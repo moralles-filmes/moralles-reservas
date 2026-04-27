@@ -7,6 +7,12 @@ import {
   type AgentTool,
 } from "../_shared/ai-providers.ts";
 import { sendWhatsApp } from "../send-whatsapp/index.ts";
+import {
+  genRequestId,
+  jsonLog,
+  sanitizePhone,
+  validateWebhookSecret,
+} from "../_shared/security.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -288,9 +294,30 @@ interface ZApiPayload {
   phone: string;
   text?: { message: string };
   isFromMe?: boolean;
+  messageId?: string;
+  message?: { id?: string };
+  id?: string;
+}
+
+const RATE_LIMIT_WINDOW_SECONDS = 60;
+const RATE_LIMIT_MAX = 10;
+
+function extractMessageId(payload: ZApiPayload, phone: string, text: string): string {
+  const id = payload.messageId ?? payload.message?.id ?? payload.id;
+  if (id) return id;
+  // Fallback determinístico (mesmo phone+text dentro do mesmo segundo é deduplicado).
+  const ts = Math.floor(Date.now() / 1000);
+  return `${phone}:${ts}:${text.slice(0, 32)}`;
 }
 
 serve(async (req) => {
+  const requestId = genRequestId();
+
+  if (!validateWebhookSecret(req)) {
+    jsonLog("warn", { requestId, evt: "webhook_unauthorized" });
+    return new Response("unauthorized", { status: 401 });
+  }
+
   try {
     const payload: ZApiPayload = await req.json();
 
@@ -300,6 +327,39 @@ serve(async (req) => {
 
     const phone = payload.phone.replace(/\D/g, "").replace(/^55/, "");
     const incomingText = payload.text.message.trim();
+
+    // Idempotência — descarta retransmissões da Z-API.
+    const messageId = extractMessageId(payload, phone, incomingText);
+    const { error: idemError } = await supabase
+      .from("processed_messages")
+      .insert({ message_id: messageId });
+    if (idemError) {
+      // Unique violation = já processado; qualquer outro erro também loga e segue ok
+      // (preferimos perder uma mensagem do que duplicar).
+      jsonLog("info", {
+        requestId,
+        evt: "duplicate_message",
+        phone: sanitizePhone(phone),
+      });
+      return new Response("ok");
+    }
+
+    // Rate limit por telefone (sliding window).
+    const { data: allowed, error: rlError } = await supabase.rpc("check_rate_limit", {
+      p_phone: phone,
+      p_window_seconds: RATE_LIMIT_WINDOW_SECONDS,
+      p_max: RATE_LIMIT_MAX,
+    });
+    if (rlError) {
+      jsonLog("error", { requestId, evt: "rate_limit_check_failed", err: String(rlError) });
+    } else if (allowed === false) {
+      jsonLog("warn", {
+        requestId,
+        evt: "rate_limited",
+        phone: sanitizePhone(phone),
+      });
+      return new Response("ok"); // silencioso para evitar loop com o usuário
+    }
 
     // Upsert customer
     const { data: customer } = await supabase
@@ -400,7 +460,7 @@ serve(async (req) => {
 
     return new Response("ok");
   } catch (err) {
-    console.error("webhook-zapi error:", err);
+    jsonLog("error", { requestId, evt: "webhook_error", err: String(err) });
     return new Response("error", { status: 500 });
   }
 });

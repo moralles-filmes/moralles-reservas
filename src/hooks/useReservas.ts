@@ -36,13 +36,35 @@ export function useReservaByCode(code: string) {
   return useQuery({
     queryKey: ["reserva", code],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("reservations")
-        .select("*, customer:customers(*), table:tables(*)")
-        .eq("reservation_code", code.toUpperCase())
-        .maybeSingle();
+      // Consulta anônima vai pela RPC `get_reservation_by_code` (security definer)
+      // — RLS de leitura em `reservations`/`customers` está fechada para anon.
+      const { data, error } = await supabase.rpc("get_reservation_by_code", {
+        p_code: code.toUpperCase(),
+      });
       if (error) throw error;
-      return data as Reserva | null;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) return null;
+      const reserva: Reserva = {
+        id: row.id,
+        customer_id: "",
+        table_id: null,
+        date: row.date,
+        time: row.time,
+        party_size: row.party_size,
+        status: row.status,
+        notes: row.notes,
+        reservation_code: row.reservation_code,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        customer: {
+          id: "",
+          name: row.customer_name,
+          phone: row.customer_phone,
+          email: row.customer_email,
+          created_at: row.created_at,
+        },
+      };
+      return reserva;
     },
     enabled: !!code,
   });

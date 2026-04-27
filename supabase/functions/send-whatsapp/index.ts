@@ -1,4 +1,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { fetchWithRetry } from "../_shared/retry.ts";
+import {
+  jsonLog,
+  requireInternalAuth,
+  sanitizePhone,
+} from "../_shared/security.ts";
 
 const ZAPI_INSTANCE_ID = Deno.env.get("ZAPI_INSTANCE_ID")!;
 const ZAPI_TOKEN = Deno.env.get("ZAPI_TOKEN")!;
@@ -6,7 +12,8 @@ const ZAPI_CLIENT_TOKEN = Deno.env.get("ZAPI_CLIENT_TOKEN")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-internal-key",
 };
 
 export interface SendMessagePayload {
@@ -20,18 +27,27 @@ export async function sendWhatsApp(phone: string, message: string): Promise<bool
 
   const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE_ID}/token/${ZAPI_TOKEN}/send-text`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Client-Token": ZAPI_CLIENT_TOKEN,
+  const res = await fetchWithRetry(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Client-Token": ZAPI_CLIENT_TOKEN,
+      },
+      body: JSON.stringify({ phone: formatted, message }),
     },
-    body: JSON.stringify({ phone: formatted, message }),
-  });
+    { retries: 3, baseDelayMs: 500 },
+  );
 
   if (!res.ok) {
     const body = await res.text();
-    console.error(`Z-API error ${res.status}: ${body}`);
+    jsonLog("error", {
+      evt: "zapi_send_failed",
+      status: res.status,
+      body,
+      phone: sanitizePhone(phone),
+    });
     return false;
   }
   return true;
@@ -40,6 +56,13 @@ export async function sendWhatsApp(phone: string, message: string): Promise<bool
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  if (!requireInternalAuth(req)) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   try {
@@ -56,8 +79,8 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
-    console.error(err);
-    return new Response(JSON.stringify({ error: String(err) }), {
+    jsonLog("error", { evt: "send_whatsapp_error", err: String(err) });
+    return new Response(JSON.stringify({ error: "internal_error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

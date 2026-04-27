@@ -88,6 +88,10 @@ supabase secrets set ZAPI_INSTANCE_ID=...
 supabase secrets set ZAPI_TOKEN=...
 supabase secrets set ZAPI_CLIENT_TOKEN=...
 
+# Hardening — gere ambos com `openssl rand -hex 32`
+supabase secrets set ZAPI_WEBHOOK_SECRET=...   # validar origem do webhook (header X-Webhook-Secret no painel Z-API)
+supabase secrets set INTERNAL_API_KEY=...      # auth do send-whatsapp / send-confirmation (header X-Internal-Key no DB Webhook)
+
 # Apenas o provedor de IA ativo precisa estar configurado:
 supabase secrets set ANTHROPIC_API_KEY=sk-ant-...   # Claude
 supabase secrets set OPENAI_API_KEY=sk-...          # OpenAI

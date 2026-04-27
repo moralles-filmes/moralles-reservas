@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp } from "../send-whatsapp/index.ts";
+import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -9,7 +10,8 @@ const supabase = createClient(
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-internal-key",
 };
 
 function formatDate(dateStr: string): string {
@@ -20,6 +22,13 @@ function formatDate(dateStr: string): string {
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  if (!requireInternalAuth(req)) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   try {
@@ -34,7 +43,7 @@ serve(async (req) => {
       .single();
 
     if (error || !reserva) {
-      console.error("Reservation not found:", error);
+      jsonLog("error", { evt: "reservation_not_found", id: record.id, err: String(error) });
       return new Response(JSON.stringify({ error: "Reserva não encontrada" }), {
         status: 404,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -66,8 +75,8 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
-    console.error(err);
-    return new Response(JSON.stringify({ error: String(err) }), {
+    jsonLog("error", { evt: "send_confirmation_error", err: String(err) });
+    return new Response(JSON.stringify({ error: "internal_error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
