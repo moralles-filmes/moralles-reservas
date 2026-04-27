@@ -266,6 +266,16 @@ Definidas em `webhook-zapi/index.ts` como `agentTools: AgentTool[]`:
 | `get_reservation` | Busca reserva por código ou telefone |
 | `update_reservation` | Altera data, hora, pessoas ou observações |
 | `cancel_reservation` | Cancela reserva (status → cancelled) |
+| `list_customer_reservations` | Lista reservas ativas do cliente (sem precisar de código) |
+
+O **system prompt é montado dinamicamente** com horários do `business_hours`, próximas `special_dates` (60 dias) e preferências do cliente (alergias, restrições, VIP, mesa preferida) quando existirem.
+
+### Resiliência do agente
+
+- **Truncamento de histórico** — apenas as últimas 20 mensagens entram no contexto (configurável via `maxHistoryMessages`).
+- **Prompt caching do Claude** — `system` enviado como bloco com `cache_control: ephemeral`, ~90% de redução de custo em cache hit.
+- **Timeout** — `AbortController` de 45s por chamada (Edge Function tem limite de 60s).
+- **Telemetria** — log estruturado `evt: "agent_usage"` por mensagem com `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_creation_tokens`.
 
 ### Personalizar o agente
 

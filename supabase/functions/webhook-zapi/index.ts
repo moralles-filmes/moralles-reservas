@@ -106,6 +106,15 @@ const agentTools: AgentTool[] = [
       required: ["reservation_code"],
     },
   },
+  {
+    name: "list_customer_reservations",
+    description:
+      "Lista as reservas ativas (pending/confirmed) do cliente. Use quando o cliente perguntar sobre reservas em aberto, sem informar o código.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+  },
 ];
 
 // ─── Tool implementations ──────────────────────────────────────────────────────
@@ -251,6 +260,37 @@ async function cancelReservation(code: string) {
 
   if (error) return { success: false, error: error.message };
   return { success: true, message: `Reserva #${code} cancelada.` };
+}
+
+async function listCustomerReservations(customerId: string) {
+  const { data } = await supabase
+    .from("reservations")
+    .select("reservation_code, date, time, party_size, status, notes")
+    .eq("customer_id", customerId)
+    .in("status", ["pending", "confirmed"])
+    .gte("date", new Date().toISOString().slice(0, 10))
+    .order("date", { ascending: true })
+    .order("time", { ascending: true })
+    .limit(10);
+
+  if (!data || data.length === 0) {
+    return { found: false, message: "Você não tem reservas ativas no momento." };
+  }
+  return {
+    found: true,
+    count: data.length,
+    reservations: data.map((r) => {
+      const [y, m, d] = r.date.split("-");
+      return {
+        reservation_code: r.reservation_code,
+        date: `${d}/${m}/${y}`,
+        time: r.time,
+        party_size: r.party_size,
+        status: r.status,
+        notes: r.notes,
+      };
+    }),
+  };
 }
 
 // ─── Conversation helpers ──────────────────────────────────────────────────────
@@ -447,13 +487,73 @@ serve(async (req) => {
     const restaurantName = settingsMap["restaurant_name"] ?? "Moralles Restaurante";
     const customPrompt = settingsMap["ai_system_prompt"] ?? "";
 
+    // Contexto do restaurante: horários da semana + próximas datas especiais.
+    const { data: hoursRows } = await supabase
+      .from("business_hours")
+      .select("day_of_week, open_time, close_time, is_closed")
+      .order("day_of_week");
+
+    const dayNames = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+    const hoursLines = (hoursRows ?? []).map((h: any) =>
+      h.is_closed
+        ? `- ${dayNames[h.day_of_week]}: fechado`
+        : `- ${dayNames[h.day_of_week]}: ${h.open_time?.slice(0, 5)} às ${h.close_time?.slice(0, 5)}`
+    );
+
+    const today = new Date().toISOString().slice(0, 10);
+    const horizon = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const { data: specialDates } = await supabase
+      .from("special_dates")
+      .select("date, name, is_closed, open_time, close_time")
+      .gte("date", today)
+      .lte("date", horizon)
+      .order("date", { ascending: true });
+
+    const specialLines = (specialDates ?? []).map((s: any) => {
+      const [y, m, d] = s.date.split("-");
+      const ymd = `${d}/${m}/${y}`;
+      if (s.is_closed) return `- ${ymd} (${s.name}): fechado`;
+      return `- ${ymd} (${s.name}): ${s.open_time?.slice(0, 5)} às ${s.close_time?.slice(0, 5)}`;
+    });
+
+    // Preferências do cliente — se já cadastradas, alimentamos o prompt.
+    const prefsLines: string[] = [];
+    if (customer.allergies) prefsLines.push(`- Alergias: ${customer.allergies}`);
+    if (customer.dietary_restrictions) prefsLines.push(`- Restrições alimentares: ${customer.dietary_restrictions}`);
+    if (customer.vip_notes) prefsLines.push(`- VIP: ${customer.vip_notes}`);
+    if (customer.preferred_table_location)
+      prefsLines.push(
+        `- Mesa preferida: ${customer.preferred_table_location === "internal" ? "interna" : "externa"}`,
+      );
+
+    const todayBR = new Date().toLocaleDateString("pt-BR", {
+      weekday: "long",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+
     const systemPrompt =
       `Você é o assistente de reservas do ${restaurantName}. ` +
       `Seja cordial, eficiente e responda sempre em português brasileiro. ` +
-      `O número de WhatsApp do cliente é ${phone}. ` +
-      `Use as ferramentas disponíveis para consultar disponibilidade, criar, alterar ou cancelar reservas. ` +
-      `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar.` +
+      `O número de WhatsApp do cliente é ${phone}. Hoje é ${todayBR}. ` +
+      `Use as ferramentas disponíveis para consultar disponibilidade, criar, alterar, cancelar ou listar reservas. ` +
+      `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar. ` +
+      `Não invente horários — só ofereça horários dentro da janela de funcionamento.` +
+      (hoursLines.length ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}` : "") +
+      (specialLines.length
+        ? `\n\nDatas especiais nos próximos 60 dias (sobrescrevem o horário acima):\n${specialLines.join("\n")}`
+        : "") +
+      (prefsLines.length ? `\n\nO que sabemos sobre este cliente:\n${prefsLines.join("\n")}` : "") +
       (customPrompt ? `\n\nInstruções adicionais: ${customPrompt}` : "");
+
+    // Acumula o uso de tokens ao longo das múltiplas chamadas do loop.
+    const totalUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+    };
 
     // Run AI agent loop
     const finalText = await runAgentLoop({
@@ -464,6 +564,12 @@ serve(async (req) => {
       history,
       userMessage: incomingText,
       tools: agentTools,
+      onUsage: (u) => {
+        totalUsage.input_tokens += u.input_tokens;
+        totalUsage.output_tokens += u.output_tokens;
+        totalUsage.cache_creation_tokens += u.cache_creation_tokens;
+        totalUsage.cache_read_tokens += u.cache_read_tokens;
+      },
       onToolCall: async (name, input) => {
         try {
           let result: any;
@@ -485,6 +591,9 @@ serve(async (req) => {
             case "cancel_reservation":
               result = await cancelReservation(input.reservation_code);
               break;
+            case "list_customer_reservations":
+              result = await listCustomerReservations(customer.id);
+              break;
             default:
               result = { error: `Tool desconhecida: ${name}` };
           }
@@ -493,6 +602,14 @@ serve(async (req) => {
           return JSON.stringify({ error: String(err) });
         }
       },
+    });
+
+    jsonLog("info", {
+      requestId,
+      evt: "agent_usage",
+      provider,
+      model: modelOverride ?? DEFAULT_MODELS[provider],
+      ...totalUsage,
     });
 
     if (finalText) {
