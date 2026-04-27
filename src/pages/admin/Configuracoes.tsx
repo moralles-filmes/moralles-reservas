@@ -211,7 +211,7 @@ export default function Configuracoes() {
     queryFn: async () => {
       const { data, error } = await supabase.from("settings").select("*");
       if (error) throw error;
-      return data as Array<{ key: string; value: any }>;
+      return data as Array<{ key: string; value: unknown }>;
     },
   });
 
@@ -240,7 +240,7 @@ export default function Configuracoes() {
   });
 
   const saveSetting = useMutation({
-    mutationFn: async ({ key, value }: { key: string; value: any }) => {
+    mutationFn: async ({ key, value }: { key: string; value: unknown }) => {
       const { error } = await supabase
         .from("settings")
         .upsert({ key, value }, { onConflict: "key" });

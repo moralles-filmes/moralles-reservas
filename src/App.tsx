@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { AdminLayout } from "@/components/admin/AdminLayout";
 import { useAuth } from "@/hooks/useAuth";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const Index = lazy(() => import("./pages/Index"));
 const Auth = lazy(() => import("./pages/Auth"));
@@ -41,49 +42,30 @@ function PageLoader() {
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Suspense fallback={<PageLoader />}>
-          <Routes>
-            {/* Public */}
-            <Route path="/" element={<Index />} />
-            <Route path="/admin/login" element={<Auth />} />
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <Suspense fallback={<PageLoader />}>
+            <Routes>
+              {/* Public */}
+              <Route path="/" element={<Index />} />
+              <Route path="/admin/login" element={<Auth />} />
 
-            {/* Admin (protected) */}
-            <Route
-              path="/admin"
-              element={<AdminGuard><Dashboard /></AdminGuard>}
-            />
-            <Route
-              path="/admin/reservas"
-              element={<AdminGuard><Reservas /></AdminGuard>}
-            />
-            <Route
-              path="/admin/calendario"
-              element={<AdminGuard><Calendario /></AdminGuard>}
-            />
-            <Route
-              path="/admin/clientes"
-              element={<AdminGuard><Clientes /></AdminGuard>}
-            />
-            <Route
-              path="/admin/conversas"
-              element={<AdminGuard><Conversas /></AdminGuard>}
-            />
-            <Route
-              path="/admin/mesas"
-              element={<AdminGuard><Mesas /></AdminGuard>}
-            />
-            <Route
-              path="/admin/configuracoes"
-              element={<AdminGuard><Configuracoes /></AdminGuard>}
-            />
+              {/* Admin (protected) */}
+              <Route path="/admin" element={<AdminGuard><Dashboard /></AdminGuard>} />
+              <Route path="/admin/reservas" element={<AdminGuard><Reservas /></AdminGuard>} />
+              <Route path="/admin/calendario" element={<AdminGuard><Calendario /></AdminGuard>} />
+              <Route path="/admin/clientes" element={<AdminGuard><Clientes /></AdminGuard>} />
+              <Route path="/admin/conversas" element={<AdminGuard><Conversas /></AdminGuard>} />
+              <Route path="/admin/mesas" element={<AdminGuard><Mesas /></AdminGuard>} />
+              <Route path="/admin/configuracoes" element={<AdminGuard><Configuracoes /></AdminGuard>} />
 
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Suspense>
-      </BrowserRouter>
-      <Toaster richColors position="top-right" />
-    </QueryClientProvider>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </BrowserRouter>
+        <Toaster richColors position="top-right" />
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

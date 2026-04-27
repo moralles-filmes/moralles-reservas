@@ -30,9 +30,13 @@ Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp.
 ## Comandos
 
 ```bash
-npm run dev        # servidor local em http://localhost:8080
-npm run build      # build de produção em dist/
-npm run preview    # servir o build local
+npm run dev          # servidor local em http://localhost:8080
+npm run build        # build de produção em dist/
+npm run preview      # servir o build local
+npm run lint         # ESLint
+npm run typecheck    # tsc --noEmit
+npm test             # Vitest (run once)
+npm run test:watch   # Vitest em watch mode
 
 # instalar dependências (legacy-peer-deps necessário por react-day-picker vs date-fns v4)
 npm install --legacy-peer-deps
@@ -158,7 +162,8 @@ moralles-reservas/
 │   │   ├── 004_admin_users.sql             # Tabela admin_users (role + seed do super admin)
 │   │   ├── 005_hardening.sql               # Fecha leitura anon, RPC get_reservation_by_code, idempotência, rate limit
 │   │   ├── 006_hardening_followups.sql     # Revoke check_rate_limit + lock search_path em update_updated_at
-│   │   └── 007_product_features.sql        # table_blocks, special_dates, prefs do customer, get_customer_stats
+│   │   ├── 007_product_features.sql        # table_blocks, special_dates, prefs do customer, get_customer_stats
+│   │   └── 008_composite_indexes.sql       # Índices compostos (status,date) (date,time) (customer_id,created_at)
 │   │
 │   └── functions/
 │       ├── _shared/

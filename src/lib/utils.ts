@@ -21,7 +21,11 @@ export function formatDateBR(
 }
 
 export function formatPhone(phone: string): string {
-  const digits = phone.replace(/\D/g, "");
+  let digits = phone.replace(/\D/g, "");
+  // Tira o prefixo do país (Brasil) se vier com 12 ou 13 dígitos.
+  if ((digits.length === 12 || digits.length === 13) && digits.startsWith("55")) {
+    digits = digits.slice(2);
+  }
   if (digits.length === 11) {
     return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
   }

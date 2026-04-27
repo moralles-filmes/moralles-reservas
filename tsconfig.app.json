@@ -18,6 +18,7 @@
     "skipLibCheck": true,
     "strict": false,
     "target": "ES2020",
+    "types": ["vitest/globals", "@testing-library/jest-dom"],
     "useDefineForClassFields": true
   },
   "include": ["src"]
