@@ -16,6 +16,7 @@ const Clientes = lazy(() => import("./pages/admin/Clientes"));
 const Conversas = lazy(() => import("./pages/admin/Conversas"));
 const Mesas = lazy(() => import("./pages/admin/Mesas"));
 const Configuracoes = lazy(() => import("./pages/admin/Configuracoes"));
+const Auditoria = lazy(() => import("./pages/admin/Auditoria"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="/admin/conversas" element={<AdminGuard><Conversas /></AdminGuard>} />
               <Route path="/admin/mesas" element={<AdminGuard><Mesas /></AdminGuard>} />
               <Route path="/admin/configuracoes" element={<AdminGuard><Configuracoes /></AdminGuard>} />
+              <Route path="/admin/auditoria" element={<AdminGuard><Auditoria /></AdminGuard>} />
 
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

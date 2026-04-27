@@ -40,6 +40,22 @@ export function useUpdateCustomer() {
   });
 }
 
+export function useAnonymizeCustomer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (customerId: string) => {
+      const { error } = await supabase.rpc("anonymize_customer", {
+        p_id: customerId,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+      queryClient.invalidateQueries({ queryKey: ["reservas"] });
+    },
+  });
+}
+
 export function useCustomerStats(customerId: string | undefined) {
   return useQuery({
     queryKey: ["customer-stats", customerId],

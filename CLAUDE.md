@@ -127,9 +127,10 @@ moralles-reservas/
 │   │   ├── useReservas.ts             # CRUD de reservas via React Query
 │   │   ├── useAuth.ts                 # Autenticação + updateEmail/updatePassword + isSuperAdmin
 │   │   ├── useAdminUsers.ts           # Listar/criar/excluir admins (via Edge Function)
-│   │   ├── useCustomers.ts            # Update customer + get_customer_stats
+│   │   ├── useCustomers.ts            # Update customer + get_customer_stats + anonymize_customer
 │   │   ├── useTableBlocks.ts          # CRUD de bloqueios de mesa
-│   │   └── useSpecialDates.ts         # CRUD de datas especiais (feriados)
+│   │   ├── useSpecialDates.ts         # CRUD de datas especiais (feriados)
+│   │   └── useAuditLog.ts             # Lista de audit_log (LGPD)
 │   │
 │   ├── stores/
 │   │   └── reservaStore.ts            # Filtros do painel admin (Zustand)
@@ -151,8 +152,9 @@ moralles-reservas/
 │           ├── Calendario.tsx         # Visão calendário mensal
 │           ├── Clientes.tsx           # Histórico de clientes
 │           ├── Conversas.tsx          # Histórico de chats WhatsApp
-│           ├── Mesas.tsx              # Gestão de mesas
-│           └── Configuracoes.tsx      # Horários, provedor IA, system prompt, conta + admins
+│           ├── Mesas.tsx              # Gestão de mesas + bloqueios
+│           ├── Auditoria.tsx          # Trilha LGPD de quem alterou o quê
+│           └── Configuracoes.tsx      # Horários, datas especiais, provedor IA, conta + admins
 │
 ├── supabase/
 │   ├── migrations/
@@ -163,7 +165,10 @@ moralles-reservas/
 │   │   ├── 005_hardening.sql               # Fecha leitura anon, RPC get_reservation_by_code, idempotência, rate limit
 │   │   ├── 006_hardening_followups.sql     # Revoke check_rate_limit + lock search_path em update_updated_at
 │   │   ├── 007_product_features.sql        # table_blocks, special_dates, prefs do customer, get_customer_stats
-│   │   └── 008_composite_indexes.sql       # Índices compostos (status,date) (date,time) (customer_id,created_at)
+│   │   ├── 008_composite_indexes.sql       # Índices compostos (status,date) (date,time) (customer_id,created_at)
+│   │   ├── 009_lgpd.sql                    # audit_log + triggers, anonymize_customer, customers.deleted_at
+│   │   ├── 010_lgpd_followups.sql          # Revoke audit_trigger_func de anon/auth
+│   │   └── 011_notifications_and_satisfaction.sql  # notifications_sent + reservations.satisfaction_rating + RPCs do N8N
 │   │
 │   └── functions/
 │       ├── _shared/
@@ -200,6 +205,8 @@ moralles-reservas/
 | `admin_users` | Admins do painel — `id` (FK `auth.users`), `email`, `role` (`admin`/`super_admin`), `created_by` |
 | `table_blocks` | Bloqueios de mesa por intervalo (`blocked_from`/`blocked_to` timestamptz, `reason`) — manutenção, evento privado |
 | `special_dates` | Feriados/datas especiais — sobrescreve `business_hours` numa data exata. Campos: `date` unique, `name`, `is_closed`, `open_time`, `close_time`, `max_party_size`, `notes` |
+| `audit_log` | Trilha de auditoria de `customers` e `reservations` (LGPD). Triggers AFTER INSERT/UPDATE/DELETE registram `old_values`/`new_values`/`actor_id`/`actor_email`. Visível em `/admin/auditoria` |
+| `notifications_sent` | Log/idempotência de mensagens outbound disparadas pelo N8N (`kind` ∈ `confirmation`/`reminder_d1`/`survey_d1`). `unique(reservation_id, kind)` impede duplicação. As RPCs `get_reservations_for_reminder` / `get_reservations_for_survey` filtram pela ausência do registro |
 
 ### Status de reserva
 
@@ -323,6 +330,12 @@ No painel Supabase → **Database → Webhooks**, crie um webhook:
 - Tabela: `reservations`
 - Evento: `INSERT`
 - URL: `https://<project-ref>.supabase.co/functions/v1/send-confirmation`
+
+### Automações N8N (lembrete D-1, pesquisa D+1)
+
+Outbound agendado fica fora das Edge Functions e é orquestrado por N8N. Setup, credenciais e testes em [`docs/n8n/README.md`](docs/n8n/README.md). Os workflows ficam em [`docs/n8n/workflow-reminder-d1.json`](docs/n8n/workflow-reminder-d1.json) e [`docs/n8n/workflow-survey-d1.json`](docs/n8n/workflow-survey-d1.json) (importáveis no N8N v1.x).
+
+A captura da nota 1-5 da pesquisa é feita pelo `webhook-zapi` antes de invocar o agente IA — busca em `notifications_sent` se houve `survey_d1` enviado nas últimas 36h e atualiza `reservations.satisfaction_rating` direto.
 
 ---
 

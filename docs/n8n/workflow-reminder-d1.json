@@ -1,0 +1,186 @@
+{
+  "name": "moralles-reminder-d1",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron 10h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/get_reservations_for_reminder",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$credentials[\"supabase-service-role\"].value}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"p_target_date\": \"{{ $now.plus({days:1}).toFormat('yyyy-MM-dd') }}\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          }
+        }
+      },
+      "id": "fetch-reservations",
+      "name": "Buscar reservas D-1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_SUPABASE_CRED_ID",
+          "name": "supabase-service-role"
+        }
+      },
+      "notes": "RPC retorna [] quando não há reservas elegíveis. Filtra status, do_not_contact e idempotência."
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $json;\nconst [hh, mm] = r.reservation_time.split(':');\nconst msg = `Olá, ${r.customer_name}! 👋\\n\\nLembrete da sua reserva amanhã às ${hh}:${mm} para ${r.party_size} ${r.party_size === 1 ? 'pessoa' : 'pessoas'} no Restaurante Moralles.\\n\\nCódigo: #${r.code}\\n\\nPara alterar ou cancelar, é só responder esta mensagem. Te esperamos! 🍽️`;\n\nreturn [{\n  json: {\n    reservation_id: r.reservation_id,\n    phone: r.customer_phone,\n    message: msg,\n  }\n}];"
+      },
+      "id": "build-message",
+      "name": "Montar mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/functions/v1/send-whatsapp",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $json.phone }}\",\n  \"message\": {{ JSON.stringify($json.message) }}\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "send-whatsapp",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1160, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_INTERNAL_CRED_ID",
+          "name": "moralles-internal-key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/notifications_sent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$credentials[\"supabase-service-role\"].value}}"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"reservation_id\": \"{{ $('Montar mensagem').item.json.reservation_id }}\",\n  \"kind\": \"reminder_d1\",\n  \"status\": \"{{ $json.success ? 'sent' : 'failed' }}\",\n  \"error\": {{ $json.success ? null : JSON.stringify($json.error || 'unknown') }}\n}",
+        "options": {}
+      },
+      "id": "log-notification",
+      "name": "Log notifications_sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_SUPABASE_CRED_ID",
+          "name": "supabase-service-role"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cron 10h": {
+      "main": [[{ "node": "Buscar reservas D-1", "type": "main", "index": 0 }]]
+    },
+    "Buscar reservas D-1": {
+      "main": [[{ "node": "Split In Batches", "type": "main", "index": 0 }]]
+    },
+    "Split In Batches": {
+      "main": [[{ "node": "Montar mensagem", "type": "main", "index": 0 }]]
+    },
+    "Montar mensagem": {
+      "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]]
+    },
+    "Enviar WhatsApp": {
+      "main": [[{ "node": "Log notifications_sent", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo"
+  },
+  "versionId": "moralles-reminder-d1-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": ["moralles-reservas", "outbound"]
+}

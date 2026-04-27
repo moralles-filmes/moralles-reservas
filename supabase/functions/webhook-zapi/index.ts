@@ -370,6 +370,48 @@ serve(async (req) => {
 
     if (!customer) return new Response("error", { status: 500 });
 
+    // Survey response intercept — captura nota 1-5 de pesquisa D+1 antes do agente
+    // IA (mais barato e determinístico). Janela de 36h cobre quem responde no dia
+    // seguinte ao envio.
+    const ratingMatch = /^([1-5])$/.exec(incomingText);
+    if (ratingMatch) {
+      const rating = parseInt(ratingMatch[1], 10);
+      const cutoff = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
+
+      const { data: pending } = await supabase
+        .from("notifications_sent")
+        .select("reservation_id, reservations!inner(customer_id, satisfaction_rating)")
+        .eq("kind", "survey_d1")
+        .eq("status", "sent")
+        .gt("sent_at", cutoff)
+        .eq("reservations.customer_id", customer.id)
+        .is("reservations.satisfaction_rating", null)
+        .order("sent_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (pending) {
+        await supabase
+          .from("reservations")
+          .update({
+            satisfaction_rating: rating,
+            satisfaction_at: new Date().toISOString(),
+          })
+          .eq("id", pending.reservation_id);
+
+        await sendWhatsApp(phone, "Obrigado pelo feedback! 🙏");
+
+        jsonLog("info", {
+          requestId,
+          evt: "survey_response_captured",
+          rating,
+          phone: sanitizePhone(phone),
+        });
+
+        return new Response("ok");
+      }
+    }
+
     // Load conversation history
     const conv = await getOrCreateConversation(customer.id);
     const history: Array<{ role: "user" | "assistant"; content: string }> = (

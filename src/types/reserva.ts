@@ -46,6 +46,20 @@ export interface CustomerStats {
   last_visit: string | null;
 }
 
+export type AuditAction = "INSERT" | "UPDATE" | "DELETE";
+
+export interface AuditLogEntry {
+  id: number;
+  table_name: string;
+  record_id: string;
+  action: AuditAction;
+  old_values: Record<string, unknown> | null;
+  new_values: Record<string, unknown> | null;
+  actor_id: string | null;
+  actor_email: string | null;
+  created_at: string;
+}
+
 export interface Mesa {
   id: string;
   number: number;

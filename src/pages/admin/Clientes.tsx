@@ -16,6 +16,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -24,8 +35,12 @@ import {
 } from "@/components/ui/select";
 import { formatDateBR, formatPhone } from "@/lib/utils";
 import type { Customer } from "@/types/reserva";
-import { AlertTriangle, BellOff, Phone, Search, Sparkles } from "lucide-react";
-import { useCustomerStats, useUpdateCustomer } from "@/hooks/useCustomers";
+import { AlertTriangle, BellOff, Phone, Search, ShieldAlert, Sparkles } from "lucide-react";
+import {
+  useAnonymizeCustomer,
+  useCustomerStats,
+  useUpdateCustomer,
+} from "@/hooks/useCustomers";
 import { toast } from "sonner";
 
 interface CustomerWithCount extends Customer {
@@ -42,6 +57,7 @@ export default function Clientes() {
       let query = supabase
         .from("customers")
         .select("*")
+        .is("deleted_at", null)
         .order("created_at", { ascending: false });
 
       if (search) {
@@ -176,6 +192,7 @@ function CustomerDetailsDialog({
   onClose: () => void;
 }) {
   const update = useUpdateCustomer();
+  const anonymize = useAnonymizeCustomer();
   const { data: stats, isLoading: loadingStats } = useCustomerStats(customer?.id);
 
   if (!customer) return null;
@@ -234,6 +251,54 @@ function CustomerDetailsDialog({
             }
             saving={update.isPending}
           />
+
+          {/* LGPD: anonimização */}
+          <div className="rounded-lg border border-destructive/30 p-4 space-y-3">
+            <div className="flex items-start gap-2">
+              <ShieldAlert className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Anonimizar cliente (LGPD)</p>
+                <p className="text-xs text-muted-foreground">
+                  Remove nome, telefone, e-mail e preferências. As reservas continuam no
+                  histórico do restaurante, mas sem identificar a pessoa. Não dá pra desfazer.
+                </p>
+              </div>
+            </div>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="sm" className="text-destructive border-destructive/30">
+                  Anonimizar este cliente
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Anonimizar {customer.name}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Os dados pessoais (nome, telefone, e-mail, alergias, notas) serão
+                    apagados permanentemente. Reservas históricas continuam para fins
+                    fiscais e estatísticos. <strong>Esta ação não pode ser desfeita.</strong>
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() =>
+                      anonymize.mutate(customer.id, {
+                        onSuccess: () => {
+                          toast.success("Cliente anonimizado.");
+                          onClose();
+                        },
+                        onError: () => toast.error("Erro ao anonimizar."),
+                      })
+                    }
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Anonimizar
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

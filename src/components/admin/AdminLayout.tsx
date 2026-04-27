@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   MessageCircle,
+  ScrollText,
   Settings,
   Table2,
   Users,
@@ -21,6 +22,7 @@ const navItems = [
   { to: "/admin/clientes", label: "Clientes", icon: Users },
   { to: "/admin/conversas", label: "Conversas", icon: MessageCircle },
   { to: "/admin/mesas", label: "Mesas", icon: Table2 },
+  { to: "/admin/auditoria", label: "Auditoria", icon: ScrollText },
   { to: "/admin/configuracoes", label: "Configurações", icon: Settings },
 ];
 
