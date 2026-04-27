@@ -22,10 +22,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import type { Mesa } from "@/types/reserva";
-import { Plus, Table2 } from "lucide-react";
+import { Lock, Plus, Table2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
+import {
+  useTableBlocks,
+  useCreateTableBlock,
+  useDeleteTableBlock,
+} from "@/hooks/useTableBlocks";
 
 export default function Mesas() {
   const queryClient = useQueryClient();
@@ -70,7 +86,6 @@ export default function Mesas() {
   });
 
   const activeMesas = mesas?.filter((m) => m.active) || [];
-  const inactiveMesas = mesas?.filter((m) => !m.active) || [];
 
   return (
     <div className="space-y-5">
@@ -189,6 +204,201 @@ export default function Mesas() {
           ))}
         </div>
       )}
+
+      <TableBlocksSection mesas={mesas ?? []} />
     </div>
+  );
+}
+
+// ─── Bloqueios de mesa ────────────────────────────────────────────────────────
+
+function TableBlocksSection({ mesas }: { mesas: Mesa[] }) {
+  const [open, setOpen] = useState(false);
+  const [tableId, setTableId] = useState<string>("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [reason, setReason] = useState("");
+
+  const { data: blocks, isLoading } = useTableBlocks();
+  const createBlock = useCreateTableBlock();
+  const deleteBlock = useDeleteTableBlock();
+
+  const reset = () => {
+    setTableId("");
+    setFrom("");
+    setTo("");
+    setReason("");
+  };
+
+  const handleCreate = () => {
+    if (!tableId || !from || !to) {
+      toast.error("Preencha mesa, início e fim.");
+      return;
+    }
+    if (new Date(to) <= new Date(from)) {
+      toast.error("Fim do bloqueio precisa ser depois do início.");
+      return;
+    }
+    createBlock.mutate(
+      {
+        table_id: tableId,
+        blocked_from: new Date(from).toISOString(),
+        blocked_to: new Date(to).toISOString(),
+        reason: reason.trim() || null,
+      },
+      {
+        onSuccess: () => {
+          toast.success("Bloqueio criado.");
+          setOpen(false);
+          reset();
+        },
+        onError: () => toast.error("Erro ao criar bloqueio."),
+      }
+    );
+  };
+
+  const formatRange = (fromIso: string, toIso: string) => {
+    const f = new Date(fromIso);
+    const t = new Date(toIso);
+    const fmt = (d: Date) =>
+      d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+    return `${fmt(f)} → ${fmt(t)}`;
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Lock className="h-4 w-4 text-primary" />
+          <CardTitle className="text-base">Bloqueios de mesa</CardTitle>
+        </div>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
+          <DialogTrigger asChild>
+            <Button size="sm" variant="secondary">
+              <Plus className="h-4 w-4 mr-1" /> Novo bloqueio
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Bloquear mesa</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 mt-2">
+              <div className="space-y-1">
+                <Label>Mesa</Label>
+                <Select value={tableId} onValueChange={setTableId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione a mesa" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {mesas.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        Mesa {m.number} · {m.capacity} pessoas
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Início</Label>
+                  <Input
+                    type="datetime-local"
+                    value={from}
+                    onChange={(e) => setFrom(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Fim</Label>
+                  <Input
+                    type="datetime-local"
+                    value={to}
+                    onChange={(e) => setTo(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label>Motivo (opcional)</Label>
+                <Input
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="Manutenção, evento privado..."
+                />
+              </div>
+              <Button
+                onClick={handleCreate}
+                disabled={createBlock.isPending}
+                className="w-full"
+              >
+                Criar bloqueio
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
+          </div>
+        ) : !blocks?.length ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">
+            Nenhuma mesa bloqueada.
+          </p>
+        ) : (
+          <div className="divide-y">
+            {blocks.map((b) => {
+              const upcoming = new Date(b.blocked_to) > new Date();
+              return (
+                <div key={b.id} className="flex items-center justify-between gap-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-sm">
+                        Mesa {b.table?.number ?? "—"}
+                      </span>
+                      <Badge variant={upcoming ? "default" : "secondary"} className="text-[10px]">
+                        {upcoming ? "Ativo" : "Expirado"}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {formatRange(b.blocked_from, b.blocked_to)}
+                    </p>
+                    {b.reason && (
+                      <p className="text-xs text-muted-foreground italic mt-0.5 truncate">
+                        {b.reason}
+                      </p>
+                    )}
+                  </div>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="ghost" size="icon" aria-label="Remover bloqueio">
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Remover bloqueio?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          A mesa voltará a ficar disponível no período. Esta ação não pode ser
+                          desfeita.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => deleteBlock.mutate(b.id)}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          Remover
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

@@ -5,7 +5,7 @@ import { useUpdateReservaStatus } from "@/hooks/useReservas";
 import { formatDateBR, formatPhone } from "@/lib/utils";
 import type { Reserva } from "@/types/reserva";
 import { STATUS_COLORS, STATUS_LABELS } from "@/types/reserva";
-import { CalendarIcon, Clock, Phone, Users } from "lucide-react";
+import { AlertTriangle, BellOff, CalendarIcon, Clock, Phone, Sparkles, Users } from "lucide-react";
 import { toast } from "sonner";
 
 interface ReservaCardProps {
@@ -30,7 +30,7 @@ export function ReservaCard({ reserva, showActions = false }: ReservaCardProps) 
       <CardContent className="pt-4 pb-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
               <span className="font-semibold truncate">
                 {reserva.customer?.name || "—"}
               </span>
@@ -40,6 +40,25 @@ export function ReservaCard({ reserva, showActions = false }: ReservaCardProps) 
               >
                 {STATUS_LABELS[reserva.status]}
               </Badge>
+              {reserva.customer?.vip_notes && (
+                <Badge className="text-[10px] gap-1 bg-amber-100 text-amber-900 border-amber-200 hover:bg-amber-100">
+                  <Sparkles className="h-2.5 w-2.5" />
+                  VIP
+                </Badge>
+              )}
+              {(reserva.customer?.allergies ||
+                reserva.customer?.dietary_restrictions) && (
+                <Badge variant="outline" className="text-[10px] gap-1 text-destructive border-destructive/30">
+                  <AlertTriangle className="h-2.5 w-2.5" />
+                  {reserva.customer?.allergies ? "Alergia" : "Restrição"}
+                </Badge>
+              )}
+              {reserva.customer?.do_not_contact && (
+                <Badge variant="outline" className="text-[10px] gap-1">
+                  <BellOff className="h-2.5 w-2.5" />
+                  Não contatar
+                </Badge>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">

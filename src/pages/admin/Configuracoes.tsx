@@ -31,7 +31,7 @@ import type { BusinessHour } from "@/types/reserva";
 import { DAY_NAMES } from "@/types/reserva";
 import { toast } from "sonner";
 import { useState, useEffect } from "react";
-import { Bot, Info, Mail, KeyRound, UserPlus, Users, Trash2 } from "lucide-react";
+import { Bot, CalendarPlus, Info, Mail, KeyRound, UserPlus, Users, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import {
   useAdminUsers,
@@ -39,6 +39,12 @@ import {
   useDeleteAdmin,
   type AdminUser,
 } from "@/hooks/useAdminUsers";
+import {
+  useSpecialDates,
+  useUpsertSpecialDate,
+  useDeleteSpecialDate,
+} from "@/hooks/useSpecialDates";
+import type { SpecialDate } from "@/types/reserva";
 import { formatDateBR } from "@/lib/utils";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
@@ -351,6 +357,9 @@ export default function Configuracoes() {
         </CardContent>
       </Card>
 
+      {/* Special dates */}
+      <SpecialDatesSection />
+
       <Separator />
 
       {/* AI Provider */}
@@ -555,6 +564,7 @@ export default function Configuracoes() {
         </CardContent>
       </Card>
 
+      {/* end of main column — special dates inserted above; admin users below */}
       {/* Admin users — super admin only */}
       {isSuperAdmin && (
         <>
@@ -678,6 +688,223 @@ export default function Configuracoes() {
           </Card>
         </>
       )}
+    </div>
+  );
+}
+
+// ─── Datas especiais (feriados, eventos, horário diferenciado) ───────────────
+
+function SpecialDatesSection() {
+  const { data: dates, isLoading } = useSpecialDates();
+  const upsert = useUpsertSpecialDate();
+  const remove = useDeleteSpecialDate();
+
+  const [open, setOpen] = useState(false);
+  const [date, setDate] = useState("");
+  const [name, setName] = useState("");
+  const [isClosed, setIsClosed] = useState(false);
+  const [openTime, setOpenTime] = useState("12:00");
+  const [closeTime, setCloseTime] = useState("22:00");
+  const [notes, setNotes] = useState("");
+
+  const reset = () => {
+    setDate("");
+    setName("");
+    setIsClosed(false);
+    setOpenTime("12:00");
+    setCloseTime("22:00");
+    setNotes("");
+  };
+
+  const handleSave = () => {
+    if (!date || !name.trim()) {
+      toast.error("Preencha data e nome.");
+      return;
+    }
+    if (!isClosed && (!openTime || !closeTime)) {
+      toast.error("Defina abertura e fechamento, ou marque como fechado.");
+      return;
+    }
+    upsert.mutate(
+      {
+        date,
+        name: name.trim(),
+        is_closed: isClosed,
+        open_time: isClosed ? null : openTime,
+        close_time: isClosed ? null : closeTime,
+        notes: notes.trim() || null,
+      },
+      {
+        onSuccess: () => {
+          toast.success("Data salva.");
+          setOpen(false);
+          reset();
+        },
+        onError: () => toast.error("Erro ao salvar data."),
+      }
+    );
+  };
+
+  const upcoming = (dates ?? []).filter((d) => d.date >= new Date().toISOString().slice(0, 10));
+  const past = (dates ?? []).filter((d) => d.date < new Date().toISOString().slice(0, 10));
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div className="flex items-center gap-2">
+          <CalendarPlus className="h-4 w-4 text-primary" />
+          <CardTitle className="text-base">Datas especiais</CardTitle>
+        </div>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
+          <DialogTrigger asChild>
+            <Button size="sm" variant="secondary">
+              Adicionar data
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Data especial</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground -mt-2">
+              Sobrescreve o horário padrão da semana nesta data específica.
+            </p>
+            <div className="space-y-4 mt-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Data</Label>
+                  <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Nome</Label>
+                  <Input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Natal, Réveillon, Show…"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Switch checked={isClosed} onCheckedChange={setIsClosed} />
+                <span className="text-sm">Fechado neste dia</span>
+              </div>
+              {!isClosed && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label>Abertura</Label>
+                    <Input type="time" value={openTime} onChange={(e) => setOpenTime(e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Fechamento</Label>
+                    <Input type="time" value={closeTime} onChange={(e) => setCloseTime(e.target.value)} />
+                  </div>
+                </div>
+              )}
+              <div className="space-y-1">
+                <Label>Observação (opcional)</Label>
+                <Input
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Ex: menu fixo, reservas obrigatórias…"
+                />
+              </div>
+              <Button onClick={handleSave} disabled={upsert.isPending} className="w-full">
+                Salvar
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
+          </div>
+        ) : !dates?.length ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">
+            Nenhuma data cadastrada.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {upcoming.length > 0 && (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+                  Próximas
+                </p>
+                <SpecialDatesList dates={upcoming} onDelete={(id) => remove.mutate(id)} />
+              </div>
+            )}
+            {past.length > 0 && (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+                  Anteriores
+                </p>
+                <SpecialDatesList dates={past} onDelete={(id) => remove.mutate(id)} dimmed />
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SpecialDatesList({
+  dates,
+  onDelete,
+  dimmed = false,
+}: {
+  dates: SpecialDate[];
+  onDelete: (id: string) => void;
+  dimmed?: boolean;
+}) {
+  return (
+    <div className={`divide-y rounded-lg border ${dimmed ? "opacity-60" : ""}`}>
+      {dates.map((d) => (
+        <div key={d.id} className="flex items-center justify-between gap-3 p-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium text-sm">{formatDateBR(d.date)}</span>
+              <span className="text-sm text-muted-foreground truncate">{d.name}</span>
+              {d.is_closed ? (
+                <Badge variant="outline" className="text-[10px] text-destructive border-destructive/30">
+                  Fechado
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-[10px]">
+                  {d.open_time?.slice(0, 5)} – {d.close_time?.slice(0, 5)}
+                </Badge>
+              )}
+            </div>
+            {d.notes && (
+              <p className="text-xs text-muted-foreground italic mt-0.5 truncate">{d.notes}</p>
+            )}
+          </div>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Excluir data">
+                <Trash2 className="h-4 w-4 text-destructive" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Excluir data especial?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  O horário desta data voltará ao padrão da semana.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => onDelete(d.id)}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Excluir
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      ))}
     </div>
   );
 }

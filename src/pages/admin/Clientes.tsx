@@ -1,13 +1,32 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatDateBR, formatPhone } from "@/lib/utils";
 import type { Customer } from "@/types/reserva";
-import { Phone, Search } from "lucide-react";
+import { AlertTriangle, BellOff, Phone, Search, Sparkles } from "lucide-react";
+import { useCustomerStats, useUpdateCustomer } from "@/hooks/useCustomers";
+import { toast } from "sonner";
 
 interface CustomerWithCount extends Customer {
   reservations_count: number;
@@ -15,6 +34,7 @@ interface CustomerWithCount extends Customer {
 
 export default function Clientes() {
   const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<CustomerWithCount | null>(null);
 
   const { data: customers, isLoading } = useQuery({
     queryKey: ["customers", search],
@@ -33,7 +53,6 @@ export default function Clientes() {
       const { data, error } = await query;
       if (error) throw error;
 
-      // Fetch reservation counts
       const ids = data.map((c) => c.id);
       if (ids.length === 0) return [];
 
@@ -81,10 +100,42 @@ export default function Clientes() {
       ) : (
         <div className="grid gap-3">
           {customers.map((c) => (
-            <Card key={c.id} className="hover:shadow-sm transition-shadow">
+            <Card
+              key={c.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => setSelected(c)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelected(c);
+                }
+              }}
+              className="hover:shadow-sm transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/50"
+            >
               <CardContent className="py-3 flex items-center justify-between gap-4">
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium truncate">{c.name}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-medium truncate">{c.name}</p>
+                    {c.vip_notes && (
+                      <Badge className="text-[10px] gap-1 bg-amber-100 text-amber-900 border-amber-200 hover:bg-amber-100">
+                        <Sparkles className="h-2.5 w-2.5" />
+                        VIP
+                      </Badge>
+                    )}
+                    {c.allergies && (
+                      <Badge variant="outline" className="text-[10px] gap-1 text-destructive border-destructive/30">
+                        <AlertTriangle className="h-2.5 w-2.5" />
+                        Alergia
+                      </Badge>
+                    )}
+                    {c.do_not_contact && (
+                      <Badge variant="outline" className="text-[10px] gap-1">
+                        <BellOff className="h-2.5 w-2.5" />
+                        Não contatar
+                      </Badge>
+                    )}
+                  </div>
                   <div className="flex items-center gap-3 text-sm text-muted-foreground mt-0.5">
                     <span className="flex items-center gap-1">
                       <Phone className="h-3 w-3" />
@@ -106,6 +157,210 @@ export default function Clientes() {
           ))}
         </div>
       )}
+
+      <CustomerDetailsDialog
+        customer={selected}
+        onClose={() => setSelected(null)}
+      />
+    </div>
+  );
+}
+
+// ─── Drawer: detalhes + preferências + stats ──────────────────────────────────
+
+function CustomerDetailsDialog({
+  customer,
+  onClose,
+}: {
+  customer: Customer | null;
+  onClose: () => void;
+}) {
+  const update = useUpdateCustomer();
+  const { data: stats, isLoading: loadingStats } = useCustomerStats(customer?.id);
+
+  if (!customer) return null;
+  return (
+    <Dialog open={!!customer} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{customer.name}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-5 mt-2">
+          <div className="text-sm text-muted-foreground">
+            {formatPhone(customer.phone)}
+            {customer.email && <span className="ml-2">· {customer.email}</span>}
+          </div>
+
+          {/* Stats */}
+          <div className="rounded-lg border p-4">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground mb-3">
+              Histórico
+            </p>
+            {loadingStats ? (
+              <Skeleton className="h-12 w-full" />
+            ) : stats ? (
+              <div className="grid grid-cols-4 gap-3 text-center">
+                <Stat label="Reservas" value={stats.total} />
+                <Stat label="Confirmadas" value={stats.confirmed} />
+                <Stat label="Não vieram" value={stats.no_shows} />
+                <Stat
+                  label="Taxa no-show"
+                  value={`${Math.round((stats.no_show_rate ?? 0) * 100)}%`}
+                  highlight={stats.no_show_rate >= 0.3 && stats.confirmed + stats.no_shows >= 3}
+                />
+              </div>
+            ) : null}
+            {stats?.last_visit && (
+              <p className="text-xs text-muted-foreground mt-3 text-center">
+                Última presença: {formatDateBR(stats.last_visit)}
+              </p>
+            )}
+          </div>
+
+          {/* Preferences */}
+          <CustomerPreferencesForm
+            customer={customer}
+            onSave={(updates) =>
+              update.mutate(
+                { id: customer.id, updates },
+                {
+                  onSuccess: () => {
+                    toast.success("Preferências atualizadas.");
+                    onClose();
+                  },
+                  onError: () => toast.error("Erro ao salvar."),
+                }
+              )
+            }
+            saving={update.isPending}
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  highlight = false,
+}: {
+  label: string;
+  value: number | string;
+  highlight?: boolean;
+}) {
+  return (
+    <div>
+      <p className={`text-xl font-bold ${highlight ? "text-destructive" : ""}`}>{value}</p>
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+    </div>
+  );
+}
+
+function CustomerPreferencesForm({
+  customer,
+  onSave,
+  saving,
+}: {
+  customer: Customer;
+  onSave: (
+    updates: Partial<
+      Pick<
+        Customer,
+        | "allergies"
+        | "dietary_restrictions"
+        | "vip_notes"
+        | "preferred_table_location"
+        | "do_not_contact"
+      >
+    >
+  ) => void;
+  saving: boolean;
+}) {
+  const [allergies, setAllergies] = useState(customer.allergies ?? "");
+  const [dietary, setDietary] = useState(customer.dietary_restrictions ?? "");
+  const [vipNotes, setVipNotes] = useState(customer.vip_notes ?? "");
+  const [preferredLocation, setPreferredLocation] = useState<string>(
+    customer.preferred_table_location ?? "none"
+  );
+  const [doNotContact, setDoNotContact] = useState(customer.do_not_contact ?? false);
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs uppercase tracking-wide text-muted-foreground">Preferências</p>
+
+      <div className="space-y-1">
+        <Label className="text-xs">Alergias</Label>
+        <Textarea
+          rows={2}
+          value={allergies}
+          onChange={(e) => setAllergies(e.target.value)}
+          placeholder="Ex: amendoim, frutos do mar"
+        />
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-xs">Restrições alimentares</Label>
+        <Textarea
+          rows={2}
+          value={dietary}
+          onChange={(e) => setDietary(e.target.value)}
+          placeholder="Ex: vegetariano, sem glúten"
+        />
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-xs">Notas VIP</Label>
+        <Textarea
+          rows={2}
+          value={vipNotes}
+          onChange={(e) => setVipNotes(e.target.value)}
+          placeholder="Ex: cliente fiel, oferece prosecco de cortesia"
+        />
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-xs">Mesa preferida</Label>
+        <Select value={preferredLocation} onValueChange={setPreferredLocation}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">Sem preferência</SelectItem>
+            <SelectItem value="internal">Interna</SelectItem>
+            <SelectItem value="external">Externa / Varanda</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="flex items-center justify-between rounded-lg border p-3">
+        <div>
+          <p className="text-sm font-medium">Não enviar mensagens</p>
+          <p className="text-xs text-muted-foreground">
+            Pula esse cliente em campanhas e lembretes.
+          </p>
+        </div>
+        <Switch checked={doNotContact} onCheckedChange={setDoNotContact} />
+      </div>
+
+      <Button
+        className="w-full"
+        disabled={saving}
+        onClick={() =>
+          onSave({
+            allergies: allergies.trim() || null,
+            dietary_restrictions: dietary.trim() || null,
+            vip_notes: vipNotes.trim() || null,
+            preferred_table_location:
+              preferredLocation === "none"
+                ? null
+                : (preferredLocation as "internal" | "external"),
+            do_not_contact: doNotContact,
+          })
+        }
+      >
+        Salvar preferências
+      </Button>
     </div>
   );
 }

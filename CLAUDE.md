@@ -122,7 +122,10 @@ moralles-reservas/
 │   ├── hooks/
 │   │   ├── useReservas.ts             # CRUD de reservas via React Query
 │   │   ├── useAuth.ts                 # Autenticação + updateEmail/updatePassword + isSuperAdmin
-│   │   └── useAdminUsers.ts           # Listar/criar/excluir admins (via Edge Function)
+│   │   ├── useAdminUsers.ts           # Listar/criar/excluir admins (via Edge Function)
+│   │   ├── useCustomers.ts            # Update customer + get_customer_stats
+│   │   ├── useTableBlocks.ts          # CRUD de bloqueios de mesa
+│   │   └── useSpecialDates.ts         # CRUD de datas especiais (feriados)
 │   │
 │   ├── stores/
 │   │   └── reservaStore.ts            # Filtros do painel admin (Zustand)
@@ -149,10 +152,13 @@ moralles-reservas/
 │
 ├── supabase/
 │   ├── migrations/
-│   │   ├── 001_create_tables.sql      # Schema: customers, reservations, tables...
-│   │   ├── 002_rls_policies.sql       # RLS + trigger updated_at
-│   │   ├── 003_ai_config_setting.sql  # Seed do ai_config no settings
-│   │   └── 004_admin_users.sql        # Tabela admin_users (role + seed do super admin)
+│   │   ├── 001_create_tables.sql           # Schema: customers, reservations, tables...
+│   │   ├── 002_rls_policies.sql            # RLS + trigger updated_at
+│   │   ├── 003_ai_config_setting.sql       # Seed do ai_config no settings
+│   │   ├── 004_admin_users.sql             # Tabela admin_users (role + seed do super admin)
+│   │   ├── 005_hardening.sql               # Fecha leitura anon, RPC get_reservation_by_code, idempotência, rate limit
+│   │   ├── 006_hardening_followups.sql     # Revoke check_rate_limit + lock search_path em update_updated_at
+│   │   └── 007_product_features.sql        # table_blocks, special_dates, prefs do customer, get_customer_stats
 │   │
 │   └── functions/
 │       ├── _shared/
@@ -187,6 +193,8 @@ moralles-reservas/
 | `business_hours` | Horários por dia da semana — `open_time`, `close_time`, `is_closed` |
 | `settings` | Configurações chave-valor — `restaurant_name`, `ai_system_prompt`, `ai_config` |
 | `admin_users` | Admins do painel — `id` (FK `auth.users`), `email`, `role` (`admin`/`super_admin`), `created_by` |
+| `table_blocks` | Bloqueios de mesa por intervalo (`blocked_from`/`blocked_to` timestamptz, `reason`) — manutenção, evento privado |
+| `special_dates` | Feriados/datas especiais — sobrescreve `business_hours` numa data exata. Campos: `date` unique, `name`, `is_closed`, `open_time`, `close_time`, `max_party_size`, `notes` |
 
 ### Status de reserva
 

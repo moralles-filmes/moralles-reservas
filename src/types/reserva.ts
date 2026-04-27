@@ -6,6 +6,44 @@ export interface Customer {
   phone: string;
   email: string | null;
   created_at: string;
+  allergies?: string | null;
+  dietary_restrictions?: string | null;
+  vip_notes?: string | null;
+  preferred_table_location?: "internal" | "external" | null;
+  do_not_contact?: boolean;
+}
+
+export interface TableBlock {
+  id: string;
+  table_id: string;
+  blocked_from: string;
+  blocked_to: string;
+  reason: string | null;
+  created_by: string | null;
+  created_at: string;
+  table?: Mesa;
+}
+
+export interface SpecialDate {
+  id: string;
+  date: string;
+  name: string;
+  is_closed: boolean;
+  open_time: string | null;
+  close_time: string | null;
+  max_party_size: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomerStats {
+  total: number;
+  confirmed: number;
+  no_shows: number;
+  cancelled: number;
+  no_show_rate: number;
+  last_visit: string | null;
 }
 
 export interface Mesa {
