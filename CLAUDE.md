@@ -268,11 +268,25 @@ Em **Configurações** todo admin pode trocar o próprio e‑mail e a própria s
 
 ### Frontend (Vercel)
 
-```bash
-# Variáveis de ambiente no painel Vercel:
-VITE_SUPABASE_URL=...
-VITE_SUPABASE_ANON_KEY=...
-```
+Integração via GitHub — cada push em `main` dispara deploy de produção, cada PR cria preview URL.
+
+**Configuração no Vercel:**
+- **Framework Preset**: Vite (auto-detectado)
+- **Root Directory**: `./`
+- **Build Command** / **Output Directory**: padrões do Vite (`npm run build` / `dist`)
+- **Variáveis de ambiente** (Production + Preview):
+  ```
+  VITE_SUPABASE_URL=...
+  VITE_SUPABASE_ANON_KEY=...
+  ```
+
+> O arquivo `.npmrc` na raiz força `legacy-peer-deps=true` no `npm install` do build (necessário pelo conflito `react-day-picker` vs `date-fns v4`). Não remover.
+
+**Pós-deploy — obrigatório:** em **Supabase → Authentication → URL Configuration**, configurar:
+- **Site URL**: URL Vercel de produção
+- **Redirect URLs**: `https://<sua-url-vercel>/**`
+
+Sem isso o login no `/auth` falha em produção (Supabase rejeita redirect de domínio não autorizado).
 
 ### Edge Functions (Supabase)
 
