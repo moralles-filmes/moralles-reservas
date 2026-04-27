@@ -16,11 +16,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import type { BusinessHour } from "@/types/reserva";
 import { DAY_NAMES } from "@/types/reserva";
 import { toast } from "sonner";
 import { useState, useEffect } from "react";
-import { Bot, Info } from "lucide-react";
+import { Bot, Info, Mail, KeyRound, UserPlus, Users, Trash2 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import {
+  useAdminUsers,
+  useCreateAdmin,
+  useDeleteAdmin,
+  type AdminUser,
+} from "@/hooks/useAdminUsers";
+import { formatDateBR } from "@/lib/utils";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
 
@@ -79,6 +98,7 @@ const PROVIDERS: Array<{
 
 export default function Configuracoes() {
   const queryClient = useQueryClient();
+  const { user, isSuperAdmin, updateEmail, updatePassword } = useAuth();
 
   const [systemPrompt, setSystemPrompt] = useState("");
   const [restaurantName, setRestaurantName] = useState("");
@@ -86,6 +106,85 @@ export default function Configuracoes() {
     provider: "claude",
     models: {},
   });
+
+  // Account form state
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  // New admin form state
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+
+  // Admin users data + mutations
+  const { data: adminUsers, isLoading: loadingAdmins } = useAdminUsers();
+  const createAdmin = useCreateAdmin();
+  const deleteAdmin = useDeleteAdmin();
+
+  const updateEmailMutation = useMutation({
+    mutationFn: (email: string) => updateEmail(email),
+    onSuccess: () => {
+      toast.success("E-mail atualizado. Confirme o link enviado, se solicitado.");
+      setNewEmail("");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const updatePasswordMutation = useMutation({
+    mutationFn: (password: string) => updatePassword(password),
+    onSuccess: () => {
+      toast.success("Senha atualizada.");
+      setNewPassword("");
+      setConfirmPassword("");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const handleUpdateEmail = () => {
+    const email = newEmail.trim();
+    if (!email) {
+      toast.error("Informe o novo e-mail.");
+      return;
+    }
+    if (email === user?.email) {
+      toast.error("O novo e-mail é igual ao atual.");
+      return;
+    }
+    updateEmailMutation.mutate(email);
+  };
+
+  const handleUpdatePassword = () => {
+    if (newPassword.length < 6) {
+      toast.error("A senha deve ter pelo menos 6 caracteres.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast.error("As senhas não coincidem.");
+      return;
+    }
+    updatePasswordMutation.mutate(newPassword);
+  };
+
+  const handleCreateAdmin = () => {
+    const email = adminEmail.trim().toLowerCase();
+    if (!email || !adminPassword) {
+      toast.error("Preencha e-mail e senha.");
+      return;
+    }
+    if (adminPassword.length < 6) {
+      toast.error("A senha deve ter pelo menos 6 caracteres.");
+      return;
+    }
+    createAdmin.mutate(
+      { email, password: adminPassword },
+      {
+        onSuccess: () => {
+          setAdminEmail("");
+          setAdminPassword("");
+        },
+      }
+    );
+  };
 
   // ── Load data ──────────────────────────────────────────────────────────────
 
@@ -381,6 +480,204 @@ export default function Configuracoes() {
           </Button>
         </CardContent>
       </Card>
+
+      <Separator />
+
+      {/* My account */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <KeyRound className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Minha conta</CardTitle>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Atualize o e-mail e a senha do usuário logado.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Email */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              <Mail className="h-3.5 w-3.5" />
+              E-mail
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Atual: <span className="font-mono">{user?.email ?? "—"}</span>
+            </p>
+            <div className="flex gap-2">
+              <Input
+                type="email"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="novo@email.com"
+              />
+              <Button
+                variant="secondary"
+                onClick={handleUpdateEmail}
+                disabled={updateEmailMutation.isPending}
+              >
+                Atualizar
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Se o Supabase exigir confirmação, um link será enviado para o novo e-mail.
+            </p>
+          </div>
+
+          <Separator />
+
+          {/* Password */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              <KeyRound className="h-3.5 w-3.5" />
+              Trocar senha
+            </Label>
+            <Input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Nova senha (mín. 6 caracteres)"
+            />
+            <Input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirmar nova senha"
+            />
+            <Button
+              variant="secondary"
+              onClick={handleUpdatePassword}
+              disabled={updatePasswordMutation.isPending}
+            >
+              Atualizar senha
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Admin users — super admin only */}
+      {isSuperAdmin && (
+        <>
+          <Separator />
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4 text-primary" />
+                <CardTitle className="text-base">Usuários administradores</CardTitle>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Cadastre novos administradores e gerencie quem tem acesso ao painel.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Create form */}
+              <div className="space-y-2 rounded-lg border border-dashed p-4 bg-muted/30">
+                <Label className="flex items-center gap-2">
+                  <UserPlus className="h-3.5 w-3.5" />
+                  Cadastrar novo administrador
+                </Label>
+                <Input
+                  type="email"
+                  value={adminEmail}
+                  onChange={(e) => setAdminEmail(e.target.value)}
+                  placeholder="email@exemplo.com"
+                />
+                <Input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  placeholder="Senha (mín. 6 caracteres)"
+                />
+                <Button
+                  onClick={handleCreateAdmin}
+                  disabled={createAdmin.isPending}
+                >
+                  Cadastrar admin
+                </Button>
+              </div>
+
+              {/* List */}
+              <div className="space-y-2">
+                <Label>Administradores cadastrados</Label>
+                {loadingAdmins ? (
+                  <div className="space-y-2">
+                    {[1, 2].map((i) => (
+                      <Skeleton key={i} className="h-12 w-full" />
+                    ))}
+                  </div>
+                ) : !adminUsers || adminUsers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Nenhum administrador cadastrado.
+                  </p>
+                ) : (
+                  <div className="divide-y rounded-lg border">
+                    {adminUsers.map((admin: AdminUser) => {
+                      const isSelf = admin.id === user?.id;
+                      const isProtected =
+                        isSelf || admin.role === "super_admin";
+                      return (
+                        <div
+                          key={admin.id}
+                          className="flex items-center justify-between gap-3 p-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium text-sm truncate">
+                                {admin.email}
+                              </span>
+                              {admin.role === "super_admin" && (
+                                <Badge variant="outline" className="text-[10px] text-primary border-primary/30">
+                                  super admin
+                                </Badge>
+                              )}
+                              {isSelf && (
+                                <Badge variant="outline" className="text-[10px]">
+                                  você
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Cadastrado em {formatDateBR(admin.created_at)}
+                            </p>
+                          </div>
+                          {!isProtected && (
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button variant="ghost" size="icon" aria-label="Excluir">
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Excluir administrador?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    A conta de <span className="font-mono">{admin.email}</span>{" "}
+                                    será removida do sistema e essa pessoa perderá acesso ao
+                                    painel imediatamente. Esta ação não pode ser desfeita.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    onClick={() => deleteAdmin.mutate(admin.id)}
+                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  >
+                                    Excluir
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
     </div>
   );
 }

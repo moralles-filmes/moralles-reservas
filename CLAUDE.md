@@ -40,6 +40,37 @@ npm install --legacy-peer-deps
 
 ---
 
+## Primeira execução
+
+Bootstrap do zero (ordem importa — o seed da migration `004` espera o auth user existir):
+
+```bash
+# 1. Dependências
+npm install --legacy-peer-deps
+
+# 2. .env do frontend (preencher VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY)
+cp .env.example .env
+
+# 3. Aplicar migrations 001–003 (SQL Editor no painel ou `supabase db push`)
+
+# 4. Criar o auth user inicial (será o super_admin)
+#    Painel: Authentication > Users > Add user (marcar "Auto Confirm User")
+#    Ou via Auth Admin API:
+curl -X POST "$VITE_SUPABASE_URL/auth/v1/admin/users" \
+  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"voce@exemplo.com","password":"…","email_confirm":true}'
+
+# 5. Aplicar migration 004 (seed promove o e‑mail a super_admin)
+#    Se for fork: troque o e‑mail hardcoded em 004_admin_users.sql antes de rodar.
+
+# 6. Subir
+npm run dev   # http://localhost:8080/auth
+```
+
+---
+
 ## Variáveis de ambiente
 
 Copie `.env.example` para `.env.local` e preencha:
@@ -86,7 +117,8 @@ moralles-reservas/
 │   │
 │   ├── hooks/
 │   │   ├── useReservas.ts             # CRUD de reservas via React Query
-│   │   └── useAuth.ts                 # Autenticação Supabase Auth
+│   │   ├── useAuth.ts                 # Autenticação + updateEmail/updatePassword + isSuperAdmin
+│   │   └── useAdminUsers.ts           # Listar/criar/excluir admins (via Edge Function)
 │   │
 │   ├── stores/
 │   │   └── reservaStore.ts            # Filtros do painel admin (Zustand)
@@ -109,13 +141,14 @@ moralles-reservas/
 │           ├── Clientes.tsx           # Histórico de clientes
 │           ├── Conversas.tsx          # Histórico de chats WhatsApp
 │           ├── Mesas.tsx              # Gestão de mesas
-│           └── Configuracoes.tsx      # Horários, provedor IA, system prompt
+│           └── Configuracoes.tsx      # Horários, provedor IA, system prompt, conta + admins
 │
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001_create_tables.sql      # Schema: customers, reservations, tables...
 │   │   ├── 002_rls_policies.sql       # RLS + trigger updated_at
-│   │   └── 003_ai_config_setting.sql  # Seed do ai_config no settings
+│   │   ├── 003_ai_config_setting.sql  # Seed do ai_config no settings
+│   │   └── 004_admin_users.sql        # Tabela admin_users (role + seed do super admin)
 │   │
 │   └── functions/
 │       ├── _shared/
@@ -124,8 +157,10 @@ moralles-reservas/
 │       │   └── index.ts               # Recebe msgs Z-API → executa agente IA
 │       ├── send-whatsapp/
 │       │   └── index.ts               # Envia mensagem via Z-API REST
-│       └── send-confirmation/
-│           └── index.ts               # Confirmação automática ao criar reserva
+│       ├── send-confirmation/
+│       │   └── index.ts               # Confirmação automática ao criar reserva
+│       └── manage-admins/
+│           └── index.ts               # Cadastrar/excluir admins (super admin only)
 │
 ├── .env.example                       # Template de variáveis de ambiente
 ├── tailwind.config.ts
@@ -147,6 +182,7 @@ moralles-reservas/
 | `conversations` | Histórico de chats WhatsApp — `messages` (JSONB array) |
 | `business_hours` | Horários por dia da semana — `open_time`, `close_time`, `is_closed` |
 | `settings` | Configurações chave-valor — `restaurant_name`, `ai_system_prompt`, `ai_config` |
+| `admin_users` | Admins do painel — `id` (FK `auth.users`), `email`, `role` (`admin`/`super_admin`), `created_by` |
 
 ### Status de reserva
 
@@ -157,6 +193,7 @@ moralles-reservas/
 
 - Anon: pode inserir e ler `customers` e `reservations` (portal público)
 - Authenticated: acesso total a todas as tabelas (admin)
+- `admin_users`: authenticated tem **só leitura**; toda escrita passa pela Edge Function `manage-admins` (service role)
 - Edge Functions usam `SUPABASE_SERVICE_ROLE_KEY` (bypassa RLS)
 
 ### Rodar migrações
@@ -212,6 +249,17 @@ No painel admin → **Configurações → Instruções do Agente IA**, o texto a
 
 ---
 
+## Usuários do painel
+
+Há dois papéis em `admin_users`:
+
+- **`super_admin`** — pode cadastrar e excluir outros admins. Definido por seed na migration `004_admin_users.sql` (e‑mail `morallesfilms@gmail.com`).
+- **`admin`** — acesso total ao painel, mas não vê o card de gestão de usuários.
+
+Em **Configurações** todo admin pode trocar o próprio e‑mail e a própria senha. O cadastro/exclusão de outros admins é feito pela Edge Function `manage-admins`, que valida o JWT do chamador e exige `role = 'super_admin'` antes de chamar `auth.admin.createUser` / `auth.admin.deleteUser`. A coluna `id` em `admin_users` referencia `auth.users(id) on delete cascade`, então excluir o auth user limpa o registro automaticamente.
+
+---
+
 ## Deploy
 
 ### Frontend (Vercel)
@@ -228,6 +276,7 @@ VITE_SUPABASE_ANON_KEY=...
 supabase functions deploy webhook-zapi
 supabase functions deploy send-whatsapp
 supabase functions deploy send-confirmation
+supabase functions deploy manage-admins
 ```
 
 ### Webhook Z-API
