@@ -168,7 +168,8 @@ moralles-reservas/
 │   │   ├── 008_composite_indexes.sql       # Índices compostos (status,date) (date,time) (customer_id,created_at)
 │   │   ├── 009_lgpd.sql                    # audit_log + triggers, anonymize_customer, customers.deleted_at
 │   │   ├── 010_lgpd_followups.sql          # Revoke audit_trigger_func de anon/auth
-│   │   └── 011_notifications_and_satisfaction.sql  # notifications_sent + reservations.satisfaction_rating + RPCs do N8N
+│   │   ├── 011_notifications_and_satisfaction.sql  # notifications_sent + reservations.satisfaction_rating + RPCs do N8N
+│   │   └── 012_n8n_functions.sql           # check_rate_limit (idempotente), append_message, get_upcoming_reservations
 │   │
 │   └── functions/
 │       ├── _shared/
@@ -346,6 +347,14 @@ No painel Supabase → **Database → Webhooks**, crie um webhook:
 Outbound agendado fica fora das Edge Functions e é orquestrado por N8N. Setup, credenciais e testes em [`docs/n8n/README.md`](docs/n8n/README.md). Os workflows ficam em [`docs/n8n/workflow-reminder-d1.json`](docs/n8n/workflow-reminder-d1.json) e [`docs/n8n/workflow-survey-d1.json`](docs/n8n/workflow-survey-d1.json) (importáveis no N8N v1.x).
 
 A captura da nota 1-5 da pesquisa é feita pelo `webhook-zapi` antes de invocar o agente IA — busca em `notifications_sent` se houve `survey_d1` enviado nas últimas 36h e atualiza `reservations.satisfaction_rating` direto.
+
+**RPCs disponíveis para N8N** (todas `SECURITY DEFINER`, acesso exclusivo ao `service_role`):
+
+| RPC | Assinatura | O que faz |
+|---|---|---|
+| `check_rate_limit` | `(phone, window_seconds, max) → bool` | Controle de envio por janela deslizante; `false` = limite atingido |
+| `append_message` | `(conv_id, role, content) → void` | Append `{role, content, timestamp}` em `conversations.messages` |
+| `get_upcoming_reservations` | `(from_date, to_date) → table` | Retorna reservas `pending`/`confirmed` no intervalo com dados do cliente e mesa |
 
 ---
 
