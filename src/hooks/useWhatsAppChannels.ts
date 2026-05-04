@@ -9,7 +9,7 @@ export function useWhatsAppChannels(unitId: string) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("whatsapp_channels")
-        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, created_at, updated_at")
+        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, created_at, updated_at")
         .eq("unit_id", unitId)
         .order("created_at", { ascending: true });
       if (error) throw error;

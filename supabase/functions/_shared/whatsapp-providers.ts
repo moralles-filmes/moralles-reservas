@@ -183,18 +183,34 @@ async function sendOfficial(creds: ChannelCredentials, msg: OutboundMessage): Pr
 
 // ─── Webhook secret validation (per-channel) ─────────────────────────────────
 
-export function validateChannelSecret(req: Request, expectedSecret: string): boolean {
-  // Different providers use different headers
-  const got =
-    req.headers.get("x-webhook-secret") ??
-    req.headers.get("x-hub-signature-256") ?? // Meta uses this for signature
-    "";
-  if (!got || !expectedSecret) return false;
-  // Simple constant-time compare for the stored secret value
-  if (got.length !== expectedSecret.length) return false;
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
   let diff = 0;
-  for (let i = 0; i < got.length; i++) {
-    diff |= got.charCodeAt(i) ^ expectedSecret.charCodeAt(i);
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return diff === 0;
+}
+
+export function validateChannelSecret(req: Request, expectedSecret: string): boolean {
+  if (!expectedSecret) return false;
+
+  // Header path (WAHA, Meta, providers que aceitam header customizado)
+  const headerSecret =
+    req.headers.get("x-webhook-secret") ??
+    req.headers.get("x-hub-signature-256") ?? // Meta usa para assinatura
+    "";
+  if (headerSecret && constantTimeEquals(headerSecret, expectedSecret)) return true;
+
+  // Query string fallback — necessário para Z-API, que não permite
+  // configurar headers customizados no webhook.
+  try {
+    const url = new URL(req.url);
+    const querySecret = url.searchParams.get("secret") ?? "";
+    if (querySecret && constantTimeEquals(querySecret, expectedSecret)) return true;
+  } catch {
+    // ignore URL parse errors
+  }
+
+  return false;
 }

@@ -47,6 +47,7 @@ export interface WhatsAppChannel {
   display_phone: string | null;
   last_event_at: string | null;
   last_error: string | null;
+  webhook_secret: string;
   created_at: string;
   updated_at: string;
 }

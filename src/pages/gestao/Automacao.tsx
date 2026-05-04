@@ -37,6 +37,8 @@ import { toast } from "sonner";
 import { useState, useEffect } from "react";
 import {
   Bot,
+  Check,
+  Copy,
   Info,
   MessageSquare,
   Phone,
@@ -140,11 +142,28 @@ export default function Automacao() {
 
 // ─── Tab: WhatsApp Channels ───────────────────────────────────────────────────
 
+function buildWebhookUrl(channelId: string, secret: string): string {
+  const base = (import.meta.env.VITE_SUPABASE_URL ?? "").replace(/\/$/, "");
+  return `${base}/functions/v1/webhook-whatsapp?channel=${channelId}&secret=${secret}`;
+}
+
 function ChannelsTab({ unitId }: { unitId: string }) {
   const { data: channels, isLoading } = useWhatsAppChannels(unitId);
   const deleteChannel = useDeleteChannel(unitId);
   const testChannel = useTestChannel(unitId);
   const [addOpen, setAddOpen] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = async (channelId: string, url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedId(channelId);
+      toast.success("URL do webhook copiada.");
+      setTimeout(() => setCopiedId((c) => (c === channelId ? null : c)), 2000);
+    } catch {
+      toast.error("Não foi possível copiar.");
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -187,12 +206,33 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                     {ch.last_error && (
                       <p className="text-xs text-destructive mt-0.5 truncate">{ch.last_error}</p>
                     )}
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Webhook:{" "}
-                      <code className="font-mono bg-muted px-1 rounded text-[10px]">
-                        /functions/v1/webhook-whatsapp?channel={ch.id}
-                      </code>
-                    </p>
+                    <div className="mt-2 space-y-1">
+                      <p className="text-xs text-muted-foreground">
+                        Webhook (configure no painel do provedor):
+                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <code
+                          className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] truncate flex-1 min-w-0"
+                          title={buildWebhookUrl(ch.id, ch.webhook_secret)}
+                        >
+                          {buildWebhookUrl(ch.id, ch.webhook_secret)}
+                        </code>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 shrink-0"
+                          onClick={() =>
+                            handleCopy(ch.id, buildWebhookUrl(ch.id, ch.webhook_secret))
+                          }
+                        >
+                          {copiedId === ch.id ? (
+                            <Check className="h-3 w-3 text-green-600" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
@@ -366,10 +406,10 @@ function AddChannelDialog({
 
           <div className="rounded-lg border border-dashed p-3 bg-muted/30 text-xs text-muted-foreground space-y-1">
             <p className="font-medium text-foreground">Após adicionar:</p>
-            <p>Configure o webhook no painel da plataforma apontando para:</p>
-            <code className="block font-mono bg-background rounded px-2 py-1 text-[11px]">
-              /functions/v1/webhook-whatsapp?channel={"<id-do-canal>"}
-            </code>
+            <p>
+              A URL completa do webhook (com o secret) será exibida no card do canal.
+              Copie e cole no painel do provedor (campo "Ao receber" / "On receive").
+            </p>
           </div>
 
           <Button onClick={handleCreate} disabled={createChannel.isPending} className="w-full">
