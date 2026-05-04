@@ -353,20 +353,65 @@ function extractMessageId(payload: ZApiPayload, phone: string, text: string): st
 serve(async (req) => {
   const requestId = genRequestId();
 
+  // DEBUG: confirma que o request chegou na função (não foi bloqueado pelo gateway).
+  let hasSecretQuery = false;
+  try {
+    hasSecretQuery = new URL(req.url).searchParams.has("secret");
+  } catch {
+    hasSecretQuery = false;
+  }
+  jsonLog("info", {
+    requestId,
+    evt: "request_received",
+    method: req.method,
+    url: req.url,
+    has_secret_header: req.headers.has("x-webhook-secret"),
+    has_secret_query: hasSecretQuery,
+    has_auth_header: req.headers.has("authorization"),
+    user_agent: req.headers.get("user-agent")?.slice(0, 80) ?? null,
+  });
+
   if (!validateWebhookSecret(req)) {
     jsonLog("warn", { requestId, evt: "webhook_unauthorized" });
     return new Response("unauthorized", { status: 401 });
   }
 
   try {
-    const payload: ZApiPayload = await req.json();
+    const payload: any = await req.json();
 
-    if (payload.isFromMe || !payload.text?.message) {
+    // DEBUG temporário — descobrir a estrutura real do payload da Z-API.
+    jsonLog("info", {
+      requestId,
+      evt: "incoming_payload_debug",
+      keys: Object.keys(payload ?? {}),
+      sample: JSON.stringify(payload).slice(0, 500),
+    });
+
+    // Z-API envia o flag às vezes como `isFromMe`, às vezes como `fromMe`.
+    const isFromMe = payload.isFromMe === true || payload.fromMe === true;
+
+    // Tenta extrair o texto de várias estruturas possíveis.
+    const incomingTextRaw: string | undefined =
+      payload.text?.message ??
+      payload.text?.body ??
+      (typeof payload.text === "string" ? payload.text : undefined) ??
+      payload.body ??
+      payload.message?.text ??
+      payload.message?.body ??
+      payload.message?.conversation;
+
+    if (isFromMe || !incomingTextRaw) {
+      jsonLog("info", {
+        requestId,
+        evt: "skipped_no_text",
+        isFromMe,
+        hasText: Boolean(incomingTextRaw),
+      });
       return new Response("ok");
     }
 
-    const phone = payload.phone.replace(/\D/g, "").replace(/^55/, "");
-    const incomingText = payload.text.message.trim();
+    const phone = String(payload.phone ?? "").replace(/\D/g, "").replace(/^55/, "");
+    const incomingText = incomingTextRaw.trim();
 
     // Idempotência — descarta retransmissões da Z-API.
     const messageId = extractMessageId(payload, phone, incomingText);

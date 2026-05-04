@@ -12,8 +12,22 @@ function constantTimeEquals(a: string, b: string): boolean {
 export function validateWebhookSecret(req: Request): boolean {
   const expected = Deno.env.get("ZAPI_WEBHOOK_SECRET");
   if (!expected) return false;
-  const got = req.headers.get("x-webhook-secret") ?? "";
-  return constantTimeEquals(got, expected);
+
+  // Preferência: header X-Webhook-Secret (provedores que suportam header customizado).
+  const headerSecret = req.headers.get("x-webhook-secret") ?? "";
+  if (headerSecret && constantTimeEquals(headerSecret, expected)) return true;
+
+  // Fallback: query string ?secret=... — necessário em painéis (ex: Z-API)
+  // que não permitem configurar headers customizados no webhook.
+  try {
+    const url = new URL(req.url);
+    const querySecret = url.searchParams.get("secret") ?? "";
+    if (querySecret && constantTimeEquals(querySecret, expected)) return true;
+  } catch {
+    // ignore URL parse errors
+  }
+
+  return false;
 }
 
 export function requireInternalAuth(req: Request): boolean {
