@@ -8,13 +8,14 @@ export interface AuditLogFilters {
   limit?: number;
 }
 
-export function useAuditLog(filters?: AuditLogFilters) {
+export function useAuditLog(unitId: string, filters?: AuditLogFilters) {
   return useQuery({
-    queryKey: ["audit-log", filters],
+    queryKey: ["audit-log", unitId, filters],
     queryFn: async () => {
       let query = supabase
         .from("audit_log")
         .select("*")
+        .eq("unit_id", unitId)
         .order("created_at", { ascending: false })
         .limit(filters?.limit ?? 100);
 
@@ -25,5 +26,6 @@ export function useAuditLog(filters?: AuditLogFilters) {
       if (error) throw error;
       return data as AuditLogEntry[];
     },
+    enabled: !!unitId,
   });
 }

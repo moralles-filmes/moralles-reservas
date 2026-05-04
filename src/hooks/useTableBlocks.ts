@@ -2,23 +2,25 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { TableBlock } from "@/types/reserva";
 
-export function useTableBlocks(tableId?: string) {
+export function useTableBlocks(unitId: string, tableId?: string) {
   return useQuery({
-    queryKey: ["table-blocks", tableId ?? "all"],
+    queryKey: ["table-blocks", unitId, tableId ?? "all"],
     queryFn: async () => {
       let query = supabase
         .from("table_blocks")
-        .select("*, table:tables(*)")
+        .select("*, table:tables!inner(id, unit_id, number, capacity, location, active)")
+        .eq("tables.unit_id", unitId)
         .order("blocked_from", { ascending: false });
       if (tableId) query = query.eq("table_id", tableId);
       const { data, error } = await query;
       if (error) throw error;
       return data as TableBlock[];
     },
+    enabled: !!unitId,
   });
 }
 
-export function useCreateTableBlock() {
+export function useCreateTableBlock(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: {
@@ -36,12 +38,12 @@ export function useCreateTableBlock() {
       return data as TableBlock;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["table-blocks"] });
+      queryClient.invalidateQueries({ queryKey: ["table-blocks", unitId] });
     },
   });
 }
 
-export function useDeleteTableBlock() {
+export function useDeleteTableBlock(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
@@ -49,7 +51,7 @@ export function useDeleteTableBlock() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["table-blocks"] });
+      queryClient.invalidateQueries({ queryKey: ["table-blocks", unitId] });
     },
   });
 }

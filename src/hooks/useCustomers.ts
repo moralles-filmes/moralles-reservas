@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { Customer, CustomerStats } from "@/types/reserva";
 
-export function useUpdateCustomer() {
+export function useUpdateCustomer(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({
@@ -34,13 +34,13 @@ export function useUpdateCustomer() {
       return data as Customer;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["customers"] });
-      queryClient.invalidateQueries({ queryKey: ["reservas"] });
+      queryClient.invalidateQueries({ queryKey: ["customers", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
     },
   });
 }
 
-export function useAnonymizeCustomer() {
+export function useAnonymizeCustomer(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (customerId: string) => {
@@ -50,18 +50,19 @@ export function useAnonymizeCustomer() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["customers"] });
-      queryClient.invalidateQueries({ queryKey: ["reservas"] });
+      queryClient.invalidateQueries({ queryKey: ["customers", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
     },
   });
 }
 
-export function useCustomerStats(customerId: string | undefined) {
+export function useCustomerStats(customerId: string | undefined, unitId?: string) {
   return useQuery({
-    queryKey: ["customer-stats", customerId],
+    queryKey: ["customer-stats", customerId, unitId],
     queryFn: async () => {
       const { data, error } = await supabase.rpc("get_customer_stats", {
         p_customer_id: customerId,
+        ...(unitId ? { p_unit_id: unitId } : {}),
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;

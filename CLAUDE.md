@@ -1,12 +1,13 @@
 # moralles-reservas
 
-Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp.
+Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Arquitetura **multi-tenant**: organizations → units → unit_members.
 
 ## Visão geral
 
-- **Portal público** (`/`) — clientes fazem reservas via formulário web ou consultam pelo código
+- **Portal público** (`/r/:slug`) — clientes fazem reservas via formulário web ou consultam pelo código
 - **Agente IA WhatsApp** — responde clientes, cria/altera/cancela reservas conversacionalmente
-- **Painel admin** (`/admin`) — gestão completa de reservas, clientes, mesas e configurações
+- **Painel de Gestão** (`/g/:unitSlug`) — configurações, relatórios, clientes, automação, auditoria
+- **Painel Operacional** (`/o/:unitSlug`) — reservas do dia, fila de espera, walk-ins (uso em tempo real)
 
 ---
 
@@ -20,7 +21,7 @@ Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp.
 | Autenticação | Supabase Auth |
 | Backend serverless | Supabase Edge Functions (Deno) |
 | Agente IA | Multi-provedor — Claude, OpenAI, Gemini, Grok, DeepSeek |
-| WhatsApp | Z-API |
+| WhatsApp | Abstração multi-provider: Z-API, WAHA, Meta Cloud API Oficial |
 | State/cache | TanStack React Query 5 + Zustand |
 | Forms | React Hook Form + Zod |
 | Deploy | Vercel (frontend) + Supabase (backend) |
@@ -55,7 +56,7 @@ npm install --legacy-peer-deps
 # 2. .env do frontend (preencher VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY)
 cp .env.example .env
 
-# 3. Aplicar migrations 001–003 (SQL Editor no painel ou `supabase db push`)
+# 3. Aplicar migrations 001–013 (SQL Editor no painel ou `supabase db push`)
 
 # 4. Criar o auth user inicial (será o super_admin)
 #    Painel: Authentication > Users > Add user (marcar "Auto Confirm User")
@@ -66,11 +67,11 @@ curl -X POST "$VITE_SUPABASE_URL/auth/v1/admin/users" \
   -H "Content-Type: application/json" \
   -d '{"email":"voce@exemplo.com","password":"…","email_confirm":true}'
 
-# 5. Aplicar migration 004 (seed promove o e‑mail a super_admin)
-#    Se for fork: troque o e‑mail hardcoded em 004_admin_users.sql antes de rodar.
+# 5. Aplicar migration 004 (seed promove o e-mail a super_admin / unit_member)
+#    Se for fork: troque o e-mail hardcoded em 004_admin_users.sql antes de rodar.
 
 # 6. Subir
-npm run dev   # http://localhost:8080/auth
+npm run dev   # http://localhost:8080/admin/login
 ```
 
 ---
@@ -84,17 +85,19 @@ VITE_SUPABASE_URL=       # Settings > API no painel Supabase
 VITE_SUPABASE_ANON_KEY=  # Settings > API no painel Supabase
 ```
 
-As demais variáveis (API keys, Z-API, service role key) são **secrets das Edge Functions** — nunca vão no `.env` do frontend:
+As demais variáveis (API keys, WhatsApp, service role key) são **secrets das Edge Functions** — nunca vão no `.env` do frontend:
 
 ```bash
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=...
+
+# Legado Z-API (usado como fallback enquanto não há whatsapp_channels configurados)
 supabase secrets set ZAPI_INSTANCE_ID=...
 supabase secrets set ZAPI_TOKEN=...
 supabase secrets set ZAPI_CLIENT_TOKEN=...
+supabase secrets set ZAPI_WEBHOOK_SECRET=...   # validar origem do webhook Z-API
 
-# Hardening — gere ambos com `openssl rand -hex 32`
-supabase secrets set ZAPI_WEBHOOK_SECRET=...   # validar origem do webhook (header X-Webhook-Secret no painel Z-API)
-supabase secrets set INTERNAL_API_KEY=...      # auth do send-whatsapp / send-confirmation (header X-Internal-Key no DB Webhook)
+# Hardening geral
+supabase secrets set INTERNAL_API_KEY=...      # auth do send-whatsapp / send-confirmation
 
 # Apenas o provedor de IA ativo precisa estar configurado:
 supabase secrets set ANTHROPIC_API_KEY=sk-ant-...   # Claude
@@ -102,6 +105,34 @@ supabase secrets set OPENAI_API_KEY=sk-...          # OpenAI
 supabase secrets set GEMINI_API_KEY=AIza...         # Gemini
 supabase secrets set GROK_API_KEY=xai-...           # Grok
 supabase secrets set DEEPSEEK_API_KEY=sk-...        # DeepSeek
+```
+
+---
+
+## Roteamento
+
+```
+/                            → Index.tsx (landing pública — redireciona para /r/<slug-padrão>)
+/r/:slug                     → PublicPortal.tsx — formulário de reserva + consulta por código
+/admin/login                 → Auth.tsx — login
+/admin/*                     → redireciona para /g/<defaultSlug>/* (compatibilidade)
+
+/g/:unitSlug                 → Painel de Gestão (GestaoLayout)
+  ├── /                      → Dashboard
+  ├── /reservas              → Lista de reservas com filtros
+  ├── /calendario            → Visão calendário mensal
+  ├── /clientes              → Histórico e perfil de clientes
+  ├── /conversas             → Histórico de chats WhatsApp
+  ├── /mesas                 → Gestão de mesas + bloqueios
+  ├── /configuracoes         → Horários, datas especiais, conta, membros
+  ├── /automacao             → WhatsApp channels + Provedor de IA + System prompt
+  ├── /avaliacoes            → Avaliações de satisfação
+  └── /auditoria             → Trilha LGPD
+
+/o/:unitSlug                 → Painel Operacional (OperacionalLayout)
+  ├── /                      → Reservas do dia (agrupadas por status)
+  ├── /fila                  → Fila de espera (waitlist)
+  └── /passantes             → Walk-ins (clientes sem reserva)
 ```
 
 ---
@@ -116,7 +147,7 @@ moralles-reservas/
 │   ├── index.css                      # CSS variables (tema warm restaurant)
 │   │
 │   ├── types/
-│   │   └── reserva.ts                 # Tipos: Reserva, Customer, Mesa, Conversation...
+│   │   └── reserva.ts                 # Tipos: Reserva, Customer, Mesa, WalkIn, WaitlistEntry...
 │   │
 │   ├── lib/
 │   │   ├── supabase.ts                # Cliente Supabase (singleton)
@@ -125,65 +156,84 @@ moralles-reservas/
 │   │
 │   ├── hooks/
 │   │   ├── useReservas.ts             # CRUD de reservas via React Query
-│   │   ├── useAuth.ts                 # Autenticação + updateEmail/updatePassword + isSuperAdmin
-│   │   ├── useAdminUsers.ts           # Listar/criar/excluir admins (via Edge Function)
-│   │   ├── useCustomers.ts            # Update customer + get_customer_stats + anonymize_customer
+│   │   ├── useAuth.ts                 # Autenticação + memberships + defaultUnitSlug
+│   │   ├── useCurrentUnit.ts          # Lê :unitSlug da URL, retorna unit + org + role
+│   │   ├── useUnitMembers.ts          # Lista/cria/remove membros da unidade
+│   │   ├── useCustomers.ts            # Update customer + get_customer_stats + anonymize
 │   │   ├── useTableBlocks.ts          # CRUD de bloqueios de mesa
 │   │   ├── useSpecialDates.ts         # CRUD de datas especiais (feriados)
-│   │   └── useAuditLog.ts             # Lista de audit_log (LGPD)
+│   │   ├── useAuditLog.ts             # Lista de audit_log (LGPD)
+│   │   ├── useWalkIns.ts              # CRUD de walk-ins (Operacional)
+│   │   └── useWaitlist.ts             # CRUD de fila de espera (Operacional)
 │   │
 │   ├── stores/
-│   │   └── reservaStore.ts            # Filtros do painel admin (Zustand)
+│   │   └── reservaStore.ts            # Filtros do painel (Zustand)
 │   │
 │   ├── components/
 │   │   ├── ui/                        # shadcn/ui — não editar diretamente
 │   │   ├── reserva/
-│   │   │   ├── ReservaForm.tsx        # Formulário público de reserva
+│   │   │   ├── ReservaForm.tsx        # Formulário público — aceita prop unit; TIME_SLOTS dinâmicos do business_hours
 │   │   │   └── ReservaCard.tsx        # Card de reserva com ações de status
-│   │   └── admin/
-│   │       └── AdminLayout.tsx        # Sidebar + layout das páginas admin
+│   │   ├── layouts/
+│   │   │   ├── GestaoLayout.tsx       # Sidebar + layout das páginas de gestão
+│   │   │   └── OperacionalLayout.tsx  # Header minimalista + navegação operacional
+│   │   └── UnitSwitcher.tsx           # Dropdown de troca de unidade no header
 │   │
 │   └── pages/
-│       ├── Index.tsx                  # Landing pública: formulário + consulta
-│       ├── Auth.tsx                   # Login admin
-│       └── admin/
-│           ├── Dashboard.tsx          # Métricas do dia
-│           ├── Reservas.tsx           # Lista com filtros
-│           ├── Calendario.tsx         # Visão calendário mensal
-│           ├── Clientes.tsx           # Histórico de clientes
-│           ├── Conversas.tsx          # Histórico de chats WhatsApp
-│           ├── Mesas.tsx              # Gestão de mesas + bloqueios
-│           ├── Auditoria.tsx          # Trilha LGPD de quem alterou o quê
-│           └── Configuracoes.tsx      # Horários, datas especiais, provedor IA, conta + admins
+│       ├── Index.tsx                  # Landing pública (redireciona para /r/slug)
+│       ├── PublicPortal.tsx           # Portal público escopado por unit slug
+│       ├── Auth.tsx                   # Login
+│       ├── gestao/
+│       │   ├── Dashboard.tsx          # Métricas e KPIs da unidade
+│       │   ├── Reservas.tsx           # Lista com filtros amplos
+│       │   ├── Calendario.tsx         # Visão calendário mensal
+│       │   ├── Clientes.tsx           # Histórico de clientes (escopado por organização)
+│       │   ├── Conversas.tsx          # Histórico de chats WhatsApp
+│       │   ├── Mesas.tsx              # Gestão de mesas + bloqueios
+│       │   ├── Configuracoes.tsx      # Horários, datas especiais, conta, membros da equipe
+│       │   ├── Automacao.tsx          # WhatsApp channels + Provedor de IA + System prompt
+│       │   ├── Avaliacoes.tsx         # Avaliações de satisfação pós-reserva
+│       │   └── Auditoria.tsx          # Trilha LGPD
+│       └── operacional/
+│           ├── ReservasDia.tsx        # Reservas do dia agrupadas por status
+│           ├── Fila.tsx               # Fila de espera com timers e notificação WhatsApp
+│           └── Passantes.tsx          # Walk-ins — registro, alocação de mesa, status
 │
 ├── supabase/
 │   ├── migrations/
-│   │   ├── 001_create_tables.sql           # Schema: customers, reservations, tables...
-│   │   ├── 002_rls_policies.sql            # RLS + trigger updated_at
-│   │   ├── 003_ai_config_setting.sql       # Seed do ai_config no settings
-│   │   ├── 004_admin_users.sql             # Tabela admin_users (role + seed do super admin)
-│   │   ├── 005_hardening.sql               # Fecha leitura anon, RPC get_reservation_by_code, idempotência, rate limit
-│   │   ├── 006_hardening_followups.sql     # Revoke check_rate_limit + lock search_path em update_updated_at
-│   │   ├── 007_product_features.sql        # table_blocks, special_dates, prefs do customer, get_customer_stats
-│   │   ├── 008_composite_indexes.sql       # Índices compostos (status,date) (date,time) (customer_id,created_at)
-│   │   ├── 009_lgpd.sql                    # audit_log + triggers, anonymize_customer, customers.deleted_at
-│   │   ├── 010_lgpd_followups.sql          # Revoke audit_trigger_func de anon/auth
-│   │   ├── 011_notifications_and_satisfaction.sql  # notifications_sent + reservations.satisfaction_rating + RPCs do N8N
-│   │   └── 012_n8n_functions.sql           # check_rate_limit (idempotente), append_message, get_upcoming_reservations
+│   │   ├── 001_create_tables.sql
+│   │   ├── 002_rls_policies.sql
+│   │   ├── 003_ai_config_setting.sql
+│   │   ├── 004_admin_users.sql            # Seed super_admin → unit_member (migration 013 migra)
+│   │   ├── 005_hardening.sql
+│   │   ├── 006_hardening_followups.sql
+│   │   ├── 007_product_features.sql       # table_blocks, special_dates, customer prefs
+│   │   ├── 008_composite_indexes.sql
+│   │   ├── 009_lgpd.sql
+│   │   ├── 010_lgpd_followups.sql
+│   │   ├── 011_notifications_and_satisfaction.sql
+│   │   ├── 012_n8n_functions.sql
+│   │   ├── 013_multi_tenant.sql           # organizations, units, unit_members, platform_admins, whatsapp_channels + RLS multi-tenant
+│   │   └── 014_operacional.sql            # walk_ins, waitlist + RLS
 │   │
 │   └── functions/
 │       ├── _shared/
-│       │   └── ai-providers.ts        # Abstração multi-provedor (runAgentLoop)
+│       │   ├── ai-providers.ts            # Abstração multi-provedor (runAgentLoop)
+│       │   └── whatsapp-providers.ts      # Abstração WhatsApp: parseInbound / sendOutbound por provider
+│       ├── webhook-whatsapp/
+│       │   └── index.ts                   # Webhook unificado — resolve canal por ?channel=<id>
 │       ├── webhook-zapi/
-│       │   └── index.ts               # Recebe msgs Z-API → executa agente IA
+│       │   └── index.ts                   # Mantido por compatibilidade (redireciona internamente)
 │       ├── send-whatsapp/
-│       │   └── index.ts               # Envia mensagem via Z-API REST
+│       │   └── index.ts                   # Aceita channel_id ou unit_id; fallback Z-API legacy
 │       ├── send-confirmation/
-│       │   └── index.ts               # Confirmação automática ao criar reserva
-│       └── manage-admins/
-│           └── index.ts               # Cadastrar/excluir admins (super admin only)
+│       │   └── index.ts                   # Resolve canal via unit_id da reserva
+│       ├── manage-channels/
+│       │   └── index.ts                   # CRUD de whatsapp_channels (valida papel gerente/owner)
+│       └── manage-members/
+│           └── index.ts                   # Substitui manage-admins; escopo por unidade
 │
-├── .env.example                       # Template de variáveis de ambiente
+├── .env.example
 ├── tailwind.config.ts
 ├── vite.config.ts
 └── CLAUDE.md                          # Este arquivo
@@ -193,32 +243,57 @@ moralles-reservas/
 
 ## Banco de dados (Supabase)
 
-### Tabelas
+### Modelo de tenancy
+
+```
+organizations (1 cliente SaaS, ex. "Grupo Moralles")
+  └── units (1 restaurante físico, ex. "Moralles Centro")
+        └── unit_members (user_id, unit_id, role: owner|gerente|operador)
+```
+
+`customers` pertencem à **organization** (um cliente pode reservar em qualquer unidade da rede). Todas as demais tabelas de negócio levam `unit_id`.
+
+### Tabelas principais
 
 | Tabela | Descrição |
 |---|---|
-| `customers` | Clientes — `name`, `phone` (unique), `email` |
-| `reservations` | Reservas — `customer_id`, `table_id`, `date`, `time`, `party_size`, `status`, `reservation_code` (unique) |
-| `tables` | Mesas do restaurante — `number`, `capacity`, `location`, `active` |
-| `conversations` | Histórico de chats WhatsApp — `messages` (JSONB array) |
-| `business_hours` | Horários por dia da semana — `open_time`, `close_time`, `is_closed` |
-| `settings` | Configurações chave-valor — `restaurant_name`, `ai_system_prompt`, `ai_config` |
-| `admin_users` | Admins do painel — `id` (FK `auth.users`), `email`, `role` (`admin`/`super_admin`), `created_by` |
-| `table_blocks` | Bloqueios de mesa por intervalo (`blocked_from`/`blocked_to` timestamptz, `reason`) — manutenção, evento privado |
-| `special_dates` | Feriados/datas especiais — sobrescreve `business_hours` numa data exata. Campos: `date` unique, `name`, `is_closed`, `open_time`, `close_time`, `max_party_size`, `notes` |
-| `audit_log` | Trilha de auditoria de `customers` e `reservations` (LGPD). Triggers AFTER INSERT/UPDATE/DELETE registram `old_values`/`new_values`/`actor_id`/`actor_email`. Visível em `/admin/auditoria` |
-| `notifications_sent` | Log/idempotência de mensagens outbound disparadas pelo N8N (`kind` ∈ `confirmation`/`reminder_d1`/`survey_d1`). `unique(reservation_id, kind)` impede duplicação. As RPCs `get_reservations_for_reminder` / `get_reservations_for_survey` filtram pela ausência do registro |
+| `organizations` | Grupos de restaurantes — `name`, `slug` unique, `plan` |
+| `units` | Restaurante físico — `organization_id`, `name`, `slug` unique, `address`, `timezone` |
+| `unit_members` | Membros com papel por unidade — `user_id`, `unit_id`, `role` |
+| `platform_admins` | Admins internos do SaaS (suporte) |
+| `customers` | Clientes — `name`, `phone` unique por `organization_id`, `email` |
+| `reservations` | Reservas — `unit_id`, `customer_id`, `table_id`, `date`, `time`, `party_size`, `status`, `reservation_code` |
+| `tables` | Mesas — `unit_id`, `number` unique por unidade, `capacity`, `location`, `active` |
+| `conversations` | Histórico de chats WhatsApp — `unit_id`, `messages` JSONB |
+| `business_hours` | Horários — `unit_id`, `day_of_week` (0=dom…6=sáb), `open_time`, `close_time`, `is_closed` |
+| `settings` | Configurações chave-valor — `unit_id`, `key`, `value` |
+| `table_blocks` | Bloqueios de mesa — `table_id`, `blocked_from`/`blocked_to`, `reason` |
+| `special_dates` | Datas especiais — `unit_id`, `date` unique por unidade, `is_closed`, `open_time`, `close_time` |
+| `audit_log` | Trilha LGPD — `unit_id`, `table_name`, `operation`, `old_values`, `new_values`, `actor_id` |
+| `notifications_sent` | Log/idempotência outbound — `unit_id`, `reservation_id`, `kind`, `status` |
+| `whatsapp_channels` | Canais WhatsApp por unidade — `unit_id`, `provider` (zapi/waha/official), `credentials` JSONB criptografado, `status`, `display_phone` |
+| `walk_ins` | Clientes sem reserva no dia — `unit_id`, `customer_name`, `party_size`, `table_id?`, `status` (waiting/seated/left/no_show) |
+| `waitlist` | Fila de espera — `unit_id`, `customer_name`, `party_size`, `priority`, `status` (waiting/notified/seated/cancelled) |
 
 ### Status de reserva
 
 `pending` → `confirmed` → `no_show`  
 `pending` ou `confirmed` → `cancelled`
 
+### Status de walk-in
+
+`waiting` → `seated` → `left`  
+`waiting` → `no_show`
+
+### Status de fila (waitlist)
+
+`waiting` → `notified` → `seated`  
+`waiting` ou `notified` → `cancelled`
+
 ### RLS
 
 - Anon: pode inserir e ler `customers` e `reservations` (portal público)
-- Authenticated: acesso total a todas as tabelas (admin)
-- `admin_users`: authenticated tem **só leitura**; toda escrita passa pela Edge Function `manage-admins` (service role)
+- Authenticated: acesso escopado por `is_unit_member(auth.uid(), unit_id)` — nunca vê dados de outra unidade
 - Edge Functions usam `SUPABASE_SERVICE_ROLE_KEY` (bypassa RLS)
 
 ### Rodar migrações
@@ -235,16 +310,17 @@ supabase db push
 ### Fluxo de uma mensagem WhatsApp
 
 ```
-Cliente → Z-API → webhook-zapi (Edge Function)
+Cliente → Provider WhatsApp → webhook-whatsapp (Edge Function)
+  → resolve unit_id pelo canal (?channel=<id>)
   → carrega histórico da conversa (Supabase)
   → monta system prompt + history + tools
   → runAgentLoop() [_shared/ai-providers.ts]
     → loop: chama IA → executa tools → repete até end_turn
   → salva resposta no histórico
-  → envia resposta via Z-API → Cliente
+  → sendOutbound() [_shared/whatsapp-providers.ts] → Cliente
 ```
 
-### Provedores suportados
+### Provedores de IA suportados
 
 | Provedor | Env var da chave | Modelo padrão |
 |---|---|---|
@@ -254,11 +330,19 @@ Cliente → Z-API → webhook-zapi (Edge Function)
 | Grok (xAI) | `GROK_API_KEY` | `grok-3` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 
-O provedor ativo é configurado no painel admin em **Configurações → Provedor de IA** e salvo na tabela `settings` com a chave `ai_config`.
+O provedor ativo e o system prompt são configurados por unidade em **Gestão → Automação → Provedor de IA**.
+
+### Provedores WhatsApp suportados
+
+| Provider | Configuração | Webhook URL |
+|---|---|---|
+| Z-API | `instance_id`, `token`, `client_token` | `.../webhook-whatsapp?channel=<id>` |
+| WAHA | `base_url`, `api_key`, `session_name` | `.../webhook-whatsapp?channel=<id>` |
+| Meta Cloud API | `phone_number_id`, `access_token`, `app_secret` | `.../webhook-whatsapp?channel=<id>` |
+
+Canais são configurados por unidade em **Gestão → Automação → Canais WhatsApp**. Cada canal tem um `webhook_secret` individual (substitui o global `ZAPI_WEBHOOK_SECRET`).
 
 ### Tools do agente
-
-Definidas em `webhook-zapi/index.ts` como `agentTools: AgentTool[]`:
 
 | Tool | O que faz |
 |---|---|
@@ -267,31 +351,42 @@ Definidas em `webhook-zapi/index.ts` como `agentTools: AgentTool[]`:
 | `get_reservation` | Busca reserva por código ou telefone |
 | `update_reservation` | Altera data, hora, pessoas ou observações |
 | `cancel_reservation` | Cancela reserva (status → cancelled) |
-| `list_customer_reservations` | Lista reservas ativas do cliente (sem precisar de código) |
-
-O **system prompt é montado dinamicamente** com horários do `business_hours`, próximas `special_dates` (60 dias) e preferências do cliente (alergias, restrições, VIP, mesa preferida) quando existirem.
+| `list_customer_reservations` | Lista reservas ativas do cliente |
 
 ### Resiliência do agente
 
-- **Truncamento de histórico** — apenas as últimas 20 mensagens entram no contexto (configurável via `maxHistoryMessages`).
-- **Prompt caching do Claude** — `system` enviado como bloco com `cache_control: ephemeral`, ~90% de redução de custo em cache hit.
-- **Timeout** — `AbortController` de 45s por chamada (Edge Function tem limite de 60s).
-- **Telemetria** — log estruturado `evt: "agent_usage"` por mensagem com `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_creation_tokens`.
-
-### Personalizar o agente
-
-No painel admin → **Configurações → Instruções do Agente IA**, o texto adicional é salvo em `settings.ai_system_prompt` e concatenado ao system prompt base.
+- **Truncamento de histórico** — apenas as últimas 20 mensagens entram no contexto
+- **Prompt caching do Claude** — `system` com `cache_control: ephemeral`, ~90% de redução de custo
+- **Timeout** — `AbortController` de 45s por chamada
+- **Telemetria** — log `evt: "agent_usage"` com token counts
 
 ---
 
-## Usuários do painel
+## Módulo Operacional
 
-Há dois papéis em `admin_users`:
+### Fila de espera (`/o/:slug/fila`)
 
-- **`super_admin`** — pode cadastrar e excluir outros admins. Definido por seed na migration `004_admin_users.sql` (e‑mail `morallesfilms@gmail.com`).
-- **`admin`** — acesso total ao painel, mas não vê o card de gestão de usuários.
+- Clientes aguardam mesa sem reserva prévia
+- Ações: Notificar via WhatsApp, Sentar, Confirmar entrada (após notificado), Remover
+- Timer colorido: verde <15min, âmbar 15–30min, vermelho ≥30min
 
-Em **Configurações** todo admin pode trocar o próprio e‑mail e a própria senha. O cadastro/exclusão de outros admins é feito pela Edge Function `manage-admins`, que valida o JWT do chamador e exige `role = 'super_admin'` antes de chamar `auth.admin.createUser` / `auth.admin.deleteUser`. A coluna `id` em `admin_users` referencia `auth.users(id) on delete cascade`, então excluir o auth user limpa o registro automaticamente.
+### Walk-ins (`/o/:slug/passantes`)
+
+- Registro imediato de clientes que chegaram sem reserva
+- Alocação de mesa via dropdown antes de "Sentar"
+- Ações: Sentar, Não apareceu, Foi embora, Remover
+
+---
+
+## Membros e papéis
+
+| Papel | Permissões |
+|---|---|
+| `owner` | Acesso total, incluindo criação de outras unidades |
+| `gerente` | Configurações, automação, membros, todos os dados da unidade |
+| `operador` | Reservas, fila, walk-ins (acesso operacional apenas) |
+
+O cadastro/remoção de membros é feito via Edge Function `manage-members`, que valida papel `owner` ou `gerente` antes de executar.
 
 ---
 
@@ -299,11 +394,10 @@ Em **Configurações** todo admin pode trocar o próprio e‑mail e a própria s
 
 ### Frontend (Vercel)
 
-Integração via GitHub — cada push em `main` dispara deploy de produção, cada PR cria preview URL.
+Integração via GitHub — cada push em `main` dispara deploy de produção.
 
 **Configuração no Vercel:**
 - **Framework Preset**: Vite (auto-detectado)
-- **Root Directory**: `./`
 - **Build Command** / **Output Directory**: padrões do Vite (`npm run build` / `dist`)
 - **Variáveis de ambiente** (Production + Preview):
   ```
@@ -311,50 +405,49 @@ Integração via GitHub — cada push em `main` dispara deploy de produção, ca
   VITE_SUPABASE_ANON_KEY=...
   ```
 
-> O arquivo `.npmrc` na raiz força `legacy-peer-deps=true` no `npm install` do build (necessário pelo conflito `react-day-picker` vs `date-fns v4`). Não remover.
+> O arquivo `.npmrc` força `legacy-peer-deps=true` (necessário pelo conflito `react-day-picker` vs `date-fns v4`). Não remover.
 
-**Pós-deploy — obrigatório:** em **Supabase → Authentication → URL Configuration**, configurar:
+**Pós-deploy:** em **Supabase → Authentication → URL Configuration**:
 - **Site URL**: URL Vercel de produção
 - **Redirect URLs**: `https://<sua-url-vercel>/**`
 
-Sem isso o login no `/auth` falha em produção (Supabase rejeita redirect de domínio não autorizado).
-
-### Edge Functions (Supabase)
+### Edge Functions
 
 ```bash
-supabase functions deploy webhook-zapi
+supabase functions deploy webhook-whatsapp
 supabase functions deploy send-whatsapp
 supabase functions deploy send-confirmation
-supabase functions deploy manage-admins
+supabase functions deploy manage-channels
+supabase functions deploy manage-members
 ```
 
-### Webhook Z-API
+### Webhook WhatsApp
 
-No painel da Z-API, configure o webhook de **mensagens recebidas** apontando para:
+Para cada canal configurado em **Automação**, a URL do webhook é exibida na UI:
 ```
-https://<project-ref>.supabase.co/functions/v1/webhook-zapi
+https://<project-ref>.supabase.co/functions/v1/webhook-whatsapp?channel=<channel-id>
 ```
+
+Configure essa URL no painel do provider (Z-API, WAHA ou Meta).
 
 ### Database Webhook (confirmação automática)
 
-No painel Supabase → **Database → Webhooks**, crie um webhook:
+No painel Supabase → **Database → Webhooks**:
 - Tabela: `reservations`
 - Evento: `INSERT`
 - URL: `https://<project-ref>.supabase.co/functions/v1/send-confirmation`
 
 ### Automações N8N (lembrete D-1, pesquisa D+1)
 
-Outbound agendado fica fora das Edge Functions e é orquestrado por N8N. Setup, credenciais e testes em [`docs/n8n/README.md`](docs/n8n/README.md). Os workflows ficam em [`docs/n8n/workflow-reminder-d1.json`](docs/n8n/workflow-reminder-d1.json) e [`docs/n8n/workflow-survey-d1.json`](docs/n8n/workflow-survey-d1.json) (importáveis no N8N v1.x).
+Orquestração em N8N. Setup e workflows em [`docs/n8n/README.md`](docs/n8n/README.md).
 
-A captura da nota 1-5 da pesquisa é feita pelo `webhook-zapi` antes de invocar o agente IA — busca em `notifications_sent` se houve `survey_d1` enviado nas últimas 36h e atualiza `reservations.satisfaction_rating` direto.
-
-**RPCs disponíveis para N8N** (todas `SECURITY DEFINER`, acesso exclusivo ao `service_role`):
+**RPCs disponíveis para N8N** (`SECURITY DEFINER`, acesso exclusivo ao `service_role`):
 
 | RPC | Assinatura | O que faz |
 |---|---|---|
-| `check_rate_limit` | `(phone, window_seconds, max) → bool` | Controle de envio por janela deslizante; `false` = limite atingido |
-| `append_message` | `(conv_id, role, content) → void` | Append `{role, content, timestamp}` em `conversations.messages` |
-| `get_upcoming_reservations` | `(from_date, to_date) → table` | Retorna reservas `pending`/`confirmed` no intervalo com dados do cliente e mesa |
+| `check_rate_limit` | `(phone, window_seconds, max, unit_id) → bool` | Rate limit por (phone, unit) |
+| `append_message` | `(conv_id, role, content) → void` | Append mensagem no histórico |
+| `get_upcoming_reservations` | `(from_date, to_date, unit_id) → table` | Reservas no intervalo |
 
 ---
 
@@ -362,6 +455,7 @@ A captura da nota 1-5 da pesquisa é feita pelo `webhook-zapi` antes de invocar 
 
 - Componentes em **PascalCase**, hooks em **camelCase** com prefixo `use`
 - Queries/mutations via **TanStack React Query** — nunca `useState` + `useEffect` para dados remotos
+- **Todo hook de dados aceita `unitId` como primeiro parâmetro** — usar `useCurrentUnit()` para obtê-lo
 - Formulários via **React Hook Form + Zod** — schemas de validação em `zod`
 - Notificações via **`toast` do Sonner** (`import { toast } from "sonner"`)
 - Classes CSS via **`cn()`** de `@/lib/utils` — nunca template literals diretos com Tailwind

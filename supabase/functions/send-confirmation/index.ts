@@ -32,9 +32,8 @@ serve(async (req) => {
   }
 
   try {
-    // Triggered by Supabase Database Webhook on INSERT to reservations
     const body = await req.json();
-    const record = body.record ?? body; // handle both webhook and direct call
+    const record = body.record ?? body;
 
     const { data: reserva, error } = await supabase
       .from("reservations")
@@ -50,7 +49,28 @@ serve(async (req) => {
       });
     }
 
-    const { customer, date, time, party_size, reservation_code } = reserva;
+    const { customer, date, time, party_size, reservation_code, unit_id } = reserva;
+
+    // Check if there's a connected channel for this unit
+    const { data: channel } = unit_id
+      ? await supabase
+          .from("whatsapp_channels")
+          .select("id")
+          .eq("unit_id", unit_id)
+          .eq("status", "connected")
+          .limit(1)
+          .maybeSingle()
+      : { data: null };
+
+    if (!channel && !Deno.env.get("ZAPI_INSTANCE_ID")) {
+      // No channel configured — log and skip gracefully
+      jsonLog("info", { evt: "confirmation_skipped", reason: "no_channel", reservation_id: record.id });
+      // Still mark as confirmed
+      await supabase.from("reservations").update({ status: "confirmed" }).eq("id", record.id);
+      return new Response(JSON.stringify({ success: false, reason: "no_channel" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     const message =
       `✅ *Reserva Confirmada!*\n\n` +
@@ -61,14 +81,13 @@ serve(async (req) => {
       `🔑 Código: #${reservation_code}\n\n` +
       `Para alterar ou cancelar, é só responder aqui. Até logo! 😊`;
 
-    const sent = await sendWhatsApp(customer.phone, message);
+    const sent = await sendWhatsApp(customer.phone, message, {
+      channel_id: channel?.id,
+      unit_id: unit_id ?? undefined,
+    });
 
     if (sent) {
-      // Mark as confirmed after sending
-      await supabase
-        .from("reservations")
-        .update({ status: "confirmed" })
-        .eq("id", record.id);
+      await supabase.from("reservations").update({ status: "confirmed" }).eq("id", record.id);
     }
 
     return new Response(JSON.stringify({ success: sent }), {

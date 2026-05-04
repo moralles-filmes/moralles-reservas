@@ -1,7 +1,98 @@
 export type ReservaStatus = "pending" | "confirmed" | "cancelled" | "no_show";
 
+// ── Multi-tenant entities ──────────────────────────────────────────────────
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  is_public: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Unit {
+  id: string;
+  organization_id: string;
+  name: string;
+  slug: string;
+  address: Record<string, unknown> | null;
+  timezone: string;
+  is_public: boolean;
+  created_at: string;
+  updated_at: string;
+  organization?: Organization;
+}
+
+export type UnitRole = "owner" | "gerente" | "operador";
+
+export interface UnitMember {
+  id: string;
+  user_id: string;
+  unit_id: string;
+  role: UnitRole;
+  created_at: string;
+  unit?: Unit;
+}
+
+export type WhatsAppProvider = "zapi" | "waha" | "official";
+export type ChannelStatus = "connected" | "disconnected" | "error";
+
+export interface WhatsAppChannel {
+  id: string;
+  unit_id: string;
+  provider: WhatsAppProvider;
+  status: ChannelStatus;
+  display_phone: string | null;
+  last_event_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Operacional ───────────────────────────────────────────────────────────────
+
+export type WalkInStatus = "waiting" | "seated" | "left" | "no_show";
+export type WaitlistStatus = "waiting" | "notified" | "seated" | "cancelled";
+
+export interface WalkIn {
+  id: string;
+  unit_id: string;
+  customer_name: string;
+  customer_phone: string | null;
+  party_size: number;
+  table_id: string | null;
+  status: WalkInStatus;
+  notes: string | null;
+  arrived_at: string;
+  seated_at: string | null;
+  created_at: string;
+  updated_at: string;
+  table?: { number: number } | null;
+}
+
+export interface WaitlistEntry {
+  id: string;
+  unit_id: string;
+  customer_id: string | null;
+  customer_name: string;
+  customer_phone: string | null;
+  party_size: number;
+  requested_for_time: string | null;
+  priority: number;
+  status: WaitlistStatus;
+  notes: string | null;
+  notified_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Core domain ───────────────────────────────────────────────────────────────
+
 export interface Customer {
   id: string;
+  organization_id: string;
   name: string;
   phone: string;
   email: string | null;
@@ -11,6 +102,7 @@ export interface Customer {
   vip_notes?: string | null;
   preferred_table_location?: "internal" | "external" | null;
   do_not_contact?: boolean;
+  deleted_at?: string | null;
 }
 
 export interface TableBlock {
@@ -26,6 +118,7 @@ export interface TableBlock {
 
 export interface SpecialDate {
   id: string;
+  unit_id: string;
   date: string;
   name: string;
   is_closed: boolean;
@@ -57,11 +150,14 @@ export interface AuditLogEntry {
   new_values: Record<string, unknown> | null;
   actor_id: string | null;
   actor_email: string | null;
+  unit_id: string | null;
+  organization_id: string | null;
   created_at: string;
 }
 
 export interface Mesa {
   id: string;
+  unit_id: string;
   number: number;
   capacity: number;
   location: "internal" | "external";
@@ -70,6 +166,7 @@ export interface Mesa {
 
 export interface Reserva {
   id: string;
+  unit_id: string;
   customer_id: string;
   table_id: string | null;
   date: string;
@@ -78,6 +175,8 @@ export interface Reserva {
   status: ReservaStatus;
   notes: string | null;
   reservation_code: string;
+  satisfaction_rating?: number | null;
+  satisfaction_at?: string | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;
@@ -86,6 +185,7 @@ export interface Reserva {
 
 export interface Conversation {
   id: string;
+  unit_id: string;
   customer_id: string;
   reservation_id: string | null;
   messages: ConversationMessage[];
@@ -103,6 +203,7 @@ export interface ConversationMessage {
 
 export interface BusinessHour {
   id: string;
+  unit_id: string;
   day_of_week: number;
   open_time: string;
   close_time: string;

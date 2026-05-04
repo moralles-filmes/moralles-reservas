@@ -2,6 +2,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { supabase } from "@/lib/supabase";
 import { useCreateReserva } from "@/hooks/useReservas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,20 +34,74 @@ const schema = z.object({
 
 type FormData = z.infer<typeof schema>;
 
-const TIME_SLOTS = [
+const FALLBACK_TIME_SLOTS = [
   "12:00", "12:30", "13:00", "13:30", "14:00",
   "19:00", "19:30", "20:00", "20:30", "21:00", "21:30", "22:00",
 ];
 
 const PARTY_SIZES = Array.from({ length: 20 }, (_, i) => i + 1);
 
-interface ReservaFormProps {
-  onSuccess?: (reserva: Reserva) => void;
+function generateTimeSlots(openTime: string, closeTime: string, intervalMins = 30): string[] {
+  const slots: string[] = [];
+  const [openH, openM] = openTime.split(":").map(Number);
+  const [closeH, closeM] = closeTime.split(":").map(Number);
+  let current = openH * 60 + openM;
+  const end = closeH * 60 + closeM;
+  while (current < end) {
+    const h = Math.floor(current / 60);
+    const m = current % 60;
+    slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+    current += intervalMins;
+  }
+  return slots;
 }
 
-export function ReservaForm({ onSuccess }: ReservaFormProps) {
+interface UnitContext {
+  id: string;
+  name: string;
+  organization_id: string;
+}
+
+interface ReservaFormProps {
+  onSuccess?: (reserva: Reserva) => void;
+  unit?: UnitContext;
+}
+
+export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
   const createReserva = useCreateReserva();
+
+  // Load default unit if none provided (backwards compat for Index page)
+  const { data: defaultUnit } = useQuery({
+    queryKey: ["default-unit"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("units")
+        .select("id, name, organization_id")
+        .limit(1)
+        .maybeSingle();
+      return data;
+    },
+    enabled: !unit,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const effectiveUnit = unit ?? defaultUnit ?? null;
   const [confirmed, setConfirmed] = useState<Reserva | null>(null);
+
+  const { data: businessHours } = useQuery({
+    queryKey: ["business_hours", effectiveUnit?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("business_hours")
+        .select("day_of_week, open_time, close_time, is_closed")
+        .eq("unit_id", effectiveUnit!.id)
+        .order("day_of_week");
+      if (error) throw error;
+      return data as Array<{ day_of_week: number; open_time: string; close_time: string; is_closed: boolean }>;
+    },
+    enabled: !!effectiveUnit?.id,
+    staleTime: 5 * 60 * 1000,
+  });
 
   const {
     register,
@@ -61,7 +117,11 @@ export function ReservaForm({ onSuccess }: ReservaFormProps) {
 
   const onSubmit = async (data: FormData) => {
     try {
-      const reserva = await createReserva.mutateAsync(data);
+      const reserva = await createReserva.mutateAsync({
+        ...data,
+        unit_id: effectiveUnit?.id ?? "",
+        organization_id: effectiveUnit?.organization_id ?? "",
+      });
       setConfirmed(reserva);
       reset();
       onSuccess?.(reserva);
@@ -172,16 +232,43 @@ export function ReservaForm({ onSuccess }: ReservaFormProps) {
 
             <div className="space-y-1">
               <Label>Horário *</Label>
-              <Select onValueChange={(v) => setValue("time", v)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione" />
-                </SelectTrigger>
-                <SelectContent>
-                  {TIME_SLOTS.map((t) => (
-                    <SelectItem key={t} value={t}>{t}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {(() => {
+                const selectedDate = watch("date");
+                let timeSlots = FALLBACK_TIME_SLOTS;
+                let isClosed = false;
+                if (businessHours && selectedDate) {
+                  // JS getDay(): 0=Sunday … 6=Saturday; same convention as DB
+                  const dow = new Date(`${selectedDate}T12:00:00`).getDay();
+                  const entry = businessHours.find((bh) => bh.day_of_week === dow);
+                  if (entry) {
+                    if (entry.is_closed) {
+                      isClosed = true;
+                      timeSlots = [];
+                    } else {
+                      timeSlots = generateTimeSlots(entry.open_time, entry.close_time);
+                    }
+                  }
+                }
+                if (isClosed) {
+                  return (
+                    <p className="text-xs text-muted-foreground border rounded-md px-3 py-2">
+                      Restaurante fechado neste dia
+                    </p>
+                  );
+                }
+                return (
+                  <Select onValueChange={(v) => setValue("time", v)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {timeSlots.map((t) => (
+                        <SelectItem key={t} value={t}>{t}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                );
+              })()}
               {errors.time && (
                 <p className="text-xs text-destructive">{errors.time.message}</p>
               )}

@@ -11,10 +11,12 @@ import { toast } from "sonner";
 interface ReservaCardProps {
   reserva: Reserva;
   showActions?: boolean;
+  unitId?: string;
 }
 
-export function ReservaCard({ reserva, showActions = false }: ReservaCardProps) {
-  const updateStatus = useUpdateReservaStatus();
+export function ReservaCard({ reserva, showActions = false, unitId }: ReservaCardProps) {
+  const effectiveUnitId = unitId ?? reserva.unit_id ?? "";
+  const updateStatus = useUpdateReservaStatus(effectiveUnitId);
 
   const handleStatus = async (status: "confirmed" | "cancelled" | "no_show") => {
     try {
@@ -46,8 +48,7 @@ export function ReservaCard({ reserva, showActions = false }: ReservaCardProps) 
                   VIP
                 </Badge>
               )}
-              {(reserva.customer?.allergies ||
-                reserva.customer?.dietary_restrictions) && (
+              {(reserva.customer?.allergies || reserva.customer?.dietary_restrictions) && (
                 <Badge variant="outline" className="text-[10px] gap-1 text-destructive border-destructive/30">
                   <AlertTriangle className="h-2.5 w-2.5" />
                   {reserva.customer?.allergies ? "Alergia" : "Restrição"}

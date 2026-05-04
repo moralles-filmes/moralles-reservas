@@ -1,4 +1,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  sendOutbound,
+  type WhatsAppProvider,
+  type ChannelCredentials,
+} from "../_shared/whatsapp-providers.ts";
 import { fetchWithRetry } from "../_shared/retry.ts";
 import {
   jsonLog,
@@ -6,9 +12,15 @@ import {
   sanitizePhone,
 } from "../_shared/security.ts";
 
-const ZAPI_INSTANCE_ID = Deno.env.get("ZAPI_INSTANCE_ID")!;
-const ZAPI_TOKEN = Deno.env.get("ZAPI_TOKEN")!;
-const ZAPI_CLIENT_TOKEN = Deno.env.get("ZAPI_CLIENT_TOKEN")!;
+const supabase = createClient(
+  Deno.env.get("SUPABASE_URL")!,
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+);
+
+// Legacy Z-API credentials (fallback when no channel configured)
+const LEGACY_ZAPI_INSTANCE_ID = Deno.env.get("ZAPI_INSTANCE_ID");
+const LEGACY_ZAPI_TOKEN = Deno.env.get("ZAPI_TOKEN");
+const LEGACY_ZAPI_CLIENT_TOKEN = Deno.env.get("ZAPI_CLIENT_TOKEN");
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -19,38 +31,64 @@ const corsHeaders = {
 export interface SendMessagePayload {
   phone: string;
   message: string;
+  channel_id?: string;
+  unit_id?: string;
 }
 
-export async function sendWhatsApp(phone: string, message: string): Promise<boolean> {
+// Legacy direct Z-API call (backwards compat)
+async function sendZApiLegacy(phone: string, message: string): Promise<boolean> {
+  if (!LEGACY_ZAPI_INSTANCE_ID || !LEGACY_ZAPI_TOKEN) return false;
   const digits = phone.replace(/\D/g, "");
   const formatted = digits.startsWith("55") ? digits : `55${digits}`;
-
-  const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE_ID}/token/${ZAPI_TOKEN}/send-text`;
-
+  const url = `https://api.z-api.io/instances/${LEGACY_ZAPI_INSTANCE_ID}/token/${LEGACY_ZAPI_TOKEN}/send-text`;
   const res = await fetchWithRetry(
     url,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Client-Token": ZAPI_CLIENT_TOKEN,
-      },
+      headers: { "Content-Type": "application/json", ...(LEGACY_ZAPI_CLIENT_TOKEN ? { "Client-Token": LEGACY_ZAPI_CLIENT_TOKEN } : {}) },
       body: JSON.stringify({ phone: formatted, message }),
     },
-    { retries: 3, baseDelayMs: 500 },
+    { retries: 3, baseDelayMs: 500 }
   );
-
   if (!res.ok) {
-    const body = await res.text();
-    jsonLog("error", {
-      evt: "zapi_send_failed",
-      status: res.status,
-      body,
-      phone: sanitizePhone(phone),
-    });
-    return false;
+    jsonLog("error", { evt: "zapi_send_failed", status: res.status, phone: sanitizePhone(phone) });
   }
-  return true;
+  return res.ok;
+}
+
+export async function sendWhatsApp(
+  phone: string,
+  message: string,
+  channelIdOrUnitId?: { channel_id?: string; unit_id?: string }
+): Promise<boolean> {
+  // Try to resolve a channel
+  if (channelIdOrUnitId?.channel_id) {
+    const { data: channel } = await supabase
+      .from("whatsapp_channels")
+      .select("provider, credentials")
+      .eq("id", channelIdOrUnitId.channel_id)
+      .maybeSingle();
+    if (channel) {
+      return sendOutbound(channel.provider as WhatsAppProvider, channel.credentials as ChannelCredentials, { toPhone: phone, text: message });
+    }
+  }
+
+  if (channelIdOrUnitId?.unit_id) {
+    const { data: channel } = await supabase
+      .from("whatsapp_channels")
+      .select("provider, credentials")
+      .eq("unit_id", channelIdOrUnitId.unit_id)
+      .eq("status", "connected")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (channel) {
+      return sendOutbound(channel.provider as WhatsAppProvider, channel.credentials as ChannelCredentials, { toPhone: phone, text: message });
+    }
+  }
+
+  // Fallback: legacy Z-API secrets
+  return sendZApiLegacy(phone, message);
 }
 
 serve(async (req) => {
@@ -66,7 +104,7 @@ serve(async (req) => {
   }
 
   try {
-    const { phone, message }: SendMessagePayload = await req.json();
+    const { phone, message, channel_id, unit_id }: SendMessagePayload = await req.json();
     if (!phone || !message) {
       return new Response(JSON.stringify({ error: "phone e message são obrigatórios" }), {
         status: 400,
@@ -74,7 +112,7 @@ serve(async (req) => {
       });
     }
 
-    const ok = await sendWhatsApp(phone, message);
+    const ok = await sendWhatsApp(phone, message, { channel_id, unit_id });
     return new Response(JSON.stringify({ success: ok }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

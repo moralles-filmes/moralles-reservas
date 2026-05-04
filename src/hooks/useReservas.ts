@@ -22,6 +22,7 @@ export function mapRpcRowToReserva(row: ReservationByCodeRow | null | undefined)
   if (!row) return null;
   return {
     id: row.id,
+    unit_id: "",
     customer_id: "",
     table_id: null,
     date: row.date,
@@ -34,6 +35,7 @@ export function mapRpcRowToReserva(row: ReservationByCodeRow | null | undefined)
     updated_at: row.updated_at,
     customer: {
       id: "",
+      organization_id: "",
       name: row.customer_name,
       phone: row.customer_phone,
       email: row.customer_email,
@@ -42,17 +44,21 @@ export function mapRpcRowToReserva(row: ReservationByCodeRow | null | undefined)
   };
 }
 
-export function useReservas(filters?: {
-  date?: string;
-  status?: ReservaStatus;
-  search?: string;
-}) {
+export function useReservas(
+  unitId: string,
+  filters?: {
+    date?: string;
+    status?: ReservaStatus;
+    search?: string;
+  }
+) {
   return useQuery({
-    queryKey: ["reservas", filters],
+    queryKey: ["reservas", unitId, filters],
     queryFn: async () => {
       let query = supabase
         .from("reservations")
         .select("*, customer:customers(*), table:tables(*)")
+        .eq("unit_id", unitId)
         .order("date", { ascending: true })
         .order("time", { ascending: true });
 
@@ -68,17 +74,17 @@ export function useReservas(filters?: {
       if (error) throw error;
       return data as Reserva[];
     },
+    enabled: !!unitId,
   });
 }
 
-export function useReservaByCode(code: string) {
+export function useReservaByCode(code: string, unitId?: string) {
   return useQuery({
-    queryKey: ["reserva", code],
+    queryKey: ["reserva", code, unitId],
     queryFn: async () => {
-      // Consulta anônima vai pela RPC `get_reservation_by_code` (security definer)
-      // — RLS de leitura em `reservations`/`customers` está fechada para anon.
       const { data, error } = await supabase.rpc("get_reservation_by_code", {
         p_code: code.toUpperCase(),
+        ...(unitId ? { p_unit_id: unitId } : {}),
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
@@ -88,21 +94,30 @@ export function useReservaByCode(code: string) {
   });
 }
 
-export function useReservasHoje() {
+export function useReservasHoje(unitId: string) {
   const today = new Date().toISOString().split("T")[0];
-  return useReservas({ date: today });
+  return useReservas(unitId, { date: today });
+}
+
+export interface CreateReservaParams extends ReservaFormData {
+  unit_id: string;
+  organization_id: string;
 }
 
 export function useCreateReserva() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: ReservaFormData) => {
-      // Upsert customer by phone
+    mutationFn: async (data: CreateReservaParams) => {
       const { data: customer, error: custError } = await supabase
         .from("customers")
         .upsert(
-          { name: data.name, phone: data.phone, email: data.email || null },
-          { onConflict: "phone" }
+          {
+            name: data.name,
+            phone: data.phone,
+            email: data.email || null,
+            organization_id: data.organization_id,
+          },
+          { onConflict: "organization_id,phone" }
         )
         .select()
         .single();
@@ -114,6 +129,7 @@ export function useCreateReserva() {
         .from("reservations")
         .insert({
           customer_id: customer.id,
+          unit_id: data.unit_id,
           date: data.date,
           time: data.time,
           party_size: data.party_size,
@@ -127,22 +143,16 @@ export function useCreateReserva() {
       if (error) throw error;
       return reserva as Reserva;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["reservas"] });
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["reservas", vars.unit_id] });
     },
   });
 }
 
-export function useUpdateReservaStatus() {
+export function useUpdateReservaStatus(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({
-      id,
-      status,
-    }: {
-      id: string;
-      status: ReservaStatus;
-    }) => {
+    mutationFn: async ({ id, status }: { id: string; status: ReservaStatus }) => {
       const { data, error } = await supabase
         .from("reservations")
         .update({ status, updated_at: new Date().toISOString() })
@@ -153,12 +163,12 @@ export function useUpdateReservaStatus() {
       return data as Reserva;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["reservas"] });
+      queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
     },
   });
 }
 
-export function useUpdateReserva() {
+export function useUpdateReserva(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({
@@ -178,19 +188,20 @@ export function useUpdateReserva() {
       return data as Reserva;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["reservas"] });
+      queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
     },
   });
 }
 
-export function useReservaStats() {
+export function useReservaStats(unitId: string) {
   return useQuery({
-    queryKey: ["reserva-stats"],
+    queryKey: ["reserva-stats", unitId],
     queryFn: async () => {
       const today = new Date().toISOString().split("T")[0];
       const { data, error } = await supabase
         .from("reservations")
         .select("status, party_size, date")
+        .eq("unit_id", unitId)
         .gte("date", today);
       if (error) throw error;
 
@@ -204,5 +215,6 @@ export function useReservaStats() {
           .reduce((acc, r) => acc + r.party_size, 0),
       };
     },
+    enabled: !!unitId,
   });
 }

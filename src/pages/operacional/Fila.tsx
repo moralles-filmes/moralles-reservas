@@ -1,0 +1,272 @@
+import { useState } from "react";
+import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import {
+  useWaitlist,
+  useAddToWaitlist,
+  useUpdateWaitlistStatus,
+  useNotifyWaitlist,
+  useRemoveFromWaitlist,
+} from "@/hooks/useWaitlist";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { formatPhone } from "@/lib/utils";
+import type { WaitlistEntry, WaitlistStatus } from "@/types/reserva";
+import { Bell, Clock, Plus, Trash2, Users } from "lucide-react";
+import { toast } from "sonner";
+
+const STATUS_CONFIG: Record<WaitlistStatus, { label: string; className: string }> = {
+  waiting:   { label: "Aguardando", className: "bg-amber-50 text-amber-800 border-amber-200" },
+  notified:  { label: "Notificado", className: "bg-blue-50 text-blue-800 border-blue-200" },
+  seated:    { label: "Sentou",     className: "bg-green-50 text-green-800 border-green-200" },
+  cancelled: { label: "Cancelado",  className: "bg-muted text-muted-foreground" },
+};
+
+function WaitingTime({ createdAt }: { createdAt: string }) {
+  const mins = Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000);
+  const className = mins >= 30 ? "text-destructive font-semibold" : mins >= 15 ? "text-amber-600" : "text-muted-foreground";
+  return (
+    <span className={`flex items-center gap-1 text-xs ${className}`}>
+      <Clock className="h-3 w-3" />
+      {mins < 1 ? "agora" : `${mins} min`}
+    </span>
+  );
+}
+
+export default function Fila() {
+  const unit = useCurrentUnit();
+  const unitId = unit?.unit_id ?? "";
+
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [partySize, setPartySize] = useState("2");
+  const [requestedTime, setRequestedTime] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const { data: waitlist, isLoading } = useWaitlist(unitId);
+  const addToWaitlist = useAddToWaitlist(unitId);
+  const updateStatus = useUpdateWaitlistStatus(unitId);
+  const notifyEntry = useNotifyWaitlist(unitId);
+  const removeEntry = useRemoveFromWaitlist(unitId);
+
+  const reset = () => { setName(""); setPhone(""); setPartySize("2"); setRequestedTime(""); setNotes(""); };
+
+  const handleAdd = () => {
+    if (!name.trim()) { toast.error("Informe o nome do cliente."); return; }
+    addToWaitlist.mutate(
+      {
+        customer_name: name.trim(),
+        customer_phone: phone.replace(/\D/g, "") || null,
+        party_size: Number(partySize),
+        requested_for_time: requestedTime || null,
+        notes: notes.trim() || null,
+      },
+      { onSuccess: () => { setOpen(false); reset(); } }
+    );
+  };
+
+  const handleNotify = (entry: WaitlistEntry) => {
+    if (!entry.customer_phone) {
+      toast.error("Este cliente não tem WhatsApp cadastrado.");
+      return;
+    }
+    const message =
+      `🔔 *Mesa disponível!*\n\n` +
+      `Olá ${entry.customer_name}! Uma mesa para ${entry.party_size} pessoa(s) está disponível agora.\n\n` +
+      `Venha até o restaurante nos próximos 10 minutos para garantir seu lugar. 😊`;
+
+    notifyEntry.mutate({ id: entry.id, phone: entry.customer_phone, message });
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Users className="h-5 w-5 text-primary" />
+          <h1 className="text-xl font-bold">Fila de espera</h1>
+          {waitlist && waitlist.length > 0 && (
+            <Badge className="bg-amber-100 text-amber-800 border-amber-200">
+              {waitlist.length} na fila
+            </Badge>
+          )}
+        </div>
+        <Button size="sm" onClick={() => setOpen(true)}>
+          <Plus className="h-4 w-4 mr-1" /> Adicionar
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
+      ) : !waitlist?.length ? (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground text-sm">
+            <Users className="h-8 w-8 mx-auto mb-2 opacity-30" />
+            Fila de espera vazia.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {waitlist.map((entry, idx) => {
+            const statusCfg = STATUS_CONFIG[entry.status];
+            return (
+              <Card key={entry.id}>
+                <CardContent className="py-3 flex items-start gap-4 flex-wrap">
+                  <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center text-sm font-bold shrink-0">
+                    {idx + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <p className="font-medium text-sm">{entry.customer_name}</p>
+                      <Badge variant="outline" className={`text-[10px] ${statusCfg.className}`}>
+                        {statusCfg.label}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                      <span className="flex items-center gap-1">
+                        <Users className="h-3 w-3" />
+                        {entry.party_size} {entry.party_size === 1 ? "pessoa" : "pessoas"}
+                      </span>
+                      {entry.customer_phone && <span>{formatPhone(entry.customer_phone)}</span>}
+                      {entry.requested_for_time && (
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          Prefere {entry.requested_for_time.slice(0, 5)}
+                        </span>
+                      )}
+                      <WaitingTime createdAt={entry.created_at} />
+                    </div>
+                    {entry.notes && (
+                      <p className="text-xs text-muted-foreground italic mt-1 truncate">{entry.notes}</p>
+                    )}
+                    {entry.notified_at && (
+                      <p className="text-xs text-blue-600 mt-1">
+                        Notificado às {new Date(entry.notified_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    {entry.status === "waiting" && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1"
+                          onClick={() => handleNotify(entry)}
+                          disabled={!entry.customer_phone || notifyEntry.isPending}
+                        >
+                          <Bell className="h-3 w-3" />
+                          Notificar
+                        </Button>
+                        <Button size="sm" onClick={() => updateStatus.mutate({ id: entry.id, status: "seated" })}>
+                          Sentar
+                        </Button>
+                      </>
+                    )}
+                    {entry.status === "notified" && (
+                      <Button size="sm" onClick={() => updateStatus.mutate({ id: entry.id, status: "seated" })}>
+                        Confirmar entrada
+                      </Button>
+                    )}
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="ghost" size="icon">
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Remover da fila?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            O cliente será removido da fila de espera.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => removeEntry.mutate(entry.id)}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          >
+                            Remover
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Adicionar à fila</DialogTitle></DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="space-y-1">
+              <Label>Nome do cliente *</Label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Maria Costa" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>WhatsApp (opcional)</Label>
+                <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
+              </div>
+              <div className="space-y-1">
+                <Label>Pessoas *</Label>
+                <Select value={partySize} onValueChange={setPartySize}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+                      <SelectItem key={n} value={String(n)}>{n} {n === 1 ? "pessoa" : "pessoas"}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label>Horário preferencial (opcional)</Label>
+              <Input type="time" value={requestedTime} onChange={(e) => setRequestedTime(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label>Observações (opcional)</Label>
+              <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
+            </div>
+            <Button onClick={handleAdd} disabled={addToWaitlist.isPending} className="w-full">
+              Adicionar à fila
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
