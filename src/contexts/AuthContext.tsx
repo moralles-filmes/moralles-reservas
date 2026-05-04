@@ -35,6 +35,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
 
   useEffect(() => {
+    let initialSessionHandled = false;
+
     const loadMemberships = async (u: User | null) => {
       if (!u) {
         setMemberships([]);
@@ -67,21 +69,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsPlatformAdmin(!!platformAdmin);
     };
 
-    // Load initial session once
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    // onAuthStateChange fires INITIAL_SESSION on mount — use it as the single
+    // source of truth so we don't call loadMemberships twice on startup.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       setUser(session?.user ?? null);
-      setLoading(false);
-      loadMemberships(session?.user ?? null);
-    });
 
-    // Keep in sync with Supabase auth events
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      setUser(session?.user ?? null);
       if (!session?.user) {
         setMemberships([]);
         setIsPlatformAdmin(false);
-      } else {
-        loadMemberships(session.user);
+        setLoading(false);
+        return;
+      }
+
+      await loadMemberships(session.user);
+
+      // Mark loading done only after the first session event resolves
+      if (!initialSessionHandled) {
+        initialSessionHandled = true;
+        setLoading(false);
       }
     });
 
