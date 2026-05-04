@@ -5,7 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { GestaoLayout } from "@/components/layouts/GestaoLayout";
 import { OperacionalLayout } from "@/components/layouts/OperacionalLayout";
 import { PlatformLayout } from "@/components/layouts/PlatformLayout";
-import { useAuth } from "@/hooks/useAuth";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useEffect } from "react";
@@ -96,6 +96,7 @@ export default function App() {
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
+        <AuthProvider>
           <Suspense fallback={<PageLoader />}>
             <Routes>
               {/* ── Public ─────────────────────────────────────────────── */}
@@ -139,6 +140,7 @@ export default function App() {
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
+        </AuthProvider>
         </BrowserRouter>
         <Toaster richColors position="top-right" />
       </QueryClientProvider>
