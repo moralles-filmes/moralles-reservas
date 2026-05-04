@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
   Bot,
+  Building2,
   CalendarIcon,
   LayoutDashboard,
   LogOut,
@@ -20,7 +21,7 @@ import {
 import { toast } from "sonner";
 
 export function GestaoLayout({ children }: { children: React.ReactNode }) {
-  const { signOut } = useAuth();
+  const { signOut, isPlatformAdmin } = useAuth();
   const { unitSlug } = useParams<{ unitSlug: string }>();
   const unit = useCurrentUnit();
   const navigate = useNavigate();
@@ -93,6 +94,18 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
             Painel Operacional
           </NavLink>
         </div>
+
+        {isPlatformAdmin && (
+          <div className="px-3 pb-1">
+            <NavLink
+              to="/platform"
+              className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-primary hover:bg-sidebar-accent transition-colors font-medium"
+            >
+              <Building2 className="h-4 w-4 shrink-0" />
+              Plataforma
+            </NavLink>
+          </div>
+        )}
 
         <Separator className="bg-sidebar-border" />
         <div className="p-3">

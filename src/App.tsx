@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { GestaoLayout } from "@/components/layouts/GestaoLayout";
 import { OperacionalLayout } from "@/components/layouts/OperacionalLayout";
+import { PlatformLayout } from "@/components/layouts/PlatformLayout";
 import { useAuth } from "@/hooks/useAuth";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -30,6 +31,9 @@ const GAvaliacoes = lazy(() => import("./pages/gestao/Avaliacoes"));
 const OReservasDia = lazy(() => import("./pages/operacional/ReservasDia"));
 const OFila        = lazy(() => import("./pages/operacional/Fila"));
 const OPassantes   = lazy(() => import("./pages/operacional/Passantes"));
+
+// ── Platform ──────────────────────────────────────────────────────────────────
+const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -61,6 +65,14 @@ function OperacionalGuard({ children }: { children: React.ReactNode }) {
   if (loading) return <div className="p-6"><Skeleton className="h-8 w-48" /></div>;
   if (!user) return <Navigate to="/admin/login" replace />;
   return <OperacionalLayout>{children}</OperacionalLayout>;
+}
+
+function PlatformGuard({ children }: { children: React.ReactNode }) {
+  const { user, loading, isPlatformAdmin } = useAuth();
+  if (loading) return <div className="p-6"><Skeleton className="h-8 w-48" /></div>;
+  if (!user) return <Navigate to="/admin/login" replace />;
+  if (!isPlatformAdmin) return <Navigate to="/" replace />;
+  return <PlatformLayout>{children}</PlatformLayout>;
 }
 
 // ── Redirect /admin/* → /g/:defaultSlug/* ────────────────────────────────────
@@ -107,6 +119,10 @@ export default function App() {
               <Route path="/o/:unitSlug/reservas" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/fila" element={<OperacionalGuard><OFila /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/passantes" element={<OperacionalGuard><OPassantes /></OperacionalGuard>} />
+
+              {/* ── Platform /platform/* ───────────────────────────────── */}
+              <Route path="/platform" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
+              <Route path="/platform/empresas" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
 
               {/* ── Legacy /admin/* → redirect ──────────────────────────── */}
               <Route path="/admin" element={<AdminRedirect to="" />} />
