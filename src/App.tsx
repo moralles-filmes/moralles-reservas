@@ -14,6 +14,7 @@ import { useEffect } from "react";
 const Index = lazy(() => import("./pages/Index"));
 const PublicPortal = lazy(() => import("./pages/PublicPortal"));
 const Auth = lazy(() => import("./pages/Auth"));
+const ResetPassword = lazy(() => import("./pages/ResetPassword"));
 
 // ── Gestão ────────────────────────────────────────────────────────────────────
 const GDashboard = lazy(() => import("./pages/gestao/Dashboard"));
@@ -101,6 +102,7 @@ export default function App() {
               <Route path="/" element={<Index />} />
               <Route path="/r/:slug" element={<PublicPortal />} />
               <Route path="/admin/login" element={<Auth />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
 
               {/* ── Gestão /g/:unitSlug ─────────────────────────────────── */}
               <Route path="/g/:unitSlug" element={<GestaoGuard><GDashboard /></GestaoGuard>} />
