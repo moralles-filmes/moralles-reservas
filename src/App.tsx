@@ -76,18 +76,38 @@ function PlatformGuard({ children }: { children: React.ReactNode }) {
   return <PlatformLayout>{children}</PlatformLayout>;
 }
 
-// ── Redirect /admin/* → /g/:defaultSlug/* ────────────────────────────────────
+// ── Redirect /admin/* → correct destination based on auth state ──────────────
 
 function AdminRedirect({ to }: { to: string }) {
-  const { defaultUnitSlug, loading } = useAuth();
+  const { user, loading, defaultUnitSlug, isPlatformAdmin } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
     if (loading) return;
-    const slug = defaultUnitSlug ?? "moralles-centro";
-    navigate(`/g/${slug}${to}`, { replace: true });
-  }, [loading, defaultUnitSlug, navigate, to]);
+    if (!user) {
+      navigate("/admin/login", { replace: true });
+      return;
+    }
+    if (defaultUnitSlug) {
+      navigate(`/g/${defaultUnitSlug}${to}`, { replace: true });
+      return;
+    }
+    if (isPlatformAdmin) {
+      navigate("/platform", { replace: true });
+      return;
+    }
+  }, [loading, user, defaultUnitSlug, isPlatformAdmin, navigate, to]);
 
+  if (!loading && user && !defaultUnitSlug && !isPlatformAdmin) {
+    return (
+      <div className="p-6 max-w-md mx-auto mt-12 text-center space-y-3">
+        <h1 className="text-xl font-semibold">Sem acesso a nenhuma unidade</h1>
+        <p className="text-muted-foreground">
+          Sua conta não está vinculada a nenhum restaurante. Peça ao administrador para te adicionar.
+        </p>
+      </div>
+    );
+  }
   return <div className="p-6"><Skeleton className="h-8 w-48" /></div>;
 }
 
@@ -127,15 +147,8 @@ export default function App() {
               <Route path="/platform" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
               <Route path="/platform/empresas" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
 
-              {/* ── Legacy /admin/* → redirect ──────────────────────────── */}
+              {/* ── Legacy /admin → redirect ─────────────────────────────── */}
               <Route path="/admin" element={<AdminRedirect to="" />} />
-              <Route path="/admin/reservas" element={<AdminRedirect to="/reservas" />} />
-              <Route path="/admin/calendario" element={<AdminRedirect to="/calendario" />} />
-              <Route path="/admin/clientes" element={<AdminRedirect to="/clientes" />} />
-              <Route path="/admin/conversas" element={<AdminRedirect to="/conversas" />} />
-              <Route path="/admin/mesas" element={<AdminRedirect to="/mesas" />} />
-              <Route path="/admin/configuracoes" element={<AdminRedirect to="/configuracoes" />} />
-              <Route path="/admin/auditoria" element={<AdminRedirect to="/auditoria" />} />
 
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

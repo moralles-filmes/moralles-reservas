@@ -114,8 +114,12 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...        # DeepSeek
 ```
 /                            → Index.tsx (landing pública — redireciona para /r/<slug-padrão>)
 /r/:slug                     → PublicPortal.tsx — formulário de reserva + consulta por código
-/admin/login                 → Auth.tsx — login
-/admin/*                     → redireciona para /g/<defaultSlug>/* (compatibilidade)
+/admin/login                 → Auth.tsx — login (já logado é redirecionado para /admin)
+/admin                       → redireciona conforme auth state:
+                                  • deslogado → /admin/login
+                                  • com unit → /g/<defaultSlug>
+                                  • platform_admin sem unit → /platform
+                                  • logado sem nada → mensagem "Sem acesso a nenhuma unidade"
 
 /g/:unitSlug                 → Painel de Gestão (GestaoLayout)
   ├── /                      → Dashboard

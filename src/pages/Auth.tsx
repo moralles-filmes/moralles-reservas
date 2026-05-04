@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
@@ -14,8 +14,12 @@ export default function Auth() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState<"login" | "forgot">("login");
-  const { signIn } = useAuth();
+  const { user, signIn } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (user) navigate("/admin", { replace: true });
+  }, [user, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
