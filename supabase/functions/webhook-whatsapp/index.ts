@@ -110,6 +110,17 @@ const agentTools: AgentTool[] = [
     description: "Lista as reservas ativas (pending/confirmed) do cliente.",
     parameters: { type: "object", properties: {} },
   },
+  {
+    name: "request_human_handoff",
+    description: "Use quando o pedido do cliente não puder ser resolvido pelas ferramentas disponíveis (reclamações, eventos especiais, delivery, assuntos que exigem julgamento humano). Transfere a conversa para um atendente humano.",
+    parameters: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "Motivo breve da transferência (ex: 'cliente quer reclamar sobre atendimento')" },
+      },
+      required: ["reason"],
+    },
+  },
 ];
 
 // ─── Tool implementations (all unit-scoped) ───────────────────────────────────
@@ -372,13 +383,14 @@ serve(async (req) => {
       return new Response("ok");
     }
 
-    // Load organization_id for the unit
+    // Load organization_id + address for the unit
     const { data: unitRow } = await supabase
       .from("units")
-      .select("organization_id")
+      .select("organization_id, address")
       .eq("id", unitId)
       .maybeSingle();
     const organizationId: string = unitRow?.organization_id ?? "";
+    const unitAddress: string = unitRow?.address ?? "";
 
     // Upsert customer (org-scoped)
     const { data: customer } = await supabase
@@ -424,6 +436,17 @@ serve(async (req) => {
 
     // Load conversation history
     const conv = await getOrCreateConversation(customer.id, unitId);
+
+    // Short-circuit: conversa em atendimento humano — só registra a mensagem, IA silenciada
+    if (conv.status === "human_active" || conv.status === "awaiting_human") {
+      await appendToConversation(conv.id, conv.messages, "user", incomingText);
+      await supabase.from("conversations")
+        .update({ last_message_at: new Date().toISOString() })
+        .eq("id", conv.id);
+      jsonLog("info", { requestId, evt: "skipped_ai_human_active", convId: conv.id, status: conv.status });
+      return new Response("ok");
+    }
+
     // deno-lint-ignore no-explicit-any
     const history: Array<{ role: "user" | "assistant"; content: string }> = (conv.messages || []).map((m: any) => ({ role: m.role, content: m.content }));
 
@@ -447,7 +470,7 @@ serve(async (req) => {
       .from("settings")
       .select("key, value")
       .eq("unit_id", unitId)
-      .in("key", ["restaurant_name", "ai_system_prompt"]);
+      .in("key", ["restaurant_name", "ai_system_prompt", "agent_mode", "restaurant_menu", "delivery_response", "restaurant_extra_info"]);
 
     const settingsMap = Object.fromEntries((settings || []).map((s: { key: string; value: unknown }) => [s.key, s.value]));
     const restaurantName = (settingsMap["restaurant_name"] as string) ?? "Restaurante";
@@ -489,15 +512,25 @@ serve(async (req) => {
 
     const todayBR = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
 
+    const agentMode = (settingsMap["agent_mode"] as string) ?? "reservations";
+    const agentHeader = agentMode === "reservations_faq"
+      ? `Você é o assistente do ${restaurantName}. Atende reservas e dúvidas gerais (cardápio, horário, endereço, estacionamento). `
+      : `Você é o assistente de reservas do ${restaurantName}. `;
+
     const systemPrompt =
-      `Você é o assistente de reservas do ${restaurantName}. ` +
+      agentHeader +
       `Seja cordial, eficiente e responda sempre em português brasileiro. ` +
       `O número de WhatsApp do cliente é ${phone}. Hoje é ${todayBR}. ` +
-      `Use as ferramentas disponíveis para consultar disponibilidade, criar, alterar, cancelar ou listar reservas. ` +
+      `Use as ferramentas disponíveis para reservas. ` +
       `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar. ` +
-      `Não invente horários — só ofereça horários dentro da janela de funcionamento.` +
+      `Não invente horários, cardápio ou serviços — só use o que está documentado abaixo. ` +
+      `Se o pedido fugir do escopo (reclamação, evento corporativo, delivery não suportado, qualquer coisa que as ferramentas não cobrem), use a tool 'request_human_handoff' informando o motivo.` +
+      (unitAddress ? `\n\nEndereço: ${unitAddress}` : "") +
       (hoursLines.length ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}` : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
+      (settingsMap["restaurant_menu"] ? `\n\nCardápio:\n${settingsMap["restaurant_menu"]}` : "") +
+      (settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
+      (settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +
       (prefsLines.length ? `\n\nO que sabemos sobre este cliente:\n${prefsLines.join("\n")}` : "") +
       (customPrompt ? `\n\nInstruções adicionais: ${customPrompt}` : "");
 
@@ -540,6 +573,15 @@ serve(async (req) => {
               break;
             case "list_customer_reservations":
               result = await listCustomerReservations(customer.id, unitId);
+              break;
+            case "request_human_handoff":
+              await supabase.from("conversations").update({
+                status: "awaiting_human",
+                handoff_reason: input.reason,
+                handoff_at: new Date().toISOString(),
+              }).eq("id", conv.id);
+              jsonLog("info", { requestId, evt: "handoff_requested", convId: conv.id, reason: input.reason });
+              result = { ok: true, message: "Transferência registrada. Informe ao cliente que um atendente humano dará sequência em breve." };
               break;
             default:
               result = { error: `Tool desconhecida: ${name}` };

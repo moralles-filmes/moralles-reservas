@@ -1,6 +1,7 @@
 import { NavLink, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
 import { UnitSwitcher } from "@/components/UnitSwitcher";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -27,19 +28,20 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
 
   const base = `/g/${unitSlug}`;
+  const awaitingCount = useAwaitingHumanCount(unit?.unit_id ?? "");
 
   const navItems = [
     { to: base,                    label: "Dashboard",    icon: LayoutDashboard, end: true },
     { to: `${base}/reservas`,      label: "Reservas",     icon: UtensilsCrossed },
     { to: `${base}/calendario`,    label: "Calendário",   icon: CalendarIcon },
     { to: `${base}/clientes`,      label: "Clientes",     icon: Users },
-    { to: `${base}/conversas`,     label: "Conversas",    icon: MessageCircle },
+    { to: `${base}/conversas`,     label: "Conversas",    icon: MessageCircle, badge: awaitingCount },
     { to: `${base}/mesas`,         label: "Mesas",        icon: Table2 },
     { to: `${base}/avaliacoes`,    label: "Avaliações",   icon: Star },
     { to: `${base}/auditoria`,     label: "Auditoria",    icon: ScrollText },
     { to: `${base}/automacao`,     label: "Automação",    icon: Bot },
     { to: `${base}/configuracoes`, label: "Configurações",icon: Settings },
-  ];
+  ] as const;
 
   const handleSignOut = async () => {
     await signOut();
@@ -63,7 +65,7 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
-          {navItems.map(({ to, label, icon: Icon, end }) => (
+          {navItems.map(({ to, label, icon: Icon, end, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -77,7 +79,12 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
               }
             >
               <Icon className="h-4 w-4 shrink-0" />
-              {label}
+              <span className="flex-1">{label}</span>
+              {!!badge && (
+                <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

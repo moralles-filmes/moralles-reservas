@@ -1,0 +1,23 @@
+[functions.webhook-whatsapp]
+verify_jwt = false
+
+[functions.webhook-zapi]
+verify_jwt = false
+
+[functions.send-whatsapp]
+verify_jwt = false
+
+[functions.send-confirmation]
+verify_jwt = false
+
+[functions.send-manual-message]
+verify_jwt = false
+
+[functions.manage-channels]
+verify_jwt = true
+
+[functions.manage-members]
+verify_jwt = true
+
+[functions.manage-organizations]
+verify_jwt = true

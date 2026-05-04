@@ -183,12 +183,19 @@ export interface Reserva {
   table?: Mesa;
 }
 
+export type ConversationStatus = "ai_active" | "awaiting_human" | "human_active" | "resolved";
+
 export interface Conversation {
   id: string;
   unit_id: string;
   customer_id: string;
   reservation_id: string | null;
   messages: ConversationMessage[];
+  status: ConversationStatus;
+  handoff_reason: string | null;
+  handoff_at: string | null;
+  assigned_to: string | null;
+  last_message_at: string | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;
@@ -196,9 +203,10 @@ export interface Conversation {
 }
 
 export interface ConversationMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "human";
   content: string;
   timestamp: string;
+  human_user_id?: string;
 }
 
 export interface BusinessHour {

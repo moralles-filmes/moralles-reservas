@@ -507,10 +507,14 @@ function AITab({ unitId }: { unitId: string }) {
   );
 }
 
-// ─── Tab: System Prompt ───────────────────────────────────────────────────────
+// ─── Tab: Configuração do Agente ─────────────────────────────────────────────
 
 function PromptTab({ unitId }: { unitId: string }) {
   const queryClient = useQueryClient();
+  const [agentMode, setAgentMode] = useState<"reservations" | "reservations_faq">("reservations");
+  const [restaurantMenu, setRestaurantMenu] = useState("");
+  const [deliveryResponse, setDeliveryResponse] = useState("");
+  const [restaurantExtraInfo, setRestaurantExtraInfo] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
 
   const { data: settings } = useQuery({
@@ -526,6 +530,10 @@ function PromptTab({ unitId }: { unitId: string }) {
   useEffect(() => {
     if (!settings) return;
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
+    setAgentMode(((map["agent_mode"] as string) ?? "reservations") as "reservations" | "reservations_faq");
+    setRestaurantMenu((map["restaurant_menu"] as string) ?? "");
+    setDeliveryResponse((map["delivery_response"] as string) ?? "");
+    setRestaurantExtraInfo((map["restaurant_extra_info"] as string) ?? "");
     setSystemPrompt((map["ai_system_prompt"] as string) ?? "");
   }, [settings]);
 
@@ -538,32 +546,94 @@ function PromptTab({ unitId }: { unitId: string }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings", unitId] });
-      toast.success("Instruções salvas.");
     },
     onError: () => toast.error("Erro ao salvar."),
   });
 
+  function saveAll() {
+    Promise.all([
+      saveSetting.mutateAsync({ key: "agent_mode", value: agentMode }),
+      saveSetting.mutateAsync({ key: "restaurant_menu", value: restaurantMenu }),
+      saveSetting.mutateAsync({ key: "delivery_response", value: deliveryResponse }),
+      saveSetting.mutateAsync({ key: "restaurant_extra_info", value: restaurantExtraInfo }),
+      saveSetting.mutateAsync({ key: "ai_system_prompt", value: systemPrompt }),
+    ])
+      .then(() => toast.success("Configuração do agente salva."))
+      .catch(() => toast.error("Erro ao salvar configuração."));
+  }
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Instruções do Agente IA</CardTitle>
+        <CardTitle className="text-base">Configuração do Agente IA</CardTitle>
         <p className="text-sm text-muted-foreground">
-          Personalize como o agente se comporta. Válido para todos os provedores.
+          Define o escopo e o contexto que o agente usa ao responder via WhatsApp.
+          Endereço e horários de funcionamento são lidos automaticamente das telas Unidade e Horários.
         </p>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <Textarea
-          rows={10}
-          value={systemPrompt}
-          onChange={(e) => setSystemPrompt(e.target.value)}
-          placeholder="Você é o assistente de reservas do restaurante. Seja cordial e eficiente..."
-          className="font-mono text-sm"
-        />
-        <Button
-          onClick={() => saveSetting.mutate({ key: "ai_system_prompt", value: systemPrompt })}
-          disabled={saveSetting.isPending}
-        >
-          Salvar instruções
+      <CardContent className="space-y-5">
+        <div className="space-y-2">
+          <Label>Modo do agente</Label>
+          <Select value={agentMode} onValueChange={(v) => setAgentMode(v as typeof agentMode)}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="reservations">Apenas reservas — foca 100% em criar/alterar/cancelar reservas</SelectItem>
+              <SelectItem value="reservations_faq">Reservas + FAQ — responde também cardápio, horário, endereço e outras dúvidas gerais</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Cardápio (URL ou texto)</Label>
+          <Textarea
+            rows={4}
+            value={restaurantMenu}
+            onChange={(e) => setRestaurantMenu(e.target.value)}
+            placeholder="https://seurestaurante.com/cardapio  — ou cole o cardápio em texto simples"
+            className="text-sm"
+          />
+          <p className="text-xs text-muted-foreground">Deixe em branco para a IA não citar o cardápio.</p>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Resposta sobre delivery / take-away</Label>
+          <Textarea
+            rows={3}
+            value={deliveryResponse}
+            onChange={(e) => setDeliveryResponse(e.target.value)}
+            placeholder="Não fazemos delivery. Para pedidos fora do restaurante, sugerimos os apps iFood e Rappi."
+            className="text-sm"
+          />
+          <p className="text-xs text-muted-foreground">Se o sistema não oferecer delivery, deixe claro aqui para a IA orientar o cliente corretamente.</p>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Outras informações (estacionamento, contatos, regras da casa)</Label>
+          <Textarea
+            rows={3}
+            value={restaurantExtraInfo}
+            onChange={(e) => setRestaurantExtraInfo(e.target.value)}
+            placeholder="Temos estacionamento gratuito na rua X. Aceitamos pets na área externa. Dress code: traje esporte fino às sextas."
+            className="text-sm"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label>Instruções adicionais ao agente</Label>
+          <Textarea
+            rows={5}
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder="Ex: Sempre pergunte se o cliente tem alguma alergia antes de confirmar a reserva."
+            className="font-mono text-sm"
+          />
+          <p className="text-xs text-muted-foreground">Complementa o comportamento padrão do agente. Use para regras específicas do seu negócio.</p>
+        </div>
+
+        <Button onClick={saveAll} disabled={saveSetting.isPending}>
+          Salvar configuração
         </Button>
       </CardContent>
     </Card>
