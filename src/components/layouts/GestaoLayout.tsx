@@ -6,7 +6,6 @@ import { UnitSwitcher } from "@/components/UnitSwitcher";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
-  Bot,
   Building2,
   CalendarIcon,
   LayoutDashboard,
@@ -39,7 +38,6 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
     { to: `${base}/mesas`,         label: "Mesas",        icon: Table2 },
     { to: `${base}/avaliacoes`,    label: "Avaliações",   icon: Star },
     { to: `${base}/auditoria`,     label: "Auditoria",    icon: ScrollText },
-    { to: `${base}/automacao`,     label: "Automação",    icon: Bot },
     { to: `${base}/configuracoes`, label: "Configurações",icon: Settings },
   ] as const;
 

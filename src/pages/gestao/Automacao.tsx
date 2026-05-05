@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link, useParams } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
-import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import { useUnitBySlug } from "@/hooks/useAllUnits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,10 +37,12 @@ import {
 import { toast } from "sonner";
 import { useState, useEffect } from "react";
 import {
+  ArrowLeft,
   Bot,
   Check,
   Copy,
   Info,
+  KeyRound,
   MessageSquare,
   Phone,
   Plus,
@@ -55,6 +58,11 @@ import {
   useDeleteChannel,
   useTestChannel,
 } from "@/hooks/useWhatsAppChannels";
+import {
+  useAiProviderKeys,
+  useUpsertAiProviderKey,
+  useDeleteAiProviderKey,
+} from "@/hooks/useAiProviderKeys";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
@@ -95,18 +103,61 @@ const STATUS_CONFIG: Record<string, { label: string; icon: React.ReactNode; clas
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function Automacao() {
-  const unit = useCurrentUnit();
-  const unitId = unit?.unit_id ?? "";
+  const { unitSlug } = useParams<{ unitSlug: string }>();
+  const { data: unit, isLoading } = useUnitBySlug(unitSlug);
+  const unitId = unit?.id ?? "";
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3 max-w-3xl">
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="h-4 w-72" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+
+  if (!unit) {
+    return (
+      <div className="space-y-4 max-w-3xl">
+        <Button asChild variant="ghost" size="sm" className="gap-1 -ml-2">
+          <Link to="/platform/automacao">
+            <ArrowLeft className="h-4 w-4" />
+            Voltar para unidades
+          </Link>
+        </Button>
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            Unidade não encontrada.
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5 max-w-3xl">
-      <div className="flex items-center gap-2">
-        <Zap className="h-5 w-5 text-primary" />
-        <h1 className="text-2xl font-bold">Automação</h1>
+      <Button asChild variant="ghost" size="sm" className="gap-1 -ml-2">
+        <Link to="/platform/automacao">
+          <ArrowLeft className="h-4 w-4" />
+          Voltar para unidades
+        </Link>
+      </Button>
+
+      <div>
+        <div className="flex items-center gap-2">
+          <Zap className="h-5 w-5 text-primary" />
+          <h1 className="text-2xl font-bold">Automação</h1>
+        </div>
+        <p className="text-sm text-muted-foreground mt-1">
+          <span className="font-medium text-foreground">{unit.organization_name}</span>
+          {" — "}
+          {unit.name}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Configure os canais de WhatsApp, o provedor de IA e as instruções do agente.
+        </p>
       </div>
-      <p className="text-sm text-muted-foreground -mt-2">
-        Configure os canais de WhatsApp, o provedor de IA e as instruções do agente.
-      </p>
 
       <Tabs defaultValue="channels">
         <TabsList className="mb-4">
@@ -426,6 +477,7 @@ function AddChannelDialog({
 function AITab({ unitId }: { unitId: string }) {
   const queryClient = useQueryClient();
   const [aiConfig, setAiConfig] = useState<AIConfig>({ provider: "claude", models: {} });
+  const [apiKeyInput, setApiKeyInput] = useState("");
 
   const { data: settings } = useQuery({
     queryKey: ["settings", unitId],
@@ -442,6 +494,28 @@ function AITab({ unitId }: { unitId: string }) {
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
     if (map["ai_config"]) setAiConfig(map["ai_config"] as AIConfig);
   }, [settings]);
+
+  const { data: aiKeys } = useAiProviderKeys(unitId);
+  const upsertKey = useUpsertAiProviderKey(unitId);
+  const deleteKey = useDeleteAiProviderKey(unitId);
+
+  const savedKey = aiKeys?.find((k) => k.provider === aiConfig.provider);
+
+  const handleSaveKey = () => {
+    const trimmed = apiKeyInput.trim();
+    if (trimmed.length < 10) {
+      toast.error("Chave de API muito curta.");
+      return;
+    }
+    upsertKey.mutate(
+      { provider: aiConfig.provider, apiKey: trimmed },
+      { onSuccess: () => setApiKeyInput("") }
+    );
+  };
+
+  const handleDeleteKey = () => {
+    deleteKey.mutate(aiConfig.provider);
+  };
 
   const saveSetting = useMutation({
     mutationFn: async ({ key, value }: { key: string; value: unknown }) => {
@@ -510,36 +584,87 @@ function AITab({ unitId }: { unitId: string }) {
           </p>
         </div>
 
-        <div className="rounded-lg border border-dashed p-4 space-y-2 bg-muted/30">
+        <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
           <div className="flex items-center gap-2 text-sm font-medium">
-            <Info className="h-4 w-4 text-primary shrink-0" />
-            Como configurar a chave de API
+            <KeyRound className="h-4 w-4 text-primary shrink-0" />
+            Chave de API — {activeProvider.label}
           </div>
-          <p className="text-sm text-muted-foreground">
-            Por segurança, a chave de API é configurada como secret no Supabase.
-          </p>
-          <div className="mt-2 rounded bg-background border p-3 font-mono text-xs space-y-1">
-            <p className="text-muted-foreground"># Execute no terminal:</p>
-            <p>supabase secrets set <span className="text-primary">{activeProvider.envKey}</span>=sua_chave_aqui</p>
-          </div>
-          <div className="mt-3 space-y-1">
-            <p className="text-xs text-muted-foreground font-medium">Variáveis por provedor:</p>
-            <div className="grid grid-cols-1 gap-1">
-              {PROVIDERS.map((p) => (
-                <div
-                  key={p.id}
-                  className={`flex items-center justify-between rounded px-2 py-1 text-xs ${
-                    p.id === aiConfig.provider ? "bg-primary/10 text-primary font-medium" : "text-muted-foreground"
-                  }`}
-                >
-                  <span>{p.label}</span>
-                  <code className="font-mono">{p.envKey}</code>
-                  {p.id === aiConfig.provider && (
-                    <Badge variant="outline" className="text-[10px] ml-2 text-primary border-primary/30">ativo</Badge>
-                  )}
-                </div>
-              ))}
+
+          {savedKey ? (
+            <div className="flex items-center justify-between rounded bg-background border px-3 py-2">
+              <div className="space-y-0.5">
+                <p className="font-mono text-sm">••••••••{savedKey.last4}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Atualizada em {new Date(savedKey.updated_at).toLocaleString("pt-BR")}
+                </p>
+              </div>
+              <Badge variant="outline" className="text-[10px] text-green-700 border-green-200 bg-green-50">
+                Salva
+              </Badge>
             </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Nenhuma chave cadastrada para este provedor nesta unidade.
+              Enquanto não cadastrar, o agente usa o secret global da plataforma (se configurado).
+            </p>
+          )}
+
+          <div className="space-y-1">
+            <Label htmlFor="ai-api-key" className="text-xs">
+              {savedKey ? "Substituir chave" : "Cadastrar chave"}
+            </Label>
+            <div className="flex gap-2">
+              <Input
+                id="ai-api-key"
+                type="password"
+                autoComplete="off"
+                placeholder={`${activeProvider.envKey === "ANTHROPIC_API_KEY" ? "sk-ant-..." : activeProvider.envKey === "OPENAI_API_KEY" ? "sk-..." : activeProvider.envKey === "GEMINI_API_KEY" ? "AIza..." : activeProvider.envKey === "GROK_API_KEY" ? "xai-..." : "sk-..."}`}
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                disabled={upsertKey.isPending || deleteKey.isPending}
+              />
+              <Button
+                onClick={handleSaveKey}
+                disabled={!apiKeyInput.trim() || upsertKey.isPending || deleteKey.isPending}
+              >
+                {upsertKey.isPending ? "Salvando…" : "Salvar"}
+              </Button>
+              {savedKey && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      disabled={deleteKey.isPending || upsertKey.isPending}
+                      title="Remover chave"
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Remover chave de {activeProvider.label}?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        O agente voltará a usar o secret global da plataforma (se houver).
+                        Sem chave nem fallback, as mensagens vão falhar.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction onClick={handleDeleteKey}>Remover</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2 text-[11px] text-muted-foreground rounded bg-background border border-dashed p-2">
+            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <p>
+              A chave fica isolada por unidade no banco e nunca é exibida em texto puro depois de salva.
+              Apenas as Edge Functions do servidor a leem para chamar o provedor de IA.
+            </p>
           </div>
         </div>
       </CardContent>

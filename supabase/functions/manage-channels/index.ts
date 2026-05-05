@@ -20,23 +20,13 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-async function getCallerRole(userId: string, unitId: string): Promise<string | null> {
+async function isPlatformAdmin(userId: string): Promise<boolean> {
   const { data } = await supabase
-    .from("unit_members")
-    .select("role")
+    .from("platform_admins")
+    .select("user_id")
     .eq("user_id", userId)
-    .eq("unit_id", unitId)
     .maybeSingle();
-
-  if (!data) {
-    const { data: pa } = await supabase
-      .from("platform_admins")
-      .select("user_id")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (pa) return "owner";
-  }
-  return data?.role ?? null;
+  return !!data;
 }
 
 serve(async (req) => {
@@ -58,9 +48,8 @@ serve(async (req) => {
 
     if (!unitId) return jsonResponse({ error: "unit_id é obrigatório." }, 400);
 
-    const callerRole = await getCallerRole(callerId, unitId);
-    if (!callerRole || !["owner", "gerente"].includes(callerRole)) {
-      return jsonResponse({ error: "Sem permissão para gerenciar canais desta unidade." }, 403);
+    if (!(await isPlatformAdmin(callerId))) {
+      return jsonResponse({ error: "Apenas administradores da plataforma." }, 403);
     }
 
     // ── create ─────────────────────────────────────────────────────────────────

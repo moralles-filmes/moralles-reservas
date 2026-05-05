@@ -35,6 +35,7 @@ const OPassantes   = lazy(() => import("./pages/operacional/Passantes"));
 
 // ── Platform ──────────────────────────────────────────────────────────────────
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
+const PAutomacao = lazy(() => import("./pages/platform/Automacao"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -134,7 +135,6 @@ export default function App() {
               <Route path="/g/:unitSlug/mesas" element={<GestaoGuard><GMesas /></GestaoGuard>} />
               <Route path="/g/:unitSlug/configuracoes" element={<GestaoGuard><GConfiguracoes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/auditoria" element={<GestaoGuard><GAuditoria /></GestaoGuard>} />
-              <Route path="/g/:unitSlug/automacao" element={<GestaoGuard><GAutomacao /></GestaoGuard>} />
               <Route path="/g/:unitSlug/avaliacoes" element={<GestaoGuard><GAvaliacoes /></GestaoGuard>} />
 
               {/* ── Operacional /o/:unitSlug ────────────────────────────── */}
@@ -146,6 +146,8 @@ export default function App() {
               {/* ── Platform /platform/* ───────────────────────────────── */}
               <Route path="/platform" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
               <Route path="/platform/empresas" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
+              <Route path="/platform/automacao" element={<PlatformGuard><PAutomacao /></PlatformGuard>} />
+              <Route path="/platform/automacao/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
 
               {/* ── Legacy /admin → redirect ─────────────────────────────── */}
               <Route path="/admin" element={<AdminRedirect to="" />} />

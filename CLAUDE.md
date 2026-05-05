@@ -6,7 +6,8 @@ Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Arqu
 
 - **Portal público** (`/r/:slug`) — clientes fazem reservas via formulário web ou consultam pelo código
 - **Agente IA WhatsApp** — responde clientes, cria/altera/cancela reservas conversacionalmente
-- **Painel de Gestão** (`/g/:unitSlug`) — configurações, relatórios, clientes, automação, auditoria
+- **Painel de Gestão** (`/g/:unitSlug`) — configurações, relatórios, clientes, auditoria
+- **Painel Plataforma** (`/platform`) — exclusivo do super-admin: empresas, unidades e automação (canais WhatsApp + chaves de IA + system prompt)
 - **Painel Operacional** (`/o/:unitSlug`) — reservas do dia, fila de espera, walk-ins (uso em tempo real)
 
 ---
@@ -106,9 +107,9 @@ supabase secrets set RESEND_FROM_EMAIL="Moralles Reservas <reservas@seudominio.c
 
 # Provedor de IA — duas opções:
 #
-# 1) BYOK por unidade via UI (preferencial): cada unidade cadastra a própria
-#    chave em Gestão → Automação → Provedor de IA. Vai pra tabela
-#    ai_provider_credentials, isolada por RLS + service_role.
+# 1) BYOK por unidade via UI (preferencial): super-admin cadastra a chave de
+#    cada unidade em Plataforma → Automação → <unidade> → Provedor de IA. Vai
+#    pra tabela ai_provider_credentials, isolada por RLS + service_role.
 #
 # 2) Secret global (fallback): só usado se a unidade não tiver chave no banco.
 #    Útil pra setup inicial ou enquanto migra clientes.
@@ -141,7 +142,6 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...        # DeepSeek
   ├── /conversas             → Histórico de chats WhatsApp
   ├── /mesas                 → Gestão de mesas + bloqueios
   ├── /configuracoes         → Horários, datas especiais, conta, membros
-  ├── /automacao             → WhatsApp channels + Provedor de IA + System prompt
   ├── /avaliacoes            → Avaliações de satisfação
   └── /auditoria             → Trilha LGPD
 
@@ -149,7 +149,18 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...        # DeepSeek
   ├── /                      → Reservas do dia (agrupadas por status)
   ├── /fila                  → Fila de espera (waitlist)
   └── /passantes             → Walk-ins (clientes sem reserva)
+
+/platform                    → Painel Plataforma (PlatformLayout) — só platform_admin
+  ├── /empresas              → CRUD de organizations + unidades
+  └── /automacao             → Seleciona unidade (cross-org)
+      └── /:unitSlug         → WhatsApp channels + Provedor de IA + System prompt
 ```
+
+> **Automação é exclusiva do super-admin (platform_admin).** Owner/gerente da unidade
+> não tem mais o item no menu de Gestão; o fluxo todo (canais WhatsApp, chave de IA,
+> system prompt) vive em `/platform/automacao`. As Edge Functions `manage-channels`
+> e `manage-ai-providers` validam `platform_admin` no JWT — chamada direta de
+> owner/gerente retorna 403.
 
 ---
 
@@ -174,6 +185,7 @@ moralles-reservas/
 │   │   ├── useReservas.ts             # CRUD de reservas via React Query
 │   │   ├── useAuth.ts                 # Autenticação + memberships + defaultUnitSlug
 │   │   ├── useCurrentUnit.ts          # Lê :unitSlug da URL, retorna unit + org + role
+│   │   ├── useAllUnits.ts             # Lista global de unidades (cross-org) + useUnitBySlug — só funciona pra platform_admin
 │   │   ├── useUnitMembers.ts          # Lista/cria/remove membros da unidade
 │   │   ├── useCustomers.ts            # Update customer + get_customer_stats + anonymize
 │   │   ├── useTableBlocks.ts          # CRUD de bloqueios de mesa
@@ -192,7 +204,8 @@ moralles-reservas/
 │   │   │   └── ReservaCard.tsx        # Card de reserva com ações de status
 │   │   ├── layouts/
 │   │   │   ├── GestaoLayout.tsx       # Sidebar + layout das páginas de gestão
-│   │   │   └── OperacionalLayout.tsx  # Header minimalista + navegação operacional
+│   │   │   ├── OperacionalLayout.tsx  # Header minimalista + navegação operacional
+│   │   │   └── PlatformLayout.tsx     # Sidebar do painel /platform (só super-admin)
 │   │   └── UnitSwitcher.tsx           # Dropdown de troca de unidade no header
 │   │
 │   └── pages/
@@ -207,13 +220,16 @@ moralles-reservas/
 │       │   ├── Conversas.tsx          # Histórico de chats WhatsApp
 │       │   ├── Mesas.tsx              # Gestão de mesas + bloqueios
 │       │   ├── Configuracoes.tsx      # Horários, datas especiais, conta, membros da equipe
-│       │   ├── Automacao.tsx          # WhatsApp channels + Provedor de IA + System prompt
+│       │   ├── Automacao.tsx          # WhatsApp channels + Provedor de IA + System prompt — agora montada em /platform/automacao/:unitSlug
 │       │   ├── Avaliacoes.tsx         # Avaliações de satisfação pós-reserva
 │       │   └── Auditoria.tsx          # Trilha LGPD
-│       └── operacional/
-│           ├── ReservasDia.tsx        # Reservas do dia agrupadas por status
-│           ├── Fila.tsx               # Fila de espera com timers e notificação WhatsApp
-│           └── Passantes.tsx          # Walk-ins — registro, alocação de mesa, status
+│       ├── operacional/
+│       │   ├── ReservasDia.tsx        # Reservas do dia agrupadas por status
+│       │   ├── Fila.tsx               # Fila de espera com timers e notificação WhatsApp
+│       │   └── Passantes.tsx          # Walk-ins — registro, alocação de mesa, status
+│       └── platform/
+│           ├── Empresas.tsx           # CRUD de organizations + unidades (super-admin)
+│           └── Automacao.tsx          # Seletor de unidade cross-org → /platform/automacao/:unitSlug
 │
 ├── supabase/
 │   ├── migrations/
@@ -250,9 +266,9 @@ moralles-reservas/
 │       ├── send-confirmation/
 │       │   └── index.ts                   # WhatsApp + e-mail (Resend) em paralelo; resolve canal via unit_id
 │       ├── manage-channels/
-│       │   └── index.ts                   # CRUD de whatsapp_channels (valida papel gerente/owner)
+│       │   └── index.ts                   # CRUD de whatsapp_channels — exige platform_admin (super-admin)
 │       ├── manage-ai-providers/
-│       │   └── index.ts                   # CRUD de chaves de IA por unidade (BYOK); nunca devolve api_key cru
+│       │   └── index.ts                   # CRUD de chaves de IA por unidade (BYOK) — exige platform_admin; nunca devolve api_key cru
 │       └── manage-members/
 │           └── index.ts                   # Substitui manage-admins; escopo por unidade
 │
@@ -354,7 +370,7 @@ Cliente → Provider WhatsApp → webhook-whatsapp (Edge Function)
 | Grok (xAI) | `GROK_API_KEY` | `grok-3` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 
-O provedor ativo e o system prompt são configurados por unidade em **Gestão → Automação → Provedor de IA**. A própria chave da API também — fluxo BYOK (Bring Your Own Key): cada unidade salva a sua em `ai_provider_credentials` via Edge Function `manage-ai-providers`. Quando ausente, o `webhook-whatsapp` cai no secret global `Deno.env.get(<ENV_VAR>)` como fallback. A chave nunca é devolvida ao frontend (só `last4` + `updated_at`).
+O provedor ativo e o system prompt são configurados por unidade em **Plataforma → Automação → \<unidade\> → Provedor de IA** (exclusivo do super-admin). A própria chave da API também — fluxo BYOK (Bring Your Own Key): a chave é salva em `ai_provider_credentials` via Edge Function `manage-ai-providers`, que valida `platform_admin` no JWT. Quando ausente, o `webhook-whatsapp` cai no secret global `Deno.env.get(<ENV_VAR>)` como fallback. A chave nunca é devolvida ao frontend (só `last4` + `updated_at`).
 
 ### Provedores WhatsApp suportados
 
@@ -364,7 +380,7 @@ O provedor ativo e o system prompt são configurados por unidade em **Gestão �
 | WAHA | `base_url`, `api_key`, `session_name` | `.../webhook-whatsapp?channel=<id>` |
 | Meta Cloud API | `phone_number_id`, `access_token`, `app_secret` | `.../webhook-whatsapp?channel=<id>` |
 
-Canais são configurados por unidade em **Gestão → Automação → Canais WhatsApp**. Cada canal tem um `webhook_secret` individual (substitui o global `ZAPI_WEBHOOK_SECRET`).
+Canais são configurados por unidade em **Plataforma → Automação → \<unidade\> → Canais WhatsApp** (exclusivo do super-admin via Edge Function `manage-channels` com check `platform_admin`). Cada canal tem um `webhook_secret` individual (substitui o global `ZAPI_WEBHOOK_SECRET`).
 
 ### Tools do agente
 
@@ -407,7 +423,7 @@ Canais são configurados por unidade em **Gestão → Automação → Canais Wha
 | Papel | Permissões |
 |---|---|
 | `owner` | Acesso total, incluindo criação de outras unidades |
-| `gerente` | Configurações, automação, membros, todos os dados da unidade |
+| `gerente` | Configurações, membros, todos os dados da unidade (não tem acesso à automação — restrita ao super-admin) |
 | `operador` | Reservas, fila, walk-ins (acesso operacional apenas) |
 
 O cadastro/remoção de membros é feito via Edge Function `manage-members`, que valida papel `owner` ou `gerente` antes de executar.
@@ -448,7 +464,7 @@ supabase functions deploy manage-members
 
 ### Webhook WhatsApp
 
-Para cada canal configurado em **Automação**, a URL do webhook é exibida na UI:
+Para cada canal configurado em **Plataforma → Automação → \<unidade\>**, a URL do webhook é exibida na UI:
 ```
 https://<project-ref>.supabase.co/functions/v1/webhook-whatsapp?channel=<channel-id>
 ```
