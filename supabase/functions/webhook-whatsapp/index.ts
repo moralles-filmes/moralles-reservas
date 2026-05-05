@@ -37,10 +37,24 @@ const API_KEY_ENV: Record<AIProvider, string> = {
   deepseek: "DEEPSEEK_API_KEY",
 };
 
-function getApiKey(provider: AIProvider): string {
-  const key = Deno.env.get(API_KEY_ENV[provider]);
-  if (!key) throw new Error(`Chave de API não configurada para ${provider}. Defina ${API_KEY_ENV[provider]} nos secrets do Supabase.`);
-  return key;
+// Resolve a chave de API: BYOK por unidade no banco → fallback secret global da plataforma.
+async function resolveApiKey(provider: AIProvider, unitId: string): Promise<string> {
+  const { data } = await supabase
+    .from("ai_provider_credentials")
+    .select("api_key")
+    .eq("unit_id", unitId)
+    .eq("provider", provider)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (data?.api_key) return data.api_key;
+
+  const fallback = Deno.env.get(API_KEY_ENV[provider]);
+  if (fallback) return fallback;
+
+  throw new Error(
+    `Chave de API não configurada para ${provider}. Cadastre em Gestão → Automação ou defina ${API_KEY_ENV[provider]} nos secrets do Supabase.`
+  );
 }
 
 // ─── Agent tools ──────────────────────────────────────────────────────────────
@@ -483,7 +497,7 @@ serve(async (req) => {
     const aiConfig = (configSetting?.value ?? {}) as Record<string, unknown>;
     const provider_ai: AIProvider = (aiConfig.provider as AIProvider) ?? "claude";
     const modelOverride: string | undefined = (aiConfig.models as Record<string, string>)?.[provider_ai];
-    const apiKey = getApiKey(provider_ai);
+    const apiKey = await resolveApiKey(provider_ai, unitId);
 
     // Load restaurant name + system prompt (unit-scoped)
     const { data: settings } = await supabase

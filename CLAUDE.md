@@ -104,7 +104,14 @@ supabase secrets set INTERNAL_API_KEY=...      # auth do send-whatsapp / send-co
 supabase secrets set RESEND_API_KEY=re_...
 supabase secrets set RESEND_FROM_EMAIL="Moralles Reservas <reservas@seudominio.com.br>"
 
-# Apenas o provedor de IA ativo precisa estar configurado:
+# Provedor de IA — duas opções:
+#
+# 1) BYOK por unidade via UI (preferencial): cada unidade cadastra a própria
+#    chave em Gestão → Automação → Provedor de IA. Vai pra tabela
+#    ai_provider_credentials, isolada por RLS + service_role.
+#
+# 2) Secret global (fallback): só usado se a unidade não tiver chave no banco.
+#    Útil pra setup inicial ou enquanto migra clientes.
 supabase secrets set ANTHROPIC_API_KEY=sk-ant-...   # Claude
 supabase secrets set OPENAI_API_KEY=sk-...          # OpenAI
 supabase secrets set GEMINI_API_KEY=AIza...         # Gemini
@@ -226,7 +233,8 @@ moralles-reservas/
 │   │   ├── 014_operacional.sql            # walk_ins, waitlist + RLS
 │   │   ├── 015_whatsapp_handoff_and_scope.sql  # status human_active/awaiting_human + agent_mode
 │   │   ├── 016_reservation_duration_default.sql  # duração padrão de reserva
-│   │   └── 017_email_notifications.sql    # kinds *_email em notifications_sent
+│   │   ├── 017_email_notifications.sql    # kinds *_email em notifications_sent
+│   │   └── 018_ai_provider_credentials.sql # BYOK: chaves de IA por unidade (RLS + FORCE)
 │   │
 │   └── functions/
 │       ├── _shared/
@@ -243,6 +251,8 @@ moralles-reservas/
 │       │   └── index.ts                   # WhatsApp + e-mail (Resend) em paralelo; resolve canal via unit_id
 │       ├── manage-channels/
 │       │   └── index.ts                   # CRUD de whatsapp_channels (valida papel gerente/owner)
+│       ├── manage-ai-providers/
+│       │   └── index.ts                   # CRUD de chaves de IA por unidade (BYOK); nunca devolve api_key cru
 │       └── manage-members/
 │           └── index.ts                   # Substitui manage-admins; escopo por unidade
 │
@@ -285,6 +295,7 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 | `audit_log` | Trilha LGPD — `unit_id`, `table_name`, `operation`, `old_values`, `new_values`, `actor_id` |
 | `notifications_sent` | Log/idempotência outbound — `unit_id`, `reservation_id`, `kind`, `status` |
 | `whatsapp_channels` | Canais WhatsApp por unidade — `unit_id`, `provider` (zapi/waha/official), `credentials` JSONB criptografado, `status`, `display_phone` |
+| `ai_provider_credentials` | Chaves de API de IA por unidade (BYOK) — `unit_id`, `provider` (claude/openai/gemini/grok/deepseek), `api_key`, `last4`, `active`. RLS + FORCE: leitura só pelo `service_role` |
 | `walk_ins` | Clientes sem reserva no dia — `unit_id`, `customer_name`, `party_size`, `table_id?`, `status` (waiting/seated/left/no_show) |
 | `waitlist` | Fila de espera — `unit_id`, `customer_name`, `party_size`, `priority`, `status` (waiting/notified/seated/cancelled) |
 
@@ -343,7 +354,7 @@ Cliente → Provider WhatsApp → webhook-whatsapp (Edge Function)
 | Grok (xAI) | `GROK_API_KEY` | `grok-3` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 
-O provedor ativo e o system prompt são configurados por unidade em **Gestão → Automação → Provedor de IA**.
+O provedor ativo e o system prompt são configurados por unidade em **Gestão → Automação → Provedor de IA**. A própria chave da API também — fluxo BYOK (Bring Your Own Key): cada unidade salva a sua em `ai_provider_credentials` via Edge Function `manage-ai-providers`. Quando ausente, o `webhook-whatsapp` cai no secret global `Deno.env.get(<ENV_VAR>)` como fallback. A chave nunca é devolvida ao frontend (só `last4` + `updated_at`).
 
 ### Provedores WhatsApp suportados
 
@@ -431,6 +442,7 @@ supabase functions deploy webhook-whatsapp
 supabase functions deploy send-whatsapp
 supabase functions deploy send-confirmation
 supabase functions deploy manage-channels
+supabase functions deploy manage-ai-providers
 supabase functions deploy manage-members
 ```
 

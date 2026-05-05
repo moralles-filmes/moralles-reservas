@@ -51,6 +51,12 @@ const SENSITIVE_KEYS = new Set([
   "customer_name",
   "email",
   "customer_email",
+  "api_key",
+  "token",
+  "access_token",
+  "app_secret",
+  "client_token",
+  "webhook_secret",
 ]);
 
 export function sanitizeLog<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {

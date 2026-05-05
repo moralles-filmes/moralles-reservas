@@ -20,8 +20,9 @@ const supabase = createClient(
 );
 
 // ─── API key resolver ─────────────────────────────────────────────────────────
-// Keys are stored as Supabase secrets (never in the DB).
-// Names: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, GROK_API_KEY, DEEPSEEK_API_KEY
+// Esta função (webhook-zapi) é legacy pré-multi-tenant e não tem unit_id em
+// escopo, então NÃO suporta BYOK por unidade. Cai sempre no secret global.
+// Para BYOK, use o path moderno: webhook-whatsapp?channel=<id>.
 
 const API_KEY_ENV: Record<AIProvider, string> = {
   claude: "ANTHROPIC_API_KEY",
