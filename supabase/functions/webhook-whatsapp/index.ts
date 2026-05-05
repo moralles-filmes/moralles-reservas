@@ -18,6 +18,10 @@ import {
   jsonLog,
   sanitizePhone,
 } from "../_shared/security.ts";
+import {
+  checkAvailability as checkAvailabilityCore,
+  reserveSlot,
+} from "../_shared/availability.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -127,26 +131,11 @@ const agentTools: AgentTool[] = [
 
 // deno-lint-ignore no-explicit-any
 async function checkAvailability(date: string, time: string, partySize: number, unitId: string): Promise<any> {
-  const { data: tables } = await supabase
-    .from("tables")
-    .select("*")
-    .eq("unit_id", unitId)
-    .eq("active", true)
-    .gte("capacity", partySize);
-
-  const { data: conflicts } = await supabase
-    .from("reservations")
-    .select("table_id")
-    .eq("unit_id", unitId)
-    .eq("date", date)
-    .eq("time", time)
-    .in("status", ["confirmed", "pending"]);
-
-  const conflictIds = new Set((conflicts || []).map((r: { table_id: string }) => r.table_id));
-  const available = (tables || []).filter((t: { id: string }) => !conflictIds.has(t.id));
-
-  if (available.length === 0) return { available: false, message: "Não há mesas disponíveis para esse horário." };
-  return { available: true, tables_count: available.length, message: `Há ${available.length} mesa(s) disponível(is) para ${partySize} pessoas em ${date} às ${time}.` };
+  const result = await checkAvailabilityCore(supabase, { unitId, date, time, partySize });
+  if (!result.available) {
+    return { available: false, reason: result.reason, message: result.message };
+  }
+  return { available: true, message: result.message };
 }
 
 async function createReservation(params: {
@@ -172,22 +161,26 @@ async function createReservation(params: {
 
   if (custError) return { success: false, error: custError.message };
 
-  // 8-char code for multi-tenant (less collision chance globally)
-  const code = Math.random().toString(36).substring(2, 10).toUpperCase();
-  const { error } = await supabase.from("reservations").insert({
-    customer_id: customer.id,
-    unit_id: params.unit_id,
+  const result = await reserveSlot(supabase, {
+    unitId: params.unit_id,
     date: params.date,
     time: params.time,
-    party_size: params.party_size,
-    notes: params.notes || null,
-    reservation_code: code,
+    partySize: params.party_size,
+    customerId: customer.id,
+    notes: params.notes ?? null,
     status: "confirmed",
   });
 
-  if (error) return { success: false, error: error.message };
+  if (!result.success) {
+    return { success: false, reason: result.reason, message: result.message };
+  }
+
   const [y, m, d] = params.date.split("-");
-  return { success: true, reservation_code: code, message: `Reserva criada! Código: #${code}. Data: ${d}/${m}/${y} às ${params.time} para ${params.party_size} pessoas.` };
+  return {
+    success: true,
+    reservation_code: result.reservationCode,
+    message: `Reserva criada! Código: #${result.reservationCode}. Data: ${d}/${m}/${y} às ${params.time} para ${params.party_size} pessoas.`,
+  };
 }
 
 // deno-lint-ignore no-explicit-any
@@ -298,6 +291,32 @@ async function appendToConversation(convId: string, existing: any[], role: "user
     .update({ messages: updated, updated_at: new Date().toISOString() })
     .eq("id", convId);
   return updated;
+}
+
+// ─── Tool log helpers ──────────────────────────────────────────────────────────
+// Mantém logs informativos sem expor PII completa. Útil pra rastrear casos
+// "bot disse que tinha mesa mas não tinha" via Supabase Edge Function logs.
+
+// deno-lint-ignore no-explicit-any
+function summarizeToolInput(input: any): Record<string, unknown> {
+  if (!input || typeof input !== "object") return {};
+  const out: Record<string, unknown> = {};
+  for (const k of ["date", "time", "party_size", "reservation_code", "reason"]) {
+    if (input[k] !== undefined) out[k] = input[k];
+  }
+  if (input.customer_name) out.customer_name = "***";
+  return out;
+}
+
+// deno-lint-ignore no-explicit-any
+function summarizeToolResult(result: any): Record<string, unknown> {
+  if (!result || typeof result !== "object") return {};
+  const out: Record<string, unknown> = {};
+  for (const k of ["available", "success", "found", "ok", "reason", "reservation_code", "count"]) {
+    if (result[k] !== undefined) out[k] = result[k];
+  }
+  if (result.error) out.error = String(result.error).slice(0, 200);
+  return out;
 }
 
 // ─── Main handler ──────────────────────────────────────────────────────────────
@@ -525,6 +544,11 @@ serve(async (req) => {
       `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar. ` +
       `Não invente horários, cardápio ou serviços — só use o que está documentado abaixo. ` +
       `Se o pedido fugir do escopo (reclamação, evento corporativo, delivery não suportado, qualquer coisa que as ferramentas não cobrem), use a tool 'request_human_handoff' informando o motivo.` +
+      `\n\nREGRAS OBRIGATÓRIAS PARA RESERVAS:\n` +
+      `1. SEMPRE chame check_availability ANTES de create_reservation. Nunca atalhe.\n` +
+      `2. Se check_availability retornar available: false, NUNCA crie a reserva. Comunique ao cliente que não há mesa naquele horário e ofereça alternativas (outro horário do mesmo dia ou outra data próxima). Use o campo 'reason' para entender o motivo (closed_day, outside_hours, no_capacity, all_blocked).\n` +
+      `3. Se create_reservation retornar success: false, informe o cliente o motivo — NÃO tente criar a reserva novamente sem fazer nova consulta com data/horário diferente.\n` +
+      `4. Para alterar uma reserva existente (update_reservation) que mude data ou horário, chame check_availability antes para validar o novo slot.` +
       (unitAddress ? `\n\nEndereço: ${unitAddress}` : "") +
       (hoursLines.length ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}` : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
@@ -552,6 +576,7 @@ serve(async (req) => {
       },
       // deno-lint-ignore no-explicit-any
       onToolCall: async (name, input: any) => {
+        jsonLog("info", { requestId, evt: "tool_call", channelId, unitId, name, input: summarizeToolInput(input) });
         try {
           // deno-lint-ignore no-explicit-any
           let result: any;
@@ -586,8 +611,10 @@ serve(async (req) => {
             default:
               result = { error: `Tool desconhecida: ${name}` };
           }
+          jsonLog("info", { requestId, evt: "tool_result", channelId, unitId, name, result: summarizeToolResult(result) });
           return JSON.stringify(result);
         } catch (err) {
+          jsonLog("error", { requestId, evt: "tool_error", channelId, unitId, name, err: String(err) });
           return JSON.stringify({ error: String(err) });
         }
       },

@@ -1,6 +1,9 @@
 [functions.webhook-whatsapp]
 verify_jwt = false
 
+[functions.create-reservation]
+verify_jwt = false
+
 [functions.webhook-zapi]
 verify_jwt = false
 
