@@ -66,9 +66,9 @@ const PROVIDERS: Array<{
   {
     id: "claude",
     label: "Claude (Anthropic)",
-    defaultModel: "claude-sonnet-4-6",
+    defaultModel: "claude-haiku-4-5",
     envKey: "ANTHROPIC_API_KEY",
-    modelPlaceholder: "claude-sonnet-4-6",
+    modelPlaceholder: "claude-haiku-4-5",
   },
   {
     id: "openai",

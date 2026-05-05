@@ -73,7 +73,7 @@ const PROVIDERS: Array<{
   envKey: string;
   modelPlaceholder: string;
 }> = [
-  { id: "claude", label: "Claude (Anthropic)", defaultModel: "claude-sonnet-4-6", envKey: "ANTHROPIC_API_KEY", modelPlaceholder: "claude-sonnet-4-6" },
+  { id: "claude", label: "Claude (Anthropic)", defaultModel: "claude-haiku-4-5", envKey: "ANTHROPIC_API_KEY", modelPlaceholder: "claude-haiku-4-5" },
   { id: "openai", label: "OpenAI (ChatGPT)", defaultModel: "gpt-4o", envKey: "OPENAI_API_KEY", modelPlaceholder: "gpt-4o" },
   { id: "gemini", label: "Gemini (Google)", defaultModel: "gemini-2.0-flash", envKey: "GEMINI_API_KEY", modelPlaceholder: "gemini-2.0-flash" },
   { id: "grok", label: "Grok (xAI)", defaultModel: "grok-3", envKey: "GROK_API_KEY", modelPlaceholder: "grok-3" },
