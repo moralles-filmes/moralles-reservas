@@ -223,7 +223,10 @@ moralles-reservas/
 │   │   ├── 011_notifications_and_satisfaction.sql
 │   │   ├── 012_n8n_functions.sql
 │   │   ├── 013_multi_tenant.sql           # organizations, units, unit_members, platform_admins, whatsapp_channels + RLS multi-tenant
-│   │   └── 014_operacional.sql            # walk_ins, waitlist + RLS
+│   │   ├── 014_operacional.sql            # walk_ins, waitlist + RLS
+│   │   ├── 015_whatsapp_handoff_and_scope.sql  # status human_active/awaiting_human + agent_mode
+│   │   ├── 016_reservation_duration_default.sql  # duração padrão de reserva
+│   │   └── 017_email_notifications.sql    # kinds *_email em notifications_sent
 │   │
 │   └── functions/
 │       ├── _shared/
