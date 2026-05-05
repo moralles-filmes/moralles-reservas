@@ -3,6 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   runAgentLoop,
   DEFAULT_MODELS,
+  estimateCostUsd,
   type AIProvider,
   type AgentTool,
 } from "../_shared/ai-providers.ts";
@@ -532,7 +533,8 @@ serve(async (req) => {
     const todayBR = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
 
     const agentMode = (settingsMap["agent_mode"] as string) ?? "reservations";
-    const agentHeader = agentMode === "reservations_faq"
+    const includeFaq = agentMode === "reservations_faq";
+    const agentHeader = includeFaq
       ? `Você é o assistente do ${restaurantName}. Atende reservas e dúvidas gerais (cardápio, horário, endereço, estacionamento). `
       : `Você é o assistente de reservas do ${restaurantName}. `;
 
@@ -552,9 +554,9 @@ serve(async (req) => {
       (unitAddress ? `\n\nEndereço: ${unitAddress}` : "") +
       (hoursLines.length ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}` : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
-      (settingsMap["restaurant_menu"] ? `\n\nCardápio:\n${settingsMap["restaurant_menu"]}` : "") +
-      (settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
-      (settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +
+      (includeFaq && settingsMap["restaurant_menu"] ? `\n\nCardápio:\n${settingsMap["restaurant_menu"]}` : "") +
+      (includeFaq && settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
+      (includeFaq && settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +
       (prefsLines.length ? `\n\nO que sabemos sobre este cliente:\n${prefsLines.join("\n")}` : "") +
       (customPrompt ? `\n\nInstruções adicionais: ${customPrompt}` : "");
 
@@ -620,14 +622,16 @@ serve(async (req) => {
       },
     });
 
+    const usedModel = modelOverride ?? DEFAULT_MODELS[provider_ai];
     jsonLog("info", {
       requestId,
       evt: "agent_usage",
       provider: provider_ai,
-      model: modelOverride ?? DEFAULT_MODELS[provider_ai],
+      model: usedModel,
       channelId,
       unitId,
       ...totalUsage,
+      estimated_cost_usd: estimateCostUsd(usedModel, totalUsage),
     });
 
     if (finalText) {

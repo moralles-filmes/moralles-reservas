@@ -44,7 +44,7 @@ export interface AgentLoopOptions {
 }
 
 export const DEFAULT_MODELS: Record<AIProvider, string> = {
-  claude: "claude-sonnet-4-6",
+  claude: "claude-haiku-4-5",
   openai: "gpt-4o",
   gemini: "gemini-2.0-flash",
   grok: "grok-3",
@@ -57,8 +57,35 @@ const OPENAI_BASE_URLS: Partial<Record<AIProvider, string>> = {
   deepseek: "https://api.deepseek.com/v1",
 };
 
+/**
+ * Preços em USD por milhão de tokens. Usado só para telemetria — não é
+ * faturamento real, e segue valores públicos de cada provedor (atualizar
+ * quando mudarem). Modelos sem entrada caem em fallback genérico.
+ */
+const PRICING_USD_PER_MTOK: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> = {
+  "claude-haiku-4-5":   { input: 1,    output: 5,   cache_read: 0.10, cache_write: 1.25 },
+  "claude-sonnet-4-6":  { input: 3,    output: 15,  cache_read: 0.30, cache_write: 3.75 },
+  "claude-opus-4-7":    { input: 15,   output: 75,  cache_read: 1.50, cache_write: 18.75 },
+  "gpt-4o":             { input: 2.50, output: 10,  cache_read: 1.25, cache_write: 0 },
+  "gpt-4o-mini":        { input: 0.15, output: 0.60, cache_read: 0.075, cache_write: 0 },
+  "gemini-2.0-flash":   { input: 0.10, output: 0.40, cache_read: 0.025, cache_write: 0 },
+  "grok-3":             { input: 3,    output: 15,  cache_read: 0,    cache_write: 0 },
+  "deepseek-chat":      { input: 0.27, output: 1.10, cache_read: 0.07, cache_write: 0 },
+};
+
+export function estimateCostUsd(model: string, usage: AgentUsage): number {
+  const p = PRICING_USD_PER_MTOK[model];
+  if (!p) return 0;
+  const cost =
+    (usage.input_tokens * p.input) / 1_000_000 +
+    (usage.output_tokens * p.output) / 1_000_000 +
+    (usage.cache_read_tokens * p.cache_read) / 1_000_000 +
+    (usage.cache_creation_tokens * p.cache_write) / 1_000_000;
+  return Number(cost.toFixed(6));
+}
+
 const MAX_ITERATIONS = 12;
-const DEFAULT_HISTORY_CAP = 20;
+const DEFAULT_HISTORY_CAP = 10;
 const DEFAULT_TIMEOUT_MS = 45_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -119,14 +146,56 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<string> {
 
 // ─── Claude (Anthropic SDK) ───────────────────────────────────────────────────
 
+/**
+ * Limpa cache_control de todos os blocos em messages — usado antes de marcar
+ * um novo breakpoint para garantir que nunca passemos do limite de 4 breakpoints
+ * por request (Anthropic) ao longo de várias iterações do loop.
+ */
+function clearMessagesCache(messages: Anthropic.MessageParam[]): void {
+  for (const m of messages) {
+    if (Array.isArray(m.content)) {
+      for (const b of m.content as any[]) {
+        if (b && typeof b === "object" && "cache_control" in b) {
+          delete b.cache_control;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Marca o último bloco da última mensagem com cache_control ephemeral.
+ * Se a última mensagem tem `content` como string, converte para array de
+ * TextBlockParam para conseguir adicionar o breakpoint.
+ */
+function markLastBlockForCache(messages: Anthropic.MessageParam[]): void {
+  if (messages.length === 0) return;
+  const last = messages[messages.length - 1];
+  if (typeof last.content === "string") {
+    last.content = [
+      { type: "text", text: last.content, cache_control: { type: "ephemeral" } },
+    ] as any;
+    return;
+  }
+  if (Array.isArray(last.content) && last.content.length > 0) {
+    const lastBlock = last.content[last.content.length - 1] as any;
+    lastBlock.cache_control = { type: "ephemeral" };
+  }
+}
+
 async function runClaude(opts: AgentLoopOptions, model: string): Promise<string> {
   const anthropic = new Anthropic({ apiKey: opts.apiKey });
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const claudeTools: Anthropic.Tool[] = opts.tools.map((t) => ({
+  // Cache breakpoint #2: último item de tools. Faz o array inteiro de tools
+  // virar prefixo cacheável (~750 tokens economizados por turno em cache hit).
+  const claudeTools: Anthropic.Tool[] = opts.tools.map((t, idx) => ({
     name: t.name,
     description: t.description,
     input_schema: t.parameters as Anthropic.Tool["input_schema"],
+    ...(idx === opts.tools.length - 1
+      ? { cache_control: { type: "ephemeral" } as any }
+      : {}),
   }));
 
   const messages: Anthropic.MessageParam[] = [
@@ -134,8 +203,7 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<string>
     { role: "user", content: opts.userMessage },
   ];
 
-  // Prompt caching: marca o system prompt como cacheable. Claude reutiliza o
-  // prefixo cacheado entre requests (TTL ~5min, ~90% mais barato em cache hit).
+  // Cache breakpoint #1: system prompt. Reutilizado entre requests (TTL ~5min).
   const systemBlocks: Anthropic.TextBlockParam[] = [
     {
       type: "text",
@@ -146,10 +214,16 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<string>
 
   let iterations = MAX_ITERATIONS;
   while (iterations-- > 0) {
+    // Cache breakpoint #3: último bloco da conversa. Reposiciona a cada turno
+    // para que tool_results acumulados também entrem em cache nas iterações
+    // seguintes do mesmo loop. Limpamos antes para nunca exceder 4 breakpoints.
+    clearMessagesCache(messages);
+    markLastBlockForCache(messages);
+
     const response = await anthropic.messages.create(
       {
         model,
-        max_tokens: 1024,
+        max_tokens: 400,
         system: systemBlocks,
         tools: claudeTools,
         messages,

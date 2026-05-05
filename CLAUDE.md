@@ -99,6 +99,11 @@ supabase secrets set ZAPI_WEBHOOK_SECRET=...   # validar origem do webhook Z-API
 # Hardening geral
 supabase secrets set INTERNAL_API_KEY=...      # auth do send-whatsapp / send-confirmation
 
+# E-mail (Resend) — opcional. Sem isso, send-confirmation só manda WhatsApp.
+# Cadastre domínio em resend.com e configure SPF/DKIM/DMARC antes de produção.
+supabase secrets set RESEND_API_KEY=re_...
+supabase secrets set RESEND_FROM_EMAIL="Moralles Reservas <reservas@seudominio.com.br>"
+
 # Apenas o provedor de IA ativo precisa estar configurado:
 supabase secrets set ANTHROPIC_API_KEY=sk-ant-...   # Claude
 supabase secrets set OPENAI_API_KEY=sk-...          # OpenAI
@@ -223,6 +228,7 @@ moralles-reservas/
 │   └── functions/
 │       ├── _shared/
 │       │   ├── ai-providers.ts            # Abstração multi-provedor (runAgentLoop)
+│       │   ├── email.ts                   # Wrapper Resend (fetch, timeout 15s, log estruturado)
 │       │   └── whatsapp-providers.ts      # Abstração WhatsApp: parseInbound / sendOutbound por provider
 │       ├── webhook-whatsapp/
 │       │   └── index.ts                   # Webhook unificado — resolve canal por ?channel=<id>
@@ -231,7 +237,7 @@ moralles-reservas/
 │       ├── send-whatsapp/
 │       │   └── index.ts                   # Aceita channel_id ou unit_id; fallback Z-API legacy
 │       ├── send-confirmation/
-│       │   └── index.ts                   # Resolve canal via unit_id da reserva
+│       │   └── index.ts                   # WhatsApp + e-mail (Resend) em paralelo; resolve canal via unit_id
 │       ├── manage-channels/
 │       │   └── index.ts                   # CRUD de whatsapp_channels (valida papel gerente/owner)
 │       └── manage-members/
@@ -328,7 +334,7 @@ Cliente → Provider WhatsApp → webhook-whatsapp (Edge Function)
 
 | Provedor | Env var da chave | Modelo padrão |
 |---|---|---|
-| Claude (Anthropic) | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
+| Claude (Anthropic) | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o` |
 | Gemini (Google) | `GEMINI_API_KEY` | `gemini-2.0-flash` |
 | Grok (xAI) | `GROK_API_KEY` | `grok-3` |
