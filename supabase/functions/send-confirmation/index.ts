@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp } from "../send-whatsapp/index.ts";
+import { sendEmail } from "../_shared/email.ts";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
 
 const supabase = createClient(
@@ -17,6 +18,166 @@ const corsHeaders = {
 function formatDate(dateStr: string): string {
   const [year, month, day] = dateStr.split("-");
   return `${day}/${month}/${year}`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function trimOrEmpty(v: unknown): string {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function mapsUrl(address: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+}
+
+function normalizeInstagram(raw: string): { url: string; label: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    const m = trimmed.match(/instagram\.com\/([^/?#]+)/i);
+    return { url: trimmed, label: m ? `@${m[1]}` : trimmed };
+  }
+  const handle = trimmed.replace(/^@/, "").replace(/\/$/, "");
+  return { url: `https://instagram.com/${handle}`, label: `@${handle}` };
+}
+
+function normalizeWebsite(raw: string): { url: string; label: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const url = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  const label = trimmed.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  return { url, label };
+}
+
+type EmailParams = {
+  customerName: string;
+  unitName: string;
+  date: string;
+  time: string;
+  partySize: number;
+  reservationCode: string;
+  address: string;
+  phone: string;
+  instagram: string;
+  website: string;
+};
+
+function buildEmailHtml(params: EmailParams): string {
+  const { customerName, unitName, date, time, partySize, reservationCode } = params;
+  const address = params.address.trim();
+  const phone = params.phone.trim();
+  const ig = normalizeInstagram(params.instagram);
+  const site = normalizeWebsite(params.website);
+  const hasContact = !!(address || phone || ig || site);
+
+  const contactBlock = hasContact
+    ? `<div style="margin:24px 0 0;padding:20px;background:#faf5ed;border-radius:8px;">
+                  <p style="margin:0 0 12px;font-size:13px;font-weight:600;color:#7c2d12;text-transform:uppercase;letter-spacing:0.04em;">Localização e contato</p>
+                  ${address ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#2a2520;">📍 ${escapeHtml(address)}<br><a href="${escapeHtml(mapsUrl(address))}" style="color:#7c2d12;font-size:13px;text-decoration:underline;">Ver no Google Maps</a></p>` : ""}
+                  ${phone ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#2a2520;">📞 <a href="tel:${escapeHtml(phone.replace(/\D/g, ""))}" style="color:#2a2520;text-decoration:none;">${escapeHtml(phone)}</a></p>` : ""}
+                  ${ig ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#2a2520;">📷 <a href="${escapeHtml(ig.url)}" style="color:#7c2d12;text-decoration:underline;">${escapeHtml(ig.label)}</a></p>` : ""}
+                  ${site ? `<p style="margin:0;font-size:14px;line-height:1.5;color:#2a2520;">🔗 <a href="${escapeHtml(site.url)}" style="color:#7c2d12;text-decoration:underline;">${escapeHtml(site.label)}</a></p>` : ""}
+                </div>`
+    : "";
+  return `<!doctype html>
+<html lang="pt-BR">
+  <body style="margin:0;padding:0;background:#f5f1ea;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#2a2520;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f1ea;padding:32px 16px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+            <tr>
+              <td style="background:#7c2d12;padding:24px 32px;">
+                <h1 style="margin:0;color:#fffaf0;font-size:20px;font-weight:600;letter-spacing:-0.01em;">Reserva confirmada</h1>
+                <p style="margin:4px 0 0;color:#fde9d9;font-size:14px;">${escapeHtml(unitName)}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px;">
+                <p style="margin:0 0 16px;font-size:16px;line-height:1.5;">Olá <strong>${escapeHtml(customerName)}</strong>, sua reserva está confirmada.</p>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0;border-collapse:collapse;">
+                  <tr>
+                    <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:14px;color:#7a6f60;width:120px;">Data</td>
+                    <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:15px;font-weight:500;">${escapeHtml(date)}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:14px;color:#7a6f60;">Horário</td>
+                    <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:15px;font-weight:500;">${escapeHtml(time)}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:14px;color:#7a6f60;">Pessoas</td>
+                    <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:15px;font-weight:500;">${partySize}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:12px 0;font-size:14px;color:#7a6f60;">Código</td>
+                    <td style="padding:12px 0;font-size:15px;font-weight:600;font-family:'SF Mono',Menlo,monospace;">#${escapeHtml(reservationCode)}</td>
+                  </tr>
+                </table>
+                ${contactBlock}
+                <p style="margin:24px 0 0;font-size:14px;line-height:1.5;color:#7a6f60;">Para alterar ou cancelar, responda a confirmação no WhatsApp ou entre em contato com o restaurante usando o código acima.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="background:#faf5ed;padding:16px 32px;text-align:center;font-size:12px;color:#9b8f7f;">
+                Este e-mail foi enviado automaticamente. Não é necessário respondê-lo.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+}
+
+function buildEmailText(params: EmailParams): string {
+  const lines = [
+    `Reserva confirmada — ${params.unitName}`,
+    "",
+    `Olá ${params.customerName}, sua reserva está confirmada.`,
+    "",
+    `Data: ${params.date}`,
+    `Horário: ${params.time}`,
+    `Pessoas: ${params.partySize}`,
+    `Código: #${params.reservationCode}`,
+  ];
+
+  const address = params.address.trim();
+  const phone = params.phone.trim();
+  const ig = normalizeInstagram(params.instagram);
+  const site = normalizeWebsite(params.website);
+
+  if (address || phone || ig || site) {
+    lines.push("", "Localização e contato:");
+    if (address) lines.push(`Endereço: ${address}`, `Mapa: ${mapsUrl(address)}`);
+    if (phone) lines.push(`Telefone: ${phone}`);
+    if (ig) lines.push(`Instagram: ${ig.url}`);
+    if (site) lines.push(`Site: ${site.url}`);
+  }
+
+  lines.push(
+    "",
+    "Para alterar ou cancelar, responda a confirmação no WhatsApp ou entre em contato com o restaurante usando o código acima."
+  );
+
+  return lines.join("\n");
+}
+
+async function recordNotification(reservationId: string, kind: string, status: "sent" | "failed", error?: string) {
+  const { error: insertErr } = await supabase
+    .from("notifications_sent")
+    .insert({ reservation_id: reservationId, kind, status, error: error ?? null });
+  // unique(reservation_id, kind) pode disparar em retries do Database Webhook — ignorar
+  if (insertErr && !String(insertErr.message).includes("duplicate")) {
+    jsonLog("warn", { evt: "notifications_sent_insert_failed", kind, err: insertErr.message });
+  }
 }
 
 serve(async (req) => {
@@ -37,7 +198,7 @@ serve(async (req) => {
 
     const { data: reserva, error } = await supabase
       .from("reservations")
-      .select("*, customer:customers(*)")
+      .select("*, customer:customers(*), unit:units(name)")
       .eq("id", record.id)
       .single();
 
@@ -49,9 +210,33 @@ serve(async (req) => {
       });
     }
 
-    const { customer, date, time, party_size, reservation_code, unit_id } = reserva;
+    const { customer, date, time, party_size, reservation_code, unit_id, unit } = reserva;
+    const dateBR = formatDate(date);
 
-    // Check if there's a connected channel for this unit
+    const { data: settingsRows } = unit_id
+      ? await supabase
+          .from("settings")
+          .select("key, value")
+          .eq("unit_id", unit_id)
+          .in("key", [
+            "restaurant_name",
+            "restaurant_address",
+            "restaurant_phone",
+            "restaurant_instagram",
+            "restaurant_website",
+          ])
+      : { data: null };
+
+    const settingsMap = new Map<string, unknown>(
+      (settingsRows ?? []).map((row) => [row.key as string, row.value])
+    );
+    const unitName =
+      trimOrEmpty(settingsMap.get("restaurant_name")) || (unit?.name ?? "Restaurante");
+    const restaurantAddress = trimOrEmpty(settingsMap.get("restaurant_address"));
+    const restaurantPhone = trimOrEmpty(settingsMap.get("restaurant_phone"));
+    const restaurantInstagram = trimOrEmpty(settingsMap.get("restaurant_instagram"));
+    const restaurantWebsite = trimOrEmpty(settingsMap.get("restaurant_website"));
+
     const { data: channel } = unit_id
       ? await supabase
           .from("whatsapp_channels")
@@ -62,37 +247,109 @@ serve(async (req) => {
           .maybeSingle()
       : { data: null };
 
-    if (!channel && !Deno.env.get("ZAPI_INSTANCE_ID")) {
-      // No channel configured — log and skip gracefully
-      jsonLog("info", { evt: "confirmation_skipped", reason: "no_channel", reservation_id: record.id });
-      // Still mark as confirmed
-      await supabase.from("reservations").update({ status: "confirmed" }).eq("id", record.id);
-      return new Response(JSON.stringify({ success: false, reason: "no_channel" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    const hasWhatsappChannel = !!channel || !!Deno.env.get("ZAPI_INSTANCE_ID");
 
     const message =
       `✅ *Reserva Confirmada!*\n\n` +
       `Olá ${customer.name}, sua reserva está confirmada.\n\n` +
-      `📅 Data: ${formatDate(date)}\n` +
+      `📅 Data: ${dateBR}\n` +
       `⏰ Horário: ${time}\n` +
       `👥 Pessoas: ${party_size}\n` +
       `🔑 Código: #${reservation_code}\n\n` +
       `Para alterar ou cancelar, é só responder aqui. Até logo! 😊`;
 
-    const sent = await sendWhatsApp(customer.phone, message, {
-      channel_id: channel?.id,
-      unit_id: unit_id ?? undefined,
-    });
+    const emailParams: EmailParams = {
+      customerName: customer.name,
+      unitName,
+      date: dateBR,
+      time,
+      partySize: party_size,
+      reservationCode: reservation_code,
+      address: restaurantAddress,
+      phone: restaurantPhone,
+      instagram: restaurantInstagram,
+      website: restaurantWebsite,
+    };
 
-    if (sent) {
+    const whatsappPromise = hasWhatsappChannel
+      ? sendWhatsApp(customer.phone, message, {
+          channel_id: channel?.id,
+          unit_id: unit_id ?? undefined,
+        }).then(
+          (ok) => ({ kind: "whatsapp" as const, ok, skipped: false as const }),
+          (err) => ({ kind: "whatsapp" as const, ok: false, skipped: false as const, error: String(err) })
+        )
+      : Promise.resolve({ kind: "whatsapp" as const, ok: false, skipped: true as const, reason: "no_channel" });
+
+    const emailPromise = customer.email
+      ? sendEmail({
+          to: customer.email,
+          subject: `Reserva confirmada — ${dateBR} às ${time}`,
+          html: buildEmailHtml(emailParams),
+          text: buildEmailText(emailParams),
+        }).then((res) => ({ kind: "email" as const, ...res }))
+      : Promise.resolve({ kind: "email" as const, ok: false, skipped: true as const, reason: "no_email" });
+
+    const [whatsappResult, emailResult] = await Promise.all([whatsappPromise, emailPromise]);
+
+    if (whatsappResult.skipped) {
+      jsonLog("info", {
+        evt: "confirmation_whatsapp",
+        status: "skipped",
+        reason: (whatsappResult as { reason: string }).reason,
+        reservation_id: record.id,
+      });
+    } else if (whatsappResult.ok) {
+      jsonLog("info", { evt: "confirmation_whatsapp", status: "sent", reservation_id: record.id });
+      await recordNotification(record.id, "confirmation", "sent");
+    } else {
+      jsonLog("warn", {
+        evt: "confirmation_whatsapp",
+        status: "failed",
+        reservation_id: record.id,
+        err: (whatsappResult as { error?: string }).error,
+      });
+      await recordNotification(record.id, "confirmation", "failed", (whatsappResult as { error?: string }).error);
+    }
+
+    if (emailResult.skipped) {
+      jsonLog("info", {
+        evt: "confirmation_email",
+        status: "skipped",
+        reason: (emailResult as { reason: string }).reason,
+        reservation_id: record.id,
+      });
+    } else if (emailResult.ok) {
+      jsonLog("info", {
+        evt: "confirmation_email",
+        status: "sent",
+        reservation_id: record.id,
+        provider_id: (emailResult as { id: string }).id,
+      });
+      await recordNotification(record.id, "confirmation_email", "sent");
+    } else {
+      jsonLog("warn", {
+        evt: "confirmation_email",
+        status: "failed",
+        reservation_id: record.id,
+        err: (emailResult as { error?: string }).error,
+      });
+      await recordNotification(record.id, "confirmation_email", "failed", (emailResult as { error?: string }).error);
+    }
+
+    const anySent = whatsappResult.ok || emailResult.ok;
+    if (anySent) {
       await supabase.from("reservations").update({ status: "confirmed" }).eq("id", record.id);
     }
 
-    return new Response(JSON.stringify({ success: sent }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        success: anySent,
+        whatsapp: { sent: whatsappResult.ok, skipped: whatsappResult.skipped },
+        email: { sent: emailResult.ok, skipped: emailResult.skipped },
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   } catch (err) {
     jsonLog("error", { evt: "send_confirmation_error", err: String(err) });
     return new Response(JSON.stringify({ error: "internal_error" }), {

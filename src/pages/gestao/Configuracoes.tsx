@@ -63,6 +63,10 @@ export default function Configuracoes() {
   const isOwnerOrGerente = unit?.isOwner || unit?.isGerente;
 
   const [restaurantName, setRestaurantName] = useState("");
+  const [restaurantAddress, setRestaurantAddress] = useState("");
+  const [restaurantPhone, setRestaurantPhone] = useState("");
+  const [restaurantInstagram, setRestaurantInstagram] = useState("");
+  const [restaurantWebsite, setRestaurantWebsite] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -98,6 +102,10 @@ export default function Configuracoes() {
     if (!settings) return;
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
     setRestaurantName((map["restaurant_name"] as string) ?? "");
+    setRestaurantAddress((map["restaurant_address"] as string) ?? "");
+    setRestaurantPhone((map["restaurant_phone"] as string) ?? "");
+    setRestaurantInstagram((map["restaurant_instagram"] as string) ?? "");
+    setRestaurantWebsite((map["restaurant_website"] as string) ?? "");
   }, [settings]);
 
   const updateHour = useMutation({
@@ -166,6 +174,9 @@ export default function Configuracoes() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Informações da unidade</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Esses dados aparecem nas confirmações de reserva por e-mail. Endereço, telefone, Instagram e site são opcionais.
+          </p>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-1">
@@ -175,11 +186,91 @@ export default function Configuracoes() {
                 value={restaurantName}
                 onChange={(e) => setRestaurantName(e.target.value)}
                 placeholder="Ex: Moralles Centro"
+                disabled={!isOwnerOrGerente}
               />
               <Button
                 variant="secondary"
                 onClick={() => saveSetting.mutate({ key: "restaurant_name", value: restaurantName })}
-                disabled={saveSetting.isPending}
+                disabled={saveSetting.isPending || !isOwnerOrGerente}
+              >
+                Salvar
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Endereço completo</Label>
+            <div className="flex gap-2">
+              <Input
+                value={restaurantAddress}
+                onChange={(e) => setRestaurantAddress(e.target.value)}
+                placeholder="Rua das Flores, 123 — Centro, São Paulo/SP"
+                disabled={!isOwnerOrGerente}
+              />
+              <Button
+                variant="secondary"
+                onClick={() => saveSetting.mutate({ key: "restaurant_address", value: restaurantAddress })}
+                disabled={saveSetting.isPending || !isOwnerOrGerente}
+              >
+                Salvar
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Vira link clicável "Ver no Google Maps" no e-mail.
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Telefone para contato</Label>
+            <div className="flex gap-2">
+              <Input
+                value={restaurantPhone}
+                onChange={(e) => setRestaurantPhone(e.target.value)}
+                placeholder="(11) 3000-0000"
+                disabled={!isOwnerOrGerente}
+              />
+              <Button
+                variant="secondary"
+                onClick={() => saveSetting.mutate({ key: "restaurant_phone", value: restaurantPhone })}
+                disabled={saveSetting.isPending || !isOwnerOrGerente}
+              >
+                Salvar
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Instagram</Label>
+            <div className="flex gap-2">
+              <Input
+                value={restaurantInstagram}
+                onChange={(e) => setRestaurantInstagram(e.target.value)}
+                placeholder="@morallesrestaurante"
+                disabled={!isOwnerOrGerente}
+              />
+              <Button
+                variant="secondary"
+                onClick={() => saveSetting.mutate({ key: "restaurant_instagram", value: restaurantInstagram })}
+                disabled={saveSetting.isPending || !isOwnerOrGerente}
+              >
+                Salvar
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Site / link extra</Label>
+            <div className="flex gap-2">
+              <Input
+                value={restaurantWebsite}
+                onChange={(e) => setRestaurantWebsite(e.target.value)}
+                placeholder="https://moralles.com.br"
+                disabled={!isOwnerOrGerente}
+              />
+              <Button
+                variant="secondary"
+                onClick={() => saveSetting.mutate({ key: "restaurant_website", value: restaurantWebsite })}
+                disabled={saveSetting.isPending || !isOwnerOrGerente}
               >
                 Salvar
               </Button>
