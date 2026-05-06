@@ -202,11 +202,23 @@ serve(async (req) => {
     const body = await req.json();
     const record = body.record ?? body;
 
-    const { data: reserva, error } = await supabase
+    // Defesa em profundidade: se o caller informar unit_id, exige pareamento.
+    // Trigger do banco (database webhook) sempre envia o record completo, então
+    // record.unit_id é confiável quando vem de lá. Quando ausente, fica
+    // como antes (escopo único pelo id).
+    const expectedUnitId: string | null =
+      typeof record.unit_id === "string" ? record.unit_id : null;
+
+    let query = supabase
       .from("reservations")
       .select("*, customer:customers(*), unit:units(name)")
-      .eq("id", record.id)
-      .single();
+      .eq("id", record.id);
+
+    if (expectedUnitId) {
+      query = query.eq("unit_id", expectedUnitId);
+    }
+
+    const { data: reserva, error } = await query.single();
 
     if (error || !reserva) {
       jsonLog("error", { evt: "reservation_not_found", id: record.id, err: String(error) });

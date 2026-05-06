@@ -42,8 +42,21 @@ interface PublicUnit {
   address: UnitAddress | null;
 }
 
-const SELECT =
-  "id, name, slug, organization_id, description, price_range_min, price_range_max, hero_image_url, logo_url, address";
+interface UnitPublicFullResponse {
+  unit: PublicUnit & { timezone: string };
+  business_hours: Array<{
+    day_of_week: number;
+    open_time: string;
+    close_time: string;
+    is_closed: boolean;
+  }>;
+  special_dates: Array<{
+    date: string;
+    is_closed: boolean;
+    open_time: string | null;
+    close_time: string | null;
+  }>;
+}
 
 export default function PublicPortal() {
   const { slug } = useParams<{ slug: string }>();
@@ -51,13 +64,14 @@ export default function PublicPortal() {
   const { data: unit, isLoading, error } = useQuery({
     queryKey: ["public-unit", slug],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("units")
-        .select(SELECT)
-        .eq("slug", slug)
-        .maybeSingle();
+      // RPC SECURITY DEFINER que valida is_public e retorna apenas units
+      // públicas — substitui SELECT direto pra escolher campos seguros.
+      const { data, error } = await supabase.rpc("get_unit_public_full", {
+        p_slug: slug,
+      });
       if (error) throw error;
-      return data as PublicUnit | null;
+      const payload = data as UnitPublicFullResponse | null;
+      return payload?.unit ?? null;
     },
     enabled: !!slug,
   });

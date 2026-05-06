@@ -7,13 +7,13 @@ export function useWhatsAppChannels(unitId: string) {
   return useQuery({
     queryKey: ["whatsapp-channels", unitId],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("whatsapp_channels")
-        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, created_at, updated_at")
-        .eq("unit_id", unitId)
-        .order("created_at", { ascending: true });
-      if (error) throw error;
-      return data as WhatsAppChannel[];
+      // whatsapp_channels usa FORCE RLS — leitura passa pela Edge Function
+      // manage-channels que retorna apenas colunas seguras (sem `credentials`).
+      const data = (await invokeManageChannels({
+        action: "list",
+        unit_id: unitId,
+      })) as { channels?: WhatsAppChannel[] } | null;
+      return (data?.channels ?? []) as WhatsAppChannel[];
     },
     enabled: !!unitId,
   });

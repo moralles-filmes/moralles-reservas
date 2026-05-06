@@ -57,12 +57,17 @@ export async function sendWhatsApp(
   message: string,
   channelIdOrUnitId?: { channel_id?: string; unit_id?: string }
 ): Promise<boolean> {
+  // Quando ambos channel_id e unit_id são fornecidos, exige que pertençam à
+  // mesma unit — defesa contra envio cross-tenant se INTERNAL_API_KEY vazar.
   if (channelIdOrUnitId?.channel_id) {
-    const { data: channel } = await supabase
+    let q = supabase
       .from("whatsapp_channels")
-      .select("provider, credentials")
-      .eq("id", channelIdOrUnitId.channel_id)
-      .maybeSingle();
+      .select("provider, credentials, unit_id")
+      .eq("id", channelIdOrUnitId.channel_id);
+    if (channelIdOrUnitId.unit_id) {
+      q = q.eq("unit_id", channelIdOrUnitId.unit_id);
+    }
+    const { data: channel } = await q.maybeSingle();
     if (channel) {
       return sendOutbound(
         channel.provider as WhatsAppProvider,
@@ -70,6 +75,13 @@ export async function sendWhatsApp(
         { toPhone: phone, text: message }
       );
     }
+    // channel_id não encontrado/não pertence à unit informada — sem fallback.
+    jsonLog("warn", {
+      evt: "send_whatsapp_channel_mismatch",
+      channel_id: channelIdOrUnitId.channel_id,
+      unit_id: channelIdOrUnitId.unit_id ?? null,
+    });
+    return false;
   }
 
   if (channelIdOrUnitId?.unit_id) {

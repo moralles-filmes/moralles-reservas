@@ -52,6 +52,21 @@ serve(async (req) => {
       return jsonResponse({ error: "Apenas administradores da plataforma." }, 403);
     }
 
+    // ── list ──────────────────────────────────────────────────────────────────
+    // Retorna canais da unidade com colunas seguras (sem `credentials`).
+    // Necessário porque whatsapp_channels usa FORCE RLS — UI não pode mais
+    // consultar a tabela direto.
+    if (action === "list") {
+      const { data, error } = await supabase
+        .from("whatsapp_channels")
+        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, created_at, updated_at")
+        .eq("unit_id", unitId)
+        .order("created_at", { ascending: true });
+
+      if (error) return jsonResponse({ error: error.message }, 500);
+      return jsonResponse({ success: true, channels: data ?? [] });
+    }
+
     // ── create ─────────────────────────────────────────────────────────────────
     if (action === "create") {
       const provider: WhatsAppProvider = body.provider;

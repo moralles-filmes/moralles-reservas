@@ -78,19 +78,19 @@ export function useReservas(
   });
 }
 
-export function useReservaByCode(code: string, unitId?: string) {
+export function useReservaByCode(code: string, unitId: string) {
   return useQuery({
     queryKey: ["reserva", code, unitId],
     queryFn: async () => {
       const { data, error } = await supabase.rpc("get_reservation_by_code", {
         p_code: code.toUpperCase(),
-        ...(unitId ? { p_unit_id: unitId } : {}),
+        p_unit_id: unitId,
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
       return mapRpcRowToReserva(row as ReservationByCodeRow | null);
     },
-    enabled: !!code,
+    enabled: !!code && !!unitId,
   });
 }
 

@@ -89,13 +89,13 @@ export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
   const [confirmed, setConfirmed] = useState<Reserva | null>(null);
 
   const { data: businessHours } = useQuery({
-    queryKey: ["business_hours", effectiveUnit?.id],
+    queryKey: ["public_business_hours", effectiveUnit?.id],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("business_hours")
-        .select("day_of_week, open_time, close_time, is_closed")
-        .eq("unit_id", effectiveUnit!.id)
-        .order("day_of_week");
+      // RPC pública (anon-safe) — leitura direta de business_hours via REST
+      // só é permitida pra unit_member depois da migration 023.
+      const { data, error } = await supabase.rpc("get_public_business_hours", {
+        p_unit_id: effectiveUnit!.id,
+      });
       if (error) throw error;
       return data as Array<{ day_of_week: number; open_time: string; close_time: string; is_closed: boolean }>;
     },
