@@ -176,6 +176,7 @@ async function createReservation(params: {
     notes: params.notes || null,
     reservation_code: code,
     status: "confirmed",
+    source: "whatsapp",
   });
 
   if (error) return { success: false, error: error.message };

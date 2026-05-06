@@ -4,9 +4,10 @@ Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Arqu
 
 ## Visão geral
 
-- **Portal público** (`/r/:slug`) — clientes fazem reservas via formulário web ou consultam pelo código
+- **Landing pública** (`/`) — descobrir restaurantes por cidade, busca por nome, redireciona para o portal escolhido
+- **Portal público do restaurante** (`/r/:slug`) — landing rica com hero, logo, descrição, faixa de preço, mapa; CTAs para reservar e entrar na fila; consulta por código
 - **Agente IA WhatsApp** — responde clientes, cria/altera/cancela reservas conversacionalmente
-- **Painel de Gestão** (`/g/:unitSlug`) — configurações, relatórios, clientes, auditoria
+- **Painel de Gestão** (`/g/:unitSlug`) — configurações, relatórios, clientes, auditoria, **edição da página pública**
 - **Painel Plataforma** (`/platform`) — exclusivo do super-admin: empresas, unidades e automação (canais WhatsApp + chaves de IA + system prompt)
 - **Painel Operacional** (`/o/:unitSlug`) — reservas do dia, fila de espera, walk-ins (uso em tempo real)
 
@@ -57,7 +58,7 @@ npm install --legacy-peer-deps
 # 2. .env do frontend (preencher VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY)
 cp .env.example .env
 
-# 3. Aplicar migrations 001–013 (SQL Editor no painel ou `supabase db push`)
+# 3. Aplicar migrations 001–019 (SQL Editor no painel ou `supabase db push`)
 
 # 4. Criar o auth user inicial (será o super_admin)
 #    Painel: Authentication > Users > Add user (marcar "Auto Confirm User")
@@ -125,8 +126,9 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...        # DeepSeek
 ## Roteamento
 
 ```
-/                            → Index.tsx (landing pública — redireciona para /r/<slug-padrão>)
-/r/:slug                     → PublicPortal.tsx — formulário de reserva + consulta por código
+/                            → Index.tsx — landing pública: seletor de cidade + busca + grid de restaurantes
+/r/:slug                     → PublicPortal.tsx — landing do restaurante: hero, logo, sobre, preço, mapa,
+                                CTAs (Reservar / Entrar na Fila) em Dialog, consulta por código
 /admin/login                 → Auth.tsx — login (já logado é redirecionado para /admin)
 /admin                       → redireciona conforme auth state:
                                   • deslogado → /admin/login
@@ -143,12 +145,14 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...        # DeepSeek
   ├── /mesas                 → Gestão de mesas + bloqueios
   ├── /configuracoes         → Horários, datas especiais, conta, membros
   ├── /avaliacoes            → Avaliações de satisfação
+  ├── /pagina-publica        → Edição da página pública: hero, logo, descrição, faixa de preço, endereço
   └── /auditoria             → Trilha LGPD
 
 /o/:unitSlug                 → Painel Operacional (OperacionalLayout)
   ├── /                      → Reservas do dia (agrupadas por status)
   ├── /fila                  → Fila de espera (waitlist)
-  └── /passantes             → Walk-ins (clientes sem reserva)
+  ├── /passantes             → Walk-ins (clientes sem reserva)
+  └── /conversas             → Histórico de chats WhatsApp (mesma tela da Gestão)
 
 /platform                    → Painel Plataforma (PlatformLayout) — só platform_admin
   ├── /empresas              → CRUD de organizations + unidades
@@ -179,7 +183,9 @@ moralles-reservas/
 │   ├── lib/
 │   │   ├── supabase.ts                # Cliente Supabase (singleton)
 │   │   ├── utils.ts                   # cn(), formatDateBR(), formatPhone()
-│   │   └── zapi.ts                    # Templates de mensagem WhatsApp (referência)
+│   │   ├── zapi.ts                    # Templates de mensagem WhatsApp (referência)
+│   │   └── validators/
+│   │       └── organization.ts        # Schemas Zod de criação/edição de organization
 │   │
 │   ├── hooks/
 │   │   ├── useReservas.ts             # CRUD de reservas via React Query
@@ -192,7 +198,16 @@ moralles-reservas/
 │   │   ├── useSpecialDates.ts         # CRUD de datas especiais (feriados)
 │   │   ├── useAuditLog.ts             # Lista de audit_log (LGPD)
 │   │   ├── useWalkIns.ts              # CRUD de walk-ins (Operacional)
-│   │   └── useWaitlist.ts             # CRUD de fila de espera (Operacional)
+│   │   ├── useWaitlist.ts             # CRUD de fila + useAnonAddToWaitlist (entrar na fila público)
+│   │   ├── useOrganizations.ts        # Plataforma — list/create/update via manage-organizations
+│   │   ├── useWhatsAppChannels.ts     # CRUD de whatsapp_channels via manage-channels
+│   │   ├── useConversations.ts        # Histórico de chats WhatsApp
+│   │   ├── useAwaitingHumanCount.ts   # Badge de conversas aguardando handoff humano
+│   │   ├── useSendManualMessage.ts    # Envio manual de mensagem (handoff humano)
+│   │   ├── useUnitPublicContent.ts    # Read/update do conteúdo da página pública (descrição, preço, address, URLs)
+│   │   ├── useUnitAssetUpload.ts      # Upload de logo/hero pro bucket unit-assets (Storage)
+│   │   ├── useDiscoverUnits.ts        # Landing — usePublicCities, usePublicUnits({city,search}), useFeaturedHero
+│   │   └── useAdminUsers.ts           # Legacy admin_users (será removido pós migration 013)
 │   │
 │   ├── stores/
 │   │   └── reservaStore.ts            # Filtros do painel (Zustand)
@@ -202,6 +217,8 @@ moralles-reservas/
 │   │   ├── reserva/
 │   │   │   ├── ReservaForm.tsx        # Formulário público — aceita prop unit; TIME_SLOTS dinâmicos do business_hours
 │   │   │   └── ReservaCard.tsx        # Card de reserva com ações de status
+│   │   ├── waitlist/
+│   │   │   └── WaitlistFormPublic.tsx # Form anônimo para "Entrar na Fila" no portal público
 │   │   ├── layouts/
 │   │   │   ├── GestaoLayout.tsx       # Sidebar + layout das páginas de gestão
 │   │   │   ├── OperacionalLayout.tsx  # Header minimalista + navegação operacional
@@ -209,8 +226,8 @@ moralles-reservas/
 │   │   └── UnitSwitcher.tsx           # Dropdown de troca de unidade no header
 │   │
 │   └── pages/
-│       ├── Index.tsx                  # Landing pública (redireciona para /r/slug)
-│       ├── PublicPortal.tsx           # Portal público escopado por unit slug
+│       ├── Index.tsx                  # Landing pública — seletor de cidade, busca, grid de restaurantes
+│       ├── PublicPortal.tsx           # Portal público do restaurante — hero/sobre/preço/mapa/CTAs
 │       ├── Auth.tsx                   # Login
 │       ├── gestao/
 │       │   ├── Dashboard.tsx          # Métricas e KPIs da unidade
@@ -222,11 +239,13 @@ moralles-reservas/
 │       │   ├── Configuracoes.tsx      # Horários, datas especiais, conta, membros da equipe
 │       │   ├── Automacao.tsx          # WhatsApp channels + Provedor de IA + System prompt — agora montada em /platform/automacao/:unitSlug
 │       │   ├── Avaliacoes.tsx         # Avaliações de satisfação pós-reserva
+│       │   ├── PaginaPublica.tsx      # Editor de conteúdo público — upload logo/hero, descrição, preço, endereço
 │       │   └── Auditoria.tsx          # Trilha LGPD
 │       ├── operacional/
 │       │   ├── ReservasDia.tsx        # Reservas do dia agrupadas por status
 │       │   ├── Fila.tsx               # Fila de espera com timers e notificação WhatsApp
-│       │   └── Passantes.tsx          # Walk-ins — registro, alocação de mesa, status
+│       │   ├── Passantes.tsx          # Walk-ins — registro, alocação de mesa, status
+│       │   └── Conversas.tsx          # Re-export de gestao/Conversas.tsx (handoff humano no piso)
 │       └── platform/
 │           ├── Empresas.tsx           # CRUD de organizations + unidades (super-admin)
 │           └── Automacao.tsx          # Seletor de unidade cross-org → /platform/automacao/:unitSlug
@@ -250,13 +269,20 @@ moralles-reservas/
 │   │   ├── 015_whatsapp_handoff_and_scope.sql  # status human_active/awaiting_human + agent_mode
 │   │   ├── 016_reservation_duration_default.sql  # duração padrão de reserva
 │   │   ├── 017_email_notifications.sql    # kinds *_email em notifications_sent
-│   │   └── 018_ai_provider_credentials.sql # BYOK: chaves de IA por unidade (RLS + FORCE)
+│   │   ├── 018_ai_provider_credentials.sql # BYOK: chaves de IA por unidade (RLS + FORCE)
+│   │   ├── 019_public_page_content.sql    # colunas de conteúdo público em units + bucket unit-assets + anon waitlist
+│   │   ├── 020_cancellation_notification.sql   # adiciona 'cancellation' ao CHECK de notifications_sent.kind
+│   │   ├── 021_confirmation_email_kind.sql     # adiciona 'confirmation_email' ao CHECK de notifications_sent.kind
+│   │   └── 022_reservation_source.sql          # coluna reservations.source ('web'|'whatsapp') + trigger condicional
 │   │
 │   └── functions/
 │       ├── _shared/
 │       │   ├── ai-providers.ts            # Abstração multi-provedor (runAgentLoop)
 │       │   ├── email.ts                   # Wrapper Resend (fetch, timeout 15s, log estruturado)
-│       │   └── whatsapp-providers.ts      # Abstração WhatsApp: parseInbound / sendOutbound por provider
+│       │   ├── whatsapp-providers.ts      # Abstração WhatsApp: parseInbound / sendOutbound por provider
+│       │   ├── whatsapp-send.ts           # Helper sendWhatsApp (canal por unit_id ou channel_id, fallback Z-API legacy)
+│       │   ├── retry.ts                   # fetchWithRetry com exponential backoff
+│       │   └── security.ts                # requireInternalAuth / sanitizePhone / jsonLog
 │       ├── webhook-whatsapp/
 │       │   └── index.ts                   # Webhook unificado — resolve canal por ?channel=<id>
 │       ├── webhook-zapi/
@@ -265,12 +291,18 @@ moralles-reservas/
 │       │   └── index.ts                   # Aceita channel_id ou unit_id; fallback Z-API legacy
 │       ├── send-confirmation/
 │       │   └── index.ts                   # WhatsApp + e-mail (Resend) em paralelo; resolve canal via unit_id
+│       ├── send-cancellation/
+│       │   └── index.ts                   # Notifica cliente via WhatsApp ao cancelar reserva
 │       ├── manage-channels/
 │       │   └── index.ts                   # CRUD de whatsapp_channels — exige platform_admin (super-admin)
 │       ├── manage-ai-providers/
 │       │   └── index.ts                   # CRUD de chaves de IA por unidade (BYOK) — exige platform_admin; nunca devolve api_key cru
-│       └── manage-members/
-│           └── index.ts                   # Substitui manage-admins; escopo por unidade
+│       ├── manage-members/
+│       │   └── index.ts                   # Substitui manage-admins; escopo por unidade
+│       ├── manage-organizations/
+│       │   └── index.ts                   # list/create/update organization+unit+owner (platform_admin)
+│       └── send-manual-message/
+│           └── index.ts                   # Envio manual de mensagem WhatsApp (handoff humano)
 │
 ├── .env.example
 ├── tailwind.config.ts
@@ -297,11 +329,11 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 | Tabela | Descrição |
 |---|---|
 | `organizations` | Grupos de restaurantes — `name`, `slug` unique, `plan` |
-| `units` | Restaurante físico — `organization_id`, `name`, `slug` unique, `address`, `timezone` |
+| `units` | Restaurante físico — `organization_id`, `name`, `slug` unique, `address` (jsonb com street/number/neighborhood/city/state/cep/full), `timezone`, `description`, `price_range_min/max`, `hero_image_url`, `logo_url` |
 | `unit_members` | Membros com papel por unidade — `user_id`, `unit_id`, `role` |
 | `platform_admins` | Admins internos do SaaS (suporte) |
 | `customers` | Clientes — `name`, `phone` unique por `organization_id`, `email` |
-| `reservations` | Reservas — `unit_id`, `customer_id`, `table_id`, `date`, `time`, `party_size`, `status`, `reservation_code` |
+| `reservations` | Reservas — `unit_id`, `customer_id`, `table_id`, `date`, `time`, `party_size`, `status`, `reservation_code`, `source` (`'web'\|'whatsapp'`) |
 | `tables` | Mesas — `unit_id`, `number` unique por unidade, `capacity`, `location`, `active` |
 | `conversations` | Histórico de chats WhatsApp — `unit_id`, `messages` JSONB |
 | `business_hours` | Horários — `unit_id`, `day_of_week` (0=dom…6=sáb), `open_time`, `close_time`, `is_closed` |
@@ -332,9 +364,16 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 
 ### RLS
 
-- Anon: pode inserir e ler `customers` e `reservations` (portal público)
+- Anon: pode inserir e ler `customers` e `reservations`, ler `units` públicas, e inserir em `waitlist` (Entrar na Fila público)
 - Authenticated: acesso escopado por `is_unit_member(auth.uid(), unit_id)` — nunca vê dados de outra unidade
+- Owner/gerente: pode `UPDATE` em `units` (conteúdo da página pública) e gravar no bucket `unit-assets` (path `<unit_id>/...`)
 - Edge Functions usam `SUPABASE_SERVICE_ROLE_KEY` (bypassa RLS)
+
+### Storage
+
+- Bucket público `unit-assets` — logos e hero images por unidade
+- Path convention: `<unit_id>/logo-<timestamp>.<ext>`, `<unit_id>/hero-<timestamp>.<ext>`
+- Read público (CDN); write apenas owner/gerente da unidade dona do path
 
 ### Rodar migrações
 
@@ -457,9 +496,12 @@ Integração via GitHub — cada push em `main` dispara deploy de produção.
 supabase functions deploy webhook-whatsapp
 supabase functions deploy send-whatsapp
 supabase functions deploy send-confirmation
+supabase functions deploy send-cancellation
 supabase functions deploy manage-channels
 supabase functions deploy manage-ai-providers
 supabase functions deploy manage-members
+supabase functions deploy manage-organizations
+supabase functions deploy send-manual-message
 ```
 
 ### Webhook WhatsApp
@@ -473,10 +515,12 @@ Configure essa URL no painel do provider (Z-API, WAHA ou Meta).
 
 ### Database Webhook (confirmação automática)
 
-No painel Supabase → **Database → Webhooks**:
-- Tabela: `reservations`
-- Evento: `INSERT`
-- URL: `https://<project-ref>.supabase.co/functions/v1/send-confirmation`
+Trigger SQL `send-confirmation-on-reservation` (criado pela migration 019) — `AFTER INSERT` em `reservations` com filtro `WHEN (new.source <> 'whatsapp')` chamando `supabase_functions.http_request` para a Edge Function `send-confirmation`.
+
+- Reservas criadas pelo site, portal público ou painel de gestão (`source='web'`, default) → trigger dispara → cliente recebe WhatsApp + email de confirmação.
+- Reservas criadas pelo agente IA via WhatsApp (`source='whatsapp'`) → trigger NÃO dispara, evitando mensagem duplicada (o agente já confirma na conversa).
+
+A Edge Function `send-cancellation` é invocada **client-side** quando uma reserva muda para `status='cancelled'` no painel (ver [src/hooks/useReservas.ts](src/hooks/useReservas.ts) `useUpdateReservaStatus`). Não tem trigger no banco.
 
 ### Automações N8N (lembrete D-1, pesquisa D+1)
 

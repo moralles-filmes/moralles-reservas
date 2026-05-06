@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { sendWhatsApp } from "../send-whatsapp/index.ts";
+import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
 import { sendEmail } from "../_shared/email.ts";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
 
@@ -170,10 +170,16 @@ function buildEmailText(params: EmailParams): string {
   return lines.join("\n");
 }
 
-async function recordNotification(reservationId: string, kind: string, status: "sent" | "failed", error?: string) {
+async function recordNotification(
+  reservationId: string,
+  unitId: string,
+  kind: string,
+  status: "sent" | "failed",
+  error?: string
+) {
   const { error: insertErr } = await supabase
     .from("notifications_sent")
-    .insert({ reservation_id: reservationId, kind, status, error: error ?? null });
+    .insert({ reservation_id: reservationId, unit_id: unitId, kind, status, error: error ?? null });
   // unique(reservation_id, kind) pode disparar em retries do Database Webhook — ignorar
   if (insertErr && !String(insertErr.message).includes("duplicate")) {
     jsonLog("warn", { evt: "notifications_sent_insert_failed", kind, err: insertErr.message });
@@ -301,7 +307,7 @@ serve(async (req) => {
       });
     } else if (whatsappResult.ok) {
       jsonLog("info", { evt: "confirmation_whatsapp", status: "sent", reservation_id: record.id });
-      await recordNotification(record.id, "confirmation", "sent");
+      await recordNotification(record.id, unit_id, "confirmation", "sent");
     } else {
       jsonLog("warn", {
         evt: "confirmation_whatsapp",
@@ -309,7 +315,7 @@ serve(async (req) => {
         reservation_id: record.id,
         err: (whatsappResult as { error?: string }).error,
       });
-      await recordNotification(record.id, "confirmation", "failed", (whatsappResult as { error?: string }).error);
+      await recordNotification(record.id, unit_id, "confirmation", "failed", (whatsappResult as { error?: string }).error);
     }
 
     if (emailResult.skipped) {
@@ -326,7 +332,7 @@ serve(async (req) => {
         reservation_id: record.id,
         provider_id: (emailResult as { id: string }).id,
       });
-      await recordNotification(record.id, "confirmation_email", "sent");
+      await recordNotification(record.id, unit_id, "confirmation_email", "sent");
     } else {
       jsonLog("warn", {
         evt: "confirmation_email",
@@ -334,7 +340,7 @@ serve(async (req) => {
         reservation_id: record.id,
         err: (emailResult as { error?: string }).error,
       });
-      await recordNotification(record.id, "confirmation_email", "failed", (emailResult as { error?: string }).error);
+      await recordNotification(record.id, unit_id, "confirmation_email", "failed", (emailResult as { error?: string }).error);
     }
 
     const anySent = whatsappResult.ok || emailResult.ok;

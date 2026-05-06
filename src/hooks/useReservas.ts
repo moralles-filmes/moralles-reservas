@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import type { Reserva, ReservaFormData, ReservaStatus } from "@/types/reserva";
 
@@ -214,6 +215,19 @@ export function useUpdateReservaStatus(unitId: string) {
         .select()
         .single();
       if (error) throw error;
+
+      if (status === "cancelled") {
+        // Fire-and-forget: não bloquear o fluxo de UI se a notificação WhatsApp falhar.
+        supabase.functions
+          .invoke("send-cancellation", { body: { reservation_id: id } })
+          .then(({ error: fnErr }) => {
+            if (fnErr) {
+              console.error("send-cancellation failed", fnErr);
+              toast.error("Reserva cancelada, mas falha ao notificar o cliente.");
+            }
+          });
+      }
+
       return data as Reserva;
     },
     onSuccess: () => {

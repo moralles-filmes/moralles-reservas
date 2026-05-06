@@ -184,6 +184,7 @@ async function createReservation(params: {
     customerId: customer.id,
     notes: params.notes ?? null,
     status: "confirmed",
+    source: "whatsapp",
   });
 
   if (!result.success) {

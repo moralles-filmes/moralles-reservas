@@ -47,3 +47,21 @@ export function buildReminderMessage(params: {
     `Te esperamos! 🍽️`
   );
 }
+
+export function buildCancellationMessage(params: {
+  name: string;
+  date: string;
+  time: string;
+  partySize: number;
+  code: string;
+}): string {
+  return (
+    `❌ *Reserva Cancelada*\n\n` +
+    `Olá ${params.name}, sua reserva foi cancelada.\n\n` +
+    `📅 Data: ${params.date}\n` +
+    `⏰ Horário: ${params.time}\n` +
+    `👥 Pessoas: ${params.partySize}\n` +
+    `🔑 Código: #${params.code}\n\n` +
+    `Se foi engano ou quiser remarcar, é só responder aqui que ajudamos. 🙏`
+  );
+}
