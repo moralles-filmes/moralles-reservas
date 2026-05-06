@@ -27,11 +27,13 @@ const GConfiguracoes = lazy(() => import("./pages/gestao/Configuracoes"));
 const GAuditoria = lazy(() => import("./pages/gestao/Auditoria"));
 const GAutomacao = lazy(() => import("./pages/gestao/Automacao"));
 const GAvaliacoes = lazy(() => import("./pages/gestao/Avaliacoes"));
+const GPaginaPublica = lazy(() => import("./pages/gestao/PaginaPublica"));
 
 // ── Operacional ───────────────────────────────────────────────────────────────
 const OReservasDia = lazy(() => import("./pages/operacional/ReservasDia"));
 const OFila        = lazy(() => import("./pages/operacional/Fila"));
 const OPassantes   = lazy(() => import("./pages/operacional/Passantes"));
+const OConversas   = lazy(() => import("./pages/operacional/Conversas"));
 
 // ── Platform ──────────────────────────────────────────────────────────────────
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
@@ -136,12 +138,14 @@ export default function App() {
               <Route path="/g/:unitSlug/configuracoes" element={<GestaoGuard><GConfiguracoes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/auditoria" element={<GestaoGuard><GAuditoria /></GestaoGuard>} />
               <Route path="/g/:unitSlug/avaliacoes" element={<GestaoGuard><GAvaliacoes /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/pagina-publica" element={<GestaoGuard><GPaginaPublica /></GestaoGuard>} />
 
               {/* ── Operacional /o/:unitSlug ────────────────────────────── */}
               <Route path="/o/:unitSlug" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/reservas" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/fila" element={<OperacionalGuard><OFila /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/passantes" element={<OperacionalGuard><OPassantes /></OperacionalGuard>} />
+              <Route path="/o/:unitSlug/conversas" element={<OperacionalGuard><OConversas /></OperacionalGuard>} />
 
               {/* ── Platform /platform/* ───────────────────────────────── */}
               <Route path="/platform" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />

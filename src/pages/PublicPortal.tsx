@@ -1,35 +1,59 @@
-import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { Link } from "react-router-dom";
 import { ReservaForm } from "@/components/reserva/ReservaForm";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
+import { WaitlistFormPublic } from "@/components/waitlist/WaitlistFormPublic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { useReservaByCode } from "@/hooks/useReservas";
-import { CalendarIcon, Search } from "lucide-react";
+import {
+  CalendarDays,
+  ChevronRight,
+  Clock,
+  MapPin,
+  Search,
+  Smartphone,
+  Sparkles,
+  UtensilsCrossed,
+  Wallet,
+} from "lucide-react";
+import type { UnitAddress } from "@/types/reserva";
 
 interface PublicUnit {
   id: string;
   name: string;
   slug: string;
   organization_id: string;
+  description: string | null;
+  price_range_min: number | null;
+  price_range_max: number | null;
+  hero_image_url: string | null;
+  logo_url: string | null;
+  address: UnitAddress | null;
 }
+
+const SELECT =
+  "id, name, slug, organization_id, description, price_range_min, price_range_max, hero_image_url, logo_url, address";
 
 export default function PublicPortal() {
   const { slug } = useParams<{ slug: string }>();
-  const [code, setCode] = useState("");
-  const [searchCode, setSearchCode] = useState("");
 
   const { data: unit, isLoading, error } = useQuery({
     queryKey: ["public-unit", slug],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("units")
-        .select("id, name, slug, organization_id")
+        .select(SELECT)
         .eq("slug", slug)
         .maybeSingle();
       if (error) throw error;
@@ -38,104 +62,407 @@ export default function PublicPortal() {
     enabled: !!slug,
   });
 
-  const { data: reserva, isLoading: loadingReserva } = useReservaByCode(
-    searchCode,
-    unit?.id
-  );
-
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <Skeleton className="h-12 w-48" />
+      <div className="min-h-screen bg-background">
+        <div className="aspect-[16/9] w-full max-h-[520px]">
+          <Skeleton className="h-full w-full rounded-none" />
+        </div>
+        <div className="max-w-6xl mx-auto px-4 py-12 space-y-4">
+          <Skeleton className="h-10 w-72" />
+          <Skeleton className="h-5 w-96" />
+        </div>
       </div>
     );
   }
 
   if (error || !unit) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4">
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-6 text-center">
         <p className="text-lg font-semibold">Restaurante não encontrado.</p>
-        <p className="text-sm text-muted-foreground">Verifique o link e tente novamente.</p>
+        <p className="text-sm text-muted-foreground">
+          Verifique o link e tente novamente.
+        </p>
         <Link to="/">
-          <Button variant="outline" size="sm">Página inicial</Button>
+          <Button variant="outline" size="sm">
+            Página inicial
+          </Button>
         </Link>
       </div>
     );
   }
 
+  return <PortalContent unit={unit} />;
+}
+
+// ─── Conteúdo principal ───────────────────────────────────────────────────────
+
+function PortalContent({ unit }: { unit: PublicUnit }) {
+  const initials = useMemo(() => getInitials(unit.name), [unit.name]);
+
+  const fullAddress =
+    unit.address?.full?.trim() ||
+    [unit.address?.street, unit.address?.number, unit.address?.city]
+      .filter(Boolean)
+      .join(", ");
+
+  const cityLine = [unit.address?.neighborhood, unit.address?.city]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b bg-card">
-        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <CalendarIcon className="h-5 w-5 text-primary" />
-            <span className="font-semibold text-lg">{unit.name}</span>
-          </div>
-          <Link to="/admin/login">
-            <Button variant="ghost" size="sm">Área Admin</Button>
+      {/* Top bar minimal — não compete com o hero */}
+      <header className="absolute top-0 inset-x-0 z-20">
+        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+          <Link
+            to="/"
+            className="text-xs uppercase tracking-[0.2em] text-white/90 hover:text-white drop-shadow"
+          >
+            Moralles
+          </Link>
+          <Link
+            to="/admin/login"
+            className="text-xs text-white/90 hover:text-white drop-shadow"
+          >
+            Área Admin
           </Link>
         </div>
       </header>
 
-      <div className="max-w-5xl mx-auto px-4 py-12">
-        <div className="grid lg:grid-cols-2 gap-12 items-start">
-          <div>
-            <div className="mb-8">
-              <h1 className="text-3xl font-bold mb-2">Faça sua reserva</h1>
-              <p className="text-muted-foreground">
-                Reserve sua mesa com facilidade. A confirmação será enviada via WhatsApp.
-              </p>
+      {/* Hero */}
+      <section className="relative">
+        <div className="relative aspect-[16/9] max-h-[560px] w-full overflow-hidden bg-gradient-to-br from-[hsl(24,85%,45%)] via-[hsl(28,80%,55%)] to-[hsl(38,90%,52%)]">
+          {unit.hero_image_url ? (
+            <img
+              src={unit.hero_image_url}
+              alt={unit.name}
+              className="absolute inset-0 w-full h-full object-cover"
+            />
+          ) : (
+            <div
+              className="absolute inset-0"
+              style={{
+                backgroundImage:
+                  "radial-gradient(circle at 30% 30%, rgba(255,255,255,0.18) 0%, transparent 50%), radial-gradient(circle at 70% 70%, rgba(0,0,0,0.18) 0%, transparent 60%)",
+              }}
+            />
+          )}
+          <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-black/10 to-black/55" />
+        </div>
+
+        {/* Faixa identitária — sobreposta ao hero, com logo + nome */}
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="relative -mt-20 sm:-mt-24 flex items-end gap-5 sm:gap-7">
+            <div
+              className={`shrink-0 h-28 w-28 sm:h-36 sm:w-36 rounded-full overflow-hidden ring-4 ring-background bg-card shadow-xl flex items-center justify-center`}
+            >
+              {unit.logo_url ? (
+                <img
+                  src={unit.logo_url}
+                  alt={`Logo ${unit.name}`}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <span className="font-display text-3xl sm:text-4xl text-primary">
+                  {initials}
+                </span>
+              )}
             </div>
-            <ReservaForm unit={unit} />
-          </div>
-
-          <div className="lg:pt-16">
-            <Card>
-              <CardContent className="pt-6">
-                <h2 className="font-semibold text-lg mb-1">Consultar reserva</h2>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Informe o código para ver sua reserva.
+            <div className="pb-3 sm:pb-4 text-white">
+              <h1 className="font-display text-3xl sm:text-5xl leading-tight tracking-tight drop-shadow-md">
+                {unit.name}
+              </h1>
+              {cityLine && (
+                <p className="text-sm sm:text-base text-white/90 mt-1 flex items-center gap-1.5 drop-shadow">
+                  <MapPin className="h-3.5 w-3.5" />
+                  {cityLine}
                 </p>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Ex: AB1C2DEF"
-                    value={code}
-                    onChange={(e) => setCode(e.target.value.toUpperCase())}
-                    className="font-mono"
-                    maxLength={8}
-                  />
-                  <Button
-                    variant="secondary"
-                    onClick={() => setSearchCode(code)}
-                    disabled={code.length < 4}
-                  >
-                    <Search className="h-4 w-4" />
-                  </Button>
-                </div>
-
-                {loadingReserva && (
-                  <p className="text-sm text-muted-foreground mt-3">Buscando...</p>
-                )}
-                {searchCode && !loadingReserva && !reserva && (
-                  <p className="text-sm text-destructive mt-3">
-                    Reserva não encontrada. Verifique o código.
-                  </p>
-                )}
-                {reserva && (
-                  <div className="mt-4">
-                    <ReservaCard reserva={reserva} />
-                    {(reserva.status === "confirmed" || reserva.status === "pending") && (
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Para alterar ou cancelar, envie uma mensagem no WhatsApp com o código #{reserva.reservation_code}.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </section>
+
+      {/* Body */}
+      <section className="max-w-6xl mx-auto px-4 pt-10 sm:pt-14 pb-20">
+        <div className="grid lg:grid-cols-[1fr_22rem] gap-10 lg:gap-14 items-start">
+          {/* ── Coluna esquerda — conteúdo editorial ───────────────────────── */}
+          <div className="space-y-12">
+            {unit.description && (
+              <Section icon={<UtensilsCrossed className="h-4 w-4" />} title="Sobre">
+                <p className="font-display text-lg sm:text-xl leading-relaxed text-foreground/85 whitespace-pre-line">
+                  {unit.description}
+                </p>
+              </Section>
+            )}
+
+            {(unit.price_range_min != null || unit.price_range_max != null) && (
+              <Section icon={<Wallet className="h-4 w-4" />} title="Faixa de preço">
+                <p className="font-display text-2xl sm:text-3xl">
+                  {formatPriceRange(unit.price_range_min, unit.price_range_max)}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Ticket médio por pessoa
+                </p>
+              </Section>
+            )}
+
+            {fullAddress && (
+              <Section icon={<MapPin className="h-4 w-4" />} title="Como chegar">
+                <p className="text-foreground/85 leading-relaxed">{fullAddress}</p>
+                <div className="mt-4 rounded-xl overflow-hidden border bg-muted">
+                  <iframe
+                    title={`Mapa de ${unit.name}`}
+                    src={`https://www.google.com/maps?q=${encodeURIComponent(
+                      fullAddress
+                    )}&output=embed`}
+                    className="w-full h-72 border-0"
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                </div>
+                <a
+                  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                    fullAddress
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-primary hover:underline mt-3 inline-flex items-center gap-1"
+                >
+                  Abrir no Google Maps
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </a>
+              </Section>
+            )}
+
+            {/* Footer minimal — consulta por código discreta */}
+            <div className="border-t pt-6">
+              <ReservaCodeLookup unitId={unit.id} />
+            </div>
+          </div>
+
+          {/* ── Coluna direita — CTAs sticky ────────────────────────────────── */}
+          <div className="lg:sticky lg:top-8 space-y-3 order-first lg:order-none -mt-2 lg:mt-0">
+            <ReservaCTA unit={unit} />
+            <WaitlistCTA unit={unit} />
+          </div>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="border-t bg-card">
+        <div className="max-w-6xl mx-auto px-4 py-6 flex items-center justify-between text-xs text-muted-foreground">
+          <span>Reservas · {unit.name}</span>
+          <span>Powered by Moralles</span>
+        </div>
+      </footer>
     </div>
   );
+}
+
+// ─── Subcomponentes ───────────────────────────────────────────────────────────
+
+function Section({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <div className="flex items-center gap-2 text-primary mb-3">
+        {icon}
+        <h2 className="text-xs font-medium uppercase tracking-[0.18em]">{title}</h2>
+      </div>
+      <div>{children}</div>
+    </section>
+  );
+}
+
+function ReservaCTA({ unit }: { unit: PublicUnit }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="w-full text-left rounded-2xl border bg-card p-5 sm:p-6 hover:shadow-lg hover:border-primary/40 transition-all group"
+        >
+          <div className="flex items-start gap-4">
+            <div className="h-11 w-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+              <CalendarDays className="h-5 w-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="font-display text-2xl leading-tight">Reserve Agora</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                Garanta sua mesa, evite filas
+              </p>
+              <p className="text-xs text-primary mt-3 inline-flex items-center gap-1 font-medium">
+                Fazer reserva
+                <ChevronRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+              </p>
+            </div>
+          </div>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="font-display text-2xl">
+            Reservar em {unit.name}
+          </DialogTitle>
+        </DialogHeader>
+        <ReservaForm
+          unit={{
+            id: unit.id,
+            name: unit.name,
+            organization_id: unit.organization_id,
+          }}
+          onSuccess={() => {
+            // Mantém aberto para mostrar a tela de confirmação;
+            // o usuário fecha quando quiser.
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function WaitlistCTA({ unit }: { unit: PublicUnit }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="w-full text-left rounded-2xl border bg-card/60 p-5 hover:shadow-md hover:border-secondary/40 transition-all group"
+        >
+          <div className="flex items-start gap-4">
+            <div className="h-10 w-10 rounded-full bg-secondary/15 text-secondary flex items-center justify-center shrink-0">
+              <Smartphone className="h-4 w-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="font-display text-xl leading-tight">Entrar na Fila</h3>
+              <p className="text-sm text-muted-foreground mt-0.5">
+                Guarde seu lugar sem sair de casa
+              </p>
+            </div>
+            <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 mt-1" />
+          </div>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="font-display text-2xl flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-secondary" />
+            Entrar na fila
+          </DialogTitle>
+          <p className="text-sm text-muted-foreground">
+            Avisamos pelo WhatsApp quando sua mesa estiver pronta em {unit.name}.
+          </p>
+        </DialogHeader>
+        <WaitlistFormPublic unitId={unit.id} onClose={() => setOpen(false)} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ReservaCodeLookup({ unitId }: { unitId: string }) {
+  const [open, setOpen] = useState(false);
+  const [code, setCode] = useState("");
+  const [searchCode, setSearchCode] = useState("");
+  const { data: reserva, isLoading } = useReservaByCode(searchCode, unitId);
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) {
+          setCode("");
+          setSearchCode("");
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 transition-colors"
+        >
+          <Clock className="h-3.5 w-3.5" />
+          Já tem reserva? Consulte pelo código
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="font-display text-2xl">Consultar reserva</DialogTitle>
+          <p className="text-sm text-muted-foreground">
+            Informe o código de 8 caracteres recebido no WhatsApp.
+          </p>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <Input
+              placeholder="Ex: AB1C2DEF"
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              className="font-mono"
+              maxLength={8}
+            />
+            <Button
+              variant="secondary"
+              onClick={() => setSearchCode(code)}
+              disabled={code.length < 4}
+            >
+              <Search className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {isLoading && <p className="text-sm text-muted-foreground">Buscando...</p>}
+          {searchCode && !isLoading && !reserva && (
+            <p className="text-sm text-destructive">
+              Reserva não encontrada. Verifique o código.
+            </p>
+          )}
+          {reserva && (
+            <div className="space-y-2">
+              <ReservaCard reserva={reserva} />
+              {(reserva.status === "confirmed" || reserva.status === "pending") && (
+                <p className="text-xs text-muted-foreground">
+                  Para alterar ou cancelar, envie uma mensagem no WhatsApp com o código #
+                  {reserva.reservation_code}.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function formatPriceRange(min: number | null, max: number | null): string {
+  const fmt = (n: number) =>
+    n.toLocaleString("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+  if (min != null && max != null) return `de ${fmt(min)} até ${fmt(max)}`;
+  if (min != null) return `a partir de ${fmt(min)}`;
+  if (max != null) return `até ${fmt(max)}`;
+  return "";
 }

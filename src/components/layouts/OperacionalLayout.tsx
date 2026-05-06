@@ -1,11 +1,14 @@
 import { NavLink, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
 import { UnitSwitcher } from "@/components/UnitSwitcher";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
   CalendarIcon,
   LogOut,
+  MessageCircle,
   Settings,
   Users,
   UtensilsCrossed,
@@ -15,15 +18,18 @@ import { toast } from "sonner";
 export function OperacionalLayout({ children }: { children: React.ReactNode }) {
   const { signOut } = useAuth();
   const { unitSlug } = useParams<{ unitSlug: string }>();
+  const unit = useCurrentUnit();
   const navigate = useNavigate();
 
   const base = `/o/${unitSlug}`;
+  const awaitingCount = useAwaitingHumanCount(unit?.unit_id ?? "");
 
   const navItems = [
-    { to: base,               label: "Reservas do dia", icon: CalendarIcon, end: true },
-    { to: `${base}/fila`,     label: "Fila de espera",  icon: Users },
-    { to: `${base}/passantes`,label: "Walk-ins",         icon: UtensilsCrossed },
-  ];
+    { to: base,                label: "Reservas do dia", icon: CalendarIcon, end: true },
+    { to: `${base}/fila`,      label: "Fila de espera",  icon: Users },
+    { to: `${base}/passantes`, label: "Walk-ins",        icon: UtensilsCrossed },
+    { to: `${base}/conversas`, label: "Conversas",       icon: MessageCircle, badge: awaitingCount },
+  ] as const;
 
   const handleSignOut = async () => {
     await signOut();
@@ -47,7 +53,7 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 px-3 space-y-0.5">
-          {navItems.map(({ to, label, icon: Icon, end }) => (
+          {navItems.map(({ to, label, icon: Icon, end, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -61,7 +67,12 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
               }
             >
               <Icon className="h-4 w-4 shrink-0" />
-              {label}
+              <span className="flex-1">{label}</span>
+              {!!badge && (
+                <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

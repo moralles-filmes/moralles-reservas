@@ -17,8 +17,16 @@ export interface OrganizationRow {
 async function invokeManageOrganizations(body: Record<string, unknown>) {
   const { data, error } = await supabase.functions.invoke("manage-organizations", { body });
   if (error) {
-    const message =
-      (data as { error?: string } | null)?.error ?? error.message ?? "Erro inesperado.";
+    let message = error.message ?? "Erro inesperado.";
+    const ctx = (error as { context?: Response }).context;
+    if (ctx && typeof ctx.json === "function") {
+      try {
+        const parsed = await ctx.json();
+        if (parsed?.error) message = String(parsed.error);
+      } catch {
+        // body não-JSON — mantém message do error.message
+      }
+    }
     throw new Error(message);
   }
   if (data && typeof data === "object" && "error" in data && data.error) {

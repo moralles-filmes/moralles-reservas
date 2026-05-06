@@ -12,14 +12,29 @@ export interface Organization {
   updated_at: string;
 }
 
+export interface UnitAddress {
+  street?: string | null;
+  number?: string | null;
+  neighborhood?: string | null;
+  city?: string | null;
+  state?: string | null;
+  cep?: string | null;
+  full?: string | null;
+}
+
 export interface Unit {
   id: string;
   organization_id: string;
   name: string;
   slug: string;
-  address: Record<string, unknown> | null;
+  address: UnitAddress | null;
   timezone: string;
   is_public: boolean;
+  description: string | null;
+  price_range_min: number | null;
+  price_range_max: number | null;
+  hero_image_url: string | null;
+  logo_url: string | null;
   created_at: string;
   updated_at: string;
   organization?: Organization;

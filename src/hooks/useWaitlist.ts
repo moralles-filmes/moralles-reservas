@@ -27,6 +27,29 @@ export function useWaitlist(unitId: string, onlyActive = true) {
   });
 }
 
+export interface AnonWaitlistInput {
+  customer_name: string;
+  customer_phone: string;
+  party_size: number;
+  notes?: string | null;
+}
+
+export function useAnonAddToWaitlist(unitId: string) {
+  return useMutation({
+    mutationFn: async (payload: AnonWaitlistInput) => {
+      const { error } = await supabase.from("waitlist").insert({
+        unit_id: unitId,
+        status: "waiting",
+        ...payload,
+      });
+      if (error) throw error;
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "Não foi possível entrar na fila.");
+    },
+  });
+}
+
 export function useAddToWaitlist(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({

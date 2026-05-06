@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   Building2,
   CalendarIcon,
+  Globe,
   LayoutDashboard,
   LogOut,
   MessageCircle,
@@ -37,6 +38,7 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
     { to: `${base}/conversas`,     label: "Conversas",    icon: MessageCircle, badge: awaitingCount },
     { to: `${base}/mesas`,         label: "Mesas",        icon: Table2 },
     { to: `${base}/avaliacoes`,    label: "Avaliações",   icon: Star },
+    { to: `${base}/pagina-publica`,label: "Página pública",icon: Globe },
     { to: `${base}/auditoria`,     label: "Auditoria",    icon: ScrollText },
     { to: `${base}/configuracoes`, label: "Configurações",icon: Settings },
   ] as const;
