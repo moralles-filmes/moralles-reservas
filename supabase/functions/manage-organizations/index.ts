@@ -1,21 +1,17 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+import { corsHeadersFor } from "../_shared/cors.ts";
+
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeadersFor(req), "Content-Type": "application/json" },
   });
 }
 
@@ -34,20 +30,20 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { headers: corsHeadersFor(req) });
   }
 
   try {
     const authHeader = req.headers.get("Authorization") ?? "";
     const jwt = authHeader.replace(/^Bearer\s+/i, "");
-    if (!jwt) return jsonResponse({ error: "Não autenticado." }, 401);
+    if (!jwt) return jsonResponse(req, { error: "Não autenticado." }, 401);
 
     const { data: callerData, error: callerErr } = await supabase.auth.getUser(jwt);
-    if (callerErr || !callerData.user) return jsonResponse({ error: "Sessão inválida." }, 401);
+    if (callerErr || !callerData.user) return jsonResponse(req, { error: "Sessão inválida." }, 401);
     const callerId = callerData.user.id;
 
     if (!(await isPlatformAdmin(callerId))) {
-      return jsonResponse({ error: "Acesso restrito a administradores da plataforma." }, 403);
+      return jsonResponse(req, { error: "Acesso restrito a administradores da plataforma." }, 403);
     }
 
     const body = await req.json().catch(() => ({}));
@@ -65,7 +61,7 @@ serve(async (req) => {
         `)
         .order("created_at", { ascending: true });
 
-      if (error) return jsonResponse({ error: error.message }, 500);
+      if (error) return jsonResponse(req, { error: error.message }, 500);
 
       const rows = (data ?? []).map((org: any) => ({
         id: org.id,
@@ -81,7 +77,7 @@ serve(async (req) => {
         first_unit_slug: (org.units ?? [])[0]?.slug ?? null,
       }));
 
-      return jsonResponse({ organizations: rows });
+      return jsonResponse(req, { organizations: rows });
     }
 
     // ── create_organization ─────────────────────────────────────────────────────
@@ -94,15 +90,15 @@ serve(async (req) => {
       const ownerEmail = String(body.owner_email ?? "").trim().toLowerCase();
       const ownerPassword = String(body.owner_password ?? "");
 
-      if (!orgName) return jsonResponse({ error: "Nome da empresa é obrigatório." }, 400);
-      if (!slugValid(orgSlug)) return jsonResponse({ error: "Slug da empresa inválido (letras minúsculas, números e hífens)." }, 400);
-      if (!unitName) return jsonResponse({ error: "Nome da unidade é obrigatório." }, 400);
-      if (!slugValid(unitSlug)) return jsonResponse({ error: "Slug da unidade inválido." }, 400);
+      if (!orgName) return jsonResponse(req, { error: "Nome da empresa é obrigatório." }, 400);
+      if (!slugValid(orgSlug)) return jsonResponse(req, { error: "Slug da empresa inválido (letras minúsculas, números e hífens)." }, 400);
+      if (!unitName) return jsonResponse(req, { error: "Nome da unidade é obrigatório." }, 400);
+      if (!slugValid(unitSlug)) return jsonResponse(req, { error: "Slug da unidade inválido." }, 400);
       if (!ownerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail)) {
-        return jsonResponse({ error: "E-mail do proprietário inválido." }, 400);
+        return jsonResponse(req, { error: "E-mail do proprietário inválido." }, 400);
       }
       if (ownerPassword.length < 6) {
-        return jsonResponse({ error: "Senha deve ter pelo menos 6 caracteres." }, 400);
+        return jsonResponse(req, { error: "Senha deve ter pelo menos 6 caracteres." }, 400);
       }
 
       // 1. Criar auth user do owner
@@ -112,7 +108,7 @@ serve(async (req) => {
         email_confirm: true,
       });
       if (createErr || !created.user) {
-        return jsonResponse({ error: createErr?.message ?? "Falha ao criar usuário." }, 400);
+        return jsonResponse(req, { error: createErr?.message ?? "Falha ao criar usuário." }, 400);
       }
       const ownerId = created.user.id;
 
@@ -125,7 +121,7 @@ serve(async (req) => {
 
       if (orgErr || !org) {
         await supabase.auth.admin.deleteUser(ownerId);
-        return jsonResponse({ error: orgErr?.message ?? "Falha ao criar organização." }, 400);
+        return jsonResponse(req, { error: orgErr?.message ?? "Falha ao criar organização." }, 400);
       }
 
       // 3. Criar unit
@@ -138,7 +134,7 @@ serve(async (req) => {
       if (unitErr || !unit) {
         await supabase.from("organizations").delete().eq("id", org.id);
         await supabase.auth.admin.deleteUser(ownerId);
-        return jsonResponse({ error: unitErr?.message ?? "Falha ao criar unidade." }, 400);
+        return jsonResponse(req, { error: unitErr?.message ?? "Falha ao criar unidade." }, 400);
       }
 
       // 4. Criar unit_member owner
@@ -152,10 +148,10 @@ serve(async (req) => {
         await supabase.from("units").delete().eq("id", unit.id);
         await supabase.from("organizations").delete().eq("id", org.id);
         await supabase.auth.admin.deleteUser(ownerId);
-        return jsonResponse({ error: memberErr.message }, 500);
+        return jsonResponse(req, { error: memberErr.message }, 500);
       }
 
-      return jsonResponse({ success: true, organization_id: org.id, unit_id: unit.id, owner_id: ownerId });
+      return jsonResponse(req, { success: true, organization_id: org.id, unit_id: unit.id, owner_id: ownerId });
     }
 
     // ── update_organization ─────────────────────────────────────────────────────
@@ -164,8 +160,8 @@ serve(async (req) => {
       const orgName = String(body.org_name ?? "").trim();
       const plan = body.plan ? String(body.plan).trim() : undefined;
 
-      if (!orgId) return jsonResponse({ error: "org_id é obrigatório." }, 400);
-      if (!orgName) return jsonResponse({ error: "Nome da empresa é obrigatório." }, 400);
+      if (!orgId) return jsonResponse(req, { error: "org_id é obrigatório." }, 400);
+      if (!orgName) return jsonResponse(req, { error: "Nome da empresa é obrigatório." }, 400);
 
       const updatePayload: Record<string, string> = { name: orgName };
       if (plan) updatePayload.plan = plan;
@@ -175,13 +171,13 @@ serve(async (req) => {
         .update(updatePayload)
         .eq("id", orgId);
 
-      if (updateErr) return jsonResponse({ error: updateErr.message }, 500);
-      return jsonResponse({ success: true });
+      if (updateErr) return jsonResponse(req, { error: updateErr.message }, 500);
+      return jsonResponse(req, { success: true });
     }
 
-    return jsonResponse({ error: "Ação inválida." }, 400);
+    return jsonResponse(req, { error: "Ação inválida." }, 400);
   } catch (err) {
     console.error(err);
-    return jsonResponse({ error: String(err) }, 500);
+    return jsonResponse(req, { error: String(err) }, 500);
   }
 });

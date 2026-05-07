@@ -1,22 +1,17 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { sendOutbound, type WhatsAppProvider, type ChannelCredentials } from "../_shared/whatsapp-providers.ts";
+import { type WhatsAppProvider, type ChannelCredentials } from "../_shared/whatsapp-providers.ts";
+import { corsHeadersFor } from "../_shared/cors.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeadersFor(req), "Content-Type": "application/json" },
   });
 }
 
@@ -31,25 +26,25 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { headers: corsHeadersFor(req) });
   }
 
   try {
     const authHeader = req.headers.get("Authorization") ?? "";
     const jwt = authHeader.replace(/^Bearer\s+/i, "");
-    if (!jwt) return jsonResponse({ error: "Não autenticado." }, 401);
+    if (!jwt) return jsonResponse(req, { error: "Não autenticado." }, 401);
 
     const { data: callerData, error: callerErr } = await supabase.auth.getUser(jwt);
-    if (callerErr || !callerData.user) return jsonResponse({ error: "Sessão inválida." }, 401);
+    if (callerErr || !callerData.user) return jsonResponse(req, { error: "Sessão inválida." }, 401);
     const callerId = callerData.user.id;
 
     const body = await req.json().catch(() => ({}));
     const { action, unit_id: unitId } = body;
 
-    if (!unitId) return jsonResponse({ error: "unit_id é obrigatório." }, 400);
+    if (!unitId) return jsonResponse(req, { error: "unit_id é obrigatório." }, 400);
 
     if (!(await isPlatformAdmin(callerId))) {
-      return jsonResponse({ error: "Apenas administradores da plataforma." }, 403);
+      return jsonResponse(req, { error: "Apenas administradores da plataforma." }, 403);
     }
 
     // ── list ──────────────────────────────────────────────────────────────────
@@ -63,8 +58,8 @@ serve(async (req) => {
         .eq("unit_id", unitId)
         .order("created_at", { ascending: true });
 
-      if (error) return jsonResponse({ error: error.message }, 500);
-      return jsonResponse({ success: true, channels: data ?? [] });
+      if (error) return jsonResponse(req, { error: error.message }, 500);
+      return jsonResponse(req, { success: true, channels: data ?? [] });
     }
 
     // ── create ─────────────────────────────────────────────────────────────────
@@ -73,7 +68,7 @@ serve(async (req) => {
       const credentials: ChannelCredentials = body.credentials ?? {};
 
       if (!provider || !["zapi", "waha", "official"].includes(provider)) {
-        return jsonResponse({ error: "Provedor inválido." }, 400);
+        return jsonResponse(req, { error: "Provedor inválido." }, 400);
       }
 
       // Generate a per-channel webhook secret
@@ -94,20 +89,20 @@ serve(async (req) => {
         .single();
 
       if (insertErr || !channel) {
-        return jsonResponse({ error: insertErr?.message ?? "Erro ao criar canal." }, 500);
+        return jsonResponse(req, { error: insertErr?.message ?? "Erro ao criar canal." }, 500);
       }
 
       const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const projectRef = supabaseUrl.match(/https:\/\/([^.]+)\./)?.[1] ?? "<project>";
       const webhookUrl = `https://${projectRef}.supabase.co/functions/v1/webhook-whatsapp?channel=${channel.id}`;
 
-      return jsonResponse({ success: true, channel, webhookUrl, webhookSecret });
+      return jsonResponse(req, { success: true, channel, webhookUrl, webhookSecret });
     }
 
     // ── delete ─────────────────────────────────────────────────────────────────
     if (action === "delete") {
       const channelId = String(body.channel_id ?? "");
-      if (!channelId) return jsonResponse({ error: "channel_id é obrigatório." }, 400);
+      if (!channelId) return jsonResponse(req, { error: "channel_id é obrigatório." }, 400);
 
       const { error: delErr } = await supabase
         .from("whatsapp_channels")
@@ -115,14 +110,14 @@ serve(async (req) => {
         .eq("id", channelId)
         .eq("unit_id", unitId);
 
-      if (delErr) return jsonResponse({ error: delErr.message }, 500);
-      return jsonResponse({ success: true });
+      if (delErr) return jsonResponse(req, { error: delErr.message }, 500);
+      return jsonResponse(req, { success: true });
     }
 
     // ── test ──────────────────────────────────────────────────────────────────
     if (action === "test") {
       const channelId = String(body.channel_id ?? "");
-      if (!channelId) return jsonResponse({ error: "channel_id é obrigatório." }, 400);
+      if (!channelId) return jsonResponse(req, { error: "channel_id é obrigatório." }, 400);
 
       const { data: channel } = await supabase
         .from("whatsapp_channels")
@@ -131,7 +126,7 @@ serve(async (req) => {
         .eq("unit_id", unitId)
         .maybeSingle();
 
-      if (!channel) return jsonResponse({ error: "Canal não encontrado." }, 404);
+      if (!channel) return jsonResponse(req, { error: "Canal não encontrado." }, 404);
 
       const creds: ChannelCredentials = channel.credentials ?? {};
       const provider: WhatsAppProvider = channel.provider;
@@ -193,12 +188,12 @@ serve(async (req) => {
         })
         .eq("id", channelId);
 
-      return jsonResponse({ success: connected, status: newStatus, error: errorMsg });
+      return jsonResponse(req, { success: connected, status: newStatus, error: errorMsg });
     }
 
-    return jsonResponse({ error: "Ação inválida." }, 400);
+    return jsonResponse(req, { error: "Ação inválida." }, 400);
   } catch (err) {
     console.error(err);
-    return jsonResponse({ error: String(err) }, 500);
+    return jsonResponse(req, { error: String(err) }, 500);
   }
 });
