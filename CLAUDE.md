@@ -45,6 +45,20 @@ npm run test:watch   # Vitest em watch mode
 npm install --legacy-peer-deps
 ```
 
+### Travou com "Failed to fetch dynamically imported module"
+
+Sintoma: rota lazy (ex.: `/r/:slug`) cai no `ErrorBoundary` mesmo após reload. Causa quase sempre é cache do Vite corrompido — em especial quando o repo está em pasta sincronizada por iCloud Drive (`~/Documents`), porque o iCloud renomeia `node_modules/.vite/deps/` para `deps 2/`, `deps 3/` durante a otimização e os hashes `?v=...` dos imports param de bater.
+
+```bash
+# mata o vite, limpa cache, sobe limpo
+lsof -ti:8080 | xargs kill 2>/dev/null
+rm -rf node_modules/.vite
+npm run dev
+# no browser: Cmd+Shift+R; se persistir, sessionStorage.clear() no DevTools
+```
+
+Se `node_modules/.vite/` voltar a aparecer com `deps 2/`, `deps 3/`, mover o projeto pra fora de `~/Documents` (ex.: `~/Code/`) é a única solução definitiva — iCloud não é compatível com `node_modules`.
+
 ---
 
 ## Primeira execução
@@ -92,11 +106,15 @@ As demais variáveis (API keys, WhatsApp, service role key) são **secrets das E
 ```bash
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=...
 
-# Legado Z-API (usado como fallback enquanto não há whatsapp_channels configurados)
+# Legado Z-API — fallback caso `whatsapp_channels` não tenha canal connected
+# para a unit. Cada canal moderno tem seu próprio webhook_secret per-channel,
+# então ZAPI_WEBHOOK_SECRET só era usado pelo endpoint legacy /webhook-zapi
+# (hoje 410 Gone — todo webhook passa pelo path multi-tenant
+# /webhook-whatsapp?channel=<id>&secret=<webhook_secret>). Pode ser removido
+# após confirmar que nenhum canal externo aponta pro legacy.
 supabase secrets set ZAPI_INSTANCE_ID=...
 supabase secrets set ZAPI_TOKEN=...
 supabase secrets set ZAPI_CLIENT_TOKEN=...
-supabase secrets set ZAPI_WEBHOOK_SECRET=...   # validar origem do webhook Z-API
 
 # Hardening geral
 supabase secrets set INTERNAL_API_KEY=...      # auth do send-whatsapp / send-confirmation
@@ -198,7 +216,9 @@ moralles-reservas/
 │   │   ├── useSpecialDates.ts         # CRUD de datas especiais (feriados)
 │   │   ├── useAuditLog.ts             # Lista de audit_log (LGPD)
 │   │   ├── useWalkIns.ts              # CRUD de walk-ins (Operacional)
+│   │   ├── useWalkInStatsToday.ts     # Count de walk-ins do dia + breakdown por status (Dashboard)
 │   │   ├── useWaitlist.ts             # CRUD de fila + useAnonAddToWaitlist (entrar na fila público)
+│   │   ├── useDashboardMetrics.ts     # KPIs/charts/listas do Dashboard — query única + agregações em useMemo
 │   │   ├── useOrganizations.ts        # Plataforma — list/create/update via manage-organizations
 │   │   ├── useWhatsAppChannels.ts     # CRUD de whatsapp_channels via manage-channels
 │   │   ├── useConversations.ts        # Histórico de chats WhatsApp
@@ -219,6 +239,17 @@ moralles-reservas/
 │   │   │   └── ReservaCard.tsx        # Card de reserva com ações de status
 │   │   ├── waitlist/
 │   │   │   └── WaitlistFormPublic.tsx # Form anônimo para "Entrar na Fila" no portal público
+│   │   ├── dashboard/                 # Componentes do Dashboard analítico (Bloco A-F)
+│   │   │   ├── KpiCard.tsx            #   Card de KPI com seta de delta (% ou abs) + sufixo
+│   │   │   ├── ChartCard.tsx          #   Wrapper Card com altura fixa + estados loading/empty
+│   │   │   ├── PeriodFilter.tsx       #   Tabs Hoje/7d/30d/90d controlado
+│   │   │   ├── ReservationsByDayChart.tsx  # LineChart confirmadas vs cancel./no-show (Recharts)
+│   │   │   ├── OccupancyByHourChart.tsx    # BarChart 8h-23h, reservas confirmadas
+│   │   │   ├── RatingsSummary.tsx     #   Card média + distribuição 1-5 (reusado em Avaliacoes)
+│   │   │   ├── RatingDistributionBars.tsx  # Barras horizontais 5..1 estrelas
+│   │   │   ├── StarRating.tsx         #   Renderiza N estrelas (sm/md)
+│   │   │   ├── RecentRatingsList.tsx  #   Lista compacta últimas avaliações
+│   │   │   └── EmptyChartCard.tsx     #   Estado vazio padrão pra charts/listas
 │   │   ├── layouts/
 │   │   │   ├── GestaoLayout.tsx       # Sidebar + layout das páginas de gestão
 │   │   │   ├── OperacionalLayout.tsx  # Header minimalista + navegação operacional
@@ -230,7 +261,7 @@ moralles-reservas/
 │       ├── PublicPortal.tsx           # Portal público do restaurante — hero/sobre/preço/mapa/CTAs
 │       ├── Auth.tsx                   # Login
 │       ├── gestao/
-│       │   ├── Dashboard.tsx          # Métricas e KPIs da unidade
+│       │   ├── Dashboard.tsx          # KPIs analíticos com filtro de período (Hoje/7d/30d/90d) — operação de hoje + 6 KPIs c/ delta + 2 charts (reservas por dia, ocupação por horário) + avaliações + fila/walk-ins live. Charts via lazy-load.
 │       │   ├── Reservas.tsx           # Lista com filtros amplos
 │       │   ├── Calendario.tsx         # Visão calendário mensal
 │       │   ├── Clientes.tsx           # Histórico de clientes (escopado por organização)
@@ -273,24 +304,28 @@ moralles-reservas/
 │   │   ├── 019_public_page_content.sql    # colunas de conteúdo público em units + bucket unit-assets + anon waitlist
 │   │   ├── 020_cancellation_notification.sql   # adiciona 'cancellation' ao CHECK de notifications_sent.kind
 │   │   ├── 021_confirmation_email_kind.sql     # adiciona 'confirmation_email' ao CHECK de notifications_sent.kind
-│   │   └── 022_reservation_source.sql          # coluna reservations.source ('web'|'whatsapp') + trigger condicional
+│   │   ├── 022_reservation_source.sql          # coluna reservations.source ('web'|'whatsapp') + trigger condicional
+│   │   ├── 023a_public_rpcs_and_rate_limit.sql # RPCs públicas (get_unit_public_full, get_public_business_hours) + check_rate_limit/4 NOT NULL
+│   │   ├── 023b_lock_anon_policies.sql         # dropa policies anon abertas (tables/business_hours/settings/special_dates) + FORCE RLS em whatsapp_channels + rate_limit_events.unit_id NOT NULL
+│   │   └── 024_drop_unit_assets_listing.sql    # remove SELECT policy do bucket unit-assets (CDN público continua, listing bloqueado)
 │   │
 │   └── functions/
 │       ├── _shared/
 │       │   ├── ai-providers.ts            # Abstração multi-provedor (runAgentLoop)
+│       │   ├── cors.ts                    # corsHeadersFor — whitelist de Origin (localhost, *.vercel.app, reservas.moralles.com.br) pra manage-*
 │       │   ├── email.ts                   # Wrapper Resend (fetch, timeout 15s, log estruturado)
 │       │   ├── whatsapp-providers.ts      # Abstração WhatsApp: parseInbound / sendOutbound por provider
-│       │   ├── whatsapp-send.ts           # Helper sendWhatsApp (canal por unit_id ou channel_id, fallback Z-API legacy)
+│       │   ├── whatsapp-send.ts           # Helper sendWhatsApp — exige pareamento channel_id+unit_id; sem fallback se mismatch
 │       │   ├── retry.ts                   # fetchWithRetry com exponential backoff
 │       │   └── security.ts                # requireInternalAuth / sanitizePhone / jsonLog
 │       ├── webhook-whatsapp/
 │       │   └── index.ts                   # Webhook unificado — resolve canal por ?channel=<id>
 │       ├── webhook-zapi/
-│       │   └── index.ts                   # Mantido por compatibilidade (redireciona internamente)
+│       │   └── index.ts                   # 410 Gone — endpoint legacy global, substituído pelo path multi-tenant em webhook-whatsapp
 │       ├── send-whatsapp/
-│       │   └── index.ts                   # Aceita channel_id ou unit_id; fallback Z-API legacy
+│       │   └── index.ts                   # Aceita channel_id+unit_id; exige pareamento (vide _shared/whatsapp-send)
 │       ├── send-confirmation/
-│       │   └── index.ts                   # WhatsApp + e-mail (Resend) em paralelo; resolve canal via unit_id
+│       │   └── index.ts                   # WhatsApp + e-mail (Resend) em paralelo; valida unit_id da reserva quando record.unit_id presente
 │       ├── send-cancellation/
 │       │   └── index.ts                   # Notifica cliente via WhatsApp ao cancelar reserva
 │       ├── manage-channels/
@@ -342,7 +377,7 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 | `special_dates` | Datas especiais — `unit_id`, `date` unique por unidade, `is_closed`, `open_time`, `close_time` |
 | `audit_log` | Trilha LGPD — `unit_id`, `table_name`, `operation`, `old_values`, `new_values`, `actor_id` |
 | `notifications_sent` | Log/idempotência outbound — `unit_id`, `reservation_id`, `kind`, `status` |
-| `whatsapp_channels` | Canais WhatsApp por unidade — `unit_id`, `provider` (zapi/waha/official), `credentials` JSONB criptografado, `status`, `display_phone` |
+| `whatsapp_channels` | Canais WhatsApp por unidade — `unit_id`, `provider` (zapi/waha/official), `credentials` JSONB, `webhook_secret`, `status`, `display_phone`. RLS + FORCE: leitura só pelo `service_role` (UI consome via `manage-channels` action `list`) |
 | `ai_provider_credentials` | Chaves de API de IA por unidade (BYOK) — `unit_id`, `provider` (claude/openai/gemini/grok/deepseek), `api_key`, `last4`, `active`. RLS + FORCE: leitura só pelo `service_role` |
 | `walk_ins` | Clientes sem reserva no dia — `unit_id`, `customer_name`, `party_size`, `table_id?`, `status` (waiting/seated/left/no_show) |
 | `waitlist` | Fila de espera — `unit_id`, `customer_name`, `party_size`, `priority`, `status` (waiting/notified/seated/cancelled) |
@@ -364,8 +399,8 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 
 ### RLS
 
-- Anon: pode inserir e ler `customers` e `reservations`, ler `units` públicas, e inserir em `waitlist` (Entrar na Fila público)
-- Authenticated: acesso escopado por `is_unit_member(auth.uid(), unit_id)` — nunca vê dados de outra unidade
+- Anon: pode **inserir** customers (org pública), reservations e waitlist (unit pública); pode ler `organizations`/`units` públicas. **Não pode ler** `tables`/`business_hours`/`settings`/`special_dates` direto — precisa passar pelas RPCs `SECURITY DEFINER` `get_unit_public_full(slug)` e `get_public_business_hours(unit_id)`. **Não pode ler** `whatsapp_channels` (FORCE RLS).
+- Authenticated: acesso escopado por `is_unit_member(auth.uid(), unit_id)` — nunca vê dados de outra unidade. `whatsapp_channels` e `ai_provider_credentials` têm FORCE RLS sem policies — Edge Functions consomem via `service_role`.
 - Owner/gerente: pode `UPDATE` em `units` (conteúdo da página pública) e gravar no bucket `unit-assets` (path `<unit_id>/...`)
 - Edge Functions usam `SUPABASE_SERVICE_ROLE_KEY` (bypassa RLS)
 
@@ -373,7 +408,8 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 
 - Bucket público `unit-assets` — logos e hero images por unidade
 - Path convention: `<unit_id>/logo-<timestamp>.<ext>`, `<unit_id>/hero-<timestamp>.<ext>`
-- Read público (CDN); write apenas owner/gerente da unidade dona do path
+- Read **público via CDN URL** (`/storage/v1/object/public/unit-assets/<path>`); listing (`/list/`) bloqueado pra anon
+- Write apenas owner/gerente da unidade dona do path
 
 ### Rodar migrações
 
@@ -419,7 +455,7 @@ O provedor ativo e o system prompt são configurados por unidade em **Plataforma
 | WAHA | `base_url`, `api_key`, `session_name` | `.../webhook-whatsapp?channel=<id>` |
 | Meta Cloud API | `phone_number_id`, `access_token`, `app_secret` | `.../webhook-whatsapp?channel=<id>` |
 
-Canais são configurados por unidade em **Plataforma → Automação → \<unidade\> → Canais WhatsApp** (exclusivo do super-admin via Edge Function `manage-channels` com check `platform_admin`). Cada canal tem um `webhook_secret` individual (substitui o global `ZAPI_WEBHOOK_SECRET`).
+Canais são configurados por unidade em **Plataforma → Automação → \<unidade\> → Canais WhatsApp** (exclusivo do super-admin via Edge Function `manage-channels` com check `platform_admin`). Cada canal tem um `webhook_secret` individual; o secret global `ZAPI_WEBHOOK_SECRET` foi descontinuado junto com o `webhook-zapi` (hoje 410 Gone). A UI de gestão consome a lista via action `list` em `manage-channels` — leitura direta da tabela `whatsapp_channels` está bloqueada (FORCE RLS).
 
 ### Tools do agente
 
@@ -547,6 +583,45 @@ Orquestração em N8N. Setup e workflows em [`docs/n8n/README.md`](docs/n8n/READ
 - Path alias `@/` aponta para `src/`
 - Datas sempre em formato `YYYY-MM-DD` no banco; exibição via `formatDateBR()` de `@/lib/utils`
 - Telefones sem formatação no banco (apenas dígitos); exibição via `formatPhone()`
+
+## Hardening de segurança multi-tenant
+
+Auditoria aplicada em maio/2026 (migrations 023a/023b/024) fechou os vetores
+de vazamento entre empresas. Pontos pra manter ao adicionar features novas:
+
+- **Anon nunca lê tabelas de negócio direto**. Toda leitura pública passa por
+  RPC `SECURITY DEFINER` parametrizada (ex.: `get_unit_public_full(slug)`,
+  `get_public_business_hours(unit_id)`) que filtra por `is_public = true`
+  na própria função. Adicionar policy `... TO anon` direto na tabela é
+  regressão garantida — use RPC.
+- **Anon insere apenas em units/orgs públicas**. As policies `anon_insert_*`
+  em `customers`, `reservations`, `waitlist` têm `EXISTS (... WHERE is_public)`
+  no `WITH CHECK`. Mantenha o padrão em qualquer tabela nova com escrita anon.
+- **Tabelas com credenciais usam `FORCE ROW LEVEL SECURITY` sem policies**:
+  `whatsapp_channels`, `ai_provider_credentials`, `processed_messages`,
+  `rate_limit_events`. Nem owner do schema lê — só `service_role` via
+  Edge Functions. Para a UI consumir, expor via action de Edge Function
+  com whitelist de colunas seguras (modelo: `manage-channels` action `list`).
+- **Edge Functions com `INTERNAL_API_KEY`** (`send-confirmation`,
+  `send-whatsapp`) devem validar `unit_id` da request contra `unit_id` do
+  recurso buscado — defense-in-depth se a key vazar. `_shared/whatsapp-send`
+  rejeita pareamento `channel_id` ↔ `unit_id` divergente.
+- **CORS em `manage-*`** usa `_shared/cors.ts` (`corsHeadersFor(req)`),
+  whitelist de origin em regex (`localhost`, `*.vercel.app`,
+  `reservas.moralles.com.br`). Webhooks continuam com `*` — auth por
+  webhook secret resolve.
+- **Storage `unit-assets`** é bucket público, mas sem policy `SELECT` em
+  `storage.objects` — listing bloqueado, retrieval por URL CDN funciona.
+- **Auth password protection** (HIBP / HaveIBeenPwned) ativado no painel
+  Supabase em **Authentication → Sign In / Providers → Email →
+  Prevent use of leaked passwords**. Min length recomendado: 8.
+
+Pra rodar advisor de RLS contra mudanças novas:
+
+```bash
+# via MCP no Claude Code: mcp__claude_ai_Supabase__get_advisors
+# ou painel: https://supabase.com/dashboard/project/<ref>/advisors
+```
 
 ## Adicionando novos componentes shadcn/ui
 
