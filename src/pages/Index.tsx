@@ -115,7 +115,9 @@ function Header({ city, cities, cityOpen, setCityOpen, onSelectCity }: HeaderPro
               size="sm"
               className="rounded-full bg-white/95 hover:bg-white text-foreground font-medium px-4 sm:px-5 backdrop-blur"
             >
-              Entrar
+              <UtensilsCrossed className="h-3.5 w-3.5 sm:mr-1.5" />
+              <span className="hidden sm:inline">Sou restaurante</span>
+              <span className="sr-only sm:hidden">Sou restaurante</span>
             </Button>
           </Link>
         </div>
@@ -359,7 +361,7 @@ function Hero({ heroUrl, search, onSearch, city, onPickCity }: HeroProps) {
                 value={search}
                 onChange={(e) => onSearch(e.target.value)}
                 placeholder={city ? `Buscar em ${city}…` : "Buscar restaurante…"}
-                className="border-0 shadow-none focus-visible:ring-0 px-0 text-sm sm:text-base bg-transparent"
+                className="border-0 shadow-none focus-visible:ring-0 px-0 text-sm sm:text-base bg-transparent text-foreground placeholder:text-muted-foreground"
               />
             </div>
             <Button

@@ -10,6 +10,17 @@ interface State {
   error: Error | null;
 }
 
+const CHUNK_ERROR_FLAG = "moralles:chunk-reload-attempt";
+
+function isDynamicImportError(error: Error): boolean {
+  const msg = error.message || "";
+  return (
+    /Failed to fetch dynamically imported module/i.test(msg) ||
+    /Importing a module script failed/i.test(msg) ||
+    error.name === "ChunkLoadError"
+  );
+}
+
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null };
 
@@ -18,8 +29,17 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // Em produção isso pode ser enviado para Sentry / Logflare.
     console.error("ErrorBoundary caught:", error, info.componentStack);
+
+    if (isDynamicImportError(error)) {
+      const alreadyTried = sessionStorage.getItem(CHUNK_ERROR_FLAG);
+      if (!alreadyTried) {
+        sessionStorage.setItem(CHUNK_ERROR_FLAG, "1");
+        window.location.reload();
+        return;
+      }
+      sessionStorage.removeItem(CHUNK_ERROR_FLAG);
+    }
   }
 
   reset = () => this.setState({ error: null });
