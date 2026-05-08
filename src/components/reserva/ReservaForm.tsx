@@ -1,7 +1,7 @@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useCreateReserva } from "@/hooks/useReservas";
@@ -18,9 +18,14 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-import type { Reserva } from "@/types/reserva";
+import type {
+  PublicCustomField,
+  Reserva,
+  WidgetFieldConfigMap,
+  WidgetFieldKey,
+} from "@/types/reserva";
 import { formatDateBR, formatPhone } from "@/lib/utils";
-import { CalendarIcon, CheckCircle, Users } from "lucide-react";
+import { CalendarIcon, CheckCircle, SquareStack, Users } from "lucide-react";
 
 const schema = z.object({
   name: z.string().min(2, "Nome deve ter ao menos 2 caracteres"),
@@ -47,7 +52,9 @@ function generateTimeSlots(openTime: string, closeTime: string, intervalMins = 3
   const [closeH, closeM] = closeTime.split(":").map(Number);
   let current = openH * 60 + openM;
   const end = closeH * 60 + closeM;
-  while (current < end) {
+  // Última reserva tem que ser pelo menos 30min antes do fechamento
+  const cutoff = end - 30;
+  while (current <= cutoff) {
     const h = Math.floor(current / 60);
     const m = current % 60;
     slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
@@ -62,15 +69,62 @@ interface UnitContext {
   organization_id: string;
 }
 
+interface PublicHallSchedule {
+  day_of_week: number;
+  open_time: string;
+  close_time: string;
+  slot_minutes: number;
+  min_advance_minutes: number;
+}
+
+interface PublicHall {
+  id: string;
+  name: string;
+  description: string | null;
+  schedules: PublicHallSchedule[];
+}
+
 interface ReservaFormProps {
   onSuccess?: (reserva: Reserva) => void;
   unit?: UnitContext;
+  halls?: PublicHall[];
+  widgetConfig?: WidgetFieldConfigMap;
+  widgetId?: string;
+  customFields?: PublicCustomField[];
+  /** Janela de reserva em dias (default 60). Limita o `max` do date input. */
+  bookingWindowDays?: number;
 }
 
-export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
+const FIELD_LABELS: Record<WidgetFieldKey, string> = {
+  experiencia: "Experiência",
+  estado: "Estado",
+  ocasiao: "Ocasião",
+  data_nascimento: "Data de nascimento",
+  cpf: "CPF",
+  cep: "CEP",
+  codigo_promocional: "Código promocional",
+  observacao: "Observação",
+};
+
+const FIELD_ORDER: WidgetFieldKey[] = [
+  "ocasiao",
+  "data_nascimento",
+  "cpf",
+  "cep",
+  "experiencia",
+  "estado",
+  "codigo_promocional",
+  "observacao",
+];
+
+function fieldInputType(key: WidgetFieldKey): string {
+  if (key === "data_nascimento") return "date";
+  return "text";
+}
+
+export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, customFields, bookingWindowDays }: ReservaFormProps) {
   const createReserva = useCreateReserva();
 
-  // Load default unit if none provided (backwards compat for Index page)
   const { data: defaultUnit } = useQuery({
     queryKey: ["default-unit"],
     queryFn: async () => {
@@ -88,18 +142,26 @@ export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
   const effectiveUnit = unit ?? defaultUnit ?? null;
   const [confirmed, setConfirmed] = useState<Reserva | null>(null);
 
+  const hallList = halls ?? [];
+  const [hallId, setHallId] = useState<string>(() =>
+    hallList.length === 1 ? hallList[0].id : "",
+  );
+
+  useEffect(() => {
+    if (hallList.length === 1 && !hallId) setHallId(hallList[0].id);
+  }, [hallList, hallId]);
+
+  // Caminho legado: business_hours quando a unit não tem halls
   const { data: businessHours } = useQuery({
     queryKey: ["public_business_hours", effectiveUnit?.id],
     queryFn: async () => {
-      // RPC pública (anon-safe) — leitura direta de business_hours via REST
-      // só é permitida pra unit_member depois da migration 023.
       const { data, error } = await supabase.rpc("get_public_business_hours", {
         p_unit_id: effectiveUnit!.id,
       });
       if (error) throw error;
       return data as Array<{ day_of_week: number; open_time: string; close_time: string; is_closed: boolean }>;
     },
-    enabled: !!effectiveUnit?.id,
+    enabled: !!effectiveUnit?.id && hallList.length === 0,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -115,19 +177,114 @@ export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
     defaultValues: { party_size: 2 },
   });
 
+  // Estado dos campos extras configurados pelo widget
+  const enabledExtras = useMemo(
+    () =>
+      FIELD_ORDER.filter((key) => widgetConfig?.[key]?.enabled === true).map((key) => ({
+        key,
+        label: widgetConfig?.[key]?.label?.trim() || FIELD_LABELS[key],
+        required: widgetConfig?.[key]?.required === true,
+      })),
+    [widgetConfig],
+  );
+  const [extras, setExtras] = useState<Partial<Record<WidgetFieldKey, string>>>({});
+
+  // Custom fields (definidos por unit em "Personalizar formulário")
+  const sortedCustomFields = useMemo(
+    () => [...(customFields ?? [])].sort((a, b) => a.sort_order - b.sort_order),
+    [customFields],
+  );
+  const [customValues, setCustomValues] = useState<Record<string, string>>({});
+
+  const selectedDate = watch("date");
+  const selectedHall = useMemo(
+    () => hallList.find((h) => h.id === hallId),
+    [hallList, hallId],
+  );
+
+  // Slots disponíveis: hall_schedules → preferido; business_hours → legado
+  const { timeSlots, isClosed } = useMemo<{ timeSlots: string[]; isClosed: boolean }>(() => {
+    if (!selectedDate) {
+      return { timeSlots: FALLBACK_TIME_SLOTS, isClosed: false };
+    }
+    const dow = new Date(`${selectedDate}T12:00:00`).getDay();
+
+    // Caso 1: hall escolhido
+    if (selectedHall) {
+      const windows = selectedHall.schedules.filter((s) => s.day_of_week === dow);
+      if (windows.length === 0) return { timeSlots: [], isClosed: true };
+      const all: string[] = [];
+      for (const w of windows) {
+        all.push(...generateTimeSlots(w.open_time, w.close_time, w.slot_minutes));
+      }
+      return { timeSlots: Array.from(new Set(all)).sort(), isClosed: false };
+    }
+
+    // Caso 2: legado (sem halls)
+    if (businessHours) {
+      const entry = businessHours.find((bh) => bh.day_of_week === dow);
+      if (entry?.is_closed) return { timeSlots: [], isClosed: true };
+      if (entry) return { timeSlots: generateTimeSlots(entry.open_time, entry.close_time), isClosed: false };
+    }
+    return { timeSlots: FALLBACK_TIME_SLOTS, isClosed: false };
+  }, [selectedDate, selectedHall, businessHours]);
+
   const onSubmit = async (data: FormData) => {
+    if (hallList.length > 1 && !hallId) {
+      toast.error("Selecione um salão.");
+      return;
+    }
+    // Validar campos extras obrigatórios
+    for (const f of enabledExtras) {
+      if (f.required && !(extras[f.key] ?? "").trim()) {
+        toast.error(`Preencha: ${f.label}`);
+        return;
+      }
+    }
+    // Validar custom fields obrigatórios
+    for (const f of sortedCustomFields) {
+      if (f.required && !(customValues[f.id] ?? "").trim()) {
+        toast.error(`Preencha: ${f.label}`);
+        return;
+      }
+    }
+    // Concatena extras nas notas pra preservar dados sem mudar schema da reserva
+    const extraLines = enabledExtras
+      .map((f) => {
+        const v = (extras[f.key] ?? "").trim();
+        return v ? `${f.label}: ${v}` : "";
+      })
+      .filter(Boolean);
+    const combinedNotes = [data.notes?.trim(), extraLines.join("\n")]
+      .filter(Boolean)
+      .join("\n\n") || undefined;
+
+    // Custom field values (gravados em coluna JSONB dedicada)
+    const customPayload: Record<string, string> = {};
+    for (const f of sortedCustomFields) {
+      const v = (customValues[f.id] ?? "").trim();
+      if (v) customPayload[f.id] = v;
+    }
+
     try {
       const reserva = await createReserva.mutateAsync({
         ...data,
+        notes: combinedNotes,
         unit_id: effectiveUnit?.id ?? "",
         organization_id: effectiveUnit?.organization_id ?? "",
+        hall_id: hallId || null,
+        widget_id: widgetId,
+        custom_field_values: Object.keys(customPayload).length ? customPayload : undefined,
       });
       setConfirmed(reserva);
       reset();
+      setExtras({});
+      setCustomValues({});
       onSuccess?.(reserva);
       toast.success("Reserva criada! Você receberá a confirmação no WhatsApp.");
-    } catch (err: any) {
-      toast.error(err?.message || "Erro ao criar reserva. Tente novamente.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Erro ao criar reserva. Tente novamente.";
+      toast.error(msg);
     }
   };
 
@@ -183,6 +340,27 @@ export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          {hallList.length > 1 && (
+            <div className="space-y-1">
+              <Label className="flex items-center gap-1">
+                <SquareStack className="h-3 w-3" /> Salão *
+              </Label>
+              <Select value={hallId} onValueChange={setHallId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione o salão" />
+                </SelectTrigger>
+                <SelectContent>
+                  {hallList.map((h) => (
+                    <SelectItem key={h.id} value={h.id}>
+                      {h.name}
+                      {h.description ? ` · ${h.description}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           <div className="space-y-1">
             <Label htmlFor="name">Nome completo *</Label>
             <Input id="name" placeholder="Seu nome" {...register("name")} />
@@ -223,6 +401,12 @@ export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
                 id="date"
                 type="date"
                 min={new Date().toISOString().split("T")[0]}
+                max={(() => {
+                  const days = bookingWindowDays && bookingWindowDays > 0 ? bookingWindowDays : 60;
+                  const max = new Date();
+                  max.setDate(max.getDate() + days);
+                  return max.toISOString().split("T")[0];
+                })()}
                 {...register("date")}
               />
               {errors.date && (
@@ -232,43 +416,22 @@ export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
 
             <div className="space-y-1">
               <Label>Horário *</Label>
-              {(() => {
-                const selectedDate = watch("date");
-                let timeSlots = FALLBACK_TIME_SLOTS;
-                let isClosed = false;
-                if (businessHours && selectedDate) {
-                  // JS getDay(): 0=Sunday … 6=Saturday; same convention as DB
-                  const dow = new Date(`${selectedDate}T12:00:00`).getDay();
-                  const entry = businessHours.find((bh) => bh.day_of_week === dow);
-                  if (entry) {
-                    if (entry.is_closed) {
-                      isClosed = true;
-                      timeSlots = [];
-                    } else {
-                      timeSlots = generateTimeSlots(entry.open_time, entry.close_time);
-                    }
-                  }
-                }
-                if (isClosed) {
-                  return (
-                    <p className="text-xs text-muted-foreground border rounded-md px-3 py-2">
-                      Restaurante fechado neste dia
-                    </p>
-                  );
-                }
-                return (
-                  <Select onValueChange={(v) => setValue("time", v)}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecione" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {timeSlots.map((t) => (
-                        <SelectItem key={t} value={t}>{t}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                );
-              })()}
+              {isClosed ? (
+                <p className="text-xs text-muted-foreground border rounded-md px-3 py-2">
+                  {selectedHall ? `${selectedHall.name}: fechado` : "Restaurante fechado neste dia"}
+                </p>
+              ) : (
+                <Select onValueChange={(v) => setValue("time", v)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {timeSlots.map((t) => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               {errors.time && (
                 <p className="text-xs text-destructive">{errors.time.message}</p>
               )}
@@ -296,15 +459,83 @@ export function ReservaForm({ onSuccess, unit }: ReservaFormProps) {
             </Select>
           </div>
 
-          <div className="space-y-1">
-            <Label htmlFor="notes">Observações (opcional)</Label>
-            <Textarea
-              id="notes"
-              placeholder="Alergias, ocasião especial, preferências de mesa..."
-              rows={3}
-              {...register("notes")}
-            />
-          </div>
+          {!enabledExtras.some((f) => f.key === "observacao") && (
+            <div className="space-y-1">
+              <Label htmlFor="notes">Observações (opcional)</Label>
+              <Textarea
+                id="notes"
+                placeholder="Alergias, ocasião especial, preferências de mesa..."
+                rows={3}
+                {...register("notes")}
+              />
+            </div>
+          )}
+
+          {enabledExtras.map((f) => {
+            const value = extras[f.key] ?? "";
+            const setValue = (v: string) => setExtras((prev) => ({ ...prev, [f.key]: v }));
+            const inputType = fieldInputType(f.key);
+            return (
+              <div key={f.key} className="space-y-1">
+                <Label>
+                  {f.label}
+                  {f.required && <span className="text-destructive ml-1">*</span>}
+                </Label>
+                {f.key === "observacao" ? (
+                  <Textarea
+                    rows={3}
+                    placeholder="Alergias, ocasião especial, preferências de mesa..."
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                  />
+                ) : (
+                  <Input
+                    type={inputType}
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                  />
+                )}
+              </div>
+            );
+          })}
+
+          {sortedCustomFields.map((f) => {
+            const value = customValues[f.id] ?? "";
+            const setValue = (v: string) =>
+              setCustomValues((prev) => ({ ...prev, [f.id]: v }));
+            return (
+              <div key={f.id} className="space-y-1">
+                <Label>
+                  {f.label}
+                  {f.required && <span className="text-destructive ml-1">*</span>}
+                </Label>
+                {f.type === "options" ? (
+                  <Select value={value} onValueChange={setValue}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(f.options ?? []).map((opt) => (
+                        <SelectItem key={opt} value={opt}>
+                          {opt}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : f.type === "file" ? (
+                  <p className="text-xs text-muted-foreground border rounded-md px-3 py-2 bg-muted/30">
+                    Upload de arquivo em breve.
+                  </p>
+                ) : (
+                  <Input
+                    type="text"
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                  />
+                )}
+              </div>
+            );
+          })}
 
           <Button type="submit" className="w-full" disabled={isSubmitting}>
             {isSubmitting ? "Criando reserva..." : "Confirmar Reserva"}

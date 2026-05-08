@@ -34,6 +34,9 @@ const RATE_LIMIT_MAX = 5;
 interface CreateReservationBody {
   unit_id?: string;
   organization_id?: string;
+  hall_id?: string | null;
+  widget_id?: string | null;
+  custom_field_values?: Record<string, string> | null;
   customer?: {
     name?: string;
     phone?: string;
@@ -131,6 +134,7 @@ serve(async (req) => {
     // reserveSlot valida disponibilidade + insere com table_id atribuído
     const result = await reserveSlot(supabase, {
       unitId,
+      hallId: body.hall_id ?? undefined,
       date: body.date!,
       time: body.time!,
       partySize: body.party_size!,
@@ -138,6 +142,14 @@ serve(async (req) => {
       notes: body.notes ?? null,
       status: "pending", // mantém fluxo do portal: pending → confirmed via webhook
     });
+
+    // Persiste extras (custom_field_values) na reserva criada
+    if (result.success && body.custom_field_values && Object.keys(body.custom_field_values).length) {
+      await supabase
+        .from("reservations")
+        .update({ custom_field_values: body.custom_field_values })
+        .eq("id", result.reservationId);
+    }
 
     jsonLog("info", {
       requestId,

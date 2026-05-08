@@ -71,6 +71,23 @@ export interface WhatsAppChannel {
 
 export type WalkInStatus = "waiting" | "seated" | "left" | "no_show";
 export type WaitlistStatus = "waiting" | "notified" | "seated" | "cancelled";
+export type WaitlistPriorityCategory =
+  | "normal"
+  | "senior"
+  | "pregnant"
+  | "disabled"
+  | "other";
+export type WaitlistTemplateEvent = "entered" | "table_ready" | "feedback";
+
+export interface WaitlistMessageTemplate {
+  id: string;
+  unit_id: string;
+  event: WaitlistTemplateEvent;
+  customized: boolean;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface WalkIn {
   id: string;
@@ -97,6 +114,8 @@ export interface WaitlistEntry {
   party_size: number;
   requested_for_time: string | null;
   priority: number;
+  priority_category: WaitlistPriorityCategory;
+  code: number | null;
   status: WaitlistStatus;
   notes: string | null;
   notified_at: string | null;
@@ -112,6 +131,7 @@ export interface Customer {
   name: string;
   phone: string;
   email: string | null;
+  birthday?: string | null;
   created_at: string;
   allergies?: string | null;
   dietary_restrictions?: string | null;
@@ -123,24 +143,38 @@ export interface Customer {
 
 export interface TableBlock {
   id: string;
-  table_id: string;
+  unit_id: string;
+  hall_id: string | null;
+  /** Mesa específica afetada — se null, bloqueia toda a unit/hall no intervalo (macro). */
+  table_id: string | null;
+  /** Título exibido na UI. `reason` é o campo legado. */
+  title: string | null;
   blocked_from: string;
   blocked_to: string;
   reason: string | null;
   created_by: string | null;
   created_at: string;
-  table?: Mesa;
+  table?: Mesa | null;
 }
 
 export interface SpecialDate {
   id: string;
   unit_id: string;
+  hall_id: string | null;
+  /** Início do intervalo. */
   date: string;
+  /** Fim do intervalo (inclusive). Pode ser igual a `date` para single-day. */
+  end_date: string;
   name: string;
   is_closed: boolean;
   open_time: string | null;
   close_time: string | null;
   max_party_size: number | null;
+  slot_minutes: number | null;
+  min_advance_minutes: number | null;
+  discount_percent: number | null;
+  charge_enabled: boolean;
+  charge_amount_cents: number | null;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -174,10 +208,150 @@ export interface AuditLogEntry {
 export interface Mesa {
   id: string;
   unit_id: string;
+  hall_id: string | null;
   number: number;
+  /** Mantido por compat — sincronizado via trigger com max_capacity. Use min/max nas regras novas. */
   capacity: number;
+  min_capacity: number;
+  max_capacity: number;
   location: "internal" | "external";
   active: boolean;
+}
+
+export type CustomFieldType = "text" | "options" | "file";
+
+export interface UnitCustomField {
+  id: string;
+  unit_id: string;
+  label: string;
+  type: CustomFieldType;
+  options: string[] | null;
+  required: boolean;
+  sort_order: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PublicCustomField {
+  id: string;
+  label: string;
+  type: CustomFieldType;
+  options: string[] | null;
+  required: boolean;
+  sort_order: number;
+}
+
+/** Campos extras opcionais que o widget pode habilitar no form público. */
+export type WidgetFieldKey =
+  | "experiencia"
+  | "estado"
+  | "ocasiao"
+  | "data_nascimento"
+  | "cpf"
+  | "cep"
+  | "codigo_promocional"
+  | "observacao";
+
+export interface WidgetFieldConfig {
+  enabled: boolean;
+  required: boolean;
+  /** Título customizado exibido no form (override do default). */
+  label?: string | null;
+}
+
+export type WidgetFieldConfigMap = Partial<Record<WidgetFieldKey, WidgetFieldConfig>>;
+
+export interface ReservationWidget {
+  id: string;
+  unit_id: string;
+  slug: string;
+  name: string;
+  field_config: WidgetFieldConfigMap;
+  client_instructions: string | null;
+  show_menu_banner: boolean;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Cardápios (galeria de imagens) ────────────────────────────────────────────
+
+export interface MenuTheme {
+  font_primary: string;
+  font_secondary: string;
+  bg_primary: string;
+  bg_secondary: string;
+  accent: string;
+}
+
+export const DEFAULT_MENU_THEME: MenuTheme = {
+  font_primary: "#141414",
+  font_secondary: "#AAAAAA",
+  bg_primary: "#FFFFFF",
+  bg_secondary: "#EFF2F5",
+  accent: "#DD4F50",
+};
+
+export interface Menu {
+  id: string;
+  unit_id: string;
+  slug: string;
+  name: string;
+  cover_image_url: string | null;
+  theme: MenuTheme;
+  active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MenuPage {
+  id: string;
+  menu_id: string;
+  image_url: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export type MenuBannerType = "home" | "content";
+
+export interface MenuBanner {
+  id: string;
+  unit_id: string;
+  type: MenuBannerType;
+  image_url: string;
+  link_url: string | null;
+  active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Hall {
+  id: string;
+  unit_id: string;
+  name: string;
+  description: string | null;
+  active: boolean;
+  allow_empty_seat: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HallSchedule {
+  id: string;
+  hall_id: string;
+  day_of_week: number;
+  open_time: string;
+  close_time: string;
+  slot_minutes: number;
+  min_advance_minutes: number;
+  discount_percent: number;
+  charge_enabled: boolean;
+  charge_amount_cents: number | null;
+  created_at: string;
 }
 
 export interface Reserva {
