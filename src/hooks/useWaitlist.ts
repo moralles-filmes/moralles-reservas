@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
-import type { WaitlistEntry, WaitlistStatus } from "@/types/reserva";
+import type {
+  WaitlistEntry,
+  WaitlistPriorityCategory,
+  WaitlistStatus,
+} from "@/types/reserva";
 
 export function useWaitlist(unitId: string, onlyActive = true) {
   return useQuery({
@@ -32,17 +36,42 @@ export interface AnonWaitlistInput {
   customer_phone: string;
   party_size: number;
   notes?: string | null;
+  priority_category?: WaitlistPriorityCategory;
+}
+
+/** Resposta do hook de inserção anônima — inclui o código gerado pra exibir
+ *  na confirmação. */
+export interface AnonWaitlistResult {
+  code: number | null;
+}
+
+async function fetchNextWaitlistCode(unitId: string): Promise<number | null> {
+  const { data, error } = await supabase.rpc("next_waitlist_code", {
+    p_unit_id: unitId,
+  });
+  if (error) {
+    console.warn("next_waitlist_code falhou", error);
+    return null;
+  }
+  return typeof data === "number" ? data : null;
 }
 
 export function useAnonAddToWaitlist(unitId: string) {
-  return useMutation({
-    mutationFn: async (payload: AnonWaitlistInput) => {
+  return useMutation<AnonWaitlistResult, Error, AnonWaitlistInput>({
+    mutationFn: async (payload) => {
+      const code = await fetchNextWaitlistCode(unitId);
       const { error } = await supabase.from("waitlist").insert({
         unit_id: unitId,
         status: "waiting",
-        ...payload,
+        priority_category: payload.priority_category ?? "normal",
+        code,
+        customer_name: payload.customer_name,
+        customer_phone: payload.customer_phone,
+        party_size: payload.party_size,
+        notes: payload.notes ?? null,
       });
       if (error) throw error;
+      return { code };
     },
     onError: (err: Error) => {
       toast.error(err.message || "Não foi possível entrar na fila.");
@@ -59,9 +88,13 @@ export function useAddToWaitlist(unitId: string) {
       party_size: number;
       requested_for_time?: string | null;
       notes?: string | null;
+      priority_category?: WaitlistPriorityCategory;
     }) => {
+      const code = await fetchNextWaitlistCode(unitId);
       const { error } = await supabase.from("waitlist").insert({
         unit_id: unitId,
+        priority_category: payload.priority_category ?? "normal",
+        code,
         ...payload,
       });
       if (error) throw error;
@@ -93,11 +126,22 @@ export function useNotifyWaitlist(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, phone, message }: { id: string; phone: string; message: string }) => {
-      // Envia WhatsApp via send-whatsapp Edge Function
-      const { error: funcErr } = await supabase.functions.invoke("send-whatsapp", {
-        body: { phone, message, unit_id: unitId },
+      // Envia WhatsApp via send-whatsapp Edge Function. `kind` faz a Edge
+      // Function gravar a tentativa em notifications_sent (analytics em
+      // Relatórios → Comunicação).
+      const { data, error: funcErr } = await supabase.functions.invoke("send-whatsapp", {
+        body: {
+          phone,
+          message,
+          unit_id: unitId,
+          kind: "waitlist_table_ready",
+        },
       });
       if (funcErr) throw funcErr;
+      const result = data as { success?: boolean; error?: string } | null;
+      if (result && result.success === false) {
+        throw new Error(result.error ?? "Falha ao enviar WhatsApp.");
+      }
 
       // Marca como notificado
       const { error } = await supabase
@@ -110,7 +154,7 @@ export function useNotifyWaitlist(unitId: string) {
       queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] });
       toast.success("Notificação enviada via WhatsApp.");
     },
-    onError: () => toast.error("Erro ao notificar."),
+    onError: (err: Error) => toast.error(err.message ?? "Erro ao notificar."),
   });
 }
 

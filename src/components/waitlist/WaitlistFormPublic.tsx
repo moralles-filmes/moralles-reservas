@@ -15,13 +15,28 @@ import {
 } from "@/components/ui/select";
 import { useAnonAddToWaitlist } from "@/hooks/useWaitlist";
 import { formatPhone } from "@/lib/utils";
-import { CheckCircle2, Smartphone } from "lucide-react";
+import type { WaitlistPriorityCategory } from "@/types/reserva";
+import { Accessibility, Baby, CheckCircle2, Smartphone, UserCircle2 } from "lucide-react";
+
+const PRIORITY_OPTIONS: Array<{
+  value: WaitlistPriorityCategory;
+  label: string;
+}> = [
+  { value: "normal", label: "Não sou prioritário" },
+  { value: "senior", label: "Idoso (60+)" },
+  { value: "pregnant", label: "Gestante" },
+  { value: "disabled", label: "Pessoa com deficiência (PCD)" },
+  { value: "other", label: "Outro caso prioritário" },
+];
 
 const schema = z.object({
   name: z.string().min(2, "Nome deve ter ao menos 2 caracteres"),
   phone: z.string().min(10, "Telefone inválido").max(15),
   party_size: z.coerce.number().min(1).max(20),
   notes: z.string().optional(),
+  priority_category: z
+    .enum(["normal", "senior", "pregnant", "disabled", "other"])
+    .default("normal"),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -30,12 +45,19 @@ const PARTY_SIZES = Array.from({ length: 20 }, (_, i) => i + 1);
 
 interface WaitlistFormPublicProps {
   unitId: string;
+  priorityEnabled?: boolean;
   onClose?: () => void;
 }
 
-export function WaitlistFormPublic({ unitId, onClose }: WaitlistFormPublicProps) {
+export function WaitlistFormPublic({
+  unitId,
+  priorityEnabled = true,
+  onClose,
+}: WaitlistFormPublicProps) {
   const addToWaitlist = useAnonAddToWaitlist(unitId);
-  const [confirmed, setConfirmed] = useState(false);
+  const [confirmedCode, setConfirmedCode] = useState<number | null | undefined>(
+    undefined,
+  );
 
   const {
     register,
@@ -45,25 +67,34 @@ export function WaitlistFormPublic({ unitId, onClose }: WaitlistFormPublicProps)
     formState: { errors, isSubmitting },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
-    defaultValues: { party_size: 2 },
+    defaultValues: { party_size: 2, priority_category: "normal" },
   });
 
   const onSubmit = async (data: FormData) => {
-    await addToWaitlist.mutateAsync({
+    const result = await addToWaitlist.mutateAsync({
       customer_name: data.name,
       customer_phone: data.phone,
       party_size: data.party_size,
       notes: data.notes?.trim() || null,
+      priority_category: priorityEnabled ? data.priority_category : "normal",
     });
-    setConfirmed(true);
+    setConfirmedCode(result.code);
   };
 
-  if (confirmed) {
+  if (confirmedCode !== undefined) {
     return (
       <div className="text-center py-6 space-y-4 animate-fade-up">
         <CheckCircle2 className="h-14 w-14 text-success mx-auto" />
         <div className="space-y-1">
           <h3 className="font-display text-2xl">Você está na fila</h3>
+          {confirmedCode != null && (
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                Sua senha
+              </p>
+              <p className="text-4xl font-bold font-mono">#{confirmedCode}</p>
+            </div>
+          )}
           <p className="text-sm text-muted-foreground max-w-xs mx-auto">
             Avisaremos no seu WhatsApp assim que sua mesa estiver pronta. Pode ficar
             tranquilo aí.
@@ -123,6 +154,42 @@ export function WaitlistFormPublic({ unitId, onClose }: WaitlistFormPublicProps)
           </SelectContent>
         </Select>
       </div>
+
+      {priorityEnabled && (
+        <div className="space-y-1">
+          <Label className="flex items-center gap-1.5">
+            <Accessibility className="h-3.5 w-3.5 text-secondary" />
+            Prioridade no atendimento
+          </Label>
+          <Select
+            defaultValue="normal"
+            onValueChange={(v) =>
+              setValue("priority_category", v as WaitlistPriorityCategory)
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PRIORITY_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  <span className="flex items-center gap-2">
+                    {opt.value === "senior" && <UserCircle2 className="h-3.5 w-3.5" />}
+                    {opt.value === "pregnant" && <Baby className="h-3.5 w-3.5" />}
+                    {opt.value === "disabled" && (
+                      <Accessibility className="h-3.5 w-3.5" />
+                    )}
+                    {opt.label}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground">
+            Atendimento prioritário conforme legislação (idosos, gestantes, PCDs).
+          </p>
+        </div>
+      )}
 
       <div className="space-y-1">
         <Label htmlFor="wl-notes">Observações (opcional)</Label>

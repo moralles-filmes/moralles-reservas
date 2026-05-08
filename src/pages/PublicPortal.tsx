@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { ReservaForm } from "@/components/reserva/ReservaForm";
@@ -42,8 +42,36 @@ interface PublicUnit {
   address: UnitAddress | null;
 }
 
+interface PublicHallSchedule {
+  day_of_week: number;
+  open_time: string;
+  close_time: string;
+  slot_minutes: number;
+  min_advance_minutes: number;
+}
+
+interface PublicHall {
+  id: string;
+  name: string;
+  description: string | null;
+  schedules: PublicHallSchedule[];
+}
+
+interface UnitSettings {
+  booking_window_days?: number;
+  rules_and_conditions?: string;
+  additional_info?: string;
+  waitlist_priority_enabled?: boolean;
+  waitlist_remote_entry_enabled?: boolean;
+  waitlist_remote_entry_limit?: number;
+  waitlist_qr_enabled?: boolean;
+  waitlist_menu_link_enabled?: boolean;
+}
+
 interface UnitPublicFullResponse {
   unit: PublicUnit & { timezone: string };
+  unit_settings?: UnitSettings | null;
+  halls?: PublicHall[];
   business_hours: Array<{
     day_of_week: number;
     open_time: string;
@@ -56,25 +84,34 @@ interface UnitPublicFullResponse {
     open_time: string | null;
     close_time: string | null;
   }>;
+  custom_fields?: Array<{
+    id: string;
+    label: string;
+    type: "text" | "options" | "file";
+    options: string[] | null;
+    required: boolean;
+    sort_order: number;
+  }>;
 }
 
 export default function PublicPortal() {
   const { slug } = useParams<{ slug: string }>();
 
-  const { data: unit, isLoading, error } = useQuery({
+  const { data: payload, isLoading, error } = useQuery({
     queryKey: ["public-unit", slug],
     queryFn: async () => {
-      // RPC SECURITY DEFINER que valida is_public e retorna apenas units
-      // públicas — substitui SELECT direto pra escolher campos seguros.
       const { data, error } = await supabase.rpc("get_unit_public_full", {
         p_slug: slug,
       });
       if (error) throw error;
-      const payload = data as UnitPublicFullResponse | null;
-      return payload?.unit ?? null;
+      return data as UnitPublicFullResponse | null;
     },
     enabled: !!slug,
   });
+  const unit = payload?.unit ?? null;
+  const halls = payload?.halls ?? [];
+  const customFields = payload?.custom_fields ?? [];
+  const settings = payload?.unit_settings ?? {};
 
   if (isLoading) {
     return (
@@ -106,12 +143,29 @@ export default function PublicPortal() {
     );
   }
 
-  return <PortalContent unit={unit} />;
+  return (
+    <PortalContent
+      unit={unit}
+      halls={halls}
+      customFields={customFields}
+      settings={settings}
+    />
+  );
 }
 
 // ─── Conteúdo principal ───────────────────────────────────────────────────────
 
-function PortalContent({ unit }: { unit: PublicUnit }) {
+function PortalContent({
+  unit,
+  halls,
+  customFields,
+  settings,
+}: {
+  unit: PublicUnit;
+  halls: PublicHall[];
+  customFields: NonNullable<UnitPublicFullResponse["custom_fields"]>;
+  settings: UnitSettings;
+}) {
   const initials = useMemo(() => getInitials(unit.name), [unit.name]);
 
   const fullAddress =
@@ -258,8 +312,13 @@ function PortalContent({ unit }: { unit: PublicUnit }) {
 
           {/* ── Coluna direita — CTAs sticky ────────────────────────────────── */}
           <div className="lg:sticky lg:top-8 space-y-3 order-first lg:order-none -mt-2 lg:mt-0">
-            <ReservaCTA unit={unit} />
-            <WaitlistCTA unit={unit} />
+            <ReservaCTA
+              unit={unit}
+              halls={halls}
+              customFields={customFields}
+              settings={settings}
+            />
+            <WaitlistCTA unit={unit} settings={settings} />
           </div>
         </div>
       </section>
@@ -297,7 +356,17 @@ function Section({
   );
 }
 
-function ReservaCTA({ unit }: { unit: PublicUnit }) {
+function ReservaCTA({
+  unit,
+  halls,
+  customFields,
+  settings,
+}: {
+  unit: PublicUnit;
+  halls: PublicHall[];
+  customFields: NonNullable<UnitPublicFullResponse["custom_fields"]>;
+  settings: UnitSettings;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -329,24 +398,54 @@ function ReservaCTA({ unit }: { unit: PublicUnit }) {
             Reservar em {unit.name}
           </DialogTitle>
         </DialogHeader>
+        {(settings.rules_and_conditions || settings.additional_info) && (
+          <div className="space-y-2 mb-3">
+            {settings.rules_and_conditions && (
+              <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 whitespace-pre-line">
+                <strong className="block mb-0.5">Regras e Condições</strong>
+                {settings.rules_and_conditions}
+              </div>
+            )}
+            {settings.additional_info && (
+              <div className="rounded-md bg-muted/50 border p-3 text-xs whitespace-pre-line">
+                {settings.additional_info}
+              </div>
+            )}
+          </div>
+        )}
         <ReservaForm
           unit={{
             id: unit.id,
             name: unit.name,
             organization_id: unit.organization_id,
           }}
-          onSuccess={() => {
-            // Mantém aberto para mostrar a tela de confirmação;
-            // o usuário fecha quando quiser.
-          }}
+          halls={halls}
+          customFields={customFields}
+          bookingWindowDays={
+            typeof settings.booking_window_days === "number" ? settings.booking_window_days : undefined
+          }
         />
       </DialogContent>
     </Dialog>
   );
 }
 
-function WaitlistCTA({ unit }: { unit: PublicUnit }) {
+function WaitlistCTA({
+  unit,
+  settings,
+}: {
+  unit: PublicUnit;
+  settings: UnitSettings;
+}) {
   const [open, setOpen] = useState(false);
+  const [searchParams] = useSearchParams();
+  const action = searchParams.get("action");
+
+  // Auto-abre o modal quando o portal é acessado via QR Code (?action=waitlist)
+  useEffect(() => {
+    if (action === "waitlist") setOpen(true);
+  }, [action]);
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -378,7 +477,11 @@ function WaitlistCTA({ unit }: { unit: PublicUnit }) {
             Avisamos pelo WhatsApp quando sua mesa estiver pronta em {unit.name}.
           </p>
         </DialogHeader>
-        <WaitlistFormPublic unitId={unit.id} onClose={() => setOpen(false)} />
+        <WaitlistFormPublic
+          unitId={unit.id}
+          priorityEnabled={settings.waitlist_priority_enabled !== false}
+          onClose={() => setOpen(false)}
+        />
       </DialogContent>
     </Dialog>
   );
