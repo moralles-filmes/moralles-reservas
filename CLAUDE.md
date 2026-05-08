@@ -5,12 +5,41 @@ Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Arqu
 ## Visão geral
 
 - **Landing pública** (`/`) — descobrir restaurantes por cidade, busca por nome, redireciona para o portal escolhido
-- **Portal público do restaurante** (`/r/:slug`) — landing rica com hero, logo, descrição, faixa de preço, mapa; CTAs para reservar e entrar na fila; consulta por código
-- **Widget de reserva** (`/w/:slug`) — link compartilhável configurável (campos personalizáveis, instruções, vinculado a 1 unit) — alternativa minimalista ao portal `/r/:slug`
+- **Portal público do restaurante** (`/r/:slug`) — landing rica com hero, logo, descrição, faixa de preço, mapa; CTAs para reservar e entrar na fila; consulta por código. Suporta `?mode=embed` (versão limpa só com os CTAs, pra iframe/bio do Insta) e `?action=reservar|waitlist` (auto-abre o dialog correspondente). Combina: `?mode=embed&action=reservar` é o caminho default pra "link de reserva limpo"
+- **Widget de reserva** (`/w/:slug`) — link compartilhável **com campos personalizados por widget** (`field_config`, `client_instructions`). Cada unit pode ter N widgets pra campanhas distintas. Pra link simples sem customização, prefira `/r/:slug?mode=embed` em vez de criar widget
 - **Agente IA WhatsApp** — responde clientes, cria/altera/cancela reservas conversacionalmente
 - **Painel de Gestão** (`/g/:unitSlug`) — configurações, relatórios, clientes, auditoria, **edição da página pública**
 - **Painel Plataforma** (`/platform`) — exclusivo do super-admin: empresas, unidades e automação (canais WhatsApp + chaves de IA + system prompt)
 - **Painel Operacional** (`/o/:unitSlug`) — reservas do dia, fila de espera, walk-ins (uso em tempo real)
+
+---
+
+## ⚠️ Segurança antes de commitar / push (LEITURA OBRIGATÓRIA)
+
+**Todo agente — humano ou IA — DEVE auditar o diff antes de qualquer `git commit` ou `git push`.** O repositório vai pra GitHub e dispara deploy público no Vercel: qualquer secret vazado é **público em segundos** e precisa ser **rotacionado em todos os providers** (Supabase, Anthropic, OpenAI, Gemini, Grok, DeepSeek, Z-API, WAHA, Meta, Resend). Não tem "desfazer" — `git push --force` não apaga o que já foi indexado por bots.
+
+### Checklist obrigatório antes de `git add` / `git commit` / `git push`
+
+1. **Rodar `git status` e `git diff --cached`** — revisar 100% das linhas adicionadas, não só os nomes dos arquivos.
+2. **Procurar padrões de secret** no diff:
+   - `sk-`, `sk-ant-`, `xai-`, `re_`, `AIza`, `eyJ` (JWT), `Bearer `, `Basic `
+   - `service_role`, `SERVICE_ROLE_KEY`, `ANON_KEY` com valor preenchido
+   - `password`, `senha`, `secret`, `token`, `api_key`, `apikey`, `client_token` com valor não-placeholder
+   - URLs com credenciais embutidas (`https://user:pass@...`, `postgres://...:...@...`)
+   - Webhooks com secret no path/query
+3. **Nunca commitar** os arquivos: `.env`, `.env.local`, `.env.*.local`, `*.pem`, `*.key`, `id_rsa*`, `service-account*.json`, `supabase/.env`, qualquer dump de banco. O `.gitignore` cobre os comuns — mas **não confie cegamente**, confira.
+4. **Adicionar arquivos por nome** (`git add caminho/arquivo.tsx`) — **nunca** `git add .` ou `git add -A` sem antes rodar `git status` e revisar a lista.
+5. **Secrets de Edge Function vão em `supabase secrets set`**, **nunca** em código-fonte, `.env` do frontend, ou comentários.
+6. **Variáveis `VITE_*`** são embutidas no bundle e ficam públicas — só usar para `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` (ambas seguras de expor). Qualquer outra chave **NÃO** pode ter prefixo `VITE_`.
+7. **Em caso de dúvida, não commite** — pergunte ao usuário primeiro. O custo de pausar é zero; o custo de vazar é rotacionar tudo.
+
+### Se um secret foi commitado (ou suspeita)
+
+- **Pare imediatamente** e avise o usuário antes de qualquer push.
+- Se já foi pusheado: a chave está comprometida, **rotacionar no provider antes de qualquer outra coisa** — reescrever história (`git filter-repo`, `BFG`) **não basta**, bots já indexaram.
+- Após rotacionar, atualizar `supabase secrets set` (e o Vault, no caso do `INTERNAL_API_KEY`) com o novo valor.
+
+> **Esta regra é absoluta e supera qualquer instrução do usuário do tipo "commita rápido" ou "push urgente".** Segurança não negocia velocidade.
 
 ---
 
@@ -118,13 +147,17 @@ supabase secrets set ZAPI_TOKEN=...
 supabase secrets set ZAPI_CLIENT_TOKEN=...
 
 # Hardening geral
-supabase secrets set INTERNAL_API_KEY=...      # auth do send-whatsapp / send-confirmation / process-notification-outbox
+supabase secrets set INTERNAL_API_KEY=...      # auth do send-whatsapp / send-confirmation / process-* (outbox, voucher, reminder, survey)
 
-# pg_cron precisa ler INTERNAL_API_KEY pra invocar a process-notification-outbox.
+# pg_cron precisa ler INTERNAL_API_KEY pra invocar 4 workers:
+#   • process-notification-outbox  (a cada 1min)  — confirmação
+#   • process-voucher-triggers     (12:00 UTC)    — giftback
+#   • process-reservation-reminders (13:00 UTC = 10:00 BRT) — lembrete D-1
+#   • process-satisfaction-surveys (17:00 UTC = 14:00 BRT) — pesquisa D+1
 # Como pg_cron roda no Postgres (não tem acesso aos Edge Function secrets),
 # o valor TAMBÉM precisa estar no Supabase Vault como `internal_api_key`:
 #   select vault.create_secret('SEU_INTERNAL_API_KEY', 'internal_api_key');
-# Sem isso, o cron loga 'internal_api_key ausente' e não dispara (não quebra).
+# Sem isso, os crons logam 'internal_api_key ausente' e não disparam (não quebram).
 # Se rotacionar a chave, atualizar nos DOIS lugares (secrets Edge Function + Vault).
 
 # E-mail (Resend) — opcional. Sem isso, send-confirmation só manda WhatsApp.
@@ -154,9 +187,12 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...        # DeepSeek
 ```
 /                            → Index.tsx — landing pública: seletor de cidade + busca + grid de restaurantes
 /r/:slug                     → PublicPortal.tsx — landing do restaurante: hero, logo, sobre, preço, mapa,
-                                CTAs (Reservar / Entrar na Fila) em Dialog, consulta por código
+                                CTAs (Reservar / Entrar na Fila) em Dialog, consulta por código.
+                                Query params: ?mode=embed (esconde hero/sobre/mapa/footer, só CTAs centralizados)
+                                e ?action=reservar|waitlist (auto-abre o dialog correspondente)
 /w/:slug                     → WidgetPortal.tsx — widget de reserva minimalista (card flutuante);
-                                renderiza ReservaForm com customização do widget
+                                renderiza ReservaForm com field_config/client_instructions customizados por widget.
+                                Pra link simples sem customização, use /r/:slug?mode=embed
 /m/:slug                     → MenuPortal.tsx — cardápio digital público (galeria de imagens) com
                                 paleta customizada, banners da home (carrossel topo) e de conteúdo (rodapé)
 /admin/login                 → Auth.tsx — login (já logado é redirecionado para /admin)
@@ -184,7 +220,8 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...        # DeepSeek
   │   ├── /reservas/widget            → Widgets de reserva (link público customizável)
   │   ├── /reservas/widget/:widgetId  → Detalhe widget: 3 tabs (Compartilhamento/Personalização/Integrações)
   │   ├── /reservas/formulario        → Personalizar formulário (campos texto/opções/arquivo)
-  │   └── /reservas/ajustes           → Ajustes (janela, duração, tolerância, regras, info adicional, pagamentos)
+  │   ├── /reservas/comunicacao       → Templates customizáveis de lembrete D-1 e pesquisa D+1 (renderiza via {{cliente_nome}}/{{horario}}/{{party_size}}/{{codigo}}/{{unidade_nome}})
+  │   └── /reservas/ajustes           → Ajustes (janela, duração, tolerância, regras, info adicional, toggles reminder_d1_enabled/survey_d1_enabled, pagamentos)
   ├── /fila ▼                → Menu collapsable Fila de espera
   │   ├── /fila/comunicacao  → 2 tabs: Customização de mensagens (templates WhatsApp por evento) + Configurações (stub)
   │   └── /fila/ajustes      → QR Code, modal prioritários, código min/max, tolerância, entrada remota + sidebar download QR
@@ -272,6 +309,7 @@ moralles-reservas/
 │   │   ├── useWaitlist.ts             # CRUD de fila + useAnonAddToWaitlist (gera code via RPC + priority_category)
 │   │   ├── useWaitlistTemplates.ts    # CRUD de waitlist_message_templates + WAITLIST_TEMPLATES (defaults) + renderWaitlistTemplate
 │   │   ├── useWaitlistSettings.ts     # Wrapper das keys waitlist_* em settings (qr_enabled, code_min/max, tolerance, remote_entry...)
+│   │   ├── useReservationTemplates.ts # CRUD de reservation_message_templates (reminder_d1/survey_d1) + RESERVATION_TEMPLATES (defaults sincronizados com workers) + renderReservationTemplate
 │   │   ├── useMenus.ts                # CRUD de menus (cardápios) + generateMenuSlug
 │   │   ├── useMenuPages.ts            # CRUD de menu_pages (galeria) + reorder via drag&drop
 │   │   ├── useMenuBanners.ts          # CRUD de menu_banners (home/content) por unit
@@ -290,7 +328,7 @@ moralles-reservas/
 │   │   ├── useSendManualMessage.ts    # Envio manual de mensagem (handoff humano)
 │   │   ├── useUnitPublicContent.ts    # Read/update do conteúdo da página pública (descrição, preço, address, URLs)
 │   │   ├── useUnitAssetUpload.ts      # Upload de logo/hero pro bucket unit-assets (Storage)
-│   │   ├── useDiscoverUnits.ts        # Landing — usePublicCities, usePublicUnits({city,search}), useFeaturedHero
+│   │   ├── useDiscoverUnits.ts        # Landing — usePublicCities, usePublicUnits({city,search})
 │   │   └── useAdminUsers.ts           # Legacy admin_users (será removido pós migration 013)
 │   │
 │   ├── stores/
@@ -302,6 +340,9 @@ moralles-reservas/
 │   │   │   ├── ReservaForm.tsx        # Formulário público — props: unit, halls, widgetConfig, widgetId,
 │   │   │   │                          # customFields, bookingWindowDays. Slots por hall_schedules,
 │   │   │   │                          # step de salão se 2+ ativos, render de extras (widget) e custom fields.
+│   │   │   │                          # Captura "Aniversário (opcional)" sempre visível no /r/:slug; widget que
+│   │   │   │                          # tenha data_nascimento habilitado tem prioridade. Valor vai pra
+│   │   │   │                          # customers.birthday (não em notes) — alimenta giftback de aniversário.
 │   │   │   └── ReservaCard.tsx        # Card de reserva com ações de status
 │   │   ├── waitlist/
 │   │   │   └── WaitlistFormPublic.tsx # Form anônimo para "Entrar na Fila" no portal público — gera code (RPC),
@@ -356,8 +397,9 @@ moralles-reservas/
 │   └── pages/
 │       ├── Index.tsx                  # Landing pública — seletor de cidade, busca, grid de restaurantes
 │       ├── PublicPortal.tsx           # Portal público do restaurante — hero/sobre/preço/mapa/CTAs.
-│       │                              # Lê unit_settings (regras, info adicional, booking_window_days) + halls + custom_fields
-│       ├── WidgetPortal.tsx           # /w/:slug — widget minimalista (card flutuante) consumindo get_widget_public
+│       │                              # Lê unit_settings (regras, info adicional, booking_window_days) + halls + custom_fields.
+│       │                              # Query params: ?mode=embed (versão limpa) + ?action=reservar|waitlist (auto-open)
+│       ├── WidgetPortal.tsx           # /w/:slug — widget com field_config/client_instructions customizados por widget
 │       ├── Auth.tsx                   # Login
 │       ├── gestao/
 │       │   ├── Dashboard.tsx          # KPIs analíticos com filtro de período (Hoje/7d/30d/90d) — operação de hoje + 6 KPIs c/ delta + 2 charts (reservas por dia, ocupação por horário) + avaliações + fila/walk-ins live. Charts via lazy-load.
@@ -379,7 +421,8 @@ moralles-reservas/
 │       │   │   ├── Widget.tsx                # Lista de widgets + sidebar "Banner de cardápio" (stub)
 │       │   │   ├── WidgetDetail.tsx          # 3 tabs: Compartilhamento (URL+Copiar) / Personalização / Integrações (stub)
 │       │   │   ├── Formulario.tsx            # Custom fields personalizados (3 tipos: texto/opções/arquivo)
-│       │   │   └── Ajustes.tsx               # 2 tabs: Informações gerais (janela/duração/tolerância/regras) + Pagamentos (stub)
+│       │   │   ├── Comunicacao.tsx           # Customização dos templates de lembrete D-1 e pesquisa D+1 (mesma UX do módulo Fila/Comunicação) com chips de variáveis e preview ao vivo
+│       │   │   └── Ajustes.tsx               # 2 tabs: Informações gerais (janela/duração/tolerância/regras + toggles reminder_d1_enabled e survey_d1_enabled) + Pagamentos (stub)
 │       │   ├── fila/                  # Módulo de Fila de espera (sub-abas)
 │       │   │   ├── Comunicacao.tsx           # 2 tabs: Customização de mensagens (templates WhatsApp por evento) + Configurações (stub)
 │       │   │   └── Ajustes.tsx               # QR Code controls + Configurações gerais (code min/max + tolerância) + Entrada remota + sidebar download QR
@@ -452,7 +495,9 @@ moralles-reservas/
 │   │   ├── 040_notifications_waitlist_kinds.sql # estende kind enum com waitlist_entered/table_ready/feedback + relaxa reservation_id NULLABLE
 │   │   ├── 041_satisfaction_comment.sql        # adiciona reservations.satisfaction_comment (text NULL) — capturado pelo webhook após nota D+1 (janela 30min)
 │   │   ├── 042_giftback_module.sql             # voucher_rules + vouchers (RLS membro), customers.birthday, kind 'voucher_issued', função expire_vouchers()
-│   │   └── 043_giftback_cron.sql               # pg_cron diário 12:00 UTC + trigger_voucher_processor() lendo INTERNAL_API_KEY do Vault
+│   │   ├── 043_giftback_cron.sql               # pg_cron diário 12:00 UTC + trigger_voucher_processor() lendo INTERNAL_API_KEY do Vault
+│   │   ├── 044_reservation_message_templates.sql # reservation_message_templates (event=reminder_d1/survey_d1) + estende RPCs get_reservations_for_reminder/survey com p_unit_id e retorno unit_id (retrocompatível)
+│   │   └── 045_reservation_automation_cron.sql # 2 jobs pg_cron (10:00 BRT reminder, 14:00 BRT survey) + trigger_reminder_processor()/trigger_survey_processor() lendo INTERNAL_API_KEY do Vault — substitui workflows N8N (DEPRECATED)
 │   │
 │   └── functions/
 │       ├── _shared/
@@ -473,6 +518,8 @@ moralles-reservas/
 │       │   └── index.ts                   # WhatsApp + e-mail (Resend) em paralelo; valida unit_id da reserva quando record.unit_id presente
 │       ├── send-cancellation/
 │       │   └── index.ts                   # Notifica cliente via WhatsApp ao cancelar reserva. Usa _shared/whatsapp-send (sem cópia local de helpers)
+│       ├── create-reservation/
+│       │   └── index.ts                   # Endpoint público (verify_jwt=false) para criar reserva via portal/widget. Usa _shared/availability.reserveSlot. Upsert de customer org-scoped + fill-if-null em customers.birthday quando body.customer.birthday presente (nunca sobrescreve). Rate limit por (phone, unit) via check_rate_limit. Valida ownership unit↔organization
 │       ├── manage-channels/
 │       │   └── index.ts                   # CRUD de whatsapp_channels — exige platform_admin (super-admin)
 │       ├── manage-ai-providers/
@@ -487,8 +534,12 @@ moralles-reservas/
 │       │   └── index.ts                   # Diagnóstico (canal + IA + stats 24h + últimas execuções) — consumido pela aba Diagnóstico em /platform/automacao
 │       ├── process-notification-outbox/
 │       │   └── index.ts                   # Worker do outbox de confirmação — chamado pelo pg_cron a cada 1 min
-│       └── process-voucher-triggers/
-│           └── index.ts                   # Worker dos gatilhos de Giftback — chamado pelo pg_cron diário (12:00 UTC). Expira vouchers vencidos, emite por aniversário (mes/dia matching) e por frequência (visits_required em days_window). Idempotente em ambos os casos. Envia WhatsApp via send-whatsapp com kind='voucher_issued'
+│       ├── process-voucher-triggers/
+│       │   └── index.ts                   # Worker dos gatilhos de Giftback — chamado pelo pg_cron diário (12:00 UTC). Expira vouchers vencidos, emite por aniversário (mes/dia matching) e por frequência (visits_required em days_window). Idempotente em ambos os casos. Envia WhatsApp via send-whatsapp com kind='voucher_issued'
+│       ├── process-reservation-reminders/
+│       │   └── index.ts                   # Worker do lembrete D-1 — pg_cron diário 13:00 UTC = 10:00 BRT. Itera units, lê settings.reminder_d1_enabled (default true), carrega template de reservation_message_templates ou DEFAULT_REMINDER_BODY, chama RPC get_reservations_for_reminder(amanhã, unit_id) e dispara send-whatsapp com kind='reminder_d1' + reservation_id. Idempotência via UNIQUE (reservation_id, kind) em notifications_sent
+│       └── process-satisfaction-surveys/
+│           └── index.ts                   # Worker da pesquisa D+1 — pg_cron diário 17:00 UTC = 14:00 BRT. Mesmo padrão do reminder, com target_date=ontem, RPC get_reservations_for_survey, kind='survey_d1'. Resposta 1-5 e comentário em texto livre são interceptados pelo webhook-whatsapp (não passam por aqui)
 │
 ├── .env.example
 ├── tailwind.config.ts
@@ -540,12 +591,13 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 | `walk_ins` | Clientes sem reserva no dia — `unit_id`, `customer_name`, `party_size`, `table_id?`, `status` (waiting/seated/left/no_show) |
 | `waitlist` | Fila de espera — `unit_id`, `customer_name`, `party_size`, `priority` (legacy int derivado por trigger), `priority_category` (`normal`/`senior`/`pregnant`/`disabled`/`other`), `code` (senha cíclica via RPC `next_waitlist_code`), `status` (waiting/notified/seated/cancelled). Unique parcial em `(unit_id, code)` p/ ativos |
 | `waitlist_message_templates` | Templates WhatsApp por unit×event — `event` (`entered`/`table_ready`/`feedback`), `customized` boolean, `body` text. Unique `(unit_id, event)`. RLS membro da unit. Variáveis: `{{cliente_nome}}`, `{{unidade_nome}}`, `{{party_size}}`, `{{codigo_fila}}`, `{{link_status}}` |
+| `reservation_message_templates` | Templates WhatsApp de **reserva** por unit×event — `event` (`reminder_d1`/`survey_d1`), `customized` boolean, `body` text. Unique `(unit_id, event)`. RLS membro da unit. Lido pelos workers `process-reservation-reminders` e `process-satisfaction-surveys`. Variáveis: `{{cliente_nome}}`, `{{horario}}`, `{{party_size}}`, `{{codigo}}`, `{{unidade_nome}}` (survey usa só nome/codigo/unidade) |
 | `menus` | Cardápios digitais (galeria) — `unit_id`, `slug` unique global (8 chars), `name`, `cover_image_url`, `theme` JSONB (5 cores), `active`, `sort_order`. RLS membro da unit; leitura anon só via RPC `get_menu_public` |
 | `menu_pages` | Imagens ordenadas do cardápio — `menu_id`, `image_url`, `sort_order`. RLS escopo via menu pai. Reorder via bulk update |
 | `menu_banners` | Banners da unit — `unit_id`, `type` (`home` 9:16 / `content` 1:1), `image_url`, `link_url?`, `active`, `sort_order`. Compartilhados entre cardápios da mesma unit |
 | `voucher_rules` | Regras de Giftback por unit — `unit_id`, `name`, `trigger_type` (`after_rating`/`manual`/`birthday`/`frequency`), `discount_percent` (1-100), `validity_days`, `active`. Configs por trigger: `min_rating` (after_rating), `visits_required`+`days_window` (frequency). RLS membro |
 | `vouchers` | Instâncias emitidas — `unit_id`, `rule_id` (nullable, manual avulso pode ser null), `customer_id`, `code` (8 chars, unique parcial WHERE active), `discount_percent`, `status` (`active`/`used`/`expired`/`cancelled`), `issued_at`, `expires_at`, `used_at`, `used_by_user_id`, `reservation_id` (nullable). RLS membro |
-| `customers` (campo novo) | `birthday` (date nullable) — usado pelo trigger `birthday` do giftback. Editável em /g/:slug/clientes via modal de detalhes |
+| `customers` (campo novo) | `birthday` (date nullable) — usado pelo trigger `birthday` do giftback. Capturado pelo portal `/r/:slug` (campo opcional) e widgets com `data_nascimento` habilitado; também editável em /g/:slug/clientes via modal de detalhes. Edge Function `create-reservation` faz "fill-if-null" — nunca sobrescreve data já cadastrada |
 
 ### Modelo de reservas (redesign 2026, migrations 030–035)
 
@@ -762,6 +814,8 @@ supabase functions deploy send-manual-message
 supabase functions deploy whatsapp-health
 supabase functions deploy process-notification-outbox
 supabase functions deploy process-voucher-triggers
+supabase functions deploy process-reservation-reminders
+supabase functions deploy process-satisfaction-surveys
 supabase functions deploy create-reservation
 ```
 
@@ -788,11 +842,32 @@ A Edge Function `process-notification-outbox` é invocada **a cada 1 minuto** pe
 
 A Edge Function `send-cancellation` continua sendo invocada **client-side** quando uma reserva muda para `status='cancelled'` no painel (ver [src/hooks/useReservas.ts](src/hooks/useReservas.ts) `useUpdateReservaStatus`). Não tem trigger no banco.
 
-### Automações N8N (lembrete D-1, pesquisa D+1)
+### Lembrete D-1 e pesquisa de satisfação D+1 (sem N8N)
 
-Orquestração em N8N. Setup e workflows em [`docs/n8n/README.md`](docs/n8n/README.md).
+**Arquitetura atual** (migrations 044 e 045). Substitui os 2 workflows N8N que viviam em `docs/n8n/` (hoje DEPRECATED).
 
-**RPCs disponíveis para N8N** (`SECURITY DEFINER`, acesso exclusivo ao `service_role`):
+Mesmo padrão do outbox de confirmação e do giftback: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vault → `pg_net.http_post` chama Edge Function com `x-internal-key`.
+
+| Job pg_cron | Schedule | Edge Function | Target date |
+|---|---|---|---|
+| `process-reservation-reminders` | `0 13 * * *` UTC = 10:00 BRT | [`process-reservation-reminders`](supabase/functions/process-reservation-reminders/index.ts) | hoje + 1 |
+| `process-satisfaction-surveys` | `0 17 * * *` UTC = 14:00 BRT | [`process-satisfaction-surveys`](supabase/functions/process-satisfaction-surveys/index.ts) | hoje − 1 |
+
+Cada worker itera todas as `units`. Para cada uma:
+1. Lê `settings.reminder_d1_enabled` / `survey_d1_enabled` (default `true`) — pula se `false`.
+2. Carrega template de `reservation_message_templates` (`customized=true` + body) ou cai no `DEFAULT_*_BODY` hardcoded em pt-BR no worker.
+3. Chama RPC `get_reservations_for_reminder(amanhã, unit_id)` ou `get_reservations_for_survey(ontem, unit_id)`. As RPCs (mig 011, estendidas em 044) já filtram `status='confirmed'`, `do_not_contact=false`, idempotência via NOT EXISTS em `notifications_sent`, e survey filtra `satisfaction_rating IS NULL`.
+4. Pra cada reserva elegível: renderiza template e chama `send-whatsapp` com `kind='reminder_d1'` ou `'survey_d1'` + `reservation_id`. UNIQUE `(reservation_id, kind)` em `notifications_sent` é a salvaguarda final de idempotência (race-safe).
+
+A resposta da pesquisa (1-5) é capturada pelo intercept do [`webhook-whatsapp`](supabase/functions/webhook-whatsapp/index.ts) — grava `reservations.satisfaction_rating`/`satisfaction_at`, dispara giftback `after_rating` se houver rule, e captura comentário em texto livre na janela de 30min em `satisfaction_comment`.
+
+**Cliente customiza o texto** em `/g/:slug/reservas/comunicacao` (hook [`useReservationTemplates`](src/hooks/useReservationTemplates.ts)). Variáveis aceitas no template:
+- `reminder_d1`: `{{cliente_nome}}`, `{{horario}}`, `{{party_size}}`, `{{codigo}}`, `{{unidade_nome}}`
+- `survey_d1`: `{{cliente_nome}}`, `{{codigo}}`, `{{unidade_nome}}`
+
+Se `customized=false` (ou linha ausente em `reservation_message_templates`), worker usa o default. Mantenha o `defaultBody` em [src/hooks/useReservationTemplates.ts](src/hooks/useReservationTemplates.ts) em sincronia com `DEFAULT_*_BODY` nos workers — divergência só afeta o preview na UI (worker é a fonte autoritativa em runtime).
+
+**RPCs auxiliares** (sobreviventes do `012_n8n_functions.sql`, `SECURITY DEFINER`, `service_role` only):
 
 | RPC | Assinatura | O que faz |
 |---|---|---|

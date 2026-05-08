@@ -41,6 +41,7 @@ interface CreateReservationBody {
     name?: string;
     phone?: string;
     email?: string | null;
+    birthday?: string | null;
   };
   date?: string;
   time?: string;
@@ -55,6 +56,13 @@ function validateBody(b: CreateReservationBody): string | null {
   if (!b.customer.name || b.customer.name.trim().length < 2) return "Nome inválido.";
   const digits = (b.customer.phone ?? "").replace(/\D/g, "");
   if (digits.length < 10 || digits.length > 13) return "Telefone inválido.";
+  if (b.customer.birthday) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.customer.birthday)) return "Aniversário inválido (use YYYY-MM-DD).";
+    const ms = Date.parse(b.customer.birthday + "T00:00:00Z");
+    if (Number.isNaN(ms) || ms > Date.now()) return "Aniversário inválido.";
+    const year = parseInt(b.customer.birthday.slice(0, 4), 10);
+    if (year < 1900) return "Aniversário inválido.";
+  }
   if (!b.date || !/^\d{4}-\d{2}-\d{2}$/.test(b.date)) return "Data inválida (use YYYY-MM-DD).";
   if (!b.time || !/^\d{2}:\d{2}(:\d{2})?$/.test(b.time)) return "Horário inválido (use HH:MM).";
   if (typeof b.party_size !== "number" || b.party_size < 1 || b.party_size > 30) return "party_size inválido.";
@@ -111,7 +119,8 @@ serve(async (req) => {
       );
     }
 
-    // Upsert customer (org-scoped)
+    // Upsert customer (org-scoped). Birthday tratado separado pra nunca
+    // sobrescrever valor existente — só preenche se hoje está null.
     const { data: customer, error: custErr } = await supabase
       .from("customers")
       .upsert(
@@ -123,12 +132,23 @@ serve(async (req) => {
         },
         { onConflict: "organization_id,phone" },
       )
-      .select("id, name, phone, email")
+      .select("id, name, phone, email, birthday")
       .single();
 
     if (custErr || !customer) {
       jsonLog("error", { requestId, evt: "create_reservation_customer_failed", err: String(custErr) });
       return jsonResponse({ success: false, reason: "customer_failed", message: "Falha ao registrar cliente." }, 500);
+    }
+
+    if (body.customer!.birthday && !customer.birthday) {
+      const { error: bdayErr } = await supabase
+        .from("customers")
+        .update({ birthday: body.customer!.birthday })
+        .eq("id", customer.id)
+        .is("birthday", null);
+      if (bdayErr) {
+        jsonLog("warn", { requestId, evt: "create_reservation_birthday_failed", err: String(bdayErr) });
+      }
     }
 
     // reserveSlot valida disponibilidade + insere com table_id atribuído

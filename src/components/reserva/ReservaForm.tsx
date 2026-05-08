@@ -248,8 +248,11 @@ export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, cu
         return;
       }
     }
-    // Concatena extras nas notas pra preservar dados sem mudar schema da reserva
+    // data_nascimento vai pro campo birthday do customer (não duplica em notes).
+    // Demais extras seguem concatenados em notes pra preservar dados sem mudar schema.
+    const birthday = (extras.data_nascimento ?? "").trim() || null;
     const extraLines = enabledExtras
+      .filter((f) => f.key !== "data_nascimento")
       .map((f) => {
         const v = (extras[f.key] ?? "").trim();
         return v ? `${f.label}: ${v}` : "";
@@ -275,6 +278,7 @@ export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, cu
         hall_id: hallId || null,
         widget_id: widgetId,
         custom_field_values: Object.keys(customPayload).length ? customPayload : undefined,
+        birthday,
       });
       setConfirmed(reserva);
       reset();
@@ -498,6 +502,19 @@ export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, cu
               </div>
             );
           })}
+
+          {!enabledExtras.some((f) => f.key === "data_nascimento") && (
+            <div className="space-y-1">
+              <Label htmlFor="birthday">Aniversário (opcional)</Label>
+              <Input
+                id="birthday"
+                type="date"
+                max={new Date().toISOString().slice(0, 10)}
+                value={extras.data_nascimento ?? ""}
+                onChange={(e) => setExtras((prev) => ({ ...prev, data_nascimento: e.target.value }))}
+              />
+            </div>
+          )}
 
           {sortedCustomFields.map((f) => {
             const value = customValues[f.id] ?? "";

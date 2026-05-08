@@ -23,7 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Code2, Link2, Plus } from "lucide-react";
+import { Code2, Copy, Link2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { BreadcrumbReservas } from "./Saloes";
 
@@ -56,12 +56,50 @@ export default function Widget() {
     );
   };
 
+  const embedUrl = unitSlug
+    ? `${window.location.origin}/r/${unitSlug}?mode=embed`
+    : "";
+
+  const copyEmbedUrl = () => {
+    if (!embedUrl) return;
+    navigator.clipboard.writeText(embedUrl).then(
+      () => toast.success("Link copiado."),
+      () => toast.error("Não foi possível copiar."),
+    );
+  };
+
   return (
     <div className="space-y-5">
       <header className="space-y-1">
         <BreadcrumbReservas current="Widget de Reserva" />
         <h1 className="text-2xl font-bold">Widget de Reserva</h1>
       </header>
+
+      <Card className="p-4 bg-muted/30 border-dashed">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1 space-y-1">
+            <p className="text-sm font-medium">
+              Precisa só de um link de reserva sem campos personalizados?
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Compartilhe a versão limpa da sua página pública — sem hero/sobre/mapa.
+              Crie um widget abaixo apenas se precisar de <strong>campos extras por campanha</strong>{" "}
+              (ex.: número de filhos, evento privado, prepago).
+            </p>
+          </div>
+          {embedUrl && (
+            <div className="flex items-center gap-2 shrink-0">
+              <code className="px-2 py-1 rounded bg-background border text-xs font-mono break-all">
+                {embedUrl}
+              </code>
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={copyEmbedUrl}>
+                <Copy className="h-3.5 w-3.5" />
+                Copiar
+              </Button>
+            </div>
+          )}
+        </div>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-5 items-start">
         <Card className="p-0 overflow-hidden">

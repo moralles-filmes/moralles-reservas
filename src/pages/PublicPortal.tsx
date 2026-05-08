@@ -94,8 +94,16 @@ interface UnitPublicFullResponse {
   }>;
 }
 
+type PortalMode = "full" | "embed";
+type AutoOpenAction = "reservar" | "waitlist" | null;
+
 export default function PublicPortal() {
   const { slug } = useParams<{ slug: string }>();
+  const [searchParams] = useSearchParams();
+  const mode: PortalMode = searchParams.get("mode") === "embed" ? "embed" : "full";
+  const actionParam = searchParams.get("action");
+  const autoOpen: AutoOpenAction =
+    actionParam === "reservar" || actionParam === "waitlist" ? actionParam : null;
 
   const { data: payload, isLoading, error } = useQuery({
     queryKey: ["public-unit", slug],
@@ -114,6 +122,16 @@ export default function PublicPortal() {
   const settings = payload?.unit_settings ?? {};
 
   if (isLoading) {
+    if (mode === "embed") {
+      return (
+        <div className="min-h-screen bg-muted/40 flex items-center justify-center p-4 sm:p-6">
+          <div className="w-full max-w-md space-y-3">
+            <Skeleton className="h-28 w-full rounded-2xl" />
+            <Skeleton className="h-24 w-full rounded-2xl" />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-background">
         <div className="aspect-[16/9] w-full max-h-[520px]">
@@ -149,6 +167,8 @@ export default function PublicPortal() {
       halls={halls}
       customFields={customFields}
       settings={settings}
+      mode={mode}
+      autoOpen={autoOpen}
     />
   );
 }
@@ -160,11 +180,15 @@ function PortalContent({
   halls,
   customFields,
   settings,
+  mode,
+  autoOpen,
 }: {
   unit: PublicUnit;
   halls: PublicHall[];
   customFields: NonNullable<UnitPublicFullResponse["custom_fields"]>;
   settings: UnitSettings;
+  mode: PortalMode;
+  autoOpen: AutoOpenAction;
 }) {
   const initials = useMemo(() => getInitials(unit.name), [unit.name]);
 
@@ -177,6 +201,27 @@ function PortalContent({
   const cityLine = [unit.address?.neighborhood, unit.address?.city]
     .filter(Boolean)
     .join(" · ");
+
+  if (mode === "embed") {
+    return (
+      <div className="min-h-screen bg-muted/40 flex items-center justify-center p-4 sm:p-6">
+        <div className="w-full max-w-md space-y-3">
+          <ReservaCTA
+            unit={unit}
+            halls={halls}
+            customFields={customFields}
+            settings={settings}
+            defaultOpen={autoOpen === "reservar"}
+          />
+          <WaitlistCTA
+            unit={unit}
+            settings={settings}
+            defaultOpen={autoOpen === "waitlist"}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -317,8 +362,13 @@ function PortalContent({
               halls={halls}
               customFields={customFields}
               settings={settings}
+              defaultOpen={autoOpen === "reservar"}
             />
-            <WaitlistCTA unit={unit} settings={settings} />
+            <WaitlistCTA
+              unit={unit}
+              settings={settings}
+              defaultOpen={autoOpen === "waitlist"}
+            />
           </div>
         </div>
       </section>
@@ -361,13 +411,18 @@ function ReservaCTA({
   halls,
   customFields,
   settings,
+  defaultOpen = false,
 }: {
   unit: PublicUnit;
   halls: PublicHall[];
   customFields: NonNullable<UnitPublicFullResponse["custom_fields"]>;
   settings: UnitSettings;
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -433,18 +488,19 @@ function ReservaCTA({
 function WaitlistCTA({
   unit,
   settings,
+  defaultOpen = false,
 }: {
   unit: PublicUnit;
   settings: UnitSettings;
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const [searchParams] = useSearchParams();
-  const action = searchParams.get("action");
+  const [open, setOpen] = useState(defaultOpen);
 
   // Auto-abre o modal quando o portal é acessado via QR Code (?action=waitlist)
+  // ou quando o link compartilhado já vem com o dialog instruído pra abrir.
   useEffect(() => {
-    if (action === "waitlist") setOpen(true);
-  }, [action]);
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

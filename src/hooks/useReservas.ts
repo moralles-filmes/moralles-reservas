@@ -105,6 +105,7 @@ export interface CreateReservaParams extends ReservaFormData {
   hall_id?: string | null;
   widget_id?: string;
   custom_field_values?: Record<string, string>;
+  birthday?: string | null;
 }
 
 interface CreateReservationFnResponse {
@@ -149,6 +150,7 @@ export function useCreateReserva() {
               name: data.name,
               phone: data.phone,
               email: data.email || null,
+              birthday: data.birthday || null,
             },
             date: data.date,
             time: data.time,

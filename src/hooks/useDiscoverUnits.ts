@@ -69,21 +69,3 @@ export function usePublicUnits({ city, search }: DiscoverFilters) {
     staleTime: 60 * 1000,
   });
 }
-
-export function useFeaturedHero() {
-  return useQuery({
-    queryKey: ["featured-hero"],
-    queryFn: async (): Promise<string | null> => {
-      const { data, error } = await supabase
-        .from("units")
-        .select("hero_image_url")
-        .eq("is_public", true)
-        .not("hero_image_url", "is", null)
-        .limit(1)
-        .maybeSingle();
-      if (error) throw error;
-      return (data?.hero_image_url as string | null) ?? null;
-    },
-    staleTime: 10 * 60 * 1000,
-  });
-}

@@ -13,6 +13,15 @@ import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -39,6 +48,9 @@ export default function SalaoDetalhe() {
 
   const [dayOfWeek, setDayOfWeek] = useState(0);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDesc, setEditDesc] = useState("");
 
   const { data: hall, isLoading: hallLoading } = useHall(hallId);
   const { data: schedules, isLoading: schedulesLoading } = useHallSchedules(hallId);
@@ -120,6 +132,30 @@ export default function SalaoDetalhe() {
     }
   };
 
+  const openEdit = () => {
+    setEditName(hall.name);
+    setEditDesc(hall.description ?? "");
+    setEditOpen(true);
+  };
+
+  const handleSaveEdit = () => {
+    const name = editName.trim();
+    if (!name) {
+      toast.error("Informe o nome do salão.");
+      return;
+    }
+    updateHall.mutate(
+      { id: hall.id, name, description: editDesc.trim() || null },
+      {
+        onSuccess: () => {
+          toast.success("Salão atualizado.");
+          setEditOpen(false);
+        },
+        onError: (err: Error) => toast.error(err.message ?? "Erro ao atualizar salão."),
+      },
+    );
+  };
+
   return (
     <div className="space-y-5">
       <header className="space-y-1">
@@ -160,7 +196,7 @@ export default function SalaoDetalhe() {
                 onCheckedChange={(active) => updateHall.mutate({ id: hall.id, active })}
               />
             </label>
-            <Button variant="outline" size="sm" className="w-full gap-2" onClick={() => toast.info("Em breve.")}>
+            <Button variant="outline" size="sm" className="w-full gap-2" onClick={openEdit}>
               <Pencil className="h-4 w-4" /> Editar salão
             </Button>
             <AlertDialog>
@@ -236,6 +272,40 @@ export default function SalaoDetalhe() {
         onSubmit={handleSubmitSchedule}
         onDeleteTable={handleDeleteTable}
       />
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar salão</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label>Nome</Label>
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="Ex: Salão Principal, Área externa…"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Descrição (opcional)</Label>
+              <Input
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                placeholder="Ex: Mesas internas climatizadas"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleSaveEdit} disabled={updateHall.isPending}>
+              Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

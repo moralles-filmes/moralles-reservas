@@ -18,7 +18,6 @@ import {
   X,
 } from "lucide-react";
 import {
-  useFeaturedHero,
   usePublicCities,
   usePublicUnits,
   type PublicUnitCard,
@@ -44,7 +43,6 @@ export default function Index() {
     setCityOpen(false);
   };
 
-  const { data: heroUrl } = useFeaturedHero();
   const { data: cities = [] } = usePublicCities();
   const { data: units = [], isLoading } = usePublicUnits({ city, search });
 
@@ -59,7 +57,6 @@ export default function Index() {
       />
 
       <Hero
-        heroUrl={heroUrl ?? null}
         search={search}
         onSearch={setSearch}
         city={city}
@@ -285,34 +282,23 @@ function CityChip({ city, cities, open, setOpen, onSelect }: CityChipProps) {
 // ─── Hero ─────────────────────────────────────────────────────────────────────
 
 interface HeroProps {
-  heroUrl: string | null;
   search: string;
   onSearch: (s: string) => void;
   city: string | null;
   onPickCity: () => void;
 }
 
-function Hero({ heroUrl, search, onSearch, city, onPickCity }: HeroProps) {
+function Hero({ search, onSearch, city, onPickCity }: HeroProps) {
   return (
     <section className="relative isolate min-h-[640px] sm:min-h-[680px] flex items-center justify-center overflow-hidden">
-      {/* Background — usa hero de uma unidade ou fallback warm gradient mesh */}
-      {heroUrl ? (
-        <img
-          src={heroUrl}
-          alt=""
-          aria-hidden
-          className="absolute inset-0 w-full h-full object-cover scale-105"
-        />
-      ) : (
-        <div
-          aria-hidden
-          className="absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(ellipse 80% 60% at 20% 30%, hsl(24 85% 45% / 0.85), transparent 60%), radial-gradient(ellipse 60% 70% at 80% 70%, hsl(340 55% 35% / 0.85), transparent 55%), radial-gradient(ellipse 50% 50% at 50% 100%, hsl(38 90% 50% / 0.7), transparent 60%), linear-gradient(180deg, hsl(20 25% 18%), hsl(20 30% 12%))",
-          }}
-        />
-      )}
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 60% at 20% 30%, hsl(24 85% 45% / 0.85), transparent 60%), radial-gradient(ellipse 60% 70% at 80% 70%, hsl(340 55% 35% / 0.85), transparent 55%), radial-gradient(ellipse 50% 50% at 50% 100%, hsl(38 90% 50% / 0.7), transparent 60%), linear-gradient(180deg, hsl(20 25% 18%), hsl(20 30% 12%))",
+        }}
+      />
 
       {/* Overlays — escurece + grão sutil */}
       <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/30 to-black/65" />
