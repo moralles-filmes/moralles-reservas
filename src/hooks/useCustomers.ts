@@ -16,6 +16,7 @@ export function useUpdateCustomer(unitId: string) {
           | "name"
           | "phone"
           | "email"
+          | "birthday"
           | "allergies"
           | "dietary_restrictions"
           | "vip_notes"
