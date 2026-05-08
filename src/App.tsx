@@ -39,6 +39,7 @@ const GBloqueios = lazy(() => import("./pages/gestao/reservas/Bloqueios"));
 const GWidget = lazy(() => import("./pages/gestao/reservas/Widget"));
 const GFormulario = lazy(() => import("./pages/gestao/reservas/Formulario"));
 const GAjustes = lazy(() => import("./pages/gestao/reservas/Ajustes"));
+const GReservasComunicacao = lazy(() => import("./pages/gestao/reservas/Comunicacao"));
 const GWidgetDetail = lazy(() => import("./pages/gestao/reservas/WidgetDetail"));
 
 // ── Gestão > Fila de espera (sub-abas) ────────────────────────────────────────
@@ -199,6 +200,7 @@ export default function App() {
               <Route path="/g/:unitSlug/reservas/widget" element={<GestaoGuard><GWidget /></GestaoGuard>} />
               <Route path="/g/:unitSlug/reservas/widget/:widgetId" element={<GestaoGuard><GWidgetDetail /></GestaoGuard>} />
               <Route path="/g/:unitSlug/reservas/formulario" element={<GestaoGuard><GFormulario /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/reservas/comunicacao" element={<GestaoGuard><GReservasComunicacao /></GestaoGuard>} />
               <Route path="/g/:unitSlug/reservas/ajustes" element={<GestaoGuard><GAjustes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/fila" element={<Navigate to="comunicacao" replace />} />
               <Route path="/g/:unitSlug/fila/comunicacao" element={<GestaoGuard><GFilaComunicacao /></GestaoGuard>} />

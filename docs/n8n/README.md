@@ -1,5 +1,14 @@
 # Automações N8N — moralles-reservas
 
+> ⚠️ **DEPRECATED.** Os 2 workflows desta pasta (lembrete D-1 e pesquisa D+1) foram **substituídos por automações nativas dentro do Supabase** desde a migration `045_reservation_automation_cron.sql`. Hoje quem dispara é `pg_cron` chamando as Edge Functions:
+>
+> - **Lembrete D-1** → [`process-reservation-reminders`](../../supabase/functions/process-reservation-reminders/index.ts) (cron diário 13:00 UTC = 10:00 BRT)
+> - **Pesquisa D+1** → [`process-satisfaction-surveys`](../../supabase/functions/process-satisfaction-surveys/index.ts) (cron diário 17:00 UTC = 14:00 BRT)
+>
+> O cliente customiza os textos em `/g/:slug/reservas/comunicacao` (tabela `reservation_message_templates`) e habilita/desabilita por unidade em `/g/:slug/reservas/ajustes` (`settings.reminder_d1_enabled` / `survey_d1_enabled`). A captura da nota 1-5 e do comentário D+1 já era feita pelo `webhook-whatsapp` — não dependia de N8N.
+>
+> Esta pasta é mantida apenas como referência histórica / pra forks que ainda usam N8N.
+
 Esta pasta contém os workflows N8N que orquestram outbound de WhatsApp **agendado** (lembretes e pesquisa de satisfação). Os fluxos síncronos (confirmação automática e agente IA conversacional) seguem nas Edge Functions do Supabase.
 
 ## Pré-requisitos

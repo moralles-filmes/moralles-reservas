@@ -28,11 +28,19 @@ const VALID_KINDS = new Set([
   "waitlist_table_ready",
   "waitlist_feedback",
   "voucher_issued",
+  "reminder_d1",
+  "survey_d1",
 ]);
 
 interface ExtendedPayload extends SendMessagePayload {
-  /** Quando presente, grava notifications_sent. Hoje só waitlist_*. */
+  /** Quando presente, grava notifications_sent. */
   kind?: string;
+  /**
+   * Quando presente junto com kind, grava `notifications_sent.reservation_id`
+   * — necessário pra reminder_d1/survey_d1, cuja idempotência depende da
+   * UNIQUE (reservation_id, kind). Para waitlist_*/voucher_issued, deixe nulo.
+   */
+  reservation_id?: string | null;
 }
 
 /**
@@ -87,6 +95,7 @@ async function recordNotification(
   kind: string,
   status: "sent" | "failed",
   error: string | null,
+  reservationId: string | null,
 ) {
   try {
     await supabaseAdmin.from("notifications_sent").insert({
@@ -94,7 +103,7 @@ async function recordNotification(
       kind,
       status,
       error,
-      reservation_id: null,
+      reservation_id: reservationId,
     });
   } catch (err) {
     jsonLog("warn", {
@@ -121,7 +130,7 @@ serve(async (req) => {
     });
   }
 
-  const { phone, message, channel_id, unit_id, kind } = body;
+  const { phone, message, channel_id, unit_id, kind, reservation_id } = body;
 
   const authResult = await authorize(req, unit_id);
   if (!authResult.ok) {
@@ -168,6 +177,7 @@ serve(async (req) => {
         normalizedKind,
         result.ok ? "sent" : "failed",
         result.ok ? null : result.error ?? "unknown_error",
+        reservation_id ?? null,
       );
     }
 
@@ -192,6 +202,7 @@ serve(async (req) => {
         normalizedKind,
         "failed",
         String(err).slice(0, 200),
+        reservation_id ?? null,
       );
     }
     return new Response(JSON.stringify({ error: "internal_error" }), {

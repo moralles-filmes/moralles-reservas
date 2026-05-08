@@ -1,0 +1,227 @@
+import { useEffect, useMemo, useState } from "react";
+import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import {
+  RESERVATION_TEMPLATES,
+  RESERVATION_VARIABLES,
+  getReservationTemplateMeta,
+  renderReservationTemplate,
+  useReservationTemplates,
+  useUpsertReservationTemplate,
+  type ReservationVariableKey,
+} from "@/hooks/useReservationTemplates";
+import type { ReservationTemplateEvent } from "@/types/reserva";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { toast } from "sonner";
+import { BreadcrumbReservas } from "./Saloes";
+
+export default function ReservasComunicacao() {
+  const unit = useCurrentUnit();
+  const unitId = unit?.unit_id ?? "";
+
+  return (
+    <div className="space-y-5">
+      <header className="space-y-1">
+        <BreadcrumbReservas current="Comunicação" />
+        <h1 className="text-2xl font-bold">Comunicação</h1>
+        <p className="text-sm text-muted-foreground">
+          Personalize as mensagens automáticas de WhatsApp enviadas aos clientes —
+          lembrete na véspera (10:00 BRT) e pesquisa de satisfação no dia seguinte
+          (14:00 BRT). Habilite ou desabilite cada uma em{" "}
+          <span className="font-medium">Reservas → Ajustes</span>.
+        </p>
+      </header>
+
+      <Card className="p-6">
+        <CustomizacaoTab unitId={unitId} />
+      </Card>
+    </div>
+  );
+}
+
+function CustomizacaoTab({ unitId }: { unitId: string }) {
+  const unit = useCurrentUnit();
+  const { data: templates, isLoading } = useReservationTemplates(unitId);
+  const upsert = useUpsertReservationTemplate(unitId);
+
+  const [event, setEvent] = useState<ReservationTemplateEvent>("reminder_d1");
+  const [customized, setCustomized] = useState(false);
+  const [body, setBody] = useState("");
+
+  const meta = getReservationTemplateMeta(event);
+  const currentTemplate = useMemo(
+    () => templates?.find((t) => t.event === event),
+    [templates, event],
+  );
+
+  useEffect(() => {
+    if (!templates) return;
+    if (currentTemplate) {
+      setCustomized(currentTemplate.customized);
+      setBody(currentTemplate.body || meta.defaultBody);
+    } else {
+      setCustomized(false);
+      setBody(meta.defaultBody);
+    }
+  }, [event, templates, currentTemplate, meta.defaultBody]);
+
+  const charCount = body.length;
+  const overLimit = charCount > meta.maxLength;
+
+  const handleInsertVar = (key: ReservationVariableKey) => {
+    setBody(
+      (prev) =>
+        prev + (prev.endsWith(" ") || prev === "" ? "" : " ") + `{{${key}}}`,
+    );
+    setCustomized(true);
+  };
+
+  const handleSave = () => {
+    if (overLimit) {
+      toast.error(`Mensagem ultrapassa ${meta.maxLength} caracteres.`);
+      return;
+    }
+    upsert.mutate({
+      event,
+      customized,
+      body: customized ? body : "",
+    });
+  };
+
+  const previewVars =
+    event === "reminder_d1"
+      ? {
+          cliente_nome: "Maria",
+          horario: "20:30",
+          party_size: 4,
+          codigo: "ABC123",
+          unidade_nome: unit?.unit_name ?? "Restaurante",
+        }
+      : {
+          cliente_nome: "Maria",
+          codigo: "ABC123",
+          unidade_nome: unit?.unit_name ?? "Restaurante",
+        };
+
+  const preview = renderReservationTemplate(
+    customized ? body : meta.defaultBody,
+    previewVars,
+  );
+
+  const allowedVariables = RESERVATION_VARIABLES.filter((v) =>
+    meta.variables.includes(v.key),
+  );
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-10 w-60" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      <div className="space-y-2">
+        <Label className="text-xs text-muted-foreground">Modelo de mensagem</Label>
+        <Select
+          value={event}
+          onValueChange={(v) => setEvent(v as ReservationTemplateEvent)}
+        >
+          <SelectTrigger className="max-w-md">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {RESERVATION_TEMPLATES.map((t) => (
+              <SelectItem key={t.event} value={t.event}>
+                {t.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">{meta.description}</p>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Switch
+          id="customized"
+          checked={customized}
+          onCheckedChange={setCustomized}
+        />
+        <Label htmlFor="customized" className="text-sm">
+          Personalizar mensagem
+        </Label>
+      </div>
+
+      <Card className="p-4 bg-muted/30">
+        <Label className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
+          Mensagem
+        </Label>
+        <textarea
+          value={body}
+          onChange={(e) => {
+            setBody(e.target.value);
+            if (!customized) setCustomized(true);
+          }}
+          disabled={!customized}
+          rows={7}
+          className="w-full bg-background border border-input rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 disabled:cursor-not-allowed font-mono"
+          placeholder={meta.defaultBody}
+        />
+        <div className="flex items-center justify-between mt-2">
+          <p
+            className={`text-xs ${overLimit ? "text-destructive" : "text-muted-foreground"}`}
+          >
+            {charCount}/{meta.maxLength}
+          </p>
+          {!customized && (
+            <p className="text-xs text-muted-foreground italic">
+              Editando o texto, "Personalizar mensagem" será ativado automaticamente.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4 space-y-2">
+          <Label className="text-xs font-semibold">Adicionar variável</Label>
+          <div className="flex flex-wrap gap-2">
+            {allowedVariables.map((v) => (
+              <button
+                key={v.key}
+                type="button"
+                onClick={() => handleInsertVar(v.key)}
+                disabled={!customized}
+                className="text-xs px-3 py-1.5 rounded-md bg-background border border-input hover:bg-accent transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      <div className="space-y-2">
+        <Label className="text-sm font-semibold">Pré-visualização</Label>
+        <Card className="p-4 bg-emerald-50 border-emerald-200">
+          <p className="text-sm whitespace-pre-wrap font-sans">{preview}</p>
+        </Card>
+      </div>
+
+      <div className="flex justify-end">
+        <Button onClick={handleSave} disabled={upsert.isPending || overLimit}>
+          {upsert.isPending ? "Salvando…" : "Salvar mensagem"}
+        </Button>
+      </div>
+    </div>
+  );
+}

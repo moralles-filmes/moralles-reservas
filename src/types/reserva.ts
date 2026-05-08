@@ -89,6 +89,18 @@ export interface WaitlistMessageTemplate {
   updated_at: string;
 }
 
+export type ReservationTemplateEvent = "reminder_d1" | "survey_d1";
+
+export interface ReservationMessageTemplate {
+  id: string;
+  unit_id: string;
+  event: ReservationTemplateEvent;
+  customized: boolean;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WalkIn {
   id: string;
   unit_id: string;

@@ -94,6 +94,7 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
         { to: `${base}/reservas/bloqueios`,        label: "Bloqueios",            icon: Lock },
         { to: `${base}/reservas/widget`,           label: "Widget de reserva",    icon: Code2 },
         { to: `${base}/reservas/formulario`,       label: "Personalizar form.",   icon: FormInput },
+        { to: `${base}/reservas/comunicacao`,      label: "Comunicação",          icon: MessageSquare },
         { to: `${base}/reservas/ajustes`,          label: "Ajustes",              icon: Sliders },
       ],
     },

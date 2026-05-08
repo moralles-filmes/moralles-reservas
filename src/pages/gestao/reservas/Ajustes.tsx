@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -24,6 +25,8 @@ const SETTING_KEYS = [
   "reservation_tolerance_minutes",
   "rules_and_conditions",
   "additional_info",
+  "reminder_d1_enabled",
+  "survey_d1_enabled",
 ] as const;
 
 type Tab = "geral" | "pagamentos";
@@ -109,6 +112,8 @@ function InfoTab({ unitId }: { unitId: string }) {
   const [tolerance, setTolerance] = useState("");
   const [rules, setRules] = useState("");
   const [additionalInfo, setAdditionalInfo] = useState("");
+  const [reminderEnabled, setReminderEnabled] = useState(true);
+  const [surveyEnabled, setSurveyEnabled] = useState(true);
 
   useEffect(() => {
     if (!settings) return;
@@ -118,6 +123,8 @@ function InfoTab({ unitId }: { unitId: string }) {
     setTolerance(coerceNumberString(map.reservation_tolerance_minutes, 0));
     setRules(coerceString(map.rules_and_conditions));
     setAdditionalInfo(coerceString(map.additional_info));
+    setReminderEnabled(coerceBoolean(map.reminder_d1_enabled, true));
+    setSurveyEnabled(coerceBoolean(map.survey_d1_enabled, true));
   }, [settings]);
 
   const upsertSettings = useMutation({
@@ -157,6 +164,8 @@ function InfoTab({ unitId }: { unitId: string }) {
       { key: "reservation_tolerance_minutes", value: tol },
       { key: "rules_and_conditions", value: rules.trim() },
       { key: "additional_info", value: additionalInfo.trim() },
+      { key: "reminder_d1_enabled", value: reminderEnabled },
+      { key: "survey_d1_enabled", value: surveyEnabled },
     ]);
   };
 
@@ -219,6 +228,49 @@ function InfoTab({ unitId }: { unitId: string }) {
             onChange={(e) => setTolerance(e.target.value)}
           />
           <span className="text-sm text-muted-foreground">minutos</span>
+        </div>
+      </div>
+
+      <div className="border-t pt-6 space-y-1">
+        <h3 className="text-base font-semibold">Notificações automáticas</h3>
+        <p className="text-sm text-muted-foreground">
+          Mensagens enviadas pelo sistema via WhatsApp em horário fixo (BRT). Edite o
+          texto em <span className="font-medium">Reservas → Comunicação</span>.
+        </p>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-start gap-3">
+          <Switch
+            id="reminder-d1-enabled"
+            checked={reminderEnabled}
+            onCheckedChange={setReminderEnabled}
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="reminder-d1-enabled" className="text-sm font-medium cursor-pointer">
+              Lembrete na véspera (10:00)
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Envia um WhatsApp 1 dia antes da reserva confirmando data e horário.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-start gap-3">
+          <Switch
+            id="survey-d1-enabled"
+            checked={surveyEnabled}
+            onCheckedChange={setSurveyEnabled}
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="survey-d1-enabled" className="text-sm font-medium cursor-pointer">
+              Pesquisa de satisfação no dia seguinte (14:00)
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Pede uma nota de 1 a 5 no dia seguinte à reserva. A resposta é capturada
+              automaticamente e aparece em Relatórios → Avaliações.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -289,6 +341,13 @@ function coerceNumberString(raw: unknown, fallback: number): string {
 function coerceString(raw: unknown): string {
   if (typeof raw === "string") return raw;
   return "";
+}
+
+function coerceBoolean(raw: unknown, fallback: boolean): boolean {
+  if (typeof raw === "boolean") return raw;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return fallback;
 }
 
 function LabelWithHelp({
