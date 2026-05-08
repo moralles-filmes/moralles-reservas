@@ -37,6 +37,8 @@ import {
 import { toast } from "sonner";
 import { useState, useEffect } from "react";
 import {
+  Activity,
+  AlertTriangle,
   ArrowLeft,
   Bot,
   Check,
@@ -63,6 +65,7 @@ import {
   useUpsertAiProviderKey,
   useDeleteAiProviderKey,
 } from "@/hooks/useAiProviderKeys";
+import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
@@ -173,6 +176,10 @@ export default function Automacao() {
             <Info className="h-4 w-4" />
             Instruções do agente
           </TabsTrigger>
+          <TabsTrigger value="diagnostics" className="gap-2">
+            <Activity className="h-4 w-4" />
+            Diagnóstico
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="channels">
@@ -185,6 +192,10 @@ export default function Automacao() {
 
         <TabsContent value="prompt">
           <PromptTab unitId={unitId} />
+        </TabsContent>
+
+        <TabsContent value="diagnostics">
+          <DiagnosticsTab unitId={unitId} />
         </TabsContent>
       </Tabs>
     </div>
@@ -802,5 +813,285 @@ function PromptTab({ unitId }: { unitId: string }) {
         </Button>
       </CardContent>
     </Card>
+  );
+}
+
+// ─── Tab: Diagnóstico ────────────────────────────────────────────────────────
+
+const OUTCOME_LABEL: Record<string, string> = {
+  success: "Sucesso",
+  duplicate: "Duplicada",
+  empty_response: "Resposta vazia",
+  agent_error: "Erro do agente",
+  send_error: "Erro de envio",
+  rate_limited: "Rate limit",
+  human_active_silent: "Em atendimento humano",
+  human_active_reminded: "Lembrete enviado",
+  handoff_auto_resolved: "Handoff resolvido",
+  ai_key_unavailable: "Sem chave de IA",
+  webhook_unauthorized: "Secret inválido",
+  channel_not_found: "Canal não encontrado",
+  ignored_non_text: "Não-texto",
+  survey_response: "Avaliação registrada",
+  customer_upsert_failed: "Erro no customer",
+  webhook_error: "Erro inesperado",
+  missing_channel_param: "Sem channel param",
+};
+
+const OUTCOME_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = {
+  success: "good",
+  survey_response: "good",
+  handoff_auto_resolved: "good",
+  duplicate: "neutral",
+  human_active_silent: "neutral",
+  human_active_reminded: "neutral",
+  ignored_non_text: "neutral",
+  rate_limited: "warn",
+  empty_response: "warn",
+  agent_error: "bad",
+  send_error: "bad",
+  ai_key_unavailable: "bad",
+  webhook_unauthorized: "bad",
+  channel_not_found: "bad",
+  customer_upsert_failed: "bad",
+  webhook_error: "bad",
+  missing_channel_param: "bad",
+};
+
+function outcomeBadgeClass(outcome: string): string {
+  const tone = OUTCOME_TONE[outcome] ?? "neutral";
+  if (tone === "good") return "text-green-700 bg-green-50 border-green-200";
+  if (tone === "warn") return "text-amber-700 bg-amber-50 border-amber-200";
+  if (tone === "bad") return "text-destructive bg-destructive/10 border-destructive/20";
+  return "text-muted-foreground bg-muted border-transparent";
+}
+
+function relativeTime(iso: string | null): string {
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return "agora";
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min atrás`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)} h atrás`;
+  return `${Math.round(ms / 86_400_000)} d atrás`;
+}
+
+function DiagnosticsTab({ unitId }: { unitId: string }) {
+  const { data, isLoading, isError, error, refetch, isFetching } = useWhatsAppHealth(unitId);
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center space-y-3">
+          <AlertTriangle className="h-8 w-8 mx-auto text-destructive" />
+          <p className="text-sm text-destructive">{(error as Error).message}</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>
+            Tentar novamente
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!data) return null;
+
+  const { channel, ai, stats_24h, last_executions, generated_at } = data;
+  const successRate = stats_24h.total > 0
+    ? Math.round(((stats_24h.by_outcome.success ?? 0) / stats_24h.total) * 100)
+    : null;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          Atualizado {relativeTime(generated_at)}
+        </p>
+        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+          <RefreshCw className={`h-3 w-3 mr-1 ${isFetching ? "animate-spin" : ""}`} />
+          Atualizar
+        </Button>
+      </div>
+
+      {/* Canal */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center gap-2">
+            <Phone className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Canal WhatsApp</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!channel ? (
+            <p className="text-sm text-muted-foreground">Nenhum canal configurado para esta unidade.</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                <div>
+                  <p className="text-xs text-muted-foreground">Status</p>
+                  <Badge variant="outline" className={`text-[10px] gap-1 ${STATUS_CONFIG[channel.status]?.className ?? ""}`}>
+                    {STATUS_CONFIG[channel.status]?.icon}
+                    {STATUS_CONFIG[channel.status]?.label ?? channel.status}
+                  </Badge>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Provedor</p>
+                  <p className="font-medium">{PROVIDER_LABELS[channel.provider]}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Número</p>
+                  <p className="font-medium">{channel.display_phone ?? "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Último evento</p>
+                  <p className="font-medium">{relativeTime(channel.last_event_at)}</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-xs text-muted-foreground">Credenciais presentes</p>
+                  <p className="font-mono text-xs">
+                    {channel.credentials_present.length
+                      ? channel.credentials_present.join(", ")
+                      : "(nenhuma)"}
+                  </p>
+                </div>
+              </div>
+              {channel.last_error && (
+                <div className="rounded bg-destructive/10 border border-destructive/20 px-3 py-2 text-xs text-destructive">
+                  Último erro: {channel.last_error}
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* IA */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center gap-2">
+            <Bot className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Provedor de IA</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div>
+              <p className="text-xs text-muted-foreground">Provedor</p>
+              <p className="font-medium capitalize">{ai.provider}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Modelo</p>
+              <p className="font-medium font-mono text-xs">{ai.model ?? "padrão"}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Origem da chave</p>
+              {ai.key_source === "byok" && (
+                <Badge variant="outline" className="text-[10px] text-green-700 bg-green-50 border-green-200">
+                  BYOK ••••{ai.byok_last4}
+                </Badge>
+              )}
+              {ai.key_source === "global" && (
+                <Badge variant="outline" className="text-[10px] text-amber-700 bg-amber-50 border-amber-200">
+                  Secret global
+                </Badge>
+              )}
+              {ai.key_source === "missing" && (
+                <Badge variant="outline" className="text-[10px] text-destructive bg-destructive/10 border-destructive/20">
+                  Não configurada
+                </Badge>
+              )}
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Variável global</p>
+              <p className="font-mono text-xs">{ai.global_env}</p>
+            </div>
+          </div>
+          {ai.key_source === "missing" && (
+            <div className="mt-3 rounded bg-destructive/10 border border-destructive/20 px-3 py-2 text-xs text-destructive">
+              Sem chave nem fallback global — o agente vai falhar ao tentar responder.
+              Cadastre uma chave na aba "Provedor de IA".
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Stats 24h */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Activity className="h-4 w-4 text-primary" />
+              <CardTitle className="text-base">Atividade — últimas 24h</CardTitle>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {stats_24h.total} {stats_24h.total === 1 ? "execução" : "execuções"}
+              {successRate !== null && ` · ${successRate}% sucesso`}
+            </p>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {stats_24h.total === 0 ? (
+            <p className="text-sm text-muted-foreground">Nenhuma execução nas últimas 24h.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(stats_24h.by_outcome)
+                .sort((a, b) => b[1] - a[1])
+                .map(([outcome, count]) => (
+                  <Badge
+                    key={outcome}
+                    variant="outline"
+                    className={`text-[11px] ${outcomeBadgeClass(outcome)}`}
+                  >
+                    {OUTCOME_LABEL[outcome] ?? outcome}: {count}
+                  </Badge>
+                ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Últimas execuções */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Últimas execuções</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {last_executions.length === 0 ? (
+            <p className="text-sm text-muted-foreground p-4">Nada registrado ainda.</p>
+          ) : (
+            <div className="divide-y">
+              {last_executions.map((e) => (
+                <div key={e.id} className="px-4 py-2 text-sm flex items-center gap-3">
+                  <Badge
+                    variant="outline"
+                    className={`text-[10px] shrink-0 ${outcomeBadgeClass(e.outcome)}`}
+                  >
+                    {OUTCOME_LABEL[e.outcome] ?? e.outcome}
+                  </Badge>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span className="font-mono">{e.phone_hash ?? "—"}</span>
+                      {e.duration_ms != null && <span>· {e.duration_ms} ms</span>}
+                      <span>· {relativeTime(e.created_at)}</span>
+                    </div>
+                    {e.error && (
+                      <p className="text-xs text-destructive truncate">{e.error}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

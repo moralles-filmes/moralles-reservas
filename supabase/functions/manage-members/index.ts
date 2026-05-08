@@ -67,6 +67,7 @@ serve(async (req) => {
       const email = String(body.email ?? "").trim().toLowerCase();
       const password = String(body.password ?? "");
       const role = body.role ?? "operador";
+      const name = body.name != null ? String(body.name).trim() : null;
 
       if (!email || !password) return jsonResponse(req, { error: "E-mail e senha são obrigatórios." }, 400);
       if (password.length < 6) return jsonResponse(req, { error: "Senha deve ter pelo menos 6 caracteres." }, 400);
@@ -85,6 +86,8 @@ serve(async (req) => {
         user_id: created.user.id,
         unit_id: unitId,
         role,
+        email,
+        name: name || null,
       });
 
       if (insertErr) {
@@ -93,6 +96,40 @@ serve(async (req) => {
       }
 
       return jsonResponse(req, { success: true, id: created.user.id });
+    }
+
+    // ── update_member: nome (owner+gerente; gerente só edita a si mesmo) ──────
+    if (action === "update_member") {
+      const memberId = String(body.member_id ?? "");
+      if (!memberId) return jsonResponse(req, { error: "member_id é obrigatório." }, 400);
+
+      const name = body.name != null ? String(body.name).trim() : null;
+
+      const { data: member } = await supabase
+        .from("unit_members")
+        .select("user_id, role")
+        .eq("id", memberId)
+        .eq("unit_id", unitId)
+        .maybeSingle();
+
+      if (!member) return jsonResponse(req, { error: "Membro não encontrado." }, 404);
+
+      // owner pode editar qualquer um; gerente só a si mesmo; operador nada
+      const isSelf = member.user_id === callerId;
+      const canEdit =
+        callerRole === "owner" || (callerRole === "gerente" && isSelf);
+
+      if (!canEdit) {
+        return jsonResponse(req, { error: "Sem permissão para editar este membro." }, 403);
+      }
+
+      const { error: updateErr } = await supabase
+        .from("unit_members")
+        .update({ name: name || null })
+        .eq("id", memberId);
+
+      if (updateErr) return jsonResponse(req, { error: updateErr.message }, 500);
+      return jsonResponse(req, { success: true });
     }
 
     // ── delete_member: requires owner ──────────────────────────────────────────

@@ -102,6 +102,9 @@ export function useReservasHoje(unitId: string) {
 export interface CreateReservaParams extends ReservaFormData {
   unit_id: string;
   organization_id: string;
+  hall_id?: string | null;
+  widget_id?: string;
+  custom_field_values?: Record<string, string>;
 }
 
 interface CreateReservationFnResponse {
@@ -139,6 +142,9 @@ export function useCreateReserva() {
           body: {
             unit_id: data.unit_id,
             organization_id: data.organization_id,
+            hall_id: data.hall_id ?? null,
+            widget_id: data.widget_id ?? null,
+            custom_field_values: data.custom_field_values ?? null,
             customer: {
               name: data.name,
               phone: data.phone,

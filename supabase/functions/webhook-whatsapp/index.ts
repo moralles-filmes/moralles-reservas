@@ -11,6 +11,7 @@ import {
   parseInbound,
   sendOutbound,
   validateChannelSecret,
+  validateMetaSignature,
   type WhatsAppProvider,
   type ChannelCredentials,
 } from "../_shared/whatsapp-providers.ts";
@@ -62,20 +63,21 @@ async function resolveApiKey(provider: AIProvider, unitId: string): Promise<stri
 const agentTools: AgentTool[] = [
   {
     name: "check_availability",
-    description: "Verifica disponibilidade de mesas para uma data, horário e número de pessoas.",
+    description: "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
     parameters: {
       type: "object",
       properties: {
         date: { type: "string", description: "Data no formato YYYY-MM-DD" },
         time: { type: "string", description: "Horário no formato HH:MM" },
         party_size: { type: "number", description: "Número de pessoas" },
+        hall_name: { type: "string", description: "Opcional: nome do salão preferido (ex: 'Salão Principal', 'Área Externa')." },
       },
       required: ["date", "time", "party_size"],
     },
   },
   {
     name: "create_reservation",
-    description: "Cria uma nova reserva para o cliente.",
+    description: "Cria uma nova reserva para o cliente. Se o restaurante tem múltiplos salões ativos e o cliente não escolheu, pergunte antes de chamar.",
     parameters: {
       type: "object",
       properties: {
@@ -85,6 +87,7 @@ const agentTools: AgentTool[] = [
         time: { type: "string", description: "Horário HH:MM" },
         party_size: { type: "number", description: "Número de pessoas" },
         notes: { type: "string", description: "Observações opcionais" },
+        hall_name: { type: "string", description: "Opcional: nome do salão preferido." },
       },
       required: ["customer_name", "date", "time", "party_size"],
     },
@@ -144,9 +147,23 @@ const agentTools: AgentTool[] = [
 
 // ─── Tool implementations (all unit-scoped) ───────────────────────────────────
 
+async function resolveHallId(unitId: string, hallName?: string): Promise<string | undefined> {
+  if (!hallName?.trim()) return undefined;
+  const { data } = await supabase
+    .from("halls")
+    .select("id")
+    .eq("unit_id", unitId)
+    .eq("active", true)
+    .ilike("name", `%${hallName.trim()}%`)
+    .limit(1)
+    .maybeSingle();
+  return data?.id ?? undefined;
+}
+
 // deno-lint-ignore no-explicit-any
-async function checkAvailability(date: string, time: string, partySize: number, unitId: string): Promise<any> {
-  const result = await checkAvailabilityCore(supabase, { unitId, date, time, partySize });
+async function checkAvailability(date: string, time: string, partySize: number, unitId: string, hallName?: string): Promise<any> {
+  const hallId = await resolveHallId(unitId, hallName);
+  const result = await checkAvailabilityCore(supabase, { unitId, hallId, date, time, partySize });
   if (!result.available) {
     return { available: false, reason: result.reason, message: result.message };
   }
@@ -160,6 +177,7 @@ async function createReservation(params: {
   time: string;
   party_size: number;
   notes?: string;
+  hall_name?: string;
   phone: string;
   unit_id: string;
   organization_id: string;
@@ -176,8 +194,10 @@ async function createReservation(params: {
 
   if (custError) return { success: false, error: custError.message };
 
+  const hallId = await resolveHallId(params.unit_id, params.hall_name);
   const result = await reserveSlot(supabase, {
     unitId: params.unit_id,
+    hallId,
     date: params.date,
     time: params.time,
     partySize: params.party_size,
@@ -310,8 +330,6 @@ async function appendToConversation(convId: string, existing: any[], role: "user
 }
 
 // ─── Tool log helpers ──────────────────────────────────────────────────────────
-// Mantém logs informativos sem expor PII completa. Útil pra rastrear casos
-// "bot disse que tinha mesa mas não tinha" via Supabase Edge Function logs.
 
 // deno-lint-ignore no-explicit-any
 function summarizeToolInput(input: any): Record<string, unknown> {
@@ -335,6 +353,206 @@ function summarizeToolResult(result: any): Record<string, unknown> {
   return out;
 }
 
+// ─── Telemetry helpers (idempotência + webhook_executions) ────────────────────
+
+const STUCK_PROCESSING_TIMEOUT_MS = 90_000;
+const HANDOFF_AUTO_RESOLVE_MS = 12 * 60 * 60 * 1000;       // 12h
+const HANDOFF_REMINDER_THROTTLE_MS = 6 * 60 * 60 * 1000;   // 6h
+
+// Marca o ciclo de vida da mensagem em processed_messages.
+async function markProcessed(messageId: string, outcome: string, error?: string): Promise<void> {
+  try {
+    await supabase
+      .from("processed_messages")
+      .update({
+        completed_at: new Date().toISOString(),
+        outcome,
+        error: error ?? null,
+      })
+      .eq("message_id", messageId);
+  } catch (e) {
+    jsonLog("error", { evt: "mark_processed_failed", messageId, err: String(e) });
+  }
+}
+
+// Insere uma linha em webhook_executions — best-effort, nunca lança.
+async function recordExecution(payload: {
+  request_id: string;
+  unit_id: string | null;
+  channel_id: string | null;
+  phone_hash: string | null;
+  outcome: string;
+  error?: string | null;
+  duration_ms: number;
+  meta?: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    await supabase.from("webhook_executions").insert({
+      request_id: payload.request_id,
+      unit_id: payload.unit_id,
+      channel_id: payload.channel_id,
+      phone_hash: payload.phone_hash,
+      outcome: payload.outcome,
+      error: payload.error ?? null,
+      duration_ms: payload.duration_ms,
+      meta: payload.meta ?? {},
+    });
+  } catch (e) {
+    jsonLog("error", { evt: "record_execution_failed", err: String(e) });
+  }
+}
+
+// ─── Giftback helper ──────────────────────────────────────────────────────────
+
+const VOUCHER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateVoucherCode(): string {
+  let out = "";
+  for (let i = 0; i < 8; i++) {
+    out += VOUCHER_CODE_ALPHABET[Math.floor(Math.random() * VOUCHER_CODE_ALPHABET.length)];
+  }
+  return out;
+}
+
+const DEFAULT_GIFTBACK_TEMPLATE =
+  "🎁 Você ganhou {{discount}}% de desconto na sua próxima visita ao {{unidade}}!\n\n" +
+  "Código: *{{codigo}}*\nVálido até *{{validade}}*.\n\n" +
+  "Apresente esse código quando for pagar.";
+
+function renderGiftbackTemplate(
+  template: string,
+  vars: { discount: number; unidade: string; codigo: string; validade: string },
+): string {
+  return template
+    .replace(/\{\{discount\}\}/g, String(vars.discount))
+    .replace(/\{\{unidade\}\}/g, vars.unidade)
+    .replace(/\{\{codigo\}\}/g, vars.codigo)
+    .replace(/\{\{validade\}\}/g, vars.validade);
+}
+
+// deno-lint-ignore no-explicit-any
+async function maybeIssueGiftbackVoucher(args: {
+  supabase: any;
+  unitId: string;
+  customerId: string;
+  rating: number;
+  requestId: string;
+}): Promise<string | null> {
+  const { supabase, unitId, customerId, rating, requestId } = args;
+
+  // 1) Settings: WhatsApp ligado? Template? (default: WhatsApp on, template default)
+  const { data: settingsRows } = await supabase
+    .from("settings")
+    .select("key, value")
+    .eq("unit_id", unitId)
+    .in("key", ["giftback_whatsapp_enabled", "giftback_message_template"]);
+  // deno-lint-ignore no-explicit-any
+  const settings = Object.fromEntries((settingsRows ?? []).map((r: any) => [r.key, r.value]));
+  const whatsappEnabled =
+    settings.giftback_whatsapp_enabled === false ||
+    settings.giftback_whatsapp_enabled === "false"
+      ? false
+      : true;
+  if (!whatsappEnabled) return null;
+  const template: string =
+    typeof settings.giftback_message_template === "string" && settings.giftback_message_template
+      ? settings.giftback_message_template
+      : DEFAULT_GIFTBACK_TEMPLATE;
+
+  // 2) Regra ativa do tipo after_rating compatível com a nota
+  const { data: rule } = await supabase
+    .from("voucher_rules")
+    .select("id, name, discount_percent, validity_days, min_rating")
+    .eq("unit_id", unitId)
+    .eq("trigger_type", "after_rating")
+    .eq("active", true)
+    .or(`min_rating.is.null,min_rating.lte.${rating}`)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!rule) return null;
+
+  // 3) Já existe voucher ativo emitido por essa rule pra esse customer? (evita
+  //    duplicar se cliente reagir várias vezes)
+  const { data: existing } = await supabase
+    .from("vouchers")
+    .select("id")
+    .eq("unit_id", unitId)
+    .eq("customer_id", customerId)
+    .eq("rule_id", rule.id)
+    .eq("status", "active")
+    .limit(1)
+    .maybeSingle();
+  if (existing) return null;
+
+  // 4) Gerar código único (retry se colidir com índice unique parcial)
+  let code = generateVoucherCode();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const { data: exists } = await supabase
+      .from("vouchers")
+      .select("id")
+      .eq("code", code)
+      .eq("status", "active")
+      .maybeSingle();
+    if (!exists) break;
+    code = generateVoucherCode();
+  }
+
+  // 5) Insert voucher
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + (rule.validity_days as number));
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from("vouchers")
+    .insert({
+      unit_id: unitId,
+      rule_id: rule.id,
+      customer_id: customerId,
+      code,
+      discount_percent: rule.discount_percent,
+      expires_at: expiresAt.toISOString(),
+    })
+    .select("id")
+    .single();
+
+  if (insertErr) {
+    jsonLog("warn", { requestId, evt: "voucher_issue_failed", error: insertErr.message });
+    return null;
+  }
+
+  // 6) Carrega nome da unit pra render do template
+  const { data: unitRow } = await supabase
+    .from("units")
+    .select("name")
+    .eq("id", unitId)
+    .maybeSingle();
+  const unitName = (unitRow?.name as string) ?? "nosso restaurante";
+
+  const validadeStr = expiresAt.toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+  const text = renderGiftbackTemplate(template, {
+    discount: rule.discount_percent as number,
+    unidade: unitName,
+    codigo: code,
+    validade: validadeStr,
+  });
+
+  // 7) Log em notifications_sent
+  await supabase.from("notifications_sent").insert({
+    unit_id: unitId,
+    kind: "voucher_issued",
+    status: "sent",
+    sent_at: new Date().toISOString(),
+  });
+
+  jsonLog("info", { requestId, evt: "voucher_issued", voucher_id: inserted.id, code });
+  return text;
+}
+
 // ─── Main handler ──────────────────────────────────────────────────────────────
 
 const RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -342,68 +560,176 @@ const RATE_LIMIT_MAX = 10;
 
 serve(async (req) => {
   const requestId = genRequestId();
+  const t0 = Date.now();
+
+  // Estado mutável que vamos completar conforme avançamos no handler — usado
+  // pelo finalizador (recordExecution) para registrar a execução de forma
+  // consistente, mesmo em early returns.
+  let unitId: string | null = null;
+  let channelId: string | null = null;
+  let phoneHash: string | null = null;
+  let messageIdForOutcome: string | null = null;
+
+  // Helper local que finaliza a execução (grava processed_messages.outcome
+  // se já houver message_id, e registra webhook_executions). Nunca lança.
+  const finish = async (outcome: string, error?: string, meta?: Record<string, unknown>) => {
+    const duration_ms = Date.now() - t0;
+    if (messageIdForOutcome) {
+      await markProcessed(messageIdForOutcome, outcome, error);
+    }
+    await recordExecution({
+      request_id: requestId,
+      unit_id: unitId,
+      channel_id: channelId,
+      phone_hash: phoneHash,
+      outcome,
+      error: error ?? null,
+      duration_ms,
+      meta,
+    });
+  };
 
   try {
     const url = new URL(req.url);
-    const channelId = url.searchParams.get("channel");
+    channelId = url.searchParams.get("channel");
 
     if (!channelId) {
       jsonLog("warn", { requestId, evt: "missing_channel_param" });
+      await finish("missing_channel_param");
       return new Response("missing channel", { status: 400 });
     }
 
     // Resolve channel → unit_id, provider, credentials, webhook_secret
     const { data: channel, error: channelErr } = await supabase
       .from("whatsapp_channels")
-      .select("id, unit_id, provider, credentials, webhook_secret")
+      .select("id, unit_id, provider, credentials, webhook_secret, status")
       .eq("id", channelId)
       .maybeSingle();
 
     if (channelErr || !channel) {
       jsonLog("warn", { requestId, evt: "channel_not_found", channelId });
+      await finish("channel_not_found", channelErr?.message);
       return new Response("channel not found", { status: 404 });
     }
 
-    // Validate per-channel webhook secret (falls back to global ZAPI secret for legacy channels)
-    const secret = channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET") ?? "";
-    if (!validateChannelSecret(req, secret)) {
-      // For Meta Official, the validation is different (signature-based) — allow through
-      // and let the payload parsing fail naturally for invalid messages.
-      // For Z-API and WAHA, block unauthorized requests.
-      if (channel.provider !== "official") {
-        jsonLog("warn", { requestId, evt: "webhook_unauthorized", channelId });
-        return new Response("unauthorized", { status: 401 });
-      }
-    }
-
-    const payload = await req.json();
-    const unitId: string = channel.unit_id;
+    unitId = channel.unit_id;
     const provider: WhatsAppProvider = channel.provider;
     const credentials: ChannelCredentials = channel.credentials ?? {};
+
+    // Lê o body como texto antes do parse — para Meta a validação HMAC precisa
+    // do body cru (JSON.stringify de volta não preserva whitespace/ordering e
+    // quebra a assinatura).
+    const bodyText = await req.text();
+
+    // Validate por provider:
+    //  - Meta Cloud API: HMAC-SHA256 do body com app_secret (header x-hub-signature-256)
+    //  - Z-API / WAHA: secret per-channel (header x-webhook-secret OU query ?secret=)
+    let isValid = false;
+    if (provider === "official") {
+      isValid = await validateMetaSignature(req, bodyText, credentials.app_secret ?? "");
+    } else {
+      const secret = channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET") ?? "";
+      isValid = validateChannelSecret(req, secret);
+    }
+
+    if (!isValid) {
+      jsonLog("warn", { requestId, evt: "webhook_unauthorized", channelId, provider });
+      await finish("webhook_unauthorized");
+      return new Response("unauthorized", { status: 401 });
+    }
+
+    let payload: unknown;
+    try {
+      payload = bodyText ? JSON.parse(bodyText) : {};
+    } catch (e) {
+      jsonLog("warn", { requestId, evt: "webhook_invalid_json", channelId, err: String(e) });
+      await finish("invalid_json", String(e));
+      return new Response("invalid json", { status: 400 });
+    }
 
     // Parse inbound message using provider-specific adapter
     const inbound = parseInbound(provider, payload);
     if (!inbound) {
       // Not a text message or sent by us — ignore silently
+      await finish("ignored_non_text");
       return new Response("ok");
     }
 
     const phone = inbound.fromPhone;
     const incomingText = inbound.text;
+    phoneHash = sanitizePhone(phone);
 
-    // Update channel last_event_at
+    // Receber webhook é sinal de saúde — sempre marca como connected.
+    if (channel.status !== "connected") {
+      jsonLog("info", { requestId, evt: "channel_recovered", channelId, prevStatus: channel.status });
+    }
     await supabase
       .from("whatsapp_channels")
       .update({ last_event_at: new Date().toISOString(), status: "connected", last_error: null })
       .eq("id", channelId);
 
-    // Idempotência — descarta retransmissões
+    // ─── Idempotência segura ──────────────────────────────────────────────────
+    // Antes: INSERT do message_id era cego (qualquer falha posterior deixava
+    // a mensagem "marcada como processada" sem ter respondido).
+    // Agora: se o INSERT falha (já existe), checamos se está "presa"
+    // (started_at antigo + completed_at NULL) e, se sim, reprocessamos.
+    messageIdForOutcome = inbound.providerMessageId;
+
     const { error: idemError } = await supabase
       .from("processed_messages")
-      .insert({ message_id: inbound.providerMessageId });
+      .insert({ message_id: inbound.providerMessageId, unit_id: unitId, started_at: new Date().toISOString() });
+
     if (idemError) {
-      jsonLog("info", { requestId, evt: "duplicate_message", phone: sanitizePhone(phone) });
-      return new Response("ok");
+      const { data: existing } = await supabase
+        .from("processed_messages")
+        .select("started_at, completed_at, outcome")
+        .eq("message_id", inbound.providerMessageId)
+        .maybeSingle();
+
+      const isStuck = !!existing
+        && !existing.completed_at
+        && (Date.now() - new Date(existing.started_at).getTime()) > STUCK_PROCESSING_TIMEOUT_MS;
+
+      if (!isStuck) {
+        jsonLog("info", {
+          requestId,
+          evt: "duplicate_message",
+          phone: phoneHash,
+          prev_outcome: existing?.outcome ?? null,
+        });
+        await recordExecution({
+          request_id: requestId,
+          unit_id: unitId,
+          channel_id: channelId,
+          phone_hash: phoneHash,
+          outcome: "duplicate",
+          error: null,
+          duration_ms: Date.now() - t0,
+          meta: { prev_outcome: existing?.outcome ?? null },
+        });
+        // Não chama markProcessed (já estava completed_at correto).
+        messageIdForOutcome = null;
+        return new Response("ok");
+      }
+
+      // Take over the stuck record
+      await supabase
+        .from("processed_messages")
+        .update({
+          started_at: new Date().toISOString(),
+          completed_at: null,
+          outcome: null,
+          error: null,
+          unit_id: unitId,
+        })
+        .eq("message_id", inbound.providerMessageId);
+
+      jsonLog("warn", {
+        requestId,
+        evt: "reprocessing_stuck_message",
+        message_id: inbound.providerMessageId,
+        prev_outcome: existing?.outcome ?? null,
+      });
     }
 
     // Rate limit por telefone (sliding window, por unidade)
@@ -414,7 +740,8 @@ serve(async (req) => {
       p_unit_id: unitId,
     });
     if (allowed === false) {
-      jsonLog("warn", { requestId, evt: "rate_limited", phone: sanitizePhone(phone) });
+      jsonLog("warn", { requestId, evt: "rate_limited", phone: phoneHash });
+      await finish("rate_limited");
       return new Response("ok");
     }
 
@@ -437,7 +764,38 @@ serve(async (req) => {
       .select()
       .single();
 
-    if (!customer) return new Response("error", { status: 500 });
+    if (!customer) {
+      await finish("customer_upsert_failed");
+      return new Response("error", { status: 500 });
+    }
+
+    // Survey comment intercept — janela de 30 min após gravar nota.
+    // Se o cliente avaliou recentemente e ainda não comentou, qualquer texto
+    // livre vira comentário. A mensagem do rating intercept avisa o cliente.
+    const commentCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { data: pendingComment } = await supabase
+      .from("reservations")
+      .select("id")
+      .eq("unit_id", unitId)
+      .eq("customer_id", customer.id)
+      .gt("satisfaction_at", commentCutoff)
+      .is("satisfaction_comment", null)
+      .not("satisfaction_rating", "is", null)
+      .order("satisfaction_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (pendingComment) {
+      await supabase
+        .from("reservations")
+        .update({ satisfaction_comment: incomingText })
+        .eq("id", pendingComment.id);
+
+      const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: "Comentário registrado. Obrigado! 🙏" });
+      jsonLog("info", { requestId, evt: "survey_comment_captured", phone: phoneHash, sent: sendRes.ok });
+      await finish(sendRes.ok ? "survey_comment" : "send_error", sendRes.ok ? undefined : (sendRes.error ?? `status_${sendRes.status}`));
+      return new Response("ok");
+    }
 
     // Survey response intercept
     const ratingMatch = /^([1-5])$/.exec(incomingText);
@@ -463,8 +821,26 @@ serve(async (req) => {
           .update({ satisfaction_rating: rating, satisfaction_at: new Date().toISOString() })
           .eq("id", pending.reservation_id);
 
-        await sendOutbound(provider, credentials, { toPhone: phone, text: "Obrigado pelo feedback! 🙏" });
-        jsonLog("info", { requestId, evt: "survey_response_captured", rating, phone: sanitizePhone(phone) });
+        // Tentar emitir voucher (giftback after_rating)
+        const voucherText = unitId
+          ? await maybeIssueGiftbackVoucher({
+              supabase,
+              unitId,
+              customerId: customer.id,
+              rating,
+              requestId,
+            })
+          : null;
+
+        const baseText = "Obrigado pelo feedback! 🙏";
+        const tailText = "Se quiser comentar (sugestão, sua experiência), responda agora — sua próxima mensagem vira comentário.";
+        const fullText = voucherText
+          ? `${baseText}\n\n${voucherText}\n\n${tailText}`
+          : `${baseText} ${tailText}`;
+
+        const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: fullText });
+        jsonLog("info", { requestId, evt: "survey_response_captured", rating, phone: phoneHash, sent: sendRes.ok, voucher_emitted: !!voucherText });
+        await finish(sendRes.ok ? "survey_response" : "send_error", sendRes.ok ? undefined : (sendRes.error ?? `status_${sendRes.status}`));
         return new Response("ok");
       }
     }
@@ -472,20 +848,113 @@ serve(async (req) => {
     // Load conversation history
     const conv = await getOrCreateConversation(customer.id, unitId);
 
-    // Short-circuit: conversa em atendimento humano — só registra a mensagem, IA silenciada
+    // ─── UX de handoff humano ────────────────────────────────────────────────
+    // Auto-resolve quando passar muito tempo sem resposta humana, e responde
+    // ao cliente uma vez a cada N horas durante o silêncio para não parecer
+    // que o sistema morreu.
     if (conv.status === "human_active" || conv.status === "awaiting_human") {
-      await appendToConversation(conv.id, conv.messages, "user", incomingText);
-      await supabase.from("conversations")
-        .update({ last_message_at: new Date().toISOString() })
-        .eq("id", conv.id);
-      jsonLog("info", { requestId, evt: "skipped_ai_human_active", convId: conv.id, status: conv.status });
-      return new Response("ok");
+      // Já registra a mensagem no histórico independente do que decidirmos.
+      await appendToConversation(conv.id, conv.messages || [], "user", incomingText);
+
+      const handoffStart = conv.handoff_at ? new Date(conv.handoff_at).getTime() : 0;
+      const handoffAge = handoffStart ? Date.now() - handoffStart : 0;
+
+      // Houve resposta humana após o handoff? (mensagens com role 'human' OU
+      // 'assistant' enquanto a conv está em human/awaiting_human são
+      // consideradas resposta humana — assistant aqui só entra via reply
+      // manual fora do agente).
+      // deno-lint-ignore no-explicit-any
+      const hadHumanReply = (conv.messages ?? []).some((m: any) => {
+        if (!m || m.role !== "human") return false;
+        const ts = m.timestamp ? new Date(m.timestamp).getTime() : 0;
+        return ts >= handoffStart;
+      });
+
+      const shouldAutoResolve = handoffStart > 0
+        && handoffAge > HANDOFF_AUTO_RESOLVE_MS
+        && !hadHumanReply;
+
+      if (shouldAutoResolve) {
+        await supabase
+          .from("conversations")
+          .update({
+            status: "ai_active",
+            handoff_reason: null,
+            handoff_at: null,
+            last_silenced_reply_at: null,
+          })
+          .eq("id", conv.id);
+
+        await sendOutbound(provider, credentials, {
+          toPhone: phone,
+          text: "Oi! Voltei a te atender por aqui. Em que posso ajudar?",
+        });
+
+        jsonLog("info", {
+          requestId,
+          evt: "handoff_auto_resolved",
+          convId: conv.id,
+          ageHours: Math.round(handoffAge / 3600000),
+        });
+        // Atualiza estado local para o agente processar a mensagem normalmente.
+        conv.status = "ai_active";
+        conv.handoff_reason = null;
+        conv.handoff_at = null;
+        // Cai pra fora do bloco e segue o fluxo do agente IA.
+      } else {
+        // Mantém silenciada, mas avisa o cliente uma vez por janela.
+        const lastSilenced = conv.last_silenced_reply_at
+          ? new Date(conv.last_silenced_reply_at).getTime()
+          : 0;
+        const shouldRemind = !lastSilenced || (Date.now() - lastSilenced) > HANDOFF_REMINDER_THROTTLE_MS;
+
+        if (shouldRemind) {
+          const sendRes = await sendOutbound(provider, credentials, {
+            toPhone: phone,
+            text: "Recebi sua mensagem! Já avisei alguém da equipe — vou te responder por aqui assim que possível. 🙏",
+          });
+          if (sendRes.ok) {
+            await supabase
+              .from("conversations")
+              .update({
+                last_silenced_reply_at: new Date().toISOString(),
+                last_message_at: new Date().toISOString(),
+              })
+              .eq("id", conv.id);
+          }
+        } else {
+          await supabase
+            .from("conversations")
+            .update({ last_message_at: new Date().toISOString() })
+            .eq("id", conv.id);
+        }
+
+        jsonLog("info", {
+          requestId,
+          evt: "skipped_ai_human_active",
+          convId: conv.id,
+          status: conv.status,
+          reminded: shouldRemind,
+        });
+        await finish(shouldRemind ? "human_active_reminded" : "human_active_silent");
+        return new Response("ok");
+      }
     }
 
-    // deno-lint-ignore no-explicit-any
-    const history: Array<{ role: "user" | "assistant"; content: string }> = (conv.messages || []).map((m: any) => ({ role: m.role, content: m.content }));
+    // Mensagens manuais do operador (send-manual-message) ficam salvas com
+    // role: "human" — do ponto de vista do modelo isso é "assistant" (resposta
+    // que veio do nosso lado). Sem o remap, Anthropic rejeita o request com
+    // "Unexpected role 'human'".
+    const history: Array<{ role: "user" | "assistant"; content: string }> = (conv.messages || [])
+      // deno-lint-ignore no-explicit-any
+      .filter((m: any) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant" || m.role === "human"))
+      // deno-lint-ignore no-explicit-any
+      .map((m: any) => ({
+        role: m.role === "human" ? ("assistant" as const) : (m.role as "user" | "assistant"),
+        content: m.content,
+      }));
 
-    await appendToConversation(conv.id, conv.messages, "user", incomingText);
+    await appendToConversation(conv.id, conv.messages || [], "user", incomingText);
 
     // Load AI config from settings (unit-scoped)
     const { data: configSetting } = await supabase
@@ -498,7 +967,20 @@ serve(async (req) => {
     const aiConfig = (configSetting?.value ?? {}) as Record<string, unknown>;
     const provider_ai: AIProvider = (aiConfig.provider as AIProvider) ?? "claude";
     const modelOverride: string | undefined = (aiConfig.models as Record<string, string>)?.[provider_ai];
-    const apiKey = await resolveApiKey(provider_ai, unitId);
+
+    let apiKey: string;
+    try {
+      apiKey = await resolveApiKey(provider_ai, unitId);
+    } catch (err) {
+      jsonLog("error", { requestId, evt: "ai_key_unavailable", provider: provider_ai, unitId, err: String(err) });
+      // Avisa o cliente sem queimar a tentativa silenciosamente.
+      await sendOutbound(provider, credentials, {
+        toPhone: phone,
+        text: "Estou com um problema técnico aqui no atendimento automático. Já avisei o time, em breve alguém retorna por aqui.",
+      });
+      await finish("ai_key_unavailable", String(err));
+      return new Response("ok");
+    }
 
     // Load restaurant name + system prompt (unit-scoped)
     const { data: settings } = await supabase
@@ -560,7 +1042,8 @@ serve(async (req) => {
       `Use as ferramentas disponíveis para reservas. ` +
       `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar. ` +
       `Não invente horários, cardápio ou serviços — só use o que está documentado abaixo. ` +
-      `Se o pedido fugir do escopo (reclamação, evento corporativo, delivery não suportado, qualquer coisa que as ferramentas não cobrem), use a tool 'request_human_handoff' informando o motivo.` +
+      `Se o pedido fugir do escopo (reclamação, evento corporativo, delivery não suportado, qualquer coisa que as ferramentas não cobrem), use a tool 'request_human_handoff' informando o motivo. ` +
+      `IMPORTANTE: ao chamar 'request_human_handoff', SEMPRE envie ao cliente uma mensagem amigável avisando que um atendente humano vai responder em breve, antes de encerrar sua resposta. Nunca silencie sem aviso.` +
       `\n\nREGRAS OBRIGATÓRIAS PARA RESERVAS:\n` +
       `1. SEMPRE chame check_availability ANTES de create_reservation. Nunca atalhe.\n` +
       `2. Se check_availability retornar available: false, NUNCA crie a reserva. Comunique ao cliente que não há mesa naquele horário e ofereça alternativas (outro horário do mesmo dia ou outra data próxima). Use o campo 'reason' para entender o motivo (closed_day, outside_hours, no_capacity, all_blocked).\n` +
@@ -576,66 +1059,74 @@ serve(async (req) => {
       (customPrompt ? `\n\nInstruções adicionais: ${customPrompt}` : "");
 
     const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 };
+    let agentError: string | null = null;
+    let finalText = "";
 
-    const finalText = await runAgentLoop({
-      provider: provider_ai,
-      apiKey,
-      model: modelOverride,
-      systemPrompt,
-      history,
-      userMessage: incomingText,
-      tools: agentTools,
-      onUsage: (u) => {
-        totalUsage.input_tokens += u.input_tokens;
-        totalUsage.output_tokens += u.output_tokens;
-        totalUsage.cache_creation_tokens += u.cache_creation_tokens;
-        totalUsage.cache_read_tokens += u.cache_read_tokens;
-      },
-      // deno-lint-ignore no-explicit-any
-      onToolCall: async (name, input: any) => {
-        jsonLog("info", { requestId, evt: "tool_call", channelId, unitId, name, input: summarizeToolInput(input) });
-        try {
-          // deno-lint-ignore no-explicit-any
-          let result: any;
-          switch (name) {
-            case "check_availability":
-              result = await checkAvailability(input.date, input.time, input.party_size, unitId);
-              break;
-            case "create_reservation":
-              result = await createReservation({ ...input, phone, unit_id: unitId, organization_id: organizationId });
-              break;
-            case "get_reservation":
-              result = await getReservation(input.reservation_code ? input : { ...input, phone }, unitId);
-              break;
-            case "update_reservation":
-              result = await updateReservation(input);
-              break;
-            case "cancel_reservation":
-              result = await cancelReservation(input.reservation_code);
-              break;
-            case "list_customer_reservations":
-              result = await listCustomerReservations(customer.id, unitId);
-              break;
-            case "request_human_handoff":
-              await supabase.from("conversations").update({
-                status: "awaiting_human",
-                handoff_reason: input.reason,
-                handoff_at: new Date().toISOString(),
-              }).eq("id", conv.id);
-              jsonLog("info", { requestId, evt: "handoff_requested", convId: conv.id, reason: input.reason });
-              result = { ok: true, message: "Transferência registrada. Informe ao cliente que um atendente humano dará sequência em breve." };
-              break;
-            default:
-              result = { error: `Tool desconhecida: ${name}` };
+    try {
+      finalText = await runAgentLoop({
+        provider: provider_ai,
+        apiKey,
+        model: modelOverride,
+        systemPrompt,
+        history,
+        userMessage: incomingText,
+        tools: agentTools,
+        onUsage: (u) => {
+          totalUsage.input_tokens += u.input_tokens;
+          totalUsage.output_tokens += u.output_tokens;
+          totalUsage.cache_creation_tokens += u.cache_creation_tokens;
+          totalUsage.cache_read_tokens += u.cache_read_tokens;
+        },
+        // deno-lint-ignore no-explicit-any
+        onToolCall: async (name, input: any) => {
+          jsonLog("info", { requestId, evt: "tool_call", channelId, unitId, name, input: summarizeToolInput(input) });
+          try {
+            // deno-lint-ignore no-explicit-any
+            let result: any;
+            switch (name) {
+              case "check_availability":
+                result = await checkAvailability(input.date, input.time, input.party_size, unitId!, input.hall_name);
+                break;
+              case "create_reservation":
+                result = await createReservation({ ...input, phone, unit_id: unitId!, organization_id: organizationId });
+                break;
+              case "get_reservation":
+                result = await getReservation(input.reservation_code ? input : { ...input, phone }, unitId!);
+                break;
+              case "update_reservation":
+                result = await updateReservation(input);
+                break;
+              case "cancel_reservation":
+                result = await cancelReservation(input.reservation_code);
+                break;
+              case "list_customer_reservations":
+                result = await listCustomerReservations(customer.id, unitId!);
+                break;
+              case "request_human_handoff":
+                await supabase.from("conversations").update({
+                  status: "awaiting_human",
+                  handoff_reason: input.reason,
+                  handoff_at: new Date().toISOString(),
+                  last_silenced_reply_at: null,
+                }).eq("id", conv.id);
+                jsonLog("info", { requestId, evt: "handoff_requested", convId: conv.id, reason: input.reason });
+                result = { ok: true, message: "Transferência registrada. AGORA envie ao cliente uma mensagem cordial dizendo que um atendente humano vai responder em breve, antes de encerrar." };
+                break;
+              default:
+                result = { error: `Tool desconhecida: ${name}` };
+            }
+            jsonLog("info", { requestId, evt: "tool_result", channelId, unitId, name, result: summarizeToolResult(result) });
+            return JSON.stringify(result);
+          } catch (err) {
+            jsonLog("error", { requestId, evt: "tool_error", channelId, unitId, name, err: String(err) });
+            return JSON.stringify({ error: String(err) });
           }
-          jsonLog("info", { requestId, evt: "tool_result", channelId, unitId, name, result: summarizeToolResult(result) });
-          return JSON.stringify(result);
-        } catch (err) {
-          jsonLog("error", { requestId, evt: "tool_error", channelId, unitId, name, err: String(err) });
-          return JSON.stringify({ error: String(err) });
-        }
-      },
-    });
+        },
+      });
+    } catch (err) {
+      agentError = String(err);
+      jsonLog("error", { requestId, evt: "agent_loop_error", err: agentError });
+    }
 
     const usedModel = modelOverride ?? DEFAULT_MODELS[provider_ai];
     jsonLog("info", {
@@ -649,14 +1140,48 @@ serve(async (req) => {
       estimated_cost_usd: estimateCostUsd(usedModel, totalUsage),
     });
 
-    if (finalText) {
-      await appendToConversation(conv.id, [...conv.messages, { role: "user", content: incomingText }], "assistant", finalText);
-      await sendOutbound(provider, credentials, { toPhone: phone, text: finalText });
+    if (agentError) {
+      // Agente falhou: avisa o cliente e marca outcome.
+      await sendOutbound(provider, credentials, {
+        toPhone: phone,
+        text: "Tive um problema técnico aqui agora. Pode repetir? Se persistir, alguém da equipe entra em contato.",
+      });
+      await finish("agent_error", agentError);
+      return new Response("ok");
     }
 
+    if (!finalText || !finalText.trim()) {
+      // Modelo não devolveu texto algum — ainda assim respondemos pra não
+      // deixar o cliente no escuro.
+      jsonLog("warn", { requestId, evt: "agent_empty_response", channelId, unitId });
+      await sendOutbound(provider, credentials, {
+        toPhone: phone,
+        text: "Desculpa, não consegui montar uma resposta agora. Pode reformular ou aguardar um instante?",
+      });
+      await finish("empty_response");
+      return new Response("ok");
+    }
+
+    await appendToConversation(conv.id, [...(conv.messages || []), { role: "user", content: incomingText }], "assistant", finalText);
+    const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: finalText });
+
+    if (!sendRes.ok) {
+      await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
+        missingCreds: sendRes.missingCreds,
+        bodySnippet: sendRes.bodySnippet,
+      });
+      return new Response("ok");
+    }
+
+    await finish("success", undefined, { tokens: totalUsage.input_tokens + totalUsage.output_tokens });
     return new Response("ok");
   } catch (err) {
     jsonLog("error", { requestId, evt: "webhook_error", err: String(err) });
+    try {
+      await finish("webhook_error", String(err));
+    } catch {
+      // ignore
+    }
     return new Response("error", { status: 500 });
   }
 });

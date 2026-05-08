@@ -1,7 +1,7 @@
 // Abstraction layer for WhatsApp providers: Z-API, WAHA, Official (Meta Cloud API).
 
 import { fetchWithRetry } from "./retry.ts";
-import { jsonLog } from "./security.ts";
+import { jsonLog, sanitizePhone } from "./security.ts";
 
 export type WhatsAppProvider = "zapi" | "waha" | "official";
 
@@ -34,6 +34,17 @@ export interface ChannelCredentials {
   business_account_id?: string;
   access_token?: string;
   app_secret?: string;
+}
+
+// Resultado estruturado do envio. Antes era apenas `boolean` — qualquer falha
+// ficava silenciosa. Agora os callers conseguem propagar status/error pra
+// telemetria (notifications_sent.error, webhook_executions.error).
+export interface SendResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
+  bodySnippet?: string;
+  missingCreds?: string[];
 }
 
 // ─── Inbound parsing ──────────────────────────────────────────────────────────
@@ -109,21 +120,28 @@ export async function sendOutbound(
   provider: WhatsAppProvider,
   credentials: ChannelCredentials,
   msg: OutboundMessage
-): Promise<boolean> {
+): Promise<SendResult> {
   try {
     if (provider === "zapi") return await sendZApi(credentials, msg);
     if (provider === "waha") return await sendWaha(credentials, msg);
     if (provider === "official") return await sendOfficial(credentials, msg);
-    return false;
+    return { ok: false, error: `unknown_provider:${provider}` };
   } catch (err) {
-    jsonLog("error", { evt: "send_outbound_error", provider, err: String(err) });
-    return false;
+    const error = String(err);
+    jsonLog("error", { evt: "send_outbound_error", provider, err: error, phone: sanitizePhone(msg.toPhone) });
+    return { ok: false, error };
   }
 }
 
-async function sendZApi(creds: ChannelCredentials, msg: OutboundMessage): Promise<boolean> {
+async function sendZApi(creds: ChannelCredentials, msg: OutboundMessage): Promise<SendResult> {
   const { instance_id, token, client_token } = creds;
-  if (!instance_id || !token) return false;
+  const missing: string[] = [];
+  if (!instance_id) missing.push("instance_id");
+  if (!token) missing.push("token");
+  if (missing.length) {
+    jsonLog("error", { evt: "send_zapi_missing_creds", missing, phone: sanitizePhone(msg.toPhone) });
+    return { ok: false, missingCreds: missing, error: "missing_credentials" };
+  }
 
   const digits = msg.toPhone.replace(/\D/g, "");
   const formatted = digits.startsWith("55") ? digits : `55${digits}`;
@@ -138,12 +156,18 @@ async function sendZApi(creds: ChannelCredentials, msg: OutboundMessage): Promis
     },
     { retries: 3, baseDelayMs: 500 }
   );
-  return res.ok;
+  if (res.ok) return { ok: true, status: res.status };
+  const bodySnippet = (await res.text().catch(() => "")).slice(0, 200);
+  jsonLog("error", { evt: "send_zapi_failed", status: res.status, bodySnippet, phone: sanitizePhone(msg.toPhone) });
+  return { ok: false, status: res.status, bodySnippet, error: `zapi_http_${res.status}` };
 }
 
-async function sendWaha(creds: ChannelCredentials, msg: OutboundMessage): Promise<boolean> {
+async function sendWaha(creds: ChannelCredentials, msg: OutboundMessage): Promise<SendResult> {
   const { base_url, api_key, session_name = "default" } = creds;
-  if (!base_url) return false;
+  if (!base_url) {
+    jsonLog("error", { evt: "send_waha_missing_creds", missing: ["base_url"], phone: sanitizePhone(msg.toPhone) });
+    return { ok: false, missingCreds: ["base_url"], error: "missing_credentials" };
+  }
 
   const digits = msg.toPhone.replace(/\D/g, "");
   const chatId = (digits.startsWith("55") ? digits : `55${digits}`) + "@c.us";
@@ -158,12 +182,21 @@ async function sendWaha(creds: ChannelCredentials, msg: OutboundMessage): Promis
     },
     { retries: 3, baseDelayMs: 500 }
   );
-  return res.ok;
+  if (res.ok) return { ok: true, status: res.status };
+  const bodySnippet = (await res.text().catch(() => "")).slice(0, 200);
+  jsonLog("error", { evt: "send_waha_failed", status: res.status, bodySnippet, phone: sanitizePhone(msg.toPhone) });
+  return { ok: false, status: res.status, bodySnippet, error: `waha_http_${res.status}` };
 }
 
-async function sendOfficial(creds: ChannelCredentials, msg: OutboundMessage): Promise<boolean> {
+async function sendOfficial(creds: ChannelCredentials, msg: OutboundMessage): Promise<SendResult> {
   const { phone_number_id, access_token } = creds;
-  if (!phone_number_id || !access_token) return false;
+  const missing: string[] = [];
+  if (!phone_number_id) missing.push("phone_number_id");
+  if (!access_token) missing.push("access_token");
+  if (missing.length) {
+    jsonLog("error", { evt: "send_official_missing_creds", missing, phone: sanitizePhone(msg.toPhone) });
+    return { ok: false, missingCreds: missing, error: "missing_credentials" };
+  }
 
   const digits = msg.toPhone.replace(/\D/g, "");
   const to = digits.startsWith("55") ? digits : `55${digits}`;
@@ -178,7 +211,10 @@ async function sendOfficial(creds: ChannelCredentials, msg: OutboundMessage): Pr
     },
     { retries: 3, baseDelayMs: 500 }
   );
-  return res.ok;
+  if (res.ok) return { ok: true, status: res.status };
+  const bodySnippet = (await res.text().catch(() => "")).slice(0, 200);
+  jsonLog("error", { evt: "send_official_failed", status: res.status, bodySnippet, phone: sanitizePhone(msg.toPhone) });
+  return { ok: false, status: res.status, bodySnippet, error: `official_http_${res.status}` };
 }
 
 // ─── Webhook secret validation (per-channel) ─────────────────────────────────
@@ -195,11 +231,8 @@ function constantTimeEquals(a: string, b: string): boolean {
 export function validateChannelSecret(req: Request, expectedSecret: string): boolean {
   if (!expectedSecret) return false;
 
-  // Header path (WAHA, Meta, providers que aceitam header customizado)
-  const headerSecret =
-    req.headers.get("x-webhook-secret") ??
-    req.headers.get("x-hub-signature-256") ?? // Meta usa para assinatura
-    "";
+  // Header path (WAHA, providers que aceitam header customizado)
+  const headerSecret = req.headers.get("x-webhook-secret") ?? "";
   if (headerSecret && constantTimeEquals(headerSecret, expectedSecret)) return true;
 
   // Query string fallback — necessário para Z-API, que não permite
@@ -213,4 +246,38 @@ export function validateChannelSecret(req: Request, expectedSecret: string): boo
   }
 
   return false;
+}
+
+// Validação específica do Meta Cloud API: HMAC-SHA256 do body cru com app_secret,
+// comparado contra o header `x-hub-signature-256: sha256=<hex>`.
+// Tem que receber o body como TEXT (não JSON parseado) — o JSON.stringify
+// recria o body com whitespace/ordering diferentes e quebra a assinatura.
+export async function validateMetaSignature(
+  req: Request,
+  bodyText: string,
+  appSecret: string,
+): Promise<boolean> {
+  if (!appSecret) return false;
+  const sigHeader = req.headers.get("x-hub-signature-256") ?? "";
+  if (!sigHeader.startsWith("sha256=")) return false;
+  const expectedHex = sigHeader.slice("sha256=".length).toLowerCase();
+  if (expectedHex.length !== 64 || !/^[0-9a-f]+$/.test(expectedHex)) return false;
+
+  try {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(appSecret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(bodyText));
+    const computedHex = Array.from(new Uint8Array(sigBuf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return constantTimeEquals(expectedHex, computedHex);
+  } catch {
+    return false;
+  }
 }

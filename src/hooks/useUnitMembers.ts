@@ -9,7 +9,8 @@ export interface UnitMemberRow {
   unit_id: string;
   role: UnitRole;
   created_at: string;
-  email?: string;
+  email: string | null;
+  name: string | null;
 }
 
 export function useUnitMembers(unitId: string) {
@@ -48,16 +49,50 @@ export function useCreateUnitMember(unitId: string) {
       email,
       password,
       role,
+      name,
     }: {
       email: string;
       password: string;
       role: UnitRole;
+      name?: string | null;
     }) => {
-      return invokeManageMembers({ action: "create_member", unit_id: unitId, email, password, role });
+      return invokeManageMembers({
+        action: "create_member",
+        unit_id: unitId,
+        email,
+        password,
+        role,
+        name: name ?? null,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["unit-members", unitId] });
       toast.success("Membro cadastrado.");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+}
+
+export function useUpdateMemberName(unitId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      memberId,
+      name,
+    }: {
+      memberId: string;
+      name: string | null;
+    }) => {
+      return invokeManageMembers({
+        action: "update_member",
+        unit_id: unitId,
+        member_id: memberId,
+        name,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["unit-members", unitId] });
+      toast.success("Nome atualizado.");
     },
     onError: (err: Error) => toast.error(err.message),
   });

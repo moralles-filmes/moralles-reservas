@@ -294,7 +294,12 @@ serve(async (req) => {
           channel_id: channel?.id,
           unit_id: unit_id ?? undefined,
         }).then(
-          (ok) => ({ kind: "whatsapp" as const, ok, skipped: false as const }),
+          (res) => ({
+            kind: "whatsapp" as const,
+            ok: res.ok,
+            skipped: false as const,
+            error: res.ok ? undefined : (res.error ?? `status_${res.status ?? "unknown"}`),
+          }),
           (err) => ({ kind: "whatsapp" as const, ok: false, skipped: false as const, error: String(err) })
         )
       : Promise.resolve({ kind: "whatsapp" as const, ok: false, skipped: true as const, reason: "no_channel" });

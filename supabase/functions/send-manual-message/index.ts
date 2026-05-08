@@ -1,75 +1,17 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import {
-  sendOutbound,
-  type WhatsAppProvider,
-  type ChannelCredentials,
-} from "../_shared/whatsapp-providers.ts";
-import { fetchWithRetry } from "../_shared/retry.ts";
+import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
 import { jsonLog, sanitizePhone } from "../_shared/security.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
-const LEGACY_ZAPI_INSTANCE_ID = Deno.env.get("ZAPI_INSTANCE_ID");
-const LEGACY_ZAPI_TOKEN = Deno.env.get("ZAPI_TOKEN");
-const LEGACY_ZAPI_CLIENT_TOKEN = Deno.env.get("ZAPI_CLIENT_TOKEN");
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
 };
-
-async function sendZApiLegacy(phone: string, message: string): Promise<boolean> {
-  if (!LEGACY_ZAPI_INSTANCE_ID || !LEGACY_ZAPI_TOKEN) return false;
-  const digits = phone.replace(/\D/g, "");
-  const formatted = digits.startsWith("55") ? digits : `55${digits}`;
-  const url = `https://api.z-api.io/instances/${LEGACY_ZAPI_INSTANCE_ID}/token/${LEGACY_ZAPI_TOKEN}/send-text`;
-  const res = await fetchWithRetry(
-    url,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(LEGACY_ZAPI_CLIENT_TOKEN ? { "Client-Token": LEGACY_ZAPI_CLIENT_TOKEN } : {}),
-      },
-      body: JSON.stringify({ phone: formatted, message }),
-    },
-    { retries: 3, baseDelayMs: 500 }
-  );
-  if (!res.ok) {
-    jsonLog("error", { evt: "zapi_send_failed", status: res.status, phone: sanitizePhone(phone) });
-  }
-  return res.ok;
-}
-
-async function sendWhatsAppViaUnit(
-  supabase: ReturnType<typeof createClient>,
-  unitId: string,
-  phone: string,
-  message: string
-): Promise<boolean> {
-  const { data: channel } = await supabase
-    .from("whatsapp_channels")
-    .select("provider, credentials")
-    .eq("unit_id", unitId)
-    .eq("status", "connected")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (channel) {
-    return sendOutbound(
-      channel.provider as WhatsAppProvider,
-      channel.credentials as ChannelCredentials,
-      { toPhone: phone, text: message }
-    );
-  }
-
-  return sendZApiLegacy(phone, message);
-}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -151,14 +93,24 @@ serve(async (req) => {
       });
     }
 
-    // Send WhatsApp message
-    const sent = await sendWhatsAppViaUnit(supabase, conv.unit_id, customerPhone, message.trim());
-    if (!sent) {
-      jsonLog("error", { evt: "manual_send_failed", convId: conversation_id, phone: sanitizePhone(customerPhone) });
-      return new Response(JSON.stringify({ error: "falha ao enviar mensagem WhatsApp" }), {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+    // Send WhatsApp message via shared helper (canal da unit, com fallback ZAPI legacy)
+    const result = await sendWhatsApp(customerPhone, message.trim(), { unit_id: conv.unit_id });
+    if (!result.ok) {
+      jsonLog("error", {
+        evt: "manual_send_failed",
+        convId: conversation_id,
+        phone: sanitizePhone(customerPhone),
+        error: result.error,
+        status: result.status,
+        missingCreds: result.missingCreds,
       });
+      return new Response(
+        JSON.stringify({ error: "falha ao enviar mensagem WhatsApp", reason: result.error }),
+        {
+          status: 502,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     // Append human message to conversation history

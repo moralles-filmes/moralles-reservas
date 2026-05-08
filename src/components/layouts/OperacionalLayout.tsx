@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
   CalendarIcon,
+  Gift,
   LogOut,
   MessageCircle,
   Settings,
@@ -24,12 +25,19 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
   const base = `/o/${unitSlug}`;
   const awaitingCount = useAwaitingHumanCount(unit?.unit_id ?? "");
 
-  const navItems = [
+  const navItems: Array<{
+    to: string;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    end?: boolean;
+    badge?: number;
+  }> = [
     { to: base,                label: "Reservas do dia", icon: CalendarIcon, end: true },
     { to: `${base}/fila`,      label: "Fila de espera",  icon: Users },
     { to: `${base}/passantes`, label: "Walk-ins",        icon: UtensilsCrossed },
+    { to: `${base}/giftback`,  label: "Validar voucher", icon: Gift },
     { to: `${base}/conversas`, label: "Conversas",       icon: MessageCircle, badge: awaitingCount },
-  ] as const;
+  ];
 
   const handleSignOut = async () => {
     await signOut();

@@ -1,25 +1,63 @@
-import { NavLink, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { NavLink, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
 import { UnitSwitcher } from "@/components/UnitSwitcher";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 import {
+  BarChart3,
+  BookOpen,
   Building2,
   CalendarIcon,
+  CalendarOff,
+  ChevronDown,
+  Code2,
+  DollarSign,
+  FormInput,
+  Gift,
   Globe,
+  Image as ImageIcon,
   LayoutDashboard,
+  List,
+  Lock,
   LogOut,
   MessageCircle,
+  MessageSquare,
   ScrollText,
   Settings,
+  Sliders,
+  SquareStack,
   Star,
-  Table2,
-  Users,
+  TrendingUp,
+  UserCog,
+  UserPlus,
   UtensilsCrossed,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
+
+type LeafItem = {
+  to: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  end?: boolean;
+  badge?: number;
+};
+
+type GroupItem = {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  /** Path prefix to match for active/auto-expand. */
+  matchPrefix: string;
+  children: LeafItem[];
+};
+
+type NavItem = LeafItem | GroupItem;
+
+const isGroup = (item: NavItem): item is GroupItem => "children" in item;
 
 export function GestaoLayout({ children }: { children: React.ReactNode }) {
   const { signOut, isPlatformAdmin } = useAuth();
@@ -30,18 +68,71 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
   const base = `/g/${unitSlug}`;
   const awaitingCount = useAwaitingHumanCount(unit?.unit_id ?? "");
 
-  const navItems = [
-    { to: base,                    label: "Dashboard",    icon: LayoutDashboard, end: true },
-    { to: `${base}/reservas`,      label: "Reservas",     icon: UtensilsCrossed },
-    { to: `${base}/calendario`,    label: "Calendário",   icon: CalendarIcon },
-    { to: `${base}/clientes`,      label: "Clientes",     icon: Users },
-    { to: `${base}/conversas`,     label: "Conversas",    icon: MessageCircle, badge: awaitingCount },
-    { to: `${base}/mesas`,         label: "Mesas",        icon: Table2 },
-    { to: `${base}/avaliacoes`,    label: "Avaliações",   icon: Star },
-    { to: `${base}/pagina-publica`,label: "Página pública",icon: Globe },
-    { to: `${base}/auditoria`,     label: "Auditoria",    icon: ScrollText },
-    { to: `${base}/configuracoes`, label: "Configurações",icon: Settings },
-  ] as const;
+  const navItems: NavItem[] = [
+    { to: base, label: "Dashboard", icon: LayoutDashboard, end: true },
+    {
+      label: "Relatórios",
+      icon: BarChart3,
+      matchPrefix: `${base}/relatorios`,
+      children: [
+        { to: `${base}/relatorios/fluxo-clientes`, label: "Fluxo de clientes", icon: TrendingUp },
+        { to: `${base}/relatorios/vendas`,         label: "Vendas",            icon: DollarSign },
+        { to: `${base}/relatorios/comunicacao`,    label: "Comunicação",       icon: MessageSquare },
+        { to: `${base}/relatorios/avaliacoes`,     label: "Avaliações",        icon: Star },
+        { to: `${base}/relatorios/giftback`,       label: "Giftback",          icon: Gift },
+      ],
+    },
+    {
+      label: "Reservas",
+      icon: UtensilsCrossed,
+      matchPrefix: `${base}/reservas`,
+      children: [
+        { to: `${base}/reservas`,                  label: "Lista",                icon: List, end: true },
+        { to: `${base}/reservas/calendario`,       label: "Calendário",           icon: CalendarIcon },
+        { to: `${base}/reservas/saloes`,           label: "Salões",               icon: SquareStack },
+        { to: `${base}/reservas/datas-especiais`,  label: "Datas especiais",      icon: CalendarOff },
+        { to: `${base}/reservas/bloqueios`,        label: "Bloqueios",            icon: Lock },
+        { to: `${base}/reservas/widget`,           label: "Widget de reserva",    icon: Code2 },
+        { to: `${base}/reservas/formulario`,       label: "Personalizar form.",   icon: FormInput },
+        { to: `${base}/reservas/ajustes`,          label: "Ajustes",              icon: Sliders },
+      ],
+    },
+    {
+      label: "Fila de espera",
+      icon: UserPlus,
+      matchPrefix: `${base}/fila`,
+      children: [
+        { to: `${base}/fila/comunicacao`, label: "Comunicação", icon: MessageSquare },
+        { to: `${base}/fila/ajustes`,     label: "Ajustes",     icon: Sliders },
+      ],
+    },
+    {
+      label: "Cardápios",
+      icon: BookOpen,
+      matchPrefix: `${base}/cardapios`,
+      children: [
+        { to: `${base}/cardapios/meus-cardapios`, label: "Meus Cardápios", icon: List },
+        { to: `${base}/cardapios/banners`,        label: "Banners",        icon: ImageIcon },
+        { to: `${base}/cardapios/ajustes`,        label: "Ajustes",        icon: Sliders },
+      ],
+    },
+    {
+      label: "Giftback",
+      icon: Gift,
+      matchPrefix: `${base}/giftback`,
+      children: [
+        { to: `${base}/giftback/regras`,   label: "Regras",   icon: List },
+        { to: `${base}/giftback/vouchers`, label: "Vouchers", icon: Gift },
+        { to: `${base}/giftback/ajustes`,  label: "Ajustes",  icon: Sliders },
+      ],
+    },
+    { to: `${base}/clientes`,       label: "Clientes",       icon: Users },
+    { to: `${base}/conversas`,      label: "Conversas",      icon: MessageCircle, badge: awaitingCount },
+    { to: `${base}/pagina-publica`, label: "Página pública", icon: Globe },
+    { to: `${base}/auditoria`,      label: "Auditoria",      icon: ScrollText },
+    { to: `${base}/usuarios`,       label: "Usuários",       icon: UserCog },
+    { to: `${base}/configuracoes`,  label: "Configurações",  icon: Settings },
+  ];
 
   const handleSignOut = async () => {
     await signOut();
@@ -51,7 +142,6 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen bg-background">
-      {/* Sidebar */}
       <aside className="w-60 shrink-0 flex flex-col bg-sidebar border-r border-sidebar-border">
         <div className="h-14 flex items-center px-3">
           <UnitSwitcher basePath="g" />
@@ -65,33 +155,17 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
-          {navItems.map(({ to, label, icon: Icon, end, badge }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                  isActive
-                    ? "bg-sidebar-accent text-primary font-medium"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent"
-                }`
-              }
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              <span className="flex-1">{label}</span>
-              {!!badge && (
-                <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
-                  {badge > 99 ? "99+" : badge}
-                </span>
-              )}
-            </NavLink>
-          ))}
+          {navItems.map((item) =>
+            isGroup(item) ? (
+              <NavGroup key={item.label} group={item} />
+            ) : (
+              <NavLeaf key={item.to} item={item} />
+            ),
+          )}
         </nav>
 
         <Separator className="bg-sidebar-border" />
 
-        {/* Link para Painel Operacional */}
         <div className="px-3 py-2">
           <NavLink
             to={`/o/${unitSlug}`}
@@ -128,10 +202,97 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      {/* Main content */}
       <main className="flex-1 overflow-y-auto">
         <div className="p-6">{children}</div>
       </main>
+    </div>
+  );
+}
+
+function NavLeaf({ item }: { item: LeafItem }) {
+  const Icon = item.icon;
+  return (
+    <NavLink
+      to={item.to}
+      end={item.end}
+      className={({ isActive }) =>
+        cn(
+          "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+          isActive
+            ? "bg-sidebar-accent text-primary font-medium"
+            : "text-sidebar-foreground hover:bg-sidebar-accent",
+        )
+      }
+    >
+      <Icon className="h-4 w-4 shrink-0" />
+      <span className="flex-1">{item.label}</span>
+      {!!item.badge && (
+        <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+          {item.badge > 99 ? "99+" : item.badge}
+        </span>
+      )}
+    </NavLink>
+  );
+}
+
+function NavGroup({ group }: { group: GroupItem }) {
+  const location = useLocation();
+  const isInside = location.pathname.startsWith(group.matchPrefix);
+  const [open, setOpen] = useState(isInside);
+
+  useEffect(() => {
+    if (isInside) setOpen(true);
+  }, [isInside]);
+
+  const Icon = group.icon;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+          isInside
+            ? "bg-sidebar-accent text-primary font-medium"
+            : "text-sidebar-foreground hover:bg-sidebar-accent",
+        )}
+        aria-expanded={open}
+      >
+        <Icon className="h-4 w-4 shrink-0" />
+        <span className="flex-1 text-left">{group.label}</span>
+        <ChevronDown
+          className={cn(
+            "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      {open && (
+        <div className="mt-0.5 ml-3 pl-3 border-l border-sidebar-border space-y-0.5">
+          {group.children.map((child) => {
+            const ChildIcon = child.icon;
+            return (
+              <NavLink
+                key={child.to}
+                to={child.to}
+                end={child.end}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                    isActive
+                      ? "bg-sidebar-accent text-primary font-medium"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent",
+                  )
+                }
+              >
+                <ChildIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="flex-1">{child.label}</span>
+              </NavLink>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

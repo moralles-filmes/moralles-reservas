@@ -2,11 +2,21 @@ import { useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 
-export type AssetKind = "logo" | "hero";
+export type AssetKind =
+  | "logo"
+  | "hero"
+  | "menu_cover"
+  | "menu_page"
+  | "menu_banner_home"
+  | "menu_banner_content";
 
 const MAX_BYTES: Record<AssetKind, number> = {
   logo: 1 * 1024 * 1024,
   hero: 4 * 1024 * 1024,
+  menu_cover: 4 * 1024 * 1024,
+  menu_page: 8 * 1024 * 1024,
+  menu_banner_home: 4 * 1024 * 1024,
+  menu_banner_content: 4 * 1024 * 1024,
 };
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/avif"];

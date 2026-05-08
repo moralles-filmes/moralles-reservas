@@ -9,6 +9,7 @@ import {
   sendOutbound,
   type WhatsAppProvider,
   type ChannelCredentials,
+  type SendResult,
 } from "./whatsapp-providers.ts";
 import { fetchWithRetry } from "./retry.ts";
 import { jsonLog, sanitizePhone } from "./security.ts";
@@ -29,8 +30,12 @@ export interface SendMessagePayload {
   unit_id?: string;
 }
 
-async function sendZApiLegacy(phone: string, message: string): Promise<boolean> {
-  if (!LEGACY_ZAPI_INSTANCE_ID || !LEGACY_ZAPI_TOKEN) return false;
+export type { SendResult };
+
+async function sendZApiLegacy(phone: string, message: string): Promise<SendResult> {
+  if (!LEGACY_ZAPI_INSTANCE_ID || !LEGACY_ZAPI_TOKEN) {
+    return { ok: false, missingCreds: ["ZAPI_INSTANCE_ID", "ZAPI_TOKEN"], error: "legacy_zapi_not_configured" };
+  }
   const digits = phone.replace(/\D/g, "");
   const formatted = digits.startsWith("55") ? digits : `55${digits}`;
   const url = `https://api.z-api.io/instances/${LEGACY_ZAPI_INSTANCE_ID}/token/${LEGACY_ZAPI_TOKEN}/send-text`;
@@ -46,17 +51,17 @@ async function sendZApiLegacy(phone: string, message: string): Promise<boolean> 
     },
     { retries: 3, baseDelayMs: 500 }
   );
-  if (!res.ok) {
-    jsonLog("error", { evt: "zapi_send_failed", status: res.status, phone: sanitizePhone(phone) });
-  }
-  return res.ok;
+  if (res.ok) return { ok: true, status: res.status };
+  const bodySnippet = (await res.text().catch(() => "")).slice(0, 200);
+  jsonLog("error", { evt: "zapi_send_failed", status: res.status, bodySnippet, phone: sanitizePhone(phone) });
+  return { ok: false, status: res.status, bodySnippet, error: `zapi_legacy_http_${res.status}` };
 }
 
 export async function sendWhatsApp(
   phone: string,
   message: string,
   channelIdOrUnitId?: { channel_id?: string; unit_id?: string }
-): Promise<boolean> {
+): Promise<SendResult> {
   // Quando ambos channel_id e unit_id são fornecidos, exige que pertençam à
   // mesma unit — defesa contra envio cross-tenant se INTERNAL_API_KEY vazar.
   if (channelIdOrUnitId?.channel_id) {
@@ -81,7 +86,7 @@ export async function sendWhatsApp(
       channel_id: channelIdOrUnitId.channel_id,
       unit_id: channelIdOrUnitId.unit_id ?? null,
     });
-    return false;
+    return { ok: false, error: "channel_mismatch" };
   }
 
   if (channelIdOrUnitId?.unit_id) {

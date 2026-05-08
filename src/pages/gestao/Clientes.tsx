@@ -338,6 +338,7 @@ function CustomerPreferencesForm({
     updates: Partial<
       Pick<
         Customer,
+        | "birthday"
         | "allergies"
         | "dietary_restrictions"
         | "vip_notes"
@@ -348,6 +349,7 @@ function CustomerPreferencesForm({
   ) => void;
   saving: boolean;
 }) {
+  const [birthday, setBirthday] = useState(customer.birthday ?? "");
   const [allergies, setAllergies] = useState(customer.allergies ?? "");
   const [dietary, setDietary] = useState(customer.dietary_restrictions ?? "");
   const [vipNotes, setVipNotes] = useState(customer.vip_notes ?? "");
@@ -359,6 +361,18 @@ function CustomerPreferencesForm({
   return (
     <div className="space-y-4">
       <p className="text-xs uppercase tracking-wide text-muted-foreground">Preferências</p>
+
+      <div className="space-y-1">
+        <Label className="text-xs">Data de nascimento</Label>
+        <Input
+          type="date"
+          value={birthday}
+          onChange={(e) => setBirthday(e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Usada por regras de Giftback do tipo "Aniversário".
+        </p>
+      </div>
 
       <div className="space-y-1">
         <Label className="text-xs">Alergias</Label>
@@ -419,6 +433,7 @@ function CustomerPreferencesForm({
         disabled={saving}
         onClick={() =>
           onSave({
+            birthday: birthday || null,
             allergies: allergies.trim() || null,
             dietary_restrictions: dietary.trim() || null,
             vip_notes: vipNotes.trim() || null,
