@@ -5,6 +5,7 @@ import { useHall, useUpdateHall, useDeleteHall } from "@/hooks/useHalls";
 import {
   useHallSchedules,
   useCreateHallSchedules,
+  useUpdateHallSchedule,
   useDeleteHallSchedule,
 } from "@/hooks/useHallSchedules";
 import { useHallTables, useCreateTablesBulk, useDeleteTable } from "@/hooks/useHallTables";
@@ -48,6 +49,7 @@ export default function SalaoDetalhe() {
 
   const [dayOfWeek, setDayOfWeek] = useState(0);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<HallSchedule | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDesc, setEditDesc] = useState("");
@@ -56,6 +58,7 @@ export default function SalaoDetalhe() {
   const { data: schedules, isLoading: schedulesLoading } = useHallSchedules(hallId);
   const { data: hallTables } = useHallTables(hallId);
   const createSchedules = useCreateHallSchedules();
+  const updateSchedule = useUpdateHallSchedule();
   const deleteSchedule = useDeleteHallSchedule();
   const createTablesBulk = useCreateTablesBulk();
   const deleteTable = useDeleteTable();
@@ -92,6 +95,7 @@ export default function SalaoDetalhe() {
   };
 
   const handleSubmitSchedule = async (payload: {
+    id?: string;
     days: number[];
     open_time: string;
     close_time: string;
@@ -103,7 +107,7 @@ export default function SalaoDetalhe() {
     newTables: Array<{ count: number; min: number; max: number }>;
   }) => {
     try {
-      // 1) Criar mesas novas (se houver)
+      // 1) Criar mesas novas (se houver) — hall-scoped, vale nos dois modos
       for (const t of payload.newTables) {
         await createTablesBulk.mutateAsync({
           unit_id: unitId,
@@ -113,19 +117,34 @@ export default function SalaoDetalhe() {
           max_capacity: t.max,
         });
       }
-      // 2) Criar schedules pra cada dia selecionado
-      await createSchedules.mutateAsync({
-        hall_id: hall.id,
-        days: payload.days,
-        open_time: payload.open_time,
-        close_time: payload.close_time,
-        slot_minutes: payload.slot_minutes,
-        min_advance_minutes: payload.min_advance_minutes,
-        discount_percent: payload.discount_percent,
-        charge_enabled: payload.charge_enabled,
-        charge_amount_cents: payload.charge_amount_cents,
-      });
-      toast.success("Horário criado.");
+      // 2) Atualizar OU criar schedules
+      if (payload.id) {
+        await updateSchedule.mutateAsync({
+          id: payload.id,
+          day_of_week: payload.days[0],
+          open_time: payload.open_time,
+          close_time: payload.close_time,
+          slot_minutes: payload.slot_minutes,
+          min_advance_minutes: payload.min_advance_minutes,
+          discount_percent: payload.discount_percent,
+          charge_enabled: payload.charge_enabled,
+          charge_amount_cents: payload.charge_amount_cents,
+        });
+        toast.success("Horário atualizado.");
+      } else {
+        await createSchedules.mutateAsync({
+          hall_id: hall.id,
+          days: payload.days,
+          open_time: payload.open_time,
+          close_time: payload.close_time,
+          slot_minutes: payload.slot_minutes,
+          min_advance_minutes: payload.min_advance_minutes,
+          discount_percent: payload.discount_percent,
+          charge_enabled: payload.charge_enabled,
+          charge_amount_cents: payload.charge_amount_cents,
+        });
+        toast.success("Horário criado.");
+      }
     } catch (err) {
       toast.error((err as Error).message ?? "Erro ao salvar horário.");
       throw err;
@@ -178,7 +197,14 @@ export default function SalaoDetalhe() {
             schedules={schedules ?? []}
             dayOfWeek={dayOfWeek}
             onChangeDay={setDayOfWeek}
-            onAdd={() => setSheetOpen(true)}
+            onAdd={() => {
+              setEditingSchedule(null);
+              setSheetOpen(true);
+            }}
+            onEdit={(schedule) => {
+              setEditingSchedule(schedule);
+              setSheetOpen(true);
+            }}
             onDelete={handleDelete}
             loading={schedulesLoading}
           />
@@ -266,9 +292,13 @@ export default function SalaoDetalhe() {
 
       <HallScheduleSheet
         open={sheetOpen}
-        onOpenChange={setSheetOpen}
+        onOpenChange={(open) => {
+          setSheetOpen(open);
+          if (!open) setEditingSchedule(null);
+        }}
         defaultDay={dayOfWeek}
         hallTables={hallTables ?? []}
+        editingSchedule={editingSchedule}
         onSubmit={handleSubmitSchedule}
         onDeleteTable={handleDeleteTable}
       />

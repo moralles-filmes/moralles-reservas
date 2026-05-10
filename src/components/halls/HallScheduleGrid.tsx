@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
-import { Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { DAY_NAMES, type HallSchedule } from "@/types/reserva";
 import {
   Table,
@@ -17,11 +17,12 @@ type Props = {
   dayOfWeek: number;
   onChangeDay: (dow: number) => void;
   onAdd: () => void;
+  onEdit: (schedule: HallSchedule) => void;
   onDelete: (schedule: HallSchedule) => void;
   loading?: boolean;
 };
 
-export function HallScheduleGrid({ schedules, dayOfWeek, onChangeDay, onAdd, onDelete, loading }: Props) {
+export function HallScheduleGrid({ schedules, dayOfWeek, onChangeDay, onAdd, onEdit, onDelete, loading }: Props) {
   const filtered = useMemo(
     () => schedules.filter((s) => s.day_of_week === dayOfWeek),
     [schedules, dayOfWeek],
@@ -68,7 +69,7 @@ export function HallScheduleGrid({ schedules, dayOfWeek, onChangeDay, onAdd, onD
             <TableHead>Antecedência</TableHead>
             <TableHead>Desconto</TableHead>
             <TableHead>Tipo</TableHead>
-            <TableHead className="w-12" />
+            <TableHead className="w-20" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -105,14 +106,26 @@ export function HallScheduleGrid({ schedules, dayOfWeek, onChangeDay, onAdd, onD
                   )}
                 </TableCell>
                 <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => onDelete(schedule)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                      onClick={() => onEdit(schedule)}
+                      aria-label="Editar horário"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      onClick={() => onDelete(schedule)}
+                      aria-label="Remover horário"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))

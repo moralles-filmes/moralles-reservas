@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -16,7 +17,7 @@ type Props = {
 };
 
 export function TablesRangeInput({ value, onChange, showCount = true }: Props) {
-  const isRange = value.max > value.min;
+  const [isRange, setIsRange] = useState(value.max > value.min);
 
   return (
     <div className="space-y-3">
@@ -28,7 +29,10 @@ export function TablesRangeInput({ value, onChange, showCount = true }: Props) {
               min={1}
               className="w-20"
               value={value.count}
-              onChange={(e) => onChange({ ...value, count: Math.max(1, Number(e.target.value) || 1) })}
+              onChange={(e) => onChange({ ...value, count: Number(e.target.value) || 0 })}
+              onBlur={() => {
+                if (value.count < 1) onChange({ ...value, count: 1 });
+              }}
             />
           </Field>
         )}
@@ -39,9 +43,11 @@ export function TablesRangeInput({ value, onChange, showCount = true }: Props) {
             min={1}
             className="w-20"
             value={value.min}
-            onChange={(e) => {
-              const min = Math.max(1, Number(e.target.value) || 1);
-              onChange({ ...value, min, max: Math.max(min, value.max) });
+            onChange={(e) => onChange({ ...value, min: Number(e.target.value) || 0 })}
+            onBlur={() => {
+              const min = Math.max(1, value.min);
+              const max = isRange ? Math.max(min, value.max) : min;
+              if (min !== value.min || max !== value.max) onChange({ ...value, min, max });
             }}
           />
         </Field>
@@ -51,12 +57,12 @@ export function TablesRangeInput({ value, onChange, showCount = true }: Props) {
             <Field label="Máximo">
               <Input
                 type="number"
-                min={value.min}
+                min={1}
                 className="w-20"
                 value={value.max}
-                onChange={(e) => {
-                  const max = Math.max(value.min, Number(e.target.value) || value.min);
-                  onChange({ ...value, max });
+                onChange={(e) => onChange({ ...value, max: Number(e.target.value) || 0 })}
+                onBlur={() => {
+                  if (value.max < value.min) onChange({ ...value, max: value.min });
                 }}
               />
             </Field>
@@ -68,9 +74,10 @@ export function TablesRangeInput({ value, onChange, showCount = true }: Props) {
       <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
         <Switch
           checked={isRange}
-          onCheckedChange={(checked) =>
-            onChange({ ...value, max: checked ? Math.max(value.min + 1, value.max) : value.min })
-          }
+          onCheckedChange={(checked) => {
+            setIsRange(checked);
+            onChange({ ...value, max: checked ? Math.max(value.min + 1, value.max) : value.min });
+          }}
         />
         Capacidade variável (ex: 4 a 6 lugares)
       </label>

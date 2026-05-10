@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/tooltip";
 import { HelpCircle, Plus, Trash2 } from "lucide-react";
 import { TablesRangeInput, type TablesRangeValue } from "./TablesRangeInput";
-import type { Mesa } from "@/types/reserva";
+import type { HallSchedule, Mesa } from "@/types/reserva";
 
 const DAY_INITIALS = ["D", "S", "T", "Q", "Q", "S", "S"];
 const SLOT_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
@@ -33,6 +33,8 @@ const ADVANCE_OPTIONS = [0, 15, 30, 60, 120, 240, 360, 720, 1440];
 const DISCOUNT_OPTIONS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
 
 export type HallScheduleSheetSubmit = {
+  /** Presente quando editando uma schedule existente. */
+  id?: string;
   days: number[];
   open_time: string;
   close_time: string;
@@ -52,6 +54,8 @@ type Props = {
   hallTables: Mesa[];
   onSubmit: (payload: HallScheduleSheetSubmit) => Promise<void> | void;
   onDeleteTable?: (table: Mesa) => Promise<void> | void;
+  /** Quando presente, o modal entra em modo edição. */
+  editingSchedule?: HallSchedule | null;
 };
 
 export function HallScheduleSheet({
@@ -61,7 +65,9 @@ export function HallScheduleSheet({
   hallTables,
   onSubmit,
   onDeleteTable,
+  editingSchedule,
 }: Props) {
+  const isEditing = Boolean(editingSchedule);
   const [days, setDays] = useState<number[]>([defaultDay]);
   const [openTime, setOpenTime] = useState("08:00");
   const [closeTime, setCloseTime] = useState("18:00");
@@ -75,7 +81,21 @@ export function HallScheduleSheet({
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+    if (editingSchedule) {
+      setDays([editingSchedule.day_of_week]);
+      setOpenTime(editingSchedule.open_time.slice(0, 5));
+      setCloseTime(editingSchedule.close_time.slice(0, 5));
+      setSlotMinutes(editingSchedule.slot_minutes);
+      setAdvance(editingSchedule.min_advance_minutes || 0);
+      setDiscount(editingSchedule.discount_percent || 0);
+      setChargeEnabled(editingSchedule.charge_enabled);
+      setChargeAmount(
+        editingSchedule.charge_amount_cents != null
+          ? (editingSchedule.charge_amount_cents / 100).toFixed(2).replace(".", ",")
+          : "",
+      );
+    } else {
       setDays([defaultDay]);
       setOpenTime("08:00");
       setCloseTime("18:00");
@@ -84,12 +104,13 @@ export function HallScheduleSheet({
       setDiscount("");
       setChargeEnabled(false);
       setChargeAmount("");
-      setNewTables([]);
-      setPendingTable({ count: 1, min: 4, max: 4 });
     }
-  }, [open, defaultDay]);
+    setNewTables([]);
+    setPendingTable({ count: 1, min: 4, max: 4 });
+  }, [open, defaultDay, editingSchedule]);
 
   const toggleDay = (dow: number) => {
+    if (isEditing) return;
     setDays((prev) => (prev.includes(dow) ? prev.filter((d) => d !== dow) : [...prev, dow].sort()));
   };
 
@@ -105,6 +126,7 @@ export function HallScheduleSheet({
     setSubmitting(true);
     try {
       await onSubmit({
+        ...(editingSchedule ? { id: editingSchedule.id } : {}),
         days,
         open_time: openTime,
         close_time: closeTime,
@@ -128,30 +150,38 @@ export function HallScheduleSheet({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Adicionar novo horário</DialogTitle>
+          <DialogTitle>{isEditing ? "Editar horário" : "Adicionar novo horário"}</DialogTitle>
         </DialogHeader>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Coluna esquerda: parâmetros do schedule */}
           <div className="space-y-5">
-            <div className="flex gap-1 rounded-md border p-1 w-fit">
-              {DAY_INITIALS.map((label, dow) => {
-                const active = days.includes(dow);
-                return (
-                  <button
-                    key={dow}
-                    type="button"
-                    onClick={() => toggleDay(dow)}
-                    className={`h-9 w-9 rounded-md text-sm font-medium transition-colors ${
-                      active
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:bg-muted"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
+            <div>
+              <div className="flex gap-1 rounded-md border p-1 w-fit">
+                {DAY_INITIALS.map((label, dow) => {
+                  const active = days.includes(dow);
+                  return (
+                    <button
+                      key={dow}
+                      type="button"
+                      onClick={() => toggleDay(dow)}
+                      disabled={isEditing}
+                      className={`h-9 w-9 rounded-md text-sm font-medium transition-colors ${
+                        active
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:bg-muted"
+                      } ${isEditing ? "cursor-not-allowed opacity-80" : ""}`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              {isEditing && (
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  Pra mover pra outro dia, exclua e recrie.
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -305,7 +335,11 @@ export function HallScheduleSheet({
 
             <div className="space-y-3">
               <h3 className="text-sm font-semibold">Adicionar mesas</h3>
-              <TablesRangeInput value={pendingTable} onChange={setPendingTable} />
+              <TablesRangeInput
+                key={newTables.length}
+                value={pendingTable}
+                onChange={setPendingTable}
+              />
               <Button onClick={addPending} variant="outline" size="sm" className="gap-2">
                 <Plus className="h-4 w-4" />
                 Adicionar à lista

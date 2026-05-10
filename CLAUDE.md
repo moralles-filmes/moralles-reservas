@@ -883,6 +883,7 @@ Se `customized=false` (ou linha ausente em `reservation_message_templates`), wor
 - Queries/mutations via **TanStack React Query** — nunca `useState` + `useEffect` para dados remotos
 - **Todo hook de dados aceita `unitId` como primeiro parâmetro** — usar `useCurrentUnit()` para obtê-lo
 - Formulários via **React Hook Form + Zod** — schemas de validação em `zod`
+- **Hooks de query que alimentam telas de edição** (form state em `useState` sincronizado com `useQuery` via `useEffect(() => setX(data.x), [data])`) devem setar `refetchOnWindowFocus: false`. Default `true` refaz fetch ao voltar pra aba → effect zera o que o usuário digitou e não salvou. Já aplicado em `useUnitPublicContent`, `useReservationTemplates`, `useWaitlistSettings`, `useWaitlistTemplates`, `useGiftbackSettings`, `useMenu`, e nos `useQuery` inline de `Configuracoes.tsx` / `reservas/Ajustes.tsx`. Telas só-leitura (Dashboard, Fila operacional) seguem com o default
 - Notificações via **`toast` do Sonner** (`import { toast } from "sonner"`)
 - Classes CSS via **`cn()`** de `@/lib/utils` — nunca template literals diretos com Tailwind
 - Path alias `@/` aponta para `src/`
