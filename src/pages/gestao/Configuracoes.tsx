@@ -38,6 +38,7 @@ export default function Configuracoes() {
       return data as Array<{ key: string; value: unknown }>;
     },
     enabled: !!unitId,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {

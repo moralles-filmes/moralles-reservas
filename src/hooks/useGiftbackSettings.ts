@@ -70,6 +70,7 @@ export function useGiftbackSettings(unitId: string) {
       };
     },
     enabled: !!unitId,
+    refetchOnWindowFocus: false,
   });
 }
 

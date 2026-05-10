@@ -30,6 +30,7 @@ export function useUnitPublicContent(unitId: string) {
       return data as UnitPublicContent | null;
     },
     enabled: !!unitId,
+    refetchOnWindowFocus: false,
   });
 }
 

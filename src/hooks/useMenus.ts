@@ -55,6 +55,7 @@ export function useMenu(menuId: string | undefined) {
       return data as Menu;
     },
     enabled: !!menuId,
+    refetchOnWindowFocus: false,
   });
 }
 

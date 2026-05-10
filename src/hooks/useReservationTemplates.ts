@@ -84,6 +84,7 @@ export function useReservationTemplates(unitId: string) {
       return data as ReservationMessageTemplate[];
     },
     enabled: !!unitId,
+    refetchOnWindowFocus: false,
   });
 }
 

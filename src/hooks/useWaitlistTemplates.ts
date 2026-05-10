@@ -77,6 +77,7 @@ export function useWaitlistTemplates(unitId: string) {
       return data as WaitlistMessageTemplate[];
     },
     enabled: !!unitId,
+    refetchOnWindowFocus: false,
   });
 }
 

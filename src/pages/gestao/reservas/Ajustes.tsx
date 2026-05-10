@@ -105,6 +105,7 @@ function InfoTab({ unitId }: { unitId: string }) {
       return data as SettingRow[];
     },
     enabled: !!unitId,
+    refetchOnWindowFocus: false,
   });
 
   const [duration, setDuration] = useState("");
