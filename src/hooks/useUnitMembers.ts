@@ -32,9 +32,19 @@ export function useUnitMembers(unitId: string) {
 async function invokeManageMembers(body: Record<string, unknown>) {
   const { data, error } = await supabase.functions.invoke("manage-members", { body });
   if (error) {
-    const message =
-      (data as { error?: string } | null)?.error ?? error.message ?? "Erro inesperado.";
-    throw new Error(message);
+    let detail: string | undefined;
+    const ctx = (error as { context?: unknown }).context;
+    if (ctx instanceof Response) {
+      try {
+        const parsed = await ctx.clone().json();
+        if (parsed && typeof parsed === "object" && "error" in parsed) {
+          detail = String((parsed as { error: unknown }).error);
+        }
+      } catch {
+        // body não-JSON: cai no fallback
+      }
+    }
+    throw new Error(detail ?? error.message ?? "Erro inesperado.");
   }
   if (data && typeof data === "object" && "error" in data && data.error) {
     throw new Error(String(data.error));
@@ -67,7 +77,6 @@ export function useCreateUnitMember(unitId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["unit-members", unitId] });
-      toast.success("Membro cadastrado.");
     },
     onError: (err: Error) => toast.error(err.message),
   });

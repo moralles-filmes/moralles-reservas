@@ -364,7 +364,15 @@ function CreateMemberDialog({
         name: name.trim() || null,
       },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
+          const reused = (data as { reused?: boolean } | null)?.reused === true;
+          if (reused) {
+            toast.success(
+              "Usuário já existia no sistema e foi vinculado a esta unidade. A senha original foi mantida.",
+            );
+          } else {
+            toast.success("Membro cadastrado.");
+          }
           reset();
           onOpenChange(false);
         },

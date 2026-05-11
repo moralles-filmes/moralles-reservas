@@ -73,17 +73,46 @@ serve(async (req) => {
       if (password.length < 6) return jsonResponse(req, { error: "Senha deve ter pelo menos 6 caracteres." }, 400);
       if (!["gerente", "operador"].includes(role)) return jsonResponse(req, { error: "Papel inválido." }, 400);
 
+      let userId: string;
+      let reused = false;
+
       const { data: created, error: createErr } = await supabase.auth.admin.createUser({
         email,
         password,
         email_confirm: true,
       });
-      if (createErr || !created.user) {
-        return jsonResponse(req, { error: createErr?.message ?? "Falha ao criar usuário." }, 400);
+
+      if (createErr || !created?.user) {
+        const errMsg = (createErr?.message ?? "").toLowerCase();
+        const status = (createErr as { status?: number } | null)?.status;
+        const isDuplicate =
+          status === 422 ||
+          errMsg.includes("already") ||
+          errMsg.includes("registered") ||
+          errMsg.includes("exists");
+
+        if (!isDuplicate) {
+          return jsonResponse(req, { error: createErr?.message ?? "Falha ao criar usuário." }, 400);
+        }
+
+        const { data: existingId, error: rpcErr } = await supabase.rpc("find_auth_user_by_email", {
+          p_email: email,
+        });
+        if (rpcErr || !existingId) {
+          return jsonResponse(
+            req,
+            { error: "E-mail já cadastrado, mas não foi possível localizá-lo." },
+            500
+          );
+        }
+        userId = existingId as string;
+        reused = true;
+      } else {
+        userId = created.user.id;
       }
 
       const { error: insertErr } = await supabase.from("unit_members").insert({
-        user_id: created.user.id,
+        user_id: userId,
         unit_id: unitId,
         role,
         email,
@@ -91,11 +120,16 @@ serve(async (req) => {
       });
 
       if (insertErr) {
-        await supabase.auth.admin.deleteUser(created.user.id);
-        return jsonResponse(req, { error: insertErr.message }, 500);
+        if (!reused) await supabase.auth.admin.deleteUser(userId);
+        const isUniqueViolation = (insertErr as { code?: string }).code === "23505";
+        const status = isUniqueViolation ? 409 : 500;
+        const message = isUniqueViolation
+          ? "Este e-mail já é membro desta unidade."
+          : insertErr.message;
+        return jsonResponse(req, { error: message }, status);
       }
 
-      return jsonResponse(req, { success: true, id: created.user.id });
+      return jsonResponse(req, { success: true, id: userId, reused });
     }
 
     // ── update_member: nome (owner+gerente; gerente só edita a si mesmo) ──────
