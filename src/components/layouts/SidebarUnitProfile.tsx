@@ -1,0 +1,109 @@
+import { useNavigate } from "react-router-dom";
+import { ChevronDown, UtensilsCrossed } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import { useUnitPublicContent } from "@/hooks/useUnitPublicContent";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
+
+interface SidebarUnitProfileProps {
+  basePath: "g" | "o";
+}
+
+export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
+  const { memberships } = useAuth();
+  const unit = useCurrentUnit();
+  const navigate = useNavigate();
+  const { data: content } = useUnitPublicContent(unit?.unit_id ?? "");
+
+  if (!unit) return null;
+
+  const heroUrl = content?.hero_image_url ?? null;
+  const logoUrl = content?.logo_url ?? null;
+  const hasMultiple = memberships.length > 1;
+
+  const handleSwitch = (slug: string) => {
+    navigate(`/${basePath}/${slug}`);
+  };
+
+  const card = (
+    <div
+      className={cn(
+        "relative w-full h-32 rounded-lg overflow-hidden border border-sidebar-border",
+        "shadow-sm group",
+        hasMultiple && "cursor-pointer hover:shadow-md transition-shadow",
+      )}
+    >
+      {heroUrl ? (
+        <img
+          src={heroUrl}
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      ) : (
+        <div className="absolute inset-0 bg-gradient-to-br from-primary to-primary/70" />
+      )}
+
+      <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent" />
+
+      <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-end gap-2.5">
+        <div className="h-11 w-11 rounded-full bg-white border-2 border-white shadow-md overflow-hidden shrink-0 flex items-center justify-center">
+          {logoUrl ? (
+            <img src={logoUrl} alt="" className="h-full w-full object-cover" />
+          ) : (
+            <UtensilsCrossed className="h-5 w-5 text-primary" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0 pb-0.5">
+          <p className="text-sm font-semibold text-white truncate drop-shadow-md leading-tight">
+            {unit.unit_name}
+          </p>
+          {unit.organization_slug && (
+            <p className="text-[11px] text-white/80 truncate drop-shadow-md leading-tight mt-0.5">
+              {unit.role === "owner" ? "Proprietário" : unit.role === "gerente" ? "Gerente" : "Operador"}
+            </p>
+          )}
+        </div>
+        {hasMultiple && (
+          <ChevronDown className="h-4 w-4 text-white/90 drop-shadow-md shrink-0 mb-1" />
+        )}
+      </div>
+    </div>
+  );
+
+  if (!hasMultiple) {
+    return card;
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" className="w-full text-left">
+          {card}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-56">
+        <DropdownMenuLabel className="text-xs text-muted-foreground">
+          Trocar unidade
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {memberships.map((m) => (
+          <DropdownMenuItem
+            key={m.unit_id}
+            onClick={() => handleSwitch(m.unit_slug)}
+            className={m.unit_slug === unit.unit_slug ? "font-medium text-primary" : ""}
+          >
+            {m.unit_name}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}

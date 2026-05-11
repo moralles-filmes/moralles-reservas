@@ -22,7 +22,7 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
   ];
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="theme-admin flex h-screen bg-background">
       {/* Sidebar */}
       <aside className="w-60 shrink-0 flex flex-col bg-sidebar border-r border-sidebar-border">
         <div className="h-14 flex items-center px-6 gap-2">
@@ -55,7 +55,7 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
                   `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
                     isActive
                       ? "bg-sidebar-accent text-primary font-medium"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent/50"
                   }`
                 }
               >

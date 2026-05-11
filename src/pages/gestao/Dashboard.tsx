@@ -8,6 +8,7 @@ import { useWaitlist } from "@/hooks/useWaitlist";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader } from "@/components/PageHeader";
 import { KpiCard } from "@/components/dashboard/KpiCard";
 import { PeriodFilter, type Period } from "@/components/dashboard/PeriodFilter";
 import { ChartCard } from "@/components/dashboard/ChartCard";
@@ -65,13 +66,10 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      {/* Cabeçalho */}
-      <div>
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <p className="text-muted-foreground text-sm">
-          {formatDateBR(today, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
-        </p>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description={formatDateBR(today, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+      />
 
       {/* Bloco A — Operação de hoje */}
       <section className="space-y-3">

@@ -47,20 +47,20 @@ export function KpiCard({ title, value, icon: Icon, color, delta, invertDelta, d
 
   return (
     <Card>
-      <CardContent className="pt-5 pb-5">
+      <CardContent className="pt-6 pb-6">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-xs text-muted-foreground truncate">{title}</p>
             {isLoading ? (
-              <Skeleton className="h-8 w-16 mt-1" />
+              <Skeleton className="h-9 w-20 mt-2" />
             ) : (
-              <p className="text-2xl font-bold mt-1">
+              <p className="text-3xl font-bold mt-1.5 tracking-tight">
                 {formatValue(value)}
-                {suffix && <span className="text-base font-medium text-muted-foreground ml-0.5">{suffix}</span>}
+                {suffix && <span className="text-lg font-medium text-muted-foreground ml-0.5">{suffix}</span>}
               </p>
             )}
             {hasDelta && !isLoading && (
-              <div className={cn("flex items-center gap-0.5 mt-1 text-xs font-medium", deltaColor)}>
+              <div className={cn("flex items-center gap-0.5 mt-1.5 text-xs font-medium", deltaColor)}>
                 <DeltaIcon className="h-3 w-3" />
                 <span>
                   {delta === 0
@@ -72,7 +72,7 @@ export function KpiCard({ title, value, icon: Icon, color, delta, invertDelta, d
               </div>
             )}
           </div>
-          <div className={cn("p-2.5 rounded-full shrink-0", color)}>
+          <div className={cn("p-2 rounded-lg shrink-0", color)}>
             <Icon className="h-4 w-4" />
           </div>
         </div>

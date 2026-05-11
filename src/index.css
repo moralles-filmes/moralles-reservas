@@ -98,6 +98,52 @@
 }
 
 @layer base {
+  /* Tema navy/SaaS aplicado só dentro dos painéis admin (Gestão, Operacional, Plataforma).
+     Portais públicos (/r/:slug, /m/:slug, /w/:slug, /) continuam com a paleta warm restaurant do :root. */
+  .theme-admin {
+    --background: 220 20% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 222 47% 18%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 15% 95%;
+    --secondary-foreground: 222 47% 18%;
+
+    --muted: 220 15% 95%;
+    --muted-foreground: 220 12% 45%;
+
+    --accent: 220 30% 95%;
+    --accent-foreground: 222 47% 18%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 14% 90%;
+    --input: 220 14% 90%;
+    --ring: 222 47% 18%;
+
+    --sidebar-background: 220 25% 97%;
+    --sidebar-foreground: 222 30% 25%;
+    --sidebar-primary: 222 47% 18%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 30% 93%;
+    --sidebar-accent-foreground: 222 47% 18%;
+    --sidebar-border: 220 14% 90%;
+    --sidebar-ring: 222 47% 18%;
+
+    --success: 152 60% 38%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 48%;
+    --warning-foreground: 222 47% 11%;
+  }
+
   * {
     @apply border-border;
   }

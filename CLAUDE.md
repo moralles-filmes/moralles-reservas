@@ -335,6 +335,8 @@ moralles-reservas/
 │   │   └── reservaStore.ts            # Filtros do painel (Zustand)
 │   │
 │   ├── components/
+│   │   ├── Breadcrumb.tsx             # Breadcrumb compartilhado (text-xs muted, separator chevron, link com hover-foreground). BreadcrumbReservas (em pages/gestao/reservas/Saloes.tsx) e BreadcrumbRelatorios (em pages/gestao/relatorios/FluxoClientes.tsx) delegam pra cá — qualquer mudança visual aqui propaga pras 14 páginas que usam esses helpers
+│   │   ├── PageHeader.tsx             # Header compartilhado das páginas internas — props: breadcrumb (BreadcrumbItem[]), title, description, children (slot pra ações). Use em vez de duplicar <header><h1>...</h1></header>
 │   │   ├── ui/                        # shadcn/ui — não editar diretamente
 │   │   ├── reserva/
 │   │   │   ├── ReservaForm.tsx        # Formulário público — props: unit, halls, widgetConfig, widgetId,
@@ -389,10 +391,11 @@ moralles-reservas/
 │   │   │   ├── RecentRatingsList.tsx  #   Lista compacta últimas avaliações
 │   │   │   └── EmptyChartCard.tsx     #   Estado vazio padrão pra charts/listas
 │   │   ├── layouts/
-│   │   │   ├── GestaoLayout.tsx       # Sidebar + layout das páginas de gestão
-│   │   │   ├── OperacionalLayout.tsx  # Header minimalista + navegação operacional
-│   │   │   └── PlatformLayout.tsx     # Sidebar do painel /platform (só super-admin)
-│   │   └── UnitSwitcher.tsx           # Dropdown de troca de unidade no header
+│   │   │   ├── GestaoLayout.tsx       # Sidebar + layout das páginas de gestão. Aplica .theme-admin (paleta navy) na div root
+│   │   │   ├── OperacionalLayout.tsx  # Header minimalista + navegação operacional. Aplica .theme-admin
+│   │   │   ├── PlatformLayout.tsx     # Sidebar do painel /platform (só super-admin). Aplica .theme-admin
+│   │   │   └── SidebarUnitProfile.tsx # Bloco-perfil no topo da sidebar — hero_image_url como background + logo_url circular sobreposto + nome+papel. Switcher embutido (chevron + dropdown) se memberships > 1. Fallbacks: gradient se sem hero, ícone UtensilsCrossed se sem logo. Consome useUnitPublicContent
+│   │   └── UnitSwitcher.tsx           # Dropdown de troca de unidade no header (legado — substituído por SidebarUnitProfile nos layouts admin/operacional, mantido pra eventual uso em outros contextos)
 │   │
 │   └── pages/
 │       ├── Index.tsx                  # Landing pública — seletor de cidade, busca, grid de restaurantes
@@ -889,6 +892,15 @@ Se `customized=false` (ou linha ausente em `reservation_message_templates`), wor
 - Path alias `@/` aponta para `src/`
 - Datas sempre em formato `YYYY-MM-DD` no banco; exibição via `formatDateBR()` de `@/lib/utils`
 - Telefones sem formatação no banco (apenas dígitos); exibição via `formatPhone()`
+
+## Tema visual: dois mundos
+
+A aplicação usa **dois temas mutuamente exclusivos**, escopados por classe CSS:
+
+- **Warm restaurant (default `:root`)** — paleta laranja `#E67E22` + bege `#fafaf5` + tons quentes. Aplicada nos portais públicos (`/`, `/r/:slug`, `/w/:slug`, `/m/:slug`) e na tela de login (`/admin/login`). Personalidade aconchegante pro cliente final.
+- **Navy SaaS (`.theme-admin`)** — paleta navy `#1a2540` + off-white frio + accent pale-blue. Aplicada nos painéis internos (`GestaoLayout`, `OperacionalLayout`, `PlatformLayout`) via `<div className="theme-admin ...">` na raiz de cada layout. Personalidade ferramenta-pro pro operador.
+
+A classe `.theme-admin` em [src/index.css](src/index.css) sobrescreve TODAS as CSS variables do `:root` (`--background`, `--primary`, `--sidebar-background` etc.) só dentro do escopo. Components usam `bg-background`/`text-foreground`/`text-primary` normalmente — o tema é resolvido em runtime pelo cascade. **Nunca hardcode cores** (`bg-orange-500`, `#1a2540` literal): isso quebra o sistema. Sempre via tokens do Tailwind config (que mapeiam pras CSS vars).
 
 ## Hardening de segurança multi-tenant
 

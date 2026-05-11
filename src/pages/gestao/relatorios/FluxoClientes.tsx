@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import {
   useFluxoClientes,
@@ -36,6 +35,8 @@ import {
 import { FluxoLineChart, type FluxoTabKey } from "@/components/relatorios/FluxoLineChart";
 import { PartySizeChart } from "@/components/relatorios/PartySizeChart";
 import { DowChart } from "@/components/relatorios/DowChart";
+import { PageHeader } from "@/components/PageHeader";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { exportClientesCsv } from "@/lib/exportCsv";
 import { toast } from "sonner";
 
@@ -104,42 +105,43 @@ export default function FluxoClientes() {
 
   return (
     <div className="space-y-5">
-      <header className="space-y-1">
-        <BreadcrumbRelatorios current="Fluxo de clientes" />
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <h1 className="text-2xl font-bold">Fluxo de Clientes</h1>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleExport}
-              disabled={exporting || !unitId}
-              className="gap-2"
-            >
-              <Download className="h-4 w-4" />
-              {exporting ? "Exportando…" : "Exportar base de clientes"}
-            </Button>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="default"
-                    size="sm"
-                    disabled
-                    className="gap-2"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                    Relatórios avançados
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Em breve — integração com BI externo.
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-        </div>
-      </header>
+      <PageHeader
+        breadcrumb={[
+          { label: unit?.unit_name ?? "Unidade", to: `/g/${unit?.unit_slug ?? ""}` },
+          { label: "Relatórios" },
+          { label: "Fluxo de clientes" },
+        ]}
+        title="Fluxo de Clientes"
+      >
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleExport}
+          disabled={exporting || !unitId}
+          className="gap-2"
+        >
+          <Download className="h-4 w-4" />
+          {exporting ? "Exportando…" : "Exportar base de clientes"}
+        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="default"
+                size="sm"
+                disabled
+                className="gap-2"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Relatórios avançados
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Em breve — integração com BI externo.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </PageHeader>
 
       <div className="flex border-b">
         {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
@@ -514,14 +516,12 @@ export function BreadcrumbRelatorios({ current }: { current: string }) {
   const unit = useCurrentUnit();
   const unitSlug = unit?.unit_slug ?? "";
   return (
-    <nav className="text-xs text-muted-foreground flex items-center gap-1.5">
-      <Link to={`/g/${unitSlug}`} className="hover:text-foreground">
-        {unit?.unit_name ?? "Unidade"}
-      </Link>
-      <span>/</span>
-      <span>Relatórios</span>
-      <span>/</span>
-      <span className="text-foreground">{current}</span>
-    </nav>
+    <Breadcrumb
+      items={[
+        { label: unit?.unit_name ?? "Unidade", to: `/g/${unitSlug}` },
+        { label: "Relatórios" },
+        { label: current },
+      ]}
+    />
   );
 }

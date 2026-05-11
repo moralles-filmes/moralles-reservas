@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
-import { UnitSwitcher } from "@/components/UnitSwitcher";
+import { SidebarUnitProfile } from "@/components/layouts/SidebarUnitProfile";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -15,10 +15,12 @@ import {
   CalendarOff,
   ChevronDown,
   Code2,
+  Copy,
   DollarSign,
   FormInput,
   Gift,
   Globe,
+  HelpCircle,
   Image as ImageIcon,
   LayoutDashboard,
   List,
@@ -141,15 +143,24 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
     navigate("/admin/login");
   };
 
-  return (
-    <div className="flex h-screen bg-background">
-      <aside className="w-60 shrink-0 flex flex-col bg-sidebar border-r border-sidebar-border">
-        <div className="h-14 flex items-center px-3">
-          <UnitSwitcher basePath="g" />
-        </div>
-        <Separator className="bg-sidebar-border" />
+  const handleCopyCode = async () => {
+    if (!unit?.unit_slug) return;
+    try {
+      await navigator.clipboard.writeText(unit.unit_slug);
+      toast.success("Código copiado");
+    } catch {
+      toast.error("Não foi possível copiar");
+    }
+  };
 
-        <div className="px-3 py-2">
+  return (
+    <div className="theme-admin flex h-screen bg-background">
+      <aside className="w-60 shrink-0 flex flex-col bg-sidebar border-r border-sidebar-border">
+        <div className="p-3">
+          <SidebarUnitProfile basePath="g" />
+        </div>
+
+        <div className="px-3 pb-2">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-3">
             Painel de Gestão
           </p>
@@ -170,7 +181,7 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
         <div className="px-3 py-2">
           <NavLink
             to={`/o/${unitSlug}`}
-            className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-sidebar-accent transition-colors"
+            className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-sidebar-accent/50 transition-colors"
           >
             <UtensilsCrossed className="h-4 w-4 shrink-0" />
             Painel Operacional
@@ -181,7 +192,7 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
           <div className="px-3 pb-1">
             <NavLink
               to="/platform"
-              className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-primary hover:bg-sidebar-accent transition-colors font-medium"
+              className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-primary hover:bg-sidebar-accent/50 transition-colors font-medium"
             >
               <Building2 className="h-4 w-4 shrink-0" />
               Plataforma
@@ -190,7 +201,35 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
         )}
 
         <Separator className="bg-sidebar-border" />
-        <div className="p-3">
+
+        <div className="p-3 space-y-2">
+          <NavLink
+            to={`${base}/conversas`}
+            className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground transition-colors"
+          >
+            <HelpCircle className="h-4 w-4 shrink-0" />
+            <span className="flex-1">Precisa de ajuda?</span>
+            {awaitingCount > 0 && (
+              <span className="h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                {awaitingCount > 99 ? "99+" : awaitingCount}
+              </span>
+            )}
+          </NavLink>
+
+          {unit?.unit_slug && (
+            <button
+              type="button"
+              onClick={handleCopyCode}
+              className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-muted-foreground bg-muted hover:bg-muted/70 transition-colors group"
+            >
+              <Copy className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" />
+              <span className="flex-1 text-left">Copiar código</span>
+              <span className="font-mono text-[11px] text-foreground/80 truncate max-w-[100px]">
+                {unit.unit_slug}
+              </span>
+            </button>
+          )}
+
           <Button
             variant="ghost"
             size="sm"
@@ -221,7 +260,7 @@ function NavLeaf({ item }: { item: LeafItem }) {
           "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
           isActive
             ? "bg-sidebar-accent text-primary font-medium"
-            : "text-sidebar-foreground hover:bg-sidebar-accent",
+            : "text-sidebar-foreground hover:bg-sidebar-accent/50",
         )
       }
     >
@@ -256,7 +295,7 @@ function NavGroup({ group }: { group: GroupItem }) {
           "flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
           isInside
             ? "bg-sidebar-accent text-primary font-medium"
-            : "text-sidebar-foreground hover:bg-sidebar-accent",
+            : "text-sidebar-foreground hover:bg-sidebar-accent/50",
         )}
         aria-expanded={open}
       >
@@ -283,7 +322,7 @@ function NavGroup({ group }: { group: GroupItem }) {
                     "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors",
                     isActive
                       ? "bg-sidebar-accent text-primary font-medium"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent",
+                      : "text-sidebar-foreground hover:bg-sidebar-accent/50",
                   )
                 }
               >

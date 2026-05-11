@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useHalls, useCreateHall, useUpdateHall } from "@/hooks/useHalls";
 import { Button } from "@/components/ui/button";
@@ -16,8 +15,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { ChevronRight, Plus, SquareStack } from "lucide-react";
+import { Plus, SquareStack } from "lucide-react";
 import { HallCard } from "@/components/halls/HallCard";
+import { PageHeader } from "@/components/PageHeader";
+import { Breadcrumb } from "@/components/Breadcrumb";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { HallSchedule } from "@/types/reserva";
@@ -76,11 +77,14 @@ export default function Saloes() {
 
   return (
     <div className="space-y-5">
-      <header className="flex items-center justify-between gap-3">
-        <div className="space-y-1">
-          <BreadcrumbReservas current="Salões" />
-          <h1 className="text-2xl font-bold">Salões</h1>
-        </div>
+      <PageHeader
+        breadcrumb={[
+          { label: unit?.unit_name ?? "Unidade", to: `/g/${unitSlug}` },
+          { label: "Reservas", to: `/g/${unitSlug}/reservas` },
+          { label: "Salões" },
+        ]}
+        title="Salões"
+      >
         <Dialog open={newOpen} onOpenChange={setNewOpen}>
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2">
@@ -120,7 +124,7 @@ export default function Saloes() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </header>
+      </PageHeader>
 
       <label className="flex items-center gap-2 text-sm">
         <Switch checked={showInactive} onCheckedChange={setShowInactive} />
@@ -189,16 +193,12 @@ export function BreadcrumbReservas({ current }: { current: string }) {
   const unit = useCurrentUnit();
   const unitSlug = unit?.unit_slug ?? "";
   return (
-    <nav className="text-xs text-muted-foreground flex items-center gap-1.5">
-      <Link to={`/g/${unitSlug}`} className="hover:text-foreground">
-        {unit?.unit_name ?? "Unidade"}
-      </Link>
-      <span>/</span>
-      <Link to={`/g/${unitSlug}/reservas`} className="hover:text-foreground">
-        Reservas
-      </Link>
-      <span>/</span>
-      <span className="text-foreground">{current}</span>
-    </nav>
+    <Breadcrumb
+      items={[
+        { label: unit?.unit_name ?? "Unidade", to: `/g/${unitSlug}` },
+        { label: "Reservas", to: `/g/${unitSlug}/reservas` },
+        { label: current },
+      ]}
+    />
   );
 }
