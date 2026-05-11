@@ -1,10 +1,10 @@
-// Processador diário do lembrete D-1.
+// Processador diário do lembrete D-0 (dia da reserva).
 //
 // Chamado via pg_cron 1x ao dia (13:00 UTC = 10:00 BRT). Pra cada unit:
 //   1. Verifica `settings.reminder_d1_enabled` (default true) — pula se off.
 //   2. Carrega template de `reservation_message_templates` (event=reminder_d1)
 //      ou usa DEFAULT_REMINDER_BODY se não houver / customized=false.
-//   3. Chama RPC `get_reservations_for_reminder(amanhã, unit_id)` — RPC já
+//   3. Chama RPC `get_reservations_for_reminder(hoje, unit_id)` — RPC já
 //      filtra status='confirmed', do_not_contact=false e idempotência via
 //      NOT EXISTS em notifications_sent.
 //   4. Pra cada reserva elegível, dispara send-whatsapp com kind='reminder_d1'
@@ -12,7 +12,6 @@
 //      garante idempotência caso a função rode 2x.
 //
 // Auth via x-internal-key (mesmo padrão do voucher worker, outbox worker).
-// Substitui o workflow N8N reminder-d1 (docs/n8n/workflow-reminder-d1.json).
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -26,7 +25,7 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
 const DEFAULT_REMINDER_BODY =
   "Olá, {{cliente_nome}}! 👋\n\n" +
-  "Lembrete da sua reserva amanhã às {{horario}} para {{party_size}} pessoa(s) em {{unidade_nome}}.\n\n" +
+  "Lembrete da sua reserva hoje às {{horario}} para {{party_size}} pessoa(s) em {{unidade_nome}}.\n\n" +
   "Código: #{{codigo}}\n\n" +
   "Para alterar ou cancelar, é só responder esta mensagem. Te esperamos! 🍽️";
 
@@ -53,11 +52,12 @@ function formatTime(timeStr: string): string {
   return (timeStr ?? "").slice(0, 5);
 }
 
-function tomorrowDateBRT(): string {
-  // Cron roda 13:00 UTC (10:00 BRT). UTC + 1 dia equivale a "amanhã em BRT"
-  // nesse horário (BRT = UTC-3, calendário ainda casa).
+function todayDateBRT(): string {
+  // Cron roda 13:00 UTC (10:00 BRT). Em BRT = UTC-3, o dia corrente em BRT
+  // é a data UTC sem offset nesse horário (13:00 UTC = 10:00 BRT, mesmo dia).
   const d = new Date();
-  d.setUTCDate(d.getUTCDate() + 1);
+  // Aplica offset BRT (-3h) pra garantir a data correta em BRT
+  d.setUTCHours(d.getUTCHours() - 3);
   return d.toISOString().slice(0, 10);
 }
 
@@ -126,7 +126,7 @@ serve(async (req) => {
   }
 
   const t0 = Date.now();
-  const targetDate = tomorrowDateBRT();
+  const targetDate = todayDateBRT();
   const errors: string[] = [];
   let dispatched = 0;
   let failed = 0;

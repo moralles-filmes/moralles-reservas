@@ -32,11 +32,11 @@ export type ReservationVariableKey =
 export const RESERVATION_TEMPLATES: ReservationTemplateMeta[] = [
   {
     event: "reminder_d1",
-    label: "Lembrete (1 dia antes)",
+    label: "Lembrete (dia da reserva)",
     description:
-      "Mensagem enviada 1 dia antes da reserva (10:00 BRT) confirmando data e horário.",
+      "Mensagem enviada no dia da reserva (10:00 BRT) confirmando horário.",
     defaultBody:
-      "Olá, {{cliente_nome}}! 👋\n\nLembrete da sua reserva amanhã às {{horario}} para {{party_size}} pessoa(s) em {{unidade_nome}}.\n\nCódigo: #{{codigo}}\n\nPara alterar ou cancelar, é só responder esta mensagem. Te esperamos! 🍽️",
+      "Olá, {{cliente_nome}}! 👋\n\nLembrete da sua reserva hoje às {{horario}} para {{party_size}} pessoa(s) em {{unidade_nome}}.\n\nCódigo: #{{codigo}}\n\nPara alterar ou cancelar, é só responder esta mensagem. Te esperamos! 🍽️",
     maxLength: 600,
     variables: ["cliente_nome", "horario", "party_size", "codigo", "unidade_nome"],
   },

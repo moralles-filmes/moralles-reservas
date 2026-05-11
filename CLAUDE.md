@@ -235,7 +235,7 @@ moralles-reservas/
 │       ├── whatsapp-health/           # Diagnóstico (canal + IA + stats 24h)
 │       ├── process-notification-outbox/ # Worker outbox confirmação (pg_cron 1min)
 │       ├── process-voucher-triggers/    # Worker giftback (pg_cron 12:00 UTC)
-│       ├── process-reservation-reminders/ # Worker lembrete D-1 (pg_cron 13:00 UTC = 10:00 BRT)
+│       ├── process-reservation-reminders/ # Worker lembrete D-0 (pg_cron 13:00 UTC = 10:00 BRT)
 │       └── process-satisfaction-surveys/  # Worker pesquisa D+1 (pg_cron 17:00 UTC = 14:00 BRT)
 │
 ├── .env.example
@@ -382,7 +382,7 @@ Todos seguem o mesmo padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `inte
 |---|---|---|---|
 | `process-notification-outbox` | `*/1 * * * *` | process-notification-outbox | Outbox confirmação (lote 20, backoff 1m→4h, max 5 tentativas) |
 | `process-voucher-triggers` | `0 12 * * *` UTC | process-voucher-triggers | Expira vouchers + emite por aniversário/frequência |
-| `process-reservation-reminders` | `0 13 * * *` UTC (10:00 BRT) | process-reservation-reminders | Lembrete D-1 (settings.reminder_d1_enabled) |
+| `process-reservation-reminders` | `0 13 * * *` UTC (10:00 BRT) | process-reservation-reminders | Lembrete D-0 — dia da reserva (settings.reminder_d1_enabled) |
 | `process-satisfaction-surveys` | `0 17 * * *` UTC (14:00 BRT) | process-satisfaction-surveys | Pesquisa D+1 (settings.survey_d1_enabled) |
 
 Workers lêem templates de `reservation_message_templates` (`customized=true`) ou usam defaults hardcoded. Idempotência via UNIQUE `(reservation_id, kind)` em `notifications_sent`.
