@@ -59,7 +59,8 @@ serve(async (req) => {
             unit_members(id)
           )
         `)
-        .order("created_at", { ascending: true });
+        .order("created_at", { ascending: true })
+        .order("name", { ascending: true, referencedTable: "units" });
 
       if (error) return jsonResponse(req, { error: error.message }, 500);
 
