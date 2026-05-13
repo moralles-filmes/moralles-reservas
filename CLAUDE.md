@@ -66,8 +66,10 @@ Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Arqu
 npm run dev          # servidor local em http://localhost:8080
 npm run build        # build de produção em dist/
 npm run preview      # servir o build local
-npm run lint         # ESLint
-npm run typecheck    # tsc --noEmit
+npm run lint         # ESLint (atualmente sem eslint.config.js — v9 exige flat config)
+npm run typecheck    # tsc -b --noEmit (modo build respeita project references)
+                     # IMPORTANTE: nunca rodar "tsc --noEmit" sem -b — root tem files:[] + references,
+                     # então sem -b o comando vira no-op silencioso (exit 0 sem checar nada)
 npm test             # Vitest (run once)
 npm run test:watch   # Vitest em watch mode
 
@@ -407,12 +409,15 @@ Workers lêem templates de `reservation_message_templates` (`customized=true`) o
 - Queries/mutations via **TanStack React Query** — nunca `useState` + `useEffect` para dados remotos
 - **Todo hook de dados aceita `unitId` como primeiro parâmetro** — usar `useCurrentUnit()` para obtê-lo
 - Formulários via **React Hook Form + Zod**
-- **Hooks de query que alimentam telas de edição** devem setar `refetchOnWindowFocus: false` (evita resetar form state ao voltar pra aba)
+- **`refetchOnWindowFocus: false`** é default global no `QueryClient` ([src/App.tsx](src/App.tsx)) — evita resetar form state ao trocar de aba. Painéis operacionais que precisam de dados ao vivo devem usar `refetchInterval` no hook específico (não reativar `refetchOnWindowFocus`).
+- **`AuthContext` só ativa `loading=true` quando o user_id muda** ([src/contexts/AuthContext.tsx](src/contexts/AuthContext.tsx)). Supabase dispara `SIGNED_IN` em refoco de aba após token refresh; ativar loading nesse caso desmonta a árvore (guards renderizam Skeleton) e descarta state local dos forms. Manter o filtro por `currentUserId !== nextUserId`.
+- **Nome da unidade vive em `units.name`** — é a fonte canônica usada pela sidebar (via `AuthContext.memberships`), portais públicos (`/r/:slug`, `/w`, `/m`, `Index`), breadcrumbs e headers. Owner/gerente pode escrever via RLS (policy `unit_owner_gerente_update_units`, migration 019). Após escrever, **chame `refreshMemberships()` do `useAuth()`** para atualizar a sidebar sem logout. O setting `restaurant_name` é **legado** — Edge Functions (`send-confirmation`, `webhook-whatsapp`) ainda leem com fallback `unit.name` para compat, mas a UI não deve escrever nele.
 - Notificações via **`toast` do Sonner** (`import { toast } from "sonner"`)
 - Classes CSS via **`cn()`** de `@/lib/utils` — nunca template literals diretos com Tailwind
 - Path alias `@/` aponta para `src/`
 - Datas sempre em formato `YYYY-MM-DD` no banco; exibição via `formatDateBR()`
 - Telefones sem formatação no banco (apenas dígitos); exibição via `formatPhone()`
+- **Rodar `npm run typecheck` antes de commitar mudanças no frontend** — o dev server usa SWC (sem type check), então import faltante (`<Link>` sem `import { Link } from "react-router-dom"`) só explode em runtime via ErrorBoundary ("Algo deu errado"). Hoje há ~4 erros pré-existentes (toaster/use-toast órfãos do shadcn + `String.replaceAll` exigindo lib ES2021); use-os como baseline e detecte regressões pela contagem.
 
 ## Tema visual: dois mundos
 
@@ -429,6 +434,7 @@ Workers lêem templates de `reservation_message_templates` (`customized=true`) o
 - **Edge Functions validam `unit_id`** da request contra o recurso — defense-in-depth.
 - **CORS em `manage-*`** via `_shared/cors.ts` (whitelist localhost, *.vercel.app, reservas.moralles.com.br).
 - **Storage `unit-assets`**: listing bloqueado, CDN público funciona.
+- **Toda policy RLS escopada por `unit_id` precisa de contraparte `platform_admin_*`** via `is_platform_admin(auth.uid())` — vale para tabelas E para `storage.objects` de buckets multi-tenant. `useCurrentUnit.ts` fabrica pseudo-membership "owner" para platform_admin operar unidades alheias; sem a policy paralela, a write é bloqueada apesar da UI mostrar "Proprietário". Pattern em `013_multi_tenant.sql`; storage cobre em `047_unit_assets_platform_admin.sql`.
 
 ## Observabilidade da automação WhatsApp
 

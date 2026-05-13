@@ -8,3 +8,4 @@ dist/
 .claude/
 supabase/.temp/
 resolved
+*.tsbuildinfo

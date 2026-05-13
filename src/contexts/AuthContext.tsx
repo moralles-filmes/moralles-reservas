@@ -24,9 +24,38 @@ interface AuthState {
   signOut: () => Promise<void>;
   updateEmail: (newEmail: string) => Promise<void>;
   updatePassword: (newPassword: string) => Promise<void>;
+  refreshMemberships: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
+
+async function loadMembershipsFor(u: User) {
+  const [{ data: members, error: e1 }, { data: platformAdmin, error: e2 }] = await Promise.all([
+    supabase
+      .from("unit_members")
+      .select("role, unit_id, unit:units(id, slug, name, organization_id, organization:organizations(id, slug))")
+      .eq("user_id", u.id),
+    supabase
+      .from("platform_admins")
+      .select("user_id")
+      .eq("user_id", u.id)
+      .maybeSingle(),
+  ]);
+
+  if (e1) console.error("[auth] unit_members query failed:", e1);
+  if (e2) console.error("[auth] platform_admins query failed:", e2);
+
+  const parsed: UserMembership[] = (members ?? []).map((m: any) => ({
+    unit_id: m.unit_id,
+    unit_slug: m.unit?.slug ?? "",
+    unit_name: m.unit?.name ?? "",
+    organization_id: m.unit?.organization_id ?? "",
+    organization_slug: m.unit?.organization?.slug ?? "",
+    role: m.role as UnitRole,
+  }));
+
+  return { memberships: parsed, isPlatformAdmin: !!platformAdmin };
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -37,32 +66,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const loadMemberships = async (u: User) => {
       try {
-        const [{ data: members, error: e1 }, { data: platformAdmin, error: e2 }] = await Promise.all([
-          supabase
-            .from("unit_members")
-            .select("role, unit_id, unit:units(id, slug, name, organization_id, organization:organizations(id, slug))")
-            .eq("user_id", u.id),
-          supabase
-            .from("platform_admins")
-            .select("user_id")
-            .eq("user_id", u.id)
-            .maybeSingle(),
-        ]);
-
-        if (e1) console.error("[auth] unit_members query failed:", e1);
-        if (e2) console.error("[auth] platform_admins query failed:", e2);
-
-        const parsed: UserMembership[] = (members ?? []).map((m: any) => ({
-          unit_id: m.unit_id,
-          unit_slug: m.unit?.slug ?? "",
-          unit_name: m.unit?.name ?? "",
-          organization_id: m.unit?.organization_id ?? "",
-          organization_slug: m.unit?.organization?.slug ?? "",
-          role: m.role as UnitRole,
-        }));
-
+        const { memberships: parsed, isPlatformAdmin: pa } = await loadMembershipsFor(u);
         setMemberships(parsed);
-        setIsPlatformAdmin(!!platformAdmin);
+        setIsPlatformAdmin(pa);
       } catch (err) {
         console.error("[auth] loadMemberships failed:", err);
         setMemberships([]);
@@ -71,12 +77,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     // `settled` = first auth event has resolved. Loading is always released on
-    // the first event (whatever its name) and re-entered only for SIGNED_IN so
-    // that memberships finish loading before AdminRedirect navigates.
+    // the first event (whatever its name) and re-entered only when a *different*
+    // user signs in, so AdminRedirect can wait for memberships. SIGNED_IN events
+    // for the same user (token refresh, tab refocus) must NOT trigger loading —
+    // doing so would unmount the route tree and discard unsaved form state.
     let settled = false;
+    let currentUserId: string | null = null;
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "SIGNED_IN") setLoading(true);
+      const nextUserId = session?.user?.id ?? null;
+      if (event === "SIGNED_IN" && nextUserId !== currentUserId) setLoading(true);
+      currentUserId = nextUserId;
       setUser(session?.user ?? null);
 
       // Defer Supabase queries out of the auth callback. Calling authenticated
@@ -121,6 +132,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error) throw error;
   };
 
+  const refreshMemberships = async () => {
+    if (!user) return;
+    try {
+      const { memberships: parsed, isPlatformAdmin: pa } = await loadMembershipsFor(user);
+      setMemberships(parsed);
+      setIsPlatformAdmin(pa);
+    } catch (err) {
+      console.error("[auth] refreshMemberships failed:", err);
+    }
+  };
+
   const defaultMembership = memberships[0] ?? null;
 
   return (
@@ -137,6 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signOut,
         updateEmail,
         updatePassword,
+        refreshMemberships,
       }}
     >
       {children}

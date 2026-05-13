@@ -15,7 +15,7 @@ export default function Configuracoes() {
   const unit = useCurrentUnit();
   const unitId = unit?.unit_id ?? "";
   const queryClient = useQueryClient();
-  const { user, updateEmail, updatePassword } = useAuth();
+  const { user, updateEmail, updatePassword, refreshMemberships } = useAuth();
   const isOwnerOrGerente = unit?.isOwner || unit?.isGerente;
 
   const [restaurantName, setRestaurantName] = useState("");
@@ -42,9 +42,12 @@ export default function Configuracoes() {
   });
 
   useEffect(() => {
+    setRestaurantName(unit?.unit_name ?? "");
+  }, [unit?.unit_name]);
+
+  useEffect(() => {
     if (!settings) return;
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
-    setRestaurantName((map["restaurant_name"] as string) ?? "");
     setRestaurantAddress((map["restaurant_address"] as string) ?? "");
     setRestaurantPhone((map["restaurant_phone"] as string) ?? "");
     setRestaurantInstagram((map["restaurant_instagram"] as string) ?? "");
@@ -63,6 +66,30 @@ export default function Configuracoes() {
       toast.success("Configuração salva.");
     },
     onError: () => toast.error("Erro ao salvar."),
+  });
+
+  const saveRestaurantName = useMutation({
+    mutationFn: async (value: string) => {
+      const name = value.trim();
+      if (!name) throw new Error("Nome não pode ficar vazio.");
+      const { error: updateError } = await supabase
+        .from("units")
+        .update({ name })
+        .eq("id", unitId);
+      if (updateError) throw updateError;
+      // Limpa setting legado para que e-mails/WhatsApp passem a usar units.name via fallback
+      await supabase
+        .from("settings")
+        .delete()
+        .eq("unit_id", unitId)
+        .eq("key", "restaurant_name");
+    },
+    onSuccess: async () => {
+      await refreshMemberships();
+      queryClient.invalidateQueries({ queryKey: ["settings", unitId] });
+      toast.success("Nome da unidade atualizado.");
+    },
+    onError: (err: Error) => toast.error(err.message || "Erro ao salvar."),
   });
 
   const updateEmailMutation = useMutation({
@@ -121,8 +148,8 @@ export default function Configuracoes() {
               />
               <Button
                 variant="secondary"
-                onClick={() => saveSetting.mutate({ key: "restaurant_name", value: restaurantName })}
-                disabled={saveSetting.isPending || !isOwnerOrGerente}
+                onClick={() => saveRestaurantName.mutate(restaurantName)}
+                disabled={saveRestaurantName.isPending || !isOwnerOrGerente}
               >
                 Salvar
               </Button>

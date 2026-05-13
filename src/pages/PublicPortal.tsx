@@ -287,8 +287,8 @@ function PortalContent({
                 {unit.name}
               </h1>
               {cityLine && (
-                <p className="text-sm sm:text-base text-white/90 mt-1 flex items-center gap-1.5 drop-shadow">
-                  <MapPin className="h-3.5 w-3.5" />
+                <p className="text-sm sm:text-base font-medium text-foreground/80 mt-2 flex items-center gap-1.5">
+                  <MapPin className="h-3.5 w-3.5 text-primary" />
                   {cityLine}
                 </p>
               )}

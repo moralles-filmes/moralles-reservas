@@ -407,7 +407,7 @@ function AssetUploader({
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-xs text-muted-foreground">{helper}</p>
         <Button
-          variant="secondary"
+          variant="default"
           size="sm"
           onClick={onPick}
           disabled={upload.isPending}
