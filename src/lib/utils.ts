@@ -39,6 +39,20 @@ export function generateReservationCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
+export function getConversationDisplayName(
+  conv: {
+    contact_name?: string | null;
+    customer?: { name?: string | null; phone?: string | null } | null;
+  }
+): string {
+  const phone = conv.customer?.phone ?? "";
+  const customerName = conv.customer?.name?.trim();
+  if (customerName && customerName !== phone) return customerName;
+  const contactName = conv.contact_name?.trim();
+  if (contactName) return contactName;
+  return formatPhone(phone);
+}
+
 export function slugify(input: string): string {
   return input
     .normalize("NFD")

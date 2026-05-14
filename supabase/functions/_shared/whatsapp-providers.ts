@@ -11,8 +11,18 @@ export interface InboundMessage {
   text: string;
   isFromMe: boolean;
   timestamp: number;   // unix ms
+  contactName?: string; // push_name / profile name (sanitized)
   // deno-lint-ignore no-explicit-any
   raw: any;
+}
+
+function sanitizeContactName(raw: unknown, phone: string): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const digitsOnly = trimmed.replace(/\D/g, "");
+  if (digitsOnly && digitsOnly === phone) return undefined;
+  return trimmed.slice(0, 100);
 }
 
 export interface OutboundMessage {
@@ -66,12 +76,17 @@ function parseZApi(p: any): InboundMessage | null {
   if (!p.text?.message || p.isFromMe) return null;
   const digits = String(p.phone ?? "").replace(/\D/g, "").replace(/^55/, "");
   const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
+  const contactName = sanitizeContactName(
+    p.senderName ?? p.chatName ?? p.notifyName ?? p.contactName,
+    digits,
+  );
   return {
     providerMessageId: id,
     fromPhone: digits,
     text: p.text.message.trim(),
     isFromMe: false,
     timestamp: Date.now(),
+    contactName,
     raw: p,
   };
 }
@@ -84,12 +99,17 @@ function parseWaha(p: any): InboundMessage | null {
   const textBody = msg.body ?? msg.text?.body;
   if (!textBody) return null;
   const rawFrom = String(msg.from ?? "").replace("@c.us", "").replace(/\D/g, "").replace(/^55/, "");
+  const contactName = sanitizeContactName(
+    msg._data?.notifyName ?? msg.notifyName ?? msg.pushName ?? msg._data?.pushName ?? p.payload?._data?.notifyName,
+    rawFrom,
+  );
   return {
     providerMessageId: msg.id ?? `${rawFrom}:${Date.now()}`,
     fromPhone: rawFrom,
     text: String(textBody).trim(),
     isFromMe: false,
     timestamp: (msg.timestamp ?? 0) * 1000 || Date.now(),
+    contactName,
     raw: p,
   };
 }
@@ -104,12 +124,17 @@ function parseOfficial(p: any): InboundMessage | null {
   if (!msgObj) return null;
   if (msgObj.type !== "text") return null;
   const digits = String(msgObj.from ?? "").replace(/^55/, "").replace(/\D/g, "");
+  const contactName = sanitizeContactName(
+    value?.contacts?.[0]?.profile?.name,
+    digits,
+  );
   return {
     providerMessageId: msgObj.id ?? `${digits}:${Date.now()}`,
     fromPhone: digits,
     text: (msgObj.text?.body ?? "").trim(),
     isFromMe: false,
     timestamp: Number(msgObj.timestamp ?? 0) * 1000 || Date.now(),
+    contactName,
     raw: p,
   };
 }

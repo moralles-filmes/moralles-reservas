@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatDateBR, formatPhone } from "@/lib/utils";
+import { formatDateBR, formatPhone, getConversationDisplayName } from "@/lib/utils";
 import { toast } from "sonner";
 import { MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2 } from "lucide-react";
 import type { Conversation, ConversationMessage, ConversationStatus } from "@/types/reserva";
@@ -187,7 +187,7 @@ function ConversationDetail({
       <CardHeader className="py-3 px-4 border-b">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div>
-            <CardTitle className="text-base">{current.customer?.name}</CardTitle>
+            <CardTitle className="text-base">{getConversationDisplayName(current)}</CardTitle>
             <p className="text-xs text-muted-foreground">
               {formatPhone(current.customer?.phone || "")}
             </p>
@@ -338,7 +338,7 @@ export default function Conversas() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-medium text-sm truncate">
-                        {c.customer?.name || formatPhone(c.customer?.phone || "")}
+                        {getConversationDisplayName(c)}
                       </p>
                       <Badge
                         variant="outline"

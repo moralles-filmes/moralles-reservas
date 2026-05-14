@@ -299,7 +299,7 @@ async function listCustomerReservations(customerId: string, unitId: string): Pro
 
 // ─── Conversation helpers ──────────────────────────────────────────────────────
 
-async function getOrCreateConversation(customerId: string, unitId: string) {
+async function getOrCreateConversation(customerId: string, unitId: string, contactName?: string) {
   const { data } = await supabase
     .from("conversations")
     .select("*")
@@ -309,11 +309,20 @@ async function getOrCreateConversation(customerId: string, unitId: string) {
     .limit(1)
     .maybeSingle();
 
-  if (data) return data;
+  if (data) {
+    if (contactName && data.contact_name !== contactName) {
+      await supabase
+        .from("conversations")
+        .update({ contact_name: contactName })
+        .eq("id", data.id);
+      data.contact_name = contactName;
+    }
+    return data;
+  }
 
   const { data: newConv } = await supabase
     .from("conversations")
-    .insert({ customer_id: customerId, unit_id: unitId, messages: [] })
+    .insert({ customer_id: customerId, unit_id: unitId, messages: [], contact_name: contactName ?? null })
     .select()
     .single();
   return newConv;
@@ -754,15 +763,41 @@ serve(async (req) => {
     const organizationId: string = unitRow?.organization_id ?? "";
     const unitAddress: string = unitRow?.address ?? "";
 
-    // Upsert customer (org-scoped)
-    const { data: customer } = await supabase
-      .from("customers")
-      .upsert(
-        { phone, name: phone, organization_id: organizationId },
-        { onConflict: "organization_id,phone" }
-      )
-      .select()
-      .single();
+    // Upsert customer (org-scoped). Preserva nome real cadastrado via reserva;
+    // só preenche/atualiza quando o customer é novo ou ainda tem placeholder
+    // (name == phone). Push_name do WhatsApp entra como matéria-prima quando
+    // disponível — caso contrário, mantém fallback histórico (name == phone).
+    const contactName = inbound.contactName;
+    // deno-lint-ignore no-explicit-any
+    let customer: any = null;
+    {
+      const { data: existing } = await supabase
+        .from("customers")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .eq("phone", phone)
+        .maybeSingle();
+
+      if (existing) {
+        customer = existing;
+        if (contactName && (!existing.name || existing.name === existing.phone)) {
+          const { data: updated } = await supabase
+            .from("customers")
+            .update({ name: contactName })
+            .eq("id", existing.id)
+            .select("*")
+            .single();
+          if (updated) customer = updated;
+        }
+      } else {
+        const { data: inserted } = await supabase
+          .from("customers")
+          .insert({ phone, name: contactName ?? phone, organization_id: organizationId })
+          .select("*")
+          .single();
+        if (inserted) customer = inserted;
+      }
+    }
 
     if (!customer) {
       await finish("customer_upsert_failed");
@@ -846,7 +881,7 @@ serve(async (req) => {
     }
 
     // Load conversation history
-    const conv = await getOrCreateConversation(customer.id, unitId);
+    const conv = await getOrCreateConversation(customer.id, unitId, contactName);
 
     // ─── UX de handoff humano ────────────────────────────────────────────────
     // Auto-resolve quando passar muito tempo sem resposta humana, e responde

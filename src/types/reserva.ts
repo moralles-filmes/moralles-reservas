@@ -398,6 +398,7 @@ export interface Conversation {
   handoff_at: string | null;
   assigned_to: string | null;
   last_message_at: string | null;
+  contact_name: string | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;
