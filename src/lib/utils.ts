@@ -38,3 +38,13 @@ export function formatPhone(phone: string): string {
 export function generateReservationCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
+
+export function slugify(input: string): string {
+  return input
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}

@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useAuth } from "@/hooks/useAuth";
+import { slugify } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,14 +13,20 @@ import { toast } from "sonner";
 import { useState, useEffect } from "react";
 import { KeyRound, Mail } from "lucide-react";
 
+const SLUG_REGEX = /^[a-z0-9-]+$/;
+
 export default function Configuracoes() {
   const unit = useCurrentUnit();
   const unitId = unit?.unit_id ?? "";
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
   const { user, updateEmail, updatePassword, refreshMemberships } = useAuth();
   const isOwnerOrGerente = unit?.isOwner || unit?.isGerente;
 
   const [restaurantName, setRestaurantName] = useState("");
+  const [restaurantSlug, setRestaurantSlug] = useState("");
+  const [slugTouched, setSlugTouched] = useState(false);
   const [restaurantAddress, setRestaurantAddress] = useState("");
   const [restaurantPhone, setRestaurantPhone] = useState("");
   const [restaurantInstagram, setRestaurantInstagram] = useState("");
@@ -46,6 +54,11 @@ export default function Configuracoes() {
   }, [unit?.unit_name]);
 
   useEffect(() => {
+    setRestaurantSlug(unit?.unit_slug ?? "");
+    setSlugTouched(false);
+  }, [unit?.unit_slug]);
+
+  useEffect(() => {
     if (!settings) return;
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
     setRestaurantAddress((map["restaurant_address"] as string) ?? "");
@@ -68,26 +81,60 @@ export default function Configuracoes() {
     onError: () => toast.error("Erro ao salvar."),
   });
 
-  const saveRestaurantName = useMutation({
-    mutationFn: async (value: string) => {
-      const name = value.trim();
-      if (!name) throw new Error("Nome não pode ficar vazio.");
+  const saveUnitIdentity = useMutation({
+    mutationFn: async ({ name, slug }: { name: string; slug: string }) => {
+      const trimmedName = name.trim();
+      const normalizedSlug = slug.trim().toLowerCase();
+      if (!trimmedName) throw new Error("Nome não pode ficar vazio.");
+      if (!normalizedSlug) throw new Error("Slug não pode ficar vazio.");
+      if (!SLUG_REGEX.test(normalizedSlug)) {
+        throw new Error("Slug aceita apenas letras minúsculas, números e hífens.");
+      }
+      const oldSlug = unit?.unit_slug ?? "";
+      const nameChanged = trimmedName !== (unit?.unit_name ?? "");
+      const slugChanged = normalizedSlug !== oldSlug;
+      if (!nameChanged && !slugChanged) return { oldSlug, newSlug: oldSlug, slugChanged: false };
+
+      const patch: { name?: string; slug?: string } = {};
+      if (nameChanged) patch.name = trimmedName;
+      if (slugChanged) patch.slug = normalizedSlug;
+
       const { error: updateError } = await supabase
         .from("units")
-        .update({ name })
+        .update(patch)
         .eq("id", unitId);
-      if (updateError) throw updateError;
+      if (updateError) {
+        if (updateError.code === "23505") {
+          throw new Error("Esse slug já está em uso por outra unidade.");
+        }
+        throw updateError;
+      }
       // Limpa setting legado para que e-mails/WhatsApp passem a usar units.name via fallback
-      await supabase
-        .from("settings")
-        .delete()
-        .eq("unit_id", unitId)
-        .eq("key", "restaurant_name");
+      if (nameChanged) {
+        await supabase
+          .from("settings")
+          .delete()
+          .eq("unit_id", unitId)
+          .eq("key", "restaurant_name");
+      }
+      return { oldSlug, newSlug: normalizedSlug, slugChanged };
     },
-    onSuccess: async () => {
+    onSuccess: async ({ oldSlug, newSlug, slugChanged }) => {
       await refreshMemberships();
       queryClient.invalidateQueries({ queryKey: ["settings", unitId] });
-      toast.success("Nome da unidade atualizado.");
+      queryClient.invalidateQueries({ queryKey: ["all-units"] });
+      queryClient.invalidateQueries({ queryKey: ["unit-public-content", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["public-unit"] });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      toast.success(
+        slugChanged
+          ? "Unidade atualizada. URLs antigas com o slug anterior deixaram de funcionar."
+          : "Unidade atualizada.",
+      );
+      if (slugChanged && oldSlug && newSlug) {
+        const nextPath = location.pathname.replace(`/g/${oldSlug}`, `/g/${newSlug}`);
+        navigate(nextPath, { replace: true });
+      }
     },
     onError: (err: Error) => toast.error(err.message || "Erro ao salvar."),
   });
@@ -139,21 +186,46 @@ export default function Configuracoes() {
         <CardContent className="space-y-4">
           <div className="space-y-1">
             <Label>Nome do restaurante</Label>
+            <Input
+              value={restaurantName}
+              onChange={(e) => {
+                const nextName = e.target.value;
+                setRestaurantName(nextName);
+                if (!slugTouched) setRestaurantSlug(slugify(nextName));
+              }}
+              placeholder="Ex: Moralles Centro"
+              disabled={!isOwnerOrGerente}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label>Slug (URL pública)</Label>
             <div className="flex gap-2">
               <Input
-                value={restaurantName}
-                onChange={(e) => setRestaurantName(e.target.value)}
-                placeholder="Ex: Moralles Centro"
+                value={restaurantSlug}
+                onChange={(e) => {
+                  setSlugTouched(true);
+                  setRestaurantSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+                }}
+                placeholder="moralles-centro"
                 disabled={!isOwnerOrGerente}
+                className="font-mono"
               />
               <Button
                 variant="secondary"
-                onClick={() => saveRestaurantName.mutate(restaurantName)}
-                disabled={saveRestaurantName.isPending || !isOwnerOrGerente}
+                onClick={() =>
+                  saveUnitIdentity.mutate({ name: restaurantName, slug: restaurantSlug })
+                }
+                disabled={saveUnitIdentity.isPending || !isOwnerOrGerente}
               >
                 Salvar
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Aparece em <span className="font-mono">/r/{restaurantSlug || "—"}</span>,{" "}
+              <span className="font-mono">/g/{restaurantSlug || "—"}</span> e nos links de
+              confirmação/lembrete. Alterar invalida QR codes impressos e links já enviados.
+            </p>
           </div>
 
           <div className="space-y-1">

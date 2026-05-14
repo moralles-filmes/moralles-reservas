@@ -148,7 +148,7 @@ moralles-reservas/
 │   │
 │   ├── lib/
 │   │   ├── supabase.ts                # Cliente Supabase (singleton)
-│   │   ├── utils.ts                   # cn(), formatDateBR(), formatPhone()
+│   │   ├── utils.ts                   # cn(), formatDateBR(), formatPhone(), slugify()
 │   │   ├── zapi.ts                    # Templates de mensagem WhatsApp (referência)
 │   │   ├── exportCsv.ts              # exportClientesCsv (CSV com BOM utf-8)
 │   │   └── validators/organization.ts # Schemas Zod
@@ -412,6 +412,7 @@ Workers lêem templates de `reservation_message_templates` (`customized=true`) o
 - **`refetchOnWindowFocus: false`** é default global no `QueryClient` ([src/App.tsx](src/App.tsx)) — evita resetar form state ao trocar de aba. Painéis operacionais que precisam de dados ao vivo devem usar `refetchInterval` no hook específico (não reativar `refetchOnWindowFocus`).
 - **`AuthContext` só ativa `loading=true` quando o user_id muda** ([src/contexts/AuthContext.tsx](src/contexts/AuthContext.tsx)). Supabase dispara `SIGNED_IN` em refoco de aba após token refresh; ativar loading nesse caso desmonta a árvore (guards renderizam Skeleton) e descarta state local dos forms. Manter o filtro por `currentUserId !== nextUserId`.
 - **Nome da unidade vive em `units.name`** — é a fonte canônica usada pela sidebar (via `AuthContext.memberships`), portais públicos (`/r/:slug`, `/w`, `/m`, `Index`), breadcrumbs e headers. Owner/gerente pode escrever via RLS (policy `unit_owner_gerente_update_units`, migration 019). Após escrever, **chame `refreshMemberships()` do `useAuth()`** para atualizar a sidebar sem logout. O setting `restaurant_name` é **legado** — Edge Functions (`send-confirmation`, `webhook-whatsapp`) ainda leem com fallback `unit.name` para compat, mas a UI não deve escrever nele.
+- **Slug da unidade (`units.slug`) é editável em Configurações** ao lado do nome (auto-sugerido via `slugify()` enquanto o campo não é tocado, ou manual). Mudar slug **invalida URLs antigas** (`/r/`, `/g/`, `/o/`, `/w/`, `/m/`) — QR codes impressos e links em mensagens WhatsApp já enviadas viram 404. O mutation faz `refreshMemberships()`, invalida `["all-units"]`, `["public-unit"]`, `["unit-public-content"]`, `["organizations"]` e renavega `/g/<antigo>` → `/g/<novo>`. Trata colisão (`23505`) com mensagem amigável. Não há autosync silencioso — qualquer mudança exige clique no Salvar do bloco de slug.
 - Notificações via **`toast` do Sonner** (`import { toast } from "sonner"`)
 - Classes CSS via **`cn()`** de `@/lib/utils` — nunca template literals diretos com Tailwind
 - Path alias `@/` aponta para `src/`
