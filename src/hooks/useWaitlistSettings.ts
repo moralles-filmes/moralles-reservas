@@ -11,6 +11,8 @@ export const WAITLIST_SETTING_KEYS = [
   "waitlist_tolerance_minutes",
   "waitlist_remote_entry_enabled",
   "waitlist_remote_entry_limit",
+  "waitlist_entered_enabled",
+  "waitlist_feedback_enabled",
 ] as const;
 
 export type WaitlistSettingKey = (typeof WAITLIST_SETTING_KEYS)[number];
@@ -24,6 +26,8 @@ export interface WaitlistSettings {
   waitlist_tolerance_minutes: number;
   waitlist_remote_entry_enabled: boolean;
   waitlist_remote_entry_limit: number;
+  waitlist_entered_enabled: boolean;
+  waitlist_feedback_enabled: boolean;
 }
 
 export const WAITLIST_DEFAULTS: WaitlistSettings = {
@@ -35,6 +39,8 @@ export const WAITLIST_DEFAULTS: WaitlistSettings = {
   waitlist_tolerance_minutes: 3,
   waitlist_remote_entry_enabled: true,
   waitlist_remote_entry_limit: 10,
+  waitlist_entered_enabled: true,
+  waitlist_feedback_enabled: true,
 };
 
 function coerceBoolean(raw: unknown, fallback: boolean): boolean {
@@ -100,6 +106,14 @@ export function useWaitlistSettings(unitId: string) {
         waitlist_remote_entry_limit: coerceInt(
           map.waitlist_remote_entry_limit,
           WAITLIST_DEFAULTS.waitlist_remote_entry_limit,
+        ),
+        waitlist_entered_enabled: coerceBoolean(
+          map.waitlist_entered_enabled,
+          WAITLIST_DEFAULTS.waitlist_entered_enabled,
+        ),
+        waitlist_feedback_enabled: coerceBoolean(
+          map.waitlist_feedback_enabled,
+          WAITLIST_DEFAULTS.waitlist_feedback_enabled,
         ),
       };
     },

@@ -9,6 +9,10 @@ import {
   useUpsertWaitlistTemplate,
   useWaitlistTemplates,
 } from "@/hooks/useWaitlistTemplates";
+import {
+  useUpdateWaitlistSettings,
+  useWaitlistSettings,
+} from "@/hooks/useWaitlistSettings";
 import type { WaitlistTemplateEvent } from "@/types/reserva";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -50,7 +54,7 @@ export default function FilaComunicacao() {
 
         <div className="p-6">
           {tab === "customizacao" && <CustomizacaoTab unitId={unitId} />}
-          {tab === "configuracoes" && <ConfiguracoesTab />}
+          {tab === "configuracoes" && <ConfiguracoesTab unitId={unitId} />}
         </div>
       </Card>
     </div>
@@ -222,14 +226,73 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
 
 // ─── Tab: Configurações ───────────────────────────────────────────────────────
 
-function ConfiguracoesTab() {
+function ConfiguracoesTab({ unitId }: { unitId: string }) {
+  const { data: settings, isLoading } = useWaitlistSettings(unitId);
+  const update = useUpdateWaitlistSettings(unitId);
+
+  if (isLoading || !settings) {
+    return (
+      <div className="space-y-3 max-w-2xl">
+        <Skeleton className="h-6 w-60" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
+  }
+
   return (
-    <div className="py-12 text-center text-muted-foreground space-y-2 max-w-md mx-auto">
-      <p className="text-base font-medium text-foreground">Configurações de envio</p>
-      <p className="text-sm">
-        Em breve: horários de envio, confirmação de leitura e regras de retry pra notificações
-        da fila de espera.
+    <div className="space-y-6 max-w-2xl">
+      <div>
+        <h2 className="text-base font-semibold">Disparos automáticos</h2>
+        <p className="text-sm text-muted-foreground">
+          Defina quais mensagens são enviadas automaticamente pelo sistema. A mensagem de mesa
+          pronta continua sendo disparada manualmente pelo painel operacional.
+        </p>
+      </div>
+
+      <ToggleRow
+        title="Avisar quando o cliente entrar na fila"
+        description="Mensagem disparada em segundos após o cliente entrar na fila (formulário público ou painel). Inclui a senha e o link de acompanhamento."
+        checked={settings.waitlist_entered_enabled}
+        disabled={update.isPending}
+        onChange={(v) => update.mutate({ waitlist_entered_enabled: v })}
+      />
+
+      <ToggleRow
+        title="Pesquisa de satisfação D+1"
+        description="Enviada no dia seguinte às 14h00 (BRT) para todos os clientes que foram sentados pela fila no dia anterior. Edite o texto na aba 'Customização de mensagens'."
+        checked={settings.waitlist_feedback_enabled}
+        disabled={update.isPending}
+        onChange={(v) => update.mutate({ waitlist_feedback_enabled: v })}
+      />
+
+      <p className="text-xs text-muted-foreground border-t pt-4">
+        Lembrete: para qualquer mensagem ser enviada, é preciso que um canal WhatsApp esteja
+        configurado em <span className="font-medium">Plataforma → Automação</span>.
       </p>
+    </div>
+  );
+}
+
+function ToggleRow({
+  title,
+  description,
+  checked,
+  disabled,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 border rounded-lg p-4">
+      <div className="space-y-1">
+        <Label className="text-sm font-medium">{title}</Label>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
     </div>
   );
 }
