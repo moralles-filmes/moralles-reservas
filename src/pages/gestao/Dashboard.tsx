@@ -179,7 +179,7 @@ export default function Dashboard() {
           title="Tamanho médio do grupo"
           value={valueOrUndef(kpis.avgPartySize)}
           icon={Users}
-          color="bg-secondary/10 text-secondary"
+          color="bg-indigo-50 text-indigo-700"
           delta={kpis.deltas.avgPartySize}
         />
       </section>

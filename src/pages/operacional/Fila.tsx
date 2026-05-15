@@ -194,7 +194,7 @@ export default function Fila() {
                       {priorityCfg && PriorityIcon && (
                         <Badge
                           variant="outline"
-                          className="text-[10px] bg-secondary/10 text-secondary border-secondary/30 gap-1"
+                          className="text-[10px] bg-muted text-foreground border-border gap-1"
                         >
                           <PriorityIcon className="h-3 w-3" />
                           {priorityCfg.label}
