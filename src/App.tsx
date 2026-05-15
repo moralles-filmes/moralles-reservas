@@ -28,7 +28,7 @@ const GConfiguracoes = lazy(() => import("./pages/gestao/Configuracoes"));
 const GAuditoria = lazy(() => import("./pages/gestao/Auditoria"));
 const GAutomacao = lazy(() => import("./pages/gestao/Automacao"));
 const GAvaliacoes = lazy(() => import("./pages/gestao/Avaliacoes"));
-const GPaginaPublica = lazy(() => import("./pages/gestao/PaginaPublica"));
+const GConta = lazy(() => import("./pages/gestao/Conta"));
 const GUsuarios = lazy(() => import("./pages/gestao/Usuarios"));
 
 // ── Gestão > Reservas (sub-abas) ──────────────────────────────────────────────
@@ -230,7 +230,9 @@ export default function App() {
               <Route path="/g/:unitSlug/relatorios/giftback" element={<GestaoGuard><GRelGiftback /></GestaoGuard>} />
               {/* Legacy: /avaliacoes redireciona pra dentro de /relatorios */}
               <Route path="/g/:unitSlug/avaliacoes" element={<LegacyGestaoRedirect to="relatorios/avaliacoes" />} />
-              <Route path="/g/:unitSlug/pagina-publica" element={<GestaoGuard><GPaginaPublica /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/conta" element={<GestaoGuard><GConta /></GestaoGuard>} />
+              {/* Legacy: /pagina-publica redireciona pra /conta (preserva QR codes / links antigos) */}
+              <Route path="/g/:unitSlug/pagina-publica" element={<LegacyGestaoRedirect to="conta" />} />
               <Route path="/g/:unitSlug/usuarios" element={<GestaoGuard><GUsuarios /></GestaoGuard>} />
               {/* Legacy redirects */}
               <Route path="/g/:unitSlug/calendario" element={<LegacyGestaoRedirect to="reservas/calendario" />} />

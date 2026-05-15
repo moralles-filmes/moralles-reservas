@@ -12,10 +12,11 @@ export interface PublicUnitCard {
   hero_image_url: string | null;
   logo_url: string | null;
   address: UnitAddress | null;
+  cuisine_types: string[];
 }
 
 const SELECT =
-  "id, name, slug, description, price_range_min, price_range_max, hero_image_url, logo_url, address";
+  "id, name, slug, description, price_range_min, price_range_max, hero_image_url, logo_url, address, cuisine_types";
 
 export function usePublicCities() {
   return useQuery({
@@ -59,7 +60,10 @@ export function usePublicUnits({ city, search }: DiscoverFilters) {
 
       const { data, error } = await query;
       if (error) throw error;
-      const all = (data ?? []) as PublicUnitCard[];
+      const all = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+        ...row,
+        cuisine_types: Array.isArray(row.cuisine_types) ? (row.cuisine_types as string[]) : [],
+      })) as PublicUnitCard[];
       if (!city) return all;
       const wanted = city.toLowerCase();
       return all.filter(

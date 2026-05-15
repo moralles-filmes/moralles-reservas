@@ -16,9 +16,12 @@ export interface UnitAddress {
   street?: string | null;
   number?: string | null;
   neighborhood?: string | null;
+  complement?: string | null;
   city?: string | null;
   state?: string | null;
   cep?: string | null;
+  lat?: number | null;
+  lng?: number | null;
   full?: string | null;
 }
 
@@ -35,6 +38,15 @@ export interface Unit {
   price_range_max: number | null;
   hero_image_url: string | null;
   logo_url: string | null;
+  cnpj: string | null;
+  financial_email: string | null;
+  cuisine_types: string[];
+  opening_hours_text: string | null;
+  payment_methods: string | null;
+  facilities: string[];
+  phone: string | null;
+  instagram: string | null;
+  website: string | null;
   created_at: string;
   updated_at: string;
   organization?: Organization;

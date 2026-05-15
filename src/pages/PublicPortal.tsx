@@ -19,15 +19,22 @@ import { useReservaByCode } from "@/hooks/useReservas";
 import {
   CalendarDays,
   ChevronRight,
+  CheckCircle2,
   Clock,
+  CreditCard,
+  Instagram,
+  Link as LinkIcon,
   MapPin,
+  Phone,
   Search,
   Smartphone,
   Sparkles,
+  Tag,
   UtensilsCrossed,
   Wallet,
 } from "lucide-react";
 import type { UnitAddress } from "@/types/reserva";
+import { FACILITY_GROUPS, getFacilityIcon, getFacilityLabel } from "@/lib/facilities";
 
 interface PublicUnit {
   id: string;
@@ -40,6 +47,13 @@ interface PublicUnit {
   hero_image_url: string | null;
   logo_url: string | null;
   address: UnitAddress | null;
+  phone?: string | null;
+  instagram?: string | null;
+  website?: string | null;
+  cuisine_types?: string[] | null;
+  opening_hours_text?: string | null;
+  payment_methods?: string | null;
+  facilities?: string[] | null;
 }
 
 interface PublicHallSchedule {
@@ -310,6 +324,29 @@ function PortalContent({
               </Section>
             )}
 
+            {unit.cuisine_types && unit.cuisine_types.length > 0 && (
+              <Section icon={<Tag className="h-4 w-4" />} title="Tipo de cozinha">
+                <div className="flex flex-wrap gap-2">
+                  {unit.cuisine_types.map((c) => (
+                    <span
+                      key={c}
+                      className="inline-flex items-center rounded-full bg-muted px-3 py-1 text-sm text-foreground/80"
+                    >
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              </Section>
+            )}
+
+            {unit.opening_hours_text && (
+              <Section icon={<Clock className="h-4 w-4" />} title="Horário de funcionamento">
+                <p className="text-foreground/85 leading-relaxed whitespace-pre-line">
+                  {unit.opening_hours_text}
+                </p>
+              </Section>
+            )}
+
             {(unit.price_range_min != null || unit.price_range_max != null) && (
               <Section icon={<Wallet className="h-4 w-4" />} title="Faixa de preço">
                 <p className="font-display text-2xl sm:text-3xl">
@@ -318,6 +355,68 @@ function PortalContent({
                 <p className="text-xs text-muted-foreground mt-1">
                   Ticket médio por pessoa
                 </p>
+              </Section>
+            )}
+
+            {unit.payment_methods && (
+              <Section icon={<CreditCard className="h-4 w-4" />} title="Formas de pagamento">
+                <p className="text-foreground/85 leading-relaxed whitespace-pre-line">
+                  {unit.payment_methods}
+                </p>
+              </Section>
+            )}
+
+            {unit.facilities && unit.facilities.length > 0 && (
+              <Section icon={<CheckCircle2 className="h-4 w-4" />} title="Facilidades">
+                <FacilitiesGrid codes={unit.facilities} />
+              </Section>
+            )}
+
+            {(unit.phone || unit.instagram || unit.website) && (
+              <Section icon={<Phone className="h-4 w-4" />} title="Contato">
+                <ul className="space-y-2 text-foreground/85">
+                  {unit.phone && (
+                    <li className="flex items-center gap-2">
+                      <Phone className="h-4 w-4 text-primary" />
+                      <a
+                        href={`tel:${unit.phone.replace(/\D/g, "")}`}
+                        className="hover:text-primary transition-colors"
+                      >
+                        {unit.phone}
+                      </a>
+                    </li>
+                  )}
+                  {unit.instagram && (
+                    <li className="flex items-center gap-2">
+                      <Instagram className="h-4 w-4 text-primary" />
+                      <a
+                        href={
+                          unit.instagram.startsWith("http")
+                            ? unit.instagram
+                            : `https://instagram.com/${unit.instagram.replace(/^@/, "")}`
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:text-primary transition-colors"
+                      >
+                        {unit.instagram}
+                      </a>
+                    </li>
+                  )}
+                  {unit.website && (
+                    <li className="flex items-center gap-2">
+                      <LinkIcon className="h-4 w-4 text-primary" />
+                      <a
+                        href={unit.website.startsWith("http") ? unit.website : `https://${unit.website}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:text-primary transition-colors break-all"
+                      >
+                        {unit.website}
+                      </a>
+                    </li>
+                  )}
+                </ul>
               </Section>
             )}
 
@@ -403,6 +502,55 @@ function Section({
       </div>
       <div>{children}</div>
     </section>
+  );
+}
+
+function FacilitiesGrid({ codes }: { codes: string[] }) {
+  const grouped = FACILITY_GROUPS.map((g) => ({
+    group: g.group,
+    items: g.items.filter((i) => codes.includes(i.code)),
+  })).filter((g) => g.items.length > 0);
+
+  // Itens que não bateram com a lista canônica (códigos novos/desconhecidos)
+  const known = new Set(FACILITY_GROUPS.flatMap((g) => g.items.map((i) => i.code)));
+  const orphan = codes.filter((c) => !known.has(c));
+
+  return (
+    <div className="space-y-5">
+      {grouped.map(({ group, items }) => (
+        <div key={group}>
+          <p className="text-xs font-semibold text-muted-foreground mb-2">{group}</p>
+          <ul className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+            {items.map((item) => {
+              const Icon = getFacilityIcon(item.code);
+              return (
+                <li
+                  key={item.code}
+                  className="flex items-center gap-2 text-foreground/85"
+                >
+                  {Icon ? (
+                    <Icon className="h-4 w-4 text-primary shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+                  )}
+                  <span>{item.label}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+      {orphan.length > 0 && (
+        <ul className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+          {orphan.map((code) => (
+            <li key={code} className="flex items-center gap-2 text-foreground/85">
+              <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+              <span>{getFacilityLabel(code)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

@@ -211,7 +211,7 @@ serve(async (req) => {
 
     let query = supabase
       .from("reservations")
-      .select("*, customer:customers(*), unit:units(name)")
+      .select("*, customer:customers(*), unit:units(name, phone, instagram, website, address)")
       .eq("id", record.id);
 
     if (expectedUnitId) {
@@ -250,10 +250,21 @@ serve(async (req) => {
     );
     const unitName =
       trimOrEmpty(settingsMap.get("restaurant_name")) || (unit?.name ?? "Restaurante");
-    const restaurantAddress = trimOrEmpty(settingsMap.get("restaurant_address"));
-    const restaurantPhone = trimOrEmpty(settingsMap.get("restaurant_phone"));
-    const restaurantInstagram = trimOrEmpty(settingsMap.get("restaurant_instagram"));
-    const restaurantWebsite = trimOrEmpty(settingsMap.get("restaurant_website"));
+    // Migration 050 moveu telefone/instagram/website/endereço pra colunas em
+    // `units`. Lemos as colunas primeiro; settings vira fallback durante a
+    // janela de transição (e pode ser removido em migration futura).
+    const unitAddressFull =
+      unit?.address && typeof unit.address === "object"
+        ? trimOrEmpty((unit.address as { full?: string }).full)
+        : "";
+    const restaurantAddress =
+      unitAddressFull || trimOrEmpty(settingsMap.get("restaurant_address"));
+    const restaurantPhone =
+      trimOrEmpty(unit?.phone) || trimOrEmpty(settingsMap.get("restaurant_phone"));
+    const restaurantInstagram =
+      trimOrEmpty(unit?.instagram) || trimOrEmpty(settingsMap.get("restaurant_instagram"));
+    const restaurantWebsite =
+      trimOrEmpty(unit?.website) || trimOrEmpty(settingsMap.get("restaurant_website"));
 
     const { data: channel } = unit_id
       ? await supabase
