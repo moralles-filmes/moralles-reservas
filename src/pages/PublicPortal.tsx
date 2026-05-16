@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { ReservaForm } from "@/components/reserva/ReservaForm";
+import { ReservaWizard } from "@/components/reserva/ReservaWizard";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
 import { WaitlistFormPublic } from "@/components/waitlist/WaitlistFormPublic";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,13 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogTrigger,
+} from "@/components/ui/responsive-dialog";
 import { useReservaByCode } from "@/hooks/useReservas";
+import type { PublicHall } from "@/types/reserva";
 import {
   CalendarDays,
   ChevronRight,
@@ -54,21 +60,6 @@ interface PublicUnit {
   opening_hours_text?: string | null;
   payment_methods?: string | null;
   facilities?: string[] | null;
-}
-
-interface PublicHallSchedule {
-  day_of_week: number;
-  open_time: string;
-  close_time: string;
-  slot_minutes: number;
-  min_advance_minutes: number;
-}
-
-interface PublicHall {
-  id: string;
-  name: string;
-  description: string | null;
-  schedules: PublicHallSchedule[];
 }
 
 interface UnitSettings {
@@ -572,8 +563,8 @@ function ReservaCTA({
     if (defaultOpen) setOpen(true);
   }, [defaultOpen]);
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
+    <ResponsiveDialog open={open} onOpenChange={setOpen}>
+      <ResponsiveDialogTrigger asChild>
         <button
           type="button"
           className="w-full text-left rounded-2xl border bg-card p-5 sm:p-6 hover:shadow-lg hover:border-primary/40 transition-all group"
@@ -594,29 +585,11 @@ function ReservaCTA({
             </div>
           </div>
         </button>
-      </DialogTrigger>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="font-display text-2xl">
-            Reservar em {unit.name}
-          </DialogTitle>
-        </DialogHeader>
-        {(settings.rules_and_conditions || settings.additional_info) && (
-          <div className="space-y-2 mb-3">
-            {settings.rules_and_conditions && (
-              <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 whitespace-pre-line">
-                <strong className="block mb-0.5">Regras e Condições</strong>
-                {settings.rules_and_conditions}
-              </div>
-            )}
-            {settings.additional_info && (
-              <div className="rounded-md bg-muted/50 border p-3 text-xs whitespace-pre-line">
-                {settings.additional_info}
-              </div>
-            )}
-          </div>
-        )}
-        <ReservaForm
+      </ResponsiveDialogTrigger>
+      <ResponsiveDialogContent>
+        <ReservaWizard
+          mode="dialog"
+          title={`Reservar em ${unit.name}`}
           unit={{
             id: unit.id,
             name: unit.name,
@@ -627,9 +600,11 @@ function ReservaCTA({
           bookingWindowDays={
             typeof settings.booking_window_days === "number" ? settings.booking_window_days : undefined
           }
+          rulesAndConditions={settings.rules_and_conditions}
+          additionalInfo={settings.additional_info}
         />
-      </DialogContent>
-    </Dialog>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }
 

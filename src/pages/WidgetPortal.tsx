@@ -1,24 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
-import { ReservaForm } from "@/components/reserva/ReservaForm";
+import { ReservaWizard } from "@/components/reserva/ReservaWizard";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { PublicCustomField, UnitAddress, WidgetFieldConfigMap } from "@/types/reserva";
-
-interface PublicHallSchedule {
-  day_of_week: number;
-  open_time: string;
-  close_time: string;
-  slot_minutes: number;
-  min_advance_minutes: number;
-}
-
-interface PublicHall {
-  id: string;
-  name: string;
-  description: string | null;
-  schedules: PublicHallSchedule[];
-}
+import type {
+  PublicCustomField,
+  PublicHall,
+  UnitAddress,
+  WidgetFieldConfigMap,
+} from "@/types/reserva";
 
 interface WidgetPublicResponse {
   widget: {
@@ -128,30 +118,9 @@ export default function WidgetPortal() {
           <h2 className="font-display text-xl">{unit.name}</h2>
         </div>
 
-        {widget.client_instructions && (
-          <div className="mx-6 my-3 rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
-            {widget.client_instructions}
-          </div>
-        )}
-
-        {(rules || additionalInfo) && (
-          <div className="mx-6 mb-3 space-y-2">
-            {rules && (
-              <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 whitespace-pre-line">
-                <strong className="block mb-0.5">Regras e Condições</strong>
-                {rules}
-              </div>
-            )}
-            {additionalInfo && (
-              <div className="rounded-md bg-muted/50 border p-3 text-xs whitespace-pre-line">
-                {additionalInfo}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="px-6 pb-6">
-          <ReservaForm
+        <div className="px-6 pt-2 pb-6">
+          <ReservaWizard
+            mode="embedded"
             unit={{
               id: unit.id,
               name: unit.name,
@@ -162,6 +131,9 @@ export default function WidgetPortal() {
             widgetId={widget.id}
             customFields={customFields}
             bookingWindowDays={bookingWindowDays}
+            rulesAndConditions={rules || undefined}
+            additionalInfo={additionalInfo || undefined}
+            widgetInstructions={widget.client_instructions || undefined}
           />
         </div>
       </div>

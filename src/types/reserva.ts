@@ -266,6 +266,31 @@ export interface PublicCustomField {
   sort_order: number;
 }
 
+/** Horário público de um hall (vindo das RPCs `get_unit_public_full` / `get_widget_public`). */
+export interface PublicHallSchedule {
+  day_of_week: number;
+  open_time: string;
+  close_time: string;
+  slot_minutes: number;
+  min_advance_minutes: number;
+  /** % de desconto no horário. 0/null = sem desconto. */
+  discount_percent?: number | null;
+}
+
+/** Hall público (vindo das RPCs `get_unit_public_full` / `get_widget_public`). */
+export interface PublicHall {
+  id: string;
+  name: string;
+  description: string | null;
+  /** Quando true, aceita `party_size >= min_capacity - 1` (uma cadeira vazia). */
+  allow_empty_seat?: boolean;
+  /** MIN(tables.min_capacity) entre mesas ativas do hall. NULL = sem mesas configuradas. */
+  min_capacity?: number | null;
+  /** MAX(tables.max_capacity) entre mesas ativas do hall. NULL = sem mesas configuradas. */
+  max_capacity?: number | null;
+  schedules: PublicHallSchedule[];
+}
+
 /** Campos extras opcionais que o widget pode habilitar no form público. */
 export type WidgetFieldKey =
   | "experiencia"

@@ -179,9 +179,10 @@ moralles-reservas/
 │   ├── components/
 │   │   ├── Breadcrumb.tsx             # Breadcrumb compartilhado. BreadcrumbReservas e BreadcrumbRelatorios delegam pra cá
 │   │   ├── PageHeader.tsx             # Header compartilhado — props: breadcrumb, title, description, children
-│   │   ├── ui/                        # shadcn/ui — não editar diretamente
+│   │   ├── ui/                        # shadcn/ui — não editar diretamente. ResponsiveDialog é wrapper próprio: bottom-sheet em mobile (<640px), Dialog centrado em desktop
 │   │   ├── reserva/
-│   │   │   ├── ReservaForm.tsx        # Formulário público (salão, slots, extras, custom fields, aniversário → customers.birthday)
+│   │   │   ├── ReservaWizard.tsx      # Wizard público multi-step (pessoas/data/hora → salão → dados). Modos: "dialog" (PublicPortal) ou "embedded" (WidgetPortal)
+│   │   │   ├── wizard/                # useReservaWizard (state machine + Zod), availability-helpers (partitionHalls/getSlotsForDate), Step{DateTimeParty,Hall,GuestInfo}, WizardSummary/Footer/Success, PartySizeInput
 │   │   │   └── ReservaCard.tsx
 │   │   ├── waitlist/WaitlistFormPublic.tsx  # Form anônimo "Entrar na Fila" (code via RPC, prioritários)
 │   │   ├── menus/                     # MenuPagesEditor, MenuBannerEditor, ThemeEditor
@@ -213,7 +214,7 @@ moralles-reservas/
 │       └── platform/      (Empresas, Automacao)
 │
 ├── supabase/
-│   ├── migrations/        # 001–045 (ver nomes dos arquivos para contexto)
+│   ├── migrations/        # 001–052 (ver nomes dos arquivos para contexto)
 │   └── functions/
 │       ├── _shared/
 │       │   ├── ai-providers.ts        # Abstração multi-provedor (runAgentLoop)
@@ -333,6 +334,18 @@ A disponibilidade é resolvida em `supabase/functions/_shared/availability.ts` �
 
 - Bucket público `unit-assets` — path: `<unit_id>/logo-<ts>.<ext>`, `<unit_id>/hero-<ts>.<ext>`
 - CDN público (read), listing bloqueado, write só owner/gerente
+
+---
+
+## Wizard de reserva pública
+
+Fluxo público (`/r/:slug` no PublicPortal e `/w/:slug` no WidgetPortal) usa `ReservaWizard` em 3 passos: **Pessoas+Data+Hora → Ambiente → Dados**. Estado e validação ficam em [src/components/reserva/wizard/useReservaWizard.ts](src/components/reserva/wizard/useReservaWizard.ts) (state machine + schemas Zod por step).
+
+- **E-mail é obrigatório no front público** — schema do wizard usa `z.string().email()` sem `.optional()`. Já o banco (`customers.email`), o agente IA WhatsApp e o Edge Function `create-reservation` continuam aceitando customer sem e-mail. Não promover essa regra pro backend sem coordenar com o canal WhatsApp (cliente WhatsApp raramente fornece e-mail).
+- **Filtragem de halls no step 2** usa `partitionHalls()` em [wizard/availability-helpers.ts](src/components/reserva/wizard/availability-helpers.ts) — particiona em `compatible`/`alternative`/`closed` baseado em `schedules`, `min_capacity`/`max_capacity` (agregados das mesas ativas, vindos das RPCs) e `allow_empty_seat`. **Isso é apenas filtro visual** — `_shared/availability.ts` segue como fonte da verdade no submit; pode haver halls que "parecem compatíveis" e falham por bloqueio/conflito.
+- **Acordeão "Não encontrou opção ideal?"** lista halls que abrem em outros horários do dia — click volta pro step 1 com `hall_id` pré-fixado e `time` resetado.
+- **Mobile usa bottom-sheet fullscreen** via `ResponsiveDialog` (não o `Dialog` padrão). Wrapper em [src/components/ui/responsive-dialog.tsx](src/components/ui/responsive-dialog.tsx): `<640px` slide-up fullscreen, `≥640px` Dialog centrado. Inputs ficam `h-12` em mobile (tap target ≥44px). Footer com CTA sticky respeita `env(safe-area-inset-bottom)`.
+- **Tipos centralizados**: `PublicHall` e `PublicHallSchedule` ficam em [src/types/reserva.ts](src/types/reserva.ts) — não duplicar localmente nos portais.
 
 ---
 
