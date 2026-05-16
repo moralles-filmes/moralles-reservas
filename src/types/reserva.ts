@@ -391,6 +391,7 @@ export interface Reserva {
   reservation_code: string;
   satisfaction_rating?: number | null;
   satisfaction_at?: string | null;
+  applied_discount_percent?: number | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;

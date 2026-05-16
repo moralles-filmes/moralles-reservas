@@ -25,7 +25,11 @@ import type {
   WidgetFieldKey,
 } from "@/types/reserva";
 import { formatDateBR, formatPhone } from "@/lib/utils";
-import { CalendarIcon, CheckCircle, SquareStack, Users } from "lucide-react";
+import { CalendarIcon, CheckCircle, Minus, Plus, SquareStack, Users } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+const PARTY_SIZE_MIN = 1;
+const PARTY_SIZE_MAX = 50;
 
 const schema = z.object({
   name: z.string().min(2, "Nome deve ter ao menos 2 caracteres"),
@@ -33,31 +37,41 @@ const schema = z.object({
   email: z.string().email("E-mail inválido").optional().or(z.literal("")),
   date: z.string().min(1, "Selecione uma data"),
   time: z.string().min(1, "Selecione um horário"),
-  party_size: z.coerce.number().min(1).max(20),
+  party_size: z.coerce.number().min(PARTY_SIZE_MIN).max(PARTY_SIZE_MAX),
   notes: z.string().optional(),
 });
 
 type FormData = z.infer<typeof schema>;
 
-const FALLBACK_TIME_SLOTS = [
+interface TimeSlot {
+  time: string;
+  discountPercent: number | null;
+}
+
+const FALLBACK_TIME_SLOTS: TimeSlot[] = [
   "12:00", "12:30", "13:00", "13:30", "14:00",
   "19:00", "19:30", "20:00", "20:30", "21:00", "21:30", "22:00",
-];
+].map((time) => ({ time, discountPercent: null }));
 
-const PARTY_SIZES = Array.from({ length: 20 }, (_, i) => i + 1);
-
-function generateTimeSlots(openTime: string, closeTime: string, intervalMins = 30): string[] {
-  const slots: string[] = [];
+function generateTimeSlots(
+  openTime: string,
+  closeTime: string,
+  intervalMins: number,
+  discountPercent: number | null,
+): TimeSlot[] {
+  const slots: TimeSlot[] = [];
   const [openH, openM] = openTime.split(":").map(Number);
   const [closeH, closeM] = closeTime.split(":").map(Number);
   let current = openH * 60 + openM;
   const end = closeH * 60 + closeM;
-  // Última reserva tem que ser pelo menos 30min antes do fechamento
-  const cutoff = end - 30;
-  while (current <= cutoff) {
+  // close_time = última reserva aceita (inclusive). Sem buffer fixo.
+  while (current <= end) {
     const h = Math.floor(current / 60);
     const m = current % 60;
-    slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+    slots.push({
+      time: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`,
+      discountPercent,
+    });
     current += intervalMins;
   }
   return slots;
@@ -75,6 +89,8 @@ interface PublicHallSchedule {
   close_time: string;
   slot_minutes: number;
   min_advance_minutes: number;
+  /** % de desconto no horário (vindo da RPC `get_unit_public_full`). 0/null = sem desconto. */
+  discount_percent?: number | null;
 }
 
 interface PublicHall {
@@ -120,6 +136,66 @@ const FIELD_ORDER: WidgetFieldKey[] = [
 function fieldInputType(key: WidgetFieldKey): string {
   if (key === "data_nascimento") return "date";
   return "text";
+}
+
+function clampPartySize(n: number): number {
+  if (!Number.isFinite(n)) return PARTY_SIZE_MIN;
+  return Math.min(PARTY_SIZE_MAX, Math.max(PARTY_SIZE_MIN, Math.trunc(n)));
+}
+
+function PartySizeInput({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (n: number) => void;
+}) {
+  const current = clampPartySize(value);
+  return (
+    <div className="flex items-stretch rounded-md border border-input bg-background overflow-hidden">
+      <button
+        type="button"
+        aria-label="Diminuir número de pessoas"
+        onClick={() => onChange(clampPartySize(current - 1))}
+        disabled={current <= PARTY_SIZE_MIN}
+        className={cn(
+          "flex h-10 w-10 items-center justify-center text-foreground transition-colors",
+          "hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent",
+        )}
+      >
+        <Minus className="h-4 w-4" />
+      </button>
+      <Input
+        id="party_size"
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        aria-label="Número de pessoas"
+        value={current}
+        onChange={(e) => {
+          const raw = e.target.value.replace(/\D/g, "");
+          if (!raw) {
+            onChange(PARTY_SIZE_MIN);
+            return;
+          }
+          onChange(clampPartySize(Number(raw)));
+        }}
+        className="h-10 flex-1 rounded-none border-0 border-x border-input text-center focus-visible:ring-0 focus-visible:ring-offset-0"
+      />
+      <button
+        type="button"
+        aria-label="Aumentar número de pessoas"
+        onClick={() => onChange(clampPartySize(current + 1))}
+        disabled={current >= PARTY_SIZE_MAX}
+        className={cn(
+          "flex h-10 w-10 items-center justify-center text-foreground transition-colors",
+          "hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent",
+        )}
+      >
+        <Plus className="h-4 w-4" />
+      </button>
+    </div>
+  );
 }
 
 export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, customFields, bookingWindowDays }: ReservaFormProps) {
@@ -203,7 +279,7 @@ export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, cu
   );
 
   // Slots disponíveis: hall_schedules → preferido; business_hours → legado
-  const { timeSlots, isClosed } = useMemo<{ timeSlots: string[]; isClosed: boolean }>(() => {
+  const { timeSlots, isClosed } = useMemo<{ timeSlots: TimeSlot[]; isClosed: boolean }>(() => {
     if (!selectedDate) {
       return { timeSlots: FALLBACK_TIME_SLOTS, isClosed: false };
     }
@@ -213,18 +289,34 @@ export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, cu
     if (selectedHall) {
       const windows = selectedHall.schedules.filter((s) => s.day_of_week === dow);
       if (windows.length === 0) return { timeSlots: [], isClosed: true };
-      const all: string[] = [];
+      const byTime = new Map<string, number | null>();
       for (const w of windows) {
-        all.push(...generateTimeSlots(w.open_time, w.close_time, w.slot_minutes));
+        const discount = w.discount_percent && w.discount_percent > 0 ? w.discount_percent : null;
+        const slots = generateTimeSlots(w.open_time, w.close_time, w.slot_minutes, discount);
+        for (const s of slots) {
+          const existing = byTime.get(s.time);
+          // Dedup mantendo o maior desconto quando duas janelas geram o mesmo horário
+          if (existing == null || (s.discountPercent ?? 0) > (existing ?? 0)) {
+            byTime.set(s.time, s.discountPercent);
+          }
+        }
       }
-      return { timeSlots: Array.from(new Set(all)).sort(), isClosed: false };
+      const merged = Array.from(byTime.entries())
+        .map(([time, discountPercent]) => ({ time, discountPercent }))
+        .sort((a, b) => a.time.localeCompare(b.time));
+      return { timeSlots: merged, isClosed: false };
     }
 
     // Caso 2: legado (sem halls)
     if (businessHours) {
       const entry = businessHours.find((bh) => bh.day_of_week === dow);
       if (entry?.is_closed) return { timeSlots: [], isClosed: true };
-      if (entry) return { timeSlots: generateTimeSlots(entry.open_time, entry.close_time), isClosed: false };
+      if (entry) {
+        return {
+          timeSlots: generateTimeSlots(entry.open_time, entry.close_time, 30, null),
+          isClosed: false,
+        };
+      }
     }
     return { timeSlots: FALLBACK_TIME_SLOTS, isClosed: false };
   }, [selectedDate, selectedHall, businessHours]);
@@ -430,8 +522,17 @@ export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, cu
                     <SelectValue placeholder="Selecione" />
                   </SelectTrigger>
                   <SelectContent>
-                    {timeSlots.map((t) => (
-                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    {timeSlots.map((s) => (
+                      <SelectItem key={s.time} value={s.time}>
+                        <span className="inline-flex items-center gap-2">
+                          <span>{s.time}</span>
+                          {s.discountPercent ? (
+                            <span className="text-success font-medium text-xs">
+                              · {s.discountPercent}% off
+                            </span>
+                          ) : null}
+                        </span>
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -443,24 +544,16 @@ export function ReservaForm({ onSuccess, unit, halls, widgetConfig, widgetId, cu
           </div>
 
           <div className="space-y-1">
-            <Label className="flex items-center gap-1">
+            <Label htmlFor="party_size" className="flex items-center gap-1">
               <Users className="h-3 w-3" /> Número de pessoas *
             </Label>
-            <Select
-              defaultValue="2"
-              onValueChange={(v) => setValue("party_size", Number(v))}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PARTY_SIZES.map((n) => (
-                  <SelectItem key={n} value={String(n)}>
-                    {n} {n === 1 ? "pessoa" : "pessoas"}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <PartySizeInput
+              value={watch("party_size") ?? 2}
+              onChange={(n) => setValue("party_size", n, { shouldValidate: true })}
+            />
+            {errors.party_size && (
+              <p className="text-xs text-destructive">{errors.party_size.message}</p>
+            )}
           </div>
 
           {!enabledExtras.some((f) => f.key === "observacao") && (

@@ -37,6 +37,9 @@ export interface AvailabilityResult {
   reason?: AvailabilityReason;
   message: string;
   durationMinutes: number;
+  /** Desconto (%) do schedule (ou special_date override) que cobre o horário pedido.
+   *  NULL/0 = sem desconto. Persistido em `reservations.applied_discount_percent`. */
+  appliedDiscountPercent?: number | null;
 }
 
 interface HallRow {
@@ -52,6 +55,7 @@ interface HallScheduleRow {
   close_time: string;
   slot_minutes: number;
   min_advance_minutes: number;
+  discount_percent: number | null;
 }
 
 interface TableRow {
@@ -176,6 +180,7 @@ type SpecialOverride =
       hallId: string | null;
       slotMinutes: number | null;
       minAdvanceMinutes: number | null;
+      discountPercent: number | null;
     };
 
 /** Carrega special_dates ativas pra `date` na unit. Pode haver várias
@@ -188,7 +193,7 @@ async function loadSpecialDateOverrides(
   const { data } = await supabase
     .from("special_dates")
     .select(
-      "hall_id, is_closed, open_time, close_time, max_party_size, slot_minutes, min_advance_minutes",
+      "hall_id, is_closed, open_time, close_time, max_party_size, slot_minutes, min_advance_minutes, discount_percent",
     )
     .eq("unit_id", unitId)
     .lte("date", date)
@@ -211,6 +216,7 @@ async function loadSpecialDateOverrides(
         hallId: row.hall_id,
         slotMinutes: row.slot_minutes,
         minAdvanceMinutes: row.min_advance_minutes,
+        discountPercent: row.discount_percent,
       });
     }
   }
@@ -328,6 +334,7 @@ export async function checkAvailability(
               closeMin: override.closeMin,
               slotMinutes: override.slotMinutes,
               minAdvanceMinutes: override.minAdvanceMinutes,
+              discountPercent: override.discountPercent,
             }
           : null,
     });
@@ -361,6 +368,7 @@ async function tryHall(args: {
     closeMin: number;
     slotMinutes?: number | null;
     minAdvanceMinutes?: number | null;
+    discountPercent?: number | null;
   } | null;
 }): Promise<AvailabilityResult> {
   const { supabase, hall, unitId, date, dow, time, requestedMin, partySize, duration, allowOverbooking, specialOverride } = args;
@@ -369,6 +377,7 @@ async function tryHall(args: {
   let openMin: number;
   let closeMin: number;
   let minAdvance = 0;
+  let appliedDiscountPercent: number | null = null;
 
   if (specialOverride) {
     openMin = specialOverride.openMin;
@@ -376,10 +385,11 @@ async function tryHall(args: {
     if (specialOverride.minAdvanceMinutes != null) {
       minAdvance = specialOverride.minAdvanceMinutes;
     }
+    appliedDiscountPercent = specialOverride.discountPercent ?? null;
   } else {
     const { data: schedules } = await supabase
       .from("hall_schedules")
-      .select("id, hall_id, open_time, close_time, slot_minutes, min_advance_minutes")
+      .select("id, hall_id, open_time, close_time, slot_minutes, min_advance_minutes, discount_percent")
       .eq("hall_id", hall.id)
       .eq("day_of_week", dow);
 
@@ -393,11 +403,12 @@ async function tryHall(args: {
       };
     }
 
-    // Encontrar a janela que contém o horário pedido
+    // Encontrar a janela que contém o horário pedido.
+    // close_time = última reserva aceita (inclusive). Sem buffer fixo.
     const matched = sched.find((s) => {
       const o = parseTimeToMinutes(s.open_time);
       const c = parseTimeToMinutes(s.close_time);
-      return requestedMin >= o && requestedMin <= c - 30;
+      return requestedMin >= o && requestedMin <= c;
     });
 
     if (!matched) {
@@ -412,11 +423,11 @@ async function tryHall(args: {
     openMin = parseTimeToMinutes(matched.open_time);
     closeMin = parseTimeToMinutes(matched.close_time);
     minAdvance = matched.min_advance_minutes;
+    appliedDiscountPercent = matched.discount_percent ?? null;
   }
 
-  // Última reserva tem que terminar 30min antes do close
-  const latestStart = closeMin - 30;
-  if (requestedMin < openMin || requestedMin > latestStart) {
+  // close_time = última reserva aceita (inclusive). Não há buffer fixo.
+  if (requestedMin < openMin || requestedMin > closeMin) {
     return {
       available: false,
       reason: "outside_hours",
@@ -559,6 +570,7 @@ async function tryHall(args: {
         suggestedHallId: hall.id,
         message: `${hall.name}: sem mesa disponível, mas overbooking está habilitado — reserva criada como flutuante.`,
         durationMinutes: duration,
+        appliedDiscountPercent,
       };
     }
     return {
@@ -575,6 +587,7 @@ async function tryHall(args: {
     suggestedHallId: hall.id,
     message: `Há mesa disponível em ${hall.name} para ${partySize} pessoa(s) em ${date} às ${time}.`,
     durationMinutes: duration,
+    appliedDiscountPercent,
   };
 }
 
@@ -608,10 +621,12 @@ async function checkAvailabilityLegacy(
 
   let openMin: number | null = null;
   let closeMin: number | null = null;
+  let appliedDiscountPercent: number | null = null;
 
   if (special && special.closed === false) {
     openMin = special.openMin;
     closeMin = special.closeMin;
+    appliedDiscountPercent = special.discountPercent ?? null;
   } else {
     const dow = dayOfWeek(date);
     const { data: hour } = await supabase
@@ -631,10 +646,11 @@ async function checkAvailabilityLegacy(
     }
     openMin = parseTimeToMinutes(hour.open_time);
     closeMin = parseTimeToMinutes(hour.close_time);
+    // business_hours não tem discount_percent — feature exclusiva de halls/special_dates.
   }
 
-  const latestStart = closeMin - 30;
-  if (requestedMin < openMin || requestedMin > latestStart) {
+  // close_time = última reserva aceita (inclusive). Sem buffer fixo.
+  if (requestedMin < openMin || requestedMin > closeMin) {
     return {
       available: false,
       reason: "outside_hours",
@@ -728,6 +744,7 @@ async function checkAvailabilityLegacy(
     suggestedTableId: suggested.id,
     message: `Há mesa disponível para ${partySize} pessoa(s) em ${date} às ${time}.`,
     durationMinutes: duration,
+    appliedDiscountPercent,
   };
 }
 
@@ -748,6 +765,7 @@ export type ReserveSlotResult =
       tableId: string | undefined;
       hallId?: string;
       durationMinutes: number;
+      appliedDiscountPercent: number | null;
     }
   | {
       success: false;
@@ -779,6 +797,10 @@ export async function reserveSlot(
 
   const code = generateReservationCode();
   const status = params.status ?? "confirmed";
+  const appliedDiscountPercent =
+    check.appliedDiscountPercent && check.appliedDiscountPercent > 0
+      ? check.appliedDiscountPercent
+      : null;
 
   const { data, error } = await supabase
     .from("reservations")
@@ -792,6 +814,7 @@ export async function reserveSlot(
       notes: params.notes ?? null,
       reservation_code: code,
       status,
+      applied_discount_percent: appliedDiscountPercent,
     })
     .select("id")
     .single();
@@ -811,5 +834,6 @@ export async function reserveSlot(
     tableId: check.suggestedTableId,
     hallId: check.suggestedHallId,
     durationMinutes: check.durationMinutes,
+    appliedDiscountPercent,
   };
 }

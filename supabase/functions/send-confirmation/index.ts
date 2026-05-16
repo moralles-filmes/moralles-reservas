@@ -67,15 +67,23 @@ type EmailParams = {
   phone: string;
   instagram: string;
   website: string;
+  discountPercent: number | null;
 };
 
 function buildEmailHtml(params: EmailParams): string {
-  const { customerName, unitName, date, time, partySize, reservationCode } = params;
+  const { customerName, unitName, date, time, partySize, reservationCode, discountPercent } = params;
   const address = params.address.trim();
   const phone = params.phone.trim();
   const ig = normalizeInstagram(params.instagram);
   const site = normalizeWebsite(params.website);
   const hasContact = !!(address || phone || ig || site);
+  const discountRow =
+    discountPercent && discountPercent > 0
+      ? `<tr>
+                    <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:14px;color:#7a6f60;">Desconto</td>
+                    <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:15px;font-weight:600;color:#15803d;">${discountPercent}% off</td>
+                  </tr>`
+      : "";
 
   const contactBlock = hasContact
     ? `<div style="margin:24px 0 0;padding:20px;background:#faf5ed;border-radius:8px;">
@@ -115,6 +123,7 @@ function buildEmailHtml(params: EmailParams): string {
                     <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:14px;color:#7a6f60;">Pessoas</td>
                     <td style="padding:12px 0;border-bottom:1px solid #ede5d8;font-size:15px;font-weight:500;">${partySize}</td>
                   </tr>
+                  ${discountRow}
                   <tr>
                     <td style="padding:12px 0;font-size:14px;color:#7a6f60;">Código</td>
                     <td style="padding:12px 0;font-size:15px;font-weight:600;font-family:'SF Mono',Menlo,monospace;">#${escapeHtml(reservationCode)}</td>
@@ -146,8 +155,11 @@ function buildEmailText(params: EmailParams): string {
     `Data: ${params.date}`,
     `Horário: ${params.time}`,
     `Pessoas: ${params.partySize}`,
-    `Código: #${params.reservationCode}`,
   ];
+  if (params.discountPercent && params.discountPercent > 0) {
+    lines.push(`Desconto: ${params.discountPercent}% off`);
+  }
+  lines.push(`Código: #${params.reservationCode}`);
 
   const address = params.address.trim();
   const phone = params.phone.trim();
@@ -228,8 +240,12 @@ serve(async (req) => {
       });
     }
 
-    const { customer, date, time, party_size, reservation_code, unit_id, unit } = reserva;
+    const { customer, date, time, party_size, reservation_code, unit_id, unit, applied_discount_percent } = reserva;
     const dateBR = formatDate(date);
+    const discountPercent: number | null =
+      typeof applied_discount_percent === "number" && applied_discount_percent > 0
+        ? applied_discount_percent
+        : null;
 
     const { data: settingsRows } = unit_id
       ? await supabase
@@ -278,12 +294,17 @@ serve(async (req) => {
 
     const hasWhatsappChannel = !!channel || !!Deno.env.get("ZAPI_INSTANCE_ID");
 
+    const discountLine = discountPercent
+      ? `💸 Desconto: ${discountPercent}% off\n`
+      : "";
+
     const message =
       `✅ *Reserva Confirmada!*\n\n` +
       `Olá ${customer.name}, sua reserva está confirmada.\n\n` +
       `📅 Data: ${dateBR}\n` +
       `⏰ Horário: ${time}\n` +
       `👥 Pessoas: ${party_size}\n` +
+      discountLine +
       `🔑 Código: #${reservation_code}\n\n` +
       `Para alterar ou cancelar, é só responder aqui. Até logo! 😊`;
 
@@ -298,6 +319,7 @@ serve(async (req) => {
       phone: restaurantPhone,
       instagram: restaurantInstagram,
       website: restaurantWebsite,
+      discountPercent,
     };
 
     const whatsappPromise = hasWhatsappChannel
