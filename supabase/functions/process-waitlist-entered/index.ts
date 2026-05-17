@@ -19,6 +19,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog, requireInternalAuth, sanitizePhone } from "../_shared/security.ts";
+import {
+  DEFAULT_ENTERED_BODY,
+  renderWaitlistTemplate,
+} from "../_shared/waitlist-defaults.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -26,28 +30,6 @@ const INTERNAL_API_KEY = Deno.env.get("INTERNAL_API_KEY") ?? "";
 const APP_BASE_URL = Deno.env.get("APP_BASE_URL") ?? "https://reservas.moralles.com.br";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-
-const DEFAULT_ENTERED_BODY =
-  "Oi {{cliente_nome}}! Você entrou na fila de espera em {{unidade_nome}}. " +
-  "Sua senha é #{{codigo_fila}}. Acompanhe em {{link_status}}";
-
-function renderTemplate(
-  template: string,
-  vars: {
-    cliente_nome: string;
-    unidade_nome: string;
-    party_size: number | null;
-    codigo_fila: number | null;
-    link_status: string;
-  },
-): string {
-  return template
-    .replaceAll("{{cliente_nome}}", vars.cliente_nome)
-    .replaceAll("{{unidade_nome}}", vars.unidade_nome)
-    .replaceAll("{{party_size}}", vars.party_size != null ? String(vars.party_size) : "")
-    .replaceAll("{{codigo_fila}}", vars.codigo_fila != null ? String(vars.codigo_fila) : "")
-    .replaceAll("{{link_status}}", vars.link_status);
-}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -119,7 +101,7 @@ serve(async (req) => {
   const unitId = entry.unit_id as string;
 
   // 2. Carrega unit + settings + template em paralelo
-  const [unitRes, settingsRes, templateRes, slugRes] = await Promise.all([
+  const [unitRes, settingsRes, templateRes] = await Promise.all([
     supabase.from("units").select("name, slug").eq("id", unitId).maybeSingle(),
     supabase
       .from("settings")
@@ -133,7 +115,6 @@ serve(async (req) => {
       .eq("unit_id", unitId)
       .eq("event", "entered")
       .maybeSingle(),
-    supabase.from("units").select("slug").eq("id", unitId).maybeSingle(),
   ]);
 
   const rawEnabled = settingsRes.data?.value as unknown;
@@ -150,10 +131,10 @@ serve(async (req) => {
     tpl?.customized && tpl.body && tpl.body.trim() ? tpl.body : DEFAULT_ENTERED_BODY;
 
   const unitName = (unitRes.data?.name as string) ?? "nosso restaurante";
-  const unitSlug = (slugRes.data?.slug as string) ?? "";
+  const unitSlug = (unitRes.data?.slug as string) ?? "";
   const linkStatus = unitSlug ? `${APP_BASE_URL}/r/${unitSlug}` : APP_BASE_URL;
 
-  const message = renderTemplate(templateBody, {
+  const message = renderWaitlistTemplate(templateBody, {
     cliente_nome: entry.customer_name as string,
     unidade_nome: unitName,
     party_size: entry.party_size as number,

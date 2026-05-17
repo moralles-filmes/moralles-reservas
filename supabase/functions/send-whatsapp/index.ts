@@ -2,6 +2,10 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp, type SendMessagePayload } from "../_shared/whatsapp-send.ts";
 import { jsonLog, requireInternalAuth, sanitizePhone } from "../_shared/security.ts";
+import {
+  appendOutboundToConversation,
+  type OutboundKind,
+} from "../_shared/conversation-log.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -35,17 +39,13 @@ const VALID_KINDS = new Set([
 interface ExtendedPayload extends SendMessagePayload {
   /** Quando presente, grava notifications_sent. */
   kind?: string;
-  /**
-   * Quando presente junto com kind, grava `notifications_sent.reservation_id`
-   * — necessário pra reminder_d1/survey_d1, cuja idempotência depende da
-   * UNIQUE (reservation_id, kind). Para waitlist_*/voucher_issued, deixe nulo.
-   */
+  // Quando presente junto com kind, grava `notifications_sent.reservation_id`
+  // — necessário pra reminder_d1/survey_d1, cuja idempotência depende da
+  // UNIQUE (reservation_id, kind). Para waitlist e voucher_issued, deixe nulo.
   reservation_id?: string | null;
-  /**
-   * Quando presente junto com kind=waitlist_*, grava
-   * `notifications_sent.waitlist_id`. Idempotência por UNIQUE parcial
-   * (waitlist_id, kind) (migration 048).
-   */
+  // Quando presente junto com kind=waitlist_*, grava
+  // `notifications_sent.waitlist_id`. Idempotência por UNIQUE parcial
+  // (waitlist_id, kind) (migration 048).
   waitlist_id?: string | null;
 }
 
@@ -188,6 +188,41 @@ serve(async (req) => {
         reservation_id ?? null,
         waitlist_id ?? null,
       );
+    }
+
+    if (result.ok && normalizedKind && unit_id) {
+      let customerId: string | null = null;
+      try {
+        if (reservation_id) {
+          const { data: r } = await supabaseAdmin
+            .from("reservations")
+            .select("customer_id")
+            .eq("id", reservation_id)
+            .maybeSingle();
+          customerId = (r?.customer_id as string | undefined) ?? null;
+        } else if (waitlist_id) {
+          const { data: w } = await supabaseAdmin
+            .from("waitlist")
+            .select("customer_id")
+            .eq("id", waitlist_id)
+            .maybeSingle();
+          customerId = (w?.customer_id as string | undefined) ?? null;
+        }
+      } catch (err) {
+        jsonLog("warn", {
+          evt: "conversation_log_customer_lookup_failed",
+          kind: normalizedKind,
+          err: String(err).slice(0, 200),
+        });
+      }
+      await appendOutboundToConversation({
+        supabase: supabaseAdmin,
+        unitId: unit_id,
+        customerId,
+        phone,
+        content: message,
+        kind: normalizedKind as OutboundKind,
+      });
     }
 
     return new Response(

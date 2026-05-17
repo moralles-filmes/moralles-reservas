@@ -15,6 +15,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog, requireInternalAuth, sanitizePhone } from "../_shared/security.ts";
+import {
+  DEFAULT_FEEDBACK_BODY,
+  renderWaitlistTemplate,
+  yesterdayInBRT,
+} from "../_shared/waitlist-defaults.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -22,35 +27,6 @@ const INTERNAL_API_KEY = Deno.env.get("INTERNAL_API_KEY") ?? "";
 const APP_BASE_URL = Deno.env.get("APP_BASE_URL") ?? "https://reservas.moralles.com.br";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-
-const DEFAULT_FEEDBACK_BODY =
-  "Obrigado por escolher {{unidade_nome}}, {{cliente_nome}}! " +
-  "Conte pra gente como foi sua experiência: {{link_status}}";
-
-function renderTemplate(
-  template: string,
-  vars: {
-    cliente_nome: string;
-    unidade_nome: string;
-    party_size: number | null;
-    codigo_fila: number | null;
-    link_status: string;
-  },
-): string {
-  return template
-    .replaceAll("{{cliente_nome}}", vars.cliente_nome)
-    .replaceAll("{{unidade_nome}}", vars.unidade_nome)
-    .replaceAll("{{party_size}}", vars.party_size != null ? String(vars.party_size) : "")
-    .replaceAll("{{codigo_fila}}", vars.codigo_fila != null ? String(vars.codigo_fila) : "")
-    .replaceAll("{{link_status}}", vars.link_status);
-}
-
-function yesterdayDateBRT(): string {
-  // Cron roda 17:00 UTC (14:00 BRT). UTC - 1 dia equivale a "ontem em BRT".
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
 
 interface UnitContext {
   unit_id: string;
@@ -116,7 +92,7 @@ serve(async (req) => {
   }
 
   const t0 = Date.now();
-  const targetDate = yesterdayDateBRT();
+  const targetDate = yesterdayInBRT();
   const errors: string[] = [];
   let dispatched = 0;
   let failed = 0;
@@ -161,7 +137,7 @@ serve(async (req) => {
     const linkStatus = ctx.unit_slug ? `${APP_BASE_URL}/r/${ctx.unit_slug}` : APP_BASE_URL;
 
     for (const row of (rows ?? []) as FeedbackRow[]) {
-      const message = renderTemplate(ctx.body, {
+      const message = renderWaitlistTemplate(ctx.body, {
         cliente_nome: row.customer_name,
         unidade_nome: ctx.unit_name,
         party_size: row.party_size,

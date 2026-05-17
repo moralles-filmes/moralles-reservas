@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
 import { jsonLog, sanitizePhone } from "../_shared/security.ts";
+import { appendOutboundToConversation } from "../_shared/conversation-log.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -55,7 +56,7 @@ serve(async (req) => {
 
     const { data: reserva, error: rErr } = await supabase
       .from("reservations")
-      .select("id, status, date, time, party_size, reservation_code, unit_id, customer:customers(name, phone)")
+      .select("id, status, date, time, party_size, reservation_code, unit_id, customer:customers(id, name, phone)")
       .eq("id", reservation_id)
       .maybeSingle();
 
@@ -147,6 +148,16 @@ serve(async (req) => {
 
     if (result.ok) {
       jsonLog("info", { evt: "cancellation_sent", reservation_id, phone: sanitizePhone(customerPhone) });
+      // deno-lint-ignore no-explicit-any
+      const cust = customer as any;
+      await appendOutboundToConversation({
+        supabase,
+        unitId: reserva.unit_id,
+        customerId: cust?.id ?? null,
+        phone: customerPhone || null,
+        content: message,
+        kind: "cancellation",
+      });
     } else {
       jsonLog("error", {
         evt: "cancellation_failed",

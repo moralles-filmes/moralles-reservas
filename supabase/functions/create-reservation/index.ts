@@ -8,6 +8,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { genRequestId, jsonLog, sanitizePhone } from "../_shared/security.ts";
 import { reserveSlot } from "../_shared/availability.ts";
+import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -119,36 +120,22 @@ serve(async (req) => {
       );
     }
 
-    // Upsert customer (org-scoped). Birthday tratado separado pra nunca
-    // sobrescrever valor existente — só preenche se hoje está null.
-    const { data: customer, error: custErr } = await supabase
-      .from("customers")
-      .upsert(
-        {
-          name: body.customer!.name!.trim(),
-          phone,
-          email: body.customer!.email || null,
-          organization_id: organizationId,
-        },
-        { onConflict: "organization_id,phone" },
-      )
-      .select("id, name, phone, email, birthday")
-      .single();
-
-    if (custErr || !customer) {
-      jsonLog("error", { requestId, evt: "create_reservation_customer_failed", err: String(custErr) });
+    // Resolve customer com merge preservando dados:
+    //   - lookup por (organization_id, phone)
+    //   - se existe: PRESERVA nome cadastrado, append em emails[], birthday só se null
+    //   - se não existe: cria
+    let customer;
+    try {
+      customer = await resolveOrCreateCustomer(supabase, {
+        organizationId,
+        phone,
+        name: body.customer!.name!.trim(),
+        email: body.customer!.email ?? null,
+        birthday: body.customer!.birthday ?? null,
+      });
+    } catch (err) {
+      jsonLog("error", { requestId, evt: "create_reservation_customer_failed", err: String(err) });
       return jsonResponse({ success: false, reason: "customer_failed", message: "Falha ao registrar cliente." }, 500);
-    }
-
-    if (body.customer!.birthday && !customer.birthday) {
-      const { error: bdayErr } = await supabase
-        .from("customers")
-        .update({ birthday: body.customer!.birthday })
-        .eq("id", customer.id)
-        .is("birthday", null);
-      if (bdayErr) {
-        jsonLog("warn", { requestId, evt: "create_reservation_birthday_failed", err: String(bdayErr) });
-      }
     }
 
     // reserveSlot valida disponibilidade + insere com table_id atribuído

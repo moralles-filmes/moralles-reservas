@@ -55,8 +55,11 @@ function formatTime(timeStr: string): string {
 function todayDateBRT(): string {
   // Cron roda 13:00 UTC (10:00 BRT). Em BRT = UTC-3, o dia corrente em BRT
   // é a data UTC sem offset nesse horário (13:00 UTC = 10:00 BRT, mesmo dia).
+  //
+  // Offset -3h hardcoded é seguro: Brasil eliminou o horário de verão em 2019
+  // (decreto 9.772/2019). Se DST voltar ou produto for multinacional, refatorar
+  // para Intl.DateTimeFormat com unit.timezone.
   const d = new Date();
-  // Aplica offset BRT (-3h) pra garantir a data correta em BRT
   d.setUTCHours(d.getUTCHours() - 3);
   return d.toISOString().slice(0, 10);
 }

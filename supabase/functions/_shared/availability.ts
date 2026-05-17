@@ -77,7 +77,10 @@ function dayOfWeek(dateStr: string): number {
 }
 
 function minutesUntil(dateStr: string, time: string): number {
-  const target = new Date(`${dateStr}T${time}:00`).getTime();
+  // Brasil: UTC-3 fixo (sem DST desde 2019). A Edge Function roda em UTC;
+  // sem offset explícito, a string seria interpretada como UTC e a comparação
+  // contra Date.now() ficaria 3h fora do fuso real do restaurante.
+  const target = new Date(`${dateStr}T${time}:00-03:00`).getTime();
   return Math.round((target - Date.now()) / 60_000);
 }
 
@@ -786,7 +789,7 @@ export async function reserveSlot(
   supabase: SupabaseClient,
   params: ReserveSlotParams,
 ): Promise<ReserveSlotResult> {
-  const check = await checkAvailability(supabase, params);
+  let check = await checkAvailability(supabase, params);
   if (!check.available) {
     return {
       success: false,
@@ -795,45 +798,69 @@ export async function reserveSlot(
     };
   }
 
-  const code = generateReservationCode();
   const status = params.status ?? "confirmed";
   const appliedDiscountPercent =
     check.appliedDiscountPercent && check.appliedDiscountPercent > 0
       ? check.appliedDiscountPercent
       : null;
 
-  const { data, error } = await supabase
-    .from("reservations")
-    .insert({
-      customer_id: params.customerId,
-      unit_id: params.unitId,
-      table_id: check.suggestedTableId ?? null,
-      date: params.date,
-      time: params.time,
-      party_size: params.partySize,
-      notes: params.notes ?? null,
-      reservation_code: code,
-      status,
-      applied_discount_percent: appliedDiscountPercent,
-    })
-    .select("id")
-    .single();
+  // Retry loop pra cobrir race condition (TOCTOU) entre check e INSERT.
+  // A migration 056 cria UNIQUE partial index em (table_id, date, time) onde
+  // status in ('pending','confirmed'), então duas requisições paralelas pra
+  // mesma mesa fazem uma das duas falhar com SQLSTATE 23505. Aqui rechecamos
+  // disponibilidade e tentamos outra mesa antes de desistir.
+  let lastInsertErr: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const code = generateReservationCode();
+    const { data, error } = await supabase
+      .from("reservations")
+      .insert({
+        customer_id: params.customerId,
+        unit_id: params.unitId,
+        table_id: check.suggestedTableId ?? null,
+        date: params.date,
+        time: params.time,
+        party_size: params.partySize,
+        notes: params.notes ?? null,
+        reservation_code: code,
+        status,
+        applied_discount_percent: appliedDiscountPercent,
+      })
+      .select("id")
+      .single();
 
-  if (error || !data) {
-    return {
-      success: false,
-      reason: "insert_failed",
-      message: error?.message ?? "Falha ao criar reserva.",
-    };
+    if (!error && data) {
+      return {
+        success: true,
+        reservationId: data.id,
+        reservationCode: code,
+        tableId: check.suggestedTableId,
+        hallId: check.suggestedHallId,
+        durationMinutes: check.durationMinutes,
+        appliedDiscountPercent,
+      };
+    }
+
+    lastInsertErr = error;
+    const code23505 = (error as { code?: string } | null)?.code === "23505";
+    if (!code23505) break;
+
+    // Mesa ficou ocupada entre check e insert (race). Re-checa pra pegar outra.
+    const recheck = await checkAvailability(supabase, params);
+    if (!recheck.available) {
+      return {
+        success: false,
+        reason: recheck.reason ?? "no_capacity",
+        message: recheck.message,
+      };
+    }
+    check = recheck;
   }
 
   return {
-    success: true,
-    reservationId: data.id,
-    reservationCode: code,
-    tableId: check.suggestedTableId,
-    hallId: check.suggestedHallId,
-    durationMinutes: check.durationMinutes,
-    appliedDiscountPercent,
+    success: false,
+    reason: "insert_failed",
+    message: (lastInsertErr as { message?: string } | null)?.message
+      ?? "Falha ao criar reserva após tentativas.",
   };
 }

@@ -3,6 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
 import { sendEmail } from "../_shared/email.ts";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
+import { appendOutboundToConversation } from "../_shared/conversation-log.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -358,6 +359,16 @@ serve(async (req) => {
     } else if (whatsappResult.ok) {
       jsonLog("info", { evt: "confirmation_whatsapp", status: "sent", reservation_id: record.id });
       await recordNotification(record.id, unit_id, "confirmation", "sent");
+      if (unit_id) {
+        await appendOutboundToConversation({
+          supabase,
+          unitId: unit_id,
+          customerId: customer?.id ?? null,
+          phone: customer?.phone ?? null,
+          content: message,
+          kind: "confirmation",
+        });
+      }
     } else {
       jsonLog("warn", {
         evt: "confirmation_whatsapp",
