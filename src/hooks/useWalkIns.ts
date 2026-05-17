@@ -3,6 +3,11 @@ import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import type { WalkIn, WalkInStatus } from "@/types/reserva";
 
+// Pausa polling quando a aba está em background — em tablets de salão (8h+
+// abertos), 30s × 8h = 960 requisições/dia sem ninguém olhando a tela.
+const pollWhenVisible = () =>
+  typeof document !== "undefined" && document.hidden ? false : 30_000;
+
 export function useWalkIns(unitId: string, onlyActive = true) {
   return useQuery({
     queryKey: ["walk-ins", unitId, onlyActive],
@@ -22,7 +27,7 @@ export function useWalkIns(unitId: string, onlyActive = true) {
       return data as WalkIn[];
     },
     enabled: !!unitId,
-    refetchInterval: 30_000,
+    refetchInterval: pollWhenVisible,
   });
 }
 
@@ -49,6 +54,13 @@ export function useCreateWalkIn(unitId: string) {
   });
 }
 
+const WALKIN_STATUS_TOAST: Record<WalkInStatus, string> = {
+  waiting: "Status atualizado.",
+  seated: "Cliente sentado.",
+  left: "Marcado como saiu.",
+  no_show: "Marcado como não compareceu.",
+};
+
 export function useUpdateWalkInStatus(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -59,9 +71,13 @@ export function useUpdateWalkInStatus(unitId: string) {
 
       const { error } = await supabase.from("walk_ins").update(updates).eq("id", id);
       if (error) throw error;
+      return { status };
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] }),
-    onError: () => toast.error("Erro ao atualizar status."),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["walk-ins", unitId] });
+      toast.success(WALKIN_STATUS_TOAST[result.status] ?? "Status atualizado.");
+    },
+    onError: (err: Error) => toast.error(err.message || "Erro ao atualizar status."),
   });
 }
 

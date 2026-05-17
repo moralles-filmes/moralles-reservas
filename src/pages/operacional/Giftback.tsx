@@ -248,10 +248,10 @@ export default function GiftbackOperacional() {
               </div>
             </div>
 
-            {daysLeft <= 3 && daysLeft > 0 && (
+            {daysLeft <= 3 && daysLeft >= 0 && (
               <div className="rounded-md bg-amber-50 border border-amber-200 p-2 flex items-center gap-2 text-xs text-amber-800">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                Voucher expira em breve.
+                {daysLeft === 0 ? "Voucher expira hoje." : "Voucher expira em breve."}
               </div>
             )}
 

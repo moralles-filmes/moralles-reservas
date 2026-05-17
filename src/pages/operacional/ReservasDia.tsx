@@ -1,10 +1,11 @@
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useReservas } from "@/hooks/useReservas";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CalendarIcon } from "lucide-react";
+import { AlertCircle, CalendarIcon } from "lucide-react";
 import { formatDateBR, todayLocalISO } from "@/lib/utils";
 
 export default function ReservasDia() {
@@ -12,10 +13,16 @@ export default function ReservasDia() {
   const unitId = unit?.unit_id ?? "";
   const today = todayLocalISO();
 
-  const { data: reservas, isLoading } = useReservas(unitId, { date: today });
+  const { data: reservas, isLoading, isError, refetch } = useReservas(unitId, { date: today });
 
   const pending = reservas?.filter((r) => r.status === "pending") ?? [];
   const confirmed = reservas?.filter((r) => r.status === "confirmed") ?? [];
+  const cancelled = reservas?.filter((r) => r.status === "cancelled").length ?? 0;
+  const noShow = reservas?.filter((r) => r.status === "no_show").length ?? 0;
+  // Considera "vazio" quando não há nada acionável pra hoje (canceladas/no_show
+  // não aparecem como cards; sem essa checagem, dia inteiro cancelado renderiza
+  // só o header sem conteúdo nem mensagem).
+  const hasActive = pending.length > 0 || confirmed.length > 0;
 
   return (
     <div className="space-y-5">
@@ -27,10 +34,30 @@ export default function ReservasDia() {
 
       {isLoading ? (
         <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
-      ) : !reservas?.length ? (
+      ) : isError ? (
+        <Card className="border-destructive">
+          <CardContent className="py-8 flex flex-col items-center gap-3 text-center">
+            <AlertCircle className="h-8 w-8 text-destructive" />
+            <p className="text-sm font-medium">Erro ao carregar reservas de hoje.</p>
+            <p className="text-xs text-muted-foreground">
+              Verifique sua conexão e tente novamente.
+            </p>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>
+              Tentar de novo
+            </Button>
+          </CardContent>
+        </Card>
+      ) : !hasActive ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground text-sm">
-            Nenhuma reserva para hoje.
+            <p>Nenhuma reserva ativa para hoje.</p>
+            {(cancelled > 0 || noShow > 0) && (
+              <p className="text-xs mt-2">
+                {cancelled > 0 && <span>{cancelled} cancelada{cancelled !== 1 ? "s" : ""}</span>}
+                {cancelled > 0 && noShow > 0 && <span> · </span>}
+                {noShow > 0 && <span>{noShow} não compareceu</span>}
+              </p>
+            )}
           </CardContent>
         </Card>
       ) : (

@@ -48,7 +48,7 @@ import type {
   WaitlistPriorityCategory,
   WaitlistStatus,
 } from "@/types/reserva";
-import { Accessibility, Baby, Bell, Clock, Plus, Trash2, UserCircle2, Users } from "lucide-react";
+import { Accessibility, AlertCircle, Baby, Bell, Clock, Plus, Trash2, UserCircle2, Users } from "lucide-react";
 import { toast } from "sonner";
 
 const STATUS_CONFIG: Record<WaitlistStatus, { label: string; className: string }> = {
@@ -92,12 +92,18 @@ export default function Fila() {
   // Pendings por entry id — botões "Notificar" ficam independentes entre si.
   const [notifyingIds, setNotifyingIds] = useState<Set<string>>(new Set());
 
-  const { data: waitlist, isLoading } = useWaitlist(unitId);
+  const { data: waitlist, isLoading, isError, refetch } = useWaitlist(unitId);
   const { data: templates } = useWaitlistTemplates(unitId);
   const addToWaitlist = useAddToWaitlist(unitId);
   const updateStatus = useUpdateWaitlistStatus(unitId);
   const notifyEntry = useNotifyWaitlist(unitId);
   const removeEntry = useRemoveFromWaitlist(unitId);
+
+  // updateStatus é compartilhado entre todas as entries — pra evitar double-click
+  // sem desabilitar TODOS os botões da lista, checamos por id usando o `variables`
+  // que o TanStack expõe enquanto o mutate está em flight.
+  const isUpdatingEntry = (id: string) =>
+    updateStatus.isPending && updateStatus.variables?.id === id;
 
   const reset = () => { setName(""); setPhone(""); setPartySize("2"); setRequestedTime(""); setNotes(""); };
 
@@ -181,6 +187,19 @@ export default function Fila() {
 
       {isLoading ? (
         <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
+      ) : isError ? (
+        <Card className="border-destructive">
+          <CardContent className="py-8 flex flex-col items-center gap-3 text-center">
+            <AlertCircle className="h-8 w-8 text-destructive" />
+            <p className="text-sm font-medium">Erro ao carregar a fila de espera.</p>
+            <p className="text-xs text-muted-foreground">
+              Verifique sua conexão e tente novamente.
+            </p>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>
+              Tentar de novo
+            </Button>
+          </CardContent>
+        </Card>
       ) : !waitlist?.length ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground text-sm">
@@ -264,13 +283,21 @@ export default function Fila() {
                           <Bell className="h-3 w-3" />
                           Notificar
                         </Button>
-                        <Button size="sm" onClick={() => updateStatus.mutate({ id: entry.id, status: "seated" })}>
+                        <Button
+                          size="sm"
+                          onClick={() => updateStatus.mutate({ id: entry.id, status: "seated" })}
+                          disabled={isUpdatingEntry(entry.id)}
+                        >
                           Sentar
                         </Button>
                       </>
                     )}
                     {entry.status === "notified" && (
-                      <Button size="sm" onClick={() => updateStatus.mutate({ id: entry.id, status: "seated" })}>
+                      <Button
+                        size="sm"
+                        onClick={() => updateStatus.mutate({ id: entry.id, status: "seated" })}
+                        disabled={isUpdatingEntry(entry.id)}
+                      >
                         Confirmar entrada
                       </Button>
                     )}
@@ -288,9 +315,10 @@ export default function Fila() {
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                          <AlertDialogCancel disabled={removeEntry.isPending}>Cancelar</AlertDialogCancel>
                           <AlertDialogAction
                             onClick={() => removeEntry.mutate(entry.id)}
+                            disabled={removeEntry.isPending}
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                           >
                             Remover

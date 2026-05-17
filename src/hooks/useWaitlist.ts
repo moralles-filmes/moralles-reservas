@@ -7,6 +7,11 @@ import type {
   WaitlistStatus,
 } from "@/types/reserva";
 
+// Pausa polling quando a aba está em background — tablets de salão deixam o
+// painel aberto o dia inteiro; 30s × 8h = 960 requisições/dia ociosas.
+const pollWhenVisible = () =>
+  typeof document !== "undefined" && document.hidden ? false : 30_000;
+
 export function useWaitlist(unitId: string, onlyActive = true) {
   return useQuery({
     queryKey: ["waitlist", unitId, onlyActive],
@@ -27,7 +32,7 @@ export function useWaitlist(unitId: string, onlyActive = true) {
       return data as WaitlistEntry[];
     },
     enabled: !!unitId,
-    refetchInterval: 30_000,
+    refetchInterval: pollWhenVisible,
   });
 }
 
@@ -71,8 +76,10 @@ export function useAnonAddToWaitlist(unitId: string) {
       const row = Array.isArray(data) ? (data[0] as EnterWaitlistRow | undefined) : null;
       return { code: row?.code ?? null };
     },
-    onError: () => {
+    onError: (err) => {
       // Mensagem genérica — não vaza err.message do Supabase (RLS/schema/etc).
+      // Mas logamos o erro real no console pra debug em produção (DevTools).
+      console.error("[anon waitlist] failed:", err);
       toast.error("Não foi possível entrar na fila. Tente novamente.");
     },
   });
@@ -123,10 +130,19 @@ export function useUpdateWaitlistStatus(unitId: string) {
   });
 }
 
+interface NotifyResult {
+  /** WhatsApp send result. Sempre `true` quando chega ao onSuccess (erros antes lançam). */
+  sent: boolean;
+  /** UPDATE de status pra "notified". Pode ser `false` se WhatsApp foi enviado mas
+   *  o UPDATE subsequente falhou — operador precisa ser avisado e a tela vai
+   *  reconciliar via refetch (pg_cron retry / refresh manual). */
+  statusUpdated: boolean;
+}
+
 export function useNotifyWaitlist(unitId: string) {
   const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ id, phone, message }: { id: string; phone: string; message: string }) => {
+  return useMutation<NotifyResult, Error, { id: string; phone: string; message: string }>({
+    mutationFn: async ({ id, phone, message }) => {
       // Envia WhatsApp via send-whatsapp Edge Function. `kind` + `waitlist_id`
       // permitem que o backend grave notifications_sent com waitlist_id NÃO-null
       // → UNIQUE parcial (waitlist_id, kind) WHERE waitlist_id IS NOT NULL
@@ -146,16 +162,27 @@ export function useNotifyWaitlist(unitId: string) {
         throw new Error(result.error ?? "Falha ao enviar WhatsApp.");
       }
 
-      // Marca como notificado
+      // Marca como notificado. Se o UPDATE falhar AGORA, o WhatsApp JÁ foi
+      // enviado — não relançamos como erro pra não confundir o operador
+      // ("Erro ao notificar" daria a impressão de que pode tentar de novo,
+      // mas o UNIQUE PARTIAL no banco bloqueia o 2º envio).
       const { error } = await supabase
         .from("waitlist")
         .update({ status: "notified", notified_at: new Date().toISOString() })
         .eq("id", id);
-      if (error) throw error;
+      if (error) {
+        console.error("[waitlist notify] send ok, update failed:", error);
+        return { sent: true, statusUpdated: false };
+      }
+      return { sent: true, statusUpdated: true };
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] });
-      toast.success("Notificação enviada via WhatsApp.");
+      if (result.statusUpdated) {
+        toast.success("Notificação enviada via WhatsApp.");
+      } else {
+        toast.warning("Mensagem enviada, mas o estado da fila não atualizou. Recarregue a página.");
+      }
     },
     onError: (err: Error) => toast.error(err.message ?? "Erro ao notificar."),
   });

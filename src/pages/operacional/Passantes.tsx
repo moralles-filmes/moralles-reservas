@@ -81,12 +81,12 @@ export default function Passantes() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("tables")
-        .select("id, number, capacity")
+        .select("id, number, min_capacity, max_capacity")
         .eq("unit_id", unitId)
         .eq("active", true)
         .order("number");
       if (error) throw error;
-      return data as Array<{ id: string; number: number; capacity: number }>;
+      return data as Array<{ id: string; number: number; min_capacity: number; max_capacity: number }>;
     },
     enabled: !!unitId,
   });
@@ -149,6 +149,8 @@ export default function Passantes() {
                   onSeat={handleSeat}
                   onStatus={(id, status) => updateStatus.mutate({ id, status })}
                   onDelete={(id) => deleteWalkIn.mutate(id)}
+                  isUpdating={updateStatus.isPending && updateStatus.variables?.id === w.id}
+                  isDeleting={deleteWalkIn.isPending && deleteWalkIn.variables === w.id}
                 />
               ))}
             </div>
@@ -166,6 +168,8 @@ export default function Passantes() {
                   onSeat={handleSeat}
                   onStatus={(id, status) => updateStatus.mutate({ id, status })}
                   onDelete={(id) => deleteWalkIn.mutate(id)}
+                  isUpdating={updateStatus.isPending && updateStatus.variables?.id === w.id}
+                  isDeleting={deleteWalkIn.isPending && deleteWalkIn.variables === w.id}
                 />
               ))}
             </div>
@@ -213,21 +217,45 @@ export default function Passantes() {
   );
 }
 
+interface MesaOption {
+  id: string;
+  number: number;
+  min_capacity: number;
+  max_capacity: number;
+}
+
+function fitsParty(m: MesaOption, partySize: number): boolean {
+  return partySize >= m.min_capacity && partySize <= m.max_capacity;
+}
+
 function WalkInCard({
   walkIn,
   mesas,
   onSeat,
   onStatus,
   onDelete,
+  isUpdating,
+  isDeleting,
 }: {
   walkIn: WalkIn;
-  mesas: Array<{ id: string; number: number; capacity: number }>;
+  mesas: MesaOption[];
   onSeat: (w: WalkIn, tableId?: string) => void;
   onStatus: (id: string, status: WalkInStatus) => void;
   onDelete: (id: string) => void;
+  isUpdating: boolean;
+  isDeleting: boolean;
 }) {
   const [selectedTable, setSelectedTable] = useState("");
   const statusCfg = STATUS_CONFIG[walkIn.status];
+
+  // Mesas compatíveis primeiro, incompatíveis no fim (não bloqueia override —
+  // operador pode juntar mesas, acomodar criança no colo, etc).
+  const orderedMesas = [...mesas].sort((a, b) => {
+    const fitA = fitsParty(a, walkIn.party_size) ? 0 : 1;
+    const fitB = fitsParty(b, walkIn.party_size) ? 0 : 1;
+    if (fitA !== fitB) return fitA - fitB;
+    return a.number - b.number;
+  });
 
   return (
     <Card>
@@ -257,27 +285,50 @@ function WalkInCard({
           {walkIn.status === "waiting" && (
             <>
               <Select value={selectedTable} onValueChange={setSelectedTable}>
-                <SelectTrigger className="h-8 w-36 text-xs">
+                <SelectTrigger className="h-8 w-44 text-xs">
                   <SelectValue placeholder="Alocar mesa" />
                 </SelectTrigger>
                 <SelectContent>
-                  {mesas.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      Mesa {m.number} · {m.capacity}p
-                    </SelectItem>
-                  ))}
+                  {orderedMesas.map((m) => {
+                    const fits = fitsParty(m, walkIn.party_size);
+                    const range = m.min_capacity === m.max_capacity
+                      ? `${m.max_capacity}p`
+                      : `${m.min_capacity}–${m.max_capacity}p`;
+                    return (
+                      <SelectItem key={m.id} value={m.id}>
+                        <span className={fits ? "" : "text-muted-foreground"}>
+                          Mesa {m.number} · {range}
+                          {!fits && " ⚠"}
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
-              <Button size="sm" onClick={() => onSeat(walkIn, selectedTable || undefined)}>
+              <Button
+                size="sm"
+                onClick={() => onSeat(walkIn, selectedTable || undefined)}
+                disabled={isUpdating}
+              >
                 Sentar
               </Button>
-              <Button size="sm" variant="outline" onClick={() => onStatus(walkIn.id, "no_show")}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onStatus(walkIn.id, "no_show")}
+                disabled={isUpdating}
+              >
                 Não apareceu
               </Button>
             </>
           )}
           {walkIn.status === "seated" && (
-            <Button size="sm" variant="outline" onClick={() => onStatus(walkIn.id, "left")}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onStatus(walkIn.id, "left")}
+              disabled={isUpdating}
+            >
               Foi embora
             </Button>
           )}
@@ -293,9 +344,10 @@ function WalkInCard({
                 <AlertDialogDescription>O registro será removido permanentemente.</AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogCancel disabled={isDeleting}>Cancelar</AlertDialogCancel>
                 <AlertDialogAction
                   onClick={() => onDelete(walkIn.id)}
+                  disabled={isDeleting}
                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 >
                   Remover

@@ -22,8 +22,8 @@ export function ReservaCard({ reserva, showActions = false, unitId }: ReservaCar
     try {
       await updateStatus.mutateAsync({ id: reserva.id, status });
       toast.success("Status atualizado.");
-    } catch {
-      toast.error("Erro ao atualizar status.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Erro ao atualizar status.");
     }
   };
 

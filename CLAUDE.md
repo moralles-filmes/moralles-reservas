@@ -476,6 +476,17 @@ Auditoria 2026-05-17 fechou 11 bugs (migration `20260517120000_conversation_appe
 
 ---
 
+## Painel Operacional — invariantes pós-hardening
+
+Auditoria 2026-05-17 fechou bugs no painel operacional (`/o/:unitSlug`) — race conditions, erros virando "lista vazia", inconsistência send-then-update. Manter os invariantes abaixo em qualquer feature que envolva listas + mutations compartilhadas + actions externas.
+
+- **Mutation que faz "external action + status UPDATE" trata cada lado separadamente.** Se a action externa (send WhatsApp, push notif, charge) suceder mas o UPDATE de status falhar depois, **NÃO relançar throw**: operador tentaria de novo, e proteções DB-side (ex.: UNIQUE PARTIAL `(waitlist_id, kind)` em `notifications_sent`) bloqueiam o 2º envio silenciosamente → cliente recebeu, banco diz que não. Padrão atual: retornar `{ externalOk, dbOk }`, mostrar `toast.warning("ação feita, estado não sincronizou — recarregue")` quando `dbOk=false`, e invalidar mesmo assim pra forçar reconciliação na próxima refetch. Pattern em [`useNotifyWaitlist`](src/hooks/useWaitlist.ts) — replicar em send-confirmation manual, charge, etc.
+- **Desabilitar 1 botão entre N que compartilham mutation usa `mutation.variables`, não state extra.** Quando uma lista de cards compartilha a mesma mutation (`useUpdateWaitlistStatus`, `useUpdateWalkInStatus`, `useDeleteWalkIn`), checar `mutation.isPending && mutation.variables?.id === entry.id` para desabilitar apenas o botão da entry em flight — desabilitar a mutation globalmente trava a lista inteira em re-click. Pattern em [`Fila.tsx`](src/pages/operacional/Fila.tsx) (`isUpdatingEntry`) e [`Passantes.tsx`](src/pages/operacional/Passantes.tsx) (`isUpdating`/`isDeleting` props no `WalkInCard`).
+- **Painéis que rodam o dia inteiro em tablet usam `refetchInterval` visibility-aware.** `refetchInterval: 30_000` fixo em tablet de salão aberto 8h = ~960 req/dia ociosas (aba em background). Padrão: helper `pollWhenVisible = () => typeof document !== "undefined" && document.hidden ? false : 30_000` passado como função. Pattern em [`useWalkIns.ts`](src/hooks/useWalkIns.ts) e [`useWaitlist.ts`](src/hooks/useWaitlist.ts).
+- **Estado vazio em lista filtrada checa as listas DERIVADAS, não o total bruto.** `ReservasDia` filtra `pending`/`confirmed`; se as 5 reservas do dia estão todas `cancelled`, `!reservas?.length` é falso (passa o guard de vazio) mas as listas derivadas estão vazias → render em branco. Padrão: computar `hasActive = pending.length + confirmed.length > 0` e usar isso como condição de empty state, com submensagem contando `cancelled`/`no_show` pra contexto. Pattern em [`ReservasDia.tsx`](src/pages/operacional/ReservasDia.tsx).
+
+---
+
 ## Membros e papéis
 
 | Papel | Permissões |
