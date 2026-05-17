@@ -151,7 +151,8 @@ export function getConversationDisplayName(
   if (customerName && customerName !== phone) return customerName;
   const contactName = conv.contact_name?.trim();
   if (contactName) return contactName;
-  return formatPhone(phone);
+  const formatted = formatPhone(phone);
+  return formatted || "Cliente sem nome";
 }
 
 /**
@@ -165,6 +166,45 @@ export function isSafeHttpUrl(url: string | null | undefined): boolean {
     return parsed.protocol === "http:" || parsed.protocol === "https:";
   } catch {
     return false;
+  }
+}
+
+/**
+ * Formata um CNPJ a partir de entrada livre. Aceita "11222333000181" ou
+ * "11.222.333/0001-81". Retorna null se a quantidade de dígitos for diferente
+ * de 14 — chamador trata como erro de validação. Não valida dígitos
+ * verificadores (módulo 11) por enquanto.
+ */
+export function formatCnpj(raw: string): string | null {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length !== 14) return null;
+  return digits.replace(
+    /^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,
+    "$1.$2.$3.$4-$5",
+  );
+}
+
+/**
+ * Extrai o path interno de um arquivo no bucket `unit-assets` a partir da
+ * sua URL pública. Retorna null se a URL não pertence ao bucket esperado —
+ * defesa contra deletar arquivo de outro bucket por acidente.
+ *
+ * Formato esperado: `https://<projeto>.supabase.co/storage/v1/object/public/unit-assets/<unit_id>/<arquivo>`
+ */
+export function extractStoragePath(
+  publicUrl: string | null | undefined,
+  bucket = "unit-assets",
+): string | null {
+  if (!publicUrl) return null;
+  try {
+    const parsed = new URL(publicUrl);
+    const marker = `/storage/v1/object/public/${bucket}/`;
+    const idx = parsed.pathname.indexOf(marker);
+    if (idx === -1) return null;
+    const path = parsed.pathname.slice(idx + marker.length);
+    return path || null;
+  } catch {
+    return null;
   }
 }
 

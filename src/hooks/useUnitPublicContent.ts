@@ -90,6 +90,11 @@ export function useUpdateUnitPublicContent(unitId: string) {
       queryClient.invalidateQueries({ queryKey: ["public-unit"] });
       queryClient.invalidateQueries({ queryKey: ["public-units"] });
       queryClient.invalidateQueries({ queryKey: ["public-cities"] });
+      // Sidebar (SidebarUnitProfile) e seletores cross-org leem all-units +
+      // organizations. Sem isso, logo/nome/facilidades editados aqui ficam
+      // stale em outros pontos da UI até hard-refresh.
+      queryClient.invalidateQueries({ queryKey: ["all-units"] });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
       toast.success("Conta atualizada.");
     },
     onError: (err: Error) => {

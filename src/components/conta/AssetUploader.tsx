@@ -102,6 +102,7 @@ export function AssetUploader({
         type="file"
         accept="image/jpeg,image/png,image/webp,image/avif"
         className="hidden"
+        aria-label={`Enviar ${label}`}
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) onFile(file);

@@ -76,7 +76,7 @@ export function GalleryEditor({ unitId, value, onChange, disabled }: GalleryEdit
                 <button
                   type="button"
                   onClick={() => removeAt(idx)}
-                  className="absolute top-1.5 right-1.5 h-7 w-7 rounded-full bg-background/90 hover:bg-destructive hover:text-destructive-foreground text-foreground flex items-center justify-center shadow-sm transition-colors"
+                  className="absolute top-1.5 right-1.5 h-9 w-9 rounded-full bg-background/90 hover:bg-destructive hover:text-destructive-foreground text-foreground flex items-center justify-center shadow-sm transition-colors"
                   title="Remover foto"
                   aria-label="Remover foto"
                 >
@@ -87,7 +87,7 @@ export function GalleryEditor({ unitId, value, onChange, disabled }: GalleryEdit
                     type="button"
                     onClick={() => moveUp(idx)}
                     disabled={idx === 0}
-                    className="h-7 w-7 rounded-full bg-background/90 hover:bg-primary hover:text-primary-foreground text-foreground flex items-center justify-center shadow-sm transition-colors disabled:opacity-40 disabled:hover:bg-background/90 disabled:hover:text-foreground"
+                    className="h-9 w-9 rounded-full bg-background/90 hover:bg-primary hover:text-primary-foreground text-foreground flex items-center justify-center shadow-sm transition-colors disabled:opacity-40 disabled:hover:bg-background/90 disabled:hover:text-foreground"
                     title="Mover para trás"
                     aria-label="Mover para trás"
                   >
@@ -97,7 +97,7 @@ export function GalleryEditor({ unitId, value, onChange, disabled }: GalleryEdit
                     type="button"
                     onClick={() => moveDown(idx)}
                     disabled={idx === value.length - 1}
-                    className="h-7 w-7 rounded-full bg-background/90 hover:bg-primary hover:text-primary-foreground text-foreground flex items-center justify-center shadow-sm transition-colors disabled:opacity-40 disabled:hover:bg-background/90 disabled:hover:text-foreground"
+                    className="h-9 w-9 rounded-full bg-background/90 hover:bg-primary hover:text-primary-foreground text-foreground flex items-center justify-center shadow-sm transition-colors disabled:opacity-40 disabled:hover:bg-background/90 disabled:hover:text-foreground"
                     title="Mover para frente"
                     aria-label="Mover para frente"
                   >
@@ -169,6 +169,7 @@ export function GalleryEditor({ unitId, value, onChange, disabled }: GalleryEdit
         type="file"
         accept="image/jpeg,image/png,image/webp,image/avif"
         className="hidden"
+        aria-label="Enviar foto para a galeria"
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) handleFile(file);

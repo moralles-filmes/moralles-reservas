@@ -43,8 +43,15 @@ serve(async (req) => {
 
   try {
     const { conversation_id, message } = await req.json();
-    if (!conversation_id || !message?.trim()) {
+    const trimmedMessage = typeof message === "string" ? message.trim() : "";
+    if (!conversation_id || !trimmedMessage) {
       return new Response(JSON.stringify({ error: "conversation_id e message são obrigatórios" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (trimmedMessage.length > 4096) {
+      return new Response(JSON.stringify({ error: "mensagem excede 4096 caracteres" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -53,7 +60,7 @@ serve(async (req) => {
     // Load conversation + customer phone + unit
     const { data: conv, error: convErr } = await supabase
       .from("conversations")
-      .select("id, unit_id, status, messages, customer:customers(phone)")
+      .select("id, unit_id, status, customer:customers(phone)")
       .eq("id", conversation_id)
       .maybeSingle();
 
@@ -94,7 +101,7 @@ serve(async (req) => {
     }
 
     // Send WhatsApp message via shared helper (canal da unit, com fallback ZAPI legacy)
-    const result = await sendWhatsApp(customerPhone, message.trim(), { unit_id: conv.unit_id });
+    const result = await sendWhatsApp(customerPhone, trimmedMessage, { unit_id: conv.unit_id });
     if (!result.ok) {
       jsonLog("error", {
         evt: "manual_send_failed",
@@ -113,24 +120,31 @@ serve(async (req) => {
       );
     }
 
-    // Append human message to conversation history
+    // Append human message to conversation history (RPC atômica — evita race com inbound concorrente)
     const now = new Date().toISOString();
     const humanMsg = {
       role: "human",
-      content: message.trim(),
+      content: trimmedMessage,
       timestamp: now,
       human_user_id: user.id,
     };
-    const updatedMessages = [...(conv.messages || []), humanMsg];
+
+    const { error: appendErr } = await supabase.rpc("append_conversation_message", {
+      p_conversation_id: conversation_id,
+      p_message: humanMsg,
+    });
+    if (appendErr) {
+      jsonLog("error", {
+        evt: "manual_append_failed",
+        convId: conversation_id,
+        err: appendErr.message,
+      });
+      // WhatsApp já foi enviado — não falhamos o request, só logamos
+    }
 
     await supabase
       .from("conversations")
-      .update({
-        messages: updatedMessages,
-        status: "human_active",
-        last_message_at: now,
-        updated_at: now,
-      })
+      .update({ status: "human_active", updated_at: now })
       .eq("id", conversation_id);
 
     jsonLog("info", { evt: "human_replied", convId: conversation_id, userId: user.id });

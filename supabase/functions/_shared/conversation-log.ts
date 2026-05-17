@@ -73,22 +73,16 @@ export async function appendOutboundToConversation(
 
     const { data: conv } = await supabase
       .from("conversations")
-      .select("id, messages")
+      .select("id")
       .eq("unit_id", unitId)
       .eq("customer_id", customerId)
       .maybeSingle();
 
     if (conv) {
-      const existing = Array.isArray(conv.messages) ? conv.messages : [];
-      const updated = [...existing, msg];
-      const { error } = await supabase
-        .from("conversations")
-        .update({
-          messages: updated,
-          last_message_at: now,
-          updated_at: now,
-        })
-        .eq("id", conv.id);
+      const { error } = await supabase.rpc("append_conversation_message", {
+        p_conversation_id: conv.id,
+        p_message: msg,
+      });
       if (error) {
         jsonLog("warn", {
           evt: "conversation_log_update_failed",

@@ -343,12 +343,19 @@ async function getOrCreateConversation(customerId: string, unitId: string, conta
 
 // deno-lint-ignore no-explicit-any
 async function appendToConversation(convId: string, existing: any[], role: "user" | "assistant", content: string) {
-  const updated = [...existing, { role, content, timestamp: new Date().toISOString() }];
-  await supabase
-    .from("conversations")
-    .update({ messages: updated, updated_at: new Date().toISOString() })
-    .eq("id", convId);
-  return updated;
+  // Append atômico via RPC (single UPDATE com `messages || jsonb_build_array(msg)`):
+  // evita perda quando dois processos appendam simultaneamente (inbound + worker).
+  // O array retornado é uma "previsão local" mantida pra compat com callers que
+  // encadeiam appendToConversation (ex.: comment intercept → user + assistant).
+  const newMsg = { role, content, timestamp: new Date().toISOString() };
+  const { error } = await supabase.rpc("append_conversation_message", {
+    p_conversation_id: convId,
+    p_message: newMsg,
+  });
+  if (error) {
+    jsonLog("warn", { evt: "append_conversation_message_failed", convId, err: error.message });
+  }
+  return [...existing, newMsg];
 }
 
 // ─── Tool log helpers ──────────────────────────────────────────────────────────

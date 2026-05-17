@@ -74,7 +74,13 @@ export function useConversationActions(unitId: string) {
     mutationFn: async (conversationId: string) => {
       const { error } = await supabase
         .from("conversations")
-        .update({ status: "ai_active", assigned_to: null, updated_at: new Date().toISOString() })
+        .update({
+          status: "ai_active",
+          assigned_to: null,
+          handoff_reason: null,
+          handoff_at: null,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", conversationId);
       if (error) throw error;
     },

@@ -31,12 +31,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { slugify } from "@/lib/utils";
+import { slugify, formatCnpj, extractStoragePath } from "@/lib/utils";
 import { toast } from "sonner";
 import { ExternalLink, Loader2, Plus, X } from "lucide-react";
 import type { UnitAddress } from "@/types/reserva";
 
-const SLUG_REGEX = /^[a-z0-9-]+$/;
+// Slug aceita letras minúsculas/dígitos, separados por hífen — sem hífen
+// no início/fim e sem hífens duplos. saveIdentity() exibe toast adequado
+// quando o usuário tenta salvar algo fora desse padrão.
+const SLUG_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const DESCRIPTION_MAX = 800;
 
 const BR_STATES = [
@@ -203,15 +206,20 @@ export default function Conta() {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [slugTouched, setSlugTouched] = useState(false);
   const [savingIdentity, setSavingIdentity] = useState(false);
-  const lastLoadedFor = useRef<string>("");
+  // Mantém referência ao último `content` aplicado no form. Comparar por
+  // referência (e não por id) permite que o form re-absorva dados após
+  // refetch da mutation — incluindo normalizações server-side (trim/lower).
+  const lastSyncedRef = useRef<UnitPublicContent | null>(null);
 
   useEffect(() => {
     if (!content) return;
-    if (lastLoadedFor.current === content.id) return;
-    lastLoadedFor.current = content.id;
+    if (lastSyncedRef.current === content) return;
+    // Não atropela edição em curso: se há save em andamento, espera concluir.
+    if (update.isPending || savingIdentity) return;
+    lastSyncedRef.current = content;
     setForm(contentToForm(content));
     setSlugTouched(false);
-  }, [content]);
+  }, [content, update.isPending, savingIdentity]);
 
   const ticketCents = useMemo(() => {
     const n = form.ticket_medio.trim() ? Number(form.ticket_medio.replace(",", ".")) : null;
@@ -326,26 +334,92 @@ export default function Conta() {
       return;
     }
 
-    update.mutate({
-      is_public: form.is_public,
-      description: form.description.trim() || null,
-      cnpj: form.cnpj.trim() || null,
-      phone: form.phone.trim() || null,
-      website: form.website.trim() || null,
-      instagram: form.instagram.trim() || null,
-      cuisine_types: form.cuisine_types,
-      opening_hours_text: form.opening_hours_text.trim() || null,
-      timezone: form.timezone,
-      price_range_max: tm,
-      price_range_min: tm,
-      payment_methods: form.payment_methods.trim() || null,
-      financial_email: form.financial_email.trim() || null,
-      facilities: form.facilities,
-      address: addressPayload,
-      hero_image_url: form.hero_image_url,
-      logo_url: form.logo_url,
-      gallery_photos: form.gallery_photos,
-    });
+    // 4) CNPJ — vazio é ok; quando preenchido, exige 14 dígitos.
+    let cnpjFmt: string | null = null;
+    if (form.cnpj.trim()) {
+      cnpjFmt = formatCnpj(form.cnpj.trim());
+      if (!cnpjFmt) {
+        toast.error("CNPJ deve ter 14 dígitos.");
+        return;
+      }
+    }
+
+    // 5) E-mail financeiro — vazio é ok; preenchido tem que parecer e-mail.
+    const emailRaw = form.financial_email.trim();
+    if (emailRaw && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
+      toast.error("E-mail financeiro inválido.");
+      return;
+    }
+
+    // 6) Instagram — tira @ inicial pra ficar consistente no banco; portal
+    //    público já normaliza no render, mas salvar normalizado evita drift.
+    const instagramNorm = form.instagram.trim().replace(/^@+/, "").trim() || null;
+
+    // 7) Website — garante protocolo. "moralles.com.br" → "https://moralles.com.br".
+    let websiteNorm: string | null = null;
+    const wsRaw = form.website.trim();
+    if (wsRaw) {
+      websiteNorm = /^https?:\/\//i.test(wsRaw) ? wsRaw : `https://${wsRaw}`;
+    }
+
+    // 8) Snapshot dos assets antes de salvar — usado para cleanup pós-mutação.
+    const prevHero = content?.hero_image_url ?? null;
+    const prevLogo = content?.logo_url ?? null;
+    const prevGallery = content?.gallery_photos ?? [];
+
+    try {
+      await update.mutateAsync({
+        is_public: form.is_public,
+        description: form.description.trim() || null,
+        cnpj: cnpjFmt,
+        phone: form.phone.trim() || null,
+        website: websiteNorm,
+        instagram: instagramNorm,
+        cuisine_types: form.cuisine_types,
+        opening_hours_text: form.opening_hours_text.trim() || null,
+        timezone: form.timezone,
+        price_range_max: tm,
+        price_range_min: tm,
+        payment_methods: form.payment_methods.trim() || null,
+        financial_email: emailRaw || null,
+        facilities: form.facilities,
+        address: addressPayload,
+        hero_image_url: form.hero_image_url,
+        logo_url: form.logo_url,
+        gallery_photos: form.gallery_photos,
+      });
+    } catch {
+      // onError do hook já mostrou toast.
+      return;
+    }
+
+    // 9) Cleanup best-effort de arquivos órfãos no bucket unit-assets.
+    //    Compara URLs antes/depois e remove paths que sumiram. Falha de
+    //    storage não bloqueia UX nem invalida o save bem-sucedido.
+    const removed = new Set<string>(prevGallery);
+    for (const url of form.gallery_photos) removed.delete(url);
+    const toRemove: string[] = [];
+    if (prevHero && prevHero !== form.hero_image_url) {
+      const p = extractStoragePath(prevHero);
+      if (p && p.startsWith(`${unitId}/`)) toRemove.push(p);
+    }
+    if (prevLogo && prevLogo !== form.logo_url) {
+      const p = extractStoragePath(prevLogo);
+      if (p && p.startsWith(`${unitId}/`)) toRemove.push(p);
+    }
+    for (const url of removed) {
+      const p = extractStoragePath(url);
+      if (p && p.startsWith(`${unitId}/`)) toRemove.push(p);
+    }
+    if (toRemove.length > 0) {
+      try {
+        await supabase.storage.from("unit-assets").remove(toRemove);
+      } catch (err) {
+        // Não interrompe o fluxo — o save no banco já foi OK.
+        // eslint-disable-next-line no-console
+        console.warn("[Conta] falha ao remover assets antigos:", err);
+      }
+    }
   };
 
   return (

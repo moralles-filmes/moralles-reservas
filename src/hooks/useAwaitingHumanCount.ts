@@ -27,7 +27,7 @@ export function useAwaitingHumanCount(unitId: string) {
       .channel(`awaiting-human-${unitId}`)
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "conversations", filter: `unit_id=eq.${unitId}` },
+        { event: "*", schema: "public", table: "conversations", filter: `unit_id=eq.${unitId}` },
         () => {
           queryClient.invalidateQueries({ queryKey: ["awaiting-human-count", unitId] });
         }

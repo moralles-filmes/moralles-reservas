@@ -121,7 +121,8 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...
   ├── /fila/comunicacao|ajustes
   ├── /cardapios/meus-cardapios|meus-cardapios/:menuId|banners|ajustes
   ├── /giftback/regras|vouchers|ajustes
-  ├── /clientes|conversas|configuracoes|pagina-publica|auditoria|usuarios
+  ├── /clientes|conversas|configuracoes|conta|auditoria|usuarios
+                               #   /conta substituiu /pagina-publica; rota antiga redireciona
 
 /o/:unitSlug                 → Painel Operacional (OperacionalLayout)
   ├── /                      → Reservas do dia
@@ -151,6 +152,9 @@ moralles-reservas/
 │   │   ├── utils.ts                   # cn(), formatDateBR(), formatPhone(), slugify()
 │   │   ├── zapi.ts                    # Templates de mensagem WhatsApp (referência)
 │   │   ├── exportCsv.ts              # exportClientesCsv (CSV com BOM utf-8)
+│   │   #  utils.ts também exporta: formatCnpj (valida 14 dígitos + formata
+│   │   #  XX.XXX.XXX/XXXX-XX) e extractStoragePath (parse seguro de URL
+│   │   #  pública do bucket; retorna null se URL não é do bucket esperado)
 │   │   └── validators/organization.ts # Schemas Zod
 │   │
 │   ├── hooks/                         # Todos aceitam unitId como primeiro parâmetro
@@ -203,7 +207,7 @@ moralles-reservas/
 │       ├── Index.tsx / PublicPortal.tsx / WidgetPortal.tsx / MenuPortal.tsx / Auth.tsx
 │       ├── gestao/
 │       │   ├── Dashboard.tsx / Reservas.tsx / Calendario.tsx / Clientes.tsx / Conversas.tsx
-│       │   ├── Configuracoes.tsx / Automacao.tsx / Avaliacoes.tsx / PaginaPublica.tsx
+│       │   ├── Configuracoes.tsx / Automacao.tsx / Avaliacoes.tsx / Conta.tsx
 │       │   ├── Auditoria.tsx / Usuarios.tsx
 │       │   ├── reservas/  (Saloes, SalaoDetalhe, DatasEspeciais, Bloqueios, Widget, WidgetDetail, Formulario, Comunicacao, Ajustes)
 │       │   ├── fila/      (Comunicacao, Ajustes)
@@ -214,7 +218,7 @@ moralles-reservas/
 │       └── platform/      (Empresas, Automacao)
 │
 ├── supabase/
-│   ├── migrations/        # 001–052 numéricas (legado) + <timestamp>_*.sql (novas). Toda migration nova SEMPRE em formato YYYYMMDDHHMMSS_nome.sql (padrão Supabase CLI) — só assim `supabase db push` rastreia em schema_migrations
+│   ├── migrations/        # Todas em formato <timestamp>_<nome>.sql (padrão Supabase CLI). Os arquivos legacy 001-052 foram renomeados em 2026-05-17 para incluir o timestamp real do `schema_migrations` remoto como prefixo — re-sincroniza `supabase migration list --linked` sem tocar no banco. 9 versões órfãs (2 re-runs históricos + 7 duplicações da 1ª aplicação em 16/05 das migrations 053-057 + waitlist_atomic + backfill_messages que foram re-aplicadas em 17/05 como `20260517100000-100600`) foram limpas via `migration repair --status reverted` no mesmo dia — não tocou em objetos do banco (todas as migrations 17/05 eram idempotentes, 2ª execução foi no-op confirmado por queries). Toda migration nova SEMPRE em formato YYYYMMDDHHMMSS_nome.sql. `db push` casa 100% e funciona normalmente
 │   └── functions/
 │       ├── _shared/
 │       │   ├── ai-providers.ts        # Abstração multi-provedor (runAgentLoop)
@@ -443,6 +447,22 @@ Auditoria 2026-05-17 fechou 16 bugs (migration `20260517110000_giftback_hardenin
 
 ---
 
+## Conversas — invariantes pós-hardening
+
+Auditoria 2026-05-17 fechou 11 bugs (migration `20260517120000_conversation_append_atomic.sql`). Manter os invariantes abaixo ao tocar qualquer código que leia/escreva `conversations`.
+
+- **Append em `conversations.messages` é SEMPRE via RPC `append_conversation_message(p_conversation_id, p_message)`.** Nunca mais fazer `SELECT messages → push → UPDATE messages` — esse padrão perdia mensagens em concorrência (inbound + worker do cron, ou 2 inbounds <100ms). A RPC é `SECURITY DEFINER`, grant só pra `service_role`, e usa `messages || jsonb_build_array(p_message)` no mesmo UPDATE → row lock serializa appends e nenhum é perdido. Writers atuais: `webhook-whatsapp` (helper `appendToConversation`), `send-manual-message`, `_shared/conversation-log.ts` (`appendOutboundToConversation`). Worker/edge function novo que precise appendar mensagem **tem que chamar a RPC** — nunca duplicar o padrão antigo.
+- **Mensagem WhatsApp limita 4096 chars.** Frontend (`Textarea` em `Conversas.tsx`) e backend (`send-manual-message`) validam — frontend bloqueia via `maxLength` + toast, backend retorna 400 com `"mensagem excede 4096 caracteres"`. Provider rejeita ou trunca silenciosamente acima disso. Replicar validação em qualquer novo endpoint que envie mensagem manual.
+- **`releaseToAI` limpa `handoff_reason` E `handoff_at`.** Quando devolve conversa pra IA, esses 2 campos viram NULL — sem isso, próximo handoff sem motivo herdava o motivo antigo no header da UI. Replicar em qualquer mutation nova que faça transição `human_active → ai_active`.
+- **`useSendManualMessage` faz optimistic update + rollback.** A mensagem aparece na thread instantaneamente via `setQueryData(["conversation-detail", id])`, com rollback em erro. Refetch real no `onSettled` substitui a versão optimistic. Padrão pra novas mutations que escrevem na thread.
+- **Auto-scroll em thread Radix `ScrollArea` aponta para o viewport interno**, não para o ref raiz: `root.querySelector("[data-radix-scroll-area-viewport]")`. Setar `scrollTop` no wrapper raiz não tem efeito — o scroll real acontece no viewport. Pattern em `Conversas.tsx` `ConversationDetail`.
+- **`useAwaitingHumanCount` escuta `event: "*"`** (não só `UPDATE`) — INSERT de conversa já em `awaiting_human` também atualiza o badge da sidebar.
+- **`handleSend` tem guard reentrante** (`if (sendMessage.isPending) return`) antes de qualquer trim/validate. Ctrl+Enter rápido 2x não envia 2x WhatsApp (provider não dedupe).
+- **`getConversationDisplayName` fallback final é `"Cliente sem nome"`** (não string vazia). Lista lateral sempre tem rótulo legível mesmo se customer.name + contact_name + phone forem todos vazios.
+- **Shape canônico de `ConversationMessage`** (`{ role, content, timestamp, kind?, human_user_id? }`) continua autoritativo — a RPC valida que `role`, `content` e `timestamp` estão presentes e rejeita com `raise exception` se faltar. Não adicionar campo novo sem refletir no tipo em `src/types/reserva.ts`.
+
+---
+
 ## Membros e papéis
 
 | Papel | Permissões |
@@ -490,6 +510,7 @@ Auditoria 2026-05-17 fechou 16 bugs (migration `20260517110000_giftback_hardenin
 - **Edge Functions validam `unit_id`** da request contra o recurso — defense-in-depth.
 - **CORS em `manage-*`** via `_shared/cors.ts` (whitelist localhost, *.vercel.app, reservas.moralles.com.br).
 - **Storage `unit-assets`**: listing bloqueado, CDN público funciona.
+- **Substituir/remover asset no bucket `unit-assets` exige cleanup do arquivo antigo no client** — sem isso, trocar logo/hero/foto da galeria acumula órfãos no bucket indefinidamente (sem GC). Padrão em `Conta.tsx:handleSave`: captura `prevHero/Logo/Gallery` de `content` ANTES da mutation, faz `await update.mutateAsync(...)`, depois diff vs novos e `supabase.storage.from("unit-assets").remove([paths])` em best-effort (try/catch silencioso — falha de storage não invalida o save). SEMPRE filtre os paths via `extractStoragePath()` de `@/lib/utils` (rejeita URL de outro bucket → null) E confirme `path.startsWith(<unit_id>/)` antes de deletar (defesa contra cross-tenant). Replicar esse padrão em qualquer feature nova que escreva no bucket (menus, banners, futuros uploads).
 - **Toda policy RLS escopada por `unit_id` precisa de contraparte `platform_admin_*`** via `is_platform_admin(auth.uid())` — vale para tabelas E para `storage.objects` de buckets multi-tenant. `useCurrentUnit.ts` fabrica pseudo-membership "owner" para platform_admin operar unidades alheias; sem a policy paralela, a write é bloqueada apesar da UI mostrar "Proprietário". Pattern em `013_multi_tenant.sql`; storage cobre em `047_unit_assets_platform_admin.sql`.
 - **Input do usuário em `.or()` / `.ilike()` PostgREST tem que passar por `sanitizeSearchTerm()`** de `@/lib/utils`. Remove `, ( ) % _ \ " ' \` *` (caracteres que quebram a sintaxe OR ou viram wildcards involuntários) e limita a 80 chars. Sem isso, buscar `O'Brien` ou `nome,id` quebra a query inteira ou retorna resultado errado. Já aplicado em `Clientes.tsx` e `exportClientesXlsx`. Pendente: `IssueVoucherDialog.tsx` ainda lê direto sem sanitizar.
 - **URLs que vêm do banco e viram `<a href>` em portal público devem passar por `isSafeHttpUrl()`** de `@/lib/utils` antes de renderizar (bloqueia `javascript:`/`data:`/`vbscript:`). Hoje o único caso é `menu_banners.link_url` — frontend valida no save (`MenuBannerEditor`), portal valida no render (`MenuPortal.BannerCarousel`) e banco força com CHECK constraint `menu_banners_link_url_safe_check` (migration `20260517100800_menus_hardening.sql`). Qualquer novo campo "link salvo por membro" deve seguir esse triplo guard. Mesma migration documenta `menus.theme` (JSONB) cujo fallback campo a campo (`DEFAULT_MENU_THEME`) fica em `MenuPortal.safeColor()` — banco não força schema JSON, então frontend é o guardião.
@@ -532,6 +553,8 @@ supabase functions deploy create-reservation
 ```
 
 > Ao alterar `_shared/availability.ts`, sempre redeploy `create-reservation` e `webhook-whatsapp`.
+
+> Ao alterar `_shared/conversation-log.ts`, redeploy de TODAS que importam: `webhook-whatsapp`, `send-manual-message`, `send-whatsapp`, `send-confirmation`, `send-cancellation`, `process-notification-outbox`, `process-voucher-triggers`, `process-reservation-reminders`, `process-satisfaction-surveys`, `process-waitlist-entered`, `process-waitlist-feedback`. Edge Function só vê a nova versão do shared no deploy próprio — sem redeploy, ficam consumindo a versão antiga em memória.
 
 ## Adicionando novos componentes shadcn/ui
 

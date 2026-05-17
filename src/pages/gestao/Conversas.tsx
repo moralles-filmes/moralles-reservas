@@ -70,7 +70,7 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
   const isBot = msg.role === "assistant";
   const isHuman = msg.role === "human";
   const isUser = msg.role === "user";
-  const kindLabel = msg.kind ? OUTBOUND_KIND_LABEL[msg.kind] : undefined;
+  const kindLabel = msg.kind ? (OUTBOUND_KIND_LABEL[msg.kind] ?? msg.kind) : undefined;
 
   return (
     <div className={`flex ${isUser ? "justify-start" : "justify-end"}`}>
@@ -164,12 +164,18 @@ function ConversationDetail({
     return () => { supabase.removeChannel(channel); };
   }, [conv.id, unitId, queryClient]);
 
-  // Scroll to bottom when messages change
+  // Scroll to bottom when messages change.
+  // Radix ScrollArea: o nó scrollável real é o viewport interno; setar scrollTop
+  // no wrapper raiz (que o ref recebe) não tem efeito. Buscar o viewport via
+  // querySelector com o atributo data-radix-scroll-area-viewport.
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [liveConv?.messages?.length]);
+    const root = scrollRef.current;
+    if (!root) return;
+    const viewport =
+      root.querySelector<HTMLDivElement>("[data-radix-scroll-area-viewport]");
+    const target = viewport ?? root;
+    target.scrollTop = target.scrollHeight;
+  }, [liveConv?.messages?.length, conv.id]);
 
   const current = liveConv ?? conv;
   const isHumanMode = current.status === "human_active" || current.status === "awaiting_human";
@@ -196,8 +202,13 @@ function ConversationDetail({
   }
 
   function handleSend() {
+    if (sendMessage.isPending) return;
     const msg = replyText.trim();
     if (!msg) return;
+    if (msg.length > 4096) {
+      toast.error("Mensagem excede 4096 caracteres (limite do WhatsApp).");
+      return;
+    }
     sendMessage.mutate(
       { conversationId: current.id, message: msg },
       {
@@ -291,8 +302,16 @@ function ConversationDetail({
             placeholder="Digite a mensagem e pressione Ctrl+Enter para enviar..."
             className="text-sm resize-none"
             disabled={sendMessage.isPending}
+            maxLength={4096}
           />
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className={`text-[11px] ${
+                replyText.length >= 4096 ? "text-destructive" : "text-muted-foreground"
+              }`}
+            >
+              {replyText.length} / 4096
+            </span>
             <Button
               size="sm"
               onClick={handleSend}
@@ -330,7 +349,10 @@ export default function Conversas() {
   const [tab, setTab] = useState<TabValue>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { data: conversations, isLoading } = useConversations(unitId, tab === "all" ? "all" : tab);
+  const { data: conversations, isLoading, isError, refetch } = useConversations(
+    unitId,
+    tab === "all" ? "all" : tab
+  );
 
   const selected = conversations?.find((c) => c.id === selectedId) ?? null;
 
@@ -366,6 +388,13 @@ export default function Conversas() {
               {isLoading ? (
                 <div className="p-3 space-y-2">
                   {[1, 2, 3].map((i) => <Skeleton key={i} className="h-16 w-full" />)}
+                </div>
+              ) : isError ? (
+                <div className="p-6 text-center space-y-3">
+                  <p className="text-sm text-destructive">Erro ao carregar conversas.</p>
+                  <Button size="sm" variant="outline" onClick={() => refetch()}>
+                    Tentar de novo
+                  </Button>
                 </div>
               ) : conversations?.length === 0 ? (
                 <div className="p-6 text-center text-sm text-muted-foreground">

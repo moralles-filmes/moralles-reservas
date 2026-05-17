@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
 import {
@@ -38,19 +39,43 @@ const TABLE_LABEL: Record<string, string> = {
   reservations: "Reserva",
 };
 
+const PAGE_SIZE = 50;
+
 export default function Auditoria() {
   const unit = useCurrentUnit();
   const unitId = unit?.unit_id ?? "";
+  const organizationId = unit?.organization_id ?? "";
 
   const [tableFilter, setTableFilter] = useState<string>("all");
   const [actionFilter, setActionFilter] = useState<string>("all");
   const [selected, setSelected] = useState<AuditLogEntry | null>(null);
+  const [page, setPage] = useState(0);
+  const [accumulated, setAccumulated] = useState<AuditLogEntry[]>([]);
 
-  const { data: entries, isLoading } = useAuditLog(unitId, {
-    table: tableFilter === "all" ? undefined : tableFilter,
-    action: actionFilter === "all" ? undefined : actionFilter,
-    limit: 200,
-  });
+  const { data: entries, isLoading, isError, refetch, isFetching } = useAuditLog(
+    unitId,
+    organizationId,
+    {
+      table: tableFilter === "all" ? undefined : tableFilter,
+      action: actionFilter === "all" ? undefined : actionFilter,
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    },
+  );
+
+  // Reset acumulado quando filtros mudam (volta pra página 0)
+  useEffect(() => {
+    setPage(0);
+    setAccumulated([]);
+  }, [tableFilter, actionFilter, unitId, organizationId]);
+
+  // Append a cada nova página carregada
+  useEffect(() => {
+    if (!entries) return;
+    setAccumulated((prev) => (page === 0 ? entries : [...prev, ...entries]));
+  }, [entries, page]);
+
+  const hasMore = (entries?.length ?? 0) === PAGE_SIZE;
 
   return (
     <div className="space-y-5">
@@ -92,11 +117,20 @@ export default function Auditoria() {
         </div>
       </div>
 
-      {isLoading ? (
+      {isLoading && accumulated.length === 0 ? (
         <div className="space-y-2">
           {[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-14 w-full" />)}
         </div>
-      ) : !entries?.length ? (
+      ) : isError ? (
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-sm text-destructive">Erro ao carregar a auditoria.</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>
+              Tentar novamente
+            </Button>
+          </CardContent>
+        </Card>
+      ) : !accumulated.length ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
             Nenhum registro de auditoria.
@@ -104,7 +138,7 @@ export default function Auditoria() {
         </Card>
       ) : (
         <div className="space-y-2">
-          {entries.map((e) => (
+          {accumulated.map((e) => (
             <Card
               key={e.id}
               role="button"
@@ -123,10 +157,10 @@ export default function Auditoria() {
                   {TABLE_LABEL[e.table_name] ?? e.table_name}
                 </span>
                 <code className="text-xs text-muted-foreground font-mono">
-                  #{e.record_id.slice(0, 8)}
+                  #{e.id}
                 </code>
                 <span className="text-xs text-muted-foreground ml-auto">
-                  {new Date(e.created_at).toLocaleString("pt-BR")}
+                  {formatTimestamp(e.created_at)}
                 </span>
                 <span className="text-xs text-muted-foreground w-full sm:w-auto sm:ml-3">
                   por {e.actor_email ?? <em>sistema</em>}
@@ -134,6 +168,19 @@ export default function Auditoria() {
               </CardContent>
             </Card>
           ))}
+
+          {hasMore && (
+            <div className="flex justify-center pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={isFetching}
+              >
+                {isFetching ? "Carregando..." : "Carregar mais"}
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -158,7 +205,7 @@ function AuditDetailsDialog({ entry, onClose }: { entry: AuditLogEntry | null; o
           <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground">
             <div>
               <span className="font-medium">Quando:</span>{" "}
-              {new Date(entry.created_at).toLocaleString("pt-BR")}
+              {formatTimestamp(entry.created_at)}
             </div>
             <div>
               <span className="font-medium">Por:</span>{" "}
@@ -225,4 +272,11 @@ function fmt(value: unknown): string {
   if (typeof value === "string") return value || "—";
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
+}
+
+function formatTimestamp(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("pt-BR");
 }
