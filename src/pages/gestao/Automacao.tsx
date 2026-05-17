@@ -389,7 +389,7 @@ function AddChannelDialog({
       { provider, credentials: getCredentials() },
       {
         onSuccess: () => { toast.success("Canal adicionado."); onClose(); reset(); },
-        onError: () => toast.error("Erro ao adicionar canal."),
+        onError: (err: Error) => toast.error(err.message || "Erro ao adicionar canal."),
       }
     );
   };
@@ -539,7 +539,7 @@ function AITab({ unitId }: { unitId: string }) {
       queryClient.invalidateQueries({ queryKey: ["settings", unitId] });
       toast.success("Configuração salva.");
     },
-    onError: () => toast.error("Erro ao salvar."),
+    onError: (err: Error) => toast.error(err.message || "Erro ao salvar."),
   });
 
   const activeProvider = PROVIDERS.find((p) => p.id === aiConfig.provider)!;
@@ -713,6 +713,8 @@ function PromptTab({ unitId }: { unitId: string }) {
     setSystemPrompt((map["ai_system_prompt"] as string) ?? "");
   }, [settings]);
 
+  const [isSavingAll, setIsSavingAll] = useState(false);
+
   const saveSetting = useMutation({
     mutationFn: async ({ key, value }: { key: string; value: unknown }) => {
       const { error } = await supabase
@@ -723,19 +725,26 @@ function PromptTab({ unitId }: { unitId: string }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings", unitId] });
     },
-    onError: () => toast.error("Erro ao salvar."),
+    onError: (err: Error) => toast.error(err.message || "Erro ao salvar."),
   });
 
-  function saveAll() {
-    Promise.all([
-      saveSetting.mutateAsync({ key: "agent_mode", value: agentMode }),
-      saveSetting.mutateAsync({ key: "restaurant_menu", value: restaurantMenu }),
-      saveSetting.mutateAsync({ key: "delivery_response", value: deliveryResponse }),
-      saveSetting.mutateAsync({ key: "restaurant_extra_info", value: restaurantExtraInfo }),
-      saveSetting.mutateAsync({ key: "ai_system_prompt", value: systemPrompt }),
-    ])
-      .then(() => toast.success("Configuração do agente salva."))
-      .catch(() => toast.error("Erro ao salvar configuração."));
+  async function saveAll() {
+    if (isSavingAll) return;
+    setIsSavingAll(true);
+    try {
+      await Promise.all([
+        saveSetting.mutateAsync({ key: "agent_mode", value: agentMode }),
+        saveSetting.mutateAsync({ key: "restaurant_menu", value: restaurantMenu }),
+        saveSetting.mutateAsync({ key: "delivery_response", value: deliveryResponse }),
+        saveSetting.mutateAsync({ key: "restaurant_extra_info", value: restaurantExtraInfo }),
+        saveSetting.mutateAsync({ key: "ai_system_prompt", value: systemPrompt }),
+      ]);
+      toast.success("Configuração do agente salva.");
+    } catch (err) {
+      toast.error((err as Error)?.message || "Erro ao salvar configuração.");
+    } finally {
+      setIsSavingAll(false);
+    }
   }
 
   return (
@@ -808,8 +817,8 @@ function PromptTab({ unitId }: { unitId: string }) {
           <p className="text-xs text-muted-foreground">Complementa o comportamento padrão do agente. Use para regras específicas do seu negócio.</p>
         </div>
 
-        <Button onClick={saveAll} disabled={saveSetting.isPending}>
-          Salvar configuração
+        <Button onClick={saveAll} disabled={isSavingAll || saveSetting.isPending}>
+          {isSavingAll ? "Salvando…" : "Salvar configuração"}
         </Button>
       </CardContent>
     </Card>
@@ -902,7 +911,15 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
     );
   }
 
-  if (!data) return null;
+  if (!data) {
+    return (
+      <Card>
+        <CardContent className="py-6">
+          <Skeleton className="h-24 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
 
   const { channel, ai, stats_24h, last_executions, generated_at } = data;
   const successRate = stats_24h.total > 0

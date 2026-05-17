@@ -19,7 +19,7 @@ export const createOrganizationSchema = z.object({
     .transform((v) => v.toLowerCase()),
   unit_timezone: z.string().default("America/Sao_Paulo"),
   owner_email: z.string().email("E-mail inválido."),
-  owner_password: z.string().min(6, "Senha deve ter ao menos 6 caracteres."),
+  owner_password: z.string().min(10, "Senha deve ter ao menos 10 caracteres."),
 });
 
 export const updateOrganizationSchema = z.object({

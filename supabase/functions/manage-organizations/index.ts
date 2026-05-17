@@ -98,11 +98,14 @@ serve(async (req) => {
       if (!ownerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail)) {
         return jsonResponse(req, { error: "E-mail do proprietário inválido." }, 400);
       }
-      if (ownerPassword.length < 6) {
-        return jsonResponse(req, { error: "Senha deve ter pelo menos 6 caracteres." }, 400);
+      if (ownerPassword.length < 10) {
+        return jsonResponse(req, { error: "Senha deve ter pelo menos 10 caracteres." }, 400);
       }
 
-      // 1. Criar auth user do owner
+      // 1. Criar auth user do owner.
+      // Exceção à regra de não vazar error.message: o Supabase Auth retorna
+      // mensagens já amigáveis ("User already registered", "Password is too weak"
+      // etc.) que o super-admin precisa ver para reagir.
       const { data: created, error: createErr } = await supabase.auth.admin.createUser({
         email: ownerEmail,
         password: ownerPassword,
@@ -121,8 +124,11 @@ serve(async (req) => {
         .single();
 
       if (orgErr || !org) {
-        await supabase.auth.admin.deleteUser(ownerId);
-        return jsonResponse(req, { error: orgErr?.message ?? "Falha ao criar organização." }, 400);
+        console.error("manage-organizations:create org insert failed", orgErr);
+        await supabase.auth.admin.deleteUser(ownerId).catch((e) =>
+          console.error("manage-organizations:rollback deleteUser failed", e)
+        );
+        return jsonResponse(req, { error: "Falha ao criar empresa." }, 500);
       }
 
       // 3. Criar unit
@@ -133,9 +139,14 @@ serve(async (req) => {
         .single();
 
       if (unitErr || !unit) {
-        await supabase.from("organizations").delete().eq("id", org.id);
-        await supabase.auth.admin.deleteUser(ownerId);
-        return jsonResponse(req, { error: unitErr?.message ?? "Falha ao criar unidade." }, 400);
+        console.error("manage-organizations:create unit insert failed", unitErr);
+        await supabase.from("organizations").delete().eq("id", org.id).then(({ error }) => {
+          if (error) console.error("manage-organizations:rollback deleteOrg failed", error);
+        });
+        await supabase.auth.admin.deleteUser(ownerId).catch((e) =>
+          console.error("manage-organizations:rollback deleteUser failed", e)
+        );
+        return jsonResponse(req, { error: "Falha ao criar unidade." }, 500);
       }
 
       // 4. Criar unit_member owner
@@ -146,10 +157,17 @@ serve(async (req) => {
       });
 
       if (memberErr) {
-        await supabase.from("units").delete().eq("id", unit.id);
-        await supabase.from("organizations").delete().eq("id", org.id);
-        await supabase.auth.admin.deleteUser(ownerId);
-        return jsonResponse(req, { error: memberErr.message }, 500);
+        console.error("manage-organizations:create unit_member insert failed", memberErr);
+        await supabase.from("units").delete().eq("id", unit.id).then(({ error }) => {
+          if (error) console.error("manage-organizations:rollback deleteUnit failed", error);
+        });
+        await supabase.from("organizations").delete().eq("id", org.id).then(({ error }) => {
+          if (error) console.error("manage-organizations:rollback deleteOrg failed", error);
+        });
+        await supabase.auth.admin.deleteUser(ownerId).catch((e) =>
+          console.error("manage-organizations:rollback deleteUser failed", e)
+        );
+        return jsonResponse(req, { error: "Falha ao vincular proprietário à unidade." }, 500);
       }
 
       return jsonResponse(req, { success: true, organization_id: org.id, unit_id: unit.id, owner_id: ownerId });
@@ -172,13 +190,16 @@ serve(async (req) => {
         .update(updatePayload)
         .eq("id", orgId);
 
-      if (updateErr) return jsonResponse(req, { error: updateErr.message }, 500);
+      if (updateErr) {
+        console.error("manage-organizations:update", updateErr);
+        return jsonResponse(req, { error: "Falha ao atualizar empresa." }, 500);
+      }
       return jsonResponse(req, { success: true });
     }
 
     return jsonResponse(req, { error: "Ação inválida." }, 400);
   } catch (err) {
-    console.error(err);
-    return jsonResponse(req, { error: String(err) }, 500);
+    console.error("manage-organizations unhandled", err);
+    return jsonResponse(req, { error: "Falha ao processar solicitação." }, 500);
   }
 });

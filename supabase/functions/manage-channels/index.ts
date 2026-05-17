@@ -58,7 +58,10 @@ serve(async (req) => {
         .eq("unit_id", unitId)
         .order("created_at", { ascending: true });
 
-      if (error) return jsonResponse(req, { error: error.message }, 500);
+      if (error) {
+        console.error("manage-channels:list", error);
+        return jsonResponse(req, { error: "Falha ao listar canais." }, 500);
+      }
       return jsonResponse(req, { success: true, channels: data ?? [] });
     }
 
@@ -89,11 +92,20 @@ serve(async (req) => {
         .single();
 
       if (insertErr || !channel) {
-        return jsonResponse(req, { error: insertErr?.message ?? "Erro ao criar canal." }, 500);
+        console.error("manage-channels:create", insertErr);
+        return jsonResponse(req, { error: "Falha ao criar canal." }, 500);
       }
 
-      const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-      const projectRef = supabaseUrl.match(/https:\/\/([^.]+)\./)?.[1] ?? "<project>";
+      const supabaseUrl = Deno.env.get("SUPABASE_URL");
+      if (!supabaseUrl) {
+        console.error("manage-channels:create SUPABASE_URL not configured");
+        return jsonResponse(req, { error: "Falha ao gerar URL de webhook." }, 500);
+      }
+      const projectRef = supabaseUrl.match(/https:\/\/([^.]+)\./)?.[1];
+      if (!projectRef) {
+        console.error("manage-channels:create unexpected SUPABASE_URL format", supabaseUrl);
+        return jsonResponse(req, { error: "Falha ao gerar URL de webhook." }, 500);
+      }
       const webhookUrl = `https://${projectRef}.supabase.co/functions/v1/webhook-whatsapp?channel=${channel.id}`;
 
       return jsonResponse(req, { success: true, channel, webhookUrl, webhookSecret });
@@ -110,7 +122,10 @@ serve(async (req) => {
         .eq("id", channelId)
         .eq("unit_id", unitId);
 
-      if (delErr) return jsonResponse(req, { error: delErr.message }, 500);
+      if (delErr) {
+        console.error("manage-channels:delete", delErr);
+        return jsonResponse(req, { error: "Falha ao remover canal." }, 500);
+      }
       return jsonResponse(req, { success: true });
     }
 
@@ -193,7 +208,7 @@ serve(async (req) => {
 
     return jsonResponse(req, { error: "Ação inválida." }, 400);
   } catch (err) {
-    console.error(err);
-    return jsonResponse(req, { error: String(err) }, 500);
+    console.error("manage-channels unhandled", err);
+    return jsonResponse(req, { error: "Falha ao processar solicitação." }, 500);
   }
 });

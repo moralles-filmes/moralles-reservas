@@ -171,7 +171,7 @@ serve(async (req) => {
       last_executions: lastExecutions,
     });
   } catch (err) {
-    console.error(err);
-    return jsonResponse(req, { error: String(err) }, 500);
+    console.error("whatsapp-health unhandled", err);
+    return jsonResponse(req, { error: "Falha ao obter diagnóstico." }, 500);
   }
 });

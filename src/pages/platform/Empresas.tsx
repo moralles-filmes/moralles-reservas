@@ -178,7 +178,7 @@ function CreateOrgDialog({
                   <FormItem>
                     <FormLabel>Senha inicial</FormLabel>
                     <FormControl>
-                      <Input type="password" placeholder="mín. 6 chars" {...field} />
+                      <Input type="password" placeholder="mín. 10 chars" {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

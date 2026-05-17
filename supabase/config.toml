@@ -20,7 +20,7 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.whatsapp-health]
-verify_jwt = false
+verify_jwt = true
 
 [functions.update-reservation]
 verify_jwt = false
@@ -52,4 +52,7 @@ verify_jwt = true
 verify_jwt = true
 
 [functions.manage-organizations]
+verify_jwt = true
+
+[functions.manage-ai-providers]
 verify_jwt = true

@@ -437,6 +437,8 @@ Workers lêem templates de `reservation_message_templates` (`customized=true`) o
 
 > **`verify_jwt=false` obrigatório em `supabase/config.toml`** para todo worker chamado via `pg_cron` (`process-*`). O CLI a partir de 2.95 trocou o default para `true` — sem entrada explícita o gateway responde 401 "Missing authorization header" antes de chegar no `requireInternalAuth`, e o cron silencia (pg_net é fire-and-forget, ninguém alerta). Já documentadas no config: outbox, voucher-triggers, reservation-reminders, satisfaction-surveys, waitlist-entered, waitlist-feedback. Nova função worker = nova entrada antes do deploy.
 
+> **`verify_jwt=true` explícito em `supabase/config.toml`** para toda Edge Function de super-admin (`manage-channels`, `manage-members`, `manage-organizations`, `manage-ai-providers`, `whatsapp-health`). Defesa em profundidade junto à validação interna de `platform_admin`. Sem entrada o comportamento depende do default do CLI — explícito > implícito. Nova edge admin = nova entrada antes do deploy.
+
 ---
 
 ## Giftback — invariantes pós-hardening
@@ -531,6 +533,7 @@ Auditoria 2026-05-17 fechou bugs no painel operacional (`/o/:unitSlug`) — race
 
 ## Hardening de segurança multi-tenant
 
+- **Edge Functions nunca devolvem `error.message`/`String(err)` cru do Postgres nos 500.** O cliente recebe mensagem curta em PT-BR ("Falha ao listar canais.", "Falha ao criar empresa." etc.); o detalhe vai para `console.error`/`jsonLog` interno. Vaza schema/constraint/stack se exposto — atacante mapeia DB pela UI. **Exceção**: mensagens do Supabase Auth (`auth.admin.createUser` em `manage-organizations`) são amigáveis e UX-críticas — devolver intactas. Validações 400 (já em PT-BR) também ficam como estão. Pattern aplicado em `manage-channels`, `manage-organizations`, `manage-ai-providers`, `whatsapp-health`.
 - **Anon nunca lê tabelas direto** — toda leitura pública via RPC `SECURITY DEFINER`. Adicionar policy `TO anon` direto na tabela é regressão.
 - **Anon insere apenas em units/orgs públicas** — policies `anon_insert_*` têm `EXISTS (... WHERE is_public)`.
 - **Tabelas com credenciais usam `FORCE RLS` sem policies** (whatsapp_channels, ai_provider_credentials, processed_messages, rate_limit_events). UI consome via Edge Function.

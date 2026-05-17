@@ -66,7 +66,7 @@ serve(async (req) => {
 
       if (error) {
         jsonLog("error", { reqId, evt: "ai_keys_list_error", err: error.message });
-        return jsonResponse(req, { error: error.message }, 500);
+        return jsonResponse(req, { error: "Falha ao listar chaves." }, 500);
       }
 
       return jsonResponse(req, { success: true, keys: data ?? [] });
@@ -104,7 +104,7 @@ serve(async (req) => {
 
       if (error || !data) {
         jsonLog("error", { reqId, evt: "ai_keys_upsert_error", provider, err: error?.message });
-        return jsonResponse(req, { error: error?.message ?? "Erro ao salvar chave." }, 500);
+        return jsonResponse(req, { error: "Falha ao salvar chave." }, 500);
       }
 
       jsonLog("info", { reqId, evt: "ai_key_upserted", unit_id: unitId, provider });
@@ -126,7 +126,7 @@ serve(async (req) => {
 
       if (error) {
         jsonLog("error", { reqId, evt: "ai_keys_delete_error", provider, err: error.message });
-        return jsonResponse(req, { error: error.message }, 500);
+        return jsonResponse(req, { error: "Falha ao remover chave." }, 500);
       }
 
       jsonLog("info", { reqId, evt: "ai_key_deleted", unit_id: unitId, provider });
@@ -136,6 +136,6 @@ serve(async (req) => {
     return jsonResponse(req, { error: "Ação inválida." }, 400);
   } catch (err) {
     jsonLog("error", { reqId, evt: "manage_ai_providers_unhandled", err: String(err) });
-    return jsonResponse(req, { error: String(err) }, 500);
+    return jsonResponse(req, { error: "Falha ao processar solicitação." }, 500);
   }
 });
