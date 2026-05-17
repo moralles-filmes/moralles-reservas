@@ -20,8 +20,8 @@ interface MetricsRow {
 export interface DashboardKpis {
   reservasConfirmadas: number;
   pessoasAtendidas: number;
-  noShowRate: number;
-  cancelRate: number;
+  noShowRate: number | null;
+  cancelRate: number | null;
   avgRating: number | null;
   ratingsCount: number;
   avgPartySize: number;
@@ -34,6 +34,13 @@ export interface DashboardKpis {
     avgPartySize: number | null;
   };
 }
+
+export interface UnitHourRange {
+  min: number;
+  max: number;
+}
+
+const DEFAULT_HOUR_RANGE: UnitHourRange = { min: 8, max: 23 };
 
 export interface DashboardCharts {
   byDay: Array<{ date: string; label: string; confirmed: number; lost: number }>;
@@ -88,7 +95,11 @@ function rawDelta(current: number, previous: number): number | null {
   return current - previous;
 }
 
-export function useDashboardMetrics(unitId: string, period: Period): DashboardMetricsResult {
+export function useDashboardMetrics(
+  unitId: string,
+  period: Period,
+  unitHours: UnitHourRange = DEFAULT_HOUR_RANGE,
+): DashboardMetricsResult {
   const days = PERIOD_DAYS[period];
 
   const { range, currentStart } = useMemo(() => {
@@ -130,7 +141,7 @@ export function useDashboardMetrics(unitId: string, period: Period): DashboardMe
     const previous = rows.filter((r) => r.date < currentStart);
 
     const kpis = computeKpis(current, previous);
-    const charts = computeCharts(current, currentStart, days);
+    const charts = computeCharts(current, currentStart, days, unitHours);
     const lists = computeLists(current);
 
     return {
@@ -141,7 +152,8 @@ export function useDashboardMetrics(unitId: string, period: Period): DashboardMe
       isLoading,
       error: (error as Error | null) ?? null,
     };
-  }, [data, currentStart, days, isLoading, error]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, currentStart, days, unitHours.min, unitHours.max, isLoading, error]);
 }
 
 function computeKpis(current: MetricsRow[], previous: MetricsRow[]): DashboardKpis {
@@ -159,8 +171,14 @@ function computeKpis(current: MetricsRow[], previous: MetricsRow[]): DashboardKp
     deltas: {
       reservasConfirmadas: pctDelta(c.confirmed, p.confirmed),
       pessoasAtendidas: pctDelta(c.peopleServed, p.peopleServed),
-      noShowRate: rawDelta(c.noShowRate, p.noShowRate),
-      cancelRate: rawDelta(c.cancelRate, p.cancelRate),
+      noShowRate:
+        c.noShowRate !== null && p.noShowRate !== null
+          ? rawDelta(c.noShowRate, p.noShowRate)
+          : null,
+      cancelRate:
+        c.cancelRate !== null && p.cancelRate !== null
+          ? rawDelta(c.cancelRate, p.cancelRate)
+          : null,
       avgRating:
         c.avgRating !== null && p.avgRating !== null
           ? c.avgRating - p.avgRating
@@ -179,9 +197,13 @@ function aggregate(rows: MetricsRow[]) {
 
   const peopleServed = confirmedRows.reduce((acc, r) => acc + r.party_size, 0);
 
+  // Denominador: apenas reservas com desfecho decidido (exclui pending).
+  const decided = confirmed + cancelled + noShow;
   const noShowDenom = confirmed + noShow;
-  const noShowRate = noShowDenom > 0 ? (noShow / noShowDenom) * 100 : 0;
-  const cancelRate = total > 0 ? (cancelled / total) * 100 : 0;
+  const noShowRate: number | null =
+    noShowDenom > 0 ? (noShow / noShowDenom) * 100 : null;
+  const cancelRate: number | null =
+    decided > 0 ? (cancelled / decided) * 100 : null;
 
   const ratings = rows
     .filter((r) => r.satisfaction_rating !== null)
@@ -206,7 +228,12 @@ function aggregate(rows: MetricsRow[]) {
   };
 }
 
-function computeCharts(rows: MetricsRow[], currentStart: string, days: number): DashboardCharts {
+function computeCharts(
+  rows: MetricsRow[],
+  currentStart: string,
+  days: number,
+  unitHours: UnitHourRange,
+): DashboardCharts {
   const startDate = safeDateParse(currentStart);
   const byDayMap = new Map<string, { confirmed: number; lost: number }>();
   for (let i = 0; i < days; i++) {
@@ -229,13 +256,16 @@ function computeCharts(rows: MetricsRow[], currentStart: string, days: number): 
     lost: v.lost,
   }));
 
+  const hourMin = Math.max(0, Math.min(23, unitHours.min));
+  const hourMax = Math.max(hourMin, Math.min(23, unitHours.max));
   const byHourMap = new Map<number, number>();
-  for (let h = 8; h <= 23; h++) byHourMap.set(h, 0);
+  for (let h = hourMin; h <= hourMax; h++) byHourMap.set(h, 0);
 
   for (const r of rows) {
     if (r.status !== "confirmed" || !r.time) continue;
     const hour = parseInt(r.time.split(":")[0], 10);
-    if (Number.isFinite(hour) && byHourMap.has(hour)) {
+    if (!Number.isFinite(hour) || hour < 0 || hour > 23) continue;
+    if (byHourMap.has(hour)) {
       byHourMap.set(hour, (byHourMap.get(hour) ?? 0) + 1);
     }
   }
@@ -253,13 +283,14 @@ function computeCharts(rows: MetricsRow[], currentStart: string, days: number): 
 }
 
 function computeLists(rows: MetricsRow[]): DashboardLists {
+  const toMs = (r: MetricsRow): number => {
+    const iso = r.satisfaction_at ?? `${r.date}T${r.time ?? "00:00"}:00`;
+    const t = new Date(iso).getTime();
+    return Number.isFinite(t) ? t : 0;
+  };
   const recentRatings = rows
     .filter((r) => r.satisfaction_rating !== null)
-    .sort((a, b) => {
-      const aKey = a.satisfaction_at ?? `${a.date}T${a.time ?? "00:00"}`;
-      const bKey = b.satisfaction_at ?? `${b.date}T${b.time ?? "00:00"}`;
-      return bKey.localeCompare(aKey);
-    })
+    .sort((a, b) => toMs(b) - toMs(a))
     .slice(0, 5)
     .map<RecentRating>((r) => ({
       id: r.id,

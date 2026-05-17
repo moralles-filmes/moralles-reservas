@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { addDaysLocalISO, todayLocalISO } from "@/lib/utils";
 import { useReservaWizardContext } from "./useReservaWizard";
 import { PartySizeInput } from "./PartySizeInput";
 
@@ -19,14 +20,12 @@ import { PartySizeInput } from "./PartySizeInput";
 export function StepDateTimeParty() {
   const { state, input, computed, actions } = useReservaWizardContext();
 
-  const minDate = useMemo(() => new Date().toISOString().split("T")[0], []);
+  const minDate = useMemo(() => todayLocalISO(), []);
   const maxDate = useMemo(() => {
     const days = input.bookingWindowDays && input.bookingWindowDays > 0
       ? input.bookingWindowDays
       : 60;
-    const d = new Date();
-    d.setDate(d.getDate() + days);
-    return d.toISOString().split("T")[0];
+    return addDaysLocalISO(days);
   }, [input.bookingWindowDays]);
 
   const noSlotsAvailable = state.date && computed.timeSlots.length === 0;

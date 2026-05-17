@@ -12,10 +12,10 @@ import type { DailyFlow } from "@/hooks/useFluxoClientes";
 export type FluxoTabKey = "geral" | "reserva" | "fila" | "passante";
 
 const COLORS: Record<FluxoTabKey, string> = {
-  geral: "#3b82f6",
-  reserva: "#10b981",
-  fila: "#f97316",
-  passante: "#374151",
+  geral: "hsl(var(--chart-geral))",
+  reserva: "hsl(var(--chart-reserva))",
+  fila: "hsl(var(--chart-fila))",
+  passante: "hsl(var(--chart-passante))",
 };
 
 const LABELS: Record<FluxoTabKey, string> = {

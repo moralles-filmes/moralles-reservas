@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 interface KpiCardProps {
   title: string;
-  value: number | string | undefined;
+  value: number | string | null | undefined;
   icon: React.ElementType;
   color: string;
   /** Delta vs período anterior. Em % por padrão; em valor absoluto se deltaUnit='abs'. */
@@ -18,9 +18,10 @@ interface KpiCardProps {
   suffix?: string;
 }
 
-function formatValue(value: number | string | undefined): string {
-  if (value === undefined) return "—";
+function formatValue(value: number | string | null | undefined): string {
+  if (value === undefined || value === null) return "—";
   if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "—";
     if (Number.isInteger(value)) return value.toString();
     return value.toFixed(1);
   }
@@ -29,6 +30,7 @@ function formatValue(value: number | string | undefined): string {
 
 export function KpiCard({ title, value, icon: Icon, color, delta, invertDelta, deltaUnit = "pct", suffix }: KpiCardProps) {
   const isLoading = value === undefined;
+  const hasNumericValue = typeof value === "number" && Number.isFinite(value);
   const hasDelta = delta !== null && delta !== undefined && Number.isFinite(delta);
   const positive = hasDelta && delta! > 0;
   const negative = hasDelta && delta! < 0;
@@ -56,7 +58,9 @@ export function KpiCard({ title, value, icon: Icon, color, delta, invertDelta, d
             ) : (
               <p className="text-3xl font-bold mt-1.5 tracking-tight">
                 {formatValue(value)}
-                {suffix && <span className="text-lg font-medium text-muted-foreground ml-0.5">{suffix}</span>}
+                {suffix && hasNumericValue && (
+                  <span className="text-lg font-medium text-muted-foreground ml-0.5">{suffix}</span>
+                )}
               </p>
             )}
             {hasDelta && !isLoading && (

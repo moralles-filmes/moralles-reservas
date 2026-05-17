@@ -27,8 +27,11 @@ export function useTableBlocks(unitId: string, filters?: TableBlockFilters) {
         )
         .eq("unit_id", unitId)
         .order("blocked_from", { ascending: false });
-      if (filters?.from) q = q.gte("blocked_to", `${filters.from}T00:00:00`);
-      if (filters?.to) q = q.lte("blocked_from", `${filters.to}T23:59:59`);
+      // Offset BRT explícito: blocked_from/to são timestamptz; sem offset, a
+      // string seria tratada como sessão (UTC no Supabase) e o filtro deslocaria
+      // 3h, podendo perder bloqueios criados perto da meia-noite local.
+      if (filters?.from) q = q.gte("blocked_to", `${filters.from}T00:00:00-03:00`);
+      if (filters?.to) q = q.lte("blocked_from", `${filters.to}T23:59:59-03:00`);
       if (filters?.hallId) q = q.eq("hall_id", filters.hallId);
       const { data, error } = await q;
       if (error) throw error;

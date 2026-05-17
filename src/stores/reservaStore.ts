@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { todayLocalISO } from "@/lib/utils";
 import type { ReservaStatus } from "@/types/reserva";
 
 interface ReservaFilters {
@@ -13,16 +14,14 @@ interface ReservaStore {
   resetFilters: () => void;
 }
 
-const today = new Date().toISOString().split("T")[0];
-
 export const useReservaStore = create<ReservaStore>((set) => ({
   filters: {
-    date: today,
+    date: todayLocalISO(),
     status: "",
     search: "",
   },
   setFilter: (key, value) =>
     set((state) => ({ filters: { ...state.filters, [key]: value } })),
   resetFilters: () =>
-    set({ filters: { date: today, status: "", search: "" } }),
+    set({ filters: { date: todayLocalISO(), status: "", search: "" } }),
 }));

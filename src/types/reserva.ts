@@ -154,7 +154,10 @@ export interface Customer {
   organization_id: string;
   name: string;
   phone: string;
+  /** Espelho de emails[0], sincronizado por trigger no banco (migration 054). */
   email: string | null;
+  /** Lista de e-mails associados ao cliente. emails[0] é o principal e é refletido em customers.email. */
+  emails?: string[];
   birthday?: string | null;
   created_at: string;
   allergies?: string | null;
@@ -209,7 +212,8 @@ export interface CustomerStats {
   confirmed: number;
   no_shows: number;
   cancelled: number;
-  no_show_rate: number;
+  /** Null quando o denominador (confirmed + no_shows) é 0 — não há dado para calcular taxa. */
+  no_show_rate: number | null;
   last_visit: string | null;
 }
 
@@ -443,11 +447,22 @@ export interface Conversation {
   reservation?: Reserva;
 }
 
+export type OutboundMessageKind =
+  | "confirmation"
+  | "reminder_d1"
+  | "survey_d1"
+  | "cancellation"
+  | "voucher_issued"
+  | "waitlist_entered"
+  | "waitlist_table_ready"
+  | "waitlist_feedback";
+
 export interface ConversationMessage {
   role: "user" | "assistant" | "human";
   content: string;
   timestamp: string;
   human_user_id?: string;
+  kind?: OutboundMessageKind;
 }
 
 export interface BusinessHour {

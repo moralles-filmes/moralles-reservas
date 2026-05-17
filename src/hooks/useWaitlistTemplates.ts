@@ -18,6 +18,12 @@ export interface WaitlistTemplateMeta {
  * Templates default usados quando `customized = false` (ou não há linha em
  * `waitlist_message_templates`). Variáveis suportadas: {{cliente_nome}},
  * {{unidade_nome}}, {{party_size}}, {{codigo_fila}}, {{link_status}}.
+ *
+ * ⚠️ Os defaults de `entered`, `table_ready` e `feedback` ESPELHAM os do
+ * backend em `supabase/functions/_shared/waitlist-defaults.ts`. Sincronizar
+ * manualmente ao alterar qualquer string — o backend é a fonte autoritativa
+ * para envios reais (este arquivo serve preview/UI + envio manual de
+ * table_ready pelo painel operacional).
  */
 export const WAITLIST_TEMPLATES: WaitlistTemplateMeta[] = [
   {

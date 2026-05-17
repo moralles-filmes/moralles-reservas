@@ -53,7 +53,7 @@ export function ComunicacaoLineChart({
               type="monotone"
               dataKey="whatsapp"
               name="WhatsApp"
-              stroke="#10b981"
+              stroke="hsl(var(--chart-whatsapp))"
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4 }}
@@ -62,7 +62,7 @@ export function ComunicacaoLineChart({
               type="monotone"
               dataKey="email"
               name="E-mail"
-              stroke="#3b82f6"
+              stroke="hsl(var(--chart-email))"
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4 }}
@@ -73,7 +73,7 @@ export function ComunicacaoLineChart({
             type="monotone"
             dataKey="total"
             name="Envios"
-            stroke="#374151"
+            stroke="hsl(var(--chart-passante))"
             strokeWidth={2}
             dot={false}
             activeDot={{ r: 4 }}

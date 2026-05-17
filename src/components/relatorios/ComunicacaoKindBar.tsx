@@ -47,9 +47,9 @@ export function ComunicacaoKindBar({ data }: ComunicacaoKindBarProps) {
           }}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        <Bar dataKey="sent" name="Enviadas" stackId="a" fill="#10b981" />
-        <Bar dataKey="failed" name="Falhas" stackId="a" fill="#ef4444" />
-        <Bar dataKey="skipped" name="Ignoradas" stackId="a" fill="#94a3b8" />
+        <Bar dataKey="sent" name="Enviadas" stackId="a" fill="hsl(var(--success))" />
+        <Bar dataKey="failed" name="Falhas" stackId="a" fill="hsl(var(--destructive))" />
+        <Bar dataKey="skipped" name="Ignoradas" stackId="a" fill="hsl(var(--muted-foreground))" />
       </BarChart>
     </ResponsiveContainer>
   );

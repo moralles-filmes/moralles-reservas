@@ -36,7 +36,7 @@ export default function Reservas() {
     search: filters.search || undefined,
   });
 
-  const hasActiveFilters = filters.status || filters.search;
+  const hasActiveFilters = !!(filters.status || filters.search || filters.date);
 
   return (
     <div className="space-y-5">

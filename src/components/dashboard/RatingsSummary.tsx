@@ -23,7 +23,10 @@ export function RatingsSummary({ ratings, averageLabel }: RatingsSummaryProps) {
           </p>
           <p className="text-sm text-muted-foreground mt-1">{label}</p>
           <div className="flex justify-center mt-2">
-            <StarRating value={Math.round(avg ?? 0)} size="md" />
+            <StarRating
+              value={Math.min(5, Math.max(0, Math.floor(avg ?? 0)))}
+              size="md"
+            />
           </div>
         </CardContent>
       </Card>

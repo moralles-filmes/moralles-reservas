@@ -4,6 +4,7 @@ import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import {
   useCreateMenuBanner,
   useMenuBanners,
+  useReorderMenuBanners,
 } from "@/hooks/useMenuBanners";
 import { useUnitAssetUpload } from "@/hooks/useUnitAssetUpload";
 import { Button } from "@/components/ui/button";
@@ -56,8 +57,10 @@ export default function Banners() {
 function BannersList({ unitId, type }: { unitId: string; type: MenuBannerType }) {
   const { data: banners, isLoading } = useMenuBanners(unitId, type);
   const create = useCreateMenuBanner(unitId, type);
+  const reorder = useReorderMenuBanners(unitId, type);
   const upload = useUnitAssetUpload();
   const fileRef = useRef<HTMLInputElement>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
 
   const handleAddBanner = async (file: File) => {
     try {
@@ -75,6 +78,33 @@ function BannersList({ unitId, type }: { unitId: string; type: MenuBannerType })
       toast.success("Banner adicionado. Ative quando estiver pronto.");
     } catch {
       // toast já mostrado pelo hook
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = async (targetId: string) => {
+    if (!dragId || dragId === targetId || !banners) {
+      setDragId(null);
+      return;
+    }
+    const oldIdx = banners.findIndex((b) => b.id === dragId);
+    const newIdx = banners.findIndex((b) => b.id === targetId);
+    if (oldIdx < 0 || newIdx < 0) {
+      setDragId(null);
+      return;
+    }
+    const next = [...banners];
+    const [moved] = next.splice(oldIdx, 1);
+    next.splice(newIdx, 0, moved);
+    try {
+      await reorder.mutateAsync(next.map((b) => b.id));
+    } catch {
+      toast.error("Falha ao reordenar. Tente novamente.");
+    } finally {
+      setDragId(null);
     }
   };
 
@@ -105,6 +135,13 @@ function BannersList({ unitId, type }: { unitId: string; type: MenuBannerType })
         />
       </div>
 
+      {banners && banners.length > 1 && (
+        <p className="text-xs text-muted-foreground">
+          Arraste os banners para reordenar — a ordem aparece igual no carrossel
+          do cardápio público.
+        </p>
+      )}
+
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1, 2].map((i) => (
@@ -119,12 +156,19 @@ function BannersList({ unitId, type }: { unitId: string; type: MenuBannerType })
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {banners.map((b) => (
-            <MenuBannerEditor
+            <div
               key={b.id}
-              banner={b}
-              unitId={unitId}
-              type={type}
-            />
+              draggable
+              onDragStart={() => setDragId(b.id)}
+              onDragOver={handleDragOver}
+              onDrop={() => handleDrop(b.id)}
+              onDragEnd={() => setDragId(null)}
+              className={`transition-opacity ${
+                dragId === b.id ? "opacity-50" : ""
+              }`}
+            >
+              <MenuBannerEditor banner={b} unitId={unitId} type={type} />
+            </div>
           ))}
         </div>
       )}

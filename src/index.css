@@ -50,6 +50,23 @@
     --success-foreground: 0 0% 100%;
     --warning: 38 92% 48%;
     --warning-foreground: 20 15% 12%;
+
+    /* Tokens semânticos para charts de relatórios (paleta categórica).
+       Distintos dos status (--success/--destructive/--warning) — usados quando
+       o gráfico precisa separar visualmente origens/categorias. */
+    --chart-reserva: 152 60% 41%;        /* verde — reservas confirmadas */
+    --chart-fila: 24 90% 55%;            /* laranja — fila de espera */
+    --chart-passante: 220 12% 35%;       /* cinza-escuro — walk-in */
+    --chart-geral: 212 80% 50%;          /* azul — agregado */
+    --chart-whatsapp: 152 60% 41%;       /* verde WhatsApp */
+    --chart-email: 212 80% 50%;          /* azul corporativo */
+    --chart-issued: 348 80% 47%;         /* rose — vouchers emitidos */
+    --chart-used: 212 80% 50%;           /* azul — vouchers consumidos */
+    --chart-trigger-rating: 152 60% 41%; /* avaliação */
+    --chart-trigger-manual: 212 80% 50%; /* manual */
+    --chart-trigger-birthday: 272 65% 60%; /* aniversário (roxo) */
+    --chart-trigger-frequency: 24 90% 55%; /* frequência (laranja) */
+    --chart-trigger-other: 220 8% 45%;   /* outros */
   }
 
   .dark {
@@ -94,6 +111,21 @@
     --success-foreground: 0 0% 100%;
     --warning: 38 88% 52%;
     --warning-foreground: 20 15% 12%;
+
+    /* Charts no tema dark — tons levemente mais claros pra manter contraste sobre fundo navy/preto. */
+    --chart-reserva: 152 55% 48%;
+    --chart-fila: 24 88% 60%;
+    --chart-passante: 220 12% 60%;
+    --chart-geral: 212 78% 60%;
+    --chart-whatsapp: 152 55% 48%;
+    --chart-email: 212 78% 60%;
+    --chart-issued: 348 75% 58%;
+    --chart-used: 212 78% 60%;
+    --chart-trigger-rating: 152 55% 48%;
+    --chart-trigger-manual: 212 78% 60%;
+    --chart-trigger-birthday: 272 60% 68%;
+    --chart-trigger-frequency: 24 88% 60%;
+    --chart-trigger-other: 220 10% 60%;
   }
 }
 
@@ -142,6 +174,21 @@
     --success-foreground: 0 0% 100%;
     --warning: 38 92% 48%;
     --warning-foreground: 222 47% 11%;
+
+    /* Charts no tema admin (navy/SaaS) — tons sólidos e contrastantes em fundo claro azulado. */
+    --chart-reserva: 152 55% 38%;
+    --chart-fila: 24 88% 50%;
+    --chart-passante: 220 18% 30%;
+    --chart-geral: 212 75% 45%;
+    --chart-whatsapp: 152 55% 38%;
+    --chart-email: 212 75% 45%;
+    --chart-issued: 348 75% 45%;
+    --chart-used: 212 75% 45%;
+    --chart-trigger-rating: 152 55% 38%;
+    --chart-trigger-manual: 212 75% 45%;
+    --chart-trigger-birthday: 272 55% 55%;
+    --chart-trigger-frequency: 24 88% 50%;
+    --chart-trigger-other: 220 12% 45%;
   }
 
   * {

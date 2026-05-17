@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { isoToLocalDate } from "@/lib/utils";
 import type { DateRange } from "@/hooks/useFluxoClientes";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -25,8 +26,8 @@ export interface KpiSet {
   total: number;
   failed: number;
   skipped: number;
-  /** sent / (sent + failed). Skipped não conta no denominador. */
-  success_rate_pct: number;
+  /** sent / (sent + failed). Skipped não conta no denominador. null quando denom=0. */
+  success_rate_pct: number | null;
 }
 
 export interface DailyEnvio {
@@ -131,7 +132,7 @@ function emptyKpi(): KpiSet {
     total: 0,
     failed: 0,
     skipped: 0,
-    success_rate_pct: 0,
+    success_rate_pct: null,
   };
 }
 
@@ -260,7 +261,7 @@ export function useComunicacao(unitId: string, range: DateRange) {
     for (const tab of tabs) {
       const k = kpis[tab];
       const denom = k.total + k.failed;
-      k.success_rate_pct = denom > 0 ? (k.total / denom) * 100 : 0;
+      k.success_rate_pct = denom > 0 ? (k.total / denom) * 100 : null;
     }
 
     // ── Daily ──────────────────────────────────────────────────────────────
@@ -275,7 +276,9 @@ export function useComunicacao(unitId: string, range: DateRange) {
     const dailyMap = Object.fromEntries(daily.map((d) => [d.date, d]));
     for (const r of rows) {
       if (r.status !== "sent") continue;
-      const day = r.sent_at.slice(0, 10);
+      // sent_at é timestamptz UTC — converte pro dia local do restaurante
+      // para evitar bug de fuso em envios próximos da meia-noite.
+      const day = isoToLocalDate(r.sent_at);
       const entry = dailyMap[day];
       if (!entry) continue;
       if (isEmailKind(r.kind)) entry.email += 1;

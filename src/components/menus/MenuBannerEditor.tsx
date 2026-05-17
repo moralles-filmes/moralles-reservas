@@ -22,6 +22,7 @@ import {
   useDeleteMenuBanner,
 } from "@/hooks/useMenuBanners";
 import type { MenuBanner, MenuBannerType } from "@/types/reserva";
+import { isSafeHttpUrl } from "@/lib/utils";
 import { toast } from "sonner";
 
 const DIMENSION_HINT: Record<MenuBannerType, string> = {
@@ -79,11 +80,16 @@ export function MenuBannerEditor({ banner, unitId, type }: MenuBannerEditorProps
       toast.error("Adicione uma imagem ao banner.");
       return;
     }
+    const trimmedLink = linkUrl.trim();
+    if (trimmedLink && !isSafeHttpUrl(trimmedLink)) {
+      toast.error("Link inválido. Use uma URL começando com http:// ou https://");
+      return;
+    }
     update.mutate(
       {
         id: banner.id,
         image_url: imageUrl,
-        link_url: linkUrl.trim() || null,
+        link_url: trimmedLink || null,
         active,
       },
       {
@@ -161,11 +167,12 @@ export function MenuBannerEditor({ banner, unitId, type }: MenuBannerEditorProps
       />
 
       <div className="space-y-1">
-        <Label className="text-xs">Link</Label>
+        <Label className="text-xs">Link (opcional)</Label>
         <Input
+          type="url"
           value={linkUrl}
           onChange={(e) => setLinkUrl(e.target.value)}
-          placeholder="https://google.com"
+          placeholder="https://exemplo.com"
           className="text-sm"
         />
       </div>

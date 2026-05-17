@@ -45,36 +45,35 @@ export interface AnonWaitlistResult {
   code: number | null;
 }
 
-async function fetchNextWaitlistCode(unitId: string): Promise<number | null> {
-  const { data, error } = await supabase.rpc("next_waitlist_code", {
-    p_unit_id: unitId,
-  });
-  if (error) {
-    console.warn("next_waitlist_code falhou", error);
-    return null;
-  }
-  return typeof data === "number" ? data : null;
+/**
+ * Resultado da RPC atômica `enter_waitlist`. Postgres retorna como array
+ * (RETURNS TABLE) — pegamos o primeiro row.
+ */
+interface EnterWaitlistRow {
+  waitlist_id: string;
+  code: number | null;
 }
 
 export function useAnonAddToWaitlist(unitId: string) {
   return useMutation<AnonWaitlistResult, Error, AnonWaitlistInput>({
     mutationFn: async (payload) => {
-      const code = await fetchNextWaitlistCode(unitId);
-      const { error } = await supabase.from("waitlist").insert({
-        unit_id: unitId,
-        status: "waiting",
-        priority_category: payload.priority_category ?? "normal",
-        code,
-        customer_name: payload.customer_name,
-        customer_phone: payload.customer_phone,
-        party_size: payload.party_size,
-        notes: payload.notes ?? null,
+      // RPC atômica (mig 053) — advisory lock por unit + next_code + INSERT
+      // numa única transação. Elimina race do code entre clientes simultâneos.
+      const { data, error } = await supabase.rpc("enter_waitlist", {
+        p_unit_id: unitId,
+        p_customer_name: payload.customer_name,
+        p_customer_phone: payload.customer_phone,
+        p_party_size: payload.party_size,
+        p_notes: payload.notes ?? null,
+        p_priority_category: payload.priority_category ?? "normal",
       });
       if (error) throw error;
-      return { code };
+      const row = Array.isArray(data) ? (data[0] as EnterWaitlistRow | undefined) : null;
+      return { code: row?.code ?? null };
     },
-    onError: (err: Error) => {
-      toast.error(err.message || "Não foi possível entrar na fila.");
+    onError: () => {
+      // Mensagem genérica — não vaza err.message do Supabase (RLS/schema/etc).
+      toast.error("Não foi possível entrar na fila. Tente novamente.");
     },
   });
 }
@@ -90,12 +89,14 @@ export function useAddToWaitlist(unitId: string) {
       notes?: string | null;
       priority_category?: WaitlistPriorityCategory;
     }) => {
-      const code = await fetchNextWaitlistCode(unitId);
-      const { error } = await supabase.from("waitlist").insert({
-        unit_id: unitId,
-        priority_category: payload.priority_category ?? "normal",
-        code,
-        ...payload,
+      const { error } = await supabase.rpc("enter_waitlist", {
+        p_unit_id: unitId,
+        p_customer_name: payload.customer_name,
+        p_customer_phone: payload.customer_phone ?? null,
+        p_party_size: payload.party_size,
+        p_notes: payload.notes ?? null,
+        p_priority_category: payload.priority_category ?? "normal",
+        p_requested_for_time: payload.requested_for_time ?? null,
       });
       if (error) throw error;
     },
@@ -126,15 +127,17 @@ export function useNotifyWaitlist(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, phone, message }: { id: string; phone: string; message: string }) => {
-      // Envia WhatsApp via send-whatsapp Edge Function. `kind` faz a Edge
-      // Function gravar a tentativa em notifications_sent (analytics em
-      // Relatórios → Comunicação).
+      // Envia WhatsApp via send-whatsapp Edge Function. `kind` + `waitlist_id`
+      // permitem que o backend grave notifications_sent com waitlist_id NÃO-null
+      // → UNIQUE parcial (waitlist_id, kind) WHERE waitlist_id IS NOT NULL
+      // (mig 048) protege contra duplicação em double-click.
       const { data, error: funcErr } = await supabase.functions.invoke("send-whatsapp", {
         body: {
           phone,
           message,
           unit_id: unitId,
           kind: "waitlist_table_ready",
+          waitlist_id: id,
         },
       });
       if (funcErr) throw funcErr;

@@ -78,7 +78,7 @@ export default function Avaliacoes() {
           ratings={data?.rows.map((r) => r.rating) ?? []}
           total={data?.total ?? 0}
           surveysSent={data?.totalSurveysSent ?? 0}
-          ratePct={data?.responseRatePct ?? 0}
+          ratePct={data?.responseRatePct ?? null}
         />
       ) : (
         <RespostasTable
@@ -120,7 +120,7 @@ interface VisaoGeralProps {
   ratings: number[];
   total: number;
   surveysSent: number;
-  ratePct: number;
+  ratePct: number | null;
 }
 
 function VisaoGeral({ loading, ratings, total, surveysSent, ratePct }: VisaoGeralProps) {

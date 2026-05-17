@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Camera, Trash2 } from "lucide-react";
+import { ArrowLeft, Camera, Loader2, Trash2 } from "lucide-react";
 import { ShareCard } from "@/components/share/ShareCard";
 import { MenuPagesEditor } from "@/components/menus/MenuPagesEditor";
 import { ThemeEditor } from "@/components/menus/ThemeEditor";
@@ -253,7 +253,8 @@ function ShareTab({
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              className="w-full aspect-[2/1] bg-muted rounded-md border-2 border-dashed border-border hover:border-primary/40 transition-colors flex flex-col items-center justify-center text-muted-foreground overflow-hidden"
+              disabled={upload.isPending}
+              className="relative w-full aspect-[2/1] bg-muted rounded-md border-2 border-dashed border-border hover:border-primary/40 transition-colors flex flex-col items-center justify-center text-muted-foreground overflow-hidden disabled:cursor-not-allowed"
             >
               {coverUrl ? (
                 <img
@@ -266,6 +267,11 @@ function ShareTab({
                   <Camera className="h-6 w-6 mb-1" />
                   <span className="text-[10px]">400 × 200 px</span>
                 </>
+              )}
+              {upload.isPending && (
+                <div className="absolute inset-0 bg-background/60 flex items-center justify-center">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                </div>
               )}
             </button>
             <input

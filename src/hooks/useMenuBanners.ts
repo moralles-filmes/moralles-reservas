@@ -88,3 +88,21 @@ export function useDeleteMenuBanner(unitId: string, type: MenuBannerType) {
     },
   });
 }
+
+/** Atualiza sort_order de uma lista inteira de banners. Usado após drag&drop. */
+export function useReorderMenuBanners(unitId: string, type: MenuBannerType) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (orderedIds: string[]) => {
+      const updates = orderedIds.map((id, idx) =>
+        supabase.from("menu_banners").update({ sort_order: idx }).eq("id", id),
+      );
+      const results = await Promise.all(updates);
+      const firstError = results.find((r) => r.error);
+      if (firstError?.error) throw firstError.error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["menu-banners", unitId, type] });
+    },
+  });
+}

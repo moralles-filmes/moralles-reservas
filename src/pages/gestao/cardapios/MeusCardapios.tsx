@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { BookOpen, Camera, Plus } from "lucide-react";
+import { BookOpen, Camera, Loader2, Plus } from "lucide-react";
 import { ShareCard } from "@/components/share/ShareCard";
 import { DownloadCard } from "@/components/share/DownloadCard";
 import { toast } from "sonner";
@@ -262,7 +262,8 @@ function CreateMenuDialog({
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            className="w-full aspect-[2/1] bg-muted rounded-md border-2 border-dashed border-border hover:border-primary/40 transition-colors flex flex-col items-center justify-center text-muted-foreground overflow-hidden"
+            disabled={upload.isPending}
+            className="relative w-full aspect-[2/1] bg-muted rounded-md border-2 border-dashed border-border hover:border-primary/40 transition-colors flex flex-col items-center justify-center text-muted-foreground overflow-hidden disabled:cursor-not-allowed"
           >
             {coverUrl ? (
               <img src={coverUrl} alt="Cover" className="w-full h-full object-cover" />
@@ -271,6 +272,11 @@ function CreateMenuDialog({
                 <Camera className="h-7 w-7 mb-1" />
                 <span className="text-xs">400 × 200 px</span>
               </>
+            )}
+            {upload.isPending && (
+              <div className="absolute inset-0 bg-background/60 flex items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              </div>
             )}
           </button>
           <input

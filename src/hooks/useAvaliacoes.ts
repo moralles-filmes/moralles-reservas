@@ -20,7 +20,8 @@ export interface AvaliacoesData {
   average: number | null;
   distribution: { stars: number; count: number }[];
   totalSurveysSent: number;
-  responseRatePct: number;
+  /** null quando nenhuma pesquisa foi enviada no período. */
+  responseRatePct: number | null;
   rows: AvaliacaoRow[];
 }
 
@@ -113,7 +114,7 @@ export function useAvaliacoes(unitId: string, range: DateRange) {
 
       const totalSurveysSent = surveysRes.count ?? 0;
       const responseRatePct =
-        totalSurveysSent > 0 ? (total / totalSurveysSent) * 100 : 0;
+        totalSurveysSent > 0 ? (total / totalSurveysSent) * 100 : null;
 
       return {
         total,

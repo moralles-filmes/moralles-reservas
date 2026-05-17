@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import { todayLocalISO } from "@/lib/utils";
 import type { Reserva, ReservaFormData, ReservaStatus } from "@/types/reserva";
 
 interface ReservationByCodeRow {
@@ -55,24 +56,39 @@ export function useReservas(
   return useQuery({
     queryKey: ["reservas", unitId, filters],
     queryFn: async () => {
-      let query = supabase
-        .from("reservations")
-        .select("*, customer:customers(*), table:tables(*)")
-        .eq("unit_id", unitId)
-        .order("date", { ascending: true })
-        .order("time", { ascending: true });
+      const term = filters?.search?.trim();
 
-      if (filters?.date) query = query.eq("date", filters.date);
-      if (filters?.status) query = query.eq("status", filters.status);
-      if (filters?.search) {
-        query = query.or(
-          `reservation_code.ilike.%${filters.search}%,customers.name.ilike.%${filters.search}%,customers.phone.ilike.%${filters.search}%`
-        );
+      // Path A — sem busca por termo: query direta com join.
+      if (!term) {
+        let query = supabase
+          .from("reservations")
+          .select("*, customer:customers(*), table:tables(*)")
+          .eq("unit_id", unitId)
+          .order("date", { ascending: true })
+          .order("time", { ascending: true });
+
+        if (filters?.date) query = query.eq("date", filters.date);
+        if (filters?.status) query = query.eq("status", filters.status);
+
+        const { data, error } = await query;
+        if (error) throw error;
+        return data as Reserva[];
       }
 
-      const { data, error } = await query;
+      // Path B — com busca: PostgREST não suporta `.or()` cross-table, então
+      // usamos a RPC `search_reservations` (criada na migration 055) que faz
+      // o JOIN no servidor e devolve o conjunto. O `.select(...)` em cima da
+      // RPC adiciona o embedding de customer/table.
+      const { data, error } = await supabase
+        .rpc("search_reservations", {
+          p_unit_id: unitId,
+          p_term: term,
+          p_date: filters?.date ?? null,
+          p_status: filters?.status ?? null,
+        })
+        .select("*, customer:customers(*), table:tables(*)");
       if (error) throw error;
-      return data as Reserva[];
+      return (data ?? []) as Reserva[];
     },
     enabled: !!unitId,
   });
@@ -95,7 +111,7 @@ export function useReservaByCode(code: string, unitId: string) {
 }
 
 export function useReservasHoje(unitId: string) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayLocalISO();
   return useReservas(unitId, { date: today });
 }
 
@@ -244,24 +260,59 @@ export function useUpdateReservaStatus(unitId: string) {
   });
 }
 
+interface UpdateReservaInput {
+  id: string;
+  updates: Partial<Pick<Reserva, "date" | "time" | "party_size" | "notes" | "table_id">> & {
+    hall_id?: string | null;
+  };
+  /** Se true, pula a revalidação de disponibilidade (escape hatch para casos
+   *  legítimos onde o gerente sabe o que está fazendo). Default false. */
+  override?: boolean;
+}
+
+interface UpdateReservaResponse {
+  success: boolean;
+  reserva?: Reserva;
+  error?: string;
+  reason?: string;
+}
+
 export function useUpdateReserva(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({
-      id,
-      updates,
-    }: {
-      id: string;
-      updates: Partial<Pick<Reserva, "date" | "time" | "party_size" | "notes" | "table_id">>;
-    }) => {
-      const { data, error } = await supabase
-        .from("reservations")
-        .update({ ...updates, updated_at: new Date().toISOString() })
-        .eq("id", id)
-        .select("*, customer:customers(*), table:tables(*)")
-        .single();
-      if (error) throw error;
-      return data as Reserva;
+    mutationFn: async ({ id, updates, override }: UpdateReservaInput) => {
+      // Chama Edge Function `update-reservation` que revalida disponibilidade
+      // antes de aplicar o UPDATE — evita deixar reservas em horário sem
+      // capacidade ou em mesa bloqueada quando o gerente move uma reserva.
+      const { data: response, error } = await supabase.functions.invoke<UpdateReservaResponse>(
+        "update-reservation",
+        {
+          body: {
+            reservation_id: id,
+            updates,
+            override: override ?? false,
+          },
+        }
+      );
+
+      if (error) {
+        type WithContext = { context?: { body?: string } };
+        const ctx = (error as WithContext).context;
+        if (ctx?.body) {
+          try {
+            const parsed = JSON.parse(ctx.body) as UpdateReservaResponse;
+            throw new Error(parsed.error || error.message);
+          } catch (parseErr) {
+            if (parseErr instanceof Error && parseErr.message !== error.message) throw parseErr;
+          }
+        }
+        throw error;
+      }
+
+      if (!response?.success || !response.reserva) {
+        throw new Error(response?.error || "Falha ao atualizar reserva.");
+      }
+      return response.reserva;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
@@ -269,25 +320,37 @@ export function useUpdateReserva(unitId: string) {
   });
 }
 
+export interface ReservaStatsToday {
+  total_hoje: number;
+  confirmadas_hoje: number;
+  pendentes_hoje: number;
+  canceladas_hoje: number;
+  no_show_hoje: number;
+  pessoas_hoje: number;
+}
+
 export function useReservaStats(unitId: string) {
-  return useQuery({
+  return useQuery<ReservaStatsToday>({
     queryKey: ["reserva-stats", unitId],
     queryFn: async () => {
-      const today = new Date().toISOString().split("T")[0];
+      const today = todayLocalISO();
       const { data, error } = await supabase
         .from("reservations")
         .select("status, party_size, date")
         .eq("unit_id", unitId)
-        .gte("date", today);
+        .eq("date", today);
       if (error) throw error;
 
-      const hoje = data.filter((r) => r.date === today);
+      const hoje = data ?? [];
       return {
         total_hoje: hoje.length,
         confirmadas_hoje: hoje.filter((r) => r.status === "confirmed").length,
         pendentes_hoje: hoje.filter((r) => r.status === "pending").length,
+        canceladas_hoje: hoje.filter((r) => r.status === "cancelled").length,
+        no_show_hoje: hoje.filter((r) => r.status === "no_show").length,
+        // "Pessoas esperadas": apenas reservas que ainda podem comparecer.
         pessoas_hoje: hoje
-          .filter((r) => r.status !== "cancelled")
+          .filter((r) => r.status === "pending" || r.status === "confirmed")
           .reduce((acc, r) => acc + r.party_size, 0),
       };
     },

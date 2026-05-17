@@ -155,7 +155,7 @@ export function RespostasTable({ rows, loading, onExport }: RespostasTableProps)
                       )}
                     </TableCell>
                     <TableCell className="text-sm">
-                      {formatDateBR(r.date)} às {r.time?.slice(0, 5) ?? r.time}
+                      {formatDateBR(r.date)} às {r.time ? r.time.slice(0, 5) : "—"}
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">

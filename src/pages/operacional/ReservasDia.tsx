@@ -5,12 +5,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CalendarIcon } from "lucide-react";
-import { formatDateBR } from "@/lib/utils";
+import { formatDateBR, todayLocalISO } from "@/lib/utils";
 
 export default function ReservasDia() {
   const unit = useCurrentUnit();
   const unitId = unit?.unit_id ?? "";
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayLocalISO();
 
   const { data: reservas, isLoading } = useReservas(unitId, { date: today });
 

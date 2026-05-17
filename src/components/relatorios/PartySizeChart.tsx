@@ -13,9 +13,9 @@ import type { PartySizeBucket } from "@/hooks/useFluxoClientes";
 import type { FluxoTabKey } from "./FluxoLineChart";
 
 const COLORS = {
-  reserva: "#10b981",
-  fila: "#f97316",
-  passante: "#374151",
+  reserva: "hsl(var(--chart-reserva))",
+  fila: "hsl(var(--chart-fila))",
+  passante: "hsl(var(--chart-passante))",
 };
 
 interface PartySizeChartProps {

@@ -36,11 +36,11 @@ import { Gift, Send, CheckCircle2, Percent, XCircle } from "lucide-react";
 import { formatPhone } from "@/lib/utils";
 
 const TRIGGER_COLOR: Record<string, string> = {
-  after_rating: "#10b981",   // verde — avaliação
-  manual: "#3b82f6",          // azul — manual
-  birthday: "#a855f7",        // roxo — aniversário
-  frequency: "#f97316",       // laranja — frequência
-  manual_avulso: "#6b7280",   // cinza — manual sem regra
+  after_rating: "hsl(var(--chart-trigger-rating))",
+  manual: "hsl(var(--chart-trigger-manual))",
+  birthday: "hsl(var(--chart-trigger-birthday))",
+  frequency: "hsl(var(--chart-trigger-frequency))",
+  manual_avulso: "hsl(var(--chart-trigger-other))",
 };
 
 function formatDateTime(iso: string): string {
@@ -97,7 +97,11 @@ export default function Giftback() {
         />
         <KpiCard
           title="Conversão"
-          value={isLoading ? undefined : (data?.kpis.conversion_pct ?? 0).toFixed(1)}
+          value={
+            isLoading
+              ? undefined
+              : data?.kpis.conversion_pct ?? null
+          }
           suffix="%"
           icon={Percent}
           color="bg-blue-50 text-blue-600"
@@ -165,7 +169,7 @@ export default function Giftback() {
                         type="monotone"
                         dataKey="issued"
                         name="Emitidos"
-                        stroke="#e11d48"
+                        stroke="hsl(var(--chart-issued))"
                         strokeWidth={2}
                         dot={false}
                         activeDot={{ r: 4 }}
@@ -174,7 +178,7 @@ export default function Giftback() {
                         type="monotone"
                         dataKey="used"
                         name="Usados"
-                        stroke="#3b82f6"
+                        stroke="hsl(var(--chart-used))"
                         strokeWidth={2}
                         dot={false}
                         activeDot={{ r: 4 }}
@@ -229,7 +233,7 @@ export default function Giftback() {
                         {(data?.byTrigger ?? []).map((entry, idx) => (
                           <Cell
                             key={`cell-${idx}`}
-                            fill={TRIGGER_COLOR[entry.trigger] ?? "#6b7280"}
+                            fill={TRIGGER_COLOR[entry.trigger] ?? "hsl(var(--chart-trigger-other))"}
                           />
                         ))}
                       </Bar>

@@ -88,12 +88,12 @@ export function IssueVoucherDialog({ open, onOpenChange, unitId, organizationId 
       toast.error("Selecione um cliente");
       return;
     }
-    if (discount < 1 || discount > 100) {
-      toast.error("Desconto deve estar entre 1% e 100%");
+    if (!Number.isInteger(discount) || discount < 1 || discount > 100) {
+      toast.error("Desconto deve ser um inteiro entre 1% e 100%");
       return;
     }
-    if (validity < 1) {
-      toast.error("Validade mínima de 1 dia");
+    if (!Number.isInteger(validity) || validity < 1 || validity > 365) {
+      toast.error("Validade deve ser um inteiro entre 1 e 365 dias");
       return;
     }
     try {

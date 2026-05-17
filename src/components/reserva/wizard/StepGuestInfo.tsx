@@ -8,7 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatPhone } from "@/lib/utils";
+import { formatPhone, todayLocalISO } from "@/lib/utils";
 import { useReservaWizardContext } from "./useReservaWizard";
 import { WizardSummary } from "./WizardSummary";
 import type { WidgetFieldKey } from "@/types/reserva";
@@ -30,7 +30,7 @@ export function StepGuestInfo() {
     (f) => f.key !== "data_nascimento" && f.key !== "observacao",
   );
 
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = todayLocalISO();
 
   return (
     <div className="space-y-5">

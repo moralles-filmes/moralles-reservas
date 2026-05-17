@@ -89,6 +89,8 @@ export default function Fila() {
   const [partySize, setPartySize] = useState("2");
   const [requestedTime, setRequestedTime] = useState("");
   const [notes, setNotes] = useState("");
+  // Pendings por entry id — botões "Notificar" ficam independentes entre si.
+  const [notifyingIds, setNotifyingIds] = useState<Set<string>>(new Set());
 
   const { data: waitlist, isLoading } = useWaitlist(unitId);
   const { data: templates } = useWaitlistTemplates(unitId);
@@ -101,10 +103,15 @@ export default function Fila() {
 
   const handleAdd = () => {
     if (!name.trim()) { toast.error("Informe o nome do cliente."); return; }
+    const phoneDigits = phone.replace(/\D/g, "");
+    if (phoneDigits && phoneDigits.length < 10) {
+      toast.error("Telefone inválido. Informe DDD + número (ex: 11999998888).");
+      return;
+    }
     addToWaitlist.mutate(
       {
         customer_name: name.trim(),
-        customer_phone: phone.replace(/\D/g, "") || null,
+        customer_phone: phoneDigits || null,
         party_size: Number(partySize),
         requested_for_time: requestedTime || null,
         notes: notes.trim() || null,
@@ -118,22 +125,41 @@ export default function Fila() {
       toast.error("Este cliente não tem WhatsApp cadastrado.");
       return;
     }
+    if (notifyingIds.has(entry.id)) return; // evita double-click na mesma entry
 
     // Usa o template `table_ready` customizado, se houver. Senão, padrão.
+    // `.trim()` garante paridade com o que as edge functions fazem.
     const tpl = templates?.find((t) => t.event === "table_ready");
     const defaultBody =
       WAITLIST_TEMPLATES.find((t) => t.event === "table_ready")?.defaultBody ?? "";
-    const body = tpl?.customized && tpl.body ? tpl.body : defaultBody;
+    const body = tpl?.customized && tpl.body && tpl.body.trim() ? tpl.body : defaultBody;
 
     const message = renderWaitlistTemplate(body, {
       cliente_nome: entry.customer_name,
-      unidade_nome: unit?.unit_name ?? "",
+      // Fallback consistente com edge functions (evita "sua mesa em  está pronta").
+      unidade_nome: unit?.unit_name || "nosso restaurante",
       party_size: entry.party_size,
       codigo_fila: entry.code,
       link_status: `${window.location.origin}/r/${unit?.unit_slug ?? ""}`,
     });
 
-    notifyEntry.mutate({ id: entry.id, phone: entry.customer_phone, message });
+    setNotifyingIds((prev) => {
+      const next = new Set(prev);
+      next.add(entry.id);
+      return next;
+    });
+    notifyEntry.mutate(
+      { id: entry.id, phone: entry.customer_phone, message },
+      {
+        onSettled: () => {
+          setNotifyingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(entry.id);
+            return next;
+          });
+        },
+      },
+    );
   };
 
   return (
@@ -233,7 +259,7 @@ export default function Fila() {
                           variant="outline"
                           className="gap-1"
                           onClick={() => handleNotify(entry)}
-                          disabled={!entry.customer_phone || notifyEntry.isPending}
+                          disabled={!entry.customer_phone || notifyingIds.has(entry.id)}
                         >
                           <Bell className="h-3 w-3" />
                           Notificar

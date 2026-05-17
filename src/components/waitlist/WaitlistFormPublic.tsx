@@ -30,9 +30,18 @@ const PRIORITY_OPTIONS: Array<{
 ];
 
 const schema = z.object({
-  name: z.string().min(2, "Nome deve ter ao menos 2 caracteres"),
-  phone: z.string().min(10, "Telefone inválido").max(15),
-  party_size: z.coerce.number().min(1).max(20),
+  name: z.string().trim().min(2, "Nome deve ter ao menos 2 caracteres"),
+  // .transform strip de não-dígitos antes do refine — usuário pode colar
+  // "(11) 99998-8877" e o schema valida só os dígitos. min 10 (10-11 dígitos
+  // BR sem código de país).
+  phone: z
+    .string()
+    .transform((v) => v.replace(/\D/g, ""))
+    .refine((v) => v.length >= 10 && v.length <= 11, {
+      message: "Telefone inválido. Informe DDD + número.",
+    }),
+  // .int() — Postgres rejeita decimais com 22P02 (erro confuso pro usuário).
+  party_size: z.coerce.number().int().min(1).max(20),
   notes: z.string().optional(),
   priority_category: z
     .enum(["normal", "senior", "pregnant", "disabled", "other"])

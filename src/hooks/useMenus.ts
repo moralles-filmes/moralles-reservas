@@ -79,7 +79,16 @@ export function useCreateMenu(unitId: string) {
         })
         .select()
         .single();
-      if (error) throw error;
+      if (error) {
+        // Race rara: outro insert no mesmo slug entre o SELECT do ensureUniqueSlug
+        // e este INSERT. Mensagem amigável em vez do "duplicate key value..." cru.
+        if ((error as { code?: string }).code === "23505") {
+          throw new Error(
+            "Não foi possível gerar um link único. Tente novamente.",
+          );
+        }
+        throw error;
+      }
       return data as Menu;
     },
     onSuccess: () => {

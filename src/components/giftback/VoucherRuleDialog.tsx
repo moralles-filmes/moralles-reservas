@@ -36,7 +36,10 @@ interface VoucherRuleDialogProps {
   rule?: VoucherRule | null;
 }
 
-const TRIGGERS: VoucherTrigger[] = ["after_rating", "manual", "birthday", "frequency"];
+// "manual" não aparece no select porque IssueVoucherDialog nunca passa rule_id
+// — emissão manual sempre cria voucher avulso. Mantemos o tipo no TRIGGER_LABEL
+// pra renderizar registros legados que tenham trigger_type='manual'.
+const TRIGGERS: VoucherTrigger[] = ["after_rating", "birthday", "frequency"];
 
 export function VoucherRuleDialog({ open, onOpenChange, unitId, rule }: VoucherRuleDialogProps) {
   const isEdit = !!rule;
@@ -79,13 +82,29 @@ export function VoucherRuleDialog({ open, onOpenChange, unitId, rule }: VoucherR
       toast.error("Dê um nome para a regra");
       return;
     }
-    if (discount < 1 || discount > 100) {
-      toast.error("Desconto deve estar entre 1% e 100%");
+    if (!Number.isInteger(discount) || discount < 1 || discount > 100) {
+      toast.error("Desconto deve ser um inteiro entre 1% e 100%");
       return;
     }
-    if (validity < 1) {
-      toast.error("Validade deve ser de pelo menos 1 dia");
+    if (!Number.isInteger(validity) || validity < 1 || validity > 365) {
+      toast.error("Validade deve ser um inteiro entre 1 e 365 dias");
       return;
+    }
+    if (trigger === "after_rating") {
+      if (!Number.isInteger(minRating) || minRating < 1 || minRating > 5) {
+        toast.error("Nota mínima deve ser um inteiro entre 1 e 5");
+        return;
+      }
+    }
+    if (trigger === "frequency") {
+      if (!Number.isInteger(visitsRequired) || visitsRequired < 1 || visitsRequired > 100) {
+        toast.error("Visitas mínimas deve ser um inteiro entre 1 e 100");
+        return;
+      }
+      if (!Number.isInteger(daysWindow) || daysWindow < 1 || daysWindow > 365) {
+        toast.error("Janela em dias deve ser um inteiro entre 1 e 365");
+        return;
+      }
     }
 
     const payload: VoucherRuleInput = {
@@ -196,17 +215,16 @@ export function VoucherRuleDialog({ open, onOpenChange, unitId, rule }: VoucherR
           )}
 
           {trigger === "birthday" && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-              Em construção — o job de aniversário será ativado no Sprint 2 (exige preencher
-              <code className="mx-1 px-1 bg-amber-100 rounded">birthday</code> nos clientes).
-              A regra pode ser cadastrada normalmente.
+            <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+              Requer o campo <code className="mx-1 px-1 bg-muted rounded">birthday</code>{" "}
+              preenchido no cadastro do cliente. Verificado diariamente às 09:00 BRT.
             </div>
           )}
 
           {trigger === "frequency" && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-              Em construção — o job de frequência entra no Sprint 2. A regra pode ser cadastrada
-              agora e fica em standby até o job estar ativo.
+            <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+              Conta reservas <strong>confirmadas</strong> ou marcadas como{" "}
+              <strong>no-show</strong> nessa unidade. Verificado diariamente às 09:00 BRT.
             </div>
           )}
 

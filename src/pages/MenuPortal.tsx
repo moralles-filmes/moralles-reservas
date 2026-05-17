@@ -4,7 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { MenuTheme } from "@/types/reserva";
+import { DEFAULT_MENU_THEME, type MenuTheme } from "@/types/reserva";
+import { isSafeHttpUrl } from "@/lib/utils";
+
+const HEX_RE = /^#[0-9A-Fa-f]{6}$/;
+
+function safeColor(value: unknown, fallback: string): string {
+  return typeof value === "string" && HEX_RE.test(value) ? value : fallback;
+}
 
 interface MenuPublicResponse {
   menu: {
@@ -69,7 +76,16 @@ export default function MenuPortal() {
   }
 
   const { menu, unit, pages, banners } = data;
-  const theme = menu.theme;
+  // Theme JSONB pode vir corrompido (insert via SQL, migração antiga, etc).
+  // Aplicar fallback por campo para o portal nunca quebrar visualmente.
+  const rawTheme = (menu.theme ?? {}) as Partial<MenuTheme>;
+  const theme: MenuTheme = {
+    font_primary: safeColor(rawTheme.font_primary, DEFAULT_MENU_THEME.font_primary),
+    font_secondary: safeColor(rawTheme.font_secondary, DEFAULT_MENU_THEME.font_secondary),
+    bg_primary: safeColor(rawTheme.bg_primary, DEFAULT_MENU_THEME.bg_primary),
+    bg_secondary: safeColor(rawTheme.bg_secondary, DEFAULT_MENU_THEME.bg_secondary),
+    accent: safeColor(rawTheme.accent, DEFAULT_MENU_THEME.accent),
+  };
 
   // CSS variables — paleta aplicada apenas dentro deste portal.
   const themeStyle: React.CSSProperties = {
@@ -249,7 +265,9 @@ function BannerCarousel({
     </div>
   );
 
-  if (current.link_url) {
+  // Só renderiza <a> se a URL for http(s). Bloqueia javascript:/data:/etc
+  // mesmo que algum banner antigo tenha entrado no banco antes da validação.
+  if (current.link_url && isSafeHttpUrl(current.link_url)) {
     return (
       <a
         href={current.link_url}

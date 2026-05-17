@@ -12,6 +12,7 @@ export interface UnitPublicContent {
   price_range_max: number | null;
   hero_image_url: string | null;
   logo_url: string | null;
+  gallery_photos: string[];
   address: UnitAddress | null;
   is_public: boolean;
   cnpj: string | null;
@@ -27,7 +28,7 @@ export interface UnitPublicContent {
 }
 
 const SELECT =
-  "id, name, slug, description, price_range_min, price_range_max, hero_image_url, logo_url, address, is_public, cnpj, financial_email, cuisine_types, opening_hours_text, payment_methods, facilities, phone, instagram, website, timezone";
+  "id, name, slug, description, price_range_min, price_range_max, hero_image_url, logo_url, gallery_photos, address, is_public, cnpj, financial_email, cuisine_types, opening_hours_text, payment_methods, facilities, phone, instagram, website, timezone";
 
 export function useUnitPublicContent(unitId: string) {
   return useQuery({
@@ -45,6 +46,7 @@ export function useUnitPublicContent(unitId: string) {
         ...row,
         cuisine_types: Array.isArray(row.cuisine_types) ? (row.cuisine_types as string[]) : [],
         facilities: Array.isArray(row.facilities) ? (row.facilities as string[]) : [],
+        gallery_photos: Array.isArray(row.gallery_photos) ? (row.gallery_photos as string[]) : [],
       } as UnitPublicContent;
     },
     enabled: !!unitId,
@@ -58,6 +60,7 @@ export interface UpdateUnitContentPayload {
   price_range_max?: number | null;
   hero_image_url?: string | null;
   logo_url?: string | null;
+  gallery_photos?: string[];
   address?: UnitAddress | null;
   is_public?: boolean;
   cnpj?: string | null;

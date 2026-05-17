@@ -10,6 +10,7 @@ import {
   type UnitPublicContent,
 } from "@/hooks/useUnitPublicContent";
 import { AssetUploader } from "@/components/conta/AssetUploader";
+import { GalleryEditor } from "@/components/conta/GalleryEditor";
 import { FACILITY_GROUPS } from "@/lib/facilities";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -93,6 +94,7 @@ interface FormState {
   showCoords: boolean;
   hero_image_url: string | null;
   logo_url: string | null;
+  gallery_photos: string[];
   facilities: string[];
 }
 
@@ -125,6 +127,7 @@ const emptyForm: FormState = {
   showCoords: false,
   hero_image_url: null,
   logo_url: null,
+  gallery_photos: [],
   facilities: [],
 };
 
@@ -179,6 +182,7 @@ function contentToForm(c: UnitPublicContent): FormState {
     showCoords: !!(a?.lat != null || a?.lng != null),
     hero_image_url: c.hero_image_url,
     logo_url: c.logo_url,
+    gallery_photos: c.gallery_photos ?? [],
     facilities: c.facilities ?? [],
   };
 }
@@ -340,6 +344,7 @@ export default function Conta() {
       address: addressPayload,
       hero_image_url: form.hero_image_url,
       logo_url: form.logo_url,
+      gallery_photos: form.gallery_photos,
     });
   };
 
@@ -799,13 +804,20 @@ export default function Conta() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Álbum de fotos</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Até 5 fotos do salão, pratos ou ambiente. Aparecem na sua página
+                  pública. JPG, PNG, WebP ou AVIF. Até 5MB cada.
+                </p>
               </CardHeader>
               <CardContent>
-                <div className="p-6 text-center border-2 border-dashed border-border rounded-md bg-muted/30">
-                  <p className="text-sm text-muted-foreground">
-                    Galeria com múltiplas fotos chega numa próxima versão.
-                  </p>
-                </div>
+                <GalleryEditor
+                  unitId={unitId}
+                  value={form.gallery_photos}
+                  onChange={(urls) =>
+                    setForm((f) => ({ ...f, gallery_photos: urls }))
+                  }
+                  disabled={!canEdit}
+                />
               </CardContent>
             </Card>
           </TabsContent>

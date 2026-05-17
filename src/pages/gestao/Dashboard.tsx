@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useReservaStats, useReservasHoje } from "@/hooks/useReservas";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useDashboardMetrics } from "@/hooks/useDashboardMetrics";
+import { useUnitHourRange } from "@/hooks/useUnitHourRange";
 import { useWalkInStatsToday } from "@/hooks/useWalkInStatsToday";
 import { useWaitlist } from "@/hooks/useWaitlist";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
@@ -34,7 +35,7 @@ import {
   ListChecks,
   Footprints,
 } from "lucide-react";
-import { formatDateBR } from "@/lib/utils";
+import { formatDateBR, todayLocalISO } from "@/lib/utils";
 
 const PERIOD_LABEL: Record<Period, string> = {
   today: "hoje",
@@ -52,15 +53,19 @@ export default function Dashboard() {
 
   const { data: stats } = useReservaStats(unitId);
   const { data: reservasHoje, isLoading: isLoadingReservasHoje } = useReservasHoje(unitId);
+  const unitHours = useUnitHourRange(unitId);
 
   const { kpis, charts, lists, hasDataInPeriod, isLoading: isLoadingMetrics } =
-    useDashboardMetrics(unitId, period);
+    useDashboardMetrics(unitId, period, unitHours);
 
   const { data: walkInStats } = useWalkInStatsToday(unitId);
   const { data: waitlist } = useWaitlist(unitId, true);
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = useMemo(() => todayLocalISO(), []);
   const periodLabel = PERIOD_LABEL[period];
+
+  const extrasHoje =
+    (stats?.canceladas_hoje ?? 0) + (stats?.no_show_hoje ?? 0);
 
   const valueOrUndef = <T,>(v: T): T | undefined => (isLoadingMetrics ? undefined : v);
 
@@ -102,7 +107,14 @@ export default function Dashboard() {
         </div>
 
         <div className="pt-2">
-          <h3 className="text-sm font-semibold text-muted-foreground mb-3">Reservas de hoje</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3">
+            Reservas de hoje
+            {stats && extrasHoje > 0 && (
+              <span className="text-xs font-normal ml-2">
+                ({stats.canceladas_hoje} canc.{stats.no_show_hoje > 0 ? ` · ${stats.no_show_hoje} no-show` : ""})
+              </span>
+            )}
+          </h3>
           {isLoadingReservasHoje ? (
             <div className="space-y-3">
               {[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}

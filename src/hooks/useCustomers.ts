@@ -16,6 +16,7 @@ export function useUpdateCustomer(unitId: string) {
           | "name"
           | "phone"
           | "email"
+          | "emails"
           | "birthday"
           | "allergies"
           | "dietary_restrictions"
@@ -35,8 +36,13 @@ export function useUpdateCustomer(unitId: string) {
       return data as Customer;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["customers", unitId] });
+      // Broad invalidate: a query principal em Clientes.tsx usa key
+      // ["customers", orgId, unitId, search] — um prefix ["customers", unitId]
+      // não casa porque orgId vem antes. Invalidate por prefix raiz é simples
+      // e cobre todas as listagens ativas.
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
       queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["customer-stats"] });
     },
   });
 }
@@ -51,8 +57,9 @@ export function useAnonymizeCustomer(unitId: string) {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["customers", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
       queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["customer-stats"] });
     },
   });
 }
@@ -72,7 +79,7 @@ export function useCustomerStats(customerId: string | undefined, unitId?: string
         confirmed: 0,
         no_shows: 0,
         cancelled: 0,
-        no_show_rate: 0,
+        no_show_rate: null,
         last_visit: null,
       }) as CustomerStats;
     },

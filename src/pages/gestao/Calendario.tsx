@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { formatDateBR } from "@/lib/utils";
+import { formatDateBR, todayLocalISO } from "@/lib/utils";
 
 function getDaysInMonth(year: number, month: number) {
   return new Date(year, month + 1, 0).getDate();
@@ -22,11 +22,10 @@ export default function Calendario() {
   const unitId = unit?.unit_id ?? "";
 
   const today = new Date();
+  const todayStr = todayLocalISO();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
-  const [selectedDate, setSelectedDate] = useState<string>(
-    today.toISOString().split("T")[0]
-  );
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
 
   const { data: allReservas } = useReservas(unitId);
   const { data: dayReservas, isLoading } = useReservas(unitId, { date: selectedDate });
@@ -86,7 +85,7 @@ export default function Calendario() {
                 const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
                 const count = reservasByDate[dateStr] || 0;
                 const isSelected = dateStr === selectedDate;
-                const isToday = dateStr === today.toISOString().split("T")[0];
+                const isToday = dateStr === todayStr;
 
                 return (
                   <button

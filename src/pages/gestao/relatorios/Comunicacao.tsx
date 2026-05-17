@@ -37,8 +37,8 @@ const TAB_LABEL: Record<Tab, string> = {
 
 const LOCKED: Tab[] = ["marketing", "giftback"];
 
-function formatPct(value: number): string {
-  if (!Number.isFinite(value)) return "0 %";
+function formatPct(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
   return `${value.toFixed(1).replace(/\.0$/, "")} %`;
 }
 

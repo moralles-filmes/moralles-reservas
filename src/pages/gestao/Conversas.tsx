@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Fragment } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
@@ -11,10 +11,33 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatDateBR, formatPhone, getConversationDisplayName } from "@/lib/utils";
+import {
+  formatDateBR,
+  formatMessageTime,
+  formatPhone,
+  getConversationDisplayName,
+  getMessageDayKey,
+  humanDateLabel,
+} from "@/lib/utils";
 import { toast } from "sonner";
 import { MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2 } from "lucide-react";
-import type { Conversation, ConversationMessage, ConversationStatus } from "@/types/reserva";
+import type {
+  Conversation,
+  ConversationMessage,
+  ConversationStatus,
+  OutboundMessageKind,
+} from "@/types/reserva";
+
+const OUTBOUND_KIND_LABEL: Record<OutboundMessageKind, string> = {
+  confirmation: "Confirmação",
+  reminder_d1: "Lembrete",
+  survey_d1: "Pesquisa",
+  cancellation: "Cancelamento",
+  voucher_issued: "Voucher",
+  waitlist_entered: "Fila — entrada",
+  waitlist_table_ready: "Fila — mesa pronta",
+  waitlist_feedback: "Fila — feedback",
+};
 
 // ── Status display helpers ─────────────────────────────────────────────────────
 
@@ -47,6 +70,7 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
   const isBot = msg.role === "assistant";
   const isHuman = msg.role === "human";
   const isUser = msg.role === "user";
+  const kindLabel = msg.kind ? OUTBOUND_KIND_LABEL[msg.kind] : undefined;
 
   return (
     <div className={`flex ${isUser ? "justify-start" : "justify-end"}`}>
@@ -62,18 +86,30 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
         {isHuman && (
           <p className="text-[10px] font-semibold mb-0.5 text-emerald-100">Atendente</p>
         )}
+        {isBot && kindLabel && (
+          <p className="text-[10px] font-semibold uppercase tracking-wide opacity-80 mb-0.5">
+            {kindLabel}
+          </p>
+        )}
         <p className="whitespace-pre-wrap">{msg.content}</p>
         <p
           className={`text-[10px] mt-1 ${
             isUser ? "text-muted-foreground" : "text-white/60"
           }`}
         >
-          {new Date(msg.timestamp).toLocaleTimeString("pt-BR", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
+          {formatMessageTime(msg.timestamp)}
         </p>
       </div>
+    </div>
+  );
+}
+
+function DateDivider({ label }: { label: string }) {
+  return (
+    <div className="flex justify-center my-3">
+      <span className="text-[11px] bg-muted text-muted-foreground px-3 py-1 rounded-full">
+        {label}
+      </span>
     </div>
   );
 }
@@ -230,9 +266,17 @@ function ConversationDetail({
       {/* Messages */}
       <ScrollArea className="flex-1 p-4" ref={scrollRef as React.RefObject<HTMLDivElement>}>
         <div className="space-y-3">
-          {(current.messages || []).map((msg, i) => (
-            <MessageBubble key={i} msg={msg} />
-          ))}
+          {(current.messages || []).map((msg, i, arr) => {
+            const prev = i > 0 ? arr[i - 1] : null;
+            const showDivider =
+              !prev || getMessageDayKey(msg.timestamp) !== getMessageDayKey(prev.timestamp);
+            return (
+              <Fragment key={i}>
+                {showDivider && <DateDivider label={humanDateLabel(msg.timestamp)} />}
+                <MessageBubble msg={msg} />
+              </Fragment>
+            );
+          })}
         </div>
       </ScrollArea>
 

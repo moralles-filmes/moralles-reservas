@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { isoToLocalDate } from "@/lib/utils";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -45,8 +46,10 @@ export interface KpiSet {
   total_mesas: number;
   total_pessoas: number;
   media_pessoas_por_mesa: number;
-  taxa_no_show_pct: number;
-  taxa_cancelamento_pct: number;
+  /** null quando denominador é 0 (sem reservas decididas). */
+  taxa_no_show_pct: number | null;
+  /** null quando denominador é 0 (sem reservas decididas). */
+  taxa_cancelamento_pct: number | null;
   /** Apenas Fila — segundos médios entre created_at e notified_at. */
   tempo_medio_espera_seg: number | null;
   /** Mesas/pessoas efetivamente sentadas. */
@@ -118,8 +121,8 @@ function emptyKpiSet(): KpiSet {
     total_mesas: 0,
     total_pessoas: 0,
     media_pessoas_por_mesa: 0,
-    taxa_no_show_pct: 0,
-    taxa_cancelamento_pct: 0,
+    taxa_no_show_pct: null,
+    taxa_cancelamento_pct: null,
     tempo_medio_espera_seg: null,
     mesas_sentadas: 0,
     pessoas_sentadas: 0,
@@ -237,20 +240,28 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       0,
     );
 
+    // Denominadores excluem `pending` per CLAUDE.md:
+    //  - no-show: confirmed + no_show
+    //  - cancelamento: confirmed + cancelled + no_show
+    const reservaConfirmadasCount = reservaConfirmadas.length;
+    const noShowDenom = reservaConfirmadasCount + reservaNoShow;
+    const decidedDenom = reservaConfirmadasCount + reservaCanceladas + reservaNoShow;
+
     const reservaKpis: KpiSet = {
       total_mesas: reservaTotalMesas,
       total_pessoas: reservaTotalPessoas,
-      media_pessoas_por_mesa: reservaTotalMesas
-        ? reservaTotalPessoas / reservaTotalMesas
+      // Média de pessoas/mesa só faz sentido sobre mesas que efetivamente
+      // foram ocupadas (confirmadas), não sobre o total bruto que inclui
+      // canceladas/no_show.
+      media_pessoas_por_mesa: reservaConfirmadasCount
+        ? reservaSentadasPessoas / reservaConfirmadasCount
         : 0,
-      taxa_no_show_pct: reservaTotalMesas
-        ? (reservaNoShow / reservaTotalMesas) * 100
-        : 0,
-      taxa_cancelamento_pct: reservaTotalMesas
-        ? (reservaCanceladas / reservaTotalMesas) * 100
-        : 0,
+      taxa_no_show_pct:
+        noShowDenom > 0 ? (reservaNoShow / noShowDenom) * 100 : null,
+      taxa_cancelamento_pct:
+        decidedDenom > 0 ? (reservaCanceladas / decidedDenom) * 100 : null,
       tempo_medio_espera_seg: null,
-      mesas_sentadas: reservaConfirmadas.length,
+      mesas_sentadas: reservaConfirmadasCount,
       pessoas_sentadas: reservaSentadasPessoas,
       receita_centavos: 0, // pagamentos: stub até integração
     };
@@ -278,16 +289,20 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       )
       .filter((s) => s >= 0);
 
+    // Fila não tem status "no_show" — usamos `cancelled` como proxy de não
+    // comparecimento. Denominador: seated + cancelled (exclui waiting/notified
+    // que ainda não têm desfecho).
+    const filaDecidedDenom = filaSeated.length + filaCanceladas;
+
     const filaKpis: KpiSet = {
       total_mesas: filaTotalMesas,
       total_pessoas: filaTotalPessoas,
-      media_pessoas_por_mesa: filaTotalMesas
-        ? filaTotalPessoas / filaTotalMesas
+      media_pessoas_por_mesa: filaSeated.length
+        ? filaSentadasPessoas / filaSeated.length
         : 0,
-      taxa_no_show_pct: filaTotalMesas
-        ? (filaCanceladas / filaTotalMesas) * 100
-        : 0,
-      taxa_cancelamento_pct: 0,
+      taxa_no_show_pct:
+        filaDecidedDenom > 0 ? (filaCanceladas / filaDecidedDenom) * 100 : null,
+      taxa_cancelamento_pct: null,
       tempo_medio_espera_seg: filaWaits.length
         ? filaWaits.reduce((a, b) => a + b, 0) / filaWaits.length
         : null,
@@ -307,16 +322,19 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       0,
     );
 
+    // Walk-in tem `seated`, `left`, `no_show` como desfechos. No-show denom:
+    // seated + no_show (não conta walkin que saiu da fila — "left").
+    const walkNoShowDenom = walkSeated.length + walkNoShow;
+
     const passanteKpis: KpiSet = {
       total_mesas: walkTotalMesas,
       total_pessoas: walkTotalPessoas,
-      media_pessoas_por_mesa: walkTotalMesas
-        ? walkTotalPessoas / walkTotalMesas
+      media_pessoas_por_mesa: walkSeated.length
+        ? walkSentadasPessoas / walkSeated.length
         : 0,
-      taxa_no_show_pct: walkTotalMesas
-        ? (walkNoShow / walkTotalMesas) * 100
-        : 0,
-      taxa_cancelamento_pct: 0,
+      taxa_no_show_pct:
+        walkNoShowDenom > 0 ? (walkNoShow / walkNoShowDenom) * 100 : null,
+      taxa_cancelamento_pct: null,
       tempo_medio_espera_seg: null,
       mesas_sentadas: walkSeated.length,
       pessoas_sentadas: walkSentadasPessoas,
@@ -333,24 +351,40 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       filaKpis.total_pessoas +
       passanteKpis.total_pessoas;
     const totalNoShow = reservaNoShow + walkNoShow;
+    // Cancelados agregados: reservas canceladas + walkin "left" não conta
+    // (visitante simplesmente foi embora antes de sentar), fila "cancelled" sim.
+    const totalCancelled = reservaCanceladas + filaCanceladas;
+
+    const totalSentadasMesas =
+      reservaKpis.mesas_sentadas +
+      filaKpis.mesas_sentadas +
+      passanteKpis.mesas_sentadas;
+    const totalSentadasPessoas =
+      reservaKpis.pessoas_sentadas +
+      filaKpis.pessoas_sentadas +
+      passanteKpis.pessoas_sentadas;
+
+    // Denominadores agregados (excluindo pending/waiting):
+    //  - no-show: sentados + no_show (de reservas e walkins)
+    //  - cancelamento: sentados + cancelados + no_show
+    const geralNoShowDenom = totalSentadasMesas + totalNoShow;
+    const geralDecidedDenom = totalSentadasMesas + totalCancelled + totalNoShow;
 
     const geralKpis: KpiSet = {
       total_mesas: totalMesas,
       total_pessoas: totalPessoas,
-      media_pessoas_por_mesa: totalMesas ? totalPessoas / totalMesas : 0,
-      taxa_no_show_pct: totalMesas ? (totalNoShow / totalMesas) * 100 : 0,
-      taxa_cancelamento_pct: reservaTotalMesas
-        ? (reservaCanceladas / reservaTotalMesas) * 100
+      media_pessoas_por_mesa: totalSentadasMesas
+        ? totalSentadasPessoas / totalSentadasMesas
         : 0,
+      taxa_no_show_pct:
+        geralNoShowDenom > 0 ? (totalNoShow / geralNoShowDenom) * 100 : null,
+      taxa_cancelamento_pct:
+        geralDecidedDenom > 0
+          ? (totalCancelled / geralDecidedDenom) * 100
+          : null,
       tempo_medio_espera_seg: filaKpis.tempo_medio_espera_seg,
-      mesas_sentadas:
-        reservaKpis.mesas_sentadas +
-        filaKpis.mesas_sentadas +
-        passanteKpis.mesas_sentadas,
-      pessoas_sentadas:
-        reservaKpis.pessoas_sentadas +
-        filaKpis.pessoas_sentadas +
-        passanteKpis.pessoas_sentadas,
+      mesas_sentadas: totalSentadasMesas,
+      pessoas_sentadas: totalSentadasPessoas,
       receita_centavos: 0,
     };
 
@@ -376,14 +410,14 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       }
     }
     for (const w of filaSeated) {
-      const d = dailyMap[w.created_at.slice(0, 10)];
+      const d = dailyMap[isoToLocalDate(w.created_at)];
       if (d) {
         d.fila_mesas += 1;
         d.fila_pessoas += w.party_size;
       }
     }
     for (const w of walkSeated) {
-      const d = dailyMap[w.arrived_at.slice(0, 10)];
+      const d = dailyMap[isoToLocalDate(w.arrived_at)];
       if (d) {
         d.passante_mesas += 1;
         d.passante_pessoas += w.party_size;
@@ -420,14 +454,18 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       dow[d].reserva_pessoas += r.party_size;
     }
     for (const w of waitlist) {
-      const d = new Date(w.created_at).getDay();
-      dow[d].fila_mesas += 1;
-      dow[d].fila_pessoas += w.party_size;
+      const d = new Date(isoToLocalDate(w.created_at) + "T12:00:00").getDay();
+      if (d >= 0 && d < 7) {
+        dow[d].fila_mesas += 1;
+        dow[d].fila_pessoas += w.party_size;
+      }
     }
     for (const w of walkIns) {
-      const d = new Date(w.arrived_at).getDay();
-      dow[d].passante_mesas += 1;
-      dow[d].passante_pessoas += w.party_size;
+      const d = new Date(isoToLocalDate(w.arrived_at) + "T12:00:00").getDay();
+      if (d >= 0 && d < 7) {
+        dow[d].passante_mesas += 1;
+        dow[d].passante_pessoas += w.party_size;
+      }
     }
 
     // Reorder Seg–Dom (Get In pattern)

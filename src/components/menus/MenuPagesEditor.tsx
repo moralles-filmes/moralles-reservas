@@ -41,6 +41,8 @@ export function MenuPagesEditor({ menuId, unitId }: MenuPagesEditorProps) {
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const baseOrder = pages?.length ?? 0;
+    let okCount = 0;
+    let failCount = 0;
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       try {
@@ -51,14 +53,20 @@ export function MenuPagesEditor({ menuId, unitId }: MenuPagesEditorProps) {
         });
         await addPage.mutateAsync({
           image_url: publicUrl,
-          sort_order: baseOrder + i,
+          sort_order: baseOrder + okCount,
         });
+        okCount++;
       } catch {
-        // upload hook já mostra toast
+        // hook de upload (ou addPage) já dispara toast.error específico
+        failCount++;
       }
     }
     if (fileRef.current) fileRef.current.value = "";
-    toast.success(`${files.length} ${files.length === 1 ? "imagem" : "imagens"} adicionada${files.length === 1 ? "" : "s"}.`);
+    if (okCount > 0 && failCount === 0) {
+      toast.success(`${okCount} ${okCount === 1 ? "imagem adicionada" : "imagens adicionadas"}.`);
+    } else if (okCount > 0 && failCount > 0) {
+      toast.warning(`${okCount} adicionada${okCount === 1 ? "" : "s"}, ${failCount} falharam.`);
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -66,15 +74,26 @@ export function MenuPagesEditor({ menuId, unitId }: MenuPagesEditorProps) {
   };
 
   const handleDrop = async (targetId: string) => {
-    if (!dragId || dragId === targetId || !pages) return;
+    if (!dragId || dragId === targetId || !pages) {
+      setDragId(null);
+      return;
+    }
     const oldIdx = pages.findIndex((p) => p.id === dragId);
     const newIdx = pages.findIndex((p) => p.id === targetId);
-    if (oldIdx < 0 || newIdx < 0) return;
+    if (oldIdx < 0 || newIdx < 0) {
+      setDragId(null);
+      return;
+    }
     const next = [...pages];
     const [moved] = next.splice(oldIdx, 1);
     next.splice(newIdx, 0, moved);
-    setDragId(null);
-    await reorder.mutateAsync(next.map((p) => p.id));
+    try {
+      await reorder.mutateAsync(next.map((p) => p.id));
+    } catch {
+      toast.error("Falha ao reordenar. Tente novamente.");
+    } finally {
+      setDragId(null);
+    }
   };
 
   return (

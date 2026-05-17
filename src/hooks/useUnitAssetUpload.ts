@@ -8,7 +8,8 @@ export type AssetKind =
   | "menu_cover"
   | "menu_page"
   | "menu_banner_home"
-  | "menu_banner_content";
+  | "menu_banner_content"
+  | "gallery_photo";
 
 const MAX_BYTES: Record<AssetKind, number> = {
   logo: 1 * 1024 * 1024,
@@ -17,6 +18,7 @@ const MAX_BYTES: Record<AssetKind, number> = {
   menu_page: 8 * 1024 * 1024,
   menu_banner_home: 4 * 1024 * 1024,
   menu_banner_content: 4 * 1024 * 1024,
+  gallery_photo: 5 * 1024 * 1024,
 };
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/avif"];

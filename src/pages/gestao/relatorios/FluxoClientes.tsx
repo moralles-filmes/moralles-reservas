@@ -19,7 +19,6 @@ import {
   Clock,
   Download,
   ExternalLink,
-  HelpCircle,
   LayoutGrid,
   TrendingUp,
   UserCheck,
@@ -37,6 +36,7 @@ import { PartySizeChart } from "@/components/relatorios/PartySizeChart";
 import { DowChart } from "@/components/relatorios/DowChart";
 import { PageHeader } from "@/components/PageHeader";
 import { Breadcrumb } from "@/components/Breadcrumb";
+import { KpiCard } from "@/components/dashboard/KpiCard";
 import { exportClientesCsv } from "@/lib/exportCsv";
 import { toast } from "sonner";
 
@@ -63,11 +63,6 @@ function formatTime(seconds: number | null): string {
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
   return [h, m, s].map((v) => String(v).padStart(2, "0")).join(":");
-}
-
-function formatPct(value: number): string {
-  if (!Number.isFinite(value)) return "0 %";
-  return `${value.toFixed(2).replace(/\.?0+$/, "")} %`;
 }
 
 function formatBRL(cents: number): string {
@@ -253,6 +248,20 @@ export default function FluxoClientes() {
 
 // ─── KPI Grid ─────────────────────────────────────────────────────────────────
 
+const ICON_COLOR = "bg-muted text-muted-foreground";
+const PCT_DECIMAL_FORMATTER = (value: number) =>
+  Number.isInteger(value) ? value : Number(value.toFixed(1));
+
+/** Wrapper sobre KpiCard que respeita "—" quando taxa é null e formata 1 casa decimal. */
+function pctValue(
+  pct: number | null,
+  loading: boolean,
+): number | null | undefined {
+  if (loading) return undefined;
+  if (pct == null) return null;
+  return PCT_DECIMAL_FORMATTER(pct);
+}
+
 function KpiGrid({
   tab,
   kpis,
@@ -262,28 +271,36 @@ function KpiGrid({
   kpis: KpiSet;
   loading: boolean;
 }) {
+  const receita = loading ? undefined : formatBRL(kpis.receita_centavos);
+
   if (tab === "geral") {
     return (
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi
+        <KpiCard
+          title="Total de mesas"
+          value={loading ? undefined : kpis.total_mesas}
           icon={LayoutGrid}
-          label="Total de mesas"
-          value={kpis.total_mesas}
-          loading={loading}
+          color={ICON_COLOR}
         />
-        <Kpi
+        <KpiCard
+          title="Total de pessoas"
+          value={loading ? undefined : kpis.total_pessoas}
           icon={Users}
-          label="Total de pessoas"
-          value={kpis.total_pessoas}
-          loading={loading}
+          color={ICON_COLOR}
         />
-        <Kpi
+        <KpiCard
+          title="Taxa de não comparecimento"
+          value={pctValue(kpis.taxa_no_show_pct, loading)}
+          suffix="%"
           icon={UserX}
-          label="Taxa de não comparecimento"
-          value={formatPct(kpis.taxa_no_show_pct)}
-          loading={loading}
+          color={ICON_COLOR}
         />
-        <KpiReceita value={kpis.receita_centavos} loading={loading} />
+        <KpiCard
+          title="Receita gerada via Get In"
+          value={receita}
+          icon={DollarSign}
+          color={ICON_COLOR}
+        />
       </div>
     );
   }
@@ -292,35 +309,52 @@ function KpiGrid({
     return (
       <div className="space-y-3">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Kpi icon={LayoutGrid} label="Total de mesas" value={kpis.total_mesas} loading={loading} />
-          <Kpi icon={Users} label="Total de pessoas" value={kpis.total_pessoas} loading={loading} />
-          <Kpi
-            icon={TrendingUp}
-            label="Média de pessoas por mesa"
-            value={Math.round(kpis.media_pessoas_por_mesa)}
-            loading={loading}
+          <KpiCard
+            title="Total de mesas"
+            value={loading ? undefined : kpis.total_mesas}
+            icon={LayoutGrid}
+            color={ICON_COLOR}
           />
-          <Kpi
+          <KpiCard
+            title="Total de pessoas"
+            value={loading ? undefined : kpis.total_pessoas}
+            icon={Users}
+            color={ICON_COLOR}
+          />
+          <KpiCard
+            title="Média de pessoas por mesa"
+            value={loading ? undefined : Math.round(kpis.media_pessoas_por_mesa)}
+            icon={TrendingUp}
+            color={ICON_COLOR}
+          />
+          <KpiCard
+            title="Taxa de cancelamento"
+            value={pctValue(kpis.taxa_cancelamento_pct, loading)}
+            suffix="%"
             icon={XCircle}
-            label="Taxa de cancelamento"
-            value={formatPct(kpis.taxa_cancelamento_pct)}
-            loading={loading}
+            color={ICON_COLOR}
           />
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-          <Kpi
+          <KpiCard
+            title="Taxa de não comparecimento"
+            value={pctValue(kpis.taxa_no_show_pct, loading)}
+            suffix="%"
             icon={UserX}
-            label="Taxa de não comparecimento"
-            value={formatPct(kpis.taxa_no_show_pct)}
-            loading={loading}
+            color={ICON_COLOR}
           />
-          <Kpi
+          <KpiCard
+            title="Pessoas sentadas via Get In"
+            value={loading ? undefined : kpis.pessoas_sentadas}
             icon={UserCheck}
-            label="Pessoas sentadas via Get In"
-            value={kpis.pessoas_sentadas}
-            loading={loading}
+            color={ICON_COLOR}
           />
-          <KpiReceita value={kpis.receita_centavos} loading={loading} />
+          <KpiCard
+            title="Receita gerada via Get In"
+            value={receita}
+            icon={DollarSign}
+            color={ICON_COLOR}
+          />
         </div>
       </div>
     );
@@ -330,29 +364,45 @@ function KpiGrid({
     return (
       <div className="space-y-3">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Kpi icon={LayoutGrid} label="Total de mesas" value={kpis.total_mesas} loading={loading} />
-          <Kpi icon={Users} label="Total de pessoas" value={kpis.total_pessoas} loading={loading} />
-          <Kpi
-            icon={Clock}
-            label="Tempo médio de espera"
-            value={formatTime(kpis.tempo_medio_espera_seg)}
-            loading={loading}
+          <KpiCard
+            title="Total de mesas"
+            value={loading ? undefined : kpis.total_mesas}
+            icon={LayoutGrid}
+            color={ICON_COLOR}
           />
-          <Kpi
+          <KpiCard
+            title="Total de pessoas"
+            value={loading ? undefined : kpis.total_pessoas}
+            icon={Users}
+            color={ICON_COLOR}
+          />
+          <KpiCard
+            title="Tempo médio de espera"
+            value={loading ? undefined : formatTime(kpis.tempo_medio_espera_seg)}
+            icon={Clock}
+            color={ICON_COLOR}
+          />
+          <KpiCard
+            title="Média de pessoas por mesa"
+            value={loading ? undefined : Math.round(kpis.media_pessoas_por_mesa)}
             icon={TrendingUp}
-            label="Média de pessoas por mesa"
-            value={Math.round(kpis.media_pessoas_por_mesa)}
-            loading={loading}
+            color={ICON_COLOR}
           />
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Kpi
+          <KpiCard
+            title="Taxa de não comparecimento"
+            value={pctValue(kpis.taxa_no_show_pct, loading)}
+            suffix="%"
             icon={UserX}
-            label="Taxa de não comparecimento"
-            value={formatPct(kpis.taxa_no_show_pct)}
-            loading={loading}
+            color={ICON_COLOR}
           />
-          <KpiReceita value={kpis.receita_centavos} loading={loading} />
+          <KpiCard
+            title="Receita gerada via Get In"
+            value={receita}
+            icon={DollarSign}
+            color={ICON_COLOR}
+          />
         </div>
       </div>
     );
@@ -361,86 +411,25 @@ function KpiGrid({
   // Passante
   return (
     <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-      <Kpi icon={LayoutGrid} label="Total de mesas" value={kpis.total_mesas} loading={loading} />
-      <Kpi icon={Users} label="Total de pessoas" value={kpis.total_pessoas} loading={loading} />
-      <Kpi
+      <KpiCard
+        title="Total de mesas"
+        value={loading ? undefined : kpis.total_mesas}
+        icon={LayoutGrid}
+        color={ICON_COLOR}
+      />
+      <KpiCard
+        title="Total de pessoas"
+        value={loading ? undefined : kpis.total_pessoas}
+        icon={Users}
+        color={ICON_COLOR}
+      />
+      <KpiCard
+        title="Média de pessoas por mesa"
+        value={loading ? undefined : Math.round(kpis.media_pessoas_por_mesa)}
         icon={TrendingUp}
-        label="Média de pessoas por mesa"
-        value={Math.round(kpis.media_pessoas_por_mesa)}
-        loading={loading}
+        color={ICON_COLOR}
       />
     </div>
-  );
-}
-
-// ─── Kpi components ──────────────────────────────────────────────────────────
-
-function Kpi({
-  icon: Icon,
-  label,
-  value,
-  loading,
-}: {
-  icon: React.ElementType;
-  label: string;
-  value: number | string;
-  loading: boolean;
-}) {
-  return (
-    <Card>
-      <CardContent className="pt-5 pb-5">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-muted-foreground truncate">{label}</p>
-            {loading ? (
-              <Skeleton className="h-8 w-20 mt-1" />
-            ) : (
-              <p className="text-2xl font-bold mt-1">{value}</p>
-            )}
-          </div>
-          <Icon className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function KpiReceita({
-  value,
-  loading,
-}: {
-  value: number;
-  loading: boolean;
-}) {
-  return (
-    <Card>
-      <CardContent className="pt-5 pb-5">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
-              Receita gerada via Get In
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <HelpCircle className="h-3 w-3 cursor-help" />
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-xs">
-                    Em breve — ative pagamentos nas configurações de reserva
-                    pra começar a contabilizar receita aqui.
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </p>
-            {loading ? (
-              <Skeleton className="h-8 w-24 mt-1" />
-            ) : (
-              <p className="text-2xl font-bold mt-1">{formatBRL(value)}</p>
-            )}
-          </div>
-          <DollarSign className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 

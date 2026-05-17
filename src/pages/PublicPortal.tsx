@@ -28,6 +28,7 @@ import {
   CheckCircle2,
   Clock,
   CreditCard,
+  Images,
   Instagram,
   Link as LinkIcon,
   MapPin,
@@ -38,6 +39,7 @@ import {
   Tag,
   UtensilsCrossed,
   Wallet,
+  X,
 } from "lucide-react";
 import type { UnitAddress } from "@/types/reserva";
 import { FACILITY_GROUPS, getFacilityIcon, getFacilityLabel } from "@/lib/facilities";
@@ -52,6 +54,7 @@ interface PublicUnit {
   price_range_max: number | null;
   hero_image_url: string | null;
   logo_url: string | null;
+  gallery_photos?: string[] | null;
   address: UnitAddress | null;
   phone?: string | null;
   instagram?: string | null;
@@ -196,6 +199,8 @@ function PortalContent({
   autoOpen: AutoOpenAction;
 }) {
   const initials = useMemo(() => getInitials(unit.name), [unit.name]);
+  const galleryPhotos = (unit.gallery_photos ?? []).filter(Boolean);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   const fullAddress =
     unit.address?.full?.trim() ||
@@ -312,6 +317,29 @@ function PortalContent({
                 <p className="font-display text-lg sm:text-xl leading-relaxed text-foreground/85 whitespace-pre-line">
                   {unit.description}
                 </p>
+              </Section>
+            )}
+
+            {galleryPhotos.length > 0 && (
+              <Section icon={<Images className="h-4 w-4" />} title="Galeria">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
+                  {galleryPhotos.map((url, idx) => (
+                    <button
+                      key={`${url}-${idx}`}
+                      type="button"
+                      onClick={() => setLightboxIndex(idx)}
+                      className="relative aspect-square rounded-md overflow-hidden bg-muted/30 group focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      aria-label={`Abrir foto ${idx + 1}`}
+                    >
+                      <img
+                        src={url}
+                        alt={`Foto ${idx + 1} de ${unit.name}`}
+                        loading="lazy"
+                        className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      />
+                    </button>
+                  ))}
+                </div>
               </Section>
             )}
 
@@ -470,6 +498,68 @@ function PortalContent({
           <span>Powered by Moralles</span>
         </div>
       </footer>
+
+      {/* Lightbox da galeria */}
+      <Dialog
+        open={lightboxIndex !== null}
+        onOpenChange={(open) => {
+          if (!open) setLightboxIndex(null);
+        }}
+      >
+        <DialogContent className="max-w-5xl p-0 bg-black/95 border-0 sm:rounded-lg overflow-hidden">
+          <DialogTitle className="sr-only">
+            Foto {lightboxIndex !== null ? lightboxIndex + 1 : 0} de {unit.name}
+          </DialogTitle>
+          {lightboxIndex !== null && galleryPhotos[lightboxIndex] && (
+            <div className="relative w-full h-[min(85vh,720px)] flex items-center justify-center">
+              <img
+                src={galleryPhotos[lightboxIndex]}
+                alt={`Foto ${lightboxIndex + 1} de ${unit.name}`}
+                className="max-w-full max-h-full object-contain"
+              />
+              <button
+                type="button"
+                onClick={() => setLightboxIndex(null)}
+                className="absolute top-3 right-3 h-9 w-9 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                aria-label="Fechar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+              {galleryPhotos.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLightboxIndex((i) =>
+                        i === null ? null : (i - 1 + galleryPhotos.length) % galleryPhotos.length
+                      )
+                    }
+                    className="absolute left-3 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                    aria-label="Foto anterior"
+                  >
+                    <ChevronRight className="h-5 w-5 rotate-180" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLightboxIndex((i) =>
+                        i === null ? null : (i + 1) % galleryPhotos.length
+                      )
+                    }
+                    className="absolute right-3 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                    aria-label="Próxima foto"
+                  >
+                    <ChevronRight className="h-5 w-5" />
+                  </button>
+                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-xs text-white/80 bg-black/60 rounded-full px-3 py-1">
+                    {lightboxIndex + 1} / {galleryPhotos.length}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
