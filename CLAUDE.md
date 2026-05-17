@@ -2,6 +2,19 @@
 
 Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Arquitetura **multi-tenant**: organizations → units → unit_members.
 
+---
+
+## 🧭 O que pertence neste arquivo (regra de ouro)
+
+**Só entra aqui o que muda decisão de código futuro** — invariantes que evitam bug, gotchas de stack, contratos cross-feature, convenções de design. Antes de adicionar algo, pergunte:
+
+- É **descobrível em `ls`**, `git log`, `git blame`, ou lendo o próprio arquivo? → **não entra**. Documente no código com comentário curto.
+- É **histórico** (migration X foi rodada em Y, bug Z foi corrigido)? → **não entra**. Banco/git já guardam.
+- É **status atual** de um arquivo ("será removido", "em refactor")? → **não entra**. Ou remove o arquivo, ou marca com `@deprecated` no próprio código.
+- É **invariante** que vale pra próxima feature ("RLS força X", "writer Y precisa chamar RPC Z", "padrão de cleanup de storage")? → **entra**, com **regra + por quê + como aplicar + ponteiro de código**.
+
+Quando este arquivo dobrar de tamanho, reaudita: hardening de hoje vira CLAUDE.md de amanhã, comentário-de-código depois de amanhã.
+
 ## Visão geral
 
 - **Landing pública** (`/`) — descobrir restaurantes por cidade, busca por nome
@@ -175,8 +188,7 @@ moralles-reservas/
 │   │   ├── useAvaliacoes.ts / useVouchers.ts / useGiftbackSettings.ts / useGiftbackRelatorio.ts
 │   │   ├── useOrganizations.ts / useWhatsAppChannels.ts / useWhatsAppHealth.ts
 │   │   ├── useConversations.ts / useAwaitingHumanCount.ts / useSendManualMessage.ts
-│   │   ├── useUnitPublicContent.ts / useUnitAssetUpload.ts / useDiscoverUnits.ts
-│   │   └── useAdminUsers.ts           # Legacy (será removido)
+│   │   └── useUnitPublicContent.ts / useUnitAssetUpload.ts / useDiscoverUnits.ts
 │   │
 │   ├── stores/reservaStore.ts         # Filtros do painel (Zustand)
 │   │
@@ -201,7 +213,6 @@ moralles-reservas/
 │   │   │   ├── OperacionalLayout.tsx  # Header minimalista + .theme-admin
 │   │   │   ├── PlatformLayout.tsx     # Sidebar super-admin + .theme-admin
 │   │   │   └── SidebarUnitProfile.tsx # Bloco-perfil no topo da sidebar (hero+logo+switcher)
-│   │   └── UnitSwitcher.tsx           # Legado — substituído por SidebarUnitProfile
 │   │
 │   └── pages/
 │       ├── Index.tsx / PublicPortal.tsx / WidgetPortal.tsx / MenuPortal.tsx / Auth.tsx
@@ -218,7 +229,7 @@ moralles-reservas/
 │       └── platform/      (Empresas, Automacao)
 │
 ├── supabase/
-│   ├── migrations/        # Todas em formato <timestamp>_<nome>.sql (padrão Supabase CLI). Os arquivos legacy 001-052 foram renomeados em 2026-05-17 para incluir o timestamp real do `schema_migrations` remoto como prefixo — re-sincroniza `supabase migration list --linked` sem tocar no banco. 9 versões órfãs (2 re-runs históricos + 7 duplicações da 1ª aplicação em 16/05 das migrations 053-057 + waitlist_atomic + backfill_messages que foram re-aplicadas em 17/05 como `20260517100000-100600`) foram limpas via `migration repair --status reverted` no mesmo dia — não tocou em objetos do banco (todas as migrations 17/05 eram idempotentes, 2ª execução foi no-op confirmado por queries). Toda migration nova SEMPRE em formato YYYYMMDDHHMMSS_nome.sql. `db push` casa 100% e funciona normalmente
+│   ├── migrations/        # Toda migration nova SEMPRE em formato `YYYYMMDDHHMMSS_nome.sql` (padrão Supabase CLI). Migrations idempotentes por design — re-runs no remoto são no-op
 │   └── functions/
 │       ├── _shared/
 │       │   ├── ai-providers.ts        # Abstração multi-provedor (runAgentLoop)
@@ -460,6 +471,8 @@ Auditoria 2026-05-17 fechou 11 bugs (migration `20260517120000_conversation_appe
 - **`handleSend` tem guard reentrante** (`if (sendMessage.isPending) return`) antes de qualquer trim/validate. Ctrl+Enter rápido 2x não envia 2x WhatsApp (provider não dedupe).
 - **`getConversationDisplayName` fallback final é `"Cliente sem nome"`** (não string vazia). Lista lateral sempre tem rótulo legível mesmo se customer.name + contact_name + phone forem todos vazios.
 - **Shape canônico de `ConversationMessage`** (`{ role, content, timestamp, kind?, human_user_id? }`) continua autoritativo — a RPC valida que `role`, `content` e `timestamp` estão presentes e rejeita com `raise exception` se faltar. Não adicionar campo novo sem refletir no tipo em `src/types/reserva.ts`.
+- **`appendOutboundToConversation` (em [supabase/functions/_shared/conversation-log.ts](supabase/functions/_shared/conversation-log.ts)) auto-cria conversa em `ai_active` se customer ainda não tem nenhuma.** Isso garante que mensagens de worker (confirmação, lembrete, survey, voucher) apareçam na timeline operacional mesmo no 1º contato. O helper é best-effort — nunca lança, falha de log não bloqueia o send. Workers/Edge Functions novos que registrem outbound NÃO devem fazer `INSERT into conversations` direto; sempre delegar ao helper.
+- **Customer create/merge é SEMPRE via [`_shared/resolve-customer.ts`](supabase/functions/_shared/resolve-customer.ts) (`resolveOrCreateCustomer`).** Webhook WhatsApp e `create-reservation` usam o helper. Regras: dedupe por `(organization_id, phone)`, preserva `name` real cadastrado (nunca sobrescreve com push_name do WhatsApp), faz APPEND em `emails[]` se email é novo. Edge Function nova que crie customer **não deve duplicar lógica de upsert** — chamar o helper.
 
 ---
 
@@ -478,6 +491,7 @@ Auditoria 2026-05-17 fechou 11 bugs (migration `20260517120000_conversation_appe
 - Componentes em **PascalCase**, hooks em **camelCase** com prefixo `use`
 - Queries/mutations via **TanStack React Query** — nunca `useState` + `useEffect` para dados remotos
 - **`invalidateQueries` usa prefix-match — cuidado com ordem da queryKey.** Se a query é `["customers", orgId, unitId, search]` e o mutation invalida `["customers", unitId]`, **não casa** (a posição 1 é `orgId`, não `unitId`) e a UI fica com dado obsoleto até F5. Padrão: invalidate broad (`["customers"]`) ou montar a key na mesma ordem do mutation. Bug histórico: `useCustomers` invalidava `["customers", unitId]` enquanto `Clientes.tsx` lia `["customers", orgId, unitId, search]` — depois de editar/anonimizar a lista não atualizava.
+- **Auditoria multi-tenant lê por `unit_id OR organization_id`** ([src/hooks/useAuditLog.ts](src/hooks/useAuditLog.ts)). Reservas logam `unit_id`, clientes logam `organization_id` (porque `customers` pertence à org, não à unit). Query nova em `audit_log` precisa do `.or()` cobrindo os 2 — filtrar só por `unit_id` esconde silenciosamente anonimizações/edições de cliente do log da unidade.
 - **Listas com TanStack Query devem tratar `isError` separado de `!data.length`.** Silenciar erro como "lista vazia" mascarou em produção o incidente "todos os clientes da Moralles sumiram" (RPC `get_customer_stats_bulk` faltava e a UI mostrou "Nenhum cliente encontrado"). Padrão: 4 branches — `isLoading`, `isError` (mensagem + botão `refetch()`), `empty`, `list`. Pattern em `Clientes.tsx`.
 - **Operações batch que leem tabela inteira precisam paginar explícito** com `.range(from, to)` em loop até `chunk.length < PAGE`. Sem `.range()`, o PostgREST aplica `db-max-rows` default do Supabase (1000) e **trunca silenciosamente** — sem erro, sem warning. Vale pra exports (CSV/XLSX), backfills no client, agregações cross-tabela. Pattern em `exportClientesXlsx`.
 - **Todo hook de dados aceita `unitId` como primeiro parâmetro** — usar `useCurrentUnit()` para obtê-lo
@@ -534,31 +548,18 @@ Push em `main` dispara deploy. Vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KE
 
 ### Edge Functions
 
-```bash
-supabase functions deploy webhook-whatsapp
-supabase functions deploy send-whatsapp
-supabase functions deploy send-confirmation
-supabase functions deploy send-cancellation
-supabase functions deploy manage-channels
-supabase functions deploy manage-ai-providers
-supabase functions deploy manage-members
-supabase functions deploy manage-organizations
-supabase functions deploy send-manual-message
-supabase functions deploy whatsapp-health
-supabase functions deploy process-notification-outbox
-supabase functions deploy process-voucher-triggers
-supabase functions deploy process-reservation-reminders
-supabase functions deploy process-satisfaction-surveys
-supabase functions deploy create-reservation
-```
+Deploy individual: `supabase functions deploy <nome>`. Lista canônica das functions vive em [supabase/functions/](supabase/functions/) — não duplicar aqui.
 
-> Ao alterar `_shared/availability.ts`, sempre redeploy `create-reservation` e `webhook-whatsapp`.
-
-> Ao alterar `_shared/conversation-log.ts`, redeploy de TODAS que importam: `webhook-whatsapp`, `send-manual-message`, `send-whatsapp`, `send-confirmation`, `send-cancellation`, `process-notification-outbox`, `process-voucher-triggers`, `process-reservation-reminders`, `process-satisfaction-surveys`, `process-waitlist-entered`, `process-waitlist-feedback`. Edge Function só vê a nova versão do shared no deploy próprio — sem redeploy, ficam consumindo a versão antiga em memória.
+> **Edge Functions não compartilham bundle em runtime.** Ao alterar arquivo em `_shared/`, redeploy de TODAS as functions que importam — sem redeploy continuam usando a versão antiga em memória.
+>
+> - `_shared/availability.ts` → redeploy de `create-reservation` + `webhook-whatsapp`.
+> - `_shared/conversation-log.ts` → redeploy de TODAS as functions (webhook, send-*, workers process-*). Ao adicionar feature/worker novo que importe, atualizar este checklist.
+> - `_shared/resolve-customer.ts` → redeploy de `create-reservation` + `webhook-whatsapp`.
 
 ## Adicionando novos componentes shadcn/ui
 
-Copie do projeto `moralles-agenda`:
+```bash
+npx shadcn@latest add <componente>
 ```
-/Users/yurimoraes/Documents/APPs Moralles/moralles-agenda/src/components/ui/<componente>.tsx
-```
+
+Alternativa: copiar o `.tsx` do componente de outro projeto interno do design system (ex.: `moralles-agenda`). Não editar arquivos em `src/components/ui/` que já vieram do shadcn — wrappers próprios (ex.: `responsive-dialog.tsx`) ficam ao lado, com nome distinto.
