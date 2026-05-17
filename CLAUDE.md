@@ -167,7 +167,7 @@ moralles-reservas/
 │   │   ├── useWaitlist.ts / useWaitlistTemplates.ts / useWaitlistSettings.ts
 │   │   ├── useReservationTemplates.ts # Templates reminder_d1/survey_d1 (sincronizar defaults com workers)
 │   │   ├── useMenus.ts / useMenuPages.ts / useMenuBanners.ts
-│   │   ├── useDashboardMetrics.ts / useFluxoClientes.ts / useComunicacao.ts
+│   │   ├── useDashboardMetrics.ts / useUnitHourRange.ts / useFluxoClientes.ts / useComunicacao.ts
 │   │   ├── useAvaliacoes.ts / useVouchers.ts / useGiftbackSettings.ts / useGiftbackRelatorio.ts
 │   │   ├── useOrganizations.ts / useWhatsAppChannels.ts / useWhatsAppHealth.ts
 │   │   ├── useConversations.ts / useAwaitingHumanCount.ts / useSendManualMessage.ts
@@ -214,7 +214,7 @@ moralles-reservas/
 │       └── platform/      (Empresas, Automacao)
 │
 ├── supabase/
-│   ├── migrations/        # 001–052 (ver nomes dos arquivos para contexto)
+│   ├── migrations/        # 001–052 numéricas (legado) + <timestamp>_*.sql (novas). Toda migration nova SEMPRE em formato YYYYMMDDHHMMSS_nome.sql (padrão Supabase CLI) — só assim `supabase db push` rastreia em schema_migrations
 │   └── functions/
 │       ├── _shared/
 │       │   ├── ai-providers.ts        # Abstração multi-provedor (runAgentLoop)
@@ -223,6 +223,7 @@ moralles-reservas/
 │       │   ├── whatsapp-providers.ts  # parseInbound / sendOutbound / SendResult / validateMetaSignature
 │       │   ├── whatsapp-send.ts       # sendWhatsApp — exige pareamento channel_id↔unit_id
 │       │   ├── retry.ts              # fetchWithRetry (exponential backoff)
+│       │   ├── giftback.ts           # expiresAtEndOfDayBrt / formatExpiryBR / ensureUniqueVoucherCode / DEFAULT_GIFTBACK_TEMPLATE
 │       │   └── security.ts           # requireInternalAuth / sanitizePhone / jsonLog
 │       ├── webhook-whatsapp/          # Webhook unificado: resolve canal, idempotência, handoff UX, survey intercept, giftback
 │       ├── webhook-zapi/              # 410 Gone (legacy)
@@ -295,8 +296,8 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 | `menus` | Cardápios digitais (galeria) — `slug`, `theme` JSONB |
 | `menu_pages` | Imagens ordenadas do cardápio |
 | `menu_banners` | Banners da unit (home 9:16 / content 1:1) |
-| `voucher_rules` | Regras Giftback — `trigger_type` (after_rating/manual/birthday/frequency), `discount_percent`, `validity_days` |
-| `vouchers` | Instâncias — `code` (8 chars), `status` (active/used/expired/cancelled) |
+| `voucher_rules` | Regras Giftback — `trigger_type` (after_rating/manual/birthday/frequency), `discount_percent`, `validity_days`. CHECK `voucher_rules_min_rating_when_after_rating` (migration `20260517110000`) exige `min_rating NOT NULL` quando `trigger_type='after_rating'` |
+| `vouchers` | Instâncias — `code` (8 chars), `status` (active/used/expired/cancelled). UNIQUE PARTIAL `vouchers_unit_rule_customer_active_idx` (unit_id, rule_id, customer_id) WHERE status='active' + rule_id IS NOT NULL: garante no máximo 1 voucher ativo por (rule, customer) |
 
 ### Modelo de reservas (availability.ts)
 
@@ -346,6 +347,21 @@ Fluxo público (`/r/:slug` no PublicPortal e `/w/:slug` no WidgetPortal) usa `Re
 - **Acordeão "Não encontrou opção ideal?"** lista halls que abrem em outros horários do dia — click volta pro step 1 com `hall_id` pré-fixado e `time` resetado.
 - **Mobile usa bottom-sheet fullscreen** via `ResponsiveDialog` (não o `Dialog` padrão). Wrapper em [src/components/ui/responsive-dialog.tsx](src/components/ui/responsive-dialog.tsx): `<640px` slide-up fullscreen, `≥640px` Dialog centrado. Inputs ficam `h-12` em mobile (tap target ≥44px). Footer com CTA sticky respeita `env(safe-area-inset-bottom)`.
 - **Tipos centralizados**: `PublicHall` e `PublicHallSchedule` ficam em [src/types/reserva.ts](src/types/reserva.ts) — não duplicar localmente nos portais.
+
+---
+
+## Dashboard e métricas
+
+Convenções de cálculo aplicadas em [useDashboardMetrics.ts](src/hooks/useDashboardMetrics.ts) e [useFluxoClientes.ts](src/hooks/useFluxoClientes.ts) — replicar em qualquer hook novo de relatório.
+
+- **Taxa de cancelamento** = `cancelled / (confirmed + cancelled + no_show) * 100`. **Exclui pending** — denominador são apenas reservas com desfecho decidido. Retorna `null` quando o denominador é 0 (UI renderiza "—" via `KpiCard.formatValue`).
+- **Taxa de no-show** = `no_show / (confirmed + no_show) * 100`. Mesma regra: `null` quando denom=0.
+- **"Pessoas esperadas hoje"** (`useReservaStats.pessoas_hoje`) soma apenas reservas `pending` ou `confirmed`. Canceladas E no-show são excluídas. O hook retorna também `canceladas_hoje` e `no_show_hoje` para exibição contextual.
+- **Gráfico "Ocupação por horário"** usa range dinâmico via [useUnitHourRange.ts](src/hooks/useUnitHourRange.ts), que agrega `hall_schedules.open_time/close_time` dos halls ativos. Fallback 8h-23h quando unit não tem halls/schedules.
+- **`KpiCard.formatValue`** renderiza "—" para `null`, `undefined`, `NaN` e `Infinity`. Suffix ("%", "⭐") só aparece quando o valor é numérico finito.
+- **Datas de eventos com timestamp UTC** (waitlist.created_at, walk_ins.arrived_at, notifications_sent.sent_at) — para agrupar por dia local, usar helper `isoToLocalDate(iso)` em vez de `.slice(0, 10)`. `.slice(0,10)` em UTC pode atribuir o dia errado para eventos próximos da meia-noite no fuso do restaurante. O padrão está em [useFluxoClientes.ts](src/hooks/useFluxoClientes.ts).
+- **`getDay()` em timestamp UTC** retorna o dia da semana no fuso LOCAL do browser — para waitlist/walk-ins, parsear via `new Date(isoToLocalDate(iso) + "T12:00:00").getDay()`. Para reservas, `r.date` (YYYY-MM-DD) já é dia local — basta `new Date(r.date + "T00:00:00").getDay()`.
+- **Ordenação de timestamps** — nunca usar `localeCompare` em strings ISO quando há mistura de formatos (com/sem `Z`, com/sem milissegundos). Sempre `new Date(iso).getTime()` numérico.
 
 ---
 
@@ -404,6 +420,27 @@ Workers lêem templates de `reservation_message_templates` (`customized=true`) o
 
 > Mantenha `defaultBody` em `useReservationTemplates.ts` em sincronia com `DEFAULT_*_BODY` nos workers (worker é a fonte autoritativa).
 
+> **`verify_jwt=false` obrigatório em `supabase/config.toml`** para todo worker chamado via `pg_cron` (`process-*`). O CLI a partir de 2.95 trocou o default para `true` — sem entrada explícita o gateway responde 401 "Missing authorization header" antes de chegar no `requireInternalAuth`, e o cron silencia (pg_net é fire-and-forget, ninguém alerta). Já documentadas no config: outbox, voucher-triggers, reservation-reminders, satisfaction-surveys, waitlist-entered, waitlist-feedback. Nova função worker = nova entrada antes do deploy.
+
+---
+
+## Giftback — invariantes pós-hardening
+
+Auditoria 2026-05-17 fechou 16 bugs (migration `20260517110000_giftback_hardening.sql`). Manter os invariantes abaixo ao tocar qualquer código de voucher.
+
+- **Validade sempre fim-do-dia BRT.** Use `expiresAtEndOfDayBrt(validity_days)` de `_shared/giftback.ts` — runtime Deno é UTC, e `Date#setHours` em UTC daria meia-noite UTC (21:00 BRT do dia anterior). Igual ao frontend `endOfDayLocalISO` em `src/lib/utils.ts` (que roda no fuso do browser do operador). Não calcule offset manualmente em código novo.
+- **Voucher só persiste se WhatsApp send OK.** No `webhook-whatsapp` o ciclo é `prepareGiftbackVoucher` (monta code+texto sem escrever) → `sendOutbound` → `commitGiftbackVoucher` (escreve voucher + `notifications_sent` com status real). Inverter essa ordem cria voucher fantasma: cliente recebe code que não existe no banco, ou ativo no banco sem cliente ter sido notificado.
+- **`notifications_sent.status` precisa refletir o envio real** — `sent` se WhatsApp respondeu 2xx, `failed` com `error` preenchido caso contrário. Antes da auditoria o webhook gravava `sent` antes do envio.
+- **Dedupe (rule, customer) é DB-enforced.** `vouchers_unit_rule_customer_active_idx` (UNIQUE PARTIAL) rejeita 2º voucher ativo pra mesmo (unit, rule, customer). Sempre tente o INSERT — se vier erro `23505`, trate como dedupe silencioso (`voucher_dedup_race` no log). Não confie só no `SELECT existing` antes do insert: `reprocessing_stuck_message` no webhook permite 2 execuções paralelas passarem o check.
+- **`min_rating IS NULL` está bloqueado em `voucher_rules.trigger_type='after_rating'`** via CHECK. Query do webhook usa `.lte('min_rating', rating)` puro — sem `IS NULL` no `.or(...)`.
+- **`processFrequency` conta apenas reservas até ontem (BRT).** `.lte('date', yesterdayIso)` é obrigatório — sem isso, cliente com reservas confirmadas no futuro dispara voucher antes de ter visitado.
+- **Cooldown da frequência = `rule.validity_days`** (estável). NÃO use `windowStart` (que desliza dia a dia) como filtro de "já emiti antes" — cliente vira re-elegível assim que o window passa.
+- **Phone vazio = skip do worker.** `processBirthday` e `processFrequency` filtram `phoneDigits.length >= 10` antes do `issueAndSend`. Sem isso, voucher é inserido e WhatsApp falha — voucher ativo no banco que cliente nunca viu.
+- **29/02 em ano não-bissexto → dispara em 28/02** (regra civil BR). Lógica em `getTodayBrtParts` + flag `acceptLeapBirthday` no worker.
+- **Advisory lock no worker:** `try_giftback_lock()` no início, `release_giftback_lock()` no `finally`. Evita cron + chamada manual concorrentes. Falha aberta (prossegue sem lock) é OK — UNIQUE PARTIAL pega o resto.
+- **Mensagem do voucher é appendada em `conversations.messages`.** Rating intercept e comment intercept do webhook agora chamam `appendToConversation` pro incoming "5" e pro outgoing. Sem isso, operador na tela "Conversas" vê buraco entre survey D+1 e próxima mensagem.
+- **`unitCache` do worker é zerado no início de cada invocação** (`unitCache.clear()`). Settings mudados via UI refletem na próxima execução do cron mesmo em Edge Function quente.
+
 ---
 
 ## Membros e papéis
@@ -420,6 +457,9 @@ Workers lêem templates de `reservation_message_templates` (`customized=true`) o
 
 - Componentes em **PascalCase**, hooks em **camelCase** com prefixo `use`
 - Queries/mutations via **TanStack React Query** — nunca `useState` + `useEffect` para dados remotos
+- **`invalidateQueries` usa prefix-match — cuidado com ordem da queryKey.** Se a query é `["customers", orgId, unitId, search]` e o mutation invalida `["customers", unitId]`, **não casa** (a posição 1 é `orgId`, não `unitId`) e a UI fica com dado obsoleto até F5. Padrão: invalidate broad (`["customers"]`) ou montar a key na mesma ordem do mutation. Bug histórico: `useCustomers` invalidava `["customers", unitId]` enquanto `Clientes.tsx` lia `["customers", orgId, unitId, search]` — depois de editar/anonimizar a lista não atualizava.
+- **Listas com TanStack Query devem tratar `isError` separado de `!data.length`.** Silenciar erro como "lista vazia" mascarou em produção o incidente "todos os clientes da Moralles sumiram" (RPC `get_customer_stats_bulk` faltava e a UI mostrou "Nenhum cliente encontrado"). Padrão: 4 branches — `isLoading`, `isError` (mensagem + botão `refetch()`), `empty`, `list`. Pattern em `Clientes.tsx`.
+- **Operações batch que leem tabela inteira precisam paginar explícito** com `.range(from, to)` em loop até `chunk.length < PAGE`. Sem `.range()`, o PostgREST aplica `db-max-rows` default do Supabase (1000) e **trunca silenciosamente** — sem erro, sem warning. Vale pra exports (CSV/XLSX), backfills no client, agregações cross-tabela. Pattern em `exportClientesXlsx`.
 - **Todo hook de dados aceita `unitId` como primeiro parâmetro** — usar `useCurrentUnit()` para obtê-lo
 - Formulários via **React Hook Form + Zod**
 - **`refetchOnWindowFocus: false`** é default global no `QueryClient` ([src/App.tsx](src/App.tsx)) — evita resetar form state ao trocar de aba. Painéis operacionais que precisam de dados ao vivo devem usar `refetchInterval` no hook específico (não reativar `refetchOnWindowFocus`).
@@ -427,6 +467,7 @@ Workers lêem templates de `reservation_message_templates` (`customized=true`) o
 - **Nome da unidade vive em `units.name`** — é a fonte canônica usada pela sidebar (via `AuthContext.memberships`), portais públicos (`/r/:slug`, `/w`, `/m`, `Index`), breadcrumbs e headers. Owner/gerente pode escrever via RLS (policy `unit_owner_gerente_update_units`, migration 019). Após escrever, **chame `refreshMemberships()` do `useAuth()`** para atualizar a sidebar sem logout. O setting `restaurant_name` é **legado** — Edge Functions (`send-confirmation`, `webhook-whatsapp`) ainda leem com fallback `unit.name` para compat, mas a UI não deve escrever nele.
 - **Slug da unidade (`units.slug`) é editável em Configurações** ao lado do nome (auto-sugerido via `slugify()` enquanto o campo não é tocado, ou manual). Mudar slug **invalida URLs antigas** (`/r/`, `/g/`, `/o/`, `/w/`, `/m/`) — QR codes impressos e links em mensagens WhatsApp já enviadas viram 404. O mutation faz `refreshMemberships()`, invalida `["all-units"]`, `["public-unit"]`, `["unit-public-content"]`, `["organizations"]` e renavega `/g/<antigo>` → `/g/<novo>`. Trata colisão (`23505`) com mensagem amigável. Não há autosync silencioso — qualquer mudança exige clique no Salvar do bloco de slug.
 - **Nome do contato em Conversas** — exibir SEMPRE via `getConversationDisplayName()` de `@/lib/utils`. Ordem: `customer.name` (se ≠ phone) → `conversation.contact_name` (push_name corrente) → `formatPhone(phone)`. Push_name é extraído por `parseInbound` em `_shared/whatsapp-providers.ts` (Z-API `senderName`/`chatName`/`notifyName`, WAHA `_data.notifyName`/`pushName`, Meta `contacts[0].profile.name`) e persistido em DOIS lugares pelo `webhook-whatsapp`: (1) `customers.name` — só preenche quando customer é novo ou tem placeholder (`name == phone`); nunca sobrescreve nome real cadastrado via reserva; (2) `conversations.contact_name` — espelho atualizado a cada mensagem.
+- **Shape de `conversations.messages`** — array JSONB de `{ role: "user"|"assistant"|"human", content, timestamp (ISO obrigatório), kind?, human_user_id? }`. Os 3 writers (`webhook-whatsapp`, `_shared/conversation-log.ts`, `send-manual-message`) sempre injetam `timestamp: new Date().toISOString()` — nenhum writer novo deve omitir esse campo. Mensagens órfãs históricas foram corrigidas pela migration `20260517100600_backfill_message_timestamps.sql`, que herdou `conversations.created_at` como aproximação e marcou cada mensagem corrigida com `timestamp_backfilled: true`. Essa flag NÃO deve ser replicada em writers novos — é só rastro auditável de backfill. O divisor de dia em `Conversas.tsx` (via `humanDateLabel`/`getMessageDayKey` em `@/lib/utils`) renderiza "Sem data" como fallback quando o timestamp é null/inválido — se a label reaparecer na UI, indica regressão (writer novo esqueceu o campo, ou import externo de mensagens sem ele).
 - Notificações via **`toast` do Sonner** (`import { toast } from "sonner"`)
 - Classes CSS via **`cn()`** de `@/lib/utils` — nunca template literals diretos com Tailwind
 - Path alias `@/` aponta para `src/`
@@ -450,6 +491,8 @@ Workers lêem templates de `reservation_message_templates` (`customized=true`) o
 - **CORS em `manage-*`** via `_shared/cors.ts` (whitelist localhost, *.vercel.app, reservas.moralles.com.br).
 - **Storage `unit-assets`**: listing bloqueado, CDN público funciona.
 - **Toda policy RLS escopada por `unit_id` precisa de contraparte `platform_admin_*`** via `is_platform_admin(auth.uid())` — vale para tabelas E para `storage.objects` de buckets multi-tenant. `useCurrentUnit.ts` fabrica pseudo-membership "owner" para platform_admin operar unidades alheias; sem a policy paralela, a write é bloqueada apesar da UI mostrar "Proprietário". Pattern em `013_multi_tenant.sql`; storage cobre em `047_unit_assets_platform_admin.sql`.
+- **Input do usuário em `.or()` / `.ilike()` PostgREST tem que passar por `sanitizeSearchTerm()`** de `@/lib/utils`. Remove `, ( ) % _ \ " ' \` *` (caracteres que quebram a sintaxe OR ou viram wildcards involuntários) e limita a 80 chars. Sem isso, buscar `O'Brien` ou `nome,id` quebra a query inteira ou retorna resultado errado. Já aplicado em `Clientes.tsx` e `exportClientesXlsx`. Pendente: `IssueVoucherDialog.tsx` ainda lê direto sem sanitizar.
+- **URLs que vêm do banco e viram `<a href>` em portal público devem passar por `isSafeHttpUrl()`** de `@/lib/utils` antes de renderizar (bloqueia `javascript:`/`data:`/`vbscript:`). Hoje o único caso é `menu_banners.link_url` — frontend valida no save (`MenuBannerEditor`), portal valida no render (`MenuPortal.BannerCarousel`) e banco força com CHECK constraint `menu_banners_link_url_safe_check` (migration `20260517100800_menus_hardening.sql`). Qualquer novo campo "link salvo por membro" deve seguir esse triplo guard. Mesma migration documenta `menus.theme` (JSONB) cujo fallback campo a campo (`DEFAULT_MENU_THEME`) fica em `MenuPortal.safeColor()` — banco não força schema JSON, então frontend é o guardião.
 
 ## Observabilidade da automação WhatsApp
 
