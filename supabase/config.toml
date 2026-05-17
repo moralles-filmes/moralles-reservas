@@ -16,6 +16,35 @@ verify_jwt = false
 [functions.send-manual-message]
 verify_jwt = false
 
+[functions.send-cancellation]
+verify_jwt = false
+
+[functions.whatsapp-health]
+verify_jwt = false
+
+[functions.update-reservation]
+verify_jwt = false
+
+# Workers internos chamados via pg_cron com x-internal-key. JWT default novo
+# (verify_jwt=true) bloqueia no gateway antes de chegar no requireInternalAuth.
+[functions.process-notification-outbox]
+verify_jwt = false
+
+[functions.process-voucher-triggers]
+verify_jwt = false
+
+[functions.process-reservation-reminders]
+verify_jwt = false
+
+[functions.process-satisfaction-surveys]
+verify_jwt = false
+
+[functions.process-waitlist-entered]
+verify_jwt = false
+
+[functions.process-waitlist-feedback]
+verify_jwt = false
+
 [functions.manage-channels]
 verify_jwt = true
 
