@@ -9,6 +9,7 @@ import {
   useUpdateUnitPublicContent,
   type UnitPublicContent,
 } from "@/hooks/useUnitPublicContent";
+import type { UploadAssetResult } from "@/hooks/useUnitAssetUpload";
 import { AssetUploader } from "@/components/conta/AssetUploader";
 import { GalleryEditor } from "@/components/conta/GalleryEditor";
 import { FACILITY_GROUPS } from "@/lib/facilities";
@@ -210,6 +211,17 @@ export default function Conta() {
   // referência (e não por id) permite que o form re-absorva dados após
   // refetch da mutation — incluindo normalizações server-side (trim/lower).
   const lastSyncedRef = useRef<UnitPublicContent | null>(null);
+  // Rastreia paths uploadados durante a sessão (publicUrl → path interno do
+  // bucket). Usado no save pra remover do bucket os arquivos que o usuário
+  // enviou mas decidiu não usar (substituiu, removeu, ou trocou de novo).
+  // Sem isso, cada upload-then-replace deixa órfão no bucket pra sempre.
+  const uploadedRef = useRef<Map<string, string>>(new Map());
+
+  const handleUploaded = (result: UploadAssetResult) => {
+    uploadedRef.current.set(result.publicUrl, result.path);
+  };
+
+  const isSaving = update.isPending || savingIdentity;
 
   useEffect(() => {
     if (!content) return;
@@ -228,6 +240,32 @@ export default function Conta() {
   const faixa = ticketRange(ticketCents);
 
   if (!unit) return null;
+
+  // Estado vazio: unit existe na URL/membership mas a query devolveu null
+  // (unit deletada por outro admin, ou unitId inválido). Sem este guard,
+  // o form renderia com emptyForm e o user poderia tentar "salvar" em cima.
+  if (!isLoading && !content) {
+    return (
+      <div className="space-y-6 max-w-4xl">
+        <PageHeader
+          breadcrumb={[
+            { label: "Início", to: `/g/${unitSlug}` },
+            { label: "Conta" },
+          ]}
+          title="Conta"
+        />
+        <Card>
+          <CardContent className="py-10 text-center space-y-2">
+            <p className="text-base font-medium">Unidade não encontrada.</p>
+            <p className="text-sm text-muted-foreground">
+              Pode ter sido removida ou o link está incorreto. Volte para a
+              listagem e selecione uma unidade válida.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   const setAddressField = <K extends keyof FormState["address"]>(
     key: K,
@@ -378,8 +416,12 @@ export default function Conta() {
         cuisine_types: form.cuisine_types,
         opening_hours_text: form.opening_hours_text.trim() || null,
         timezone: form.timezone,
+        // Form tem um único campo "Ticket médio" — gravamos só em
+        // price_range_max e deixamos price_range_min nulo. Formatters do
+        // portal público (PublicPortal/Index) já tratam esse caso como
+        // "até R$ X" em vez de "de R$ X até R$ X".
         price_range_max: tm,
-        price_range_min: tm,
+        price_range_min: null,
         payment_methods: form.payment_methods.trim() || null,
         financial_email: emailRaw || null,
         facilities: form.facilities,
@@ -394,30 +436,54 @@ export default function Conta() {
     }
 
     // 9) Cleanup best-effort de arquivos órfãos no bucket unit-assets.
-    //    Compara URLs antes/depois e remove paths que sumiram. Falha de
+    //    Compara URLs antes/depois E inclui arquivos uploadados nesta
+    //    sessão que NÃO ficaram no estado final salvo (substituídos,
+    //    removidos, ou trocados sem chegar ao save anterior). Falha de
     //    storage não bloqueia UX nem invalida o save bem-sucedido.
-    const removed = new Set<string>(prevGallery);
-    for (const url of form.gallery_photos) removed.delete(url);
-    const toRemove: string[] = [];
-    if (prevHero && prevHero !== form.hero_image_url) {
-      const p = extractStoragePath(prevHero);
-      if (p && p.startsWith(`${unitId}/`)) toRemove.push(p);
-    }
-    if (prevLogo && prevLogo !== form.logo_url) {
-      const p = extractStoragePath(prevLogo);
-      if (p && p.startsWith(`${unitId}/`)) toRemove.push(p);
-    }
-    for (const url of removed) {
+    const finalUrls = new Set<string>([
+      ...(form.hero_image_url ? [form.hero_image_url] : []),
+      ...(form.logo_url ? [form.logo_url] : []),
+      ...form.gallery_photos,
+    ]);
+    const toRemoveSet = new Set<string>();
+    const tryAdd = (url: string | null | undefined) => {
       const p = extractStoragePath(url);
-      if (p && p.startsWith(`${unitId}/`)) toRemove.push(p);
+      if (p && p.startsWith(`${unitId}/`)) toRemoveSet.add(p);
+    };
+    // (a) Antigos do DB que sumiram do form
+    if (prevHero && prevHero !== form.hero_image_url) tryAdd(prevHero);
+    if (prevLogo && prevLogo !== form.logo_url) tryAdd(prevLogo);
+    for (const url of prevGallery) {
+      if (!finalUrls.has(url)) tryAdd(url);
     }
+    // (b) Arquivos uploadados nesta sessão que não chegaram ao estado salvo
+    for (const [publicUrl, path] of uploadedRef.current.entries()) {
+      if (finalUrls.has(publicUrl)) continue;
+      if (path.startsWith(`${unitId}/`)) toRemoveSet.add(path);
+    }
+    // Limpa o tracker: tudo que ficou salvo agora é "estado oficial" do DB;
+    // tudo que não ficou já foi pra fila de remoção.
+    uploadedRef.current.clear();
+
+    const toRemove = Array.from(toRemoveSet);
     if (toRemove.length > 0) {
       try {
-        await supabase.storage.from("unit-assets").remove(toRemove);
+        const { error: removeErr } = await supabase.storage
+          .from("unit-assets")
+          .remove(toRemove);
+        if (removeErr) {
+          // Não interrompe o fluxo — o save no banco já foi OK.
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[Conta] falha ao remover assets antigos:",
+            removeErr.message,
+            { paths: toRemove },
+          );
+        }
       } catch (err) {
-        // Não interrompe o fluxo — o save no banco já foi OK.
+        // Falha de rede / exceção inesperada. Save permanece válido.
         // eslint-disable-next-line no-console
-        console.warn("[Conta] falha ao remover assets antigos:", err);
+        console.warn("[Conta] exceção ao remover assets antigos:", err);
       }
     }
   };
@@ -507,7 +573,7 @@ export default function Conta() {
                         }));
                       }}
                       placeholder="Ex: Moralles Centro"
-                      disabled={!canEdit}
+                      disabled={!canEdit || isSaving}
                     />
                   </div>
                   <div className="space-y-1">
@@ -522,7 +588,7 @@ export default function Conta() {
                         }));
                       }}
                       placeholder="moralles-centro"
-                      disabled={!canEdit}
+                      disabled={!canEdit || isSaving}
                       className="font-mono"
                     />
                   </div>
@@ -860,6 +926,8 @@ export default function Conta() {
                   unitId={unitId}
                   value={form.hero_image_url}
                   onChange={(url) => setForm((f) => ({ ...f, hero_image_url: url }))}
+                  onUploaded={handleUploaded}
+                  disabled={!canEdit || isSaving}
                 />
                 <Separator />
                 <AssetUploader
@@ -870,6 +938,8 @@ export default function Conta() {
                   unitId={unitId}
                   value={form.logo_url}
                   onChange={(url) => setForm((f) => ({ ...f, logo_url: url }))}
+                  onUploaded={handleUploaded}
+                  disabled={!canEdit || isSaving}
                   rounded
                 />
               </CardContent>
@@ -890,7 +960,8 @@ export default function Conta() {
                   onChange={(urls) =>
                     setForm((f) => ({ ...f, gallery_photos: urls }))
                   }
-                  disabled={!canEdit}
+                  onUploaded={handleUploaded}
+                  disabled={!canEdit || isSaving}
                 />
               </CardContent>
             </Card>
@@ -945,12 +1016,8 @@ export default function Conta() {
       {!isLoading && canEdit && (
         <div className="sticky bottom-0 -mx-6 px-6 py-4 bg-background/90 backdrop-blur border-t flex items-center justify-between gap-3">
           <p className="text-sm font-medium">Tudo pronto? É só salvar!</p>
-          <Button
-            onClick={handleSave}
-            disabled={update.isPending || savingIdentity}
-            size="lg"
-          >
-            {update.isPending || savingIdentity ? (
+          <Button onClick={handleSave} disabled={isSaving} size="lg">
+            {isSaving ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Salvando...
               </>

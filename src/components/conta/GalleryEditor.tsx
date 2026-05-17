@@ -1,5 +1,8 @@
 import { useRef, useState } from "react";
-import { useUnitAssetUpload } from "@/hooks/useUnitAssetUpload";
+import {
+  useUnitAssetUpload,
+  type UploadAssetResult,
+} from "@/hooks/useUnitAssetUpload";
 import { Button } from "@/components/ui/button";
 import { ChevronDown, ChevronUp, ImagePlus, Loader2, Trash2, Upload } from "lucide-react";
 
@@ -10,9 +13,19 @@ export interface GalleryEditorProps {
   value: string[];
   onChange: (urls: string[]) => void;
   disabled?: boolean;
+  // Notifica o parent de cada upload bem-sucedido (path interno + publicUrl),
+  // permitindo rastrear arquivos enviados na sessão para limpar órfãos
+  // no save (ver Conta.tsx handleSave).
+  onUploaded?: (result: UploadAssetResult) => void;
 }
 
-export function GalleryEditor({ unitId, value, onChange, disabled }: GalleryEditorProps) {
+export function GalleryEditor({
+  unitId,
+  value,
+  onChange,
+  disabled,
+  onUploaded,
+}: GalleryEditorProps) {
   const upload = useUnitAssetUpload();
   const inputRef = useRef<HTMLInputElement>(null);
   const [pendingPreview, setPendingPreview] = useState<string | null>(null);
@@ -32,6 +45,7 @@ export function GalleryEditor({ unitId, value, onChange, disabled }: GalleryEdit
     try {
       const result = await upload.mutateAsync({ unitId, kind: "gallery_photo", file });
       onChange([...value, result.publicUrl]);
+      onUploaded?.(result);
     } finally {
       URL.revokeObjectURL(localPreview);
       setPendingPreview(null);
@@ -62,7 +76,7 @@ export function GalleryEditor({ unitId, value, onChange, disabled }: GalleryEdit
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {value.map((url, idx) => (
           <div
-            key={`${url}-${idx}`}
+            key={url}
             className="relative aspect-square rounded-md overflow-hidden bg-muted/30 border border-border group"
           >
             <img

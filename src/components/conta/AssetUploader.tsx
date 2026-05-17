@@ -1,5 +1,9 @@
 import { useRef, useState } from "react";
-import { useUnitAssetUpload, type AssetKind } from "@/hooks/useUnitAssetUpload";
+import {
+  useUnitAssetUpload,
+  type AssetKind,
+  type UploadAssetResult,
+} from "@/hooks/useUnitAssetUpload";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { ImagePlus, Loader2, Trash2, Upload } from "lucide-react";
@@ -14,6 +18,11 @@ export interface AssetUploaderProps {
   value: string | null;
   onChange: (url: string | null) => void;
   rounded?: boolean;
+  disabled?: boolean;
+  // Notifica o parent de cada upload bem-sucedido (path interno + publicUrl),
+  // permitindo que ele rastreie arquivos enviados na sessão para limpar
+  // órfãos no save (ver Conta.tsx handleSave).
+  onUploaded?: (result: UploadAssetResult) => void;
 }
 
 export function AssetUploader({
@@ -25,12 +34,18 @@ export function AssetUploader({
   value,
   onChange,
   rounded,
+  disabled,
+  onUploaded,
 }: AssetUploaderProps) {
   const upload = useUnitAssetUpload();
   const inputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
 
-  const onPick = () => inputRef.current?.click();
+  const isBlocked = disabled || upload.isPending;
+  const onPick = () => {
+    if (isBlocked) return;
+    inputRef.current?.click();
+  };
 
   const onFile = async (file: File) => {
     const localPreview = URL.createObjectURL(file);
@@ -38,6 +53,7 @@ export function AssetUploader({
     try {
       const result = await upload.mutateAsync({ unitId, kind, file });
       onChange(result.publicUrl);
+      onUploaded?.(result);
       toast.success("Imagem enviada.");
     } finally {
       URL.revokeObjectURL(localPreview);
@@ -51,7 +67,7 @@ export function AssetUploader({
     <div className="space-y-2">
       <div className="flex items-baseline justify-between gap-3">
         <Label>{label}</Label>
-        {value && !upload.isPending && (
+        {value && !upload.isPending && !disabled && (
           <button
             type="button"
             onClick={() => onChange(null)}
@@ -90,7 +106,7 @@ export function AssetUploader({
           variant="default"
           size="sm"
           onClick={onPick}
-          disabled={upload.isPending}
+          disabled={isBlocked}
           className="gap-2"
         >
           <Upload className="h-3.5 w-3.5" />
@@ -103,6 +119,7 @@ export function AssetUploader({
         accept="image/jpeg,image/png,image/webp,image/avif"
         className="hidden"
         aria-label={`Enviar ${label}`}
+        disabled={isBlocked}
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) onFile(file);
