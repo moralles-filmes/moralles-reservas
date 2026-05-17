@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -93,7 +93,7 @@ export default function Usuarios() {
   const [tab, setTab] = useState<Tab>("gerentes");
   const [createOpen, setCreateOpen] = useState(false);
 
-  const { data: members, isLoading } = useUnitMembers(unitId);
+  const { data: members, isLoading, isError, refetch } = useUnitMembers(unitId);
 
   const filtered = useMemo(() => {
     if (!members) return [];
@@ -144,6 +144,15 @@ export default function Usuarios() {
               {[1, 2, 3].map((i) => (
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
+            </div>
+          ) : isError ? (
+            <div className="py-12 text-center space-y-3">
+              <p className="text-sm text-destructive">
+                Erro ao carregar a lista de membros.
+              </p>
+              <Button variant="outline" size="sm" onClick={() => refetch()}>
+                Tentar novamente
+              </Button>
             </div>
           ) : !filtered.length ? (
             <div className="py-12 text-center text-sm text-muted-foreground space-y-2">
@@ -411,6 +420,7 @@ function CreateMemberDialog({
             </Label>
             <Input
               type="email"
+              autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="email@exemplo.com"
@@ -424,6 +434,7 @@ function CreateMemberDialog({
             </Label>
             <Input
               type="password"
+              autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••"
@@ -479,6 +490,14 @@ function RenameDialog({
   const [name, setName] = useState(
     member.name ?? deriveDisplayName(member.email, null),
   );
+
+  // Reseta o input ao reabrir ou quando o nome remoto muda — sem isso,
+  // o useState retém o valor inicial e mostra dado obsoleto após refetch.
+  useEffect(() => {
+    if (open) {
+      setName(member.name ?? deriveDisplayName(member.email, null));
+    }
+  }, [open, member.id, member.name, member.email]);
 
   const handleSave = () => {
     update.mutate(

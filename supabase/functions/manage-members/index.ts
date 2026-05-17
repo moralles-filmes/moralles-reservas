@@ -8,6 +8,8 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+
 function jsonResponse(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -70,6 +72,7 @@ serve(async (req) => {
       const name = body.name != null ? String(body.name).trim() : null;
 
       if (!email || !password) return jsonResponse(req, { error: "E-mail e senha são obrigatórios." }, 400);
+      if (!EMAIL_RE.test(email)) return jsonResponse(req, { error: "Formato de e-mail inválido." }, 400);
       if (password.length < 6) return jsonResponse(req, { error: "Senha deve ter pelo menos 6 caracteres." }, 400);
       if (!["gerente", "operador"].includes(role)) return jsonResponse(req, { error: "Papel inválido." }, 400);
 
@@ -83,16 +86,22 @@ serve(async (req) => {
       });
 
       if (createErr || !created?.user) {
-        const errMsg = (createErr?.message ?? "").toLowerCase();
+        const errCode = (createErr as { code?: string } | null)?.code;
         const status = (createErr as { status?: number } | null)?.status;
-        const isDuplicate =
-          status === 422 ||
-          errMsg.includes("already") ||
-          errMsg.includes("registered") ||
-          errMsg.includes("exists");
+        const errMsg = (createErr?.message ?? "").toLowerCase();
+
+        // Prefere detecção estruturada (Supabase auth v2): code === "email_exists" ou status 422.
+        // Mantém fallback string-match apenas como segunda linha — se disparar, loga warn
+        // para que a próxima quebra do contrato fique visível em produção.
+        let isDuplicate = errCode === "email_exists" || status === 422;
+        if (!isDuplicate && (errMsg.includes("already registered") || errMsg.includes("already exists"))) {
+          console.warn("[manage-members] duplicate detected via fallback string-match", { errMsg, errCode, status });
+          isDuplicate = true;
+        }
 
         if (!isDuplicate) {
-          return jsonResponse(req, { error: createErr?.message ?? "Falha ao criar usuário." }, 400);
+          console.error("[manage-members] create_user failed", createErr);
+          return jsonResponse(req, { error: "Não foi possível criar o usuário. Tente novamente." }, 400);
         }
 
         const { data: existingId, error: rpcErr } = await supabase.rpc("find_auth_user_by_email", {

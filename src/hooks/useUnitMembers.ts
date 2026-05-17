@@ -26,6 +26,7 @@ export function useUnitMembers(unitId: string) {
       return data as UnitMemberRow[];
     },
     enabled: !!unitId,
+    staleTime: 30_000,
   });
 }
 

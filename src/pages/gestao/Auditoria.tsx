@@ -37,6 +37,7 @@ const ACTION_VARIANT: Record<AuditAction, "default" | "secondary" | "destructive
 const TABLE_LABEL: Record<string, string> = {
   customers: "Cliente",
   reservations: "Reserva",
+  unit_members: "Membro da unidade",
 };
 
 const PAGE_SIZE = 50;
@@ -84,7 +85,7 @@ export default function Auditoria() {
         <h1 className="text-2xl font-bold">Auditoria</h1>
       </div>
       <p className="text-sm text-muted-foreground -mt-2">
-        Registro de quem alterou clientes e reservas, quando e o que mudou.
+        Registro de quem alterou clientes, reservas e membros da unidade, quando e o que mudou.
       </p>
 
       <div className="flex flex-wrap gap-3">
@@ -98,6 +99,7 @@ export default function Auditoria() {
               <SelectItem value="all">Todas</SelectItem>
               <SelectItem value="customers">Clientes</SelectItem>
               <SelectItem value="reservations">Reservas</SelectItem>
+              <SelectItem value="unit_members">Membros da unidade</SelectItem>
             </SelectContent>
           </Select>
         </div>
