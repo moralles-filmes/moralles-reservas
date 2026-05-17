@@ -1,0 +1,23 @@
+-- Dropa a tabela admin_users, que ficou órfã após a migração multi-tenant.
+--
+-- Linha do tempo:
+--   - 20260427194236_004_admin_users.sql       → criou a tabela
+--   - 20260504170218_013_multi_tenant.sql      → migrou dados para
+--                                                 platform_admins + unit_members
+--                                                 (mantida viva pra backward-compat
+--                                                  com o frontend antigo; ver PART 12)
+--   - d82f840 (commit 18/05)                   → removeu Edge Function manage-admins
+--                                                 + hook frontend useAdminUsers;
+--                                                 Usuarios.tsx passou a ler unit_members
+--                                                 via useUnitMembers
+--
+-- Estado verificado antes do DROP (via MCP, 17/05/2026):
+--   - 1 linha em admin_users (super_admin morallesfilms@gmail.com)
+--   - mesma id já presente em platform_admins → ids_match=true
+--   - sem FKs apontando pra admin_users, sem triggers, sem views, sem funções
+--   - única policy: auth_select_admin_users (cai junto no DROP TABLE)
+--   - zero referências em código (src/** + supabase/functions/**)
+--
+-- Idempotente: re-execução é no-op.
+
+DROP TABLE IF EXISTS public.admin_users CASCADE;

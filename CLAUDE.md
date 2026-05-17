@@ -484,6 +484,8 @@ Auditoria 2026-05-17 fechou 11 bugs (migration `20260517120000_conversation_appe
 | `gerente` | Configurações, membros, todos os dados da unidade (sem automação) |
 | `operador` | Reservas, fila, walk-ins (operacional apenas) |
 
+> **Origem dos dados de membros**: `unit_members` (escopo unidade) via Edge Function `manage-members` + hook `useUnitMembers`. Super-admins ficam em `platform_admins`. A tabela `admin_users` e a Edge Function `manage-admins` foram **removidas** no refactor multi-tenant — não reinstalar.
+
 ---
 
 ## Padrões de código
