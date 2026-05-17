@@ -24,6 +24,14 @@ import {
   checkAvailability as checkAvailabilityCore,
   reserveSlot,
 } from "../_shared/availability.ts";
+import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
+import {
+  DEFAULT_GIFTBACK_TEMPLATE,
+  ensureUniqueVoucherCode,
+  expiresAtEndOfDayBrt,
+  formatExpiryBR,
+  renderGiftbackTemplate,
+} from "../_shared/giftback.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -183,16 +191,21 @@ async function createReservation(params: {
   organization_id: string;
 // deno-lint-ignore no-explicit-any
 }): Promise<any> {
-  const { data: customer, error: custError } = await supabase
-    .from("customers")
-    .upsert(
-      { name: params.customer_name, phone: params.phone, email: params.customer_email || null, organization_id: params.organization_id },
-      { onConflict: "organization_id,phone" }
-    )
-    .select()
-    .single();
-
-  if (custError) return { success: false, error: custError.message };
+  // Resolve customer com merge preservando dados:
+  //   - lookup por (organization_id, phone)
+  //   - se existe: PRESERVA nome cadastrado, append em emails[]
+  //   - se não existe: cria
+  let customer;
+  try {
+    customer = await resolveOrCreateCustomer(supabase, {
+      organizationId: params.organization_id,
+      phone: params.phone,
+      name: params.customer_name,
+      email: params.customer_email ?? null,
+    });
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
 
   const hallId = await resolveHallId(params.unit_id, params.hall_name);
   const result = await reserveSlot(supabase, {
@@ -413,43 +426,35 @@ async function recordExecution(payload: {
 
 // ─── Giftback helper ──────────────────────────────────────────────────────────
 
-const VOUCHER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generateVoucherCode(): string {
-  let out = "";
-  for (let i = 0; i < 8; i++) {
-    out += VOUCHER_CODE_ALPHABET[Math.floor(Math.random() * VOUCHER_CODE_ALPHABET.length)];
-  }
-  return out;
-}
-
-const DEFAULT_GIFTBACK_TEMPLATE =
-  "🎁 Você ganhou {{discount}}% de desconto na sua próxima visita ao {{unidade}}!\n\n" +
-  "Código: *{{codigo}}*\nVálido até *{{validade}}*.\n\n" +
-  "Apresente esse código quando for pagar.";
-
-function renderGiftbackTemplate(
-  template: string,
-  vars: { discount: number; unidade: string; codigo: string; validade: string },
-): string {
-  return template
-    .replace(/\{\{discount\}\}/g, String(vars.discount))
-    .replace(/\{\{unidade\}\}/g, vars.unidade)
-    .replace(/\{\{codigo\}\}/g, vars.codigo)
-    .replace(/\{\{validade\}\}/g, vars.validade);
-}
-
+/**
+ * Resolve a regra e código de voucher candidato, mas NÃO persiste ainda.
+ * Retorna null quando: WhatsApp desabilitado pra unit, sem regra ativa
+ * compatível com a nota, ou já existe voucher ativo (rule, customer).
+ *
+ * Caller chama `commitGiftbackVoucher` depois do send confirmado.
+ */
 // deno-lint-ignore no-explicit-any
-async function maybeIssueGiftbackVoucher(args: {
+async function prepareGiftbackVoucher(args: {
   supabase: any;
   unitId: string;
   customerId: string;
   rating: number;
-  requestId: string;
-}): Promise<string | null> {
-  const { supabase, unitId, customerId, rating, requestId } = args;
+}): Promise<
+  | {
+      ruleId: string;
+      discountPercent: number;
+      validityDays: number;
+      code: string;
+      expiresAtIso: string;
+      text: string;
+      template: string;
+      unitName: string;
+    }
+  | null
+> {
+  const { supabase, unitId, customerId, rating } = args;
 
-  // 1) Settings: WhatsApp ligado? Template? (default: WhatsApp on, template default)
+  // Settings: WhatsApp ligado? Template?
   const { data: settingsRows } = await supabase
     .from("settings")
     .select("key, value")
@@ -468,21 +473,24 @@ async function maybeIssueGiftbackVoucher(args: {
       ? settings.giftback_message_template
       : DEFAULT_GIFTBACK_TEMPLATE;
 
-  // 2) Regra ativa do tipo after_rating compatível com a nota
+  // Regra ativa after_rating compatível com a nota.
+  // min_rating é NOT NULL via CHECK quando trigger_type='after_rating' (migration
+  // 20260517110000), então não testamos IS NULL aqui.
   const { data: rule } = await supabase
     .from("voucher_rules")
-    .select("id, name, discount_percent, validity_days, min_rating")
+    .select("id, discount_percent, validity_days, min_rating")
     .eq("unit_id", unitId)
     .eq("trigger_type", "after_rating")
     .eq("active", true)
-    .or(`min_rating.is.null,min_rating.lte.${rating}`)
+    .lte("min_rating", rating)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (!rule) return null;
 
-  // 3) Já existe voucher ativo emitido por essa rule pra esse customer? (evita
-  //    duplicar se cliente reagir várias vezes)
+  // Já existe voucher ativo (rule, customer)? Constraint
+  // vouchers_unit_rule_customer_active_idx também protege via 23505 no insert,
+  // mas o check explícito evita gerar mensagem que nunca vai ser persistida.
   const { data: existing } = await supabase
     .from("vouchers")
     .select("id")
@@ -494,42 +502,9 @@ async function maybeIssueGiftbackVoucher(args: {
     .maybeSingle();
   if (existing) return null;
 
-  // 4) Gerar código único (retry se colidir com índice unique parcial)
-  let code = generateVoucherCode();
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const { data: exists } = await supabase
-      .from("vouchers")
-      .select("id")
-      .eq("code", code)
-      .eq("status", "active")
-      .maybeSingle();
-    if (!exists) break;
-    code = generateVoucherCode();
-  }
+  const code = await ensureUniqueVoucherCode(supabase);
+  const expiresAtIso = expiresAtEndOfDayBrt(rule.validity_days as number);
 
-  // 5) Insert voucher
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + (rule.validity_days as number));
-
-  const { data: inserted, error: insertErr } = await supabase
-    .from("vouchers")
-    .insert({
-      unit_id: unitId,
-      rule_id: rule.id,
-      customer_id: customerId,
-      code,
-      discount_percent: rule.discount_percent,
-      expires_at: expiresAt.toISOString(),
-    })
-    .select("id")
-    .single();
-
-  if (insertErr) {
-    jsonLog("warn", { requestId, evt: "voucher_issue_failed", error: insertErr.message });
-    return null;
-  }
-
-  // 6) Carrega nome da unit pra render do template
   const { data: unitRow } = await supabase
     .from("units")
     .select("name")
@@ -537,29 +512,83 @@ async function maybeIssueGiftbackVoucher(args: {
     .maybeSingle();
   const unitName = (unitRow?.name as string) ?? "nosso restaurante";
 
-  const validadeStr = expiresAt.toLocaleDateString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-
   const text = renderGiftbackTemplate(template, {
     discount: rule.discount_percent as number,
     unidade: unitName,
     codigo: code,
-    validade: validadeStr,
+    validade: formatExpiryBR(expiresAtIso),
   });
 
-  // 7) Log em notifications_sent
+  return {
+    ruleId: rule.id as string,
+    discountPercent: rule.discount_percent as number,
+    validityDays: rule.validity_days as number,
+    code,
+    expiresAtIso,
+    text,
+    template,
+    unitName,
+  };
+}
+
+/**
+ * Persiste o voucher e a notification após confirmação de envio.
+ * `sendOk` reflete o resultado real do WhatsApp — `notifications_sent.status`
+ * é gravado fiel (sent/failed). Voucher só é inserido quando `sendOk=true`
+ * pra evitar voucher fantasma quando o envio falha.
+ */
+async function commitGiftbackVoucher(args: {
+  // deno-lint-ignore no-explicit-any
+  supabase: any;
+  unitId: string;
+  customerId: string;
+  prepared: NonNullable<Awaited<ReturnType<typeof prepareGiftbackVoucher>>>;
+  sendOk: boolean;
+  sendError?: string | null;
+  reservationId: string | null;
+  requestId: string;
+}): Promise<void> {
+  const { supabase, unitId, customerId, prepared, sendOk, sendError, reservationId, requestId } = args;
+
+  if (sendOk) {
+    const { error: insertErr } = await supabase
+      .from("vouchers")
+      .insert({
+        unit_id: unitId,
+        rule_id: prepared.ruleId,
+        customer_id: customerId,
+        code: prepared.code,
+        discount_percent: prepared.discountPercent,
+        expires_at: prepared.expiresAtIso,
+      });
+
+    if (insertErr) {
+      // 23505 = UNIQUE violation. Outro handler em paralelo já inseriu
+      // (B4 — race em reprocessing_stuck_message). Tratamos como dedupe.
+      const isDuplicate = String(insertErr.code ?? "") === "23505";
+      jsonLog(isDuplicate ? "info" : "warn", {
+        requestId,
+        evt: isDuplicate ? "voucher_dedup_race" : "voucher_insert_failed",
+        error: insertErr.message,
+      });
+      if (!isDuplicate) {
+        // Cliente já recebeu a mensagem com o code mas nada está persistido.
+        // Caso raríssimo. Loga pra investigação manual.
+        return;
+      }
+    } else {
+      jsonLog("info", { requestId, evt: "voucher_issued", code: prepared.code });
+    }
+  }
+
   await supabase.from("notifications_sent").insert({
     unit_id: unitId,
     kind: "voucher_issued",
-    status: "sent",
+    status: sendOk ? "sent" : "failed",
     sent_at: new Date().toISOString(),
+    reservation_id: reservationId ?? null,
+    error: sendOk ? null : (sendError ?? "send_failed"),
   });
-
-  jsonLog("info", { requestId, evt: "voucher_issued", voucher_id: inserted.id, code });
-  return text;
 }
 
 // ─── Main handler ──────────────────────────────────────────────────────────────
@@ -826,7 +855,17 @@ serve(async (req) => {
         .update({ satisfaction_comment: incomingText })
         .eq("id", pendingComment.id);
 
-      const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: "Comentário registrado. Obrigado! 🙏" });
+      const replyText = "Comentário registrado. Obrigado! 🙏";
+      const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: replyText });
+
+      // B2/B3: appenda incoming + outgoing na conversation pra operador ver
+      // o ciclo completo da pesquisa de satisfação na timeline.
+      const commentConv = await getOrCreateConversation(customer.id, unitId, contactName);
+      const afterUser = await appendToConversation(commentConv.id, commentConv.messages || [], "user", incomingText);
+      if (sendRes.ok) {
+        await appendToConversation(commentConv.id, afterUser, "assistant", replyText);
+      }
+
       jsonLog("info", { requestId, evt: "survey_comment_captured", phone: phoneHash, sent: sendRes.ok });
       await finish(sendRes.ok ? "survey_comment" : "send_error", sendRes.ok ? undefined : (sendRes.error ?? `status_${sendRes.status}`));
       return new Response("ok");
@@ -856,25 +895,47 @@ serve(async (req) => {
           .update({ satisfaction_rating: rating, satisfaction_at: new Date().toISOString() })
           .eq("id", pending.reservation_id);
 
-        // Tentar emitir voucher (giftback after_rating)
-        const voucherText = unitId
-          ? await maybeIssueGiftbackVoucher({
+        // Prepara voucher SEM persistir — code e texto montados, banco intocado.
+        // Commit acontece DEPOIS do send pra evitar voucher fantasma (B3).
+        const prepared = unitId
+          ? await prepareGiftbackVoucher({
               supabase,
               unitId,
               customerId: customer.id,
               rating,
-              requestId,
             })
           : null;
 
         const baseText = "Obrigado pelo feedback! 🙏";
         const tailText = "Se quiser comentar (sugestão, sua experiência), responda agora — sua próxima mensagem vira comentário.";
-        const fullText = voucherText
-          ? `${baseText}\n\n${voucherText}\n\n${tailText}`
+        const fullText = prepared
+          ? `${baseText}\n\n${prepared.text}\n\n${tailText}`
           : `${baseText} ${tailText}`;
 
         const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: fullText });
-        jsonLog("info", { requestId, evt: "survey_response_captured", rating, phone: phoneHash, sent: sendRes.ok, voucher_emitted: !!voucherText });
+
+        // Persiste voucher (se houve) + notifications_sent com status REAL (B1).
+        if (prepared && unitId) {
+          await commitGiftbackVoucher({
+            supabase,
+            unitId,
+            customerId: customer.id,
+            prepared,
+            sendOk: sendRes.ok,
+            sendError: sendRes.ok ? null : (sendRes.error ?? `status_${sendRes.status}`),
+            reservationId: pending.reservation_id ?? null,
+            requestId,
+          });
+        }
+
+        // B2: appenda incoming "5" + outgoing na conversation pra timeline ficar completa.
+        if (sendRes.ok && unitId) {
+          const ratingConv = await getOrCreateConversation(customer.id, unitId, contactName);
+          const afterUser = await appendToConversation(ratingConv.id, ratingConv.messages || [], "user", incomingText);
+          await appendToConversation(ratingConv.id, afterUser, "assistant", fullText);
+        }
+
+        jsonLog("info", { requestId, evt: "survey_response_captured", rating, phone: phoneHash, sent: sendRes.ok, voucher_emitted: !!prepared && sendRes.ok });
         await finish(sendRes.ok ? "survey_response" : "send_error", sendRes.ok ? undefined : (sendRes.error ?? `status_${sendRes.status}`));
         return new Response("ok");
       }

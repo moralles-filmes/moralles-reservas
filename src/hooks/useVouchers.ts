@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { endOfDayLocalISO } from "@/lib/utils";
 
 export type VoucherTrigger =
   | "after_rating"
@@ -69,6 +70,13 @@ async function ensureUniqueActiveCode(): Promise<string> {
   }
   // Fallback estatisticamente impossível.
   return `${generateVoucherCode()}${Date.now().toString(36).slice(-2).toUpperCase()}`;
+}
+
+// 23505 PostgreSQL = unique_violation. Acontece em race entre dois operadores
+// emitindo voucher manual com mesmo code gerado client-side, ou na UNIQUE
+// PARTIAL (unit_id, rule_id, customer_id) — não cabe aqui (sempre rule_id=null).
+function isUniqueViolation(err: unknown): boolean {
+  return !!err && typeof err === "object" && "code" in err && (err as { code?: string }).code === "23505";
 }
 
 // ── Rules ─────────────────────────────────────────────────────────────────────
@@ -184,25 +192,34 @@ export function useIssueVoucher(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: IssueVoucherInput): Promise<Voucher> => {
-      const code = await ensureUniqueActiveCode();
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + input.validity_days);
+      // 23:59:59.999 do dia local — cliente tem o dia inteiro até a meia-noite
+      // independente do horário de emissão.
+      const expiresAtIso = endOfDayLocalISO(input.validity_days);
 
-      const { data, error } = await supabase
-        .from("vouchers")
-        .insert({
-          unit_id: unitId,
-          customer_id: input.customer_id,
-          rule_id: input.rule_id ?? null,
-          code,
-          discount_percent: input.discount_percent,
-          expires_at: expiresAt.toISOString(),
-          notes: input.notes ?? null,
-        })
-        .select()
-        .single();
-      if (error) throw error;
-      return data as Voucher;
+      // B13: retry transparente em colisão de code (23505). 8 chars sobre
+      // alfabeto 32 = ~1T possibilidades — colisão real é astronomicamente
+      // rara, mas com 2 operadores emitindo simultaneamente pode acontecer.
+      // Erro bruto do Postgres confunde operador; melhor regenerar e tentar.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const code = await ensureUniqueActiveCode();
+        const { data, error } = await supabase
+          .from("vouchers")
+          .insert({
+            unit_id: unitId,
+            customer_id: input.customer_id,
+            rule_id: input.rule_id ?? null,
+            code,
+            discount_percent: input.discount_percent,
+            expires_at: expiresAtIso,
+            notes: input.notes ?? null,
+          })
+          .select()
+          .single();
+        if (!error) return data as Voucher;
+        if (!isUniqueViolation(error)) throw error;
+        // Race detectada — outro insert pegou esse code. Próxima iteração gera novo.
+      }
+      throw new Error("Não foi possível gerar código único após múltiplas tentativas. Tente novamente.");
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["vouchers", unitId] });
@@ -259,7 +276,7 @@ export function useCancelVoucher(unitId: string) {
 // ── Lookup por código (tela de validação operacional) ────────────────────────
 
 export function useFindVoucherByCode(unitId: string) {
-  const queryClient = useQueryClient();
+  // Lookup-only mutation — não invalida cache, é só leitura por código.
   return useMutation({
     mutationFn: async (code: string): Promise<VoucherWithCustomer | null> => {
       const cleaned = code.trim().toUpperCase();
@@ -275,9 +292,6 @@ export function useFindVoucherByCode(unitId: string) {
         .maybeSingle();
       if (error) throw error;
       return data as unknown as VoucherWithCustomer | null;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["vouchers", unitId] });
     },
   });
 }

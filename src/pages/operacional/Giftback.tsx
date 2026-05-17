@@ -12,6 +12,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Gift, Search, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
 import { formatPhone } from "@/lib/utils";
 import { toast } from "sonner";
@@ -24,9 +34,30 @@ function formatDate(iso: string): string {
   });
 }
 
+/**
+ * Diferença em dias entre a data de expiração e hoje, comparando ambos
+ * zerados na meia-noite local. Negativo = já expirado; 0 = expira hoje;
+ * positivo = N dias até expirar.
+ *
+ * Usa floor em vez de round — se DST voltar pro Brasil, round pode dar
+ * off-by-one nos dias da transição. Floor é seguro porque ambos os lados
+ * são meia-noite local (offset cancela na subtração na maior parte do ano).
+ */
 function daysUntil(iso: string): number {
-  const ms = new Date(iso).getTime() - Date.now();
-  return Math.ceil(ms / (1000 * 60 * 60 * 24));
+  const expiry = new Date(iso);
+  if (!Number.isFinite(expiry.getTime())) return 0;
+  const expiryMidnight = new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate());
+  const now = new Date();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const ms = expiryMidnight.getTime() - todayMidnight.getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+}
+
+function daysLeftLabel(daysLeft: number): string {
+  if (daysLeft < 0) return "expirado";
+  if (daysLeft === 0) return "expira hoje";
+  if (daysLeft === 1) return "1 dia";
+  return `${daysLeft} dias`;
 }
 
 export default function GiftbackOperacional() {
@@ -40,6 +71,7 @@ export default function GiftbackOperacional() {
   const [code, setCode] = useState("");
   const [voucher, setVoucher] = useState<VoucherWithCustomer | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
 
   const handleSearch = async () => {
     if (!code.trim()) return;
@@ -76,6 +108,7 @@ export default function GiftbackOperacional() {
       toast.success("Voucher cancelado");
       setVoucher(null);
       setCode("");
+      setConfirmCancelOpen(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao cancelar");
     }
@@ -146,6 +179,30 @@ export default function GiftbackOperacional() {
         </Card>
       )}
 
+      <AlertDialog open={confirmCancelOpen} onOpenChange={setConfirmCancelOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancelar voucher?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O voucher{" "}
+              <span className="font-mono font-semibold">{voucher?.code}</span> (
+              {voucher?.discount_percent}% off) ficará indisponível pra uso. Essa ação não
+              pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cancel.isPending}>Voltar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleCancel}
+              disabled={cancel.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {cancel.isPending ? "Cancelando…" : "Cancelar voucher"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {voucher && (
         <Card className="border-emerald-300">
           <CardContent className="p-5 space-y-4">
@@ -185,7 +242,7 @@ export default function GiftbackOperacional() {
                 <span className="font-medium">
                   {formatDate(voucher.expires_at)}
                   <span className="text-xs text-muted-foreground ml-1">
-                    ({daysLeft > 0 ? `${daysLeft} dias` : "expira hoje"})
+                    ({daysLeftLabel(daysLeft)})
                   </span>
                 </span>
               </div>
@@ -204,7 +261,7 @@ export default function GiftbackOperacional() {
               </Button>
               <Button
                 variant="ghost"
-                onClick={handleCancel}
+                onClick={() => setConfirmCancelOpen(true)}
                 disabled={cancel.isPending || redeem.isPending}
                 className="text-destructive hover:text-destructive"
               >

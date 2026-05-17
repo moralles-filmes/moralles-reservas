@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { isoToLocalDate } from "@/lib/utils";
 import type { DateRange } from "@/hooks/useFluxoClientes";
 import type { VoucherStatus, VoucherTrigger } from "@/hooks/useVouchers";
 
@@ -9,7 +10,8 @@ export interface GiftbackKpis {
   total_expired: number;
   total_cancelled: number;
   total_active: number;
-  conversion_pct: number;
+  /** total_used / total_issued. null quando nenhum voucher foi emitido. */
+  conversion_pct: number | null;
 }
 
 export interface DailyGiftback {
@@ -19,8 +21,12 @@ export interface DailyGiftback {
   used: number;
 }
 
+// Tipo do bucket: 'manual_avulso' unifica registros sem rule (rule_id=null)
+// E rules com trigger_type='manual' — semanticamente "emissão manual fora
+// de gatilho automático". Antes apareciam como 2 fatias separadas no gráfico
+// (legacy trigger_type='manual' não é mais selecionável na UI).
 export interface TriggerBucket {
-  trigger: VoucherTrigger | "manual_avulso";
+  trigger: Exclude<VoucherTrigger, "manual"> | "manual_avulso";
   label: string;
   count: number;
 }
@@ -47,10 +53,9 @@ export interface GiftbackData {
 
 const TRIGGER_LABEL: Record<TriggerBucket["trigger"], string> = {
   after_rating: "Após avaliação",
-  manual: "Manual",
   birthday: "Aniversário",
   frequency: "Frequência",
-  manual_avulso: "Manual avulso",
+  manual_avulso: "Manual",
 };
 
 function toIsoDate(d: Date): string {
@@ -115,11 +120,18 @@ export function useGiftbackRelatorio(unitId: string, range: DateRange) {
     placeholderData: keepPreviousData,
     enabled: !!unitId,
     queryFn: async (): Promise<GiftbackData> => {
-      const startTs = `${fromIso}T00:00:00.000Z`;
+      // Boundaries em fuso local — alinhados com isoToLocalDate() abaixo. Antes
+      // o startTs usava 'T00:00:00.000Z' (UTC puro) enquanto endTs convertia
+      // do local → vazava 3h do dia anterior em BRT e excluía 3h do último.
+      const startDate = new Date(range.from);
+      startDate.setHours(0, 0, 0, 0);
+      const startTs = startDate.toISOString();
       const endDate = new Date(range.to);
       endDate.setHours(23, 59, 59, 999);
       const endTs = endDate.toISOString();
 
+      // Limit defensivo (B15): unit com volume alto pode passar 5000 vouchers/range.
+      // Caso atinja, exibe truncado — relatório deveria migrar pra RPC agregada.
       const { data, error } = await supabase
         .from("vouchers")
         .select(
@@ -128,7 +140,8 @@ export function useGiftbackRelatorio(unitId: string, range: DateRange) {
         .eq("unit_id", unitId)
         .gte("issued_at", startTs)
         .lte("issued_at", endTs)
-        .order("issued_at", { ascending: false });
+        .order("issued_at", { ascending: false })
+        .limit(5000);
 
       if (error) throw error;
 
@@ -141,12 +154,12 @@ export function useGiftbackRelatorio(unitId: string, range: DateRange) {
         total_expired: rows.filter((r) => r.status === "expired").length,
         total_cancelled: rows.filter((r) => r.status === "cancelled").length,
         total_active: rows.filter((r) => r.status === "active").length,
-        conversion_pct: 0,
+        conversion_pct: null,
       };
       kpis.conversion_pct =
         kpis.total_issued > 0
           ? (kpis.total_used / kpis.total_issued) * 100
-          : 0;
+          : null;
 
       // Daily
       const days = eachDay(range.from, range.to);
@@ -159,27 +172,34 @@ export function useGiftbackRelatorio(unitId: string, range: DateRange) {
       const dailyByDate = new Map(daily.map((d) => [d.date, d]));
 
       for (const r of rows) {
-        const issuedDay = r.issued_at.slice(0, 10);
+        // issued_at e used_at são timestamptz UTC — converte pro dia local
+        // do restaurante para evitar bug de fuso em eventos próximos da meia-noite.
+        const issuedDay = isoToLocalDate(r.issued_at);
         const issuedSlot = dailyByDate.get(issuedDay);
         if (issuedSlot) issuedSlot.issued += 1;
 
         if (r.used_at) {
-          const usedDay = r.used_at.slice(0, 10);
+          const usedDay = isoToLocalDate(r.used_at);
           const usedSlot = dailyByDate.get(usedDay);
           if (usedSlot) usedSlot.used += 1;
         }
       }
 
-      // Por gatilho — rows com rule_id null = manual avulso, com rule = pega do trigger_type
+      // Por gatilho — rule_id null OU rule.trigger_type='manual' (legado) unificam
+      // como manual_avulso. UI nunca expõe 'manual' como gatilho selecionável.
       const triggerCounts = new Map<TriggerBucket["trigger"], number>();
       for (const r of rows) {
         const rule = ruleOf(r);
-        const key: TriggerBucket["trigger"] = rule?.trigger_type ?? "manual_avulso";
+        const trig = rule?.trigger_type;
+        const key: TriggerBucket["trigger"] =
+          trig === "after_rating" || trig === "birthday" || trig === "frequency"
+            ? trig
+            : "manual_avulso";
         triggerCounts.set(key, (triggerCounts.get(key) ?? 0) + 1);
       }
 
       const byTrigger: TriggerBucket[] = (
-        ["after_rating", "manual", "birthday", "frequency", "manual_avulso"] as TriggerBucket["trigger"][]
+        ["after_rating", "birthday", "frequency", "manual_avulso"] as TriggerBucket["trigger"][]
       )
         .filter((t) => (triggerCounts.get(t) ?? 0) > 0)
         .map((t) => ({

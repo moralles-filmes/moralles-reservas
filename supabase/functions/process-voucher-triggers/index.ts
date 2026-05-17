@@ -8,14 +8,22 @@
 //      últimos 365 dias).
 //   3. Frequência: pra cada rule trigger_type='frequency', emite voucher pra
 //      customers que tiveram >= visits_required reservations confirmed/no_show
-//      nos últimos days_window dias. Idempotente (skip se já emitiu nesse
-//      mesmo days_window).
+//      nos últimos days_window dias E até ontem (não conta reservas futuras).
+//      Cooldown = validity_days da própria regra: skip se já emitiu nesse
+//      período.
 //
 // Auth via x-internal-key (mesmo padrão das outras edge functions internas).
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
+import {
+  DEFAULT_GIFTBACK_TEMPLATE,
+  ensureUniqueVoucherCode,
+  expiresAtEndOfDayBrt,
+  formatExpiryBR,
+  renderGiftbackTemplate,
+} from "../_shared/giftback.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -23,31 +31,7 @@ const INTERNAL_API_KEY = Deno.env.get("INTERNAL_API_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-const DEFAULT_GIFTBACK_TEMPLATE =
-  "🎁 Você ganhou {{discount}}% de desconto na sua próxima visita ao {{unidade}}!\n\n" +
-  "Código: *{{codigo}}*\nVálido até *{{validade}}*.\n\n" +
-  "Apresente esse código quando for pagar.";
-
-const VOUCHER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generateVoucherCode(): string {
-  let out = "";
-  for (let i = 0; i < 8; i++) {
-    out += VOUCHER_CODE_ALPHABET[Math.floor(Math.random() * VOUCHER_CODE_ALPHABET.length)];
-  }
-  return out;
-}
-
-function renderTemplate(
-  template: string,
-  vars: { discount: number; unidade: string; codigo: string; validade: string },
-): string {
-  return template
-    .replace(/\{\{discount\}\}/g, String(vars.discount))
-    .replace(/\{\{unidade\}\}/g, vars.unidade)
-    .replace(/\{\{codigo\}\}/g, vars.codigo)
-    .replace(/\{\{validade\}\}/g, vars.validade);
-}
+const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
 
 interface UnitContext {
   unit_id: string;
@@ -56,6 +40,7 @@ interface UnitContext {
   template: string;
 }
 
+// Cache invalidado no início de cada invocação (B10).
 const unitCache = new Map<string, UnitContext>();
 
 async function loadUnitContext(unitId: string): Promise<UnitContext> {
@@ -93,20 +78,6 @@ async function loadUnitContext(unitId: string): Promise<UnitContext> {
   return ctx;
 }
 
-async function ensureUniqueCode(): Promise<string> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const code = generateVoucherCode();
-    const { data } = await supabase
-      .from("vouchers")
-      .select("id")
-      .eq("code", code)
-      .eq("status", "active")
-      .maybeSingle();
-    if (!data) return code;
-  }
-  return `${generateVoucherCode()}${Date.now().toString(36).slice(-2).toUpperCase()}`;
-}
-
 interface IssueArgs {
   unitId: string;
   ruleId: string;
@@ -119,11 +90,18 @@ interface IssueArgs {
 async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: string }> {
   const { unitId, ruleId, customerId, customerPhone, discountPercent, validityDays } = args;
 
+  // B8: defesa final contra phone vazio/curto. Caller já filtra, mas guarda.
+  const phoneDigits = (customerPhone ?? "").replace(/\D/g, "");
+  if (phoneDigits.length < 10) {
+    jsonLog("info", { evt: "voucher_skipped_no_phone", unit_id: unitId, rule_id: ruleId });
+    return { ok: false, reason: "no_phone" };
+  }
+
   const ctx = await loadUnitContext(unitId);
 
-  const code = await ensureUniqueCode();
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + validityDays);
+  const code = await ensureUniqueVoucherCode(supabase);
+  // B6: fim do dia BRT — alinhado ao webhook-whatsapp.
+  const expiresAtIso = expiresAtEndOfDayBrt(validityDays);
 
   const { error: insertErr } = await supabase
     .from("vouchers")
@@ -133,12 +111,18 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
       customer_id: customerId,
       code,
       discount_percent: discountPercent,
-      expires_at: expiresAt.toISOString(),
+      expires_at: expiresAtIso,
     });
 
   if (insertErr) {
-    jsonLog("warn", { evt: "voucher_insert_failed", error: insertErr.message });
-    return { ok: false, reason: insertErr.message };
+    // 23505 = UNIQUE violation (vouchers_unit_rule_customer_active_idx).
+    // Outra execução em paralelo já emitiu — tratamos como idempotente.
+    const isDuplicate = String((insertErr as { code?: string }).code ?? "") === "23505";
+    jsonLog(isDuplicate ? "info" : "warn", {
+      evt: isDuplicate ? "voucher_dedup_race" : "voucher_insert_failed",
+      error: insertErr.message,
+    });
+    return { ok: false, reason: isDuplicate ? "duplicate" : insertErr.message };
   }
 
   if (!ctx.whatsapp_enabled) {
@@ -146,20 +130,15 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
     return { ok: true, reason: "whatsapp_disabled" };
   }
 
-  const validadeStr = expiresAt.toLocaleDateString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-
-  const message = renderTemplate(ctx.template, {
+  const message = renderGiftbackTemplate(ctx.template, {
     discount: discountPercent,
     unidade: ctx.unit_name,
     codigo: code,
-    validade: validadeStr,
+    validade: formatExpiryBR(expiresAtIso),
   });
 
-  // Dispara send-whatsapp internamente. Ele grava notifications_sent.
+  // Dispara send-whatsapp internamente. Ele grava notifications_sent e
+  // appenda à conversation. customer_id é resolvido via phone no helper.
   try {
     const sendRes = await fetch(`${SUPABASE_URL}/functions/v1/send-whatsapp`, {
       method: "POST",
@@ -168,7 +147,7 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
         "x-internal-key": INTERNAL_API_KEY,
       },
       body: JSON.stringify({
-        phone: customerPhone,
+        phone: phoneDigits,
         message,
         unit_id: unitId,
         kind: "voucher_issued",
@@ -202,6 +181,24 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
 
 // ─── Step: Aniversário ────────────────────────────────────────────────────────
 
+/**
+ * Resolve o "today" em BRT. Cron roda 12:00 UTC (09:00 BRT), runtime UTC.
+ * Subtrai o offset e usa UTC accessors pra ler o calendário BRT.
+ */
+function getTodayBrtParts(): { mm: string; dd: string; isoDate: string; isLeapYear: boolean } {
+  const nowBrt = new Date(Date.now() - BRT_OFFSET_MS);
+  const y = nowBrt.getUTCFullYear();
+  const m = nowBrt.getUTCMonth() + 1; // 1-12
+  const d = nowBrt.getUTCDate();
+  const isLeap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  return {
+    mm: String(m).padStart(2, "0"),
+    dd: String(d).padStart(2, "0"),
+    isoDate: `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+    isLeapYear: isLeap,
+  };
+}
+
 async function processBirthday(): Promise<{ issued: number; errors: string[] }> {
   const errors: string[] = [];
   let issued = 0;
@@ -214,11 +211,13 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
 
   if (!rules || rules.length === 0) return { issued, errors };
 
-  const today = new Date();
-  const todayMmdd = `${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const today = getTodayBrtParts();
+  const todayMmdd = `${today.mm}-${today.dd}`;
+  // B11: em ano não-bissexto, clientes nascidos 29/02 recebem em 28/02
+  // (regra civil brasileira).
+  const acceptLeapBirthday = !today.isLeapYear && todayMmdd === "02-28";
 
   for (const rule of rules) {
-    // Pega org_id da unit
     const { data: unitRow } = await supabase
       .from("units")
       .select("organization_id")
@@ -226,7 +225,6 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
       .maybeSingle();
     if (!unitRow) continue;
 
-    // Customers da org com aniversário hoje
     const { data: customers } = await supabase
       .from("customers")
       .select("id, name, phone, birthday")
@@ -240,11 +238,20 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
     const matching = (customers as any[]).filter((c) => {
       if (!c.birthday) return false;
       const mmdd = String(c.birthday).slice(5, 10); // YYYY-MM-DD → MM-DD
-      return mmdd === todayMmdd;
+      if (mmdd === todayMmdd) return true;
+      if (acceptLeapBirthday && mmdd === "02-29") return true;
+      return false;
     });
 
     for (const customer of matching) {
-      // Visitou esta unit?
+      // B8: filtro defensivo de phone antes do issueAndSend.
+      const phoneDigits = (customer.phone ?? "").replace(/\D/g, "");
+      if (phoneDigits.length < 10) {
+        jsonLog("info", { evt: "birthday_skipped_no_phone", customer_id: customer.id });
+        continue;
+      }
+
+      // Visitou esta unit? (confirmed efetivada OU no_show; ambos contam como visita registrada)
       const { count: visits } = await supabase
         .from("reservations")
         .select("id", { count: "exact", head: true })
@@ -270,7 +277,7 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
         unitId: rule.unit_id,
         ruleId: rule.id,
         customerId: customer.id,
-        customerPhone: customer.phone,
+        customerPhone: phoneDigits,
         discountPercent: rule.discount_percent,
         validityDays: rule.validity_days,
       });
@@ -297,24 +304,29 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
 
   if (!rules || rules.length === 0) return { issued, errors };
 
+  // B7: limite superior — exclui reservas futuras. Conta só visitas até ontem (BRT).
+  const yesterdayBrt = new Date(Date.now() - BRT_OFFSET_MS);
+  yesterdayBrt.setUTCDate(yesterdayBrt.getUTCDate() - 1);
+  const yesterdayIso = yesterdayBrt.toISOString().slice(0, 10);
+
   for (const rule of rules) {
     if (!rule.visits_required || !rule.days_window) continue;
 
-    const windowStart = new Date();
-    windowStart.setDate(windowStart.getDate() - (rule.days_window as number));
+    const windowStart = new Date(Date.now() - BRT_OFFSET_MS);
+    windowStart.setUTCDate(windowStart.getUTCDate() - (rule.days_window as number));
     const windowStartIso = windowStart.toISOString().slice(0, 10);
 
-    // Pega reservations da unit no windows
+    // B7: window agora tem upper bound (yesterday, inclusivo).
     const { data: reservations } = await supabase
       .from("reservations")
       .select("customer_id")
       .eq("unit_id", rule.unit_id)
       .in("status", ["confirmed", "no_show"])
-      .gte("date", windowStartIso);
+      .gte("date", windowStartIso)
+      .lte("date", yesterdayIso);
 
     if (!reservations || reservations.length === 0) continue;
 
-    // Conta por customer
     const counts = new Map<string, number>();
     for (const r of reservations) {
       const cid = (r as { customer_id: string }).customer_id;
@@ -327,13 +339,19 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
 
     if (eligible.length === 0) continue;
 
-    // Idempotência: skip customers que já receberam dessa rule dentro do window
+    // B9: cooldown estável usa `validity_days` da regra. Cliente só pode
+    // ganhar de novo após esse período. Antes o filtro era "issued_at >
+    // windowStart" — windowStart desliza dia a dia, então cliente que
+    // ganhou há `days_window + 1` dias virava re-elegível.
+    const cooldownStart = new Date();
+    cooldownStart.setUTCDate(cooldownStart.getUTCDate() - (rule.validity_days as number));
+
     const { data: recentVouchers } = await supabase
       .from("vouchers")
       .select("customer_id")
       .eq("rule_id", rule.id)
       .in("customer_id", eligible)
-      .gt("issued_at", windowStart.toISOString());
+      .gt("issued_at", cooldownStart.toISOString());
 
     const alreadyIssued = new Set(
       // deno-lint-ignore no-explicit-any
@@ -343,21 +361,28 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
     const remaining = eligible.filter((id) => !alreadyIssued.has(id));
     if (remaining.length === 0) continue;
 
-    // Carrega phones
+    // B8: já filtra phone non-empty no DB.
     const { data: customers } = await supabase
       .from("customers")
       .select("id, phone")
       .in("id", remaining)
-      .is("deleted_at", null);
+      .is("deleted_at", null)
+      .not("phone", "is", null);
 
     if (!customers) continue;
 
     for (const c of customers) {
+      const phoneDigits = String((c as { phone: string }).phone ?? "").replace(/\D/g, "");
+      if (phoneDigits.length < 10) {
+        jsonLog("info", { evt: "frequency_skipped_no_phone", customer_id: c.id });
+        continue;
+      }
+
       const result = await issueAndSend({
         unitId: rule.unit_id,
         ruleId: rule.id,
         customerId: c.id,
-        customerPhone: (c as { phone: string }).phone,
+        customerPhone: phoneDigits,
         discountPercent: rule.discount_percent,
         validityDays: rule.validity_days,
       });
@@ -384,55 +409,91 @@ serve(async (req) => {
     });
   }
 
+  // B10: invalida cache de unit settings no início de cada invocação.
+  unitCache.clear();
+
+  // B12: advisory lock — evita duas execuções concorrentes (cron + chamada
+  // manual de debug) duplicarem trabalho. Wrappers em migration 20260517110000.
+  // Fallback: se RPC indisponível, prossegue (UNIQUE PARTIAL em vouchers
+  // protege contra duplicar (rule, customer) ativos).
+  let hasLock = false;
+  try {
+    const { data: lockData, error: lockErr } = await supabase.rpc("try_giftback_lock");
+    if (lockErr) {
+      jsonLog("info", { evt: "advisory_lock_unavailable", err: lockErr.message });
+    } else {
+      hasLock = lockData === true;
+      if (!hasLock) {
+        jsonLog("info", { evt: "voucher_triggers_already_running" });
+        return new Response(
+          JSON.stringify({ skipped: true, reason: "already_running" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+    }
+  } catch (err) {
+    jsonLog("info", { evt: "advisory_lock_error", err: String(err).slice(0, 200) });
+  }
+
   const t0 = Date.now();
   const errors: string[] = [];
 
-  // 1. Expira vencidos
-  let expiredCount = 0;
   try {
-    const { data, error } = await supabase.rpc("expire_vouchers");
-    if (error) {
-      errors.push(`expire_vouchers: ${error.message}`);
-    } else {
-      expiredCount = (data as number | null) ?? 0;
+    // 1. Expira vencidos
+    let expiredCount = 0;
+    try {
+      const { data, error } = await supabase.rpc("expire_vouchers");
+      if (error) {
+        errors.push(`expire_vouchers: ${error.message}`);
+      } else {
+        expiredCount = (data as number | null) ?? 0;
+      }
+    } catch (err) {
+      errors.push(`expire_vouchers: ${String(err).slice(0, 200)}`);
     }
-  } catch (err) {
-    errors.push(`expire_vouchers: ${String(err).slice(0, 200)}`);
-  }
 
-  // 2. Aniversários
-  const birthday = await processBirthday().catch((err) => {
-    errors.push(`processBirthday: ${String(err).slice(0, 200)}`);
-    return { issued: 0, errors: [] as string[] };
-  });
+    // 2. Aniversários
+    const birthday = await processBirthday().catch((err) => {
+      errors.push(`processBirthday: ${String(err).slice(0, 200)}`);
+      return { issued: 0, errors: [] as string[] };
+    });
 
-  // 3. Frequência
-  const frequency = await processFrequency().catch((err) => {
-    errors.push(`processFrequency: ${String(err).slice(0, 200)}`);
-    return { issued: 0, errors: [] as string[] };
-  });
+    // 3. Frequência
+    const frequency = await processFrequency().catch((err) => {
+      errors.push(`processFrequency: ${String(err).slice(0, 200)}`);
+      return { issued: 0, errors: [] as string[] };
+    });
 
-  errors.push(...birthday.errors, ...frequency.errors);
+    errors.push(...birthday.errors, ...frequency.errors);
 
-  jsonLog("info", {
-    evt: "voucher_triggers_done",
-    expired: expiredCount,
-    birthday_issued: birthday.issued,
-    frequency_issued: frequency.issued,
-    errors_count: errors.length,
-    duration_ms: Date.now() - t0,
-  });
-
-  return new Response(
-    JSON.stringify({
-      expired_count: expiredCount,
+    jsonLog("info", {
+      evt: "voucher_triggers_done",
+      expired: expiredCount,
       birthday_issued: birthday.issued,
       frequency_issued: frequency.issued,
-      errors,
-    }),
-    {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    },
-  );
+      errors_count: errors.length,
+      duration_ms: Date.now() - t0,
+    });
+
+    return new Response(
+      JSON.stringify({
+        expired_count: expiredCount,
+        birthday_issued: birthday.issued,
+        frequency_issued: frequency.issued,
+        errors,
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  } finally {
+    if (hasLock) {
+      try {
+        await supabase.rpc("release_giftback_lock");
+      } catch (err) {
+        jsonLog("warn", { evt: "advisory_unlock_failed", err: String(err).slice(0, 200) });
+      }
+    }
+  }
 });
