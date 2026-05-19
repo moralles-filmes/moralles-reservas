@@ -104,9 +104,12 @@ function GestaoGuard({ children }: { children: React.ReactNode }) {
 
   // Operador NÃO acessa o painel de Gestão. Redireciona pro Operacional da
   // mesma unit. Platform admin (super-admin) sempre passa, mesmo sem membership.
+  // Sem membership na unit alvo → /admin (AuthContext decide: redireciona pra
+  // outra unit, ou desloga se órfão total).
   if (!isPlatformAdmin) {
     const m = memberships.find((mm) => mm.unit_slug === unitSlug);
-    if (m && m.role === "operador") {
+    if (!m) return <Navigate to="/admin" replace />;
+    if (m.role === "operador") {
       return <Navigate to={`/o/${unitSlug}`} replace />;
     }
   }
@@ -114,9 +117,14 @@ function GestaoGuard({ children }: { children: React.ReactNode }) {
 }
 
 function OperacionalGuard({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, memberships, isPlatformAdmin } = useAuth();
+  const { unitSlug } = useParams<{ unitSlug: string }>();
   if (loading) return <div className="p-6"><Skeleton className="h-8 w-48" /></div>;
   if (!user) return <Navigate to="/admin/login" replace />;
+  if (!isPlatformAdmin) {
+    const m = memberships.find((mm) => mm.unit_slug === unitSlug);
+    if (!m) return <Navigate to="/admin" replace />;
+  }
   return <OperacionalLayout>{children}</OperacionalLayout>;
 }
 
@@ -162,18 +170,11 @@ function AdminRedirect({ to }: { to: string }) {
       navigate("/platform", { replace: true });
       return;
     }
+    // Caso restante: user autenticado, sem memberships e sem platform_admin.
+    // O auto-logout global em AuthContext já cuidou disso (toast + signOut +
+    // navigate login). Só renderiza Skeleton enquanto a transição acontece.
   }, [loading, user, defaultUnitSlug, isPlatformAdmin, memberships, navigate, to]);
 
-  if (!loading && user && !defaultUnitSlug && !isPlatformAdmin) {
-    return (
-      <div className="p-6 max-w-md mx-auto mt-12 text-center space-y-3">
-        <h1 className="text-xl font-semibold">Sem acesso a nenhuma unidade</h1>
-        <p className="text-muted-foreground">
-          Sua conta não está vinculada a nenhum restaurante. Peça ao administrador para te adicionar.
-        </p>
-      </div>
-    );
-  }
   return <div className="p-6"><Skeleton className="h-8 w-48" /></div>;
 }
 

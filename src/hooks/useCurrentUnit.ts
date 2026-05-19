@@ -69,7 +69,10 @@ export function useCurrentUnit(): CurrentUnit | null {
 
   useEffect(() => {
     if (!loading && memberships.length === 0 && !isPlatformAdmin && !membership) {
-      navigate("/admin/login");
+      // Vai pra /admin (não /admin/login) — o AuthContext desloga e redireciona
+      // pra login se realmente é órfão. Login direto causaria loop: Auth.tsx
+      // joga user logado de volta em /admin.
+      navigate("/admin");
     }
   }, [loading, memberships, isPlatformAdmin, membership, navigate]);
 

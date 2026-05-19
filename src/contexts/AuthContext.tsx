@@ -1,4 +1,6 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
 import type { UnitRole } from "@/types/reserva";
@@ -62,6 +64,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [memberships, setMemberships] = useState<UserMembership[]>([]);
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  const orphanLogoutInFlight = useRef(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const loadMemberships = async (u: User) => {
@@ -112,6 +116,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  // Reset orphan-logout flag whenever the session goes away, so the next login
+  // can trigger another auto-logout if it lands without memberships again.
+  useEffect(() => {
+    if (!user) orphanLogoutInFlight.current = false;
+  }, [user]);
+
+  // Orphan auto-logout: if an authenticated user has no memberships AND is not
+  // a platform admin, sign them out and bounce to /admin/login. Covers the
+  // first-load case (user removed while offline) AND the runtime case (Realtime
+  // subscription below kicks refreshMemberships → memberships → []).
+  useEffect(() => {
+    if (loading || !user || orphanLogoutInFlight.current) return;
+    if (memberships.length === 0 && !isPlatformAdmin) {
+      orphanLogoutInFlight.current = true;
+      toast.info("Sua conta não tem mais acesso a nenhuma unidade. Faça login novamente.");
+      supabase.auth.signOut().finally(() => {
+        navigate("/admin/login", { replace: true });
+      });
+    }
+  }, [loading, user, memberships, isPlatformAdmin, navigate]);
+
+  // Realtime: detect membership changes for the current user. Either side can
+  // tip the orphan condition — losing the last unit_members row, or losing
+  // platform_admins access. Refresh on any event for our user_id.
+  useEffect(() => {
+    if (!user) return;
+    const currentUser = user;
+    const refresh = async () => {
+      try {
+        const { memberships: parsed, isPlatformAdmin: pa } = await loadMembershipsFor(currentUser);
+        setMemberships(parsed);
+        setIsPlatformAdmin(pa);
+      } catch (err) {
+        console.error("[auth] realtime refresh failed:", err);
+      }
+    };
+    const channel = supabase
+      .channel(`auth-membership-${currentUser.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "unit_members", filter: `user_id=eq.${currentUser.id}` },
+        refresh,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "platform_admins", filter: `user_id=eq.${currentUser.id}` },
+        refresh,
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user]);
 
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
