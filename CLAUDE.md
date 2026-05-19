@@ -229,7 +229,7 @@ moralles-reservas/
 │       └── platform/      (Empresas, Automacao)
 │
 ├── supabase/
-│   ├── migrations/        # Toda migration nova SEMPRE em formato `YYYYMMDDHHMMSS_nome.sql` (padrão Supabase CLI). Migrations idempotentes por design — re-runs no remoto são no-op
+│   ├── migrations/        # Toda migration nova SEMPRE em formato `YYYYMMDDHHMMSS_nome.sql` (padrão Supabase CLI). Migrations idempotentes por design — re-runs no remoto são no-op. APLICAR SEMPRE via `supabase db push` — nunca colar SQL no Studio/SQL Editor (gera entrada em schema_migrations com timestamp ≠ filename local, e o `db push` seguinte fica bloqueado por drift; recovery exige `supabase migration repair --status reverted <ver>`)
 │   └── functions/
 │       ├── _shared/
 │       │   ├── ai-providers.ts        # Abstração multi-provedor (runAgentLoop)
