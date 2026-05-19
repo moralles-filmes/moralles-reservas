@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useCreateMenu, useMenus } from "@/hooks/useMenus";
 import { useUnitAssetUpload } from "@/hooks/useUnitAssetUpload";
+import { deleteUnitAssetsByUrls } from "@/lib/storage";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -212,11 +213,16 @@ function CreateMenuDialog({
   const fileRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState("");
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  // URLs upadas nesta sessão. Cleanup ocorre quando o usuário fecha o
+  // dialog sem criar (cancela), ou cria com uma capa diferente da inicial
+  // (caso ele troque a foto múltiplas vezes antes de finalizar).
+  const uploadedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!open) {
       setName("");
       setCoverUrl(null);
+      uploadedRef.current.clear();
     }
   }, [open]);
 
@@ -227,9 +233,23 @@ function CreateMenuDialog({
         kind: "menu_cover",
         file,
       });
+      uploadedRef.current.add(publicUrl);
       setCoverUrl(publicUrl);
     } catch {
       // toast já mostrado pelo hook
+    }
+  };
+
+  // Apaga do bucket todas as URLs upadas que não bateram com a capa final
+  // (saved). Não bloqueia close — fire-and-forget.
+  const cleanupOrphans = (finalUrl: string | null) => {
+    const toRemove: string[] = [];
+    for (const url of uploadedRef.current) {
+      if (url !== finalUrl) toRemove.push(url);
+    }
+    uploadedRef.current.clear();
+    if (toRemove.length > 0) {
+      void deleteUnitAssetsByUrls(toRemove, unitId);
     }
   };
 
@@ -244,6 +264,8 @@ function CreateMenuDialog({
       {
         onSuccess: () => {
           toast.success("Cardápio criado.");
+          // Mantém coverUrl (capa salva), apaga intermediárias.
+          cleanupOrphans(coverUrl);
           onOpenChange(false);
         },
         onError: (err: Error) => toast.error(err.message ?? "Erro ao criar."),
@@ -251,8 +273,15 @@ function CreateMenuDialog({
     );
   };
 
+  // Intercepta fechamento por X / overlay / ESC / botão Cancelar.
+  // Se fechou sem ter criado (uploadedRef ainda com itens), todas são órfãs.
+  const handleOpenChange = (next: boolean) => {
+    if (!next && open) cleanupOrphans(null);
+    onOpenChange(next);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Adicionar Cardápio</DialogTitle>
@@ -309,7 +338,7 @@ function CreateMenuDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancelar
           </Button>
           <Button

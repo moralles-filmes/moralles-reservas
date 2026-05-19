@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { deleteUnitAssetByUrl, deleteUnitAssetsByUrls } from "@/lib/storage";
 import type { Menu, MenuTheme } from "@/types/reserva";
 
 const SLUG_ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
@@ -110,6 +111,17 @@ export function useUpdateMenu(unitId: string) {
       }>,
     ) => {
       const { id, ...patch } = input;
+      // Se cover_image_url está mudando, captura a antiga p/ apagar do
+      // bucket depois (best-effort). Cobre Trocar e Remover capa.
+      let oldCover: string | null = null;
+      if (patch.cover_image_url !== undefined) {
+        const { data: prev } = await supabase
+          .from("menus")
+          .select("cover_image_url")
+          .eq("id", id)
+          .maybeSingle();
+        oldCover = (prev?.cover_image_url as string | null) ?? null;
+      }
       const { data, error } = await supabase
         .from("menus")
         .update(patch)
@@ -117,6 +129,9 @@ export function useUpdateMenu(unitId: string) {
         .select()
         .single();
       if (error) throw error;
+      if (oldCover && oldCover !== patch.cover_image_url) {
+        await deleteUnitAssetByUrl(oldCover);
+      }
       return data as Menu;
     },
     onSuccess: (data) => {
@@ -130,8 +145,30 @@ export function useDeleteMenu(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
+      // 1) Capta TUDO que vai virar órfão no bucket: a capa + todas as
+      //    páginas do menu. FK menu_pages.menu_id é ON DELETE CASCADE no
+      //    banco, então as rows somem junto — mas os arquivos no bucket
+      //    precisam ser apagados manualmente.
+      const [{ data: menu }, { data: pages }] = await Promise.all([
+        supabase
+          .from("menus")
+          .select("cover_image_url")
+          .eq("id", id)
+          .maybeSingle(),
+        supabase
+          .from("menu_pages")
+          .select("image_url")
+          .eq("menu_id", id),
+      ]);
+      // 2) Delete da row do menu (cascade apaga menu_pages).
       const { error } = await supabase.from("menus").delete().eq("id", id);
       if (error) throw error;
+      // 3) Best-effort: apaga todos os arquivos do bucket em lote.
+      const urlsToRemove: Array<string | null | undefined> = [
+        menu?.cover_image_url as string | null,
+        ...((pages ?? []).map((p) => p.image_url as string)),
+      ];
+      await deleteUnitAssetsByUrls(urlsToRemove);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["menus", unitId] });

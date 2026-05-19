@@ -21,6 +21,7 @@ import {
   useUpdateMenuBanner,
   useDeleteMenuBanner,
 } from "@/hooks/useMenuBanners";
+import { deleteUnitAssetsByUrls } from "@/lib/storage";
 import type { MenuBanner, MenuBannerType } from "@/types/reserva";
 import { isSafeHttpUrl } from "@/lib/utils";
 import { toast } from "sonner";
@@ -50,6 +51,9 @@ export function MenuBannerEditor({ banner, unitId, type }: MenuBannerEditorProps
   const [imageUrl, setImageUrl] = useState(banner.image_url);
   const [linkUrl, setLinkUrl] = useState(banner.link_url ?? "");
   const [active, setActive] = useState(banner.active);
+  // URLs upadas nesta sessão. Cleanup acontece após salvar — apaga as
+  // que não viraram a image_url final (Trocar A→B→C deixaria B órfã sem isso).
+  const uploadedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setImageUrl(banner.image_url);
@@ -69,6 +73,7 @@ export function MenuBannerEditor({ banner, unitId, type }: MenuBannerEditorProps
         kind: type === "home" ? "menu_banner_home" : "menu_banner_content",
         file,
       });
+      uploadedRef.current.add(publicUrl);
       setImageUrl(publicUrl);
     } catch {
       // toast já mostrado pelo hook
@@ -93,7 +98,19 @@ export function MenuBannerEditor({ banner, unitId, type }: MenuBannerEditorProps
         active,
       },
       {
-        onSuccess: () => toast.success("Banner salvo."),
+        onSuccess: () => {
+          toast.success("Banner salvo.");
+          // Apaga uploads intermediários que não viraram a image_url salva.
+          // A "antiga" do banco (banner.image_url) já é apagada dentro do hook.
+          const toRemove: string[] = [];
+          for (const url of uploadedRef.current) {
+            if (url !== imageUrl) toRemove.push(url);
+          }
+          uploadedRef.current.clear();
+          if (toRemove.length > 0) {
+            void deleteUnitAssetsByUrls(toRemove, unitId);
+          }
+        },
         onError: (err: Error) => toast.error(err.message ?? "Erro ao salvar."),
       },
     );

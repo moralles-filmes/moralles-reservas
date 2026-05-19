@@ -7,6 +7,7 @@ import {
   useUpdateMenu,
 } from "@/hooks/useMenus";
 import { useUnitAssetUpload } from "@/hooks/useUnitAssetUpload";
+import { deleteUnitAssetsByUrls } from "@/lib/storage";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -149,16 +150,16 @@ export default function MenuDetail() {
             <ShareTab
               publicUrl={publicUrl}
               menu={menu}
-              onSave={(payload) =>
-                updateMenu.mutate(
-                  { id: menu.id, ...payload },
-                  {
-                    onSuccess: () => toast.success("Cardápio atualizado."),
-                    onError: (err: Error) =>
-                      toast.error(err.message ?? "Erro ao salvar."),
-                  },
-                )
-              }
+              onSave={async (payload) => {
+                try {
+                  await updateMenu.mutateAsync({ id: menu.id, ...payload });
+                  toast.success("Cardápio atualizado.");
+                  return true;
+                } catch (err) {
+                  toast.error((err as Error).message ?? "Erro ao salvar.");
+                  return false;
+                }
+              }}
               saving={updateMenu.isPending}
               unitId={unitId}
             />
@@ -203,7 +204,7 @@ function ShareTab({
     name?: string;
     cover_image_url?: string | null;
     active?: boolean;
-  }) => void;
+  }) => Promise<boolean>;
   saving: boolean;
   unitId: string;
 }) {
@@ -212,6 +213,10 @@ function ShareTab({
   const [coverUrl, setCoverUrl] = useState<string | null>(menu.cover_image_url);
   const [active, setActive] = useState(menu.active);
   const fileRef = useRef<HTMLInputElement>(null);
+  // URLs upadas nesta sessão — se o usuário trocou A→B→C antes de salvar,
+  // o hook `useUpdateMenu` só conhece A (do DB) e C (a salva). B fica órfã
+  // sem este cleanup local. (A capa antiga do DB é apagada dentro do hook.)
+  const uploadedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setName(menu.name);
@@ -231,9 +236,31 @@ function ShareTab({
         kind: "menu_cover",
         file,
       });
+      uploadedRef.current.add(publicUrl);
       setCoverUrl(publicUrl);
     } catch {
       // toast já mostrado pelo hook
+    }
+  };
+
+  const handleSave = async () => {
+    const ok = await onSave({
+      name: name.trim(),
+      cover_image_url: coverUrl,
+      active,
+    });
+    if (!ok) return;
+
+    // Cleanup de capas intermediárias upadas nesta sessão que não bateram
+    // com a salva. Best-effort: erro só vai pro console, não invalida save.
+    const finalUrl = coverUrl;
+    const toRemove: string[] = [];
+    for (const url of uploadedRef.current) {
+      if (url !== finalUrl) toRemove.push(url);
+    }
+    uploadedRef.current.clear();
+    if (toRemove.length > 0) {
+      await deleteUnitAssetsByUrls(toRemove, unitId);
     }
   };
 
@@ -308,13 +335,7 @@ function ShareTab({
 
         <div className="flex justify-end">
           <Button
-            onClick={() =>
-              onSave({
-                name: name.trim(),
-                cover_image_url: coverUrl,
-                active,
-              })
-            }
+            onClick={handleSave}
             disabled={!dirty || saving || upload.isPending || !name.trim()}
           >
             {saving ? "Salvando…" : "Salvar"}

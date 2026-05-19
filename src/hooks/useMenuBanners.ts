@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { deleteUnitAssetByUrl } from "@/lib/storage";
 import type { MenuBanner, MenuBannerType } from "@/types/reserva";
 
 export function useMenuBanners(unitId: string, type: MenuBannerType) {
@@ -64,11 +65,25 @@ export function useUpdateMenuBanner(unitId: string, type: MenuBannerType) {
       }>,
     ) => {
       const { id, ...patch } = input;
+      // Se a image_url está mudando, captura a antiga antes do update
+      // pra poder apagar do bucket depois (best-effort).
+      let oldImageUrl: string | null = null;
+      if (patch.image_url !== undefined) {
+        const { data: prev } = await supabase
+          .from("menu_banners")
+          .select("image_url")
+          .eq("id", id)
+          .maybeSingle();
+        oldImageUrl = (prev?.image_url as string | null) ?? null;
+      }
       const { error } = await supabase
         .from("menu_banners")
         .update(patch)
         .eq("id", id);
       if (error) throw error;
+      if (oldImageUrl && oldImageUrl !== patch.image_url) {
+        await deleteUnitAssetByUrl(oldImageUrl);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["menu-banners", unitId, type] });
@@ -80,8 +95,19 @@ export function useDeleteMenuBanner(unitId: string, type: MenuBannerType) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
+      // 1) Captura image_url antes do delete.
+      const { data: row } = await supabase
+        .from("menu_banners")
+        .select("image_url")
+        .eq("id", id)
+        .maybeSingle();
+      // 2) Delete da row.
       const { error } = await supabase.from("menu_banners").delete().eq("id", id);
       if (error) throw error;
+      // 3) Best-effort: apaga o arquivo do bucket.
+      if (row?.image_url) {
+        await deleteUnitAssetByUrl(row.image_url);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["menu-banners", unitId, type] });

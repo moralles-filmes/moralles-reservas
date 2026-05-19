@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { deleteUnitAssetByUrl } from "@/lib/storage";
 import type { MenuPage } from "@/types/reserva";
 
 export function useMenuPages(menuId: string | undefined) {
@@ -39,8 +40,19 @@ export function useDeleteMenuPage(menuId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
+      // 1) Captura image_url antes do delete — depois somem da row.
+      const { data: row } = await supabase
+        .from("menu_pages")
+        .select("image_url")
+        .eq("id", id)
+        .maybeSingle();
+      // 2) Delete da row (operação crítica que pode falhar e propaga erro).
       const { error } = await supabase.from("menu_pages").delete().eq("id", id);
       if (error) throw error;
+      // 3) Best-effort: apaga o arquivo do bucket. Falha aqui só loga warn.
+      if (row?.image_url) {
+        await deleteUnitAssetByUrl(row.image_url);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["menu-pages", menuId] });
