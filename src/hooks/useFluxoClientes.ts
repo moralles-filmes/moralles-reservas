@@ -55,7 +55,7 @@ export interface KpiSet {
   /** Mesas/pessoas efetivamente sentadas. */
   mesas_sentadas: number;
   pessoas_sentadas: number;
-  /** Sempre 0 por ora — depende de pagamentos. */
+  /** Estimativa: pessoas_sentadas × ticket_medio cadastrado em Conta. 0 se ticket não cadastrado. */
   receita_centavos: number;
 }
 
@@ -155,7 +155,11 @@ interface WalkInRow {
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
-export function useFluxoClientes(unitId: string, range: DateRange) {
+export function useFluxoClientes(
+  unitId: string,
+  range: DateRange,
+  ticketMedioReais: number | null,
+) {
   const fromIso = toIsoDate(range.from);
   const toIso = toIsoDate(range.to);
 
@@ -219,6 +223,11 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
 
     const { reservations, waitlist, walkIns } = query.data;
 
+    const ticketCents =
+      ticketMedioReais && ticketMedioReais > 0
+        ? Math.round(ticketMedioReais * 100)
+        : 0;
+
     // ── Reserva ────────────────────────────────────────────────────────────
     const reservaConfirmadas = reservations.filter(
       (r) => r.status === "confirmed",
@@ -263,7 +272,7 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       tempo_medio_espera_seg: null,
       mesas_sentadas: reservaConfirmadasCount,
       pessoas_sentadas: reservaSentadasPessoas,
-      receita_centavos: 0, // pagamentos: stub até integração
+      receita_centavos: reservaSentadasPessoas * ticketCents,
     };
 
     // ── Fila ───────────────────────────────────────────────────────────────
@@ -308,7 +317,7 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
         : null,
       mesas_sentadas: filaSeated.length,
       pessoas_sentadas: filaSentadasPessoas,
-      receita_centavos: 0,
+      receita_centavos: filaSentadasPessoas * ticketCents,
     };
 
     // ── Passante (walk-ins) ────────────────────────────────────────────────
@@ -338,7 +347,7 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       tempo_medio_espera_seg: null,
       mesas_sentadas: walkSeated.length,
       pessoas_sentadas: walkSentadasPessoas,
-      receita_centavos: 0,
+      receita_centavos: walkSentadasPessoas * ticketCents,
     };
 
     // ── Visão geral (agregado dos 3) ───────────────────────────────────────
@@ -385,7 +394,7 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       tempo_medio_espera_seg: filaKpis.tempo_medio_espera_seg,
       mesas_sentadas: totalSentadasMesas,
       pessoas_sentadas: totalSentadasPessoas,
-      receita_centavos: 0,
+      receita_centavos: totalSentadasPessoas * ticketCents,
     };
 
     // ── Daily flow ─────────────────────────────────────────────────────────
@@ -482,7 +491,7 @@ export function useFluxoClientes(unitId: string, range: DateRange) {
       partySize,
       dow: dowReordered,
     };
-  }, [query.data, range.from, range.to]);
+  }, [query.data, range.from, range.to, ticketMedioReais]);
 
   return {
     data,

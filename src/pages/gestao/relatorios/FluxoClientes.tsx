@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import { useUnitPublicContent } from "@/hooks/useUnitPublicContent";
 import {
   useFluxoClientes,
   type DateRange,
@@ -81,7 +82,11 @@ export default function FluxoClientes() {
   const [dowUnit, setDowUnit] = useState<"mesas" | "pessoas">("mesas");
   const [exporting, setExporting] = useState(false);
 
-  const { data, isLoading } = useFluxoClientes(unitId, range);
+  const { data: unitContent } = useUnitPublicContent(unitId);
+  const ticketMedio = unitContent?.price_range_max ?? null;
+  const hasTicketMedio = !!ticketMedio && ticketMedio > 0;
+
+  const { data, isLoading } = useFluxoClientes(unitId, range, ticketMedio);
   const kpis = data.kpis[tab];
 
   const handleExport = async () => {
@@ -151,7 +156,7 @@ export default function FluxoClientes() {
       </div>
 
       {/* KPIs */}
-      <KpiGrid tab={tab} kpis={kpis} loading={isLoading} />
+      <KpiGrid tab={tab} kpis={kpis} loading={isLoading} hasTicketMedio={hasTicketMedio} />
 
       {/* Fluxo geral / Fluxo de Consumidores */}
       <Card>
@@ -266,12 +271,17 @@ function KpiGrid({
   tab,
   kpis,
   loading,
+  hasTicketMedio,
 }: {
   tab: Tab;
   kpis: KpiSet;
   loading: boolean;
+  hasTicketMedio: boolean;
 }) {
   const receita = loading ? undefined : formatBRL(kpis.receita_centavos);
+  const receitaCard = (
+    <ReceitaEstimadaCard value={receita} hasTicketMedio={hasTicketMedio} />
+  );
 
   if (tab === "geral") {
     return (
@@ -295,12 +305,7 @@ function KpiGrid({
           icon={UserX}
           color={ICON_COLOR}
         />
-        <KpiCard
-          title="Receita gerada via Get In"
-          value={receita}
-          icon={DollarSign}
-          color={ICON_COLOR}
-        />
+        {receitaCard}
       </div>
     );
   }
@@ -344,17 +349,12 @@ function KpiGrid({
             color={ICON_COLOR}
           />
           <KpiCard
-            title="Pessoas sentadas via Get In"
+            title="Pessoas sentadas"
             value={loading ? undefined : kpis.pessoas_sentadas}
             icon={UserCheck}
             color={ICON_COLOR}
           />
-          <KpiCard
-            title="Receita gerada via Get In"
-            value={receita}
-            icon={DollarSign}
-            color={ICON_COLOR}
-          />
+          {receitaCard}
         </div>
       </div>
     );
@@ -397,12 +397,7 @@ function KpiGrid({
             icon={UserX}
             color={ICON_COLOR}
           />
-          <KpiCard
-            title="Receita gerada via Get In"
-            value={receita}
-            icon={DollarSign}
-            color={ICON_COLOR}
-          />
+          {receitaCard}
         </div>
       </div>
     );
@@ -430,6 +425,36 @@ function KpiGrid({
         color={ICON_COLOR}
       />
     </div>
+  );
+}
+
+function ReceitaEstimadaCard({
+  value,
+  hasTicketMedio,
+}: {
+  value: string | undefined;
+  hasTicketMedio: boolean;
+}) {
+  const card = (
+    <KpiCard
+      title="Receita estimada"
+      value={value}
+      icon={DollarSign}
+      color={ICON_COLOR}
+    />
+  );
+  if (hasTicketMedio) return card;
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div>{card}</div>
+        </TooltipTrigger>
+        <TooltipContent>
+          Cadastre o ticket médio em <strong>Conta › Categoria e operação</strong> para ver a estimativa.
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
