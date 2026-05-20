@@ -558,25 +558,27 @@ function RestaurantCard({ unit, index }: { unit: PublicUnitCard; index: number }
       className="group flex flex-col rounded-2xl overflow-hidden bg-card border hover:border-primary/40 hover:shadow-xl hover:shadow-black/5 transition-all duration-300 animate-fade-up"
       style={{ animationDelay: `${index * 60}ms`, animationFillMode: "backwards" }}
     >
-      <div className="relative aspect-[16/10] overflow-hidden bg-muted">
-        {unit.hero_image_url ? (
-          <img
-            src={unit.hero_image_url}
-            alt=""
-            className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
-          />
-        ) : (
-          <div
-            className="absolute inset-0"
-            style={{
-              background:
-                "radial-gradient(circle at 30% 30%, hsl(24 85% 50% / 0.7), transparent 55%), radial-gradient(circle at 75% 70%, hsl(340 55% 40% / 0.6), transparent 55%), linear-gradient(135deg, hsl(20 25% 22%), hsl(28 50% 18%))",
-            }}
-          />
-        )}
-        <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/45 to-transparent" />
+      <div className="relative aspect-[16/10] bg-muted">
+        <div className="absolute inset-0 overflow-hidden">
+          {unit.hero_image_url ? (
+            <img
+              src={unit.hero_image_url}
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
+            />
+          ) : (
+            <div
+              className="absolute inset-0"
+              style={{
+                background:
+                  "radial-gradient(circle at 30% 30%, hsl(24 85% 50% / 0.7), transparent 55%), radial-gradient(circle at 75% 70%, hsl(340 55% 40% / 0.6), transparent 55%), linear-gradient(135deg, hsl(20 25% 22%), hsl(28 50% 18%))",
+              }}
+            />
+          )}
+          <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/45 to-transparent" />
+        </div>
 
-        {/* Logo overlap */}
+        {/* Logo overlap — fora do overflow-hidden pra não ser cortada */}
         <div className="absolute -bottom-6 left-5">
           <div className="h-14 w-14 rounded-full ring-4 ring-card bg-background overflow-hidden flex items-center justify-center shadow-lg">
             {unit.logo_url ? (
