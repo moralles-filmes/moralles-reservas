@@ -1043,6 +1043,33 @@ serve(async (req) => {
     // Load conversation history
     const conv = await getOrCreateConversation(customer.id, unitId, contactName);
 
+    // ─── Promove status 'resolved' legado pra 'ai_active' ────────────────────
+    // O botão "Resolver" da UI deixou de gravar 'resolved' (vide
+    // useConversations.markResolved — agora limpa handoff e volta pra
+    // ai_active). Conversas antigas que ainda estão em 'resolved' no banco
+    // sobem aqui na próxima inbound; sem isso, handoff_reason/handoff_at
+    // poderiam ficar fósseis e a UI mostraria badge "Resolvida" pra sempre.
+    if (conv.status === "resolved") {
+      const { error: promoteErr } = await supabase
+        .from("conversations")
+        .update({
+          status: "ai_active",
+          handoff_reason: null,
+          handoff_at: null,
+          last_silenced_reply_at: null,
+        })
+        .eq("id", conv.id);
+      if (promoteErr) {
+        jsonLog("warn", { requestId, evt: "resolved_promote_failed", convId: conv.id, err: String(promoteErr) });
+      } else {
+        jsonLog("info", { requestId, evt: "resolved_promoted_to_ai", convId: conv.id });
+      }
+      conv.status = "ai_active";
+      conv.handoff_reason = null;
+      conv.handoff_at = null;
+      conv.last_silenced_reply_at = null;
+    }
+
     // ─── UX de handoff humano ────────────────────────────────────────────────
     // Auto-resolve quando passar muito tempo sem resposta humana, e responde
     // ao cliente uma vez a cada N horas durante o silêncio para não parecer

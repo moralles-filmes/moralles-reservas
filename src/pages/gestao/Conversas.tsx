@@ -61,7 +61,6 @@ const TABS: { value: TabValue; label: string }[] = [
   { value: "all", label: "Todas" },
   { value: "awaiting_human", label: "Aguardando humano" },
   { value: "human_active", label: "Em atendimento" },
-  { value: "resolved", label: "Resolvidas" },
 ];
 
 // ── Message bubble ─────────────────────────────────────────────────────────────
@@ -196,7 +195,7 @@ function ConversationDetail({
 
   function handleResolve() {
     markResolved.mutate(current.id, {
-      onSuccess: () => toast.success("Conversa marcada como resolvida."),
+      onSuccess: () => toast.success("Atendimento concluído. IA reativada."),
       onError: () => toast.error("Erro ao resolver conversa."),
     });
   }
