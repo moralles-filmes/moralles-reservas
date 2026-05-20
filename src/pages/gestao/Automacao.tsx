@@ -254,83 +254,93 @@ function ChannelsTab({ unitId }: { unitId: string }) {
             const statusCfg = STATUS_CONFIG[ch.status] ?? STATUS_CONFIG.disconnected;
             return (
               <Card key={ch.id}>
-                <CardContent className="py-4 flex items-start gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                <CardContent className="py-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
                       <span className="font-medium text-sm">{PROVIDER_LABELS[ch.provider]}</span>
                       <Badge variant="outline" className={`text-[10px] gap-1 ${statusCfg.className}`}>
                         {statusCfg.icon}
                         {statusCfg.label}
                       </Badge>
+                      {ch.display_phone && (
+                        <span className="text-sm text-muted-foreground">{ch.display_phone}</span>
+                      )}
                     </div>
-                    {ch.display_phone && (
-                      <p className="text-sm text-muted-foreground">{ch.display_phone}</p>
-                    )}
-                    {ch.last_error && (
-                      <p className="text-xs text-destructive mt-0.5 truncate">{ch.last_error}</p>
-                    )}
-                    <div className="mt-2 space-y-1">
-                      <p className="text-xs text-muted-foreground">
-                        Webhook (configure no painel do provedor):
-                      </p>
-                      <div className="flex items-center gap-1.5">
-                        <code
-                          className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] truncate flex-1 min-w-0"
-                          title={buildWebhookUrl(ch.id, ch.webhook_secret)}
-                        >
-                          {buildWebhookUrl(ch.id, ch.webhook_secret)}
-                        </code>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 shrink-0"
-                          onClick={() =>
-                            handleCopy(ch.id, buildWebhookUrl(ch.id, ch.webhook_secret))
-                          }
-                        >
-                          {copiedId === ch.id ? (
-                            <Check className="h-3 w-3 text-green-600" />
-                          ) : (
-                            <Copy className="h-3 w-3" />
-                          )}
-                        </Button>
-                      </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => testChannel.mutate(ch.id)}
+                        disabled={testChannel.isPending}
+                      >
+                        <RefreshCw className="h-3 w-3 mr-1" />
+                        Testar
+                      </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <Trash2 className="h-3 w-3 mr-1" />
+                            Remover
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remover canal {PROVIDER_LABELS[ch.provider]}?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              O agente deixará de receber e enviar mensagens por este canal.
+                              Lembre-se de também desativar o webhook no painel do provedor.
+                              Esta ação não pode ser desfeita.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => deleteChannel.mutate(ch.id)}
+                              disabled={deleteChannel.isPending}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              {deleteChannel.isPending ? "Removendo..." : "Remover"}
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => testChannel.mutate(ch.id)}
-                      disabled={testChannel.isPending}
-                    >
-                      <RefreshCw className="h-3 w-3 mr-1" />
-                      Testar
-                    </Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Remover canal?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            O agente deixará de receber mensagens por este canal. Esta ação não pode ser desfeita.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => deleteChannel.mutate(ch.id)}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                          >
-                            Remover
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+
+                  {ch.last_error && (
+                    <p className="text-xs text-destructive truncate">{ch.last_error}</p>
+                  )}
+
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">
+                      Webhook (configure no painel do provedor):
+                    </p>
+                    <div className="flex items-center gap-1.5">
+                      <code
+                        className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] truncate flex-1 min-w-0"
+                        title={buildWebhookUrl(ch.id, ch.webhook_secret)}
+                      >
+                        {buildWebhookUrl(ch.id, ch.webhook_secret)}
+                      </code>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 shrink-0"
+                        onClick={() =>
+                          handleCopy(ch.id, buildWebhookUrl(ch.id, ch.webhook_secret))
+                        }
+                      >
+                        {copiedId === ch.id ? (
+                          <Check className="h-3 w-3 text-green-600" />
+                        ) : (
+                          <Copy className="h-3 w-3" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
