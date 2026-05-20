@@ -642,10 +642,17 @@ function AITab({ unitId }: { unitId: string }) {
               </Badge>
             </div>
           ) : (
-            <p className="text-xs text-muted-foreground">
-              Nenhuma chave cadastrada para este provedor nesta unidade.
-              Enquanto não cadastrar, o agente usa o secret global da plataforma (se configurado).
-            </p>
+            <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <p className="font-medium">Chave obrigatória nesta unidade.</p>
+                <p>
+                  Sem chave cadastrada, o agente IA não responde mensagens —
+                  cada conversa que chegar vira handoff humano automaticamente.
+                  Cadastre a chave de {activeProvider.label} abaixo.
+                </p>
+              </div>
+            </div>
           )}
 
           <div className="space-y-1">
@@ -684,8 +691,9 @@ function AITab({ unitId }: { unitId: string }) {
                     <AlertDialogHeader>
                       <AlertDialogTitle>Remover chave de {activeProvider.label}?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        O agente voltará a usar o secret global da plataforma (se houver).
-                        Sem chave nem fallback, as mensagens vão falhar.
+                        O agente IA para de responder mensagens desta unidade até
+                        você cadastrar uma chave nova. As próximas mensagens viram
+                        handoff humano automaticamente. Esta ação não pode ser desfeita.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>

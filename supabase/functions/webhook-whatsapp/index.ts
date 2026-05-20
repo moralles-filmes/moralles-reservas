@@ -40,15 +40,12 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-const API_KEY_ENV: Record<AIProvider, string> = {
-  claude: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  gemini: "GEMINI_API_KEY",
-  grok: "GROK_API_KEY",
-  deepseek: "DEEPSEEK_API_KEY",
-};
-
-// Resolve a chave de API: BYOK por unidade no banco → fallback secret global da plataforma.
+// Resolve a chave de API: BYOK por unidade no banco.
+// Sem fallback global da plataforma (removido em 2026-05-20). Razão: secrets
+// globais (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) compartilhados entre units
+// faziam parecer "vazamento de chave entre lojas" e bagunçavam cobrança por
+// tenant. Sem chave própria = throw → handoff humano automático no catch do
+// caller.
 async function resolveApiKey(provider: AIProvider, unitId: string): Promise<string> {
   const { data } = await supabase
     .from("ai_provider_credentials")
@@ -60,12 +57,7 @@ async function resolveApiKey(provider: AIProvider, unitId: string): Promise<stri
 
   if (data?.api_key) return data.api_key;
 
-  const fallback = Deno.env.get(API_KEY_ENV[provider]);
-  if (fallback) return fallback;
-
-  throw new Error(
-    `Chave de API não configurada para ${provider}. Cadastre em Gestão → Automação ou defina ${API_KEY_ENV[provider]} nos secrets do Supabase.`
-  );
+  throw new Error(`api_key_not_configured:${provider}`);
 }
 
 // ─── Agent tools ──────────────────────────────────────────────────────────────
@@ -1189,13 +1181,34 @@ serve(async (req) => {
     try {
       apiKey = await resolveApiKey(provider_ai, unitId);
     } catch (err) {
+      // Sem chave própria cadastrada pra esta unit. Vai pra handoff humano —
+      // não silenciamos, não pedimos retry (não resolve), não compartilhamos
+      // chave global (cobrança ficaria misturada entre tenants).
       jsonLog("error", { requestId, evt: "ai_key_unavailable", provider: provider_ai, unitId, err: String(err) });
-      // Avisa o cliente sem queimar a tentativa silenciosamente.
-      await sendOutbound(provider, credentials, {
-        toPhone: phone,
-        text: "Estou com um problema técnico aqui no atendimento automático. Já avisei o time, em breve alguém retorna por aqui.",
+
+      await supabase
+        .from("conversations")
+        .update({
+          status: "awaiting_human",
+          handoff_reason: `api_key_not_configured:${provider_ai}`,
+          handoff_at: new Date().toISOString(),
+          last_silenced_reply_at: null,
+        })
+        .eq("id", conv.id);
+
+      const handoffText = "Obrigado pela mensagem! Já avisei alguém da equipe pra continuar com você por aqui. Em breve um humano assume.";
+      await sendOutbound(provider, credentials, { toPhone: phone, text: handoffText });
+      await appendToConversation(
+        conv.id,
+        [...(conv.messages || []), { role: "user", content: incomingText }],
+        "assistant",
+        handoffText
+      );
+
+      await finish("ai_key_unavailable", String(err), {
+        provider: provider_ai,
+        channel_id: channelId,
       });
-      await finish("ai_key_unavailable", String(err));
       return new Response("ok");
     }
 
