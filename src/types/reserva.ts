@@ -295,6 +295,30 @@ export interface PublicHall {
   schedules: PublicHallSchedule[];
 }
 
+/** Special date pública — vindo das RPCs `get_unit_public_full` / `get_widget_public`.
+ *  Range `[date, end_date]` inclusivo. `hall_id != null` = override só naquele salão. */
+export interface PublicSpecialDate {
+  date: string;
+  end_date: string;
+  hall_id: string | null;
+  name: string;
+  is_closed: boolean;
+  open_time: string | null;
+  close_time: string | null;
+}
+
+/** Bloqueio macro (table_blocks com `table_id IS NULL`) exposto pela RPC pública.
+ *  Datas já convertidas pro fuso BRT na RPC — usar como YYYY-MM-DD direto. */
+export interface PublicBlockedDate {
+  date_from: string;
+  date_to: string;
+  title: string;
+  /** Quando não-nulo, bloqueio afeta apenas um salão específico — UI normalmente
+   *  ignora pra não bloquear o dia inteiro indevidamente, mas pode mostrar
+   *  tooltip informativo. */
+  hall_id: string | null;
+}
+
 /** Campos extras opcionais que o widget pode habilitar no form público. */
 export type WidgetFieldKey =
   | "experiencia"

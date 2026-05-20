@@ -10,8 +10,10 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { useCreateReserva } from "@/hooks/useReservas";
 import type {
+  PublicBlockedDate,
   PublicCustomField,
   PublicHall,
+  PublicSpecialDate,
   Reserva,
   WidgetFieldConfigMap,
   WidgetFieldKey,
@@ -19,9 +21,11 @@ import type {
 import {
   FALLBACK_TIME_SLOTS,
   getSlotsForDate,
+  getUnavailableDateInfo,
   partitionHalls,
   type PartitionedHalls,
   type TimeSlot,
+  type UnavailableDate,
 } from "./availability-helpers";
 
 export type WizardStep = 1 | 2 | 3 | "success";
@@ -90,6 +94,13 @@ interface WizardInput {
   widgetId: string | undefined;
   unit: { id: string; name: string; organization_id: string } | null;
   bookingWindowDays: number | undefined;
+  /** Datas com bloqueio macro global (table_blocks com hall_id IS NULL e
+   *  table_id IS NULL). O step 1 bloqueia a navegação quando o cliente escolhe
+   *  uma dessas datas. */
+  blockedDates?: PublicBlockedDate[];
+  /** Special dates da unit — `is_closed=true` com `hall_id` null também trava
+   *  o dia. Mesma lógica do availability.ts (cliente nunca passa do step 1). */
+  specialDates?: PublicSpecialDate[];
   /** Conteúdo das regras/condições (do unit_settings) — exibido no step 3. */
   rulesAndConditions?: string;
   /** Info adicional — exibida no step 3. */
@@ -109,6 +120,9 @@ export interface WizardComputed {
   customFieldsSorted: PublicCustomField[];
   /** Extras (widget) ordenados conforme FIELD_ORDER. */
   enabledExtras: Array<{ key: WidgetFieldKey; label: string; required: boolean }>;
+  /** Se a data atual está totalmente bloqueada (bloqueio macro ou special_date
+   *  fechado cobrindo a unit inteira). Não-null = step 1 inválido. */
+  unavailableDate: UnavailableDate | null;
 }
 
 export interface WizardActions {
@@ -214,8 +228,14 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
         required: widgetConfig?.[key]?.required === true,
       }));
 
-    return { timeSlots, partition, customFieldsSorted, enabledExtras };
-  }, [state.date, state.time, state.party_size, input.halls, input.customFields, input.widgetConfig]);
+    const unavailableDate = getUnavailableDateInfo(
+      state.date,
+      input.blockedDates,
+      input.specialDates,
+    );
+
+    return { timeSlots, partition, customFieldsSorted, enabledExtras, unavailableDate };
+  }, [state.date, state.time, state.party_size, input.halls, input.customFields, input.widgetConfig, input.blockedDates, input.specialDates]);
 
   // ─── Validação por step ──────────────────────────────────────────────────
 
@@ -230,8 +250,16 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
       toast.error(first?.message ?? "Preencha os campos do passo atual");
       return false;
     }
+    // Bloqueio macro / special_date fechado cobrindo a unit inteira: trava o
+    // step 1 com mensagem específica. Sem isso, o cliente preenche tudo e só
+    // leva erro genérico no submit via create-reservation → reserveSlot.
+    const unavailable = getUnavailableDateInfo(state.date, input.blockedDates, input.specialDates);
+    if (unavailable) {
+      toast.error(unavailable.message);
+      return false;
+    }
     return true;
-  }, [state.party_size, state.date, state.time]);
+  }, [state.party_size, state.date, state.time, input.blockedDates, input.specialDates]);
 
   const validateStep2 = useCallback((): boolean => {
     // Se há halls compatíveis, exige seleção. Se não há nenhum hall (legacy), pula.

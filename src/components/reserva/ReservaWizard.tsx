@@ -18,8 +18,10 @@ import {
   ResponsiveDialogTitle,
 } from "@/components/ui/responsive-dialog";
 import type {
+  PublicBlockedDate,
   PublicCustomField,
   PublicHall,
+  PublicSpecialDate,
   Reserva,
   WidgetFieldConfigMap,
 } from "@/types/reserva";
@@ -44,6 +46,12 @@ export interface ReservaWizardProps {
   widgetConfig?: WidgetFieldConfigMap;
   widgetId?: string;
   bookingWindowDays?: number;
+  /** Bloqueios macro globais vindos da RPC pública. Step 1 trava se o cliente
+   *  escolhe uma dessas datas — sem isso o erro só apareceria no submit. */
+  blockedDates?: PublicBlockedDate[];
+  /** Special dates (feriados/fechamentos) — apenas as com `is_closed=true` e
+   *  `hall_id` null travam o dia inteiro no wizard. */
+  specialDates?: PublicSpecialDate[];
   rulesAndConditions?: string;
   additionalInfo?: string;
   /** Instruções específicas do widget (só usado pelo WidgetPortal). */
@@ -60,6 +68,8 @@ export function ReservaWizard({
   widgetConfig,
   widgetId,
   bookingWindowDays,
+  blockedDates,
+  specialDates,
   rulesAndConditions,
   additionalInfo,
   widgetInstructions,
@@ -72,6 +82,8 @@ export function ReservaWizard({
     widgetId,
     unit,
     bookingWindowDays,
+    blockedDates,
+    specialDates,
     rulesAndConditions,
     additionalInfo,
     widgetInstructions,

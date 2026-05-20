@@ -21,7 +21,7 @@ import {
   ResponsiveDialogTrigger,
 } from "@/components/ui/responsive-dialog";
 import { useReservaByCode } from "@/hooks/useReservas";
-import type { PublicHall } from "@/types/reserva";
+import type { PublicBlockedDate, PublicHall, PublicSpecialDate } from "@/types/reserva";
 import {
   CalendarDays,
   ChevronRight,
@@ -86,12 +86,8 @@ interface UnitPublicFullResponse {
     close_time: string;
     is_closed: boolean;
   }>;
-  special_dates: Array<{
-    date: string;
-    is_closed: boolean;
-    open_time: string | null;
-    close_time: string | null;
-  }>;
+  special_dates?: PublicSpecialDate[];
+  blocked_dates?: PublicBlockedDate[];
   custom_fields?: Array<{
     id: string;
     label: string;
@@ -128,6 +124,8 @@ export default function PublicPortal() {
   const halls = payload?.halls ?? [];
   const customFields = payload?.custom_fields ?? [];
   const settings = payload?.unit_settings ?? {};
+  const blockedDates = payload?.blocked_dates ?? [];
+  const specialDates = payload?.special_dates ?? [];
 
   if (isLoading) {
     if (mode === "embed") {
@@ -175,6 +173,8 @@ export default function PublicPortal() {
       halls={halls}
       customFields={customFields}
       settings={settings}
+      blockedDates={blockedDates}
+      specialDates={specialDates}
       mode={mode}
       autoOpen={autoOpen}
     />
@@ -188,6 +188,8 @@ function PortalContent({
   halls,
   customFields,
   settings,
+  blockedDates,
+  specialDates,
   mode,
   autoOpen,
 }: {
@@ -195,6 +197,8 @@ function PortalContent({
   halls: PublicHall[];
   customFields: NonNullable<UnitPublicFullResponse["custom_fields"]>;
   settings: UnitSettings;
+  blockedDates: PublicBlockedDate[];
+  specialDates: PublicSpecialDate[];
   mode: PortalMode;
   autoOpen: AutoOpenAction;
 }) {
@@ -221,6 +225,8 @@ function PortalContent({
             halls={halls}
             customFields={customFields}
             settings={settings}
+            blockedDates={blockedDates}
+            specialDates={specialDates}
             defaultOpen={autoOpen === "reservar"}
           />
           <WaitlistCTA
@@ -480,6 +486,8 @@ function PortalContent({
               halls={halls}
               customFields={customFields}
               settings={settings}
+              blockedDates={blockedDates}
+              specialDates={specialDates}
               defaultOpen={autoOpen === "reservar"}
             />
             <WaitlistCTA
@@ -640,12 +648,16 @@ function ReservaCTA({
   halls,
   customFields,
   settings,
+  blockedDates,
+  specialDates,
   defaultOpen = false,
 }: {
   unit: PublicUnit;
   halls: PublicHall[];
   customFields: NonNullable<UnitPublicFullResponse["custom_fields"]>;
   settings: UnitSettings;
+  blockedDates: PublicBlockedDate[];
+  specialDates: PublicSpecialDate[];
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -687,6 +699,8 @@ function ReservaCTA({
           }}
           halls={halls}
           customFields={customFields}
+          blockedDates={blockedDates}
+          specialDates={specialDates}
           bookingWindowDays={
             typeof settings.booking_window_days === "number" ? settings.booking_window_days : undefined
           }

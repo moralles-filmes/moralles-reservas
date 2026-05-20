@@ -11,8 +11,10 @@ import {
 } from "@/components/ui/dialog";
 import { ChevronRight, X } from "lucide-react";
 import type {
+  PublicBlockedDate,
   PublicCustomField,
   PublicHall,
+  PublicSpecialDate,
   UnitAddress,
   WidgetFieldConfigMap,
 } from "@/types/reserva";
@@ -43,6 +45,8 @@ interface WidgetPublicResponse {
     additional_info?: string;
   } | null;
   halls: PublicHall[];
+  special_dates?: PublicSpecialDate[];
+  blocked_dates?: PublicBlockedDate[];
   custom_fields?: PublicCustomField[];
 }
 
@@ -90,6 +94,8 @@ export default function WidgetPortal() {
     halls,
     custom_fields: customFields = [],
     unit_settings: settings,
+    blocked_dates: blockedDates = [],
+    special_dates: specialDates = [],
   } = data;
   const rules = settings?.rules_and_conditions ?? "";
   const additionalInfo = settings?.additional_info ?? "";
@@ -163,6 +169,8 @@ export default function WidgetPortal() {
             widgetConfig={widget.field_config}
             widgetId={widget.id}
             customFields={customFields}
+            blockedDates={blockedDates}
+            specialDates={specialDates}
             bookingWindowDays={bookingWindowDays}
             rulesAndConditions={rules || undefined}
             additionalInfo={additionalInfo || undefined}

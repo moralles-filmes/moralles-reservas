@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Users } from "lucide-react";
+import { CalendarX2, Users } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -29,6 +29,7 @@ export function StepDateTimeParty() {
   }, [input.bookingWindowDays]);
 
   const noSlotsAvailable = state.date && computed.timeSlots.length === 0;
+  const unavailable = computed.unavailableDate;
 
   return (
     <div className="space-y-5">
@@ -61,13 +62,26 @@ export function StepDateTimeParty() {
           }}
           className="h-12 sm:h-11 text-base"
         />
+        {unavailable && (
+          <p
+            role="alert"
+            className="flex items-start gap-2 text-sm border rounded-md px-3 py-2.5 bg-destructive/10 border-destructive/30 text-destructive"
+          >
+            <CalendarX2 className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>{unavailable.message}</span>
+          </p>
+        )}
       </div>
 
       <div className="space-y-1.5">
         <Label htmlFor="wizard-time">
           Horário <span className="text-destructive">*</span>
         </Label>
-        {noSlotsAvailable ? (
+        {unavailable ? (
+          <p className="text-sm text-muted-foreground border rounded-md px-3 py-2.5 bg-muted/30">
+            Escolha outra data para liberar os horários.
+          </p>
+        ) : noSlotsAvailable ? (
           <p className="text-sm text-muted-foreground border rounded-md px-3 py-2.5 bg-muted/30">
             Nenhum horário disponível neste dia. Escolha outra data.
           </p>
@@ -75,7 +89,7 @@ export function StepDateTimeParty() {
           <Select
             value={state.time}
             onValueChange={(v) => actions.set("time", v)}
-            disabled={!state.date}
+            disabled={!state.date || !!unavailable}
           >
             <SelectTrigger id="wizard-time" className="h-12 sm:h-11 text-base">
               <SelectValue placeholder={state.date ? "Selecione um horário" : "Escolha a data primeiro"} />

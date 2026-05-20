@@ -415,7 +415,11 @@ function parseBlockToForm(b: TableBlock | null) {
       title: "",
       startDate: "",
       endDate: "",
-      allDay: false,
+      // Caso mais comum é bloquear o dia inteiro (feriado, evento privado).
+      // Default antigo era false + horários parciais — usuário desatento salvava
+      // bloqueio das 12-22h achando ser "dia todo" e a IA aceitava reserva fora
+      // dessa janela.
+      allDay: true,
       startTime: "12:00",
       endTime: "22:00",
     };

@@ -482,9 +482,13 @@ async function tryHall(args: {
   void minRequired; // reservado para uso futuro
 
   // 3.4 — Bloqueios
-  const startISO = new Date(`${date}T${time}:00`).toISOString();
+  // Offset BRT explícito: a Edge Function roda em UTC; sem offset, `time`
+  // seria lido como UTC e o intervalo da reserva ficaria 3h fora do fuso do
+  // restaurante — bloqueios parciais (ex: 19h-22h BRT) escapavam na borda
+  // inicial. Mesma convenção usada por `minutesUntil` acima.
+  const startISO = new Date(`${date}T${time}:00-03:00`).toISOString();
   const endISO = new Date(
-    new Date(`${date}T${time}:00`).getTime() + duration * 60 * 1000,
+    new Date(`${date}T${time}:00-03:00`).getTime() + duration * 60 * 1000,
   ).toISOString();
 
   // 3.4a — Bloqueio macro (sem table_id) afetando este hall: trava tudo.
@@ -680,9 +684,10 @@ async function checkAvailabilityLegacy(
     };
   }
 
-  const startISO = new Date(`${date}T${time}:00`).toISOString();
+  // Offset BRT explícito (idem 3.4 acima) pra cobrir caminho legacy.
+  const startISO = new Date(`${date}T${time}:00-03:00`).toISOString();
   const endISO = new Date(
-    new Date(`${date}T${time}:00`).getTime() + duration * 60 * 1000,
+    new Date(`${date}T${time}:00-03:00`).getTime() + duration * 60 * 1000,
   ).toISOString();
   const tableIds = tables.map((t) => t.id);
 

@@ -1279,6 +1279,71 @@ serve(async (req) => {
       return s.is_closed ? `- ${ymd} (${s.name}): fechado` : `- ${ymd} (${s.name}): ${s.open_time?.slice(0, 5)} às ${s.close_time?.slice(0, 5)}`;
     });
 
+    // table_blocks macro (table_id IS NULL) ativos no horizonte de 60 dias.
+    // Sem isso o LLM responde "sim, aceitamos reservas pra dia X" sem chamar
+    // check_availability pra perguntas genéricas — o bloqueio só era visto
+    // quando o cliente já tinha dado data+hora+party (auditoria 2026-05-20).
+    const horizonISO = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString();
+    const nowISO = new Date().toISOString();
+    const { data: tableBlocks } = await supabase
+      .from("table_blocks")
+      .select("title, reason, hall_id, blocked_from, blocked_to")
+      .eq("unit_id", unitId)
+      .is("table_id", null)
+      .gte("blocked_to", nowISO)
+      .lte("blocked_from", horizonISO)
+      .order("blocked_from", { ascending: true });
+
+    // Hall names pra sufixar bloqueios hall-específicos
+    const blockHallIds = Array.from(
+      new Set(((tableBlocks ?? []) as { hall_id: string | null }[]).map((b) => b.hall_id).filter((id): id is string => !!id)),
+    );
+    const blockHallNameById = new Map<string, string>();
+    if (blockHallIds.length > 0) {
+      const { data: hallRows } = await supabase
+        .from("halls")
+        .select("id, name")
+        .in("id", blockHallIds);
+      for (const h of (hallRows ?? []) as { id: string; name: string }[]) {
+        blockHallNameById.set(h.id, h.name);
+      }
+    }
+
+    // BRT = UTC-3 fixo. Edge Function roda em UTC; subtraímos 3h e lemos UTC*.
+    const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
+    const toBrtParts = (iso: string) => {
+      const d = new Date(new Date(iso).getTime() - BRT_OFFSET_MS);
+      const dd = String(d.getUTCDate()).padStart(2, "0");
+      const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+      const yyyy = d.getUTCFullYear();
+      const hh = String(d.getUTCHours()).padStart(2, "0");
+      const min = String(d.getUTCMinutes()).padStart(2, "0");
+      return {
+        ymd: `${yyyy}-${mm}-${dd}`,
+        br: `${dd}/${mm}/${yyyy}`,
+        time: `${hh}:${min}`,
+        h: d.getUTCHours(),
+        m: d.getUTCMinutes(),
+      };
+    };
+
+    const blockedLines = (tableBlocks ?? []).map(
+      (b: { title: string | null; reason: string | null; hall_id: string | null; blocked_from: string; blocked_to: string }) => {
+        const from = toBrtParts(b.blocked_from);
+        const to = toBrtParts(b.blocked_to);
+        const title = b.title ?? b.reason ?? "Bloqueio";
+        const hallSuffix = b.hall_id
+          ? ` — só no salão ${blockHallNameById.get(b.hall_id) ?? "específico"}`
+          : "";
+        const sameDay = from.ymd === to.ymd;
+        const allDay = from.h === 0 && from.m === 0 && to.h === 23 && to.m === 59;
+        if (sameDay && allDay) return `- ${from.br} (${title}): fechado o dia inteiro${hallSuffix}`;
+        if (sameDay) return `- ${from.br} (${title}): das ${from.time} às ${to.time}${hallSuffix}`;
+        if (allDay) return `- ${from.br} a ${to.br} (${title}): fechado o dia inteiro${hallSuffix}`;
+        return `- ${from.br} ${from.time} a ${to.br} ${to.time} (${title})${hallSuffix}`;
+      },
+    );
+
     const prefsLines: string[] = [];
     if (customer.allergies) prefsLines.push(`- Alergias: ${customer.allergies}`);
     if (customer.dietary_restrictions) prefsLines.push(`- Restrições alimentares: ${customer.dietary_restrictions}`);
@@ -1306,7 +1371,8 @@ serve(async (req) => {
       `1. SEMPRE chame check_availability ANTES de create_reservation. Nunca atalhe.\n` +
       `2. Se check_availability retornar available: false, NUNCA crie a reserva. Comunique ao cliente que não há mesa naquele horário e ofereça alternativas (outro horário do mesmo dia ou outra data próxima). Use o campo 'reason' para entender o motivo (closed_day, outside_hours, no_capacity, all_blocked).\n` +
       `3. Se create_reservation retornar success: false, informe o cliente o motivo — NÃO tente criar a reserva novamente sem fazer nova consulta com data/horário diferente.\n` +
-      `4. Para alterar uma reserva existente (update_reservation) que mude data ou horário, chame check_availability antes para validar o novo slot.` +
+      `4. Para alterar uma reserva existente (update_reservation) que mude data ou horário, chame check_availability antes para validar o novo slot.\n` +
+      `5. Se o cliente perguntar sobre uma data presente na lista 'Datas bloqueadas' (abaixo) ou 'Datas especiais' com 'fechado', NUNCA diga que aceitamos reservas naquela data. Informe imediatamente que naquela data o restaurante (ou o salão específico, se a linha indicar) está fechado/bloqueado pelo motivo entre parênteses, e ofereça datas próximas. NÃO chame check_availability nem create_reservation para datas dessa lista — a resposta é direta com base no contexto.` +
       `\n\nFORMATAÇÃO DA RESPOSTA NO WHATSAPP:\n` +
       `- Negrito é *um único asterisco* (ex: *importante*). NUNCA use **dois asteriscos**, ### header ou markdown — WhatsApp mostra os símbolos literais.\n` +
       `- Itálico com _texto_ entre underlines. Tachado com ~texto~.\n` +
@@ -1317,6 +1383,7 @@ serve(async (req) => {
       (unitAddress ? `\n\nEndereço: ${unitAddress}` : "") +
       (hoursLines.length ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}` : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
+      (blockedLines.length ? `\n\nDatas bloqueadas nos próximos 60 dias (não aceitamos reservas):\n${blockedLines.join("\n")}` : "") +
       (includeFaq && settingsMap["restaurant_menu"] ? `\n\nCardápio:\n${settingsMap["restaurant_menu"]}` : "") +
       (includeFaq && settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
       (includeFaq && settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +

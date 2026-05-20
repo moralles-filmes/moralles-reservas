@@ -7,7 +7,12 @@
  * que "parecem compatíveis" mas falham no submit por bloqueios/conflitos.
  */
 
-import type { PublicHall, PublicHallSchedule } from "@/types/reserva";
+import type {
+  PublicBlockedDate,
+  PublicHall,
+  PublicHallSchedule,
+  PublicSpecialDate,
+} from "@/types/reserva";
 
 export interface TimeSlot {
   time: string;
@@ -115,6 +120,51 @@ export interface PartitionedHalls {
   alternative: PublicHall[];
   /** Hall não abre no DOW. */
   closed: PublicHall[];
+}
+
+/** Razão pela qual a data não está aceitando reservas. Mensagem é PT-BR e
+ *  pode ir direto pra UI / toast. */
+export interface UnavailableDate {
+  reason: "blocked" | "closed_special";
+  title: string;
+  message: string;
+}
+
+/** Checa se a data (YYYY-MM-DD) está totalmente fechada pra reservas — seja
+ *  por bloqueio macro global (`PublicBlockedDate.hall_id IS NULL`) ou por
+ *  `PublicSpecialDate.is_closed=true` cobrindo a unit inteira (`hall_id` null).
+ *
+ *  IMPORTANTE: bloqueios e specials hall-específicos NÃO travam o dia — o
+ *  cliente pode reservar em outro salão. Por isso filtramos `hall_id IS NULL`
+ *  aqui. Decisão alinhada com `availability.ts:findActiveMacroBlock`. */
+export function getUnavailableDateInfo(
+  dateISO: string,
+  blockedDates: PublicBlockedDate[] | undefined,
+  specialDates: PublicSpecialDate[] | undefined,
+): UnavailableDate | null {
+  if (!dateISO) return null;
+  for (const b of blockedDates ?? []) {
+    if (b.hall_id != null) continue; // hall-específico não bloqueia o dia
+    if (dateISO >= b.date_from && dateISO <= b.date_to) {
+      return {
+        reason: "blocked",
+        title: b.title,
+        message: `Esta data está bloqueada: ${b.title}. Por favor, escolha outra data.`,
+      };
+    }
+  }
+  for (const sd of specialDates ?? []) {
+    if (!sd.is_closed) continue;
+    if (sd.hall_id != null) continue; // override só de um salão
+    if (dateISO >= sd.date && dateISO <= sd.end_date) {
+      return {
+        reason: "closed_special",
+        title: sd.name,
+        message: `Esta data o restaurante está fechado: ${sd.name}. Por favor, escolha outra data.`,
+      };
+    }
+  }
+  return null;
 }
 
 /** Particiona halls em 3 buckets pra renderização no step 2. */
