@@ -46,7 +46,7 @@ export interface AgentLoopOptions {
 export const DEFAULT_MODELS: Record<AIProvider, string> = {
   claude: "claude-haiku-4-5",
   openai: "gpt-4o",
-  gemini: "gemini-2.0-flash",
+  gemini: "gemini-2.5-flash",
   grok: "grok-3",
   deepseek: "deepseek-chat",
 };
@@ -69,6 +69,7 @@ const PRICING_USD_PER_MTOK: Record<string, { input: number; output: number; cach
   "gpt-4o":             { input: 2.50, output: 10,  cache_read: 1.25, cache_write: 0 },
   "gpt-4o-mini":        { input: 0.15, output: 0.60, cache_read: 0.075, cache_write: 0 },
   "gemini-2.0-flash":   { input: 0.10, output: 0.40, cache_read: 0.025, cache_write: 0 },
+  "gemini-2.5-flash":   { input: 0.15, output: 0.60, cache_read: 0.0375, cache_write: 0 },
   "grok-3":             { input: 3,    output: 15,  cache_read: 0,    cache_write: 0 },
   "deepseek-chat":      { input: 0.27, output: 1.10, cache_read: 0.07, cache_write: 0 },
 };
