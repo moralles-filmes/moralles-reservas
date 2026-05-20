@@ -882,14 +882,18 @@ serve(async (req) => {
       return new Response("ok");
     }
 
-    // Load organization_id + address for the unit
+    // Load organization_id + address + name for the unit.
+    // `name` é usado como fallback do system prompt do agente — `settings.restaurant_name`
+    // virou legado, UI nova escreve em `units.name`. Sem o fallback real, o LLM
+    // recebe "Você é o assistente do Restaurante" e papagueia esse nome.
     const { data: unitRow } = await supabase
       .from("units")
-      .select("organization_id, address")
+      .select("organization_id, address, name")
       .eq("id", unitId)
       .maybeSingle();
     const organizationId: string = unitRow?.organization_id ?? "";
     const unitAddress: string = unitRow?.address ?? "";
+    const unitName: string = (unitRow?.name as string | undefined) ?? "";
 
     // Upsert customer (org-scoped). Preserva nome real cadastrado via reserva;
     // só preenche/atualiza quando o customer é novo ou ainda tem placeholder
@@ -1248,20 +1252,8 @@ serve(async (req) => {
       .in("key", ["restaurant_name", "ai_system_prompt", "agent_mode", "restaurant_menu", "delivery_response", "restaurant_extra_info"]);
 
     const settingsMap = Object.fromEntries((settings || []).map((s: { key: string; value: unknown }) => [s.key, s.value]));
-
-    // Nome do restaurante: `settings.restaurant_name` é legado (UI não escreve
-    // mais). Fonte canônica é `units.name`. Sem o fallback real o prompt vira
-    // "Você é o assistente do Restaurante" e o modelo papagueia "Bem-vindo ao
-    // Restaurante" — bug observado 2026-05-20.
-    const { data: unitRow } = await supabase
-      .from("units")
-      .select("name")
-      .eq("id", unitId)
-      .maybeSingle();
     const restaurantName =
-      (settingsMap["restaurant_name"] as string) ||
-      ((unitRow?.name as string | undefined) ?? "") ||
-      "nosso restaurante";
+      (settingsMap["restaurant_name"] as string) || unitName || "nosso restaurante";
     const customPrompt = (settingsMap["ai_system_prompt"] as string) ?? "";
 
     // Business hours (unit-scoped)
