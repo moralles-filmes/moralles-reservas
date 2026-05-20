@@ -757,6 +757,7 @@ export interface ReserveSlotParams extends AvailabilityParams {
   customerId: string;
   notes?: string | null;
   status?: "pending" | "confirmed";
+  source?: "web" | "whatsapp";
 }
 
 export type ReserveSlotResult =
@@ -825,6 +826,7 @@ export async function reserveSlot(
         reservation_code: code,
         status,
         applied_discount_percent: appliedDiscountPercent,
+        source: params.source ?? "web",
       })
       .select("id")
       .single();

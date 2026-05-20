@@ -51,6 +51,36 @@ export const DEFAULT_MODELS: Record<AIProvider, string> = {
   deepseek: "deepseek-chat",
 };
 
+// Lista de modelos conhecidos (espelha `MODELS_BY_PROVIDER` em src/lib/aiModels.ts).
+// Blindagem: settings.ai_config.models[provider] pode ter valor legado de antes do
+// Select curado (vimos `gemini-2.0-flash` salvo em produção depois que o Google o
+// descontinuou — provoca 404 silencioso → agent_error). Se o modelo override não
+// está aqui, `resolveModel` ignora e usa o default. Mantenha sincronizado com:
+//   - src/lib/aiModels.ts MODELS_BY_PROVIDER (UI)
+//   - DEFAULT_MODELS acima (este arquivo)
+//   - DEFAULT_MODEL_BY_PROVIDER em src/lib/aiModels.ts
+const KNOWN_MODELS: Record<AIProvider, ReadonlySet<string>> = {
+  claude: new Set(["claude-haiku-4-5", "claude-sonnet-4-6"]),
+  openai: new Set(["gpt-4o", "gpt-4o-mini"]),
+  gemini: new Set(["gemini-2.5-flash", "gemini-2.5-pro"]),
+  grok: new Set(["grok-3"]),
+  deepseek: new Set(["deepseek-chat"]),
+};
+
+/**
+ * Resolve o modelo final a ser usado:
+ *   - se `override` está em KNOWN_MODELS[provider] → usa ele
+ *   - senão (vazio, descontinuado, digitado errado) → usa DEFAULT_MODELS[provider]
+ * Retorna o nome do modelo + flag indicando se houve fallback (pra log/telemetria).
+ */
+export function resolveModel(provider: AIProvider, override?: string): { model: string; fellBack: boolean; rejected?: string } {
+  const def = DEFAULT_MODELS[provider];
+  const trimmed = (override ?? "").trim();
+  if (!trimmed) return { model: def, fellBack: false };
+  if (KNOWN_MODELS[provider]?.has(trimmed)) return { model: trimmed, fellBack: false };
+  return { model: def, fellBack: true, rejected: trimmed };
+}
+
 const OPENAI_BASE_URLS: Partial<Record<AIProvider, string>> = {
   openai: "https://api.openai.com/v1",
   grok: "https://api.x.ai/v1",

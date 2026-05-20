@@ -2,18 +2,20 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   runAgentLoop,
-  DEFAULT_MODELS,
+  resolveModel,
   estimateCostUsd,
   type AIProvider,
   type AgentTool,
 } from "../_shared/ai-providers.ts";
 import {
   parseInbound,
+  peekInboundMedia,
   sendOutbound,
   validateChannelSecret,
   validateMetaSignature,
   type WhatsAppProvider,
   type ChannelCredentials,
+  type InboundMediaKind,
 } from "../_shared/whatsapp-providers.ts";
 import {
   genRequestId,
@@ -358,6 +360,21 @@ async function appendToConversation(convId: string, existing: any[], role: "user
   return [...existing, newMsg];
 }
 
+function mediaPlaceholder(kind: InboundMediaKind): string {
+  switch (kind) {
+    case "audio": return "[áudio]";
+    case "image": return "[imagem]";
+    case "video": return "[vídeo]";
+    case "document": return "[documento]";
+    case "sticker": return "[figurinha]";
+    case "location": return "[localização]";
+    case "contacts": return "[contato]";
+    default: return "[mídia]";
+  }
+}
+
+const MEDIA_REPLY_TEXT = "Por aqui só consigo ler texto. Pode me escrever a informação que precisa? Se quiser falar com a equipe, é só pedir.";
+
 // ─── Tool log helpers ──────────────────────────────────────────────────────────
 
 // deno-lint-ignore no-explicit-any
@@ -695,8 +712,90 @@ serve(async (req) => {
     // Parse inbound message using provider-specific adapter
     const inbound = parseInbound(provider, payload);
     if (!inbound) {
-      // Not a text message or sent by us — ignore silently
-      await finish("ignored_non_text");
+      // Não é texto. Antes silenciávamos — agora detectamos áudio/foto/sticker/etc
+      // e respondemos uma vez pedindo texto, pra cliente não ficar achando que
+      // mandou pro vazio. O fluxo de LLM/tools NÃO roda nesse path.
+      const media = peekInboundMedia(provider, payload);
+      if (!media) {
+        await finish("ignored_non_text");
+        return new Response("ok");
+      }
+
+      const mediaPhone = media.fromPhone;
+      phoneHash = sanitizePhone(mediaPhone);
+      messageIdForOutcome = media.providerMessageId;
+
+      // Idempotência: se a mensagem já foi processada, não responde de novo.
+      const { error: idemErr } = await supabase
+        .from("processed_messages")
+        .insert({ message_id: media.providerMessageId, unit_id: unitId, started_at: new Date().toISOString() });
+      if (idemErr) {
+        messageIdForOutcome = null;
+        await finish("duplicate_media");
+        return new Response("ok");
+      }
+
+      // Resolve org → customer → conversation (mesmo padrão do path de texto).
+      const { data: unitRow2 } = await supabase
+        .from("units")
+        .select("organization_id")
+        .eq("id", unitId)
+        .maybeSingle();
+      const orgId2: string = unitRow2?.organization_id ?? "";
+
+      // deno-lint-ignore no-explicit-any
+      let mediaCustomer: any = null;
+      if (orgId2) {
+        const { data: existing } = await supabase
+          .from("customers")
+          .select("*")
+          .eq("organization_id", orgId2)
+          .eq("phone", mediaPhone)
+          .maybeSingle();
+        if (existing) {
+          mediaCustomer = existing;
+        } else {
+          const { data: inserted } = await supabase
+            .from("customers")
+            .insert({ phone: mediaPhone, name: media.contactName ?? mediaPhone, organization_id: orgId2 })
+            .select("*")
+            .single();
+          mediaCustomer = inserted;
+        }
+      }
+
+      const userPlaceholder = mediaPlaceholder(media.mediaKind);
+      // deno-lint-ignore no-explicit-any
+      let mediaConv: any = null;
+      if (mediaCustomer && unitId) {
+        mediaConv = await getOrCreateConversation(mediaCustomer.id, unitId, media.contactName);
+        if (mediaConv) {
+          await appendToConversation(mediaConv.id, mediaConv.messages || [], "user", userPlaceholder);
+        }
+      }
+
+      // Conversa em handoff humano? Não responde — atendente assume.
+      if (mediaConv && (mediaConv.status === "human_active" || mediaConv.status === "awaiting_human")) {
+        jsonLog("info", { requestId, evt: "media_during_handoff", mediaKind: media.mediaKind, phone: phoneHash });
+        await finish("media_during_handoff", null, { mediaKind: media.mediaKind });
+        return new Response("ok");
+      }
+
+      const sendRes = await sendOutbound(provider, credentials, { toPhone: mediaPhone, text: MEDIA_REPLY_TEXT });
+      if (sendRes.ok && mediaConv) {
+        await appendToConversation(
+          mediaConv.id,
+          [...(mediaConv.messages || []), { role: "user", content: userPlaceholder }],
+          "assistant",
+          MEDIA_REPLY_TEXT,
+        );
+      }
+      jsonLog("info", { requestId, evt: "media_response", mediaKind: media.mediaKind, sent: sendRes.ok });
+      await finish(
+        sendRes.ok ? "media_response" : "send_error",
+        sendRes.ok ? undefined : (sendRes.error ?? `status_${sendRes.status}`),
+        { mediaKind: media.mediaKind },
+      );
       return new Response("ok");
     }
 
@@ -1069,7 +1168,22 @@ serve(async (req) => {
 
     const aiConfig = (configSetting?.value ?? {}) as Record<string, unknown>;
     const provider_ai: AIProvider = (aiConfig.provider as AIProvider) ?? "claude";
-    const modelOverride: string | undefined = (aiConfig.models as Record<string, string>)?.[provider_ai];
+    const rawModel: string | undefined = (aiConfig.models as Record<string, string>)?.[provider_ai];
+    // Blindagem: ignora modelo desconhecido/descontinuado salvo em settings (ex: legado
+    // "gemini-2.0-flash" que o Google removeu pra contas novas → 404 silencioso).
+    // resolveModel cai no DEFAULT_MODELS[provider] e marca fellBack pra logar/telemetria.
+    const modelResolved = resolveModel(provider_ai, rawModel);
+    const modelOverride: string = modelResolved.model;
+    if (modelResolved.fellBack) {
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_model_fallback",
+        provider: provider_ai,
+        rejected: modelResolved.rejected,
+        used: modelOverride,
+        unitId,
+      });
+    }
 
     let apiKey: string;
     try {
@@ -1231,7 +1345,7 @@ serve(async (req) => {
       jsonLog("error", { requestId, evt: "agent_loop_error", err: agentError });
     }
 
-    const usedModel = modelOverride ?? DEFAULT_MODELS[provider_ai];
+    const usedModel = modelOverride;
     jsonLog("info", {
       requestId,
       evt: "agent_usage",
@@ -1244,12 +1358,32 @@ serve(async (req) => {
     });
 
     if (agentError) {
-      // Agente falhou: avisa o cliente e marca outcome.
-      await sendOutbound(provider, credentials, {
-        toPhone: phone,
-        text: "Tive um problema técnico aqui agora. Pode repetir? Se persistir, alguém da equipe entra em contato.",
+      // Agente falhou (timeout, modelo descontinuado, 4xx do provider, tool error
+      // não tratado, etc). Em vez de só pedir pro cliente repetir — o que não
+      // resolve quando o erro é estrutural —, fazemos auto-handoff: marca a
+      // conversa awaiting_human pra atendente assumir, registra provider/model
+      // no handoff_reason e em webhook_executions.meta, e avisa o cliente.
+      const usedModel = modelOverride;
+      await supabase
+        .from("conversations")
+        .update({
+          status: "awaiting_human",
+          handoff_reason: `agent_error:${provider_ai}:${usedModel}`,
+          handoff_at: new Date().toISOString(),
+          last_silenced_reply_at: null,
+        })
+        .eq("id", conv.id);
+
+      const handoffText = "Tive um instante de instabilidade aqui. Já chamei alguém da equipe pra te responder. Em breve um humano assume.";
+      await sendOutbound(provider, credentials, { toPhone: phone, text: handoffText });
+      await appendToConversation(conv.id, [...(conv.messages || []), { role: "user", content: incomingText }], "assistant", handoffText);
+
+      jsonLog("warn", { requestId, evt: "agent_error_handoff", provider: provider_ai, model: usedModel, err: agentError });
+      await finish("agent_error", agentError, {
+        provider: provider_ai,
+        model: usedModel,
+        channel_id: channelId,
       });
-      await finish("agent_error", agentError);
       return new Response("ok");
     }
 

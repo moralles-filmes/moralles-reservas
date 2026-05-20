@@ -139,6 +139,136 @@ function parseOfficial(p: any): InboundMessage | null {
   };
 }
 
+// ─── Media inbound (não-texto): peek sem exigir text ─────────────────────────
+//
+// `parseInbound` retorna null pra qualquer mensagem que não é texto. Antes o
+// webhook silenciava — cliente mandava áudio/foto/sticker e não recebia nada.
+// Esse peek detecta o tipo de mídia e devolve metadata mínimo (phone + kind),
+// pra o webhook responder uma mensagem amigável e seguir.
+
+export type InboundMediaKind =
+  | "audio"
+  | "image"
+  | "video"
+  | "document"
+  | "sticker"
+  | "location"
+  | "contacts"
+  | "other";
+
+export interface InboundMediaPeek {
+  providerMessageId: string;
+  fromPhone: string;
+  mediaKind: InboundMediaKind;
+  contactName?: string;
+}
+
+// deno-lint-ignore no-explicit-any
+export function peekInboundMedia(provider: WhatsAppProvider, payload: any): InboundMediaPeek | null {
+  try {
+    if (provider === "zapi") return peekZApiMedia(payload);
+    if (provider === "waha") return peekWahaMedia(payload);
+    if (provider === "official") return peekOfficialMedia(payload);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// deno-lint-ignore no-explicit-any
+function peekZApiMedia(p: any): InboundMediaPeek | null {
+  if (p.isFromMe) return null;
+  if (p.text?.message) return null; // é texto, deixa parseInbound cuidar
+  let kind: InboundMediaKind | null = null;
+  if (p.audio || p.ptt) kind = "audio";
+  else if (p.image) kind = "image";
+  else if (p.video) kind = "video";
+  else if (p.document) kind = "document";
+  else if (p.sticker) kind = "sticker";
+  else if (p.location) kind = "location";
+  else if (p.contact || p.contacts) kind = "contacts";
+  if (!kind) return null;
+  const digits = String(p.phone ?? "").replace(/\D/g, "").replace(/^55/, "");
+  if (!digits) return null;
+  const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
+  const contactName = sanitizeContactName(
+    p.senderName ?? p.chatName ?? p.notifyName ?? p.contactName,
+    digits,
+  );
+  return { providerMessageId: id, fromPhone: digits, mediaKind: kind, contactName };
+}
+
+// deno-lint-ignore no-explicit-any
+function peekWahaMedia(p: any): InboundMediaPeek | null {
+  const msg = p.payload ?? p;
+  if (msg.fromMe) return null;
+  const textBody = msg.body ?? msg.text?.body;
+  // WAHA às vezes manda body com legenda — só consideramos mídia se hasMedia ou type indica mídia
+  const wahaType = String(msg.type ?? "").toLowerCase();
+  const mediaTypes: Record<string, InboundMediaKind> = {
+    image: "image",
+    audio: "audio",
+    voice: "audio",
+    ptt: "audio",
+    video: "video",
+    document: "document",
+    sticker: "sticker",
+    location: "location",
+    vcard: "contacts",
+    contacts: "contacts",
+    contact_card: "contacts",
+  };
+  let kind: InboundMediaKind | null = mediaTypes[wahaType] ?? null;
+  if (!kind && msg.hasMedia && !textBody) kind = "other";
+  if (!kind) return null;
+  const rawFrom = String(msg.from ?? "").replace("@c.us", "").replace(/\D/g, "").replace(/^55/, "");
+  if (!rawFrom) return null;
+  const contactName = sanitizeContactName(
+    msg._data?.notifyName ?? msg.notifyName ?? msg.pushName ?? msg._data?.pushName ?? p.payload?._data?.notifyName,
+    rawFrom,
+  );
+  return {
+    providerMessageId: msg.id ?? `${rawFrom}:${Date.now()}`,
+    fromPhone: rawFrom,
+    mediaKind: kind,
+    contactName,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+function peekOfficialMedia(p: any): InboundMediaPeek | null {
+  const entry = p.entry?.[0];
+  const change = entry?.changes?.[0];
+  const value = change?.value;
+  const msgObj = value?.messages?.[0];
+  if (!msgObj) return null;
+  const t = String(msgObj.type ?? "");
+  if (t === "text") return null;
+  const map: Record<string, InboundMediaKind> = {
+    audio: "audio",
+    voice: "audio",
+    image: "image",
+    video: "video",
+    document: "document",
+    sticker: "sticker",
+    location: "location",
+    contacts: "contacts",
+  };
+  const kind: InboundMediaKind = map[t] ?? "other";
+  const digits = String(msgObj.from ?? "").replace(/^55/, "").replace(/\D/g, "");
+  if (!digits) return null;
+  const contactName = sanitizeContactName(
+    value?.contacts?.[0]?.profile?.name,
+    digits,
+  );
+  return {
+    providerMessageId: msgObj.id ?? `${digits}:${Date.now()}`,
+    fromPhone: digits,
+    mediaKind: kind,
+    contactName,
+  };
+}
+
 // ─── Outbound sending ─────────────────────────────────────────────────────────
 
 export async function sendOutbound(
