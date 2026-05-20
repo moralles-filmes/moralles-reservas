@@ -17,6 +17,7 @@ import {
   type ChannelCredentials,
   type InboundMediaKind,
 } from "../_shared/whatsapp-providers.ts";
+import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
   genRequestId,
   jsonLog,
@@ -1279,6 +1280,13 @@ serve(async (req) => {
       `2. Se check_availability retornar available: false, NUNCA crie a reserva. Comunique ao cliente que não há mesa naquele horário e ofereça alternativas (outro horário do mesmo dia ou outra data próxima). Use o campo 'reason' para entender o motivo (closed_day, outside_hours, no_capacity, all_blocked).\n` +
       `3. Se create_reservation retornar success: false, informe o cliente o motivo — NÃO tente criar a reserva novamente sem fazer nova consulta com data/horário diferente.\n` +
       `4. Para alterar uma reserva existente (update_reservation) que mude data ou horário, chame check_availability antes para validar o novo slot.` +
+      `\n\nFORMATAÇÃO DA RESPOSTA NO WHATSAPP:\n` +
+      `- Negrito é *um único asterisco* (ex: *importante*). NUNCA use **dois asteriscos**, ### header ou markdown — WhatsApp mostra os símbolos literais.\n` +
+      `- Itálico com _texto_ entre underlines. Tachado com ~texto~.\n` +
+      `- Listas SEMPRE com "- " (hífen + espaço) no começo da linha, uma por linha. NUNCA use "* " — o asterisco solto aparece literal pro cliente.\n` +
+      `- Separe blocos lógicos (preços, horários, opções, observação) com UMA linha em branco. Frases e parágrafos curtos — o cliente está lendo no celular.\n` +
+      `- Não use tabelas, blocos de código com \`\`\`, nem links no formato [texto](url) — WhatsApp não interpreta. Cole a URL direto.\n` +
+      `- Emojis: máximo 1 ou 2 por mensagem, só quando agregam contexto. Sugestões: 📅 data, 🕐 horário, 📍 endereço, 🍽️ cardápio, ✅ confirmação, ❌ cancelamento, 🙏 agradecimento. Não exagere — mensagem cheia de emoji parece spam.` +
       (unitAddress ? `\n\nEndereço: ${unitAddress}` : "") +
       (hoursLines.length ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}` : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
@@ -1412,8 +1420,15 @@ serve(async (req) => {
       return new Response("ok");
     }
 
-    await appendToConversation(conv.id, [...(conv.messages || []), { role: "user", content: incomingText }], "assistant", finalText);
-    const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: finalText });
+    // Sanitiza markdown padrão de LLM (**bold**, # header, `code`, listas com
+    // "* ", links [text](url)) pro formato WhatsApp (*bold*, "- " em lista).
+    // Rede defensiva — o system prompt já instrui, mas modelos divergem.
+    // A versão sanitizada é o que vai pro cliente E o que fica no log da
+    // conversa operacional (operador vê o mesmo que cliente recebeu).
+    const finalTextForWhatsApp = sanitizeForWhatsApp(finalText);
+
+    await appendToConversation(conv.id, [...(conv.messages || []), { role: "user", content: incomingText }], "assistant", finalTextForWhatsApp);
+    const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: finalTextForWhatsApp });
 
     if (!sendRes.ok) {
       await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
