@@ -1327,6 +1327,12 @@ serve(async (req) => {
       };
     };
 
+    // IMPORTANTE: bloqueio em table_blocks = "não aceitamos reservas" naquela
+    // data/horário, NÃO = "restaurante fechado". Walk-in, evento privado já
+    // contratado, fila de espera, etc, podem continuar rolando. Por isso o
+    // phrasing aqui evita "fechado" — é "sem reservas". `special_dates` com
+    // `is_closed=true` é o canal correto pra fechamento real (formatado em
+    // `specialLines` acima como "fechado").
     const blockedLines = (tableBlocks ?? []).map(
       (b: { title: string | null; reason: string | null; hall_id: string | null; blocked_from: string; blocked_to: string }) => {
         const from = toBrtParts(b.blocked_from);
@@ -1337,10 +1343,10 @@ serve(async (req) => {
           : "";
         const sameDay = from.ymd === to.ymd;
         const allDay = from.h === 0 && from.m === 0 && to.h === 23 && to.m === 59;
-        if (sameDay && allDay) return `- ${from.br} (${title}): fechado o dia inteiro${hallSuffix}`;
-        if (sameDay) return `- ${from.br} (${title}): das ${from.time} às ${to.time}${hallSuffix}`;
-        if (allDay) return `- ${from.br} a ${to.br} (${title}): fechado o dia inteiro${hallSuffix}`;
-        return `- ${from.br} ${from.time} a ${to.br} ${to.time} (${title})${hallSuffix}`;
+        if (sameDay && allDay) return `- ${from.br} (${title}): sem reservas o dia inteiro${hallSuffix}`;
+        if (sameDay) return `- ${from.br} (${title}): sem reservas das ${from.time} às ${to.time}${hallSuffix}`;
+        if (allDay) return `- ${from.br} a ${to.br} (${title}): sem reservas o dia inteiro${hallSuffix}`;
+        return `- ${from.br} ${from.time} a ${to.br} ${to.time} (${title}): sem reservas${hallSuffix}`;
       },
     );
 
@@ -1372,7 +1378,7 @@ serve(async (req) => {
       `2. Se check_availability retornar available: false, NUNCA crie a reserva. Comunique ao cliente que não há mesa naquele horário e ofereça alternativas (outro horário do mesmo dia ou outra data próxima). Use o campo 'reason' para entender o motivo (closed_day, outside_hours, no_capacity, all_blocked).\n` +
       `3. Se create_reservation retornar success: false, informe o cliente o motivo — NÃO tente criar a reserva novamente sem fazer nova consulta com data/horário diferente.\n` +
       `4. Para alterar uma reserva existente (update_reservation) que mude data ou horário, chame check_availability antes para validar o novo slot.\n` +
-      `5. Se o cliente perguntar sobre uma data presente na lista 'Datas bloqueadas' (abaixo) ou 'Datas especiais' com 'fechado', NUNCA diga que aceitamos reservas naquela data. Informe imediatamente que naquela data o restaurante (ou o salão específico, se a linha indicar) está fechado/bloqueado pelo motivo entre parênteses, e ofereça datas próximas. NÃO chame check_availability nem create_reservation para datas dessa lista — a resposta é direta com base no contexto.` +
+      `5. Se o cliente perguntar sobre uma data presente na lista 'Datas bloqueadas' (abaixo), NUNCA confirme disponibilidade. Explique que naquela data NÃO ESTAMOS ACEITANDO RESERVAS pelo motivo entre parênteses (ex: evento, alta demanda, manutenção). NUNCA diga que o restaurante está "fechado" — bloqueio de reserva ≠ fechamento; o restaurante pode estar atendendo walk-in, ter evento privado, etc. Use "não estamos aceitando reservas", "agenda de reservas indisponível", ou "estamos com bloqueio de reservas". Se for bloqueio só de um salão (sufixo "— só no salão X"), ofereça reserva em OUTRO salão na mesma data. Para 'Datas especiais' marcadas como 'fechado', aí sim diga "estamos fechados" (é fechamento real). Ofereça datas próximas. NÃO chame check_availability nem create_reservation para datas dessa lista — a resposta é direta com base no contexto.` +
       `\n\nFORMATAÇÃO DA RESPOSTA NO WHATSAPP:\n` +
       `- Negrito é *um único asterisco* (ex: *importante*). NUNCA use **dois asteriscos**, ### header ou markdown — WhatsApp mostra os símbolos literais.\n` +
       `- Itálico com _texto_ entre underlines. Tachado com ~texto~.\n` +
@@ -1383,7 +1389,7 @@ serve(async (req) => {
       (unitAddress ? `\n\nEndereço: ${unitAddress}` : "") +
       (hoursLines.length ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}` : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
-      (blockedLines.length ? `\n\nDatas bloqueadas nos próximos 60 dias (não aceitamos reservas):\n${blockedLines.join("\n")}` : "") +
+      (blockedLines.length ? `\n\nDatas com bloqueio de reservas nos próximos 60 dias (agenda indisponível, mas o restaurante pode estar funcionando):\n${blockedLines.join("\n")}` : "") +
       (includeFaq && settingsMap["restaurant_menu"] ? `\n\nCardápio:\n${settingsMap["restaurant_menu"]}` : "") +
       (includeFaq && settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
       (includeFaq && settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +

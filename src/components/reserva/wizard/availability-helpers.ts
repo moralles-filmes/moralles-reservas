@@ -146,10 +146,14 @@ export function getUnavailableDateInfo(
   for (const b of blockedDates ?? []) {
     if (b.hall_id != null) continue; // hall-específico não bloqueia o dia
     if (dateISO >= b.date_from && dateISO <= b.date_to) {
+      // "Bloqueio" aqui é bloqueio de RESERVAS — o restaurante pode estar
+      // funcionando normalmente (walk-in, evento privado). Por isso o texto
+      // evita "fechado" e foca em "sem reservas disponíveis", reservando o
+      // termo "fechado" para special_dates com is_closed=true abaixo.
       return {
         reason: "blocked",
         title: b.title,
-        message: `Esta data está bloqueada: ${b.title}. Por favor, escolha outra data.`,
+        message: `Não estamos aceitando reservas nesta data (${b.title}). Por favor, escolha outra data.`,
       };
     }
   }
