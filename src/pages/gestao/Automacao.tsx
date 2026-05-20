@@ -67,10 +67,13 @@ import {
 } from "@/hooks/useAiProviderKeys";
 import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
+import {
+  MODELS_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
+  type AIProvider,
+} from "@/lib/aiModels";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
-
-type AIProvider = "claude" | "openai" | "gemini" | "grok" | "deepseek";
 
 interface AIConfig {
   provider: AIProvider;
@@ -80,15 +83,13 @@ interface AIConfig {
 const PROVIDERS: Array<{
   id: AIProvider;
   label: string;
-  defaultModel: string;
   envKey: string;
-  modelPlaceholder: string;
 }> = [
-  { id: "claude", label: "Claude (Anthropic)", defaultModel: "claude-haiku-4-5", envKey: "ANTHROPIC_API_KEY", modelPlaceholder: "claude-haiku-4-5" },
-  { id: "openai", label: "OpenAI (ChatGPT)", defaultModel: "gpt-4o", envKey: "OPENAI_API_KEY", modelPlaceholder: "gpt-4o" },
-  { id: "gemini", label: "Gemini (Google)", defaultModel: "gemini-2.0-flash", envKey: "GEMINI_API_KEY", modelPlaceholder: "gemini-2.0-flash" },
-  { id: "grok", label: "Grok (xAI)", defaultModel: "grok-3", envKey: "GROK_API_KEY", modelPlaceholder: "grok-3" },
-  { id: "deepseek", label: "DeepSeek", defaultModel: "deepseek-chat", envKey: "DEEPSEEK_API_KEY", modelPlaceholder: "deepseek-chat" },
+  { id: "claude", label: "Claude (Anthropic)", envKey: "ANTHROPIC_API_KEY" },
+  { id: "openai", label: "OpenAI (ChatGPT)", envKey: "OPENAI_API_KEY" },
+  { id: "gemini", label: "Gemini (Google)", envKey: "GEMINI_API_KEY" },
+  { id: "grok", label: "Grok (xAI)", envKey: "GROK_API_KEY" },
+  { id: "deepseek", label: "DeepSeek", envKey: "DEEPSEEK_API_KEY" },
 ];
 
 const PROVIDER_LABELS: Record<WhatsAppProvider, string> = {
@@ -543,6 +544,11 @@ function AITab({ unitId }: { unitId: string }) {
   });
 
   const activeProvider = PROVIDERS.find((p) => p.id === aiConfig.provider)!;
+  const activeProviderModels = MODELS_BY_PROVIDER[aiConfig.provider];
+  const activeDefaultModel = DEFAULT_MODEL_BY_PROVIDER[aiConfig.provider];
+  const savedModel = aiConfig.models?.[aiConfig.provider] ?? "";
+  const savedModelInList = activeProviderModels.some((m) => m.value === savedModel);
+  const showLegacyOption = savedModel !== "" && !savedModelInList;
 
   const updateAiConfig = (patch: Partial<AIConfig>) => {
     const updated = { ...aiConfig, ...patch };
@@ -578,20 +584,32 @@ function AITab({ unitId }: { unitId: string }) {
 
         <div className="space-y-1">
           <Label>Modelo</Label>
-          <Input
-            className="w-64"
-            placeholder={activeProvider.modelPlaceholder}
-            value={aiConfig.models?.[aiConfig.provider] ?? ""}
-            onChange={(e) =>
-              setAiConfig((prev) => ({
-                ...prev,
-                models: { ...prev.models, [prev.provider]: e.target.value },
-              }))
-            }
-            onBlur={(e) => setModelOverride(e.target.value)}
-          />
+          <Select
+            value={savedModel === "" ? "__default__" : savedModel}
+            onValueChange={(v) => setModelOverride(v === "__default__" ? "" : v)}
+          >
+            <SelectTrigger className="w-72">
+              <SelectValue placeholder="Selecione um modelo…" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__default__">
+                Padrão ({activeDefaultModel})
+              </SelectItem>
+              {activeProviderModels.map((m) => (
+                <SelectItem key={m.value} value={m.value}>
+                  {m.label}
+                  {m.hint ? <span className="text-muted-foreground"> · {m.hint}</span> : null}
+                </SelectItem>
+              ))}
+              {showLegacyOption && (
+                <SelectItem value={savedModel} className="text-amber-700">
+                  {savedModel} (descontinuado — trocar)
+                </SelectItem>
+              )}
+            </SelectContent>
+          </Select>
           <p className="text-xs text-muted-foreground">
-            Padrão: <code className="bg-muted px-1 rounded">{activeProvider.defaultModel}</code>
+            Recomendado deixar no padrão. A lista é atualizada conforme cada provedor lança modelos novos.
           </p>
         </div>
 

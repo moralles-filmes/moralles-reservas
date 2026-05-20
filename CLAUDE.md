@@ -400,11 +400,14 @@ Cliente → Provider → webhook-whatsapp → resolve canal → carrega históri
 |---|---|---|
 | Claude | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o` |
-| Gemini | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| Gemini | `GEMINI_API_KEY` | `gemini-2.5-flash` |
 | Grok | `GROK_API_KEY` | `grok-3` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 
-Provedor ativo configurado por unidade via BYOK (ai_provider_credentials). Fallback: secret global.
+Provedor ativo configurado por unidade via BYOK (ai_provider_credentials). Modelo configurado por unidade em `settings.ai_config.models[provider]` (string vazia ou ausente = fallback pro default). Fallback de chave: secret global.
+
+- **Default de modelo vive em DOIS arquivos que precisam ficar sincronizados** — [src/lib/aiModels.ts](src/lib/aiModels.ts) `DEFAULT_MODEL_BY_PROVIDER` (UI exibe como "Padrão (X)") + [supabase/functions/_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts) `DEFAULT_MODELS` (fallback runtime do `runAgentLoop`). Se mudar um sem o outro, UI promete X e backend usa Y silenciosamente. Quando o provedor descontinua um modelo (caso 2026-05: Google removeu `gemini-2.0-flash` pra contas novas → erro 404), atualizar AMBOS + atualizar a lista curada `MODELS_BY_PROVIDER` em `src/lib/aiModels.ts` (remover/substituir o ID) + redeploy de `webhook-whatsapp` e `manage-ai-providers` (compartilham `_shared/ai-providers.ts`).
+- **Modelo é Select com lista curada, não input livre.** A UI de [Automacao.tsx](src/pages/gestao/Automacao.tsx) (`AITab`) lê `MODELS_BY_PROVIDER[provider]` e renderiza opções. Se o valor salvo em `settings.ai_config.models[provider]` não está mais na lista (modelo descontinuado), aparece como opção em âmbar marcada "(descontinuado — trocar)" — usuário continua vendo o que está ativo, mas é forçado visualmente a trocar. Backend não valida o ID — confia na UI; qualquer string aceita e cai no fallback se vier vazia.
 
 | Provider WhatsApp | Configuração |
 |---|---|
