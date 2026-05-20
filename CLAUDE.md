@@ -532,7 +532,7 @@ Auditoria 2026-05-17 fechou bugs no painel operacional (`/o/:unitSlug`) — race
 - Path alias `@/` aponta para `src/`
 - Datas sempre em formato `YYYY-MM-DD` no banco; exibição via `formatDateBR()`
 - Telefones sem formatação no banco (apenas dígitos); exibição via `formatPhone()`
-- **Rodar `npm run typecheck` antes de commitar mudanças no frontend** — o dev server usa SWC (sem type check), então import faltante (`<Link>` sem `import { Link } from "react-router-dom"`) só explode em runtime via ErrorBoundary ("Algo deu errado"). Hoje há ~4 erros pré-existentes (toaster/use-toast órfãos do shadcn + `String.replaceAll` exigindo lib ES2021); use-os como baseline e detecte regressões pela contagem.
+- **Rodar `npm run typecheck` antes de commitar mudanças no frontend** — o dev server usa SWC (sem type check), então import faltante (`<Link>` sem `import { Link } from "react-router-dom"`) só explode em runtime via ErrorBoundary ("Algo deu errado"). Baseline atual: **zero erros**; qualquer novo erro é regressão.
 
 ## Tema visual: dois mundos
 
