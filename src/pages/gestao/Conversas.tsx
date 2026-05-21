@@ -1,12 +1,14 @@
-import { useState, useRef, useEffect, Fragment } from "react";
+import { useState, useRef, useEffect, useMemo, Fragment } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useConversations, useConversationActions } from "@/hooks/useConversations";
 import { useSendManualMessage } from "@/hooks/useSendManualMessage";
+import { useDebounce } from "@/hooks/useDebounce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,9 +21,10 @@ import {
   getConversationDisplayName,
   getMessageDayKey,
   humanDateLabel,
+  sanitizeSearchTerm,
 } from "@/lib/utils";
 import { toast } from "sonner";
-import { ArrowLeft, MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2 } from "lucide-react";
+import { ArrowLeft, MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2, Search } from "lucide-react";
 import type {
   Conversation,
   ConversationMessage,
@@ -361,6 +364,8 @@ export default function Conversas() {
 
   const [tab, setTab] = useState<TabValue>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounce(search.trim(), 200);
 
   const { data: conversations, isLoading, isError, refetch } = useConversations(
     unitId,
@@ -368,6 +373,28 @@ export default function Conversas() {
   );
 
   const selected = conversations?.find((c) => c.id === selectedId) ?? null;
+
+  const filteredConversations = useMemo(() => {
+    if (!conversations) return [] as Conversation[];
+    const term = sanitizeSearchTerm(debouncedSearch).toLowerCase();
+    if (!term) return conversations;
+    const digits = debouncedSearch.replace(/\D/g, "");
+    return conversations.filter((c) => {
+      const name = getConversationDisplayName(c).toLowerCase();
+      if (name.includes(term)) return true;
+      const contactName = c.contact_name?.toLowerCase() ?? "";
+      if (contactName.includes(term)) return true;
+      if (digits.length >= 3) {
+        const phone = c.customer?.phone ?? "";
+        if (phone.includes(digits)) return true;
+      }
+      return false;
+    });
+  }, [conversations, debouncedSearch]);
+
+  const hasActiveSearch = debouncedSearch.trim().length > 0;
+  const totalCount = conversations?.length ?? 0;
+  const filteredCount = filteredConversations.length;
 
   // Clear selection when it's no longer in the current tab
   useEffect(() => {
@@ -379,6 +406,16 @@ export default function Conversas() {
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-bold">Conversas WhatsApp</h1>
+
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Buscar por nome ou telefone..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-9"
+        />
+      </div>
 
       <Tabs value={tab} onValueChange={(v) => { setTab(v as TabValue); setSelectedId(null); }}>
         <TabsList className="mb-4">
@@ -394,7 +431,9 @@ export default function Conversas() {
           <Card className={cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
             <CardHeader className="py-3 px-4 border-b">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                {conversations?.length || 0} conversa{conversations?.length !== 1 ? "s" : ""}
+                {hasActiveSearch && filteredCount !== totalCount
+                  ? `${filteredCount} de ${totalCount} conversa${totalCount !== 1 ? "s" : ""}`
+                  : `${totalCount} conversa${totalCount !== 1 ? "s" : ""}`}
               </CardTitle>
             </CardHeader>
             <ScrollArea className="flex-1">
@@ -409,12 +448,14 @@ export default function Conversas() {
                     Tentar de novo
                   </Button>
                 </div>
-              ) : conversations?.length === 0 ? (
+              ) : filteredCount === 0 ? (
                 <div className="p-6 text-center text-sm text-muted-foreground">
-                  Nenhuma conversa nessa categoria.
+                  {hasActiveSearch
+                    ? "Nenhuma conversa corresponde a essa busca."
+                    : "Nenhuma conversa nessa categoria."}
                 </div>
               ) : (
-                conversations?.map((c) => (
+                filteredConversations.map((c) => (
                   <button
                     key={c.id}
                     onClick={() => setSelectedId(c.id)}
