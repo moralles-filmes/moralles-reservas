@@ -1,4 +1,5 @@
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.27.3";
+import { fetchWithRetry } from "./retry.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,8 +36,10 @@ export interface AgentLoopOptions {
   userMessage: string;
   tools: AgentTool[];
   onToolCall: (name: string, input: any) => Promise<string>;
-  /** Cap context window via truncation. Default: 20 most recent messages. */
+  /** Cap context window via truncation. Default: DEFAULT_HISTORY_CAP most recent messages. */
   maxHistoryMessages?: number;
+  /** Token budget só pro histórico. Default: DEFAULT_HISTORY_TOKEN_CAP. */
+  maxHistoryTokens?: number;
   /** Hard timeout per HTTP call in ms. Default: 45_000 (Edge Function limit is 60s). */
   requestTimeoutMs?: number;
   /** Telemetry callback fired once per HTTP turn (the loop may have multiple). */
@@ -49,6 +52,19 @@ export const DEFAULT_MODELS: Record<AIProvider, string> = {
   gemini: "gemini-2.5-flash",
   grok: "grok-3",
   deepseek: "deepseek-chat",
+};
+
+// Fallback de modelo dentro do mesmo provider para erros 5xx persistentes
+// (modelo principal saturado regionalmente). Cotas TPM são tipicamente
+// separadas entre modelos do mesmo provider, então `pro` continua atendendo
+// enquanto `flash` está sobrecarregado. Null = não há fallback configurado.
+// Conservador: só Gemini hoje, porque é o caso real observado em produção.
+export const FALLBACK_MODELS: Record<AIProvider, string | null> = {
+  claude: null,
+  openai: null,
+  gemini: "gemini-2.5-pro",
+  grok: null,
+  deepseek: null,
 };
 
 // Lista de modelos conhecidos (espelha `MODELS_BY_PROVIDER` em src/lib/aiModels.ts).
@@ -116,24 +132,63 @@ export function estimateCostUsd(model: string, usage: AgentUsage): number {
 }
 
 const MAX_ITERATIONS = 12;
-const DEFAULT_HISTORY_CAP = 10;
-const DEFAULT_TIMEOUT_MS = 45_000;
+const DEFAULT_HISTORY_CAP = 20;
+// Limite estimado de tokens só para o histórico (não inclui system prompt,
+// tools, nem userMessage). 1500 tokens ≈ ~6000 caracteres ≈ ~15 mensagens
+// médias em PT-BR. Caps por NÚMERO sozinho subestimam custo quando mensagens
+// são longas (descrições de reserva, listas de horários repetidos pelo bot).
+const DEFAULT_HISTORY_TOKEN_CAP = 1500;
+// Timeout por TENTATIVA HTTP. Reduzido pra 12s pra acomodar fallback de modelo
+// no Gemini: primary 1 tentativa + fallback 3 tentativas + esperas ≈ 51s,
+// cabendo nos 60s da Edge Function. Modelos LLM tipicamente respondem em 2-5s.
+const DEFAULT_TIMEOUT_MS = 12_000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 1024;
+// Retentar 2x em 5xx/429/network: Gemini retorna 503 transitório com frequência;
+// outros providers ocasionalmente também. Backoff 1s/2s + jitter.
+const DEFAULT_HTTP_RETRIES = 2;
+const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
+
+// Estimativa grosseira: em PT-BR, 1 token ≈ 4 caracteres (incluindo espaços e
+// pontuação). Não é exato pra qualquer tokenizer (Claude/OpenAI/Gemini cada
+// um tem o seu), mas o objetivo aqui é cortar histórico cedo, não cobrança.
+// Errar pra mais é OK — corta um pouco antes; errar pra menos seria pior.
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Mantém apenas as últimas `cap` mensagens, garantindo que o primeiro item
- * seja sempre `role: 'user'` (alguns provedores rejeitam histórico que
- * começa com 'assistant').
+ * Mantém só as últimas `cap` mensagens E corta por `tokenCap` tokens estimados.
+ *
+ * Dois passes:
+ * 1) Corte por NÚMERO (`cap`): pega últimas N mensagens (proteção contra
+ *    históricos com 100+ entradas).
+ * 2) Corte por TOKENS (`tokenCap`): se a soma estimada das últimas N ainda
+ *    estoura o teto, drop do COMEÇO (mensagens mais antigas) até caber.
+ *    O turno atual (userMessage) NÃO conta aqui — é adicionado depois pelo
+ *    runner.
+ *
+ * Em ambos os casos, garante que a primeira mensagem do array final seja
+ * `role: 'user'` (Anthropic e OpenAI rejeitam histórico iniciado com assistant).
  */
-export function truncateHistory(history: AgentMessage[], cap = DEFAULT_HISTORY_CAP): AgentMessage[] {
-  if (history.length <= cap) {
-    if (history.length > 0 && history[0].role !== "user") {
-      return history.slice(1);
-    }
-    return history;
+export function truncateHistory(
+  history: AgentMessage[],
+  cap = DEFAULT_HISTORY_CAP,
+  tokenCap = DEFAULT_HISTORY_TOKEN_CAP,
+): AgentMessage[] {
+  // Pass 1: corte por número
+  let trimmed = history.length > cap ? history.slice(-cap) : [...history];
+
+  // Pass 2: corte por tokens — drop do começo até caber. Soma do fim pro
+  // começo, mantendo as mensagens mais recentes (mais relevantes).
+  let totalTokens = trimmed.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+  while (trimmed.length > 0 && totalTokens > tokenCap) {
+    const dropped = trimmed.shift()!;
+    totalTokens -= estimateTokens(dropped.content);
   }
-  let trimmed = history.slice(-cap);
+
+  // Garante que começa com role: 'user'
   while (trimmed.length > 0 && trimmed[0].role !== "user") {
     trimmed = trimmed.slice(1);
   }
@@ -158,6 +213,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<string> {
   const trimmedHistory = truncateHistory(
     opts.history,
     opts.maxHistoryMessages ?? DEFAULT_HISTORY_CAP,
+    opts.maxHistoryTokens ?? DEFAULT_HISTORY_TOKEN_CAP,
   );
   const effectiveOpts: AgentLoopOptions = { ...opts, history: trimmedHistory };
 
@@ -215,7 +271,12 @@ function markLastBlockForCache(messages: Anthropic.MessageParam[]): void {
 }
 
 async function runClaude(opts: AgentLoopOptions, model: string): Promise<string> {
-  const anthropic = new Anthropic({ apiKey: opts.apiKey });
+  // SDK Anthropic faz retry built-in em 429/5xx/network errors com backoff
+  // exponencial. Defaults: 2 retries. Setamos explícito pra deixar claro.
+  const anthropic = new Anthropic({
+    apiKey: opts.apiKey,
+    maxRetries: DEFAULT_HTTP_RETRIES,
+  });
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   // Cache breakpoint #2: último item de tools. Faz o array inteiro de tools
@@ -254,7 +315,7 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<string>
     const response = await anthropic.messages.create(
       {
         model,
-        max_tokens: 400,
+        max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
         system: systemBlocks,
         tools: claudeTools,
         messages,
@@ -290,6 +351,17 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<string>
       continue;
     }
 
+    // Qualquer stop_reason fora de end_turn/tool_use cai aqui (max_tokens,
+    // pause_turn, refusal, etc). Log estruturado pra distinguir do fallback
+    // genérico quando o webhook decidir handoff.
+    console.warn(JSON.stringify({
+      level: "warn",
+      evt: "agent_unexpected_stop",
+      provider: "claude",
+      model,
+      stop_reason: response.stop_reason,
+      iterations_left: iterations,
+    }));
     break;
   }
 
@@ -317,14 +389,35 @@ async function runOpenAICompatible(
 
   let iterations = MAX_ITERATIONS;
   while (iterations-- > 0) {
-    const resp = await fetch(`${baseUrl}/chat/completions`, {
+    const resp = await fetchWithRetry(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${opts.apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model, messages, tools: openaiTools, tool_choice: "auto" }),
+      body: JSON.stringify({
+        model,
+        messages,
+        tools: openaiTools,
+        tool_choice: "auto",
+        max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+      }),
       signal: timeoutSignal(timeoutMs),
+    }, {
+      retries: DEFAULT_HTTP_RETRIES,
+      baseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
+      onRetry: ({ attempt, status, error, delayMs }) => {
+        console.warn(JSON.stringify({
+          level: "warn",
+          evt: "agent_http_retry",
+          provider: opts.provider,
+          model,
+          attempt,
+          status: status ?? null,
+          error: error ? String(error) : null,
+          delay_ms: Math.round(delayMs),
+        }));
+      },
     });
 
     if (!resp.ok) {
@@ -350,6 +443,18 @@ async function runOpenAICompatible(
     messages.push(msg);
 
     if (choice.finish_reason === "stop" || !msg.tool_calls?.length) {
+      // finish_reason="length" (cortado por max_tokens) também chega aqui;
+      // a resposta volta truncada. Logamos pra rastreio sem mudar comportamento.
+      if (choice.finish_reason && choice.finish_reason !== "stop" && choice.finish_reason !== "tool_calls") {
+        console.warn(JSON.stringify({
+          level: "warn",
+          evt: "agent_unexpected_stop",
+          provider: opts.provider,
+          model,
+          finish_reason: choice.finish_reason,
+          iterations_left: iterations,
+        }));
+      }
       return msg.content ?? "";
     }
 
@@ -384,9 +489,72 @@ function toGeminiSchema(schema: any): any {
   return result;
 }
 
+// Faz uma chamada Gemini com retry e fallback de modelo:
+// 1) Tenta `primaryModel` com fetchWithRetry (3 tentativas, 5xx/429/network).
+// 2) Se ainda assim retornar 5xx (Flash saturado regionalmente), tenta UMA vez
+//    o `fallbackModel` (Pro, com cota TPM separada).
+// Retorna a Response da chamada que funcionou. Se ambos falham, lança a última.
+async function callGeminiWithFallback(
+  body: string,
+  apiKey: string,
+  primaryModel: string,
+  fallbackModel: string | null,
+  timeoutMs: number,
+): Promise<{ resp: Response; modelUsed: string }> {
+  const buildUrl = (m: string) =>
+    `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`;
+
+  const callOnce = (m: string, retries: number) =>
+    fetchWithRetry(buildUrl(m), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal: timeoutSignal(timeoutMs),
+    }, {
+      retries,
+      baseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
+      onRetry: ({ attempt, status, error, delayMs }) => {
+        console.warn(JSON.stringify({
+          level: "warn",
+          evt: "agent_http_retry",
+          provider: "gemini",
+          model: m,
+          attempt,
+          status: status ?? null,
+          error: error ? String(error) : null,
+          delay_ms: Math.round(delayMs),
+        }));
+      },
+    });
+
+  // Primary: 1 retry (2 tentativas total) — se Flash falha 2x seguidas, a
+  // sobrecarga regional persiste; mais espera só atrasa a resposta ao cliente.
+  // Cai pro fallback logo. Pro tem cota TPM separada e geralmente está livre.
+  const primary = await callOnce(primaryModel, 1);
+  if (primary.ok || primary.status < 500 || !fallbackModel) {
+    return { resp: primary, modelUsed: primaryModel };
+  }
+
+  // Primary esgotou retries em 5xx — log e tenta fallback.
+  const primaryErr = await primary.text().catch(() => "<unreadable>");
+  console.warn(JSON.stringify({
+    level: "warn",
+    evt: "agent_model_fallback",
+    provider: "gemini",
+    from_model: primaryModel,
+    to_model: fallbackModel,
+    primary_status: primary.status,
+    primary_body_snippet: primaryErr.slice(0, 200),
+  }));
+
+  // Fallback: usa retries default (Pro tem cota maior, retry vale mais).
+  const fallback = await callOnce(fallbackModel, DEFAULT_HTTP_RETRIES);
+  return { resp: fallback, modelUsed: fallbackModel };
+}
+
 async function runGemini(opts: AgentLoopOptions, model: string): Promise<string> {
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${opts.apiKey}`;
+  const fallbackModel = FALLBACK_MODELS.gemini;
 
   const functionDeclarations = opts.tools.map((t) => ({
     name: t.name,
@@ -402,19 +570,27 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<string>
     { role: "user", parts: [{ text: opts.userMessage }] },
   ];
 
+  let activeModel = model;
   let iterations = MAX_ITERATIONS;
   while (iterations-- > 0) {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: opts.systemPrompt }] },
-        contents,
-        tools: [{ functionDeclarations }],
-        tool_config: { function_calling_config: { mode: "AUTO" } },
-      }),
-      signal: timeoutSignal(timeoutMs),
+    const body = JSON.stringify({
+      system_instruction: { parts: [{ text: opts.systemPrompt }] },
+      contents,
+      tools: [{ functionDeclarations }],
+      tool_config: { function_calling_config: { mode: "AUTO" } },
+      generationConfig: { maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
     });
+
+    const { resp, modelUsed } = await callGeminiWithFallback(
+      body,
+      opts.apiKey,
+      activeModel,
+      fallbackModel,
+      timeoutMs,
+    );
+    // Sticky fallback: se caímos no Pro nessa iteração do loop de tools,
+    // mantemos Pro nas próximas (cota Flash continua saturada, não adianta voltar).
+    activeModel = modelUsed;
 
     if (!resp.ok) {
       const err = await resp.text();
@@ -442,6 +618,18 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<string>
     contents.push({ role: "model", parts });
 
     if (funcCalls.length === 0) {
+      // finishReason="MAX_TOKENS" indica resposta truncada — Gemini retorna
+      // texto parcial mesmo assim. Log pra rastreio.
+      if (candidate.finishReason && candidate.finishReason !== "STOP") {
+        console.warn(JSON.stringify({
+          level: "warn",
+          evt: "agent_unexpected_stop",
+          provider: "gemini",
+          model: activeModel,
+          finish_reason: candidate.finishReason,
+          iterations_left: iterations,
+        }));
+      }
       return textParts.map((p: any) => p.text).join("") || "";
     }
 

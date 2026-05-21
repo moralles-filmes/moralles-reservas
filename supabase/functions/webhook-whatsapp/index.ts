@@ -608,6 +608,155 @@ async function commitGiftbackVoucher(args: {
   });
 }
 
+// ─── System prompt: bloco de horários por salão ────────────────────────────────
+//
+// Monta a representação textual dos horários de reserva a partir de
+// `halls` + `hall_schedules` — fonte autoritativa desde a migration 030.
+// O prompt do agente usava `business_hours` (DEPRECATED, fallback pré-030).
+// Unidades novas (Ren Sushi etc.) só preenchem `hall_schedules`, então o
+// bloco "Horário de funcionamento" ia vazio e o LLM caía em handoff por
+// "não tenho a informação aqui". Retorna `null` se não há halls ativos com
+// schedules — caller usa fallback de business_hours nesse caso.
+const DAY_ABBR = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+
+// Agrupa dias 0-6 que compartilham o mesmo padrão de janelas. Dias
+// consecutivos viram range ("seg a sex"), 2 não-consecutivos viram "sex e
+// sáb", e o caso geral fica solto ("dom"). Dias sem janela são ignorados.
+function formatDaysByPattern(daysByPattern: Map<string, number[]>): { pattern: string; days: number[] }[] {
+  return [...daysByPattern.entries()].map(([pattern, days]) => ({
+    pattern,
+    days: [...days].sort((a, b) => a - b),
+  }));
+}
+
+function describeDays(days: number[]): string {
+  if (days.length === 0) return "";
+  if (days.length === 1) return DAY_ABBR[days[0]];
+  // Verifica se é range consecutivo (ex: 1,2,3,4,5 → "seg a sex").
+  const isRange = days.every((d, i) => i === 0 || d === days[i - 1] + 1);
+  if (isRange && days.length >= 3) {
+    return `${DAY_ABBR[days[0]]} a ${DAY_ABBR[days[days.length - 1]]}`;
+  }
+  if (days.length === 2) return `${DAY_ABBR[days[0]]} e ${DAY_ABBR[days[1]]}`;
+  // 3+ dias não-consecutivos: lista com vírgulas e "e" no último.
+  const labels = days.map((d) => DAY_ABBR[d]);
+  return `${labels.slice(0, -1).join(", ")} e ${labels[labels.length - 1]}`;
+}
+
+interface WindowRow {
+  open_time: string;
+  close_time: string;
+  min_advance_minutes: number | null;
+  discount_percent: number | null;
+  charge_enabled: boolean;
+  charge_amount_cents: number | null;
+}
+
+function formatWindowAnnotations(w: WindowRow): string {
+  const parts: string[] = [];
+  if (w.discount_percent && w.discount_percent > 0) parts.push(`${w.discount_percent}% off`);
+  if (w.min_advance_minutes && w.min_advance_minutes > 0) {
+    const h = Math.floor(w.min_advance_minutes / 60);
+    const m = w.min_advance_minutes % 60;
+    const label = h > 0 && m > 0 ? `${h}h${m}min` : h > 0 ? `${h}h` : `${m}min`;
+    parts.push(`antecedência mínima ${label}`);
+  }
+  if (w.charge_enabled && w.charge_amount_cents && w.charge_amount_cents > 0) {
+    const brl = (w.charge_amount_cents / 100).toFixed(2).replace(".", ",");
+    parts.push(`caução R$ ${brl}/mesa`);
+  }
+  return parts.length > 0 ? ` (${parts.join("; ")})` : "";
+}
+
+function formatWindowsForDayDetailed(rows: WindowRow[]): string {
+  const sorted = [...rows].sort((a, b) => a.open_time.localeCompare(b.open_time));
+  return sorted
+    .map((r) => `${r.open_time.slice(0, 5)} às ${r.close_time.slice(0, 5)}${formatWindowAnnotations(r)}`)
+    .join("; ");
+}
+
+async function buildHallSchedulesBlock(unitId: string): Promise<string | null> {
+  const { data: halls } = await supabase
+    .from("halls")
+    .select("id, name, description, allow_empty_seat, sort_order")
+    .eq("unit_id", unitId)
+    .eq("active", true)
+    .order("sort_order", { ascending: true })
+    .order("name", { ascending: true });
+
+  if (!halls || halls.length === 0) return null;
+
+  const hallIds = halls.map((h: { id: string }) => h.id);
+  const { data: schedules } = await supabase
+    .from("hall_schedules")
+    .select("hall_id, day_of_week, open_time, close_time, min_advance_minutes, discount_percent, charge_enabled, charge_amount_cents")
+    .in("hall_id", hallIds);
+
+  if (!schedules || schedules.length === 0) return null;
+
+  // Capacidade por hall: agrega min(min_capacity) e max(max_capacity) das
+  // mesas ativas. Pra responder "tem mesa pra X pessoas?" sem chamar tool.
+  const { data: tables } = await supabase
+    .from("tables")
+    .select("hall_id, min_capacity, max_capacity")
+    .in("hall_id", hallIds)
+    .eq("active", true);
+
+  const capByHall = new Map<string, { min: number; max: number }>();
+  for (const t of (tables ?? []) as { hall_id: string | null; min_capacity: number; max_capacity: number }[]) {
+    if (!t.hall_id) continue;
+    const cur = capByHall.get(t.hall_id);
+    if (!cur) {
+      capByHall.set(t.hall_id, { min: t.min_capacity, max: t.max_capacity });
+    } else {
+      cur.min = Math.min(cur.min, t.min_capacity);
+      cur.max = Math.max(cur.max, t.max_capacity);
+    }
+  }
+
+  const hallLines: string[] = [];
+  for (const hall of halls as { id: string; name: string; description: string | null; allow_empty_seat: boolean }[]) {
+    const byDay = new Map<number, WindowRow[]>();
+    for (const s of schedules as (WindowRow & { hall_id: string; day_of_week: number })[]) {
+      if (s.hall_id !== hall.id) continue;
+      const arr = byDay.get(s.day_of_week) ?? [];
+      arr.push(s);
+      byDay.set(s.day_of_week, arr);
+    }
+
+    if (byDay.size === 0) continue;
+
+    // Header do hall: nome + descrição + capacidade.
+    const headerParts: string[] = [];
+    if (hall.description) headerParts.push(hall.description);
+    const cap = capByHall.get(hall.id);
+    if (cap) {
+      const effectiveMin = hall.allow_empty_seat ? Math.max(1, cap.min - 1) : cap.min;
+      headerParts.push(`mesas para ${effectiveMin}${effectiveMin === cap.max ? "" : ` a ${cap.max}`} pessoas`);
+    }
+    const headerSuffix = headerParts.length > 0 ? ` — ${headerParts.join("; ")}` : "";
+
+    // Padrão de janelas (detalhado) → dias que compartilham.
+    const patternToDays = new Map<string, number[]>();
+    for (const [dow, rows] of byDay.entries()) {
+      const pattern = formatWindowsForDayDetailed(rows);
+      const days = patternToDays.get(pattern) ?? [];
+      days.push(dow);
+      patternToDays.set(pattern, days);
+    }
+
+    const groups = formatDaysByPattern(patternToDays);
+    groups.sort((a, b) => a.days[0] - b.days[0]);
+
+    const lines = groups.map((g) => `  - ${describeDays(g.days)}: ${g.pattern}`);
+    hallLines.push(`- ${hall.name}${headerSuffix}:\n${lines.join("\n")}`);
+  }
+
+  if (hallLines.length === 0) return null;
+
+  return `Horários de reservas por salão:\n${hallLines.join("\n")}`;
+}
+
 // ─── Main handler ──────────────────────────────────────────────────────────────
 
 const RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -882,18 +1031,21 @@ serve(async (req) => {
       return new Response("ok");
     }
 
-    // Load organization_id + address + name for the unit.
+    // Load organization_id + address + name + slug + ticket médio for the unit.
     // `name` é usado como fallback do system prompt do agente — `settings.restaurant_name`
     // virou legado, UI nova escreve em `units.name`. Sem o fallback real, o LLM
     // recebe "Você é o assistente do Restaurante" e papagueia esse nome.
+    // `slug` + `price_range_max` alimentam o bloco "Sobre o restaurante" no prompt.
     const { data: unitRow } = await supabase
       .from("units")
-      .select("organization_id, address, name")
+      .select("organization_id, address, name, slug, price_range_max")
       .eq("id", unitId)
       .maybeSingle();
     const organizationId: string = unitRow?.organization_id ?? "";
     const unitAddress: string = unitRow?.address ?? "";
     const unitName: string = (unitRow?.name as string | undefined) ?? "";
+    const unitSlug: string | null = (unitRow?.slug as string | undefined) ?? null;
+    const unitTicketMax: number | null = (unitRow?.price_range_max as number | null | undefined) ?? null;
 
     // Upsert customer (org-scoped). Preserva nome real cadastrado via reserva;
     // só preenche/atualiza quando o customer é novo ou ainda tem placeholder
@@ -1171,9 +1323,41 @@ serve(async (req) => {
     // role: "human" — do ponto de vista do modelo isso é "assistant" (resposta
     // que veio do nosso lado). Sem o remap, Anthropic rejeita o request com
     // "Unexpected role 'human'".
+    //
+    // Além do remap, aplicamos 2 filtros antes de enviar pro LLM (mensagens
+    // continuam no banco e na UI — filtro só afeta o contexto do agente):
+    //
+    // (a) Lixo de retentativa: respostas hardcoded de erro/handoff/empty
+    //     response não agregam contexto pro modelo e ainda viciam o LLM em
+    //     achar que "problema técnico" é o padrão. Lista pequena e EXATA pra
+    //     evitar falso positivo (cliente reclamando de "problema técnico" do
+    //     restaurante NÃO pode ser filtrado).
+    //
+    // (b) Janela temporal: mensagens com timestamp > 72h atrás raramente são
+    //     relevantes pro pedido atual. Cortar reduz input tokens e melhora
+    //     latência. Sem timestamp (legado pré-backfill) → mantém.
+    const HARDCODED_AGENT_NOISE = new Set<string>([
+      "Tive um instante de instabilidade aqui. Já chamei alguém da equipe pra te responder. Em breve um humano assume.",
+      "Desculpa, não consegui montar uma resposta agora. Pode reformular ou aguardar um instante?",
+      "Desculpe, não consegui processar sua solicitação. Tente novamente.",
+    ]);
+    const HISTORY_WINDOW_MS = 72 * 60 * 60 * 1000;
+    const cutoffMs = Date.now() - HISTORY_WINDOW_MS;
+
     const history: Array<{ role: "user" | "assistant"; content: string }> = (conv.messages || [])
       // deno-lint-ignore no-explicit-any
-      .filter((m: any) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant" || m.role === "human"))
+      .filter((m: any) => {
+        if (!m || typeof m.content !== "string") return false;
+        if (m.role !== "user" && m.role !== "assistant" && m.role !== "human") return false;
+        if (HARDCODED_AGENT_NOISE.has(m.content.trim())) return false;
+        // Janela temporal: descarta só quando o timestamp É válido E antigo.
+        // Mensagem sem timestamp (legado) ou com timestamp inválido → mantém.
+        if (m.timestamp) {
+          const t = new Date(m.timestamp).getTime();
+          if (Number.isFinite(t) && t < cutoffMs) return false;
+        }
+        return true;
+      })
       // deno-lint-ignore no-explicit-any
       .map((m: any) => ({
         role: m.role === "human" ? ("assistant" as const) : (m.role as "user" | "assistant"),
@@ -1256,17 +1440,24 @@ serve(async (req) => {
       (settingsMap["restaurant_name"] as string) || unitName || "nosso restaurante";
     const customPrompt = (settingsMap["ai_system_prompt"] as string) ?? "";
 
-    // Business hours (unit-scoped)
-    const { data: hoursRows } = await supabase
-      .from("business_hours")
-      .select("day_of_week, open_time, close_time, is_closed")
-      .eq("unit_id", unitId)
-      .order("day_of_week");
+    // Horários de reserva — fonte primária é `halls + hall_schedules` (migration
+    // 030+). `business_hours` é DEPRECATED, mas mantido como fallback pra units
+    // antigas que ainda não tenham hall configurado.
+    const hallScheduleBlock = await buildHallSchedulesBlock(unitId);
 
-    const dayNames = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
-    const hoursLines = (hoursRows ?? []).map((h: { day_of_week: number; open_time: string; close_time: string; is_closed: boolean }) =>
-      h.is_closed ? `- ${dayNames[h.day_of_week]}: fechado` : `- ${dayNames[h.day_of_week]}: ${h.open_time?.slice(0, 5)} às ${h.close_time?.slice(0, 5)}`
-    );
+    let hoursLines: string[] = [];
+    if (!hallScheduleBlock) {
+      const { data: hoursRows } = await supabase
+        .from("business_hours")
+        .select("day_of_week, open_time, close_time, is_closed")
+        .eq("unit_id", unitId)
+        .order("day_of_week");
+
+      const dayNames = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+      hoursLines = (hoursRows ?? []).map((h: { day_of_week: number; open_time: string; close_time: string; is_closed: boolean }) =>
+        h.is_closed ? `- ${dayNames[h.day_of_week]}: fechado` : `- ${dayNames[h.day_of_week]}: ${h.open_time?.slice(0, 5)} às ${h.close_time?.slice(0, 5)}`
+      );
+    }
 
     const today = new Date().toISOString().slice(0, 10);
     const horizon = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -1355,11 +1546,113 @@ serve(async (req) => {
       },
     );
 
+    // ── Cardápio digital ativo (link público pra mandar ao cliente quando perguntar)
+    let menuPublicUrl: string | null = null;
+    if (unitSlug) {
+      const { data: activeMenu } = await supabase
+        .from("menus")
+        .select("slug")
+        .eq("unit_id", unitId)
+        .eq("active", true)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (activeMenu?.slug) {
+        const appBaseUrl = Deno.env.get("APP_BASE_URL") ?? "https://reservas.moralles.com.br";
+        menuPublicUrl = `${appBaseUrl}/m/${activeMenu.slug}`;
+      }
+    }
+
+    // ── Regras Giftback ativas (resumo pro LLM saber o que existe sem inventar)
+    const { data: voucherRules } = await supabase
+      .from("voucher_rules")
+      .select("trigger_type, discount_percent, validity_days, min_rating, visits_required, days_window")
+      .eq("unit_id", unitId)
+      .eq("active", true);
+
+    const giftbackLines: string[] = [];
+    for (const r of (voucherRules ?? []) as {
+      trigger_type: string;
+      discount_percent: number;
+      validity_days: number;
+      min_rating: number | null;
+      visits_required: number | null;
+      days_window: number | null;
+    }[]) {
+      const validity = `validade ${r.validity_days} ${r.validity_days === 1 ? "dia" : "dias"}`;
+      if (r.trigger_type === "birthday") {
+        giftbackLines.push(`- Aniversariantes ganham voucher de ${r.discount_percent}% (${validity}) — emitido automaticamente no dia.`);
+      } else if (r.trigger_type === "after_rating" && r.min_rating != null) {
+        giftbackLines.push(`- Avaliação de ${r.min_rating}★ ou mais gera voucher de ${r.discount_percent}% (${validity}) — emitido automaticamente após a avaliação.`);
+      } else if (r.trigger_type === "frequency" && r.visits_required != null) {
+        const win = r.days_window ? ` em até ${r.days_window} dias` : "";
+        giftbackLines.push(`- A cada ${r.visits_required} visitas${win} o cliente ganha voucher de ${r.discount_percent}% (${validity}).`);
+      } else if (r.trigger_type === "manual") {
+        giftbackLines.push(`- Há voucher manual de ${r.discount_percent}% (${validity}) — emitido só pela equipe, NÃO ofereça automaticamente.`);
+      }
+    }
+
+    // ── Vouchers ativos deste cliente
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const { data: customerVouchers } = await supabase
+      .from("vouchers")
+      .select("code, discount_percent, expires_at")
+      .eq("unit_id", unitId)
+      .eq("customer_id", customer.id)
+      .eq("status", "active")
+      .gte("expires_at", todayIso)
+      .order("expires_at", { ascending: true });
+
+    const customerVoucherLines: string[] = ((customerVouchers ?? []) as {
+      code: string;
+      discount_percent: number;
+      expires_at: string;
+    }[]).map((v) => {
+      const [y, m, d] = v.expires_at.slice(0, 10).split("-");
+      return `- Voucher *${v.code}*: ${v.discount_percent}% de desconto, válido até ${d}/${m}/${y}.`;
+    });
+
+    // ── Aniversário do cliente — hoje? nos próximos 7 dias?
+    let birthdayLine: string | null = null;
+    if (customer.birthday) {
+      const bday = String(customer.birthday); // YYYY-MM-DD
+      const bMM = bday.slice(5, 7);
+      const bDD = bday.slice(8, 10);
+      const now = new Date();
+      const todayMM = String(now.getMonth() + 1).padStart(2, "0");
+      const todayDD = String(now.getDate()).padStart(2, "0");
+      if (bMM === todayMM && bDD === todayDD) {
+        birthdayLine = `- HOJE é aniversário do cliente. Parabenize com calor logo no início da resposta, antes de tratar do pedido dele.`;
+      } else {
+        // Próximos 7 dias
+        const target = new Date(`${now.getUTCFullYear()}-${bMM}-${bDD}T12:00:00Z`);
+        if (target.getTime() < now.getTime()) {
+          target.setUTCFullYear(target.getUTCFullYear() + 1);
+        }
+        const diffDays = Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays > 0 && diffDays <= 7) {
+          birthdayLine = `- Aniversário do cliente em ${diffDays} dia(s) (${bDD}/${bMM}). Se ele tocar no assunto, parabenize antecipadamente; senão, não force.`;
+        }
+      }
+    }
+
     const prefsLines: string[] = [];
     if (customer.allergies) prefsLines.push(`- Alergias: ${customer.allergies}`);
     if (customer.dietary_restrictions) prefsLines.push(`- Restrições alimentares: ${customer.dietary_restrictions}`);
     if (customer.vip_notes) prefsLines.push(`- VIP: ${customer.vip_notes}`);
     if (customer.preferred_table_location) prefsLines.push(`- Mesa preferida: ${customer.preferred_table_location === "internal" ? "interna" : "externa"}`);
+    if (birthdayLine) prefsLines.push(birthdayLine);
+    for (const v of customerVoucherLines) prefsLines.push(v);
+
+    // ── Bloco "Sobre o restaurante" (ticket médio + link do cardápio digital)
+    const restaurantInfoLines: string[] = [];
+    if (unitTicketMax && unitTicketMax > 0) {
+      const brl = unitTicketMax.toFixed(2).replace(".", ",");
+      restaurantInfoLines.push(`- Ticket médio: até R$ ${brl} por pessoa (referência, não inclui bebidas/sobremesa).`);
+    }
+    if (menuPublicUrl) {
+      restaurantInfoLines.push(`- Cardápio digital (envie o link quando o cliente pedir o cardápio): ${menuPublicUrl}`);
+    }
 
     const todayBR = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
 
@@ -1383,7 +1676,10 @@ serve(async (req) => {
       `2. Se check_availability retornar available: false, NUNCA crie a reserva. Comunique ao cliente que não há mesa naquele horário e ofereça alternativas (outro horário do mesmo dia ou outra data próxima). Use o campo 'reason' para entender o motivo (closed_day, outside_hours, no_capacity, all_blocked).\n` +
       `3. Se create_reservation retornar success: false, informe o cliente o motivo — NÃO tente criar a reserva novamente sem fazer nova consulta com data/horário diferente.\n` +
       `4. Para alterar uma reserva existente (update_reservation) que mude data ou horário, chame check_availability antes para validar o novo slot.\n` +
-      `5. Se o cliente perguntar sobre uma data presente na lista 'Datas com bloqueio de reservas' (abaixo), NUNCA confirme disponibilidade de reserva. Na MESMA resposta (sem esperar o cliente perguntar de novo), deixe DUAS coisas claras juntas: (a) naquela data não estamos aceitando reservas pelo motivo entre parênteses; (b) o restaurante ESTARÁ ABERTO normalmente e o atendimento será por ORDEM DE CHEGADA — o cliente pode ir presencialmente. Exceção: se o título do bloqueio indicar evento privado, casa fechada para terceiros, manutenção ou similar, NÃO diga "venha por ordem de chegada" — nesse caso explique que naquela data não estamos atendendo o público geral. NUNCA diga que o restaurante está "fechado" — bloqueio de reserva ≠ fechamento. Use "não estamos aceitando reservas", "agenda de reservas indisponível" ou "estamos com bloqueio de reservas" pra falar da agenda; "aberto normalmente, atendimento por ordem de chegada" pra explicar o funcionamento. Se for bloqueio só de um salão (sufixo "— só no salão X"), ofereça reserva em OUTRO salão na mesma data. Para 'Datas especiais' marcadas como 'fechado', aí sim diga "estamos fechados" (é fechamento real). NÃO chame check_availability nem create_reservation para datas dessa lista — a resposta é direta com base no contexto.` +
+      `5. Se o cliente perguntar sobre uma data presente na lista 'Datas com bloqueio de reservas' (abaixo), NUNCA confirme disponibilidade de reserva. Na MESMA resposta (sem esperar o cliente perguntar de novo), deixe DUAS coisas claras juntas: (a) naquela data não estamos aceitando reservas pelo motivo entre parênteses; (b) o restaurante ESTARÁ ABERTO normalmente e o atendimento será por ORDEM DE CHEGADA — o cliente pode ir presencialmente. Exceção: se o título do bloqueio indicar evento privado, casa fechada para terceiros, manutenção ou similar, NÃO diga "venha por ordem de chegada" — nesse caso explique que naquela data não estamos atendendo o público geral. NUNCA diga que o restaurante está "fechado" — bloqueio de reserva ≠ fechamento. Use "não estamos aceitando reservas", "agenda de reservas indisponível" ou "estamos com bloqueio de reservas" pra falar da agenda; "aberto normalmente, atendimento por ordem de chegada" pra explicar o funcionamento. Se for bloqueio só de um salão (sufixo "— só no salão X"), ofereça reserva em OUTRO salão na mesma data. Para 'Datas especiais' marcadas como 'fechado', aí sim diga "estamos fechados" (é fechamento real). NÃO chame check_availability nem create_reservation para datas dessa lista — a resposta é direta com base no contexto.\n` +
+      `6. Os "Horários de reservas por salão" (abaixo) são a fonte completa do que aceitamos. Se o cliente perguntar sobre o horário, ou pedir reserva em horário/dia que não aparece nas janelas listadas, responda DIRETAMENTE com base nessa lista — sem chamar check_availability, sem pedir handoff humano e sem dizer "não tenho essa informação". Indique a janela mais próxima do mesmo dia (ou do dia seguinte, se o dia pedido estiver totalmente fora). Se houver mais de um salão e algum atender no horário pedido, ofereça esse salão. Só chame check_availability quando o horário pedido CAI dentro de alguma janela listada e você precisa confirmar mesa para uma reserva concreta (data + hora + nº de pessoas). Cada janela pode ter anotações entre parênteses (% de desconto, antecedência mínima, caução). Mencione essas anotações quando relevantes pra resposta — sem inventar.\n` +
+      `7. Vouchers e Giftback: os vouchers ATIVOS deste cliente estão listados em "O que sabemos sobre este cliente" (se houver). Pode mencionar o código e a validade quando o cliente perguntar sobre desconto ou quando for relevante (ex: ao fechar uma reserva). NUNCA invente código de voucher, NUNCA prometa desconto fora das regras descritas em "Programa Giftback". Vouchers automáticos chegam ao cliente sozinhos (worker dispara via WhatsApp) — você NÃO emite voucher. Voucher de trigger "manual" só é emitido pela equipe, não ofereça por iniciativa.\n` +
+      `8. Aniversário: se "O que sabemos sobre este cliente" indicar que HOJE é o aniversário do cliente, parabenize logo no início da resposta antes de tratar do pedido — mesmo que o cliente esteja só perguntando algo trivial. Se for nos próximos dias, só mencione se o cliente trouxer o assunto.` +
       `\n\nFORMATAÇÃO DA RESPOSTA NO WHATSAPP:\n` +
       `- Negrito é *um único asterisco* (ex: *importante*). NUNCA use **dois asteriscos**, ### header ou markdown — WhatsApp mostra os símbolos literais.\n` +
       `- Itálico com _texto_ entre underlines. Tachado com ~texto~.\n` +
@@ -1392,9 +1688,15 @@ serve(async (req) => {
       `- Não use tabelas, blocos de código com \`\`\`, nem links no formato [texto](url) — WhatsApp não interpreta. Cole a URL direto.\n` +
       `- Emojis: máximo 1 ou 2 por mensagem, só quando agregam contexto. Sugestões: 📅 data, 🕐 horário, 📍 endereço, 🍽️ cardápio, ✅ confirmação, ❌ cancelamento, 🙏 agradecimento. Não exagere — mensagem cheia de emoji parece spam.` +
       (unitAddress ? `\n\nEndereço: ${unitAddress}` : "") +
-      (hoursLines.length ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}` : "") +
+      (restaurantInfoLines.length ? `\n\nSobre o restaurante:\n${restaurantInfoLines.join("\n")}` : "") +
+      (hallScheduleBlock
+        ? `\n\n${hallScheduleBlock}`
+        : hoursLines.length
+        ? `\n\nHorário de funcionamento:\n${hoursLines.join("\n")}`
+        : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
       (blockedLines.length ? `\n\nDatas com bloqueio de reservas nos próximos 60 dias (agenda indisponível, mas o restaurante pode estar funcionando):\n${blockedLines.join("\n")}` : "") +
+      (giftbackLines.length ? `\n\nPrograma Giftback (regras automáticas ativas):\n${giftbackLines.join("\n")}` : "") +
       (includeFaq && settingsMap["restaurant_menu"] ? `\n\nCardápio:\n${settingsMap["restaurant_menu"]}` : "") +
       (includeFaq && settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
       (includeFaq && settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +
