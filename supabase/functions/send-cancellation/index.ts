@@ -67,11 +67,14 @@ serve(async (req) => {
       });
     }
 
-    const { data: isMember } = await supabase.rpc("is_unit_member", {
-      p_user_id: user.id,
-      p_unit_id: reserva.unit_id,
-    });
-    if (!isMember) {
+    // platform_admin opera unidades alheias via pseudo-membership fabricada em
+    // useCurrentUnit.ts — backend tem que aceitar o paralelo, senão super-admin
+    // recebe 403 mesmo com a UI mostrando "Proprietário".
+    const [memberResult, adminResult] = await Promise.all([
+      supabase.rpc("is_unit_member", { p_user_id: user.id, p_unit_id: reserva.unit_id }),
+      supabase.rpc("is_platform_admin", { p_user_id: user.id }),
+    ]);
+    if (!memberResult.data && !adminResult.data) {
       return new Response(JSON.stringify({ error: "forbidden" }), {
         status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
 import type { Conversation, ConversationMessage } from "@/types/reserva";
@@ -12,7 +13,21 @@ export function useSendManualMessage(unitId: string) {
       const { data, error } = await supabase.functions.invoke("send-manual-message", {
         body: { conversation_id: conversationId, message },
       });
-      if (error) throw error;
+      if (error) {
+        // supabase-js v2 envolve qualquer non-2xx num FunctionsHttpError cuja .message é
+        // sempre "Edge Function returned a non-2xx status code" — body real fica em
+        // error.context.json(). Lemos pra surfar a mensagem útil ("conversa não está em
+        // atendimento humano", "telefone do cliente não encontrado", etc.) e anexamos o
+        // status pro onError decidir se precisa ressincronizar o cache.
+        if (error instanceof FunctionsHttpError) {
+          const body = (await error.context.json().catch(() => null)) as
+            | { error?: string; reason?: string }
+            | null;
+          const reason = body?.error ?? body?.reason ?? `HTTP ${error.context.status}`;
+          throw Object.assign(new Error(reason), { httpStatus: error.context.status });
+        }
+        throw error;
+      }
       if (!data?.success) throw new Error(data?.error ?? "Falha ao enviar mensagem");
     },
     onMutate: async ({ conversationId, message }) => {
@@ -36,9 +51,17 @@ export function useSendManualMessage(unitId: string) {
       }
       return { previous };
     },
-    onError: (_err, { conversationId }, context) => {
+    onError: (err, { conversationId }, context) => {
       if (context?.previous) {
         queryClient.setQueryData(["conversation-detail", conversationId], context.previous);
+      }
+      // 409 = backend rejeitou por status mismatch (conversa não está mais em mãos humanas).
+      // Cache local ficou stale — forçar refetch traz o status real do banco, esconde o
+      // input de envio e revela o botão "Assumir" condicional em Conversas.tsx.
+      const httpStatus = (err as { httpStatus?: number } | null)?.httpStatus;
+      if (httpStatus === 409) {
+        queryClient.invalidateQueries({ queryKey: ["conversation-detail", conversationId] });
+        queryClient.invalidateQueries({ queryKey: ["conversations", unitId] });
       }
     },
     onSettled: (_data, _err, { conversationId }) => {

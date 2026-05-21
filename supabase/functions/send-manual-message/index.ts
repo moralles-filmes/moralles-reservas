@@ -71,12 +71,14 @@ serve(async (req) => {
       });
     }
 
-    // Verify caller is a member of this unit
-    const { data: isMember } = await supabase.rpc("is_unit_member", {
-      p_user_id: user.id,
-      p_unit_id: conv.unit_id,
-    });
-    if (!isMember) {
+    // Verify caller is a member of this unit OR a platform admin.
+    // useCurrentUnit.ts fabrica pseudo-membership "owner" pra platform_admin operar
+    // unidades alheias na UI; sem o paralelo aqui, super-admin é bloqueado pelo backend.
+    const [memberResult, adminResult] = await Promise.all([
+      supabase.rpc("is_unit_member", { p_user_id: user.id, p_unit_id: conv.unit_id }),
+      supabase.rpc("is_platform_admin", { p_user_id: user.id }),
+    ]);
+    if (!memberResult.data && !adminResult.data) {
       return new Response(JSON.stringify({ error: "forbidden" }), {
         status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
