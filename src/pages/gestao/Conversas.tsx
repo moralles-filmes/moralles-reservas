@@ -12,6 +12,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  cn,
   formatDateBR,
   formatMessageTime,
   formatPhone,
@@ -20,7 +21,7 @@ import {
   humanDateLabel,
 } from "@/lib/utils";
 import { toast } from "sonner";
-import { MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2 } from "lucide-react";
+import { ArrowLeft, MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2 } from "lucide-react";
 import type {
   Conversation,
   ConversationMessage,
@@ -119,10 +120,12 @@ function ConversationDetail({
   conv,
   unitId,
   onUpdate,
+  onBack,
 }: {
   conv: Conversation;
   unitId: string;
   onUpdate: (updated: Conversation) => void;
+  onBack: () => void;
 }) {
   const [replyText, setReplyText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -232,11 +235,22 @@ function ConversationDetail({
       {/* Header */}
       <CardHeader className="py-3 px-4 border-b">
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div>
-            <CardTitle className="text-base">{getConversationDisplayName(current)}</CardTitle>
-            <p className="text-xs text-muted-foreground">
-              {formatPhone(current.customer?.phone || "")}
-            </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onBack}
+              className="lg:hidden -ml-2"
+              aria-label="Voltar para a lista"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <div>
+              <CardTitle className="text-base">{getConversationDisplayName(current)}</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                {formatPhone(current.customer?.phone || "")}
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Badge
@@ -375,9 +389,9 @@ export default function Conversas() {
           ))}
         </TabsList>
 
-        <div className="grid lg:grid-cols-[320px,1fr] gap-4 h-[calc(100vh-220px)]">
+        <div className="grid lg:grid-cols-[320px,1fr] gap-4 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]">
           {/* List */}
-          <Card className="flex flex-col overflow-hidden">
+          <Card className={cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
             <CardHeader className="py-3 px-4 border-b">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {conversations?.length || 0} conversa{conversations?.length !== 1 ? "s" : ""}
@@ -435,7 +449,7 @@ export default function Conversas() {
           </Card>
 
           {/* Detail */}
-          <Card className="flex flex-col overflow-hidden">
+          <Card className={cn("flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>
             {!selected ? (
               <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
                 <MessageCircle className="h-10 w-10 opacity-30" />
@@ -447,6 +461,7 @@ export default function Conversas() {
                 conv={selected}
                 unitId={unitId}
                 onUpdate={() => {}}
+                onBack={() => setSelectedId(null)}
               />
             )}
           </Card>
