@@ -1042,7 +1042,27 @@ serve(async (req) => {
       .eq("id", unitId)
       .maybeSingle();
     const organizationId: string = unitRow?.organization_id ?? "";
-    const unitAddress: string = unitRow?.address ?? "";
+    const addressJson = unitRow?.address as
+      | {
+          full?: string | null;
+          street?: string | null;
+          number?: string | null;
+          neighborhood?: string | null;
+          city?: string | null;
+          state?: string | null;
+        }
+      | null;
+    const unitAddress: string =
+      (typeof addressJson?.full === "string" && addressJson.full.trim()) ||
+      [
+        addressJson?.street,
+        addressJson?.number,
+        addressJson?.neighborhood,
+        addressJson?.city,
+        addressJson?.state,
+      ]
+        .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+        .join(", ");
     const unitName: string = (unitRow?.name as string | undefined) ?? "";
     const unitSlug: string | null = (unitRow?.slug as string | undefined) ?? null;
     const unitTicketMax: number | null = (unitRow?.price_range_max as number | null | undefined) ?? null;
