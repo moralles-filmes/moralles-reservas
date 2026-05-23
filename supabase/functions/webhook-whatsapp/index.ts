@@ -150,22 +150,57 @@ const agentTools: AgentTool[] = [
 
 // ─── Tool implementations (all unit-scoped) ───────────────────────────────────
 
-async function resolveHallId(unitId: string, hallName?: string): Promise<string | undefined> {
+async function resolveHallId(
+  unitId: string,
+  hallName?: string,
+  partySize?: number,
+): Promise<string | undefined> {
   if (!hallName?.trim()) return undefined;
-  const { data } = await supabase
+
+  const { data: matches } = await supabase
     .from("halls")
-    .select("id")
+    .select("id, allow_empty_seat")
     .eq("unit_id", unitId)
     .eq("active", true)
     .ilike("name", `%${hallName.trim()}%`)
-    .limit(1)
-    .maybeSingle();
-  return data?.id ?? undefined;
+    .order("sort_order", { ascending: true })
+    .order("name", { ascending: true });
+
+  const list = (matches ?? []) as { id: string; allow_empty_seat: boolean }[];
+  if (list.length === 0) return undefined;
+  if (list.length === 1) return list[0].id;
+
+  // 2+ matches: desambigua por partySize via capacidade das mesas ativas.
+  // Se exatamente um hall comporta partySize, escolhe esse. Senão devolve
+  // undefined e o core itera todos os halls em sort_order (mesmo
+  // comportamento de quando hall_name é vazio). Evita o bug em que o
+  // PostgREST escolhia um hall arbitrário entre nomes com prefixo comum
+  // (ex.: "Salão principal - até 4 pessoas" vs "Salão principal - 6 a 20").
+  if (partySize == null) return undefined;
+
+  const ids = list.map((h) => h.id);
+  const { data: tbls } = await supabase
+    .from("tables")
+    .select("hall_id, min_capacity, max_capacity")
+    .in("hall_id", ids)
+    .eq("active", true);
+
+  const tableRows = (tbls ?? []) as { hall_id: string; min_capacity: number; max_capacity: number }[];
+  const candidates = list.filter((h) =>
+    tableRows.some((t) => {
+      if (t.hall_id !== h.id) return false;
+      const lower = h.allow_empty_seat ? Math.max(1, t.min_capacity - 1) : t.min_capacity;
+      return partySize >= lower && partySize <= t.max_capacity;
+    }),
+  );
+
+  if (candidates.length === 1) return candidates[0].id;
+  return undefined;
 }
 
 // deno-lint-ignore no-explicit-any
 async function checkAvailability(date: string, time: string, partySize: number, unitId: string, hallName?: string): Promise<any> {
-  const hallId = await resolveHallId(unitId, hallName);
+  const hallId = await resolveHallId(unitId, hallName, partySize);
   const result = await checkAvailabilityCore(supabase, { unitId, hallId, date, time, partySize });
   if (!result.available) {
     return { available: false, reason: result.reason, message: result.message };
@@ -202,7 +237,7 @@ async function createReservation(params: {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 
-  const hallId = await resolveHallId(params.unit_id, params.hall_name);
+  const hallId = await resolveHallId(params.unit_id, params.hall_name, params.party_size);
   const result = await reserveSlot(supabase, {
     unitId: params.unit_id,
     hallId,
