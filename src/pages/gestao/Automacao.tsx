@@ -728,6 +728,7 @@ function PromptTab({ unitId }: { unitId: string }) {
   const [deliveryResponse, setDeliveryResponse] = useState("");
   const [restaurantExtraInfo, setRestaurantExtraInfo] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [aiContextExtra, setAiContextExtra] = useState("");
 
   const { data: settings } = useQuery({
     queryKey: ["settings", unitId],
@@ -747,6 +748,7 @@ function PromptTab({ unitId }: { unitId: string }) {
     setDeliveryResponse((map["delivery_response"] as string) ?? "");
     setRestaurantExtraInfo((map["restaurant_extra_info"] as string) ?? "");
     setSystemPrompt((map["ai_system_prompt"] as string) ?? "");
+    setAiContextExtra((map["ai_context_extra"] as string) ?? "");
   }, [settings]);
 
   const [isSavingAll, setIsSavingAll] = useState(false);
@@ -774,6 +776,7 @@ function PromptTab({ unitId }: { unitId: string }) {
         saveSetting.mutateAsync({ key: "delivery_response", value: deliveryResponse }),
         saveSetting.mutateAsync({ key: "restaurant_extra_info", value: restaurantExtraInfo }),
         saveSetting.mutateAsync({ key: "ai_system_prompt", value: systemPrompt }),
+        saveSetting.mutateAsync({ key: "ai_context_extra", value: aiContextExtra }),
       ]);
       toast.success("Configuração do agente salva.");
     } catch (err) {
@@ -851,6 +854,20 @@ function PromptTab({ unitId }: { unitId: string }) {
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">Complementa o comportamento padrão do agente. Use para regras específicas do seu negócio.</p>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Observações extras para o bot</Label>
+          <Textarea
+            rows={4}
+            value={aiContextExtra}
+            onChange={(e) => setAiContextExtra(e.target.value)}
+            placeholder="Ex: O rodízio funciona via tablet na mesa, sem precisar chamar garçom. Para grupos acima de 12 pessoas confirmamos pelo telefone após a reserva."
+            className="text-sm"
+          />
+          <p className="text-xs text-muted-foreground">
+            Use para informações úteis que o bot precisa saber para responder dúvidas frequentes — coisas que não cabem em cardápio, delivery ou outras informações.
+          </p>
         </div>
 
         <Button onClick={saveAll} disabled={isSavingAll || saveSetting.isPending}>

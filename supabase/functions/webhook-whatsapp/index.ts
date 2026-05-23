@@ -1488,7 +1488,7 @@ serve(async (req) => {
       .from("settings")
       .select("key, value")
       .eq("unit_id", unitId)
-      .in("key", ["restaurant_name", "ai_system_prompt", "agent_mode", "restaurant_menu", "delivery_response", "restaurant_extra_info"]);
+      .in("key", ["restaurant_name", "ai_system_prompt", "agent_mode", "restaurant_menu", "delivery_response", "restaurant_extra_info", "ai_context_extra"]);
 
     const settingsMap = Object.fromEntries((settings || []).map((s: { key: string; value: unknown }) => [s.key, s.value]));
     const restaurantName =
@@ -1756,6 +1756,9 @@ serve(async (req) => {
       (includeFaq && settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
       (includeFaq && settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +
       (prefsLines.length ? `\n\nO que sabemos sobre este cliente:\n${prefsLines.join("\n")}` : "") +
+      (settingsMap["ai_context_extra"]
+        ? `\n\nObservações sobre a unidade (use para responder dúvidas dos clientes):\n${settingsMap["ai_context_extra"]}`
+        : "") +
       (customPrompt ? `\n\nInstruções adicionais: ${customPrompt}` : "");
 
     const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 };
