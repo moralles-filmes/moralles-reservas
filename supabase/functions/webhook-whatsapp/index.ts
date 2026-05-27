@@ -123,7 +123,7 @@ const agentTools: AgentTool[] = [
   },
   {
     name: "cancel_reservation",
-    description: "Cancela uma reserva existente.",
+    description: "Cancela uma reserva existente. Requer o código da reserva. Se o cliente não informou o código, use get_reservation ou list_customer_reservations primeiro para obtê-lo.",
     parameters: {
       type: "object",
       properties: { reservation_code: { type: "string" } },
@@ -310,14 +310,19 @@ async function updateReservation(params: { reservation_code: string; date?: stri
 
 // deno-lint-ignore no-explicit-any
 async function cancelReservation(code: string): Promise<any> {
-  const { error } = await supabase
+  if (!code?.trim()) return { success: false, error: "Código da reserva não informado. Use get_reservation ou list_customer_reservations para obter o código." };
+  const upperCode = code.toUpperCase();
+  const { data, error } = await supabase
     .from("reservations")
     .update({ status: "cancelled", updated_at: new Date().toISOString() })
-    .eq("reservation_code", code.toUpperCase())
-    .in("status", ["confirmed", "pending"]);
+    .eq("reservation_code", upperCode)
+    .in("status", ["confirmed", "pending"])
+    .select("reservation_code")
+    .maybeSingle();
 
   if (error) return { success: false, error: error.message };
-  return { success: true, message: `Reserva #${code} cancelada.` };
+  if (!data) return { success: false, error: "Reserva não encontrada ou já cancelada." };
+  return { success: true, message: `Reserva #${upperCode} cancelada.` };
 }
 
 // deno-lint-ignore no-explicit-any
@@ -1070,10 +1075,11 @@ serve(async (req) => {
     // `name` é usado como fallback do system prompt do agente — `settings.restaurant_name`
     // virou legado, UI nova escreve em `units.name`. Sem o fallback real, o LLM
     // recebe "Você é o assistente do Restaurante" e papagueia esse nome.
-    // `slug` + `price_range_max` alimentam o bloco "Sobre o restaurante" no prompt.
+    // SELECT * garante que colunas novas ficam disponíveis sem mexer na query.
+    // O prompt builder (buildRestaurantInfoLines) é o gatekeeper do que entra no prompt.
     const { data: unitRow } = await supabase
       .from("units")
-      .select("organization_id, address, name, slug, price_range_max")
+      .select("*")
       .eq("id", unitId)
       .maybeSingle();
     const organizationId: string = unitRow?.organization_id ?? "";
@@ -1483,12 +1489,12 @@ serve(async (req) => {
       return new Response("ok");
     }
 
-    // Load restaurant name + system prompt (unit-scoped)
+    // Carrega TODOS os settings da unit — sem filtro por key.
+    // Prompt builder decide o que usar; settings novos ficam disponíveis sem mexer na query.
     const { data: settings } = await supabase
       .from("settings")
       .select("key, value")
-      .eq("unit_id", unitId)
-      .in("key", ["restaurant_name", "ai_system_prompt", "agent_mode", "restaurant_menu", "delivery_response", "restaurant_extra_info", "ai_context_extra"]);
+      .eq("unit_id", unitId);
 
     const settingsMap = Object.fromEntries((settings || []).map((s: { key: string; value: unknown }) => [s.key, s.value]));
     const restaurantName =
@@ -1699,15 +1705,23 @@ serve(async (req) => {
     if (birthdayLine) prefsLines.push(birthdayLine);
     for (const v of customerVoucherLines) prefsLines.push(v);
 
-    // ── Bloco "Sobre o restaurante" (ticket médio + link do cardápio digital)
-    const restaurantInfoLines: string[] = [];
-    if (unitTicketMax && unitTicketMax > 0) {
-      const brl = unitTicketMax.toFixed(2).replace(".", ",");
-      restaurantInfoLines.push(`- Ticket médio: até R$ ${brl} por pessoa (referência, não inclui bebidas/sobremesa).`);
-    }
-    if (menuPublicUrl) {
-      restaurantInfoLines.push(`- Cardápio digital (envie o link quando o cliente pedir o cardápio): ${menuPublicUrl}`);
-    }
+    // ── Registry centralizado: UMA linha por campo = prompt atualizado.
+    // Para adicionar campo novo: inclua uma entrada aqui. SELECT * na units
+    // e settings sem filtro garantem que o dado já está carregado.
+    const FACILITY_LABELS: Record<string, string> = { parking: "estacionamento", valet: "valet/manobrista", wifi: "Wi-Fi", accessible: "acessibilidade", air_conditioning: "ar-condicionado", kids_area: "espaço kids", pet_friendly: "aceita pets", live_music: "música ao vivo", smoking_area: "área fumante", outdoor_seating: "área externa" };
+    const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+    const restaurantInfoLines: string[] = [
+      str(unitRow?.description) && `- Descrição: ${str(unitRow?.description)}`,
+      Array.isArray(unitRow?.cuisine_types) && (unitRow.cuisine_types as string[]).filter(Boolean).length > 0 && `- Tipo de cozinha: ${(unitRow.cuisine_types as string[]).filter(Boolean).join(", ")}`,
+      str(unitRow?.opening_hours_text) && `- Horário de funcionamento: ${str(unitRow?.opening_hours_text)}`,
+      unitTicketMax && unitTicketMax > 0 && `- Ticket médio: até R$ ${unitTicketMax.toFixed(2).replace(".", ",")} por pessoa (referência, não inclui bebidas/sobremesa).`,
+      str(unitRow?.payment_methods) && `- Formas de pagamento: ${str(unitRow?.payment_methods)}`,
+      Array.isArray(unitRow?.facilities) && (unitRow.facilities as string[]).length > 0 && `- Facilidades: ${(unitRow.facilities as string[]).map((f: string) => FACILITY_LABELS[f] || f).join(", ")}`,
+      menuPublicUrl && `- Cardápio digital (envie o link quando o cliente pedir o cardápio): ${menuPublicUrl}`,
+      str(unitRow?.phone) && `- Telefone do restaurante: ${str(unitRow?.phone)}`,
+      str(unitRow?.instagram) && `- Instagram: @${str(unitRow?.instagram).replace(/^@/, "")}`,
+      str(unitRow?.website) && `- Site: ${str(unitRow?.website)}`,
+    ].filter((line): line is string => !!line);
 
     const todayBR = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
 
@@ -1732,9 +1746,21 @@ serve(async (req) => {
       `3. Se create_reservation retornar success: false, informe o cliente o motivo — NÃO tente criar a reserva novamente sem fazer nova consulta com data/horário diferente.\n` +
       `4. Para alterar uma reserva existente (update_reservation) que mude data ou horário, chame check_availability antes para validar o novo slot.\n` +
       `5. Se o cliente perguntar sobre uma data presente na lista 'Datas com bloqueio de reservas' (abaixo), NUNCA confirme disponibilidade de reserva. Na MESMA resposta (sem esperar o cliente perguntar de novo), deixe DUAS coisas claras juntas: (a) naquela data não estamos aceitando reservas pelo motivo entre parênteses; (b) o restaurante ESTARÁ ABERTO normalmente e o atendimento será por ORDEM DE CHEGADA — o cliente pode ir presencialmente. Exceção: se o título do bloqueio indicar evento privado, casa fechada para terceiros, manutenção ou similar, NÃO diga "venha por ordem de chegada" — nesse caso explique que naquela data não estamos atendendo o público geral. NUNCA diga que o restaurante está "fechado" — bloqueio de reserva ≠ fechamento. Use "não estamos aceitando reservas", "agenda de reservas indisponível" ou "estamos com bloqueio de reservas" pra falar da agenda; "aberto normalmente, atendimento por ordem de chegada" pra explicar o funcionamento. Se for bloqueio só de um salão (sufixo "— só no salão X"), ofereça reserva em OUTRO salão na mesma data. Para 'Datas especiais' marcadas como 'fechado', aí sim diga "estamos fechados" (é fechamento real). NÃO chame check_availability nem create_reservation para datas dessa lista — a resposta é direta com base no contexto.\n` +
-      `6. Os "Horários de reservas por salão" (abaixo) são a fonte completa do que aceitamos. Se o cliente perguntar sobre o horário, ou pedir reserva em horário/dia que não aparece nas janelas listadas, responda DIRETAMENTE com base nessa lista — sem chamar check_availability, sem pedir handoff humano e sem dizer "não tenho essa informação". Indique a janela mais próxima do mesmo dia (ou do dia seguinte, se o dia pedido estiver totalmente fora). Se houver mais de um salão e algum atender no horário pedido, ofereça esse salão. Só chame check_availability quando o horário pedido CAI dentro de alguma janela listada e você precisa confirmar mesa para uma reserva concreta (data + hora + nº de pessoas). Cada janela pode ter anotações entre parênteses (% de desconto, antecedência mínima, caução). Mencione essas anotações quando relevantes pra resposta — sem inventar.\n` +
+      `6. Os "Horários de reservas por salão" (abaixo) são as JANELAS em que aceitamos RESERVAS — podem ser diferentes do horário completo de funcionamento do restaurante (ex: aceitamos reservas das 19:00 às 19:30, mas o restaurante funciona até 23:00). Quando o cliente perguntar "qual o horário?", "que horas abre/fecha?" ou similar (pergunta ambígua), responda DUAS coisas na mesma mensagem: (a) o horário de funcionamento do restaurante, se estiver documentado em "Observações sobre a unidade" ou "Outras informações" abaixo; E (b) os horários em que aceitamos reservas (das janelas listadas). Se o horário de funcionamento NÃO estiver documentado no contexto, responda apenas os horários de reserva, deixando claro que são os horários em que aceitamos reservas — NUNCA diga "não tenho essa informação" nem peça handoff humano só por isso. Se o cliente perguntar especificamente "até que horas funciona o almoço/jantar?" e a informação não estiver nas observações, diga que pode confirmar os horários de reserva e sugira que entre em contato para saber o horário completo de funcionamento. Para reservas: se o horário pedido não aparece nas janelas listadas, indique a janela mais próxima do mesmo dia (ou do dia seguinte). Se houver mais de um salão e algum atender no horário pedido, ofereça esse salão. Só chame check_availability quando o horário pedido CAI dentro de alguma janela listada e você precisa confirmar mesa para uma reserva concreta (data + hora + nº de pessoas). Cada janela pode ter anotações entre parênteses (% de desconto, antecedência mínima, caução). Mencione essas anotações quando relevantes pra resposta — sem inventar.\n` +
       `7. Vouchers e Giftback: os vouchers ATIVOS deste cliente estão listados em "O que sabemos sobre este cliente" (se houver). Pode mencionar o código e a validade quando o cliente perguntar sobre desconto ou quando for relevante (ex: ao fechar uma reserva). NUNCA invente código de voucher, NUNCA prometa desconto fora das regras descritas em "Programa Giftback". Vouchers automáticos chegam ao cliente sozinhos (worker dispara via WhatsApp) — você NÃO emite voucher. Voucher de trigger "manual" só é emitido pela equipe, não ofereça por iniciativa.\n` +
-      `8. Aniversário: se "O que sabemos sobre este cliente" indicar que HOJE é o aniversário do cliente, parabenize logo no início da resposta antes de tratar do pedido — mesmo que o cliente esteja só perguntando algo trivial. Se for nos próximos dias, só mencione se o cliente trouxer o assunto.` +
+      `8. Aniversário: se "O que sabemos sobre este cliente" indicar que HOJE é o aniversário do cliente, parabenize logo no início da resposta antes de tratar do pedido — mesmo que o cliente esteja só perguntando algo trivial. Se for nos próximos dias, só mencione se o cliente trouxer o assunto.\n` +
+      `9. Cancelamento: quando o cliente pedir para cancelar (ex: "Cancelar", "Quero cancelar", "Cancela minha reserva"), siga este fluxo:\n` +
+      `   (a) Se o cliente informou o código da reserva, confirme data/horário/código com ele e, após confirmação, chame cancel_reservation com o código.\n` +
+      `   (b) Se o cliente NÃO informou o código, chame get_reservation sem parâmetros — o sistema usa o telefone do cliente automaticamente para localizar a reserva ativa mais recente.\n` +
+      `   (c) Se get_reservation retornar a reserva, confirme os detalhes com o cliente (data, horário, código) antes de cancelar.\n` +
+      `   (d) Se o cliente tiver múltiplas reservas ativas, chame list_customer_reservations para listar todas e pergunte qual deseja cancelar.\n` +
+      `   (e) Só chame cancel_reservation APÓS confirmação explícita do cliente. NUNCA chame cancel_reservation sem reservation_code — o parâmetro é obrigatório.\n` +
+      `   (f) Após cancelar, informe o código cancelado e pergunte se precisa de algo mais.\n` +
+      `10. Confirmação de reserva: quando você já apresentou os detalhes (data, horário, pessoas, salão) e pediu confirmação ao cliente, interprete como SIM qualquer resposta afirmativa em português — mesmo informal. Exemplos: "Isso", "Isso mesmo", "Sim", "Pode ser", "Tá bom", "Tá", "Pode", "Fechado", "Bora", "Confirma", "Manda ver", "Perfeito", "Exato", "Aham", "Claro", "Lógico", "Beleza". Ao receber confirmação:\n` +
+      `   (a) Chame check_availability com a data, horário e número de pessoas combinados — MESMO que você já tenha checado no turno anterior (a disponibilidade pode ter mudado entre mensagens).\n` +
+      `   (b) Se available: true, chame create_reservation imediatamente com todos os dados coletados (nome, data, hora, party_size, hall_name se definido).\n` +
+      `   (c) Se available: false, informe que a mesa não está mais disponível e ofereça alternativas.\n` +
+      `   (d) Após criar com sucesso, SEMPRE informe o código da reserva ao cliente.` +
       `\n\nFORMATAÇÃO DA RESPOSTA NO WHATSAPP:\n` +
       `- Negrito é *um único asterisco* (ex: *importante*). NUNCA use **dois asteriscos**, ### header ou markdown — WhatsApp mostra os símbolos literais.\n` +
       `- Itálico com _texto_ entre underlines. Tachado com ~texto~.\n` +
@@ -1752,6 +1778,18 @@ serve(async (req) => {
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
       (blockedLines.length ? `\n\nDatas com bloqueio de reservas nos próximos 60 dias (agenda indisponível, mas o restaurante pode estar funcionando):\n${blockedLines.join("\n")}` : "") +
       (giftbackLines.length ? `\n\nPrograma Giftback (regras automáticas ativas):\n${giftbackLines.join("\n")}` : "") +
+      (settingsMap["rules_and_conditions"] ? `\n\nPreços e condições do restaurante (use para responder sobre valores, regras e condições):\n${settingsMap["rules_and_conditions"]}` : "") +
+      ((() => {
+        const parts: string[] = [];
+        const bwd = settingsMap["booking_window_days"];
+        if (bwd) parts.push(`- Antecedência máxima para reservar: ${bwd} dias`);
+        const dur = settingsMap["reservation_duration_minutes"];
+        if (dur) parts.push(`- Duração padrão da reserva: ${dur} minutos`);
+        const tol = settingsMap["reservation_tolerance_minutes"];
+        if (tol) parts.push(`- Tolerância de atraso: ${tol} minutos`);
+        return parts.length ? `\n\nRegras de reserva:\n${parts.join("\n")}` : "";
+      })()) +
+      (settingsMap["additional_info"] ? `\n\nInformações adicionais:\n${settingsMap["additional_info"]}` : "") +
       (includeFaq && settingsMap["restaurant_menu"] ? `\n\nCardápio:\n${settingsMap["restaurant_menu"]}` : "") +
       (includeFaq && settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
       (includeFaq && settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +
