@@ -12,7 +12,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   cn,
   formatDateBR,
@@ -59,12 +58,13 @@ const STATUS_CLASSES: Record<ConversationStatus, string> = {
   resolved: "bg-muted text-muted-foreground border-border",
 };
 
-type TabValue = "all" | ConversationStatus;
+type FilterValue = "all" | ConversationStatus;
 
-const TABS: { value: TabValue; label: string }[] = [
-  { value: "all", label: "Todas" },
-  { value: "awaiting_human", label: "Aguardando humano" },
-  { value: "human_active", label: "Em atendimento" },
+const FILTER_CHIPS: { value: FilterValue; label: string; activeClasses: string; countStatus?: ConversationStatus }[] = [
+  { value: "all", label: "Todas", activeClasses: "bg-foreground text-background border-foreground" },
+  { value: "awaiting_human", label: "Aguardando", activeClasses: "bg-amber-100 text-amber-700 border-amber-300", countStatus: "awaiting_human" },
+  { value: "human_active", label: "Em atendimento", activeClasses: "bg-blue-100 text-blue-700 border-blue-300", countStatus: "human_active" },
+  { value: "ai_active", label: "IA ativa", activeClasses: "bg-emerald-100 text-emerald-700 border-emerald-300", countStatus: "ai_active" },
 ];
 
 // ── Message bubble ─────────────────────────────────────────────────────────────
@@ -362,15 +362,28 @@ export default function Conversas() {
   const unit = useCurrentUnit();
   const unitId = unit?.unit_id ?? "";
 
-  const [tab, setTab] = useState<TabValue>("all");
+  const [activeFilter, setActiveFilter] = useState<FilterValue>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search.trim(), 200);
 
-  const { data: conversations, isLoading, isError, refetch } = useConversations(
-    unitId,
-    tab === "all" ? "all" : tab
-  );
+  const { data: allConversations, isLoading, isError, refetch } = useConversations(unitId, "all");
+
+  const statusCounts = useMemo(() => {
+    if (!allConversations) return {} as Record<ConversationStatus, number>;
+    const counts: Record<string, number> = {};
+    for (const c of allConversations) {
+      const s = c.status ?? "ai_active";
+      counts[s] = (counts[s] ?? 0) + 1;
+    }
+    return counts as Record<ConversationStatus, number>;
+  }, [allConversations]);
+
+  const conversations = useMemo(() => {
+    if (!allConversations) return [] as Conversation[];
+    if (activeFilter === "all") return allConversations;
+    return allConversations.filter((c) => c.status === activeFilter);
+  }, [allConversations, activeFilter]);
 
   const selected = conversations?.find((c) => c.id === selectedId) ?? null;
 
@@ -417,97 +430,119 @@ export default function Conversas() {
         />
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => { setTab(v as TabValue); setSelectedId(null); }}>
-        <TabsList className="mb-4">
-          {TABS.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
-              {t.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-
-        <div className="grid lg:grid-cols-[320px,1fr] gap-4 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]">
-          {/* List */}
-          <Card className={cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
-            <CardHeader className="py-3 px-4 border-b">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                {hasActiveSearch && filteredCount !== totalCount
-                  ? `${filteredCount} de ${totalCount} conversa${totalCount !== 1 ? "s" : ""}`
-                  : `${totalCount} conversa${totalCount !== 1 ? "s" : ""}`}
-              </CardTitle>
-            </CardHeader>
-            <ScrollArea className="flex-1">
-              {isLoading ? (
-                <div className="p-3 space-y-2">
-                  {[1, 2, 3].map((i) => <Skeleton key={i} className="h-16 w-full" />)}
-                </div>
-              ) : isError ? (
-                <div className="p-6 text-center space-y-3">
-                  <p className="text-sm text-destructive">Erro ao carregar conversas.</p>
-                  <Button size="sm" variant="outline" onClick={() => refetch()}>
-                    Tentar de novo
-                  </Button>
-                </div>
-              ) : filteredCount === 0 ? (
-                <div className="p-6 text-center text-sm text-muted-foreground">
-                  {hasActiveSearch
-                    ? "Nenhuma conversa corresponde a essa busca."
-                    : "Nenhuma conversa nessa categoria."}
-                </div>
-              ) : (
-                filteredConversations.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => setSelectedId(c.id)}
-                    className={`w-full text-left px-4 py-3 border-b transition-colors hover:bg-muted/50 ${
-                      selectedId === c.id ? "bg-muted" : ""
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="font-medium text-sm truncate">
-                        {getConversationDisplayName(c)}
-                      </p>
-                      <Badge
-                        variant="outline"
-                        className={`text-[10px] shrink-0 ${STATUS_CLASSES[c.status ?? "ai_active"]}`}
-                      >
-                        {STATUS_LABEL[c.status ?? "ai_active"]}
-                      </Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {formatPhone(c.customer?.phone || "")}
-                    </p>
-                    {c.status === "awaiting_human" && c.handoff_reason && (
-                      <p className="text-xs text-amber-700 truncate mt-0.5">{c.handoff_reason}</p>
-                    )}
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {formatDateBR(c.last_message_at ?? c.updated_at)}
-                    </p>
-                  </button>
-                ))
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+        {FILTER_CHIPS.map((chip) => {
+          const isActive = activeFilter === chip.value;
+          const count = chip.countStatus ? (statusCounts[chip.countStatus] ?? 0) : null;
+          return (
+            <button
+              key={chip.value}
+              onClick={() => {
+                setActiveFilter(isActive && chip.value !== "all" ? "all" : chip.value);
+                setSelectedId(null);
+              }}
+              className={cn(
+                "inline-flex items-center gap-1.5 shrink-0 rounded-full px-3 py-1.5 text-xs font-medium border transition-colors",
+                isActive
+                  ? chip.activeClasses
+                  : "bg-background text-muted-foreground border-border hover:bg-muted"
               )}
-            </ScrollArea>
-          </Card>
+            >
+              {chip.label}
+              {count !== null && count > 0 && (
+                <span className={cn(
+                  "inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full px-1 text-[10px] font-semibold",
+                  isActive ? "bg-white/30" : "bg-muted"
+                )}>
+                  {count > 99 ? "99+" : count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
 
-          {/* Detail */}
-          <Card className={cn("flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>
-            {!selected ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
-                <MessageCircle className="h-10 w-10 opacity-30" />
-                <p className="text-sm">Selecione uma conversa para visualizar</p>
+      <div className="grid lg:grid-cols-[320px,1fr] gap-4 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]">
+        {/* List */}
+        <Card className={cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
+          <CardHeader className="py-3 px-4 border-b">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              {hasActiveSearch && filteredCount !== totalCount
+                ? `${filteredCount} de ${totalCount} conversa${totalCount !== 1 ? "s" : ""}`
+                : `${totalCount} conversa${totalCount !== 1 ? "s" : ""}`}
+            </CardTitle>
+          </CardHeader>
+          <ScrollArea className="flex-1">
+            {isLoading ? (
+              <div className="p-3 space-y-2">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-16 w-full" />)}
+              </div>
+            ) : isError ? (
+              <div className="p-6 text-center space-y-3">
+                <p className="text-sm text-destructive">Erro ao carregar conversas.</p>
+                <Button size="sm" variant="outline" onClick={() => refetch()}>
+                  Tentar de novo
+                </Button>
+              </div>
+            ) : filteredCount === 0 ? (
+              <div className="p-6 text-center text-sm text-muted-foreground">
+                {hasActiveSearch
+                  ? "Nenhuma conversa corresponde a essa busca."
+                  : "Nenhuma conversa nessa categoria."}
               </div>
             ) : (
-              <ConversationDetail
-                key={selected.id}
-                conv={selected}
-                unitId={unitId}
-                onUpdate={() => {}}
-                onBack={() => setSelectedId(null)}
-              />
+              filteredConversations.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setSelectedId(c.id)}
+                  className={`w-full text-left px-4 py-3 border-b transition-colors hover:bg-muted/50 ${
+                    selectedId === c.id ? "bg-muted" : ""
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-medium text-sm truncate">
+                      {getConversationDisplayName(c)}
+                    </p>
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] shrink-0 ${STATUS_CLASSES[c.status ?? "ai_active"]}`}
+                    >
+                      {STATUS_LABEL[c.status ?? "ai_active"]}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {formatPhone(c.customer?.phone || "")}
+                  </p>
+                  {c.status === "awaiting_human" && c.handoff_reason && (
+                    <p className="text-xs text-amber-700 truncate mt-0.5">{c.handoff_reason}</p>
+                  )}
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {formatDateBR(c.last_message_at ?? c.updated_at)}
+                  </p>
+                </button>
+              ))
             )}
-          </Card>
-        </div>
-      </Tabs>
+          </ScrollArea>
+        </Card>
+
+        {/* Detail */}
+        <Card className={cn("flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>
+          {!selected ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
+              <MessageCircle className="h-10 w-10 opacity-30" />
+              <p className="text-sm">Selecione uma conversa para visualizar</p>
+            </div>
+          ) : (
+            <ConversationDetail
+              key={selected.id}
+              conv={selected}
+              unitId={unitId}
+              onUpdate={() => {}}
+              onBack={() => setSelectedId(null)}
+            />
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
