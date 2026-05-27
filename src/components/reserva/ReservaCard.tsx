@@ -5,7 +5,7 @@ import { useUpdateReservaStatus } from "@/hooks/useReservas";
 import { formatDateBR, formatPhone } from "@/lib/utils";
 import type { Reserva } from "@/types/reserva";
 import { STATUS_COLORS, STATUS_LABELS } from "@/types/reserva";
-import { AlertTriangle, BellOff, CalendarIcon, Clock, Phone, Sparkles, Users } from "lucide-react";
+import { AlertTriangle, Banknote, BellOff, CalendarIcon, Clock, Phone, Sparkles, Users } from "lucide-react";
 import { toast } from "sonner";
 
 interface ReservaCardProps {
@@ -58,6 +58,30 @@ export function ReservaCard({ reserva, showActions = false, unitId }: ReservaCar
                 <Badge variant="outline" className="text-[10px] gap-1">
                   <BellOff className="h-2.5 w-2.5" />
                   Não contatar
+                </Badge>
+              )}
+              {reserva.payment_status === "paid" && (
+                <Badge variant="outline" className="text-[10px] gap-1 text-green-700 bg-green-50 border-green-200">
+                  <Banknote className="h-2.5 w-2.5" />
+                  Pago{reserva.payment_amount_cents ? ` R$ ${(reserva.payment_amount_cents / 100).toFixed(2).replace(".", ",")}` : ""}
+                </Badge>
+              )}
+              {reserva.payment_status === "pending_payment" && (
+                <Badge variant="outline" className="text-[10px] gap-1 text-amber-700 bg-amber-50 border-amber-200">
+                  <Banknote className="h-2.5 w-2.5" />
+                  Aguardando pgto
+                </Badge>
+              )}
+              {reserva.payment_status === "expired" && (
+                <Badge variant="outline" className="text-[10px] gap-1 text-destructive bg-destructive/10 border-destructive/20">
+                  <Banknote className="h-2.5 w-2.5" />
+                  Pgto expirado
+                </Badge>
+              )}
+              {reserva.payment_status === "refunded" && (
+                <Badge variant="outline" className="text-[10px] gap-1 text-muted-foreground bg-muted">
+                  <Banknote className="h-2.5 w-2.5" />
+                  Reembolsado
                 </Badge>
               )}
             </div>

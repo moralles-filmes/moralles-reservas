@@ -111,6 +111,11 @@ interface WizardInput {
   onSuccess?: (reserva: Reserva) => void;
 }
 
+export interface ChargeInfo {
+  enabled: true;
+  amountCents: number;
+}
+
 export interface WizardComputed {
   /** Slots disponíveis no dia escolhido (UNION dos halls). */
   timeSlots: TimeSlot[];
@@ -123,6 +128,8 @@ export interface WizardComputed {
   /** Se a data atual está totalmente bloqueada (bloqueio macro ou special_date
    *  fechado cobrindo a unit inteira). Não-null = step 1 inválido. */
   unavailableDate: UnavailableDate | null;
+  /** Caução do schedule que cobre hall+date+time selecionados. null = sem caução. */
+  chargeInfo: ChargeInfo | null;
 }
 
 export interface WizardActions {
@@ -234,7 +241,41 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
       input.specialDates,
     );
 
-    return { timeSlots, partition, customFieldsSorted, enabledExtras, unavailableDate };
+    let chargeInfo: ChargeInfo | null = null;
+    if (state.hall_id && state.date && state.time) {
+      const hall = input.halls.find((h) => h.id === state.hall_id);
+      if (hall) {
+        const dow = new Date(state.date + "T12:00:00").getDay();
+        const specialOverride = input.specialDates?.find(
+          (sd) =>
+            !sd.is_closed &&
+            (sd.hall_id === null || sd.hall_id === hall.id) &&
+            sd.date <= state.date &&
+            sd.end_date >= state.date &&
+            sd.charge_enabled === true &&
+            sd.charge_amount_cents != null &&
+            sd.charge_amount_cents > 0,
+        );
+        if (specialOverride) {
+          chargeInfo = { enabled: true, amountCents: specialOverride.charge_amount_cents! };
+        } else {
+          const schedule = hall.schedules.find(
+            (s) =>
+              s.day_of_week === dow &&
+              s.open_time <= state.time &&
+              s.close_time > state.time &&
+              s.charge_enabled === true &&
+              s.charge_amount_cents != null &&
+              s.charge_amount_cents > 0,
+          );
+          if (schedule) {
+            chargeInfo = { enabled: true, amountCents: schedule.charge_amount_cents! };
+          }
+        }
+      }
+    }
+
+    return { timeSlots, partition, customFieldsSorted, enabledExtras, unavailableDate, chargeInfo };
   }, [state.date, state.time, state.party_size, input.halls, input.customFields, input.widgetConfig, input.blockedDates, input.specialDates]);
 
   // ─── Validação por step ──────────────────────────────────────────────────
@@ -395,6 +436,14 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
         custom_field_values: Object.keys(customPayload).length ? customPayload : undefined,
         birthday,
       });
+
+      const withCheckout = reserva as typeof reserva & { checkoutUrl?: string };
+      if (withCheckout.checkoutUrl) {
+        toast.success("Redirecionando para pagamento...");
+        window.location.href = withCheckout.checkoutUrl;
+        return;
+      }
+
       setState((prev) => ({ ...prev, confirmed: reserva, step: "success" }));
       input.onSuccess?.(reserva);
       toast.success("Reserva criada! Você receberá a confirmação no WhatsApp.");

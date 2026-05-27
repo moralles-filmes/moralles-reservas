@@ -103,6 +103,13 @@ supabase secrets set SUPABASE_SERVICE_ROLE_KEY=...
 supabase secrets set INTERNAL_API_KEY=...        # auth dos workers (outbox, voucher, reminder, survey)
 supabase secrets set RESEND_API_KEY=re_...       # e-mail (opcional)
 supabase secrets set RESEND_FROM_EMAIL="Moralles Reservas <reservas@seudominio.com.br>"
+# Stripe (LEGADO — desde 2026-05-27, PREFERIR configurar pelo painel em
+# /platform/automacao → card "Stripe — Configuração da Plataforma". O painel
+# grava em platform_secrets no banco; as Edge Functions leem de lá primeiro,
+# com fallback para Deno.env. Manter esses secrets apenas se quiser override
+# de emergência que não dependa de DB.)
+supabase secrets set STRIPE_SECRET_KEY=sk_test_...   # secret key da plataforma
+supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_... # signing secret do webhook
 # IA (LEGADO — desde 2026-05-20 NÃO há fallback global pra unit sem chave.
 # Cada unidade DEVE cadastrar a própria chave em /platform/automacao/<slug>.
 # Mantidos só pra rollback emergencial — o webhook-whatsapp não lê mais essas
@@ -289,7 +296,7 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 | `unit_members` | Membros com papel — `user_id`, `unit_id`, `role`, `email` (denorm), `name` |
 | `platform_admins` | Admins internos do SaaS |
 | `customers` | `name`, `phone` unique por `organization_id`, `email`, `birthday` (date nullable, giftback) |
-| `reservations` | `unit_id`, `customer_id`, `table_id`, `date`, `time`, `party_size`, `status`, `reservation_code`, `source` (`web`/`whatsapp`), `custom_field_values` JSONB, `satisfaction_rating` (1-5), `satisfaction_comment` |
+| `reservations` | `unit_id`, `customer_id`, `table_id`, `date`, `time`, `party_size`, `status`, `reservation_code`, `source` (`web`/`whatsapp`), `custom_field_values` JSONB, `satisfaction_rating` (1-5), `satisfaction_comment`, `payment_status` (not_required/pending_payment/paid/failed/refunded/expired), `payment_amount_cents`, `stripe_checkout_session_id`, `stripe_payment_intent_id`, `payment_expires_at` |
 | `tables` | `unit_id`, `hall_id`, `number`, `min_capacity`/`max_capacity`, `active` |
 | `halls` | Salões — `unit_id`, `name`, `active`, `allow_empty_seat`, `sort_order` |
 | `hall_schedules` | Janelas horárias — `hall_id`, `day_of_week`, `open_time`/`close_time`, `slot_minutes`, `min_advance_minutes`, `discount_percent`, `charge_enabled`/`charge_amount_cents` |
@@ -316,6 +323,9 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 | `menu_banners` | Banners da unit (home 9:16 / content 1:1) |
 | `voucher_rules` | Regras Giftback — `trigger_type` (after_rating/manual/birthday/frequency), `discount_percent`, `validity_days`. CHECK `voucher_rules_min_rating_when_after_rating` (migration `20260517110000`) exige `min_rating NOT NULL` quando `trigger_type='after_rating'` |
 | `vouchers` | Instâncias — `code` (8 chars), `status` (active/used/expired/cancelled). UNIQUE PARTIAL `vouchers_unit_rule_customer_active_idx` (unit_id, rule_id, customer_id) WHERE status='active' + rule_id IS NOT NULL: garante no máximo 1 voucher ativo por (rule, customer) |
+| `platform_secrets` | Secrets globais da plataforma (Stripe, futuras integrações) — `key` unique, `value`, `last4`. FORCE RLS sem policies — só `service_role` acessa via `manage-platform-secrets`. Frontend nunca vê `value` |
+| `stripe_accounts` | Conta Stripe Connect por unit — `stripe_account_id`, `charges_enabled`, `payouts_enabled`, `onboarding_complete`. FORCE RLS sem policies |
+| `stripe_webhook_events` | Idempotência de webhooks Stripe — `stripe_event_id` unique, `event_type`, `reservation_id`. FORCE RLS |
 
 ### Modelo de reservas (availability.ts)
 
@@ -480,6 +490,19 @@ Auditoria 2026-05-27 fechou 2 bugs do agente WhatsApp: (1) cancelamento falhava 
 
 ---
 
+## Stripe — Pagamento de caução
+
+Integração Stripe Connect para cobrar caução nas reservas web. Cada unit conecta sua própria conta Stripe (Standard). Pagamento via Stripe Checkout (hosted — redirect, não embedded).
+
+- **Secrets Stripe vivem em `platform_secrets` (banco), não em env vars.** Edge Functions leem via `_shared/stripe-config.ts` (`getStripeSecretKey()`, `getStripeWebhookSecret()`). O helper tenta `platform_secrets` primeiro, fallback `Deno.env` pra compat. Cache em memória 5min. Platform admin configura pelo painel em `/platform/automacao` → card "Stripe — Configuração da Plataforma". A tabela `platform_secrets` tem FORCE RLS sem policies — **`value` NUNCA é retornado ao frontend**, só `last4`.
+- **`create-reservation` detecta caução automaticamente.** Após `reserveSlot()`, se o `hall_schedule` (ou `special_date` override) do horário escolhido tem `charge_enabled=true`, seta `payment_status='pending_payment'`, `payment_amount_cents`, `payment_expires_at = now()+15min` e retorna `requires_payment: true`. `useReservas.ts` então chama `create-checkout-session` e redireciona pro Stripe Checkout.
+- **Reservas via WhatsApp são isentas.** O agente não cobra caução — `source='whatsapp'` nunca entra no path de pagamento. Caução é mencionada informativamente no prompt do bot.
+- **Confirmação pós-pagamento.** `stripe-webhook` (evento `checkout.session.completed`) seta `payment_status='paid'` e insere na `notification_outbox` (mesmo path do trigger de confirmação web, que não dispara pra reservas com `payment_status='pending_payment'` porque o trigger original filtra `source != 'whatsapp'` mas NÃO re-filtra payment — o INSERT manual no webhook é necessário).
+- **Expiração.** Worker `expire-pending-payments` (cron `*/2 * * * *`) + `stripe-webhook` evento `checkout.session.expired` — ambos setam `payment_status='expired'`, `status='cancelled'`. Defesa dupla: Stripe expira a session no lado deles, cron pega o que escapar.
+- **`_shared/stripe-config.ts` precisa de redeploy** em todas as EFs que importam quando alterado: `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`.
+
+---
+
 ## Workers automáticos (pg_cron)
 
 Todos seguem o mesmo padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vault → `pg_net.http_post` chama Edge Function com `x-internal-key`.
@@ -491,14 +514,15 @@ Todos seguem o mesmo padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `inte
 | `process-reservation-reminders` | `0 13 * * *` UTC (10:00 BRT) | process-reservation-reminders | Lembrete D-0 — dia da reserva (settings.reminder_d1_enabled) |
 | `process-satisfaction-surveys` | `0 17 * * *` UTC (14:00 BRT) | process-satisfaction-surveys | Pesquisa D+1 (settings.survey_d1_enabled) |
 | `cleanup-orphan-assets` | `0 4 * * 0` UTC (domingo 01:00 BRT) | cleanup-orphan-assets | Apaga blobs órfãos do bucket `unit-assets` (grace 60min). RPC `list_orphan_unit_assets(integer)` cruza com units/menus/menu_pages/menu_banners. Invocável manual: `?dry=1` ou `{dry:true}` no body. Migration `20260520000000_storage_orphan_cleanup_cron.sql`. |
+| `expire-pending-payments` | `*/2 * * * *` | expire-pending-payments | Cancela reservas com `payment_status='pending_payment'` e `payment_expires_at < now()`. Seta `payment_status='expired'` + `status='cancelled'`. Migration `20260527140001_stripe_expire_payments_cron.sql`. |
 
 Workers lêem templates de `reservation_message_templates` (`customized=true`) ou usam defaults hardcoded. Idempotência via UNIQUE `(reservation_id, kind)` em `notifications_sent`.
 
 > Mantenha `defaultBody` em `useReservationTemplates.ts` em sincronia com `DEFAULT_*_BODY` nos workers (worker é a fonte autoritativa).
 
-> **`verify_jwt=false` obrigatório em `supabase/config.toml`** para todo worker chamado via `pg_cron` (`process-*`). O CLI a partir de 2.95 trocou o default para `true` — sem entrada explícita o gateway responde 401 "Missing authorization header" antes de chegar no `requireInternalAuth`, e o cron silencia (pg_net é fire-and-forget, ninguém alerta). Já documentadas no config: outbox, voucher-triggers, reservation-reminders, satisfaction-surveys, waitlist-entered, waitlist-feedback. Nova função worker = nova entrada antes do deploy.
+> **`verify_jwt=false` obrigatório em `supabase/config.toml`** para todo worker chamado via `pg_cron` (`process-*`). O CLI a partir de 2.95 trocou o default para `true` — sem entrada explícita o gateway responde 401 "Missing authorization header" antes de chegar no `requireInternalAuth`, e o cron silencia (pg_net é fire-and-forget, ninguém alerta). Já documentadas no config: outbox, voucher-triggers, reservation-reminders, satisfaction-surveys, waitlist-entered, waitlist-feedback, expire-pending-payments. Nova função worker = nova entrada antes do deploy.
 
-> **`verify_jwt=true` explícito em `supabase/config.toml`** para toda Edge Function de super-admin (`manage-channels`, `manage-members`, `manage-organizations`, `manage-ai-providers`, `whatsapp-health`). Defesa em profundidade junto à validação interna de `platform_admin`. Sem entrada o comportamento depende do default do CLI — explícito > implícito. Nova edge admin = nova entrada antes do deploy.
+> **`verify_jwt=true` explícito em `supabase/config.toml`** para toda Edge Function de super-admin (`manage-channels`, `manage-members`, `manage-organizations`, `manage-ai-providers`, `manage-stripe-accounts`, `manage-platform-secrets`, `whatsapp-health`). Defesa em profundidade junto à validação interna de `platform_admin`. Sem entrada o comportamento depende do default do CLI — explícito > implícito. Nova edge admin = nova entrada antes do deploy.
 
 ---
 

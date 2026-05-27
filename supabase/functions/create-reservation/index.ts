@@ -147,7 +147,7 @@ serve(async (req) => {
       partySize: body.party_size!,
       customerId: customer.id,
       notes: body.notes ?? null,
-      status: "pending", // mantém fluxo do portal: pending → confirmed via webhook
+      status: "pending",
     });
 
     // Persiste extras (custom_field_values) na reserva criada
@@ -158,6 +158,61 @@ serve(async (req) => {
         .eq("id", result.reservationId);
     }
 
+    // Detectar caução: buscar schedule do hall/data/hora selecionados
+    let requiresPayment = false;
+    let paymentAmountCents: number | null = null;
+
+    if (result.success && body.hall_id) {
+      const dateObj = new Date(`${body.date}T12:00:00`);
+      const dow = dateObj.getDay();
+
+      // Checar special_date override primeiro
+      const { data: specialRow } = await supabase
+        .from("special_dates")
+        .select("charge_enabled, charge_amount_cents")
+        .eq("unit_id", unitId)
+        .lte("date", body.date!)
+        .gte("end_date", body.date!)
+        .eq("is_closed", false)
+        .eq("charge_enabled", true)
+        .or(`hall_id.is.null,hall_id.eq.${body.hall_id}`)
+        .limit(1)
+        .maybeSingle();
+
+      if (specialRow?.charge_enabled && specialRow.charge_amount_cents > 0) {
+        paymentAmountCents = specialRow.charge_amount_cents;
+      } else {
+        // Checar hall_schedule
+        const { data: schedRow } = await supabase
+          .from("hall_schedules")
+          .select("charge_enabled, charge_amount_cents, open_time, close_time")
+          .eq("hall_id", body.hall_id)
+          .eq("day_of_week", dow)
+          .eq("charge_enabled", true)
+          .lte("open_time", body.time!)
+          .gt("close_time", body.time!)
+          .limit(1)
+          .maybeSingle();
+
+        if (schedRow?.charge_enabled && schedRow.charge_amount_cents > 0) {
+          paymentAmountCents = schedRow.charge_amount_cents;
+        }
+      }
+
+      if (paymentAmountCents && paymentAmountCents > 0) {
+        requiresPayment = true;
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        await supabase
+          .from("reservations")
+          .update({
+            payment_status: "pending_payment",
+            payment_amount_cents: paymentAmountCents,
+            payment_expires_at: expiresAt,
+          })
+          .eq("id", result.reservationId);
+      }
+    }
+
     jsonLog("info", {
       requestId,
       evt: "create_reservation_attempt",
@@ -165,6 +220,7 @@ serve(async (req) => {
       phone: sanitizePhone(phone),
       success: result.success,
       reason: result.success ? undefined : result.reason,
+      requires_payment: requiresPayment,
     });
 
     if (!result.success) {
@@ -180,13 +236,15 @@ serve(async (req) => {
       reservation_id: result.reservationId,
       reservation_code: result.reservationCode,
       table_id: result.tableId,
+      requires_payment: requiresPayment,
+      payment_amount_cents: paymentAmountCents,
       customer: {
         id: customer.id,
         name: customer.name,
         phone: customer.phone,
         email: customer.email,
       },
-      message: "Reserva criada.",
+      message: requiresPayment ? "Reserva criada. Pagamento pendente." : "Reserva criada.",
     }, 200);
   } catch (err) {
     jsonLog("error", { requestId, evt: "create_reservation_error", err: String(err) });

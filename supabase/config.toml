@@ -59,3 +59,23 @@ verify_jwt = true
 
 [functions.manage-ai-providers]
 verify_jwt = true
+
+# Stripe: secrets da plataforma (super-admin)
+[functions.manage-platform-secrets]
+verify_jwt = true
+
+# Stripe: CRUD da conta Connect (super-admin)
+[functions.manage-stripe-accounts]
+verify_jwt = true
+
+# Stripe: cria Checkout Session (público, sem JWT)
+[functions.create-checkout-session]
+verify_jwt = false
+
+# Stripe: webhook handler (assinatura Stripe, sem JWT)
+[functions.stripe-webhook]
+verify_jwt = false
+
+# Worker: cancela reservas com pagamento expirado (pg_cron)
+[functions.expire-pending-payments]
+verify_jwt = false

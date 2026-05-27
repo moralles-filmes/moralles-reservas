@@ -1,4 +1,4 @@
-import { Pencil, CalendarDays, Users, Clock, SquareStack } from "lucide-react";
+import { Pencil, CalendarDays, Users, Clock, SquareStack, Banknote } from "lucide-react";
 import { formatDateBR } from "@/lib/utils";
 import { useReservaWizardContext } from "./useReservaWizard";
 
@@ -12,7 +12,7 @@ interface WizardSummaryProps {
  * (e opcionalmente o salão) com botão "Editar" que volta pro step 1.
  */
 export function WizardSummary({ includeHall = false }: WizardSummaryProps) {
-  const { state, input, actions } = useReservaWizardContext();
+  const { state, input, computed, actions } = useReservaWizardContext();
   const hall = input.halls.find((h) => h.id === state.hall_id);
 
   return (
@@ -41,6 +41,12 @@ export function WizardSummary({ includeHall = false }: WizardSummaryProps) {
             <span className="inline-flex items-center gap-1">
               <Clock className="h-3.5 w-3.5 text-primary" />
               {state.time}
+            </span>
+          )}
+          {computed.chargeInfo && (
+            <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
+              <Banknote className="h-3.5 w-3.5" />
+              Caução R$ {(computed.chargeInfo.amountCents / 100).toFixed(2).replace(".", ",")}
             </span>
           )}
         </div>

@@ -279,6 +279,10 @@ export interface PublicHallSchedule {
   min_advance_minutes: number;
   /** % de desconto no horário. 0/null = sem desconto. */
   discount_percent?: number | null;
+  /** Caução habilitada neste horário. */
+  charge_enabled?: boolean;
+  /** Valor da caução em centavos. Presente quando `charge_enabled=true`. */
+  charge_amount_cents?: number | null;
 }
 
 /** Hall público (vindo das RPCs `get_unit_public_full` / `get_widget_public`). */
@@ -305,6 +309,8 @@ export interface PublicSpecialDate {
   is_closed: boolean;
   open_time: string | null;
   close_time: string | null;
+  charge_enabled?: boolean;
+  charge_amount_cents?: number | null;
 }
 
 /** Bloqueio macro (table_blocks com `table_id IS NULL`) exposto pela RPC pública.
@@ -445,6 +451,10 @@ export interface Reserva {
   satisfaction_rating?: number | null;
   satisfaction_at?: string | null;
   applied_discount_percent?: number | null;
+  payment_status?: "not_required" | "pending_payment" | "paid" | "failed" | "refunded" | "expired" | null;
+  payment_amount_cents?: number | null;
+  stripe_checkout_session_id?: string | null;
+  stripe_payment_intent_id?: string | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;

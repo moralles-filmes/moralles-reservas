@@ -11,7 +11,7 @@ import { useReservaWizardContext } from "./useReservaWizard";
  * envolvido pelo container do widget (em WidgetPortal).
  */
 export function WizardFooter() {
-  const { state, actions, isSubmitting } = useReservaWizardContext();
+  const { state, computed, actions, isSubmitting } = useReservaWizardContext();
 
   if (state.step === "success") return null;
 
@@ -41,7 +41,11 @@ export function WizardFooter() {
           disabled={isSubmitting}
           className="flex-1"
         >
-          {isSubmitting ? "Criando reserva..." : "Reservar"}
+          {isSubmitting
+            ? "Criando reserva..."
+            : computed.chargeInfo
+              ? "Continuar para pagamento"
+              : "Reservar"}
         </Button>
       ) : (
         <Button

@@ -1,3 +1,4 @@
+import { CreditCard } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -35,6 +36,20 @@ export function StepGuestInfo() {
   return (
     <div className="space-y-5">
       <WizardSummary includeHall />
+
+      {computed.chargeInfo && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 flex items-start gap-2.5 text-sm text-amber-900">
+          <CreditCard className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-medium">
+              Caução de R$ {(computed.chargeInfo.amountCents / 100).toFixed(2).replace(".", ",")}
+            </p>
+            <p className="text-xs text-amber-800 mt-0.5">
+              Após confirmar seus dados, você será redirecionado para o pagamento seguro via Stripe.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-4">
         <h3 className="text-sm font-semibold text-foreground">Seus dados</h3>

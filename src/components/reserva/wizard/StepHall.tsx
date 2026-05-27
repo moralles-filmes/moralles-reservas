@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, SquareStack, Check } from "lucide-react";
+import { ChevronDown, SquareStack, Check, Banknote } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useReservaWizardContext } from "./useReservaWizard";
 import { WizardSummary } from "./WizardSummary";
@@ -58,6 +58,7 @@ export function StepHall() {
                 onSelect={() => actions.set("hall_id", hall.id)}
                 partySize={state.party_size}
                 time={state.time}
+                date={state.date}
               />
             ))}
           </div>
@@ -119,13 +120,17 @@ function HallCard({
   onSelect,
   partySize,
   time,
+  date,
 }: {
   hall: PublicHall;
   selected: boolean;
   onSelect: () => void;
   partySize: number;
   time: string;
+  date: string;
 }) {
+  const chargeCents = getHallChargeCents(hall, date, time);
+
   return (
     <button
       type="button"
@@ -148,8 +153,16 @@ function HallCard({
               {hall.description}
             </div>
           )}
-          <div className="text-xs text-foreground/70">
-            {partySize} pessoa{partySize === 1 ? "" : "s"} às {time}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-foreground/70">
+            <span>
+              {partySize} pessoa{partySize === 1 ? "" : "s"} às {time}
+            </span>
+            {chargeCents != null && chargeCents > 0 && (
+              <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
+                <Banknote className="h-3 w-3" />
+                Caução R$ {(chargeCents / 100).toFixed(2).replace(".", ",")}
+              </span>
+            )}
           </div>
         </div>
         {selected && (
@@ -160,4 +173,19 @@ function HallCard({
       </div>
     </button>
   );
+}
+
+function getHallChargeCents(hall: PublicHall, date: string, time: string): number | null {
+  if (!date || !time) return null;
+  const dow = new Date(date + "T12:00:00").getDay();
+  const schedule = hall.schedules.find(
+    (s) =>
+      s.day_of_week === dow &&
+      s.open_time <= time &&
+      s.close_time > time &&
+      s.charge_enabled === true &&
+      s.charge_amount_cents != null &&
+      s.charge_amount_cents > 0,
+  );
+  return schedule?.charge_amount_cents ?? null;
 }

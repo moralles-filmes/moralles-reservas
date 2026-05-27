@@ -131,6 +131,8 @@ interface CreateReservationFnResponse {
   reservation_id?: string;
   reservation_code?: string;
   table_id?: string;
+  requires_payment?: boolean;
+  payment_amount_cents?: number | null;
   customer?: {
     id: string;
     name: string;
@@ -209,6 +211,8 @@ export function useCreateReserva() {
         status: "pending",
         notes: data.notes || null,
         reservation_code: response.reservation_code!,
+        payment_status: response.requires_payment ? "pending_payment" : undefined,
+        payment_amount_cents: response.payment_amount_cents ?? undefined,
         created_at: now,
         updated_at: now,
         customer: {
@@ -220,7 +224,24 @@ export function useCreateReserva() {
           created_at: now,
         },
       };
-      return reserva;
+
+      // If payment required, create Stripe Checkout Session and attach URL
+      if (response.requires_payment) {
+        try {
+          const { data: checkoutData, error: checkoutErr } =
+            await supabase.functions.invoke("create-checkout-session", {
+              body: { reservation_id: response.reservation_id },
+            });
+          if (!checkoutErr && checkoutData?.checkout_url) {
+            (reserva as Reserva & { checkoutUrl?: string }).checkoutUrl =
+              checkoutData.checkout_url;
+          }
+        } catch {
+          // Payment session failed — reservation still created, user can retry
+        }
+      }
+
+      return reserva as Reserva & { checkoutUrl?: string };
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["reservas", vars.unit_id] });

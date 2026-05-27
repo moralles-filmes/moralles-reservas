@@ -42,7 +42,9 @@ import {
   ArrowLeft,
   Bot,
   Check,
+  CreditCard,
   Copy,
+  ExternalLink,
   Info,
   KeyRound,
   MessageSquare,
@@ -65,6 +67,12 @@ import {
   useUpsertAiProviderKey,
   useDeleteAiProviderKey,
 } from "@/hooks/useAiProviderKeys";
+import {
+  useStripeAccount,
+  useConnectStripe,
+  useCheckStripeStatus,
+  useDisconnectStripe,
+} from "@/hooks/useStripeAccount";
 import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 import {
@@ -181,6 +189,10 @@ export default function Automacao() {
             <Activity className="h-4 w-4" />
             Diagnóstico
           </TabsTrigger>
+          <TabsTrigger value="payments" className="gap-2">
+            <CreditCard className="h-4 w-4" />
+            Pagamentos
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="channels">
@@ -197,6 +209,10 @@ export default function Automacao() {
 
         <TabsContent value="diagnostics">
           <DiagnosticsTab unitId={unitId} />
+        </TabsContent>
+
+        <TabsContent value="payments">
+          <PaymentsTab unitId={unitId} unitSlug={unitSlug ?? ""} />
         </TabsContent>
       </Tabs>
     </div>
@@ -873,6 +889,204 @@ function PromptTab({ unitId }: { unitId: string }) {
         <Button onClick={saveAll} disabled={isSavingAll || saveSetting.isPending}>
           {isSavingAll ? "Salvando…" : "Salvar configuração"}
         </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Tab: Pagamentos (Stripe Connect) ───────────────────────────────────────
+
+function PaymentsTab({ unitId, unitSlug }: { unitId: string; unitSlug: string }) {
+  const { data: account, isLoading } = useStripeAccount(unitId);
+  const connectStripe = useConnectStripe(unitId);
+  const checkStatus = useCheckStripeStatus(unitId);
+  const disconnectStripe = useDisconnectStripe(unitId);
+
+  if (isLoading) {
+    return <Skeleton className="h-32 w-full" />;
+  }
+
+  if (!account) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <CreditCard className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Pagamentos via Stripe</CardTitle>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Conecte a conta Stripe do restaurante para cobrar caução nas reservas online.
+            O dinheiro vai direto para a conta do restaurante.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-lg border border-dashed p-4 bg-muted/30 space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Nenhuma conta Stripe conectada. Clique abaixo para iniciar o processo de conexão.
+              O restaurante será redirecionado para o Stripe para completar o cadastro.
+            </p>
+            <Button
+              onClick={() => connectStripe.mutate({ unitSlug })}
+              disabled={connectStripe.isPending}
+              className="gap-2"
+            >
+              <ExternalLink className="h-4 w-4" />
+              {connectStripe.isPending ? "Redirecionando…" : "Conectar conta Stripe"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CreditCard className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Pagamentos via Stripe</CardTitle>
+          </div>
+          <Badge
+            variant="outline"
+            className={`text-[10px] gap-1 ${
+              account.charges_enabled
+                ? "text-green-700 bg-green-50 border-green-200"
+                : account.onboarding_complete
+                  ? "text-amber-700 bg-amber-50 border-amber-200"
+                  : "text-muted-foreground bg-muted"
+            }`}
+          >
+            {account.charges_enabled
+              ? "Ativo"
+              : account.onboarding_complete
+                ? "Pendente de ativação"
+                : "Onboarding incompleto"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+          <div>
+            <p className="text-xs text-muted-foreground">Nome</p>
+            <p className="font-medium">{account.display_name ?? "—"}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Cobranças</p>
+            <Badge
+              variant="outline"
+              className={`text-[10px] ${
+                account.charges_enabled
+                  ? "text-green-700 bg-green-50 border-green-200"
+                  : "text-muted-foreground bg-muted"
+              }`}
+            >
+              {account.charges_enabled ? "Habilitadas" : "Desabilitadas"}
+            </Badge>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Pagamentos</p>
+            <Badge
+              variant="outline"
+              className={`text-[10px] ${
+                account.payouts_enabled
+                  ? "text-green-700 bg-green-50 border-green-200"
+                  : "text-muted-foreground bg-muted"
+              }`}
+            >
+              {account.payouts_enabled ? "Habilitados" : "Desabilitados"}
+            </Badge>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Modo</p>
+            <p className="font-medium">{account.livemode ? "Produção" : "Teste"}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Conta</p>
+            <p className="font-mono text-xs">{account.stripe_account_id}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Conectada em</p>
+            <p className="text-xs">{new Date(account.created_at).toLocaleDateString("pt-BR")}</p>
+          </div>
+        </div>
+
+        {!account.onboarding_complete && (
+          <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-medium">Onboarding incompleto</p>
+              <p>
+                O restaurante precisa completar o cadastro no Stripe para começar a receber pagamentos.
+                Clique em "Retomar onboarding" para continuar.
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {!account.onboarding_complete && (
+            <Button
+              size="sm"
+              onClick={() => connectStripe.mutate({ unitSlug })}
+              disabled={connectStripe.isPending}
+              className="gap-1"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {connectStripe.isPending ? "Redirecionando…" : "Retomar onboarding"}
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => checkStatus.mutate()}
+            disabled={checkStatus.isPending}
+            className="gap-1"
+          >
+            <RefreshCw className={`h-3 w-3 ${checkStatus.isPending ? "animate-spin" : ""}`} />
+            Atualizar status
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive gap-1"
+              >
+                <Trash2 className="h-3 w-3" />
+                Desconectar
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Desconectar conta Stripe?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  As reservas com cobrança deixarão de aceitar pagamento online
+                  até uma nova conta ser conectada. Reservas já pagas não são afetadas.
+                  Esta ação não pode ser desfeita.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => disconnectStripe.mutate()}
+                  disabled={disconnectStripe.isPending}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  {disconnectStripe.isPending ? "Desconectando…" : "Desconectar"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+
+        <div className="flex items-start gap-2 text-[11px] text-muted-foreground rounded bg-background border border-dashed p-2">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <p>
+            Os pagamentos vão direto para a conta Stripe do restaurante.
+            Para configurar quais horários cobram caução, acesse Salões &gt; Horários no painel de gestão da unidade.
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

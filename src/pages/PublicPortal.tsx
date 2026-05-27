@@ -106,6 +106,7 @@ export default function PublicPortal() {
   const [searchParams] = useSearchParams();
   const mode: PortalMode = searchParams.get("mode") === "embed" ? "embed" : "full";
   const actionParam = searchParams.get("action");
+  const paymentParam = searchParams.get("payment");
   const autoOpen: AutoOpenAction =
     actionParam === "reservar" || actionParam === "waitlist" ? actionParam : null;
 
@@ -161,6 +162,41 @@ export default function PublicPortal() {
         <Link to="/">
           <Button variant="outline" size="sm">
             Página inicial
+          </Button>
+        </Link>
+      </div>
+    );
+  }
+
+  if (paymentParam === "success") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <CheckCircle2 className="h-16 w-16 text-green-600" />
+        <h1 className="text-2xl font-bold">Pagamento confirmado!</h1>
+        <p className="text-muted-foreground max-w-md">
+          Sua reserva está garantida. Você receberá a confirmação por WhatsApp em instantes.
+        </p>
+        <Link to={`/r/${slug}`}>
+          <Button variant="outline" size="sm">
+            Voltar para {unit?.name ?? "o restaurante"}
+          </Button>
+        </Link>
+      </div>
+    );
+  }
+
+  if (paymentParam === "cancelled") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <CreditCard className="h-16 w-16 text-amber-600" />
+        <h1 className="text-2xl font-bold">Pagamento não concluído</h1>
+        <p className="text-muted-foreground max-w-md">
+          Sua reserva será cancelada automaticamente se o pagamento não for concluído nos próximos minutos.
+          Você pode tentar novamente fazendo uma nova reserva.
+        </p>
+        <Link to={`/r/${slug}`}>
+          <Button variant="outline" size="sm">
+            Voltar para {unit?.name ?? "o restaurante"}
           </Button>
         </Link>
       </div>
