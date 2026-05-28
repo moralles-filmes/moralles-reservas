@@ -153,10 +153,12 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...
 
 /platform                    → Painel Plataforma (só platform_admin)
   ├── /empresas
-  └── /automacao/:unitSlug   → 4 abas: WhatsApp + IA + Instruções + Diagnóstico
+  ├── /automacao/:unitSlug   → 4 abas: WhatsApp + IA + Instruções + Diagnóstico
+  ├── /billing               → Dashboard de cobranças (KPIs, lista orgs, filtros)
+  └── /billing/:organizationId → Detalhe billing da org (customer, subscription, faturas, overrides)
 ```
 
-> **Automação é exclusiva do super-admin (platform_admin).** Edge Functions `manage-channels` e `manage-ai-providers` validam `platform_admin` no JWT.
+> **Automação e Billing são exclusivos do super-admin (platform_admin).** Edge Functions `manage-channels`, `manage-ai-providers` e `manage-billing` validam `platform_admin` no JWT.
 
 ---
 
@@ -326,6 +328,13 @@ organizations (1 cliente SaaS, ex. "Grupo Moralles")
 | `platform_secrets` | Secrets globais da plataforma (Stripe, futuras integrações) — `key` unique, `value`, `last4`. FORCE RLS sem policies — só `service_role` acessa via `manage-platform-secrets`. Frontend nunca vê `value` |
 | `stripe_accounts` | Conta Stripe Connect por unit — `stripe_account_id`, `charges_enabled`, `payouts_enabled`, `onboarding_complete`. FORCE RLS sem policies |
 | `stripe_webhook_events` | Idempotência de webhooks Stripe — `stripe_event_id` unique, `event_type`, `reservation_id`. FORCE RLS |
+| `billing_customers` | 1:1 com organization — `stripe_customer_id` (conta principal, não Connect). FORCE RLS sem policies |
+| `billing_plans` | Planos de mensalidade — `slug`, `amount_cents`, `stripe_price_id_card/boleto/pix`. RLS: authenticated lê ativos, platform_admin CRUD |
+| `billing_subscriptions` | Assinatura recorrente por org — `stripe_subscription_id`, `status`, `payment_method`. FORCE RLS |
+| `billing_invoices` | Faturas — `stripe_invoice_id`, `status`, `hosted_invoice_url`, `due_date`. FORCE RLS |
+| `billing_events` | Idempotência de webhooks Stripe de billing (separada de `stripe_webhook_events`). FORCE RLS |
+| `billing_access_overrides` | Overrides manuais de acesso — `grant_access`, `block_access`, `extend_trial`. RLS: platform_admin |
+| `billing_notifications` | Log de notificações de billing enviadas. FORCE RLS |
 
 ### Modelo de reservas (availability.ts)
 
@@ -499,7 +508,25 @@ Integração Stripe Connect para cobrar caução nas reservas web. Cada unit con
 - **Reservas via WhatsApp são isentas.** O agente não cobra caução — `source='whatsapp'` nunca entra no path de pagamento. Caução é mencionada informativamente no prompt do bot.
 - **Confirmação pós-pagamento.** `stripe-webhook` (evento `checkout.session.completed`) seta `payment_status='paid'` e insere na `notification_outbox` (mesmo path do trigger de confirmação web, que não dispara pra reservas com `payment_status='pending_payment'` porque o trigger original filtra `source != 'whatsapp'` mas NÃO re-filtra payment — o INSERT manual no webhook é necessário).
 - **Expiração.** Worker `expire-pending-payments` (cron `*/2 * * * *`) + `stripe-webhook` evento `checkout.session.expired` — ambos setam `payment_status='expired'`, `status='cancelled'`. Defesa dupla: Stripe expira a session no lado deles, cron pega o que escapar.
-- **`_shared/stripe-config.ts` precisa de redeploy** em todas as EFs que importam quando alterado: `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`.
+- **`_shared/stripe-config.ts` precisa de redeploy** em todas as EFs que importam quando alterado: `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`.
+
+---
+
+## Billing — Mensalidades da plataforma
+
+Módulo de cobrança recorrente das organizations (clientes do SaaS). Usa a **conta principal Stripe da plataforma** (não Connected Account, não `transfer_data`). Completamente separado da caução de reservas.
+
+- **Billing é por organization, não por unit.** `billing_customers` é 1:1 com `organizations`. Uma org com 5 unidades paga 1 mensalidade.
+- **`organizations.billing_status`** é a coluna autoritativa para o BillingGuard no frontend e para checks server-side em `create-reservation` e `webhook-whatsapp`. Valores: `active`, `trialing`, `pending_payment`, `past_due`, `grace_period`, `blocked`, `canceled`, `manual_override`, `suspended`. Default `'active'` — orgs existentes não são bloqueadas.
+- **BillingGuard** ([src/components/BillingGuard.tsx](src/components/BillingGuard.tsx)) lê `organizations.billing_status` via Supabase client (RLS `org_member_read` já permite). Integrado dentro de `GestaoGuard` e `OperacionalGuard` — não bloqueia `/platform/*`. Platform admin bypassa totalmente.
+- **`billing_events` é SEPARADA de `stripe_webhook_events`.** Billing events usam `billing_events` para idempotência; reservation events continuam usando `stripe_webhook_events`. No `stripe-webhook/index.ts`, billing events são roteados ANTES do check de `stripe_webhook_events` — se `BILLING_EVENT_TYPES.has(eventType)`, processa e retorna sem tocar nas tabelas de reserva.
+- **`_shared/stripe-billing.ts`** é o helper compartilhado para Stripe Billing (raw `fetch` + `URLSearchParams`, sem SDK). Usado por `manage-billing` e workers de billing. Não confundir com `_shared/stripe-config.ts` (resolve secrets) — billing usa `getStripeSecretKey()` de lá.
+- **`manage-billing` Edge Function** tem 17 actions (CRUD plans, orgs, customers, subscriptions, invoices, overrides, block/unblock, trial, sync). Exige `platform_admin`. `verify_jwt=true`.
+- **Política comercial default:** trial 14 dias, grace 7 dias pós-vencimento, bloqueio D+8. Implementada nos workers `process-billing-overdue` (escalação) e `process-billing-reminders` (lembretes D-3, D0, D+2, D+5, bloqueio). Alterar via constantes nos workers.
+- **Desbloqueio automático** — dupla defesa: (1) webhook `invoice.paid` desbloqueia imediatamente, (2) worker `process-billing-unblock` (cron `*/5 * * * *`) pega o que o webhook perdeu.
+- **Overrides manuais** em `billing_access_overrides` — `grant_access` seta `manual_override`, `block_access` seta `blocked`, `extend_trial` seta `trialing`. Worker `process-billing-overdue` respeita override ativo de `grant_access` antes de escalar status.
+- **Server-side guards:** `create-reservation` rejeita novas reservas se org `blocked`/`suspended`. `webhook-whatsapp` silencia agente IA (outcome `org_billing_blocked`). Ambos fazem SELECT em `organizations.billing_status` — não dependem do frontend.
+- **Redeploy de `_shared/stripe-billing.ts`** afeta: `manage-billing`, `process-billing-reconcile`.
 
 ---
 
@@ -515,14 +542,18 @@ Todos seguem o mesmo padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `inte
 | `process-satisfaction-surveys` | `0 17 * * *` UTC (14:00 BRT) | process-satisfaction-surveys | Pesquisa D+1 (settings.survey_d1_enabled) |
 | `cleanup-orphan-assets` | `0 4 * * 0` UTC (domingo 01:00 BRT) | cleanup-orphan-assets | Apaga blobs órfãos do bucket `unit-assets` (grace 60min). RPC `list_orphan_unit_assets(integer)` cruza com units/menus/menu_pages/menu_banners. Invocável manual: `?dry=1` ou `{dry:true}` no body. Migration `20260520000000_storage_orphan_cleanup_cron.sql`. |
 | `expire-pending-payments` | `*/2 * * * *` | expire-pending-payments | Cancela reservas com `payment_status='pending_payment'` e `payment_expires_at < now()`. Seta `payment_status='expired'` + `status='cancelled'`. Migration `20260527140001_stripe_expire_payments_cron.sql`. |
+| `billing-overdue` | `0 10 * * *` UTC | process-billing-overdue | Verifica invoices vencidas → past_due (D+0), grace_period (D+7), blocked (D+8). Respeita overrides. Migration `20260528010000_billing_crons.sql`. |
+| `billing-reminders` | `0 13 * * *` UTC | process-billing-reminders | Lembretes D-3, D0, D+2, D+5, bloqueio. Registra em `billing_notifications`. Dedupe por (org_id, event_type, dia). |
+| `billing-reconcile` | `0 6 * * *` UTC | process-billing-reconcile | Reconcilia subscriptions/invoices com Stripe (fonte de verdade). Desbloqueia orgs se invoice paga. |
+| `billing-unblock` | `*/5 * * * *` | process-billing-unblock | Desbloqueia orgs com invoice paga recente. Defesa dupla: webhook `invoice.paid` já desbloqueia, worker pega falhas. |
 
 Workers lêem templates de `reservation_message_templates` (`customized=true`) ou usam defaults hardcoded. Idempotência via UNIQUE `(reservation_id, kind)` em `notifications_sent`.
 
 > Mantenha `defaultBody` em `useReservationTemplates.ts` em sincronia com `DEFAULT_*_BODY` nos workers (worker é a fonte autoritativa).
 
-> **`verify_jwt=false` obrigatório em `supabase/config.toml`** para todo worker chamado via `pg_cron` (`process-*`). O CLI a partir de 2.95 trocou o default para `true` — sem entrada explícita o gateway responde 401 "Missing authorization header" antes de chegar no `requireInternalAuth`, e o cron silencia (pg_net é fire-and-forget, ninguém alerta). Já documentadas no config: outbox, voucher-triggers, reservation-reminders, satisfaction-surveys, waitlist-entered, waitlist-feedback, expire-pending-payments. Nova função worker = nova entrada antes do deploy.
+> **`verify_jwt=false` obrigatório em `supabase/config.toml`** para todo worker chamado via `pg_cron` (`process-*`). O CLI a partir de 2.95 trocou o default para `true` — sem entrada explícita o gateway responde 401 "Missing authorization header" antes de chegar no `requireInternalAuth`, e o cron silencia (pg_net é fire-and-forget, ninguém alerta). Já documentadas no config: outbox, voucher-triggers, reservation-reminders, satisfaction-surveys, waitlist-entered, waitlist-feedback, expire-pending-payments, process-billing-overdue, process-billing-reminders, process-billing-reconcile, process-billing-unblock. Nova função worker = nova entrada antes do deploy.
 
-> **`verify_jwt=true` explícito em `supabase/config.toml`** para toda Edge Function de super-admin (`manage-channels`, `manage-members`, `manage-organizations`, `manage-ai-providers`, `manage-stripe-accounts`, `manage-platform-secrets`, `whatsapp-health`). Defesa em profundidade junto à validação interna de `platform_admin`. Sem entrada o comportamento depende do default do CLI — explícito > implícito. Nova edge admin = nova entrada antes do deploy.
+> **`verify_jwt=true` explícito em `supabase/config.toml`** para toda Edge Function de super-admin (`manage-channels`, `manage-members`, `manage-organizations`, `manage-ai-providers`, `manage-stripe-accounts`, `manage-platform-secrets`, `manage-billing`, `whatsapp-health`). Defesa em profundidade junto à validação interna de `platform_admin`. Sem entrada o comportamento depende do default do CLI — explícito > implícito. Nova edge admin = nova entrada antes do deploy.
 
 ---
 

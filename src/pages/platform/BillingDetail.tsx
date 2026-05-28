@@ -1,0 +1,820 @@
+import { useState } from "react";
+import { useParams, Link } from "react-router-dom";
+import {
+  useOrgBillingDetail,
+  useBillingPlans,
+  useCreateBillingCustomer,
+  useCreateSubscription,
+  useCancelSubscription,
+  useCreateManualInvoice,
+  useBlockOrganization,
+  useUnblockOrganization,
+  useCreateOverride,
+  useDeactivateOverride,
+  useExtendTrial,
+  useSyncFromStripe,
+} from "@/hooks/useBilling";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
+import { toast } from "sonner";
+import { ArrowLeft, RefreshCw, Copy, ExternalLink, Plus, Lock, Unlock, Clock, CreditCard } from "lucide-react";
+import {
+  BILLING_STATUS_LABEL,
+  BILLING_STATUS_VARIANT,
+  INVOICE_STATUS_LABEL,
+  PAYMENT_METHOD_LABEL,
+  formatCentsBRL,
+  type BillingStatus,
+  type BillingInvoice,
+  type BillingAccessOverride,
+  type BillingNotification,
+} from "@/types/billing";
+import { formatDateBR } from "@/lib/utils";
+
+export default function BillingDetail() {
+  const { organizationId } = useParams<{ organizationId: string }>();
+  const { data, isLoading, isError, refetch } = useOrgBillingDetail(organizationId);
+  const { data: plans } = useBillingPlans();
+  const syncMutation = useSyncFromStripe();
+
+  const [customerDialog, setCustomerDialog] = useState(false);
+  const [subDialog, setSubDialog] = useState(false);
+  const [invoiceDialog, setInvoiceDialog] = useState(false);
+  const [blockDialog, setBlockDialog] = useState(false);
+  const [overrideDialog, setOverrideDialog] = useState(false);
+  const [trialDialog, setTrialDialog] = useState(false);
+  const [cancelDialog, setCancelDialog] = useState(false);
+
+  if (isLoading) {
+    return <div className="space-y-4 p-6">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32 w-full" />)}</div>;
+  }
+
+  if (isError || !data) {
+    return (
+      <div className="p-6 text-center">
+        <p className="text-destructive mb-2">Erro ao carregar dados de cobrança.</p>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>Tentar novamente</Button>
+      </div>
+    );
+  }
+
+  const org = data.organization;
+  const customer = data.customer;
+  const activeSub = data.subscriptions.find((s) => s.status !== "canceled");
+  const bs = org.billing_status as BillingStatus;
+  const isBlocked = bs === "blocked" || bs === "suspended";
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-4">
+        <Link to="/platform/billing">
+          <Button variant="ghost" size="icon"><ArrowLeft className="h-4 w-4" /></Button>
+        </Link>
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold">{org.name}</h1>
+          <p className="text-sm text-muted-foreground">{org.slug}</p>
+        </div>
+        <Badge variant="secondary" className={`${BILLING_STATUS_VARIANT[bs]} text-sm px-3 py-1`}>
+          {BILLING_STATUS_LABEL[bs] ?? bs}
+        </Badge>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => syncMutation.mutate(organizationId!)}
+          disabled={syncMutation.isPending}
+        >
+          <RefreshCw className={`mr-2 h-4 w-4 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+          Sincronizar Stripe
+        </Button>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid md:grid-cols-3 gap-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Customer Stripe</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {customer ? (
+              <div className="space-y-1">
+                <p className="font-mono text-sm">{customer.stripe_customer_id ?? "Sem ID Stripe"}</p>
+                <p className="text-sm text-muted-foreground">{customer.email ?? "Sem e-mail"}</p>
+                {customer.tax_id && <p className="text-xs text-muted-foreground">CNPJ/CPF: {customer.tax_id}</p>}
+              </div>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => setCustomerDialog(true)}>
+                <Plus className="mr-2 h-4 w-4" /> Criar customer
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Assinatura</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {activeSub ? (
+              <div className="space-y-1">
+                <p className="font-medium">{data.active_plan?.name ?? "Plano"}</p>
+                <p className="text-sm">{formatCentsBRL(data.active_plan?.amount_cents ?? 0)}/{data.active_plan?.interval === "year" ? "ano" : "mês"}</p>
+                <p className="text-xs text-muted-foreground">
+                  {PAYMENT_METHOD_LABEL[activeSub.payment_method]} — vence {activeSub.current_period_end ? formatDateBR(activeSub.current_period_end.slice(0, 10)) : "—"}
+                </p>
+                {activeSub.cancel_at_period_end && (
+                  <p className="text-xs text-amber-600 font-medium">Cancelamento ao fim do período</p>
+                )}
+              </div>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => setSubDialog(true)} disabled={!customer}>
+                <CreditCard className="mr-2 h-4 w-4" /> Criar assinatura
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Info</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1">
+            <p className="text-sm">E-mail cobrança: {org.billing_email ?? "—"}</p>
+            <p className="text-sm">Unidades: {data.units_count ?? "—"}</p>
+            {org.trial_ends_at && (
+              <p className="text-sm">Trial até: {formatDateBR(org.trial_ends_at.slice(0, 10))}</p>
+            )}
+            {org.blocked_at && (
+              <p className="text-sm text-destructive">Bloqueado em: {formatDateBR(org.blocked_at.slice(0, 10))}</p>
+            )}
+            {org.blocked_reason && (
+              <p className="text-xs text-muted-foreground">Motivo: {org.blocked_reason}</p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Actions */}
+      <div className="flex flex-wrap gap-2">
+        {!customer && (
+          <Button size="sm" variant="outline" onClick={() => setCustomerDialog(true)}>
+            <Plus className="mr-2 h-3 w-3" /> Criar customer
+          </Button>
+        )}
+        {customer && !activeSub && (
+          <Button size="sm" variant="outline" onClick={() => setSubDialog(true)}>
+            <CreditCard className="mr-2 h-3 w-3" /> Criar assinatura
+          </Button>
+        )}
+        {activeSub && !activeSub.cancel_at_period_end && (
+          <Button size="sm" variant="outline" onClick={() => setCancelDialog(true)}>
+            Cancelar assinatura
+          </Button>
+        )}
+        <Button size="sm" variant="outline" onClick={() => setInvoiceDialog(true)} disabled={!customer}>
+          Gerar fatura manual
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => setOverrideDialog(true)}>
+          Criar override
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => setTrialDialog(true)}>
+          <Clock className="mr-2 h-3 w-3" /> Estender trial
+        </Button>
+        <Separator orientation="vertical" className="h-8 hidden sm:block" />
+        {isBlocked ? (
+          <UnblockButton organizationId={org.id} />
+        ) : (
+          <Button size="sm" variant="destructive" onClick={() => setBlockDialog(true)}>
+            <Lock className="mr-2 h-3 w-3" /> Bloquear
+          </Button>
+        )}
+      </div>
+
+      {/* Tabs */}
+      <Tabs defaultValue="invoices">
+        <TabsList>
+          <TabsTrigger value="invoices">Faturas ({data.invoices.length})</TabsTrigger>
+          <TabsTrigger value="overrides">Overrides ({data.overrides.length})</TabsTrigger>
+          <TabsTrigger value="notifications">Notificações ({data.notifications.length})</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="invoices" className="mt-4">
+          <InvoicesTable invoices={data.invoices} />
+        </TabsContent>
+
+        <TabsContent value="overrides" className="mt-4">
+          <OverridesTable overrides={data.overrides} />
+        </TabsContent>
+
+        <TabsContent value="notifications" className="mt-4">
+          <NotificationsTable notifications={data.notifications} />
+        </TabsContent>
+      </Tabs>
+
+      {/* Dialogs */}
+      <CreateCustomerDialog
+        open={customerDialog}
+        onOpenChange={setCustomerDialog}
+        organizationId={org.id}
+        orgName={org.name}
+        billingEmail={org.billing_email}
+      />
+      <CreateSubscriptionDialog
+        open={subDialog}
+        onOpenChange={setSubDialog}
+        organizationId={org.id}
+        plans={plans ?? []}
+      />
+      <CreateInvoiceDialog
+        open={invoiceDialog}
+        onOpenChange={setInvoiceDialog}
+        organizationId={org.id}
+        planAmount={data.active_plan?.amount_cents}
+      />
+      <BlockOrgDialog
+        open={blockDialog}
+        onOpenChange={setBlockDialog}
+        organizationId={org.id}
+        orgName={org.name}
+      />
+      <OverrideDialog
+        open={overrideDialog}
+        onOpenChange={setOverrideDialog}
+        organizationId={org.id}
+      />
+      <TrialDialog
+        open={trialDialog}
+        onOpenChange={setTrialDialog}
+        organizationId={org.id}
+      />
+      {activeSub && (
+        <CancelSubDialog
+          open={cancelDialog}
+          onOpenChange={setCancelDialog}
+          subscriptionId={activeSub.id}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Sub-components ───────────────────────────────────────────────────────────
+
+function UnblockButton({ organizationId }: { organizationId: string }) {
+  const mutation = useUnblockOrganization();
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => mutation.mutate(organizationId, {
+        onSuccess: () => toast.success("Organização desbloqueada."),
+        onError: (err) => toast.error(err.message),
+      })}
+      disabled={mutation.isPending}
+    >
+      <Unlock className="mr-2 h-3 w-3" /> Desbloquear
+    </Button>
+  );
+}
+
+function InvoicesTable({ invoices }: { invoices: BillingInvoice[] }) {
+  if (invoices.length === 0) return <p className="text-muted-foreground text-sm py-4">Nenhuma fatura.</p>;
+
+  return (
+    <div className="rounded-md border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Nº</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Valor</TableHead>
+            <TableHead className="hidden md:table-cell">Pagamento</TableHead>
+            <TableHead className="hidden md:table-cell">Vencimento</TableHead>
+            <TableHead className="hidden lg:table-cell">Pago em</TableHead>
+            <TableHead className="w-10"></TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {invoices.map((inv) => (
+            <TableRow key={inv.id}>
+              <TableCell className="font-mono text-xs">{inv.number ?? inv.stripe_invoice_id?.slice(-8) ?? inv.id.slice(0, 8)}</TableCell>
+              <TableCell>
+                <Badge variant="secondary" className={inv.status === "paid" ? "bg-emerald-100 text-emerald-800" : inv.status === "open" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-800"}>
+                  {INVOICE_STATUS_LABEL[inv.status] ?? inv.status}
+                </Badge>
+              </TableCell>
+              <TableCell>{formatCentsBRL(inv.amount_cents)}</TableCell>
+              <TableCell className="hidden md:table-cell">{inv.payment_method ? PAYMENT_METHOD_LABEL[inv.payment_method] : "—"}</TableCell>
+              <TableCell className="hidden md:table-cell">{inv.due_date ? formatDateBR(inv.due_date) : "—"}</TableCell>
+              <TableCell className="hidden lg:table-cell">{inv.paid_at ? formatDateBR(inv.paid_at.slice(0, 10)) : "—"}</TableCell>
+              <TableCell>
+                {inv.hosted_invoice_url && (
+                  <div className="flex gap-1">
+                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { navigator.clipboard.writeText(inv.hosted_invoice_url!); toast.success("Link copiado."); }}>
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                    <a href={inv.hosted_invoice_url} target="_blank" rel="noopener noreferrer">
+                      <Button variant="ghost" size="icon" className="h-7 w-7"><ExternalLink className="h-3 w-3" /></Button>
+                    </a>
+                  </div>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function OverridesTable({ overrides }: { overrides: BillingAccessOverride[] }) {
+  const deactivate = useDeactivateOverride();
+
+  if (overrides.length === 0) return <p className="text-muted-foreground text-sm py-4">Nenhum override.</p>;
+
+  const TYPE_LABEL: Record<string, string> = {
+    grant_access: "Liberar acesso",
+    block_access: "Bloquear acesso",
+    extend_trial: "Estender trial",
+  };
+
+  return (
+    <div className="rounded-md border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Tipo</TableHead>
+            <TableHead>Motivo</TableHead>
+            <TableHead>Validade</TableHead>
+            <TableHead>Ativo</TableHead>
+            <TableHead className="w-10"></TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {overrides.map((ov) => (
+            <TableRow key={ov.id}>
+              <TableCell>{TYPE_LABEL[ov.override_type] ?? ov.override_type}</TableCell>
+              <TableCell className="max-w-[200px] truncate">{ov.reason}</TableCell>
+              <TableCell>{ov.valid_until ? formatDateBR(ov.valid_until.slice(0, 10)) : "Permanente"}</TableCell>
+              <TableCell>
+                <Badge variant={ov.active ? "default" : "secondary"}>{ov.active ? "Sim" : "Não"}</Badge>
+              </TableCell>
+              <TableCell>
+                {ov.active && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => deactivate.mutate(ov.id, {
+                      onSuccess: () => toast.success("Override desativado."),
+                      onError: (err) => toast.error(err.message),
+                    })}
+                    disabled={deactivate.isPending}
+                  >
+                    Desativar
+                  </Button>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function NotificationsTable({ notifications }: { notifications: BillingNotification[] }) {
+  if (notifications.length === 0) return <p className="text-muted-foreground text-sm py-4">Nenhuma notificação.</p>;
+
+  return (
+    <div className="rounded-md border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Evento</TableHead>
+            <TableHead>Canal</TableHead>
+            <TableHead>Destinatário</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead className="hidden md:table-cell">Data</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {notifications.map((n) => (
+            <TableRow key={n.id}>
+              <TableCell className="text-xs">{n.event_type}</TableCell>
+              <TableCell>{n.channel}</TableCell>
+              <TableCell className="max-w-[150px] truncate">{n.recipient}</TableCell>
+              <TableCell>
+                <Badge variant={n.status === "sent" ? "default" : "destructive"}>{n.status}</Badge>
+              </TableCell>
+              <TableCell className="hidden md:table-cell">{formatDateBR(n.sent_at.slice(0, 10))}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+// ── Dialogs ──────────────────────────────────────────────────────────────────
+
+function CreateCustomerDialog({ open, onOpenChange, organizationId, orgName, billingEmail }: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  organizationId: string;
+  orgName: string;
+  billingEmail: string | null;
+}) {
+  const mutation = useCreateBillingCustomer();
+  const [email, setEmail] = useState(billingEmail ?? "");
+  const [name, setName] = useState(orgName);
+  const [taxId, setTaxId] = useState("");
+
+  function handleSubmit() {
+    mutation.mutate(
+      { organization_id: organizationId, email: email || undefined, name: name || undefined, tax_id: taxId || undefined },
+      {
+        onSuccess: (data) => {
+          toast.success(data.created ? "Customer criado." : "Customer já existia.");
+          onOpenChange(false);
+        },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Criar Customer Stripe</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Nome</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div>
+            <Label>E-mail de cobrança</Label>
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+          <div>
+            <Label>CNPJ/CPF</Label>
+            <Input value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="Opcional" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button onClick={handleSubmit} disabled={mutation.isPending}>
+            {mutation.isPending ? "Criando..." : "Criar"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CreateSubscriptionDialog({ open, onOpenChange, organizationId, plans }: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  organizationId: string;
+  plans: { id: string; name: string; amount_cents: number; slug: string; active: boolean }[];
+}) {
+  const mutation = useCreateSubscription();
+  const [planId, setPlanId] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("card");
+  const [trialDays, setTrialDays] = useState("");
+
+  const activePlans = plans.filter((p) => p.active);
+
+  function handleSubmit() {
+    if (!planId) { toast.error("Selecione um plano."); return; }
+    mutation.mutate(
+      {
+        organization_id: organizationId,
+        plan_id: planId,
+        payment_method: paymentMethod,
+        trial_days: trialDays ? Number(trialDays) : undefined,
+      },
+      {
+        onSuccess: () => {
+          toast.success("Assinatura criada.");
+          onOpenChange(false);
+        },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Criar Assinatura</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Plano</Label>
+            <Select value={planId} onValueChange={setPlanId}>
+              <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+              <SelectContent>
+                {activePlans.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.name} — {formatCentsBRL(p.amount_cents)}/mês</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Método de pagamento</Label>
+            <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="card">Cartão</SelectItem>
+                <SelectItem value="boleto">Boleto</SelectItem>
+                <SelectItem value="pix">PIX</SelectItem>
+                <SelectItem value="manual">Manual</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Trial (dias, opcional)</Label>
+            <Input type="number" value={trialDays} onChange={(e) => setTrialDays(e.target.value)} placeholder="14" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button onClick={handleSubmit} disabled={mutation.isPending}>
+            {mutation.isPending ? "Criando..." : "Criar assinatura"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CreateInvoiceDialog({ open, onOpenChange, organizationId, planAmount }: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  organizationId: string;
+  planAmount?: number;
+}) {
+  const mutation = useCreateManualInvoice();
+  const [amount, setAmount] = useState(planAmount ? String(planAmount) : "");
+  const [description, setDescription] = useState("Mensalidade Moralles Reservas");
+  const [paymentMethod, setPaymentMethod] = useState("pix");
+  const [daysUntilDue, setDaysUntilDue] = useState("7");
+
+  function handleSubmit() {
+    if (!amount || Number(amount) <= 0) { toast.error("Informe o valor."); return; }
+    mutation.mutate(
+      {
+        organization_id: organizationId,
+        amount_cents: Number(amount),
+        description,
+        payment_method: paymentMethod,
+        days_until_due: Number(daysUntilDue),
+      },
+      {
+        onSuccess: (data) => {
+          toast.success("Fatura criada.");
+          if (data.invoice?.hosted_invoice_url) {
+            navigator.clipboard.writeText(data.invoice.hosted_invoice_url);
+            toast.info("Link de pagamento copiado.");
+          }
+          onOpenChange(false);
+        },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Gerar Fatura Manual</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Valor (centavos)</Label>
+            <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="19900" />
+            {Number(amount) > 0 && <p className="text-xs text-muted-foreground mt-1">{formatCentsBRL(Number(amount))}</p>}
+          </div>
+          <div>
+            <Label>Descrição</Label>
+            <Input value={description} onChange={(e) => setDescription(e.target.value)} />
+          </div>
+          <div>
+            <Label>Método de pagamento</Label>
+            <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pix">PIX</SelectItem>
+                <SelectItem value="boleto">Boleto</SelectItem>
+                <SelectItem value="manual">Manual</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Dias até vencimento</Label>
+            <Input type="number" value={daysUntilDue} onChange={(e) => setDaysUntilDue(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button onClick={handleSubmit} disabled={mutation.isPending}>
+            {mutation.isPending ? "Criando..." : "Gerar fatura"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BlockOrgDialog({ open, onOpenChange, organizationId, orgName }: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  organizationId: string;
+  orgName: string;
+}) {
+  const mutation = useBlockOrganization();
+  const [reason, setReason] = useState("");
+
+  function handleSubmit() {
+    if (!reason.trim()) { toast.error("Informe o motivo."); return; }
+    mutation.mutate(
+      { organization_id: organizationId, reason },
+      {
+        onSuccess: () => { toast.success("Organização bloqueada."); onOpenChange(false); setReason(""); },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Bloquear {orgName}?</AlertDialogTitle>
+          <AlertDialogDescription>A organização perderá acesso ao sistema.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <Textarea placeholder="Motivo (obrigatório)" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+          <AlertDialogAction className="bg-destructive text-destructive-foreground" disabled={mutation.isPending || !reason.trim()} onClick={handleSubmit}>
+            {mutation.isPending ? "Bloqueando..." : "Bloquear"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function OverrideDialog({ open, onOpenChange, organizationId }: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  organizationId: string;
+}) {
+  const mutation = useCreateOverride();
+  const [type, setType] = useState("grant_access");
+  const [reason, setReason] = useState("");
+  const [validUntil, setValidUntil] = useState("");
+
+  function handleSubmit() {
+    if (!reason.trim()) { toast.error("Informe o motivo."); return; }
+    mutation.mutate(
+      { organization_id: organizationId, override_type: type, reason, valid_until: validUntil || undefined },
+      {
+        onSuccess: () => { toast.success("Override criado."); onOpenChange(false); setReason(""); },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Criar Override</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Tipo</Label>
+            <Select value={type} onValueChange={setType}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="grant_access">Liberar acesso</SelectItem>
+                <SelectItem value="block_access">Bloquear acesso</SelectItem>
+                <SelectItem value="extend_trial">Estender trial</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Motivo (obrigatório)</Label>
+            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
+          </div>
+          <div>
+            <Label>Válido até (opcional)</Label>
+            <Input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button onClick={handleSubmit} disabled={mutation.isPending || !reason.trim()}>
+            {mutation.isPending ? "Criando..." : "Criar override"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function TrialDialog({ open, onOpenChange, organizationId }: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  organizationId: string;
+}) {
+  const mutation = useExtendTrial();
+  const [days, setDays] = useState("14");
+  const [reason, setReason] = useState("");
+
+  function handleSubmit() {
+    mutation.mutate(
+      { organization_id: organizationId, trial_days: Number(days), reason: reason || undefined },
+      {
+        onSuccess: () => { toast.success("Trial estendido."); onOpenChange(false); },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Estender Trial</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Dias de trial</Label>
+            <Input type="number" value={days} onChange={(e) => setDays(e.target.value)} />
+          </div>
+          <div>
+            <Label>Motivo (opcional)</Label>
+            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button onClick={handleSubmit} disabled={mutation.isPending}>
+            {mutation.isPending ? "Estendendo..." : "Estender"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CancelSubDialog({ open, onOpenChange, subscriptionId }: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  subscriptionId: string;
+}) {
+  const mutation = useCancelSubscription();
+  const [atPeriodEnd, setAtPeriodEnd] = useState(true);
+
+  function handleSubmit() {
+    mutation.mutate(
+      { subscription_id: subscriptionId, at_period_end: atPeriodEnd },
+      {
+        onSuccess: () => { toast.success("Assinatura cancelada."); onOpenChange(false); },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Cancelar assinatura?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {atPeriodEnd
+              ? "O acesso será mantido até o fim do período atual."
+              : "O cancelamento será imediato."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="flex items-center gap-2 mt-2">
+          <input type="checkbox" id="atPeriodEnd" checked={atPeriodEnd} onChange={(e) => setAtPeriodEnd(e.target.checked)} />
+          <Label htmlFor="atPeriodEnd" className="text-sm">Cancelar apenas ao fim do período</Label>
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Voltar</AlertDialogCancel>
+          <AlertDialogAction className="bg-destructive text-destructive-foreground" disabled={mutation.isPending} onClick={handleSubmit}>
+            {mutation.isPending ? "Cancelando..." : "Cancelar assinatura"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}

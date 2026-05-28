@@ -1108,6 +1108,20 @@ serve(async (req) => {
     const unitSlug: string | null = (unitRow?.slug as string | undefined) ?? null;
     const unitTicketMax: number | null = (unitRow?.price_range_max as number | null | undefined) ?? null;
 
+    // Billing check — se org estiver blocked/suspended, não ativar agente IA
+    {
+      const { data: orgBilling } = await supabase
+        .from("organizations")
+        .select("billing_status")
+        .eq("id", organizationId)
+        .single();
+      if (orgBilling && (orgBilling.billing_status === "blocked" || orgBilling.billing_status === "suspended")) {
+        jsonLog("warn", { requestId, evt: "webhook_org_billing_blocked", unitId, organizationId, status: orgBilling.billing_status });
+        await finish("org_billing_blocked");
+        return new Response("ok");
+      }
+    }
+
     // Upsert customer (org-scoped). Preserva nome real cadastrado via reserva;
     // só preenche/atualiza quando o customer é novo ou ainda tem placeholder
     // (name == phone). Push_name do WhatsApp entra como matéria-prima quando

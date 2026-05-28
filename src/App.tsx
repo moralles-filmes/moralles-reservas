@@ -8,6 +8,7 @@ import { PlatformLayout } from "@/components/layouts/PlatformLayout";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { BillingGuard } from "@/components/BillingGuard";
 import { useEffect } from "react";
 
 // ── Public ────────────────────────────────────────────────────────────────────
@@ -73,6 +74,8 @@ const OGiftback    = lazy(() => import("./pages/operacional/Giftback"));
 // ── Platform ──────────────────────────────────────────────────────────────────
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
 const PAutomacao = lazy(() => import("./pages/platform/Automacao"));
+const PBilling = lazy(() => import("./pages/platform/Billing"));
+const PBillingDetail = lazy(() => import("./pages/platform/BillingDetail"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -113,7 +116,7 @@ function GestaoGuard({ children }: { children: React.ReactNode }) {
       return <Navigate to={`/o/${unitSlug}`} replace />;
     }
   }
-  return <GestaoLayout>{children}</GestaoLayout>;
+  return <GestaoLayout><BillingGuard>{children}</BillingGuard></GestaoLayout>;
 }
 
 function OperacionalGuard({ children }: { children: React.ReactNode }) {
@@ -125,7 +128,7 @@ function OperacionalGuard({ children }: { children: React.ReactNode }) {
     const m = memberships.find((mm) => mm.unit_slug === unitSlug);
     if (!m) return <Navigate to="/admin" replace />;
   }
-  return <OperacionalLayout>{children}</OperacionalLayout>;
+  return <OperacionalLayout><BillingGuard>{children}</BillingGuard></OperacionalLayout>;
 }
 
 function PlatformGuard({ children }: { children: React.ReactNode }) {
@@ -252,6 +255,8 @@ export default function App() {
               <Route path="/platform/empresas" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
               <Route path="/platform/automacao" element={<PlatformGuard><PAutomacao /></PlatformGuard>} />
               <Route path="/platform/automacao/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
+              <Route path="/platform/billing" element={<PlatformGuard><PBilling /></PlatformGuard>} />
+              <Route path="/platform/billing/:organizationId" element={<PlatformGuard><PBillingDetail /></PlatformGuard>} />
 
               {/* ── Legacy /admin → redirect ─────────────────────────────── */}
               <Route path="/admin" element={<AdminRedirect to="" />} />

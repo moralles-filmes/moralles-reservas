@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Bot, Building2, LogOut, Users } from "lucide-react";
+import { Bot, Building2, CreditCard, LogOut, Users } from "lucide-react";
 import { toast } from "sonner";
 
 export function PlatformLayout({ children }: { children: React.ReactNode }) {
@@ -18,6 +18,7 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
   const navItems = [
     { to: "/platform/empresas", label: "Empresas", icon: Building2 },
     { to: "/platform/automacao", label: "Automação", icon: Bot },
+    { to: "/platform/billing", label: "Cobranças", icon: CreditCard },
     { to: "/platform/admins", label: "Admins da Plataforma", icon: Users, disabled: true },
   ];
 

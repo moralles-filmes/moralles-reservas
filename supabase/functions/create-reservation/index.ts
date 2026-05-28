@@ -104,6 +104,18 @@ serve(async (req) => {
       return jsonResponse({ success: false, reason: "unit_invalid", message: "Unidade inválida." }, 400);
     }
 
+    // Billing check — bloquear novas reservas se org estiver blocked/suspended
+    const { data: orgBilling } = await supabase
+      .from("organizations")
+      .select("billing_status")
+      .eq("id", organizationId)
+      .single();
+
+    if (orgBilling && (orgBilling.billing_status === "blocked" || orgBilling.billing_status === "suspended")) {
+      jsonLog("warn", { requestId, evt: "create_reservation_org_blocked", organizationId, status: orgBilling.billing_status });
+      return jsonResponse({ success: false, reason: "org_blocked", message: "Este restaurante não está aceitando novas reservas no momento." }, 403);
+    }
+
     // Rate limit por (phone, unit) — mesma RPC já usada no webhook
     const { data: allowed } = await supabase.rpc("check_rate_limit", {
       p_phone: phone,

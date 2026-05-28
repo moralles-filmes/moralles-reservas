@@ -3,6 +3,18 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { genRequestId, jsonLog } from "../_shared/security.ts";
 import { getStripeWebhookSecret } from "../_shared/stripe-config.ts";
 
+// Billing event types — roteados para billing_events (idempotencia separada de stripe_webhook_events)
+const BILLING_EVENT_TYPES = new Set([
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "invoice.created",
+  "invoice.finalized",
+  "invoice.paid",
+  "invoice.payment_failed",
+  "invoice.payment_action_required",
+]);
+
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -45,6 +57,239 @@ async function verifyStripeSignature(
   return expected === signature;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Billing event handlers
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function resolveOrgIdFromCustomer(stripeCustomerId: string): Promise<string | null> {
+  const { data } = await supabase
+    .from("billing_customers")
+    .select("organization_id")
+    .eq("stripe_customer_id", stripeCustomerId)
+    .maybeSingle();
+  return data?.organization_id ?? null;
+}
+
+async function handleBillingEvent(
+  reqId: string,
+  eventType: string,
+  obj: Record<string, unknown>,
+  orgIdFromMeta: string | null,
+): Promise<void> {
+  const orgId = orgIdFromMeta
+    ?? await resolveOrgIdFromCustomer(obj.customer as string ?? "");
+
+  if (!orgId) {
+    jsonLog("warn", { reqId, evt: "billing_webhook_no_org", eventType, objectId: obj.id });
+    return;
+  }
+
+  // ── Subscription events ──────────────────────────────────────────────
+  if (eventType === "customer.subscription.created" || eventType === "customer.subscription.updated") {
+    const stripeSubId = obj.id as string;
+    const status = obj.status as string;
+    const periodStart = obj.current_period_start
+      ? new Date((obj.current_period_start as number) * 1000).toISOString()
+      : null;
+    const periodEnd = obj.current_period_end
+      ? new Date((obj.current_period_end as number) * 1000).toISOString()
+      : null;
+    const cancelAtPeriodEnd = obj.cancel_at_period_end === true;
+    const canceledAt = obj.canceled_at
+      ? new Date((obj.canceled_at as number) * 1000).toISOString()
+      : null;
+    const trialEnd = obj.trial_end
+      ? new Date((obj.trial_end as number) * 1000).toISOString()
+      : null;
+
+    const { data: existingSub } = await supabase
+      .from("billing_subscriptions")
+      .select("id")
+      .eq("stripe_subscription_id", stripeSubId)
+      .maybeSingle();
+
+    if (existingSub) {
+      await supabase.from("billing_subscriptions").update({
+        status,
+        current_period_start: periodStart,
+        current_period_end: periodEnd,
+        cancel_at_period_end: cancelAtPeriodEnd,
+        canceled_at: canceledAt,
+        trial_end: trialEnd,
+        updated_at: new Date().toISOString(),
+      }).eq("id", existingSub.id);
+    }
+
+    const billingStatusMap: Record<string, string> = {
+      active: "active",
+      trialing: "trialing",
+      past_due: "past_due",
+      unpaid: "past_due",
+      canceled: "canceled",
+      paused: "suspended",
+    };
+    const newBillingStatus = billingStatusMap[status] ?? "active";
+
+    const updateFields: Record<string, unknown> = { billing_status: newBillingStatus };
+    if (newBillingStatus === "active" || newBillingStatus === "trialing") {
+      updateFields.blocked_at = null;
+      updateFields.blocked_reason = null;
+    }
+    if (trialEnd) updateFields.trial_ends_at = trialEnd;
+
+    await supabase.from("organizations").update(updateFields).eq("id", orgId);
+
+    jsonLog("info", { reqId, evt: "billing_sub_synced", eventType, orgId, stripeSubId, status });
+  }
+
+  if (eventType === "customer.subscription.deleted") {
+    const stripeSubId = obj.id as string;
+
+    await supabase.from("billing_subscriptions").update({
+      status: "canceled",
+      canceled_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq("stripe_subscription_id", stripeSubId);
+
+    await supabase.from("organizations").update({
+      billing_status: "canceled",
+    }).eq("id", orgId);
+
+    jsonLog("info", { reqId, evt: "billing_sub_deleted", orgId, stripeSubId });
+  }
+
+  // ── Invoice events ───────────────────────────────────────────────────
+  if (eventType === "invoice.created" || eventType === "invoice.finalized") {
+    const stripeInvId = obj.id as string;
+    const status = obj.status as string;
+    const amountDue = (obj.amount_due as number) ?? 0;
+    const hostedUrl = obj.hosted_invoice_url as string | null;
+    const pdfUrl = obj.invoice_pdf as string | null;
+    const dueDate = obj.due_date
+      ? new Date((obj.due_date as number) * 1000).toISOString().slice(0, 10)
+      : null;
+    const invNumber = obj.number as string | null;
+
+    const subId = obj.subscription as string | null;
+    let localSubId: string | null = null;
+    if (subId) {
+      const { data: localSub } = await supabase
+        .from("billing_subscriptions")
+        .select("id")
+        .eq("stripe_subscription_id", subId)
+        .maybeSingle();
+      localSubId = localSub?.id ?? null;
+    }
+
+    const { data: existingInv } = await supabase
+      .from("billing_invoices")
+      .select("id")
+      .eq("stripe_invoice_id", stripeInvId)
+      .maybeSingle();
+
+    if (existingInv) {
+      await supabase.from("billing_invoices").update({
+        status,
+        hosted_invoice_url: hostedUrl,
+        invoice_pdf: pdfUrl,
+        due_date: dueDate,
+        number: invNumber,
+        updated_at: new Date().toISOString(),
+      }).eq("id", existingInv.id);
+    } else {
+      const { data: cust } = await supabase
+        .from("billing_customers")
+        .select("id")
+        .eq("organization_id", orgId)
+        .maybeSingle();
+
+      if (cust) {
+        await supabase.from("billing_invoices").insert({
+          organization_id: orgId,
+          billing_subscription_id: localSubId,
+          stripe_invoice_id: stripeInvId,
+          number: invNumber,
+          status,
+          amount_cents: amountDue,
+          hosted_invoice_url: hostedUrl,
+          invoice_pdf: pdfUrl,
+          due_date: dueDate,
+        }).single();
+      }
+    }
+
+    jsonLog("info", { reqId, evt: "billing_invoice_synced", eventType, orgId, stripeInvId, status });
+  }
+
+  if (eventType === "invoice.paid") {
+    const stripeInvId = obj.id as string;
+
+    await supabase.from("billing_invoices").update({
+      status: "paid",
+      paid_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq("stripe_invoice_id", stripeInvId);
+
+    // Desbloquear org se estava bloqueada/vencida
+    const { data: org } = await supabase
+      .from("organizations")
+      .select("billing_status")
+      .eq("id", orgId)
+      .single();
+
+    if (org && ["past_due", "grace_period", "blocked", "pending_payment"].includes(org.billing_status)) {
+      await supabase.from("organizations").update({
+        billing_status: "active",
+        blocked_at: null,
+        blocked_reason: null,
+      }).eq("id", orgId);
+
+      jsonLog("info", { reqId, evt: "billing_org_unblocked_by_payment", orgId });
+    }
+
+    // Atualizar subscription pra active se existir
+    const subId = obj.subscription as string | null;
+    if (subId) {
+      await supabase.from("billing_subscriptions").update({
+        status: "active",
+        updated_at: new Date().toISOString(),
+      }).eq("stripe_subscription_id", subId).neq("status", "canceled");
+    }
+
+    jsonLog("info", { reqId, evt: "billing_invoice_paid", orgId, stripeInvId });
+  }
+
+  if (eventType === "invoice.payment_failed") {
+    const stripeInvId = obj.id as string;
+
+    await supabase.from("billing_invoices").update({
+      status: "open",
+      updated_at: new Date().toISOString(),
+    }).eq("stripe_invoice_id", stripeInvId);
+
+    // Verificar se tem override ativo de grant_access
+    const { data: override } = await supabase
+      .from("billing_access_overrides")
+      .select("id")
+      .eq("organization_id", orgId)
+      .eq("override_type", "grant_access")
+      .eq("active", true)
+      .maybeSingle();
+
+    if (!override) {
+      await supabase.from("organizations").update({
+        billing_status: "past_due",
+      }).eq("id", orgId);
+    }
+
+    jsonLog("info", { reqId, evt: "billing_payment_failed", orgId, stripeInvId, overrideActive: !!override });
+  }
+
+  if (eventType === "invoice.payment_action_required") {
+    jsonLog("info", { reqId, evt: "billing_payment_action_required", orgId, stripeInvId: obj.id });
+  }
+}
+
 serve(async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -72,7 +317,45 @@ serve(async (req) => {
     const eventId = event.id as string;
     const eventType = event.type as string;
 
-    // Idempotency check
+    // ═══════════════════════════════════════════════════════════════════════
+    // BILLING EVENTS — roteados ANTES da idempotencia de reservas.
+    // Usam billing_events para idempotencia (separada de stripe_webhook_events).
+    // ═══════════════════════════════════════════════════════════════════════
+
+    if (BILLING_EVENT_TYPES.has(eventType)) {
+      const { data: billingExisting } = await supabase
+        .from("billing_events")
+        .select("id")
+        .eq("stripe_event_id", eventId)
+        .maybeSingle();
+
+      if (billingExisting) {
+        jsonLog("info", { reqId, evt: "billing_webhook_duplicate", eventId });
+        return new Response(JSON.stringify({ received: true }), { status: 200 });
+      }
+
+      const obj = event.data?.object as Record<string, unknown>;
+      const orgId = (obj?.metadata as Record<string, string>)?.organization_id ?? null;
+
+      await handleBillingEvent(reqId, eventType, obj, orgId);
+
+      await supabase.from("billing_events").insert({
+        stripe_event_id: eventId,
+        event_type: eventType,
+        organization_id: orgId,
+        data: { object_id: obj?.id, status: obj?.status },
+      });
+
+      return new Response(JSON.stringify({ received: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // RESERVATION EVENTS — idempotencia via stripe_webhook_events (inalterada)
+    // ═══════════════════════════════════════════════════════════════════════
+
     const { data: existing } = await supabase
       .from("stripe_webhook_events")
       .select("id")
@@ -83,6 +366,10 @@ serve(async (req) => {
       jsonLog("info", { reqId, evt: "stripe_webhook_duplicate", eventId });
       return new Response(JSON.stringify({ received: true }), { status: 200 });
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // RESERVATION EVENTS — fluxo existente de caucao (inalterado)
+    // ═══════════════════════════════════════════════════════════════════════
 
     const session = event.data?.object;
     const reservationId = session?.metadata?.reservation_id as string | undefined;
@@ -109,9 +396,6 @@ serve(async (req) => {
         });
       }
 
-      // Enqueue confirmation notification (same as notification_outbox trigger
-      // for web reservations — the trigger filters source='whatsapp', so web
-      // reservations with pending_payment that just got paid need explicit enqueue)
       const { data: reservation } = await supabase
         .from("reservations")
         .select("id, unit_id, customer_id, date, time, party_size, reservation_code")
@@ -173,7 +457,7 @@ serve(async (req) => {
       });
     }
 
-    // Record event for idempotency
+    // Record event for idempotency (reservation events only)
     await supabase.from("stripe_webhook_events").insert({
       stripe_event_id: eventId,
       event_type: eventType,

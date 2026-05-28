@@ -60,6 +60,10 @@ verify_jwt = true
 [functions.manage-ai-providers]
 verify_jwt = true
 
+# Billing: gestão de mensalidades (super-admin)
+[functions.manage-billing]
+verify_jwt = true
+
 # Stripe: secrets da plataforma (super-admin)
 [functions.manage-platform-secrets]
 verify_jwt = true
@@ -78,4 +82,17 @@ verify_jwt = false
 
 # Worker: cancela reservas com pagamento expirado (pg_cron)
 [functions.expire-pending-payments]
+verify_jwt = false
+
+# Workers de billing (pg_cron)
+[functions.process-billing-overdue]
+verify_jwt = false
+
+[functions.process-billing-reminders]
+verify_jwt = false
+
+[functions.process-billing-reconcile]
+verify_jwt = false
+
+[functions.process-billing-unblock]
 verify_jwt = false
