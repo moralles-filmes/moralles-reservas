@@ -75,6 +75,7 @@ const OGiftback    = lazy(() => import("./pages/operacional/Giftback"));
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
 const PAutomacao = lazy(() => import("./pages/platform/Automacao"));
 const PBilling = lazy(() => import("./pages/platform/Billing"));
+const PBillingPlans = lazy(() => import("./pages/platform/BillingPlans"));
 const PBillingDetail = lazy(() => import("./pages/platform/BillingDetail"));
 
 const queryClient = new QueryClient({
@@ -256,6 +257,7 @@ export default function App() {
               <Route path="/platform/automacao" element={<PlatformGuard><PAutomacao /></PlatformGuard>} />
               <Route path="/platform/automacao/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
               <Route path="/platform/billing" element={<PlatformGuard><PBilling /></PlatformGuard>} />
+              <Route path="/platform/billing/planos" element={<PlatformGuard><PBillingPlans /></PlatformGuard>} />
               <Route path="/platform/billing/:organizationId" element={<PlatformGuard><PBillingDetail /></PlatformGuard>} />
 
               {/* ── Legacy /admin → redirect ─────────────────────────────── */}

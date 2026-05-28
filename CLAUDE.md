@@ -155,6 +155,7 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...
   ├── /empresas
   ├── /automacao/:unitSlug   → 4 abas: WhatsApp + IA + Instruções + Diagnóstico
   ├── /billing               → Dashboard de cobranças (KPIs, lista orgs, filtros)
+  ├── /billing/planos        → CRUD de planos (referencia stripe_price_id_card/boleto/pix)
   └── /billing/:organizationId → Detalhe billing da org (customer, subscription, faturas, overrides)
 ```
 

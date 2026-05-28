@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { CreditCard, Eye, Lock, Unlock, MoreHorizontal, Search, DollarSign, Users, AlertTriangle, Clock } from "lucide-react";
+import { CreditCard, Eye, Lock, Unlock, MoreHorizontal, Search, DollarSign, Users, AlertTriangle, Clock, Settings2 } from "lucide-react";
 import {
   BILLING_STATUS_LABEL,
   BILLING_STATUS_VARIANT,
@@ -84,9 +84,16 @@ export default function Billing() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Cobranças</h1>
-        <p className="text-muted-foreground text-sm">Gestão de mensalidades e faturamento das organizações.</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Cobranças</h1>
+          <p className="text-muted-foreground text-sm">Gestão de mensalidades e faturamento das organizações.</p>
+        </div>
+        <Button variant="outline" asChild>
+          <Link to="/platform/billing/planos">
+            <Settings2 className="mr-2 h-4 w-4" /> Gerenciar planos
+          </Link>
+        </Button>
       </div>
 
       {/* KPIs */}
