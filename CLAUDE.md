@@ -144,8 +144,9 @@ supabase secrets set DEEPSEEK_API_KEY=sk-...
   ├── /fila/comunicacao|ajustes
   ├── /cardapios/meus-cardapios|meus-cardapios/:menuId|banners|ajustes
   ├── /giftback/regras|vouchers|ajustes
-  ├── /clientes|conversas|configuracoes|conta|auditoria|usuarios
+  ├── /clientes|conversas|configuracoes|conta|cobranca|auditoria|usuarios
                                #   /conta substituiu /pagina-publica; rota antiga redireciona
+                               #   /cobranca = self-service de assinatura (whitelist no BillingGuard mesmo em blocked)
 
 /o/:unitSlug                 → Painel Operacional (OperacionalLayout)
   ├── /                      → Reservas do dia
@@ -528,6 +529,18 @@ Módulo de cobrança recorrente das organizations (clientes do SaaS). Usa a **co
 - **Overrides manuais** em `billing_access_overrides` — `grant_access` seta `manual_override`, `block_access` seta `blocked`, `extend_trial` seta `trialing`. Worker `process-billing-overdue` respeita override ativo de `grant_access` antes de escalar status.
 - **Server-side guards:** `create-reservation` rejeita novas reservas se org `blocked`/`suspended`. `webhook-whatsapp` silencia agente IA (outcome `org_billing_blocked`). Ambos fazem SELECT em `organizations.billing_status` — não dependem do frontend.
 - **Redeploy de `_shared/stripe-billing.ts`** afeta: `manage-billing`, `process-billing-reconcile`.
+
+### Self-service de assinaturas (cliente cadastra próprio cartão)
+
+- **`/g/:unitSlug/cobranca`** ([src/pages/gestao/Cobranca.tsx](src/pages/gestao/Cobranca.tsx)) é a página pública/cliente — pricing table, "Meu plano", "Meu cartão" + ações (trocar plano, trocar cartão, cancelar). Backend permite owner/gerente OU platform_admin.
+- **Whitelist no BillingGuard.** A rota `/g/:unitSlug/cobranca` é a ÚNICA acessível quando `billing_status` é `blocked/suspended/canceled` — sem essa whitelist, cliente bloqueado entra em loop (PaymentRequired → "Escolher plano" → bloqueia de novo). Implementado via `useLocation()` em `BillingGuard.tsx`.
+- **Remover cartão é EXCLUSIVO de platform_admin.** Action `delete` em `manage-payment-methods` valida `is_platform_admin(callerId)` antes de chamar Stripe; retorna 403 pra owner/gerente. Cliente VÊ o cartão e PODE TROCAR (via Checkout `mode=setup`), mas NÃO remove — proteção é server-side, UI nem mostra o botão. Admin remove na aba "Cartões" de `/platform/billing/<org>`.
+- **`create-billing-checkout`** ([supabase/functions/create-billing-checkout/index.ts](supabase/functions/create-billing-checkout/index.ts)) é uma Edge Function NOVA (separada de `manage-billing`) que gera Stripe Checkout Session em `mode=subscription` ou `mode=setup`. `success_url` aponta pra `/g/<slug>/cobranca?session=success`; `cancel_url` pra `/g/<slug>/cobranca?session=cancel`.
+- **`checkout.session.completed` é DUAL-PURPOSE** no `stripe-webhook`: caução de reserva (metadata.reservation_id) OU billing self-service (mode=subscription|setup). Helper `isBillingCheckout(obj)` discrimina em runtime; sem isso o set `BILLING_EVENT_TYPES` rotearia todas as sessions pra billing. NÃO mover esses events pro set sem manter o discriminador.
+- **3 actions client-friendly em `manage-billing`** (acessíveis pra owner/gerente além de admin): `change_plan` (Stripe proration automático), `preview_plan_change` (mostra `amount_due` antes do cliente confirmar) e `cancel_subscription_by_owner` (sempre `cancel_at_period_end=true` — preserva período pago). Set `CLIENT_FRIENDLY_ACTIONS` no topo do arquivo controla a whitelist; cada handler valida `canManageOrgBilling(callerId, organization_id)` no próprio escopo.
+- **Cache de 5min em `platform_secrets`** — depois de trocar a `stripe_secret_key` no painel, Edge Functions podem usar a antiga por até 5 min. Pra invalidar mais rápido, redeploy de qualquer função que importe `_shared/stripe-config.ts` (incluindo `create-billing-checkout`, `manage-payment-methods`).
+- **`billing_plans.features` é `string[]`** (migration `20260528020000`) — array de bullets exibidos na pricing table pública. Legado `'{}'` (jsonb default antigo) é normalizado por `parsePlanFeatures()` em [src/types/billing.ts](src/types/billing.ts). Editor admin é um textarea (1 feature por linha) em `/platform/billing/planos`.
+- **Redeploy de `_shared/stripe-config.ts`** agora também afeta: `create-billing-checkout`, `manage-payment-methods`.
 
 ---
 

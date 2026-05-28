@@ -1,0 +1,394 @@
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import {
+  useBillingPlans,
+  useOrgBillingDetail,
+  useCreateBillingCheckout,
+  usePreviewPlanChange,
+  useChangePlan,
+  useCancelByOwner,
+} from "@/hooks/useBilling";
+import { usePaymentMethods } from "@/hooks/usePaymentMethods";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
+import { CreditCard, CalendarClock, AlertTriangle } from "lucide-react";
+import { PricingTable } from "@/components/PricingTable";
+import {
+  BILLING_STATUS_LABEL,
+  BILLING_STATUS_VARIANT,
+  formatCentsBRL,
+  type BillingPlan,
+  type BillingStatus,
+} from "@/types/billing";
+import { formatDateBR } from "@/lib/utils";
+
+export default function Cobranca() {
+  const current = useCurrentUnit();
+  const organizationId = current?.organization_id;
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const { data: detail, isLoading: loadingDetail, refetch: refetchDetail } = useOrgBillingDetail(organizationId);
+  const { data: plans, isLoading: loadingPlans } = useBillingPlans();
+  const { data: pmData, isLoading: loadingPms, refetch: refetchPms } = usePaymentMethods(organizationId);
+
+  const checkout = useCreateBillingCheckout();
+  const previewMutation = usePreviewPlanChange();
+  const changePlanMutation = useChangePlan();
+  const cancelMutation = useCancelByOwner();
+
+  const [previewState, setPreviewState] = useState<{
+    plan: BillingPlan;
+    amountDue: number;
+    currency: string;
+  } | null>(null);
+  const [cancelDialog, setCancelDialog] = useState(false);
+
+  // Pós-redirect do Stripe Checkout: refetch state até a subscription aparecer.
+  // Webhook pode chegar depois do redirect — damos até 6s de retry escalonado.
+  useEffect(() => {
+    if (searchParams.get("session") !== "success") return;
+    let attempts = 0;
+    const tick = () => {
+      attempts++;
+      refetchDetail();
+      refetchPms();
+      if (attempts < 4) setTimeout(tick, 1500);
+      else {
+        // Limpa o query param sem reload
+        searchParams.delete("session");
+        searchParams.delete("sid");
+        setSearchParams(searchParams, { replace: true });
+        toast.success("Pagamento processado. Bem-vindo!");
+      }
+    };
+    tick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get("session")]);
+
+  if (!current || loadingDetail || loadingPlans) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+
+  if (!organizationId) {
+    return (
+      <Card>
+        <CardContent className="py-10 text-center text-muted-foreground">
+          Não foi possível identificar a organização.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const sub = detail?.subscriptions.find((s) => s.status !== "canceled") ?? null;
+  const activePlan = detail?.active_plan ?? null;
+  const billingStatus = detail?.organization.billing_status as BillingStatus | undefined;
+  const isBlocked = billingStatus === "blocked" || billingStatus === "suspended" || billingStatus === "canceled";
+
+  const defaultPm = pmData?.payment_methods.find((pm) => pm.is_default) ?? pmData?.payment_methods[0] ?? null;
+
+  const activePlans = (plans ?? []).filter((p) => p.active);
+
+  async function handleChoose(plan: BillingPlan) {
+    try {
+      await checkout.mutateAsync({
+        organization_id: organizationId!,
+        plan_id: plan.id,
+        mode: "subscription",
+      });
+      // Redirect acontece dentro do hook (window.location.href = url)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha ao iniciar checkout.");
+    }
+  }
+
+  async function handleChangePlanPreview(plan: BillingPlan) {
+    if (!sub) {
+      // Sem sub ativa → trata como nova
+      handleChoose(plan);
+      return;
+    }
+    try {
+      const preview = await previewMutation.mutateAsync({
+        subscription_id: sub.id,
+        new_plan_id: plan.id,
+        organization_id: organizationId!,
+      });
+      setPreviewState({
+        plan,
+        amountDue: preview.amount_due,
+        currency: preview.currency,
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha ao calcular preview.");
+    }
+  }
+
+  async function confirmChangePlan() {
+    if (!previewState || !sub) return;
+    try {
+      await changePlanMutation.mutateAsync({
+        subscription_id: sub.id,
+        new_plan_id: previewState.plan.id,
+        organization_id: organizationId!,
+      });
+      toast.success("Plano atualizado.");
+      setPreviewState(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha ao trocar plano.");
+    }
+  }
+
+  async function handleCancel() {
+    if (!sub) return;
+    try {
+      await cancelMutation.mutateAsync({
+        subscription_id: sub.id,
+        organization_id: organizationId!,
+      });
+      toast.success("Assinatura agendada para cancelamento no fim do período.");
+      setCancelDialog(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha ao cancelar.");
+    }
+  }
+
+  async function handleChangeCard() {
+    try {
+      await checkout.mutateAsync({
+        organization_id: organizationId!,
+        mode: "setup",
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha ao abrir checkout.");
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Meu plano e cobrança</h1>
+        <p className="text-muted-foreground text-sm">
+          Gerencie sua assinatura, troque o cartão e veja os planos disponíveis.
+        </p>
+      </div>
+
+      {isBlocked && (
+        <Card className="border-amber-300 bg-amber-50">
+          <CardContent className="py-4 flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-sm">
+              <p className="font-medium text-amber-900">
+                Sua conta está com status: {BILLING_STATUS_LABEL[billingStatus!] ?? billingStatus}
+              </p>
+              <p className="text-amber-800">
+                Escolha um plano abaixo para reativar o acesso ao sistema.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Meu plano */}
+      {sub && activePlan && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">Plano atual</CardTitle>
+            <Badge variant="secondary" className={BILLING_STATUS_VARIANT[billingStatus ?? "active"]}>
+              {BILLING_STATUS_LABEL[billingStatus ?? "active"] ?? billingStatus}
+            </Badge>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-baseline gap-4">
+              <div>
+                <p className="text-2xl font-bold">{activePlan.name}</p>
+                {activePlan.description && (
+                  <p className="text-sm text-muted-foreground">{activePlan.description}</p>
+                )}
+              </div>
+              <p className="text-lg font-semibold">
+                {formatCentsBRL(activePlan.amount_cents)}
+                <span className="text-sm text-muted-foreground font-normal">
+                  /{activePlan.interval === "year" ? "ano" : "mês"}
+                </span>
+              </p>
+            </div>
+
+            <Separator />
+
+            <div className="grid sm:grid-cols-2 gap-3 text-sm">
+              {sub.current_period_end && (
+                <div className="flex items-center gap-2">
+                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">
+                    {sub.cancel_at_period_end ? "Acesso ativo até" : "Próximo vencimento"}:
+                  </span>
+                  <span className="font-medium">{formatDateBR(sub.current_period_end.slice(0, 10))}</span>
+                </div>
+              )}
+              {sub.trial_end && sub.status === "trialing" && (
+                <div className="flex items-center gap-2">
+                  <CalendarClock className="h-4 w-4 text-blue-600" />
+                  <span className="text-muted-foreground">Trial até:</span>
+                  <span className="font-medium">{formatDateBR(sub.trial_end.slice(0, 10))}</span>
+                </div>
+              )}
+            </div>
+
+            {!sub.cancel_at_period_end && (
+              <div className="pt-2">
+                <Button variant="ghost" size="sm" onClick={() => setCancelDialog(true)} className="text-destructive hover:text-destructive">
+                  Cancelar assinatura
+                </Button>
+              </div>
+            )}
+            {sub.cancel_at_period_end && (
+              <p className="text-xs text-amber-700 pt-1">
+                Cancelamento agendado. Acesso garantido até o fim do período pago.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Meu cartão */}
+      {sub && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Meu cartão de cobrança</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loadingPms ? (
+              <Skeleton className="h-12 w-full" />
+            ) : defaultPm ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <CreditCard className="h-5 w-5 text-muted-foreground" />
+                  <div>
+                    <p className="font-medium">
+                      {(defaultPm.brand ?? "card").toUpperCase()} •••• {defaultPm.last4}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Expira {String(defaultPm.exp_month).padStart(2, "0")}/{defaultPm.exp_year}
+                    </p>
+                  </div>
+                </div>
+                <Button variant="outline" size="sm" onClick={handleChangeCard} disabled={checkout.isPending}>
+                  Trocar cartão
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground">Nenhum cartão cadastrado.</p>
+                <Button variant="outline" size="sm" onClick={handleChangeCard} disabled={checkout.isPending}>
+                  Cadastrar cartão
+                </Button>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground mt-3">
+              Para remover o cartão, entre em contato com o suporte da Moralles.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Planos disponíveis */}
+      <div className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold">Planos disponíveis</h2>
+          <p className="text-sm text-muted-foreground">
+            {sub
+              ? "Mude de plano a qualquer momento — você só paga a diferença proporcional."
+              : "Escolha o plano ideal pro seu negócio. Pagamento via cartão de crédito."}
+          </p>
+        </div>
+        <PricingTable
+          plans={activePlans}
+          currentPlanId={activePlan?.id ?? null}
+          onChoose={handleChoose}
+          onChange={handleChangePlanPreview}
+          loadingPlanId={checkout.isPending ? checkout.variables?.plan_id ?? null : previewMutation.isPending ? previewMutation.variables?.new_plan_id ?? null : null}
+        />
+      </div>
+
+      {/* Preview / confirmação de troca de plano */}
+      <AlertDialog open={!!previewState} onOpenChange={(open) => !open && setPreviewState(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Trocar para {previewState?.plan.name}?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  Você está alterando seu plano. O Stripe vai calcular automaticamente
+                  o valor proporcional ao tempo restante do período atual.
+                </p>
+                <div className="bg-muted rounded-md p-3 text-sm">
+                  <p className="text-muted-foreground">Cobrança agora (proporcional):</p>
+                  <p className="text-lg font-bold mt-1">
+                    {previewState ? formatCentsBRL(previewState.amountDue) : "—"}
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  A próxima cobrança recorrente passará a usar o novo valor do plano.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={changePlanMutation.isPending}
+              onClick={confirmChangePlan}
+            >
+              {changePlanMutation.isPending ? "Confirmando..." : "Confirmar troca"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirmação de cancelamento */}
+      <AlertDialog open={cancelDialog} onOpenChange={setCancelDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancelar assinatura?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Você manterá acesso ao sistema até o fim do período já pago
+              {sub?.current_period_end && ` (${formatDateBR(sub.current_period_end.slice(0, 10))})`}.
+              Depois disso, o acesso será suspenso até você escolher um novo plano.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Voltar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={cancelMutation.isPending}
+              onClick={handleCancel}
+            >
+              {cancelMutation.isPending ? "Cancelando..." : "Confirmar cancelamento"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}

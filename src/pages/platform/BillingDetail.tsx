@@ -14,6 +14,7 @@ import {
   useExtendTrial,
   useSyncFromStripe,
 } from "@/hooks/useBilling";
+import { usePaymentMethods, useDeletePaymentMethod } from "@/hooks/usePaymentMethods";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,7 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import { ArrowLeft, RefreshCw, Copy, ExternalLink, Plus, Lock, Unlock, Clock, CreditCard } from "lucide-react";
+import { ArrowLeft, RefreshCw, Copy, ExternalLink, Plus, Lock, Unlock, Clock, CreditCard, Trash2 } from "lucide-react";
 import {
   BILLING_STATUS_LABEL,
   BILLING_STATUS_VARIANT,
@@ -205,12 +206,17 @@ export default function BillingDetail() {
       <Tabs defaultValue="invoices">
         <TabsList>
           <TabsTrigger value="invoices">Faturas ({data.invoices.length})</TabsTrigger>
+          <TabsTrigger value="payment_methods">Cartões</TabsTrigger>
           <TabsTrigger value="overrides">Overrides ({data.overrides.length})</TabsTrigger>
           <TabsTrigger value="notifications">Notificações ({data.notifications.length})</TabsTrigger>
         </TabsList>
 
         <TabsContent value="invoices" className="mt-4">
           <InvoicesTable invoices={data.invoices} />
+        </TabsContent>
+
+        <TabsContent value="payment_methods" className="mt-4">
+          <PaymentMethodsTable organizationId={org.id} />
         </TabsContent>
 
         <TabsContent value="overrides" className="mt-4">
@@ -335,6 +341,110 @@ function InvoicesTable({ invoices }: { invoices: BillingInvoice[] }) {
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+function PaymentMethodsTable({ organizationId }: { organizationId: string }) {
+  const { data, isLoading, isError, refetch } = usePaymentMethods(organizationId);
+  const deleteMutation = useDeletePaymentMethod();
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; label: string } | null>(null);
+
+  if (isLoading) {
+    return <p className="text-muted-foreground text-sm py-4">Carregando cartões…</p>;
+  }
+  if (isError) {
+    return (
+      <div className="text-sm py-4 space-y-2">
+        <p className="text-destructive">Falha ao listar cartões.</p>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>Tentar novamente</Button>
+      </div>
+    );
+  }
+  const pms = data?.payment_methods ?? [];
+  if (pms.length === 0) {
+    return <p className="text-muted-foreground text-sm py-4">Nenhum cartão cadastrado.</p>;
+  }
+
+  return (
+    <>
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Bandeira</TableHead>
+              <TableHead>Final</TableHead>
+              <TableHead>Validade</TableHead>
+              <TableHead>Padrão</TableHead>
+              <TableHead className="w-10"></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {pms.map((pm) => (
+              <TableRow key={pm.id}>
+                <TableCell className="font-medium">{(pm.brand ?? "card").toUpperCase()}</TableCell>
+                <TableCell className="font-mono">•••• {pm.last4 ?? "----"}</TableCell>
+                <TableCell>
+                  {pm.exp_month ? `${String(pm.exp_month).padStart(2, "0")}/${pm.exp_year}` : "—"}
+                </TableCell>
+                <TableCell>
+                  {pm.is_default && (
+                    <Badge variant="secondary" className="bg-emerald-100 text-emerald-800">Padrão</Badge>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-destructive hover:text-destructive"
+                    onClick={() =>
+                      setConfirmDelete({
+                        id: pm.id,
+                        label: `${(pm.brand ?? "card").toUpperCase()} •••• ${pm.last4 ?? "----"}`,
+                      })
+                    }
+                    disabled={deleteMutation.isPending}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="text-xs text-muted-foreground mt-2">
+        Apenas administradores da plataforma podem remover cartões. O cliente pode trocar
+        o cartão pela aba "Cobrança" do próprio painel.
+      </p>
+
+      <AlertDialog open={!!confirmDelete} onOpenChange={(open) => !open && setConfirmDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remover cartão {confirmDelete?.label}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O cartão será desvinculado do customer no Stripe. Próximas cobranças
+              recorrentes vão falhar até o cliente cadastrar outro cartão.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                if (!confirmDelete) return;
+                deleteMutation.mutate(
+                  { paymentMethodId: confirmDelete.id, organizationId },
+                  { onSuccess: () => setConfirmDelete(null) },
+                );
+              }}
+            >
+              {deleteMutation.isPending ? "Removendo..." : "Remover"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 

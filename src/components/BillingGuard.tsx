@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
-import { useParams } from "react-router-dom";
+import { useParams, useLocation } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BillingBanner } from "@/components/BillingBanner";
 import PaymentRequired from "@/pages/PaymentRequired";
@@ -13,9 +13,16 @@ const WARNING_STATUSES: BillingStatus[] = ["pending_payment", "past_due", "grace
 export function BillingGuard({ children }: { children: React.ReactNode }) {
   const { isPlatformAdmin, memberships } = useAuth();
   const { unitSlug } = useParams<{ unitSlug: string }>();
+  const location = useLocation();
 
   const membership = memberships.find((m) => m.unit_slug === unitSlug);
   const orgId = membership?.organization_id;
+
+  // Whitelist: a página /cobranca DEVE ficar acessível mesmo em status
+  // blocked/suspended/canceled — é onde o cliente reativa o acesso. Sem isso,
+  // org bloqueada cai em loop (PaymentRequired → "Escolher plano" → bloqueia
+  // de novo). Cliente nunca sai do limbo.
+  const isCobrancaRoute = !!unitSlug && location.pathname === `/g/${unitSlug}/cobranca`;
 
   const { data: org, isLoading } = useQuery({
     queryKey: ["org-billing-status", orgId],
@@ -44,12 +51,17 @@ export function BillingGuard({ children }: { children: React.ReactNode }) {
 
   const bs = org.billing_status;
 
-  if (bs === "canceled") {
-    return <PaymentRequired status={bs} blockedReason={org.blocked_reason} />;
-  }
-
-  if (BLOCKED_STATUSES.includes(bs)) {
-    return <PaymentRequired status={bs} blockedReason={org.blocked_reason} />;
+  if (bs === "canceled" || BLOCKED_STATUSES.includes(bs)) {
+    if (isCobrancaRoute) {
+      // Mostra banner amarelo + renderiza Cobranca normalmente
+      return (
+        <>
+          <BillingBanner status={bs} />
+          {children}
+        </>
+      );
+    }
+    return <PaymentRequired status={bs} blockedReason={org.blocked_reason} unitSlug={unitSlug} />;
   }
 
   return (

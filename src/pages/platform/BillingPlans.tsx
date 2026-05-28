@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -28,17 +30,21 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { ArrowLeft, Plus, MoreHorizontal, Pencil, PowerOff } from "lucide-react";
-import { formatCentsBRL, type BillingPlan } from "@/types/billing";
+import { formatCentsBRL, parsePlanFeatures, type BillingPlan } from "@/types/billing";
 import { slugify } from "@/lib/utils";
 
 interface PlanFormState {
   name: string;
   slug: string;
+  description: string;
   amount_brl: string;
   interval: "month" | "year";
   stripe_price_id_card: string;
   stripe_price_id_boleto: string;
   stripe_price_id_pix: string;
+  trial_days: string;
+  popular: boolean;
+  features: string;  // 1 feature por linha (textarea)
   max_units: string;
   max_members_per_unit: string;
   sort_order: string;
@@ -47,11 +53,15 @@ interface PlanFormState {
 const EMPTY_FORM: PlanFormState = {
   name: "",
   slug: "",
+  description: "",
   amount_brl: "",
   interval: "month",
   stripe_price_id_card: "",
   stripe_price_id_boleto: "",
   stripe_price_id_pix: "",
+  trial_days: "0",
+  popular: false,
+  features: "",
   max_units: "",
   max_members_per_unit: "",
   sort_order: "0",
@@ -61,11 +71,15 @@ function planToForm(plan: BillingPlan): PlanFormState {
   return {
     name: plan.name,
     slug: plan.slug,
+    description: plan.description ?? "",
     amount_brl: (plan.amount_cents / 100).toFixed(2).replace(".", ","),
     interval: plan.interval,
     stripe_price_id_card: plan.stripe_price_id_card ?? "",
     stripe_price_id_boleto: plan.stripe_price_id_boleto ?? "",
     stripe_price_id_pix: plan.stripe_price_id_pix ?? "",
+    trial_days: (plan.trial_days ?? 0).toString(),
+    popular: plan.popular === true,
+    features: parsePlanFeatures(plan.features).join("\n"),
     max_units: plan.max_units?.toString() ?? "",
     max_members_per_unit: plan.max_members_per_unit?.toString() ?? "",
     sort_order: plan.sort_order.toString(),
@@ -134,14 +148,24 @@ export default function BillingPlans() {
       return;
     }
 
+    // Parse features textarea → array de strings (trim + dropa vazios)
+    const featuresArray = form.features
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
     const payload: Record<string, unknown> = {
       name: form.name.trim(),
       slug: form.slug.trim(),
+      description: form.description.trim() || null,
       amount_cents: amountCents,
       interval: form.interval,
       stripe_price_id_card: form.stripe_price_id_card.trim() || null,
       stripe_price_id_boleto: form.stripe_price_id_boleto.trim() || null,
       stripe_price_id_pix: form.stripe_price_id_pix.trim() || null,
+      trial_days: form.trial_days.trim() ? Math.max(0, Number(form.trial_days)) : 0,
+      popular: form.popular,
+      features: featuresArray,
       max_units: form.max_units.trim() ? Number(form.max_units) : null,
       max_members_per_unit: form.max_members_per_unit.trim() ? Number(form.max_members_per_unit) : null,
       sort_order: form.sort_order.trim() ? Number(form.sort_order) : 0,
@@ -343,6 +367,19 @@ export default function BillingPlans() {
             </div>
 
             <div className="space-y-1">
+              <Label htmlFor="plan-trial">Dias de trial</Label>
+              <Input
+                id="plan-trial"
+                type="number"
+                min="0"
+                value={form.trial_days}
+                onChange={(e) => setForm((prev) => ({ ...prev, trial_days: e.target.value }))}
+                placeholder="0"
+              />
+              <p className="text-xs text-muted-foreground">0 = cobra imediato.</p>
+            </div>
+
+            <div className="space-y-1">
               <Label htmlFor="plan-sort">Ordem de exibição</Label>
               <Input
                 id="plan-sort"
@@ -350,6 +387,42 @@ export default function BillingPlans() {
                 value={form.sort_order}
                 onChange={(e) => setForm((prev) => ({ ...prev, sort_order: e.target.value }))}
               />
+            </div>
+
+            <div className="sm:col-span-2 space-y-1">
+              <Label htmlFor="plan-description">Descrição curta</Label>
+              <Input
+                id="plan-description"
+                value={form.description}
+                onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+                placeholder="Ex.: Ideal pra restaurantes com até 3 salões"
+                maxLength={120}
+              />
+              <p className="text-xs text-muted-foreground">Aparece logo abaixo do nome do plano na pricing table pública.</p>
+            </div>
+
+            <div className="sm:col-span-2 flex items-center justify-between rounded-md border p-3">
+              <div>
+                <Label htmlFor="plan-popular" className="font-medium">Plano popular</Label>
+                <p className="text-xs text-muted-foreground">Destaca este plano na pricing table pública.</p>
+              </div>
+              <Switch
+                id="plan-popular"
+                checked={form.popular}
+                onCheckedChange={(checked) => setForm((prev) => ({ ...prev, popular: checked }))}
+              />
+            </div>
+
+            <div className="sm:col-span-2 space-y-1">
+              <Label htmlFor="plan-features">Features (uma por linha)</Label>
+              <Textarea
+                id="plan-features"
+                value={form.features}
+                onChange={(e) => setForm((prev) => ({ ...prev, features: e.target.value }))}
+                placeholder={"Reservas ilimitadas\nAgente IA WhatsApp\nMulti-unidade\nRelatórios completos"}
+                rows={5}
+              />
+              <p className="text-xs text-muted-foreground">Cada linha vira um bullet com check verde no card público.</p>
             </div>
 
             <div className="sm:col-span-2 border-t pt-4 mt-2">

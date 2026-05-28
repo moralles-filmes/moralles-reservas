@@ -32,6 +32,7 @@ export interface BillingPlan {
   id: string;
   name: string;
   slug: string;
+  description: string | null;
   stripe_price_id_card: string | null;
   stripe_price_id_boleto: string | null;
   stripe_price_id_pix: string | null;
@@ -40,11 +41,40 @@ export interface BillingPlan {
   interval: "month" | "year";
   max_units: number | null;
   max_members_per_unit: number | null;
-  features: Record<string, unknown>;
+  // Migration 20260528020000 passou features pra array de strings (bullets na
+  // pricing table pública). Legado pode vir como '{}' jsonb — parsePlanFeatures()
+  // normaliza isso.
+  features: string[] | Record<string, unknown>;
+  trial_days: number;
+  popular: boolean;
   active: boolean;
   sort_order: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface PaymentMethodSummary {
+  id: string;
+  brand: string | null;
+  last4: string | null;
+  exp_month: number | null;
+  exp_year: number | null;
+  is_default: boolean;
+}
+
+export interface PlanChangePreview {
+  amount_due: number;
+  amount_remaining: number;
+  currency: string;
+  period_start: string | null;
+  period_end: string | null;
+}
+
+/** Normaliza features pra string[] — trata '{}' legado e qualquer outro shape como []. */
+export function parsePlanFeatures(features: BillingPlan["features"] | null | undefined): string[] {
+  if (!features) return [];
+  if (Array.isArray(features)) return features.filter((f): f is string => typeof f === "string");
+  return [];
 }
 
 export interface BillingCustomer {

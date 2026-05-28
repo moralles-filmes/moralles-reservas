@@ -5,6 +5,7 @@ import type {
   OrgBillingRow,
   OrgBillingDetail,
   BillingInvoice,
+  PlanChangePreview,
 } from "@/types/billing";
 
 async function invokeManageBilling(body: Record<string, unknown>) {
@@ -239,6 +240,71 @@ export function useExtendTrial() {
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["billing-detail", vars.organization_id] });
       qc.invalidateQueries({ queryKey: ["billing-orgs"] });
+    },
+  });
+}
+
+// ── Self-service (cliente) ───────────────────────────────────────────────────
+
+/**
+ * Cria Stripe Checkout Session (mode=subscription | setup) e redireciona o
+ * navegador pra `data.url`. Aceita o caller ser owner/gerente da org OU
+ * platform_admin (backend valida).
+ */
+export function useCreateBillingCheckout() {
+  return useMutation({
+    mutationFn: async (params: {
+      organization_id: string;
+      plan_id?: string;
+      mode?: "subscription" | "setup";
+    }) => {
+      const { data, error } = await supabase.functions.invoke("create-billing-checkout", { body: params });
+      if (error) {
+        const message = (data as { error?: string } | null)?.error ?? error.message;
+        throw new Error(message);
+      }
+      if (data && typeof data === "object" && "error" in data && data.error) {
+        throw new Error(String(data.error));
+      }
+      return data as { success: true; url: string; session_id: string };
+    },
+    onSuccess: (data) => {
+      if (data?.url) window.location.href = data.url;
+    },
+  });
+}
+
+export function usePreviewPlanChange() {
+  return useMutation<PlanChangePreview, Error, { subscription_id: string; new_plan_id: string; organization_id: string }>({
+    mutationFn: async (params) => {
+      const res = await invokeManageBilling({ action: "preview_plan_change", ...params });
+      return res as PlanChangePreview;
+    },
+  });
+}
+
+export function useChangePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { subscription_id: string; new_plan_id: string; organization_id: string }) =>
+      invokeManageBilling({ action: "change_plan", ...params }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["billing-detail", vars.organization_id] });
+      qc.invalidateQueries({ queryKey: ["billing-orgs"] });
+      qc.invalidateQueries({ queryKey: ["org-billing-status"] });
+    },
+  });
+}
+
+export function useCancelByOwner() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { subscription_id: string; organization_id: string }) =>
+      invokeManageBilling({ action: "cancel_subscription_by_owner", ...params }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["billing-detail", vars.organization_id] });
+      qc.invalidateQueries({ queryKey: ["billing-orgs"] });
+      qc.invalidateQueries({ queryKey: ["org-billing-status"] });
     },
   });
 }

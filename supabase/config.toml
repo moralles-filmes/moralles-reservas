@@ -76,6 +76,14 @@ verify_jwt = true
 [functions.create-checkout-session]
 verify_jwt = false
 
+# Stripe: cria Checkout Session de billing (subscription/setup) — self-service
+[functions.create-billing-checkout]
+verify_jwt = true
+
+# Stripe: gestão de payment_methods (list/set_default por owner, delete só admin)
+[functions.manage-payment-methods]
+verify_jwt = true
+
 # Stripe: webhook handler (assinatura Stripe, sem JWT)
 [functions.stripe-webhook]
 verify_jwt = false

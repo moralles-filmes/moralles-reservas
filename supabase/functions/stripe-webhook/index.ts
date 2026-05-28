@@ -15,6 +15,22 @@ const BILLING_EVENT_TYPES = new Set([
   "invoice.payment_action_required",
 ]);
 
+// checkout.session.* é dual-purpose: caução de reserva (metadata.reservation_id)
+// OU billing self-service (mode=subscription|setup + metadata.organization_id).
+// Discriminado em runtime — sem essa separação, o set acima rotearia tudo pra billing.
+const CHECKOUT_EVENT_TYPES = new Set([
+  "checkout.session.completed",
+  "checkout.session.expired",
+]);
+
+function isBillingCheckout(obj: Record<string, unknown> | undefined): boolean {
+  if (!obj) return false;
+  const metadata = (obj.metadata as Record<string, string> | undefined) ?? {};
+  if (metadata.reservation_id) return false; // caução
+  const mode = obj.mode as string | undefined;
+  return mode === "subscription" || mode === "setup" || !!metadata.organization_id;
+}
+
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -156,6 +172,69 @@ async function handleBillingEvent(
     }).eq("id", orgId);
 
     jsonLog("info", { reqId, evt: "billing_sub_deleted", orgId, stripeSubId });
+  }
+
+  // ── Checkout Session events (billing self-service) ───────────────────
+  // Caução de reserva já é tratada no path de reservations (isBillingCheckout=false).
+  // Aqui só billing: cliente terminou checkout em mode=subscription ou setup.
+  //
+  // O Stripe emite customer.subscription.created/updated AUTOMATICAMENTE após
+  // checkout em mode=subscription, e o handler acima (linhas 88+) faz o upsert real.
+  // Esse handler só sincroniza metadata.plan_id (que vem do checkout, não da sub)
+  // e registra o evento pra rastreamento.
+  if (eventType === "checkout.session.completed") {
+    const mode = obj.mode as string | undefined;
+    const sessionId = obj.id as string;
+    const stripeSubId = obj.subscription as string | null;
+    const planIdFromMeta = (obj.metadata as Record<string, string>)?.plan_id ?? null;
+
+    if (mode === "subscription" && stripeSubId && planIdFromMeta) {
+      // Garante que billing_subscriptions tem o plan_id correto (subscription.created
+      // pode ter chegado antes sem o plan_id resolvido, ou pode chegar depois).
+      const { data: existingSub } = await supabase
+        .from("billing_subscriptions")
+        .select("id, billing_plan_id")
+        .eq("stripe_subscription_id", stripeSubId)
+        .maybeSingle();
+
+      if (existingSub) {
+        if (existingSub.billing_plan_id !== planIdFromMeta) {
+          await supabase.from("billing_subscriptions").update({
+            billing_plan_id: planIdFromMeta,
+            updated_at: new Date().toISOString(),
+          }).eq("id", existingSub.id);
+        }
+      } else {
+        // Subscription ainda não foi criada pelo handler de subscription.created.
+        // Insere registro mínimo agora; subscription.created/updated faz o resto.
+        const { data: cust } = await supabase
+          .from("billing_customers")
+          .select("id")
+          .eq("organization_id", orgId)
+          .maybeSingle();
+
+        if (cust) {
+          await supabase.from("billing_subscriptions").insert({
+            organization_id: orgId,
+            billing_customer_id: cust.id,
+            billing_plan_id: planIdFromMeta,
+            stripe_subscription_id: stripeSubId,
+            status: "trialing",
+            payment_method: "card",
+          });
+        }
+      }
+    }
+
+    jsonLog("info", {
+      reqId,
+      evt: "billing_checkout_completed",
+      mode,
+      orgId,
+      sessionId,
+      stripeSubId,
+      planId: planIdFromMeta,
+    });
   }
 
   // ── Invoice events ───────────────────────────────────────────────────
@@ -322,7 +401,12 @@ serve(async (req) => {
     // Usam billing_events para idempotencia (separada de stripe_webhook_events).
     // ═══════════════════════════════════════════════════════════════════════
 
-    if (BILLING_EVENT_TYPES.has(eventType)) {
+    const objForRouting = event.data?.object as Record<string, unknown> | undefined;
+    const routeAsBilling =
+      BILLING_EVENT_TYPES.has(eventType) ||
+      (CHECKOUT_EVENT_TYPES.has(eventType) && isBillingCheckout(objForRouting));
+
+    if (routeAsBilling) {
       const { data: billingExisting } = await supabase
         .from("billing_events")
         .select("id")
@@ -334,7 +418,7 @@ serve(async (req) => {
         return new Response(JSON.stringify({ received: true }), { status: 200 });
       }
 
-      const obj = event.data?.object as Record<string, unknown>;
+      const obj = objForRouting!;
       const orgId = (obj?.metadata as Record<string, string>)?.organization_id ?? null;
 
       await handleBillingEvent(reqId, eventType, obj, orgId);
@@ -343,7 +427,7 @@ serve(async (req) => {
         stripe_event_id: eventId,
         event_type: eventType,
         organization_id: orgId,
-        data: { object_id: obj?.id, status: obj?.status },
+        data: { object_id: obj?.id, status: obj?.status, mode: obj?.mode },
       });
 
       return new Response(JSON.stringify({ received: true }), {

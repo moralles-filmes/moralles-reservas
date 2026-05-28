@@ -39,6 +39,49 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
   return !!data;
 }
 
+async function canManageOrgBilling(userId: string, organizationId: string): Promise<boolean> {
+  if (await isPlatformAdmin(userId)) return true;
+  const { data } = await supabase
+    .from("unit_members")
+    .select("role, units!inner(organization_id)")
+    .eq("user_id", userId)
+    .in("role", ["owner", "gerente"])
+    .eq("units.organization_id", organizationId)
+    .limit(1);
+  return !!(data && data.length > 0);
+}
+
+// Actions liberadas pra owner/gerente da org (não só platform_admin).
+// Cada action client-friendly checa canManageOrgBilling no próprio handler.
+const CLIENT_FRIENDLY_ACTIONS = new Set([
+  "change_plan",
+  "preview_plan_change",
+  "cancel_subscription_by_owner",
+]);
+
+// Helpers Stripe inline (pra preview_plan_change que não tem wrapper em stripe-billing.ts)
+import { getStripeSecretKey } from "../_shared/stripe-config.ts";
+
+async function stripeRequestRaw(
+  path: string,
+  method: "GET" | "POST" | "DELETE" = "GET",
+  body?: Record<string, string>,
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
+  const secretKey = await getStripeSecretKey();
+  if (!secretKey) throw new Error("Stripe não configurado.");
+  const opts: RequestInit = {
+    method,
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+  };
+  if (body) opts.body = new URLSearchParams(body).toString();
+  const res = await fetch(`https://api.stripe.com/v1${path}`, opts);
+  const data = await res.json();
+  return { ok: res.ok, status: res.status, data };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeadersFor(req) });
@@ -57,12 +100,15 @@ serve(async (req) => {
     }
     const callerId = callerData.user.id;
 
-    if (!(await isPlatformAdmin(callerId))) {
-      return jsonResponse(req, { error: "Apenas administradores da plataforma." }, 403);
-    }
-
     const body = await req.json().catch(() => ({}));
     const { action } = body;
+
+    // Bloqueia non-admins exceto pras client-friendly actions (cada uma checa
+    // canManageOrgBilling no próprio handler com a organization_id do payload).
+    const callerIsAdmin = await isPlatformAdmin(callerId);
+    if (!callerIsAdmin && !CLIENT_FRIENDLY_ACTIONS.has(action)) {
+      return jsonResponse(req, { error: "Apenas administradores da plataforma." }, 403);
+    }
 
     // ═════════════════════════════════════════════════════════════════════════
     // PLANS
@@ -480,6 +526,190 @@ serve(async (req) => {
       }
 
       jsonLog("info", { reqId, evt: "billing_subscription_cancelled", subId: subscription_id, atPeriodEnd: at_period_end });
+      return jsonResponse(req, { success: true });
+    }
+
+    // ─── change_plan (client-friendly) ────────────────────────────────────
+    // Owner/gerente OU platform_admin troca plano da própria sub.
+    // Stripe faz proration automático via proration_behavior=create_prorations.
+    if (action === "change_plan") {
+      const { subscription_id, new_plan_id, organization_id } = body;
+      if (!subscription_id || !new_plan_id || !organization_id) {
+        return jsonResponse(req, { error: "subscription_id, new_plan_id e organization_id são obrigatórios." }, 400);
+      }
+      if (!callerIsAdmin && !(await canManageOrgBilling(callerId, organization_id))) {
+        return jsonResponse(req, { error: "Sem permissão para esta organização." }, 403);
+      }
+
+      const { data: sub } = await supabase
+        .from("billing_subscriptions")
+        .select("id, stripe_subscription_id, organization_id, billing_plan_id")
+        .eq("id", subscription_id)
+        .single();
+
+      if (!sub || sub.organization_id !== organization_id) {
+        return jsonResponse(req, { error: "Assinatura não encontrada." }, 404);
+      }
+      if (!sub.stripe_subscription_id) {
+        return jsonResponse(req, { error: "Assinatura sem stripe_subscription_id (não pode trocar plano)." }, 400);
+      }
+      if (sub.billing_plan_id === new_plan_id) {
+        return jsonResponse(req, { error: "Plano selecionado é o atual." }, 400);
+      }
+
+      const { data: newPlan } = await supabase
+        .from("billing_plans")
+        .select("id, stripe_price_id_card, active")
+        .eq("id", new_plan_id)
+        .maybeSingle();
+
+      if (!newPlan || !newPlan.active) {
+        return jsonResponse(req, { error: "Novo plano não encontrado ou inativo." }, 404);
+      }
+      if (!newPlan.stripe_price_id_card) {
+        return jsonResponse(req, { error: "Novo plano sem stripe_price_id_card." }, 400);
+      }
+
+      // Retrieve subscription pra pegar o item_id atual
+      const subRes = await stripeRequestRaw(`/subscriptions/${sub.stripe_subscription_id}`);
+      if (!subRes.ok) {
+        jsonLog("error", { reqId, evt: "billing_change_plan_retrieve_error", err: subRes.data });
+        return jsonResponse(req, { error: "Falha ao buscar assinatura no Stripe." }, 500);
+      }
+
+      const items = (subRes.data.items as Record<string, unknown>)?.data as Record<string, unknown>[] | undefined;
+      const currentItemId = items?.[0]?.id as string | undefined;
+      if (!currentItemId) {
+        return jsonResponse(req, { error: "Subscription sem item ativo no Stripe." }, 500);
+      }
+
+      const updateRes = await stripeRequestRaw(`/subscriptions/${sub.stripe_subscription_id}`, "POST", {
+        "items[0][id]": currentItemId,
+        "items[0][price]": newPlan.stripe_price_id_card as string,
+        "proration_behavior": "create_prorations",
+      });
+
+      if (!updateRes.ok) {
+        const errMsg = (updateRes.data.error as Record<string, string> | undefined)?.message ?? "Falha ao trocar plano.";
+        jsonLog("error", { reqId, evt: "billing_change_plan_stripe_error", err: errMsg });
+        return jsonResponse(req, { error: errMsg }, 500);
+      }
+
+      await supabase.from("billing_subscriptions").update({
+        billing_plan_id: new_plan_id,
+        updated_at: new Date().toISOString(),
+      }).eq("id", subscription_id);
+
+      jsonLog("info", { reqId, evt: "billing_plan_changed", subId: subscription_id, newPlanId: new_plan_id, callerId });
+      return jsonResponse(req, { success: true });
+    }
+
+    // ─── preview_plan_change (client-friendly) ────────────────────────────
+    // Owner vê quanto vai cobrar agora (proration) antes de confirmar.
+    if (action === "preview_plan_change") {
+      const { subscription_id, new_plan_id, organization_id } = body;
+      if (!subscription_id || !new_plan_id || !organization_id) {
+        return jsonResponse(req, { error: "subscription_id, new_plan_id e organization_id são obrigatórios." }, 400);
+      }
+      if (!callerIsAdmin && !(await canManageOrgBilling(callerId, organization_id))) {
+        return jsonResponse(req, { error: "Sem permissão para esta organização." }, 403);
+      }
+
+      const { data: sub } = await supabase
+        .from("billing_subscriptions")
+        .select("stripe_subscription_id, organization_id")
+        .eq("id", subscription_id)
+        .single();
+
+      if (!sub || sub.organization_id !== organization_id || !sub.stripe_subscription_id) {
+        return jsonResponse(req, { error: "Assinatura inválida." }, 404);
+      }
+
+      const { data: newPlan } = await supabase
+        .from("billing_plans")
+        .select("stripe_price_id_card")
+        .eq("id", new_plan_id)
+        .maybeSingle();
+
+      if (!newPlan?.stripe_price_id_card) {
+        return jsonResponse(req, { error: "Plano sem price_id." }, 400);
+      }
+
+      // Retrieve subscription pra pegar item_id
+      const subRes = await stripeRequestRaw(`/subscriptions/${sub.stripe_subscription_id}`);
+      if (!subRes.ok) {
+        return jsonResponse(req, { error: "Falha ao buscar assinatura." }, 500);
+      }
+      const items = (subRes.data.items as Record<string, unknown>)?.data as Record<string, unknown>[] | undefined;
+      const currentItemId = items?.[0]?.id as string | undefined;
+
+      // Stripe /invoices/upcoming exige GET com query string (não aceita body)
+      const params = new URLSearchParams({
+        subscription: sub.stripe_subscription_id,
+        "subscription_items[0][id]": currentItemId ?? "",
+        "subscription_items[0][price]": newPlan.stripe_price_id_card,
+        "subscription_proration_behavior": "create_prorations",
+      });
+      const secretKey = await getStripeSecretKey();
+      const upcoming = await fetch(`https://api.stripe.com/v1/invoices/upcoming?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${secretKey}` },
+      });
+      const upcomingData = await upcoming.json();
+
+      if (!upcoming.ok) {
+        const errMsg = (upcomingData.error as Record<string, string> | undefined)?.message ?? "Falha ao calcular preview.";
+        jsonLog("error", { reqId, evt: "billing_preview_stripe_error", err: errMsg });
+        return jsonResponse(req, { error: errMsg }, 500);
+      }
+
+      return jsonResponse(req, {
+        success: true,
+        amount_due: upcomingData.amount_due ?? 0,
+        amount_remaining: upcomingData.amount_remaining ?? 0,
+        currency: upcomingData.currency ?? "brl",
+        period_start: upcomingData.period_start ? new Date(upcomingData.period_start * 1000).toISOString() : null,
+        period_end: upcomingData.period_end ? new Date(upcomingData.period_end * 1000).toISOString() : null,
+      });
+    }
+
+    // ─── cancel_subscription_by_owner (client-friendly) ───────────────────
+    // Owner cancela a própria sub. Sempre at_period_end=true (preserva o que pagou).
+    if (action === "cancel_subscription_by_owner") {
+      const { subscription_id, organization_id } = body;
+      if (!subscription_id || !organization_id) {
+        return jsonResponse(req, { error: "subscription_id e organization_id são obrigatórios." }, 400);
+      }
+      if (!callerIsAdmin && !(await canManageOrgBilling(callerId, organization_id))) {
+        return jsonResponse(req, { error: "Sem permissão." }, 403);
+      }
+
+      const { data: sub } = await supabase
+        .from("billing_subscriptions")
+        .select("id, stripe_subscription_id, organization_id, status")
+        .eq("id", subscription_id)
+        .single();
+
+      if (!sub || sub.organization_id !== organization_id) {
+        return jsonResponse(req, { error: "Assinatura não encontrada." }, 404);
+      }
+      if (sub.status === "canceled") {
+        return jsonResponse(req, { error: "Assinatura já cancelada." }, 400);
+      }
+
+      if (sub.stripe_subscription_id) {
+        const cancelRes = await cancelStripeSubscription(sub.stripe_subscription_id, true);
+        if (!cancelRes.ok) {
+          jsonLog("error", { reqId, evt: "billing_cancel_by_owner_stripe_error", err: cancelRes.error });
+          return jsonResponse(req, { error: cancelRes.error ?? "Falha ao cancelar no Stripe." }, 500);
+        }
+      }
+
+      await supabase.from("billing_subscriptions").update({
+        cancel_at_period_end: true,
+        updated_at: new Date().toISOString(),
+      }).eq("id", subscription_id);
+
+      jsonLog("info", { reqId, evt: "billing_subscription_cancelled_by_owner", subId: subscription_id, callerId });
       return jsonResponse(req, { success: true });
     }
 
