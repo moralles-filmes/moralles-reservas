@@ -17,12 +17,15 @@ function addDays(date: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Cadência alinhada à política de grace=3 dias / bloqueio em D+4 em
+// process-billing-overdue. Lembretes em D+5 ou D+8 não fariam sentido
+// porque a org já está blocked nesse momento.
 const REMINDER_OFFSETS = [
   { days: -3, type: "reminder_3d_before" },
   { days: 0, type: "reminder_due_today" },
-  { days: 2, type: "reminder_2d_after" },
-  { days: 5, type: "reminder_5d_after" },
-  { days: 8, type: "reminder_blocked" },
+  { days: 1, type: "reminder_1d_after" },
+  { days: 3, type: "reminder_3d_after" },
+  { days: 4, type: "reminder_blocked" },
 ];
 
 serve(async (req) => {

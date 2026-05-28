@@ -1,6 +1,6 @@
 // Worker: verifica invoices vencidas e atualiza billing_status das orgs.
 // Roda diariamente via pg_cron.
-// Política: vencido → past_due. +7 dias → grace_period. +8 dias (total) → blocked.
+// Política: vencido → past_due. +3 dias → grace_period. +4 dias (total) → blocked.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -11,8 +11,8 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
-const GRACE_PERIOD_DAYS = 7;
-const BLOCK_AFTER_DAYS = 8;
+const GRACE_PERIOD_DAYS = 3;
+const BLOCK_AFTER_DAYS = 4;
 
 serve(async (req) => {
   if (!requireInternalAuth(req)) {
