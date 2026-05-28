@@ -47,6 +47,10 @@ export interface BillingPlan {
   features: string[] | Record<string, unknown>;
   trial_days: number;
   popular: boolean;
+  // Marca o plano "trial automático" aplicado a toda nova organization criada.
+  // Cliente NUNCA escolhe esse plano manualmente (PricingTable filtra).
+  // Máximo 1 ativo por vez (UNIQUE PARTIAL no banco).
+  is_trial: boolean;
   active: boolean;
   sort_order: number;
   created_at: string;

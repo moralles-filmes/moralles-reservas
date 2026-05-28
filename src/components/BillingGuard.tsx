@@ -10,6 +10,16 @@ import type { BillingStatus } from "@/types/billing";
 const BLOCKED_STATUSES: BillingStatus[] = ["blocked", "suspended"];
 const WARNING_STATUSES: BillingStatus[] = ["pending_payment", "past_due", "grace_period"];
 
+// Mostra banner de "trial acabando" quando faltam ≤ esse número de dias.
+const TRIAL_ENDING_THRESHOLD_DAYS = 3;
+
+function trialDaysRemaining(trialEndsAt: string | null): number | null {
+  if (!trialEndsAt) return null;
+  const ms = new Date(trialEndsAt).getTime() - Date.now();
+  if (Number.isNaN(ms)) return null;
+  return Math.max(0, Math.ceil(ms / 86400000));
+}
+
 export function BillingGuard({ children }: { children: React.ReactNode }) {
   const { isPlatformAdmin, memberships } = useAuth();
   const { unitSlug } = useParams<{ unitSlug: string }>();
@@ -62,6 +72,19 @@ export function BillingGuard({ children }: { children: React.ReactNode }) {
       );
     }
     return <PaymentRequired status={bs} blockedReason={org.blocked_reason} unitSlug={unitSlug} />;
+  }
+
+  // Banner de "trial acabando" — D-3 client-side, sem worker envolvido.
+  if (bs === "trialing") {
+    const days = trialDaysRemaining(org.trial_ends_at);
+    if (days != null && days <= TRIAL_ENDING_THRESHOLD_DAYS) {
+      return (
+        <>
+          <BillingBanner status="trial_ending" daysRemaining={days} />
+          {children}
+        </>
+      );
+    }
   }
 
   return (

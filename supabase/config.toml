@@ -104,3 +104,7 @@ verify_jwt = false
 
 [functions.process-billing-unblock]
 verify_jwt = false
+
+# Worker: expira trial automático ao vencer e bloqueia org (pg_cron 03:00 UTC)
+[functions.process-trial-expiry]
+verify_jwt = false

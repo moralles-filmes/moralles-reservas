@@ -542,6 +542,16 @@ Módulo de cobrança recorrente das organizations (clientes do SaaS). Usa a **co
 - **`billing_plans.features` é `string[]`** (migration `20260528020000`) — array de bullets exibidos na pricing table pública. Legado `'{}'` (jsonb default antigo) é normalizado por `parsePlanFeatures()` em [src/types/billing.ts](src/types/billing.ts). Editor admin é um textarea (1 feature por linha) em `/platform/billing/planos`.
 - **Redeploy de `_shared/stripe-config.ts`** agora também afeta: `create-billing-checkout`, `manage-payment-methods`.
 
+### Trial automático ao criar empresa
+
+- **Org nova criada via `manage-organizations.create_organization` herda automaticamente o plano com `is_trial=true AND active=true`.** Trial é puramente LOCAL (sem registro em `billing_subscriptions`, sem Stripe envolvido) — apenas `organizations.billing_status='trialing'` + `trial_ends_at = now() + plan.trial_days`. Fallback seguro: se não houver plano trial cadastrado, org nasce `active` (comportamento legado). Falha ao aplicar trial NÃO faz rollback da criação da org.
+- **`is_trial` é mutuamente exclusivo via UNIQUE PARTIAL** (`billing_plans_only_one_active_trial`) — no máximo 1 plano com `is_trial=true AND active=true`. Pra trocar o plano trial atual, admin tem que desativar o anterior antes. UI em [BillingPlans.tsx](src/pages/platform/BillingPlans.tsx) traduz erro 23505 em mensagem amigável.
+- **Plano `is_trial=true` é FILTRADO de [PricingTable.tsx](src/components/PricingTable.tsx)** — cliente nunca escolhe trial manualmente, só recebe automaticamente. Filtro é `plans.filter(p => !p.is_trial)` antes do sort. Não confundir com `popular` (que só destaca visualmente).
+- **Worker `process-trial-expiry`** (cron `0 3 * * *` UTC, diário 00:00 BRT) move orgs com `billing_status='trialing'` + `trial_ends_at < now()` pra `blocked` com `blocked_reason='Trial expirado — escolha um plano para continuar usando.'`. **DEFENSIVO**: pula orgs com subscription ativa (admin pode ter criado plano manual) E orgs com override `grant_access` ativo (cortesia). Migration `20260528030000_billing_trial_auto.sql`.
+- **Banner D-3 client-side em [BillingGuard.tsx](src/components/BillingGuard.tsx)** — quando `billing_status='trialing'` E `trial_ends_at - now() <= 3 dias`, renderiza `<BillingBanner status="trial_ending" daysRemaining={N} />`. Sem worker, sem e-mail — só visual. Threshold é constante `TRIAL_ENDING_THRESHOLD_DAYS` no próprio guard.
+- **`Cobranca.tsx` detecta trial local** (`billing_status='trialing'` + sem subscription + `trial_ends_at`) e renderiza bloco "Período de teste" no topo (separado do bloco "Plano atual", que só aparece com subscription Stripe).
+- **Trial é one-shot por org.** Quando cliente bloqueado por trial expirado escolhe plano pago e depois cancela → fica `canceled`. NÃO recomeça em trial. Pra dar tempo extra a um cliente específico, admin usa override `extend_trial` em `billing_access_overrides` que continua funcionando.
+
 ---
 
 ## Workers automáticos (pg_cron)
@@ -560,6 +570,7 @@ Todos seguem o mesmo padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `inte
 | `billing-reminders` | `0 13 * * *` UTC | process-billing-reminders | Lembretes D-3, D0, D+2, D+5, bloqueio. Registra em `billing_notifications`. Dedupe por (org_id, event_type, dia). |
 | `billing-reconcile` | `0 6 * * *` UTC | process-billing-reconcile | Reconcilia subscriptions/invoices com Stripe (fonte de verdade). Desbloqueia orgs se invoice paga. |
 | `billing-unblock` | `*/5 * * * *` | process-billing-unblock | Desbloqueia orgs com invoice paga recente. Defesa dupla: webhook `invoice.paid` já desbloqueia, worker pega falhas. |
+| `billing-trial-expiry` | `0 3 * * *` UTC (00:00 BRT) | process-trial-expiry | Bloqueia orgs com trial local vencido (sem subscription). Pula orgs com sub ativa ou override grant_access. Migration `20260528030000_billing_trial_auto.sql`. |
 
 Workers lêem templates de `reservation_message_templates` (`customized=true`) ou usam defaults hardcoded. Idempotência via UNIQUE `(reservation_id, kind)` em `notifications_sent`.
 

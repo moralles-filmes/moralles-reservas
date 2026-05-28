@@ -105,6 +105,15 @@ export default function Cobranca() {
   const billingStatus = detail?.organization.billing_status as BillingStatus | undefined;
   const isBlocked = billingStatus === "blocked" || billingStatus === "suspended" || billingStatus === "canceled";
 
+  // Trial puramente local — org está em billing_status='trialing' MAS sem
+  // subscription (não passou pelo Stripe ainda). Aplicado automaticamente
+  // pelo manage-organizations na criação da org.
+  const trialEndsAt = detail?.organization.trial_ends_at ?? null;
+  const isLocalTrial = billingStatus === "trialing" && !sub && !!trialEndsAt;
+  const trialDaysLeft = trialEndsAt
+    ? Math.max(0, Math.ceil((new Date(trialEndsAt).getTime() - Date.now()) / 86400000))
+    : null;
+
   const defaultPm = pmData?.payment_methods.find((pm) => pm.is_default) ?? pmData?.payment_methods[0] ?? null;
 
   const activePlans = (plans ?? []).filter((p) => p.active);
@@ -204,6 +213,35 @@ export default function Cobranca() {
               <p className="text-amber-800">
                 Escolha um plano abaixo para reativar o acesso ao sistema.
               </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Período de teste local (sem subscription) */}
+      {isLocalTrial && (
+        <Card className="border-blue-200 bg-blue-50/40">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">Período de teste</CardTitle>
+            <Badge variant="secondary" className="bg-blue-100 text-blue-800">Trial</Badge>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm">
+              Você está testando a plataforma. Aproveite pra explorar tudo —
+              quando estiver pronto, escolha um plano abaixo pra continuar sem
+              interrupção.
+            </p>
+            <div className="flex items-center gap-2 text-sm">
+              <CalendarClock className="h-4 w-4 text-muted-foreground" />
+              <span className="text-muted-foreground">Trial acaba em:</span>
+              <span className="font-medium">
+                {trialDaysLeft === 0
+                  ? "hoje"
+                  : trialDaysLeft === 1
+                    ? "1 dia"
+                    : `${trialDaysLeft} dias`}
+                {" "}({formatDateBR(trialEndsAt!.slice(0, 10))})
+              </span>
             </div>
           </CardContent>
         </Card>

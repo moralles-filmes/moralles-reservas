@@ -170,7 +170,43 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao vincular proprietário à unidade." }, 500);
       }
 
-      return jsonResponse(req, { success: true, organization_id: org.id, unit_id: unit.id, owner_id: ownerId });
+      // 5. Auto-aplicar plano trial automático (se cadastrado).
+      // Busca o plano com is_trial=true AND active=true. UNIQUE PARTIAL garante
+      // no máximo 1. Se não houver plano trial, org nasce em billing_status
+      // 'active' (default) — fallback seguro. Falha aqui não rollback as etapas
+      // anteriores (admin pode aplicar trial manual via extend_trial override).
+      const { data: trialPlan } = await supabase
+        .from("billing_plans")
+        .select("trial_days")
+        .eq("is_trial", true)
+        .eq("active", true)
+        .maybeSingle();
+
+      let trialApplied = false;
+      if (trialPlan && trialPlan.trial_days > 0) {
+        const trialEndsAt = new Date(Date.now() + trialPlan.trial_days * 86400000).toISOString();
+        const { error: trialErr } = await supabase
+          .from("organizations")
+          .update({
+            billing_status: "trialing",
+            trial_ends_at: trialEndsAt,
+          })
+          .eq("id", org.id);
+
+        if (trialErr) {
+          console.error("manage-organizations:auto trial apply failed", trialErr);
+        } else {
+          trialApplied = true;
+        }
+      }
+
+      return jsonResponse(req, {
+        success: true,
+        organization_id: org.id,
+        unit_id: unit.id,
+        owner_id: ownerId,
+        trial_applied: trialApplied,
+      });
     }
 
     // ── update_organization ─────────────────────────────────────────────────────

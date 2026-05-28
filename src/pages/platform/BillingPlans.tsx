@@ -44,6 +44,7 @@ interface PlanFormState {
   stripe_price_id_pix: string;
   trial_days: string;
   popular: boolean;
+  is_trial: boolean;
   features: string;  // 1 feature por linha (textarea)
   max_units: string;
   max_members_per_unit: string;
@@ -61,6 +62,7 @@ const EMPTY_FORM: PlanFormState = {
   stripe_price_id_pix: "",
   trial_days: "0",
   popular: false,
+  is_trial: false,
   features: "",
   max_units: "",
   max_members_per_unit: "",
@@ -79,6 +81,7 @@ function planToForm(plan: BillingPlan): PlanFormState {
     stripe_price_id_pix: plan.stripe_price_id_pix ?? "",
     trial_days: (plan.trial_days ?? 0).toString(),
     popular: plan.popular === true,
+    is_trial: plan.is_trial === true,
     features: parsePlanFeatures(plan.features).join("\n"),
     max_units: plan.max_units?.toString() ?? "",
     max_members_per_unit: plan.max_members_per_unit?.toString() ?? "",
@@ -165,6 +168,7 @@ export default function BillingPlans() {
       stripe_price_id_pix: form.stripe_price_id_pix.trim() || null,
       trial_days: form.trial_days.trim() ? Math.max(0, Number(form.trial_days)) : 0,
       popular: form.popular,
+      is_trial: form.is_trial,
       features: featuresArray,
       max_units: form.max_units.trim() ? Number(form.max_units) : null,
       max_members_per_unit: form.max_members_per_unit.trim() ? Number(form.max_members_per_unit) : null,
@@ -181,7 +185,19 @@ export default function BillingPlans() {
       }
       setDialogOpen(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao salvar plano.");
+      const msg = err instanceof Error ? err.message : "Falha ao salvar plano.";
+      // UNIQUE PARTIAL billing_plans_only_one_active_trial — usuário ativou
+      // is_trial mas já existe outro ativo. Backend devolve a mensagem do
+      // Postgres; aqui traduzimos pra texto amigável.
+      const isUniqueViolation =
+        msg.includes("23505") ||
+        msg.toLowerCase().includes("only_one_active_trial") ||
+        msg.toLowerCase().includes("duplicate key");
+      if (form.is_trial && isUniqueViolation) {
+        toast.error("Já existe outro plano de trial ativo. Desative o anterior antes de marcar este como trial.");
+      } else {
+        toast.error(msg);
+      }
     }
   }
 
@@ -262,7 +278,14 @@ export default function BillingPlans() {
             <TableBody>
               {plans.map((plan) => (
                 <TableRow key={plan.id}>
-                  <TableCell className="font-medium">{plan.name}</TableCell>
+                  <TableCell className="font-medium">
+                    <div className="flex items-center gap-2">
+                      {plan.name}
+                      {plan.is_trial && (
+                        <Badge variant="secondary" className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0">TRIAL</Badge>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell className="text-xs text-muted-foreground font-mono">{plan.slug}</TableCell>
                   <TableCell>{formatCentsBRL(plan.amount_cents)}</TableCell>
                   <TableCell className="hidden md:table-cell">
@@ -410,6 +433,21 @@ export default function BillingPlans() {
                 id="plan-popular"
                 checked={form.popular}
                 onCheckedChange={(checked) => setForm((prev) => ({ ...prev, popular: checked }))}
+              />
+            </div>
+
+            <div className="sm:col-span-2 flex items-center justify-between rounded-md border border-amber-200 bg-amber-50/50 p-3">
+              <div>
+                <Label htmlFor="plan-is-trial" className="font-medium">Plano de trial automático</Label>
+                <p className="text-xs text-muted-foreground">
+                  Aplicado automaticamente a toda nova empresa criada. Apenas 1 plano de trial pode estar ativo por vez.
+                  Não aparece na lista de planos pra escolha do cliente.
+                </p>
+              </div>
+              <Switch
+                id="plan-is-trial"
+                checked={form.is_trial}
+                onCheckedChange={(checked) => setForm((prev) => ({ ...prev, is_trial: checked }))}
               />
             </div>
 

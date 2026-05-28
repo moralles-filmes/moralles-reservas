@@ -16,7 +16,11 @@ interface Props {
  *  - Com sub ativa em outro plan: "Trocar para este plano"
  */
 export function PricingTable({ plans, currentPlanId, onChoose, onChange, loadingPlanId }: Props) {
-  if (!plans.length) {
+  // Esconde o plano "trial automático" (is_trial=true). Ele é aplicado
+  // automaticamente a novas orgs, nunca é escolha manual do cliente.
+  const visible = plans.filter((p) => !p.is_trial);
+
+  if (!visible.length) {
     return (
       <p className="text-center text-muted-foreground py-8">
         Nenhum plano disponível no momento.
@@ -24,7 +28,7 @@ export function PricingTable({ plans, currentPlanId, onChoose, onChange, loading
     );
   }
 
-  const sorted = [...plans].sort((a, b) => a.sort_order - b.sort_order);
+  const sorted = [...visible].sort((a, b) => a.sort_order - b.sort_order);
 
   return (
     <div className="grid gap-6 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
