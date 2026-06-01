@@ -530,7 +530,25 @@ async function callGeminiWithFallback(
   // Primary: 1 retry (2 tentativas total) — se Flash falha 2x seguidas, a
   // sobrecarga regional persiste; mais espera só atrasa a resposta ao cliente.
   // Cai pro fallback logo. Pro tem cota TPM separada e geralmente está livre.
-  const primary = await callOnce(primaryModel, 1);
+  let primary: Response;
+  try {
+    primary = await callOnce(primaryModel, 1);
+  } catch (err) {
+    // Timeout / erro de rede esgotou os retries no primary. Antes de propagar
+    // (→ agent_error → handoff), tenta o fallback (Pro): cota TPM separada,
+    // geralmente livre quando o Flash está saturado regionalmente.
+    if (!fallbackModel) throw err;
+    console.warn(JSON.stringify({
+      level: "warn",
+      evt: "agent_model_fallback",
+      provider: "gemini",
+      from_model: primaryModel,
+      to_model: fallbackModel,
+      primary_error: String(err),
+    }));
+    const fb = await callOnce(fallbackModel, DEFAULT_HTTP_RETRIES);
+    return { resp: fb, modelUsed: fallbackModel };
+  }
   if (primary.ok || primary.status < 500 || !fallbackModel) {
     return { resp: primary, modelUsed: primaryModel };
   }
@@ -571,6 +589,7 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<string>
   ];
 
   let activeModel = model;
+  let emptyRetried = false;
   let iterations = MAX_ITERATIONS;
   while (iterations-- > 0) {
     const body = JSON.stringify({
@@ -609,30 +628,48 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<string>
     }
 
     const candidate = data.candidates?.[0];
-    if (!candidate) break;
-
-    const parts: any[] = candidate.content?.parts ?? [];
+    const parts: any[] = candidate?.content?.parts ?? [];
     const funcCalls = parts.filter((p: any) => p.functionCall);
     const textParts = parts.filter((p: any) => p.text);
 
-    contents.push({ role: "model", parts });
-
     if (funcCalls.length === 0) {
-      // finishReason="MAX_TOKENS" indica resposta truncada — Gemini retorna
-      // texto parcial mesmo assim. Log pra rastreio.
-      if (candidate.finishReason && candidate.finishReason !== "STOP") {
+      const text = textParts.map((p: any) => p.text).join("");
+      if (text.trim()) {
+        // finishReason != "STOP" (ex: MAX_TOKENS) → resposta truncada, mas o
+        // Gemini ainda devolve texto parcial. Log pra rastreio.
+        if (candidate?.finishReason && candidate.finishReason !== "STOP") {
+          console.warn(JSON.stringify({
+            level: "warn",
+            evt: "agent_unexpected_stop",
+            provider: "gemini",
+            model: activeModel,
+            finish_reason: candidate.finishReason,
+            iterations_left: iterations,
+          }));
+        }
+        return text;
+      }
+      // Resposta VAZIA (Gemini sob carga / safety devolve candidate sem texto e
+      // sem tool call, ou nenhum candidate). É a causa nº1 do "Desculpa, não
+      // consegui montar uma resposta agora". Uma re-tentativa no fallback (Pro,
+      // cota TPM separada) costuma resolver. NÃO empurra turno "model" vazio.
+      if (!emptyRetried && fallbackModel) {
+        emptyRetried = true;
+        activeModel = fallbackModel; // sticky pro resto do loop de tools
         console.warn(JSON.stringify({
           level: "warn",
-          evt: "agent_unexpected_stop",
+          evt: "agent_empty_retry",
           provider: "gemini",
-          model: activeModel,
-          finish_reason: candidate.finishReason,
-          iterations_left: iterations,
+          to_model: fallbackModel,
+          finish_reason: candidate?.finishReason ?? null,
         }));
+        continue;
       }
-      return textParts.map((p: any) => p.text).join("") || "";
+      return "";
     }
 
+    // Turno com tool calls: registra o turno do modelo e executa as tools.
+    contents.push({ role: "model", parts });
     const responseParts: any[] = [];
     for (const part of funcCalls) {
       const result = await opts.onToolCall(part.functionCall.name, part.functionCall.args ?? {});

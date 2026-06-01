@@ -438,6 +438,19 @@ const STUCK_PROCESSING_TIMEOUT_MS = 90_000;
 const HANDOFF_AUTO_RESOLVE_MS = 12 * 60 * 60 * 1000;       // 12h
 const HANDOFF_REMINDER_THROTTLE_MS = 6 * 60 * 60 * 1000;   // 6h
 
+// Janela de agregação (debounce) de rajada: cliente costuma mandar várias
+// mensagens picadas em poucos segundos. Esperamos esse intervalo antes de
+// acionar o LLM; se chegar mensagem mais nova na MESMA conversa durante a
+// espera, esta invocação desiste — quem responde é a invocação da ÚLTIMA
+// mensagem, que relê o histórico fresco e responde uma vez só com a rajada
+// inteira. Tunável: maior = pega rajadas mais lentas mas atrasa toda resposta.
+const DEBOUNCE_WINDOW_MS = 6_000;
+// Orçamento de tempo (desde o início da request) para um retry silencioso do
+// agente após erro transitório. Acima disso não retentamos (risco de estourar
+// o limite de 60s da Edge Function e o cliente não receber NADA).
+const AGENT_RETRY_BUDGET_MS = 30_000;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 // Marca o ciclo de vida da mensagem em processed_messages.
 async function markProcessed(messageId: string, outcome: string, error?: string): Promise<void> {
   try {
@@ -1394,6 +1407,40 @@ serve(async (req) => {
       }
     }
 
+    // ─── Append imediato + debounce de rajada ────────────────────────────────
+    // Grava esta mensagem já (append atômico) pra que as invocações irmãs da
+    // rajada e a invocação vencedora a enxerguem no histórico. Depois espera a
+    // janela de debounce: se durante a espera chegou mensagem MAIS NOVA nesta
+    // conversa, esta invocação desiste — quem responde é a invocação da última
+    // mensagem, que relê o histórico fresco e responde uma vez só com a rajada
+    // inteira. Resolve o "embaralha" (respostas paralelas fora de ordem) e
+    // reduz a carga simultânea no provider de IA (menos 503/timeout → handoff).
+    const appendedSelf = await appendToConversation(conv.id, conv.messages || [], "user", incomingText);
+    const myInboundTs = appendedSelf[appendedSelf.length - 1]?.timestamp ?? new Date().toISOString();
+
+    await sleep(DEBOUNCE_WINDOW_MS);
+    {
+      const { data: latestConv } = await supabase
+        .from("conversations")
+        .select("messages")
+        .eq("id", conv.id)
+        .maybeSingle();
+      // deno-lint-ignore no-explicit-any
+      const latestMsgs = (latestConv?.messages ?? []) as any[];
+      // deno-lint-ignore no-explicit-any
+      const newestUserTs = latestMsgs.reduce((acc: string, m: any) => {
+        if (m && m.role === "user" && typeof m.timestamp === "string" && m.timestamp > acc) return m.timestamp;
+        return acc;
+      }, "");
+      if (newestUserTs && newestUserTs > myInboundTs) {
+        jsonLog("info", { requestId, evt: "debounced_superseded", convId: conv.id });
+        await finish("debounced_superseded");
+        return new Response("ok");
+      }
+      // Vencedora da rajada: assume o histórico fresco (inclui toda a rajada).
+      conv.messages = latestMsgs;
+    }
+
     // Mensagens manuais do operador (send-manual-message) ficam salvas com
     // role: "human" — do ponto de vista do modelo isso é "assistant" (resposta
     // que veio do nosso lado). Sem o remap, Anthropic rejeita o request com
@@ -1419,7 +1466,27 @@ serve(async (req) => {
     const HISTORY_WINDOW_MS = 72 * 60 * 60 * 1000;
     const cutoffMs = Date.now() - HISTORY_WINDOW_MS;
 
-    const history: Array<{ role: "user" | "assistant"; content: string }> = (conv.messages || [])
+    // Separa o histórico (turnos já respondidos) das mensagens de usuário ainda
+    // PENDENTES — a rajada que ainda não respondemos: tudo que veio depois da
+    // última resposta do nosso lado (assistant/human). As pendentes viram UMA
+    // mensagem combinada pro LLM; o resto vira histórico. Sem isso, a rajada
+    // entraria no histórico E como userMessage (duplicada) ou fora de ordem.
+    // deno-lint-ignore no-explicit-any
+    const allMsgs: any[] = conv.messages || [];
+    let lastReplyIdx = -1;
+    for (let i = allMsgs.length - 1; i >= 0; i--) {
+      const r = allMsgs[i]?.role;
+      if (r === "assistant" || r === "human") { lastReplyIdx = i; break; }
+    }
+    const pendingUserMsgs = allMsgs
+      .slice(lastReplyIdx + 1)
+      // deno-lint-ignore no-explicit-any
+      .filter((m: any) =>
+        m && m.role === "user" && typeof m.content === "string"
+        && !HARDCODED_AGENT_NOISE.has(m.content.trim()) && m.content.trim());
+    const priorMsgs = allMsgs.slice(0, lastReplyIdx + 1);
+
+    const history: Array<{ role: "user" | "assistant"; content: string }> = priorMsgs
       // deno-lint-ignore no-explicit-any
       .filter((m: any) => {
         if (!m || typeof m.content !== "string") return false;
@@ -1439,7 +1506,11 @@ serve(async (req) => {
         content: m.content,
       }));
 
-    await appendToConversation(conv.id, conv.messages || [], "user", incomingText);
+    // Mensagem combinada da rajada (várias linhas se o cliente picou em vários
+    // balões). Fallback pro texto desta invocação se a separação vier vazia.
+    const combinedUserMessage =
+      // deno-lint-ignore no-explicit-any
+      pendingUserMsgs.map((m: any) => m.content.trim()).join("\n").trim() || incomingText;
 
     // Load AI config from settings (unit-scoped)
     const { data: configSetting } = await supabase
@@ -1751,7 +1822,7 @@ serve(async (req) => {
       `O número de WhatsApp do cliente é ${phone}. Hoje é ${todayBR}. ` +
       `Use as ferramentas disponíveis para reservas. ` +
       `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar. ` +
-      `Não invente horários, cardápio ou serviços — só use o que está documentado abaixo. ` +
+      `Não invente horários, cardápio, serviços, descontos, promoções nem benefícios de aniversário — só use o que está documentado abaixo. ` +
       `Se o pedido fugir do escopo (reclamação, evento corporativo, delivery não suportado, qualquer coisa que as ferramentas não cobrem), use a tool 'request_human_handoff' informando o motivo. ` +
       `IMPORTANTE: ao chamar 'request_human_handoff', SEMPRE envie ao cliente uma mensagem amigável avisando que um atendente humano vai responder em breve, antes de encerrar sua resposta. Nunca silencie sem aviso.` +
       `\n\nREGRAS OBRIGATÓRIAS PARA RESERVAS:\n` +
@@ -1761,7 +1832,7 @@ serve(async (req) => {
       `4. Para alterar uma reserva existente (update_reservation) que mude data ou horário, chame check_availability antes para validar o novo slot.\n` +
       `5. Se o cliente perguntar sobre uma data presente na lista 'Datas com bloqueio de reservas' (abaixo), NUNCA confirme disponibilidade de reserva. Na MESMA resposta (sem esperar o cliente perguntar de novo), deixe DUAS coisas claras juntas: (a) naquela data não estamos aceitando reservas pelo motivo entre parênteses; (b) o restaurante ESTARÁ ABERTO normalmente e o atendimento será por ORDEM DE CHEGADA — o cliente pode ir presencialmente. Exceção: se o título do bloqueio indicar evento privado, casa fechada para terceiros, manutenção ou similar, NÃO diga "venha por ordem de chegada" — nesse caso explique que naquela data não estamos atendendo o público geral. NUNCA diga que o restaurante está "fechado" — bloqueio de reserva ≠ fechamento. Use "não estamos aceitando reservas", "agenda de reservas indisponível" ou "estamos com bloqueio de reservas" pra falar da agenda; "aberto normalmente, atendimento por ordem de chegada" pra explicar o funcionamento. Se for bloqueio só de um salão (sufixo "— só no salão X"), ofereça reserva em OUTRO salão na mesma data. Para 'Datas especiais' marcadas como 'fechado', aí sim diga "estamos fechados" (é fechamento real). NÃO chame check_availability nem create_reservation para datas dessa lista — a resposta é direta com base no contexto.\n` +
       `6. Os "Horários de reservas por salão" (abaixo) são as JANELAS em que aceitamos RESERVAS — podem ser diferentes do horário completo de funcionamento do restaurante (ex: aceitamos reservas das 19:00 às 19:30, mas o restaurante funciona até 23:00). Quando o cliente perguntar "qual o horário?", "que horas abre/fecha?" ou similar (pergunta ambígua), responda DUAS coisas na mesma mensagem: (a) o horário de funcionamento do restaurante, se estiver documentado em "Observações sobre a unidade" ou "Outras informações" abaixo; E (b) os horários em que aceitamos reservas (das janelas listadas). Se o horário de funcionamento NÃO estiver documentado no contexto, responda apenas os horários de reserva, deixando claro que são os horários em que aceitamos reservas — NUNCA diga "não tenho essa informação" nem peça handoff humano só por isso. Se o cliente perguntar especificamente "até que horas funciona o almoço/jantar?" e a informação não estiver nas observações, diga que pode confirmar os horários de reserva e sugira que entre em contato para saber o horário completo de funcionamento. Para reservas: se o horário pedido não aparece nas janelas listadas, indique a janela mais próxima do mesmo dia (ou do dia seguinte). Se houver mais de um salão e algum atender no horário pedido, ofereça esse salão. Só chame check_availability quando o horário pedido CAI dentro de alguma janela listada e você precisa confirmar mesa para uma reserva concreta (data + hora + nº de pessoas). Cada janela pode ter anotações entre parênteses (% de desconto, antecedência mínima, caução). Mencione essas anotações quando relevantes pra resposta — sem inventar.\n` +
-      `7. Vouchers e Giftback: os vouchers ATIVOS deste cliente estão listados em "O que sabemos sobre este cliente" (se houver). Pode mencionar o código e a validade quando o cliente perguntar sobre desconto ou quando for relevante (ex: ao fechar uma reserva). NUNCA invente código de voucher, NUNCA prometa desconto fora das regras descritas em "Programa Giftback". Vouchers automáticos chegam ao cliente sozinhos (worker dispara via WhatsApp) — você NÃO emite voucher. Voucher de trigger "manual" só é emitido pela equipe, não ofereça por iniciativa.\n` +
+      `7. Vouchers, descontos e promoções: os vouchers ATIVOS deste cliente estão listados em "O que sabemos sobre este cliente" (se houver). Pode mencionar o código e a validade quando o cliente perguntar sobre desconto ou quando for relevante (ex: ao fechar uma reserva). NUNCA invente código de voucher. Vouchers automáticos chegam ao cliente sozinhos (worker dispara via WhatsApp) — você NÃO emite voucher. Voucher de trigger "manual" só é emitido pela equipe, não ofereça por iniciativa. CRÍTICO: NUNCA invente, prometa ou sugira qualquer desconto, promoção, cupom, brinde, cortesia ou benefício (incluindo desconto ou cortesia de aniversário) que não esteja EXPLICITAMENTE listado em "Programa Giftback", nos vouchers ativos deste cliente, ou em "Preços e condições do restaurante". Se o cliente perguntar sobre um desconto/promoção que NÃO está documentado acima, responda com clareza que NO MOMENTO não há nenhuma promoção ou desconto ativo — NÃO invente percentual, condição (ex: "mediante documento com foto", "válido no dia do aniversário") nem regra. O nome de um item do cardápio (ex: "Rodízio Especial") NÃO autoriza afirmar que existe desconto sobre ele.\n` +
       `8. Aniversário: se "O que sabemos sobre este cliente" indicar que HOJE é o aniversário do cliente, parabenize logo no início da resposta antes de tratar do pedido — mesmo que o cliente esteja só perguntando algo trivial. Se for nos próximos dias, só mencione se o cliente trouxer o assunto.\n` +
       `9. Cancelamento: quando o cliente pedir para cancelar (ex: "Cancelar", "Quero cancelar", "Cancela minha reserva"), siga este fluxo:\n` +
       `   (a) Se o cliente informou o código da reserva, confirme data/horário/código com ele e, após confirmação, chame cancel_reservation com o código.\n` +
@@ -1791,7 +1862,9 @@ serve(async (req) => {
         : "") +
       (specialLines.length ? `\n\nDatas especiais nos próximos 60 dias:\n${specialLines.join("\n")}` : "") +
       (blockedLines.length ? `\n\nDatas com bloqueio de reservas nos próximos 60 dias (agenda indisponível, mas o restaurante pode estar funcionando):\n${blockedLines.join("\n")}` : "") +
-      (giftbackLines.length ? `\n\nPrograma Giftback (regras automáticas ativas):\n${giftbackLines.join("\n")}` : "") +
+      (giftbackLines.length
+        ? `\n\nPrograma Giftback (regras automáticas ativas):\n${giftbackLines.join("\n")}`
+        : `\n\nPrograma Giftback: esta unidade NÃO tem nenhuma regra automática de promoção, desconto, cupom ou benefício de aniversário ativa no momento. Se o cliente perguntar sobre desconto ou promoção e ele NÃO tiver voucher ativo listado em "O que sabemos sobre este cliente", deixe claro que no momento não há nenhuma promoção ou desconto — NÃO invente percentual, condição nem regra.`) +
       (settingsMap["rules_and_conditions"] ? `\n\nPreços e condições do restaurante (use para responder sobre valores, regras e condições):\n${settingsMap["rules_and_conditions"]}` : "") +
       ((() => {
         const parts: string[] = [];
@@ -1817,14 +1890,14 @@ serve(async (req) => {
     let agentError: string | null = null;
     let finalText = "";
 
-    try {
-      finalText = await runAgentLoop({
+    let mutatingToolUsed = false;
+    const runOnce = () => runAgentLoop({
         provider: provider_ai,
         apiKey,
         model: modelOverride,
         systemPrompt,
         history,
-        userMessage: incomingText,
+        userMessage: combinedUserMessage,
         tools: agentTools,
         onUsage: (u) => {
           totalUsage.input_tokens += u.input_tokens;
@@ -1843,15 +1916,18 @@ serve(async (req) => {
                 result = await checkAvailability(input.date, input.time, input.party_size, unitId!, input.hall_name);
                 break;
               case "create_reservation":
+                mutatingToolUsed = true; // desliga o retry silencioso (evita reserva duplicada)
                 result = await createReservation({ ...input, phone, unit_id: unitId!, organization_id: organizationId });
                 break;
               case "get_reservation":
                 result = await getReservation(input.reservation_code ? input : { ...input, phone }, unitId!);
                 break;
               case "update_reservation":
+                mutatingToolUsed = true; // desliga o retry silencioso (evita alteração duplicada)
                 result = await updateReservation(input);
                 break;
               case "cancel_reservation":
+                mutatingToolUsed = true; // desliga o retry silencioso (evita cancelamento duplicado)
                 result = await cancelReservation(input.reservation_code);
                 break;
               case "list_customer_reservations":
@@ -1878,9 +1954,27 @@ serve(async (req) => {
           }
         },
       });
-    } catch (err) {
-      agentError = String(err);
-      jsonLog("error", { requestId, evt: "agent_loop_error", err: agentError });
+
+    // Roda o agente. Em erro transitório (timeout / 5xx / quota momentânea)
+    // ANTES de qualquer tool que altere estado, tenta UMA vez mais em silêncio
+    // antes de cair pra handoff — desde que ainda dentro do orçamento de tempo.
+    // Nunca retenta se uma reserva já foi criada/alterada/cancelada (evita
+    // duplicar) nem se o tempo estourar (evita deixar o cliente sem resposta).
+    for (let attempt = 0; attempt <= 1; attempt++) {
+      try {
+        finalText = await runOnce();
+        agentError = null;
+        break;
+      } catch (err) {
+        agentError = String(err);
+        jsonLog("error", { requestId, evt: "agent_loop_error", attempt, err: agentError });
+        const elapsed = Date.now() - t0;
+        if (attempt === 0 && !mutatingToolUsed && elapsed < AGENT_RETRY_BUDGET_MS) {
+          jsonLog("warn", { requestId, evt: "agent_retry", elapsed_ms: elapsed });
+          continue;
+        }
+        break;
+      }
     }
 
     const usedModel = modelOverride;
