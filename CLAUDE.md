@@ -1,749 +1,365 @@
 # moralles-reservas
 
-Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Arquitetura **multi-tenant**: organizations → units → unit_members.
+Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Multi-tenant: `organizations → units → unit_members`.
 
 ---
 
 ## 🧭 O que pertence neste arquivo (regra de ouro)
 
-**Só entra aqui o que muda decisão de código futuro** — invariantes que evitam bug, gotchas de stack, contratos cross-feature, convenções de design. Antes de adicionar algo, pergunte:
+**Só entra aqui o que muda decisão de código futuro** — invariantes que evitam bug, gotchas de stack, contratos cross-feature. Antes de adicionar algo:
 
-- É **descobrível em `ls`**, `git log`, `git blame`, ou lendo o próprio arquivo? → **não entra**. Documente no código com comentário curto.
-- É **histórico** (migration X foi rodada em Y, bug Z foi corrigido)? → **não entra**. Banco/git já guardam.
-- É **status atual** de um arquivo ("será removido", "em refactor")? → **não entra**. Ou remove o arquivo, ou marca com `@deprecated` no próprio código.
-- É **invariante** que vale pra próxima feature ("RLS força X", "writer Y precisa chamar RPC Z", "padrão de cleanup de storage")? → **entra**, com **regra + por quê + como aplicar + ponteiro de código**.
+- Descobrível em `ls` / `git log` / `git blame` / lendo o próprio arquivo? → **não entra**. Comentário curto no código.
+- Histórico ("bug X foi corrigido em data Y", "antes era A, hoje é B")? → **não entra**. Git já guarda.
+- Status transicional ("legado", "deprecated", "será removido")? → **não entra**. Marca `@deprecated` no código ou remove de vez.
+- Invariante futuro ("RLS força X", "writer Y precisa chamar RPC Z")? → **entra**, em **uma frase de regra + uma frase de por quê + ponteiro `arquivo.ts:linha`**. Sem storytelling.
 
-Quando este arquivo dobrar de tamanho, reaudita: hardening de hoje vira CLAUDE.md de amanhã, comentário-de-código depois de amanhã.
+### Regra para agentes IA editando este arquivo (humanos e bots)
 
-## Visão geral
-
-- **Landing pública** (`/`) — descobrir restaurantes por cidade, busca por nome
-- **Portal público** (`/r/:slug`) — landing do restaurante com CTAs (Reservar/Fila). `?mode=embed` (versão limpa pra iframe), `?action=reservar|waitlist` (auto-abre dialog). Combina: `?mode=embed&action=reservar` pra link de reserva limpo
-- **Widget de reserva** (`/w/:slug`) — campos personalizados por widget (`field_config`, `client_instructions`). Pra link simples, prefira `/r/:slug?mode=embed`
-- **Agente IA WhatsApp** — cria/altera/cancela reservas conversacionalmente
-- **Painel de Gestão** (`/g/:unitSlug`) — configurações, relatórios, clientes, auditoria
-- **Painel Plataforma** (`/platform`) — super-admin: empresas, unidades, automação (WhatsApp + IA)
-- **Painel Operacional** (`/o/:unitSlug`) — reservas do dia, fila de espera, walk-ins
+- **Atualize proativamente quando descobrir invariante novo**, sem esperar o usuário pedir. Vale pra: gotcha de stack, contrato entre Edge Functions, RLS/multi-tenant, padrão cross-feature.
+- **Aplique o filtro acima antes de escrever a linha.** Se cai em descobrível/histórico/status, NÃO entra — vai pro código como comentário curto, ou some.
+- **Formato obrigatório:** `**regra em 1 frase.** Por quê (1 frase). [arquivo.ts](arquivo.ts).` Sem parágrafos longos, sem datas de bug.
+- **Audite ao notar inchaço.** Quando o arquivo passar de **40K chars**, é prioridade — corte o que virou ruído antes de adicionar mais.
 
 ---
 
-## ⚠️ Segurança antes de commitar / push (LEITURA OBRIGATÓRIA)
+## ⚠️ Segurança antes de commitar (LEITURA OBRIGATÓRIA)
 
-**Todo agente — humano ou IA — DEVE auditar o diff antes de qualquer `git commit` ou `git push`.** O repositório vai pra GitHub e dispara deploy público no Vercel: qualquer secret vazado é **público em segundos** e precisa ser **rotacionado em todos os providers** (Supabase, Anthropic, OpenAI, Gemini, Grok, DeepSeek, Z-API, WAHA, Meta, Resend). Não tem "desfazer" — `git push --force` não apaga o que já foi indexado por bots.
+Repo público no GitHub + deploy automático Vercel: secret vazado é público em segundos e exige rotação no provider (push --force NÃO apaga o que bot já indexou).
 
-### Checklist obrigatório antes de `git add` / `git commit` / `git push`
+1. **Rode `git status` + `git diff --cached`** — revise 100% das linhas adicionadas.
+2. **Padrões de secret a procurar:** `sk-`, `sk-ant-`, `xai-`, `re_`, `AIza`, `eyJ` (JWT), `Bearer `, `Basic `, `service_role`, `SERVICE_ROLE_KEY`, `password`/`senha`/`secret`/`token`/`api_key`/`client_token` com valor real, URLs com creds embutidas (`https://u:p@...`, `postgres://...:...@...`), webhooks com secret no path/query.
+3. **Nunca commitar:** `.env*`, `*.pem`, `*.key`, `id_rsa*`, `service-account*.json`, `supabase/.env`, dumps de DB.
+4. **Sempre `git add caminho/arquivo`** — nunca `git add .` / `git add -A` sem revisar a lista antes.
+5. **Secrets de Edge Function → `supabase secrets set`**, NUNCA no `.env` do frontend ou comentários.
+6. **`VITE_*` é público no bundle** — só pra `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`. Qualquer outra chave NÃO pode ter esse prefixo.
+7. **Em dúvida, não commite** — pergunte antes.
 
-1. **Rodar `git status` e `git diff --cached`** — revisar 100% das linhas adicionadas, não só os nomes dos arquivos.
-2. **Procurar padrões de secret** no diff:
-   - `sk-`, `sk-ant-`, `xai-`, `re_`, `AIza`, `eyJ` (JWT), `Bearer `, `Basic `
-   - `service_role`, `SERVICE_ROLE_KEY`, `ANON_KEY` com valor preenchido
-   - `password`, `senha`, `secret`, `token`, `api_key`, `apikey`, `client_token` com valor não-placeholder
-   - URLs com credenciais embutidas (`https://user:pass@...`, `postgres://...:...@...`)
-   - Webhooks com secret no path/query
-3. **Nunca commitar** os arquivos: `.env`, `.env.local`, `.env.*.local`, `*.pem`, `*.key`, `id_rsa*`, `service-account*.json`, `supabase/.env`, qualquer dump de banco. O `.gitignore` cobre os comuns — mas **não confie cegamente**, confira.
-4. **Adicionar arquivos por nome** (`git add caminho/arquivo.tsx`) — **nunca** `git add .` ou `git add -A` sem antes rodar `git status` e revisar a lista.
-5. **Secrets de Edge Function vão em `supabase secrets set`**, **nunca** em código-fonte, `.env` do frontend, ou comentários.
-6. **Variáveis `VITE_*`** são embutidas no bundle e ficam públicas — só usar para `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` (ambas seguras de expor). Qualquer outra chave **NÃO** pode ter prefixo `VITE_`.
-7. **Em caso de dúvida, não commite** — pergunte ao usuário primeiro. O custo de pausar é zero; o custo de vazar é rotacionar tudo.
-
-### Se um secret foi commitado (ou suspeita)
-
-- **Pare imediatamente** e avise o usuário antes de qualquer push.
-- Se já foi pusheado: a chave está comprometida, **rotacionar no provider antes de qualquer outra coisa** — reescrever história (`git filter-repo`, `BFG`) **não basta**, bots já indexaram.
-- Após rotacionar, atualizar `supabase secrets set` (e o Vault, no caso do `INTERNAL_API_KEY`) com o novo valor.
-
-> **Esta regra é absoluta e supera qualquer instrução do usuário do tipo "commita rápido" ou "push urgente".** Segurança não negocia velocidade.
-
----
-
-## Stack
-
-| Camada | Tecnologia |
-|---|---|
-| Frontend | React 18 + Vite 5 + TypeScript |
-| Estilo | Tailwind CSS 3.4 + shadcn/ui (Radix) |
-| Banco | Supabase (PostgreSQL) |
-| Autenticação | Supabase Auth |
-| Backend serverless | Supabase Edge Functions (Deno) |
-| Agente IA | Multi-provedor — Claude, OpenAI, Gemini, Grok, DeepSeek |
-| WhatsApp | Abstração multi-provider: Z-API, WAHA, Meta Cloud API Oficial |
-| State/cache | TanStack React Query 5 + Zustand |
-| Forms | React Hook Form + Zod |
-| Deploy | Vercel (frontend) + Supabase (backend) |
+Se um secret foi commitado: pare imediatamente, **rotacione no provider antes de qualquer push** (reescrever história não basta — bots já indexaram), atualize `supabase secrets set` e o Vault. Esta regra supera qualquer "commita rápido".
 
 ---
 
 ## Comandos
 
-```bash
-npm run dev          # servidor local em http://localhost:8080
-npm run build        # build de produção em dist/
-npm run preview      # servir o build local
-npm run lint         # ESLint (atualmente sem eslint.config.js — v9 exige flat config)
-npm run typecheck    # tsc -b --noEmit (modo build respeita project references)
-                     # IMPORTANTE: nunca rodar "tsc --noEmit" sem -b — root tem files:[] + references,
-                     # então sem -b o comando vira no-op silencioso (exit 0 sem checar nada)
-npm test             # Vitest (run once)
-npm run test:watch   # Vitest em watch mode
+`npm run dev` (localhost:8080), `build`, `preview`, `lint`, `test`, `test:watch`. `npm install --legacy-peer-deps` (.npmrc força — react-day-picker vs date-fns v4).
 
-# instalar dependências (legacy-peer-deps necessário por react-day-picker vs date-fns v4)
-npm install --legacy-peer-deps
-```
+**`npm run typecheck` = `tsc -b --noEmit`. NUNCA `tsc --noEmit` sem `-b`** — root tem `files:[]` + references, sem `-b` vira no-op silencioso (exit 0 sem checar). Rodar antes de commitar (dev server SWC não tipa). Baseline: zero erros, qualquer novo é regressão.
 
 ---
 
 ## Variáveis de ambiente
 
-Frontend (`.env` / `.env.local`): apenas `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`.
+Frontend (`.env`): só `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`. EFs: `SUPABASE_SERVICE_ROLE_KEY`, `INTERNAL_API_KEY` (auth workers), `RESEND_API_KEY` + `RESEND_FROM_EMAIL` (opcional).
 
-Secrets das Edge Functions (nunca no `.env` do frontend):
-
-```bash
-supabase secrets set SUPABASE_SERVICE_ROLE_KEY=...
-supabase secrets set INTERNAL_API_KEY=...        # auth dos workers (outbox, voucher, reminder, survey)
-supabase secrets set RESEND_API_KEY=re_...       # e-mail (opcional)
-supabase secrets set RESEND_FROM_EMAIL="Moralles Reservas <reservas@seudominio.com.br>"
-# Stripe (LEGADO — desde 2026-05-27, PREFERIR configurar pelo painel em
-# /platform/automacao → card "Stripe — Configuração da Plataforma". O painel
-# grava em platform_secrets no banco; as Edge Functions leem de lá primeiro,
-# com fallback para Deno.env. Manter esses secrets apenas se quiser override
-# de emergência que não dependa de DB.)
-supabase secrets set STRIPE_SECRET_KEY=sk_test_...   # secret key da plataforma
-supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_... # signing secret do webhook
-# IA (LEGADO — desde 2026-05-20 NÃO há fallback global pra unit sem chave.
-# Cada unidade DEVE cadastrar a própria chave em /platform/automacao/<slug>.
-# Mantidos só pra rollback emergencial — o webhook-whatsapp não lê mais essas
-# vars. Pode remover quando confiança no novo fluxo estiver consolidada.)
-supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-supabase secrets set OPENAI_API_KEY=sk-...
-supabase secrets set GEMINI_API_KEY=AIza...
-supabase secrets set GROK_API_KEY=xai-...
-supabase secrets set DEEPSEEK_API_KEY=sk-...
-```
-
-> `INTERNAL_API_KEY` também precisa estar no Supabase Vault (`select vault.create_secret('...', 'internal_api_key')`) para os 4 jobs pg_cron funcionarem. Se rotacionar, atualizar nos DOIS lugares.
+- **`INTERNAL_API_KEY` precisa estar no Supabase Vault TAMBÉM** (`vault.create_secret(..., 'internal_api_key')`) pra `pg_cron` funcionar. Rotacionar nos DOIS lugares.
+- **Stripe e chaves de IA NÃO ficam em env vars.** Stripe em `platform_secrets` (DB, painel `/platform/automacao`); chaves de IA per-unit em `ai_provider_credentials` (BYOK, `/platform/automacao/<slug>`). Sem fallback global pra IA.
 
 ---
 
-## Roteamento
+## Roteamento (gotchas)
 
-```
-/                            → Index.tsx (landing pública)
-/r/:slug                     → PublicPortal.tsx (?mode=embed, ?action=reservar|waitlist)
-/w/:slug                     → WidgetPortal.tsx (widget com field_config)
-/m/:slug                     → MenuPortal.tsx (cardápio digital público)
-/admin/login                 → Auth.tsx
-/admin                       → redirect conforme auth state
+Estrutura completa em `src/App.tsx`. O que NÃO é descobrível:
 
-/g/:unitSlug                 → Painel de Gestão (GestaoLayout)
-  ├── /                      → Dashboard
-  ├── /relatorios/fluxo-clientes|vendas|comunicacao|avaliacoes|giftback
-  ├── /reservas              → Lista de reservas
-  ├── /reservas/calendario|saloes|saloes/:hallId|datas-especiais|bloqueios
-  ├── /reservas/widget|widget/:widgetId|formulario|comunicacao|ajustes
-  ├── /fila/comunicacao|ajustes
-  ├── /cardapios/meus-cardapios|meus-cardapios/:menuId|banners|ajustes
-  ├── /giftback/regras|vouchers|ajustes
-  ├── /clientes|conversas|configuracoes|conta|cobranca|auditoria|usuarios
-                               #   /conta substituiu /pagina-publica; rota antiga redireciona
-                               #   /cobranca = self-service de assinatura (whitelist no BillingGuard mesmo em blocked)
-
-/o/:unitSlug                 → Painel Operacional (OperacionalLayout)
-  ├── /                      → Reservas do dia
-  ├── /fila|passantes|giftback|conversas
-
-/platform                    → Painel Plataforma (só platform_admin)
-  ├── /empresas
-  ├── /automacao/:unitSlug   → 4 abas: WhatsApp + IA + Instruções + Diagnóstico
-  ├── /billing               → Dashboard de cobranças (KPIs, lista orgs, filtros)
-  ├── /billing/planos        → CRUD de planos (referencia stripe_price_id_card/boleto/pix)
-  └── /billing/:organizationId → Detalhe billing da org (customer, subscription, faturas, overrides)
-```
-
-> **Automação e Billing são exclusivos do super-admin (platform_admin).** Edge Functions `manage-channels`, `manage-ai-providers` e `manage-billing` validam `platform_admin` no JWT.
+- `/r/:slug` aceita `?mode=embed` (sem chrome, pra iframe) e `?action=reservar|waitlist` (auto-abre dialog). Combinável.
+- `/g/:unitSlug/cobranca` é a única rota whitelisted no `BillingGuard` quando org está `blocked/suspended/canceled` — sem isso, cliente bloqueado entra em loop.
+- `/platform/*` é exclusivo de `platform_admin`. Edge Functions `manage-channels`, `manage-ai-providers`, `manage-billing`, `manage-organizations`, `manage-stripe-accounts`, `manage-platform-secrets`, `whatsapp-health` validam `platform_admin` no JWT.
 
 ---
 
-## Estrutura de arquivos
-
-```
-moralles-reservas/
-├── src/
-│   ├── App.tsx                        # Roteamento + providers globais
-│   ├── main.tsx                       # Entry point React
-│   ├── index.css                      # CSS variables (tema warm restaurant + .theme-admin)
-│   ├── types/reserva.ts               # Tipos: Reserva, Customer, Mesa, WalkIn, WaitlistEntry...
-│   │
-│   ├── lib/
-│   │   ├── supabase.ts                # Cliente Supabase (singleton)
-│   │   ├── utils.ts                   # cn(), formatDateBR(), formatPhone(), slugify()
-│   │   ├── zapi.ts                    # Templates de mensagem WhatsApp (referência)
-│   │   ├── exportCsv.ts              # exportClientesCsv (CSV com BOM utf-8)
-│   │   #  utils.ts também exporta: formatCnpj (valida 14 dígitos + formata
-│   │   #  XX.XXX.XXX/XXXX-XX) e extractStoragePath (parse seguro de URL
-│   │   #  pública do bucket; retorna null se URL não é do bucket esperado)
-│   │   └── validators/organization.ts # Schemas Zod
-│   │
-│   ├── hooks/                         # Todos aceitam unitId como primeiro parâmetro
-│   │   ├── useReservas.ts             # CRUD de reservas (hall_id/widget_id/custom_field_values)
-│   │   ├── useAuth.ts                 # Autenticação + memberships + defaultUnitSlug
-│   │   ├── useCurrentUnit.ts          # Lê :unitSlug da URL → unit + org + role
-│   │   ├── useAllUnits.ts             # Lista cross-org (só platform_admin)
-│   │   ├── useUnitMembers.ts          # CRUD via manage-members
-│   │   ├── useCustomers.ts            # Update + stats + anonymize
-│   │   ├── useHalls.ts / useHallSchedules.ts / useHallTables.ts
-│   │   ├── useTableBlocks.ts / useSpecialDates.ts
-│   │   ├── useWidgets.ts / useCustomFields.ts
-│   │   ├── useAuditLog.ts / useWalkIns.ts / useWalkInStatsToday.ts
-│   │   ├── useWaitlist.ts / useWaitlistTemplates.ts / useWaitlistSettings.ts
-│   │   ├── useReservationTemplates.ts # Templates reminder_d1/survey_d1 (sincronizar defaults com workers)
-│   │   ├── useMenus.ts / useMenuPages.ts / useMenuBanners.ts
-│   │   ├── useDashboardMetrics.ts / useUnitHourRange.ts / useFluxoClientes.ts / useComunicacao.ts
-│   │   ├── useAvaliacoes.ts / useVouchers.ts / useGiftbackSettings.ts / useGiftbackRelatorio.ts
-│   │   ├── useOrganizations.ts / useWhatsAppChannels.ts / useWhatsAppHealth.ts
-│   │   ├── useConversations.ts / useAwaitingHumanCount.ts / useSendManualMessage.ts
-│   │   └── useUnitPublicContent.ts / useUnitAssetUpload.ts / useDiscoverUnits.ts
-│   │
-│   ├── stores/reservaStore.ts         # Filtros do painel (Zustand)
-│   │
-│   ├── components/
-│   │   ├── Breadcrumb.tsx             # Breadcrumb compartilhado. BreadcrumbReservas e BreadcrumbRelatorios delegam pra cá
-│   │   ├── PageHeader.tsx             # Header compartilhado — props: breadcrumb, title, description, children
-│   │   ├── ui/                        # shadcn/ui — não editar diretamente. ResponsiveDialog é wrapper próprio: bottom-sheet em mobile (<640px), Dialog centrado em desktop
-│   │   ├── reserva/
-│   │   │   ├── ReservaWizard.tsx      # Wizard público multi-step (pessoas/data/hora → salão → dados). Modos: "dialog" (PublicPortal) ou "embedded" (WidgetPortal)
-│   │   │   ├── wizard/                # useReservaWizard (state machine + Zod), availability-helpers (partitionHalls/getSlotsForDate), Step{DateTimeParty,Hall,GuestInfo}, WizardSummary/Footer/Success, PartySizeInput
-│   │   │   └── ReservaCard.tsx
-│   │   ├── waitlist/WaitlistFormPublic.tsx  # Form anônimo "Entrar na Fila" (code via RPC, prioritários)
-│   │   ├── menus/                     # MenuPagesEditor, MenuBannerEditor, ThemeEditor
-│   │   ├── share/                     # DownloadCard (QR), ShareCard (link+copy)
-│   │   ├── relatorios/               # DateRangePicker, FluxoLineChart, PartySizeChart, DowChart, ComunicacaoLineChart, ComunicacaoKindBar, avaliacoes/*
-│   │   ├── giftback/                 # VoucherStatusBadge, VoucherRuleDialog, IssueVoucherDialog
-│   │   ├── halls/                    # HallCard, HallScheduleGrid, HallScheduleSheet, TablesRangeInput
-│   │   ├── widgets/WidgetFieldEditor.tsx
-│   │   ├── dashboard/               # KpiCard, ChartCard, PeriodFilter, ReservationsByDayChart, OccupancyByHourChart, RatingsSummary, RatingDistributionBars, StarRating, RecentRatingsList, EmptyChartCard
-│   │   ├── layouts/
-│   │   │   ├── GestaoLayout.tsx       # Sidebar + .theme-admin
-│   │   │   ├── OperacionalLayout.tsx  # Header minimalista + .theme-admin
-│   │   │   ├── PlatformLayout.tsx     # Sidebar super-admin + .theme-admin
-│   │   │   └── SidebarUnitProfile.tsx # Bloco-perfil no topo da sidebar (hero+logo+switcher)
-│   │
-│   └── pages/
-│       ├── Index.tsx / PublicPortal.tsx / WidgetPortal.tsx / MenuPortal.tsx / Auth.tsx
-│       ├── gestao/
-│       │   ├── Dashboard.tsx / Reservas.tsx / Calendario.tsx / Clientes.tsx / Conversas.tsx
-│       │   ├── Configuracoes.tsx / Automacao.tsx / Avaliacoes.tsx / Conta.tsx
-│       │   ├── Auditoria.tsx / Usuarios.tsx
-│       │   ├── reservas/  (Saloes, SalaoDetalhe, DatasEspeciais, Bloqueios, Widget, WidgetDetail, Formulario, Comunicacao, Ajustes)
-│       │   ├── fila/      (Comunicacao, Ajustes)
-│       │   ├── cardapios/ (MeusCardapios, MenuDetail, Banners, Ajustes)
-│       │   ├── giftback/  (Regras, Vouchers, Ajustes)
-│       │   └── relatorios/ (FluxoClientes, Vendas, Comunicacao, Giftback)
-│       ├── operacional/   (ReservasDia, Fila, Passantes, Giftback, Conversas)
-│       └── platform/      (Empresas, Automacao)
-│
-├── supabase/
-│   ├── migrations/        # Toda migration nova SEMPRE em formato `YYYYMMDDHHMMSS_nome.sql` (padrão Supabase CLI). Migrations idempotentes por design — re-runs no remoto são no-op. APLICAR SEMPRE via `supabase db push` — nunca colar SQL no Studio/SQL Editor (gera entrada em schema_migrations com timestamp ≠ filename local, e o `db push` seguinte fica bloqueado por drift; recovery exige `supabase migration repair --status reverted <ver>`)
-│   └── functions/
-│       ├── _shared/
-│       │   ├── ai-providers.ts        # Abstração multi-provedor (runAgentLoop)
-│       │   ├── cors.ts                # corsHeadersFor — whitelist de Origin
-│       │   ├── email.ts               # Wrapper Resend
-│       │   ├── whatsapp-providers.ts  # parseInbound / sendOutbound / SendResult / validateMetaSignature
-│       │   ├── whatsapp-send.ts       # sendWhatsApp — exige pareamento channel_id↔unit_id
-│       │   ├── retry.ts              # fetchWithRetry (exponential backoff)
-│       │   ├── giftback.ts           # expiresAtEndOfDayBrt / formatExpiryBR / ensureUniqueVoucherCode / DEFAULT_GIFTBACK_TEMPLATE
-│       │   └── security.ts           # requireInternalAuth / sanitizePhone / jsonLog
-│       ├── webhook-whatsapp/          # Webhook unificado: resolve canal, idempotência, handoff UX, survey intercept, giftback
-│       ├── webhook-zapi/              # 410 Gone (legacy)
-│       ├── send-whatsapp/             # Auth dual (internal-key OU JWT membro). Grava notifications_sent
-│       ├── send-confirmation/         # WhatsApp + e-mail em paralelo
-│       ├── send-cancellation/         # WhatsApp ao cancelar reserva
-│       ├── create-reservation/        # Endpoint público. Usa availability.reserveSlot. Rate limit
-│       ├── manage-channels/           # CRUD whatsapp_channels (platform_admin)
-│       ├── manage-ai-providers/       # CRUD chaves IA (BYOK, platform_admin)
-│       ├── manage-members/            # CRUD unit_members
-│       ├── manage-organizations/      # CRUD organizations (platform_admin)
-│       ├── send-manual-message/       # Handoff humano
-│       ├── whatsapp-health/           # Diagnóstico (canal + IA + stats 24h)
-│       ├── process-notification-outbox/ # Worker outbox confirmação (pg_cron 1min)
-│       ├── process-voucher-triggers/    # Worker giftback (pg_cron 12:00 UTC)
-│       ├── process-reservation-reminders/ # Worker lembrete D-0 (pg_cron 13:00 UTC = 10:00 BRT)
-│       └── process-satisfaction-surveys/  # Worker pesquisa D+1 (pg_cron 17:00 UTC = 14:00 BRT)
-│
-├── .env.example
-├── tailwind.config.ts
-├── vite.config.ts
-└── CLAUDE.md
-```
-
----
-
-## Banco de dados (Supabase)
+## Banco de dados
 
 ### Modelo de tenancy
 
 ```
-organizations (1 cliente SaaS, ex. "Grupo Moralles")
-  └── units (1 restaurante físico, ex. "Moralles Centro")
+organizations (cliente SaaS)
+  └── units (restaurante físico)
         └── unit_members (user_id, unit_id, role: owner|gerente|operador)
 ```
 
-`customers` pertencem à **organization** (um cliente pode reservar em qualquer unidade da rede). Todas as demais tabelas de negócio levam `unit_id`.
+`customers` pertencem à **organization** (cliente reserva em qualquer unidade da rede). Todas as outras tabelas de negócio levam `unit_id`.
 
-### Tabelas principais
+### Migrations
 
-| Tabela | Descrição |
-|---|---|
-| `organizations` | Grupos de restaurantes — `name`, `slug` unique, `plan` |
-| `units` | Restaurante físico — `organization_id`, `name`, `slug`, `address` (jsonb), `timezone`, `description`, `price_range_min/max`, `hero_image_url`, `logo_url` |
-| `unit_members` | Membros com papel — `user_id`, `unit_id`, `role`, `email` (denorm), `name` |
-| `platform_admins` | Admins internos do SaaS |
-| `customers` | `name`, `phone` unique por `organization_id`, `email`, `birthday` (date nullable, giftback) |
-| `reservations` | `unit_id`, `customer_id`, `table_id`, `date`, `time`, `party_size`, `status`, `reservation_code`, `source` (`web`/`whatsapp`), `custom_field_values` JSONB, `satisfaction_rating` (1-5), `satisfaction_comment`, `payment_status` (not_required/pending_payment/paid/failed/refunded/expired), `payment_amount_cents`, `stripe_checkout_session_id`, `stripe_payment_intent_id`, `payment_expires_at` |
-| `tables` | `unit_id`, `hall_id`, `number`, `min_capacity`/`max_capacity`, `active` |
-| `halls` | Salões — `unit_id`, `name`, `active`, `allow_empty_seat`, `sort_order` |
-| `hall_schedules` | Janelas horárias — `hall_id`, `day_of_week`, `open_time`/`close_time`, `slot_minutes`, `min_advance_minutes`, `discount_percent`, `charge_enabled`/`charge_amount_cents` |
-| `conversations` | Chats WhatsApp — `unit_id`, `messages` JSONB, `status` (ai_active/awaiting_human/human_active), `last_silenced_reply_at`, `contact_name` (espelho do push_name corrente, atualizado a cada inbound) |
-| `business_hours` | **DEPRECATED** — fallback quando unit não tem halls |
-| `settings` | Chave-valor — `unit_id`, `key`, `value` |
-| `table_blocks` | Bloqueios — `unit_id`, `hall_id?`, `table_id?` (NULL=macro), `blocked_from`/`blocked_to` |
-| `special_dates` | Datas especiais com range — `date`/`end_date`, `hall_id?`, `is_closed`, override de horário/cobrança |
-| `reservation_widgets` | Widgets — `slug`, `field_config` JSONB, `client_instructions` |
-| `unit_custom_fields` | Campos personalizados (texto/opções/arquivo) |
-| `audit_log` | Trilha LGPD. Trigger genérico `audit_trigger_func()` ativo em `customers`, `reservations` e `unit_members` (este último via migration `20260518100000`). Toda criação/promoção/remoção de membro vira INSERT/UPDATE/DELETE no log com `unit_id` preenchido |
-| `notifications_sent` | Log outbound — `kind` (confirmation/reminder_d1/survey_d1/cancellation/waitlist_*/voucher_issued), `status`, `error` |
-| `processed_messages` | Idempotência inbound WhatsApp. FORCE RLS |
-| `whatsapp_channels` | Canais por unit — `provider`, `credentials` JSONB. FORCE RLS |
-| `ai_provider_credentials` | Chaves IA por unit (BYOK). FORCE RLS |
-| `webhook_executions` | Telemetria do webhook. FORCE RLS, TTL 30 dias |
-| `notification_outbox` | Fila confirmações com retry exponencial (5 tentativas, backoff 1m→4h) |
-| `walk_ins` | `unit_id`, `customer_name`, `party_size`, `table_id?`, `status` |
-| `waitlist` | `unit_id`, `customer_name`, `party_size`, `priority_category`, `code` (cíclica), `status` |
-| `waitlist_message_templates` | Templates por evento (entered/table_ready/feedback) |
-| `reservation_message_templates` | Templates por evento (reminder_d1/survey_d1) |
-| `menus` | Cardápios digitais (galeria) — `slug`, `theme` JSONB |
-| `menu_pages` | Imagens ordenadas do cardápio |
-| `menu_banners` | Banners da unit (home 9:16 / content 1:1) |
-| `voucher_rules` | Regras Giftback — `trigger_type` (after_rating/manual/birthday/frequency), `discount_percent`, `validity_days`. CHECK `voucher_rules_min_rating_when_after_rating` (migration `20260517110000`) exige `min_rating NOT NULL` quando `trigger_type='after_rating'` |
-| `vouchers` | Instâncias — `code` (8 chars), `status` (active/used/expired/cancelled). UNIQUE PARTIAL `vouchers_unit_rule_customer_active_idx` (unit_id, rule_id, customer_id) WHERE status='active' + rule_id IS NOT NULL: garante no máximo 1 voucher ativo por (rule, customer) |
-| `platform_secrets` | Secrets globais da plataforma (Stripe, futuras integrações) — `key` unique, `value`, `last4`. FORCE RLS sem policies — só `service_role` acessa via `manage-platform-secrets`. Frontend nunca vê `value` |
-| `stripe_accounts` | Conta Stripe Connect por unit — `stripe_account_id`, `charges_enabled`, `payouts_enabled`, `onboarding_complete`. FORCE RLS sem policies |
-| `stripe_webhook_events` | Idempotência de webhooks Stripe — `stripe_event_id` unique, `event_type`, `reservation_id`. FORCE RLS |
-| `billing_customers` | 1:1 com organization — `stripe_customer_id` (conta principal, não Connect). FORCE RLS sem policies |
-| `billing_plans` | Planos de mensalidade — `slug`, `amount_cents`, `stripe_price_id_card/boleto/pix`. RLS: authenticated lê ativos, platform_admin CRUD |
-| `billing_subscriptions` | Assinatura recorrente por org — `stripe_subscription_id`, `status`, `payment_method`. FORCE RLS |
-| `billing_invoices` | Faturas — `stripe_invoice_id`, `status`, `hosted_invoice_url`, `due_date`. FORCE RLS |
-| `billing_events` | Idempotência de webhooks Stripe de billing (separada de `stripe_webhook_events`). FORCE RLS |
-| `billing_access_overrides` | Overrides manuais de acesso — `grant_access`, `block_access`, `extend_trial`. RLS: platform_admin |
-| `billing_notifications` | Log de notificações de billing enviadas. FORCE RLS |
+- Formato `YYYYMMDDHHMMSS_nome.sql` (Supabase CLI). **Idempotentes por design.**
+- **Aplicar SEMPRE via `supabase db push`** — nunca colar SQL no Studio/SQL Editor. Studio grava em `schema_migrations` com timestamp ≠ filename, e o próximo `db push` fica bloqueado por drift; recovery exige `supabase migration repair --status reverted <ver>`.
 
-### Modelo de reservas (availability.ts)
+### Modelo de reservas (availability.ts — contrato cross-feature)
 
-A disponibilidade é resolvida em `supabase/functions/_shared/availability.ts` — fonte única de verdade compartilhada por `webhook-whatsapp` e `create-reservation`. Ordem:
+[supabase/functions/_shared/availability.ts](supabase/functions/_shared/availability.ts) é fonte única de verdade compartilhada por `webhook-whatsapp` e `create-reservation`. Ordem de resolução:
 
 1. **Janela de reserva** (`settings.booking_window_days`)
 2. **`special_dates`** — override fechado bloqueia; aberto substitui hall_schedule
-3. **Halls ativos** — special_date do hall > global, depois hall_schedules do dia
+3. **Halls ativos** — special_date do hall > global, depois `hall_schedules` do dia
 4. **Antecedência mínima** da janela que cobre o horário
-5. **Mesas compatíveis** — `min_capacity ≤ partySize ≤ max_capacity`. `allow_empty_seat` aceita `partySize >= min - 1`
+5. **Mesas compatíveis** — `min_capacity ≤ partySize ≤ max_capacity`; `allow_empty_seat` aceita `partySize ≥ min - 1`
 6. **`table_blocks`** — `table_id IS NULL` = macro (fecha hall/unit)
-7. **Conflitos** — first-fit aloca menor mesa disponível
+7. **First-fit** — aloca menor mesa disponível
 8. **Overbooking** — se ativo, cria reserva floating (`table_id: null`) em vez de rejeitar
 
-### Status de reserva
+- **Timestamps em `availability.ts` SEMPRE com offset BRT explícito (`-03:00`).** Deno runtime é UTC; sem offset, comparação contra `table_blocks.blocked_from/to` (BRT no banco) fica 3h fora e bloqueios parciais (ex.: 19h-22h) deixam reservas escaparem na borda. Replicar em qualquer query nova nesse arquivo.
 
-`pending` → `confirmed` → `no_show`
-`pending` ou `confirmed` → `cancelled`
+### Invariantes de tabelas
 
-### Status de walk-in
-
-`waiting` → `seated` → `left` | `waiting` → `no_show`
-
-### Status de fila (waitlist)
-
-`waiting` → `notified` → `seated` | `waiting`/`notified` → `cancelled`
+- **`reservations.source` (`web`/`whatsapp`)** é load-bearing: trigger `enqueue_confirmation_notification` filtra `source != 'whatsapp'` pra não duplicar template. Qualquer Edge Function nova que crie reserva via agente DEVE passar `source: "whatsapp"` em `reserveSlot` — frontend/wizard usa default `'web'`.
+- **`customers.email` é array (`emails[]`)** — append-only via `resolveOrCreateCustomer`.
+- **`business_hours`** é DEPRECATED — fonte de horário é `halls + hall_schedules`. Não construa nada novo em cima.
+- **Tabelas com credenciais usam `FORCE RLS` sem policies** (`whatsapp_channels`, `ai_provider_credentials`, `processed_messages`, `rate_limit_events`, `platform_secrets`, `stripe_accounts`, `stripe_webhook_events`, `billing_customers`, `billing_subscriptions`, `billing_invoices`, `billing_events`, `billing_notifications`, `webhook_executions`). UI acessa via Edge Function.
+- **`vouchers_unit_rule_customer_active_idx`** (UNIQUE PARTIAL em `vouchers` WHERE status='active' AND rule_id NOT NULL) garante no máximo 1 voucher ativo por (unit, rule, customer). Sempre tentar INSERT e tratar `23505` como dedupe silencioso.
+- **`voucher_rules` CHECK exige `min_rating NOT NULL` quando `trigger_type='after_rating'`** — queries do webhook usam `.lte('min_rating', rating)` puro.
+- **`organizations.billing_status`** é coluna autoritativa pro `BillingGuard` frontend E pra checks server-side em `create-reservation` / `webhook-whatsapp`. Valores: `active`, `trialing`, `pending_payment`, `past_due`, `grace_period`, `blocked`, `canceled`, `manual_override`, `suspended`. Default `'active'`.
+- **`audit_log`** usa trigger genérico `audit_trigger_func()` em `customers`, `reservations`, `unit_members`. Reservas/membros logam `unit_id`; clientes logam `organization_id` (porque pertence à org). Query nova em `audit_log` precisa `.or(unit_id.eq.X, organization_id.eq.Y)` cobrindo os 2 — filtrar só por `unit_id` esconde mudanças de cliente.
 
 ### RLS
 
-- **Anon**: insere em customers/reservations/waitlist (unit pública); lê organizations/units públicas. **Nunca lê tabelas de negócio direto** — passa por RPCs `SECURITY DEFINER` (`get_unit_public_full`, `get_widget_public`, `get_public_business_hours`, `get_public_hall_schedules`)
-- **Authenticated**: escopado por `is_unit_member(auth.uid(), unit_id)`. Tabelas com credenciais (whatsapp_channels, ai_provider_credentials, processed_messages) têm FORCE RLS sem policies — só `service_role`
-- **Edge Functions**: `SUPABASE_SERVICE_ROLE_KEY` (bypassa RLS)
+- **Anon insere em `customers`/`reservations`/`waitlist`** (units públicas), e **lê só por RPCs `SECURITY DEFINER`** (`get_unit_public_full`, `get_widget_public`, `get_public_hall_schedules`, `get_public_business_hours`). Policy `TO anon` direto em tabela de negócio é regressão.
+- **`anon_insert_*` policies têm `EXISTS (... WHERE is_public)`**.
+- **Authenticated** escopado por `is_unit_member(auth.uid(), unit_id)`. Edge Function bypassa via `SUPABASE_SERVICE_ROLE_KEY` mas deve validar `unit_id` da request contra o recurso (defense-in-depth).
+- **Toda policy RLS escopada por `unit_id` precisa de contraparte `platform_admin_*`** via `is_platform_admin(auth.uid())` — vale pra tabelas E pra `storage.objects` de buckets multi-tenant. `useCurrentUnit.ts` fabrica pseudo-membership "owner" pra super-admin operar units alheias; sem o paralelo, write é bloqueada apesar da UI mostrar "Proprietário".
+- **Toda Edge Function que faz guard com `is_unit_member` precisa do paralelo `is_platform_admin`** — mesma razão. Pattern canônico: `Promise.all([rpc("is_unit_member", ...), rpc("is_platform_admin", ...)]); if (!member.data && !admin.data) forbidden;`. Aplicado em `send-manual-message`, `send-cancellation`, `update-reservation`.
 
-### Storage
+### Storage (bucket `unit-assets`)
 
-- Bucket público `unit-assets` — path: `<unit_id>/logo-<ts>.<ext>`, `<unit_id>/hero-<ts>.<ext>`
-- CDN público (read), listing bloqueado, write só owner/gerente
-- **Cleanup obrigatório ao apagar/trocar imagem** — DB `*_url = null` ou DELETE não toca o blob no bucket. Sem cleanup ativo, cada upload descartado fica órfão, acumula custo de Storage e nunca é recuperado. Helpers em [src/lib/storage.ts](src/lib/storage.ts): `deleteUnitAssetByUrl(url, unitId?)` e `deleteUnitAssetsByUrls(urls, unitId?)` (lote). Erros são silenciosos (console.warn) — cleanup é secundário, não pode quebrar o save. O segundo parâmetro `unitId` valida que o path começa com `<unit_id>/` antes de apagar (defesa contra apagar arquivo de outra unit por bug). Padrões wireados:
-  - **Diff no save (hero/logo/gallery/cover/banner image_url)** — hooks `useUpdateUnitPublicContent`, `useUpdateMenu`, `useUpdateMenuBanner` fazem SELECT da URL antiga ANTES do UPDATE e apagam do bucket depois do UPDATE OK. `useDeleteMenuPage`, `useDeleteMenuBanner`, `useDeleteMenu` (cascade pra menu_pages) seguem o mesmo: SELECT → DELETE row → delete bucket.
-  - **Session uploads intermediários (Trocar A→B→C)** — hook só conhece A (DB) e C (saved). B (intermediário) fica órfã. Componentes que permitem múltiplos uploads antes do save mantêm `uploadedRef = useRef<Set<string>>()` e, no `onSuccess` do mutate, apagam tudo em `uploadedRef` que não bateu com a URL final salva. Implementado em [Conta.tsx](src/pages/gestao/Conta.tsx) (hero+logo+gallery), [MenuDetail.tsx ShareTab](src/pages/gestao/cardapios/MenuDetail.tsx) (capa edição), [MeusCardapios.tsx CreateMenuDialog](src/pages/gestao/cardapios/MeusCardapios.tsx) (capa criação, com cleanup ao cancelar/ESC/X via `onOpenChange` interceptado), [MenuBannerEditor.tsx](src/components/menus/MenuBannerEditor.tsx).
-  - **Caso de borda coberto pelo cron `cleanup-orphan-assets`** — se o usuário sobe imagem e fecha a aba do navegador sem salvar nem cancelar, o blob fica sem referência em DB. Cleanup `onUnmount` no React foi rejeitado (Strict Mode dev faz double-mount e apagaria a foto recém-upada; `beforeunload`/`pagehide` em SPA é flaky). Pega-se isso depois via worker `cleanup-orphan-assets` (Edge Function + pg_cron domingo 04:00 UTC, vide tabela de workers acima): chama RPC `list_orphan_unit_assets(grace_minutes)` que cruza `storage.objects` com `units.{hero,logo,gallery_photos}`, `menus.cover_image_url`, `menu_pages.image_url`, `menu_banners.image_url` e apaga em batches via Storage API. Grace period default 60min evita pegar uploads em curso de usuários ativos.
-  - **Nunca apagar via SQL `DELETE FROM storage.objects`** — sempre via API (`supabase.storage.from(BUCKET).remove([paths])`). API respeita policies; SQL direto bypassa e ainda pula triggers internos do Supabase Storage que limpam metadata.
+Path: `<unit_id>/logo-<ts>.<ext>`. CDN read público; listing bloqueado; write só owner/gerente. Substituir asset NÃO apaga blob antigo — sem cleanup, custo acumula.
+
+**Cleanup duplo obrigatório em qualquer feature que escreva no bucket:**
+
+1. **Diff DB-vs-form no save** — capturar URLs prévias ANTES da mutation, comparar com form depois, apagar paths que sumiram. Helpers em [src/lib/storage.ts](src/lib/storage.ts): `deleteUnitAssetByUrl(url, unitId?)` / `deleteUnitAssetsByUrls`.
+2. **Tracking de sessão (`uploadedRef = useRef<Set>()`)** — uploaders chamam `onUploaded({ publicUrl, path })`. No save, paths em `uploadedRef` que não ficaram no estado final são candidatos a remoção. Cobre "Trocar A→B→C".
+3. **`storage.remove()` NÃO lança** em RLS denied / file missing — retorna `{ error }`. Sempre destruturar e logar.
+4. **SEMPRE filtrar paths via `extractStoragePath()` de `@/lib/utils`** (rejeita URL de outro bucket → null) E confirmar `path.startsWith(<unit_id>/)` (defesa cross-tenant).
+
+NUNCA `DELETE FROM storage.objects` via SQL — SQL bypassa policies e pula triggers internos. Worker `cleanup-orphan-assets` (dom 04:00 UTC) cobre "usuário fechou aba sem salvar" (cleanup `onUnmount` rejeitado: Strict Mode double-mount; `beforeunload` flaky em SPA).
+
+**`units.price_range_min/max`:** UI tem campo único "ticket médio" → grava SÓ `price_range_max`, deixa `price_range_min` NULL. Formatters renderizam "até R$ X" no branch `min == null && max != null`.
 
 ---
 
 ## Wizard de reserva pública
 
-Fluxo público (`/r/:slug` no PublicPortal e `/w/:slug` no WidgetPortal) usa `ReservaWizard` em 3 passos: **Pessoas+Data+Hora → Ambiente → Dados**. Estado e validação ficam em [src/components/reserva/wizard/useReservaWizard.ts](src/components/reserva/wizard/useReservaWizard.ts) (state machine + schemas Zod por step).
+Fluxo público (`/r/:slug` e `/w/:slug`) em [src/components/reserva/wizard/useReservaWizard.ts](src/components/reserva/wizard/useReservaWizard.ts) (state machine + Zod por step).
 
-- **E-mail é obrigatório no front público** — schema do wizard usa `z.string().email()` sem `.optional()`. Já o banco (`customers.email`), o agente IA WhatsApp e o Edge Function `create-reservation` continuam aceitando customer sem e-mail. Não promover essa regra pro backend sem coordenar com o canal WhatsApp (cliente WhatsApp raramente fornece e-mail).
-- **Filtragem de halls no step 2** usa `partitionHalls()` em [wizard/availability-helpers.ts](src/components/reserva/wizard/availability-helpers.ts) — particiona em `compatible`/`alternative`/`closed` baseado em `schedules`, `min_capacity`/`max_capacity` (agregados das mesas ativas, vindos das RPCs) e `allow_empty_seat`. **Isso é apenas filtro visual** — `_shared/availability.ts` segue como fonte da verdade no submit; pode haver halls que "parecem compatíveis" e falham por bloqueio/conflito.
-- **Acordeão "Não encontrou opção ideal?"** lista halls que abrem em outros horários do dia — click volta pro step 1 com `hall_id` pré-fixado e `time` resetado.
-- **Mobile usa bottom-sheet fullscreen** via `ResponsiveDialog` (não o `Dialog` padrão). Wrapper em [src/components/ui/responsive-dialog.tsx](src/components/ui/responsive-dialog.tsx): `<640px` slide-up fullscreen, `≥640px` Dialog centrado. Inputs ficam `h-12` em mobile (tap target ≥44px). Footer com CTA sticky respeita `env(safe-area-inset-bottom)`.
-- **Tipos centralizados**: `PublicHall` e `PublicHallSchedule` ficam em [src/types/reserva.ts](src/types/reserva.ts) — não duplicar localmente nos portais.
+- **E-mail é obrigatório no frontend público** (`z.string().email()` sem `.optional()`) MAS opcional no banco / `create-reservation` / agente WhatsApp. Não promover essa regra pro backend sem coordenar (cliente WhatsApp raramente fornece e-mail).
+- **`partitionHalls()`** em [src/components/reserva/wizard/availability-helpers.ts](src/components/reserva/wizard/availability-helpers.ts) é apenas filtro visual — `_shared/availability.ts` segue como fonte de verdade no submit.
+- **Mobile usa `ResponsiveDialog` (bottom-sheet `<640px`, Dialog centrado `≥640px`)** — em [src/components/ui/responsive-dialog.tsx](src/components/ui/responsive-dialog.tsx). Inputs `h-12` em mobile (tap target ≥44px); footer respeita `env(safe-area-inset-bottom)`.
+- **Copy de bloqueio:** `reason: "blocked"` → "Não estamos aceitando reservas nesta data"; `reason: "closed_special"` → "Esta data o restaurante está fechado". Não confundir bloqueio (`table_blocks`) com fechamento (`special_dates is_closed`) na cópia.
 
 ---
 
 ## Dashboard e métricas
 
-Convenções de cálculo aplicadas em [useDashboardMetrics.ts](src/hooks/useDashboardMetrics.ts) e [useFluxoClientes.ts](src/hooks/useFluxoClientes.ts) — replicar em qualquer hook novo de relatório.
+Convenções em [src/hooks/useDashboardMetrics.ts](src/hooks/useDashboardMetrics.ts) e [src/hooks/useFluxoClientes.ts](src/hooks/useFluxoClientes.ts) — replicar em hook novo de relatório.
 
-- **Taxa de cancelamento** = `cancelled / (confirmed + cancelled + no_show) * 100`. **Exclui pending** — denominador são apenas reservas com desfecho decidido. Retorna `null` quando o denominador é 0 (UI renderiza "—" via `KpiCard.formatValue`).
-- **Taxa de no-show** = `no_show / (confirmed + no_show) * 100`. Mesma regra: `null` quando denom=0.
-- **"Pessoas esperadas hoje"** (`useReservaStats.pessoas_hoje`) soma apenas reservas `pending` ou `confirmed`. Canceladas E no-show são excluídas. O hook retorna também `canceladas_hoje` e `no_show_hoje` para exibição contextual.
-- **Gráfico "Ocupação por horário"** usa range dinâmico via [useUnitHourRange.ts](src/hooks/useUnitHourRange.ts), que agrega `hall_schedules.open_time/close_time` dos halls ativos. Fallback 8h-23h quando unit não tem halls/schedules.
-- **`KpiCard.formatValue`** renderiza "—" para `null`, `undefined`, `NaN` e `Infinity`. Suffix ("%", "⭐") só aparece quando o valor é numérico finito.
-- **Datas de eventos com timestamp UTC** (waitlist.created_at, walk_ins.arrived_at, notifications_sent.sent_at) — para agrupar por dia local, usar helper `isoToLocalDate(iso)` em vez de `.slice(0, 10)`. `.slice(0,10)` em UTC pode atribuir o dia errado para eventos próximos da meia-noite no fuso do restaurante. O padrão está em [useFluxoClientes.ts](src/hooks/useFluxoClientes.ts).
-- **`getDay()` em timestamp UTC** retorna o dia da semana no fuso LOCAL do browser — para waitlist/walk-ins, parsear via `new Date(isoToLocalDate(iso) + "T12:00:00").getDay()`. Para reservas, `r.date` (YYYY-MM-DD) já é dia local — basta `new Date(r.date + "T00:00:00").getDay()`.
-- **Ordenação de timestamps** — nunca usar `localeCompare` em strings ISO quando há mistura de formatos (com/sem `Z`, com/sem milissegundos). Sempre `new Date(iso).getTime()` numérico.
+- **Taxa de cancelamento** = `cancelled / (confirmed + cancelled + no_show) * 100`. **Exclui pending.** Retorna `null` se denom=0 (UI renderiza "—").
+- **Taxa de no-show** = `no_show / (confirmed + no_show) * 100`. Mesma regra.
+- **"Pessoas esperadas hoje"** soma apenas `pending` ou `confirmed`. Canceladas e no-show excluídas.
+- **`KpiCard.formatValue`** renderiza "—" para `null`/`undefined`/`NaN`/`Infinity`. Suffix ("%", "⭐") só com número finito.
+- **Datas de eventos com timestamp UTC** (waitlist/walk_ins/notifications_sent): use `isoToLocalDate(iso)` pra agrupar por dia local — `.slice(0, 10)` em UTC atribui dia errado em eventos próximos da meia-noite BRT.
+- **`getDay()` em timestamp UTC** retorna dia da semana no fuso LOCAL do browser. Pra waitlist/walk-ins parsear via `new Date(isoToLocalDate(iso) + "T12:00:00").getDay()`. Pra reservas, `r.date` (YYYY-MM-DD) já é dia local.
+- **Ordenação de timestamps** — sempre `new Date(iso).getTime()` numérico, nunca `localeCompare` (mistura de formatos com/sem Z / milissegundos quebra).
 
 ---
 
-## Agente IA — Arquitetura
+## Agente IA — WhatsApp
 
-### Fluxo de uma mensagem WhatsApp
+### Fluxo
 
 ```
-Cliente → Provider → webhook-whatsapp → resolve canal → carrega histórico
-  → runAgentLoop() → salva resposta → sendOutbound() → Cliente
+Cliente → Provider (Z-API/WAHA/Meta) → webhook-whatsapp
+  → resolve canal → load histórico → runAgentLoop()
+  → save resposta (sanitizada) → sendOutbound() → Cliente
 ```
 
-### Provedores suportados
+### Provedores
 
-| Provedor IA | Env var | Modelo padrão |
-|---|---|---|
-| Claude | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` |
-| OpenAI | `OPENAI_API_KEY` | `gpt-4o` |
-| Gemini | `GEMINI_API_KEY` | `gemini-2.5-flash` |
-| Grok | `GROK_API_KEY` | `grok-3` |
-| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+5 LLMs suportados — Claude, OpenAI, Gemini, Grok, DeepSeek. Provedor é per-unit via BYOK em `ai_provider_credentials`; modelo em `settings.ai_config.models[provider]`. Defaults e lista curada em [src/lib/aiModels.ts](src/lib/aiModels.ts) (UI) + [_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts) (backend) — ver invariante de sincronização abaixo.
 
-Provedor ativo configurado por unidade via BYOK (ai_provider_credentials). Modelo configurado por unidade em `settings.ai_config.models[provider]` (string vazia ou ausente = fallback pro default). **Chave de API é obrigatória por unidade — sem chave o agente não responde**, conversa vai pra handoff humano automático (sem fallback global de secret da plataforma desde 2026-05-20).
+### Invariantes do agente
 
-- **Default de modelo vive em DOIS arquivos que precisam ficar sincronizados** — [src/lib/aiModels.ts](src/lib/aiModels.ts) `DEFAULT_MODEL_BY_PROVIDER` (UI exibe como "Padrão (X)") + [supabase/functions/_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts) `DEFAULT_MODELS` (fallback runtime do `runAgentLoop`). Se mudar um sem o outro, UI promete X e backend usa Y silenciosamente. Quando o provedor descontinua um modelo (caso 2026-05: Google removeu `gemini-2.0-flash` pra contas novas → erro 404), atualizar AMBOS + atualizar a lista curada `MODELS_BY_PROVIDER` em `src/lib/aiModels.ts` (remover/substituir o ID) + redeploy de `webhook-whatsapp` e `manage-ai-providers` (compartilham `_shared/ai-providers.ts`).
-- **Modelo é Select com lista curada, não input livre.** A UI de [Automacao.tsx](src/pages/gestao/Automacao.tsx) (`AITab`) lê `MODELS_BY_PROVIDER[provider]` e renderiza opções. Se o valor salvo em `settings.ai_config.models[provider]` não está mais na lista (modelo descontinuado), aparece como opção em âmbar marcada "(descontinuado — trocar)" — usuário continua vendo o que está ativo, mas é forçado visualmente a trocar.
-- **Backend tem `resolveModel(provider, override)` como blindagem runtime** ([supabase/functions/_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts)). `KNOWN_MODELS` (Set por provider) espelha `MODELS_BY_PROVIDER` da UI; modelo fora da lista é ignorado, cai no `DEFAULT_MODELS[provider]` e loga `evt:"ai_model_fallback"` com `rejected`+`used`+`unitId`. Motivação: incidente 2026-05-20 — unidade ficou com `gemini-2.0-flash` (descontinuado pelo Google) salvo via UI antiga, agente lançava 404 e caía em "problema técnico". Hoje o webhook continua respondendo mesmo se a config tem lixo, e o warning fica visível em logs pro platform admin caçar configs ruins. **Quando atualizar/remover um modelo, sincronize: UI `MODELS_BY_PROVIDER`, backend `KNOWN_MODELS`, defaults `DEFAULT_MODEL_BY_PROVIDER`/`DEFAULT_MODELS`.**
-
-| Provider WhatsApp | Configuração |
-|---|---|
-| Z-API | `instance_id`, `token`, `client_token` |
-| WAHA | `base_url`, `api_key`, `session_name` |
-| Meta Cloud API | `phone_number_id`, `access_token`, `app_secret` |
-
-### Tools do agente
-
-`check_availability`, `create_reservation`, `get_reservation`, `update_reservation`, `cancel_reservation`, `list_customer_reservations` — todos aceitam `hall_name` opcional.
+- **Chave de API é per-unit, SEM fallback global.** `resolveApiKey` em [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts) lê só de `ai_provider_credentials WHERE active=true`. Sem chave → `throw api_key_not_configured:<provider>` → auto-handoff. Resolver futuro NÃO pode reintroduzir fallback global (cobrança não isola por tenant).
+- **Default de modelo vive em DOIS arquivos sincronizados:** [src/lib/aiModels.ts](src/lib/aiModels.ts) (`DEFAULT_MODEL_BY_PROVIDER`/`MODELS_BY_PROVIDER` — UI) + [supabase/functions/_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts) (`DEFAULT_MODELS`/`KNOWN_MODELS` — backend blindagem). Trocar/remover modelo descontinuado: atualizar os 4 + redeploy `webhook-whatsapp` e `manage-ai-providers`. `resolveModel()` cai pro default e loga `evt:"ai_model_fallback"` quando modelo está fora do set.
+- **Erro do agente é auto-handoff, não retry.** Exception em `runAgentLoop` → `conversations.status='awaiting_human'` com `handoff_reason: agent_error:<provider>:<model>` + `meta` em `webhook_executions`. Retry estrutural (modelo descontinuado, quota, key inválida) não resolve.
+- **Retry silencioso (UMA vez) gated por `!mutatingToolUsed` + tempo `<30s`.** Mutating tools (`create_reservation`/`update_reservation`/`cancel_reservation`) setam `mutatingToolUsed=true` — retry duplicaria. Tool mutante nova DEVE setar a flag.
+- **Mensagens não-texto (áudio/imagem/sticker) recebem `MEDIA_REPLY_TEXT` hardcoded — nunca silêncio.** `peekInboundMedia()` em `_shared/whatsapp-providers.ts` antes do `finish("ignored_non_text")`. Outcome `media_response`, zero token. Conversa em handoff humano: loga mas não responde auto.
+- **Toda saída do LLM passa por `sanitizeForWhatsApp`** ([_shared/whatsapp-format.ts](supabase/functions/_shared/whatsapp-format.ts)) antes do `sendOutbound` E do `appendToConversation`. Converte markdown padrão → formato WhatsApp. **Aplicar SÓ em saída de LLM** — NÃO em hardcoded, templates do lojista, ou `send-manual-message`.
+- **System prompt usa `SELECT *` em `units` e carrega TODOS os `settings`** (sem `.in()` por key). `restaurantInfoLines` (array em `webhook-whatsapp/index.ts`) é o gatekeeper: campo novo no bot = 1 linha nova. Reverter pra SELECT explícito ou `.in()` é regressão (lacunas recorrentes).
+- **Prompt injeta `special_dates` E `table_blocks` macro próximos 60d.** Sem isso, LLM responde "sim, aceitamos pra 12/06" pra perguntas sem horário/party. Bloqueios hall-específicos recebem sufixo `— só no salão X`. Regra 5 manda LLM NÃO chamar `check_availability` quando data está na lista. Feature nova de bloqueio aparece no mesmo bloco.
+- **`table_blocks` ≠ `special_dates is_closed`.** Bloqueio = "não aceitamos reservas" (restaurante pode estar aberto pra walk-in); fechamento = "restaurante não abre". Copy do prompt: "sem reservas"/"agenda indisponível" pra bloqueio; "fechado" só pra `is_closed`. Regra 5 manda dizer JUNTO: (a) não aceitamos reservas + (b) aberto, atendimento por ordem de chegada (exceto título indicar evento privado).
+- **Fonte de horário no prompt é `halls + hall_schedules`**, nunca `business_hours`. Helper `buildHallSchedulesBlock(unitId)` agrupa dias com janelas iguais, anota `% off` / antecedência / caução. Fallback pra `business_hours` só se unit não tem hall ativo (pré-migration 030).
+- **Bloco "Programa Giftback" SEMPRE emitido — âncora NEGATIVA explícita quando vazio.** Ausência não é negação pra LLM — ele preenche inventando promoções. Replicar padrão em qualquer bloco onde ausência possa virar invenção.
+- **Regra 7 do prompt proíbe fabricar QUALQUER desconto/promoção/cortesia/brinde** (não só voucher). Nome de item de cardápio não autoriza afirmar desconto. Negar direto sem handoff.
+- **Coluna JSONB NUNCA é interpolada direto em template literal.** Supabase JS retorna `jsonb` como objeto; `${obj}` vira `"[object Object]"` → LLM alucina. Tipar interface, extrair campo string, fallback `""`. Aplica a `units.address`, `customers.emails`, `whatsapp_channels.credentials`, `ai_provider_credentials.credentials`, `settings.value`, `menus.theme`, `reservations.custom_field_values`, `reservation_widgets.field_config`, `notification_outbox.payload`. Pattern em [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts) e [src/pages/PublicPortal.tsx](src/pages/PublicPortal.tsx).
+- **Resolver de entidade nomeada do LLM (`hall_name`, etc.) NUNCA usa `ilike + limit(1)`.** PostgREST retorna linha não-determinística em múltiplos matches. Pattern em `resolveHallId(unitId, name, partySize?)`: busca todos com `ORDER BY sort_order, name`; 0→undefined; 1→retorna; 2+ sem partySize→undefined; 2+ com partySize→filtra por capacidade agregada (`allow_empty_seat` subtrai 1). `undefined` faz o caller iterar todos os halls.
+- **`cancel_reservation` description manda LLM buscar código primeiro** (via `get_reservation`/`list_customer_reservations`). Função tem guard `if (!code?.trim())` retornando erro amigável; `.maybeSingle()` detecta zero rows. Tool nova com param lookup-dependent documenta isso na própria description.
+- **Confirmações informais PT-BR listadas na regra 10** ("Isso", "Tá bom", "Pode ser", "Fechado", "Bora", "Beleza", etc.). Re-checa `check_availability` antes de `create_reservation` mesmo após confirmação.
+- **Debounce de rajada por conversa.** Cada inbound é invocação independente sem fila. Webhook appenda mensagem, captura `myInboundTs`, espera `DEBOUNCE_WINDOW_MS` (6s), relê thread, desiste se há mensagem mais nova. Só a ÚLTIMA invocação prossegue e combina pendentes em `combinedUserMessage`. Path novo de inbound DEVE passar pelo debounce.
 
 ### Resiliência
 
-- Truncamento: últimas 20 mensagens **E** teto de 1500 tokens estimados (cap duplo em [_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts) `truncateHistory`).
-- Janela de 72h: mensagens mais antigas que isso são descartadas do contexto do LLM ([webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts), filtro antes do `truncateHistory`).
-- Filtro de lixo: respostas hardcoded de erro/handoff/empty-response não vão pro LLM (`HARDCODED_AGENT_NOISE`).
-- Prompt caching Claude (`cache_control: ephemeral`).
-- `max_tokens: 1024` por turno (input cap 1500 + output 1024 cabe em qualquer provider).
-- Timeout 12s por TENTATIVA HTTP, retry exponencial (1s/2s + jitter) em 5xx/429/network, 2 retries default.
-- Fallback de modelo dentro do provider quando primary esgota retries em 5xx: `gemini-2.5-flash` → `gemini-2.5-pro` (cotas TPM separadas). Apenas Gemini hoje (`FALLBACK_MODELS`).
-- Telemetria: `evt: "agent_usage"` (tokens), `evt: "agent_http_retry"` (cada retry), `evt: "agent_model_fallback"` (Flash→Pro), `evt: "agent_unexpected_stop"` (stop_reason ≠ end_turn).
+- **Truncamento:** últimas 20 mensagens E ≤1500 tokens estimados (`truncateHistory`). Janela 72h descarta mensagens antigas. Filtro `HARDCODED_AGENT_NOISE` remove strings hardcoded de erro/handoff/empty-response — string nova de resposta hardcoded DEVE ser adicionada ao set no mesmo PR.
+- **Prompt caching Claude** (`cache_control: ephemeral`) — bloco novo deve ser ANEXADO (preserva prefix) e gated por "if data exists".
+- **`max_tokens: 1024` por turno**, timeout 12s por tentativa, 2 retries (5xx/429/network, backoff exponencial) via [_shared/retry.ts](supabase/functions/_shared/retry.ts).
+- **Fallback same-provider:** `FALLBACK_MODELS.gemini` = Flash→Pro. `callGeminiWithFallback` cobre 5xx, timeout E resposta vazia (candidate vazio). Sticky na invocação. Outros providers `null`. Fallback novo replica os 3 caminhos.
+- **Telemetria:** `evt: agent_usage | agent_http_retry | agent_model_fallback | agent_empty_retry | agent_unexpected_stop`.
 
-### Invariantes pós-hardening (2026-05-20)
+### Idempotência / handoff UX
 
-Auditoria 2026-05-20 fechou 3 bugs do webhook WhatsApp (confirmação dupla, mídia ignorada, fallback genérico em erro). Manter os invariantes abaixo ao tocar qualquer código de webhook/agente.
-
-- **Reservas criadas via WhatsApp NÃO disparam template de confirmação.** O trigger SQL `enqueue_confirmation_notification` ([migration 028](supabase/migrations/20260507153453_028_notification_outbox.sql)) filtra `new.source is distinct from 'whatsapp'` — só enfileira `notification_outbox` quando reserva vem da web. Pra esse filtro funcionar, a coluna `reservations.source` precisa receber `'whatsapp'` quando criada pelo agente. Path: `webhook-whatsapp` → `createReservation` passa `source: "whatsapp"` para `reserveSlot` (em [_shared/availability.ts](supabase/functions/_shared/availability.ts)), que persiste em `reservations.source` (default `'web'`). Histórico: bug 2026-05-20 — `ReserveSlotParams` não incluía `source`, valor era silenciosamente descartado, toda reserva via WhatsApp gravava `source='web'` e disparava template duplicado. Replicar: qualquer Edge Function nova que crie reserva pelo agente DEVE passar `source: "whatsapp"`; qualquer caller do portal/wizard omite (default 'web' correto).
-- **Mensagens não-texto (áudio/imagem/sticker/etc) recebem resposta hardcoded — nunca silêncio.** `parseInbound` em [_shared/whatsapp-providers.ts](supabase/functions/_shared/whatsapp-providers.ts) retorna null pra qualquer não-texto. Webhook chama `peekInboundMedia(provider, payload)` ANTES do `finish("ignored_non_text")` — se retornar `InboundMediaPeek`, executa fluxo dedicado (idempotency → customer → conversation → envio de `MEDIA_REPLY_TEXT`) sem invocar o LLM. Conversa em handoff humano (`human_active`/`awaiting_human`) recebe a mídia no log mas não dispara resposta automática — atendente assume. Outcome `media_response` em `webhook_executions`. Custo: zero token. NÃO transcrever áudio/visualizar imagem aqui (fora de escopo; estrutura `peekInboundMedia` deixa fácil plugar Whisper/Vision depois).
-- **Erro do agente é auto-handoff, não retry.** Quando `runAgentLoop` lança exception (timeout, 4xx, modelo inválido, tool error não tratado), o webhook NÃO pede "tente de novo" — marca `conversations.status='awaiting_human'` com `handoff_reason: agent_error:<provider>:<model>`, avisa o cliente que humano assume, e grava `meta: {provider, model, channel_id}` em `webhook_executions` pra diagnóstico. Razão: erros estruturais (modelo descontinuado, quota exausta, key inválida) não resolvem com retry; cliente fica preso pingando o bot quebrado. Atendente vê a conversa em `/o/<unit>/conversas` com badge "Aguardando humano" e o handoff_reason mostra provider+model — clique pro Diagnóstico em `/platform/automacao/<slug>` mostra os últimos erros.
-- **Chave de API de IA é per-unit, sem fallback global da plataforma.** `resolveApiKey` em [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts) lê SÓ de `ai_provider_credentials` filtrado por `(unit_id, provider, active=true)`. Sem chave cadastrada → `throw api_key_not_configured:<provider>` → o catch do caller faz auto-handoff (`status='awaiting_human'`, `handoff_reason='api_key_not_configured:<provider>'`) e manda mensagem amigável pro cliente, idêntico ao path `agent_error`. Removido o fallback `Deno.env.get(ANTHROPIC_API_KEY|OPENAI_API_KEY|...)` em 2026-05-20 porque mascarava como "vazamento entre lojas" (toda unit sem BYOK usava o mesmo secret global → cobrança não isolada por tenant). Mesma `api_key` pode coexistir em N units (UNIQUE composto `(unit_id, provider)` na tabela permite — dono com 2 restaurantes usa a mesma chave em ambas, esperado). Nenhum resolver futuro (novos providers, novos workers IA) deve reintroduzir fallback global silencioso.
-- **Toda saída do LLM passa por `sanitizeForWhatsApp` antes de `sendOutbound` e antes de `appendToConversation`.** Helper em [supabase/functions/_shared/whatsapp-format.ts](supabase/functions/_shared/whatsapp-format.ts). Converte markdown padrão pro formato WhatsApp: `**bold**` → `*bold*`, `***x***` → `*_x_*`, `# Header` → `*Header*`, `* item` (lista) → `- item`, ``` ``` blocos``` ``` → texto cru, `` `inline` `` → texto cru, `[texto](http://url)` → `texto (http://url)`, e normaliza 3+ quebras de linha pra 2. O system prompt do agente em `webhook-whatsapp` já instrui o modelo a usar formato WhatsApp, mas modelos divergem entre provedores (Claude/GPT/Gemini/Grok/DeepSeek) e ignoram instruções ocasionalmente — sanitizer é rede defensiva. **Aplicar SÓ em saída de LLM** (`finalText` em [webhook-whatsapp/index.ts:1416](supabase/functions/webhook-whatsapp/index.ts)). NÃO aplicar em mensagens hardcoded (`MEDIA_REPLY_TEXT`, handoff, empty_response), templates de giftback/lembrete (já são autoria do lojista), nem em `send-manual-message` (operador digitou — respeitar). A versão sanitizada é o que vai pro cliente E o que vai pra `conversations.messages` — operador em `/o/<slug>/conversas` vê exatamente o que cliente recebeu. Quando criar Edge Function nova que envie resposta de LLM, sanitizar antes do send.
-- **System prompt do agente injeta `special_dates` E `table_blocks` macro dos próximos 60 dias.** Sem `table_blocks` no contexto, o LLM responde "sim, aceitamos reservas pra dia X" pra perguntas genéricas (sem horário/party) — `check_availability` só dispara quando cliente fornece os 3 campos, então o bloqueio fica invisível na conversa inicial. Bug observado 2026-05-20: cliente perguntou "aceitam reservas pra 12/06?" e bot afirmou "sim", mesmo com bloqueio "Dia dos namorados" ativo. Implementação: query em [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts) busca `table_blocks` com `table_id IS NULL` no horizonte de 60 dias, converte timestamps pra BRT (subtraindo 3h e lendo `getUTC*`), formata como `- DD/MM/YYYY (Título): sem reservas o dia inteiro` (ou range de horários), e injeta sob `Datas com bloqueio de reservas nos próximos 60 dias`. Bloqueios hall-específicos (`hall_id != null`) recebem sufixo `— só no salão X` pra IA poder oferecer alternativa. Regra "5." obrigatória no prompt instrui o LLM a NÃO chamar `check_availability` quando a data está na lista — resposta direta de contexto, sem queimar tool call. Replicar: feature nova que adicione fonte de bloqueio (ex.: bloqueio recorrente) deve aparecer no mesmo bloco do prompt.
-- **`table_blocks` (bloqueio) ≠ `special_dates` com `is_closed=true` (fechamento).** Bloqueio significa "não aceitamos reservas" — o restaurante pode estar funcionando normalmente (walk-in, evento privado contratado, alta demanda com fila). Fechamento significa "restaurante não abre". Bug 2026-05-20: prompt do agente usava palavra "fechado" pras duas fontes, e o LLM respondia "o restaurante estará fechado o dia inteiro" pra qualquer `table_blocks`, criando ansiedade desnecessária no cliente que poderia simplesmente passar lá pessoalmente. Hoje o prompt (linhas formatadoras de `blockedLines` + regra "5.") usa exclusivamente "sem reservas", "não estamos aceitando reservas", "agenda indisponível" pra `table_blocks`; e "fechado" só pra `special_dates is_closed`. Mesma distinção aplicada em [wizard/availability-helpers.ts:getUnavailableDateInfo](src/components/reserva/wizard/availability-helpers.ts) — `reason: "blocked"` usa "Não estamos aceitando reservas nesta data" e `reason: "closed_special"` usa "Esta data o restaurante está fechado". Replicar: qualquer copy futura que mencione `table_blocks` NÃO pode usar "fechado" — é "sem reservas" ou equivalente. **Adicional 2026-05-20**: regra "5." do prompt manda o LLM dizer JUNTO na primeira resposta sobre uma data bloqueada: (a) não aceitamos reservas + (b) restaurante estará aberto, atendimento por ordem de chegada — sem isso, cliente assume "bloqueio = fechado" e desiste, perdendo walk-in. Exceção: se o título do bloqueio indicar evento privado / casa fechada / manutenção, o LLM omite "ordem de chegada" e explica que não atendemos público geral. Mudança futura na regra 5 deve preservar o "(a) + (b) na MESMA resposta".
-- **Timestamps de janela de reserva no `_shared/availability.ts` SEMPRE usam offset BRT explícito (`-03:00`).** Em `tryHall` e `checkAvailabilityLegacy`, `startISO`/`endISO` são gerados com `new Date(\`${date}T${time}:00-03:00\`).toISOString()`. Sem o offset, o runtime Deno (TZ=UTC) interpretava o horário como UTC e a comparação contra `table_blocks.blocked_from/blocked_to` (gravados em BRT) ficava 3h fora — bloqueios "dia inteiro" se salvavam pelo intervalo amplo, mas bloqueios PARCIAIS (ex.: 19h-22h BRT) deixavam reservas na borda inicial escaparem. Mesma convenção da função `minutesUntil` (que sempre usou `-03:00`). Quando criar query nova nesse arquivo que comparar timestamps com colunas BRT do banco, replicar o offset.
-
-### Invariantes pós-hardening (2026-05-21)
-
-Auditoria 2026-05-21 endereçou alucinações do agente (bot dizendo "não tenho essa informação" sobre horário) e 503 persistente do Gemini Flash com clientes de histórico grande. Manter os invariantes abaixo ao tocar qualquer código do agente IA / construção de prompt / chamada de LLM.
-
-- **Fonte de horário no prompt é `halls + hall_schedules`, NÃO `business_hours`.** Helper `buildHallSchedulesBlock(unitId)` em [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts) carrega halls ativos da unit, agrupa dias com janelas idênticas em ranges ("seg a sex"), formata janelas com anotações entre parênteses quando aplicável (`{discount_percent}% off`, antecedência mínima formatada, `caução R$ X/mesa`). Fallback pra `business_hours` SÓ se a unit não tem hall ativo com schedule (units antigas pré-migration 030). Bug 2026-05-21: prompt lia `business_hours` (DEPRECATED — fallback transicional), units novas configuram só `hall_schedules`, então o bloco "Horário de funcionamento" do prompt ia vazio e o LLM caía em "Não tenho essa informação" + handoff humano. Replicar: nova feature que precise mostrar horário ao LLM (ex.: lembrete de horário, copy de promoção) usa a função helper ou query equivalente — NUNCA `business_hours`.
-- **Cada salão no prompt vem com descrição + capacidade agregada das mesas.** Header gerado: `- {hall.name} — {hall.description}; mesas para {min} a {max} pessoas:`. `min` respeita `allow_empty_seat` (subtrai 1 da menor capacidade quando habilitado). Sem isso, perguntas como "tem mesa pra 12 pessoas?" / "tem ambiente ao ar livre?" / "aceita pet?" caíam em handoff porque o LLM não tinha contexto pra responder. Capacidade agregada vem de `SELECT min(min_capacity), max(max_capacity) FROM tables WHERE hall_id IN (...) AND active=true` em memória.
-- **Regra 6 do prompt obriga o LLM a responder sobre horário SEM chamar `check_availability`.** Antes da regra, o LLM chamava `check_availability` pra QUALQUER pergunta de horário (mesmo sem cliente dar party_size), recebia `reason: outside_hours` sem alternativas, e caía em handoff. Hoje a regra explicitamente instrui: "se o horário pedido não cai dentro das janelas listadas, responda direto indicando a janela mais próxima — sem chamar tool, sem handoff". Replicar: qualquer informação NOVA injetada no system prompt que substitua uso de tool deve vir com instrução explícita pro LLM preferir o contexto sobre a tool (senão ele queima 1 tool call desnecessária por turno).
-- **Vouchers ativos do cliente E regras Giftback da unit são injetados no prompt.** `customer.id` + `vouchers WHERE status='active' AND expires_at >= today` mostra códigos válidos pro LLM mencionar (com validade). `voucher_rules WHERE active=true` mostra regras automáticas (aniversário/avaliação/frequência/manual). Regras "manual" recebem instrução explícita: "NÃO ofereça por iniciativa — só equipe emite". Regras 7 e 8 do prompt cobrem: bot pode citar voucher existente do cliente; NUNCA inventa código; NUNCA emite voucher (workers do cron fazem isso); aniversário HOJE → parabéns no início da resposta.
-- **`URL pública do cardápio digital` (`/m/<slug>`) vai no prompt quando a unit tem `menus.active=true`.** Compõe `APP_BASE_URL` (env, default `https://reservas.moralles.com.br`) + slug do menu. O bot é instruído a colar esse link quando o cliente pedir cardápio em vez de inventar resposta — antes da mudança, o bot só via `restaurant_menu` (texto livre da aba Automação), que muitas units não preenchem.
-- **System prompt do agente cresceu pra ~3-4K tokens com cadastro completo da unit.** Composição: header + 8 regras + formatação WhatsApp + endereço + "Sobre o restaurante" (ticket médio + URL cardápio) + horários por salão com anotações + `special_dates` + `table_blocks` + "Programa Giftback" + cardápio/delivery/extra info (modo FAQ) + "Sobre este cliente" (alergias, restrições, VIP, mesa preferida, aniversário, vouchers ativos) + custom prompt. Tudo cabe sob `cache_control: ephemeral` (Anthropic) — cache hit em conversa ativa zera custo. Cache miss custa ~$0.0003 a mais em Haiku 4.5. Replicar: bloco novo no prompt deve ser anexado APÓS os existentes (preserva prefix de cache) e gated por "if data exists" (não polui prompt com `null/undefined`).
-- **Histórico do agente passa por TRÊS filtros antes do LLM** ([webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts) ao montar `history`, e `truncateHistory` em [_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts)): (a) lixo hardcoded em `HARDCODED_AGENT_NOISE` (3 strings exatas de erro/handoff/empty-response) é removido — não agrega contexto e ainda vicia o LLM a achar que "problema técnico" é o padrão; (b) janela de 72h descarta mensagens antigas (mantém sem timestamp / legado pré-backfill); (c) cap por número (20) + cap por tokens estimados (1500). Mensagens continuam no banco e na UI — filtro só afeta o que o LLM vê. Bug histórico 2026-05-21: cliente Yuri com 43 mensagens (várias "Tive um instante de instabilidade...") atingia ~3.500 input tokens e era rejeitado pelo Gemini Flash em sobrecarga regional. Após filtros, ~1.500 tokens. Replicar: nova string hardcoded de resposta do agente (handoff, fallback, etc) DEVE ser adicionada a `HARDCODED_AGENT_NOISE` no mesmo PR pra não poluir histórico futuro.
-- **Retry com backoff em todo chamada HTTP de provider LLM.** Claude SDK Anthropic configurado com `maxRetries: DEFAULT_HTTP_RETRIES` (2). OpenAI-compatible (OpenAI/Grok/DeepSeek) e Gemini usam `fetchWithRetry` ([_shared/retry.ts](supabase/functions/_shared/retry.ts)) com retries=2, baseDelay=1s, retryOn 5xx/429 + network errors. Cada tentativa tem `DEFAULT_TIMEOUT_MS=12s`. Pior caso: 3 × 12s + 3s espera ≈ 39s — cabe nos 60s da Edge Function. `onRetry` callback loga `evt: "agent_http_retry"` por tentativa.
-- **Fallback de modelo dentro do mesmo provider** para erros 5xx persistentes (provider saturado regionalmente no modelo principal, cota TPM por modelo separada). `FALLBACK_MODELS` em [_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts): Gemini Flash → Gemini Pro. Outros providers `null` (não há fallback). Lógica em `callGeminiWithFallback`: primary com 1 retry (2 tentativas), se ainda 5xx cai pro fallback com retries default (3 tentativas). Sticky: dentro de uma invocação do webhook (loop de tools pode disparar várias chamadas LLM), uma vez no fallback fica no fallback. Próxima mensagem do cliente = nova invocação = tenta primary de novo (sistema "respira" sozinho). Log `evt: "agent_model_fallback"`. Custo: Pro ~10x mais caro que Flash; só dispara em raras sobrecargas.
-
-### Invariantes pós-hardening (2026-05-23)
-
-Auditoria 2026-05-23 fechou bug onde o agente respondia endereço fictício ("Rua Fidêncio Ramos, Vila Olímpia, São Paulo") em vez do real cadastrado — o webhook tratava `units.address` (JSONB) como `string` e interpolava em template literal: `${obj}` vira `"[object Object]"`, o LLM recebia lixo no system prompt e alucinava um endereço plausível brasileiro. Bug afetava 100% das units com endereço cadastrado.
-
-- **Coluna JSONB NUNCA é interpolada direto em template literal sem extração explícita.** O Supabase JS client retorna `jsonb` como `unknown`/objeto; `?? ""` em cima de objeto retorna o objeto (a coerção só dispara em `null`/`undefined`), e `${obj}` em template literal coerce pra `"[object Object]"`. Pattern correto: tipar como interface conhecida, extrair o campo string desejado (ou montar string a partir de subcampos via `.filter(...).join(", ")`), fallback `""` no fim — usar o ternário existente do prompt builder pra omitir o bloco quando vazio. Pattern de referência: [webhook-whatsapp/index.ts:1045-1066](supabase/functions/webhook-whatsapp/index.ts#L1045-L1066) extrai `units.address.full` ou monta de `street/number/neighborhood/city/state`; [PublicPortal.tsx:209-213](src/pages/PublicPortal.tsx#L209-L213) faz o mesmo no frontend. Aplica-se a TODAS as colunas JSONB que viram texto pro usuário ou LLM: `units.address`, `customers.email` (array), `whatsapp_channels.credentials`, `ai_provider_credentials.credentials`, `settings.value`, `menus.theme`, `reservations.custom_field_values`, `reservation_widgets.field_config`, `notification_outbox.payload`. Replicar: nova Edge Function ou hook que injete coluna JSONB em texto/prompt DEVE extrair campo a campo, nunca confiar em coerção implícita; o cast `: string` na declaração engana TS mas não impede o lixo em runtime.
-- **Resolver de entidade nomeada (`hall_name`, `widget_name`, qualquer string que vem do LLM ou cliente externo) NUNCA usa `ilike(%X%) + limit(1)` sem desambiguação.** O PostgREST retorna a linha que o planner escolher quando há múltiplos matches — resultado não-determinístico entre invocações (cache miss, paralelismo, ordem física na tabela). Bug observado 2026-05-23: Ren Sushi tinha 2 halls com "Salão principal" no nome ("- até 4 pessoas" e "- 6 a 20 pessoas"); o LLM consolidava em `hall_name="Salão Principal"` na tool call, o `resolveHallId` antigo casava ambos e devolvia qualquer um, e quando vinha o de "até 4" pra reserva de 8 pessoas, `tryHall` rejeitava com `no_capacity` — bot dizia "sem mesa" inconsistentemente (mesma pergunta às vezes "tem", às vezes "não tem"). Pattern correto em [webhook-whatsapp/index.ts:153-200](supabase/functions/webhook-whatsapp/index.ts#L153-L200) `resolveHallId(unitId, hallName, partySize?)`: (a) busca TODOS os matches com `ORDER BY sort_order, name` (determinismo); (b) 0 matches → `undefined`; (c) 1 match → retorna esse; (d) 2+ matches sem `partySize` → `undefined`; (e) 2+ matches com `partySize` → filtra pelos halls cuja capacidade agregada das mesas comporta o partySize (respeitando `allow_empty_seat`: `lower = empty_seat ? min_capacity - 1 : min_capacity`), retorna se exatamente 1 sobra, senão `undefined`. Quando devolve `undefined`, o `checkAvailabilityCore`/`reserveSlot` itera todos os halls em `sort_order` — mesmo caminho de quando o LLM omite `hall_name`. Replicar: qualquer feature nova que faça lookup de entidade nomeada vinda do LLM (resolver de salão, widget, custom field, menu) DEVE replicar esse fluxo de desambiguação ao invés de chutar com `limit 1`. Tanto a tool `check_availability` quanto `create_reservation` chamam o mesmo resolver — manter os dois call sites em sincronia.
-
-### Invariantes pós-hardening (2026-05-27)
-
-Auditoria 2026-05-27 fechou 2 bugs do agente WhatsApp: (1) cancelamento falhava com handoff automático porque o LLM chamava `cancel_reservation` sem `reservation_code` (TypeError em `code.toUpperCase()`), e (2) confirmação informal em PT-BR ("Isso") não era reconhecida, impedindo a criação da reserva.
-
-- **Regras do system prompt cobrem TODO o ciclo de vida da reserva: criação (regras 1-3), alteração (regra 4), cancelamento (regra 9), confirmação (regra 10).** Regra nova de ciclo de vida deve seguir o formato enumerado. Replicar: feature nova que adicione ação do agente (ex.: reagendamento, split de mesa) DEVE ter regra correspondente no prompt.
-- **`cancel_reservation` tool description instrui o LLM a buscar código primeiro.** O parâmetro `reservation_code` é obrigatório; a description diz explicitamente "use get_reservation ou list_customer_reservations primeiro". A função `cancelReservation()` tem guard defensivo (`if (!code?.trim())`) que retorna erro amigável ao LLM em vez de TypeError. Usa `.select().maybeSingle()` para detectar "zero linhas afetadas" (código inválido ou reserva já cancelada). Se adicionar nova tool com parâmetro obrigatório que dependa de lookup prévio, descrever o lookup na description da tool (não só no system prompt) como defesa em profundidade.
-- **Confirmações informais em PT-BR listadas explicitamente na regra 10 do prompt.** Inclui "Isso", "Tá bom", "Pode ser", "Fechado", "Bora", "Beleza", entre outras. Ao observar nova expressão de confirmação que o bot não entende (via logs `webhook_executions`), adicionar à lista na regra 10. A regra também reforça: re-checar `check_availability` antes de `create_reservation` mesmo após confirmação (disponibilidade pode mudar entre turnos).
-- **Regra 6 distingue "horários de reserva" de "horário de funcionamento".** `hall_schedules` armazena JANELAS DE ACEITE DE RESERVA (ex: 19:00-19:30), que podem ser muito mais curtas que o horário real de funcionamento do restaurante (ex: aberto até 23:00). Quando o cliente pergunta "qual o horário?" (ambíguo), o bot responde AMBOS: funcionamento (de `units.opening_hours_text`, carregado direto no prompt) + janelas de reserva. Se o horário de funcionamento não estiver preenchido, o bot responde os horários de reserva sem handoff.
-- **System prompt do agente usa `SELECT *` em `units` e carrega TODOS os `settings` (sem filtro por key).** Isso garante que colunas/settings novos ficam disponíveis automaticamente — nunca mais esquecer de atualizar a query. O **prompt builder** (registry em [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts), array `restaurantInfoLines`) é o gatekeeper: para expor um campo novo ao bot, basta adicionar UMA linha no array. Campos atuais no bloco "Sobre o restaurante": `description`, `cuisine_types`, `opening_hours_text`, `price_range_max` (formatado BRL), `payment_methods`, `facilities` (traduzido via `FACILITY_LABELS`), cardápio digital (URL), `phone`, `instagram`, `website`. Settings no prompt: `rules_and_conditions` (preços/condições, SEMPRE), `booking_window_days`/`reservation_duration_minutes`/`reservation_tolerance_minutes` (regras de reserva, SEMPRE), `additional_info` (SEMPRE), `restaurant_menu`/`delivery_response`/`restaurant_extra_info` (só com `includeFaq`), `ai_context_extra` (SEMPRE). **NUNCA reverter pra SELECT com colunas explícitas ou settings com `.in()` — isso é a causa raiz de lacunas recorrentes.**
-
-### Invariantes pós-hardening (2026-06-01)
-
-Auditoria 2026-06-01 fechou alucinação do agente que **inventava promoção de aniversário**: cliente perguntou "tem desconto para aniversariante?" numa unit SEM nenhuma `voucher_rule`, e o bot afirmou com convicção "Rodízio Especial com 50% de desconto, mediante apresentação de documento com foto, válido no dia". Nada disso estava cadastrado — alucinação pura ancorada no nome real do item de cardápio ("Rodízio Especial") + clichê de promoção de rodízio do treino do LLM. Apareceu em 4 conversas do Ren Sushi. Manter os invariantes abaixo ao tocar o prompt do agente.
-
-- **O bloco "Programa Giftback" do prompt é SEMPRE emitido — com âncora NEGATIVA explícita quando não há regra ativa.** Causa raiz da alucinação: quando `giftbackLines` está vazio (unit sem `voucher_rules` ativa), o bloco antigo simplesmente sumia do prompt — e **ausência de informação não é negação para um LLM**, que preenche o vácuo inventando. Hoje, se `giftbackLines.length === 0`, o prompt injeta "esta unidade NÃO tem nenhuma regra automática de promoção/desconto/benefício de aniversário ativa no momento… NÃO invente". A negação é qualificada: só vale "se o cliente NÃO tiver voucher ativo listado em 'O que sabemos sobre este cliente'" — pra não contradizer voucher manual que o cliente já possua. Replicar o padrão "sempre emitir, com âncora negativa quando vazio" em QUALQUER bloco futuro do prompt onde a ausência possa virar invenção (ex: bloco de eventos, de delivery). Nunca deixar um bloco de capacidade/oferta sumir silenciosamente.
-- **Regra 7 do prompt proíbe fabricar QUALQUER desconto/promoção/cortesia/brinde — não só código de voucher.** Antes a regra 7 falava só de "código de voucher" e a única proibição geral (preâmbulo) citava "horários, cardápio ou serviços", sem mencionar descontos. Hoje a regra 7 é explícita: nenhum desconto/promoção/cupom/cortesia/benefício (incl. aniversário) que não esteja em "Programa Giftback", nos vouchers ativos do cliente, ou em "Preços e condições" pode ser afirmado; e "o nome de um item de cardápio (ex: Rodízio Especial) NÃO autoriza afirmar que existe desconto sobre ele". O preâmbulo (linha ~1754) também foi estendido pra incluir "descontos, promoções, benefícios de aniversário". Comportamento ao ser perguntado sobre promoção não cadastrada: **negar direto com clareza** ("no momento não há nenhuma promoção ou desconto ativo"), sem handoff — é seguro porque o prompt carrega 100% da config de giftback, então ausência no prompt = ausência real.
-- **Qualquer fonte futura de desconto/promoção (nova `voucher_rule`, campanha sazonal, cupom) DEVE aparecer no bloco "Programa Giftback" do prompt** — é a única fonte que o agente está autorizado a citar como promoção (junto com vouchers do próprio cliente e "Preços e condições"). Não criar canal paralelo de desconto que o bot não enxergue: ou aparece nesse bloco, ou o bot vai negar a existência dele.
-
-Mesma data, segundo eixo da auditoria: **rajada de mensagens** (cliente manda vários balões picados em segundos) embaralhava o bot, e **instabilidade do Gemini Flash** (503/timeout/resposta vazia) gerava "instabilidade"/handoff. Diagnóstico nos logs (`webhook_executions`, 14d): ~97-98% success; erros eram ~1 `agent_error`/dia (100% Gemini: 503 "high demand", timeout, quota) + ~2-3 `empty_response`/dia (Gemini devolvendo candidate vazio, quase tudo Ren Sushi). O pico grande de `agent_error` foi 20-21/05 (config de modelo bagunçada), já resolvido. Ambas as units rodam só com chave Gemini (sem BYOK alternativo). Manter os invariantes:
-
-- **Debounce de rajada por conversa, no [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts).** Cada mensagem inbound dispara uma invocação independente da Edge Function — NÃO há fila nem lock. Sem debounce, balões em rajada rodavam em paralelo, liam histórico stale e respondiam fora de ordem ("embaralha"), além de dobrar a carga simultânea no provider de IA (mais 503/timeout → handoff). Fix (sem migration): logo após o bloco de handoff humano, faz append atômico da mensagem, captura o timestamp dela (`myInboundTs`), espera `DEBOUNCE_WINDOW_MS` (6s, tunável), relê `conversations.messages` e, se surgiu mensagem de usuário com timestamp MAIOR, esta invocação desiste (`finish("debounced_superseded")`). Só a invocação da ÚLTIMA mensagem da rajada prossegue; ela relê o histórico fresco e separa as mensagens de usuário PENDENTES (tudo depois da última resposta nossa) numa única `combinedUserMessage` passada ao LLM, com o resto virando `history`. Replicar: qualquer novo caminho que processe inbound do cliente deve passar pelo mesmo debounce, ou vai reintroduzir o paralelismo. Custo: adiciona ~6s de latência a TODA resposta (trade-off aceito — coerência + menos handoff valem mais que 6s no WhatsApp).
-- **Retry silencioso do agente é gated por `!mutatingToolUsed` + orçamento de tempo.** Em erro transitório do `runAgentLoop` (timeout/5xx/quota), o webhook tenta UMA vez mais antes do auto-handoff — MAS só se nenhuma tool que altera estado (`create_reservation`/`update_reservation`/`cancel_reservation`) rodou (flag `mutatingToolUsed`, setada nos 3 cases) E `Date.now() - t0 < AGENT_RETRY_BUDGET_MS` (30s). Sem o gate de mutação, o retry duplicaria reserva/cancelamento; sem o gate de tempo, estouraria os 60s da Edge Function e o cliente ficaria SEM resposta (pior que handoff). Qualquer tool mutante nova DEVE setar `mutatingToolUsed = true`.
-- **Blindagem do Gemini em [_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts) cobre timeout E resposta vazia, não só 5xx.** (a) `callGeminiWithFallback`: se o primary (Flash) lança timeout/erro de rede após esgotar retries, tenta o fallback (Pro, cota TPM separada) antes de propagar — antes só caía pro Pro em status 5xx, e timeout virava `agent_error` direto. (b) `runGemini`: quando o Gemini devolve candidate VAZIO (sem texto e sem tool call — causa nº1 do `empty_response`), faz 1 retry no fallback (`emptyRetried` sticky) em vez de retornar "" direto. Telemetria: `evt:"agent_empty_retry"`, `evt:"agent_model_fallback"` com `primary_error`. `FALLBACK_MODELS.gemini` (Flash→Pro) é o único com fallback; outros providers `null`. Ao adicionar fallback pra outro provider, replicar os dois caminhos (throw + empty), não só o 5xx.
+- **`processed_messages` FORCE RLS** com `started_at`/`completed_at` — reprocessa após 90s se incompleto.
+- **Handoff UX:** auto-resolve 12h sem reply humano → `ai_active`. Lembrete operador 1x/6h via `last_silenced_reply_at`.
+- **`releaseToAI` / `markResolved` limpam `handoff_reason` E `handoff_at` E voltam status pra `ai_active`.** Status `resolved` é legado; webhook auto-promove pra `ai_active` na próxima inbound. Nunca grave `resolved` em código novo.
+- **HMAC SHA-256** pra provider `official` (Meta); Z-API/WAHA usam `webhook_secret` per-channel.
 
 ---
 
-## Stripe — Pagamento de caução
+## Stripe — caução de reserva
 
-Integração Stripe Connect para cobrar caução nas reservas web. Cada unit conecta sua própria conta Stripe (Standard). Pagamento via Stripe Checkout (hosted — redirect, não embedded).
+Stripe Connect Standard (per-unit). Pagamento via Stripe Checkout (hosted).
 
-- **Secrets Stripe vivem em `platform_secrets` (banco), não em env vars.** Edge Functions leem via `_shared/stripe-config.ts` (`getStripeSecretKey()`, `getStripeWebhookSecret()`). O helper tenta `platform_secrets` primeiro, fallback `Deno.env` pra compat. Cache em memória 5min. Platform admin configura pelo painel em `/platform/automacao` → card "Stripe — Configuração da Plataforma". A tabela `platform_secrets` tem FORCE RLS sem policies — **`value` NUNCA é retornado ao frontend**, só `last4`.
-- **`create-reservation` detecta caução automaticamente.** Após `reserveSlot()`, se o `hall_schedule` (ou `special_date` override) do horário escolhido tem `charge_enabled=true`, seta `payment_status='pending_payment'`, `payment_amount_cents`, `payment_expires_at = now()+15min` e retorna `requires_payment: true`. `useReservas.ts` então chama `create-checkout-session` e redireciona pro Stripe Checkout.
-- **Reservas via WhatsApp são isentas.** O agente não cobra caução — `source='whatsapp'` nunca entra no path de pagamento. Caução é mencionada informativamente no prompt do bot.
-- **Confirmação pós-pagamento.** `stripe-webhook` (evento `checkout.session.completed`) seta `payment_status='paid'` e insere na `notification_outbox` (mesmo path do trigger de confirmação web, que não dispara pra reservas com `payment_status='pending_payment'` porque o trigger original filtra `source != 'whatsapp'` mas NÃO re-filtra payment — o INSERT manual no webhook é necessário).
-- **Expiração.** Worker `expire-pending-payments` (cron `*/2 * * * *`) + `stripe-webhook` evento `checkout.session.expired` — ambos setam `payment_status='expired'`, `status='cancelled'`. Defesa dupla: Stripe expira a session no lado deles, cron pega o que escapar.
-- **`_shared/stripe-config.ts` precisa de redeploy** em todas as EFs que importam quando alterado: `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`.
+- **Secrets Stripe vivem em `platform_secrets` (DB), não em env vars.** EFs leem via `_shared/stripe-config.ts` (cache memória 5min, fallback `Deno.env`). `platform_secrets` FORCE RLS — `value` nunca volta pro frontend, só `last4`.
+- **`create-reservation` detecta caução** após `reserveSlot()`: se schedule tem `charge_enabled=true`, seta `payment_status='pending_payment'` + `payment_expires_at = now()+15min` + retorna `requires_payment: true`. Frontend chama `create-checkout-session` e redireciona.
+- **Reservas WhatsApp são isentas** (`source='whatsapp'` nunca entra no path).
+- **Confirmação pós-pagamento:** `stripe-webhook` evento `checkout.session.completed` seta `paid` e insere `notification_outbox` (trigger original filtra `source != whatsapp` mas NÃO re-filtra payment — INSERT manual necessário).
+- **Expiração:** worker `expire-pending-payments` + evento `checkout.session.expired` (defesa dupla).
 
 ---
 
-## Billing — Mensalidades da plataforma
+## Billing — mensalidades
 
-Módulo de cobrança recorrente das organizations (clientes do SaaS). Usa a **conta principal Stripe da plataforma** (não Connected Account, não `transfer_data`). Completamente separado da caução de reservas.
+Cobrança recorrente das organizations. Usa **conta principal Stripe** (não Connect, não `transfer_data`). Separado da caução.
 
-- **Billing é por organization, não por unit.** `billing_customers` é 1:1 com `organizations`. Uma org com 5 unidades paga 1 mensalidade.
-- **`organizations.billing_status`** é a coluna autoritativa para o BillingGuard no frontend e para checks server-side em `create-reservation` e `webhook-whatsapp`. Valores: `active`, `trialing`, `pending_payment`, `past_due`, `grace_period`, `blocked`, `canceled`, `manual_override`, `suspended`. Default `'active'` — orgs existentes não são bloqueadas.
-- **BillingGuard** ([src/components/BillingGuard.tsx](src/components/BillingGuard.tsx)) lê `organizations.billing_status` via Supabase client (RLS `org_member_read` já permite). Integrado dentro de `GestaoGuard` e `OperacionalGuard` — não bloqueia `/platform/*`. Platform admin bypassa totalmente.
-- **`billing_events` é SEPARADA de `stripe_webhook_events`.** Billing events usam `billing_events` para idempotência; reservation events continuam usando `stripe_webhook_events`. No `stripe-webhook/index.ts`, billing events são roteados ANTES do check de `stripe_webhook_events` — se `BILLING_EVENT_TYPES.has(eventType)`, processa e retorna sem tocar nas tabelas de reserva.
-- **`_shared/stripe-billing.ts`** é o helper compartilhado para Stripe Billing (raw `fetch` + `URLSearchParams`, sem SDK). Usado por `manage-billing` e workers de billing. Não confundir com `_shared/stripe-config.ts` (resolve secrets) — billing usa `getStripeSecretKey()` de lá.
-- **`manage-billing` Edge Function** tem 17 actions (CRUD plans, orgs, customers, subscriptions, invoices, overrides, block/unblock, trial, sync). Exige `platform_admin`. `verify_jwt=true`.
-- **Política comercial default:** trial 14 dias (config no plano `is_trial`), grace 3 dias pós-vencimento, bloqueio D+4. Implementada nos workers `process-billing-overdue` (escalação) e `process-billing-reminders` (lembretes D-3, D0, D+1, D+3, bloqueio D+4). Alterar via constantes `GRACE_PERIOD_DAYS`/`BLOCK_AFTER_DAYS` no overdue + `REMINDER_OFFSETS` no reminders — mantém os dois sincronizados.
-- **Desbloqueio automático** — dupla defesa: (1) webhook `invoice.paid` desbloqueia imediatamente, (2) worker `process-billing-unblock` (cron `*/5 * * * *`) pega o que o webhook perdeu.
-- **Overrides manuais** em `billing_access_overrides` — `grant_access` seta `manual_override`, `block_access` seta `blocked`, `extend_trial` seta `trialing`. Worker `process-billing-overdue` respeita override ativo de `grant_access` antes de escalar status.
-- **Server-side guards:** `create-reservation` rejeita novas reservas se org `blocked`/`suspended`. `webhook-whatsapp` silencia agente IA (outcome `org_billing_blocked`). Ambos fazem SELECT em `organizations.billing_status` — não dependem do frontend.
-- **Redeploy de `_shared/stripe-billing.ts`** afeta: `manage-billing`, `process-billing-reconcile`.
-
-### Self-service de assinaturas (cliente cadastra próprio cartão)
-
-- **`/g/:unitSlug/cobranca`** ([src/pages/gestao/Cobranca.tsx](src/pages/gestao/Cobranca.tsx)) é a página pública/cliente — pricing table, "Meu plano", "Meu cartão" + ações (trocar plano, trocar cartão, cancelar). Backend permite owner/gerente OU platform_admin.
-- **Whitelist no BillingGuard.** A rota `/g/:unitSlug/cobranca` é a ÚNICA acessível quando `billing_status` é `blocked/suspended/canceled` — sem essa whitelist, cliente bloqueado entra em loop (PaymentRequired → "Escolher plano" → bloqueia de novo). Implementado via `useLocation()` em `BillingGuard.tsx`.
-- **Remover cartão é EXCLUSIVO de platform_admin.** Action `delete` em `manage-payment-methods` valida `is_platform_admin(callerId)` antes de chamar Stripe; retorna 403 pra owner/gerente. Cliente VÊ o cartão e PODE TROCAR (via Checkout `mode=setup`), mas NÃO remove — proteção é server-side, UI nem mostra o botão. Admin remove na aba "Cartões" de `/platform/billing/<org>`.
-- **`create-billing-checkout`** ([supabase/functions/create-billing-checkout/index.ts](supabase/functions/create-billing-checkout/index.ts)) é uma Edge Function NOVA (separada de `manage-billing`) que gera Stripe Checkout Session em `mode=subscription` ou `mode=setup`. `success_url` aponta pra `/g/<slug>/cobranca?session=success`; `cancel_url` pra `/g/<slug>/cobranca?session=cancel`.
-- **`checkout.session.completed` é DUAL-PURPOSE** no `stripe-webhook`: caução de reserva (metadata.reservation_id) OU billing self-service (mode=subscription|setup). Helper `isBillingCheckout(obj)` discrimina em runtime; sem isso o set `BILLING_EVENT_TYPES` rotearia todas as sessions pra billing. NÃO mover esses events pro set sem manter o discriminador.
-- **3 actions client-friendly em `manage-billing`** (acessíveis pra owner/gerente além de admin): `change_plan` (Stripe proration automático), `preview_plan_change` (mostra `amount_due` antes do cliente confirmar) e `cancel_subscription_by_owner` (sempre `cancel_at_period_end=true` — preserva período pago). Set `CLIENT_FRIENDLY_ACTIONS` no topo do arquivo controla a whitelist; cada handler valida `canManageOrgBilling(callerId, organization_id)` no próprio escopo.
-- **Cache de 5min em `platform_secrets`** — depois de trocar a `stripe_secret_key` no painel, Edge Functions podem usar a antiga por até 5 min. Pra invalidar mais rápido, redeploy de qualquer função que importe `_shared/stripe-config.ts` (incluindo `create-billing-checkout`, `manage-payment-methods`).
-- **`billing_plans.features` é `string[]`** (migration `20260528020000`) — array de bullets exibidos na pricing table pública. Legado `'{}'` (jsonb default antigo) é normalizado por `parsePlanFeatures()` em [src/types/billing.ts](src/types/billing.ts). Editor admin é um textarea (1 feature por linha) em `/platform/billing/planos`.
-- **Redeploy de `_shared/stripe-config.ts`** agora também afeta: `create-billing-checkout`, `manage-payment-methods`.
-
-### Trial automático ao criar empresa
-
-- **Org nova criada via `manage-organizations.create_organization` herda automaticamente o plano com `is_trial=true AND active=true`.** Trial é puramente LOCAL (sem registro em `billing_subscriptions`, sem Stripe envolvido) — apenas `organizations.billing_status='trialing'` + `trial_ends_at = now() + plan.trial_days`. Fallback seguro: se não houver plano trial cadastrado, org nasce `active` (comportamento legado). Falha ao aplicar trial NÃO faz rollback da criação da org.
-- **`is_trial` é mutuamente exclusivo via UNIQUE PARTIAL** (`billing_plans_only_one_active_trial`) — no máximo 1 plano com `is_trial=true AND active=true`. Pra trocar o plano trial atual, admin tem que desativar o anterior antes. UI em [BillingPlans.tsx](src/pages/platform/BillingPlans.tsx) traduz erro 23505 em mensagem amigável.
-- **Plano `is_trial=true` é FILTRADO de [PricingTable.tsx](src/components/PricingTable.tsx)** — cliente nunca escolhe trial manualmente, só recebe automaticamente. Filtro é `plans.filter(p => !p.is_trial)` antes do sort. Não confundir com `popular` (que só destaca visualmente).
-- **Worker `process-trial-expiry`** (cron `0 3 * * *` UTC, diário 00:00 BRT) move orgs com `billing_status='trialing'` + `trial_ends_at < now()` pra `blocked` com `blocked_reason='Trial expirado — escolha um plano para continuar usando.'`. **DEFENSIVO**: pula orgs com subscription ativa (admin pode ter criado plano manual) E orgs com override `grant_access` ativo (cortesia). Migration `20260528030000_billing_trial_auto.sql`.
-- **Banner D-3 client-side em [BillingGuard.tsx](src/components/BillingGuard.tsx)** — quando `billing_status='trialing'` E `trial_ends_at - now() <= 3 dias`, renderiza `<BillingBanner status="trial_ending" daysRemaining={N} />`. Sem worker, sem e-mail — só visual. Threshold é constante `TRIAL_ENDING_THRESHOLD_DAYS` no próprio guard.
-- **`Cobranca.tsx` detecta trial local** (`billing_status='trialing'` + sem subscription + `trial_ends_at`) e renderiza bloco "Período de teste" no topo (separado do bloco "Plano atual", que só aparece com subscription Stripe).
-- **Trial é one-shot por org.** Quando cliente bloqueado por trial expirado escolhe plano pago e depois cancela → fica `canceled`. NÃO recomeça em trial. Pra dar tempo extra a um cliente específico, admin usa override `extend_trial` em `billing_access_overrides` que continua funcionando.
+- **Billing é por organization.** `billing_customers` 1:1 com `organizations`. Org com 5 units paga 1 mensalidade.
+- **`organizations.billing_status`** é autoritativa pro `BillingGuard` ([src/components/BillingGuard.tsx](src/components/BillingGuard.tsx)) E checks server-side. Platform admin bypassa. `/g/<slug>/cobranca` é whitelist (única rota em `blocked/suspended/canceled`, sem isso cliente entra em loop).
+- **`billing_events` é SEPARADA de `stripe_webhook_events`.** No `stripe-webhook/index.ts`, billing events roteados ANTES do check de `stripe_webhook_events` — `BILLING_EVENT_TYPES.has(eventType)` processa e retorna. `checkout.session.completed` é DUAL-PURPOSE (caução OU billing) — `isBillingCheckout(obj)` discrimina em runtime; não mover esse evento pro set sem manter o discriminador.
+- **`_shared/stripe-billing.ts`** é helper sem SDK (raw `fetch` + `URLSearchParams`) usado por `manage-billing` e workers. Não confundir com `stripe-config.ts` (resolve secrets).
+- **Server-side guards:** `create-reservation` rejeita se org `blocked`/`suspended`. `webhook-whatsapp` silencia agente (outcome `org_billing_blocked`). SELECT direto em `organizations.billing_status` — não dependem do frontend.
+- **Política comercial:** trial 14d (`plan.is_trial=true`), grace 3d, bloqueio D+4. Constantes `GRACE_PERIOD_DAYS`/`BLOCK_AFTER_DAYS` em `process-billing-overdue` + `REMINDER_OFFSETS` em `process-billing-reminders` — manter sincronizados.
+- **Overrides manuais** em `billing_access_overrides`: `grant_access`→`manual_override`; `block_access`→`blocked`; `extend_trial`→`trialing`. Worker overdue respeita `grant_access` ativo antes de escalar.
+- **Self-service `/g/:slug/cobranca`** ([src/pages/gestao/Cobranca.tsx](src/pages/gestao/Cobranca.tsx)): owner/gerente OU platform_admin. Remover cartão é EXCLUSIVO de platform_admin (action `delete` em `manage-payment-methods` valida server-side; cliente vê e troca via Checkout `mode=setup`). EF `create-billing-checkout` (separada de `manage-billing`) gera session `mode=subscription|setup`. Actions client-friendly em `manage-billing` (whitelist `CLIENT_FRIENDLY_ACTIONS`): `change_plan`, `preview_plan_change`, `cancel_subscription_by_owner` (sempre `cancel_at_period_end=true`).
+- **Trial automático:** org nova herda plano `is_trial=true AND active=true` (`billing_status='trialing'` + `trial_ends_at`, sem Stripe envolvido). UNIQUE PARTIAL garante 1 plano trial ativo. `is_trial=true` filtrado da `PricingTable.tsx` (cliente nunca escolhe). One-shot por org — cancelou depois → `canceled`, não recomeça. Tempo extra via override `extend_trial`.
 
 ---
 
 ## Workers automáticos (pg_cron)
 
-Todos seguem o mesmo padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vault → `pg_net.http_post` chama Edge Function com `x-internal-key`.
+Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vault → `pg_net.http_post` chama EF com `x-internal-key`.
 
-| Job | Schedule | Edge Function | Descrição |
-|---|---|---|---|
-| `process-notification-outbox` | `*/1 * * * *` | process-notification-outbox | Outbox confirmação (lote 20, backoff 1m→4h, max 5 tentativas) |
-| `process-voucher-triggers` | `0 12 * * *` UTC | process-voucher-triggers | Expira vouchers + emite por aniversário/frequência |
-| `process-reservation-reminders` | `0 13 * * *` UTC (10:00 BRT) | process-reservation-reminders | Lembrete D-0 — dia da reserva (settings.reminder_d1_enabled) |
-| `process-satisfaction-surveys` | `0 17 * * *` UTC (14:00 BRT) | process-satisfaction-surveys | Pesquisa D+1 (settings.survey_d1_enabled) |
-| `cleanup-orphan-assets` | `0 4 * * 0` UTC (domingo 01:00 BRT) | cleanup-orphan-assets | Apaga blobs órfãos do bucket `unit-assets` (grace 60min). RPC `list_orphan_unit_assets(integer)` cruza com units/menus/menu_pages/menu_banners. Invocável manual: `?dry=1` ou `{dry:true}` no body. Migration `20260520000000_storage_orphan_cleanup_cron.sql`. |
-| `expire-pending-payments` | `*/2 * * * *` | expire-pending-payments | Cancela reservas com `payment_status='pending_payment'` e `payment_expires_at < now()`. Seta `payment_status='expired'` + `status='cancelled'`. Migration `20260527140001_stripe_expire_payments_cron.sql`. |
-| `billing-overdue` | `0 10 * * *` UTC | process-billing-overdue | Verifica invoices vencidas → past_due (D+0), grace_period (D+3), blocked (D+4). Respeita overrides. Migration `20260528010000_billing_crons.sql`. |
-| `billing-reminders` | `0 13 * * *` UTC | process-billing-reminders | Lembretes D-3, D0, D+1, D+3, bloqueio D+4. Registra em `billing_notifications`. Dedupe por (org_id, event_type, dia). |
-| `billing-reconcile` | `0 6 * * *` UTC | process-billing-reconcile | Reconcilia subscriptions/invoices com Stripe (fonte de verdade). Desbloqueia orgs se invoice paga. |
-| `billing-unblock` | `*/5 * * * *` | process-billing-unblock | Desbloqueia orgs com invoice paga recente. Defesa dupla: webhook `invoice.paid` já desbloqueia, worker pega falhas. |
-| `billing-trial-expiry` | `0 3 * * *` UTC (00:00 BRT) | process-trial-expiry | Bloqueia orgs com trial local vencido (sem subscription). Pula orgs com sub ativa ou override grant_access. Migration `20260528030000_billing_trial_auto.sql`. |
+| Job | Schedule UTC | Função |
+|---|---|---|
+| `process-notification-outbox` | `*/1 * * * *` | Outbox confirmação (lote 20, backoff 1m→4h, max 5) |
+| `process-voucher-triggers` | `0 12 * * *` | Expira vouchers + emite aniversário/frequência |
+| `process-reservation-reminders` | `0 13 * * *` | Lembrete D-0 |
+| `process-satisfaction-surveys` | `0 17 * * *` | Pesquisa D+1 |
+| `cleanup-orphan-assets` | `0 4 * * 0` | Blobs órfãos `unit-assets` (grace 60min) |
+| `expire-pending-payments` | `*/2 * * * *` | Cancela `pending_payment` expirado |
+| `process-billing-overdue` | `0 10 * * *` | Escala invoices vencidas |
+| `process-billing-reminders` | `0 13 * * *` | Lembretes D-3/D0/D+1/D+3 + bloqueio D+4 |
+| `process-billing-reconcile` | `0 6 * * *` | Reconcilia subs/invoices com Stripe |
+| `process-billing-unblock` | `*/5 * * * *` | Defesa dupla pra webhook `invoice.paid` |
+| `process-trial-expiry` | `0 3 * * *` | Bloqueia trial vencido (skip se sub ativa ou override) |
 
-Workers lêem templates de `reservation_message_templates` (`customized=true`) ou usam defaults hardcoded. Idempotência via UNIQUE `(reservation_id, kind)` em `notifications_sent`.
-
-> Mantenha `defaultBody` em `useReservationTemplates.ts` em sincronia com `DEFAULT_*_BODY` nos workers (worker é a fonte autoritativa).
-
-> **`verify_jwt=false` obrigatório em `supabase/config.toml`** para todo worker chamado via `pg_cron` (`process-*`). O CLI a partir de 2.95 trocou o default para `true` — sem entrada explícita o gateway responde 401 "Missing authorization header" antes de chegar no `requireInternalAuth`, e o cron silencia (pg_net é fire-and-forget, ninguém alerta). Já documentadas no config: outbox, voucher-triggers, reservation-reminders, satisfaction-surveys, waitlist-entered, waitlist-feedback, expire-pending-payments, process-billing-overdue, process-billing-reminders, process-billing-reconcile, process-billing-unblock. Nova função worker = nova entrada antes do deploy.
-
-> **`verify_jwt=true` explícito em `supabase/config.toml`** para toda Edge Function de super-admin (`manage-channels`, `manage-members`, `manage-organizations`, `manage-ai-providers`, `manage-stripe-accounts`, `manage-platform-secrets`, `manage-billing`, `whatsapp-health`). Defesa em profundidade junto à validação interna de `platform_admin`. Sem entrada o comportamento depende do default do CLI — explícito > implícito. Nova edge admin = nova entrada antes do deploy.
+- **`verify_jwt=false` obrigatório em `supabase/config.toml`** pra todo worker pg_cron (`process-*`, `expire-*`, `cleanup-*`). CLI ≥2.95 mudou default pra `true` — sem entrada explícita, gateway responde 401 antes do `requireInternalAuth` e cron silencia (pg_net é fire-and-forget). Worker novo = entrada nova antes do deploy.
+- **`verify_jwt=true` explícito** pra toda EF de super-admin (`manage-*`, `whatsapp-health`) — defesa em profundidade.
+- **Idempotência** via UNIQUE `(reservation_id, kind)` em `notifications_sent`. Workers lêem `reservation_message_templates` (`customized=true`) ou defaults hardcoded — **`defaultBody` em `useReservationTemplates.ts` precisa ficar sincronizado com `DEFAULT_*_BODY` dos workers** (worker é autoritativo).
+- **`unitCache` zerado no início de cada invocação** — settings novos da UI refletem na próxima execução mesmo em EF quente.
 
 ---
 
-## Giftback — invariantes pós-hardening
+## Giftback — invariantes
 
-Auditoria 2026-05-17 fechou 16 bugs (migration `20260517110000_giftback_hardening.sql`). Manter os invariantes abaixo ao tocar qualquer código de voucher.
-
-- **Validade sempre fim-do-dia BRT.** Use `expiresAtEndOfDayBrt(validity_days)` de `_shared/giftback.ts` — runtime Deno é UTC, e `Date#setHours` em UTC daria meia-noite UTC (21:00 BRT do dia anterior). Igual ao frontend `endOfDayLocalISO` em `src/lib/utils.ts` (que roda no fuso do browser do operador). Não calcule offset manualmente em código novo.
-- **Voucher só persiste se WhatsApp send OK.** No `webhook-whatsapp` o ciclo é `prepareGiftbackVoucher` (monta code+texto sem escrever) → `sendOutbound` → `commitGiftbackVoucher` (escreve voucher + `notifications_sent` com status real). Inverter essa ordem cria voucher fantasma: cliente recebe code que não existe no banco, ou ativo no banco sem cliente ter sido notificado.
-- **`notifications_sent.status` precisa refletir o envio real** — `sent` se WhatsApp respondeu 2xx, `failed` com `error` preenchido caso contrário. Antes da auditoria o webhook gravava `sent` antes do envio.
-- **Dedupe (rule, customer) é DB-enforced.** `vouchers_unit_rule_customer_active_idx` (UNIQUE PARTIAL) rejeita 2º voucher ativo pra mesmo (unit, rule, customer). Sempre tente o INSERT — se vier erro `23505`, trate como dedupe silencioso (`voucher_dedup_race` no log). Não confie só no `SELECT existing` antes do insert: `reprocessing_stuck_message` no webhook permite 2 execuções paralelas passarem o check.
-- **`min_rating IS NULL` está bloqueado em `voucher_rules.trigger_type='after_rating'`** via CHECK. Query do webhook usa `.lte('min_rating', rating)` puro — sem `IS NULL` no `.or(...)`.
-- **`processFrequency` conta apenas reservas até ontem (BRT).** `.lte('date', yesterdayIso)` é obrigatório — sem isso, cliente com reservas confirmadas no futuro dispara voucher antes de ter visitado.
-- **Cooldown da frequência = `rule.validity_days`** (estável). NÃO use `windowStart` (que desliza dia a dia) como filtro de "já emiti antes" — cliente vira re-elegível assim que o window passa.
-- **Phone vazio = skip do worker.** `processBirthday` e `processFrequency` filtram `phoneDigits.length >= 10` antes do `issueAndSend`. Sem isso, voucher é inserido e WhatsApp falha — voucher ativo no banco que cliente nunca viu.
-- **29/02 em ano não-bissexto → dispara em 28/02** (regra civil BR). Lógica em `getTodayBrtParts` + flag `acceptLeapBirthday` no worker.
-- **Advisory lock no worker:** `try_giftback_lock()` no início, `release_giftback_lock()` no `finally`. Evita cron + chamada manual concorrentes. Falha aberta (prossegue sem lock) é OK — UNIQUE PARTIAL pega o resto.
-- **Mensagem do voucher é appendada em `conversations.messages`.** Rating intercept e comment intercept do webhook agora chamam `appendToConversation` pro incoming "5" e pro outgoing. Sem isso, operador na tela "Conversas" vê buraco entre survey D+1 e próxima mensagem.
-- **`unitCache` do worker é zerado no início de cada invocação** (`unitCache.clear()`). Settings mudados via UI refletem na próxima execução do cron mesmo em Edge Function quente.
+- **Validade sempre fim-do-dia BRT.** Use `expiresAtEndOfDayBrt(validity_days)` de [supabase/functions/_shared/giftback.ts](supabase/functions/_shared/giftback.ts) — Deno é UTC, `setHours` daria 21:00 BRT do dia anterior. Frontend usa `endOfDayLocalISO` em [src/lib/utils.ts](src/lib/utils.ts).
+- **Voucher só persiste se WhatsApp send OK.** Ciclo no webhook: `prepareGiftbackVoucher` (monta sem escrever) → `sendOutbound` → `commitGiftbackVoucher` (escreve voucher + `notifications_sent` com status real). Inverter cria voucher fantasma.
+- **`notifications_sent.status` reflete envio real** — `sent` se 2xx, `failed` com `error` caso contrário.
+- **Dedupe `(rule, customer)` é DB-enforced** via `vouchers_unit_rule_customer_active_idx`. Sempre tente INSERT; erro `23505` é dedupe silencioso (log `voucher_dedup_race`). `SELECT existing` antes não basta (reprocessing_stuck_message permite 2 execuções paralelas).
+- **`processFrequency` conta reservas até ontem BRT** (`.lte('date', yesterdayIso)`) — sem isso, reservas confirmadas no futuro disparam voucher antes da visita.
+- **Cooldown da frequência = `rule.validity_days`** (estável). NÃO use `windowStart` deslizante.
+- **Phone vazio = skip.** Workers filtram `phoneDigits.length >= 10` antes do `issueAndSend`.
+- **29/02 em ano não-bissexto → dispara em 28/02** (regra civil BR). Lógica em `getTodayBrtParts` + flag `acceptLeapBirthday`.
+- **Advisory lock no worker:** `try_giftback_lock()` no início, `release_giftback_lock()` no `finally`. Falha aberta é OK — UNIQUE PARTIAL pega o resto.
+- **Mensagem do voucher é appendada em `conversations.messages`** (rating intercept + comment intercept chamam `appendToConversation` pro incoming "5" E pro outgoing). Sem isso, operador vê buraco na thread.
 
 ---
 
-## Conversas — invariantes pós-hardening
+## Conversas — invariantes
 
-Auditoria 2026-05-17 fechou 11 bugs (migration `20260517120000_conversation_append_atomic.sql`). Manter os invariantes abaixo ao tocar qualquer código que leia/escreva `conversations`.
-
-- **Append em `conversations.messages` é SEMPRE via RPC `append_conversation_message(p_conversation_id, p_message)`.** Nunca mais fazer `SELECT messages → push → UPDATE messages` — esse padrão perdia mensagens em concorrência (inbound + worker do cron, ou 2 inbounds <100ms). A RPC é `SECURITY DEFINER`, grant só pra `service_role`, e usa `messages || jsonb_build_array(p_message)` no mesmo UPDATE → row lock serializa appends e nenhum é perdido. Writers atuais: `webhook-whatsapp` (helper `appendToConversation`), `send-manual-message`, `_shared/conversation-log.ts` (`appendOutboundToConversation`). Worker/edge function novo que precise appendar mensagem **tem que chamar a RPC** — nunca duplicar o padrão antigo.
-- **Mensagem WhatsApp limita 4096 chars.** Frontend (`Textarea` em `Conversas.tsx`) e backend (`send-manual-message`) validam — frontend bloqueia via `maxLength` + toast, backend retorna 400 com `"mensagem excede 4096 caracteres"`. Provider rejeita ou trunca silenciosamente acima disso. Replicar validação em qualquer novo endpoint que envie mensagem manual.
-- **`releaseToAI` limpa `handoff_reason` E `handoff_at`.** Quando devolve conversa pra IA, esses 2 campos viram NULL — sem isso, próximo handoff sem motivo herdava o motivo antigo no header da UI. Replicar em qualquer mutation nova que faça transição `human_active → ai_active`.
-- **`markResolved` é alias semântico de `releaseToAI` — ambos limpam handoff e voltam status pra `ai_active`.** Antes (até 2026-05-20) o botão "Resolver" só setava `status='resolved'` e deixava `handoff_reason`/`handoff_at` fósseis, o que fazia o operador achar que tinha encerrado mas o estado de handoff continuava no banco. Nunca grave status `resolved` em código novo. Conversas com `resolved` no banco são legado e são auto-promovidas pra `ai_active` pelo webhook na próxima inbound ([webhook-whatsapp/index.ts logo após `getOrCreateConversation`](supabase/functions/webhook-whatsapp/index.ts)). O tab "Resolvidas" foi removido da UI; `STATUS_LABEL`/`STATUS_CLASSES` mantêm o entry só pra renderizar badge de conversas legadas sem quebrar TS.
-- **`useSendManualMessage` faz optimistic update + rollback.** A mensagem aparece na thread instantaneamente via `setQueryData(["conversation-detail", id])`, com rollback em erro. Refetch real no `onSettled` substitui a versão optimistic. Padrão pra novas mutations que escrevem na thread.
-- **`supabase.functions.invoke` mascara o corpo de erro em non-2xx — sempre extrair via `FunctionsHttpError.context.json()`.** O `error.message` que vem do supabase-js é a string fixa `"Edge Function returned a non-2xx status code"`; jogar isso cru num toast esconde a razão real (`"conversa não está em atendimento humano"`, `"telefone do cliente não encontrado"`, `"falha ao enviar mensagem WhatsApp"`, etc) e quebra triagem. Pattern em [src/hooks/useSendManualMessage.ts](src/hooks/useSendManualMessage.ts) `mutationFn`: `if (error instanceof FunctionsHttpError) { const body = await error.context.json().catch(() => null); throw Object.assign(new Error(body?.error ?? body?.reason ?? "HTTP " + error.context.status), { httpStatus: error.context.status }); }`. Anexar `httpStatus` no Error permite que `onError` decida ressincronizar — ex.: em 409 (status mismatch como `human_active` esperado mas banco já está `ai_active` porque outro tab/webhook mudou), invalidar `["conversation-detail", id]` força refetch e UI se realinha (input some, botão "Assumir" aparece). Replicar em qualquer novo hook que faça `functions.invoke` com mutation user-facing.
-- **Auto-scroll em thread Radix `ScrollArea` aponta para o viewport interno**, não para o ref raiz: `root.querySelector("[data-radix-scroll-area-viewport]")`. Setar `scrollTop` no wrapper raiz não tem efeito — o scroll real acontece no viewport. Pattern em `Conversas.tsx` `ConversationDetail`.
-- **`useAwaitingHumanCount` escuta `event: "*"`** (não só `UPDATE`) — INSERT de conversa já em `awaiting_human` também atualiza o badge da sidebar.
-- **`handleSend` tem guard reentrante** (`if (sendMessage.isPending) return`) antes de qualquer trim/validate. Ctrl+Enter rápido 2x não envia 2x WhatsApp (provider não dedupe).
-- **`getConversationDisplayName` fallback final é `"Cliente sem nome"`** (não string vazia). Lista lateral sempre tem rótulo legível mesmo se customer.name + contact_name + phone forem todos vazios.
-- **Shape canônico de `ConversationMessage`** (`{ role, content, timestamp, kind?, human_user_id? }`) continua autoritativo — a RPC valida que `role`, `content` e `timestamp` estão presentes e rejeita com `raise exception` se faltar. Não adicionar campo novo sem refletir no tipo em `src/types/reserva.ts`.
-- **`appendOutboundToConversation` (em [supabase/functions/_shared/conversation-log.ts](supabase/functions/_shared/conversation-log.ts)) auto-cria conversa em `ai_active` se customer ainda não tem nenhuma.** Isso garante que mensagens de worker (confirmação, lembrete, survey, voucher) apareçam na timeline operacional mesmo no 1º contato. O helper é best-effort — nunca lança, falha de log não bloqueia o send. Workers/Edge Functions novos que registrem outbound NÃO devem fazer `INSERT into conversations` direto; sempre delegar ao helper.
-- **Customer create/merge é SEMPRE via [`_shared/resolve-customer.ts`](supabase/functions/_shared/resolve-customer.ts) (`resolveOrCreateCustomer`).** Webhook WhatsApp e `create-reservation` usam o helper. Regras: dedupe por `(organization_id, phone)`, preserva `name` real cadastrado (nunca sobrescreve com push_name do WhatsApp), faz APPEND em `emails[]` se email é novo. Edge Function nova que crie customer **não deve duplicar lógica de upsert** — chamar o helper.
-- **Subscription Supabase Realtime exige que a tabela esteja em `publication supabase_realtime`** — caso contrário o Postgres não emite `postgres_changes` e o `.on(...)` do frontend nunca dispara (UI só atualiza com F5). Coupling silencioso: o código JS "parece certo", o canal `subscribe()` retorna `SUBSCRIBED`, mas nenhum evento chega. Pattern: ao adicionar subscription nova (hoje em `useConversations`, `useAwaitingHumanCount`, `Conversas.tsx`, `AuthContext`), criar migration espelho de [20260519121500_realtime_auth_tables.sql](supabase/migrations/20260519121500_realtime_auth_tables.sql) / [20260519140000_realtime_conversations.sql](supabase/migrations/20260519140000_realtime_conversations.sql) — `do $$ alter publication supabase_realtime add table X exception when duplicate_object then null` (idempotente). RLS da tabela continua valendo no canal: clientes só recebem linhas que sua sessão pode ler, e o frontend ainda filtra `unit_id=eq.{unitId}` no `.on(...)` como defesa em profundidade.
-- **Layout master-detail da página de Conversas em `<lg` (1024px) é single-pane, não dual-pane com altura fixa.** Em [src/pages/gestao/Conversas.tsx](src/pages/gestao/Conversas.tsx) o container usa `h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]` e os Cards alternam visibilidade com `cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")` (lista) e `!selectedId && "hidden lg:flex"` (detalhe); header do detalhe ganha botão Voltar `lg:hidden` que zera `selectedId`. Combinar `grid lg:grid-cols-[X,1fr]` com altura fixa SEM esse toggle quebra mobile: no `<lg` o grid colapsa pra 1 coluna mas mantém a altura, lista E detalhe ficam empilhados e ambos com `overflow-hidden` — input de envio do operador fica cortado, atendimento humano vira inutilizável fora do desktop (incidente 2026-05-21). **`100dvh` é obrigatório** em vez de `100vh` porque iOS Safari posiciona `100vh` embaixo da barra inferior do navegador, e quando o teclado virtual abre `100vh` não recua; `100dvh` ajusta com a chrome dinâmica. Tela nova com padrão lista+detalhe deve seguir esse pattern, OU usar `ResponsiveDialog`/modal full-screen no mobile como em `Clientes.tsx`. Operacional `Conversas.tsx` é re-export de `gestao/Conversas.tsx` ([src/pages/operacional/Conversas.tsx](src/pages/operacional/Conversas.tsx)) — fix herda automaticamente.
+- **Append em `conversations.messages` é SEMPRE via RPC `append_conversation_message(p_conv_id, p_message)`** (`SECURITY DEFINER`, só `service_role`). Usa `messages || jsonb_build_array(...)` no mesmo UPDATE — row lock serializa, SELECT→push→UPDATE perde mensagens. Writers: `webhook-whatsapp` (`appendToConversation`), `send-manual-message`, [_shared/conversation-log.ts](supabase/functions/_shared/conversation-log.ts) (`appendOutboundToConversation`). Worker novo DEVE chamar a RPC.
+- **Shape canônico de `ConversationMessage`:** `{ role: "user"|"assistant"|"human", content, timestamp (ISO obrigatório), kind?, human_user_id? }`. RPC rejeita se faltar campo obrigatório. Tipo em [src/types/reserva.ts](src/types/reserva.ts).
+- **Mensagem WhatsApp limita 4096 chars** — frontend (`maxLength` + toast) e backend (`send-manual-message` retorna 400). Replicar em endpoint novo.
+- **`appendOutboundToConversation` auto-cria conversa em `ai_active`** se customer não tem nenhuma. Best-effort, nunca lança. Workers/EFs NÃO devem `INSERT into conversations` direto — sempre delegar.
+- **Customer create/merge é SEMPRE via [`_shared/resolve-customer.ts`](supabase/functions/_shared/resolve-customer.ts) (`resolveOrCreateCustomer`).** Dedupe `(organization_id, phone)`; preserva `name` cadastrado (nunca sobrescreve com push_name); append em `emails[]`.
+- **`useSendManualMessage` faz optimistic update + rollback** via `setQueryData(["conversation-detail", id])`, refetch real no `onSettled`. Padrão pra mutations novas na thread.
+- **`supabase.functions.invoke` mascara corpo de erro non-2xx** — extrair via `FunctionsHttpError.context.json()` e anexar `httpStatus` no Error. Pattern em [src/hooks/useSendManualMessage.ts](src/hooks/useSendManualMessage.ts) permite `onError` ressincronizar (409 → invalidar e refetch).
+- **Auto-scroll em Radix `ScrollArea`** aponta pro viewport interno: `root.querySelector("[data-radix-scroll-area-viewport]")`. Setar `scrollTop` no root não tem efeito.
+- **`useAwaitingHumanCount` escuta `event: "*"`** — INSERT de conversa já em `awaiting_human` também conta.
+- **`handleSend` guard reentrante** (`if (sendMessage.isPending) return`) antes de trim/validate — Ctrl+Enter rápido 2x não envia 2x.
+- **`getConversationDisplayName()` em `@/lib/utils`** é a fonte canônica. Ordem: `customer.name` (se ≠ phone) → `conversation.contact_name` → `formatPhone(phone)` → `"Cliente sem nome"`. Push_name (extraído por `parseInbound`) é persistido em `customers.name` (só se placeholder `name == phone`) E `conversations.contact_name` (espelho).
+- **Realtime subscription exige tabela em `publication supabase_realtime`** — senão `.on(...)` nunca dispara (canal retorna SUBSCRIBED, eventos não chegam). Pattern: `alter publication supabase_realtime add table X exception when duplicate_object then null` (idempotente). RLS continua valendo no canal.
+- **Layout master-detail `<lg` é single-pane.** [src/pages/gestao/Conversas.tsx](src/pages/gestao/Conversas.tsx): `h-[calc(100dvh-180px)]` + toggle `hidden lg:flex` baseado em `selectedId`; detalhe ganha botão Voltar `lg:hidden`. **`100dvh` obrigatório** (não `100vh`) — iOS Safari não recua `100vh` com teclado aberto. Tela nova lista+detalhe segue o pattern ou usa `ResponsiveDialog`.
 
 ---
 
-## Painel Operacional — invariantes pós-hardening
+## Painel Operacional — invariantes
 
-Auditoria 2026-05-17 fechou bugs no painel operacional (`/o/:unitSlug`) — race conditions, erros virando "lista vazia", inconsistência send-then-update. Manter os invariantes abaixo em qualquer feature que envolva listas + mutations compartilhadas + actions externas.
-
-- **Mutation que faz "external action + status UPDATE" trata cada lado separadamente.** Se a action externa (send WhatsApp, push notif, charge) suceder mas o UPDATE de status falhar depois, **NÃO relançar throw**: operador tentaria de novo, e proteções DB-side (ex.: UNIQUE PARTIAL `(waitlist_id, kind)` em `notifications_sent`) bloqueiam o 2º envio silenciosamente → cliente recebeu, banco diz que não. Padrão atual: retornar `{ externalOk, dbOk }`, mostrar `toast.warning("ação feita, estado não sincronizou — recarregue")` quando `dbOk=false`, e invalidar mesmo assim pra forçar reconciliação na próxima refetch. Pattern em [`useNotifyWaitlist`](src/hooks/useWaitlist.ts) — replicar em send-confirmation manual, charge, etc.
-- **Desabilitar 1 botão entre N que compartilham mutation usa `mutation.variables`, não state extra.** Quando uma lista de cards compartilha a mesma mutation (`useUpdateWaitlistStatus`, `useUpdateWalkInStatus`, `useDeleteWalkIn`), checar `mutation.isPending && mutation.variables?.id === entry.id` para desabilitar apenas o botão da entry em flight — desabilitar a mutation globalmente trava a lista inteira em re-click. Pattern em [`Fila.tsx`](src/pages/operacional/Fila.tsx) (`isUpdatingEntry`) e [`Passantes.tsx`](src/pages/operacional/Passantes.tsx) (`isUpdating`/`isDeleting` props no `WalkInCard`).
-- **Painéis que rodam o dia inteiro em tablet usam `refetchInterval` visibility-aware.** `refetchInterval: 30_000` fixo em tablet de salão aberto 8h = ~960 req/dia ociosas (aba em background). Padrão: helper `pollWhenVisible = () => typeof document !== "undefined" && document.hidden ? false : 30_000` passado como função. Pattern em [`useWalkIns.ts`](src/hooks/useWalkIns.ts) e [`useWaitlist.ts`](src/hooks/useWaitlist.ts).
-- **Estado vazio em lista filtrada checa as listas DERIVADAS, não o total bruto.** `ReservasDia` filtra `pending`/`confirmed`; se as 5 reservas do dia estão todas `cancelled`, `!reservas?.length` é falso (passa o guard de vazio) mas as listas derivadas estão vazias → render em branco. Padrão: computar `hasActive = pending.length + confirmed.length > 0` e usar isso como condição de empty state, com submensagem contando `cancelled`/`no_show` pra contexto. Pattern em [`ReservasDia.tsx`](src/pages/operacional/ReservasDia.tsx).
+- **Mutation que faz "external action + status UPDATE" trata cada lado separadamente.** Se external suceder mas UPDATE falhar, NÃO relançar throw — proteções DB-side (ex.: UNIQUE PARTIAL em `notifications_sent`) bloqueiam o 2º envio silenciosamente. Padrão: retornar `{ externalOk, dbOk }`, `toast.warning` quando `dbOk=false`, invalidar pra forçar reconciliação. Pattern em [src/hooks/useWaitlist.ts](src/hooks/useWaitlist.ts) `useNotifyWaitlist`.
+- **Desabilitar 1 botão entre N que compartilham mutation usa `mutation.variables`**, não state extra. Checar `mutation.isPending && mutation.variables?.id === entry.id`. Desabilitar mutation globalmente trava a lista. Pattern em [src/pages/operacional/Fila.tsx](src/pages/operacional/Fila.tsx) / [Passantes.tsx](src/pages/operacional/Passantes.tsx).
+- **Painéis em tablet usam `refetchInterval` visibility-aware:** `() => document.hidden ? false : 30_000`. Tab background não consome request idle.
+- **Empty state em lista filtrada checa as listas DERIVADAS**, não o total bruto. `reservas?.length > 0` com todas `cancelled` passa o guard mas as listas derivadas estão vazias → render em branco. Pattern em [src/pages/operacional/ReservasDia.tsx](src/pages/operacional/ReservasDia.tsx).
 
 ---
 
 ## Membros e papéis
 
-| Papel | Permissões |
-|---|---|
-| `owner` | Acesso total, incluindo criação de outras unidades |
-| `gerente` | Configurações, membros, todos os dados da unidade (sem automação) |
-| `operador` | Reservas, fila, walk-ins (operacional apenas) |
-
-> **Origem dos dados de membros**: `unit_members` (escopo unidade) via Edge Function `manage-members` + hook `useUnitMembers`. Super-admins ficam em `platform_admins`. A tabela `admin_users` e a Edge Function `manage-admins` foram **removidas** no refactor multi-tenant — não reinstalar.
+`owner` (total, cria units) > `gerente` (config + membros + dados, sem automação) > `operador` (reservas/fila/walk-ins). Membros em `unit_members` via EF `manage-members`; super-admins em `platform_admins`. Tabela `admin_users` + EF `manage-admins` foram REMOVIDAS — **não reinstalar**.
 
 ---
 
 ## Padrões de código
 
-- Componentes em **PascalCase**, hooks em **camelCase** com prefixo `use`
-- Queries/mutations via **TanStack React Query** — nunca `useState` + `useEffect` para dados remotos
-- **`invalidateQueries` usa prefix-match — cuidado com ordem da queryKey.** Se a query é `["customers", orgId, unitId, search]` e o mutation invalida `["customers", unitId]`, **não casa** (a posição 1 é `orgId`, não `unitId`) e a UI fica com dado obsoleto até F5. Padrão: invalidate broad (`["customers"]`) ou montar a key na mesma ordem do mutation. Bug histórico: `useCustomers` invalidava `["customers", unitId]` enquanto `Clientes.tsx` lia `["customers", orgId, unitId, search]` — depois de editar/anonimizar a lista não atualizava.
-- **Auditoria multi-tenant lê por `unit_id OR organization_id`** ([src/hooks/useAuditLog.ts](src/hooks/useAuditLog.ts)). Reservas E membros (`unit_members`) logam `unit_id`; clientes logam `organization_id` (porque `customers` pertence à org, não à unit). Query nova em `audit_log` precisa do `.or()` cobrindo os 2 — filtrar só por `unit_id` esconde silenciosamente anonimizações/edições de cliente do log da unidade. Ao adicionar novo `table_name` em [src/pages/gestao/Auditoria.tsx](src/pages/gestao/Auditoria.tsx), atualizar `TABLE_LABEL` E o `Select` de filtro (`unit_members → "Membro da unidade"` é o padrão atual).
-- **Listas com TanStack Query devem tratar `isError` separado de `!data.length`.** Silenciar erro como "lista vazia" mascarou em produção o incidente "todos os clientes da Moralles sumiram" (RPC `get_customer_stats_bulk` faltava e a UI mostrou "Nenhum cliente encontrado"). Padrão: 4 branches — `isLoading`, `isError` (mensagem + botão `refetch()`), `empty`, `list`. Pattern em `Clientes.tsx`.
-- **Operações batch que leem tabela inteira precisam paginar explícito** com `.range(from, to)` em loop até `chunk.length < PAGE`. Sem `.range()`, o PostgREST aplica `db-max-rows` default do Supabase (1000) e **trunca silenciosamente** — sem erro, sem warning. Vale pra exports (CSV/XLSX), backfills no client, agregações cross-tabela. Pattern em `exportClientesXlsx`.
-- **Todo hook de dados aceita `unitId` como primeiro parâmetro** — usar `useCurrentUnit()` para obtê-lo
-- Formulários via **React Hook Form + Zod**
-- **`refetchOnWindowFocus: false`** é default global no `QueryClient` ([src/App.tsx](src/App.tsx)) — evita resetar form state ao trocar de aba. Painéis operacionais que precisam de dados ao vivo devem usar `refetchInterval` no hook específico (não reativar `refetchOnWindowFocus`).
-- **`AuthContext` só ativa `loading=true` quando o user_id muda** ([src/contexts/AuthContext.tsx](src/contexts/AuthContext.tsx)). Supabase dispara `SIGNED_IN` em refoco de aba após token refresh; ativar loading nesse caso desmonta a árvore (guards renderizam Skeleton) e descarta state local dos forms. Manter o filtro por `currentUserId !== nextUserId`.
-- **Nome da unidade vive em `units.name`** — é a fonte canônica usada pela sidebar (via `AuthContext.memberships`), portais públicos (`/r/:slug`, `/w`, `/m`, `Index`), breadcrumbs e headers. Owner/gerente pode escrever via RLS (policy `unit_owner_gerente_update_units`, migration 019). Após escrever, **chame `refreshMemberships()` do `useAuth()`** para atualizar a sidebar sem logout. O setting `restaurant_name` é **legado** — Edge Functions (`send-confirmation`, `webhook-whatsapp`) ainda leem com fallback `unit.name` para compat, mas a UI não deve escrever nele.
-- **Slug da unidade (`units.slug`) é editável em Configurações** ao lado do nome (auto-sugerido via `slugify()` enquanto o campo não é tocado, ou manual). Mudar slug **invalida URLs antigas** (`/r/`, `/g/`, `/o/`, `/w/`, `/m/`) — QR codes impressos e links em mensagens WhatsApp já enviadas viram 404. O mutation faz `refreshMemberships()`, invalida `["all-units"]`, `["public-unit"]`, `["unit-public-content"]`, `["organizations"]` e renavega `/g/<antigo>` → `/g/<novo>`. Trata colisão (`23505`) com mensagem amigável. Não há autosync silencioso — qualquer mudança exige clique no Salvar do bloco de slug.
-- **Nome do contato em Conversas** — exibir SEMPRE via `getConversationDisplayName()` de `@/lib/utils`. Ordem: `customer.name` (se ≠ phone) → `conversation.contact_name` (push_name corrente) → `formatPhone(phone)`. Push_name é extraído por `parseInbound` em `_shared/whatsapp-providers.ts` (Z-API `senderName`/`chatName`/`notifyName`, WAHA `_data.notifyName`/`pushName`, Meta `contacts[0].profile.name`) e persistido em DOIS lugares pelo `webhook-whatsapp`: (1) `customers.name` — só preenche quando customer é novo ou tem placeholder (`name == phone`); nunca sobrescreve nome real cadastrado via reserva; (2) `conversations.contact_name` — espelho atualizado a cada mensagem.
-- **Shape de `conversations.messages`** — array JSONB de `{ role: "user"|"assistant"|"human", content, timestamp (ISO obrigatório), kind?, human_user_id? }`. Os 3 writers (`webhook-whatsapp`, `_shared/conversation-log.ts`, `send-manual-message`) sempre injetam `timestamp: new Date().toISOString()` — nenhum writer novo deve omitir esse campo. Mensagens órfãs históricas foram corrigidas pela migration `20260517100600_backfill_message_timestamps.sql`, que herdou `conversations.created_at` como aproximação e marcou cada mensagem corrigida com `timestamp_backfilled: true`. Essa flag NÃO deve ser replicada em writers novos — é só rastro auditável de backfill. O divisor de dia em `Conversas.tsx` (via `humanDateLabel`/`getMessageDayKey` em `@/lib/utils`) renderiza "Sem data" como fallback quando o timestamp é null/inválido — se a label reaparecer na UI, indica regressão (writer novo esqueceu o campo, ou import externo de mensagens sem ele).
-- Notificações via **`toast` do Sonner** (`import { toast } from "sonner"`)
-- Classes CSS via **`cn()`** de `@/lib/utils` — nunca template literals diretos com Tailwind
-- Path alias `@/` aponta para `src/`
-- Datas sempre em formato `YYYY-MM-DD` no banco; exibição via `formatDateBR()`
-- Telefones sem formatação no banco (apenas dígitos); exibição via `formatPhone()`
-- **Rodar `npm run typecheck` antes de commitar mudanças no frontend** — o dev server usa SWC (sem type check), então import faltante (`<Link>` sem `import { Link } from "react-router-dom"`) só explode em runtime via ErrorBoundary ("Algo deu errado"). Baseline atual: **zero erros**; qualquer novo erro é regressão.
+- Componentes **PascalCase**, hooks **camelCase** com prefixo `use`. Path alias `@/` → `src/`. Hooks de dados aceitam `unitId` como 1º parâmetro (`useCurrentUnit()` resolve). Forms via React Hook Form + Zod. Toast via Sonner. CSS via `cn()` de `@/lib/utils` (nunca template literal Tailwind). Datas `YYYY-MM-DD` no DB / `formatDateBR()` na exibição. Telefones só dígitos / `formatPhone()` na exibição.
+- Queries/mutations via **TanStack React Query** — nunca `useState + useEffect` pra dados remotos.
+- **`invalidateQueries` é prefix-match — cuidado com ordem da key.** Se query é `["customers", orgId, unitId, search]` e mutation invalida `["customers", unitId]`, **não casa** (posição 1 é orgId). Invalidate broad (`["customers"]`) ou montar key na mesma ordem.
+- **Listas TanStack tratam `isError` separado de `!data.length`** — 4 branches: `isLoading`, `isError` (com `refetch()`), `empty`, `list`. Silenciar erro como "lista vazia" já mascarou incidente em produção.
+- **Batch que lê tabela inteira precisa `.range(from, to)` em loop** até `chunk.length < PAGE`. Sem `.range`, PostgREST trunca silenciosamente em `db-max-rows` default (1000).
+- **`refetchOnWindowFocus: false`** é default global em [src/App.tsx](src/App.tsx) — evita resetar form state ao trocar de aba. Painéis operacionais usam `refetchInterval`, não reativam windowFocus.
+- **`AuthContext` só ativa `loading=true` quando `user_id muda`** ([src/contexts/AuthContext.tsx](src/contexts/AuthContext.tsx)). Supabase dispara `SIGNED_IN` em refoco após token refresh — ativar loading desmonta árvore e descarta state local.
+- **Auto-logout de órfão:** user autenticado sem `unit_members` E sem `platform_admins` → `AuthContext` desloga + redireciona `/admin/login`. Detecção via Realtime nas duas tabelas. NÃO adicionar de volta tela estática "Sem acesso a nenhuma unidade" — trava em sessão zumbi.
+- **Nome da unit vive em `units.name`** — fonte canônica. Owner/gerente escreve via policy `unit_owner_gerente_update_units`. Após escrever, chamar `refreshMemberships()` do `useAuth()`. Setting `restaurant_name` é legado (EFs leem com fallback pra compat); UI não escreve mais nele.
+- **Slug da unit (`units.slug`) é editável** e invalida URLs antigas (QR impresso → 404). Mutation faz `refreshMemberships`, invalida `["all-units"|"public-unit"|"unit-public-content"|"organizations"]`, renavega `/g/<antigo>` → `/g/<novo>`. Trata colisão `23505`.
+- **Input do usuário em `.or()`/`.ilike()` PostgREST passa por `sanitizeSearchTerm()`** de `@/lib/utils` (remove `, ( ) % _ \ " ' \` *`, limita 80 chars). Sem isso, `O'Brien` quebra a query.
+- **URLs em `<a href>` de portal público passam por `isSafeHttpUrl()`** (bloqueia `javascript:`/`data:`/`vbscript:`). Hoje só `menu_banners.link_url`: triplo guard frontend save + render + CHECK constraint. Campo novo "link salvo por membro" segue o mesmo.
+- **Edge Functions nunca devolvem `error.message` cru do Postgres em 500.** Mensagem curta PT-BR pro cliente; detalhe em `console.error`/`jsonLog`. Exceção: mensagens do Supabase Auth são UX-críticas, devolver intactas.
+- **CORS em `manage-*`** via [_shared/cors.ts](supabase/functions/_shared/cors.ts) (whitelist localhost, *.vercel.app, reservas.moralles.com.br).
 
-## Tema visual: dois mundos
+---
 
-- **Warm restaurant (`:root`)** — paleta laranja + bege. Portais públicos e login.
-- **Navy SaaS (`.theme-admin`)** — paleta navy + off-white. Painéis internos (GestaoLayout, OperacionalLayout, PlatformLayout).
+## Tema visual
 
-`.theme-admin` sobrescreve TODAS as CSS variables dentro do escopo. **Nunca hardcode cores** — sempre via tokens do Tailwind (que mapeiam pras CSS vars).
+Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admin` navy SaaS (painéis Gestão/Operacional/Plataforma). `.theme-admin` sobrescreve TODAS as CSS vars no escopo. Nunca hardcode cores — tokens Tailwind sempre.
 
-## Hardening de segurança multi-tenant
+---
 
-- **Edge Functions nunca devolvem `error.message`/`String(err)` cru do Postgres nos 500.** O cliente recebe mensagem curta em PT-BR ("Falha ao listar canais.", "Falha ao criar empresa." etc.); o detalhe vai para `console.error`/`jsonLog` interno. Vaza schema/constraint/stack se exposto — atacante mapeia DB pela UI. **Exceção**: mensagens do Supabase Auth (`auth.admin.createUser` em `manage-organizations`) são amigáveis e UX-críticas — devolver intactas. Validações 400 (já em PT-BR) também ficam como estão. Pattern aplicado em `manage-channels`, `manage-organizations`, `manage-ai-providers`, `whatsapp-health`.
-- **Anon nunca lê tabelas direto** — toda leitura pública via RPC `SECURITY DEFINER`. Adicionar policy `TO anon` direto na tabela é regressão.
-- **Anon insere apenas em units/orgs públicas** — policies `anon_insert_*` têm `EXISTS (... WHERE is_public)`.
-- **Tabelas com credenciais usam `FORCE RLS` sem policies** (whatsapp_channels, ai_provider_credentials, processed_messages, rate_limit_events). UI consome via Edge Function.
-- **Edge Functions validam `unit_id`** da request contra o recurso — defense-in-depth.
-- **CORS em `manage-*`** via `_shared/cors.ts` (whitelist localhost, *.vercel.app, reservas.moralles.com.br).
-- **Storage `unit-assets`**: listing bloqueado, CDN público funciona.
-- **Substituir/remover asset no bucket `unit-assets` exige cleanup duplo no client** — sem isso, trocar logo/hero/foto da galeria acumula órfãos no bucket indefinidamente (sem GC). Padrão em `Conta.tsx:handleSave`:
-  1. **Diff DB-vs-form**: captura `prevHero/Logo/Gallery` de `content` ANTES da mutation, faz `await update.mutateAsync(...)`, depois compara contra os novos valores do form e marca os paths que sumiram.
-  2. **Tracking de sessão**: parent mantém `uploadedRef` (Map publicUrl→path). Uploaders (`AssetUploader`, `GalleryEditor`) expõem callback `onUploaded({ publicUrl, path })` chamado a cada upload bem-sucedido. No save, qualquer path em `uploadedRef` que NÃO ficou no estado final do form é candidato a remoção. Sem isso, "Trocar imagem" 2x ou "adicionar+remover sem salvar" deixa órfão.
-  3. **`supabase.storage.from().remove()` NÃO lança em RLS denied / arquivo inexistente** — retorna `{ data, error }`. Sempre destruture `const { error } = await ...remove([...])` e logue `error` explicitamente. O `try/catch` em volta só pega exceção de rede; sem checar `error` no return, falha de permissão fica invisível.
-  4. SEMPRE filtre os paths via `extractStoragePath()` de `@/lib/utils` (rejeita URL de outro bucket → null) E confirme `path.startsWith(<unit_id>/)` antes de deletar (defesa contra cross-tenant).
+## Observabilidade WhatsApp
 
-  Replicar todos os 4 passos em qualquer feature nova que escreva no bucket (menus, banners, futuros uploads).
-- **Ticket médio é um número único na UI → grava só em `units.price_range_max`, deixa `price_range_min` NULL.** Formatters `formatPriceRange` (PublicPortal) e `formatPriceRangeShort` (Index) renderizam "até R$ X" no branch `min == null && max != null`. Gravar `min = max` (copiar valor) produz "de R$ 150 até R$ 150" no portal e perde dado se algum admin tiver setado uma faixa real via SQL. Nenhuma escrita futura em `units` deve preencher `price_range_min` a partir de campo único do form — só faz sentido se a UI tiver dois inputs distintos. Histórico: bug B1 da auditoria 2026-05-17 corrigido por backfill em `20260518110000_units_price_range_min_backfill.sql` + fix em `Conta.tsx:handleSave`.
-- **Toda policy RLS escopada por `unit_id` precisa de contraparte `platform_admin_*`** via `is_platform_admin(auth.uid())` — vale para tabelas E para `storage.objects` de buckets multi-tenant. `useCurrentUnit.ts` fabrica pseudo-membership "owner" para platform_admin operar unidades alheias; sem a policy paralela, a write é bloqueada apesar da UI mostrar "Proprietário". Pattern em `013_multi_tenant.sql`; storage cobre em `047_unit_assets_platform_admin.sql`.
-- **Toda Edge Function que faz guard de autorização com `is_unit_member` precisa do paralelo `is_platform_admin`** — mesma motivação da regra RLS acima. `useCurrentUnit.ts` fabrica membership "owner" pra super-admin operar unidades alheias na UI; sem o paralelo no backend, o Edge Function devolve 403 e o usuário vê "Erro: forbidden" mesmo logado. Pattern canônico (em [send-manual-message](supabase/functions/send-manual-message/index.ts), [send-cancellation](supabase/functions/send-cancellation/index.ts), [update-reservation](supabase/functions/update-reservation/index.ts)): `const [memberResult, adminResult] = await Promise.all([supabase.rpc("is_unit_member", { p_user_id, p_unit_id }), supabase.rpc("is_platform_admin", { p_user_id })]); if (!memberResult.data && !adminResult.data) return forbidden;`. Edge Function nova que valide acesso por unit DEVE seguir esse pattern — chamar só `is_unit_member` é regressão e quebra o painel para super-admin.
-- **Input do usuário em `.or()` / `.ilike()` PostgREST tem que passar por `sanitizeSearchTerm()`** de `@/lib/utils`. Remove `, ( ) % _ \ " ' \` *` (caracteres que quebram a sintaxe OR ou viram wildcards involuntários) e limita a 80 chars. Sem isso, buscar `O'Brien` ou `nome,id` quebra a query inteira ou retorna resultado errado. Já aplicado em `Clientes.tsx` e `exportClientesXlsx`. Pendente: `IssueVoucherDialog.tsx` ainda lê direto sem sanitizar.
-- **URLs que vêm do banco e viram `<a href>` em portal público devem passar por `isSafeHttpUrl()`** de `@/lib/utils` antes de renderizar (bloqueia `javascript:`/`data:`/`vbscript:`). Hoje o único caso é `menu_banners.link_url` — frontend valida no save (`MenuBannerEditor`), portal valida no render (`MenuPortal.BannerCarousel`) e banco força com CHECK constraint `menu_banners_link_url_safe_check` (migration `20260517100800_menus_hardening.sql`). Qualquer novo campo "link salvo por membro" deve seguir esse triplo guard. Mesma migration documenta `menus.theme` (JSONB) cujo fallback campo a campo (`DEFAULT_MENU_THEME`) fica em `MenuPortal.safeColor()` — banco não força schema JSON, então frontend é o guardião.
-- **Auto-logout de órfão** — quando o `user` está autenticado mas perde toda `unit_members` e **não** é `platform_admin`, o `AuthContext` ([src/contexts/AuthContext.tsx](src/contexts/AuthContext.tsx)) desloga automaticamente com toast e redireciona para `/admin/login`. Detecção em runtime via Supabase Realtime subscreve `unit_members` e `platform_admins` filtrado por `user_id`. Migration `20260519121500_realtime_auth_tables.sql` garante essas tabelas na publication. **Não adicionar de volta a tela estática "Sem acesso a nenhuma unidade"** — isso trava o user em sessão zumbi. Guards de `/g/:unitSlug` e `/o/:unitSlug` também checam membership na unit alvo e mandam pra `/admin` (que então o AuthContext resolve).
+- **`webhook_executions`** FORCE RLS, TTL 30d. Outcomes: `success`, `agent_error`, `send_error`, `duplicate`, `media_response`, `debounced_superseded`, `org_billing_blocked`, etc.
+- **`SendResult` estruturado:** `{ ok, status, error, bodySnippet, missingCreds }`.
+- **Diagnóstico** em `/platform/automacao/<slug>` aba "Diagnóstico" via `whatsapp-health`.
 
-## Observabilidade da automação WhatsApp
-
-- **Diagnóstico** em `/platform/automacao/<slug>` → aba "Diagnóstico" (whatsapp-health + useWhatsAppHealth)
-- **`webhook_executions`**: toda execução com outcome (success, agent_error, send_error, duplicate, etc). FORCE RLS.
-- **Idempotência segura**: `processed_messages` com started_at/completed_at. Reprocessa após 90s se incompleto.
-- **UX handoff**: auto-resolve 12h sem reply humano → ai_active. Lembrete 1x/6h via `last_silenced_reply_at`.
-- **HMAC SHA-256** para provider `official` (Meta). Z-API/WAHA usam `webhook_secret` per-channel.
-- **SendResult estruturado**: `{ ok, status, error, bodySnippet, missingCreds }`.
+---
 
 ## Deploy
 
 ### Frontend (Vercel)
 
-Push em `main` dispara deploy. Vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`.
-
-> `.npmrc` força `legacy-peer-deps=true`. Não remover.
+Push em `main` dispara deploy. Vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`. `.npmrc` força `legacy-peer-deps=true` — não remover.
 
 ### Edge Functions
 
-Deploy individual: `supabase functions deploy <nome>`. Lista canônica das functions vive em [supabase/functions/](supabase/functions/) — não duplicar aqui.
+Deploy individual: `supabase functions deploy <nome>`. **Edge Functions não compartilham bundle em runtime** — alterar arquivo em `_shared/` exige redeploy de TODAS as functions que importam, senão continuam com versão antiga em memória.
 
-> **Edge Functions não compartilham bundle em runtime.** Ao alterar arquivo em `_shared/`, redeploy de TODAS as functions que importam — sem redeploy continuam usando a versão antiga em memória.
->
-> - `_shared/availability.ts` → redeploy de `create-reservation` + `webhook-whatsapp`.
-> - `_shared/conversation-log.ts` → redeploy de TODAS as functions (webhook, send-*, workers process-*). Ao adicionar feature/worker novo que importe, atualizar este checklist.
-> - `_shared/resolve-customer.ts` → redeploy de `create-reservation` + `webhook-whatsapp`.
+Checklist de redeploy quando `_shared/X.ts` muda:
 
-## Adicionando novos componentes shadcn/ui
+- **`availability.ts`** → `create-reservation`, `webhook-whatsapp`
+- **`conversation-log.ts`** → TODAS (`webhook-*`, `send-*`, `process-*`)
+- **`resolve-customer.ts`** → `create-reservation`, `webhook-whatsapp`
+- **`stripe-config.ts`** → `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`, `manage-payment-methods`
+- **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`
+- **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
 
-```bash
-npx shadcn@latest add <componente>
-```
-
-Alternativa: copiar o `.tsx` do componente de outro projeto interno do design system (ex.: `moralles-agenda`). Não editar arquivos em `src/components/ui/` que já vieram do shadcn — wrappers próprios (ex.: `responsive-dialog.tsx`) ficam ao lado, com nome distinto.
+Worker/EF novo que importe um helper aqui = atualizar este checklist no mesmo PR.
