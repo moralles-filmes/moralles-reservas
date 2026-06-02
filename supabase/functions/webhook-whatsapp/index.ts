@@ -137,7 +137,7 @@ const agentTools: AgentTool[] = [
   },
   {
     name: "request_human_handoff",
-    description: "Use quando o pedido do cliente não puder ser resolvido pelas ferramentas disponíveis (reclamações, eventos especiais, delivery, assuntos que exigem julgamento humano). Transfere a conversa para um atendente humano.",
+    description: "Use SOMENTE depois de tentar resolver pelas ferramentas e informações disponíveis. Se o cliente pedir para 'falar com um atendente/humano' sem dizer o motivo, NÃO transfira de imediato: pergunte primeiro, de forma cordial, o que ele precisa, e tente resolver você mesmo (reserva, dúvida de cardápio/horário/endereço/pagamento/estacionamento). Só chame esta tool quando: (a) o assunto realmente exigir julgamento humano (reclamação, evento/grupo grande, delivery não suportado, cobrança, alergia grave, imprensa/parceria), OU (b) o cliente insistir em falar com uma pessoa mesmo após você se oferecer para ajudar. Transfere a conversa para um atendente humano.",
     parameters: {
       type: "object",
       properties: {
@@ -1824,6 +1824,7 @@ serve(async (req) => {
       `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar. ` +
       `Não invente horários, cardápio, serviços, descontos, promoções nem benefícios de aniversário — só use o que está documentado abaixo. ` +
       `Se o pedido fugir do escopo (reclamação, evento corporativo, delivery não suportado, qualquer coisa que as ferramentas não cobrem), use a tool 'request_human_handoff' informando o motivo. ` +
+      `ANTES DE TRANSFERIR PARA UM HUMANO: quando o cliente pedir para "falar com um atendente", "falar com alguém", "quero uma pessoa" ou similar SEM explicar o motivo, NÃO chame 'request_human_handoff' de cara. Primeiro responda de forma cordial perguntando em que pode ajudar (ex: "Claro! Pra eu te ajudar mais rápido, me conta o que você precisa? Posso cuidar de reservas, cardápio, horários, endereço, pagamento e estacionamento."). Se o que o cliente quer estiver dentro do seu escopo e das ferramentas, RESOLVA você mesmo em vez de transferir. Só acione 'request_human_handoff' se (a) o assunto exigir mesmo um humano (reclamação, evento/grupo grande, delivery não suportado, cobrança, alergia grave, imprensa/parceria), ou (b) o cliente insistir em falar com uma pessoa mesmo depois de você se oferecer pra ajudar. Cliente claramente irritado ou em situação delicada: transfira direto, sem insistir em resolver sozinho. ` +
       `IMPORTANTE: ao chamar 'request_human_handoff', SEMPRE envie ao cliente uma mensagem amigável avisando que um atendente humano vai responder em breve, antes de encerrar sua resposta. Nunca silencie sem aviso.` +
       `\n\nREGRAS OBRIGATÓRIAS PARA RESERVAS:\n` +
       `1. SEMPRE chame check_availability ANTES de create_reservation. Nunca atalhe.\n` +
