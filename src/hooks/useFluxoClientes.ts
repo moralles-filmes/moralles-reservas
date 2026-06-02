@@ -59,6 +59,29 @@ export interface KpiSet {
   receita_centavos: number;
 }
 
+export type ReservaCanal = "whatsapp" | "web" | "outros";
+
+export interface CanalStat {
+  canal: ReservaCanal;
+  label: string;
+  /** Todas as reservas do canal (bate com "Total de mesas" da aba Reserva). */
+  reservas: number;
+  /** Soma de party_size de todas as reservas do canal (bate com "Total de pessoas"). */
+  pessoas: number;
+  /** pessoas confirmadas × ticket — bate com "Receita estimada". */
+  receita_centavos: number;
+  /** reservas / totalReservas × 100 (0 se denominador 0). */
+  pct_reservas: number;
+  /** pessoas / totalPessoas × 100 (0 se denominador 0). */
+  pct_pessoas: number;
+}
+
+export interface OrigemData {
+  canais: CanalStat[];
+  totalReservas: number;
+  totalPessoas: number;
+}
+
 export interface FluxoData {
   kpis: {
     geral: KpiSet;
@@ -69,6 +92,7 @@ export interface FluxoData {
   daily: DailyFlow[];
   partySize: PartySizeBucket[];
   dow: DowFlow[];
+  origem: OrigemData;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -116,6 +140,23 @@ const ALL_BUCKETS = [
   "20+",
 ];
 
+const CANAL_LABEL: Record<ReservaCanal, string> = {
+  whatsapp: "WhatsApp",
+  web: "Site",
+  outros: "Não identificado",
+};
+
+// Ordem de exibição fixa (mantém cor/posição estáveis entre renders).
+const CANAL_ORDER: ReservaCanal[] = ["whatsapp", "web", "outros"];
+
+/** Mapeia o `source` cru da reserva pro canal exibido. Defensivo: qualquer
+ *  valor fora de web/whatsapp (nulo, legado, futuro) cai em "outros". */
+function canalDe(source: string | null | undefined): ReservaCanal {
+  if (source === "whatsapp") return "whatsapp";
+  if (source === "web") return "web";
+  return "outros";
+}
+
 function emptyKpiSet(): KpiSet {
   return {
     total_mesas: 0,
@@ -136,6 +177,7 @@ interface ReservationRow {
   time: string | null;
   party_size: number;
   status: "pending" | "confirmed" | "cancelled" | "no_show";
+  source: string;
 }
 
 interface WaitlistRow {
@@ -175,7 +217,7 @@ export function useFluxoClientes(
       const [resv, wait, walk] = await Promise.all([
         supabase
           .from("reservations")
-          .select("id, date, time, party_size, status")
+          .select("id, date, time, party_size, status, source")
           .eq("unit_id", unitId)
           .gte("date", fromIso)
           .lte("date", toIso),
@@ -218,6 +260,7 @@ export function useFluxoClientes(
         daily: [],
         partySize: [],
         dow: [],
+        origem: { canais: [], totalReservas: 0, totalPessoas: 0 },
       };
     }
 
@@ -273,6 +316,51 @@ export function useFluxoClientes(
       mesas_sentadas: reservaConfirmadasCount,
       pessoas_sentadas: reservaSentadasPessoas,
       receita_centavos: reservaSentadasPessoas * ticketCents,
+    };
+
+    // ── Origem das reservas (por canal) ──────────────────────────────────────
+    // Contagens sobre TODAS as reservas (espelha total_mesas/total_pessoas da
+    // aba Reserva); receita sobre confirmadas (espelha receita_centavos). Assim
+    // a soma dos canais reconcilia com os KPIs já exibidos — sem divergência.
+    const canalAcc: Record<
+      ReservaCanal,
+      { reservas: number; pessoas: number; pessoasConfirmadas: number }
+    > = {
+      whatsapp: { reservas: 0, pessoas: 0, pessoasConfirmadas: 0 },
+      web: { reservas: 0, pessoas: 0, pessoasConfirmadas: 0 },
+      outros: { reservas: 0, pessoas: 0, pessoasConfirmadas: 0 },
+    };
+    for (const r of reservations) {
+      const c = canalAcc[canalDe(r.source)];
+      c.reservas += 1;
+      c.pessoas += r.party_size;
+      if (r.status === "confirmed") c.pessoasConfirmadas += r.party_size;
+    }
+    const origemTotalReservas = reservaTotalMesas;
+    const origemTotalPessoas = reservaTotalPessoas;
+    const canais: CanalStat[] = CANAL_ORDER.map((canal) => {
+      const acc = canalAcc[canal];
+      return {
+        canal,
+        label: CANAL_LABEL[canal],
+        reservas: acc.reservas,
+        pessoas: acc.pessoas,
+        receita_centavos: acc.pessoasConfirmadas * ticketCents,
+        pct_reservas: origemTotalReservas
+          ? (acc.reservas / origemTotalReservas) * 100
+          : 0,
+        pct_pessoas: origemTotalPessoas
+          ? (acc.pessoas / origemTotalPessoas) * 100
+          : 0,
+      };
+    })
+      .filter((c) => c.reservas > 0)
+      .sort((a, b) => b.reservas - a.reservas);
+
+    const origem: OrigemData = {
+      canais,
+      totalReservas: origemTotalReservas,
+      totalPessoas: origemTotalPessoas,
     };
 
     // ── Fila ───────────────────────────────────────────────────────────────
@@ -490,6 +578,7 @@ export function useFluxoClientes(
       daily,
       partySize,
       dow: dowReordered,
+      origem,
     };
   }, [query.data, range.from, range.to, ticketMedioReais]);
 

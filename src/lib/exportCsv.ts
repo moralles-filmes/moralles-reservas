@@ -5,6 +5,7 @@ import type { AvaliacaoRow } from "@/hooks/useAvaliacoes";
 interface ReservationRow {
   date: string;
   party_size: number;
+  source: string;
   customer: {
     id: string;
     name: string;
@@ -19,6 +20,8 @@ interface CustomerSummary {
   email: string;
   totalReservas: number;
   totalPessoas: number;
+  reservasWhatsapp: number;
+  reservasSite: number;
   ultimaVisita: string;
 }
 
@@ -63,7 +66,7 @@ export async function exportClientesCsv(
   const { data, error } = await supabase
     .from("reservations")
     .select(
-      "date, party_size, customer:customers!inner(id, name, phone, email)",
+      "date, party_size, source, customer:customers!inner(id, name, phone, email)",
     )
     .eq("unit_id", unitId)
     .gte("date", fromIso)
@@ -79,10 +82,13 @@ export async function exportClientesCsv(
   for (const r of rows) {
     if (!r.customer) continue;
     const key = r.customer.id;
+    const isWhatsapp = r.source === "whatsapp";
     const existing = map.get(key);
     if (existing) {
       existing.totalReservas += 1;
       existing.totalPessoas += r.party_size;
+      if (isWhatsapp) existing.reservasWhatsapp += 1;
+      else existing.reservasSite += 1;
       if (r.date > existing.ultimaVisita) existing.ultimaVisita = r.date;
     } else {
       map.set(key, {
@@ -91,6 +97,8 @@ export async function exportClientesCsv(
         email: r.customer.email ?? "",
         totalReservas: 1,
         totalPessoas: r.party_size,
+        reservasWhatsapp: isWhatsapp ? 1 : 0,
+        reservasSite: isWhatsapp ? 0 : 1,
         ultimaVisita: r.date,
       });
     }
@@ -101,13 +109,24 @@ export async function exportClientesCsv(
   );
 
   const csv = toCsv([
-    ["Nome", "Telefone", "E-mail", "Reservas no período", "Total de pessoas", "Última visita"],
+    [
+      "Nome",
+      "Telefone",
+      "E-mail",
+      "Reservas no período",
+      "Total de pessoas",
+      "Reservas WhatsApp",
+      "Reservas Site",
+      "Última visita",
+    ],
     ...customers.map((c) => [
       c.name,
       c.phone,
       c.email,
       String(c.totalReservas),
       String(c.totalPessoas),
+      String(c.reservasWhatsapp),
+      String(c.reservasSite),
       c.ultimaVisita,
     ]),
   ]);

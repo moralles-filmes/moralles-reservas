@@ -35,6 +35,7 @@ import {
 import { FluxoLineChart, type FluxoTabKey } from "@/components/relatorios/FluxoLineChart";
 import { PartySizeChart } from "@/components/relatorios/PartySizeChart";
 import { DowChart } from "@/components/relatorios/DowChart";
+import { OrigemReservasSection } from "@/components/relatorios/OrigemReservasSection";
 import { PageHeader } from "@/components/PageHeader";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { KpiCard } from "@/components/dashboard/KpiCard";
@@ -237,6 +238,14 @@ export default function FluxoClientes() {
           </CardContent>
         </Card>
       </div>
+
+      {tab === "reserva" && (
+        <OrigemReservasSection
+          origem={data.origem}
+          hasTicketMedio={hasTicketMedio}
+          loading={isLoading}
+        />
+      )}
 
       <p className="text-xs text-muted-foreground">
         <span
