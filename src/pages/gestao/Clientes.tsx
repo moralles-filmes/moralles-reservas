@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useDebounce } from "@/hooks/useDebounce";
@@ -152,6 +152,34 @@ export default function Clientes() {
   const customers = customersQuery.data?.pages.flatMap((p) => p.items) ?? [];
   const isLoading = customersQuery.isLoading;
 
+  // Total real de clientes (head:true → só conta, não traz dados). Espelha os
+  // mesmos filtros da lista, então sem busca mostra o total geral e com busca
+  // mostra o total filtrado — consistente com o que está em tela.
+  const countQuery = useQuery({
+    queryKey: ["customers-count", orgId, unitId, debouncedSearch],
+    enabled: !!orgId && !!unitId,
+    staleTime: 30_000,
+    queryFn: async () => {
+      let q = supabase
+        .from("customers")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", orgId)
+        .is("deleted_at", null);
+
+      const safeSearch = sanitizeSearchTerm(debouncedSearch);
+      if (safeSearch) {
+        q = q.or(
+          `name.ilike.%${safeSearch}%,phone.ilike.%${safeSearch}%,email.ilike.%${safeSearch}%`
+        );
+      }
+
+      const { count, error } = await q;
+      if (error) throw error;
+      return count ?? 0;
+    },
+  });
+  const totalCount = countQuery.data;
+
   // IntersectionObserver pra auto-carregar próxima página quando a sentinela
   // entra no viewport.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -204,7 +232,15 @@ export default function Clientes() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold">Clientes</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold">Clientes</h1>
+          {totalCount != null && (
+            <Badge variant="secondary" className="text-sm font-medium">
+              {totalCount.toLocaleString("pt-BR")}{" "}
+              {totalCount === 1 ? "cliente" : "clientes"}
+            </Badge>
+          )}
+        </div>
         <Button
           variant="outline"
           size="sm"

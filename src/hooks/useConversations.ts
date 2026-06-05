@@ -6,26 +6,45 @@ import type { Conversation, ConversationStatus } from "@/types/reserva";
 
 export type ConversationFilter = ConversationStatus | "all";
 
+// Lista NÃO usa a coluna `messages` (JSONB grande): renderiza nome/telefone/
+// status/handoff/last_message_at. O detalhe busca a conversa completa por id
+// numa query separada (["conversation-detail", id]). Selecionar colunas
+// explícitas sem `messages` derruba o payload por linha e viabiliza carregar
+// TODAS as conversas (sem o antigo cap de 200) sem custo proibitivo.
+const LIST_COLUMNS =
+  "id, unit_id, customer_id, status, contact_name, assigned_to, handoff_reason, handoff_at, last_message_at, updated_at, created_at, customer:customers(*)";
+const PAGE = 1000;
+
 export function useConversations(unitId: string, filter: ConversationFilter = "all") {
   const queryClient = useQueryClient();
 
   const query = useQuery({
     queryKey: ["conversations", unitId, filter],
     queryFn: async () => {
-      let q = supabase
-        .from("conversations")
-        .select("*, customer:customers(*)")
-        .eq("unit_id", unitId)
-        .order("last_message_at", { ascending: false })
-        .limit(200);
+      // PostgREST trunca em db-max-rows (1000) por request — paginar com
+      // .range() em loop até esgotar pra não esconder conversas silenciosamente.
+      const all: Conversation[] = [];
+      for (let from = 0; ; from += PAGE) {
+        let q = supabase
+          .from("conversations")
+          .select(LIST_COLUMNS)
+          .eq("unit_id", unitId)
+          .order("last_message_at", { ascending: false })
+          .range(from, from + PAGE - 1);
 
-      if (filter !== "all") {
-        q = q.eq("status", filter);
+        if (filter !== "all") {
+          q = q.eq("status", filter);
+        }
+
+        const { data, error } = await q;
+        if (error) throw error;
+        // Cast via unknown: a lista omite `messages`/`reservation_id` de propósito
+        // (detalhe busca a conversa completa por id), então o shape não sobrepõe.
+        const chunk = (data ?? []) as unknown as Conversation[];
+        all.push(...chunk);
+        if (chunk.length < PAGE) break;
       }
-
-      const { data, error } = await q;
-      if (error) throw error;
-      return data as Conversation[];
+      return all;
     },
     enabled: !!unitId,
   });
