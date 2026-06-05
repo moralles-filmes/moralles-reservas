@@ -137,8 +137,12 @@ function ConversationDetail({
   const { assumeConversation, releaseToAI, markResolved } = useConversationActions(unitId);
   const sendMessage = useSendManualMessage(unitId);
 
-  // Live conversation data (realtime via query invalidation from useConversations hook)
-  const { data: liveConv } = useQuery({
+  // Live conversation data (realtime via query invalidation from useConversations hook).
+  // `placeholderData` (não `initialData`): o `conv` vem da LISTA, que omite a coluna
+  // `messages` (payload). placeholderData mostra nome/status na hora mas NÃO conta como
+  // dado fresco — a queryFn sempre roda no mount e traz `messages`. Com `initialData` +
+  // staleTime global de 30s o detalhe nunca buscava e o thread ficava em branco.
+  const { data: liveConv, isError, refetch, isPlaceholderData } = useQuery({
     queryKey: ["conversation-detail", conv.id],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -149,7 +153,8 @@ function ConversationDetail({
       if (error) throw error;
       return data as Conversation;
     },
-    initialData: conv,
+    placeholderData: conv,
+    staleTime: 0,
     refetchOnWindowFocus: false,
   });
 
@@ -290,22 +295,42 @@ function ConversationDetail({
         </div>
       </CardHeader>
 
-      {/* Messages */}
-      <ScrollArea className="flex-1 p-4" ref={scrollRef as React.RefObject<HTMLDivElement>}>
-        <div className="space-y-3">
-          {(current.messages || []).map((msg, i, arr) => {
-            const prev = i > 0 ? arr[i - 1] : null;
-            const showDivider =
-              !prev || getMessageDayKey(msg.timestamp) !== getMessageDayKey(prev.timestamp);
-            return (
-              <Fragment key={i}>
-                {showDivider && <DateDivider label={humanDateLabel(msg.timestamp)} />}
-                <MessageBubble msg={msg} />
-              </Fragment>
-            );
-          })}
+      {/* Messages — precedência: erro → carregando → vazio → lista */}
+      {isError ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3 p-4">
+          <MessageCircle className="h-10 w-10 opacity-30" />
+          <p className="text-sm">Não foi possível carregar as mensagens.</p>
+          <Button size="sm" variant="outline" onClick={() => refetch()}>
+            Tentar de novo
+          </Button>
         </div>
-      </ScrollArea>
+      ) : isPlaceholderData && !(current.messages?.length) ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2 p-4">
+          <Loader2 className="h-6 w-6 animate-spin opacity-50" />
+          <p className="text-sm">Carregando mensagens...</p>
+        </div>
+      ) : !(current.messages?.length) ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3 p-4">
+          <MessageCircle className="h-10 w-10 opacity-30" />
+          <p className="text-sm">Nenhuma mensagem ainda.</p>
+        </div>
+      ) : (
+        <ScrollArea className="flex-1 p-4" ref={scrollRef as React.RefObject<HTMLDivElement>}>
+          <div className="space-y-3">
+            {current.messages.map((msg, i, arr) => {
+              const prev = i > 0 ? arr[i - 1] : null;
+              const showDivider =
+                !prev || getMessageDayKey(msg.timestamp) !== getMessageDayKey(prev.timestamp);
+              return (
+                <Fragment key={i}>
+                  {showDivider && <DateDivider label={humanDateLabel(msg.timestamp)} />}
+                  <MessageBubble msg={msg} />
+                </Fragment>
+              );
+            })}
+          </div>
+        </ScrollArea>
+      )}
 
       {/* Reply box (only when human_active) */}
       {current.status === "human_active" && (
