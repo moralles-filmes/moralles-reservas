@@ -17,8 +17,12 @@ serve(async (req) => {
     return new Response(null, { status: 204 });
   }
 
-  const authErr = requireInternalAuth(req);
-  if (authErr) return authErr;
+  if (!requireInternalAuth(req)) {
+    return new Response(
+      JSON.stringify({ error: "unauthorized" }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    );
+  }
 
   try {
     const now = new Date().toISOString();
