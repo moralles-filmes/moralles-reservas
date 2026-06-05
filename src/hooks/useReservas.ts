@@ -249,6 +249,97 @@ export function useCreateReserva() {
   });
 }
 
+export interface CreateManualReservaParams {
+  unit_id: string;
+  organization_id: string;
+  hall_id?: string | null;
+  name: string;
+  phone: string;
+  email?: string | null;
+  birthday?: string | null;
+  date: string;
+  time: string;
+  party_size: number;
+  notes?: string | null;
+  /** Origem registrada na reserva — só pra relatório "Origem das reservas". */
+  source: "web" | "whatsapp";
+  status: "pending" | "confirmed";
+  /** Disparar confirmação automática (desacoplado da origem). */
+  notify: boolean;
+  /** Forçar reserva mesmo sem mesa/fora de horário (cria flutuante). */
+  override: boolean;
+}
+
+interface ManualReservationFnResponse {
+  success: boolean;
+  reason?: string;
+  message?: string;
+  reservation_id?: string;
+  reservation_code?: string;
+  table_id?: string | null;
+  customer?: { id: string; name: string; phone: string; email: string | null };
+}
+
+/** Reserva manual lançada pelo operador no painel (EF autenticada). */
+export function useCreateManualReserva(unitId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: CreateManualReservaParams) => {
+      const { data: response, error } = await supabase.functions.invoke<ManualReservationFnResponse>(
+        "create-manual-reservation",
+        {
+          body: {
+            unit_id: data.unit_id,
+            organization_id: data.organization_id,
+            hall_id: data.hall_id ?? null,
+            customer: {
+              name: data.name,
+              phone: data.phone,
+              email: data.email || null,
+              birthday: data.birthday || null,
+            },
+            date: data.date,
+            time: data.time,
+            party_size: data.party_size,
+            notes: data.notes || null,
+            source: data.source,
+            status: data.status,
+            notify: data.notify,
+            override: data.override,
+          },
+        }
+      );
+
+      if (error) {
+        // supabase.functions.invoke mascara o corpo non-2xx — extrair de context.body.
+        type WithContext = { context?: { body?: string } };
+        const ctx = (error as WithContext).context;
+        if (ctx?.body) {
+          try {
+            const parsed = JSON.parse(ctx.body) as ManualReservationFnResponse;
+            const fallback = parsed.reason ? REASON_MESSAGES[parsed.reason] : undefined;
+            throw new Error(parsed.message || fallback || error.message);
+          } catch (parseErr) {
+            if (parseErr instanceof Error && parseErr.message !== error.message) throw parseErr;
+          }
+        }
+        throw error;
+      }
+
+      if (!response || !response.success) {
+        const reasonMsg = response?.reason ? REASON_MESSAGES[response.reason] : undefined;
+        throw new Error(response?.message || reasonMsg || "Não foi possível criar a reserva.");
+      }
+
+      return response;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["reservas", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["reserva-stats", unitId] });
+    },
+  });
+}
+
 export function useUpdateReservaStatus(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({

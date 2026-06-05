@@ -763,6 +763,10 @@ export interface ReserveSlotParams extends AvailabilityParams {
   notes?: string | null;
   status?: "pending" | "confirmed";
   source?: "web" | "whatsapp";
+  /** Exclusivo da reserva manual pelo operador (create-manual-reservation):
+   *  quando true e a validação normal recusa (sem mesa, fora de horário,
+   *  bloqueio etc), cria a reserva mesmo assim como flutuante (table_id null). */
+  override?: boolean;
 }
 
 export type ReserveSlotResult =
@@ -797,10 +801,23 @@ export async function reserveSlot(
 ): Promise<ReserveSlotResult> {
   let check = await checkAvailability(supabase, params);
   if (!check.available) {
-    return {
-      success: false,
-      reason: check.reason ?? "no_capacity",
-      message: check.message,
+    // Sem override: recusa como sempre. Com override (reserva manual forçada
+    // pelo operador): segue como flutuante (sem mesa) — table_id null não
+    // conflita no UNIQUE partial (table_id, date, time), então insert único.
+    if (!params.override) {
+      return {
+        success: false,
+        reason: check.reason ?? "no_capacity",
+        message: check.message,
+      };
+    }
+    const durationMinutes = await loadDurationMinutes(supabase, params.unitId);
+    check = {
+      available: true,
+      suggestedTableId: undefined,
+      message: "Reserva forçada (sem alocação de mesa).",
+      durationMinutes,
+      appliedDiscountPercent: null,
     };
   }
 

@@ -1,17 +1,21 @@
+import { useState } from "react";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useReservas } from "@/hooks/useReservas";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
+import { ManualReservaDialog } from "@/components/reserva/ManualReservaDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertCircle, CalendarIcon } from "lucide-react";
+import { AlertCircle, CalendarIcon, Plus } from "lucide-react";
 import { formatDateBR, todayLocalISO } from "@/lib/utils";
 
 export default function ReservasDia() {
   const unit = useCurrentUnit();
   const unitId = unit?.unit_id ?? "";
+  const organizationId = unit?.organization_id ?? "";
   const today = todayLocalISO();
+  const [manualOpen, setManualOpen] = useState(false);
 
   const { data: reservas, isLoading, isError, refetch } = useReservas(unitId, { date: today });
 
@@ -30,7 +34,24 @@ export default function ReservasDia() {
         <CalendarIcon className="h-5 w-5 text-primary" />
         <h1 className="text-xl font-bold">Reservas de hoje</h1>
         <Badge variant="outline">{formatDateBR(today, { weekday: "long", day: "numeric", month: "long" })}</Badge>
+        <Button
+          size="sm"
+          className="ml-auto"
+          onClick={() => setManualOpen(true)}
+          disabled={!unitId}
+        >
+          <Plus className="h-4 w-4 mr-1" /> Nova reserva manual
+        </Button>
       </div>
+
+      {unitId && (
+        <ManualReservaDialog
+          open={manualOpen}
+          onOpenChange={setManualOpen}
+          unitId={unitId}
+          organizationId={organizationId}
+        />
+      )}
 
       {isLoading ? (
         <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>

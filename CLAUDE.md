@@ -100,6 +100,8 @@ organizations (cliente SaaS)
 ### Invariantes de tabelas
 
 - **`reservations.source` (`web`/`whatsapp`)** é load-bearing: trigger `enqueue_confirmation_notification` filtra `source != 'whatsapp'` pra não duplicar template. Qualquer Edge Function nova que crie reserva via agente DEVE passar `source: "whatsapp"` em `reserveSlot` — frontend/wizard usa default `'web'`.
+- **Reserva manual ([create-manual-reservation](supabase/functions/create-manual-reservation/index.ts)) DESACOPLA notificação de `source`.** Operador escolhe origem (relatório) E "avisar cliente" separadamente; como o trigger acopla os dois, a EF reconcilia `notification_outbox` no pós-insert (insere se notify=ON, deleta pendente se OFF). NÃO inferir intenção de notificar a partir de `source` em código novo. EF é autenticada (`is_unit_member`/`is_platform_admin`), isenta de rate-limit e caução.
+- **`reserveSlot({ override: true })` força reserva flutuante** (`table_id: null`) quando a validação recusa — exclusivo da reserva manual do operador. Não usar em path público.
 - **`customers.email` é array (`emails[]`)** — append-only via `resolveOrCreateCustomer`.
 - **`business_hours`** é DEPRECATED — fonte de horário é `halls + hall_schedules`. Não construa nada novo em cima.
 - **Tabelas com credenciais usam `FORCE RLS` sem policies** (`whatsapp_channels`, `ai_provider_credentials`, `processed_messages`, `rate_limit_events`, `platform_secrets`, `stripe_accounts`, `stripe_webhook_events`, `billing_customers`, `billing_subscriptions`, `billing_invoices`, `billing_events`, `billing_notifications`, `webhook_executions`). UI acessa via Edge Function.
@@ -292,6 +294,7 @@ Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vaul
 - **`getConversationDisplayName()` em `@/lib/utils`** é a fonte canônica. Ordem: `customer.name` (se ≠ phone) → `conversation.contact_name` → `formatPhone(phone)` → `"Cliente sem nome"`. Push_name (extraído por `parseInbound`) é persistido em `customers.name` (só se placeholder `name == phone`) E `conversations.contact_name` (espelho).
 - **Realtime subscription exige tabela em `publication supabase_realtime`** — senão `.on(...)` nunca dispara (canal retorna SUBSCRIBED, eventos não chegam). Pattern: `alter publication supabase_realtime add table X exception when duplicate_object then null` (idempotente). RLS continua valendo no canal.
 - **Layout master-detail `<lg` é single-pane.** [src/pages/gestao/Conversas.tsx](src/pages/gestao/Conversas.tsx): `h-[calc(100dvh-180px)]` + toggle `hidden lg:flex` baseado em `selectedId`; detalhe ganha botão Voltar `lg:hidden`. **`100dvh` obrigatório** (não `100vh`) — iOS Safari não recua `100vh` com teclado aberto. Tela nova lista+detalhe segue o pattern ou usa `ResponsiveDialog`.
+- **`useConversations` carrega TODAS as conversas (loop `.range()` 1000) e seleciona colunas explícitas SEM `messages`.** `statusCounts`/busca/filtro/contagem são client-side sobre o conjunto inteiro — qualquer `.limit()` capa contagem E esconde conversas antigas; reintroduzir `messages` no select estoura o payload (detalhe busca a conversa completa por id em `["conversation-detail", id]`). [src/hooks/useConversations.ts](src/hooks/useConversations.ts).
 
 ---
 
@@ -355,9 +358,10 @@ Deploy individual: `supabase functions deploy <nome>`. **Edge Functions não com
 
 Checklist de redeploy quando `_shared/X.ts` muda:
 
-- **`availability.ts`** → `create-reservation`, `webhook-whatsapp`
+- **`availability.ts`** → `create-reservation`, `create-manual-reservation`, `webhook-whatsapp`
 - **`conversation-log.ts`** → TODAS (`webhook-*`, `send-*`, `process-*`)
-- **`resolve-customer.ts`** → `create-reservation`, `webhook-whatsapp`
+- **`resolve-customer.ts`** → `create-reservation`, `create-manual-reservation`, `webhook-whatsapp`
+- **`cors.ts`** → `manage-*`, `send-*`, `create-manual-reservation` (qualquer EF chamada pelo frontend autenticado)
 - **`stripe-config.ts`** → `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`, `manage-payment-methods`
 - **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
