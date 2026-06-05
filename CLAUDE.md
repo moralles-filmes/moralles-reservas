@@ -359,12 +359,12 @@ Deploy individual: `supabase functions deploy <nome>`. **Edge Functions não com
 
 Checklist de redeploy quando `_shared/X.ts` muda:
 
-- **`availability.ts`** → `create-reservation`, `create-manual-reservation`, `webhook-whatsapp`
+- **`availability.ts`** → `create-reservation`, `create-manual-reservation`, `update-reservation`, `webhook-whatsapp`
 - **`conversation-log.ts`** → TODAS (`webhook-*`, `send-*`, `process-*`)
 - **`resolve-customer.ts`** → `create-reservation`, `create-manual-reservation`, `webhook-whatsapp`
 - **`cors.ts`** → `manage-*`, `send-*`, `create-manual-reservation` (qualquer EF chamada pelo frontend autenticado)
 - **`stripe-config.ts`** → `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`, `manage-payment-methods`
-- **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`
+- **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
 
 Worker/EF novo que importe um helper aqui = atualizar este checklist no mesmo PR.
