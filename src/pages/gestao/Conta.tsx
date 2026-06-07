@@ -473,7 +473,6 @@ export default function Conta() {
           .remove(toRemove);
         if (removeErr) {
           // Não interrompe o fluxo — o save no banco já foi OK.
-          // eslint-disable-next-line no-console
           console.warn(
             "[Conta] falha ao remover assets antigos:",
             removeErr.message,
@@ -482,7 +481,6 @@ export default function Conta() {
         }
       } catch (err) {
         // Falha de rede / exceção inesperada. Save permanece válido.
-        // eslint-disable-next-line no-console
         console.warn("[Conta] exceção ao remover assets antigos:", err);
       }
     }

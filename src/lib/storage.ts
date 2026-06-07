@@ -18,13 +18,11 @@ export async function deleteUnitAssetByUrl(
   const path = extractStoragePath(url, BUCKET);
   if (!path) return;
   if (unitId && !path.startsWith(`${unitId}/`)) {
-    // eslint-disable-next-line no-console
     console.warn("[storage] path fora da unit, ignorando delete", { path, unitId });
     return;
   }
   const { error } = await supabase.storage.from(BUCKET).remove([path]);
   if (error) {
-    // eslint-disable-next-line no-console
     console.warn("[storage] falha ao apagar asset", path, error.message);
   }
 }
@@ -44,7 +42,6 @@ export async function deleteUnitAssetsByUrls(
   if (paths.length === 0) return;
   const { error } = await supabase.storage.from(BUCKET).remove(paths);
   if (error) {
-    // eslint-disable-next-line no-console
     console.warn("[storage] falha ao apagar assets em lote", paths, error.message);
   }
 }
