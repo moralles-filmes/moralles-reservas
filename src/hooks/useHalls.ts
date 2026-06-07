@@ -1,6 +1,34 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import type { Hall } from "@/types/reserva";
+import type { Hall, HallSchedule } from "@/types/reserva";
+
+export interface HallWithSchedules extends Hall {
+  schedules: HallSchedule[];
+}
+
+/**
+ * Halls ativos com seus hall_schedules aninhados (contexto autenticado).
+ * RLS `unit_member_all_hall_schedules` / `platform_admin_all_hall_schedules`
+ * permite ao membro/super-admin ler hall_schedules direto, então o select
+ * aninhado funciona no painel. Usado pra derivar horários disponíveis numa data
+ * via `getSlotsForDate` (mesma fonte do wizard público).
+ */
+export function useHallsWithSchedules(unitId: string) {
+  return useQuery({
+    queryKey: ["halls-with-schedules", unitId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("halls")
+        .select("*, schedules:hall_schedules(*)")
+        .eq("unit_id", unitId)
+        .eq("active", true)
+        .order("sort_order", { ascending: true });
+      if (error) throw error;
+      return data as HallWithSchedules[];
+    },
+    enabled: !!unitId,
+  });
+}
 
 export function useHalls(unitId: string, { includeInactive = false } = {}) {
   return useQuery({

@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -24,11 +25,14 @@ import {
   ResponsiveDialogDescription,
 } from "@/components/ui/responsive-dialog";
 import { useCreateManualReserva } from "@/hooks/useReservas";
-import { useHalls } from "@/hooks/useHalls";
+import { useHallsWithSchedules } from "@/hooks/useHalls";
+import { PartySizeInput } from "@/components/reserva/wizard/PartySizeInput";
+import { getSlotsForDate } from "@/components/reserva/wizard/availability-helpers";
+import type { PublicHall } from "@/types/reserva";
 import { formatPhone, todayLocalISO } from "@/lib/utils";
 
 const FORM_ID = "manual-reserva-form";
-const PARTY_SIZES = Array.from({ length: 30 }, (_, i) => i + 1);
+const PARTY_SIZE_MAX = 30; // backend (create-manual-reservation) rejeita party_size > 30
 const HALL_AUTO = "auto";
 
 const schema = z.object({
@@ -67,7 +71,7 @@ export function ManualReservaDialog({
   organizationId,
 }: ManualReservaDialogProps) {
   const createManual = useCreateManualReserva(unitId);
-  const { data: halls } = useHalls(unitId);
+  const { data: halls } = useHallsWithSchedules(unitId);
 
   const {
     register,
@@ -98,6 +102,19 @@ export function ManualReservaDialog({
   const status = watch("status");
   const notify = watch("notify");
   const override = watch("override");
+  const date = watch("date");
+  const partySize = watch("party_size");
+  const time = watch("time");
+
+  // Horários cadastrados (halls + hall_schedules) pra a data escolhida — mesma
+  // fonte do wizard público. `override` libera horário livre (eventos fora do
+  // expediente); unit sem schedules cai no fallback de input livre.
+  const timeSlots = useMemo(
+    () => (date && halls ? getSlotsForDate(halls as unknown as PublicHall[], date) : []),
+    [date, halls],
+  );
+  const hasAnySchedule = halls?.some((h) => h.schedules.length > 0) ?? false;
+  const restrictTimes = !override && hasAnySchedule;
 
   const onSubmit = async (data: FormData) => {
     try {
@@ -180,32 +197,60 @@ export function ManualReservaDialog({
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="mr-date">Data *</Label>
-                <Input id="mr-date" type="date" {...register("date")} />
+                <Input
+                  id="mr-date"
+                  type="date"
+                  {...register("date")}
+                  onChange={(e) => {
+                    setValue("date", e.target.value, { shouldValidate: true });
+                    // Slots mudam com a data — limpa o horário pra não manter um
+                    // valor inválido pro novo dia.
+                    if (time) setValue("time", "");
+                  }}
+                />
                 {errors.date && <p className="text-xs text-destructive">{errors.date.message}</p>}
               </div>
               <div className="space-y-1">
                 <Label htmlFor="mr-time">Horário *</Label>
-                <Input id="mr-time" type="time" {...register("time")} />
+                {restrictTimes ? (
+                  timeSlots.length === 0 ? (
+                    <p className="text-xs text-muted-foreground border rounded-md px-3 py-2.5 bg-muted/30">
+                      Nenhum horário disponível neste dia. Escolha outra data ou
+                      ligue "Forçar reserva".
+                    </p>
+                  ) : (
+                    <Select
+                      value={time}
+                      onValueChange={(v) => setValue("time", v, { shouldValidate: true })}
+                    >
+                      <SelectTrigger id="mr-time">
+                        <SelectValue placeholder="Selecione" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {timeSlots.map((s) => (
+                          <SelectItem key={s.time} value={s.time}>
+                            {s.time}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )
+                ) : (
+                  <Input id="mr-time" type="time" {...register("time")} />
+                )}
                 {errors.time && <p className="text-xs text-destructive">{errors.time.message}</p>}
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label>Pessoas *</Label>
-                <Select
-                  defaultValue="2"
-                  onValueChange={(v) => setValue("party_size", Number(v))}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {PARTY_SIZES.map((n) => (
-                      <SelectItem key={n} value={String(n)}>
-                        {n} {n === 1 ? "pessoa" : "pessoas"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label htmlFor="mr-party">Pessoas *</Label>
+                <PartySizeInput
+                  id="mr-party"
+                  value={partySize}
+                  onChange={(n) => setValue("party_size", n, { shouldValidate: true })}
+                  max={PARTY_SIZE_MAX}
+                />
               </div>
               {halls && halls.length > 0 && (
                 <div className="space-y-1">
@@ -291,7 +336,12 @@ export function ManualReservaDialog({
                 </div>
                 <Switch
                   checked={override}
-                  onCheckedChange={(c) => setValue("override", c)}
+                  onCheckedChange={(c) => {
+                    setValue("override", c);
+                    // Alterna entre lista de horários e input livre — limpa o
+                    // valor anterior pra não carregar um horário inválido pro modo.
+                    setValue("time", "");
+                  }}
                 />
               </div>
             </div>

@@ -24,13 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { PartySizeInput } from "@/components/reserva/wizard/PartySizeInput";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -86,7 +80,7 @@ export default function Fila() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
-  const [partySize, setPartySize] = useState("2");
+  const [partySize, setPartySize] = useState(2);
   const [requestedTime, setRequestedTime] = useState("");
   const [notes, setNotes] = useState("");
   // Pendings por entry id — botões "Notificar" ficam independentes entre si.
@@ -105,7 +99,7 @@ export default function Fila() {
   const isUpdatingEntry = (id: string) =>
     updateStatus.isPending && updateStatus.variables?.id === id;
 
-  const reset = () => { setName(""); setPhone(""); setPartySize("2"); setRequestedTime(""); setNotes(""); };
+  const reset = () => { setName(""); setPhone(""); setPartySize(2); setRequestedTime(""); setNotes(""); };
 
   const handleAdd = () => {
     if (!name.trim()) { toast.error("Informe o nome do cliente."); return; }
@@ -118,7 +112,7 @@ export default function Fila() {
       {
         customer_name: name.trim(),
         customer_phone: phoneDigits || null,
-        party_size: Number(partySize),
+        party_size: partySize,
         requested_for_time: requestedTime || null,
         notes: notes.trim() || null,
       },
@@ -348,15 +342,14 @@ export default function Fila() {
                 <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />
               </div>
               <div className="space-y-1">
-                <Label>Pessoas *</Label>
-                <Select value={partySize} onValueChange={setPartySize}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
-                      <SelectItem key={n} value={String(n)}>{n} {n === 1 ? "pessoa" : "pessoas"}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label htmlFor="fila-party">Pessoas *</Label>
+                {/* enter_waitlist: anon trava em 20; operador não tem cap no DB — 20 mantido por consistência de UI. */}
+                <PartySizeInput
+                  id="fila-party"
+                  value={partySize}
+                  onChange={setPartySize}
+                  max={20}
+                />
               </div>
             </div>
             <div className="space-y-1">
