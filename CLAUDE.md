@@ -116,7 +116,7 @@ organizations (cliente SaaS)
 - **`anon_insert_*` policies têm `EXISTS (... WHERE is_public)`**.
 - **Authenticated** escopado por `is_unit_member(auth.uid(), unit_id)`. Edge Function bypassa via `SUPABASE_SERVICE_ROLE_KEY` mas deve validar `unit_id` da request contra o recurso (defense-in-depth).
 - **Toda policy RLS escopada por `unit_id` precisa de contraparte `platform_admin_*`** via `is_platform_admin(auth.uid())` — vale pra tabelas E pra `storage.objects` de buckets multi-tenant. `useCurrentUnit.ts` fabrica pseudo-membership "owner" pra super-admin operar units alheias; sem o paralelo, write é bloqueada apesar da UI mostrar "Proprietário".
-- **Toda Edge Function que faz guard com `is_unit_member` precisa do paralelo `is_platform_admin`** — mesma razão. Pattern canônico: `Promise.all([rpc("is_unit_member", ...), rpc("is_platform_admin", ...)]); if (!member.data && !admin.data) forbidden;`. Aplicado em `send-manual-message`, `send-cancellation`, `update-reservation`.
+- **Todo guard server-side com `is_unit_member` precisa do paralelo `is_platform_admin`** — vale pra Edge Function E pra RPC `SECURITY DEFINER` com check inline. Mesma razão. Pattern EF: `Promise.all([rpc("is_unit_member", ...), rpc("is_platform_admin", ...)]); if (!member.data && !admin.data) forbidden;`. Pattern RPC: `if not (is_unit_member(uid, unit) or is_platform_admin(uid)) then raise ...`. Aplicado em `send-manual-message`, `send-cancellation`, `update-reservation`, `enter_waitlist`.
 
 ### Storage (bucket `unit-assets`)
 
