@@ -60,6 +60,7 @@ Frontend (`.env`): só `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`. EFs: `SUP
 Estrutura completa em `src/App.tsx`. O que NÃO é descobrível:
 
 - `/r/:slug` aceita `?mode=embed` (sem chrome, pra iframe) e `?action=reservar|waitlist` (auto-abre dialog). Combinável.
+- `/acompanhar/:token` é página pública (sem login) de status de reserva/fila; `token` = `reservations.id` OU `waitlist.id` (UUID), resolvido pela RPC `get_public_tracking`. Link enviado ao cliente (fila ao entrar em `process-waitlist-entered`, lembrete D-0 em `process-reservation-reminders`) aponta pra cá — não mais pra `/r/:slug`.
 - `/g/:unitSlug/cobranca` é a única rota whitelisted no `BillingGuard` quando org está `blocked/suspended/canceled` — sem isso, cliente bloqueado entra em loop.
 - `/platform/*` é exclusivo de `platform_admin`. Edge Functions `manage-channels`, `manage-ai-providers`, `manage-billing`, `manage-organizations`, `manage-stripe-accounts`, `manage-platform-secrets`, `whatsapp-health` validam `platform_admin` no JWT.
 
@@ -112,7 +113,7 @@ organizations (cliente SaaS)
 
 ### RLS
 
-- **Anon insere em `customers`/`reservations`/`waitlist`** (units públicas), e **lê só por RPCs `SECURITY DEFINER`** (`get_unit_public_full`, `get_widget_public`, `get_public_hall_schedules`, `get_public_business_hours`). Policy `TO anon` direto em tabela de negócio é regressão.
+- **Anon insere em `customers`/`reservations`/`waitlist`** (units públicas), e **lê só por RPCs `SECURITY DEFINER`** (`get_unit_public_full`, `get_widget_public`, `get_public_hall_schedules`, `get_public_business_hours`, `get_public_tracking`). Policy `TO anon` direto em tabela de negócio é regressão. **`get_public_tracking(p_token uuid)` só devolve dados públicos (1º nome, sem telefone/e-mail/`notes`) gateado por `units.is_public` — campo novo no payload DEVE permanecer privacy-safe.**
 - **`anon_insert_*` policies têm `EXISTS (... WHERE is_public)`**.
 - **Authenticated** escopado por `is_unit_member(auth.uid(), unit_id)`. Edge Function bypassa via `SUPABASE_SERVICE_ROLE_KEY` mas deve validar `unit_id` da request contra o recurso (defense-in-depth).
 - **Toda policy RLS escopada por `unit_id` precisa de contraparte `platform_admin_*`** via `is_platform_admin(auth.uid())` — vale pra tabelas E pra `storage.objects` de buckets multi-tenant. `useCurrentUnit.ts` fabrica pseudo-membership "owner" pra super-admin operar units alheias; sem o paralelo, write é bloqueada apesar da UI mostrar "Proprietário".

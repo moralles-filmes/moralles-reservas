@@ -102,7 +102,7 @@ serve(async (req) => {
 
   // 2. Carrega unit + settings + template em paralelo
   const [unitRes, settingsRes, templateRes] = await Promise.all([
-    supabase.from("units").select("name, slug").eq("id", unitId).maybeSingle(),
+    supabase.from("units").select("name").eq("id", unitId).maybeSingle(),
     supabase
       .from("settings")
       .select("value")
@@ -131,8 +131,10 @@ serve(async (req) => {
     tpl?.customized && tpl.body && tpl.body.trim() ? tpl.body : DEFAULT_ENTERED_BODY;
 
   const unitName = (unitRes.data?.name as string) ?? "nosso restaurante";
-  const unitSlug = (unitRes.data?.slug as string) ?? "";
-  const linkStatus = unitSlug ? `${APP_BASE_URL}/r/${unitSlug}` : APP_BASE_URL;
+  // Link de acompanhamento dedicado (página /acompanhar/:token, token = id da
+  // entry). Substitui o antigo link pra página da loja (/r/:slug), onde o
+  // cliente não conseguia ver o status da própria fila.
+  const linkStatus = `${APP_BASE_URL}/acompanhar/${waitlistId}`;
 
   const message = renderWaitlistTemplate(templateBody, {
     cliente_nome: entry.customer_name as string,

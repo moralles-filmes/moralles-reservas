@@ -20,6 +20,8 @@ import { jsonLog, requireInternalAuth, sanitizePhone } from "../_shared/security
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const INTERNAL_API_KEY = Deno.env.get("INTERNAL_API_KEY") ?? "";
+const APP_BASE_URL =
+  Deno.env.get("APP_BASE_URL") ?? "https://reservas.moralles.com.br";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
@@ -27,6 +29,7 @@ const DEFAULT_REMINDER_BODY =
   "Olá, {{cliente_nome}}! 👋\n\n" +
   "Lembrete da sua reserva hoje às {{horario}} para {{party_size}} pessoa(s) em {{unidade_nome}}.\n\n" +
   "Código: #{{codigo}}\n\n" +
+  "Acompanhe sua reserva: {{link_acompanhamento}}\n\n" +
   "Para alterar ou cancelar, é só responder esta mensagem. Te esperamos! 🍽️";
 
 function renderTemplate(
@@ -37,6 +40,7 @@ function renderTemplate(
     party_size: number;
     codigo: string;
     unidade_nome: string;
+    link_acompanhamento: string;
   },
 ): string {
   return template
@@ -44,7 +48,8 @@ function renderTemplate(
     .replaceAll("{{horario}}", vars.horario)
     .replaceAll("{{party_size}}", String(vars.party_size))
     .replaceAll("{{codigo}}", vars.codigo)
-    .replaceAll("{{unidade_nome}}", vars.unidade_nome);
+    .replaceAll("{{unidade_nome}}", vars.unidade_nome)
+    .replaceAll("{{link_acompanhamento}}", vars.link_acompanhamento);
 }
 
 function formatTime(timeStr: string): string {
@@ -178,6 +183,7 @@ serve(async (req) => {
         party_size: row.party_size,
         codigo: row.code,
         unidade_nome: ctx.unit_name,
+        link_acompanhamento: `${APP_BASE_URL}/acompanhar/${row.reservation_id}`,
       });
 
       try {

@@ -106,6 +106,7 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
           party_size: 4,
           codigo: "ABC123",
           unidade_nome: unit?.unit_name ?? "Restaurante",
+          link_acompanhamento: `${window.location.origin}/acompanhar/exemplo`,
         }
       : {
           cliente_nome: "Maria",

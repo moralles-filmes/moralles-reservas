@@ -16,6 +16,7 @@ const Index = lazy(() => import("./pages/Index"));
 const PublicPortal = lazy(() => import("./pages/PublicPortal"));
 const WidgetPortal = lazy(() => import("./pages/WidgetPortal"));
 const MenuPortal = lazy(() => import("./pages/MenuPortal"));
+const AcompanharReserva = lazy(() => import("./pages/AcompanharReserva"));
 const Auth = lazy(() => import("./pages/Auth"));
 const ResetPassword = lazy(() => import("./pages/ResetPassword"));
 
@@ -196,6 +197,7 @@ export default function App() {
               <Route path="/r/:slug" element={<PublicPortal />} />
               <Route path="/w/:slug" element={<WidgetPortal />} />
               <Route path="/m/:slug" element={<MenuPortal />} />
+              <Route path="/acompanhar/:token" element={<AcompanharReserva />} />
               <Route path="/admin/login" element={<Auth />} />
               <Route path="/reset-password" element={<ResetPassword />} />
 

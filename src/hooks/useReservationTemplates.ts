@@ -21,7 +21,8 @@ export type ReservationVariableKey =
   | "horario"
   | "party_size"
   | "codigo"
-  | "unidade_nome";
+  | "unidade_nome"
+  | "link_acompanhamento";
 
 /**
  * Templates default usados quando `customized = false` (ou não há linha em
@@ -36,9 +37,16 @@ export const RESERVATION_TEMPLATES: ReservationTemplateMeta[] = [
     description:
       "Mensagem enviada no dia da reserva (10:00 BRT) confirmando horário.",
     defaultBody:
-      "Olá, {{cliente_nome}}! 👋\n\nLembrete da sua reserva hoje às {{horario}} para {{party_size}} pessoa(s) em {{unidade_nome}}.\n\nCódigo: #{{codigo}}\n\nPara alterar ou cancelar, é só responder esta mensagem. Te esperamos! 🍽️",
+      "Olá, {{cliente_nome}}! 👋\n\nLembrete da sua reserva hoje às {{horario}} para {{party_size}} pessoa(s) em {{unidade_nome}}.\n\nCódigo: #{{codigo}}\n\nAcompanhe sua reserva: {{link_acompanhamento}}\n\nPara alterar ou cancelar, é só responder esta mensagem. Te esperamos! 🍽️",
     maxLength: 600,
-    variables: ["cliente_nome", "horario", "party_size", "codigo", "unidade_nome"],
+    variables: [
+      "cliente_nome",
+      "horario",
+      "party_size",
+      "codigo",
+      "unidade_nome",
+      "link_acompanhamento",
+    ],
   },
   {
     event: "survey_d1",
@@ -61,6 +69,7 @@ export const RESERVATION_VARIABLES: Array<{
   { key: "party_size", label: "Quantidade de pessoas" },
   { key: "codigo", label: "Código da reserva" },
   { key: "unidade_nome", label: "Nome da unidade" },
+  { key: "link_acompanhamento", label: "Link de acompanhamento" },
 ];
 
 export function getReservationTemplateMeta(
@@ -135,6 +144,7 @@ export function renderReservationTemplate(
     party_size?: number;
     codigo?: string;
     unidade_nome?: string;
+    link_acompanhamento?: string;
   },
 ): string {
   return body
@@ -142,5 +152,6 @@ export function renderReservationTemplate(
     .replaceAll("{{horario}}", vars.horario ?? "")
     .replaceAll("{{party_size}}", String(vars.party_size ?? ""))
     .replaceAll("{{codigo}}", vars.codigo ?? "")
-    .replaceAll("{{unidade_nome}}", vars.unidade_nome ?? "");
+    .replaceAll("{{unidade_nome}}", vars.unidade_nome ?? "")
+    .replaceAll("{{link_acompanhamento}}", vars.link_acompanhamento ?? "");
 }

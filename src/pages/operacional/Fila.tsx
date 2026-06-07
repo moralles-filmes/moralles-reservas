@@ -42,7 +42,7 @@ import type {
   WaitlistPriorityCategory,
   WaitlistStatus,
 } from "@/types/reserva";
-import { Accessibility, AlertCircle, Baby, Bell, Clock, Plus, Trash2, UserCircle2, Users } from "lucide-react";
+import { Accessibility, AlertCircle, Baby, Bell, Clock, Link2, Plus, Trash2, UserCircle2, Users } from "lucide-react";
 import { toast } from "sonner";
 
 const STATUS_CONFIG: Record<WaitlistStatus, { label: string; className: string }> = {
@@ -140,7 +140,8 @@ export default function Fila() {
       unidade_nome: unit?.unit_name || "nosso restaurante",
       party_size: entry.party_size,
       codigo_fila: entry.code,
-      link_status: `${window.location.origin}/r/${unit?.unit_slug ?? ""}`,
+      // Link de acompanhamento dedicado (página /acompanhar/:token = id da entry).
+      link_status: `${window.location.origin}/acompanhar/${entry.id}`,
     });
 
     setNotifyingIds((prev) => {
@@ -160,6 +161,14 @@ export default function Fila() {
         },
       },
     );
+  };
+
+  const handleCopyLink = (id: string) => {
+    const url = `${window.location.origin}/acompanhar/${id}`;
+    navigator.clipboard
+      .writeText(url)
+      .then(() => toast.success("Link de acompanhamento copiado."))
+      .catch(() => toast.error("Não foi possível copiar o link."));
   };
 
   return (
@@ -295,6 +304,16 @@ export default function Fila() {
                         Confirmar entrada
                       </Button>
                     )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1"
+                      onClick={() => handleCopyLink(entry.id)}
+                      title="Copiar link de acompanhamento"
+                    >
+                      <Link2 className="h-3 w-3" />
+                      <span className="hidden sm:inline">Copiar link</span>
+                    </Button>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button variant="ghost" size="icon">
