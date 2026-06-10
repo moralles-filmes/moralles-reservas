@@ -740,6 +740,7 @@ function AITab({ unitId }: { unitId: string }) {
 function PromptTab({ unitId }: { unitId: string }) {
   const queryClient = useQueryClient();
   const [agentMode, setAgentMode] = useState<"reservations" | "reservations_faq">("reservations");
+  const [agentName, setAgentName] = useState("");
   const [restaurantMenu, setRestaurantMenu] = useState("");
   const [deliveryResponse, setDeliveryResponse] = useState("");
   const [restaurantExtraInfo, setRestaurantExtraInfo] = useState("");
@@ -760,6 +761,7 @@ function PromptTab({ unitId }: { unitId: string }) {
     if (!settings) return;
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
     setAgentMode(((map["agent_mode"] as string) ?? "reservations") as "reservations" | "reservations_faq");
+    setAgentName((map["agent_name"] as string) ?? "");
     setRestaurantMenu((map["restaurant_menu"] as string) ?? "");
     setDeliveryResponse((map["delivery_response"] as string) ?? "");
     setRestaurantExtraInfo((map["restaurant_extra_info"] as string) ?? "");
@@ -788,6 +790,7 @@ function PromptTab({ unitId }: { unitId: string }) {
     try {
       await Promise.all([
         saveSetting.mutateAsync({ key: "agent_mode", value: agentMode }),
+        saveSetting.mutateAsync({ key: "agent_name", value: agentName.trim() }),
         saveSetting.mutateAsync({ key: "restaurant_menu", value: restaurantMenu }),
         saveSetting.mutateAsync({ key: "delivery_response", value: deliveryResponse }),
         saveSetting.mutateAsync({ key: "restaurant_extra_info", value: restaurantExtraInfo }),
@@ -823,6 +826,19 @@ function PromptTab({ unitId }: { unitId: string }) {
               <SelectItem value="reservations_faq">Reservas + FAQ — responde também cardápio, horário, endereço e outras dúvidas gerais</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Nome do agente</Label>
+          <Input
+            value={agentName}
+            onChange={(e) => setAgentName(e.target.value)}
+            placeholder="Yumi"
+            maxLength={40}
+          />
+          <p className="text-xs text-muted-foreground">
+            Nome usado pelo atendente no WhatsApp. Ele se apresenta como pessoa da equipe e só revela que é um atendimento virtual se o cliente perguntar diretamente. Em branco, usa "Yumi".
+          </p>
         </div>
 
         <div className="space-y-2">
