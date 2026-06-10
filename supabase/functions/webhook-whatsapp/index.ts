@@ -1678,8 +1678,15 @@ serve(async (req) => {
       );
     }
 
-    const today = new Date().toISOString().slice(0, 10);
-    const horizon = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // Data/dia-da-semana SEMPRE em BRT (UTC-3). Deno roda em UTC; sem o shift, das 21h à
+    // meia-noite BRT o dia vira pro seguinte e o bot cita preço do dia errado (cardápio por dia).
+    const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
+    const nowBrt = new Date(Date.now() - BRT_OFFSET_MS);
+    const WEEKDAY_NAMES_PT = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
+    const brtWeekdayIdx = nowBrt.getUTCDay();
+    const weekdayName = WEEKDAY_NAMES_PT[brtWeekdayIdx];
+    const today = nowBrt.toISOString().slice(0, 10);
+    const horizon = new Date(nowBrt.getTime() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const { data: specialDates } = await supabase
       .from("special_dates")
       .select("date, name, is_closed, open_time, close_time")
@@ -1724,8 +1731,7 @@ serve(async (req) => {
       }
     }
 
-    // BRT = UTC-3 fixo. Edge Function roda em UTC; subtraímos 3h e lemos UTC*.
-    const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
+    // BRT = UTC-3 fixo (BRT_OFFSET_MS declarado acima). Subtraímos 3h e lemos UTC*.
     const toBrtParts = (iso: string) => {
       const d = new Date(new Date(iso).getTime() - BRT_OFFSET_MS);
       const dd = String(d.getUTCDate()).padStart(2, "0");
@@ -1881,7 +1887,8 @@ serve(async (req) => {
       str(unitRow?.website) && `- Site: ${str(unitRow?.website)}`,
     ].filter((line): line is string => !!line);
 
-    const todayBR = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
+    const [todayY, todayM, todayD] = today.split("-");
+    const todayBR = `${weekdayName}, ${todayD}/${todayM}/${todayY}`;
 
     const agentMode = (settingsMap["agent_mode"] as string) ?? "reservations";
     const includeFaq = agentMode === "reservations_faq";
@@ -1923,7 +1930,8 @@ serve(async (req) => {
       `   (a) Chame check_availability com a data, horário e número de pessoas combinados — MESMO que você já tenha checado no turno anterior (a disponibilidade pode ter mudado entre mensagens).\n` +
       `   (b) Se available: true, chame create_reservation imediatamente com todos os dados coletados (nome, data, hora, party_size, hall_name se definido).\n` +
       `   (c) Se available: false, informe que a mesa não está mais disponível e ofereça alternativas.\n` +
-      `   (d) Após criar com sucesso, SEMPRE informe o código da reserva ao cliente.` +
+      `   (d) Após criar com sucesso, SEMPRE informe o código da reserva ao cliente.\n` +
+      `11. Preços que variam por dia da semana: o cardápio e/ou "Preços e condições" podem listar valores diferentes por dia (ex: "segunda a quarta", "quinta a domingo", "todos os dias"). HOJE é ${weekdayName}. Ao informar um preço, identifique PRIMEIRO qual faixa de dias inclui ${weekdayName} e use SOMENTE essa faixa. NUNCA cite um valor de um intervalo que NÃO inclua ${weekdayName} (ex: não dê preço de quinta num dia que é quarta). Se o cliente perguntar o preço de OUTRO dia, use a faixa daquele dia. Se alguma faixa mencionar "feriado(s)": você NÃO tem como saber se hoje é feriado — informe o preço NORMAL do dia da semana e acrescente o aviso "Exceto feriados." (em feriados o valor pode ser diferente). NUNCA assuma que hoje é ou não é feriado, nem invente preço de feriado.` +
       `\n\nFORMATAÇÃO DA RESPOSTA NO WHATSAPP:\n` +
       `- Negrito é *um único asterisco* (ex: *importante*). NUNCA use **dois asteriscos**, ### header ou markdown — WhatsApp mostra os símbolos literais.\n` +
       `- Itálico com _texto_ entre underlines. Tachado com ~texto~.\n` +
@@ -1943,7 +1951,7 @@ serve(async (req) => {
       (giftbackLines.length
         ? `\n\nPrograma Giftback (regras automáticas ativas):\n${giftbackLines.join("\n")}`
         : `\n\nPrograma Giftback: esta unidade NÃO tem nenhuma regra automática de promoção, desconto, cupom ou benefício de aniversário ativa no momento. Se o cliente perguntar sobre desconto ou promoção e ele NÃO tiver voucher ativo listado em "O que sabemos sobre este cliente", deixe claro que no momento não há nenhuma promoção ou desconto — NÃO invente percentual, condição nem regra.`) +
-      (settingsMap["rules_and_conditions"] ? `\n\nPreços e condições do restaurante (use para responder sobre valores, regras e condições):\n${settingsMap["rules_and_conditions"]}` : "") +
+      (settingsMap["rules_and_conditions"] ? `\n\nPreços e condições do restaurante (use para responder sobre valores, regras e condições; hoje é ${weekdayName}, respeite preços por dia da semana — ver Regra 11):\n${settingsMap["rules_and_conditions"]}` : "") +
       ((() => {
         const parts: string[] = [];
         const bwd = settingsMap["booking_window_days"];
@@ -1955,7 +1963,7 @@ serve(async (req) => {
         return parts.length ? `\n\nRegras de reserva:\n${parts.join("\n")}` : "";
       })()) +
       (settingsMap["additional_info"] ? `\n\nInformações adicionais:\n${settingsMap["additional_info"]}` : "") +
-      (includeFaq && settingsMap["restaurant_menu"] ? `\n\nCardápio:\n${settingsMap["restaurant_menu"]}` : "") +
+      (includeFaq && settingsMap["restaurant_menu"] ? `\n\nCardápio (hoje é ${weekdayName}; se houver preços por dia da semana, use só a faixa que inclui ${weekdayName} — ver Regra 11):\n${settingsMap["restaurant_menu"]}` : "") +
       (includeFaq && settingsMap["delivery_response"] ? `\n\nSobre delivery/take-away:\n${settingsMap["delivery_response"]}` : "") +
       (includeFaq && settingsMap["restaurant_extra_info"] ? `\n\nOutras informações:\n${settingsMap["restaurant_extra_info"]}` : "") +
       (prefsLines.length ? `\n\nO que sabemos sobre este cliente:\n${prefsLines.join("\n")}` : "") +
