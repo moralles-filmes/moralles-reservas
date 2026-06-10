@@ -449,6 +449,10 @@ const DEBOUNCE_WINDOW_MS = 6_000;
 // agente após erro transitório. Acima disso não retentamos (risco de estourar
 // o limite de 60s da Edge Function e o cliente não receber NADA).
 const AGENT_RETRY_BUDGET_MS = 30_000;
+// TTL do lock de exclusão do agente por conversa. Mirror do stuck timeout:
+// cobre o pior caso de runOnce (~51s Gemini c/ fallback) + folga, e auto-expira
+// se a função crashar segurando o lock. Ver migration 056_conversation_ai_lock.
+const AI_LOCK_TTL_SECONDS = 90;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Marca o ciclo de vida da mensagem em processed_messages.
@@ -826,6 +830,12 @@ serve(async (req) => {
   let channelId: string | null = null;
   let phoneHash: string | null = null;
   let messageIdForOutcome: string | null = null;
+  // Estado do lock de exclusão do agente por conversa. Hasteado aqui (e não só
+  // dentro do try) pra que releaseAiLock seja visível no outer catch — que é
+  // irmão do try e está fora do escopo de `conv`.
+  let convIdForLock: string | null = null;
+  let aiLockToken: string | null = null;
+  let lockAcquired = false;
 
   // Helper local que finaliza a execução (grava processed_messages.outcome
   // se já houver message_id, e registra webhook_executions). Nunca lança.
@@ -844,6 +854,20 @@ serve(async (req) => {
       duration_ms,
       meta,
     });
+  };
+
+  // Libera o lock de exclusão do agente. No-op se esta invocação não o detém.
+  // Nunca propaga — o TTL de 90s é o backstop se a RPC falhar.
+  const releaseAiLock = async () => {
+    if (!lockAcquired || !convIdForLock || !aiLockToken) return;
+    try {
+      await supabase.rpc("release_conversation_ai_claim", {
+        p_conv: convIdForLock,
+        p_token: aiLockToken,
+      });
+    } catch (e) {
+      jsonLog("warn", { requestId, evt: "ai_lock_release_failed", convId: convIdForLock, err: String(e) });
+    }
   };
 
   try {
@@ -1441,6 +1465,54 @@ serve(async (req) => {
       conv.messages = latestMsgs;
     }
 
+    // ─── Lock de exclusão por conversa ────────────────────────────────────────
+    // O debounce acima é OTIMISTA (comparação de timestamp) e NÃO garante
+    // exclusão: empate de milissegundo, ou janelas não-sobrepostas (irmão chega
+    // logo após esta invocação acordar do sleep), deixam DUAS invocações
+    // seguirem. Duas chamadas concorrentes ao LLM saturam o provider → ambas
+    // caem em agent_error → handoff DUPLICADO. Após vencer o timestamp, esta
+    // invocação reivindica a conversa: só o holder roda o agente.
+    aiLockToken = requestId; // único por invocação
+    const { data: claimed, error: claimErr } = await supabase.rpc("try_claim_conversation_for_ai", {
+      p_conv: conv.id,
+      p_token: aiLockToken,
+      p_ttl_seconds: AI_LOCK_TTL_SECONDS,
+    });
+    if (claimErr) {
+      // Falha da RPC: degrada seguro — segue SEM lock (comportamento antigo).
+      // Melhor responder que travar todo o tráfego num bug de RPC. releaseAiLock
+      // vira no-op (lockAcquired permanece false).
+      jsonLog("warn", { requestId, evt: "ai_lock_claim_failed", convId: conv.id, err: claimErr.message });
+    } else if (claimed !== true) {
+      // Outro irmão da rajada detém o lock. Desiste — mas via finish() pra que
+      // markProcessed marque completed_at neste message_id (senão vira "stuck" e
+      // reprocessa após 90s). O holder já enxerga esta mensagem no histórico.
+      jsonLog("info", { requestId, evt: "conversation_locked", convId: conv.id });
+      await finish("conversation_locked");
+      return new Response("ok");
+    } else {
+      lockAcquired = true;
+      convIdForLock = conv.id;
+    }
+
+    // Re-leitura FRESCA pós-lock: entre o debounce e o claim, um irmão (erro do
+    // agente / request_human_handoff) ou o operador podem ter virado o status.
+    if (lockAcquired) {
+      const { data: freshConv } = await supabase
+        .from("conversations")
+        .select("status, messages")
+        .eq("id", conv.id)
+        .maybeSingle();
+      if (freshConv && freshConv.status !== "ai_active") {
+        jsonLog("info", { requestId, evt: "status_changed_after_lock", convId: conv.id, status: freshConv.status });
+        await releaseAiLock();
+        await finish("status_changed_locked");
+        return new Response("ok");
+      }
+      // deno-lint-ignore no-explicit-any
+      conv.messages = (freshConv?.messages ?? conv.messages) as any[];
+    }
+
     // Mensagens manuais do operador (send-manual-message) ficam salvas com
     // role: "human" — do ponto de vista do modelo isso é "assistant" (resposta
     // que veio do nosso lado). Sem o remap, Anthropic rejeita o request com
@@ -1571,6 +1643,7 @@ serve(async (req) => {
         provider: provider_ai,
         channel_id: channelId,
       });
+      await releaseAiLock();
       return new Response("ok");
     }
 
@@ -2021,6 +2094,7 @@ serve(async (req) => {
         model: usedModel,
         channel_id: channelId,
       });
+      await releaseAiLock();
       return new Response("ok");
     }
 
@@ -2033,6 +2107,7 @@ serve(async (req) => {
         text: "Desculpa, não consegui montar uma resposta agora. Pode reformular ou aguardar um instante?",
       });
       await finish("empty_response");
+      await releaseAiLock();
       return new Response("ok");
     }
 
@@ -2051,17 +2126,20 @@ serve(async (req) => {
         missingCreds: sendRes.missingCreds,
         bodySnippet: sendRes.bodySnippet,
       });
+      await releaseAiLock();
       return new Response("ok");
     }
 
     await finish("success", undefined, { tokens: totalUsage.input_tokens + totalUsage.output_tokens });
+    await releaseAiLock();
     return new Response("ok");
   } catch (err) {
     jsonLog("error", { requestId, evt: "webhook_error", err: String(err) });
     try {
+      await releaseAiLock();
       await finish("webhook_error", String(err));
     } catch {
-      // ignore
+      // ignore — TTL de 90s libera o lock
     }
     return new Response("error", { status: 500 });
   }

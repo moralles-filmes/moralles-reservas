@@ -194,6 +194,7 @@ Cliente → Provider (Z-API/WAHA/Meta) → webhook-whatsapp
 - **`cancel_reservation` description manda LLM buscar código primeiro** (via `get_reservation`/`list_customer_reservations`). Função tem guard `if (!code?.trim())` retornando erro amigável; `.maybeSingle()` detecta zero rows. Tool nova com param lookup-dependent documenta isso na própria description.
 - **Confirmações informais PT-BR listadas na regra 10** ("Isso", "Tá bom", "Pode ser", "Fechado", "Bora", "Beleza", etc.). Re-checa `check_availability` antes de `create_reservation` mesmo após confirmação.
 - **Debounce de rajada por conversa.** Cada inbound é invocação independente sem fila. Webhook appenda mensagem, captura `myInboundTs`, espera `DEBOUNCE_WINDOW_MS` (6s), relê thread, desiste se há mensagem mais nova. Só a ÚLTIMA invocação prossegue e combina pendentes em `combinedUserMessage`. Path novo de inbound DEVE passar pelo debounce.
+- **O debounce é OTIMISTA e não garante exclusão — backado por lock de conversa.** A comparação de timestamp falha em empate de ms e em janelas não-sobrepostas (irmão chega logo após o sleep), deixando 2 invocações rodarem o agente → 2 chamadas concorrentes ao LLM → 503/timeout → handoff DUPLICADO. Após vencer o timestamp, a invocação reivindica `try_claim_conversation_for_ai(conv, requestId, 90s)`; só o holder roda o agente, irmão bloqueado faz `finish("conversation_locked")` (markProcessed evita virar "stuck"). Release em TODOS os exit paths + outer catch; TTL 90s cobre crash. Path novo de inbound passa pelo debounce **E** pelo lock. [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts).
 
 ### Resiliência
 
@@ -283,6 +284,7 @@ Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vaul
 ## Conversas — invariantes
 
 - **Append em `conversations.messages` é SEMPRE via RPC `append_conversation_message(p_conv_id, p_message)`** (`SECURITY DEFINER`, só `service_role`). Usa `messages || jsonb_build_array(...)` no mesmo UPDATE — row lock serializa, SELECT→push→UPDATE perde mensagens. Writers: `webhook-whatsapp` (`appendToConversation`), `send-manual-message`, [_shared/conversation-log.ts](supabase/functions/_shared/conversation-log.ts) (`appendOutboundToConversation`). Worker novo DEVE chamar a RPC.
+- **Lock de exclusão do agente por conversa:** `try_claim_conversation_for_ai(conv, token, ttl)` / `release_conversation_ai_claim(conv, token)` (`SECURITY DEFINER`, só `service_role`, grants espelhando o giftback). Lock é coluna TTL `conversations.ai_lock_until` — NÃO `pg_try_advisory_lock` (session-scoped, não sobrevive ao pooling transaction-mode do PgBouncer num hold de vários segundos). Após adquirir, re-checa `status == ai_active` (handoff/operador podem ter assumido entre debounce e claim). Não unificar com o lock advisory do giftback — perfil de risco diferente.
 - **Shape canônico de `ConversationMessage`:** `{ role: "user"|"assistant"|"human", content, timestamp (ISO obrigatório), kind?, human_user_id? }`. RPC rejeita se faltar campo obrigatório. Tipo em [src/types/reserva.ts](src/types/reserva.ts).
 - **Mensagem WhatsApp limita 4096 chars** — frontend (`maxLength` + toast) e backend (`send-manual-message` retorna 400). Replicar em endpoint novo.
 - **`appendOutboundToConversation` auto-cria conversa em `ai_active`** se customer não tem nenhuma. Best-effort, nunca lança. Workers/EFs NÃO devem `INSERT into conversations` direto — sempre delegar.
@@ -342,7 +344,7 @@ Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admi
 
 ## Observabilidade WhatsApp
 
-- **`webhook_executions`** FORCE RLS, TTL 30d. Outcomes: `success`, `agent_error`, `send_error`, `duplicate`, `media_response`, `debounced_superseded`, `org_billing_blocked`, etc.
+- **`webhook_executions`** FORCE RLS, TTL 30d. Outcomes: `success`, `agent_error`, `send_error`, `duplicate`, `media_response`, `debounced_superseded`, `conversation_locked`, `status_changed_locked`, `org_billing_blocked`, etc.
 - **`SendResult` estruturado:** `{ ok, status, error, bodySnippet, missingCreds }`.
 - **Diagnóstico** em `/platform/automacao/<slug>` aba "Diagnóstico" via `whatsapp-health`.
 
