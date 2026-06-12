@@ -1,5 +1,6 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { AdminShell } from "@/components/layouts/AdminShell";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -37,11 +38,14 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="flex h-screen bg-background">
-      {/* Sidebar */}
-      <aside className="w-60 shrink-0 flex flex-col bg-sidebar border-r border-sidebar-border">
-        <div className="h-16 flex items-center px-5">
-          <Link to="/admin" className="flex items-center gap-2">
+    <AdminShell
+      themeAdmin={false}
+      sidebarWidthClass="lg:w-60"
+      mainPaddingClass="p-6"
+      sidebar={
+        <>
+          <div className="h-16 flex items-center px-5">
+            <Link to="/admin" className="flex items-center gap-2">
             <UtensilsCrossed className="h-5 w-5 text-primary" />
             <span className="font-semibold text-sidebar-foreground">
               Moralles Reservas
@@ -82,12 +86,10 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
             Sair
           </Button>
         </div>
-      </aside>
-
-      {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="p-6">{children}</div>
-      </main>
-    </div>
+        </>
+      }
+    >
+      {children}
+    </AdminShell>
   );
 }

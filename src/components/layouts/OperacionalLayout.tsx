@@ -3,9 +3,11 @@ import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
 import { SidebarUnitProfile } from "@/components/layouts/SidebarUnitProfile";
+import { AdminShell } from "@/components/layouts/AdminShell";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
+  CalendarDays,
   CalendarIcon,
   Copy,
   Gift,
@@ -35,6 +37,7 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
     badge?: number;
   }> = [
     { to: base,                label: "Reservas do dia", icon: CalendarIcon, end: true },
+    { to: `${base}/agenda`,    label: "Calendário",      icon: CalendarDays },
     { to: `${base}/fila`,      label: "Fila de espera",  icon: Users },
     { to: `${base}/passantes`, label: "Walk-ins",        icon: UtensilsCrossed },
     { to: `${base}/giftback`,  label: "Validar voucher", icon: Gift },
@@ -58,11 +61,13 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="theme-admin flex h-screen bg-background">
-      {/* Sidebar compacta */}
-      <aside className="w-56 shrink-0 flex flex-col bg-sidebar border-r border-sidebar-border">
-        <div className="p-3">
-          <SidebarUnitProfile basePath="o" />
+    <AdminShell
+      sidebarWidthClass="lg:w-56"
+      mainPaddingClass="p-4"
+      sidebar={
+        <>
+          <div className="p-3">
+            <SidebarUnitProfile basePath="o" />
         </div>
 
         <div className="px-3 pb-2">
@@ -148,12 +153,10 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
             Sair
           </Button>
         </div>
-      </aside>
-
-      {/* Main content — mais denso, sem padding excessivo */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="p-4">{children}</div>
-      </main>
-    </div>
+        </>
+      }
+    >
+      {children}
+    </AdminShell>
   );
 }

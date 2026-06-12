@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { AdminShell } from "@/components/layouts/AdminShell";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Bot, Building2, CreditCard, LogOut, Users } from "lucide-react";
@@ -23,11 +24,13 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
   ];
 
   return (
-    <div className="theme-admin flex h-screen bg-background">
-      {/* Sidebar */}
-      <aside className="w-60 shrink-0 flex flex-col bg-sidebar border-r border-sidebar-border">
-        <div className="h-14 flex items-center px-6 gap-2">
-          <Building2 className="h-5 w-5 text-primary" />
+    <AdminShell
+      sidebarWidthClass="lg:w-60"
+      mainPaddingClass="p-6"
+      sidebar={
+        <>
+          <div className="h-14 flex items-center px-6 gap-2">
+            <Building2 className="h-5 w-5 text-primary" />
           <span className="font-semibold text-sm">Moralles Plataforma</span>
         </div>
         <Separator className="bg-sidebar-border" />
@@ -83,12 +86,10 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
             Sair
           </Button>
         </div>
-      </aside>
-
-      {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="p-6">{children}</div>
-      </main>
-    </div>
+        </>
+      }
+    >
+      {children}
+    </AdminShell>
   );
 }

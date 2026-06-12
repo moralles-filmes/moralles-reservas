@@ -4,6 +4,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
 import { SidebarUnitProfile } from "@/components/layouts/SidebarUnitProfile";
+import { AdminShell } from "@/components/layouts/AdminShell";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -156,10 +157,13 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="theme-admin flex h-screen bg-background">
-      <aside className="w-60 shrink-0 flex flex-col bg-sidebar border-r border-sidebar-border">
-        <div className="p-3">
-          <SidebarUnitProfile basePath="g" />
+    <AdminShell
+      sidebarWidthClass="lg:w-60"
+      mainPaddingClass="p-6"
+      sidebar={
+        <>
+          <div className="p-3">
+            <SidebarUnitProfile basePath="g" />
         </div>
 
         <div className="px-3 pb-2">
@@ -242,12 +246,11 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
             Sair
           </Button>
         </div>
-      </aside>
-
-      <main className="flex-1 overflow-y-auto">
-        <div className="p-6">{children}</div>
-      </main>
-    </div>
+        </>
+      }
+    >
+      {children}
+    </AdminShell>
   );
 }
 
