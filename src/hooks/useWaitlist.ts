@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import type {
@@ -6,6 +7,27 @@ import type {
   WaitlistPriorityCategory,
   WaitlistStatus,
 } from "@/types/reserva";
+
+/**
+ * Traduz o código de erro técnico do send-whatsapp (`result.error`) numa
+ * mensagem acionável pro operador. Sem isso, a UI mostrava o genérico
+ * "Edge Function returned a non-2xx status code" (o `supabase.functions.invoke`
+ * mascara o corpo num FunctionsHttpError).
+ */
+function friendlyWhatsAppError(code?: string | null): string {
+  if (!code) return "Falha ao enviar WhatsApp.";
+  if (code === "whatsapp_not_configured")
+    return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Automação para enviar avisos.";
+  if (code === "channel_mismatch")
+    return "Canal de WhatsApp inválido para esta unidade.";
+  if (code === "missing_credentials")
+    return "As credenciais do WhatsApp estão incompletas. Revise a configuração do canal.";
+  if (/http_4\d\d/.test(code))
+    return "O WhatsApp recusou o envio — a conexão da conta pode ter caído. Reconecte o canal e tente de novo.";
+  if (/http_5\d\d/.test(code))
+    return "O provedor de WhatsApp está instável no momento. Tente novamente em instantes.";
+  return "Falha ao enviar WhatsApp.";
+}
 
 // Pausa polling quando a aba está em background — tablets de salão deixam o
 // painel aberto o dia inteiro; 30s × 8h = 960 requisições/dia ociosas.
@@ -156,10 +178,21 @@ export function useNotifyWaitlist(unitId: string) {
           waitlist_id: id,
         },
       });
-      if (funcErr) throw funcErr;
+      if (funcErr) {
+        // send-whatsapp devolve 502 quando o envio falha; supabase-js empacota
+        // num FunctionsHttpError cuja `.message` é sempre o genérico "non-2xx".
+        // O motivo real (ex.: "whatsapp_not_configured") está em context.json().
+        if (funcErr instanceof FunctionsHttpError) {
+          const body = (await funcErr.context.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(friendlyWhatsAppError(body?.error));
+        }
+        throw funcErr;
+      }
       const result = data as { success?: boolean; error?: string } | null;
       if (result && result.success === false) {
-        throw new Error(result.error ?? "Falha ao enviar WhatsApp.");
+        throw new Error(friendlyWhatsAppError(result.error));
       }
 
       // Marca como notificado. Se o UPDATE falhar AGORA, o WhatsApp JÁ foi

@@ -102,7 +102,8 @@ serve(async (req) => {
       });
     }
 
-    // Send WhatsApp message via shared helper (canal da unit, com fallback ZAPI legacy)
+    // Send WhatsApp message via shared helper (canal `connected` da unit; sem
+    // canal devolve { ok:false, error:"whatsapp_not_configured" } — sem fallback global).
     const result = await sendWhatsApp(customerPhone, trimmedMessage, { unit_id: conv.unit_id });
     if (!result.ok) {
       jsonLog("error", {

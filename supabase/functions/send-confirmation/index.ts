@@ -293,7 +293,9 @@ serve(async (req) => {
           .maybeSingle()
       : { data: null };
 
-    const hasWhatsappChannel = !!channel || !!Deno.env.get("ZAPI_INSTANCE_ID");
+    // Só há WhatsApp se a unit tem canal `connected` próprio. O antigo fallback
+    // global (env ZAPI_*) foi removido — sem canal, send pula com reason "no_channel".
+    const hasWhatsappChannel = !!channel;
 
     const discountLine = discountPercent
       ? `💸 Desconto: ${discountPercent}% off\n`

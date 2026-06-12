@@ -352,6 +352,7 @@ Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admi
 
 - **`webhook_executions`** FORCE RLS, TTL 30d. Outcomes: `success`, `agent_error`, `send_error`, `duplicate`, `media_response`, `debounced_superseded`, `conversation_locked`, `status_changed_locked`, `org_billing_blocked`, etc.
 - **`SendResult` estruturado:** `{ ok, status, error, bodySnippet, missingCreds }`.
+- **Envio de WhatsApp NÃO tem fallback global — unit sem canal `connected` retorna `{ ok:false, error:"whatsapp_not_configured" }`.** `sendWhatsApp` resolve só `whatsapp_channels` da unit; mandar pelo número de outra conta vazaria cross-tenant. Caller trata o erro (UI traduz via `friendlyWhatsAppError`); reintroduzir env `ZAPI_*` global é regressão. [_shared/whatsapp-send.ts](supabase/functions/_shared/whatsapp-send.ts).
 - **Diagnóstico** em `/platform/automacao/<slug>` aba "Diagnóstico" via `whatsapp-health`.
 
 ---
@@ -375,5 +376,7 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`stripe-config.ts`** → `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`, `manage-payment-methods`
 - **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
+- **`whatsapp-send.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
+- **`whatsapp-providers.ts`** → `webhook-whatsapp`, `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
 
 Worker/EF novo que importe um helper aqui = atualizar este checklist no mesmo PR.
