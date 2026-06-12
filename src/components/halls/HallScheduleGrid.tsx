@@ -110,7 +110,7 @@ export function HallScheduleGrid({ schedules, dayOfWeek, onChangeDay, onAdd, onE
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                      className="h-8 w-8 text-muted-foreground hover:text-foreground"
                       onClick={() => onEdit(schedule)}
                       aria-label="Editar horário"
                     >
@@ -119,7 +119,7 @@ export function HallScheduleGrid({ schedules, dayOfWeek, onChangeDay, onAdd, onE
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
                       onClick={() => onDelete(schedule)}
                       aria-label="Remover horário"
                     >

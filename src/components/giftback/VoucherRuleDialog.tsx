@@ -190,7 +190,7 @@ export function VoucherRuleDialog({ open, onOpenChange, unitId, rule }: VoucherR
           )}
 
           {trigger === "frequency" && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor="rule-visits">Visitas mínimas</Label>
                 <Input
@@ -228,7 +228,7 @@ export function VoucherRuleDialog({ open, onOpenChange, unitId, rule }: VoucherR
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="rule-discount">Desconto (%)</Label>
               <Input

@@ -168,14 +168,14 @@ export default function Bloqueios() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7"
+                            className="h-8 w-8"
                             onClick={() => handleEdit(b)}
                           >
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-7 w-7">
+                              <Button variant="ghost" size="icon" className="h-8 w-8">
                                 <Trash2 className="h-3.5 w-3.5 text-destructive" />
                               </Button>
                             </AlertDialogTrigger>
@@ -353,7 +353,7 @@ function BloqueioModal({
 
           <div className="space-y-1">
             <Label className="text-xs">Data</Label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input
                 type="date"
                 value={startDate}
@@ -379,7 +379,7 @@ function BloqueioModal({
           </label>
 
           {!allDay && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label className="text-xs">
                   <span className="text-destructive">*</span> Início

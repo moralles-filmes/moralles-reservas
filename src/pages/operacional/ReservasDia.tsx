@@ -30,13 +30,13 @@ export default function ReservasDia() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-3">
-        <CalendarIcon className="h-5 w-5 text-primary" />
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <CalendarIcon className="h-5 w-5 text-primary shrink-0" />
         <h1 className="text-xl font-bold">Reservas de hoje</h1>
         <Badge variant="outline">{formatDateBR(today, { weekday: "long", day: "numeric", month: "long" })}</Badge>
         <Button
           size="sm"
-          className="ml-auto"
+          className="w-full sm:w-auto sm:ml-auto"
           onClick={() => setManualOpen(true)}
           disabled={!unitId}
         >

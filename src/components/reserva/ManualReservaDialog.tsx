@@ -170,7 +170,7 @@ export function ManualReservaDialog({
               {errors.name && <p className="text-xs text-destructive">{errors.name.message}</p>}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="mr-phone">WhatsApp *</Label>
                 <Input
@@ -194,7 +194,7 @@ export function ManualReservaDialog({
             </div>
 
             {/* Data / hora / pessoas */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="mr-date">Data *</Label>
                 <Input
@@ -242,7 +242,7 @@ export function ManualReservaDialog({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="mr-party">Pessoas *</Label>
                 <PartySizeInput

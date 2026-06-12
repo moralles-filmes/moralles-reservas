@@ -184,7 +184,7 @@ export function HallScheduleSheet({
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <Label className="text-xs">
                   <span className="text-destructive">*</span> Início
@@ -300,7 +300,7 @@ export function HallScheduleSheet({
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
                             onClick={() => onDeleteTable(t)}
                           >
                             <Trash2 className="h-4 w-4" />
@@ -321,7 +321,7 @@ export function HallScheduleSheet({
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
                           onClick={() => setNewTables((prev) => prev.filter((_, i) => i !== idx))}
                         >
                           <Trash2 className="h-4 w-4" />

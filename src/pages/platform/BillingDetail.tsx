@@ -327,11 +327,11 @@ function InvoicesTable({ invoices }: { invoices: BillingInvoice[] }) {
               <TableCell>
                 {inv.hosted_invoice_url && (
                   <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { navigator.clipboard.writeText(inv.hosted_invoice_url!); toast.success("Link copiado."); }}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { navigator.clipboard.writeText(inv.hosted_invoice_url!); toast.success("Link copiado."); }}>
                       <Copy className="h-3 w-3" />
                     </Button>
                     <a href={inv.hosted_invoice_url} target="_blank" rel="noopener noreferrer">
-                      <Button variant="ghost" size="icon" className="h-7 w-7"><ExternalLink className="h-3 w-3" /></Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8"><ExternalLink className="h-3 w-3" /></Button>
                     </a>
                   </div>
                 )}

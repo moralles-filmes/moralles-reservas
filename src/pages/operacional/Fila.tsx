@@ -355,7 +355,7 @@ export default function Fila() {
               <Label>Nome do cliente *</Label>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Maria Costa" />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label>WhatsApp (opcional)</Label>
                 <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(11) 99999-9999" />

@@ -343,6 +343,9 @@ Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vaul
 
 Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admin` navy SaaS (painéis Gestão/Operacional/Plataforma). `.theme-admin` sobrescreve TODAS as CSS vars no escopo. Nunca hardcode cores — tokens Tailwind sempre.
 
+- **`index.html` precisa manter `viewport-fit=cover` no meta viewport.** Sem ele, todo `env(safe-area-inset-*)` (footers de `Dialog`/`ResponsiveDialog`, gaveta do `AdminShell`) avalia 0 no iOS — safe-area morre em silêncio. [index.html](index.html).
+- **Pares de inputs em form usam `grid grid-cols-1 sm:grid-cols-2`, nunca `grid-cols-2` cru.** O `sm:` (640px) casa com a largura em que o Dialog deixa de ser fullscreen — abaixo disso empilha. Grid de KPI/tiles (`grid-cols-2 lg:grid-cols-4`) é proposital e fica.
+
 ---
 
 ## Observabilidade WhatsApp
