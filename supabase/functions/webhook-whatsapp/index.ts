@@ -1894,6 +1894,15 @@ serve(async (req) => {
     const includeFaq = agentMode === "reservations_faq";
     // Nome do agente é per-unit (setting jsonb `agent_name`, default "Yumi"). str() blinda contra interpolação de jsonb cru.
     const agentName = str(settingsMap["agent_name"]) || "Yumi";
+    // Nome do cliente para o prompt. customer.name pode ser placeholder (== phone)
+    // quando o WhatsApp não trouxe push_name — nesse caso NÃO injetar (viraria "número").
+    // Sem isso, o único nome próprio no prompt é o da persona (agentName) e o LLM
+    // passa a chamar o CLIENTE pelo nome da persona ("Yumi").
+    const rawCustomerName = str(customer?.name);
+    const customerFirstName =
+      rawCustomerName && rawCustomerName !== customer?.phone && rawCustomerName !== phone
+        ? rawCustomerName.trim().split(/\s+/)[0]
+        : "";
     const agentHeader = includeFaq
       ? `Você é ${agentName}, atendente do ${restaurantName}. Cuida de reservas e dúvidas gerais (cardápio, horário, endereço, estacionamento, pagamento). `
       : `Você é ${agentName}, atendente de reservas do ${restaurantName}. `;
@@ -1903,6 +1912,9 @@ serve(async (req) => {
       `IDENTIDADE: Você se chama ${agentName} e atende como parte da equipe do ${restaurantName} — fale sempre na primeira pessoa, de forma natural e humana, tratando o cliente por "você". NÃO diga espontaneamente que é um assistente virtual, robô, IA, bot ou sistema automático, e não use linguagem robótica. Só revele que é um atendimento virtual se o cliente perguntar DIRETAMENTE se está falando com um robô/IA/atendente automático — nesse caso seja honesta e responda com naturalidade (ex: "Sou a ${agentName}, faço o atendimento virtual do ${restaurantName} e quando precisar chamo alguém da equipe"). Ao transferir para um colega (handoff), dizer que vai chamar alguém da equipe NÃO exige revelar que você é virtual. ` +
       `Seja cordial, eficiente e responda sempre em português brasileiro. Respostas curtas e diretas — em geral 3 a 4 linhas; use mais espaço só quando precisar listar horários, opções ou preços. Evite excesso de emojis. ` +
       `O número de WhatsApp do cliente é ${phone}. Hoje é ${todayBR}. ` +
+      (customerFirstName
+        ? `O cliente com quem você está falando se chama ${customerFirstName} — esse é o nome do CLIENTE, NÃO o seu. Você continua sendo ${agentName}. Pode tratá-lo por ${customerFirstName} quando soar natural, sem forçar o nome em toda mensagem. `
+        : "") +
       `Use as ferramentas disponíveis para reservas. ` +
       `Ao criar uma reserva, sempre confirme todos os detalhes antes de finalizar. ` +
       `Não invente horários, cardápio, serviços, descontos, promoções nem benefícios de aniversário — só use o que está documentado abaixo. ` +
