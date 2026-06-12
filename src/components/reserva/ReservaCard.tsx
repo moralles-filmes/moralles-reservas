@@ -2,6 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useUpdateReservaStatus } from "@/hooks/useReservas";
+import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { formatDateBR, formatPhone } from "@/lib/utils";
 import type { Reserva } from "@/types/reserva";
 import { STATUS_COLORS, STATUS_LABELS } from "@/types/reserva";
@@ -17,6 +18,10 @@ interface ReservaCardProps {
 export function ReservaCard({ reserva, showActions = false, unitId }: ReservaCardProps) {
   const effectiveUnitId = unitId ?? reserva.unit_id ?? "";
   const updateStatus = useUpdateReservaStatus(effectiveUnitId);
+  // Operador não pode cancelar reservas — só gerente/owner/platform_admin.
+  // (isGerente cobre owner+gerente; platform_admin entra via pseudo-role "owner".)
+  const unit = useCurrentUnit();
+  const canCancel = unit?.isGerente ?? false;
 
   const handleStatus = async (status: "confirmed" | "cancelled" | "no_show") => {
     try {
@@ -129,15 +134,17 @@ export function ReservaCard({ reserva, showActions = false, unitId }: ReservaCar
             >
               Confirmar
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-destructive hover:bg-destructive/10"
-              onClick={() => handleStatus("cancelled")}
-              disabled={updateStatus.isPending}
-            >
-              Cancelar
-            </Button>
+            {canCancel && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-destructive hover:bg-destructive/10"
+                onClick={() => handleStatus("cancelled")}
+                disabled={updateStatus.isPending}
+              >
+                Cancelar
+              </Button>
+            )}
           </div>
         )}
 
@@ -151,15 +158,17 @@ export function ReservaCard({ reserva, showActions = false, unitId }: ReservaCar
             >
               Não compareceu
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-destructive hover:bg-destructive/10"
-              onClick={() => handleStatus("cancelled")}
-              disabled={updateStatus.isPending}
-            >
-              Cancelar
-            </Button>
+            {canCancel && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-destructive hover:bg-destructive/10"
+                onClick={() => handleStatus("cancelled")}
+                disabled={updateStatus.isPending}
+              >
+                Cancelar
+              </Button>
+            )}
           </div>
         )}
       </CardContent>

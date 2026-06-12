@@ -68,6 +68,7 @@ const GGiftbackAjustes  = lazy(() => import("./pages/gestao/giftback/Ajustes"));
 
 // ── Operacional ───────────────────────────────────────────────────────────────
 const OReservasDia = lazy(() => import("./pages/operacional/ReservasDia"));
+const OAgenda      = lazy(() => import("./pages/operacional/Agenda"));
 const OFila        = lazy(() => import("./pages/operacional/Fila"));
 const OPassantes   = lazy(() => import("./pages/operacional/Passantes"));
 const OConversas   = lazy(() => import("./pages/operacional/Conversas"));
@@ -250,6 +251,7 @@ export default function App() {
               {/* ── Operacional /o/:unitSlug ────────────────────────────── */}
               <Route path="/o/:unitSlug" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/reservas" element={<OperacionalGuard><OReservasDia /></OperacionalGuard>} />
+              <Route path="/o/:unitSlug/agenda" element={<OperacionalGuard><OAgenda /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/fila" element={<OperacionalGuard><OFila /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/passantes" element={<OperacionalGuard><OPassantes /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/conversas" element={<OperacionalGuard><OConversas /></OperacionalGuard>} />
