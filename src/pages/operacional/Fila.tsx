@@ -46,6 +46,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { formatPhone } from "@/lib/utils";
+import { validateBrPhone } from "@/lib/phone";
 import type {
   WaitlistEntry,
   WaitlistPriorityCategory,
@@ -136,11 +137,8 @@ export default function Fila() {
 
   const handleSubmit = () => {
     if (!name.trim()) { toast.error("Informe o nome do cliente."); return; }
-    const phoneDigits = phone.replace(/\D/g, "");
-    if (phoneDigits && phoneDigits.length < 10) {
-      toast.error("Telefone inválido. Informe DDD + número (ex: 11999998888).");
-      return;
-    }
+    const { valid, reason, digits: phoneDigits } = validateBrPhone(phone, { allowEmpty: true });
+    if (!valid) { toast.error(reason); return; }
     const onSuccess = () => { setOpen(false); reset(); };
     if (editingId) {
       updateEntry.mutate(

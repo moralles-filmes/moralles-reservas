@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { useAnonAddToWaitlist } from "@/hooks/useWaitlist";
 import { formatPhone } from "@/lib/utils";
+import { normalizeBrPhone, validateBrPhone } from "@/lib/phone";
 import type { WaitlistPriorityCategory } from "@/types/reserva";
 import { Accessibility, Baby, CheckCircle2, Smartphone, UserCircle2 } from "lucide-react";
 
@@ -31,14 +32,14 @@ const PRIORITY_OPTIONS: Array<{
 
 const schema = z.object({
   name: z.string().trim().min(2, "Nome deve ter ao menos 2 caracteres"),
-  // .transform strip de não-dígitos antes do refine — usuário pode colar
-  // "(11) 99998-8877" e o schema valida só os dígitos. min 10 (10-11 dígitos
-  // BR sem código de país).
+  // .transform normaliza (tira 55/não-dígitos) e o validador BR barra DDD
+  // inválido / celular sem o 9 — usuário pode colar "(11) 99998-8877".
   phone: z
     .string()
-    .transform((v) => v.replace(/\D/g, ""))
-    .refine((v) => v.length >= 10 && v.length <= 11, {
-      message: "Telefone inválido. Informe DDD + número.",
+    .transform((v) => normalizeBrPhone(v))
+    .superRefine((v, ctx) => {
+      const r = validateBrPhone(v);
+      if (!r.valid) ctx.addIssue({ code: z.ZodIssueCode.custom, message: r.reason ?? "Telefone inválido." });
     }),
   // .int() — Postgres rejeita decimais com 22P02 (erro confuso pro usuário).
   party_size: z.coerce.number().int().min(1).max(20),

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { validateBrPhone } from "@/lib/phone";
 import {
   useWalkIns,
   useCreateWalkIn,
@@ -11,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -95,8 +96,10 @@ export default function Passantes() {
 
   const handleCreate = () => {
     if (!name.trim()) { toast.error("Informe o nome do cliente."); return; }
+    const { valid, reason, digits } = validateBrPhone(phone, { allowEmpty: true });
+    if (!valid) { toast.error(reason); return; }
     createWalkIn.mutate(
-      { customer_name: name.trim(), customer_phone: phone.replace(/\D/g, "") || null, party_size: Number(partySize), notes: notes.trim() || null },
+      { customer_name: name.trim(), customer_phone: digits || null, party_size: Number(partySize), notes: notes.trim() || null },
       { onSuccess: () => { setOpen(false); reset(); } }
     );
   };

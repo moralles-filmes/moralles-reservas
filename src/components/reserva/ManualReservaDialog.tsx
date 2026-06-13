@@ -30,6 +30,7 @@ import { PartySizeInput } from "@/components/reserva/wizard/PartySizeInput";
 import { getSlotsForDate } from "@/components/reserva/wizard/availability-helpers";
 import type { PublicHall } from "@/types/reserva";
 import { formatPhone, todayLocalISO } from "@/lib/utils";
+import { normalizeBrPhone, validateBrPhone } from "@/lib/phone";
 
 const FORM_ID = "manual-reserva-form";
 const PARTY_SIZE_MAX = 30; // backend (create-manual-reservation) rejeita party_size > 30
@@ -39,9 +40,10 @@ const schema = z.object({
   name: z.string().trim().min(2, "Nome deve ter ao menos 2 caracteres"),
   phone: z
     .string()
-    .transform((v) => v.replace(/\D/g, ""))
-    .refine((v) => v.length >= 10 && v.length <= 13, {
-      message: "Telefone inválido. Informe DDD + número.",
+    .transform((v) => normalizeBrPhone(v))
+    .superRefine((v, ctx) => {
+      const r = validateBrPhone(v);
+      if (!r.valid) ctx.addIssue({ code: z.ZodIssueCode.custom, message: r.reason ?? "Telefone inválido." });
     }),
   email: z.string().trim().email("E-mail inválido").optional().or(z.literal("")),
   date: z.string().min(1, "Informe a data"),

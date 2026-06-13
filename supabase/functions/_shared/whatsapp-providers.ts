@@ -2,6 +2,7 @@
 
 import { fetchWithRetry } from "./retry.ts";
 import { jsonLog, sanitizePhone } from "./security.ts";
+import { canonicalBrPhone } from "./phone.ts";
 
 export type WhatsAppProvider = "zapi" | "waha" | "official";
 
@@ -98,7 +99,7 @@ export function parseInbound(provider: WhatsAppProvider, payload: any): InboundM
 // deno-lint-ignore no-explicit-any
 function parseZApi(p: any): InboundMessage | null {
   if (!p.text?.message || p.isFromMe) return null;
-  const digits = String(p.phone ?? "").replace(/\D/g, "").replace(/^55/, "");
+  const digits = canonicalBrPhone(String(p.phone ?? ""));
   const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
   const contactName = sanitizeContactName(
     p.senderName ?? p.chatName ?? p.notifyName ?? p.contactName,
@@ -122,7 +123,7 @@ function parseWaha(p: any): InboundMessage | null {
   if (msg.fromMe) return null;
   const textBody = msg.body ?? msg.text?.body;
   if (!textBody) return null;
-  const rawFrom = String(msg.from ?? "").replace("@c.us", "").replace(/\D/g, "").replace(/^55/, "");
+  const rawFrom = canonicalBrPhone(String(msg.from ?? "").replace("@c.us", ""));
   const contactName = sanitizeContactName(
     msg._data?.notifyName ?? msg.notifyName ?? msg.pushName ?? msg._data?.pushName ?? p.payload?._data?.notifyName,
     rawFrom,
@@ -147,7 +148,7 @@ function parseOfficial(p: any): InboundMessage | null {
   const msgObj = value?.messages?.[0];
   if (!msgObj) return null;
   if (msgObj.type !== "text") return null;
-  const digits = String(msgObj.from ?? "").replace(/^55/, "").replace(/\D/g, "");
+  const digits = canonicalBrPhone(String(msgObj.from ?? ""));
   const contactName = sanitizeContactName(
     value?.contacts?.[0]?.profile?.name,
     digits,
@@ -212,7 +213,7 @@ function peekZApiMedia(p: any): InboundMediaPeek | null {
   else if (p.location) kind = "location";
   else if (p.contact || p.contacts) kind = "contacts";
   if (!kind) return null;
-  const digits = String(p.phone ?? "").replace(/\D/g, "").replace(/^55/, "");
+  const digits = canonicalBrPhone(String(p.phone ?? ""));
   if (!digits) return null;
   const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
   const contactName = sanitizeContactName(
@@ -245,7 +246,7 @@ function peekWahaMedia(p: any): InboundMediaPeek | null {
   let kind: InboundMediaKind | null = mediaTypes[wahaType] ?? null;
   if (!kind && msg.hasMedia && !textBody) kind = "other";
   if (!kind) return null;
-  const rawFrom = String(msg.from ?? "").replace("@c.us", "").replace(/\D/g, "").replace(/^55/, "");
+  const rawFrom = canonicalBrPhone(String(msg.from ?? "").replace("@c.us", ""));
   if (!rawFrom) return null;
   const contactName = sanitizeContactName(
     msg._data?.notifyName ?? msg.notifyName ?? msg.pushName ?? msg._data?.pushName ?? p.payload?._data?.notifyName,
@@ -279,7 +280,7 @@ function peekOfficialMedia(p: any): InboundMediaPeek | null {
     contacts: "contacts",
   };
   const kind: InboundMediaKind = map[t] ?? "other";
-  const digits = String(msgObj.from ?? "").replace(/^55/, "").replace(/\D/g, "");
+  const digits = canonicalBrPhone(String(msgObj.from ?? ""));
   if (!digits) return null;
   const contactName = sanitizeContactName(
     value?.contacts?.[0]?.profile?.name,

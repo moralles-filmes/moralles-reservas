@@ -8,6 +8,7 @@
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { z } from "zod";
 import { toast } from "sonner";
+import { canonicalBrPhone, normalizeBrPhone, validateBrPhone } from "@/lib/phone";
 import { useCreateReserva } from "@/hooks/useReservas";
 import type {
   PublicBlockedDate,
@@ -79,8 +80,11 @@ export const step3Schema = z.object({
   email: z.string().trim().email("E-mail inválido"),
   phone: z
     .string()
-    .transform((v) => v.replace(/\D/g, ""))
-    .pipe(z.string().min(10, "Telefone inválido").max(11, "Telefone inválido")),
+    .transform((v) => normalizeBrPhone(v))
+    .superRefine((v, ctx) => {
+      const r = validateBrPhone(v);
+      if (!r.valid) ctx.addIssue({ code: z.ZodIssueCode.custom, message: r.reason ?? "Telefone inválido." });
+    }),
   birthday: z.string().optional(),
   notes: z.string().optional(),
 });
@@ -424,7 +428,7 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
       const reserva = await createReserva.mutateAsync({
         name: state.name.trim(),
         email: state.email.trim(),
-        phone: state.phone.replace(/\D/g, ""),
+        phone: canonicalBrPhone(state.phone),
         date: state.date,
         time: state.time,
         party_size: state.party_size,

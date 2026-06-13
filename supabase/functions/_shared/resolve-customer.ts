@@ -13,10 +13,11 @@
 //   - supabase/functions/webhook-whatsapp/index.ts (tool createReservation)
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { canonicalBrPhone } from "./phone.ts";
 
 export interface ResolveCustomerInput {
   organizationId: string;
-  phone: string;              // só dígitos, sem máscara
+  phone: string;              // qualquer formato — normalizado p/ canônico aqui dentro
   name: string;
   email?: string | null;
   birthday?: string | null;   // YYYY-MM-DD
@@ -42,12 +43,16 @@ export async function resolveOrCreateCustomer(
   input: ResolveCustomerInput,
 ): Promise<ResolvedCustomer> {
   const normEmail = normalizeEmail(input.email);
+  // Canoniza o telefone (9º dígito) ANTES do lookup — senão o mesmo cliente em
+  // dois formatos (com/sem 9) não casa e vira duplicata. Backstop no banco:
+  // trigger customers_canonical_phone_trg força o canônico em qualquer write.
+  const normPhone = canonicalBrPhone(input.phone);
 
   const { data: existing, error: lookupErr } = await supabase
     .from("customers")
     .select("id, name, phone, email, emails, birthday")
     .eq("organization_id", input.organizationId)
-    .eq("phone", input.phone)
+    .eq("phone", normPhone)
     .maybeSingle();
 
   if (lookupErr) throw lookupErr;
@@ -97,7 +102,7 @@ export async function resolveOrCreateCustomer(
     .from("customers")
     .insert({
       organization_id: input.organizationId,
-      phone: input.phone,
+      phone: normPhone,
       name: input.name.trim(),
       email: normEmail,                            // trigger replica em emails[0]
       emails: normEmail ? [normEmail] : [],

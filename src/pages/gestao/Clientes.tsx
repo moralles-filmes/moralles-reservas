@@ -36,6 +36,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatDateBR, formatPhone, sanitizeSearchTerm } from "@/lib/utils";
+import { validateBrPhone } from "@/lib/phone";
 import type { Customer } from "@/types/reserva";
 import {
   AlertTriangle,
@@ -608,9 +609,9 @@ function CustomerEditForm({
   }
 
   function handleSave() {
-    const phoneDigits = phone.replace(/\D/g, "");
-    if (phoneDigits.length < 10 || phoneDigits.length > 13) {
-      toast.error("Telefone inválido. Use DDD + número.");
+    const { valid, reason, digits: phoneDigits } = validateBrPhone(phone);
+    if (!valid) {
+      toast.error(reason);
       return;
     }
     if (!name.trim()) {
