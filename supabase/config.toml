@@ -15,6 +15,11 @@ verify_jwt = false
 [functions.send-whatsapp]
 verify_jwt = false
 
+# Reenvio do painel "Entregas": auth própria (JWT de unit member) — verify_jwt=false
+# pra ela validar membership internamente, igual send-whatsapp.
+[functions.resend-notification]
+verify_jwt = false
+
 [functions.send-confirmation]
 verify_jwt = false
 

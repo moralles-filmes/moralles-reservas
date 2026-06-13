@@ -2,6 +2,7 @@ import { NavLink, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
+import { useUndeliveredNotifications } from "@/hooks/useUndeliveredNotifications";
 import { SidebarUnitProfile } from "@/components/layouts/SidebarUnitProfile";
 import { AdminShell } from "@/components/layouts/AdminShell";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import {
   Gift,
   HelpCircle,
   LogOut,
+  MailWarning,
   MessageCircle,
   Settings,
   Users,
@@ -28,6 +30,9 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
 
   const base = `/o/${unitSlug}`;
   const awaitingCount = useAwaitingHumanCount(unit?.unit_id ?? "");
+  // Mesma query key da página Entregas → cache compartilhado (1 fetch só).
+  const { data: undelivered } = useUndeliveredNotifications(unit?.unit_id ?? "");
+  const undeliveredCount = undelivered?.length ?? 0;
 
   const navItems: Array<{
     to: string;
@@ -41,6 +46,7 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
     { to: `${base}/fila`,      label: "Fila de espera",  icon: Users },
     { to: `${base}/passantes`, label: "Walk-ins",        icon: UtensilsCrossed },
     { to: `${base}/giftback`,  label: "Validar voucher", icon: Gift },
+    { to: `${base}/entregas`,  label: "Entregas",        icon: MailWarning, badge: undeliveredCount },
     { to: `${base}/conversas`, label: "Conversas",       icon: MessageCircle, badge: awaitingCount },
   ];
 

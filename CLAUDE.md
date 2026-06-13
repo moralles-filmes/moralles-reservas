@@ -354,6 +354,7 @@ Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admi
 - **`SendResult` estruturado:** `{ ok, status, error, bodySnippet, missingCreds, providerMessageId }`.
 - **Entrega ≠ envio. `notifications_sent.status='sent'` só diz "o provedor aceitou (2xx)".** Entrega real vem do callback de status: `send-*` capturam `providerMessageId` no envio (gravado em `notifications_sent.provider_message_id`), e o webhook detecta o callback via [_shared/whatsapp-status.ts](supabase/functions/_shared/whatsapp-status.ts) (`parseStatusCallback`) ANTES do `parseInbound`, correlaciona por `provider_message_id` e preenche `delivered_at`/`read_at`/`failed_at` (monotônico, `read` garante `delivered`). Outcome `status_callback`. Requer o "webhook de status da mensagem" ligado no painel do provedor (Z-API). Frontend lê via `useNotificationDeliveries` + `DeliveryBadge`.
 - **`recordNotification` (send-whatsapp E send-confirmation) é UPSERT: 23505 → UPDATE** com novo `provider_message_id` + reset `delivered_at/read_at/failed_at`. Reenvio re-rastreia; e o caso "1ª tentativa falhou, retry deu certo" deixa de travar a linha em `failed`. Writer novo de `notifications_sent` que reenvie DEVE seguir esse padrão.
+- **Painel `Operacional → Entregas` (`/o/:slug/entregas`)** lista não-entregues via RPC `get_undelivered_notifications` (SECURITY DEFINER, member/admin guard; "não entregue" = failed OU sent-com-msgid-sem-delivered há >5min; ignora linhas sem `provider_message_id` e `confirmation_email`). **Reenvio é SEMPRE pela EF única `resend-notification`** (frontend-callable, JWT de member): roteia waitlist→`send-whatsapp`, `confirmation`→`send-confirmation` com `resend_whatsapp_only=true` (pula e-mail). Kind novo reenviável entra no `RESENDABLE` da EF + no `isResendableKind` do front.
 - **Envio de WhatsApp NÃO tem fallback global — unit sem canal `connected` retorna `{ ok:false, error:"whatsapp_not_configured" }`.** `sendWhatsApp` resolve só `whatsapp_channels` da unit; mandar pelo número de outra conta vazaria cross-tenant. Caller trata o erro (UI traduz via `friendlyWhatsAppError`); reintroduzir env `ZAPI_*` global é regressão. [_shared/whatsapp-send.ts](supabase/functions/_shared/whatsapp-send.ts).
 - **Diagnóstico** em `/platform/automacao/<slug>` aba "Diagnóstico" via `whatsapp-health`.
 
@@ -374,7 +375,8 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`availability.ts`** → `create-reservation`, `create-manual-reservation`, `update-reservation`, `webhook-whatsapp`
 - **`conversation-log.ts`** → TODAS (`webhook-*`, `send-*`, `process-*`)
 - **`resolve-customer.ts`** → `create-reservation`, `create-manual-reservation`, `webhook-whatsapp`
-- **`cors.ts`** → `manage-*`, `send-*`, `create-manual-reservation` (qualquer EF chamada pelo frontend autenticado)
+- **`cors.ts`** → `manage-*`, `send-*`, `resend-notification`, `create-manual-reservation` (qualquer EF chamada pelo frontend autenticado)
+- **`waitlist-defaults.ts`** → `process-waitlist-entered`, `resend-notification`
 - **`stripe-config.ts`** → `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`, `manage-payment-methods`
 - **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`

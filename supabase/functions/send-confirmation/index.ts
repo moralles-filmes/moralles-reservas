@@ -248,6 +248,9 @@ serve(async (req) => {
   try {
     const body = await req.json();
     const record = body.record ?? body;
+    // Reenvio só-WhatsApp (painel "Entregas" via resend-notification): pula o
+    // e-mail pra não duplicar (a confirmação já foi enviada uma vez).
+    const resendWhatsappOnly = body.resend_whatsapp_only === true;
 
     // Defesa em profundidade: se o caller informar unit_id, exige pareamento.
     // Trigger do banco (database webhook) sempre envia o record completo, então
@@ -375,7 +378,7 @@ serve(async (req) => {
         )
       : Promise.resolve({ kind: "whatsapp" as const, ok: false, skipped: true as const, reason: "no_channel" });
 
-    const emailPromise = customer.email
+    const emailPromise = customer.email && !resendWhatsappOnly
       ? sendEmail({
           to: customer.email,
           subject: `Reserva confirmada — ${dateBR} às ${time}`,
