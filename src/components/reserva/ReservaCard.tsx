@@ -6,6 +6,12 @@ import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { formatDateBR, formatPhone } from "@/lib/utils";
 import type { Reserva } from "@/types/reserva";
 import { STATUS_COLORS, STATUS_LABELS } from "@/types/reserva";
+import {
+  deriveDeliveryState,
+  deliveryTooltip,
+  type DeliveryRow,
+} from "@/hooks/useNotificationDeliveries";
+import { DeliveryBadge } from "@/components/notifications/DeliveryBadge";
 import { AlertTriangle, Banknote, BellOff, CalendarIcon, Clock, Phone, Sparkles, Users } from "lucide-react";
 import { toast } from "sonner";
 
@@ -13,9 +19,12 @@ interface ReservaCardProps {
   reserva: Reserva;
   showActions?: boolean;
   unitId?: string;
+  /** Entrega da confirmação (kind `confirmation`). Só existe pra reservas web —
+   *  reservas via WhatsApp são confirmadas no chat pelo agente, sem essa linha. */
+  confirmationDelivery?: DeliveryRow | null;
 }
 
-export function ReservaCard({ reserva, showActions = false, unitId }: ReservaCardProps) {
+export function ReservaCard({ reserva, showActions = false, unitId, confirmationDelivery }: ReservaCardProps) {
   const effectiveUnitId = unitId ?? reserva.unit_id ?? "";
   const updateStatus = useUpdateReservaStatus(effectiveUnitId);
   // Operador não pode cancelar reservas — só gerente/owner/platform_admin.
@@ -88,6 +97,13 @@ export function ReservaCard({ reserva, showActions = false, unitId }: ReservaCar
                   <Banknote className="h-2.5 w-2.5" />
                   Reembolsado
                 </Badge>
+              )}
+              {confirmationDelivery && (
+                <DeliveryBadge
+                  prefix="Confirmação"
+                  state={deriveDeliveryState(confirmationDelivery, !!reserva.customer?.phone)}
+                  title={deliveryTooltip(confirmationDelivery)}
+                />
               )}
             </div>
 

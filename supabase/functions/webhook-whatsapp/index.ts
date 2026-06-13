@@ -17,6 +17,7 @@ import {
   type ChannelCredentials,
   type InboundMediaKind,
 } from "../_shared/whatsapp-providers.ts";
+import { parseStatusCallback, type StatusUpdate } from "../_shared/whatsapp-status.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
   genRequestId,
@@ -40,6 +41,47 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
+
+// Aplica callbacks de status em notifications_sent, correlacionando por
+// provider_message_id. MONOTÔNICO: só preenche um carimbo se ainda nulo, e
+// `read` garante `delivered` (não regride entregue→enviado). Best-effort:
+// linhas antigas sem provider_message_id simplesmente não casam.
+async function applyDeliveryStatus(updates: StatusUpdate[]): Promise<void> {
+  const nowIso = new Date().toISOString();
+  for (const u of updates) {
+    const id = u.providerMessageId;
+    try {
+      if (u.status === "delivered") {
+        await supabase
+          .from("notifications_sent")
+          .update({ delivered_at: nowIso })
+          .eq("provider_message_id", id)
+          .is("delivered_at", null);
+      } else if (u.status === "read") {
+        // read implica delivered — backfill do delivered_at se faltou o RECEIVED.
+        await supabase
+          .from("notifications_sent")
+          .update({ delivered_at: nowIso })
+          .eq("provider_message_id", id)
+          .is("delivered_at", null);
+        await supabase
+          .from("notifications_sent")
+          .update({ read_at: nowIso })
+          .eq("provider_message_id", id)
+          .is("read_at", null);
+      } else if (u.status === "failed") {
+        await supabase
+          .from("notifications_sent")
+          .update({ failed_at: nowIso, status: "failed" })
+          .eq("provider_message_id", id)
+          .is("failed_at", null);
+      }
+      // status "sent" não muda nada — já sabíamos do envio.
+    } catch (e) {
+      jsonLog("warn", { evt: "apply_delivery_status_failed", id, status: u.status, err: String(e) });
+    }
+  }
+}
 
 // Resolve a chave de API: BYOK por unidade no banco.
 // Sem fallback global da plataforma (removido em 2026-05-20). Razão: secrets
@@ -926,6 +968,20 @@ serve(async (req) => {
       jsonLog("warn", { requestId, evt: "webhook_invalid_json", channelId, err: String(e) });
       await finish("invalid_json", String(e));
       return new Response("invalid json", { status: 400 });
+    }
+
+    // Callback de STATUS (entregue/lido/falhou) das NOSSAS mensagens enviadas —
+    // NÃO é mensagem do cliente. Atualiza notifications_sent por
+    // provider_message_id e encerra: não roda agente, debounce nem lock de
+    // conversa (status ≠ inbound). Antes caía em `ignored_non_text` e sumia.
+    const statusUpdates = parseStatusCallback(provider, payload);
+    if (statusUpdates) {
+      await applyDeliveryStatus(statusUpdates);
+      await finish("status_callback", undefined, {
+        statuses: statusUpdates.map((u) => u.status),
+        ids: statusUpdates.map((u) => u.providerMessageId).slice(0, 5),
+      });
+      return new Response("ok");
     }
 
     // Parse inbound message using provider-specific adapter

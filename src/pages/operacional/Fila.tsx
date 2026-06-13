@@ -1,12 +1,21 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import {
   useWaitlist,
   useAddToWaitlist,
+  useUpdateWaitlistEntry,
   useUpdateWaitlistStatus,
   useNotifyWaitlist,
+  useResendWaitlistEntered,
   useRemoveFromWaitlist,
 } from "@/hooks/useWaitlist";
+import {
+  useWaitlistDeliveries,
+  deriveDeliveryState,
+  findDelivery,
+  deliveryTooltip,
+} from "@/hooks/useNotificationDeliveries";
+import { DeliveryBadge } from "@/components/notifications/DeliveryBadge";
 import {
   WAITLIST_TEMPLATES,
   renderWaitlistTemplate,
@@ -42,7 +51,7 @@ import type {
   WaitlistPriorityCategory,
   WaitlistStatus,
 } from "@/types/reserva";
-import { Accessibility, AlertCircle, Baby, Bell, Clock, Link2, Plus, Trash2, UserCircle2, Users } from "lucide-react";
+import { Accessibility, AlertCircle, Baby, Bell, Clock, Link2, Pencil, Plus, Send, Trash2, UserCircle2, Users } from "lucide-react";
 import { toast } from "sonner";
 
 const STATUS_CONFIG: Record<WaitlistStatus, { label: string; className: string }> = {
@@ -78,6 +87,8 @@ export default function Fila() {
   const unitId = unit?.unit_id ?? "";
 
   const [open, setOpen] = useState(false);
+  // null = modo "adicionar"; id = modo "editar" da entry correspondente.
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [partySize, setPartySize] = useState(2);
@@ -89,9 +100,15 @@ export default function Fila() {
   const { data: waitlist, isLoading, isError, refetch } = useWaitlist(unitId);
   const { data: templates } = useWaitlistTemplates(unitId);
   const addToWaitlist = useAddToWaitlist(unitId);
+  const updateEntry = useUpdateWaitlistEntry(unitId);
   const updateStatus = useUpdateWaitlistStatus(unitId);
   const notifyEntry = useNotifyWaitlist(unitId);
+  const resendEntered = useResendWaitlistEntered(unitId);
   const removeEntry = useRemoveFromWaitlist(unitId);
+
+  // Status de entrega das mensagens da fila (entrada + mesa pronta), por entry.
+  const waitlistIds = useMemo(() => waitlist?.map((e) => e.id) ?? [], [waitlist]);
+  const { data: deliveries } = useWaitlistDeliveries(unitId, waitlistIds);
 
   // updateStatus é compartilhado entre todas as entries — pra evitar double-click
   // sem desabilitar TODOS os botões da lista, checamos por id usando o `variables`
@@ -99,25 +116,75 @@ export default function Fila() {
   const isUpdatingEntry = (id: string) =>
     updateStatus.isPending && updateStatus.variables?.id === id;
 
-  const reset = () => { setName(""); setPhone(""); setPartySize(2); setRequestedTime(""); setNotes(""); };
+  const reset = () => {
+    setEditingId(null);
+    setName(""); setPhone(""); setPartySize(2); setRequestedTime(""); setNotes("");
+  };
 
-  const handleAdd = () => {
+  const openAdd = () => { reset(); setOpen(true); };
+
+  const openEdit = (entry: WaitlistEntry) => {
+    setEditingId(entry.id);
+    setName(entry.customer_name);
+    setPhone(entry.customer_phone ?? "");
+    setPartySize(entry.party_size);
+    // requested_for_time vem como "HH:MM:SS" do Postgres; <input type="time"> quer "HH:MM".
+    setRequestedTime(entry.requested_for_time ? entry.requested_for_time.slice(0, 5) : "");
+    setNotes(entry.notes ?? "");
+    setOpen(true);
+  };
+
+  const handleSubmit = () => {
     if (!name.trim()) { toast.error("Informe o nome do cliente."); return; }
     const phoneDigits = phone.replace(/\D/g, "");
     if (phoneDigits && phoneDigits.length < 10) {
       toast.error("Telefone inválido. Informe DDD + número (ex: 11999998888).");
       return;
     }
-    addToWaitlist.mutate(
-      {
-        customer_name: name.trim(),
-        customer_phone: phoneDigits || null,
-        party_size: partySize,
-        requested_for_time: requestedTime || null,
-        notes: notes.trim() || null,
-      },
-      { onSuccess: () => { setOpen(false); reset(); } }
-    );
+    const onSuccess = () => { setOpen(false); reset(); };
+    if (editingId) {
+      updateEntry.mutate(
+        {
+          id: editingId,
+          customer_name: name.trim(),
+          customer_phone: phoneDigits || null,
+          party_size: partySize,
+          requested_for_time: requestedTime || null,
+          notes: notes.trim() || null,
+        },
+        { onSuccess },
+      );
+    } else {
+      addToWaitlist.mutate(
+        {
+          customer_name: name.trim(),
+          customer_phone: phoneDigits || null,
+          party_size: partySize,
+          requested_for_time: requestedTime || null,
+          notes: notes.trim() || null,
+        },
+        { onSuccess },
+      );
+    }
+  };
+
+  // Monta a mensagem de um evento de fila (template customizado ou default).
+  // Paridade com as edge functions: `.trim()` + mesmos fallbacks.
+  const buildWaitlistMessage = (
+    entry: WaitlistEntry,
+    event: "entered" | "table_ready",
+  ) => {
+    const tpl = templates?.find((t) => t.event === event);
+    const defaultBody =
+      WAITLIST_TEMPLATES.find((t) => t.event === event)?.defaultBody ?? "";
+    const body = tpl?.customized && tpl.body && tpl.body.trim() ? tpl.body : defaultBody;
+    return renderWaitlistTemplate(body, {
+      cliente_nome: entry.customer_name,
+      unidade_nome: unit?.unit_name || "nosso restaurante",
+      party_size: entry.party_size,
+      codigo_fila: entry.code,
+      link_status: `${window.location.origin}/acompanhar/${entry.id}`,
+    });
   };
 
   const handleNotify = (entry: WaitlistEntry) => {
@@ -127,22 +194,7 @@ export default function Fila() {
     }
     if (notifyingIds.has(entry.id)) return; // evita double-click na mesma entry
 
-    // Usa o template `table_ready` customizado, se houver. Senão, padrão.
-    // `.trim()` garante paridade com o que as edge functions fazem.
-    const tpl = templates?.find((t) => t.event === "table_ready");
-    const defaultBody =
-      WAITLIST_TEMPLATES.find((t) => t.event === "table_ready")?.defaultBody ?? "";
-    const body = tpl?.customized && tpl.body && tpl.body.trim() ? tpl.body : defaultBody;
-
-    const message = renderWaitlistTemplate(body, {
-      cliente_nome: entry.customer_name,
-      // Fallback consistente com edge functions (evita "sua mesa em  está pronta").
-      unidade_nome: unit?.unit_name || "nosso restaurante",
-      party_size: entry.party_size,
-      codigo_fila: entry.code,
-      // Link de acompanhamento dedicado (página /acompanhar/:token = id da entry).
-      link_status: `${window.location.origin}/acompanhar/${entry.id}`,
-    });
+    const message = buildWaitlistMessage(entry, "table_ready");
 
     setNotifyingIds((prev) => {
       const next = new Set(prev);
@@ -171,6 +223,20 @@ export default function Fila() {
       .catch(() => toast.error("Não foi possível copiar o link."));
   };
 
+  // Reenvia o aviso de ENTRADA (quando não entregou ou após corrigir o número).
+  const handleResendEntered = (entry: WaitlistEntry) => {
+    if (!entry.customer_phone) {
+      toast.error("Este cliente não tem WhatsApp cadastrado.");
+      return;
+    }
+    if (resendEntered.isPending && resendEntered.variables?.id === entry.id) return;
+    resendEntered.mutate({
+      id: entry.id,
+      phone: entry.customer_phone,
+      message: buildWaitlistMessage(entry, "entered"),
+    });
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -183,7 +249,7 @@ export default function Fila() {
             </Badge>
           )}
         </div>
-        <Button size="sm" onClick={() => setOpen(true)}>
+        <Button size="sm" onClick={openAdd}>
           <Plus className="h-4 w-4 mr-1" /> Adicionar
         </Button>
       </div>
@@ -219,6 +285,18 @@ export default function Fila() {
                 ? PRIORITY_CONFIG[entry.priority_category]
                 : null;
             const PriorityIcon = priorityCfg?.icon;
+            const hasPhone = !!entry.customer_phone;
+            const entryDeliveries = deliveries?.[entry.id];
+            const enteredRow = findDelivery(entryDeliveries, "waitlist_entered");
+            const enteredState = deriveDeliveryState(enteredRow, hasPhone);
+            const tableReadyRow = findDelivery(entryDeliveries, "waitlist_table_ready");
+            const tableReadyState = deriveDeliveryState(tableReadyRow, hasPhone);
+            // Só oferece reenvio quando houve tentativa que não confirmou entrega
+            // (não confunde com unidade que desligou o aviso de entrada).
+            const enteredNeedsResend =
+              !!enteredRow && (enteredState === "undelivered" || enteredState === "failed");
+            const isResending =
+              resendEntered.isPending && resendEntered.variables?.id === entry.id;
             return (
               <Card key={entry.id}>
                 <CardContent className="py-3 flex items-start gap-4 flex-wrap">
@@ -248,6 +326,20 @@ export default function Fila() {
                           {priorityCfg.label}
                         </Badge>
                       )}
+                      {(enteredRow || !hasPhone) && (
+                        <DeliveryBadge
+                          prefix="Entrada"
+                          state={enteredState}
+                          title={deliveryTooltip(enteredRow)}
+                        />
+                      )}
+                      {entry.status === "notified" && tableReadyRow && (
+                        <DeliveryBadge
+                          prefix="Mesa"
+                          state={tableReadyState}
+                          title={deliveryTooltip(tableReadyRow)}
+                        />
+                      )}
                     </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
                       <span className="flex items-center gap-1">
@@ -274,26 +366,39 @@ export default function Fila() {
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    {(entry.status === "waiting" || entry.status === "notified") && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1"
+                        onClick={() => handleNotify(entry)}
+                        disabled={!entry.customer_phone || notifyingIds.has(entry.id)}
+                      >
+                        <Bell className="h-3 w-3" />
+                        {entry.status === "notified" ? "Renotificar" : "Notificar"}
+                      </Button>
+                    )}
+                    {enteredNeedsResend && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1"
+                        onClick={() => handleResendEntered(entry)}
+                        disabled={isResending}
+                        title="Reenviar a mensagem de entrada na fila"
+                      >
+                        <Send className="h-3 w-3" />
+                        Reenviar entrada
+                      </Button>
+                    )}
                     {entry.status === "waiting" && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="gap-1"
-                          onClick={() => handleNotify(entry)}
-                          disabled={!entry.customer_phone || notifyingIds.has(entry.id)}
-                        >
-                          <Bell className="h-3 w-3" />
-                          Notificar
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={() => updateStatus.mutate({ id: entry.id, status: "seated" })}
-                          disabled={isUpdatingEntry(entry.id)}
-                        >
-                          Sentar
-                        </Button>
-                      </>
+                      <Button
+                        size="sm"
+                        onClick={() => updateStatus.mutate({ id: entry.id, status: "seated" })}
+                        disabled={isUpdatingEntry(entry.id)}
+                      >
+                        Sentar
+                      </Button>
                     )}
                     {entry.status === "notified" && (
                       <Button
@@ -304,6 +409,16 @@ export default function Fila() {
                         Confirmar entrada
                       </Button>
                     )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1"
+                      onClick={() => openEdit(entry)}
+                      title="Editar dados do cliente"
+                    >
+                      <Pencil className="h-3 w-3" />
+                      <span className="hidden sm:inline">Editar</span>
+                    </Button>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -349,7 +464,9 @@ export default function Fila() {
 
       <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Adicionar à fila</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>{editingId ? "Editar cliente" : "Adicionar à fila"}</DialogTitle>
+          </DialogHeader>
           <div className="space-y-4 mt-2">
             <div className="space-y-1">
               <Label>Nome do cliente *</Label>
@@ -379,8 +496,12 @@ export default function Fila() {
               <Label>Observações (opcional)</Label>
               <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Ex: aniversário, alergia..." />
             </div>
-            <Button onClick={handleAdd} disabled={addToWaitlist.isPending} className="w-full">
-              Adicionar à fila
+            <Button
+              onClick={handleSubmit}
+              disabled={editingId ? updateEntry.isPending : addToWaitlist.isPending}
+              className="w-full"
+            >
+              {editingId ? "Salvar alterações" : "Adicionar à fila"}
             </Button>
           </div>
         </DialogContent>

@@ -55,6 +55,30 @@ export interface SendResult {
   error?: string;
   bodySnippet?: string;
   missingCreds?: string[];
+  // ID da mensagem devolvido pelo provedor no sucesso. Persistido em
+  // notifications_sent.provider_message_id pra correlacionar o callback de
+  // status (entregue/lido). Pode faltar se o provedor não devolver / body não
+  // parsear — nesse caso a entrega fica não-rastreável (degrada pra só "enviado").
+  providerMessageId?: string;
+}
+
+// Extrai o id da mensagem da resposta do provedor de forma tolerante. Nunca
+// lança — captura é best-effort (sucesso do envio não depende disso).
+// deno-lint-ignore no-explicit-any
+function pickMessageId(body: any): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const candidates = [
+    body.messageId,
+    body.id,
+    body.zaapId,
+    body.messages?.[0]?.id, // Meta Cloud API
+    body.key?.id, // WAHA (Baileys-style)
+    body._data?.id?._serialized,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  return undefined;
 }
 
 // ─── Inbound parsing ──────────────────────────────────────────────────────────
@@ -311,7 +335,10 @@ async function sendZApi(creds: ChannelCredentials, msg: OutboundMessage): Promis
     },
     { retries: 3, baseDelayMs: 500 }
   );
-  if (res.ok) return { ok: true, status: res.status };
+  if (res.ok) {
+    const body = await res.json().catch(() => null);
+    return { ok: true, status: res.status, providerMessageId: pickMessageId(body) };
+  }
   const bodySnippet = (await res.text().catch(() => "")).slice(0, 200);
   jsonLog("error", { evt: "send_zapi_failed", status: res.status, bodySnippet, phone: sanitizePhone(msg.toPhone) });
   return { ok: false, status: res.status, bodySnippet, error: `zapi_http_${res.status}` };
@@ -337,7 +364,10 @@ async function sendWaha(creds: ChannelCredentials, msg: OutboundMessage): Promis
     },
     { retries: 3, baseDelayMs: 500 }
   );
-  if (res.ok) return { ok: true, status: res.status };
+  if (res.ok) {
+    const body = await res.json().catch(() => null);
+    return { ok: true, status: res.status, providerMessageId: pickMessageId(body) };
+  }
   const bodySnippet = (await res.text().catch(() => "")).slice(0, 200);
   jsonLog("error", { evt: "send_waha_failed", status: res.status, bodySnippet, phone: sanitizePhone(msg.toPhone) });
   return { ok: false, status: res.status, bodySnippet, error: `waha_http_${res.status}` };
@@ -366,7 +396,10 @@ async function sendOfficial(creds: ChannelCredentials, msg: OutboundMessage): Pr
     },
     { retries: 3, baseDelayMs: 500 }
   );
-  if (res.ok) return { ok: true, status: res.status };
+  if (res.ok) {
+    const body = await res.json().catch(() => null);
+    return { ok: true, status: res.status, providerMessageId: pickMessageId(body) };
+  }
   const bodySnippet = (await res.text().catch(() => "")).slice(0, 200);
   jsonLog("error", { evt: "send_official_failed", status: res.status, bodySnippet, phone: sanitizePhone(msg.toPhone) });
   return { ok: false, status: res.status, bodySnippet, error: `official_http_${res.status}` };

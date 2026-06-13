@@ -1,6 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useReservas } from "@/hooks/useReservas";
+import {
+  useReservationDeliveries,
+  findDelivery,
+} from "@/hooks/useNotificationDeliveries";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
 import { ManualReservaDialog } from "@/components/reserva/ManualReservaDialog";
 import { Button } from "@/components/ui/button";
@@ -21,6 +25,10 @@ export default function ReservasDia() {
 
   const pending = reservas?.filter((r) => r.status === "pending") ?? [];
   const confirmed = reservas?.filter((r) => r.status === "confirmed") ?? [];
+
+  // Status de entrega da confirmação (kind `confirmation`), por reserva.
+  const reservaIds = useMemo(() => reservas?.map((r) => r.id) ?? [], [reservas]);
+  const { data: deliveries } = useReservationDeliveries(unitId, reservaIds);
   const cancelled = reservas?.filter((r) => r.status === "cancelled").length ?? 0;
   const noShow = reservas?.filter((r) => r.status === "no_show").length ?? 0;
   // Considera "vazio" quando não há nada acionável pra hoje (canceladas/no_show
@@ -89,7 +97,13 @@ export default function ReservasDia() {
                 Aguardando confirmação ({pending.length})
               </p>
               {pending.map((r) => (
-                <ReservaCard key={r.id} reserva={r} showActions unitId={unitId} />
+                <ReservaCard
+                  key={r.id}
+                  reserva={r}
+                  showActions
+                  unitId={unitId}
+                  confirmationDelivery={findDelivery(deliveries?.[r.id], "confirmation")}
+                />
               ))}
             </div>
           )}
@@ -99,7 +113,13 @@ export default function ReservasDia() {
                 Confirmadas ({confirmed.length})
               </p>
               {confirmed.map((r) => (
-                <ReservaCard key={r.id} reserva={r} showActions unitId={unitId} />
+                <ReservaCard
+                  key={r.id}
+                  reserva={r}
+                  showActions
+                  unitId={unitId}
+                  confirmationDelivery={findDelivery(deliveries?.[r.id], "confirmation")}
+                />
               ))}
             </div>
           )}

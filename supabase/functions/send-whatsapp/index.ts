@@ -103,24 +103,55 @@ async function recordNotification(
   error: string | null,
   reservationId: string | null,
   waitlistId: string | null,
+  providerMessageId: string | null,
 ) {
-  try {
-    await supabaseAdmin.from("notifications_sent").insert({
-      unit_id: unitId,
-      kind,
-      status,
-      error,
-      reservation_id: reservationId,
-      waitlist_id: waitlistId,
-    });
-  } catch (err) {
-    jsonLog("warn", {
-      evt: "record_notification_failed",
-      unit_id: unitId,
-      kind,
-      err: String(err),
-    });
+  const sentAt = new Date().toISOString();
+  // provider_message_id correlaciona o callback de status (entregue/lido).
+  // delivered_at/read_at/failed_at começam null e são preenchidos pelo webhook.
+  const { error: insErr } = await supabaseAdmin.from("notifications_sent").insert({
+    unit_id: unitId,
+    kind,
+    status,
+    error,
+    reservation_id: reservationId,
+    waitlist_id: waitlistId,
+    provider_message_id: providerMessageId,
+    sent_at: sentAt,
+  });
+  if (!insErr) return;
+
+  // 23505 = a linha já existe (UNIQUE (reservation_id,kind) OU parcial
+  // (waitlist_id,kind)). É um REENVIO: atualiza o registro com o novo messageId
+  // e RESETA o rastreio de entrega, pra a UI voltar a "enviado" e reconfirmar
+  // entrega quando o novo callback chegar. (PostgREST não faz upsert em índice
+  // parcial → insert-then-update manual, service_role.)
+  if ((insErr as { code?: string }).code === "23505") {
+    let q = supabaseAdmin
+      .from("notifications_sent")
+      .update({
+        status,
+        error,
+        provider_message_id: providerMessageId,
+        sent_at: sentAt,
+        delivered_at: null,
+        read_at: null,
+        failed_at: null,
+      })
+      .eq("kind", kind);
+    if (waitlistId) q = q.eq("waitlist_id", waitlistId);
+    else if (reservationId) q = q.eq("reservation_id", reservationId);
+    else {
+      jsonLog("warn", { evt: "record_notification_conflict_no_key", unit_id: unitId, kind });
+      return;
+    }
+    const { error: updErr } = await q;
+    if (updErr) {
+      jsonLog("warn", { evt: "record_notification_update_failed", unit_id: unitId, kind, err: updErr.message });
+    }
+    return;
   }
+
+  jsonLog("warn", { evt: "record_notification_failed", unit_id: unitId, kind, err: insErr.message });
 }
 
 serve(async (req) => {
@@ -187,6 +218,7 @@ serve(async (req) => {
         result.ok ? null : result.error ?? "unknown_error",
         reservation_id ?? null,
         waitlist_id ?? null,
+        result.providerMessageId ?? null,
       );
     }
 
@@ -248,6 +280,7 @@ serve(async (req) => {
         String(err).slice(0, 200),
         reservation_id ?? null,
         waitlist_id ?? null,
+        null,
       );
     }
     return new Response(JSON.stringify({ error: "internal_error" }), {

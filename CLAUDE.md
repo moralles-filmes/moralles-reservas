@@ -350,8 +350,10 @@ Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admi
 
 ## Observabilidade WhatsApp
 
-- **`webhook_executions`** FORCE RLS, TTL 30d. Outcomes: `success`, `agent_error`, `send_error`, `duplicate`, `media_response`, `debounced_superseded`, `conversation_locked`, `status_changed_locked`, `org_billing_blocked`, etc.
-- **`SendResult` estruturado:** `{ ok, status, error, bodySnippet, missingCreds }`.
+- **`webhook_executions`** FORCE RLS, TTL 30d. Outcomes: `success`, `agent_error`, `send_error`, `duplicate`, `media_response`, `debounced_superseded`, `conversation_locked`, `status_changed_locked`, `org_billing_blocked`, `status_callback`, etc.
+- **`SendResult` estruturado:** `{ ok, status, error, bodySnippet, missingCreds, providerMessageId }`.
+- **Entrega ≠ envio. `notifications_sent.status='sent'` só diz "o provedor aceitou (2xx)".** Entrega real vem do callback de status: `send-*` capturam `providerMessageId` no envio (gravado em `notifications_sent.provider_message_id`), e o webhook detecta o callback via [_shared/whatsapp-status.ts](supabase/functions/_shared/whatsapp-status.ts) (`parseStatusCallback`) ANTES do `parseInbound`, correlaciona por `provider_message_id` e preenche `delivered_at`/`read_at`/`failed_at` (monotônico, `read` garante `delivered`). Outcome `status_callback`. Requer o "webhook de status da mensagem" ligado no painel do provedor (Z-API). Frontend lê via `useNotificationDeliveries` + `DeliveryBadge`.
+- **`recordNotification` (send-whatsapp E send-confirmation) é UPSERT: 23505 → UPDATE** com novo `provider_message_id` + reset `delivered_at/read_at/failed_at`. Reenvio re-rastreia; e o caso "1ª tentativa falhou, retry deu certo" deixa de travar a linha em `failed`. Writer novo de `notifications_sent` que reenvie DEVE seguir esse padrão.
 - **Envio de WhatsApp NÃO tem fallback global — unit sem canal `connected` retorna `{ ok:false, error:"whatsapp_not_configured" }`.** `sendWhatsApp` resolve só `whatsapp_channels` da unit; mandar pelo número de outra conta vazaria cross-tenant. Caller trata o erro (UI traduz via `friendlyWhatsAppError`); reintroduzir env `ZAPI_*` global é regressão. [_shared/whatsapp-send.ts](supabase/functions/_shared/whatsapp-send.ts).
 - **Diagnóstico** em `/platform/automacao/<slug>` aba "Diagnóstico" via `whatsapp-health`.
 
@@ -378,5 +380,6 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
 - **`whatsapp-send.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
 - **`whatsapp-providers.ts`** → `webhook-whatsapp`, `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
+- **`whatsapp-status.ts`** → `webhook-whatsapp`
 
 Worker/EF novo que importe um helper aqui = atualizar este checklist no mesmo PR.

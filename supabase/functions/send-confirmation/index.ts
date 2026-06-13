@@ -188,15 +188,49 @@ async function recordNotification(
   unitId: string,
   kind: string,
   status: "sent" | "failed",
-  error?: string
+  error?: string,
+  providerMessageId?: string | null,
 ) {
+  const sentAt = new Date().toISOString();
+  // provider_message_id correlaciona o callback de status (entregue/lido).
   const { error: insertErr } = await supabase
     .from("notifications_sent")
-    .insert({ reservation_id: reservationId, unit_id: unitId, kind, status, error: error ?? null });
-  // unique(reservation_id, kind) pode disparar em retries do Database Webhook — ignorar
-  if (insertErr && !String(insertErr.message).includes("duplicate")) {
-    jsonLog("warn", { evt: "notifications_sent_insert_failed", kind, err: insertErr.message });
+    .insert({
+      reservation_id: reservationId,
+      unit_id: unitId,
+      kind,
+      status,
+      error: error ?? null,
+      provider_message_id: providerMessageId ?? null,
+      sent_at: sentAt,
+    });
+  if (!insertErr) return;
+
+  // 23505 = unique(reservation_id, kind). Acontece em retry do Database Webhook:
+  // se a 1ª tentativa gravou 'failed' e a atual deu certo, ANTES a linha ficava
+  // travada em 'failed'. Agora ATUALIZA (e reseta o rastreio de entrega pro novo
+  // messageId).
+  if ((insertErr as { code?: string }).code === "23505") {
+    const { error: updErr } = await supabase
+      .from("notifications_sent")
+      .update({
+        status,
+        error: error ?? null,
+        provider_message_id: providerMessageId ?? null,
+        sent_at: sentAt,
+        delivered_at: null,
+        read_at: null,
+        failed_at: null,
+      })
+      .eq("reservation_id", reservationId)
+      .eq("kind", kind);
+    if (updErr) {
+      jsonLog("warn", { evt: "notifications_sent_update_failed", kind, err: updErr.message });
+    }
+    return;
   }
+
+  jsonLog("warn", { evt: "notifications_sent_insert_failed", kind, err: insertErr.message });
 }
 
 serve(async (req) => {
@@ -335,8 +369,9 @@ serve(async (req) => {
             ok: res.ok,
             skipped: false as const,
             error: res.ok ? undefined : (res.error ?? `status_${res.status ?? "unknown"}`),
+            providerMessageId: res.providerMessageId,
           }),
-          (err) => ({ kind: "whatsapp" as const, ok: false, skipped: false as const, error: String(err) })
+          (err) => ({ kind: "whatsapp" as const, ok: false, skipped: false as const, error: String(err), providerMessageId: undefined })
         )
       : Promise.resolve({ kind: "whatsapp" as const, ok: false, skipped: true as const, reason: "no_channel" });
 
@@ -360,7 +395,14 @@ serve(async (req) => {
       });
     } else if (whatsappResult.ok) {
       jsonLog("info", { evt: "confirmation_whatsapp", status: "sent", reservation_id: record.id });
-      await recordNotification(record.id, unit_id, "confirmation", "sent");
+      await recordNotification(
+        record.id,
+        unit_id,
+        "confirmation",
+        "sent",
+        undefined,
+        (whatsappResult as { providerMessageId?: string }).providerMessageId ?? null,
+      );
       if (unit_id) {
         await appendOutboundToConversation({
           supabase,

@@ -29,6 +29,32 @@ function friendlyWhatsAppError(code?: string | null): string {
   return "Falha ao enviar WhatsApp.";
 }
 
+/**
+ * Invoca a Edge Function send-whatsapp e converte erro non-2xx (mascarado pelo
+ * supabase-js num FunctionsHttpError) numa mensagem acionável. Compartilhado
+ * pelos hooks de notificação/reenvio. Lança em falha; resolve em sucesso.
+ */
+async function invokeSendWhatsApp(body: {
+  phone: string;
+  message: string;
+  unit_id: string;
+  kind: string;
+  waitlist_id?: string;
+}): Promise<void> {
+  const { data, error: funcErr } = await supabase.functions.invoke("send-whatsapp", { body });
+  if (funcErr) {
+    if (funcErr instanceof FunctionsHttpError) {
+      const b = (await funcErr.context.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(friendlyWhatsAppError(b?.error));
+    }
+    throw funcErr;
+  }
+  const result = data as { success?: boolean; error?: string } | null;
+  if (result && result.success === false) {
+    throw new Error(friendlyWhatsAppError(result.error));
+  }
+}
+
 // Pausa polling quando a aba está em background — tablets de salão deixam o
 // painel aberto o dia inteiro; 30s × 8h = 960 requisições/dia ociosas.
 const pollWhenVisible = () =>
@@ -137,6 +163,33 @@ export function useAddToWaitlist(unitId: string) {
   });
 }
 
+export function useUpdateWaitlistEntry(unitId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      id: string;
+      customer_name: string;
+      customer_phone: string | null;
+      party_size: number;
+      requested_for_time: string | null;
+      notes: string | null;
+    }) => {
+      // UPDATE direto na linha denormalizada da waitlist (mesmo padrão de
+      // useUpdateWaitlistStatus). NÃO toca em `customers`: a notificação lê de
+      // `waitlist.customer_phone`, e mexer em `customers` arriscaria o dedupe
+      // UNIQUE (organization_id, phone).
+      const { id, ...updates } = payload;
+      const { error } = await supabase.from("waitlist").update(updates).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] });
+      toast.success("Dados do cliente atualizados.");
+    },
+    onError: () => toast.error("Erro ao atualizar os dados."),
+  });
+}
+
 export function useUpdateWaitlistStatus(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -211,6 +264,7 @@ export function useNotifyWaitlist(unitId: string) {
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["notification-deliveries"] });
       if (result.statusUpdated) {
         toast.success("Notificação enviada via WhatsApp.");
       } else {
@@ -218,6 +272,31 @@ export function useNotifyWaitlist(unitId: string) {
       }
     },
     onError: (err: Error) => toast.error(err.message ?? "Erro ao notificar."),
+  });
+}
+
+/**
+ * Reenvia a mensagem de ENTRADA na fila (kind `waitlist_entered`) — usado quando
+ * o operador corrige o telefone ou a entrega não foi confirmada. NÃO muda o
+ * status da entry (≠ useNotifyWaitlist, que é o aviso "mesa pronta" e marca
+ * `notified`). O UPSERT em send-whatsapp re-rastreia a entrega do novo envio.
+ */
+export function useResendWaitlistEntered(unitId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, { id: string; phone: string; message: string }>({
+    mutationFn: ({ id, phone, message }) =>
+      invokeSendWhatsApp({
+        phone,
+        message,
+        unit_id: unitId,
+        kind: "waitlist_entered",
+        waitlist_id: id,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["notification-deliveries"] });
+      toast.success("Aviso de entrada reenviado.");
+    },
+    onError: (err: Error) => toast.error(err.message ?? "Erro ao reenviar."),
   });
 }
 
