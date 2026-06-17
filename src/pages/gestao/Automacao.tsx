@@ -48,6 +48,7 @@ import {
   Info,
   KeyRound,
   MessageSquare,
+  Pencil,
   Phone,
   Plus,
   RefreshCw,
@@ -59,8 +60,10 @@ import {
 import {
   useWhatsAppChannels,
   useCreateChannel,
+  useUpdateChannel,
   useDeleteChannel,
   useTestChannel,
+  type ChannelCredentials,
 } from "@/hooks/useWhatsAppChannels";
 import {
   useAiProviderKeys,
@@ -231,6 +234,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
   const deleteChannel = useDeleteChannel(unitId);
   const testChannel = useTestChannel(unitId);
   const [addOpen, setAddOpen] = useState(false);
+  const [editChannel, setEditChannel] = useState<WhatsAppChannel | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleCopy = async (channelId: string, url: string) => {
@@ -291,6 +295,14 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                       >
                         <RefreshCw className="h-3 w-3 mr-1" />
                         Testar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setEditChannel(ch)}
+                      >
+                        <Pencil className="h-3 w-3 mr-1" />
+                        Editar
                       </Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -366,7 +378,163 @@ function ChannelsTab({ unitId }: { unitId: string }) {
       )}
 
       <AddChannelDialog unitId={unitId} open={addOpen} onClose={() => setAddOpen(false)} />
+      <EditChannelDialog
+        unitId={unitId}
+        channel={editChannel}
+        onClose={() => setEditChannel(null)}
+      />
     </div>
+  );
+}
+
+function EditChannelDialog({
+  unitId,
+  channel,
+  onClose,
+}: {
+  unitId: string;
+  channel: WhatsAppChannel | null;
+  onClose: () => void;
+}) {
+  const updateChannel = useUpdateChannel(unitId);
+  const provider = channel?.provider;
+
+  // Z-API fields
+  const [instanceId, setInstanceId] = useState("");
+  const [token, setToken] = useState("");
+  const [clientToken, setClientToken] = useState("");
+
+  // WAHA fields
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [sessionName, setSessionName] = useState("");
+
+  // Official fields
+  const [phoneNumberId, setPhoneNumberId] = useState("");
+  const [businessAccountId, setBusinessAccountId] = useState("");
+  const [accessToken, setAccessToken] = useState("");
+  const [appSecret, setAppSecret] = useState("");
+
+  const reset = () => {
+    setInstanceId(""); setToken(""); setClientToken("");
+    setBaseUrl(""); setApiKey(""); setSessionName("");
+    setPhoneNumberId(""); setBusinessAccountId(""); setAccessToken(""); setAppSecret("");
+  };
+
+  // Só envia campos preenchidos — o backend faz merge e mantém o resto.
+  const getCredentials = (): ChannelCredentials => {
+    const c: ChannelCredentials = {};
+    if (provider === "zapi") {
+      if (instanceId.trim()) c.instance_id = instanceId.trim();
+      if (token.trim()) c.token = token.trim();
+      if (clientToken.trim()) c.client_token = clientToken.trim();
+    } else if (provider === "waha") {
+      if (baseUrl.trim()) c.base_url = baseUrl.trim();
+      if (apiKey.trim()) c.api_key = apiKey.trim();
+      if (sessionName.trim()) c.session_name = sessionName.trim();
+    } else if (provider === "official") {
+      if (phoneNumberId.trim()) c.phone_number_id = phoneNumberId.trim();
+      if (businessAccountId.trim()) c.business_account_id = businessAccountId.trim();
+      if (accessToken.trim()) c.access_token = accessToken.trim();
+      if (appSecret.trim()) c.app_secret = appSecret.trim();
+    }
+    return c;
+  };
+
+  const handleSave = () => {
+    if (!channel) return;
+    const credentials = getCredentials();
+    if (Object.keys(credentials).length === 0) {
+      toast.error("Preencha ao menos um campo para atualizar.");
+      return;
+    }
+    updateChannel.mutate(
+      { channelId: channel.id, credentials },
+      {
+        onSuccess: () => { onClose(); reset(); },
+        onError: (err: Error) => toast.error(err.message || "Erro ao atualizar credenciais."),
+      }
+    );
+  };
+
+  return (
+    <Dialog open={!!channel} onOpenChange={(o) => { if (!o) { onClose(); reset(); } }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            Editar credenciais{provider ? ` — ${PROVIDER_LABELS[provider]}` : ""}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 mt-2">
+          <div className="rounded-lg border border-dashed p-3 bg-muted/30 text-xs text-muted-foreground space-y-1">
+            <p>
+              Deixe em branco o que quer manter — só os campos preenchidos são
+              atualizados. O webhook não muda, então <span className="font-medium text-foreground">não precisa reconfigurar no provedor</span>.
+            </p>
+            <p>Depois de salvar, clique em "Testar" no card para validar a conexão.</p>
+          </div>
+
+          {provider === "zapi" && (
+            <>
+              <div className="space-y-1">
+                <Label>Instance ID</Label>
+                <Input value={instanceId} onChange={(e) => setInstanceId(e.target.value)} placeholder="Manter atual" />
+              </div>
+              <div className="space-y-1">
+                <Label>Token</Label>
+                <Input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Manter atual" />
+              </div>
+              <div className="space-y-1">
+                <Label>Client Token</Label>
+                <Input type="password" autoComplete="off" value={clientToken} onChange={(e) => setClientToken(e.target.value)} placeholder="Novo client token" />
+              </div>
+            </>
+          )}
+
+          {provider === "waha" && (
+            <>
+              <div className="space-y-1">
+                <Label>URL base</Label>
+                <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="Manter atual" />
+              </div>
+              <div className="space-y-1">
+                <Label>API Key</Label>
+                <Input type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Manter atual" />
+              </div>
+              <div className="space-y-1">
+                <Label>Session name</Label>
+                <Input value={sessionName} onChange={(e) => setSessionName(e.target.value)} placeholder="Manter atual" />
+              </div>
+            </>
+          )}
+
+          {provider === "official" && (
+            <>
+              <div className="space-y-1">
+                <Label>Phone Number ID</Label>
+                <Input value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)} placeholder="Manter atual" />
+              </div>
+              <div className="space-y-1">
+                <Label>Business Account ID</Label>
+                <Input value={businessAccountId} onChange={(e) => setBusinessAccountId(e.target.value)} placeholder="Manter atual" />
+              </div>
+              <div className="space-y-1">
+                <Label>Access Token</Label>
+                <Input type="password" autoComplete="off" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} placeholder="Manter atual" />
+              </div>
+              <div className="space-y-1">
+                <Label>App Secret</Label>
+                <Input type="password" autoComplete="off" value={appSecret} onChange={(e) => setAppSecret(e.target.value)} placeholder="Manter atual" />
+              </div>
+            </>
+          )}
+
+          <Button onClick={handleSave} disabled={updateChannel.isPending} className="w-full">
+            {updateChannel.isPending ? "Salvando…" : "Salvar alterações"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

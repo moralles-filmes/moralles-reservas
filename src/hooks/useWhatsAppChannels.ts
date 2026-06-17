@@ -19,7 +19,7 @@ export function useWhatsAppChannels(unitId: string) {
   });
 }
 
-interface ChannelCredentials {
+export interface ChannelCredentials {
   // Z-API
   instance_id?: string;
   token?: string;
@@ -68,6 +68,31 @@ export function useCreateChannel(unitId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
       toast.success("Canal criado. Configure o webhook no painel do provedor.");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+}
+
+export function useUpdateChannel(unitId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      channelId,
+      credentials,
+    }: {
+      channelId: string;
+      credentials: ChannelCredentials;
+    }) => {
+      return invokeManageChannels({
+        action: "update",
+        unit_id: unitId,
+        channel_id: channelId,
+        credentials,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
+      toast.success("Credenciais atualizadas.");
     },
     onError: (err: Error) => toast.error(err.message),
   });

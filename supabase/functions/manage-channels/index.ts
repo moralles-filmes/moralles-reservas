@@ -111,6 +111,65 @@ serve(async (req) => {
       return jsonResponse(req, { success: true, channel, webhookUrl, webhookSecret });
     }
 
+    // ── update ─────────────────────────────────────────────────────────────────
+    // Atualiza credenciais de um canal existente SEM recriar — channel_id e
+    // webhook_secret são preservados, então o webhook configurado no provedor
+    // continua válido. Merge: só sobrescreve as chaves enviadas com valor
+    // não-vazio (campo em branco mantém o atual). Caso de uso: rotacionar só o
+    // Client Token do Z-API sem reenviar instance_id/token.
+    if (action === "update") {
+      const channelId = String(body.channel_id ?? "");
+      if (!channelId) return jsonResponse(req, { error: "channel_id é obrigatório." }, 400);
+
+      const incoming: Record<string, unknown> = body.credentials ?? {};
+
+      const { data: existing, error: fetchErr } = await supabase
+        .from("whatsapp_channels")
+        .select("credentials")
+        .eq("id", channelId)
+        .eq("unit_id", unitId)
+        .maybeSingle();
+
+      if (fetchErr) {
+        console.error("manage-channels:update fetch", fetchErr);
+        return jsonResponse(req, { error: "Falha ao carregar canal." }, 500);
+      }
+      if (!existing) return jsonResponse(req, { error: "Canal não encontrado." }, 404);
+
+      // Whitelist de chaves conhecidas — evita injeção de campos arbitrários no JSONB.
+      const ALLOWED_CRED_KEYS = [
+        "instance_id", "token", "client_token",                                  // Z-API
+        "base_url", "api_key", "session_name",                                   // WAHA
+        "phone_number_id", "business_account_id", "access_token", "app_secret",  // Official
+      ];
+
+      const merged: Record<string, unknown> = { ...((existing.credentials as Record<string, unknown>) ?? {}) };
+      let changed = 0;
+      for (const key of ALLOWED_CRED_KEYS) {
+        const v = incoming[key];
+        if (typeof v === "string" && v.trim() !== "") {
+          merged[key] = v.trim();
+          changed++;
+        }
+      }
+
+      if (changed === 0) {
+        return jsonResponse(req, { error: "Nenhuma credencial para atualizar." }, 400);
+      }
+
+      const { error: updateErr } = await supabase
+        .from("whatsapp_channels")
+        .update({ credentials: merged, updated_at: new Date().toISOString() })
+        .eq("id", channelId)
+        .eq("unit_id", unitId);
+
+      if (updateErr) {
+        console.error("manage-channels:update", updateErr);
+        return jsonResponse(req, { error: "Falha ao atualizar credenciais." }, 500);
+      }
+      return jsonResponse(req, { success: true });
+    }
+
     // ── delete ─────────────────────────────────────────────────────────────────
     if (action === "delete") {
       const channelId = String(body.channel_id ?? "");
