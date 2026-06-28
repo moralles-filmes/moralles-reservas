@@ -88,7 +88,7 @@ export default function Entregas() {
         <MailWarning className="h-5 w-5 text-primary shrink-0" />
         <h1 className="text-xl font-bold">Mensagens não entregues</h1>
         {rows && rows.length > 0 && (
-          <Badge className="bg-amber-100 text-amber-800 border-amber-200">{rows.length}</Badge>
+          <Badge className="bg-warning/10 text-warning border-warning/20">{rows.length}</Badge>
         )}
         <div className="flex gap-1 sm:ml-auto">
           {FILTERS.map((f) => (

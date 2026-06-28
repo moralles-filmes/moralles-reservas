@@ -199,15 +199,15 @@ export const BILLING_STATUS_LABEL: Record<BillingStatus, string> = {
 };
 
 export const BILLING_STATUS_VARIANT: Record<BillingStatus, string> = {
-  active: "bg-emerald-100 text-emerald-800",
-  trialing: "bg-blue-100 text-blue-800",
-  pending_payment: "bg-amber-100 text-amber-800",
-  past_due: "bg-orange-100 text-orange-800",
-  grace_period: "bg-orange-100 text-orange-800",
-  blocked: "bg-red-100 text-red-800",
-  canceled: "bg-gray-100 text-gray-800",
-  manual_override: "bg-purple-100 text-purple-800",
-  suspended: "bg-red-100 text-red-800",
+  active: "bg-success/10 text-success",
+  trialing: "bg-info/10 text-info",
+  pending_payment: "bg-warning/10 text-warning",
+  past_due: "bg-warning/10 text-warning",
+  grace_period: "bg-warning/10 text-warning",
+  blocked: "bg-destructive/10 text-destructive",
+  canceled: "bg-muted text-muted-foreground",
+  manual_override: "bg-info/10 text-info",
+  suspended: "bg-destructive/10 text-destructive",
 };
 
 export const INVOICE_STATUS_LABEL: Record<InvoiceStatus, string> = {

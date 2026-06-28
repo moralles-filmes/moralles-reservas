@@ -203,14 +203,14 @@ export default function Cobranca() {
       </div>
 
       {isBlocked && (
-        <Card className="border-amber-300 bg-amber-50">
+        <Card className="border-warning/20 bg-warning/10">
           <CardContent className="py-4 flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+            <AlertTriangle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
             <div className="text-sm">
-              <p className="font-medium text-amber-900">
+              <p className="font-medium text-warning">
                 Sua conta está com status: {BILLING_STATUS_LABEL[billingStatus!] ?? billingStatus}
               </p>
-              <p className="text-amber-800">
+              <p className="text-warning">
                 Escolha um plano abaixo para reativar o acesso ao sistema.
               </p>
             </div>
@@ -220,10 +220,10 @@ export default function Cobranca() {
 
       {/* Período de teste local (sem subscription) */}
       {isLocalTrial && (
-        <Card className="border-blue-200 bg-blue-50/40">
+        <Card className="border-info/20 bg-info/10">
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base">Período de teste</CardTitle>
-            <Badge variant="secondary" className="bg-blue-100 text-blue-800">Trial</Badge>
+            <Badge variant="secondary" className="bg-info/10 text-info">Trial</Badge>
           </CardHeader>
           <CardContent className="space-y-2">
             <p className="text-sm">
@@ -286,7 +286,7 @@ export default function Cobranca() {
               )}
               {sub.trial_end && sub.status === "trialing" && (
                 <div className="flex items-center gap-2">
-                  <CalendarClock className="h-4 w-4 text-blue-600" />
+                  <CalendarClock className="h-4 w-4 text-info" />
                   <span className="text-muted-foreground">Trial até:</span>
                   <span className="font-medium">{formatDateBR(sub.trial_end.slice(0, 10))}</span>
                 </div>
@@ -301,7 +301,7 @@ export default function Cobranca() {
               </div>
             )}
             {sub.cancel_at_period_end && (
-              <p className="text-xs text-amber-700 pt-1">
+              <p className="text-xs text-warning pt-1">
                 Cancelamento agendado. Acesso garantido até o fim do período pago.
               </p>
             )}

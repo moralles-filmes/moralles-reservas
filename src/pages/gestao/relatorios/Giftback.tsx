@@ -75,7 +75,7 @@ export default function Giftback() {
       <header className="space-y-1">
         <BreadcrumbRelatorios current="Giftback" />
         <div className="flex items-center gap-2">
-          <Gift className="h-5 w-5 text-rose-500" />
+          <Gift className="h-5 w-5 text-gold" />
           <h1 className="text-2xl font-bold">Giftback</h1>
         </div>
       </header>
@@ -87,13 +87,13 @@ export default function Giftback() {
           title="Emitidos"
           value={isLoading ? undefined : data?.kpis.total_issued ?? 0}
           icon={Send}
-          color="bg-rose-50 text-rose-600"
+          color="bg-gold/10 text-gold"
         />
         <KpiCard
           title="Usados"
           value={isLoading ? undefined : data?.kpis.total_used ?? 0}
           icon={CheckCircle2}
-          color="bg-emerald-50 text-emerald-600"
+          color="bg-success/10 text-success"
         />
         <KpiCard
           title="Conversão"
@@ -104,13 +104,13 @@ export default function Giftback() {
           }
           suffix="%"
           icon={Percent}
-          color="bg-blue-50 text-blue-600"
+          color="bg-info/10 text-info"
         />
         <KpiCard
           title="Cancelados"
           value={isLoading ? undefined : data?.kpis.total_cancelled ?? 0}
           icon={XCircle}
-          color="bg-rose-50 text-rose-600"
+          color="bg-destructive/10 text-destructive"
         />
       </div>
 
@@ -285,7 +285,7 @@ export default function Giftback() {
                             </p>
                           </div>
                         </TableCell>
-                        <TableCell className="font-semibold text-rose-600">
+                        <TableCell className="font-semibold text-gold">
                           {v.discount_percent}%
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">

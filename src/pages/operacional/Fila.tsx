@@ -56,9 +56,9 @@ import { Accessibility, AlertCircle, Baby, Bell, Clock, Link2, Pencil, Plus, Sen
 import { toast } from "sonner";
 
 const STATUS_CONFIG: Record<WaitlistStatus, { label: string; className: string }> = {
-  waiting:   { label: "Aguardando", className: "bg-amber-50 text-amber-800 border-amber-200" },
-  notified:  { label: "Notificado", className: "bg-blue-50 text-blue-800 border-blue-200" },
-  seated:    { label: "Sentou",     className: "bg-green-50 text-green-800 border-green-200" },
+  waiting:   { label: "Aguardando", className: "bg-warning/10 text-warning border-warning/20" },
+  notified:  { label: "Notificado", className: "bg-info/10 text-info border-info/20" },
+  seated:    { label: "Sentou",     className: "bg-success/10 text-success border-success/20" },
   cancelled: { label: "Cancelado",  className: "bg-muted text-muted-foreground" },
 };
 
@@ -74,7 +74,7 @@ const PRIORITY_CONFIG: Record<
 
 function WaitingTime({ createdAt }: { createdAt: string }) {
   const mins = Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000);
-  const className = mins >= 30 ? "text-destructive font-semibold" : mins >= 15 ? "text-amber-600" : "text-muted-foreground";
+  const className = mins >= 30 ? "text-destructive font-semibold" : mins >= 15 ? "text-warning" : "text-muted-foreground";
   return (
     <span className={`flex items-center gap-1 text-xs ${className}`}>
       <Clock className="h-3 w-3" />
@@ -242,7 +242,7 @@ export default function Fila() {
           <Users className="h-5 w-5 text-primary" />
           <h1 className="text-xl font-bold">Fila de espera</h1>
           {waitlist && waitlist.length > 0 && (
-            <Badge className="bg-amber-100 text-amber-800 border-amber-200">
+            <Badge className="bg-warning/10 text-warning border-warning/20">
               {waitlist.length} na fila
             </Badge>
           )}
@@ -357,7 +357,7 @@ export default function Fila() {
                       <p className="text-xs text-muted-foreground italic mt-1 truncate">{entry.notes}</p>
                     )}
                     {entry.notified_at && (
-                      <p className="text-xs text-blue-600 mt-1">
+                      <p className="text-xs text-info mt-1">
                         Notificado às {new Date(entry.notified_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                       </p>
                     )}

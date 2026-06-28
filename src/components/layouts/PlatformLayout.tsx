@@ -1,8 +1,14 @@
-import { NavLink, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { AdminShell } from "@/components/layouts/AdminShell";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import {
+  SidebarActionButton,
+  SidebarBrand,
+  SidebarDisabledItem,
+  SidebarFootnote,
+  SidebarLink,
+  SidebarSectionTitle,
+} from "@/components/layouts/SidebarNav";
 import { Bot, Building2, CreditCard, LogOut, Users } from "lucide-react";
 import { toast } from "sonner";
 
@@ -20,7 +26,6 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
     { to: "/platform/empresas", label: "Empresas", icon: Building2 },
     { to: "/platform/automacao", label: "Automação", icon: Bot },
     { to: "/platform/billing", label: "Cobranças", icon: CreditCard },
-    { to: "/platform/admins", label: "Admins da Plataforma", icon: Users, disabled: true },
   ];
 
   return (
@@ -29,63 +34,26 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
       mainPaddingClass="p-6"
       sidebar={
         <>
-          <div className="h-14 flex items-center px-6 gap-2">
-            <Building2 className="h-5 w-5 text-primary" />
-          <span className="font-semibold text-sm">Moralles Plataforma</span>
-        </div>
-        <Separator className="bg-sidebar-border" />
+          <SidebarBrand icon={Building2} label="Moralles Plataforma" />
 
-        <div className="px-3 py-2">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-3">
-            Administração
-          </p>
-        </div>
+          <div className="px-3 py-2">
+            <SidebarSectionTitle>Administração</SidebarSectionTitle>
+          </div>
 
-        <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
-          {navItems.map(({ to, label, icon: Icon, disabled }) =>
-            disabled ? (
-              <span
-                key={to}
-                className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground/50 cursor-not-allowed select-none"
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {label}
-              </span>
-            ) : (
-              <NavLink
-                key={to}
-                to={to}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                    isActive
-                      ? "bg-sidebar-accent text-primary font-medium"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent/50"
-                  }`
-                }
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {label}
-              </NavLink>
-            )
-          )}
-        </nav>
+          <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto scrollbar-premium">
+            {navItems.map((item) => (
+              <SidebarLink key={item.to} to={item.to} label={item.label} icon={item.icon} />
+            ))}
+            <SidebarDisabledItem icon={Users} label="Admins da Plataforma" />
+          </nav>
 
-        <Separator className="bg-sidebar-border" />
-        <div className="px-6 py-3 text-xs text-muted-foreground truncate">
-          {user?.email}
-        </div>
-        <Separator className="bg-sidebar-border" />
-        <div className="p-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start gap-3 text-muted-foreground hover:text-destructive"
-            onClick={handleSignOut}
-          >
-            <LogOut className="h-4 w-4" />
-            Sair
-          </Button>
-        </div>
+          <div className="mx-3 my-1.5 h-px bg-sidebar-border/50" />
+          <SidebarFootnote>{user?.email}</SidebarFootnote>
+          <div className="mx-3 my-1.5 h-px bg-sidebar-border/50" />
+
+          <div className="p-3">
+            <SidebarActionButton icon={LogOut} label="Sair" onClick={handleSignOut} danger />
+          </div>
         </>
       }
     >

@@ -21,12 +21,12 @@ const CONFIG: Record<
   not_sent: {
     label: "Não enviada",
     icon: AlertTriangle,
-    className: "bg-amber-50 text-amber-800 border-amber-200",
+    className: "bg-warning/10 text-warning border-warning/20",
   },
   failed: {
     label: "Falhou",
     icon: Ban,
-    className: "bg-red-50 text-red-700 border-red-200",
+    className: "bg-destructive/10 text-destructive border-destructive/20",
   },
   sent_pending: {
     label: "Enviada",
@@ -41,17 +41,17 @@ const CONFIG: Record<
   undelivered: {
     label: "Não entregue",
     icon: AlertTriangle,
-    className: "bg-red-50 text-red-700 border-red-200",
+    className: "bg-destructive/10 text-destructive border-destructive/20",
   },
   delivered: {
     label: "Entregue",
     icon: CheckCheck,
-    className: "bg-green-50 text-green-700 border-green-200",
+    className: "bg-success/10 text-success border-success/20",
   },
   read: {
     label: "Lida",
     icon: CheckCheck,
-    className: "bg-blue-50 text-blue-700 border-blue-200",
+    className: "bg-info/10 text-info border-info/20",
   },
 };
 

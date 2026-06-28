@@ -57,7 +57,7 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
                 {STATUS_LABELS[reserva.status]}
               </Badge>
               {reserva.customer?.vip_notes && (
-                <Badge className="text-[10px] gap-1 bg-amber-100 text-amber-900 border-amber-200 hover:bg-amber-100">
+                <Badge className="text-[10px] gap-1 bg-gold/10 text-gold border-gold/20 hover:bg-gold/10">
                   <Sparkles className="h-2.5 w-2.5" />
                   VIP
                 </Badge>
@@ -75,13 +75,13 @@ export function ReservaCard({ reserva, showActions = false, unitId, confirmation
                 </Badge>
               )}
               {reserva.payment_status === "paid" && (
-                <Badge variant="outline" className="text-[10px] gap-1 text-green-700 bg-green-50 border-green-200">
+                <Badge variant="outline" className="text-[10px] gap-1 text-success bg-success/10 border-success/20">
                   <Banknote className="h-2.5 w-2.5" />
                   Pago{reserva.payment_amount_cents ? ` R$ ${(reserva.payment_amount_cents / 100).toFixed(2).replace(".", ",")}` : ""}
                 </Badge>
               )}
               {reserva.payment_status === "pending_payment" && (
-                <Badge variant="outline" className="text-[10px] gap-1 text-amber-700 bg-amber-50 border-amber-200">
+                <Badge variant="outline" className="text-[10px] gap-1 text-warning bg-warning/10 border-warning/20">
                   <Banknote className="h-2.5 w-2.5" />
                   Aguardando pgto
                 </Badge>

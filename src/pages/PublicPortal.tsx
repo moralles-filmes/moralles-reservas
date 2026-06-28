@@ -171,7 +171,7 @@ export default function PublicPortal() {
   if (paymentParam === "success") {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-6 text-center">
-        <CheckCircle2 className="h-16 w-16 text-green-600" />
+        <CheckCircle2 className="h-16 w-16 text-success" />
         <h1 className="text-2xl font-bold">Pagamento confirmado!</h1>
         <p className="text-muted-foreground max-w-md">
           Sua reserva está garantida. Você receberá a confirmação por WhatsApp em instantes.
@@ -188,7 +188,7 @@ export default function PublicPortal() {
   if (paymentParam === "cancelled") {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-6 text-center">
-        <CreditCard className="h-16 w-16 text-amber-600" />
+        <CreditCard className="h-16 w-16 text-warning" />
         <h1 className="text-2xl font-bold">Pagamento não concluído</h1>
         <p className="text-muted-foreground max-w-md">
           Sua reserva será cancelada automaticamente se o pagamento não for concluído nos próximos minutos.

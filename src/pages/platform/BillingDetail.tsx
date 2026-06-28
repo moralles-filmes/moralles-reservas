@@ -135,7 +135,7 @@ export default function BillingDetail() {
                   {PAYMENT_METHOD_LABEL[activeSub.payment_method]} — vence {activeSub.current_period_end ? formatDateBR(activeSub.current_period_end.slice(0, 10)) : "—"}
                 </p>
                 {activeSub.cancel_at_period_end && (
-                  <p className="text-xs text-amber-600 font-medium">Cancelamento ao fim do período</p>
+                  <p className="text-xs text-warning font-medium">Cancelamento ao fim do período</p>
                 )}
               </div>
             ) : (
@@ -316,7 +316,7 @@ function InvoicesTable({ invoices }: { invoices: BillingInvoice[] }) {
             <TableRow key={inv.id}>
               <TableCell className="font-mono text-xs">{inv.number ?? inv.stripe_invoice_id?.slice(-8) ?? inv.id.slice(0, 8)}</TableCell>
               <TableCell>
-                <Badge variant="secondary" className={inv.status === "paid" ? "bg-emerald-100 text-emerald-800" : inv.status === "open" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-800"}>
+                <Badge variant="secondary" className={inv.status === "paid" ? "bg-success/10 text-success" : inv.status === "open" ? "bg-warning/10 text-warning" : "bg-muted text-muted-foreground"}>
                   {INVOICE_STATUS_LABEL[inv.status] ?? inv.status}
                 </Badge>
               </TableCell>
@@ -388,7 +388,7 @@ function PaymentMethodsTable({ organizationId }: { organizationId: string }) {
                 </TableCell>
                 <TableCell>
                   {pm.is_default && (
-                    <Badge variant="secondary" className="bg-emerald-100 text-emerald-800">Padrão</Badge>
+                    <Badge variant="secondary" className="bg-success/10 text-success">Padrão</Badge>
                   )}
                 </TableCell>
                 <TableCell>

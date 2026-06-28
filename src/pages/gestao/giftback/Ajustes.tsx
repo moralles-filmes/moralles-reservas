@@ -75,7 +75,7 @@ export default function Ajustes() {
     <div className="space-y-5">
       <header>
         <div className="flex items-center gap-2">
-          <Gift className="h-5 w-5 text-rose-500" />
+          <Gift className="h-5 w-5 text-gold" />
           <h1 className="text-2xl font-bold">Ajustes do Giftback</h1>
         </div>
         <p className="text-sm text-muted-foreground mt-1">
@@ -146,8 +146,8 @@ export default function Ajustes() {
             </div>
           </div>
 
-          <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3 text-sm whitespace-pre-wrap">
-            <p className="text-[11px] uppercase tracking-wider text-emerald-700 font-medium mb-1.5">
+          <div className="rounded-md bg-success/10 border border-success/20 p-3 text-sm whitespace-pre-wrap">
+            <p className="text-[11px] uppercase tracking-wider text-success font-medium mb-1.5">
               Pré-visualização
             </p>
             {preview}

@@ -338,7 +338,7 @@ function TabButton({
     >
       {children}
       {locked && (
-        <span className="ml-1 text-[9px] uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200 rounded px-1 py-0.5">
+        <span className="ml-1 text-[9px] uppercase tracking-wider bg-warning/10 text-warning border border-warning/20 rounded px-1 py-0.5">
           em breve
         </span>
       )}

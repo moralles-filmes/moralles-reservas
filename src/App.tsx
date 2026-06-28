@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
 import { GestaoLayout } from "@/components/layouts/GestaoLayout";
 import { OperacionalLayout } from "@/components/layouts/OperacionalLayout";
@@ -189,6 +190,13 @@ function AdminRedirect({ to }: { to: string }) {
 export default function App() {
   return (
     <ErrorBoundary>
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="light"
+        enableSystem={false}
+        storageKey="moralles-theme"
+        disableTransitionOnChange
+      >
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
         <AuthProvider>
@@ -278,6 +286,7 @@ export default function App() {
         </BrowserRouter>
         <Toaster richColors position="top-right" />
       </QueryClientProvider>
+      </ThemeProvider>
     </ErrorBoundary>
   );
 }

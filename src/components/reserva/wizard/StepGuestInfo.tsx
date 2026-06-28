@@ -38,13 +38,13 @@ export function StepGuestInfo() {
       <WizardSummary includeHall />
 
       {computed.chargeInfo && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 flex items-start gap-2.5 text-sm text-amber-900">
+        <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 flex items-start gap-2.5 text-sm text-warning">
           <CreditCard className="h-4 w-4 mt-0.5 shrink-0" />
           <div>
             <p className="font-medium">
               Caução de R$ {(computed.chargeInfo.amountCents / 100).toFixed(2).replace(".", ",")}
             </p>
-            <p className="text-xs text-amber-800 mt-0.5">
+            <p className="text-xs text-warning/90 mt-0.5">
               Após confirmar seus dados, você será redirecionado para o pagamento seguro via Stripe.
             </p>
           </div>
@@ -199,12 +199,12 @@ export function StepGuestInfo() {
         <div className="rounded-xl border bg-card p-4 space-y-3">
           <h4 className="text-sm font-semibold text-foreground">Sobre a Reserva</h4>
           {input.widgetInstructions && (
-            <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 whitespace-pre-line">
+            <div className="rounded-md bg-warning/10 border border-warning/20 p-3 text-xs text-warning whitespace-pre-line">
               {input.widgetInstructions}
             </div>
           )}
           {input.rulesAndConditions && (
-            <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 whitespace-pre-line">
+            <div className="rounded-md bg-warning/10 border border-warning/20 p-3 text-xs text-warning whitespace-pre-line">
               <strong className="block mb-1">Regras e Condições</strong>
               {input.rulesAndConditions}
             </div>

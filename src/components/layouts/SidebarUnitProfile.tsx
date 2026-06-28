@@ -11,7 +11,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useSidebarCollapse } from "./sidebar-context";
 
 interface SidebarUnitProfileProps {
   basePath: "g" | "o";
@@ -22,6 +24,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
   const unit = useCurrentUnit();
   const navigate = useNavigate();
   const { data: content } = useUnitPublicContent(unit?.unit_id ?? "");
+  const { collapsed } = useSidebarCollapse();
 
   if (!unit) return null;
 
@@ -32,6 +35,49 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
   const handleSwitch = (slug: string) => {
     navigate(`/${basePath}/${slug}`);
   };
+
+  // Trilho recolhido: só o avatar circular (logo ou ícone), com tooltip do nome.
+  if (collapsed) {
+    const avatar = (
+      <div className="mx-auto h-10 w-10 rounded-full bg-card border border-sidebar-border shadow-sm overflow-hidden flex items-center justify-center">
+        {logoUrl ? (
+          <img src={logoUrl} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <UtensilsCrossed className="h-5 w-5 text-gold" />
+        )}
+      </div>
+    );
+    if (!hasMultiple) {
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>{avatar}</TooltipTrigger>
+          <TooltipContent side="right">{unit.unit_name}</TooltipContent>
+        </Tooltip>
+      );
+    }
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button type="button" className="w-full">
+            {avatar}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" side="right" className="w-56">
+          <DropdownMenuLabel className="text-xs text-muted-foreground">Trocar unidade</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {memberships.map((m) => (
+            <DropdownMenuItem
+              key={m.unit_id}
+              onClick={() => handleSwitch(m.unit_slug)}
+              className={m.unit_slug === unit.unit_slug ? "font-medium text-gold" : ""}
+            >
+              {m.unit_name}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
 
   const card = (
     <div
@@ -48,7 +94,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
           className="absolute inset-0 w-full h-full object-cover"
         />
       ) : (
-        <div className="absolute inset-0 bg-gradient-to-br from-primary to-primary/70" />
+        <div className="absolute inset-0 bg-gradient-to-br from-gold to-gold/70" />
       )}
 
       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent" />
@@ -58,7 +104,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
           {logoUrl ? (
             <img src={logoUrl} alt="" className="h-full w-full object-cover" />
           ) : (
-            <UtensilsCrossed className="h-5 w-5 text-primary" />
+            <UtensilsCrossed className="h-5 w-5 text-gold" />
           )}
         </div>
         <div className="flex-1 min-w-0 pb-0.5">
@@ -98,7 +144,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
           <DropdownMenuItem
             key={m.unit_id}
             onClick={() => handleSwitch(m.unit_slug)}
-            className={m.unit_slug === unit.unit_slug ? "font-medium text-primary" : ""}
+            className={m.unit_slug === unit.unit_slug ? "font-medium text-gold" : ""}
           >
             {m.unit_name}
           </DropdownMenuItem>

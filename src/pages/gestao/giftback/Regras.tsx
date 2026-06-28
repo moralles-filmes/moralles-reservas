@@ -78,7 +78,7 @@ export default function Regras() {
       <header className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <Gift className="h-5 w-5 text-rose-500" />
+            <Gift className="h-5 w-5 text-gold" />
             <h1 className="text-2xl font-bold">Regras de Giftback</h1>
           </div>
           <p className="text-sm text-muted-foreground mt-1">

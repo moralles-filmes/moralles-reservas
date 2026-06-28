@@ -182,7 +182,7 @@ export default function Dashboard() {
           title={`Avaliação média (${kpis.ratingsCount})`}
           value={valueOrUndef(kpis.avgRating ?? "—")}
           icon={Star}
-          color="bg-amber-100 text-amber-600"
+          color="bg-gold/10 text-gold"
           delta={kpis.deltas.avgRating}
           deltaUnit="abs"
           suffix={kpis.avgRating !== null ? " ⭐" : undefined}
@@ -191,7 +191,7 @@ export default function Dashboard() {
           title="Tamanho médio do grupo"
           value={valueOrUndef(kpis.avgPartySize)}
           icon={Users}
-          color="bg-indigo-50 text-indigo-700"
+          color="bg-info/10 text-info"
           delta={kpis.deltas.avgPartySize}
         />
       </section>

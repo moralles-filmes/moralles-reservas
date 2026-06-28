@@ -175,7 +175,7 @@ export default function Widget() {
             Quando esta opção está ativada, exibimos um banner com o seu cardápio na tela de
             sucesso do widget.
           </p>
-          <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-2">
+          <p className="text-[11px] text-warning bg-warning/10 border border-warning/20 rounded-md p-2">
             ⚠ Você precisa ter um cardápio ativo para ativar essa função.
           </p>
         </Card>

@@ -210,7 +210,7 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
 
       <div className="space-y-2">
         <Label className="text-sm font-semibold">Pré-visualização</Label>
-        <Card className="p-4 bg-emerald-50 border-emerald-200">
+        <Card className="p-4 bg-success/10 border-success/20">
           <p className="text-sm whitespace-pre-wrap font-sans">{preview}</p>
         </Card>
       </div>

@@ -177,12 +177,12 @@ function StripeConfigCard() {
                     </p>
                   )}
                 </div>
-                <Badge variant="outline" className="text-[10px] text-green-700 border-green-200 bg-green-50">
+                <Badge variant="outline" className="text-[10px] text-success border-success/20 bg-success/10">
                   Configurada
                 </Badge>
               </div>
             ) : (
-              <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <div className="rounded border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning">
                 Não configurada. Cole o valor abaixo.
               </div>
             )}
@@ -259,7 +259,7 @@ function StripeConfigCard() {
               onClick={handleCopyWebhook}
             >
               {copiedWebhook ? (
-                <Check className="h-3 w-3 text-green-600" />
+                <Check className="h-3 w-3 text-success" />
               ) : (
                 <Copy className="h-3 w-3" />
               )}

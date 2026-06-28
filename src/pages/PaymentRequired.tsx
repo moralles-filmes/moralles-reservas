@@ -15,8 +15,8 @@ export default function PaymentRequired({ status, blockedReason, unitSlug }: Pro
     <div className="theme-admin min-h-screen bg-background flex items-center justify-center p-6">
       <Card className="max-w-md w-full">
         <CardHeader className="text-center">
-          <div className="mx-auto mb-4 h-16 w-16 rounded-full bg-red-100 flex items-center justify-center">
-            <CreditCard className="h-8 w-8 text-red-600" />
+          <div className="mx-auto mb-4 h-16 w-16 rounded-full bg-destructive/10 flex items-center justify-center">
+            <CreditCard className="h-8 w-8 text-destructive" />
           </div>
           <CardTitle className="text-xl">Acesso suspenso</CardTitle>
         </CardHeader>

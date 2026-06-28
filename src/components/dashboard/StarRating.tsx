@@ -21,7 +21,7 @@ export function StarRating({ value, size = "sm" }: StarRatingProps) {
                 className="absolute inset-0 overflow-hidden"
                 style={{ width: `${fill * 100}%` }}
               >
-                <Star className={cn(sizeClass, "fill-amber-400 text-amber-400")} />
+                <Star className={cn(sizeClass, "fill-gold text-gold")} />
               </div>
             )}
           </div>

@@ -28,7 +28,7 @@ export function PricingCard({ plan, cta, onAction, loading }: Props) {
       className={cn(
         "relative flex flex-col h-full",
         isPopular && "border-2 border-primary shadow-lg",
-        isCurrent && "ring-2 ring-emerald-500/40",
+        isCurrent && "ring-2 ring-success/40",
       )}
     >
       {isPopular && (
@@ -53,7 +53,7 @@ export function PricingCard({ plan, cta, onAction, loading }: Props) {
             </span>
           </div>
           {plan.trial_days > 0 && (
-            <p className="text-xs text-emerald-700 font-medium">
+            <p className="text-xs text-success font-medium">
               {plan.trial_days} dias grátis pra testar
             </p>
           )}
@@ -63,7 +63,7 @@ export function PricingCard({ plan, cta, onAction, loading }: Props) {
           <ul className="space-y-2 flex-1">
             {features.map((feature, i) => (
               <li key={i} className="flex items-start gap-2 text-sm">
-                <Check className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                <Check className="h-4 w-4 text-success shrink-0 mt-0.5" />
                 <span>{feature}</span>
               </li>
             ))}

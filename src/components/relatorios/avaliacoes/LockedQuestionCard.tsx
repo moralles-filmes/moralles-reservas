@@ -15,7 +15,7 @@ export function LockedQuestionCard({ title, hint }: LockedQuestionCardProps) {
           <Lock className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
         </div>
         <p className="text-2xl font-semibold text-muted-foreground/70">—</p>
-        <p className="text-[11px] uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 rounded inline-block px-1.5 py-0.5">
+        <p className="text-[11px] uppercase tracking-wider text-warning bg-warning/10 border border-warning/20 rounded inline-block px-1.5 py-0.5">
           em breve
         </p>
         {hint && <p className="text-[11px] text-muted-foreground/70">{hint}</p>}

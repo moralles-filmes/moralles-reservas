@@ -18,7 +18,7 @@ export function RatingsSummary({ ratings, averageLabel }: RatingsSummaryProps) {
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       <Card>
         <CardContent className="pt-5 pb-5 text-center">
-          <p className="text-4xl font-bold text-amber-500">
+          <p className="text-4xl font-bold text-gold">
             {avg !== null ? avg.toFixed(1) : "—"}
           </p>
           <p className="text-sm text-muted-foreground mt-1">{label}</p>

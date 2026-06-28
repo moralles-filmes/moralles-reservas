@@ -128,7 +128,7 @@ export default function Billing() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-amber-600">{pastDueCount}</p>
+            <p className="text-2xl font-bold text-warning">{pastDueCount}</p>
           </CardContent>
         </Card>
         <Card>
@@ -138,7 +138,7 @@ export default function Billing() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-red-600">{blockedCount}</p>
+            <p className="text-2xl font-bold text-destructive">{blockedCount}</p>
           </CardContent>
         </Card>
       </div>

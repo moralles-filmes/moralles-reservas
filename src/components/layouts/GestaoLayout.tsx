@@ -1,22 +1,24 @@
-import { useEffect, useState } from "react";
-import { NavLink, useLocation, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useAwaitingHumanCount } from "@/hooks/useAwaitingHumanCount";
 import { SidebarUnitProfile } from "@/components/layouts/SidebarUnitProfile";
 import { AdminShell } from "@/components/layouts/AdminShell";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
+import {
+  SidebarActionButton,
+  SidebarCopyCode,
+  SidebarGroup,
+  SidebarLink,
+  SidebarSectionTitle,
+  type SidebarSubItem,
+} from "@/components/layouts/SidebarNav";
 import {
   BarChart3,
   BookOpen,
   Building2,
   CalendarIcon,
   CalendarOff,
-  ChevronDown,
   Code2,
-  Copy,
   CreditCard,
   DollarSign,
   FormInput,
@@ -56,7 +58,7 @@ type GroupItem = {
   icon: React.ComponentType<{ className?: string }>;
   /** Path prefix to match for active/auto-expand. */
   matchPrefix: string;
-  children: LeafItem[];
+  children: SidebarSubItem[];
 };
 
 type NavItem = LeafItem | GroupItem;
@@ -146,16 +148,6 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
     navigate("/admin/login");
   };
 
-  const handleCopyCode = async () => {
-    if (!unit?.unit_slug) return;
-    try {
-      await navigator.clipboard.writeText(unit.unit_slug);
-      toast.success("Código copiado");
-    } catch {
-      toast.error("Não foi possível copiar");
-    }
-  };
-
   return (
     <AdminShell
       sidebarWidthClass="lg:w-60"
@@ -164,180 +156,66 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
         <>
           <div className="p-3">
             <SidebarUnitProfile basePath="g" />
-        </div>
-
-        <div className="px-3 pb-2">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-3">
-            Painel de Gestão
-          </p>
-        </div>
-
-        <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
-          {navItems.map((item) =>
-            isGroup(item) ? (
-              <NavGroup key={item.label} group={item} />
-            ) : (
-              <NavLeaf key={item.to} item={item} />
-            ),
-          )}
-        </nav>
-
-        <Separator className="bg-sidebar-border" />
-
-        <div className="px-3 py-2">
-          <NavLink
-            to={`/o/${unitSlug}`}
-            className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-sidebar-accent/50 transition-colors"
-          >
-            <UtensilsCrossed className="h-4 w-4 shrink-0" />
-            Painel Operacional
-          </NavLink>
-        </div>
-
-        {isPlatformAdmin && (
-          <div className="px-3 pb-1">
-            <NavLink
-              to="/platform"
-              className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-primary hover:bg-sidebar-accent/50 transition-colors font-medium"
-            >
-              <Building2 className="h-4 w-4 shrink-0" />
-              Plataforma
-            </NavLink>
           </div>
-        )}
 
-        <Separator className="bg-sidebar-border" />
+          <div className="px-3 pb-2">
+            <SidebarSectionTitle>Painel de Gestão</SidebarSectionTitle>
+          </div>
 
-        <div className="p-3 space-y-2">
-          <NavLink
-            to={`${base}/conversas`}
-            className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground transition-colors"
-          >
-            <HelpCircle className="h-4 w-4 shrink-0" />
-            <span className="flex-1">Precisa de ajuda?</span>
-            {awaitingCount > 0 && (
-              <span className="h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
-                {awaitingCount > 99 ? "99+" : awaitingCount}
-              </span>
+          <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto scrollbar-premium">
+            {navItems.map((item) =>
+              isGroup(item) ? (
+                <SidebarGroup
+                  key={item.label}
+                  label={item.label}
+                  icon={item.icon}
+                  matchPrefix={item.matchPrefix}
+                  items={item.children}
+                />
+              ) : (
+                <SidebarLink
+                  key={item.to}
+                  to={item.to}
+                  label={item.label}
+                  icon={item.icon}
+                  end={item.end}
+                  badge={item.badge}
+                />
+              ),
             )}
-          </NavLink>
+          </nav>
 
-          {unit?.unit_slug && (
-            <button
-              type="button"
-              onClick={handleCopyCode}
-              className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-muted-foreground bg-muted hover:bg-muted/70 transition-colors group"
-            >
-              <Copy className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" />
-              <span className="flex-1 text-left">Copiar código</span>
-              <span className="font-mono text-[11px] text-foreground/80 truncate max-w-[100px]">
-                {unit.unit_slug}
-              </span>
-            </button>
-          )}
+          <div className="mx-3 my-1.5 h-px bg-sidebar-border/50" />
 
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start gap-3 text-muted-foreground hover:text-destructive"
-            onClick={handleSignOut}
-          >
-            <LogOut className="h-4 w-4" />
-            Sair
-          </Button>
-        </div>
+          <div className="px-3 space-y-0.5">
+            <SidebarLink
+              to={`/o/${unitSlug}`}
+              label="Painel Operacional"
+              icon={UtensilsCrossed}
+              tone="muted"
+            />
+            {isPlatformAdmin && (
+              <SidebarLink to="/platform" label="Plataforma" icon={Building2} tone="gold" />
+            )}
+          </div>
+
+          <div className="mx-3 my-1.5 h-px bg-sidebar-border/50" />
+
+          <div className="p-3 space-y-2">
+            <SidebarLink
+              to={`${base}/conversas`}
+              label="Precisa de ajuda?"
+              icon={HelpCircle}
+              tone="muted"
+              badge={awaitingCount}
+            />
+            {unit?.unit_slug && <SidebarCopyCode slug={unit.unit_slug} />}
+            <SidebarActionButton icon={LogOut} label="Sair" onClick={handleSignOut} danger />
+          </div>
         </>
       }
     >
       {children}
     </AdminShell>
-  );
-}
-
-function NavLeaf({ item }: { item: LeafItem }) {
-  const Icon = item.icon;
-  return (
-    <NavLink
-      to={item.to}
-      end={item.end}
-      className={({ isActive }) =>
-        cn(
-          "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
-          isActive
-            ? "bg-sidebar-accent text-primary font-medium"
-            : "text-sidebar-foreground hover:bg-sidebar-accent/50",
-        )
-      }
-    >
-      <Icon className="h-4 w-4 shrink-0" />
-      <span className="flex-1">{item.label}</span>
-      {!!item.badge && (
-        <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
-          {item.badge > 99 ? "99+" : item.badge}
-        </span>
-      )}
-    </NavLink>
-  );
-}
-
-function NavGroup({ group }: { group: GroupItem }) {
-  const location = useLocation();
-  const isInside = location.pathname.startsWith(group.matchPrefix);
-  const [open, setOpen] = useState(isInside);
-
-  useEffect(() => {
-    if (isInside) setOpen(true);
-  }, [isInside]);
-
-  const Icon = group.icon;
-
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
-          isInside
-            ? "bg-sidebar-accent text-primary font-medium"
-            : "text-sidebar-foreground hover:bg-sidebar-accent/50",
-        )}
-        aria-expanded={open}
-      >
-        <Icon className="h-4 w-4 shrink-0" />
-        <span className="flex-1 text-left">{group.label}</span>
-        <ChevronDown
-          className={cn(
-            "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
-            open && "rotate-180",
-          )}
-        />
-      </button>
-      {open && (
-        <div className="mt-0.5 ml-3 pl-3 border-l border-sidebar-border space-y-0.5">
-          {group.children.map((child) => {
-            const ChildIcon = child.icon;
-            return (
-              <NavLink
-                key={child.to}
-                to={child.to}
-                end={child.end}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors",
-                    isActive
-                      ? "bg-sidebar-accent text-primary font-medium"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent/50",
-                  )
-                }
-              >
-                <ChildIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span className="flex-1">{child.label}</span>
-              </NavLink>
-            );
-          })}
-        </div>
-      )}
-    </div>
   );
 }

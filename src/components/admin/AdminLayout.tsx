@@ -1,8 +1,7 @@
-import { Link, NavLink, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { AdminShell } from "@/components/layouts/AdminShell";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { SidebarActionButton, SidebarBrand, SidebarLink } from "@/components/layouts/SidebarNav";
 import {
   CalendarIcon,
   LayoutDashboard,
@@ -44,48 +43,26 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       mainPaddingClass="p-6"
       sidebar={
         <>
-          <div className="h-16 flex items-center px-5">
-            <Link to="/admin" className="flex items-center gap-2">
-            <UtensilsCrossed className="h-5 w-5 text-primary" />
-            <span className="font-semibold text-sidebar-foreground">
-              Moralles Reservas
-            </span>
-          </Link>
-        </div>
-        <Separator className="bg-sidebar-border" />
+          <SidebarBrand icon={UtensilsCrossed} label="Moralles Reservas" />
 
-        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
-          {navItems.map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                  isActive
-                    ? "bg-sidebar-accent text-primary font-medium"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent"
-                }`
-              }
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              {label}
-            </NavLink>
-          ))}
-        </nav>
+          <div className="mx-3 my-1.5 h-px bg-sidebar-border/50" />
 
-        <Separator className="bg-sidebar-border" />
-        <div className="p-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start gap-3 text-muted-foreground hover:text-destructive"
-            onClick={handleSignOut}
-          >
-            <LogOut className="h-4 w-4" />
-            Sair
-          </Button>
-        </div>
+          <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto scrollbar-premium">
+            {navItems.map((item) => (
+              <SidebarLink
+                key={item.to}
+                to={item.to}
+                label={item.label}
+                icon={item.icon}
+                end={item.end}
+              />
+            ))}
+          </nav>
+
+          <div className="mx-3 my-1.5 h-px bg-sidebar-border/50" />
+          <div className="p-3">
+            <SidebarActionButton icon={LogOut} label="Sair" onClick={handleSignOut} danger />
+          </div>
         </>
       }
     >

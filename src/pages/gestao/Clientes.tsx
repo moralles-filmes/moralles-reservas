@@ -323,7 +323,7 @@ export default function Clientes() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-medium truncate">{c.name}</p>
                         {c.vip_notes && (
-                          <Badge className="text-[10px] gap-1 bg-amber-100 text-amber-900 border-amber-200 hover:bg-amber-100">
+                          <Badge className="text-[10px] gap-1 bg-gold/10 text-gold border-gold/20 hover:bg-gold/10">
                             <Sparkles className="h-2.5 w-2.5" />
                             VIP
                           </Badge>
@@ -668,8 +668,8 @@ function CustomerEditForm({
                   className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm"
                 >
                   {i === 0 ? (
-                    <Badge variant="outline" className="text-[10px] gap-1 border-amber-300 text-amber-900 bg-amber-50">
-                      <Star className="h-2.5 w-2.5 fill-amber-500 text-amber-500" />
+                    <Badge variant="outline" className="text-[10px] gap-1 border-gold/20 text-gold bg-gold/10">
+                      <Star className="h-2.5 w-2.5 fill-gold text-gold" />
                       Principal
                     </Badge>
                   ) : (

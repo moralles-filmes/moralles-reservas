@@ -51,7 +51,7 @@ export default function CardapiosAjustes() {
                   </Tooltip>
                 </TooltipProvider>
               </Label>
-              <span className="ml-auto text-[10px] uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+              <span className="ml-auto text-[10px] uppercase tracking-wider text-warning bg-warning/10 border border-warning/20 rounded-full px-2 py-0.5">
                 Em breve
               </span>
             </div>

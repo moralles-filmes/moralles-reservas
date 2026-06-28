@@ -52,9 +52,9 @@ const STATUS_LABEL: Record<ConversationStatus, string> = {
 };
 
 const STATUS_CLASSES: Record<ConversationStatus, string> = {
-  ai_active: "bg-emerald-100 text-emerald-700 border-emerald-200",
-  awaiting_human: "bg-amber-100 text-amber-700 border-amber-200",
-  human_active: "bg-blue-100 text-blue-700 border-blue-200",
+  ai_active: "bg-success/10 text-success border-success/20",
+  awaiting_human: "bg-warning/10 text-warning border-warning/20",
+  human_active: "bg-info/10 text-info border-info/20",
   resolved: "bg-muted text-muted-foreground border-border",
 };
 
@@ -62,9 +62,9 @@ type FilterValue = "all" | ConversationStatus;
 
 const FILTER_CHIPS: { value: FilterValue; label: string; activeClasses: string; countStatus?: ConversationStatus }[] = [
   { value: "all", label: "Todas", activeClasses: "bg-foreground text-background border-foreground" },
-  { value: "awaiting_human", label: "Aguardando", activeClasses: "bg-amber-100 text-amber-700 border-amber-300", countStatus: "awaiting_human" },
-  { value: "human_active", label: "Em atendimento", activeClasses: "bg-blue-100 text-blue-700 border-blue-300", countStatus: "human_active" },
-  { value: "ai_active", label: "IA ativa", activeClasses: "bg-emerald-100 text-emerald-700 border-emerald-300", countStatus: "ai_active" },
+  { value: "awaiting_human", label: "Aguardando", activeClasses: "bg-warning/10 text-warning border-warning/20", countStatus: "awaiting_human" },
+  { value: "human_active", label: "Em atendimento", activeClasses: "bg-info/10 text-info border-info/20", countStatus: "human_active" },
+  { value: "ai_active", label: "IA ativa", activeClasses: "bg-success/10 text-success border-success/20", countStatus: "ai_active" },
 ];
 
 // ── Message bubble ─────────────────────────────────────────────────────────────
@@ -82,12 +82,12 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
           isBot
             ? "bg-primary text-primary-foreground rounded-br-sm"
             : isHuman
-            ? "bg-emerald-600 text-white rounded-br-sm"
+            ? "bg-success text-success-foreground rounded-br-sm"
             : "bg-muted rounded-bl-sm"
         }`}
       >
         {isHuman && (
-          <p className="text-[10px] font-semibold mb-0.5 text-emerald-100">Atendente</p>
+          <p className="text-[10px] font-semibold mb-0.5 text-success-foreground">Atendente</p>
         )}
         {isBot && kindLabel && (
           <p className="text-[10px] font-semibold uppercase tracking-wide opacity-80 mb-0.5">
@@ -287,7 +287,7 @@ function ConversationDetail({
               </>
             )}
             {current.status === "awaiting_human" && current.handoff_reason && (
-              <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-0.5 max-w-xs truncate">
+              <span className="text-xs text-warning bg-warning/10 border border-warning/20 rounded px-2 py-0.5 max-w-xs truncate">
                 {current.handoff_reason}
               </span>
             )}
@@ -371,8 +371,8 @@ function ConversationDetail({
 
       {/* Notice when awaiting human */}
       {current.status === "awaiting_human" && (
-        <div className="border-t p-3 bg-amber-50">
-          <p className="text-xs text-amber-700 text-center">
+        <div className="border-t p-3 bg-warning/10">
+          <p className="text-xs text-warning text-center">
             Aguardando atendente. Clique em <strong>Assumir</strong> para responder manualmente.
           </p>
         </div>
@@ -539,7 +539,7 @@ export default function Conversas() {
                     {formatPhone(c.customer?.phone || "")}
                   </p>
                   {c.status === "awaiting_human" && c.handoff_reason && (
-                    <p className="text-xs text-amber-700 truncate mt-0.5">{c.handoff_reason}</p>
+                    <p className="text-xs text-warning truncate mt-0.5">{c.handoff_reason}</p>
                   )}
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {formatDateBR(c.last_message_at ?? c.updated_at)}

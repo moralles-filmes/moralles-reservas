@@ -44,7 +44,7 @@ export function WizardSummary({ includeHall = false }: WizardSummaryProps) {
             </span>
           )}
           {computed.chargeInfo && (
-            <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
+            <span className="inline-flex items-center gap-1 text-warning font-medium">
               <Banknote className="h-3.5 w-3.5" />
               Caução R$ {(computed.chargeInfo.amountCents / 100).toFixed(2).replace(".", ",")}
             </span>

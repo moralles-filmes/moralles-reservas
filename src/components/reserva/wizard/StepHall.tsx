@@ -41,7 +41,7 @@ export function StepHall() {
         </h3>
 
         {noCompatible ? (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <div className="rounded-lg border border-warning/20 bg-warning/10 p-4 text-sm text-warning">
             Nenhum ambiente disponível para {state.party_size} pessoa
             {state.party_size === 1 ? "" : "s"} às {state.time}.
             {hasAlternatives
@@ -158,7 +158,7 @@ function HallCard({
               {partySize} pessoa{partySize === 1 ? "" : "s"} às {time}
             </span>
             {chargeCents != null && chargeCents > 0 && (
-              <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
+              <span className="inline-flex items-center gap-1 text-warning font-medium">
                 <Banknote className="h-3 w-3" />
                 Caução R$ {(chargeCents / 100).toFixed(2).replace(".", ",")}
               </span>

@@ -110,7 +110,7 @@ const PROVIDER_LABELS: Record<WhatsAppProvider, string> = {
 };
 
 const STATUS_CONFIG: Record<string, { label: string; icon: React.ReactNode; className: string }> = {
-  connected: { label: "Conectado", icon: <Wifi className="h-3 w-3" />, className: "text-green-700 bg-green-50 border-green-200" },
+  connected: { label: "Conectado", icon: <Wifi className="h-3 w-3" />, className: "text-success bg-success/10 border-success/20" },
   disconnected: { label: "Desconectado", icon: <WifiOff className="h-3 w-3" />, className: "text-muted-foreground bg-muted" },
   error: { label: "Erro", icon: <WifiOff className="h-3 w-3" />, className: "text-destructive bg-destructive/10 border-destructive/20" },
 };
@@ -363,7 +363,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                         }
                       >
                         {copiedId === ch.id ? (
-                          <Check className="h-3 w-3 text-green-600" />
+                          <Check className="h-3 w-3 text-success" />
                         ) : (
                           <Copy className="h-3 w-3" />
                         )}
@@ -796,7 +796,7 @@ function AITab({ unitId }: { unitId: string }) {
                 </SelectItem>
               ))}
               {showLegacyOption && (
-                <SelectItem value={savedModel} className="text-amber-700">
+                <SelectItem value={savedModel} className="text-warning">
                   {savedModel} (descontinuado — trocar)
                 </SelectItem>
               )}
@@ -821,12 +821,12 @@ function AITab({ unitId }: { unitId: string }) {
                   Atualizada em {new Date(savedKey.updated_at).toLocaleString("pt-BR")}
                 </p>
               </div>
-              <Badge variant="outline" className="text-[10px] text-green-700 border-green-200 bg-green-50">
+              <Badge variant="outline" className="text-[10px] text-success border-success/20 bg-success/10">
                 Salva
               </Badge>
             </div>
           ) : (
-            <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-start gap-2">
+            <div className="rounded border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning flex items-start gap-2">
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
               <div className="space-y-0.5">
                 <p className="font-medium">Chave obrigatória nesta unidade.</p>
@@ -1135,9 +1135,9 @@ function PaymentsTab({ unitId, unitSlug }: { unitId: string; unitSlug: string })
             variant="outline"
             className={`text-[10px] gap-1 ${
               account.charges_enabled
-                ? "text-green-700 bg-green-50 border-green-200"
+                ? "text-success bg-success/10 border-success/20"
                 : account.onboarding_complete
-                  ? "text-amber-700 bg-amber-50 border-amber-200"
+                  ? "text-warning bg-warning/10 border-warning/20"
                   : "text-muted-foreground bg-muted"
             }`}
           >
@@ -1161,7 +1161,7 @@ function PaymentsTab({ unitId, unitSlug }: { unitId: string; unitSlug: string })
               variant="outline"
               className={`text-[10px] ${
                 account.charges_enabled
-                  ? "text-green-700 bg-green-50 border-green-200"
+                  ? "text-success bg-success/10 border-success/20"
                   : "text-muted-foreground bg-muted"
               }`}
             >
@@ -1174,7 +1174,7 @@ function PaymentsTab({ unitId, unitSlug }: { unitId: string; unitSlug: string })
               variant="outline"
               className={`text-[10px] ${
                 account.payouts_enabled
-                  ? "text-green-700 bg-green-50 border-green-200"
+                  ? "text-success bg-success/10 border-success/20"
                   : "text-muted-foreground bg-muted"
               }`}
             >
@@ -1196,7 +1196,7 @@ function PaymentsTab({ unitId, unitSlug }: { unitId: string; unitSlug: string })
         </div>
 
         {!account.onboarding_complete && (
-          <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-start gap-2">
+          <div className="rounded border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning flex items-start gap-2">
             <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <p className="font-medium">Onboarding incompleto</p>
@@ -1320,8 +1320,8 @@ const OUTCOME_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = {
 
 function outcomeBadgeClass(outcome: string): string {
   const tone = OUTCOME_TONE[outcome] ?? "neutral";
-  if (tone === "good") return "text-green-700 bg-green-50 border-green-200";
-  if (tone === "warn") return "text-amber-700 bg-amber-50 border-amber-200";
+  if (tone === "good") return "text-success bg-success/10 border-success/20";
+  if (tone === "warn") return "text-warning bg-warning/10 border-warning/20";
   if (tone === "bad") return "text-destructive bg-destructive/10 border-destructive/20";
   return "text-muted-foreground bg-muted border-transparent";
 }
@@ -1462,12 +1462,12 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
             <div>
               <p className="text-xs text-muted-foreground">Origem da chave</p>
               {ai.key_source === "byok" && (
-                <Badge variant="outline" className="text-[10px] text-green-700 bg-green-50 border-green-200">
+                <Badge variant="outline" className="text-[10px] text-success bg-success/10 border-success/20">
                   BYOK ••••{ai.byok_last4}
                 </Badge>
               )}
               {ai.key_source === "global" && (
-                <Badge variant="outline" className="text-[10px] text-amber-700 bg-amber-50 border-amber-200">
+                <Badge variant="outline" className="text-[10px] text-warning bg-warning/10 border-warning/20">
                   Secret global
                 </Badge>
               )}

@@ -52,10 +52,10 @@ const TAB_LABELS: Record<Tab, string> = {
 };
 
 const TAB_ACCENT: Record<Tab, string> = {
-  geral: "bg-blue-500/15 text-blue-700",
-  reserva: "bg-emerald-500/15 text-emerald-700",
-  fila: "bg-orange-500/15 text-orange-700",
-  passante: "bg-slate-500/15 text-slate-700",
+  geral: "bg-info/15 text-info",
+  reserva: "bg-success/15 text-success",
+  fila: "bg-warning/15 text-warning",
+  passante: "bg-muted text-muted-foreground",
 };
 
 function formatTime(seconds: number | null): string {

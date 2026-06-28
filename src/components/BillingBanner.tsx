@@ -26,13 +26,13 @@ function urgencyClass(status: BillingBannerStatus): string {
     case "blocked":
     case "suspended":
     case "canceled":
-      return "bg-red-50 text-red-800 border-b border-red-200";
+      return "bg-destructive/10 text-destructive border-b border-destructive/20";
     case "past_due":
     case "grace_period":
     case "trial_ending":
-      return "bg-amber-50 text-amber-800 border-b border-amber-200";
+      return "bg-warning/10 text-warning border-b border-warning/20";
     default:
-      return "bg-blue-50 text-blue-800 border-b border-blue-200";
+      return "bg-info/10 text-info border-b border-info/20";
   }
 }
 

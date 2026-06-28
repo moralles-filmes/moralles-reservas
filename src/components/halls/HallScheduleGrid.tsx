@@ -100,7 +100,7 @@ export function HallScheduleGrid({ schedules, dayOfWeek, onChangeDay, onAdd, onE
                 </TableCell>
                 <TableCell>
                   {schedule.charge_enabled ? (
-                    <span className="text-amber-700">Com cobrança</span>
+                    <span className="text-warning">Com cobrança</span>
                   ) : (
                     <span className="text-muted-foreground">Sem cobrança</span>
                   )}

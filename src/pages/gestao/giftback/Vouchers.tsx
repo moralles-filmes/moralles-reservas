@@ -109,7 +109,7 @@ export default function Vouchers() {
       <header className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <Gift className="h-5 w-5 text-rose-500" />
+            <Gift className="h-5 w-5 text-gold" />
             <h1 className="text-2xl font-bold">Vouchers emitidos</h1>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
@@ -186,7 +186,7 @@ export default function Vouchers() {
                         </p>
                       </div>
                     </TableCell>
-                    <TableCell className="font-semibold text-rose-600">
+                    <TableCell className="font-semibold text-gold">
                       {v.discount_percent}%
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">

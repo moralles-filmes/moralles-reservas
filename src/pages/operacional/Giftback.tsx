@@ -126,7 +126,7 @@ export default function GiftbackOperacional() {
     <div className="space-y-5 max-w-xl mx-auto">
       <header>
         <div className="flex items-center gap-2">
-          <Gift className="h-5 w-5 text-rose-500" />
+          <Gift className="h-5 w-5 text-gold" />
           <h1 className="text-2xl font-bold">Validar voucher</h1>
         </div>
         <p className="text-sm text-muted-foreground mt-1">
@@ -204,12 +204,12 @@ export default function GiftbackOperacional() {
       </AlertDialog>
 
       {voucher && (
-        <Card className="border-emerald-300">
+        <Card className="border-success/20">
           <CardContent className="p-5 space-y-4">
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                  <CheckCircle2 className="h-5 w-5 text-success" />
                   <h2 className="font-semibold text-lg">Voucher válido</h2>
                 </div>
                 <p className="font-mono text-2xl font-bold tracking-wider">{voucher.code}</p>
@@ -217,9 +217,9 @@ export default function GiftbackOperacional() {
               <VoucherStatusBadge status={voucher.status} />
             </div>
 
-            <div className="rounded-md bg-rose-50 border border-rose-200 p-4 text-center">
-              <p className="text-xs uppercase tracking-wider text-rose-700">Desconto</p>
-              <p className="text-4xl font-bold text-rose-600">{voucher.discount_percent}%</p>
+            <div className="rounded-md bg-gold/10 border border-gold/20 p-4 text-center">
+              <p className="text-xs uppercase tracking-wider text-gold">Desconto</p>
+              <p className="text-4xl font-bold text-gold">{voucher.discount_percent}%</p>
             </div>
 
             <div className="space-y-2 text-sm">
@@ -249,7 +249,7 @@ export default function GiftbackOperacional() {
             </div>
 
             {daysLeft <= 3 && daysLeft >= 0 && (
-              <div className="rounded-md bg-amber-50 border border-amber-200 p-2 flex items-center gap-2 text-xs text-amber-800">
+              <div className="rounded-md bg-warning/10 border border-warning/20 p-2 flex items-center gap-2 text-xs text-warning">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                 {daysLeft === 0 ? "Voucher expira hoje." : "Voucher expira em breve."}
               </div>

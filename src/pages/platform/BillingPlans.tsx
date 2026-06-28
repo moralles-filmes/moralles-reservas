@@ -282,7 +282,7 @@ export default function BillingPlans() {
                     <div className="flex items-center gap-2">
                       {plan.name}
                       {plan.is_trial && (
-                        <Badge variant="secondary" className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0">TRIAL</Badge>
+                        <Badge variant="secondary" className="bg-warning/10 text-warning text-[10px] px-1.5 py-0">TRIAL</Badge>
                       )}
                     </div>
                   </TableCell>
@@ -296,9 +296,9 @@ export default function BillingPlans() {
                   </TableCell>
                   <TableCell>
                     {plan.active ? (
-                      <Badge variant="secondary" className="bg-emerald-100 text-emerald-800">Ativo</Badge>
+                      <Badge variant="secondary" className="bg-success/10 text-success">Ativo</Badge>
                     ) : (
-                      <Badge variant="secondary" className="bg-gray-100 text-gray-700">Inativo</Badge>
+                      <Badge variant="secondary" className="bg-muted text-muted-foreground">Inativo</Badge>
                     )}
                   </TableCell>
                   <TableCell>
@@ -436,7 +436,7 @@ export default function BillingPlans() {
               />
             </div>
 
-            <div className="sm:col-span-2 flex items-center justify-between rounded-md border border-amber-200 bg-amber-50/50 p-3">
+            <div className="sm:col-span-2 flex items-center justify-between rounded-md border border-warning/20 bg-warning/10 p-3">
               <div>
                 <Label htmlFor="plan-is-trial" className="font-medium">Plano de trial automático</Label>
                 <p className="text-xs text-muted-foreground">

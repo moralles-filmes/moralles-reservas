@@ -391,7 +391,7 @@ function CustomFieldModal({
               )}
 
               {type === "file" && (
-                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
+                <div className="rounded-md bg-warning/10 border border-warning/20 p-3 text-xs text-warning">
                   ⚠ Upload de arquivo está em fase beta — o campo aparece no formulário, mas a
                   retenção dos arquivos depende de configuração adicional do Storage. Pra MVP,
                   prefira tipos Texto ou Opções.

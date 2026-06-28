@@ -57,7 +57,7 @@ export default function Avaliacoes() {
       <header className="space-y-1">
         <BreadcrumbRelatorios current="Avaliações" />
         <div className="flex items-center gap-2">
-          <Star className="h-5 w-5 text-amber-400" />
+          <Star className="h-5 w-5 text-gold" />
           <h1 className="text-2xl font-bold">Avaliações</h1>
         </div>
       </header>

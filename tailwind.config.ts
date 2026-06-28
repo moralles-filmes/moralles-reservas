@@ -75,11 +75,29 @@ export default {
           DEFAULT: "hsl(var(--warning))",
           foreground: "hsl(var(--warning-foreground))",
         },
+        info: {
+          DEFAULT: "hsl(var(--info))",
+          foreground: "hsl(var(--info-foreground))",
+        },
+        gold: {
+          DEFAULT: "hsl(var(--gold))",
+          foreground: "hsl(var(--gold-foreground))",
+        },
+        "surface-elevated": "hsl(var(--surface-elevated))",
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      boxShadow: {
+        soft: "0 1px 2px hsl(var(--foreground) / 0.04), 0 1px 3px hsl(var(--foreground) / 0.06)",
+        "soft-hover":
+          "0 4px 12px -2px hsl(var(--foreground) / 0.10), 0 2px 6px -2px hsl(var(--foreground) / 0.08)",
+        premium: "0 8px 30px -6px hsl(var(--foreground) / 0.12)",
+        "premium-dark": "0 8px 40px -8px rgb(0 0 0 / 0.6)",
+        "gold-glow":
+          "0 0 0 1px hsl(var(--gold) / 0.22), 0 4px 14px -2px hsl(var(--gold) / 0.25)",
       },
       keyframes: {
         "accordion-down": {
