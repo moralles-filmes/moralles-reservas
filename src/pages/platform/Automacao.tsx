@@ -165,6 +165,10 @@ function PlatformSecretsCard() {
 
   const stripeSecrets = (secrets ?? []).filter((secret) => KEY_PROVIDER[secret.key] === "stripe");
   const asaasSecrets = (secrets ?? []).filter((secret) => KEY_PROVIDER[secret.key] === "asaas");
+  // Chave que a EF conhece (VALID_KEYS) mas que esta tela ainda não mapeou em
+  // KEY_PROVIDER cai aqui — visível numa seção própria em vez de sumir sem
+  // aviso (era o comportamento antes desta guarda).
+  const otherSecrets = (secrets ?? []).filter((secret) => !KEY_PROVIDER[secret.key]);
 
   const renderSecretRow = (secret: (typeof stripeSecrets)[number]) => (
     <div key={secret.key} className="rounded-lg border p-4 space-y-3 bg-muted/30">
@@ -260,8 +264,9 @@ function PlatformSecretsCard() {
             <h3 className="text-sm font-semibold">Stripe</h3>
             <p className="text-xs text-muted-foreground">
               Conta principal, usada na cobrança das mensalidades. Cada restaurante conecta sua
-              própria conta Stripe via a aba "Pagamentos" da unidade para caução de reserva — isso
-              é separado das chaves abaixo.
+              própria conta Stripe (Connect) via a aba "Pagamentos" da unidade, mas essa conexão
+              e o checkout de caução de reserva dependem da chave secreta abaixo — ela não é
+              exclusiva da cobrança.
             </p>
           </div>
           {stripeSecrets.map(renderSecretRow)}
@@ -310,6 +315,19 @@ function PlatformSecretsCard() {
           </div>
           {asaasSecrets.map(renderSecretRow)}
         </div>
+
+        {otherSecrets.length > 0 && (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold">Outras chaves</h3>
+              <p className="text-xs text-muted-foreground">
+                Chaves existentes no servidor sem provedor mapeado nesta tela ainda. Configuráveis
+                normalmente abaixo — avise o time de dev para classificá-las.
+              </p>
+            </div>
+            {otherSecrets.map(renderSecretRow)}
+          </div>
+        )}
 
         <div className="flex items-start gap-2 text-[11px] text-muted-foreground rounded bg-background border border-dashed p-2">
           <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
