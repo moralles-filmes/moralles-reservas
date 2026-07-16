@@ -223,9 +223,12 @@ serve(async (req) => {
       return new Response("OK", { status: 200 });
     }
   } catch (err) {
-    // Rede de segurança final — qualquer coisa não prevista acima ainda
-    // responde 200 (invariante §2: erro interno nunca é motivo pra não-200).
+    // Rede de segurança final. Responde 503 (não 200) porque aqui NÃO dá pra
+    // saber se o evento chegou a ser persistido: um throw inesperado antes do
+    // INSERT com 200 perderia o evento pra sempre. Pedir retry é seguro nos
+    // dois casos — se já tinha persistido, a redelivery bate na UNIQUE
+    // (provider, provider_event_id) e vira dedupe silencioso com 200.
     jsonLog("error", { reqId, evt: "asaas_webhook_unexpected", err: String(err) });
-    return new Response("OK", { status: 200 });
+    return new Response("Erro inesperado", { status: 503 });
   }
 });
