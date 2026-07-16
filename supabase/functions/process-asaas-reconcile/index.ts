@@ -95,8 +95,14 @@ serve(async (req) => {
 
     if (fetchError) {
       // Best-effort: sem a lista não há o que reprocessar agora, mas não é
-      // motivo pra 500 o worker inteiro — tenta de novo amanhã.
+      // motivo pra 500 o worker inteiro — tenta de novo amanhã. O status 200
+      // não muda (pg_net não olha), mas o corpo PRECISA marcar o skip — senão
+      // fica idêntico a uma execução saudável que não achou nada a fazer.
       jsonLog("error", { reqId, evt: "asaas_reconcile_fetch_error", err: fetchError.message });
+      return new Response(JSON.stringify({ success: true, skipped: "fetch_error" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     let processedCount = 0;

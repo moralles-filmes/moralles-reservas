@@ -12,9 +12,9 @@
  * Flags booleanas guardam jsonb true/false; flags de escolha guardam string
  * (ex.: billing_provider_default = "stripe").
  *
- * Fase 2 billing-asaas — consumido hoje por `asaas-webhook` (gate
- * asaas_enabled). Ao importar este módulo numa EF nova, lembrar do checklist
- * de redeploy no CLAUDE.md.
+ * Fase 2 billing-asaas — consumido hoje por `asaas-webhook` e
+ * `process-asaas-reconcile` (gate asaas_enabled). Ao importar este módulo
+ * numa EF nova, lembrar do checklist de redeploy no CLAUDE.md.
  */
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";

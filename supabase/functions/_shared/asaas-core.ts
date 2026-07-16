@@ -12,9 +12,10 @@
  * só a limpeza de cache no upsert/delete de secret), via asaas.ts (cliente
  * HTTP, Fase 2 — ainda sem EF consumidora) e diretamente por
  * supabase/functions/asaas-webhook/index.ts (classificação known/unknown +
- * parse do envelope). Nenhuma flag é lida neste módulo. Fatos abaixo vêm de
- * docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§3/§4/§8/§10) — não alterar
- * sem reconferir a doc oficial do Asaas.
+ * parse do envelope) e supabase/functions/process-asaas-reconcile/index.ts
+ * (reclassificação known/unknown das linhas presas). Nenhuma flag é lida
+ * neste módulo. Fatos abaixo vêm de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md
+ * (§3/§4/§8/§10) — não alterar sem reconferir a doc oficial do Asaas.
  */
 
 export type AsaasEnv = "sandbox" | "production";
@@ -214,7 +215,9 @@ export function asaasValueToCents(value: number): number {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Webhook — classificação de evento + parsing do envelope (§3/§4 da doc,
-// Fase 2 Task 4). Consumido por supabase/functions/asaas-webhook/index.ts.
+// Fase 2 Task 4). Consumido por supabase/functions/asaas-webhook/index.ts e
+// supabase/functions/process-asaas-reconcile/index.ts (Task 5, só reclassifica
+// — parseAsaasWebhookEnvelope segue exclusivo do webhook).
 // Escopo estritamente limitado a "persistir + classificar known/unknown" —
 // NENHUMA lógica de negócio por evento (ativar assinatura, creditar saldo,
 // mudar billing_status) mora aqui. Isso é Fase 4.
