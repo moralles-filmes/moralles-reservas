@@ -7,6 +7,7 @@ dist/
 *.log
 .claude/
 .hermes/
+.superpowers/
 supabase/.temp/
 resolved
 *.tsbuildinfo
