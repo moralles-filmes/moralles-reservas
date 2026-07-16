@@ -4,6 +4,8 @@ import {
   resolveAsaasBaseUrl,
   detectKeyEnv,
   validateKeyForEnv,
+  parseAsaasError,
+  parseRateLimitReset,
   ASAAS_SANDBOX_BASE_URL,
   ASAAS_PRODUCTION_BASE_URL,
 } from "../../supabase/functions/_shared/asaas-core";
@@ -183,5 +185,101 @@ describe("validateKeyForEnv", () => {
     if (r.status !== "inconclusive") throw new Error("esperava inconclusive");
     expect(r.warning).not.toContain(secretKey);
     expect(r.warning).not.toContain("super-secreta-98765");
+  });
+});
+
+// parseAsaasError/parseRateLimitReset são consumidos por _shared/asaas.ts
+// (cliente HTTP, Fase 2) — shape verificado em 03-ASAAS-API-VERIFICADO.md
+// (§10). O Asaas usa `errors[0].description`, não `error.message` (Stripe).
+
+describe("parseAsaasError", () => {
+  it("caso feliz: devolve errors[0].description", () => {
+    const data = { errors: [{ code: "invalid_object", description: "O campo items deve ser informado." }] };
+    expect(parseAsaasError(data, "fallback")).toBe("O campo items deve ser informado.");
+  });
+
+  it("usa só o primeiro erro quando há vários", () => {
+    const data = {
+      errors: [
+        { code: "a", description: "primeiro erro" },
+        { code: "b", description: "segundo erro" },
+      ],
+    };
+    expect(parseAsaasError(data, "fallback")).toBe("primeiro erro");
+  });
+
+  it("errors: [] (array vazio) → fallback", () => {
+    expect(parseAsaasError({ errors: [] }, "fallback")).toBe("fallback");
+  });
+
+  it("errors ausente → fallback", () => {
+    expect(parseAsaasError({}, "fallback")).toBe("fallback");
+  });
+
+  it("data null/undefined → fallback", () => {
+    expect(parseAsaasError(null, "fallback")).toBe("fallback");
+    expect(parseAsaasError(undefined, "fallback")).toBe("fallback");
+  });
+
+  it("shape inesperado (string solta) → fallback", () => {
+    expect(parseAsaasError("erro genérico", "fallback")).toBe("fallback");
+  });
+
+  it("shape inesperado (número) → fallback", () => {
+    expect(parseAsaasError(42, "fallback")).toBe("fallback");
+  });
+
+  it("shape inesperado (array no topo, não objeto) → fallback", () => {
+    expect(parseAsaasError([{ description: "x" }], "fallback")).toBe("fallback");
+  });
+
+  it("errors[0] sem description → fallback", () => {
+    expect(parseAsaasError({ errors: [{ code: "invalid_object" }] }, "fallback")).toBe("fallback");
+  });
+
+  it("errors[0] não é objeto (string solta dentro do array) → fallback", () => {
+    expect(parseAsaasError({ errors: ["erro"] }, "fallback")).toBe("fallback");
+  });
+
+  it("description vazia ou só espaço → fallback", () => {
+    expect(parseAsaasError({ errors: [{ description: "" }] }, "fallback")).toBe("fallback");
+    expect(parseAsaasError({ errors: [{ description: "   " }] }, "fallback")).toBe("fallback");
+  });
+
+  it("nunca lança, mesmo com shapes hostis", () => {
+    expect(() => parseAsaasError(undefined, "fallback")).not.toThrow();
+    expect(() => parseAsaasError(null, "fallback")).not.toThrow();
+    expect(() => parseAsaasError("x", "fallback")).not.toThrow();
+    expect(() => parseAsaasError(123, "fallback")).not.toThrow();
+    expect(() => parseAsaasError([], "fallback")).not.toThrow();
+    expect(() => parseAsaasError({ errors: null }, "fallback")).not.toThrow();
+    expect(() => parseAsaasError({ errors: [null] }, "fallback")).not.toThrow();
+  });
+});
+
+describe("parseRateLimitReset", () => {
+  it("número válido (string) → number", () => {
+    expect(parseRateLimitReset("42")).toBe(42);
+  });
+
+  it("null → null (header ausente)", () => {
+    expect(parseRateLimitReset(null)).toBeNull();
+  });
+
+  it("string vazia/só espaço → null", () => {
+    expect(parseRateLimitReset("")).toBeNull();
+    expect(parseRateLimitReset("   ")).toBeNull();
+  });
+
+  it("lixo não-numérico ('abc') → null", () => {
+    expect(parseRateLimitReset("abc")).toBeNull();
+  });
+
+  it("negativo → null", () => {
+    expect(parseRateLimitReset("-1")).toBeNull();
+  });
+
+  it("'0' → 0 (reset iminente é válido, não é ausência — cuidado com falsy)", () => {
+    expect(parseRateLimitReset("0")).toBe(0);
   });
 });

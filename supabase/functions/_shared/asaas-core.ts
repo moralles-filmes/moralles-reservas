@@ -1,15 +1,17 @@
 /**
- * Núcleo PURO de configuração Asaas (ambiente, base URL, validação de chave).
+ * Núcleo PURO Asaas: ambiente/base URL/validação de chave (§8) + parsing de
+ * erro e de rate limit (§10) das respostas HTTP.
  *
  * ZERO dependências (sem imports, sem `Deno.*`) — importável tanto por
- * _shared/asaas-config.ts (Edge Functions, Deno) quanto pelo vitest do
- * frontend (src/lib/asaas-core.test.ts, roda em jsdom sem Deno). Mesmo
- * padrão de entitlements-core.ts.
+ * _shared/asaas-config.ts / _shared/asaas.ts (Edge Functions, Deno) quanto
+ * pelo vitest do frontend (src/lib/asaas-core.test.ts, roda em jsdom sem
+ * Deno). Mesmo padrão de entitlements-core.ts.
  *
  * Consumido hoje via asaas-config.ts por manage-platform-secrets (Fase 2:
- * só a limpeza de cache no upsert/delete de secret). Nenhuma flag é lida
- * neste módulo. Fatos abaixo vêm de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md
- * (§8) — não alterar sem reconferir a doc oficial do Asaas.
+ * só a limpeza de cache no upsert/delete de secret) e via asaas.ts (cliente
+ * HTTP, Fase 2 — ainda sem EF consumidora). Nenhuma flag é lida neste módulo.
+ * Fatos abaixo vêm de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§8/§10)
+ * — não alterar sem reconferir a doc oficial do Asaas.
  */
 
 export type AsaasEnv = "sandbox" | "production";
@@ -93,4 +95,37 @@ export function validateKeyForEnv(apiKey: string, env: AsaasEnv): KeyEnvValidati
   }
 
   return { status: "ok" };
+}
+
+/**
+ * Extrai a mensagem de erro do body do Asaas: `{ errors: [{ code, description }] }`
+ * (§10 da doc verificada — a Stripe usa `error.message`, o Asaas não). À prova
+ * de qualquer shape (null, array vazio, string solta, objeto sem `description`)
+ * — nunca lança, sempre cai no `fallback`.
+ */
+export function parseAsaasError(data: unknown, fallback: string): string {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return fallback;
+
+  const errors = (data as Record<string, unknown>).errors;
+  if (!Array.isArray(errors) || errors.length === 0) return fallback;
+
+  const first = errors[0];
+  if (!first || typeof first !== "object") return fallback;
+
+  const description = (first as Record<string, unknown>).description;
+  if (typeof description === "string" && description.trim()) return description;
+
+  return fallback;
+}
+
+/**
+ * Segundos até o reset do rate limit, lido do header `RateLimit-Reset` (§10 —
+ * não existe `Retry-After` no Asaas). `null` pra ausente/NaN/negativo. "0" É
+ * válido (reset iminente, não ausência) — não tratar como falsy.
+ */
+export function parseRateLimitReset(headerValue: string | null): number | null {
+  if (headerValue === null || headerValue.trim() === "") return null;
+  const parsed = Number(headerValue);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
 }
