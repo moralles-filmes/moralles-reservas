@@ -384,6 +384,8 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`waitlist-defaults.ts`** → `process-waitlist-entered`, `resend-notification`
 - **`stripe-config.ts`** → `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`, `manage-payment-methods`
 - **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`
+- **`asaas-config.ts`** → `manage-platform-secrets`
+- **`asaas-core.ts`** → consumido via `asaas-config.ts`: `manage-platform-secrets`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
 - **`whatsapp-send.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
 - **`whatsapp-providers.ts`** → `webhook-whatsapp`, `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`

@@ -6,8 +6,9 @@
  * frontend (src/lib/asaas-core.test.ts, roda em jsdom sem Deno). Mesmo
  * padrão de entitlements-core.ts.
  *
- * Fase 2 billing-asaas: sem consumidor ainda, atrás da flag `asaas_enabled`
- * (OFF). Fatos abaixo vêm de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md
+ * Consumido hoje via asaas-config.ts por manage-platform-secrets (Fase 2:
+ * só a limpeza de cache no upsert/delete de secret). Nenhuma flag é lida
+ * neste módulo. Fatos abaixo vêm de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md
  * (§8) — não alterar sem reconferir a doc oficial do Asaas.
  */
 
@@ -59,11 +60,12 @@ export type KeyEnvValidation =
  * Nunca inclui o valor da chave em `error`/`warning` — essas mensagens vão pra log.
  */
 export function validateKeyForEnv(apiKey: string, env: AsaasEnv): KeyEnvValidation {
-  if (!apiKey.trim()) {
+  const trimmedKey = apiKey.trim();
+  if (!trimmedKey) {
     return { status: "blocked", error: "Chave da API Asaas não está configurada." };
   }
 
-  const keyEnv = detectKeyEnv(apiKey);
+  const keyEnv = detectKeyEnv(trimmedKey);
   if (keyEnv === null) {
     // Chaves geradas ANTES de 10/03/2025 não têm o segmento prod/hmlg (formato
     // legado `$aact_YTU5...`, hash direto após `$aact_`) e continuam válidas —
@@ -79,9 +81,14 @@ export function validateKeyForEnv(apiKey: string, env: AsaasEnv): KeyEnvValidati
 
   if (keyEnv !== env) {
     const label = (e: AsaasEnv) => (e === "production" ? "produção" : "sandbox");
+    // Lado esquerdo (chave) usa o rótulo PT-BR pro operador; lado direito
+    // (ASAAS_ENV=) usa o literal em inglês — é o valor real da env var, não
+    // texto traduzível. `parseAsaasEnv("produção")` cai pro default "sandbox",
+    // então um "ASAAS_ENV=produção" no log levaria quem copia a configurar o
+    // ambiente TROCADO.
     return {
       status: "blocked",
-      error: `Chave de ${label(keyEnv)} configurada mas ASAAS_ENV=${label(env)}.`,
+      error: `Chave de ${label(keyEnv)} configurada mas ASAAS_ENV=${env}.`,
     };
   }
 

@@ -6,8 +6,10 @@
  * Functions quentes não fazem SELECT a cada request, mas refletem mudanças
  * do admin em ≤5min.
  *
- * Fase 2 billing-asaas — sem consumidor ainda (chega em `_shared/asaas.ts` e
- * `asaas-webhook` nas próximas tasks). Ao importar este módulo numa EF,
+ * Fase 2 billing-asaas — consumido hoje por manage-platform-secrets (só
+ * `clearAsaasConfigCache`, no upsert/delete de secret). Os getters
+ * (`getAsaasApiKey` etc.) ganham consumidor real em `_shared/asaas.ts` e
+ * `asaas-webhook` nas próximas tasks. Ao importar este módulo numa EF,
  * lembrar do checklist de redeploy no CLAUDE.md.
  */
 

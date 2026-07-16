@@ -37,6 +37,14 @@ describe("resolveAsaasBaseUrl", () => {
     expect(resolveAsaasBaseUrl("production")).toBe(ASAAS_PRODUCTION_BASE_URL);
   });
 
+  // As duas asserções acima comparam a constante contra ela mesma — um typo em
+  // ASAAS_SANDBOX_BASE_URL/ASAAS_PRODUCTION_BASE_URL passaria verde e só falharia
+  // em runtime (DNS). Pinar o literal exato de 03-ASAAS-API-VERIFICADO.md (§8).
+  it("as constantes de base URL batem com o literal verificado em 03-ASAAS-API-VERIFICADO.md (§8)", () => {
+    expect(ASAAS_SANDBOX_BASE_URL).toBe("https://api-sandbox.asaas.com/v3");
+    expect(ASAAS_PRODUCTION_BASE_URL).toBe("https://api.asaas.com/v3");
+  });
+
   it("override com conteúdo vence, sem barra final", () => {
     expect(resolveAsaasBaseUrl("sandbox", "https://custom.example.com/v3")).toBe(
       "https://custom.example.com/v3",
@@ -98,6 +106,30 @@ describe("validateKeyForEnv", () => {
     expect(r.error).toMatch(/produ/i);
   });
 
+  // O lado "Chave de X" pode usar rótulo PT-BR, mas "ASAAS_ENV=" precisa do
+  // literal em inglês — não é um valor traduzível. "ASAAS_ENV=produção" não é
+  // um AsaasEnv válido: parseAsaasEnv("produção") cai no default "sandbox", ou
+  // seja, quem copiasse esse literal do log pra configurar a env var
+  // selecionaria o ambiente OPOSTO ao que o erro está reportando.
+  it("mensagem usa o literal em inglês do lado direito de ASAAS_ENV= (nunca traduzido)", () => {
+    const rSandbox = validateKeyForEnv("$aact_prod_x", "sandbox");
+    if (rSandbox.status !== "blocked") throw new Error("esperava blocked");
+    expect(rSandbox.error).toContain("ASAAS_ENV=sandbox");
+
+    const rProduction = validateKeyForEnv("$aact_hmlg_x", "production");
+    if (rProduction.status !== "blocked") throw new Error("esperava blocked");
+    expect(rProduction.error).toContain("ASAAS_ENV=production");
+    expect(rProduction.error).not.toContain("ASAAS_ENV=produção");
+  });
+
+  it("chave com espaço em branco à esquerda ainda é reconhecida pelo prefixo (trim antes de detectKeyEnv)", () => {
+    const r = validateKeyForEnv("  $aact_prod_x", "sandbox");
+    expect(r.status).toBe("blocked");
+    if (r.status !== "blocked") throw new Error("esperava blocked");
+    expect(r.error).toMatch(/produ/i);
+    expect(r.error).toMatch(/sandbox/i);
+  });
+
   // Prefixo desconhecido é ambíguo, não inválido: chaves geradas antes de
   // 10/03/2025 (formato legado `$aact_YTU5...`, sem segmento prod/hmlg) não
   // têm prefixo de ambiente e continuam válidas. Bloquear aqui rejeitaria
@@ -137,5 +169,19 @@ describe("validateKeyForEnv", () => {
     if (r.status !== "blocked") throw new Error("esperava blocked");
     expect(r.error).not.toContain(secretKey);
     expect(r.error).not.toContain("super_secret_value_12345");
+  });
+
+  // Mesmo guard do teste acima, mas pro branch "inconclusive" — é o mais
+  // tentador de "melhorar" no futuro citando o prefixo não reconhecido
+  // (ex.: `warning: \`prefixo ${apiKey.slice(0,11)} não reconhecido\``), o que
+  // vazaria um pedaço da chave pro log e passaria batido se só o branch
+  // "blocked" fosse coberto.
+  it("warning do branch inconclusive também NUNCA contém o valor da chave", () => {
+    const secretKey = "chave-com-prefixo-desconhecido-super-secreta-98765";
+    const r = validateKeyForEnv(secretKey, "sandbox");
+    expect(r.status).toBe("inconclusive");
+    if (r.status !== "inconclusive") throw new Error("esperava inconclusive");
+    expect(r.warning).not.toContain(secretKey);
+    expect(r.warning).not.toContain("super-secreta-98765");
   });
 });

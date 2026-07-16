@@ -31,6 +31,16 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
 
 // Centraliza a limpeza de cache de config de TODOS os providers — upsert/delete
 // chama isto uma vez; provider novo entra aqui, não em cada call site solto.
+//
+// Escopo real: cada Edge Function é seu próprio isolate com sua própria cópia
+// do módulo (CLAUDE.md: "Edge Functions não compartilham bundle em runtime").
+// As duas chamadas abaixo só limpam o cache DESTE isolate — que aqui nem chega
+// a ser populado, pois manage-platform-secrets nunca lê getStripeSecretKey()/
+// getAsaasApiKey(). Isolates que de fato leem a chave (stripe-webhook,
+// create-checkout-session, o futuro asaas-webhook, etc.) mantêm o valor antigo
+// em cache até o próprio TTL de 5min expirar — uma chave rotacionada pode levar
+// até 5min pra valer em todo lugar. Não existe invalidação cross-isolate; esse
+// TTL bounded é o comportamento aceito.
 function clearAllProviderConfigCaches(): void {
   clearStripeConfigCache();
   clearAsaasConfigCache();
@@ -137,7 +147,7 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao salvar configuração." }, 500);
       }
 
-      clearAllProviderConfigCaches();
+      clearAllProviderConfigCaches(); // só limpa o cache deste isolate — ver comentário na função
 
       jsonLog("info", { reqId, evt: "platform_secret_upserted", key });
       return jsonResponse(req, { success: true, key, last4 });
@@ -160,7 +170,7 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao remover configuração." }, 500);
       }
 
-      clearAllProviderConfigCaches();
+      clearAllProviderConfigCaches(); // só limpa o cache deste isolate — ver comentário na função
 
       jsonLog("info", { reqId, evt: "platform_secret_deleted", key });
       return jsonResponse(req, { success: true });
