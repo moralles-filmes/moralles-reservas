@@ -75,43 +75,66 @@ describe("detectKeyEnv", () => {
 
 describe("validateKeyForEnv", () => {
   it("caso feliz: chave sandbox + env sandbox", () => {
-    expect(validateKeyForEnv("$aact_hmlg_x", "sandbox")).toEqual({ ok: true });
+    expect(validateKeyForEnv("$aact_hmlg_x", "sandbox")).toEqual({ status: "ok" });
   });
 
   it("caso feliz: chave produção + env produção", () => {
-    expect(validateKeyForEnv("$aact_prod_x", "production")).toEqual({ ok: true });
+    expect(validateKeyForEnv("$aact_prod_x", "production")).toEqual({ status: "ok" });
   });
 
-  it("chave de produção + env sandbox → erro explícito", () => {
+  it("chave de produção + env sandbox → bloqueada com erro explícito", () => {
     const r = validateKeyForEnv("$aact_prod_x", "sandbox");
-    expect(r.ok).toBe(false);
+    expect(r.status).toBe("blocked");
+    if (r.status !== "blocked") throw new Error("esperava blocked");
     expect(r.error).toMatch(/produ/i);
     expect(r.error).toMatch(/sandbox/i);
   });
 
-  it("chave de sandbox + env produção → erro explícito", () => {
+  it("chave de sandbox + env produção → bloqueada com erro explícito", () => {
     const r = validateKeyForEnv("$aact_hmlg_x", "production");
-    expect(r.ok).toBe(false);
+    expect(r.status).toBe("blocked");
+    if (r.status !== "blocked") throw new Error("esperava blocked");
     expect(r.error).toMatch(/sandbox/i);
     expect(r.error).toMatch(/produ/i);
   });
 
-  it("prefixo desconhecido → erro (não casa com nenhum ambiente)", () => {
+  // Prefixo desconhecido é ambíguo, não inválido: chaves geradas antes de
+  // 10/03/2025 (formato legado `$aact_YTU5...`, sem segmento prod/hmlg) não
+  // têm prefixo de ambiente e continuam válidas. Bloquear aqui rejeitaria
+  // uma chave legítima e antiga — ver §8 de 03-ASAAS-API-VERIFICADO.md.
+  it("prefixo desconhecido/legado → permitido mas inconclusivo (NÃO bloqueia)", () => {
     const r = validateKeyForEnv("chave-invalida", "sandbox");
-    expect(r.ok).toBe(false);
-    expect(r.error).toBeTruthy();
+    expect(r.status).toBe("inconclusive");
+    if (r.status !== "inconclusive") throw new Error("esperava inconclusive");
+    expect(r.warning).toBeTruthy();
   });
 
-  it("chave vazia → erro dizendo que não está configurada", () => {
+  it("chave legado ($aact_YTU5...) → permitida mas inconclusiva, nos dois ambientes", () => {
+    const legacyKey = "$aact_YTU5MjJhOWY4MDAwMDAwMDAwMDAwMDAw";
+
+    const rSandbox = validateKeyForEnv(legacyKey, "sandbox");
+    expect(rSandbox.status).toBe("inconclusive");
+    if (rSandbox.status !== "inconclusive") throw new Error("esperava inconclusive");
+    expect(rSandbox.warning).toBeTruthy();
+
+    const rProduction = validateKeyForEnv(legacyKey, "production");
+    expect(rProduction.status).toBe("inconclusive");
+    if (rProduction.status !== "inconclusive") throw new Error("esperava inconclusive");
+    expect(rProduction.warning).toBeTruthy();
+  });
+
+  it("chave vazia → bloqueada dizendo que não está configurada", () => {
     const r = validateKeyForEnv("", "sandbox");
-    expect(r.ok).toBe(false);
+    expect(r.status).toBe("blocked");
+    if (r.status !== "blocked") throw new Error("esperava blocked");
     expect(r.error).toBeTruthy();
   });
 
   it("mensagem de erro NUNCA contém o valor da chave (mensagens vão pra log)", () => {
     const secretKey = "$aact_prod_super_secret_value_12345";
     const r = validateKeyForEnv(secretKey, "sandbox");
-    expect(r.ok).toBe(false);
+    expect(r.status).toBe("blocked");
+    if (r.status !== "blocked") throw new Error("esperava blocked");
     expect(r.error).not.toContain(secretKey);
     expect(r.error).not.toContain("super_secret_value_12345");
   });

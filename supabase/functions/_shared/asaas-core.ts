@@ -43,32 +43,47 @@ export function detectKeyEnv(apiKey: string): AsaasEnv | null {
 }
 
 /**
- * Guard de configuração: a chave pertence ao ambiente em que vamos usá-la?
- * Nunca inclui o valor da chave na mensagem de erro — mensagens vão pra log.
+ * Resultado de validateKeyForEnv — 3 estados, nunca booleano puro (§8 da doc):
+ * - "ok": prefixo bate com o ambiente.
+ * - "blocked": prefixo conhecido mas do ambiente errado — falha cedo, `error` pro chamador.
+ * - "inconclusive": prefixo não reconhecido — NÃO bloqueia (ver comentário no branch
+ *   abaixo), mas `warning` deve ir pro log do chamador.
  */
-export function validateKeyForEnv(
-  apiKey: string,
-  env: AsaasEnv,
-): { ok: boolean; error?: string } {
+export type KeyEnvValidation =
+  | { status: "ok" }
+  | { status: "blocked"; error: string }
+  | { status: "inconclusive"; warning: string };
+
+/**
+ * Guard de configuração: a chave pertence ao ambiente em que vamos usá-la?
+ * Nunca inclui o valor da chave em `error`/`warning` — essas mensagens vão pra log.
+ */
+export function validateKeyForEnv(apiKey: string, env: AsaasEnv): KeyEnvValidation {
   if (!apiKey.trim()) {
-    return { ok: false, error: "Chave da API Asaas não está configurada." };
+    return { status: "blocked", error: "Chave da API Asaas não está configurada." };
   }
 
   const keyEnv = detectKeyEnv(apiKey);
   if (keyEnv === null) {
+    // Chaves geradas ANTES de 10/03/2025 não têm o segmento prod/hmlg (formato
+    // legado `$aact_YTU5...`, hash direto após `$aact_`) e continuam válidas —
+    // não são migradas automaticamente. Tratar como erro rejeitaria uma chave
+    // legítima e antiga; quem garante o ambiente de fato é a própria API
+    // (401 invalid_environment), não o prefixo.
     return {
-      ok: false,
-      error: "Chave da API Asaas com prefixo desconhecido (não é sandbox nem produção).",
+      status: "inconclusive",
+      warning:
+        "Chave da API Asaas com prefixo não reconhecido (possível formato legado pré-10/03/2025) — validação de ambiente por prefixo inconclusiva.",
     };
   }
 
   if (keyEnv !== env) {
     const label = (e: AsaasEnv) => (e === "production" ? "produção" : "sandbox");
     return {
-      ok: false,
+      status: "blocked",
       error: `Chave de ${label(keyEnv)} configurada mas ASAAS_ENV=${label(env)}.`,
     };
   }
 
-  return { ok: true };
+  return { status: "ok" };
 }
