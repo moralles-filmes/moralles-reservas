@@ -12,6 +12,8 @@ import {
   shouldRetryGet,
   MUTATION_RATE_LIMIT_RETRIES,
   GET_MAX_RETRIES,
+  centsToAsaasValue,
+  asaasValueToCents,
 } from "../../supabase/functions/_shared/asaas-core";
 
 // Fatos verificados em docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§8):
@@ -347,5 +349,95 @@ describe("shouldRetryGet — GET é idempotente: 5xx e 429 repetem normal até o
     expect(shouldRetryGet(400, 0)).toBe(false);
     expect(shouldRetryGet(404, 0)).toBe(false);
     expect(shouldRetryGet(401, 0)).toBe(false);
+  });
+});
+
+// centsToAsaasValue/asaasValueToCents são o invariante de dinheiro mais caro
+// desta integração (§9.1): o Asaas fala reais decimais, nós falamos
+// amountCents inteiro. Mandar `44900` cru cobraria R$ 44.900,00 em vez de
+// R$ 449,00 — 100x. Valores dos planos reais vêm de
+// docs/billing-asaas/01-PLANO-IMPLEMENTACAO.md (§FASE 3).
+
+describe("centsToAsaasValue — centavos → reais decimais (§9.1)", () => {
+  it("R$ 449,00 (plano sistema-reservas): 44900 centavos → 449", () => {
+    expect(centsToAsaasValue(44900)).toBe(449);
+  });
+
+  it("R$ 750,00 (plano implementacao-whatsapp): 75000 centavos → 750", () => {
+    expect(centsToAsaasValue(75000)).toBe(750);
+  });
+
+  it("R$ 149,00 (plano instancia-whatsapp): 14900 centavos → 149", () => {
+    expect(centsToAsaasValue(14900)).toBe(149);
+  });
+
+  it("R$ 49,90: 4990 centavos → 49.9", () => {
+    expect(centsToAsaasValue(4990)).toBe(49.9);
+  });
+
+  it("zero é válido (plano trial-padrao, R$ 0)", () => {
+    expect(centsToAsaasValue(0)).toBe(0);
+  });
+
+  it("não-inteiro (fração de centavo não existe) → lança", () => {
+    expect(() => centsToAsaasValue(4990.5)).toThrow(RangeError);
+  });
+
+  it("negativo → lança", () => {
+    expect(() => centsToAsaasValue(-100)).toThrow(RangeError);
+  });
+
+  it("NaN/Infinity → lança", () => {
+    expect(() => centsToAsaasValue(NaN)).toThrow(RangeError);
+    expect(() => centsToAsaasValue(Infinity)).toThrow(RangeError);
+    expect(() => centsToAsaasValue(-Infinity)).toThrow(RangeError);
+  });
+});
+
+describe("asaasValueToCents — reais decimais → centavos (§9.1)", () => {
+  it("449 → 44900 centavos", () => {
+    expect(asaasValueToCents(449)).toBe(44900);
+  });
+
+  it("750 → 75000 centavos", () => {
+    expect(asaasValueToCents(750)).toBe(75000);
+  });
+
+  it("149 → 14900 centavos", () => {
+    expect(asaasValueToCents(149)).toBe(14900);
+  });
+
+  it("49.9 → 4990 centavos", () => {
+    expect(asaasValueToCents(49.9)).toBe(4990);
+  });
+
+  it("zero é válido", () => {
+    expect(asaasValueToCents(0)).toBe(0);
+  });
+
+  // A razão de existir do Math.round: em IEEE 754, 19.90 * 100 não é 1990
+  // exato. Sem arredondar, um cast/truncamento cru cortaria pra 1899 —
+  // R$ 0,01 a menos por cobrança, silenciosamente. Não "simplificar" isso
+  // removendo o Math.round.
+  it("float drift do IEEE 754: 19.90 * 100 !== 1990 exato, mas o resultado arredondado é", () => {
+    expect(19.9 * 100).not.toBe(1990);
+    expect(19.9 * 100).toBeCloseTo(1990, 5);
+    expect(asaasValueToCents(19.9)).toBe(1990);
+  });
+
+  it("negativo → lança", () => {
+    expect(() => asaasValueToCents(-1)).toThrow(RangeError);
+  });
+
+  it("NaN/Infinity → lança", () => {
+    expect(() => asaasValueToCents(NaN)).toThrow(RangeError);
+    expect(() => asaasValueToCents(Infinity)).toThrow(RangeError);
+    expect(() => asaasValueToCents(-Infinity)).toThrow(RangeError);
+  });
+});
+
+describe("round-trip asaasValueToCents(centsToAsaasValue(x)) === x", () => {
+  it.each([0, 100, 4990, 14900, 44900, 75000, 1, 999999])("%i centavos sobrevive ao round-trip", (cents) => {
+    expect(asaasValueToCents(centsToAsaasValue(cents))).toBe(cents);
   });
 });

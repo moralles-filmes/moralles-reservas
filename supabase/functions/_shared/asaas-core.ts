@@ -160,3 +160,51 @@ export function shouldRetryMutation(status: number, attempt: number): boolean {
 export function shouldRetryGet(status: number, attempt: number): boolean {
   return (status >= 500 || status === 429) && attempt < GET_MAX_RETRIES;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Conversão monetária — a fronteira mais perigosa da integração (§9.1)
+//
+// Nosso código inteiro fala `amountCents` (inteiro). O Asaas fala `value` em
+// REAIS DECIMAIS (`"value": 19.90` = R$ 19,90 — não `1990`). Mandar centavos
+// crus (`44900`) cobraria R$ 44.900,00 em vez de R$ 449,00: 100x. Estas duas
+// funções são a ÚNICA fronteira de conversão — AsaasBillingProvider
+// (_shared/billing-provider.ts) chama-as em vez de dividir/multiplicar por
+// 100 solto no meio do adapter.
+//
+// Ambas erram pro lado seguro: entrada inválida LANÇA em vez de tentar
+// adivinhar um valor — cobrar um número errado silenciosamente é pior do que
+// a operação falhar alto e o caller (AsaasBillingProvider) traduzir pra um
+// ProviderResult{ok:false} antes de expor ao resto do sistema.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Centavos (inteiro) → `value` do Asaas (reais decimais). Ver §9.1.
+ * Lança se `amountCents` não for inteiro finito ≥ 0 — fração de centavo não
+ * existe (não há como "arredondar" isso sem mascarar um bug de chamador).
+ * Zero é válido (plano trial R$ 0, seed `trial-padrao` do FASE 3).
+ */
+export function centsToAsaasValue(amountCents: number): number {
+  if (!Number.isInteger(amountCents) || amountCents < 0) {
+    throw new RangeError(
+      `centsToAsaasValue: amountCents inválido (${amountCents}) — precisa ser inteiro ≥ 0.`,
+    );
+  }
+  return amountCents / 100;
+}
+
+/**
+ * `value` do Asaas (reais decimais) → centavos (inteiro). Ver §9.1.
+ * O `Math.round` NÃO é decorativo: `19.90 * 100 === 1899.9999999999998` em
+ * IEEE 754 — sem arredondar, `Math.trunc`/cast direto cortaria pra `1899`
+ * (R$ 0,01 a menos por cobrança, de forma silenciosa). Lança em
+ * NaN/Infinity/negativo: um `value` corrompido vindo da API não deve virar
+ * um número de centavos qualquer.
+ */
+export function asaasValueToCents(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(
+      `asaasValueToCents: value inválido (${value}) — precisa ser finito e ≥ 0.`,
+    );
+  }
+  return Math.round(value * 100);
+}

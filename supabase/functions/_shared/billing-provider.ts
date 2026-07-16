@@ -1,21 +1,26 @@
 /**
- * Camada abstrata de provedores de pagamento (Fase 1 billing-asaas).
+ * Camada abstrata de provedores de pagamento (Fase 1/2/3 billing-asaas).
  *
  * BillingProviderPort é o contrato único; implementações:
  *   - StripeBillingProvider (este arquivo): adapter fino sobre os helpers
  *     legados de stripe-billing.ts — comportamento IDÊNTICO ao atual, papel
  *     read-only/legado durante a migração.
- *   - AsaasBillingProvider (Fase 2, _shared/asaas.ts): provedor principal novo.
+ *   - AsaasBillingProvider (este arquivo, Fase 3): provedor principal novo,
+ *     adapter fino sobre _shared/asaas.ts (cliente HTTP) + conversão
+ *     centavos↔reais de _shared/asaas-core.ts (§9.1 de
+ *     docs/billing-asaas/03-ASAAS-API-VERIFICADO.md).
  *
  * Regras:
- *   - Valores monetários SEMPRE em centavos inteiros.
+ *   - Valores monetários SEMPRE em centavos inteiros na fronteira do port —
+ *     AsaasBillingProvider converte pra reais só na chamada ao asaas.ts.
  *   - O caller NUNCA aceita preço vindo do request — carrega de billing_plans.
  *   - processWebhook fica FORA do port: cada provedor tem verificação própria
  *     (Stripe HMAC t=/v1= em stripe-webhook; Asaas token de header em
  *     asaas-webhook). O port cobre as operações imperativas.
  *
- * REDEPLOY: nenhuma EF importa este módulo ainda. Quando importarem, adicionar
- * ao checklist de redeploy do CLAUDE.md.
+ * REDEPLOY: nenhuma EF importa este módulo ainda (fica pronto pra Fase 4
+ * consumir) — nada a adicionar no checklist de redeploy do CLAUDE.md até uma
+ * EF de fato importar `getBillingProvider`/`AsaasBillingProvider`.
  */
 
 import {
@@ -26,6 +31,20 @@ import {
   retrieveStripeInvoice,
   retrieveStripeSubscription,
 } from "./stripe-billing.ts";
+import {
+  createAsaasCheckout,
+  createAsaasCustomer,
+  createAsaasPayment,
+  createAsaasSubscription,
+  deleteAsaasSubscription,
+  getAsaasPayment,
+  getAsaasSubscription,
+  refundAsaasPayment,
+  updateAsaasSubscription,
+  type AsaasCheckoutParams,
+} from "./asaas.ts";
+import { centsToAsaasValue } from "./asaas-core.ts";
+import { jsonLog } from "./security.ts";
 
 export type BillingProviderName = "stripe" | "asaas";
 
@@ -163,6 +182,209 @@ const stripeProvider: BillingProviderPort = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Asaas — provedor principal novo, adapter sobre _shared/asaas.ts
+//
+// Nenhum retorno lança — todo caminho, incluindo erro inesperado (ex.: um
+// `amountCents` inválido estourando em centsToAsaasValue), é traduzido pra
+// ProviderResult{ok:false}. O `safely()` abaixo é o guard disso: os callers
+// deste port contam com "nunca lançar" (mesmo invariante do stripeProvider).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+// Sem dueDate explícito, mesma janela default do createStripeInvoice
+// (stripe-billing.ts) — mantém paridade de comportamento entre provedores.
+const DEFAULT_DAYS_UNTIL_DUE = 7;
+
+/**
+ * YYYY-MM-DD do dia de calendário BRT, N dias à frente de agora. Deno roda em
+ * UTC (mesmo padrão de _shared/giftback.ts e _shared/availability.ts) — sem
+ * o ajuste, a virada de dia entre 21h e meia-noite BRT erraria a data de
+ * vencimento em ±1 dia.
+ */
+function isoDateInDaysBrt(days: number): string {
+  const nowBrt = new Date(Date.now() - BRT_OFFSET_MS);
+  nowBrt.setUTCDate(nowBrt.getUTCDate() + days);
+  return nowBrt.toISOString().slice(0, 10);
+}
+
+/**
+ * Envolve cada método do provider: captura qualquer exceção (ex.:
+ * centsToAsaasValue lançando em amountCents corrompido) e traduz pra
+ * ProviderResult — nunca deixa escapar um throw pro caller. Detalhe técnico
+ * vai pro jsonLog; o cliente nunca vê stack/mensagem crua.
+ */
+async function safely<T>(op: string, fn: () => Promise<ProviderResult<T>>): Promise<ProviderResult<T>> {
+  try {
+    return await fn();
+  } catch (err) {
+    jsonLog("error", { evt: "asaas_provider_unexpected_error", op, error: String(err) });
+    return { ok: false, error: "Falha inesperada ao comunicar com o Asaas." };
+  }
+}
+
+const asaasProvider: BillingProviderPort = {
+  name: "asaas",
+
+  async createCustomer(params) {
+    return safely<{ customerId: string }>("createCustomer", async () => {
+      // cpfCnpj é OBRIGATÓRIO no Asaas (§9) mas opcional na porta (Stripe não
+      // exige) — validar aqui e devolver erro claro SEM chamar a API, em vez
+      // de deixar o Asaas rejeitar com um 400 genérico.
+      if (!params.taxId?.trim()) {
+        return { ok: false, error: "CPF/CNPJ é obrigatório para cadastrar cliente no Asaas." };
+      }
+      if (!params.name?.trim()) {
+        return { ok: false, error: "Nome é obrigatório para cadastrar cliente no Asaas." };
+      }
+      const res = await createAsaasCustomer({
+        name: params.name,
+        cpfCnpj: params.taxId,
+        email: params.email,
+        externalReference: params.organizationId,
+      });
+      if (!res.ok || !res.customerId) return { ok: false, error: res.error ?? "Falha ao criar cliente no Asaas." };
+      return { ok: true, data: { customerId: res.customerId } };
+    });
+  },
+
+  async createCheckout(params) {
+    return safely<{ checkoutId?: string; url: string }>("createCheckout", async () => {
+      if (!params.successUrl || !params.cancelUrl) {
+        return { ok: false, error: "URL de sucesso e de cancelamento são obrigatórias para o checkout." };
+      }
+      const value = centsToAsaasValue(params.amountCents);
+      const isSubscription = params.mode === "subscription";
+
+      const checkoutParams: AsaasCheckoutParams = {
+        // Único conjunto aceito pelo produto de checkout hospedado — sem
+        // BOLETO (§9). Deixar os dois habilitados dá ao pagador a escolha.
+        billingTypes: ["CREDIT_CARD", "PIX"],
+        chargeTypes: isSubscription ? ["RECURRENT"] : ["DETACHED"],
+        callback: { successUrl: params.successUrl, cancelUrl: params.cancelUrl },
+        items: [
+          {
+            name: params.description.slice(0, 30),
+            quantity: 1,
+            value,
+            description: params.description.slice(0, 150),
+          },
+        ],
+        externalReference: params.externalReference,
+      };
+      if (isSubscription) {
+        // Obrigatório quando chargeTypes inclui RECURRENT (§9); shape exato
+        // não documentado — só `cycle` é citado como exigido nesse caso.
+        checkoutParams.subscription = { cycle: "MONTHLY" };
+      }
+
+      const res = await createAsaasCheckout(checkoutParams);
+      if (!res.ok || !res.link) return { ok: false, error: res.error ?? "Falha ao criar checkout no Asaas." };
+      return { ok: true, data: { checkoutId: res.checkoutId, url: res.link } };
+    });
+  },
+
+  async createOneTimeCharge(params) {
+    return safely<{ paymentId: string; paymentUrl?: string }>("createOneTimeCharge", async () => {
+      const value = centsToAsaasValue(params.amountCents);
+      const dueDate = isoDateInDaysBrt(params.daysUntilDue ?? DEFAULT_DAYS_UNTIL_DUE);
+      const res = await createAsaasPayment({
+        customer: params.providerCustomerId,
+        // UNDEFINED deixa o Asaas oferecer, na fatura, todos os métodos
+        // habilitados na conta (boleto/cartão/Pix) pro pagador escolher — não
+        // travamos um método fixo aqui (§9).
+        billingType: "UNDEFINED",
+        value,
+        dueDate,
+        description: params.description,
+        externalReference: params.externalReference,
+      });
+      if (!res.ok || !res.paymentId) return { ok: false, error: res.error ?? "Falha ao criar cobrança no Asaas." };
+      return { ok: true, data: { paymentId: res.paymentId, paymentUrl: res.invoiceUrl } };
+    });
+  },
+
+  async createSubscription(params) {
+    return safely<{ subscriptionId: string }>("createSubscription", async () => {
+      const value = centsToAsaasValue(params.amountCents);
+      // Asaas não tem trial nativo (diferente do trial_period_days da
+      // Stripe) — aproximamos adiando nextDueDate por trialDays: a
+      // assinatura já nasce ACTIVE, mas a primeira cobrança real só é
+      // emitida nessa data. Não é idêntico ao trial da Stripe (que suspende
+      // a cobrança até o fim do trial mantendo o registro em "trialing");
+      // aqui o efeito prático equivalente (sem cobrança até a data) é
+      // alcançado só pelo adiamento da data de vencimento.
+      const trialDays = params.trialDays && params.trialDays > 0 ? params.trialDays : 0;
+      const nextDueDate = isoDateInDaysBrt(trialDays);
+      const res = await createAsaasSubscription({
+        customer: params.providerCustomerId,
+        // Mesmo raciocínio do createOneTimeCharge: deixa o pagador escolher
+        // o método na cobrança gerada a cada ciclo.
+        billingType: "UNDEFINED",
+        value,
+        nextDueDate,
+        cycle: "MONTHLY",
+        externalReference: params.externalReference,
+        // providerPriceId é conceito Stripe (price pré-cadastrado); Asaas
+        // manda `value` cru, então params.providerPriceId é ignorado aqui.
+      });
+      if (!res.ok || !res.subscriptionId) return { ok: false, error: res.error ?? "Falha ao criar assinatura no Asaas." };
+      return { ok: true, data: { subscriptionId: res.subscriptionId } };
+    });
+  },
+
+  async cancelSubscription(providerSubscriptionId, atPeriodEnd) {
+    return safely<Record<string, unknown>>("cancelSubscription", async () => {
+      if (atPeriodEnd) {
+        // Não existe cancel_at_period_end no Asaas (§9): INACTIVE interrompe
+        // a geração de cobranças futuras mas preserva o registro e as
+        // cobranças já emitidas — o acesso do período pago continua
+        // governado por billing_subscriptions.current_period_end no nosso
+        // banco, não pelo Asaas.
+        const res = await updateAsaasSubscription(providerSubscriptionId, { status: "INACTIVE" });
+        return res.ok ? { ok: true } : { ok: false, error: res.error };
+      }
+      // Cancelamento imediato: DELETE encerra a assinatura E remove as
+      // cobranças pendentes/vencidas em aberto (§9) — só para quando o
+      // cancelamento deve ser instantâneo, sem cobrança residual.
+      const res = await deleteAsaasSubscription(providerSubscriptionId);
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    });
+  },
+
+  async getSubscription(providerSubscriptionId) {
+    return safely<Record<string, unknown>>("getSubscription", async () => {
+      const res = await getAsaasSubscription(providerSubscriptionId);
+      // Passthrough do payload cru do Asaas (mesmo padrão do stripeProvider)
+      // — ATENÇÃO: ao contrário do Stripe (já em centavos), campos monetários
+      // aqui (`value`, `netValue`, etc.) vêm em REAIS decimais (§9.1). Quem
+      // consumir precisa passar por asaasValueToCents antes de tratar como
+      // amountCents.
+      return res.ok ? { ok: true, data: res.data } : { ok: false, error: "Assinatura não encontrada no Asaas." };
+    });
+  },
+
+  async getPayment(providerPaymentId) {
+    return safely<Record<string, unknown>>("getPayment", async () => {
+      const res = await getAsaasPayment(providerPaymentId);
+      // Mesma ressalva do getSubscription acima: `value`/`netValue`/etc. no
+      // payload cru estão em reais decimais, não em centavos.
+      return res.ok ? { ok: true, data: res.data } : { ok: false, error: "Cobrança não encontrada no Asaas." };
+    });
+  },
+
+  async refundPayment(providerPaymentId, amountCents) {
+    return safely<Record<string, unknown>>("refundPayment", async () => {
+      // Sem amountCents = estorno total (Asaas usa ausência de `value` como
+      // sinal, não um valor explícito de "tudo").
+      const params = amountCents !== undefined ? { value: centsToAsaasValue(amountCents) } : undefined;
+      const res = await refundAsaasPayment(providerPaymentId, params);
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    });
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Factory
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -171,8 +393,6 @@ export function getBillingProvider(name: BillingProviderName): BillingProviderPo
     case "stripe":
       return stripeProvider;
     case "asaas":
-      // AsaasBillingProvider chega na Fase 2 (_shared/asaas.ts). Erro explícito
-      // até lá — flag asaas_enabled OFF impede qualquer caller de chegar aqui.
-      throw new Error("AsaasBillingProvider ainda não implementado (Fase 2 do plano billing-asaas).");
+      return asaasProvider;
   }
 }
