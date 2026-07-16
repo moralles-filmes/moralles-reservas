@@ -266,6 +266,30 @@ describe("parseAsaasError", () => {
     expect(() => parseAsaasError({ errors: null }, "fallback")).not.toThrow();
     expect(() => parseAsaasError({ errors: [null] }, "fallback")).not.toThrow();
   });
+
+  // `{ error: string }` não é shape do Asaas (a API real só manda `errors[]`)
+  // — é o formato SINTÉTICO que asaas.ts usa nos próprios guards (chave do
+  // ambiente errado, falha de rede). Sem este branch a mensagem específica
+  // morre no fallback genérico do wrapper (achado #4 da revisão da Fase 2).
+  it("data.error (shape sintético do próprio asaas.ts) → devolve a mensagem específica", () => {
+    expect(
+      parseAsaasError({ error: "Chave de produção configurada mas ASAAS_ENV=sandbox." }, "fallback"),
+    ).toBe("Chave de produção configurada mas ASAAS_ENV=sandbox.");
+    expect(parseAsaasError({ error: "Falha de conexão com o Asaas." }, "fallback")).toBe(
+      "Falha de conexão com o Asaas.",
+    );
+  });
+
+  it("data.error vazio, só espaço, ou não-string → fallback", () => {
+    expect(parseAsaasError({ error: "" }, "fallback")).toBe("fallback");
+    expect(parseAsaasError({ error: "   " }, "fallback")).toBe("fallback");
+    expect(parseAsaasError({ error: 42 }, "fallback")).toBe("fallback");
+  });
+
+  it("errors[0].description tem prioridade sobre data.error quando os dois vierem presentes", () => {
+    const data = { errors: [{ description: "erro real do Asaas" }], error: "não deveria vencer" };
+    expect(parseAsaasError(data, "fallback")).toBe("erro real do Asaas");
+  });
 });
 
 describe("parseRateLimitReset", () => {

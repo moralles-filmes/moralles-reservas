@@ -106,18 +106,36 @@ export function validateKeyForEnv(apiKey: string, env: AsaasEnv): KeyEnvValidati
  * (§10 da doc verificada — a Stripe usa `error.message`, o Asaas não). À prova
  * de qualquer shape (null, array vazio, string solta, objeto sem `description`)
  * — nunca lança, sempre cai no `fallback`.
+ *
+ * Também aceita `{ error: string }` — NÃO é shape do Asaas (a API real só
+ * manda `errors[]`, nunca `error` singular), é o formato SINTÉTICO que
+ * `asaas.ts` (`asaasRequest`) usa nos próprios guards: chave do ambiente
+ * errado (`validateKeyForEnv` bloqueado) e falha de rede/timeout. Sem este
+ * branch, essas duas mensagens específicas morrem na fronteira de cada
+ * wrapper (`createAsaasCustomer` etc., que só recebem `res.data` e chamam
+ * `parseAsaasError` de novo) — o caller sempre veria o fallback genérico em
+ * vez do motivo real, contrariando o design de §8 ("erro duro, falha cedo com
+ * mensagem clara"). `errors[0].description` (shape real do Asaas) tem
+ * prioridade quando os dois vierem presentes — não deveria acontecer na
+ * prática (são shapes mutuamente exclusivos), mas mantém o comportamento já
+ * pinado pros erros reais da API caso algum dia coexistam.
  */
 export function parseAsaasError(data: unknown, fallback: string): string {
   if (!data || typeof data !== "object" || Array.isArray(data)) return fallback;
 
-  const errors = (data as Record<string, unknown>).errors;
-  if (!Array.isArray(errors) || errors.length === 0) return fallback;
+  const obj = data as Record<string, unknown>;
 
-  const first = errors[0];
-  if (!first || typeof first !== "object") return fallback;
+  const errors = obj.errors;
+  if (Array.isArray(errors) && errors.length > 0) {
+    const first = errors[0];
+    if (first && typeof first === "object") {
+      const description = (first as Record<string, unknown>).description;
+      if (typeof description === "string" && description.trim()) return description;
+    }
+  }
 
-  const description = (first as Record<string, unknown>).description;
-  if (typeof description === "string" && description.trim()) return description;
+  const errorField = obj.error;
+  if (typeof errorField === "string" && errorField.trim()) return errorField;
 
   return fallback;
 }

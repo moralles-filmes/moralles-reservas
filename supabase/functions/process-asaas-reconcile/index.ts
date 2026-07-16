@@ -47,10 +47,24 @@ const MAX_RETRY_COUNT = 5;
  *  próxima execução diária, não precisa de loop `.range()` aqui. */
 const BATCH_LIMIT = 200;
 
+/**
+ * As ÚNICAS mensagens que hoje populam `billing_events.error_message` — a de
+ * classificação do próprio `asaas-webhook` e a deste worker. Reclassificar
+ * com sucesso RESOLVE exatamente esse erro, então é seguro apagar. Qualquer
+ * mensagem FORA deste set (ex.: um diagnóstico de lógica de negócio que a
+ * Fase 4 vier a gravar no webhook) NÃO é apagada por este worker — ver aviso
+ * completo no loop abaixo, perto do UPDATE.
+ */
+const CLASSIFICATION_ERROR_MESSAGES = new Set([
+  "Erro inesperado ao classificar evento — ver logs.",
+  "Erro ao reprocessar no worker de reconcile — ver logs.",
+]);
+
 interface StuckEvent {
   id: string;
   event_type: string;
   retry_count: number;
+  error_message: string | null;
 }
 
 serve(async (req) => {
@@ -86,7 +100,7 @@ serve(async (req) => {
 
     const { data: stuckEvents, error: fetchError } = await supabase
       .from("billing_events")
-      .select("id, event_type, retry_count")
+      .select("id, event_type, retry_count, error_message")
       .eq("provider", "asaas")
       .in("processing_status", ["received", "failed"])
       .lt("retry_count", MAX_RETRY_COUNT)
@@ -114,12 +128,33 @@ serve(async (req) => {
         const classification = classifyAsaasEvent(event.event_type);
         const newStatus = classification === "known" ? "processed" : "ignored";
 
+        // ⚠️ HOJE 'processed' SÓ significa "classificado known/unknown" — este
+        // worker nunca fez mais que isso, então apagar `error_message` junto
+        // é coerente (é o próprio erro que a reclassificação resolveu). QUANDO
+        // A FASE 4 ADICIONAR LÓGICA DE NEGÓCIO ao `asaas-webhook` (ativar
+        // assinatura, creditar saldo, mudar billing_status), 'processed' passa
+        // a significar "lógica de negócio aplicada" — e ESTE WORKER PRECISA
+        // RODAR ESSA MESMA LÓGICA, não só reclassificar. Sem isso, uma linha
+        // 'failed' por erro de negócio (com um `error_message` diagnóstico
+        // gravado pelo webhook) seria pega aqui, reclassificada (sempre
+        // funciona, é só known/unknown), marcada 'processed' e o diagnóstico
+        // apagado — a assinatura nunca ativou, mas a linha parece resolvida e
+        // ninguém mais revisita (`.in("processing_status", ["received",
+        // "failed"])` não pega mais 'processed'). Por isso só apaga
+        // `error_message` quando ele é uma das DUAS mensagens que este worker
+        // (ou o classificador do webhook) realmente resolve — ver
+        // CLASSIFICATION_ERROR_MESSAGES acima; qualquer outra mensagem (ex.:
+        // diagnóstico de negócio futuro) fica de fora do payload do UPDATE e
+        // sobrevive intacta.
+        const shouldClearErrorMessage =
+          event.error_message !== null && CLASSIFICATION_ERROR_MESSAGES.has(event.error_message);
+
         const { error: updateError } = await supabase
           .from("billing_events")
           .update({
             processing_status: newStatus,
             retry_count: event.retry_count + 1,
-            error_message: null,
+            ...(shouldClearErrorMessage ? { error_message: null } : {}),
           })
           .eq("id", event.id);
 

@@ -13,7 +13,10 @@
  *
  * ⚠ Responde SEMPRE 200 — exceto 405 (não-POST), 401 (token inválido), 500
  * (token não configurado no servidor) e 503 (evento NÃO PERSISTIDO: erro no
- * INSERT em billing_events, ou falha ao LER platform_flags). O Asaas só
+ * INSERT em billing_events, falha ao LER platform_flags, ou falha ao LER o
+ * corpo da requisição — TCP resetado/stream truncado no meio do body, que é
+ * diferente de "o Asaas mandou JSON quebrado" e por isso pede retry em vez de
+ * descarte). O Asaas só
  * conta HTTP 200 como entrega bem-sucedida (doc §2): 201/204/qualquer outro
  * 2xx conta como FALHA, 15 falhas seguidas interrompem a fila, e eventos
  * parados nela são apagados após 14 dias (só um e-mail avisa) — mas até lá
@@ -91,10 +94,33 @@ serve(async (req) => {
       return new Response("OK", { status: 200 });
     }
 
+    // Ler o corpo é uma etapa DISTINTA de parsear o JSON — conflar as duas
+    // (ex.: um `req.json()` só com try/catch em volta) esconde uma falha de
+    // TRANSPORTE (conexão resetada/stream truncado a meio do body) atrás do
+    // mesmo log de "envelope inválido" que cobre JSON genuinamente malformado.
+    // São classes diferentes: JSON malformado é o Asaas mandando lixo — retry
+    // traria o MESMO lixo de novo, 200 é correto. Falha de LEITURA é a rede
+    // comendo bytes no meio do caminho — o corpo real nunca chegou a existir
+    // pra gente, e um retry teria toda chance de entregá-lo intacto; 200 aqui
+    // destruiria o evento pra sempre sem o reconcile (Task 5) ter o que achar
+    // (a linha nunca é inserida em billing_events). Por isso separado do
+    // erro de INSERT abaixo, mas na MESMA classe de resposta (503).
+    let rawText: string;
+    try {
+      rawText = await req.text();
+    } catch (err) {
+      jsonLog("error", { reqId, evt: "asaas_webhook_body_read_error", err: String(err) });
+      return new Response("Erro ao ler corpo da requisição", { status: 503 });
+    }
+
     let rawBody: unknown = null;
     try {
-      rawBody = await req.json();
-    } catch {
+      rawBody = JSON.parse(rawText);
+    } catch (err) {
+      // Corpo foi lido por completo (não é falha de transporte) — só não é
+      // JSON válido. Loga o motivo (antes isso era descartado em silêncio) e
+      // cai no branch de envelope inválido abaixo, que responde 200.
+      jsonLog("warn", { reqId, evt: "asaas_webhook_json_parse_error", err: String(err) });
       rawBody = null;
     }
 
