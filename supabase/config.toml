@@ -124,3 +124,7 @@ verify_jwt = false
 # Worker: expira trial automático ao vencer e bloqueia org (pg_cron 03:00 UTC)
 [functions.process-trial-expiry]
 verify_jwt = false
+
+# Worker: reprocessa billing_events Asaas presos received/failed (pg_cron 07:00 UTC)
+[functions.process-asaas-reconcile]
+verify_jwt = false
