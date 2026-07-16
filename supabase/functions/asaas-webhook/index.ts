@@ -11,24 +11,37 @@
  * — se o processamento estourar ou o isolate morrer depois do INSERT, o
  * evento já está salvo e o worker de reconcile (Task 5) reprocessa.
  *
- * ⚠ Responde SEMPRE 200 — exceto 405 (não-POST), 401 (token inválido) e 500
- * (token não configurado no servidor). O Asaas só conta HTTP 200 como
- * entrega bem-sucedida (doc §2): 201/204/qualquer outro 2xx conta como
- * FALHA, 15 falhas seguidas interrompem a fila, e eventos parados nela são
- * apagados após 14 dias (só um e-mail avisa). Por isso até duplicata, evento
- * desconhecido, flag desligada e erro interno de processamento respondem 200
- * — nunca "corrigir" um branch de sucesso pra 204/202 achando que está mais
- * correto com HTTP.
+ * ⚠ Responde SEMPRE 200 — exceto 405 (não-POST), 401 (token inválido), 500
+ * (token não configurado no servidor) e 503 (evento NÃO PERSISTIDO: erro no
+ * INSERT em billing_events, ou falha ao LER platform_flags). O Asaas só
+ * conta HTTP 200 como entrega bem-sucedida (doc §2): 201/204/qualquer outro
+ * 2xx conta como FALHA, 15 falhas seguidas interrompem a fila, e eventos
+ * parados nela são apagados após 14 dias (só um e-mail avisa) — mas até lá
+ * eles SOBREVIVEM e são reentregues em ordem cronológica na reativação.
  *
- * Gate: só processa se platform_flags.asaas_enabled=true (fail-closed,
- * `isFlagEnabled`); com a flag OFF responde 200 sem persistir nada.
+ * Por isso a régua não é "200 = sucesso, resto = erro" — é "200 = já está
+ * durável ou foi deliberadamente descartado; não-200 = não consegui guardar,
+ * tenta de novo". Duplicata, envelope inválido, evento desconhecido, flag
+ * GENUINAMENTE off e erro de PROCESSAMENTO (a linha já está em
+ * `billing_events`, o reconcile da Task 5 reprocessa) respondem 200. Só
+ * falha de PERSISTÊNCIA (a linha nunca chegou a existir — INSERT quebrou, ou
+ * nem sabemos se a flag está ligada porque a leitura falhou) é 503: um 200
+ * aí apagaria um evento de pagamento pra sempre, sem nada pro reconcile
+ * encontrar. Nunca "corrigir" um branch de sucesso pra 204/202 achando mais
+ * correto com HTTP; nunca "corrigir" o 503 pra 200 achando mais consistente
+ * com os vizinhos — são classes de erro diferentes de propósito.
+ *
+ * Gate: só processa se platform_flags.asaas_enabled=true (fail-closed pra
+ * flag GENUINAMENTE ausente/false, via `checkFlagEnabled`); com a flag OFF
+ * responde 200 sem persistir nada. Falha ao LER a flag é tratada como falha
+ * de persistência (503) — não pode virar "OFF" e descartar o evento.
  */
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { genRequestId, jsonLog, validateStaticTokenHeader } from "../_shared/security.ts";
 import { getAsaasWebhookToken } from "../_shared/asaas-config.ts";
-import { isFlagEnabled } from "../_shared/platform-flags.ts";
+import { checkFlagEnabled } from "../_shared/platform-flags.ts";
 import { classifyAsaasEvent, parseAsaasWebhookEnvelope } from "../_shared/asaas-core.ts";
 
 const supabase = createClient(
@@ -58,12 +71,22 @@ serve(async (req) => {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  // ── A partir daqui: SEMPRE 200 (ver header do arquivo) ──────────────────
+  // ── A partir daqui: 200 na maioria dos casos, 503 se não persistir (ver
+  // header do arquivo) ─────────────────────────────────────────────────────
   try {
-    // Flag desligada → não processa NEM persiste. Precisa ser 200: um
-    // não-200 numa feature desligada mataria a fila do Asaas do mesmo jeito.
-    const enabled = await isFlagEnabled("asaas_enabled");
-    if (!enabled) {
+    // Flag GENUINAMENTE desligada → não processa NEM persiste, 200 (um
+    // não-200 numa feature desligada mataria a fila do Asaas à toa). Falha
+    // ao LER a flag é outra coisa — ver branch abaixo.
+    const flagCheck = await checkFlagEnabled("asaas_enabled");
+    if (flagCheck.readFailed) {
+      // Não sabemos se está ligada. Se estiver (produção real), um 200 aqui
+      // descartaria um evento de pagamento pra sempre — mesma classe do
+      // erro de INSERT abaixo. 503 pede retry; doc §2 garante 14 dias de
+      // fila e reentrega em ordem cronológica.
+      jsonLog("error", { reqId, evt: "asaas_webhook_flag_read_error" });
+      return new Response("Erro ao verificar configuração", { status: 503 });
+    }
+    if (!flagCheck.enabled) {
       jsonLog("info", { reqId, evt: "asaas_webhook_flag_off" });
       return new Response("OK", { status: 200 });
     }
@@ -111,12 +134,33 @@ serve(async (req) => {
         return new Response("OK", { status: 200 });
       }
 
-      // Erro inesperado no INSERT (fora de duplicata): nada foi persistido,
-      // mas um não-200 aqui arrisca derrubar a fila inteira do Asaas — pior
-      // que perder este evento pontual. Log carrega o suficiente pra
-      // investigar; nunca devolver error.message cru pro Asaas.
+      // Erro inesperado no INSERT (fora de duplicata): nada foi persistido —
+      // diferente do erro de PROCESSAMENTO lá embaixo, aqui a linha nunca
+      // chegou a existir em `billing_events`, então o reconcile (Task 5) não
+      // tem o que encontrar. Um 200 aqui destruiria o evento pra sempre (o
+      // Asaas marca como entregue e não reenvia); 503 custa um atraso na
+      // fila (doc §2: até 14 dias, reentregue em ordem cronológica), mas o
+      // evento sobrevive. NÃO "consertar" isso pra 200 por simetria com os
+      // branches vizinhos — aqueles já persistiram a linha, este não.
+      // Nunca devolver error.message cru pro Asaas; o detalhe vai só pro log.
       jsonLog("error", { reqId, evt: "asaas_webhook_insert_error", err: insertError.message });
-      return new Response("OK", { status: 200 });
+      return new Response("Erro ao persistir evento", { status: 503 });
+    }
+
+    if (!inserted) {
+      // Defensivo: com `strictNullChecks:false` um `inserted` null aqui não
+      // é sinalizado pelo compilador, e `inserted.id` abaixo estouraria
+      // TypeError pro catch mais externo → 200 → evento perdido em silêncio.
+      // `.single()` torna este branch quase inalcançável (é erro-ou-linha),
+      // mas o tratamento é o mesmo do INSERT que falhou: nada persistido,
+      // então retry (503), não descarte (200).
+      jsonLog("error", {
+        reqId,
+        evt: "asaas_webhook_insert_no_row",
+        eventType: parsed.event,
+        providerEventId: parsed.id,
+      });
+      return new Response("Erro ao persistir evento", { status: 503 });
     }
 
     const billingEventId = inserted.id as string;
@@ -155,17 +199,25 @@ serve(async (req) => {
         err: String(processErr),
       });
 
-      try {
-        await supabase
-          .from("billing_events")
-          .update({
-            processing_status: "failed",
-            error_message: "Erro inesperado ao classificar evento — ver logs.",
-          })
-          .eq("id", billingEventId);
-      } catch {
-        // Best-effort: se o UPDATE também falhar, a linha fica em 'received'
-        // e o reconcile (Task 5) reprocessa do jeito que está.
+      const { error: statusUpdateError } = await supabase
+        .from("billing_events")
+        .update({
+          processing_status: "failed",
+          error_message: "Erro inesperado ao classificar evento — ver logs.",
+        })
+        .eq("id", billingEventId);
+
+      if (statusUpdateError) {
+        // Best-effort: o UPDATE também falhou — a linha fica em 'received' e
+        // o reconcile (Task 5) reprocessa do jeito que está. supabase-js
+        // RESOLVE com `{ error }` em vez de rejeitar, por isso é um `if` e
+        // não um `catch` (um catch aqui nunca dispararia de verdade).
+        jsonLog("error", {
+          reqId,
+          evt: "asaas_webhook_status_update_failed",
+          billingEventId,
+          err: statusUpdateError.message,
+        });
       }
 
       return new Response("OK", { status: 200 });

@@ -7,10 +7,11 @@
  * do admin em ≤5min.
  *
  * Fase 2 billing-asaas — consumido hoje por manage-platform-secrets (só
- * `clearAsaasConfigCache`, no upsert/delete de secret). Os getters
- * (`getAsaasApiKey` etc.) ganham consumidor real em `_shared/asaas.ts` e
- * `asaas-webhook` nas próximas tasks. Ao importar este módulo numa EF,
- * lembrar do checklist de redeploy no CLAUDE.md.
+ * `clearAsaasConfigCache`, no upsert/delete de secret) e por `asaas-webhook`
+ * (`getAsaasWebhookToken`, na auth do endpoint). `getAsaasApiKey`/`getAsaasEnv`/
+ * `getAsaasBaseUrl` seguem só com o consumidor indireto `_shared/asaas.ts`
+ * (ainda sem EF própria). Ao importar este módulo numa EF nova, lembrar do
+ * checklist de redeploy no CLAUDE.md.
  */
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
