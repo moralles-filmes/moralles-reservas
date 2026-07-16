@@ -14,6 +14,11 @@ import {
   GET_MAX_RETRIES,
   centsToAsaasValue,
   asaasValueToCents,
+  ASAAS_PAYMENT_EVENTS,
+  ASAAS_SUBSCRIPTION_EVENTS,
+  ASAAS_CHECKOUT_EVENTS,
+  classifyAsaasEvent,
+  parseAsaasWebhookEnvelope,
 } from "../../supabase/functions/_shared/asaas-core";
 
 // Fatos verificados em docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§8):
@@ -439,5 +444,216 @@ describe("asaasValueToCents — reais decimais → centavos (§9.1)", () => {
 describe("round-trip asaasValueToCents(centsToAsaasValue(x)) === x", () => {
   it.each([0, 100, 4990, 14900, 44900, 75000, 1, 999999])("%i centavos sobrevive ao round-trip", (cents) => {
     expect(asaasValueToCents(centsToAsaasValue(cents))).toBe(cents);
+  });
+});
+
+// classifyAsaasEvent/parseAsaasWebhookEnvelope são consumidos por
+// asaas-webhook/index.ts (Fase 2 Task 4). Nomes de evento vêm de
+// docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§4) — pinar contagem e
+// nomes específicos evita que um refactor futuro "simplifique" pra matching
+// por prefixo (a armadilha real: PAYMENT_AWAITING_CHARGEBACK_REVERSAL não
+// começa com PAYMENT_CHARGEBACK_) ou invente um evento que não existe
+// (SUBSCRIPTION_CANCELED).
+
+describe("ASAAS_*_EVENTS — contagem pinada contra a lista verificada (§4)", () => {
+  it("PAYMENT_* tem exatamente 29 nomes", () => {
+    expect(ASAAS_PAYMENT_EVENTS.size).toBe(29);
+  });
+
+  it("SUBSCRIPTION_* tem exatamente 7 nomes", () => {
+    expect(ASAAS_SUBSCRIPTION_EVENTS.size).toBe(7);
+  });
+
+  it("CHECKOUT_* tem exatamente 4 nomes", () => {
+    expect(ASAAS_CHECKOUT_EVENTS.size).toBe(4);
+  });
+});
+
+describe("classifyAsaasEvent", () => {
+  it("PAYMENT_RECEIVED (caso comum) → known", () => {
+    expect(classifyAsaasEvent("PAYMENT_RECEIVED")).toBe("known");
+  });
+
+  // A armadilha real do §4: este evento existe e começa com "PAYMENT_" mas
+  // NÃO com "PAYMENT_CHARGEBACK_" — um matcher por prefixo cru erraria.
+  it("PAYMENT_AWAITING_CHARGEBACK_REVERSAL é reconhecido (guard do bug de prefixo)", () => {
+    expect(classifyAsaasEvent("PAYMENT_AWAITING_CHARGEBACK_REVERSAL")).toBe("known");
+  });
+
+  it("os outros dois nomes de chargeback também são reconhecidos", () => {
+    expect(classifyAsaasEvent("PAYMENT_CHARGEBACK_REQUESTED")).toBe("known");
+    expect(classifyAsaasEvent("PAYMENT_CHARGEBACK_DISPUTE")).toBe("known");
+  });
+
+  it("SUBSCRIPTION_DELETED e SUBSCRIPTION_INACTIVATED (cancelamento real) → known", () => {
+    expect(classifyAsaasEvent("SUBSCRIPTION_DELETED")).toBe("known");
+    expect(classifyAsaasEvent("SUBSCRIPTION_INACTIVATED")).toBe("known");
+  });
+
+  // Não existe SUBSCRIPTION_CANCELED na API (§4) — se alguém "adivinhar" esse
+  // nome no futuro (é o palpite óbvio vindo da Stripe), tem que classificar
+  // como desconhecido, não known.
+  it("SUBSCRIPTION_CANCELED (nome que NÃO existe na API) → unknown", () => {
+    expect(classifyAsaasEvent("SUBSCRIPTION_CANCELED")).toBe("unknown");
+  });
+
+  it("CHECKOUT_PAID → known", () => {
+    expect(classifyAsaasEvent("CHECKOUT_PAID")).toBe("known");
+  });
+
+  it("evento totalmente desconhecido → unknown, sem lançar", () => {
+    expect(() => classifyAsaasEvent("PIX_QRCODE_SOMETHING_NEW")).not.toThrow();
+    expect(classifyAsaasEvent("PIX_QRCODE_SOMETHING_NEW")).toBe("unknown");
+  });
+
+  it("string vazia → unknown", () => {
+    expect(classifyAsaasEvent("")).toBe("unknown");
+  });
+});
+
+describe("parseAsaasWebhookEnvelope", () => {
+  // Exemplo literal de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§3).
+  const validPayload = {
+    id: "evt_05b708f961d739ea7eba7e4db318f621&368604920",
+    event: "PAYMENT_RECEIVED",
+    dateCreated: "2024-06-12 16:45:03",
+    payment: { object: "payment", id: "pay_080225913252" },
+  };
+
+  it("envelope válido (exemplo da doc) → valid:true com id/event/dateCreated", () => {
+    const result = parseAsaasWebhookEnvelope(validPayload);
+    expect(result.valid).toBe(true);
+    if (!result.valid) throw new Error("esperava valid:true");
+    expect(result.id).toBe("evt_05b708f961d739ea7eba7e4db318f621&368604920");
+    expect(result.event).toBe("PAYMENT_RECEIVED");
+    expect(result.dateCreated).toBe("2024-06-12 16:45:03");
+  });
+
+  // Guard explícito contra "limpar" o id — o `&` é literal (§3), nunca deve
+  // ser splitado, decodificado ou tratado como separador de query string.
+  it("id com '&' literal é preservado INTEIRO, sem split/decode", () => {
+    const result = parseAsaasWebhookEnvelope(validPayload);
+    if (!result.valid) throw new Error("esperava valid:true");
+    expect(result.id).toContain("&");
+    expect(result.id.split("&")).toHaveLength(2); // prova que NINGUÉM deu split nele
+    expect(result.id).toBe(validPayload.id);
+  });
+
+  it("shape não-uniforme (checkout com 'account' + objeto inteiro) ainda é válido — só envelope importa", () => {
+    const checkoutPayload = {
+      id: "evt_abc123&999",
+      event: "CHECKOUT_PAID",
+      dateCreated: "2024-06-12 16:45:03",
+      account: { id: "acc_1" },
+      checkout: { id: "chk_1", status: "PAID" },
+    };
+    const result = parseAsaasWebhookEnvelope(checkoutPayload);
+    expect(result.valid).toBe(true);
+  });
+
+  it("event desconhecido no envelope ainda é um envelope válido — classificação é responsabilidade de classifyAsaasEvent", () => {
+    const result = parseAsaasWebhookEnvelope({ ...validPayload, event: "SOME_NEW_EVENT" });
+    expect(result.valid).toBe(true);
+    if (!result.valid) throw new Error("esperava valid:true");
+    expect(classifyAsaasEvent(result.event)).toBe("unknown");
+  });
+
+  it("body null → inválido com motivo", () => {
+    const result = parseAsaasWebhookEnvelope(null);
+    expect(result.valid).toBe(false);
+    // Comparação explícita (não truthy-check cru): projeto roda com
+    // strictNullChecks:false, e "if (result.valid) throw" nesse modo NÃO
+    // estreita o tipo pro branch valid:false (confirmado — precisa do
+    // "!== false" explícito pra TS liberar `.reason` na linha seguinte).
+    if (result.valid !== false) throw new Error("esperava valid:false");
+    expect(result.reason).toBeTruthy();
+  });
+
+  it("body undefined → inválido com motivo", () => {
+    const result = parseAsaasWebhookEnvelope(undefined);
+    expect(result.valid).toBe(false);
+  });
+
+  it("body array → inválido com motivo", () => {
+    const result = parseAsaasWebhookEnvelope([validPayload]);
+    expect(result.valid).toBe(false);
+  });
+
+  it("body string solta → inválido com motivo", () => {
+    const result = parseAsaasWebhookEnvelope("PAYMENT_RECEIVED");
+    expect(result.valid).toBe(false);
+  });
+
+  it("body número → inválido com motivo", () => {
+    const result = parseAsaasWebhookEnvelope(42);
+    expect(result.valid).toBe(false);
+  });
+
+  it("objeto sem 'id' → inválido com motivo mencionando o campo", () => {
+    const { id, ...rest } = validPayload;
+    void id;
+    const result = parseAsaasWebhookEnvelope(rest);
+    expect(result.valid).toBe(false);
+    // Comparação explícita (não truthy-check cru): projeto roda com
+    // strictNullChecks:false, e "if (result.valid) throw" nesse modo NÃO
+    // estreita o tipo pro branch valid:false (confirmado — precisa do
+    // "!== false" explícito pra TS liberar `.reason` na linha seguinte).
+    if (result.valid !== false) throw new Error("esperava valid:false");
+    expect(result.reason).toMatch(/id/);
+  });
+
+  it("objeto sem 'event' → inválido com motivo mencionando o campo", () => {
+    const { event, ...rest } = validPayload;
+    void event;
+    const result = parseAsaasWebhookEnvelope(rest);
+    expect(result.valid).toBe(false);
+    // Comparação explícita (não truthy-check cru): projeto roda com
+    // strictNullChecks:false, e "if (result.valid) throw" nesse modo NÃO
+    // estreita o tipo pro branch valid:false (confirmado — precisa do
+    // "!== false" explícito pra TS liberar `.reason` na linha seguinte).
+    if (result.valid !== false) throw new Error("esperava valid:false");
+    expect(result.reason).toMatch(/event/);
+  });
+
+  it("'id' com tipo errado (número) → inválido", () => {
+    const result = parseAsaasWebhookEnvelope({ ...validPayload, id: 12345 });
+    expect(result.valid).toBe(false);
+  });
+
+  it("'event' com tipo errado (objeto) → inválido", () => {
+    const result = parseAsaasWebhookEnvelope({ ...validPayload, event: { name: "x" } });
+    expect(result.valid).toBe(false);
+  });
+
+  it("'id' vazio ou só espaço → inválido", () => {
+    expect(parseAsaasWebhookEnvelope({ ...validPayload, id: "" }).valid).toBe(false);
+    expect(parseAsaasWebhookEnvelope({ ...validPayload, id: "   " }).valid).toBe(false);
+  });
+
+  it("'dateCreated' ausente → valid:true com dateCreated:null (campo não é obrigatório pro envelope)", () => {
+    const { dateCreated, ...rest } = validPayload;
+    void dateCreated;
+    const result = parseAsaasWebhookEnvelope(rest);
+    expect(result.valid).toBe(true);
+    if (!result.valid) throw new Error("esperava valid:true");
+    expect(result.dateCreated).toBeNull();
+  });
+
+  it("'dateCreated' NÃO é convertido pra Date/ISO — permanece string crua (formato sem timezone)", () => {
+    const result = parseAsaasWebhookEnvelope(validPayload);
+    if (!result.valid) throw new Error("esperava valid:true");
+    expect(typeof result.dateCreated).toBe("string");
+    expect(result.dateCreated).not.toMatch(/T.*Z$/); // não vira ISO
+    expect(result.dateCreated).toBe("2024-06-12 16:45:03");
+  });
+
+  it("nunca lança, mesmo com shapes hostis", () => {
+    expect(() => parseAsaasWebhookEnvelope(null)).not.toThrow();
+    expect(() => parseAsaasWebhookEnvelope(undefined)).not.toThrow();
+    expect(() => parseAsaasWebhookEnvelope([])).not.toThrow();
+    expect(() => parseAsaasWebhookEnvelope("x")).not.toThrow();
+    expect(() => parseAsaasWebhookEnvelope(123)).not.toThrow();
+    expect(() => parseAsaasWebhookEnvelope({})).not.toThrow();
+    expect(() => parseAsaasWebhookEnvelope({ id: null, event: null })).not.toThrow();
   });
 });

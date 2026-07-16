@@ -1,6 +1,7 @@
 /**
  * Núcleo PURO Asaas: ambiente/base URL/validação de chave (§8) + parsing de
- * erro e de rate limit (§10) das respostas HTTP.
+ * erro e de rate limit (§10) das respostas HTTP + classificação de evento e
+ * parsing do envelope de webhook (§3/§4).
  *
  * ZERO dependências (sem imports, sem `Deno.*`) — importável tanto por
  * _shared/asaas-config.ts / _shared/asaas.ts (Edge Functions, Deno) quanto
@@ -8,10 +9,12 @@
  * Deno). Mesmo padrão de entitlements-core.ts.
  *
  * Consumido hoje via asaas-config.ts por manage-platform-secrets (Fase 2:
- * só a limpeza de cache no upsert/delete de secret) e via asaas.ts (cliente
- * HTTP, Fase 2 — ainda sem EF consumidora). Nenhuma flag é lida neste módulo.
- * Fatos abaixo vêm de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§8/§10)
- * — não alterar sem reconferir a doc oficial do Asaas.
+ * só a limpeza de cache no upsert/delete de secret), via asaas.ts (cliente
+ * HTTP, Fase 2 — ainda sem EF consumidora) e diretamente por
+ * supabase/functions/asaas-webhook/index.ts (classificação known/unknown +
+ * parse do envelope). Nenhuma flag é lida neste módulo. Fatos abaixo vêm de
+ * docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§3/§4/§8/§10) — não alterar
+ * sem reconferir a doc oficial do Asaas.
  */
 
 export type AsaasEnv = "sandbox" | "production";
@@ -207,4 +210,137 @@ export function asaasValueToCents(value: number): number {
     );
   }
   return Math.round(value * 100);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Webhook — classificação de evento + parsing do envelope (§3/§4 da doc,
+// Fase 2 Task 4). Consumido por supabase/functions/asaas-webhook/index.ts.
+// Escopo estritamente limitado a "persistir + classificar known/unknown" —
+// NENHUMA lógica de negócio por evento (ativar assinatura, creditar saldo,
+// mudar billing_status) mora aqui. Isso é Fase 4.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Nomes exatos copiados de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§4)
+ * — não repetir de memória, reconferir a doc se a lista precisar mudar.
+ * Comparação é SEMPRE por igualdade de string inteira contra este set —
+ * NUNCA por prefixo. `PAYMENT_AWAITING_CHARGEBACK_REVERSAL` existe e começa
+ * com `PAYMENT_` mas NÃO com `PAYMENT_CHARGEBACK_`; um matcher por prefixo
+ * (`event.startsWith("PAYMENT_CHARGEBACK_")`) erraria esse evento. Um Set de
+ * literais evita a armadilha por construção.
+ */
+export const ASAAS_PAYMENT_EVENTS: ReadonlySet<string> = new Set([
+  "PAYMENT_CREATED",
+  "PAYMENT_AWAITING_RISK_ANALYSIS",
+  "PAYMENT_APPROVED_BY_RISK_ANALYSIS",
+  "PAYMENT_REPROVED_BY_RISK_ANALYSIS",
+  "PAYMENT_AUTHORIZED",
+  "PAYMENT_UPDATED",
+  "PAYMENT_CONFIRMED",
+  "PAYMENT_RECEIVED",
+  "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED",
+  "PAYMENT_ANTICIPATED",
+  "PAYMENT_OVERDUE",
+  "PAYMENT_DELETED",
+  "PAYMENT_RESTORED",
+  "PAYMENT_REFUNDED",
+  "PAYMENT_PARTIALLY_REFUNDED",
+  "PAYMENT_REFUND_IN_PROGRESS",
+  "PAYMENT_REFUND_DENIED",
+  "PAYMENT_RECEIVED_IN_CASH_UNDONE",
+  "PAYMENT_CHARGEBACK_REQUESTED",
+  "PAYMENT_CHARGEBACK_DISPUTE",
+  "PAYMENT_AWAITING_CHARGEBACK_REVERSAL",
+  "PAYMENT_DUNNING_RECEIVED",
+  "PAYMENT_BANK_SLIP_CANCELLED",
+  "PAYMENT_DUNNING_REQUESTED",
+  "PAYMENT_BANK_SLIP_VIEWED",
+  "PAYMENT_CHECKOUT_VIEWED",
+  "PAYMENT_SPLIT_CANCELLED",
+  "PAYMENT_SPLIT_DIVERGENCE_BLOCK",
+  "PAYMENT_SPLIT_DIVERGENCE_BLOCK_FINISHED",
+]);
+
+/**
+ * Não existe `SUBSCRIPTION_CANCELED` na API (§4) — cancelamento chega como
+ * `SUBSCRIPTION_DELETED` ou `SUBSCRIPTION_INACTIVATED`. Não adicionar
+ * `SUBSCRIPTION_CANCELED` aqui "pra garantir": o nome não existe de fato, e
+ * o teste correspondente prova que ele classifica como desconhecido.
+ */
+export const ASAAS_SUBSCRIPTION_EVENTS: ReadonlySet<string> = new Set([
+  "SUBSCRIPTION_CREATED",
+  "SUBSCRIPTION_UPDATED",
+  "SUBSCRIPTION_INACTIVATED",
+  "SUBSCRIPTION_DELETED",
+  "SUBSCRIPTION_SPLIT_DISABLED",
+  "SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK",
+  "SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK_FINISHED",
+]);
+
+export const ASAAS_CHECKOUT_EVENTS: ReadonlySet<string> = new Set([
+  "CHECKOUT_CREATED",
+  "CHECKOUT_CANCELED",
+  "CHECKOUT_EXPIRED",
+  "CHECKOUT_PAID",
+]);
+
+export type AsaasEventClassification = "known" | "unknown";
+
+/**
+ * Classifica o `event` do envelope. "known" vira `processing_status='processed'`
+ * no webhook; "unknown" vira 'ignored' — NUNCA erro (evento novo ou fora do
+ * escopo da Fase 2 não pode derrubar a fila do Asaas, doc §2).
+ */
+export function classifyAsaasEvent(event: string): AsaasEventClassification {
+  if (
+    ASAAS_PAYMENT_EVENTS.has(event) ||
+    ASAAS_SUBSCRIPTION_EVENTS.has(event) ||
+    ASAAS_CHECKOUT_EVENTS.has(event)
+  ) {
+    return "known";
+  }
+  return "unknown";
+}
+
+/**
+ * Resultado discriminado do parse do envelope do webhook — nunca lança.
+ * `valid:false` sempre vem com `reason` (vai pro log, nunca é exposto ao
+ * Asaas na resposta).
+ */
+export type ParsedAsaasWebhook =
+  | { valid: true; id: string; event: string; dateCreated: string | null }
+  | { valid: false; reason: string };
+
+/**
+ * Valida só o envelope (`id`/`event`), à prova de body nulo, array, string
+ * solta, ou objeto sem os campos — §3 avisa que o miolo (chave `payment`/
+ * `subscription`/`checkout`) NÃO tem shape uniforme entre categorias, então
+ * validar além do envelope acoplaria a uma categoria específica sem
+ * necessidade (o caller só precisa de id/event pra persistir e classificar).
+ *
+ * `dateCreated` é repassado cru como string quando presente: formato Asaas é
+ * "YYYY-MM-DD HH:mm:ss" SEM timezone (não é ISO) — não converter pra Date
+ * aqui, isso fingiria uma garantia (UTC) que o dado não tem. Ninguém consome
+ * esse campo ainda nesta fase.
+ */
+export function parseAsaasWebhookEnvelope(body: unknown): ParsedAsaasWebhook {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return { valid: false, reason: "body ausente, nulo ou não é objeto" };
+  }
+
+  const obj = body as Record<string, unknown>;
+
+  const id = obj.id;
+  if (typeof id !== "string" || !id.trim()) {
+    return { valid: false, reason: "campo 'id' ausente ou não é string" };
+  }
+
+  const event = obj.event;
+  if (typeof event !== "string" || !event.trim()) {
+    return { valid: false, reason: "campo 'event' ausente ou não é string" };
+  }
+
+  const dateCreated = typeof obj.dateCreated === "string" ? obj.dateCreated : null;
+
+  return { valid: true, id, event, dateCreated };
 }
