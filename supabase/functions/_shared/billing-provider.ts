@@ -1,26 +1,30 @@
 /**
- * Camada abstrata de provedores de pagamento (Fase 1/2/3 billing-asaas).
+ * Camada abstrata de provedores de pagamento (Fase 1/2 billing-asaas).
  *
  * BillingProviderPort é o contrato único; implementações:
  *   - StripeBillingProvider (este arquivo): adapter fino sobre os helpers
  *     legados de stripe-billing.ts — comportamento IDÊNTICO ao atual, papel
  *     read-only/legado durante a migração.
- *   - AsaasBillingProvider (este arquivo, Fase 3): provedor principal novo,
+ *   - AsaasBillingProvider (este arquivo, Fase 2): provedor principal novo,
  *     adapter fino sobre _shared/asaas.ts (cliente HTTP) + conversão
  *     centavos↔reais de _shared/asaas-core.ts (§9.1 de
  *     docs/billing-asaas/03-ASAAS-API-VERIFICADO.md).
  *
  * Regras:
- *   - Valores monetários SEMPRE em centavos inteiros na fronteira do port —
- *     AsaasBillingProvider converte pra reais só na chamada ao asaas.ts.
+ *   - Valores monetários de SAÍDA (params que o port recebe) SEMPRE em
+ *     centavos inteiros — AsaasBillingProvider converte pra reais só na
+ *     chamada ao asaas.ts. Exceção documentada: `getPayment`/`getSubscription`
+ *     devolvem o payload cru do Asaas na fronteira do port — reais decimais,
+ *     NÃO normalizados (ver comentário em cada método abaixo).
  *   - O caller NUNCA aceita preço vindo do request — carrega de billing_plans.
  *   - processWebhook fica FORA do port: cada provedor tem verificação própria
  *     (Stripe HMAC t=/v1= em stripe-webhook; Asaas token de header em
  *     asaas-webhook). O port cobre as operações imperativas.
  *
- * REDEPLOY: nenhuma EF importa este módulo ainda (fica pronto pra Fase 4
- * consumir) — nada a adicionar no checklist de redeploy do CLAUDE.md até uma
- * EF de fato importar `getBillingProvider`/`AsaasBillingProvider`.
+ * REDEPLOY: nenhuma EF importa este módulo ainda — os primeiros consumidores
+ * prováveis são `asaas-webhook` e `process-asaas-reconcile` (ambos ainda
+ * FASE 2, não Fase 4) — nada a adicionar no checklist de redeploy do
+ * CLAUDE.md até uma EF de fato importar `getBillingProvider`/`AsaasBillingProvider`.
  */
 
 import {
@@ -219,7 +223,11 @@ async function safely<T>(op: string, fn: () => Promise<ProviderResult<T>>): Prom
     return await fn();
   } catch (err) {
     jsonLog("error", { evt: "asaas_provider_unexpected_error", op, error: String(err) });
-    return { ok: false, error: "Falha inesperada ao comunicar com o Asaas." };
+    // Não afirmar "comunicar com o Asaas" — a exceção pode ser local (ex.:
+    // centsToAsaasValue rejeitando um amountCents inválido ANTES de qualquer
+    // request sair), então "falha ao comunicar" apontaria o operador pra um
+    // problema de rede/upstream que não necessariamente ocorreu.
+    return { ok: false, error: "Falha inesperada ao processar a operação no Asaas." };
   }
 }
 
@@ -273,8 +281,12 @@ const asaasProvider: BillingProviderPort = {
         externalReference: params.externalReference,
       };
       if (isSubscription) {
-        // Obrigatório quando chargeTypes inclui RECURRENT (§9); shape exato
-        // não documentado — só `cycle` é citado como exigido nesse caso.
+        // `subscription` obrigatório quando chargeTypes inclui RECURRENT
+        // (§9). Shape exato do objeto NÃO documentado pro checkout — `cycle`
+        // é o único campo que usamos aqui por analogia ao endpoint irmão
+        // POST /v3/subscriptions (que exige `cycle`, §9), não porque o §9
+        // afirme isso pro objeto `subscription` do checkout. Validar no
+        // sandbox antes da Fase 4.
         checkoutParams.subscription = { cycle: "MONTHLY" };
       }
 
@@ -290,13 +302,17 @@ const asaasProvider: BillingProviderPort = {
       const dueDate = isoDateInDaysBrt(params.daysUntilDue ?? DEFAULT_DAYS_UNTIL_DUE);
       const res = await createAsaasPayment({
         customer: params.providerCustomerId,
-        // UNDEFINED deixa o Asaas oferecer, na fatura, todos os métodos
-        // habilitados na conta (boleto/cartão/Pix) pro pagador escolher — não
-        // travamos um método fixo aqui (§9).
+        // UNDEFINED é um valor válido do enum billingType (§9) — a doc NÃO
+        // descreve o comportamento pro pagador. Suposição nossa, NÃO
+        // VERIFICADA: deixa o Asaas oferecer todos os métodos habilitados da
+        // conta na fatura pro pagador escolher, em vez de travar um método
+        // fixo aqui; validar no sandbox antes da Fase 4.
         billingType: "UNDEFINED",
         value,
         dueDate,
-        description: params.description,
+        // description máx 500 (§9) — mesmo truncamento aplicado aos campos
+        // do item de checkout acima (name 30 / description 150).
+        description: params.description.slice(0, 500),
         externalReference: params.externalReference,
       });
       if (!res.ok || !res.paymentId) return { ok: false, error: res.error ?? "Falha ao criar cobrança no Asaas." };

@@ -416,7 +416,7 @@ describe("asaasValueToCents — reais decimais → centavos (§9.1)", () => {
   });
 
   // A razão de existir do Math.round: em IEEE 754, 19.90 * 100 não é 1990
-  // exato. Sem arredondar, um cast/truncamento cru cortaria pra 1899 —
+  // exato. Sem arredondar, um cast/truncamento cru cortaria pra 1989 —
   // R$ 0,01 a menos por cobrança, silenciosamente. Não "simplificar" isso
   // removendo o Math.round.
   it("float drift do IEEE 754: 19.90 * 100 !== 1990 exato, mas o resultado arredondado é", () => {

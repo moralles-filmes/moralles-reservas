@@ -4,10 +4,12 @@
  * NÃO copia o encoding: JSON + header `access_token` cru, nada de
  * `URLSearchParams`/`Bearer` (§8 de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md).
  *
- * Fase 2 — nenhuma EF importa este módulo ainda (chega na Fase 3, via
- * AsaasBillingProvider em _shared/billing-provider.ts). Este arquivo NÃO lê
- * platform_flags — `asaas_enabled` existe na tabela mas quem decide se o
- * provider Asaas é chamado é a camada acima (Task 3+), não este cliente HTTP.
+ * Fase 2 — nenhuma EF importa este módulo ainda diretamente; é consumido por
+ * AsaasBillingProvider (_shared/billing-provider.ts, também Fase 2) — chega
+ * numa EF de fato quando `asaas-webhook`/`process-asaas-reconcile` (Fase 2)
+ * forem implementadas. Este arquivo NÃO lê platform_flags — `asaas_enabled`
+ * existe na tabela mas quem decide se o provider Asaas é chamado é a camada
+ * acima (Task 3+), não este cliente HTTP.
  *
  * Ao importar este módulo numa EF nova, adicionar ao checklist de redeploy
  * do CLAUDE.md (mesma seção de stripe-config.ts/stripe-billing.ts).

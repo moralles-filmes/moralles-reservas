@@ -194,8 +194,8 @@ export function centsToAsaasValue(amountCents: number): number {
 
 /**
  * `value` do Asaas (reais decimais) → centavos (inteiro). Ver §9.1.
- * O `Math.round` NÃO é decorativo: `19.90 * 100 === 1899.9999999999998` em
- * IEEE 754 — sem arredondar, `Math.trunc`/cast direto cortaria pra `1899`
+ * O `Math.round` NÃO é decorativo: `19.90 * 100 === 1989.9999999999998` em
+ * IEEE 754 — sem arredondar, `Math.trunc`/cast direto cortaria pra `1989`
  * (R$ 0,01 a menos por cobrança, de forma silenciosa). Lança em
  * NaN/Infinity/negativo: um `value` corrompido vindo da API não deve virar
  * um número de centavos qualquer.

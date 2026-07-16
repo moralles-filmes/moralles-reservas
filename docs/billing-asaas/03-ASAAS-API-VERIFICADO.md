@@ -153,7 +153,7 @@ Prova (doc oficial, `criando-uma-assinatura`): `"value": 19.90` para uma assinat
 
 **Conversão obrigatória na fronteira** (é o `AsaasBillingProvider` quem converte — o cliente HTTP `asaas.ts` passa `value` cru de propósito, com o nome do campo do Asaas, pra não fingir unidade que não tem):
 - enviando: `value = amountCents / 100`
-- lendo de volta: `amountCents = Math.round(value * 100)` (o `Math.round` evita drift de float — `19.90 * 100 = 1899.9999...` em IEEE 754)
+- lendo de volta: `amountCents = Math.round(value * 100)` (o `Math.round` evita drift de float — `19.90 * 100 === 1989.9999999999998` em IEEE 754; truncar daria `1989`, um centavo a menos)
 
 **Campos em reais** (mesma unidade de `value`): `netValue` · `originalValue` · `installmentValue` · `totalValue` · `split[].fixedValue` · `items[].value` · `value` do refund.
 
