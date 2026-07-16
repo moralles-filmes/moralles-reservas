@@ -8,6 +8,10 @@ import {
   parseRateLimitReset,
   ASAAS_SANDBOX_BASE_URL,
   ASAAS_PRODUCTION_BASE_URL,
+  shouldRetryMutation,
+  shouldRetryGet,
+  MUTATION_RATE_LIMIT_RETRIES,
+  GET_MAX_RETRIES,
 } from "../../supabase/functions/_shared/asaas-core";
 
 // Fatos verificados em docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§8):
@@ -281,5 +285,67 @@ describe("parseRateLimitReset", () => {
 
   it("'0' → 0 (reset iminente é válido, não é ausência — cuidado com falsy)", () => {
     expect(parseRateLimitReset("0")).toBe(0);
+  });
+});
+
+// shouldRetryMutation/shouldRetryGet são o invariante de dinheiro desta
+// integração (§11 — Asaas não tem Idempotency-Key): um retry cego de
+// POST/PUT/DELETE em 5xx/timeout pode duplicar uma cobrança real que já foi
+// processada do lado do Asaas mesmo sem resposta a tempo. Estes testes
+// existem pra que um futuro refactor que "simplifique" o retry (ex.: passar
+// a repetir 5xx, ou remover o teto de tentativas) quebre CI em vez de só
+// quebrar em produção. Ver política completa comentada em _shared/asaas.ts.
+
+describe("shouldRetryMutation — NUNCA duplicar cobrança (só 429 repete, e só até o limite)", () => {
+  it("429 abaixo do limite de tentativas → retry (rate limit não processou nada, repetir é seguro)", () => {
+    expect(shouldRetryMutation(429, 0)).toBe(true);
+    expect(shouldRetryMutation(429, MUTATION_RATE_LIMIT_RETRIES - 1)).toBe(true);
+  });
+
+  it("429 NO limite de tentativas → NÃO retry (esgotou, devolve o 429 pro caller)", () => {
+    expect(shouldRetryMutation(429, MUTATION_RATE_LIMIT_RETRIES)).toBe(false);
+  });
+
+  it("429 acima do limite de tentativas → NÃO retry", () => {
+    expect(shouldRetryMutation(429, MUTATION_RATE_LIMIT_RETRIES + 5)).toBe(false);
+  });
+
+  it("500/502/503 NUNCA retry — outcome desconhecido, repetir arrisca duplicar cobrança real", () => {
+    expect(shouldRetryMutation(500, 0)).toBe(false);
+    expect(shouldRetryMutation(502, 0)).toBe(false);
+    expect(shouldRetryMutation(503, 0)).toBe(false);
+  });
+
+  it("200 (sucesso) → NÃO retry", () => {
+    expect(shouldRetryMutation(200, 0)).toBe(false);
+  });
+
+  it("400/401 (erro do cliente, não é rate limit) → NÃO retry", () => {
+    expect(shouldRetryMutation(400, 0)).toBe(false);
+    expect(shouldRetryMutation(401, 0)).toBe(false);
+  });
+});
+
+describe("shouldRetryGet — GET é idempotente: 5xx e 429 repetem normal até o limite", () => {
+  it("5xx abaixo do limite de tentativas → retry", () => {
+    expect(shouldRetryGet(500, 0)).toBe(true);
+    expect(shouldRetryGet(503, GET_MAX_RETRIES - 1)).toBe(true);
+  });
+
+  it("429 abaixo do limite de tentativas → retry", () => {
+    expect(shouldRetryGet(429, 0)).toBe(true);
+  });
+
+  it("5xx/429 no limite ou acima do limite de tentativas → NÃO retry", () => {
+    expect(shouldRetryGet(500, GET_MAX_RETRIES)).toBe(false);
+    expect(shouldRetryGet(429, GET_MAX_RETRIES)).toBe(false);
+    expect(shouldRetryGet(500, GET_MAX_RETRIES + 3)).toBe(false);
+  });
+
+  it("2xx/4xx fora de 429 → NÃO retry", () => {
+    expect(shouldRetryGet(200, 0)).toBe(false);
+    expect(shouldRetryGet(400, 0)).toBe(false);
+    expect(shouldRetryGet(404, 0)).toBe(false);
+    expect(shouldRetryGet(401, 0)).toBe(false);
   });
 });

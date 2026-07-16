@@ -143,6 +143,32 @@ Confirma a suposição do plano. (`sandbox.asaas.com` como host de API aparece e
 - `subscription` obrigatório se `chargeTypes` inclui `RECURRENT`; `minutesToExpire` 10–1440; `externalReference` máx 200
 - Resposta: `id` é **UUID** (não tem prefixo `chk_`), `link` = URL hospedada, `status`: `ACTIVE` `CANCELED` `EXPIRED` `PAID`
 
+## 9.1 ⚠ UNIDADE MONETÁRIA — `value` é em REAIS DECIMAIS, não em centavos
+
+**O invariante mais perigoso desta integração.** Nosso código inteiro fala `amountCents` (inteiro). O Asaas fala **reais decimais**.
+
+Prova (doc oficial, `criando-uma-assinatura`): `"value": 19.90` para uma assinatura de R$ 19,90 — ponto decimal é impossível se a unidade fosse centavo inteiro (seria `1990`). Corroborado em `criar-uma-cobranca-parcelada` ("valor total de R$ 350,00 … totalizando R$: 350.00"), `cobrancas-via-boleto` (`"value": 100.00`), `estornar-cobranca` (`"value": 2.00`), `split-de-pagamentos` ("cobrança de R$100,00 … valor líquido R$98,00").
+
+> **Mandar `44900` (centavos de R$ 449,00) cobra R$ 44.900,00 do cliente. 100x.**
+
+**Conversão obrigatória na fronteira** (é o `AsaasBillingProvider` quem converte — o cliente HTTP `asaas.ts` passa `value` cru de propósito, com o nome do campo do Asaas, pra não fingir unidade que não tem):
+- enviando: `value = amountCents / 100`
+- lendo de volta: `amountCents = Math.round(value * 100)` (o `Math.round` evita drift de float — `19.90 * 100 = 1899.9999...` em IEEE 754)
+
+**Campos em reais** (mesma unidade de `value`): `netValue` · `originalValue` · `installmentValue` · `totalValue` · `split[].fixedValue` · `items[].value` · `value` do refund.
+
+**Armadilhas — NÃO converter estes:**
+| Campo | Unidade real |
+|---|---|
+| `interest.value` | **SEMPRE percentual** (% ao mês). Não existe `type` — não dá pra usar valor fixo. Mandar `2` = 2%/mês, não R$ 2. |
+| `discount.value` / `fine.value` | **Depende do irmão `type`**: `FIXED` → reais; `PERCENTAGE` → percentual. Mesmo nome de campo, unidade diferente. |
+| `split[].percentualValue` | Percentual, **4 casas** decimais (ex.: `92.3444`) — distinto de `fixedValue` (reais, 2 casas). |
+
+**NÃO VERIFICADO:**
+- `items[].value` do checkout: só aparece como `"value": 100` (sem decimal) nas páginas — sem "prova decisiva" decimal. É o mesmo nome/padrão de todos os outros `value` da API e nada sugere unidade diferente, mas **testar `19.90` no sandbox antes de produção**.
+- Comportamento com mais de 2 casas decimais (ex.: `19.999`) — nenhuma página documenta arredondamento ou erro de validação.
+- A descrição de `fine.value` na doc diz "Percentual de multa..." mesmo existindo `type: FIXED` no enum — prosa e enum se contradizem. Confirmar no sandbox.
+
 ## 10. Rate limit e erros
 
 - Headers: `RateLimit-Limit` · `RateLimit-Remaining` · `RateLimit-Reset` (segundos até reset). `Remaining: 0` → **429**.

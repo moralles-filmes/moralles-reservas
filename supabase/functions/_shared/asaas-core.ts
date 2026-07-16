@@ -129,3 +129,34 @@ export function parseRateLimitReset(headerValue: string | null): number | null {
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return parsed;
 }
+
+/**
+ * Limite de tentativas de cada caminho — compartilhado entre a decisão pura
+ * abaixo e o loop real em _shared/asaas.ts (fetchAsaasGet/fetchAsaasMutation)
+ * pra não duplicar o número em dois lugares e divergir por refactor futuro.
+ */
+export const MUTATION_RATE_LIMIT_RETRIES = 3;
+export const GET_MAX_RETRIES = 2;
+
+/**
+ * Decisão PURA de retry do caminho mutante (POST/PUT/DELETE) — só por
+ * status+attempt, sem I/O. É o invariante de dinheiro desta integração
+ * (pinado em src/lib/asaas-core.test.ts): 429 e ainda dentro do limite de
+ * tentativas → true (rate limit rejeitou a requisição ANTES de processar
+ * nada, repetir é seguro); qualquer outro status (200, 4xx, 5xx) → false —
+ * 5xx NUNCA repete aqui, outcome desconhecido arrisca duplicar uma cobrança
+ * real (Asaas não tem Idempotency-Key, §11). Erro de rede/timeout não passa
+ * por esta função — é estrutural em asaas.ts (fetch não é capturado nesse
+ * caminho de propósito), não dá pra expressar como predicado de status.
+ */
+export function shouldRetryMutation(status: number, attempt: number): boolean {
+  return status === 429 && attempt < MUTATION_RATE_LIMIT_RETRIES;
+}
+
+/**
+ * Decisão PURA de retry do caminho GET — GET é idempotente por natureza,
+ * então 5xx E 429 repetem normalmente até o limite de tentativas.
+ */
+export function shouldRetryGet(status: number, attempt: number): boolean {
+  return (status >= 500 || status === 429) && attempt < GET_MAX_RETRIES;
+}

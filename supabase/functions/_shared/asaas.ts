@@ -15,7 +15,14 @@
 
 import { genRequestId, jsonLog } from "./security.ts";
 import { getAsaasApiKey, getAsaasBaseUrl, getAsaasEnv } from "./asaas-config.ts";
-import { parseAsaasError, parseRateLimitReset, validateKeyForEnv } from "./asaas-core.ts";
+import {
+  GET_MAX_RETRIES,
+  parseAsaasError,
+  parseRateLimitReset,
+  shouldRetryGet,
+  shouldRetryMutation,
+  validateKeyForEnv,
+} from "./asaas-core.ts";
 
 // Identifica a aplicação nas chamadas — obrigatório em contas Asaas criadas a
 // partir de 13/06/2024 (§8); o fetch do Deno não manda User-Agent por padrão.
@@ -25,10 +32,15 @@ const ASAAS_USER_AGENT = "moralles-reservas";
 // com retry — cada `fetch` isolado aborta sozinho nesse teto).
 const ASAAS_REQUEST_TIMEOUT_MS = 15_000;
 
-function timeoutSignal(ms: number): AbortSignal {
+// Devolve o signal JUNTO com `clear` — o caller precisa desarmar o timer
+// assim que o `fetch` resolver (headers recebidos). Sem isso o timer segue
+// armado contra o MESMO controller enquanto o body é lido (`res.json()`
+// alhures); se a leitura cruzar os `ms` restantes, o parse aborta em vez de
+// completar (ver uso em fetchAsaasGet/fetchAsaasMutation).
+function timeoutSignal(ms: number): { signal: AbortSignal; clear: () => void } {
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), ms);
-  return controller.signal;
+  const timer = setTimeout(() => controller.abort(), ms);
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -54,22 +66,75 @@ function sleep(ms: number): Promise<void> {
 //   é em 429: rate limit rejeitou a requisição ANTES de processar nada, então
 //   repetir é seguro. Espera por `RateLimit-Reset` quando o header vier,
 //   senão backoff exponencial com teto.
+//
+// A decisão de QUAL status entra em retry (por status+attempt, sem I/O) vive
+// em shouldRetryMutation/shouldRetryGet (./asaas-core.ts) — pinada por teste
+// puro em src/lib/asaas-core.test.ts. É o invariante de dinheiro desta
+// integração: um catch que engolisse o fetch mutante não seria pego por esse
+// teste (é estrutural, ver comentário no loop abaixo), só por revisão manual.
+//
+// A espera por `RateLimit-Reset` (429) tem teto (RATE_LIMIT_WAIT_CAP_MS):
+// acima dele o reset informado pelo servidor levaria o sleep além da vida do
+// isolate da Edge Function, que seria matado no meio da espera de qualquer
+// jeito — sem responder ao caller e sem reconciliar nada no banco. Nesse caso
+// desiste e devolve o 429 pro caller em vez de dormir. Não há risco de
+// duplicar cobrança em nenhum dos dois casos — 429 nunca processou nada.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const GET_MAX_RETRIES = 2;
 const GET_BACKOFF_BASE_MS = 1000;
-const GET_RETRYABLE_STATUS = (status: number) => status >= 500 || status === 429;
+const MUTATION_BACKOFF_BASE_MS = 1000;
+
+// Teto compartilhado de quanto este cliente tolera dormir esperando um
+// `RateLimit-Reset` do Asaas (mutação E get) — acima disso o isolate da Edge
+// Function pode morrer no meio do sleep (limite de wall-clock da plataforma)
+// antes do reset acontecer. Também serve de teto pro backoff exponencial
+// puro do caminho mutante (fallback quando o header não vem).
+const RATE_LIMIT_WAIT_CAP_MS = 30_000;
+
+type RateLimitWait =
+  | { kind: "none" }
+  | { kind: "wait"; ms: number }
+  | { kind: "give_up"; resetSeconds: number };
+
+/**
+ * Traduz `RateLimit-Reset` (§10) num veredito: sem header → "none" (caller
+ * usa seu próprio backoff); dentro do teto → "wait" com o delay exato; acima
+ * do teto → "give_up" — dormir isso mataria o isolate no meio do sleep sem
+ * chegar a reentrar. Nenhum dos casos arrisca duplicar cobrança: 429
+ * significa que nada foi processado do lado do Asaas.
+ */
+function resolveRateLimitWait(headerValue: string | null): RateLimitWait {
+  const resetSeconds = parseRateLimitReset(headerValue);
+  if (resetSeconds === null) return { kind: "none" };
+  const ms = resetSeconds * 1000;
+  return ms > RATE_LIMIT_WAIT_CAP_MS ? { kind: "give_up", resetSeconds } : { kind: "wait", ms };
+}
 
 async function fetchAsaasGet(url: string, init: RequestInit, reqId: string, path: string): Promise<Response> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= GET_MAX_RETRIES; attempt++) {
+    const { signal, clear } = timeoutSignal(ASAAS_REQUEST_TIMEOUT_MS);
     try {
-      const res = await fetch(url, { ...init, signal: timeoutSignal(ASAAS_REQUEST_TIMEOUT_MS) });
-      if (!GET_RETRYABLE_STATUS(res.status) || attempt === GET_MAX_RETRIES) return res;
-      const delayMs = GET_BACKOFF_BASE_MS * 2 ** attempt + Math.random() * GET_BACKOFF_BASE_MS;
+      const res = await fetch(url, { ...init, signal });
+      clear();
+      if (!shouldRetryGet(res.status, attempt)) return res;
+
+      let delayMs = GET_BACKOFF_BASE_MS * 2 ** attempt + Math.random() * GET_BACKOFF_BASE_MS;
+      if (res.status === 429) {
+        // 429 é o único status com um sinal de espera real do servidor
+        // (§10) — honrar em vez de backoff cego evita queimar tentativas
+        // contra uma janela que só reseta bem depois.
+        const wait = resolveRateLimitWait(res.headers.get("RateLimit-Reset"));
+        if (wait.kind === "give_up") {
+          jsonLog("warn", { evt: "asaas_get_rate_limit_exceeds_cap", reqId, path, attempt: attempt + 1, reset_seconds: wait.resetSeconds });
+          return res;
+        }
+        if (wait.kind === "wait") delayMs = wait.ms;
+      }
       jsonLog("warn", { evt: "asaas_get_retry", reqId, path, attempt: attempt + 1, status: res.status, delay_ms: Math.round(delayMs) });
       await sleep(delayMs);
     } catch (err) {
+      clear();
       lastError = err;
       if (attempt === GET_MAX_RETRIES) throw err;
       const delayMs = GET_BACKOFF_BASE_MS * 2 ** attempt + Math.random() * GET_BACKOFF_BASE_MS;
@@ -81,21 +146,27 @@ async function fetchAsaasGet(url: string, init: RequestInit, reqId: string, path
   throw lastError ?? new Error("fetchAsaasGet: esgotou tentativas sem resposta");
 }
 
-const MUTATION_RATE_LIMIT_RETRIES = 3;
-const MUTATION_BACKOFF_BASE_MS = 1000;
-const MUTATION_BACKOFF_CAP_MS = 30_000;
-
 async function fetchAsaasMutation(url: string, init: RequestInit, reqId: string, path: string): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     // Erro de rede/timeout aqui propaga (throw) direto pro caller — nunca
     // capturado/reentrado. Ver comentário da política de retry acima.
-    const res = await fetch(url, { ...init, signal: timeoutSignal(ASAAS_REQUEST_TIMEOUT_MS) });
-    if (res.status !== 429 || attempt >= MUTATION_RATE_LIMIT_RETRIES) return res;
+    const { signal, clear } = timeoutSignal(ASAAS_REQUEST_TIMEOUT_MS);
+    const res = await fetch(url, { ...init, signal });
+    clear();
+    if (!shouldRetryMutation(res.status, attempt)) return res;
 
-    const resetSeconds = parseRateLimitReset(res.headers.get("RateLimit-Reset"));
-    const delayMs = resetSeconds !== null
-      ? resetSeconds * 1000
-      : Math.min(MUTATION_BACKOFF_BASE_MS * 2 ** attempt, MUTATION_BACKOFF_CAP_MS);
+    const wait = resolveRateLimitWait(res.headers.get("RateLimit-Reset"));
+    if (wait.kind === "give_up") {
+      // Reset reportado (ex.: 12h, dentro da janela de 25k req/12h do §10)
+      // excede o teto que o isolate aguenta esperar vivo — dormir até lá
+      // mataria a invocação no meio do sleep, sem resposta amigável pro
+      // caller e sem reconciliação no banco. Desiste e devolve o 429 pro
+      // caller decidir; sem risco de duplicar cobrança (429 não processou
+      // nada do lado do Asaas).
+      jsonLog("warn", { evt: "asaas_mutation_rate_limit_exceeds_cap", reqId, path, attempt: attempt + 1, reset_seconds: wait.resetSeconds });
+      return res;
+    }
+    const delayMs = wait.kind === "wait" ? wait.ms : Math.min(MUTATION_BACKOFF_BASE_MS * 2 ** attempt, RATE_LIMIT_WAIT_CAP_MS);
     jsonLog("warn", { evt: "asaas_mutation_rate_limited", reqId, path, attempt: attempt + 1, delay_ms: Math.round(delayMs) });
     await sleep(delayMs);
   }
@@ -146,7 +217,14 @@ export async function asaasRequest(
     return { ok: false, status: 0, data: { error: "Falha de conexão com o Asaas." } };
   }
 
-  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  const data = (await res.json().catch((err) => {
+    // Nunca deixar o parse falhar em silêncio: sem log aqui, um POST que
+    // criou a cobrança de verdade mas cujo body não deu tempo de ser lido
+    // (signal já cancelado, ver timeoutSignal) devolveria {ok:true,
+    // paymentId:undefined} sem nenhum rastro do id perdido.
+    jsonLog("error", { evt: "asaas_response_parse_error", reqId, method, path, status: res.status, error: String(err) });
+    return {};
+  })) as Record<string, unknown>;
   if (!res.ok) {
     const message = parseAsaasError(data, `Erro Asaas (status ${res.status}).`);
     jsonLog("error", { evt: "asaas_request_error", reqId, method, path, status: res.status, error: message });
@@ -199,10 +277,12 @@ export type AsaasBillingType = "UNDEFINED" | "BOLETO" | "CREDIT_CARD" | "PIX";
 export interface AsaasPaymentParams {
   customer: string;
   billingType: AsaasBillingType;
-  /** Valor no formato nativo do Asaas — unidade (reais decimais vs. centavos)
-   * não confirmada em 03-ASAAS-API-VERIFICADO.md; conversão a partir de
-   * amountCents (centavos, convenção interna) é responsabilidade de quem
-   * chama (AsaasBillingProvider, Fase 3) — validar no sandbox antes de usar. */
+  /** Reais decimais (ex.: `19.90` = R$ 19,90), NÃO centavos — CONFIRMADO em
+   * §9.1 de 03-ASAAS-API-VERIFICADO.md. Quem chama (AsaasBillingProvider,
+   * Fase 3) converte na fronteira: enviando, `value = amountCents / 100`;
+   * lendo de volta, `amountCents = Math.round(value * 100)` (o `Math.round`
+   * evita drift de float). Este cliente passa `value` cru de propósito — não
+   * converte aqui. */
   value: number;
   /** YYYY-MM-DD */
   dueDate: string;
@@ -277,6 +357,11 @@ export type AsaasCycle =
 export interface AsaasSubscriptionParams {
   customer: string;
   billingType: AsaasBillingType;
+  /** Reais decimais (ex.: `19.90` = R$ 19,90), NÃO centavos — CONFIRMADO em
+   * §9.1 de 03-ASAAS-API-VERIFICADO.md. Mesma conversão de
+   * AsaasPaymentParams.value: enviando, `value = amountCents / 100`; lendo de
+   * volta, `amountCents = Math.round(value * 100)`. Cliente passa cru, sem
+   * converter. */
   value: number;
   /** YYYY-MM-DD */
   nextDueDate: string;
@@ -325,6 +410,13 @@ export interface AsaasCheckoutItem {
   /** máx 30 chars */
   name: string;
   quantity: number;
+  /** Reais decimais, NÃO centavos — mesma convenção CONFIRMADA dos demais
+   * `value` da API (§9.1 de 03-ASAAS-API-VERIFICADO.md), mas ESTE campo
+   * específico (`items[].value` do checkout) segue sem prova decisiva: a doc
+   * só mostra `"value": 100` sem casa decimal — §9.1 marca como NÃO
+   * VERIFICADO, testar `19.90` no sandbox antes da Fase 4. Mesma conversão
+   * dos demais: `value = amountCents / 100` / `amountCents = Math.round(value
+   * * 100)`. */
   value: number;
   /** máx 150 chars */
   description?: string;
