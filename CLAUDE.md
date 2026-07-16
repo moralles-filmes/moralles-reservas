@@ -230,8 +230,11 @@ Stripe Connect Standard (per-unit). Pagamento via Stripe Checkout (hosted).
 
 ## Billing — mensalidades
 
-Cobrança recorrente das organizations. Usa **conta principal Stripe** (não Connect, não `transfer_data`). Separado da caução.
+Cobrança recorrente das organizations. Usa **conta principal Stripe** (não Connect, não `transfer_data`). Separado da caução. **Migração Stripe→Asaas em andamento** — plano e fases em [docs/billing-asaas/](docs/billing-asaas/01-PLANO-IMPLEMENTACAO.md); ler antes de mexer em billing/IA/Z-API.
 
+- **Código novo de billing lê `provider` + `provider_*_id`; colunas `stripe_*` são legado read-only.** Idempotência de webhook é UNIQUE `(provider, provider_event_id)` em `billing_events`. Não construir feature nova sobre `stripe_*`. [20260716130200_063](supabase/migrations/20260716130200_063_billing_provider_columns.sql).
+- **Feature flags globais vivem em `platform_flags` (FORCE RLS) e são lidas SÓ via [_shared/platform-flags.ts](supabase/functions/_shared/platform-flags.ts)** (cache 5min, fail-closed: flag ausente = OFF). Flag nova = seed em migration com `on conflict do nothing`; frontend nunca lê a tabela.
+- **Entitlement por feature (system/whatsapp/ai) resolve via [_shared/entitlements.ts](supabase/functions/_shared/entitlements.ts)**; prioridade (bloqueio admin > override > assinatura > trial) é código puro testado em [src/lib/entitlements-core.test.ts](src/lib/entitlements-core.test.ts). Webhook financeiro NUNCA escreve em `organization_entitlement_overrides` — só admin. Moralles e Ren Sushi têm LIFETIME seedado (não remover — orgs reais sem assinatura).
 - **Billing é por organization.** `billing_customers` 1:1 com `organizations`. Org com 5 units paga 1 mensalidade.
 - **`organizations.billing_status`** é autoritativa pro `BillingGuard` ([src/components/BillingGuard.tsx](src/components/BillingGuard.tsx)) E checks server-side. Platform admin bypassa. `/g/<slug>/cobranca` é whitelist (única rota em `blocked/suspended/canceled`, sem isso cliente entra em loop).
 - **`billing_events` é SEPARADA de `stripe_webhook_events`.** No `stripe-webhook/index.ts`, billing events roteados ANTES do check de `stripe_webhook_events` — `BILLING_EVENT_TYPES.has(eventType)` processa e retorna. `checkout.session.completed` é DUAL-PURPOSE (caução OU billing) — `isBillingCheckout(obj)` discrimina em runtime; não mover esse evento pro set sem manter o discriminador.

@@ -28,6 +28,39 @@ export type PaymentMethod = "card" | "boleto" | "pix" | "manual";
 
 export type OverrideType = "grant_access" | "block_access" | "extend_trial";
 
+// ─── Multi-provider (Fase 1 billing-asaas — migration 063) ───────────────────
+
+export type PlanCategory =
+  | "SYSTEM_SUBSCRIPTION"
+  | "WHATSAPP_IMPLEMENTATION"
+  | "WHATSAPP_SUBSCRIPTION"
+  | "AI_CREDIT_PACKAGE"
+  | "TRIAL"
+  | "CUSTOM";
+
+export type BillingProviderName = "stripe" | "asaas" | "manual" | "lifetime";
+
+export type PlanBillingType = "recurring" | "one_time";
+
+export type EntitlementFeature = "system" | "whatsapp" | "ai";
+
+export type EntitlementGrantType = "LIFETIME" | "TEMPORARY" | "PROMOTIONAL" | "MANUAL_OVERRIDE";
+
+export interface OrganizationEntitlementOverride {
+  id: string;
+  organization_id: string;
+  feature: EntitlementFeature;
+  enabled: boolean;
+  grant_type: EntitlementGrantType;
+  starts_at: string;
+  ends_at: string | null;
+  reason: string;
+  granted_by: string;
+  created_at: string;
+  revoked_at: string | null;
+  revoked_by: string | null;
+}
+
 export interface BillingPlan {
   id: string;
   name: string;
@@ -55,6 +88,15 @@ export interface BillingPlan {
   sort_order: number;
   created_at: string;
   updated_at: string;
+  // Multi-provider (migration 063) — opcionais até a Fase 3 atualizar o painel;
+  // manage-billing pode não devolvê-los em versões antigas deployadas.
+  category?: PlanCategory;
+  provider?: BillingProviderName;
+  billing_type?: PlanBillingType;
+  amount_credited_cents?: number | null;
+  recommended?: boolean;
+  requires_plan_id?: string | null;
+  provider_metadata?: Record<string, unknown> | null;
 }
 
 export interface PaymentMethodSummary {

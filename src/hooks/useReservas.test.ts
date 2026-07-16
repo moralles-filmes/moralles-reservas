@@ -31,6 +31,7 @@ describe("mapRpcRowToReserva", () => {
     expect(reserva!.status).toBe("confirmed");
     expect(reserva!.customer).toEqual({
       id: "",
+      organization_id: "",
       name: "João da Silva",
       phone: "11999887766",
       email: "joao@example.com",
