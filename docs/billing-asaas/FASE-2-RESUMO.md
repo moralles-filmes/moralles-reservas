@@ -2,7 +2,23 @@
 
 > Concluída em 2026-07-16, branch `billing-asaas/fase-2` (base `ca957c7`, tag `billing-asaas/fase-1`). 16 commits.
 >
-> **Aplicado em produção em 2026-07-18** (depois do fechamento da fase): migration 064 aplicada, EFs `asaas-webhook` / `process-asaas-reconcile` / `manage-platform-secrets` deployadas. A flag `asaas_enabled` continua **OFF** e nenhum webhook está cadastrado no painel Asaas — nada recebe evento ainda. Ver §"Aplicação em produção" no fim.
+> ## 📍 ESTADO ATUAL — leia antes de tocar em qualquer coisa de billing
+>
+> **A Fase 2 está aplicada em produção e validada com evento real (2026-07-18).** Mergeada na `main`.
+>
+> | | |
+> |---|---|
+> | Migration 064 (cron `asaas-reconcile`) | ✅ aplicada |
+> | EFs `asaas-webhook`, `process-asaas-reconcile`, `manage-platform-secrets` | ✅ deployadas |
+> | Flag `asaas_enabled` | 🟢 **LIGADA** (não está mais OFF — trechos antigos deste doc e do runbook dizem OFF, estão desatualizados) |
+> | `ASAAS_API_KEY` / `ASAAS_WEBHOOK_TOKEN` | ✅ nos **secrets de Edge Function** do Supabase, não em `platform_secrets` |
+> | Webhook no painel Asaas (sandbox) | ✅ cadastrado, fila de sincronização ligada |
+> | Recebimento + persistência | ✅ provado com evento real |
+> | Idempotência (cenário 7, reenvio) | ✅ testado |
+> | Chave da API validada contra a API | ❌ nunca exercitada — nenhum código nosso chama o Asaas ainda |
+> | Cenário 8 (successUrl não ativa nada) | 🔒 depende da Fase 4 (não existe checkout ainda) |
+>
+> **Ligar/desligar a flag:** `update platform_flags set value = 'true'::jsonb where key = 'asaas_enabled';` (`value` é jsonb, não boolean). Depois de mudar, **espere ~5 min** — cache.
 
 ---
 

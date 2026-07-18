@@ -7,6 +7,8 @@
 
 1. `npm run lint` · 2. `npm run typecheck` (`tsc -b`) · 3. `npm run test` · 4. `npm run build` · 5. `supabase db push` aplicado + query de validação pós-migration · 6. Entradas `verify_jwt` no `config.toml` para toda EF nova **no mesmo PR** · 7. Redeploy de EFs afetadas por mudanças em `_shared/` (atualizar checklist do CLAUDE.md se helper novo) · 8. Atualizar docs desta pasta · 9. Resumo da fase (arquivos alterados, riscos, rollback, próxima fase) · 10. Tag git `billing-asaas/fase-N`. **Não avançar com erro.**
 
+> ⚠️ **A tag e a branch têm o mesmo nome — e isso já causou merge errado duas vezes.** `git merge billing-asaas/fase-N` resolve pela **TAG** (que aponta pro commit de fechamento) e ignora silenciosamente qualquer commit feito na branch depois disso. O aviso `refname ... is ambiguous` passa despercebido e o merge "dá certo" faltando código. **Sempre use o ref completo em merge e push:** `git merge refs/heads/billing-asaas/fase-N` · `git push origin refs/heads/...:refs/heads/...`. Depois de mergear, confirme com `git log --oneline main..refs/heads/billing-asaas/fase-N` (tem que sair vazio).
+
 ## Feature flags (criadas na Fase 1, todas default OFF)
 
 | Flag | Controla | Ligada na fase |
