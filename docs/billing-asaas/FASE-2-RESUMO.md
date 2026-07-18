@@ -47,7 +47,7 @@
 3. **Não existe `Idempotency-Key`.** Retry cego de `POST /payments` que deu timeout **duplica cobrança**. Daí a política: GET repete; POST/PUT/DELETE só em 429.
 4. **Não existe HMAC** — só o token estático `asaas-access-token` (o oposto da Stripe).
 5. **O id do evento tem `&` literal** (`evt_<hex>&<num>`) — string opaca, nunca dar split.
-6. **`PAYMENT_CONFIRMED` ≠ `PAYMENT_RECEIVED`**: confirmado = pago, saldo indisponível; recebido = liquidado, **até ~30 dias depois no cartão**. Gate de acesso na Fase 4 vai no CONFIRMED (decisão registrada em §5); RECEIVED é conciliação financeira.
+6. **`PAYMENT_CONFIRMED` ≠ `PAYMENT_RECEIVED`**: confirmado = pago, saldo indisponível; recebido = liquidado, **até ~30 dias depois no cartão**. ⚠️ **Corrigido pelo teste ao vivo de 18/07:** PIX/boleto **não emite `CONFIRMED`** — vai direto pro `RECEIVED`. O gate de acesso da Fase 4 é **`CONFIRMED` OU `RECEIVED`, o que vier primeiro** (só-CONFIRMED deixaria cliente de PIX/boleto pagando sem acesso). Ver §5 da doc verificada.
 7. **Prefixo de ambiente na chave só existe a partir de 10/03/2025** — chave legada é válida e indistinguível por prefixo → validação é de 3 estados (`ok`/`blocked`/`inconclusive`), nunca bloqueia o inconclusivo.
 
 ## Invariantes fixados (não quebrar)
