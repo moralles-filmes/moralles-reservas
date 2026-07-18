@@ -68,7 +68,7 @@ Depois: cole o token gerado em **`asaas_webhook_token`** no `/platform/automacao
 
 > ⚠️ **A EF `asaas-webhook` precisa estar deployada antes** (`supabase functions deploy asaas-webhook`), senão toda entrega falha e queima o contador da §5.
 >
-> ⚠️ **A flag `asaas_enabled` está OFF.** Com ela OFF a EF responde 200 e **descarta** o evento sem gravar — de propósito (200 evita matar a fila). Pra testar de verdade, ligue a flag em `platform_flags`. Nada mais no sistema muda com ela ligada nesta fase.
+> ⚠️ **Comportamento da flag `asaas_enabled`** (hoje ela está **LIGADA** — ver o estado atual no [FASE-2-RESUMO](FASE-2-RESUMO.md)). Com ela OFF a EF responde 200 e **descarta** o evento sem gravar — de propósito (200 evita matar a fila). Ligar/desligar: `update platform_flags set value = 'true'::jsonb where key = 'asaas_enabled';`. Nada mais no sistema muda com ela ligada nesta fase.
 >
 > ⚠️ **Depois de ligar a flag, espere ~5 minutos antes de disparar o 1º evento de teste.** `checkFlagEnabled` cacheia por até 5 min — mesmo cache do passo 2. Se você acabou de observar o comportamento "OFF descarta sem gravar" acima, o isolate já rodou com `false` em cache; ligar a flag e clicar em "CONFIRMAR PAGAMENTO" logo em seguida corre o risco de cair DENTRO da janela do cache antigo → 200 sem gravar → **evento perdido pra sempre** (o Asaas marca como entregue e não reenvia). Se o log mostrar `asaas_webhook_flag_off` no primeiro evento depois de ligar a flag, é isso — não é o webhook quebrado, é o cache. Espere os 5 minutos e dispare de novo.
 
