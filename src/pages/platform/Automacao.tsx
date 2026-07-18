@@ -38,11 +38,27 @@ const WEBHOOK_URL = `${import.meta.env.VITE_SUPABASE_URL ?? ""}/functions/v1/str
 const SECRET_LABELS: Record<string, string> = {
   stripe_secret_key: "Chave secreta (Secret Key)",
   stripe_webhook_secret: "Webhook Signing Secret",
+  asaas_api_key: "Chave da API (Access Token)",
+  asaas_webhook_token: "Token de autenticação do webhook",
 };
 
 const SECRET_PLACEHOLDERS: Record<string, string> = {
   stripe_secret_key: "sk_test_... ou sk_live_...",
   stripe_webhook_secret: "whsec_...",
+  asaas_api_key: "$aact_hmlg_... ou $aact_prod_...",
+  asaas_webhook_token: "Token do header asaas-access-token",
+};
+
+const KEY_PROVIDER: Record<string, "stripe" | "asaas"> = {
+  stripe_secret_key: "stripe",
+  stripe_webhook_secret: "stripe",
+  asaas_api_key: "asaas",
+  asaas_webhook_token: "asaas",
+};
+
+const PROVIDER_LABELS: Record<"stripe" | "asaas", string> = {
+  stripe: "Stripe",
+  asaas: "Asaas",
 };
 
 export default function PlatformAutomacao() {
@@ -60,7 +76,7 @@ export default function PlatformAutomacao() {
         </p>
       </div>
 
-      <StripeConfigCard />
+      <PlatformSecretsCard />
 
       <div>
         <h2 className="text-lg font-semibold mb-3">Unidades</h2>
@@ -115,7 +131,7 @@ export default function PlatformAutomacao() {
   );
 }
 
-function StripeConfigCard() {
+function PlatformSecretsCard() {
   const { data: secrets, isLoading } = usePlatformSecrets();
   const upsertSecret = useUpsertPlatformSecret();
   const deleteSecret = useDeletePlatformSecret();
@@ -147,129 +163,171 @@ function StripeConfigCard() {
 
   if (isLoading) return null;
 
+  const stripeSecrets = (secrets ?? []).filter((secret) => KEY_PROVIDER[secret.key] === "stripe");
+  const asaasSecrets = (secrets ?? []).filter((secret) => KEY_PROVIDER[secret.key] === "asaas");
+  // Chave que a EF conhece (VALID_KEYS) mas que esta tela ainda não mapeou em
+  // KEY_PROVIDER cai aqui — visível numa seção própria em vez de sumir sem
+  // aviso (era o comportamento antes desta guarda).
+  const otherSecrets = (secrets ?? []).filter((secret) => !KEY_PROVIDER[secret.key]);
+
+  const renderSecretRow = (secret: (typeof stripeSecrets)[number]) => (
+    <div key={secret.key} className="rounded-lg border p-4 space-y-3 bg-muted/30">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <KeyRound className="h-4 w-4 text-primary shrink-0" />
+        {SECRET_LABELS[secret.key] ?? secret.key}
+      </div>
+
+      {secret.configured ? (
+        <div className="flex items-center justify-between rounded bg-background border px-3 py-2">
+          <div className="space-y-0.5">
+            <p className="font-mono text-sm">••••••••{secret.last4}</p>
+            {secret.updated_at && (
+              <p className="text-[11px] text-muted-foreground">
+                Atualizada em {new Date(secret.updated_at).toLocaleString("pt-BR")}
+              </p>
+            )}
+          </div>
+          <Badge variant="outline" className="text-[10px] text-success border-success/20 bg-success/10">
+            Configurada
+          </Badge>
+        </div>
+      ) : (
+        <div className="rounded border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning">
+          Não configurada. Cole o valor abaixo.
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <Input
+          type="password"
+          autoComplete="off"
+          placeholder={SECRET_PLACEHOLDERS[secret.key] ?? "Valor do secret"}
+          value={inputs[secret.key] ?? ""}
+          onChange={(e) => setInputs((prev) => ({ ...prev, [secret.key]: e.target.value }))}
+          disabled={upsertSecret.isPending || deleteSecret.isPending}
+        />
+        <Button
+          onClick={() => handleSave(secret.key)}
+          disabled={!(inputs[secret.key]?.trim()) || upsertSecret.isPending}
+        >
+          {upsertSecret.isPending ? "Salvando…" : "Salvar"}
+        </Button>
+        {secret.configured && (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+                disabled={deleteSecret.isPending}
+                title="Remover"
+              >
+                <Trash2 className="h-4 w-4 text-destructive" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  Remover {SECRET_LABELS[secret.key] ?? secret.key}?
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  As funcionalidades de pagamento {PROVIDER_LABELS[KEY_PROVIDER[secret.key]] ?? secret.key} ficarão
+                  inativas até um novo valor ser cadastrado. Esta ação não pode ser desfeita.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction onClick={() => deleteSecret.mutate(secret.key)}>
+                  Remover
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center gap-2">
           <CreditCard className="h-4 w-4 text-primary" />
-          <CardTitle className="text-base">Stripe — Configuração da Plataforma</CardTitle>
+          <CardTitle className="text-base">Pagamentos — Configuração da Plataforma</CardTitle>
         </div>
         <p className="text-sm text-muted-foreground">
-          Chaves globais da plataforma Moralles. Cada restaurante conecta sua própria conta Stripe
-          via a aba "Pagamentos" da unidade.
+          Chaves globais dos provedores de pagamento da plataforma Moralles.
         </p>
       </CardHeader>
-      <CardContent className="space-y-5">
-        {(secrets ?? []).map((secret) => (
-          <div key={secret.key} className="rounded-lg border p-4 space-y-3 bg-muted/30">
+      <CardContent className="space-y-6">
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold">Stripe</h3>
+            <p className="text-xs text-muted-foreground">
+              Conta principal, usada na cobrança das mensalidades. Cada restaurante conecta sua
+              própria conta Stripe (Connect) via a aba "Pagamentos" da unidade, mas essa conexão
+              e o checkout de caução de reserva dependem da chave secreta abaixo — ela não é
+              exclusiva da cobrança.
+            </p>
+          </div>
+          {stripeSecrets.map(renderSecretRow)}
+
+          <div className="rounded-lg border p-4 space-y-2 bg-muted/30">
             <div className="flex items-center gap-2 text-sm font-medium">
-              <KeyRound className="h-4 w-4 text-primary shrink-0" />
-              {SECRET_LABELS[secret.key] ?? secret.key}
+              <Info className="h-4 w-4 text-primary shrink-0" />
+              URL do Webhook Stripe
             </div>
-
-            {secret.configured ? (
-              <div className="flex items-center justify-between rounded bg-background border px-3 py-2">
-                <div className="space-y-0.5">
-                  <p className="font-mono text-sm">••••••••{secret.last4}</p>
-                  {secret.updated_at && (
-                    <p className="text-[11px] text-muted-foreground">
-                      Atualizada em {new Date(secret.updated_at).toLocaleString("pt-BR")}
-                    </p>
-                  )}
-                </div>
-                <Badge variant="outline" className="text-[10px] text-success border-success/20 bg-success/10">
-                  Configurada
-                </Badge>
-              </div>
-            ) : (
-              <div className="rounded border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning">
-                Não configurada. Cole o valor abaixo.
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <Input
-                type="password"
-                autoComplete="off"
-                placeholder={SECRET_PLACEHOLDERS[secret.key] ?? "Valor do secret"}
-                value={inputs[secret.key] ?? ""}
-                onChange={(e) => setInputs((prev) => ({ ...prev, [secret.key]: e.target.value }))}
-                disabled={upsertSecret.isPending || deleteSecret.isPending}
-              />
+            <p className="text-xs text-muted-foreground">
+              Configure esta URL no{" "}
+              <span className="font-medium">Stripe Dashboard &gt; Developers &gt; Webhooks &gt; Add endpoint</span>.
+              Selecione os eventos <code className="text-[10px] bg-muted px-1 rounded">checkout.session.completed</code> e{" "}
+              <code className="text-[10px] bg-muted px-1 rounded">checkout.session.expired</code>.
+            </p>
+            <div className="flex items-center gap-1.5">
+              <code className="font-mono bg-background border px-2 py-1 rounded text-xs truncate flex-1 min-w-0">
+                {WEBHOOK_URL}
+              </code>
               <Button
-                onClick={() => handleSave(secret.key)}
-                disabled={!(inputs[secret.key]?.trim()) || upsertSecret.isPending}
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 shrink-0"
+                onClick={handleCopyWebhook}
               >
-                {upsertSecret.isPending ? "Salvando…" : "Salvar"}
+                {copiedWebhook ? (
+                  <Check className="h-3 w-3 text-success" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
               </Button>
-              {secret.configured && (
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      disabled={deleteSecret.isPending}
-                      title="Remover"
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>
-                        Remover {SECRET_LABELS[secret.key]}?
-                      </AlertDialogTitle>
-                      <AlertDialogDescription>
-                        As funcionalidades de pagamento Stripe ficarão inativas até um
-                        novo valor ser cadastrado. Esta ação não pode ser desfeita.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => deleteSecret.mutate(secret.key)}>
-                        Remover
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              )}
             </div>
+            <p className="text-xs text-muted-foreground">
+              Após criar o endpoint, copie o <span className="font-medium">Signing secret</span> (começa com <code className="text-[10px] bg-muted px-1 rounded">whsec_</code>)
+              e cole no campo "Webhook Signing Secret" acima.
+            </p>
           </div>
-        ))}
-
-        <div className="rounded-lg border p-4 space-y-2 bg-muted/30">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <Info className="h-4 w-4 text-primary shrink-0" />
-            URL do Webhook Stripe
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Configure esta URL no{" "}
-            <span className="font-medium">Stripe Dashboard &gt; Developers &gt; Webhooks &gt; Add endpoint</span>.
-            Selecione os eventos <code className="text-[10px] bg-muted px-1 rounded">checkout.session.completed</code> e{" "}
-            <code className="text-[10px] bg-muted px-1 rounded">checkout.session.expired</code>.
-          </p>
-          <div className="flex items-center gap-1.5">
-            <code className="font-mono bg-background border px-2 py-1 rounded text-xs truncate flex-1 min-w-0">
-              {WEBHOOK_URL}
-            </code>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 shrink-0"
-              onClick={handleCopyWebhook}
-            >
-              {copiedWebhook ? (
-                <Check className="h-3 w-3 text-success" />
-              ) : (
-                <Copy className="h-3 w-3" />
-              )}
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Após criar o endpoint, copie o <span className="font-medium">Signing secret</span> (começa com <code className="text-[10px] bg-muted px-1 rounded">whsec_</code>)
-            e cole no campo "Webhook Signing Secret" acima.
-          </p>
         </div>
+
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold">Asaas</h3>
+            <p className="text-xs text-muted-foreground">
+              Chave da API e token de autenticação do webhook da conta Asaas da plataforma.
+            </p>
+          </div>
+          {asaasSecrets.map(renderSecretRow)}
+        </div>
+
+        {otherSecrets.length > 0 && (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold">Outras chaves</h3>
+              <p className="text-xs text-muted-foreground">
+                Chaves existentes no servidor sem provedor mapeado nesta tela ainda. Configuráveis
+                normalmente abaixo — avise o time de dev para classificá-las.
+              </p>
+            </div>
+            {otherSecrets.map(renderSecretRow)}
+          </div>
+        )}
 
         <div className="flex items-start gap-2 text-[11px] text-muted-foreground rounded bg-background border border-dashed p-2">
           <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />

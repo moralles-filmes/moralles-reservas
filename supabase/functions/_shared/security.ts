@@ -37,6 +37,24 @@ export function requireInternalAuth(req: Request): boolean {
   return constantTimeEquals(got, expected);
 }
 
+/**
+ * Comparação de token estático em tempo constante — variante genérica de
+ * validateWebhookSecret pra providers sem HMAC que mandam o token num header
+ * fixo (caso Asaas: header `asaas-access-token`, doc §1 — token puro, sem
+ * assinatura de payload). Quem resolve `expected` é o caller (pode ser
+ * assíncrono, ex.: getAsaasWebhookToken() lê platform_secrets) — esta função
+ * só faz a comparação, pra não duplicar constantTimeEquals em cada EF nova.
+ */
+export function validateStaticTokenHeader(
+  req: Request,
+  headerName: string,
+  expected: string,
+): boolean {
+  if (!expected) return false;
+  const got = req.headers.get(headerName) ?? "";
+  return constantTimeEquals(got, expected);
+}
+
 export function sanitizePhone(phone?: string | null): string {
   if (!phone) return "***";
   const digits = phone.replace(/\D/g, "");

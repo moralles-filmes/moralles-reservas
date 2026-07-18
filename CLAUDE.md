@@ -264,6 +264,7 @@ Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vaul
 | `process-billing-reconcile` | `0 6 * * *` | Reconcilia subs/invoices com Stripe |
 | `process-billing-unblock` | `*/5 * * * *` | Defesa dupla pra webhook `invoice.paid` |
 | `process-trial-expiry` | `0 3 * * *` | Bloqueia trial vencido (skip se sub ativa ou override) |
+| `process-asaas-reconcile` | `0 7 * * *` | Reprocessa `billing_events` Asaas presos em `received`/`failed` (reclassifica known/unknown) |
 
 - **`verify_jwt=false` obrigatório em `supabase/config.toml`** pra todo worker pg_cron (`process-*`, `expire-*`, `cleanup-*`). CLI ≥2.95 mudou default pra `true` — sem entrada explícita, gateway responde 401 antes do `requireInternalAuth` e cron silencia (pg_net é fire-and-forget). Worker novo = entrada nova antes do deploy.
 - **`verify_jwt=true` explícito** pra toda EF de super-admin (`manage-*`, `whatsapp-health`) — defesa em profundidade.
@@ -384,6 +385,9 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`waitlist-defaults.ts`** → `process-waitlist-entered`, `resend-notification`
 - **`stripe-config.ts`** → `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`, `manage-payment-methods`
 - **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`
+- **`asaas-config.ts`** → `manage-platform-secrets`, `asaas-webhook`
+- **`asaas-core.ts`** → consumido via `asaas-config.ts` (`manage-platform-secrets`) e diretamente por `asaas-webhook`, `process-asaas-reconcile`
+- **`platform-flags.ts`** → `asaas-webhook`, `process-asaas-reconcile`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
 - **`whatsapp-send.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
 - **`whatsapp-providers.ts`** → `webhook-whatsapp`, `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`

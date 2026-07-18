@@ -98,6 +98,12 @@ verify_jwt = true
 [functions.stripe-webhook]
 verify_jwt = false
 
+# Asaas: webhook handler (token estático no header, sem HMAC — sem JWT).
+# Sem esta entrada o gateway responde 401 antes do handler rodar, e cada 401
+# conta como falha de entrega pro Asaas (15 seguidas interrompem a fila).
+[functions.asaas-webhook]
+verify_jwt = false
+
 # Worker: cancela reservas com pagamento expirado (pg_cron)
 [functions.expire-pending-payments]
 verify_jwt = false
@@ -117,4 +123,8 @@ verify_jwt = false
 
 # Worker: expira trial automático ao vencer e bloqueia org (pg_cron 03:00 UTC)
 [functions.process-trial-expiry]
+verify_jwt = false
+
+# Worker: reprocessa billing_events Asaas presos received/failed (pg_cron 07:00 UTC)
+[functions.process-asaas-reconcile]
 verify_jwt = false
