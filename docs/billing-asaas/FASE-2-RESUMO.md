@@ -2,7 +2,7 @@
 
 > Concluída em 2026-07-16, branch `billing-asaas/fase-2` (base `ca957c7`, tag `billing-asaas/fase-1`). 16 commits.
 >
-> **Nada foi aplicado em produção nesta fase**: `supabase db push` NÃO foi rodado (migration 064 existe mas nunca executou) e nenhuma Edge Function foi deployada. A flag `asaas_enabled` continua OFF.
+> **Aplicado em produção em 2026-07-18** (depois do fechamento da fase): migration 064 aplicada, EFs `asaas-webhook` / `process-asaas-reconcile` / `manage-platform-secrets` deployadas. A flag `asaas_enabled` continua **OFF** e nenhum webhook está cadastrado no painel Asaas — nada recebe evento ainda. Ver §"Aplicação em produção" no fim.
 
 ---
 
@@ -32,7 +32,8 @@
 | `npm run test` | **160/160** |
 | `npm run build` | OK |
 | `deno check` nas 7 EFs/`_shared` | **limpo** |
-| `supabase db push` | ❌ **NÃO rodado** — decisão do usuário (mexe em produção) |
+| `supabase db push` | ✅ migration 064 aplicada em 2026-07-18 |
+| Deploy das 3 EFs | ✅ 2026-07-18 |
 | Testes de sandbox ao vivo | ❌ **NÃO rodados** — dependem da chave Sandbox |
 
 > ⚠️ `supabase/functions/**` está **fora** do `tsc -b` (`tsconfig.app.json` é `include:["src"]`) **e** do eslint. O `deno check` é a **única** coisa que já tipou esse código. `deno` não está instalado na máquina — foi rodado via `npx deno@2.1.4`.
@@ -46,7 +47,7 @@
 3. **Não existe `Idempotency-Key`.** Retry cego de `POST /payments` que deu timeout **duplica cobrança**. Daí a política: GET repete; POST/PUT/DELETE só em 429.
 4. **Não existe HMAC** — só o token estático `asaas-access-token` (o oposto da Stripe).
 5. **O id do evento tem `&` literal** (`evt_<hex>&<num>`) — string opaca, nunca dar split.
-6. **`PAYMENT_CONFIRMED` ≠ `PAYMENT_RECEIVED`**: confirmado = pago, saldo indisponível; recebido = liquidado, **até ~30 dias depois no cartão**. Gate de acesso na Fase 4 vai no CONFIRMED (decisão registrada em §5); RECEIVED é conciliação financeira.
+6. **`PAYMENT_CONFIRMED` ≠ `PAYMENT_RECEIVED`**: confirmado = pago, saldo indisponível; recebido = liquidado, **até ~30 dias depois no cartão**. ⚠️ **Corrigido pelo teste ao vivo de 18/07:** PIX/boleto **não emite `CONFIRMED`** — vai direto pro `RECEIVED`. O gate de acesso da Fase 4 é **`CONFIRMED` OU `RECEIVED`, o que vier primeiro** (só-CONFIRMED deixaria cliente de PIX/boleto pagando sem acesso). Ver §5 da doc verificada.
 7. **Prefixo de ambiente na chave só existe a partir de 10/03/2025** — chave legada é válida e indistinguível por prefixo → validação é de 3 estados (`ok`/`blocked`/`inconclusive`), nunca bloqueia o inconclusivo.
 
 ## Invariantes fixados (não quebrar)
@@ -87,9 +88,22 @@ O resto é inerte: `billing-provider.ts` sem importador, `platform-flags.ts` só
 ## Rollback
 
 - Flag `asaas_enabled` já está OFF.
-- Migration 064 não aplicada. Se aplicar e quiser desfazer: `select cron.unschedule('asaas-reconcile');`.
-- EFs novas: não deployadas. Se deployar e quiser reverter, `supabase functions delete asaas-webhook` (ou deixar — sem webhook cadastrado no Asaas, não recebe nada).
+- Migration 064 **aplicada** (18/07). Pra desfazer: `select cron.unschedule('asaas-reconcile');`.
+- EFs novas **deployadas** (18/07). Pra reverter, `supabase functions delete asaas-webhook` — mas normalmente basta deixar: sem webhook cadastrado no painel Asaas e com a flag OFF, elas não recebem nem processam nada.
 - Reverter a branch inteira: `git revert` do range, ou não mergear. A Fase 1 (`ca957c7`) fica intacta.
+
+## Aplicação em produção — 2026-07-18
+
+Feito:
+- `supabase db push` → migration `064` aplicada (cron `asaas-reconcile`, `0 7 * * *`).
+- Deploy de `asaas-webhook`, `process-asaas-reconcile`, `manage-platform-secrets`.
+- Smoke test da EF: `POST` sem token → **500 `Server misconfigured`**, que é o caminho certo enquanto `asaas_webhook_token` não existe. Confirma de quebra que o `verify_jwt=false` pegou (senão o gateway teria devolvido 401 antes da nossa função).
+
+Ainda **não** feito: chave da API válida, token do webhook, webhook cadastrado no painel Asaas, flag `asaas_enabled` ligada, testes ao vivo.
+
+> ⚠️ **Gotcha na hora de gravar a chave: ela começa com `$`.** `supabase secrets set ASAAS_API_KEY=$aact_hmlg_...` sem aspas simples faz o shell (PowerShell **e** bash) tratar `$aact_hmlg_...` como nome de variável, expandir pra vazio e gravar **string vazia sem erro nenhum**. Aconteceu aqui. Sempre `ASAAS_API_KEY='$aact_...'` com aspas simples.
+>
+> **Como verificar:** `supabase secrets list` mostra o SHA-256 do valor. Se o digest for `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, é o hash da string vazia — a chave não entrou. Vale pro cutover de produção (`$aact_prod_`) também.
 
 ## Próxima fase
 

@@ -71,7 +71,24 @@ Citação literal da doc:
 
 Fluxo documentado no cartão: `PAYMENT_CREATED` → `PAYMENT_CONFIRMED` → `PAYMENT_RECEIVED` **até ~30 dias depois** (ciclo de liquidação). No Pix, os dois são quase simultâneos.
 
-**Implicação:** liberar acesso só no `PAYMENT_RECEIVED` faria o cliente de cartão pagar e esperar até 30 dias. A Fase 4 deve ativar assinatura no **`PAYMENT_CONFIRMED`** e tratar `PAYMENT_RECEIVED` como conciliação financeira (saldo), não como gate de acesso. Registrar os dois. `PAYMENT_RECEIVED` é o único que significa dinheiro liquidado — relatório financeiro usa ele, gate de acesso não.
+### ⚠️ CORRIGIDO POR TESTE AO VIVO — 2026-07-18
+
+A frase acima ("no Pix, os dois são quase simultâneos") **está errada**. Teste real no sandbox (cobrança PIX/boleto → botão "CONFIRMAR PAGAMENTO", com `PAYMENT_CONFIRMED` marcado no webhook) entregou **exatamente 2 eventos**:
+
+```
+PAYMENT_CREATED   evt_05b708f961d739ea7eba7e4db318f621&17319022   21:53:32
+PAYMENT_RECEIVED  evt_d26e303b238e509335ac9ba210e51b0f&17319023   21:53:40
+```
+
+**`PAYMENT_CONFIRMED` não disparou.** Não é "quase simultâneo" — não veio. Coerente com a semântica: liquidação de PIX/boleto é imediata, então não existe o estado intermediário "pago mas saldo indisponível" que o `CONFIRMED` representa.
+
+**Implicação — muda a decisão da Fase 4:** o gate de acesso **NÃO pode ser só `PAYMENT_CONFIRMED`**. Se fosse, todo cliente pagando por PIX ou boleto (a maioria no Brasil) pagaria e **nunca teria o acesso liberado**, porque o evento escutado jamais chegaria. Bug silencioso e enganoso, porque no cartão funcionaria normalmente.
+
+**Regra correta:** ativar no **`PAYMENT_CONFIRMED` OU `PAYMENT_RECEIVED`, o que chegar primeiro**, com idempotência por assinatura/invoice pra não ativar duas vezes quando o cartão mandar os dois. `PAYMENT_RECEIVED` continua sendo o único que significa dinheiro liquidado — relatório financeiro usa só ele.
+
+**Ressalva honesta:** o disparo veio do botão de simulação do sandbox. Não dá pra descartar que uma liquidação PIX real emita `CONFIRMED` antes. Mas a regra "CONFIRMED ou RECEIVED" é correta nos dois cenários, então não depende de resolver essa dúvida.
+
+**Ainda não observado ao vivo:** o fluxo de cartão (`CREATED` → `CONFIRMED` → `RECEIVED` ~30d depois).
 
 ## 6. Sandbox
 

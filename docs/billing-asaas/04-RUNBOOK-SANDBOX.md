@@ -31,6 +31,14 @@
 
 ---
 
+> ⚠️ **A chave começa com `$` — isso quebra `supabase secrets set` em silêncio.** Sem aspas simples, PowerShell e bash leem `$aact_hmlg_...` como variável, expandem pra vazio e gravam **string vazia sem dar erro**. Use sempre:
+>
+> ```
+> supabase secrets set ASAAS_API_KEY='$aact_hmlg_...'
+> ```
+>
+> Confira com `supabase secrets list`: o campo `value` é o SHA-256 do valor. `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` é o hash da string vazia — se aparecer isso, a chave não entrou. Vale pro token do webhook (§3) também.
+
 ## 2. Cadastrar a chave no nosso painel
 
 1. Entre no painel Moralles como **platform_admin** → `/platform/automacao`
