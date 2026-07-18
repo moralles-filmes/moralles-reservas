@@ -30,8 +30,31 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { ArrowLeft, Plus, MoreHorizontal, Pencil, PowerOff } from "lucide-react";
-import { formatCentsBRL, parsePlanFeatures, type BillingPlan } from "@/types/billing";
+import {
+  formatCentsBRL,
+  parsePlanFeatures,
+  BILLING_PROVIDER_LABEL,
+  PLAN_BILLING_TYPE_LABEL,
+  PLAN_CATEGORY_LABEL,
+  PLAN_CATEGORY_VARIANT,
+  type BillingPlan,
+  type BillingProviderName,
+  type PlanBillingType,
+  type PlanCategory,
+} from "@/types/billing";
+import {
+  isAiCreditPackage,
+  planBillingType,
+  planCategory,
+  planIntervalLabel,
+  planProvider,
+  showsStripeConfig,
+} from "@/lib/billing-plan-display";
 import { slugify } from "@/lib/utils";
+
+const CATEGORY_OPTIONS = Object.keys(PLAN_CATEGORY_LABEL) as PlanCategory[];
+const PROVIDER_OPTIONS = Object.keys(BILLING_PROVIDER_LABEL) as BillingProviderName[];
+const BILLING_TYPE_OPTIONS = Object.keys(PLAN_BILLING_TYPE_LABEL) as PlanBillingType[];
 
 interface PlanFormState {
   name: string;
@@ -39,11 +62,17 @@ interface PlanFormState {
   description: string;
   amount_brl: string;
   interval: "month" | "year";
+  category: PlanCategory;
+  provider: BillingProviderName;
+  billing_type: PlanBillingType;
+  amount_credited_brl: string;
+  recommended: boolean;
+  requires_plan_id: string;
+  provider_metadata: string; // JSON cru (textarea)
   stripe_price_id_card: string;
   stripe_price_id_boleto: string;
   stripe_price_id_pix: string;
   trial_days: string;
-  popular: boolean;
   is_trial: boolean;
   features: string;  // 1 feature por linha (textarea)
   max_units: string;
@@ -51,17 +80,29 @@ interface PlanFormState {
   sort_order: string;
 }
 
+// Sentinela do Select de pré-requisito: Radix Select não aceita value="" num
+// SelectItem (string vazia é reservada pro estado "sem seleção").
+const NO_PREREQUISITE = "__none__";
+
 const EMPTY_FORM: PlanFormState = {
   name: "",
   slug: "",
   description: "",
   amount_brl: "",
   interval: "month",
+  category: "SYSTEM_SUBSCRIPTION",
+  // Plano novo nasce Asaas: é o provedor pra onde a plataforma está migrando
+  // (a coluna tem default 'stripe' só pra não reclassificar linha legada).
+  provider: "asaas",
+  billing_type: "recurring",
+  amount_credited_brl: "",
+  recommended: false,
+  requires_plan_id: NO_PREREQUISITE,
+  provider_metadata: "",
   stripe_price_id_card: "",
   stripe_price_id_boleto: "",
   stripe_price_id_pix: "",
   trial_days: "0",
-  popular: false,
   is_trial: false,
   features: "",
   max_units: "",
@@ -69,18 +110,32 @@ const EMPTY_FORM: PlanFormState = {
   sort_order: "0",
 };
 
+function centsToBRLInput(cents: number | null | undefined): string {
+  if (cents == null) return "";
+  return (cents / 100).toFixed(2).replace(".", ",");
+}
+
 function planToForm(plan: BillingPlan): PlanFormState {
   return {
     name: plan.name,
     slug: plan.slug,
     description: plan.description ?? "",
-    amount_brl: (plan.amount_cents / 100).toFixed(2).replace(".", ","),
+    amount_brl: centsToBRLInput(plan.amount_cents),
     interval: plan.interval,
+    category: planCategory(plan),
+    provider: planProvider(plan),
+    billing_type: planBillingType(plan),
+    amount_credited_brl: centsToBRLInput(plan.amount_credited_cents),
+    recommended: plan.recommended === true,
+    requires_plan_id: plan.requires_plan_id ?? NO_PREREQUISITE,
+    provider_metadata:
+      plan.provider_metadata && Object.keys(plan.provider_metadata).length > 0
+        ? JSON.stringify(plan.provider_metadata, null, 2)
+        : "",
     stripe_price_id_card: plan.stripe_price_id_card ?? "",
     stripe_price_id_boleto: plan.stripe_price_id_boleto ?? "",
     stripe_price_id_pix: plan.stripe_price_id_pix ?? "",
     trial_days: (plan.trial_days ?? 0).toString(),
-    popular: plan.popular === true,
     is_trial: plan.is_trial === true,
     features: parsePlanFeatures(plan.features).join("\n"),
     max_units: plan.max_units?.toString() ?? "",
@@ -151,6 +206,39 @@ export default function BillingPlans() {
       return;
     }
 
+    // Valor creditado só existe em pacote de IA — nas outras categorias vai
+    // null, senão um valor digitado e depois "escondido" pela troca de
+    // categoria continuaria gravado e creditaria saldo na Fase 7.
+    let amountCreditedCents: number | null = null;
+    if (isAiCreditPackage(form)) {
+      if (!form.amount_credited_brl.trim()) {
+        toast.error("Informe o valor creditado do pacote de IA.");
+        return;
+      }
+      amountCreditedCents = parseAmountBRL(form.amount_credited_brl);
+      if (amountCreditedCents == null) {
+        toast.error("Valor creditado inválido. Use formato 70,00.");
+        return;
+      }
+    }
+
+    // Metadados do provedor: JSON de objeto. Validado aqui porque a EF só
+    // devolveria um 500 genérico do Postgres.
+    let providerMetadata: Record<string, unknown> = {};
+    if (form.provider_metadata.trim()) {
+      try {
+        const parsed = JSON.parse(form.provider_metadata);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          toast.error("Metadados do provedor devem ser um objeto JSON.");
+          return;
+        }
+        providerMetadata = parsed as Record<string, unknown>;
+      } catch {
+        toast.error("Metadados do provedor: JSON inválido.");
+        return;
+      }
+    }
+
     // Parse features textarea → array de strings (trim + dropa vazios)
     const featuresArray = form.features
       .split("\n")
@@ -163,11 +251,23 @@ export default function BillingPlans() {
       description: form.description.trim() || null,
       amount_cents: amountCents,
       interval: form.interval,
+      category: form.category,
+      provider: form.provider,
+      billing_type: form.billing_type,
+      amount_credited_cents: amountCreditedCents,
+      recommended: form.recommended,
+      requires_plan_id:
+        form.requires_plan_id === NO_PREREQUISITE ? null : form.requires_plan_id,
+      provider_metadata: providerMetadata,
+      // Price IDs são PRESERVADOS mesmo quando o provedor deixa de ser Stripe.
+      // Zerá-los ao trocar pra Asaas destruiria, sem aviso e sem volta pela UI,
+      // a configuração de um plano Stripe com assinantes vivos — e o
+      // create-billing-checkout pararia de conseguir criar assinatura nele.
+      // Ficam gravados e simplesmente não são lidos enquanto provider != stripe.
       stripe_price_id_card: form.stripe_price_id_card.trim() || null,
       stripe_price_id_boleto: form.stripe_price_id_boleto.trim() || null,
       stripe_price_id_pix: form.stripe_price_id_pix.trim() || null,
       trial_days: form.trial_days.trim() ? Math.max(0, Number(form.trial_days)) : 0,
-      popular: form.popular,
       is_trial: form.is_trial,
       features: featuresArray,
       max_units: form.max_units.trim() ? Number(form.max_units) : null,
@@ -185,19 +285,11 @@ export default function BillingPlans() {
       }
       setDialogOpen(false);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Falha ao salvar plano.";
-      // UNIQUE PARTIAL billing_plans_only_one_active_trial — usuário ativou
-      // is_trial mas já existe outro ativo. Backend devolve a mensagem do
-      // Postgres; aqui traduzimos pra texto amigável.
-      const isUniqueViolation =
-        msg.includes("23505") ||
-        msg.toLowerCase().includes("only_one_active_trial") ||
-        msg.toLowerCase().includes("duplicate key");
-      if (form.is_trial && isUniqueViolation) {
-        toast.error("Já existe outro plano de trial ativo. Desative o anterior antes de marcar este como trial.");
-      } else {
-        toast.error(msg);
-      }
+      // manage-billing já traduz 23505 (slug duplicado E a UNIQUE PARCIAL do
+      // trial), 23514 (CHECK de enum) e 23503 (pré-requisito inexistente) em
+      // mensagem PT-BR. Antes essa tradução era tentada aqui por substring, mas
+      // a EF nunca devolvia o código do Postgres — o toast amigável era morto.
+      toast.error(err instanceof Error ? err.message : "Falha ao salvar plano.");
     }
   }
 
@@ -234,7 +326,7 @@ export default function BillingPlans() {
         <div className="flex-1">
           <h1 className="text-2xl font-bold">Planos</h1>
           <p className="text-muted-foreground text-sm">
-            Catálogo de planos da plataforma. Cada plano referencia um <code className="text-xs">price_id</code> do Stripe.
+            Catálogo de produtos da plataforma — assinatura do sistema, WhatsApp e pacotes de IA.
           </p>
         </div>
         <Button onClick={openCreate}>
@@ -267,10 +359,12 @@ export default function BillingPlans() {
             <TableHeader>
               <TableRow>
                 <TableHead>Nome</TableHead>
-                <TableHead>Slug</TableHead>
+                <TableHead className="hidden xl:table-cell">Slug</TableHead>
                 <TableHead>Valor</TableHead>
                 <TableHead className="hidden md:table-cell">Intervalo</TableHead>
-                <TableHead className="hidden lg:table-cell">Stripe price (cartão)</TableHead>
+                <TableHead className="hidden lg:table-cell">Categoria</TableHead>
+                <TableHead className="hidden lg:table-cell">Provedor</TableHead>
+                <TableHead className="hidden md:table-cell text-center">Empresas</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-10"></TableHead>
               </TableRow>
@@ -279,20 +373,41 @@ export default function BillingPlans() {
               {plans.map((plan) => (
                 <TableRow key={plan.id}>
                   <TableCell className="font-medium">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       {plan.name}
                       {plan.is_trial && (
                         <Badge variant="secondary" className="bg-warning/10 text-warning text-[10px] px-1.5 py-0">TRIAL</Badge>
                       )}
+                      {plan.recommended && (
+                        <Badge variant="secondary" className="bg-info/10 text-info text-[10px] px-1.5 py-0">RECOMENDADO</Badge>
+                      )}
                     </div>
+                    <span className="block xl:hidden text-xs text-muted-foreground font-mono">{plan.slug}</span>
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground font-mono">{plan.slug}</TableCell>
+                  <TableCell className="hidden xl:table-cell text-xs text-muted-foreground font-mono">{plan.slug}</TableCell>
                   <TableCell>{formatCentsBRL(plan.amount_cents)}</TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    {plan.interval === "month" ? "Mensal" : "Anual"}
+                  <TableCell className="hidden md:table-cell text-sm">
+                    {/* null = cobrança única; ver planIntervalLabel */}
+                    {planIntervalLabel(plan) ?? (
+                      <span className="text-muted-foreground">
+                        {PLAN_BILLING_TYPE_LABEL.one_time}
+                      </span>
+                    )}
                   </TableCell>
-                  <TableCell className="hidden lg:table-cell text-xs font-mono text-muted-foreground">
-                    {plan.stripe_price_id_card ?? "—"}
+                  <TableCell className="hidden lg:table-cell">
+                    <Badge
+                      variant="secondary"
+                      className={`${PLAN_CATEGORY_VARIANT[planCategory(plan)]} text-[10px] px-1.5 py-0`}
+                    >
+                      {PLAN_CATEGORY_LABEL[planCategory(plan)]}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell text-sm">
+                    {BILLING_PROVIDER_LABEL[planProvider(plan)]}
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell text-center text-sm">
+                    {/* undefined = EF antiga deployada, sem a contagem. "—" ≠ 0. */}
+                    {plan.active_subscriptions ?? "—"}
                   </TableCell>
                   <TableCell>
                     {plan.active ? (
@@ -336,7 +451,7 @@ export default function BillingPlans() {
 
       {/* Create/Edit dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingPlan ? "Editar plano" : "Novo plano"}</DialogTitle>
           </DialogHeader>
@@ -350,6 +465,57 @@ export default function BillingPlans() {
                 onChange={(e) => handleNameChange(e.target.value)}
                 placeholder="Ex.: Plano Profissional Mensal"
               />
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="plan-category">Categoria</Label>
+              <Select
+                value={form.category}
+                onValueChange={(value: PlanCategory) => setForm((prev) => ({ ...prev, category: value }))}
+              >
+                <SelectTrigger id="plan-category"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CATEGORY_OPTIONS.map((c) => (
+                    <SelectItem key={c} value={c}>{PLAN_CATEGORY_LABEL[c]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Define onde o produto aparece pro cliente.
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="plan-provider">Provedor</Label>
+              <Select
+                value={form.provider}
+                onValueChange={(value: BillingProviderName) => setForm((prev) => ({ ...prev, provider: value }))}
+              >
+                <SelectTrigger id="plan-provider"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PROVIDER_OPTIONS.map((p) => (
+                    <SelectItem key={p} value={p}>{BILLING_PROVIDER_LABEL[p]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Quem cobra. Stripe é legado — plano novo usa Asaas.
+              </p>
+            </div>
+
+            <div className="space-y-1 sm:col-span-2">
+              <Label htmlFor="plan-billing-type">Tipo de cobrança</Label>
+              <Select
+                value={form.billing_type}
+                onValueChange={(value: PlanBillingType) => setForm((prev) => ({ ...prev, billing_type: value }))}
+              >
+                <SelectTrigger id="plan-billing-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {BILLING_TYPE_OPTIONS.map((t) => (
+                    <SelectItem key={t} value={t}>{PLAN_BILLING_TYPE_LABEL[t]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-1">
@@ -375,19 +541,47 @@ export default function BillingPlans() {
               />
             </div>
 
-            <div className="space-y-1">
-              <Label htmlFor="plan-interval">Intervalo de cobrança</Label>
-              <Select
-                value={form.interval}
-                onValueChange={(value: "month" | "year") => setForm((prev) => ({ ...prev, interval: value }))}
-              >
-                <SelectTrigger id="plan-interval"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="month">Mensal</SelectItem>
-                  <SelectItem value="year">Anual</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {/* Intervalo só existe em cobrança recorrente. Em one_time a coluna
+                fica 'month' no banco por ser NOT NULL — ver migration 065. */}
+            {form.billing_type === "recurring" ? (
+              <div className="space-y-1">
+                <Label htmlFor="plan-interval">Intervalo de cobrança</Label>
+                <Select
+                  value={form.interval}
+                  onValueChange={(value: "month" | "year") => setForm((prev) => ({ ...prev, interval: value }))}
+                >
+                  <SelectTrigger id="plan-interval"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="month">Mensal</SelectItem>
+                    <SelectItem value="year">Anual</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <Label>Intervalo de cobrança</Label>
+                <p className="text-sm text-muted-foreground pt-2">
+                  Não se aplica — cobrança única.
+                </p>
+              </div>
+            )}
+
+            {isAiCreditPackage(form) && (
+              <div className="space-y-1 sm:col-span-2">
+                <Label htmlFor="plan-credited">Valor creditado (R$)</Label>
+                <Input
+                  id="plan-credited"
+                  value={form.amount_credited_brl}
+                  onChange={(e) => setForm((prev) => ({ ...prev, amount_credited_brl: e.target.value }))}
+                  placeholder="70,00"
+                  inputMode="decimal"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Saldo que cai na carteira de IA. Igual ao valor pago em pacote sem
+                  bônus; maior que ele se o pacote der bônus.
+                </p>
+              </div>
+            )}
 
             <div className="space-y-1">
               <Label htmlFor="plan-trial">Dias de trial</Label>
@@ -426,14 +620,41 @@ export default function BillingPlans() {
 
             <div className="sm:col-span-2 flex items-center justify-between rounded-md border p-3">
               <div>
-                <Label htmlFor="plan-popular" className="font-medium">Plano popular</Label>
-                <p className="text-xs text-muted-foreground">Destaca este plano na pricing table pública.</p>
+                <Label htmlFor="plan-recommended" className="font-medium">Recomendado</Label>
+                <p className="text-xs text-muted-foreground">
+                  Destaca este produto pro cliente. Marque só um por categoria.
+                </p>
               </div>
               <Switch
-                id="plan-popular"
-                checked={form.popular}
-                onCheckedChange={(checked) => setForm((prev) => ({ ...prev, popular: checked }))}
+                id="plan-recommended"
+                checked={form.recommended}
+                onCheckedChange={(checked) => setForm((prev) => ({ ...prev, recommended: checked }))}
               />
+            </div>
+
+            <div className="space-y-1 sm:col-span-2">
+              <Label htmlFor="plan-requires">Pré-requisito (opcional)</Label>
+              <Select
+                value={form.requires_plan_id}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, requires_plan_id: value }))}
+              >
+                <SelectTrigger id="plan-requires"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_PREREQUISITE}>Nenhum</SelectItem>
+                  {/* Exclui o próprio plano: requires_plan_id é FK pra
+                      billing_plans e auto-referência criaria dependência
+                      circular que nenhum checkout resolve. */}
+                  {(plans ?? [])
+                    .filter((p) => p.id !== editingPlan?.id)
+                    .map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Produto que precisa estar pago antes deste. Ex.: a instância de
+                WhatsApp exige a implantação.
+              </p>
             </div>
 
             <div className="sm:col-span-2 flex items-center justify-between rounded-md border border-warning/20 bg-warning/10 p-3">
@@ -463,46 +684,79 @@ export default function BillingPlans() {
               <p className="text-xs text-muted-foreground">Cada linha vira um bullet com check verde no card público.</p>
             </div>
 
-            <div className="sm:col-span-2 border-t pt-4 mt-2">
-              <p className="text-sm font-medium mb-1">Stripe Price IDs</p>
-              <p className="text-xs text-muted-foreground mb-3">
-                Cole os IDs <code>price_...</code> criados no Stripe. Pelo menos o de cartão é obrigatório
-                pra criar assinatura.
+            <div className="sm:col-span-2 space-y-1">
+              <Label htmlFor="plan-metadata">Metadados do provedor (opcional)</Label>
+              <Textarea
+                id="plan-metadata"
+                value={form.provider_metadata}
+                onChange={(e) => setForm((prev) => ({ ...prev, provider_metadata: e.target.value }))}
+                placeholder={'{\n  "asaas_cycle": "MONTHLY"\n}'}
+                rows={3}
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Objeto JSON com config específica do provedor. Vazio = <code>{"{}"}</code>.
               </p>
             </div>
 
-            <div className="space-y-1 sm:col-span-2">
-              <Label htmlFor="plan-price-card">Cartão</Label>
-              <Input
-                id="plan-price-card"
-                value={form.stripe_price_id_card}
-                onChange={(e) => setForm((prev) => ({ ...prev, stripe_price_id_card: e.target.value }))}
-                placeholder="price_..."
-                className="font-mono text-sm"
-              />
-            </div>
+            {/* Price IDs da Stripe: colapsados e só em plano Stripe. Plano Asaas
+                não tem price_...; deixar os campos à vista convidaria a
+                preencher o que nunca vai ser lido.
 
-            <div className="space-y-1">
-              <Label htmlFor="plan-price-boleto">Boleto (opcional)</Label>
-              <Input
-                id="plan-price-boleto"
-                value={form.stripe_price_id_boleto}
-                onChange={(e) => setForm((prev) => ({ ...prev, stripe_price_id_boleto: e.target.value }))}
-                placeholder="price_..."
-                className="font-mono text-sm"
-              />
-            </div>
+                Abre já expandido quando o plano em edição TEM price id: um
+                plano Stripe vivo não pode abrir o modal com a config escondida
+                atrás de um clique (parece que sumiu). Deriva de editingPlan,
+                não do form, pra não reabrir sozinho a cada tecla. */}
+            {showsStripeConfig(form) && (
+              <details
+                className="sm:col-span-2 border-t pt-4 mt-2 group"
+                open={!!editingPlan?.stripe_price_id_card}
+              >
+                <summary className="cursor-pointer text-sm font-medium list-none [&::-webkit-details-marker]:hidden flex items-center gap-2">
+                  <span className="text-muted-foreground transition-transform group-open:rotate-90">›</span>
+                  Configuração do provedor (legado Stripe)
+                </summary>
+                <p className="text-xs text-muted-foreground mt-1 mb-3">
+                  Cole os IDs <code>price_...</code> criados no Stripe. Pelo menos o de cartão é
+                  obrigatório pra criar assinatura. Só se aplica a planos que ainda cobram pela Stripe.
+                </p>
 
-            <div className="space-y-1">
-              <Label htmlFor="plan-price-pix">PIX (opcional)</Label>
-              <Input
-                id="plan-price-pix"
-                value={form.stripe_price_id_pix}
-                onChange={(e) => setForm((prev) => ({ ...prev, stripe_price_id_pix: e.target.value }))}
-                placeholder="price_..."
-                className="font-mono text-sm"
-              />
-            </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1 sm:col-span-2">
+                    <Label htmlFor="plan-price-card">Cartão</Label>
+                    <Input
+                      id="plan-price-card"
+                      value={form.stripe_price_id_card}
+                      onChange={(e) => setForm((prev) => ({ ...prev, stripe_price_id_card: e.target.value }))}
+                      placeholder="price_..."
+                      className="font-mono text-sm"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="plan-price-boleto">Boleto (opcional)</Label>
+                    <Input
+                      id="plan-price-boleto"
+                      value={form.stripe_price_id_boleto}
+                      onChange={(e) => setForm((prev) => ({ ...prev, stripe_price_id_boleto: e.target.value }))}
+                      placeholder="price_..."
+                      className="font-mono text-sm"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="plan-price-pix">PIX (opcional)</Label>
+                    <Input
+                      id="plan-price-pix"
+                      value={form.stripe_price_id_pix}
+                      onChange={(e) => setForm((prev) => ({ ...prev, stripe_price_id_pix: e.target.value }))}
+                      placeholder="price_..."
+                      className="font-mono text-sm"
+                    />
+                  </div>
+                </div>
+              </details>
+            )}
 
             <div className="sm:col-span-2 border-t pt-4 mt-2">
               <p className="text-sm font-medium mb-1">Limites do plano (opcional)</p>

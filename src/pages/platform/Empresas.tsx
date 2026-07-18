@@ -4,7 +4,6 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Building2, ExternalLink, MoreHorizontal, Pencil, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -213,7 +212,10 @@ function EditOrgDialog({
   const update = useUpdateOrganization();
   const form = useForm<UpdateOrganizationInput>({
     resolver: zodResolver(updateOrganizationSchema),
-    values: org ? { org_id: org.id, org_name: org.name, plan: org.plan ?? "" } : undefined,
+    // `plan` (coluna legada organizations.plan) saiu do form na Fase 3 da
+    // migração billing-asaas: o plano real vive em billing_subscriptions →
+    // billing_plans. A coluna continua no banco, só não é mais editável aqui.
+    values: org ? { org_id: org.id, org_name: org.name } : undefined,
   });
 
   const onSubmit = async (values: UpdateOrganizationInput) => {
@@ -237,19 +239,6 @@ function EditOrgDialog({
                   <FormLabel>Nome</FormLabel>
                   <FormControl>
                     <Input {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="plan"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Plano</FormLabel>
-                  <FormControl>
-                    <Input placeholder="free" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -298,7 +287,6 @@ export default function Empresas() {
             <TableRow>
               <TableHead>Empresa</TableHead>
               <TableHead>Slug</TableHead>
-              <TableHead>Plano</TableHead>
               <TableHead className="text-center">Unidades</TableHead>
               <TableHead className="text-center">Membros</TableHead>
               <TableHead className="w-10" />
@@ -307,14 +295,14 @@ export default function Empresas() {
           <TableBody>
             {isLoading && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                   Carregando…
                 </TableCell>
               </TableRow>
             )}
             {!isLoading && (!orgs || orgs.length === 0) && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                   <Building2 className="mx-auto h-8 w-8 mb-2 opacity-30" />
                   Nenhuma empresa cadastrada ainda.
                 </TableCell>
@@ -325,9 +313,6 @@ export default function Empresas() {
                 <TableCell className="font-medium">{org.name}</TableCell>
                 <TableCell className="text-muted-foreground font-mono text-xs">
                   {org.slug}
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline">{org.plan ?? "free"}</Badge>
                 </TableCell>
                 <TableCell className="text-center">{org.units_count}</TableCell>
                 <TableCell className="text-center">{org.members_count}</TableCell>

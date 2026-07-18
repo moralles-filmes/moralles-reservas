@@ -79,6 +79,11 @@ export interface BillingPlan {
   // normaliza isso.
   features: string[] | Record<string, unknown>;
   trial_days: number;
+  /**
+   * @deprecated Legado. O destaque canônico é `recommended` (migration 063) —
+   * é ele que a PricingCard e o painel renderizam. A coluna continua no banco
+   * pra não quebrar linha antiga, mas a UI não escreve mais nela.
+   */
   popular: boolean;
   // Marca o plano "trial automático" aplicado a toda nova organization criada.
   // Cliente NUNCA escolhe esse plano manualmente (PricingTable filtra).
@@ -97,6 +102,12 @@ export interface BillingPlan {
   recommended?: boolean;
   requires_plan_id?: string | null;
   provider_metadata?: Record<string, unknown> | null;
+  /**
+   * Contagem de organizations com assinatura não-cancelada neste plano.
+   * Calculada por `manage-billing` (action list_plans) — não é coluna do banco,
+   * e só vem pra platform_admin. Ausente = EF antiga deployada.
+   */
+  active_subscriptions?: number;
 }
 
 export interface PaymentMethodSummary {
@@ -250,6 +261,36 @@ export const BILLING_STATUS_VARIANT: Record<BillingStatus, string> = {
   canceled: "bg-muted text-muted-foreground",
   manual_override: "bg-info/10 text-info",
   suspended: "bg-destructive/10 text-destructive",
+};
+
+export const PLAN_CATEGORY_LABEL: Record<PlanCategory, string> = {
+  SYSTEM_SUBSCRIPTION: "Sistema",
+  WHATSAPP_IMPLEMENTATION: "Implantação WhatsApp",
+  WHATSAPP_SUBSCRIPTION: "Instância WhatsApp",
+  AI_CREDIT_PACKAGE: "Crédito de IA",
+  TRIAL: "Trial",
+  CUSTOM: "Personalizado",
+};
+
+export const PLAN_CATEGORY_VARIANT: Record<PlanCategory, string> = {
+  SYSTEM_SUBSCRIPTION: "bg-info/10 text-info",
+  WHATSAPP_IMPLEMENTATION: "bg-success/10 text-success",
+  WHATSAPP_SUBSCRIPTION: "bg-success/10 text-success",
+  AI_CREDIT_PACKAGE: "bg-warning/10 text-warning",
+  TRIAL: "bg-warning/10 text-warning",
+  CUSTOM: "bg-muted text-muted-foreground",
+};
+
+export const BILLING_PROVIDER_LABEL: Record<BillingProviderName, string> = {
+  stripe: "Stripe",
+  asaas: "Asaas",
+  manual: "Manual",
+  lifetime: "Vitalício",
+};
+
+export const PLAN_BILLING_TYPE_LABEL: Record<PlanBillingType, string> = {
+  recurring: "Recorrente",
+  one_time: "Cobrança única",
 };
 
 export const INVOICE_STATUS_LABEL: Record<InvoiceStatus, string> = {

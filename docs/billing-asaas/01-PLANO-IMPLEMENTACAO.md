@@ -64,6 +64,12 @@ Infra: tabela `platform_flags` (key UNIQUE, value jsonb, description, updated_at
 
 ## FASE 3 — Painel de Planos adaptado + seeds
 
+> ✅ **Código concluído** em `billing-asaas/fase-3` — ver [FASE-3-RESUMO.md](FASE-3-RESUMO.md). Migration `065` e deploy de `manage-billing` **ainda não aplicados**.
+>
+> ⚠️ **3 desvios do texto abaixo**, todos registrados no resumo: (1) os planos comerciais nascem `active=false` — inclusive `sistema-reservas`, que este texto diz "ativo" — porque nenhum checkout os processa antes da Fase 4; (2) `recommended` virou o destaque canônico e `popular` ficou legado read-only; (3) `PricingTable` passou a filtrar por `category='SYSTEM_SUBSCRIPTION'`, não só por `is_trial`, senão pacote de IA e implantação apareceriam como plano contratável.
+>
+> **A Fase 4 precisa ligar o plano:** `update billing_plans set active = true where slug = 'sistema-reservas';`
+
 **Entregas**
 - `BillingPlans.tsx`: coluna "Stripe price" → **"Provedor"** + **"Categoria"**; badge "Recomendado"; modal ganha Categoria, Provedor, Valor creditado (só IA), Recomendado, Pré-requisito (`requires_plan_id`), Metadados externos; seção "Stripe Price IDs" vira colapsável "Configuração do provedor (legado Stripe)" visível só quando `provider='stripe'`.
 - Coluna "Empresas usando" (count de subscriptions ativas por plano — nova action `list_plans` enriquecida).

@@ -53,11 +53,107 @@ async function canManageOrgBilling(userId: string, organizationId: string): Prom
 
 // Actions liberadas pra owner/gerente da org (não só platform_admin).
 // Cada action client-friendly checa canManageOrgBilling no próprio handler.
+//
+// `list_plans` é a exceção: é o CATÁLOGO da plataforma, não tem organization_id
+// no payload e portanto não tem o que checar contra a org do caller. Ela se
+// protege moldando a RESPOSTA por papel (ver PLAN_PUBLIC_COLUMNS) — o cliente
+// recebe só plano ativo e só campo de vitrine. Sem ela aqui, o PricingTable de
+// /g/:slug/cobranca leva 403 e fica vazio pra todo owner/gerente não-admin.
 const CLIENT_FRIENDLY_ACTIONS = new Set([
+  "list_plans",
   "change_plan",
   "preview_plan_change",
   "cancel_subscription_by_owner",
 ]);
+
+// ── billing_plans: colunas e enums ──────────────────────────────────────────
+// Espelham a migration 063. Divergir daqui devolve 23514 (CHECK) do Postgres
+// como 500 genérico, então validamos antes pra dar mensagem útil.
+const PLAN_CATEGORIES = new Set([
+  "SYSTEM_SUBSCRIPTION",
+  "WHATSAPP_IMPLEMENTATION",
+  "WHATSAPP_SUBSCRIPTION",
+  "AI_CREDIT_PACKAGE",
+  "TRIAL",
+  "CUSTOM",
+]);
+const PLAN_PROVIDERS = new Set(["stripe", "asaas", "manual", "lifetime"]);
+const PLAN_BILLING_TYPES = new Set(["recurring", "one_time"]);
+const PLAN_INTERVALS = new Set(["month", "year"]);
+
+// Colunas graváveis por create_plan/update_plan. Whitelist explícita: o
+// update_plan fazia spread cru do body, então qualquer chave virava coluna.
+const PLAN_WRITABLE_COLUMNS = [
+  "name", "slug", "description", "amount_cents", "currency", "interval",
+  "stripe_price_id_card", "stripe_price_id_boleto", "stripe_price_id_pix",
+  "max_units", "max_members_per_unit", "features", "trial_days", "popular",
+  "is_trial", "active", "sort_order",
+  // migration 063 (Fase 1 billing-asaas)
+  "category", "provider", "billing_type", "amount_credited_cents",
+  "recommended", "requires_plan_id", "provider_metadata",
+] as const;
+
+// Campos devolvidos a caller NÃO-admin. Omite os Price IDs da Stripe e o
+// provider_metadata (config interna do provedor) — o cliente só precisa da
+// vitrine. `active_subscriptions` também é só do admin: quantos clientes cada
+// plano tem é informação de negócio da plataforma.
+const PLAN_PUBLIC_COLUMNS =
+  "id, name, slug, description, amount_cents, currency, interval, features, " +
+  "trial_days, is_trial, active, sort_order, category, billing_type, " +
+  "recommended, popular, amount_credited_cents, requires_plan_id, max_units, " +
+  "max_members_per_unit";
+
+/** Valida os enums de billing_plans. Devolve mensagem PT-BR ou null. */
+function validatePlanEnums(fields: Record<string, unknown>): string | null {
+  if (fields.category != null && !PLAN_CATEGORIES.has(String(fields.category))) {
+    return "Categoria inválida.";
+  }
+  if (fields.provider != null && !PLAN_PROVIDERS.has(String(fields.provider))) {
+    return "Provedor inválido.";
+  }
+  if (fields.billing_type != null && !PLAN_BILLING_TYPES.has(String(fields.billing_type))) {
+    return "Tipo de cobrança inválido.";
+  }
+  if (fields.interval != null && !PLAN_INTERVALS.has(String(fields.interval))) {
+    return "Intervalo inválido.";
+  }
+  for (const key of ["amount_cents", "amount_credited_cents", "trial_days"]) {
+    const raw = fields[key];
+    if (raw == null) continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return "Valores monetários e de trial não podem ser negativos.";
+  }
+  return null;
+}
+
+/**
+ * Traduz erro do Postgres em resposta útil.
+ *
+ * O 23505 aqui não é só slug duplicado: `billing_plans_only_one_active_trial` é
+ * UNIQUE PARCIAL, então marcar um segundo plano como trial ativo cai no mesmo
+ * código. O frontend tentava detectar isso pela string da mensagem, mas a EF
+ * devolvia "Falha ao salvar plano." — o toast amigável nunca disparava.
+ */
+function planWriteError(
+  err: { code?: string; message?: string },
+): { message: string; status: number } | null {
+  if (err.code === "23505") {
+    if ((err.message ?? "").includes("only_one_active_trial")) {
+      return {
+        message: "Já existe um plano de trial automático ativo. Desative o atual antes.",
+        status: 409,
+      };
+    }
+    return { message: "Já existe um plano com esse slug.", status: 409 };
+  }
+  if (err.code === "23514") {
+    return { message: "Valor inválido para categoria, provedor, intervalo ou tipo de cobrança.", status: 400 };
+  }
+  if (err.code === "23503") {
+    return { message: "O plano pré-requisito informado não existe.", status: 400 };
+  }
+  return null;
+}
 
 // Helpers Stripe inline (pra preview_plan_change que não tem wrapper em stripe-billing.ts)
 import { getStripeSecretKey } from "../_shared/stripe-config.ts";
@@ -115,45 +211,96 @@ serve(async (req) => {
     // ═════════════════════════════════════════════════════════════════════════
 
     if (action === "list_plans") {
-      const { data, error } = await supabase
-        .from("billing_plans")
-        .select("*")
-        .order("sort_order");
+      // Caller não-admin (owner/gerente na própria área de cobrança) enxerga só
+      // plano ativo e só coluna de vitrine. Admin vê o catálogo inteiro.
+      const query = callerIsAdmin
+        ? supabase.from("billing_plans").select("*")
+        : supabase.from("billing_plans").select(PLAN_PUBLIC_COLUMNS).eq("active", true);
+
+      const { data, error } = await query.order("sort_order");
 
       if (error) {
         jsonLog("error", { reqId, evt: "billing_list_plans_error", err: error.message });
         return jsonResponse(req, { error: "Falha ao listar planos." }, 500);
       }
-      return jsonResponse(req, { success: true, plans: data });
+
+      const plans = (data ?? []) as Record<string, unknown>[];
+      if (!callerIsAdmin) {
+        return jsonResponse(req, { success: true, plans });
+      }
+
+      // "Empresas usando": organizations distintas com assinatura não-cancelada.
+      // FK é billing_plan_id (não plan_id). billing_subscriptions é FORCE RLS
+      // sem policies — só service_role conta, por isso vem daqui e não do front.
+      //
+      // `.range()` em loop é obrigatório (invariante do CLAUDE.md): sem ele o
+      // PostgREST trunca em db-max-rows (1000) SEM erro, e a coluna "Empresas
+      // usando" passaria a subcontar em silêncio depois da milésima assinatura.
+      const PAGE = 1000;
+      const byPlan = new Map<string, Set<string>>();
+      for (let from = 0; ; from += PAGE) {
+        const { data: chunk, error: subsErr } = await supabase
+          .from("billing_subscriptions")
+          .select("billing_plan_id, organization_id")
+          .neq("status", "canceled")
+          .range(from, from + PAGE - 1);
+
+        if (subsErr) {
+          // Contagem é enriquecimento — nunca derruba a listagem do catálogo.
+          jsonLog("error", { reqId, evt: "billing_list_plans_count_error", err: subsErr.message });
+          return jsonResponse(req, { success: true, plans });
+        }
+
+        for (const sub of chunk ?? []) {
+          const planId = String(sub.billing_plan_id);
+          if (!byPlan.has(planId)) byPlan.set(planId, new Set());
+          byPlan.get(planId)!.add(String(sub.organization_id));
+        }
+
+        if (!chunk || chunk.length < PAGE) break;
+      }
+
+      return jsonResponse(req, {
+        success: true,
+        plans: plans.map((p) => ({
+          ...p,
+          active_subscriptions: byPlan.get(String(p.id))?.size ?? 0,
+        })),
+      });
     }
 
     if (action === "create_plan") {
-      const { name, slug, amount_cents, interval, stripe_price_id_card, stripe_price_id_boleto, stripe_price_id_pix, max_units, max_members_per_unit, features, sort_order } = body;
+      const { name, slug, amount_cents } = body;
       if (!name || !slug || amount_cents == null) {
         return jsonResponse(req, { error: "name, slug e amount_cents são obrigatórios." }, 400);
       }
 
+      // Whitelist em vez do destructuring campo-a-campo que existia aqui: ele
+      // descartava em silêncio description, trial_days, popular e is_trial (a UI
+      // mandava, o banco nunca via — criar um plano de trial pelo painel não
+      // funcionava, só editar depois). Com a whitelist, coluna nova de migration
+      // futura só precisa entrar em PLAN_WRITABLE_COLUMNS.
+      const insertPayload: Record<string, unknown> = {};
+      for (const col of PLAN_WRITABLE_COLUMNS) {
+        if (body[col] !== undefined) insertPayload[col] = body[col];
+      }
+      insertPayload.amount_cents = Number(amount_cents);
+      insertPayload.interval = body.interval ?? "month";
+      insertPayload.features = body.features ?? [];
+      insertPayload.sort_order = body.sort_order ?? 0;
+
+      const invalid = validatePlanEnums(insertPayload);
+      if (invalid) return jsonResponse(req, { error: invalid }, 400);
+
       const { data, error } = await supabase
         .from("billing_plans")
-        .insert({
-          name, slug,
-          amount_cents: Number(amount_cents),
-          interval: interval ?? "month",
-          stripe_price_id_card: stripe_price_id_card ?? null,
-          stripe_price_id_boleto: stripe_price_id_boleto ?? null,
-          stripe_price_id_pix: stripe_price_id_pix ?? null,
-          max_units: max_units ?? null,
-          max_members_per_unit: max_members_per_unit ?? null,
-          features: features ?? {},
-          sort_order: sort_order ?? 0,
-        })
+        .insert(insertPayload)
         .select()
         .single();
 
       if (error) {
-        if (error.code === "23505") {
-          return jsonResponse(req, { error: "Já existe um plano com esse slug." }, 409);
-        }
+        const known = planWriteError(error);
+        if (known) return jsonResponse(req, { error: known.message }, known.status);
         jsonLog("error", { reqId, evt: "billing_create_plan_error", err: error.message });
         return jsonResponse(req, { error: "Falha ao criar plano." }, 500);
       }
@@ -162,20 +309,41 @@ serve(async (req) => {
     }
 
     if (action === "update_plan") {
-      const { plan_id, ...fields } = body;
+      const { plan_id } = body;
       if (!plan_id) return jsonResponse(req, { error: "plan_id é obrigatório." }, 400);
 
-      delete fields.action;
-      fields.updated_at = new Date().toISOString();
+      // Antes era spread cru do body (`{plan_id, ...fields}`), o que deixava
+      // qualquer chave do payload virar coluna. Whitelist explícita.
+      const updatePayload: Record<string, unknown> = {};
+      for (const col of PLAN_WRITABLE_COLUMNS) {
+        if (body[col] !== undefined) updatePayload[col] = body[col];
+      }
+      if (Object.keys(updatePayload).length === 0) {
+        return jsonResponse(req, { error: "Nada para atualizar." }, 400);
+      }
+
+      const invalid = validatePlanEnums(updatePayload);
+      if (invalid) return jsonResponse(req, { error: invalid }, 400);
+
+      // requires_plan_id é FK auto-referencial: plano pré-requisito de si mesmo
+      // passa no CHECK e na FK, e só explodiria como ciclo no gate de checkout
+      // da Fase 5. A UI já exclui o próprio plano do select — isto fecha o curl.
+      if (updatePayload.requires_plan_id === plan_id) {
+        return jsonResponse(req, { error: "Um plano não pode ser pré-requisito de si mesmo." }, 400);
+      }
+
+      updatePayload.updated_at = new Date().toISOString();
 
       const { data, error } = await supabase
         .from("billing_plans")
-        .update(fields)
+        .update(updatePayload)
         .eq("id", plan_id)
         .select()
         .single();
 
       if (error) {
+        const known = planWriteError(error);
+        if (known) return jsonResponse(req, { error: known.message }, known.status);
         jsonLog("error", { reqId, evt: "billing_update_plan_error", err: error.message });
         return jsonResponse(req, { error: "Falha ao atualizar plano." }, 500);
       }
