@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 import { corsHeadersFor } from "../_shared/cors.ts";
+import { isValidTaxId, normalizeTaxId } from "../_shared/tax-id.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -90,6 +91,8 @@ serve(async (req) => {
       const timezone = String(body.unit_timezone ?? "America/Sao_Paulo").trim();
       const ownerEmail = String(body.owner_email ?? "").trim().toLowerCase();
       const ownerPassword = String(body.owner_password ?? "");
+      const taxId = normalizeTaxId(String(body.tax_id ?? ""));
+      const billingEmail = String(body.billing_email ?? "").trim().toLowerCase();
 
       if (!orgName) return jsonResponse(req, { error: "Nome da empresa é obrigatório." }, 400);
       if (!slugValid(orgSlug)) return jsonResponse(req, { error: "Slug da empresa inválido (letras minúsculas, números e hífens)." }, 400);
@@ -100,6 +103,12 @@ serve(async (req) => {
       }
       if (ownerPassword.length < 10) {
         return jsonResponse(req, { error: "Senha deve ter pelo menos 10 caracteres." }, 400);
+      }
+      if (!isValidTaxId(taxId)) {
+        return jsonResponse(req, { error: "CPF/CNPJ da empresa é inválido." }, 400);
+      }
+      if (!billingEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmail)) {
+        return jsonResponse(req, { error: "E-mail de cobrança inválido." }, 400);
       }
 
       // 1. Criar auth user do owner.
@@ -119,7 +128,7 @@ serve(async (req) => {
       // 2. Criar organization (com rollback em falha)
       const { data: org, error: orgErr } = await supabase
         .from("organizations")
-        .insert({ name: orgName, slug: orgSlug })
+        .insert({ name: orgName, slug: orgSlug, billing_email: billingEmail })
         .select("id")
         .single();
 
@@ -170,6 +179,22 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao vincular proprietário à unidade." }, 500);
       }
 
+      // 4.5. Criar billing_customer com o documento fiscal.
+      // Antes desta fase a linha só nascia quando um admin abria BillingDetail e
+      // salvava à mão — e sem tax_id o checkout Asaas falha antes da primeira
+      // chamada de API (billing-provider.ts valida cpfCnpj e recusa).
+      // Falha aqui NÃO faz rollback: a org é utilizável sem billing_customer, e
+      // o admin pode criar depois em BillingDetail. Só loga.
+      const { error: customerErr } = await supabase.from("billing_customers").insert({
+        organization_id: org.id,
+        name: orgName,
+        email: billingEmail,
+        tax_id: taxId,
+      });
+      if (customerErr) {
+        console.error("manage-organizations:create billing_customer insert failed", customerErr);
+      }
+
       // 5. Auto-aplicar plano trial automático (se cadastrado).
       // Busca o plano com is_trial=true AND active=true. UNIQUE PARTIAL garante
       // no máximo 1. Se não houver plano trial, org nasce em billing_status
@@ -206,6 +231,7 @@ serve(async (req) => {
         unit_id: unit.id,
         owner_id: ownerId,
         trial_applied: trialApplied,
+        billing_customer_created: !customerErr,
       });
     }
 
