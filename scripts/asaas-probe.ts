@@ -5,20 +5,23 @@
 //
 // Uso — PowerShell (shell primário deste projeto):
 //   $env:ASAAS_ENV = 'sandbox'
-//   $env:ASAAS_API_KEY = '$aact_hmlg_...'
+//   $env:ASAAS_API_KEY = '<Ctrl+V da chave INTEIRA, nada digitado à mão>'
 //   npx deno@2.1.4 run --allow-net --allow-env scripts/asaas-probe.ts
-//   $env:ASAAS_API_KEY = $null      # limpa a chave da sessão depois
+//   $env:ASAAS_API_KEY = $null      # limpa a chave da sessão SÓ no fim
 //
 // Uso — bash / Git Bash:
-//   ASAAS_ENV=sandbox ASAAS_API_KEY='$aact_hmlg_...' \
+//   ASAAS_ENV=sandbox ASAAS_API_KEY='<Ctrl+V da chave INTEIRA>' \
 //     npx deno@2.1.4 run --allow-net --allow-env scripts/asaas-probe.ts
 //
 // PowerShell NÃO aceita prefixo de variável inline (`VAR=x comando`) — isso é
 // sintaxe de bash e vira "termo não reconhecido".
 //
 // A chave começa com "$": SEMPRE entre aspas SIMPLES, senão o shell expande
-// pra vazio e a sonda falha sem explicar por quê. E cole a chave INTEIRA, uma
-// vez só — ela já inclui o prefixo `$aact_hmlg_`, não o digite de novo.
+// pra vazio e a sonda falha sem explicar por quê.
+//
+// NÃO digite `$aact_hmlg_` antes de colar — a chave do painel JÁ traz esse
+// prefixo. Prefixo duplicado produz `401 invalid_access_token_format`, que a
+// própria sonda detecta e explica (explainAuthFailure abaixo).
 
 const BASE = Deno.env.get("ASAAS_BASE_URL") ?? "https://api-sandbox.asaas.com/v3";
 const KEY = Deno.env.get("ASAAS_API_KEY") ?? "";
