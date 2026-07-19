@@ -1290,7 +1290,11 @@ git commit -m "feat(billing): decideEventEffect com gate CONFIRMED-ou-RECEIVED i
   - `interface ApplyResult { status: "processed" | "failed" | "ignored"; organizationId: string | null; effect: AsaasEffectKind; error?: string }`
   - `applyAsaasEvent(supabase: SupabaseClient, row: BillingEventRow): Promise<ApplyResult>`
 
-> **Pré-requisito:** a Task 1 precisa ter respondido se o payload de `PAYMENT_*` traz o objeto completo ou só `{object, id}`. Este código assume **só o stub** e sempre reconsulta via `getPayment` — que é correto nos dois casos e é o que a regra §19 ("valores sempre do banco") exige de qualquer jeito.
+> **Pré-requisito — RESOLVIDO (2026-07-19), não bloqueia mais.** A pergunta era se o payload de `PAYMENT_*` traz o objeto completo ou só `{object, id}`. Ela deixou de importar: este código assume **só o stub** e sempre reconsulta via `getPayment`, o que é correto nos dois casos e é o que a regra §19 ("valores sempre do banco") exige de qualquer jeito. Implementar sem esperar o passo manual da Task 1.
+>
+> **Dois achados da sonda que este código precisa respeitar** (`03-ASAAS-API-VERIFICADO.md`):
+> - §13.6 — `payment.subscription` é **omitido** em cobrança avulsa, não vem `null`. Ler com `?.`, nunca testar `=== null`.
+> - §13.1 — `netValue` é líquido de taxa (`19.90` bruto → `18.91` líquido). O valor da fatura sai de `value`, jamais de `netValue`.
 
 - [ ] **Step 1: Implementar o aplicador**
 
@@ -1602,8 +1606,36 @@ git commit -m "feat(billing): applyAsaasEvent com reconferencia de valor e updat
 ### Task 7: Checkout roteado por provider
 
 **Files:**
+- Modify: `supabase/functions/_shared/billing-provider.ts:259-295` (`asaasProvider.createCheckout`)
 - Modify: `supabase/functions/create-billing-checkout/index.ts`
 - Modify: `src/hooks/useBilling.ts:249-275` (`useCreateBillingCheckout`)
+
+> **Decisão de produto (2026-07-19):** assinatura do sistema é cobrada
+> **só no cartão**, com renovação automática. Não é preferência — o checkout
+> hospedado do Asaas recusa qualquer outro método em `RECURRENT`
+> (`03-ASAAS-API-VERIFICADO.md` §13.3). PIX/boleto recorrente exigiria
+> `POST /subscriptions` + `invoiceUrl`, sem cartão em arquivo e portanto sem
+> renovação automática — fora do escopo da 4a.
+
+- [ ] **Step 0: Corrigir `billingTypes` por modo em `billing-provider.ts`**
+
+Bug já em produção desde a Fase 2: a linha 270 fixa `["CREDIT_CARD", "PIX"]`
+para os **dois** modos, então todo checkout de assinatura responderia `400`
+antes de chegar ao pagador. Sondado ao vivo em 2026-07-19.
+
+Substituir a montagem de `checkoutParams` em `asaasProvider.createCheckout`:
+
+```ts
+      const checkoutParams: AsaasCheckoutParams = {
+        // RECURRENT aceita EXCLUSIVAMENTE cartão — PIX exige chargeType
+        // DETACHED e a API recusa a combinação (§13.3, verificado em sandbox).
+        // Em cobrança avulsa os dois valem, e deixar a escolha com o pagador
+        // aumenta a conversão.
+        billingTypes: isSubscription ? ["CREDIT_CARD"] : ["CREDIT_CARD", "PIX"],
+        chargeTypes: isSubscription ? ["RECURRENT"] : ["DETACHED"],
+```
+
+O restante do objeto fica inalterado.
 
 **Interfaces:**
 - Consumes: `getFlagString` de `../_shared/platform-flags.ts`; `getBillingProvider` de `../_shared/billing-provider.ts`; `buildExternalReference` de `../_shared/asaas-billing-events.ts`.
@@ -1881,6 +1913,10 @@ git commit -m "feat(billing): webhook Asaas aplica efeito de negocio e resolve a
 **Interfaces:**
 - Consumes: `applyAsaasEvent` (Task 6); `getBillingProvider`; `asaasValueToCents`.
 - Produces: action `reprocess_billing_event` em `manage-billing` (admin-only), body `{ action, billing_event_id }`.
+
+> **Dois achados da sonda de 2026-07-19 que atingem o reconcile** (`03-ASAAS-API-VERIFICADO.md`):
+> - §13.4 — `subscription.nextDueDate` na resposta **já avançou um ciclo**: criada com `nextDueDate: 2026-07-26`, a assinatura devolve `2026-08-26` e emite a 1ª cobrança para `2026-07-26`. Comparar esse campo com a competência local sem descontar o ciclo produz divergência falsa em toda assinatura saudável.
+> - §13.2 — `PUT {status:"INACTIVE"}` **não** cancela cobrança já emitida (segue `PENDING`, `dueDate` intacta). Assinatura local `canceled` com cobrança Asaas em aberto é estado esperado, não drift — não "corrigir" reativando a assinatura.
 
 - [ ] **Step 1: Trocar a reclassificação pela aplicação real**
 
