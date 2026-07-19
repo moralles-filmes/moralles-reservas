@@ -23,6 +23,31 @@ if (!KEY.startsWith("$aact_")) {
   Deno.exit(1);
 }
 
+// Proteção: a sonda cria clientes, checkouts, assinaturas e cobranças REAIS.
+// Recusa-se a rodar fora do sandbox para evitar charges acidentais em produção.
+const SANDBOX_HOST = "api-sandbox.asaas.com";
+if (!BASE.includes(SANDBOX_HOST)) {
+  console.error(`ASAAS_BASE_URL não aponta para sandbox. URL resolvida: ${BASE}`);
+  console.error("A sonda criará clientes e cobranças REAIS em produção. Abortando.");
+  Deno.exit(1);
+}
+
+// Detecta chaves de produção explícitas. Chaves anteriores a 10/03/2025 não têm
+// prefixo de ambiente (formato antigo: "$aact_<hash>"). Chaves novas têm prefixo
+// ($aact_prod_<hash> ou $aact_hmlg_<hash>). Chaves de produção são recusadas;
+// chaves antigas passam com aviso.
+if (KEY.startsWith("$aact_prod_")) {
+  console.error("ASAAS_API_KEY começa com $aact_prod_ — é uma chave de PRODUÇÃO.");
+  console.error("A sonda criará cobranças reais. Abortando.");
+  Deno.exit(1);
+}
+
+const hasEnvironmentPrefix = /^\$aact_[a-z]+_/.test(KEY);
+if (!hasEnvironmentPrefix) {
+  console.warn("ASAAS_API_KEY é chave legacy, anterior a 10/03/2025 (sem prefixo de ambiente).");
+  console.warn("Continuando — mas note que chaves antigas podem estar descontinuadas.");
+}
+
 async function call(path: string, method = "GET", body?: unknown) {
   const res = await fetch(`${BASE}${path}`, {
     method,
