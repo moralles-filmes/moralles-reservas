@@ -264,6 +264,19 @@ comparar `nextDueDate` com a competência local precisa contar com isso.
 `GET` da cobrança. O formato de pipes de `buildExternalReference` está
 validado contra a API real.
 
+### 13.5.1 Cobrança de assinatura HERDA o `externalReference` da assinatura
+
+A assinatura criada com `externalReference: "probe-sub"` gerou uma cobrança
+que traz o mesmo `"externalReference": "probe-sub"` (sonda 3b). Isso importa
+porque toda a ativação depende do `purpose` extraído desse campo: se a
+renovação viesse sem ele, cairia em `purpose: "other"` — registraria o
+dinheiro e **nunca reativaria** uma org bloqueada, e como `status='paid'` é
+terminal, o reprocessamento viraria `noop` para sempre.
+
+⚠ Verificado para assinatura criada via `POST /subscriptions`. A assinatura
+nascida do **checkout** `RECURRENT` ainda não foi exercitada — confirmar na
+Task 13 antes de considerar fechado.
+
 ### 13.6 `payment.subscription` é opcional, não `null`
 
 Cobrança gerada por assinatura traz `"subscription": "sub_…"`; cobrança
