@@ -325,6 +325,15 @@ se a cobrança do checkout não herdar o `externalReference`, a org paga e não
 é liberada. Mitigação, se falhar: coletar endereço completo no onboarding e
 voltar a amarrar o `customer` (fallback de correlação por `asaas_customer_id`).
 
-**Sonda 2d** (adicionada nesta rodada) manda o shape EXATO que o código passa
-agora (sem `customer`, com `nextDueDate`) — re-rodar e confirmar `200 ACTIVE`
-fecha a validação de API antes do deploy.
+**Sonda 2d — CONFIRMADA `200 ACTIVE` (2026-07-19).** Manda o shape EXATO que o
+código passa agora (sem `customer`, com `nextDueDate`). A API devolveu
+`status: ACTIVE`, `chargeTypes: ["RECURRENT"]`, `billingTypes: ["CREDIT_CARD"]`,
+`subscription: { cycle: "MONTHLY", nextDueDate, endDate: null }` e o
+`externalReference` ecoado íntegro (`org:probe|plan:probe|purpose:subscription`).
+**Validação de nível de API fechada** — o checkout que `billing-provider.ts`
+emite é aceito. Isso destrava o deploy, mas NÃO substitui o cenário 2: só um
+checkout hospedado **completado** (cartão de teste no browser) prova que a
+cobrança nascida do checkout herda o `externalReference`. A sonda 3b provou a
+herança assinatura→cobrança apenas para `POST /subscriptions` (payment herdou o
+`externalReference` da sub) — evidência de apoio, não a prova do caminho
+hospedado. O link 2d fica vivo por 1440 min e serve pra esse teste manual.
