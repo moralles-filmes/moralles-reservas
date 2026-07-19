@@ -1,13 +1,18 @@
-// Decisão e aplicação dos efeitos de negócio dos eventos Asaas.
+// Decisão dos efeitos de negócio dos eventos Asaas — NÚCLEO PURO (zero
+// imports, zero Deno.*), testado em src/lib/asaas-billing-events.test.ts.
+//
+// O aplicador de I/O (`applyAsaasEvent`) mora em asaas-billing-events-apply.ts
+// — arquivo IRMÃO, não seção deste. Um import (mesmo só de tipo) de
+// `https://esm.sh/@supabase/supabase-js` neste módulo quebra a resolução do
+// Vite para quem importa o núcleo puro (`Only URLs with a scheme in: file and
+// data are supported by the default ESM loader`), então a metade de I/O foi
+// deliberadamente extraída — mesmo particionamento de asaas-core.ts (puro) /
+// asaas.ts (I/O).
 //
 // COMPARTILHADO por asaas-webhook e process-asaas-reconcile de propósito:
 // quando `processing_status='processed'` passou a significar "assinatura
 // ativada", o reconcile precisou executar a MESMA lógica — senão marca como
 // resolvido um evento que nunca ativou nada.
-//
-// A metade de cima é PURA (zero imports, zero Deno.*) e testada em
-// src/lib/asaas-billing-events.test.ts. A metade de baixo faz I/O e nunca é
-// importada por src/.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NÚCLEO PURO
