@@ -68,6 +68,11 @@ export interface CreateCustomerParams {
 }
 
 export interface CreateCheckoutParams {
+  /** Id do cliente no provedor. HOJE o checkout Asaas NÃO o envia (amarrar o
+   * `customer` exigiria endereço completo — §13.7, ver createCheckout); fica no
+   * contrato porque a mitigação documentada (voltar a amarrar se a herança do
+   * `externalReference` falhar no cenário 2 da Task 13) o reintroduz, e o
+   * caller já o tem em mãos. O caminho Stripe deste método é `unsupported`. */
   providerCustomerId: string;
   /** Centavos — SEMPRE carregado de billing_plans no servidor. */
   amountCents: number;
