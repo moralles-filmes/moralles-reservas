@@ -82,7 +82,6 @@ describe("decideEventEffect — gate de ativação", () => {
     const e = decideEventEffect({
       eventType: "PAYMENT_CONFIRMED",
       invoiceStatus: "open",
-      subscriptionStatus: null,
     });
     expect(e.kind).toBe("activate_subscription");
   });
@@ -94,7 +93,6 @@ describe("decideEventEffect — gate de ativação", () => {
     const e = decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: "open",
-      subscriptionStatus: null,
     });
     expect(e.kind).toBe("activate_subscription");
   });
@@ -105,7 +103,6 @@ describe("decideEventEffect — gate de ativação", () => {
     const e = decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: "paid",
-      subscriptionStatus: "active",
     });
     expect(e.kind).toBe("noop");
   });
@@ -114,36 +111,26 @@ describe("decideEventEffect — gate de ativação", () => {
     const e = decideEventEffect({
       eventType: "PAYMENT_CONFIRMED",
       invoiceStatus: "paid",
-      subscriptionStatus: "active",
     });
     expect(e.kind).toBe("noop");
   });
 
-  it("activates on first-ever payment (no invoice row, no subscription yet)", () => {
-    // `mark_invoice_paid` foi removido do union: era alcançado só por este
-    // caso e por engano tratava "sem correlação encontrada" como "não é
-    // preciso ativar nada". O gate correto é binário — qualquer estado
-    // não-terminal da invoice ativa.
+  it("activates on invoiceStatus: null — first-ever payment and monthly renewal alike", () => {
+    // Fusão de dois testes que o Fix B (remoção de `subscriptionStatus` do
+    // contrato) tornou idênticos: (a) primeiro pagamento de sempre, nenhuma
+    // invoice ainda existe; (b) renovação mensal — `PAYMENT_CREATED` é
+    // informativo (não cria invoice), então quando o `PAYMENT_RECEIVED` da
+    // renovação chega, a busca por invoice correlacionada também dá `null`,
+    // mesmo com assinatura já `active` de um ciclo anterior. Antes do Fix 1,
+    // o código lia esse `invoiceStatus === null` combinado com
+    // `subscriptionStatus === "active"` como "nada a fazer" (`noop`),
+    // descartando silenciosamente um pagamento genuíno. Provado que
+    // `decideEventEffect` nunca precisou de `subscriptionStatus` pra decidir
+    // isso — o gate é binário sobre `invoiceStatus`, sem depender de
+    // assinatura.
     const e = decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: null,
-      subscriptionStatus: null,
-    });
-    expect(e.kind).toBe("activate_subscription");
-  });
-
-  it("REGRESSION (Fix 1): a genuine renewal payment must activate, not noop", () => {
-    // Caso da renovação mensal: `PAYMENT_CREATED` é informativo (não cria
-    // invoice), então quando o `PAYMENT_RECEIVED` da renovação chega, a busca
-    // de invoice correlacionada dá `null` — mas a assinatura já está `active`
-    // de um ciclo anterior. O código antigo tratava esse par exatamente como
-    // "nada a fazer" (`noop`), descartando silenciosamente um pagamento
-    // genuíno e deixando o cliente ser bloqueado por falta de pagamento
-    // mesmo tendo pago.
-    const e = decideEventEffect({
-      eventType: "PAYMENT_RECEIVED",
-      invoiceStatus: null,
-      subscriptionStatus: "active",
     });
     expect(e.kind).toBe("activate_subscription");
   });
@@ -154,14 +141,12 @@ describe("decideEventEffect — gate de ativação", () => {
     expect(decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: "void",
-      subscriptionStatus: "active",
     }).kind).toBe("noop");
 
     // 'draft': nunca é terminal — ativa normalmente.
     expect(decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: "draft",
-      subscriptionStatus: null,
     }).kind).toBe("activate_subscription");
 
     // 'uncollectible': DELIBERADAMENTE não é terminal — uma invoice baixada
@@ -170,7 +155,6 @@ describe("decideEventEffect — gate de ativação", () => {
     expect(decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: "uncollectible",
-      subscriptionStatus: "active",
     }).kind).toBe("activate_subscription");
   });
 
@@ -181,7 +165,6 @@ describe("decideEventEffect — gate de ativação", () => {
     const voidCase = decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: "void",
-      subscriptionStatus: "active",
     });
     expect(voidCase.reason).toMatch(/void/);
     expect(voidCase.reason).toMatch(/conferência/);
@@ -189,7 +172,6 @@ describe("decideEventEffect — gate de ativação", () => {
     const paidCase = decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: "paid",
-      subscriptionStatus: "active",
     });
     expect(paidCase.reason).toMatch(/duplicado ou tardio/);
   });
@@ -200,7 +182,6 @@ describe("decideEventEffect — demais eventos", () => {
     expect(decideEventEffect({
       eventType: "PAYMENT_OVERDUE",
       invoiceStatus: "open",
-      subscriptionStatus: "active",
     }).kind).toBe("mark_invoice_overdue");
   });
 
@@ -208,8 +189,19 @@ describe("decideEventEffect — demais eventos", () => {
     expect(decideEventEffect({
       eventType: "PAYMENT_OVERDUE",
       invoiceStatus: "paid",
-      subscriptionStatus: "active",
     }).kind).toBe("noop");
+  });
+
+  it("marks overdue even with no correlated invoice row (Fix C — pinned, consumer treats as no-op)", () => {
+    // Cobrança vencida no Asaas sem nenhuma invoice nossa correlacionada
+    // (`invoiceStatus: null`). O contrato acima de `decideEventEffect` (item 3)
+    // manda o consumidor tratar esse caso como no-op, não como erro: o
+    // registro existe só do lado do Asaas, e é o `process-asaas-reconcile`
+    // quem fecha essa lacuna depois — não este evento.
+    expect(decideEventEffect({
+      eventType: "PAYMENT_OVERDUE",
+      invoiceStatus: null,
+    }).kind).toBe("mark_invoice_overdue");
   });
 
   it("records refunds and chargebacks", () => {
@@ -224,7 +216,6 @@ describe("decideEventEffect — demais eventos", () => {
       expect(decideEventEffect({
         eventType: ev,
         invoiceStatus: "paid",
-        subscriptionStatus: "active",
       }).kind).toBe("record_refund");
     }
   });
@@ -233,7 +224,6 @@ describe("decideEventEffect — demais eventos", () => {
     expect(decideEventEffect({
       eventType: "PAYMENT_RECEIVED_IN_CASH_UNDONE",
       invoiceStatus: "paid",
-      subscriptionStatus: "active",
     }).kind).toBe("record_refund");
   });
 
@@ -241,7 +231,6 @@ describe("decideEventEffect — demais eventos", () => {
     expect(decideEventEffect({
       eventType: "PAYMENT_REFUND_DENIED",
       invoiceStatus: "paid",
-      subscriptionStatus: "active",
     }).kind).toBe("noop");
   });
 
@@ -250,7 +239,6 @@ describe("decideEventEffect — demais eventos", () => {
       expect(decideEventEffect({
         eventType: ev,
         invoiceStatus: "open",
-        subscriptionStatus: null,
       }).kind).toBe("noop");
     }
   });
@@ -259,7 +247,6 @@ describe("decideEventEffect — demais eventos", () => {
     expect(decideEventEffect({
       eventType: "SOMETHING_NEW",
       invoiceStatus: null,
-      subscriptionStatus: null,
     }).kind).toBe("unknown");
   });
 
@@ -269,7 +256,6 @@ describe("decideEventEffect — demais eventos", () => {
     expect(decideEventEffect({
       eventType: "PAYMENT_AWAITING_CHARGEBACK_REVERSAL",
       invoiceStatus: "paid",
-      subscriptionStatus: "active",
     }).kind).toBe("record_refund");
   });
 
@@ -277,14 +263,14 @@ describe("decideEventEffect — demais eventos", () => {
     // Propriedade universal — testar com um único input não a prova. Cobre um
     // representante de cada branch de decideEventEffect (ativação, overdue,
     // estorno, informativo, desconhecido).
-    const cases: Array<{ eventType: string; invoiceStatus: string | null; subscriptionStatus: string | null }> = [
-      { eventType: "PAYMENT_RECEIVED", invoiceStatus: "open", subscriptionStatus: null },
-      { eventType: "PAYMENT_CONFIRMED", invoiceStatus: "paid", subscriptionStatus: "active" },
-      { eventType: "PAYMENT_OVERDUE", invoiceStatus: "open", subscriptionStatus: "active" },
-      { eventType: "PAYMENT_OVERDUE", invoiceStatus: "paid", subscriptionStatus: "active" },
-      { eventType: "PAYMENT_REFUNDED", invoiceStatus: "paid", subscriptionStatus: "active" },
-      { eventType: "PAYMENT_CREATED", invoiceStatus: null, subscriptionStatus: null },
-      { eventType: "SOMETHING_NEW", invoiceStatus: null, subscriptionStatus: null },
+    const cases: Array<{ eventType: string; invoiceStatus: string | null }> = [
+      { eventType: "PAYMENT_RECEIVED", invoiceStatus: "open" },
+      { eventType: "PAYMENT_CONFIRMED", invoiceStatus: "paid" },
+      { eventType: "PAYMENT_OVERDUE", invoiceStatus: "open" },
+      { eventType: "PAYMENT_OVERDUE", invoiceStatus: "paid" },
+      { eventType: "PAYMENT_REFUNDED", invoiceStatus: "paid" },
+      { eventType: "PAYMENT_CREATED", invoiceStatus: null },
+      { eventType: "SOMETHING_NEW", invoiceStatus: null },
     ];
     for (const c of cases) {
       const e = decideEventEffect(c);
@@ -316,7 +302,6 @@ describe("decideEventEffect — catálogo Asaas completo", () => {
       const e = decideEventEffect({
         eventType,
         invoiceStatus: null,
-        subscriptionStatus: null,
       });
       expect(e.kind, `${eventType} deveria ter uma classificação conhecida`).not.toBe("unknown");
     }
