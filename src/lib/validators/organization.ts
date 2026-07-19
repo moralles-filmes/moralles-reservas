@@ -25,7 +25,11 @@ export const createOrganizationSchema = z.object({
 export const updateOrganizationSchema = z.object({
   org_id: z.string().uuid(),
   org_name: z.string().min(2, "Nome deve ter ao menos 2 caracteres."),
-  plan: z.string().optional(),
+  // `plan` (coluna legada organizations.plan) saiu daqui na Fase 3 da migração
+  // billing-asaas. O plano contratado vive em billing_subscriptions →
+  // billing_plans; a coluna antiga é texto livre sem relação com o catálogo.
+  // manage-organizations ainda aceita o campo (guardado por `if (plan)`), então
+  // remover daqui não quebra a EF — só para de oferecer a edição.
 });
 
 export type CreateOrganizationInput = z.infer<typeof createOrganizationSchema>;

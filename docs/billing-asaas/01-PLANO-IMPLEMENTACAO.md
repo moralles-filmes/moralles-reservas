@@ -3,6 +3,18 @@
 > Baseado na auditoria [00-FASE-0-AUDITORIA.md](00-FASE-0-AUDITORIA.md) (2026-07-16).
 > Regra mestra: **nada de destrutivo** — migrations aditivas, Stripe preservada como legado read-only, feature flags default OFF, rollback documentado por fase.
 
+## 🔴 Base de clientes real — leia antes de qualquer fase
+
+**Hoje existe UM cliente ativo: Ren Sushi. Ele usa o sistema de graça, para sempre.** Moralles é a própria plataforma. Ambos têm `LIFETIME` em `system` + `whatsapp` + `ai` (verificado em `organization_entitlement_overrides` em 2026-07-19: `enabled=true`, sem `ends_at`, sem `revoked_at`).
+
+Consequências que valem para **todas** as fases:
+
+- **Não existe receita recorrente a proteger, e não existe cliente pagante a quebrar.** O risco de uma mudança de billing é quase todo *reputacional* (cliente vitalício ver cobrança, bloqueio ou oferta que não faz sentido pra ele), não financeiro.
+- **Nenhum fluxo de cobrança pode alcançar Ren Sushi.** Guard de inadimplência, dispatcher de notificação, gate de carteira de IA e bloqueio por trial: todos precisam respeitar o override `LIFETIME` **antes** de qualquer escalação. Webhook financeiro nunca sobrescreve override (invariante da Fase 9, vale desde já).
+- **IA do Ren Sushi é BYOK** (decisão 4 abaixo) — a carteira da Fase 7 não debita dele.
+- **Um plano ativo e cobrável no catálogo é risco puro**, porque o único cliente que enxerga a pricing table nunca deveria contratar nada. Por isso o catálogo da Fase 3 nasceu inteiro `active=false` e os planos de teste legados foram desativados. Ligue um plano só quando a fase que o cobra estiver pronta.
+- **"Seu Japa Teste"** (`seu-japa`, `billing_status='past_due'`, sem overrides) é org de teste, não cliente. É ela que a Fase 10 fecha.
+
 ## Checklist padrão de fim de fase (aplica-se a TODAS)
 
 1. `npm run lint` · 2. `npm run typecheck` (`tsc -b`) · 3. `npm run test` · 4. `npm run build` · 5. `supabase db push` aplicado + query de validação pós-migration · 6. Entradas `verify_jwt` no `config.toml` para toda EF nova **no mesmo PR** · 7. Redeploy de EFs afetadas por mudanças em `_shared/` (atualizar checklist do CLAUDE.md se helper novo) · 8. Atualizar docs desta pasta · 9. Resumo da fase (arquivos alterados, riscos, rollback, próxima fase) · 10. Tag git `billing-asaas/fase-N`. **Não avançar com erro.**
@@ -63,6 +75,12 @@ Infra: tabela `platform_flags` (key UNIQUE, value jsonb, description, updated_at
 ---
 
 ## FASE 3 — Painel de Planos adaptado + seeds
+
+> ✅ **Código concluído** em `billing-asaas/fase-3` — ver [FASE-3-RESUMO.md](FASE-3-RESUMO.md). Migration `065` e deploy de `manage-billing` **ainda não aplicados**.
+>
+> ⚠️ **3 desvios do texto abaixo**, todos registrados no resumo: (1) os planos comerciais nascem `active=false` — inclusive `sistema-reservas`, que este texto diz "ativo" — porque nenhum checkout os processa antes da Fase 4; (2) `recommended` virou o destaque canônico e `popular` ficou legado read-only; (3) `PricingTable` passou a filtrar por `category='SYSTEM_SUBSCRIPTION'`, não só por `is_trial`, senão pacote de IA e implantação apareceriam como plano contratável.
+>
+> **A Fase 4 precisa ligar o plano:** `update billing_plans set active = true where slug = 'sistema-reservas';`
 
 **Entregas**
 - `BillingPlans.tsx`: coluna "Stripe price" → **"Provedor"** + **"Categoria"**; badge "Recomendado"; modal ganha Categoria, Provedor, Valor creditado (só IA), Recomendado, Pré-requisito (`requires_plan_id`), Metadados externos; seção "Stripe Price IDs" vira colapsável "Configuração do provedor (legado Stripe)" visível só quando `provider='stripe'`.

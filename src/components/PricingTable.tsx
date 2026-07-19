@@ -1,4 +1,5 @@
 import { PricingCard } from "./PricingCard";
+import { isSelectableSystemPlan } from "@/lib/billing-plan-display";
 import type { BillingPlan } from "@/types/billing";
 
 interface Props {
@@ -16,9 +17,10 @@ interface Props {
  *  - Com sub ativa em outro plan: "Trocar para este plano"
  */
 export function PricingTable({ plans, currentPlanId, onChoose, onChange, loadingPlanId }: Props) {
-  // Esconde o plano "trial automático" (is_trial=true). Ele é aplicado
-  // automaticamente a novas orgs, nunca é escolha manual do cliente.
-  const visible = plans.filter((p) => !p.is_trial);
+  // Só assinatura do sistema entra aqui — o trial é aplicado automaticamente na
+  // criação da org, e implantação de WhatsApp / instância / pacote de IA têm
+  // fluxo próprio (Fase 5 e 7). Ver isSelectableSystemPlan.
+  const visible = plans.filter(isSelectableSystemPlan);
 
   if (!visible.length) {
     return (

@@ -11,3 +11,6 @@ dist/
 supabase/.temp/
 resolved
 *.tsbuildinfo
+
+# Lockfile gerado por `npx deno check` nas Edge Functions (verificacao local).
+deno.lock
