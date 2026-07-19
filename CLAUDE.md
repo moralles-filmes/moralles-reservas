@@ -397,7 +397,7 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`asaas.ts`** (cliente HTTP) → consumido via `billing-provider.ts`: `asaas-webhook`, `create-billing-checkout`
 - **`billing-provider.ts`** → `asaas-webhook` (via `asaas-billing-events-apply.ts`), `create-billing-checkout`
 - **`asaas-billing-events.ts`** (núcleo puro) → `create-billing-checkout` (produz o `externalReference`), `asaas-webhook` e `process-asaas-reconcile` (via `-apply`). **Linha própria de propósito:** quem muda o formato do `externalReference` e redeploya só os consumidores do `-apply` deixa o `create-billing-checkout` emitindo o formato antigo em memória — o webhook para de extrair `orgId`/`planId`, `purpose` cai no default `other` e toda assinatura nova termina em `failed` sem ativar ninguém.
-- **`asaas-billing-events-apply.ts`** → `asaas-webhook`, `process-asaas-reconcile`
+- **`asaas-billing-events-apply.ts`** → `asaas-webhook`, `process-asaas-reconcile`, `manage-billing` (action `reprocess_billing_event`)
 - **`platform-flags.ts`** → `asaas-webhook`, `process-asaas-reconcile`, `create-billing-checkout`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
 - **`whatsapp-send.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`

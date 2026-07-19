@@ -203,6 +203,13 @@ Se surgirem clientes Stripe reais antes desta fase: jornada de migração da spe
 
 Revisão de segurança (checklist §19 da spec: valores sempre do banco, validação externalReference/org/ambiente, rate limit no webhook, sanitização de logs, criptografia Z-API); troca Sandbox→Produção do Asaas (chaves via painel `/platform/automacao`, `ASAAS_ENV=production`); cadastro dos webhooks no painel Asaas (documentar); E2E dos fluxos principais; monitoramento (outcomes novos no painel Diagnóstico, alertas admin); ativação gradual por flag; observação pós-deploy; documentação final (runbook de incidentes, troubleshooting, como reprocessar evento/corrigir crédito duplicado/suspender/restaurar/cancelar instância/agir com Z-API fora do ar).
 
+### ⛔ Gate bloqueante: antes da 1ª assinatura PAGANTE ir ao ar
+
+Estes dois itens são inofensivos hoje (base = 1 cliente vitalício grátis, sem receita recorrente) e viram bloqueantes no minuto em que existir cobrança real:
+
+1. **Subir a cadência de `process-asaas-reconcile`** de `0 7 * * *` (diário) para horário ou `*/15`. O reconcile é a rede de segurança do webhook: com o orçamento de tempo da Task 8/Fase 4a, "Asaas degradado → evento `failed` → reconcile retenta" é modo de operação ESPERADO, não exceção. Na cadência diária, um cliente que pagar durante instabilidade do Asaas espera até ~24h por acesso. Migration de cron idempotente trivial — mas **não** subir antes, senão só antecipa o item 2 sem contrapartida.
+2. **Deduplicar `billing_notifications` no estágio 2 do reconcile** (insert-on-state-change, não insert-por-execução). Hoje o worker insere uma linha de notificação a cada passada em que a invoice segue divergente; na cadência diária com divergência rara é desprezível, mas a `*/15` uma invoice presa em `failed` (ex.: `externalReference` ilegível → `missing_plan_id`) gera até ~96 linhas/dia. Fazer JUNTO com o item 1.
+
 ---
 
 ## Mapa dos 30 cenários de teste obrigatórios → fase
