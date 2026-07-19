@@ -1,8 +1,10 @@
 /**
- * Webhook do Asaas (Fase 2 billing-asaas). Recebe eventos de pagamento/
- * assinatura/checkout e SÓ persiste + classifica (known/unknown) em
- * `billing_events`. NÃO ativa assinatura, NÃO credita saldo, NÃO muda
- * `organizations.billing_status` — isso é Fase 4 (ainda não implementada).
+ * Webhook do Asaas. Recebe eventos de pagamento/assinatura/checkout, persiste
+ * em `billing_events` e APLICA o efeito de negócio via `applyAsaasEvent`
+ * (registrar o pagamento, ativar a assinatura, liberar
+ * `organizations.billing_status`). A aplicação é compartilhada com
+ * `process-asaas-reconcile` — a lógica mora em
+ * `_shared/asaas-billing-events-apply.ts` e não pode divergir entre os dois.
  *
  * Sem HMAC: autenticação é um token estático no header `asaas-access-token`
  * (doc §1), comparado em tempo constante via `validateStaticTokenHeader`.
@@ -25,8 +27,9 @@
  * Por isso a régua não é "200 = sucesso, resto = erro" — é "200 = já está
  * durável ou foi deliberadamente descartado; não-200 = não consegui guardar,
  * tenta de novo". Duplicata, envelope inválido, evento desconhecido, flag
- * GENUINAMENTE off e erro de PROCESSAMENTO (a linha já está em
- * `billing_events`, o reconcile da Task 5 reprocessa) respondem 200. Só
+ * GENUINAMENTE off e erro de PROCESSAMENTO — inclusive falha ao APLICAR o
+ * efeito de negócio, que vira `processing_status='failed'` e é a linha já
+ * durável que o reconcile reprocessa — respondem 200. Só
  * falha de PERSISTÊNCIA (a linha nunca chegou a existir — INSERT quebrou, ou
  * nem sabemos se a flag está ligada porque a leitura falhou) é 503: um 200
  * aí apagaria um evento de pagamento pra sempre, sem nada pro reconcile
@@ -46,6 +49,7 @@ import { genRequestId, jsonLog, validateStaticTokenHeader } from "../_shared/sec
 import { getAsaasWebhookToken } from "../_shared/asaas-config.ts";
 import { checkFlagEnabled } from "../_shared/platform-flags.ts";
 import { classifyAsaasEvent, parseAsaasWebhookEnvelope } from "../_shared/asaas-core.ts";
+import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -132,8 +136,11 @@ serve(async (req) => {
       return new Response("OK", { status: 200 });
     }
 
-    // INSERT ANTES de processar (invariante desta EF). `organization_id`
-    // fica null nesta fase — resolver a org do evento é trabalho da Fase 4.
+    // INSERT ANTES de processar (invariante desta EF). `organization_id` entra
+    // null de propósito: quem resolve a org é `applyAsaasEvent` (invoice →
+    // externalReference → customer Asaas), e o valor resolvido é carimbado de
+    // volta no UPDATE lá embaixo. Persistir primeiro e correlacionar depois é
+    // o que garante que um evento sobreviva mesmo se a correlação falhar.
     const { data: inserted, error: insertError } = await supabase
       .from("billing_events")
       .insert({
@@ -191,32 +198,93 @@ serve(async (req) => {
 
     const billingEventId = inserted.id as string;
 
-    // "Processar" nesta fase é só classificar known/unknown — nenhuma ação
-    // de negócio (ativar assinatura, creditar saldo, billing_status) mora
-    // aqui. Evento desconhecido NUNCA vira erro (doc §2 — foge do escopo da
-    // Fase 2, mas ainda é uma entrega válida do Asaas).
+    // "Processar" é DUAS coisas: classificar (known/unknown) e APLICAR o efeito
+    // de negócio. A linha já está durável, então daqui pra baixo TODO caminho
+    // responde 200 — inclusive falha de negócio, que vira
+    // `processing_status='failed'` + `error_message` pro reconcile reprocessar.
+    // Um 503 aqui faria o Asaas reenviar um evento que já está salvo e queimaria
+    // o contador de falhas da fila (doc §2) sem nada a ganhar.
     try {
-      const classification = classifyAsaasEvent(parsed.event);
-      const newStatus = classification === "known" ? "processed" : "ignored";
+      // Evento fora do catálogo NUNCA vira erro (doc §2: o Asaas adiciona
+      // eventos novos) e nem entra no aplicador: sem catálogo não há efeito a
+      // decidir, e `applyAsaasEvent` gastaria uma chamada à API do Asaas pra
+      // chegar na mesma conclusão de 'ignored'.
+      if (classifyAsaasEvent(parsed.event) === "unknown") {
+        const { error: ignoreError } = await supabase
+          .from("billing_events")
+          .update({ processing_status: "ignored" })
+          .eq("id", billingEventId);
 
-      const { error: updateError } = await supabase
+        if (ignoreError) throw ignoreError;
+
+        jsonLog("info", {
+          reqId,
+          evt: "asaas_webhook_ignored",
+          eventType: parsed.event,
+          providerEventId: parsed.id,
+        });
+        return new Response("OK", { status: 200 });
+      }
+
+      // `applyAsaasEvent` por contrato NUNCA lança — todo caminho de erro volta
+      // como `{status:'failed'}` justamente pra este 200 continuar valendo.
+      const result = await applyAsaasEvent(supabase, {
+        id: billingEventId,
+        provider_event_id: parsed.id,
+        event_type: parsed.event,
+        // `parsed.valid` já provou que o corpo é objeto não-nulo e não-array
+        // (`parseAsaasWebhookEnvelope`), então o cast não esconde nada aqui.
+        data: rawBody as Record<string, unknown>,
+        // Sempre null: a linha acabou de ser inserida sem org. Quem resolve é o
+        // aplicador, e o resultado é carimbado no UPDATE logo abaixo.
+        organization_id: null,
+      });
+
+      // `error_message` é gravado SEMPRE, inclusive `null` no sucesso — senão um
+      // diagnóstico velho ficaria colado numa linha que reprocessou com êxito.
+      const { error: stampError } = await supabase
         .from("billing_events")
-        .update({ processing_status: newStatus })
+        .update({
+          processing_status: result.status,
+          organization_id: result.organizationId,
+          error_message: result.error ?? null,
+        })
         .eq("id", billingEventId);
 
-      if (updateError) throw updateError;
+      if (stampError) {
+        // Deliberadamente NÃO é `throw`: o efeito pode ter sido aplicado por
+        // completo e só o carimbo falhou — cair no catch gravaria 'failed' por
+        // cima de um evento que deu certo, usando o mesmo UPDATE que acabou de
+        // provar que não está funcionando. A linha fica em 'received' e o
+        // reconcile reprocessa (o aplicador é idempotente por UPDATE
+        // condicional). supabase-js RESOLVE com `{ error }` em vez de rejeitar,
+        // por isso `if` e não `catch`.
+        jsonLog("error", {
+          reqId,
+          evt: "asaas_webhook_stamp_failed",
+          billingEventId,
+          err: stampError.message,
+        });
+      }
 
-      jsonLog("info", {
+      // `failed` sobe pra nível error: é evento de dinheiro que NÃO surtiu
+      // efeito e depende do reconcile — não pode se esconder num log "info".
+      jsonLog(result.status === "failed" ? "error" : "info", {
         reqId,
-        evt: classification === "known" ? "asaas_webhook_processed" : "asaas_webhook_ignored",
+        evt: "asaas_webhook_applied",
         eventType: parsed.event,
         providerEventId: parsed.id,
+        status: result.status,
+        effect: result.effect,
+        organizationId: result.organizationId,
       });
       return new Response("OK", { status: 200 });
     } catch (processErr) {
-      // Já está persistido (processing_status='received') — o worker de
-      // reconcile (Task 5) reprocessa. Mensagem curta, sem vazar detalhe
-      // sensível; o detalhe completo vai só pro jsonLog.
+      // Rede de segurança do bloco de processamento. Com `applyAsaasEvent` não
+      // lançando por contrato, na prática só o UPDATE da classificação chega
+      // aqui. Já está persistido (`processing_status='received'`) — o
+      // reconcile reprocessa. Mensagem curta, sem vazar detalhe sensível; o
+      // detalhe completo vai só pro jsonLog.
       jsonLog("error", {
         reqId,
         evt: "asaas_webhook_process_error",
@@ -229,6 +297,11 @@ serve(async (req) => {
         .from("billing_events")
         .update({
           processing_status: "failed",
+          // String PINADA: `CLASSIFICATION_ERROR_MESSAGES` em
+          // process-asaas-reconcile só limpa `error_message` quando ele é uma
+          // das mensagens que uma reclassificação de fato resolve. Reescrever
+          // este texto sem atualizar lá deixaria o diagnóstico grudado pra
+          // sempre numa linha já resolvida.
           error_message: "Erro inesperado ao classificar evento — ver logs.",
         })
         .eq("id", billingEventId);

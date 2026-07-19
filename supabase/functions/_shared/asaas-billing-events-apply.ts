@@ -313,6 +313,27 @@ export async function applyAsaasEvent(
     //    reconcile podem tocar a mesma linha).
     switch (effect.kind) {
       case "activate_subscription": {
+        // Sem `payment.id` no envelope, TUDO abaixo vira no-op silencioso:
+        // `invoice` é null e o `else if (paymentId)` não dispara, então o
+        // dinheiro não é registrado; `purpose` fica no default "other" e o
+        // `break` mais abaixo pula a ativação. O evento sairia daqui como
+        // `processed`, fora da fila do reconcile, com o cliente pago e sem
+        // acesso — e sem invoice paga nenhum reprocessamento futuro se
+        // corrigiria. `PAYMENT_CONFIRMED`/`PAYMENT_RECEIVED` SEMPRE trazem o
+        // `payment` (§3), então isto é payload anômalo: falha ALTO pra linha
+        // continuar na fila. Guard só neste efeito — `mark_invoice_overdue` sem
+        // invoice correlacionada é no-op POR CONTRATO (obrigação 3 do JSDoc de
+        // decideEventEffect), não anomalia.
+        if (!paymentId) {
+          return failWith(
+            organizationId,
+            effect.kind,
+            "missing_payment_id",
+            `evento ${row.event_type} sem 'payment.id' no envelope`,
+            "Evento de pagamento sem identificador da cobrança — ver logs.",
+          );
+        }
+
         // OBRIGAÇÃO 1 do contrato (JSDoc de decideEventEffect): registrar o
         // dinheiro SEMPRE — inclusive criando a linha quando ela não existe.
         // A idempotência do 2º evento do cartão (CONFIRMED e depois RECEIVED,
@@ -343,7 +364,8 @@ export async function applyAsaasEvent(
               paid_cents: paidValueCents,
             });
           }
-        } else if (paymentId) {
+        } else {
+          // `paymentId` é não-nulo aqui — garantido pelo guard no topo do case.
           // Sem linha prévia — caso normal de renovação, porque PAYMENT_CREATED
           // é informativo e não cria invoice. `provider_payment_id` tem UNIQUE
           // parcial, então uma corrida entre webhook e reconcile vira 23505 e
