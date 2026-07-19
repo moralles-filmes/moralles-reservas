@@ -60,7 +60,8 @@ Estas valem para **todas** as tasks. Violar qualquer uma é regressão, não esc
 | `supabase/functions/_shared/tax-id.ts` | Validação de CPF/CNPJ (backend, Deno). Puro. |
 | `src/lib/tax-id.ts` | Validação de CPF/CNPJ (frontend) + formatação de máscara. Puro. |
 | `src/lib/tax-id.test.ts` | Testa as duas cópias com o mesmo corpus e afirma que concordam. |
-| `supabase/functions/_shared/asaas-billing-events.ts` | Núcleo puro (externalReference + `decideEventEffect`) e aplicador de I/O. |
+| `supabase/functions/_shared/asaas-billing-events.ts` | Núcleo puro (externalReference + `decideEventEffect`). Zero imports — importado por `src/`. |
+| `supabase/functions/_shared/asaas-billing-events-apply.ts` | Aplicador de I/O (`applyAsaasEvent`). Arquivo IRMÃO, nunca importado por `src/`. |
 | `src/lib/asaas-billing-events.test.ts` | Testes do núcleo puro, importado cross-boundary. |
 | `supabase/migrations/20260719120000_066_activate_sistema_reservas.sql` | Liga o plano `sistema-reservas`. |
 
@@ -79,7 +80,7 @@ Estas valem para **todas** as tasks. Violar qualquer uma é regressão, não esc
 | `supabase/config.toml` | (só se surgir EF nova — nenhuma prevista) |
 | `CLAUDE.md` | Invariantes novos + checklist de redeploy |
 
-**Fronteira de import verificada:** o vitest resolve `../../supabase/functions/_shared/<mod>` a partir de `src/` (precedentes: `asaas-core.test.ts:22`, `entitlements-core.test.ts:6`). Isso vale **só para módulos puros** (sem `Deno.*`, sem import HTTP). `_shared/tax-id.ts` e o núcleo de `_shared/asaas-billing-events.ts` respeitam essa regra; o aplicador de I/O fica no mesmo arquivo mas **nunca é importado por `src/`**.
+**Fronteira de import verificada:** o vitest resolve `../../supabase/functions/_shared/<mod>` a partir de `src/` (precedentes: `asaas-core.test.ts:22`, `entitlements-core.test.ts:6`). Isso vale **só para módulos puros** (sem `Deno.*`, sem import HTTP). `_shared/tax-id.ts` e o núcleo de `_shared/asaas-billing-events.ts` respeitam essa regra; o aplicador de I/O foi **extraído para o arquivo irmão `_shared/asaas-billing-events-apply.ts`** — na Task 6 se provou que o import de `https://esm.sh/@supabase/supabase-js`, mesmo **só de tipo**, quebra a resolução do Vite para quem importa o núcleo puro (`Only URLs with a scheme in: file and data are supported by the default ESM loader`). O irmão **nunca é importado por `src/`**.
 
 ---
 
@@ -2572,7 +2573,7 @@ git tag billing-asaas/fase-4a
 |---|---|
 | Passo 0 — Sonda do sandbox (5 pendências) | 1 |
 | Passo 1 — CPF/CNPJ e billing_email no onboarding | 2, 3 |
-| Passo 2 — `asaas-billing-events.ts` (núcleo puro + aplicador) | 4, 5, 6 |
+| Passo 2 — `asaas-billing-events.ts` (núcleo puro) + `asaas-billing-events-apply.ts` (aplicador) | 4, 5, 6 |
 | Passo 3 — Checkout roteado por flag | 7 |
 | Passo 4 — Webhook aplica o efeito | 8 |
 | Passo 5 — Reconcile completo (4 itens herdados) | 9 |

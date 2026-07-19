@@ -150,7 +150,20 @@ export async function applyAsaasEvent(
       invoice = data ?? null;
     }
 
-    // 2. Resolver a organização. Ordem real de precedência: coluna
+    // 2. Decidir o efeito (puro). ANTECIPADO de propósito para antes do I/O do
+    //    Asaas: `decideEventEffect` só depende de `row.event_type` e do status
+    //    da invoice, ambos já em mãos aqui. Ter o efeito antes do `getPayment`
+    //    é o que permite graduar a severidade de uma falha daquela chamada —
+    //    sem isso, todo erro do Asaas teria que ser tratado igual.
+    //
+    //    NÃO passa status de assinatura — `decideEventEffect` não branchia
+    //    nele (removido do input na revisão da Task 5).
+    const effect = decideEventEffect({
+      eventType: row.event_type,
+      invoiceStatus: invoice?.status ?? null,
+    });
+
+    // 3. Resolver a organização. Ordem real de precedência: coluna
     //    `organization_id` da própria linha do evento → invoice já conhecida →
     //    externalReference do payment → customer Asaas.
     let organizationId = row.organization_id ?? invoice?.organization_id ?? null;
@@ -194,11 +207,14 @@ export async function applyAsaasEvent(
         const rawValue = res.data.value;
         if (typeof rawValue === "number" && Number.isFinite(rawValue) && rawValue >= 0) {
           paidValueCents = asaasValueToCents(rawValue);
-        } else if (rawValue !== undefined) {
+        } else {
+          // Campo AUSENTE também loga: num PAYMENT_RECEIVED, `value` não vir é
+          // anomalia de payload tão relevante quanto um NaN, e o silêncio
+          // esconderia a causa do `missing_payment_value` logo adiante.
           jsonLog("warn", {
             evt: "asaas_payment_value_invalid",
             payment_id: paymentId,
-            raw_value: String(rawValue),
+            raw_value: rawValue === undefined ? "ausente" : String(rawValue),
           });
         }
 
@@ -222,10 +238,34 @@ export async function applyAsaasEvent(
             organizationId = cust?.organization_id ?? null;
           }
         }
+      } else if (effect.kind === "activate_subscription") {
+        // Indisponibilidade do Asaas (rede, 5xx, token expirado) NÃO pode virar
+        // `processed`. Sem o payload, `purpose` fica no default "other",
+        // `paidValueCents` e `planId` ficam `null` — e o `purpose !==
+        // "subscription"` mais abaixo daria `break` ANTES de ativar a
+        // assinatura e antes de tocar `organizations.billing_status`. O evento
+        // sairia da fila com o cliente pago e bloqueado, sem rastro.
+        //
+        // Sem invoice prévia é pior: o INSERT gravaria `amount_cents` errado e
+        // `purpose:'other'` sob o UNIQUE (provider, provider_payment_id), e
+        // qualquer reprocessamento futuro reencontraria `status='paid'` →
+        // `noop` → `processed`. Envenenamento permanente, sem auto-cura.
+        //
+        // Falha SÓ neste efeito: só a ativação depende do payload. Derrubar
+        // também um `PAYMENT_CREATED` informativo (ou um `PAYMENT_OVERDUE`,
+        // que não lê nada do payment) transformaria ruído em `failed` e
+        // inflaria a fila do reconcile à toa.
+        return failWith(
+          organizationId,
+          effect.kind,
+          "get_payment",
+          res.error ?? "getPayment devolveu ok sem data",
+          "Falha ao consultar o pagamento no Asaas — ver logs.",
+        );
       }
     }
 
-    // 3. Estado atual da assinatura da org.
+    // 4. Estado atual da assinatura da org.
     let subscription: { id: string; status: string } | null = null;
     if (organizationId) {
       // `error` checado: `maybeSingle()` devolve PGRST116 quando casa MAIS de
@@ -250,13 +290,9 @@ export async function applyAsaasEvent(
       subscription = data ?? null;
     }
 
-    // 4. Decidir (puro). NÃO passa status de assinatura — `decideEventEffect`
-    //    não branchia nele (removido do input na revisão da Task 5).
-    const effect = decideEventEffect({
-      eventType: row.event_type,
-      invoiceStatus: invoice?.status ?? null,
-    });
-
+    // 5. Portões do efeito já decidido no passo 2. Ficam AQUI, e não junto da
+    //    decisão, para que `organizationId` reportado no retorno seja o
+    //    resolvido por completo (invoice → externalReference → customer).
     if (effect.kind === "unknown") {
       return { status: "ignored", organizationId, effect: effect.kind, error: effect.reason };
     }
@@ -272,7 +308,7 @@ export async function applyAsaasEvent(
       };
     }
 
-    // 5. Executar. Transições por UPDATE CONDICIONAL — o `.neq`/`.eq` no status
+    // 6. Executar. Transições por UPDATE CONDICIONAL — o `.neq`/`.eq` no status
     //    anterior é o que garante idempotência sob concorrência (webhook e
     //    reconcile podem tocar a mesma linha).
     switch (effect.kind) {
@@ -312,6 +348,24 @@ export async function applyAsaasEvent(
           // é informativo e não cria invoice. `provider_payment_id` tem UNIQUE
           // parcial, então uma corrida entre webhook e reconcile vira 23505 e
           // não linha duplicada.
+          //
+          // Sem valor legível NÃO se insere: `status:'paid'` é terminal para
+          // `decideEventEffect`, então uma fatura de R$ 0,00 nunca seria
+          // revisitada e o valor nunca seria corrigido. Registrar zero é pior
+          // que não registrar — `failed` mantém o evento na fila e o reconcile
+          // retenta quando o payload voltar íntegro. (Diferente da DIVERGÊNCIA
+          // de valor com invoice existente logo acima, que só loga de
+          // propósito: lá o valor conhecido é o nosso, não um chute.)
+          if (paidValueCents === null) {
+            return failWith(
+              organizationId,
+              effect.kind,
+              "missing_payment_value",
+              `payment ${paymentId} sem 'value' numérico utilizável`,
+              "Pagamento sem valor legível para registrar a fatura — ver logs.",
+            );
+          }
+
           const { error: insertErr } = await supabase.from("billing_invoices").insert({
             organization_id: organizationId,
             billing_subscription_id: subscription?.id ?? null,
@@ -320,7 +374,7 @@ export async function applyAsaasEvent(
             purpose,
             external_reference: externalReferenceRaw,
             status: "paid",
-            amount_cents: paidValueCents ?? 0,
+            amount_cents: paidValueCents,
             // Coluna tem default 'brl' minúsculo — gravar "BRL" criaria duas
             // grafias pra mesma moeda.
             currency: "brl",
@@ -361,6 +415,35 @@ export async function applyAsaasEvent(
               subErr,
               "Falha ao ativar a assinatura — ver logs.",
             );
+          }
+
+          // Backfill do `provider_subscription_id`: a assinatura criada pelo
+          // checkout pode não tê-lo (§13.6 — o Asaas só expõe o `sub_…` na
+          // cobrança gerada), e este é o instante em que ele está em mãos.
+          // Sem isto a coluna fica `null` para sempre.
+          //
+          // UPDATE SEPARADO porque o de status acima é condicional em
+          // `.neq('status','active')`: numa assinatura já ativa ele não afeta
+          // linha nenhuma e o backfill nunca aconteceria. O `.is(..., null)`
+          // torna este write idempotente e impede sobrescrever id existente.
+          if (providerSubscriptionId) {
+            const { error: backfillErr } = await supabase
+              .from("billing_subscriptions")
+              .update({ provider_subscription_id: providerSubscriptionId })
+              .eq("id", subscription.id)
+              .is("provider_subscription_id", null);
+            if (backfillErr) {
+              // NÃO derruba o evento: id de correlação não é pré-requisito do
+              // acesso — a fatura já está paga e a assinatura já está ativa.
+              // Devolver `failed` aqui faria o reconcile reexecutar tudo por
+              // causa de um campo cosmético. Loga e segue.
+              jsonLog("warn", {
+                evt: "asaas_subscription_backfill_failed",
+                organization_id: organizationId,
+                subscription_id: subscription.id,
+                error: String(backfillErr),
+              });
+            }
           }
         } else {
           // Criar assinatura exige DOIS pais NOT NULL (`billing_customer_id` e
