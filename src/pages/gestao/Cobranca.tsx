@@ -65,25 +65,56 @@ export default function Cobranca() {
   } | null>(null);
   const [cancelDialog, setCancelDialog] = useState(false);
 
-  // Pós-redirect do Stripe Checkout: refetch state até a subscription aparecer.
-  // Webhook pode chegar depois do redirect — damos até 6s de retry escalonado.
+  // Pós-redirect do checkout: refetch até a assinatura aparecer.
+  //
+  // O webhook é quem ativa — a URL de retorno NÃO ativa nada (cenário 8). Por
+  // isso a mensagem depende do estado REAL ter mudado, e não de o navegador ter
+  // voltado com session=success. Com PIX a confirmação pode chegar depois desta
+  // janela, e prometer "Bem-vindo!" nesse caso seria mentira.
   useEffect(() => {
-    if (searchParams.get("session") !== "success") return;
-    let attempts = 0;
-    const tick = () => {
-      attempts++;
-      refetchDetail();
-      refetchPms();
-      if (attempts < 4) setTimeout(tick, 1500);
-      else {
-        // Limpa o query param sem reload
-        searchParams.delete("session");
-        searchParams.delete("sid");
-        setSearchParams(searchParams, { replace: true });
-        toast.success("Pagamento processado. Bem-vindo!");
-      }
+    const session = searchParams.get("session");
+    if (session !== "success" && session !== "cancel") return;
+
+    const clearParams = () => {
+      searchParams.delete("session");
+      searchParams.delete("sid");
+      setSearchParams(searchParams, { replace: true });
     };
+
+    if (session === "cancel") {
+      clearParams();
+      toast.info("Checkout cancelado. Nenhuma cobrança foi feita.");
+      return;
+    }
+
+    let attempts = 0;
+    let cancelled = false;
+
+    const tick = async () => {
+      if (cancelled) return;
+      attempts++;
+      const [detailResult] = await Promise.all([refetchDetail(), refetchPms()]);
+      if (cancelled) return;
+
+      const activeSub = detailResult.data?.subscriptions?.find((s) => s.status !== "canceled");
+      if (activeSub) {
+        clearParams();
+        toast.success("Pagamento confirmado. Bem-vindo!");
+        return;
+      }
+      if (attempts < 6) {
+        setTimeout(tick, 2000);
+        return;
+      }
+      clearParams();
+      toast.info(
+        "Recebemos seu pagamento e estamos confirmando com o banco. " +
+          "Pode levar alguns minutos — você não precisa pagar de novo.",
+      );
+    };
+
     tick();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams.get("session")]);
 
