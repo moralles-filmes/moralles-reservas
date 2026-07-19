@@ -439,6 +439,15 @@ export interface AsaasCheckoutParams {
   chargeTypes: Array<"DETACHED" | "RECURRENT" | "INSTALLMENT">;
   callback: AsaasCheckoutCallback;
   items: AsaasCheckoutItem[];
+  /** Id do cliente Asaas (`cus_...`) que este checkout deve amarrar. INFERIDO
+   * do shape de resposta da sonda de 2026-07-19 ao POST /v3/checkouts, que
+   * devolveu `"customer": null` e `"customerData": null` no corpo — os campos
+   * existem no recurso, faltava modelá-los aqui. Sem enviá-lo, o Asaas cria um
+   * cliente próprio a partir do que o pagador digitar e o `asaas_customer_id`
+   * que gravamos vira órfão, matando o fallback de correlação do webhook
+   * (`_shared/asaas-billing-events-apply.ts`, `.eq("asaas_customer_id", ...)`).
+   * Confirmação ao vivo fica pra Task 13. */
+  customer?: string;
   /** Obrigatório quando chargeTypes inclui RECURRENT (§9) — shape exato não
    * detalhado em 03-ASAAS-API-VERIFICADO.md. */
   subscription?: Record<string, unknown>;

@@ -46,6 +46,7 @@ import {
   refundAsaasPayment,
   updateAsaasSubscription,
   type AsaasCheckoutParams,
+  type AsaasCycle,
 } from "./asaas.ts";
 import { centsToAsaasValue } from "./asaas-core.ts";
 import { jsonLog } from "./security.ts";
@@ -74,6 +75,10 @@ export interface CreateCheckoutParams {
   /** Correlação org|plan|purpose validada no webhook. */
   externalReference: string;
   mode: "subscription" | "one_time";
+  /** `billing_plans.interval` (CHECK `month|year`) — OBRIGATÓRIO em
+   * mode=subscription. Tipado frouxo de propósito: o valor vem do banco e é
+   * validado em runtime por `asaasCycleForInterval`, não pelo compilador. */
+  interval?: string | null;
   successUrl?: string;
   cancelUrl?: string;
 }
@@ -93,6 +98,9 @@ export interface CreateSubscriptionParams {
   providerPriceId?: string;
   trialDays?: number;
   externalReference: string;
+  /** Mesma regra do CreateCheckoutParams.interval: vem do banco, validado em
+   * runtime. Sem ele o Asaas não sabe o ciclo e a operação é recusada. */
+  interval?: string | null;
   metadata?: Record<string, string>;
 }
 
@@ -213,6 +221,20 @@ function isoDateInDaysBrt(days: number): string {
 }
 
 /**
+ * `billing_plans.interval` (CHECK `month|year`) → ciclo do Asaas. Devolve
+ * `null` pro que não sabemos mapear, e o caller RECUSA a operação: assumir
+ * mensal num plano anual abriria um RECURRENT cobrando o valor do ano inteiro
+ * todo mês. O painel de planos da Fase 3 já permite criar plano anual, então
+ * isto não é hipotético — hoje só não explode porque todo plano do seed 065 é
+ * `'month'`.
+ */
+function asaasCycleForInterval(interval: string | null | undefined): AsaasCycle | null {
+  if (interval === "month") return "MONTHLY";
+  if (interval === "year") return "YEARLY";
+  return null;
+}
+
+/**
  * Envolve cada método do provider: captura qualquer exceção (ex.:
  * centsToAsaasValue lançando em amountCents corrompido) e traduz pra
  * ProviderResult — nunca deixa escapar um throw pro caller. Detalhe técnico
@@ -264,6 +286,16 @@ const asaasProvider: BillingProviderPort = {
       const value = centsToAsaasValue(params.amountCents);
       const isSubscription = params.mode === "subscription";
 
+      // Resolvido ANTES de qualquer request: um intervalo que não sabemos
+      // mapear tem que barrar o checkout, não virar mensal por omissão.
+      const cycle = isSubscription ? asaasCycleForInterval(params.interval) : null;
+      if (isSubscription && !cycle) {
+        return {
+          ok: false,
+          error: "O intervalo de cobrança deste plano não é suportado no checkout recorrente.",
+        };
+      }
+
       const checkoutParams: AsaasCheckoutParams = {
         // RECURRENT aceita EXCLUSIVAMENTE cartão — PIX exige chargeType
         // DETACHED e a API recusa a combinação (§13.3, verificado em sandbox).
@@ -271,6 +303,11 @@ const asaasProvider: BillingProviderPort = {
         // aumenta a conversão. Sem BOLETO em nenhum dos modos (§9).
         billingTypes: isSubscription ? ["CREDIT_CARD"] : ["CREDIT_CARD", "PIX"],
         chargeTypes: isSubscription ? ["RECURRENT"] : ["DETACHED"],
+        // Amarra o checkout ao cliente que NÓS criamos. Sem isto o Asaas cria
+        // um cliente próprio com os dados que o pagador digitar, e o
+        // `asaas_customer_id` gravado em billing_customers nunca aparece em
+        // pagamento nenhum — o fallback de correlação do webhook nasce morto.
+        customer: params.providerCustomerId,
         callback: { successUrl: params.successUrl, cancelUrl: params.cancelUrl },
         items: [
           {
@@ -282,14 +319,14 @@ const asaasProvider: BillingProviderPort = {
         ],
         externalReference: params.externalReference,
       };
-      if (isSubscription) {
+      if (cycle) {
         // `subscription` obrigatório quando chargeTypes inclui RECURRENT
         // (§9). Shape exato do objeto AINDA NÃO VERIFICADO: a sonda de
         // 2026-07-19 parou antes, no 400 de `billingTypes` (§13.3), então
         // `cycle` continua sendo analogia ao endpoint irmão
         // POST /v3/subscriptions (que exige `cycle`, §9) — não confirmação.
         // Primeiro checkout RECURRENT real valida ou derruba isso.
-        checkoutParams.subscription = { cycle: "MONTHLY" };
+        checkoutParams.subscription = { cycle };
       }
 
       const res = await createAsaasCheckout(checkoutParams);
@@ -324,6 +361,12 @@ const asaasProvider: BillingProviderPort = {
 
   async createSubscription(params) {
     return safely<{ subscriptionId: string }>("createSubscription", async () => {
+      // Mesmo invariante do createCheckout: ciclo sai de billing_plans.interval,
+      // nunca de um default mensal.
+      const cycle = asaasCycleForInterval(params.interval);
+      if (!cycle) {
+        return { ok: false, error: "O intervalo de cobrança deste plano não é suportado no Asaas." };
+      }
       const value = centsToAsaasValue(params.amountCents);
       // Asaas não tem trial nativo (diferente do trial_period_days da
       // Stripe) — aproximamos adiando nextDueDate por trialDays: a
@@ -341,7 +384,7 @@ const asaasProvider: BillingProviderPort = {
         billingType: "UNDEFINED",
         value,
         nextDueDate,
-        cycle: "MONTHLY",
+        cycle,
         externalReference: params.externalReference,
         // providerPriceId é conceito Stripe (price pré-cadastrado); Asaas
         // manda `value` cru, então params.providerPriceId é ignorado aqui.

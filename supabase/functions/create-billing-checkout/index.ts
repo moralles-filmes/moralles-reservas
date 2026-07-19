@@ -82,13 +82,16 @@ async function resolveOrg(organizationId: string): Promise<OrgRow | null> {
 interface PlanRow {
   id: string;
   name: string;
-  slug: string | null;
   stripe_price_id_card: string | null;
   trial_days: number | null;
   active: boolean;
   amount_cents: number | null;
   provider: string | null;
   billing_type: string | null;
+  /** NOT NULL no banco, CHECK `month|year` — quem decide o ciclo do checkout
+   * recorrente. Tipado nullable por segurança de leitura, e validado no
+   * provider (assumir mensal cobraria o valor anual todo mês). */
+  interval: string | null;
 }
 
 async function resolveUnitSlug(organizationId: string): Promise<string | null> {
@@ -222,7 +225,7 @@ serve(async (req) => {
     if (mode === "subscription") {
       const { data: planData, error: planErr } = await supabase
         .from("billing_plans")
-        .select("id, name, slug, stripe_price_id_card, trial_days, active, amount_cents, provider, billing_type")
+        .select("id, name, stripe_price_id_card, trial_days, active, amount_cents, provider, billing_type, interval")
         .eq("id", plan_id)
         .maybeSingle();
 
@@ -314,8 +317,13 @@ serve(async (req) => {
             orgId: organization_id,
             err: created.error ?? null,
           });
+          // Mensagem FIXA: `created.error` carrega o texto de validação cru do
+          // Asaas (parseAsaasError = errors[0].description) e o dono do
+          // restaurante não deve ler "O método de pagamento CREDIT_CARD é o
+          // único método permitido para operações RECURRENT". O detalhe já
+          // está no jsonLog acima.
           return jsonResponse(req, {
-            error: created.error ?? "Falha ao cadastrar a empresa no provedor de pagamento.",
+            error: "Não foi possível cadastrar a empresa no provedor de pagamento. Tente novamente em instantes.",
           }, 502);
         }
         asaasCustomerId = created.data.customerId;
@@ -342,10 +350,22 @@ serve(async (req) => {
 
       // 2. Criar o checkout. Valor SEMPRE do banco, nunca do request. A
       // conversão centavos→reais fica no provider (centsToAsaasValue).
+      //
+      // DIVERGÊNCIA CONSCIENTE vs. o ramo Stripe: `plan.trial_days` NÃO é
+      // propagado aqui. O checkout hospedado do Asaas não expõe equivalente ao
+      // `subscription_data[trial_period_days]` da Stripe — o que existe no
+      // Asaas é adiar `nextDueDate` em POST /v3/subscriptions (ver
+      // asaasProvider.createSubscription), campo que o objeto `subscription` do
+      // checkout não documenta. Sem efeito prático hoje: o único plano com
+      // `trial_days > 0` é o `trial-padrao`, que é `provider='manual'` +
+      // `is_trial` e nunca chega neste ramo. Se um plano Asaas com trial for
+      // criado, o trial será silenciosamente ignorado — reavaliar na Task 13.
       const checkout = await asaas.createCheckout({
         providerCustomerId: asaasCustomerId,
         amountCents: plan.amount_cents,
         description: plan.name,
+        // Ciclo do RECURRENT sai daqui; o provider recusa o que não mapear.
+        interval: plan.interval,
         // É deste externalReference que o webhook tira o purpose que libera o
         // acesso — e a cobrança de cada ciclo o herda da assinatura (§13.5.1).
         externalReference: buildExternalReference({
@@ -369,8 +389,10 @@ serve(async (req) => {
           planId: plan.id,
           err: checkout.error ?? null,
         });
+        // Mesma razão do bloco de cadastro acima — nada de texto cru do
+        // provedor pro cliente final; o `err` do jsonLog guarda o original.
         return jsonResponse(req, {
-          error: checkout.error ?? "Falha ao abrir o checkout.",
+          error: "Não foi possível abrir o checkout de pagamento. Tente novamente em instantes.",
         }, 502);
       }
 
