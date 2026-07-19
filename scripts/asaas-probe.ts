@@ -3,13 +3,22 @@
 // docs/billing-asaas/03-ASAAS-API-VERIFICADO.md antes de a Fase 4a assumir
 // qualquer uma delas. NÃO é código de produção e não deve ser importado.
 //
-// Uso:
-//   supabase secrets list   # confirmar que ASAAS_API_KEY não é hash de vazio
-//   ASAAS_ENV=sandbox ASAAS_API_KEY='$aact_hmlg_...' npx deno@2.1.4 run \
-//     --allow-net --allow-env scripts/asaas-probe.ts
+// Uso — PowerShell (shell primário deste projeto):
+//   $env:ASAAS_ENV = 'sandbox'
+//   $env:ASAAS_API_KEY = '$aact_hmlg_...'
+//   npx deno@2.1.4 run --allow-net --allow-env scripts/asaas-probe.ts
+//   $env:ASAAS_API_KEY = $null      # limpa a chave da sessão depois
 //
-// A chave começa com "$": SEMPRE entre aspas simples, senão o shell expande
-// pra vazio e a sonda falha com 401 sem explicar por quê.
+// Uso — bash / Git Bash:
+//   ASAAS_ENV=sandbox ASAAS_API_KEY='$aact_hmlg_...' \
+//     npx deno@2.1.4 run --allow-net --allow-env scripts/asaas-probe.ts
+//
+// PowerShell NÃO aceita prefixo de variável inline (`VAR=x comando`) — isso é
+// sintaxe de bash e vira "termo não reconhecido".
+//
+// A chave começa com "$": SEMPRE entre aspas SIMPLES, senão o shell expande
+// pra vazio e a sonda falha sem explicar por quê. E cole a chave INTEIRA, uma
+// vez só — ela já inclui o prefixo `$aact_hmlg_`, não o digite de novo.
 
 const BASE = Deno.env.get("ASAAS_BASE_URL") ?? "https://api-sandbox.asaas.com/v3";
 const KEY = Deno.env.get("ASAAS_API_KEY") ?? "";
