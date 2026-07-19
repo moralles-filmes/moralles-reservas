@@ -181,16 +181,28 @@ show("1b. POST /checkouts COM imageBase64", await call("/checkouts", "POST", {
   externalReference: "probe-with-image",
 }));
 
-// ---- 2. items[].value aceita decimal? ----
-// Se 19.90 voltar como 19.9 no eco, é reais. Se voltar 1990, é centavos e o
-// invariante monetário inteiro está errado.
-show("2. Checkout RECURRENT com value decimal", await call("/checkouts", "POST", {
-  billingTypes: ["CREDIT_CARD", "PIX"],
+// ---- 2. Checkout RECURRENT: billingTypes e shape de `subscription` ----
+// Rodada 1 provou que RECURRENT + PIX é 400 ("CREDIT_CARD é o único método
+// permitido para operações RECURRENT"). Aqui mandamos só cartão, o que
+// finalmente exercita o objeto `subscription` — cujo shape billing-provider.ts
+// assumiu por analogia ao POST /subscriptions e nunca validou.
+show("2a. Checkout RECURRENT só cartão (shape de `subscription`)", await call("/checkouts", "POST", {
+  billingTypes: ["CREDIT_CARD"],
   chargeTypes: ["RECURRENT"],
   callback: { successUrl: "https://example.com/ok", cancelUrl: "https://example.com/no" },
-  items: [{ name: "Sonda recorrente", quantity: 1, value: 19.90, imageBase64: PNG_1PX }],
+  items: [{ name: "Sonda recorrente", quantity: 1, value: 19.90 }],
   subscription: { cycle: "MONTHLY" },
   externalReference: "probe-recurrent",
+}));
+
+// `subscription` é mesmo obrigatório em RECURRENT, ou o Asaas assume um
+// default? Se passar sem ele, billing-provider.ts pode simplificar.
+show("2b. RECURRENT SEM o objeto `subscription`", await call("/checkouts", "POST", {
+  billingTypes: ["CREDIT_CARD"],
+  chargeTypes: ["RECURRENT"],
+  callback: { successUrl: "https://example.com/ok", cancelUrl: "https://example.com/no" },
+  items: [{ name: "Sonda sem sub", quantity: 1, value: 19.90 }],
+  externalReference: "probe-recurrent-nosub",
 }));
 
 // ---- 3. PUT {status:"INACTIVE"} preserva as cobranças emitidas? ----
