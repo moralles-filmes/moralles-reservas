@@ -57,6 +57,42 @@ if (!hasEnvironmentPrefix) {
   console.warn("Continuando — mas note que chaves antigas podem estar descontinuadas.");
 }
 
+/**
+ * Impressão digital da chave — NUNCA o valor. Serve para diagnosticar
+ * `invalid_access_token_format` sem pedir a chave de volta a ninguém (pedir
+ * faria a chave circular por chat/log, que é como um segredo vaza).
+ */
+function keyFingerprint(): string {
+  const prefixCount = KEY.split("$aact_").length - 1;
+  const hasWhitespace = /\s/.test(KEY);
+  return [
+    `comprimento=${KEY.length}`,
+    `prefixo_$aact_=${prefixCount}x`,
+    `espaco_ou_quebra=${hasWhitespace}`,
+    `prefixo_de_ambiente=${hasEnvironmentPrefix}`,
+  ].join(" · ");
+}
+
+function explainAuthFailure(): void {
+  console.error("\n===== 401: a API recusou a chave =====");
+  console.error(`Impressão digital (sem revelar o valor): ${keyFingerprint()}`);
+  console.error("");
+  if (KEY.split("$aact_").length - 1 > 1) {
+    console.error("CAUSA PROVÁVEL: o prefixo $aact_ aparece MAIS DE UMA VEZ.");
+    console.error("A chave copiada do painel já inclui o prefixo — não digite outro na frente.");
+  } else if (/\s/.test(KEY)) {
+    console.error("CAUSA PROVÁVEL: a chave contém espaço ou quebra de linha (cópia suja).");
+  } else if (KEY.length < 50) {
+    console.error("CAUSA PROVÁVEL: a chave parece truncada — a cópia não pegou o valor inteiro.");
+  } else {
+    console.error("O formato parece plausível. Hipóteses restantes:");
+    console.error(" - a chave foi desabilitada por inatividade (3 meses sem uso) ou expirou (6 meses);");
+    console.error(" - a chave foi excluída no painel;");
+    console.error(" - foi gerada em outra conta que não a do Sandbox.");
+    console.error("Gere uma nova em: Sandbox -> Integrações -> Chaves API.");
+  }
+}
+
 async function call(path: string, method = "GET", body?: unknown) {
   const res = await fetch(`${BASE}${path}`, {
     method,
@@ -92,7 +128,13 @@ show("0. POST /customers", customer);
 
 const customerId = (customer.data as { id?: string })?.id;
 if (!customerId) {
-  console.error("Sem customerId — as demais sondas dependem dele. Abortando.");
+  // 401 aqui é quase sempre problema de FORMATO da chave, não da conta.
+  // Diagnosticar na hora evita um ciclo de ida e volta pedindo a chave —
+  // que é justamente como um segredo acaba circulando por chat.
+  if (customer.status === 401) {
+    explainAuthFailure();
+  }
+  console.error("\nSem customerId — as demais sondas dependem dele. Abortando.");
   Deno.exit(1);
 }
 
