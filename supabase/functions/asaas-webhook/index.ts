@@ -37,6 +37,13 @@
  * correto com HTTP; nunca "corrigir" o 503 pra 200 achando mais consistente
  * com os vizinhos — são classes de erro diferentes de propósito.
  *
+ * ⏱ Além do código HTTP, o TEMPO também é contrato: o Asaas corta em 10s e
+ * conta o estouro como falha de entrega, com o mesmo efeito de fila
+ * interrompida. Por isso todo I/O com a API do Asaas feito aqui dentro é
+ * limitado por `ASAAS_IO_BUDGET_MS` (ver constante abaixo) — falha rápida,
+ * nunca `EdgeRuntime.waitUntil`. Qualquer chamada externa nova neste caminho
+ * entra no mesmo orçamento.
+ *
  * Gate: só processa se platform_flags.asaas_enabled=true (fail-closed pra
  * flag GENUINAMENTE ausente/false, via `checkFlagEnabled`); com a flag OFF
  * responde 200 sem persistir nada. Falha ao LER a flag é tratada como falha
@@ -55,6 +62,24 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
+
+/**
+ * Teto de wall-clock pro I/O com a API do Asaas dentro desta resposta.
+ *
+ * O Asaas concede 10s (doc §2) e conta o estouro como FALHA de entrega; 15
+ * seguidas INTERROMPEM a fila de eventos de todos os clientes, que é apagada
+ * em 14 dias. ~5s deixa margem confortável pro INSERT já feito, pelo UPDATE de
+ * carimbo e pelas escritas do aplicador.
+ *
+ * Sem este teto, um único `getPayment` lento estoura os 10s sozinho (15s de
+ * timeout por tentativa × 3 tentativas + backoff + até 30s honrando
+ * `RateLimit-Reset`) — e o cenário é auto-amplificante: numa rajada, o limite
+ * de 50 GETs concorrentes (§10) gera 429 em massa, todas as invocações dormem
+ * juntas e todas estouram. Estourar o orçamento vira `failed` (o reconcile
+ * retenta), NUNCA 503: a linha já está persistida, e 503 dispararia redelivery
+ * queimando justamente o contador de 15.
+ */
+const ASAAS_IO_BUDGET_MS = 5_000;
 
 serve(async (req) => {
   // Não é entrega de evento — não conta pro contador de falha do Asaas.
@@ -238,6 +263,11 @@ serve(async (req) => {
         // Sempre null: a linha acabou de ser inserida sem org. Quem resolve é o
         // aplicador, e o resultado é carimbado no UPDATE logo abaixo.
         organization_id: null,
+      }, {
+        // O orçamento é DESTE caller — o `process-asaas-reconcile` chama o
+        // mesmo aplicador SEM ele e mantém os retries completos, porque roda em
+        // cron sem ninguém esperando a resposta.
+        asaasIoBudgetMs: ASAAS_IO_BUDGET_MS,
       });
 
       // `error_message` é gravado SEMPRE, inclusive `null` no sucesso — senão um

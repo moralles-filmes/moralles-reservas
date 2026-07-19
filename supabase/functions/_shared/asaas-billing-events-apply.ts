@@ -38,6 +38,29 @@ export interface ApplyResult {
   error?: string;
 }
 
+/**
+ * Opções do CALLER — não do aplicador. Cada chamador tem um orçamento de tempo
+ * diferente e é ele quem sabe qual é o seu.
+ *
+ * `asaasIoBudgetMs`: teto de wall-clock pro I/O com a API do Asaas
+ * (`getPayment`). O `asaas-webhook` passa um valor confortavelmente abaixo dos
+ * 10s que o Asaas concede pra resposta (§2 de
+ * docs/billing-asaas/03-ASAAS-API-VERIFICADO.md), deixando margem pro INSERT e
+ * pelas demais escritas; estourar o teto vira `failed` (nunca `processed`), e o
+ * reconcile retenta. O `process-asaas-reconcile` roda em cron, sem cliente
+ * esperando, e OMITE o campo — mantendo os retries completos do cliente HTTP.
+ *
+ * NUNCA transformar isso em trabalho de background (`EdgeRuntime.waitUntil`):
+ * uma continuação depois da resposta pode ser morta sem deixar ninguém pra
+ * marcar a linha, trocando uma falha visível por uma silenciosa. Sob
+ * degradação do Asaas a ativação atrasa até o reconcile — ruim, mas muito
+ * melhor que interromper a fila de eventos de TODOS os clientes (15 timeouts
+ * seguidos), que só se resolve manualmente.
+ */
+export interface ApplyOptions {
+  asaasIoBudgetMs?: number;
+}
+
 /** Espelha o CHECK de billing_subscriptions.payment_method (migration 20260528000000). */
 type PaymentMethod = "card" | "pix" | "boleto";
 
@@ -114,6 +137,7 @@ function failWith(
 export async function applyAsaasEvent(
   supabase: SupabaseClient,
   row: BillingEventRow,
+  opts: ApplyOptions = {},
 ): Promise<ApplyResult> {
   try {
     const paymentId = extractPaymentId(row.data);
@@ -176,9 +200,52 @@ export async function applyAsaasEvent(
     let paymentMethod: PaymentMethod | null = null;
     let providerSubscriptionId: string | null = null;
 
+    // 4. PORTÕES de noop/unknown — ANTES de qualquer I/O com o Asaas.
+    //
+    //    ~31 dos 40 eventos do catálogo são informativos (`PAYMENT_CREATED`
+    //    dispara em TODA cobrança). Consultar `getPayment` pra depois descartar
+    //    o payload inteiro paga um round-trip por evento: multiplica o consumo
+    //    da quota (25k req/12h, §10) e — pior — coloca latência de rede no
+    //    caminho crítico de eventos que não produzem efeito nenhum, que é o
+    //    multiplicador direto do risco de estourar os 10s de resposta.
+    //
+    //    CUSTO CONHECIDO E ACEITO: linha `noop` sem invoice correlacionada
+    //    deixa de ter `organization_id` carimbado (o SELECT do passo 1 é DB
+    //    barato e continua resolvendo as demais). Verificado que nenhum
+    //    consumidor depende disso — `billing_events.organization_id` não é
+    //    lido por src/ nem pelo process-asaas-reconcile; só existe o índice
+    //    `billing_events_org_idx`. Consumidor NOVO dessa coluna precisa saber
+    //    que ela é esparsa em linhas informativas.
+    if (effect.kind === "unknown") {
+      // NÃO usa `error`: o webhook grava esse campo em `billing_events.
+      // error_message`, e "evento fora do catálogo" é diagnóstico, não erro —
+      // carimbá-lo ali faria uma linha saudável parecer quebrada pro operador.
+      // Inalcançável pelo webhook (os catálogos batem), mas alcançável pelo
+      // reconcile. O motivo vai pro log.
+      jsonLog("info", {
+        evt: "asaas_apply_unknown_effect",
+        billing_event_id: row.id,
+        event_type: row.event_type,
+        reason: effect.reason,
+      });
+      return { status: "ignored", organizationId, effect: effect.kind };
+    }
+    if (effect.kind === "noop") {
+      return { status: "processed", organizationId, effect: effect.kind };
+    }
+
+    // 5. Enriquecer com o payload do Asaas — só para efeitos que de fato
+    //    produzem escrita.
     if (paymentId) {
       const provider = getBillingProvider("asaas");
-      const res = await provider.getPayment(paymentId);
+      // `asaasIoBudgetMs` corta tentativa/retry/sleep de rate limit lá no
+      // cliente HTTP (asaas.ts). Estourar volta como `{ok:false}` — mesmo
+      // shape de "Asaas indisponível" — e o branch abaixo já degrada pra
+      // `failed`, que é o que mantém o evento na fila do reconcile.
+      const res = await provider.getPayment(
+        paymentId,
+        opts.asaasIoBudgetMs !== undefined ? { budgetMs: opts.asaasIoBudgetMs } : undefined,
+      );
       if (res.ok && res.data) {
         if (typeof res.data.externalReference === "string") {
           externalReferenceRaw = res.data.externalReference;
@@ -265,7 +332,7 @@ export async function applyAsaasEvent(
       }
     }
 
-    // 4. Estado atual da assinatura da org.
+    // 6. Estado atual da assinatura da org.
     let subscription: { id: string; status: string } | null = null;
     if (organizationId) {
       // `error` checado: `maybeSingle()` devolve PGRST116 quando casa MAIS de
@@ -290,15 +357,9 @@ export async function applyAsaasEvent(
       subscription = data ?? null;
     }
 
-    // 5. Portões do efeito já decidido no passo 2. Ficam AQUI, e não junto da
-    //    decisão, para que `organizationId` reportado no retorno seja o
-    //    resolvido por completo (invoice → externalReference → customer).
-    if (effect.kind === "unknown") {
-      return { status: "ignored", organizationId, effect: effect.kind, error: effect.reason };
-    }
-    if (effect.kind === "noop") {
-      return { status: "processed", organizationId, effect: effect.kind };
-    }
+    // 7. Último portão. Fica AQUI, e não junto da decisão do passo 2, para que
+    //    `organizationId` já tenha passado por toda a cadeia de resolução
+    //    (invoice → externalReference → customer) antes de desistir.
     if (!organizationId) {
       return {
         status: "failed",
@@ -308,7 +369,7 @@ export async function applyAsaasEvent(
       };
     }
 
-    // 6. Executar. Transições por UPDATE CONDICIONAL — o `.neq`/`.eq` no status
+    // 8. Executar. Transições por UPDATE CONDICIONAL — o `.neq`/`.eq` no status
     //    anterior é o que garante idempotência sob concorrência (webhook e
     //    reconcile podem tocar a mesma linha).
     switch (effect.kind) {
@@ -324,6 +385,13 @@ export async function applyAsaasEvent(
         // continuar na fila. Guard só neste efeito — `mark_invoice_overdue` sem
         // invoice correlacionada é no-op POR CONTRATO (obrigação 3 do JSDoc de
         // decideEventEffect), não anomalia.
+        //
+        // ⚠️ NÃO É CÓDIGO MORTO, apesar de inalcançável pelo asaas-webhook: por
+        // aquele caminho, sem `paymentId` não há invoice nem payload, então o
+        // `!organizationId` do passo 7 já retornou `failed` antes de chegar
+        // aqui. Quem mantém este guard vivo é o caller reconcile, que passa
+        // `row.organization_id` JÁ preenchido (carimbado pelo webhook na
+        // primeira passagem) e portanto atravessa aquele portão.
         if (!paymentId) {
           return failWith(
             organizationId,

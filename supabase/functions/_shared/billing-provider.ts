@@ -104,6 +104,23 @@ export interface CreateSubscriptionParams {
   metadata?: Record<string, string>;
 }
 
+/**
+ * Opções de LEITURA do port. `budgetMs` limita o wall-clock TOTAL que o caller
+ * tolera gastar na chamada (tentativa + retries + sleeps de rate limit) e faz
+ * a leitura FALHAR RÁPIDO ao estourar, devolvendo `{ok:false}` — nunca
+ * trabalho em background, que poderia morrer com o isolate e trocar uma falha
+ * visível por uma silenciosa.
+ *
+ * Quem tem orçamento é o CALLER, não o provedor: o `asaas-webhook` responde
+ * dentro dos 10s do Asaas, o `process-asaas-reconcile` roda em cron sem
+ * ninguém esperando e omite o campo (retries completos). Só se aplica a
+ * leituras — nada mutante ganha corte de tempo, porque o Asaas não tem
+ * `Idempotency-Key`.
+ */
+export interface ProviderReadOptions {
+  budgetMs?: number;
+}
+
 export interface BillingProviderPort {
   readonly name: BillingProviderName;
   createCustomer(params: CreateCustomerParams): Promise<ProviderResult<{ customerId: string }>>;
@@ -112,7 +129,7 @@ export interface BillingProviderPort {
   createSubscription(params: CreateSubscriptionParams): Promise<ProviderResult<{ subscriptionId: string }>>;
   cancelSubscription(providerSubscriptionId: string, atPeriodEnd: boolean): Promise<ProviderResult>;
   getSubscription(providerSubscriptionId: string): Promise<ProviderResult>;
-  getPayment(providerPaymentId: string): Promise<ProviderResult>;
+  getPayment(providerPaymentId: string, opts?: ProviderReadOptions): Promise<ProviderResult>;
   refundPayment(providerPaymentId: string, amountCents?: number): Promise<ProviderResult>;
 }
 
@@ -181,6 +198,10 @@ const stripeProvider: BillingProviderPort = {
     return res.ok ? { ok: true, data: res.data } : { ok: false, error: "Assinatura não encontrada no Stripe." };
   },
 
+  // `opts.budgetMs` é IGNORADO aqui de propósito: o caminho Stripe é legado
+  // read-only e não tem caller com orçamento apertado (o webhook do Stripe não
+  // consulta a API dentro da resposta). Se algum dia ganhar um, o corte de
+  // tempo precisa ser implementado em stripe-billing.ts, não simulado aqui.
   async getPayment(providerPaymentId) {
     const res = await retrieveStripeInvoice(providerPaymentId);
     return res.ok ? { ok: true, data: res.data } : { ok: false, error: "Cobrança não encontrada no Stripe." };
@@ -425,9 +446,13 @@ const asaasProvider: BillingProviderPort = {
     });
   },
 
-  async getPayment(providerPaymentId) {
+  async getPayment(providerPaymentId, opts) {
     return safely<Record<string, unknown>>("getPayment", async () => {
-      const res = await getAsaasPayment(providerPaymentId);
+      // `budgetMs` desce até o fetch (asaas.ts) e corta tentativa, retry e
+      // sleep de rate limit. Estourar chega aqui como erro de rede/timeout, ou
+      // seja `{ok:false}` — o mesmo shape de "Asaas indisponível", que o
+      // aplicador já degrada pra `failed` sem inventar sucesso.
+      const res = await getAsaasPayment(providerPaymentId, opts);
       // Mesma ressalva do getSubscription acima: `value`/`netValue`/etc. no
       // payload cru estão em reais decimais, não em centavos.
       return res.ok ? { ok: true, data: res.data } : { ok: false, error: "Cobrança não encontrada no Asaas." };

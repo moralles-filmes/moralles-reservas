@@ -234,6 +234,7 @@ Cobrança recorrente das organizations. Usa **conta principal Stripe** (não Con
 
 - **Código novo de billing lê `provider` + `provider_*_id`; colunas `stripe_*` são legado read-only.** Idempotência de webhook é UNIQUE `(provider, provider_event_id)` em `billing_events`. Não construir feature nova sobre `stripe_*`. [20260716130200_063](supabase/migrations/20260716130200_063_billing_provider_columns.sql).
 - **Feature flags globais vivem em `platform_flags` (FORCE RLS) e são lidas SÓ via [_shared/platform-flags.ts](supabase/functions/_shared/platform-flags.ts)** (cache 5min, fail-closed: flag ausente = OFF). Flag nova = seed em migration com `on conflict do nothing`; frontend nunca lê a tabela.
+- **Todo I/O externo dentro da resposta do `asaas-webhook` roda sob orçamento de tempo com falha rápida (`ASAAS_IO_BUDGET_MS`, ~5s), nunca `EdgeRuntime.waitUntil`.** O Asaas corta em 10s e conta o estouro como falha de entrega — 15 seguidas interrompem a fila de eventos de TODOS os clientes, apagada em 14 dias. Orçamento é do caller: `applyAsaasEvent(…, { asaasIoBudgetMs })` no webhook, omitido no `process-asaas-reconcile` (cron, retries completos). [asaas-webhook/index.ts](supabase/functions/asaas-webhook/index.ts).
 - **Entitlement por feature (system/whatsapp/ai) resolve via [_shared/entitlements.ts](supabase/functions/_shared/entitlements.ts)**; prioridade (bloqueio admin > override > assinatura > trial) é código puro testado em [src/lib/entitlements-core.test.ts](src/lib/entitlements-core.test.ts). Webhook financeiro NUNCA escreve em `organization_entitlement_overrides` — só admin.
 - **O único cliente ativo é Ren Sushi, e ele é vitalício grátis; Moralles é a própria plataforma.** Ambos com `LIFETIME` em system+whatsapp+ai (não remover). Não há cliente pagante: todo fluxo de cobrança, bloqueio, notificação e débito de IA tem que respeitar o override ANTES de escalar, e plano cobrável ativo no catálogo é risco sem contrapartida. Detalhes e implicações por fase em [docs/billing-asaas/01-PLANO-IMPLEMENTACAO.md](docs/billing-asaas/01-PLANO-IMPLEMENTACAO.md).
 - **Billing é por organization.** `billing_customers` 1:1 com `organizations`. Org com 5 units paga 1 mensalidade.
@@ -392,6 +393,9 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`
 - **`asaas-config.ts`** → `manage-platform-secrets`, `asaas-webhook`
 - **`asaas-core.ts`** → consumido via `asaas-config.ts` (`manage-platform-secrets`) e diretamente por `asaas-webhook`, `process-asaas-reconcile`
+- **`asaas.ts`** (cliente HTTP) → consumido via `billing-provider.ts`: `asaas-webhook`, `create-billing-checkout`, `manage-organizations`
+- **`billing-provider.ts`** → `asaas-webhook` (via `asaas-billing-events-apply.ts`), `create-billing-checkout`, `manage-organizations`
+- **`asaas-billing-events-apply.ts`** (+ `asaas-billing-events.ts`, núcleo puro que ele importa) → `asaas-webhook`, `process-asaas-reconcile`
 - **`platform-flags.ts`** → `asaas-webhook`, `process-asaas-reconcile`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
 - **`whatsapp-send.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
