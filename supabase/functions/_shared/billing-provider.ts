@@ -21,10 +21,10 @@
  *     (Stripe HMAC t=/v1= em stripe-webhook; Asaas token de header em
  *     asaas-webhook). O port cobre as operações imperativas.
  *
- * REDEPLOY: nenhuma EF importa este módulo ainda — os primeiros consumidores
- * prováveis são `asaas-webhook` e `process-asaas-reconcile` (ambos ainda
- * FASE 2, não Fase 4) — nada a adicionar no checklist de redeploy do
- * CLAUDE.md até uma EF de fato importar `getBillingProvider`/`AsaasBillingProvider`.
+ * REDEPLOY: `create-billing-checkout` importa `getBillingProvider` (Fase 4a).
+ * Qualquer mudança aqui exige redeploy dessa EF — Edge Functions não
+ * compartilham bundle em runtime. EF nova que importe este módulo entra na
+ * mesma lista.
  */
 
 import {
@@ -265,9 +265,11 @@ const asaasProvider: BillingProviderPort = {
       const isSubscription = params.mode === "subscription";
 
       const checkoutParams: AsaasCheckoutParams = {
-        // Único conjunto aceito pelo produto de checkout hospedado — sem
-        // BOLETO (§9). Deixar os dois habilitados dá ao pagador a escolha.
-        billingTypes: ["CREDIT_CARD", "PIX"],
+        // RECURRENT aceita EXCLUSIVAMENTE cartão — PIX exige chargeType
+        // DETACHED e a API recusa a combinação (§13.3, verificado em sandbox).
+        // Em cobrança avulsa os dois valem, e deixar a escolha com o pagador
+        // aumenta a conversão. Sem BOLETO em nenhum dos modos (§9).
+        billingTypes: isSubscription ? ["CREDIT_CARD"] : ["CREDIT_CARD", "PIX"],
         chargeTypes: isSubscription ? ["RECURRENT"] : ["DETACHED"],
         callback: { successUrl: params.successUrl, cancelUrl: params.cancelUrl },
         items: [
@@ -282,11 +284,11 @@ const asaasProvider: BillingProviderPort = {
       };
       if (isSubscription) {
         // `subscription` obrigatório quando chargeTypes inclui RECURRENT
-        // (§9). Shape exato do objeto NÃO documentado pro checkout — `cycle`
-        // é o único campo que usamos aqui por analogia ao endpoint irmão
-        // POST /v3/subscriptions (que exige `cycle`, §9), não porque o §9
-        // afirme isso pro objeto `subscription` do checkout. Validar no
-        // sandbox antes da Fase 4.
+        // (§9). Shape exato do objeto AINDA NÃO VERIFICADO: a sonda de
+        // 2026-07-19 parou antes, no 400 de `billingTypes` (§13.3), então
+        // `cycle` continua sendo analogia ao endpoint irmão
+        // POST /v3/subscriptions (que exige `cycle`, §9) — não confirmação.
+        // Primeiro checkout RECURRENT real valida ou derruba isso.
         checkoutParams.subscription = { cycle: "MONTHLY" };
       }
 

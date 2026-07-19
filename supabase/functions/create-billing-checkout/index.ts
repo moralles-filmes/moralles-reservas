@@ -1,12 +1,16 @@
 // Edge Function: create-billing-checkout
-// Gera Stripe Checkout Session (mode=subscription | mode=setup) pra self-service.
+// Abre o checkout hospedado da assinatura, roteado por provedor (Fase 4a).
 //
 // Auth: JWT obrigatório. Caller precisa ser:
 //   - platform_admin OU
 //   - member (role owner|gerente) de qualquer unit da organization_id alvo
 //
 // mode=subscription → cliente cadastra cartão e ativa subscription do plano
-// mode=setup        → cliente só troca o cartão (sem mudar plano)
+// mode=setup        → cliente só troca o cartão (sem mudar plano) — só Stripe
+//
+// Roteamento: plano com provider='asaas' abre checkout no Asaas; o resto segue
+// o caminho Stripe legado, intocado. Nada aqui ativa acesso — quem ativa é o
+// webhook do provedor.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -14,6 +18,9 @@ import { genRequestId, jsonLog } from "../_shared/security.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
 import { getStripeSecretKey } from "../_shared/stripe-config.ts";
 import { createStripeCustomer } from "../_shared/stripe-billing.ts";
+import { getFlagString } from "../_shared/platform-flags.ts";
+import { getBillingProvider } from "../_shared/billing-provider.ts";
+import { buildExternalReference } from "../_shared/asaas-billing-events.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -55,13 +62,33 @@ async function canManageOrgBilling(userId: string, organizationId: string): Prom
   return !!(data && data.length > 0);
 }
 
-async function resolveOrgSlug(organizationId: string): Promise<string | null> {
+interface OrgRow {
+  slug: string | null;
+  name: string | null;
+  billing_email: string | null;
+}
+
+/** Slug pra log/URL + nome e e-mail que servem de fallback no cadastro Asaas. */
+async function resolveOrg(organizationId: string): Promise<OrgRow | null> {
   const { data } = await supabase
     .from("organizations")
-    .select("slug")
+    .select("slug, name, billing_email")
     .eq("id", organizationId)
     .maybeSingle();
-  return data?.slug ?? null;
+  return (data as OrgRow | null) ?? null;
+}
+
+/** Colunas de billing_plans que o roteamento e os dois ramos consomem. */
+interface PlanRow {
+  id: string;
+  name: string;
+  slug: string | null;
+  stripe_price_id_card: string | null;
+  trial_days: number | null;
+  active: boolean;
+  amount_cents: number | null;
+  provider: string | null;
+  billing_type: string | null;
 }
 
 async function resolveUnitSlug(organizationId: string): Promise<string | null> {
@@ -151,10 +178,10 @@ serve(async (req) => {
   const reqId = genRequestId();
 
   try {
-    const STRIPE_SECRET_KEY = await getStripeSecretKey();
-    if (!STRIPE_SECRET_KEY) {
-      return jsonResponse(req, { error: "Stripe não configurado." }, 500);
-    }
+    // A chave da Stripe é resolvida DENTRO do ramo Stripe, não aqui: um
+    // checkout Asaas não depende dela, e falhar de saída com "Stripe não
+    // configurado" travaria a contratação inteira numa plataforma que já
+    // migrou.
 
     const authHeader = req.headers.get("Authorization") ?? "";
     const jwt = authHeader.replace(/^Bearer\s+/i, "");
@@ -188,12 +215,14 @@ serve(async (req) => {
       return jsonResponse(req, { error: "Sem permissão para esta organização." }, 403);
     }
 
-    // Resolve plano (se subscription)
-    let plan: Record<string, unknown> | null = null;
+    // Resolve plano (se subscription). A rejeição por stripe_price_id_card
+    // ausente NÃO mora aqui — ela é específica do ramo Stripe, e plano Asaas
+    // legitimamente não tem Price ID.
+    let plan: PlanRow | null = null;
     if (mode === "subscription") {
       const { data: planData, error: planErr } = await supabase
         .from("billing_plans")
-        .select("id, name, slug, stripe_price_id_card, trial_days, active")
+        .select("id, name, slug, stripe_price_id_card, trial_days, active, amount_cents, provider, billing_type")
         .eq("id", plan_id)
         .maybeSingle();
 
@@ -203,10 +232,175 @@ serve(async (req) => {
       if (!planData.active) {
         return jsonResponse(req, { error: "Plano inativo." }, 400);
       }
-      if (!planData.stripe_price_id_card) {
-        return jsonResponse(req, { error: "Plano sem stripe_price_id_card configurado." }, 400);
+      plan = planData as PlanRow;
+      // Produto de cobrança única (implementação WhatsApp, recarga de IA) não
+      // é assinatura: seguir aqui abriria um checkout RECURRENT e cobraria
+      // todo mês por algo avulso. Esses produtos têm fluxo próprio.
+      if (plan.billing_type === "one_time") {
+        return jsonResponse(req, {
+          error: "Este produto é de cobrança única e não pode ser contratado como assinatura.",
+        }, 400);
       }
-      plan = planData;
+    }
+
+    const unitSlug = await resolveUnitSlug(organization_id);
+    const org = await resolveOrg(organization_id);
+    const orgSlug = org?.slug ?? null;
+    const successBase = unitSlug
+      ? `${APP_BASE_URL}/g/${unitSlug}/cobranca`
+      : `${APP_BASE_URL}/platform/billing/${organization_id}`;
+
+    // ── Roteamento por provedor ───────────────────────────────────────────
+    // A flag é lida SERVER-SIDE — o frontend nunca lê platform_flags (FORCE
+    // RLS sem policies) e não decide provedor.
+    // Precedência: o provider do próprio plano vence a flag global, porque um
+    // plano Asaas não tem Price ID e não existe caminho Stripe pra ele.
+    const defaultProvider = await getFlagString("billing_provider_default", "stripe");
+    const provider = plan?.provider === "asaas" || plan?.provider === "stripe"
+      ? plan.provider
+      : defaultProvider;
+
+    if (provider === "asaas") {
+      if (mode !== "subscription" || !plan) {
+        return jsonResponse(req, {
+          error: "Cadastro de cartão avulso ainda não está disponível para cobranças Asaas.",
+        }, 400);
+      }
+      if (!plan.amount_cents || plan.amount_cents <= 0) {
+        return jsonResponse(req, { error: "Plano sem valor configurado." }, 400);
+      }
+
+      // 1. Resolver o cliente Asaas da org (criando se ainda não existe).
+      // `error` destrinchado à parte: leitura que FALHA e linha ausente viram
+      // o mesmo `null`, e tratar as duas como "sem CPF/CNPJ" mandaria o
+      // cliente conferir um cadastro que provavelmente está certo.
+      const { data: customerRow, error: customerErr } = await supabase
+        .from("billing_customers")
+        .select("id, asaas_customer_id, name, email, tax_id")
+        .eq("organization_id", organization_id)
+        .maybeSingle();
+
+      if (customerErr) {
+        jsonLog("error", {
+          reqId,
+          evt: "checkout_billing_customer_read_error",
+          orgId: organization_id,
+          err: customerErr.message,
+        });
+        return jsonResponse(req, { error: "Falha ao carregar o cadastro de cobrança." }, 500);
+      }
+      if (!customerRow?.tax_id) {
+        return jsonResponse(req, {
+          error: "CPF/CNPJ da empresa não está cadastrado. Preencha o cadastro fiscal antes de contratar.",
+        }, 400);
+      }
+
+      const asaas = getBillingProvider("asaas");
+      let asaasCustomerId: string | null = customerRow.asaas_customer_id;
+
+      if (!asaasCustomerId) {
+        const created = await asaas.createCustomer({
+          organizationId: organization_id,
+          // Asaas exige nome; billing_customers.name é opcional, então cai
+          // pro nome da organization antes de deixar o provider recusar.
+          name: customerRow.name ?? org?.name ?? undefined,
+          email: customerRow.email ?? org?.billing_email ?? callerEmail ?? undefined,
+          taxId: customerRow.tax_id,
+        });
+        if (!created.ok || !created.data) {
+          jsonLog("error", {
+            reqId,
+            evt: "checkout_asaas_customer_error",
+            orgId: organization_id,
+            err: created.error ?? null,
+          });
+          return jsonResponse(req, {
+            error: created.error ?? "Falha ao cadastrar a empresa no provedor de pagamento.",
+          }, 502);
+        }
+        asaasCustomerId = created.data.customerId;
+
+        const { error: persistErr } = await supabase
+          .from("billing_customers")
+          .update({ asaas_customer_id: asaasCustomerId })
+          .eq("id", customerRow.id);
+        if (persistErr) {
+          // O cliente EXISTE no Asaas mas não conseguimos gravar o id. Abortar
+          // é mais seguro que seguir: a próxima tentativa criaria um cliente
+          // duplicado lá (o Asaas não deduplica por externalReference).
+          jsonLog("error", {
+            reqId,
+            evt: "checkout_asaas_customer_persist_error",
+            orgId: organization_id,
+            err: persistErr.message,
+          });
+          return jsonResponse(req, {
+            error: "Falha ao salvar o cadastro no provedor. Tente novamente em instantes.",
+          }, 500);
+        }
+      }
+
+      // 2. Criar o checkout. Valor SEMPRE do banco, nunca do request. A
+      // conversão centavos→reais fica no provider (centsToAsaasValue).
+      const checkout = await asaas.createCheckout({
+        providerCustomerId: asaasCustomerId,
+        amountCents: plan.amount_cents,
+        description: plan.name,
+        // É deste externalReference que o webhook tira o purpose que libera o
+        // acesso — e a cobrança de cada ciclo o herda da assinatura (§13.5.1).
+        externalReference: buildExternalReference({
+          orgId: organization_id,
+          planId: plan.id,
+          purpose: "subscription",
+        }),
+        mode: "subscription",
+        // O Asaas não interpola id de sessão na URL (a Stripe usa
+        // {CHECKOUT_SESSION_ID}); as URLs vão no corpo da criação, antes de o
+        // id existir. Logo, sem `sid` — o frontend tolera a ausência.
+        successUrl: `${successBase}?session=success`,
+        cancelUrl: `${successBase}?session=cancel`,
+      });
+
+      if (!checkout.ok || !checkout.data) {
+        jsonLog("error", {
+          reqId,
+          evt: "checkout_asaas_error",
+          orgId: organization_id,
+          planId: plan.id,
+          err: checkout.error ?? null,
+        });
+        return jsonResponse(req, {
+          error: checkout.error ?? "Falha ao abrir o checkout.",
+        }, 502);
+      }
+
+      jsonLog("info", {
+        reqId,
+        evt: "checkout_session_created",
+        provider: "asaas",
+        orgId: organization_id,
+        planId: plan.id,
+        mode,
+        sessionId: checkout.data.checkoutId ?? null,
+        orgSlug,
+      });
+
+      return jsonResponse(req, {
+        success: true,
+        url: checkout.data.url,
+        session_id: checkout.data.checkoutId ?? "",
+      });
+    }
+
+    // ── daqui pra baixo: caminho Stripe, inalterado ───────────────────────
+
+    const STRIPE_SECRET_KEY = await getStripeSecretKey();
+    if (!STRIPE_SECRET_KEY) {
+      return jsonResponse(req, { error: "Stripe não configurado." }, 500);
+    }
+
+    if (mode === "subscription" && !plan?.stripe_price_id_card) {
+      return jsonResponse(req, { error: "Plano sem stripe_price_id_card configurado." }, 400);
     }
 
     // Resolve/cria billing_customer (com stripe_customer_id)
@@ -215,12 +409,6 @@ serve(async (req) => {
       jsonLog("error", { reqId, evt: "checkout_no_stripe_customer", orgId: organization_id });
       return jsonResponse(req, { error: "Falha ao preparar customer Stripe." }, 500);
     }
-
-    const unitSlug = await resolveUnitSlug(organization_id);
-    const orgSlug = await resolveOrgSlug(organization_id);
-    const successBase = unitSlug
-      ? `${APP_BASE_URL}/g/${unitSlug}/cobranca`
-      : `${APP_BASE_URL}/platform/billing/${organization_id}`;
 
     // Monta payload do Checkout Session
     const sessionBody: Record<string, string> = {
@@ -233,13 +421,13 @@ serve(async (req) => {
     };
 
     if (mode === "subscription" && plan) {
-      sessionBody["line_items[0][price]"] = plan.stripe_price_id_card as string;
+      sessionBody["line_items[0][price]"] = plan.stripe_price_id_card!;
       sessionBody["line_items[0][quantity]"] = "1";
-      sessionBody["metadata[plan_id]"] = plan.id as string;
+      sessionBody["metadata[plan_id]"] = plan.id;
       sessionBody["subscription_data[metadata][organization_id]"] = organization_id;
-      sessionBody["subscription_data[metadata][plan_id]"] = plan.id as string;
+      sessionBody["subscription_data[metadata][plan_id]"] = plan.id;
 
-      const trialDays = (plan.trial_days as number | undefined) ?? 0;
+      const trialDays = plan.trial_days ?? 0;
       if (trialDays > 0) {
         sessionBody["subscription_data[trial_period_days]"] = String(trialDays);
       }
@@ -270,6 +458,7 @@ serve(async (req) => {
     jsonLog("info", {
       reqId,
       evt: "checkout_session_created",
+      provider: "stripe",
       orgId: organization_id,
       planId: plan?.id ?? null,
       mode,
