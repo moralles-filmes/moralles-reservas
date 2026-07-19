@@ -3,11 +3,14 @@ import {
   buildExternalReference,
   parseExternalReference,
   decideEventEffect,
+  ACTIVATING_EVENTS,
+  REFUND_EVENTS,
 } from "../../supabase/functions/_shared/asaas-billing-events";
 import {
   ASAAS_PAYMENT_EVENTS,
   ASAAS_SUBSCRIPTION_EVENTS,
   ASAAS_CHECKOUT_EVENTS,
+  classifyAsaasEvent,
 } from "../../supabase/functions/_shared/asaas-core";
 
 const ORG = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
@@ -304,6 +307,54 @@ describe("decideEventEffect — catálogo Asaas completo", () => {
         invoiceStatus: null,
       });
       expect(e.kind, `${eventType} deveria ter uma classificação conhecida`).not.toBe("unknown");
+    }
+  });
+});
+
+describe("catálogo REVERSO — todo ativador espelhado no short-circuit do webhook", () => {
+  // O asaas-webhook chama `classifyAsaasEvent` (asaas-core) ANTES do aplicador:
+  // evento 'unknown' vira `processing_status='ignored'` e o reconcile nunca o
+  // revisita. Logo, TODO evento que `decideEventEffect` trate como ACIONÁVEL
+  // (kind ≠ noop e ≠ unknown — ativação, estorno, overdue) TEM que estar no
+  // catálogo do webhook; senão a ativação/estorno é perdida em silêncio.
+  //
+  // O teste acima cobre a direção catálogo → não-unknown. Este cobre a REVERSA.
+  // Iterar SÓ o catálogo seria tautológico (todo evento do catálogo classifica
+  // 'known' por construção, e um ativador novo adicionado só em
+  // asaas-billing-events.ts nem entraria no corpus). Por isso o corpus UNE o
+  // catálogo (importado de asaas-core, nunca redeclarado) aos sets acionáveis do
+  // núcleo de decisão (ACTIVATING_EVENTS/REFUND_EVENTS, importados de
+  // asaas-billing-events — não redeclarados). Assim, um ativador adicionado só em
+  // asaas-billing-events.ts sem espelhar no catálogo entra no corpus e é
+  // flagrado aqui. `PAYMENT_OVERDUE` (acionável inline) já vem via o catálogo.
+  const corpus = new Set<string>([
+    ...ASAAS_PAYMENT_EVENTS,
+    ...ASAAS_SUBSCRIPTION_EVENTS,
+    ...ASAAS_CHECKOUT_EVENTS,
+    ...ACTIVATING_EVENTS,
+    ...REFUND_EVENTS,
+  ]);
+
+  const actionable = [...corpus].filter((eventType) => {
+    const kind = decideEventEffect({ eventType, invoiceStatus: null }).kind;
+    return kind !== "noop" && kind !== "unknown";
+  });
+
+  it("encontra ao menos um evento acionável (guarda de não-vacuidade)", () => {
+    // Sem esta guarda, um corpus vazio ou um decideEventEffect que nunca aciona
+    // faria a asserção principal passar sem verificar nada.
+    expect(actionable.length).toBeGreaterThan(0);
+  });
+
+  it("todo evento acionável está no catálogo do short-circuit (classifyAsaasEvent === 'known')", () => {
+    for (const eventType of actionable) {
+      // `classifyAsaasEvent` é EXATAMENTE o gate do asaas-webhook: 'known' ⟺ o
+      // evento está num dos sets de asaas-core. Um ativador fora do catálogo
+      // classifica 'unknown' aqui e derruba o teste.
+      expect(
+        classifyAsaasEvent(eventType),
+        `${eventType} tem efeito acionável em decideEventEffect mas NÃO está no catálogo do webhook — o asaas-webhook o carimbaria 'ignored' e a ativação seria perdida`,
+      ).toBe("known");
     }
   });
 });

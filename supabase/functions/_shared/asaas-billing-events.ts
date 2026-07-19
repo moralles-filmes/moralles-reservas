@@ -99,7 +99,11 @@ export interface AsaasEffect {
  * enganoso. Ativar nos dois exige idempotência, que é o `invoiceStatus==='paid'`
  * logo abaixo.
  */
-const ACTIVATING_EVENTS: ReadonlySet<string> = new Set([
+// Exportado (além de usado abaixo) pra que o teste do catálogo REVERSO em
+// src/lib/asaas-billing-events.test.ts enumere os ativadores sem redeclará-los:
+// todo evento aqui TEM que estar no catálogo de asaas-core.ts, senão o
+// short-circuit do asaas-webhook o carimba 'ignored' e a ativação some.
+export const ACTIVATING_EVENTS: ReadonlySet<string> = new Set([
   "PAYMENT_CONFIRMED",
   "PAYMENT_RECEIVED",
 ]);
@@ -109,7 +113,10 @@ const ACTIVATING_EVENTS: ReadonlySet<string> = new Set([
  * `PAYMENT_AWAITING_CHARGEBACK_REVERSAL` não começa com `PAYMENT_CHARGEBACK_`
  * e um matcher por prefixo o perderia (armadilha registrada no §4 do doc 03).
  */
-const REFUND_EVENTS: ReadonlySet<string> = new Set([
+// Exportado pelo mesmo motivo de ACTIVATING_EVENTS: o teste do catálogo
+// REVERSO enumera estes eventos acionáveis (kind='record_refund') e prova que
+// todos vivem no catálogo de asaas-core.ts.
+export const REFUND_EVENTS: ReadonlySet<string> = new Set([
   "PAYMENT_REFUNDED",
   "PAYMENT_PARTIALLY_REFUNDED",
   "PAYMENT_REFUND_IN_PROGRESS",

@@ -18,7 +18,7 @@ import { genRequestId, jsonLog } from "../_shared/security.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
 import { getStripeSecretKey } from "../_shared/stripe-config.ts";
 import { createStripeCustomer } from "../_shared/stripe-billing.ts";
-import { getFlagString } from "../_shared/platform-flags.ts";
+import { checkFlagEnabled, getFlagString } from "../_shared/platform-flags.ts";
 import { getBillingProvider } from "../_shared/billing-provider.ts";
 import { buildExternalReference } from "../_shared/asaas-billing-events.ts";
 
@@ -264,6 +264,35 @@ serve(async (req) => {
       : defaultProvider;
 
     if (provider === "asaas") {
+      // Gate CRÍTICO de simetria com o webhook: só abrir checkout Asaas se o
+      // asaas-webhook estiver ligado pra ouvir a confirmação. O webhook
+      // fail-closa em `asaas_enabled` (flag OFF → responde 200 e DESCARTA o
+      // evento sem persistir billing_events/billing_invoices). Abrir aqui um
+      // checkout com a flag OFF geraria cobrança REAL: o cliente paga, o
+      // PAYMENT_CONFIRMED/RECEIVED é jogado fora e nem o reconcile tem
+      // billing_events/billing_invoices pra recuperar — pagamento perdido em
+      // silêncio. Lido com o MESMO helper e a MESMA flag do webhook
+      // (checkFlagEnabled / "asaas_enabled"); qualquer divergência aqui recria a
+      // assimetria. CHECADO ANTES de qualquer I/O no Asaas — criar o customer e
+      // então abortar deixaria um cus_... órfão (o Asaas não deduplica). O ramo
+      // Stripe (abaixo) NÃO passa por este gate.
+      const asaasFlag = await checkFlagEnabled("asaas_enabled");
+      if (!asaasFlag.enabled) {
+        // readFailed (não deu pra ler a flag) e OFF genuíno caem no MESMO
+        // fail-closed: em nenhum dos dois dá pra garantir que o webhook vai
+        // ouvir, então não abrimos o checkout. Só o nível do log os distingue.
+        jsonLog(asaasFlag.readFailed ? "error" : "warn", {
+          reqId,
+          evt: "checkout_asaas_disabled",
+          orgId: organization_id,
+          planId: plan?.id ?? null,
+          readFailed: asaasFlag.readFailed,
+        });
+        return jsonResponse(req, {
+          error: "A cobrança pelo Asaas está temporariamente indisponível. Tente novamente em instantes ou fale com o suporte.",
+        }, 503);
+      }
+
       if (mode !== "subscription" || !plan) {
         return jsonResponse(req, {
           error: "Cadastro de cartão avulso ainda não está disponível para cobranças Asaas.",
