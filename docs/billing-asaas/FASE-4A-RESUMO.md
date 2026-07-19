@@ -32,18 +32,19 @@ A ativação do plano torna o botão de R$ 449 **comprável**. Fazê-la fora de 
    ```
    O resultado é gravado em `asaas-probe-output.json`. Depois, no painel sandbox: ache a cobrança "Sonda payment", confirme o pagamento (anote o rótulo do botão), e copie o payload inteiro dos eventos em **Integrações → Logs de Webhooks**. Isso fecha o §13 e confirma **2c** (o Asaas amarra ou ignora o `customer` no request) e **2a/2b** (shape do objeto `subscription` do checkout). Se 2c mostrar que o `customer` é ignorado, é um ajuste em `billing-provider.ts` antes de seguir.
 2. **`supabase db push`** — aplica só a `066` (é a única migration pendente; confirme com `supabase db push --dry-run` que não há drift). Isso ativa o plano no banco, mas ele só fica funcional quando os passos 3–4 estiverem no ar.
-3. **Deploy das Edge Functions** (o `_shared/` mudou; a lista completa está no checklist do CLAUDE.md, replicada abaixo):
+3. **Deploy das Edge Functions.** São exatamente **5** — o conjunto autoritativo derivado do que mudou nesta branch (arquivos alterados diretamente + quem importa os `_shared` alterados: `asaas-billing-events.ts`, `asaas-billing-events-apply.ts`, `asaas.ts`, `billing-provider.ts`, `tax-id.ts`):
    ```
    supabase functions deploy create-billing-checkout
    supabase functions deploy asaas-webhook
    supabase functions deploy process-asaas-reconcile
    supabase functions deploy manage-billing
    supabase functions deploy manage-organizations
-   supabase functions deploy manage-platform-secrets
    ```
+   > `manage-platform-secrets` **NÃO** entra: importa só `asaas-config.ts`/`asaas-core.ts`, que não mudaram nesta branch. (Se você redeployá-la por precaução, é inofensivo — só desnecessário.)
 4. **Ligar `asaas_enabled=true`** (painel `/platform/automacao` ou a tabela `platform_flags`). **Isto é obrigatório e simétrico:** o `asaas-webhook` fail-closa quando a flag está OFF (descarta o evento sem persistir), e agora o `create-billing-checkout` também recusa abrir checkout Asaas com a flag OFF (retorna 503). Sem ligar a flag, toda contratação Asaas dá 503 — seguro, mas quebrado.
 5. **Cadastrar o webhook no painel Asaas** apontando pro `asaas-webhook`, com o "webhook de status da mensagem" e os eventos de pagamento ligados.
-6. **Validar ao vivo em sandbox** os cenários abaixo antes de considerar a fase fechada.
+6. **Merge da branch `billing-asaas/fase-4` em `main`** — dispara o deploy Vercel do **frontend**, que carrega 4 mudanças desta fase: coleta de CPF/CNPJ + e-mail de cobrança no onboarding (`Empresas.tsx`/`organization.ts`), oferta de R$ 449 escondida de quem tem cortesia LIFETIME (`Cobranca.tsx`), e entitlements no cliente (`useBilling.ts`). Sem esse merge, o backend aceita o plano mas o onboarding não coleta o `tax_id` que o `billing-provider.ts` exige → a 1ª org nova travaria no checkout. Como o único cliente hoje é vitalício e você mesmo cria as orgs, não há corrida — mas o merge deve entrar **junto/antes** da ativação real do plano, não depois.
+7. **Validar ao vivo em sandbox** os cenários abaixo antes de considerar a fase fechada.
 
 ### Cenários de validação ao vivo (Task 13)
 
