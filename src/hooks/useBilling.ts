@@ -247,9 +247,10 @@ export function useExtendTrial() {
 // ── Self-service (cliente) ───────────────────────────────────────────────────
 
 /**
- * Cria Stripe Checkout Session (mode=subscription | setup) e redireciona o
- * navegador pra `data.url`. Aceita o caller ser owner/gerente da org OU
- * platform_admin (backend valida).
+ * Abre o checkout hospedado (mode=subscription | setup) e redireciona o
+ * navegador pra `data.url`. O provedor (Stripe ou Asaas) é decidido
+ * server-side — o frontend não sabe nem escolhe. Aceita o caller ser
+ * owner/gerente da org OU platform_admin (backend valida).
  */
 export function useCreateBillingCheckout() {
   return useMutation({
@@ -260,7 +261,19 @@ export function useCreateBillingCheckout() {
     }) => {
       const { data, error } = await supabase.functions.invoke("create-billing-checkout", { body: params });
       if (error) {
-        const message = (data as { error?: string } | null)?.error ?? error.message;
+        // supabase-js zera `data` em erro HTTP — a mensagem do backend só
+        // existe no corpo da resposta, acessível via error.context. Mesmo
+        // padrão de useOrganizations.ts.
+        let message = error.message ?? "Erro inesperado.";
+        const ctx = (error as { context?: Response }).context;
+        if (ctx && typeof ctx.json === "function") {
+          try {
+            const parsed = await ctx.json();
+            if (parsed?.error) message = String(parsed.error);
+          } catch {
+            // corpo não-JSON — mantém error.message
+          }
+        }
         throw new Error(message);
       }
       if (data && typeof data === "object" && "error" in data && data.error) {
@@ -319,6 +332,35 @@ export function useSyncFromStripe() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["billing-detail"] });
       qc.invalidateQueries({ queryKey: ["billing-orgs"] });
+    },
+  });
+}
+
+// ── Entitlements (leitura, Fase 4a — nada aqui bloqueia) ────────────────────
+
+export interface FeatureEntitlementView {
+  allowed: boolean;
+  source: "admin_block" | "override" | "subscription" | "trial" | "wallet" | "legacy" | "none";
+  status: string;
+  expires_at: string | null;
+}
+
+export interface OrgEntitlementsView {
+  system: FeatureEntitlementView;
+  whatsapp: FeatureEntitlementView;
+  ai: FeatureEntitlementView;
+}
+
+export function useOrgEntitlements(organizationId: string | null) {
+  return useQuery<OrgEntitlementsView>({
+    queryKey: ["org-entitlements", organizationId],
+    enabled: !!organizationId,
+    queryFn: async () => {
+      const res = await invokeManageBilling({
+        action: "get_org_entitlements",
+        organization_id: organizationId,
+      });
+      return (res as { entitlements: OrgEntitlementsView }).entitlements;
     },
   });
 }

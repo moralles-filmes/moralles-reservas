@@ -31,8 +31,37 @@ import {
 const ASAAS_USER_AGENT = "moralles-reservas";
 
 // Timeout por tentativa individual de rede (não é orçamento acumulado do GET
-// com retry — cada `fetch` isolado aborta sozinho nesse teto).
+// com retry — cada `fetch` isolado aborta sozinho nesse teto). Quando o caller
+// passa `budgetMs` (ver AsaasRequestOptions) este teto vira o LIMITE SUPERIOR:
+// a tentativa é capada pelo que sobra do orçamento.
 const ASAAS_REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * Opções por chamada. `budgetMs` é o orçamento de wall-clock TOTAL que o
+ * CALLER tolera gastar nesta requisição — tentativa inicial, retries e sleeps
+ * de rate limit somados.
+ *
+ * Existe porque o orçamento é do caller, não do cliente HTTP: o `asaas-webhook`
+ * precisa responder dentro dos 10s que o Asaas concede (§2 de
+ * docs/billing-asaas/03-ASAAS-API-VERIFICADO.md) — estourar conta como FALHA de
+ * entrega, e 15 seguidas INTERROMPEM a fila de eventos de todos os clientes,
+ * que é apagada em 14 dias. Sem orçamento, um único GET lento (15s por
+ * tentativa × 3 tentativas + backoff + até 30s honrando `RateLimit-Reset`)
+ * arrasta a resposta muito além disso, e sob rajada o efeito é
+ * auto-amplificante (§10 limita 50 GETs concorrentes; o 429 faz todo mundo
+ * dormir junto).
+ *
+ * Já os workers de cron (`process-asaas-reconcile`) NÃO passam `budgetMs`:
+ * rodam sem cliente esperando e devem manter os retries completos.
+ *
+ * Só o caminho GET honra o orçamento. O caminho mutante é deixado de fora de
+ * propósito: o Asaas não tem `Idempotency-Key` (§11), então abortar um
+ * POST/PUT/DELETE no meio deixaria o outcome desconhecido — e nenhum caminho
+ * com orçamento apertado é mutante hoje.
+ */
+export interface AsaasRequestOptions {
+  budgetMs?: number;
+}
 
 // Devolve o signal JUNTO com `clear` — o caller precisa desarmar o timer
 // assim que o `fetch` resolver (headers recebidos). Sem isso o timer segue
@@ -112,10 +141,37 @@ function resolveRateLimitWait(headerValue: string | null): RateLimitWait {
   return ms > RATE_LIMIT_WAIT_CAP_MS ? { kind: "give_up", resetSeconds } : { kind: "wait", ms };
 }
 
-async function fetchAsaasGet(url: string, init: RequestInit, reqId: string, path: string): Promise<Response> {
+/**
+ * `deadlineAt` é o instante (epoch ms) em que o orçamento do caller acaba, ou
+ * `null` quando não há orçamento (comportamento histórico: retries completos).
+ * É FALHA RÁPIDA de propósito, nunca trabalho em background: quem pediu o GET
+ * precisa saber que ele não aconteceu para degradar o resultado (no webhook,
+ * virar `failed` e deixar o reconcile retentar). Uma continuação depois da
+ * resposta poderia ser morta com o isolate, trocando uma falha visível por uma
+ * silenciosa.
+ */
+async function fetchAsaasGet(
+  url: string,
+  init: RequestInit,
+  reqId: string,
+  path: string,
+  deadlineAt: number | null,
+): Promise<Response> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= GET_MAX_RETRIES; attempt++) {
-    const { signal, clear } = timeoutSignal(ASAAS_REQUEST_TIMEOUT_MS);
+    // Cada tentativa é capada pelo que SOBRA do orçamento — o teto de 15s só
+    // vale integralmente quando não há orçamento. Sem esse `min`, uma única
+    // tentativa lenta já estouraria sozinha o limite do caller.
+    const budgetLeftMs = deadlineAt === null ? null : deadlineAt - Date.now();
+    if (budgetLeftMs !== null && budgetLeftMs <= 0) {
+      jsonLog("warn", { evt: "asaas_get_budget_exhausted", reqId, path, attempt: attempt + 1, phase: "before_fetch" });
+      throw lastError ?? new Error("Orçamento de tempo esgotado antes da chamada ao Asaas.");
+    }
+    const attemptTimeoutMs = budgetLeftMs === null
+      ? ASAAS_REQUEST_TIMEOUT_MS
+      : Math.min(ASAAS_REQUEST_TIMEOUT_MS, budgetLeftMs);
+
+    const { signal, clear } = timeoutSignal(attemptTimeoutMs);
     try {
       const res = await fetch(url, { ...init, signal });
       clear();
@@ -133,6 +189,15 @@ async function fetchAsaasGet(url: string, init: RequestInit, reqId: string, path
         }
         if (wait.kind === "wait") delayMs = wait.ms;
       }
+      // Dormir além do orçamento é EXATAMENTE o cenário auto-amplificante que
+      // o `budgetMs` existe pra cortar: numa rajada, todas as invocações levam
+      // 429 e honram o mesmo `RateLimit-Reset` juntas, todas passam dos 10s do
+      // Asaas e a fila é interrompida. Devolve a resposta que já temos e deixa
+      // o caller degradar.
+      if (deadlineAt !== null && Date.now() + delayMs >= deadlineAt) {
+        jsonLog("warn", { evt: "asaas_get_budget_exhausted", reqId, path, attempt: attempt + 1, status: res.status, phase: "before_retry_sleep" });
+        return res;
+      }
       jsonLog("warn", { evt: "asaas_get_retry", reqId, path, attempt: attempt + 1, status: res.status, delay_ms: Math.round(delayMs) });
       await sleep(delayMs);
     } catch (err) {
@@ -140,6 +205,13 @@ async function fetchAsaasGet(url: string, init: RequestInit, reqId: string, path
       lastError = err;
       if (attempt === GET_MAX_RETRIES) throw err;
       const delayMs = GET_BACKOFF_BASE_MS * 2 ** attempt + Math.random() * GET_BACKOFF_BASE_MS;
+      // Mesmo motivo do branch acima — aqui o erro (inclusive o AbortError do
+      // timeout capado) precisa propagar pro caller em vez de virar mais um
+      // sleep dentro de um orçamento que já acabou.
+      if (deadlineAt !== null && Date.now() + delayMs >= deadlineAt) {
+        jsonLog("warn", { evt: "asaas_get_budget_exhausted", reqId, path, attempt: attempt + 1, error: String(err), phase: "before_retry_sleep" });
+        throw err;
+      }
       jsonLog("warn", { evt: "asaas_get_retry", reqId, path, attempt: attempt + 1, error: String(err), delay_ms: Math.round(delayMs) });
       await sleep(delayMs);
     }
@@ -184,8 +256,13 @@ export async function asaasRequest(
   path: string,
   method: "GET" | "POST" | "PUT" | "DELETE" = "GET",
   body?: Record<string, unknown>,
+  opts?: AsaasRequestOptions,
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   const reqId = genRequestId();
+  // Deadline fixado ANTES da resolução da chave: `getAsaasApiKey` lê
+  // `platform_secrets` (com cache) e um miss de cache também gasta tempo do
+  // orçamento do caller — deixá-lo de fora subestimaria o custo real.
+  const deadlineAt = opts?.budgetMs !== undefined ? Date.now() + opts.budgetMs : null;
   const env = getAsaasEnv();
   const apiKey = await getAsaasApiKey();
 
@@ -212,7 +289,9 @@ export async function asaasRequest(
   let res: Response;
   try {
     res = method === "GET"
-      ? await fetchAsaasGet(url, init, reqId, path)
+      // Só o GET recebe o deadline — ver AsaasRequestOptions: abortar mutação
+      // sem `Idempotency-Key` deixaria o outcome desconhecido.
+      ? await fetchAsaasGet(url, init, reqId, path, deadlineAt)
       : await fetchAsaasMutation(url, init, reqId, path);
   } catch (err) {
     jsonLog("error", { evt: "asaas_request_network_error", reqId, method, path, error: String(err) });
@@ -311,10 +390,16 @@ export async function createAsaasPayment(params: AsaasPaymentParams): Promise<{
   };
 }
 
+/**
+ * `opts.budgetMs` existe pro caminho do `asaas-webhook`, que tem 10s de teto
+ * do Asaas pra responder — ver AsaasRequestOptions. Workers de cron chamam sem
+ * `opts` e mantêm os retries completos.
+ */
 export async function getAsaasPayment(
   paymentId: string,
+  opts?: AsaasRequestOptions,
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
-  return asaasRequest(`/payments/${paymentId}`, "GET");
+  return asaasRequest(`/payments/${paymentId}`, "GET", undefined, opts);
 }
 
 export async function refundAsaasPayment(
@@ -412,19 +497,15 @@ export interface AsaasCheckoutItem {
   /** máx 30 chars */
   name: string;
   quantity: number;
-  /** Reais decimais, NÃO centavos — mesma convenção CONFIRMADA dos demais
-   * `value` da API (§9.1 de 03-ASAAS-API-VERIFICADO.md), mas ESTE campo
-   * específico (`items[].value` do checkout) segue sem prova decisiva: a doc
-   * só mostra `"value": 100` sem casa decimal — §9.1 marca como NÃO
-   * VERIFICADO, testar `19.90` no sandbox antes da Fase 4. Mesma conversão
-   * dos demais: `value = amountCents / 100` / `amountCents = Math.round(value
-   * * 100)`. */
+  /** Reais decimais, NÃO centavos — VERIFICADO em sandbox (§13.1): `19.90`
+   * enviado no `items[].value` volta como `19.9`, mesma convenção decimal dos
+   * demais `value` da API. Conversão na fronteira: `value = amountCents / 100`
+   * / `amountCents = Math.round(value * 100)`. */
   value: number;
   /** máx 150 chars */
   description?: string;
-  /** OpenAPI do Asaas lista como obrigatório no array `items` — NÃO VERIFICADO
-   * em runtime (§9/§13 da doc). Opcional aqui; confirmar no sandbox antes da
-   * Fase 4 antes de assumir que pode ser omitido. */
+  /** OpenAPI lista como obrigatório no array `items`, mas VERIFICADO em sandbox
+   * (§13.1) que o checkout é criado (200) SEM ele — a doc mente. Opcional. */
   imageBase64?: string;
 }
 
@@ -439,8 +520,17 @@ export interface AsaasCheckoutParams {
   chargeTypes: Array<"DETACHED" | "RECURRENT" | "INSTALLMENT">;
   callback: AsaasCheckoutCallback;
   items: AsaasCheckoutItem[];
-  /** Obrigatório quando chargeTypes inclui RECURRENT (§9) — shape exato não
-   * detalhado em 03-ASAAS-API-VERIFICADO.md. */
+  /** Id do cliente Asaas (`cus_...`) a amarrar no checkout. ATENÇÃO: verificado
+   * em sandbox (§13.7) que enviar um `customer` existente faz o checkout EXIGIR
+   * telefone + endereço completo (address/addressNumber/postalCode/province/
+   * city) nesse cliente — 400 sem eles. Por isso o AsaasBillingProvider NÃO
+   * envia este campo (o onboarding só coleta nome/CPF/e-mail); a correlação do
+   * webhook é por `externalReference`, não por customer. Só popular aqui se o
+   * cliente tiver cadastro completo. */
+  customer?: string;
+  /** Obrigatório quando chargeTypes inclui RECURRENT. Shape verificado em
+   * sandbox (§13.7): exige `cycle` E `nextDueDate` (YYYY-MM-DD) — a API responde
+   * 400 sem qualquer um dos dois. */
   subscription?: Record<string, unknown>;
   /** 10–1440 */
   minutesToExpire?: number;

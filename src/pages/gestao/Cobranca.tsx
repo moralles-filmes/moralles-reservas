@@ -8,6 +8,7 @@ import {
   usePreviewPlanChange,
   useChangePlan,
   useCancelByOwner,
+  useOrgEntitlements,
 } from "@/hooks/useBilling";
 import { usePaymentMethods } from "@/hooks/usePaymentMethods";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,6 +46,12 @@ export default function Cobranca() {
   const { data: detail, isLoading: loadingDetail, refetch: refetchDetail } = useOrgBillingDetail(organizationId);
   const { data: plans, isLoading: loadingPlans } = useBillingPlans();
   const { data: pmData, isLoading: loadingPms, refetch: refetchPms } = usePaymentMethods(organizationId);
+  const {
+    data: entitlements,
+    isLoading: loadingEntitlements,
+    isError: entitlementsError,
+    refetch: refetchEntitlements,
+  } = useOrgEntitlements(organizationId ?? null);
 
   const checkout = useCreateBillingCheckout();
   const previewMutation = usePreviewPlanChange();
@@ -58,25 +65,56 @@ export default function Cobranca() {
   } | null>(null);
   const [cancelDialog, setCancelDialog] = useState(false);
 
-  // Pós-redirect do Stripe Checkout: refetch state até a subscription aparecer.
-  // Webhook pode chegar depois do redirect — damos até 6s de retry escalonado.
+  // Pós-redirect do checkout: refetch até a assinatura aparecer.
+  //
+  // O webhook é quem ativa — a URL de retorno NÃO ativa nada (cenário 8). Por
+  // isso a mensagem depende do estado REAL ter mudado, e não de o navegador ter
+  // voltado com session=success. Com PIX a confirmação pode chegar depois desta
+  // janela, e prometer "Bem-vindo!" nesse caso seria mentira.
   useEffect(() => {
-    if (searchParams.get("session") !== "success") return;
-    let attempts = 0;
-    const tick = () => {
-      attempts++;
-      refetchDetail();
-      refetchPms();
-      if (attempts < 4) setTimeout(tick, 1500);
-      else {
-        // Limpa o query param sem reload
-        searchParams.delete("session");
-        searchParams.delete("sid");
-        setSearchParams(searchParams, { replace: true });
-        toast.success("Pagamento processado. Bem-vindo!");
-      }
+    const session = searchParams.get("session");
+    if (session !== "success" && session !== "cancel") return;
+
+    const clearParams = () => {
+      searchParams.delete("session");
+      searchParams.delete("sid");
+      setSearchParams(searchParams, { replace: true });
     };
+
+    if (session === "cancel") {
+      clearParams();
+      toast.info("Checkout cancelado. Nenhuma cobrança foi feita.");
+      return;
+    }
+
+    let attempts = 0;
+    let cancelled = false;
+
+    const tick = async () => {
+      if (cancelled) return;
+      attempts++;
+      const [detailResult] = await Promise.all([refetchDetail(), refetchPms()]);
+      if (cancelled) return;
+
+      const activeSub = detailResult.data?.subscriptions?.find((s) => s.status !== "canceled");
+      if (activeSub) {
+        clearParams();
+        toast.success("Pagamento confirmado. Bem-vindo!");
+        return;
+      }
+      if (attempts < 6) {
+        setTimeout(tick, 2000);
+        return;
+      }
+      clearParams();
+      toast.info(
+        "Recebemos seu pagamento e estamos confirmando com o banco. " +
+          "Pode levar alguns minutos — você não precisa pagar de novo.",
+      );
+    };
+
     tick();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams.get("session")]);
 
@@ -117,6 +155,10 @@ export default function Cobranca() {
   const defaultPm = pmData?.payment_methods.find((pm) => pm.is_default) ?? pmData?.payment_methods[0] ?? null;
 
   const activePlans = (plans ?? []).filter((p) => p.active);
+
+  // Cortesia (LIFETIME/PROMOTIONAL etc. concedida por admin). Mostrar preço a
+  // quem tem acesso vitalício gratuito gera dúvida sobre estar sendo cobrado.
+  const isCourtesy = entitlements?.system.source === "override" && entitlements.system.allowed;
 
   async function handleChoose(plan: BillingPlan) {
     try {
@@ -350,24 +392,60 @@ export default function Cobranca() {
         </Card>
       )}
 
-      {/* Planos disponíveis */}
-      <div className="space-y-3">
-        <div>
-          <h2 className="text-lg font-semibold">Planos disponíveis</h2>
-          <p className="text-sm text-muted-foreground">
-            {sub
-              ? "Mude de plano a qualquer momento — você só paga a diferença proporcional."
-              : "Escolha o plano ideal pro seu negócio. Pagamento via cartão de crédito."}
-          </p>
+      {/* Planos disponíveis / cortesia */}
+      {loadingEntitlements ? (
+        <Skeleton className="h-32 w-full" />
+      ) : entitlementsError ? (
+        // Falha ao carregar entitlements: não sabemos se a conta tem cortesia.
+        // Não mostrar o preço com confiança nesse caso — evita sugerir cobrança
+        // pra quem tem acesso vitalício grátis (ex.: Ren Sushi) por causa de um
+        // erro transitório de rede.
+        <Card className="border-warning/20 bg-warning/10">
+          <CardContent className="py-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-warning">
+              Não foi possível carregar as informações de acesso da sua conta.
+            </p>
+            <Button variant="outline" size="sm" onClick={() => refetchEntitlements()}>
+              Tentar novamente
+            </Button>
+          </CardContent>
+        </Card>
+      ) : isCourtesy ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Acesso vitalício cortesia</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Sua conta tem acesso liberado por cortesia, sem cobrança. Não há
+              nada a contratar nem a pagar.
+            </p>
+            {entitlements?.system.expires_at && (
+              <p className="text-sm text-muted-foreground">
+                Válido até {formatDateBR(entitlements.system.expires_at)}.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <h2 className="text-lg font-semibold">Planos disponíveis</h2>
+            <p className="text-sm text-muted-foreground">
+              {sub
+                ? "Mude de plano a qualquer momento — você só paga a diferença proporcional."
+                : "Escolha o plano ideal pro seu negócio. Pagamento via cartão de crédito."}
+            </p>
+          </div>
+          <PricingTable
+            plans={activePlans}
+            currentPlanId={activePlan?.id ?? null}
+            onChoose={handleChoose}
+            onChange={handleChangePlanPreview}
+            loadingPlanId={checkout.isPending ? checkout.variables?.plan_id ?? null : previewMutation.isPending ? previewMutation.variables?.new_plan_id ?? null : null}
+          />
         </div>
-        <PricingTable
-          plans={activePlans}
-          currentPlanId={activePlan?.id ?? null}
-          onChoose={handleChoose}
-          onChange={handleChangePlanPreview}
-          loadingPlanId={checkout.isPending ? checkout.variables?.plan_id ?? null : previewMutation.isPending ? previewMutation.variables?.new_plan_id ?? null : null}
-        />
-      </div>
+      )}
 
       {/* Preview / confirmação de troca de plano */}
       <AlertDialog open={!!previewState} onOpenChange={(open) => !open && setPreviewState(null)}>

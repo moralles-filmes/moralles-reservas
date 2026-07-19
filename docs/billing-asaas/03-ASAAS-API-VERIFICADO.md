@@ -207,8 +207,173 @@ Prova (doc oficial, `criando-uma-assinatura`): `"value": 19.90` para uma assinat
 
 ## 13. Pendências pra validar no sandbox (Fase 2/4)
 
-1. `imageBase64` é mesmo obrigatório em `items[]` do checkout?
-2. Payload de `PAYMENT_*` traz o objeto completo ou só `{object, id}`?
-3. Payload de `SUBSCRIPTION_*` — shape exato.
-4. `PUT {status:"INACTIVE"}` se comporta como esperado (para cobrança futura, preserva as emitidas)?
-5. Label exato do botão de simular pagamento no sandbox.
+Sondado ao vivo no sandbox em **2026-07-19** por `scripts/asaas-probe.ts`
+(descartável, não é código de produção).
+
+| # | Pendência | Resposta |
+|---|---|---|
+| 1 | `imageBase64` obrigatório em `items[]`? | **NÃO.** Checkout sem o campo → `200`. O OpenAPI marca como required, a API não exige. `AsaasBillingProvider.createCheckout` fica como está. |
+| 2 | Payload de `PAYMENT_*` — completo ou `{object, id}`? | ⏳ exige confirmar pagamento no painel + ler Logs de Webhooks. |
+| 3 | Shape de `SUBSCRIPTION_*` | ⏳ mesma dependência. |
+| 4 | `PUT {status:"INACTIVE"}` preserva cobranças emitidas? | **SIM** — e é uma armadilha, ver 13.2. |
+| 5 | Label do botão de simular pagamento | ⏳ manual. |
+
+### 13.1 `value` é decimal em reais — confirmado ao vivo
+
+Enviado `19.90`, ecoado `19.9` em checkout, assinatura e cobrança. Confirma
+§9.1 e o par `centsToAsaasValue` / `asaasValueToCents`. `netValue: 18.91`
+numa cobrança PIX de `19.90` (taxa de R$ 0,99) — nunca derivar valor bruto
+de `netValue`.
+
+### 13.2 ⚠ `INACTIVE` não cancela o que já foi emitido
+
+Assinatura desativada continua com a cobrança em aberto:
+
+```
+3c. PUT {status:"INACTIVE"}     → subscription.status = "INACTIVE"
+3e. GET /subscriptions/{id}/payments → pay_… ainda "PENDING", dueDate intacta
+```
+
+Quem cancelar uma assinatura e quiser parar de cobrar tem que tratar a
+cobrança pendente **separadamente** (`DELETE /payments/{id}`). Só desativar
+deixa o cliente recebendo lembrete de uma assinatura que ele cancelou.
+
+### 13.3 ⚠ Checkout `RECURRENT` só aceita `CREDIT_CARD`
+
+`chargeTypes: ["RECURRENT"]` com `billingTypes: ["CREDIT_CARD","PIX"]` → `400`:
+
+> O método de pagamento CREDIT_CARD é o único método de pagamento permitido para operações RECURRENT
+> O tipo de cobrança DETACHED é obrigatório para o método de pagamento PIX
+
+Assinatura por checkout hospedado é **cartão, e só cartão**. PIX/boleto
+recorrente exige o outro caminho: `POST /subscriptions` com
+`billingType: "UNDEFINED"`, que gera a cobrança e devolve `invoiceUrl` +
+`bankSlipUrl` para o cliente escolher — sem cartão em arquivo, logo sem
+renovação automática.
+
+### 13.4 `nextDueDate` na resposta é a PRÓXIMA, não a primeira
+
+`POST /subscriptions` com `nextDueDate: 2026-07-26` devolveu
+`nextDueDate: 2026-08-26`, tendo emitido a 1ª cobrança com
+`dueDate: 2026-07-26`. O campo avança um ciclo na criação. Reconciliação que
+comparar `nextDueDate` com a competência local precisa contar com isso.
+
+### 13.5 `externalReference` sobrevive intacto
+
+`org:probe|plan:probe|purpose:subscription` voltou byte a byte no `POST` e no
+`GET` da cobrança. O formato de pipes de `buildExternalReference` está
+validado contra a API real.
+
+### 13.5.1 Cobrança de assinatura HERDA o `externalReference` da assinatura
+
+A assinatura criada com `externalReference: "probe-sub"` gerou uma cobrança
+que traz o mesmo `"externalReference": "probe-sub"` (sonda 3b). Isso importa
+porque toda a ativação depende do `purpose` extraído desse campo: se a
+renovação viesse sem ele, cairia em `purpose: "other"` — registraria o
+dinheiro e **nunca reativaria** uma org bloqueada, e como `status='paid'` é
+terminal, o reprocessamento viraria `noop` para sempre.
+
+⚠ Verificado para assinatura criada via `POST /subscriptions`. A assinatura
+nascida do **checkout** `RECURRENT` ainda não foi exercitada — confirmar na
+Task 13 antes de considerar fechado.
+
+### 13.6 `payment.subscription` é opcional, não `null`
+
+Cobrança gerada por assinatura traz `"subscription": "sub_…"`; cobrança
+avulsa **omite a chave** (não vem como `null`). Parser lê com `?.`, nunca
+assume presença.
+
+### 13.7 ⚠ Shape do checkout RECURRENT — dois 400 que consertaram o código
+
+A 2ª rodada da sonda (2026-07-19) finalmente exercitou o objeto `subscription`
+do checkout, que a Task 7 assumira por analogia. Dois achados derrubaram o
+código como estava e obrigaram correção **antes do deploy**:
+
+**2a — `subscription.nextDueDate` é obrigatório.** RECURRENT só cartão com
+`subscription: { cycle: "MONTHLY" }` → `400`:
+
+> O campo nextDueDate deve ser informado.
+
+`billing-provider.ts` mandava só `{ cycle }` → todo checkout de assinatura
+daria 400. Corrigido para `{ cycle, nextDueDate }` (data de hoje BRT; o
+checkout hospedado não propaga trial).
+
+**2c — amarrar `customer` exige cadastro COMPLETO.** Checkout com
+`customer: <cus_ mínimo>` (só nome/CPF/e-mail, como o onboarding cria) → `400`
+pedindo **seis** campos:
+
+> O campo phone deve existir para o customer informado.
+> O campo address / addressNumber / postalCode / province / city deve existir …
+
+Ou seja: o checkout NÃO ignora o `customer` (a hipótese do órfão), ele o
+**exige íntegro**. Como o onboarding só coleta nome/CPF/e-mail, `billing-provider.ts`
+**parou de enviar `customer`** no checkout. A correlação do webhook passa a
+depender exclusivamente do `externalReference` (caminho primário do aplicador).
+O cliente que gravamos em `billing_customers` segue válido para cobrança
+**direta** (`POST /payments` aceitou o cliente mínimo na sonda 4a — status 200);
+é só o *binding do checkout* que demanda o cadastro completo.
+
+**2b — `subscription` é obrigatório em RECURRENT.** Sem o objeto → `400`
+"O campo subscription deve ser informado". Não há default; o código sempre o
+envia em `mode=subscription`.
+
+**Consequência que virou gate de deploy:** sem o `customer` amarrado, a
+ativação da org depende 100% do `externalReference` **chegar na cobrança
+nascida do checkout** — e isso (§13.5.1) só foi provado para `POST /subscriptions`,
+não para o checkout hospedado. É o **cenário 2 da Task 13**, agora HARD GATE:
+se a cobrança do checkout não herdar o `externalReference`, a org paga e não
+é liberada. Mitigação, se falhar: coletar endereço completo no onboarding e
+voltar a amarrar o `customer` (fallback de correlação por `asaas_customer_id`).
+
+**Sonda 2d — CONFIRMADA `200 ACTIVE` (2026-07-19).** Manda o shape EXATO que o
+código passa agora (sem `customer`, com `nextDueDate`). A API devolveu
+`status: ACTIVE`, `chargeTypes: ["RECURRENT"]`, `billingTypes: ["CREDIT_CARD"]`,
+`subscription: { cycle: "MONTHLY", nextDueDate, endDate: null }` e o
+`externalReference` ecoado íntegro (`org:probe|plan:probe|purpose:subscription`).
+**Validação de nível de API fechada** — o checkout que `billing-provider.ts`
+emite é aceito. Isso destrava o deploy, mas NÃO substitui o cenário 2: só um
+checkout hospedado **completado** (cartão de teste no browser) prova que a
+cobrança nascida do checkout herda o `externalReference`. A sonda 3b provou a
+herança assinatura→cobrança apenas para `POST /subscriptions` (payment herdou o
+`externalReference` da sub) — evidência de apoio, não a prova do caminho
+hospedado. O link 2d fica vivo por 1440 min e serve pra esse teste manual.
+
+### 13.8 ✅ Cenário 2 (HARD GATE) RESOLVIDO — o checkout hospedado NÃO propaga `externalReference`; correlação por `checkoutSession`
+
+Checkout hospedado **completado** (cartão de teste `4444…4444` no browser,
+2026-07-19). O que a cobrança + a assinatura nascidas dele realmente carregam
+(inspecionado via `GET /payments/{id}` e `GET /subscriptions/{id}`):
+
+- **`payment.externalReference = null` E `subscription.externalReference = null`.**
+  O Asaas NÃO propaga o `externalReference` do checkout — nem para a assinatura,
+  nem para a cobrança. A herança que a §13.5.1 / sonda 3b provou para
+  `POST /subscriptions` **NÃO vale** para a subscription nascida do checkout
+  hospedado. A hipótese de apoio caiu.
+- **`payment.customer` é um cliente NOVO** (`cus_…346`), diferente do que
+  pré-criamos (`cus_…337`): o pagador digita os dados na própria página do Asaas.
+  O fallback de correlação por `asaas_customer_id` também morre.
+- **`payment.checkoutSession` E `subscription.checkoutSession` carregam o MESMO
+  id** — o id do checkout que `create-billing-checkout` criou (`res.data.id` do
+  `POST /checkouts`). Dos três handles, só o `checkoutSession` sobrevive.
+
+Resultado imediato ao vivo: o `PAYMENT_CONFIRMED` caiu em `failed` ("Não foi
+possível correlacionar o evento a uma organização"); a org **não** ativou —
+exatamente o HARD GATE falhando.
+
+**Correção (Fix K), aplicada e re-validada ao vivo:** tabela nova
+`billing_checkout_sessions` (migration 067) mapeia `checkoutId → org/plano/purpose`,
+gravada por `create-billing-checkout` na criação (persist-or-abort). O aplicador
+(`asaas-billing-events-apply.ts`) ganhou um 3º fallback: `externalReference` →
+`customer` → **`payment.checkoutSession` → billing_checkout_sessions**,
+reidratando org+plano+purpose via `parseExternalReference` do `external_reference`
+gravado. Re-teste com checkout novo: `PAYMENT_CONFIRMED` → `processed`,
+`organizations.billing_status='active'`, assinatura `active`, fatura `paid`.
+**Gate vencido.**
+
+A mitigação antiga (§13.7: coletar endereço + reamarrar `customer`) fica
+**descartada** — o `checkoutSession` correlaciona sem atrito no onboarding.
+
+**Escopo 4a:** cobre a 1ª cobrança (ativação). A **renovação** do mês 2+ nasce da
+assinatura (a cobrança de renovação NÃO carrega `checkoutSession`) e o aplicador
+ainda não resolve org por `provider_subscription_id` (só o backfilla) — item da
+Fase 4b, tem que aterrissar antes do 1º ciclo real (~30 dias).

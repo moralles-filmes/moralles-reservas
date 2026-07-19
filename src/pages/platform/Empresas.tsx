@@ -20,6 +20,7 @@ import {
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -67,6 +68,8 @@ function CreateOrgDialog({
       unit_timezone: "America/Sao_Paulo",
       owner_email: "",
       owner_password: "",
+      tax_id: "",
+      billing_email: "",
     },
   });
 
@@ -179,6 +182,41 @@ function CreateOrgDialog({
                     <FormControl>
                       <Input type="password" placeholder="mín. 10 chars" {...field} />
                     </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="tax_id"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>CPF/CNPJ da empresa</FormLabel>
+                    <FormControl>
+                      <Input placeholder="11.222.333/0001-81" {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Obrigatório para emitir cobrança. Aceita CPF ou CNPJ.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="billing_email"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>E-mail de cobrança</FormLabel>
+                    <FormControl>
+                      <Input type="email" placeholder="financeiro@acme.com" {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Recebe faturas e avisos. Pode ser igual ao do proprietário.
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}

@@ -21,10 +21,10 @@
  *     (Stripe HMAC t=/v1= em stripe-webhook; Asaas token de header em
  *     asaas-webhook). O port cobre as operações imperativas.
  *
- * REDEPLOY: nenhuma EF importa este módulo ainda — os primeiros consumidores
- * prováveis são `asaas-webhook` e `process-asaas-reconcile` (ambos ainda
- * FASE 2, não Fase 4) — nada a adicionar no checklist de redeploy do
- * CLAUDE.md até uma EF de fato importar `getBillingProvider`/`AsaasBillingProvider`.
+ * REDEPLOY: `create-billing-checkout` importa `getBillingProvider` (Fase 4a).
+ * Qualquer mudança aqui exige redeploy dessa EF — Edge Functions não
+ * compartilham bundle em runtime. EF nova que importe este módulo entra na
+ * mesma lista.
  */
 
 import {
@@ -46,6 +46,7 @@ import {
   refundAsaasPayment,
   updateAsaasSubscription,
   type AsaasCheckoutParams,
+  type AsaasCycle,
 } from "./asaas.ts";
 import { centsToAsaasValue } from "./asaas-core.ts";
 import { jsonLog } from "./security.ts";
@@ -67,6 +68,11 @@ export interface CreateCustomerParams {
 }
 
 export interface CreateCheckoutParams {
+  /** Id do cliente no provedor. HOJE o checkout Asaas NÃO o envia (amarrar o
+   * `customer` exigiria endereço completo — §13.7, ver createCheckout); fica no
+   * contrato porque a mitigação documentada (voltar a amarrar se a herança do
+   * `externalReference` falhar no cenário 2 da Task 13) o reintroduz, e o
+   * caller já o tem em mãos. O caminho Stripe deste método é `unsupported`. */
   providerCustomerId: string;
   /** Centavos — SEMPRE carregado de billing_plans no servidor. */
   amountCents: number;
@@ -74,6 +80,10 @@ export interface CreateCheckoutParams {
   /** Correlação org|plan|purpose validada no webhook. */
   externalReference: string;
   mode: "subscription" | "one_time";
+  /** `billing_plans.interval` (CHECK `month|year`) — OBRIGATÓRIO em
+   * mode=subscription. Tipado frouxo de propósito: o valor vem do banco e é
+   * validado em runtime por `asaasCycleForInterval`, não pelo compilador. */
+  interval?: string | null;
   successUrl?: string;
   cancelUrl?: string;
 }
@@ -93,7 +103,27 @@ export interface CreateSubscriptionParams {
   providerPriceId?: string;
   trialDays?: number;
   externalReference: string;
+  /** Mesma regra do CreateCheckoutParams.interval: vem do banco, validado em
+   * runtime. Sem ele o Asaas não sabe o ciclo e a operação é recusada. */
+  interval?: string | null;
   metadata?: Record<string, string>;
+}
+
+/**
+ * Opções de LEITURA do port. `budgetMs` limita o wall-clock TOTAL que o caller
+ * tolera gastar na chamada (tentativa + retries + sleeps de rate limit) e faz
+ * a leitura FALHAR RÁPIDO ao estourar, devolvendo `{ok:false}` — nunca
+ * trabalho em background, que poderia morrer com o isolate e trocar uma falha
+ * visível por uma silenciosa.
+ *
+ * Quem tem orçamento é o CALLER, não o provedor: o `asaas-webhook` responde
+ * dentro dos 10s do Asaas, o `process-asaas-reconcile` roda em cron sem
+ * ninguém esperando e omite o campo (retries completos). Só se aplica a
+ * leituras — nada mutante ganha corte de tempo, porque o Asaas não tem
+ * `Idempotency-Key`.
+ */
+export interface ProviderReadOptions {
+  budgetMs?: number;
 }
 
 export interface BillingProviderPort {
@@ -104,7 +134,7 @@ export interface BillingProviderPort {
   createSubscription(params: CreateSubscriptionParams): Promise<ProviderResult<{ subscriptionId: string }>>;
   cancelSubscription(providerSubscriptionId: string, atPeriodEnd: boolean): Promise<ProviderResult>;
   getSubscription(providerSubscriptionId: string): Promise<ProviderResult>;
-  getPayment(providerPaymentId: string): Promise<ProviderResult>;
+  getPayment(providerPaymentId: string, opts?: ProviderReadOptions): Promise<ProviderResult>;
   refundPayment(providerPaymentId: string, amountCents?: number): Promise<ProviderResult>;
 }
 
@@ -173,6 +203,10 @@ const stripeProvider: BillingProviderPort = {
     return res.ok ? { ok: true, data: res.data } : { ok: false, error: "Assinatura não encontrada no Stripe." };
   },
 
+  // `opts.budgetMs` é IGNORADO aqui de propósito: o caminho Stripe é legado
+  // read-only e não tem caller com orçamento apertado (o webhook do Stripe não
+  // consulta a API dentro da resposta). Se algum dia ganhar um, o corte de
+  // tempo precisa ser implementado em stripe-billing.ts, não simulado aqui.
   async getPayment(providerPaymentId) {
     const res = await retrieveStripeInvoice(providerPaymentId);
     return res.ok ? { ok: true, data: res.data } : { ok: false, error: "Cobrança não encontrada no Stripe." };
@@ -210,6 +244,20 @@ function isoDateInDaysBrt(days: number): string {
   const nowBrt = new Date(Date.now() - BRT_OFFSET_MS);
   nowBrt.setUTCDate(nowBrt.getUTCDate() + days);
   return nowBrt.toISOString().slice(0, 10);
+}
+
+/**
+ * `billing_plans.interval` (CHECK `month|year`) → ciclo do Asaas. Devolve
+ * `null` pro que não sabemos mapear, e o caller RECUSA a operação: assumir
+ * mensal num plano anual abriria um RECURRENT cobrando o valor do ano inteiro
+ * todo mês. O painel de planos da Fase 3 já permite criar plano anual, então
+ * isto não é hipotético — hoje só não explode porque todo plano do seed 065 é
+ * `'month'`.
+ */
+function asaasCycleForInterval(interval: string | null | undefined): AsaasCycle | null {
+  if (interval === "month") return "MONTHLY";
+  if (interval === "year") return "YEARLY";
+  return null;
 }
 
 /**
@@ -264,11 +312,37 @@ const asaasProvider: BillingProviderPort = {
       const value = centsToAsaasValue(params.amountCents);
       const isSubscription = params.mode === "subscription";
 
+      // Resolvido ANTES de qualquer request: um intervalo que não sabemos
+      // mapear tem que barrar o checkout, não virar mensal por omissão.
+      const cycle = isSubscription ? asaasCycleForInterval(params.interval) : null;
+      if (isSubscription && !cycle) {
+        return {
+          ok: false,
+          error: "O intervalo de cobrança deste plano não é suportado no checkout recorrente.",
+        };
+      }
+
       const checkoutParams: AsaasCheckoutParams = {
-        // Único conjunto aceito pelo produto de checkout hospedado — sem
-        // BOLETO (§9). Deixar os dois habilitados dá ao pagador a escolha.
-        billingTypes: ["CREDIT_CARD", "PIX"],
+        // RECURRENT aceita EXCLUSIVAMENTE cartão — PIX exige chargeType
+        // DETACHED e a API recusa a combinação (§13.3, verificado em sandbox).
+        // Em cobrança avulsa os dois valem, e deixar a escolha com o pagador
+        // aumenta a conversão. Sem BOLETO em nenhum dos modos (§9).
+        billingTypes: isSubscription ? ["CREDIT_CARD"] : ["CREDIT_CARD", "PIX"],
         chargeTypes: isSubscription ? ["RECURRENT"] : ["DETACHED"],
+        // NÃO amarra `customer` ao checkout, de propósito. Verificado em sandbox
+        // (§13.7): ao receber um `customer` existente, o checkout EXIGE que ele
+        // tenha telefone + endereço completo (address, addressNumber,
+        // postalCode, province, city) — dados que o onboarding não coleta (só
+        // nome/CPF/e-mail), então passar o cliente mínimo dá 400 e trava a
+        // contratação inteira. O checkout hospedado coleta os dados do pagador
+        // na própria página; a correlação de volta pra org é pelo
+        // `externalReference` (caminho PRIMÁRIO do aplicador —
+        // asaas-billing-events-apply.ts passo 5), não pelo customer. O cliente
+        // que gravamos em billing_customers segue válido pra cobrança DIRETA
+        // (POST /payments aceita cliente mínimo — §13 sonda 4a); só o binding do
+        // checkout é que exige o cadastro completo. Consequência aceita: sem o
+        // customer amarrado, a ativação depende do externalReference chegar na
+        // cobrança da assinatura (cenário 2 da Task 13 é o gate disso).
         callback: { successUrl: params.successUrl, cancelUrl: params.cancelUrl },
         items: [
           {
@@ -280,14 +354,14 @@ const asaasProvider: BillingProviderPort = {
         ],
         externalReference: params.externalReference,
       };
-      if (isSubscription) {
-        // `subscription` obrigatório quando chargeTypes inclui RECURRENT
-        // (§9). Shape exato do objeto NÃO documentado pro checkout — `cycle`
-        // é o único campo que usamos aqui por analogia ao endpoint irmão
-        // POST /v3/subscriptions (que exige `cycle`, §9), não porque o §9
-        // afirme isso pro objeto `subscription` do checkout. Validar no
-        // sandbox antes da Fase 4.
-        checkoutParams.subscription = { cycle: "MONTHLY" };
+      if (cycle) {
+        // `subscription` obrigatório quando chargeTypes inclui RECURRENT, E o
+        // objeto exige `nextDueDate` além de `cycle` — verificado em sandbox
+        // (§13.7): sem `nextDueDate` a API responde 400 "O campo nextDueDate
+        // deve ser informado". Data de hoje BRT: o checkout hospedado não
+        // propaga trial (ver create-billing-checkout), então a 1ª cobrança do
+        // cartão sai na conclusão do checkout, não numa data futura.
+        checkoutParams.subscription = { cycle, nextDueDate: isoDateInDaysBrt(0) };
       }
 
       const res = await createAsaasCheckout(checkoutParams);
@@ -322,6 +396,12 @@ const asaasProvider: BillingProviderPort = {
 
   async createSubscription(params) {
     return safely<{ subscriptionId: string }>("createSubscription", async () => {
+      // Mesmo invariante do createCheckout: ciclo sai de billing_plans.interval,
+      // nunca de um default mensal.
+      const cycle = asaasCycleForInterval(params.interval);
+      if (!cycle) {
+        return { ok: false, error: "O intervalo de cobrança deste plano não é suportado no Asaas." };
+      }
       const value = centsToAsaasValue(params.amountCents);
       // Asaas não tem trial nativo (diferente do trial_period_days da
       // Stripe) — aproximamos adiando nextDueDate por trialDays: a
@@ -339,7 +419,7 @@ const asaasProvider: BillingProviderPort = {
         billingType: "UNDEFINED",
         value,
         nextDueDate,
-        cycle: "MONTHLY",
+        cycle,
         externalReference: params.externalReference,
         // providerPriceId é conceito Stripe (price pré-cadastrado); Asaas
         // manda `value` cru, então params.providerPriceId é ignorado aqui.
@@ -380,9 +460,13 @@ const asaasProvider: BillingProviderPort = {
     });
   },
 
-  async getPayment(providerPaymentId) {
+  async getPayment(providerPaymentId, opts) {
     return safely<Record<string, unknown>>("getPayment", async () => {
-      const res = await getAsaasPayment(providerPaymentId);
+      // `budgetMs` desce até o fetch (asaas.ts) e corta tentativa, retry e
+      // sleep de rate limit. Estourar chega aqui como erro de rede/timeout, ou
+      // seja `{ok:false}` — o mesmo shape de "Asaas indisponível", que o
+      // aplicador já degrada pra `failed` sem inventar sucesso.
+      const res = await getAsaasPayment(providerPaymentId, opts);
       // Mesma ressalva do getSubscription acima: `value`/`netValue`/etc. no
       // payload cru estão em reais decimais, não em centavos.
       return res.ok ? { ok: true, data: res.data } : { ok: false, error: "Cobrança não encontrada no Asaas." };

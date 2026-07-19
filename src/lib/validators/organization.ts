@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidTaxId, normalizeTaxId } from "@/lib/tax-id";
 
 const slugRegex = /^[a-z0-9-]+$/;
 
@@ -20,6 +21,16 @@ export const createOrganizationSchema = z.object({
   unit_timezone: z.string().default("America/Sao_Paulo"),
   owner_email: z.string().email("E-mail inválido."),
   owner_password: z.string().min(10, "Senha deve ter ao menos 10 caracteres."),
+  // CPF/CNPJ é obrigatório para criar cliente no Asaas (§9 do doc 03). Sem ele,
+  // o checkout falha antes da primeira chamada de API — melhor barrar aqui.
+  tax_id: z
+    .string()
+    .min(1, "CPF/CNPJ é obrigatório.")
+    .refine(isValidTaxId, "CPF/CNPJ inválido — verifique os dígitos.")
+    .transform(normalizeTaxId),
+  // Canal de cobrança da org. Antes desta fase nascia nulo em toda org, o que
+  // deixava os lembretes de billing sem destinatário.
+  billing_email: z.string().email("E-mail de cobrança inválido."),
 });
 
 export const updateOrganizationSchema = z.object({
