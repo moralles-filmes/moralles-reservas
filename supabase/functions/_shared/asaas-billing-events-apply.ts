@@ -305,6 +305,54 @@ export async function applyAsaasEvent(
             organizationId = cust?.organization_id ?? null;
           }
         }
+
+        // Terceiro fallback: checkout hospedado. Verificado ao vivo (§13.7) que o
+        // Asaas NÃO propaga o externalReference do checkout para a assinatura NEM
+        // para a cobrança (ambas nascem com externalReference=null), e o pagador
+        // digita os dados na página gerando um customer NOVO — então nem o
+        // externalReference (acima) nem o customer resolvem a org. O elo que
+        // sobrevive é o `checkoutSession` (id do checkout que a
+        // create-billing-checkout criou), presente na cobrança E na assinatura.
+        // Mapeamos esse id → org na criação (billing_checkout_sessions) e
+        // reidratamos org+plano+purpose aqui.
+        //
+        // ESCOPO 4a (1ª cobrança/ativação): a renovação do mês 2+ NÃO carrega
+        // checkoutSession (a cobrança nasce da assinatura, não do checkout) — a
+        // correlação dela é por provider_subscription_id (backfillado abaixo na
+        // ativação), trabalho da Fase 4b.
+        if (!organizationId) {
+          const checkoutRef = res.data.checkoutSession;
+          if (typeof checkoutRef === "string" && checkoutRef) {
+            const { data: sess, error: sessErr } = await supabase
+              .from("billing_checkout_sessions")
+              .select("organization_id, external_reference")
+              .eq("provider_checkout_id", checkoutRef)
+              .maybeSingle();
+            if (sessErr) {
+              return failWith(
+                null,
+                "unknown",
+                "select_checkout_session",
+                sessErr,
+                "Falha ao correlacionar o checkout do evento — ver logs.",
+              );
+            }
+            if (sess) {
+              organizationId = sess.organization_id;
+              // Reidrata plano+purpose: no checkout hospedado o payment vem SEM
+              // externalReference, então planId ficaria null e purpose "other"
+              // → o gate purpose!=="subscription" daria break antes de ativar e
+              // o INSERT de assinatura não teria billing_plan_id. Mesmo parse do
+              // caminho primário; só preenche o que ainda está no default.
+              externalReferenceRaw = externalReferenceRaw ?? sess.external_reference;
+              const parsedSess = parseExternalReference(sess.external_reference);
+              if (parsedSess) {
+                planId = planId ?? parsedSess.planId;
+                if (purpose === "other") purpose = parsedSess.purpose;
+              }
+            }
+          }
+        }
       } else if (effect.kind === "activate_subscription") {
         // Indisponibilidade do Asaas (rede, 5xx, token expirado) NÃO pode virar
         // `processed`. Sem o payload, `purpose` fica no default "other",

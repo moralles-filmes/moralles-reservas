@@ -389,19 +389,27 @@ serve(async (req) => {
       // `trial_days > 0` é o `trial-padrao`, que é `provider='manual'` +
       // `is_trial` e nunca chega neste ramo. Se um plano Asaas com trial for
       // criado, o trial será silenciosamente ignorado — reavaliar na Task 13.
+      // Correlação do webhook. ATENÇÃO (§13.7, verificado ao vivo): o checkout
+      // hospedado do Asaas NÃO propaga este externalReference para a assinatura
+      // nem para a cobrança geradas (ambas nascem com externalReference=null), e
+      // o pagador digita os dados na página gerando um customer NOVO — logo nem
+      // externalReference nem customer resolvem a org no webhook. Por isso
+      // gravamos o mapa checkoutId → org logo abaixo; este externalReference vai
+      // no checkout mesmo assim (é lido de volta de billing_checkout_sessions e
+      // reidrata plano+purpose no aplicador).
+      const externalReference = buildExternalReference({
+        orgId: organization_id,
+        planId: plan.id,
+        purpose: "subscription",
+      });
+
       const checkout = await asaas.createCheckout({
         providerCustomerId: asaasCustomerId,
         amountCents: plan.amount_cents,
         description: plan.name,
         // Ciclo do RECURRENT sai daqui; o provider recusa o que não mapear.
         interval: plan.interval,
-        // É deste externalReference que o webhook tira o purpose que libera o
-        // acesso — e a cobrança de cada ciclo o herda da assinatura (§13.5.1).
-        externalReference: buildExternalReference({
-          orgId: organization_id,
-          planId: plan.id,
-          purpose: "subscription",
-        }),
+        externalReference,
         mode: "subscription",
         // O Asaas não interpola id de sessão na URL (a Stripe usa
         // {CHECKOUT_SESSION_ID}); as URLs vão no corpo da criação, antes de o
@@ -425,6 +433,52 @@ serve(async (req) => {
         }, 502);
       }
 
+      // Sem o id do checkout não há como correlacionar o pagamento de volta à
+      // org (o webhook resolve por checkoutSession). Abortar é mais seguro que
+      // devolver um checkout que o cliente pagaria sem nunca ativar — mesma
+      // filosofia do abort quando não gravamos o asaas_customer_id acima.
+      const providerCheckoutId = checkout.data.checkoutId;
+      if (!providerCheckoutId) {
+        jsonLog("error", {
+          reqId,
+          evt: "checkout_missing_id",
+          orgId: organization_id,
+          planId: plan.id,
+        });
+        return jsonResponse(req, {
+          error: "Não foi possível abrir o checkout de pagamento. Tente novamente em instantes.",
+        }, 502);
+      }
+
+      // Mapa checkoutId → org/plano/purpose: é a ÚNICA âncora que sobrevive do
+      // checkout hospedado até o pagamento (§13.7 — Asaas não propaga
+      // externalReference nem preserva o customer). Persistir é PRÉ-REQUISITO da
+      // ativação: se falhar, aborta em vez de abrir um checkout que o webhook não
+      // conseguirá correlacionar (pagamento perdido em silêncio).
+      const { error: mapErr } = await supabase
+        .from("billing_checkout_sessions")
+        .insert({
+          provider_checkout_id: providerCheckoutId,
+          provider: "asaas",
+          organization_id,
+          plan_id: plan.id,
+          purpose: "subscription",
+          external_reference: externalReference,
+        });
+      if (mapErr) {
+        jsonLog("error", {
+          reqId,
+          evt: "checkout_session_persist_error",
+          orgId: organization_id,
+          planId: plan.id,
+          checkoutId: providerCheckoutId,
+          err: mapErr.message,
+        });
+        return jsonResponse(req, {
+          error: "Falha ao registrar o checkout. Tente novamente em instantes.",
+        }, 500);
+      }
+
       jsonLog("info", {
         reqId,
         evt: "checkout_session_created",
@@ -432,14 +486,14 @@ serve(async (req) => {
         orgId: organization_id,
         planId: plan.id,
         mode,
-        sessionId: checkout.data.checkoutId ?? null,
+        sessionId: providerCheckoutId,
         orgSlug,
       });
 
       return jsonResponse(req, {
         success: true,
         url: checkout.data.url,
-        session_id: checkout.data.checkoutId ?? "",
+        session_id: providerCheckoutId,
       });
     }
 

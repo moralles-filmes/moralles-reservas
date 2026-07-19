@@ -337,3 +337,43 @@ cobrança nascida do checkout herda o `externalReference`. A sonda 3b provou a
 herança assinatura→cobrança apenas para `POST /subscriptions` (payment herdou o
 `externalReference` da sub) — evidência de apoio, não a prova do caminho
 hospedado. O link 2d fica vivo por 1440 min e serve pra esse teste manual.
+
+### 13.8 ✅ Cenário 2 (HARD GATE) RESOLVIDO — o checkout hospedado NÃO propaga `externalReference`; correlação por `checkoutSession`
+
+Checkout hospedado **completado** (cartão de teste `4444…4444` no browser,
+2026-07-19). O que a cobrança + a assinatura nascidas dele realmente carregam
+(inspecionado via `GET /payments/{id}` e `GET /subscriptions/{id}`):
+
+- **`payment.externalReference = null` E `subscription.externalReference = null`.**
+  O Asaas NÃO propaga o `externalReference` do checkout — nem para a assinatura,
+  nem para a cobrança. A herança que a §13.5.1 / sonda 3b provou para
+  `POST /subscriptions` **NÃO vale** para a subscription nascida do checkout
+  hospedado. A hipótese de apoio caiu.
+- **`payment.customer` é um cliente NOVO** (`cus_…346`), diferente do que
+  pré-criamos (`cus_…337`): o pagador digita os dados na própria página do Asaas.
+  O fallback de correlação por `asaas_customer_id` também morre.
+- **`payment.checkoutSession` E `subscription.checkoutSession` carregam o MESMO
+  id** — o id do checkout que `create-billing-checkout` criou (`res.data.id` do
+  `POST /checkouts`). Dos três handles, só o `checkoutSession` sobrevive.
+
+Resultado imediato ao vivo: o `PAYMENT_CONFIRMED` caiu em `failed` ("Não foi
+possível correlacionar o evento a uma organização"); a org **não** ativou —
+exatamente o HARD GATE falhando.
+
+**Correção (Fix K), aplicada e re-validada ao vivo:** tabela nova
+`billing_checkout_sessions` (migration 067) mapeia `checkoutId → org/plano/purpose`,
+gravada por `create-billing-checkout` na criação (persist-or-abort). O aplicador
+(`asaas-billing-events-apply.ts`) ganhou um 3º fallback: `externalReference` →
+`customer` → **`payment.checkoutSession` → billing_checkout_sessions**,
+reidratando org+plano+purpose via `parseExternalReference` do `external_reference`
+gravado. Re-teste com checkout novo: `PAYMENT_CONFIRMED` → `processed`,
+`organizations.billing_status='active'`, assinatura `active`, fatura `paid`.
+**Gate vencido.**
+
+A mitigação antiga (§13.7: coletar endereço + reamarrar `customer`) fica
+**descartada** — o `checkoutSession` correlaciona sem atrito no onboarding.
+
+**Escopo 4a:** cobre a 1ª cobrança (ativação). A **renovação** do mês 2+ nasce da
+assinatura (a cobrança de renovação NÃO carrega `checkoutSession`) e o aplicador
+ainda não resolve org por `provider_subscription_id` (só o backfilla) — item da
+Fase 4b, tem que aterrissar antes do 1º ciclo real (~30 dias).
