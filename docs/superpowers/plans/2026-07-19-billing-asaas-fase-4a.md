@@ -1832,7 +1832,7 @@ git commit -m "feat(billing): checkout Asaas roteado por billing_provider_defaul
 - [ ] **Step 1: Adicionar o import**
 
 ```ts
-import { applyAsaasEvent } from "../_shared/asaas-billing-events.ts";
+import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
 ```
 
 - [ ] **Step 2: Substituir o bloco de processamento**
@@ -1925,7 +1925,7 @@ O comentário `:131-148` do próprio arquivo já previa isto: quando `'processed
 Adicionar o import no topo:
 
 ```ts
-import { applyAsaasEvent } from "../_shared/asaas-billing-events.ts";
+import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
 ```
 
 Estender o SELECT do lote para trazer o que o aplicador precisa:
@@ -2439,7 +2439,7 @@ Nenhuma linha de código nova. É aqui que a fase prova que funciona.
 
 - [ ] **Step 1: Deploy das EFs**
 
-`_shared/asaas-billing-events.ts` e `_shared/tax-id.ts` são novos; EFs não compartilham bundle em runtime, então todo importador precisa de redeploy.
+`_shared/asaas-billing-events.ts`, `_shared/asaas-billing-events-apply.ts` e `_shared/tax-id.ts` são novos; EFs não compartilham bundle em runtime, então todo importador precisa de redeploy.
 
 ```bash
 supabase functions deploy asaas-webhook
@@ -2528,7 +2528,7 @@ Adicionar na seção Billing, no formato obrigatório (regra em 1 frase + porqu�
 
 ```markdown
 - **Ativação de assinatura Asaas é `PAYMENT_CONFIRMED` OU `PAYMENT_RECEIVED`, o que chegar primeiro.** PIX/boleto nunca emite `CONFIRMED` (provado ao vivo), então gate só-CONFIRMED deixaria todo cliente de PIX pagando sem acesso — e funcionaria no cartão, escondendo o bug. Idempotência por `invoiceStatus='paid'` em [_shared/asaas-billing-events.ts](supabase/functions/_shared/asaas-billing-events.ts).
-- **Webhook e reconcile compartilham `applyAsaasEvent` — nunca duplicar a lógica.** Se o reconcile classificar sem aplicar, marca como resolvido um evento que nunca ativou assinatura. [_shared/asaas-billing-events.ts](supabase/functions/_shared/asaas-billing-events.ts).
+- **Webhook e reconcile compartilham `applyAsaasEvent` — nunca duplicar a lógica.** Se o reconcile classificar sem aplicar, marca como resolvido um evento que nunca ativou assinatura. [_shared/asaas-billing-events-apply.ts](supabase/functions/_shared/asaas-billing-events-apply.ts).
 - **`getPayment`/`getSubscription` devolvem dinheiro em REAIS no Asaas e em centavos na Stripe, pela mesma interface.** O tipo é `Record<string, unknown>` e não protege; comparar com `amount_cents` sem `asaasValueToCents` é bug de 100x. [_shared/billing-provider.ts](supabase/functions/_shared/billing-provider.ts).
 - **`_shared/tax-id.ts` ⇄ [src/lib/tax-id.ts](src/lib/tax-id.ts) são cópias com sincronia VERIFICADA POR TESTE** (`src/lib/tax-id.test.ts` importa as duas e roda o mesmo corpus). Diferente do `phone.ts`, cuja sincronia é só convencional.
 - **Org nova nasce com `tax_id` e `billing_email` obrigatórios.** Sem CPF/CNPJ o Asaas recusa criar cliente e o checkout falha antes da primeira chamada de API. [manage-organizations/index.ts](supabase/functions/manage-organizations/index.ts).
@@ -2537,7 +2537,8 @@ Adicionar na seção Billing, no formato obrigatório (regra em 1 frase + porqu�
 E adicionar ao checklist de redeploy:
 
 ```markdown
-- **`asaas-billing-events.ts`** → `asaas-webhook`, `process-asaas-reconcile`, `manage-billing`
+- **`asaas-billing-events.ts`** (núcleo puro) → `asaas-webhook`, `process-asaas-reconcile`, `create-billing-checkout`, `manage-billing`
+- **`asaas-billing-events-apply.ts`** (aplicador de I/O, onde vive `applyAsaasEvent`) → `asaas-webhook`, `process-asaas-reconcile`
 - **`tax-id.ts`** → `manage-organizations`
 - **`billing-provider.ts`** → `create-billing-checkout`, `asaas-webhook`, `process-asaas-reconcile`, `manage-billing`
 ```
