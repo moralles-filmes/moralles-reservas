@@ -207,8 +207,65 @@ Prova (doc oficial, `criando-uma-assinatura`): `"value": 19.90` para uma assinat
 
 ## 13. Pendências pra validar no sandbox (Fase 2/4)
 
-1. `imageBase64` é mesmo obrigatório em `items[]` do checkout?
-2. Payload de `PAYMENT_*` traz o objeto completo ou só `{object, id}`?
-3. Payload de `SUBSCRIPTION_*` — shape exato.
-4. `PUT {status:"INACTIVE"}` se comporta como esperado (para cobrança futura, preserva as emitidas)?
-5. Label exato do botão de simular pagamento no sandbox.
+Sondado ao vivo no sandbox em **2026-07-19** por `scripts/asaas-probe.ts`
+(descartável, não é código de produção).
+
+| # | Pendência | Resposta |
+|---|---|---|
+| 1 | `imageBase64` obrigatório em `items[]`? | **NÃO.** Checkout sem o campo → `200`. O OpenAPI marca como required, a API não exige. `AsaasBillingProvider.createCheckout` fica como está. |
+| 2 | Payload de `PAYMENT_*` — completo ou `{object, id}`? | ⏳ exige confirmar pagamento no painel + ler Logs de Webhooks. |
+| 3 | Shape de `SUBSCRIPTION_*` | ⏳ mesma dependência. |
+| 4 | `PUT {status:"INACTIVE"}` preserva cobranças emitidas? | **SIM** — e é uma armadilha, ver 13.2. |
+| 5 | Label do botão de simular pagamento | ⏳ manual. |
+
+### 13.1 `value` é decimal em reais — confirmado ao vivo
+
+Enviado `19.90`, ecoado `19.9` em checkout, assinatura e cobrança. Confirma
+§9.1 e o par `centsToAsaasValue` / `asaasValueToCents`. `netValue: 18.91`
+numa cobrança PIX de `19.90` (taxa de R$ 0,99) — nunca derivar valor bruto
+de `netValue`.
+
+### 13.2 ⚠ `INACTIVE` não cancela o que já foi emitido
+
+Assinatura desativada continua com a cobrança em aberto:
+
+```
+3c. PUT {status:"INACTIVE"}     → subscription.status = "INACTIVE"
+3e. GET /subscriptions/{id}/payments → pay_… ainda "PENDING", dueDate intacta
+```
+
+Quem cancelar uma assinatura e quiser parar de cobrar tem que tratar a
+cobrança pendente **separadamente** (`DELETE /payments/{id}`). Só desativar
+deixa o cliente recebendo lembrete de uma assinatura que ele cancelou.
+
+### 13.3 ⚠ Checkout `RECURRENT` só aceita `CREDIT_CARD`
+
+`chargeTypes: ["RECURRENT"]` com `billingTypes: ["CREDIT_CARD","PIX"]` → `400`:
+
+> O método de pagamento CREDIT_CARD é o único método de pagamento permitido para operações RECURRENT
+> O tipo de cobrança DETACHED é obrigatório para o método de pagamento PIX
+
+Assinatura por checkout hospedado é **cartão, e só cartão**. PIX/boleto
+recorrente exige o outro caminho: `POST /subscriptions` com
+`billingType: "UNDEFINED"`, que gera a cobrança e devolve `invoiceUrl` +
+`bankSlipUrl` para o cliente escolher — sem cartão em arquivo, logo sem
+renovação automática.
+
+### 13.4 `nextDueDate` na resposta é a PRÓXIMA, não a primeira
+
+`POST /subscriptions` com `nextDueDate: 2026-07-26` devolveu
+`nextDueDate: 2026-08-26`, tendo emitido a 1ª cobrança com
+`dueDate: 2026-07-26`. O campo avança um ciclo na criação. Reconciliação que
+comparar `nextDueDate` com a competência local precisa contar com isso.
+
+### 13.5 `externalReference` sobrevive intacto
+
+`org:probe|plan:probe|purpose:subscription` voltou byte a byte no `POST` e no
+`GET` da cobrança. O formato de pipes de `buildExternalReference` está
+validado contra a API real.
+
+### 13.6 `payment.subscription` é opcional, não `null`
+
+Cobrança gerada por assinatura traz `"subscription": "sub_…"`; cobrança
+avulsa **omite a chave** (não vem como `null`). Parser lê com `?.`, nunca
+assume presença.

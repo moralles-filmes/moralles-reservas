@@ -6,12 +6,12 @@
 // Uso — PowerShell (shell primário deste projeto):
 //   $env:ASAAS_ENV = 'sandbox'
 //   $env:ASAAS_API_KEY = '<Ctrl+V da chave INTEIRA, nada digitado à mão>'
-//   npx deno@2.1.4 run --allow-net --allow-env scripts/asaas-probe.ts
+//   npx deno@2.1.4 run --allow-net --allow-env --allow-write scripts/asaas-probe.ts
 //   $env:ASAAS_API_KEY = $null      # limpa a chave da sessão SÓ no fim
 //
 // Uso — bash / Git Bash:
 //   ASAAS_ENV=sandbox ASAAS_API_KEY='<Ctrl+V da chave INTEIRA>' \
-//     npx deno@2.1.4 run --allow-net --allow-env scripts/asaas-probe.ts
+//     npx deno@2.1.4 run --allow-net --allow-env --allow-write scripts/asaas-probe.ts
 //
 // PowerShell NÃO aceita prefixo de variável inline (`VAR=x comando`) — isso é
 // sintaxe de bash e vira "termo não reconhecido".
@@ -112,10 +112,27 @@ async function call(path: string, method = "GET", body?: unknown) {
   return { status: res.status, data };
 }
 
+// Acumula tudo que a sonda observou. O terminal serve pra acompanhar; o
+// arquivo é o que vira resposta do §13 sem ninguém copiar JSON à mão.
+const captured: Array<{ label: string; result: unknown }> = [];
+
 function show(label: string, result: unknown) {
   console.log(`\n===== ${label} =====`);
   console.log(JSON.stringify(result, null, 2));
+  captured.push({ label, result });
 }
+
+// O arquivo carrega respostas da API, nunca a chave — por isso KEY não é
+// referenciada aqui.
+const OUT_PATH = Deno.env.get("ASAAS_PROBE_OUT") ?? "asaas-probe-output.json";
+globalThis.addEventListener("unload", () => {
+  try {
+    Deno.writeTextFileSync(OUT_PATH, JSON.stringify(captured, null, 2));
+    console.log(`\nResultado gravado em: ${OUT_PATH}`);
+  } catch (err) {
+    console.error(`Falha ao gravar ${OUT_PATH}:`, err);
+  }
+});
 
 // CPF de teste gerado (4Devs). O sandbox valida o formato/dígito.
 const CPF_TESTE = "52998224725";
