@@ -125,6 +125,8 @@ As orgs `Moralles`, `Ren Sushi` e `Seu Japa Teste` ficaram sem `tax_id`/`billing
 
 ## Gate de go-live (registrado na Fase 11 do plano; NÃO bloqueia a 4a)
 
+**DECISÃO (2026-07-19): o go-live de PRODUÇÃO fica DEFERIDO para a ÚLTIMA fase do projeto.** O sistema roda validado em **sandbox** (`ASAAS_ENV=sandbox`) até a virada final, mesmo sem cliente pagante hoje — é seguro (nenhum cartão real é cobrado). O merge da 4a pra `main` (frontend) foi feito; NÃO rodar o Passo 7 do [runbook](FASE-4A-DEPLOY-RUNBOOK.md) (chave prod, `ASAAS_ENV=production`, webhook prod, rotacionar chave sandbox, tag) antes da última fase.
+
 Enquanto o único cliente é vitalício grátis, o pior caso não atinge ninguém. Antes da 1ª assinatura PAGANTE: subir a cadência do `process-asaas-reconcile` de diário para horário/`*/15` **e** deduplicar `billing_notifications` no estágio 2 — feitos juntos.
 
 ## Riscos residuais
