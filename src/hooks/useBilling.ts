@@ -322,3 +322,32 @@ export function useSyncFromStripe() {
     },
   });
 }
+
+// ── Entitlements (leitura, Fase 4a — nada aqui bloqueia) ────────────────────
+
+export interface FeatureEntitlementView {
+  allowed: boolean;
+  source: "admin_block" | "override" | "subscription" | "trial" | "wallet" | "legacy" | "none";
+  status: string;
+  expires_at: string | null;
+}
+
+export interface OrgEntitlementsView {
+  system: FeatureEntitlementView;
+  whatsapp: FeatureEntitlementView;
+  ai: FeatureEntitlementView;
+}
+
+export function useOrgEntitlements(organizationId: string | null) {
+  return useQuery<OrgEntitlementsView>({
+    queryKey: ["org-entitlements", organizationId],
+    enabled: !!organizationId,
+    queryFn: async () => {
+      const res = await invokeManageBilling({
+        action: "get_org_entitlements",
+        organization_id: organizationId,
+      });
+      return (res as { entitlements: OrgEntitlementsView }).entitlements;
+    },
+  });
+}

@@ -17,6 +17,7 @@ import {
   retrieveStripeInvoice,
   voidStripeInvoice,
 } from "../_shared/stripe-billing.ts";
+import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -64,6 +65,7 @@ const CLIENT_FRIENDLY_ACTIONS = new Set([
   "change_plan",
   "preview_plan_change",
   "cancel_subscription_by_owner",
+  "get_org_entitlements",
 ]);
 
 // ── billing_plans: colunas e enums ──────────────────────────────────────────
@@ -1208,6 +1210,39 @@ serve(async (req) => {
 
       jsonLog("info", { reqId, evt: "billing_synced_from_stripe", orgId: organization_id, synced });
       return jsonResponse(req, { success: true, synced });
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // ENTITLEMENTS (client-friendly, read-only — Fase 4a, nada aqui bloqueia)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    // ── get_org_entitlements (client-friendly) ─────────────────────────────────
+    if (action === "get_org_entitlements") {
+      const orgId = String(body.organization_id ?? "");
+      if (!orgId) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
+      if (!callerIsAdmin && !(await canManageOrgBilling(callerId, orgId))) {
+        return jsonResponse(req, { error: "Acesso negado." }, 403);
+      }
+
+      const ent = await resolveOrgEntitlements(supabase, orgId);
+
+      // Moldar: devolve só o que a UI precisa. `reason`, `granted_by` e
+      // `grant_type` do override ficam no servidor — quem concedeu a cortesia e
+      // por quê é informação interna da plataforma.
+      const shape = (f: { allowed: boolean; source: string; status: string; expiresAt: string | null }) => ({
+        allowed: f.allowed,
+        source: f.source,
+        status: f.status,
+        expires_at: f.expiresAt,
+      });
+
+      return jsonResponse(req, {
+        entitlements: {
+          system: shape(ent.system),
+          whatsapp: shape(ent.whatsapp),
+          ai: shape(ent.ai),
+        },
+      });
     }
 
     return jsonResponse(req, { error: "Ação inválida." }, 400);

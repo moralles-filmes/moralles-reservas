@@ -397,5 +397,6 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`whatsapp-send.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
 - **`whatsapp-providers.ts`** → `webhook-whatsapp`, `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
 - **`whatsapp-status.ts`** → `webhook-whatsapp`
+- **`entitlements.ts`** (+ `entitlements-core.ts`, mudam juntos) → `manage-billing`
 
 Worker/EF novo que importe um helper aqui = atualizar este checklist no mesmo PR.

@@ -8,6 +8,7 @@ import {
   usePreviewPlanChange,
   useChangePlan,
   useCancelByOwner,
+  useOrgEntitlements,
 } from "@/hooks/useBilling";
 import { usePaymentMethods } from "@/hooks/usePaymentMethods";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,6 +46,12 @@ export default function Cobranca() {
   const { data: detail, isLoading: loadingDetail, refetch: refetchDetail } = useOrgBillingDetail(organizationId);
   const { data: plans, isLoading: loadingPlans } = useBillingPlans();
   const { data: pmData, isLoading: loadingPms, refetch: refetchPms } = usePaymentMethods(organizationId);
+  const {
+    data: entitlements,
+    isLoading: loadingEntitlements,
+    isError: entitlementsError,
+    refetch: refetchEntitlements,
+  } = useOrgEntitlements(organizationId ?? null);
 
   const checkout = useCreateBillingCheckout();
   const previewMutation = usePreviewPlanChange();
@@ -117,6 +124,10 @@ export default function Cobranca() {
   const defaultPm = pmData?.payment_methods.find((pm) => pm.is_default) ?? pmData?.payment_methods[0] ?? null;
 
   const activePlans = (plans ?? []).filter((p) => p.active);
+
+  // Cortesia (LIFETIME/PROMOTIONAL etc. concedida por admin). Mostrar preço a
+  // quem tem acesso vitalício gratuito gera dúvida sobre estar sendo cobrado.
+  const isCourtesy = entitlements?.system.source === "override" && entitlements.system.allowed;
 
   async function handleChoose(plan: BillingPlan) {
     try {
@@ -350,24 +361,60 @@ export default function Cobranca() {
         </Card>
       )}
 
-      {/* Planos disponíveis */}
-      <div className="space-y-3">
-        <div>
-          <h2 className="text-lg font-semibold">Planos disponíveis</h2>
-          <p className="text-sm text-muted-foreground">
-            {sub
-              ? "Mude de plano a qualquer momento — você só paga a diferença proporcional."
-              : "Escolha o plano ideal pro seu negócio. Pagamento via cartão de crédito."}
-          </p>
+      {/* Planos disponíveis / cortesia */}
+      {loadingEntitlements ? (
+        <Skeleton className="h-32 w-full" />
+      ) : entitlementsError ? (
+        // Falha ao carregar entitlements: não sabemos se a conta tem cortesia.
+        // Não mostrar o preço com confiança nesse caso — evita sugerir cobrança
+        // pra quem tem acesso vitalício grátis (ex.: Ren Sushi) por causa de um
+        // erro transitório de rede.
+        <Card className="border-warning/20 bg-warning/10">
+          <CardContent className="py-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-warning">
+              Não foi possível carregar as informações de acesso da sua conta.
+            </p>
+            <Button variant="outline" size="sm" onClick={() => refetchEntitlements()}>
+              Tentar novamente
+            </Button>
+          </CardContent>
+        </Card>
+      ) : isCourtesy ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Acesso vitalício cortesia</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Sua conta tem acesso liberado por cortesia, sem cobrança. Não há
+              nada a contratar nem a pagar.
+            </p>
+            {entitlements?.system.expires_at && (
+              <p className="text-sm text-muted-foreground">
+                Válido até {formatDateBR(entitlements.system.expires_at)}.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <h2 className="text-lg font-semibold">Planos disponíveis</h2>
+            <p className="text-sm text-muted-foreground">
+              {sub
+                ? "Mude de plano a qualquer momento — você só paga a diferença proporcional."
+                : "Escolha o plano ideal pro seu negócio. Pagamento via cartão de crédito."}
+            </p>
+          </div>
+          <PricingTable
+            plans={activePlans}
+            currentPlanId={activePlan?.id ?? null}
+            onChoose={handleChoose}
+            onChange={handleChangePlanPreview}
+            loadingPlanId={checkout.isPending ? checkout.variables?.plan_id ?? null : previewMutation.isPending ? previewMutation.variables?.new_plan_id ?? null : null}
+          />
         </div>
-        <PricingTable
-          plans={activePlans}
-          currentPlanId={activePlan?.id ?? null}
-          onChoose={handleChoose}
-          onChange={handleChangePlanPreview}
-          loadingPlanId={checkout.isPending ? checkout.variables?.plan_id ?? null : previewMutation.isPending ? previewMutation.variables?.new_plan_id ?? null : null}
-        />
-      </div>
+      )}
 
       {/* Preview / confirmação de troca de plano */}
       <AlertDialog open={!!previewState} onOpenChange={(open) => !open && setPreviewState(null)}>
