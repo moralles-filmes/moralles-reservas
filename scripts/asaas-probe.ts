@@ -195,6 +195,23 @@ show("2a. Checkout RECURRENT só cartão (shape de `subscription`)", await call(
   externalReference: "probe-recurrent",
 }));
 
+// O checkout ACEITA `customer` no request? A resposta da rodada 1 trazia
+// "customer": null e "customerData": null, o que prova que o campo existe no
+// recurso — mas não que o POST o aceite. billing-provider.ts passou a enviar
+// providerCustomerId nele; se o Asaas IGNORAR em silêncio (200 com customer
+// null), o cliente que criamos vira órfão e o fallback de correlação do
+// webhook (billing_customers.asaas_customer_id) nasce morto.
+// Confira o campo `customer` NA RESPOSTA, não só o status.
+show("2c. Checkout com `customer` — o Asaas amarra ou ignora?", await call("/checkouts", "POST", {
+  billingTypes: ["CREDIT_CARD"],
+  chargeTypes: ["RECURRENT"],
+  callback: { successUrl: "https://example.com/ok", cancelUrl: "https://example.com/no" },
+  items: [{ name: "Sonda com customer", quantity: 1, value: 19.90 }],
+  subscription: { cycle: "MONTHLY" },
+  customer: customerId,
+  externalReference: "probe-customer-bound",
+}));
+
 // `subscription` é mesmo obrigatório em RECURRENT, ou o Asaas assume um
 // default? Se passar sem ele, billing-provider.ts pode simplificar.
 show("2b. RECURRENT SEM o objeto `subscription`", await call("/checkouts", "POST", {
