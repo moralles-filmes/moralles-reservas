@@ -391,12 +391,14 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`waitlist-defaults.ts`** → `process-waitlist-entered`, `resend-notification`
 - **`stripe-config.ts`** → `manage-stripe-accounts`, `create-checkout-session`, `stripe-webhook`, `manage-platform-secrets`, `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`, `manage-payment-methods`
 - **`stripe-billing.ts`** → `manage-billing`, `process-billing-reconcile`, `create-billing-checkout`
-- **`asaas-config.ts`** → `manage-platform-secrets`, `asaas-webhook`
-- **`asaas-core.ts`** → consumido via `asaas-config.ts` (`manage-platform-secrets`) e diretamente por `asaas-webhook`, `process-asaas-reconcile`
-- **`asaas.ts`** (cliente HTTP) → consumido via `billing-provider.ts`: `asaas-webhook`, `create-billing-checkout`, `manage-organizations`
-- **`billing-provider.ts`** → `asaas-webhook` (via `asaas-billing-events-apply.ts`), `create-billing-checkout`, `manage-organizations`
-- **`asaas-billing-events-apply.ts`** (+ `asaas-billing-events.ts`, núcleo puro que ele importa) → `asaas-webhook`, `process-asaas-reconcile`
-- **`platform-flags.ts`** → `asaas-webhook`, `process-asaas-reconcile`
+- **`tax-id.ts`** → `manage-organizations`. Tem cópia gêmea em [src/lib/tax-id.ts](src/lib/tax-id.ts) (backend não importa de `src/`); a sincronia é garantida por teste que importa as duas — mudar uma sem a outra quebra [src/lib/tax-id.test.ts](src/lib/tax-id.test.ts).
+- **`asaas-config.ts`** → `manage-platform-secrets`, `asaas-webhook`, `create-billing-checkout`
+- **`asaas-core.ts`** → consumido via `asaas-config.ts` (`manage-platform-secrets`) e diretamente por `asaas-webhook`, `process-asaas-reconcile`, `create-billing-checkout`
+- **`asaas.ts`** (cliente HTTP) → consumido via `billing-provider.ts`: `asaas-webhook`, `create-billing-checkout`
+- **`billing-provider.ts`** → `asaas-webhook` (via `asaas-billing-events-apply.ts`), `create-billing-checkout`
+- **`asaas-billing-events.ts`** (núcleo puro) → `create-billing-checkout` (produz o `externalReference`), `asaas-webhook` e `process-asaas-reconcile` (via `-apply`). **Linha própria de propósito:** quem muda o formato do `externalReference` e redeploya só os consumidores do `-apply` deixa o `create-billing-checkout` emitindo o formato antigo em memória — o webhook para de extrair `orgId`/`planId`, `purpose` cai no default `other` e toda assinatura nova termina em `failed` sem ativar ninguém.
+- **`asaas-billing-events-apply.ts`** → `asaas-webhook`, `process-asaas-reconcile`
+- **`platform-flags.ts`** → `asaas-webhook`, `process-asaas-reconcile`, `create-billing-checkout`
 - **`ai-providers.ts`** → `webhook-whatsapp`, `manage-ai-providers`
 - **`whatsapp-send.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
 - **`whatsapp-providers.ts`** → `webhook-whatsapp`, `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`
