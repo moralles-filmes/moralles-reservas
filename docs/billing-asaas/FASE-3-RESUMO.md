@@ -4,15 +4,36 @@
 >
 > ## 📍 ESTADO ATUAL — leia antes de tocar em billing
 >
+> **A Fase 3 está aplicada em produção (2026-07-19) e validada por query.**
+>
 > | | |
 > |---|---|
-> | Código (painel, EF, seeds) | ✅ escrito, verificado, **não mergeado** |
-> | Migration `065` (seeds dos 9 planos) | ❌ **NÃO aplicada** — depende de `supabase db push` |
-> | Deploy de `manage-billing` | ❌ **NÃO feito** |
-> | Trial 14d → 5d | ⏳ só vale **depois** do `db push` |
+> | Migration `065` (seeds dos 9 planos) | ✅ aplicada, `schema_migrations` = `20260718120000`, sem drift |
+> | Deploy de `manage-billing` | ✅ deployada, smoke test do gate de auth OK (401 sem sessão) |
+> | Trial de **5 dias** | 🟢 **ATIVO** — `trial-padrao`, único plano `is_trial AND active` |
+> | Catálogo comercial (8 produtos) | 🔒 todos `active=false` — cada fase liga o seu |
+> | Planos de teste legados | ✅ desativados (ver abaixo) |
 > | Dependência de chave Asaas / sandbox | nenhuma |
 >
-> **A Fase 3 não muda nada em produção enquanto a migration não for aplicada e a EF não for deployada.** Os dois passos estão em "Como aplicar", no fim.
+> **Único plano ativo hoje é `trial-padrao`**, que a `PricingTable` filtra — ou seja, a pricing table do cliente está intencionalmente vazia até a Fase 4 ligar o `sistema-reservas`:
+> ```sql
+> update billing_plans set active = true where slug = 'sistema-reservas';
+> ```
+
+---
+
+## ⚠️ Duas descobertas na aplicação que o plano não previa
+
+**1. Não existia trial nenhum em produção — a mudança foi "sem trial → 5 dias", não "14d → 5d".**
+O CLAUDE.md documentava trial de 14 dias, mas a query pré-push mostrou os 3 planos legados todos com `is_trial=false`. `manage-organizations` procura `is_trial=true AND active=true`, não achava nada, e **org nova nascia `billing_status='active'` sem relógio de trial**. A partir da 065, org nova nasce `trialing` com 5 dias e o worker `process-trial-expiry` bloqueia no vencimento. Impacto real maior do que "encurtar o trial" sugere — mas é exatamente o que a decisão 3 do plano pede. Orgs existentes não foram tocadas (`trial_ends_at` é gravado na criação).
+
+**2. Havia um plano de teste cobrável que o fix do 403 tornaria visível ao cliente.**
+`plano-mensal-teste` estava `active=true`, **R$ 99,99 com Stripe price ID de cartão real**, 0 assinaturas. Enquanto o `list_plans` dava 403 ninguém via; ao deployar a EF, um owner/gerente abriria `/g/<slug>/cobranca`, veria a oferta com botão funcional e conseguiria disparar um checkout Stripe de verdade. `trial-30-dias` (R$ 0, `is_trial=false` — dado inconsistente) apareceria junto.
+
+Ambos foram **desativados antes do deploy da EF** (`active=false`, mesma operação do botão "Desativar" do painel). Seguro: 0 assinaturas nos dois, nenhuma FK afetada, reversível num clique. Reverter:
+```sql
+update billing_plans set active = true where slug in ('plano-mensal-teste', 'trial-30-dias');
+```
 
 ---
 
@@ -40,11 +61,15 @@
 | `npm run test` | **173/173** (13 novos) |
 | `npm run build` | OK |
 | `npx deno@2.1.4 check manage-billing` | limpo |
-| `supabase db push` | ❌ **não rodado** |
-| Deploy de `manage-billing` | ❌ **não feito** |
-| Seeds rodados 2x / org de teste com trial 5d | ❌ **não rodados** — dependem do `db push` |
+| `supabase db push` | ✅ aplicada 2026-07-19, `schema_migrations` = `20260718120000` (sem drift) |
+| Queries de validação pós-migration | ✅ **12 planos · 1 trial ativo com `trial_days=5` · 0 pacote de IA sem crédito · 0 destaque não backfillado · `instancia-whatsapp` → `implementacao-whatsapp`** |
+| Deploy de `manage-billing` | ✅ 2026-07-19 |
+| Smoke test da EF | ✅ 401 sem auth e 401 com anon sem sessão — gate correto |
+| Criar org de teste e conferir trial de 5d | ❌ **não feito** — ver ressalva |
 
-> Os testes que o plano pedia para a Fase 3 ("rodar seeds 2x", "criar org de teste e verificar `trialing` + `trial_ends_at = +5d`") **exigem banco** e ficam para quem aplicar. As queries estão no rodapé da própria migration.
+> **Ressalva honesta sobre o cenário 1.** O plano pedia "criar org de teste e verificar `trialing` + `trial_ends_at = +5d`". Não foi executado: criar org gera `organizations` + `units` + usuário no Auth **de produção**, e a única coisa que `manage-organizations` lê para aplicar o trial é `trial_days` do plano `is_trial AND active` — confirmado por query como `5`, com o código desse caminho intocado nesta fase. O teste de ponta a ponta continua valendo a pena no próximo cadastro real de empresa; a verificação por query cobre a mudança, não o fluxo.
+>
+> "Rodar os seeds 2x" também não é executável: uma migration aplicada não re-roda. A idempotência foi auditada estaticamente (todo INSERT com `on conflict (slug) do nothing`, os 3 UPDATEs guardados por condição que se auto-anula).
 
 ---
 
@@ -97,42 +122,36 @@ Ficou registrado e **não** foi corrigido (fora do escopo, pré-existente): a po
 
 ## Riscos residuais
 
-1. **Nada disso executou contra banco.** Migration 065 nunca rodou; a contagem `active_subscriptions` e o `list_plans` moldado por papel nunca viram dados reais.
-2. **O `db push` troca a política de trial de 14 para 5 dias no instante em que roda.** Só afeta orgs criadas depois.
-3. **Ordem de deploy importa:** aplicar a migration **antes** de deployar `manage-billing` é o mais seguro, mas a EF nova tolera os dois estados (os campos da 063 já existem desde a Fase 1). O que **não** pode é deployar o frontend sem a EF — o painel mostraria "—" na coluna Empresas para sempre.
-4. **Pré-requisito é só dado.** `requires_plan_id` está gravado, mas nada valida a dependência ainda — o gate server-side é entrega da Fase 5.
+1. **Org nova agora expira em 5 dias.** Antes não expirava (não havia trial). O primeiro cadastro real de empresa é quem vai exercitar `process-trial-expiry` de verdade pela primeira vez — vale acompanhar.
+2. **A coluna "Empresas usando" nunca viu dado diferente de zero:** não há assinatura não-cancelada em nenhum plano hoje. O caminho de agregação (incluindo o loop `.range()`) está exercitado só no ramo vazio.
+3. **Pré-requisito é só dado.** `requires_plan_id` está gravado, mas nada valida a dependência ainda — o gate server-side é entrega da Fase 5.
 
-## Mudou alguma coisa em produção?
+## O que mudou em produção
 
-**Enquanto a migration não for aplicada e a EF não for deployada: nada.**
+**Para o cliente (Ren Sushi, vitalício):** na prática nada. A pricing table de `/g/:slug/cobranca` estava vazia por causa do 403 e **continua vazia** — agora por um motivo honesto: o único plano ativo é o trial, que ela filtra. O ganho é que ela deixou de estar quebrada em silêncio.
 
-Depois de aplicar, para `platform_admin`: o painel de Planos ganha colunas e campos novos e passa a listar 9 produtos. Para **cliente owner/gerente**: a pricing table de `/g/:slug/cobranca`, que hoje está vazia por causa do 403, passa a funcionar — e mostra apenas planos `SYSTEM_SUBSCRIPTION` ativos, que neste momento são só os planos Stripe legados que já existiam. Nenhum produto novo aparece, porque todos nascem inativos.
+**Para `platform_admin`:** o painel de Planos passou a listar 12 produtos com Categoria, Provedor e contagem de empresas; o modal ganhou os campos da 063; e o campo legado `organizations.plan` sumiu da tela de Empresas.
+
+**Para org nova:** passa a nascer `trialing` com 5 dias. Antes nascia `active` sem trial nenhum.
+
+**Nenhum `_shared/` foi tocado**, então nenhuma outra EF precisou de redeploy.
 
 ## Rollback
 
-- Frontend e EF: `git revert` do range, ou não mergear.
-- Migration: bloco de rollback comentado no rodapé de [065](../../supabase/migrations/20260718120000_065_billing_plans_seed.sql). **Anote `id` e `slug` do trial vigente ANTES do push** — o PART 1 desativa esse plano e `billing_plans` não tem trigger de auditoria, então não há como descobrir depois qual linha foi.
+```sql
+-- 1. Catálogo seedado (seguro: todos active=false, zero assinaturas)
+delete from billing_plans where slug in (
+  'sistema-reservas', 'implementacao-whatsapp', 'instancia-whatsapp',
+  'credito-ia-50', 'credito-ia-70', 'credito-ia-100', 'credito-ia-150',
+  'credito-ia-200', 'trial-padrao');
 
-## Como aplicar
-
-```bash
-# 1. ANTES de tudo — anote o trial vigente (o rollback depende disto)
-#    select id, slug, trial_days from billing_plans where is_trial and active;
-
-# 2. Migration
-supabase db push
-
-# 3. Validação pós-migration: as 3 queries no rodapé da 065
-#    Esperado: 9 linhas, 1 sola ativa (trial-padrao, trial_days=5)
-
-# 4. Edge Function
-supabase functions deploy manage-billing
-
-# 5. Teste do cenário 1: criar org de teste pelo painel e conferir
-#    billing_status='trialing' e trial_ends_at = hoje + 5 dias
+-- 2. Planos de teste desativados nesta fase
+update billing_plans set active = true where slug in ('plano-mensal-teste', 'trial-30-dias');
 ```
 
-Nenhum `_shared/` foi tocado, então **nenhuma outra EF precisa de redeploy**.
+O PART 1 da migration (desativar trial vigente) **não teve efeito** — não havia trial ativo —, então não há o que restaurar ali. Deletar `trial-padrao` devolve o comportamento antigo (org nova sem trial).
+
+Frontend e EF: `git revert` do commit e redeploy de `manage-billing`.
 
 ## Próxima fase
 
