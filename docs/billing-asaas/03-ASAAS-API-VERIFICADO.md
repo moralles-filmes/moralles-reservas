@@ -282,3 +282,49 @@ Task 13 antes de considerar fechado.
 Cobrança gerada por assinatura traz `"subscription": "sub_…"`; cobrança
 avulsa **omite a chave** (não vem como `null`). Parser lê com `?.`, nunca
 assume presença.
+
+### 13.7 ⚠ Shape do checkout RECURRENT — dois 400 que consertaram o código
+
+A 2ª rodada da sonda (2026-07-19) finalmente exercitou o objeto `subscription`
+do checkout, que a Task 7 assumira por analogia. Dois achados derrubaram o
+código como estava e obrigaram correção **antes do deploy**:
+
+**2a — `subscription.nextDueDate` é obrigatório.** RECURRENT só cartão com
+`subscription: { cycle: "MONTHLY" }` → `400`:
+
+> O campo nextDueDate deve ser informado.
+
+`billing-provider.ts` mandava só `{ cycle }` → todo checkout de assinatura
+daria 400. Corrigido para `{ cycle, nextDueDate }` (data de hoje BRT; o
+checkout hospedado não propaga trial).
+
+**2c — amarrar `customer` exige cadastro COMPLETO.** Checkout com
+`customer: <cus_ mínimo>` (só nome/CPF/e-mail, como o onboarding cria) → `400`
+pedindo **seis** campos:
+
+> O campo phone deve existir para o customer informado.
+> O campo address / addressNumber / postalCode / province / city deve existir …
+
+Ou seja: o checkout NÃO ignora o `customer` (a hipótese do órfão), ele o
+**exige íntegro**. Como o onboarding só coleta nome/CPF/e-mail, `billing-provider.ts`
+**parou de enviar `customer`** no checkout. A correlação do webhook passa a
+depender exclusivamente do `externalReference` (caminho primário do aplicador).
+O cliente que gravamos em `billing_customers` segue válido para cobrança
+**direta** (`POST /payments` aceitou o cliente mínimo na sonda 4a — status 200);
+é só o *binding do checkout* que demanda o cadastro completo.
+
+**2b — `subscription` é obrigatório em RECURRENT.** Sem o objeto → `400`
+"O campo subscription deve ser informado". Não há default; o código sempre o
+envia em `mode=subscription`.
+
+**Consequência que virou gate de deploy:** sem o `customer` amarrado, a
+ativação da org depende 100% do `externalReference` **chegar na cobrança
+nascida do checkout** — e isso (§13.5.1) só foi provado para `POST /subscriptions`,
+não para o checkout hospedado. É o **cenário 2 da Task 13**, agora HARD GATE:
+se a cobrança do checkout não herdar o `externalReference`, a org paga e não
+é liberada. Mitigação, se falhar: coletar endereço completo no onboarding e
+voltar a amarrar o `customer` (fallback de correlação por `asaas_customer_id`).
+
+**Sonda 2d** (adicionada nesta rodada) manda o shape EXATO que o código passa
+agora (sem `customer`, com `nextDueDate`) — re-rodar e confirmar `200 ACTIVE`
+fecha a validação de API antes do deploy.

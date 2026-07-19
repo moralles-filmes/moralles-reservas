@@ -497,19 +497,15 @@ export interface AsaasCheckoutItem {
   /** máx 30 chars */
   name: string;
   quantity: number;
-  /** Reais decimais, NÃO centavos — mesma convenção CONFIRMADA dos demais
-   * `value` da API (§9.1 de 03-ASAAS-API-VERIFICADO.md), mas ESTE campo
-   * específico (`items[].value` do checkout) segue sem prova decisiva: a doc
-   * só mostra `"value": 100` sem casa decimal — §9.1 marca como NÃO
-   * VERIFICADO, testar `19.90` no sandbox antes da Fase 4. Mesma conversão
-   * dos demais: `value = amountCents / 100` / `amountCents = Math.round(value
-   * * 100)`. */
+  /** Reais decimais, NÃO centavos — VERIFICADO em sandbox (§13.1): `19.90`
+   * enviado no `items[].value` volta como `19.9`, mesma convenção decimal dos
+   * demais `value` da API. Conversão na fronteira: `value = amountCents / 100`
+   * / `amountCents = Math.round(value * 100)`. */
   value: number;
   /** máx 150 chars */
   description?: string;
-  /** OpenAPI do Asaas lista como obrigatório no array `items` — NÃO VERIFICADO
-   * em runtime (§9/§13 da doc). Opcional aqui; confirmar no sandbox antes da
-   * Fase 4 antes de assumir que pode ser omitido. */
+  /** OpenAPI lista como obrigatório no array `items`, mas VERIFICADO em sandbox
+   * (§13.1) que o checkout é criado (200) SEM ele — a doc mente. Opcional. */
   imageBase64?: string;
 }
 
@@ -524,17 +520,17 @@ export interface AsaasCheckoutParams {
   chargeTypes: Array<"DETACHED" | "RECURRENT" | "INSTALLMENT">;
   callback: AsaasCheckoutCallback;
   items: AsaasCheckoutItem[];
-  /** Id do cliente Asaas (`cus_...`) que este checkout deve amarrar. INFERIDO
-   * do shape de resposta da sonda de 2026-07-19 ao POST /v3/checkouts, que
-   * devolveu `"customer": null` e `"customerData": null` no corpo — os campos
-   * existem no recurso, faltava modelá-los aqui. Sem enviá-lo, o Asaas cria um
-   * cliente próprio a partir do que o pagador digitar e o `asaas_customer_id`
-   * que gravamos vira órfão, matando o fallback de correlação do webhook
-   * (`_shared/asaas-billing-events-apply.ts`, `.eq("asaas_customer_id", ...)`).
-   * Confirmação ao vivo fica pra Task 13. */
+  /** Id do cliente Asaas (`cus_...`) a amarrar no checkout. ATENÇÃO: verificado
+   * em sandbox (§13.7) que enviar um `customer` existente faz o checkout EXIGIR
+   * telefone + endereço completo (address/addressNumber/postalCode/province/
+   * city) nesse cliente — 400 sem eles. Por isso o AsaasBillingProvider NÃO
+   * envia este campo (o onboarding só coleta nome/CPF/e-mail); a correlação do
+   * webhook é por `externalReference`, não por customer. Só popular aqui se o
+   * cliente tiver cadastro completo. */
   customer?: string;
-  /** Obrigatório quando chargeTypes inclui RECURRENT (§9) — shape exato não
-   * detalhado em 03-ASAAS-API-VERIFICADO.md. */
+  /** Obrigatório quando chargeTypes inclui RECURRENT. Shape verificado em
+   * sandbox (§13.7): exige `cycle` E `nextDueDate` (YYYY-MM-DD) — a API responde
+   * 400 sem qualquer um dos dois. */
   subscription?: Record<string, unknown>;
   /** 10–1440 */
   minutesToExpire?: number;

@@ -324,11 +324,20 @@ const asaasProvider: BillingProviderPort = {
         // aumenta a conversão. Sem BOLETO em nenhum dos modos (§9).
         billingTypes: isSubscription ? ["CREDIT_CARD"] : ["CREDIT_CARD", "PIX"],
         chargeTypes: isSubscription ? ["RECURRENT"] : ["DETACHED"],
-        // Amarra o checkout ao cliente que NÓS criamos. Sem isto o Asaas cria
-        // um cliente próprio com os dados que o pagador digitar, e o
-        // `asaas_customer_id` gravado em billing_customers nunca aparece em
-        // pagamento nenhum — o fallback de correlação do webhook nasce morto.
-        customer: params.providerCustomerId,
+        // NÃO amarra `customer` ao checkout, de propósito. Verificado em sandbox
+        // (§13.7): ao receber um `customer` existente, o checkout EXIGE que ele
+        // tenha telefone + endereço completo (address, addressNumber,
+        // postalCode, province, city) — dados que o onboarding não coleta (só
+        // nome/CPF/e-mail), então passar o cliente mínimo dá 400 e trava a
+        // contratação inteira. O checkout hospedado coleta os dados do pagador
+        // na própria página; a correlação de volta pra org é pelo
+        // `externalReference` (caminho PRIMÁRIO do aplicador —
+        // asaas-billing-events-apply.ts passo 5), não pelo customer. O cliente
+        // que gravamos em billing_customers segue válido pra cobrança DIRETA
+        // (POST /payments aceita cliente mínimo — §13 sonda 4a); só o binding do
+        // checkout é que exige o cadastro completo. Consequência aceita: sem o
+        // customer amarrado, a ativação depende do externalReference chegar na
+        // cobrança da assinatura (cenário 2 da Task 13 é o gate disso).
         callback: { successUrl: params.successUrl, cancelUrl: params.cancelUrl },
         items: [
           {
@@ -341,13 +350,13 @@ const asaasProvider: BillingProviderPort = {
         externalReference: params.externalReference,
       };
       if (cycle) {
-        // `subscription` obrigatório quando chargeTypes inclui RECURRENT
-        // (§9). Shape exato do objeto AINDA NÃO VERIFICADO: a sonda de
-        // 2026-07-19 parou antes, no 400 de `billingTypes` (§13.3), então
-        // `cycle` continua sendo analogia ao endpoint irmão
-        // POST /v3/subscriptions (que exige `cycle`, §9) — não confirmação.
-        // Primeiro checkout RECURRENT real valida ou derruba isso.
-        checkoutParams.subscription = { cycle };
+        // `subscription` obrigatório quando chargeTypes inclui RECURRENT, E o
+        // objeto exige `nextDueDate` além de `cycle` — verificado em sandbox
+        // (§13.7): sem `nextDueDate` a API responde 400 "O campo nextDueDate
+        // deve ser informado". Data de hoje BRT: o checkout hospedado não
+        // propaga trial (ver create-billing-checkout), então a 1ª cobrança do
+        // cartão sai na conclusão do checkout, não numa data futura.
+        checkoutParams.subscription = { cycle, nextDueDate: isoDateInDaysBrt(0) };
       }
 
       const res = await createAsaasCheckout(checkoutParams);

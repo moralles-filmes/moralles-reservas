@@ -14,3 +14,7 @@ resolved
 
 # Lockfile gerado por `npx deno check` nas Edge Functions (verificacao local).
 deno.lock
+
+# Saida descartavel da sonda Asaas (scripts/asaas-probe.ts) — IDs de sandbox,
+# nunca versionar.
+asaas-probe-output.json

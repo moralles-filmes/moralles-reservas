@@ -222,6 +222,21 @@ show("2b. RECURRENT SEM o objeto `subscription`", await call("/checkouts", "POST
   externalReference: "probe-recurrent-nosub",
 }));
 
+// 2d. SHAPE FINAL DE PRODUÇÃO — espelha exatamente o que billing-provider.ts
+// passa após as correções pós-sonda: RECURRENT só cartão, SEM `customer` (2c
+// provou que amarrar exige endereço completo, que o onboarding não coleta),
+// `subscription: { cycle, nextDueDate }` (2a provou nextDueDate obrigatório).
+// ESPERADO: 200 com `status: ACTIVE` e um `link`. Se der 200, o caminho de
+// checkout da assinatura está validado no nível da API antes do deploy.
+show("2d. SHAPE DE PRODUÇÃO (sem customer, com nextDueDate)", await call("/checkouts", "POST", {
+  billingTypes: ["CREDIT_CARD"],
+  chargeTypes: ["RECURRENT"],
+  callback: { successUrl: "https://example.com/ok", cancelUrl: "https://example.com/no" },
+  items: [{ name: "Sonda shape final", quantity: 1, value: 19.90, description: "Assinatura do sistema" }],
+  subscription: { cycle: "MONTHLY", nextDueDate: new Date().toISOString().slice(0, 10) },
+  externalReference: "org:probe|plan:probe|purpose:subscription",
+}));
+
 // ---- 3. PUT {status:"INACTIVE"} preserva as cobranças emitidas? ----
 const sub = await call("/subscriptions", "POST", {
   customer: customerId,

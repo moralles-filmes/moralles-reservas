@@ -104,6 +104,8 @@ Os cenários 3/5/6 cobrem os caminhos de erro do aplicador que não têm teste u
 
 **5. Checkout gateia `asaas_enabled` (revisão final).** Simetria com o webhook, que fail-closa na mesma flag. Sem isso, ativar o plano com a flag OFF perderia pagamento em silêncio.
 
+**6. Correção pós-sonda no `billing-provider.ts` (§13.7).** A 2ª rodada da sonda achou dois `400` no shape do checkout RECURRENT que a Task 7 assumira por analogia: `subscription.nextDueDate` é obrigatório (mandávamos só `{ cycle }`), e amarrar `customer` exige cadastro completo (telefone + endereço) que o onboarding não coleta. Consertado: adiciona `nextDueDate` (hoje BRT) e **para de enviar `customer`** — correlação só por `externalReference`. Sonda `2d` adicionada pra confirmar o shape final antes do deploy.
+
 ## Invariantes fixados (não quebrar)
 
 - **Webhook Asaas aceita SÓ HTTP 200.** 200 = persistimos durável OU descartamos deliberado; 503 = falha de PERSISTÊNCIA só; falha de lógica de negócio continua 200 (reconcile reprocessa). 15 falhas consecutivas interrompem a fila; eventos apagados em 14 dias.
@@ -127,7 +129,7 @@ Enquanto o único cliente é vitalício grátis, o pior caso não atinge ningué
 
 ## Riscos residuais
 
-1. **`subscription:{cycle}` e `customer` no request do checkout são inferidos.** A sonda provou que `customer` existe na *resposta*; que o Asaas o aceite no *request* é a sonda 2c, aguardando re-execução. Se ignorar em silêncio, o cliente vira órfão e o fallback de correlação do webhook nasce morto — por isso o cenário 2 da Task 13.
+1. **Correlação do checkout depende 100% do `externalReference` na cobrança gerada.** A 2ª rodada da sonda (§13.7) matou a dúvida do `customer`: amarrá-lo ao checkout **exige cadastro completo** (telefone + endereço), que o onboarding não coleta — então `billing-provider.ts` parou de enviá-lo e a correlação passa a ser só pelo `externalReference`. Isso torna o **cenário 2 da Task 13 um HARD GATE**: §13.5.1 só provou a herança do `externalReference` via `POST /subscriptions`, não via checkout hospedado. Se a cobrança do checkout não herdar, a org paga e não é liberada. Mitigação: coletar endereço no onboarding e voltar a amarrar o `customer`.
 2. **Aplicador de I/O sem teste unitário** (sem runner Deno). Coberto pelos cenários 3/5/6 ao vivo.
 3. **`billing_events.organization_id` não tem consumidor de leitura** hoje — a decisão de não carimbá-lo em eventos `noop` informativos é segura, mas se alguém passar a ler a coluna, revisar.
 
