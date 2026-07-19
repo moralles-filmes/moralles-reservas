@@ -18,6 +18,7 @@ import {
   voidStripeInvoice,
 } from "../_shared/stripe-billing.ts";
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
+import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -1210,6 +1211,99 @@ serve(async (req) => {
 
       jsonLog("info", { reqId, evt: "billing_synced_from_stripe", orgId: organization_id, synced });
       return jsonResponse(req, { success: true, synced });
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // REPROCESSAMENTO MANUAL DE EVENTO (admin)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    // ── reprocess_billing_event (admin) ───────────────────────────────────────
+    // Botão de emergência: reaplica o efeito de um evento Asaas sem esperar o
+    // cron diário do `process-asaas-reconcile`. Deliberadamente FORA de
+    // `CLIENT_FRIENDLY_ACTIONS` — o guard de platform_admin lá em cima é o que
+    // protege esta action, e ela não recebe `organization_id` pra checar contra
+    // a org do caller (a org sai do próprio evento).
+    if (action === "reprocess_billing_event") {
+      const eventId = String(body.billing_event_id ?? "");
+      if (!eventId) {
+        return jsonResponse(req, { error: "billing_event_id é obrigatório." }, 400);
+      }
+
+      const { data: row, error: fetchErr } = await supabase
+        .from("billing_events")
+        .select("id, provider, provider_event_id, event_type, data, organization_id")
+        .eq("id", eventId)
+        .maybeSingle();
+
+      if (fetchErr) {
+        // Nunca devolve error.message cru do Postgres; detalhe só no log.
+        jsonLog("error", { reqId, evt: "billing_reprocess_fetch_failed", eventId, err: fetchErr.message });
+        return jsonResponse(req, { error: "Falha ao carregar o evento." }, 500);
+      }
+      if (!row) {
+        return jsonResponse(req, { error: "Evento não encontrado." }, 404);
+      }
+      if (row.provider !== "asaas") {
+        return jsonResponse(
+          req,
+          { error: "Reprocessamento manual só está disponível para eventos Asaas." },
+          400,
+        );
+      }
+
+      // Idempotente: `applyAsaasEvent` decide de novo a partir do estado ATUAL
+      // (invoice já paga → `noop`) e todo UPDATE é condicional. Reprocessar um
+      // evento já aplicado é no-op. SEM `asaasIoBudgetMs`: é uma ação humana
+      // sob demanda, não a resposta de 10s do webhook — vale usar os retries
+      // completos do cliente HTTP.
+      const result = await applyAsaasEvent(supabase, {
+        id: row.id as string,
+        provider_event_id: (row.provider_event_id as string) ?? "",
+        event_type: row.event_type as string,
+        data: row.data as Record<string, unknown> | null,
+        organization_id: (row.organization_id as string) ?? null,
+      });
+
+      // `retry_count` NÃO é incrementado aqui de propósito: aquele contador é o
+      // fusível do worker automático (`MAX_RETRY_COUNT`), e uma tentativa manual
+      // do admin não pode consumir as tentativas do cron — queimá-las tiraria a
+      // linha da fila justamente quando alguém está tentando resolvê-la.
+      const { error: stampErr } = await supabase
+        .from("billing_events")
+        .update({
+          processing_status: result.status,
+          organization_id: result.organizationId,
+          error_message: result.error ?? null,
+        })
+        .eq("id", row.id);
+
+      if (stampErr) {
+        // O efeito pode ter sido aplicado por completo e só o carimbo falhou —
+        // mesma leitura do asaas-webhook. Não vira 500: informa o admin que o
+        // estado ficou por carimbar e deixa o reconcile reconciliar.
+        jsonLog("error", { reqId, evt: "billing_reprocess_stamp_failed", eventId, err: stampErr.message });
+      }
+
+      jsonLog(result.status === "failed" ? "error" : "info", {
+        reqId,
+        evt: "billing_event_reprocessed",
+        eventId,
+        eventType: row.event_type,
+        status: result.status,
+        effect: result.effect,
+        organizationId: result.organizationId,
+      });
+
+      return jsonResponse(req, {
+        success: true,
+        status: result.status,
+        effect: result.effect,
+        organization_id: result.organizationId,
+        stamped: !stampErr,
+        // `result.error` já é mensagem curta em PT-BR feita pra humano
+        // (`applyAsaasEvent` nunca devolve texto cru do Postgres).
+        error_message: result.error ?? null,
+      });
     }
 
     // ═════════════════════════════════════════════════════════════════════════

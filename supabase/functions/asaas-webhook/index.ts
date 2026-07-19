@@ -327,11 +327,11 @@ serve(async (req) => {
         .from("billing_events")
         .update({
           processing_status: "failed",
-          // String PINADA: `CLASSIFICATION_ERROR_MESSAGES` em
-          // process-asaas-reconcile só limpa `error_message` quando ele é uma
-          // das mensagens que uma reclassificação de fato resolve. Reescrever
-          // este texto sem atualizar lá deixaria o diagnóstico grudado pra
-          // sempre numa linha já resolvida.
+          // Texto LIVRE desde a Fase 4a: o `process-asaas-reconcile` deixou de
+          // depender de uma whitelist de mensagens (ele reaplica o efeito e
+          // sobrescreve `error_message` com o resultado real, inclusive `null`),
+          // então mudar esta string não gruda mais diagnóstico velho em linha
+          // resolvida. Continua sendo mensagem curta, sem detalhe do Postgres.
           error_message: "Erro inesperado ao classificar evento — ver logs.",
         })
         .eq("id", billingEventId);
