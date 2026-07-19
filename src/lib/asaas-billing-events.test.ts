@@ -4,6 +4,11 @@ import {
   parseExternalReference,
   decideEventEffect,
 } from "../../supabase/functions/_shared/asaas-billing-events";
+import {
+  ASAAS_PAYMENT_EVENTS,
+  ASAAS_SUBSCRIPTION_EVENTS,
+  ASAAS_CHECKOUT_EVENTS,
+} from "../../supabase/functions/_shared/asaas-core";
 
 const ORG = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
 const PLAN = "9c858901-8a57-4791-81fe-4c455b099bc9";
@@ -114,13 +119,79 @@ describe("decideEventEffect — gate de ativação", () => {
     expect(e.kind).toBe("noop");
   });
 
-  it("marks the invoice paid when there is no subscription to activate", () => {
+  it("activates on first-ever payment (no invoice row, no subscription yet)", () => {
+    // `mark_invoice_paid` foi removido do union: era alcançado só por este
+    // caso e por engano tratava "sem correlação encontrada" como "não é
+    // preciso ativar nada". O gate correto é binário — qualquer estado
+    // não-terminal da invoice ativa.
     const e = decideEventEffect({
       eventType: "PAYMENT_RECEIVED",
       invoiceStatus: null,
       subscriptionStatus: null,
     });
-    expect(e.kind).toBe("mark_invoice_paid");
+    expect(e.kind).toBe("activate_subscription");
+  });
+
+  it("REGRESSION (Fix 1): a genuine renewal payment must activate, not noop", () => {
+    // Caso da renovação mensal: `PAYMENT_CREATED` é informativo (não cria
+    // invoice), então quando o `PAYMENT_RECEIVED` da renovação chega, a busca
+    // de invoice correlacionada dá `null` — mas a assinatura já está `active`
+    // de um ciclo anterior. O código antigo tratava esse par exatamente como
+    // "nada a fazer" (`noop`), descartando silenciosamente um pagamento
+    // genuíno e deixando o cliente ser bloqueado por falta de pagamento
+    // mesmo tendo pago.
+    const e = decideEventEffect({
+      eventType: "PAYMENT_RECEIVED",
+      invoiceStatus: null,
+      subscriptionStatus: "active",
+    });
+    expect(e.kind).toBe("activate_subscription");
+  });
+
+  it("covers the previously untested invoice statuses on the activating path", () => {
+    // 'void': terminal, mas é anomalia (pagamento sobre cobrança anulada) —
+    // ainda assim não deve ativar de novo.
+    expect(decideEventEffect({
+      eventType: "PAYMENT_RECEIVED",
+      invoiceStatus: "void",
+      subscriptionStatus: "active",
+    }).kind).toBe("noop");
+
+    // 'draft': nunca é terminal — ativa normalmente.
+    expect(decideEventEffect({
+      eventType: "PAYMENT_RECEIVED",
+      invoiceStatus: "draft",
+      subscriptionStatus: null,
+    }).kind).toBe("activate_subscription");
+
+    // 'uncollectible': DELIBERADAMENTE não é terminal — uma invoice baixada
+    // como incobrável que acaba sendo paga deve restaurar o acesso, não ficar
+    // presa em 'noop' pra sempre.
+    expect(decideEventEffect({
+      eventType: "PAYMENT_RECEIVED",
+      invoiceStatus: "uncollectible",
+      subscriptionStatus: "active",
+    }).kind).toBe("activate_subscription");
+  });
+
+  it("gives a distinct reason for a payment landing on a void invoice", () => {
+    // Fix 4: 'void' não é "duplicado ou tardio" (caminho feliz do cartão) —
+    // é uma anomalia que precisa de conferência humana. A string de motivo
+    // precisa refletir isso, não reusar a mensagem de duplicata benigna.
+    const voidCase = decideEventEffect({
+      eventType: "PAYMENT_RECEIVED",
+      invoiceStatus: "void",
+      subscriptionStatus: "active",
+    });
+    expect(voidCase.reason).toMatch(/void/);
+    expect(voidCase.reason).toMatch(/conferência/);
+
+    const paidCase = decideEventEffect({
+      eventType: "PAYMENT_RECEIVED",
+      invoiceStatus: "paid",
+      subscriptionStatus: "active",
+    });
+    expect(paidCase.reason).toMatch(/duplicado ou tardio/);
   });
 });
 
@@ -145,7 +216,9 @@ describe("decideEventEffect — demais eventos", () => {
     for (const ev of [
       "PAYMENT_REFUNDED",
       "PAYMENT_PARTIALLY_REFUNDED",
+      "PAYMENT_REFUND_IN_PROGRESS",
       "PAYMENT_CHARGEBACK_REQUESTED",
+      "PAYMENT_CHARGEBACK_DISPUTE",
       "PAYMENT_AWAITING_CHARGEBACK_REVERSAL",
     ]) {
       expect(decideEventEffect({
@@ -154,6 +227,22 @@ describe("decideEventEffect — demais eventos", () => {
         subscriptionStatus: "active",
       }).kind).toBe("record_refund");
     }
+  });
+
+  it("records a refund for PAYMENT_RECEIVED_IN_CASH_UNDONE (cash receipt reversed)", () => {
+    expect(decideEventEffect({
+      eventType: "PAYMENT_RECEIVED_IN_CASH_UNDONE",
+      invoiceStatus: "paid",
+      subscriptionStatus: "active",
+    }).kind).toBe("record_refund");
+  });
+
+  it("treats PAYMENT_REFUND_DENIED as noop, not record_refund (the payment stands)", () => {
+    expect(decideEventEffect({
+      eventType: "PAYMENT_REFUND_DENIED",
+      invoiceStatus: "paid",
+      subscriptionStatus: "active",
+    }).kind).toBe("noop");
   });
 
   it("treats informational payment events as noop, not unknown", () => {
@@ -185,11 +274,51 @@ describe("decideEventEffect — demais eventos", () => {
   });
 
   it("always fills a reason for observability", () => {
-    const e = decideEventEffect({
-      eventType: "PAYMENT_RECEIVED",
-      invoiceStatus: "open",
-      subscriptionStatus: null,
-    });
-    expect(e.reason.length).toBeGreaterThan(0);
+    // Propriedade universal — testar com um único input não a prova. Cobre um
+    // representante de cada branch de decideEventEffect (ativação, overdue,
+    // estorno, informativo, desconhecido).
+    const cases: Array<{ eventType: string; invoiceStatus: string | null; subscriptionStatus: string | null }> = [
+      { eventType: "PAYMENT_RECEIVED", invoiceStatus: "open", subscriptionStatus: null },
+      { eventType: "PAYMENT_CONFIRMED", invoiceStatus: "paid", subscriptionStatus: "active" },
+      { eventType: "PAYMENT_OVERDUE", invoiceStatus: "open", subscriptionStatus: "active" },
+      { eventType: "PAYMENT_OVERDUE", invoiceStatus: "paid", subscriptionStatus: "active" },
+      { eventType: "PAYMENT_REFUNDED", invoiceStatus: "paid", subscriptionStatus: "active" },
+      { eventType: "PAYMENT_CREATED", invoiceStatus: null, subscriptionStatus: null },
+      { eventType: "SOMETHING_NEW", invoiceStatus: null, subscriptionStatus: null },
+    ];
+    for (const c of cases) {
+      const e = decideEventEffect(c);
+      expect(e.reason.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("decideEventEffect — catálogo Asaas completo", () => {
+  // Guarda ESTRUTURAL pedida na revisão: enumera o catálogo real de
+  // supabase/functions/_shared/asaas-core.ts (fonte única de nomes de evento)
+  // em vez de re-derivar os Sets da própria implementação — isso não é
+  // tautológico, e falha sozinho quando o Asaas adicionar um evento novo que
+  // ninguém classificou ainda em asaas-billing-events.ts.
+  const ALL_KNOWN_EVENTS = [
+    ...ASAAS_PAYMENT_EVENTS,
+    ...ASAAS_SUBSCRIPTION_EVENTS,
+    ...ASAAS_CHECKOUT_EVENTS,
+  ];
+
+  it("has exactly 40 catalogued event names (29 + 7 + 4)", () => {
+    // Sem essa asserção de tamanho, um catálogo vazio ou truncado faria o
+    // teste abaixo passar por vacuidade sem checar nada de verdade.
+    expect(ALL_KNOWN_EVENTS.length).toBe(40);
+  });
+
+  it("classifies every catalogued event to something other than 'unknown'", () => {
+    for (const eventType of ALL_KNOWN_EVENTS) {
+      const e = decideEventEffect({
+        eventType,
+        invoiceStatus: null,
+        subscriptionStatus: null,
+      });
+      expect(e.kind, `${eventType} deveria ter uma classificação conhecida`).not.toBe("unknown");
+    }
   });
 });

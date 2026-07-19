@@ -64,7 +64,6 @@ export function parseExternalReference(raw: unknown): ExternalReferenceParts | n
 
 export type AsaasEffectKind =
   | "activate_subscription"
-  | "mark_invoice_paid"
   | "mark_invoice_overdue"
   | "record_refund"
   | "noop"
@@ -114,6 +113,10 @@ const REFUND_EVENTS: ReadonlySet<string> = new Set([
   "PAYMENT_CHARGEBACK_REQUESTED",
   "PAYMENT_CHARGEBACK_DISPUTE",
   "PAYMENT_AWAITING_CHARGEBACK_REVERSAL",
+  // Estorno de recebimento em dinheiro (baixa manual desfeita) — dinheiro que
+  // tinha sido registrado como recebido deixa de estar. Mesmo efeito de
+  // negócio que um estorno normal: precisa reverter, não é um `noop`.
+  "PAYMENT_RECEIVED_IN_CASH_UNDONE",
 ]);
 
 /**
@@ -127,9 +130,24 @@ const INFORMATIONAL_EVENTS: ReadonlySet<string> = new Set([
   "PAYMENT_AUTHORIZED",
   "PAYMENT_AWAITING_RISK_ANALYSIS",
   "PAYMENT_APPROVED_BY_RISK_ANALYSIS",
+  "PAYMENT_REPROVED_BY_RISK_ANALYSIS",
+  "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED",
+  "PAYMENT_ANTICIPATED",
+  "PAYMENT_DELETED",
+  "PAYMENT_RESTORED",
+  // O pagamento continua de pé — só o PEDIDO de estorno foi negado pelo
+  // Asaas. NÃO entra em REFUND_EVENTS: não há dinheiro a reverter aqui.
+  "PAYMENT_REFUND_DENIED",
+  "PAYMENT_DUNNING_RECEIVED",
+  "PAYMENT_DUNNING_REQUESTED",
+  "PAYMENT_BANK_SLIP_CANCELLED",
   "PAYMENT_BANK_SLIP_VIEWED",
   "PAYMENT_CHECKOUT_VIEWED",
-  "PAYMENT_ANTICIPATED",
+  // Família `*_SPLIT_*` (payment e subscription): split payment do Asaas não é
+  // usado por este produto — nenhum efeito de negócio nosso depende disso.
+  "PAYMENT_SPLIT_CANCELLED",
+  "PAYMENT_SPLIT_DIVERGENCE_BLOCK",
+  "PAYMENT_SPLIT_DIVERGENCE_BLOCK_FINISHED",
   "CHECKOUT_CREATED",
   "CHECKOUT_PAID",
   "CHECKOUT_CANCELED",
@@ -138,30 +156,54 @@ const INFORMATIONAL_EVENTS: ReadonlySet<string> = new Set([
   "SUBSCRIPTION_UPDATED",
   "SUBSCRIPTION_INACTIVATED",
   "SUBSCRIPTION_DELETED",
+  "SUBSCRIPTION_SPLIT_DISABLED",
+  "SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK",
+  "SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK_FINISHED",
 ]);
 
 const TERMINAL_INVOICE_STATUSES: ReadonlySet<string> = new Set(["paid", "void"]);
 
+/**
+ * CONTRATO com quem consome `AsaasEffect` (asaas-webhook, process-asaas-reconcile):
+ *
+ * Ao tratar `kind === "activate_subscription"`, o consumidor DEVE também
+ * transicionar a invoice correlacionada para `paid` — e se não existir
+ * nenhuma invoice correlacionada, DEVE criar uma já em `paid`. A idempotência
+ * do segundo evento do cartão (`PAYMENT_CONFIRMED` seguido de
+ * `PAYMENT_RECEIVED`, até ~30 dias depois) depende INTEIRAMENTE dessa escrita:
+ * é o `invoiceStatus ∈ {paid, void}` abaixo que faz o segundo evento virar
+ * `noop` em vez de reativar (inofensivo) ou, pior, mascarar a ausência de
+ * registro do pagamento. Pular esse UPDATE/INSERT quebra silenciosamente essa
+ * garantia — o próximo evento do mesmo pagamento não vai encontrar
+ * `invoiceStatus` terminal e vai reprocessar como se fosse a primeira vez.
+ */
 export function decideEventEffect(input: EventDecisionInput): AsaasEffect {
   const { eventType, invoiceStatus, subscriptionStatus } = input;
 
   if (ACTIVATING_EVENTS.has(eventType)) {
     // Idempotência: o segundo evento do cartão encontra a invoice já paga.
     if (invoiceStatus && TERMINAL_INVOICE_STATUSES.has(invoiceStatus)) {
+      if (invoiceStatus === "void") {
+        // Anomalia, não duplicata benigna: um pagamento chegou sobre uma
+        // cobrança que já tinha sido anulada. Precisa de conferência humana,
+        // não é o caminho feliz do cartão emitindo CONFIRMED+RECEIVED.
+        return {
+          kind: "noop",
+          reason: `Invoice está 'void' — pagamento recebido sobre cobrança anulada, requer conferência.`,
+        };
+      }
       return {
         kind: "noop",
         reason: `Invoice já em '${invoiceStatus}' — ${eventType} duplicado ou tardio.`,
       };
     }
-    if (subscriptionStatus === "active" && invoiceStatus === null) {
-      return { kind: "noop", reason: "Assinatura já ativa e sem invoice pendente." };
-    }
-    if (invoiceStatus === null && subscriptionStatus === null) {
-      return {
-        kind: "mark_invoice_paid",
-        reason: `${eventType} sem assinatura correlacionada — registra pagamento.`,
-      };
-    }
+    // Qualquer outro estado ativa. Errar para o lado de REGISTRAR o dinheiro é
+    // o lado seguro: o aplicador usa UPDATE condicional, então repetir a
+    // ativação é inofensiva, enquanto descartar um pagamento genuíno bloqueia
+    // um cliente que pagou. Cobre inclusive `subscriptionStatus === "active"`
+    // com `invoiceStatus === null` — esse par é exatamente a renovação mensal
+    // (cobrança nova, ainda sem linha de invoice correlacionada), não "nada a
+    // fazer".
     return { kind: "activate_subscription", reason: `${eventType} libera o acesso.` };
   }
 
