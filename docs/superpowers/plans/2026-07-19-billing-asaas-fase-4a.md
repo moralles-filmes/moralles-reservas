@@ -1368,13 +1368,19 @@ export async function applyAsaasEvent(
     //    do payment (fonte primária) → customer Asaas.
     let organizationId = row.organization_id ?? invoice?.organization_id ?? null;
     let planId: string | null = null;
-    let purpose: AsaasPurpose = "subscription";
+    // Default deliberado: sem externalReference legível, tratamos como
+    // "other" — que NÃO concede acesso. Errar para o lado de não liberar.
+    let purpose: AsaasPurpose = "other";
+    let externalReferenceRaw: string | null = null;
     let paidValueCents: number | null = null;
 
     if (paymentId) {
       const provider = getBillingProvider("asaas");
       const res = await provider.getPayment(paymentId);
       if (res.ok && res.data) {
+        if (typeof res.data.externalReference === "string") {
+          externalReferenceRaw = res.data.externalReference;
+        }
         const parsed = parseExternalReference(res.data.externalReference);
         if (parsed) {
           organizationId = organizationId ?? parsed.orgId;
@@ -1415,11 +1421,11 @@ export async function applyAsaasEvent(
       subscription = data ?? null;
     }
 
-    // 4. Decidir (puro).
+    // 4. Decidir (puro). NÃO passa status de assinatura — `decideEventEffect`
+    //    não branchia nele (removido do input na revisão da Task 5).
     const effect = decideEventEffect({
       eventType: row.event_type,
       invoiceStatus: invoice?.status ?? null,
-      subscriptionStatus: subscription?.status ?? null,
     });
 
     if (effect.kind === "unknown") {
@@ -1441,8 +1447,12 @@ export async function applyAsaasEvent(
     //    anterior é o que garante idempotência sob concorrência (webhook e
     //    reconcile podem tocar a mesma linha).
     switch (effect.kind) {
-      case "activate_subscription":
-      case "mark_invoice_paid": {
+      case "activate_subscription": {
+        // OBRIGAÇÃO 1 do contrato (JSDoc de decideEventEffect): registrar o
+        // dinheiro SEMPRE — inclusive criando a linha quando ela não existe.
+        // A idempotência do 2º evento do cartão (CONFIRMED e depois RECEIVED,
+        // até ~30 dias) depende INTEIRAMENTE desta escrita: sem ela o segundo
+        // evento reencontra a invoice não-paga e ativa de novo.
         if (invoice) {
           await supabase
             .from("billing_invoices")
@@ -1460,39 +1470,65 @@ export async function applyAsaasEvent(
               }),
             );
           }
-        }
-
-        if (effect.kind === "activate_subscription") {
-          if (subscription) {
-            await supabase
-              .from("billing_subscriptions")
-              .update({ status: "active" })
-              .eq("id", subscription.id)
-              .neq("status", "active");
-          } else if (planId) {
-            const { data: customer } = await supabase
-              .from("billing_customers")
-              .select("id")
-              .eq("organization_id", organizationId)
-              .maybeSingle();
-
-            await supabase.from("billing_subscriptions").insert({
-              organization_id: organizationId,
-              billing_customer_id: customer?.id ?? null,
-              billing_plan_id: planId,
-              provider: "asaas",
-              status: "active",
-              payment_method: "pix",
-            });
+        } else if (paymentId) {
+          // Sem linha prévia — caso normal de renovação, porque PAYMENT_CREATED
+          // é informativo e não cria invoice. `provider_payment_id` tem UNIQUE
+          // parcial, então uma corrida entre webhook e reconcile vira 23505 e
+          // não linha duplicada.
+          const { error: insertErr } = await supabase.from("billing_invoices").insert({
+            organization_id: organizationId,
+            billing_subscription_id: subscription?.id ?? null,
+            provider: "asaas",
+            provider_payment_id: paymentId,
+            purpose,
+            external_reference: externalReferenceRaw,
+            status: "paid",
+            amount_cents: paidValueCents ?? 0,
+            currency: "BRL",
+            paid_at: new Date().toISOString(),
+          });
+          if (insertErr && insertErr.code !== "23505") {
+            console.error("applyAsaasEvent: falha ao criar invoice", insertErr);
           }
-
-          // Espelha em organizations, que é a coluna autoritativa do
-          // BillingGuard e dos guards server-side.
-          await supabase
-            .from("organizations")
-            .update({ billing_status: "active", blocked_at: null, blocked_reason: null })
-            .eq("id", organizationId);
         }
+
+        // OBRIGAÇÃO 2 do contrato: conceder acesso SOMENTE quando o pagamento
+        // for de assinatura do sistema. Um pacote de IA ou uma taxa de
+        // implantação registram dinheiro mas NÃO liberam o sistema — senão uma
+        // org inadimplente compraria R$ 50 de crédito e voltaria a ter acesso.
+        if (purpose !== "subscription") {
+          break;
+        }
+
+        if (subscription) {
+          await supabase
+            .from("billing_subscriptions")
+            .update({ status: "active" })
+            .eq("id", subscription.id)
+            .neq("status", "active");
+        } else if (planId) {
+          const { data: customer } = await supabase
+            .from("billing_customers")
+            .select("id")
+            .eq("organization_id", organizationId)
+            .maybeSingle();
+
+          await supabase.from("billing_subscriptions").insert({
+            organization_id: organizationId,
+            billing_customer_id: customer?.id ?? null,
+            billing_plan_id: planId,
+            provider: "asaas",
+            status: "active",
+            payment_method: "pix",
+          });
+        }
+
+        // Espelha em organizations, que é a coluna autoritativa do
+        // BillingGuard e dos guards server-side.
+        await supabase
+          .from("organizations")
+          .update({ billing_status: "active", blocked_at: null, blocked_reason: null })
+          .eq("id", organizationId);
         break;
       }
 
@@ -1933,7 +1969,7 @@ Depois do loop de eventos presos, adicionar um segundo estágio:
     // dias e ninguém mais nos conta que a cobrança foi paga. Aqui perguntamos.
     const { data: pendingInvoices } = await supabase
       .from("billing_invoices")
-      .select("id, organization_id, provider_payment_id, status, amount_cents")
+      .select("id, organization_id, provider_payment_id, status, amount_cents, purpose")
       .eq("provider", "asaas")
       .in("status", ["open", "draft"])
       .not("provider_payment_id", "is", null)
@@ -1963,17 +1999,23 @@ Depois do loop de eventos presos, adicionar um segundo estágio:
         .eq("id", inv.id)
         .neq("status", "paid");
 
-      await supabase
-        .from("billing_subscriptions")
-        .update({ status: "active" })
-        .eq("organization_id", inv.organization_id)
-        .neq("status", "canceled")
-        .neq("status", "active");
+      // Mesmo gate por `purpose` do aplicador (obrigação 2 do contrato em
+      // `decideEventEffect`): pacote de IA e taxa de implantação registram o
+      // dinheiro mas NÃO liberam o sistema. Sem este `if`, o reconcile vira a
+      // porta dos fundos que o aplicador fechou.
+      if (inv.purpose === "subscription") {
+        await supabase
+          .from("billing_subscriptions")
+          .update({ status: "active" })
+          .eq("organization_id", inv.organization_id)
+          .neq("status", "canceled")
+          .neq("status", "active");
 
-      await supabase
-        .from("organizations")
-        .update({ billing_status: "active", blocked_at: null, blocked_reason: null })
-        .eq("id", inv.organization_id);
+        await supabase
+          .from("organizations")
+          .update({ billing_status: "active", blocked_at: null, blocked_reason: null })
+          .eq("id", inv.organization_id);
+      }
 
       // Item 3 dos herdados: alerta ao admin. Registro consultável no painel —
       // o DISPATCHER de e-mail é entrega da Fase 4b; até lá isto NÃO envia nada.
