@@ -18,7 +18,7 @@ export async function resolveBillingRecipient(
     .maybeSingle();
 
   let ownerEmail: string | null = null;
-  if (!org?.billing_email) {
+  if (!org?.billing_email?.trim()) {
     // Escopar por org em dois passos (sem depender de filtro em recurso embutido):
     // units da org -> owners dessas units. Sem isso pegaria o owner mais antigo
     // da plataforma inteira (vazamento cross-tenant).
@@ -45,7 +45,8 @@ export async function resolveBillingRecipient(
 /**
  * INSERT ... ON CONFLICT DO NOTHING via tratamento de 23505 (padrão voucher do
  * CLAUDE.md). O UNIQUE (organization_id, event_type, invoice_id) garante 1 aviso
- * por ciclo. Best-effort: nunca lança.
+ * por ciclo (índice é PARCIAL: where invoice_id is not null, logo chamadas com
+ * invoiceId: null não são deduplicadas). Best-effort: nunca lança.
  */
 export async function enqueueBillingNotification(
   supabase: SupabaseClient,
@@ -92,6 +93,7 @@ export async function hasActiveSystemOverride(
     .eq("feature", "system")
     .eq("enabled", true)
     .is("revoked_at", null)
+    .lte("starts_at", nowIso)
     .or(`ends_at.is.null,ends_at.gt.${nowIso}`)
     .limit(1);
   return (data ?? []).length > 0;
