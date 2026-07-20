@@ -115,12 +115,20 @@ serve(async (req) => {
   jsonLog("info", { reqId, evt: "billing_notifications_start" });
 
   try {
-    const { data: pending } = await supabase
+    const { data: pending, error: pendingErr } = await supabase
       .from("billing_notifications")
       .select("id, organization_id, event_type, recipient, invoice_id")
       .eq("status", "pending")
       .order("sent_at", { ascending: true })
       .limit(BATCH);
+
+    if (pendingErr) {
+      jsonLog("error", { reqId, evt: "billing_notifications_query_failed", err: pendingErr.message });
+      return new Response(JSON.stringify({ success: false, error: "query_failed" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     let sent = 0;
     let failed = 0;
@@ -129,10 +137,19 @@ serve(async (req) => {
       const tmpl = TEMPLATE_BY_EVENT[row.event_type];
       if (!tmpl) {
         // Tipo desconhecido — marca failed pra não repetir eternamente.
-        await supabase
+        const { error: updErr } = await supabase
           .from("billing_notifications")
           .update({ status: "failed", error: "unknown_event_type" })
           .eq("id", row.id);
+        if (updErr) {
+          jsonLog("error", {
+            reqId,
+            evt: "billing_notification_status_write_failed",
+            id: row.id,
+            to: "failed",
+            err: updErr.message,
+          });
+        }
         failed++;
         continue;
       }
@@ -140,20 +157,41 @@ serve(async (req) => {
       let amountCents = 0;
       let paymentUrl: string | null = null;
       if (row.invoice_id) {
-        const { data: inv } = await supabase
+        const { data: inv, error: invErr } = await supabase
           .from("billing_invoices")
           .select("amount_cents, hosted_invoice_url")
           .eq("id", row.invoice_id)
           .maybeSingle();
+        if (invErr) {
+          jsonLog("warn", {
+            reqId,
+            evt: "billing_notification_invoice_lookup_failed",
+            id: row.id,
+            invoice_id: row.invoice_id,
+            err: invErr.message,
+          });
+          continue;
+        }
         amountCents = (inv?.amount_cents as number | undefined) ?? 0;
         paymentUrl = (inv?.hosted_invoice_url as string | null | undefined) ?? null;
       }
 
-      const { data: org } = await supabase
+      const { data: org, error: orgErr } = await supabase
         .from("organizations")
         .select("name")
         .eq("id", row.organization_id)
         .maybeSingle();
+
+      if (orgErr) {
+        jsonLog("warn", {
+          reqId,
+          evt: "billing_notification_org_lookup_failed",
+          id: row.id,
+          org: row.organization_id,
+          err: orgErr.message,
+        });
+        continue;
+      }
 
       const body = tmpl({
         orgName: (org?.name as string | undefined) ?? "cliente",
@@ -169,10 +207,19 @@ serve(async (req) => {
       });
 
       if (result.ok) {
-        await supabase
+        const { error: updErr } = await supabase
           .from("billing_notifications")
           .update({ status: "sent", sent_at: new Date().toISOString() })
           .eq("id", row.id);
+        if (updErr) {
+          jsonLog("error", {
+            reqId,
+            evt: "billing_notification_status_write_failed",
+            id: row.id,
+            to: "sent",
+            err: updErr.message,
+          });
+        }
         sent++;
       } else if (result.skipped && (result.reason === "no_api_key" || result.reason === "no_from")) {
         // Config ausente — não é culpa da linha. Deixa 'pending' e para o lote.
@@ -180,10 +227,19 @@ serve(async (req) => {
         break;
       } else {
         const err = result.skipped ? result.reason : result.error;
-        await supabase
+        const { error: updErr } = await supabase
           .from("billing_notifications")
           .update({ status: "failed", error: err })
           .eq("id", row.id);
+        if (updErr) {
+          jsonLog("error", {
+            reqId,
+            evt: "billing_notification_status_write_failed",
+            id: row.id,
+            to: "failed",
+            err: updErr.message,
+          });
+        }
         failed++;
       }
     }
