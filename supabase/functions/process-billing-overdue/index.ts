@@ -84,7 +84,11 @@ serve(async (req) => {
         updateFields.blocked_reason = "Bloqueio automático por inadimplência.";
       }
 
-      await supabase.from("organizations").update(updateFields).eq("id", orgId);
+      const { error: updErr } = await supabase.from("organizations").update(updateFields).eq("id", orgId);
+      if (updErr) {
+        jsonLog("error", { reqId, evt: "billing_overdue_update_failed", orgId, to: target, err: updErr.message });
+        continue;
+      }
       updated++;
       jsonLog("info", { reqId, evt: "billing_overdue_updated", orgId, from: org.billing_status, to: target });
 
