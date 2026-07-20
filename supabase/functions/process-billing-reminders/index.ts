@@ -1,32 +1,22 @@
-// Worker: envia lembretes de billing por e-mail.
-// Roda diariamente via pg_cron.
-// Lembretes: 3 dias antes, no dia, 2 dias após, 5 dias após, no bloqueio.
+// Worker: enfileira lembretes de billing (o envio real é do
+// process-billing-notifications). Roda diariamente via pg_cron.
+// Cadência (Fase 4b): D0 (vence hoje), D+1, D+3, D+5 relativos ao due_date.
+// Datas em BRT. Destinatário escopado por org (sem vazamento cross-tenant).
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.ts";
+import { todayBrt, addDaysToDate, REMINDER_OFFSETS } from "../_shared/billing-delinquency-core.ts";
+import {
+  resolveBillingRecipient,
+  enqueueBillingNotification,
+  hasActiveSystemOverride,
+} from "../_shared/billing-notify.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
-
-function addDays(date: string, days: number): string {
-  const d = new Date(date + "T12:00:00Z");
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-// Cadência alinhada à política de grace=3 dias / bloqueio em D+4 em
-// process-billing-overdue. Lembretes em D+5 ou D+8 não fariam sentido
-// porque a org já está blocked nesse momento.
-const REMINDER_OFFSETS = [
-  { days: -3, type: "reminder_3d_before" },
-  { days: 0, type: "reminder_due_today" },
-  { days: 1, type: "reminder_1d_after" },
-  { days: 3, type: "reminder_3d_after" },
-  { days: 4, type: "reminder_blocked" },
-];
 
 serve(async (req) => {
   if (!requireInternalAuth(req)) {
@@ -37,70 +27,40 @@ serve(async (req) => {
   jsonLog("info", { reqId, evt: "billing_reminders_start" });
 
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayBrt();
 
-    // Buscar invoices open com due_date
     const { data: invoices } = await supabase
       .from("billing_invoices")
-      .select("id, organization_id, due_date, amount_cents, hosted_invoice_url")
+      .select("id, organization_id, due_date")
       .eq("status", "open")
       .not("due_date", "is", null);
 
-    let sent = 0;
+    let queued = 0;
     for (const inv of invoices ?? []) {
       if (!inv.due_date) continue;
 
-      for (const offset of REMINDER_OFFSETS) {
-        const triggerDate = addDays(inv.due_date, offset.days);
-        if (triggerDate !== today) continue;
+      // Qual offset cai hoje? (no máximo um por invoice por dia)
+      const match = REMINDER_OFFSETS.find((o) => addDaysToDate(inv.due_date, o.days) === today);
+      if (!match) continue;
 
-        // Dedupe: já mandou esse tipo hoje pra essa org?
-        const { data: existing } = await supabase
-          .from("billing_notifications")
-          .select("id")
-          .eq("organization_id", inv.organization_id)
-          .eq("event_type", offset.type)
-          .gte("sent_at", today + "T00:00:00Z")
-          .maybeSingle();
+      // Nunca avisar cliente com cortesia vitalícia (system).
+      if (await hasActiveSystemOverride(supabase, inv.organization_id)) continue;
 
-        if (existing) continue;
+      const recipient = await resolveBillingRecipient(supabase, inv.organization_id);
+      if (!recipient) continue;
 
-        // Buscar email de cobrança
-        const { data: org } = await supabase
-          .from("organizations")
-          .select("billing_email, name")
-          .eq("id", inv.organization_id)
-          .single();
-
-        let recipient = org?.billing_email;
-        if (!recipient) {
-          // Fallback: email do owner
-          const { data: owner } = await supabase
-            .from("unit_members")
-            .select("email")
-            .eq("role", "owner")
-            .order("created_at")
-            .limit(1);
-          recipient = owner?.[0]?.email;
-        }
-
-        if (!recipient) continue;
-
-        await supabase.from("billing_notifications").insert({
-          organization_id: inv.organization_id,
-          event_type: offset.type,
-          channel: "email",
-          recipient,
-          status: "pending",
-        });
-
-        sent++;
-        jsonLog("info", { reqId, evt: "billing_reminder_queued", orgId: inv.organization_id, type: offset.type, recipient });
-      }
+      await enqueueBillingNotification(supabase, {
+        organizationId: inv.organization_id,
+        eventType: match.type,
+        invoiceId: inv.id,
+        recipient,
+      });
+      queued++;
+      jsonLog("info", { reqId, evt: "billing_reminder_queued", orgId: inv.organization_id, type: match.type });
     }
 
-    jsonLog("info", { reqId, evt: "billing_reminders_done", sent });
-    return new Response(JSON.stringify({ success: true, sent }), {
+    jsonLog("info", { reqId, evt: "billing_reminders_done", queued });
+    return new Response(JSON.stringify({ success: true, queued }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
