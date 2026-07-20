@@ -128,3 +128,7 @@ verify_jwt = false
 # Worker: reprocessa billing_events Asaas presos received/failed (pg_cron 07:00 UTC)
 [functions.process-asaas-reconcile]
 verify_jwt = false
+
+# Worker: dispatcher da fila billing_notifications via Resend (pg_cron */5min)
+[functions.process-billing-notifications]
+verify_jwt = false

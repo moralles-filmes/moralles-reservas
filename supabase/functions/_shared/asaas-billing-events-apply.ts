@@ -22,6 +22,7 @@ import {
 import { getBillingProvider } from "./billing-provider.ts";
 import { asaasValueToCents } from "./asaas-core.ts";
 import { jsonLog } from "./security.ts";
+import { resolveBillingRecipient, enqueueBillingNotification } from "./billing-notify.ts";
 
 export interface BillingEventRow {
   id: string;
@@ -653,9 +654,36 @@ export async function applyAsaasEvent(
         // Espelha em organizations, que é a coluna autoritativa do
         // BillingGuard e dos guards server-side. É o último passo de propósito:
         // só liberamos acesso depois que assinatura e fatura ficaram duráveis.
+        //
+        // Regularização (Fase 4b): se a org estava em atraso, carimba restored_at
+        // e enfileira o aviso "regularized". Ler o status ANTES do update.
+        const { data: prevOrg, error: prevOrgErr } = await supabase
+          .from("organizations")
+          .select("billing_status")
+          .eq("id", organizationId)
+          .maybeSingle();
+        if (prevOrgErr) {
+          jsonLog("warn", {
+            evt: "regularize_prevorg_read_failed",
+            organization_id: organizationId,
+            err: prevOrgErr.message,
+          });
+        }
+        const wasDelinquent =
+          prevOrg?.billing_status === "grace_period" ||
+          prevOrg?.billing_status === "blocked" ||
+          prevOrg?.billing_status === "past_due";
+
+        const orgUpdate: Record<string, unknown> = {
+          billing_status: "active",
+          blocked_at: null,
+          blocked_reason: null,
+        };
+        if (wasDelinquent) orgUpdate.restored_at = new Date().toISOString();
+
         const { error: orgErr } = await supabase
           .from("organizations")
-          .update({ billing_status: "active", blocked_at: null, blocked_reason: null })
+          .update(orgUpdate)
           .eq("id", organizationId);
         if (orgErr) {
           return failWith(
@@ -665,6 +693,18 @@ export async function applyAsaasEvent(
             orgErr,
             "Falha ao liberar o acesso da organização — ver logs.",
           );
+        }
+
+        if (wasDelinquent) {
+          const recipient = await resolveBillingRecipient(supabase, organizationId);
+          if (recipient) {
+            await enqueueBillingNotification(supabase, {
+              organizationId,
+              eventType: "regularized",
+              invoiceId: invoice?.id ?? null,
+              recipient,
+            });
+          }
         }
         break;
       }

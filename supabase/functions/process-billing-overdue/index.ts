@@ -1,18 +1,22 @@
 // Worker: verifica invoices vencidas e atualiza billing_status das orgs.
 // Roda diariamente via pg_cron.
-// Política: vencido → past_due. +3 dias → grace_period. +4 dias (total) → blocked.
+// Política (Fase 4b): vencido D+1..D+5 -> grace_period. D+6+ -> blocked.
+// Respeita override vitalício (system) e grant_access legado. Datas em BRT.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.ts";
+import { todayBrt, decideDelinquencyStatus } from "../_shared/billing-delinquency-core.ts";
+import {
+  resolveBillingRecipient,
+  enqueueBillingNotification,
+  hasActiveSystemOverride,
+} from "../_shared/billing-notify.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
-
-const GRACE_PERIOD_DAYS = 3;
-const BLOCK_AFTER_DAYS = 4;
 
 serve(async (req) => {
   if (!requireInternalAuth(req)) {
@@ -23,52 +27,41 @@ serve(async (req) => {
   jsonLog("info", { reqId, evt: "billing_overdue_start" });
 
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const graceDate = new Date(Date.now() - GRACE_PERIOD_DAYS * 86400000).toISOString().slice(0, 10);
-    const blockDate = new Date(Date.now() - BLOCK_AFTER_DAYS * 86400000).toISOString().slice(0, 10);
+    const today = todayBrt();
 
-    // Invoices vencidas que ainda estão open
     const { data: overdueInvoices } = await supabase
       .from("billing_invoices")
       .select("id, organization_id, due_date")
       .eq("status", "open")
       .lt("due_date", today);
 
-    const orgIds = new Set<string>();
+    // Menor (mais antiga) invoice vencida por org.
+    const oldestByOrg = new Map<string, { id: string; due_date: string }>();
     for (const inv of overdueInvoices ?? []) {
-      orgIds.add(inv.organization_id);
+      if (!inv.due_date) continue;
+      const cur = oldestByOrg.get(inv.organization_id);
+      if (!cur || inv.due_date < cur.due_date) {
+        oldestByOrg.set(inv.organization_id, { id: inv.id, due_date: inv.due_date });
+      }
     }
 
     let updated = 0;
-    for (const orgId of orgIds) {
-      // Verificar se tem override ativo de grant_access
-      const { data: override } = await supabase
+    for (const [orgId, inv] of oldestByOrg) {
+      // Override legado grant_access.
+      const { data: legacyOverride } = await supabase
         .from("billing_access_overrides")
         .select("id")
         .eq("organization_id", orgId)
         .eq("override_type", "grant_access")
         .eq("active", true)
         .maybeSingle();
+      if (legacyOverride) continue;
 
-      if (override) continue;
+      // Override vitalício novo (system) — nunca bloquear cliente cortesia.
+      if (await hasActiveSystemOverride(supabase, orgId)) continue;
 
-      // Pegar a invoice mais antiga vencida
-      const oldestInvoice = (overdueInvoices ?? [])
-        .filter((i) => i.organization_id === orgId)
-        .sort((a, b) => (a.due_date ?? "").localeCompare(b.due_date ?? ""))[0];
-
-      if (!oldestInvoice?.due_date) continue;
-
-      const dueDate = oldestInvoice.due_date;
-      let newStatus: string;
-
-      if (dueDate <= blockDate) {
-        newStatus = "blocked";
-      } else if (dueDate <= graceDate) {
-        newStatus = "grace_period";
-      } else {
-        newStatus = "past_due";
-      }
+      const target = decideDelinquencyStatus(inv.due_date, today);
+      if (!target) continue;
 
       const { data: org } = await supabase
         .from("organizations")
@@ -76,22 +69,46 @@ serve(async (req) => {
         .eq("id", orgId)
         .single();
 
-      if (!org || org.billing_status === newStatus || org.billing_status === "manual_override") continue;
+      if (
+        !org ||
+        org.billing_status === target ||
+        org.billing_status === "manual_override" ||
+        org.billing_status === "canceled"
+      ) {
+        continue;
+      }
 
-      const updateFields: Record<string, unknown> = { billing_status: newStatus };
-      if (newStatus === "blocked") {
+      const updateFields: Record<string, unknown> = { billing_status: target };
+      if (target === "blocked") {
         updateFields.blocked_at = new Date().toISOString();
         updateFields.blocked_reason = "Bloqueio automático por inadimplência.";
       }
 
-      await supabase.from("organizations").update(updateFields).eq("id", orgId);
+      const { error: updErr } = await supabase.from("organizations").update(updateFields).eq("id", orgId);
+      if (updErr) {
+        jsonLog("error", { reqId, evt: "billing_overdue_update_failed", orgId, to: target, err: updErr.message });
+        continue;
+      }
       updated++;
+      jsonLog("info", { reqId, evt: "billing_overdue_updated", orgId, from: org.billing_status, to: target });
 
-      jsonLog("info", { reqId, evt: "billing_overdue_updated", orgId, from: org.billing_status, to: newStatus });
+      // Aviso de suspensão só na TRANSIÇÃO para blocked (o guard acima garante
+      // que não estávamos em blocked). UNIQUE por invoice é o backstop.
+      if (target === "blocked") {
+        const recipient = await resolveBillingRecipient(supabase, orgId);
+        if (recipient) {
+          await enqueueBillingNotification(supabase, {
+            organizationId: orgId,
+            eventType: "suspended",
+            invoiceId: inv.id,
+            recipient,
+          });
+        }
+      }
     }
 
-    jsonLog("info", { reqId, evt: "billing_overdue_done", checked: orgIds.size, updated });
-    return new Response(JSON.stringify({ success: true, checked: orgIds.size, updated }), {
+    jsonLog("info", { reqId, evt: "billing_overdue_done", checked: oldestByOrg.size, updated });
+    return new Response(JSON.stringify({ success: true, checked: oldestByOrg.size, updated }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
