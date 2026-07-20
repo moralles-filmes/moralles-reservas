@@ -657,11 +657,18 @@ export async function applyAsaasEvent(
         //
         // Regularização (Fase 4b): se a org estava em atraso, carimba restored_at
         // e enfileira o aviso "regularized". Ler o status ANTES do update.
-        const { data: prevOrg } = await supabase
+        const { data: prevOrg, error: prevOrgErr } = await supabase
           .from("organizations")
           .select("billing_status")
           .eq("id", organizationId)
           .maybeSingle();
+        if (prevOrgErr) {
+          jsonLog("warn", {
+            evt: "regularize_prevorg_read_failed",
+            organization_id: organizationId,
+            err: prevOrgErr.message,
+          });
+        }
         const wasDelinquent =
           prevOrg?.billing_status === "grace_period" ||
           prevOrg?.billing_status === "blocked" ||
