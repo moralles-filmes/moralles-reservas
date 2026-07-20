@@ -409,7 +409,7 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`whatsapp-status.ts`** → `webhook-whatsapp`
 - **`entitlements.ts`** (+ `entitlements-core.ts`, mudam juntos) → `manage-billing`
 - **`billing-delinquency-core.ts`** (núcleo puro, testado em [src/lib/billing-delinquency-core.test.ts](src/lib/billing-delinquency-core.test.ts)) → `process-billing-overdue`, `process-billing-reminders`; consumido também via `billing-notify.ts` (`pickRecipient`).
-- **`billing-notify.ts`** → `process-billing-overdue`, `process-billing-reminders`, `process-billing-notifications`, e via `asaas-billing-events-apply.ts`: `asaas-webhook`, `process-asaas-reconcile`, `manage-billing`.
-- **`email.ts`** (Resend) → `process-billing-notifications`.
+- **`billing-notify.ts`** → `process-billing-overdue`, `process-billing-reminders`, e via `asaas-billing-events-apply.ts`: `asaas-webhook`, `process-asaas-reconcile`, `manage-billing`.
+- **`email.ts`** (Resend) → `process-billing-notifications`, `send-confirmation`.
 
 Worker/EF novo que importe um helper aqui = atualizar este checklist no mesmo PR.

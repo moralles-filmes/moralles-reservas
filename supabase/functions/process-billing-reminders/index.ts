@@ -46,6 +46,24 @@ serve(async (req) => {
       // Nunca avisar cliente com cortesia vitalícia (system).
       if (await hasActiveSystemOverride(supabase, inv.organization_id)) continue;
 
+      // Coerência com process-billing-overdue: não avisar org com override
+      // legado grant_access, nem org manual_override/canceled (o overdue as pula).
+      const { data: legacyOverride } = await supabase
+        .from("billing_access_overrides")
+        .select("id")
+        .eq("organization_id", inv.organization_id)
+        .eq("override_type", "grant_access")
+        .eq("active", true)
+        .maybeSingle();
+      if (legacyOverride) continue;
+
+      const { data: orgRow } = await supabase
+        .from("organizations")
+        .select("billing_status")
+        .eq("id", inv.organization_id)
+        .maybeSingle();
+      if (orgRow?.billing_status === "manual_override" || orgRow?.billing_status === "canceled") continue;
+
       const recipient = await resolveBillingRecipient(supabase, inv.organization_id);
       if (!recipient) continue;
 

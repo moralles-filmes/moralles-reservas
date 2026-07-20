@@ -6,6 +6,8 @@ import {
   decideDelinquencyStatus,
   pickRecipient,
   REMINDER_OFFSETS,
+  GRACE_PERIOD_DAYS,
+  BLOCK_AFTER_DAYS,
 } from "../../supabase/functions/_shared/billing-delinquency-core";
 
 describe("todayBrt", () => {
@@ -65,5 +67,11 @@ describe("REMINDER_OFFSETS", () => {
       "overdue_d5",
     ]);
     expect(REMINDER_OFFSETS.map((o) => o.days)).toEqual([0, 1, 3, 5]);
+  });
+});
+
+describe("constantes de política", () => {
+  it("bloqueia no dia seguinte ao fim da tolerância", () => {
+    expect(BLOCK_AFTER_DAYS).toBe(GRACE_PERIOD_DAYS + 1);
   });
 });
