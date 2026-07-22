@@ -1,0 +1,31 @@
+# .claude/tenancy-profile.yml
+# Modelo multi-tenant REAL deste repo, para os agentes/skills do saas-shield-br
+# (skill tenant-model). Gerado a partir da auditoria. Mantenha em dia se o modelo mudar.
+#
+# Moralles reservas — Híbrido: stack Vite + tenancy unit_id (Arquétipo B, resolver
+# próprio por membership-lookup). Hierarquia organizations → units → unit_members.
+
+framework: vite                # Vite SPA + React Router v6 + TanStack Query + Context/Zustand
+
+tenant:
+  columns: [unit_id, organization_id]   # maioria das tabelas usa unit_id; customers usam organization_id
+  resolver: is_unit_member     # is_unit_member(uid, unit) boolean ; + is_org_member ; + is_platform_admin
+  resolver_kind: membership-lookup
+  force_trigger: false
+  write_path: server-scoped    # policies USING/WITH CHECK; FORCE-sem-policy nas tabelas de secrets; leitura anon só via RPCs SECURITY DEFINER gateadas por units.is_public
+
+membership:
+  model: multi
+  table: unit_members          # junction user_id × unit_id × role
+
+roles:
+  model: enum                  # unit_members.role: owner > gerente > operador
+
+super_admin:
+  authority: platform_admins   # tabela dedicada (admin_users foi removida)
+  fn: is_platform_admin
+
+secrets_boundary: edge-function   # ~40+ Supabase Edge Functions; secrets no Vault + tabela platform_secrets; workers via pg_cron → pg_net (x-internal-key)
+client_env_prefix: VITE_
+rls_helper_namespace: public
+display_term: Unidade
