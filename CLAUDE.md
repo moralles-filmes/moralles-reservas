@@ -38,6 +38,18 @@ Se um secret foi commitado: pare imediatamente, **rotacione no provider antes de
 
 ---
 
+## 🤖 Fluxo obrigatório para agentes (toda fase, mudança ou feature)
+
+**Qualquer fase, mudança estrutural ou feature nova PASSA pelas skills e agentes de construção de SaaS — não improvise fluxo próprio.** Garante spec → plano → execução revisada + gates de segurança multi-tenant antes de mergear.
+
+- **Design → plano:** `superpowers:brainstorming` (spec em `docs/superpowers/specs/`) → `superpowers:writing-plans` (plano em `docs/superpowers/plans/`). Nenhum código antes de spec aprovada.
+- **Execução:** `superpowers:subagent-driven-development` — implementer fresco + review (spec + qualidade) por task; review whole-branch no fim.
+- **Construção especializada:** agentes `saas-builder-br:*` — `arquiteto-chefe` orquestra; `db-schema-designer`, `backend-supabase`, `frontend-react`, `design-ux`, `integrador-apis`, `qa-testes`, `devops-ci`.
+- **Gates de segurança (OBRIGATÓRIOS antes de merge/push que toque banco, auth, Edge Function, webhook, RLS ou multi-tenant):** agentes `saas-shield-br:*` — `rls-auditor`, `tenant-isolation-auditor`, `identity-access-auditor`, `migration-validator`, `secret-hunter`, `integration-reliability-auditor`.
+- Exceção só pra trivial (typo, comentário, doc de 1 linha). **Mudança que altere comportamento NÃO é exceção.** Em dúvida, rode o fluxo.
+
+---
+
 ## Comandos
 
 `npm run dev` (localhost:8080), `build`, `preview`, `lint`, `test`, `test:watch`. `npm install --legacy-peer-deps` (.npmrc força — react-day-picker vs date-fns v4).
