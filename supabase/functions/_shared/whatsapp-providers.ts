@@ -98,7 +98,10 @@ export function parseInbound(provider: WhatsAppProvider, payload: any): InboundM
 
 // deno-lint-ignore no-explicit-any
 function parseZApi(p: any): InboundMessage | null {
-  if (!p.text?.message || p.isFromMe) return null;
+  // `fromMe` é o campo que a Z-API realmente manda no eco de mensagem enviada
+  // pela loja (`isFromMe` nunca chegou a existir nesse payload). Sem os dois, o
+  // eco entrava como se fosse fala do cliente e o agente respondia a si mesmo.
+  if (!p.text?.message || p.fromMe || p.isFromMe) return null;
   const digits = canonicalBrPhone(String(p.phone ?? ""));
   const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
   const contactName = sanitizeContactName(
@@ -202,7 +205,7 @@ export function peekInboundMedia(provider: WhatsAppProvider, payload: any): Inbo
 
 // deno-lint-ignore no-explicit-any
 function peekZApiMedia(p: any): InboundMediaPeek | null {
-  if (p.isFromMe) return null;
+  if (p.fromMe || p.isFromMe) return null;
   if (p.text?.message) return null; // é texto, deixa parseInbound cuidar
   let kind: InboundMediaKind | null = null;
   if (p.audio || p.ptt) kind = "audio";

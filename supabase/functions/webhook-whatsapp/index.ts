@@ -18,6 +18,7 @@ import {
   type InboundMediaKind,
 } from "../_shared/whatsapp-providers.ts";
 import { parseStatusCallback, type StatusUpdate } from "../_shared/whatsapp-status.ts";
+import { canonicalBrPhone } from "../_shared/phone.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
   genRequestId,
@@ -389,7 +390,12 @@ async function listCustomerReservations(customerId: string, unitId: string): Pro
 
 // ─── Conversation helpers ──────────────────────────────────────────────────────
 
-async function getOrCreateConversation(customerId: string, unitId: string, contactName?: string) {
+async function getOrCreateConversation(
+  customerId: string,
+  unitId: string,
+  contactName?: string,
+  chatLid?: string | null,
+) {
   const { data } = await supabase
     .from("conversations")
     .select("*")
@@ -400,26 +406,44 @@ async function getOrCreateConversation(customerId: string, unitId: string, conta
     .maybeSingle();
 
   if (data) {
-    if (contactName && data.contact_name !== contactName) {
-      await supabase
-        .from("conversations")
-        .update({ contact_name: contactName })
-        .eq("id", data.id);
-      data.contact_name = contactName;
+    const updates: Record<string, unknown> = {};
+    if (contactName && data.contact_name !== contactName) updates.contact_name = contactName;
+    // Aprende o vínculo LID↔conversa do inbound do cliente — é o que permite
+    // resolver o eco da mensagem do atendente quando ele vem sem telefone.
+    if (chatLid && data.wa_chat_lid !== chatLid) updates.wa_chat_lid = chatLid;
+    if (Object.keys(updates).length > 0) {
+      const { error } = await supabase.from("conversations").update(updates).eq("id", data.id);
+      // Índice único (unit_id, wa_chat_lid): colisão é anomalia, não motivo pra
+      // derrubar o atendimento. Loga e segue com o estado que já temos.
+      if (error) jsonLog("warn", { evt: "conversation_meta_update_failed", convId: data.id, err: error.message });
+      else Object.assign(data, updates);
     }
     return data;
   }
 
   const { data: newConv } = await supabase
     .from("conversations")
-    .insert({ customer_id: customerId, unit_id: unitId, messages: [], contact_name: contactName ?? null })
+    .insert({
+      customer_id: customerId,
+      unit_id: unitId,
+      messages: [],
+      contact_name: contactName ?? null,
+      wa_chat_lid: chatLid ?? null,
+    })
     .select()
     .single();
   return newConv;
 }
 
 // deno-lint-ignore no-explicit-any
-async function appendToConversation(convId: string, existing: any[], role: "user" | "assistant", content: string) {
+async function appendToConversation(
+  convId: string,
+  // deno-lint-ignore no-explicit-any
+  existing: any[],
+  // "human" = digitada por um atendente (painel ou celular da loja).
+  role: "user" | "assistant" | "human",
+  content: string,
+) {
   // Append atômico via RPC (single UPDATE com `messages || jsonb_build_array(msg)`):
   // evita perda quando dois processos appendam simultaneamente (inbound + worker).
   // O array retornado é uma "previsão local" mantida pra compat com callers que
@@ -449,6 +473,219 @@ function mediaPlaceholder(kind: InboundMediaKind): string {
 }
 
 const MEDIA_REPLY_TEXT = "Por aqui só consigo ler texto. Pode me escrever a informação que precisa? Se quiser falar com a equipe, é só pedir.";
+
+// Eco de mensagem NOSSA: com "Notificar as enviadas por mim também" ligado, a
+// Z-API reenvia ao MESMO webhook as mensagens que SAEM do número da loja. Elas
+// não podem virar inbound — o agente responde à própria loja e o cliente real
+// recebe uma resposta automática logo depois da mensagem do atendente.
+// `parseZApi` testa só `isFromMe`; na prática o nome do campo varia, então aqui
+// aceitamos as variantes conhecidas. Guarda de contenção, não de recurso: o
+// tratamento correto (gravar como `role: "human"`) exige o payload real.
+// deno-lint-ignore no-explicit-any
+function looksLikeOwnMessageEcho(payload: any): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const p = payload.payload ?? payload;
+  if (!p || typeof p !== "object") return false;
+  return p.fromMe === true || p.isFromMe === true || p.sentByMe === true || p.fromApi === true;
+}
+
+// Remetente implausível = não é cliente. O eco da Z-API chega com `phone` no
+// formato LID do WhatsApp (14+ dígitos), que `canonicalBrPhone` deixa passar
+// intacto por não ter 10/12/13 dígitos — vira customer fantasma. Telefone real,
+// BR ou internacional, cabe em 13 dígitos após a canonicalização.
+function isPlausibleCustomerPhone(digits: string): boolean {
+  return digits.length >= 10 && digits.length <= 13;
+}
+
+// Grava no thread a mensagem que SAIU do número da loja e a Z-API devolveu ao
+// webhook (toggle "Notificar as enviadas por mim também"). É a única forma de o
+// painel enxergar o que o atendente digita no celular — sem isso o operador vê
+// a pergunta do cliente, um vazio, e a próxima pergunta.
+//
+//   fromApi: true  → saiu pela API (agente/painel). Já foi appendada no envio;
+//                    gravar de novo duplicaria o balão.
+//   fromApi: false → digitada no aparelho por uma pessoa → `role: "human"`.
+//
+// A conversa é resolvida em duas camadas porque o `phone` do eco às vezes vem
+// como LID do WhatsApp: telefone utilizável resolve direto; senão cai no
+// `wa_chat_lid` aprendido do inbound (migration 070). Sem nenhum dos dois,
+// termina em `own_message_echo_unresolved` — outcome visível é melhor do que
+// pendurar a mensagem na conversa errada.
+//
+// NÃO cria customer: um eco pode ser pra fornecedor ou contato pessoal, e criar
+// cliente a partir daí poluiria a base que alimenta giftback/aniversário.
+async function handleOwnMessageEcho(
+  provider: WhatsAppProvider,
+  // deno-lint-ignore no-explicit-any
+  payload: any,
+  unitId: string | null,
+  finish: (outcome: string, error?: string, meta?: Record<string, unknown>) => Promise<void>,
+): Promise<void> {
+  const shape = describeIgnoredPayload(provider, payload);
+  const done = (outcome: string, reason: string, extra?: Record<string, unknown>) =>
+    finish(outcome, undefined, { ...shape, reason, ...extra });
+
+  try {
+    if (provider !== "zapi" || !unitId) return await done("own_message_echo", "provider_unsupported");
+
+    const p = payload ?? {};
+    if (p.fromApi === true) return await done("own_message_echo", "from_api");
+    if (p.isGroup === true || p.isNewsletter === true) return await done("own_message_echo", "group_or_newsletter");
+
+    const text = typeof p.text?.message === "string" ? p.text.message.trim() : "";
+    if (!text) return await done("own_message_echo", "no_text");
+
+    const messageId = typeof p.messageId === "string" ? p.messageId.trim() : "";
+    if (messageId) {
+      // A Z-API reentrega o mesmo evento (observado em produção nos callbacks de
+      // status). Sem idempotência, a mensagem do atendente sai duplicada.
+      const nowIso = new Date().toISOString();
+      const { error: dupErr } = await supabase.from("processed_messages").insert({
+        message_id: messageId,
+        unit_id: unitId,
+        started_at: nowIso,
+        completed_at: nowIso,
+        outcome: "own_message_echo",
+      });
+      if (dupErr) return await done("own_message_echo", "duplicate");
+
+      // Trava extra: se o id é de notificação NOSSA, não veio do atendente.
+      // Protege se `fromApi` mudar de semântica numa versão futura da Z-API.
+      const { data: ours } = await supabase
+        .from("notifications_sent")
+        .select("id")
+        .eq("provider_message_id", messageId)
+        .limit(1)
+        .maybeSingle();
+      if (ours) return await done("own_message_echo", "own_notification");
+    }
+
+    const phone = canonicalBrPhone(String(p.phone ?? ""));
+    const chatLid = typeof p.chatLid === "string" && p.chatLid ? p.chatLid : null;
+    const contactName = typeof p.chatName === "string" ? p.chatName.trim() : "";
+
+    // deno-lint-ignore no-explicit-any
+    let conv: any = null;
+
+    if (isPlausibleCustomerPhone(phone)) {
+      const { data: unitRow } = await supabase
+        .from("units").select("organization_id").eq("id", unitId).maybeSingle();
+      const orgId: string = unitRow?.organization_id ?? "";
+      if (orgId) {
+        const { data: customer } = await supabase
+          .from("customers").select("id")
+          .eq("organization_id", orgId).eq("phone", phone).maybeSingle();
+        if (customer) {
+          conv = await getOrCreateConversation(customer.id, unitId, contactName || undefined, chatLid);
+        }
+      }
+      if (!conv) return await done("own_message_echo_unresolved", "customer_unknown");
+    } else if (chatLid) {
+      const { data } = await supabase
+        .from("conversations").select("*")
+        .eq("unit_id", unitId).eq("wa_chat_lid", chatLid).maybeSingle();
+      conv = data;
+      if (!conv) return await done("own_message_echo_unresolved", "lid_unknown");
+    } else {
+      return await done("own_message_echo_unresolved", "no_identity");
+    }
+
+    await appendToConversation(conv.id, conv.messages || [], "human", text);
+
+    // Atendente assumiu pelo celular → silencia a IA. Sem isso o cliente recebe
+    // a resposta do atendente E a da Yumi no mesmo turno.
+    //
+    // `handoff_at` é reescrito a CADA mensagem do atendente: é o relógio que
+    // devolve a conversa pra IA depois de HANDOFF_AUTO_RESOLVE_MS sem atividade
+    // humana (ver o bloco de auto-resolve). O operador também pode devolver na
+    // hora pelo botão "Devolver à IA" no painel.
+    //
+    // `last_silenced_reply_at = agora` (e NÃO null): suprime o aviso automático
+    // "já avisei alguém da equipe" na próxima mensagem do cliente — mandar isso
+    // logo depois de um humano ter respondido é ruído e confunde.
+    const nowIso2 = new Date().toISOString();
+    const { error: statusErr } = await supabase
+      .from("conversations")
+      .update({
+        status: "human_active",
+        handoff_at: nowIso2,
+        handoff_reason: "atendente respondeu pelo WhatsApp da loja",
+        last_silenced_reply_at: nowIso2,
+      })
+      .eq("id", conv.id);
+    if (statusErr) {
+      jsonLog("warn", { evt: "own_message_echo_status_failed", convId: conv.id, err: statusErr.message });
+    }
+
+    return await done("own_message_echo_recorded", "recorded", {
+      convId: conv.id,
+      silenced: !statusErr,
+    });
+  } catch (e) {
+    // Nunca derruba o webhook por causa do eco: pior caso é a mensagem do
+    // atendente não aparecer, que é exatamente o estado anterior.
+    jsonLog("warn", { evt: "own_message_echo_failed", err: String(e) });
+    return await done("own_message_echo", "handler_error");
+  }
+}
+
+// Qual campo do eco carrega o telefone REAL do destinatário. No eco da Z-API o
+// `phone` vem como LID do WhatsApp (14+ dígitos), não como número — sem saber a
+// alternativa, não dá pra pendurar a mensagem do atendente na conversa certa.
+// Só COMPRIMENTO e flags: nenhum número sai daqui.
+// deno-lint-ignore no-explicit-any
+function identityShape(p: any): Record<string, unknown> {
+  const digits = (v: unknown) => (typeof v === "string" ? v.replace(/\D/g, "") : "");
+  const len = (v: unknown) => (typeof v === "string" ? digits(v).length : null);
+  const phoneD = digits(p.phone);
+  const connectedD = digits(p.connectedPhone);
+  return {
+    phone_len: len(p.phone),
+    chat_lid_len: len(p.chatLid),
+    participant_phone_len: len(p.participantPhone),
+    participant_lid_len: len(p.participantLid),
+    connected_phone_len: len(p.connectedPhone),
+    // Se true, `phone` é o número da LOJA (inútil como destinatário).
+    phone_is_connected: !!phoneD && phoneD === connectedD,
+    from_api: p.fromApi === true,
+    is_group: p.isGroup === true,
+  };
+}
+
+// Sumário PRIVACY-SAFE do payload que caiu em `ignored_non_text` — só NOMES de
+// chave, flags booleanas e o discriminador de tipo/evento; nunca conteúdo,
+// telefone ou credencial. Sem isso o outcome é um ponto cego: é o 2º evento
+// mais frequente do webhook e não dá pra saber se é eco das nossas próprias
+// mensagens, mensagem digitada no celular da loja, ou tipo de mídia novo.
+// deno-lint-ignore no-explicit-any
+function describeIgnoredPayload(provider: WhatsAppProvider, payload: any): Record<string, unknown> {
+  try {
+    if (!payload || typeof payload !== "object") return { provider, shape: typeof payload };
+    // WAHA aninha em `payload`; Meta aninha em entry[0].changes[0].value.
+    const inner = provider === "waha"
+      ? (payload.payload ?? payload)
+      : provider === "official"
+      ? (payload.entry?.[0]?.changes?.[0]?.value ?? payload)
+      : payload;
+    const p = inner && typeof inner === "object" ? inner : {};
+    const metaMsg = provider === "official" ? p.messages?.[0] : null;
+    return {
+      provider,
+      keys: Object.keys(p).slice(0, 30),
+      type: typeof (metaMsg?.type ?? p.type) === "string" ? (metaMsg?.type ?? p.type) : null,
+      event: typeof payload.event === "string" ? payload.event : null,
+      // Enum do provedor (SENT/RECEIVED/READ/READ_BY_ME/...), não é dado do cliente.
+      // É o discriminador de qual status o mapa de whatsapp-status.ts não cobre.
+      status: typeof p.status === "string" ? p.status : null,
+      ...identityShape(p),
+      from_me: p.isFromMe === true || p.fromMe === true,
+      has_text: !!(p.text?.message ?? p.body ?? metaMsg?.text?.body),
+      has_message_id: !!(p.messageId ?? p.id ?? metaMsg?.id),
+    };
+  } catch {
+    return { provider, describe_failed: true };
+  }
+}
 
 // ─── Tool log helpers ──────────────────────────────────────────────────────────
 
@@ -984,6 +1221,23 @@ serve(async (req) => {
       return new Response("ok");
     }
 
+    // Eco das NOSSAS mensagens (ver looksLikeOwnMessageEcho). Barra antes do
+    // parse: nem cria customer, nem roda agente. O meta guarda o formato do
+    // payload — é o que falta pra gravar essas mensagens como `role: "human"`.
+    if (looksLikeOwnMessageEcho(payload)) {
+      await handleOwnMessageEcho(provider, payload, unitId, finish);
+      return new Response("ok");
+    }
+
+    // `chatLid` do inbound do cliente: gravado na conversa pra que o eco da
+    // mensagem do atendente — que às vezes só traz LID — ache onde se pendurar.
+    // deno-lint-ignore no-explicit-any
+    const rawPayload = payload as any;
+    const inboundChatLid: string | null =
+      provider === "zapi" && typeof rawPayload?.chatLid === "string" && rawPayload.chatLid
+        ? String(rawPayload.chatLid)
+        : null;
+
     // Parse inbound message using provider-specific adapter
     const inbound = parseInbound(provider, payload);
     if (!inbound) {
@@ -992,12 +1246,24 @@ serve(async (req) => {
       // mandou pro vazio. O fluxo de LLM/tools NÃO roda nesse path.
       const media = peekInboundMedia(provider, payload);
       if (!media) {
-        await finish("ignored_non_text");
+        await finish("ignored_non_text", undefined, describeIgnoredPayload(provider, payload));
         return new Response("ok");
       }
 
       const mediaPhone = media.fromPhone;
       phoneHash = sanitizePhone(mediaPhone);
+
+      // Mesmo guarda do path de texto — mídia ecoada não pode virar customer.
+      if (!isPlausibleCustomerPhone(mediaPhone)) {
+        jsonLog("warn", { requestId, evt: "implausible_sender_phone_media", len: mediaPhone.length });
+        await finish("implausible_sender_phone", undefined, {
+          len: mediaPhone.length,
+          media: true,
+          ...describeIgnoredPayload(provider, payload),
+        });
+        return new Response("ok");
+      }
+
       messageIdForOutcome = media.providerMessageId;
 
       // Idempotência: se a mensagem já foi processada, não responde de novo.
@@ -1043,7 +1309,7 @@ serve(async (req) => {
       // deno-lint-ignore no-explicit-any
       let mediaConv: any = null;
       if (mediaCustomer && unitId) {
-        mediaConv = await getOrCreateConversation(mediaCustomer.id, unitId, media.contactName);
+        mediaConv = await getOrCreateConversation(mediaCustomer.id, unitId, media.contactName, inboundChatLid);
         if (mediaConv) {
           await appendToConversation(mediaConv.id, mediaConv.messages || [], "user", userPlaceholder);
         }
@@ -1077,6 +1343,17 @@ serve(async (req) => {
     const phone = inbound.fromPhone;
     const incomingText = inbound.text;
     phoneHash = sanitizePhone(phone);
+
+    // Backstop do guarda de eco: se a Z-API mudar o nome do campo `fromMe`, o
+    // LID ainda é barrado aqui — antes de criar customer e antes do agente.
+    if (!isPlausibleCustomerPhone(phone)) {
+      jsonLog("warn", { requestId, evt: "implausible_sender_phone", len: phone.length });
+      await finish("implausible_sender_phone", undefined, {
+        len: phone.length,
+        ...describeIgnoredPayload(provider, payload),
+      });
+      return new Response("ok");
+    }
 
     // Receber webhook é sinal de saúde — sempre marca como connected.
     if (channel.status !== "connected") {
@@ -1283,7 +1560,7 @@ serve(async (req) => {
 
       // B2/B3: appenda incoming + outgoing na conversation pra operador ver
       // o ciclo completo da pesquisa de satisfação na timeline.
-      const commentConv = await getOrCreateConversation(customer.id, unitId, contactName);
+      const commentConv = await getOrCreateConversation(customer.id, unitId, contactName, inboundChatLid);
       const afterUser = await appendToConversation(commentConv.id, commentConv.messages || [], "user", incomingText);
       if (sendRes.ok) {
         await appendToConversation(commentConv.id, afterUser, "assistant", replyText);
@@ -1353,7 +1630,7 @@ serve(async (req) => {
 
         // B2: appenda incoming "5" + outgoing na conversation pra timeline ficar completa.
         if (sendRes.ok && unitId) {
-          const ratingConv = await getOrCreateConversation(customer.id, unitId, contactName);
+          const ratingConv = await getOrCreateConversation(customer.id, unitId, contactName, inboundChatLid);
           const afterUser = await appendToConversation(ratingConv.id, ratingConv.messages || [], "user", incomingText);
           await appendToConversation(ratingConv.id, afterUser, "assistant", fullText);
         }
@@ -1365,7 +1642,7 @@ serve(async (req) => {
     }
 
     // Load conversation history
-    const conv = await getOrCreateConversation(customer.id, unitId, contactName);
+    const conv = await getOrCreateConversation(customer.id, unitId, contactName, inboundChatLid);
 
     // ─── Promove status 'resolved' legado pra 'ai_active' ────────────────────
     // O botão "Resolver" da UI deixou de gravar 'resolved' (vide
@@ -1403,22 +1680,22 @@ serve(async (req) => {
       await appendToConversation(conv.id, conv.messages || [], "user", incomingText);
 
       const handoffStart = conv.handoff_at ? new Date(conv.handoff_at).getTime() : 0;
-      const handoffAge = handoffStart ? Date.now() - handoffStart : 0;
 
-      // Houve resposta humana após o handoff? (mensagens com role 'human' OU
-      // 'assistant' enquanto a conv está em human/awaiting_human são
-      // consideradas resposta humana — assistant aqui só entra via reply
-      // manual fora do agente).
+      // Relógio do auto-resolve = ÚLTIMA atividade humana (início do handoff ou
+      // a mensagem mais recente do atendente, venha do painel ou do celular da
+      // loja). Antes bastava UMA resposta humana pra travar o auto-resolve pra
+      // sempre; com o eco do celular gravado como `human`, uma única mensagem
+      // do atendente silenciaria a IA indefinidamente nessa conversa.
       // deno-lint-ignore no-explicit-any
-      const hadHumanReply = (conv.messages ?? []).some((m: any) => {
-        if (!m || m.role !== "human") return false;
+      const lastHumanTs = (conv.messages ?? []).reduce((acc: number, m: any) => {
+        if (!m || m.role !== "human") return acc;
         const ts = m.timestamp ? new Date(m.timestamp).getTime() : 0;
-        return ts >= handoffStart;
-      });
+        return ts > acc ? ts : acc;
+      }, 0);
 
-      const shouldAutoResolve = handoffStart > 0
-        && handoffAge > HANDOFF_AUTO_RESOLVE_MS
-        && !hadHumanReply;
+      const silenceStart = Math.max(handoffStart, lastHumanTs);
+      const handoffAge = silenceStart ? Date.now() - silenceStart : 0;
+      const shouldAutoResolve = silenceStart > 0 && handoffAge > HANDOFF_AUTO_RESOLVE_MS;
 
       if (shouldAutoResolve) {
         await supabase
