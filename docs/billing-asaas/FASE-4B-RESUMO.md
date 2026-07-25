@@ -6,7 +6,7 @@
 >
 > ## 📍 ESTADO ATUAL — leia antes de tocar em billing
 >
-> **Código completo, revisado, aplicado e VALIDADO em sandbox (7 tasks + deploy + validação ao vivo B1–B5, em 2026-07-25).** A flag `billing_notifications_dispatch` está de volta **OFF** (fila acumula, nada é enviado) até a decisão de go-live. **Go-live de PRODUÇÃO segue DEFERIDO para a última fase do projeto.**
+> **Código completo, revisado, aplicado e VALIDADO em sandbox (7 tasks + deploy + validação ao vivo B1–B6, em 2026-07-25).** A flag `billing_notifications_dispatch` está de volta **OFF** (fila acumula, nada é enviado) até a decisão de go-live. **Go-live de PRODUÇÃO segue DEFERIDO para a última fase do projeto.**
 >
 > | | |
 > |---|---|
@@ -16,7 +16,7 @@
 > | Migrations `068` (ciclo/restored_at) e `069` (cron dispatcher) | ✅ **aplicadas via `db push`, sem drift** (`version = filename`; cron `*/5` agendado) |
 > | Deploy das 6 Edge Functions | ✅ **deployadas** (overdue, reminders, notifications, asaas-webhook, asaas-reconcile, manage-billing) |
 > | Validação sandbox B1–B5 | ✅ **passou** — grace D+1, blocked+suspended D+6, recipient org-scoped, override vitalício intacto, dispatcher enviou 2 e-mails reais |
-> | Regularização B6 (PAYMENT_RECEIVED → active + restored_at) | ⏳ **não testada ao vivo** — exige pagamento real no checkout sandbox Asaas; código deployado e revisado |
+> | Regularização B6 (PAYMENT_RECEIVED → active + restored_at) | ✅ **passou** (pagamento sandbox real) — org `blocked`→`active`, `restored_at` carimbado, assinatura nova `active`, fatura `paid`, aviso `regularized` org-scoped, `PAYMENT_CONFIRMED` processado |
 > | Flag `billing_notifications_dispatch` | 🔒 de volta OFF pós-validação — ligar só na decisão de go-live |
 
 ---
@@ -84,8 +84,8 @@ applyAsaasEvent (restore)  ─┘  (regularized na volta pra active)        (fla
    - **B3** invoice `due_date = today-6` → org `blocked` + `blocked_at`/`blocked_reason` + `suspended` enfileirado. ✅
    - **B4** override vitalício (LIFETIME `system`) + invoice D+6 → org **permaneceu `active`**, não bloqueou nem avisou. ✅
    - **B5** `billing_notifications_dispatch=true` → dispatcher enviou os 2 avisos (`status='sent'` 15:50 BRT), Resend aceitou → **2 e-mails reais**. ✅
-   - **B6** regularização (`PAYMENT_RECEIVED` → `active` + `restored_at` + `regularized`) — ⏳ **não testada ao vivo**; exige pagamento real no checkout sandbox Asaas (forjar o webhook exigiria token + payment id resolvível). Código deployado e revisado.
-   - Limpeza feita e conferida: 0 invoices/notifications/overrides de teste restantes; Seu Japa de volta `active` (sem `blocked_at`); `billing_notifications_dispatch` de volta OFF; `asaas_enabled` intacto.
+   - **B6** regularização (`PAYMENT_RECEIVED` → `active` + `restored_at` + `regularized`) — ✅ **passou** com pagamento sandbox real (cartão de teste `4444…` no checkout hospedado): org `blocked`→`active`, `restored_at` carimbado (`19:24:39`), assinatura nova `sub_rp0p6o3casfcszuk` ativa, fatura `paid` (`pay_vq1cmt0tfr9osyqa`, R$449), aviso `regularized` org-scoped enfileirado, `PAYMENT_CONFIRMED` `processed` sem erro. **Confirmou o follow-up 4c #2**: o aviso saiu com `invoice_id=null` (o aplicador cria a fatura no branch `else` sem reatribuir a var `invoice`) — baixo impacto, corrigir na 4c.
+   - Limpeza conferida: notificações de teste 0 restantes; `billing_notifications_dispatch` de volta OFF; `asaas_enabled` intacto. Pós-B6 o Seu Japa fica `active` com a assinatura nova (estado natural pós-regularização); as assinaturas sandbox `sub_rp0p6o3casfcszuk`/`sub_i89jdm76vjl8gxi8` são canceladas no painel Asaas.
 4. ✅ Tag anotada `billing-asaas/fase-4b` criada no commit de merge `d656b94` (validação passou).
 
 ## Rollback
