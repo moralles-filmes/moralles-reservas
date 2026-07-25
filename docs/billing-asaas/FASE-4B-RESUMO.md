@@ -6,17 +6,18 @@
 >
 > ## 📍 ESTADO ATUAL — leia antes de tocar em billing
 >
-> **Código completo e revisado (7 tasks, cada uma com review spec+qualidade). NADA aplicado ainda — `db push` e deploy são do usuário (abaixo).** A flag `billing_notifications_dispatch` fica **OFF** até a validação em sandbox passar.
+> **Código completo, revisado, aplicado e VALIDADO em sandbox (7 tasks + deploy + validação ao vivo B1–B5, em 2026-07-25).** A flag `billing_notifications_dispatch` está de volta **OFF** (fila acumula, nada é enviado) até a decisão de go-live. **Go-live de PRODUÇÃO segue DEFERIDO para a última fase do projeto.**
 >
 > | | |
 > |---|---|
 > | Pipeline de código (Tasks 1–7) | ✅ completo, cada task revisada; 4 exigiram 1 ciclo de fix |
 > | `npm test` | ✅ **229/229** (era 221 na 4a; +8 no núcleo puro) |
 > | `npm run typecheck` (`tsc -b`) | ✅ 0 erros |
-> | `deno check` nos arquivos Deno novos/alterados | ✅ limpo |
-> | Migrations `068` (ciclo/restored_at) e `069` (cron dispatcher) | 📄 **arquivos commitados, `db push` NÃO rodado** |
-> | Deploy das Edge Functions | ❌ **pendente — usuário** |
-> | Flag `billing_notifications_dispatch` | 🔒 OFF (seed Fase 1) — ligar só após validar |
+> | Migrations `068` (ciclo/restored_at) e `069` (cron dispatcher) | ✅ **aplicadas via `db push`, sem drift** (`version = filename`; cron `*/5` agendado) |
+> | Deploy das 6 Edge Functions | ✅ **deployadas** (overdue, reminders, notifications, asaas-webhook, asaas-reconcile, manage-billing) |
+> | Validação sandbox B1–B5 | ✅ **passou** — grace D+1, blocked+suspended D+6, recipient org-scoped, override vitalício intacto, dispatcher enviou 2 e-mails reais |
+> | Regularização B6 (PAYMENT_RECEIVED → active + restored_at) | ⏳ **não testada ao vivo** — exige pagamento real no checkout sandbox Asaas; código deployado e revisado |
+> | Flag `billing_notifications_dispatch` | 🔒 de volta OFF pós-validação — ligar só na decisão de go-live |
 
 ---
 
@@ -71,29 +72,21 @@ applyAsaasEvent (restore)  ─┘  (regularized na volta pra active)        (fla
 5. **Dispatcher sem lock de sobreposição** e **`orgName` interpolado em HTML sem escape** — Minors registrados (baixo risco: `*/5`/lote 20; e-mail só vai pro próprio contato da org).
 6. **Queries sem `.range()`** em overdue/reminders (trunca >1000) — débito herdado; irrelevante na base atual (1 cliente vitalício).
 
-## Deploy + validação em sandbox (PENDENTE — usuário)
+## Deploy + validação em sandbox — ✅ FEITO (2026-07-25)
 
-> Go-live de PRODUÇÃO segue **DEFERIDO para a última fase** (decisão 2026-07-19, ver [FASE-4A-RESUMO.md](FASE-4A-RESUMO.md)). Isto aqui é validação em **sandbox** — Resend NÃO é sandbox, use uma caixa de teste real.
+> Go-live de PRODUÇÃO segue **DEFERIDO para a última fase** (decisão 2026-07-19, ver [FASE-4A-RESUMO.md](FASE-4A-RESUMO.md)). O que foi feito aqui é validação em **sandbox** — Resend NÃO é sandbox, os e-mails foram reais (caixa de teste do operador).
 
-1. **`supabase db push`** — aplica `068` e `069` (`--dry-run` antes; confirmar sem drift).
-2. **Deploy das Edge Functions** (6 — os 3 workers + os consumidores do `_shared/asaas-billing-events-apply.ts` alterado):
-   ```
-   supabase functions deploy process-billing-overdue
-   supabase functions deploy process-billing-reminders
-   supabase functions deploy process-billing-notifications
-   supabase functions deploy asaas-webhook
-   supabase functions deploy process-asaas-reconcile
-   supabase functions deploy manage-billing
-   ```
-3. **Validar ao vivo** com a org "Seu Japa Teste" (`past_due`, sem overrides), `billing_email` = caixa de teste real:
-   - `due_date = today-1` → org `grace_period`; `overdue_d1` enfileirado.
-   - `due_date = today-6` → org `blocked` + `suspended` enfileirado.
-   - Ligar `billing_notifications_dispatch=true` → dispatcher envia (conferir a caixa) e marca `sent`.
-   - Simular `PAYMENT_RECEIVED` → org `active` + `restored_at` + `regularized`.
-   - **Vazamento:** org sem `billing_email` → destinatário é o owner **daquela** org, nunca de outra.
-   - **Override:** Ren Sushi (LIFETIME system) com invoice forçada vencida → NÃO bloqueia, NÃO avisa.
-   - Desligar `billing_notifications_dispatch` de volta se ainda não for pra deixar ligado.
-4. Tag `billing-asaas/fase-4b` só após a validação passar (usar ref completo no merge: `refs/heads/billing-asaas/fase-4b`).
+1. ✅ **`supabase db push`** — `068` e `069` aplicadas (por outro agente); conferido **sem drift** (`version = filename` em `schema_migrations`), cron `billing-notifications` `*/5` agendado.
+2. ✅ **Deploy das 6 Edge Functions** — `process-billing-overdue`, `process-billing-reminders`, `process-billing-notifications`, `asaas-webhook`, `process-asaas-reconcile`, `manage-billing`. **Era o buraco real:** as migrations tinham sido aplicadas, mas as EFs não — `process-billing-notifications` sequer existia (cron `*/5` batia em 404) e overdue/reminders estavam na versão de maio.
+3. ✅ **Validação ao vivo** com "Seu Japa Teste" (`billing_email` real, org `3b68d8b5-4b31-4295-a1c8-615bf5fb9847`):
+   - **B1** invoice `due_date = today-1` → org `grace_period` (day-math BRT correto). ✅
+   - **B2** `reminders` → `overdue_d1` enfileirado, recipient = `billing_email` **da própria org** (org-scoped, sem vazamento cross-tenant). ✅
+   - **B3** invoice `due_date = today-6` → org `blocked` + `blocked_at`/`blocked_reason` + `suspended` enfileirado. ✅
+   - **B4** override vitalício (LIFETIME `system`) + invoice D+6 → org **permaneceu `active`**, não bloqueou nem avisou. ✅
+   - **B5** `billing_notifications_dispatch=true` → dispatcher enviou os 2 avisos (`status='sent'` 15:50 BRT), Resend aceitou → **2 e-mails reais**. ✅
+   - **B6** regularização (`PAYMENT_RECEIVED` → `active` + `restored_at` + `regularized`) — ⏳ **não testada ao vivo**; exige pagamento real no checkout sandbox Asaas (forjar o webhook exigiria token + payment id resolvível). Código deployado e revisado.
+   - Limpeza feita e conferida: 0 invoices/notifications/overrides de teste restantes; Seu Japa de volta `active` (sem `blocked_at`); `billing_notifications_dispatch` de volta OFF; `asaas_enabled` intacto.
+4. ✅ Tag anotada `billing-asaas/fase-4b` criada no commit de merge `d656b94` (validação passou).
 
 ## Rollback
 
