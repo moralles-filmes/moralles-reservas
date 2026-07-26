@@ -103,37 +103,38 @@ export interface InvoiceCategoryInput {
 
 /**
  * Uma fatura é "de sistema" quando o plano por trás dela tem categoria
- * SYSTEM_SUBSCRIPTION. Três caminhos, nesta ordem — e a resposta pro caso
- * "não deu pra saber" NÃO é a mesma nos três (registrado aqui pra não
- * repetir o erro que motivou esta correção: um docstring generalizando um
- * único default onde na verdade há dois motivos diferentes por trás dele):
+ * SYSTEM_SUBSCRIPTION. Três caminhos, nesta ordem. A regra pro caso "não deu
+ * pra saber" é uma só, e não é "erro versus sucesso" — é HAVIA VÍNCULO DE
+ * PLANO OU NÃO: quando não dá pra resolver a categoria, `false` — EXCETO
+ * quando não havia vínculo nenhum, onde o default de compatibilidade dá
+ * `true`.
  *
  *  1. `billing_subscription_id` (caso comum: fatura de renovação) → delega
- *     pra `isSystemSubscription()`. Erro de leitura aqui devolve FALSE —
- *     herdado de `isSystemSubscription`, que escolhe `false` deliberadamente
- *     pro caso "não sabemos" (ver docstring lá). Este caminho NÃO cai no
- *     default de compatibilidade do item 3.
+ *     pra `isSystemSubscription()`, que devolve `false` em erro de leitura
+ *     (ver docstring lá — vínculo presente, categoria ilegível, `false`
+ *     deliberado).
  *  2. `external_reference` → `plan:<uuid>` → `planCategoryOf()` (o checkout
  *     hospedado grava esse texto; a primeira cobrança costuma nascer SEM
- *     `billing_subscription_id`). Erro de leitura OU plano não encontrado
- *     aqui cai no default de compatibilidade do item 3 (TRUE) — porque HAVIA
- *     um plano vinculado, só não deu pra ler a categoria dele; tratamos como
- *     "provavelmente de sistema" em vez de como ausência de vínculo. Isto é
- *     uma ASSIMETRIA real com o caminho 1 (que devolve `false` pro mesmo
- *     tipo de falha) — não foi corrigida aqui porque exigiria mudar
- *     comportamento fora do escopo desta rodada; fica registrada pra quem
- *     revisar o default de compatibilidade depois.
- *  3. sem nenhum dos dois (fatura legada, sem `subscription_id` nem
- *     `external_reference` com plano) → TRUE, por compatibilidade: toda
- *     fatura anterior à Fase 5a é de sistema, e devolver `false` as tiraria
- *     da inadimplência em silêncio — trocaria um bug (bloquear demais) por
- *     outro pior (nunca bloquear). Faturas de WhatsApp nascem com
+ *     `billing_subscription_id`). Vínculo também presente aqui — se
+ *     `planCategoryOf` não resolver (erro de leitura OU plano órfão/
+ *     apagado), a comparação `categoria === SYSTEM_CATEGORY` dá `false`
+ *     naturalmente (`null !== SYSTEM_CATEGORY`). NÃO cai no default de
+ *     compatibilidade do item 3 — esse default é só pra ausência de vínculo,
+ *     nunca pra vínculo ilegível. Faturas de instância de WhatsApp nascem com
  *     `purpose='subscription'` e `external_reference` preenchido, então
- *     caem no caminho 2, não neste.
+ *     passam por aqui: se a leitura falhar, a fatura de R$149 da instância
+ *     NÃO pode ser lida como "de sistema" e escalar o bloqueio da org
+ *     inteira — seria o bug original da fase, alcançável por um erro
+ *     transitório de banco.
+ *  3. sem nenhum dos dois (fatura legada, sem `subscription_id` nem
+ *     `external_reference` com plano — ausência real de vínculo) → TRUE,
+ *     por compatibilidade: toda fatura anterior à Fase 5a é de sistema, e
+ *     devolver `false` as tiraria da inadimplência em silêncio — trocaria um
+ *     bug (bloquear demais) por outro pior (nunca bloquear).
  *
- * Resumo sem eufemismo dos três casos: (a) resolveu e é do sistema → true;
- * (b) resolveu e não é → false; (c) não deu pra resolver → depende do
- * caminho — false no 1, true no 2 e no 3.
+ * Resumo sem eufemismo: (a) resolveu e é do sistema → true; (b) resolveu e
+ * não é → false; (c) não deu pra resolver → false se havia vínculo (1 e 2),
+ * true só se não havia vínculo nenhum (3).
  */
 export async function isSystemInvoice(
   supabase: SupabaseClient,
@@ -150,11 +151,14 @@ export async function isSystemInvoice(
 
   const parsed = parseExternalReference(invoice.external_reference ?? null);
   if (parsed?.planId) {
+    // Vínculo de plano EXISTE (veio do external_reference) — categoria
+    // ilegível (erro de leitura OU plano órfão, `planCategoryOf` devolve
+    // null nos dois casos, já logado lá) NÃO cai no default de
+    // compatibilidade do caminho 3. `null === SYSTEM_CATEGORY` é `false`
+    // naturalmente, igual ao caminho 1: vínculo presente e ilegível nunca
+    // autoriza presumir sistema.
     const category = await planCategoryOf(supabase, parsed.planId);
-    // Categoria ilegível (erro OU plano não encontrado, já logado dentro de
-    // planCategoryOf) cai no default de compatibilidade do caminho 3, não em
-    // false — ver assimetria com o caminho 1 na docstring acima.
-    if (category !== null) return category === SYSTEM_CATEGORY;
+    return category === SYSTEM_CATEGORY;
   }
 
   return true;
