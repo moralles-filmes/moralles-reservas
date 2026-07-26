@@ -381,29 +381,66 @@ export async function applyAsaasEvent(
       }
     }
 
-    // 6. Estado atual da assinatura da org.
+    // 6. Categoria do plano do PAGAMENTO e a assinatura correspondente.
+    //
+    // O código antigo perguntava "qual é a assinatura desta organização?" com
+    // maybeSingle(). A partir da Fase 5a uma org pode ter DUAS (sistema R$449 +
+    // instância R$149) e aquela pergunta não tem resposta única — devolvia
+    // PGRST116 e o pagamento falhava. A pergunta certa é "qual é a assinatura
+    // desta organização NA CATEGORIA deste plano?".
+    let planCategory: string | null = null;
+    if (planId) {
+      const { data: planRow, error: planErr } = await supabase
+        .from("billing_plans")
+        .select("category")
+        .eq("id", planId)
+        .maybeSingle();
+      if (planErr) {
+        return failWith(
+          organizationId,
+          effect.kind,
+          "select_plan_category",
+          planErr,
+          "Falha ao consultar a categoria do plano — ver logs.",
+        );
+      }
+      planCategory = (planRow?.category as string | undefined) ?? null;
+    }
+
+    // Só serve para carimbar billing_subscription_id na fatura. A ativação em si
+    // é feita pela RPC mais abaixo, que é quem tem o lock.
     let subscription: { id: string; status: string } | null = null;
-    if (organizationId) {
-      // `error` checado: `maybeSingle()` devolve PGRST116 quando casa MAIS de
-      // uma linha. Só destruturar `data` transformaria "duas assinaturas
-      // não-canceladas" em `null` — e o código abaixo inseriria uma terceira.
-      // Ambiguidade é falha, não vazio.
+    if (organizationId && planCategory) {
+      // `.select()` de lista (não maybeSingle): ambiguidade aqui precisa ser
+      // detectada, não convertida em null. Duas assinaturas vivas na mesma
+      // categoria é estado inválido, e escolher uma em silêncio carimbaria a
+      // fatura na assinatura errada.
       const { data, error } = await supabase
         .from("billing_subscriptions")
-        .select("id, status")
+        .select("id, status, billing_plans!inner(category)")
         .eq("organization_id", organizationId)
         .neq("status", "canceled")
-        .maybeSingle();
+        .eq("billing_plans.category", planCategory);
       if (error) {
         return failWith(
           organizationId,
           "unknown",
-          "select_subscription",
+          "select_subscription_by_category",
           error,
           "Falha ao consultar a assinatura da organização — ver logs.",
         );
       }
-      subscription = data ?? null;
+      if ((data ?? []).length > 1) {
+        return failWith(
+          organizationId,
+          effect.kind,
+          "ambiguous_subscription_category",
+          `org ${organizationId} tem ${data!.length} assinaturas vivas na categoria ${planCategory}`,
+          "Organização com mais de uma assinatura ativa na mesma categoria — ver logs.",
+        );
+      }
+      const row = (data ?? [])[0] as { id: string; status: string } | undefined;
+      subscription = row ? { id: row.id, status: row.status } : null;
     }
 
     // 7. Último portão. Fica AQUI, e não junto da decisão do passo 2, para que
@@ -540,115 +577,77 @@ export async function applyAsaasEvent(
           break;
         }
 
-        if (subscription) {
-          const { error: subErr } = await supabase
-            .from("billing_subscriptions")
-            .update({ status: "active" })
-            .eq("id", subscription.id)
-            .neq("status", "active");
-          if (subErr) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "update_subscription_active",
-              subErr,
-              "Falha ao ativar a assinatura — ver logs.",
-            );
-          }
+        // A criação/ativação é da RPC, não daqui: ela roda sob
+        // pg_advisory_xact_lock por (org, categoria), que é o que impede duas
+        // assinaturas de planos DIFERENTES da mesma categoria nascerem em
+        // paralelo — corrida que nenhuma UNIQUE consegue expressar. A RPC
+        // também faz o backfill do provider_subscription_id.
+        if (!planId) {
+          return failWith(
+            organizationId,
+            effect.kind,
+            "missing_plan_id",
+            `externalReference sem plano (raw=${externalReferenceRaw ?? "ausente"})`,
+            "Pagamento de assinatura sem plano identificável — ver logs.",
+          );
+        }
 
-          // Backfill do `provider_subscription_id`: a assinatura criada pelo
-          // checkout pode não tê-lo (§13.6 — o Asaas só expõe o `sub_…` na
-          // cobrança gerada), e este é o instante em que ele está em mãos.
-          // Sem isto a coluna fica `null` para sempre.
-          //
-          // UPDATE SEPARADO porque o de status acima é condicional em
-          // `.neq('status','active')`: numa assinatura já ativa ele não afeta
-          // linha nenhuma e o backfill nunca aconteceria. O `.is(..., null)`
-          // torna este write idempotente e impede sobrescrever id existente.
-          if (providerSubscriptionId) {
-            const { error: backfillErr } = await supabase
-              .from("billing_subscriptions")
-              .update({ provider_subscription_id: providerSubscriptionId })
-              .eq("id", subscription.id)
-              .is("provider_subscription_id", null);
-            if (backfillErr) {
-              // NÃO derruba o evento: id de correlação não é pré-requisito do
-              // acesso — a fatura já está paga e a assinatura já está ativa.
-              // Devolver `failed` aqui faria o reconcile reexecutar tudo por
-              // causa de um campo cosmético. Loga e segue.
-              jsonLog("warn", {
-                evt: "asaas_subscription_backfill_failed",
-                organization_id: organizationId,
-                subscription_id: subscription.id,
-                error: String(backfillErr),
-              });
+        const { data: rpcData, error: rpcErr } = await supabase.rpc(
+          "resolve_or_activate_subscription",
+          {
+            p_org: organizationId,
+            p_plan_id: planId,
+            p_provider_subscription_id: providerSubscriptionId,
+            // Coluna NOT NULL. O fallback 'card' é regra de produto (o checkout
+            // RECURRENT do Asaas só aceita cartão), não chute.
+            p_payment_method: paymentMethod ?? "card",
+          },
+        );
+        if (rpcErr) {
+          // Inclui ambiguous_subscription_category, plan_not_found e
+          // missing_billing_customer. Todos são falha ALTA: o evento continua na
+          // fila e o reconcile reprocessa depois que um humano resolver.
+          return failWith(
+            organizationId,
+            effect.kind,
+            "resolve_or_activate_subscription",
+            rpcErr,
+            "Falha ao ativar a assinatura da organização — ver logs.",
+          );
+        }
+
+        const activated = rpcData as
+          | {
+              action?: string;
+              subscription_id?: string;
+              category?: string;
+              plan_changed?: { from: string; to: string } | null;
+              provider_changed?: { from: string; to: string } | null;
             }
-          }
-        } else {
-          // Criar assinatura exige DOIS pais NOT NULL (`billing_customer_id` e
-          // `billing_plan_id`, migration 20260528000000 PART 4). Sem qualquer um
-          // deles a linha é impossível: `?? null` daria 23502 e um planId
-          // inválido daria 23503. Falhar ALTO e deixar o reconcile retentar é a
-          // única saída correta — inserir nulo não é opção, e seguir para a
-          // ativação daria acesso a uma org SEM assinatura, com o evento
-          // marcado como resolvido para sempre.
-          if (!planId) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "missing_plan_id",
-              `externalReference sem plano (raw=${externalReferenceRaw ?? "ausente"})`,
-              "Pagamento de assinatura sem plano identificável — ver logs.",
-            );
-          }
+          | null;
 
-          const { data: customer, error: custErr } = await supabase
-            .from("billing_customers")
-            .select("id")
-            .eq("organization_id", organizationId)
-            .maybeSingle();
-          if (custErr) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "select_billing_customer",
-              custErr,
-              "Falha ao consultar o cadastro de cobrança — ver logs.",
-            );
-          }
-          if (!customer) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "missing_billing_customer",
-              "organização sem linha em billing_customers",
-              "Organização sem cadastro de cobrança — ver logs.",
-            );
-          }
+        jsonLog("info", {
+          evt: "asaas_subscription_resolved",
+          organization_id: organizationId,
+          action: activated?.action ?? null,
+          category: activated?.category ?? null,
+          plan_changed: activated?.plan_changed ?? null,
+          provider_changed: activated?.provider_changed ?? null,
+        });
 
-          const { error: insErr } = await supabase.from("billing_subscriptions").insert({
+        // ── INVARIANTE DA FASE 5a ────────────────────────────────────────────
+        // SÓ assinatura de categoria SYSTEM_SUBSCRIPTION escreve em
+        // organizations.billing_status. Sem este gate, pagar os R$149 da
+        // instância reativaria uma organização cujo SISTEMA está inadimplente —
+        // e carimbaria restored_at + aviso "voltou" por uma dívida que continua
+        // aberta.
+        if (activated?.category !== "SYSTEM_SUBSCRIPTION") {
+          jsonLog("info", {
+            evt: "asaas_activation_scoped_to_service",
             organization_id: organizationId,
-            billing_customer_id: customer.id,
-            billing_plan_id: planId,
-            provider: "asaas",
-            // Vem do `payment.subscription` do payload (§13.6). Em cobrança
-            // avulsa o campo é omitido e fica null — a coluna é nullable e o
-            // UNIQUE (provider, provider_subscription_id) é parcial.
-            provider_subscription_id: providerSubscriptionId,
-            status: "active",
-            // Coluna NOT NULL — aqui o fallback 'card' é regra de produto
-            // (checkout RECURRENT só aceita cartão), não chute.
-            payment_method: paymentMethod ?? "card",
+            category: activated?.category ?? null,
           });
-          if (insErr) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "insert_subscription",
-              insErr,
-              "Falha ao criar a assinatura — ver logs.",
-            );
-          }
+          break;
         }
 
         // Espelha em organizations, que é a coluna autoritativa do
