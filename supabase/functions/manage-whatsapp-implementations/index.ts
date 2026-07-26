@@ -15,6 +15,9 @@ import { corsHeadersFor } from "../_shared/cors.ts";
 import {
   validateOriginPayment,
   canTransitionOperational,
+  buildClientImplementationView,
+  summarizeMonthlyCosts,
+  SETTLED_PAYMENT_STATUSES,
   ORIGIN_PAYMENT_MATRIX,
   type ImplementationOrigin,
   type ImplementationPaymentStatus,
@@ -31,6 +34,12 @@ import {
   CHECKOUT_EXPIRY_MINUTES,
 } from "../_shared/checkout-sessions.ts";
 import { checkFlagEnabled } from "../_shared/platform-flags.ts";
+import {
+  grantOverride,
+  revokeOverride,
+  type OverrideGrantType,
+} from "../_shared/entitlement-overrides.ts";
+import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -162,7 +171,10 @@ serve(async (req) => {
       // procurar um problema de matriz que não existe. Checagem contra a MESMA
       // matriz do núcleo puro (nenhuma lista nova aqui) dá o erro certo.
       // register_external_payment não precisa: a origem já vem travada acima.
-      if (action === "create" && !(resolvedOrigin in ORIGIN_PAYMENT_MATRIX)) {
+      if (
+        action === "create" &&
+        !Object.prototype.hasOwnProperty.call(ORIGIN_PAYMENT_MATRIX, resolvedOrigin)
+      ) {
         return jsonResponse(req, { error: "Informe uma origem válida." }, 400);
       }
 
@@ -468,7 +480,175 @@ serve(async (req) => {
       return jsonResponse(req, { success: true });
     }
 
-    // ... dispatch de get_service_status (Task 14)
+    if (action === "grant_whatsapp_override") {
+      const { organization_id, grant_type, reason, ends_at } = body as Record<string, unknown>;
+      if (!organization_id) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
+
+      // `feature` é FIXA aqui. A UI genérica das três features é da Fase 9;
+      // aceitar feature pelo corpo agora deixaria esta ação conceder IA — que
+      // depende da carteira (Fase 7) e não tem efeito nenhum hoje.
+      const result = await grantOverride(supabase, {
+        organizationId: organization_id as string,
+        feature: "whatsapp",
+        grantType: grant_type as OverrideGrantType,
+        reason: String(reason ?? ""),
+        grantedBy: callerId,
+        endsAt: (ends_at as string | null | undefined) ?? null,
+      });
+      if (!result.ok) return jsonResponse(req, { error: result.error }, result.status);
+
+      jsonLog("info", {
+        reqId, evt: "whatsapp_override_granted",
+        orgId: organization_id, grantType: grant_type, by: callerId,
+      });
+      return jsonResponse(req, { success: true, entitlements: result.entitlements });
+    }
+
+    if (action === "revoke_whatsapp_override") {
+      const { organization_id, override_id } = body as Record<string, unknown>;
+      if (!organization_id || !override_id) {
+        return jsonResponse(req, { error: "organization_id e override_id são obrigatórios." }, 400);
+      }
+      const result = await revokeOverride(supabase, {
+        organizationId: organization_id as string,
+        overrideId: override_id as string,
+        revokedBy: callerId,
+      });
+      if (!result.ok) return jsonResponse(req, { error: result.error }, result.status);
+      return jsonResponse(req, { success: true, entitlements: result.entitlements });
+    }
+
+    if (action === "list_whatsapp_overrides") {
+      const organizationId = String(body.organization_id ?? "");
+      if (!organizationId) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
+      const { data, error } = await supabase
+        .from("organization_entitlement_overrides")
+        .select("id, feature, enabled, grant_type, starts_at, ends_at, reason, granted_by, created_at, revoked_at, revoked_by")
+        .eq("organization_id", organizationId)
+        .eq("feature", "whatsapp")
+        .order("created_at", { ascending: false });
+      if (error) {
+        jsonLog("error", { reqId, evt: "whatsapp_override_list_error", err: error.message });
+        return jsonResponse(req, { error: "Falha ao listar as concessões." }, 500);
+      }
+      return jsonResponse(req, { success: true, overrides: data ?? [] });
+    }
+
+    if (action === "get_service_status") {
+      const organizationId = String(body.organization_id ?? "");
+      // Permissão já checada no bloco de autorização (CLIENT_FRIENDLY_ACTIONS)
+      // — organizationId aqui é o MESMO valor lido de body.organization_id que
+      // o guard validou logo acima (nenhuma reinterpretação do body no meio).
+
+      const [implRes, entitlements, subsRes, plansRes, flags] = await Promise.all([
+        supabase
+          .from("whatsapp_implementations")
+          // Colunas EXPLÍCITAS, nunca "*": a projeção descarta o resto, mas não
+          // trazer o que não se usa é a defesa que sobrevive a um refactor.
+          .select("payment_status, operational_status, amount_cents, paid_at, scheduled_for, started_at, completed_at")
+          .eq("organization_id", organizationId)
+          .neq("operational_status", "CANCELED")
+          .maybeSingle(),
+        resolveOrgEntitlements(supabase, organizationId),
+        supabase
+          .from("billing_subscriptions")
+          .select("id, status, current_period_end, billing_plans!inner(category)")
+          .eq("organization_id", organizationId)
+          .neq("status", "canceled"),
+        supabase
+          .from("billing_plans")
+          .select("slug, amount_cents, active")
+          .in("slug", ["sistema-reservas", "implementacao-whatsapp", "instancia-whatsapp"]),
+        Promise.all([
+          checkFlagEnabled("whatsapp_implementation_flow"),
+          checkFlagEnabled("whatsapp_subscription_checkout"),
+        ]),
+      ]);
+
+      if (implRes.error) {
+        jsonLog("error", { reqId, evt: "service_status_impl_error", err: implRes.error.message });
+        return jsonResponse(req, { error: "Falha ao carregar o status do serviço." }, 500);
+      }
+      if (subsRes.error) {
+        // Engolir este erro faz subs=[] → has_instance:false → a tela oferece
+        // "contratar a instância" pra quem JÁ TEM assinatura ativa. Dado errado
+        // aqui vira cobrança duplicada; um 500 honesto é melhor.
+        jsonLog("error", { reqId, evt: "service_status_subs_error", err: subsRes.error.message });
+        return jsonResponse(req, { error: "Falha ao carregar o status do serviço." }, 500);
+      }
+      if (plansRes.error) {
+        // Vitrine de preços é degradável: summarizeMonthlyCosts já trata preço
+        // null. Derrubar a página inteira porque o catálogo não carregou seria
+        // pior que mostrar o estado sem os valores.
+        jsonLog("warn", { reqId, evt: "service_status_plans_warn", err: plansRes.error.message });
+      }
+
+      const subs = (subsRes.data ?? []) as Array<{
+        status: string;
+        current_period_end: string | null;
+        billing_plans: { category: string } | { category: string }[];
+      }>;
+      const categoryOf = (s: typeof subs[number]) =>
+        (Array.isArray(s.billing_plans) ? s.billing_plans[0] : s.billing_plans)?.category;
+      const instanceSub = subs.find((s) => categoryOf(s) === "WHATSAPP_SUBSCRIPTION") ?? null;
+      const systemSub = subs.find((s) => categoryOf(s) === "SYSTEM_SUBSCRIPTION") ?? null;
+
+      const priceOf = (slug: string) =>
+        ((plansRes.data ?? []).find((p) => p.slug === slug)?.amount_cents as number | undefined) ?? null;
+
+      const implRow = implRes.data as
+        | {
+            payment_status: ImplementationPaymentStatus;
+            operational_status: ImplementationOperationalStatus;
+            amount_cents: number | null;
+            paid_at: string | null;
+            scheduled_for: string | null;
+            started_at: string | null;
+            completed_at: string | null;
+          }
+        | null;
+
+      const whatsappSponsored =
+        entitlements.whatsapp.allowed && entitlements.whatsapp.source === "override";
+      const systemSponsored =
+        entitlements.system.allowed && entitlements.system.source === "override";
+
+      return jsonResponse(req, {
+        success: true,
+        // NOT_REQUESTED quando não há linha — ausência é um estado legítimo, não
+        // um erro nem uma linha vazia no banco.
+        implementation: buildClientImplementationView(implRow),
+        subscription: {
+          has_instance: !!instanceSub,
+          status: instanceSub?.status ?? null,
+          next_due: instanceSub?.current_period_end ?? null,
+        },
+        override: {
+          active: whatsappSponsored,
+          grant_type: whatsappSponsored ? entitlements.whatsapp.status : null,
+          ends_at: whatsappSponsored ? entitlements.whatsapp.expiresAt : null,
+        },
+        costs: summarizeMonthlyCosts({
+          systemMonthlyCents: priceOf("sistema-reservas"),
+          instanceMonthlyCents: priceOf("instancia-whatsapp"),
+          implementationOneTimeCents: priceOf("implementacao-whatsapp"),
+          hasActiveInstanceSubscription: !!instanceSub,
+          whatsappSponsored,
+          implementationSettled: implRow
+            ? SETTLED_PAYMENT_STATUSES.has(implRow.payment_status)
+            : false,
+          // Cortesia de sistema zera o mensal inteiro; sem assinatura de
+          // sistema nem cortesia, o preço de vitrine ainda é o que a tela mostra.
+          systemSponsored,
+        }),
+        flags: {
+          implementation_flow: flags[0].enabled,
+          subscription_checkout: flags[1].enabled,
+        },
+        // Usado pela UI para saber se o mensal atual reflete cobrança real.
+        has_system_subscription: !!systemSub,
+      });
+    }
 
     return jsonResponse(req, { error: "Ação desconhecida." }, 400);
   } catch (err) {
