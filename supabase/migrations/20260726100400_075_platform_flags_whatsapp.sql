@@ -12,9 +12,9 @@ begin;
 
 insert into platform_flags (key, value, description) values
   ('whatsapp_subscription_checkout', 'false',
-   'Libera o checkout da mensalidade da instancia (R$149). Fica OFF em producao ate a Fase 5b: sem enforcement, seria cobrar mensalidade sem poder suspender.'),
+   'Libera o checkout da mensalidade da instância (R$149). Fica OFF em produção até a Fase 5b: sem enforcement, seria cobrar mensalidade sem poder suspender.'),
   ('whatsapp_service_enforcement', 'false',
-   'Suspensao e gates do servico de WhatsApp por inadimplencia da instancia (Fase 5b).')
+   'Suspensão e gates do serviço de WhatsApp por inadimplência da instância (Fase 5b).')
 on conflict (key) do nothing;
 
 commit;
