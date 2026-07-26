@@ -15,6 +15,7 @@ import { corsHeadersFor } from "../_shared/cors.ts";
 import {
   validateOriginPayment,
   canTransitionOperational,
+  ORIGIN_PAYMENT_MATRIX,
   type ImplementationOrigin,
   type ImplementationPaymentStatus,
   type ImplementationOperationalStatus,
@@ -29,7 +30,6 @@ import {
   failCheckoutSession,
   CHECKOUT_EXPIRY_MINUTES,
 } from "../_shared/checkout-sessions.ts";
-import { getBillingProvider } from "../_shared/billing-provider.ts";
 import { checkFlagEnabled } from "../_shared/platform-flags.ts";
 
 const supabase = createClient(
@@ -147,7 +147,7 @@ serve(async (req) => {
       const {
         organization_id, origin, amount_cents, payment_method,
         external_payment_reference, reason, notes, owner_admin_id, scheduled_for, paid_at,
-      } = body as Record<string, never>;
+      } = body as Record<string, unknown>;
 
       if (!organization_id) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
 
@@ -156,6 +156,15 @@ serve(async (req) => {
       const resolvedOrigin: ImplementationOrigin = action === "register_external_payment"
         ? "EXTERNAL_PAYMENT"
         : (origin as ImplementationOrigin);
+
+      // `origin` ausente/inválida cairia direto em validateOriginPayment com
+      // WAIVED e devolveria "combinação inválida" — mensagem que manda o admin
+      // procurar um problema de matriz que não existe. Checagem contra a MESMA
+      // matriz do núcleo puro (nenhuma lista nova aqui) dá o erro certo.
+      // register_external_payment não precisa: a origem já vem travada acima.
+      if (action === "create" && !(resolvedOrigin in ORIGIN_PAYMENT_MATRIX)) {
+        return jsonResponse(req, { error: "Informe uma origem válida." }, 400);
+      }
 
       if (resolvedOrigin === "ASAAS") {
         // Cobrança real tem fluxo próprio: create_asaas_charge. Aceitar aqui
@@ -184,11 +193,17 @@ serve(async (req) => {
         }
       }
 
-      const { data: plan } = await supabase
+      const { data: plan, error: planErr } = await supabase
         .from("billing_plans")
         .select("id")
         .eq("slug", "implementacao-whatsapp")
         .maybeSingle();
+      // Não aborta: billing_plan_id é nullable e a linha manual sobrevive sem
+      // ele (não é uma cobrança Asaas, então não precisa do link pro plano
+      // pra conciliação). Só loga pra não esconder uma falha de leitura real.
+      if (planErr) {
+        jsonLog("warn", { reqId, evt: "whatsapp_impl_plan_lookup_warn", err: planErr.message });
+      }
 
       const { data: created, error: insErr } = await supabase
         .from("whatsapp_implementations")
@@ -247,11 +262,20 @@ serve(async (req) => {
       const plan = await loadImplementationPlan(supabase);
       if (!plan) return jsonResponse(req, { error: "Produto não encontrado." }, 404);
 
-      const { data: customer } = await supabase
+      const { data: customer, error: customerErr } = await supabase
         .from("billing_customers")
         .select("asaas_customer_id, tax_id")
         .eq("organization_id", organizationId)
         .maybeSingle();
+      if (customerErr) {
+        // Falha de leitura real (banco indisponível, etc.) NÃO pode virar
+        // "esta empresa não tem cadastro" — o admin iria cobrar por fora um
+        // cliente que já tem asaas_customer_id, achando que não tem.
+        jsonLog("error", {
+          reqId, evt: "whatsapp_impl_customer_read_error", err: customerErr.message,
+        });
+        return jsonResponse(req, { error: "Falha ao consultar o cadastro da empresa." }, 500);
+      }
       if (!customer?.asaas_customer_id) {
         // O admin não cria cliente Asaas por aqui: o cadastro fiscal é fluxo do
         // onboarding, e criar um `cus_` a partir deste painel duplicaria o que
@@ -294,10 +318,18 @@ serve(async (req) => {
       if (!id || !to) {
         return jsonResponse(req, { error: "id e operational_status são obrigatórios." }, 400);
       }
+      if (to === "CANCELED") {
+        // Cancelamento tem action própria (exige motivo, grava canceled_at +
+        // cancel_reason e checa a janela do checkout Asaas). Deixar passar por
+        // aqui tiraria a linha do índice de "uma aberta" sem nada disso.
+        return jsonResponse(req, {
+          error: "Para cancelar use a ação de cancelamento, que exige o motivo.",
+        }, 400);
+      }
 
       const { data: row, error: readErr } = await supabase
         .from("whatsapp_implementations")
-        .select("id, payment_status, operational_status")
+        .select("id, payment_status, operational_status, started_at")
         .eq("id", id)
         .maybeSingle();
       if (readErr) {
@@ -357,8 +389,61 @@ serve(async (req) => {
       if (!id) return jsonResponse(req, { error: "id é obrigatório." }, 400);
       if (!cancelReason) return jsonResponse(req, { error: "Informe o motivo do cancelamento." }, 400);
 
+      const { data: row, error: readErr } = await supabase
+        .from("whatsapp_implementations")
+        .select("id, origin, payment_status, operational_status, created_at")
+        .eq("id", id)
+        .maybeSingle();
+      if (readErr) {
+        jsonLog("error", { reqId, evt: "whatsapp_impl_cancel_read_error", err: readErr.message });
+        return jsonResponse(req, { error: "Falha ao carregar a implantação." }, 500);
+      }
+      // CANCELED já é o estado final desejado — mesmo 404 idempotente de
+      // antes, decidido ANTES de consultar o núcleo (que rejeitaria com 409
+      // por CANCELED ser terminal, mudando o contrato de resposta à toa).
+      if (!row || row.operational_status === "CANCELED") {
+        return jsonResponse(req, { error: "Implantação não encontrada ou já cancelada." }, 404);
+      }
+
+      // Checkout Asaas ainda pode ser pago pelo cliente dentro da janela de
+      // expiração que foi passada ao Asaas (minutesToExpire em
+      // openImplementationCheckout). Cancelar agora deixaria a cobrança viva
+      // no provedor sem nenhuma linha local pra correlacionar a confirmação —
+      // confirmImplementationPayment casa por origin/payment_status/
+      // provider_checkout_id, sem olhar operational_status. Usa created_at da
+      // própria linha (não uma consulta a billing_checkout_sessions): a linha
+      // nasce segundos DEPOIS da reserva da sessão, então created_at+30min
+      // termina um pouco depois do expires_at real — erra para o lado seguro.
+      if (
+        row.origin === "ASAAS" &&
+        row.payment_status === "PENDING" &&
+        Date.now() - new Date(row.created_at as string).getTime() < CHECKOUT_EXPIRY_MINUTES * 60_000
+      ) {
+        return jsonResponse(req, {
+          error: "Esta cobrança ainda pode ser paga pelo cliente. Aguarde o checkout expirar (até 30 minutos) e cancele depois.",
+        }, 409);
+      }
+
+      // A decisão de "pode cancelar daqui" é do núcleo puro, não de um filtro
+      // ad hoc — COMPLETED é terminal em OPERATIONAL_TRANSITIONS e não pode
+      // virar CANCELED por aqui (senão a org perde a elegibilidade de
+      // contratar a mensalidade pra sempre, sem poder desfazer).
+      const verdict = canTransitionOperational(
+        row.operational_status as ImplementationOperationalStatus,
+        "CANCELED",
+        row.payment_status as ImplementationPaymentStatus,
+      );
+      if (!verdict.ok) {
+        return jsonResponse(req, {
+          error: "Esta implantação não pode ser cancelada a partir da etapa atual.",
+        }, 409);
+      }
+
       // NUNCA apaga: o histórico financeiro (pagamento externo confirmado, por
       // exemplo) mora nesta linha. CANCELED só a tira do índice de "uma aberta".
+      // UPDATE condicional na etapa lida (mesmo lock otimista do
+      // set_operational_status): corrida entre dois admins não sobrescreve em
+      // silêncio.
       const { data: updated, error } = await supabase
         .from("whatsapp_implementations")
         .update({
@@ -368,14 +453,16 @@ serve(async (req) => {
           updated_by: callerId,
         })
         .eq("id", id)
-        .neq("operational_status", "CANCELED")
+        .eq("operational_status", row.operational_status)
         .select("id");
       if (error) {
         jsonLog("error", { reqId, evt: "whatsapp_impl_cancel_error", err: error.message });
         return jsonResponse(req, { error: "Falha ao cancelar a implantação." }, 500);
       }
       if (!updated || updated.length === 0) {
-        return jsonResponse(req, { error: "Implantação não encontrada ou já cancelada." }, 404);
+        return jsonResponse(req, {
+          error: "A etapa mudou enquanto você editava. Recarregue e tente de novo.",
+        }, 409);
       }
       jsonLog("info", { reqId, evt: "whatsapp_impl_canceled", id, by: callerId });
       return jsonResponse(req, { success: true });
