@@ -19,7 +19,7 @@ import {
 } from "../_shared/stripe-billing.ts";
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
-import { isSystemSubscription, planCategoryOf } from "../_shared/billing-category.ts";
+import { isSystemSubscription, SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -661,9 +661,10 @@ serve(async (req) => {
 
       // Assinatura criada à mão pelo admin. Só a de sistema move o
       // billing_status da organização — criar a instância de WhatsApp para um
-      // cliente em atraso não pode marcá-lo como 'active'.
-      const createdCategory = await planCategoryOf(supabase, plan.id);
-      if (createdCategory === "SYSTEM_SUBSCRIPTION") {
+      // cliente em atraso não pode marcá-lo como 'active'. Categoria já veio
+      // no `select("*")` de `plan` acima — não precisa de nova consulta, e não
+      // "conserte" isso de volta pra planCategoryOf(plan.id).
+      if (plan.category === SYSTEM_CATEGORY) {
         const billingStatus = trial_days ? "trialing" : "active";
         await supabase.from("organizations").update({
           billing_status: billingStatus,
@@ -1100,11 +1101,17 @@ serve(async (req) => {
       const { organization_id } = body;
       if (!organization_id) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
 
+      // Só a assinatura de SISTEMA decide se o desbloqueio cai em 'trialing' ou
+      // 'active' — uma instância de WhatsApp trialing não pode travar a org
+      // num status que não é o dela. Sem match (org sem assinatura de sistema,
+      // ou nenhuma linha), newStatus cai em 'active': é desbloqueio manual
+      // explícito do admin, e o lado seguro aqui é NÃO deixar de desbloquear.
       const { data: activeSub } = await supabase
         .from("billing_subscriptions")
-        .select("status")
+        .select("status, billing_plans!inner(category)")
         .eq("organization_id", organization_id)
         .neq("status", "canceled")
+        .eq("billing_plans.category", SYSTEM_CATEGORY)
         .maybeSingle();
 
       const newStatus = activeSub ? (activeSub.status as string) === "trialing" ? "trialing" : "active" : "active";
