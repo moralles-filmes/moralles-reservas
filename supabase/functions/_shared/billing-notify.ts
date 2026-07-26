@@ -76,6 +76,15 @@ export async function enqueueBillingNotification(
   }
 }
 
+// Teto da consulta abaixo: esta função é chamada de dentro do caminho síncrono
+// do asaas-webhook (sem orçamento próprio, diferente do I/O com o Asaas — ver
+// ASAAS_IO_BUDGET_MS no CLAUDE.md) e faz UMA chamada HTTP ao Auth Admin por
+// linha, embora só `recipients[0]` seja usado de fato. Sem teto, uma lista de
+// platform_admins que cresça vira N chamadas sequenciais ao GoTrue dentro dos
+// 10s que o Asaas concede pra resposta — o mesmo acidente que o orçamento do
+// Asaas evita, só que sem orçamento nenhum aqui.
+const PLATFORM_ADMIN_RECIPIENTS_CAP = 10;
+
 /**
  * E-mails dos administradores da PLATAFORMA, ordenados por antiguidade.
  *
@@ -92,11 +101,23 @@ export async function resolvePlatformAdminRecipients(
   const { data: admins, error } = await supabase
     .from("platform_admins")
     .select("user_id")
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .limit(PLATFORM_ADMIN_RECIPIENTS_CAP);
 
   if (error) {
     jsonLog("error", { evt: "platform_admin_recipients_read_failed", err: error.message });
     return [];
+  }
+
+  if ((admins ?? []).length === PLATFORM_ADMIN_RECIPIENTS_CAP) {
+    // Cap atingido: pode haver mais platform_admins não lidos aqui. Loga pra
+    // não parecer silenciosamente "cobri todo mundo" — cap silencioso lê como
+    // cobertura completa quando não é.
+    jsonLog("warn", {
+      evt: "platform_admin_recipients_capped",
+      cap: PLATFORM_ADMIN_RECIPIENTS_CAP,
+      count: admins!.length,
+    });
   }
 
   const emails: string[] = [];

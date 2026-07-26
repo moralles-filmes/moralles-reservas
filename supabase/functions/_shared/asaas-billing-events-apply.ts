@@ -201,25 +201,39 @@ async function confirmImplementationPayment(
     implementation_id: updated[0].id,
   });
 
-  const recipients = await resolvePlatformAdminRecipients(supabase);
-  if (recipients.length === 0) return;
-  // UMA linha só: o UNIQUE (organization_id, event_type, invoice_id) deduplica,
-  // e sendEmail aceita um único `to`. Enfileirar uma por admin faria N-1
-  // desaparecerem em 23505 silencioso. A lista completa vai para o log, e quem
-  // recebe é o admin mais antigo (ordem determinística).
-  if (recipients.length > 1) {
-    jsonLog("info", {
-      evt: "implementation_notify_single_recipient",
-      chosen: recipients[0],
-      total_admins: recipients.length,
+  // O UPDATE acima já commitou — o dinheiro está durável e o pagamento, real.
+  // A partir daqui é aviso acessório: qualquer exceção (não só `error` de
+  // campo) fica CONTIDA aqui e nunca sobe para o try/catch de applyAsaasEvent,
+  // que devolveria `failed` para um evento cujo efeito já foi aplicado de
+  // verdade — mentira que o próprio invariante do arquivo proíbe (`processed`
+  // ⇔ efeito aplicado; `failed` ⇔ não aplicado).
+  try {
+    const recipients = await resolvePlatformAdminRecipients(supabase);
+    if (recipients.length === 0) return;
+    // UMA linha só: o UNIQUE (organization_id, event_type, invoice_id) deduplica,
+    // e sendEmail aceita um único `to`. Enfileirar uma por admin faria N-1
+    // desaparecerem em 23505 silencioso. A lista completa vai para o log, e quem
+    // recebe é o admin mais antigo (ordem determinística).
+    if (recipients.length > 1) {
+      jsonLog("info", {
+        evt: "implementation_notify_single_recipient",
+        chosen: recipients[0],
+        total_admins: recipients.length,
+      });
+    }
+    await enqueueBillingNotification(supabase, {
+      organizationId: args.organizationId,
+      eventType: "implementation_paid",
+      invoiceId: args.invoiceId,
+      recipient: recipients[0],
+    });
+  } catch (err) {
+    jsonLog("error", {
+      evt: "implementation_notify_unexpected_error",
+      organization_id: args.organizationId,
+      error: String(err),
     });
   }
-  await enqueueBillingNotification(supabase, {
-    organizationId: args.organizationId,
-    eventType: "implementation_paid",
-    invoiceId: args.invoiceId,
-    recipient: recipients[0],
-  });
 }
 
 /**
