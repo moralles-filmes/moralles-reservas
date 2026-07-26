@@ -5,6 +5,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.ts";
+import { isSystemInvoice } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -27,18 +28,25 @@ serve(async (req) => {
 
     let unblocked = 0;
     for (const org of blockedOrgs ?? []) {
-      // Verificar se tem alguma invoice paga nos últimos 7 dias
+      // Verificar se tem invoice de SISTEMA paga nos últimos 7 dias. Sem o
+      // filtro, comprar R$149 de instância (ou R$50 de crédito de IA)
+      // desbloquearia uma organização com a mensalidade do sistema em atraso.
       const since = new Date(Date.now() - 7 * 86400000).toISOString();
-      const { data: paidInvoice } = await supabase
+      const { data: paidInvoices } = await supabase
         .from("billing_invoices")
-        .select("id")
+        .select("id, billing_subscription_id, external_reference, purpose")
         .eq("organization_id", org.id)
         .eq("status", "paid")
-        .gte("paid_at", since)
-        .limit(1)
-        .maybeSingle();
+        .gte("paid_at", since);
 
-      if (!paidInvoice) continue;
+      let systemPaid = false;
+      for (const inv of paidInvoices ?? []) {
+        if (await isSystemInvoice(supabase, inv)) {
+          systemPaid = true;
+          break;
+        }
+      }
+      if (!systemPaid) continue;
 
       // Verificar se não tem override de block_access ativo
       const { data: blockOverride } = await supabase

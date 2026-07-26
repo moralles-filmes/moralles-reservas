@@ -214,7 +214,7 @@ async function handleBillingEvent(
           .maybeSingle();
 
         if (cust) {
-          await supabase.from("billing_subscriptions").insert({
+          const { error: insertSubErr } = await supabase.from("billing_subscriptions").insert({
             organization_id: orgId,
             billing_customer_id: cust.id,
             billing_plan_id: planIdFromMeta,
@@ -222,6 +222,22 @@ async function handleBillingEvent(
             status: "trialing",
             payment_method: "card",
           });
+          if (insertSubErr) {
+            // 23505 = billing_subscriptions_org_plan_active_idx (migration 073):
+            // a org já tem assinatura viva deste plano — reentrega do Stripe do
+            // mesmo checkout.session.completed. Dedupe silencioso, igual ao
+            // precedente do módulo de giftback: tenta o INSERT, trata 23505
+            // como no-op logado em vez de deixar a exceção subir e devolver
+            // 5xx pra Stripe (que reentregaria de novo em loop).
+            const isDuplicate = String(insertSubErr.code ?? "") === "23505";
+            jsonLog(isDuplicate ? "info" : "error", {
+              reqId,
+              evt: isDuplicate ? "billing_sub_insert_dedup" : "billing_sub_insert_error",
+              orgId,
+              stripeSubId,
+              err: insertSubErr.message,
+            });
+          }
         }
       }
     }

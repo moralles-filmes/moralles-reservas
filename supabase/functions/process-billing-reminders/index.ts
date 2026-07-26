@@ -12,6 +12,7 @@ import {
   enqueueBillingNotification,
   hasActiveSystemOverride,
 } from "../_shared/billing-notify.ts";
+import { isSystemInvoice } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -31,7 +32,7 @@ serve(async (req) => {
 
     const { data: invoices } = await supabase
       .from("billing_invoices")
-      .select("id, organization_id, due_date")
+      .select("id, organization_id, due_date, billing_subscription_id, external_reference, purpose")
       .eq("status", "open")
       .not("due_date", "is", null);
 
@@ -42,6 +43,10 @@ serve(async (req) => {
       // Qual offset cai hoje? (no máximo um por invoice por dia)
       const match = REMINDER_OFFSETS.find((o) => addDaysToDate(inv.due_date, o.days) === today);
       if (!match) continue;
+
+      // Os templates de lembrete dizem "o acesso será suspenso". Mandar isso por
+      // uma fatura de instância seria mentira: ela não suspende nada na 5a.
+      if (!(await isSystemInvoice(supabase, inv))) continue;
 
       // Nunca avisar cliente com cortesia vitalícia (system).
       if (await hasActiveSystemOverride(supabase, inv.organization_id)) continue;

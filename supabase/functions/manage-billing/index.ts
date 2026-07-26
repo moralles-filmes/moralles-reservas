@@ -19,6 +19,7 @@ import {
 } from "../_shared/stripe-billing.ts";
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
+import { isSystemSubscription, planCategoryOf } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -345,6 +346,15 @@ serve(async (req) => {
         .single();
 
       if (error) {
+        // Trigger da migration 074 (billing_plans_category_guard): recusa
+        // mudar categoria de plano com assinatura não-cancelada. Discrimina
+        // por MENSAGEM, não por código — o P0001 é o SQLSTATE genérico do
+        // plpgsql e já é usado por only_one_active_trial nesta mesma EF.
+        if (error.message?.includes("plan_category_locked")) {
+          return jsonResponse(req, {
+            error: "Não é possível mudar a categoria de um plano que já tem assinatura ativa. Desative o plano e crie um novo.",
+          }, 409);
+        }
         const known = planWriteError(error);
         if (known) return jsonResponse(req, { error: known.message }, known.status);
         jsonLog("error", { reqId, evt: "billing_update_plan_error", err: error.message });
@@ -649,11 +659,17 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao registrar assinatura." }, 500);
       }
 
-      const billingStatus = trial_days ? "trialing" : "active";
-      await supabase.from("organizations").update({
-        billing_status: billingStatus,
-        trial_ends_at: trialEnd,
-      }).eq("id", organization_id);
+      // Assinatura criada à mão pelo admin. Só a de sistema move o
+      // billing_status da organização — criar a instância de WhatsApp para um
+      // cliente em atraso não pode marcá-lo como 'active'.
+      const createdCategory = await planCategoryOf(supabase, plan.id);
+      if (createdCategory === "SYSTEM_SUBSCRIPTION") {
+        const billingStatus = trial_days ? "trialing" : "active";
+        await supabase.from("organizations").update({
+          billing_status: billingStatus,
+          trial_ends_at: trialEnd,
+        }).eq("id", organization_id);
+      }
 
       jsonLog("info", { reqId, evt: "billing_subscription_created", orgId: organization_id, subId: sub.id, stripeSubscriptionId });
       return jsonResponse(req, { success: true, subscription: sub, client_secret: clientSecret ?? null });
@@ -691,9 +707,14 @@ serve(async (req) => {
           updated_at: new Date().toISOString(),
         }).eq("id", subscription_id);
 
-        await supabase.from("organizations").update({
-          billing_status: "canceled",
-        }).eq("id", sub.organization_id);
+        // Só o cancelamento da assinatura de SISTEMA cancela a organização.
+        // Cancelar a instância de WhatsApp marcava a org inteira como
+        // 'canceled' — o cliente perdia o sistema por desistir da automação.
+        if (await isSystemSubscription(supabase, subscription_id)) {
+          await supabase.from("organizations").update({
+            billing_status: "canceled",
+          }).eq("id", sub.organization_id);
+        }
       }
 
       jsonLog("info", { reqId, evt: "billing_subscription_cancelled", subId: subscription_id, atPeriodEnd: at_period_end });

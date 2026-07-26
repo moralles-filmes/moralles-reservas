@@ -53,12 +53,16 @@ serve(async (req) => {
 
     const orgIds = candidates.map((o) => o.id);
 
-    // 2) Filtra orgs que JÁ têm subscription ativa (admin criou plano manual durante o trial)
+    // 2) Filtra orgs que JÁ têm subscription de SISTEMA (admin criou plano
+    //    manual durante o trial). Uma assinatura de instância de WhatsApp NÃO
+    //    conta: ela não dá acesso ao sistema, e considerá-la aqui faria o trial
+    //    nunca expirar para quem contratou só a automação.
     const { data: activeSubs } = await supabase
       .from("billing_subscriptions")
-      .select("organization_id")
+      .select("organization_id, billing_plans!inner(category)")
       .in("organization_id", orgIds)
-      .neq("status", "canceled");
+      .neq("status", "canceled")
+      .eq("billing_plans.category", "SYSTEM_SUBSCRIPTION");
     const orgsWithActiveSub = new Set((activeSubs ?? []).map((s) => s.organization_id as string));
 
     // 3) Filtra orgs com override grant_access ativo

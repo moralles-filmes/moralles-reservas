@@ -12,6 +12,7 @@ import {
   enqueueBillingNotification,
   hasActiveSystemOverride,
 } from "../_shared/billing-notify.ts";
+import { isSystemInvoice } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -31,14 +32,25 @@ serve(async (req) => {
 
     const { data: overdueInvoices } = await supabase
       .from("billing_invoices")
-      .select("id, organization_id, due_date")
+      .select("id, organization_id, due_date, billing_subscription_id, external_reference, purpose")
       .eq("status", "open")
       .lt("due_date", today);
 
-    // Menor (mais antiga) invoice vencida por org.
+    // Menor (mais antiga) invoice vencida por org — CONSIDERANDO SÓ AS DE
+    // SISTEMA. Uma fatura de R$149 da instância vencida não pode bloquear o
+    // acesso ao sistema inteiro; a inadimplência da instância é da Fase 5b.
     const oldestByOrg = new Map<string, { id: string; due_date: string }>();
     for (const inv of overdueInvoices ?? []) {
       if (!inv.due_date) continue;
+      if (!(await isSystemInvoice(supabase, inv))) {
+        jsonLog("info", {
+          reqId,
+          evt: "billing_overdue_skip_non_system",
+          orgId: inv.organization_id,
+          invoiceId: inv.id,
+        });
+        continue;
+      }
       const cur = oldestByOrg.get(inv.organization_id);
       if (!cur || inv.due_date < cur.due_date) {
         oldestByOrg.set(inv.organization_id, { id: inv.id, due_date: inv.due_date });
