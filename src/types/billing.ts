@@ -367,8 +367,14 @@ export interface WhatsappServiceStatus {
    * `has_system_subscription` não serve pra isso: cortesia de sistema tem
    * `system_allowed=true` e `has_system_subscription=false`. Nenhum outro
    * campo do objeto `entitlements` é exposto — só este booleano.
+   *
+   * OPCIONAL de propósito: o campo nasceu depois da EF já estar no ar, e o
+   * frontend sobe pela Vercel automaticamente enquanto a Edge Function é
+   * implantada à mão. Na janela entre os dois deploys a resposta chega SEM
+   * ele. Quem consumir compara com `?? false` — nunca `=== false`, que
+   * trataria o ausente como "liberado".
    */
-  system_allowed: boolean;
+  system_allowed?: boolean;
 }
 
 /**

@@ -188,7 +188,7 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
           {data.implementation.state === "COMPLETED"
             && !data.subscription.has_instance
             && !data.override.active
-            && data.system_allowed
+            && (data.system_allowed ?? false)
             && data.flags.subscription_checkout && (
             <Button onClick={contratarInstancia} disabled={subCheckout.isPending || !instancePlan}>
               {subCheckout.isPending
