@@ -311,3 +311,87 @@ export const PAYMENT_METHOD_LABEL: Record<PaymentMethod, string> = {
 export function formatCentsBRL(cents: number): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(cents / 100);
 }
+
+// ─── Implantação do WhatsApp (Fase 5a) ───────────────────────────────────────
+
+export type ImplementationOrigin =
+  | "ASAAS" | "EXTERNAL_PAYMENT" | "COURTESY" | "ADMIN_OVERRIDE";
+
+export type ImplementationPaymentStatus =
+  | "PENDING" | "CONFIRMED" | "WAIVED" | "REFUNDED" | "CHARGEBACK" | "CANCELED";
+
+export type ImplementationOperationalStatus =
+  | "NOT_STARTED" | "SCHEDULED" | "IN_PROGRESS" | "WAITING_CUSTOMER" | "COMPLETED" | "CANCELED";
+
+export type ClientImplementationState =
+  | "NOT_REQUESTED" | "AWAITING_PAYMENT" | "PAID_NOT_STARTED"
+  | "IN_PROGRESS" | "WAITING_CUSTOMER" | "COMPLETED" | "CANCELED";
+
+export interface WhatsappServiceStatus {
+  implementation: {
+    state: ClientImplementationState;
+    payment_status: ImplementationPaymentStatus | null;
+    operational_status: ImplementationOperationalStatus | null;
+    amount_cents: number | null;
+    paid_at: string | null;
+    scheduled_for: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+    next_step: string;
+  };
+  subscription: { has_instance: boolean; status: string | null; next_due: string | null };
+  override: { active: boolean; grant_type: string | null; ends_at: string | null };
+  costs: {
+    currentMonthlyCents: number;
+    projectedMonthlyCents: number;
+    oneTimeDueCents: number;
+    aiVariable: true;
+  };
+  /**
+   * `true` quando `manage-whatsapp-implementations` não conseguiu ler o
+   * catálogo de planos: os 3 preços caem para `null` e `summarizeMonthlyCosts`
+   * colapsa `null` em 0 — indistinguível do zero legítimo de cortesia. A UI
+   * NUNCA renderiza os valores de `costs` como R$ 0,00 quando este campo vem
+   * `true`; renderiza "—" (mesma convenção de `KpiCard.formatValue`).
+   */
+  prices_unavailable: boolean;
+  flags: { implementation_flow: boolean; subscription_checkout: boolean };
+  has_system_subscription: boolean;
+}
+
+/**
+ * Rótulos de UI dos grant types. Mapa ÚNICO, deliberadamente separado dos
+ * valores do banco: o CHECK da migration 062 não é ampliado só para criar
+ * sinônimos ("cortesia" é como se fala de PROMOTIONAL, não um valor novo).
+ */
+export const ENTITLEMENT_GRANT_TYPE_LABEL: Record<EntitlementGrantType, string> = {
+  LIFETIME: "Acesso vitalício",
+  TEMPORARY: "Acesso temporário",
+  PROMOTIONAL: "Cortesia",
+  MANUAL_OVERRIDE: "Override administrativo",
+};
+
+export const IMPLEMENTATION_ORIGIN_LABEL: Record<ImplementationOrigin, string> = {
+  ASAAS: "Cobrança Asaas",
+  EXTERNAL_PAYMENT: "Pagamento externo",
+  COURTESY: "Cortesia",
+  ADMIN_OVERRIDE: "Override administrativo",
+};
+
+export const IMPLEMENTATION_PAYMENT_LABEL: Record<ImplementationPaymentStatus, string> = {
+  PENDING: "Aguardando pagamento",
+  CONFIRMED: "Pago",
+  WAIVED: "Sem cobrança",
+  REFUNDED: "Estornado",
+  CHARGEBACK: "Chargeback",
+  CANCELED: "Cancelado",
+};
+
+export const IMPLEMENTATION_OPERATIONAL_LABEL: Record<ImplementationOperationalStatus, string> = {
+  NOT_STARTED: "Não iniciada",
+  SCHEDULED: "Agendada",
+  IN_PROGRESS: "Em andamento",
+  WAITING_CUSTOMER: "Aguardando cliente",
+  COMPLETED: "Concluída",
+  CANCELED: "Cancelada",
+};

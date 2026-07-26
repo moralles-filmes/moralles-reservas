@@ -257,7 +257,9 @@ export function useCreateBillingCheckout() {
     mutationFn: async (params: {
       organization_id: string;
       plan_id?: string;
-      mode?: "subscription" | "setup";
+      /** `mode` saiu do contrato na Fase 5a. A EF ainda aceita o campo legado
+       *  por uma release; o frontend já manda `purpose`. */
+      purpose?: "subscription" | "payment_method_update";
     }) => {
       const { data, error } = await supabase.functions.invoke("create-billing-checkout", { body: params });
       if (error) {
