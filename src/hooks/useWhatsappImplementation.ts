@@ -61,7 +61,13 @@ export function useImplementations(filters: {
   });
 }
 
-/** Invalida status do cliente E lista do admin — as duas leem a mesma linha. */
+/**
+ * Invalida status do cliente, lista do admin E a lista de overrides — as três
+ * podem ler a mesma linha/mudança. `whatsapp-overrides` (Rodada de correção 1,
+ * I5) faltava: é ela que `useGrantWhatsappOverride`/`useRevokeWhatsappOverride`
+ * passam por este helper, e sem a invalidação a lista de cortesias concedidas
+ * ficava congelada até um refresh manual.
+ */
 function useImplementationMutation<TVars>(build: (v: TVars) => Record<string, unknown>) {
   const qc = useQueryClient();
   return useMutation({
@@ -69,6 +75,7 @@ function useImplementationMutation<TVars>(build: (v: TVars) => Record<string, un
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["whatsapp-implementations"] });
       qc.invalidateQueries({ queryKey: ["whatsapp-service-status"] });
+      qc.invalidateQueries({ queryKey: ["whatsapp-overrides"] });
       qc.invalidateQueries({ queryKey: ["org-entitlements"] });
     },
   });

@@ -716,6 +716,15 @@ serve(async (req) => {
         },
         // Usado pela UI para saber se o mensal atual reflete cobrança real.
         has_system_subscription: !!systemSub,
+        // Task 15, Rodada de correção 1, I2: espelha entitlements.system.allowed
+        // pra o CTA "Contratar instância" do cliente replicar o gate real de
+        // canContractInstance/create-billing-checkout/eligibility.ts (que
+        // recusa com 409 se o sistema não estiver liberado). NÃO usar
+        // has_system_subscription pra isso — cortesia de sistema tem
+        // systemAllowed=true e has_system_subscription=false, e esconderia o
+        // botão de quem tem direito. Nenhum outro campo de `entitlements` é
+        // exposto aqui — só este booleano.
+        system_allowed: entitlements.system.allowed,
       });
     }
 

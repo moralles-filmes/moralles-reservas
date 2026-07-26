@@ -352,11 +352,23 @@ export interface WhatsappServiceStatus {
    * catálogo de planos: os 3 preços caem para `null` e `summarizeMonthlyCosts`
    * colapsa `null` em 0 — indistinguível do zero legítimo de cortesia. A UI
    * NUNCA renderiza os valores de `costs` como R$ 0,00 quando este campo vem
-   * `true`; renderiza "—" (mesma convenção de `KpiCard.formatValue`).
+   * `true`; renderiza "—" (mesma convenção de `KpiCard.formatValue`). Quem
+   * garante isso é o helper `money()` dentro de `ResumoCustos`, em
+   * `src/components/gestao/AutomacaoWhatsappCard.tsx`.
    */
   prices_unavailable: boolean;
   flags: { implementation_flow: boolean; subscription_checkout: boolean };
   has_system_subscription: boolean;
+  /**
+   * Espelha `entitlements.system.allowed` (Rodada de correção 1, I2) — usado
+   * SÓ para o gate do CTA "Contratar instância" replicar
+   * `canContractInstance`/`create-billing-checkout/eligibility.ts` do
+   * servidor (que recusa com 409 se o sistema não estiver liberado).
+   * `has_system_subscription` não serve pra isso: cortesia de sistema tem
+   * `system_allowed=true` e `has_system_subscription=false`. Nenhum outro
+   * campo do objeto `entitlements` é exposto — só este booleano.
+   */
+  system_allowed: boolean;
 }
 
 /**

@@ -26,17 +26,27 @@ interface Props {
 /**
  * Rótulo da linha "pagamentos únicos" do resumo, por estado da implantação.
  *
- * `costs.oneTimeDueCents` devolve o preço de VITRINE (750000 centavos) quando
+ * `costs.oneTimeDueCents` devolve o preço de VITRINE (75000 centavos) quando
  * não existe linha (`NOT_REQUESTED`) — é "quanto custa", não "quanto você
  * deve" (a org pode nunca ter pedido a implantação e ter cortesia vitalícia
  * em tudo o resto, ex.: Ren Sushi). Só `AWAITING_PAYMENT` é cobrança real em
- * aberto; nos estados liquidados o valor já é 0, e em `CANCELED` não há
- * checkout ativo pra pagar (o botão de contratar só existe em
- * `NOT_REQUESTED`). Rotular pelo estado evita a leitura "você deve R$750"
- * pra quem nunca contratou.
+ * aberto (e usa `implementation.amount_cents`, não `costs.oneTimeDueCents` —
+ * ver `ResumoCustos`); nos estados liquidados o valor já é 0. Rotular pelo
+ * estado evita a leitura "você deve R$750" pra quem nunca contratou.
+ *
+ * `CANCELED` é INALCANÇÁVEL no payload do cliente hoje (Rodada de correção 1,
+ * Minor): `get_service_status` lê `whatsapp_implementations` com
+ * `.neq("operational_status", "CANCELED")` — a mesma condição do índice
+ * parcial da migration 071 (`where operational_status <> 'CANCELED'`) — então
+ * uma linha cancelada nunca chega a `buildClientImplementationView`, que cai
+ * em `NOT_REQUESTED` como se a linha não existisse. Nenhum writer do repo
+ * grava `payment_status='CANCELED'` (só a leitura em
+ * `whatsapp-implementation-core.ts:206` prevê o caso). O rótulo abaixo fica
+ * como defesa para o dia em que um caminho de estorno alcançar esse estado —
+ * não é código morto por descuido, é código morto documentado.
  */
 const ONE_TIME_ROW_LABEL: Record<ClientImplementationState, string> = {
-  NOT_REQUESTED: "Implantação (contratação avulsa)",
+  NOT_REQUESTED: "Implantação (se contratar)",
   AWAITING_PAYMENT: "Implantação — pagamento em aberto",
   PAID_NOT_STARTED: "Pagamentos únicos",
   IN_PROGRESS: "Pagamentos únicos",
@@ -148,20 +158,44 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
         <Separator />
 
         <div className="space-y-2">
-          <p className="text-sm">{data.implementation.next_step}</p>
-          {data.implementation.state === "NOT_REQUESTED" && (
+          {/* I4 (Rodada 1): `next_step` do backend é escrito para quem ainda
+              não tem nada — "Contrate a implantação..." — e mente pra quem já
+              usa a automação em produção por cortesia (ex.: Ren Sushi). Só o
+              FRONTEND sabe cruzar `override.active` com `state`; o núcleo puro
+              não teria como (ele não decide texto de cortesia). */}
+          <p className="text-sm">
+            {data.override.active && data.implementation.state === "NOT_REQUESTED"
+              ? "Sua automação de WhatsApp está ativa por cortesia da plataforma."
+              : data.implementation.next_step}
+          </p>
+          {/* I4: sem isso, quem já tem cortesia (override.active) vê um botão
+              de R$750 pra um serviço que já recebeu fora deste sistema de
+              tracking. Formalizar isso é ação de admin (Task 16, action
+              `create` com origin:"COURTESY"), não oferta na tela do cliente. */}
+          {data.implementation.state === "NOT_REQUESTED" && !data.override.active && (
             <Button onClick={contratarImplantacao} disabled={implCheckout.isPending || !implPlan}>
               {implCheckout.isPending ? "Abrindo checkout..." : "Contratar implementação"}
             </Button>
           )}
+          {/* I2 (Rodada 1): `system_allowed` espelha `canContractInstance`
+              (núcleo puro) / `eligibility.ts` (servidor) — sem ele, uma org com
+              implantação concluída mas sistema bloqueado (parou de pagar) via
+              esta MESMA rota (única liberada quando bloqueada) via o botão e
+              levava 409 no clique. `has_system_subscription` não serve pra
+              isso: cortesia de sistema tem `systemAllowed=true` e
+              `has_system_subscription=false` — usá-lo aqui esconderia o botão
+              de quem tem direito. */}
           {data.implementation.state === "COMPLETED"
             && !data.subscription.has_instance
             && !data.override.active
+            && data.system_allowed
             && data.flags.subscription_checkout && (
             <Button onClick={contratarInstancia} disabled={subCheckout.isPending || !instancePlan}>
               {subCheckout.isPending
                 ? "Abrindo checkout..."
-                : `Contratar instância — ${instancePlan ? formatCentsBRL(instancePlan.amount_cents) : ""}/mês`}
+                : instancePlan
+                  ? `Contratar instância — ${formatCentsBRL(instancePlan.amount_cents)}/mês`
+                  : "Contratar instância"}
             </Button>
           )}
           {data.subscription.has_instance && data.subscription.next_due && (
@@ -190,6 +224,8 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
           sponsored={data.override.active}
           pricesUnavailable={data.prices_unavailable}
           implementationState={data.implementation.state}
+          hasSystemSubscription={data.has_system_subscription}
+          implementationAmountCents={data.implementation.amount_cents}
         />
       </CardContent>
     </Card>
@@ -199,30 +235,70 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
 /**
  * Os quatro números do resumo consolidado — sempre os quatro, inclusive
  * quando algum é zero. `pricesUnavailable` força "—" em vez de R$ 0,00 (mesma
- * convenção de `KpiCard.formatValue`): quando o catálogo não carrega, o
- * backend colapsa preço `null` em 0, indistinguível do zero legítimo de quem
- * tem cortesia — mostrar R$ 0,00 nesse caso seria mentira pra quem deve
- * R$ 449 + R$ 750.
+ * convenção de `KpiCard.formatValue`) via o helper `money()` logo abaixo —
+ * este É o invariante ("a UI nunca renderiza `costs` como R$ 0,00 quando o
+ * catálogo falhou") citado no comentário de `WhatsappServiceStatus` em
+ * `src/types/billing.ts`: quando o catálogo não carrega, o backend colapsa
+ * preço `null` em 0, indistinguível do zero legítimo de quem tem cortesia —
+ * mostrar R$ 0,00 nesse caso seria mentira pra quem deve R$ 449 + R$ 750.
  */
 function ResumoCustos({
   costs,
   sponsored,
   pricesUnavailable,
   implementationState,
+  hasSystemSubscription,
+  implementationAmountCents,
 }: {
   costs: WhatsappServiceStatus["costs"];
   sponsored: boolean;
   pricesUnavailable: boolean;
   implementationState: ClientImplementationState;
+  hasSystemSubscription: boolean;
+  implementationAmountCents: number | null;
 }) {
   const money = (cents: number) => (pricesUnavailable ? "—" : formatCentsBRL(cents));
+
+  // C1 (Rodada de correção 1, CRITICAL): `summarizeMonthlyCosts` (núcleo puro)
+  // calcula `systemPart` a partir do preço de VITRINE do sistema sempre que
+  // não há cortesia — de propósito, é um núcleo de projeção sobre catálogo,
+  // não de cobrança real; não é ele que está errado. Quem mente é a palavra
+  // "atual" ao lado desse número quando NÃO existe assinatura de sistema
+  // (trial sem sub, org `blocked` sem sub) — o cliente paga zero e leria
+  // "Total mensal atual: R$ 449,00". Sem cortesia (`systemSponsored`), o
+  // backend zera `currentMonthlyCents` só quando o preço não carrega
+  // (`pricesUnavailable`), nunca por falta de assinatura — daí o gate aqui,
+  // não no backend.
+  const systemNotBilled =
+    !hasSystemSubscription && !pricesUnavailable && costs.currentMonthlyCents > 0;
+  const currentLabel = systemNotBilled
+    ? "Valor de tabela (sem assinatura ativa)"
+    : "Total mensal atual";
+
+  // I3 (Rodada de correção 1, Important): em `AWAITING_PAYMENT`, o único
+  // estado rotulado "pagamento em aberto", `costs.oneTimeDueCents` é o preço
+  // do CATÁLOGO hoje — se o preço subir entre a abertura do checkout e o
+  // pagamento, a tela diverge do valor real da cobrança (e do link já aberto).
+  // `implementation.amount_cents` é o valor GRAVADO na linha no momento em que
+  // o checkout foi criado (`insertImplementationRow`,
+  // `_shared/implementation-checkout.ts:72`) — vem de uma leitura própria
+  // (`whatsapp_implementations`) que já teria abortado a resposta inteira com
+  // 500 se tivesse falhado, então é confiável independentemente de
+  // `pricesUnavailable` (que só reflete falha em `billing_plans`). Por isso
+  // este valor NÃO passa pelo `money()` acima — não faz sentido esconder o
+  // único número que é garantidamente uma dívida real atrás de um aviso que
+  // fala de um catálogo que nem foi consultado para produzi-lo.
+  const oneTimeDisplay =
+    implementationState === "AWAITING_PAYMENT" && implementationAmountCents != null
+      ? formatCentsBRL(implementationAmountCents)
+      : money(costs.oneTimeDueCents);
 
   return (
     <div className="space-y-2">
       <p className="text-sm font-medium">Resumo dos custos</p>
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
         <div className="flex justify-between gap-2">
-          <dt className="text-muted-foreground">Total mensal atual</dt>
+          <dt className="text-muted-foreground">{currentLabel}</dt>
           <dd className="font-medium">{money(costs.currentMonthlyCents)}</dd>
         </div>
         <div className="flex justify-between gap-2">
@@ -231,13 +307,19 @@ function ResumoCustos({
         </div>
         <div className="flex justify-between gap-2">
           <dt className="text-muted-foreground">{ONE_TIME_ROW_LABEL[implementationState]}</dt>
-          <dd className="font-medium">{money(costs.oneTimeDueCents)}</dd>
+          <dd className="font-medium">{oneTimeDisplay}</dd>
         </div>
         <div className="flex justify-between gap-2">
           <dt className="text-muted-foreground">Créditos de IA</dt>
           <dd className="font-medium">Variável</dd>
         </div>
       </dl>
+      {systemNotBilled && (
+        <p className="text-xs text-muted-foreground">
+          Você ainda não tem uma assinatura ativa do sistema — os valores
+          mensais acima são de referência, não uma cobrança em curso.
+        </p>
+      )}
       {pricesUnavailable && (
         <p className="text-xs text-warning">
           Não foi possível carregar os valores agora. Tente novamente em instantes.

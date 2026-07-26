@@ -99,10 +99,21 @@ export default function Cobranca() {
       // Além da assinatura do sistema, também refaz o status da automação de
       // WhatsApp — cobre o retorno de uma implantação paga por PIX, cuja
       // confirmação chega pelo webhook depois do redirect.
+      //
+      // I1 (Rodada de correção 1): key AMPLA (sem `organizationId`), não
+      // `["whatsapp-service-status", organizationId]`. Para owner/gerente
+      // membro, `useCurrentUnit()` resolve síncrono e `organizationId` já está
+      // presente no mount deste efeito. Mas platform_admin operando uma unit
+      // de que não é membro resolve `organizationId` num useEffect
+      // ASSÍNCRONO — no mount deste efeito o valor capturado no closure ainda
+      // é `undefined`, o prefix-match de invalidação compara com a key real
+      // (que tem a org de verdade) e NUNCA casa. As 6 tentativas do polling
+      // não invalidam nada e o card fica preso em "aguardando confirmação"
+      // até um F5. Só existe uma org por sessão — a key ampla é segura.
       const [detailResult] = await Promise.all([
         refetchDetail(),
         refetchPms(),
-        qc.invalidateQueries({ queryKey: ["whatsapp-service-status", organizationId] }),
+        qc.invalidateQueries({ queryKey: ["whatsapp-service-status"] }),
       ]);
       if (cancelled) return;
 
