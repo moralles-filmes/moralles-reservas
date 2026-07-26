@@ -46,6 +46,54 @@ export async function loadImplementationPlan(
 }
 
 /**
+ * Insere a linha de whatsapp_implementations correlacionada a um checkout
+ * Asaas que JÁ EXISTE — criado agora (caminho normal) ou reaproveitado de uma
+ * sessão viva (caminho de reuso, ver comentário no ramo `reserved.reuse`
+ * abaixo). Isolado porque os dois caminhos precisam do MESMO insert: divergir
+ * os campos entre eles criaria duas verdades sobre o formato da linha.
+ */
+async function insertImplementationRow(
+  supabase: SupabaseClient,
+  args: {
+    reqId: string;
+    organizationId: string;
+    plan: ImplementationPlan;
+    providerCheckoutId: string;
+    createdBy: string | null;
+  },
+): Promise<{ ok: true; id: string } | { ok: false }> {
+  const { data: created, error: implErr } = await supabase
+    .from("whatsapp_implementations")
+    .insert({
+      organization_id: args.organizationId,
+      origin: "ASAAS",
+      payment_status: "PENDING",
+      operational_status: "NOT_STARTED",
+      amount_cents: args.plan.amount_cents,
+      billing_plan_id: args.plan.id,
+      provider_checkout_id: args.providerCheckoutId,
+      created_by: args.createdBy,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (implErr || !created) {
+    // O checkout EXISTE no Asaas e não há como desfazê-lo. Loga alto: se o
+    // cliente pagar, o webhook não vai achar linha para confirmar (cai em
+    // implementation_confirm_noop) e isso precisa ser resolvido à mão.
+    jsonLog("error", {
+      reqId: args.reqId,
+      evt: "implementation_row_insert_failed",
+      orgId: args.organizationId,
+      checkout: args.providerCheckoutId,
+      err: implErr?.message ?? "insert sem linha",
+    });
+    return { ok: false };
+  }
+  return { ok: true, id: created.id as string };
+}
+
+/**
  * Fluxo completo. A ORDEM importa e cada passo desfaz o anterior no erro:
  *
  *  1. valida o plano (categoria e modalidade vêm do banco, não do caller);
@@ -61,6 +109,15 @@ export async function loadImplementationPlan(
  * verdade é que a linha tem sentido. Falha nele NÃO desfaz o checkout no Asaas
  * (não há como) — devolve erro e loga alto, para conferência manual, em vez de
  * fingir sucesso.
+ *
+ * Reuso de sessão viva (passo 3 encontra uma 'pending' ainda válida): como o
+ * passo 2 já teria barrado se existisse implantação aberta, chegar a esse ramo
+ * SÓ é possível numa corrida em que uma tentativa anterior abriu o checkout no
+ * Asaas mas falhou exatamente no passo 6. Nem devolver a URL cega (pagamento
+ * sem linha pro webhook confirmar) nem recusar cegamente (a mensagem diria que
+ * existe um link que nunca chegou ao cliente) resolvem — a saída é REPETIR o
+ * passo 6 sozinho, correlacionando à MESMA sessão (sem chamar o Asaas de
+ * novo), e só então devolver a mesma URL.
  */
 export async function openImplementationCheckout(args: {
   supabase: SupabaseClient;
@@ -144,13 +201,57 @@ export async function openImplementationCheckout(args: {
     externalReference,
   });
   if (!reserved.ok && reserved.reuse) {
-    // Sessão viva: devolve a MESMA url. A linha de implantação já existe (foi
-    // criada na primeira tentativa) e o `open` acima teria barrado — este ramo
-    // só é alcançável numa corrida, e reusar é o comportamento correto.
+    // Sessão viva sem implantação aberta (o check acima já teria barrado se
+    // existisse) = o checkout já existe no Asaas de uma tentativa anterior que
+    // falhou no passo 6. Repara reinserindo a linha que faltou, correlacionada
+    // ao MESMO checkout — sem chamar o Asaas de novo.
+    if (!reserved.providerCheckoutId) {
+      // Não deveria acontecer: finalizeCheckoutSession grava checkout_url e
+      // provider_checkout_id na MESMA escrita, e reuse só é devolvido quando
+      // checkout_url existe. Mesmo tratamento do insert abaixo — nunca inventar
+      // sucesso sobre um estado que não bate com o esperado.
+      jsonLog("error", {
+        reqId: args.reqId,
+        evt: "implementation_reuse_missing_checkout_id",
+        orgId: args.organizationId,
+      });
+      return {
+        ok: false,
+        status: 500,
+        error: "Falha ao registrar a implantação. Fale com o suporte antes de pagar.",
+      };
+    }
+
+    const inserted = await insertImplementationRow(supabase, {
+      reqId: args.reqId,
+      organizationId: args.organizationId,
+      plan,
+      providerCheckoutId: reserved.providerCheckoutId,
+      createdBy: args.createdBy,
+    });
+    if (!inserted.ok) {
+      // Mesma mensagem do caminho normal: URL sem linha é pagamento sem nada
+      // para o webhook confirmar, então NUNCA a devolvemos neste ramo.
+      return {
+        ok: false,
+        status: 500,
+        error: "Falha ao registrar a implantação. Fale com o suporte antes de pagar.",
+      };
+    }
+
+    jsonLog("info", {
+      reqId: args.reqId,
+      evt: "implementation_checkout_reused",
+      orgId: args.organizationId,
+      implementationId: inserted.id,
+      checkout: reserved.providerCheckoutId,
+    });
+
     return {
-      ok: false,
-      status: 409,
-      error: "Já existe um checkout aberto para esta implantação. Use o link enviado ou aguarde a expiração.",
+      ok: true,
+      url: reserved.url,
+      providerCheckoutId: reserved.providerCheckoutId,
+      implementationId: inserted.id,
     };
   }
   if (!reserved.ok) return { ok: false, status: reserved.status, error: reserved.error };
@@ -192,32 +293,14 @@ export async function openImplementationCheckout(args: {
     return { ok: false, status: 500, error: "Falha ao registrar o checkout. Tente novamente em instantes." };
   }
 
-  const { data: created, error: implErr } = await supabase
-    .from("whatsapp_implementations")
-    .insert({
-      organization_id: args.organizationId,
-      origin: "ASAAS",
-      payment_status: "PENDING",
-      operational_status: "NOT_STARTED",
-      amount_cents: plan.amount_cents,
-      billing_plan_id: plan.id,
-      provider_checkout_id: checkout.data.checkoutId,
-      created_by: args.createdBy,
-    })
-    .select("id")
-    .maybeSingle();
-
-  if (implErr || !created) {
-    // O checkout EXISTE no Asaas e não há como desfazê-lo. Loga alto: se o
-    // cliente pagar, o webhook não vai achar linha para confirmar (cai em
-    // implementation_confirm_noop) e isso precisa ser resolvido à mão.
-    jsonLog("error", {
-      reqId: args.reqId,
-      evt: "implementation_row_insert_failed",
-      orgId: args.organizationId,
-      checkout: checkout.data.checkoutId,
-      err: implErr?.message ?? "insert sem linha",
-    });
+  const inserted = await insertImplementationRow(supabase, {
+    reqId: args.reqId,
+    organizationId: args.organizationId,
+    plan,
+    providerCheckoutId: checkout.data.checkoutId,
+    createdBy: args.createdBy,
+  });
+  if (!inserted.ok) {
     return {
       ok: false,
       status: 500,
@@ -229,7 +312,7 @@ export async function openImplementationCheckout(args: {
     reqId: args.reqId,
     evt: "implementation_checkout_created",
     orgId: args.organizationId,
-    implementationId: created.id,
+    implementationId: inserted.id,
     checkout: checkout.data.checkoutId,
   });
 
@@ -237,6 +320,6 @@ export async function openImplementationCheckout(args: {
     ok: true,
     url: checkout.data.url,
     providerCheckoutId: checkout.data.checkoutId,
-    implementationId: created.id as string,
+    implementationId: inserted.id,
   };
 }
