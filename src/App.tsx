@@ -275,8 +275,12 @@ export default function App() {
               <Route path="/platform/automacao/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
               <Route path="/platform/billing" element={<PlatformGuard><PBilling /></PlatformGuard>} />
               <Route path="/platform/billing/planos" element={<PlatformGuard><PBillingPlans /></PlatformGuard>} />
-              {/* Precisa vir ANTES de /:organizationId — senão "implementacoes" é
-                  capturado como um organizationId e cai no detalhe errado. */}
+              {/* M-9 (Rodada de correção 1): a ordem de declaração aqui NÃO é o que
+                  resolve a rota certa — React Router v6 rankeia por especificidade
+                  (segmento estático sempre vence dinâmico), então "implementacoes"
+                  bateria em ":organizationId" mesmo se esta linha viesse depois.
+                  Mantida perto de "planos" (mesmo padrão estático-antes-de-dinâmico)
+                  só por legibilidade de quem lê o arquivo de cima pra baixo. */}
               <Route path="/platform/billing/implementacoes" element={<PlatformGuard><PWhatsappImplementations /></PlatformGuard>} />
               <Route path="/platform/billing/:organizationId" element={<PlatformGuard><PBillingDetail /></PlatformGuard>} />
 

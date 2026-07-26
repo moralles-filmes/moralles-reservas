@@ -981,9 +981,16 @@ interface AdminImplementationSummary {
 /** Linha de organization_entitlement_overrides projetada por
  *  list_whatsapp_overrides — sem organization_id (a EF não seleciona essa
  *  coluna aqui), por isso não é o mesmo tipo de OrganizationEntitlementOverride
- *  em src/types/billing.ts. */
+ *  em src/types/billing.ts.
+ *  `enabled` (M-1, Rodada de correção 1): `false` é bloqueio administrativo
+ *  explícito (prioridade 1 no resolver — CLAUDE.md), não cortesia. A EF já
+ *  devolve o campo; descartá-lo faz uma linha de bloqueio se passar por
+ *  concessão na lista abaixo. Inalcançável hoje (nenhum caller desta tela
+ *  grava `enabled:false`), mas o tipo/render não podem mentir se um dia
+ *  alguém gravar. */
 interface WhatsappOverrideRow {
   id: string;
+  enabled: boolean;
   grant_type: EntitlementGrantType;
   ends_at: string | null;
   revoked_at: string | null;
@@ -1018,6 +1025,12 @@ function ImplantacaoCard({ organizationId }: { organizationId: string }) {
   const rows = (data?.implementations ?? []) as unknown as AdminImplementationSummary[];
   // Mais recente primeiro — mesma ordenação da EF (created_at desc).
   const latest = rows[0] ?? null;
+  // M-8 (Rodada de correção 1): quando a ÚNICA (ou última) implantação está
+  // CANCELED, mostrar só os dados dela sem nenhum caminho pra frente era
+  // exatamente o buraco que o I-2 fechou do lado da ação — aqui é o lado da
+  // visibilidade. Índice único é por organização: se não há nenhuma linha
+  // não-cancelada, registrar uma nova é permitido.
+  const hasOpenImplementation = rows.some((r) => r.operational_status !== "CANCELED");
 
   return (
     <Card>
@@ -1074,17 +1087,55 @@ function ImplantacaoCard({ organizationId }: { organizationId: string }) {
               Registra COMO a configuração foi paga — não libera nem bloqueia o acesso ao
               WhatsApp (isso é o card ao lado).
             </p>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/platform/billing/implementacoes">
-                Ver na página de implantações <ExternalLink className="ml-2 h-3 w-3" />
-              </Link>
-            </Button>
+            {!hasOpenImplementation && latest.operational_status === "CANCELED" && (
+              <p className="text-xs text-muted-foreground">
+                A implantação mais recente foi cancelada — nenhuma está em aberto.
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/platform/billing/implementacoes">
+                  Ver na página de implantações <ExternalLink className="ml-2 h-3 w-3" />
+                </Link>
+              </Button>
+              {!hasOpenImplementation && latest.operational_status === "CANCELED" && (
+                <Button variant="outline" size="sm" asChild>
+                  <Link to="/platform/billing/implementacoes">Registrar nova implantação</Link>
+                </Button>
+              )}
+            </div>
           </div>
         )}
       </CardContent>
     </Card>
   );
 }
+
+/**
+ * I-4 (Rodada de correção 1): `has_instance` é "existe assinatura não
+ * cancelada?" (critério de VENDA — pode contratar de novo?), não "alguém está
+ * pagando isto agora" — a própria EF documenta isso (ver `BILLABLE_SUB_STATUSES`
+ * em manage-whatsapp-implementations/index.ts) porque os dois booleanos
+ * respondem perguntas diferentes. Uma assinatura `unpaid`/`paused` teria
+ * `has_instance=true` e a badge diria "Ativa" pra uma conta que ninguém está
+ * bancando — o card cuja função é responder "quem paga isto" mentindo sobre
+ * exatamente essa pergunta. Rótulo/cor vêm do status REAL.
+ */
+const SUBSCRIPTION_STATUS_LABEL: Record<string, string> = {
+  active: "Ativa",
+  trialing: "Em trial",
+  past_due: "Vencida",
+  unpaid: "Não paga",
+  paused: "Pausada",
+};
+
+const SUBSCRIPTION_STATUS_CLASS: Record<string, string> = {
+  active: "bg-success/10 text-success",
+  trialing: "bg-success/10 text-success",
+  past_due: "bg-warning/10 text-warning",
+  unpaid: "bg-destructive/10 text-destructive",
+  paused: "bg-muted text-muted-foreground",
+};
 
 function WhatsappAccessCard({ organizationId, orgName }: { organizationId: string; orgName: string }) {
   const { data, isLoading, isError, refetch } = useWhatsappServiceStatus(organizationId);
@@ -1104,7 +1155,17 @@ function WhatsappAccessCard({ organizationId, orgName }: { organizationId: strin
           <MessageSquare className="h-4 w-4 text-muted-foreground" />
           <CardTitle className="text-sm font-medium">Acesso ao WhatsApp</CardTitle>
         </div>
-        <Button size="sm" variant="outline" onClick={() => setGrantOpen(true)}>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setGrantOpen(true)}
+          disabled={isLoading || isError || !data || data.override.active}
+          title={
+            data?.override.active
+              ? "Já existe uma cortesia ativa — revogue-a antes de conceder outra (a mesma feature não empilha, ver a lista abaixo)."
+              : undefined
+          }
+        >
           Conceder cortesia
         </Button>
       </CardHeader>
@@ -1122,9 +1183,15 @@ function WhatsappAccessCard({ organizationId, orgName }: { organizationId: strin
               <span className="text-muted-foreground">Assinatura paga:</span>
               <Badge
                 variant="secondary"
-                className={data.subscription.has_instance ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}
+                className={
+                  data.subscription.status
+                    ? (SUBSCRIPTION_STATUS_CLASS[data.subscription.status] ?? "bg-muted text-muted-foreground")
+                    : "bg-muted text-muted-foreground"
+                }
               >
-                {data.subscription.has_instance ? "Ativa" : "Sem assinatura"}
+                {data.subscription.status
+                  ? (SUBSCRIPTION_STATUS_LABEL[data.subscription.status] ?? data.subscription.status)
+                  : "Sem assinatura"}
               </Badge>
               {data.subscription.next_due && (
                 <span className="text-xs text-muted-foreground">
@@ -1173,34 +1240,50 @@ function WhatsappAccessCard({ organizationId, orgName }: { organizationId: strin
             <p className="text-xs text-muted-foreground">Nenhuma concessão registrada.</p>
           ) : (
             <ul className="space-y-1.5">
-              {(overrides as unknown as WhatsappOverrideRow[]).map((ov) => (
-                <li key={ov.id} className="flex items-center justify-between gap-2 text-xs">
-                  <span>
-                    {ENTITLEMENT_GRANT_TYPE_LABEL[ov.grant_type]} —{" "}
-                    {ov.ends_at ? formatDateBR(ov.ends_at.slice(0, 10)) : "sem validade"}
-                    {ov.revoked_at && " (revogada)"}
-                  </span>
-                  {!ov.revoked_at && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2"
-                      disabled={revoke.isPending && revoke.variables?.override_id === ov.id}
-                      onClick={() =>
-                        revoke.mutate(
-                          { organization_id: organizationId, override_id: ov.id },
-                          {
-                            onSuccess: (res) => afterOverrideMutation(res, "Concessão revogada."),
-                            onError: (err) => toast.error(err.message),
-                          },
-                        )
-                      }
-                    >
-                      Revogar
-                    </Button>
-                  )}
-                </li>
-              ))}
+              {(overrides as unknown as WhatsappOverrideRow[]).map((ov) => {
+                // M-2: TEMPORARY vencida some do resolver (whatsapp deixa de
+                // estar liberado por ela) mas continua com revoked_at=null —
+                // sem marcar, fica indistinguível de uma concessão vigente.
+                const isExpired = !ov.revoked_at && !!ov.ends_at && new Date(ov.ends_at).getTime() < Date.now();
+                const statusSuffix = ov.revoked_at ? " (revogada)" : isExpired ? " (expirada)" : "";
+                return (
+                  <li key={ov.id} className="flex items-center justify-between gap-2 text-xs">
+                    {/* M-1: enabled=false é BLOQUEIO administrativo, não
+                        cortesia — mostrar o grant_type/validade normal
+                        mentiria sobre o que a linha faz. */}
+                    {ov.enabled ? (
+                      <span className={ov.revoked_at || isExpired ? "text-muted-foreground" : undefined}>
+                        {ENTITLEMENT_GRANT_TYPE_LABEL[ov.grant_type]} —{" "}
+                        {ov.ends_at ? formatDateBR(ov.ends_at.slice(0, 10)) : "sem validade"}
+                        {statusSuffix}
+                      </span>
+                    ) : (
+                      <span className={ov.revoked_at ? "text-muted-foreground" : "text-destructive font-medium"}>
+                        Bloqueio administrativo{statusSuffix}
+                      </span>
+                    )}
+                    {!ov.revoked_at && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2"
+                        disabled={revoke.isPending && revoke.variables?.override_id === ov.id}
+                        onClick={() =>
+                          revoke.mutate(
+                            { organization_id: organizationId, override_id: ov.id },
+                            {
+                              onSuccess: (res) => afterOverrideMutation(res, "Concessão revogada."),
+                              onError: (err) => toast.error(err.message),
+                            },
+                          )
+                        }
+                      >
+                        Revogar
+                      </Button>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

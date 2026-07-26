@@ -47,8 +47,22 @@ import {
   useRegisterExternalPayment,
   useCreateImplementation,
 } from "@/hooks/useWhatsappImplementation";
-import { useOrganizationsBilling } from "@/hooks/useBilling";
+import { useOrganizationsBilling, useBillingPlans } from "@/hooks/useBilling";
 import { useAuth } from "@/contexts/AuthContext";
+/**
+ * Núcleo puro do backend (ZERO imports — Deno E vitest a partir de src/ já o
+ * consomem, ver src/lib/whatsapp-implementation-core.test.ts:9). A máquina de
+ * estados da implantação mora AQUI, não numa cópia no frontend — reimplementar
+ * o grafo de transições (ou o gate de "pagamento resolvido pra concluir") é
+ * defeito mesmo quando o resultado bate, porque as duas cópias divergem no
+ * dia em que só uma for atualizada. Import relativo (fora de `src/`) é o
+ * mesmo padrão já validado pelo teste acima; `tsc -b` resolve por follow de
+ * import, não pelo glob `include` do tsconfig.
+ */
+import {
+  OPERATIONAL_TRANSITIONS,
+  canTransitionOperational,
+} from "../../../supabase/functions/_shared/whatsapp-implementation-core";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "Todas" },
@@ -92,24 +106,16 @@ function orgOf(row: AdminImplementationRow) {
 }
 
 /**
- * Espelha OPERATIONAL_TRANSITIONS de
- * supabase/functions/_shared/whatsapp-implementation-core.ts, SEM o destino
- * CANCELED (ação própria — set_operational_status recusa CANCELED com 400
- * mandando usar `cancel`). O servidor continua sendo a fonte de verdade;
- * isto só evita oferecer no Select um destino que ele recusaria de cara.
+ * Destinos válidos a partir da etapa atual, direto de OPERATIONAL_TRANSITIONS
+ * (núcleo puro) — SEM o destino CANCELED (ação própria — set_operational_status
+ * recusa CANCELED com 400 mandando usar `cancel`). `?? []` cobre um status
+ * fora do grafo (não deveria acontecer, mas não estoura o `.map` do Select).
  */
-const NEXT_DESTINATIONS: Record<ImplementationOperationalStatus, ImplementationOperationalStatus[]> = {
-  NOT_STARTED: ["SCHEDULED", "IN_PROGRESS"],
-  SCHEDULED: ["IN_PROGRESS", "WAITING_CUSTOMER"],
-  IN_PROGRESS: ["WAITING_CUSTOMER", "COMPLETED"],
-  WAITING_CUSTOMER: ["IN_PROGRESS", "COMPLETED"],
-  COMPLETED: [],
-  CANCELED: [],
-};
-
-/** Pagamento que autoriza CONCLUIR — espelha COMPLETABLE_PAYMENT_STATUSES do
- *  núcleo puro. Só gate de UX: o servidor recusa com 409 de qualquer forma. */
-const COMPLETABLE_PAYMENT: ReadonlySet<ImplementationPaymentStatus> = new Set(["CONFIRMED", "WAIVED"]);
+function nextDestinations(
+  status: ImplementationOperationalStatus,
+): ImplementationOperationalStatus[] {
+  return (OPERATIONAL_TRANSITIONS[status] ?? []).filter((d) => d !== "CANCELED");
+}
 
 /** Origens que a action `create` aceita — ASAAS é recusada (tem ação própria,
  *  create_asaas_charge, fora do escopo deste painel) e EXTERNAL_PAYMENT tem
@@ -142,6 +148,11 @@ export default function WhatsappImplementations() {
   const { data, isLoading, isError, refetch } = useImplementations(
     status === "all" ? {} : { status },
   );
+  // M-4 (Rodada de correção 1): o valor da configuração assistida vem do
+  // catálogo (`billing_plans`, slug "implementacao-whatsapp") — hardcoded na
+  // copy, a frase mentiria no dia em que o preço mudasse no painel de planos.
+  const { data: plans } = useBillingPlans();
+  const implPlan = (plans ?? []).find((p) => p.slug === "implementacao-whatsapp");
 
   const rows = (data?.implementations ?? []) as unknown as AdminImplementationRow[];
 
@@ -151,10 +162,10 @@ export default function WhatsappImplementations() {
         <div>
           <h1 className="text-2xl font-bold">Implantações de WhatsApp</h1>
           <p className="text-sm text-muted-foreground max-w-2xl">
-            Registra COMO a configuração assistida (R$ 750) foi paga — venda pelo Asaas,
-            pagamento externo ou cortesia. Isto NÃO libera nem bloqueia o acesso ao
-            WhatsApp: quem faz isso é a assinatura da instância ou uma cortesia de acesso,
-            geridas no detalhe da organização.
+            Registra COMO a configuração assistida{implPlan ? ` (${formatCentsBRL(implPlan.amount_cents)})` : ""} foi
+            paga — venda pelo Asaas, pagamento externo ou cortesia. Isto NÃO libera nem
+            bloqueia o acesso ao WhatsApp: quem faz isso é a assinatura da instância ou uma
+            cortesia de acesso, geridas no detalhe da organização.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -279,10 +290,27 @@ function ImplementationDetail({
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
 
-  const destinations = NEXT_DESTINATIONS[row.operational_status];
+  const destinations = nextDestinations(row.operational_status);
   const isTerminal = row.operational_status === "COMPLETED" || row.operational_status === "CANCELED";
-  const completionBlocked = destino === "COMPLETED" && !COMPLETABLE_PAYMENT.has(row.payment_status);
+  const advanceVerdict = destino ? canTransitionOperational(row.operational_status, destino, row.payment_status) : null;
+  const completionBlocked = !!advanceVerdict && !advanceVerdict.ok && advanceVerdict.reason === "payment_not_settled";
   const asaasPendingWindow = row.origin === "ASAAS" && row.payment_status === "PENDING";
+
+  /**
+   * I-2 (Rodada de correção 1): o índice único parcial é por ORGANIZAÇÃO
+   * (`whatsapp_impl_one_open_per_org_idx`, migration 071), não por linha. A
+   * linha selecionada estar CANCELED não basta — a lista da página pode estar
+   * filtrada por status e esconder uma OUTRA implantação da mesma org que
+   * segue aberta. Consulta própria, sem filtro de status, só pra esta org —
+   * nunca reaproveita `rows` da tela-mãe.
+   */
+  const orgImplementations = useImplementations({ organization_id: row.organization_id });
+  const orgRows = (orgImplementations.data?.implementations ?? []) as unknown as AdminImplementationRow[];
+  const canRegisterNew =
+    !orgImplementations.isLoading &&
+    !orgImplementations.isError &&
+    orgRows.length > 0 &&
+    orgRows.every((r) => r.operational_status === "CANCELED");
 
   function handleAdvance() {
     if (!destino) return;
@@ -419,11 +447,29 @@ function ImplementationDetail({
         {row.operational_status === "CANCELED" && (
           <div className="space-y-3 border-t pt-4">
             <p className="text-sm font-medium">Esta implantação foi cancelada</p>
-            <p className="text-xs text-muted-foreground">
-              O registro abaixo cria uma NOVA implantação para {org?.name ?? "esta empresa"} —
-              a linha cancelada é histórico e não é reaberta.
-            </p>
-            <CreateImplementationForm organizationId={row.organization_id} onSuccess={onClose} />
+            {orgImplementations.isLoading ? (
+              <Skeleton className="h-24 w-full" />
+            ) : orgImplementations.isError ? (
+              <div className="space-y-2">
+                <p className="text-xs text-destructive">Falha ao checar as demais implantações desta empresa.</p>
+                <Button variant="outline" size="sm" onClick={() => orgImplementations.refetch()}>
+                  Tentar novamente
+                </Button>
+              </div>
+            ) : canRegisterNew ? (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  O registro abaixo cria uma NOVA implantação para {org?.name ?? "esta empresa"} —
+                  a linha cancelada é histórico e não é reaberta.
+                </p>
+                <CreateImplementationForm organizationId={row.organization_id} onSuccess={onClose} />
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Esta empresa já tem outra implantação não cancelada — localize-a na lista pra
+                agir sobre ela antes de registrar uma nova aqui.
+              </p>
+            )}
           </div>
         )}
       </ResponsiveDialogBody>
@@ -461,6 +507,21 @@ function ImplementationDetail({
 // ── Registro manual (pagamento externo OU cortesia/override) ───────────────
 
 /**
+ * Converte string digitada em formato BR (milhar "." / decimal ",") pra
+ * centavos. M-11 (Rodada de correção 1): `replace(",", ".")` sozinho trocava
+ * só a PRIMEIRA ocorrência e não tocava o ponto de milhar — "1.750,00" virava
+ * "1.750.00", `Number(...)` devolvia NaN, e o botão ficava desabilitado sem
+ * nenhuma mensagem explicando por quê. Retorna NaN se não parsear — o
+ * chamador decide a mensagem de erro.
+ */
+function parseAmountReaisToCents(raw: string): number {
+  const normalized = raw.trim().replace(/\./g, "").replace(",", ".");
+  if (!normalized) return NaN;
+  const value = Number(normalized);
+  return Number.isFinite(value) ? Math.round(value * 100) : NaN;
+}
+
+/**
  * Compartilhado por dois pontos de entrada: o botão "Nova implantação" do
  * topo da lista (organização escolhida pelo admin) e a seção que aparece
  * quando a implantação selecionada já está CANCELED (organização fixa). Os
@@ -490,14 +551,18 @@ function CreateImplementationForm({
   const [reason, setReason] = useState("");
 
   const isPending = registerPayment.isPending || createImplementation.isPending;
-  const amountCents = Math.round(Number(amount.replace(",", ".")) * 100);
-  const externalValid = amountCents > 0 && paymentMethod.trim().length > 0;
+  const amountCents = parseAmountReaisToCents(amount);
+  const externalValid = Number.isFinite(amountCents) && amountCents > 0 && paymentMethod.trim().length > 0;
   const courtesyValid = reason.trim().length > 0;
 
   function handleSubmit() {
     if (origin === "EXTERNAL_PAYMENT") {
       if (!externalValid) {
-        toast.error(amountCents > 0 ? "Informe a forma de pagamento." : "Informe o valor recebido.");
+        toast.error(
+          !Number.isFinite(amountCents) || amountCents <= 0
+            ? "Informe um valor recebido válido."
+            : "Informe a forma de pagamento.",
+        );
         return;
       }
       registerPayment.mutate(
@@ -638,32 +703,55 @@ function NovaImplantacaoDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { data, isLoading, isError, refetch } = useOrganizationsBilling({ page_size: 100 });
+  // I-3 (Rodada de correção 1): sem cruzar com quem já tem implantação aberta,
+  // o Select oferece qualquer empresa e o 409 garantido só aparece depois do
+  // submit. Consulta própria, sem filtro de status — precisa ver TODAS as
+  // linhas pra saber quem está bloqueado, independente do filtro da tela-mãe.
+  const implsQuery = useImplementations({});
   const [organizationId, setOrganizationId] = useState("");
   const orgs = data?.organizations ?? [];
 
+  const blockedOrgIds = new Set(
+    ((implsQuery.data?.implementations ?? []) as unknown as AdminImplementationRow[])
+      .filter((r) => r.operational_status !== "CANCELED")
+      .map((r) => r.organization_id),
+  );
+
+  // M-3 (Rodada de correção 1): fechar sem passar por aqui deixava
+  // `organizationId` intacto — reabrir o diálogo (ou o sucesso do form, que
+  // chamava `onOpenChange(false)` direto, pulando este reset) reaproveitava a
+  // mesma organização e convidava a um re-submit que 409a contra a linha que
+  // acabou de ser criada.
+  function handleClose() {
+    onOpenChange(false);
+    setOrganizationId("");
+  }
+
   return (
-    <ResponsiveDialog
-      open={open}
-      onOpenChange={(o) => { onOpenChange(o); if (!o) setOrganizationId(""); }}
-    >
+    <ResponsiveDialog open={open} onOpenChange={(o) => { if (!o) handleClose(); else onOpenChange(o); }}>
       <ResponsiveDialogContent>
         <ResponsiveDialogHeader>
           <ResponsiveDialogTitle>Nova implantação</ResponsiveDialogTitle>
           <ResponsiveDialogDescription>
-            Registro manual — pagamento recebido fora do Asaas, ou cortesia/override. É
-            recusado (409) se a empresa já tiver uma implantação não cancelada.
+            Registro manual — pagamento recebido fora do Asaas, ou cortesia/override.
           </ResponsiveDialogDescription>
         </ResponsiveDialogHeader>
         <ResponsiveDialogBody className="space-y-4">
           <div>
             <Label>Empresa</Label>
-            <Select value={organizationId} onValueChange={setOrganizationId} disabled={isLoading}>
+            <Select
+              value={organizationId}
+              onValueChange={setOrganizationId}
+              disabled={isLoading || orgs.length === 0}
+            >
               <SelectTrigger className="h-12 sm:h-10">
                 <SelectValue placeholder={isLoading ? "Carregando empresas..." : "Selecione a empresa"} />
               </SelectTrigger>
               <SelectContent>
                 {orgs.map((o) => (
-                  <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+                  <SelectItem key={o.id} value={o.id} disabled={blockedOrgIds.has(o.id)}>
+                    {o.name}{blockedOrgIds.has(o.id) ? " — já tem implantação aberta" : ""}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -675,12 +763,20 @@ function NovaImplantacaoDialog({
                 </Button>
               </div>
             )}
+            {!isLoading && !isError && orgs.length === 0 && (
+              <p className="text-xs text-muted-foreground mt-1">Nenhuma organização encontrada.</p>
+            )}
+            {implsQuery.isError && (
+              <p className="text-xs text-warning mt-1">
+                Não foi possível checar quem já tem implantação — confira antes de escolher.
+              </p>
+            )}
           </div>
           {organizationId && (
             <CreateImplementationForm
               key={organizationId}
               organizationId={organizationId}
-              onSuccess={() => onOpenChange(false)}
+              onSuccess={handleClose}
             />
           )}
         </ResponsiveDialogBody>
