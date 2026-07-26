@@ -58,6 +58,17 @@ const ADMIN_COLUMNS =
 /** Única action liberada para não-admin. Ver Task 14. */
 const CLIENT_FRIENDLY_ACTIONS = new Set(["get_service_status"]);
 
+/**
+ * Status de billing_subscriptions que contam como "mantendo o serviço" para
+ * fins de CUSTO exibido em get_service_status — espelha ALLOWED_SUB_STATUSES
+ * de _shared/entitlements-core.ts:86 (não exportado de lá: núcleo puro, não é
+ * decisão de matriz, é um literal local só para este corte). Correção 1, M1:
+ * `has_instance` (pode contratar?) usa um critério mais largo (qualquer status
+ * != canceled, ver get_service_status) de propósito — os dois NÃO podem ser o
+ * mesmo booleano.
+ */
+const BILLABLE_SUB_STATUSES: ReadonlySet<string> = new Set(["active", "trialing", "past_due"]);
+
 function jsonResponse(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -481,37 +492,47 @@ serve(async (req) => {
     }
 
     if (action === "grant_whatsapp_override") {
-      const { organization_id, grant_type, reason, ends_at } = body as Record<string, unknown>;
-      if (!organization_id) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
+      // Coerção via String(...) ANTES do guard e da chamada — mesma idiom do
+      // resto do arquivo (list_whatsapp_overrides/get_service_status), em vez
+      // de `as string` (cast que não muda o valor em runtime: um
+      // organization_id booleano/objeto passaria o guard `!organization_id`
+      // sem virar string, chegando cru no `.eq()` do helper e virando 500 de
+      // Postgres em vez do 400 de validação de entrada esperado aqui).
+      const organizationId = String(body.organization_id ?? "");
+      const grantType = String(body.grant_type ?? "");
+      const reason = String(body.reason ?? "");
+      const endsAt = String(body.ends_at ?? "");
+      if (!organizationId) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
 
       // `feature` é FIXA aqui. A UI genérica das três features é da Fase 9;
       // aceitar feature pelo corpo agora deixaria esta ação conceder IA — que
       // depende da carteira (Fase 7) e não tem efeito nenhum hoje.
       const result = await grantOverride(supabase, {
-        organizationId: organization_id as string,
+        organizationId,
         feature: "whatsapp",
-        grantType: grant_type as OverrideGrantType,
-        reason: String(reason ?? ""),
+        grantType: grantType as OverrideGrantType,
+        reason,
         grantedBy: callerId,
-        endsAt: (ends_at as string | null | undefined) ?? null,
+        endsAt,
       });
       if (!result.ok) return jsonResponse(req, { error: result.error }, result.status);
 
       jsonLog("info", {
         reqId, evt: "whatsapp_override_granted",
-        orgId: organization_id, grantType: grant_type, by: callerId,
+        orgId: organizationId, grantType, by: callerId,
       });
       return jsonResponse(req, { success: true, entitlements: result.entitlements });
     }
 
     if (action === "revoke_whatsapp_override") {
-      const { organization_id, override_id } = body as Record<string, unknown>;
-      if (!organization_id || !override_id) {
+      const organizationId = String(body.organization_id ?? "");
+      const overrideId = String(body.override_id ?? "");
+      if (!organizationId || !overrideId) {
         return jsonResponse(req, { error: "organization_id e override_id são obrigatórios." }, 400);
       }
       const result = await revokeOverride(supabase, {
-        organizationId: organization_id as string,
-        overrideId: override_id as string,
+        organizationId,
+        overrideId,
         revokedBy: callerId,
       });
       if (!result.ok) return jsonResponse(req, { error: result.error }, result.status);
@@ -552,13 +573,30 @@ serve(async (req) => {
         resolveOrgEntitlements(supabase, organizationId),
         supabase
           .from("billing_subscriptions")
-          .select("id, status, current_period_end, billing_plans!inner(category)")
+          // Sem `id` (não usado nesta projeção) — Correção 1, M4.
+          .select("status, current_period_end, billing_plans!inner(category)")
           .eq("organization_id", organizationId)
-          .neq("status", "canceled"),
+          .neq("status", "canceled")
+          // Correção 1, M2: sem ORDER BY, PostgREST devolve ordem indefinida —
+          // `.find()` abaixo pegaria uma linha aleatória se alguma organização
+          // tiver mais de uma assinatura viva na mesma categoria (não deveria
+          // acontecer graças à migration 073, mas o índice cobre corrida, não
+          // dado histórico). Mais recente primeiro.
+          .order("created_at", { ascending: false }),
         supabase
           .from("billing_plans")
-          .select("slug, amount_cents, active")
+          // Sem `active` — Correção 1, M3: implementacao-whatsapp e
+          // instancia-whatsapp nascem active=false no seed (065) e só ativam
+          // na Task 17; filtrar por active aqui zeraria a vitrine inteira
+          // antes disso. Quem gateia o fluxo são as flags abaixo, não o
+          // catálogo — a coluna não tem uso nesta projeção.
+          .select("slug, amount_cents")
           .in("slug", ["sistema-reservas", "implementacao-whatsapp", "instancia-whatsapp"]),
+        // Fail-closed deliberado (Correção 1, M5): se a leitura da flag falhar,
+        // `checkFlagEnabled` devolve enabled=false e o botão de contratar some
+        // — isso não AFIRMA nada falso sobre dinheiro (ao contrário do
+        // I1/I2 abaixo), só nega uma ação. `readFailed` de cada flag é
+        // descartado de propósito; não "consertar" pra 500.
         Promise.all([
           checkFlagEnabled("whatsapp_implementation_flow"),
           checkFlagEnabled("whatsapp_subscription_checkout"),
@@ -576,6 +614,23 @@ serve(async (req) => {
         jsonLog("error", { reqId, evt: "service_status_subs_error", err: subsRes.error.message });
         return jsonResponse(req, { error: "Falha ao carregar o status do serviço." }, 500);
       }
+      // Correção 1, I1: resolveOrgEntitlements engole os 3 `.error` internos
+      // (organizations/overrides/subscriptions) uma camada abaixo — sem checar
+      // `readFailed`, uma leitura de override que falha transitoriamente vira
+      // `entitlements.whatsapp.source="none"` e a resposta 200 nega a cortesia
+      // do único cliente real (Ren Sushi, vitalício grátis), afirmando um
+      // custo mensal que não existe. Mesma classe de erro que subsRes.error
+      // acima; mesma correção.
+      if (entitlements.readFailed) {
+        jsonLog("error", { reqId, evt: "service_status_entitlements_read_failed", orgId: organizationId });
+        return jsonResponse(req, { error: "Falha ao carregar o status do serviço." }, 500);
+      }
+      // Correção 1, I2: `plansRes.error` degrada de propósito (não aborta),
+      // mas summarizeMonthlyCosts colapsa preço null em R$0,00 — indistinguível
+      // do zero legítimo de quem tem cortesia. `prices_unavailable` no payload
+      // avisa a UI pra renderizar "—" em vez do zero quando os preços não
+      // carregaram (Task 15 trata a exibição; aqui só sinaliza).
+      const pricesUnavailable = !!plansRes.error;
       if (plansRes.error) {
         // Vitrine de preços é degradável: summarizeMonthlyCosts já trata preço
         // null. Derrubar a página inteira porque o catálogo não carregou seria
@@ -592,6 +647,14 @@ serve(async (req) => {
         (Array.isArray(s.billing_plans) ? s.billing_plans[0] : s.billing_plans)?.category;
       const instanceSub = subs.find((s) => categoryOf(s) === "WHATSAPP_SUBSCRIPTION") ?? null;
       const systemSub = subs.find((s) => categoryOf(s) === "SYSTEM_SUBSCRIPTION") ?? null;
+
+      // Correção 1, M1: `has_instance` (venda — "existe assinatura não
+      // cancelada?") e o booleano de CUSTO precisam de critérios diferentes de
+      // propósito. `has_instance` casa com create-billing-checkout/
+      // eligibility.ts (barra `unpaid`/`paused` de tentar assinar de novo).
+      // Usar o MESMO booleano pro custo infla `currentMonthlyCents` em R$149
+      // numa assinatura `paused` que ninguém está cobrando.
+      const instanceSubBillable = !!instanceSub && BILLABLE_SUB_STATUSES.has(instanceSub.status);
 
       const priceOf = (slug: string) =>
         ((plansRes.data ?? []).find((p) => p.slug === slug)?.amount_cents as number | undefined) ?? null;
@@ -632,7 +695,8 @@ serve(async (req) => {
           systemMonthlyCents: priceOf("sistema-reservas"),
           instanceMonthlyCents: priceOf("instancia-whatsapp"),
           implementationOneTimeCents: priceOf("implementacao-whatsapp"),
-          hasActiveInstanceSubscription: !!instanceSub,
+          // `instanceSubBillable`, não `!!instanceSub` — ver M1 acima.
+          hasActiveInstanceSubscription: instanceSubBillable,
           whatsappSponsored,
           implementationSettled: implRow
             ? SETTLED_PAYMENT_STATUSES.has(implRow.payment_status)
@@ -641,6 +705,11 @@ serve(async (req) => {
           // sistema nem cortesia, o preço de vitrine ainda é o que a tela mostra.
           systemSponsored,
         }),
+        // Correção 1, I2: true quando `billing_plans` não carregou — os 3
+        // preços caem para null e summarizeMonthlyCosts os colapsa em R$0,00,
+        // indistinguível do zero legítimo de cortesia. UI (Task 15) renderiza
+        // "—" em vez de R$0,00 quando este campo vier true.
+        prices_unavailable: pricesUnavailable,
         flags: {
           implementation_flow: flags[0].enabled,
           subscription_checkout: flags[1].enabled,
