@@ -77,6 +77,51 @@ export async function enqueueBillingNotification(
 }
 
 /**
+ * E-mails dos administradores da PLATAFORMA, ordenados por antiguidade.
+ *
+ * NÃO reusa resolveBillingRecipient, que é org-scoped de propósito (o fix do
+ * vazamento cross-tenant da Fase 4b). Aqui o destinatário é a própria Moralles:
+ * "o cliente X pagou a implantação" é aviso interno, não do cliente.
+ *
+ * Best-effort: devolve [] em qualquer falha e loga. NUNCA pode derrubar a
+ * confirmação financeira que a chamou.
+ */
+export async function resolvePlatformAdminRecipients(
+  supabase: SupabaseClient,
+): Promise<string[]> {
+  const { data: admins, error } = await supabase
+    .from("platform_admins")
+    .select("user_id")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    jsonLog("error", { evt: "platform_admin_recipients_read_failed", err: error.message });
+    return [];
+  }
+
+  const emails: string[] = [];
+  const seen = new Set<string>();
+  for (const row of admins ?? []) {
+    const { data, error: userErr } = await supabase.auth.admin.getUserById(
+      row.user_id as string,
+    );
+    if (userErr || !data?.user) continue;
+    // Usuário banido não recebe aviso operacional.
+    const bannedUntil = (data.user as { banned_until?: string | null }).banned_until;
+    if (bannedUntil && new Date(bannedUntil).getTime() > Date.now()) continue;
+    const email = data.user.email?.trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    emails.push(email);
+  }
+
+  if (emails.length === 0) {
+    jsonLog("warn", { evt: "platform_admin_recipients_empty", admins: (admins ?? []).length });
+  }
+  return emails;
+}
+
+/**
  * true se a org tem cortesia/override de sistema ATIVO (não pode ser bloqueada
  * nem avisada por inadimplência). enabled=true = grant positivo; enabled=false é
  * bloqueio explícito e não impede escalação (a org já deve estar sem acesso).

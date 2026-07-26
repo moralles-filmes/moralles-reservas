@@ -22,7 +22,11 @@ import {
 import { getBillingProvider } from "./billing-provider.ts";
 import { asaasValueToCents } from "./asaas-core.ts";
 import { jsonLog } from "./security.ts";
-import { resolveBillingRecipient, enqueueBillingNotification } from "./billing-notify.ts";
+import {
+  resolveBillingRecipient,
+  resolvePlatformAdminRecipients,
+  enqueueBillingNotification,
+} from "./billing-notify.ts";
 
 export interface BillingEventRow {
   id: string;
@@ -124,6 +128,101 @@ function failWith(
 }
 
 /**
+ * Confirma a implantação paga pelo checkout do Asaas.
+ *
+ * IDEMPOTENTE por UPDATE condicional em `payment_status = 'PENDING'`: o cartão
+ * emite PAYMENT_CONFIRMED e depois PAYMENT_RECEIVED (até ~30 dias), e o
+ * reconcile pode reprocessar a mesma linha. Só a execução que de fato mudou a
+ * linha enfileira o aviso — `.select("id")` é o que distingue "eu mudei" de
+ * "já estava assim".
+ *
+ * `.eq('PENDING')` e não `.neq('CONFIRMED')`: a matriz origem×pagamento só
+ * admite PENDING→CONFIRMED para origin='ASAAS', e um `.neq` também casaria
+ * linhas CANCELED ou estornadas.
+ *
+ * Best-effort no aviso: falha ao resolver destinatário NUNCA derruba a
+ * confirmação financeira (mesma filosofia do enqueue de `regularized`).
+ */
+async function confirmImplementationPayment(
+  supabase: SupabaseClient,
+  args: {
+    organizationId: string;
+    checkoutSessionId: string | null;
+    invoiceId: string | null;
+    paidValueCents: number | null;
+    paymentMethod: string | null;
+  },
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const patch: Record<string, unknown> = {
+    payment_status: "CONFIRMED",
+    paid_at: nowIso,
+  };
+  if (args.invoiceId) patch.billing_invoice_id = args.invoiceId;
+  if (args.paidValueCents !== null) patch.amount_cents = args.paidValueCents;
+  if (args.paymentMethod) patch.payment_method = args.paymentMethod;
+
+  let query = supabase
+    .from("whatsapp_implementations")
+    .update(patch)
+    .eq("origin", "ASAAS")
+    .eq("payment_status", "PENDING");
+
+  // Correlação precisa quando temos o checkout; senão cai na organização, que é
+  // suficiente porque só existe UMA implantação aberta por org (UNIQUE parcial).
+  query = args.checkoutSessionId
+    ? query.eq("provider_checkout_id", args.checkoutSessionId)
+    : query.eq("organization_id", args.organizationId);
+
+  const { data: updated, error } = await query.select("id");
+
+  if (error) {
+    jsonLog("error", {
+      evt: "implementation_confirm_failed",
+      organization_id: args.organizationId,
+      error: String(error),
+    });
+    return;
+  }
+  if (!updated || updated.length === 0) {
+    // Duplicata benigna (2º evento do cartão) ou pagamento de implantação sem
+    // linha correspondente. Log em info: não é erro, mas precisa ser visível.
+    jsonLog("info", {
+      evt: "implementation_confirm_noop",
+      organization_id: args.organizationId,
+      checkout: args.checkoutSessionId,
+    });
+    return;
+  }
+
+  jsonLog("info", {
+    evt: "implementation_confirmed",
+    organization_id: args.organizationId,
+    implementation_id: updated[0].id,
+  });
+
+  const recipients = await resolvePlatformAdminRecipients(supabase);
+  if (recipients.length === 0) return;
+  // UMA linha só: o UNIQUE (organization_id, event_type, invoice_id) deduplica,
+  // e sendEmail aceita um único `to`. Enfileirar uma por admin faria N-1
+  // desaparecerem em 23505 silencioso. A lista completa vai para o log, e quem
+  // recebe é o admin mais antigo (ordem determinística).
+  if (recipients.length > 1) {
+    jsonLog("info", {
+      evt: "implementation_notify_single_recipient",
+      chosen: recipients[0],
+      total_admins: recipients.length,
+    });
+  }
+  await enqueueBillingNotification(supabase, {
+    organizationId: args.organizationId,
+    eventType: "implementation_paid",
+    invoiceId: args.invoiceId,
+    recipient: recipients[0],
+  });
+}
+
+/**
  * Aplica o efeito de negócio de um evento Asaas já persistido.
  *
  * NUNCA lança: todo caminho de erro vira `{status:'failed'}`, porque o webhook
@@ -200,6 +299,7 @@ export async function applyAsaasEvent(
     let paidValueCents: number | null = null;
     let paymentMethod: PaymentMethod | null = null;
     let providerSubscriptionId: string | null = null;
+    let checkoutSessionId: string | null = null;
 
     // 4. PORTÕES de noop/unknown — ANTES de qualquer I/O com o Asaas.
     //
@@ -321,8 +421,12 @@ export async function applyAsaasEvent(
         // checkoutSession (a cobrança nasce da assinatura, não do checkout) — a
         // correlação dela é por provider_subscription_id (backfillado abaixo na
         // ativação), trabalho da Fase 4b.
+        const checkoutRef = res.data.checkoutSession;
+        if (typeof checkoutRef === "string" && checkoutRef) {
+          checkoutSessionId = checkoutRef;
+        }
+
         if (!organizationId) {
-          const checkoutRef = res.data.checkoutSession;
           if (typeof checkoutRef === "string" && checkoutRef) {
             const { data: sess, error: sessErr } = await supabase
               .from("billing_checkout_sessions")
@@ -567,6 +671,51 @@ export async function applyAsaasEvent(
               "Falha ao registrar a fatura paga — ver logs.",
             );
           }
+        }
+
+        // Id da fatura deste pagamento, resolvido nos DOIS ramos: o UPDATE não
+        // devolve id, e o INSERT pode ter virado 23505 numa corrida com o
+        // reconcile. Um SELECT pelo UNIQUE (provider, provider_payment_id)
+        // responde nos dois casos.
+        let settledInvoiceId: string | null = invoice?.id ?? null;
+        if (!settledInvoiceId) {
+          const { data: inv } = await supabase
+            .from("billing_invoices")
+            .select("id")
+            .eq("provider", "asaas")
+            .eq("provider_payment_id", paymentId)
+            .maybeSingle();
+          settledInvoiceId = (inv?.id as string | undefined) ?? null;
+        }
+
+        // Sessão de checkout consumida — vale para QUALQUER purpose. Sem isto a
+        // linha fica 'pending' para sempre e o UNIQUE parcial de sessão ativa
+        // barra a próxima contratação do mesmo produto.
+        if (checkoutSessionId) {
+          const { error: sessErr } = await supabase
+            .from("billing_checkout_sessions")
+            .update({ status: "used" })
+            .eq("provider_checkout_id", checkoutSessionId)
+            .neq("status", "used");
+          if (sessErr) {
+            // Cosmético para o acesso — loga e segue, como o backfill do
+            // provider_subscription_id.
+            jsonLog("warn", {
+              evt: "checkout_session_mark_used_failed",
+              checkout: checkoutSessionId,
+              error: String(sessErr),
+            });
+          }
+        }
+
+        if (purpose === "implementation") {
+          await confirmImplementationPayment(supabase, {
+            organizationId,
+            checkoutSessionId,
+            invoiceId: settledInvoiceId,
+            paidValueCents,
+            paymentMethod,
+          });
         }
 
         // OBRIGAÇÃO 2 do contrato: conceder acesso SOMENTE quando o pagamento

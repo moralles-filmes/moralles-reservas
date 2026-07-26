@@ -94,6 +94,19 @@ const TEMPLATE_BY_EVENT: Record<
       `Obrigado!`,
     ]),
   }),
+  // Aviso INTERNO (vai para o admin da plataforma, não para o cliente): a
+  // implantação foi paga e entra na fila de execução. Sem esta entrada o
+  // dispatcher marcaria a linha como failed/unknown_event_type e o aviso
+  // sumiria.
+  implementation_paid: (d) => ({
+    subject: `Implantação de WhatsApp paga — ${d.orgName}`,
+    text: `${d.orgName} pagou a implantação do WhatsApp (${d.amountBrl}). Agende a configuração no painel de implantações.`,
+    html: wrapHtml("Implantação de WhatsApp paga", [
+      `<strong>${d.orgName}</strong> pagou a implantação do WhatsApp.`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      `Agende a configuração no painel de implantações.`,
+    ]),
+  }),
 };
 
 serve(async (req) => {
