@@ -30,9 +30,12 @@ export type ReserveResult =
  * O Asaas não tem Idempotency-Key: dois cliques abrem duas cobranças reais. A
  * linha 'creating' + o UNIQUE parcial (organization_id, plan_id, purpose) são o
  * que serializa isso. Sequência:
- *   1. varre sessões vencidas do mesmo produto para 'expired';
+ *   1. varre sessões vencidas do mesmo produto para 'expired' (falha aqui é
+ *      só logada — não aborta a reserva, ver comentário no corpo);
  *   2. tenta inserir a reserva;
- *   3. no 23505, lê a viva: 'pending' com url → reusa; 'creating' → 409.
+ *   3. no 23505, lê a viva: 'pending' com url e AINDA VÁLIDA → reusa; 'pending'
+ *      vencida (a varredura do passo 1 pode ter falhado) → marca 'expired' e
+ *      pede retry; 'creating' → 409.
  */
 export async function reserveCheckoutSession(
   supabase: SupabaseClient,
@@ -49,7 +52,7 @@ export async function reserveCheckoutSession(
   // reservas órfãs (isolate morto entre a reserva e a resposta do Asaas), que
   // nunca chegaram a ter data.
   const staleCutoff = new Date(Date.now() - CHECKOUT_EXPIRY_MINUTES * 60_000).toISOString();
-  await supabase
+  const { error: sweepError } = await supabase
     .from("billing_checkout_sessions")
     .update({ status: "expired" })
     .eq("organization_id", args.organizationId)
@@ -57,6 +60,22 @@ export async function reserveCheckoutSession(
     .eq("purpose", args.purpose)
     .in("status", ["creating", "pending"])
     .or(`expires_at.lt.${nowIso},and(expires_at.is.null,created_at.lt.${staleCutoff})`);
+  if (sweepError) {
+    // NÃO abortamos a reserva por causa disso: na esmagadora maioria das
+    // chamadas não existe linha nenhuma pra varrer, e travar aqui bloquearia
+    // uma compra saudável por um problema que provavelmente não existe
+    // (Global Constraint 1 — nada nesta fase bloqueia serviço). O preço de
+    // deixar passar é coberto pela revalidação no caminho 23505 abaixo, que
+    // não confia cegamente numa linha 'pending' só porque ela existe.
+    jsonLog("warn", {
+      reqId: args.reqId,
+      evt: "checkout_session_sweep_failed",
+      orgId: args.organizationId,
+      planId: args.planId,
+      purpose: args.purpose,
+      err: sweepError.message,
+    });
+  }
 
   const { data: reserved, error: insErr } = await supabase
     .from("billing_checkout_sessions")
@@ -76,7 +95,7 @@ export async function reserveCheckoutSession(
   if (insErr && insErr.code === "23505") {
     const { data: live } = await supabase
       .from("billing_checkout_sessions")
-      .select("status, checkout_url, provider_checkout_id")
+      .select("id, status, checkout_url, provider_checkout_id, expires_at, created_at")
       .eq("organization_id", args.organizationId)
       .eq("plan_id", args.planId)
       .eq("purpose", args.purpose)
@@ -84,17 +103,56 @@ export async function reserveCheckoutSession(
       .maybeSingle();
 
     if (live?.status === "pending" && live.checkout_url) {
-      jsonLog("info", {
+      // Revalida a linha ANTES de devolvê-la — não é redundante com a
+      // varredura lá em cima, é o backstop pra quando ela falha (logada
+      // acima): sem isto, uma falha transitória de UPDATE bem no instante em
+      // que esta linha específica venceu faria o cliente reusar uma URL morta
+      // no Asaas e cair numa página de erro do provedor sem saber que precisa
+      // tentar de novo. Mesmo critério da varredura, aplicado à linha única
+      // que está prestes a ser entregue.
+      const stillValid = live.expires_at
+        ? new Date(live.expires_at as string).getTime() > Date.now()
+        : Date.now() - new Date(live.created_at as string).getTime() < CHECKOUT_EXPIRY_MINUTES * 60_000;
+
+      if (stillValid) {
+        jsonLog("info", {
+          reqId: args.reqId,
+          evt: "checkout_session_reused",
+          orgId: args.organizationId,
+          purpose: args.purpose,
+        });
+        return {
+          ok: false,
+          reuse: true,
+          url: live.checkout_url as string,
+          providerCheckoutId: (live.provider_checkout_id as string | null) ?? null,
+        };
+      }
+
+      // Exatamente a linha morta que a varredura deveria ter capturado (e não
+      // capturou, por causa da falha logada acima). Fecha o ciclo aqui em vez
+      // de devolver a URL: marca 'expired' e pede retry — o próximo clique
+      // encontra a UNIQUE livre e reserva limpo.
+      const { error: expireErr } = await supabase
+        .from("billing_checkout_sessions")
+        .update({ status: "expired" })
+        .eq("id", live.id as string);
+      // Erro aqui não muda a resposta (já é retriável) — só logado pra não
+      // repetir o mesmo silêncio do Achado 1 se esta segunda escrita falhar
+      // também. Sem sucesso, a linha se autocura na próxima tentativa via a
+      // varredura do topo (mesmo predicado, próxima chamada).
+      jsonLog("warn", {
         reqId: args.reqId,
-        evt: "checkout_session_reused",
+        evt: "checkout_session_stale_reuse_blocked",
         orgId: args.organizationId,
         purpose: args.purpose,
+        expireMarkFailed: !!expireErr,
+        expireMarkErr: expireErr?.message ?? null,
       });
       return {
         ok: false,
-        reuse: true,
-        url: live.checkout_url as string,
-        providerCheckoutId: (live.provider_checkout_id as string | null) ?? null,
+        status: 409,
+        error: "O checkout anterior expirou. Tente novamente em instantes.",
       };
     }
     // Irmão ainda em 'creating': a chamada ao Asaas dele está em voo. Devolver

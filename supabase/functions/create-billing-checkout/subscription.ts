@@ -248,6 +248,10 @@ async function stripeCheckout(ctx: CheckoutContext, purpose: CheckoutPurpose): P
   const mode: "subscription" | "setup" = purpose === "payment_method_update" ? "setup" : "subscription";
   const plan = ctx.plan;
 
+  // A chave da Stripe é resolvida AQUI DENTRO, não no topo do módulo: um
+  // checkout Asaas não depende dela, e falhar de saída com "Stripe não
+  // configurado" travaria a contratação inteira numa plataforma que já
+  // migrou.
   const STRIPE_SECRET_KEY = await getStripeSecretKey();
   if (!STRIPE_SECRET_KEY) {
     return { status: 500, body: { error: "Stripe não configurado." } };
