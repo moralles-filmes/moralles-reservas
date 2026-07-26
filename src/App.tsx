@@ -82,6 +82,7 @@ const PAutomacao = lazy(() => import("./pages/platform/Automacao"));
 const PBilling = lazy(() => import("./pages/platform/Billing"));
 const PBillingPlans = lazy(() => import("./pages/platform/BillingPlans"));
 const PBillingDetail = lazy(() => import("./pages/platform/BillingDetail"));
+const PWhatsappImplementations = lazy(() => import("./pages/platform/WhatsappImplementations"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -274,6 +275,9 @@ export default function App() {
               <Route path="/platform/automacao/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
               <Route path="/platform/billing" element={<PlatformGuard><PBilling /></PlatformGuard>} />
               <Route path="/platform/billing/planos" element={<PlatformGuard><PBillingPlans /></PlatformGuard>} />
+              {/* Precisa vir ANTES de /:organizationId — senão "implementacoes" é
+                  capturado como um organizationId e cai no detalhe errado. */}
+              <Route path="/platform/billing/implementacoes" element={<PlatformGuard><PWhatsappImplementations /></PlatformGuard>} />
               <Route path="/platform/billing/:organizationId" element={<PlatformGuard><PBillingDetail /></PlatformGuard>} />
 
               {/* ── Legacy /admin → redirect ─────────────────────────────── */}

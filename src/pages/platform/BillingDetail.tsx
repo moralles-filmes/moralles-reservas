@@ -15,6 +15,13 @@ import {
   useSyncFromStripe,
 } from "@/hooks/useBilling";
 import { usePaymentMethods, useDeletePaymentMethod } from "@/hooks/usePaymentMethods";
+import {
+  useImplementations,
+  useWhatsappServiceStatus,
+  useWhatsappOverrides,
+  useGrantWhatsappOverride,
+  useRevokeWhatsappOverride,
+} from "@/hooks/useWhatsappImplementation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,17 +36,25 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import { ArrowLeft, RefreshCw, Copy, ExternalLink, Plus, Lock, Unlock, Clock, CreditCard, Trash2 } from "lucide-react";
+import { ArrowLeft, RefreshCw, Copy, ExternalLink, Plus, Lock, Unlock, Clock, CreditCard, Trash2, Wrench, MessageSquare } from "lucide-react";
 import {
   BILLING_STATUS_LABEL,
   BILLING_STATUS_VARIANT,
   INVOICE_STATUS_LABEL,
   PAYMENT_METHOD_LABEL,
   formatCentsBRL,
+  IMPLEMENTATION_ORIGIN_LABEL,
+  IMPLEMENTATION_PAYMENT_LABEL,
+  IMPLEMENTATION_OPERATIONAL_LABEL,
+  ENTITLEMENT_GRANT_TYPE_LABEL,
   type BillingStatus,
   type BillingInvoice,
   type BillingAccessOverride,
   type BillingNotification,
+  type ImplementationOrigin,
+  type ImplementationPaymentStatus,
+  type ImplementationOperationalStatus,
+  type EntitlementGrantType,
 } from "@/types/billing";
 import { formatDateBR } from "@/lib/utils";
 
@@ -200,6 +215,15 @@ export default function BillingDetail() {
             <Lock className="mr-2 h-3 w-3" /> Bloquear
           </Button>
         )}
+      </div>
+
+      {/* WhatsApp: implantação (origem COMERCIAL) × acesso (fonte do direito).
+          Dois cards deliberadamente separados — uma cortesia de implantação
+          NÃO concede entitlement, e uma cortesia de entitlement NÃO cria
+          implantação. Ver ImplantacaoCard / WhatsappAccessCard. */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <ImplantacaoCard organizationId={org.id} />
+        <WhatsappAccessCard organizationId={org.id} orgName={org.name} />
       </div>
 
       {/* Tabs */}
@@ -922,6 +946,361 @@ function CancelSubDialog({ open, onOpenChange, subscriptionId }: {
           <AlertDialogCancel>Voltar</AlertDialogCancel>
           <AlertDialogAction className="bg-destructive text-destructive-foreground" disabled={mutation.isPending} onClick={handleSubmit}>
             {mutation.isPending ? "Cancelando..." : "Cancelar assinatura"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// ── WhatsApp: implantação × acesso (Task 16) ────────────────────────────────
+//
+// Dois cards, deliberadamente separados:
+//   - ImplantacaoCard    — origem COMERCIAL: como o serviço de configuração
+//                          de R$750 foi pago (ou por que não foi). Read-only
+//                          + link; criar/avançar/cancelar mora na página
+//                          /platform/billing/implementacoes.
+//   - WhatsappAccessCard — fonte do ACESSO: assinatura paga da instância ×
+//                          cortesia administrativa (organization_entitlement_
+//                          overrides, feature "whatsapp"). Uma implantação
+//                          COURTESY não concede isto, e uma cortesia daqui
+//                          não registra implantação nenhuma.
+
+/** Subconjunto de ADMIN_COLUMNS usado só para o resumo — ver tipo irmão em
+ *  WhatsappImplementations.tsx (não compartilhado: cada página projeta só o
+ *  que exibe). */
+interface AdminImplementationSummary {
+  origin: ImplementationOrigin;
+  amount_cents: number | null;
+  payment_status: ImplementationPaymentStatus;
+  operational_status: ImplementationOperationalStatus;
+  owner_admin_id: string | null;
+  created_at: string;
+}
+
+/** Linha de organization_entitlement_overrides projetada por
+ *  list_whatsapp_overrides — sem organization_id (a EF não seleciona essa
+ *  coluna aqui), por isso não é o mesmo tipo de OrganizationEntitlementOverride
+ *  em src/types/billing.ts. */
+interface WhatsappOverrideRow {
+  id: string;
+  grant_type: EntitlementGrantType;
+  ends_at: string | null;
+  revoked_at: string | null;
+}
+
+const GRANT_TYPES: EntitlementGrantType[] = ["LIFETIME", "TEMPORARY", "PROMOTIONAL", "MANUAL_OVERRIDE"];
+
+/**
+ * `entitlements: null` na resposta de grant/revoke NÃO é falha — a escrita já
+ * commitou, só a releitura do snapshot pós-escrita falhou (ver
+ * supabase/functions/_shared/entitlement-overrides.ts). Mostra sucesso sempre;
+ * o aviso extra é informativo, nunca um toast de erro. Não tipamos o objeto
+ * `entitlements` da resposta (ele carrega um `readFailed` solto que a EF
+ * repassa cru) — só checamos se veio `null`.
+ */
+function afterOverrideMutation(res: unknown, successMessage: string) {
+  toast.success(successMessage);
+  const readFailed =
+    res !== null &&
+    typeof res === "object" &&
+    "entitlements" in res &&
+    (res as { entitlements: unknown }).entitlements === null;
+  if (readFailed) {
+    toast.info(
+      "A concessão foi gravada, mas não foi possível confirmar o novo status agora. A tela pode levar um instante para refletir a mudança.",
+    );
+  }
+}
+
+function ImplantacaoCard({ organizationId }: { organizationId: string }) {
+  const { data, isLoading, isError, refetch } = useImplementations({ organization_id: organizationId });
+  const rows = (data?.implementations ?? []) as unknown as AdminImplementationSummary[];
+  // Mais recente primeiro — mesma ordenação da EF (created_at desc).
+  const latest = rows[0] ?? null;
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center gap-2 space-y-0">
+        <Wrench className="h-4 w-4 text-muted-foreground" />
+        <CardTitle className="text-sm font-medium">Implantação do WhatsApp</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : isError ? (
+          <div className="space-y-2">
+            <p className="text-sm text-destructive">Falha ao carregar a implantação.</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Tentar novamente</Button>
+          </div>
+        ) : !latest ? (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">Nenhuma implantação registrada para esta empresa.</p>
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/platform/billing/implementacoes">Registrar implantação</Link>
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3 text-sm">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <p className="text-muted-foreground">Origem</p>
+                <p className="font-medium">{IMPLEMENTATION_ORIGIN_LABEL[latest.origin]}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Valor</p>
+                <p className="font-medium">
+                  {latest.amount_cents == null ? "—" : formatCentsBRL(latest.amount_cents)}
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Financeiro</p>
+                <Badge variant="secondary">{IMPLEMENTATION_PAYMENT_LABEL[latest.payment_status]}</Badge>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Operacional</p>
+                <Badge variant="secondary">{IMPLEMENTATION_OPERATIONAL_LABEL[latest.operational_status]}</Badge>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Responsável</p>
+                <p className="font-medium">{latest.owner_admin_id ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Criada em</p>
+                <p className="font-medium">{formatDateBR(latest.created_at.slice(0, 10))}</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground border-t pt-2">
+              Registra COMO a configuração foi paga — não libera nem bloqueia o acesso ao
+              WhatsApp (isso é o card ao lado).
+            </p>
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/platform/billing/implementacoes">
+                Ver na página de implantações <ExternalLink className="ml-2 h-3 w-3" />
+              </Link>
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function WhatsappAccessCard({ organizationId, orgName }: { organizationId: string; orgName: string }) {
+  const { data, isLoading, isError, refetch } = useWhatsappServiceStatus(organizationId);
+  const {
+    data: overrides,
+    isLoading: ovLoading,
+    isError: ovError,
+    refetch: ovRefetch,
+  } = useWhatsappOverrides(organizationId);
+  const revoke = useRevokeWhatsappOverride();
+  const [grantOpen, setGrantOpen] = useState(false);
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+        <div className="flex items-center gap-2">
+          <MessageSquare className="h-4 w-4 text-muted-foreground" />
+          <CardTitle className="text-sm font-medium">Acesso ao WhatsApp</CardTitle>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => setGrantOpen(true)}>
+          Conceder cortesia
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : isError || !data ? (
+          <div className="space-y-2">
+            <p className="text-sm text-destructive">Falha ao carregar o status de acesso.</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Tentar novamente</Button>
+          </div>
+        ) : (
+          <div className="space-y-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-muted-foreground">Assinatura paga:</span>
+              <Badge
+                variant="secondary"
+                className={data.subscription.has_instance ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}
+              >
+                {data.subscription.has_instance ? "Ativa" : "Sem assinatura"}
+              </Badge>
+              {data.subscription.next_due && (
+                <span className="text-xs text-muted-foreground">
+                  vence {formatDateBR(data.subscription.next_due.slice(0, 10))}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-muted-foreground">Cortesia administrativa:</span>
+              <Badge
+                variant="secondary"
+                className={data.override.active ? "bg-info/10 text-info" : "bg-muted text-muted-foreground"}
+              >
+                {data.override.active ? "Ativa" : "Nenhuma"}
+              </Badge>
+            </div>
+            {data.override.active && (
+              <p className="text-xs text-muted-foreground">
+                {ENTITLEMENT_GRANT_TYPE_LABEL[(data.override.grant_type ?? "MANUAL_OVERRIDE") as EntitlementGrantType]}
+                {" — "}
+                {data.override.ends_at
+                  ? `expira em ${formatDateBR(data.override.ends_at.slice(0, 10))}`
+                  : "sem validade (não expira)"}
+                . O custo de Z-API desta conta é patrocinado pela plataforma enquanto esta
+                cortesia estiver ativa.
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground border-t pt-2">
+              Isto é a fonte do ACESSO ao recurso — separada da implantação (como o serviço
+              de configuração foi pago). Conceder cortesia aqui não registra nem substitui a
+              implantação do card ao lado.
+            </p>
+          </div>
+        )}
+
+        <div className="space-y-2 border-t pt-3">
+          <p className="text-xs font-medium text-muted-foreground">Concessões de WhatsApp</p>
+          {ovLoading ? (
+            <Skeleton className="h-12 w-full" />
+          ) : ovError ? (
+            <div className="space-y-1">
+              <p className="text-xs text-destructive">Falha ao listar as concessões.</p>
+              <Button variant="outline" size="sm" onClick={() => ovRefetch()}>Tentar novamente</Button>
+            </div>
+          ) : !overrides || overrides.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Nenhuma concessão registrada.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {(overrides as unknown as WhatsappOverrideRow[]).map((ov) => (
+                <li key={ov.id} className="flex items-center justify-between gap-2 text-xs">
+                  <span>
+                    {ENTITLEMENT_GRANT_TYPE_LABEL[ov.grant_type]} —{" "}
+                    {ov.ends_at ? formatDateBR(ov.ends_at.slice(0, 10)) : "sem validade"}
+                    {ov.revoked_at && " (revogada)"}
+                  </span>
+                  {!ov.revoked_at && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2"
+                      disabled={revoke.isPending && revoke.variables?.override_id === ov.id}
+                      onClick={() =>
+                        revoke.mutate(
+                          { organization_id: organizationId, override_id: ov.id },
+                          {
+                            onSuccess: (res) => afterOverrideMutation(res, "Concessão revogada."),
+                            onError: (err) => toast.error(err.message),
+                          },
+                        )
+                      }
+                    >
+                      Revogar
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </CardContent>
+
+      <GrantWhatsappOverrideDialog
+        open={grantOpen}
+        onOpenChange={setGrantOpen}
+        organizationId={organizationId}
+        orgName={orgName}
+      />
+    </Card>
+  );
+}
+
+function GrantWhatsappOverrideDialog({
+  open,
+  onOpenChange,
+  organizationId,
+  orgName,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  organizationId: string;
+  orgName: string;
+}) {
+  const grant = useGrantWhatsappOverride();
+  const [grantType, setGrantType] = useState<EntitlementGrantType | "">("");
+  const [reason, setReason] = useState("");
+  const [endsAt, setEndsAt] = useState("");
+
+  // Só TEMPORARY carrega prazo — o servidor recusa com 400 um ends_at em
+  // LIFETIME/PROMOTIONAL/MANUAL_OVERRIDE. O campo de data só existe no DOM
+  // quando grantType === "TEMPORARY".
+  const needsDate = grantType === "TEMPORARY";
+  const endsAtMs = endsAt ? new Date(`${endsAt}T23:59:59`).getTime() : NaN;
+  const valid =
+    grantType !== "" &&
+    reason.trim().length > 0 &&
+    (!needsDate || (Number.isFinite(endsAtMs) && endsAtMs > Date.now()));
+
+  function handleSubmit() {
+    if (!valid || !grantType) return;
+    grant.mutate(
+      {
+        organization_id: organizationId,
+        grant_type: grantType,
+        reason: reason.trim(),
+        ends_at: needsDate ? new Date(`${endsAt}T23:59:59`).toISOString() : undefined,
+      },
+      {
+        onSuccess: (res) => {
+          afterOverrideMutation(res, `Acesso ao WhatsApp liberado por cortesia para ${orgName}.`);
+          onOpenChange(false);
+          setGrantType("");
+          setReason("");
+          setEndsAt("");
+        },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Conceder acesso ao WhatsApp por cortesia?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Esta empresa poderá gerar um custo mensal de Z-API para a plataforma, mesmo sem
+            uma assinatura paga pelo cliente.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Tipo de concessão</Label>
+            <Select value={grantType} onValueChange={(v) => setGrantType(v as EntitlementGrantType)}>
+              <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+              <SelectContent>
+                {GRANT_TYPES.map((g) => (
+                  <SelectItem key={g} value={g}>{ENTITLEMENT_GRANT_TYPE_LABEL[g]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {needsDate && (
+            <div>
+              <Label>Válido até</Label>
+              <Input type="date" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
+            </div>
+          )}
+          <div>
+            <Label>Motivo (obrigatório)</Label>
+            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
+          </div>
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+          <AlertDialogAction disabled={grant.isPending || !valid} onClick={handleSubmit}>
+            {grant.isPending ? "Concedendo..." : "Conceder acesso"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
