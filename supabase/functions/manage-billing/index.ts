@@ -349,7 +349,10 @@ serve(async (req) => {
         // Trigger da migration 074 (billing_plans_category_guard): recusa
         // mudar categoria de plano com assinatura não-cancelada. Discrimina
         // por MENSAGEM, não por código — o P0001 é o SQLSTATE genérico do
-        // plpgsql e já é usado por only_one_active_trial nesta mesma EF.
+        // plpgsql e colide com `ambiguous_subscription_category` (migration
+        // 073, RPC resolve_or_activate_subscription). `only_one_active_trial`
+        // é outro erro, 23505 (UNIQUE parcial), tratado por planWriteError()
+        // logo abaixo — não é o mesmo código.
         if (error.message?.includes("plan_category_locked")) {
           return jsonResponse(req, {
             error: "Não é possível mudar a categoria de um plano que já tem assinatura ativa. Desative o plano e crie um novo.",

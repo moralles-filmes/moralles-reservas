@@ -12,6 +12,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.ts";
+import { SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -62,7 +63,7 @@ serve(async (req) => {
       .select("organization_id, billing_plans!inner(category)")
       .in("organization_id", orgIds)
       .neq("status", "canceled")
-      .eq("billing_plans.category", "SYSTEM_SUBSCRIPTION");
+      .eq("billing_plans.category", SYSTEM_CATEGORY);
     const orgsWithActiveSub = new Set((activeSubs ?? []).map((s) => s.organization_id as string));
 
     // 3) Filtra orgs com override grant_access ativo
