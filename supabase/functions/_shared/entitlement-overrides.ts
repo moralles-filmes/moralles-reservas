@@ -29,8 +29,39 @@ const GRANT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 export type OverrideResult =
-  | { ok: true; entitlements: OrgEntitlements }
+  /**
+   * `entitlements: null` só ocorre quando o INSERT/UPDATE já foi confirmado
+   * pelo Postgres e a releitura de confirmação (pós-escrita) falhou — NUNCA
+   * significa que a concessão/revogação falhou. Tratar `null` como "operação
+   * falhou" reverteria uma mudança que já é real. Caller mostra sucesso e,
+   * se quiser, um aviso de que o snapshot não pôde ser confirmado.
+   */
+  | { ok: true; entitlements: OrgEntitlements | null }
   | { ok: false; status: number; error: string };
+
+/**
+ * Releitura best-effort pós-escrita. A escrita já commitou antes desta
+ * chamada — uma exceção aqui é só a confirmação falhando, não a operação.
+ * Reportar {ok:false} devolveria "falhou" pra uma mudança que já aconteceu
+ * (mesma classe de bug da Task 7: efeito durável não pode virar falha por
+ * causa de um passo best-effort depois dele).
+ */
+async function safeResolveEntitlements(
+  supabase: SupabaseClient,
+  organizationId: string,
+  evt: string,
+): Promise<OrgEntitlements | null> {
+  try {
+    return await resolveOrgEntitlements(supabase, organizationId);
+  } catch (err) {
+    jsonLog("error", {
+      evt,
+      org: organizationId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
 
 export interface GrantOverrideArgs {
   organizationId: string;
@@ -38,7 +69,7 @@ export interface GrantOverrideArgs {
   grantType: OverrideGrantType;
   reason: string;
   grantedBy: string;
-  /** ISO. Obrigatório e futuro em TEMPORARY; recusado em LIFETIME. */
+  /** ISO. Obrigatório e futuro em TEMPORARY; recusado em qualquer outro grantType. */
   endsAt?: string | null;
   /** false = bloqueio administrativo explícito (prioridade 1 no resolver). */
   enabled?: boolean;
@@ -63,6 +94,13 @@ export async function grantOverride(
     return { ok: false, status: 400, error: "Responsável pela concessão não identificado." };
   }
 
+  // Regra única de data do módulo: só TEMPORARY carrega prazo. LIFETIME,
+  // PROMOTIONAL e MANUAL_OVERRIDE recusam `endsAt` em vez de coagir pra null —
+  // honrar a data mudando o grant_type seria inventar semântica de validade
+  // fora do que a fase desenhou; descartar a data em silêncio concederia MAIS
+  // do que foi pedido (o admin pede "até 30/09", recebe vitalício, sem aviso).
+  // Ambos os desvios violam a direção de erro deste módulo: prefira falhar
+  // sem conceder. Recusar mantém as três num único enunciado testável.
   const nowMs = Date.now();
   if (args.grantType === "TEMPORARY") {
     if (!args.endsAt) {
@@ -72,10 +110,12 @@ export async function grantOverride(
     if (!Number.isFinite(endsMs) || endsMs <= nowMs) {
       return { ok: false, status: 400, error: "A validade precisa ser uma data futura." };
     }
-  } else if (args.grantType === "LIFETIME" && args.endsAt) {
-    // Coerência: LIFETIME com ends_at é um TEMPORARY disfarçado, e o resolver
-    // trataria como expirável — o operador acharia que deu acesso vitalício.
-    return { ok: false, status: 400, error: "Acesso vitalício não tem data de validade." };
+  } else if (args.endsAt) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Este tipo de concessão não expira. Para conceder acesso com prazo, use o tipo Temporário.",
+    };
   }
 
   // Conflito com override vivo da MESMA feature. Empilhar dois grants deixaria
@@ -141,7 +181,14 @@ export async function grantOverride(
 
   // Devolve o entitlement RESOLVIDO após a escrita — a UI reflete o efeito real,
   // não o que ela supõe que a escrita causou.
-  return { ok: true, entitlements: await resolveOrgEntitlements(supabase, args.organizationId) };
+  return {
+    ok: true,
+    entitlements: await safeResolveEntitlements(
+      supabase,
+      args.organizationId,
+      "override_grant_reread_failed",
+    ),
+  };
 }
 
 export interface RevokeOverrideArgs {
@@ -183,5 +230,12 @@ export async function revokeOverride(
     id: args.overrideId,
     feature: updated[0].feature,
   });
-  return { ok: true, entitlements: await resolveOrgEntitlements(supabase, args.organizationId) };
+  return {
+    ok: true,
+    entitlements: await safeResolveEntitlements(
+      supabase,
+      args.organizationId,
+      "override_revoke_reread_failed",
+    ),
+  };
 }
