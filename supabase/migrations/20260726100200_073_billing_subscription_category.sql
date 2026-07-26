@@ -37,6 +37,10 @@ declare
   v_count int;
   v_sub_id uuid;
   v_customer_id uuid;
+  v_prev_plan_id uuid;
+  v_prev_provider text;
+  v_new_plan_id uuid;
+  v_new_provider text;
 begin
   select category into v_category from billing_plans where id = p_plan_id;
   if v_category is null then
@@ -60,7 +64,8 @@ begin
   end if;
 
   if v_count = 1 then
-    select s.id into v_sub_id
+    select s.id, s.billing_plan_id, s.provider
+      into v_sub_id, v_prev_plan_id, v_prev_provider
       from billing_subscriptions s
       join billing_plans p on p.id = s.billing_plan_id
      where s.organization_id = p_org
@@ -68,22 +73,45 @@ begin
        and p.category = v_category
      limit 1;
 
-    -- Condicional: numa assinatura já ativa isto não afeta linha nenhuma.
+    -- Condicional: numa assinatura ja ativa isto nao afeta linha nenhuma.
     update billing_subscriptions
        set status = 'active', updated_at = now()
      where id = v_sub_id and status <> 'active';
 
-    -- Backfill SEPARADO, pelo mesmo motivo: o update acima é condicional, e num
-    -- caminho em que ele não afeta linha o id de correlação nunca chegaria.
-    -- O `is null` impede sobrescrever id existente.
+    -- A linha tem que apontar para o plano REALMENTE pago. Sem isto, uma troca
+    -- de plano dentro da mesma categoria deixa a assinatura no plano antigo e
+    -- todo preco derivado dela (billing_plans.amount_cents via billing_plan_id)
+    -- fica errado.
+    update billing_subscriptions
+       set billing_plan_id = p_plan_id, updated_at = now()
+     where id = v_sub_id and billing_plan_id is distinct from p_plan_id;
+
+    -- Provedor e id de correlacao andam JUNTOS. Virar provider para 'asaas'
+    -- deixando um id de outro provedor na linha produz uma linha incoerente,
+    -- e gravar 'asaas' sem id real violaria a regra de nunca inventar id do
+    -- Asaas. Por isso os dois so mudam quando ha id real em maos.
     if p_provider_subscription_id is not null then
       update billing_subscriptions
-         set provider_subscription_id = p_provider_subscription_id, updated_at = now()
-       where id = v_sub_id and provider_subscription_id is null;
+         set provider_subscription_id = p_provider_subscription_id,
+             provider = 'asaas',
+             updated_at = now()
+       where id = v_sub_id
+         and (provider_subscription_id is null or provider is distinct from 'asaas');
     end if;
 
+    select billing_plan_id, provider into v_new_plan_id, v_new_provider
+      from billing_subscriptions where id = v_sub_id;
+
     return jsonb_build_object(
-      'action', 'reused', 'subscription_id', v_sub_id, 'category', v_category
+      'action', 'reused',
+      'subscription_id', v_sub_id,
+      'category', v_category,
+      'plan_changed', case when v_prev_plan_id is distinct from v_new_plan_id
+                           then jsonb_build_object('from', v_prev_plan_id, 'to', v_new_plan_id)
+                           else null end,
+      'provider_changed', case when v_prev_provider is distinct from v_new_provider
+                               then jsonb_build_object('from', v_prev_provider, 'to', v_new_provider)
+                               else null end
     );
   end if;
 
@@ -102,15 +130,16 @@ begin
   ) returning id into v_sub_id;
 
   return jsonb_build_object(
-    'action', 'created', 'subscription_id', v_sub_id, 'category', v_category
+    'action', 'created', 'subscription_id', v_sub_id, 'category', v_category,
+    'plan_changed', null, 'provider_changed', null
   );
 end;
 $$;
 
 comment on function resolve_or_activate_subscription(uuid, uuid, text, text) is
-  'Ativa ou cria a assinatura da CATEGORIA do plano informado, sob advisory lock por (org, categoria). Mais de uma assinatura viva na categoria levanta ambiguous_subscription_category — o aplicador converte em failed e o reconcile retenta. So service_role.';
+  'Ativa ou cria a assinatura da CATEGORIA do plano informado, sob advisory lock por (org, categoria). O reuso reconcilia billing_plan_id e (quando ha id real) provider/provider_subscription_id da linha existente para o plano/provedor REALMENTE pagos, sinalizando a troca em plan_changed/provider_changed no retorno. Mais de uma assinatura viva na categoria levanta ambiguous_subscription_category — o aplicador converte em failed e o reconcile retenta. So service_role.';
 
-revoke all on function resolve_or_activate_subscription(uuid, uuid, text, text) from public;
+revoke all on function resolve_or_activate_subscription(uuid, uuid, text, text) from public, anon, authenticated;
 grant execute on function resolve_or_activate_subscription(uuid, uuid, text, text) to service_role;
 
 commit;
@@ -118,7 +147,16 @@ commit;
 -- =====================================================================
 -- Validação pós-migration
 -- =====================================================================
--- 1. Nenhuma org já tem duas assinaturas vivas da mesma categoria — se tiver, a
+-- 1. PRÉ-FLIGHT — rodar ANTES do push. Precondição real do
+--    `create unique index ... billing_subscriptions_org_plan_active_idx`:
+--    duplicata em (organization_id, billing_plan_id) faz o índice falhar e
+--    aborta o db push no meio do lote (esperado: 0 linhas):
+--   select organization_id, billing_plan_id, count(*)
+--     from billing_subscriptions
+--    where status <> 'canceled'
+--    group by 1, 2 having count(*) > 1;
+--
+-- 2. Nenhuma org já tem duas assinaturas vivas da mesma categoria — se tiver, a
 --    RPC vai falhar para ela e é preciso resolver à mão ANTES de vender
 --    (esperado: 0 linhas):
 --   select s.organization_id, p.category, count(*)
@@ -126,12 +164,13 @@ commit;
 --    where s.status <> 'canceled'
 --    group by 1, 2 having count(*) > 1;
 --
--- 2. Grants (esperado: só service_role):
+-- 3. Grants (esperado: só service_role):
 --   select grantee, privilege_type from information_schema.routine_privileges
 --    where routine_name = 'resolve_or_activate_subscription';
 --
--- 3. Reuso é idempotente numa org com assinatura de sistema ativa (esperado:
---    action='reused' nas duas chamadas, mesmo subscription_id):
+-- 4. Reuso é idempotente numa org com assinatura de sistema ativa (esperado:
+--    action='reused' nas duas chamadas, mesmo subscription_id, plan_changed e
+--    provider_changed null):
 --   select resolve_or_activate_subscription(
 --     '<org>'::uuid,
 --     (select id from billing_plans where slug = 'sistema-reservas'),
