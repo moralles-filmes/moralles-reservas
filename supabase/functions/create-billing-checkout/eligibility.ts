@@ -40,11 +40,18 @@ export async function assertCanContractPlan(
 ): Promise<{ ok: true } | HandlerFailure> {
   if (plan.category !== "WHATSAPP_SUBSCRIPTION") return { ok: true };
 
-  // Barato primeiro: a flag é leitura de cache (sem I/O na maioria das
-  // chamadas), as outras três checagens abaixo fazem consulta ao banco. Não
-  // vale a pena gastar três round-trips pra descobrir no fim que a flag está
-  // OFF.
   const flag = await checkFlagEnabled("whatsapp_subscription_checkout");
+
+  // As três consultas abaixo rodam SEMPRE, mesmo com a flag já OFF — de
+  // propósito, não por descuido. A prioridade entre as cinco condições (qual
+  // delas vira a mensagem quando mais de uma é verdadeira) pertence só a
+  // canContractInstance (_shared/whatsapp-implementation-core.ts), o único
+  // lugar testado. Um `return` antecipado aqui pra pular flag_off duplicaria
+  // essa ordem fora do núcleo — e divergiria em silêncio no dia em que o
+  // núcleo for reordenado, sem que ninguém percebesse (a mensagem errada
+  // continuaria saindo daqui sem nunca chamar o núcleo de novo). O custo de
+  // sempre consultar é aceitável: este caminho só roda quando alguém clica em
+  // "contratar", não é hot path nem loop.
 
   const [implRes, entitlements, subsRes] = await Promise.all([
     supabase
@@ -101,11 +108,15 @@ export async function assertCanContractPlan(
 
   if (verdict.ok) return { ok: true };
 
-  jsonLog("info", {
+  // `readFailed` distingue "flag OFF de verdade" de "não deu pra ler" (mesmo
+  // padrão de requireAsaasEnabled em context.ts) — sem isto, uma falha de
+  // leitura vira um flag_off indistinguível de uma OFF deliberada no log.
+  jsonLog(flag.readFailed ? "error" : "info", {
     reqId: ctx.reqId,
     evt: "instance_checkout_blocked",
     orgId: ctx.organizationId,
     reason: verdict.reason,
+    readFailed: flag.readFailed,
   });
   const msg = BLOCK_MESSAGE[verdict.reason!];
   return { ok: false, status: msg.status, error: msg.error };
