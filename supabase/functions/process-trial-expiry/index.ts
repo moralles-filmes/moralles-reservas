@@ -13,6 +13,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.ts";
 import { SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
+import { hasActiveSystemOverride } from "../_shared/billing-notify.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -87,6 +88,19 @@ serve(async (req) => {
       if (orgsWithGrant.has(org.id)) {
         skipped++;
         jsonLog("info", { reqId, evt: "trial_expiry_skip_grant_override", orgId: org.id, slug: org.slug });
+        continue;
+      }
+
+      // N4 (review final fase 5a): esta fase estreitou o skip de "qualquer
+      // assinatura viva" pra só a de categoria de sistema (passo 2 acima) —
+      // mas isso tirou a rede que cobria cortesia vitalícia. Espelha o mesmo
+      // skip de process-billing-overdue/process-billing-reminders: cortesia
+      // registrada em organization_entitlement_overrides (feature "system")
+      // nunca pode ser bloqueada por este cron, mesmo sem grant_access legado
+      // em billing_access_overrides.
+      if (await hasActiveSystemOverride(supabase, org.id)) {
+        skipped++;
+        jsonLog("info", { reqId, evt: "trial_expiry_skip_system_override", orgId: org.id, slug: org.slug });
         continue;
       }
 

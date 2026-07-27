@@ -88,6 +88,17 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
   const implPlan = (plans ?? []).find((p) => p.slug === "implementacao-whatsapp");
   const instancePlan = (plans ?? []).find((p) => p.slug === "instancia-whatsapp");
 
+  // N6 (review final fase 5a): par da correção I-4 (Task 16) já aplicada no
+  // lado admin (BillingDetail.tsx, SUBSCRIPTION_STATUS_LABEL/CLASS) — o
+  // rótulo/cor vêm do status REAL, não de `has_instance` (que só diz "existe
+  // assinatura não cancelada", inclusive `past_due`/`unpaid`). Sem qualificar
+  // por status, `current_period_end` já vencido era apresentado ao cliente
+  // como "Próximo vencimento". `unpaid` é mais severo que `past_due` (mesma
+  // gradação do lado admin).
+  const instanceOverdue =
+    data.subscription.status === "past_due" || data.subscription.status === "unpaid";
+  const instanceSeverelyOverdue = data.subscription.status === "unpaid";
+
   async function contratarImplantacao() {
     if (!implPlan) return;
     try {
@@ -199,8 +210,17 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
             </Button>
           )}
           {data.subscription.has_instance && data.subscription.next_due && (
-            <p className="text-sm text-muted-foreground">
-              Próximo vencimento da instância:{" "}
+            <p
+              className={`text-sm ${
+                instanceOverdue
+                  ? instanceSeverelyOverdue
+                    ? "text-destructive"
+                    : "text-warning"
+                  : "text-muted-foreground"
+              }`}
+            >
+              {instanceOverdue ? "Pagamento da instância em atraso desde" : "Próximo vencimento da instância"}
+              :{" "}
               <span className="font-medium">{formatDateBR(data.subscription.next_due.slice(0, 10))}</span>
             </p>
           )}

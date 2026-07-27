@@ -49,6 +49,7 @@ import {
 } from "@/hooks/useWhatsappImplementation";
 import { useOrganizationsBilling, useBillingPlans } from "@/hooks/useBilling";
 import { useAuth } from "@/contexts/AuthContext";
+import { parseAmountReaisToCents } from "@/lib/billing-amount";
 /**
  * Núcleo puro do backend (ZERO imports — Deno E vitest a partir de src/ já o
  * consomem, ver src/lib/whatsapp-implementation-core.test.ts:9). A máquina de
@@ -505,54 +506,6 @@ function ImplementationDetail({
 }
 
 // ── Registro manual (pagamento externo OU cortesia/override) ───────────────
-
-/**
- * Converte string digitada em formato BR pra centavos.
- *
- * Rodada de correção 2 — o fix do M-11 (Rodada 1) trocou uma falha SEGURA por
- * um valor SILENCIOSAMENTE ERRADO: removia todo "." incondicionalmente, então
- * "750.00" (formato US, hábito de teclado numérico) virava "75000" → 7500000
- * centavos = R$ 75.000,00, cem vezes o valor digitado, sem nenhum aviso — e
- * `externalValid` passava. Regra explícita, sem remover "." às cegas:
- *   - Com vírgula: vírgula é decimal, todo "." é milhar (comportamento já
- *     correto na Rodada 1 — "1.750,00" → 175000).
- *   - Sem vírgula: o ÚLTIMO "." decide. Exatamente 2 dígitos depois dele →
- *     é decimal ("750.00" → 75000, NÃO 7500000). Qualquer outra contagem →
- *     é milhar ("1.750" → 175000). Pontos ANTES do último (se houver, ex.
- *     "1.750.00") são sempre milhar quando o último é decimal.
- * Retorna NaN se não parsear — o chamador decide a mensagem de erro. O eco
- * "Será registrado: R$ X" abaixo do campo (CreateImplementationForm) é a
- * defesa que sobrevive a uma entrada que esta heurística não previu: o admin
- * lê o valor interpretado ANTES de confirmar, em vez de confiar cego na regra.
- */
-function parseAmountReaisToCents(raw: string): number {
-  const trimmed = raw.trim();
-  if (!trimmed) return NaN;
-
-  let normalized: string;
-  if (trimmed.includes(",")) {
-    normalized = trimmed.replace(/\./g, "").replace(",", ".");
-  } else {
-    const lastDot = trimmed.lastIndexOf(".");
-    if (lastDot === -1) {
-      normalized = trimmed;
-    } else {
-      const decimalsLength = trimmed.length - lastDot - 1;
-      if (decimalsLength === 2) {
-        // Último ponto é decimal — qualquer ponto ANTES dele é milhar.
-        const intPart = trimmed.slice(0, lastDot).replace(/\./g, "");
-        const decPart = trimmed.slice(lastDot + 1);
-        normalized = `${intPart}.${decPart}`;
-      } else {
-        // Nenhum ponto é decimal — todos são milhar.
-        normalized = trimmed.replace(/\./g, "");
-      }
-    }
-  }
-
-  const value = Number(normalized);
-  return Number.isFinite(value) ? Math.round(value * 100) : NaN;
-}
 
 /**
  * Compartilhado por dois pontos de entrada: o botão "Nova implantação" do

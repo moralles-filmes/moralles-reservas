@@ -947,12 +947,27 @@ serve(async (req) => {
         .eq("organization_id", organization_id)
         .maybeSingle();
 
-      const { data: activeSub } = await supabase
+      // N2 (review final fase 5a): sem filtro de categoria, uma org com duas
+      // assinaturas vivas (sistema + instância de WhatsApp) tanto podia
+      // vincular a fatura manual à assinatura ERRADA (instância) — o que faz
+      // isSystemInvoice devolver false e a fatura de sistema desaparecer dos
+      // lembretes/escalada de inadimplência — quanto estourar PGRST116 no
+      // .maybeSingle() com 2 linhas, erro esse que era descartado em
+      // silêncio. Mesmo padrão de unblock_organization_manual (linha ~1117
+      // abaixo): filtra por billing_plans.category = SYSTEM_CATEGORY e
+      // confere o erro.
+      const { data: activeSub, error: activeSubErr } = await supabase
         .from("billing_subscriptions")
-        .select("id")
+        .select("id, billing_plans!inner(category)")
         .eq("organization_id", organization_id)
         .neq("status", "canceled")
+        .eq("billing_plans.category", SYSTEM_CATEGORY)
         .maybeSingle();
+
+      if (activeSubErr) {
+        jsonLog("error", { reqId, evt: "billing_create_manual_invoice_sub_lookup_error", err: activeSubErr.message });
+        return jsonResponse(req, { error: "Falha ao localizar a assinatura da organização." }, 500);
+      }
 
       let stripeInvoiceId: string | null = null;
       let hostedUrl: string | null = null;
