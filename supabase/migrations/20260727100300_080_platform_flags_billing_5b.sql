@@ -15,9 +15,9 @@ begin;
 
 insert into platform_flags (key, value, description) values
   ('billing_invoice_ingestion', 'false',
-   'Cria e correlaciona faturas internas automaticamente a partir das cobrancas do Asaas (PAYMENT_CREATED e reconciliacao). OFF ate a validacao em sandbox da Fase 5b.'),
-  ('billing_invoice_ingestion_since', '',
-   'Data ISO (YYYY-MM-DD) em que billing_invoice_ingestion foi ligada. Cobranca com due_date anterior a esta data e retida com motivo PRE_GO_LIVE_INVOICE. Vazia = nunca ativada.')
+   'Cria e correlaciona faturas internas automaticamente a partir das cobranças do Asaas (PAYMENT_CREATED e reconciliação). OFF até a validação em sandbox da Fase 5b.'),
+  ('billing_invoice_ingestion_since', '""',
+   'Data ISO (YYYY-MM-DD) em que billing_invoice_ingestion foi ligada. Cobrança com due_date anterior a esta data é retida com motivo PRE_GO_LIVE_INVOICE. Vazia = nunca ativada.')
 on conflict (key) do nothing;
 
 commit;
