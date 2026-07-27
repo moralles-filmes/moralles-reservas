@@ -517,6 +517,20 @@ export async function applyAsaasEvent(
             );
           }
           if (sess) {
+            // Divergência é IMPOSSÍVEL hoje (o checkoutSession vem do próprio
+            // payment, logo a sessão é daquela org), mas se um dia acontecer,
+            // adotar plano+purpose de uma sessão de OUTRA organização seria bug
+            // cross-tenant silencioso. Uma linha de log transforma silencioso em
+            // ruidoso; não mudamos o comportamento, porque a precedência abaixo
+            // já mantém a org correta.
+            if (organizationId && sess.organization_id !== organizationId) {
+              jsonLog("error", {
+                evt: "asaas_checkout_session_org_mismatch",
+                billing_event_id: row.id,
+                resolved_organization_id: organizationId,
+                session_organization_id: sess.organization_id,
+              });
+            }
             // PRESERVADOR em todos os campos: fonte de precedência maior
             // (coluna do evento, invoice, externalReference, customer) nunca é
             // sobrescrita por esta. Reidrata plano+purpose porque no checkout

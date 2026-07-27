@@ -1297,8 +1297,15 @@ serve(async (req) => {
         );
       }
 
-      // Idempotente: todo UPDATE do aplicador é condicional, então reprocessar
-      // um evento já aplicado é no-op. SEM `asaasIoBudgetMs`: é uma ação humana
+      // Quase idempotente, e a diferença importa: os UPDATEs de fatura, sessão,
+      // implantação e assinatura são todos condicionais (`.neq`/`.eq` no estado
+      // esperado), então reprocessar um evento já aplicado é no-op neles. A
+      // ÚNICA escrita incondicional é a de `organizations` no ramo de ativação
+      // de assinatura de SISTEMA — reprocessar um pagamento antigo reescreve
+      // `billing_status='active'` e limpa o bloqueio mesmo que a organização
+      // tenha sido bloqueada DEPOIS, por outra fatura. Não clique aqui sobre um
+      // evento antigo de organização atualmente bloqueada sem conferir qual
+      // fatura causou o bloqueio. SEM `asaasIoBudgetMs`: é uma ação humana
       // sob demanda, não a resposta de 10s do webhook — vale usar os retries
       // completos do cliente HTTP. COM `recheckDurableEffect`: pela mesma razão.
       // Quem clica neste botão está justamente diante de um evento que não
