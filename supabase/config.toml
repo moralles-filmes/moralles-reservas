@@ -132,3 +132,7 @@ verify_jwt = false
 # Worker: dispatcher da fila billing_notifications via Resend (pg_cron */5min)
 [functions.process-billing-notifications]
 verify_jwt = false
+
+# Painel da implantação do WhatsApp (super-admin, com uma action client-friendly)
+[functions.manage-whatsapp-implementations]
+verify_jwt = true

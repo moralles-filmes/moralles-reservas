@@ -14,6 +14,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
+  ACTIVATING_EVENTS,
   decideEventEffect,
   parseExternalReference,
   type AsaasEffectKind,
@@ -22,7 +23,11 @@ import {
 import { getBillingProvider } from "./billing-provider.ts";
 import { asaasValueToCents } from "./asaas-core.ts";
 import { jsonLog } from "./security.ts";
-import { resolveBillingRecipient, enqueueBillingNotification } from "./billing-notify.ts";
+import {
+  resolveBillingRecipient,
+  resolvePlatformAdminRecipients,
+  enqueueBillingNotification,
+} from "./billing-notify.ts";
 
 export interface BillingEventRow {
   id: string;
@@ -57,9 +62,27 @@ export interface ApplyResult {
  * degradação do Asaas a ativação atrasa até o reconcile — ruim, mas muito
  * melhor que interromper a fila de eventos de TODOS os clientes (15 timeouts
  * seguidos), que só se resolve manualmente.
+ *
+ * `recheckDurableEffect`: quando um evento ATIVADOR chega com a fatura já em
+ * `paid`, `decideEventEffect` devolve `noop` e o aplicador retorna `processed`
+ * de imediato. Isso é correto e barato no webhook — é assim que o par
+ * `PAYMENT_CONFIRMED` + `PAYMENT_RECEIVED` do cartão fica idempotente sem gastar
+ * um `getPayment` extra dentro dos 10s. Mas ESCONDE o envenenamento: a fatura
+ * vira `paid` ANTES da ativação, então uma falha posterior (categoria do plano,
+ * assinatura ambígua, RPC, confirmação da implantação) deixa o evento `failed`
+ * com o dinheiro registrado — e todo reprocessamento futuro reencontra `paid` →
+ * `noop` → `processed`, sem auto-cura e sem alerta. Com esta opção o aplicador
+ * segue adiante nesse caso e refaz os caminhos de confirmação/ativação, que já
+ * são idempotentes (UPDATE condicional `.eq('PENDING')` na implantação;
+ * advisory lock + UNIQUE parcial na RPC). Custa um `getPayment`, por isso é do
+ * CALLER: só quem não tem pressão de latência liga (cron de reconcile,
+ * reprocessamento manual do admin). O `noop` por fatura `void` NUNCA é
+ * re-checado — aquilo é anomalia que pede conferência humana, não duplicata
+ * benigna.
  */
 export interface ApplyOptions {
   asaasIoBudgetMs?: number;
+  recheckDurableEffect?: boolean;
 }
 
 /** Espelha o CHECK de billing_subscriptions.payment_method (migration 20260528000000). */
@@ -121,6 +144,113 @@ function failWith(
     error: String(detail),
   });
   return { status: "failed", organizationId, effect, error: clientMessage };
+}
+
+/**
+ * Confirma a implantação paga pelo checkout do Asaas.
+ *
+ * IDEMPOTENTE por UPDATE condicional em `payment_status = 'PENDING'`: o cartão
+ * emite PAYMENT_CONFIRMED e depois PAYMENT_RECEIVED (até ~30 dias), e o
+ * reconcile pode reprocessar a mesma linha. Só a execução que de fato mudou a
+ * linha enfileira o aviso — `.select("id")` é o que distingue "eu mudei" de
+ * "já estava assim".
+ *
+ * `.eq('PENDING')` e não `.neq('CONFIRMED')`: a matriz origem×pagamento só
+ * admite PENDING→CONFIRMED para origin='ASAAS', e um `.neq` também casaria
+ * linhas CANCELED ou estornadas.
+ *
+ * DUAS naturezas, dois tratamentos: o UPDATE é o EFEITO (erro dele volta como
+ * `{ok:false}` e o caller degrada o evento pra `failed`, pra ele voltar na fila
+ * do reconcile); o aviso é ACESSÓRIO (best-effort, contido no try/catch daqui —
+ * falha ao resolver destinatário NUNCA derruba a confirmação financeira, mesma
+ * filosofia do enqueue de `regularized`).
+ */
+async function confirmImplementationPayment(
+  supabase: SupabaseClient,
+  args: {
+    organizationId: string;
+    checkoutSessionId: string | null;
+    invoiceId: string | null;
+    paidValueCents: number | null;
+    paymentMethod: string | null;
+  },
+): Promise<{ ok: boolean; error?: unknown }> {
+  const nowIso = new Date().toISOString();
+  const patch: Record<string, unknown> = {
+    payment_status: "CONFIRMED",
+    paid_at: nowIso,
+  };
+  if (args.invoiceId) patch.billing_invoice_id = args.invoiceId;
+  if (args.paidValueCents !== null) patch.amount_cents = args.paidValueCents;
+  if (args.paymentMethod) patch.payment_method = args.paymentMethod;
+
+  let query = supabase
+    .from("whatsapp_implementations")
+    .update(patch)
+    .eq("origin", "ASAAS")
+    .eq("payment_status", "PENDING");
+
+  // Correlação precisa quando temos o checkout; senão cai na organização, que é
+  // suficiente porque só existe UMA implantação aberta por org (UNIQUE parcial).
+  query = args.checkoutSessionId
+    ? query.eq("provider_checkout_id", args.checkoutSessionId)
+    : query.eq("organization_id", args.organizationId);
+
+  const { data: updated, error } = await query.select("id");
+
+  if (error) {
+    // NÃO loga aqui: o caller chama `failWith`, que já emite
+    // `asaas_apply_write_failed` com `step:"confirm_implementation_payment"`,
+    // a org e o detalhe do erro. Duas linhas pro mesmo fato só polui.
+    return { ok: false, error };
+  }
+  if (!updated || updated.length === 0) {
+    // Duplicata benigna (2º evento do cartão), re-checagem do reconcile sobre
+    // linha já CONFIRMED, ou pagamento de implantação sem linha correspondente.
+    // Log em info: não é erro, mas precisa ser visível.
+    jsonLog("info", {
+      evt: "implementation_confirm_noop",
+      organization_id: args.organizationId,
+      checkout: args.checkoutSessionId,
+    });
+    return { ok: true };
+  }
+
+  jsonLog("info", {
+    evt: "implementation_confirmed",
+    organization_id: args.organizationId,
+    implementation_id: updated[0].id,
+  });
+
+  // O UPDATE acima já commitou — o dinheiro está durável e o pagamento, real.
+  // A partir daqui é aviso acessório: qualquer exceção (não só `error` de
+  // campo) fica CONTIDA aqui e nunca sobe para o try/catch de applyAsaasEvent,
+  // que devolveria `failed` para um evento cujo efeito já foi aplicado de
+  // verdade — mentira que o próprio invariante do arquivo proíbe (`processed`
+  // ⇔ efeito aplicado; `failed` ⇔ não aplicado).
+  try {
+    // UMA linha só: o UNIQUE (organization_id, event_type, invoice_id) deduplica,
+    // e sendEmail aceita um único `to`. Enfileirar uma por admin faria N-1
+    // desaparecerem em 23505 silencioso — por isso `resolvePlatformAdminRecipients`
+    // devolve no máximo um (o admin mais antigo com e-mail utilizável) e para de
+    // buscar ali mesmo; quem loga a escolha é ela.
+    const recipients = await resolvePlatformAdminRecipients(supabase);
+    if (recipients.length === 0) return { ok: true };
+    await enqueueBillingNotification(supabase, {
+      organizationId: args.organizationId,
+      eventType: "implementation_paid",
+      invoiceId: args.invoiceId,
+      recipient: recipients[0],
+    });
+  } catch (err) {
+    jsonLog("error", {
+      evt: "implementation_notify_unexpected_error",
+      organization_id: args.organizationId,
+      error: String(err),
+    });
+  }
+
+  return { ok: true };
 }
 
 /**
@@ -200,6 +330,7 @@ export async function applyAsaasEvent(
     let paidValueCents: number | null = null;
     let paymentMethod: PaymentMethod | null = null;
     let providerSubscriptionId: string | null = null;
+    let checkoutSessionId: string | null = null;
 
     // 4. PORTÕES de noop/unknown — ANTES de qualquer I/O com o Asaas.
     //
@@ -231,9 +362,37 @@ export async function applyAsaasEvent(
       });
       return { status: "ignored", organizationId, effect: effect.kind };
     }
-    if (effect.kind === "noop") {
+    // `noop` de evento ATIVADOR sobre fatura já `paid` é o único que pode estar
+    // escondendo efeito durável não aplicado (a fatura é escrita ANTES da
+    // ativação, de propósito — o dinheiro primeiro). `void` fica de fora: é
+    // anomalia pra conferência humana, reprocessar seria pior. Informativo
+    // (`PAYMENT_CREATED` & cia.) e `PAYMENT_OVERDUE` também ficam de fora — não
+    // há efeito de ativação por trás deles.
+    const noopOverPaidInvoice =
+      effect.kind === "noop" &&
+      ACTIVATING_EVENTS.has(row.event_type) &&
+      invoice?.status === "paid";
+    const rechecking = noopOverPaidInvoice && opts.recheckDurableEffect === true;
+
+    if (effect.kind === "noop" && !rechecking) {
+      if (noopOverPaidInvoice) {
+        // Caminho por onde um pagamento sem efeito escapa quando o caller não
+        // pede re-checagem (webhook). Mudo até aqui — logar é o que permite
+        // enxergar a duplicata benigna do cartão E o evento envenenado.
+        jsonLog("info", {
+          evt: "asaas_paid_invoice_noop",
+          billing_event_id: row.id,
+          event_type: row.event_type,
+        });
+      }
       return { status: "processed", organizationId, effect: effect.kind };
     }
+
+    // Efeito EXECUTADO daqui pra baixo. Na re-checagem seguimos o roteiro de
+    // ativação (idempotente ponta a ponta) apesar de `decideEventEffect` ter
+    // dito `noop` — e é este valor, não `effect.kind`, que vai pros logs e pro
+    // `ApplyResult`, porque é o que de fato foi tentado.
+    const effectKind: AsaasEffectKind = rechecking ? "activate_subscription" : effect.kind;
 
     // 5. Enriquecer com o payload do Asaas — só para efeitos que de fato
     //    produzem escrita.
@@ -321,40 +480,74 @@ export async function applyAsaasEvent(
         // checkoutSession (a cobrança nasce da assinatura, não do checkout) — a
         // correlação dela é por provider_subscription_id (backfillado abaixo na
         // ativação), trabalho da Fase 4b.
-        if (!organizationId) {
-          const checkoutRef = res.data.checkoutSession;
-          if (typeof checkoutRef === "string" && checkoutRef) {
-            const { data: sess, error: sessErr } = await supabase
-              .from("billing_checkout_sessions")
-              .select("organization_id, external_reference")
-              .eq("provider_checkout_id", checkoutRef)
-              .maybeSingle();
-            if (sessErr) {
-              return failWith(
-                null,
-                "unknown",
-                "select_checkout_session",
-                sessErr,
-                "Falha ao correlacionar o checkout do evento — ver logs.",
-              );
+        const checkoutRef = res.data.checkoutSession;
+        if (typeof checkoutRef === "string" && checkoutRef) {
+          checkoutSessionId = checkoutRef;
+        }
+
+        // A condição NÃO é `!organizationId` — e isso é o ponto. No checkout
+        // hospedado esta é a ÚNICA fonte de `purpose` e `planId` (o payment vem
+        // sem externalReference), e no REPROCESSAMENTO a org já chega carimbada:
+        // o asaas-webhook grava `billing_events.organization_id` mesmo quando o
+        // evento sai `failed`, e o process-asaas-reconcile repassa esse valor.
+        // Gatear por `!organizationId` fazia a segunda passagem pular a
+        // reidratação, terminar com purpose "other" + planId null e sair
+        // `processed` sem ativar nada — e ainda registrar a fatura sem vínculo
+        // de plano, que é o que faz `isSystemInvoice` (billing-category.ts) cair
+        // no caminho de compatibilidade e devolver `true` para uma cobrança de
+        // implantação. Rodamos quando FALTA qualquer um dos três, e só quando há
+        // checkout a consultar (é I/O de banco, fora do ASAAS_IO_BUDGET_MS, mas
+        // ainda assim não é para ser incondicional).
+        if (checkoutSessionId && (!organizationId || !planId || purpose === "other")) {
+          const { data: sess, error: sessErr } = await supabase
+            .from("billing_checkout_sessions")
+            .select("organization_id, external_reference")
+            .eq("provider_checkout_id", checkoutSessionId)
+            .maybeSingle();
+          if (sessErr) {
+            // Passa a org JÁ resolvida (não `null`): o caller carimba
+            // `billing_events.organization_id` com este valor, e devolver null
+            // apagaria uma correlação que já tínhamos.
+            return failWith(
+              organizationId,
+              "unknown",
+              "select_checkout_session",
+              sessErr,
+              "Falha ao correlacionar o checkout do evento — ver logs.",
+            );
+          }
+          if (sess) {
+            // Divergência é IMPOSSÍVEL hoje (o checkoutSession vem do próprio
+            // payment, logo a sessão é daquela org), mas se um dia acontecer,
+            // adotar plano+purpose de uma sessão de OUTRA organização seria bug
+            // cross-tenant silencioso. Uma linha de log transforma silencioso em
+            // ruidoso; não mudamos o comportamento, porque a precedência abaixo
+            // já mantém a org correta.
+            if (organizationId && sess.organization_id !== organizationId) {
+              jsonLog("error", {
+                evt: "asaas_checkout_session_org_mismatch",
+                billing_event_id: row.id,
+                resolved_organization_id: organizationId,
+                session_organization_id: sess.organization_id,
+              });
             }
-            if (sess) {
-              organizationId = sess.organization_id;
-              // Reidrata plano+purpose: no checkout hospedado o payment vem SEM
-              // externalReference, então planId ficaria null e purpose "other"
-              // → o gate purpose!=="subscription" daria break antes de ativar e
-              // o INSERT de assinatura não teria billing_plan_id. Mesmo parse do
-              // caminho primário; só preenche o que ainda está no default.
-              externalReferenceRaw = externalReferenceRaw ?? sess.external_reference;
-              const parsedSess = parseExternalReference(sess.external_reference);
-              if (parsedSess) {
-                planId = planId ?? parsedSess.planId;
-                if (purpose === "other") purpose = parsedSess.purpose;
-              }
+            // PRESERVADOR em todos os campos: fonte de precedência maior
+            // (coluna do evento, invoice, externalReference, customer) nunca é
+            // sobrescrita por esta. Reidrata plano+purpose porque no checkout
+            // hospedado o payment vem SEM externalReference — sem isso planId
+            // fica null e purpose "other", o gate purpose!=="subscription" dá
+            // break antes de ativar e o INSERT de assinatura não teria
+            // billing_plan_id.
+            organizationId = organizationId ?? sess.organization_id;
+            externalReferenceRaw = externalReferenceRaw ?? sess.external_reference;
+            const parsedSess = parseExternalReference(sess.external_reference);
+            if (parsedSess) {
+              planId = planId ?? parsedSess.planId;
+              if (purpose === "other") purpose = parsedSess.purpose;
             }
           }
         }
-      } else if (effect.kind === "activate_subscription") {
+      } else if (effectKind === "activate_subscription") {
         // Indisponibilidade do Asaas (rede, 5xx, token expirado) NÃO pode virar
         // `processed`. Sem o payload, `purpose` fica no default "other",
         // `paidValueCents` e `planId` ficam `null` — e o `purpose !==
@@ -373,7 +566,7 @@ export async function applyAsaasEvent(
         // inflaria a fila do reconcile à toa.
         return failWith(
           organizationId,
-          effect.kind,
+          effectKind,
           "get_payment",
           res.error ?? "getPayment devolveu ok sem data",
           "Falha ao consultar o pagamento no Asaas — ver logs.",
@@ -381,29 +574,66 @@ export async function applyAsaasEvent(
       }
     }
 
-    // 6. Estado atual da assinatura da org.
+    // 6. Categoria do plano do PAGAMENTO e a assinatura correspondente.
+    //
+    // O código antigo perguntava "qual é a assinatura desta organização?" com
+    // maybeSingle(). A partir da Fase 5a uma org pode ter DUAS (sistema R$449 +
+    // instância R$149) e aquela pergunta não tem resposta única — devolvia
+    // PGRST116 e o pagamento falhava. A pergunta certa é "qual é a assinatura
+    // desta organização NA CATEGORIA deste plano?".
+    let planCategory: string | null = null;
+    if (planId) {
+      const { data: planRow, error: planErr } = await supabase
+        .from("billing_plans")
+        .select("category")
+        .eq("id", planId)
+        .maybeSingle();
+      if (planErr) {
+        return failWith(
+          organizationId,
+          effectKind,
+          "select_plan_category",
+          planErr,
+          "Falha ao consultar a categoria do plano — ver logs.",
+        );
+      }
+      planCategory = (planRow?.category as string | undefined) ?? null;
+    }
+
+    // Só serve para carimbar billing_subscription_id na fatura. A ativação em si
+    // é feita pela RPC mais abaixo, que é quem tem o lock.
     let subscription: { id: string; status: string } | null = null;
-    if (organizationId) {
-      // `error` checado: `maybeSingle()` devolve PGRST116 quando casa MAIS de
-      // uma linha. Só destruturar `data` transformaria "duas assinaturas
-      // não-canceladas" em `null` — e o código abaixo inseriria uma terceira.
-      // Ambiguidade é falha, não vazio.
+    if (organizationId && planCategory) {
+      // `.select()` de lista (não maybeSingle): ambiguidade aqui precisa ser
+      // detectada, não convertida em null. Duas assinaturas vivas na mesma
+      // categoria é estado inválido, e escolher uma em silêncio carimbaria a
+      // fatura na assinatura errada.
       const { data, error } = await supabase
         .from("billing_subscriptions")
-        .select("id, status")
+        .select("id, status, billing_plans!inner(category)")
         .eq("organization_id", organizationId)
         .neq("status", "canceled")
-        .maybeSingle();
+        .eq("billing_plans.category", planCategory);
       if (error) {
         return failWith(
           organizationId,
           "unknown",
-          "select_subscription",
+          "select_subscription_by_category",
           error,
           "Falha ao consultar a assinatura da organização — ver logs.",
         );
       }
-      subscription = data ?? null;
+      if ((data ?? []).length > 1) {
+        return failWith(
+          organizationId,
+          effectKind,
+          "ambiguous_subscription_category",
+          `org ${organizationId} tem ${data!.length} assinaturas vivas na categoria ${planCategory}`,
+          "Organização com mais de uma assinatura ativa na mesma categoria — ver logs.",
+        );
+      }
+      const row = (data ?? [])[0] as { id: string; status: string } | undefined;
+      subscription = row ? { id: row.id, status: row.status } : null;
     }
 
     // 7. Último portão. Fica AQUI, e não junto da decisão do passo 2, para que
@@ -413,7 +643,7 @@ export async function applyAsaasEvent(
       return {
         status: "failed",
         organizationId: null,
-        effect: effect.kind,
+        effect: effectKind,
         error: "Não foi possível correlacionar o evento a uma organização.",
       };
     }
@@ -421,7 +651,7 @@ export async function applyAsaasEvent(
     // 8. Executar. Transições por UPDATE CONDICIONAL — o `.neq`/`.eq` no status
     //    anterior é o que garante idempotência sob concorrência (webhook e
     //    reconcile podem tocar a mesma linha).
-    switch (effect.kind) {
+    switch (effectKind) {
       case "activate_subscription": {
         // Sem `payment.id` no envelope, TUDO abaixo vira no-op silencioso:
         // `invoice` é null e o `else if (paymentId)` não dispara, então o
@@ -444,7 +674,7 @@ export async function applyAsaasEvent(
         if (!paymentId) {
           return failWith(
             organizationId,
-            effect.kind,
+            effectKind,
             "missing_payment_id",
             `evento ${row.event_type} sem 'payment.id' no envelope`,
             "Evento de pagamento sem identificador da cobrança — ver logs.",
@@ -466,7 +696,7 @@ export async function applyAsaasEvent(
           if (updErr) {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "update_invoice_paid",
               updErr,
               "Falha ao registrar o pagamento da fatura — ver logs.",
@@ -498,7 +728,7 @@ export async function applyAsaasEvent(
           if (paidValueCents === null) {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "missing_payment_value",
               `payment ${paymentId} sem 'value' numérico utilizável`,
               "Pagamento sem valor legível para registrar a fatura — ver logs.",
@@ -524,10 +754,75 @@ export async function applyAsaasEvent(
           if (insertErr && insertErr.code !== "23505") {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "insert_invoice_paid",
               insertErr,
               "Falha ao registrar a fatura paga — ver logs.",
+            );
+          }
+        }
+
+        // Id da fatura deste pagamento, resolvido nos DOIS ramos: o UPDATE não
+        // devolve id, e o INSERT pode ter virado 23505 numa corrida com o
+        // reconcile. Um SELECT pelo UNIQUE (provider, provider_payment_id)
+        // responde nos dois casos.
+        let settledInvoiceId: string | null = invoice?.id ?? null;
+        if (!settledInvoiceId) {
+          const { data: inv } = await supabase
+            .from("billing_invoices")
+            .select("id")
+            .eq("provider", "asaas")
+            .eq("provider_payment_id", paymentId)
+            .maybeSingle();
+          settledInvoiceId = (inv?.id as string | undefined) ?? null;
+        }
+
+        // Sessão de checkout consumida — vale para QUALQUER purpose. Sem isto a
+        // linha fica 'pending' para sempre e o UNIQUE parcial de sessão ativa
+        // barra a próxima contratação do mesmo produto.
+        if (checkoutSessionId) {
+          const { error: sessErr } = await supabase
+            .from("billing_checkout_sessions")
+            .update({ status: "used" })
+            .eq("provider_checkout_id", checkoutSessionId)
+            .neq("status", "used");
+          if (sessErr) {
+            // Cosmético para o acesso — loga e segue, como o backfill do
+            // provider_subscription_id.
+            jsonLog("warn", {
+              evt: "checkout_session_mark_used_failed",
+              checkout: checkoutSessionId,
+              error: String(sessErr),
+            });
+          }
+        }
+
+        if (purpose === "implementation") {
+          // Falha do UPDATE aqui é PRÉ-REQUISITO do resultado, não acessório: o
+          // dinheiro (R$ 750) já está durável e a implantação ficaria em
+          // `PENDING` para sempre, sem action administrativa que corrija
+          // (`set_operational_status` não escreve `payment_status`; `cancel` é o
+          // único destino manual). Degrada pra `failed` — o UPDATE é idempotente
+          // por `.eq('payment_status','PENDING')`, então reprocessar é seguro.
+          // Só o AVISO continua best-effort, contido dentro da própria função.
+          //
+          // Depende do `recheckDurableEffect`: sem ele o retry reencontraria a
+          // fatura `paid` → `noop` → `processed` e este `failed` nunca se
+          // resolveria. Os dois consertos são um só.
+          const confirmed = await confirmImplementationPayment(supabase, {
+            organizationId,
+            checkoutSessionId,
+            invoiceId: settledInvoiceId,
+            paidValueCents,
+            paymentMethod,
+          });
+          if (!confirmed.ok) {
+            return failWith(
+              organizationId,
+              effectKind,
+              "confirm_implementation_payment",
+              confirmed.error,
+              "Falha ao confirmar a implantação paga — ver logs.",
             );
           }
         }
@@ -540,115 +835,77 @@ export async function applyAsaasEvent(
           break;
         }
 
-        if (subscription) {
-          const { error: subErr } = await supabase
-            .from("billing_subscriptions")
-            .update({ status: "active" })
-            .eq("id", subscription.id)
-            .neq("status", "active");
-          if (subErr) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "update_subscription_active",
-              subErr,
-              "Falha ao ativar a assinatura — ver logs.",
-            );
-          }
+        // A criação/ativação é da RPC, não daqui: ela roda sob
+        // pg_advisory_xact_lock por (org, categoria), que é o que impede duas
+        // assinaturas de planos DIFERENTES da mesma categoria nascerem em
+        // paralelo — corrida que nenhuma UNIQUE consegue expressar. A RPC
+        // também faz o backfill do provider_subscription_id.
+        if (!planId) {
+          return failWith(
+            organizationId,
+            effectKind,
+            "missing_plan_id",
+            `externalReference sem plano (raw=${externalReferenceRaw ?? "ausente"})`,
+            "Pagamento de assinatura sem plano identificável — ver logs.",
+          );
+        }
 
-          // Backfill do `provider_subscription_id`: a assinatura criada pelo
-          // checkout pode não tê-lo (§13.6 — o Asaas só expõe o `sub_…` na
-          // cobrança gerada), e este é o instante em que ele está em mãos.
-          // Sem isto a coluna fica `null` para sempre.
-          //
-          // UPDATE SEPARADO porque o de status acima é condicional em
-          // `.neq('status','active')`: numa assinatura já ativa ele não afeta
-          // linha nenhuma e o backfill nunca aconteceria. O `.is(..., null)`
-          // torna este write idempotente e impede sobrescrever id existente.
-          if (providerSubscriptionId) {
-            const { error: backfillErr } = await supabase
-              .from("billing_subscriptions")
-              .update({ provider_subscription_id: providerSubscriptionId })
-              .eq("id", subscription.id)
-              .is("provider_subscription_id", null);
-            if (backfillErr) {
-              // NÃO derruba o evento: id de correlação não é pré-requisito do
-              // acesso — a fatura já está paga e a assinatura já está ativa.
-              // Devolver `failed` aqui faria o reconcile reexecutar tudo por
-              // causa de um campo cosmético. Loga e segue.
-              jsonLog("warn", {
-                evt: "asaas_subscription_backfill_failed",
-                organization_id: organizationId,
-                subscription_id: subscription.id,
-                error: String(backfillErr),
-              });
+        const { data: rpcData, error: rpcErr } = await supabase.rpc(
+          "resolve_or_activate_subscription",
+          {
+            p_org: organizationId,
+            p_plan_id: planId,
+            p_provider_subscription_id: providerSubscriptionId,
+            // Coluna NOT NULL. O fallback 'card' é regra de produto (o checkout
+            // RECURRENT do Asaas só aceita cartão), não chute.
+            p_payment_method: paymentMethod ?? "card",
+          },
+        );
+        if (rpcErr) {
+          // Inclui ambiguous_subscription_category, plan_not_found e
+          // missing_billing_customer. Todos são falha ALTA: o evento continua na
+          // fila e o reconcile reprocessa depois que um humano resolver.
+          return failWith(
+            organizationId,
+            effectKind,
+            "resolve_or_activate_subscription",
+            rpcErr,
+            "Falha ao ativar a assinatura da organização — ver logs.",
+          );
+        }
+
+        const activated = rpcData as
+          | {
+              action?: string;
+              subscription_id?: string;
+              category?: string;
+              plan_changed?: { from: string; to: string } | null;
+              provider_changed?: { from: string; to: string } | null;
             }
-          }
-        } else {
-          // Criar assinatura exige DOIS pais NOT NULL (`billing_customer_id` e
-          // `billing_plan_id`, migration 20260528000000 PART 4). Sem qualquer um
-          // deles a linha é impossível: `?? null` daria 23502 e um planId
-          // inválido daria 23503. Falhar ALTO e deixar o reconcile retentar é a
-          // única saída correta — inserir nulo não é opção, e seguir para a
-          // ativação daria acesso a uma org SEM assinatura, com o evento
-          // marcado como resolvido para sempre.
-          if (!planId) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "missing_plan_id",
-              `externalReference sem plano (raw=${externalReferenceRaw ?? "ausente"})`,
-              "Pagamento de assinatura sem plano identificável — ver logs.",
-            );
-          }
+          | null;
 
-          const { data: customer, error: custErr } = await supabase
-            .from("billing_customers")
-            .select("id")
-            .eq("organization_id", organizationId)
-            .maybeSingle();
-          if (custErr) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "select_billing_customer",
-              custErr,
-              "Falha ao consultar o cadastro de cobrança — ver logs.",
-            );
-          }
-          if (!customer) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "missing_billing_customer",
-              "organização sem linha em billing_customers",
-              "Organização sem cadastro de cobrança — ver logs.",
-            );
-          }
+        jsonLog("info", {
+          evt: "asaas_subscription_resolved",
+          organization_id: organizationId,
+          action: activated?.action ?? null,
+          category: activated?.category ?? null,
+          plan_changed: activated?.plan_changed ?? null,
+          provider_changed: activated?.provider_changed ?? null,
+        });
 
-          const { error: insErr } = await supabase.from("billing_subscriptions").insert({
+        // ── INVARIANTE DA FASE 5a ────────────────────────────────────────────
+        // SÓ assinatura de categoria SYSTEM_SUBSCRIPTION escreve em
+        // organizations.billing_status. Sem este gate, pagar os R$149 da
+        // instância reativaria uma organização cujo SISTEMA está inadimplente —
+        // e carimbaria restored_at + aviso "voltou" por uma dívida que continua
+        // aberta.
+        if (activated?.category !== "SYSTEM_SUBSCRIPTION") {
+          jsonLog("info", {
+            evt: "asaas_activation_scoped_to_service",
             organization_id: organizationId,
-            billing_customer_id: customer.id,
-            billing_plan_id: planId,
-            provider: "asaas",
-            // Vem do `payment.subscription` do payload (§13.6). Em cobrança
-            // avulsa o campo é omitido e fica null — a coluna é nullable e o
-            // UNIQUE (provider, provider_subscription_id) é parcial.
-            provider_subscription_id: providerSubscriptionId,
-            status: "active",
-            // Coluna NOT NULL — aqui o fallback 'card' é regra de produto
-            // (checkout RECURRENT só aceita cartão), não chute.
-            payment_method: paymentMethod ?? "card",
+            category: activated?.category ?? null,
           });
-          if (insErr) {
-            return failWith(
-              organizationId,
-              effect.kind,
-              "insert_subscription",
-              insErr,
-              "Falha ao criar a assinatura — ver logs.",
-            );
-          }
+          break;
         }
 
         // Espelha em organizations, que é a coluna autoritativa do
@@ -688,7 +945,7 @@ export async function applyAsaasEvent(
         if (orgErr) {
           return failWith(
             organizationId,
-            effect.kind,
+            effectKind,
             "update_organization_active",
             orgErr,
             "Falha ao liberar o acesso da organização — ver logs.",
@@ -719,7 +976,7 @@ export async function applyAsaasEvent(
           if (updErr) {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "update_invoice_overdue",
               updErr,
               "Falha ao marcar a fatura como vencida — ver logs.",
@@ -739,7 +996,7 @@ export async function applyAsaasEvent(
           if (updErr) {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "update_invoice_void",
               updErr,
               "Falha ao registrar o estorno da fatura — ver logs.",
@@ -757,7 +1014,7 @@ export async function applyAsaasEvent(
       }
     }
 
-    return { status: "processed", organizationId, effect: effect.kind };
+    return { status: "processed", organizationId, effect: effectKind };
   } catch (err) {
     jsonLog("error", {
       evt: "asaas_apply_unexpected_error",

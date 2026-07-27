@@ -51,6 +51,7 @@ import {
   showsStripeConfig,
 } from "@/lib/billing-plan-display";
 import { slugify } from "@/lib/utils";
+import { parseAmountReaisToCents } from "@/lib/billing-amount";
 
 const CATEGORY_OPTIONS = Object.keys(PLAN_CATEGORY_LABEL) as PlanCategory[];
 const PROVIDER_OPTIONS = Object.keys(BILLING_PROVIDER_LABEL) as BillingProviderName[];
@@ -144,12 +145,18 @@ function planToForm(plan: BillingPlan): PlanFormState {
   };
 }
 
+// N1 (review final fase 5a): esta função removia todo "." às cegas — "149.90"
+// (hábito de teclado numérico ou cópia de planilha) virava "14990" →
+// R$ 14.990,00/mês, cem vezes o valor digitado, sem aviso. A regra de
+// separador correta (vírgula presente → decimal é a vírgula; ausente → 2
+// dígitos após o último ponto = decimal, senão milhar) já existia em
+// WhatsappImplementations.tsx e foi extraída pra src/lib/billing-amount.ts —
+// aqui só resta validar sinal/vazio, que é regra própria deste formulário
+// (permite 0, rejeita negativo).
 function parseAmountBRL(input: string): number | null {
-  const normalized = input.replace(/\./g, "").replace(",", ".").trim();
-  if (!normalized) return null;
-  const value = Number(normalized);
-  if (!Number.isFinite(value) || value < 0) return null;
-  return Math.round(value * 100);
+  const cents = parseAmountReaisToCents(input);
+  if (!Number.isFinite(cents) || cents < 0) return null;
+  return cents;
 }
 
 export default function BillingPlans() {
@@ -313,6 +320,14 @@ export default function BillingPlans() {
   }
 
   const submitting = createMutation.isPending || updateMutation.isPending;
+
+  // N1 (review final fase 5a): eco do valor INTERPRETADO, não do texto
+  // digitado — mesmo padrão de WhatsappImplementations.tsx
+  // (CreateImplementationForm). É o eco, não a heurística de separador, que
+  // fecha a classe do problema: qualquer regra pode ser enganada por uma
+  // entrada que não previu, mas o admin lê o número antes de confirmar.
+  const amountPreviewCents = parseAmountBRL(form.amount_brl);
+  const amountCreditedPreviewCents = parseAmountBRL(form.amount_credited_brl);
 
   return (
     <div className="space-y-6">
@@ -539,6 +554,21 @@ export default function BillingPlans() {
                 placeholder="99,90"
                 inputMode="decimal"
               />
+              {/* N1: eco do valor interpretado — ver comentário em
+                  amountPreviewCents acima do return. */}
+              {form.amount_brl.trim() && (
+                <p
+                  className={
+                    amountPreviewCents != null
+                      ? "text-xs text-muted-foreground"
+                      : "text-xs text-destructive"
+                  }
+                >
+                  {amountPreviewCents != null
+                    ? `Será salvo: ${formatCentsBRL(amountPreviewCents)}`
+                    : "Valor não reconhecido — confira o formato (ex.: 99,90 ou 1.750,00)."}
+                </p>
+              )}
             </div>
 
             {/* Intervalo só existe em cobrança recorrente. Em one_time a coluna
@@ -576,6 +606,19 @@ export default function BillingPlans() {
                   placeholder="70,00"
                   inputMode="decimal"
                 />
+                {form.amount_credited_brl.trim() && (
+                  <p
+                    className={
+                      amountCreditedPreviewCents != null
+                        ? "text-xs text-muted-foreground"
+                        : "text-xs text-destructive"
+                    }
+                  >
+                    {amountCreditedPreviewCents != null
+                      ? `Será salvo: ${formatCentsBRL(amountCreditedPreviewCents)}`
+                      : "Valor não reconhecido — confira o formato (ex.: 70,00 ou 1.750,00)."}
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground">
                   Saldo que cai na carteira de IA. Igual ao valor pago em pacote sem
                   bônus; maior que ele se o pacote der bônus.

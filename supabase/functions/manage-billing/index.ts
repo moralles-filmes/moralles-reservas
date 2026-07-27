@@ -19,6 +19,7 @@ import {
 } from "../_shared/stripe-billing.ts";
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
+import { isSystemSubscription, SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -345,6 +346,18 @@ serve(async (req) => {
         .single();
 
       if (error) {
+        // Trigger da migration 074 (billing_plans_category_guard): recusa
+        // mudar categoria de plano com assinatura não-cancelada. Discrimina
+        // por MENSAGEM, não por código — o P0001 é o SQLSTATE genérico do
+        // plpgsql e colide com `ambiguous_subscription_category` (migration
+        // 073, RPC resolve_or_activate_subscription). `only_one_active_trial`
+        // é outro erro, 23505 (UNIQUE parcial), tratado por planWriteError()
+        // logo abaixo — não é o mesmo código.
+        if (error.message?.includes("plan_category_locked")) {
+          return jsonResponse(req, {
+            error: "Não é possível mudar a categoria de um plano que já tem assinatura ativa. Desative o plano e crie um novo.",
+          }, 409);
+        }
         const known = planWriteError(error);
         if (known) return jsonResponse(req, { error: known.message }, known.status);
         jsonLog("error", { reqId, evt: "billing_update_plan_error", err: error.message });
@@ -649,11 +662,18 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao registrar assinatura." }, 500);
       }
 
-      const billingStatus = trial_days ? "trialing" : "active";
-      await supabase.from("organizations").update({
-        billing_status: billingStatus,
-        trial_ends_at: trialEnd,
-      }).eq("id", organization_id);
+      // Assinatura criada à mão pelo admin. Só a de sistema move o
+      // billing_status da organização — criar a instância de WhatsApp para um
+      // cliente em atraso não pode marcá-lo como 'active'. Categoria já veio
+      // no `select("*")` de `plan` acima — não precisa de nova consulta, e não
+      // "conserte" isso de volta pra planCategoryOf(plan.id).
+      if (plan.category === SYSTEM_CATEGORY) {
+        const billingStatus = trial_days ? "trialing" : "active";
+        await supabase.from("organizations").update({
+          billing_status: billingStatus,
+          trial_ends_at: trialEnd,
+        }).eq("id", organization_id);
+      }
 
       jsonLog("info", { reqId, evt: "billing_subscription_created", orgId: organization_id, subId: sub.id, stripeSubscriptionId });
       return jsonResponse(req, { success: true, subscription: sub, client_secret: clientSecret ?? null });
@@ -691,9 +711,14 @@ serve(async (req) => {
           updated_at: new Date().toISOString(),
         }).eq("id", subscription_id);
 
-        await supabase.from("organizations").update({
-          billing_status: "canceled",
-        }).eq("id", sub.organization_id);
+        // Só o cancelamento da assinatura de SISTEMA cancela a organização.
+        // Cancelar a instância de WhatsApp marcava a org inteira como
+        // 'canceled' — o cliente perdia o sistema por desistir da automação.
+        if (await isSystemSubscription(supabase, subscription_id)) {
+          await supabase.from("organizations").update({
+            billing_status: "canceled",
+          }).eq("id", sub.organization_id);
+        }
       }
 
       jsonLog("info", { reqId, evt: "billing_subscription_cancelled", subId: subscription_id, atPeriodEnd: at_period_end });
@@ -922,12 +947,27 @@ serve(async (req) => {
         .eq("organization_id", organization_id)
         .maybeSingle();
 
-      const { data: activeSub } = await supabase
+      // N2 (review final fase 5a): sem filtro de categoria, uma org com duas
+      // assinaturas vivas (sistema + instância de WhatsApp) tanto podia
+      // vincular a fatura manual à assinatura ERRADA (instância) — o que faz
+      // isSystemInvoice devolver false e a fatura de sistema desaparecer dos
+      // lembretes/escalada de inadimplência — quanto estourar PGRST116 no
+      // .maybeSingle() com 2 linhas, erro esse que era descartado em
+      // silêncio. Mesmo padrão de unblock_organization_manual (linha ~1117
+      // abaixo): filtra por billing_plans.category = SYSTEM_CATEGORY e
+      // confere o erro.
+      const { data: activeSub, error: activeSubErr } = await supabase
         .from("billing_subscriptions")
-        .select("id")
+        .select("id, billing_plans!inner(category)")
         .eq("organization_id", organization_id)
         .neq("status", "canceled")
+        .eq("billing_plans.category", SYSTEM_CATEGORY)
         .maybeSingle();
+
+      if (activeSubErr) {
+        jsonLog("error", { reqId, evt: "billing_create_manual_invoice_sub_lookup_error", err: activeSubErr.message });
+        return jsonResponse(req, { error: "Falha ao localizar a assinatura da organização." }, 500);
+      }
 
       let stripeInvoiceId: string | null = null;
       let hostedUrl: string | null = null;
@@ -1079,11 +1119,17 @@ serve(async (req) => {
       const { organization_id } = body;
       if (!organization_id) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
 
+      // Só a assinatura de SISTEMA decide se o desbloqueio cai em 'trialing' ou
+      // 'active' — uma instância de WhatsApp trialing não pode travar a org
+      // num status que não é o dela. Sem match (org sem assinatura de sistema,
+      // ou nenhuma linha), newStatus cai em 'active': é desbloqueio manual
+      // explícito do admin, e o lado seguro aqui é NÃO deixar de desbloquear.
       const { data: activeSub } = await supabase
         .from("billing_subscriptions")
-        .select("status")
+        .select("status, billing_plans!inner(category)")
         .eq("organization_id", organization_id)
         .neq("status", "canceled")
+        .eq("billing_plans.category", SYSTEM_CATEGORY)
         .maybeSingle();
 
       const newStatus = activeSub ? (activeSub.status as string) === "trialing" ? "trialing" : "active" : "active";
@@ -1251,18 +1297,32 @@ serve(async (req) => {
         );
       }
 
-      // Idempotente: `applyAsaasEvent` decide de novo a partir do estado ATUAL
-      // (invoice já paga → `noop`) e todo UPDATE é condicional. Reprocessar um
-      // evento já aplicado é no-op. SEM `asaasIoBudgetMs`: é uma ação humana
+      // Quase idempotente, e a diferença importa: os UPDATEs de fatura, sessão,
+      // implantação e assinatura são todos condicionais (`.neq`/`.eq` no estado
+      // esperado), então reprocessar um evento já aplicado é no-op neles. A
+      // ÚNICA escrita incondicional é a de `organizations` no ramo de ativação
+      // de assinatura de SISTEMA — reprocessar um pagamento antigo reescreve
+      // `billing_status='active'` e limpa o bloqueio mesmo que a organização
+      // tenha sido bloqueada DEPOIS, por outra fatura. Não clique aqui sobre um
+      // evento antigo de organização atualmente bloqueada sem conferir qual
+      // fatura causou o bloqueio. SEM `asaasIoBudgetMs`: é uma ação humana
       // sob demanda, não a resposta de 10s do webhook — vale usar os retries
-      // completos do cliente HTTP.
-      const result = await applyAsaasEvent(supabase, {
-        id: row.id as string,
-        provider_event_id: (row.provider_event_id as string) ?? "",
-        event_type: row.event_type as string,
-        data: row.data as Record<string, unknown> | null,
-        organization_id: (row.organization_id as string) ?? null,
-      });
+      // completos do cliente HTTP. COM `recheckDurableEffect`: pela mesma razão.
+      // Quem clica neste botão está justamente diante de um evento que não
+      // surtiu efeito, e o caso típico é a fatura já estar `paid` (o dinheiro é
+      // registrado antes da ativação) — sem a re-checagem o aplicador devolveria
+      // `noop`/`processed` e o botão de emergência não faria nada, em silêncio.
+      const result = await applyAsaasEvent(
+        supabase,
+        {
+          id: row.id as string,
+          provider_event_id: (row.provider_event_id as string) ?? "",
+          event_type: row.event_type as string,
+          data: row.data as Record<string, unknown> | null,
+          organization_id: (row.organization_id as string) ?? null,
+        },
+        { recheckDurableEffect: true },
+      );
 
       // `retry_count` NÃO é incrementado aqui de propósito: aquele contador é o
       // fusível do worker automático (`MAX_RETRY_COUNT`), e uma tentativa manual

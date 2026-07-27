@@ -86,6 +86,10 @@ export interface CreateCheckoutParams {
   interval?: string | null;
   successUrl?: string;
   cancelUrl?: string;
+  /** 10–1440 (§9). É daqui que sai o `expires_at` gravado em
+   * billing_checkout_sessions — sem enviá-lo, a expiração da sessão viraria
+   * palpite nosso sobre o comportamento do Asaas. */
+  minutesToExpire?: number;
 }
 
 export interface CreateOneTimeChargeParams {
@@ -362,6 +366,9 @@ const asaasProvider: BillingProviderPort = {
         // propaga trial (ver create-billing-checkout), então a 1ª cobrança do
         // cartão sai na conclusão do checkout, não numa data futura.
         checkoutParams.subscription = { cycle, nextDueDate: isoDateInDaysBrt(0) };
+      }
+      if (params.minutesToExpire !== undefined) {
+        checkoutParams.minutesToExpire = params.minutesToExpire;
       }
 
       const res = await createAsaasCheckout(checkoutParams);

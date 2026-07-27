@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import {
   useBillingPlans,
@@ -11,6 +12,7 @@ import {
   useOrgEntitlements,
 } from "@/hooks/useBilling";
 import { usePaymentMethods } from "@/hooks/usePaymentMethods";
+import { AutomacaoWhatsappCard } from "@/components/gestao/AutomacaoWhatsappCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +44,7 @@ export default function Cobranca() {
   const current = useCurrentUnit();
   const organizationId = current?.organization_id;
   const [searchParams, setSearchParams] = useSearchParams();
+  const qc = useQueryClient();
 
   const { data: detail, isLoading: loadingDetail, refetch: refetchDetail } = useOrgBillingDetail(organizationId);
   const { data: plans, isLoading: loadingPlans } = useBillingPlans();
@@ -93,7 +96,25 @@ export default function Cobranca() {
     const tick = async () => {
       if (cancelled) return;
       attempts++;
-      const [detailResult] = await Promise.all([refetchDetail(), refetchPms()]);
+      // Além da assinatura do sistema, também refaz o status da automação de
+      // WhatsApp — cobre o retorno de uma implantação paga por PIX, cuja
+      // confirmação chega pelo webhook depois do redirect.
+      //
+      // I1 (Rodada de correção 1): key AMPLA (sem `organizationId`), não
+      // `["whatsapp-service-status", organizationId]`. Para owner/gerente
+      // membro, `useCurrentUnit()` resolve síncrono e `organizationId` já está
+      // presente no mount deste efeito. Mas platform_admin operando uma unit
+      // de que não é membro resolve `organizationId` num useEffect
+      // ASSÍNCRONO — no mount deste efeito o valor capturado no closure ainda
+      // é `undefined`, o prefix-match de invalidação compara com a key real
+      // (que tem a org de verdade) e NUNCA casa. As 6 tentativas do polling
+      // não invalidam nada e o card fica preso em "aguardando confirmação"
+      // até um F5. Só existe uma org por sessão — a key ampla é segura.
+      const [detailResult] = await Promise.all([
+        refetchDetail(),
+        refetchPms(),
+        qc.invalidateQueries({ queryKey: ["whatsapp-service-status"] }),
+      ]);
       if (cancelled) return;
 
       const activeSub = detailResult.data?.subscriptions?.find((s) => s.status !== "canceled");
@@ -165,7 +186,7 @@ export default function Cobranca() {
       await checkout.mutateAsync({
         organization_id: organizationId!,
         plan_id: plan.id,
-        mode: "subscription",
+        purpose: "subscription",
       });
       // Redirect acontece dentro do hook (window.location.href = url)
     } catch (err) {
@@ -228,7 +249,7 @@ export default function Cobranca() {
     try {
       await checkout.mutateAsync({
         organization_id: organizationId!,
-        mode: "setup",
+        purpose: "payment_method_update",
       });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Falha ao abrir checkout.");
@@ -391,6 +412,9 @@ export default function Cobranca() {
           </CardContent>
         </Card>
       )}
+
+      {/* Automação WhatsApp (implantação avulsa + instância mensal) */}
+      <AutomacaoWhatsappCard organizationId={organizationId} />
 
       {/* Planos disponíveis / cortesia */}
       {loadingEntitlements ? (

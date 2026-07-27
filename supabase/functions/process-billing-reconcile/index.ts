@@ -5,6 +5,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.ts";
 import { retrieveStripeSubscription, retrieveStripeInvoice } from "../_shared/stripe-billing.ts";
+import { isSystemInvoice, isSystemSubscription } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -48,8 +49,8 @@ serve(async (req) => {
 
         await supabase.from("billing_subscriptions").update(updates).eq("id", sub.id);
 
-        // Sync org billing_status se mudou
-        if (newStatus !== sub.status) {
+        // Sync org billing_status se mudou — SÓ quando a assinatura é de sistema.
+        if (newStatus !== sub.status && (await isSystemSubscription(supabase, sub.id))) {
           const statusMap: Record<string, string> = {
             active: "active", trialing: "trialing", past_due: "past_due",
             unpaid: "past_due", canceled: "canceled", paused: "suspended",
@@ -74,7 +75,7 @@ serve(async (req) => {
     // Sync invoices que estão open/draft
     const { data: invoices } = await supabase
       .from("billing_invoices")
-      .select("id, stripe_invoice_id, status, organization_id")
+      .select("id, stripe_invoice_id, status, organization_id, billing_subscription_id, external_reference, purpose")
       .not("stripe_invoice_id", "is", null)
       .in("status", ["draft", "open"])
       .limit(100);
@@ -93,22 +94,27 @@ serve(async (req) => {
         };
 
         if (i.status === "paid") {
+          // paid_at é dado financeiro da própria fatura — grava sempre, não
+          // importa a categoria. Só o desbloqueio da organização é gateado:
+          // uma fatura de instância paga não pode reabrir o acesso ao sistema.
           updates.paid_at = new Date().toISOString();
 
-          const { data: org } = await supabase
-            .from("organizations")
-            .select("billing_status")
-            .eq("id", inv.organization_id)
-            .single();
+          if (await isSystemInvoice(supabase, inv)) {
+            const { data: org } = await supabase
+              .from("organizations")
+              .select("billing_status")
+              .eq("id", inv.organization_id)
+              .single();
 
-          if (org && ["past_due", "grace_period", "blocked"].includes(org.billing_status)) {
-            await supabase.from("organizations").update({
-              billing_status: "active",
-              blocked_at: null,
-              blocked_reason: null,
-            }).eq("id", inv.organization_id);
+            if (org && ["past_due", "grace_period", "blocked"].includes(org.billing_status)) {
+              await supabase.from("organizations").update({
+                billing_status: "active",
+                blocked_at: null,
+                blocked_reason: null,
+              }).eq("id", inv.organization_id);
 
-            jsonLog("info", { reqId, evt: "billing_reconcile_unblocked", orgId: inv.organization_id });
+              jsonLog("info", { reqId, evt: "billing_reconcile_unblocked", orgId: inv.organization_id });
+            }
           }
         }
 

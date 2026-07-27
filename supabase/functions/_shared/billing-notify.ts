@@ -76,6 +76,89 @@ export async function enqueueBillingNotification(
   }
 }
 
+// Teto de VARREDURA da busca abaixo — não de destinatários. Esta função é
+// chamada de dentro do caminho síncrono do asaas-webhook (sem orçamento próprio,
+// diferente do I/O com o Asaas — ver ASAAS_IO_BUDGET_MS no CLAUDE.md) e faz uma
+// chamada HTTP ao Auth Admin por linha VARRIDA. Como só um destinatário é
+// consumido, a varredura para no primeiro e-mail utilizável (ver laço abaixo) e
+// na prática gasta UMA chamada; o cap só limita o pior caso — o admin mais
+// antigo sem e-mail resolvível (usuário removido, banido), em que é preciso
+// andar na lista pra achar quem receba.
+const PLATFORM_ADMIN_RECIPIENTS_CAP = 10;
+
+/**
+ * E-mail do administrador da PLATAFORMA mais antigo que tenha endereço
+ * utilizável. Devolve array de 0 ou 1 elemento — array, e não `string | null`,
+ * pra manter o contrato do caller (`recipients[0]`).
+ *
+ * NÃO reusa resolveBillingRecipient, que é org-scoped de propósito (o fix do
+ * vazamento cross-tenant da Fase 4b). Aqui o destinatário é a própria Moralles:
+ * "o cliente X pagou a implantação" é aviso interno, não do cliente.
+ *
+ * Best-effort: devolve [] em qualquer falha e loga. NUNCA pode derrubar a
+ * confirmação financeira que a chamou.
+ */
+export async function resolvePlatformAdminRecipients(
+  supabase: SupabaseClient,
+): Promise<string[]> {
+  const { data: admins, error } = await supabase
+    .from("platform_admins")
+    .select("user_id")
+    .order("created_at", { ascending: true })
+    .limit(PLATFORM_ADMIN_RECIPIENTS_CAP);
+
+  if (error) {
+    jsonLog("error", { evt: "platform_admin_recipients_read_failed", err: error.message });
+    return [];
+  }
+
+  if ((admins ?? []).length === PLATFORM_ADMIN_RECIPIENTS_CAP) {
+    // Cap atingido: pode haver mais platform_admins não lidos aqui. Loga pra
+    // não parecer silenciosamente "cobri todo mundo" — cap silencioso lê como
+    // cobertura completa quando não é.
+    jsonLog("warn", {
+      evt: "platform_admin_recipients_capped",
+      cap: PLATFORM_ADMIN_RECIPIENTS_CAP,
+      count: admins!.length,
+    });
+  }
+
+  // PARA no primeiro e-mail utilizável. A ordem (antiguidade) e a escolha
+  // (o admin mais antigo que dê pra notificar) são exatamente as de antes — o
+  // que muda é não continuar chamando o Auth Admin depois de já ter a resposta,
+  // dentro da resposta do webhook e depois de até 5s já gastos no getPayment.
+  const total = (admins ?? []).length;
+  let scanned = 0;
+  for (const row of admins ?? []) {
+    scanned++;
+    const { data, error: userErr } = await supabase.auth.admin.getUserById(
+      row.user_id as string,
+    );
+    if (userErr || !data?.user) continue;
+    // Usuário banido não recebe aviso operacional.
+    const bannedUntil = (data.user as { banned_until?: string | null }).banned_until;
+    if (bannedUntil && new Date(bannedUntil).getTime() > Date.now()) continue;
+    const email = data.user.email?.trim().toLowerCase();
+    if (!email) continue;
+
+    if (total > 1) {
+      // Existem outros admins e eles NÃO serão avisados (uma linha só em
+      // billing_notifications — o UNIQUE deduplicaria o resto). Visível de
+      // propósito: silêncio aqui lê como "avisei todo mundo".
+      jsonLog("info", {
+        evt: "platform_admin_recipient_chosen",
+        chosen: email,
+        scanned,
+        total_admins: total,
+      });
+    }
+    return [email];
+  }
+
+  jsonLog("warn", { evt: "platform_admin_recipients_empty", admins: total });
+  return [];
+}
+
 /**
  * true se a org tem cortesia/override de sistema ATIVO (não pode ser bloqueada
  * nem avisada por inadimplência). enabled=true = grant positivo; enabled=false é

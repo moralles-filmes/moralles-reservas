@@ -82,6 +82,7 @@ const PAutomacao = lazy(() => import("./pages/platform/Automacao"));
 const PBilling = lazy(() => import("./pages/platform/Billing"));
 const PBillingPlans = lazy(() => import("./pages/platform/BillingPlans"));
 const PBillingDetail = lazy(() => import("./pages/platform/BillingDetail"));
+const PWhatsappImplementations = lazy(() => import("./pages/platform/WhatsappImplementations"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -274,6 +275,13 @@ export default function App() {
               <Route path="/platform/automacao/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
               <Route path="/platform/billing" element={<PlatformGuard><PBilling /></PlatformGuard>} />
               <Route path="/platform/billing/planos" element={<PlatformGuard><PBillingPlans /></PlatformGuard>} />
+              {/* M-9 (Rodada de correção 1): a ordem de declaração aqui NÃO é o que
+                  resolve a rota certa — React Router v6 rankeia por especificidade
+                  (segmento estático sempre vence dinâmico), então "implementacoes"
+                  bateria em ":organizationId" mesmo se esta linha viesse depois.
+                  Mantida perto de "planos" (mesmo padrão estático-antes-de-dinâmico)
+                  só por legibilidade de quem lê o arquivo de cima pra baixo. */}
+              <Route path="/platform/billing/implementacoes" element={<PlatformGuard><PWhatsappImplementations /></PlatformGuard>} />
               <Route path="/platform/billing/:organizationId" element={<PlatformGuard><PBillingDetail /></PlatformGuard>} />
 
               {/* ── Legacy /admin → redirect ─────────────────────────────── */}

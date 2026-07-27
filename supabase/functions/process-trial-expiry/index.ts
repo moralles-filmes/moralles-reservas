@@ -12,6 +12,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.ts";
+import { SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
+import { hasActiveSystemOverride } from "../_shared/billing-notify.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -53,12 +55,16 @@ serve(async (req) => {
 
     const orgIds = candidates.map((o) => o.id);
 
-    // 2) Filtra orgs que JÁ têm subscription ativa (admin criou plano manual durante o trial)
+    // 2) Filtra orgs que JÁ têm subscription de SISTEMA (admin criou plano
+    //    manual durante o trial). Uma assinatura de instância de WhatsApp NÃO
+    //    conta: ela não dá acesso ao sistema, e considerá-la aqui faria o trial
+    //    nunca expirar para quem contratou só a automação.
     const { data: activeSubs } = await supabase
       .from("billing_subscriptions")
-      .select("organization_id")
+      .select("organization_id, billing_plans!inner(category)")
       .in("organization_id", orgIds)
-      .neq("status", "canceled");
+      .neq("status", "canceled")
+      .eq("billing_plans.category", SYSTEM_CATEGORY);
     const orgsWithActiveSub = new Set((activeSubs ?? []).map((s) => s.organization_id as string));
 
     // 3) Filtra orgs com override grant_access ativo
@@ -82,6 +88,19 @@ serve(async (req) => {
       if (orgsWithGrant.has(org.id)) {
         skipped++;
         jsonLog("info", { reqId, evt: "trial_expiry_skip_grant_override", orgId: org.id, slug: org.slug });
+        continue;
+      }
+
+      // N4 (review final fase 5a): esta fase estreitou o skip de "qualquer
+      // assinatura viva" pra só a de categoria de sistema (passo 2 acima) —
+      // mas isso tirou a rede que cobria cortesia vitalícia. Espelha o mesmo
+      // skip de process-billing-overdue/process-billing-reminders: cortesia
+      // registrada em organization_entitlement_overrides (feature "system")
+      // nunca pode ser bloqueada por este cron, mesmo sem grant_access legado
+      // em billing_access_overrides.
+      if (await hasActiveSystemOverride(supabase, org.id)) {
+        skipped++;
+        jsonLog("info", { reqId, evt: "trial_expiry_skip_system_override", orgId: org.id, slug: org.slug });
         continue;
       }
 

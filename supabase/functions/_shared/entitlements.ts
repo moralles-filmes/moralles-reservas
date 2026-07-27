@@ -12,6 +12,7 @@
  */
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { jsonLog } from "./security.ts";
 import {
   resolveEntitlements,
   type EntitlementOverrideInput,
@@ -20,6 +21,25 @@ import {
 } from "./entitlements-core.ts";
 
 export type { OrgEntitlements };
+
+/**
+ * `OrgEntitlements` + `readFailed`. Mudança ADITIVA (Rodada de correção 1,
+ * Task 14 I1): `entitlements-core.ts` é núcleo puro testado por vitest e não
+ * ganha o campo — o wrapper é montado aqui, fora do core.
+ *
+ * `readFailed=true` significa que uma ou mais das 3 leituras (organizations /
+ * organization_entitlement_overrides / billing_subscriptions) falhou, e o
+ * objeto abaixo foi resolvido com os defaults seguros de quem NÃO leu
+ * (`overrides=[]`, `subscriptions=[]`, `billingStatus='active'`) — ou seja,
+ * pode estar SUBESTIMANDO o acesso real (uma cortesia vitalícia real vira
+ * `allowed:false` se a leitura de overrides falhar). Caller que usa o
+ * resultado só para permitir/negar (fail-closed já é a direção segura) pode
+ * ignorar o campo; caller que AFIRMA um número/estado pro cliente (ex.:
+ * `get_service_status`) tem que checar antes de responder 200.
+ */
+export interface OrgEntitlementsResult extends OrgEntitlements {
+  readFailed: boolean;
+}
 
 interface SubscriptionRow {
   status: string;
@@ -35,7 +55,7 @@ export async function resolveOrgEntitlements(
   supabase: SupabaseClient,
   organizationId: string,
   aiWalletBalanceCents?: number | null,
-): Promise<OrgEntitlements> {
+): Promise<OrgEntitlementsResult> {
   const [orgRes, overridesRes, subsRes] = await Promise.all([
     supabase
       .from("organizations")
@@ -53,6 +73,22 @@ export async function resolveOrgEntitlements(
       .eq("organization_id", organizationId),
   ]);
 
+  // Nenhuma das 3 rejeita a Promise (supabase-js resolve {data:null, error}
+  // em erro) — sem checar `.error` explicitamente, uma leitura que falha vira
+  // silenciosamente "organização sem override/sem assinatura", o mesmo erro
+  // de classe que subsRes.error engolido em get_service_status já corrigiu
+  // uma camada acima.
+  const readFailed = !!(orgRes.error || overridesRes.error || subsRes.error);
+  if (readFailed) {
+    jsonLog("warn", {
+      evt: "entitlements_read_failed",
+      org: organizationId,
+      orgErr: orgRes.error?.message ?? null,
+      overridesErr: overridesRes.error?.message ?? null,
+      subsErr: subsRes.error?.message ?? null,
+    });
+  }
+
   const org = orgRes.data as { billing_status: string; trial_ends_at: string | null } | null;
 
   const overrides = (overridesRes.data ?? []) as EntitlementOverrideInput[];
@@ -69,11 +105,14 @@ export async function resolveOrgEntitlements(
     },
   );
 
-  return resolveEntitlements({
-    billingStatus: org?.billing_status ?? "active",
-    trialEndsAt: org?.trial_ends_at ?? null,
-    overrides,
-    subscriptions,
-    aiWalletBalanceCents,
-  });
+  return {
+    ...resolveEntitlements({
+      billingStatus: org?.billing_status ?? "active",
+      trialEndsAt: org?.trial_ends_at ?? null,
+      overrides,
+      subscriptions,
+      aiWalletBalanceCents,
+    }),
+    readFailed,
+  };
 }
