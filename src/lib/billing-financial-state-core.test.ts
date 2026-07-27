@@ -70,7 +70,7 @@ describe("normalizeFinancialState", () => {
   });
 
   it("fatura paga ou anulada não conta como atraso", () => {
-    for (const status of ["paid", "void", "uncollectible"]) {
+    for (const status of ["paid", "void", "uncollectible"] as const) {
       expect(
         normalizeFinancialState({
           now: NOW, subscriptionStatus: "past_due", canceledAt: null,
@@ -78,5 +78,32 @@ describe("normalizeFinancialState", () => {
         }).state,
       ).toBe("PAID");
     }
+  });
+
+  it("vencimento HOJE ainda está em dia (fronteira do dia 0)", () => {
+    // Trava a fronteira: o único guard é `if (overdue < 1) return none`. Uma
+    // regressão para `< 0` moveria "vence hoje" para IN_GRACE silenciosamente,
+    // cobrando tolerância de quem ainda está dentro do prazo. Valores
+    // conferidos contra o comportamento real do código (branch `none`):
+    // daysOverdue e graceEndsAt continuam null quando não há atraso.
+    const r = normalizeFinancialState({
+      now: NOW, subscriptionStatus: "past_due", canceledAt: null,
+      oldestOpenInvoice: { dueDate: "2026-07-27", status: "open" },
+    });
+    expect(r.state).toBe("PAID");
+    expect(r.daysOverdue).toBeNull();
+    expect(r.graceEndsAt).toBeNull();
+  });
+
+  it("canceledAt sozinho (sem subscriptionStatus) ainda precede NO_SUBSCRIPTION", () => {
+    // Antes deste teste, a precedência de CANCELED só era exercitada com os
+    // dois sinais juntos (canceledAt + subscriptionStatus: "canceled"). Trava
+    // o ramo em que só canceledAt está preenchido.
+    expect(
+      normalizeFinancialState({
+        now: NOW, subscriptionStatus: null, canceledAt: "2026-07-01T00:00:00Z",
+        oldestOpenInvoice: null,
+      }).state,
+    ).toBe("CANCELED");
   });
 });

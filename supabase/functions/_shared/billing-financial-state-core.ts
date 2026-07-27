@@ -31,6 +31,13 @@ export type FinancialState =
   /** Assinatura cancelada. */
   | "CANCELED";
 
+/**
+ * Espelha o CHECK de `billing_invoices.status`
+ * (supabase/migrations/20260528000000_billing_module.sql:194). Vocabulário
+ * fechado — os 5 valores são todos os que o banco aceita.
+ */
+export type BillingInvoiceStatus = "draft" | "open" | "paid" | "void" | "uncollectible";
+
 export interface FinancialStateInput {
   /** ISO. Injetável nos testes; a camada de I/O passa `new Date().toISOString()`. */
   now: string;
@@ -42,7 +49,7 @@ export interface FinancialStateInput {
    * que estão com `enforcement_hold` — fatura retida para revisão não conta
    * como atraso, por definição.
    */
-  oldestOpenInvoice: { dueDate: string; status: string } | null;
+  oldestOpenInvoice: { dueDate: string; status: BillingInvoiceStatus } | null;
 }
 
 export interface FinancialStateResult {
@@ -52,8 +59,33 @@ export interface FinancialStateResult {
   daysOverdue: number | null;
 }
 
-/** Status de fatura que representam dívida viva. Os demais não geram atraso. */
-const OPEN_INVOICE_STATUSES = new Set(["open", "draft"]);
+/**
+ * Classificação EXAUSTIVA de `BillingInvoiceStatus` em dívida viva (`true`) ou
+ * quitada/anulada (`false`) — fonte única, `isBillingInvoiceStatus` deriva
+ * daqui. `Record` completo por design: acrescentar um 6º status ao tipo sem
+ * atualizar esta linha quebra `tsc -b --noEmit` (propriedade faltando) até
+ * alguém decidir conscientemente o lado da classificação; renomear ou
+ * remover um status quebra por propriedade em excesso. Essa quebra em
+ * compilação é intencional — não "conserte" suprimindo o erro, atualize o
+ * `Record`.
+ */
+const IS_LIVE_DEBT: Record<BillingInvoiceStatus, boolean> = {
+  draft: true,
+  open: true,
+  paid: false,
+  void: false,
+  uncollectible: false,
+};
+
+/**
+ * Type guard de `BillingInvoiceStatus`, derivado do mesmo `IS_LIVE_DEBT`
+ * acima (nenhuma lista paralela). Não é usado por este núcleo — existe para a
+ * camada de I/O (Tasks 11 e 17), que lê a coluna do banco como `string` e
+ * precisa validar ANTES de montar um `FinancialStateInput`.
+ */
+export function isBillingInvoiceStatus(value: unknown): value is BillingInvoiceStatus {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(IS_LIVE_DEBT, value);
+}
 
 export function normalizeFinancialState(i: FinancialStateInput): FinancialStateResult {
   const none: FinancialStateResult = { state: "PAID", graceEndsAt: null, daysOverdue: null };
@@ -66,7 +98,7 @@ export function normalizeFinancialState(i: FinancialStateInput): FinancialStateR
   }
 
   const inv = i.oldestOpenInvoice;
-  if (!inv || !OPEN_INVOICE_STATUSES.has(inv.status)) return none;
+  if (!inv || !IS_LIVE_DEBT[inv.status]) return none;
 
   const today = todayBrt(new Date(i.now).getTime());
   const overdue = daysOverdue(inv.dueDate, today);
