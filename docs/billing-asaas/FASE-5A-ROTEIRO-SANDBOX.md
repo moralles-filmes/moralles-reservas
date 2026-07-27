@@ -99,7 +99,7 @@ select id, provider_checkout_id, status, created_at from billing_checkout_sessio
 ```
 No painel Asaas (sandbox) → Cobranças, conte quantos checkouts foram criados para esta org/produto.
 
-**Esperado:** o segundo clique devolve a **mesma** `checkout_url` da sessão `pending` já reservada, OU um 409 "checkout em criação" se a primeira reserva ainda estiver em `status='creating'` no instante exato do segundo clique. Em nenhum caso duas linhas `pending` distintas nem duas cobranças reais no Asaas — o índice `UNIQUE (organization_id, billing_plan_id, purpose) WHERE status IN ('creating','pending')` da migration 072 garante isso.
+**Esperado:** o segundo clique devolve a **mesma** `checkout_url` da sessão `pending` já reservada, OU um 409 "checkout em criação" se a primeira reserva ainda estiver em `status='creating'` no instante exato do segundo clique. Em nenhum caso duas linhas `pending` distintas nem duas cobranças reais no Asaas — o índice `UNIQUE (organization_id, plan_id, purpose) WHERE status IN ('creating','pending')` da migration 072 garante isso (a coluna é `plan_id`, não `billing_plan_id` — só `whatsapp_implementations` usa o nome longo).
 
 **Resultado observado:** _(preencher)_
 
@@ -166,7 +166,11 @@ Nos logs da EF `asaas-webhook` (Supabase Dashboard → Edge Functions → Logs),
 
 **Observar:** resposta HTTP.
 
-**Esperado:** **409** — mensagem *"Esta empresa já tem uma implantação registrada."* (variante exata depende do caminho: `implementation-checkout.ts` para o caminho de checkout, ou *"Esta empresa já tem uma implantação registrada. Cancele a atual antes de criar outra."* para a criação manual do admin). Confirma o índice único parcial `whatsapp_impl_one_open_per_org_idx` — `23505` traduzido para 409 amigável nos dois pontos de entrada.
+**Esperado:** **409** nos dois caminhos, mas por mecanismos diferentes — não confundir:
+- **Caminho do cliente** (`implementation-checkout.ts`): o `SELECT` que roda ANTES do insert acha a linha existente e devolve 409 direto (mensagem *"Esta empresa já tem uma implantação registrada."* ou *"Já existe uma implantação aguardando pagamento para esta empresa."* se `PENDING`) — sem nunca tentar o insert. Esse é o caminho que este cenário sequencial exercita.
+- **Caminho do admin** (`create`/`register_external_payment`): tenta o `INSERT` direto e só aí trata `23505` do índice único parcial `whatsapp_impl_one_open_per_org_idx`, devolvendo *"Esta empresa já tem uma implantação registrada. Cancele a atual antes de criar outra."*
+
+O `23505` do insert como backstop de corrida (dois cliques simultâneos batendo o `SELECT` juntos no caminho do cliente) é cenário separado, não coberto por este teste sequencial — ver invariante no `CLAUDE.md` (o insert do caminho do cliente NÃO trata `23505` especificamente; uma corrida genuína ali vira 500, não 409).
 
 **Resultado observado:** _(preencher)_
 
@@ -231,7 +235,7 @@ select billing_status from organizations where id = '<org-id>';
 1. Na org do B10 (com assinatura `WHATSAPP_SUBSCRIPTION` ativa), force uma fatura vencida há 6+ dias para essa assinatura (ajuste `due_date` de uma `billing_invoices` de teste vinculada, ou aguarde/simule via evento `PAYMENT_OVERDUE`).
 2. Rode `process-billing-overdue` manualmente (invoke da EF) ou aguarde o cron `0 10 * * *`.
 
-**Observar:** logs da EF `process-billing-overdue` (procure `evt: "billing_overdue_skip_non_system"` ou equivalente) e:
+**Observar:** logs da EF `process-billing-overdue` (procure `evt: "billing_overdue_skip_non_system"` — nome exato em `process-billing-overdue/index.ts:48`) e:
 ```sql
 select billing_status, blocked_at, blocked_reason from organizations where id = '<org-id>';
 ```
@@ -247,7 +251,7 @@ select billing_status, blocked_at, blocked_reason from organizations where id = 
 ## B12 — Cancelamento imediato da instância
 
 **Passos:**
-1. Na org do B10, cancele a assinatura `WHATSAPP_SUBSCRIPTION` (ação de cancelamento imediato — via `manage-billing`, não `cancel_subscription_by_owner` que é `at_period_end`; use a action admin de cancelamento imediato se existir, ou o cancelamento padrão marcando `status='canceled'` diretamente pela API testada).
+1. Na org do B10, chame `manage-billing` com `{ action: "cancel_subscription", subscription_id: "<id-da-sub-whatsapp>", at_period_end: false }` (`manage-billing/index.ts:682` — a action é admin-only, **não** `cancel_subscription_by_owner`, que é sempre `at_period_end=true` e não serve pra este teste; `at_period_end: false` é o que torna o cancelamento imediato).
 
 **Observar:**
 ```sql
@@ -273,7 +277,7 @@ select billing_status from organizations where id = '<org-id>';
 select billing_status, blocked_at from organizations where id = '<org-id>';
 ```
 
-**Esperado:** o worker **bloqueia normalmente** (`billing_status` vira `blocked` ou equivalente) — a assinatura de WhatsApp **não** conta como "assinatura ativa" para efeito de pular o bloqueio do trial (`process-trial-expiry` exige `SYSTEM_SUBSCRIPTION`).
+**Esperado:** o worker **bloqueia normalmente** — `billing_status` vira literalmente `"blocked"` (`process-trial-expiry/index.ts:96`, junto com `blocked_at`/`blocked_reason`) — a assinatura de WhatsApp **não** conta como "assinatura ativa" para efeito de pular o bloqueio do trial (`process-trial-expiry` exige `SYSTEM_SUBSCRIPTION`).
 
 **Resultado observado:** _(preencher)_
 

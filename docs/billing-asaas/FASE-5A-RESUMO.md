@@ -1,6 +1,6 @@
 # FASE 5A — Comercial: implantação do WhatsApp (R$ 750) + assinatura da instância (R$ 149) — Resumo de Execução
 
-> Branch `billing-asaas/fase-5a`, base `d03ce88` (spec) / HEAD `ad8d89f` no fechamento da Task 17.
+> Branch `billing-asaas/fase-5a`, base `d03ce88` (spec). Tasks 1–16 (código) fecham em `ad8d89f`; depois dele, `8b72cd2` (fix independente do gate `secret-hunter`, `.gitignore`) e a documentação da Task 17 (`d897686` + rodada de correção 1 sobre ele).
 > Spec: [../superpowers/specs/2026-07-25-billing-asaas-fase-5a-design.md](../superpowers/specs/2026-07-25-billing-asaas-fase-5a-design.md).
 > Plano: [../superpowers/plans/2026-07-25-billing-asaas-fase-5a.md](../superpowers/plans/2026-07-25-billing-asaas-fase-5a.md).
 > Fase anterior: [FASE-4B-RESUMO.md](FASE-4B-RESUMO.md) (validada em sandbox, tag `billing-asaas/fase-4b`).
@@ -84,7 +84,7 @@ _shared/billing-category.ts → process-billing-overdue, -reminders, -unblock, -
 
 **Documentação (esta task):** `CLAUDE.md` (invariantes + checklist de redeploy), `docs/billing-asaas/FASE-5A-RESUMO.md`, `docs/billing-asaas/FASE-5A-ROTEIRO-SANDBOX.md`.
 
-Total do branch: 39 arquivos, +6159/-684 linhas (`git diff --stat d03ce88..ad8d89f`).
+Total do código das Tasks 1–16: 39 arquivos, +6159/-684 linhas (`git diff --stat d03ce88..ad8d89f`). Em cima disso: `8b72cd2` (1 arquivo, `.gitignore`, fix de `secret-hunter` não relacionado ao escopo comercial da fase) e a documentação desta Task 17 (`CLAUDE.md` + 3 arquivos novos em `docs/billing-asaas/`, commit `d897686` e a rodada de correção 1 sobre ele).
 
 ## Commits (Tasks 1–16, 32 commits)
 
@@ -113,13 +113,15 @@ Total do branch: 39 arquivos, +6159/-684 linhas (`git diff --stat d03ce88..ad8d8
 5. **`regularized` com `invoice_id=null` na renovação** — follow-up #2 da 4b, ainda aberto (não tocado nesta fase).
 6. **Queries sem `.range()`** em overdue/reminders — débito herdado, irrelevante na base atual (1 cliente vitalício + a própria plataforma).
 7. **Estorno após entrega não reverte o trabalho** (`payment_status=REFUNDED` com `operational_status=COMPLETED` continua CONCLUÍDA) — política comercial de reembolso parcial não está desenhada; a matriz do banco permite o estado, a decisão de negócio fica em aberto.
-8. **Dívida legada do `stripe-webhook`** (não corrigida nesta fase, ver seção própria abaixo) — 4 escritas de `organizations.billing_status` sem checar categoria, hoje inalcançáveis na prática porque nenhum plano tem `stripe_price_id_*` populado.
+8. **Dívida legada do `stripe-webhook`** (não corrigida nesta fase, ver seção própria abaixo) — 4 escritas de `organizations.billing_status` sem checar categoria, inalcançáveis apenas enquanto nenhum plano tiver `provider='stripe'` com Price ID preenchido pelo painel.
 
 ## Dívida legada do `stripe-webhook` (achado e verificado nesta task)
 
 `supabase/functions/stripe-webhook/index.ts` tem **4 escritas diretas** em `organizations.billing_status` que **não passam pelo sweep de category-awareness** desta fase (linhas 149, 171, 337, 376 — eventos `customer.subscription.created/updated/deleted` e o desbloqueio/bloqueio do fluxo de invoice legado). O sweep da Task 8 tocou deliberadamente só os 7 arquivos listados na spec §7 (`asaas-billing-events-apply.ts` e os 6 workers/EF que já liam "qualquer fatura/assinatura"); `stripe-webhook` ficou de fora por decisão registrada no ledger da Task 8 ("dívida conhecida, documentar na Task 17").
 
-Verificação feita agora: **nenhuma migration popula `stripe_price_id_card`/`_boleto`/`_pix`** — as colunas existem desde `20260528000000_billing_module.sql` (só a definição de schema) e a seed `20260718120000_065_billing_plans_seed.sql` apenas comenta que cada fase ligaria a sua, o que nunca aconteceu. Sem `price_id`, a única action que cria assinatura Stripe nova (`manage-billing` `create_subscription`, admin-only, fora da whitelist `CLIENT_FRIENDLY_ACTIONS`) recusa com 400 pra pagamento em cartão (`"Plano sem price_id de cartão configurado."`); pra outras formas de pagamento ela cria a linha em `billing_subscriptions` com `stripe_subscription_id: null`, que nunca dispara evento Stripe nenhum. **Conclusão: o caminho é inalcançável hoje** — não há como o `stripe-webhook` receber um evento de assinatura para um plano do catálogo atual. Invariante registrada no `CLAUDE.md`: não construir feature nova sobre esse caminho.
+Verificação feita agora: **nenhuma migration popula `stripe_price_id_card`/`_boleto`/`_pix`** — as colunas existem desde `20260528000000_billing_module.sql` (só a definição de schema) e a seed `20260718120000_065_billing_plans_seed.sql` apenas comenta que cada fase ligaria a sua, o que nunca aconteceu. Sem `price_id`, a única action que cria assinatura Stripe nova (`manage-billing` `create_subscription`, admin-only, fora da whitelist `CLIENT_FRIENDLY_ACTIONS`) recusa com 400 pra pagamento em cartão (`"Plano sem price_id de cartão configurado."`); pra outras formas de pagamento ela cria a linha em `billing_subscriptions` com `stripe_subscription_id: null`, que nunca dispara evento Stripe nenhum.
+
+**Correção sobre a primeira versão deste documento: "inalcançável" não é absoluto.** `manage-billing/index.ts:90-94` inclui `stripe_price_id_card`/`_boleto`/`_pix` em `PLAN_WRITABLE_COLUMNS`, e `src/pages/platform/BillingPlans.tsx` tem um bloco de formulário ("Configuração do provedor (legado Stripe)", visível quando `provider === 'stripe'`) que grava as três colunas pelo painel — nenhuma migration precisa popular nada, o admin escreve direto pela UI. **Conclusão correta: o caminho fica inalcançável só enquanto nenhum plano do catálogo tiver `provider='stripe'` com Price ID preenchido** — cenário que um rollback do Asaas tornaria real, não teórico. Invariante no `CLAUDE.md` ajustada para essa condição.
 
 ## Gates de segurança (`saas-shield-br`)
 
@@ -197,9 +199,18 @@ select feature, grant_type, ends_at
 
 Esperado: linha `feature='system'` E linha `feature='whatsapp'`, ambas `LIFETIME`. Se só a de `whatsapp` existir, a tela de cobrança do Ren Sushi passa a mostrar preço de tabela pro sistema assim que as flags ligarem (mesma classe do C1 corrigido na Task 15, mas pro lado do sistema).
 
-### 6. Ativar os planos (migration 076 — já criada nesta task)
+### 6. Confirmar que os planos ficaram ativos (efeito da migration 076, aplicada no passo 3)
 
-`update billing_plans set active=true where slug in ('implementacao-whatsapp','instancia-whatsapp')`. `PricingTable` continua filtrando `SYSTEM_SUBSCRIPTION`, então isso não cria card contratável na tabela de planos pública — só o bloco dedicado da tela de cobrança passa a mostrar preço real em vez do catálogo vazio.
+**Não é uma ação nova** — `supabase db push` aplica TODAS as migrations pendentes de uma vez, então a 076 já rodou junto com 071–075 no passo 3. Rodar de novo o `update` aqui (ou pior, colar no Studio) seria redundante e tentaria alguém a burlar a disciplina de migration do projeto. Este passo é só a confirmação, na ordem em que ela faz sentido — depois do guard da 074 validado (passo 4) e do override do Ren Sushi conferido (passo 5):
+
+```sql
+select slug, active, category,
+       (select slug from billing_plans r where r.id = p.requires_plan_id) as requires
+  from billing_plans p
+ where slug in ('implementacao-whatsapp', 'instancia-whatsapp');
+```
+
+Esperado: **2 linhas, `active=t`** (query de validação já documentada no rodapé da própria migration 076). `active=false` não é só cosmético (some da vitrine) — o servidor **recusa o checkout** enquanto o plano estiver inativo: `implementation-checkout.ts:148` devolve 400 `"Produto indisponível no momento."`, `create-billing-checkout/subscription.ts:50` devolve 400 `"Plano inativo."`. Mas `active=true` sozinho **não expõe nada a cliente real**: `whatsapp_implementation_flow` é checada de novo no servidor (`create-billing-checkout/implementation.ts:23`, não só na UI) e `asaas_enabled` gateia o checkout inteiro — as duas ainda estão OFF neste ponto do runbook. Quem de fato abre a venda é o passo 7. Este passo só evita seguir adiante com uma suposição errada sobre o estado do catálogo.
 
 ### 7. Ligar as flags NESSA ORDEM: `asaas_enabled` → `whatsapp_implementation_flow` → `whatsapp_subscription_checkout`
 
