@@ -20,7 +20,7 @@ alter table billing_invoices
   add column if not exists enforcement_hold_reason text,
   add column if not exists enforcement_held_at timestamptz,
   add column if not exists enforcement_released_at timestamptz,
-  add column if not exists enforcement_released_by uuid references auth.users(id);
+  add column if not exists enforcement_released_by uuid references auth.users(id) on delete set null;
 
 do $$
 begin
@@ -77,6 +77,26 @@ commit;
 --      and column_name like 'enforcement%' or column_name = 'ingestion_source';
 --
 --   select count(*) from billing_invoices where enforcement_hold;
+--
+-- 3. Excluir um usuário administrativo que liberou retenção NÃO é bloqueado,
+--    NÃO apaga a fatura e zera apenas o ator. Rodar em sandbox, dentro da
+--    transação abaixo — o `rollback` desfaz tudo:
+--
+--   begin;
+--     update billing_invoices
+--        set enforcement_released_at = now(),
+--            enforcement_released_by = '<user_id de um platform admin>'
+--      where id = '<invoice_id de teste>';
+--
+--     delete from auth.users where id = '<user_id de um platform admin>';
+--     -- esperado: DELETE 1, sem erro de foreign key
+--
+--     select id, enforcement_released_by, enforcement_released_at
+--       from billing_invoices where id = '<invoice_id de teste>';
+--     -- esperado: 1 linha (a fatura sobreviveu — nada em cascata),
+--     --           enforcement_released_by = null (só o ator sumiu),
+--     --           enforcement_released_at preservado (a auditoria continua)
+--   rollback;
 --
 -- Rollback:
 --   drop index if exists billing_invoices_enforcement_hold_idx;
