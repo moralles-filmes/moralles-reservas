@@ -3,6 +3,10 @@ import {
   resolveCorrelation,
   type CorrelationCandidate,
 } from "../../supabase/functions/_shared/billing-correlation-core";
+import {
+  isAsaasPurpose,
+  type AsaasPurpose,
+} from "../../supabase/functions/_shared/asaas-billing-events";
 
 const ORG_A = "11111111-1111-1111-1111-111111111111";
 const ORG_B = "22222222-2222-2222-2222-222222222222";
@@ -76,5 +80,49 @@ describe("resolveCorrelation", () => {
       c({ source: "external_reference", organizationId: ORG_A, planId: "plano-do-checkout" }),
     ]);
     expect(out).toMatchObject({ kind: "resolved", planId: "plano-da-assinatura" });
+  });
+});
+
+describe("CorrelationCandidate.purpose — contrato tipado (Fix round 1, achado Important)", () => {
+  it("não aceita string arbitrária — teste de COMPILAÇÃO, não de runtime", () => {
+    // `purpose` foi apertado de `string | null` para `AsaasPurpose | null`
+    // (fonte única: asaas-billing-events.ts). Se o tipo afrouxar de volta pra
+    // `string | null`, a linha abaixo passa a compilar sem erro, o
+    // `@ts-expect-error` fica "sem erro pra suprimir" e o PRÓPRIO
+    // `@ts-expect-error` vira erro de "unused directive" — é o alarme
+    // desejado: `npm run typecheck` (tsc -b --noEmit) quebra sozinho.
+    const invalid: CorrelationCandidate = {
+      source: "checkout_session",
+      organizationId: null,
+      subscriptionId: null,
+      planId: null,
+      // @ts-expect-error — "pagamento_avulso" não está no CHECK de billing_invoices.purpose
+      purpose: "pagamento_avulso",
+    };
+    expect(invalid.source).toBe("checkout_session");
+  });
+
+  it("exaustividade de AsaasPurpose — Record completo trava a fonte única em compilação e em runtime", () => {
+    // Record<AsaasPurpose, true> só compila com EXATAMENTE as 4 chaves do tipo
+    // (Record exige todas; um objeto literal recusa chave a mais). Se
+    // asaas-billing-events.ts adicionar, renomear ou remover um purpose, este
+    // Record deixa de compilar — `npm run typecheck` quebra na hora.
+    const ALL_PURPOSES: Record<AsaasPurpose, true> = {
+      subscription: true,
+      implementation: true,
+      ai_topup: true,
+      other: true,
+    };
+    const recordKeys = Object.keys(ALL_PURPOSES) as AsaasPurpose[];
+
+    // Runtime: cobre a divergência que o compilador NÃO pega — alguém editar
+    // o Set `PURPOSES` de asaas-billing-events.ts sem tocar no tipo
+    // `AsaasPurpose` (ou vice-versa de um jeito que ainda compila). Aqui prova
+    // que toda chave do Record é de fato aceita pelo guard...
+    for (const key of recordKeys) {
+      expect(isAsaasPurpose(key)).toBe(true);
+    }
+    // ...e que o Record não ficou nem maior nem menor que a fonte única.
+    expect(recordKeys.sort()).toEqual(["ai_topup", "implementation", "other", "subscription"]);
   });
 });

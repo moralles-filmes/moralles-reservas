@@ -28,6 +28,13 @@ const PURPOSES: ReadonlySet<string> = new Set<AsaasPurpose>([
   "other",
 ]);
 
+/** Type guard do purpose. Fonte única: o Set `PURPOSES` acima, que espelha o
+ *  CHECK de billing_invoices.purpose (063). Valor vindo do banco ou do provedor
+ *  passa por aqui ANTES de entrar em qualquer estrutura tipada. */
+export function isAsaasPurpose(value: unknown): value is AsaasPurpose {
+  return typeof value === "string" && PURPOSES.has(value);
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ExternalReferenceParts {
@@ -58,12 +65,12 @@ export function parseExternalReference(raw: unknown): ExternalReferenceParts | n
   const [, orgId, planRaw, purpose] = match;
   if (!UUID_RE.test(orgId)) return null;
   if (planRaw !== "none" && !UUID_RE.test(planRaw)) return null;
-  if (!PURPOSES.has(purpose)) return null;
+  if (!isAsaasPurpose(purpose)) return null;
 
   return {
     orgId,
     planId: planRaw === "none" ? null : planRaw,
-    purpose: purpose as AsaasPurpose,
+    purpose,
   };
 }
 

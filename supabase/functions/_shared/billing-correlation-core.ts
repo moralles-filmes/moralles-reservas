@@ -14,6 +14,12 @@
  * CLAUDE.md para a lista de Edge Functions que precisam voltar juntas.
  */
 
+// `import type` — não emite nada em runtime, então não quebra a regra de
+// núcleo puro (zero Deno, zero supabase-js, zero rede). asaas-billing-events.ts
+// também é núcleo puro (mesmo cabeçalho de garantia), então essa dependência é
+// legal: puro importando puro.
+import type { AsaasPurpose } from "./asaas-billing-events.ts";
+
 export type CorrelationSource =
   | "known_invoice"
   | "provider_subscription"
@@ -45,7 +51,15 @@ export interface CorrelationCandidate {
   /** id interno de billing_subscriptions, não o `sub_…` do provedor. */
   subscriptionId: string | null;
   planId: string | null;
-  purpose: string | null;
+  /**
+   * `null` ≠ "purpose desconhecido" — significa "este degrau não carrega
+   * purpose nenhum" (ex.: provider_subscription só traz o id da assinatura, e
+   * isso é legítimo). Um purpose que não bate com `AsaasPurpose` é INVÁLIDO,
+   * não ausente: é barrado na fronteira (via `isAsaasPurpose`, em
+   * asaas-billing-events.ts) antes de virar um `CorrelationCandidate` — nunca
+   * chega aqui como string solta. Não trocar de volta para `string | null`.
+   */
+  purpose: AsaasPurpose | null;
 }
 
 export type CorrelationOutcome =
@@ -54,7 +68,7 @@ export type CorrelationOutcome =
       organizationId: string;
       subscriptionId: string | null;
       planId: string | null;
-      purpose: string | null;
+      purpose: AsaasPurpose | null;
       /** Degraus que contribuíram com algum campo, do mais forte ao mais fraco. */
       via: CorrelationSource[];
       /** Degraus que discordaram em plano/purpose. Não é fatal; é para log. */
@@ -94,7 +108,7 @@ export function resolveCorrelation(candidates: CorrelationCandidate[]): Correlat
   const organizationId = withOrg[0].organizationId;
   let subscriptionId: string | null = null;
   let planId: string | null = null;
-  let purpose: string | null = null;
+  let purpose: AsaasPurpose | null = null;
   const via: CorrelationSource[] = [];
   const softDivergence: CorrelationSource[] = [];
 

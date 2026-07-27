@@ -3,6 +3,7 @@ import {
   buildExternalReference,
   parseExternalReference,
   decideEventEffect,
+  isAsaasPurpose,
   ACTIVATING_EVENTS,
   REFUND_EVENTS,
 } from "../../supabase/functions/_shared/asaas-billing-events";
@@ -77,6 +78,29 @@ describe("parseExternalReference", () => {
       const ref = `org:${ORG}|plan:none|purpose:${p}`;
       expect(parseExternalReference(ref)?.purpose).toBe(p);
     }
+  });
+});
+
+describe("isAsaasPurpose — fonte única para quem tipa purpose fora deste módulo", () => {
+  // billing-correlation-core.ts (Fix round 1 da Task 5) importa este guard em
+  // vez de duplicar a lista de purposes — cobrir aqui protege os dois lados.
+  it("aceita os quatro purposes válidos", () => {
+    for (const p of ["subscription", "implementation", "ai_topup", "other"]) {
+      expect(isAsaasPurpose(p)).toBe(true);
+    }
+  });
+
+  it("recusa string que não está no CHECK, incluindo diferença de caixa", () => {
+    expect(isAsaasPurpose("whatsapp")).toBe(false);
+    expect(isAsaasPurpose("")).toBe(false);
+    expect(isAsaasPurpose("SUBSCRIPTION")).toBe(false);
+  });
+
+  it("recusa qualquer valor que não seja string, sem lançar", () => {
+    expect(isAsaasPurpose(null)).toBe(false);
+    expect(isAsaasPurpose(undefined)).toBe(false);
+    expect(isAsaasPurpose(42)).toBe(false);
+    expect(isAsaasPurpose({})).toBe(false);
   });
 });
 
