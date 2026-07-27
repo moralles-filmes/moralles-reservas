@@ -64,6 +64,7 @@ Frontend (`.env`): só `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`. EFs: `SUP
 
 - **`INTERNAL_API_KEY` precisa estar no Supabase Vault TAMBÉM** (`vault.create_secret(..., 'internal_api_key')`) pra `pg_cron` funcionar. Rotacionar nos DOIS lugares.
 - **Stripe e chaves de IA NÃO ficam em env vars.** Stripe em `platform_secrets` (DB, painel `/platform/automacao`); chaves de IA per-unit em `ai_provider_credentials` (BYOK, `/platform/automacao/<slug>`). Sem fallback global pra IA.
+- **`platform_secrets` cai pro `Deno.env` em QUALQUER erro de leitura — o `try/catch` não distingue "sem linha" de "banco indisponível", então uma cópia velha em env é credencial VIVA durante qualquer soluço.** Rotacionar só no painel deixa o valor antigo aceito pela porta dos fundos; sincronizar `supabase secrets set` no mesmo ato (ou remover a env). Vale pra `asaas_api_key`, `asaas_webhook_token`, `stripe_secret_key`, `stripe_webhook_secret`. Runbook em [docs/RUNBOOK-ROTACAO-CREDENCIAIS.md](docs/RUNBOOK-ROTACAO-CREDENCIAIS.md). [_shared/asaas-config.ts](supabase/functions/_shared/asaas-config.ts).
 
 ---
 
