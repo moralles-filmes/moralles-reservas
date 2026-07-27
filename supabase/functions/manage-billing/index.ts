@@ -1297,18 +1297,25 @@ serve(async (req) => {
         );
       }
 
-      // Idempotente: `applyAsaasEvent` decide de novo a partir do estado ATUAL
-      // (invoice já paga → `noop`) e todo UPDATE é condicional. Reprocessar um
-      // evento já aplicado é no-op. SEM `asaasIoBudgetMs`: é uma ação humana
+      // Idempotente: todo UPDATE do aplicador é condicional, então reprocessar
+      // um evento já aplicado é no-op. SEM `asaasIoBudgetMs`: é uma ação humana
       // sob demanda, não a resposta de 10s do webhook — vale usar os retries
-      // completos do cliente HTTP.
-      const result = await applyAsaasEvent(supabase, {
-        id: row.id as string,
-        provider_event_id: (row.provider_event_id as string) ?? "",
-        event_type: row.event_type as string,
-        data: row.data as Record<string, unknown> | null,
-        organization_id: (row.organization_id as string) ?? null,
-      });
+      // completos do cliente HTTP. COM `recheckDurableEffect`: pela mesma razão.
+      // Quem clica neste botão está justamente diante de um evento que não
+      // surtiu efeito, e o caso típico é a fatura já estar `paid` (o dinheiro é
+      // registrado antes da ativação) — sem a re-checagem o aplicador devolveria
+      // `noop`/`processed` e o botão de emergência não faria nada, em silêncio.
+      const result = await applyAsaasEvent(
+        supabase,
+        {
+          id: row.id as string,
+          provider_event_id: (row.provider_event_id as string) ?? "",
+          event_type: row.event_type as string,
+          data: row.data as Record<string, unknown> | null,
+          organization_id: (row.organization_id as string) ?? null,
+        },
+        { recheckDurableEffect: true },
+      );
 
       // `retry_count` NÃO é incrementado aqui de propósito: aquele contador é o
       // fusível do worker automático (`MAX_RETRY_COUNT`), e uma tentativa manual

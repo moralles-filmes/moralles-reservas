@@ -14,6 +14,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
+  ACTIVATING_EVENTS,
   decideEventEffect,
   parseExternalReference,
   type AsaasEffectKind,
@@ -61,9 +62,27 @@ export interface ApplyResult {
  * degradação do Asaas a ativação atrasa até o reconcile — ruim, mas muito
  * melhor que interromper a fila de eventos de TODOS os clientes (15 timeouts
  * seguidos), que só se resolve manualmente.
+ *
+ * `recheckDurableEffect`: quando um evento ATIVADOR chega com a fatura já em
+ * `paid`, `decideEventEffect` devolve `noop` e o aplicador retorna `processed`
+ * de imediato. Isso é correto e barato no webhook — é assim que o par
+ * `PAYMENT_CONFIRMED` + `PAYMENT_RECEIVED` do cartão fica idempotente sem gastar
+ * um `getPayment` extra dentro dos 10s. Mas ESCONDE o envenenamento: a fatura
+ * vira `paid` ANTES da ativação, então uma falha posterior (categoria do plano,
+ * assinatura ambígua, RPC, confirmação da implantação) deixa o evento `failed`
+ * com o dinheiro registrado — e todo reprocessamento futuro reencontra `paid` →
+ * `noop` → `processed`, sem auto-cura e sem alerta. Com esta opção o aplicador
+ * segue adiante nesse caso e refaz os caminhos de confirmação/ativação, que já
+ * são idempotentes (UPDATE condicional `.eq('PENDING')` na implantação;
+ * advisory lock + UNIQUE parcial na RPC). Custa um `getPayment`, por isso é do
+ * CALLER: só quem não tem pressão de latência liga (cron de reconcile,
+ * reprocessamento manual do admin). O `noop` por fatura `void` NUNCA é
+ * re-checado — aquilo é anomalia que pede conferência humana, não duplicata
+ * benigna.
  */
 export interface ApplyOptions {
   asaasIoBudgetMs?: number;
+  recheckDurableEffect?: boolean;
 }
 
 /** Espelha o CHECK de billing_subscriptions.payment_method (migration 20260528000000). */
@@ -140,8 +159,11 @@ function failWith(
  * admite PENDING→CONFIRMED para origin='ASAAS', e um `.neq` também casaria
  * linhas CANCELED ou estornadas.
  *
- * Best-effort no aviso: falha ao resolver destinatário NUNCA derruba a
- * confirmação financeira (mesma filosofia do enqueue de `regularized`).
+ * DUAS naturezas, dois tratamentos: o UPDATE é o EFEITO (erro dele volta como
+ * `{ok:false}` e o caller degrada o evento pra `failed`, pra ele voltar na fila
+ * do reconcile); o aviso é ACESSÓRIO (best-effort, contido no try/catch daqui —
+ * falha ao resolver destinatário NUNCA derruba a confirmação financeira, mesma
+ * filosofia do enqueue de `regularized`).
  */
 async function confirmImplementationPayment(
   supabase: SupabaseClient,
@@ -152,7 +174,7 @@ async function confirmImplementationPayment(
     paidValueCents: number | null;
     paymentMethod: string | null;
   },
-): Promise<void> {
+): Promise<{ ok: boolean; error?: unknown }> {
   const nowIso = new Date().toISOString();
   const patch: Record<string, unknown> = {
     payment_status: "CONFIRMED",
@@ -177,22 +199,21 @@ async function confirmImplementationPayment(
   const { data: updated, error } = await query.select("id");
 
   if (error) {
-    jsonLog("error", {
-      evt: "implementation_confirm_failed",
-      organization_id: args.organizationId,
-      error: String(error),
-    });
-    return;
+    // NÃO loga aqui: o caller chama `failWith`, que já emite
+    // `asaas_apply_write_failed` com `step:"confirm_implementation_payment"`,
+    // a org e o detalhe do erro. Duas linhas pro mesmo fato só polui.
+    return { ok: false, error };
   }
   if (!updated || updated.length === 0) {
-    // Duplicata benigna (2º evento do cartão) ou pagamento de implantação sem
-    // linha correspondente. Log em info: não é erro, mas precisa ser visível.
+    // Duplicata benigna (2º evento do cartão), re-checagem do reconcile sobre
+    // linha já CONFIRMED, ou pagamento de implantação sem linha correspondente.
+    // Log em info: não é erro, mas precisa ser visível.
     jsonLog("info", {
       evt: "implementation_confirm_noop",
       organization_id: args.organizationId,
       checkout: args.checkoutSessionId,
     });
-    return;
+    return { ok: true };
   }
 
   jsonLog("info", {
@@ -208,19 +229,13 @@ async function confirmImplementationPayment(
   // verdade — mentira que o próprio invariante do arquivo proíbe (`processed`
   // ⇔ efeito aplicado; `failed` ⇔ não aplicado).
   try {
-    const recipients = await resolvePlatformAdminRecipients(supabase);
-    if (recipients.length === 0) return;
     // UMA linha só: o UNIQUE (organization_id, event_type, invoice_id) deduplica,
     // e sendEmail aceita um único `to`. Enfileirar uma por admin faria N-1
-    // desaparecerem em 23505 silencioso. A lista completa vai para o log, e quem
-    // recebe é o admin mais antigo (ordem determinística).
-    if (recipients.length > 1) {
-      jsonLog("info", {
-        evt: "implementation_notify_single_recipient",
-        chosen: recipients[0],
-        total_admins: recipients.length,
-      });
-    }
+    // desaparecerem em 23505 silencioso — por isso `resolvePlatformAdminRecipients`
+    // devolve no máximo um (o admin mais antigo com e-mail utilizável) e para de
+    // buscar ali mesmo; quem loga a escolha é ela.
+    const recipients = await resolvePlatformAdminRecipients(supabase);
+    if (recipients.length === 0) return { ok: true };
     await enqueueBillingNotification(supabase, {
       organizationId: args.organizationId,
       eventType: "implementation_paid",
@@ -234,6 +249,8 @@ async function confirmImplementationPayment(
       error: String(err),
     });
   }
+
+  return { ok: true };
 }
 
 /**
@@ -345,9 +362,37 @@ export async function applyAsaasEvent(
       });
       return { status: "ignored", organizationId, effect: effect.kind };
     }
-    if (effect.kind === "noop") {
+    // `noop` de evento ATIVADOR sobre fatura já `paid` é o único que pode estar
+    // escondendo efeito durável não aplicado (a fatura é escrita ANTES da
+    // ativação, de propósito — o dinheiro primeiro). `void` fica de fora: é
+    // anomalia pra conferência humana, reprocessar seria pior. Informativo
+    // (`PAYMENT_CREATED` & cia.) e `PAYMENT_OVERDUE` também ficam de fora — não
+    // há efeito de ativação por trás deles.
+    const noopOverPaidInvoice =
+      effect.kind === "noop" &&
+      ACTIVATING_EVENTS.has(row.event_type) &&
+      invoice?.status === "paid";
+    const rechecking = noopOverPaidInvoice && opts.recheckDurableEffect === true;
+
+    if (effect.kind === "noop" && !rechecking) {
+      if (noopOverPaidInvoice) {
+        // Caminho por onde um pagamento sem efeito escapa quando o caller não
+        // pede re-checagem (webhook). Mudo até aqui — logar é o que permite
+        // enxergar a duplicata benigna do cartão E o evento envenenado.
+        jsonLog("info", {
+          evt: "asaas_paid_invoice_noop",
+          billing_event_id: row.id,
+          event_type: row.event_type,
+        });
+      }
       return { status: "processed", organizationId, effect: effect.kind };
     }
+
+    // Efeito EXECUTADO daqui pra baixo. Na re-checagem seguimos o roteiro de
+    // ativação (idempotente ponta a ponta) apesar de `decideEventEffect` ter
+    // dito `noop` — e é este valor, não `effect.kind`, que vai pros logs e pro
+    // `ApplyResult`, porque é o que de fato foi tentado.
+    const effectKind: AsaasEffectKind = rechecking ? "activate_subscription" : effect.kind;
 
     // 5. Enriquecer com o payload do Asaas — só para efeitos que de fato
     //    produzem escrita.
@@ -440,39 +485,55 @@ export async function applyAsaasEvent(
           checkoutSessionId = checkoutRef;
         }
 
-        if (!organizationId) {
-          if (typeof checkoutRef === "string" && checkoutRef) {
-            const { data: sess, error: sessErr } = await supabase
-              .from("billing_checkout_sessions")
-              .select("organization_id, external_reference")
-              .eq("provider_checkout_id", checkoutRef)
-              .maybeSingle();
-            if (sessErr) {
-              return failWith(
-                null,
-                "unknown",
-                "select_checkout_session",
-                sessErr,
-                "Falha ao correlacionar o checkout do evento — ver logs.",
-              );
-            }
-            if (sess) {
-              organizationId = sess.organization_id;
-              // Reidrata plano+purpose: no checkout hospedado o payment vem SEM
-              // externalReference, então planId ficaria null e purpose "other"
-              // → o gate purpose!=="subscription" daria break antes de ativar e
-              // o INSERT de assinatura não teria billing_plan_id. Mesmo parse do
-              // caminho primário; só preenche o que ainda está no default.
-              externalReferenceRaw = externalReferenceRaw ?? sess.external_reference;
-              const parsedSess = parseExternalReference(sess.external_reference);
-              if (parsedSess) {
-                planId = planId ?? parsedSess.planId;
-                if (purpose === "other") purpose = parsedSess.purpose;
-              }
+        // A condição NÃO é `!organizationId` — e isso é o ponto. No checkout
+        // hospedado esta é a ÚNICA fonte de `purpose` e `planId` (o payment vem
+        // sem externalReference), e no REPROCESSAMENTO a org já chega carimbada:
+        // o asaas-webhook grava `billing_events.organization_id` mesmo quando o
+        // evento sai `failed`, e o process-asaas-reconcile repassa esse valor.
+        // Gatear por `!organizationId` fazia a segunda passagem pular a
+        // reidratação, terminar com purpose "other" + planId null e sair
+        // `processed` sem ativar nada — e ainda registrar a fatura sem vínculo
+        // de plano, que é o que faz `isSystemInvoice` (billing-category.ts) cair
+        // no caminho de compatibilidade e devolver `true` para uma cobrança de
+        // implantação. Rodamos quando FALTA qualquer um dos três, e só quando há
+        // checkout a consultar (é I/O de banco, fora do ASAAS_IO_BUDGET_MS, mas
+        // ainda assim não é para ser incondicional).
+        if (checkoutSessionId && (!organizationId || !planId || purpose === "other")) {
+          const { data: sess, error: sessErr } = await supabase
+            .from("billing_checkout_sessions")
+            .select("organization_id, external_reference")
+            .eq("provider_checkout_id", checkoutSessionId)
+            .maybeSingle();
+          if (sessErr) {
+            // Passa a org JÁ resolvida (não `null`): o caller carimba
+            // `billing_events.organization_id` com este valor, e devolver null
+            // apagaria uma correlação que já tínhamos.
+            return failWith(
+              organizationId,
+              "unknown",
+              "select_checkout_session",
+              sessErr,
+              "Falha ao correlacionar o checkout do evento — ver logs.",
+            );
+          }
+          if (sess) {
+            // PRESERVADOR em todos os campos: fonte de precedência maior
+            // (coluna do evento, invoice, externalReference, customer) nunca é
+            // sobrescrita por esta. Reidrata plano+purpose porque no checkout
+            // hospedado o payment vem SEM externalReference — sem isso planId
+            // fica null e purpose "other", o gate purpose!=="subscription" dá
+            // break antes de ativar e o INSERT de assinatura não teria
+            // billing_plan_id.
+            organizationId = organizationId ?? sess.organization_id;
+            externalReferenceRaw = externalReferenceRaw ?? sess.external_reference;
+            const parsedSess = parseExternalReference(sess.external_reference);
+            if (parsedSess) {
+              planId = planId ?? parsedSess.planId;
+              if (purpose === "other") purpose = parsedSess.purpose;
             }
           }
         }
-      } else if (effect.kind === "activate_subscription") {
+      } else if (effectKind === "activate_subscription") {
         // Indisponibilidade do Asaas (rede, 5xx, token expirado) NÃO pode virar
         // `processed`. Sem o payload, `purpose` fica no default "other",
         // `paidValueCents` e `planId` ficam `null` — e o `purpose !==
@@ -491,7 +552,7 @@ export async function applyAsaasEvent(
         // inflaria a fila do reconcile à toa.
         return failWith(
           organizationId,
-          effect.kind,
+          effectKind,
           "get_payment",
           res.error ?? "getPayment devolveu ok sem data",
           "Falha ao consultar o pagamento no Asaas — ver logs.",
@@ -516,7 +577,7 @@ export async function applyAsaasEvent(
       if (planErr) {
         return failWith(
           organizationId,
-          effect.kind,
+          effectKind,
           "select_plan_category",
           planErr,
           "Falha ao consultar a categoria do plano — ver logs.",
@@ -551,7 +612,7 @@ export async function applyAsaasEvent(
       if ((data ?? []).length > 1) {
         return failWith(
           organizationId,
-          effect.kind,
+          effectKind,
           "ambiguous_subscription_category",
           `org ${organizationId} tem ${data!.length} assinaturas vivas na categoria ${planCategory}`,
           "Organização com mais de uma assinatura ativa na mesma categoria — ver logs.",
@@ -568,7 +629,7 @@ export async function applyAsaasEvent(
       return {
         status: "failed",
         organizationId: null,
-        effect: effect.kind,
+        effect: effectKind,
         error: "Não foi possível correlacionar o evento a uma organização.",
       };
     }
@@ -576,7 +637,7 @@ export async function applyAsaasEvent(
     // 8. Executar. Transições por UPDATE CONDICIONAL — o `.neq`/`.eq` no status
     //    anterior é o que garante idempotência sob concorrência (webhook e
     //    reconcile podem tocar a mesma linha).
-    switch (effect.kind) {
+    switch (effectKind) {
       case "activate_subscription": {
         // Sem `payment.id` no envelope, TUDO abaixo vira no-op silencioso:
         // `invoice` é null e o `else if (paymentId)` não dispara, então o
@@ -599,7 +660,7 @@ export async function applyAsaasEvent(
         if (!paymentId) {
           return failWith(
             organizationId,
-            effect.kind,
+            effectKind,
             "missing_payment_id",
             `evento ${row.event_type} sem 'payment.id' no envelope`,
             "Evento de pagamento sem identificador da cobrança — ver logs.",
@@ -621,7 +682,7 @@ export async function applyAsaasEvent(
           if (updErr) {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "update_invoice_paid",
               updErr,
               "Falha ao registrar o pagamento da fatura — ver logs.",
@@ -653,7 +714,7 @@ export async function applyAsaasEvent(
           if (paidValueCents === null) {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "missing_payment_value",
               `payment ${paymentId} sem 'value' numérico utilizável`,
               "Pagamento sem valor legível para registrar a fatura — ver logs.",
@@ -679,7 +740,7 @@ export async function applyAsaasEvent(
           if (insertErr && insertErr.code !== "23505") {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "insert_invoice_paid",
               insertErr,
               "Falha ao registrar a fatura paga — ver logs.",
@@ -723,13 +784,33 @@ export async function applyAsaasEvent(
         }
 
         if (purpose === "implementation") {
-          await confirmImplementationPayment(supabase, {
+          // Falha do UPDATE aqui é PRÉ-REQUISITO do resultado, não acessório: o
+          // dinheiro (R$ 750) já está durável e a implantação ficaria em
+          // `PENDING` para sempre, sem action administrativa que corrija
+          // (`set_operational_status` não escreve `payment_status`; `cancel` é o
+          // único destino manual). Degrada pra `failed` — o UPDATE é idempotente
+          // por `.eq('payment_status','PENDING')`, então reprocessar é seguro.
+          // Só o AVISO continua best-effort, contido dentro da própria função.
+          //
+          // Depende do `recheckDurableEffect`: sem ele o retry reencontraria a
+          // fatura `paid` → `noop` → `processed` e este `failed` nunca se
+          // resolveria. Os dois consertos são um só.
+          const confirmed = await confirmImplementationPayment(supabase, {
             organizationId,
             checkoutSessionId,
             invoiceId: settledInvoiceId,
             paidValueCents,
             paymentMethod,
           });
+          if (!confirmed.ok) {
+            return failWith(
+              organizationId,
+              effectKind,
+              "confirm_implementation_payment",
+              confirmed.error,
+              "Falha ao confirmar a implantação paga — ver logs.",
+            );
+          }
         }
 
         // OBRIGAÇÃO 2 do contrato: conceder acesso SOMENTE quando o pagamento
@@ -748,7 +829,7 @@ export async function applyAsaasEvent(
         if (!planId) {
           return failWith(
             organizationId,
-            effect.kind,
+            effectKind,
             "missing_plan_id",
             `externalReference sem plano (raw=${externalReferenceRaw ?? "ausente"})`,
             "Pagamento de assinatura sem plano identificável — ver logs.",
@@ -772,7 +853,7 @@ export async function applyAsaasEvent(
           // fila e o reconcile reprocessa depois que um humano resolver.
           return failWith(
             organizationId,
-            effect.kind,
+            effectKind,
             "resolve_or_activate_subscription",
             rpcErr,
             "Falha ao ativar a assinatura da organização — ver logs.",
@@ -850,7 +931,7 @@ export async function applyAsaasEvent(
         if (orgErr) {
           return failWith(
             organizationId,
-            effect.kind,
+            effectKind,
             "update_organization_active",
             orgErr,
             "Falha ao liberar o acesso da organização — ver logs.",
@@ -881,7 +962,7 @@ export async function applyAsaasEvent(
           if (updErr) {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "update_invoice_overdue",
               updErr,
               "Falha ao marcar a fatura como vencida — ver logs.",
@@ -901,7 +982,7 @@ export async function applyAsaasEvent(
           if (updErr) {
             return failWith(
               organizationId,
-              effect.kind,
+              effectKind,
               "update_invoice_void",
               updErr,
               "Falha ao registrar o estorno da fatura — ver logs.",
@@ -919,7 +1000,7 @@ export async function applyAsaasEvent(
       }
     }
 
-    return { status: "processed", organizationId, effect: effect.kind };
+    return { status: "processed", organizationId, effect: effectKind };
   } catch (err) {
     jsonLog("error", {
       evt: "asaas_apply_unexpected_error",

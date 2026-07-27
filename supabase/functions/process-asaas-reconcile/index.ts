@@ -167,16 +167,30 @@ serve(async (req) => {
       try {
         // MESMA lógica do webhook, sem orçamento de tempo (ver header). Nunca
         // lança por contrato — todo erro volta como `{status:'failed'}`.
-        const result = await applyAsaasEvent(supabase, {
-          id: event.id,
-          // Coluna é nullable no schema (linhas legadas da Stripe), mas o
-          // aplicador só a carrega pra rastreio; `""` evita propagar null num
-          // campo que o contrato declara string.
-          provider_event_id: event.provider_event_id ?? "",
-          event_type: event.event_type,
-          data: event.data,
-          organization_id: event.organization_id,
-        });
+        const result = await applyAsaasEvent(
+          supabase,
+          {
+            id: event.id,
+            // Coluna é nullable no schema (linhas legadas da Stripe), mas o
+            // aplicador só a carrega pra rastreio; `""` evita propagar null num
+            // campo que o contrato declara string.
+            provider_event_id: event.provider_event_id ?? "",
+            event_type: event.event_type,
+            data: event.data,
+            organization_id: event.organization_id,
+          },
+          {
+            // Recuperar evento preso é literalmente a função deste worker: uma
+            // linha chega aqui justamente porque a primeira passagem gravou a
+            // fatura como `paid` e falhou DEPOIS (ativação, categoria do plano,
+            // confirmação da implantação). Sem isto o retry reencontraria
+            // `paid` → `noop` → `processed` e tiraria da fila um pagamento que
+            // nunca surtiu efeito. Custa um `getPayment` a mais por linha —
+            // aceitável em cron, e só nas linhas presas (as `processed` nem
+            // aparecem na query).
+            recheckDurableEffect: true,
+          },
+        );
 
         // `error_message` é gravado SEMPRE, inclusive `null` no sucesso — senão
         // um diagnóstico velho ficaria colado numa linha que reprocessou com
@@ -318,15 +332,26 @@ serve(async (req) => {
       //
       // Custo aceito: um segundo `getPayment` (o aplicador refaz a leitura).
       // Divergência é rara por definição e o worker roda em cron.
-      const result = await applyAsaasEvent(supabase, {
-        // Marcador explicitamente sintético: não existe `billing_events.id`
-        // aqui, e um uuid solto no log seria confundido com um evento real.
-        id: `invoice:${inv.id}`,
-        provider_event_id: `reconcile:${paymentId}`,
-        event_type: SYNTHETIC_EVENT_TYPE,
-        data: { payment: { id: paymentId } },
-        organization_id: inv.organization_id,
-      });
+      const result = await applyAsaasEvent(
+        supabase,
+        {
+          // Marcador explicitamente sintético: não existe `billing_events.id`
+          // aqui, e um uuid solto no log seria confundido com um evento real.
+          id: `invoice:${inv.id}`,
+          provider_event_id: `reconcile:${paymentId}`,
+          event_type: SYNTHETIC_EVENT_TYPE,
+          data: { payment: { id: paymentId } },
+          organization_id: inv.organization_id,
+        },
+        {
+          // Mesma razão do estágio 1. Aqui a fatura foi lida 'open'/'draft', então
+          // normalmente não há `noop` a re-checar — mas o webhook pode tê-la pago
+          // (e falhado na ativação) entre aquele SELECT e esta chamada, e nesse
+          // caso é este flag que impede o evento sintético de sair `processed`
+          // sem ter ativado nada.
+          recheckDurableEffect: true,
+        },
+      );
 
       if (result.status === "processed") reconciled++;
 

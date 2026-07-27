@@ -76,17 +76,20 @@ export async function enqueueBillingNotification(
   }
 }
 
-// Teto da consulta abaixo: esta função é chamada de dentro do caminho síncrono
-// do asaas-webhook (sem orçamento próprio, diferente do I/O com o Asaas — ver
-// ASAAS_IO_BUDGET_MS no CLAUDE.md) e faz UMA chamada HTTP ao Auth Admin por
-// linha, embora só `recipients[0]` seja usado de fato. Sem teto, uma lista de
-// platform_admins que cresça vira N chamadas sequenciais ao GoTrue dentro dos
-// 10s que o Asaas concede pra resposta — o mesmo acidente que o orçamento do
-// Asaas evita, só que sem orçamento nenhum aqui.
+// Teto de VARREDURA da busca abaixo — não de destinatários. Esta função é
+// chamada de dentro do caminho síncrono do asaas-webhook (sem orçamento próprio,
+// diferente do I/O com o Asaas — ver ASAAS_IO_BUDGET_MS no CLAUDE.md) e faz uma
+// chamada HTTP ao Auth Admin por linha VARRIDA. Como só um destinatário é
+// consumido, a varredura para no primeiro e-mail utilizável (ver laço abaixo) e
+// na prática gasta UMA chamada; o cap só limita o pior caso — o admin mais
+// antigo sem e-mail resolvível (usuário removido, banido), em que é preciso
+// andar na lista pra achar quem receba.
 const PLATFORM_ADMIN_RECIPIENTS_CAP = 10;
 
 /**
- * E-mails dos administradores da PLATAFORMA, ordenados por antiguidade.
+ * E-mail do administrador da PLATAFORMA mais antigo que tenha endereço
+ * utilizável. Devolve array de 0 ou 1 elemento — array, e não `string | null`,
+ * pra manter o contrato do caller (`recipients[0]`).
  *
  * NÃO reusa resolveBillingRecipient, que é org-scoped de propósito (o fix do
  * vazamento cross-tenant da Fase 4b). Aqui o destinatário é a própria Moralles:
@@ -120,9 +123,14 @@ export async function resolvePlatformAdminRecipients(
     });
   }
 
-  const emails: string[] = [];
-  const seen = new Set<string>();
+  // PARA no primeiro e-mail utilizável. A ordem (antiguidade) e a escolha
+  // (o admin mais antigo que dê pra notificar) são exatamente as de antes — o
+  // que muda é não continuar chamando o Auth Admin depois de já ter a resposta,
+  // dentro da resposta do webhook e depois de até 5s já gastos no getPayment.
+  const total = (admins ?? []).length;
+  let scanned = 0;
   for (const row of admins ?? []) {
+    scanned++;
     const { data, error: userErr } = await supabase.auth.admin.getUserById(
       row.user_id as string,
     );
@@ -131,15 +139,24 @@ export async function resolvePlatformAdminRecipients(
     const bannedUntil = (data.user as { banned_until?: string | null }).banned_until;
     if (bannedUntil && new Date(bannedUntil).getTime() > Date.now()) continue;
     const email = data.user.email?.trim().toLowerCase();
-    if (!email || seen.has(email)) continue;
-    seen.add(email);
-    emails.push(email);
+    if (!email) continue;
+
+    if (total > 1) {
+      // Existem outros admins e eles NÃO serão avisados (uma linha só em
+      // billing_notifications — o UNIQUE deduplicaria o resto). Visível de
+      // propósito: silêncio aqui lê como "avisei todo mundo".
+      jsonLog("info", {
+        evt: "platform_admin_recipient_chosen",
+        chosen: email,
+        scanned,
+        total_admins: total,
+      });
+    }
+    return [email];
   }
 
-  if (emails.length === 0) {
-    jsonLog("warn", { evt: "platform_admin_recipients_empty", admins: (admins ?? []).length });
-  }
-  return emails;
+  jsonLog("warn", { evt: "platform_admin_recipients_empty", admins: total });
+  return [];
 }
 
 /**
