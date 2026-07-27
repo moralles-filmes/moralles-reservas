@@ -1,8 +1,9 @@
 node_modules/
 dist/
-.env
-.env.local
-.env*.local
+# Regra do CLAUDE.md: nunca commitar `.env*`. O glob cobre variantes futuras
+# (.env.sandbox, .env.production) que as tres linhas antigas deixavam passar.
+.env*
+!.env.example
 .DS_Store
 *.log
 .claude/*
