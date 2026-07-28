@@ -408,3 +408,156 @@ export function parseAsaasWebhookEnvelope(body: unknown): ParsedAsaasWebhook {
 
   return { valid: true, id, event, dateCreated };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Listagem de cobranças de uma assinatura (Fase 5b Task 10) — consumida por
+// _shared/asaas.ts (listAsaasSubscriptionPayments) e, indiretamente, pelo
+// worker de reconciliação process-asaas-invoice-reconcile (Task 11, ainda não
+// implementado — este núcleo já existe pronto pra ele). Endpoint verificado
+// em §13.2 de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md:
+// `GET /v3/subscriptions/{id}/payments`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Tamanho de página usado por listAsaasSubscriptionPayments. */
+export const ASAAS_PAYMENT_LIST_PAGE_SIZE = 100;
+
+/**
+ * Teto de páginas que o cliente HTTP percorre antes de desistir e devolver
+ * erro. Nenhuma assinatura real chega perto disso (mesmo semanal por décadas
+ * não passaria de ~30 páginas) — o teto existe só pra não deixar um loop cujo
+ * `hasMore` nunca vira `false` (bug do lado do Asaas, ou resposta corrompida
+ * repetindo a mesma página) rodar pra sempre consumindo o rate limit da conta
+ * inteira (§10: 25k req/12h, 50 GETs concorrentes). Ao ser atingido, o
+ * cliente loga o evento e devolve `ok:false` — NUNCA devolve a coleção
+ * parcial como se fosse a lista completa (mesmo princípio de
+ * `parseAsaasPaymentListPage` abaixo: dado incompleto não pode se passar por
+ * dado completo).
+ */
+export const ASAAS_PAYMENT_LIST_MAX_PAGES = 100;
+
+/**
+ * Um item de `GET /subscriptions/{id}/payments` — só os campos que o
+ * reconciliador (Task 11) precisa pra diferenciar cobranças já refletidas no
+ * banco das que faltam.
+ */
+export interface AsaasPaymentSummary {
+  id: string;
+  status: string;
+  /** Em REAIS decimais crus do Asaas (§9.1) — NÃO é amount_cents. Converter
+   * com `asaasValueToCents` na fronteira antes de comparar com uma coluna
+   * `_cents` do banco; nunca comparar `value` diretamente com `amount_cents`. */
+  value: number;
+  /** YYYY-MM-DD */
+  dueDate: string;
+  billingType: string | null;
+  /** Presente em cobrança nascida de assinatura; OMITIDO (não `null`) em
+   * cobrança avulsa (§13.6) — os dois casos normalizam pra `null` aqui. */
+  subscription: string | null;
+  externalReference: string | null;
+}
+
+type ParsedAsaasPaymentSummary =
+  | { valid: true; payment: AsaasPaymentSummary }
+  | { valid: false; reason: string };
+
+/**
+ * Guard de um item bruto da lista. `id`/`status`/`dueDate` são a chave de
+ * correlação com o banco pro reconciliador — ausentes ou de tipo errado
+ * tornam o item inutilizável, então falham o item inteiro.
+ *
+ * `value` segue a MESMA régua de `parseAsaasAmountCents` acima: nunca ganha
+ * fallback `?? 0`. Um `value` ausente/inválido faz o item inteiro falhar em
+ * vez de virar uma cobrança fantasma de R$ 0,00 na reconciliação — mas ao
+ * contrário de `parseAsaasAmountCents`, esta função NÃO converte pra
+ * centavos: devolve `value` cru em reais, mesma convenção do resto de
+ * `asaas.ts` (o cliente HTTP não converte unidade monetária na própria
+ * fronteira — quem compara com `amount_cents` do banco converte na hora).
+ *
+ * `billingType`/`subscription`/`externalReference` são secundários (não
+ * servem de chave de correlação) — presentes com tipo errado ou ausentes
+ * normalizam pra `null` em vez de invalidar o item, mesmo padrão de
+ * `dateCreated` em `parseAsaasWebhookEnvelope` acima.
+ */
+function parseAsaasPaymentSummary(raw: unknown): ParsedAsaasPaymentSummary {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { valid: false, reason: "item não é objeto" };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const id = obj.id;
+  if (typeof id !== "string" || !id.trim()) {
+    return { valid: false, reason: "campo 'id' ausente ou não é string" };
+  }
+
+  const status = obj.status;
+  if (typeof status !== "string" || !status.trim()) {
+    return { valid: false, reason: "campo 'status' ausente ou não é string" };
+  }
+
+  const value = obj.value;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return { valid: false, reason: "campo 'value' ausente ou inválido" };
+  }
+
+  const dueDate = obj.dueDate;
+  if (typeof dueDate !== "string" || !dueDate.trim()) {
+    return { valid: false, reason: "campo 'dueDate' ausente ou não é string" };
+  }
+
+  const billingType = typeof obj.billingType === "string" ? obj.billingType : null;
+  const subscription = typeof obj.subscription === "string" ? obj.subscription : null;
+  const externalReference = typeof obj.externalReference === "string" ? obj.externalReference : null;
+
+  return {
+    valid: true,
+    payment: { id, status, value, dueDate, billingType, subscription, externalReference },
+  };
+}
+
+export type ParsedAsaasPaymentListPage =
+  | { valid: true; payments: AsaasPaymentSummary[]; hasMore: boolean }
+  | { valid: false; reason: string };
+
+/**
+ * Parseia uma página de `GET /subscriptions/{id}/payments`: `{ data: [...],
+ * hasMore: boolean }` (convenção padrão de listagem do Asaas). Duas decisões
+ * deliberadamente rígidas, ambas pelo mesmo motivo — dado incompleto/duvidoso
+ * não pode se passar por dado completo pro reconciliador:
+ *
+ * 1. Um item malformado invalida A PÁGINA INTEIRA (não "pula e segue"). Uma
+ *    lista com um buraco silencioso é o mesmo defeito que uma paginação
+ *    truncada — o reconciliador criaria um "diff" que não reflete a
+ *    realidade sem nenhum sinal de que algo foi descartado.
+ * 2. `hasMore` ausente ou de tipo errado é ERRO, não `false` por default.
+ *    Se o valor default fosse `false`, uma resposta corrompida faria o
+ *    cliente HTTP parar de paginar achando que já leu tudo — exatamente o
+ *    "capped scan que lê como cobertura completa" que este trecho existe
+ *    pra evitar.
+ */
+export function parseAsaasPaymentListPage(raw: unknown): ParsedAsaasPaymentListPage {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { valid: false, reason: "resposta não é objeto" };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const items = obj.data;
+  if (!Array.isArray(items)) {
+    return { valid: false, reason: "campo 'data' ausente ou não é array" };
+  }
+
+  const payments: AsaasPaymentSummary[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const parsed = parseAsaasPaymentSummary(items[i]);
+    if (parsed.valid === false) {
+      return { valid: false, reason: `item ${i}: ${parsed.reason}` };
+    }
+    payments.push(parsed.payment);
+  }
+
+  const hasMore = obj.hasMore;
+  if (typeof hasMore !== "boolean") {
+    return { valid: false, reason: "campo 'hasMore' ausente ou não é boolean" };
+  }
+
+  return { valid: true, payments, hasMore };
+}

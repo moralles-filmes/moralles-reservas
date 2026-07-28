@@ -18,13 +18,17 @@
 import { genRequestId, jsonLog } from "./security.ts";
 import { getAsaasApiKey, getAsaasBaseUrl, getAsaasEnv } from "./asaas-config.ts";
 import {
+  ASAAS_PAYMENT_LIST_MAX_PAGES,
+  ASAAS_PAYMENT_LIST_PAGE_SIZE,
   GET_MAX_RETRIES,
   parseAsaasError,
+  parseAsaasPaymentListPage,
   parseRateLimitReset,
   shouldRetryGet,
   shouldRetryMutation,
   validateKeyForEnv,
 } from "./asaas-core.ts";
+import type { AsaasPaymentSummary } from "./asaas-core.ts";
 
 // Identifica a aplicação nas chamadas — obrigatório em contas Asaas criadas a
 // partir de 13/06/2024 (§8); o fetch do Deno não manda User-Agent por padrão.
@@ -553,4 +557,79 @@ export async function createAsaasCheckout(params: AsaasCheckoutParams): Promise<
     link: res.data.link as string | undefined,
     status: res.data.status as string | undefined,
   };
+}
+
+// ── Payments de uma assinatura (§9, verificado em §13.2) ────────────────────
+
+export type { AsaasPaymentSummary };
+
+/**
+ * Cobranças de uma assinatura (`GET /subscriptions/{id}/payments`,
+ * confirmado ao vivo no passo §13.2 de 03-ASAAS-API-VERIFICADO.md). SÓ
+ * LEITURA: este cliente nunca cria cobrança na reconciliação — `POST` não é
+ * retry-safe (§11 "Idempotência — não existe do lado da API"), e um retry
+ * cego geraria cobrança duplicada pro cliente.
+ *
+ * Pagina com `offset`/`limit` até `hasMore` ficar `false`, até
+ * `ASAAS_PAYMENT_LIST_MAX_PAGES` (_shared/asaas-core.ts) — acima disso
+ * desiste e devolve `ok:false` em vez de fingir que a coleção parcial é a
+ * lista completa. O parsing de cada página (guard campo a campo, nunca cast
+ * direto de `res.data`) vive em `parseAsaasPaymentListPage`
+ * (_shared/asaas-core.ts, testado por vitest) — este método só orquestra o
+ * I/O e a paginação.
+ *
+ * `opts.budgetMs` segue a mesma convenção de `getAsaasPayment`/
+ * `getAsaasSubscription` (ver AsaasRequestOptions): nenhum caminho dentro do
+ * orçamento do `asaas-webhook` chama este método hoje — o consumidor
+ * (`process-asaas-invoice-reconcile`, Task 11, ainda não existe) é um worker
+ * de cron sem orçamento — mas honrar o parâmetro deixa a porta aberta sem
+ * violar o contrato já estabelecido pro resto do cliente.
+ */
+export async function listAsaasSubscriptionPayments(
+  subscriptionId: string,
+  opts?: AsaasRequestOptions,
+): Promise<{ ok: boolean; data?: AsaasPaymentSummary[]; error?: string }> {
+  const all: AsaasPaymentSummary[] = [];
+  let offset = 0;
+
+  for (let page = 0; ; page++) {
+    if (page >= ASAAS_PAYMENT_LIST_MAX_PAGES) {
+      // Nunca alcançável em uso real (ver comentário do teto em
+      // asaas-core.ts) — só dispara com um `hasMore` que nunca vira `false`.
+      // Log explícito do quanto foi lido antes de desistir: a paginação não
+      // pode ficar muda sobre o que NÃO leu.
+      jsonLog("error", {
+        evt: "asaas_payment_list_page_cap_reached",
+        subscriptionId,
+        pages_read: page,
+        items_read: all.length,
+      });
+      return {
+        ok: false,
+        error: "Lista de cobranças da assinatura excedeu o número máximo de páginas lidas.",
+      };
+    }
+
+    const res = await asaasRequest(
+      `/subscriptions/${subscriptionId}/payments?limit=${ASAAS_PAYMENT_LIST_PAGE_SIZE}&offset=${offset}`,
+      "GET",
+      undefined,
+      opts,
+    );
+    if (!res.ok) {
+      return { ok: false, error: parseAsaasError(res.data, "Falha ao listar cobranças da assinatura no Asaas.") };
+    }
+
+    const parsed = parseAsaasPaymentListPage(res.data);
+    if (parsed.valid === false) {
+      jsonLog("error", { evt: "asaas_payment_list_parse_error", subscriptionId, offset, reason: parsed.reason });
+      return { ok: false, error: "Resposta do Asaas em formato inesperado ao listar cobranças da assinatura." };
+    }
+
+    all.push(...parsed.payments);
+    if (!parsed.hasMore) break;
+    offset += ASAAS_PAYMENT_LIST_PAGE_SIZE;
+  }
+
+  return { ok: true, data: all };
 }
