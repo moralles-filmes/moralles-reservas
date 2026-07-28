@@ -34,6 +34,7 @@ import {
   CORRELATION_RANK,
   type CorrelationCandidate,
 } from "./billing-correlation-core.ts";
+import { isFlagEnabled, getFlagString } from "./platform-flags.ts";
 
 export interface BillingEventRow {
   id: string;
@@ -323,6 +324,28 @@ async function notifyAdminCorrelationAmbiguity(
 }
 
 /**
+ * Decide se a fatura entra retida. RETENÇÃO É EXCEPCIONAL: fatura encontrada
+ * tarde por falha temporária de webhook preserva vencimento e tolerância reais
+ * — retê-la converteria em atraso justamente o conserto que a reconciliação
+ * existe para fazer.
+ *
+ * Só dois motivos automáticos aqui: backfill declarado pelo caller, e cobrança
+ * anterior ao go-live da ingestão. `VALUE_MISMATCH` e `CORRELATION_AMBIGUITY`
+ * são retenções de OUTROS pontos do fluxo, não desta função.
+ */
+async function decideIngestionHold(
+  args: { dueDate: string; source: "WEBHOOK" | "RECONCILE" | "BACKFILL" },
+): Promise<{ hold: boolean; reason: string | null }> {
+  if (args.source === "BACKFILL") return { hold: true, reason: "INITIAL_BACKFILL" };
+
+  const since = await getFlagString("billing_invoice_ingestion_since", "");
+  if (since && args.dueDate < since) {
+    return { hold: true, reason: "PRE_GO_LIVE_INVOICE" };
+  }
+  return { hold: false, reason: null };
+}
+
+/**
  * Aplica o efeito de negócio de um evento Asaas já persistido.
  *
  * NUNCA lança: todo caminho de erro vira `{status:'failed'}`, porque o webhook
@@ -397,6 +420,11 @@ export async function applyAsaasEvent(
     let purpose: AsaasPurpose = "other";
     let externalReferenceRaw: string | null = null;
     let paidValueCents: number | null = null;
+    // `dueDate` (YYYY-MM-DD) do payload do getPayment — usado só por
+    // `upsert_open_invoice` (due_date da fatura e insumo de `decideIngestionHold`),
+    // mas extraído aqui ao lado de `paidValueCents` porque os dois vêm do
+    // MESMO payload, no mesmo bloco de enriquecimento abaixo.
+    let paymentDueDate: string | null = null;
     let paymentMethod: PaymentMethod | null = null;
     let providerSubscriptionId: string | null = null;
     let checkoutSessionId: string | null = null;
@@ -407,12 +435,12 @@ export async function applyAsaasEvent(
 
     // 4. PORTÕES de noop/unknown — ANTES de qualquer I/O com o Asaas.
     //
-    //    ~31 dos 40 eventos do catálogo são informativos (`PAYMENT_CREATED`
-    //    dispara em TODA cobrança). Consultar `getPayment` pra depois descartar
-    //    o payload inteiro paga um round-trip por evento: multiplica o consumo
-    //    da quota (25k req/12h, §10) e — pior — coloca latência de rede no
-    //    caminho crítico de eventos que não produzem efeito nenhum, que é o
-    //    multiplicador direto do risco de estourar os 10s de resposta.
+    //    ~31 dos 40 eventos do catálogo são informativos. Consultar `getPayment`
+    //    pra depois descartar o payload inteiro paga um round-trip por evento:
+    //    multiplica o consumo da quota (25k req/12h, §10) e — pior — coloca
+    //    latência de rede no caminho crítico de eventos que não produzem
+    //    efeito nenhum, que é o multiplicador direto do risco de estourar os
+    //    10s de resposta.
     //
     //    CUSTO CONHECIDO E ACEITO: linha `noop` sem invoice correlacionada
     //    deixa de ter `organization_id` carimbado (o SELECT do passo 1 é DB
@@ -434,6 +462,26 @@ export async function applyAsaasEvent(
         reason: effect.reason,
       });
       return { status: "ignored", organizationId, effect: effect.kind };
+    }
+
+    // 4.1. Gate de flag do `upsert_open_invoice`, MOVIDO pra antes do
+    //      `getPayment` (Fase 5b). `PAYMENT_CREATED` dispara em TODA
+    //      cobrança — é o evento mais frequente do catálogo — e desde que ele
+    //      deixou de classificar como `noop` (obrigação 4 do JSDoc de
+    //      `decideEventEffect`), o portão de "noop" logo abaixo não o
+    //      intercepta mais. Sem ESTE gate aqui, desligar a flag deixaria de
+    //      ser grátis: cada `PAYMENT_CREATED` pagaria um `getPayment` completo
+    //      só para o `case` do switch descartá-lo depois — exatamente o custo
+    //      que o comentário acima descreve, reintroduzido pela porta dos
+    //      fundos. Com a flag OFF (default até o go-live), este `return`
+    //      reproduz OS MESMOS `status`/`organizationId`/`effect` que o antigo
+    //      `noop` de `PAYMENT_CREATED` devolvia.
+    if (effect.kind === "upsert_open_invoice") {
+      const ingestionOn = await isFlagEnabled("billing_invoice_ingestion");
+      if (!ingestionOn) {
+        jsonLog("info", { evt: "asaas_invoice_ingestion_disabled", billing_event_id: row.id });
+        return { status: "processed", organizationId, effect: effect.kind };
+      }
     }
     // `noop` de evento ATIVADOR sobre fatura já `paid` é o único que pode estar
     // escondendo efeito durável não aplicado (a fatura é escrita ANTES da
@@ -585,6 +633,21 @@ export async function applyAsaasEvent(
             evt: "asaas_payment_value_invalid",
             payment_id: paymentId,
             raw_value: rawValue === undefined ? "ausente" : String(rawValue),
+          });
+        }
+
+        // `dueDate` alimenta `billing_invoices.due_date` (efeito
+        // `upsert_open_invoice`) e `decideIngestionHold`. Mesmo tratamento do
+        // `value` acima: ausente/tipo errado loga e segue — não é fatal para
+        // efeitos que não precisam dele.
+        const rawDueDate = res.data.dueDate;
+        if (typeof rawDueDate === "string" && rawDueDate) {
+          paymentDueDate = rawDueDate;
+        } else {
+          jsonLog("warn", {
+            evt: "asaas_payment_due_date_invalid",
+            payment_id: paymentId,
+            raw_due_date: rawDueDate === undefined ? "ausente" : String(rawDueDate),
           });
         }
 
@@ -1275,6 +1338,79 @@ export async function applyAsaasEvent(
           event_type: row.event_type,
           purpose,
         });
+        break;
+      }
+
+      case "upsert_open_invoice": {
+        // Gate de flag já resolvido no passo 4.1, ANTES do `getPayment` —
+        // chegar aqui significa `billing_invoice_ingestion` estava ligada
+        // quando a checagem rodou (TTL de cache de 5min, não pode ter virado
+        // no meio desta invocação). Repetir o check aqui seria só um segundo
+        // round-trip inútil ao cache/DB da flag.
+
+        // `organizationId` já é garantidamente não-nulo aqui — o portão do
+        // passo 7 (acima, antes deste switch) já retornou `failed` para todo
+        // efeito, inclusive este, quando a organização não resolveu. Um
+        // segundo guard aqui seria código morto.
+        if (!paymentId) {
+          return failWith(
+            organizationId,
+            effectKind,
+            "upsert_open_invoice_no_payment_id",
+            `evento ${row.event_type} sem 'payment.id'`,
+            "Evento de cobrança sem identificador — ver logs.",
+          );
+        }
+
+        // Repete o padrão de validação de `paidValueCents`: campo ausente é
+        // anomalia de payload e loga (já feito na extração acima) — aqui é
+        // fatal porque `due_date` é NOT NULL de fato para este efeito (é o que
+        // `decideIngestionHold` e o worker de inadimplência usam).
+        if (!paymentDueDate) {
+          return failWith(
+            organizationId,
+            effectKind,
+            "upsert_open_invoice_no_due_date",
+            `cobrança ${paymentId} sem dueDate`,
+            "Cobrança sem data de vencimento — ver logs.",
+          );
+        }
+
+        const hold = await decideIngestionHold({ dueDate: paymentDueDate, source: "WEBHOOK" });
+
+        // `billing_subscription_id` vem de `resolvedSubscriptionId` — o id
+        // INTERNO produzido pela escada de correlação (Task 8), não de
+        // `subscription?.id` (que é resolvido mais abaixo só para o path de
+        // ativação) nem de `providerSubscriptionId` (o `sub_…` do Asaas).
+        const { error: insErr } = await supabase.from("billing_invoices").insert({
+          organization_id: organizationId,
+          billing_subscription_id: resolvedSubscriptionId,
+          provider: "asaas",
+          provider_payment_id: paymentId,
+          status: "open",
+          amount_cents: paidValueCents ?? 0,
+          payment_method: paymentMethod,
+          due_date: paymentDueDate,
+          purpose,
+          external_reference: externalReferenceRaw,
+          ingestion_source: "WEBHOOK",
+          enforcement_hold: hold.hold,
+          enforcement_hold_reason: hold.reason,
+          enforcement_held_at: hold.hold ? new Date().toISOString() : null,
+        });
+        // 23505 = a UNIQUE (provider, provider_payment_id) pegou: webhook e
+        // reconcile encontraram o mesmo pagamento primeiro, ou o próprio
+        // PAYMENT_CREATED chegou duas vezes (Asaas entrega ao menos uma vez).
+        // Caminho feliz da idempotência, não erro.
+        if (insErr && insErr.code !== "23505") {
+          return failWith(
+            organizationId,
+            effectKind,
+            "insert_open_invoice",
+            insErr,
+            "Falha ao registrar a cobrança — ver logs.",
+          );
+        }
         break;
       }
     }
