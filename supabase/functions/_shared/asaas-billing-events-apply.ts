@@ -28,6 +28,10 @@ import {
   resolvePlatformAdminRecipients,
   enqueueBillingNotification,
 } from "./billing-notify.ts";
+import {
+  resolveCorrelation,
+  type CorrelationCandidate,
+} from "./billing-correlation-core.ts";
 
 export interface BillingEventRow {
   id: string;
@@ -254,6 +258,58 @@ async function confirmImplementationPayment(
 }
 
 /**
+ * Avisa a Moralles (não o cliente) de que um evento precisa de conferência
+ * humana — hoje só o caso de organização divergente entre degraus da escada
+ * de correlação. Best-effort: NUNCA derruba o resultado financeiro que a
+ * chamou — mesma filosofia de `confirmImplementationPayment`.
+ *
+ * Usa `resolvePlatformAdminRecipients`, e não `resolveBillingRecipient`, que é
+ * org-scoped de propósito: aqui o destinatário é a própria plataforma.
+ *
+ * `enqueueBillingNotification` exige `organizationId: string` —
+ * `billing_notifications.organization_id` é `not null` (migration
+ * 20260528000000_billing_module.sql). Quando o evento já chegou com uma
+ * organização carimbada em `row.organization_id` (o caso comum: a org
+ * resolvida numa passagem anterior e um degrau novo divergindo dela), a
+ * notificação usa essa organização como ENDEREÇO de conveniência — o
+ * destinatário continua sendo a plataforma, nunca o cliente daquela org, e o
+ * `notification_enqueued` no log deixa isso auditável. Quando não há
+ * organização nenhuma carimbada, a notificação é PULADA (não dá pra gravar
+ * uma linha sem violar o NOT NULL) e o `jsonLog` abaixo é a ÚNICA fonte de
+ * verdade sobre quantas vezes isto aconteceu — `invoiceId: null` também não é
+ * deduplicado pelo índice parcial, então o log é quem conta.
+ */
+async function notifyAdminCorrelationAmbiguity(
+  supabase: SupabaseClient,
+  args: { billingEventId: string; detail: string; organizationId: string | null },
+): Promise<void> {
+  try {
+    const orgId = args.organizationId;
+    jsonLog("error", {
+      evt: "asaas_correlation_ambiguity",
+      billing_event_id: args.billingEventId,
+      detail: args.detail,
+      organization_id: orgId,
+      notification_enqueued: !!orgId,
+    });
+    // Guard antes do uso — não cast: `enqueueBillingNotification` exige
+    // `organizationId: string`, e este `if` é o que estreita `orgId` de
+    // `string | null` pra `string` no resto da função.
+    if (!orgId) return;
+    const recipients = await resolvePlatformAdminRecipients(supabase);
+    if (recipients.length === 0) return;
+    await enqueueBillingNotification(supabase, {
+      organizationId: orgId,
+      eventType: "admin_correlation_ambiguity",
+      invoiceId: null,
+      recipient: recipients[0],
+    });
+  } catch (err) {
+    jsonLog("warn", { evt: "asaas_correlation_ambiguity_notify_failed", err: String(err) });
+  }
+}
+
+/**
  * Aplica o efeito de negócio de um evento Asaas já persistido.
  *
  * NUNCA lança: todo caminho de erro vira `{status:'failed'}`, porque o webhook
@@ -331,6 +387,10 @@ export async function applyAsaasEvent(
     let paymentMethod: PaymentMethod | null = null;
     let providerSubscriptionId: string | null = null;
     let checkoutSessionId: string | null = null;
+    // id INTERNO de billing_subscriptions (não o `sub_…` do provedor, que
+    // continua em `providerSubscriptionId`). Alimenta o `billing_subscription_id`
+    // que a fatura paga carrega quando a correlação resolve por assinatura.
+    let resolvedSubscriptionId: string | null = null;
 
     // 4. PORTÕES de noop/unknown — ANTES de qualquer I/O com o Asaas.
     //
@@ -394,6 +454,25 @@ export async function applyAsaasEvent(
     // `ApplyResult`, porque é o que de fato foi tentado.
     const effectKind: AsaasEffectKind = rechecking ? "activate_subscription" : effect.kind;
 
+    // Escada de correlação (Task 8): cada degrau abaixo empurra um candidato
+    // num array; quem decide organização/assinatura/plano/purpose é
+    // `resolveCorrelation`, chamado depois que todos os degraus alcançáveis
+    // nesta passagem já contribuíram — nunca mais uma atribuição direta `??`
+    // isolada por degrau.
+    const candidates: CorrelationCandidate[] = [];
+
+    // Degrau 1 — a fatura já conhecida deste pagamento (carregada no passo 1
+    // da função). Traz tudo e é a fonte mais forte.
+    if (invoice) {
+      candidates.push({
+        source: "known_invoice",
+        organizationId: invoice.organization_id,
+        subscriptionId: invoice.billing_subscription_id,
+        planId: null,
+        purpose: null,
+      });
+    }
+
     // 5. Enriquecer com o payload do Asaas — só para efeitos que de fato
     //    produzem escrita.
     if (paymentId) {
@@ -412,9 +491,15 @@ export async function applyAsaasEvent(
         }
         const parsed = parseExternalReference(res.data.externalReference);
         if (parsed) {
-          organizationId = organizationId ?? parsed.orgId;
-          planId = parsed.planId;
-          purpose = parsed.purpose;
+          // Degrau 3 — externalReference presente na cobrança direta (ausente
+          // no checkout hospedado — ver Degrau 4 abaixo).
+          candidates.push({
+            source: "external_reference",
+            organizationId: parsed.orgId,
+            subscriptionId: null,
+            planId: parsed.planId,
+            purpose: parsed.purpose,
+          });
         }
 
         paymentMethod = mapPaymentMethod(res.data.billingType);
@@ -424,6 +509,51 @@ export async function applyAsaasEvent(
         const subRef = res.data.subscription;
         if (typeof subRef === "string" && subRef) {
           providerSubscriptionId = subRef;
+        }
+
+        // Degrau 2 — assinatura do provedor. É o ÚNICO elo que a renovação do
+        // mês 2+ carrega: ela nasce da assinatura, sem externalReference (o
+        // Asaas não propaga — §13.8), sem checkoutSession, e com um `customer`
+        // que pode ser o que o pagador criou na página hospedada. Sem este
+        // degrau, nenhuma renovação é processada.
+        if (providerSubscriptionId) {
+          const { data: sub, error: subErr } = await supabase
+            .from("billing_subscriptions")
+            .select("id, organization_id, billing_plan_id")
+            .eq("provider", "asaas")
+            .eq("provider_subscription_id", providerSubscriptionId)
+            .maybeSingle();
+          if (subErr) {
+            return failWith(
+              row.organization_id,
+              "unknown",
+              "select_subscription_by_provider_id",
+              subErr,
+              "Falha ao correlacionar a assinatura do evento — ver logs.",
+            );
+          }
+          if (sub) {
+            candidates.push({
+              source: "provider_subscription",
+              organizationId: sub.organization_id as string,
+              subscriptionId: sub.id as string,
+              planId: sub.billing_plan_id as string,
+              // Cobrança nascida de assinatura é sempre mensalidade. O
+              // `purpose` do checkout original não sobrevive à renovação, e
+              // sem isto o evento cairia no default `other` e não ativaria
+              // ninguém.
+              purpose: "subscription",
+            });
+          } else {
+            // Assinatura desconhecida: não é erro de leitura, é cobrança de
+            // uma assinatura que este banco não conhece. Loga e segue para os
+            // degraus seguintes — o reconcile pode resolver depois.
+            jsonLog("warn", {
+              evt: "asaas_unknown_provider_subscription",
+              billing_event_id: row.id,
+              provider_subscription_id: providerSubscriptionId,
+            });
+          }
         }
 
         // getPayment devolve payload CRU do Asaas: `value` é em REAIS.
@@ -462,7 +592,18 @@ export async function applyAsaasEvent(
                 "Falha ao correlacionar o cliente do evento — ver logs.",
               );
             }
-            organizationId = cust?.organization_id ?? null;
+            // Degrau 5 — cliente do provedor. Resolve só a organização; no
+            // checkout hospedado o pagador gera um cliente NOVO, então nem
+            // sempre resolve.
+            if (cust?.organization_id) {
+              candidates.push({
+                source: "billing_customer",
+                organizationId: cust.organization_id as string,
+                subscriptionId: null,
+                planId: null,
+                purpose: null,
+              });
+            }
           }
         }
 
@@ -474,12 +615,11 @@ export async function applyAsaasEvent(
         // sobrevive é o `checkoutSession` (id do checkout que a
         // create-billing-checkout criou), presente na cobrança E na assinatura.
         // Mapeamos esse id → org na criação (billing_checkout_sessions) e
-        // reidratamos org+plano+purpose aqui.
+        // reidratamos org+plano+purpose aqui como Degrau 4.
         //
         // ESCOPO 4a (1ª cobrança/ativação): a renovação do mês 2+ NÃO carrega
         // checkoutSession (a cobrança nasce da assinatura, não do checkout) — a
-        // correlação dela é por provider_subscription_id (backfillado abaixo na
-        // ativação), trabalho da Fase 4b.
+        // correlação dela é pelo Degrau 2 (provider_subscription) acima.
         const checkoutRef = res.data.checkoutSession;
         if (typeof checkoutRef === "string" && checkoutRef) {
           checkoutSessionId = checkoutRef;
@@ -497,7 +637,10 @@ export async function applyAsaasEvent(
         // no caminho de compatibilidade e devolver `true` para uma cobrança de
         // implantação. Rodamos quando FALTA qualquer um dos três, e só quando há
         // checkout a consultar (é I/O de banco, fora do ASAAS_IO_BUDGET_MS, mas
-        // ainda assim não é para ser incondicional).
+        // ainda assim não é para ser incondicional). `organizationId`/`planId`/
+        // `purpose` aqui ainda são os valores PRÉ-escada (a decisão final só
+        // acontece depois deste bloco todo, em `resolveCorrelation`) — o gate
+        // é sobre o que já sabíamos ANTES de consultar o Asaas.
         if (checkoutSessionId && (!organizationId || !planId || purpose === "other")) {
           const { data: sess, error: sessErr } = await supabase
             .from("billing_checkout_sessions")
@@ -517,34 +660,25 @@ export async function applyAsaasEvent(
             );
           }
           if (sess) {
-            // Divergência é IMPOSSÍVEL hoje (o checkoutSession vem do próprio
-            // payment, logo a sessão é daquela org), mas se um dia acontecer,
-            // adotar plano+purpose de uma sessão de OUTRA organização seria bug
-            // cross-tenant silencioso. Uma linha de log transforma silencioso em
-            // ruidoso; não mudamos o comportamento, porque a precedência abaixo
-            // já mantém a org correta.
-            if (organizationId && sess.organization_id !== organizationId) {
-              jsonLog("error", {
-                evt: "asaas_checkout_session_org_mismatch",
-                billing_event_id: row.id,
-                resolved_organization_id: organizationId,
-                session_organization_id: sess.organization_id,
-              });
-            }
-            // PRESERVADOR em todos os campos: fonte de precedência maior
-            // (coluna do evento, invoice, externalReference, customer) nunca é
-            // sobrescrita por esta. Reidrata plano+purpose porque no checkout
-            // hospedado o payment vem SEM externalReference — sem isso planId
-            // fica null e purpose "other", o gate purpose!=="subscription" dá
-            // break antes de ativar e o INSERT de assinatura não teria
-            // billing_plan_id.
-            organizationId = organizationId ?? sess.organization_id;
+            // Reidrata plano+purpose porque no checkout hospedado o payment
+            // vem SEM externalReference — sem isso planId fica null e purpose
+            // "other", o gate purpose!=="subscription" dá break antes de
+            // ativar e o INSERT de assinatura não teria billing_plan_id.
+            // `externalReferenceRaw` não é campo de `CorrelationCandidate` —
+            // segue como atribuição direta, preservando o valor mais forte já
+            // capturado acima.
             externalReferenceRaw = externalReferenceRaw ?? sess.external_reference;
             const parsedSess = parseExternalReference(sess.external_reference);
-            if (parsedSess) {
-              planId = planId ?? parsedSess.planId;
-              if (purpose === "other") purpose = parsedSess.purpose;
-            }
+            // Degrau 4 — sessão de checkout. Divergência de organização entre
+            // este degrau e os demais não é mais um log isolado: vira
+            // `conflict` em `resolveCorrelation`, tratado logo abaixo.
+            candidates.push({
+              source: "checkout_session",
+              organizationId: (sess.organization_id as string | null) ?? null,
+              subscriptionId: null,
+              planId: parsedSess?.planId ?? null,
+              purpose: parsedSess?.purpose ?? null,
+            });
           }
         }
       } else if (effectKind === "activate_subscription") {
@@ -573,6 +707,53 @@ export async function applyAsaasEvent(
         );
       }
     }
+
+    // 5.5. Decidir a correlação com o núcleo puro, agora que todos os degraus
+    //      alcançáveis nesta passagem já empurraram seus candidatos.
+    const correlation = resolveCorrelation(candidates);
+
+    if (correlation.kind === "conflict") {
+      // Divergência de ORGANIZAÇÃO entre degraus. Escrever no tenant errado é
+      // pior que atrasar um pagamento: o evento fica na fila, o reconcile
+      // retenta, e um humano resolve.
+      await notifyAdminCorrelationAmbiguity(supabase, {
+        billingEventId: row.id,
+        detail: correlation.sources.map((s) => `${s.source}=${s.organizationId}`).join(" / "),
+        organizationId: row.organization_id,
+      });
+      return failWith(
+        row.organization_id,
+        effectKind,
+        "organization_divergence",
+        correlation.sources.map((s) => `${s.source}:${s.organizationId}`).join(","),
+        "Evento correlacionado a organizações divergentes — requer conferência.",
+      );
+    }
+
+    if (correlation.kind === "resolved") {
+      organizationId = correlation.organizationId;
+      resolvedSubscriptionId = correlation.subscriptionId;
+      planId = correlation.planId;
+      if (correlation.purpose) purpose = correlation.purpose;
+
+      if (correlation.softDivergence.length > 0) {
+        // Plano ou propósito discordando entre degraus NÃO é fatal — o degrau
+        // superior vence. Mas é anomalia que precisa aparecer: um plano
+        // trocado entre a criação da sessão e o pagamento é legítimo; dois
+        // planos aleatoriamente diferentes não são.
+        jsonLog("warn", {
+          evt: "asaas_correlation_soft_divergence",
+          billing_event_id: row.id,
+          sources: correlation.softDivergence,
+          resolved_plan: planId,
+          resolved_purpose: purpose,
+        });
+      }
+    }
+    // `correlation.kind === "unresolved"` não faz nada aqui: organizationId/
+    // planId/purpose mantêm os valores PRÉ-escada (row.organization_id ??
+    // invoice?.organization_id, e os defaults null/"other") — mesmo
+    // comportamento de fallback que o código tinha antes desta task.
 
     // 6. Categoria do plano do PAGAMENTO e a assinatura correspondente.
     //
