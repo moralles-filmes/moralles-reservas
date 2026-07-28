@@ -164,6 +164,25 @@ const TEMPLATE_BY_EVENT: Record<
       `Confira nos logs (<code>evt: asaas_invoice_reconcile_value_mismatch</code>) antes de liberar.`,
     ]),
   }),
+  // Aviso INTERNO (Fix round 1, achado 3 — decisão do dono): a varredura por
+  // assinatura achou uma cobrança estornada/contestada/cancelada ou de status
+  // desconhecido no Asaas, correspondente a uma fatura `open` local. A fatura
+  // foi CONGELADA (enforcement_hold='MANUAL_REVIEW') pra tirá-la da régua de
+  // inadimplência sem apagar o registro nem marcar como paga sozinha — sem
+  // esta entrada o dispatcher marcaria a linha como failed/unknown_event_type
+  // e o aviso sumiria. `d.amountBrl` é o valor LOCAL da fatura; o
+  // `remoteStatus` (REFUNDED/CHARGEBACK_*/status desconhecido) só está nos
+  // logs (evt: asaas_invoice_reconcile_non_collectible_hold) — o e-mail não
+  // tenta adivinhar se foi estorno, chargeback ou status novo da API.
+  admin_invoice_non_collectible_hold: (d) => ({
+    subject: "Fatura Asaas retida — cobrança estornada, contestada ou de status desconhecido",
+    text: `Uma fatura de ${d.orgName} (${d.amountBrl}) tem cobrança correspondente no Asaas com status de estorno, chargeback ou desconhecido. A fatura foi retida (enforcement_hold=MANUAL_REVIEW) e não entra na régua de inadimplência — confira nos logs (evt: asaas_invoice_reconcile_non_collectible_hold) para o status exato antes de qualquer ação.`,
+    html: wrapHtml("Fatura Asaas retida — revisão manual", [
+      `Uma fatura de <strong>${d.orgName}</strong> (<strong>${d.amountBrl}</strong>) tem cobrança correspondente no Asaas com status de <strong>estorno, chargeback ou desconhecido</strong>.`,
+      `A fatura foi <strong>retida</strong> (enforcement_hold=MANUAL_REVIEW) e não entra na régua de inadimplência.`,
+      `Confira nos logs (<code>evt: asaas_invoice_reconcile_non_collectible_hold</code>) para o status exato antes de qualquer ação.`,
+    ]),
+  }),
 };
 
 serve(async (req) => {

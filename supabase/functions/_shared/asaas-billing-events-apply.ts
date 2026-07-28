@@ -21,7 +21,13 @@ import {
   type AsaasPurpose,
 } from "./asaas-billing-events.ts";
 import { getBillingProvider } from "./billing-provider.ts";
-import { asaasValueToCents, parseAsaasAmountCents, type AsaasAmountParse } from "./asaas-core.ts";
+import {
+  asaasValueToCents,
+  parseAsaasAmountCents,
+  mapAsaasBillingTypeToPaymentMethod,
+  type AsaasAmountParse,
+  type AsaasInvoicePaymentMethod,
+} from "./asaas-core.ts";
 import { jsonLog } from "./security.ts";
 import {
   resolveBillingRecipient,
@@ -96,33 +102,15 @@ export interface ApplyOptions {
   recheckDurableEffect?: boolean;
 }
 
-/** Espelha o CHECK de billing_subscriptions.payment_method (migration 20260528000000). */
-type PaymentMethod = "card" | "pix" | "boleto";
-
-const PAYMENT_METHOD_BY_BILLING_TYPE: Readonly<Record<string, PaymentMethod>> = {
-  CREDIT_CARD: "card",
-  PIX: "pix",
-  BOLETO: "boleto",
-};
-
-/**
- * `billingType` do payload do Asaas → CHECK `card|pix|boleto`. ESTRITO: devolve
- * `null` para `UNDEFINED`/ausente em vez de chutar, porque o valor é lido por
- * humano no painel (`PAYMENT_METHOD_LABEL` em src/pages/platform/BillingDetail.tsx
- * e Billing.tsx) — chute vira informação errada na tela.
- *
- * O fallback `'card'` é aplicado SÓ no caminho de assinatura, onde ele é regra
- * de produto e não palpite: o checkout `RECURRENT` do Asaas recusa os outros
- * métodos (§13 da doc), então `UNDEFINED` ali só pode ter sido cartão. Em
- * cobrança avulsa (recarga de IA via PIX, por ex.) esse fallback seria falso,
- * e a coluna de `billing_invoices` é nullable justamente para isso.
- */
-function mapPaymentMethod(billingType: unknown): PaymentMethod | null {
-  if (typeof billingType === "string") {
-    return PAYMENT_METHOD_BY_BILLING_TYPE[billingType] ?? null;
-  }
-  return null;
-}
+// `PaymentMethod`/`mapPaymentMethod` MOVIDOS pra `asaas-core.ts` (Fase 5b Task
+// 11, fix round 1 — `AsaasInvoicePaymentMethod`/`mapAsaasBillingTypeToPaymentMethod`)
+// pra parar de duplicar o mapa em `_shared/asaas-invoice-reconcile-core.ts`.
+// O fallback `'card'` deste arquivo (ver `p_payment_method: paymentMethod ??
+// "card"` abaixo) continua SÓ no caminho de assinatura, onde é regra de
+// produto e não palpite: o checkout `RECURRENT` do Asaas recusa os outros
+// métodos (§13 da doc), então `UNDEFINED` ali só pode ter sido cartão. Em
+// cobrança avulsa (recarga de IA via PIX, por ex.) esse fallback seria falso
+// — por isso o fallback fica no CALLER, nunca dentro do mapeamento puro.
 
 /** Extrai o id do payment do envelope. Shape não é uniforme entre categorias (§3). */
 function extractPaymentId(data: Record<string, unknown> | null): string | null {
@@ -454,7 +442,7 @@ export async function applyAsaasEvent(
     // mas extraído aqui ao lado de `paidValueCents` porque os dois vêm do
     // MESMO payload, no mesmo bloco de enriquecimento abaixo.
     let paymentDueDate: string | null = null;
-    let paymentMethod: PaymentMethod | null = null;
+    let paymentMethod: AsaasInvoicePaymentMethod | null = null;
     let providerSubscriptionId: string | null = null;
     let checkoutSessionId: string | null = null;
     // id INTERNO de billing_subscriptions (não o `sub_…` do provedor, que
@@ -610,7 +598,7 @@ export async function applyAsaasEvent(
           });
         }
 
-        paymentMethod = mapPaymentMethod(res.data.billingType);
+        paymentMethod = mapAsaasBillingTypeToPaymentMethod(res.data.billingType);
 
         // §13.6: cobrança gerada por assinatura traz `subscription: "sub_…"`;
         // cobrança avulsa OMITE o campo (não vem `null`). Daí o typeof guard.

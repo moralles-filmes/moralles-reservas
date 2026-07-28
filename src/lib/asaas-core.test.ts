@@ -25,6 +25,7 @@ import {
   ASAAS_PAYMENT_LIST_MAX_PAGES,
   ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS,
   hasAsaasBudgetForAnotherPage,
+  mapAsaasBillingTypeToPaymentMethod,
 } from "../../supabase/functions/_shared/asaas-core";
 
 // Fatos verificados em docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§8):
@@ -983,5 +984,31 @@ describe("hasAsaasBudgetForAnotherPage", () => {
     expect(hasAsaasBudgetForAnotherPage(NaN)).toBe(false);
     expect(() => hasAsaasBudgetForAnotherPage(Infinity)).not.toThrow();
     expect(hasAsaasBudgetForAnotherPage(Infinity)).toBe(true);
+  });
+});
+
+// Extraído de `asaas-billing-events-apply.ts` pro fix round 1 da Fase 5b
+// Task 11 (achado "minor" de duplicação): aquele arquivo importa
+// `SupabaseClient` (mesmo só de tipo) de `https://esm.sh/@supabase/supabase-js`,
+// o que quebra a resolução do Vite pra qualquer teste vitest que tente
+// importá-lo — confirmado empiricamente, não por dedução. Mover o mapa pra
+// cá (em vez de manter uma segunda cópia em `_shared/asaas-invoice-reconcile-core.ts`
+// com um teste de sincronia) elimina a duplicação inteira: agora só existe
+// UMA definição, e `asaas-billing-events-apply.ts` importa dela.
+describe("mapAsaasBillingTypeToPaymentMethod", () => {
+  it("mapeia os 3 tipos conhecidos", () => {
+    expect(mapAsaasBillingTypeToPaymentMethod("CREDIT_CARD")).toBe("card");
+    expect(mapAsaasBillingTypeToPaymentMethod("PIX")).toBe("pix");
+    expect(mapAsaasBillingTypeToPaymentMethod("BOLETO")).toBe("boleto");
+  });
+
+  it("null/undefined/não-string/desconhecido nunca chutam um método", () => {
+    expect(mapAsaasBillingTypeToPaymentMethod(null)).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod(undefined)).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod("UNDEFINED")).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod("")).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod("credit_card")).toBeNull(); // case-sensitive
+    expect(mapAsaasBillingTypeToPaymentMethod(123)).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod({})).toBeNull();
   });
 });

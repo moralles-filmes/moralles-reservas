@@ -275,6 +275,51 @@ export function parseAsaasAmountCents(value: unknown): AsaasAmountParse {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Método de pagamento — mapeamento único (Fase 5b Task 11, fix round 1)
+//
+// EXTRAÍDO de `asaas-billing-events-apply.ts` (que tinha uma cópia privada
+// `PAYMENT_METHOD_BY_BILLING_TYPE`/`mapPaymentMethod`) para cá em vez de deixar
+// `_shared/asaas-invoice-reconcile-core.ts` manter uma SEGUNDA cópia. A opção
+// "escrever um teste de sincronia entre as duas cópias" foi avaliada e
+// descartada: `asaas-billing-events-apply.ts` importa `SupabaseClient` (mesmo
+// só de tipo) de `https://esm.sh/@supabase/supabase-js`, e ISSO quebra a
+// resolução do Vite pra qualquer teste vitest que tente importar esse módulo
+// — confirmado empiricamente (não por dedução) tentando importar a função de
+// dentro de um teste antes deste commit: `Error: Only URLs with a scheme in:
+// file and data are supported by the default ESM loader`. Um teste de
+// sincronia real é IMPOSSÍVEL sem primeiro mover o mapa pra fora do arquivo
+// de I/O — que é exatamente o que este bloco faz. `asaas-core.ts` já é o
+// lugar comprovado que tanto Deno (EFs) quanto vitest (src/lib/*.test.ts)
+// conseguem importar sem quebrar nada.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Espelha o CHECK de `billing_invoices.payment_method`/`billing_subscriptions.payment_method`
+ * (migration 20260528000000). */
+export type AsaasInvoicePaymentMethod = "card" | "pix" | "boleto";
+
+const PAYMENT_METHOD_BY_BILLING_TYPE: Readonly<Record<string, AsaasInvoicePaymentMethod>> = {
+  CREDIT_CARD: "card",
+  PIX: "pix",
+  BOLETO: "boleto",
+};
+
+/**
+ * `billingType` do payload do Asaas → CHECK `card|pix|boleto`. ESTRITO: devolve
+ * `null` para `UNDEFINED`/ausente/desconhecido em vez de chutar — o valor é
+ * lido por humano no painel (`PAYMENT_METHOD_LABEL` em
+ * src/pages/platform/BillingDetail.tsx e Billing.tsx), e um chute vira
+ * informação errada na tela. Aceita `unknown` (não só `string | null`) porque
+ * o consumidor original (`asaas-billing-events-apply.ts`) recebe o campo cru
+ * de `res.data.billingType` (JSON de terceiro, tipo não garantido).
+ */
+export function mapAsaasBillingTypeToPaymentMethod(billingType: unknown): AsaasInvoicePaymentMethod | null {
+  if (typeof billingType === "string") {
+    return PAYMENT_METHOD_BY_BILLING_TYPE[billingType] ?? null;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Webhook — classificação de evento + parsing do envelope (§3/§4 da doc,
 // Fase 2 Task 4). Consumido por supabase/functions/asaas-webhook/index.ts e
 // supabase/functions/process-asaas-reconcile/index.ts (Task 5, só reclassifica
