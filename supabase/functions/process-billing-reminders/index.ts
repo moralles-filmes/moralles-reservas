@@ -34,6 +34,11 @@ serve(async (req) => {
       .from("billing_invoices")
       .select("id, organization_id, due_date, billing_subscription_id, external_reference, purpose")
       .eq("status", "open")
+      // Fatura retida não gera lembrete: cobrar por e-mail o que o sistema
+      // decidiu não escalar é pior que não cobrar. Mesmo filtro e mesmo
+      // ponto do process-billing-overdue — antes de qualquer decisão por
+      // invoice, não depois.
+      .eq("enforcement_hold", false)
       .not("due_date", "is", null);
 
     let queued = 0;

@@ -34,6 +34,13 @@ serve(async (req) => {
       .from("billing_invoices")
       .select("id, organization_id, due_date, billing_subscription_id, external_reference, purpose")
       .eq("status", "open")
+      // Fatura retida para revisão administrativa NÃO conta como atraso — é o
+      // freio que impede a primeira varredura da ingestão de suspender alguém
+      // por dívida antiga que nunca foi cobrada de verdade. Filtro entra ANTES
+      // da redução "mais antiga por org": se entrasse depois, uma org cuja
+      // fatura mais antiga está retida jamais seria avaliada pela próxima
+      // fatura vencida não retida.
+      .eq("enforcement_hold", false)
       .lt("due_date", today);
 
     // Menor (mais antiga) invoice vencida por org — CONSIDERANDO SÓ AS DE
