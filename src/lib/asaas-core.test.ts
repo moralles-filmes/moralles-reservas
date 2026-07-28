@@ -14,6 +14,7 @@ import {
   GET_MAX_RETRIES,
   centsToAsaasValue,
   asaasValueToCents,
+  parseAsaasAmountCents,
   ASAAS_PAYMENT_EVENTS,
   ASAAS_SUBSCRIPTION_EVENTS,
   ASAAS_CHECKOUT_EVENTS,
@@ -468,6 +469,70 @@ describe("asaasValueToCents — reais decimais → centavos (§9.1)", () => {
 describe("round-trip asaasValueToCents(centsToAsaasValue(x)) === x", () => {
   it.each([0, 100, 4990, 14900, 44900, 75000, 1, 999999])("%i centavos sobrevive ao round-trip", (cents) => {
     expect(asaasValueToCents(centsToAsaasValue(cents))).toBe(cents);
+  });
+});
+
+// parseAsaasAmountCents — Fix round 1 da Fase 5b (Task 9): protege
+// `upsert_open_invoice` de tratar "não deu pra ler o valor" como R$ 0,00.
+// Zero explícito e ausência têm que produzir resultados DIFERENTES — é o
+// ponto inteiro da função.
+describe("parseAsaasAmountCents — não confunde ausente com zero (Fix round 1)", () => {
+  it("valor válido vira centavos respeitando o arredondamento existente (delega a asaasValueToCents)", () => {
+    expect(parseAsaasAmountCents(449)).toEqual({ ok: true, cents: 44900 });
+    // Mesmo float drift do IEEE 754 que asaasValueToCents já cobre — prova que
+    // não existe uma segunda lógica de conversão aqui.
+    expect(parseAsaasAmountCents(19.9)).toEqual({ ok: true, cents: 1990 });
+  });
+
+  it("zero explícito é aceito (protege plano trial R$ 0)", () => {
+    expect(parseAsaasAmountCents(0)).toEqual({ ok: true, cents: 0 });
+  });
+
+  it("zero explícito é DISTINTO de ausente — o mesmo `cents:0` não pode nascer de um value que nunca veio", () => {
+    const zero = parseAsaasAmountCents(0);
+    const missing = parseAsaasAmountCents(undefined);
+    expect(zero.ok).toBe(true);
+    expect(missing.ok).toBe(false);
+    // `missing.ok === false` (não `!missing.ok`) — sob strict:false deste
+    // tsconfig, negar um discriminante boolean não estreita a união dentro do
+    // próprio `if`; comparação por igualdade estreita corretamente.
+    if (missing.ok === false) expect(missing.code).toBe("MISSING_PAYMENT_AMOUNT");
+  });
+
+  it("undefined não vira zero — MISSING_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(undefined)).toEqual({ ok: false, code: "MISSING_PAYMENT_AMOUNT" });
+  });
+
+  it("null não vira zero — MISSING_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(null)).toEqual({ ok: false, code: "MISSING_PAYMENT_AMOUNT" });
+  });
+
+  it("string vazia não vira zero — MISSING_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents("")).toEqual({ ok: false, code: "MISSING_PAYMENT_AMOUNT" });
+  });
+
+  it("NaN é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(NaN)).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+
+  it("Infinity é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(Infinity)).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+
+  it("negativo é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(-1)).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+
+  it("não-número (string não vazia, objeto) é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents("449")).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+    expect(parseAsaasAmountCents({})).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+
+  it("valor absurdamente grande (centavos estourando Number.MAX_SAFE_INTEGER) é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    // MAX_SAFE_INTEGER / 100 já é maior que qualquer cobrança real possível —
+    // fronteira de correção de representação, não regra de negócio.
+    const hugeValue = Number.MAX_SAFE_INTEGER;
+    expect(parseAsaasAmountCents(hugeValue)).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
   });
 });
 

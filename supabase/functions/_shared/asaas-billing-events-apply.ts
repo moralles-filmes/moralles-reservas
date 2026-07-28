@@ -21,7 +21,7 @@ import {
   type AsaasPurpose,
 } from "./asaas-billing-events.ts";
 import { getBillingProvider } from "./billing-provider.ts";
-import { asaasValueToCents } from "./asaas-core.ts";
+import { asaasValueToCents, parseAsaasAmountCents, type AsaasAmountParse } from "./asaas-core.ts";
 import { jsonLog } from "./security.ts";
 import {
   resolveBillingRecipient,
@@ -34,7 +34,11 @@ import {
   CORRELATION_RANK,
   type CorrelationCandidate,
 } from "./billing-correlation-core.ts";
-import { isFlagEnabled, getFlagString } from "./platform-flags.ts";
+// `checkFlagEnabled`/`checkFlagString` (NÃO `isFlagEnabled`/`getFlagString`):
+// uma leitura de flag que FALHA (DB indisponível) tem que virar `failed` (o
+// evento fica na fila, o reconcile retenta), nunca "flag desligada" — Fix
+// round 1 da Fase 5b. Ver o gate 4.1 e `decideIngestionHold` abaixo.
+import { checkFlagEnabled, checkFlagString } from "./platform-flags.ts";
 
 export interface BillingEventRow {
   id: string;
@@ -323,6 +327,11 @@ async function notifyAdminCorrelationAmbiguity(
   }
 }
 
+/** Resultado de `decideIngestionHold` — ver função abaixo. */
+type IngestionHoldDecision =
+  | { ok: true; hold: boolean; reason: string | null }
+  | { ok: false };
+
 /**
  * Decide se a fatura entra retida. RETENÇÃO É EXCEPCIONAL: fatura encontrada
  * tarde por falha temporária de webhook preserva vencimento e tolerância reais
@@ -332,17 +341,27 @@ async function notifyAdminCorrelationAmbiguity(
  * Só dois motivos automáticos aqui: backfill declarado pelo caller, e cobrança
  * anterior ao go-live da ingestão. `VALUE_MISMATCH` e `CORRELATION_AMBIGUITY`
  * são retenções de OUTROS pontos do fluxo, não desta função.
+ *
+ * `ok: false` (Fix round 1) é a leitura de `billing_invoice_ingestion_since`
+ * tendo FALHADO (DB indisponível) — `checkFlagString` distingue isso de
+ * "flag vazia de verdade". Colapsar os dois em "sem retenção" desligaria a
+ * proteção pré-go-live justo na janela em que ela mais importa (cobrança
+ * antiga encontrada pela primeira reconciliação). O caller DEVE tratar
+ * `ok:false` como falha do evento (`failed`), nunca como "não reter".
  */
 async function decideIngestionHold(
   args: { dueDate: string; source: "WEBHOOK" | "RECONCILE" | "BACKFILL" },
-): Promise<{ hold: boolean; reason: string | null }> {
-  if (args.source === "BACKFILL") return { hold: true, reason: "INITIAL_BACKFILL" };
+): Promise<IngestionHoldDecision> {
+  if (args.source === "BACKFILL") return { ok: true, hold: true, reason: "INITIAL_BACKFILL" };
 
-  const since = await getFlagString("billing_invoice_ingestion_since", "");
-  if (since && args.dueDate < since) {
-    return { hold: true, reason: "PRE_GO_LIVE_INVOICE" };
+  const since = await checkFlagString("billing_invoice_ingestion_since", "");
+  if (since.readFailed) {
+    return { ok: false };
   }
-  return { hold: false, reason: null };
+  if (since.value && args.dueDate < since.value) {
+    return { ok: true, hold: true, reason: "PRE_GO_LIVE_INVOICE" };
+  }
+  return { ok: true, hold: false, reason: null };
 }
 
 /**
@@ -420,6 +439,16 @@ export async function applyAsaasEvent(
     let purpose: AsaasPurpose = "other";
     let externalReferenceRaw: string | null = null;
     let paidValueCents: number | null = null;
+    // Resultado TIPADO do parse de `payment.value` (Fix round 1) — usado só
+    // por `upsert_open_invoice`. DELIBERADAMENTE separado de `paidValueCents`
+    // acima: aquela variável já é consumida pelo caminho `activate_subscription`
+    // (verificado e correto — ver `case "activate_subscription"`) e este fix
+    // não reescreve código já certo. `paymentAmountParse` existe porque
+    // `paidValueCents: number | null` colapsa "ausente" e "inválido" no mesmo
+    // `null` sem dizer qual — e é exatamente essa ambiguidade que motivou o
+    // achado: sem ela, `upsert_open_invoice` fazia `paidValueCents ?? 0`,
+    // tratando "não consegui ler o valor" como "cobrança de R$ 0,00".
+    let paymentAmountParse: AsaasAmountParse | null = null;
     // `dueDate` (YYYY-MM-DD) do payload do getPayment — usado só por
     // `upsert_open_invoice` (due_date da fatura e insumo de `decideIngestionHold`),
     // mas extraído aqui ao lado de `paidValueCents` porque os dois vêm do
@@ -476,9 +505,27 @@ export async function applyAsaasEvent(
     //      fundos. Com a flag OFF (default até o go-live), este `return`
     //      reproduz OS MESMOS `status`/`organizationId`/`effect` que o antigo
     //      `noop` de `PAYMENT_CREATED` devolvia.
+    //
+    //      `checkFlagEnabled` (Fix round 1), NÃO `isFlagEnabled`: uma leitura
+    //      que FALHA (DB fora do ar) devolve `enabled:false` de qualquer jeito
+    //      em `isFlagEnabled` — indistinguível de "flag OFF de verdade". Com a
+    //      ingestão LIGADA, isso faria um soluço transitório do banco virar
+    //      `processed` (sai da fila) sem nunca ter criado a fatura, e nada
+    //      revisita `processed` depois — é o buraco que esta fase existe pra
+    //      fechar. Falha de leitura tem que virar `failed`: o evento fica na
+    //      fila e o `process-asaas-reconcile` tenta de novo.
     if (effect.kind === "upsert_open_invoice") {
-      const ingestionOn = await isFlagEnabled("billing_invoice_ingestion");
-      if (!ingestionOn) {
+      const ingestionCheck = await checkFlagEnabled("billing_invoice_ingestion");
+      if (ingestionCheck.readFailed) {
+        return failWith(
+          organizationId,
+          effect.kind,
+          "upsert_open_invoice_flag_read_failed",
+          "falha ao ler a flag billing_invoice_ingestion",
+          "Falha ao verificar configuração de cobrança — ver logs.",
+        );
+      }
+      if (!ingestionCheck.enabled) {
         jsonLog("info", { evt: "asaas_invoice_ingestion_disabled", billing_event_id: row.id });
         return { status: "processed", organizationId, effect: effect.kind };
       }
@@ -635,6 +682,13 @@ export async function applyAsaasEvent(
             raw_value: rawValue === undefined ? "ausente" : String(rawValue),
           });
         }
+
+        // Mesmo `rawValue`, resultado TIPADO (Fix round 1) — só pra
+        // `upsert_open_invoice`. `parseAsaasAmountCents` distingue "ausente" de
+        // "inválido" (o log acima não distinguia) e devolve zero explícito como
+        // resultado válido em vez de colapsá-lo com "não sei". Ver o `case`
+        // abaixo pra onde isso é consumido.
+        paymentAmountParse = parseAsaasAmountCents(rawValue);
 
         // `dueDate` alimenta `billing_invoices.due_date` (efeito
         // `upsert_open_invoice`) e `decideIngestionHold`. Mesmo tratamento do
@@ -1376,7 +1430,62 @@ export async function applyAsaasEvent(
           );
         }
 
+        // Achado Important #2 (Fix round 1): valor financeiro DESCONHECIDO
+        // bloqueia o evento, nunca vira R$ 0,00 — R$ 0,00 tem significado
+        // financeiro próprio (ex.: cortesia) e não é um fallback técnico pra
+        // "não consegui ler". `paymentAmountParse` (calculado junto de
+        // `paidValueCents` no bloco de enriquecimento acima) já distingue
+        // "ausente" de "inválido"; NENHUM `?? 0`/`|| 0` neste campo.
+        //
+        // Dois `if` separados (null → depois `.ok === false`), NÃO
+        // `!paymentAmountParse.ok` combinado nem `?.code`: sob
+        // `strictNullChecks:false` (tsconfig.json deste repo — arquivo Deno,
+        // fora do `tsc -b`, mas escrito pra tipar corretamente se algum dia
+        // entrar), a negação de um discriminante boolean (`!x.ok`) NÃO
+        // estreita a união dentro do próprio `if`, e acesso via `?.` a um
+        // campo que só existe num dos ramos é erro independente de
+        // estreitamento. `x.ok === false` estreita corretamente; verificado.
+        if (!paymentAmountParse) {
+          return failWith(
+            organizationId,
+            effectKind,
+            "upsert_open_invoice_bad_amount",
+            `provider_event_id=${row.provider_event_id} payment_id=${paymentId} ` +
+              `provider_subscription_id=${providerSubscriptionId ?? "null"} ` +
+              `organization_id=${organizationId ?? "null"} purpose=${purpose} ` +
+              `event_type=${row.event_type} missing_or_invalid_field=value code=MISSING_PAYMENT_AMOUNT`,
+            "Cobrança sem valor legível para registrar a fatura — ver logs.",
+          );
+        }
+        if (paymentAmountParse.ok === false) {
+          // `detail` é STRING, não objeto — `failWith` faz `String(detail)` pro
+          // log (um objeto viraria "[object Object]" e perderia tudo). Campos
+          // exigidos pelo achado: evento do provedor, pagamento, assinatura do
+          // provedor, organização, purpose, tipo do evento, campo problemático
+          // e a classificação. Nenhuma chave/token/payload aqui.
+          return failWith(
+            organizationId,
+            effectKind,
+            "upsert_open_invoice_bad_amount",
+            `provider_event_id=${row.provider_event_id} payment_id=${paymentId} ` +
+              `provider_subscription_id=${providerSubscriptionId ?? "null"} ` +
+              `organization_id=${organizationId ?? "null"} purpose=${purpose} ` +
+              `event_type=${row.event_type} missing_or_invalid_field=value code=${paymentAmountParse.code}`,
+            "Cobrança sem valor legível para registrar a fatura — ver logs.",
+          );
+        }
+        // `paymentAmountParse` é `{ok:true, cents}` daqui pra baixo.
+
         const hold = await decideIngestionHold({ dueDate: paymentDueDate, source: "WEBHOOK" });
+        if (!hold.ok) {
+          return failWith(
+            organizationId,
+            effectKind,
+            "upsert_open_invoice_hold_flag_read_failed",
+            `cobrança ${paymentId}: falha ao ler billing_invoice_ingestion_since`,
+            "Falha ao verificar configuração de cobrança — ver logs.",
+          );
+        }
 
         // `billing_subscription_id` vem de `resolvedSubscriptionId` — o id
         // INTERNO produzido pela escada de correlação (Task 8), não de
@@ -1388,7 +1497,7 @@ export async function applyAsaasEvent(
           provider: "asaas",
           provider_payment_id: paymentId,
           status: "open",
-          amount_cents: paidValueCents ?? 0,
+          amount_cents: paymentAmountParse.cents,
           payment_method: paymentMethod,
           due_date: paymentDueDate,
           purpose,

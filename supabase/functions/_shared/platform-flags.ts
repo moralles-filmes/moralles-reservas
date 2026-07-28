@@ -122,6 +122,41 @@ export async function getFlagString(key: string, fallback: string): Promise<stri
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
+/** Resultado de `checkFlagString` — ver função abaixo. */
+export interface FlagStringCheckResult {
+  /** Valor efetivo pro caller (o `fallback` também quando a leitura falhou). */
+  value: string;
+  /** `true` quando o valor acima NÃO é confiável — a leitura falhou, não é ausência/vazio genuíno. */
+  readFailed: boolean;
+}
+
+/**
+ * Como `getFlagString`, mas separa "flag ausente/vazia DE VERDADE" de "não deu
+ * pra saber" — mesmo espírito de `checkFlagEnabled` pro par booleano, sem
+ * irmão de leitura confiável até a Fase 5b. Caller que trata as duas coisas
+ * igual (ex.: UI, log informativo) continua usando `getFlagString`; caller pra
+ * quem uma leitura falha não pode virar "campo vazio" (ex.:
+ * `billing_invoice_ingestion_since` — uma falha de leitura não pode desligar
+ * silenciosamente a retenção de fatura pré-go-live) usa esta função.
+ */
+export async function checkFlagString(key: string, fallback: string): Promise<FlagStringCheckResult> {
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    const v = cached.value;
+    return { value: typeof v === "string" && v.length > 0 ? v : fallback, readFailed: false };
+  }
+
+  const result = await readFlagFromDb(key);
+  if (!result.ok) {
+    return { value: fallback, readFailed: true };
+  }
+  cache.set(key, { value: result.value, fetchedAt: Date.now() });
+  return {
+    value: typeof result.value === "string" && result.value.length > 0 ? result.value : fallback,
+    readFailed: false,
+  };
+}
+
 export function clearPlatformFlagsCache(): void {
   cache.clear();
 }

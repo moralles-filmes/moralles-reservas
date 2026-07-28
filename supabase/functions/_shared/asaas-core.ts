@@ -231,6 +231,49 @@ export function asaasValueToCents(value: number): number {
   return Math.round(value * 100);
 }
 
+/**
+ * Resultado tipado do parse de `payment.value` (payload cru do Asaas, tipo
+ * `unknown` — JSON de terceiro). Ao contrário de `asaasValueToCents`, esta
+ * função NUNCA lança: o caller (o aplicador de eventos Asaas) precisa decidir
+ * o que fazer com um valor ausente/inválido sem `try/catch` por chamada, e
+ * precisa saber a DIFERENÇA entre "o campo não veio" e "o campo veio, mas é
+ * lixo" — os dois exigem o mesmo `failed` no chamador, mas merecem log e
+ * observabilidade diferentes.
+ */
+export type AsaasAmountParse =
+  | { ok: true; cents: number }
+  | { ok: false; code: "MISSING_PAYMENT_AMOUNT" | "INVALID_PAYMENT_AMOUNT" };
+
+/**
+ * `payment.value` cru do Asaas → resultado tipado em centavos. Delega TODO o
+ * arredondamento a `asaasValueToCents` — nenhuma segunda lógica de conversão
+ * aqui, só classificação de entrada.
+ *
+ * Zero explícito (`value: 0`) é um resultado VÁLIDO (`{ok:true, cents:0}`) —
+ * cobrança de valor zero existe (plano trial) — e tem que ficar distinguível
+ * de "não veio" (`undefined`/`null`/string vazia). Colapsar os dois em zero é
+ * exatamente o bug que esta função existe para impedir: um `value` ausente ou
+ * corrompido virando `amount_cents: 0` cria uma fatura aparentemente válida
+ * que nunca vai ser cobrada de verdade — R$ 0,00 tem significado financeiro
+ * próprio, não é um "não sei".
+ */
+export function parseAsaasAmountCents(value: unknown): AsaasAmountParse {
+  if (value === undefined || value === null || value === "") {
+    return { ok: false, code: "MISSING_PAYMENT_AMOUNT" };
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return { ok: false, code: "INVALID_PAYMENT_AMOUNT" };
+  }
+  const cents = asaasValueToCents(value);
+  // Fronteira de correção (representação segura de inteiro em JS), não regra
+  // de negócio inventada: nenhum plano real chega perto disso, mas um payload
+  // corrompido não pode produzir um `amount_cents` fora da precisão segura.
+  if (!Number.isSafeInteger(cents)) {
+    return { ok: false, code: "INVALID_PAYMENT_AMOUNT" };
+  }
+  return { ok: true, cents };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Webhook — classificação de evento + parsing do envelope (§3/§4 da doc,
 // Fase 2 Task 4). Consumido por supabase/functions/asaas-webhook/index.ts e
