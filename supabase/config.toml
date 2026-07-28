@@ -129,6 +129,12 @@ verify_jwt = false
 [functions.process-asaas-reconcile]
 verify_jwt = false
 
+# Worker: reconcilia cobranças do Asaas com billing_invoices por assinatura
+# (pg_cron 08:00 UTC). Obrigatório explicitar — CLI >=2.95 default vira true e
+# o gateway responde 401 antes do requireInternalAuth, cron silencia.
+[functions.process-asaas-invoice-reconcile]
+verify_jwt = false
+
 # Worker: dispatcher da fila billing_notifications via Resend (pg_cron */5min)
 [functions.process-billing-notifications]
 verify_jwt = false

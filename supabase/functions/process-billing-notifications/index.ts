@@ -145,6 +145,25 @@ const TEMPLATE_BY_EVENT: Record<
       `Confira nos logs (<code>evt: asaas_previous_stamp_divergence</code>) se a correção foi aplicada automaticamente ou se aguarda revisão.`,
     ]),
   }),
+  // Aviso INTERNO (vai para o admin da plataforma, não para o cliente —
+  // Fase 5b Task 11, process-asaas-invoice-reconcile): a varredura por
+  // assinatura achou uma fatura `open` cujo `amount_cents` diverge do `value`
+  // atual da cobrança no Asaas. A fatura foi RETIDA (`enforcement_hold`) sem
+  // corrigir nenhum dos dois lados — sem esta entrada o dispatcher marcaria a
+  // linha como failed/unknown_event_type e o aviso sumiria, deixando a
+  // divergência presa sem ninguém saber. `d.amountBrl` é o valor LOCAL (o que
+  // `billing_invoices.amount_cents` registra); o valor do provedor só está
+  // nos logs (evt: asaas_invoice_reconcile_value_mismatch) — nunca inventar
+  // qual dos dois está certo no corpo do e-mail.
+  admin_invoice_value_mismatch: (d) => ({
+    subject: "Fatura Asaas com valor divergente — requer conferência",
+    text: `Uma fatura de ${d.orgName} tem valor divergente entre billing_invoices (${d.amountBrl}) e a cobrança correspondente no Asaas. A fatura foi retida (enforcement_hold) e não entra na régua de inadimplência até revisão manual — confira nos logs (evt: asaas_invoice_reconcile_value_mismatch) antes de liberar.`,
+    html: wrapHtml("Fatura Asaas com valor divergente", [
+      `Uma fatura de <strong>${d.orgName}</strong> tem valor divergente entre <code>billing_invoices</code> (<strong>${d.amountBrl}</strong>) e a cobrança correspondente no Asaas.`,
+      `A fatura foi <strong>retida</strong> (enforcement_hold) e não entra na régua de inadimplência até revisão manual.`,
+      `Confira nos logs (<code>evt: asaas_invoice_reconcile_value_mismatch</code>) antes de liberar.`,
+    ]),
+  }),
 };
 
 serve(async (req) => {
