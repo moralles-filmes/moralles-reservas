@@ -204,3 +204,87 @@ export function decideWhatsAppGate(i: WhatsAppGateInput): WhatsAppGateDecision {
 
   return { state, systemBlocked, sendingBlocked, newProvisioningBlocked, reason };
 }
+
+/**
+ * Combina a decisão de `decideWhatsAppGate` com o resultado da leitura da
+ * flag de enforcement e da leitura de dados, e devolve a CONSEQUÊNCIA
+ * operacional. Roda DEPOIS de `decideWhatsAppGate` e não reimplementa nada
+ * dele — a flag controla só a APLICAÇÃO das consequências, nunca o estado
+ * calculado (os sete estados e as duas perguntas acima ficam intocados).
+ *
+ * ASSIMETRIA INTENCIONAL entre as duas consequências, e ela é o motivo desta
+ * função existir em vez de um `flagOn && decision.xBlocked` solto no caller:
+ *   - Envio existente é FAIL-OPEN: uma flag ilegível ou um dado que não pôde
+ *     ser lido NÃO pode suspender quem já está usando o WhatsApp por causa de
+ *     um soluço técnico. `enforced.sending` só fica `true` quando TUDO foi
+ *     lido com sucesso E a flag está ligada E o estado bloqueia.
+ *   - Novo provisionamento é FAIL-CLOSED: autorizar um custo externo recorrente
+ *     (nova instância) sem conseguir confirmar a autorização é pior do que
+ *     recusar e pedir para tentar de novo. `enforced.newProvisioning` só fica
+ *     `false` (permite) quando TUDO foi confirmado — qualquer leitura que
+ *     falhou, ou a flag desligada, ou o estado bloqueando, resulta em bloqueio.
+ */
+export interface EnforcementInput {
+  decision: WhatsAppGateDecision;
+  flagEnabled: boolean;
+  flagReadFailed: boolean;
+  /** Alguma das leituras de ESTADO (org, overrides, assinatura, fatura) falhou. */
+  dataReadFailed: boolean;
+}
+
+/**
+ * Motivo do bloqueio de provisionamento, para a UI/log dizerem a coisa certa
+ * ao usuário — "não foi possível verificar agora" é uma mensagem diferente de
+ * "você não tem direito". Ordem de precedência FIXA (ver `resolveEnforcement`):
+ * transitório (leitura falhou) sempre vence sobre definitivo (estado ou flag).
+ */
+export type ProvisioningBlockReason =
+  | "ALLOWED"
+  | "ENFORCEMENT_FLAG_UNREADABLE"
+  | "STATE_READ_FAILED"
+  | "SERVICE_STATE"
+  | "ENFORCEMENT_FLAG_OFF";
+
+/**
+ * `"FLAG_READ_FAILED"` é distinto de `"NONE"` de propósito: uma leitura de
+ * flag que falhou NUNCA pode contar como "flag OFF" na métrica de dry-run —
+ * ela inflaria `whatsapp_enforcement_dryrun`, a única métrica que sustenta a
+ * decisão de ligar o enforcement, com ruído de um soluço da tabela de flags.
+ */
+export type EnforcementTelemetry = "NONE" | "DRY_RUN_WOULD_BLOCK_SENDING" | "FLAG_READ_FAILED";
+
+export interface EnforcementResult {
+  enforcementEnabled: boolean;
+  enforced: { sending: boolean; newProvisioning: boolean };
+  provisioningBlockReason: ProvisioningBlockReason;
+  telemetry: EnforcementTelemetry;
+}
+
+export function resolveEnforcement(i: EnforcementInput): EnforcementResult {
+  const enforcementEnabled = i.flagEnabled && !i.flagReadFailed;
+  const anyReadFailed = i.flagReadFailed || i.dataReadFailed;
+
+  const sending = i.decision.sendingBlocked && enforcementEnabled && !anyReadFailed;
+  // Fail-closed: bloqueado a menos que TUDO tenha sido confirmado (flag lida
+  // com sucesso E ligada E nenhuma leitura de estado falhou E o estado libera).
+  const newProvisioning = !(enforcementEnabled && !anyReadFailed && !i.decision.newProvisioningBlocked);
+
+  let provisioningBlockReason: ProvisioningBlockReason;
+  if (i.flagReadFailed) provisioningBlockReason = "ENFORCEMENT_FLAG_UNREADABLE";
+  else if (i.dataReadFailed) provisioningBlockReason = "STATE_READ_FAILED";
+  else if (i.decision.newProvisioningBlocked) provisioningBlockReason = "SERVICE_STATE";
+  else if (!i.flagEnabled) provisioningBlockReason = "ENFORCEMENT_FLAG_OFF";
+  else provisioningBlockReason = "ALLOWED";
+
+  let telemetry: EnforcementTelemetry;
+  if (i.flagReadFailed) telemetry = "FLAG_READ_FAILED";
+  else if (!i.flagEnabled && !anyReadFailed && i.decision.sendingBlocked) telemetry = "DRY_RUN_WOULD_BLOCK_SENDING";
+  else telemetry = "NONE";
+
+  return {
+    enforcementEnabled,
+    enforced: { sending, newProvisioning },
+    provisioningBlockReason,
+    telemetry,
+  };
+}

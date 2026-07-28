@@ -3,46 +3,63 @@
  * Camada de I/O do gate de serviço de WhatsApp: carrega do banco o que o núcleo
  * puro precisa e devolve a decisão já combinada com a flag de enforcement.
  *
- * DOIS CAMPOS, NÃO UM: `sendingBlocked` é o estado REAL (o núcleo sempre
- * calcula), `enforced.sending` é a CONSEQUÊNCIA (só verdadeira com a flag
- * ligada). O caller que bloqueia usa `enforced`; o caller que loga ou mostra
- * estado usa o campo real. Colapsar os dois num booleano só apagaria o modo
- * dry-run, que é justamente como esta fase vai a produção primeiro.
+ * A CONSEQUÊNCIA (não o estado) é quem tem a assimetria fail-open/fail-closed
+ * — ver `resolveEnforcement` em `whatsapp-service-state-core.ts`, o único
+ * lugar que decide `enforced`. Este arquivo só lê o banco, valida o que lê, e
+ * repassa ao núcleo; não reimplementa a lógica de consequência.
  *
  * CACHE POR INVOCAÇÃO: `orgCache`/`unitToOrg` são zerados no início de cada
  * invocação pelo caller (`clearWhatsAppGateCache()`), mesmo padrão do
  * `unitCache` dos workers — sem isso, um isolate quente serviria estado velho
- * depois de o cliente pagar.
+ * depois de o cliente pagar. Resultado com `readFailed=true` NUNCA é
+ * cacheado — um soluço pontual não pode fixar o veredito de uma organização
+ * pelo resto da invocação (a Task 17 varre muitas organizações numa só).
  *
- * Sem consumidor nesta task (Task 13 é só a camada de I/O). As Tasks 14-17, 19
- * e 20 é que plugam este helper nos caminhos de envio, no agente, no
- * provisionamento e nos painéis — a linha do checklist de redeploy do
- * CLAUDE.md entra junto com o primeiro consumidor real.
+ * Sem consumidor nesta task — nenhuma Edge Function importa este arquivo
+ * ainda.
  */
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog } from "./security.ts";
-import { isFlagEnabled } from "./platform-flags.ts";
+import { checkFlagEnabled } from "./platform-flags.ts";
 import {
   normalizeFinancialState,
   isBillingInvoiceStatus,
   type BillingInvoiceStatus,
 } from "./billing-financial-state-core.ts";
-import { decideWhatsAppGate, type WhatsAppGateDecision } from "./whatsapp-service-state-core.ts";
+import {
+  decideWhatsAppGate,
+  resolveEnforcement,
+  isSystemBillingStatus,
+  type WhatsAppGateDecision,
+  type ProvisioningBlockReason,
+} from "./whatsapp-service-state-core.ts";
 
 const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
 
 export interface ServiceGateResult extends WhatsAppGateDecision {
   organizationId: string;
   enforcementEnabled: boolean;
-  /** Consequência operacional: estado real E flag ligada. */
+  /** Consequência operacional — ver a assimetria fail-open/fail-closed no núcleo. */
   enforced: { sending: boolean; newProvisioning: boolean };
   /**
-   * true quando alguma das leituras falhou e a decisão foi montada com defaults
-   * de quem não leu. Caller que BLOQUEIA pode ignorar (o default é permitir, e
-   * permitir é o lado seguro aqui); caller que AFIRMA o estado pro cliente tem
-   * que checar antes de responder 200 — mesmo contrato de
-   * `OrgEntitlementsResult.readFailed`.
+   * Por que `enforced.newProvisioning` está bloqueado — a UI/log usam isto
+   * para dizer "não foi possível verificar agora"
+   * (`ENFORCEMENT_FLAG_UNREADABLE`/`STATE_READ_FAILED`) em vez de "você não
+   * tem direito" (`SERVICE_STATE`/`ENFORCEMENT_FLAG_OFF`). `"ALLOWED"` quando
+   * não há bloqueio.
+   */
+  provisioningBlockReason: ProvisioningBlockReason;
+  /**
+   * true quando ALGUMA leitura falhou — dado (organizations/overrides/
+   * assinatura/fatura) OU a leitura da própria flag de enforcement. NÃO há um
+   * "lado seguro" único para este campo agregado: `enforced.sending` já é
+   * fail-open (uma falha aqui nunca vira bloqueio de envio) e
+   * `enforced.newProvisioning` já é fail-closed (uma falha aqui SEMPRE
+   * bloqueia, ver `provisioningBlockReason`). Nenhum caller de bloqueio deve
+   * decidir a partir deste campo — ele é só diagnóstico agregado para
+   * log/observabilidade; `enforced` e `provisioningBlockReason` já carregam a
+   * consequência certa para cada lado.
    */
   readFailed: boolean;
 }
@@ -64,7 +81,7 @@ export async function resolveWhatsAppGateByOrg(
 
   const nowIso = new Date().toISOString();
 
-  const [orgRes, overridesRes, subRes, flagOn] = await Promise.all([
+  const [orgRes, overridesRes, subRes, flagCheck] = await Promise.all([
     supabase
       .from("organizations")
       .select("billing_status, whatsapp_legacy_grandfathered, whatsapp_grandfather_revoked_at")
@@ -85,14 +102,16 @@ export async function resolveWhatsAppGateByOrg(
       .eq("billing_plans.category", WHATSAPP_CATEGORY)
       .neq("status", "canceled")
       .maybeSingle(),
-    isFlagEnabled("whatsapp_service_enforcement"),
+    checkFlagEnabled("whatsapp_service_enforcement"),
   ]);
 
   // `let`, não `const`: a leitura de billing_invoices (mais abaixo, condicional
   // à existência de assinatura) e a validação do status da fatura também podem
-  // marcar isto depois deste bloco.
-  let readFailed = !!(orgRes.error || overridesRes.error || subRes.error);
-  if (readFailed) {
+  // marcar isto depois deste bloco. Isto é a falha de DADO — a falha da FLAG
+  // (`flagCheck.readFailed`) é uma dimensão separada, combinada só dentro de
+  // `resolveEnforcement`.
+  let dataReadFailed = !!(orgRes.error || overridesRes.error || subRes.error);
+  if (dataReadFailed) {
     jsonLog("warn", {
       evt: "whatsapp_gate_read_failed",
       org: organizationId,
@@ -123,8 +142,9 @@ export async function resolveWhatsAppGateByOrg(
     if (invErr) {
       // Mesma direção de erro do resto do helper: uma leitura que falha aqui
       // não pode inventar uma fatura vencida — ela só pode DEIXAR de enxergar
-      // uma real, o que já é coberto por `readFailed` (lado seguro: permite).
-      readFailed = true;
+      // uma real. O tratamento dessa incerteza (fail-open no envio, fail-closed
+      // no provisionamento) é do núcleo, não daqui.
+      dataReadFailed = true;
       jsonLog("warn", {
         evt: "whatsapp_gate_read_failed",
         org: organizationId,
@@ -138,7 +158,7 @@ export async function resolveWhatsAppGateByOrg(
       if (isBillingInvoiceStatus(inv.status)) {
         oldestOpenInvoice = { dueDate: inv.due_date as string, status: inv.status };
       } else {
-        readFailed = true;
+        dataReadFailed = true;
         jsonLog("warn", {
           evt: "whatsapp_gate_invalid_invoice_status",
           org: organizationId,
@@ -155,10 +175,24 @@ export async function resolveWhatsAppGateByOrg(
     oldestOpenInvoice,
   });
 
+  // Valida o `billing_status` lido contra o vocabulário fechado do CHECK do
+  // banco. Não muda o comportamento em runtime — `decideWhatsAppGate` (via
+  // `systemBlocksDependentServices`) já falha aberto para um valor
+  // desconhecido — o ganho aqui é só telemetria: um 10º status no CHECK que
+  // este núcleo ainda não classificou não pode entrar em silêncio.
+  const billingStatusRaw = orgRes.data?.billing_status as string | undefined;
+  if (billingStatusRaw !== undefined && !isSystemBillingStatus(billingStatusRaw)) {
+    jsonLog("warn", {
+      evt: "whatsapp_gate_invalid_billing_status",
+      org: organizationId,
+      status: billingStatusRaw,
+    });
+  }
+
   const decision = decideWhatsAppGate({
     // Default 'active' quando a leitura falhou: o lado seguro aqui é PERMITIR.
     // Um erro transitório de banco não pode silenciar o WhatsApp do cliente.
-    systemBillingStatus: (orgRes.data?.billing_status as string | undefined) ?? "active",
+    systemBillingStatus: billingStatusRaw ?? "active",
     financialState: financial.state,
     hasActiveWhatsAppOverride: overrides.some((o) => o.enabled),
     hasWhatsAppAdminBlock: overrides.some((o) => !o.enabled),
@@ -167,20 +201,35 @@ export async function resolveWhatsAppGateByOrg(
       orgRes.data?.whatsapp_grandfather_revoked_at === null,
   });
 
+  const enforcement = resolveEnforcement({
+    decision,
+    flagEnabled: flagCheck.enabled,
+    flagReadFailed: flagCheck.readFailed,
+    dataReadFailed,
+  });
+
+  const readFailed = dataReadFailed || flagCheck.readFailed;
+
   const result: ServiceGateResult = {
     ...decision,
     organizationId,
-    enforcementEnabled: flagOn,
-    enforced: {
-      sending: flagOn && decision.sendingBlocked,
-      newProvisioning: flagOn && decision.newProvisioningBlocked,
-    },
+    enforcementEnabled: enforcement.enforcementEnabled,
+    enforced: enforcement.enforced,
+    provisioningBlockReason: enforcement.provisioningBlockReason,
     readFailed,
   };
 
-  // Telemetria de dry-run: com a flag desligada, registra o que TERIA
-  // acontecido. É a única fonte de métrica antes de ligar o enforcement.
-  if (!flagOn && decision.sendingBlocked) {
+  // Log guiado pelo campo `telemetry` do núcleo — nunca os dois ao mesmo
+  // tempo, e uma falha de leitura da flag NUNCA vira dry-run (contaminaria a
+  // única métrica que sustenta a decisão de ligar o enforcement).
+  if (enforcement.telemetry === "FLAG_READ_FAILED") {
+    jsonLog("warn", {
+      evt: "whatsapp_enforcement_flag_read_failed",
+      org: organizationId,
+      state: decision.state,
+      reason: decision.reason,
+    });
+  } else if (enforcement.telemetry === "DRY_RUN_WOULD_BLOCK_SENDING") {
     jsonLog("info", {
       evt: "whatsapp_enforcement_dryrun",
       org: organizationId,
@@ -190,7 +239,9 @@ export async function resolveWhatsAppGateByOrg(
     });
   }
 
-  orgCache.set(organizationId, result);
+  if (!readFailed) {
+    orgCache.set(organizationId, result);
+  }
   return result;
 }
 
