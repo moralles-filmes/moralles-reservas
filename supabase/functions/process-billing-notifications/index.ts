@@ -107,6 +107,44 @@ const TEMPLATE_BY_EVENT: Record<
       `Agende a configuração no painel de implantações.`,
     ]),
   }),
+  // Aviso INTERNO (vai para o admin da plataforma, não para o cliente — Fix
+  // round 1, achado Important #1): duas fontes da escada de correlação
+  // (asaas-billing-events-apply.ts) divergiram de organização DENTRO da MESMA
+  // passagem (`resolveCorrelation` devolveu `kind: "conflict"`). O evento
+  // caiu como `failed` na fila do reconcile e não pode ser aplicado sozinho —
+  // escrever no tenant errado é pior que atrasar um pagamento. `d.orgName` é
+  // só para o admin achar o evento (a coluna organization_id de
+  // billing_notifications é NOT NULL, então a linha é arquivada sob a
+  // organização mais plausível — não é ela quem recebe este e-mail); o
+  // detalhe completo (quais degraus, quais organizações) vai só nos logs
+  // (evt: asaas_correlation_ambiguity), nunca no corpo do e-mail.
+  admin_correlation_ambiguity: (d) => ({
+    subject: "Evento Asaas com organizações divergentes — requer conferência",
+    text: `Um evento de pagamento do Asaas correlacionou para mais de uma organização na mesma passagem (referência: ${d.orgName}). O evento ficou em falha na fila do reconcile — confira em billing_events e nos logs (evt: asaas_correlation_ambiguity) antes de qualquer ação.`,
+    html: wrapHtml("Evento Asaas com organizações divergentes", [
+      `Um evento de pagamento do Asaas correlacionou para <strong>mais de uma organização</strong> na mesma passagem.`,
+      `Referência: <strong>${d.orgName}</strong>.`,
+      `O evento ficou em falha na fila do reconcile — confira em <code>billing_events</code> e nos logs (<code>evt: asaas_correlation_ambiguity</code>) antes de qualquer ação.`,
+    ]),
+  }),
+  // Aviso INTERNO (Fix round 1, achado Important #2): o carimbo de
+  // `billing_events.organization_id` de uma passagem ANTERIOR do aplicador
+  // divergiu da resolução da escada NESTA passagem (`comparePreviousStamp`
+  // !== MATCH). Cobre os dois sub-casos — corrigido automaticamente (fonte
+  // atual mais forte que a anterior, ou fonte anterior desconhecida) ou
+  // sinalizado para revisão (escada não resolveu desta vez, ou — hoje
+  // inalcançável — fonte anterior conhecida de rank superior). `d.orgName`
+  // é só para o admin achar o evento; qual dos dois sub-casos ocorreu está
+  // no `evt: asaas_previous_stamp_divergence` dos logs, nunca no e-mail.
+  admin_correlation_org_restamped: (d) => ({
+    subject: "Evento Asaas com organização recarimbada — conferir",
+    text: `Um evento de pagamento do Asaas já tinha uma organização carimbada de uma passagem anterior e a resolução desta passagem divergiu (referência: ${d.orgName}). Confira nos logs (evt: asaas_previous_stamp_divergence) se a correção foi aplicada automaticamente ou se aguarda revisão.`,
+    html: wrapHtml("Evento Asaas com organização recarimbada", [
+      `Um evento de pagamento do Asaas já tinha uma organização carimbada de uma passagem anterior, e a resolução desta passagem <strong>divergiu</strong>.`,
+      `Referência: <strong>${d.orgName}</strong>.`,
+      `Confira nos logs (<code>evt: asaas_previous_stamp_divergence</code>) se a correção foi aplicada automaticamente ou se aguarda revisão.`,
+    ]),
+  }),
 };
 
 serve(async (req) => {

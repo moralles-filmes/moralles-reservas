@@ -145,3 +145,133 @@ export function resolveCorrelation(candidates: CorrelationCandidate[]): Correlat
 
   return { kind: "resolved", organizationId, subscriptionId, planId, purpose, via, softDivergence };
 }
+
+/**
+ * Resultado de comparar o carimbo de `billing_events.organization_id` de uma
+ * passagem ANTERIOR do aplicador com o resultado da escada NESTA passagem.
+ *
+ * `MATCH` cobre dois casos: não há carimbo anterior (nada a comparar) OU o
+ * carimbo bate com a organização resolvida agora.
+ */
+export type PreviousStampComparison =
+  | { status: "MATCH" }
+  | {
+      status: "DIVERGENT_NEW_RESULT_WINS";
+      previousOrganizationId: string;
+      resolvedOrganizationId: string;
+    }
+  | {
+      status: "DIVERGENT_REQUIRES_REVIEW";
+      previousOrganizationId: string;
+      resolvedOrganizationId?: string;
+      reason: string;
+    };
+
+/**
+ * Compara o carimbo anterior de `billing_events.organization_id` (só existe em
+ * REPROCESSAMENTO — `asaas-webhook` sempre insere a linha com `organization_id:
+ * null` e é o UPDATE pós-`applyAsaasEvent` que carimba o resultado; o
+ * `process-asaas-reconcile` é quem lê esse carimbo de volta e o repassa) com o
+ * resultado ATUAL da escada de correlação, ANTES do aplicador escrever
+ * qualquer efeito financeiro.
+ *
+ * DECISÃO DO DONO (Fix round 1, achado Important #2): o carimbo NUNCA volta a
+ * ser candidato de `resolveCorrelation` — a escada continua sendo a ÚNICA
+ * fonte autoritativa. Ele serve só como DETECTOR de divergência a posteriori:
+ * fonte atual determinística vence carimbo histórico; histórico nunca pode
+ * impedir para sempre uma correção segura (por isso a review é um sinal, não
+ * um bloqueio permanente — a próxima passagem pode resolver diferente de novo,
+ * e cada uma é reavaliada do zero).
+ *
+ * `previousSource` é a fonte (`CorrelationSource`) que produziu o carimbo
+ * anterior. HOJE sempre chega `undefined`: não persistimos a fonte anterior em
+ * lugar nenhum — `billing_events` só guarda a coluna `organization_id`, não
+ * qual degrau a resolveu. O parâmetro existe porque o contrato já aceita essa
+ * informação para quando ela existir; enquanto não existir, o ramo "carimbo de
+ * rank superior à fonte vencedora atual" (ver `DIVERGENT_REQUIRES_REVIEW`
+ * abaixo) fica inalcançável NA PRÁTICA — e é para ficar assim: não crie coluna
+ * nova, não invente um jeito de adivinhar a fonte anterior, e não force esse
+ * ramo a disparar hoje.
+ */
+export function comparePreviousStamp(
+  previousOrganizationId: string | null,
+  correlation: CorrelationOutcome,
+  previousSource?: CorrelationSource,
+): PreviousStampComparison {
+  // Sem carimbo anterior, não há do que divergir — MATCH incondicional, ANTES
+  // de olhar pro `kind` da escada (inclusive antes de `conflict`: o tipo exige
+  // `previousOrganizationId: string` de verdade nos dois ramos DIVERGENT_*, e
+  // é este `if` que garante essa invariante pro resto da função).
+  if (!previousOrganizationId) {
+    return { status: "MATCH" };
+  }
+
+  if (correlation.kind === "conflict") {
+    // Defesa de TOTALIDADE DO TIPO: por construção, o aplicador já retornou
+    // (via `failWith`, após avisar o admin) antes de chamar este helper quando
+    // a escada conflita — este ramo não é alcançado em produção hoje. Mas o
+    // carimbo NUNCA desempata ambiguidade entre degraus da MESMA passagem, e
+    // esta função continua correta mesmo que um caller futuro a chame sem ter
+    // retornado antes: a resposta certa é sempre "revisão", nunca "aplica
+    // sozinho escolhendo um lado".
+    return {
+      status: "DIVERGENT_REQUIRES_REVIEW",
+      previousOrganizationId,
+      reason: "escada em conflito de organização nesta passagem — carimbo anterior não desempata ambiguidade",
+    };
+  }
+
+  if (correlation.kind === "unresolved") {
+    // A escada não achou organização NENHUMA nesta passagem. O carimbo NÃO É
+    // APAGADO por este resultado — quem decide isso é o aplicador (que
+    // simplesmente não sobrescreve `organizationId` fora do ramo `resolved`);
+    // aqui só sinalizamos que a resolução determinística falhou desta vez.
+    return {
+      status: "DIVERGENT_REQUIRES_REVIEW",
+      previousOrganizationId,
+      reason: "escada não resolveu nenhuma organização nesta passagem",
+    };
+  }
+
+  // kind === "resolved" daqui pra baixo — os dois ramos anteriores já
+  // retornaram.
+  if (correlation.organizationId === previousOrganizationId) {
+    return { status: "MATCH" };
+  }
+
+  // `via[0]` é sempre o degrau de rank mais forte (menor número) que
+  // contribuiu nesta resolução: `resolveCorrelation` popula `via` iterando
+  // `ordered` (já ordenado por `CORRELATION_RANK` ascendente) e empurra em
+  // ordem de encontro — o primeiro elemento é, por construção, o de rank mais
+  // alto, e em `resolved` o array nunca vem vazio (`withOrg.length >= 1` é
+  // pré-condição de `resolved`, e esse candidato sempre contribui a própria
+  // organização).
+  const winningSource = correlation.via[0];
+  const winningRank = CORRELATION_RANK[winningSource];
+  const previousRank = previousSource ? CORRELATION_RANK[previousSource] : null;
+
+  if (previousRank !== null && previousRank < winningRank) {
+    // Fonte anterior CONHECIDA e de rank SUPERIOR (número menor = mais forte)
+    // à fonte que venceu agora. A nova resolução é MENOS confiável que o
+    // vínculo histórico — sinaliza para revisão em vez de trocar o tenant
+    // sozinha. Inalcançável hoje (`previousSource` sempre `undefined`, ver
+    // JSDoc da função) — mantido para quando a fonte anterior passar a ser
+    // persistida.
+    return {
+      status: "DIVERGENT_REQUIRES_REVIEW",
+      previousOrganizationId,
+      resolvedOrganizationId: correlation.organizationId,
+      reason: `fonte anterior (${previousSource}, rank ${previousRank}) é mais confiável que a fonte vencedora atual (${winningSource}, rank ${winningRank}) — requer revisão antes de trocar a organização carimbada`,
+    };
+  }
+
+  // Fonte atual é determinística e não perde para uma fonte anterior mais
+  // forte (porque não há fonte anterior conhecida, ou porque ela é de rank
+  // igual/inferior à vencedora atual) — corrige o carimbo. Histórico não pode
+  // travar uma correção segura para sempre.
+  return {
+    status: "DIVERGENT_NEW_RESULT_WINS",
+    previousOrganizationId,
+    resolvedOrganizationId: correlation.organizationId,
+  };
+}

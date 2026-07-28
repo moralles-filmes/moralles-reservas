@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveCorrelation,
+  comparePreviousStamp,
   type CorrelationCandidate,
 } from "../../supabase/functions/_shared/billing-correlation-core";
 import {
@@ -124,5 +125,112 @@ describe("CorrelationCandidate.purpose — contrato tipado (Fix round 1, achado 
     }
     // ...e que o Record não ficou nem maior nem menor que a fonte única.
     expect(recordKeys.sort()).toEqual(["ai_topup", "implementation", "other", "subscription"]);
+  });
+});
+
+describe("comparePreviousStamp (Fix round 1, achado Important #2)", () => {
+  it("carimbo anterior igual ao resultado atual → MATCH", () => {
+    // Reprocessagem "de rotina": a escada reconfirma exatamente o que já
+    // estava carimbado. Nada a corrigir, nada a avisar.
+    const correlation = resolveCorrelation([
+      c({ source: "provider_subscription", organizationId: ORG_A, subscriptionId: SUB }),
+    ]);
+    expect(comparePreviousStamp(ORG_A, correlation)).toEqual({ status: "MATCH" });
+  });
+
+  it("sem carimbo anterior → MATCH, mesmo quando a escada resolve ou conflita", () => {
+    // Guarda o check MAIS IMPORTANTE do helper: sem carimbo, não há do que
+    // divergir — isto precisa valer ANTES de olhar pro `kind` da escada,
+    // inclusive pro `kind: "conflict"` (senão o tipo não fecharia: os dois
+    // ramos DIVERGENT_* exigem `previousOrganizationId: string`, nunca null).
+    const resolved = resolveCorrelation([
+      c({ source: "provider_subscription", organizationId: ORG_A }),
+    ]);
+    expect(comparePreviousStamp(null, resolved)).toEqual({ status: "MATCH" });
+
+    const conflict = resolveCorrelation([
+      c({ source: "provider_subscription", organizationId: ORG_A }),
+      c({ source: "checkout_session", organizationId: ORG_B }),
+    ]);
+    expect(comparePreviousStamp(null, conflict)).toEqual({ status: "MATCH" });
+  });
+
+  it("carimbo diferente, nova resolução por degrau de rank superior → DIVERGENT_NEW_RESULT_WINS", () => {
+    // Sem `previousSource` conhecida (o caso real hoje — nunca persistimos a
+    // fonte anterior), qualquer divergência de organização corrige o carimbo.
+    // Histórico não pode travar uma correção segura para sempre.
+    const correlation = resolveCorrelation([
+      c({ source: "provider_subscription", organizationId: ORG_A, subscriptionId: SUB }),
+    ]);
+    const out = comparePreviousStamp(ORG_B, correlation);
+    expect(out).toEqual({
+      status: "DIVERGENT_NEW_RESULT_WINS",
+      previousOrganizationId: ORG_B,
+      resolvedOrganizationId: ORG_A,
+    });
+  });
+
+  it("especificamente: anterior por billing_customer (rank 5), nova por provider_subscription (rank 2) → a nova vence", () => {
+    // Cenário nomeado pelo dono: fonte anterior FRACA (billing_customer,
+    // resolve só a org, nem sempre confiável no checkout hospedado) perde
+    // pra fonte atual FORTE (o próprio elo que sustenta a renovação do mês
+    // 2+). `previousRank(5) < winningRank(2)` é falso — cai no default.
+    const correlation = resolveCorrelation([
+      c({ source: "provider_subscription", organizationId: ORG_A, subscriptionId: SUB }),
+    ]);
+    const out = comparePreviousStamp(ORG_B, correlation, "billing_customer");
+    expect(out.status).toBe("DIVERGENT_NEW_RESULT_WINS");
+  });
+
+  it("fonte anterior conhecida e de rank superior à vencedora → DIVERGENT_REQUIRES_REVIEW", () => {
+    // Inalcançável em produção hoje (`previousSource` sempre `undefined`),
+    // mas o contrato já precisa se comportar direito quando existir: um
+    // carimbo vindo de `known_invoice` (rank 1, a fonte mais forte que
+    // existe) não pode ser trocado em silêncio por uma resolução vinda de
+    // `checkout_session` (rank 4, mais fraca) só porque ela é "a de agora".
+    const correlation = resolveCorrelation([
+      c({ source: "checkout_session", organizationId: ORG_A, planId: PLAN }),
+    ]);
+    const out = comparePreviousStamp(ORG_B, correlation, "known_invoice");
+    expect(out.status).toBe("DIVERGENT_REQUIRES_REVIEW");
+    if (out.status === "DIVERGENT_REQUIRES_REVIEW") {
+      expect(out.previousOrganizationId).toBe(ORG_B);
+      expect(out.resolvedOrganizationId).toBe(ORG_A);
+      expect(out.reason).toMatch(/rank/);
+    }
+  });
+
+  it("escada sem resultado e carimbo presente → DIVERGENT_REQUIRES_REVIEW, e o carimbo aparece intacto no retorno", () => {
+    // `unresolved`: nenhum candidato trouxe organização. O carimbo NÃO
+    // desaparece do resultado — é ele que o aplicador vai continuar usando
+    // (o helper só sinaliza; quem decide não sobrescrever é o caller).
+    const correlation = resolveCorrelation([]);
+    expect(correlation.kind).toBe("unresolved");
+    const out = comparePreviousStamp(ORG_A, correlation);
+    expect(out.status).toBe("DIVERGENT_REQUIRES_REVIEW");
+    if (out.status === "DIVERGENT_REQUIRES_REVIEW") {
+      expect(out.previousOrganizationId).toBe(ORG_A);
+      expect(out.resolvedOrganizationId).toBeUndefined();
+      expect(out.reason).toMatch(/não resolveu/);
+    }
+  });
+
+  it("escada em conflito → DIVERGENT_REQUIRES_REVIEW, e o carimbo NÃO é usado como desempate", () => {
+    // O carimbo bate com um dos dois lados do conflito (ORG_A) — se ele
+    // pudesse desempatar, a resposta óbvia (e ERRADA) seria "escolhe ORG_A
+    // porque é o que já tínhamos". O helper se recusa: `conflict` sempre
+    // pede revisão, sem `resolvedOrganizationId` nenhum.
+    const correlation = resolveCorrelation([
+      c({ source: "provider_subscription", organizationId: ORG_A }),
+      c({ source: "checkout_session", organizationId: ORG_B }),
+    ]);
+    expect(correlation.kind).toBe("conflict");
+    const out = comparePreviousStamp(ORG_A, correlation);
+    expect(out.status).toBe("DIVERGENT_REQUIRES_REVIEW");
+    if (out.status === "DIVERGENT_REQUIRES_REVIEW") {
+      expect(out.previousOrganizationId).toBe(ORG_A);
+      expect(out.resolvedOrganizationId).toBeUndefined();
+      expect(out.reason).toMatch(/conflito/);
+    }
   });
 });

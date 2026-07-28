@@ -30,6 +30,8 @@ import {
 } from "./billing-notify.ts";
 import {
   resolveCorrelation,
+  comparePreviousStamp,
+  CORRELATION_RANK,
   type CorrelationCandidate,
 } from "./billing-correlation-core.ts";
 
@@ -259,9 +261,19 @@ async function confirmImplementationPayment(
 
 /**
  * Avisa a Moralles (não o cliente) de que um evento precisa de conferência
- * humana — hoje só o caso de organização divergente entre degraus da escada
- * de correlação. Best-effort: NUNCA derruba o resultado financeiro que a
- * chamou — mesma filosofia de `confirmImplementationPayment`.
+ * humana. Duas chamadas hoje, discriminadas por `args.eventType` (Fix round 1,
+ * achado Important #2 generalizou de um único evento fixo para isto):
+ * `admin_correlation_ambiguity` — organização divergente ENTRE degraus da
+ * escada NA MESMA passagem (`resolveCorrelation` devolveu `kind: "conflict"`);
+ * `admin_correlation_org_restamped` — organização divergente entre o carimbo
+ * de uma passagem ANTERIOR e a resolução DESTA passagem
+ * (`comparePreviousStamp` !== `MATCH`). São famílias diferentes de anomalia —
+ * "duas fontes brigando agora" vs. "carimbo histórico corrigido/sinalizado" —
+ * por isso `eventType` (e o template correspondente em
+ * `TEMPLATE_BY_EVENT`) são distintos, não um único aviso genérico.
+ *
+ * Best-effort: NUNCA derruba o resultado financeiro que chamou esta função —
+ * mesma filosofia de `confirmImplementationPayment`.
  *
  * Usa `resolvePlatformAdminRecipients`, e não `resolveBillingRecipient`, que é
  * org-scoped de propósito: aqui o destinatário é a própria plataforma.
@@ -281,13 +293,14 @@ async function confirmImplementationPayment(
  */
 async function notifyAdminCorrelationAmbiguity(
   supabase: SupabaseClient,
-  args: { billingEventId: string; detail: string; organizationId: string | null },
+  args: { billingEventId: string; detail: string; organizationId: string | null; eventType: string },
 ): Promise<void> {
   try {
     const orgId = args.organizationId;
     jsonLog("error", {
       evt: "asaas_correlation_ambiguity",
       billing_event_id: args.billingEventId,
+      event_type: args.eventType,
       detail: args.detail,
       organization_id: orgId,
       notification_enqueued: !!orgId,
@@ -300,7 +313,7 @@ async function notifyAdminCorrelationAmbiguity(
     if (recipients.length === 0) return;
     await enqueueBillingNotification(supabase, {
       organizationId: orgId,
-      eventType: "admin_correlation_ambiguity",
+      eventType: args.eventType,
       invoiceId: null,
       recipient: recipients[0],
     });
@@ -635,13 +648,21 @@ export async function applyAsaasEvent(
         // `processed` sem ativar nada — e ainda registrar a fatura sem vínculo
         // de plano, que é o que faz `isSystemInvoice` (billing-category.ts) cair
         // no caminho de compatibilidade e devolver `true` para uma cobrança de
-        // implantação. Rodamos quando FALTA qualquer um dos três, e só quando há
-        // checkout a consultar (é I/O de banco, fora do ASAAS_IO_BUDGET_MS, mas
-        // ainda assim não é para ser incondicional). `organizationId`/`planId`/
-        // `purpose` aqui ainda são os valores PRÉ-escada (a decisão final só
-        // acontece depois deste bloco todo, em `resolveCorrelation`) — o gate
-        // é sobre o que já sabíamos ANTES de consultar o Asaas.
-        if (checkoutSessionId && (!organizationId || !planId || purpose === "other")) {
+        // implantação.
+        //
+        // [Fix round 1, achado Minor] O resto da condição original virou
+        // TAUTOLOGIA depois da escada de correlação (Task 8): `planId` e
+        // `purpose` neste ponto do fluxo são SEMPRE os valores PRÉ-escada —
+        // `null` e `"other"` — porque este trecho não os atribui mais direto
+        // (só empurra candidato pra `resolveCorrelation`, que decide bem mais
+        // abaixo). `!planId` e `purpose === "other"` são portanto sempre
+        // verdadeiros aqui, o que torna o `||` inteiro sempre verdadeiro
+        // independente de `organizationId`. O gate não estreita mais nada: a
+        // reidratação é INCONDICIONAL para todo evento com `checkoutSessionId`.
+        // Isso é inofensivo — mais um candidato (Degrau 4) pra escada, cobertura
+        // de conflito mais ampla — mas fingir que ainda discrimina seria pior
+        // que admitir que não discrimina.
+        if (checkoutSessionId) {
           const { data: sess, error: sessErr } = await supabase
             .from("billing_checkout_sessions")
             .select("organization_id, external_reference")
@@ -720,6 +741,7 @@ export async function applyAsaasEvent(
         billingEventId: row.id,
         detail: correlation.sources.map((s) => `${s.source}=${s.organizationId}`).join(" / "),
         organizationId: row.organization_id,
+        eventType: "admin_correlation_ambiguity",
       });
       return failWith(
         row.organization_id,
@@ -730,7 +752,66 @@ export async function applyAsaasEvent(
       );
     }
 
-    if (correlation.kind === "resolved") {
+    // 5.6. Detector de carimbo divergente (Fix round 1, achado Important #2).
+    //
+    // `organizationId` foi semeado (passo 3) de `row.organization_id ??
+    // invoice?.organization_id`, mas só a invoice virou candidato (Degrau 1) —
+    // o carimbo BRUTO de `row.organization_id` nunca participa da escada. Numa
+    // REPROCESSAGEM em que o evento já tinha carimbo da org X (gravado pelo
+    // UPDATE de uma passagem anterior — `asaas-webhook` sempre insere com
+    // `organization_id: null`, é o aplicador que resolve e o caller que
+    // carimba de volta) e a escada resolve org Y nesta passagem, sobrescrever
+    // `organizationId` sem levantar nada trocaria de tenant em silêncio.
+    //
+    // `comparePreviousStamp` é a fonte única desta regra (testada em
+    // src/lib/billing-correlation-core.test.ts — o único CI que alcança esta
+    // camada). O carimbo NUNCA vira candidato nem desempata `conflict` (que já
+    // retornou acima); ele só DETECTA divergência depois que a escada decidiu.
+    // `previousSource` fica sempre `undefined` — não persistimos qual degrau
+    // produziu o carimbo anterior (ver JSDoc do helper).
+    const previousStamp = comparePreviousStamp(row.organization_id, correlation);
+
+    if (previousStamp.status !== "MATCH") {
+      // `winningSource`/`winningRank` só existem quando a escada resolveu
+      // ALGUMA organização nesta passagem — em `unresolved` ficam `null`.
+      const winningSource = correlation.kind === "resolved" ? correlation.via[0] : null;
+      // Log RICO e dedicado (distinto do `asaas_correlation_ambiguity` interno
+      // de `notifyAdminCorrelationAmbiguity`, que só registra a tentativa de
+      // aviso): carrega só ids/enums/ranks — nenhum token, segredo, payload
+      // financeiro completo ou dado pessoal.
+      jsonLog("error", {
+        evt: "asaas_previous_stamp_divergence",
+        billing_event_id: row.id,
+        provider_event_id: row.provider_event_id,
+        previous_organization_id: previousStamp.previousOrganizationId,
+        resolved_organization_id: previousStamp.resolvedOrganizationId ?? null,
+        // Sempre `null` hoje — ver JSDoc de `comparePreviousStamp`.
+        previous_source: null,
+        winning_source: winningSource,
+        winning_rank: winningSource ? CORRELATION_RANK[winningSource] : null,
+        purpose: correlation.kind === "resolved" ? correlation.purpose : null,
+        subscription_id: correlation.kind === "resolved" ? correlation.subscriptionId : null,
+        comparison_status: previousStamp.status,
+      });
+
+      await notifyAdminCorrelationAmbiguity(supabase, {
+        billingEventId: row.id,
+        detail: `carimbo_anterior=${previousStamp.previousOrganizationId} resolvido_agora=${previousStamp.resolvedOrganizationId ?? "nenhum"} status=${previousStamp.status}`,
+        organizationId: row.organization_id,
+        eventType: "admin_correlation_org_restamped",
+      });
+    }
+
+    // Aplica o resultado da escada quando ela resolveu E o detector de
+    // carimbo não pediu revisão. `DIVERGENT_REQUIRES_REVIEW` cobre dois
+    // sub-casos: `unresolved` (o `if` abaixo já não entraria de qualquer
+    // forma, já que `correlation.kind !== "resolved"`) e — hoje inalcançável,
+    // porque `previousSource` nunca chega preenchido — `resolved` com carimbo
+    // anterior de rank superior. O `&&` extra é o que mantém este segundo
+    // sub-caso seguro no dia em que a fonte anterior passar a ser persistida:
+    // sem ele, o código aplicaria a resolução mais fraca sozinho assim que
+    // `previousSource` deixasse de ser sempre `undefined`.
+    if (correlation.kind === "resolved" && previousStamp.status !== "DIVERGENT_REQUIRES_REVIEW") {
       organizationId = correlation.organizationId;
       resolvedSubscriptionId = correlation.subscriptionId;
       planId = correlation.planId;
@@ -750,10 +831,13 @@ export async function applyAsaasEvent(
         });
       }
     }
-    // `correlation.kind === "unresolved"` não faz nada aqui: organizationId/
-    // planId/purpose mantêm os valores PRÉ-escada (row.organization_id ??
-    // invoice?.organization_id, e os defaults null/"other") — mesmo
-    // comportamento de fallback que o código tinha antes desta task.
+    // `correlation.kind === "unresolved"` (ou `resolved` bloqueado por
+    // `DIVERGENT_REQUIRES_REVIEW`) não faz nada aqui: organizationId/planId/
+    // purpose mantêm os valores PRÉ-escada (row.organization_id ??
+    // invoice?.organization_id, e os defaults null/"other") — o carimbo NÃO É
+    // APAGADO, só não é reafirmado por uma escada que não conseguiu confirmá-lo
+    // com a mesma força desta vez. Mesmo comportamento de fallback que o
+    // código já tinha para `unresolved` antes deste fix.
 
     // 6. Categoria do plano do PAGAMENTO e a assinatura correspondente.
     //
