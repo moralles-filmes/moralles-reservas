@@ -436,6 +436,35 @@ export const ASAAS_PAYMENT_LIST_PAGE_SIZE = 100;
 export const ASAAS_PAYMENT_LIST_MAX_PAGES = 100;
 
 /**
+ * Orçamento mínimo (ms) que precisa sobrar do `budgetMs` TOTAL do caller
+ * (ver `AsaasRequestOptions` em asaas.ts) antes de `listAsaasSubscriptionPayments`
+ * disparar mais uma página. Um GET do Asaas sob rede real raramente fecha em
+ * bem menos de 1s; abaixo deste teto a tentativa não tem uma ida-e-volta
+ * plausível — melhor desistir cedo com um motivo explícito ("orçamento
+ * esgotado") do que arriscar um timeout no meio da chamada, que devolveria
+ * um erro de rede indistinguível de uma falha real do provider.
+ */
+export const ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS = 2_000;
+
+/**
+ * Decisão PURA: dado o que resta de um orçamento TOTAL (não o `budgetMs` por
+ * chamada), ainda vale tentar mais uma página?
+ *
+ * Existe porque `AsaasRequestOptions.budgetMs` é documentado como orçamento
+ * TOTAL de wall-clock da chamada, mas `asaasRequest` calcula
+ * `deadlineAt = Date.now() + budgetMs` A CADA invocação — repassar `opts`
+ * cru dentro do laço de paginação reiniciaria o relógio em cada página, e um
+ * `budgetMs: 5000` do caller custaria 5s × número de páginas em vez de 5s no
+ * total. `listAsaasSubscriptionPayments` (asaas.ts) fixa UMA deadline antes
+ * do laço e usa esta função pra decidir, a cada volta, se o que resta ainda
+ * justifica outra tentativa — o cálculo em si (`deadlineAt - Date.now()`)
+ * fica no caller porque depende de relógio; aqui só mora o limiar.
+ */
+export function hasAsaasBudgetForAnotherPage(remainingMs: number): boolean {
+  return remainingMs >= ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS;
+}
+
+/**
  * Um item de `GET /subscriptions/{id}/payments` — só os campos que o
  * reconciliador (Task 11) precisa pra diferenciar cobranças já refletidas no
  * banco das que faltam.

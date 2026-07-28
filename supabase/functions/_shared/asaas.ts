@@ -21,6 +21,7 @@ import {
   ASAAS_PAYMENT_LIST_MAX_PAGES,
   ASAAS_PAYMENT_LIST_PAGE_SIZE,
   GET_MAX_RETRIES,
+  hasAsaasBudgetForAnotherPage,
   parseAsaasError,
   parseAsaasPaymentListPage,
   parseRateLimitReset,
@@ -578,12 +579,23 @@ export type { AsaasPaymentSummary };
  * (_shared/asaas-core.ts, testado por vitest) — este método só orquestra o
  * I/O e a paginação.
  *
- * `opts.budgetMs` segue a mesma convenção de `getAsaasPayment`/
- * `getAsaasSubscription` (ver AsaasRequestOptions): nenhum caminho dentro do
- * orçamento do `asaas-webhook` chama este método hoje — o consumidor
- * (`process-asaas-invoice-reconcile`, Task 11, ainda não existe) é um worker
- * de cron sem orçamento — mas honrar o parâmetro deixa a porta aberta sem
- * violar o contrato já estabelecido pro resto do cliente.
+ * `opts.budgetMs` é o orçamento TOTAL de wall-clock que o caller tolera
+ * gastar NESTA CHAMADA (ver `AsaasRequestOptions`) — não por página. Por
+ * isso é convertido numa deadline ÚNICA antes do laço, e cada página recebe
+ * só o que resta (`asaasRequest` calcula `deadlineAt = Date.now() +
+ * budgetMs` a cada invocação — repassar `opts` cru a cada página reiniciaria
+ * o relógio e um `budgetMs: 5000` custaria 5s × páginas). Antes de disparar
+ * mais uma página, `hasAsaasBudgetForAnotherPage` (_shared/asaas-core.ts,
+ * testada por vitest) decide se o que resta ainda dá pra uma ida-e-volta
+ * plausível; se não der, para e devolve `ok:false` pelo mesmo caminho do
+ * teto de páginas — mesmo motivo: nunca devolver a coleção parcial como se
+ * fosse completa, só que aqui o motivo é orçamento, não fim dos dados (o log
+ * distingue os dois). Nenhum caminho dentro do orçamento do `asaas-webhook`
+ * chama este método hoje — o consumidor (`process-asaas-invoice-reconcile`,
+ * Task 11, ainda não existe) é um worker de cron sem orçamento — mas quando
+ * `budgetMs` vier definido, o contrato é honrado de ponta a ponta. Sem
+ * `budgetMs`, nada disso entra em jogo (comportamento histórico: paginação
+ * completa sem prazo).
  */
 export async function listAsaasSubscriptionPayments(
   subscriptionId: string,
@@ -591,6 +603,7 @@ export async function listAsaasSubscriptionPayments(
 ): Promise<{ ok: boolean; data?: AsaasPaymentSummary[]; error?: string }> {
   const all: AsaasPaymentSummary[] = [];
   let offset = 0;
+  const overallDeadlineAt = opts?.budgetMs !== undefined ? Date.now() + opts.budgetMs : null;
 
   for (let page = 0; ; page++) {
     if (page >= ASAAS_PAYMENT_LIST_MAX_PAGES) {
@@ -610,11 +623,34 @@ export async function listAsaasSubscriptionPayments(
       };
     }
 
+    // `pageOpts` carrega SÓ o que resta do orçamento total pra esta página
+    // específica — nunca o `budgetMs` original do caller (ver docstring
+    // acima). Sem orçamento (`overallDeadlineAt === null`), `opts` segue
+    // repassado intacto: comportamento histórico, sem prazo.
+    let pageOpts = opts;
+    if (overallDeadlineAt !== null) {
+      const remainingMs = overallDeadlineAt - Date.now();
+      if (!hasAsaasBudgetForAnotherPage(remainingMs)) {
+        jsonLog("warn", {
+          evt: "asaas_payment_list_budget_exhausted",
+          subscriptionId,
+          pages_read: page,
+          items_read: all.length,
+          remaining_ms: Math.round(remainingMs),
+        });
+        return {
+          ok: false,
+          error: "Orçamento de tempo esgotado ao listar cobranças da assinatura (paginação incompleta).",
+        };
+      }
+      pageOpts = { ...opts, budgetMs: remainingMs };
+    }
+
     const res = await asaasRequest(
       `/subscriptions/${subscriptionId}/payments?limit=${ASAAS_PAYMENT_LIST_PAGE_SIZE}&offset=${offset}`,
       "GET",
       undefined,
-      opts,
+      pageOpts,
     );
     if (!res.ok) {
       return { ok: false, error: parseAsaasError(res.data, "Falha ao listar cobranças da assinatura no Asaas.") };

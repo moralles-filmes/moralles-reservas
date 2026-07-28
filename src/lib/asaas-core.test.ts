@@ -23,6 +23,8 @@ import {
   parseAsaasPaymentListPage,
   ASAAS_PAYMENT_LIST_PAGE_SIZE,
   ASAAS_PAYMENT_LIST_MAX_PAGES,
+  ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS,
+  hasAsaasBudgetForAnotherPage,
 } from "../../supabase/functions/_shared/asaas-core";
 
 // Fatos verificados em docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§8):
@@ -932,14 +934,54 @@ describe("parseAsaasPaymentListPage", () => {
     expect(() => parseAsaasPaymentListPage({ data: [undefined, null, 42, "x"] })).not.toThrow();
   });
 
-  // Pinagem dos tetos — um refactor que "simplifique" removendo o teto de
-  // páginas, ou que mude o page size sem atualizar o comentário do porquê,
-  // quebra este teste em vez de só em produção.
-  it("ASAAS_PAYMENT_LIST_PAGE_SIZE e ASAAS_PAYMENT_LIST_MAX_PAGES são positivos e generosos o bastante pra cobertura real", () => {
-    expect(ASAAS_PAYMENT_LIST_PAGE_SIZE).toBeGreaterThan(0);
-    expect(ASAAS_PAYMENT_LIST_MAX_PAGES).toBeGreaterThan(0);
+  // Pinagem dos tetos contra o VALOR EXATO, não só "é positivo" — um teto de
+  // cobertura é justamente o tipo de número que não pode mudar sem alguém
+  // notando (trocar 100×100 por 50×100 cortaria a cobertura segura pela
+  // metade e um `toBeGreaterThan(0)` deixaria passar calado).
+  it("ASAAS_PAYMENT_LIST_PAGE_SIZE e ASAAS_PAYMENT_LIST_MAX_PAGES pinados no valor exato", () => {
+    expect(ASAAS_PAYMENT_LIST_PAGE_SIZE).toBe(100);
+    expect(ASAAS_PAYMENT_LIST_MAX_PAGES).toBe(100);
     // Nenhuma assinatura real (mesmo semanal, décadas de histórico) chega
-    // perto de 5.000 cobranças.
-    expect(ASAAS_PAYMENT_LIST_PAGE_SIZE * ASAAS_PAYMENT_LIST_MAX_PAGES).toBeGreaterThanOrEqual(5000);
+    // perto de 10.000 cobranças — o produto documenta a folga, não é a
+    // garantia em si (a garantia é o valor exato pinado acima).
+    expect(ASAAS_PAYMENT_LIST_PAGE_SIZE * ASAAS_PAYMENT_LIST_MAX_PAGES).toBe(10_000);
+  });
+});
+
+// hasAsaasBudgetForAnotherPage — Fix round 1 da Fase 5b (Task 10). Transforma
+// o `budgetMs` TOTAL de AsaasRequestOptions numa decisão por página dentro do
+// laço de listAsaasSubscriptionPayments (asaas.ts): sem isso, repassar `opts`
+// cru a cada página reiniciaria o relógio do orçamento a cada
+// `asaasRequest`, e um `budgetMs: 5000` custaria 5s × número de páginas em
+// vez de 5s no total.
+describe("hasAsaasBudgetForAnotherPage", () => {
+  it("ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS pinado no valor exato", () => {
+    expect(ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS).toBe(2_000);
+  });
+
+  it("restante acima do limiar → true (vale tentar mais uma página)", () => {
+    expect(hasAsaasBudgetForAnotherPage(ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS + 1)).toBe(true);
+    expect(hasAsaasBudgetForAnotherPage(10_000)).toBe(true);
+  });
+
+  it("restante EXATAMENTE no limiar → true (limiar é o mínimo aceitável, não o primeiro valor recusado)", () => {
+    expect(hasAsaasBudgetForAnotherPage(ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS)).toBe(true);
+  });
+
+  it("restante abaixo do limiar → false (desiste antes de tentar uma página sem tempo plausível)", () => {
+    expect(hasAsaasBudgetForAnotherPage(ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS - 1)).toBe(false);
+    expect(hasAsaasBudgetForAnotherPage(100)).toBe(false);
+  });
+
+  it("restante zero ou negativo (orçamento já estourou) → false", () => {
+    expect(hasAsaasBudgetForAnotherPage(0)).toBe(false);
+    expect(hasAsaasBudgetForAnotherPage(-500)).toBe(false);
+  });
+
+  it("nunca lança, mesmo com entrada hostil (NaN/Infinity)", () => {
+    expect(() => hasAsaasBudgetForAnotherPage(NaN)).not.toThrow();
+    expect(hasAsaasBudgetForAnotherPage(NaN)).toBe(false);
+    expect(() => hasAsaasBudgetForAnotherPage(Infinity)).not.toThrow();
+    expect(hasAsaasBudgetForAnotherPage(Infinity)).toBe(true);
   });
 });
