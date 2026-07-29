@@ -63,6 +63,7 @@ import {
   useUpdateChannel,
   useDeleteChannel,
   useTestChannel,
+  useRotateChannelSecret,
   type ChannelCredentials,
 } from "@/hooks/useWhatsAppChannels";
 import {
@@ -233,6 +234,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
   const { data: channels, isLoading } = useWhatsAppChannels(unitId);
   const deleteChannel = useDeleteChannel(unitId);
   const testChannel = useTestChannel(unitId);
+  const rotateSecret = useRotateChannelSecret(unitId);
   const [addOpen, setAddOpen] = useState(false);
   const [editChannel, setEditChannel] = useState<WhatsAppChannel | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -304,6 +306,33 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                         <Pencil className="h-3 w-3 mr-1" />
                         Editar
                       </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button size="sm" variant="outline">
+                            <KeyRound className="h-3 w-3 mr-1" />
+                            Rotacionar secret
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Rotacionar secret do canal {PROVIDER_LABELS[ch.provider]}?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              A URL antiga do webhook para de funcionar imediatamente.
+                              Depois de rotacionar, copie a URL nova neste card e configure-a
+                              no painel do provedor.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => rotateSecret.mutate(ch.id)}
+                              disabled={rotateSecret.isPending}
+                            >
+                              {rotateSecret.isPending ? "Rotacionando..." : "Rotacionar"}
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button

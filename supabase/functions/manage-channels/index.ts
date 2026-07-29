@@ -236,6 +236,57 @@ serve(async (req) => {
       return jsonResponse(req, { success: true });
     }
 
+    // ── rotate_secret ──────────────────────────────────────────────────────────
+    // Gera um `webhook_secret` novo PRESERVANDO o `channel_id` — a URL do webhook
+    // muda só no parâmetro `secret=`, e o resto continua válido no painel do
+    // provedor. Existe porque a alternativa era remover e recriar o canal, o que
+    // (a) troca o channel_id e obriga a reconfigurar a URL inteira e (b) desde o
+    // gate de novo provisionamento pode ser RECUSADO no meio da rotação,
+    // deixando a unidade sem canal nenhum.
+    //
+    // Deliberadamente FORA do gate de novo provisionamento: o canal já existe e
+    // nenhum custo externo novo nasce aqui. Uma organização em GRACE_PERIOD ou
+    // LEGACY_GRANDFATHERED PRECISA conseguir rotacionar — "preserva o uso
+    // existente" inclui poder trocar um secret vazado.
+    if (action === "rotate_secret") {
+      const channelId = String(body.channel_id ?? "");
+      if (!channelId) return jsonResponse(req, { error: "channel_id é obrigatório." }, 400);
+
+      const newSecret = Array.from(
+        crypto.getRandomValues(new Uint8Array(32))
+      ).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+      const { data: rotated, error: rotErr } = await supabase
+        .from("whatsapp_channels")
+        .update({ webhook_secret: newSecret, updated_at: new Date().toISOString() })
+        .eq("id", channelId)
+        .eq("unit_id", unitId)
+        .select("id")
+        .maybeSingle();
+
+      if (rotErr) {
+        console.error("manage-channels:rotate_secret", rotErr);
+        return jsonResponse(req, { error: "Falha ao rotacionar o secret do webhook." }, 500);
+      }
+      if (!rotated) return jsonResponse(req, { error: "Canal não encontrado." }, 404);
+
+      const supabaseUrl = Deno.env.get("SUPABASE_URL");
+      const projectRef = supabaseUrl?.match(/https:\/\/([^.]+)\./)?.[1];
+      if (!projectRef) {
+        console.error("manage-channels:rotate_secret unexpected SUPABASE_URL", supabaseUrl);
+        // O secret JÁ rotacionou — não devolver erro seria pior, porque o
+        // operador precisa saber que a URL antiga parou de valer.
+        return jsonResponse(
+          req,
+          { error: "Secret rotacionado, mas não foi possível montar a URL do webhook. Recarregue a tela." },
+          500,
+        );
+      }
+      const webhookUrl = `https://${projectRef}.supabase.co/functions/v1/webhook-whatsapp?channel=${channelId}`;
+
+      return jsonResponse(req, { success: true, webhookSecret: newSecret, webhookUrl });
+    }
+
     // ── delete ─────────────────────────────────────────────────────────────────
     if (action === "delete") {
       const channelId = String(body.channel_id ?? "");

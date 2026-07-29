@@ -112,6 +112,24 @@ export function useDeleteChannel(unitId: string) {
   });
 }
 
+export function useRotateChannelSecret(unitId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (channelId: string) => {
+      return invokeManageChannels({
+        action: "rotate_secret",
+        unit_id: unitId,
+        channel_id: channelId,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
+      toast.success("Secret rotacionado. Atualize a URL do webhook no painel do provedor.");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+}
+
 export function useTestChannel(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
