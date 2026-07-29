@@ -437,6 +437,27 @@ async function getOrCreateConversation(
   return newConv;
 }
 
+// Chama a RPC atômica (single UPDATE com `messages || jsonb_build_array(msg)`)
+// e devolve se a escrita foi confirmada — `false` em erro, após o mesmo warn
+// log que já existia. Extraído de `appendToConversation` para que callers que
+// precisam de um sinal de sucesso real (ex.: `persistInboundOnly`) não dependam
+// do array "previsão local" que `appendToConversation` sempre retorna.
+// deno-lint-ignore no-explicit-any
+async function appendConversationMessageRpc(
+  convId: string,
+  newMsg: { role: "user" | "assistant" | "human"; content: string; timestamp: string },
+): Promise<boolean> {
+  const { error } = await supabase.rpc("append_conversation_message", {
+    p_conversation_id: convId,
+    p_message: newMsg,
+  });
+  if (error) {
+    jsonLog("warn", { evt: "append_conversation_message_failed", convId, err: error.message });
+    return false;
+  }
+  return true;
+}
+
 // deno-lint-ignore no-explicit-any
 async function appendToConversation(
   convId: string,
@@ -446,18 +467,13 @@ async function appendToConversation(
   role: "user" | "assistant" | "human",
   content: string,
 ) {
-  // Append atômico via RPC (single UPDATE com `messages || jsonb_build_array(msg)`):
-  // evita perda quando dois processos appendam simultaneamente (inbound + worker).
-  // O array retornado é uma "previsão local" mantida pra compat com callers que
-  // encadeiam appendToConversation (ex.: comment intercept → user + assistant).
+  // Append atômico via RPC: evita perda quando dois processos appendam
+  // simultaneamente (inbound + worker). O array retornado é uma "previsão
+  // local" mantida pra compat com callers que encadeiam appendToConversation
+  // (ex.: comment intercept → user + assistant) — o sucesso/falha real da RPC
+  // é só logado (warn), nunca propagado; esse contrato não muda aqui.
   const newMsg = { role, content, timestamp: new Date().toISOString() };
-  const { error } = await supabase.rpc("append_conversation_message", {
-    p_conversation_id: convId,
-    p_message: newMsg,
-  });
-  if (error) {
-    jsonLog("warn", { evt: "append_conversation_message_failed", convId, err: error.message });
-  }
+  await appendConversationMessageRpc(convId, newMsg);
   return [...existing, newMsg];
 }
 
@@ -511,8 +527,8 @@ async function persistInboundOnly(args: {
     const conv = await getOrCreateConversation(customerId, args.unitId, args.contactName ?? undefined, args.chatLid);
     if (!conv) return false;
 
-    await appendToConversation(conv.id, conv.messages || [], "user", args.text);
-    return true;
+    const newMsg = { role: "user" as const, content: args.text, timestamp: new Date().toISOString() };
+    return await appendConversationMessageRpc(conv.id, newMsg);
   } catch (e) {
     jsonLog("warn", { requestId: args.requestId, evt: "persist_inbound_only_failed", err: String(e) });
     return false;
