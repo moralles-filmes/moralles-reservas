@@ -3,6 +3,7 @@ import {
   decideWhatsAppGate,
   systemBlocksDependentServices,
   resolveEnforcement,
+  decideInboundAutoReply,
   type WhatsAppGateInput,
   type SystemBillingStatus,
 } from "../../supabase/functions/_shared/whatsapp-service-state-core";
@@ -273,5 +274,69 @@ describe("resolveEnforcement — consequência operacional", () => {
     expect(rBlocked.enforced.sending).toBe(true);
     expect(rBlocked.enforced.newProvisioning).toBe(true);
     expect(rBlocked.provisioningBlockReason).toBe("SERVICE_STATE");
+  });
+});
+
+// Task 15b: resposta automática a mídia (áudio/imagem/sticker). Os seis casos
+// abaixo são montados pelo caminho REAL — decideWhatsAppGate() via gate()
+// seguido de resolveEnforcement() — nunca por um literal de
+// `{ systemBlocked, enforcedSending }` escrito à mão, porque um teste que
+// finge o booleano não prova que o estado real o produz. Mesma disciplina do
+// describe "resolveEnforcement — consequência operacional" acima.
+describe("decideInboundAutoReply", () => {
+  const call = (o: { state?: Partial<WhatsAppGateInput>; enforcementOn?: boolean } = {}) => {
+    const decision = gate(o.state);
+    const enforcement = resolveEnforcement({
+      decision,
+      flagEnabled: o.enforcementOn ?? true,
+      flagReadFailed: false,
+      dataReadFailed: false,
+    });
+    return decideInboundAutoReply({
+      systemBlocked: decision.systemBlocked,
+      enforcedSending: enforcement.enforced.sending,
+    });
+  };
+
+  it("SUSPENDED_UNPAID com enforcement ligado não responde", () => {
+    const decision = gate({ financialState: "OVERDUE_BEYOND_GRACE" });
+    expect(decision.state).toBe("SUSPENDED_UNPAID");
+    expect(call({ state: { financialState: "OVERDUE_BEYOND_GRACE" }, enforcementOn: true }))
+      .toBe("SILENT_WHATSAPP_SUSPENDED");
+  });
+
+  it("ADMIN_BLOCKED com enforcement ligado não responde", () => {
+    const decision = gate({ hasWhatsAppAdminBlock: true });
+    expect(decision.state).toBe("ADMIN_BLOCKED");
+    expect(call({ state: { hasWhatsAppAdminBlock: true }, enforcementOn: true }))
+      .toBe("SILENT_WHATSAPP_SUSPENDED");
+  });
+
+  it("sistema suspenso não responde mesmo com override de WhatsApp e enforcement desligado", () => {
+    const decision = gate({ systemBillingStatus: "suspended", hasActiveWhatsAppOverride: true });
+    expect(decision.state).toBe("OVERRIDE_ACTIVE"); // o estado do WhatsApp não muda...
+    expect(decision.systemBlocked).toBe(true); // ...mas o gate pai fecha, mesmo com enforcement OFF
+    expect(call({
+      state: { systemBillingStatus: "suspended", hasActiveWhatsAppOverride: true },
+      enforcementOn: false,
+    })).toBe("SILENT_SYSTEM_BLOCKED");
+  });
+
+  it("ACTIVE responde", () => {
+    const decision = gate({ financialState: "PAID" });
+    expect(decision.state).toBe("ACTIVE");
+    expect(call({ state: { financialState: "PAID" }, enforcementOn: true })).toBe("REPLY");
+  });
+
+  it("OVERRIDE_ACTIVE responde", () => {
+    const decision = gate({ hasActiveWhatsAppOverride: true });
+    expect(decision.state).toBe("OVERRIDE_ACTIVE");
+    expect(call({ state: { hasActiveWhatsAppOverride: true }, enforcementOn: true })).toBe("REPLY");
+  });
+
+  it("dry-run com SUSPENDED_UNPAID responde", () => {
+    const decision = gate({ financialState: "OVERDUE_BEYOND_GRACE" });
+    expect(decision.state).toBe("SUSPENDED_UNPAID");
+    expect(call({ state: { financialState: "OVERDUE_BEYOND_GRACE" }, enforcementOn: false })).toBe("REPLY");
   });
 });

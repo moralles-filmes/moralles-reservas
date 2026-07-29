@@ -19,6 +19,7 @@ import {
 } from "../_shared/whatsapp-providers.ts";
 import { parseStatusCallback, type StatusUpdate } from "../_shared/whatsapp-status.ts";
 import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
+import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
@@ -1327,6 +1328,29 @@ serve(async (req) => {
         jsonLog("info", { requestId, evt: "media_during_handoff", mediaKind: media.mediaKind, phone: phoneHash });
         await finish("media_during_handoff", null, { mediaKind: media.mediaKind });
         return new Response("ok");
+      }
+
+      // Gate de serviço, nas duas dimensões (§6.5 da spec). Vem DEPOIS do
+      // append na conversa — a mensagem recebida nunca se perde — e ANTES do
+      // sendOutbound: bloqueado significa ZERO chamada à Z-API. Reusa o helper
+      // central; não reimplementa os sete estados.
+      if (orgId2) {
+        const waGate = await resolveWhatsAppGateByOrg(supabase, orgId2);
+        const verdict = decideInboundAutoReply({
+          systemBlocked: waGate.systemBlocked,
+          enforcedSending: waGate.enforced.sending,
+        });
+        if (verdict !== "REPLY") {
+          const outcome = verdict === "SILENT_SYSTEM_BLOCKED"
+            ? "org_billing_blocked"
+            : "whatsapp_service_suspended";
+          jsonLog("warn", {
+            requestId, evt: "media_reply_suppressed", unitId, organizationId: orgId2,
+            state: waGate.state, reason: waGate.reason, verdict,
+          });
+          await finish(outcome, undefined, { media: true, mediaKind: media.mediaKind, verdict });
+          return new Response("ok");
+        }
       }
 
       const sendRes = await sendOutbound(provider, credentials, { toPhone: mediaPhone, text: MEDIA_REPLY_TEXT });

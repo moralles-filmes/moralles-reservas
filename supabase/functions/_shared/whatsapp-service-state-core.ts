@@ -288,3 +288,29 @@ export function resolveEnforcement(i: EnforcementInput): EnforcementResult {
     telemetry,
   };
 }
+
+/**
+ * Resposta automática a mídia (áudio/imagem/sticker) recebida: responder ou
+ * silenciar, e por quê. Função pura porque `supabase/functions/` não roda em
+ * CI — sem ela, os seis casos exigidos não teriam onde ser testados.
+ *
+ * DUAS DIMENSÕES, NÃO UMA, e é o ponto todo: o bloqueio do sistema NÃO é
+ * submetido a `whatsapp_service_enforcement` (é o mesmo tratamento não-gateado
+ * que o fluxo de texto já dá ao `org_billing_blocked`), enquanto a suspensão
+ * do WhatsApp é. Colapsar as duas num booleano faria o dry-run responder por
+ * uma organização com o sistema bloqueado.
+ */
+export interface InboundAutoReplyInput {
+  /** `WhatsAppGateDecision.systemBlocked` — estado real, nunca gateado por flag. */
+  systemBlocked: boolean;
+  /** `EnforcementResult.enforced.sending` — consequência, já gateada pela flag. */
+  enforcedSending: boolean;
+}
+
+export type InboundAutoReply = "REPLY" | "SILENT_SYSTEM_BLOCKED" | "SILENT_WHATSAPP_SUSPENDED";
+
+export function decideInboundAutoReply(i: InboundAutoReplyInput): InboundAutoReply {
+  if (i.systemBlocked) return "SILENT_SYSTEM_BLOCKED";
+  if (i.enforcedSending) return "SILENT_WHATSAPP_SUSPENDED";
+  return "REPLY";
+}
