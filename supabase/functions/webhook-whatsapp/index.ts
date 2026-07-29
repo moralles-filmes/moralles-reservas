@@ -461,6 +461,64 @@ async function appendToConversation(
   return [...existing, newMsg];
 }
 
+/**
+ * Grava a mensagem recebida na conversa e RETORNA — sem agente, sem resposta
+ * automática, sem ferramenta, sem envio. Chamado pelos gates de billing, que
+ * silenciam a IA mas não podem fazer o cliente sumir do histórico: o operador
+ * precisa ver o que chegou quando o serviço voltar (§6.10 da spec).
+ *
+ * RAMO-FOLHA DE PROPÓSITO: nada aqui é movido para antes dos gates. Não roda
+ * interceptador de avaliação, não roda handoff, não dorme no debounce e não
+ * reivindica `try_claim_conversation_for_ai` — a ordem do fluxo concorrente
+ * fica intocada. A deduplicação por `providerMessageId` já aconteceu a
+ * montante (INSERT em `processed_messages`), então reentrega do mesmo id nem
+ * chega aqui; e o append é atômico pela RPC `append_conversation_message`.
+ *
+ * NUNCA LANÇA. Perder a persistência é ruim; devolver não-2xx é pior — faria o
+ * provedor reentregar, e reentrega não recupera nada neste caminho. Devolve se
+ * conseguiu, para o caller registrar em `meta`.
+ */
+async function persistInboundOnly(args: {
+  requestId: string;
+  organizationId: string;
+  unitId: string;
+  phone: string;
+  contactName: string | null;
+  text: string;
+  chatLid: string | null;
+}): Promise<boolean> {
+  try {
+    if (!args.organizationId || !args.unitId) return false;
+
+    const { data: existing } = await supabase
+      .from("customers")
+      .select("id")
+      .eq("organization_id", args.organizationId)
+      .eq("phone", args.phone)
+      .maybeSingle();
+
+    let customerId = existing?.id as string | undefined;
+    if (!customerId) {
+      const { data: inserted } = await supabase
+        .from("customers")
+        .insert({ phone: args.phone, name: args.contactName ?? args.phone, organization_id: args.organizationId })
+        .select("id")
+        .single();
+      customerId = inserted?.id as string | undefined;
+    }
+    if (!customerId) return false;
+
+    const conv = await getOrCreateConversation(customerId, args.unitId, args.contactName ?? undefined, args.chatLid);
+    if (!conv) return false;
+
+    await appendToConversation(conv.id, conv.messages || [], "user", args.text);
+    return true;
+  } catch (e) {
+    jsonLog("warn", { requestId: args.requestId, evt: "persist_inbound_only_failed", err: String(e) });
+    return false;
+  }
+}
+
 function mediaPlaceholder(kind: InboundMediaKind): string {
   switch (kind) {
     case "audio": return "[áudio]";
@@ -1517,8 +1575,12 @@ serve(async (req) => {
         .eq("id", organizationId)
         .single();
       if (orgBilling && (orgBilling.billing_status === "blocked" || orgBilling.billing_status === "suspended")) {
-        jsonLog("warn", { requestId, evt: "webhook_org_billing_blocked", unitId, organizationId, status: orgBilling.billing_status });
-        await finish("org_billing_blocked");
+        const persisted = await persistInboundOnly({
+          requestId, organizationId, unitId, phone,
+          contactName: inbound.contactName, text: incomingText, chatLid: inboundChatLid,
+        });
+        jsonLog("warn", { requestId, evt: "webhook_org_billing_blocked", unitId, organizationId, status: orgBilling.billing_status, persisted });
+        await finish("org_billing_blocked", undefined, { inbound_persisted: persisted });
         return new Response("ok");
       }
     }
@@ -1532,11 +1594,15 @@ serve(async (req) => {
     {
       const waGate = await resolveWhatsAppGateByOrg(supabase, organizationId);
       if (waGate.enforced.sending) {
+        const persisted = await persistInboundOnly({
+          requestId, organizationId, unitId, phone,
+          contactName: inbound.contactName, text: incomingText, chatLid: inboundChatLid,
+        });
         jsonLog("warn", {
           requestId, evt: "webhook_whatsapp_service_suspended",
-          unitId, organizationId, state: waGate.state, reason: waGate.reason,
+          unitId, organizationId, state: waGate.state, reason: waGate.reason, persisted,
         });
-        await finish("whatsapp_service_suspended");
+        await finish("whatsapp_service_suspended", undefined, { inbound_persisted: persisted });
         return new Response("ok");
       }
     }
