@@ -18,6 +18,7 @@ import {
   type InboundMediaKind,
 } from "../_shared/whatsapp-providers.ts";
 import { parseStatusCallback, type StatusUpdate } from "../_shared/whatsapp-status.ts";
+import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
@@ -1102,6 +1103,12 @@ serve(async (req) => {
   const requestId = genRequestId();
   const t0 = Date.now();
 
+  // Cache do gate de serviço de WhatsApp é por invocação — zera aqui, mesmo
+  // padrão do unitCache dos workers e do clearWhatsAppGateCache() nas EFs de
+  // envio (Task 14), senão um isolate quente serve estado de suspensão velho
+  // depois de o cliente pagar.
+  clearWhatsAppGateCache();
+
   // Estado mutável que vamos completar conforme avançamos no handler — usado
   // pelo finalizador (recordExecution) para registrar a execução de forma
   // consistente, mesmo em early returns.
@@ -1488,6 +1495,24 @@ serve(async (req) => {
       if (orgBilling && (orgBilling.billing_status === "blocked" || orgBilling.billing_status === "suspended")) {
         jsonLog("warn", { requestId, evt: "webhook_org_billing_blocked", unitId, organizationId, status: orgBilling.billing_status });
         await finish("org_billing_blocked");
+        return new Response("ok");
+      }
+    }
+
+    // Suspensão do SERVIÇO de WhatsApp (mensalidade da instância), separada
+    // do bloqueio do sistema logo acima. Roda ANTES do runAgentLoop: zero
+    // token de IA consumido. SILÊNCIO, não mensagem — mesmo tratamento (e
+    // mesma posição no fluxo, ANTES do upsert de customer/conversation) do
+    // org_billing_blocked logo acima: o cliente do restaurante é terceiro
+    // inocente. Outcome "whatsapp_service_suspended".
+    {
+      const waGate = await resolveWhatsAppGateByOrg(supabase, organizationId);
+      if (waGate.enforced.sending) {
+        jsonLog("warn", {
+          requestId, evt: "webhook_whatsapp_service_suspended",
+          unitId, organizationId, state: waGate.state, reason: waGate.reason,
+        });
+        await finish("whatsapp_service_suspended");
         return new Response("ok");
       }
     }
