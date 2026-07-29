@@ -2723,6 +2723,133 @@ git commit -m "feat(billing): bloqueia canal novo de WhatsApp sem direito ativo"
 
 ---
 
+## Task 16b: Action `rotate_secret` — rotação sem recriar canal
+
+**Files:**
+- Modify: `supabase/functions/manage-channels/index.ts` (action nova, entre `update` e `delete`)
+- Modify: `src/hooks/useWhatsAppChannels.ts`
+- Modify: `src/pages/gestao/Automacao.tsx` (botão no card do canal, no `ChannelsTab`)
+- Modify: `docs/RUNBOOK-ROTACAO-CREDENCIAIS.md` (seção 2)
+
+**Interfaces:**
+- Produces: `manage-channels` action `rotate_secret` → `{ success: true, webhookSecret, webhookUrl }`; hook `useRotateChannelSecret(unitId)`.
+
+**Por que esta task existe (achado da revisão da Task 16).** O gate de novo provisionamento recusa `create` quando a unidade tem zero canais. O [runbook](../../RUNBOOK-ROTACAO-CREDENCIAIS.md) manda "recriar o canal" para rotacionar o `webhook_secret` da Z-API, sem dizer em que ordem. Quem **remove antes de adicionar** fica com zero canais, o gate recusa a recriação, e o caminho alternativo do runbook (UPDATE direto na coluna) morreu junto com a linha. Para `NOT_ENTITLED`/`SUSPENDED_UNPAID`/`ADMIN_BLOCKED` isso é a guarda funcionando. Para **`GRACE_PERIOD` e `LEGACY_GRANDFATHERED` é contradição direta** — são os dois estados cuja definição é "preserva o uso existente", e a migration 079 concede `LEGACY_GRANDFATHERED` a toda organização com canal conectado.
+
+A causa raiz não é o gate: é o runbook não ter ação de rotação, o que ele próprio chama de "a lacuna estrutural". Fechada aqui. Rotação **não** é provisionamento novo — o canal já existe, nenhum custo externo nasce — então esta action fica fora do gate por construção, e não por exceção escrita à mão.
+
+Contexto de segurança que motiva a rotação existir de verdade: a Z-API não aceita header customizado em webhook, então o secret viaja na **query string** e aparece em log de gateway. Rotação periódica é a mitigação.
+
+- [ ] **Step 1: Acrescentar a action na Edge Function**
+
+Entre a action `update` e a action `delete`:
+
+```ts
+    // ── rotate_secret ──────────────────────────────────────────────────────────
+    // Gera um `webhook_secret` novo PRESERVANDO o `channel_id` — a URL do webhook
+    // muda só no parâmetro `secret=`, e o resto continua válido no painel do
+    // provedor. Existe porque a alternativa era remover e recriar o canal, o que
+    // (a) troca o channel_id e obriga a reconfigurar a URL inteira e (b) desde o
+    // gate de novo provisionamento pode ser RECUSADO no meio da rotação,
+    // deixando a unidade sem canal nenhum.
+    //
+    // Deliberadamente FORA do gate de novo provisionamento: o canal já existe e
+    // nenhum custo externo novo nasce aqui. Uma organização em GRACE_PERIOD ou
+    // LEGACY_GRANDFATHERED PRECISA conseguir rotacionar — "preserva o uso
+    // existente" inclui poder trocar um secret vazado.
+    if (action === "rotate_secret") {
+      const channelId = String(body.channel_id ?? "");
+      if (!channelId) return jsonResponse(req, { error: "channel_id é obrigatório." }, 400);
+
+      const newSecret = Array.from(
+        crypto.getRandomValues(new Uint8Array(32))
+      ).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+      const { data: rotated, error: rotErr } = await supabase
+        .from("whatsapp_channels")
+        .update({ webhook_secret: newSecret, updated_at: new Date().toISOString() })
+        .eq("id", channelId)
+        .eq("unit_id", unitId)
+        .select("id")
+        .maybeSingle();
+
+      if (rotErr) {
+        console.error("manage-channels:rotate_secret", rotErr);
+        return jsonResponse(req, { error: "Falha ao rotacionar o secret do webhook." }, 500);
+      }
+      if (!rotated) return jsonResponse(req, { error: "Canal não encontrado." }, 404);
+
+      const supabaseUrl = Deno.env.get("SUPABASE_URL");
+      const projectRef = supabaseUrl?.match(/https:\/\/([^.]+)\./)?.[1];
+      if (!projectRef) {
+        console.error("manage-channels:rotate_secret unexpected SUPABASE_URL", supabaseUrl);
+        // O secret JÁ rotacionou — não devolver erro seria pior, porque o
+        // operador precisa saber que a URL antiga parou de valer.
+        return jsonResponse(
+          req,
+          { error: "Secret rotacionado, mas não foi possível montar a URL do webhook. Recarregue a tela." },
+          500,
+        );
+      }
+      const webhookUrl = `https://${projectRef}.supabase.co/functions/v1/webhook-whatsapp?channel=${channelId}`;
+
+      return jsonResponse(req, { success: true, webhookSecret: newSecret, webhookUrl });
+    }
+```
+
+**`.eq("unit_id", unitId)` no UPDATE** é o mesmo guard cross-tenant que `update` e `delete` já usam — sem ele, um `channel_id` de outra unidade seria rotacionado, quebrando o webhook de outro cliente.
+
+- [ ] **Step 2: Hook no frontend**
+
+Em `src/hooks/useWhatsAppChannels.ts`, seguindo o padrão dos hooks vizinhos:
+
+```ts
+export function useRotateChannelSecret(unitId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (channelId: string) => {
+      return invokeManageChannels({
+        action: "rotate_secret",
+        unit_id: unitId,
+        channel_id: channelId,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
+      toast.success("Secret rotacionado. Atualize a URL do webhook no painel do provedor.");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+}
+```
+
+O toast **manda atualizar no provedor** de propósito: o secret velho para de ser aceito na hora, então rotacionar sem reconfigurar derruba o webhook até alguém colar a URL nova. Um "sucesso" seco esconderia isso.
+
+- [ ] **Step 3: Botão no card do canal**
+
+No `ChannelsTab` de `src/pages/gestao/Automacao.tsx`, no mesmo grupo de botões onde já vivem copiar-URL / testar / remover, acrescentar um botão "Rotacionar secret" com `AlertDialog` de confirmação (o mesmo padrão de confirmação que o botão Remover já usa), e texto de confirmação deixando claro a consequência: **a URL antiga para de funcionar imediatamente e precisa ser reconfigurada no painel do provedor.**
+
+Reaproveitar a exibição de URL que já existe no card — depois de rotacionar, a query é invalidada e o card mostra a URL nova; não montar uma segunda superfície de "copie isto agora".
+
+- [ ] **Step 4: Corrigir o runbook**
+
+Em `docs/RUNBOOK-ROTACAO-CREDENCIAIS.md`, seção 2 ("Z-API — secret de webhook por canal"):
+
+- A frase "**Não existe ação de rotação**" deixou de ser verdade — passa a descrever `rotate_secret` como o **caminho recomendado**, preservando `channel_id`.
+- Rebaixar "recriar o canal" a último recurso, e acrescentar o aviso: **recriar troca o `channel_id`** (URL inteira nova no provedor) e, se a unidade estiver em estado que não autoriza novo provisionamento, **remover antes de adicionar deixa a unidade sem canal e o gate recusa a recriação** — se for necessário recriar, **adicionar o canal novo ANTES de remover o antigo** (o `unique (unit_id, provider, display_phone)` tolera duas linhas com `display_phone` nulo).
+- Manter o UPDATE direto como caminho de emergência.
+
+- [ ] **Step 5: Verificar e commitar**
+
+```bash
+npm run typecheck && npm run lint
+npx esbuild supabase/functions/manage-channels/index.ts --bundle --platform=neutral --external:https://* --outfile=/dev/null
+git add supabase/functions/manage-channels/index.ts src/hooks/useWhatsAppChannels.ts src/pages/gestao/Automacao.tsx docs/RUNBOOK-ROTACAO-CREDENCIAIS.md
+git commit -m "feat(whatsapp): rotacao de secret de webhook sem recriar o canal"
+```
+
+---
+
 ## Task 17: Worker `process-whatsapp-enforcement`
 
 **Files:**
