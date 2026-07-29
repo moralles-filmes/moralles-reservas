@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { type WhatsAppProvider, type ChannelCredentials } from "../_shared/whatsapp-providers.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
+import { resolveWhatsAppGateByUnit, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -24,10 +25,41 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
   return !!data;
 }
 
+/**
+ * Mensagem por estado. Textos DIFERENTES de propósito: "regularize a
+ * mensalidade" e "contrate a automação" pedem ações opostas, e um texto
+ * genérico faria o cliente tentar a errada.
+ */
+const NEW_PROVISIONING_MESSAGE: Record<string, string> = {
+  GRACE_PERIOD:
+    "Há uma mensalidade da automação em aberto. Regularize em Cobrança para adicionar um novo número.",
+  LEGACY_GRANDFATHERED:
+    "Sua unidade usa a automação de WhatsApp em condição anterior à cobrança. Adicionar um novo número exige contratar a mensalidade da instância.",
+  NOT_ENTITLED:
+    "A automação de WhatsApp não está contratada para esta organização. Contrate em Cobrança para configurar o canal.",
+  SUSPENDED_UNPAID:
+    "Automação de WhatsApp suspensa por falta de pagamento. Regularize em Cobrança.",
+  ADMIN_BLOCKED:
+    "Automação de WhatsApp bloqueada administrativamente. Fale com o suporte.",
+  ACTIVE: "Não foi possível criar o canal.",
+  OVERRIDE_ACTIVE: "Não foi possível criar o canal.",
+};
+
+/**
+ * Estado indeterminado ≠ sem direito. Dizer "você não contratou" a quem só
+ * sofreu um soluço de leitura manda o cliente comprar o que já tem.
+ */
+const PROVISIONING_UNVERIFIABLE =
+  "Não foi possível verificar o direito de uso da automação de WhatsApp agora. Tente novamente em alguns minutos.";
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeadersFor(req) });
   }
+
+  // Cache do gate é por invocação — zera aqui, mesmo padrão do unitCache dos
+  // workers, senão um isolate quente serve estado de suspensão velho.
+  clearWhatsAppGateCache();
 
   try {
     const authHeader = req.headers.get("Authorization") ?? "";
@@ -67,6 +99,40 @@ serve(async (req) => {
 
     // ── create ─────────────────────────────────────────────────────────────────
     if (action === "create") {
+      // Gate de NOVO provisionamento: só ACTIVE e OVERRIDE_ACTIVE autorizam
+      // gerar custo externo novo. GRACE_PERIOD preserva a instância existente
+      // mas não cria outra; LEGACY_GRANDFATHERED preserva o uso existente mas
+      // não expande o serviço.
+      //
+      // NÃO consulta `whatsapp_service_enforcement`, nem para liberar nem para
+      // bloquear: aquela flag governa a suspensão de uso EXISTENTE. Esta guarda
+      // impede despesa recorrente nova de nascer e vale sempre. Fail-closed:
+      // gate irresolvível (unidade sem organização, leitura que falhou) recusa.
+      //
+      // platform_admin NÃO passa por cima — esta EF já é exclusiva de
+      // super-admin, então "exceto para admin" seria "nunca". Provisionar para
+      // organização sem assinatura exige override formal de `whatsapp`, que
+      // leva a OVERRIDE_ACTIVE e libera pela porta da frente, com rastro.
+      const { count: existingChannels, error: countErr } = await supabase
+        .from("whatsapp_channels")
+        .select("id", { count: "exact", head: true })
+        .eq("unit_id", unitId);
+
+      if (countErr) {
+        console.error("manage-channels:create count", countErr);
+        return jsonResponse(req, { error: PROVISIONING_UNVERIFIABLE }, 403);
+      }
+
+      if ((existingChannels ?? 0) === 0) {
+        const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
+        if (!gate || !gate.provisioning.allowed) {
+          const message = !gate || gate.provisioning.blockReason === "STATE_READ_FAILED"
+            ? PROVISIONING_UNVERIFIABLE
+            : NEW_PROVISIONING_MESSAGE[gate.state];
+          return jsonResponse(req, { error: message }, 403);
+        }
+      }
+
       const provider: WhatsAppProvider = body.provider;
       const credentials: ChannelCredentials = body.credentials ?? {};
 

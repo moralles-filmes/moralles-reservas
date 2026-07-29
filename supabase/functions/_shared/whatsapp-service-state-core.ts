@@ -208,21 +208,21 @@ export function decideWhatsAppGate(i: WhatsAppGateInput): WhatsAppGateDecision {
 /**
  * Combina a decisão de `decideWhatsAppGate` com o resultado da leitura da
  * flag de enforcement e da leitura de dados, e devolve a CONSEQUÊNCIA
- * operacional. Roda DEPOIS de `decideWhatsAppGate` e não reimplementa nada
- * dele — a flag controla só a APLICAÇÃO das consequências, nunca o estado
- * calculado (os sete estados e as duas perguntas acima ficam intocados).
+ * operacional sobre uso EXISTENTE. Roda DEPOIS de `decideWhatsAppGate` e não
+ * reimplementa nada dele — a flag controla só a APLICAÇÃO da consequência,
+ * nunca o estado calculado (os sete estados e as duas perguntas acima ficam
+ * intocados).
  *
- * ASSIMETRIA INTENCIONAL entre as duas consequências, e ela é o motivo desta
- * função existir em vez de um `flagOn && decision.xBlocked` solto no caller:
- *   - Envio existente é FAIL-OPEN: uma flag ilegível ou um dado que não pôde
- *     ser lido NÃO pode suspender quem já está usando o WhatsApp por causa de
- *     um soluço técnico. `enforced.sending` só fica `true` quando TUDO foi
- *     lido com sucesso E a flag está ligada E o estado bloqueia.
- *   - Novo provisionamento é FAIL-CLOSED: autorizar um custo externo recorrente
- *     (nova instância) sem conseguir confirmar a autorização é pior do que
- *     recusar e pedir para tentar de novo. `enforced.newProvisioning` só fica
- *     `false` (permite) quando TUDO foi confirmado — qualquer leitura que
- *     falhou, ou a flag desligada, ou o estado bloqueando, resulta em bloqueio.
+ * `enforced` contém SOMENTE consequências submetidas à flag
+ * `whatsapp_service_enforcement` — hoje, só o envio. A elegibilidade para
+ * provisionar instância NOVA não é uma dessas consequências (ela nunca
+ * consulta essa flag, nem para liberar nem para bloquear) e vive em
+ * `resolveProvisioningEligibility`, função separada logo abaixo.
+ *
+ * FAIL-OPEN é a assimetria deste eixo: uma flag ilegível ou um dado que não
+ * pôde ser lido NÃO pode suspender quem já está usando o WhatsApp por causa
+ * de um soluço técnico. `enforced.sending` só fica `true` quando TUDO foi
+ * lido com sucesso E a flag está ligada E o estado bloqueia.
  */
 export interface EnforcementInput {
   decision: WhatsAppGateDecision;
@@ -231,19 +231,6 @@ export interface EnforcementInput {
   /** Alguma das leituras de ESTADO (org, overrides, assinatura, fatura) falhou. */
   dataReadFailed: boolean;
 }
-
-/**
- * Motivo do bloqueio de provisionamento, para a UI/log dizerem a coisa certa
- * ao usuário — "não foi possível verificar agora" é uma mensagem diferente de
- * "você não tem direito". Ordem de precedência FIXA (ver `resolveEnforcement`):
- * transitório (leitura falhou) sempre vence sobre definitivo (estado ou flag).
- */
-export type ProvisioningBlockReason =
-  | "ALLOWED"
-  | "ENFORCEMENT_FLAG_UNREADABLE"
-  | "STATE_READ_FAILED"
-  | "SERVICE_STATE"
-  | "ENFORCEMENT_FLAG_OFF";
 
 /**
  * `"FLAG_READ_FAILED"` é distinto de `"NONE"` de propósito: uma leitura de
@@ -255,8 +242,7 @@ export type EnforcementTelemetry = "NONE" | "DRY_RUN_WOULD_BLOCK_SENDING" | "FLA
 
 export interface EnforcementResult {
   enforcementEnabled: boolean;
-  enforced: { sending: boolean; newProvisioning: boolean };
-  provisioningBlockReason: ProvisioningBlockReason;
+  enforced: { sending: boolean };
   telemetry: EnforcementTelemetry;
 }
 
@@ -265,16 +251,6 @@ export function resolveEnforcement(i: EnforcementInput): EnforcementResult {
   const anyReadFailed = i.flagReadFailed || i.dataReadFailed;
 
   const sending = i.decision.sendingBlocked && enforcementEnabled && !anyReadFailed;
-  // Fail-closed: bloqueado a menos que TUDO tenha sido confirmado (flag lida
-  // com sucesso E ligada E nenhuma leitura de estado falhou E o estado libera).
-  const newProvisioning = !(enforcementEnabled && !anyReadFailed && !i.decision.newProvisioningBlocked);
-
-  let provisioningBlockReason: ProvisioningBlockReason;
-  if (i.flagReadFailed) provisioningBlockReason = "ENFORCEMENT_FLAG_UNREADABLE";
-  else if (i.dataReadFailed) provisioningBlockReason = "STATE_READ_FAILED";
-  else if (i.decision.newProvisioningBlocked) provisioningBlockReason = "SERVICE_STATE";
-  else if (!i.flagEnabled) provisioningBlockReason = "ENFORCEMENT_FLAG_OFF";
-  else provisioningBlockReason = "ALLOWED";
 
   let telemetry: EnforcementTelemetry;
   if (i.flagReadFailed) telemetry = "FLAG_READ_FAILED";
@@ -283,10 +259,50 @@ export function resolveEnforcement(i: EnforcementInput): EnforcementResult {
 
   return {
     enforcementEnabled,
-    enforced: { sending, newProvisioning },
-    provisioningBlockReason,
+    enforced: { sending },
     telemetry,
   };
+}
+
+/**
+ * Motivo do bloqueio de provisionamento, para a UI/log dizerem a coisa certa —
+ * "não foi possível verificar agora" é mensagem diferente de "você não tem
+ * direito". Precedência FIXA: transitório (leitura falhou) vence sobre
+ * definitivo (estado).
+ *
+ * NÃO HÁ motivo ligado à flag de enforcement, e a ausência é o contrato: essa
+ * flag governa consequência sobre uso existente, nunca autorização de despesa
+ * nova. Acrescentar um `ENFORCEMENT_FLAG_*` aqui reintroduz o acoplamento que
+ * esta separação existe para impedir.
+ */
+export type ProvisioningBlockReason = "ALLOWED" | "STATE_READ_FAILED" | "SERVICE_STATE";
+
+export interface ProvisioningEligibilityInput {
+  decision: WhatsAppGateDecision;
+  /** Alguma leitura de ESTADO (org, overrides, assinatura, fatura) falhou. */
+  dataReadFailed: boolean;
+  // SEM campo de flag, de propósito — ver o comentário acima.
+}
+
+export interface ProvisioningEligibility {
+  allowed: boolean;
+  blockReason: ProvisioningBlockReason;
+}
+
+/**
+ * Elegibilidade para gerar custo externo recorrente NOVO. Proteção permanente:
+ * vale com qualquer valor de `whatsapp_service_enforcement`, inclusive
+ * ilegível, porque não consulta a flag.
+ *
+ * FAIL-CLOSED, e a assimetria com o envio é deliberada: autorizar despesa
+ * recorrente sem conseguir confirmar a autorização é pior do que recusar e
+ * pedir para tentar de novo. Envio existente faz o oposto (fail-open) — um
+ * soluço técnico não pode suspender quem está pagando.
+ */
+export function resolveProvisioningEligibility(i: ProvisioningEligibilityInput): ProvisioningEligibility {
+  if (i.dataReadFailed) return { allowed: false, blockReason: "STATE_READ_FAILED" };
+  if (i.decision.newProvisioningBlocked) return { allowed: false, blockReason: "SERVICE_STATE" };
+  return { allowed: true, blockReason: "ALLOWED" };
 }
 
 /**

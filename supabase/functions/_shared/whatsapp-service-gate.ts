@@ -3,10 +3,13 @@
  * Camada de I/O do gate de serviço de WhatsApp: carrega do banco o que o núcleo
  * puro precisa e devolve a decisão já combinada com a flag de enforcement.
  *
- * A CONSEQUÊNCIA (não o estado) é quem tem a assimetria fail-open/fail-closed
- * — ver `resolveEnforcement` em `whatsapp-service-state-core.ts`, o único
- * lugar que decide `enforced`. Este arquivo só lê o banco, valida o que lê, e
- * repassa ao núcleo; não reimplementa a lógica de consequência.
+ * A CONSEQUÊNCIA sobre uso existente (não o estado) é FAIL-OPEN — ver
+ * `resolveEnforcement` em `whatsapp-service-state-core.ts`, o único lugar que
+ * decide `enforced`. A elegibilidade para provisionar instância nova é
+ * FAIL-CLOSED e vive em `resolveProvisioningEligibility`, separada de
+ * propósito (não consulta a flag de enforcement) — ver o campo `provisioning`
+ * abaixo. Este arquivo só lê o banco, valida o que lê, e repassa aos dois
+ * núcleos; não reimplementa nenhuma lógica de consequência.
  *
  * CACHE POR INVOCAÇÃO: `orgCache`/`unitToOrg` são zerados no início de cada
  * invocação pelo caller (`clearWhatsAppGateCache()`), mesmo padrão do
@@ -32,9 +35,10 @@ import {
 import {
   decideWhatsAppGate,
   resolveEnforcement,
+  resolveProvisioningEligibility,
   isSystemBillingStatus,
   type WhatsAppGateDecision,
-  type ProvisioningBlockReason,
+  type ProvisioningEligibility,
 } from "./whatsapp-service-state-core.ts";
 
 const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
@@ -42,25 +46,24 @@ const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
 export interface ServiceGateResult extends WhatsAppGateDecision {
   organizationId: string;
   enforcementEnabled: boolean;
-  /** Consequência operacional — ver a assimetria fail-open/fail-closed no núcleo. */
-  enforced: { sending: boolean; newProvisioning: boolean };
+  /** Consequência operacional sobre uso existente — fail-open, ver o núcleo. */
+  enforced: { sending: boolean };
   /**
-   * Por que `enforced.newProvisioning` está bloqueado — a UI/log usam isto
-   * para dizer "não foi possível verificar agora"
-   * (`ENFORCEMENT_FLAG_UNREADABLE`/`STATE_READ_FAILED`) em vez de "você não
-   * tem direito" (`SERVICE_STATE`/`ENFORCEMENT_FLAG_OFF`). `"ALLOWED"` quando
-   * não há bloqueio.
+   * Elegibilidade para provisionar instância nova. Calculada SEM a flag de
+   * enforcement e fail-closed — ver `resolveProvisioningEligibility`. Não
+   * confundir com `enforced`, que é o outro eixo (consequência gateada por
+   * flag, fail-open).
    */
-  provisioningBlockReason: ProvisioningBlockReason;
+  provisioning: ProvisioningEligibility;
   /**
    * true quando ALGUMA leitura falhou — dado (organizations/overrides/
    * assinatura/fatura) OU a leitura da própria flag de enforcement. NÃO há um
    * "lado seguro" único para este campo agregado: `enforced.sending` já é
    * fail-open (uma falha aqui nunca vira bloqueio de envio) e
-   * `enforced.newProvisioning` já é fail-closed (uma falha aqui SEMPRE
-   * bloqueia, ver `provisioningBlockReason`). Nenhum caller de bloqueio deve
-   * decidir a partir deste campo — ele é só diagnóstico agregado para
-   * log/observabilidade; `enforced` e `provisioningBlockReason` já carregam a
+   * `provisioning.allowed` já é fail-closed (uma falha aqui SEMPRE bloqueia,
+   * ver `provisioning.blockReason`). Nenhum caller de bloqueio deve decidir a
+   * partir deste campo — ele é só diagnóstico agregado para
+   * log/observabilidade; `enforced` e `provisioning` já carregam a
    * consequência certa para cada lado.
    */
   readFailed: boolean;
@@ -210,6 +213,10 @@ export async function resolveWhatsAppGateByOrg(
     dataReadFailed,
   });
 
+  // `dataReadFailed`, não `readFailed` — a falha de leitura da flag de
+  // enforcement não entra nesta conta (provisionamento nunca consulta a flag).
+  const provisioning = resolveProvisioningEligibility({ decision, dataReadFailed });
+
   const readFailed = dataReadFailed || flagCheck.readFailed;
 
   const result: ServiceGateResult = {
@@ -217,7 +224,7 @@ export async function resolveWhatsAppGateByOrg(
     organizationId,
     enforcementEnabled: enforcement.enforcementEnabled,
     enforced: enforcement.enforced,
-    provisioningBlockReason: enforcement.provisioningBlockReason,
+    provisioning,
     readFailed,
   };
 

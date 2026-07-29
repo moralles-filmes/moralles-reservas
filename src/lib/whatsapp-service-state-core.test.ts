@@ -3,6 +3,7 @@ import {
   decideWhatsAppGate,
   systemBlocksDependentServices,
   resolveEnforcement,
+  resolveProvisioningEligibility,
   decideInboundAutoReply,
   type WhatsAppGateInput,
   type SystemBillingStatus,
@@ -135,13 +136,17 @@ describe("decideWhatsAppGate — gate pai do sistema", () => {
   });
 });
 
-// Fix round 1, findings 1 e 2: a CONSEQUÊNCIA (não o estado) tem a assimetria
-// fail-open (envio) / fail-closed (provisionamento). Todo caso abaixo passa a
-// decisão REAL de decideWhatsAppGate para resolveEnforcement — nunca um
-// literal de WhatsAppGateDecision escrito à mão — para que o teste proteja a
-// ligação entre os dois núcleos, não só cada um isolado.
+// Fix round 1, findings 1 e 2 (histórico): a CONSEQUÊNCIA (não o estado) tem a
+// assimetria fail-open (envio) / fail-closed (provisionamento). A Task 16
+// separou o lado fail-closed para `resolveProvisioningEligibility` (describe
+// dedicado logo abaixo) — este describe cobre só o que `resolveEnforcement`
+// ainda decide: a consequência sobre uso EXISTENTE, submetida à flag. Todo
+// caso abaixo passa a decisão REAL de decideWhatsAppGate para
+// resolveEnforcement — nunca um literal de WhatsAppGateDecision escrito à mão
+// — para que o teste proteja a ligação entre os dois núcleos, não só cada um
+// isolado.
 describe("resolveEnforcement — consequência operacional", () => {
-  it("flag ON + leitura válida + ACTIVE: envio e provisionamento permitidos", () => {
+  it("flag ON + leitura válida + ACTIVE: envio permitido", () => {
     const decision = gate({ financialState: "PAID" });
     expect(decision.state).toBe("ACTIVE");
 
@@ -149,34 +154,25 @@ describe("resolveEnforcement — consequência operacional", () => {
 
     expect(r.enforcementEnabled).toBe(true);
     expect(r.enforced.sending).toBe(false);
-    expect(r.enforced.newProvisioning).toBe(false);
-    expect(r.provisioningBlockReason).toBe("ALLOWED");
     expect(r.telemetry).toBe("NONE");
   });
 
-  it("flag ON + leitura válida + OVERRIDE_ACTIVE: envio e provisionamento permitidos", () => {
+  it("flag ON + leitura válida + OVERRIDE_ACTIVE: envio permitido", () => {
     const decision = gate({ hasActiveWhatsAppOverride: true });
     expect(decision.state).toBe("OVERRIDE_ACTIVE");
 
     const r = resolveEnforcement({ decision, flagEnabled: true, flagReadFailed: false, dataReadFailed: false });
 
     expect(r.enforced.sending).toBe(false);
-    expect(r.enforced.newProvisioning).toBe(false);
-    expect(r.provisioningBlockReason).toBe("ALLOWED");
   });
 
-  it("flag OFF + leitura válida: envio sem enforcement, provisionamento bloqueado por ENFORCEMENT_FLAG_OFF", () => {
-    // ACTIVE é o estado que, com a flag ligada, liberaria os dois — prova que
-    // a flag desligada barra provisionamento novo mesmo quando o estado por
-    // si só autorizaria.
+  it("flag OFF + leitura válida: envio sem enforcement (enforcementEnabled=false)", () => {
     const decision = gate({ financialState: "PAID" });
 
     const r = resolveEnforcement({ decision, flagEnabled: false, flagReadFailed: false, dataReadFailed: false });
 
     expect(r.enforcementEnabled).toBe(false);
     expect(r.enforced.sending).toBe(false);
-    expect(r.enforced.newProvisioning).toBe(true);
-    expect(r.provisioningBlockReason).toBe("ENFORCEMENT_FLAG_OFF");
     expect(r.telemetry).toBe("NONE"); // ACTIVE não bloquearia envio de qualquer forma — nada para o dry-run registrar
   });
 
@@ -188,7 +184,6 @@ describe("resolveEnforcement — consequência operacional", () => {
 
     expect(r.enforced.sending).toBe(false); // dry-run não aplica a consequência, só a registra
     expect(r.telemetry).toBe("DRY_RUN_WOULD_BLOCK_SENDING");
-    expect(r.provisioningBlockReason).toBe("SERVICE_STATE"); // o estado já bloqueava, independente da flag
   });
 
   it("falha de leitura de dado + estado que bloquearia envio: envio continua liberado (fail-open)", () => {
@@ -198,18 +193,14 @@ describe("resolveEnforcement — consequência operacional", () => {
     const r = resolveEnforcement({ decision, flagEnabled: true, flagReadFailed: false, dataReadFailed: true });
 
     expect(r.enforced.sending).toBe(false); // apesar do estado bloquear, a leitura falhou — não suspende
-    expect(r.enforced.newProvisioning).toBe(true); // fail-closed
-    expect(r.provisioningBlockReason).toBe("STATE_READ_FAILED");
   });
 
-  it("falha de leitura de dado + estado ACTIVE: novo provisionamento bloqueado por leitura desconhecida", () => {
+  it("falha de leitura de dado + estado ACTIVE: envio permanece liberado", () => {
     const decision = gate({ financialState: "PAID" });
 
     const r = resolveEnforcement({ decision, flagEnabled: true, flagReadFailed: false, dataReadFailed: true });
 
     expect(r.enforced.sending).toBe(false); // ACTIVE não bloqueia envio de qualquer forma
-    expect(r.enforced.newProvisioning).toBe(true);
-    expect(r.provisioningBlockReason).toBe("STATE_READ_FAILED");
   });
 
   it("falha de leitura de dado tampouco produz dry-run, mesmo com flag OFF e estado bloqueado", () => {
@@ -230,24 +221,18 @@ describe("resolveEnforcement — consequência operacional", () => {
     expect(r.telemetry).not.toBe("DRY_RUN_WOULD_BLOCK_SENDING");
     expect(r.enforcementEnabled).toBe(false);
     expect(r.enforced.sending).toBe(false); // fail-open
-    expect(r.enforced.newProvisioning).toBe(true); // fail-closed
-    expect(r.provisioningBlockReason).toBe("ENFORCEMENT_FLAG_UNREADABLE");
   });
 
-  it("GRACE_PERIOD e LEGACY_GRANDFATHERED continuam sem permitir novo provisionamento, mesmo com enforcement pleno", () => {
+  it("GRACE_PERIOD e LEGACY_GRANDFATHERED não bloqueiam envio, mesmo com enforcement pleno", () => {
     const grace = gate({ financialState: "IN_GRACE" });
     expect(grace.state).toBe("GRACE_PERIOD");
     const rGrace = resolveEnforcement({ decision: grace, flagEnabled: true, flagReadFailed: false, dataReadFailed: false });
     expect(rGrace.enforced.sending).toBe(false);
-    expect(rGrace.enforced.newProvisioning).toBe(true);
-    expect(rGrace.provisioningBlockReason).toBe("SERVICE_STATE");
 
     const legacy = gate({ financialState: "CANCELED", isLegacyGrandfathered: true });
     expect(legacy.state).toBe("LEGACY_GRANDFATHERED");
     const rLegacy = resolveEnforcement({ decision: legacy, flagEnabled: true, flagReadFailed: false, dataReadFailed: false });
     expect(rLegacy.enforced.sending).toBe(false);
-    expect(rLegacy.enforced.newProvisioning).toBe(true);
-    expect(rLegacy.provisioningBlockReason).toBe("SERVICE_STATE");
   });
 
   it("SUSPENDED_UNPAID e ADMIN_BLOCKED continuam bloqueando envio com enforcement efetivamente habilitado", () => {
@@ -260,8 +245,6 @@ describe("resolveEnforcement — consequência operacional", () => {
       dataReadFailed: false,
     });
     expect(rSuspended.enforced.sending).toBe(true);
-    expect(rSuspended.enforced.newProvisioning).toBe(true);
-    expect(rSuspended.provisioningBlockReason).toBe("SERVICE_STATE");
 
     const blocked = gate({ hasWhatsAppAdminBlock: true });
     expect(blocked.state).toBe("ADMIN_BLOCKED");
@@ -272,8 +255,100 @@ describe("resolveEnforcement — consequência operacional", () => {
       dataReadFailed: false,
     });
     expect(rBlocked.enforced.sending).toBe(true);
-    expect(rBlocked.enforced.newProvisioning).toBe(true);
-    expect(rBlocked.provisioningBlockReason).toBe("SERVICE_STATE");
+  });
+});
+
+// Task 16: elegibilidade para provisionar instância NOVA — eixo separado de
+// `resolveEnforcement`, e deliberadamente: aquela função governa consequência
+// sobre uso EXISTENTE, gateada pela flag `whatsapp_service_enforcement`
+// (fail-open); esta função governa autorização de despesa recorrente NOVA, e
+// nunca consulta aquela flag (fail-closed). Todo caso é montado pelo caminho
+// REAL — `gate(...)` (que chama `decideWhatsAppGate`) — nunca um literal de
+// `WhatsAppGateDecision` escrito à mão, mesma disciplina do describe acima.
+describe("resolveProvisioningEligibility", () => {
+  const active = () => gate({ financialState: "PAID" });
+  const suspendedUnpaid = () => gate({ financialState: "OVERDUE_BEYOND_GRACE" });
+  const legacy = () => gate({ financialState: "CANCELED", isLegacyGrandfathered: true });
+  const overrideActive = () => gate({ hasActiveWhatsAppOverride: true });
+
+  it("flag de enforcement OFF + ACTIVE libera, e não pelo motivo errado", () => {
+    const decision = active();
+    expect(decision.state).toBe("ACTIVE");
+    const r = resolveProvisioningEligibility({ decision, dataReadFailed: false });
+    expect(r.allowed).toBe(true);
+    expect(r.blockReason).toBe("ALLOWED");
+  });
+
+  it("flag de enforcement OFF + SUSPENDED_UNPAID continua bloqueando", () => {
+    const decision = suspendedUnpaid();
+    expect(decision.state).toBe("SUSPENDED_UNPAID");
+    const r = resolveProvisioningEligibility({ decision, dataReadFailed: false });
+    expect(r.allowed).toBe(false);
+    expect(r.blockReason).toBe("SERVICE_STATE");
+  });
+
+  it("falha na leitura da flag de enforcement não interfere", () => {
+    const decision = active();
+
+    // Prova estrutural: `ProvisioningEligibilityInput` não tem campo de flag
+    // — não há como esta chamada consultá-la, nem se quisesse.
+    const r = resolveProvisioningEligibility({ decision, dataReadFailed: false });
+    expect(r.allowed).toBe(true);
+
+    // Prova de comportamento: mesmo depois de rodar `resolveEnforcement` com
+    // `flagReadFailed: true` (o eixo que de fato consome a flag), a
+    // elegibilidade de provisionamento sobre a MESMA decisão não muda.
+    const enforcement = resolveEnforcement({ decision, flagEnabled: false, flagReadFailed: true, dataReadFailed: false });
+    expect(enforcement.enforced.sending).toBe(false); // fail-open, de referência
+    expect(resolveProvisioningEligibility({ decision, dataReadFailed: false }).allowed).toBe(true);
+  });
+
+  it("falha na resolução do estado bloqueia", () => {
+    const r = resolveProvisioningEligibility({ decision: active(), dataReadFailed: true });
+    expect(r.allowed).toBe(false);
+    expect(r.blockReason).toBe("STATE_READ_FAILED");
+  });
+
+  it("LEGACY_GRANDFATHERED permite envio e bloqueia instância nova", () => {
+    const d = legacy();
+    expect(d.state).toBe("LEGACY_GRANDFATHERED");
+    expect(d.sendingBlocked).toBe(false);
+    expect(resolveProvisioningEligibility({ decision: d, dataReadFailed: false }).allowed).toBe(false);
+  });
+
+  it("OVERRIDE_ACTIVE permite provisionamento", () => {
+    const d = overrideActive();
+    expect(d.state).toBe("OVERRIDE_ACTIVE");
+    expect(resolveProvisioningEligibility({ decision: d, dataReadFailed: false }).allowed).toBe(true);
+  });
+
+  it("sistema suspenso bloqueia mesmo com OVERRIDE_ACTIVE de WhatsApp", () => {
+    const d = gate({ hasActiveWhatsAppOverride: true, systemBillingStatus: "suspended" });
+    expect(d.state).toBe("OVERRIDE_ACTIVE");
+    const r = resolveProvisioningEligibility({ decision: d, dataReadFailed: false });
+    expect(r.allowed).toBe(false);
+    expect(r.blockReason).toBe("SERVICE_STATE");
+  });
+
+  // GRACE_PERIOD, NOT_ENTITLED e ADMIN_BLOCKED também bloqueiam. Cobertos
+  // aqui porque o describe "decideWhatsAppGate — as duas perguntas" só
+  // exercita `decision.newProvisioningBlocked`, nunca esta função.
+  it("GRACE_PERIOD bloqueia provisionamento", () => {
+    const d = gate({ financialState: "IN_GRACE" });
+    expect(d.state).toBe("GRACE_PERIOD");
+    expect(resolveProvisioningEligibility({ decision: d, dataReadFailed: false }).allowed).toBe(false);
+  });
+
+  it("NOT_ENTITLED bloqueia provisionamento", () => {
+    const d = gate();
+    expect(d.state).toBe("NOT_ENTITLED");
+    expect(resolveProvisioningEligibility({ decision: d, dataReadFailed: false }).allowed).toBe(false);
+  });
+
+  it("ADMIN_BLOCKED bloqueia provisionamento", () => {
+    const d = gate({ hasWhatsAppAdminBlock: true });
+    expect(d.state).toBe("ADMIN_BLOCKED");
+    expect(resolveProvisioningEligibility({ decision: d, dataReadFailed: false }).allowed).toBe(false);
   });
 });
 
