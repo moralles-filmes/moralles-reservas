@@ -1898,6 +1898,8 @@ git commit -m "fix(billing): inadimplencia ignora fatura retida para revisao"
 - Consumes: `decideWhatsAppGate`, `WhatsAppGateDecision` (Task 7); `normalizeFinancialState` (Task 6); `isFlagEnabled` de `_shared/platform-flags.ts`.
 - Produces:
   - `interface ServiceGateResult extends WhatsAppGateDecision { enforcementEnabled: boolean; enforced: { sending: boolean; newProvisioning: boolean }; readFailed: boolean }`
+
+> **Superseded pela Task 16 — não implementar `enforced.newProvisioning` a partir desta task.** Pôr provisionamento dentro de `enforced` o submete a `whatsapp_service_enforcement`, e a flag termina a fase OFF: o efeito seria bloquear toda criação de canal, inclusive a legítima. A Task 16 separa a elegibilidade de provisionamento num campo próprio (`provisioning`), calculado sem a flag. O restante desta task (leituras, `readFailed`, cache, `enforced.sending`) segue valendo.
   - `resolveWhatsAppGateByOrg(supabase, organizationId): Promise<ServiceGateResult>`
   - `resolveWhatsAppGateByUnit(supabase, unitId): Promise<ServiceGateResult | null>` — **`null`** quando a unidade não resolve para uma organização; todo caller usa `gate?.enforced.sending`, e `null` significa "não sei" e portanto **não bloqueia**
   - `clearWhatsAppGateCache(): void`
@@ -2211,7 +2213,9 @@ Logo no começo do handler, junto das demais inicializações por invocação, c
       }
 ```
 
-**SILÊNCIO, não mensagem.** O cliente do restaurante é terceiro inocente; avisá-lo de que o restaurante não pagou é dano de reputação do lojista. É o mesmo tratamento que `org_billing_blocked` já dá. A mensagem inbound **continua sendo registrada na conversa** pelo fluxo normal — o operador vê o que chegou quando o serviço voltar.
+**SILÊNCIO, não mensagem.** O cliente do restaurante é terceiro inocente; avisá-lo de que o restaurante não pagou é dano de reputação do lojista. É o mesmo tratamento que `org_billing_blocked` já dá.
+
+**Correção de premissa (decisão do dono, pós-revisão):** a versão anterior deste passo afirmava que "a mensagem inbound continua sendo registrada na conversa pelo fluxo normal". **É falso** neste ponto de inserção — o upsert de cliente, o `getOrCreateConversation` e o `appendToConversation` ficam todos **depois** deste `return`, e `processed_messages` guarda só o `message_id`. A mensagem do cliente some. Vale igualmente para o `org_billing_blocked` pré-existente. Fechado pela **Task 15c**, que é bloqueante para o go-live do enforcement. Esta task fica como está.
 
 - [ ] **Step 3: Registrar o outcome novo**
 
@@ -2227,17 +2231,411 @@ git commit -m "feat(billing): agente silencia quando o servico de WhatsApp esta 
 
 ---
 
+## Task 15b: Gate da resposta automática a áudio, imagem e sticker
+
+**Files:**
+- Modify: `supabase/functions/_shared/whatsapp-service-state-core.ts` (acrescenta uma função pura)
+- Modify: `src/lib/whatsapp-service-state-core.test.ts`
+- Modify: `supabase/functions/webhook-whatsapp/index.ts` (o ramo de mídia, `if (!inbound)`)
+
+**Interfaces:**
+- Consumes: `decideWhatsAppGate`, `resolveEnforcement` (núcleo, Tasks 7 e 13); `resolveWhatsAppGateByOrg` (Task 13).
+- Produces: `decideInboundAutoReply(i: InboundAutoReplyInput): InboundAutoReply` no núcleo puro.
+
+**Contexto:** áudio/imagem/sticker não passam pelo fluxo de texto. `parseInbound` devolve `null` e o ramo de `peekInboundMedia` (index.ts:1250-1348) responde `MEDIA_REPLY_TEXT` pedindo mensagem escrita. Esse ramo **resolve a própria organização** (`orgId2`, l.1287-1292) e **já grava a mensagem recebida na conversa** (l.1319-1323), mas nunca consultou nem `billing_status` do sistema nem o estado do serviço — respondia e gastava Z-API com a organização suspensa.
+
+- [ ] **Step 1: Escrever o teste que falha, no núcleo puro**
+
+Em `src/lib/whatsapp-service-state-core.test.ts`, reaproveitando o helper `gate()` que já existe no arquivo (ele monta a decisão real por `decideWhatsAppGate` + `resolveEnforcement`, sem stub):
+
+```ts
+describe("decideInboundAutoReply", () => {
+  const call = (o: { state?: Parameters<typeof gate>[0]; enforcementOn?: boolean } = {}) => {
+    /* monta o ServiceGateResult-like pelo caminho real e chama decideInboundAutoReply */
+  };
+
+  it("SUSPENDED_UNPAID com enforcement ligado não responde", () => {
+    expect(decideInboundAutoReply({ systemBlocked: false, enforcedSending: true }))
+      .toBe("SILENT_WHATSAPP_SUSPENDED");
+  });
+
+  it("ADMIN_BLOCKED com enforcement ligado não responde", () => {
+    expect(decideInboundAutoReply({ systemBlocked: false, enforcedSending: true }))
+      .toBe("SILENT_WHATSAPP_SUSPENDED");
+  });
+
+  it("sistema suspenso não responde mesmo com override de WhatsApp e enforcement desligado", () => {
+    expect(decideInboundAutoReply({ systemBlocked: true, enforcedSending: false }))
+      .toBe("SILENT_SYSTEM_BLOCKED");
+  });
+
+  it("ACTIVE responde", () => {
+    expect(decideInboundAutoReply({ systemBlocked: false, enforcedSending: false })).toBe("REPLY");
+  });
+
+  it("dry-run com SUSPENDED_UNPAID responde", () => {
+    expect(decideInboundAutoReply({ systemBlocked: false, enforcedSending: false })).toBe("REPLY");
+  });
+
+  it("bloqueio do sistema vence a suspensão do WhatsApp no motivo reportado", () => {
+    expect(decideInboundAutoReply({ systemBlocked: true, enforcedSending: true }))
+      .toBe("SILENT_SYSTEM_BLOCKED");
+  });
+});
+```
+
+**Os seis casos exigidos pelo dono precisam ser montados pelo caminho REAL**, não por literais de `systemBlocked`/`enforcedSending`: cada `it` acima constrói o `ServiceGateResult` chamando `decideWhatsAppGate` com o input que produz o estado nomeado (`SUSPENDED_UNPAID`, `ADMIN_BLOCKED`, `OVERRIDE_ACTIVE` + `systemBillingStatus:"suspended"`, `ACTIVE`, `OVERRIDE_ACTIVE`) e depois `resolveEnforcement` com a flag ligada ou desligada, exatamente como o helper `gate()` já faz para os testes de `resolveEnforcement`. Um teste que passa `{ systemBlocked: true }` na mão não prova que o estado real produz esse booleano — e é justamente o elo que quebrou aqui. Casos obrigatórios, nomeados no `it`: `SUSPENDED_UNPAID` não responde; `ADMIN_BLOCKED` não responde; sistema suspenso não responde mesmo com override de WhatsApp; `ACTIVE` responde; `OVERRIDE_ACTIVE` responde; dry-run não bloqueia.
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `npx vitest run src/lib/whatsapp-service-state-core.test.ts`
+Expected: FAIL — `decideInboundAutoReply is not a function`.
+
+- [ ] **Step 3: Escrever a função pura**
+
+Em `supabase/functions/_shared/whatsapp-service-state-core.ts`, no fim do arquivo:
+
+```ts
+/**
+ * Resposta automática a mídia (áudio/imagem/sticker) recebida: responder ou
+ * silenciar, e por quê. Função pura porque `supabase/functions/` não roda em
+ * CI — sem ela, os seis casos exigidos não teriam onde ser testados.
+ *
+ * DUAS DIMENSÕES, NÃO UMA, e é o ponto todo: o bloqueio do sistema NÃO é
+ * submetido a `whatsapp_service_enforcement` (é o mesmo tratamento não-gateado
+ * que o fluxo de texto já dá ao `org_billing_blocked`), enquanto a suspensão
+ * do WhatsApp é. Colapsar as duas num booleano faria o dry-run responder por
+ * uma organização com o sistema bloqueado.
+ */
+export interface InboundAutoReplyInput {
+  /** `WhatsAppGateDecision.systemBlocked` — estado real, nunca gateado por flag. */
+  systemBlocked: boolean;
+  /** `EnforcementResult.enforced.sending` — consequência, já gateada pela flag. */
+  enforcedSending: boolean;
+}
+
+export type InboundAutoReply = "REPLY" | "SILENT_SYSTEM_BLOCKED" | "SILENT_WHATSAPP_SUSPENDED";
+
+export function decideInboundAutoReply(i: InboundAutoReplyInput): InboundAutoReply {
+  if (i.systemBlocked) return "SILENT_SYSTEM_BLOCKED";
+  if (i.enforcedSending) return "SILENT_WHATSAPP_SUSPENDED";
+  return "REPLY";
+}
+```
+
+- [ ] **Step 4: Rodar e ver passar**
+
+Run: `npx vitest run src/lib/whatsapp-service-state-core.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Ligar o ramo de mídia ao gate**
+
+Em `supabase/functions/webhook-whatsapp/index.ts`, **depois** do append da mensagem na conversa (hoje l.1319-1323, o bloco `if (mediaCustomer && unitId)`) e do check de handoff humano, e **antes** do `sendOutbound` de `MEDIA_REPLY_TEXT` (hoje l.1332):
+
+```ts
+      // Gate de serviço, nas duas dimensões (§6.5 da spec). Vem DEPOIS do
+      // append na conversa — a mensagem recebida nunca se perde — e ANTES do
+      // sendOutbound: bloqueado significa ZERO chamada à Z-API. Reusa o helper
+      // central; não reimplementa os sete estados.
+      if (orgId2) {
+        const waGate = await resolveWhatsAppGateByOrg(supabase, orgId2);
+        const verdict = decideInboundAutoReply({
+          systemBlocked: waGate.systemBlocked,
+          enforcedSending: waGate.enforced.sending,
+        });
+        if (verdict !== "REPLY") {
+          const outcome = verdict === "SILENT_SYSTEM_BLOCKED"
+            ? "org_billing_blocked"
+            : "whatsapp_service_suspended";
+          jsonLog("warn", {
+            requestId, evt: "media_reply_suppressed", unitId, organizationId: orgId2,
+            state: waGate.state, reason: waGate.reason, verdict,
+          });
+          await finish(outcome, undefined, { media: true, mediaKind: media.mediaKind, verdict });
+          return new Response("ok");
+        }
+      }
+```
+
+**SILÊNCIO, não mensagem** — nenhuma resposta automática avisando suspensão, pelo mesmo motivo da Task 15. Outcomes **reaproveitados**, não novos: `org_billing_blocked` e `whatsapp_service_suspended` já existem no painel de diagnóstico; `meta.media` distingue a origem. `orgId2` vazio (unidade sem organização) não bloqueia — mesma direção de erro do resto do fluxo.
+
+Importar `decideInboundAutoReply` de `../_shared/whatsapp-service-state-core.ts`; `resolveWhatsAppGateByOrg` já está importado pela Task 15.
+
+- [ ] **Step 6: Verificar**
+
+Run: `npm run typecheck && npm test && npx esbuild supabase/functions/webhook-whatsapp/index.ts --bundle --platform=neutral --external:https://* --outfile=/dev/null`
+Expected: typecheck 0 erros; suíte verde com os 6 testes novos; esbuild sem erro.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add supabase/functions/_shared/whatsapp-service-state-core.ts src/lib/whatsapp-service-state-core.test.ts supabase/functions/webhook-whatsapp/index.ts
+git commit -m "feat(billing): resposta automatica a midia respeita bloqueio e suspensao"
+```
+
+---
+
+## Task 15c: Persistir a mensagem recebida quando o gate silencia
+
+**Files:**
+- Modify: `supabase/functions/webhook-whatsapp/index.ts` (os dois gates: `org_billing_blocked` l.1489-1500 e `whatsapp_service_suspended` l.1502-1518)
+
+**Interfaces:**
+- Consumes: `getOrCreateConversation` e `appendToConversation`, ambas já existentes neste arquivo.
+- Produces: nada exportado.
+
+**Por que esta task existe:** os dois gates retornam **antes** do upsert de cliente (l.1520), do `getOrCreateConversation` (l.1670) e do `appendToConversation` (l.1705/1800). `processed_messages` guarda só `message_id`/`started_at`/`completed_at`/`outcome` — nenhum texto. `webhook_executions` é telemetria com TTL de 30d, sem payload, visível só a super-admin. A Z-API não reentrega o que já recebeu 200. **A mensagem do cliente acaba ali.** Bloqueante para o go-live do enforcement (§6.10 da spec).
+
+**Fronteira — ler antes de implementar:** NÃO mover o upsert de cliente, o `getOrCreateConversation`, o debounce, o lock nem a deduplicação para antes dos gates. Esta task **acrescenta um desvio que termina**; não reordena nada. Se em algum momento a implementação exigir mexer na ordem do fluxo concorrente, pare e reporte — a decisão do dono foi explícita nesse ponto.
+
+- [ ] **Step 1: Escrever o helper, uma vez, para os dois gates**
+
+Perto das outras funções auxiliares do arquivo (acima do `serve`), na mesma vizinhança de `getOrCreateConversation`:
+
+```ts
+/**
+ * Grava a mensagem recebida na conversa e RETORNA — sem agente, sem resposta
+ * automática, sem ferramenta, sem envio. Chamado pelos gates de billing, que
+ * silenciam a IA mas não podem fazer o cliente sumir do histórico: o operador
+ * precisa ver o que chegou quando o serviço voltar (§6.10 da spec).
+ *
+ * RAMO-FOLHA DE PROPÓSITO: nada aqui é movido para antes dos gates. Não roda
+ * interceptador de avaliação, não roda handoff, não dorme no debounce e não
+ * reivindica `try_claim_conversation_for_ai` — a ordem do fluxo concorrente
+ * fica intocada. A deduplicação por `providerMessageId` já aconteceu a
+ * montante (INSERT em `processed_messages`), então reentrega do mesmo id nem
+ * chega aqui; e o append é atômico pela RPC `append_conversation_message`.
+ *
+ * NUNCA LANÇA. Perder a persistência é ruim; devolver não-2xx é pior — faria o
+ * provedor reentregar, e reentrega não recupera nada neste caminho. Devolve se
+ * conseguiu, para o caller registrar em `meta`.
+ */
+async function persistInboundOnly(args: {
+  requestId: string;
+  organizationId: string;
+  unitId: string;
+  phone: string;
+  contactName: string | null;
+  text: string;
+  chatLid: string | null;
+}): Promise<boolean> {
+  try {
+    if (!args.organizationId || !args.unitId) return false;
+
+    const { data: existing } = await supabase
+      .from("customers")
+      .select("id")
+      .eq("organization_id", args.organizationId)
+      .eq("phone", args.phone)
+      .maybeSingle();
+
+    let customerId = existing?.id as string | undefined;
+    if (!customerId) {
+      const { data: inserted } = await supabase
+        .from("customers")
+        .insert({ phone: args.phone, name: args.contactName ?? args.phone, organization_id: args.organizationId })
+        .select("id")
+        .single();
+      customerId = inserted?.id as string | undefined;
+    }
+    if (!customerId) return false;
+
+    const conv = await getOrCreateConversation(customerId, args.unitId, args.contactName, args.chatLid);
+    if (!conv) return false;
+
+    await appendToConversation(conv.id, conv.messages || [], "user", args.text);
+    return true;
+  } catch (e) {
+    jsonLog("warn", { requestId: args.requestId, evt: "persist_inbound_only_failed", err: String(e) });
+    return false;
+  }
+}
+```
+
+- [ ] **Step 2: Chamar nos dois gates**
+
+No gate do sistema (hoje l.1495-1499), trocar o corpo do `if` por:
+
+```ts
+      if (orgBilling && (orgBilling.billing_status === "blocked" || orgBilling.billing_status === "suspended")) {
+        const persisted = await persistInboundOnly({
+          requestId, organizationId, unitId, phone,
+          contactName: inbound.contactName, text: incomingText, chatLid: inboundChatLid,
+        });
+        jsonLog("warn", { requestId, evt: "webhook_org_billing_blocked", unitId, organizationId, status: orgBilling.billing_status, persisted });
+        await finish("org_billing_blocked", undefined, { inbound_persisted: persisted });
+        return new Response("ok");
+      }
+```
+
+E no gate do WhatsApp (hoje l.1510-1517), o mesmo padrão, mantendo `evt`, `state`, `reason` e o outcome `whatsapp_service_suspended`, acrescentando `persisted` ao log e `{ inbound_persisted: persisted }` ao `meta` do `finish`.
+
+**Um helper só para os dois** — dois blocos copiados divergem, e foi exatamente assim que o gate do sistema ficou anos perdendo mensagem sem ninguém notar.
+
+- [ ] **Step 3: Conferir o que NÃO mudou**
+
+Ler o diff inteiro e confirmar, item por item, que nenhuma destas linhas se moveu: o `INSERT` em `processed_messages`, o `check_rate_limit`, o upsert de cliente do fluxo normal, `getOrCreateConversation` (l.1670), o `sleep(DEBOUNCE_WINDOW_MS)`, o `append` de l.1800 e o `try_claim_conversation_for_ai`. O diff desta task deve ser: uma função nova + duas chamadas + dois `meta`. Qualquer linha movida além disso é fora de escopo e precisa ser revertida.
+
+- [ ] **Step 4: Verificar sintaxe**
+
+Run: `npx esbuild supabase/functions/webhook-whatsapp/index.ts --bundle --platform=neutral --external:https://* --outfile=/dev/null`
+Expected: sem erro. (Deno não está instalado; `npm test` e `npm run typecheck` não alcançam `supabase/functions/` — a verificação desta task é esbuild + revisão do diff.)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add supabase/functions/webhook-whatsapp/index.ts
+git commit -m "fix(billing): mensagem recebida nao some quando o gate de billing silencia"
+```
+
+---
+
 ## Task 16: Gate de novo provisionamento
 
 **Files:**
+- Modify: `supabase/functions/_shared/whatsapp-service-state-core.ts` (separa provisionamento de `enforced`)
+- Modify: `supabase/functions/_shared/whatsapp-service-gate.ts` (repassa o campo novo)
+- Modify: `src/lib/whatsapp-service-state-core.test.ts`
 - Modify: `supabase/functions/manage-channels/index.ts:69-95`
 
 **Interfaces:**
-- Consumes: `resolveWhatsAppGateByUnit` (Task 13).
+- Consumes: `resolveWhatsAppGateByUnit`, `ServiceGateResult` (Task 13).
+- Produces: `resolveProvisioningEligibility(i): ProvisioningEligibility` no núcleo puro; `ServiceGateResult.provisioning: { allowed: boolean; blockReason: ProvisioningBlockReason }`.
+- **Quebra deliberada:** `ServiceGateResult.enforced.newProvisioning` e o campo solto `provisioningBlockReason` **deixam de existir**. Consumidores hoje: nenhum — Tasks 14 e 15 usam só `enforced.sending`. Confirmar com `grep -rn "newProvisioning\|provisioningBlockReason" supabase/ src/` antes de commitar.
 
-**Fronteira desta fase — ler antes de implementar:** "nova instância" aqui significa **criar canal para uma unidade que ainda não tem nenhum**. Substituir o canal de uma unidade que já tem **não** é bloqueado: o caminho (a) de rotação de secret do [runbook de credenciais](../../RUNBOOK-ROTACAO-CREDENCIAIS.md) depende exatamente de recriar o canal, e bloqueá-lo travaria a rotação de um cliente legado. Reconexão e reprovisionamento da mesma instância são detalhados na Fase 6.
+**Correção da orientação da Task 13 — ler antes de implementar.** A Task 13 pôs `newProvisioning` dentro de `enforced`, exigindo a flag `whatsapp_service_enforcement` ligada para liberar. **Está errado, e o dono corrigiu:** aquela flag governa a aplicação da suspensão sobre uso **existente** (envio, execução de jobs). Ela não autoriza contratar nem provisionar. Como a fase termina com a flag OFF por mandato, mantê-la nessa decisão bloquearia **toda** criação de canal, inclusive a operação legítima da própria plataforma. A elegibilidade para novo provisionamento é proteção **permanente** contra custo recorrente e **não consulta essa flag** — nem para liberar, nem para bloquear, nem quando a leitura dela falha.
 
-- [ ] **Step 1: Acrescentar o gate no início da action `create`**
+**Fronteira desta fase:** "nova instância" aqui significa **criar canal para uma unidade que ainda não tem nenhum**. Substituir o canal de uma unidade que já tem **não** é bloqueado: o caminho (a) de rotação de secret do [runbook de credenciais](../../RUNBOOK-ROTACAO-CREDENCIAIS.md) depende exatamente de recriar o canal, e bloqueá-lo travaria a rotação de um cliente legado. Reconexão e reprovisionamento da mesma instância são detalhados na Fase 6.
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+Em `src/lib/whatsapp-service-state-core.test.ts`, montando cada caso pelo caminho REAL (`decideWhatsAppGate` com o input que produz o estado nomeado — nunca um literal de `newProvisioningBlocked` na mão):
+
+```ts
+describe("resolveProvisioningEligibility", () => {
+  it("flag de enforcement OFF + ACTIVE libera, e não pelo motivo errado", () => {
+    const r = resolveProvisioningEligibility({ decision: decideWhatsAppGate(active()), dataReadFailed: false });
+    expect(r.allowed).toBe(true);
+    expect(r.blockReason).toBe("ALLOWED");
+  });
+
+  it("flag de enforcement OFF + SUSPENDED_UNPAID continua bloqueando", () => {
+    const r = resolveProvisioningEligibility({ decision: decideWhatsAppGate(suspendedUnpaid()), dataReadFailed: false });
+    expect(r.allowed).toBe(false);
+    expect(r.blockReason).toBe("SERVICE_STATE");
+  });
+
+  it("falha na leitura da flag de enforcement não interfere", () => {
+    // A assinatura não tem onde receber a flag — é a prova estrutural.
+    // Cobrir também por ServiceGateResult: gate com flagReadFailed em ACTIVE libera.
+  });
+
+  it("falha na resolução do estado bloqueia", () => {
+    const r = resolveProvisioningEligibility({ decision: decideWhatsAppGate(active()), dataReadFailed: true });
+    expect(r.allowed).toBe(false);
+    expect(r.blockReason).toBe("STATE_READ_FAILED");
+  });
+
+  it("LEGACY_GRANDFATHERED permite envio e bloqueia instância nova", () => {
+    const d = decideWhatsAppGate(legacy());
+    expect(d.sendingBlocked).toBe(false);
+    expect(resolveProvisioningEligibility({ decision: d, dataReadFailed: false }).allowed).toBe(false);
+  });
+
+  it("OVERRIDE_ACTIVE permite provisionamento", () => {
+    expect(resolveProvisioningEligibility({ decision: decideWhatsAppGate(overrideActive()), dataReadFailed: false }).allowed).toBe(true);
+  });
+
+  it("sistema suspenso bloqueia mesmo com OVERRIDE_ACTIVE de WhatsApp", () => {
+    const d = decideWhatsAppGate({ ...overrideActive(), systemBillingStatus: "suspended" });
+    expect(d.state).toBe("OVERRIDE_ACTIVE");
+    const r = resolveProvisioningEligibility({ decision: d, dataReadFailed: false });
+    expect(r.allowed).toBe(false);
+    expect(r.blockReason).toBe("SERVICE_STATE");
+  });
+});
+```
+
+Os sete casos acima são os exigidos pelo dono, um `it` cada. `GRACE_PERIOD`, `NOT_ENTITLED` e `ADMIN_BLOCKED` também bloqueiam — acrescentar se ainda não estiverem cobertos pelo `describe` existente dos sete estados.
+
+O terceiro caso ("falha na leitura da flag não interfere") tem duas provas complementares, e **as duas entram**: a estrutural — `ProvisioningEligibilityInput` não tem campo de flag, então é impossível consultá-la — e a de comportamento, que passa por `resolveEnforcement` com `flagReadFailed: true` em `ACTIVE` e confirma que a elegibilidade continua `allowed: true`.
+
+- [ ] **Step 2: Rodar e ver falhar**
+
+Run: `npx vitest run src/lib/whatsapp-service-state-core.test.ts`
+Expected: FAIL — `resolveProvisioningEligibility is not a function`.
+
+- [ ] **Step 3: Separar provisionamento de `enforced` no núcleo**
+
+Em `supabase/functions/_shared/whatsapp-service-state-core.ts`:
+
+```ts
+/**
+ * Motivo do bloqueio de provisionamento, para a UI/log dizerem a coisa certa —
+ * "não foi possível verificar agora" é mensagem diferente de "você não tem
+ * direito". Precedência FIXA: transitório (leitura falhou) vence sobre
+ * definitivo (estado).
+ *
+ * NÃO HÁ motivo ligado à flag de enforcement, e a ausência é o contrato: essa
+ * flag governa consequência sobre uso existente, nunca autorização de despesa
+ * nova. Acrescentar um `ENFORCEMENT_FLAG_*` aqui reintroduz o acoplamento que
+ * esta separação existe para impedir.
+ */
+export type ProvisioningBlockReason = "ALLOWED" | "STATE_READ_FAILED" | "SERVICE_STATE";
+
+export interface ProvisioningEligibilityInput {
+  decision: WhatsAppGateDecision;
+  /** Alguma leitura de ESTADO (org, overrides, assinatura, fatura) falhou. */
+  dataReadFailed: boolean;
+  // SEM campo de flag, de propósito — ver o comentário acima.
+}
+
+export interface ProvisioningEligibility {
+  allowed: boolean;
+  blockReason: ProvisioningBlockReason;
+}
+
+/**
+ * Elegibilidade para gerar custo externo recorrente NOVO. Proteção permanente:
+ * vale com qualquer valor de `whatsapp_service_enforcement`, inclusive
+ * ilegível, porque não consulta a flag.
+ *
+ * FAIL-CLOSED, e a assimetria com o envio é deliberada: autorizar despesa
+ * recorrente sem conseguir confirmar a autorização é pior do que recusar e
+ * pedir para tentar de novo. Envio existente faz o oposto (fail-open) — um
+ * soluço técnico não pode suspender quem está pagando.
+ */
+export function resolveProvisioningEligibility(i: ProvisioningEligibilityInput): ProvisioningEligibility {
+  if (i.dataReadFailed) return { allowed: false, blockReason: "STATE_READ_FAILED" };
+  if (i.decision.newProvisioningBlocked) return { allowed: false, blockReason: "SERVICE_STATE" };
+  return { allowed: true, blockReason: "ALLOWED" };
+}
+```
+
+E em `resolveEnforcement`, **remover** `newProvisioning` de `EnforcementResult.enforced` (fica `enforced: { sending: boolean }`) e remover o cálculo e o `provisioningBlockReason` de lá — passam a ser responsabilidade da função acima. A docstring de `resolveEnforcement` perde o parágrafo sobre provisionamento e ganha uma linha dizendo que `enforced` contém **somente** consequências submetidas à flag. Os campos `enforcementEnabled` e `telemetry` ficam como estão.
+
+- [ ] **Step 4: Repassar no helper de I/O**
+
+Em `supabase/functions/_shared/whatsapp-service-gate.ts`: trocar o campo `provisioningBlockReason` por
+
+```ts
+  /**
+   * Elegibilidade para provisionar instância nova. Calculada SEM a flag de
+   * enforcement e fail-closed — ver `resolveProvisioningEligibility`. Não
+   * confundir com `enforced`, que é o outro eixo (consequência gateada por
+   * flag, fail-open).
+   */
+  provisioning: ProvisioningEligibility;
+```
+
+chamando `resolveProvisioningEligibility({ decision, dataReadFailed })` — **`dataReadFailed`, não `readFailed`**: a falha de leitura da flag não entra nesta conta. Atualizar a docstring de `readFailed` no mesmo arquivo, que hoje descreve `enforced.newProvisioning` como o lado fail-closed; passa a apontar para `provisioning.allowed`.
+
+- [ ] **Step 5: Rodar e ver passar**
+
+Run: `npm run typecheck && npx vitest run src/lib/whatsapp-service-state-core.test.ts`
+Expected: typecheck 0 erros; testes verdes.
+
+- [ ] **Step 6: Acrescentar o gate na action `create`**
 
 ```ts
     if (action === "create") {
@@ -2246,23 +2644,39 @@ git commit -m "feat(billing): agente silencia quando o servico de WhatsApp esta 
       // mas não cria outra; LEGACY_GRANDFATHERED preserva o uso existente mas
       // não expande o serviço.
       //
-      // NÃO depende de `whatsapp_service_enforcement`: esta guarda impede um
-      // custo novo de nascer e não interrompe nada que já funcione — é a única
-      // consequência que vale com a flag desligada.
-      const { count: existingChannels } = await supabase
+      // NÃO consulta `whatsapp_service_enforcement`, nem para liberar nem para
+      // bloquear: aquela flag governa a suspensão de uso EXISTENTE. Esta guarda
+      // impede despesa recorrente nova de nascer e vale sempre. Fail-closed:
+      // gate irresolvível (unidade sem organização, leitura que falhou) recusa.
+      //
+      // platform_admin NÃO passa por cima — esta EF já é exclusiva de
+      // super-admin, então "exceto para admin" seria "nunca". Provisionar para
+      // organização sem assinatura exige override formal de `whatsapp`, que
+      // leva a OVERRIDE_ACTIVE e libera pela porta da frente, com rastro.
+      const { count: existingChannels, error: countErr } = await supabase
         .from("whatsapp_channels")
         .select("id", { count: "exact", head: true })
         .eq("unit_id", unitId);
 
+      if (countErr) {
+        console.error("manage-channels:create count", countErr);
+        return jsonResponse(req, { error: PROVISIONING_UNVERIFIABLE }, 403);
+      }
+
       if ((existingChannels ?? 0) === 0) {
         const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
-        if (gate?.newProvisioningBlocked) {
-          return jsonResponse(req, { error: NEW_PROVISIONING_MESSAGE[gate.state] }, 403);
+        if (!gate || !gate.provisioning.allowed) {
+          const message = !gate || gate.provisioning.blockReason === "STATE_READ_FAILED"
+            ? PROVISIONING_UNVERIFIABLE
+            : NEW_PROVISIONING_MESSAGE[gate.state];
+          return jsonResponse(req, { error: message }, 403);
         }
       }
 ```
 
-- [ ] **Step 2: Escrever as mensagens por estado**
+`clearWhatsAppGateCache()` como primeira instrução do handler, depois do short-circuit de `OPTIONS` — mesmo padrão das Tasks 14 e 15.
+
+- [ ] **Step 7: Escrever as mensagens**
 
 ```ts
 /**
@@ -2284,15 +2698,28 @@ const NEW_PROVISIONING_MESSAGE: Record<string, string> = {
   ACTIVE: "Não foi possível criar o canal.",
   OVERRIDE_ACTIVE: "Não foi possível criar o canal.",
 };
+
+/**
+ * Estado indeterminado ≠ sem direito. Dizer "você não contratou" a quem só
+ * sofreu um soluço de leitura manda o cliente comprar o que já tem.
+ */
+const PROVISIONING_UNVERIFIABLE =
+  "Não foi possível verificar o direito de uso da automação de WhatsApp agora. Tente novamente em alguns minutos.";
 ```
 
-- [ ] **Step 3: Verificar sintaxe e commitar**
+- [ ] **Step 8: Verificar e commitar**
 
 ```bash
+grep -rn "newProvisioning\|provisioningBlockReason" supabase/ src/   # só as ocorrências novas
+npm run typecheck && npm test && npm run lint
 npx esbuild supabase/functions/manage-channels/index.ts --bundle --platform=neutral --external:https://* --outfile=/dev/null
-git add supabase/functions/manage-channels/index.ts
+git add supabase/functions/_shared/whatsapp-service-state-core.ts supabase/functions/_shared/whatsapp-service-gate.ts src/lib/whatsapp-service-state-core.test.ts supabase/functions/manage-channels/index.ts
 git commit -m "feat(billing): bloqueia canal novo de WhatsApp sem direito ativo"
 ```
+
+- [ ] **Step 9: Atualizar o checklist de redeploy do CLAUDE.md**
+
+`manage-channels` passa a consumir `whatsapp-service-gate.ts` (e, por ele, `whatsapp-service-state-core.ts`, `billing-financial-state-core.ts`, `billing-delinquency-core.ts` e `platform-flags.ts`). Acrescentar `manage-channels` a essas cinco linhas do checklist, conferindo cada uma contra os `import` reais do arquivo. Commitar junto.
 
 ---
 

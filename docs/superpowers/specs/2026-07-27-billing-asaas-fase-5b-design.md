@@ -349,6 +349,8 @@ E, sobrepondo tudo: `systemBlocked === true` bloqueia **as duas colunas**, qualq
 
 `GRACE_PERIOD` preserva a instância existente mas não gera custo externo novo. `LEGACY_GRANDFATHERED` preserva o uso existente mas não é "WhatsApp grátis para sempre": não expande serviço, não provisiona outro número, não cria instância nova.
 
+A tabela acima é o **estado**. As duas colunas divergem de novo na camada de consequência, e por eixos diferentes: envio é submetido à flag de enforcement e falha aberto (§6.9); provisionamento novo ignora a flag e falha fechado (§6.6).
+
 **Fronteira explícita desta fase:** "nova instância" na 5b significa **criar canal de WhatsApp para uma unidade que ainda não tem nenhum**. Substituir o canal de uma unidade que já tem — o caminho (a) de rotação do [runbook de credenciais](../../RUNBOOK-ROTACAO-CREDENCIAIS.md#2-z-api--secret-de-webhook-por-canal) — **não** é bloqueado, senão o gate impediria a rotação de secret de um cliente legado. Reconexão e reprovisionamento da mesma instância, incluindo "não recriar silenciosamente uma instância cancelada", são detalhados na Fase 6, onde existe o ciclo de vida real da instância na Z-API para consultar.
 
 ### 6.3 Ciclo de vida do grandfathering
@@ -397,16 +399,44 @@ Em `webhook-whatsapp`, imediatamente após o check de `org_billing_blocked` que 
 
 - `sendingBlocked && enforcementEnabled` → `finish("whatsapp_service_suspended")`, sem resposta ao cliente final.
 - **Silêncio, não mensagem.** O cliente do restaurante é terceiro inocente; avisá-lo de que o restaurante não pagou é dano de reputação. É o mesmo tratamento que `org_billing_blocked` já dá.
-- A mensagem inbound continua sendo registrada na conversa: o operador vê o que chegou quando o serviço voltar.
 - Zero token de IA consumido — o gate roda antes do `runAgentLoop`.
+- A mensagem inbound **precisa** ser registrada na conversa antes do retorno, para o operador ver o que chegou quando o serviço voltar. No ponto de inserção do gate isso **não acontece hoje** — nem para este gate, nem para o `org_billing_blocked` que já existia. É a lacuna que a §6.10 fecha, e ela é bloqueante para o go-live do enforcement.
 
 Outcome novo em `webhook_executions`: `whatsapp_service_suspended`.
 
+**O ramo de mídia é uma segunda porta de saída, e passa pelo mesmo gate.** Áudio, imagem e sticker não caem no fluxo de texto: `parseInbound` devolve `null`, e o ramo de `peekInboundMedia` responde um texto fixo (`MEDIA_REPLY_TEXT`) pedindo mensagem escrita. Esse ramo resolve a própria organização e já grava a mensagem recebida na conversa, mas nunca consultou nem o `billing_status` do sistema nem o estado do serviço — ou seja, respondia (e gastava Z-API) com a organização suspensa. Passa a consultar o **mesmo helper central**, sem reimplementar os sete estados, e nas duas dimensões:
+
+- `systemBlocked` → silêncio **sempre**, independente da flag de enforcement — é o mesmo tratamento não-gateado que o fluxo de texto já dá ao `org_billing_blocked`;
+- `enforced.sending` → silêncio quando o enforcement está ligado; em dry-run responde normalmente e registra a decisão hipotética (§6.9).
+
+Silêncio aqui significa: nenhuma chamada à Z-API, nenhuma mensagem automática avisando suspensão, nenhum processamento que gere custo. A mensagem recebida continua sendo gravada na conversa antes do retorno — nesse ramo isso já é verdade hoje, e é o comportamento que a §6.10 leva para o ramo de texto. Outcomes reaproveitados (`org_billing_blocked` e `whatsapp_service_suspended`), com `meta.media` marcando a origem.
+
 ### 6.6 Gate de novo provisionamento
 
-`manage-channels`, action `create`: se a unidade **não tem nenhum canal** e `newProvisioningBlocked`, recusa com 403 e mensagem explicando o estado (`GRACE_PERIOD` e `LEGACY_GRANDFATHERED` recebem textos diferentes de `NOT_ENTITLED`). Substituição de canal em unidade que já tem canal não é bloqueada (§6.2).
+`manage-channels`, action `create`: se a unidade **não tem nenhum canal** e o provisionamento não está liberado, recusa com 403 e mensagem explicando o motivo (`GRACE_PERIOD` e `LEGACY_GRANDFATHERED` recebem textos diferentes de `NOT_ENTITLED`, e "não foi possível verificar agora" é um texto diferente de "você não tem direito"). Substituição de canal em unidade que já tem canal não é bloqueada (§6.2).
 
-Diferente dos gates de envio, **este gate não depende de `whatsapp_service_enforcement`**: ele impede um custo externo novo de nascer, e não interrompe nada que já esteja funcionando. Nesta fase ele é a única consequência que vale com a flag desligada.
+**A elegibilidade para novo provisionamento é proteção permanente contra custo recorrente, e não é submetida a `whatsapp_service_enforcement`.** Aquela flag governa a aplicação da suspensão sobre uso **existente** — envio e execução de jobs. Usá-la como autorização de contratação daria dois significados a uma flag só: com ela desligada, ou toda organização passaria a poder provisionar (a flag autorizando o que o estado proíbe), ou nenhuma passaria (a flag negando o que o estado permite). As duas leituras estão erradas, e a fase termina com a flag OFF por mandato.
+
+Contrato, avaliado sobre o **estado real** (`newProvisioningBlocked`), nunca sobre a consequência gateada por flag:
+
+| Condição | Provisionamento novo |
+|---|:---:|
+| `ACTIVE` | passa pelo gate de estado |
+| `OVERRIDE_ACTIVE` | passa pelo gate de estado |
+| `GRACE_PERIOD` · `LEGACY_GRANDFATHERED` · `NOT_ENTITLED` · `SUSPENDED_UNPAID` · `ADMIN_BLOCKED` | bloqueia |
+| Sistema principal suspenso | bloqueia, como gate pai, mesmo com override de WhatsApp |
+| Falha ou resultado indeterminado ao resolver estado/entitlement | bloqueia — **fail-closed** |
+
+A assimetria com o envio é deliberada e é a razão de os dois campos existirem separados: **envio existente falha aberto** (um soluço técnico não pode suspender quem está pagando), **provisionamento novo falha fechado** (autorizar despesa recorrente sem conseguir confirmar a autorização é pior do que pedir para tentar de novo). Uma leitura de flag que falhou não interfere nesta avaliação — a flag não participa dela.
+
+Separação de vocabulário, para o código não voltar a colapsar as duas coisas:
+
+- **estado calculado** (os sete estados) define entitlement e elegibilidade;
+- **`newProvisioningBlocked`** protege despesa nova e vale sempre;
+- **`enforced.*`** representa **somente** consequências submetidas a `whatsapp_service_enforcement` — logo, contém apenas `sending`;
+- **flag de checkout/provisionamento** (`whatsapp_subscription_checkout` hoje, ou uma flag própria de provisionamento na Fase 6) controla disponibilidade comercial da funcionalidade, não entitlement. Controle de rollout de novas contratações usa essa flag, nunca a de enforcement.
+
+**`platform_admin` não ignora este gate.** `manage-channels` é uma Edge Function exclusiva de super-admin — se o gate valesse "exceto para admin", ele não valeria nunca. Provisionar para uma organização sem assinatura exige override formal e auditado de `whatsapp` (`_shared/entitlement-overrides.ts`, writer único), que leva a organização a `OVERRIDE_ACTIVE` e libera o gate pela porta da frente, deixando rastro de quem autorizou o custo.
 
 ### 6.7 Worker de inadimplência e restauração da instância
 
@@ -471,7 +501,36 @@ Com a flag **OFF**:
 - **registra o que teria acontecido**: log estruturado `evt:"whatsapp_enforcement_dryrun"` com organização, unidade, estado calculado, se teria bloqueado e por quê;
 - o estado calculado aparece em `get_service_status` e no painel, então o dry-run é observável sem tabela nova.
 
-O gate de novo provisionamento (§6.6) é a exceção declarada: vale sempre.
+**Uma leitura da flag que falhou não é "flag OFF".** São três resultados, não dois: lida-e-ligada aplica o enforcement; lida-e-desligada executa e registra o dry-run normalmente; **ilegível** deixa o estado da flag desconhecido — não bloqueia envio existente e emite telemetria própria (`evt:"whatsapp_enforcement_flag_read_failed"`), nunca contabilizada como dry-run. Contar falha de leitura como dry-run contaminaria a única métrica que sustenta a decisão de ligar o enforcement. A flag é fail-open para o enforcement de envio: indisponibilidade da tabela de flags não suspende cliente nenhum.
+
+O gate de novo provisionamento (§6.6) **não é exceção a esta seção — é outro eixo**: ele nunca consulta esta flag, nem para ligar nem para desligar. Vale sempre, sobre o estado real, e falha fechado.
+
+### 6.10 Persistência da mensagem recebida durante a suspensão
+
+**Bloqueante para o go-live do enforcement.** Enquanto mensagem recebida durante a suspensão puder sumir em definitivo, a flag `whatsapp_service_enforcement` não vai a ON.
+
+**O que existe hoje, inspecionado:** nada que sirva. `processed_messages` guarda `message_id`, `unit_id`, `started_at`, `completed_at` e `outcome` — nenhum texto, nenhum vínculo com conversa; é chave de deduplicação, não arquivo. `webhook_executions` é telemetria: `outcome`, `error`, `duration_ms`, `meta`, sem o payload, com TTL de 30 dias, `FORCE RLS` sem policies e visível apenas a super-admin via `whatsapp-health`. O provedor não é fonte durável — a Z-API não reentrega o que já respondeu 200. Portanto, **quando o gate dispara antes da conversa existir, a mensagem do cliente acaba ali**. Vale igualmente para o `org_billing_blocked` que já existia antes desta fase.
+
+**Solução: persistir e silenciar — aditiva, sem migration, sem reordenar o fluxo concorrente.** O gate mantém a posição atual (antes dos interceptadores, do bloco de handoff, do debounce e do lock). Ao disparar, em vez de retornar direto, executa um **ramo-folha de persistência**:
+
+1. resolve ou cria o cliente pelo mesmo upsert org-scoped que o fluxo normal usa logo abaixo;
+2. resolve ou cria a conversa por `getOrCreateConversation`;
+3. grava a mensagem recebida como `role:"user"` pela RPC atômica `append_conversation_message`;
+4. `finish(<outcome>)` e retorna.
+
+É folha: retorna sem seguir adiante. Nada mais roda — sem interceptador de avaliação, sem lógica de handoff, sem `sleep` de debounce, sem `try_claim_conversation_for_ai`, sem agente, sem `sendOutbound`. **A ordem do fluxo concorrente não muda**, porque nada foi movido para antes dos gates: só se acrescentou um desvio que termina.
+
+Propriedades exigidas, e de onde cada uma vem:
+
+- **Captura idempotente pelo id da mensagem do provider** — já garantida a montante: o `INSERT` em `processed_messages` acontece antes do gate, e reentrega do mesmo `providerMessageId` retorna em `duplicate` sem chegar aqui.
+- **Durante a suspensão, armazena mas não executa agente, resposta automática, ferramenta ou envio** — o ramo é folha e não contém nenhuma dessas chamadas.
+- **Nada de resposta automática a mensagens antigas depois da regularização** — não há fila de reprocessamento: a mensagem já está na thread, e nada fica pendente de envio.
+- **Evento duplicado ou fora de ordem não cria mensagem duplicada** — a deduplicação é a mesma do fluxo normal, e o append é atômico (a RPC faz `messages || jsonb_build_array(...)` no mesmo `UPDATE`, com row lock).
+- **Materialização após a regularização é nenhuma** — o operador abre a conversa e vê o histórico, porque ele nunca deixou de ser gravado. É o que torna a solução mínima: a alternativa com tabela de captura exigiria migration, worker de materialização e uma segunda fonte de verdade da thread.
+
+**Um helper único, usado pelos dois gates** (bloqueio do sistema e suspensão do WhatsApp), para os dois não divergirem. Falha na persistência é registrada em log e em `meta`, e **não** vira resposta ao cliente nem erro HTTP: devolver não-2xx faria o provedor reentregar, e reentrega não recupera nada aqui.
+
+O ramo de mídia (§6.5) já grava a mensagem antes de decidir se responde; ele só precisa do gate antes do envio.
 
 ---
 
@@ -523,9 +582,11 @@ Todas idempotentes, aditivas, com rollback no rodapé, aplicadas por `supabase d
 | `whatsapp_subscription_checkout` | checkout mensal de R$ 149 (5a) | OFF |
 | `billing_invoice_ingestion` | criação e correlação automática de faturas (5b.1) | OFF |
 | `billing_invoice_ingestion_since` | data de go-live da ingestão | vazia |
-| `whatsapp_service_enforcement` | consequência operacional da inadimplência (5b.2) | OFF |
+| `whatsapp_service_enforcement` | consequência da inadimplência sobre uso **existente** (5b.2) | OFF |
 
 `billing_invoice_ingestion` e `whatsapp_service_enforcement` são **separadas de propósito**: uma controla a entrada de dados, a outra as consequências. Isso permite pôr o elo financeiro em produção, observar, e só depois permitir suspensões.
+
+`whatsapp_service_enforcement` tem **uma responsabilidade só**: aplicar a suspensão sobre envio e execução de jobs de quem já usa. Ela não autoriza contratação nem provisionamento (§6.6), não altera o estado calculado (§6.9), e sua indisponibilidade não bloqueia ninguém.
 
 **Ordem segura de ativação:**
 
@@ -589,8 +650,27 @@ Núcleo puro em vitest (`src/lib/*.test.ts`) para tudo que for decisão; sandbox
 20. `NOT_ENTITLED` não bloqueia envio nesta fase e bloqueia nova instância.
 21. Organização legada que ativa assinatura paga perde o grandfathering.
 22. Cancelar a assinatura depois **não** restaura o grandfathering.
-23. Flag de enforcement OFF calcula `SUSPENDED_UNPAID` e **não** bloqueia.
+23. Flag de enforcement OFF calcula `SUSPENDED_UNPAID` e **não** bloqueia envio.
 24. Sistema vencido bloqueia a organização; WhatsApp vencido bloqueia só WhatsApp.
+
+**Elegibilidade de novo provisionamento — independente da flag de enforcement (§6.6)**
+
+24a. Flag de enforcement OFF + `ACTIVE` → provisionamento **liberado**; nunca bloqueado pelo motivo errado ("flag desligada").
+24b. Flag de enforcement OFF + `SUSPENDED_UNPAID` → provisionamento **bloqueado**, motivo `SERVICE_STATE`.
+24c. Falha na leitura da flag de enforcement **não interfere** na avaliação: com `ACTIVE`, libera; com `SUSPENDED_UNPAID`, bloqueia por estado.
+24d. Falha na resolução do estado/entitlement → **bloqueia**, motivo de indeterminação, com a flag em qualquer valor.
+24e. `LEGACY_GRANDFATHERED` permite uso existente e **bloqueia** instância nova.
+24f. `OVERRIDE_ACTIVE` **permite** provisionamento.
+24g. Sistema principal suspenso **bloqueia** mesmo com `OVERRIDE_ACTIVE` de WhatsApp.
+
+**Resposta automática a áudio, imagem e sticker (§6.5)**
+
+24h. `SUSPENDED_UNPAID` com enforcement ON → não responde a mídia.
+24i. `ADMIN_BLOCKED` com enforcement ON → não responde.
+24j. Sistema principal suspenso → não responde, **mesmo com override de WhatsApp**, e independente da flag.
+24k. `ACTIVE` e `OVERRIDE_ACTIVE` → respondem normalmente.
+24l. Enforcement em dry-run com `SUSPENDED_UNPAID` → **responde**, e a decisão hipotética é registrada.
+24m. Nos casos efetivamente bloqueados, a decisão é de silêncio — nenhuma chamada ao provedor. Os testes cobrem a decisão pura; que o envio esteja depois dela no código é verificado por revisão, porque `supabase/functions/` não roda em CI.
 
 **Regularização e jobs**
 
@@ -613,6 +693,8 @@ Núcleo puro em vitest (`src/lib/*.test.ts`) para tudo que for decisão; sandbox
 5. **Reter fatura por `enforcement_hold` a esconde da inadimplência.** Hold esquecido é cliente que nunca é cobrado. O painel de faturas retidas existe para que isso não fique invisível.
 6. **`entitlements.system.allowed` continua `false` para organização legada** — a spec evita esse campo no gate pai, mas ele segue sendo uma armadilha para código futuro. Vira invariante no CLAUDE.md ao fim da fase.
 7. **Nada disso é validado em produção nesta fase.** O go-live do Asaas segue diferido para a última fase do projeto, por decisão do controlador; a validação é sandbox.
+8. **Mensagem recebida durante a suspensão desaparecia em definitivo** (§6.10), e desaparecia igualmente no `org_billing_blocked` que já existia. Fechado nesta fase pelo ramo de persistência; enquanto não estiver implementado, `whatsapp_service_enforcement` não vai a ON.
+9. **Uma flag com duas responsabilidades é o modo de falha que a §6.6 existe para evitar.** `whatsapp_service_enforcement` governa consequência sobre uso existente e nada mais. Rollout comercial de novas contratações usa `whatsapp_subscription_checkout` ou flag própria da Fase 6. Reintroduzir a flag de enforcement na decisão de provisionar volta a acoplar "posso suspender quem devo" com "posso vender para quem quer".
 
 ---
 
