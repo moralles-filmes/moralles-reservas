@@ -12,6 +12,7 @@ import {
   type SendResult,
 } from "./whatsapp-providers.ts";
 import { jsonLog } from "./security.ts";
+import { resolveWhatsAppGateByUnit } from "./whatsapp-service-gate.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -32,6 +33,33 @@ export async function sendWhatsApp(
   message: string,
   channelIdOrUnitId?: { channel_id?: string; unit_id?: string }
 ): Promise<SendResult> {
+  // Gate de serviço. Precisa de unit_id; quando só veio channel_id, resolve a
+  // unit pelo canal primeiro (a consulta do canal já acontece logo abaixo, mas
+  // o gate tem que vir ANTES de tocar no provedor — depois já custou dinheiro).
+  let gateUnitId = channelIdOrUnitId?.unit_id ?? null;
+  if (!gateUnitId && channelIdOrUnitId?.channel_id) {
+    const { data: ch } = await supabase
+      .from("whatsapp_channels")
+      .select("unit_id")
+      .eq("id", channelIdOrUnitId.channel_id)
+      .maybeSingle();
+    gateUnitId = (ch?.unit_id as string | undefined) ?? null;
+  }
+
+  if (gateUnitId) {
+    const gate = await resolveWhatsAppGateByUnit(supabase, gateUnitId);
+    if (gate?.enforced.sending) {
+      jsonLog("warn", {
+        evt: "send_whatsapp_service_suspended",
+        unit_id: gateUnitId,
+        org: gate.organizationId,
+        state: gate.state,
+        reason: gate.reason,
+      });
+      return { ok: false, error: "whatsapp_service_suspended" };
+    }
+  }
+
   // Quando ambos channel_id e unit_id são fornecidos, exige que pertençam à
   // mesma unit — defesa contra envio cross-tenant se INTERNAL_API_KEY vazar.
   if (channelIdOrUnitId?.channel_id) {

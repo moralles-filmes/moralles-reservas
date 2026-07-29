@@ -18,6 +18,8 @@ function friendlyWhatsAppError(code?: string | null): string {
   if (!code) return "Falha ao enviar WhatsApp.";
   if (code === "whatsapp_not_configured")
     return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Automação para enviar avisos.";
+  if (code === "whatsapp_service_suspended")
+    return "Envio de WhatsApp suspenso por falta de pagamento da mensalidade da automação. Regularize em Cobrança para voltar a enviar.";
   if (code === "channel_mismatch")
     return "Canal de WhatsApp inválido para esta unidade.";
   if (code === "missing_credentials")

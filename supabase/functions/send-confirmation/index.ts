@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
+import { clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { sendEmail } from "../_shared/email.ts";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
 import { appendOutboundToConversation } from "../_shared/conversation-log.ts";
@@ -237,6 +238,10 @@ serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+
+  // Cache do gate é por invocação — zera aqui, mesmo padrão do unitCache dos
+  // workers, senão um isolate quente serve estado de suspensão velho.
+  clearWhatsAppGateCache();
 
   if (!requireInternalAuth(req)) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {

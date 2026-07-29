@@ -15,8 +15,10 @@
  * cacheado — um soluço pontual não pode fixar o veredito de uma organização
  * pelo resto da invocação (a Task 17 varre muitas organizações numa só).
  *
- * Sem consumidor nesta task — nenhuma Edge Function importa este arquivo
- * ainda.
+ * Consumido por `whatsapp-send.ts` (Task 14) — ponto único de todo envio de
+ * WhatsApp que não é do agente de IA (`send-whatsapp`, `send-confirmation`,
+ * `send-cancellation`, `send-manual-message`). Caller zera o cache no início
+ * de cada invocação via `clearWhatsAppGateCache()`, não este módulo.
  */
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
