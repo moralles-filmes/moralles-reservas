@@ -41,6 +41,13 @@ import {
   type ProvisioningEligibility,
 } from "./whatsapp-service-state-core.ts";
 
+// Re-exportado para callers que já importam deste módulo (ex.: manage-channels)
+// tipar um `Record` exaustivo sobre os sete estados sem abrir um import novo
+// direto pra whatsapp-service-state-core.ts — mantém o checklist de redeploy
+// do CLAUDE.md ("manage-channels consome whatsapp-service-state-core.ts via
+// whatsapp-service-gate.ts") verdadeiro.
+export type { WhatsAppServiceState } from "./whatsapp-service-state-core.ts";
+
 const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
 
 export interface ServiceGateResult extends WhatsAppGateDecision {

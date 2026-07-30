@@ -116,12 +116,6 @@ export async function checkFlagEnabled(key: string): Promise<FlagCheckResult> {
   return { enabled: result.value === true, readFailed: false };
 }
 
-/** Flag de escolha (string jsonb). Fallback quando ausente/tipo errado. */
-export async function getFlagString(key: string, fallback: string): Promise<string> {
-  const value = await getFlagValue(key);
-  return typeof value === "string" && value.length > 0 ? value : fallback;
-}
-
 /** Resultado de `checkFlagString` — ver função abaixo. */
 export interface FlagStringCheckResult {
   /** Valor efetivo pro caller (o `fallback` também quando a leitura falhou). */
@@ -131,11 +125,9 @@ export interface FlagStringCheckResult {
 }
 
 /**
- * Como `getFlagString`, mas separa "flag ausente/vazia DE VERDADE" de "não deu
- * pra saber" — mesmo espírito de `checkFlagEnabled` pro par booleano, sem
- * irmão de leitura confiável até a Fase 5b. Caller que trata as duas coisas
- * igual (ex.: UI, log informativo) continua usando `getFlagString`; caller pra
- * quem uma leitura falha não pode virar "campo vazio" (ex.:
+ * Flag de escolha (string jsonb), separando "flag ausente/vazia DE VERDADE" de
+ * "não deu pra saber" — mesmo espírito de `checkFlagEnabled` pro par booleano.
+ * Caller pra quem uma leitura falha não pode virar "campo vazio" (ex.:
  * `billing_invoice_ingestion_since` — uma falha de leitura não pode desligar
  * silenciosamente a retenção de fatura pré-go-live) usa esta função.
  */

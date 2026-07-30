@@ -2,7 +2,11 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { type WhatsAppProvider, type ChannelCredentials } from "../_shared/whatsapp-providers.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
-import { resolveWhatsAppGateByUnit, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
+import {
+  resolveWhatsAppGateByUnit,
+  clearWhatsAppGateCache,
+  type WhatsAppServiceState,
+} from "../_shared/whatsapp-service-gate.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -30,7 +34,7 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
  * mensalidade" e "contrate a automação" pedem ações opostas, e um texto
  * genérico faria o cliente tentar a errada.
  */
-const NEW_PROVISIONING_MESSAGE: Record<string, string> = {
+const NEW_PROVISIONING_MESSAGE: Record<WhatsAppServiceState, string> = {
   GRACE_PERIOD:
     "Há uma mensalidade da automação em aberto. Regularize em Cobrança para adicionar um novo número.",
   LEGACY_GRANDFATHERED:

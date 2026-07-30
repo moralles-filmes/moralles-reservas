@@ -103,6 +103,12 @@ export function WhatsappServiceBanner({
   }
 
   if (data.serviceState === "GRACE_PERIOD") {
+    // Tempo verbal decidido por `sendingBlocked` — mesmo motivo do ramo
+    // SUSPENDED_UNPAID acima: a flag nasce OFF, e "Suspensão em <data>"
+    // promete uma consequência automática que não vai acontecer enquanto o
+    // enforcement estiver desligado. "Regularize até <data>" é honesta nos
+    // dois modos (a carência em si é real, vem de normalizeFinancialState).
+    const enforced = data.sendingBlocked === true;
     return (
       <div
         className={cn(
@@ -113,7 +119,11 @@ export function WhatsappServiceBanner({
         <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5 text-warning" />
         <p className="text-sm text-warning">
           Mensalidade da automação em aberto.
-          {data.graceEndsAt ? ` Suspensão em ${formatDateBR(data.graceEndsAt.slice(0, 10))}.` : ""}
+          {data.graceEndsAt
+            ? enforced
+              ? ` Suspensão em ${formatDateBR(data.graceEndsAt.slice(0, 10))}.`
+              : ` Regularize até ${formatDateBR(data.graceEndsAt.slice(0, 10))}.`
+            : ""}
         </p>
       </div>
     );
