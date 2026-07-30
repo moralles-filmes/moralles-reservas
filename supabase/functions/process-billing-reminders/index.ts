@@ -68,6 +68,20 @@ serve(async (req) => {
       // decisão de mandar ou não.
       const isSystem = await isSystemInvoice(supabase, inv);
 
+      // isSystemInvoice devolvendo false NÃO identifica o produto — ela só
+      // responde "não é mensalidade de sistema". purpose='implementation'
+      // (pacote avulso de implantação do WhatsApp) e purpose='ai_topup'
+      // (recarga de créditos de IA) também caem em false e NÃO são a
+      // mensalidade recorrente da instância — mandar "sua mensalidade está
+      // em atraso" pra eles inventaria uma cobrança recorrente que não
+      // existe (fix round 1, Task 18: `!isSystem` sozinho tratava os três
+      // como a mesma coisa). Vocabulário fechado de `purpose`
+      // (`billing_invoices_purpose_check`, migration 063): 'subscription' |
+      // 'implementation' | 'ai_topup' | 'other'. Só 'subscription' com
+      // `!isSystem` é a mensalidade da instância de WhatsApp; os outros
+      // voltam a ser silêncio, exatamente como antes desta task.
+      if (!isSystem && inv.purpose !== "subscription") continue;
+
       if (isSystem) {
         // Nunca avisar cliente com cortesia vitalícia (system).
         if (await hasActiveSystemOverride(supabase, inv.organization_id)) continue;
@@ -77,8 +91,12 @@ serve(async (req) => {
         // checagem que process-whatsapp-enforcement (Task 17) faz antes de
         // suspender o serviço (resolveWhatsAppGateByOrg + state ===
         // "OVERRIDE_ACTIVE"), reusada aqui em vez de duplicar a resolução do
-        // gate num segundo lugar. readFailed é tratado como Task 17 trata: não
-        // age no soluço técnico, tenta de novo na próxima passagem diária.
+        // gate num segundo lugar. readFailed não age no soluço técnico — mas
+        // isto NÃO "tenta de novo amanhã": os offsets são deltas fixos do
+        // due_date (0/1/3/5), então o próximo dia em que ALGUM offset bate
+        // de novo pra esta fatura é o próximo degrau da escada (D+3 depois
+        // de D+1, D+5 depois de D+3), ou nunca, se a fatura sair de `open`
+        // antes disso.
         const gate = await resolveWhatsAppGateByOrg(supabase, inv.organization_id);
         if (gate.readFailed) {
           jsonLog("warn", {

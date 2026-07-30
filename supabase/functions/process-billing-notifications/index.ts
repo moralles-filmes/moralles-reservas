@@ -104,49 +104,65 @@ const TEMPLATE_BY_EVENT: Record<
   // parar. `process-billing-reminders` decide o prefixo `whatsapp_` do
   // event_type; estas 4 entradas cobrem a mesma escada D0/D+1/D+3/D+5 de
   // `REMINDER_OFFSETS` (billing-delinquency-core.ts) — uma escada só, dois
-  // vocabulários.
+  // vocabulários. Escalada visível igual à irmã de sistema (fix round 1, Task
+  // 18): D0/D+1 sem consequência, D+3 já avisa que a automação será
+  // suspensa, D+5 é o último aviso — só o VOCABULÁRIO muda (nunca "acesso"),
+  // não o formato da escalada. `d.amountBrl`/`payLine(d.paymentUrl)` seguem
+  // exatamente o padrão das irmãs de sistema acima (mesmo fix round: um
+  // lembrete de cobrança sem valor nem link pra pagar é quase inútil).
   whatsapp_payment_pending: (d) => ({
     subject: "A mensalidade da automação de WhatsApp vence hoje",
-    text: `A mensalidade da automação de WhatsApp de ${d.orgName} vence hoje. O restante do sistema não é afetado por esta cobrança.`,
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} vence hoje. O restante do sistema não é afetado por esta cobrança. Valor: ${d.amountBrl}. ${payLine(d.paymentUrl)}`,
     html: wrapHtml("A mensalidade da automação de WhatsApp vence hoje", [
       `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> vence hoje.`,
       `O restante do sistema não é afetado por esta cobrança.`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      payLine(d.paymentUrl),
     ]),
   }),
   whatsapp_overdue_d1: (d) => ({
     subject: "Mensalidade da automação em atraso",
-    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso há 1 dia. O restante do sistema não é afetado por esta cobrança.`,
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso há 1 dia. O restante do sistema não é afetado por esta cobrança. Valor: ${d.amountBrl}. ${payLine(d.paymentUrl)}`,
     html: wrapHtml("Mensalidade da automação em atraso", [
       `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso há 1 dia.`,
       `O restante do sistema não é afetado por esta cobrança.`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      payLine(d.paymentUrl),
     ]),
   }),
   whatsapp_overdue_d3: (d) => ({
     subject: "Mensalidade da automação em atraso (3 dias)",
-    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso há 3 dias. O restante do sistema não é afetado por esta cobrança.`,
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso há 3 dias. Se não for regularizada, a automação de WhatsApp será suspensa — reservas, agenda, painel e relatórios continuam funcionando normalmente. Valor: ${d.amountBrl}. ${payLine(d.paymentUrl)}`,
     html: wrapHtml("Mensalidade da automação em atraso (3 dias)", [
       `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso há 3 dias.`,
-      `O restante do sistema não é afetado por esta cobrança.`,
+      `Se não for regularizada, a automação de WhatsApp será <strong>suspensa</strong> — reservas, agenda, painel e relatórios continuam funcionando normalmente.`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      payLine(d.paymentUrl),
     ]),
   }),
   whatsapp_overdue_d5: (d) => ({
     subject: "Último aviso antes da suspensão da automação de WhatsApp",
-    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso. Amanhã os envios e o atendimento automático pelo WhatsApp serão suspensos. Reservas, agenda, painel e relatórios continuam funcionando normalmente.`,
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso. Amanhã os envios e o atendimento automático pelo WhatsApp serão suspensos. Reservas, agenda, painel e relatórios continuam funcionando normalmente. Valor: ${d.amountBrl}. ${payLine(d.paymentUrl)}`,
     html: wrapHtml("Último aviso antes da suspensão da automação de WhatsApp", [
       `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso.`,
       `Amanhã os envios e o atendimento automático pelo WhatsApp serão suspensos. <strong>Reservas, agenda, painel e relatórios continuam funcionando normalmente.</strong>`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      payLine(d.paymentUrl),
     ]),
   }),
   // Produzido por process-whatsapp-enforcement (Task 17), invoiceId sempre
   // null (a suspensão é por estado da assinatura, não por uma fatura
-  // específica) — por isso não referenciar d.amountBrl/d.paymentUrl aqui,
-  // eles chegam zerados/nulos.
+  // específica) — por isso não referenciar d.amountBrl aqui, chega zerado.
+  // `payLine(null)` (fix round 1, Task 18: verificado que produz um CTA
+  // genérico utilizável, "Acesse o painel para regularizar.") substitui um
+  // "regularize a mensalidade" sem nenhum ponteiro de onde.
   whatsapp_suspended: (d) => ({
     subject: "Automação de WhatsApp suspensa",
-    text: `A automação de WhatsApp de ${d.orgName} foi suspensa por falta de pagamento. O sistema segue funcionando: reservas, agenda, clientes e relatórios não foram afetados. Regularize a mensalidade para retomar os envios.`,
+    text: `A automação de WhatsApp de ${d.orgName} foi suspensa por falta de pagamento. O sistema segue funcionando: reservas, agenda, clientes e relatórios não foram afetados. Regularize a mensalidade para retomar os envios. ${payLine(d.paymentUrl)}`,
     html: wrapHtml("Automação de WhatsApp suspensa", [
       `A automação de WhatsApp de <strong>${d.orgName}</strong> foi suspensa por falta de pagamento.`,
       `O sistema segue funcionando: reservas, agenda, clientes e relatórios não foram afetados. Regularize a mensalidade para retomar os envios.`,
+      payLine(d.paymentUrl),
     ]),
   }),
   // Mesma origem (Task 17) e mesmo motivo de não usar amountBrl/paymentUrl.
