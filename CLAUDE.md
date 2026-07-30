@@ -323,6 +323,7 @@ Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vaul
 - **Dedupe `(rule, customer)` é DB-enforced** via `vouchers_unit_rule_customer_active_idx`. Sempre tente INSERT; erro `23505` é dedupe silencioso (log `voucher_dedup_race`). `SELECT existing` antes não basta (reprocessing_stuck_message permite 2 execuções paralelas).
 - **`processFrequency` conta reservas até ontem BRT** (`.lte('date', yesterdayIso)`) — sem isso, reservas confirmadas no futuro disparam voucher antes da visita.
 - **Cooldown da frequência = `rule.validity_days`** (estável). NÃO use `windowStart` deslizante.
+- **Sob suspensão de WhatsApp, aniversário cria o voucher e só suprime o envio; frequência pula a regra inteira.** Assimetria deliberada: a data de aniversário não volta (perda permanente se pular), a janela de frequência é recalculada a cada execução (adiado, sem perda). `suppressSend` em `IssueArgs`. [process-voucher-triggers/index.ts](supabase/functions/process-voucher-triggers/index.ts).
 - **Phone vazio = skip.** Workers filtram `phoneDigits.length >= 10` antes do `issueAndSend`.
 - **29/02 em ano não-bissexto → dispara em 28/02** (regra civil BR). Lógica em `getTodayBrtParts` + flag `acceptLeapBirthday`.
 - **Advisory lock no worker:** `try_giftback_lock()` no início, `release_giftback_lock()` no `finally`. Falha aberta é OK — UNIQUE PARTIAL pega o resto.
