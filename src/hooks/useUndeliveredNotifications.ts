@@ -56,6 +56,8 @@ function friendlyResendError(code?: string | null): string {
   if (code === "no_phone") return "Este cliente não tem WhatsApp cadastrado.";
   if (code === "whatsapp_not_configured")
     return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Automação.";
+  if (code === "whatsapp_service_suspended")
+    return "Envio de WhatsApp suspenso por falta de pagamento da mensalidade da automação. Regularize em Cobrança para voltar a enviar.";
   if (code === "not_found_or_cross_tenant") return "Registro não encontrado nesta unidade.";
   return "Falha ao reenviar a mensagem.";
 }

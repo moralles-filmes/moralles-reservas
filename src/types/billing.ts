@@ -179,7 +179,48 @@ export interface BillingInvoice {
   paid_at: string | null;
   created_at: string;
   updated_at: string;
+  // Retenção pra revisão administrativa (migration 077, Fase 5b Task 11).
+  // Opcionais: linhas antigas da EF podem não devolver ainda em deploy
+  // intermediário — mesma convenção de `system_allowed` acima.
+  enforcement_hold?: boolean;
+  enforcement_hold_reason?: EnforcementHoldReason | null;
+  enforcement_held_at?: string | null;
+  enforcement_released_at?: string | null;
+  enforcement_released_by?: string | null;
+  ingestion_source?: string | null;
+  /** Presente só quando `list_invoices` embute o join (painel da plataforma). */
+  organizations?: { name: string; slug: string } | { name: string; slug: string }[] | null;
 }
+
+/** Espelha o CHECK `billing_invoices_hold_reason_chk` (migration 077). */
+export type EnforcementHoldReason =
+  | "INITIAL_BACKFILL"
+  | "PRE_GO_LIVE_INVOICE"
+  | "CORRELATION_AMBIGUITY"
+  | "VALUE_MISMATCH"
+  | "MANUAL_REVIEW";
+
+export const ENFORCEMENT_HOLD_REASON_LABEL: Record<EnforcementHoldReason, string> = {
+  INITIAL_BACKFILL: "Backfill inicial",
+  PRE_GO_LIVE_INVOICE: "Cobrança anterior ao go-live da ingestão",
+  CORRELATION_AMBIGUITY: "Ambiguidade de correlação",
+  VALUE_MISMATCH: "Divergência de valor",
+  MANUAL_REVIEW: "Revisão manual",
+};
+
+/** Espelha o CHECK `organizations_wa_grandfather_revoke_chk` (migration 079). */
+export type WhatsappGrandfatherRevokedReason =
+  | "FIRST_PAID_SUBSCRIPTION"
+  | "ADMIN_MIGRATION"
+  | "REPLACED_BY_OVERRIDE"
+  | "ADMIN_REVOCATION";
+
+export const WHATSAPP_GRANDFATHER_REVOKED_REASON_LABEL: Record<WhatsappGrandfatherRevokedReason, string> = {
+  FIRST_PAID_SUBSCRIPTION: "Primeira assinatura paga da instância",
+  ADMIN_MIGRATION: "Migrada para o modelo comercial",
+  REPLACED_BY_OVERRIDE: "Substituída por override formal",
+  ADMIN_REVOCATION: "Revogação administrativa",
+};
 
 export interface BillingAccessOverride {
   id: string;
@@ -327,7 +368,49 @@ export type ClientImplementationState =
   | "NOT_REQUESTED" | "AWAITING_PAYMENT" | "PAID_NOT_STARTED"
   | "IN_PROGRESS" | "WAITING_CUSTOMER" | "COMPLETED" | "CANCELED";
 
+/**
+ * Espelha `WhatsAppServiceState` de
+ * `supabase/functions/_shared/whatsapp-service-state-core.ts` (núcleo puro,
+ * Fase 5b). Cópia deliberada, não import cross-boundary: aquele arquivo é
+ * consumido só por Edge Functions; este tipo existe pra tipar a RESPOSTA JSON
+ * de `get_service_status`, já serializada.
+ */
+export type WhatsAppServiceState =
+  | "ACTIVE"
+  | "GRACE_PERIOD"
+  | "OVERRIDE_ACTIVE"
+  | "LEGACY_GRANDFATHERED"
+  | "NOT_ENTITLED"
+  | "SUSPENDED_UNPAID"
+  | "ADMIN_BLOCKED";
+
 export interface WhatsappServiceStatus {
+  /**
+   * Task 20. A UI (WhatsappServiceBanner) escolhe o banner por ESTE campo —
+   * nunca por `sendingBlocked`, que é a consequência gateada pela flag
+   * `whatsapp_service_enforcement` (nasce OFF; um banner keyado nela nunca
+   * apareceria).
+   *
+   * OPCIONAL de propósito, mesma convenção de `system_allowed` abaixo: o
+   * frontend sobe pela Vercel automaticamente enquanto a Edge Function é
+   * implantada à mão (`supabase functions deploy`) — na janela entre os dois
+   * deploys a resposta chega SEM este campo. `WhatsappServiceBanner` trata
+   * ausência como "não renderizar nada", nunca como um estado específico.
+   */
+  serviceState?: WhatsAppServiceState;
+  /** Consequência REAL sobre o envio agora, já considerando a flag de
+   *  enforcement — diagnóstico, não usado pra decidir o banner. Opcional pelo
+   *  mesmo motivo de `serviceState`. */
+  sendingBlocked?: boolean;
+  /** `due_date` da fatura mais antiga em aberto + dias de carência. `null`
+   *  fora de GRACE_PERIOD/SUSPENDED_UNPAID. Opcional pelo mesmo motivo de
+   *  `serviceState`. */
+  graceEndsAt?: string | null;
+  /** `billing_subscriptions.suspended_at` — coluna real, escrita só pelo
+   *  worker de enforcement. Pode ser `null` mesmo em SUSPENDED_UNPAID
+   *  enquanto a flag estiver OFF; a UI cai pra `graceEndsAt` nesse caso.
+   *  Opcional pelo mesmo motivo de `serviceState`. */
+  suspendedAt?: string | null;
   implementation: {
     state: ClientImplementationState;
     payment_status: ImplementationPaymentStatus | null;

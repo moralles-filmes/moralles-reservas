@@ -13,6 +13,7 @@ import {
 } from "@/hooks/useBilling";
 import { usePaymentMethods } from "@/hooks/usePaymentMethods";
 import { AutomacaoWhatsappCard } from "@/components/gestao/AutomacaoWhatsappCard";
+import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -264,6 +265,10 @@ export default function Cobranca() {
           Gerencie sua assinatura, troque o cartão e veja os planos disponíveis.
         </p>
       </div>
+
+      {/* Suspensão da automação de WhatsApp — nunca do sistema. Sem CTA: o
+          dono já está na página de cobrança. */}
+      <WhatsappServiceBanner organizationId={organizationId} unitSlug={current.unit_slug} showCta={false} />
 
       {isBlocked && (
         <Card className="border-warning/20 bg-warning/10">

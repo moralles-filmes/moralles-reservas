@@ -914,18 +914,24 @@ serve(async (req) => {
     // ═════════════════════════════════════════════════════════════════════════
 
     if (action === "list_invoices") {
-      const { organization_id, status: filterStatus, page = 0, page_size = 20 } = body;
+      const { organization_id, status: filterStatus, page = 0, page_size = 20, enforcement_hold } = body;
       const from = Number(page) * Number(page_size);
       const to = from + Number(page_size) - 1;
 
+      // `organizations(name, slug)` embutido via FK (billing_invoices.organization_id
+      // -> organizations.id) — Task 20, painel de faturas retidas da plataforma
+      // precisa do nome da organização na linha, sem consulta separada.
+      // Aditivo: consumidores existentes de `invoices` continuam recebendo os
+      // mesmos campos, só ganham este a mais.
       let query = supabase
         .from("billing_invoices")
-        .select("*", { count: "exact" })
+        .select("*, organizations(name, slug)", { count: "exact" })
         .order("created_at", { ascending: false })
         .range(from, to);
 
       if (organization_id) query = query.eq("organization_id", organization_id);
       if (filterStatus) query = query.eq("status", filterStatus);
+      if (enforcement_hold !== undefined) query = query.eq("enforcement_hold", !!enforcement_hold);
 
       const { data, error, count } = await query;
       if (error) {
@@ -1013,6 +1019,46 @@ serve(async (req) => {
 
       jsonLog("info", { reqId, evt: "billing_invoice_created", orgId: organization_id, invoiceId: invoice.id, stripeInvoiceId });
       return jsonResponse(req, { success: true, invoice });
+    }
+
+    // ── release_invoice_enforcement_hold (admin) ───────────────────────────
+    // Libera uma fatura retida pra revisão (migration 077) — fora de
+    // CLIENT_FRIENDLY_ACTIONS, exclusiva de platform_admin (guard já rodou no
+    // topo). Sem organization_id no payload pra checar contra o caller: a org
+    // sai da própria fatura, mesmo padrão de reprocess_billing_event.
+    if (action === "release_invoice_enforcement_hold") {
+      const { invoice_id, reason } = body;
+      if (!invoice_id || typeof reason !== "string" || reason.trim().length < 5) {
+        return jsonResponse(req, { error: "Informe a fatura e o motivo da liberação." }, 400);
+      }
+      const { data: released, error } = await supabase
+        .from("billing_invoices")
+        .update({
+          enforcement_hold: false,
+          enforcement_released_at: new Date().toISOString(),
+          enforcement_released_by: callerId,
+        })
+        .eq("id", invoice_id)
+        .eq("enforcement_hold", true) // condicional: liberar duas vezes não reescreve a autoria
+        .select("id, organization_id");
+      if (error) {
+        jsonLog("error", { reqId, evt: "billing_release_hold_failed", invoice_id, err: error.message });
+        return jsonResponse(req, { error: "Não foi possível liberar a fatura." }, 500);
+      }
+      if (!released?.length) {
+        return jsonResponse(req, { error: "Fatura não está retida." }, 409);
+      }
+      // Auditoria: quem liberou, quando e por quê. Sem isso, uma fatura sai da
+      // retenção e volta a poder suspender um cliente sem rastro de decisão.
+      await supabase.from("billing_events").insert({
+        organization_id: released[0].organization_id,
+        provider: "asaas",
+        event_type: "internal.invoice_hold_released",
+        processing_status: "processed",
+        data: { invoice_id, reason: reason.trim(), released_by: callerId },
+      });
+      jsonLog("info", { reqId, evt: "billing_invoice_hold_released", invoice_id, by: callerId });
+      return jsonResponse(req, { success: true });
     }
 
     // ═════════════════════════════════════════════════════════════════════════

@@ -67,6 +67,21 @@ export interface ServiceGateResult extends WhatsAppGateDecision {
    * consequência certa para cada lado.
    */
   readFailed: boolean;
+  /**
+   * `due_date` da fatura em aberto mais antiga + `GRACE_PERIOD_DAYS`, já
+   * calculado por `normalizeFinancialState` — repassado aqui só para a UI
+   * (Task 20, `get_service_status`) não duplicar a conta. `null` fora de
+   * `GRACE_PERIOD`/`SUSPENDED_UNPAID` (nenhuma fatura vencida em jogo).
+   */
+  graceEndsAt: string | null;
+  /**
+   * `billing_subscriptions.suspended_at` da assinatura WHATSAPP_SUBSCRIPTION —
+   * coluna real, não derivada. Escrita só pelo worker `process-whatsapp-enforcement`
+   * (gated pela flag), então pode ficar `null` mesmo com `state==="SUSPENDED_UNPAID"`
+   * enquanto a flag estiver OFF ou o worker não tiver rodado ainda — quem
+   * consome isto não pode tratar `null` aqui como "não está suspenso".
+   */
+  suspendedAt: string | null;
 }
 
 const orgCache = new Map<string, ServiceGateResult>();
@@ -102,7 +117,7 @@ export async function resolveWhatsAppGateByOrg(
       .or(`ends_at.is.null,ends_at.gt.${nowIso}`),
     supabase
       .from("billing_subscriptions")
-      .select("id, status, canceled_at, billing_plans!inner(category)")
+      .select("id, status, canceled_at, suspended_at, billing_plans!inner(category)")
       .eq("organization_id", organizationId)
       .eq("billing_plans.category", WHATSAPP_CATEGORY)
       .neq("status", "canceled")
@@ -127,7 +142,9 @@ export async function resolveWhatsAppGateByOrg(
   }
 
   const overrides = (overridesRes.data ?? []) as { enabled: boolean }[];
-  const sub = subRes.data as { id: string; status: string; canceled_at: string | null } | null;
+  const sub = subRes.data as
+    | { id: string; status: string; canceled_at: string | null; suspended_at: string | null }
+    | null;
 
   // Fatura em aberto mais antiga da assinatura, JÁ EXCLUINDO as retidas —
   // fatura em revisão administrativa não conta como atraso, por definição.
@@ -226,6 +243,8 @@ export async function resolveWhatsAppGateByOrg(
     enforced: enforcement.enforced,
     provisioning,
     readFailed,
+    graceEndsAt: financial.graceEndsAt,
+    suspendedAt: sub?.suspended_at ?? null,
   };
 
   // Log guiado pelo campo `telemetry` do núcleo — nunca os dois ao mesmo

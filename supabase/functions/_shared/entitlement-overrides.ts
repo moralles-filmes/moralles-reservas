@@ -179,6 +179,34 @@ export async function grantOverride(
     enabled: args.enabled ?? true,
   });
 
+  // Override formal de whatsapp=true SUBSTITUI o grandfathering: a organização
+  // passa a ter direito por decisão administrativa registrada, não por
+  // antiguidade. A revogação é TERMINAL — revogar o override depois NÃO
+  // devolve o grandfathering, senão "concedo, revogo, volto a ser legado"
+  // viraria isenção permanente com aparência de processo. Best-effort: falha
+  // aqui loga e NÃO derruba a concessão do override já commitada acima — o
+  // direito de acesso é o efeito principal, o encerramento do grandfathering é
+  // consequência administrativa.
+  if (args.feature === "whatsapp" && (args.enabled ?? true) === true) {
+    const { error: revokeErr } = await supabase
+      .from("organizations")
+      .update({
+        whatsapp_grandfather_revoked_at: new Date().toISOString(),
+        whatsapp_grandfather_revoked_reason: "REPLACED_BY_OVERRIDE",
+        whatsapp_grandfather_revoked_by: args.grantedBy,
+      })
+      .eq("id", args.organizationId)
+      .eq("whatsapp_legacy_grandfathered", true)
+      .is("whatsapp_grandfather_revoked_at", null);
+    if (revokeErr) {
+      jsonLog("error", {
+        evt: "override_grant_grandfather_revoke_failed",
+        org: args.organizationId,
+        err: revokeErr.message,
+      });
+    }
+  }
+
   // Devolve o entitlement RESOLVIDO após a escrita — a UI reflete o efeito real,
   // não o que ela supõe que a escrita causou.
   return {

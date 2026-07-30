@@ -78,6 +78,7 @@ import {
   useDisconnectStripe,
 } from "@/hooks/useStripeAccount";
 import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
+import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 import {
   MODELS_BY_PROVIDER,
@@ -174,6 +175,11 @@ export default function Automacao() {
           Configure os canais de WhatsApp, o provedor de IA e as instruções do agente.
         </p>
       </div>
+
+      {/* Visível pro platform_admin que está configurando a unidade — a
+          suspensão é do WhatsApp, o resto do sistema da organização segue
+          funcionando. */}
+      <WhatsappServiceBanner organizationId={unit.organization_id} unitSlug={unit.slug} />
 
       <Tabs defaultValue="channels">
         <TabsList className="mb-4">
