@@ -558,7 +558,7 @@ Após confirmação real de pagamento — webhook, ou reconciliação como defes
 
 - `get_service_status` em `manage-whatsapp-implementations` devolve o estado do serviço, `graceEndsAt` e `suspendedAt`. Continua respeitando `readFailed`: não afirma estado ao cliente sobre leitura que falhou.
 - Card de WhatsApp em [Cobranca.tsx](../../../src/pages/gestao/Cobranca.tsx) mostra o estado e a data.
-- Banner em Gestão → Automação e em Gestão → Conversas quando `SUSPENDED_UNPAID` — é onde o efeito é sentido. **Sem banner global e sem bloqueio de rota:** painel, agenda, reservas, clientes, relatórios, e-mails e a página de cobrança continuam funcionando.
+- Banner em Gestão → Conversas ([Conversas.tsx](../../../src/pages/gestao/Conversas.tsx)) e em Gestão → Cobrança ([Cobranca.tsx](../../../src/pages/gestao/Cobranca.tsx)) quando `SUSPENDED_UNPAID` — as duas rotas (`/g/:unitSlug/conversas`, `/g/:unitSlug/cobranca`) existem sob `GestaoGuard` e são onde o lojista sente o efeito. `pages/gestao/Automacao.tsx` também renderiza o banner, mas essa página está montada só em `/platform/automacao/:unitSlug`, atrás de `PlatformGuard` — não é uma rota do lojista, então não conta como cobertura adicional pra ele. **Sem banner global e sem bloqueio de rota:** painel, agenda, reservas, clientes, relatórios, e-mails e a página de cobrança continuam funcionando.
 
 ---
 
@@ -617,7 +617,7 @@ Organização com override ativo de `whatsapp` **não recebe cobrança nem aviso
 
 ### 10.2 Administrador
 
-Event type `admin_correlation_ambiguity`, destinatário resolvido pela RPC `get_platform_admin_emails()` — não por `resolveBillingRecipient`, que é escopado por organização. Disparado em: divergência de organização entre degraus, ambiguidade de assinatura por categoria, divergência de valor contra o provedor, e fatura retida automaticamente.
+Event type `admin_correlation_ambiguity`, destinatário resolvido pela RPC `get_platform_admin_emails()` — não por `resolveBillingRecipient`, que é escopado por organização. Disparado em dois gatilhos, sem relação um com o outro: divergência de organização entre degraus da escada de correlação NA MESMA passagem (`asaas-billing-events-apply.ts`), e ambiguidade de assinatura WhatsApp por categoria (`process-whatsapp-enforcement`, quando há mais de uma assinatura não-cancelada da mesma categoria pra uma organização). Divergência de valor contra o provedor e fatura retida automaticamente por não-cobrabilidade ganharam event types próprios (`admin_invoice_value_mismatch`, `admin_invoice_non_collectible_hold`) na Task 11 — não usam mais este.
 
 ---
 
