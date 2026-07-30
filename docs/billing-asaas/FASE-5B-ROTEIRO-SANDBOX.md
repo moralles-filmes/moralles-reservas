@@ -62,6 +62,49 @@ A spec é explícita: as duas flags da 5b são **separadas de propósito** (uma 
 
 ---
 
+## 0.3 Relatório global de impacto do enforcement — levantado em 2026-07-30
+
+> Pré-requisito da §6 da autorização de virada, feito **antes** de qualquer flag ligar.
+> Leitura pura, nenhuma escrita. Ambiente confirmado: `ASAAS_ENV=sandbox`.
+
+| org | sistema | grandf. | override WA | override sys | assin. WA | vencidas | hold | canais conectados | jobs pendentes |
+|---|---|---|---|---|---|---|---|---|---|
+| `moralles` | active | não | **1** | 1 | 0 | 0 | 0 | 0 | 0 |
+| `ren-sushi` | active | **sim** | **1** | 1 | 0 | 0 | 0 | **1** | 0 |
+| `seu-japa` | active | não | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+**Estado calculado e motivo determinante:**
+
+- `moralles` → `OVERRIDE_ACTIVE` (override de `whatsapp` ativo). Plataforma, sem canal.
+- `ren-sushi` → `OVERRIDE_ACTIVE` (override vence grandfathering na ordem do gate). **É a única org com canal conectado.** Não bloquearia envio nem provisionamento.
+- `seu-japa` → `NOT_ENTITLED` (sem override, sem assinatura, sem grandfathering). Não bloqueia envio nesta fase (C20) e não tem canal — impacto nulo.
+
+**Condições da §6, todas satisfeitas:** zero faturas vencidas, zero `enforcement_hold`, zero ambiguidade de assinatura, zero fatura com valor ausente, zero jobs pendentes, nenhuma org real em `SUSPENDED_UNPAID`/`ADMIN_BLOCKED` inesperado, `ren-sushi` preservada pela regra legada, nenhum override concedido para maquiar o relatório.
+
+**Conclusão:** ligar `whatsapp_service_enforcement` hoje seria inofensivo — **e é exatamente esse o problema**: não há nada para o enforcement enforçar. A virada só produz evidência depois que a fixture paga existir. Ver §0.4.
+
+## 0.4 Bloqueio de execução — o B1→B10 exige navegador
+
+O roteiro B1→B10 da 5a **não é executável por API**. O fluxo abre um **checkout hospedado
+`DETACHED` no Asaas** (cartão + PIX) e o pagamento acontece **naquela página**:
+
+- **B4** — "Pagar com cartão de teste" na página do Asaas sandbox;
+- **B5** — "Reenviar o mesmo evento **pelo painel Asaas**";
+- **B1/B2/B3** — cliques em `/g/<slug>/cobranca` e observação da tela.
+
+Para checkout `DETACHED`, o objeto `payment` **só nasce quando o pagador preenche o formulário**.
+Não há endpoint de simulação que crie o pagamento sem essa etapa — `receiveInCash` do sandbox
+exige um `payment` que ainda não existe.
+
+**Consequência:** sem a fixture paga não há implantação `COMPLETED`, nem assinatura
+`WHATSAPP_SUBSCRIPTION` ativa, nem correlação Asaas — e sem isso os ~30 blocos que dependem
+delas (C1–C18, C21–C22, C24a–g, C25–C31) não têm sobre o que rodar, e a observação da ingestão
+(§5 da virada) não teria fatura nenhuma para ingerir.
+
+**Não construí a fixture legada sozinha:** os cenários dela (C19–C22, C24e, C24j) exigem
+`whatsapp_service_enforcement` ON, e ligar a flag sem a fixture paga validaria o vazio. Criar
+metade da fixture deixaria uma org órfã em produção sem mecanismo de arquivamento (§9).
+
 ## Resumo dos cenários (preencher "Real" ao executar)
 
 | # | Cenário | Esperado | Real |
