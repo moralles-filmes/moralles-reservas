@@ -53,6 +53,24 @@ const supabase = createClient(
 
 const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
 
+// Reusa o event_type já coberto por TEMPLATE_BY_EVENT em
+// process-billing-notifications/index.ts — o design da fase (seção de
+// avisos) lista "ambiguidade de assinatura por categoria" como um dos
+// gatilhos deste MESMO evento (ao lado da divergência de organização entre
+// degraus da correlação Asaas), não um evento próprio. Inventar um nome novo
+// aqui deixaria a linha `failed/unknown_event_type` para sempre — nenhuma
+// task futura vai adicionar template para um nome que o design não previu.
+const ADMIN_AMBIGUITY_EVENT_TYPE = "admin_correlation_ambiguity";
+
+// enqueueBillingNotification só deduplica via UNIQUE (organization_id,
+// event_type, invoice_id), e esse índice é PARCIAL (invoice_id IS NOT NULL) —
+// invoice_id null, o caso aqui, NUNCA casa nele. Sem um freio no produtor,
+// uma ambiguidade não resolvida manualmente reenfileiraria um aviso novo TODO
+// dia que este worker rodasse, para sempre, sem backoff. Por isso o worker
+// checa aqui, antes de enfileirar, se já existe aviso do mesmo tipo para a
+// mesma organização ainda pendente ou enviado dentro da janela abaixo.
+const ADMIN_AMBIGUITY_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 interface WhatsAppSub {
   id: string;
   organization_id: string;
@@ -119,14 +137,42 @@ serve(async (req) => {
           org: orgId,
           count: orgSubs.length,
         });
-        const recipients = await resolvePlatformAdminRecipients(supabase);
-        for (const recipient of recipients) {
-          await enqueueBillingNotification(supabase, {
-            organizationId: orgId,
-            eventType: "admin_whatsapp_ambiguous_subscription",
-            invoiceId: null,
-            recipient,
+
+        const dedupSince = new Date(Date.now() - ADMIN_AMBIGUITY_DEDUP_WINDOW_MS).toISOString();
+        const { data: recentNotice, error: recentErr } = await supabase
+          .from("billing_notifications")
+          .select("id")
+          .eq("organization_id", orgId)
+          .eq("event_type", ADMIN_AMBIGUITY_EVENT_TYPE)
+          .or(`status.eq.pending,sent_at.gte.${dedupSince}`)
+          .limit(1);
+
+        if (recentErr) {
+          // Não dá pra confirmar se já avisamos — lado seguro é NÃO reenviar
+          // (evita flood se o soluço persistir por vários dias seguidos); a
+          // tentativa fica visível no log, não em silêncio.
+          jsonLog("warn", {
+            reqId,
+            evt: "whatsapp_enforcement_ambiguity_dedup_read_failed",
+            org: orgId,
+            err: recentErr.message,
           });
+        } else if ((recentNotice?.length ?? 0) > 0) {
+          jsonLog("info", {
+            reqId,
+            evt: "whatsapp_ambiguity_notice_skipped_dedup",
+            org: orgId,
+          });
+        } else {
+          const recipients = await resolvePlatformAdminRecipients(supabase);
+          for (const recipient of recipients) {
+            await enqueueBillingNotification(supabase, {
+              organizationId: orgId,
+              eventType: ADMIN_AMBIGUITY_EVENT_TYPE,
+              invoiceId: null,
+              recipient,
+            });
+          }
         }
         continue;
       }
@@ -183,23 +229,32 @@ serve(async (req) => {
         oldestOpenInvoice,
       });
 
-      // Override ativo de whatsapp: reusa o helper de I/O da Task 13 em vez de
-      // duplicar a leitura de organization_entitlement_overrides. Com
-      // exatamente 1 assinatura confirmada acima, o .maybeSingle() interno do
-      // gate não pode mais lançar PGRST116 por ambiguidade.
-      const gate = await resolveWhatsAppGateByOrg(supabase, orgId);
-      if (gate.readFailed) {
-        jsonLog("warn", {
-          reqId,
-          evt: "whatsapp_enforcement_gate_read_failed",
-          org: orgId,
-          sub: sub.id,
-        });
-        continue;
-      }
-      const overrideActive = gate.state === "OVERRIDE_ACTIVE";
-
       if (financial.state === "OVERDUE_BEYOND_GRACE") {
+        // Override ativo de whatsapp: reusa o helper de I/O da Task 13 em vez
+        // de duplicar a leitura de organization_entitlement_overrides. Com
+        // exatamente 1 assinatura confirmada acima, o .maybeSingle() interno
+        // do gate não pode mais lançar PGRST116 por ambiguidade.
+        //
+        // Escopado a ESTE branch de propósito (fix round 1, achado Important
+        // #2): só a decisão de SUSPENDER depende de "há override ativo?". A
+        // restauração (branch abaixo) não usa `overrideActive` e não pode
+        // ficar refém de um soluço nesta leitura — sem este escopo, um
+        // gate.readFailed pontual fazia `continue` ANTES de sequer olhar o
+        // estado PAID de quem já pagou, atrasando a restauração por soluço
+        // técnico. Fail-open pro cliente vale nos dois sentidos: nunca
+        // suspender por engano E nunca atrasar quem já está em dia.
+        const gate = await resolveWhatsAppGateByOrg(supabase, orgId);
+        if (gate.readFailed) {
+          jsonLog("warn", {
+            reqId,
+            evt: "whatsapp_enforcement_gate_read_failed",
+            org: orgId,
+            sub: sub.id,
+          });
+          continue; // não suspende por soluço técnico de leitura.
+        }
+        const overrideActive = gate.state === "OVERRIDE_ACTIVE";
+
         if (overrideActive) {
           // Custo patrocinado pela plataforma — precisa ficar visível mesmo
           // quando não há nada a suspender por causa disso.
