@@ -132,6 +132,8 @@ serve(async (req) => {
   let failed = 0;
   let expired = 0;
   let parkedCount = 0;
+  let parkWriteFailed = 0;
+  let expireWriteFailed = 0;
 
   try {
     // Pega lote de pendentes due — atomicamente marca como 'processing' pra
@@ -175,6 +177,14 @@ serve(async (req) => {
       // `attempts`. Sem isso, o teto de 5 tentativas é consumido pela suspensão
       // e o job vira 'dead' por não ter sido enviado enquanto o cliente estava
       // suspenso — perdendo a mensagem de vez quando ele pagar.
+      //
+      // Não há reaper pra linhas presas em 'processing' nesta tabela (diferente
+      // de `processed_messages`, que tem janela de staleness de 90s — aqui
+      // 'processing' só aparece no CHECK constraint e neste arquivo). Se este
+      // UPDATE falhar, as linhas claimed acima ficam presas pra sempre: o
+      // próximo claim só pega 'pending', então elas somem do pipeline. O log
+      // abaixo é a única forma de recuperá-las à mão (reset manual pra
+      // 'pending').
       const { error: parkErr } = await supabase
         .from("notification_outbox")
         .update({
@@ -185,12 +195,18 @@ serve(async (req) => {
         })
         .in("id", parked.map((r) => r.id));
       if (parkErr) {
-        jsonLog("error", { evt: "outbox_park_failed", count: parked.length, err: parkErr.message });
+        jsonLog("error", {
+          evt: "outbox_park_write_failed",
+          count: parked.length,
+          ids: parked.map((r) => r.id),
+          err: parkErr.message,
+        });
+        parkWriteFailed = parked.length;
       } else {
         jsonLog("info", { evt: "outbox_parked", count: parked.length });
+        parkedCount = parked.length;
       }
     }
-    parkedCount = parked.length;
 
     for (const row of toDispatch) {
       // Revalidação só se aplica a 'confirmation' — para 'cancellation' o
@@ -201,16 +217,34 @@ serve(async (req) => {
       if (row.kind === "confirmation") {
         const validity = await stillValid(row);
         if (!validity.ok) {
-          await supabase
+          // Rótulo sem "after_suspension": este caminho roda pra QUALQUER job
+          // de `toDispatch` que falhe a revalidação, inclusive um job que
+          // nunca foi estacionado — 5 tentativas de backoff (1m+5m+15m+1h+4h
+          // ≈ 5.5h) bastam pra uma reserva próxima virar passado sem nenhuma
+          // suspensão envolvida. `validity.reason` já carrega a causa real.
+          const { error: expireErr } = await supabase
             .from("notification_outbox")
             .update({
               status: "done",
-              last_error: `expired_after_suspension:${validity.reason}`,
+              last_error: `expired:${validity.reason}`,
               updated_at: new Date().toISOString(),
             })
             .eq("id", row.id);
-          jsonLog("info", { evt: "outbox_expired", id: row.id, reason: validity.reason });
-          expired++;
+          if (expireErr) {
+            // Mesma lacuna do park (sem reaper pra 'processing'): se este
+            // UPDATE falhar, a linha fica presa em 'processing' pra sempre —
+            // o log é a única forma de recuperá-la à mão.
+            jsonLog("error", {
+              evt: "outbox_expire_write_failed",
+              id: row.id,
+              reason: validity.reason,
+              err: expireErr.message,
+            });
+            expireWriteFailed++;
+          } else {
+            jsonLog("info", { evt: "outbox_expired", id: row.id, reason: validity.reason });
+            expired++;
+          }
           continue;
         }
       }
@@ -249,7 +283,9 @@ serve(async (req) => {
         succeeded,
         failed,
         parked: parkedCount,
+        parkWriteFailed,
         expired,
+        expireWriteFailed,
         duration_ms: Date.now() - t0,
       }),
       { headers: { "Content-Type": "application/json" } },
@@ -262,7 +298,9 @@ serve(async (req) => {
       succeeded,
       failed,
       parked: parkedCount,
+      parkWriteFailed,
       expired,
+      expireWriteFailed,
     });
     return new Response(JSON.stringify({ error: "internal_error" }), {
       status: 500,
