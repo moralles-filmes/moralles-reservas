@@ -1,23 +1,24 @@
 # FASE 5B — Enforcement por serviço de WhatsApp — Resumo de Execução
 
-> Branch `billing-asaas/fase-5b`, base `46b8a6b` (plano + spec, sem código). 44 commits de código/documentação (`c63c9b8`..`5ff1852`) + esta task de fechamento (`d81469a` + o commit deste documento).
+> Branch `billing-asaas/fase-5b`, base `46b8a6b` (plano + spec, sem código). 53 commits sobre `main`: implementação (`c63c9b8`..`5ff1852`), fechamento (`d81469a`, `4a9a753`), fix da revisão whole-branch (`fca0379`, `b9a5947`), registro de riscos (`fd5619e`) e fix dos gates de segurança (`433f5fa`).
 > Spec: [../superpowers/specs/2026-07-27-billing-asaas-fase-5b-design.md](../superpowers/specs/2026-07-27-billing-asaas-fase-5b-design.md).
 > Plano: [../superpowers/plans/2026-07-27-billing-asaas-fase-5b.md](../superpowers/plans/2026-07-27-billing-asaas-fase-5b.md).
 > Fase anterior: [FASE-5A-RESUMO.md](FASE-5A-RESUMO.md) (vendeu implantação R$750 + assinatura R$149 da instância, sem poder suspender ninguém — esta fase existe pra fechar exatamente essa lacuna).
 >
 > ## 📍 ESTADO ATUAL — leia antes de tocar em billing/WhatsApp
 >
-> **Código completo (21 tasks) e verificado localmente. NADA foi aplicado em produção.** Nenhuma das 7 migrations novas (077–080, 082–083 — ver nota sobre a numeração abaixo) rodou `db push`, nenhuma Edge Function foi deployada, o roteiro de sandbox (44 blocos verificáveis) está escrito mas não executado, e não houve merge/tag. Mesma decisão da 5a: a virada do Asaas fica em sandbox até a última fase do projeto.
+> **Código completo, revisado e auditado. NADA foi aplicado em produção.** Nenhuma das 7 migrations novas (077–080, 082–084 — ver nota sobre a numeração abaixo) rodou `db push`, nenhuma Edge Function foi deployada, o roteiro de sandbox (44 blocos verificáveis) está escrito mas não executado, e não houve merge/tag. Mesma decisão da 5a: a virada do Asaas fica em sandbox até a última fase do projeto.
 >
 > | | |
 > |---|---|
-> | Pipeline de código (Tasks 1–20 + fechamento) | ✅ completo, cada task revisada; a maioria exigiu 1–2 ciclos de fix |
+> | Pipeline de código (24 tasks + fechamento) | ✅ completo, cada task revisada; a maioria exigiu 1–2 ciclos de fix |
+> | Revisão whole-branch (modelo mais capaz, 63 arquivos) | ✅ **changes requested → corrigido → re-revisão APROVADA** |
 > | `npm test` | ✅ **423/423** (baseline no início da fase era 265; +158 nesta fase: 5 núcleos puros novos) |
 > | `npm run typecheck` (`tsc -b`) | ✅ 0 erros |
 > | `npm run lint` | ✅ 0 erros, 22 warnings (pré-existentes, baseline inalterada) |
-> | Migrations 077, 078, 079, 080, 082, 083 (082/083 são os crons dos 2 workers novos) | ✅ **criadas** — **NÃO aplicadas** (`db push` fica para o dono) |
-> | Deploy das Edge Functions afetadas | ❌ **não feito** — lista completa no checklist de redeploy do [CLAUDE.md](../../CLAUDE.md) |
-> | Gates `saas-shield-br` (`rls-auditor`, `tenant-isolation-auditor`, `identity-access-auditor`, `migration-validator`, `secret-hunter`, `integration-reliability-auditor`) | ❌ **não rodados nesta task de fechamento** — obrigatórios antes de merge por tocar banco/webhook/RLS/multi-tenant ([CLAUDE.md](../../CLAUDE.md) § Fluxo obrigatório), ficam para o dono |
+> | Migrations 077, 078, 079, 080, 082, 083, 084 (082/083 são os crons dos 2 workers novos; 084 é o fix de segurança dos gates) | ✅ **criadas** — **NÃO aplicadas** (`db push` fica para o dono) |
+> | Deploy das Edge Functions afetadas | ❌ **não feito** — lista completa no checklist de redeploy do [CLAUDE.md](../../CLAUDE.md). **Ordem obrigatória: migrations ANTES do deploy do `manage-channels`** (Risco 8) |
+> | Gates `saas-shield-br` (os 6) | ✅ **rodados** — 5 PASS; `rls-auditor` FAIL com 1 bloqueante P1, **corrigido na migration 084**. Detalhe e achados abertos na seção "Gates de segurança" |
 > | Roteiro de sandbox (44 blocos, C1–C31 com sub-itens) | 📝 **escrito**, não executado — [FASE-5B-ROTEIRO-SANDBOX.md](FASE-5B-ROTEIRO-SANDBOX.md) |
 > | Merge em `main` + tag `billing-asaas/fase-5b` | ❌ **não feito** — só depois do sandbox validado e dos gates rodados |
 >
@@ -199,7 +200,12 @@ A policy pré-existente `org_member_read_organizations` (`013_multi_tenant.sql:3
 
 ## Gates de segurança (`saas-shield-br`)
 
-**Três rodados no fechamento desta fase, os três PASS com zero bloqueantes:**
+**Os seis rodaram. Cinco PASS; o `rls-auditor` deu FAIL com um bloqueante P1, corrigido na migration 084.**
+
+- **`rls-auditor`** — **FAIL**, 1 bloqueante P1 + 1 atenção P3. O P1: **nenhuma das 16 funções `trigger_*` de cron do repo tinha `revoke`/`grant`**. Em PostgreSQL, `CREATE FUNCTION` concede `EXECUTE` a `PUBLIC` por padrão; `anon` tem `USAGE` no schema `public`, que é o exposto ao PostgREST — então qualquer pessoa com a `VITE_SUPABASE_ANON_KEY` (pública no bundle, por design) podia chamar `POST /rest/v1/rpc/trigger_whatsapp_enforcement` e disparar os workers fora de hora. O `x-internal-key` não protege: é a própria função `SECURITY DEFINER` que o lê do Vault e o fornece. Impacto: corrida com o cron legítimo sobre `billing_subscriptions.status`/`suspended_at`, e amplificação de custo/rate-limit contra a API do Asaas. **Não é regressão desta fase** — o repo aplica o padrão corretamente em todas as outras funções (`get_widget_public`, `enter_waitlist`, `get_public_tracking`, `try_claim_conversation_for_ai`, `resolve_or_activate_subscription`, …), e a família `trigger_*` é a única omissão, repetida desde a migration 029; a 5b apenas acrescentava mais duas. A **migration 084** fecha as 16 de uma vez, por laço sobre `pg_proc` (idempotente, e no-op onde o privilégio já não existisse). O P3 virou o Risco 10.
+- **`integration-reliability-auditor`** — PASS_WITH_WARNINGS, 0 bloqueantes. Aprovou o que mais importa nesta fase: idempotência do webhook em todo caminho de escrita (persist-then-apply, `23505` como dedupe silencioso), orçamento de I/O presente só no `asaas-webhook` e omitido nos crons de propósito, zero uso de `EdgeRuntime.waitUntil`, `PAYMENT_CREATED` fora de ordem como no-op explícito (não regride fatura já paga), conflito de organização entre degraus da correlação derrubando o evento em vez de escolher um lado, claim atômico do outbox por `UPDATE ... RETURNING`, e os 16 consumidores do gate limpando o cache no início da própria invocação. Confirmou a assimetria fail-open (envio) / fail-closed (provisionamento) ponta a ponta. As duas atenções P2 viraram o Risco 9 e o teto de leitura corrigido na 084.
+
+**Os três primeiros, rodados antes, todos PASS com zero bloqueantes:**
 
 - **`tenant-isolation-auditor`** — PASS_WITH_WARNINGS. Confirmou que o cache de módulo do gate é indexado por organização/unidade e que os 15 consumidores chamam `clearWhatsAppGateCache()` antes de qualquer `resolveWhatsAppGateBy*`; resultados com `readFailed` nunca são cacheados; toda action de `manage-channels` escopa por `id` **e** `unit_id`. Um P2: `resolveBillingRecipient` não confere o erro da query de `units`, então falha transitória é indistinguível de "org sem unidades" e o aviso é suprimido em silêncio — não é vazamento, o escopo por organização está correto.
 - **`migration-validator`** — PASS_WITH_WARNINGS. Diffou a RPC `resolve_or_activate_subscription` linha a linha contra a 073: assinatura, `security definer`, `search_path` e os `revoke`/`grant` byte-idênticos, com os dois blocos novos estritamente aditivos e shape de retorno inalterado. Wrappers de cron 082/083 sem drift em relação à 064; `verify_jwt=false` presente para as duas EFs novas. Dois P2/P3: as colunas novas de grandfathering legíveis por `anon` (ver abaixo) e o backfill da 079 refletir o estado no momento do `db push`, não no da autoria.
@@ -207,7 +213,9 @@ A policy pré-existente `org_member_read_organizations` (`013_multi_tenant.sql:3
 
 **Achado dos gates que exige decisão do dono, ainda aberto:** a policy pré-existente `public_read_organizations` é `for select to anon using (is_public = true)` **sem lista de colunas**, e RLS filtra linha, não coluna. As seis colunas novas de grandfathering — incluindo `whatsapp_grandfather_revoked_by`, um UUID de `auth.users` — ficam legíveis por qualquer visitante com a anon key pública do bundle, para toda organização com `is_public=true` (o default). A categoria é pré-existente (a mesma policy já expõe `billing_status` e `trial_ends_at`), mas esta fase a alarga, e a policy contradiz o invariante do próprio `CLAUDE.md` ("anon lê só por RPCs `SECURITY DEFINER`; policy `TO anon` direto em tabela de negócio é regressão"). Não corrigido aqui porque mexer nessa policy afeta o portal público inteiro — merece task e revisão próprias, logo após o merge.
 
-**Os outros três gates (`rls-auditor`, `identity-access-auditor`, `integration-reliability-auditor`) não foram rodados** e continuam obrigatórios antes do merge por definição do fluxo do projeto (`CLAUDE.md` § Fluxo obrigatório para agentes).
+- **`identity-access-auditor`** — PASS, 0 bloqueantes e 0 atenções. Confirmou que o gate de novo provisionamento **não é contornável por `platform_admin`** (não existe ramo de bypass — a decisão do dono está implementada como escrita), que `get_service_status` é a única action client-friendly de `manage-whatsapp-implementations` e que o guard roda antes do dispatch, que `rotate_secret` escopa por `unit_id` além do `id` do canal, e que `_shared/entitlement-overrides.ts` é o **único** writer de `organization_entitlement_overrides` em toda a base — nem `asaas-webhook`, nem `process-asaas-reconcile`, nem `manage-billing` tocam a tabela.
+
+**Verificação que só o dono pode fazer** (exige acesso SQL autenticado): a premissa do P1 do `rls-auditor` foi estabelecida por leitura estática das migrations, não contra o banco ao vivo. A query de confirmação está no rodapé da migration 084 — se ela devolver zero linhas ANTES da 084, o privilégio já estava revogado por outro caminho e a migration é um no-op de defesa em profundidade.
 
 ## Runbook de ativação
 

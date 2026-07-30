@@ -28,8 +28,9 @@
 -- nenhuma linha deste arquivo. O `grant execute ... to postgres` abaixo é
 -- redundante de propósito: só deixa a intenção legível e sobrevive a uma
 -- eventual troca de dono; se falhar (ex.: nome de role diferente do
--- esperado), o bloco captura a exceção e segue sem abortar a migration nem
--- desfazer o revoke já aplicado naquela função.
+-- esperado), o bloco captura a exceção e segue sem abortar a migration. O
+-- grant vive num bloco `begin/exception` SEPARADO do revoke justamente por
+-- isso — ver o comentário no laço.
 --
 -- BLOCO DO QUE ITERA pg_proc, não 16 statements literais: (a) idempotente
 -- por construção — revoke de privilégio ausente é no-op, não erro; (b) não
@@ -42,7 +43,8 @@ begin;
 do $$
 declare
   fn record;
-  fn_count integer := 0;
+  revoked integer := 0;
+  granted integer := 0;
 begin
   for fn in
     select p.oid::regprocedure as sig
@@ -50,18 +52,43 @@ begin
      where p.pronamespace = 'public'::regnamespace
        and p.proname like 'trigger\_%'
   loop
+    -- Os dois blocos abaixo são SEPARADOS de propósito, e a separação é
+    -- load-bearing: em PL/pgSQL, `begin ... exception ... end` é uma
+    -- subtransação, e uma exceção capturada desfaz TODA a escrita feita
+    -- dentro daquele bloco. Com revoke e grant no mesmo bloco, um `grant`
+    -- que falhasse (role `postgres` inexistente ou renomeado no ambiente)
+    -- reverteria o `revoke` já aplicado — a migration reportaria sucesso
+    -- sem ter corrigido nada, que é o pior desfecho possível aqui.
     begin
       execute format('revoke all on function %s from public, anon, authenticated', fn.sig);
-      -- Redundante por desenho (ver header) — falha aqui não pode derrubar
-      -- o revoke acima nem abortar o laço para as próximas funções.
-      execute format('grant execute on function %s to postgres', fn.sig);
-      fn_count := fn_count + 1;
+      revoked := revoked + 1;
     exception when others then
-      raise warning '[084] falha ao ajustar privilegios de %: %', fn.sig, sqlerrm;
+      raise warning '[084] falha ao REVOGAR privilegios de %: %', fn.sig, sqlerrm;
+    end;
+
+    -- Redundante por desenho (ver header): o dono mantém EXECUTE implícito e
+    -- o cron funciona sem esta linha. Falhar aqui é aceitável e não
+    -- compromete o revoke acima.
+    begin
+      execute format('grant execute on function %s to postgres', fn.sig);
+      granted := granted + 1;
+    exception when others then
+      raise warning '[084] grant redundante para postgres falhou em % (inofensivo): %', fn.sig, sqlerrm;
     end;
   end loop;
 
-  raise notice '[084] revoke execute (public/anon/authenticated) aplicado a % funcao(oes) trigger_*', fn_count;
+  raise notice '[084] revoke execute (public/anon/authenticated): % funcao(oes) trigger_*; grant redundante a postgres: %', revoked, granted;
+
+  -- O revoke é a razão de existir deste arquivo. Zero função revogada com
+  -- funções trigger_* presentes significa que nada foi corrigido — aborta em
+  -- vez de deixar passar como sucesso.
+  if revoked = 0 and exists (
+    select 1 from pg_proc p
+     where p.pronamespace = 'public'::regnamespace
+       and p.proname like 'trigger\_%'
+  ) then
+    raise exception '[084] nenhuma funcao trigger_* teve privilegio revogado — ver os warnings acima';
+  end if;
 end $$;
 
 commit;
