@@ -1,3 +1,15 @@
+// Import type-only cross-boundary, reexportado abaixo (`WhatsAppServiceState`)
+// — mesmo padrão de `whatsapp-implementation-core.ts` (importado direto por
+// `WhatsappImplementations.tsx` e testado a partir de `src/lib/*.test.ts`).
+// Uma cópia divergente do union é pior que um import fora do padrão comum de
+// `src/`: se um oitavo estado for acrescentado no backend e este tipo não
+// acompanhar, nada quebra a compilação — a cadeia exaustiva do banner cai em
+// silêncio no `return null` final, escondendo justamente o aviso que devia
+// aparecer. `import type` é apagado no bundle (Vite/esbuild), então este
+// arquivo nunca carrega runtime de Deno.
+import type { WhatsAppServiceState } from "../../supabase/functions/_shared/whatsapp-service-state-core";
+export type { WhatsAppServiceState };
+
 export type BillingStatus =
   | "active"
   | "trialing"
@@ -368,21 +380,8 @@ export type ClientImplementationState =
   | "NOT_REQUESTED" | "AWAITING_PAYMENT" | "PAID_NOT_STARTED"
   | "IN_PROGRESS" | "WAITING_CUSTOMER" | "COMPLETED" | "CANCELED";
 
-/**
- * Espelha `WhatsAppServiceState` de
- * `supabase/functions/_shared/whatsapp-service-state-core.ts` (núcleo puro,
- * Fase 5b). Cópia deliberada, não import cross-boundary: aquele arquivo é
- * consumido só por Edge Functions; este tipo existe pra tipar a RESPOSTA JSON
- * de `get_service_status`, já serializada.
- */
-export type WhatsAppServiceState =
-  | "ACTIVE"
-  | "GRACE_PERIOD"
-  | "OVERRIDE_ACTIVE"
-  | "LEGACY_GRANDFATHERED"
-  | "NOT_ENTITLED"
-  | "SUSPENDED_UNPAID"
-  | "ADMIN_BLOCKED";
+// `WhatsAppServiceState` importado no topo do arquivo (cross-boundary) e
+// reexportado aqui — ver o comentário junto ao import.
 
 export interface WhatsappServiceStatus {
   /**

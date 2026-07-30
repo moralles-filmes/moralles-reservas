@@ -24,11 +24,20 @@ interface WhatsappServiceBannerProps {
  * efeito é sentido (Cobrança, Conversas, Automação) — SEM banner global, SEM
  * bloqueio de rota. Não promover este componente pra um layout compartilhado.
  *
- * A escolha do banner é por `serviceState`, NUNCA por `sendingBlocked`: a
- * flag `whatsapp_service_enforcement` nasce OFF, e um banner keyado na
- * consequência gateada por ela nunca apareceria mesmo com a mensalidade
- * vencida há meses. `serviceState` é a decisão pura (7 estados,
+ * QUAL banner aparece é decidido por `serviceState`, NUNCA por
+ * `sendingBlocked`: a flag `whatsapp_service_enforcement` nasce OFF, e um
+ * banner keyado na consequência gateada por ela nunca apareceria mesmo com a
+ * mensalidade vencida há meses. `serviceState` é a decisão pura (7 estados,
  * `_shared/whatsapp-service-state-core.ts`), não a consequência.
+ *
+ * DENTRO do banner SUSPENDED_UNPAID, o TEMPO VERBAL é decidido por
+ * `sendingBlocked` (Fix round 1): o estado é calculado independente da flag,
+ * então uma organização pode estar em SUSPENDED_UNPAID com o envio ainda
+ * funcionando de verdade (flag OFF = dry-run). Afirmar "suspensa" no passado
+ * nesse caso mandaria o dono pagar pra "restaurar" algo que nunca parou —
+ * pior que o problema que este componente existe para resolver. Ver o `if`
+ * abaixo: `enforced = sendingBlocked === true` escolhe entre a frase no
+ * passado (já aconteceu) e a frase no futuro (vai acontecer).
  *
  * Loading e erro renderizam nada — silencioso de propósito. Este é um aviso
  * SUPLEMENTAR: o card de Automação (`AutomacaoWhatsappCard`) e a própria tela
@@ -50,11 +59,14 @@ export function WhatsappServiceBanner({
   if (isLoading || isError || !data) return null;
 
   if (data.serviceState === "SUSPENDED_UNPAID") {
+    // Tempo verbal decidido por `sendingBlocked` — ver o docstring acima.
+    const enforced = data.sendingBlocked === true;
     // `suspendedAt` é a coluna real (billing_subscriptions.suspended_at), mas
     // só é escrita pelo worker de enforcement — que fica de fora enquanto a
-    // flag estiver OFF. `graceEndsAt` (quando a carência teoricamente acabou)
-    // é o fallback honesto: nunca mostra a data em branco nem inventa "hoje".
+    // flag estiver OFF. `graceEndsAt` (quando a carência acabou) é o fallback
+    // honesto: nunca mostra a data em branco nem inventa "hoje".
     const sinceIso = data.suspendedAt ?? data.graceEndsAt;
+    const sinceLabel = sinceIso ? formatDateBR(sinceIso.slice(0, 10)) : null;
     return (
       <div
         className={cn(
@@ -65,9 +77,20 @@ export function WhatsappServiceBanner({
         <div className="flex items-start gap-2.5">
           <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5 text-destructive" />
           <p className="text-sm text-destructive">
-            Automação de WhatsApp suspensa por falta de pagamento
-            {sinceIso ? ` desde ${formatDateBR(sinceIso.slice(0, 10))}` : ""}. Reservas,
-            agenda e relatórios seguem funcionando.
+            {enforced ? (
+              <>
+                Automação de WhatsApp suspensa por falta de pagamento
+                {sinceLabel ? ` desde ${sinceLabel}` : ""}. Reservas, agenda e relatórios
+                seguem funcionando.
+              </>
+            ) : (
+              <>
+                Mensalidade da automação vencida
+                {sinceLabel ? ` — a carência terminou em ${sinceLabel}` : ""}. A automação
+                de WhatsApp será suspensa em breve. Reservas, agenda e relatórios seguem
+                funcionando normalmente.
+              </>
+            )}
           </p>
         </div>
         {showCta && (
