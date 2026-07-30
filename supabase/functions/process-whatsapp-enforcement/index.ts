@@ -148,16 +148,25 @@ serve(async (req) => {
           .limit(1);
 
         if (recentErr) {
-          // Não dá pra confirmar se já avisamos — lado seguro é NÃO reenviar
-          // (evita flood se o soluço persistir por vários dias seguidos); a
-          // tentativa fica visível no log, não em silêncio.
+          // Fix round 2 (achado novo #1): a checagem falhou, não achou uma
+          // duplicata — "não deu pra confirmar" tem que virar "não achei",
+          // nunca "achei". Este é o ÚNICO sinal humano de que a organização
+          // tem duas assinaturas de WhatsApp vivas, um estado que o worker se
+          // recusa a resolver sozinho e que nada mais corrige. Um e-mail
+          // duplicado num dia de soluço no SELECT é barato (e
+          // enqueueBillingNotification nunca lança — numa falha sistêmica o
+          // INSERT de acompanhamento também vira no-op, sem flood real);
+          // deixar o admin sem saber da duplicata enquanto o SELECT falhar é
+          // caro. Cai para o enfileiramento abaixo.
           jsonLog("warn", {
             reqId,
             evt: "whatsapp_enforcement_ambiguity_dedup_read_failed",
             org: orgId,
             err: recentErr.message,
           });
-        } else if ((recentNotice?.length ?? 0) > 0) {
+        }
+
+        if (!recentErr && (recentNotice?.length ?? 0) > 0) {
           jsonLog("info", {
             reqId,
             evt: "whatsapp_ambiguity_notice_skipped_dedup",
