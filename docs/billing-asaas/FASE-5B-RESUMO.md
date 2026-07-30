@@ -169,9 +169,37 @@ O bloqueio de sistema no fluxo de texto do agente (`webhook-whatsapp/index.ts:15
 
 Introduzido pelo próprio estacionamento de jobs desta fase (Task 19): se o `UPDATE` que volta um job estacionado para `pending` falhar, a linha fica `processing` para sempre — não existe worker nem janela de staleness (diferente de `processed_messages`, que tem 90s) que a resgate. O código já loga o suficiente para um reset manual (`process-notification-outbox/index.ts:180-188`), mas a recuperação é manual, via SQL, quando alguém notar o log.
 
+### 7. Fatura de renovação sem vínculo de assinatura ainda pode bloquear a organização inteira — **bloqueante da ingestão automática**
+
+Este é o risco que a própria fase existe para matar, e ele continua aberto no caso menos comum. O `CLAUDE.md` já registra a regra ("a garantia depende de a fatura carregar vínculo de plano"); o que faltava era nomear o caminho concreto que ainda produz uma fatura sem vínculo.
+
+A escada de correlação tem um degrau que resolve a **organização sem resolver a assinatura**: o degrau 5, `billing_customer`, devolve `subscriptionId: null` explicitamente (`_shared/asaas-billing-events-apply.ts:716-723`). E o degrau da assinatura do provedor, quando o `provider_subscription_id` do payload não bate com nenhuma linha local, apenas loga `asaas_unknown_provider_subscription` e segue (`:645-651`). Uma renovação de mês 2+ não carrega `checkoutSession` nem `externalReference` — nasce da assinatura. Então basta que o `provider_subscription_id` local esteja ausente ou defasado (linha criada por admin, troca de plano que gerou assinatura nova no Asaas, primeiro `PAYMENT_CONFIRMED` sem `subscription` no payload) para que a correlação caia no degrau 5, e `upsert_open_invoice` grave a fatura com `billing_subscription_id = null`, `purpose = 'other'`, `external_reference = null`.
+
+Com os três nulos, `isSystemInvoice` cai no caminho 3 e devolve **`true` por compatibilidade com fatura legada** (`_shared/billing-category.ts:164`). A partir daí: `process-billing-overdue` escreve `organizations.billing_status='blocked'` em D+6 — **o sistema inteiro morre por uma mensalidade de R$149 da automação de WhatsApp** —, e `process-billing-reminders` manda ao cliente a cópia de sistema ("seu acesso será suspenso") por uma dívida que não é do sistema.
+
+O comentário em `:645-650` diz "o reconcile pode resolver depois". **Não resolve:** `process-asaas-invoice-reconcile` itera apenas assinaturas com `provider_subscription_id` não-nulo (`index.ts:219-222`), que é exatamente a condição ausente; e mesmo quando encontra a fatura, `decideReconcileAction` devolve `NO_ACTION` (`_shared/asaas-invoice-reconcile-core.ts:406-421`). Nada faz o backfill do vínculo.
+
+**Hoje é inalcançável em produção** — as duas flags estão OFF, não há cliente pagante da automação, e as duas organizações vivas curto-circuitam em `OVERRIDE_ACTIVE` (vitalício). Torna-se crítico no dia em que existir o primeiro cliente pagante do add-on. **Gate: fechar antes de ligar `billing_invoice_ingestion`** — é essa flag, não a de enforcement, que abre o caminho, porque é ela que autoriza a criação automática de fatura. A correção provável é fazer o degrau 5 nunca produzir fatura tratável como de sistema (ou fazer o caminho 3 do `isSystemInvoice` deixar de devolver `true` por default quando a fatura nasceu do Asaas depois do go-live), não mexer na escada de correlação.
+
+### 8. Deploy do `manage-channels` antes do `supabase db push` bloqueia todo provisionamento novo — **gate de ordem de deploy**
+
+O gate de novo provisionamento (Task 16) **falha fechado** por decisão do dono: qualquer falha de leitura vira `STATE_READ_FAILED` e o `create` responde 403 (`manage-channels/index.ts:128-134`, `_shared/whatsapp-service-state-core.ts:303`). As leituras do gate tocam colunas criadas nas migrations 077, 078 e 079. Se a Edge Function subir antes das migrations, o PostgREST responde 400 em coluna desconhecida e **toda unidade sem canal recebe 403**, inclusive para `platform_admin`.
+
+Isto inverte uma conclusão registrada na Task 13, que era correta enquanto existia só o gate de ENVIO (que falha aberto, por decisão oposta e deliberada). Desde a Task 16 não vale mais. A regra está escrita no `CLAUDE.md` (§ Deploy → Edge Functions) e no pré-requisito do roteiro de sandbox; este item existe para que o registro de riscos não a esconda.
+
+Nota independente: mesmo com as migrations aplicadas e as duas flags OFF, **o gate de provisionamento já está valendo no merge** — é a única consequência da fase que não depende de flag, por desenho (elegibilidade protege custo novo recorrente e sempre se aplica). Qualquer organização sem assinatura ativa de WhatsApp, sem override e fora do grandfathering passa a receber 403 ao adicionar o primeiro canal. É o comportamento pretendido, mas não é coberto pela leitura de que "com as duas flags OFF nada muda".
+
 ## Gates de segurança (`saas-shield-br`)
 
-**Não rodados nesta task de fechamento.** A fase toca banco (7 migrations), webhook (`asaas-webhook`, `process-asaas-invoice-reconcile`), RLS (nenhuma tabela nova, mas 2 workers novos com `verify_jwt=false`) e multi-tenant (gate por organização em cascata) — os 6 gates (`rls-auditor`, `tenant-isolation-auditor`, `identity-access-auditor`, `migration-validator`, `secret-hunter`, `integration-reliability-auditor`) são obrigatórios antes de merge, por definição do fluxo do projeto (`CLAUDE.md` § Fluxo obrigatório para agentes), e ficam para o dono rodar — mesmo padrão da 5a, que também deixou os gates explicitamente fora da task de fechamento de código.
+**Três rodados no fechamento desta fase, os três PASS com zero bloqueantes:**
+
+- **`tenant-isolation-auditor`** — PASS_WITH_WARNINGS. Confirmou que o cache de módulo do gate é indexado por organização/unidade e que os 15 consumidores chamam `clearWhatsAppGateCache()` antes de qualquer `resolveWhatsAppGateBy*`; resultados com `readFailed` nunca são cacheados; toda action de `manage-channels` escopa por `id` **e** `unit_id`. Um P2: `resolveBillingRecipient` não confere o erro da query de `units`, então falha transitória é indistinguível de "org sem unidades" e o aviso é suprimido em silêncio — não é vazamento, o escopo por organização está correto.
+- **`migration-validator`** — PASS_WITH_WARNINGS. Diffou a RPC `resolve_or_activate_subscription` linha a linha contra a 073: assinatura, `security definer`, `search_path` e os `revoke`/`grant` byte-idênticos, com os dois blocos novos estritamente aditivos e shape de retorno inalterado. Wrappers de cron 082/083 sem drift em relação à 064; `verify_jwt=false` presente para as duas EFs novas. Dois P2/P3: as colunas novas de grandfathering legíveis por `anon` (ver abaixo) e o backfill da 079 refletir o estado no momento do `db push`, não no da autoria.
+- **`secret-hunter`** — PASS. `rotate_secret` nunca loga o secret gerado; o roteiro de sandbox é 100% placeholder. O P2 sobre o `.env` local foi fechado por verificação direta: `git ls-files .env` e `git log --all -- .env` vazios — nunca rastreado, nunca commitado.
+
+**Achado dos gates que exige decisão do dono, ainda aberto:** a policy pré-existente `public_read_organizations` é `for select to anon using (is_public = true)` **sem lista de colunas**, e RLS filtra linha, não coluna. As seis colunas novas de grandfathering — incluindo `whatsapp_grandfather_revoked_by`, um UUID de `auth.users` — ficam legíveis por qualquer visitante com a anon key pública do bundle, para toda organização com `is_public=true` (o default). A categoria é pré-existente (a mesma policy já expõe `billing_status` e `trial_ends_at`), mas esta fase a alarga, e a policy contradiz o invariante do próprio `CLAUDE.md` ("anon lê só por RPCs `SECURITY DEFINER`; policy `TO anon` direto em tabela de negócio é regressão"). Não corrigido aqui porque mexer nessa policy afeta o portal público inteiro — merece task e revisão próprias, logo após o merge.
+
+**Os outros três gates (`rls-auditor`, `identity-access-auditor`, `integration-reliability-auditor`) não foram rodados** e continuam obrigatórios antes do merge por definição do fluxo do projeto (`CLAUDE.md` § Fluxo obrigatório para agentes).
 
 ## Runbook de ativação
 
@@ -179,6 +207,26 @@ Não duplicado aqui — as duas fontes canônicas já existem e cobrem o runbook
 
 - **Ordem de deploy de Edge Functions**: checklist de redeploy do [CLAUDE.md](../../CLAUDE.md) § Deploy → Edge Functions (mantido atualizado task a task ao longo da fase).
 - **Ordem de ativação das duas flags** (deploy → validar com as duas OFF → `billing_invoice_ingestion` primeiro, com `billing_invoice_ingestion_since` gravada antes → observar um ciclo completo do worker → liberar holds legítimos → `whatsapp_service_enforcement`): passo a passo executável, com SQL de verificação em cada etapa, na [§0.2 do roteiro de sandbox](FASE-5B-ROTEIRO-SANDBOX.md#02-ordem-de-ativação-das-flags-9-da-spec--executar-antes-dos-cenários-que-exigem-ingestão-real).
+
+### Gates nomeados — o que fechar antes de cada etapa
+
+Os riscos abaixo não bloqueiam o merge (as duas flags sobem OFF e as duas organizações vivas curto-circuitam em `OVERRIDE_ACTIVE`), mas cada um bloqueia uma etapa específica da ativação. Esta lista existe para que nenhum deles seja descoberto depois de a flag já estar ligada.
+
+**Antes do deploy (qualquer flag):**
+- Risco 8 — aplicar as migrations 077, 078, 079, 080, 082 e 083 **antes** de deployar `manage-channels`. Ordem obrigatória, não convenção.
+
+**Antes de ligar `billing_invoice_ingestion`:**
+- Risco 7 — fatura de renovação sem vínculo de assinatura lida como fatura de sistema. É esta flag que autoriza a criação automática de fatura, então é aqui que o caminho abre. **O mais grave da lista.**
+- Risco 5 — `shouldSettleOpenInvoice` auto-liquidando fatura retida por divergência de valor. Sem ingestão automática não há retenção a contornar; com ela, há.
+- **`paid_at = now()` no reconcile** (`process-asaas-invoice-reconcile/index.ts:367,407`) — no primeiro backfill, toda fatura histórica fica registrada como paga no dia do backfill. `AsaasPaymentSummary` não carrega a data do pagamento, então corrigir exige um `getPayment` por linha (custo real). Decidir antes do backfill, não depois: qualquer relatório de receita por mês construído sobre esses dados nasce distorcido.
+- **Estorno após pagamento é invisível** — uma fatura já `paid` localmente que vire estornada no Asaas cai em `NO_ACTION` (`_shared/asaas-invoice-reconcile-core.ts:377-380`, o branch de categoria congelada exige `status === "open"`). A regra do dono ("estorno nunca fabrica dívida") é respeitada, mas não há log nem alerta que distinga isso de "nada a fazer". No mínimo, um log próprio.
+
+**Antes de ligar `whatsapp_service_enforcement`:**
+- Risco 2 — decisão de produto sobre o voucher de aniversário (perder o ano vs. criar sempre e gatear só o envio). Hoje ninguém decidiu, e o comportamento que roda por omissão é a perda permanente. Recomendação da revisão: criar sempre, gatear só o envio.
+- Risco 6 — reaper (ou janela de staleness) para `notification_outbox` preso em `processing`. O estacionamento de jobs é o que torna esse caminho alcançável, e o estacionamento só acontece sob suspensão aplicada.
+- Risco 4 — decidir se o fluxo de TEXTO passa a usar `systemBlocksDependentServices` como o de mídia já usa. Ligar a flag muda o comportamento de organização `canceled` no caminho de texto de um jeito ou de outro; deve ser decisão, não efeito colateral. Junto disso: hoje `enforced.sending` carrega `systemBlocked` dentro de si, então a flag de enforcement também gateia consequência de bloqueio de SISTEMA em caminhos que nada têm a ver com o add-on de WhatsApp — e o resultado é registrado sob o outcome `whatsapp_service_suspended`, um rótulo de cobrança de WhatsApp para uma causa de acesso ao sistema. Só o gate de mídia (`decideInboundAutoReply`) mantém as duas dimensões separadas, como o núcleo documenta que deveriam ser.
+
+**Sem etapa vinculada** (follow-ups sem gate): riscos 1 (FK da 062) e 3 (`whatsapp_restored` raro).
 
 ## Resultado do sandbox
 
