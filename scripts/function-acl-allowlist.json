@@ -1,0 +1,153 @@
+{
+  "_doc": [
+    "Allowlist de funções do schema public que PODEM ser executadas por anon e/ou",
+    "authenticated. Consumida por scripts/audit-function-acl.ts.",
+    "",
+    "Regra: toda função que aparecer no banco com EXECUTE para anon/authenticated e",
+    "NÃO estiver aqui é violação, e o script falha nomeando a assinatura.",
+    "",
+    "Acrescentar entrada aqui é decisão de segurança — deve ser revisada em code",
+    "review como tal, com justificativa no campo `why`. Nunca adicione só para o",
+    "script parar de falhar.",
+    "",
+    "`args` tem que bater EXATAMENTE com pg_get_function_identity_arguments(oid)",
+    "— é o que distingue overloads. Compare com a saída de audit_function_acl().",
+    "",
+    "Origem da classificação: docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md"
+  ],
+
+  "public_anon": [
+    {
+      "name": "get_unit_public",
+      "args": "p_slug text",
+      "roles": ["anon", "authenticated"],
+      "why": "Portal público /r/:slug — RPC SECURITY DEFINER prevista pelo CLAUDE.md."
+    },
+    {
+      "name": "get_unit_public_full",
+      "args": "p_slug text",
+      "roles": ["anon", "authenticated"],
+      "why": "Portal público — payload completo da unidade."
+    },
+    {
+      "name": "get_widget_public",
+      "args": "p_slug text",
+      "roles": ["anon", "authenticated"],
+      "why": "Widget embutível /w/:slug."
+    },
+    {
+      "name": "get_menu_public",
+      "args": "p_slug text",
+      "roles": ["anon", "authenticated"],
+      "why": "Cardápio público."
+    },
+    {
+      "name": "get_public_tracking",
+      "args": "p_token uuid",
+      "roles": ["anon", "authenticated"],
+      "why": "Página /acompanhar/:token, sem login. Só devolve dado privacy-safe e é gateada por units.is_public."
+    },
+    {
+      "name": "get_public_business_hours",
+      "args": "p_unit_id uuid",
+      "roles": ["anon", "authenticated"],
+      "why": "Portal público."
+    },
+    {
+      "name": "get_public_hall_schedules",
+      "args": "p_hall_id uuid, p_date date",
+      "roles": ["anon", "authenticated"],
+      "why": "Portal público — disponibilidade por salão."
+    },
+    {
+      "name": "list_public_units",
+      "args": "",
+      "roles": ["anon", "authenticated"],
+      "why": "Listagem pública de unidades."
+    },
+    {
+      "name": "enter_waitlist",
+      "args": "p_unit_id uuid, p_customer_name text, p_customer_phone text, p_party_size integer, p_notes text, p_priority_category text, p_requested_for_time time without time zone",
+      "roles": ["anon", "authenticated"],
+      "why": "Entrada pública na fila de espera."
+    },
+    {
+      "name": "normalize_br_phone",
+      "args": "raw text",
+      "roles": ["anon", "authenticated"],
+      "why": "NÃO é RPC de portal. Dependência do trigger customers_canonical_phone_trg, que é SECURITY INVOKER: num INSERT anônimo em customers ele roda COMO anon e a chamada interna é checada em runtime nesse papel. Revogar quebra a inserção pública de cliente."
+    }
+  ],
+
+  "rls_helpers": [
+    {
+      "name": "is_unit_member",
+      "args": "p_user_id uuid, p_unit_id uuid",
+      "roles": ["anon", "authenticated"],
+      "why": "Chamada de dentro de policies RLS. 24 policies com roles={public} (waitlist, vouchers, voucher_rules, walk_ins, *_message_templates) a invocam — policy é avaliada no contexto de privilégio de quem consulta, então revogar de anon faz a query ESTOURAR com permission denied, não negar. Ver inventário §1.1 e follow-up §4.1."
+    },
+    {
+      "name": "is_platform_admin",
+      "args": "p_user_id uuid",
+      "roles": ["authenticated"],
+      "why": "Chamada por 26 policies RLS de papel authenticated."
+    },
+    {
+      "name": "is_org_member",
+      "args": "p_user_id uuid, p_org_id uuid",
+      "roles": ["authenticated"],
+      "why": "Chamada por 3 policies RLS de papel authenticated."
+    }
+  ],
+
+  "authenticated_tenant": [
+    {
+      "name": "get_undelivered_notifications",
+      "args": "p_unit_id uuid, p_since timestamp with time zone",
+      "roles": ["authenticated"],
+      "why": "Painel Operacional → Entregas. Tem guarda interna is_unit_member OR is_platform_admin."
+    },
+    {
+      "name": "search_reservations",
+      "args": "p_unit_id uuid, p_term text, p_date date, p_status text",
+      "roles": ["authenticated"],
+      "why": "Busca do painel. SECURITY INVOKER — a RLS da tabela aplica."
+    },
+    {
+      "name": "get_reservation_by_code",
+      "args": "p_code text, p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Busca por código no painel (src/hooks/useReservas.ts)."
+    },
+    {
+      "name": "get_reservation_by_code",
+      "args": "p_code text",
+      "roles": ["authenticated"],
+      "why": "Overload sem caller localizado no repositório. Mantido em authenticated para não quebrar consumidor não mapeado; candidato a remoção após confirmação."
+    },
+    {
+      "name": "anonymize_customer",
+      "args": "p_id uuid",
+      "roles": ["authenticated"],
+      "why": "LGPD. Guarda interna: is_org_member ou platform_admin."
+    },
+    {
+      "name": "get_customer_stats",
+      "args": "p_customer_id uuid, p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Ficha do cliente no painel."
+    },
+    {
+      "name": "get_customer_stats",
+      "args": "p_customer_id uuid",
+      "roles": ["authenticated"],
+      "why": "Overload legado da ficha do cliente."
+    },
+    {
+      "name": "get_customer_stats_bulk",
+      "args": "p_customer_ids uuid[], p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Listagem de clientes — stats agregadas em uma chamada."
+    }
+  ]
+}
