@@ -23,6 +23,10 @@ import {
   DEFAULT_ENTERED_BODY,
   renderWaitlistTemplate,
 } from "../_shared/waitlist-defaults.ts";
+import {
+  resolveWhatsAppGateByUnit,
+  clearWhatsAppGateCache,
+} from "../_shared/whatsapp-service-gate.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -41,6 +45,11 @@ serve(async (req) => {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  // Cache do gate é por invocação — cada chamada trata uma única entry/unit,
+  // mas zera do mesmo jeito que os demais workers pra nunca servir estado
+  // velho de um isolate quente.
+  clearWhatsAppGateCache();
 
   let body: { waitlist_id?: string };
   try {
@@ -99,6 +108,18 @@ serve(async (req) => {
   }
 
   const unitId = entry.unit_id as string;
+
+  // Gate resolvido pra esta unidade antes de qualquer envio — pula sem nunca
+  // gravar `notifications_sent`. Uma linha `failed` ali bloquearia o reenvio
+  // depois da restauração pelo UNIQUE parcial (waitlist_id, kind).
+  const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
+  if (gate?.enforced.sending) {
+    jsonLog("info", { evt: "worker_skipped_whatsapp_suspended", unit_id: unitId, state: gate.state });
+    return new Response(JSON.stringify({ skipped: "whatsapp_suspended" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   // 2. Carrega unit + settings + template em paralelo
   const [unitRes, settingsRes, templateRes] = await Promise.all([

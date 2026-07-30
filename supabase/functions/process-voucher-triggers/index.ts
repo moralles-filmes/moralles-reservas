@@ -24,6 +24,10 @@ import {
   formatExpiryBR,
   renderGiftbackTemplate,
 } from "../_shared/giftback.ts";
+import {
+  resolveWhatsAppGateByUnit,
+  clearWhatsAppGateCache,
+} from "../_shared/whatsapp-service-gate.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -199,9 +203,10 @@ function getTodayBrtParts(): { mm: string; dd: string; isoDate: string; isLeapYe
   };
 }
 
-async function processBirthday(): Promise<{ issued: number; errors: string[] }> {
+async function processBirthday(): Promise<{ issued: number; errors: string[]; skippedSuspended: number }> {
   const errors: string[] = [];
   let issued = 0;
+  let skippedSuspended = 0;
 
   const { data: rules } = await supabase
     .from("voucher_rules")
@@ -209,7 +214,7 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
     .eq("trigger_type", "birthday")
     .eq("active", true);
 
-  if (!rules || rules.length === 0) return { issued, errors };
+  if (!rules || rules.length === 0) return { issued, errors, skippedSuspended };
 
   const today = getTodayBrtParts();
   const todayMmdd = `${today.mm}-${today.dd}`;
@@ -218,6 +223,17 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
   const acceptLeapBirthday = !today.isLeapYear && todayMmdd === "02-28";
 
   for (const rule of rules) {
+    // Gate resolvido UMA vez por unidade (rule.unit_id), antes de qualquer
+    // trabalho de emissão — pula a regra inteira SEM criar voucher e SEM
+    // gravar `notifications_sent`. Diferente do outbox, giftback não tem fila
+    // de retomada: o que não roda hoje não é reagendado.
+    const gate = await resolveWhatsAppGateByUnit(supabase, rule.unit_id);
+    if (gate?.enforced.sending) {
+      skippedSuspended++;
+      jsonLog("info", { evt: "worker_skipped_whatsapp_suspended", unit_id: rule.unit_id, state: gate.state });
+      continue;
+    }
+
     const { data: unitRow } = await supabase
       .from("units")
       .select("organization_id")
@@ -287,14 +303,15 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
     }
   }
 
-  return { issued, errors };
+  return { issued, errors, skippedSuspended };
 }
 
 // ─── Step: Frequência ─────────────────────────────────────────────────────────
 
-async function processFrequency(): Promise<{ issued: number; errors: string[] }> {
+async function processFrequency(): Promise<{ issued: number; errors: string[]; skippedSuspended: number }> {
   const errors: string[] = [];
   let issued = 0;
+  let skippedSuspended = 0;
 
   const { data: rules } = await supabase
     .from("voucher_rules")
@@ -302,7 +319,7 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
     .eq("trigger_type", "frequency")
     .eq("active", true);
 
-  if (!rules || rules.length === 0) return { issued, errors };
+  if (!rules || rules.length === 0) return { issued, errors, skippedSuspended };
 
   // B7: limite superior — exclui reservas futuras. Conta só visitas até ontem (BRT).
   const yesterdayBrt = new Date(Date.now() - BRT_OFFSET_MS);
@@ -311,6 +328,17 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
 
   for (const rule of rules) {
     if (!rule.visits_required || !rule.days_window) continue;
+
+    // Gate resolvido UMA vez por unidade (rule.unit_id), antes de qualquer
+    // trabalho de emissão — pula a regra inteira SEM criar voucher e SEM
+    // gravar `notifications_sent`. Diferente do outbox, giftback não tem fila
+    // de retomada: o que não roda hoje não é reagendado.
+    const gate = await resolveWhatsAppGateByUnit(supabase, rule.unit_id);
+    if (gate?.enforced.sending) {
+      skippedSuspended++;
+      jsonLog("info", { evt: "worker_skipped_whatsapp_suspended", unit_id: rule.unit_id, state: gate.state });
+      continue;
+    }
 
     const windowStart = new Date(Date.now() - BRT_OFFSET_MS);
     windowStart.setUTCDate(windowStart.getUTCDate() - (rule.days_window as number));
@@ -392,7 +420,7 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
     }
   }
 
-  return { issued, errors };
+  return { issued, errors, skippedSuspended };
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
@@ -411,6 +439,10 @@ serve(async (req) => {
 
   // B10: invalida cache de unit settings no início de cada invocação.
   unitCache.clear();
+  // Cache do gate de WhatsApp segue o mesmo padrão — por invocação, senão um
+  // isolate quente serve estado de suspensão velho pra um cliente que acabou
+  // de pagar.
+  clearWhatsAppGateCache();
 
   // B12: advisory lock — evita duas execuções concorrentes (cron + chamada
   // manual de debug) duplicarem trabalho. Wrappers em migration 20260517110000.
@@ -455,22 +487,24 @@ serve(async (req) => {
     // 2. Aniversários
     const birthday = await processBirthday().catch((err) => {
       errors.push(`processBirthday: ${String(err).slice(0, 200)}`);
-      return { issued: 0, errors: [] as string[] };
+      return { issued: 0, errors: [] as string[], skippedSuspended: 0 };
     });
 
     // 3. Frequência
     const frequency = await processFrequency().catch((err) => {
       errors.push(`processFrequency: ${String(err).slice(0, 200)}`);
-      return { issued: 0, errors: [] as string[] };
+      return { issued: 0, errors: [] as string[], skippedSuspended: 0 };
     });
 
     errors.push(...birthday.errors, ...frequency.errors);
+    const skippedSuspended = birthday.skippedSuspended + frequency.skippedSuspended;
 
     jsonLog("info", {
       evt: "voucher_triggers_done",
       expired: expiredCount,
       birthday_issued: birthday.issued,
       frequency_issued: frequency.issued,
+      skipped_suspended: skippedSuspended,
       errors_count: errors.length,
       duration_ms: Date.now() - t0,
     });
@@ -480,6 +514,7 @@ serve(async (req) => {
         expired_count: expiredCount,
         birthday_issued: birthday.issued,
         frequency_issued: frequency.issued,
+        skipped_suspended: skippedSuspended,
         errors,
       }),
       {

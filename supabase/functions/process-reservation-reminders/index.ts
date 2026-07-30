@@ -16,6 +16,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog, requireInternalAuth, sanitizePhone } from "../_shared/security.ts";
+import {
+  resolveWhatsAppGateByUnit,
+  clearWhatsAppGateCache,
+} from "../_shared/whatsapp-service-gate.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -133,12 +137,18 @@ serve(async (req) => {
     });
   }
 
+  // Cache do gate é por invocação — zera aqui, mesmo padrão do unitCache que
+  // outros workers já fazem, senão um isolate quente serve estado de
+  // suspensão velho pra um cliente que acabou de pagar.
+  clearWhatsAppGateCache();
+
   const t0 = Date.now();
   const targetDate = todayDateBRT();
   const errors: string[] = [];
   let dispatched = 0;
   let failed = 0;
   let skippedUnits = 0;
+  let skippedSuspended = 0;
 
   const { data: units, error: unitsErr } = await supabase
     .from("units")
@@ -153,6 +163,19 @@ serve(async (req) => {
 
   for (const u of (units ?? []) as Array<{ id: string }>) {
     const unitId = u.id;
+
+    // Gate resolvido UMA vez por unidade, antes de qualquer query de reserva
+    // — pula sem nunca gravar `notifications_sent`. Uma linha `failed` ali
+    // bloquearia o reenvio depois da restauração pelo UNIQUE
+    // (reservation_id, kind), e como este worker não tem fila/retry (só olha
+    // "hoje"), o job simplesmente nunca mais seria tentado de novo.
+    const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
+    if (gate?.enforced.sending) {
+      skippedSuspended++;
+      jsonLog("info", { evt: "worker_skipped_whatsapp_suspended", unit_id: unitId, state: gate.state });
+      continue;
+    }
+
     let ctx: UnitContext;
     try {
       ctx = await loadUnitContext(unitId);
@@ -239,6 +262,7 @@ serve(async (req) => {
     dispatched,
     failed,
     skipped_units: skippedUnits,
+    skipped_suspended: skippedSuspended,
     errors_count: errors.length,
     duration_ms: Date.now() - t0,
   });
@@ -249,6 +273,7 @@ serve(async (req) => {
       dispatched,
       failed,
       skipped_units: skippedUnits,
+      skipped_suspended: skippedSuspended,
       errors,
     }),
     {
