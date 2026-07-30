@@ -24,7 +24,7 @@ Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Mult
 
 ## ⚠️ Segurança antes de commitar (LEITURA OBRIGATÓRIA)
 
-Repo público no GitHub + deploy automático Vercel: secret vazado é público em segundos e exige rotação no provider (push --force NÃO apaga o que bot já indexou).
+Repo **privado** no GitHub + deploy automático Vercel. Privado reduz a janela, **não elimina o risco**: colaborador, integração, fork futuro ou abertura do repo expõem tudo retroativamente, e `push --force` NÃO apaga o que já foi clonado ou indexado. Secret vazado exige rotação no provider — as regras abaixo valem integralmente.
 
 1. **Rode `git status` + `git diff --cached`** — revise 100% das linhas adicionadas.
 2. **Padrões de secret a procurar:** `sk-`, `sk-ant-`, `xai-`, `re_`, `AIza`, `eyJ` (JWT), `Bearer `, `Basic `, `service_role`, `SERVICE_ROLE_KEY`, `password`/`senha`/`secret`/`token`/`api_key`/`client_token` com valor real, URLs com creds embutidas (`https://u:p@...`, `postgres://...:...@...`), webhooks com secret no path/query.
@@ -400,6 +400,14 @@ Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admi
 ---
 
 ## Deploy
+
+### CI — auditoria de ACL
+
+**`acl-estatico` ([.github/workflows/function-acl-audit.yml](.github/workflows/function-acl-audit.yml)) roda em todo PR e passa, mas NÃO é required status check — não impede merge.** Branch protection exige GitHub Pro ou repo público, e a decisão é manter o repo privado. **Regra operacional enquanto isso:** PR que toque migration, função SQL, `grant`/`revoke` ou ACL só é mergeado depois de alguém conferir o resultado do `acl-estatico` na aba Checks. Ele cruza as migrations com [scripts/function-acl-allowlist.json](scripts/function-acl-allowlist.json) e falha nomeando função, aridade e regra.
+
+**O guardrail autoritativo é [scripts/audit-function-acl.ts](scripts/audit-function-acl.ts)**, que lê o ACL real do banco pela RPC `audit_function_acl()`. Não roda em PR (o histórico de migrations não reconstrói um banco vazio, e não há staging) — roda no job `acl-com-banco` por `workflow_dispatch` contra alvo não-produção, ou localmente. Ele é o único que enxerga grant feito fora de migration.
+
+**Função nova em `public` nasce executável por `anon`** pelo grant implícito do `CREATE FUNCTION` a PUBLIC; `ALTER DEFAULT PRIVILEGES ... REVOKE ... FROM PUBLIC` é no-op nesta plataforma (medido). Migration que criar função exposta revoga explicitamente: `revoke all on function <assinatura completa> from public, anon, authenticated;` e só então concede ao papel mínimo. Contexto em [docs/hotfix-acl/](docs/hotfix-acl/02-VALIDACAO-E-RISCOS.md).
 
 ### Frontend (Vercel)
 
