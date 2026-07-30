@@ -93,6 +93,20 @@ existe e por isso ele deve rodar periodicamente, não uma vez só.
 
 ## 2. Impacto previsto, por função
 
+**Como ler a coluna "Depois".** Ela lista os papéis com **grant explícito** depois da 085. Três
+distinções que a versão anterior desta tabela embaralhava:
+
+- **O dono (`postgres`) nunca aparece.** Ele tem EXECUTE **implícito** por ser dono, em toda
+  função, e nenhum `revoke` tira isso. "Sem grant nenhum" não significa "ninguém executa" —
+  significa "só o dono".
+- **`service_role` aparece quando o grant pré-existente foi mantido.** A 085 revoga de
+  `public, anon, authenticated` e **não** revoga de `service_role`. Então nenhuma função aqui é
+  literalmente "service_role only": o dono também executa.
+- **Exposição via PostgREST ≠ execução interna.** Só `anon` e `authenticated` alcançam a função
+  por `POST /rest/v1/rpc/<nome>`. `postgres` (cron, DDL) e `service_role` (Edge Functions)
+  executam por conexão direta, fora do PostgREST. Fechar as duas primeiras é o objetivo; as
+  outras duas não são superfície pública.
+
 | Função | Antes | Depois | Quem quebra se eu errei |
 |---|---|---|---|
 | `append_conversation_message(uuid, jsonb)` | anon, authenticated, service_role, postgres | **service_role** | `webhook-whatsapp`, `send-manual-message`, `_shared/conversation-log.ts` — todos usam service role key |
@@ -361,7 +375,54 @@ repositório sem ser notado porque nada nunca reconstruiu a partir do histórico
 exigido para a 085 o expôs. Sem essa verificação, o histórico volta a ficar irrecuperável e só se
 descobre no próximo ambiente novo.
 
-## 8. Registro antes/depois
+## 8. CI — o guardrail é controle obrigatório, não script opcional
+
+A prevenção no banco é **parcial** (seção 8 da 085): `ALTER DEFAULT PRIVILEGES ... REVOKE
+EXECUTE ON FUNCTIONS FROM PUBLIC` foi **no-op** no ambiente ensaiado, então função nova continua
+nascendo executável por `anon` via o grant implícito a PUBLIC. Quem impede reabertura é o CI.
+
+Duas camadas, em [.github/workflows/function-acl-audit.yml](../../.github/workflows/function-acl-audit.yml):
+
+| Camada | O que faz | Onde roda |
+|---|---|---|
+| **`acl-estatico`** — [function-acl-allowlist.test.ts](../../scripts/function-acl-allowlist.test.ts) | Cruza as migrations com a allowlist versionada. Falha nomeando função, aridade e regra. Sem banco, sem segredo. | **Todo PR e push na `main`** |
+| **`acl-com-banco`** — [audit-function-acl.ts](../../scripts/audit-function-acl.ts) | Lê o ACL REAL pela RPC `audit_function_acl()`. É o guardrail autoritativo. | `workflow_dispatch` + **local, contra o clone efêmero** |
+
+**Por que a camada com banco ainda não roda em PR:** o histórico de migrations não replaya, então
+o CI não consegue construir um banco descartável; e apontar o CI para produção está proibido. A
+camada estática cobre o vetor visível sem banco — alguém abrir uma função numa migration nova sem
+classificar — que é o caminho mais provável de regressão vinda de código.
+
+**O que a camada estática NÃO cobre**, e por isso a com-banco continua obrigatória antes de cada
+aplicação em produção: grant feito fora de migration (dashboard, `psql` manual), default
+privilege restaurado pela plataforma, e função criada por `supabase_admin`.
+
+**Marcar `acl-estatico` como required status check** na proteção da branch — sem isso o workflow
+reprova mas não bloqueia o merge. A allowlist **nunca** é atualizada automaticamente: abrir
+superfície nova exige editar o JSON no mesmo PR, com justificativa, e passar por revisão.
+
+## 9. Follow-up de desenho — event trigger (NÃO improvisar na 085)
+
+Único caminho conhecido para fechar de verdade a superfície B (grant implícito a PUBLIC em função
+nova). Exige spec própria, porque intercepta **todo** DDL do banco. A avaliação precisa cobrir:
+
+- quais roles podem criar funções, e se o trigger alcança todas (`supabase_admin` inclusive);
+- como identificar com segurança as funções em `public` criadas no comando;
+- como revogar `PUBLIC`, `anon` e `authenticated` depois do DDL sem desfazer grant explícito
+  legítimo feito na mesma migration (ordem importa: o `grant` da RPC pública vem depois do
+  `create`);
+- comportamento durante migrations, no dashboard, em `create extension` e em operações internas
+  da plataforma;
+- risco de recursão (o próprio trigger executa DDL?), de travar migration e de interferir com
+  objetos gerenciados pela Supabase;
+- privilégios necessários para criar e manter o trigger, e se a Supabase os concede;
+- estratégia de rollback e de observabilidade (como saber que o trigger agiu, e quando falhou).
+
+**Mesmo com o event trigger, o CI não sai.** Alteração ou restauração feita pela plataforma pode
+reabrir a superfície por fora do trigger — o guardrail é a única verificação que enxerga o estado
+real do banco.
+
+## 10. Registro antes/depois
 
 > A preencher por quem aplicar. Colar a saída de A1 e de D1, mais o resultado do guardrail e do
 > smoke test. Sem isso o hotfix não é considerado validado.

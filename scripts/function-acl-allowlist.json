@@ -90,13 +90,13 @@
       "name": "is_platform_admin",
       "args": "p_user_id uuid",
       "roles": ["authenticated"],
-      "why": "Chamada por 26 policies RLS de papel authenticated."
+      "why": "Chamada por 26 policies RLS de papel authenticated e ZERO policies roles={public}. Nenhuma função SECURITY INVOKER a referencia (as SECURITY DEFINER que a chamam rodam como o dono). anon foi revogado pela 085 §5.2: sem caller, só entregava oráculo de enumeração de super-admin a quem tem a anon key."
     },
     {
       "name": "is_org_member",
       "args": "p_user_id uuid, p_org_id uuid",
       "roles": ["authenticated"],
-      "why": "Chamada por 3 policies RLS de papel authenticated."
+      "why": "Chamada por 3 policies RLS de papel authenticated e ZERO policies roles={public}. Mesma evidência e mesma revogação de anon na 085 §5.2 — oráculo de pertencimento a organização."
     }
   ],
 

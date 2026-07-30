@@ -52,9 +52,16 @@ interface AllowEntry {
 
 interface Violation {
   severity: "CRITICO" | "ALTO" | "MEDIO";
+  /** Assinatura completa: nome + tipos dos argumentos. */
   fn: string;
   rule: string;
   detail: string;
+  /** Papéis externos que REALMENTE executam, conforme o banco. */
+  observed: string;
+  /** Papéis que a allowlist versionada aprova. */
+  expected: string;
+  /** Estado do search_path, quando a função é SECURITY DEFINER. */
+  searchPath?: string;
 }
 
 const ALLOWLIST_PATH = new URL("./function-acl-allowlist.json", import.meta.url);
@@ -97,37 +104,66 @@ function claimsServiceRoleOnly(comment: string): boolean {
   return /service[_ ]role\s+only/i.test(comment);
 }
 
+/**
+ * Papéis externos que de fato executam, conforme o banco. O dono (postgres) tem
+ * EXECUTE implícito e nunca aparece aqui: esta lista é sobre superfície externa,
+ * não sobre quem consegue rodar a função por ser dono.
+ */
+function observedRoles(r: AuditRow): string {
+  const roles = [
+    r.public_execute && "PUBLIC",
+    r.anon_execute && "anon",
+    r.auth_execute && "authenticated",
+  ].filter(Boolean) as string[];
+  return roles.length > 0 ? roles.join(", ") : "nenhum";
+}
+
+function expectedRoles(entry: AllowEntry | undefined): string {
+  if (!entry) return "nenhum (não consta na allowlist)";
+  return entry.roles.length > 0 ? entry.roles.join(", ") : "nenhum";
+}
+
+/**
+ * TODA regra aplicável é avaliada para TODA função. Nenhuma classificação
+ * encerra as verificações seguintes: uma mesma função pode — e deve — produzir
+ * várias violações distintas. Um `continue` aqui já escondeu um defeito real de
+ * `search_path` atrás de um achado de allowlist; não reintroduza.
+ */
 function audit(rows: AuditRow[], allow: Map<string, AllowEntry>): Violation[] {
   const violations: Violation[] = [];
 
   for (const r of rows) {
     const key = sig(r.function_name, r.identity_args);
     const entry = allow.get(key);
-    const exposed = r.anon_execute || r.auth_execute;
+    const exposed = r.anon_execute || r.auth_execute || r.public_execute;
 
-    // 1. COMMENT promete service_role only, mas anon/authenticated executam.
+    const ctx = {
+      fn: key,
+      observed: observedRoles(r),
+      expected: expectedRoles(entry),
+      ...(r.is_secdef ? { searchPath: r.has_search_path ? "fixo" : "MUTÁVEL" } : {}),
+    };
+
+    // 1. COMMENT promete service_role only, mas papel externo executa.
     if (claimsServiceRoleOnly(r.fn_comment) && exposed) {
       violations.push({
+        ...ctx,
         severity: "CRITICO",
-        fn: key,
         rule: "comentario-mente",
-        detail:
-          `COMMENT declara "service_role only", mas ` +
-          `${r.anon_execute ? "anon " : ""}${r.auth_execute ? "authenticated " : ""}` +
-          `pode executar. ACL: ${r.acl}`,
+        detail: `COMMENT declara "service_role only", mas há papel externo com EXECUTE. ACL: ${r.acl}`,
       });
-      continue; // já é o achado mais grave desta função
     }
 
-    // 2. Concessão direta ao pseudo-papel PUBLIC. Nunca é intencional aqui:
-    //    a allowlist concede a papéis nomeados, jamais a PUBLIC.
+    // 2. Concessão ao pseudo-papel PUBLIC — implícita do CREATE FUNCTION ou
+    //    explícita. Nunca é intencional aqui: a allowlist concede a papéis
+    //    nomeados, jamais a PUBLIC, porque PUBLIC alcança todo papel futuro.
     if (r.public_execute) {
       violations.push({
+        ...ctx,
         severity: "ALTO",
-        fn: key,
         rule: "grant-para-PUBLIC",
         detail:
-          `EXECUTE concedido ao pseudo-papel PUBLIC (ou ACL default). ` +
+          `EXECUTE concedido ao pseudo-papel PUBLIC (ou ACL default do CREATE FUNCTION). ` +
           `Use "revoke all ... from public, anon, authenticated" e conceda ao papel mínimo. ACL: ${r.acl}`,
       });
     }
@@ -136,41 +172,39 @@ function audit(rows: AuditRow[], allow: Map<string, AllowEntry>): Violation[] {
     //    regressão de uma já classificada.
     if (exposed && !entry) {
       violations.push({
+        ...ctx,
         severity: r.is_secdef ? "CRITICO" : "ALTO",
-        fn: key,
         rule: "fora-da-allowlist",
         detail:
-          `${r.is_secdef ? "SECURITY DEFINER" : "SECURITY INVOKER"} executável por ` +
-          `${[r.anon_execute && "anon", r.auth_execute && "authenticated"].filter(Boolean).join(" + ")}, ` +
+          `${r.is_secdef ? "SECURITY DEFINER" : "SECURITY INVOKER"} com papel externo e ` +
           `sem entrada em function-acl-allowlist.json. ` +
           `Classifique em docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md antes de liberar.`,
       });
-      continue;
     }
 
     // 4. Na allowlist, mas com papel a MAIS do que foi aprovado.
     if (entry) {
       const extra: string[] = [];
+      if (r.public_execute) extra.push("PUBLIC");
       if (r.anon_execute && !entry.roles.includes("anon")) extra.push("anon");
       if (r.auth_execute && !entry.roles.includes("authenticated")) extra.push("authenticated");
       if (extra.length > 0) {
         violations.push({
+          ...ctx,
           severity: "ALTO",
-          fn: key,
           rule: "papel-a-mais",
-          detail:
-            `Allowlist aprova [${entry.roles.join(", ")}], mas o banco concede também ` +
-            `[${extra.join(", ")}]. ACL: ${r.acl}`,
+          detail: `O banco concede além do aprovado: [${extra.join(", ")}]. ACL: ${r.acl}`,
         });
       }
     }
 
     // 5. SECURITY DEFINER sem `search_path` fixo: o caller controla a resolução
-    //    de nomes e pode sequestrar a função com um schema próprio.
+    //    de nomes e pode sequestrar a função com um schema próprio. Ortogonal às
+    //    regras acima — avaliada SEMPRE, inclusive em função já sinalizada.
     if (r.is_secdef && !r.has_search_path) {
       violations.push({
+        ...ctx,
         severity: "MEDIO",
-        fn: key,
         rule: "search_path-mutavel",
         detail: `SECURITY DEFINER sem "set search_path". Adicione "set search_path = public".`,
       });
@@ -178,7 +212,9 @@ function audit(rows: AuditRow[], allow: Map<string, AllowEntry>): Violation[] {
   }
 
   const ordem = { CRITICO: 0, ALTO: 1, MEDIO: 2 };
-  return violations.sort((a, b) => ordem[a.severity] - ordem[b.severity] || a.fn.localeCompare(b.fn));
+  return violations.sort(
+    (a, b) => ordem[a.severity] - ordem[b.severity] || a.fn.localeCompare(b.fn) || a.rule.localeCompare(b.rule),
+  );
 }
 
 // ─── main ────────────────────────────────────────────────────────────────────
@@ -225,10 +261,13 @@ if (violations.length === 0) {
   Deno.exit(0);
 }
 
-console.error(`\n❌ ${violations.length} violação(ões):\n`);
+const fnsAfetadas = new Set(violations.map((v) => v.fn)).size;
+console.error(`\n❌ ${violations.length} violação(ões) em ${fnsAfetadas} função(ões):\n`);
 for (const v of violations) {
   console.error(`  [${v.severity}] ${v.fn}`);
-  console.error(`      regra: ${v.rule}`);
+  console.error(`      regra:      ${v.rule}`);
+  console.error(`      papéis:     observados [${v.observed}] | esperados [${v.expected}]`);
+  if (v.searchPath) console.error(`      search_path: ${v.searchPath}`);
   console.error(`      ${v.detail}\n`);
 }
 console.error(

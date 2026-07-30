@@ -2,28 +2,37 @@
 --
 -- INDEPENDENTE DA FASE 5b. Não aplicar junto com 077–084.
 --
--- ─── A CAUSA REAL (confirmada em produção, não suposta) ──────────────────────
+-- ─── A CAUSA REAL (confirmada em produção e em ensaio, não suposta) ──────────
 --
--- Não é (só) o comportamento padrão do Postgres em CREATE FUNCTION, que concede
--- EXECUTE ao pseudo-papel PUBLIC. O que importa aqui é mais específico e mais
--- teimoso: `pg_default_acl` do projeto tem, para FUNCTION no schema public,
--- entradas de DUAS roles criadoras —
+-- São DUAS superfícies INDEPENDENTES. Fechar uma não fecha a outra, e é isso que
+-- enganou este repositório por 14 migrations.
 --
---   postgres        -> {postgres=X, anon=X, authenticated=X, service_role=X}
---   supabase_admin  -> {postgres=X, anon=X, authenticated=X, service_role=X}
+-- Superfície A — grant DIRETO a anon/authenticated.
+--   `pg_default_acl` tem, para FUNCTION no schema public, entradas de DUAS roles
+--   criadoras:
+--     postgres        -> {postgres=X, anon=X, authenticated=X, service_role=X}
+--     supabase_admin  -> {postgres=X, anon=X, authenticated=X, service_role=X}
+--   Toda função nova nasce com entrada PRÓPRIA para anon e authenticated.
 --
--- Ou seja: toda função nova em public NASCE com grant DIRETO para `anon` e
--- `authenticated`. Consequência que enganou este repositório por 14 migrations:
+-- Superfície B — grant IMPLÍCITO ao pseudo-papel PUBLIC.
+--   `CREATE FUNCTION` concede EXECUTE a PUBLIC por padrão do Postgres. Como todo
+--   papel é membro de PUBLIC, isso sozinho basta para anon executar.
 --
---   `REVOKE ... FROM public` NÃO revoga de anon nem de authenticated.
+-- As duas consequências, cada uma comprovada:
 --
--- Remove só a concessão ao pseudo-papel PUBLIC. As concessões a anon e
--- authenticated são entradas próprias e sobrevivem intactas — a migration parece
--- ter protegido, o COMMENT afirma que protegeu, e a função segue chamável por
--- qualquer portador da anon key (pública no bundle, por design), via
--- POST /rest/v1/rpc/<nome>, porque public é o schema exposto ao PostgREST.
+--   1. `REVOKE ... FROM public` NÃO revoga de anon nem de authenticated.
+--      Remove só a entrada do pseudo-papel; as entradas diretas sobrevivem — a
+--      migration parece ter protegido, o COMMENT afirma que protegeu, e a função
+--      segue chamável por qualquer portador da anon key (pública no bundle, por
+--      design) via POST /rest/v1/rpc/<nome>, porque public é o schema exposto ao
+--      PostgREST.
 --
--- A forma correta, já usada e comprovadamente eficaz neste banco
+--   2. Revogar só as entradas diretas NÃO elimina o acesso herdado de PUBLIC.
+--      Verificado em ensaio: função com ACL {=X/postgres, postgres=X, service_role=X}
+--      continua com has_function_privilege('anon', ..., 'EXECUTE') = true.
+--
+-- Por isso a forma correta revoga das DUAS de uma vez, e só então concede ao
+-- papel mínimo — padrão já usado e comprovadamente eficaz neste banco
 -- (resolve_or_activate_subscription e try_claim_conversation_for_ai mostram
 -- {postgres=X, service_role=X} — limpas):
 --
@@ -32,12 +41,15 @@
 --
 -- ─── O QUE ESTA MIGRATION NÃO FAZ, E POR QUÊ ────────────────────────────────
 --
--- 1. NÃO toca is_unit_member / is_platform_admin / is_org_member. São chamadas
---    de DENTRO de policies RLS, avaliadas no contexto de privilégio de quem
---    consulta. `is_unit_member` aparece em 24 policies com roles={public} —
---    revogar de anon não faria a policy negar, faria a query estourar com
---    "permission denied for function", derrubando a entrada pública na fila.
---    Ver §1.1 e §4.1 de docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md.
+-- 1. NÃO revoga is_unit_member de anon. É chamada de DENTRO de policies RLS,
+--    avaliadas no contexto de privilégio de quem consulta, e aparece em 24
+--    policies com roles={public} — revogar de anon não faria a policy negar,
+--    faria a query estourar com "permission denied for function", derrubando a
+--    entrada pública na fila. Ver §1.1 e §4.1 de
+--    docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md.
+--
+--    is_platform_admin e is_org_member SÃO revogadas de anon na seção 5.2: o
+--    levantamento de policies mostra 0 policies roles={public} para as duas.
 --
 -- 2. NÃO toca funções que retornam `trigger`. PostgREST não as expõe, e o
 --    Postgres checa EXECUTE em CREATE TRIGGER, não a cada disparo — revogar não
@@ -190,6 +202,23 @@ revoke all on function public.next_waitlist_code(uuid) from public, anon, authen
 --    política ampla, nenhum "manter as RPCs atuais".
 -- ─────────────────────────────────────────────────────────────────────────────
 
+-- REVOKE ANTES DO GRANT. Sem esta primeira metade, get_unit_public(text),
+-- list_public_units() e normalize_br_phone(text) permanecem com o grant
+-- implícito ao pseudo-papel PUBLIC (`=X/postgres` no proacl) — verificado em
+-- ensaio. Conceder a anon/authenticated não remove PUBLIC: são superfícies
+-- independentes (ver cabeçalho). Com PUBLIC no ACL, QUALQUER papel presente ou
+-- futuro executa, não só os dois pretendidos.
+revoke all on function public.get_unit_public(text)                  from public;
+revoke all on function public.get_unit_public_full(text)             from public;
+revoke all on function public.get_widget_public(text)                from public;
+revoke all on function public.get_menu_public(text)                  from public;
+revoke all on function public.get_public_tracking(uuid)              from public;
+revoke all on function public.get_public_business_hours(uuid)        from public;
+revoke all on function public.get_public_hall_schedules(uuid, date)  from public;
+revoke all on function public.list_public_units()                    from public;
+revoke all on function public.enter_waitlist(uuid, text, text, int, text, text, time) from public;
+revoke all on function public.normalize_br_phone(text)               from public;
+
 grant execute on function public.get_unit_public(text)                  to anon, authenticated;
 grant execute on function public.get_unit_public_full(text)             to anon, authenticated;
 grant execute on function public.get_widget_public(text)                to anon, authenticated;
@@ -203,6 +232,28 @@ grant execute on function public.enter_waitlist(uuid, text, text, int, text, tex
 -- NÃO é RPC de portal: é dependência do trigger INVOKER
 -- customers_canonical_phone_trg, que num INSERT anônimo roda COMO anon.
 grant execute on function public.normalize_br_phone(text) to anon, authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 5.2 HELPERS DE RLS — anon só onde uma policy roles={public} depende.
+--
+--     Levantamento sobre as 77 policies de public:
+--       is_unit_member    -> 17 policies {authenticated} + 24 policies {public}
+--       is_platform_admin -> 26 policies {authenticated} +  0 policies {public}
+--       is_org_member     ->  3 policies {authenticated} +  0 policies {public}
+--
+--     E ZERO funções SECURITY INVOKER referenciam is_platform_admin ou
+--     is_org_member (as SECURITY DEFINER que as chamam rodam como o dono, então
+--     não dependem do EXECUTE do chamador).
+--
+--     Logo, anon nessas duas não serve a nenhuma policy nem a nenhum caller — só
+--     entrega um oráculo de enumeração ("este UUID é platform admin?", "este
+--     usuário pertence a esta organização?") a quem tem a anon key.
+--
+--     is_unit_member NÃO é tocada: as 24 policies {public} a exigem.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+revoke all on function public.is_platform_admin(uuid)   from anon;
+revoke all on function public.is_org_member(uuid, uuid) from anon;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 5.1 SEARCH_PATH — única SECURITY DEFINER de public sem search_path fixo.
@@ -304,20 +355,47 @@ comment on function public.audit_function_acl() is
   'service_role only.';
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 8. PREVENÇÃO — função nova não nasce mais aberta.
+-- 8. DEFESA PARCIAL — remove o grant DIRETO de funções futuras. NÃO é garantia.
 --
---    SÓ para a role `postgres`, que é quem cria as funções deste projeto e é a
---    role auditada. `supabase_admin` tem default privilege equivalente e NÃO é
+--    LEIA ANTES DE CONFIAR NESTA SEÇÃO. Ela NÃO faz função nova nascer fechada.
+--
+--    O que ela faz: funções novas criadas por `postgres` deixam de receber
+--    entrada DIRETA para anon/authenticated (superfície A do cabeçalho).
+--
+--    O que ela NÃO faz: o `CREATE FUNCTION` continua concedendo EXECUTE ao
+--    pseudo-papel PUBLIC (superfície B), e todo papel é membro de PUBLIC. Medido
+--    em ensaio, em schema virgem, nesta mesma versão de Postgres:
+--
+--      f1 (sem ALTER nenhum)                        -> proacl NULL, anon = true
+--      alter default privileges ... revoke execute
+--        on functions from public                   -> NENHUMA linha em pg_default_acl
+--      f2 (criada depois do revoke)                 -> proacl NULL, anon = true
+--
+--    Ou seja: `ALTER DEFAULT PRIVILEGES ... REVOKE EXECUTE ON FUNCTIONS FROM
+--    PUBLIC` foi NO-OP no ambiente ensaiado. Não existe, por este caminho,
+--    proteção confiável para funções futuras. Por isso a linha abaixo revoga
+--    apenas de anon/authenticated — pedir o revoke de PUBLIC aqui daria falsa
+--    sensação de cobertura.
+--
+--    O ganho real, e é concreto: sem as entradas diretas, um `revoke ... from
+--    public` pontual passa a ser SUFICIENTE para fechar uma função. Hoje não é —
+--    e é exatamente esse o modo de falha que produziu este hotfix.
+--
+--    Escopo: SÓ a role `postgres`, que cria as funções deste projeto e é a role
+--    auditada. `supabase_admin` tem default privilege equivalente e NÃO é
 --    tocada: é da plataforma, alterá-la é mudança não auditada que a Supabase
---    pode reverter em manutenção.
+--    pode reverter em manutenção. Default privilege é POR ROLE CRIADORA, não
+--    configuração global.
 --
---    Default privilege é POR ROLE CRIADORA, não configuração global — é por isso
---    que existem duas entradas em pg_default_acl e por isso corrigir uma só não
---    fecha o buraco da outra. O guardrail em scripts/audit-function-acl.mjs é a
---    rede de verdade; esta linha só evita o caso comum.
+--    CONTROLE OBRIGATÓRIO: como a prevenção é parcial, quem impede reabertura é
+--    o guardrail scripts/audit-function-acl.ts rodando em CI (.github/workflows/
+--    function-acl-audit.yml), não esta seção. Ele NÃO pode ser removido nem
+--    tornado opcional — nem se um event trigger for criado no futuro, porque
+--    manutenções da plataforma podem restaurar os defaults a qualquer momento.
 --
---    NÃO impede grant explícito: RPC pública nova segue funcionando com
---    `grant execute ... to anon` na própria migration. Só deixa de vir de graça.
+--    Follow-up de desenho (NÃO improvisar aqui): event trigger em
+--    ddl_command_end que feche funções novas. Requisitos em
+--    docs/hotfix-acl/02-VALIDACAO-E-RISCOS.md §9.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 alter default privileges for role postgres in schema public
@@ -364,6 +442,6 @@ commit;
 --
 -- O estado exato de antes está em public.function_acl_snapshot where label='pre-085'.
 --
--- Para reverter a prevenção da seção 7 (não recomendado):
+-- Para reverter a defesa parcial da seção 8 (não recomendado):
 --   alter default privileges for role postgres in schema public
 --     grant execute on functions to anon, authenticated;

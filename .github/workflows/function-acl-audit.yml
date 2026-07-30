@@ -1,0 +1,86 @@
+# Guardrail de ACL das funções do schema public — BLOQUEANTE.
+#
+# Existe porque a prevenção no banco é PARCIAL: `ALTER DEFAULT PRIVILEGES ...
+# REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` foi comprovadamente no-op no ambiente
+# ensaiado, então função nova continua nascendo executável por anon via o grant
+# implícito do CREATE FUNCTION ao pseudo-papel PUBLIC. Ver a seção 8 de
+# supabase/migrations/20260730160000_085_harden_public_function_acl.sql.
+#
+# Este workflow NÃO pode ser removido nem tornado opcional, nem se um event
+# trigger for criado no futuro: manutenção da plataforma pode restaurar os
+# default privileges a qualquer momento e reabrir a superfície em silêncio.
+#
+# Marque "acl-estatico" como required status check na proteção da branch para
+# que a reprovação bloqueie o merge de fato.
+
+name: ACL de funções (public)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acl-estatico:
+    name: acl-estatico
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # .npmrc força legacy-peer-deps (react-day-picker vs date-fns v4).
+      - run: npm ci --legacy-peer-deps
+
+      # Cruza as migrations com scripts/function-acl-allowlist.json e falha
+      # nomeando função, aridade e regra. NÃO toca em banco nenhum e NÃO
+      # atualiza a allowlist — abrir superfície nova exige editar o JSON no
+      # mesmo PR, com justificativa, e passar por code review.
+      - name: Auditoria estática de ACL
+        run: npx vitest run scripts/function-acl-allowlist.test.ts
+
+  # Guardrail com banco: lê o ACL REAL pela RPC audit_function_acl().
+  #
+  # NÃO roda em PR e NÃO aponta para produção. Fica em workflow_dispatch porque
+  # hoje não existe alvo seguro: o histórico de migrations não replaya (ver o
+  # cabeçalho de docs/hotfix-acl/03-ENSAIO-ORDEM-REAL.md), então o CI não
+  # consegue construir um banco descartável, e não há staging. Enquanto isso, a
+  # execução com banco é LOCAL, contra o clone efêmero, e está documentada em
+  # docs/hotfix-acl/02-VALIDACAO-E-RISCOS.md §4.
+  #
+  # Quando a baseline reproduzível existir, este job passa a rodar em PR contra
+  # um banco descartável criado no próprio runner.
+  acl-com-banco:
+    name: acl-com-banco (manual, alvo não-produção)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: v2.1.4
+
+      - name: Exigir alvo explícito e não-produção
+        env:
+          ACL_AUDIT_URL: ${{ secrets.ACL_AUDIT_URL }}
+        run: |
+          if [ -z "$ACL_AUDIT_URL" ]; then
+            echo "::error::ACL_AUDIT_URL não configurado. Este job nunca deve apontar para produção."
+            exit 1
+          fi
+
+      # Somente leitura: a RPC faz SELECT em pg_proc e não altera nada.
+      - name: Guardrail de ACL
+        env:
+          SUPABASE_URL: ${{ secrets.ACL_AUDIT_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.ACL_AUDIT_SERVICE_KEY }}
+        run: deno run --allow-net --allow-env --allow-read scripts/audit-function-acl.ts
