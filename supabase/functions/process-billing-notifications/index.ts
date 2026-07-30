@@ -94,6 +94,70 @@ const TEMPLATE_BY_EVENT: Record<
       `Obrigado!`,
     ]),
   }),
+  // Lembretes da mensalidade da INSTÂNCIA de WhatsApp (Task 18, Fase 5b) —
+  // vocabulário próprio, separado do da mensalidade de SISTEMA acima. A razão
+  // de existir: "o acesso será suspenso" é verdade pra fatura de sistema e
+  // seria mentira pra esta, que só desliga a automação de WhatsApp. Todo
+  // parágrafo aqui deixa explícito que o resto do sistema (reservas, agenda,
+  // clientes, relatórios) continua funcionando — sem isso o dono do
+  // restaurante lê a palavra "suspenso" e entende que o sistema inteiro vai
+  // parar. `process-billing-reminders` decide o prefixo `whatsapp_` do
+  // event_type; estas 4 entradas cobrem a mesma escada D0/D+1/D+3/D+5 de
+  // `REMINDER_OFFSETS` (billing-delinquency-core.ts) — uma escada só, dois
+  // vocabulários.
+  whatsapp_payment_pending: (d) => ({
+    subject: "A mensalidade da automação de WhatsApp vence hoje",
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} vence hoje. O restante do sistema não é afetado por esta cobrança.`,
+    html: wrapHtml("A mensalidade da automação de WhatsApp vence hoje", [
+      `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> vence hoje.`,
+      `O restante do sistema não é afetado por esta cobrança.`,
+    ]),
+  }),
+  whatsapp_overdue_d1: (d) => ({
+    subject: "Mensalidade da automação em atraso",
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso há 1 dia. O restante do sistema não é afetado por esta cobrança.`,
+    html: wrapHtml("Mensalidade da automação em atraso", [
+      `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso há 1 dia.`,
+      `O restante do sistema não é afetado por esta cobrança.`,
+    ]),
+  }),
+  whatsapp_overdue_d3: (d) => ({
+    subject: "Mensalidade da automação em atraso (3 dias)",
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso há 3 dias. O restante do sistema não é afetado por esta cobrança.`,
+    html: wrapHtml("Mensalidade da automação em atraso (3 dias)", [
+      `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso há 3 dias.`,
+      `O restante do sistema não é afetado por esta cobrança.`,
+    ]),
+  }),
+  whatsapp_overdue_d5: (d) => ({
+    subject: "Último aviso antes da suspensão da automação de WhatsApp",
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso. Amanhã os envios e o atendimento automático pelo WhatsApp serão suspensos. Reservas, agenda, painel e relatórios continuam funcionando normalmente.`,
+    html: wrapHtml("Último aviso antes da suspensão da automação de WhatsApp", [
+      `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso.`,
+      `Amanhã os envios e o atendimento automático pelo WhatsApp serão suspensos. <strong>Reservas, agenda, painel e relatórios continuam funcionando normalmente.</strong>`,
+    ]),
+  }),
+  // Produzido por process-whatsapp-enforcement (Task 17), invoiceId sempre
+  // null (a suspensão é por estado da assinatura, não por uma fatura
+  // específica) — por isso não referenciar d.amountBrl/d.paymentUrl aqui,
+  // eles chegam zerados/nulos.
+  whatsapp_suspended: (d) => ({
+    subject: "Automação de WhatsApp suspensa",
+    text: `A automação de WhatsApp de ${d.orgName} foi suspensa por falta de pagamento. O sistema segue funcionando: reservas, agenda, clientes e relatórios não foram afetados. Regularize a mensalidade para retomar os envios.`,
+    html: wrapHtml("Automação de WhatsApp suspensa", [
+      `A automação de WhatsApp de <strong>${d.orgName}</strong> foi suspensa por falta de pagamento.`,
+      `O sistema segue funcionando: reservas, agenda, clientes e relatórios não foram afetados. Regularize a mensalidade para retomar os envios.`,
+    ]),
+  }),
+  // Mesma origem (Task 17) e mesmo motivo de não usar amountBrl/paymentUrl.
+  whatsapp_restored: (d) => ({
+    subject: "Automação de WhatsApp reativada",
+    text: `Pagamento confirmado. A automação de WhatsApp de ${d.orgName} voltou a funcionar. Mensagens que ficaram pendentes durante a suspensão são reavaliadas antes de sair — as que perderam validade não são enviadas.`,
+    html: wrapHtml("Automação de WhatsApp reativada", [
+      `Pagamento confirmado. A automação de WhatsApp de <strong>${d.orgName}</strong> voltou a funcionar.`,
+      `Mensagens que ficaram pendentes durante a suspensão são reavaliadas antes de sair — as que perderam validade não são enviadas.`,
+    ]),
+  }),
   // Aviso INTERNO (vai para o admin da plataforma, não para o cliente): a
   // implantação foi paga e entra na fila de execução. Sem esta entrada o
   // dispatcher marcaria a linha como failed/unknown_event_type e o aviso
@@ -107,24 +171,33 @@ const TEMPLATE_BY_EVENT: Record<
       `Agende a configuração no painel de implantações.`,
     ]),
   }),
-  // Aviso INTERNO (vai para o admin da plataforma, não para o cliente — Fix
-  // round 1, achado Important #1): duas fontes da escada de correlação
-  // (asaas-billing-events-apply.ts) divergiram de organização DENTRO da MESMA
-  // passagem (`resolveCorrelation` devolveu `kind: "conflict"`). O evento
-  // caiu como `failed` na fila do reconcile e não pode ser aplicado sozinho —
-  // escrever no tenant errado é pior que atrasar um pagamento. `d.orgName` é
-  // só para o admin achar o evento (a coluna organization_id de
-  // billing_notifications é NOT NULL, então a linha é arquivada sob a
-  // organização mais plausível — não é ela quem recebe este e-mail); o
-  // detalhe completo (quais degraus, quais organizações) vai só nos logs
-  // (evt: asaas_correlation_ambiguity), nunca no corpo do e-mail.
+  // Aviso INTERNO (vai para o admin da plataforma, não para o cliente).
+  // GENERALIZADO na Task 18 (Fase 5b) — este `event_type` é compartilhado por
+  // mais de um gatilho, e o texto não pode presumir qual foi:
+  //   1. `asaas-billing-events-apply.ts` (Task 8): duas fontes da escada de
+  //      correlação divergiram de organização DENTRO da MESMA passagem
+  //      (`resolveCorrelation` devolveu `kind: "conflict"`) — evento em falha
+  //      na fila do reconcile, log `evt: asaas_correlation_ambiguity`.
+  //   2. `process-whatsapp-enforcement` (Task 17): mais de uma assinatura
+  //      `WHATSAPP_SUBSCRIPTION` viva para a mesma organização — nada a ver
+  //      com `billing_events` nem com o reconcile do Asaas, log
+  //      `evt: whatsapp_ambiguous_subscription`.
+  // A versão anterior deste template nomeava "evento de pagamento do Asaas" e
+  // mandava o admin olhar `billing_events` — certo para o gatilho 1, errado
+  // para o 2 (o admin ia procurar no lugar errado). Por isso o texto agora
+  // fala em "evento de cobrança" (cobre os dois) e aponta pro painel da
+  // plataforma de forma genérica, nunca por uma tabela específica — evento
+  // novo que reusar esta chave continua acertando o texto. Detalhe de QUAL
+  // gatilho ocorreu e QUAIS organizações/assinaturas fica só nos logs do
+  // `evt` correspondente, nunca no corpo do e-mail (`d.orgName` é só endereço
+  // de conveniência — a coluna organization_id de billing_notifications é NOT
+  // NULL — não necessariamente quem gerou a ambiguidade).
   admin_correlation_ambiguity: (d) => ({
-    subject: "Evento Asaas com organizações divergentes — requer conferência",
-    text: `Um evento de pagamento do Asaas correlacionou para mais de uma organização na mesma passagem (referência: ${d.orgName}). O evento ficou em falha na fila do reconcile — confira em billing_events e nos logs (evt: asaas_correlation_ambiguity) antes de qualquer ação.`,
-    html: wrapHtml("Evento Asaas com organizações divergentes", [
-      `Um evento de pagamento do Asaas correlacionou para <strong>mais de uma organização</strong> na mesma passagem.`,
-      `Referência: <strong>${d.orgName}</strong>.`,
-      `O evento ficou em falha na fila do reconcile — confira em <code>billing_events</code> e nos logs (<code>evt: asaas_correlation_ambiguity</code>) antes de qualquer ação.`,
+    subject: `[interno] Evento de cobrança precisa de conferência — ${d.orgName}`,
+    text: `Um evento de cobrança da organização ${d.orgName} precisa de conferência manual antes de qualquer ação automática. Verifique o painel da plataforma e os logs do evento para os detalhes.`,
+    html: wrapHtml("Evento de cobrança precisa de conferência", [
+      `Um evento de cobrança da organização <strong>${d.orgName}</strong> precisa de <strong>conferência manual</strong> antes de qualquer ação automática.`,
+      `Verifique o painel da plataforma e os logs do evento para os detalhes.`,
     ]),
   }),
   // Aviso INTERNO (Fix round 1, achado Important #2): o carimbo de
