@@ -54,7 +54,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.ts";
-// `checkFlagEnabled`/`checkFlagString`, NÃO `isFlagEnabled`/`getFlagString`:
+// `checkFlagEnabled`/`checkFlagString`, NÃO `isFlagEnabled`:
 // uma leitura que FALHA (DB indisponível) não pode parecer "flag OFF" — com a
 // ingestão de fato ligada, um soluço transitório faria este worker "rodar com
 // sucesso" sem checar nada, todo dia, até alguém notar. Mesma regra da

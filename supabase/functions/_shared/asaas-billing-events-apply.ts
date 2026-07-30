@@ -40,7 +40,7 @@ import {
   CORRELATION_RANK,
   type CorrelationCandidate,
 } from "./billing-correlation-core.ts";
-// `checkFlagEnabled`/`checkFlagString` (NÃO `isFlagEnabled`/`getFlagString`):
+// `checkFlagEnabled`/`checkFlagString` (NÃO `isFlagEnabled`):
 // uma leitura de flag que FALHA (DB indisponível) tem que virar `failed` (o
 // evento fica na fila, o reconcile retenta), nunca "flag desligada" — Fix
 // round 1 da Fase 5b. Ver o gate 4.1 e `decideIngestionHold` abaixo.
