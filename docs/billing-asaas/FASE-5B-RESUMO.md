@@ -7,7 +7,21 @@
 >
 > ## 📍 ESTADO ATUAL — leia antes de tocar em billing/WhatsApp
 >
-> **Código completo, revisado e auditado. NADA foi aplicado em produção.** Nenhuma das 7 migrations novas (077–080, 082–084 — ver nota sobre a numeração abaixo) rodou `db push`, nenhuma Edge Function foi deployada, o roteiro de sandbox (44 blocos verificáveis) está escrito mas não executado, e não houve merge/tag. Mesma decisão da 5a: a virada do Asaas fica em sandbox até a última fase do projeto.
+> **Migrations aplicadas e Edge Functions deployadas em 2026-07-30. As duas flags da fase seguem OFF, então o comportamento novo está dormente.** O roteiro de sandbox (44 blocos) continua **não executado** — bloqueado por falta de fixture e pela decisão de ligar as flags, que é do dono. Sem sandbox, **não há merge nem tag**. A virada do Asaas segue em sandbox até a última fase do projeto (`ASAAS_ENV=sandbox`, confirmado).
+>
+> ### Rollout operacional de 2026-07-30
+>
+> Ordem efetiva de migrations: **076 → 085 (hotfix de ACL, 18:36 UTC) → 077–084 (20:01 UTC, `db push --include-all`)**. O `--include-all` foi necessário porque a 085 tem timestamp posterior às 077–084; o ensaio em clone do schema real validou essa ordem antes.
+>
+> Reauditoria de ACL depois da 084: `anon` em 11 funções, `authenticated` em 21, SECURITY DEFINER expostas em 10, não-trigger com grant a PUBLIC em 0 — **idênticos ao pós-085**, ou seja, nenhuma migration da 5b reabriu superfície. Guardrail verde contra produção. As funções novas da 082/083 nasceram fechadas; a 079 preservou o ACL de `resolve_or_activate_subscription`; a 084 ficou no-op idempotente.
+>
+> 26 Edge Functions redeployadas (as 19 com código próprio alterado + 7 que entram só por `_shared`), `manage-channels` por último conforme o Risco 8. Os 2 workers novos têm `verify_jwt=false` no `config.toml` e crons ativos como `postgres`.
+>
+> ### Por que o sandbox não rodou
+>
+> 1. **Não existe fixture.** O §0.1.1 do roteiro exige uma org com implantação `COMPLETED` e assinatura `WHATSAPP_SUBSCRIPTION` ativa, e proíbe usar `ren-sushi` (override vitalício) e `moralles` (a própria plataforma). O banco tem **zero implantações abertas e zero assinaturas vivas** em qualquer org. A terceira org (`seu-japa`) não tem nada. Construir a fixture exige rodar antes o B1→B10 da **5a**.
+> 2. **Não há org legada disponível.** Os cenários C19–C22, C24e e C24j precisam de uma org com `whatsapp_legacy_grandfathered=true`; a única é `ren-sushi`, que o roteiro proíbe usar.
+> 3. **O roteiro exige ligar as duas flags** (§0.2, passos 3 e 6) — decisão do dono, deferida para a virada final.
 >
 > | | |
 > |---|---|
@@ -16,10 +30,10 @@
 > | `npm test` | ✅ **423/423** (baseline no início da fase era 265; +158 nesta fase: 5 núcleos puros novos) |
 > | `npm run typecheck` (`tsc -b`) | ✅ 0 erros |
 > | `npm run lint` | ✅ 0 erros, 22 warnings (pré-existentes, baseline inalterada) |
-> | Migrations 077, 078, 079, 080, 082, 083, 084 (082/083 são os crons dos 2 workers novos; 084 é o fix de segurança dos gates) | ✅ **criadas** — **NÃO aplicadas** (`db push` fica para o dono) |
-> | Deploy das Edge Functions afetadas | ❌ **não feito** — lista completa no checklist de redeploy do [CLAUDE.md](../../CLAUDE.md). **Ordem obrigatória: migrations ANTES do deploy do `manage-channels`** (Risco 8) |
+> | Migrations 077, 078, 079, 080, 082, 083, 084 (082/083 são os crons dos 2 workers novos; 084 é o fix de segurança dos gates) | ✅ **aplicadas em produção** 2026-07-30 20:01 UTC, com `--include-all`, depois da 085 |
+> | Deploy das Edge Functions afetadas | ✅ **26 deployadas** 2026-07-30, `manage-channels` por último (Risco 8 respeitado) |
 > | Gates `saas-shield-br` (os 6) | ✅ **rodados** — 5 PASS; `rls-auditor` FAIL com 1 bloqueante P1, **corrigido na migration 084**. Detalhe e achados abertos na seção "Gates de segurança" |
-> | Roteiro de sandbox (44 blocos, C1–C31 com sub-itens) | 📝 **escrito**, não executado — [FASE-5B-ROTEIRO-SANDBOX.md](FASE-5B-ROTEIRO-SANDBOX.md) |
+> | Roteiro de sandbox (44 blocos, C1–C31 com sub-itens) | 📝 **escrito, NÃO executado** — bloqueado por falta de fixture (exige o B1→B10 da 5a) e pela ativação das flags, decisão do dono |
 > | Merge em `main` + tag `billing-asaas/fase-5b` | ❌ **não feito** — só depois do sandbox validado e dos gates rodados |
 >
 > **As duas flags que esta fase liga terminam OFF:** `billing_invoice_ingestion` (nasce nesta fase, migration 080) e `whatsapp_service_enforcement` (existia OFF desde a 5a, migration 075 — esta fase é quem finalmente a consome). Ligá-las é decisão separada do dono, na ordem da §9 da spec (transcrita em passo a passo executável na §0.2 do roteiro de sandbox).
