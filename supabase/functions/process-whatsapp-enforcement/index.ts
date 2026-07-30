@@ -53,6 +53,24 @@ const supabase = createClient(
 
 const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
 
+/**
+ * Teto de assinaturas por execução. Mesmo raciocínio do `BATCH_LIMIT` do
+ * worker irmão `process-asaas-invoice-reconcile/index.ts`: sem `.limit()`
+ * (nem `.range()` em loop), o PostgREST trunca silenciosamente em
+ * `db-max-rows` (default 1000) — CLAUDE.md § Padrões de código. O resto
+ * sobra pra execução de amanhã DE PROPÓSITO (worker diário); atingir o teto
+ * é logado explicitamente, nunca um corte silencioso que lê como cobertura
+ * completa.
+ *
+ * `ORDER BY updated_at ASC, id ASC`: sem ordenação, `.limit()` do PostgREST
+ * devolve um subconjunto ARBITRÁRIO — acima do teto, o mesmo grupo podia
+ * voltar todo dia e o resto nunca ser reconciliado. Assinatura tocada por
+ * qualquer escrita (suspensão, restauração, troca de plano) volta pro fim da
+ * fila, e a que fica parada por mais tempo entra primeiro. Empate quebrado
+ * por `id` pra determinismo total.
+ */
+const BATCH_LIMIT = 200;
+
 // Reusa o event_type já coberto por TEMPLATE_BY_EVENT em
 // process-billing-notifications/index.ts — o design da fase (seção de
 // avisos) lista "ambiguidade de assinatura por categoria" como um dos
@@ -100,9 +118,12 @@ serve(async (req) => {
 
     const { data: subsRaw, error: subsErr } = await supabase
       .from("billing_subscriptions")
-      .select("id, organization_id, status, canceled_at, billing_plans!inner(category)")
+      .select("id, organization_id, status, canceled_at, updated_at, billing_plans!inner(category)")
       .eq("billing_plans.category", WHATSAPP_CATEGORY)
-      .neq("status", "canceled");
+      .neq("status", "canceled")
+      .order("updated_at", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(BATCH_LIMIT);
 
     if (subsErr) {
       jsonLog("error", { reqId, evt: "whatsapp_enforcement_query_failed", err: subsErr.message });
@@ -110,6 +131,9 @@ serve(async (req) => {
     }
 
     const subs = (subsRaw ?? []) as unknown as WhatsAppSub[];
+    if (subs.length === BATCH_LIMIT) {
+      jsonLog("warn", { reqId, evt: "whatsapp_enforcement_subs_capped", cap: BATCH_LIMIT });
+    }
 
     // Agrupar por organização é o que permite detectar ambiguidade SEM passar
     // por .maybeSingle() (que lançaria PGRST116 em vez de devolver uma
@@ -393,10 +417,17 @@ serve(async (req) => {
     };
 
     jsonLog("info", { reqId, evt: "whatsapp_enforcement_done", ...summary });
-    return new Response(JSON.stringify({ success: true, ...summary }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        success: true,
+        ...summary,
+        // Marcador de estágio degradado (mesmo padrão de
+        // process-asaas-invoice-reconcile): sem ele, uma execução que bateu
+        // no teto é indistinguível de uma que varreu tudo.
+        ...(subs.length === BATCH_LIMIT ? { subscriptions_capped: true } : {}),
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
   } catch (err) {
     jsonLog("error", { reqId, evt: "whatsapp_enforcement_error", err: String(err) });
     return new Response(JSON.stringify({ error: "internal" }), { status: 500 });

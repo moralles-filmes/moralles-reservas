@@ -311,6 +311,7 @@ Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vaul
 - **`verify_jwt=true` explícito** pra toda EF de super-admin (`manage-*`, `whatsapp-health`) — defesa em profundidade.
 - **Idempotência** via UNIQUE `(reservation_id, kind)` em `notifications_sent`. Workers lêem `reservation_message_templates` (`customized=true`) ou defaults hardcoded — **`defaultBody` em `useReservationTemplates.ts` precisa ficar sincronizado com `DEFAULT_*_BODY` dos workers** (worker é autoritativo).
 - **`unitCache` zerado no início de cada invocação** — settings novos da UI refletem na próxima execução mesmo em EF quente.
+- **Toda função `trigger_*` nova precisa de `revoke all ... from public, anon, authenticated`.** `CREATE FUNCTION` concede `EXECUTE` a `PUBLIC` por padrão e o schema `public` é exposto ao PostgREST com a anon key. [20260727100600_084_revoke_cron_trigger_execute.sql](supabase/migrations/20260727100600_084_revoke_cron_trigger_execute.sql).
 
 ---
 
