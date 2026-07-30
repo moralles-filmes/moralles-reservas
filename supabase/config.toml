@@ -142,3 +142,10 @@ verify_jwt = false
 # Painel da implantação do WhatsApp (super-admin, com uma action client-friendly)
 [functions.manage-whatsapp-implementations]
 verify_jwt = true
+
+# Worker: suspende/restaura o serviço de WhatsApp por inadimplência da
+# mensalidade da instância (pg_cron diário 11:00 UTC). Obrigatório explicitar
+# — CLI >=2.95 default vira true e o gateway responde 401 antes do
+# requireInternalAuth, cron silencia.
+[functions.process-whatsapp-enforcement]
+verify_jwt = false
