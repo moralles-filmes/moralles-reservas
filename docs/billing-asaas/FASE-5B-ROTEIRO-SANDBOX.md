@@ -399,6 +399,76 @@ consequência em tenant real. Desenho dessa janela em
 **A fase não recebe merge/tag como rollout completo do enforcement**, e a conclusão não deve ser
 apresentada como "44 blocos concluídos" enquanto C15–C24 não forem executados.
 
+## 0.9 Limpeza da fixture — executada em 2026-07-31
+
+Regra aplicada: **nenhum registro financeiro apagado.** Cobrança, fatura, implantação, evento e
+auditoria permanecem. A opção de **aguardar o ciclo natural** (cobrança em 2026-08-31, D+6 em
+~2026-09-06) foi considerada e **descartada** — risco de notificação futura, fixture ativa por um
+mês, dependência de acompanhamento manual, conflito com a política de limpeza, baixa
+reprodutibilidade e impossibilidade de virar teste recorrente.
+
+### Assinatura `sub_qn6dpom3q6xr3r8s`
+
+Motivo registrado: `SANDBOX_FASE_5B_FIXTURE_CLEANUP_PROVIDER_BLOCKED`.
+
+| campo | antes | depois |
+|---|---|---|
+| status no Asaas | `ACTIVE`, `deleted: false` | `INACTIVE`, `deleted: true` |
+| `billingType` · valor · ciclo | `BOLETO` · R$ 149,00 · `MONTHLY` | inalterados |
+| `nextDueDate` | `2026-08-31` | atributo obsoleto — **nenhuma cobrança gerada ou agendada** |
+| cobrança `pay_u47jujtp7u4fm19l` | `CONFIRMED` | **preservada**, `deleted: false` |
+| assinaturas ativas do customer | 1 | **0** |
+| linha interna `26d60705-…` | `active` | `canceled`, `canceled_at 18:34:52Z` |
+| `organizations.billing_status` | `trialing` | **`trialing`** |
+
+Encerrada pelo painel do Asaas (`DELETE`, que o provedor aplica como desativação com
+soft-delete) e **depois** conciliada no banco pela action admin `cancel_subscription` com
+`at_period_end: false`. Os dois passos foram necessários — ver
+[08-BUG-CANCELAMENTO-ASAAS-NAO-PROPAGA.md](08-BUG-CANCELAMENTO-ASAAS-NAO-PROPAGA.md).
+
+**Evidência ao vivo da guarda de categoria:** cancelar imediatamente uma assinatura
+`WHATSAPP_SUBSCRIPTION` **não** escreveu `organizations.billing_status`. Sem o `isSystemSubscription`
+do `cancel_subscription`, a organização inteira teria ido para `canceled` — o cliente perderia o
+sistema por desistir da automação. É um dos poucos comportamentos críticos desta fase observado
+de fato, e não por leitura de código.
+
+### Grandfathering da fixture LEGACY
+
+Revogado pela action admin `revoke_whatsapp_grandfathering` (não SQL): `ADMIN_REVOCATION`,
+`2026-07-31 18:42:08Z`, operador `52287191-…`, nota `SANDBOX_FASE_5B_LEGACY_FIXTURE`.
+
+O motivo textual pedido não cabia na coluna: o CHECK `organizations_wa_grandfather_revoke_chk`
+(migration 079) só admite `FIRST_PAID_SUBSCRIPTION`, `ADMIN_MIGRATION`, `REPLACED_BY_OVERRIDE` e
+`ADMIN_REVOCATION`. Texto livre vai no `note`.
+
+> **Lacuna de alcance da UI (não é bug de comportamento).** A única tela que expõe conceder/revogar
+> grandfathering é o detalhe de implantação, cuja query parte de `whatsapp_implementations` —
+> limite já documentado em [WhatsappImplementations.tsx:108](../../src/pages/platform/WhatsappImplementations.tsx).
+> Grandfathering existe justamente para quem **nunca** contratou, ou seja, organizações **sem**
+> implantação: a tela não alcança exatamente a população que a feature endereça. Hoje só é
+> operável por console. Admin sem acesso a console não consegue revogar.
+
+### Estado final verificado
+
+| item | resultado |
+|---|---|
+| `billing_invoice_ingestion` | `true` — ciclo observado seguiu limpo |
+| `billing_invoice_ingestion_since` | `2026-07-31` — preservada |
+| `whatsapp_service_enforcement` | **`false`** |
+| `whatsapp_implementation_flow` · `whatsapp_subscription_checkout` | `true` → **`false`** |
+| assinaturas em qualquer estado ativo | **nenhuma** (4 linhas, todas `canceled`) |
+| `notification_outbox` pendente | **0** |
+| `billing_events` não processados | **0** |
+| canais Z-API das fixtures | **0** (o único canal do banco é de tenant real) |
+| tenants reais | `Moralles`, `Ren Sushi`, `Seu Japa Teste` — todos `active`, intocados |
+| fixtures PAID e LEGACY | `trialing`, preservadas, sem override e sem concessão ativa |
+
+Pendência declarada, não resolvida por decisão: **uma linha `billing_notifications`
+(`implementation_paid`, `pending`) da fixture PAID**. Não envia — `billing_notifications_dispatch`
+está `false`. Se a flag for ligada no futuro, dispara um e-mail para
+`morallesfilms+sandbox5b-paid@gmail.com` (contato da equipe). Mantida em vez de apagada porque é
+registro de fila de uma fixture cujo histórico se decidiu preservar.
+
 ## Resumo dos cenários (preencher "Real" ao executar)
 
 | # | Cenário | Esperado | Real |
