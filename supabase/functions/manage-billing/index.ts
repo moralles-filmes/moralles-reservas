@@ -649,6 +649,15 @@ serve(async (req) => {
           billing_customer_id: customer.id,
           billing_plan_id: plan_id,
           stripe_subscription_id: stripeSubscriptionId,
+          // `provider` tem default 'stripe' no banco (migration 063). Deixar o
+          // default valer numa assinatura sem contraparte na Stripe (boleto/PIX,
+          // ou customer sem stripe_customer_id) produz uma linha que se declara
+          // Stripe e não tem id nenhum — `decideCancelTarget` a recusa como
+          // `unroutable` e ela fica incancelável, travando a org, já que aqui em
+          // cima o insert bloqueia criar outra enquanto existir não-cancelada.
+          // A honestidade mora na origem: sem id externo, é assinatura `manual`.
+          provider: stripeSubscriptionId ? "stripe" : "manual",
+          provider_subscription_id: stripeSubscriptionId,
           status: trial_days ? "trialing" : "active",
           payment_method,
           trial_end: trialEnd,
@@ -686,11 +695,17 @@ serve(async (req) => {
 
       const { data: sub } = await supabase
         .from("billing_subscriptions")
-        .select("id, provider, provider_subscription_id, stripe_subscription_id, organization_id")
+        .select("id, provider, provider_subscription_id, stripe_subscription_id, organization_id, status")
         .eq("id", subscription_id)
         .single();
 
       if (!sub) return jsonResponse(req, { error: "Assinatura não encontrada." }, 404);
+      // Reentrância: aba velha, duplo clique, retry. Sem isto, recancelar uma
+      // linha já cancelada reescreve `canceled_at` e — pior — re-executa a
+      // cascata abaixo, derrubando uma org que já assinou de novo e está em dia.
+      if (sub.status === "canceled") {
+        return jsonResponse(req, { error: "Assinatura já cancelada." }, 400);
+      }
 
       const target = decideCancelTarget(sub);
       if (target.kind === "unroutable") {
@@ -964,6 +979,21 @@ serve(async (req) => {
           subId: subscription_id, provider: target.provider, effective, err: updErr.message,
         });
         return jsonResponse(req, { error: "Assinatura cancelada no provedor, mas o registro local falhou. Ver logs." }, 500);
+      }
+
+      // Mesma cascata da action admin, e pelo mesmo motivo: `billing_status` é a
+      // coluna autoritativa do BillingGuard. Sem isto, cancelamento imediato
+      // (Asaas) para de cobrar e NUNCA encerra o acesso — nenhum worker fecha a
+      // brecha, porque assinatura INACTIVE não gera mais fatura pra vencer. Só
+      // assinatura de SISTEMA cancela a org: desistir da instância de WhatsApp
+      // não pode derrubar o sistema inteiro. `sub.organization_id` (linha já
+      // conferida contra o payload acima), nunca o `organization_id` do body.
+      // `/g/:slug/cobranca` é whitelist do BillingGuard, então o lojista
+      // continua alcançando esta tela pra reassinar.
+      if (effective === "immediate" && await isSystemSubscription(supabase, subscription_id)) {
+        await supabase.from("organizations").update({
+          billing_status: "canceled",
+        }).eq("id", sub.organization_id);
       }
 
       jsonLog("info", {
