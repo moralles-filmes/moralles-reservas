@@ -2,6 +2,20 @@
 
 > Guia operacional para o administrador da plataforma. Verificado contra a documentação oficial em 2026-07-16 (`developer.z-api.io/partner/*`). **Reconfirmar o contrato exato dos endpoints no momento da implementação da Fase 6** — a doc de parceiro muda com frequência.
 
+---
+
+## ⛔ RESPOSTAS OFICIAIS DO SUPORTE Z-API (2026-07-31) — leia antes de projetar a Fase 6
+
+As três perguntas do passo 2 foram feitas e respondidas. **As respostas invalidam a premissa central da Fase 6 como estava planejada** (provisionamento e cancelamento via API):
+
+1. **Não existe rota de API para cancelar assinatura.** O cancelamento é **manual pelo painel** (Instâncias → clicar na instância → "Cancelar assinatura"). E **não é imediato**: a instância continua ativa até o fim do ciclo já pago; o cancelamento só impede a **próxima** cobrança.
+2. **Não há sandbox de parceiro.** O único mecanismo de teste é o **trial de 2 dias grátis, válido apenas na 1ª instância criada na conta** — ou seja, não há como testar o fluxo da instância nº 2 em diante sem pagar.
+3. **No Plano Partner o pagamento é único e mensal**, calculado sobre o total de instâncias (preço por instância cai com o volume). Difere do **Ultimate**, onde cada instância é cobrada individualmente.
+
+**Decisão comercial do dono (2026-07-31): o Plano Partner não compensa agora** — ele só passa a fazer sentido a partir de ~10 instâncias, e hoje há 1 canal. Portanto a Fase 6 assume o cenário que o próprio plano previu como alternativa: **"sem parceria confirmada, a fase vira fluxo manual assistido (admin provisiona, sistema rastreia estados)"**.
+
+**Consequência de modelagem que a Fase 6 precisa resolver:** cancelar no painel da Z-API interrompe o **custo** da plataforma, não o **serviço** do cliente (a instância segue viva até o fim do ciclo pago). Quem interrompe o serviço é o enforcement interno da Fase 5b. São duas ações, com dois relógios diferentes, e não podem ser tratadas como uma só.
+
 ## Como o programa funciona (modelo Z-API)
 
 O programa de Parceiro Integrador permite criar, assinar e cancelar instâncias **via API**, sem passar pelo painel manualmente. O caminho tem 2 estágios:
