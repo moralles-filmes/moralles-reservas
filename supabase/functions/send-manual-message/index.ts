@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
+import { clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { jsonLog, sanitizePhone } from "../_shared/security.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -17,6 +18,10 @@ serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+
+  // Cache do gate é por invocação — zera aqui, mesmo padrão do unitCache dos
+  // workers, senão um isolate quente serve estado de suspensão velho.
+  clearWhatsAppGateCache();
 
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {

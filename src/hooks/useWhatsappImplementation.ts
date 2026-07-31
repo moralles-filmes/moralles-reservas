@@ -110,6 +110,29 @@ export const useRevokeWhatsappOverride = () =>
     action: "revoke_whatsapp_override", ...v,
   }));
 
+/**
+ * Encerra o grandfathering legado por decisão administrativa (Task 20).
+ * `reason` decide o rótulo: ADMIN_MIGRATION (empresa migrada pro modelo
+ * comercial) ou ADMIN_REVOCATION (revogação pura). Terminal — não existe
+ * "desfazer", só `useGrantWhatsappGrandfathering` (reconcessão explícita).
+ */
+export const useRevokeWhatsappGrandfathering = () =>
+  useImplementationMutation<{
+    organization_id: string;
+    reason: "ADMIN_MIGRATION" | "ADMIN_REVOCATION";
+    note: string;
+  }>((v) => ({ action: "revoke_whatsapp_grandfathering", ...v }));
+
+/**
+ * Reconcede o grandfathering — ação explícita, nunca automática: a revogação
+ * é terminal justamente para que voltar a ser legado exija um humano
+ * decidindo (Task 20).
+ */
+export const useGrantWhatsappGrandfathering = () =>
+  useImplementationMutation<{ organization_id: string; note: string }>((v) => ({
+    action: "grant_whatsapp_grandfathering", ...v,
+  }));
+
 export function useWhatsappOverrides(organizationId: string | undefined) {
   return useQuery({
     queryKey: ["whatsapp-overrides", organizationId],

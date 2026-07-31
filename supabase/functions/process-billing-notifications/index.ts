@@ -94,6 +94,86 @@ const TEMPLATE_BY_EVENT: Record<
       `Obrigado!`,
     ]),
   }),
+  // Lembretes da mensalidade da INSTÂNCIA de WhatsApp (Task 18, Fase 5b) —
+  // vocabulário próprio, separado do da mensalidade de SISTEMA acima. A razão
+  // de existir: "o acesso será suspenso" é verdade pra fatura de sistema e
+  // seria mentira pra esta, que só desliga a automação de WhatsApp. Todo
+  // parágrafo aqui deixa explícito que o resto do sistema (reservas, agenda,
+  // clientes, relatórios) continua funcionando — sem isso o dono do
+  // restaurante lê a palavra "suspenso" e entende que o sistema inteiro vai
+  // parar. `process-billing-reminders` decide o prefixo `whatsapp_` do
+  // event_type; estas 4 entradas cobrem a mesma escada D0/D+1/D+3/D+5 de
+  // `REMINDER_OFFSETS` (billing-delinquency-core.ts) — uma escada só, dois
+  // vocabulários. Escalada visível igual à irmã de sistema (fix round 1, Task
+  // 18): D0/D+1 sem consequência, D+3 já avisa que a automação será
+  // suspensa, D+5 é o último aviso — só o VOCABULÁRIO muda (nunca "acesso"),
+  // não o formato da escalada. `d.amountBrl`/`payLine(d.paymentUrl)` seguem
+  // exatamente o padrão das irmãs de sistema acima (mesmo fix round: um
+  // lembrete de cobrança sem valor nem link pra pagar é quase inútil).
+  whatsapp_payment_pending: (d) => ({
+    subject: "A mensalidade da automação de WhatsApp vence hoje",
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} vence hoje. O restante do sistema não é afetado por esta cobrança. Valor: ${d.amountBrl}. ${payLine(d.paymentUrl)}`,
+    html: wrapHtml("A mensalidade da automação de WhatsApp vence hoje", [
+      `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> vence hoje.`,
+      `O restante do sistema não é afetado por esta cobrança.`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      payLine(d.paymentUrl),
+    ]),
+  }),
+  whatsapp_overdue_d1: (d) => ({
+    subject: "Mensalidade da automação em atraso",
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso há 1 dia. O restante do sistema não é afetado por esta cobrança. Valor: ${d.amountBrl}. ${payLine(d.paymentUrl)}`,
+    html: wrapHtml("Mensalidade da automação em atraso", [
+      `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso há 1 dia.`,
+      `O restante do sistema não é afetado por esta cobrança.`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      payLine(d.paymentUrl),
+    ]),
+  }),
+  whatsapp_overdue_d3: (d) => ({
+    subject: "Mensalidade da automação em atraso (3 dias)",
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso há 3 dias. Se não for regularizada, a automação de WhatsApp será suspensa — reservas, agenda, painel e relatórios continuam funcionando normalmente. Valor: ${d.amountBrl}. ${payLine(d.paymentUrl)}`,
+    html: wrapHtml("Mensalidade da automação em atraso (3 dias)", [
+      `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso há 3 dias.`,
+      `Se não for regularizada, a automação de WhatsApp será <strong>suspensa</strong> — reservas, agenda, painel e relatórios continuam funcionando normalmente.`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      payLine(d.paymentUrl),
+    ]),
+  }),
+  whatsapp_overdue_d5: (d) => ({
+    subject: "Último aviso antes da suspensão da automação de WhatsApp",
+    text: `A mensalidade da automação de WhatsApp de ${d.orgName} está em atraso. Amanhã os envios e o atendimento automático pelo WhatsApp serão suspensos. Reservas, agenda, painel e relatórios continuam funcionando normalmente. Valor: ${d.amountBrl}. ${payLine(d.paymentUrl)}`,
+    html: wrapHtml("Último aviso antes da suspensão da automação de WhatsApp", [
+      `A mensalidade da automação de WhatsApp de <strong>${d.orgName}</strong> está em atraso.`,
+      `Amanhã os envios e o atendimento automático pelo WhatsApp serão suspensos. <strong>Reservas, agenda, painel e relatórios continuam funcionando normalmente.</strong>`,
+      `Valor: <strong>${d.amountBrl}</strong>.`,
+      payLine(d.paymentUrl),
+    ]),
+  }),
+  // Produzido por process-whatsapp-enforcement (Task 17), invoiceId sempre
+  // null (a suspensão é por estado da assinatura, não por uma fatura
+  // específica) — por isso não referenciar d.amountBrl aqui, chega zerado.
+  // `payLine(null)` (fix round 1, Task 18: verificado que produz um CTA
+  // genérico utilizável, "Acesse o painel para regularizar.") substitui um
+  // "regularize a mensalidade" sem nenhum ponteiro de onde.
+  whatsapp_suspended: (d) => ({
+    subject: "Automação de WhatsApp suspensa",
+    text: `A automação de WhatsApp de ${d.orgName} foi suspensa por falta de pagamento. O sistema segue funcionando: reservas, agenda, clientes e relatórios não foram afetados. Regularize a mensalidade para retomar os envios. ${payLine(d.paymentUrl)}`,
+    html: wrapHtml("Automação de WhatsApp suspensa", [
+      `A automação de WhatsApp de <strong>${d.orgName}</strong> foi suspensa por falta de pagamento.`,
+      `O sistema segue funcionando: reservas, agenda, clientes e relatórios não foram afetados. Regularize a mensalidade para retomar os envios.`,
+      payLine(d.paymentUrl),
+    ]),
+  }),
+  // Mesma origem (Task 17) e mesmo motivo de não usar amountBrl/paymentUrl.
+  whatsapp_restored: (d) => ({
+    subject: "Automação de WhatsApp reativada",
+    text: `Pagamento confirmado. A automação de WhatsApp de ${d.orgName} voltou a funcionar. Mensagens que ficaram pendentes durante a suspensão são reavaliadas antes de sair — as que perderam validade não são enviadas.`,
+    html: wrapHtml("Automação de WhatsApp reativada", [
+      `Pagamento confirmado. A automação de WhatsApp de <strong>${d.orgName}</strong> voltou a funcionar.`,
+      `Mensagens que ficaram pendentes durante a suspensão são reavaliadas antes de sair — as que perderam validade não são enviadas.`,
+    ]),
+  }),
   // Aviso INTERNO (vai para o admin da plataforma, não para o cliente): a
   // implantação foi paga e entra na fila de execução. Sem esta entrada o
   // dispatcher marcaria a linha como failed/unknown_event_type e o aviso
@@ -105,6 +185,110 @@ const TEMPLATE_BY_EVENT: Record<
       `<strong>${d.orgName}</strong> pagou a implantação do WhatsApp.`,
       `Valor: <strong>${d.amountBrl}</strong>.`,
       `Agende a configuração no painel de implantações.`,
+    ]),
+  }),
+  // Aviso INTERNO (vai para o admin da plataforma, não para o cliente).
+  // GENERALIZADO na Task 18 (Fase 5b) — este `event_type` é compartilhado por
+  // mais de um gatilho, e o texto não pode presumir qual foi:
+  //   1. `asaas-billing-events-apply.ts` (Task 8): duas fontes da escada de
+  //      correlação divergiram de organização DENTRO da MESMA passagem
+  //      (`resolveCorrelation` devolveu `kind: "conflict"`) — evento em falha
+  //      na fila do reconcile, log `evt: asaas_correlation_ambiguity`.
+  //   2. `process-whatsapp-enforcement` (Task 17): mais de uma assinatura
+  //      `WHATSAPP_SUBSCRIPTION` viva para a mesma organização — nada a ver
+  //      com `billing_events` nem com o reconcile do Asaas, log
+  //      `evt: whatsapp_ambiguous_subscription`.
+  // A versão anterior deste template nomeava "evento de pagamento do Asaas" e
+  // mandava o admin olhar `billing_events` — certo para o gatilho 1, errado
+  // para o 2 (o admin ia procurar no lugar errado). Por isso o texto agora
+  // fala em "evento de cobrança" (cobre os dois) e aponta pro painel da
+  // plataforma de forma genérica, nunca por uma tabela específica — evento
+  // novo que reusar esta chave continua acertando o texto. Detalhe de QUAL
+  // gatilho ocorreu e QUAIS organizações/assinaturas fica só nos logs do
+  // `evt` correspondente, nunca no corpo do e-mail (`d.orgName` é só endereço
+  // de conveniência — a coluna organization_id de billing_notifications é NOT
+  // NULL — não necessariamente quem gerou a ambiguidade).
+  // Aviso INTERNO: `manage-billing` cancelou a assinatura NO PROVEDOR e a
+  // escrita local falhou logo depois. É a única divergência de cancelamento
+  // que o nosso código produz sozinho (as outras nascem de alguém mexer no
+  // painel do provedor), e o efeito é assimétrico de propósito: ninguém mais
+  // será cobrado, mas o banco segue dizendo que a assinatura está viva — logo
+  // o BillingGuard continua liberando acesso. Exige conferência humana, não
+  // retry: o provedor já cancelou, repetir não desfaz nada.
+  // Qual assinatura e qual erro do Postgres ficam nos logs
+  // (`evt: billing_cancel_local_write_failed` e a variante `_by_owner_`),
+  // nunca no corpo do e-mail.
+  admin_cancel_local_write_failed: (d) => ({
+    subject: `[interno] Cancelamento divergente — ${d.orgName}`,
+    text: `A assinatura da organização ${d.orgName} foi cancelada no provedor de pagamento, mas o registro local NÃO foi atualizado. O cliente deixou de ser cobrado e o sistema ainda o considera ativo. Concilie manualmente: confira o estado da assinatura no provedor e atualize o registro no painel da plataforma.`,
+    html: wrapHtml("Cancelamento divergente", [
+      `A assinatura da organização <strong>${d.orgName}</strong> foi cancelada <strong>no provedor de pagamento</strong>, mas o registro local <strong>não</strong> foi atualizado.`,
+      `Consequência: o cliente deixou de ser cobrado e o sistema ainda o considera ativo.`,
+      `Concilie manualmente — confira o estado da assinatura no provedor e atualize o registro no painel da plataforma.`,
+    ]),
+  }),
+  admin_correlation_ambiguity: (d) => ({
+    subject: `[interno] Evento de cobrança precisa de conferência — ${d.orgName}`,
+    text: `Um evento de cobrança da organização ${d.orgName} precisa de conferência manual antes de qualquer ação automática. Verifique o painel da plataforma e os logs do evento para os detalhes.`,
+    html: wrapHtml("Evento de cobrança precisa de conferência", [
+      `Um evento de cobrança da organização <strong>${d.orgName}</strong> precisa de <strong>conferência manual</strong> antes de qualquer ação automática.`,
+      `Verifique o painel da plataforma e os logs do evento para os detalhes.`,
+    ]),
+  }),
+  // Aviso INTERNO (Fix round 1, achado Important #2): o carimbo de
+  // `billing_events.organization_id` de uma passagem ANTERIOR do aplicador
+  // divergiu da resolução da escada NESTA passagem (`comparePreviousStamp`
+  // !== MATCH). Cobre os dois sub-casos — corrigido automaticamente (fonte
+  // atual mais forte que a anterior, ou fonte anterior desconhecida) ou
+  // sinalizado para revisão (escada não resolveu desta vez, ou — hoje
+  // inalcançável — fonte anterior conhecida de rank superior). `d.orgName`
+  // é só para o admin achar o evento; qual dos dois sub-casos ocorreu está
+  // no `evt: asaas_previous_stamp_divergence` dos logs, nunca no e-mail.
+  admin_correlation_org_restamped: (d) => ({
+    subject: "Evento Asaas com organização recarimbada — conferir",
+    text: `Um evento de pagamento do Asaas já tinha uma organização carimbada de uma passagem anterior e a resolução desta passagem divergiu (referência: ${d.orgName}). Confira nos logs (evt: asaas_previous_stamp_divergence) se a correção foi aplicada automaticamente ou se aguarda revisão.`,
+    html: wrapHtml("Evento Asaas com organização recarimbada", [
+      `Um evento de pagamento do Asaas já tinha uma organização carimbada de uma passagem anterior, e a resolução desta passagem <strong>divergiu</strong>.`,
+      `Referência: <strong>${d.orgName}</strong>.`,
+      `Confira nos logs (<code>evt: asaas_previous_stamp_divergence</code>) se a correção foi aplicada automaticamente ou se aguarda revisão.`,
+    ]),
+  }),
+  // Aviso INTERNO (vai para o admin da plataforma, não para o cliente —
+  // Fase 5b Task 11, process-asaas-invoice-reconcile): a varredura por
+  // assinatura achou uma fatura `open` cujo `amount_cents` diverge do `value`
+  // atual da cobrança no Asaas. A fatura foi RETIDA (`enforcement_hold`) sem
+  // corrigir nenhum dos dois lados — sem esta entrada o dispatcher marcaria a
+  // linha como failed/unknown_event_type e o aviso sumiria, deixando a
+  // divergência presa sem ninguém saber. `d.amountBrl` é o valor LOCAL (o que
+  // `billing_invoices.amount_cents` registra); o valor do provedor só está
+  // nos logs (evt: asaas_invoice_reconcile_value_mismatch) — nunca inventar
+  // qual dos dois está certo no corpo do e-mail.
+  admin_invoice_value_mismatch: (d) => ({
+    subject: "Fatura Asaas com valor divergente — requer conferência",
+    text: `Uma fatura de ${d.orgName} tem valor divergente entre billing_invoices (${d.amountBrl}) e a cobrança correspondente no Asaas. A fatura foi retida (enforcement_hold) e não entra na régua de inadimplência até revisão manual — confira nos logs (evt: asaas_invoice_reconcile_value_mismatch) antes de liberar.`,
+    html: wrapHtml("Fatura Asaas com valor divergente", [
+      `Uma fatura de <strong>${d.orgName}</strong> tem valor divergente entre <code>billing_invoices</code> (<strong>${d.amountBrl}</strong>) e a cobrança correspondente no Asaas.`,
+      `A fatura foi <strong>retida</strong> (enforcement_hold) e não entra na régua de inadimplência até revisão manual.`,
+      `Confira nos logs (<code>evt: asaas_invoice_reconcile_value_mismatch</code>) antes de liberar.`,
+    ]),
+  }),
+  // Aviso INTERNO (Fix round 1, achado 3 — decisão do dono): a varredura por
+  // assinatura achou uma cobrança estornada/contestada/cancelada ou de status
+  // desconhecido no Asaas, correspondente a uma fatura `open` local. A fatura
+  // foi CONGELADA (enforcement_hold='MANUAL_REVIEW') pra tirá-la da régua de
+  // inadimplência sem apagar o registro nem marcar como paga sozinha — sem
+  // esta entrada o dispatcher marcaria a linha como failed/unknown_event_type
+  // e o aviso sumiria. `d.amountBrl` é o valor LOCAL da fatura; o
+  // `remoteStatus` (REFUNDED/CHARGEBACK_*/status desconhecido) só está nos
+  // logs (evt: asaas_invoice_reconcile_non_collectible_hold) — o e-mail não
+  // tenta adivinhar se foi estorno, chargeback ou status novo da API.
+  admin_invoice_non_collectible_hold: (d) => ({
+    subject: "Fatura Asaas retida — cobrança estornada, contestada ou de status desconhecido",
+    text: `Uma fatura de ${d.orgName} (${d.amountBrl}) tem cobrança correspondente no Asaas com status de estorno, chargeback ou desconhecido. A fatura foi retida (enforcement_hold=MANUAL_REVIEW) e não entra na régua de inadimplência — confira nos logs (evt: asaas_invoice_reconcile_non_collectible_hold) para o status exato antes de qualquer ação.`,
+    html: wrapHtml("Fatura Asaas retida — revisão manual", [
+      `Uma fatura de <strong>${d.orgName}</strong> (<strong>${d.amountBrl}</strong>) tem cobrança correspondente no Asaas com status de <strong>estorno, chargeback ou desconhecido</strong>.`,
+      `A fatura foi <strong>retida</strong> (enforcement_hold=MANUAL_REVIEW) e não entra na régua de inadimplência.`,
+      `Confira nos logs (<code>evt: asaas_invoice_reconcile_non_collectible_hold</code>) para o status exato antes de qualquer ação.`,
     ]),
   }),
 };

@@ -18,6 +18,8 @@ import {
   type InboundMediaKind,
 } from "../_shared/whatsapp-providers.ts";
 import { parseStatusCallback, type StatusUpdate } from "../_shared/whatsapp-status.ts";
+import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
+import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
@@ -435,6 +437,27 @@ async function getOrCreateConversation(
   return newConv;
 }
 
+// Chama a RPC atômica (single UPDATE com `messages || jsonb_build_array(msg)`)
+// e devolve se a escrita foi confirmada — `false` em erro, após o mesmo warn
+// log que já existia. Extraído de `appendToConversation` para que callers que
+// precisam de um sinal de sucesso real (ex.: `persistInboundOnly`) não dependam
+// do array "previsão local" que `appendToConversation` sempre retorna.
+// deno-lint-ignore no-explicit-any
+async function appendConversationMessageRpc(
+  convId: string,
+  newMsg: { role: "user" | "assistant" | "human"; content: string; timestamp: string },
+): Promise<boolean> {
+  const { error } = await supabase.rpc("append_conversation_message", {
+    p_conversation_id: convId,
+    p_message: newMsg,
+  });
+  if (error) {
+    jsonLog("warn", { evt: "append_conversation_message_failed", convId, err: error.message });
+    return false;
+  }
+  return true;
+}
+
 // deno-lint-ignore no-explicit-any
 async function appendToConversation(
   convId: string,
@@ -444,19 +467,72 @@ async function appendToConversation(
   role: "user" | "assistant" | "human",
   content: string,
 ) {
-  // Append atômico via RPC (single UPDATE com `messages || jsonb_build_array(msg)`):
-  // evita perda quando dois processos appendam simultaneamente (inbound + worker).
-  // O array retornado é uma "previsão local" mantida pra compat com callers que
-  // encadeiam appendToConversation (ex.: comment intercept → user + assistant).
+  // Append atômico via RPC: evita perda quando dois processos appendam
+  // simultaneamente (inbound + worker). O array retornado é uma "previsão
+  // local" mantida pra compat com callers que encadeiam appendToConversation
+  // (ex.: comment intercept → user + assistant) — o sucesso/falha real da RPC
+  // é só logado (warn), nunca propagado; esse contrato não muda aqui.
   const newMsg = { role, content, timestamp: new Date().toISOString() };
-  const { error } = await supabase.rpc("append_conversation_message", {
-    p_conversation_id: convId,
-    p_message: newMsg,
-  });
-  if (error) {
-    jsonLog("warn", { evt: "append_conversation_message_failed", convId, err: error.message });
-  }
+  await appendConversationMessageRpc(convId, newMsg);
   return [...existing, newMsg];
+}
+
+/**
+ * Grava a mensagem recebida na conversa e RETORNA — sem agente, sem resposta
+ * automática, sem ferramenta, sem envio. Chamado pelos gates de billing, que
+ * silenciam a IA mas não podem fazer o cliente sumir do histórico: o operador
+ * precisa ver o que chegou quando o serviço voltar (§6.10 da spec).
+ *
+ * RAMO-FOLHA DE PROPÓSITO: nada aqui é movido para antes dos gates. Não roda
+ * interceptador de avaliação, não roda handoff, não dorme no debounce e não
+ * reivindica `try_claim_conversation_for_ai` — a ordem do fluxo concorrente
+ * fica intocada. A deduplicação por `providerMessageId` já aconteceu a
+ * montante (INSERT em `processed_messages`), então reentrega do mesmo id nem
+ * chega aqui; e o append é atômico pela RPC `append_conversation_message`.
+ *
+ * NUNCA LANÇA. Perder a persistência é ruim; devolver não-2xx é pior — faria o
+ * provedor reentregar, e reentrega não recupera nada neste caminho. Devolve se
+ * conseguiu, para o caller registrar em `meta`.
+ */
+async function persistInboundOnly(args: {
+  requestId: string;
+  organizationId: string;
+  unitId: string;
+  phone: string;
+  contactName: string | null;
+  text: string;
+  chatLid: string | null;
+}): Promise<boolean> {
+  try {
+    if (!args.organizationId || !args.unitId) return false;
+
+    const { data: existing } = await supabase
+      .from("customers")
+      .select("id")
+      .eq("organization_id", args.organizationId)
+      .eq("phone", args.phone)
+      .maybeSingle();
+
+    let customerId = existing?.id as string | undefined;
+    if (!customerId) {
+      const { data: inserted } = await supabase
+        .from("customers")
+        .insert({ phone: args.phone, name: args.contactName ?? args.phone, organization_id: args.organizationId })
+        .select("id")
+        .single();
+      customerId = inserted?.id as string | undefined;
+    }
+    if (!customerId) return false;
+
+    const conv = await getOrCreateConversation(customerId, args.unitId, args.contactName ?? undefined, args.chatLid);
+    if (!conv) return false;
+
+    const newMsg = { role: "user" as const, content: args.text, timestamp: new Date().toISOString() };
+    return await appendConversationMessageRpc(conv.id, newMsg);
+  } catch (e) {
+    jsonLog("warn", { requestId: args.requestId, evt: "persist_inbound_only_failed", err: String(e) });
+    return false;
+  }
 }
 
 function mediaPlaceholder(kind: InboundMediaKind): string {
@@ -1102,6 +1178,12 @@ serve(async (req) => {
   const requestId = genRequestId();
   const t0 = Date.now();
 
+  // Cache do gate de serviço de WhatsApp é por invocação — zera aqui, mesmo
+  // padrão do unitCache dos workers e do clearWhatsAppGateCache() nas EFs de
+  // envio (Task 14), senão um isolate quente serve estado de suspensão velho
+  // depois de o cliente pagar.
+  clearWhatsAppGateCache();
+
   // Estado mutável que vamos completar conforme avançamos no handler — usado
   // pelo finalizador (recordExecution) para registrar a execução de forma
   // consistente, mesmo em early returns.
@@ -1322,6 +1404,29 @@ serve(async (req) => {
         return new Response("ok");
       }
 
+      // Gate de serviço, nas duas dimensões (§6.5 da spec). Vem DEPOIS do
+      // append na conversa — a mensagem recebida nunca se perde — e ANTES do
+      // sendOutbound: bloqueado significa ZERO chamada à Z-API. Reusa o helper
+      // central; não reimplementa os sete estados.
+      if (orgId2) {
+        const waGate = await resolveWhatsAppGateByOrg(supabase, orgId2);
+        const verdict = decideInboundAutoReply({
+          systemBlocked: waGate.systemBlocked,
+          enforcedSending: waGate.enforced.sending,
+        });
+        if (verdict !== "REPLY") {
+          const outcome = verdict === "SILENT_SYSTEM_BLOCKED"
+            ? "org_billing_blocked"
+            : "whatsapp_service_suspended";
+          jsonLog("warn", {
+            requestId, evt: "media_reply_suppressed", unitId, organizationId: orgId2,
+            state: waGate.state, reason: waGate.reason, verdict,
+          });
+          await finish(outcome, undefined, { media: true, mediaKind: media.mediaKind, verdict });
+          return new Response("ok");
+        }
+      }
+
       const sendRes = await sendOutbound(provider, credentials, { toPhone: mediaPhone, text: MEDIA_REPLY_TEXT });
       if (sendRes.ok && mediaConv) {
         await appendToConversation(
@@ -1486,8 +1591,34 @@ serve(async (req) => {
         .eq("id", organizationId)
         .single();
       if (orgBilling && (orgBilling.billing_status === "blocked" || orgBilling.billing_status === "suspended")) {
-        jsonLog("warn", { requestId, evt: "webhook_org_billing_blocked", unitId, organizationId, status: orgBilling.billing_status });
-        await finish("org_billing_blocked");
+        const persisted = await persistInboundOnly({
+          requestId, organizationId, unitId, phone,
+          contactName: inbound.contactName, text: incomingText, chatLid: inboundChatLid,
+        });
+        jsonLog("warn", { requestId, evt: "webhook_org_billing_blocked", unitId, organizationId, status: orgBilling.billing_status, persisted });
+        await finish("org_billing_blocked", undefined, { inbound_persisted: persisted });
+        return new Response("ok");
+      }
+    }
+
+    // Suspensão do SERVIÇO de WhatsApp (mensalidade da instância), separada
+    // do bloqueio do sistema logo acima. Roda ANTES do runAgentLoop: zero
+    // token de IA consumido. SILÊNCIO, não mensagem — mesmo tratamento (e
+    // mesma posição no fluxo, ANTES do upsert de customer/conversation) do
+    // org_billing_blocked logo acima: o cliente do restaurante é terceiro
+    // inocente. Outcome "whatsapp_service_suspended".
+    {
+      const waGate = await resolveWhatsAppGateByOrg(supabase, organizationId);
+      if (waGate.enforced.sending) {
+        const persisted = await persistInboundOnly({
+          requestId, organizationId, unitId, phone,
+          contactName: inbound.contactName, text: incomingText, chatLid: inboundChatLid,
+        });
+        jsonLog("warn", {
+          requestId, evt: "webhook_whatsapp_service_suspended",
+          unitId, organizationId, state: waGate.state, reason: waGate.reason, persisted,
+        });
+        await finish("whatsapp_service_suspended", undefined, { inbound_persisted: persisted });
         return new Response("ok");
       }
     }

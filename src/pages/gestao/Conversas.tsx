@@ -5,6 +5,7 @@ import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useConversations, useConversationActions } from "@/hooks/useConversations";
 import { useSendManualMessage } from "@/hooks/useSendManualMessage";
 import { useDebounce } from "@/hooks/useDebounce";
+import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -444,6 +445,10 @@ export default function Conversas() {
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-bold">Conversas WhatsApp</h1>
+
+      {/* Suspensão da automação — reservas/agenda continuam normais, só o
+          agente de WhatsApp para de responder. */}
+      <WhatsappServiceBanner organizationId={unit?.organization_id} unitSlug={unit?.unit_slug ?? ""} />
 
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />

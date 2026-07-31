@@ -13,6 +13,7 @@ import {
 } from "@/hooks/useBilling";
 import { usePaymentMethods } from "@/hooks/usePaymentMethods";
 import { AutomacaoWhatsappCard } from "@/components/gestao/AutomacaoWhatsappCard";
+import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -234,11 +235,17 @@ export default function Cobranca() {
   async function handleCancel() {
     if (!sub) return;
     try {
-      await cancelMutation.mutateAsync({
+      // `effective` vem do provedor, não do que pedimos: no Asaas o
+      // cancelamento é sempre imediato, e afirmar "fim do período" seria falso.
+      const res = await cancelMutation.mutateAsync({
         subscription_id: sub.id,
         organization_id: organizationId!,
       });
-      toast.success("Assinatura agendada para cancelamento no fim do período.");
+      toast.success(
+        (res as { effective?: string })?.effective === "at_period_end"
+          ? "Assinatura agendada para cancelamento no fim do período."
+          : "Assinatura cancelada.",
+      );
       setCancelDialog(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Falha ao cancelar.");
@@ -264,6 +271,10 @@ export default function Cobranca() {
           Gerencie sua assinatura, troque o cartão e veja os planos disponíveis.
         </p>
       </div>
+
+      {/* Suspensão da automação de WhatsApp — nunca do sistema. Sem CTA: o
+          dono já está na página de cobrança. */}
+      <WhatsappServiceBanner organizationId={organizationId} unitSlug={current.unit_slug} showCta={false} />
 
       {isBlocked && (
         <Card className="border-warning/20 bg-warning/10">
@@ -356,7 +367,10 @@ export default function Cobranca() {
               )}
             </div>
 
-            {!sub.cancel_at_period_end && (
+            {/* Só o proprietário: o cancelamento cascateia pra
+                organizations.billing_status e derrubaria as unidades irmãs.
+                O servidor recusa gerente com 403 — aqui é só não oferecer. */}
+            {!sub.cancel_at_period_end && current?.isOwner && (
               <div className="pt-2">
                 <Button variant="ghost" size="sm" onClick={() => setCancelDialog(true)} className="text-destructive hover:text-destructive">
                   Cancelar assinatura
@@ -512,9 +526,18 @@ export default function Cobranca() {
           <AlertDialogHeader>
             <AlertDialogTitle>Cancelar assinatura?</AlertDialogTitle>
             <AlertDialogDescription>
-              Você manterá acesso ao sistema até o fim do período já pago
-              {sub?.current_period_end && ` (${formatDateBR(sub.current_period_end.slice(0, 10))})`}.
-              Depois disso, o acesso será suspenso até você escolher um novo plano.
+              {sub?.provider === "asaas" ? (
+                <>
+                  O cancelamento é imediato: a cobrança recorrente é interrompida e o acesso
+                  ao sistema termina agora. Não há reembolso do período já pago.
+                </>
+              ) : (
+                <>
+                  Você manterá acesso ao sistema até o fim do período já pago
+                  {sub?.current_period_end && ` (${formatDateBR(sub.current_period_end.slice(0, 10))})`}.
+                  Depois disso, o acesso será suspenso até você escolher um novo plano.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

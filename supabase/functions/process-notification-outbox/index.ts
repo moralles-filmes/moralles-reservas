@@ -11,6 +11,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
+import {
+  resolveWhatsAppGateByUnit,
+  clearWhatsAppGateCache,
+} from "../_shared/whatsapp-service-gate.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -70,6 +74,46 @@ async function dispatchOne(row: OutboxRow): Promise<{ ok: boolean; error?: strin
   }
 }
 
+/**
+ * Um job estacionado pode ter perdido a validade enquanto o serviço estava
+ * suspenso. NÃO SE REENVIA TUDO AUTOMATICAMENTE: confirmação de reserva que já
+ * aconteceu é ruído para o cliente e custo para o lojista.
+ *
+ * Vale também fora da suspensão — um job represado por 5 tentativas de falha
+ * tem o mesmo problema. Por isso a checagem é do despacho, não do desestaciona.
+ */
+async function stillValid(row: OutboxRow): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { data: r } = await supabase
+    .from("reservations")
+    .select("id, date, time, status")
+    .eq("id", row.reservation_id)
+    .maybeSingle();
+
+  if (!r) return { ok: false, reason: "reservation_missing" };
+  if (r.status === "cancelled") return { ok: false, reason: "reservation_cancelled" };
+
+  // Data e hora da reserva são horário local (BRT); comparar em BRT.
+  // `r.time` chega do Postgres como "HH:MM:SS" (coluna `time`, mesmo padrão de
+  // `formatTime` em process-reservation-reminders) — normaliza pra "HH:MM"
+  // antes de montar o literal ISO. Sem o slice, o literal ficaria com dois
+  // blocos de segundos ("...T19:00:00:00-03:00"), o `Date` resultante vira
+  // Invalid Date (NaN) e a comparação `when < Date.now()` nunca é verdadeira
+  // — a checagem de "reserva no passado" fica sempre desligada.
+  const timeHHMM = (r.time ?? "23:59").slice(0, 5);
+  const when = new Date(`${r.date}T${timeHHMM}:00-03:00`).getTime();
+  if (when < Date.now()) return { ok: false, reason: "reservation_in_the_past" };
+
+  const { data: sent } = await supabase
+    .from("notifications_sent")
+    .select("id")
+    .eq("reservation_id", row.reservation_id)
+    .eq("kind", row.kind)
+    .maybeSingle();
+  if (sent) return { ok: false, reason: "already_sent" };
+
+  return { ok: true };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204 });
@@ -86,6 +130,10 @@ serve(async (req) => {
   let processed = 0;
   let succeeded = 0;
   let failed = 0;
+  let expired = 0;
+  let parkedCount = 0;
+  let parkWriteFailed = 0;
+  let expireWriteFailed = 0;
 
   try {
     // Pega lote de pendentes due — atomicamente marca como 'processing' pra
@@ -107,10 +155,100 @@ serve(async (req) => {
       });
     }
 
+    // Cache do gate é por invocação — zera aqui, mesmo padrão do unitCache dos
+    // outros workers, senão um isolate quente serve estado de suspensão velho
+    // pra um cliente que acabou de pagar.
+    clearWhatsAppGateCache();
+
     const rows = (claimed ?? []) as OutboxRow[];
     processed = rows.length;
 
+    const toDispatch: OutboxRow[] = [];
+    const parked: OutboxRow[] = [];
+
     for (const row of rows) {
+      const gate = await resolveWhatsAppGateByUnit(supabase, row.unit_id);
+      if (gate?.enforced.sending) parked.push(row);
+      else toDispatch.push(row);
+    }
+
+    if (parked.length > 0) {
+      // ESTACIONAMENTO: volta a 'pending', adia uma hora e NÃO incrementa
+      // `attempts`. Sem isso, o teto de 5 tentativas é consumido pela suspensão
+      // e o job vira 'dead' por não ter sido enviado enquanto o cliente estava
+      // suspenso — perdendo a mensagem de vez quando ele pagar.
+      //
+      // Não há reaper pra linhas presas em 'processing' nesta tabela (diferente
+      // de `processed_messages`, que tem janela de staleness de 90s — aqui
+      // 'processing' só aparece no CHECK constraint e neste arquivo). Se este
+      // UPDATE falhar, as linhas claimed acima ficam presas pra sempre: o
+      // próximo claim só pega 'pending', então elas somem do pipeline. O log
+      // abaixo é a única forma de recuperá-las à mão (reset manual pra
+      // 'pending').
+      const { error: parkErr } = await supabase
+        .from("notification_outbox")
+        .update({
+          status: "pending",
+          next_attempt_at: new Date(Date.now() + 3_600_000).toISOString(),
+          last_error: "whatsapp_service_suspended",
+          updated_at: new Date().toISOString(),
+        })
+        .in("id", parked.map((r) => r.id));
+      if (parkErr) {
+        jsonLog("error", {
+          evt: "outbox_park_write_failed",
+          count: parked.length,
+          ids: parked.map((r) => r.id),
+          err: parkErr.message,
+        });
+        parkWriteFailed = parked.length;
+      } else {
+        jsonLog("info", { evt: "outbox_parked", count: parked.length });
+        parkedCount = parked.length;
+      }
+    }
+
+    for (const row of toDispatch) {
+      // Revalidação só se aplica a 'confirmation' — para 'cancellation' o
+      // status já ESPERADO é 'cancelled' (é por isso que a notificação existe),
+      // então rodar o mesmo stillValid rejeitaria toda cancelação legítima.
+      // Hoje 'cancellation' nunca é enfileirado (só o trigger de confirmation
+      // insere no outbox) e dispatchOne já devolve erro permanente pra ele.
+      if (row.kind === "confirmation") {
+        const validity = await stillValid(row);
+        if (!validity.ok) {
+          // Rótulo sem "after_suspension": este caminho roda pra QUALQUER job
+          // de `toDispatch` que falhe a revalidação, inclusive um job que
+          // nunca foi estacionado — 5 tentativas de backoff (1m+5m+15m+1h+4h
+          // ≈ 5.5h) bastam pra uma reserva próxima virar passado sem nenhuma
+          // suspensão envolvida. `validity.reason` já carrega a causa real.
+          const { error: expireErr } = await supabase
+            .from("notification_outbox")
+            .update({
+              status: "done",
+              last_error: `expired:${validity.reason}`,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", row.id);
+          if (expireErr) {
+            // Mesma lacuna do park (sem reaper pra 'processing'): se este
+            // UPDATE falhar, a linha fica presa em 'processing' pra sempre —
+            // o log é a única forma de recuperá-la à mão.
+            jsonLog("error", {
+              evt: "outbox_expire_write_failed",
+              id: row.id,
+              reason: validity.reason,
+              err: expireErr.message,
+            });
+            expireWriteFailed++;
+          } else {
+            jsonLog("info", { evt: "outbox_expired", id: row.id, reason: validity.reason });
+            expired++;
+          }
+          continue;
+        }
+      }
+
       const result = await dispatchOne(row);
       if (result.ok) {
         await supabase.rpc("mark_outbox_done", { p_id: row.id });
@@ -144,12 +282,26 @@ serve(async (req) => {
         processed,
         succeeded,
         failed,
+        parked: parkedCount,
+        parkWriteFailed,
+        expired,
+        expireWriteFailed,
         duration_ms: Date.now() - t0,
       }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (err) {
-    jsonLog("error", { evt: "outbox_processor_error", err: String(err), processed, succeeded, failed });
+    jsonLog("error", {
+      evt: "outbox_processor_error",
+      err: String(err),
+      processed,
+      succeeded,
+      failed,
+      parked: parkedCount,
+      parkWriteFailed,
+      expired,
+      expireWriteFailed,
+    });
     return new Response(JSON.stringify({ error: "internal_error" }), {
       status: 500,
       headers: { "Content-Type": "application/json" },

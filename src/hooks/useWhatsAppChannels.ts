@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
@@ -38,9 +39,20 @@ export interface ChannelCredentials {
 async function invokeManageChannels(body: Record<string, unknown>) {
   const { data, error } = await supabase.functions.invoke("manage-channels", { body });
   if (error) {
-    const message =
-      (data as { error?: string } | null)?.error ?? error.message ?? "Erro inesperado.";
-    throw new Error(message);
+    // supabase-js v2 envolve qualquer non-2xx num FunctionsHttpError cuja .message é
+    // sempre "Edge Function returned a non-2xx status code" — `data` vem null, e o body
+    // real (a mensagem PT-BR que a Edge Function escreveu, ex.: "Canal não encontrado.")
+    // só existe em error.context.json(). Sem isso o operador nunca via a mensagem
+    // específica, só o texto genérico do SDK. Mesmo padrão de useSendManualMessage.ts —
+    // anexa o status HTTP pro caller poder decidir (ex.: 409 força refetch).
+    if (error instanceof FunctionsHttpError) {
+      const errBody = (await error.context.json().catch(() => null)) as
+        | { error?: string }
+        | null;
+      const message = errBody?.error ?? error.message ?? "Erro inesperado.";
+      throw Object.assign(new Error(message), { httpStatus: error.context.status });
+    }
+    throw error;
   }
   if (data && typeof data === "object" && "error" in data && data.error) {
     throw new Error(String(data.error));
@@ -107,6 +119,24 @@ export function useDeleteChannel(unitId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
       toast.success("Canal removido.");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+}
+
+export function useRotateChannelSecret(unitId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (channelId: string) => {
+      return invokeManageChannels({
+        action: "rotate_secret",
+        unit_id: unitId,
+        channel_id: channelId,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
+      toast.success("Secret rotacionado. Atualize a URL do webhook no painel do provedor.");
     },
     onError: (err: Error) => toast.error(err.message),
   });

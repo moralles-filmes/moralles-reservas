@@ -28,6 +28,13 @@ const PURPOSES: ReadonlySet<string> = new Set<AsaasPurpose>([
   "other",
 ]);
 
+/** Type guard do purpose. Fonte única: o Set `PURPOSES` acima, que espelha o
+ *  CHECK de billing_invoices.purpose (063). Valor vindo do banco ou do provedor
+ *  passa por aqui ANTES de entrar em qualquer estrutura tipada. */
+export function isAsaasPurpose(value: unknown): value is AsaasPurpose {
+  return typeof value === "string" && PURPOSES.has(value);
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ExternalReferenceParts {
@@ -58,12 +65,12 @@ export function parseExternalReference(raw: unknown): ExternalReferenceParts | n
   const [, orgId, planRaw, purpose] = match;
   if (!UUID_RE.test(orgId)) return null;
   if (planRaw !== "none" && !UUID_RE.test(planRaw)) return null;
-  if (!PURPOSES.has(purpose)) return null;
+  if (!isAsaasPurpose(purpose)) return null;
 
   return {
     orgId,
     planId: planRaw === "none" ? null : planRaw,
-    purpose: purpose as AsaasPurpose,
+    purpose,
   };
 }
 
@@ -71,6 +78,7 @@ export type AsaasEffectKind =
   | "activate_subscription"
   | "mark_invoice_overdue"
   | "record_refund"
+  | "upsert_open_invoice"
   | "noop"
   | "unknown";
 
@@ -135,7 +143,6 @@ export const REFUND_EVENTS: ReadonlySet<string> = new Set([
  * `unknown` vira `'ignored'` e é sinal de que o catálogo mudou.
  */
 const INFORMATIONAL_EVENTS: ReadonlySet<string> = new Set([
-  "PAYMENT_CREATED",
   "PAYMENT_UPDATED",
   "PAYMENT_AUTHORIZED",
   "PAYMENT_AWAITING_RISK_ANALYSIS",
@@ -205,6 +212,11 @@ const TERMINAL_INVOICE_STATUSES: ReadonlySet<string> = new Set(["paid", "void"])
  *    esse caso como no-op, não como erro: a cobrança existe no Asaas mas não
  *    temos registro dela aqui, e fechar essa lacuna é papel do worker
  *    `process-asaas-reconcile`, não deste evento.
+ *
+ * 4. `kind === "upsert_open_invoice"` só escreve quando a flag
+ *    `billing_invoice_ingestion` está ligada; com ela desligada o consumidor
+ *    trata como `noop` e o evento sai `processed` mesmo assim — a flag gateia
+ *    a ESCRITA, não a classificação do evento.
  */
 export function decideEventEffect(input: EventDecisionInput): AsaasEffect {
   const { eventType, invoiceStatus } = input;
@@ -244,6 +256,19 @@ export function decideEventEffect(input: EventDecisionInput): AsaasEffect {
 
   if (REFUND_EVENTS.has(eventType)) {
     return { kind: "record_refund", reason: `${eventType} — registra estorno/chargeback.` };
+  }
+
+  if (eventType === "PAYMENT_CREATED") {
+    // Já existe linha para esta cobrança: nada a criar. Vale tanto para a
+    // fatura em aberto (webhook duplicado, reconcile passou antes) quanto para
+    // a terminal (evento tardio sobre cobrança já liquidada).
+    if (invoiceStatus) {
+      return { kind: "noop", reason: `Invoice já em '${invoiceStatus}' — cobrança já registrada.` };
+    }
+    // ESTE é o elo que faltava: sem ele a cobrança da renovação nunca vira
+    // fatura interna, o PAYMENT_OVERDUE seguinte não acha linha para marcar, e
+    // process-billing-overdue roda sobre entrada vazia para sempre.
+    return { kind: "upsert_open_invoice", reason: "Cobrança criada no provedor — registrar fatura em aberto." };
   }
 
   if (INFORMATIONAL_EVENTS.has(eventType)) {

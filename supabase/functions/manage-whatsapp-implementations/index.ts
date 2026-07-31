@@ -40,6 +40,7 @@ import {
   type OverrideGrantType,
 } from "../_shared/entitlement-overrides.ts";
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
+import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -101,6 +102,11 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeadersFor(req) });
   if (req.method !== "POST") return jsonResponse(req, { error: "Método não permitido." }, 405);
 
+  // Cache do gate é por invocação — zera aqui, mesmo padrão de manage-channels
+  // e dos workers, senão um isolate quente serve estado de suspensão velho
+  // pro dono que acabou de pagar.
+  clearWhatsAppGateCache();
+
   const reqId = genRequestId();
 
   try {
@@ -131,9 +137,20 @@ serve(async (req) => {
         status?: string; organization_id?: string; page?: number; page_size?: number;
       };
       const from = Number(page) * Number(page_size);
+      // Colunas de grandfathering incluídas no join: a tela de implantações
+      // (Task 20) mostra o estado de legado por organização na mesma linha —
+      // sem elas o admin precisaria de uma segunda tela pra ver o que já está
+      // na mão. Cobre só organizações que TÊM uma linha de implantação; uma
+      // organização legada sem implantação nunca registrada não aparece aqui
+      // (limite conhecido, documentado no relatório da task).
       let query = supabase
         .from("whatsapp_implementations")
-        .select(`${ADMIN_COLUMNS}, organizations!inner(name, slug)`, { count: "exact" })
+        .select(
+          `${ADMIN_COLUMNS}, organizations!inner(name, slug, whatsapp_legacy_grandfathered, ` +
+            `whatsapp_grandfathered_at, whatsapp_grandfathered_source, whatsapp_grandfather_revoked_at, ` +
+            `whatsapp_grandfather_revoked_reason, whatsapp_grandfather_revoked_by)`,
+          { count: "exact" },
+        )
         .order("created_at", { ascending: false })
         .range(from, from + Number(page_size) - 1);
       if (status) query = query.eq("operational_status", status);
@@ -561,6 +578,21 @@ serve(async (req) => {
       // — organizationId aqui é o MESMO valor lido de body.organization_id que
       // o guard validou logo acima (nenhuma reinterpretação do body no meio).
 
+      // Task 20: esta action agora também AFIRMA o estado do serviço de
+      // WhatsApp pro dono da loja (banner de suspensão). Se alguma leitura do
+      // gate falhou, o objeto pode estar subestimando o acesso real —
+      // responder 200 com ele seria mentir com confiança. 503 aqui é
+      // ortogonal aos outros `return` de erro abaixo (que já cobrem falha de
+      // leitura dos OUTROS blocos do payload).
+      const gate = await resolveWhatsAppGateByOrg(supabase, organizationId);
+      if (gate.readFailed) {
+        return jsonResponse(
+          req,
+          { error: "Não foi possível verificar o status do serviço agora. Tente novamente." },
+          503,
+        );
+      }
+
       const [implRes, entitlements, subsRes, plansRes, flags] = await Promise.all([
         supabase
           .from("whatsapp_implementations")
@@ -678,6 +710,17 @@ serve(async (req) => {
 
       return jsonResponse(req, {
         success: true,
+        // Task 20: estado do serviço de WhatsApp (banner de suspensão no
+        // painel do lojista). Nenhum dado financeiro sensível — só estado e
+        // datas. `serviceState`/`sendingBlocked` NÃO decidem sozinhos o que a
+        // UI renderiza: a UI escolhe o banner por `serviceState`
+        // (SUSPENDED_UNPAID/GRACE_PERIOD/ADMIN_BLOCKED), nunca por
+        // `sendingBlocked` — a flag `whatsapp_service_enforcement` ainda
+        // nasce OFF, e um banner gateado por ela nunca apareceria.
+        serviceState: gate.state,
+        sendingBlocked: gate.enforced.sending,
+        graceEndsAt: gate.graceEndsAt,
+        suspendedAt: gate.suspendedAt,
         // NOT_REQUESTED quando não há linha — ausência é um estado legítimo, não
         // um erro nem uma linha vazia no banco.
         implementation: buildClientImplementationView(implRow),
@@ -726,6 +769,65 @@ serve(async (req) => {
         // exposto aqui — só este booleano.
         system_allowed: entitlements.system.allowed,
       });
+    }
+
+    // Encerra o grandfathering por decisão administrativa. `reason` decide o
+    // rótulo: ADMIN_MIGRATION quando a empresa foi formalmente migrada para o
+    // modelo comercial; ADMIN_REVOCATION quando é revogação pura. Fora de
+    // CLIENT_FRIENDLY_ACTIONS — exclusiva de platform_admin (guard já rodou
+    // acima, no bloco de autorização).
+    if (action === "revoke_whatsapp_grandfathering") {
+      const { organization_id, reason, note } = body;
+      if (!organization_id || (reason !== "ADMIN_MIGRATION" && reason !== "ADMIN_REVOCATION")) {
+        return jsonResponse(req, { error: "Informe a organização e o motivo (ADMIN_MIGRATION ou ADMIN_REVOCATION)." }, 400);
+      }
+      if (typeof note !== "string" || note.trim().length < 5) {
+        return jsonResponse(req, { error: "Descreva o motivo da revogação." }, 400);
+      }
+      const { data: rows, error } = await supabase
+        .from("organizations")
+        .update({
+          whatsapp_grandfather_revoked_at: new Date().toISOString(),
+          whatsapp_grandfather_revoked_reason: reason,
+          whatsapp_grandfather_revoked_by: callerId,
+        })
+        .eq("id", organization_id)
+        .eq("whatsapp_legacy_grandfathered", true)
+        .is("whatsapp_grandfather_revoked_at", null)
+        .select("id");
+      if (error) {
+        jsonLog("error", { reqId, evt: "whatsapp_grandfathering_revoke_error", err: error.message });
+        return jsonResponse(req, { error: "Não foi possível revogar." }, 500);
+      }
+      if (!rows?.length) return jsonResponse(req, { error: "Organização não está em condição legada ativa." }, 409);
+      jsonLog("info", { reqId, evt: "whatsapp_grandfathering_revoked", org: organization_id, reason, by: callerId });
+      return jsonResponse(req, { success: true });
+    }
+
+    // Reconceder é ação explícita, nunca automática: a revogação é terminal
+    // justamente para que voltar a ser legado exija um humano decidindo.
+    if (action === "grant_whatsapp_grandfathering") {
+      const { organization_id, note } = body;
+      if (!organization_id || typeof note !== "string" || note.trim().length < 5) {
+        return jsonResponse(req, { error: "Informe a organização e o motivo." }, 400);
+      }
+      const { error } = await supabase
+        .from("organizations")
+        .update({
+          whatsapp_legacy_grandfathered: true,
+          whatsapp_grandfathered_at: new Date().toISOString(),
+          whatsapp_grandfathered_source: "ADMIN",
+          whatsapp_grandfather_revoked_at: null,
+          whatsapp_grandfather_revoked_reason: null,
+          whatsapp_grandfather_revoked_by: null,
+        })
+        .eq("id", organization_id);
+      if (error) {
+        jsonLog("error", { reqId, evt: "whatsapp_grandfathering_grant_error", err: error.message });
+        return jsonResponse(req, { error: "Não foi possível conceder." }, 500);
+      }
+      jsonLog("warn", { reqId, evt: "whatsapp_grandfathering_granted", org: organization_id, by: callerId, note: note.trim() });
+      return jsonResponse(req, { success: true });
     }
 
     return jsonResponse(req, { error: "Ação desconhecida." }, 400);

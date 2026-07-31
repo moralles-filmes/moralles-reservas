@@ -18,13 +18,18 @@
 import { genRequestId, jsonLog } from "./security.ts";
 import { getAsaasApiKey, getAsaasBaseUrl, getAsaasEnv } from "./asaas-config.ts";
 import {
+  ASAAS_PAYMENT_LIST_MAX_PAGES,
+  ASAAS_PAYMENT_LIST_PAGE_SIZE,
   GET_MAX_RETRIES,
+  hasAsaasBudgetForAnotherPage,
   parseAsaasError,
+  parseAsaasPaymentListPage,
   parseRateLimitReset,
   shouldRetryGet,
   shouldRetryMutation,
   validateKeyForEnv,
 } from "./asaas-core.ts";
+import type { AsaasPaymentSummary } from "./asaas-core.ts";
 
 // Identifica a aplicação nas chamadas — obrigatório em contas Asaas criadas a
 // partir de 13/06/2024 (§8); o fetch do Deno não manda User-Agent por padrão.
@@ -482,14 +487,6 @@ export async function updateAsaasSubscription(
   return { ok: true };
 }
 
-export async function deleteAsaasSubscription(
-  subscriptionId: string,
-): Promise<{ ok: boolean; error?: string }> {
-  const res = await asaasRequest(`/subscriptions/${subscriptionId}`, "DELETE");
-  if (!res.ok) return { ok: false, error: parseAsaasError(res.data, "Falha ao remover assinatura no Asaas.") };
-  return { ok: true };
-}
-
 // ── Checkout (§9) ────────────────────────────────────────────────────────────
 // Página hospedada (não paymentLinks). billingTypes só aceita CREDIT_CARD/PIX.
 
@@ -553,4 +550,114 @@ export async function createAsaasCheckout(params: AsaasCheckoutParams): Promise<
     link: res.data.link as string | undefined,
     status: res.data.status as string | undefined,
   };
+}
+
+// ── Payments de uma assinatura (§9, verificado em §13.2) ────────────────────
+
+export type { AsaasPaymentSummary };
+
+/**
+ * Cobranças de uma assinatura (`GET /subscriptions/{id}/payments`,
+ * confirmado ao vivo no passo §13.2 de 03-ASAAS-API-VERIFICADO.md). SÓ
+ * LEITURA: este cliente nunca cria cobrança na reconciliação — `POST` não é
+ * retry-safe (§11 "Idempotência — não existe do lado da API"), e um retry
+ * cego geraria cobrança duplicada pro cliente.
+ *
+ * Pagina com `offset`/`limit` até `hasMore` ficar `false`, até
+ * `ASAAS_PAYMENT_LIST_MAX_PAGES` (_shared/asaas-core.ts) — acima disso
+ * desiste e devolve `ok:false` em vez de fingir que a coleção parcial é a
+ * lista completa. O parsing de cada página (guard campo a campo, nunca cast
+ * direto de `res.data`) vive em `parseAsaasPaymentListPage`
+ * (_shared/asaas-core.ts, testado por vitest) — este método só orquestra o
+ * I/O e a paginação.
+ *
+ * `opts.budgetMs` é o orçamento TOTAL de wall-clock que o caller tolera
+ * gastar NESTA CHAMADA (ver `AsaasRequestOptions`) — não por página. Por
+ * isso é convertido numa deadline ÚNICA antes do laço, e cada página recebe
+ * só o que resta (`asaasRequest` calcula `deadlineAt = Date.now() +
+ * budgetMs` a cada invocação — repassar `opts` cru a cada página reiniciaria
+ * o relógio e um `budgetMs: 5000` custaria 5s × páginas). Antes de disparar
+ * mais uma página, `hasAsaasBudgetForAnotherPage` (_shared/asaas-core.ts,
+ * testada por vitest) decide se o que resta ainda dá pra uma ida-e-volta
+ * plausível; se não der, para e devolve `ok:false` pelo mesmo caminho do
+ * teto de páginas — mesmo motivo: nunca devolver a coleção parcial como se
+ * fosse completa, só que aqui o motivo é orçamento, não fim dos dados (o log
+ * distingue os dois). Nenhum caminho dentro do orçamento do `asaas-webhook`
+ * chama este método hoje — o consumidor (`process-asaas-invoice-reconcile`,
+ * Task 11, ainda não existe) é um worker de cron sem orçamento — mas quando
+ * `budgetMs` vier definido, o contrato é honrado de ponta a ponta. Sem
+ * `budgetMs`, nada disso entra em jogo (comportamento histórico: paginação
+ * completa sem prazo).
+ */
+export async function listAsaasSubscriptionPayments(
+  subscriptionId: string,
+  opts?: AsaasRequestOptions,
+): Promise<{ ok: boolean; data?: AsaasPaymentSummary[]; error?: string }> {
+  const all: AsaasPaymentSummary[] = [];
+  let offset = 0;
+  const overallDeadlineAt = opts?.budgetMs !== undefined ? Date.now() + opts.budgetMs : null;
+
+  for (let page = 0; ; page++) {
+    if (page >= ASAAS_PAYMENT_LIST_MAX_PAGES) {
+      // Nunca alcançável em uso real (ver comentário do teto em
+      // asaas-core.ts) — só dispara com um `hasMore` que nunca vira `false`.
+      // Log explícito do quanto foi lido antes de desistir: a paginação não
+      // pode ficar muda sobre o que NÃO leu.
+      jsonLog("error", {
+        evt: "asaas_payment_list_page_cap_reached",
+        subscriptionId,
+        pages_read: page,
+        items_read: all.length,
+      });
+      return {
+        ok: false,
+        error: "Lista de cobranças da assinatura excedeu o número máximo de páginas lidas.",
+      };
+    }
+
+    // `pageOpts` carrega SÓ o que resta do orçamento total pra esta página
+    // específica — nunca o `budgetMs` original do caller (ver docstring
+    // acima). Sem orçamento (`overallDeadlineAt === null`), `opts` segue
+    // repassado intacto: comportamento histórico, sem prazo.
+    let pageOpts = opts;
+    if (overallDeadlineAt !== null) {
+      const remainingMs = overallDeadlineAt - Date.now();
+      if (!hasAsaasBudgetForAnotherPage(remainingMs)) {
+        jsonLog("warn", {
+          evt: "asaas_payment_list_budget_exhausted",
+          subscriptionId,
+          pages_read: page,
+          items_read: all.length,
+          remaining_ms: Math.round(remainingMs),
+        });
+        return {
+          ok: false,
+          error: "Orçamento de tempo esgotado ao listar cobranças da assinatura (paginação incompleta).",
+        };
+      }
+      pageOpts = { ...opts, budgetMs: remainingMs };
+    }
+
+    const res = await asaasRequest(
+      `/subscriptions/${subscriptionId}/payments?limit=${ASAAS_PAYMENT_LIST_PAGE_SIZE}&offset=${offset}`,
+      "GET",
+      undefined,
+      pageOpts,
+    );
+    if (!res.ok) {
+      return { ok: false, error: parseAsaasError(res.data, "Falha ao listar cobranças da assinatura no Asaas.") };
+    }
+
+    const parsed = parseAsaasPaymentListPage(res.data);
+    if (parsed.valid === false) {
+      jsonLog("error", { evt: "asaas_payment_list_parse_error", subscriptionId, offset, reason: parsed.reason });
+      return { ok: false, error: "Resposta do Asaas em formato inesperado ao listar cobranças da assinatura." };
+    }
+
+    all.push(...parsed.payments);
+    if (!parsed.hasMore) break;
+    offset += ASAAS_PAYMENT_LIST_PAGE_SIZE;
+  }
+
+  return { ok: true, data: all };
 }

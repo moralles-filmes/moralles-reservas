@@ -24,6 +24,10 @@ import {
   formatExpiryBR,
   renderGiftbackTemplate,
 } from "../_shared/giftback.ts";
+import {
+  resolveWhatsAppGateByUnit,
+  clearWhatsAppGateCache,
+} from "../_shared/whatsapp-service-gate.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -85,10 +89,17 @@ interface IssueArgs {
   customerPhone: string;
   discountPercent: number;
   validityDays: number;
+  /**
+   * true quando o serviço de WhatsApp da organização está suspenso. Não é
+   * "está suspenso" — é a instrução "não envie": o voucher é criado
+   * normalmente, só a mensagem de anúncio é suprimida. Distinto de
+   * `!ctx.whatsapp_enabled` (canal desligado por escolha do lojista).
+   */
+  suppressSend?: boolean;
 }
 
 async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: string }> {
-  const { unitId, ruleId, customerId, customerPhone, discountPercent, validityDays } = args;
+  const { unitId, ruleId, customerId, customerPhone, discountPercent, validityDays, suppressSend } = args;
 
   // B8: defesa final contra phone vazio/curto. Caller já filtra, mas guarda.
   const phoneDigits = (customerPhone ?? "").replace(/\D/g, "");
@@ -123,6 +134,15 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
       error: insertErr.message,
     });
     return { ok: false, reason: isDuplicate ? "duplicate" : insertErr.message };
+  }
+
+  // Ordem entre os dois motivos de não-envio: suspensão primeiro, porque é a
+  // causa mais informativa no log quando as duas coincidem (o lojista
+  // precisa regularizar o pagamento pra resolver); canal desligado é escolha
+  // deliberada e sempre visível no painel de configurações da unidade.
+  if (suppressSend) {
+    jsonLog("info", { evt: "voucher_whatsapp_skipped", reason: "whatsapp_suspended", unit_id: unitId });
+    return { ok: true, reason: "whatsapp_suspended" };
   }
 
   if (!ctx.whatsapp_enabled) {
@@ -199,9 +219,10 @@ function getTodayBrtParts(): { mm: string; dd: string; isoDate: string; isLeapYe
   };
 }
 
-async function processBirthday(): Promise<{ issued: number; errors: string[] }> {
+async function processBirthday(): Promise<{ issued: number; errors: string[]; sendSuppressed: number }> {
   const errors: string[] = [];
   let issued = 0;
+  let sendSuppressed = 0;
 
   const { data: rules } = await supabase
     .from("voucher_rules")
@@ -209,7 +230,7 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
     .eq("trigger_type", "birthday")
     .eq("active", true);
 
-  if (!rules || rules.length === 0) return { issued, errors };
+  if (!rules || rules.length === 0) return { issued, errors, sendSuppressed };
 
   const today = getTodayBrtParts();
   const todayMmdd = `${today.mm}-${today.dd}`;
@@ -218,6 +239,17 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
   const acceptLeapBirthday = !today.isLeapYear && todayMmdd === "02-28";
 
   for (const rule of rules) {
+    // Gate resolvido UMA vez por unidade (rule.unit_id), antes do laço de
+    // clientes — não move pra dentro do laço, seria I/O por cliente. Decisão
+    // do dono: aniversário SEMPRE cria o voucher, mesmo com a organização
+    // suspensa — o gatilho é `mmdd(birthday) === mmdd(hoje)` sem retentativa,
+    // então a data NÃO volta (perder a regra hoje seria perda permanente
+    // daquele ano). `suppressSend` propaga pro `issueAndSend` só a instrução
+    // "não envie a mensagem" — o voucher fica resgatável no balcão. Frequência
+    // diverge de propósito (comentário no laço dela, abaixo).
+    const gate = await resolveWhatsAppGateByUnit(supabase, rule.unit_id);
+    const suppressSend = gate?.enforced.sending === true;
+
     const { data: unitRow } = await supabase
       .from("units")
       .select("organization_id")
@@ -280,21 +312,30 @@ async function processBirthday(): Promise<{ issued: number; errors: string[] }> 
         customerPhone: phoneDigits,
         discountPercent: rule.discount_percent,
         validityDays: rule.validity_days,
+        suppressSend,
       });
 
-      if (result.ok) issued++;
-      else errors.push(`birthday rule=${rule.id} customer=${customer.id}: ${result.reason}`);
+      if (result.ok) {
+        issued++;
+        // Métrica separada de `skippedSuspended` (frequência): ali a regra
+        // inteira é pulada; aqui o voucher FOI criado e só o envio foi
+        // suprimido — são eventos diferentes, não podem colidir no mesmo nome.
+        if (result.reason === "whatsapp_suspended") sendSuppressed++;
+      } else {
+        errors.push(`birthday rule=${rule.id} customer=${customer.id}: ${result.reason}`);
+      }
     }
   }
 
-  return { issued, errors };
+  return { issued, errors, sendSuppressed };
 }
 
 // ─── Step: Frequência ─────────────────────────────────────────────────────────
 
-async function processFrequency(): Promise<{ issued: number; errors: string[] }> {
+async function processFrequency(): Promise<{ issued: number; errors: string[]; skippedSuspended: number }> {
   const errors: string[] = [];
   let issued = 0;
+  let skippedSuspended = 0;
 
   const { data: rules } = await supabase
     .from("voucher_rules")
@@ -302,7 +343,7 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
     .eq("trigger_type", "frequency")
     .eq("active", true);
 
-  if (!rules || rules.length === 0) return { issued, errors };
+  if (!rules || rules.length === 0) return { issued, errors, skippedSuspended };
 
   // B7: limite superior — exclui reservas futuras. Conta só visitas até ontem (BRT).
   const yesterdayBrt = new Date(Date.now() - BRT_OFFSET_MS);
@@ -311,6 +352,20 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
 
   for (const rule of rules) {
     if (!rule.visits_required || !rule.days_window) continue;
+
+    // Gate resolvido UMA vez por unidade (rule.unit_id), antes de qualquer
+    // trabalho de emissão — pula a regra inteira SEM criar voucher e SEM
+    // gravar `notifications_sent`. Ao contrário do aniversário (que agora
+    // SEMPRE cria o voucher — a data não volta), a janela de frequência é
+    // recalculada a partir de "agora" a cada execução: unidade suspensa hoje
+    // e liberada amanhã emite o voucher amanhã, sem perda nenhuma. Criar sem
+    // enviar aqui resolveria um problema que esta regra não tem.
+    const gate = await resolveWhatsAppGateByUnit(supabase, rule.unit_id);
+    if (gate?.enforced.sending) {
+      skippedSuspended++;
+      jsonLog("info", { evt: "worker_skipped_whatsapp_suspended", unit_id: rule.unit_id, state: gate.state });
+      continue;
+    }
 
     const windowStart = new Date(Date.now() - BRT_OFFSET_MS);
     windowStart.setUTCDate(windowStart.getUTCDate() - (rule.days_window as number));
@@ -392,7 +447,7 @@ async function processFrequency(): Promise<{ issued: number; errors: string[] }>
     }
   }
 
-  return { issued, errors };
+  return { issued, errors, skippedSuspended };
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
@@ -411,6 +466,10 @@ serve(async (req) => {
 
   // B10: invalida cache de unit settings no início de cada invocação.
   unitCache.clear();
+  // Cache do gate de WhatsApp segue o mesmo padrão — por invocação, senão um
+  // isolate quente serve estado de suspensão velho pra um cliente que acabou
+  // de pagar.
+  clearWhatsAppGateCache();
 
   // B12: advisory lock — evita duas execuções concorrentes (cron + chamada
   // manual de debug) duplicarem trabalho. Wrappers em migration 20260517110000.
@@ -455,22 +514,29 @@ serve(async (req) => {
     // 2. Aniversários
     const birthday = await processBirthday().catch((err) => {
       errors.push(`processBirthday: ${String(err).slice(0, 200)}`);
-      return { issued: 0, errors: [] as string[] };
+      return { issued: 0, errors: [] as string[], sendSuppressed: 0 };
     });
 
     // 3. Frequência
     const frequency = await processFrequency().catch((err) => {
       errors.push(`processFrequency: ${String(err).slice(0, 200)}`);
-      return { issued: 0, errors: [] as string[] };
+      return { issued: 0, errors: [] as string[], skippedSuspended: 0 };
     });
 
     errors.push(...birthday.errors, ...frequency.errors);
+    // Duas métricas distintas, de propósito: `skippedSuspended` é só da
+    // frequência (regra inteira pulada, sem voucher); `sendSuppressed` é só
+    // do aniversário (voucher criado, envio de WhatsApp suprimido).
+    const skippedSuspended = frequency.skippedSuspended;
+    const sendSuppressed = birthday.sendSuppressed;
 
     jsonLog("info", {
       evt: "voucher_triggers_done",
       expired: expiredCount,
       birthday_issued: birthday.issued,
       frequency_issued: frequency.issued,
+      skipped_suspended: skippedSuspended,
+      send_suppressed: sendSuppressed,
       errors_count: errors.length,
       duration_ms: Date.now() - t0,
     });
@@ -480,6 +546,8 @@ serve(async (req) => {
         expired_count: expiredCount,
         birthday_issued: birthday.issued,
         frequency_issued: frequency.issued,
+        skipped_suspended: skippedSuspended,
+        send_suppressed: sendSuppressed,
         errors,
       }),
       {

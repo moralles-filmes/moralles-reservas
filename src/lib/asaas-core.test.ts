@@ -14,11 +14,18 @@ import {
   GET_MAX_RETRIES,
   centsToAsaasValue,
   asaasValueToCents,
+  parseAsaasAmountCents,
   ASAAS_PAYMENT_EVENTS,
   ASAAS_SUBSCRIPTION_EVENTS,
   ASAAS_CHECKOUT_EVENTS,
   classifyAsaasEvent,
   parseAsaasWebhookEnvelope,
+  parseAsaasPaymentListPage,
+  ASAAS_PAYMENT_LIST_PAGE_SIZE,
+  ASAAS_PAYMENT_LIST_MAX_PAGES,
+  ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS,
+  hasAsaasBudgetForAnotherPage,
+  mapAsaasBillingTypeToPaymentMethod,
 } from "../../supabase/functions/_shared/asaas-core";
 
 // Fatos verificados em docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§8):
@@ -471,6 +478,70 @@ describe("round-trip asaasValueToCents(centsToAsaasValue(x)) === x", () => {
   });
 });
 
+// parseAsaasAmountCents — Fix round 1 da Fase 5b (Task 9): protege
+// `upsert_open_invoice` de tratar "não deu pra ler o valor" como R$ 0,00.
+// Zero explícito e ausência têm que produzir resultados DIFERENTES — é o
+// ponto inteiro da função.
+describe("parseAsaasAmountCents — não confunde ausente com zero (Fix round 1)", () => {
+  it("valor válido vira centavos respeitando o arredondamento existente (delega a asaasValueToCents)", () => {
+    expect(parseAsaasAmountCents(449)).toEqual({ ok: true, cents: 44900 });
+    // Mesmo float drift do IEEE 754 que asaasValueToCents já cobre — prova que
+    // não existe uma segunda lógica de conversão aqui.
+    expect(parseAsaasAmountCents(19.9)).toEqual({ ok: true, cents: 1990 });
+  });
+
+  it("zero explícito é aceito (protege plano trial R$ 0)", () => {
+    expect(parseAsaasAmountCents(0)).toEqual({ ok: true, cents: 0 });
+  });
+
+  it("zero explícito é DISTINTO de ausente — o mesmo `cents:0` não pode nascer de um value que nunca veio", () => {
+    const zero = parseAsaasAmountCents(0);
+    const missing = parseAsaasAmountCents(undefined);
+    expect(zero.ok).toBe(true);
+    expect(missing.ok).toBe(false);
+    // `missing.ok === false` (não `!missing.ok`) — sob strict:false deste
+    // tsconfig, negar um discriminante boolean não estreita a união dentro do
+    // próprio `if`; comparação por igualdade estreita corretamente.
+    if (missing.ok === false) expect(missing.code).toBe("MISSING_PAYMENT_AMOUNT");
+  });
+
+  it("undefined não vira zero — MISSING_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(undefined)).toEqual({ ok: false, code: "MISSING_PAYMENT_AMOUNT" });
+  });
+
+  it("null não vira zero — MISSING_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(null)).toEqual({ ok: false, code: "MISSING_PAYMENT_AMOUNT" });
+  });
+
+  it("string vazia não vira zero — MISSING_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents("")).toEqual({ ok: false, code: "MISSING_PAYMENT_AMOUNT" });
+  });
+
+  it("NaN é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(NaN)).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+
+  it("Infinity é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(Infinity)).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+
+  it("negativo é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents(-1)).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+
+  it("não-número (string não vazia, objeto) é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    expect(parseAsaasAmountCents("449")).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+    expect(parseAsaasAmountCents({})).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+
+  it("valor absurdamente grande (centavos estourando Number.MAX_SAFE_INTEGER) é recusado — INVALID_PAYMENT_AMOUNT", () => {
+    // MAX_SAFE_INTEGER / 100 já é maior que qualquer cobrança real possível —
+    // fronteira de correção de representação, não regra de negócio.
+    const hugeValue = Number.MAX_SAFE_INTEGER;
+    expect(parseAsaasAmountCents(hugeValue)).toEqual({ ok: false, code: "INVALID_PAYMENT_AMOUNT" });
+  });
+});
+
 // classifyAsaasEvent/parseAsaasWebhookEnvelope são consumidos por
 // asaas-webhook/index.ts (Fase 2 Task 4). Nomes de evento vêm de
 // docs/billing-asaas/03-ASAAS-API-VERIFICADO.md (§4) — pinar contagem e
@@ -679,5 +750,265 @@ describe("parseAsaasWebhookEnvelope", () => {
     expect(() => parseAsaasWebhookEnvelope(123)).not.toThrow();
     expect(() => parseAsaasWebhookEnvelope({})).not.toThrow();
     expect(() => parseAsaasWebhookEnvelope({ id: null, event: null })).not.toThrow();
+  });
+});
+
+// parseAsaasPaymentListPage — Fase 5b Task 10. Consumido por
+// _shared/asaas.ts (listAsaasSubscriptionPayments), que percorre
+// GET /subscriptions/{id}/payments (§13.2 de 03-ASAAS-API-VERIFICADO.md) pra
+// alimentar o reconciliador de Task 11. Duas regras deliberadamente rígidas:
+// (1) um item malformado invalida A PÁGINA INTEIRA — não "pula e segue"; (2)
+// `hasMore` ausente/tipo errado é ERRO, nunca default `false` (que pararia a
+// paginação como se a lista estivesse completa).
+
+describe("parseAsaasPaymentListPage", () => {
+  const validItem = {
+    id: "pay_080225913252",
+    status: "RECEIVED",
+    value: 449,
+    dueDate: "2026-07-26",
+    billingType: "PIX",
+    subscription: "sub_abc123",
+    externalReference: "org:probe|plan:probe|purpose:subscription",
+  };
+
+  it("página válida com 1 item e hasMore:false → valid:true com o item parseado", () => {
+    const result = parseAsaasPaymentListPage({ data: [validItem], hasMore: false });
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("esperava valid:true");
+    expect(result.hasMore).toBe(false);
+    expect(result.payments).toEqual([
+      {
+        id: "pay_080225913252",
+        status: "RECEIVED",
+        value: 449,
+        dueDate: "2026-07-26",
+        billingType: "PIX",
+        subscription: "sub_abc123",
+        externalReference: "org:probe|plan:probe|purpose:subscription",
+      },
+    ]);
+  });
+
+  it("página válida com múltiplos itens preserva a ordem", () => {
+    const item2 = { ...validItem, id: "pay_2", value: 149 };
+    const result = parseAsaasPaymentListPage({ data: [validItem, item2], hasMore: true });
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("esperava valid:true");
+    expect(result.payments.map((p) => p.id)).toEqual(["pay_080225913252", "pay_2"]);
+    expect(result.hasMore).toBe(true);
+  });
+
+  it("página vazia (data: []) é válida — assinatura sem cobranças ainda", () => {
+    const result = parseAsaasPaymentListPage({ data: [], hasMore: false });
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("esperava valid:true");
+    expect(result.payments).toEqual([]);
+  });
+
+  // §13.6: cobrança avulsa OMITE a chave `subscription` (não vem como null).
+  // Cobrança de assinatura traz `subscription: "sub_..."`. Os dois casos têm
+  // que normalizar pro mesmo `null` no lado ausente.
+  it("'subscription' omitido (cobrança avulsa, §13.6) normaliza pra null", () => {
+    const { subscription, ...avulsa } = validItem;
+    void subscription;
+    const result = parseAsaasPaymentListPage({ data: [avulsa], hasMore: false });
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("esperava valid:true");
+    expect(result.payments[0].subscription).toBeNull();
+  });
+
+  it("'billingType' e 'externalReference' ausentes normalizam pra null (campos secundários, não invalidam o item)", () => {
+    const { billingType, externalReference, ...rest } = validItem;
+    void billingType;
+    void externalReference;
+    const result = parseAsaasPaymentListPage({ data: [rest], hasMore: false });
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("esperava valid:true");
+    expect(result.payments[0].billingType).toBeNull();
+    expect(result.payments[0].externalReference).toBeNull();
+  });
+
+  it("'billingType' com tipo errado (número) normaliza pra null em vez de invalidar o item", () => {
+    const result = parseAsaasPaymentListPage({ data: [{ ...validItem, billingType: 42 }], hasMore: false });
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("esperava valid:true");
+    expect(result.payments[0].billingType).toBeNull();
+  });
+
+  // Regra central da função: um item ruim não vira "pula e segue" — a página
+  // inteira fica não confiável.
+  it("um item malformado no meio da lista invalida A PÁGINA INTEIRA (não pula o item)", () => {
+    const item2 = { ...validItem, id: "pay_2" };
+    const badItem = { ...validItem, id: undefined };
+    const result = parseAsaasPaymentListPage({ data: [validItem, badItem, item2], hasMore: false });
+    expect(result.valid).toBe(false);
+    if (result.valid !== false) throw new Error("esperava valid:false");
+    expect(result.reason).toMatch(/item 1/);
+    expect(result.reason).toMatch(/id/);
+  });
+
+  it("campo 'id' ausente ou vazio → item inválido", () => {
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, id: undefined }], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, id: "" }], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, id: "   " }], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, id: 123 }], hasMore: false }).valid).toBe(false);
+  });
+
+  it("campo 'status' ausente ou vazio → item inválido", () => {
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, status: undefined }], hasMore: false }).valid).toBe(
+      false,
+    );
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, status: "" }], hasMore: false }).valid).toBe(false);
+  });
+
+  it("campo 'dueDate' ausente ou vazio → item inválido", () => {
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, dueDate: undefined }], hasMore: false }).valid).toBe(
+      false,
+    );
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, dueDate: "" }], hasMore: false }).valid).toBe(false);
+  });
+
+  // "money never gets a ?? 0 fallback" — value ausente/inválido bloqueia o
+  // item (e por consequência a página), nunca vira 0 silenciosamente.
+  it("campo 'value' ausente, negativo, NaN, Infinity ou string → item inválido (nunca vira 0)", () => {
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, value: undefined }], hasMore: false }).valid).toBe(
+      false,
+    );
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, value: null }], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, value: -1 }], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, value: NaN }], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, value: Infinity }], hasMore: false }).valid).toBe(
+      false,
+    );
+    expect(parseAsaasPaymentListPage({ data: [{ ...validItem, value: "449" }], hasMore: false }).valid).toBe(false);
+  });
+
+  it("'value: 0' é um item VÁLIDO — zero é dinheiro de verdade, não ausência (mesmo princípio de parseAsaasAmountCents)", () => {
+    const result = parseAsaasPaymentListPage({ data: [{ ...validItem, value: 0 }], hasMore: false });
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("esperava valid:true");
+    expect(result.payments[0].value).toBe(0);
+  });
+
+  it("item que não é objeto (string, número, null, array) → item inválido", () => {
+    expect(parseAsaasPaymentListPage({ data: ["pay_1"], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [42], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [null], hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [[validItem]], hasMore: false }).valid).toBe(false);
+  });
+
+  it("campo 'data' ausente ou não é array → página inválida", () => {
+    expect(parseAsaasPaymentListPage({ hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: "não é array", hasMore: false }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: {}, hasMore: false }).valid).toBe(false);
+  });
+
+  // hasMore ausente/tipo errado NÃO pode virar `false` por default — isso
+  // pararia a paginação achando que já leu tudo (o "capped scan que lê como
+  // cobertura completa" que este parser existe pra impedir).
+  it("campo 'hasMore' ausente → página inválida (NUNCA default false)", () => {
+    const result = parseAsaasPaymentListPage({ data: [validItem] });
+    expect(result.valid).toBe(false);
+    if (result.valid !== false) throw new Error("esperava valid:false");
+    expect(result.reason).toMatch(/hasMore/);
+  });
+
+  it("campo 'hasMore' com tipo errado (string 'false') → página inválida", () => {
+    expect(parseAsaasPaymentListPage({ data: [validItem], hasMore: "false" }).valid).toBe(false);
+    expect(parseAsaasPaymentListPage({ data: [validItem], hasMore: 0 }).valid).toBe(false);
+  });
+
+  it("resposta que não é objeto (null/undefined/array/string/número) → página inválida", () => {
+    expect(parseAsaasPaymentListPage(null).valid).toBe(false);
+    expect(parseAsaasPaymentListPage(undefined).valid).toBe(false);
+    expect(parseAsaasPaymentListPage([]).valid).toBe(false);
+    expect(parseAsaasPaymentListPage("x").valid).toBe(false);
+    expect(parseAsaasPaymentListPage(42).valid).toBe(false);
+  });
+
+  it("nunca lança, mesmo com shapes hostis", () => {
+    expect(() => parseAsaasPaymentListPage(null)).not.toThrow();
+    expect(() => parseAsaasPaymentListPage(undefined)).not.toThrow();
+    expect(() => parseAsaasPaymentListPage({})).not.toThrow();
+    expect(() => parseAsaasPaymentListPage({ data: null })).not.toThrow();
+    expect(() => parseAsaasPaymentListPage({ data: [undefined, null, 42, "x"] })).not.toThrow();
+  });
+
+  // Pinagem dos tetos contra o VALOR EXATO, não só "é positivo" — um teto de
+  // cobertura é justamente o tipo de número que não pode mudar sem alguém
+  // notando (trocar 100×100 por 50×100 cortaria a cobertura segura pela
+  // metade e um `toBeGreaterThan(0)` deixaria passar calado).
+  it("ASAAS_PAYMENT_LIST_PAGE_SIZE e ASAAS_PAYMENT_LIST_MAX_PAGES pinados no valor exato", () => {
+    expect(ASAAS_PAYMENT_LIST_PAGE_SIZE).toBe(100);
+    expect(ASAAS_PAYMENT_LIST_MAX_PAGES).toBe(100);
+    // Nenhuma assinatura real (mesmo semanal, décadas de histórico) chega
+    // perto de 10.000 cobranças — o produto documenta a folga, não é a
+    // garantia em si (a garantia é o valor exato pinado acima).
+    expect(ASAAS_PAYMENT_LIST_PAGE_SIZE * ASAAS_PAYMENT_LIST_MAX_PAGES).toBe(10_000);
+  });
+});
+
+// hasAsaasBudgetForAnotherPage — Fix round 1 da Fase 5b (Task 10). Transforma
+// o `budgetMs` TOTAL de AsaasRequestOptions numa decisão por página dentro do
+// laço de listAsaasSubscriptionPayments (asaas.ts): sem isso, repassar `opts`
+// cru a cada página reiniciaria o relógio do orçamento a cada
+// `asaasRequest`, e um `budgetMs: 5000` custaria 5s × número de páginas em
+// vez de 5s no total.
+describe("hasAsaasBudgetForAnotherPage", () => {
+  it("ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS pinado no valor exato", () => {
+    expect(ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS).toBe(2_000);
+  });
+
+  it("restante acima do limiar → true (vale tentar mais uma página)", () => {
+    expect(hasAsaasBudgetForAnotherPage(ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS + 1)).toBe(true);
+    expect(hasAsaasBudgetForAnotherPage(10_000)).toBe(true);
+  });
+
+  it("restante EXATAMENTE no limiar → true (limiar é o mínimo aceitável, não o primeiro valor recusado)", () => {
+    expect(hasAsaasBudgetForAnotherPage(ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS)).toBe(true);
+  });
+
+  it("restante abaixo do limiar → false (desiste antes de tentar uma página sem tempo plausível)", () => {
+    expect(hasAsaasBudgetForAnotherPage(ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS - 1)).toBe(false);
+    expect(hasAsaasBudgetForAnotherPage(100)).toBe(false);
+  });
+
+  it("restante zero ou negativo (orçamento já estourou) → false", () => {
+    expect(hasAsaasBudgetForAnotherPage(0)).toBe(false);
+    expect(hasAsaasBudgetForAnotherPage(-500)).toBe(false);
+  });
+
+  it("nunca lança, mesmo com entrada hostil (NaN/Infinity)", () => {
+    expect(() => hasAsaasBudgetForAnotherPage(NaN)).not.toThrow();
+    expect(hasAsaasBudgetForAnotherPage(NaN)).toBe(false);
+    expect(() => hasAsaasBudgetForAnotherPage(Infinity)).not.toThrow();
+    expect(hasAsaasBudgetForAnotherPage(Infinity)).toBe(true);
+  });
+});
+
+// Extraído de `asaas-billing-events-apply.ts` pro fix round 1 da Fase 5b
+// Task 11 (achado "minor" de duplicação): aquele arquivo importa
+// `SupabaseClient` (mesmo só de tipo) de `https://esm.sh/@supabase/supabase-js`,
+// o que quebra a resolução do Vite pra qualquer teste vitest que tente
+// importá-lo — confirmado empiricamente, não por dedução. Mover o mapa pra
+// cá (em vez de manter uma segunda cópia em `_shared/asaas-invoice-reconcile-core.ts`
+// com um teste de sincronia) elimina a duplicação inteira: agora só existe
+// UMA definição, e `asaas-billing-events-apply.ts` importa dela.
+describe("mapAsaasBillingTypeToPaymentMethod", () => {
+  it("mapeia os 3 tipos conhecidos", () => {
+    expect(mapAsaasBillingTypeToPaymentMethod("CREDIT_CARD")).toBe("card");
+    expect(mapAsaasBillingTypeToPaymentMethod("PIX")).toBe("pix");
+    expect(mapAsaasBillingTypeToPaymentMethod("BOLETO")).toBe("boleto");
+  });
+
+  it("null/undefined/não-string/desconhecido nunca chutam um método", () => {
+    expect(mapAsaasBillingTypeToPaymentMethod(null)).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod(undefined)).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod("UNDEFINED")).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod("")).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod("credit_card")).toBeNull(); // case-sensitive
+    expect(mapAsaasBillingTypeToPaymentMethod(123)).toBeNull();
+    expect(mapAsaasBillingTypeToPaymentMethod({})).toBeNull();
   });
 });

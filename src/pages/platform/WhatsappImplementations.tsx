@@ -46,8 +46,11 @@ import {
   useCancelImplementation,
   useRegisterExternalPayment,
   useCreateImplementation,
+  useRevokeWhatsappGrandfathering,
+  useGrantWhatsappGrandfathering,
 } from "@/hooks/useWhatsappImplementation";
 import { useOrganizationsBilling, useBillingPlans } from "@/hooks/useBilling";
+import { WHATSAPP_GRANDFATHER_REVOKED_REASON_LABEL, type WhatsappGrandfatherRevokedReason } from "@/types/billing";
 import { useAuth } from "@/contexts/AuthContext";
 import { parseAmountReaisToCents } from "@/lib/billing-amount";
 /**
@@ -99,11 +102,59 @@ interface AdminImplementationRow {
   cancel_reason: string | null;
   created_at: string;
   updated_at: string;
-  organizations: { name: string; slug: string } | { name: string; slug: string }[] | null;
+  organizations: OrgGrandfatherInfo | OrgGrandfatherInfo[] | null;
+}
+
+/**
+ * Task 20: colunas de grandfathering embutidas no join `organizations!inner`
+ * do action `list` (mesma query, sem consulta separada). Cobre só orgs que
+ * TÊM uma linha de implantação — uma organização legada sem implantação
+ * registrada não aparece nesta tela (limite conhecido, ver o relatório da
+ * task).
+ */
+interface OrgGrandfatherInfo {
+  name: string;
+  slug: string;
+  whatsapp_legacy_grandfathered: boolean;
+  whatsapp_grandfathered_at: string | null;
+  whatsapp_grandfathered_source: string | null;
+  whatsapp_grandfather_revoked_at: string | null;
+  whatsapp_grandfather_revoked_reason: WhatsappGrandfatherRevokedReason | null;
+  whatsapp_grandfather_revoked_by: string | null;
 }
 
 function orgOf(row: AdminImplementationRow) {
   return Array.isArray(row.organizations) ? row.organizations[0] : row.organizations;
+}
+
+/** Rótulo compacto pra célula da tabela (Task 20). */
+function grandfatherCellBadge(org: OrgGrandfatherInfo | null | undefined): { label: string; className: string } {
+  if (!org) return { label: "—", className: "bg-muted text-muted-foreground" };
+  if (org.whatsapp_legacy_grandfathered && !org.whatsapp_grandfather_revoked_at) {
+    return { label: "Legado ativo", className: "bg-info/10 text-info" };
+  }
+  if (org.whatsapp_grandfather_revoked_at) {
+    return { label: "Legado revogado", className: "bg-muted text-muted-foreground" };
+  }
+  return { label: "—", className: "bg-muted text-muted-foreground" };
+}
+
+/**
+ * Ator da revogação do grandfathering. `FIRST_PAID_SUBSCRIPTION` é sempre
+ * automático — a RPC (migration 079) nunca grava `revoked_by` nesse caminho,
+ * então "Usuário removido" mentiria (nenhum humano decidiu, ninguém foi
+ * removido). Para os outros três motivos (ADMIN_MIGRATION, ADMIN_REVOCATION,
+ * REPLACED_BY_OVERRIDE) o writer SEMPRE grava o ator no momento da revogação
+ * — um `revoked_by` nulo ali só acontece se a conta desse admin foi apagada
+ * depois (FK `on delete set null`).
+ */
+function grandfatherActorLabel(
+  reason: WhatsappGrandfatherRevokedReason | null,
+  revokedBy: string | null,
+): string | null {
+  if (!reason) return null;
+  if (reason === "FIRST_PAID_SUBSCRIPTION") return "Automático — primeira assinatura paga";
+  return revokedBy ?? "Usuário removido";
 }
 
 /**
@@ -212,6 +263,7 @@ export default function WhatsappImplementations() {
                   <th className="p-3">Operacional</th>
                   <th className="p-3">Valor</th>
                   <th className="p-3">Criada em</th>
+                  <th className="p-3">Legado</th>
                 </tr>
               </thead>
               <tbody>
@@ -242,6 +294,12 @@ export default function WhatsappImplementations() {
                         {row.amount_cents == null ? "—" : formatCentsBRL(row.amount_cents)}
                       </td>
                       <td className="p-3">{formatDateBR(row.created_at.slice(0, 10))}</td>
+                      <td className="p-3">
+                        {(() => {
+                          const badge = grandfatherCellBadge(org);
+                          return <Badge variant="secondary" className={badge.className}>{badge.label}</Badge>;
+                        })()}
+                      </td>
                     </tr>
                   );
                 })}
@@ -285,11 +343,20 @@ function ImplementationDetail({
   const org = orgOf(row);
   const setStatus = useSetOperationalStatus();
   const cancelMutation = useCancelImplementation();
+  const revokeGrandfather = useRevokeWhatsappGrandfathering();
+  const grantGrandfather = useGrantWhatsappGrandfathering();
 
   const [destino, setDestino] = useState<ImplementationOperationalStatus | "">("");
   const [scheduledFor, setScheduledFor] = useState("");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [grandfatherNote, setGrandfatherNote] = useState("");
+  const [grandfatherRevokeReason, setGrandfatherRevokeReason] =
+    useState<"ADMIN_MIGRATION" | "ADMIN_REVOCATION" | "">("");
+
+  // Estado efetivo é `whatsapp_legacy_grandfathered AND revoked_at IS NULL`
+  // (mesmo cálculo do núcleo puro backend) — nunca só a primeira coluna.
+  const isGrandfathered = !!org?.whatsapp_legacy_grandfathered && !org?.whatsapp_grandfather_revoked_at;
 
   const destinations = nextDestinations(row.operational_status);
   const isTerminal = row.operational_status === "COMPLETED" || row.operational_status === "CANCELED";
@@ -334,6 +401,36 @@ function ImplementationDetail({
       { id: row.id, cancel_reason: cancelReason.trim() },
       {
         onSuccess: () => { toast.success("Implantação cancelada."); setCancelOpen(false); onClose(); },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  // `onClose()` no sucesso (mesmo padrão de handleAdvance/handleCancel acima):
+  // `row`/`org` são um snapshot passado pelo pai, não uma query viva — sem
+  // fechar o diálogo, o texto ficaria mostrando o estado ANTERIOR até o admin
+  // reabrir. A lista por trás já invalida via `useImplementationMutation`.
+  function handleRevokeGrandfather() {
+    if (!grandfatherRevokeReason || grandfatherNote.trim().length < 5) return;
+    revokeGrandfather.mutate(
+      {
+        organization_id: row.organization_id,
+        reason: grandfatherRevokeReason,
+        note: grandfatherNote.trim(),
+      },
+      {
+        onSuccess: () => { toast.success("Grandfathering revogado."); onClose(); },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  function handleGrantGrandfather() {
+    if (grandfatherNote.trim().length < 5) return;
+    grantGrandfather.mutate(
+      { organization_id: row.organization_id, note: grandfatherNote.trim() },
+      {
+        onSuccess: () => { toast.success("Grandfathering concedido."); onClose(); },
         onError: (err) => toast.error(err.message),
       },
     );
@@ -390,6 +487,100 @@ function ImplementationDetail({
         {row.cancel_reason && (
           <p className="text-sm text-destructive">Motivo do cancelamento: {row.cancel_reason}</p>
         )}
+
+        {/* Grandfathering do WhatsApp legado (Task 20) — independente da etapa
+            operacional da implantação acima; é um estado da ORGANIZAÇÃO, não
+            desta linha. */}
+        <div className="space-y-3 border-t pt-4">
+          <p className="text-sm font-medium">Grandfathering do WhatsApp legado</p>
+          {!org ? (
+            <p className="text-sm text-muted-foreground">Dados da organização indisponíveis.</p>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                {isGrandfathered ? (
+                  <>
+                    Legado ativo
+                    {org.whatsapp_grandfathered_at
+                      ? ` desde ${formatDateBR(org.whatsapp_grandfathered_at.slice(0, 10))}`
+                      : ""}
+                    {org.whatsapp_grandfathered_source === "MIGRATION_5B"
+                      ? " (migração automática da Fase 5b)."
+                      : org.whatsapp_grandfathered_source === "ADMIN"
+                        ? " (concedido pela plataforma)."
+                        : "."}
+                  </>
+                ) : org.whatsapp_grandfather_revoked_at ? (
+                  <>
+                    Revogado em {formatDateBR(org.whatsapp_grandfather_revoked_at.slice(0, 10))}
+                    {org.whatsapp_grandfather_revoked_reason
+                      ? ` — ${WHATSAPP_GRANDFATHER_REVOKED_REASON_LABEL[org.whatsapp_grandfather_revoked_reason]}`
+                      : ""}
+                    {(() => {
+                      const actor = grandfatherActorLabel(
+                        org.whatsapp_grandfather_revoked_reason,
+                        org.whatsapp_grandfather_revoked_by,
+                      );
+                      return actor ? ` — por ${actor}` : "";
+                    })()}
+                    . Revogação terminal — reconceder exige ação explícita abaixo.
+                  </>
+                ) : (
+                  "Esta organização nunca teve grandfathering legado."
+                )}
+              </p>
+
+              {isGrandfathered ? (
+                <div className="space-y-2">
+                  <Select
+                    value={grandfatherRevokeReason}
+                    onValueChange={(v) => setGrandfatherRevokeReason(v as typeof grandfatherRevokeReason)}
+                  >
+                    <SelectTrigger className="h-12 sm:h-10">
+                      <SelectValue placeholder="Motivo da revogação" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ADMIN_MIGRATION">Migrada para o modelo comercial</SelectItem>
+                      <SelectItem value="ADMIN_REVOCATION">Revogação administrativa</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Textarea
+                    placeholder="Descreva o motivo da revogação (obrigatório)"
+                    value={grandfatherNote}
+                    onChange={(e) => setGrandfatherNote(e.target.value)}
+                  />
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={
+                      !grandfatherRevokeReason ||
+                      grandfatherNote.trim().length < 5 ||
+                      revokeGrandfather.isPending
+                    }
+                    onClick={handleRevokeGrandfather}
+                  >
+                    {revokeGrandfather.isPending ? "Revogando..." : "Revogar grandfathering"}
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Textarea
+                    placeholder="Motivo da concessão (obrigatório)"
+                    value={grandfatherNote}
+                    onChange={(e) => setGrandfatherNote(e.target.value)}
+                  />
+                  <Button
+                    size="sm"
+                    disabled={grandfatherNote.trim().length < 5 || grantGrandfather.isPending}
+                    onClick={handleGrantGrandfather}
+                  >
+                    {grantGrandfather.isPending ? "Concedendo..." : "Conceder grandfathering"}
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
 
         {!isTerminal && (
           <div className="space-y-2 border-t pt-4">

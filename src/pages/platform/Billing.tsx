@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useOrganizationsBilling, useBillingPlans, useBlockOrganization, useUnblockOrganization } from "@/hooks/useBilling";
+import {
+  useOrganizationsBilling,
+  useBillingPlans,
+  useBlockOrganization,
+  useUnblockOrganization,
+  useHeldInvoices,
+  useReleaseInvoiceEnforcementHold,
+} from "@/hooks/useBilling";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -12,14 +19,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { CreditCard, Eye, Lock, Unlock, MoreHorizontal, Search, DollarSign, Users, AlertTriangle, Clock, Settings2, MessageSquare } from "lucide-react";
+import { CreditCard, Eye, Lock, Unlock, MoreHorizontal, Search, DollarSign, Users, AlertTriangle, Clock, Settings2, MessageSquare, ShieldAlert } from "lucide-react";
 import {
   BILLING_STATUS_LABEL,
   BILLING_STATUS_VARIANT,
   PAYMENT_METHOD_LABEL,
+  ENFORCEMENT_HOLD_REASON_LABEL,
   formatCentsBRL,
   type BillingStatus,
   type OrgBillingRow,
+  type BillingInvoice,
 } from "@/types/billing";
 import { formatDateBR } from "@/lib/utils";
 
@@ -154,6 +163,9 @@ export default function Billing() {
         </Card>
       </div>
 
+      {/* Faturas retidas para revisão administrativa (migration 077, Task 20) */}
+      <HeldInvoicesSection />
+
       {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
@@ -272,6 +284,146 @@ export default function Billing() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function orgOfInvoice(inv: BillingInvoice) {
+  return Array.isArray(inv.organizations) ? inv.organizations[0] : inv.organizations;
+}
+
+/**
+ * Task 20 — painel de faturas retidas (migration 077). Quatro estados
+ * (carregando/erro-com-retry/vazia/lista): silenciar erro como "nenhuma
+ * fatura retida" já mascarou incidente em produção neste projeto (CLAUDE.md).
+ */
+function HeldInvoicesSection() {
+  const { data, isLoading, isError, refetch } = useHeldInvoices();
+  const releaseMutation = useReleaseInvoiceEnforcementHold();
+  const [releaseTarget, setReleaseTarget] = useState<BillingInvoice | null>(null);
+  const [releaseReason, setReleaseReason] = useState("");
+
+  const invoices = data?.invoices ?? [];
+
+  function handleClose() {
+    setReleaseTarget(null);
+    setReleaseReason("");
+  }
+
+  function handleRelease() {
+    if (!releaseTarget || releaseReason.trim().length < 5) return;
+    releaseMutation.mutate(
+      { invoice_id: releaseTarget.id, reason: releaseReason.trim() },
+      {
+        onSuccess: () => { toast.success("Fatura liberada da retenção."); handleClose(); },
+        onError: (err) => toast.error(err.message),
+      },
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <ShieldAlert className="h-4 w-4 text-warning" />
+          <CardTitle className="text-base">Faturas retidas para revisão</CardTitle>
+        </div>
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          Faturas que a reconciliação encontrou mas NÃO entram na escada de inadimplência —
+          backfill inicial, cobrança anterior ao go-live da ingestão, ambiguidade de correlação
+          ou divergência de valor. Liberar devolve a fatura ao fluxo normal de cobrança.
+        </p>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        ) : isError ? (
+          <div className="py-6 text-center space-y-3">
+            <p className="text-sm text-destructive">Erro ao carregar faturas retidas.</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Tentar novamente</Button>
+          </div>
+        ) : invoices.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            Nenhuma fatura retida no momento.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Organização</TableHead>
+                  <TableHead>Valor</TableHead>
+                  <TableHead>Vencimento</TableHead>
+                  <TableHead>Motivo</TableHead>
+                  <TableHead>Retida em</TableHead>
+                  <TableHead className="w-10"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {invoices.map((inv) => {
+                  const org = orgOfInvoice(inv);
+                  return (
+                    <TableRow key={inv.id}>
+                      <TableCell>
+                        {org ? (
+                          <Link to={`/platform/billing/${inv.organization_id}`} className="font-medium hover:underline">
+                            {org.name}
+                          </Link>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                      <TableCell>{formatCentsBRL(inv.amount_cents)}</TableCell>
+                      <TableCell>{inv.due_date ? formatDateBR(inv.due_date) : "—"}</TableCell>
+                      <TableCell>
+                        {inv.enforcement_hold_reason
+                          ? ENFORCEMENT_HOLD_REASON_LABEL[inv.enforcement_hold_reason]
+                          : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {inv.enforcement_held_at ? formatDateBR(inv.enforcement_held_at.slice(0, 10)) : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Button variant="outline" size="sm" onClick={() => setReleaseTarget(inv)}>
+                          Liberar
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+
+      <AlertDialog open={!!releaseTarget} onOpenChange={(open) => !open && handleClose()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Liberar fatura da retenção?</AlertDialogTitle>
+            <AlertDialogDescription>
+              A fatura volta a contar pra escada de inadimplência normal (lembretes, escalada e
+              bloqueio por atraso).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Textarea
+            placeholder="Motivo da liberação (obrigatório)"
+            value={releaseReason}
+            onChange={(e) => setReleaseReason(e.target.value)}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={releaseMutation.isPending || releaseReason.trim().length < 5}
+              onClick={handleRelease}
+            >
+              {releaseMutation.isPending ? "Liberando..." : "Liberar"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Card>
   );
 }
 

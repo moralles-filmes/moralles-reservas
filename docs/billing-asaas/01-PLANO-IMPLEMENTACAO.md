@@ -123,6 +123,12 @@ Infra: tabela `platform_flags` (key UNIQUE, value jsonb, description, updated_at
 
 ## FASE 5 — Implementação WhatsApp (R$ 750) + mensalidade da instância (R$ 149)
 
+> ✅ **Código concluído em duas sub-fases** — `billing-asaas/fase-5a` (implantação R$750 + assinatura da instância R$149, sem suspender ninguém) e `billing-asaas/fase-5b` (elo financeiro real + enforcement: gate central de envio, suspensão/restauração da instância, banner ao cliente). Ver [FASE-5A-RESUMO.md](FASE-5A-RESUMO.md) e [FASE-5B-RESUMO.md](FASE-5B-RESUMO.md). Migrations (071–076 da 5a; 077–080 e 082–083 da 5b — a 081 da spec não foi criada, ver nota no resumo da 5b) **aplicadas em 2026-07-30**, mais a 084 e, em 2026-07-31, a **086** (fecha leitura anon por coluna). Edge Functions afetadas **deployadas**. As flags da fase seguem OFF, então o comportamento novo está dormente — go-live do Asaas fica em sandbox até a última fase do projeto (decisão do dono).
+>
+> ⚠️ **Desvios do texto abaixo, registrados nos resumos:** (1) sem `billing_orders`/`billing_order_items` — decisão da 5a "sem carrinho: um produto, uma sessão, uma cobrança"; (2) `whatsapp_implementations` não usa o FSM único descrito abaixo (`NOT_REQUESTED|PAYMENT_PENDING|...`) — `payment_status` e `operational_status` viraram eixos separados, ausência de linha = `NOT_REQUESTED`; (3) o texto abaixo não previa o gate central de sete estados nem o worker de suspensão/restauração da instância — toda a 5b nasceu de um achado durante a 5a de que "inadimplência da instância suspende só WhatsApp" precisava de mecanismo próprio (fail-open no envio, fail-closed no provisionamento novo), não só de um `entitlement` binário.
+>
+> **As três flags relevantes seguem OFF**: `whatsapp_implementation_flow`, `whatsapp_subscription_checkout` (5a) e `whatsapp_service_enforcement` (criada OFF na 5a, migration 075; consumida pela 5b). Ligar é decisão do dono, na ordem documentada no runbook de cada resumo.
+
 **Entregas**
 - Migration `whatsapp_implementations` (org, payment ref, status CHECK `NOT_REQUESTED|PAYMENT_PENDING|PAYMENT_CONFIRMED|SCHEDULED|IN_PROGRESS|WAITING_CUSTOMER|COMPLETED|CANCELED`, responsável, datas, observações; RLS platform_admin + leitura owner/gerente via EF; audit trigger).
 - Migration `billing_orders` + `billing_order_items` (carrinho interno; 1 order → N cobranças Asaas).

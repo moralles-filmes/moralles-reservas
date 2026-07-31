@@ -293,6 +293,7 @@ export default function BillingDetail() {
           open={cancelDialog}
           onOpenChange={setCancelDialog}
           subscriptionId={activeSub.id}
+          provider={activeSub.provider}
         />
       )}
     </div>
@@ -909,19 +910,34 @@ function TrialDialog({ open, onOpenChange, organizationId }: {
   );
 }
 
-function CancelSubDialog({ open, onOpenChange, subscriptionId }: {
+function CancelSubDialog({ open, onOpenChange, subscriptionId, provider }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   subscriptionId: string;
+  provider?: string;
 }) {
   const mutation = useCancelSubscription();
+  // Só a Stripe tem período contratual. Em asaas nada popula current_period_end
+  // e nenhum evento vira cancel_at_period_end em canceled; em manual/lifetime o
+  // backend nem chega a consultar provedor — cancela na hora. Nos dois casos,
+  // oferecer a caixa prometeria algo que o sistema não sabe cumprir.
+  const isImmediateOnly = provider !== "stripe";
   const [atPeriodEnd, setAtPeriodEnd] = useState(true);
+  const effectiveAtPeriodEnd = isImmediateOnly ? false : atPeriodEnd;
 
   function handleSubmit() {
     mutation.mutate(
-      { subscription_id: subscriptionId, at_period_end: atPeriodEnd },
+      { subscription_id: subscriptionId, at_period_end: effectiveAtPeriodEnd },
       {
-        onSuccess: () => { toast.success("Assinatura cancelada."); onOpenChange(false); },
+        // Igual ao toast do lojista: o efeito vem do provedor, não do pedido.
+        onSuccess: (res) => {
+          toast.success(
+            (res as { effective?: string })?.effective === "at_period_end"
+              ? "Assinatura agendada para cancelamento no fim do período."
+              : "Assinatura cancelada.",
+          );
+          onOpenChange(false);
+        },
         onError: (err) => toast.error(err.message),
       },
     );
@@ -933,15 +949,19 @@ function CancelSubDialog({ open, onOpenChange, subscriptionId }: {
         <AlertDialogHeader>
           <AlertDialogTitle>Cancelar assinatura?</AlertDialogTitle>
           <AlertDialogDescription>
-            {atPeriodEnd
-              ? "O acesso será mantido até o fim do período atual."
-              : "O cancelamento será imediato."}
+            {isImmediateOnly
+              ? "O cancelamento é imediato: a cobrança recorrente é interrompida no provedor e o acesso termina agora. Não há reembolso do período já pago."
+              : effectiveAtPeriodEnd
+                ? "O acesso será mantido até o fim do período atual."
+                : "O cancelamento será imediato."}
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <div className="flex items-center gap-2 mt-2">
-          <input type="checkbox" id="atPeriodEnd" checked={atPeriodEnd} onChange={(e) => setAtPeriodEnd(e.target.checked)} />
-          <Label htmlFor="atPeriodEnd" className="text-sm">Cancelar apenas ao fim do período</Label>
-        </div>
+        {!isImmediateOnly && (
+          <div className="flex items-center gap-2 mt-2">
+            <input type="checkbox" id="atPeriodEnd" checked={atPeriodEnd} onChange={(e) => setAtPeriodEnd(e.target.checked)} />
+            <Label htmlFor="atPeriodEnd" className="text-sm">Cancelar apenas ao fim do período</Label>
+          </div>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel>Voltar</AlertDialogCancel>
           <AlertDialogAction className="bg-destructive text-destructive-foreground" disabled={mutation.isPending} onClick={handleSubmit}>

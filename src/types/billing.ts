@@ -1,3 +1,15 @@
+// Import type-only cross-boundary, reexportado abaixo (`WhatsAppServiceState`)
+// — mesmo padrão de `whatsapp-implementation-core.ts` (importado direto por
+// `WhatsappImplementations.tsx` e testado a partir de `src/lib/*.test.ts`).
+// Uma cópia divergente do union é pior que um import fora do padrão comum de
+// `src/`: se um oitavo estado for acrescentado no backend e este tipo não
+// acompanhar, nada quebra a compilação — a cadeia exaustiva do banner cai em
+// silêncio no `return null` final, escondendo justamente o aviso que devia
+// aparecer. `import type` é apagado no bundle (Vite/esbuild), então este
+// arquivo nunca carrega runtime de Deno.
+import type { WhatsAppServiceState } from "../../supabase/functions/_shared/whatsapp-service-state-core";
+export type { WhatsAppServiceState };
+
 export type BillingStatus =
   | "active"
   | "trialing"
@@ -161,6 +173,10 @@ export interface BillingSubscription {
   created_at: string;
   updated_at: string;
   plan?: BillingPlan | null;
+  // Multi-provider (migration 063) — opcional pelo mesmo motivo do BillingPlan:
+  // uma versão antiga de manage-billing pode não devolver a coluna. A UI usa
+  // `provider` para não prometer fim de período onde ele não existe (Asaas).
+  provider?: BillingProviderName;
 }
 
 export interface BillingInvoice {
@@ -179,7 +195,48 @@ export interface BillingInvoice {
   paid_at: string | null;
   created_at: string;
   updated_at: string;
+  // Retenção pra revisão administrativa (migration 077, Fase 5b Task 11).
+  // Opcionais: linhas antigas da EF podem não devolver ainda em deploy
+  // intermediário — mesma convenção de `system_allowed` acima.
+  enforcement_hold?: boolean;
+  enforcement_hold_reason?: EnforcementHoldReason | null;
+  enforcement_held_at?: string | null;
+  enforcement_released_at?: string | null;
+  enforcement_released_by?: string | null;
+  ingestion_source?: string | null;
+  /** Presente só quando `list_invoices` embute o join (painel da plataforma). */
+  organizations?: { name: string; slug: string } | { name: string; slug: string }[] | null;
 }
+
+/** Espelha o CHECK `billing_invoices_hold_reason_chk` (migration 077). */
+export type EnforcementHoldReason =
+  | "INITIAL_BACKFILL"
+  | "PRE_GO_LIVE_INVOICE"
+  | "CORRELATION_AMBIGUITY"
+  | "VALUE_MISMATCH"
+  | "MANUAL_REVIEW";
+
+export const ENFORCEMENT_HOLD_REASON_LABEL: Record<EnforcementHoldReason, string> = {
+  INITIAL_BACKFILL: "Backfill inicial",
+  PRE_GO_LIVE_INVOICE: "Cobrança anterior ao go-live da ingestão",
+  CORRELATION_AMBIGUITY: "Ambiguidade de correlação",
+  VALUE_MISMATCH: "Divergência de valor",
+  MANUAL_REVIEW: "Revisão manual",
+};
+
+/** Espelha o CHECK `organizations_wa_grandfather_revoke_chk` (migration 079). */
+export type WhatsappGrandfatherRevokedReason =
+  | "FIRST_PAID_SUBSCRIPTION"
+  | "ADMIN_MIGRATION"
+  | "REPLACED_BY_OVERRIDE"
+  | "ADMIN_REVOCATION";
+
+export const WHATSAPP_GRANDFATHER_REVOKED_REASON_LABEL: Record<WhatsappGrandfatherRevokedReason, string> = {
+  FIRST_PAID_SUBSCRIPTION: "Primeira assinatura paga da instância",
+  ADMIN_MIGRATION: "Migrada para o modelo comercial",
+  REPLACED_BY_OVERRIDE: "Substituída por override formal",
+  ADMIN_REVOCATION: "Revogação administrativa",
+};
 
 export interface BillingAccessOverride {
   id: string;
@@ -218,25 +275,38 @@ export interface OrgBillingRow {
   subscription: (BillingSubscription & { plan: BillingPlan | null }) | null;
 }
 
+/**
+ * Resposta de `manage-billing` action `get_organization_billing`, que tem DUAS
+ * formas: platform_admin recebe tudo; owner/gerente recebe uma versão moldada,
+ * porque o payload admin agrega histórico administrativo SOBRE o cliente.
+ *
+ * As chaves só-de-admin são OPCIONAIS e vêm OMITIDAS (não vazias) pro cliente:
+ * `[]` afirmaria "esta organização não tem fatura nenhuma", e alguém montaria
+ * "Suas faturas" em cima disso mostrando lista vazia pra quem tem fatura
+ * vencida. `undefined` obriga a decidir. Quando alguma tela de cliente precisar
+ * de uma dessas listas, o certo é moldá-la no servidor — nunca devolver `*`.
+ */
 export interface OrgBillingDetail {
+  /** Pro cliente vêm só `id`, `name`, `billing_status` e `trial_ends_at`. */
   organization: {
     id: string;
     name: string;
-    slug: string;
-    plan: string | null;
+    slug?: string;
+    plan?: string | null;
     billing_status: BillingStatus;
-    billing_email: string | null;
+    billing_email?: string | null;
     trial_ends_at: string | null;
-    blocked_at: string | null;
-    blocked_reason: string | null;
+    blocked_at?: string | null;
+    blocked_reason?: string | null;
   };
-  customer: BillingCustomer | null;
+  /** Sempre presente. Pro cliente, sem os ids do provedor. */
   subscriptions: BillingSubscription[];
   active_plan: BillingPlan | null;
-  invoices: BillingInvoice[];
-  overrides: BillingAccessOverride[];
-  notifications: BillingNotification[];
-  units_count: number | null;
+  customer?: BillingCustomer | null;
+  invoices?: BillingInvoice[];
+  overrides?: BillingAccessOverride[];
+  notifications?: BillingNotification[];
+  units_count?: number | null;
 }
 
 export const BILLING_STATUS_LABEL: Record<BillingStatus, string> = {
@@ -327,7 +397,36 @@ export type ClientImplementationState =
   | "NOT_REQUESTED" | "AWAITING_PAYMENT" | "PAID_NOT_STARTED"
   | "IN_PROGRESS" | "WAITING_CUSTOMER" | "COMPLETED" | "CANCELED";
 
+// `WhatsAppServiceState` importado no topo do arquivo (cross-boundary) e
+// reexportado aqui — ver o comentário junto ao import.
+
 export interface WhatsappServiceStatus {
+  /**
+   * Task 20. A UI (WhatsappServiceBanner) escolhe o banner por ESTE campo —
+   * nunca por `sendingBlocked`, que é a consequência gateada pela flag
+   * `whatsapp_service_enforcement` (nasce OFF; um banner keyado nela nunca
+   * apareceria).
+   *
+   * OPCIONAL de propósito, mesma convenção de `system_allowed` abaixo: o
+   * frontend sobe pela Vercel automaticamente enquanto a Edge Function é
+   * implantada à mão (`supabase functions deploy`) — na janela entre os dois
+   * deploys a resposta chega SEM este campo. `WhatsappServiceBanner` trata
+   * ausência como "não renderizar nada", nunca como um estado específico.
+   */
+  serviceState?: WhatsAppServiceState;
+  /** Consequência REAL sobre o envio agora, já considerando a flag de
+   *  enforcement — diagnóstico, não usado pra decidir o banner. Opcional pelo
+   *  mesmo motivo de `serviceState`. */
+  sendingBlocked?: boolean;
+  /** `due_date` da fatura mais antiga em aberto + dias de carência. `null`
+   *  fora de GRACE_PERIOD/SUSPENDED_UNPAID. Opcional pelo mesmo motivo de
+   *  `serviceState`. */
+  graceEndsAt?: string | null;
+  /** `billing_subscriptions.suspended_at` — coluna real, escrita só pelo
+   *  worker de enforcement. Pode ser `null` mesmo em SUSPENDED_UNPAID
+   *  enquanto a flag estiver OFF; a UI cai pra `graceEndsAt` nesse caso.
+   *  Opcional pelo mesmo motivo de `serviceState`. */
+  suspendedAt?: string | null;
   implementation: {
     state: ClientImplementationState;
     payment_status: ImplementationPaymentStatus | null;

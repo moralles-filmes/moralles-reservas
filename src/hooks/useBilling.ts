@@ -158,6 +158,39 @@ export function useBillingInvoices(filters: {
   });
 }
 
+/**
+ * Faturas retidas para revisão administrativa (migration 077, Task 20).
+ * `page_size` alto — painel de auditoria, não lista paginada de rotina; o
+ * volume esperado é baixo (retenção é exceção, não regra, ver o header da
+ * migration).
+ */
+export function useHeldInvoices() {
+  return useQuery<{ invoices: BillingInvoice[]; total: number | null }>({
+    queryKey: ["billing-invoices-held"],
+    queryFn: async () => {
+      const res = await invokeManageBilling({
+        action: "list_invoices",
+        enforcement_hold: true,
+        page_size: 200,
+      });
+      return { invoices: res.invoices, total: res.total };
+    },
+  });
+}
+
+export function useReleaseInvoiceEnforcementHold() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { invoice_id: string; reason: string }) =>
+      invokeManageBilling({ action: "release_invoice_enforcement_hold", ...params }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["billing-invoices-held"] });
+      qc.invalidateQueries({ queryKey: ["billing-invoices"] });
+      qc.invalidateQueries({ queryKey: ["billing-detail"] });
+    },
+  });
+}
+
 export function useCreateManualInvoice() {
   const qc = useQueryClient();
   return useMutation({

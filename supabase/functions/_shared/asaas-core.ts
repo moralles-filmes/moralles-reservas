@@ -231,6 +231,94 @@ export function asaasValueToCents(value: number): number {
   return Math.round(value * 100);
 }
 
+/**
+ * Resultado tipado do parse de `payment.value` (payload cru do Asaas, tipo
+ * `unknown` — JSON de terceiro). Ao contrário de `asaasValueToCents`, esta
+ * função NUNCA lança: o caller (o aplicador de eventos Asaas) precisa decidir
+ * o que fazer com um valor ausente/inválido sem `try/catch` por chamada, e
+ * precisa saber a DIFERENÇA entre "o campo não veio" e "o campo veio, mas é
+ * lixo" — os dois exigem o mesmo `failed` no chamador, mas merecem log e
+ * observabilidade diferentes.
+ */
+export type AsaasAmountParse =
+  | { ok: true; cents: number }
+  | { ok: false; code: "MISSING_PAYMENT_AMOUNT" | "INVALID_PAYMENT_AMOUNT" };
+
+/**
+ * `payment.value` cru do Asaas → resultado tipado em centavos. Delega TODO o
+ * arredondamento a `asaasValueToCents` — nenhuma segunda lógica de conversão
+ * aqui, só classificação de entrada.
+ *
+ * Zero explícito (`value: 0`) é um resultado VÁLIDO (`{ok:true, cents:0}`) —
+ * cobrança de valor zero existe (plano trial) — e tem que ficar distinguível
+ * de "não veio" (`undefined`/`null`/string vazia). Colapsar os dois em zero é
+ * exatamente o bug que esta função existe para impedir: um `value` ausente ou
+ * corrompido virando `amount_cents: 0` cria uma fatura aparentemente válida
+ * que nunca vai ser cobrada de verdade — R$ 0,00 tem significado financeiro
+ * próprio, não é um "não sei".
+ */
+export function parseAsaasAmountCents(value: unknown): AsaasAmountParse {
+  if (value === undefined || value === null || value === "") {
+    return { ok: false, code: "MISSING_PAYMENT_AMOUNT" };
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return { ok: false, code: "INVALID_PAYMENT_AMOUNT" };
+  }
+  const cents = asaasValueToCents(value);
+  // Fronteira de correção (representação segura de inteiro em JS), não regra
+  // de negócio inventada: nenhum plano real chega perto disso, mas um payload
+  // corrompido não pode produzir um `amount_cents` fora da precisão segura.
+  if (!Number.isSafeInteger(cents)) {
+    return { ok: false, code: "INVALID_PAYMENT_AMOUNT" };
+  }
+  return { ok: true, cents };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Método de pagamento — mapeamento único (Fase 5b Task 11, fix round 1)
+//
+// EXTRAÍDO de `asaas-billing-events-apply.ts` (que tinha uma cópia privada
+// `PAYMENT_METHOD_BY_BILLING_TYPE`/`mapPaymentMethod`) para cá em vez de deixar
+// `_shared/asaas-invoice-reconcile-core.ts` manter uma SEGUNDA cópia. A opção
+// "escrever um teste de sincronia entre as duas cópias" foi avaliada e
+// descartada: `asaas-billing-events-apply.ts` importa `SupabaseClient` (mesmo
+// só de tipo) de `https://esm.sh/@supabase/supabase-js`, e ISSO quebra a
+// resolução do Vite pra qualquer teste vitest que tente importar esse módulo
+// — confirmado empiricamente (não por dedução) tentando importar a função de
+// dentro de um teste antes deste commit: `Error: Only URLs with a scheme in:
+// file and data are supported by the default ESM loader`. Um teste de
+// sincronia real é IMPOSSÍVEL sem primeiro mover o mapa pra fora do arquivo
+// de I/O — que é exatamente o que este bloco faz. `asaas-core.ts` já é o
+// lugar comprovado que tanto Deno (EFs) quanto vitest (src/lib/*.test.ts)
+// conseguem importar sem quebrar nada.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Espelha o CHECK de `billing_invoices.payment_method`/`billing_subscriptions.payment_method`
+ * (migration 20260528000000). */
+export type AsaasInvoicePaymentMethod = "card" | "pix" | "boleto";
+
+const PAYMENT_METHOD_BY_BILLING_TYPE: Readonly<Record<string, AsaasInvoicePaymentMethod>> = {
+  CREDIT_CARD: "card",
+  PIX: "pix",
+  BOLETO: "boleto",
+};
+
+/**
+ * `billingType` do payload do Asaas → CHECK `card|pix|boleto`. ESTRITO: devolve
+ * `null` para `UNDEFINED`/ausente/desconhecido em vez de chutar — o valor é
+ * lido por humano no painel (`PAYMENT_METHOD_LABEL` em
+ * src/pages/platform/BillingDetail.tsx e Billing.tsx), e um chute vira
+ * informação errada na tela. Aceita `unknown` (não só `string | null`) porque
+ * o consumidor original (`asaas-billing-events-apply.ts`) recebe o campo cru
+ * de `res.data.billingType` (JSON de terceiro, tipo não garantido).
+ */
+export function mapAsaasBillingTypeToPaymentMethod(billingType: unknown): AsaasInvoicePaymentMethod | null {
+  if (typeof billingType === "string") {
+    return PAYMENT_METHOD_BY_BILLING_TYPE[billingType] ?? null;
+  }
+  return null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Webhook — classificação de evento + parsing do envelope (§3/§4 da doc,
 // Fase 2 Task 4). Consumido por supabase/functions/asaas-webhook/index.ts e
@@ -364,4 +452,186 @@ export function parseAsaasWebhookEnvelope(body: unknown): ParsedAsaasWebhook {
   const dateCreated = typeof obj.dateCreated === "string" ? obj.dateCreated : null;
 
   return { valid: true, id, event, dateCreated };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Listagem de cobranças de uma assinatura (Fase 5b Task 10) — consumida por
+// _shared/asaas.ts (listAsaasSubscriptionPayments) e, indiretamente, pelo
+// worker de reconciliação process-asaas-invoice-reconcile (Task 11, ainda não
+// implementado — este núcleo já existe pronto pra ele). Endpoint verificado
+// em §13.2 de docs/billing-asaas/03-ASAAS-API-VERIFICADO.md:
+// `GET /v3/subscriptions/{id}/payments`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Tamanho de página usado por listAsaasSubscriptionPayments. */
+export const ASAAS_PAYMENT_LIST_PAGE_SIZE = 100;
+
+/**
+ * Teto de páginas que o cliente HTTP percorre antes de desistir e devolver
+ * erro. Nenhuma assinatura real chega perto disso (mesmo semanal por décadas
+ * não passaria de ~30 páginas) — o teto existe só pra não deixar um loop cujo
+ * `hasMore` nunca vira `false` (bug do lado do Asaas, ou resposta corrompida
+ * repetindo a mesma página) rodar pra sempre consumindo o rate limit da conta
+ * inteira (§10: 25k req/12h, 50 GETs concorrentes). Ao ser atingido, o
+ * cliente loga o evento e devolve `ok:false` — NUNCA devolve a coleção
+ * parcial como se fosse a lista completa (mesmo princípio de
+ * `parseAsaasPaymentListPage` abaixo: dado incompleto não pode se passar por
+ * dado completo).
+ */
+export const ASAAS_PAYMENT_LIST_MAX_PAGES = 100;
+
+/**
+ * Orçamento mínimo (ms) que precisa sobrar do `budgetMs` TOTAL do caller
+ * (ver `AsaasRequestOptions` em asaas.ts) antes de `listAsaasSubscriptionPayments`
+ * disparar mais uma página. Um GET do Asaas sob rede real raramente fecha em
+ * bem menos de 1s; abaixo deste teto a tentativa não tem uma ida-e-volta
+ * plausível — melhor desistir cedo com um motivo explícito ("orçamento
+ * esgotado") do que arriscar um timeout no meio da chamada, que devolveria
+ * um erro de rede indistinguível de uma falha real do provider.
+ */
+export const ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS = 2_000;
+
+/**
+ * Decisão PURA: dado o que resta de um orçamento TOTAL (não o `budgetMs` por
+ * chamada), ainda vale tentar mais uma página?
+ *
+ * Existe porque `AsaasRequestOptions.budgetMs` é documentado como orçamento
+ * TOTAL de wall-clock da chamada, mas `asaasRequest` calcula
+ * `deadlineAt = Date.now() + budgetMs` A CADA invocação — repassar `opts`
+ * cru dentro do laço de paginação reiniciaria o relógio em cada página, e um
+ * `budgetMs: 5000` do caller custaria 5s × número de páginas em vez de 5s no
+ * total. `listAsaasSubscriptionPayments` (asaas.ts) fixa UMA deadline antes
+ * do laço e usa esta função pra decidir, a cada volta, se o que resta ainda
+ * justifica outra tentativa — o cálculo em si (`deadlineAt - Date.now()`)
+ * fica no caller porque depende de relógio; aqui só mora o limiar.
+ */
+export function hasAsaasBudgetForAnotherPage(remainingMs: number): boolean {
+  return remainingMs >= ASAAS_PAYMENT_LIST_MIN_PAGE_BUDGET_MS;
+}
+
+/**
+ * Um item de `GET /subscriptions/{id}/payments` — só os campos que o
+ * reconciliador (Task 11) precisa pra diferenciar cobranças já refletidas no
+ * banco das que faltam.
+ */
+export interface AsaasPaymentSummary {
+  id: string;
+  status: string;
+  /** Em REAIS decimais crus do Asaas (§9.1) — NÃO é amount_cents. Converter
+   * com `asaasValueToCents` na fronteira antes de comparar com uma coluna
+   * `_cents` do banco; nunca comparar `value` diretamente com `amount_cents`. */
+  value: number;
+  /** YYYY-MM-DD */
+  dueDate: string;
+  billingType: string | null;
+  /** Presente em cobrança nascida de assinatura; OMITIDO (não `null`) em
+   * cobrança avulsa (§13.6) — os dois casos normalizam pra `null` aqui. */
+  subscription: string | null;
+  externalReference: string | null;
+}
+
+type ParsedAsaasPaymentSummary =
+  | { valid: true; payment: AsaasPaymentSummary }
+  | { valid: false; reason: string };
+
+/**
+ * Guard de um item bruto da lista. `id`/`status`/`dueDate` são a chave de
+ * correlação com o banco pro reconciliador — ausentes ou de tipo errado
+ * tornam o item inutilizável, então falham o item inteiro.
+ *
+ * `value` segue a MESMA régua de `parseAsaasAmountCents` acima: nunca ganha
+ * fallback `?? 0`. Um `value` ausente/inválido faz o item inteiro falhar em
+ * vez de virar uma cobrança fantasma de R$ 0,00 na reconciliação — mas ao
+ * contrário de `parseAsaasAmountCents`, esta função NÃO converte pra
+ * centavos: devolve `value` cru em reais, mesma convenção do resto de
+ * `asaas.ts` (o cliente HTTP não converte unidade monetária na própria
+ * fronteira — quem compara com `amount_cents` do banco converte na hora).
+ *
+ * `billingType`/`subscription`/`externalReference` são secundários (não
+ * servem de chave de correlação) — presentes com tipo errado ou ausentes
+ * normalizam pra `null` em vez de invalidar o item, mesmo padrão de
+ * `dateCreated` em `parseAsaasWebhookEnvelope` acima.
+ */
+function parseAsaasPaymentSummary(raw: unknown): ParsedAsaasPaymentSummary {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { valid: false, reason: "item não é objeto" };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const id = obj.id;
+  if (typeof id !== "string" || !id.trim()) {
+    return { valid: false, reason: "campo 'id' ausente ou não é string" };
+  }
+
+  const status = obj.status;
+  if (typeof status !== "string" || !status.trim()) {
+    return { valid: false, reason: "campo 'status' ausente ou não é string" };
+  }
+
+  const value = obj.value;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return { valid: false, reason: "campo 'value' ausente ou inválido" };
+  }
+
+  const dueDate = obj.dueDate;
+  if (typeof dueDate !== "string" || !dueDate.trim()) {
+    return { valid: false, reason: "campo 'dueDate' ausente ou não é string" };
+  }
+
+  const billingType = typeof obj.billingType === "string" ? obj.billingType : null;
+  const subscription = typeof obj.subscription === "string" ? obj.subscription : null;
+  const externalReference = typeof obj.externalReference === "string" ? obj.externalReference : null;
+
+  return {
+    valid: true,
+    payment: { id, status, value, dueDate, billingType, subscription, externalReference },
+  };
+}
+
+export type ParsedAsaasPaymentListPage =
+  | { valid: true; payments: AsaasPaymentSummary[]; hasMore: boolean }
+  | { valid: false; reason: string };
+
+/**
+ * Parseia uma página de `GET /subscriptions/{id}/payments`: `{ data: [...],
+ * hasMore: boolean }` (convenção padrão de listagem do Asaas). Duas decisões
+ * deliberadamente rígidas, ambas pelo mesmo motivo — dado incompleto/duvidoso
+ * não pode se passar por dado completo pro reconciliador:
+ *
+ * 1. Um item malformado invalida A PÁGINA INTEIRA (não "pula e segue"). Uma
+ *    lista com um buraco silencioso é o mesmo defeito que uma paginação
+ *    truncada — o reconciliador criaria um "diff" que não reflete a
+ *    realidade sem nenhum sinal de que algo foi descartado.
+ * 2. `hasMore` ausente ou de tipo errado é ERRO, não `false` por default.
+ *    Se o valor default fosse `false`, uma resposta corrompida faria o
+ *    cliente HTTP parar de paginar achando que já leu tudo — exatamente o
+ *    "capped scan que lê como cobertura completa" que este trecho existe
+ *    pra evitar.
+ */
+export function parseAsaasPaymentListPage(raw: unknown): ParsedAsaasPaymentListPage {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { valid: false, reason: "resposta não é objeto" };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const items = obj.data;
+  if (!Array.isArray(items)) {
+    return { valid: false, reason: "campo 'data' ausente ou não é array" };
+  }
+
+  const payments: AsaasPaymentSummary[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const parsed = parseAsaasPaymentSummary(items[i]);
+    if (parsed.valid === false) {
+      return { valid: false, reason: `item ${i}: ${parsed.reason}` };
+    }
+    payments.push(parsed.payment);
+  }
+
+  const hasMore = obj.hasMore;
+  if (typeof hasMore !== "boolean") {
+    return { valid: false, reason: "campo 'hasMore' ausente ou não é boolean" };
+  }
+
+  return { valid: true, payments, hasMore };
 }

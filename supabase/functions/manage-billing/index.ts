@@ -11,7 +11,6 @@ import { corsHeadersFor } from "../_shared/cors.ts";
 import {
   createStripeCustomer,
   createStripeSubscription,
-  cancelStripeSubscription,
   createStripeInvoice,
   retrieveStripeSubscription,
   retrieveStripeInvoice,
@@ -20,6 +19,9 @@ import {
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
 import { isSystemSubscription, SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
+import { getBillingProvider } from "../_shared/billing-provider.ts";
+import { decideCancelTarget, localCancelPatch, type CancelEffective } from "../_shared/billing-cancel-core.ts";
+import { enqueueBillingNotification, resolvePlatformAdminRecipients } from "../_shared/billing-notify.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -43,12 +45,32 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
 }
 
 async function canManageOrgBilling(userId: string, organizationId: string): Promise<boolean> {
+  return hasOrgBillingRole(userId, organizationId, ["owner", "gerente"]);
+}
+
+/**
+ * Só `owner`. Existe porque `unit_members` é escopado por UNIDADE e
+ * `organizations.billing_status` é escopado pela ORGANIZAÇÃO: um `gerente` de
+ * uma única unidade de uma rede não pode cancelar a assinatura de sistema e
+ * derrubar o painel das unidades irmãs — e do próprio dono. Enquanto o
+ * cancelamento só marcava a linha em `billing_subscriptions` a diferença era
+ * inócua; desde que ele cascateia pra `billing_status`, deixou de ser.
+ */
+async function canCancelOrgSubscription(userId: string, organizationId: string): Promise<boolean> {
+  return hasOrgBillingRole(userId, organizationId, ["owner"]);
+}
+
+async function hasOrgBillingRole(
+  userId: string,
+  organizationId: string,
+  roles: string[],
+): Promise<boolean> {
   if (await isPlatformAdmin(userId)) return true;
   const { data } = await supabase
     .from("unit_members")
     .select("role, units!inner(organization_id)")
     .eq("user_id", userId)
-    .in("role", ["owner", "gerente"])
+    .in("role", roles)
     .eq("units.organization_id", organizationId)
     .limit(1);
   return !!(data && data.length > 0);
@@ -68,6 +90,12 @@ const CLIENT_FRIENDLY_ACTIONS = new Set([
   "preview_plan_change",
   "cancel_subscription_by_owner",
   "get_org_entitlements",
+  // `get_organization_billing` faz as DUAS coisas: checa canManageOrgBilling
+  // contra a organization_id do payload E molda a resposta por papel. Precisa
+  // das duas porque o payload admin agrega seis tabelas, entre elas
+  // billing_access_overrides e billing_notifications — histórico administrativo
+  // SOBRE o cliente, que ele não pode ler nem da própria org.
+  "get_organization_billing",
 ]);
 
 // ── billing_plans: colunas e enums ──────────────────────────────────────────
@@ -106,6 +134,58 @@ const PLAN_PUBLIC_COLUMNS =
   "trial_days, is_trial, active, sort_order, category, billing_type, " +
   "recommended, popular, amount_credited_cents, requires_plan_id, max_units, " +
   "max_members_per_unit";
+
+// Colunas de `organizations` devolvidas a caller NÃO-admin em
+// `get_organization_billing`. `select("*")` traria `billing_email`,
+// `blocked_reason` e o histórico de grandfathering de WhatsApp — o lojista
+// precisa só do estado de cobrança da própria org (o que `/g/:slug/cobranca`
+// consome) mais nome e id pra rotular a tela.
+const ORG_BILLING_PUBLIC_COLUMNS = "id, name, billing_status, trial_ends_at";
+
+// Colunas de `billing_subscriptions` devolvidas a caller NÃO-admin. Omite os
+// ids do provedor (`provider_subscription_id`, `stripe_subscription_id`) e o
+// `billing_customer_id`: são a identidade do cliente DENTRO do gateway, não
+// têm uso na tela e são exatamente o que um cliente não deve enxergar. O
+// `provider` fica — a tela precisa dele pra não prometer fim de período onde
+// ele não existe.
+const SUBSCRIPTION_PUBLIC_COLUMNS =
+  "id, organization_id, billing_plan_id, status, payment_method, provider, " +
+  "current_period_start, current_period_end, trial_end, cancel_at_period_end, " +
+  "canceled_at, created_at, updated_at";
+
+// Aviso INTERNO: o provedor CANCELOU a assinatura e a escrita local falhou.
+// Sem transação distribuída alguém fica na frente, e cancelar no provedor
+// primeiro erra a favor do cliente — mas deixa o banco dizendo que a assinatura
+// segue viva enquanto ninguém mais será cobrado. É divergência produzida pelo
+// nosso próprio código, não pelo painel do provedor, e o `jsonLog` sozinho não
+// avisa ninguém. `process-billing-notifications` precisa ter a entrada
+// correspondente em `TEMPLATE_BY_EVENT` no MESMO deploy — as duas EFs não
+// compartilham nada além desta string.
+const ADMIN_CANCEL_DIVERGENCE_EVENT_TYPE = "admin_cancel_local_write_failed";
+
+/**
+ * Enfileira o aviso de divergência pra todos os platform_admins. Best-effort:
+ * nunca lança — a resposta 500 ao caller já aconteceu, e falhar aqui não pode
+ * transformar um erro conhecido em exceção não tratada.
+ */
+async function notifyCancelDivergence(orgId: string, reqId: string): Promise<void> {
+  try {
+    const recipients = await resolvePlatformAdminRecipients(supabase);
+    for (const recipient of recipients) {
+      await enqueueBillingNotification(supabase, {
+        organizationId: orgId,
+        eventType: ADMIN_CANCEL_DIVERGENCE_EVENT_TYPE,
+        invoiceId: null,
+        recipient,
+      });
+    }
+  } catch (err) {
+    jsonLog("error", {
+      reqId, evt: "billing_cancel_divergence_notify_failed",
+      orgId, err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /** Valida os enums de billing_plans. Devolve mensagem PT-BR ou null. */
 function validatePlanEnums(fields: Record<string, unknown>): string | null {
@@ -466,6 +546,59 @@ serve(async (req) => {
       const { organization_id } = body;
       if (!organization_id) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
 
+      // Owner/gerente lê a PRÓPRIA org; platform_admin lê qualquer uma.
+      if (!callerIsAdmin && !(await canManageOrgBilling(callerId, organization_id))) {
+        return jsonResponse(req, { error: "Sem permissão." }, 403);
+      }
+
+      // Caminho do cliente: resposta MOLDADA, não a do admin filtrada depois.
+      // O payload admin agrega seis tabelas com `select("*")` — devolvê-lo a um
+      // lojista vazaria ids do provedor, Price IDs da Stripe, external_reference
+      // das faturas e o histórico de `billing_access_overrides` /
+      // `billing_notifications`, que é registro administrativo SOBRE ele.
+      if (!callerIsAdmin) {
+        const [orgRes, subRes] = await Promise.all([
+          supabase.from("organizations").select(ORG_BILLING_PUBLIC_COLUMNS).eq("id", organization_id).single(),
+          supabase.from("billing_subscriptions").select(SUBSCRIPTION_PUBLIC_COLUMNS)
+            .eq("organization_id", organization_id).order("created_at", { ascending: false }),
+        ]);
+
+        if (orgRes.error) {
+          return jsonResponse(req, { error: "Organização não encontrada." }, 404);
+        }
+        // Falha de leitura NÃO pode virar lista vazia: `Cobranca.tsx` derivaria
+        // `sub = null` e mostraria o PricingTable pra quem já assina, como se a
+        // assinatura tivesse sumido. Mesmo princípio das listas do frontend —
+        // `isError` é um estado, não "zero resultados".
+        if (subRes.error) {
+          jsonLog("error", {
+            reqId, evt: "billing_client_detail_subs_read_failed",
+            orgId: organization_id, err: subRes.error.message,
+          });
+          return jsonResponse(req, { error: "Falha ao carregar a assinatura." }, 500);
+        }
+
+        let clientPlan = null;
+        const clientActiveSub = (subRes.data ?? []).find((s: Record<string, unknown>) => s.status !== "canceled");
+        if (clientActiveSub) {
+          const { data: p } = await supabase.from("billing_plans")
+            .select(PLAN_PUBLIC_COLUMNS).eq("id", clientActiveSub.billing_plan_id).single();
+          clientPlan = p;
+        }
+
+        // As chaves de admin são OMITIDAS, não vazias. `invoices: []` afirmaria
+        // "esta organização não tem fatura", e uma tela futura de "Suas faturas"
+        // mostraria lista vazia pra quem tem fatura vencida. Ausente obriga quem
+        // consome a decidir. `subscriptions` e `active_plan` sempre vêm —
+        // `Cobranca.tsx` faz `detail.subscriptions.find(...)` direto.
+        return jsonResponse(req, {
+          success: true,
+          organization: orgRes.data,
+          subscriptions: subRes.data ?? [],
+          active_plan: clientPlan,
+        });
+      }
+
       const [orgRes, custRes, subRes, invRes, overRes, notifRes] = await Promise.all([
         supabase.from("organizations").select("*").eq("id", organization_id).single(),
         supabase.from("billing_customers").select("*").eq("organization_id", organization_id).maybeSingle(),
@@ -486,7 +619,9 @@ serve(async (req) => {
         plan = p;
       }
 
-      const { data: unitsCount } = await supabase
+      // `head: true` devolve a contagem em `count` e SEMPRE `data: null` —
+      // destruturar `data` deixava "Unidades: —" fixo no painel.
+      const { count: unitsCount } = await supabase
         .from("units")
         .select("id", { count: "exact", head: true })
         .eq("organization_id", organization_id);
@@ -648,6 +783,15 @@ serve(async (req) => {
           billing_customer_id: customer.id,
           billing_plan_id: plan_id,
           stripe_subscription_id: stripeSubscriptionId,
+          // `provider` tem default 'stripe' no banco (migration 063). Deixar o
+          // default valer numa assinatura sem contraparte na Stripe (boleto/PIX,
+          // ou customer sem stripe_customer_id) produz uma linha que se declara
+          // Stripe e não tem id nenhum — `decideCancelTarget` a recusa como
+          // `unroutable` e ela fica incancelável, travando a org, já que aqui em
+          // cima o insert bloqueia criar outra enquanto existir não-cancelada.
+          // A honestidade mora na origem: sem id externo, é assinatura `manual`.
+          provider: stripeSubscriptionId ? "stripe" : "manual",
+          provider_subscription_id: stripeSubscriptionId,
           status: trial_days ? "trialing" : "active",
           payment_method,
           trial_end: trialEnd,
@@ -685,44 +829,80 @@ serve(async (req) => {
 
       const { data: sub } = await supabase
         .from("billing_subscriptions")
-        .select("id, stripe_subscription_id, organization_id")
+        .select("id, provider, provider_subscription_id, stripe_subscription_id, organization_id, status")
         .eq("id", subscription_id)
         .single();
 
       if (!sub) return jsonResponse(req, { error: "Assinatura não encontrada." }, 404);
+      // Reentrância: aba velha, duplo clique, retry. Sem isto, recancelar uma
+      // linha já cancelada reescreve `canceled_at` e — pior — re-executa a
+      // cascata abaixo, derrubando uma org que já assinou de novo e está em dia.
+      if (sub.status === "canceled") {
+        return jsonResponse(req, { error: "Assinatura já cancelada." }, 400);
+      }
 
-      if (sub.stripe_subscription_id) {
-        const res = await cancelStripeSubscription(sub.stripe_subscription_id, at_period_end);
+      const target = decideCancelTarget(sub);
+      if (target.kind === "unroutable") {
+        jsonLog("warn", {
+          reqId, evt: "billing_cancel_unroutable", subId: subscription_id,
+          provider: target.provider, reason: target.reason,
+        });
+        return jsonResponse(req, {
+          error: "Esta assinatura não tem vínculo com o provedor de pagamento. Não é possível cancelar automaticamente.",
+        }, 400);
+      }
+
+      // Provedor PRIMEIRO. Falha aqui aborta sem escrever nada — era
+      // exatamente o inverso disso que fazia o banco dizer "cancelado"
+      // enquanto o Asaas seguia cobrando.
+      let effective: CancelEffective = "immediate";
+      if (target.kind === "provider") {
+        const res = await getBillingProvider(target.provider).cancelSubscription(
+          target.providerSubscriptionId,
+          at_period_end === true,
+        );
         if (!res.ok) {
-          jsonLog("error", { reqId, evt: "billing_cancel_stripe_error", err: res.error });
-          return jsonResponse(req, { error: res.error ?? "Falha ao cancelar no Stripe." }, 500);
+          jsonLog("error", {
+            reqId, evt: "billing_cancel_provider_error",
+            provider: target.provider, subId: subscription_id, err: res.error,
+          });
+          return jsonResponse(req, { error: "Falha ao cancelar a assinatura no provedor de pagamento." }, 500);
         }
+        effective = res.data?.effective ?? "immediate";
       }
 
-      if (at_period_end) {
-        await supabase.from("billing_subscriptions").update({
-          cancel_at_period_end: true,
-          updated_at: new Date().toISOString(),
-        }).eq("id", subscription_id);
-      } else {
-        await supabase.from("billing_subscriptions").update({
-          status: "canceled",
-          canceled_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }).eq("id", subscription_id);
+      const { error: updErr } = await supabase
+        .from("billing_subscriptions")
+        .update(localCancelPatch(effective, new Date().toISOString()))
+        .eq("id", subscription_id);
 
-        // Só o cancelamento da assinatura de SISTEMA cancela a organização.
-        // Cancelar a instância de WhatsApp marcava a org inteira como
-        // 'canceled' — o cliente perdia o sistema por desistir da automação.
-        if (await isSystemSubscription(supabase, subscription_id)) {
-          await supabase.from("organizations").update({
-            billing_status: "canceled",
-          }).eq("id", sub.organization_id);
-        }
+      if (updErr) {
+        // Provedor já cancelou. Sem transação distribuída alguém fica na
+        // frente, e cancelar no provedor primeiro erra a favor do cliente —
+        // ele para de ser cobrado mesmo com o nosso banco fora. Este log é o
+        // que permite achar e conciliar a divergência.
+        jsonLog("error", {
+          reqId, evt: "billing_cancel_local_write_failed",
+          subId: subscription_id, provider: target.provider, effective, err: updErr.message,
+        });
+        await notifyCancelDivergence(sub.organization_id, reqId);
+        return jsonResponse(req, { error: "Assinatura cancelada no provedor, mas o registro local falhou. Ver logs." }, 500);
       }
 
-      jsonLog("info", { reqId, evt: "billing_subscription_cancelled", subId: subscription_id, atPeriodEnd: at_period_end });
-      return jsonResponse(req, { success: true });
+      // Só o cancelamento da assinatura de SISTEMA cancela a organização.
+      // Cancelar a instância de WhatsApp marcava a org inteira como
+      // 'canceled' — o cliente perdia o sistema por desistir da automação.
+      if (effective === "immediate" && await isSystemSubscription(supabase, subscription_id)) {
+        await supabase.from("organizations").update({
+          billing_status: "canceled",
+        }).eq("id", sub.organization_id);
+      }
+
+      jsonLog("info", {
+        reqId, evt: "billing_subscription_cancelled",
+        subId: subscription_id, target: target.kind, effective,
+      });
+      return jsonResponse(req, { success: true, effective });
     }
 
     // ─── change_plan (client-friendly) ────────────────────────────────────
@@ -869,19 +1049,21 @@ serve(async (req) => {
     }
 
     // ─── cancel_subscription_by_owner (client-friendly) ───────────────────
-    // Owner cancela a própria sub. Sempre at_period_end=true (preserva o que pagou).
+    // Owner cancela a própria sub. Sempre PEDE at_period_end=true; o efeito real
+    // vem do provedor (no Asaas volta `immediate`, que não tem período a honrar).
     if (action === "cancel_subscription_by_owner") {
       const { subscription_id, organization_id } = body;
       if (!subscription_id || !organization_id) {
         return jsonResponse(req, { error: "subscription_id e organization_id são obrigatórios." }, 400);
       }
-      if (!callerIsAdmin && !(await canManageOrgBilling(callerId, organization_id))) {
-        return jsonResponse(req, { error: "Sem permissão." }, 403);
+      // `owner`, não `gerente`: este caminho cascateia pra organizations.
+      if (!callerIsAdmin && !(await canCancelOrgSubscription(callerId, organization_id))) {
+        return jsonResponse(req, { error: "Apenas o proprietário pode cancelar a assinatura." }, 403);
       }
 
       const { data: sub } = await supabase
         .from("billing_subscriptions")
-        .select("id, stripe_subscription_id, organization_id, status")
+        .select("id, provider, provider_subscription_id, stripe_subscription_id, organization_id, status")
         .eq("id", subscription_id)
         .single();
 
@@ -892,21 +1074,70 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Assinatura já cancelada." }, 400);
       }
 
-      if (sub.stripe_subscription_id) {
-        const cancelRes = await cancelStripeSubscription(sub.stripe_subscription_id, true);
-        if (!cancelRes.ok) {
-          jsonLog("error", { reqId, evt: "billing_cancel_by_owner_stripe_error", err: cancelRes.error });
-          return jsonResponse(req, { error: cancelRes.error ?? "Falha ao cancelar no Stripe." }, 500);
-        }
+      const target = decideCancelTarget(sub);
+      if (target.kind === "unroutable") {
+        jsonLog("warn", {
+          reqId, evt: "billing_cancel_by_owner_unroutable", subId: subscription_id,
+          provider: target.provider, reason: target.reason,
+        });
+        return jsonResponse(req, {
+          error: "Esta assinatura não tem vínculo com o provedor de pagamento. Fale com o suporte.",
+        }, 400);
       }
 
-      await supabase.from("billing_subscriptions").update({
-        cancel_at_period_end: true,
-        updated_at: new Date().toISOString(),
-      }).eq("id", subscription_id);
+      // O lojista sempre pede fim de período; o provedor responde o que de
+      // fato deu. No Asaas isso volta como `immediate` — não há período
+      // contratual a honrar, e a tela já avisa disso antes de confirmar.
+      let effective: CancelEffective = "immediate";
+      if (target.kind === "provider") {
+        const res = await getBillingProvider(target.provider).cancelSubscription(
+          target.providerSubscriptionId,
+          true,
+        );
+        if (!res.ok) {
+          jsonLog("error", {
+            reqId, evt: "billing_cancel_by_owner_provider_error",
+            provider: target.provider, subId: subscription_id, err: res.error,
+          });
+          return jsonResponse(req, { error: "Falha ao cancelar a assinatura no provedor de pagamento." }, 500);
+        }
+        effective = res.data?.effective ?? "immediate";
+      }
 
-      jsonLog("info", { reqId, evt: "billing_subscription_cancelled_by_owner", subId: subscription_id, callerId });
-      return jsonResponse(req, { success: true });
+      const { error: updErr } = await supabase
+        .from("billing_subscriptions")
+        .update(localCancelPatch(effective, new Date().toISOString()))
+        .eq("id", subscription_id);
+
+      if (updErr) {
+        jsonLog("error", {
+          reqId, evt: "billing_cancel_by_owner_local_write_failed",
+          subId: subscription_id, provider: target.provider, effective, err: updErr.message,
+        });
+        await notifyCancelDivergence(sub.organization_id, reqId);
+        return jsonResponse(req, { error: "Assinatura cancelada no provedor, mas o registro local falhou. Ver logs." }, 500);
+      }
+
+      // Mesma cascata da action admin, e pelo mesmo motivo: `billing_status` é a
+      // coluna autoritativa do BillingGuard. Sem isto, cancelamento imediato
+      // (Asaas) para de cobrar e NUNCA encerra o acesso — nenhum worker fecha a
+      // brecha, porque assinatura INACTIVE não gera mais fatura pra vencer. Só
+      // assinatura de SISTEMA cancela a org: desistir da instância de WhatsApp
+      // não pode derrubar o sistema inteiro. `sub.organization_id` (linha já
+      // conferida contra o payload acima), nunca o `organization_id` do body.
+      // `/g/:slug/cobranca` é whitelist do BillingGuard, então o lojista
+      // continua alcançando esta tela pra reassinar.
+      if (effective === "immediate" && await isSystemSubscription(supabase, subscription_id)) {
+        await supabase.from("organizations").update({
+          billing_status: "canceled",
+        }).eq("id", sub.organization_id);
+      }
+
+      jsonLog("info", {
+        reqId, evt: "billing_subscription_cancelled_by_owner",
+        subId: subscription_id, callerId, target: target.kind, effective,
+      });
+      return jsonResponse(req, { success: true, effective });
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -914,18 +1145,24 @@ serve(async (req) => {
     // ═════════════════════════════════════════════════════════════════════════
 
     if (action === "list_invoices") {
-      const { organization_id, status: filterStatus, page = 0, page_size = 20 } = body;
+      const { organization_id, status: filterStatus, page = 0, page_size = 20, enforcement_hold } = body;
       const from = Number(page) * Number(page_size);
       const to = from + Number(page_size) - 1;
 
+      // `organizations(name, slug)` embutido via FK (billing_invoices.organization_id
+      // -> organizations.id) — Task 20, painel de faturas retidas da plataforma
+      // precisa do nome da organização na linha, sem consulta separada.
+      // Aditivo: consumidores existentes de `invoices` continuam recebendo os
+      // mesmos campos, só ganham este a mais.
       let query = supabase
         .from("billing_invoices")
-        .select("*", { count: "exact" })
+        .select("*, organizations(name, slug)", { count: "exact" })
         .order("created_at", { ascending: false })
         .range(from, to);
 
       if (organization_id) query = query.eq("organization_id", organization_id);
       if (filterStatus) query = query.eq("status", filterStatus);
+      if (enforcement_hold !== undefined) query = query.eq("enforcement_hold", !!enforcement_hold);
 
       const { data, error, count } = await query;
       if (error) {
@@ -1013,6 +1250,46 @@ serve(async (req) => {
 
       jsonLog("info", { reqId, evt: "billing_invoice_created", orgId: organization_id, invoiceId: invoice.id, stripeInvoiceId });
       return jsonResponse(req, { success: true, invoice });
+    }
+
+    // ── release_invoice_enforcement_hold (admin) ───────────────────────────
+    // Libera uma fatura retida pra revisão (migration 077) — fora de
+    // CLIENT_FRIENDLY_ACTIONS, exclusiva de platform_admin (guard já rodou no
+    // topo). Sem organization_id no payload pra checar contra o caller: a org
+    // sai da própria fatura, mesmo padrão de reprocess_billing_event.
+    if (action === "release_invoice_enforcement_hold") {
+      const { invoice_id, reason } = body;
+      if (!invoice_id || typeof reason !== "string" || reason.trim().length < 5) {
+        return jsonResponse(req, { error: "Informe a fatura e o motivo da liberação." }, 400);
+      }
+      const { data: released, error } = await supabase
+        .from("billing_invoices")
+        .update({
+          enforcement_hold: false,
+          enforcement_released_at: new Date().toISOString(),
+          enforcement_released_by: callerId,
+        })
+        .eq("id", invoice_id)
+        .eq("enforcement_hold", true) // condicional: liberar duas vezes não reescreve a autoria
+        .select("id, organization_id");
+      if (error) {
+        jsonLog("error", { reqId, evt: "billing_release_hold_failed", invoice_id, err: error.message });
+        return jsonResponse(req, { error: "Não foi possível liberar a fatura." }, 500);
+      }
+      if (!released?.length) {
+        return jsonResponse(req, { error: "Fatura não está retida." }, 409);
+      }
+      // Auditoria: quem liberou, quando e por quê. Sem isso, uma fatura sai da
+      // retenção e volta a poder suspender um cliente sem rastro de decisão.
+      await supabase.from("billing_events").insert({
+        organization_id: released[0].organization_id,
+        provider: "asaas",
+        event_type: "internal.invoice_hold_released",
+        processing_status: "processed",
+        data: { invoice_id, reason: reason.trim(), released_by: callerId },
+      });
+      jsonLog("info", { reqId, evt: "billing_invoice_hold_released", invoice_id, by: callerId });
+      return jsonResponse(req, { success: true });
     }
 
     // ═════════════════════════════════════════════════════════════════════════

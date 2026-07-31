@@ -3,6 +3,7 @@ import {
   buildExternalReference,
   parseExternalReference,
   decideEventEffect,
+  isAsaasPurpose,
   ACTIVATING_EVENTS,
   REFUND_EVENTS,
 } from "../../supabase/functions/_shared/asaas-billing-events";
@@ -80,6 +81,29 @@ describe("parseExternalReference", () => {
   });
 });
 
+describe("isAsaasPurpose — fonte única para quem tipa purpose fora deste módulo", () => {
+  // billing-correlation-core.ts (Fix round 1 da Task 5) importa este guard em
+  // vez de duplicar a lista de purposes — cobrir aqui protege os dois lados.
+  it("aceita os quatro purposes válidos", () => {
+    for (const p of ["subscription", "implementation", "ai_topup", "other"]) {
+      expect(isAsaasPurpose(p)).toBe(true);
+    }
+  });
+
+  it("recusa string que não está no CHECK, incluindo diferença de caixa", () => {
+    expect(isAsaasPurpose("whatsapp")).toBe(false);
+    expect(isAsaasPurpose("")).toBe(false);
+    expect(isAsaasPurpose("SUBSCRIPTION")).toBe(false);
+  });
+
+  it("recusa qualquer valor que não seja string, sem lançar", () => {
+    expect(isAsaasPurpose(null)).toBe(false);
+    expect(isAsaasPurpose(undefined)).toBe(false);
+    expect(isAsaasPurpose(42)).toBe(false);
+    expect(isAsaasPurpose({})).toBe(false);
+  });
+});
+
 describe("decideEventEffect — gate de ativação", () => {
   it("activates on PAYMENT_CONFIRMED when the invoice is still open", () => {
     const e = decideEventEffect({
@@ -121,10 +145,11 @@ describe("decideEventEffect — gate de ativação", () => {
   it("activates on invoiceStatus: null — first-ever payment and monthly renewal alike", () => {
     // Fusão de dois testes que o Fix B (remoção de `subscriptionStatus` do
     // contrato) tornou idênticos: (a) primeiro pagamento de sempre, nenhuma
-    // invoice ainda existe; (b) renovação mensal — `PAYMENT_CREATED` é
-    // informativo (não cria invoice), então quando o `PAYMENT_RECEIVED` da
-    // renovação chega, a busca por invoice correlacionada também dá `null`,
-    // mesmo com assinatura já `active` de um ciclo anterior. Antes do Fix 1,
+    // invoice ainda existe; (b) renovação mensal com a ingestão de
+    // `PAYMENT_CREATED` desligada (Fase 5b) ou ainda não reprocessada —
+    // quando o `PAYMENT_RECEIVED` da renovação chega, a busca por invoice
+    // correlacionada dá `null`, mesmo com assinatura já `active` de um ciclo
+    // anterior. Antes do Fix 1,
     // o código lia esse `invoiceStatus === null` combinado com
     // `subscriptionStatus === "active"` como "nada a fazer" (`noop`),
     // descartando silenciosamente um pagamento genuíno. Provado que
@@ -238,7 +263,9 @@ describe("decideEventEffect — demais eventos", () => {
   });
 
   it("treats informational payment events as noop, not unknown", () => {
-    for (const ev of ["PAYMENT_CREATED", "PAYMENT_UPDATED", "PAYMENT_BANK_SLIP_VIEWED"]) {
+    // PAYMENT_CREATED SAIU deste grupo na Fase 5b — ganhou classificação
+    // própria (upsert_open_invoice), coberta no describe dedicado abaixo.
+    for (const ev of ["PAYMENT_UPDATED", "PAYMENT_BANK_SLIP_VIEWED"]) {
       expect(decideEventEffect({
         eventType: ev,
         invoiceStatus: "open",
@@ -356,5 +383,26 @@ describe("catálogo REVERSO — todo ativador espelhado no short-circuit do webh
         `${eventType} tem efeito acionável em decideEventEffect mas NÃO está no catálogo do webhook — o asaas-webhook o carimbaria 'ignored' e a ativação seria perdida`,
       ).toBe("known");
     }
+  });
+});
+
+describe("decideEventEffect — PAYMENT_CREATED (Fase 5b)", () => {
+  it("cria fatura em aberto quando ainda não há linha correlacionada", () => {
+    const e = decideEventEffect({ eventType: "PAYMENT_CREATED", invoiceStatus: null });
+    expect(e.kind).toBe("upsert_open_invoice");
+  });
+
+  it("é no-op quando a fatura já existe em estado terminal", () => {
+    for (const status of ["paid", "void"]) {
+      expect(decideEventEffect({ eventType: "PAYMENT_CREATED", invoiceStatus: status }).kind).toBe("noop");
+    }
+  });
+
+  it("é no-op quando a fatura já existe em aberto — nada a criar", () => {
+    expect(decideEventEffect({ eventType: "PAYMENT_CREATED", invoiceStatus: "open" }).kind).toBe("noop");
+  });
+
+  it("PAYMENT_UPDATED continua informativo", () => {
+    expect(decideEventEffect({ eventType: "PAYMENT_UPDATED", invoiceStatus: null }).kind).toBe("noop");
   });
 });
