@@ -58,7 +58,9 @@ A spec é explícita: as duas flags da 5b são **separadas de propósito** (uma 
    ```
    A partir daqui, `enforced.sending` passa a valer de verdade — os cenários C15–C24m e C27–C28 assumem esta flag LIGADA, salvo quando o próprio cenário testa o comportamento com ela OFF (C23, C24a–c, C24l).
 
-**Resultado observado (passo 0.2):** _(preencher — data/hora de cada ativação, quem executou, e o veredito da observação do passo 4)_
+**Resultado observado (passo 0.2):** executado em 2026-07-31 por `morallesfilms@gmail.com` (platform_admin). Ver §0.5 e §0.6.
+
+> ⚠️ **`billing_invoice_ingestion_since` NÃO aceita timestamp.** O bloco SQL do passo 3 acima grava `now()::date::text` (`YYYY-MM-DD`) e é isso mesmo: `parseBillingIngestionSince` valida contra `/^\d{4}-\d{2}-\d{2}$/` e devolve `INVALID_FORMAT` pra qualquer outra coisa, **abortando o worker**. Um timestamp também inverteria a comparação de retenção — `'2026-07-31' < '2026-07-31T14:52:00Z'` é `true` porque prefixo é menor, então toda cobrança vencendo no dia do go-live entraria retida como `PRE_GO_LIVE_INVOICE`. A granularidade é de DIA por construção: o valor é comparado por string contra `pay.dueDate`, que o Asaas manda como `YYYY-MM-DD`. [asaas-invoice-reconcile-core.ts:180](../../supabase/functions/_shared/asaas-invoice-reconcile-core.ts).
 
 ---
 
@@ -83,7 +85,137 @@ A spec é explícita: as duas flags da 5b são **separadas de propósito** (uma 
 
 **Conclusão:** ligar `whatsapp_service_enforcement` hoje seria inofensivo — **e é exatamente esse o problema**: não há nada para o enforcement enforçar. A virada só produz evidência depois que a fixture paga existir. Ver §0.4.
 
-## 0.4 Bloqueio de execução — o B1→B10 exige navegador
+> **Correção da leitura acima (2026-07-31).** "Zero faturas vencidas" está certo ao pé da letra — *vencida* = passou do `due_date` — mas dá a impressão errada: `seu-japa` tem uma fatura `open` de R$99,99 desde 2026-06-04 que **nunca** será cobrada. `process-billing-overdue` filtra `.lt("due_date", today)` e `due_date` dela é NULL, então a linha é excluída na própria query ([process-billing-overdue/index.ts:44](../../supabase/functions/process-billing-overdue/index.ts)). É legado Stripe (`in_1TefEW…`, sem `billing_subscription_id`, sem `external_reference`). **A ingestão nova é imune** — `upsert_open_invoice` trata `dueDate` ausente como fatal e derruba o evento pra `failed` em vez de criar fatura sem vencimento ([asaas-billing-events-apply.ts:1411](../../supabase/functions/_shared/asaas-billing-events-apply.ts)) — mas o legado fica invisível pra sempre. Follow-up, não bloqueia a fase.
+
+## 0.4 Fixtures exclusivas da 5b — criadas em 2026-07-31
+
+Criadas pelo fluxo real (`manage-organizations` action `create_organization`, painel `/platform/empresas`), com contatos plus-address da própria equipe. Nenhuma org real usada.
+
+| | PAID | LEGACY |
+|---|---|---|
+| nome | `SANDBOX FASE 5B — PAID` | `SANDBOX FASE 5B — LEGACY` |
+| `organization_id` | `a705c2e2-dff1-4f15-a62c-58af06bf8dcd` | `03132666-64f2-4d35-9268-c56f47d65108` |
+| unit / slug | `544f4fad-…` / `sandbox-fase-5b-paid` | `cde5209d-…` / `sandbox-fase-5b-legacy` |
+| CNPJ | `11.222.333/0001-81` | `11.444.777/0001-61` |
+| contato | `morallesfilms+sandbox5b-paid@gmail.com` | `morallesfilms+sandbox5b-legacy@gmail.com` |
+| `billing_status` | `trialing` (até 2026-08-04) | `trialing` (até 2026-08-04) |
+
+CNPJs distintos de propósito: o Asaas deduplica cliente por `cpfCnpj` e um repetido faria as duas fixtures colidirem no mesmo `cus_`. E-mail tem de ser da equipe porque `AsaasCustomerParams` não passa `notificationDisabled` — o sandbox manda cobrança pro e-mail do cliente ([asaas.ts:329](../../supabase/functions/_shared/asaas.ts)).
+
+### Grandfathering da fixture LEGACY
+
+Concedido pela action admin `grant_whatsapp_grandfathering` (não SQL cru — a action carimba `source` e loga o operador).
+
+| campo | valor |
+|---|---|
+| `organization_id` | `03132666-64f2-4d35-9268-c56f47d65108` |
+| antes | `whatsapp_legacy_grandfathered=false`, `_at`/`_source`/`_revoked_*` todos NULL |
+| depois | `true`, `whatsapp_grandfathered_source='ADMIN'` |
+| horário | `2026-07-31 15:22:03.777+00` |
+| operador | `morallesfilms@gmail.com` (platform_admin) |
+| motivo | `SANDBOX_FASE_5B_LEGACY_FIXTURE` (campo `note`) |
+
+`source='ADMIN'` distingue a fixture do `ren-sushi`, que é `MIGRATION_5B` (backfill da 079) — uma auditoria futura separa teste de legado real sem ambiguidade. **Revogar na limpeza (§9).**
+
+## 0.5 Roteiro B da Fase 5a executado na fixture PAID — 2026-07-30/31
+
+| # | veredito | evidência |
+|---|---|---|
+| B1 | ✅ PASS | Checkout `DETACHED` ofereceu **cartão E PIX** — risco #1 da 5a, nunca exercitado desde a Fase 2, resolvido. Sessão `pending`, implantação `origin=ASAAS`/`PENDING`, `provider_checkout_id=dd34eea2-…` idêntico nas duas tabelas |
+| B2 | ✅ PASS | Card exibiu "Estamos aguardando a confirmação do pagamento" + "Implantação — pagamento em aberto R$ 750,00". Não afirma pagamento, não promete prazo; banco seguiu `PENDING` |
+| B3 | ⚠️ PARCIAL | **Não exercitável pela UI**: o botão some quando `state` deixa de ser `NOT_REQUESTED` ([AutomacaoWhatsappCard.tsx:186](../../src/components/gestao/AutomacaoWhatsappCard.tsx)), então o 2º clique é impossível depois da 1ª sessão. Backstop `billing_checkout_sessions_active_idx` (UNIQUE parcial em `(organization_id, plan_id, purpose)` WHERE status in creating/pending) confirmado por inspeção; a corrida em runtime segue sem teste |
+| B4 | ✅ PASS | `CONFIRMED` + `paid_at` + fatura `b4058517` R$750 `paid` (`pay_izm4cc4v0ptzchfh`) + sessão `used` + **exatamente 1** `implementation_paid` `pending` + `billing_status` intocado |
+| B5 | ✅ PASS **nas duas camadas** | ver §0.5.1 |
+| B6 | ⏭️ fora de escopo | exige 2ª org; execução autorizada só na fixture PAID |
+| B7 | ✅ PASS | `409` — *"Esta empresa já tem uma implantação registrada."* Recusado **antes** de qualquer I/O no Asaas: zero sessão nova, zero `cus_` órfão |
+| B8 | ⏭️ fora de escopo | exige 3ª org |
+| B9 | ✅ PASS | `409` — *"A mensalidade da instância só pode ser contratada depois que a implantação for concluída."* Também sem I/O externo |
+| B10 | ⚠️ PARCIAL | ver §0.5.2 |
+
+### 0.5.1 B5 tem DUAS camadas de idempotência, não uma
+
+A expectativa escrita no roteiro da 5a (`implementation_confirm_noop`) descreve só a segunda. Redelivery com o **mesmo** `provider_event_id` nem chega ao aplicador.
+
+- **L1 — camada do evento.** Reenviei o payload guardado via `pg_net` (token lido de `platform_secrets` dentro do próprio SQL). HTTP **200 "OK"**, log `asaas_webhook_duplicate`, `applyAsaasEvent` **nunca chamado** — o `insert` bate na UNIQUE `(provider, provider_event_id)` e retorna antes ([asaas-webhook/index.ts:183](../../supabase/functions/asaas-webhook/index.ts)). Diff byte a byte: `impl.updated_at`, `impl.paid_at`, `fatura.updated_at` idênticos; 1 notificação, 1 fatura, 2 eventos.
+- **L2 — camada do aplicador.** Via action admin `reprocess_billing_event` sobre o evento já guardado. Resposta `{success:true, status:'processed', effect:'activate_subscription', stamped:true}`. O `effect` **não é anomalia**: em reprocessamento (`rechecking`) o aplicador roda o roteiro de ativação inteiro de propósito, por ser idempotente ponta a ponta, e reporta o que TENTOU ([asaas-billing-events-apply.ts:551](../../supabase/functions/_shared/asaas-billing-events-apply.ts)). Dentro dele as duas guardas seguraram: `purpose === "implementation"` → UPDATE `.eq('payment_status','PENDING')` casa 0 linhas → loga `implementation_confirm_noop`; depois `if (purpose !== "subscription") break`. Diff: **zero escrita**, inclusive `billing_subscriptions` total = 0 (não só "vivas").
+
+### 0.5.2 B10 — a guarda central provada, com uma lacuna declarada
+
+Transições aplicadas pelo painel: `NOT_STARTED → IN_PROGRESS → COMPLETED` (2026-07-31 14:51:02Z). Direto pra `COMPLETED` é `invalid_transition` — o grafo não admite ([whatsapp-implementation-core.ts:77](../../supabase/functions/_shared/whatsapp-implementation-core.ts)).
+
+| verificação | resultado |
+|---|---|
+| assinatura | `active` · **`WHATSAPP_SUBSCRIPTION`** · plano `instancia-whatsapp` |
+| `provider_subscription_id` | **`sub_qn6dpom3q6xr3r8s`** — preenchido pela RPC; é a âncora da correlação de renovação do mês 2+ |
+| **`organizations.billing_status`** | **`trialing` — INTOCADO** por um pagamento de R$149 |
+| fatura | `subscription R$149 [paid]`, `pay_u47jujtp7u4fm19l`, `external_reference` com `plan:daa3de8a-…` |
+| `isSystemInvoice` | **false** — caminho 2 resolve `plan:` → `WHATSAPP_SUBSCRIPTION` ≠ `SYSTEM_SUBSCRIPTION` ([billing-category.ts:152](../../supabase/functions/_shared/billing-category.ts)) |
+
+**PARCIAL porque a fixture não tem assinatura de sistema** (está em trial; o R$449 não foi contratado por decisão do dono). O B10 previa DUAS assinaturas vivas, e é a segunda que faria `resolve_or_activate_subscription` desambiguar por categoria — a origem do `PGRST116`. Esse trecho segue **sem exercício**.
+
+### 0.5.3 Confirmação ao vivo do invariante de correlação do Asaas
+
+Os dois eventos do pagamento da implantação, campo a campo:
+
+| campo | `PAYMENT_CREATED` | `PAYMENT_CONFIRMED` |
+|---|---|---|
+| `externalReference` | **null** | **null** |
+| `customer` | `cus_000008529056` | `cus_000008529056` |
+| `checkoutSession` | `dd34eea2-…` | `dd34eea2-…` |
+| org correlacionada | `null` | ✅ |
+
+O `externalReference` gravado no checkout **não propagou** pra cobrança, e o pagador gerou um `customer` NOVO (`…9056`) diferente do nosso `billing_customers.asaas_customer_id` (`cus_000008529031`). Só o `checkoutSession` sobreviveu — é o 3º degrau da escada, e foi por ele que fechou. O mesmo padrão se repetiu no pagamento da instância (`efb6087a-…`).
+
+**Lacuna de telemetria:** `PAYMENT_CREATED` fica com `organization_id = null` apesar de carregar o mesmo `checkoutSession`. Processa sem erro e não afeta nada funcional (a fatura nasce no confirm), mas é evento correlacionável que não foi correlacionado.
+
+### 0.5.4 Achado de produto — checkout órfão sem retomada
+
+Cliente que abre o checkout e fecha a aba **não tem caminho de volta**. O card em `AWAITING_PAYMENT` só mostra texto, sem link de retomar, e o botão de contratar não reaparece porque `state` deixou de ser `NOT_REQUESTED`. A sessão expira em 30 min e a linha em `whatsapp_implementations` continua `PENDING` — só intervenção de admin destrava. Bug de produto, não do roteiro.
+
+## 0.6 Virada da ingestão — 2026-07-31
+
+Ordem obrigatória respeitada: `since` gravada e **validada** antes de a flag ligar.
+
+| passo | horário UTC | valor |
+|---|---|---|
+| `billing_invoice_ingestion_since` | `15:24:13` | `"2026-07-31"` (`jsonb_typeof = string`) |
+| `billing_invoice_ingestion` | `15:24:49` | `true` |
+| `whatsapp_service_enforcement` | — | **`false`, intocada** |
+
+Flags de apoio ligadas antes, para o roteiro B: `whatsapp_implementation_flow` em 2026-07-30 `20:29:53` (anterior `false`) e `whatsapp_subscription_checkout` em 2026-07-30 `22:46:31` (anterior `false`). **As duas voltam a `false` na limpeza (§9).** `billing_notifications_dispatch` mantida `false` o tempo todo — nenhum e-mail saiu, a fila acumulou.
+
+### Primeiro ciclo observado
+
+`process-asaas-invoice-reconcile` (via `trigger_asaas_invoice_reconcile()`, o mesmo wrapper do `pg_cron`):
+
+```json
+{"success":true,"subscriptions_scanned":1,"subscriptions_list_failed":0,"payments_seen":1,
+ "payments_amount_invalid":0,"payments_skipped_non_collectible":0,"payments_skipped_unknown_status":0,
+ "invoices_created":0,"invoices_settled":0,"invoices_held":0,"value_mismatches":0,"non_collectible_holds":0}
+```
+
+O worker **não abortou** — prova em execução de que `"2026-07-31"` passa por `parseBillingIngestionSince`. E `invoices_created: 0` com `payments_seen: 1` é o **C4 passando**: o webhook já havia criado a fatura, o reconcile viu o mesmo pagamento e não duplicou.
+
+`process-whatsapp-enforcement` (via `trigger_whatsapp_enforcement()`), com a flag OFF:
+
+```json
+{"success":true,"dry_run":true,"subscriptions_scanned":1,"suspended":0,"restored":0,
+ "would_suspend":0,"would_restore":0,"skipped_override":0,"ambiguous":0}
+```
+
+`dry_run: true` confirma que a flag OFF é respeitada. **`subscriptions_scanned: 1` é o dado de segurança mais importante:** o worker só enxerga organizações com `WHATSAPP_SUBSCRIPTION`, e a única no banco é a fixture. Nenhuma org real entra no escopo dele.
+
+Crons de minuto no mesmo intervalo, todos com efeito zero: `process-notification-outbox` `{"processed":0,…}`, `expire-pending-payments` `{"expired_count":0}`, `process-billing-unblock` `{"unblocked":0}`.
+
+### Veredito honesto do ciclo
+
+Limpo, **e magro**. `invoices_created: 0` e `ingestion_source` em zero linhas: não houve nada para ingerir, porque o único pagamento já tinha sido capturado pelo webhook. O caminho `upsert_open_invoice`/BACKFILL — o que a flag de fato governa — **continua sem exercício**, e `would_suspend: 0` significa que ligar o enforcement hoje seria de novo um no-op. Falta uma cobrança **em aberto e vencida** na assinatura da fixture; o roteiro da 5a (B11) prevê produzi-la, e é a decisão pendente antes da §0.2 passo 6.
+
+## 0.7 Bloqueio superado — registro histórico
+
+_(A seção abaixo descrevia o bloqueio que motivou a Opção A; os blocos B1→B10 foram executados em 2026-07-30/31 com o dono operando o navegador. Mantida para rastreabilidade.)_
+
+### Bloqueio original — o B1→B10 exige navegador
 
 O roteiro B1→B10 da 5a **não é executável por API**. O fluxo abre um **checkout hospedado
 `DETACHED` no Asaas** (cartão + PIX) e o pagamento acontece **naquela página**:
