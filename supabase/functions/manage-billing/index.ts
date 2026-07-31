@@ -21,6 +21,7 @@ import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
 import { isSystemSubscription, SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
 import { getBillingProvider } from "../_shared/billing-provider.ts";
 import { decideCancelTarget, localCancelPatch, type CancelEffective } from "../_shared/billing-cancel-core.ts";
+import { enqueueBillingNotification, resolvePlatformAdminRecipients } from "../_shared/billing-notify.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -69,6 +70,12 @@ const CLIENT_FRIENDLY_ACTIONS = new Set([
   "preview_plan_change",
   "cancel_subscription_by_owner",
   "get_org_entitlements",
+  // `get_organization_billing` faz as DUAS coisas: checa canManageOrgBilling
+  // contra a organization_id do payload E molda a resposta por papel. Precisa
+  // das duas porque o payload admin agrega seis tabelas, entre elas
+  // billing_access_overrides e billing_notifications — histórico administrativo
+  // SOBRE o cliente, que ele não pode ler nem da própria org.
+  "get_organization_billing",
 ]);
 
 // ── billing_plans: colunas e enums ──────────────────────────────────────────
@@ -107,6 +114,57 @@ const PLAN_PUBLIC_COLUMNS =
   "trial_days, is_trial, active, sort_order, category, billing_type, " +
   "recommended, popular, amount_credited_cents, requires_plan_id, max_units, " +
   "max_members_per_unit";
+
+// Colunas de `organizations` devolvidas a caller NÃO-admin em
+// `get_organization_billing`. `select("*")` traria tax_id, billing_email e o
+// resto do cadastro — o lojista precisa só do estado de cobrança da própria
+// org (o que `/g/:slug/cobranca` consome) mais nome e id pra rotular a tela.
+const ORG_BILLING_PUBLIC_COLUMNS = "id, name, billing_status, trial_ends_at";
+
+// Colunas de `billing_subscriptions` devolvidas a caller NÃO-admin. Omite os
+// ids do provedor (`provider_subscription_id`, `stripe_subscription_id`) e o
+// `billing_customer_id`: são a identidade do cliente DENTRO do gateway, não
+// têm uso na tela e são exatamente o que um cliente não deve enxergar. O
+// `provider` fica — a tela precisa dele pra não prometer fim de período onde
+// ele não existe.
+const SUBSCRIPTION_PUBLIC_COLUMNS =
+  "id, organization_id, billing_plan_id, status, payment_method, provider, " +
+  "current_period_start, current_period_end, trial_end, cancel_at_period_end, " +
+  "canceled_at, created_at, updated_at";
+
+// Aviso INTERNO: o provedor CANCELOU a assinatura e a escrita local falhou.
+// Sem transação distribuída alguém fica na frente, e cancelar no provedor
+// primeiro erra a favor do cliente — mas deixa o banco dizendo que a assinatura
+// segue viva enquanto ninguém mais será cobrado. É divergência produzida pelo
+// nosso próprio código, não pelo painel do provedor, e o `jsonLog` sozinho não
+// avisa ninguém. `process-billing-notifications` precisa ter a entrada
+// correspondente em `TEMPLATE_BY_EVENT` no MESMO deploy — as duas EFs não
+// compartilham nada além desta string.
+const ADMIN_CANCEL_DIVERGENCE_EVENT_TYPE = "admin_cancel_local_write_failed";
+
+/**
+ * Enfileira o aviso de divergência pra todos os platform_admins. Best-effort:
+ * nunca lança — a resposta 500 ao caller já aconteceu, e falhar aqui não pode
+ * transformar um erro conhecido em exceção não tratada.
+ */
+async function notifyCancelDivergence(orgId: string, reqId: string): Promise<void> {
+  try {
+    const recipients = await resolvePlatformAdminRecipients(supabase);
+    for (const recipient of recipients) {
+      await enqueueBillingNotification(supabase, {
+        organizationId: orgId,
+        eventType: ADMIN_CANCEL_DIVERGENCE_EVENT_TYPE,
+        invoiceId: null,
+        recipient,
+      });
+    }
+  } catch (err) {
+    jsonLog("error", {
+      reqId, evt: "billing_cancel_divergence_notify_failed",
+      orgId, err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /** Valida os enums de billing_plans. Devolve mensagem PT-BR ou null. */
 function validatePlanEnums(fields: Record<string, unknown>): string | null {
@@ -467,6 +525,53 @@ serve(async (req) => {
       const { organization_id } = body;
       if (!organization_id) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
 
+      // Owner/gerente lê a PRÓPRIA org; platform_admin lê qualquer uma.
+      if (!callerIsAdmin && !(await canManageOrgBilling(callerId, organization_id))) {
+        return jsonResponse(req, { error: "Sem permissão." }, 403);
+      }
+
+      // Caminho do cliente: resposta MOLDADA, não a do admin filtrada depois.
+      // O payload admin agrega seis tabelas com `select("*")` — devolvê-lo a um
+      // lojista vazaria ids do provedor, Price IDs da Stripe, external_reference
+      // das faturas e o histórico de `billing_access_overrides` /
+      // `billing_notifications`, que é registro administrativo SOBRE ele.
+      if (!callerIsAdmin) {
+        const [orgRes, subRes] = await Promise.all([
+          supabase.from("organizations").select(ORG_BILLING_PUBLIC_COLUMNS).eq("id", organization_id).single(),
+          supabase.from("billing_subscriptions").select(SUBSCRIPTION_PUBLIC_COLUMNS)
+            .eq("organization_id", organization_id).order("created_at", { ascending: false }),
+        ]);
+
+        if (orgRes.error) {
+          return jsonResponse(req, { error: "Organização não encontrada." }, 404);
+        }
+
+        let clientPlan = null;
+        const clientActiveSub = (subRes.data ?? []).find((s: Record<string, unknown>) => s.status !== "canceled");
+        if (clientActiveSub) {
+          const { data: p } = await supabase.from("billing_plans")
+            .select(PLAN_PUBLIC_COLUMNS).eq("id", clientActiveSub.billing_plan_id).single();
+          clientPlan = p;
+        }
+
+        // As chaves de admin voltam VAZIAS em vez de omitidas: `OrgBillingDetail`
+        // é um tipo só pras duas telas, e `Cobranca.tsx` faz
+        // `detail.subscriptions.find(...)` direto. Nenhuma tela de cliente
+        // renderiza fatura, override ou notificação hoje — quando alguma
+        // precisar, o certo é moldar aquela lista aqui, não devolver `*`.
+        return jsonResponse(req, {
+          success: true,
+          organization: orgRes.data,
+          customer: null,
+          subscriptions: subRes.data ?? [],
+          active_plan: clientPlan,
+          invoices: [],
+          overrides: [],
+          notifications: [],
+          units_count: null,
+        });
+      }
+
       const [orgRes, custRes, subRes, invRes, overRes, notifRes] = await Promise.all([
         supabase.from("organizations").select("*").eq("id", organization_id).single(),
         supabase.from("billing_customers").select("*").eq("organization_id", organization_id).maybeSingle(),
@@ -487,7 +592,9 @@ serve(async (req) => {
         plan = p;
       }
 
-      const { data: unitsCount } = await supabase
+      // `head: true` devolve a contagem em `count` e SEMPRE `data: null` —
+      // destruturar `data` deixava "Unidades: —" fixo no painel.
+      const { count: unitsCount } = await supabase
         .from("units")
         .select("id", { count: "exact", head: true })
         .eq("organization_id", organization_id);
@@ -751,6 +858,7 @@ serve(async (req) => {
           reqId, evt: "billing_cancel_local_write_failed",
           subId: subscription_id, provider: target.provider, effective, err: updErr.message,
         });
+        await notifyCancelDivergence(sub.organization_id, reqId);
         return jsonResponse(req, { error: "Assinatura cancelada no provedor, mas o registro local falhou. Ver logs." }, 500);
       }
 
@@ -978,6 +1086,7 @@ serve(async (req) => {
           reqId, evt: "billing_cancel_by_owner_local_write_failed",
           subId: subscription_id, provider: target.provider, effective, err: updErr.message,
         });
+        await notifyCancelDivergence(sub.organization_id, reqId);
         return jsonResponse(req, { error: "Assinatura cancelada no provedor, mas o registro local falhou. Ver logs." }, 500);
       }
 

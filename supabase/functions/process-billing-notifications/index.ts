@@ -208,6 +208,25 @@ const TEMPLATE_BY_EVENT: Record<
   // `evt` correspondente, nunca no corpo do e-mail (`d.orgName` é só endereço
   // de conveniência — a coluna organization_id de billing_notifications é NOT
   // NULL — não necessariamente quem gerou a ambiguidade).
+  // Aviso INTERNO: `manage-billing` cancelou a assinatura NO PROVEDOR e a
+  // escrita local falhou logo depois. É a única divergência de cancelamento
+  // que o nosso código produz sozinho (as outras nascem de alguém mexer no
+  // painel do provedor), e o efeito é assimétrico de propósito: ninguém mais
+  // será cobrado, mas o banco segue dizendo que a assinatura está viva — logo
+  // o BillingGuard continua liberando acesso. Exige conferência humana, não
+  // retry: o provedor já cancelou, repetir não desfaz nada.
+  // Qual assinatura e qual erro do Postgres ficam nos logs
+  // (`evt: billing_cancel_local_write_failed` e a variante `_by_owner_`),
+  // nunca no corpo do e-mail.
+  admin_cancel_local_write_failed: (d) => ({
+    subject: `[interno] Cancelamento divergente — ${d.orgName}`,
+    text: `A assinatura da organização ${d.orgName} foi cancelada no provedor de pagamento, mas o registro local NÃO foi atualizado. O cliente deixou de ser cobrado e o sistema ainda o considera ativo. Concilie manualmente: confira o estado da assinatura no provedor e atualize o registro no painel da plataforma.`,
+    html: wrapHtml("Cancelamento divergente", [
+      `A assinatura da organização <strong>${d.orgName}</strong> foi cancelada <strong>no provedor de pagamento</strong>, mas o registro local <strong>não</strong> foi atualizado.`,
+      `Consequência: o cliente deixou de ser cobrado e o sistema ainda o considera ativo.`,
+      `Concilie manualmente — confira o estado da assinatura no provedor e atualize o registro no painel da plataforma.`,
+    ]),
+  }),
   admin_correlation_ambiguity: (d) => ({
     subject: `[interno] Evento de cobrança precisa de conferência — ${d.orgName}`,
     text: `Um evento de cobrança da organização ${d.orgName} precisa de conferência manual antes de qualquer ação automática. Verifique o painel da plataforma e os logs do evento para os detalhes.`,
