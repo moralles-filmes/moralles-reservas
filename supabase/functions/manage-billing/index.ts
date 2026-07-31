@@ -11,7 +11,6 @@ import { corsHeadersFor } from "../_shared/cors.ts";
 import {
   createStripeCustomer,
   createStripeSubscription,
-  cancelStripeSubscription,
   createStripeInvoice,
   retrieveStripeSubscription,
   retrieveStripeInvoice,
@@ -20,6 +19,8 @@ import {
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 import { applyAsaasEvent } from "../_shared/asaas-billing-events-apply.ts";
 import { isSystemSubscription, SYSTEM_CATEGORY } from "../_shared/billing-category.ts";
+import { getBillingProvider } from "../_shared/billing-provider.ts";
+import { decideCancelTarget, localCancelPatch, type CancelEffective } from "../_shared/billing-cancel-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -685,44 +686,73 @@ serve(async (req) => {
 
       const { data: sub } = await supabase
         .from("billing_subscriptions")
-        .select("id, stripe_subscription_id, organization_id")
+        .select("id, provider, provider_subscription_id, stripe_subscription_id, organization_id")
         .eq("id", subscription_id)
         .single();
 
       if (!sub) return jsonResponse(req, { error: "Assinatura não encontrada." }, 404);
 
-      if (sub.stripe_subscription_id) {
-        const res = await cancelStripeSubscription(sub.stripe_subscription_id, at_period_end);
+      const target = decideCancelTarget(sub);
+      if (target.kind === "unroutable") {
+        jsonLog("warn", {
+          reqId, evt: "billing_cancel_unroutable", subId: subscription_id,
+          provider: target.provider, reason: target.reason,
+        });
+        return jsonResponse(req, {
+          error: "Esta assinatura não tem vínculo com o provedor de pagamento. Não é possível cancelar automaticamente.",
+        }, 400);
+      }
+
+      // Provedor PRIMEIRO. Falha aqui aborta sem escrever nada — era
+      // exatamente o inverso disso que fazia o banco dizer "cancelado"
+      // enquanto o Asaas seguia cobrando.
+      let effective: CancelEffective = "immediate";
+      if (target.kind === "provider") {
+        const res = await getBillingProvider(target.provider).cancelSubscription(
+          target.providerSubscriptionId,
+          at_period_end === true,
+        );
         if (!res.ok) {
-          jsonLog("error", { reqId, evt: "billing_cancel_stripe_error", err: res.error });
-          return jsonResponse(req, { error: res.error ?? "Falha ao cancelar no Stripe." }, 500);
+          jsonLog("error", {
+            reqId, evt: "billing_cancel_provider_error",
+            provider: target.provider, subId: subscription_id, err: res.error,
+          });
+          return jsonResponse(req, { error: "Falha ao cancelar a assinatura no provedor de pagamento." }, 500);
         }
+        effective = res.data?.effective ?? "immediate";
       }
 
-      if (at_period_end) {
-        await supabase.from("billing_subscriptions").update({
-          cancel_at_period_end: true,
-          updated_at: new Date().toISOString(),
-        }).eq("id", subscription_id);
-      } else {
-        await supabase.from("billing_subscriptions").update({
-          status: "canceled",
-          canceled_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }).eq("id", subscription_id);
+      const { error: updErr } = await supabase
+        .from("billing_subscriptions")
+        .update(localCancelPatch(effective, new Date().toISOString()))
+        .eq("id", subscription_id);
 
-        // Só o cancelamento da assinatura de SISTEMA cancela a organização.
-        // Cancelar a instância de WhatsApp marcava a org inteira como
-        // 'canceled' — o cliente perdia o sistema por desistir da automação.
-        if (await isSystemSubscription(supabase, subscription_id)) {
-          await supabase.from("organizations").update({
-            billing_status: "canceled",
-          }).eq("id", sub.organization_id);
-        }
+      if (updErr) {
+        // Provedor já cancelou. Sem transação distribuída alguém fica na
+        // frente, e cancelar no provedor primeiro erra a favor do cliente —
+        // ele para de ser cobrado mesmo com o nosso banco fora. Este log é o
+        // que permite achar e conciliar a divergência.
+        jsonLog("error", {
+          reqId, evt: "billing_cancel_local_write_failed",
+          subId: subscription_id, provider: target.provider, effective, err: updErr.message,
+        });
+        return jsonResponse(req, { error: "Assinatura cancelada no provedor, mas o registro local falhou. Ver logs." }, 500);
       }
 
-      jsonLog("info", { reqId, evt: "billing_subscription_cancelled", subId: subscription_id, atPeriodEnd: at_period_end });
-      return jsonResponse(req, { success: true });
+      // Só o cancelamento da assinatura de SISTEMA cancela a organização.
+      // Cancelar a instância de WhatsApp marcava a org inteira como
+      // 'canceled' — o cliente perdia o sistema por desistir da automação.
+      if (effective === "immediate" && await isSystemSubscription(supabase, subscription_id)) {
+        await supabase.from("organizations").update({
+          billing_status: "canceled",
+        }).eq("id", sub.organization_id);
+      }
+
+      jsonLog("info", {
+        reqId, evt: "billing_subscription_cancelled",
+        subId: subscription_id, target: target.kind, effective,
+      });
+      return jsonResponse(req, { success: true, effective });
     }
 
     // ─── change_plan (client-friendly) ────────────────────────────────────
@@ -869,7 +899,8 @@ serve(async (req) => {
     }
 
     // ─── cancel_subscription_by_owner (client-friendly) ───────────────────
-    // Owner cancela a própria sub. Sempre at_period_end=true (preserva o que pagou).
+    // Owner cancela a própria sub. Sempre PEDE at_period_end=true; o efeito real
+    // vem do provedor (no Asaas volta `immediate`, que não tem período a honrar).
     if (action === "cancel_subscription_by_owner") {
       const { subscription_id, organization_id } = body;
       if (!subscription_id || !organization_id) {
@@ -881,7 +912,7 @@ serve(async (req) => {
 
       const { data: sub } = await supabase
         .from("billing_subscriptions")
-        .select("id, stripe_subscription_id, organization_id, status")
+        .select("id, provider, provider_subscription_id, stripe_subscription_id, organization_id, status")
         .eq("id", subscription_id)
         .single();
 
@@ -892,21 +923,54 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Assinatura já cancelada." }, 400);
       }
 
-      if (sub.stripe_subscription_id) {
-        const cancelRes = await cancelStripeSubscription(sub.stripe_subscription_id, true);
-        if (!cancelRes.ok) {
-          jsonLog("error", { reqId, evt: "billing_cancel_by_owner_stripe_error", err: cancelRes.error });
-          return jsonResponse(req, { error: cancelRes.error ?? "Falha ao cancelar no Stripe." }, 500);
-        }
+      const target = decideCancelTarget(sub);
+      if (target.kind === "unroutable") {
+        jsonLog("warn", {
+          reqId, evt: "billing_cancel_by_owner_unroutable", subId: subscription_id,
+          provider: target.provider, reason: target.reason,
+        });
+        return jsonResponse(req, {
+          error: "Esta assinatura não tem vínculo com o provedor de pagamento. Fale com o suporte.",
+        }, 400);
       }
 
-      await supabase.from("billing_subscriptions").update({
-        cancel_at_period_end: true,
-        updated_at: new Date().toISOString(),
-      }).eq("id", subscription_id);
+      // O lojista sempre pede fim de período; o provedor responde o que de
+      // fato deu. No Asaas isso volta como `immediate` — não há período
+      // contratual a honrar, e a tela já avisa disso antes de confirmar.
+      let effective: CancelEffective = "immediate";
+      if (target.kind === "provider") {
+        const res = await getBillingProvider(target.provider).cancelSubscription(
+          target.providerSubscriptionId,
+          true,
+        );
+        if (!res.ok) {
+          jsonLog("error", {
+            reqId, evt: "billing_cancel_by_owner_provider_error",
+            provider: target.provider, subId: subscription_id, err: res.error,
+          });
+          return jsonResponse(req, { error: "Falha ao cancelar a assinatura no provedor de pagamento." }, 500);
+        }
+        effective = res.data?.effective ?? "immediate";
+      }
 
-      jsonLog("info", { reqId, evt: "billing_subscription_cancelled_by_owner", subId: subscription_id, callerId });
-      return jsonResponse(req, { success: true });
+      const { error: updErr } = await supabase
+        .from("billing_subscriptions")
+        .update(localCancelPatch(effective, new Date().toISOString()))
+        .eq("id", subscription_id);
+
+      if (updErr) {
+        jsonLog("error", {
+          reqId, evt: "billing_cancel_by_owner_local_write_failed",
+          subId: subscription_id, provider: target.provider, effective, err: updErr.message,
+        });
+        return jsonResponse(req, { error: "Assinatura cancelada no provedor, mas o registro local falhou. Ver logs." }, 500);
+      }
+
+      jsonLog("info", {
+        reqId, evt: "billing_subscription_cancelled_by_owner",
+        subId: subscription_id, callerId, target: target.kind, effective,
+      });
+      return jsonResponse(req, { success: true, effective });
     }
 
     // ═════════════════════════════════════════════════════════════════════════
