@@ -278,6 +278,16 @@ Os riscos abaixo não bloqueiam o merge (as duas flags sobem OFF e as duas organ
 - **Grandfathering revogado é irreversível por design** (decisão do dono) — não existe rollback de `whatsapp_grandfather_revoked_at` além de ação administrativa explícita nova.
 - Rollback específico de cada migration está no rodapé do próprio arquivo `.sql`.
 
+## ✅ Validação ao vivo do enforcement (2026-07-31)
+
+**O núcleo da fase foi executado e passou.** `inadimplência → suspensão → envio bloqueado → pagamento → restauração` observado ponta a ponta contra o banco real, com os workers reais. Detalhe completo, tabela de evidências e o achado do `next_attempt_at` no topo de [FASE-5B-ROTEIRO-SANDBOX.md](FASE-5B-ROTEIRO-SANDBOX.md).
+
+O bloqueio do §0.8 (Asaas Sandbox recusa vencimento retroativo) foi contornado pela distinção que o [follow-up 06](06-FOLLOWUP-SANDBOX-INADIMPLENCIA.md) já nomeava: **o enforcement não depende do provider** — ele lê `billing_invoices` do nosso banco. A fatura vencida foi criada direto no banco, em org sandbox, `provider='manual'`.
+
+Ren Sushi verificado antes, durante e depois: intacto, com proteção tripla, e sequer varrido pelo worker.
+
+**Continua sem validação ao vivo:** os cenários de *provider* (correlação real do Asaas) e a ingestão automática de renovação — esses dependem do Asaas de fato. O Risco 7 segue aberto.
+
 ## Correções pós-fase (2026-07-31)
 
 Três achados encontrados **depois** do fechamento do código da 5b, todos corrigidos, auditados e deployados. Não alteram o escopo da fase; alteram o que é seguro ligar.

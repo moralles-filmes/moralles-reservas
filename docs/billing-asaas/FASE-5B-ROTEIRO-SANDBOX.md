@@ -1,6 +1,33 @@
 # Roteiro de sandbox — Fase 5b
 
-> **Status: ESCRITO, NÃO EXECUTADO.** Roteiro executável dos 31 cenários numerados da §11 da spec ([2026-07-27-billing-asaas-fase-5b-design.md](../superpowers/specs/2026-07-27-billing-asaas-fase-5b-design.md), 24 tem 7 subitens `a`–`g` e 6 subitens `h`–`m` — total 44 blocos verificáveis), mais o passo a passo da ordem de ativação de flags da §9. Quem rodar preenche a coluna "Real" da tabela de resumo e a seção "Resultado observado" de cada cenário, e traz o veredito consolidado para [FASE-5B-RESUMO.md](FASE-5B-RESUMO.md) antes de merge/tag.
+> ## ✅ 2026-07-31 — O NÚCLEO DO ENFORCEMENT FOI EXECUTADO AO VIVO E PASSOU
+>
+> O comportamento que esta fase inteira existe para entregar — **inadimplência suspende, pagamento restaura** — foi observado ponta a ponta em produção, contra o banco real, com a fixture numa organização sandbox. É a primeira vez no projeto.
+>
+> **Como o bloqueio foi contornado.** O §0.8 registrava a fase como não-validável porque o Asaas Sandbox recusa vencimento retroativo, então não havia como *originar* uma cobrança vencida no provedor. A saída veio da distinção que o [follow-up 06](06-FOLLOWUP-SANDBOX-INADIMPLENCIA.md) §2 já tinha nomeado: **teste de provider ≠ teste de enforcement**. O enforcement lê `billing_invoices` do NOSSO banco — não depende do Asaas para nada. Com autorização explícita do dono para operar livremente fora do Ren Sushi, a fatura vencida foi criada direto no banco, numa org sandbox, marcada `provider='manual'` para não mentir sobre existir no Asaas.
+>
+> **Sequência observada** (worker real, invocado pelo mesmo `trigger_*` que o `pg_cron` usa):
+>
+> | # | ação | resultado observado |
+> |---|---|---|
+> | 1 | Fatura `open`, 15 dias vencida, ligada a assinatura `WHATSAPP_SUBSCRIPTION`; flag **OFF** | `dry_run:true, scanned:1, would_suspend:1, suspended:0` — identifica e **não** aplica |
+> | 2 | Outbox com flag **OFF** | `parked:0`; envio chegou ao PROVEDOR e falhou com `missing_credentials` — **prova que o gate não bloqueou** |
+> | 3 | Flag **ON** → outbox | `parked:1`; linha segue `pending`, `attempts:0`, `last_error: whatsapp_service_suspended`; **zero** linhas em `notifications_sent` |
+> | 4 | Flag **ON** → enforcement | `suspended:1`; assinatura → `unpaid`, `suspended_at` carimbado, aviso `whatsapp_suspended` enfileirado |
+> | 5 | Fatura → `paid` → enforcement | `restored:1`; assinatura → `active`, `suspended_at` limpo, `restored_at` carimbado |
+> | 6 | Outbox após restauração | `succeeded:1`, linha `done`, envio chegou ao provedor de novo (`missing_credentials`) — **o gate voltou a liberar** |
+>
+> **A evidência que fecha o argumento** é o par de linhas 2 e 6: as MESMAS credenciais falsas produzem `missing_credentials` antes e depois, e `whatsapp_service_suspended` só no meio. O bloqueio não foi um efeito colateral de configuração — foi o gate, e só o gate.
+>
+> **Achado novo, não previsto no roteiro:** estacionar empurra `next_attempt_at` em ~1 hora. É backoff correto (evita o worker girar de minuto em minuto numa org suspensa), mas significa que a restauração **não** libera a fila na hora — o cliente que paga espera até o próximo slot. Vale considerar limpar `next_attempt_at` no momento da restauração, para o pagamento ter efeito imediato.
+>
+> **Ren Sushi:** verificado antes, durante e depois — `billing_status:active`, canal `connected`, override `whatsapp` ativo. Ele tem proteção **tripla** e sequer é varrido pelo worker (não tem assinatura de WhatsApp). `skipped_override:0` em todas as passagens porque ele nunca entra no conjunto.
+>
+> **Estado restaurado:** flag de volta a `false`, e toda a fixture removida (2 reservas, 2 outbox, 2 `notifications_sent`, 1 cliente, 1 canal, 1 fatura, 1 assinatura, 1 aviso). A fixture Asaas pré-existente do §0.9 foi preservada — é registro de auditoria.
+>
+> **O que este ensaio NÃO cobre:** os cenários de *provider* (C1–C10 de correlação real do Asaas) e a ingestão automática de renovação continuam sem validação ao vivo, porque esses sim dependem do Asaas. O [Risco 7](FASE-5B-RESUMO.md) segue aberto e continua sendo pré-requisito do primeiro ciclo real de cobrança.
+
+> **Status original: ESCRITO, NÃO EXECUTADO.** Roteiro executável dos 31 cenários numerados da §11 da spec ([2026-07-27-billing-asaas-fase-5b-design.md](../superpowers/specs/2026-07-27-billing-asaas-fase-5b-design.md), 24 tem 7 subitens `a`–`g` e 6 subitens `h`–`m` — total 44 blocos verificáveis), mais o passo a passo da ordem de ativação de flags da §9. Quem rodar preenche a coluna "Real" da tabela de resumo e a seção "Resultado observado" de cada cenário, e traz o veredito consolidado para [FASE-5B-RESUMO.md](FASE-5B-RESUMO.md) antes de merge/tag.
 >
 > Pré-requisito: o roteiro da [Fase 5a](FASE-5A-ROTEIRO-SANDBOX.md) concluído (checkout de implantação, checkout de instância, overrides), migrations 077, 078, 079, 080, 082, 083 aplicadas (`supabase db push`), e as EFs afetadas redeployadas — lista no checklist de redeploy do `CLAUDE.md`. **A ordem é obrigatória: migrations antes do deploy do `manage-channels`** — o gate de novo provisionamento (Task 16) falha fechado, e coluna ainda inexistente (078/079) vira 403 `PROVISIONING_UNVERIFIABLE` pra toda unidade sem canal, inclusive para `platform_admin`. Use `ASAAS_ENV=sandbox`. **As duas flags novas da 5b (`billing_invoice_ingestion`, `whatsapp_service_enforcement`) começam OFF** — a seção 0.2 abaixo é o procedimento pra ligá-las na ordem segura, e a maioria dos cenários deste roteiro roda com as duas LIGADAS (senão o elo financeiro não cria fatura nenhuma pra observar).
 
