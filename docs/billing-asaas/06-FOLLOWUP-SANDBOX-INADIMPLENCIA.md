@@ -13,12 +13,16 @@ material não é construível no Asaas Sandbox**:
 
 | barreira | evidência |
 |---|---|
-| Assinatura não aceita vencimento retroativo | *"Não é permitido data de vencimento inferior a hoje."* — painel, 2026-07-31 |
-| `POST /v3/payments` não aceita `subscription` | contrato da API |
-| Logo, fatura interna nasce com `billing_subscription_id = null` | `resolvedSubscriptionId` só vem do campo `subscription` do payload |
+| **Nenhum objeto aceita vencimento retroativo nesta conta** | *"Não é permitido data de vencimento inferior a hoje."* — mesma mensagem na assinatura (painel) e em `POST /v3/payments` (HTTP 400), 2026-07-31 |
+| `POST /v3/payments` não aceita `subscription` | contrato da API — barreira secundária: a cobrança nem chega a existir |
+| Logo, fatura interna nasceria com `billing_subscription_id = null` | `resolvedSubscriptionId` só vem do campo `subscription` do payload |
 | O gate filtra por `billing_subscription_id` | [whatsapp-service-gate.ts:160](../../supabase/functions/_shared/whatsapp-service-gate.ts) |
 | Segunda assinatura violaria a unicidade | índice parcial da [migration 071](../../supabase/migrations/20260726100000_071_whatsapp_implementations.sql) |
-| Ciclo natural | próxima cobrança da fixture só em 2026-08-31 |
+| Ciclo natural | próxima cobrança da fixture só em 2026-08-31 — **única forma comprovada de obter atraso real** |
+
+A barreira principal é a **data de vencimento**, não o vínculo com assinatura: as duas tentativas
+foram recusadas antes mesmo de a cobrança existir. Escopo: comportamento comprovado **nesta conta
+e neste Sandbox**, não afirmado como regra universal do Asaas.
 
 Registro completo em [FASE-5B-ROTEIRO-SANDBOX.md §0.8](FASE-5B-ROTEIRO-SANDBOX.md).
 

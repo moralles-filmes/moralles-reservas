@@ -237,11 +237,18 @@ delas (C1–C18, C21–C22, C24a–g, C25–C31) não têm sobre o que rodar, e 
 `whatsapp_service_enforcement` ON, e ligar a flag sem a fixture paga validaria o vazio. Criar
 metade da fixture deixaria uma org órfã em produção sem mecanismo de arquivamento (§9).
 
-## 0.8 O cenário de inadimplência por assinatura é inconstruível no Sandbox — conclusão definitiva
+## 0.8 O cenário de inadimplência é inconstruível nesta conta do Sandbox — conclusão definitiva
 
 Para exercitar `upsert_open_invoice`, o hold de pré-go-live e a suspensão D+6, faltava uma
-**cobrança em aberto e vencida pertencente à assinatura** `sub_qn6dpom3q6xr3r8s`. Duas
-tentativas controladas foram feitas, ambas encerradas pelo modelo do provedor.
+**cobrança em aberto e vencida**. Duas tentativas controladas foram feitas, ambas encerradas
+pela validação do provedor — e a segunda mostrou que a barreira é mais ampla do que a primeira
+sugeria.
+
+> **Escopo desta conclusão.** Tudo abaixo é comportamento **comprovado nesta conta e neste
+> Sandbox do Asaas**, em 2026-07-31. Não se afirma que valha universalmente para todas as contas
+> ou ambientes do Asaas — pode haver configuração de conta, permissão ou recurso oficial que
+> altere a validação. Até confirmação oficial mais ampla, tratar como restrição observada, não
+> como regra do produto.
 
 ### Tentativa 1 — retroagir o vencimento da assinatura (painel Asaas Sandbox, pelo dono)
 
@@ -256,25 +263,110 @@ Estado da assinatura após a tentativa, confirmado por leitura de API: `ACTIVE`,
 com exatamente uma, `pay_u47jujtp7u4fm19l`, `CONFIRMED`. Deriva colateral registrada: o painel
 moveu o telefone de `phone` para `mobilePhone`, e `description` passou de `null` para `""`.
 
+### Tentativa 2 — cobrança avulsa vencida (opção D) — `POST /v3/payments`
+
+Autorizada depois da Tentativa 1, com pré-flight de 11 itens aprovado e a hipótese de que a
+recusa anterior fosse específica do objeto **assinatura**. Uma única chamada, com guarda de
+prefixo de homologação na própria query (credencial de produção ⇒ zero linhas, função não
+avaliada) e a chave lida dentro da expressão SQL, nunca retornada.
+
+| parâmetro | valor |
+|---|---|
+| endpoint | `POST https://api-sandbox.asaas.com/v3/payments` |
+| ambiente | Asaas **Sandbox** (prefixo de homologação conferido como booleano, valor nunca lido) |
+| horário | 2026-07-31 18:14:44 UTC · 15:14:44 BRT |
+| customer | `cus_000008529031` (cadastro interno da fixture PAID; zero assinaturas, zero cobranças) |
+| valor · vencimento | R$ 149,00 · `2026-07-24` (7 dias no passado) |
+| `billingType` | `UNDEFINED` · sem juros, multa ou desconto |
+
+**Resposta HTTP 400, com dois erros:**
+
+```
+invalid_dueDate
+  "Não é permitido data de vencimento inferior a hoje."
+
+invalid_externalReference
+  Property [externalReference] ... exceeds the maximum size of [100]
+```
+
+**Nenhuma cobrança foi criada** — confirmado por leitura independente às 18:16:17 UTC:
+`GET /v3/payments?customer=cus_000008529031` devolveu `totalCount: 0`. A fixture seguiu com as
+mesmas 2 faturas internas, e a fatura `abdb3f9e-8bc5-4de2-9156-3e2c870204b8` permaneceu
+byte a byte inalterada — MD5 da linha inteira `fa5bfed6ec64cbac9c34e44fffdaa50d`, idêntico ao
+baseline capturado antes do POST.
+
+O segundo erro é achado independente e virou bug próprio:
+[07-BUG-EXTERNALREFERENCE-LIMITE.md](07-BUG-EXTERNALREFERENCE-LIMITE.md).
+
 ### Conclusão definitiva
 
-- **O Asaas não permite vencimento retroativo em assinatura.** Não existe forma suportada de
-  gerar uma cobrança já vencida pertencente a uma assinatura existente.
+- **Esta conta do Asaas Sandbox não aceita `dueDate` anterior à data atual.** A mesma mensagem
+  aparece nos dois caminhos testados: atualização de assinatura (Tentativa 1) e `POST /v3/payments`
+  (Tentativa 2). A restrição é da **data de vencimento**, não do objeto.
+- **Não existe rota documentada e validada para criar retroativamente uma cobrança já vencida**
+  nesta conta.
+- **O bloqueio do cenário D+6 não decorre apenas do vínculo com assinatura.** O bloqueio principal
+  é a impossibilidade de criar cobrança com vencimento passado. O vínculo é uma barreira
+  adicional, não a primeira.
 - **`POST /v3/payments` não aceita o campo `subscription`.** Cobrança avulsa nasce, por
-  definição, sem vínculo de assinatura.
-- Portanto **a fatura interna correspondente nasce com `billing_subscription_id = null`**, e a
-  query do gate ([whatsapp-service-gate.ts:160](../../supabase/functions/_shared/whatsapp-service-gate.ts))
-  filtra por `billing_subscription_id` — a fatura não entra no gate, com ou sem hold.
+  definição, sem vínculo de assinatura — logo a fatura interna nasceria com
+  `billing_subscription_id = null`, e a query do gate
+  ([whatsapp-service-gate.ts:160](../../supabase/functions/_shared/whatsapp-service-gate.ts))
+  filtra por essa coluna. Barreira real, mas **secundária**: a cobrança nem chega a existir.
 - Criar uma segunda assinatura para contornar violaria o índice único parcial de
   [migration 071](../../supabase/migrations/20260726100000_071_whatsapp_implementations.sql)
   e a invariável de unicidade da categoria.
-- **O cenário D+6 só é alcançável aguardando o ciclo natural** (próxima cobrança em 2026-08-31),
-  fora da janela deste rollout.
+- **Aguardar o ciclo natural é a única forma comprovada de obter atraso real pelo provedor**
+  (próxima cobrança em 2026-08-31), fora da janela deste rollout — salvo eventual recurso oficial
+  específico do Asaas ainda não identificado.
 
-Nada disso é falha da implementação: é limite do provedor em sandbox. O que **não** foi feito,
-deliberadamente — nenhuma outra data, outro endpoint, nova assinatura, cobrança duplicada,
-edição direta da cobrança, alteração manual da fatura interna, webhook fabricado ou vínculo
-manual de `billing_subscription_id`.
+Nada disso é falha da implementação: é limite de validação do provedor nesta conta. O que **não**
+foi feito, deliberadamente — nenhuma outra data, `externalReference` encurtado, outro endpoint,
+nova assinatura, cobrança duplicada, edição direta da cobrança, alteração manual da fatura
+interna, webhook fabricado ou vínculo manual de `billing_subscription_id`.
+
+### Opção (D) — `NOT EXECUTED — BLOCKED BY PROVIDER VALIDATION`
+
+| verificação pós-tentativa | resultado |
+|---|---|
+| `POST /v3/payments` com vencimento retroativo | **rejeitado** (`invalid_dueDate`) |
+| cobrança criada no Asaas | **nenhuma** (`totalCount: 0` no customer) |
+| fatura interna criada ou alterada | **nenhuma** (fixture segue com 2) |
+| fatura `abdb3f9e` | inalterada — MD5 `fa5bfed6ec64cbac9c34e44fffdaa50d` |
+| escrita no banco | nenhuma |
+| deploy | nenhum |
+| alteração de flag | nenhuma |
+| `whatsapp_service_enforcement` | permanece `false` |
+
+**NÃO registrar como validados ao vivo:** ingestão de cobrança avulsa · correlação por
+`externalReference` · `ingestion_source` · hold de pré-go-live · idempotência da ingestão ·
+independência WhatsApp × `organizations.billing_status` **neste cenário**.
+
+A independência já comprovada pelo pagamento real de R$ 149,00 (§0.5.2) continua valendo como
+evidência **separada** — não é resultado do ensaio da opção (D) e não deve ser atribuída a ele.
+
+### Provado por inspeção estática, não exercitado ao vivo
+
+> **VALIDADO POR INSPEÇÃO ESTÁTICA — NÃO EXERCITADO AO VIVO NESTE ENSAIO**
+
+Levantado durante o pré-flight da opção (D), lendo esquema e código:
+
+- **A identidade financeira da fatura é `(provider, provider_payment_id)`** — índice único parcial
+  `billing_invoices_provider_payment_idx`.
+- **O índice sobre `external_reference` NÃO é único** (`billing_invoices_external_ref_idx`), e a
+  única constraint de unicidade declarada na tabela é a PK.
+- **Zero lookups de fatura por `external_reference`** em todo `supabase/functions` — o campo é
+  apenas escrito.
+- **Zero `onConflict` de fatura** usando `external_reference` como chave de conflito.
+- Correlação de fatura conhecida é por `provider_payment_id` nos dois caminhos:
+  [asaas-billing-events-apply.ts:393](../../supabase/functions/_shared/asaas-billing-events-apply.ts)
+  (webhook) e
+  [process-asaas-invoice-reconcile/index.ts:299](../../supabase/functions/process-asaas-invoice-reconcile/index.ts)
+  (worker).
+
+Ou seja: o `externalReference` resolve **contexto** (organização, plano, purpose), não identidade
+financeira. Isso é o desenho lido no código — não foi exercitado por uma cobrança real nesta
+rodada.
 
 ### Consequência para o rollout
 
@@ -292,15 +384,17 @@ consequência em tenant real. Desenho dessa janela em
 | Código da fase | implementado |
 | Migrations | aplicadas |
 | Edge Functions | deployadas |
-| Ingestão (`billing_invoice_ingestion`) | ativada e validada |
-| Ingestão de cobrança avulsa | _(pendente da opção D)_ |
-| Idempotência | _(pendente da opção D)_ |
-| Hold de pré-go-live | _(pendente da opção D)_ |
-| **Enforcement** | **mantido OFF** |
-| **Suspensão D+6 por assinatura** | **não validada** |
-| **Regularização/restauração após suspensão** | **não validada** |
-| **C15–C24** | **bloqueados pelo modelo do provedor** |
-| Go-live do enforcement | pendente de nova janela controlada |
+| Ingestão (`billing_invoice_ingestion`) | ativada |
+| Pagamento real de WhatsApp sem alterar o billing global | **validado** (§0.5.2) |
+| Ingestão de fatura descoberta / backfill | **não exercitada** |
+| Ingestão de cobrança avulsa | **não exercitada** — opção (D) bloqueada pela validação do provedor |
+| Idempotência da ingestão | **não exercitada** |
+| Hold de pré-go-live | **não exercitado** |
+| **Enforcement** | **OFF** |
+| **Suspensão D+6** | **não exercitada** |
+| **Regularização/restauração após suspensão** | **não exercitada** |
+| **C15–C24** | **bloqueados** |
+| Merge/tag de go-live completo | **pendente** |
 
 **A fase não recebe merge/tag como rollout completo do enforcement**, e a conclusão não deve ser
 apresentada como "44 blocos concluídos" enquanto C15–C24 não forem executados.
@@ -576,16 +670,22 @@ select enforcement_hold, enforcement_released_at, enforcement_released_by from b
 > ## ⛔ TODO O BLOCO C15–C24: `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`
 >
 > Nenhum destes cenários foi executado, e **nenhum deve ser lido como PASS, SKIP genérico ou
-> "validado por inferência"**. O motivo é estrutural, não organizacional — registro completo em
-> [§0.8](#08-o-cenário-de-inadimplência-por-assinatura-é-inconstruível-no-sandbox--conclusão-definitiva):
+> "validado por inferência"** — nem por análise estática. O motivo é estrutural, não
+> organizacional. Registro completo em [§0.8](#08-o-cenário-de-inadimplência-é-inconstruível-nesta-conta-do-sandbox--conclusão-definitiva):
 >
-> 1. Cobrança avulsa **não recebe `subscription`** no Asaas.
-> 2. A correlação por `externalReference` resolve organização, plano e purpose, **mas não a assinatura**.
-> 3. A fatura interna nasce com **`billing_subscription_id = null`**.
+> 1. **Esta conta do Asaas Sandbox rejeita vencimento anterior à data atual** — tanto na
+>    assinatura quanto na cobrança avulsa (`POST /v3/payments`), com a mesma mensagem, confirmado
+>    ao vivo nas duas tentativas.
+> 2. **Não foi possível produzir uma cobrança real D+6 dentro da janela** deste rollout.
+> 3. Cobrança avulsa **não recebe `subscription`** no Asaas, e a fatura interna nasceria com
+>    `billing_subscription_id = null` — barreira adicional, secundária à de (1).
 > 4. O gate de WhatsApp considera **apenas faturas vinculadas à assinatura**.
-> 5. O Asaas **não permite `nextDueDate` retroativo** (recusa confirmada ao vivo).
-> 6. Criar uma segunda assinatura **violaria a invariável de unicidade**.
-> 7. Aguardar o ciclo natural (2026-08-31) **ultrapassa a janela operacional deste rollout**.
+> 5. Criar uma segunda assinatura **violaria a invariável de unicidade** da categoria.
+> 6. **Alterar manualmente fatura, vínculo ou vencimento invalidaria o teste** — seria validar a
+>    própria fabricação, não o comportamento.
+> 7. **Aguardar o ciclo natural** (2026-08-31) **ultrapassa a janela operacional** deste rollout.
+> 8. **O enforcement não foi ligado porque não existia candidato material real à suspensão** —
+>    com a flag ON e universo vazio, `would_suspend: 0` não prova comportamento nenhum.
 >
 > Some-se a isso que `whatsapp_service_enforcement` permanece **OFF** nesta rodada — sem
 > candidato material, ligar a flag validaria um universo vazio.
