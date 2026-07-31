@@ -173,6 +173,10 @@ export interface BillingSubscription {
   created_at: string;
   updated_at: string;
   plan?: BillingPlan | null;
+  // Multi-provider (migration 063) — opcional pelo mesmo motivo do BillingPlan:
+  // uma versão antiga de manage-billing pode não devolver a coluna. A UI usa
+  // `provider` para não prometer fim de período onde ele não existe (Asaas).
+  provider?: BillingProviderName;
 }
 
 export interface BillingInvoice {

@@ -293,6 +293,7 @@ export default function BillingDetail() {
           open={cancelDialog}
           onOpenChange={setCancelDialog}
           subscriptionId={activeSub.id}
+          provider={activeSub.provider}
         />
       )}
     </div>
@@ -909,17 +910,23 @@ function TrialDialog({ open, onOpenChange, organizationId }: {
   );
 }
 
-function CancelSubDialog({ open, onOpenChange, subscriptionId }: {
+function CancelSubDialog({ open, onOpenChange, subscriptionId, provider }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   subscriptionId: string;
+  provider?: string;
 }) {
   const mutation = useCancelSubscription();
+  // Asaas não tem período contratual: nada popula current_period_end nessas
+  // linhas e nenhum evento vira cancel_at_period_end em canceled. Oferecer a
+  // opção prometeria algo que o sistema não sabe cumprir.
+  const isAsaas = provider === "asaas";
   const [atPeriodEnd, setAtPeriodEnd] = useState(true);
+  const effectiveAtPeriodEnd = isAsaas ? false : atPeriodEnd;
 
   function handleSubmit() {
     mutation.mutate(
-      { subscription_id: subscriptionId, at_period_end: atPeriodEnd },
+      { subscription_id: subscriptionId, at_period_end: effectiveAtPeriodEnd },
       {
         onSuccess: () => { toast.success("Assinatura cancelada."); onOpenChange(false); },
         onError: (err) => toast.error(err.message),
@@ -933,15 +940,19 @@ function CancelSubDialog({ open, onOpenChange, subscriptionId }: {
         <AlertDialogHeader>
           <AlertDialogTitle>Cancelar assinatura?</AlertDialogTitle>
           <AlertDialogDescription>
-            {atPeriodEnd
-              ? "O acesso será mantido até o fim do período atual."
-              : "O cancelamento será imediato."}
+            {isAsaas
+              ? "O cancelamento é imediato: a cobrança recorrente é interrompida no provedor e o acesso termina agora. Não há reembolso do período já pago."
+              : effectiveAtPeriodEnd
+                ? "O acesso será mantido até o fim do período atual."
+                : "O cancelamento será imediato."}
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <div className="flex items-center gap-2 mt-2">
-          <input type="checkbox" id="atPeriodEnd" checked={atPeriodEnd} onChange={(e) => setAtPeriodEnd(e.target.checked)} />
-          <Label htmlFor="atPeriodEnd" className="text-sm">Cancelar apenas ao fim do período</Label>
-        </div>
+        {!isAsaas && (
+          <div className="flex items-center gap-2 mt-2">
+            <input type="checkbox" id="atPeriodEnd" checked={atPeriodEnd} onChange={(e) => setAtPeriodEnd(e.target.checked)} />
+            <Label htmlFor="atPeriodEnd" className="text-sm">Cancelar apenas ao fim do período</Label>
+          </div>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel>Voltar</AlertDialogCancel>
           <AlertDialogAction className="bg-destructive text-destructive-foreground" disabled={mutation.isPending} onClick={handleSubmit}>

@@ -235,11 +235,17 @@ export default function Cobranca() {
   async function handleCancel() {
     if (!sub) return;
     try {
-      await cancelMutation.mutateAsync({
+      // `effective` vem do provedor, não do que pedimos: no Asaas o
+      // cancelamento é sempre imediato, e afirmar "fim do período" seria falso.
+      const res = await cancelMutation.mutateAsync({
         subscription_id: sub.id,
         organization_id: organizationId!,
       });
-      toast.success("Assinatura agendada para cancelamento no fim do período.");
+      toast.success(
+        (res as { effective?: string })?.effective === "at_period_end"
+          ? "Assinatura agendada para cancelamento no fim do período."
+          : "Assinatura cancelada.",
+      );
       setCancelDialog(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Falha ao cancelar.");
@@ -517,9 +523,18 @@ export default function Cobranca() {
           <AlertDialogHeader>
             <AlertDialogTitle>Cancelar assinatura?</AlertDialogTitle>
             <AlertDialogDescription>
-              Você manterá acesso ao sistema até o fim do período já pago
-              {sub?.current_period_end && ` (${formatDateBR(sub.current_period_end.slice(0, 10))})`}.
-              Depois disso, o acesso será suspenso até você escolher um novo plano.
+              {sub?.provider === "asaas" ? (
+                <>
+                  O cancelamento é imediato: a cobrança recorrente é interrompida e o acesso
+                  ao sistema termina agora. Não há reembolso do período já pago.
+                </>
+              ) : (
+                <>
+                  Você manterá acesso ao sistema até o fim do período já pago
+                  {sub?.current_period_end && ` (${formatDateBR(sub.current_period_end.slice(0, 10))})`}.
+                  Depois disso, o acesso será suspenso até você escolher um novo plano.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
