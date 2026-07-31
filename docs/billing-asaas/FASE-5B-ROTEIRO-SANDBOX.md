@@ -237,6 +237,74 @@ delas (C1–C18, C21–C22, C24a–g, C25–C31) não têm sobre o que rodar, e 
 `whatsapp_service_enforcement` ON, e ligar a flag sem a fixture paga validaria o vazio. Criar
 metade da fixture deixaria uma org órfã em produção sem mecanismo de arquivamento (§9).
 
+## 0.8 O cenário de inadimplência por assinatura é inconstruível no Sandbox — conclusão definitiva
+
+Para exercitar `upsert_open_invoice`, o hold de pré-go-live e a suspensão D+6, faltava uma
+**cobrança em aberto e vencida pertencente à assinatura** `sub_qn6dpom3q6xr3r8s`. Duas
+tentativas controladas foram feitas, ambas encerradas pelo modelo do provedor.
+
+### Tentativa 1 — retroagir o vencimento da assinatura (painel Asaas Sandbox, pelo dono)
+
+| alteração pedida | resultado |
+|---|---|
+| `billingType` `CREDIT_CARD` → `BOLETO` | **aceita** — vale para esta e para as próximas faturas; o bloco `creditCard` foi removido |
+| `nextDueDate` → ≥6 dias no passado | **recusada** — *"Não é permitido data de vencimento inferior a hoje."* |
+
+Estado da assinatura após a tentativa, confirmado por leitura de API: `ACTIVE`, `BOLETO`,
+`nextDueDate = 2026-08-31`, R$ 149,00, `MONTHLY`, customer `cus_000008533953`,
+`checkoutSession = efb6087a-…`. **Nenhuma cobrança nova foi gerada** — a assinatura continua
+com exatamente uma, `pay_u47jujtp7u4fm19l`, `CONFIRMED`. Deriva colateral registrada: o painel
+moveu o telefone de `phone` para `mobilePhone`, e `description` passou de `null` para `""`.
+
+### Conclusão definitiva
+
+- **O Asaas não permite vencimento retroativo em assinatura.** Não existe forma suportada de
+  gerar uma cobrança já vencida pertencente a uma assinatura existente.
+- **`POST /v3/payments` não aceita o campo `subscription`.** Cobrança avulsa nasce, por
+  definição, sem vínculo de assinatura.
+- Portanto **a fatura interna correspondente nasce com `billing_subscription_id = null`**, e a
+  query do gate ([whatsapp-service-gate.ts:160](../../supabase/functions/_shared/whatsapp-service-gate.ts))
+  filtra por `billing_subscription_id` — a fatura não entra no gate, com ou sem hold.
+- Criar uma segunda assinatura para contornar violaria o índice único parcial de
+  [migration 071](../../supabase/migrations/20260726100000_071_whatsapp_implementations.sql)
+  e a invariável de unicidade da categoria.
+- **O cenário D+6 só é alcançável aguardando o ciclo natural** (próxima cobrança em 2026-08-31),
+  fora da janela deste rollout.
+
+Nada disso é falha da implementação: é limite do provedor em sandbox. O que **não** foi feito,
+deliberadamente — nenhuma outra data, outro endpoint, nova assinatura, cobrança duplicada,
+edição direta da cobrança, alteração manual da fatura interna, webhook fabricado ou vínculo
+manual de `billing_subscription_id`.
+
+### Consequência para o rollout
+
+`whatsapp_service_enforcement` **permanece OFF nesta rodada.** Sem candidato material, ligar a
+flag validaria um universo vazio (`would_suspend: 0`) e não provaria o comportamento crítico.
+A ativação exige uma nova janela controlada com: cobrança real pertencente a uma assinatura,
+fatura com `billing_subscription_id`, atraso D+6, relatório global de impacto e ausência de
+consequência em tenant real. Desenho dessa janela em
+[06-FOLLOWUP-SANDBOX-INADIMPLENCIA.md](06-FOLLOWUP-SANDBOX-INADIMPLENCIA.md).
+
+### Classificação final da Fase 5b
+
+| item | situação |
+|---|---|
+| Código da fase | implementado |
+| Migrations | aplicadas |
+| Edge Functions | deployadas |
+| Ingestão (`billing_invoice_ingestion`) | ativada e validada |
+| Ingestão de cobrança avulsa | _(pendente da opção D)_ |
+| Idempotência | _(pendente da opção D)_ |
+| Hold de pré-go-live | _(pendente da opção D)_ |
+| **Enforcement** | **mantido OFF** |
+| **Suspensão D+6 por assinatura** | **não validada** |
+| **Regularização/restauração após suspensão** | **não validada** |
+| **C15–C24** | **bloqueados pelo modelo do provedor** |
+| Go-live do enforcement | pendente de nova janela controlada |
+
+**A fase não recebe merge/tag como rollout completo do enforcement**, e a conclusão não deve ser
+apresentada como "44 blocos concluídos" enquanto C15–C24 não forem executados.
+
 ## Resumo dos cenários (preencher "Real" ao executar)
 
 | # | Cenário | Esperado | Real |
@@ -255,16 +323,16 @@ metade da fixture deixaria uma org órfã em produção sem mecanismo de arquiva
 | C12 | Fatura normal achada pelo reconcile após o vencimento | SEM hold só por isso | ☐ |
 | C13 | Fatura paga/void/estornada nunca entra em hold por atraso | Sem hold | ☐ |
 | C14 | Liberação de hold | Admin, data e motivo registrados | ☐ |
-| C15 | Sistema suspenso bloqueia WhatsApp mesmo com override ativo | Envio bloqueado apesar do override | ☐ |
-| C16 | Override ativo só prevalece sobre inadimplência do WhatsApp | Não sobrepõe bloqueio de sistema | ☐ |
-| C17 | D+5 tolerância / D+6 suspende | Fronteira exata | ☐ |
-| C18 | `GRACE_PERIOD`: envio ok, provisionamento novo bloqueado | Duas respostas certas | ☐ |
-| C19 | `LEGACY_GRANDFATHERED`: uso ok, provisionamento novo bloqueado | Idem | ☐ |
-| C20 | `NOT_ENTITLED`: não bloqueia envio nesta fase, bloqueia provisionamento | Idem | ☐ |
-| C21 | Org legada ativa assinatura paga → perde grandfathering | `whatsapp_grandfather_revoked_at` preenchido, `reason='FIRST_PAID_SUBSCRIPTION'` | ☐ |
-| C22 | Cancelar a assinatura depois NÃO restaura o grandfathering | Revogação permanece | ☐ |
-| C23 | Flag de enforcement OFF: calcula `SUSPENDED_UNPAID`, não bloqueia envio | `state` real, `enforced.sending=false` | ☐ |
-| C24 | Sistema vencido bloqueia a org inteira; WhatsApp vencido bloqueia só WhatsApp | Efeitos isolados por categoria | ☐ |
+| C15 | Sistema suspenso bloqueia WhatsApp mesmo com override ativo | Envio bloqueado apesar do override | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C16 | Override ativo só prevalece sobre inadimplência do WhatsApp | Não sobrepõe bloqueio de sistema | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C17 | D+5 tolerância / D+6 suspende | Fronteira exata | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C18 | `GRACE_PERIOD`: envio ok, provisionamento novo bloqueado | Duas respostas certas | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C19 | `LEGACY_GRANDFATHERED`: uso ok, provisionamento novo bloqueado | Idem | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C20 | `NOT_ENTITLED`: não bloqueia envio nesta fase, bloqueia provisionamento | Idem | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C21 | Org legada ativa assinatura paga → perde grandfathering | `whatsapp_grandfather_revoked_at` preenchido, `reason='FIRST_PAID_SUBSCRIPTION'` | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C22 | Cancelar a assinatura depois NÃO restaura o grandfathering | Revogação permanece | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C23 | Flag de enforcement OFF: calcula `SUSPENDED_UNPAID`, não bloqueia envio | `state` real, `enforced.sending=false` | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
+| C24 | Sistema vencido bloqueia a org inteira; WhatsApp vencido bloqueia só WhatsApp | Efeitos isolados por categoria | **NOT EXECUTED — BLOCKED BY PROVIDER MODEL** (§0.8) |
 | C24a | Flag OFF + `ACTIVE` → provisionamento liberado | `allowed=true` | ☐ |
 | C24b | Flag OFF + `SUSPENDED_UNPAID` → provisionamento bloqueado | `blockReason=SERVICE_STATE` | ☐ |
 | C24c | Falha na leitura da flag não interfere no provisionamento | Mesmo resultado com flag ilegível | ☐ |
@@ -505,6 +573,29 @@ select enforcement_hold, enforcement_released_at, enforcement_released_by from b
 
 ## Estados e gates (C15–C24)
 
+> ## ⛔ TODO O BLOCO C15–C24: `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`
+>
+> Nenhum destes cenários foi executado, e **nenhum deve ser lido como PASS, SKIP genérico ou
+> "validado por inferência"**. O motivo é estrutural, não organizacional — registro completo em
+> [§0.8](#08-o-cenário-de-inadimplência-por-assinatura-é-inconstruível-no-sandbox--conclusão-definitiva):
+>
+> 1. Cobrança avulsa **não recebe `subscription`** no Asaas.
+> 2. A correlação por `externalReference` resolve organização, plano e purpose, **mas não a assinatura**.
+> 3. A fatura interna nasce com **`billing_subscription_id = null`**.
+> 4. O gate de WhatsApp considera **apenas faturas vinculadas à assinatura**.
+> 5. O Asaas **não permite `nextDueDate` retroativo** (recusa confirmada ao vivo).
+> 6. Criar uma segunda assinatura **violaria a invariável de unicidade**.
+> 7. Aguardar o ciclo natural (2026-08-31) **ultrapassa a janela operacional deste rollout**.
+>
+> Some-se a isso que `whatsapp_service_enforcement` permanece **OFF** nesta rodada — sem
+> candidato material, ligar a flag validaria um universo vazio.
+>
+> **Cobertura que existe hoje:** a lógica pura destes estados é testada em
+> [whatsapp-service-state-core.test.ts](../../src/lib/whatsapp-service-state-core.test.ts).
+> O que falta é a **fiação** — gate real lendo banco real —, e é exatamente isso que fica
+> pendente da nova janela desenhada em
+> [06-FOLLOWUP-SANDBOX-INADIMPLENCIA.md](06-FOLLOWUP-SANDBOX-INADIMPLENCIA.md).
+
 **Cobertura primária de todo este bloco:** `describe("decideWhatsAppGate — ...")` em [whatsapp-service-state-core.test.ts](../../src/lib/whatsapp-service-state-core.test.ts). Os cenários abaixo validam a FIAÇÃO (gate real lendo banco real), não a lógica pura.
 
 ### Como forçar cada estado financeiro via SQL (usar nos cenários abaixo)
@@ -529,7 +620,7 @@ update billing_invoices set status='open', due_date = (current_date - interval '
 
 **Esperado:** envio bloqueado (`enforced.sending=true` via `systemBlocked`) — o gate pai vence o override, que só cobre inadimplência do WhatsApp, não bloqueio de sistema.
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: exige `organizations.billing_status` em `suspended` — que só pode chegar lá por fatura de sistema vencida (inconstruível, §0.8) — e a escrita manual da coluna está expressamente proibida nesta rodada. A consequência sobre envio ainda exige `whatsapp_service_enforcement` ON.
 
 ---
 
@@ -539,7 +630,7 @@ update billing_invoices set status='open', due_date = (current_date - interval '
 
 **Esperado:** `state=OVERRIDE_ACTIVE`, `sendingBlocked=false` — envio funciona.
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: exige a assinatura WhatsApp em `OVERDUE_BEYOND_GRACE`, ou seja, uma fatura `open` vencida **com `billing_subscription_id`** — exatamente o que o provedor não permite produzir (§0.8).
 
 ---
 
@@ -551,7 +642,7 @@ update billing_invoices set status='open', due_date = (current_date - interval '
 
 **Esperado:** fronteira exata na virada de D+5 para D+6 (`BLOCK_AFTER_DAYS=6`).
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: não existe fatura vinculada à assinatura para mover entre D+5 e D+6 (§0.8). A fronteira em si continua coberta pelo núcleo puro; o que falta é provar que o gate a lê do banco real.
 
 ---
 
@@ -561,7 +652,7 @@ update billing_invoices set status='open', due_date = (current_date - interval '
 
 **Esperado:** envio funciona; criação de canal recusada com `provisioning.blockReason=SERVICE_STATE`.
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: exige a assinatura em `IN_GRACE` (D+2), o que de novo pressupõe fatura vencida vinculada (§0.8).
 
 ---
 
@@ -571,7 +662,7 @@ update billing_invoices set status='open', due_date = (current_date - interval '
 
 **Esperado:** envio funciona (uso existente preservado); criação de canal recusada.
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: `NO_SUBSCRIPTION` só mapeia para `LEGACY_GRANDFATHERED` com `whatsapp_service_enforcement` ON, e a flag permanece OFF nesta rodada (§0.8). **Observação honesta:** a metade de *provisionamento* deste cenário não depende da flag — `resolveProvisioningEligibility` a calcula sempre — e é justamente o que C24e cobre; a metade de *envio* é que fica pendente.
 
 ---
 
@@ -581,7 +672,7 @@ update billing_invoices set status='open', due_date = (current_date - interval '
 
 **Esperado:** `sendingBlocked=false` (decisão de produto explícita desta fase — `NOT_ENTITLED` não é motivo de bloqueio de envio ainda); `newProvisioningBlocked=true`.
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: distinguir `NOT_ENTITLED` de `LEGACY_GRANDFATHERED` no gate real exige a flag ON, que permanece OFF (§0.8). Mesma observação do C19: a metade de provisionamento é independente da flag e cai em C24a–C24g.
 
 ---
 
@@ -596,7 +687,7 @@ select whatsapp_grandfather_revoked_at, whatsapp_grandfather_revoked_reason from
 
 **Esperado:** `whatsapp_grandfather_revoked_at` preenchido, `whatsapp_grandfather_revoked_reason='FIRST_PAID_SUBSCRIPTION'` — a RPC `resolve_or_activate_subscription` grava a revogação no mesmo ato da ativação.
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: exigiria um **segundo checkout pago**, agora na fixture LEGACY. A autorização desta rodada cobre uma única cobrança, e ela está reservada à validação de ingestão na fixture PAID (§0.8).
 
 ---
 
@@ -608,7 +699,7 @@ select whatsapp_grandfather_revoked_at, whatsapp_grandfather_revoked_reason from
 
 **Esperado:** `whatsapp_grandfather_revoked_at` continua preenchido (revogação é terminal); a org cai em `NOT_ENTITLED`, não volta a `LEGACY_GRANDFATHERED`.
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: encadeado ao C21 — sem a ativação paga não há o que cancelar (§0.8).
 
 ---
 
@@ -620,7 +711,7 @@ select whatsapp_grandfather_revoked_at, whatsapp_grandfather_revoked_reason from
 
 **Esperado:** `serviceState='SUSPENDED_UNPAID'` (estado real, calculado independente da flag), mas a mensagem É enviada (`enforced.sending=false`, dry-run) — e o banner no `/g/<slug>/cobranca`/`/g/<slug>/conversas` usa o tempo verbal do FUTURO (ver invariante do CLAUDE.md sobre `sendingBlocked` vs `serviceState`), nunca "já foi suspensa".
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: exige uma assinatura WhatsApp em D+6 real, e a única do banco não pode chegar lá (§0.8). Este é o cenário mais lamentado da lista — era o que provaria o dry-run com candidato de verdade, e é o que hoje sustenta a decisão de manter a flag OFF. O `process-whatsapp-enforcement` rodou com `dry_run: true` e `subscriptions_scanned: 1` (§0.6), mas `would_suspend: 0` — universo vazio.
 
 ---
 
@@ -630,7 +721,7 @@ select whatsapp_grandfather_revoked_at, whatsapp_grandfather_revoked_reason from
 
 **Esperado:** efeitos isolados por categoria — nenhuma cobrança de instância derruba o sistema, nenhuma cobrança de sistema é confundida com WhatsApp.
 
-**Resultado observado:** _(preencher)_
+**Resultado observado:** `NOT EXECUTED — BLOCKED BY PROVIDER MODEL`. Dependência específica: exige duas orgs em estados financeiros vencidos simultâneos — nenhum deles construível sem fatura vencida vinculada (§0.8) — e a escrita manual de `organizations.billing_status` está proibida nesta rodada. **A metade preventiva deste cenário, porém, já tem prova indireta:** a guarda de categoria (`isSystemInvoice`) foi exercitada no B10 e a coluna `billing_status` da fixture permaneceu `trialing` durante todo o ciclo com uma cobrança de instância confirmada — ver §0.5.2.
 
 ---
 
@@ -821,8 +912,27 @@ select count(*) from billing_invoices where updated_at > now() - interval '5 min
 
 ## Limpeza ao final
 
-1. **Cancelar assinaturas/cobranças sandbox** criadas neste roteiro no painel Asaas.
-2. **Apagar linhas de teste** (`billing_subscriptions`, `billing_invoices` sintéticas do C7/C11, overrides, `notification_outbox`) usando os mesmos padrões de `delete ... where organization_id in (<org-ids-de-teste>)` do roteiro da 5a.
-3. **Restaurar `whatsapp_grandfather_revoked_at`/`_reason`** nas orgs de teste onde o C21 gravou a revogação, se a org for reaproveitada depois (revogação real não deveria ser desfeita em org de produção — só em org de teste).
-4. **Devolver as flags ao estado do início** (seção 0.1.4), exceto se a decisão explícita do dono for manter `billing_invoice_ingestion`/`whatsapp_service_enforcement` ligadas após o roteiro passar — nesse caso, registrar a decisão em [FASE-5B-RESUMO.md](FASE-5B-RESUMO.md), não aqui.
-5. Preencher a tabela de resumo no topo e reportar o veredito consolidado em [FASE-5B-RESUMO.md](FASE-5B-RESUMO.md) § Resultado do sandbox.
+> **Regra que substitui a versão anterior desta seção:** **não apagar registro financeiro.**
+> Cobrança, fatura, hold, eventos e auditoria **ficam** — são o que prova o que aconteceu.
+> A limpeza é de *efeito externo* e de *superfície comercial*, não de histórico. Sem
+> `DELETE CASCADE`, sem `delete ... where organization_id in (...)`.
+
+1. **Preservar** cobrança, `billing_invoices`, `enforcement_hold`, `billing_events`,
+   `webhook_executions` e `audit_log` das fixtures. Nada disso é apagado.
+2. **Cancelar a assinatura sandbox `sub_qn6dpom3q6xr3r8s`** pelo fluxo suportado
+   (`manage-billing` → `cancel_subscription`), **antes de 2026-08-31**, e confirmar por leitura
+   de API que **nenhuma próxima cobrança será gerada** naquela data. Não restaurar
+   `CREDIT_CARD`: o token do cartão foi removido na troca para `BOLETO` e não deve ser manipulado.
+3. **Manter as notificações do customer desativadas** — validar por API, não pelo painel.
+4. **Revogar o grandfathering da fixture LEGACY** com motivo registrado
+   (`SANDBOX_FASE_5B_LEGACY_FIXTURE` — ver §0.4), pela action admin, nunca por SQL direto.
+5. **Devolver as flags de apoio a `false`**: `whatsapp_implementation_flow` e
+   `whatsapp_subscription_checkout`. `billing_invoice_ingestion` permanece **`true`** e
+   `whatsapp_service_enforcement` permanece **`false`** — decisão explícita do dono, registrada
+   em §0.8.
+6. **Arquivar ou bloquear administrativamente as fixtures**, sem apagá-las.
+7. **Confirmar zero efeito pendente:** `notification_outbox` sem linha `pending`,
+   nenhum job executável na fila, nenhum efeito externo em aberto.
+8. Preencher a tabela de resumo no topo e reportar o veredito consolidado em
+   [FASE-5B-RESUMO.md](FASE-5B-RESUMO.md) § Resultado do sandbox — **sem apresentar a fase como
+   "44 blocos concluídos"** enquanto C15–C24 estiverem bloqueados (§0.8).

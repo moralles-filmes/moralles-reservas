@@ -91,11 +91,24 @@ Registro do que existe hoje, sem merge automático e sem apagar nada — conform
 |---|---|---|---|---|---|---|
 | `cus_000008529031` | cadastro interno | `billing_customers.asaas_customer_id` | controlado | sim | padrão | **manter** — é o canônico da plataforma |
 | `cus_000008529056` | pagador da implantação | cobrança `pay_izm4cc4v0ptzchfh` | não verificado | não | não verificado | arquivar após o sandbox |
-| `cus_000008533953` | pagador da instância | assinatura `sub_qn6dpom3q6xr3r8s` | `yuri@gmail.com` → corrigido no painel para o endereço controlado, notificações desativadas | passou a ser controlado | desativadas | arquivar após o sandbox |
+| `cus_000008533953` | pagador da instância | assinatura `sub_qn6dpom3q6xr3r8s` | `yuri@gmail.com` → corrigido no painel para `morallesfilms+sandbox5b-paid@gmail.com` | e-mail sim; telefone não | **ver abaixo** | arquivar após o sandbox |
 
 A correção do terceiro foi **exclusivamente** para não notificar terceiro durante o ensaio,
 pelo painel do Asaas Sandbox, sem tocar em nome, documento, telefone ou endereço. Não é a
 solução do problema — é contenção do efeito externo.
+
+**Estado verificado por API em 2026-07-31, após a edição no painel:**
+
+- `email` = `morallesfilms+sandbox5b-paid@gmail.com` — **controlado**.
+- `notificationDisabled` = **`false`** — o desligamento **não persistiu** na primeira tentativa.
+- O número saiu de `phone` e apareceu em `mobilePhone` (`43991336361`) — efeito colateral do
+  formulário do painel, que tem campo único de celular. O valor não mudou; o campo, sim.
+
+Enquanto `notificationDisabled` for `false`, **existe superfície de SMS para um contato não
+comprovadamente controlado**, mesmo com o e-mail corrigido. Esse é o motivo pelo qual o ensaio
+ficou parado neste ponto: nenhuma cobrança nova deve ser criada antes de o desligamento ser
+confirmado por leitura de API. A contenção só está completa quando **e-mail e SMS** estiverem
+desativados ou apontando exclusivamente para contatos da equipe.
 
 ## 5. Limite deste documento
 
