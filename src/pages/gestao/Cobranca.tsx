@@ -367,7 +367,10 @@ export default function Cobranca() {
               )}
             </div>
 
-            {!sub.cancel_at_period_end && (
+            {/* Só o proprietário: o cancelamento cascateia pra
+                organizations.billing_status e derrubaria as unidades irmãs.
+                O servidor recusa gerente com 403 — aqui é só não oferecer. */}
+            {!sub.cancel_at_period_end && current?.isOwner && (
               <div className="pt-2">
                 <Button variant="ghost" size="sm" onClick={() => setCancelDialog(true)} className="text-destructive hover:text-destructive">
                   Cancelar assinatura

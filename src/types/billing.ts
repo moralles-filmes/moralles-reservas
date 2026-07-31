@@ -275,25 +275,38 @@ export interface OrgBillingRow {
   subscription: (BillingSubscription & { plan: BillingPlan | null }) | null;
 }
 
+/**
+ * Resposta de `manage-billing` action `get_organization_billing`, que tem DUAS
+ * formas: platform_admin recebe tudo; owner/gerente recebe uma versão moldada,
+ * porque o payload admin agrega histórico administrativo SOBRE o cliente.
+ *
+ * As chaves só-de-admin são OPCIONAIS e vêm OMITIDAS (não vazias) pro cliente:
+ * `[]` afirmaria "esta organização não tem fatura nenhuma", e alguém montaria
+ * "Suas faturas" em cima disso mostrando lista vazia pra quem tem fatura
+ * vencida. `undefined` obriga a decidir. Quando alguma tela de cliente precisar
+ * de uma dessas listas, o certo é moldá-la no servidor — nunca devolver `*`.
+ */
 export interface OrgBillingDetail {
+  /** Pro cliente vêm só `id`, `name`, `billing_status` e `trial_ends_at`. */
   organization: {
     id: string;
     name: string;
-    slug: string;
-    plan: string | null;
+    slug?: string;
+    plan?: string | null;
     billing_status: BillingStatus;
-    billing_email: string | null;
+    billing_email?: string | null;
     trial_ends_at: string | null;
-    blocked_at: string | null;
-    blocked_reason: string | null;
+    blocked_at?: string | null;
+    blocked_reason?: string | null;
   };
-  customer: BillingCustomer | null;
+  /** Sempre presente. Pro cliente, sem os ids do provedor. */
   subscriptions: BillingSubscription[];
   active_plan: BillingPlan | null;
-  invoices: BillingInvoice[];
-  overrides: BillingAccessOverride[];
-  notifications: BillingNotification[];
-  units_count: number | null;
+  customer?: BillingCustomer | null;
+  invoices?: BillingInvoice[];
+  overrides?: BillingAccessOverride[];
+  notifications?: BillingNotification[];
+  units_count?: number | null;
 }
 
 export const BILLING_STATUS_LABEL: Record<BillingStatus, string> = {

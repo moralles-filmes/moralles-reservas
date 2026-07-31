@@ -45,12 +45,32 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
 }
 
 async function canManageOrgBilling(userId: string, organizationId: string): Promise<boolean> {
+  return hasOrgBillingRole(userId, organizationId, ["owner", "gerente"]);
+}
+
+/**
+ * Só `owner`. Existe porque `unit_members` é escopado por UNIDADE e
+ * `organizations.billing_status` é escopado pela ORGANIZAÇÃO: um `gerente` de
+ * uma única unidade de uma rede não pode cancelar a assinatura de sistema e
+ * derrubar o painel das unidades irmãs — e do próprio dono. Enquanto o
+ * cancelamento só marcava a linha em `billing_subscriptions` a diferença era
+ * inócua; desde que ele cascateia pra `billing_status`, deixou de ser.
+ */
+async function canCancelOrgSubscription(userId: string, organizationId: string): Promise<boolean> {
+  return hasOrgBillingRole(userId, organizationId, ["owner"]);
+}
+
+async function hasOrgBillingRole(
+  userId: string,
+  organizationId: string,
+  roles: string[],
+): Promise<boolean> {
   if (await isPlatformAdmin(userId)) return true;
   const { data } = await supabase
     .from("unit_members")
     .select("role, units!inner(organization_id)")
     .eq("user_id", userId)
-    .in("role", ["owner", "gerente"])
+    .in("role", roles)
     .eq("units.organization_id", organizationId)
     .limit(1);
   return !!(data && data.length > 0);
@@ -116,9 +136,10 @@ const PLAN_PUBLIC_COLUMNS =
   "max_members_per_unit";
 
 // Colunas de `organizations` devolvidas a caller NÃO-admin em
-// `get_organization_billing`. `select("*")` traria tax_id, billing_email e o
-// resto do cadastro — o lojista precisa só do estado de cobrança da própria
-// org (o que `/g/:slug/cobranca` consome) mais nome e id pra rotular a tela.
+// `get_organization_billing`. `select("*")` traria `billing_email`,
+// `blocked_reason` e o histórico de grandfathering de WhatsApp — o lojista
+// precisa só do estado de cobrança da própria org (o que `/g/:slug/cobranca`
+// consome) mais nome e id pra rotular a tela.
 const ORG_BILLING_PUBLIC_COLUMNS = "id, name, billing_status, trial_ends_at";
 
 // Colunas de `billing_subscriptions` devolvidas a caller NÃO-admin. Omite os
@@ -545,6 +566,17 @@ serve(async (req) => {
         if (orgRes.error) {
           return jsonResponse(req, { error: "Organização não encontrada." }, 404);
         }
+        // Falha de leitura NÃO pode virar lista vazia: `Cobranca.tsx` derivaria
+        // `sub = null` e mostraria o PricingTable pra quem já assina, como se a
+        // assinatura tivesse sumido. Mesmo princípio das listas do frontend —
+        // `isError` é um estado, não "zero resultados".
+        if (subRes.error) {
+          jsonLog("error", {
+            reqId, evt: "billing_client_detail_subs_read_failed",
+            orgId: organization_id, err: subRes.error.message,
+          });
+          return jsonResponse(req, { error: "Falha ao carregar a assinatura." }, 500);
+        }
 
         let clientPlan = null;
         const clientActiveSub = (subRes.data ?? []).find((s: Record<string, unknown>) => s.status !== "canceled");
@@ -554,21 +586,16 @@ serve(async (req) => {
           clientPlan = p;
         }
 
-        // As chaves de admin voltam VAZIAS em vez de omitidas: `OrgBillingDetail`
-        // é um tipo só pras duas telas, e `Cobranca.tsx` faz
-        // `detail.subscriptions.find(...)` direto. Nenhuma tela de cliente
-        // renderiza fatura, override ou notificação hoje — quando alguma
-        // precisar, o certo é moldar aquela lista aqui, não devolver `*`.
+        // As chaves de admin são OMITIDAS, não vazias. `invoices: []` afirmaria
+        // "esta organização não tem fatura", e uma tela futura de "Suas faturas"
+        // mostraria lista vazia pra quem tem fatura vencida. Ausente obriga quem
+        // consome a decidir. `subscriptions` e `active_plan` sempre vêm —
+        // `Cobranca.tsx` faz `detail.subscriptions.find(...)` direto.
         return jsonResponse(req, {
           success: true,
           organization: orgRes.data,
-          customer: null,
           subscriptions: subRes.data ?? [],
           active_plan: clientPlan,
-          invoices: [],
-          overrides: [],
-          notifications: [],
-          units_count: null,
         });
       }
 
@@ -1029,8 +1056,9 @@ serve(async (req) => {
       if (!subscription_id || !organization_id) {
         return jsonResponse(req, { error: "subscription_id e organization_id são obrigatórios." }, 400);
       }
-      if (!callerIsAdmin && !(await canManageOrgBilling(callerId, organization_id))) {
-        return jsonResponse(req, { error: "Sem permissão." }, 403);
+      // `owner`, não `gerente`: este caminho cascateia pra organizations.
+      if (!callerIsAdmin && !(await canCancelOrgSubscription(callerId, organization_id))) {
+        return jsonResponse(req, { error: "Apenas o proprietário pode cancelar a assinatura." }, 403);
       }
 
       const { data: sub } = await supabase
