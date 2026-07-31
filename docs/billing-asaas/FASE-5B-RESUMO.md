@@ -212,7 +212,11 @@ O irmão deste risco — o Risco 2, voucher de aniversário — foi decidido e c
 
 ### 10. `operador` enxerga as colunas de grandfathering de WhatsApp
 
-A policy pré-existente `org_member_read_organizations` (`013_multi_tenant.sql:336-338`) é `for select to authenticated using (is_org_member(auth.uid(), id))`, **sem distinção de papel** — então qualquer membro da organização, inclusive `operador` (que não tem billing no menu), lê pelo REST as seis colunas novas de grandfathering da migration 079 (`whatsapp_legacy_grandfathered`, `whatsapp_grandfathered_at`, `whatsapp_grandfathered_source`, `whatsapp_grandfather_revoked_at`, `whatsapp_grandfather_revoked_reason`, `whatsapp_grandfather_revoked_by` — `079_whatsapp_legacy_grandfathering.sql:17-23`), incluindo o UUID de `auth.users` de quem revogou o benefício. Não cruza tenant e não é regressão da 079 — a mesma superfície já existia para `billing_status`/`trial_ends_at`. É opacidade organizacional (papel sem acesso a billing lendo dado que devia ser só de owner/gerente), não vazamento cross-tenant. Deixe explícito que é decisão de produto e que é **parente do achado já registrado** sobre a exposição a `anon` pela `public_read_organizations` (seção "Gates de segurança" abaixo) — as duas se resolvem junto, movendo a leitura pública/de membro de `organizations` para RPC com projeção de coluna. Sem gate de flag: é follow-up.
+A policy pré-existente `org_member_read_organizations` (`013_multi_tenant.sql:336-338`) é `for select to authenticated using (is_org_member(auth.uid(), id))`, **sem distinção de papel** — então qualquer membro da organização, inclusive `operador` (que não tem billing no menu), lê pelo REST as seis colunas novas de grandfathering da migration 079 (`whatsapp_legacy_grandfathered`, `whatsapp_grandfathered_at`, `whatsapp_grandfathered_source`, `whatsapp_grandfather_revoked_at`, `whatsapp_grandfather_revoked_reason`, `whatsapp_grandfather_revoked_by` — `079_whatsapp_legacy_grandfathering.sql:17-23`), incluindo o UUID de `auth.users` de quem revogou o benefício. Não cruza tenant e não é regressão da 079 — a mesma superfície já existia para `billing_status`/`trial_ends_at`. É opacidade organizacional (papel sem acesso a billing lendo dado que devia ser só de owner/gerente), não vazamento cross-tenant. Sem gate de flag: é follow-up.
+
+**A metade `anon` deste risco foi FECHADA em 2026-07-31 pela migration 086** — e antes disso foi *medida*, não suposta: `GET /rest/v1/organizations?select=name,billing_email` com a anon key do bundle devolvia 200 com o e-mail de cobrança real de uma organização cliente. A correção não foi a RPC com projeção que este parágrafo previa, e sim **privilégio por coluna**: as policies `TO anon` continuam (três policies de INSERT anon fazem subquery em `organizations`/`units` e dropar derrubaria a reserva pública), mas o grant de tabela virou grant de coluna. `anon` passou de 19 → 2 colunas em `organizations` e de 24 → 22 em `units`. Efeito colateral desejado: coluna nova nasce invisível pra `anon`.
+
+**A metade `operador` continua aberta e NÃO se resolve pelo mesmo caminho** — `operador` e `owner` são ambos `authenticated`, e privilégio de coluna não distingue papel. Essa metade exige mesmo a RPC com projeção, ou uma policy separada por papel.
 
 ## Gates de segurança (`saas-shield-br`)
 
@@ -273,6 +277,16 @@ Os riscos abaixo não bloqueiam o merge (as duas flags sobem OFF e as duas organ
 - **Migrations ficam** — `enforcement_hold`, os timestamps de suspensão/restauração e o grandfathering não têm efeito nenhum com as flags OFF; não há necessidade de reverter schema.
 - **Grandfathering revogado é irreversível por design** (decisão do dono) — não existe rollback de `whatsapp_grandfather_revoked_at` além de ação administrativa explícita nova.
 - Rollback específico de cada migration está no rodapé do próprio arquivo `.sql`.
+
+## Correções pós-fase (2026-07-31)
+
+Três achados encontrados **depois** do fechamento do código da 5b, todos corrigidos, auditados e deployados. Não alteram o escopo da fase; alteram o que é seguro ligar.
+
+1. **[Bug 08](08-BUG-CANCELAMENTO-ASAAS-NAO-PROPAGA.md) — cancelar assinatura Asaas não cancelava no Asaas.** As duas actions de `manage-billing` chamavam `cancelStripeSubscription` direto sob `if (sub.stripe_subscription_id)`; numa assinatura Asaas essa coluna é `null`, então o provedor nunca era chamado, o banco gravava `canceled` e a cobrança seguia saindo. Corrigido por núcleo puro de roteamento ([billing-cancel-core.ts](../../supabase/functions/_shared/billing-cancel-core.ts), 12 testes) + adapter devolvendo o efeito REAL. Dormente até aqui porque nunca houve assinatura Asaas de cliente pagante.
+2. **Tela de cobrança do lojista levava 403.** `get_organization_billing` era admin-only: owner/gerente real nunca via o card de plano nem o botão de cancelar. Liberada com as duas proteções (guard de org + resposta moldada por papel).
+3. **Vazamento a `anon` fechado pela migration 086** — ver Risco 10 acima.
+
+Ao longo da correção, os gates acharam e fecharam mais quatro consequências: cancelamento pelo lojista não encerrava o acesso (cascata faltando), um `gerente` de uma única unidade podia derrubar a organização inteira (agora exige `owner`), `create_subscription` produzia assinatura incancelável, e falha de leitura da assinatura virava "você não tem plano" na tela.
 
 ## Próxima fase
 
