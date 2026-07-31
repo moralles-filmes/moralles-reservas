@@ -40,7 +40,6 @@ import {
   createAsaasCustomer,
   createAsaasPayment,
   createAsaasSubscription,
-  deleteAsaasSubscription,
   getAsaasPayment,
   getAsaasSubscription,
   refundAsaasPayment,
@@ -49,6 +48,7 @@ import {
   type AsaasCycle,
 } from "./asaas.ts";
 import { centsToAsaasValue } from "./asaas-core.ts";
+import type { CancelEffective } from "./billing-cancel-core.ts";
 import { jsonLog } from "./security.ts";
 
 export type BillingProviderName = "stripe" | "asaas";
@@ -136,7 +136,10 @@ export interface BillingProviderPort {
   createCheckout(params: CreateCheckoutParams): Promise<ProviderResult<{ checkoutId?: string; url: string }>>;
   createOneTimeCharge(params: CreateOneTimeChargeParams): Promise<ProviderResult<{ paymentId: string; paymentUrl?: string }>>;
   createSubscription(params: CreateSubscriptionParams): Promise<ProviderResult<{ subscriptionId: string }>>;
-  cancelSubscription(providerSubscriptionId: string, atPeriodEnd: boolean): Promise<ProviderResult>;
+  /** Devolve o efeito REAL. O caller grava a partir daqui, nunca do que pediu:
+   *  um provedor cuja semântica não bata com `atPeriodEnd` divergiria em
+   *  silêncio, que é o bug 08. */
+  cancelSubscription(providerSubscriptionId: string, atPeriodEnd: boolean): Promise<ProviderResult<{ effective: CancelEffective }>>;
   getSubscription(providerSubscriptionId: string): Promise<ProviderResult>;
   getPayment(providerPaymentId: string, opts?: ProviderReadOptions): Promise<ProviderResult>;
   refundPayment(providerPaymentId: string, amountCents?: number): Promise<ProviderResult>;
@@ -199,7 +202,8 @@ const stripeProvider: BillingProviderPort = {
 
   async cancelSubscription(providerSubscriptionId, atPeriodEnd) {
     const res = await cancelStripeSubscription(providerSubscriptionId, atPeriodEnd);
-    return res.ok ? { ok: true } : { ok: false, error: res.error };
+    if (!res.ok) return { ok: false, error: res.error };
+    return { ok: true, data: { effective: atPeriodEnd ? "at_period_end" : "immediate" } };
   },
 
   async getSubscription(providerSubscriptionId) {
@@ -436,22 +440,22 @@ const asaasProvider: BillingProviderPort = {
     });
   },
 
-  async cancelSubscription(providerSubscriptionId, atPeriodEnd) {
-    return safely<Record<string, unknown>>("cancelSubscription", async () => {
-      if (atPeriodEnd) {
-        // Não existe cancel_at_period_end no Asaas (§9): INACTIVE interrompe
-        // a geração de cobranças futuras mas preserva o registro e as
-        // cobranças já emitidas — o acesso do período pago continua
-        // governado por billing_subscriptions.current_period_end no nosso
-        // banco, não pelo Asaas.
-        const res = await updateAsaasSubscription(providerSubscriptionId, { status: "INACTIVE" });
-        return res.ok ? { ok: true } : { ok: false, error: res.error };
-      }
-      // Cancelamento imediato: DELETE encerra a assinatura E remove as
-      // cobranças pendentes/vencidas em aberto (§9) — só para quando o
-      // cancelamento deve ser instantâneo, sem cobrança residual.
-      const res = await deleteAsaasSubscription(providerSubscriptionId);
-      return res.ok ? { ok: true } : { ok: false, error: res.error };
+  async cancelSubscription(providerSubscriptionId, _atPeriodEnd) {
+    return safely<{ effective: CancelEffective }>("cancelSubscription", async () => {
+      // `atPeriodEnd` é IGNORADO de propósito. Não existe período contratual no
+      // Asaas; nada popula `current_period_end` nessas linhas (os quatro
+      // escritores são todos Stripe) e nenhum evento ou worker viraria
+      // `cancel_at_period_end` em `canceled` — a conta Asaas só assina eventos
+      // PAYMENT_*. Honrar o pedido deixaria o cliente sem cobrança e com acesso
+      // indefinidamente.
+      //
+      // INACTIVE e NÃO DELETE: DELETE encerra a assinatura E remove as cobranças
+      // pendentes/vencidas em aberto (§9), ou seja, cancelar extinguiria a
+      // própria dívida. INACTIVE interrompe a geração futura preservando o
+      // histórico.
+      const res = await updateAsaasSubscription(providerSubscriptionId, { status: "INACTIVE" });
+      if (!res.ok) return { ok: false, error: res.error };
+      return { ok: true, data: { effective: "immediate" } };
     });
   },
 

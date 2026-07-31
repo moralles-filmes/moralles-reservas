@@ -487,14 +487,6 @@ export async function updateAsaasSubscription(
   return { ok: true };
 }
 
-export async function deleteAsaasSubscription(
-  subscriptionId: string,
-): Promise<{ ok: boolean; error?: string }> {
-  const res = await asaasRequest(`/subscriptions/${subscriptionId}`, "DELETE");
-  if (!res.ok) return { ok: false, error: parseAsaasError(res.data, "Falha ao remover assinatura no Asaas.") };
-  return { ok: true };
-}
-
 // ── Checkout (§9) ────────────────────────────────────────────────────────────
 // Página hospedada (não paymentLinks). billingTypes só aceita CREDIT_CARD/PIX.
 
