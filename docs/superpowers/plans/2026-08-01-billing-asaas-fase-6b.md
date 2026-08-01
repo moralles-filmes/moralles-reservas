@@ -3967,7 +3967,7 @@ async function resolveRevenueForOrg(organizationId: string) {
       .eq("organization_id", organizationId).eq("status", "active").maybeSingle(),
     supabase.from("organization_entitlement_overrides").select("id")
       .eq("organization_id", organizationId).eq("feature", "whatsapp")
-      .eq("override_type", "LIFETIME").maybeSingle(),
+      .eq("grant_type", "LIFETIME").eq("enabled", true).is("revoked_at", null).maybeSingle(),
   ]);
 
   return attributeRevenue({
@@ -4030,7 +4030,7 @@ O `resolveRevenueForOrg` toca duas tabelas de outra fase. **Confirme antes de de
 grep -rn "amount_cents\|unit_amount_cents" supabase/migrations/*billing_subscriptions* | head -5
 grep -rn "create table.*organization_entitlement_overrides" -A 20 supabase/migrations/ | head -30
 ```
-Confirme: o nome da coluna de valor em `billing_subscriptions`, e os nomes de `feature`/`override_type` e seus valores (`whatsapp`, `LIFETIME`) em `organization_entitlement_overrides`.
+Confirmado contra o schema real: `billing_subscriptions` **não tem coluna de valor** — o preço vem de `billing_plans.amount_cents` via `billing_plan_id`, e o filtro é `category = 'WHATSAPP_SUBSCRIPTION'`. Em `organization_entitlement_overrides` a coluna é **`grant_type`**, não `override_type`, e o override vivo exige `enabled = true` e `revoked_at is null`.
 
 - [ ] **Step 3: Deploy sem cron**
 

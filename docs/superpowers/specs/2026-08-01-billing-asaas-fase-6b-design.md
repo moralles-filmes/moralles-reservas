@@ -427,7 +427,13 @@ Lembrete **reemite o aviso e incrementa `occurrences`; não cria linha nova.** C
 
 ### 10.6 Os seis `event_type` e o acoplamento por string
 
-`admin_zapi_cycle_due_soon` · `admin_zapi_cycle_due_tomorrow` · `admin_zapi_end_confirmation_required` · `admin_zapi_instance_divergence` · `admin_zapi_cycle_cost_unknown` · `admin_zapi_org_economic_imbalance`
+`admin_zapi_cycle_d7` · `admin_zapi_cycle_d1_action_required` · `admin_zapi_end_confirmation_required` · `admin_zapi_date_review_required` · `admin_zapi_divergence` · `admin_zapi_economic_imbalance`
+
+**Fonte canônica única:** `EVENT_TYPE_BY_ALERT` em [_shared/whatsapp-instance-alerts-core.ts](../../../supabase/functions/_shared/whatsapp-instance-alerts-core.ts). Nenhum produtor emite string fora dela, e a lista não é redigitada em teste nem em documentação executável.
+
+**`admin_zapi_cycle_cost_unknown` NÃO existe** — custo desconhecido não ganha `event_type` próprio nesta fase. Ele é pendência financeira visível no painel (ciclo em `PENDING_REVIEW`) e entra como **motivo do D-1** (`COST_UNKNOWN` em `resolveD1Reasons`), que é quando vira acionável: há uma cobrança chegando. Criar um tipo só porque um valor está `NULL` multiplicaria avisos sem multiplicar decisão.
+
+**`admin_zapi_date_review_required` existe e é enviável.** Instância com `cycle_source = UNKNOWN` não recebe D-7, mantém pendência visível no painel, gera esta ocorrência, recebe **no máximo um lembrete por mês** enquanto a data continuar desconhecida — garantido pelo `dedupe_key` no formato `<YYYY-MM BRT>:<instance_id>`, que abre ocorrência nova a cada mês em vez de reemitir a mesma linha — e tem **todas** as ocorrências abertas resolvidas quando data e âncora forem confirmadas. O texto do aviso não afirma data alguma: ele diz que a data falta.
 
 Cada um exige entrada em `TEMPLATE_BY_EVENT` de `process-billing-notifications` **no mesmo commit e com deploy conjunto**. As duas funções não compartilham nenhum arquivo `_shared/` para esse acoplamento — é só a string. Sem a entrada, as linhas morrem em `failed/unknown_event_type`. É a **quarta ocorrência** do mesmo padrão (já registrado no CLAUDE.md para `process-asaas-invoice-reconcile`, `process-whatsapp-enforcement` e `manage-billing`).
 

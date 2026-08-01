@@ -2,34 +2,43 @@
 // ZERO IMPORTS — `RevenueSource` é replicado como string para não importar
 // whatsapp-instance-revenue-core.ts (nem `import type`, que também quebra o
 // Vite quando o alvo tiver qualquer import futuro).
+//
+// FONTE CANÔNICA ÚNICA dos seis event_type. Nenhum produtor pode emitir string
+// fora daqui, e o teste de acoplamento reprova as duas direções: evento sem
+// template no dispatcher, e evento produzido fora desta lista.
 
 export type AlertType =
   | "CYCLE_DUE_SOON"
   | "CYCLE_DUE_TOMORROW"
   | "END_CONFIRMATION_REQUIRED"
+  | "DATE_REVIEW_REQUIRED"
   | "DIVERGENCE"
-  | "CYCLE_COST_UNKNOWN"
-  | "ECONOMIC_IMBALANCE"
-  // Pendência de PAINEL, sem e-mail: nenhum aviso pode afirmar uma data que
-  // ninguém confirmou (§6.2). Fora de EVENT_TYPE_BY_ALERT de propósito.
-  | "DATE_REVIEW_REQUIRED";
-
-export type NotifiableAlertType = Exclude<AlertType, "DATE_REVIEW_REQUIRED">;
+  | "ECONOMIC_IMBALANCE";
 
 /**
- * ACOPLAMENTO POR STRING com TEMPLATE_BY_EVENT de process-billing-notifications
- * (§10.6). Sem a entrada lá, a linha morre em `failed/unknown_event_type` e o
+ * ACOPLAMENTO POR STRING com TEMPLATE_BY_EVENT de process-billing-notifications.
+ * Sem a entrada lá, a linha enfileirada morre em `failed/unknown_event_type` e o
  * aviso some. Mexer aqui exige mexer lá NO MESMO COMMIT, com deploy conjunto.
- * SEIS entradas — `DATE_REVIEW_REQUIRED` fica fora, e o tipo garante isso.
+ *
+ * SEIS entradas, e não sete: **custo desconhecido não tem event_type próprio**.
+ * Ele é pendência financeira exibida no painel (ciclo em `PENDING_REVIEW`) e
+ * entra como MOTIVO do D-1 (`COST_UNKNOWN` em `resolveD1Reasons`) quando há
+ * algo acionável — criar um tipo só porque um valor está `NULL` multiplicaria
+ * avisos sem multiplicar decisão.
  */
-export const EVENT_TYPE_BY_ALERT: Record<NotifiableAlertType, string> = {
-  CYCLE_DUE_SOON: "admin_zapi_cycle_due_soon",
-  CYCLE_DUE_TOMORROW: "admin_zapi_cycle_due_tomorrow",
+export const EVENT_TYPE_BY_ALERT: Record<AlertType, string> = {
+  CYCLE_DUE_SOON: "admin_zapi_cycle_d7",
+  CYCLE_DUE_TOMORROW: "admin_zapi_cycle_d1_action_required",
   END_CONFIRMATION_REQUIRED: "admin_zapi_end_confirmation_required",
-  DIVERGENCE: "admin_zapi_instance_divergence",
-  CYCLE_COST_UNKNOWN: "admin_zapi_cycle_cost_unknown",
-  ECONOMIC_IMBALANCE: "admin_zapi_org_economic_imbalance",
+  DATE_REVIEW_REQUIRED: "admin_zapi_date_review_required",
+  DIVERGENCE: "admin_zapi_divergence",
+  ECONOMIC_IMBALANCE: "admin_zapi_economic_imbalance",
 };
+
+/** Lista canônica achatada, para quem precisa validar strings soltas. */
+export const CANONICAL_EVENT_TYPES: string[] = Object.keys(EVENT_TYPE_BY_ALERT)
+  .map((k) => EVENT_TYPE_BY_ALERT[k as AlertType])
+  .sort();
 
 export const D7_WINDOW_DAYS = 7;
 
@@ -53,6 +62,9 @@ const REVENUE_NULL_EXPECTED = ["AMBIGUOUS_MULTI_INSTANCE", "LIFETIME_OVERRIDE"];
 /**
  * Ordem fixa: a chave de dedupe do D-1 depende do conjunto, não da ordem — mas
  * a lista exibida ao admin precisa ser estável entre execuções.
+ *
+ * `COST_UNKNOWN` vive aqui, e é o lugar certo dele: custo desconhecido importa
+ * quando há uma cobrança chegando, não como aviso isolado.
  */
 export function resolveD1Reasons(input: D1Input): D1Reason[] {
   const out: D1Reason[] = [];
@@ -123,16 +135,16 @@ export function dedupeKeyEndConfirmation(providerAccessUntil: string): string {
   return `end_confirmation_required:${providerAccessUntil}`;
 }
 
-export function dedupeKeyCostUnknown(cycleStart: string): string {
-  return `cycle_cost_unknown:${cycleStart}`;
-}
-
 /**
- * Uma pendência de data por instância — ela não se repete por ciclo, porque
- * enquanto a data não for confirmada não existe ciclo.
+ * Formato aprovado: `<YYYY-MM BRT>:<instance_id>`.
+ *
+ * O mês na frente é o que produz "no máximo um lembrete por mês enquanto a
+ * data continuar desconhecida": cada mês abre UMA ocorrência nova em vez de
+ * reemitir a mesma linha indefinidamente. Quando data e âncora forem
+ * confirmadas, TODAS as ocorrências abertas da instância são resolvidas.
  */
-export function dedupeKeyDateReview(instanceId: string): string {
-  return `date_review_required:${instanceId}`;
+export function dedupeKeyDateReview(monthBrt: string, instanceId: string): string {
+  return `${monthBrt}:${instanceId}`;
 }
 
 export function dedupeKeyEconomicImbalance(monthBrt: string, hash: string): string {

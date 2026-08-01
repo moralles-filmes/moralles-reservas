@@ -28,15 +28,16 @@ create table if not exists whatsapp_instance_alerts (
   -- ser apagado em cascata; a identidade textual sobrevive no dedupe_key.
   channel_id uuid references whatsapp_channels(id) on delete set null,
 
-  -- SETE tipos no ledger, SEIS event_type no dispatcher:
-  -- DATE_REVIEW_REQUIRED é pendência de PAINEL e não tem e-mail. Nenhum aviso
-  -- pode afirmar uma data que ninguém confirmou — é exatamente o que a spec
-  -- §6.2 proíbe —, então ele existe para ser visto, não enviado. Inventar um
-  -- sétimo event_type abriria acoplamento por string que a spec não previu.
+  -- SEIS tipos, um para cada event_type de EVENT_TYPE_BY_ALERT em
+  -- _shared/whatsapp-instance-alerts-core.ts (fonte canônica).
+  --
+  -- CUSTO DESCONHECIDO NÃO É TIPO: ele é pendência financeira visível no
+  -- painel (ciclo em PENDING_REVIEW) e MOTIVO do D-1, não aviso isolado. Criar
+  -- um tipo só porque um valor está NULL multiplicaria avisos sem multiplicar
+  -- decisão.
   alert_type text not null check (alert_type in (
     'CYCLE_DUE_SOON', 'CYCLE_DUE_TOMORROW', 'END_CONFIRMATION_REQUIRED',
-    'DIVERGENCE', 'CYCLE_COST_UNKNOWN', 'ECONOMIC_IMBALANCE',
-    'DATE_REVIEW_REQUIRED'
+    'DATE_REVIEW_REQUIRED', 'DIVERGENCE', 'ECONOMIC_IMBALANCE'
   )),
   dedupe_key text not null,
 

@@ -8,6 +8,7 @@ import {
   dedupeKeyD1,
   dedupeKeyD7,
   dedupeKeyDateReview,
+  CANONICAL_EVENT_TYPES,
   type D1Input,
 } from "../../supabase/functions/_shared/whatsapp-instance-alerts-core";
 
@@ -25,18 +26,22 @@ function d1(p: Partial<D1Input> = {}): D1Input {
 describe("EVENT_TYPE_BY_ALERT — o acoplamento por string com process-billing-notifications", () => {
   it("os seis event_type são exatamente os da spec §10.6", () => {
     expect(EVENT_TYPE_BY_ALERT).toEqual({
-      CYCLE_DUE_SOON: "admin_zapi_cycle_due_soon",
-      CYCLE_DUE_TOMORROW: "admin_zapi_cycle_due_tomorrow",
+      CYCLE_DUE_SOON: "admin_zapi_cycle_d7",
+      CYCLE_DUE_TOMORROW: "admin_zapi_cycle_d1_action_required",
       END_CONFIRMATION_REQUIRED: "admin_zapi_end_confirmation_required",
-      DIVERGENCE: "admin_zapi_instance_divergence",
-      CYCLE_COST_UNKNOWN: "admin_zapi_cycle_cost_unknown",
-      ECONOMIC_IMBALANCE: "admin_zapi_org_economic_imbalance",
+      DATE_REVIEW_REQUIRED: "admin_zapi_date_review_required",
+      DIVERGENCE: "admin_zapi_divergence",
+      ECONOMIC_IMBALANCE: "admin_zapi_economic_imbalance",
     });
   });
 
-  it("DATE_REVIEW_REQUIRED fica FORA: nenhum e-mail pode afirmar uma data que ninguém confirmou", () => {
-    expect(Object.keys(EVENT_TYPE_BY_ALERT)).not.toContain("DATE_REVIEW_REQUIRED");
-    expect(Object.keys(EVENT_TYPE_BY_ALERT)).toHaveLength(6);
+  it("custo desconhecido NÃO tem event_type próprio — é motivo do D-1, não aviso isolado", () => {
+    expect(CANONICAL_EVENT_TYPES).not.toContain("admin_zapi_cycle_cost_unknown");
+    expect(CANONICAL_EVENT_TYPES).toHaveLength(6);
+  });
+
+  it("CANONICAL_EVENT_TYPES é a lista achatada e ordenada dos mesmos seis", () => {
+    expect(CANONICAL_EVENT_TYPES).toEqual(Object.values(EVENT_TYPE_BY_ALERT).sort());
   });
 });
 
@@ -131,8 +136,12 @@ describe("dedupe", () => {
     expect(dedupeKeyD1("2026-08-10", ["COST_UNKNOWN"])).not.toBe(a);
   });
 
-  it("a pendência de data é uma por instância — sem ciclo, não há cycle_start", () => {
-    expect(dedupeKeyDateReview("in1")).toBe("date_review_required:in1");
+  it("a pendência de data usa <YYYY-MM BRT>:<instance_id> — uma ocorrência por mês", () => {
+    expect(dedupeKeyDateReview("2026-08", "in1")).toBe("2026-08:in1");
+  });
+
+  it("mês seguinte abre ocorrência NOVA em vez de reemitir a mesma linha", () => {
+    expect(dedupeKeyDateReview("2026-09", "in1")).not.toBe(dedupeKeyDateReview("2026-08", "in1"));
   });
 });
 

@@ -319,10 +319,10 @@ const TEMPLATE_BY_EVENT: Record<
   // enquanto billing_notifications_dispatch está OFF.
   //
   // São SEIS entradas para os seis event_type de EVENT_TYPE_BY_ALERT em
-  // _shared/whatsapp-instance-alerts-core.ts. A pendência DATE_REVIEW_REQUIRED
-  // NÃO tem entrada aqui de propósito: nenhum e-mail pode afirmar uma data que
-  // ninguém confirmou.
-  admin_zapi_cycle_due_soon: (d) => ({
+  // _shared/whatsapp-instance-alerts-core.ts, que é a FONTE CANÔNICA. Custo
+  // desconhecido NÃO tem entrada própria: ele é pendência exibida no painel
+  // (ciclo em PENDING_REVIEW) e motivo do D-1, não aviso isolado.
+  admin_zapi_cycle_d7: (d) => ({
     subject: `[interno] Instância Z-API vence em até 7 dias — ${d.orgName}`,
     text: `Uma instância de WhatsApp da organização ${d.orgName} tem cobrança do fornecedor prevista para os próximos 7 dias. Se ela não for mais necessária, cancele no painel da Z-API antes do vencimento — cancelar depois não devolve o ciclo já pago. Detalhes em Plataforma → Instâncias de WhatsApp.`,
     html: wrapHtml("Instância Z-API vence em até 7 dias", [
@@ -331,7 +331,7 @@ const TEMPLATE_BY_EVENT: Record<
       `Detalhes em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
     ]),
   }),
-  admin_zapi_cycle_due_tomorrow: (d) => ({
+  admin_zapi_cycle_d1_action_required: (d) => ({
     subject: `[interno] Instância Z-API vence amanhã e tem pendência — ${d.orgName}`,
     text: `Uma instância de WhatsApp da organização ${d.orgName} vence amanhã e tem pendência registrada (custo desconhecido, divergência aberta, cancelamento não registrado ou receita indefinida). Verifique em Plataforma → Instâncias de WhatsApp antes do vencimento.`,
     html: wrapHtml("Instância Z-API vence amanhã e tem pendência", [
@@ -349,7 +349,7 @@ const TEMPLATE_BY_EVENT: Record<
       `Confirme no painel do fornecedor e registre em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
     ]),
   }),
-  admin_zapi_instance_divergence: (d) => ({
+  admin_zapi_divergence: (d) => ({
     subject: `[interno] Divergência no inventário de instâncias — ${d.orgName}`,
     text: `Há divergência entre o inventário de instâncias e o estado registrado dos canais da organização ${d.orgName}. Nenhuma ação automática foi tomada e nenhum envio foi bloqueado. Revise em Plataforma → Instâncias de WhatsApp.`,
     html: wrapHtml("Divergência no inventário de instâncias", [
@@ -358,16 +358,19 @@ const TEMPLATE_BY_EVENT: Record<
       `Revise em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
     ]),
   }),
-  admin_zapi_cycle_cost_unknown: (d) => ({
-    subject: `[interno] Ciclo fechado sem custo informado — ${d.orgName}`,
-    text: `Um ciclo de instância da organização ${d.orgName} terminou sem custo informado e ficou pendente de revisão. Custo desconhecido não é zero — enquanto ele não for informado, a margem dessa organização fica indefinida. Informe em Plataforma → Instâncias de WhatsApp.`,
-    html: wrapHtml("Ciclo fechado sem custo informado", [
-      `Um ciclo de instância da organização <strong>${d.orgName}</strong> terminou <strong>sem custo informado</strong> e ficou pendente de revisão.`,
-      `Custo desconhecido não é zero — enquanto ele não for informado, a margem dessa organização fica indefinida.`,
-      `Informe em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
+  // Instância com `cycle_source = UNKNOWN`. O texto NÃO afirma data nenhuma —
+  // ele diz justamente que a data falta. Uma ocorrência por mês enquanto a
+  // pendência durar, e o D-7 continua suprimido até a confirmação.
+  admin_zapi_date_review_required: (d) => ({
+    subject: `[interno] Instância sem data de cobrança confirmada — ${d.orgName}`,
+    text: `Uma instância de WhatsApp da organização ${d.orgName} está sem data de cobrança confirmada. Enquanto isso, o sistema não emite o aviso de 7 dias para ela — nenhuma data é inventada. Confirme a data e o dia-âncora em Plataforma → Instâncias de WhatsApp.`,
+    html: wrapHtml("Instância sem data de cobrança confirmada", [
+      `Uma instância de WhatsApp da organização <strong>${d.orgName}</strong> está <strong>sem data de cobrança confirmada</strong>.`,
+      `Enquanto isso, o sistema <strong>não</strong> emite o aviso de 7 dias para ela — nenhuma data é inventada.`,
+      `Confirme a data e o dia-âncora em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
     ]),
   }),
-  admin_zapi_org_economic_imbalance: (d) => ({
+  admin_zapi_economic_imbalance: (d) => ({
     subject: `[interno] Custo de instâncias acima da receita — ${d.orgName}`,
     text: `O custo conhecido das instâncias de WhatsApp da organização ${d.orgName} está acima da receita atribuída. Isto é informação administrativa, não erro: cortesia vitalícia aparece assim por definição. Nada foi bloqueado. Avalie em Plataforma → Instâncias de WhatsApp.`,
     html: wrapHtml("Custo de instâncias acima da receita", [

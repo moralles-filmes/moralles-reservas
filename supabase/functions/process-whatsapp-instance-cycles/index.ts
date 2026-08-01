@@ -27,18 +27,22 @@ import {
   type RevenueAttribution,
 } from "../_shared/whatsapp-instance-revenue-core.ts";
 import {
+  EVENT_TYPE_BY_ALERT,
   resolveD1Reasons,
   shouldEmitD7,
   shouldEmitD1,
   dedupeKeyD7,
   dedupeKeyD1,
   dedupeKeyEndConfirmation,
-  dedupeKeyCostUnknown,
   dedupeKeyDateReview,
   dedupeKeyEconomicImbalance,
   economicImbalanceHash,
   type AlertType,
 } from "../_shared/whatsapp-instance-alerts-core.ts";
+import {
+  resolvePlatformAdminRecipients,
+  enqueueBillingNotification,
+} from "../_shared/billing-notify.ts";
 import {
   detectChannelWithoutInstance,
   detectInstanceDivergences,
@@ -56,6 +60,56 @@ const REMINDER_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
 type StepSummary = { step: string; processed: number; failed: number };
 
 let reqId = "";
+
+/**
+ * Destinatário administrativo, resolvido UMA vez por invocação.
+ *
+ * `resolvePlatformAdminRecipients` faz chamada ao Auth Admin por linha varrida;
+ * resolvê-lo por alerta multiplicaria isso pelo número de alertas do lote sem
+ * mudar a resposta. `undefined` = ainda não resolvido; `null` = resolvido e não
+ * há destinatário.
+ */
+let adminRecipient: string | null | undefined;
+
+async function resolveAdminRecipientOnce(): Promise<string | null> {
+  if (adminRecipient !== undefined) return adminRecipient;
+  const admins = await resolvePlatformAdminRecipients(supabase);
+  adminRecipient = admins.length > 0 ? admins[0] : null;
+  if (!adminRecipient) {
+    jsonLog("error", {
+      reqId,
+      evt: "wa_alert_no_admin_recipient",
+      needsAdminAction: true,
+    });
+  }
+  return adminRecipient;
+}
+
+/**
+ * Enfileira o aviso administrativo do alerta.
+ *
+ * SÓ é chamado quando o ledger diz `created` ou `reminded` — nunca em `seen`.
+ * O índice UNIQUE de `billing_notifications` é PARCIAL e **não deduplica com
+ * `invoice_id` nulo** (CLAUDE.md), e todos os avisos desta fase são sem fatura.
+ * Enfileirar a cada passada do worker criaria uma linha nova por dia para o
+ * mesmo fato — a cadência mensal do lembrete é o que evita isso, e ela vive no
+ * ledger, não na fila.
+ */
+async function enqueueAlertNotification(
+  alertType: AlertType,
+  organizationId: string,
+): Promise<void> {
+  const recipient = await resolveAdminRecipientOnce();
+  if (!recipient) return;
+
+  await enqueueBillingNotification(supabase, {
+    organizationId,
+    eventType: EVENT_TYPE_BY_ALERT[alertType],
+    // Aviso administrativo sobre instância não tem fatura por trás.
+    invoiceId: null,
+    recipient,
+  });
+}
 
 /**
  * Cria o alerta ou incrementa o existente. O ledger é INDEPENDENTE da fila de
@@ -116,7 +170,12 @@ async function upsertAlert(a: {
       });
       return "failed";
     }
-    return error ? "seen" : "created";
+    if (error) return "seen"; // 23505: outra execução criou; ela já enfileirou.
+    // Enfileiramento acoplado à CRIAÇÃO no ledger, num ponto único: caller que
+    // esqueça de enfileirar produziria alerta mudo, e o ledger é quem sabe se
+    // o fato é novo.
+    await enqueueAlertNotification(a.alertType, a.organizationId);
+    return "created";
   }
 
   if (existing.status !== "OPEN") return "seen";
@@ -140,7 +199,9 @@ async function upsertAlert(a: {
     });
     return "failed";
   }
-  return due ? "reminded" : "seen";
+  if (!due) return "seen";
+  await enqueueAlertNotification(a.alertType, a.organizationId);
+  return "reminded";
 }
 
 /**
@@ -564,11 +625,14 @@ async function stepEconomics(today: string): Promise<StepSummary> {
   const s: StepSummary = { step: "economics", processed: 0, failed: 0 };
   const monthBrt = today.slice(0, 7);
 
-  // Pendência de DATA: cycle_source UNKNOWN. Ela NÃO gera e-mail (não há
-  // event_type para ela) — nenhum aviso pode afirmar uma data que ninguém
-  // confirmou. A pendência existe para aparecer no painel e ser resolvida por
-  // `confirm_cycle_date`. Ausência de data NÃO é erro de implantação, NÃO
-  // bloqueia o uso da instância e NÃO gera data padrão.
+  // Pendência de DATA: cycle_source UNKNOWN. O aviso NÃO afirma data nenhuma —
+  // ele diz que a data falta, e o D-7 segue suprimido até a confirmação.
+  // `dedupeKeyDateReview` leva o mês na frente, então cada mês abre UMA
+  // ocorrência nova em vez de reemitir a mesma linha indefinidamente; a
+  // confirmação da data resolve todas as ocorrências abertas da instância.
+  //
+  // Ausência de data NÃO é erro de implantação, NÃO bloqueia o uso da
+  // instância existente e NÃO gera data padrão.
   const { data: unknownDate } = await supabase
     .from("whatsapp_instances")
     .select("id, organization_id")
@@ -583,33 +647,18 @@ async function stepEconomics(today: string): Promise<StepSummary> {
       instanceId: r.id,
       channelId: null,
       alertType: "DATE_REVIEW_REQUIRED",
-      dedupeKey: dedupeKeyDateReview(r.id),
+      dedupeKey: dedupeKeyDateReview(monthBrt, r.id),
       payload: { reason: "cycle_source UNKNOWN" },
     });
     if (res === "failed") s.failed++;
     else s.processed++;
   }
 
-  // Ciclo que terminou sem custo informado.
-  const { data: pending } = await supabase
-    .from("whatsapp_instance_cycles")
-    .select("id, instance_id, organization_id, cycle_start")
-    .eq("status", "PENDING_REVIEW");
-
-  for (const c of pending ?? []) {
-    const res = await upsertAlert({
-      subjectType: "INSTANCE",
-      subjectId: c.instance_id,
-      organizationId: c.organization_id,
-      instanceId: c.instance_id,
-      channelId: null,
-      alertType: "CYCLE_COST_UNKNOWN",
-      dedupeKey: dedupeKeyCostUnknown(c.cycle_start),
-      payload: { cycle_start: c.cycle_start },
-    });
-    if (res === "failed") s.failed++;
-    else s.processed++;
-  }
+  // CUSTO DESCONHECIDO NÃO TEM ALERTA PRÓPRIO nesta fase. O ciclo em
+  // PENDING_REVIEW aparece no painel e o fato entra como MOTIVO do D-1
+  // (`COST_UNKNOWN` em resolveD1Reasons), que é quando ele é acionável — há
+  // uma cobrança chegando. Criar um tipo só porque um valor está NULL
+  // multiplicaria avisos sem multiplicar decisão.
 
   // Desequilíbrio pertence à ORGANIZAÇÃO.
   const { data: all } = await supabase
