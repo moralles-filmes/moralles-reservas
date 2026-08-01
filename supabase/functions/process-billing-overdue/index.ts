@@ -37,11 +37,24 @@ async function holdForReview(
   inv: { id: string; organization_id: string },
   reason: string,
 ): Promise<void> {
+  // `enforcement_hold_reason` tem VOCABULÁRIO FECHADO
+  // (`billing_invoices_hold_reason_chk`, migration 077): INITIAL_BACKFILL,
+  // PRE_GO_LIVE_INVOICE, CORRELATION_AMBIGUITY, VALUE_MISMATCH, MANUAL_REVIEW.
+  // Texto livre viola o CHECK e a retenção não aplica — a coluna existe para
+  // ser enumerável no painel, não para carregar diagnóstico. `MANUAL_REVIEW` é
+  // o valor certo aqui (exige olho humano); o motivo PRECISO da indeterminação
+  // (`MODERN_WITHOUT_LINK`, `SUBSCRIPTION_TERMINAL_STATUS`, …) vai para a
+  // telemetria abaixo, que é onde ele serve para triagem.
+  //
+  // `enforcement_held_at` é obrigatório junto do `hold`
+  // (`billing_invoices_hold_requires_reason_chk`): sem ele o UPDATE inteiro é
+  // recusado.
   const { error: holdErr } = await supabase
     .from("billing_invoices")
     .update({
       enforcement_hold: true,
-      enforcement_hold_reason: `categoria indeterminada: ${reason}`,
+      enforcement_hold_reason: "MANUAL_REVIEW",
+      enforcement_held_at: new Date().toISOString(),
     })
     .eq("id", inv.id)
     .eq("enforcement_hold", false);

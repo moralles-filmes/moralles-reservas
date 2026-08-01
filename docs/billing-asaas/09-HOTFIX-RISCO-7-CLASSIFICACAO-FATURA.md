@@ -130,6 +130,34 @@ O alerta comunica organização, provider, `provider_subscription_id` mascarado,
 
 Consequências obrigatórias: `WHATSAPP_SUBSCRIPTION`, `WHATSAPP_IMPLEMENTATION`, `AI_CREDIT_PACKAGE` e `NEEDS_REVIEW` **nunca** escrevem `billing_status` global; assinatura local cancelada nunca escala automaticamente; cobrança ambígua nunca é promovida a `SYSTEM` por compatibilidade moderna.
 
+## 7.5 Teste de integração do raio de dano — executado ao vivo em 2026-08-01
+
+Quatro fixtures criadas direto no banco (`provider='manual'`, para não mentir sobre existir no Asaas), em **duas organizações sandbox** — nunca `ren-sushi`, nunca `moralles`. Todas com fatura `open` vencida há 15 dias (D+15 → `blocked` pela régua). Worker real invocado pelo mesmo wrapper `trigger_billing_overdue()` que o `pg_cron` usa.
+
+| caso | vínculo | veredito esperado | retida | status da org | aviso |
+|---|---|---|---|---|---|
+| **J1** — o Risco 7 documentado | nenhum | `NEEDS_REVIEW` | ✅ `MANUAL_REVIEW` | `trialing` — **não escalou** | 1 |
+| **J2** — mensalidade da instância | assinatura WhatsApp ativa | `NON_SYSTEM` | não | `trialing` | 0 |
+| **J3** — o caminho descoberto aqui | assinatura SISTEMA **cancelada** | `NEEDS_REVIEW` | ✅ `MANUAL_REVIEW` | `trialing` — **não escalou** | 1 |
+| **J4** — CONTROLE | assinatura SISTEMA **ativa** | `SYSTEM` | não | ✅ **`blocked`** — escalou | 0 |
+
+**O par J1/J4 é a evidência que fecha o argumento:** a mesma fatura vencida, mesmo valor, mesma idade, na mesma régua — bloqueia quando é do sistema e é retida quando não dá para afirmar. Sem o controle J4, "nada escalou" significaria apenas "o worker está quebrado".
+
+**Idempotência (item I):** o worker foi executado duas vezes; os avisos permaneceram em 1 por fatura (UNIQUE `(organization_id, event_type, invoice_id)`), sem transição financeira repetida.
+
+**Limpeza:** as 4 faturas, as 3 assinaturas de apoio, os 2 avisos e o estado da organização de controle foram removidos/restaurados. Estado final conferido: 6 faturas (as originais), 0 retenções, 2 notificações (as originais), nenhuma organização em estado anormal, `ren-sushi` `active`.
+
+### 7.5.1 Defeito encontrado PELO teste, invisível ao teste unitário
+
+A primeira execução classificou os quatro casos corretamente **mas não reteve nenhum**. Causa: o `UPDATE` violava duas constraints da migration 077 e era recusado com `23514`:
+
+- **`billing_invoices_hold_reason_chk`** — `enforcement_hold_reason` tem **vocabulário fechado** (`INITIAL_BACKFILL`, `PRE_GO_LIVE_INVOICE`, `CORRELATION_AMBIGUITY`, `VALUE_MISMATCH`, `MANUAL_REVIEW`) e o código gravava texto livre com o motivo preciso;
+- **`billing_invoices_hold_requires_reason_chk`** — `enforcement_hold=true` exige também `enforcement_held_at` preenchido.
+
+Correção: reason passa a ser `MANUAL_REVIEW` (o valor do vocabulário que significa exatamente "exige olho humano") e `enforcement_held_at` é carimbado; o motivo PRECISO (`MODERN_WITHOUT_LINK`, `SUBSCRIPTION_TERMINAL_STATUS`, …) vai para a telemetria e para o painel, que é onde serve à triagem — a coluna existe para ser enumerável, não para carregar diagnóstico.
+
+Duas lições registradas: (1) o fail-safe funcionou mesmo com o defeito — a falha do `UPDATE` foi logada e **não** relançada, então nenhuma organização escalou e o aviso saiu assim mesmo; (2) **nenhum teste unitário pegaria isto** — a regra violada mora no banco, não no código. É a justificativa concreta para o teste de integração existir.
+
 ## 8. Fora de escopo
 
 - **Bug do `externalReference` acima de 100 caracteres** ([07](07-BUG-EXTERNALREFERENCE-LIMITE.md)) — segue separado. Formato, parser, tamanho, versionamento e compatibilidade histórica **não** são tocados aqui.
