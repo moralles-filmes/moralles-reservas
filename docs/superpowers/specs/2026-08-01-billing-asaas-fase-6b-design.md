@@ -1,6 +1,6 @@
 # Fase 6b — Ciclo de vida da instância de WhatsApp (Z-API), fluxo manual assistido
 
-> **Status: EM ELABORAÇÃO.** Seções A, B e C aprovadas pelo dono. Seção D (validação, segurança, rollout, rollback) pendente de apresentação e aprovação.
+> **Status: COMPLETA.** Seções A, B, C e D aprovadas pelo dono. Pronta para `superpowers:writing-plans`.
 >
 > Antecessora: [Fase 5b](2026-07-27-billing-asaas-fase-5b-design.md) — enforcement por serviço, validado ao vivo em 2026-07-31.
 > Plano do programa: [docs/billing-asaas/01-PLANO-IMPLEMENTACAO.md](../../billing-asaas/01-PLANO-IMPLEMENTACAO.md).
@@ -234,7 +234,20 @@ todayBrt(now) >= provider_due_on
 
 **Não** `>` — com fim exclusivo, `>` deixaria a rolagem um dia atrasada.
 
-O helper puro recebe a data civil de referência (ou clock injetável) **explicitamente**, nunca lê o relógio por conta própria. Testes obrigatórios: antes do vencimento; exatamente no vencimento; depois do vencimento; virada UTC entre 21h e 00h no Brasil; meses de 28, 29, 30 e 31 dias; ano bissexto e não bissexto; reexecução idempotente do worker; concorrência entre duas execuções do worker.
+O helper puro recebe a data civil de referência (ou clock injetável) **explicitamente**, nunca lê o relógio por conta própria. Casos obrigatórios (enumerados, sem contagem resumida — a lista é a especificação):
+
+1. antes do vencimento;
+2. exatamente no vencimento;
+3. depois do vencimento;
+4. virada UTC entre 21h e 00h BRT;
+5. mês de 28 dias;
+6. fevereiro bissexto, 29 dias;
+7. mês de 30 dias;
+8. mês de 31 dias;
+9. preservação do dia-âncora após *clamp* (§6.3);
+10. reexecução idempotente.
+
+**Concorrência não entra aqui.** Duas execuções simultâneas são um fato de banco, não de aritmética de calendário — simular no núcleo puro provaria apenas que o mock foi escrito de acordo. O caso vive na camada de integração (§11.2).
 
 ## 7. Rolagem transacional e ciclos append-only
 
@@ -426,19 +439,42 @@ Cada um exige entrada em `TEMPLATE_BY_EVENT` de `process-billing-notifications` 
 
 > **Não copiar lógica de chamada ao provider para `manage-whatsapp-instances` nem para `process-whatsapp-instance-cycles`.**
 
-As cinco divergências:
+**Vocabulário canônico — cinco tipos, sem sobreposição:**
 
-| Tipo | Fato |
-|---|---|
-| `CHANNEL_WITHOUT_INSTANCE` | Canal `connected` sem instância registrada — **custo invisível**, o mais caro dos cinco: pagamos sem rastro |
-| `INSTANCE_WITHOUT_CHANNEL` | Instância `ACTIVE` sem canal vinculado vivo |
-| `INSTANCE_REF_MISMATCH` | `provider_instance_ref` da instância ≠ identificador presente no canal (§3) |
-| `LIFECYCLE_VS_CHANNEL_STATE` | Estado de lifecycle contradiz o estado do canal |
-| `CYCLE_PROJECTION_MISMATCH` | `whatsapp_instances.current_cycle_*` ≠ ciclo `OPEN` (§7.2) |
+| Tipo | Fato | Pergunta que ele faz |
+|---|---|---|
+| `CHANNEL_WITHOUT_INSTANCE` | Canal ativo sem instância registrada | "Estou pagando algo que não está no inventário?" — **custo invisível**, o mais caro dos cinco |
+| `PAYING_WITHOUT_CHANNEL` | Instância `ACTIVE` sem canal vinculado vivo | "Estou pagando por algo que ninguém usa?" |
+| `INSTANCE_REF_MISMATCH` | `provider_instance_ref` ≠ identificador presente no canal (§3) | "O inventário aponta para a instância certa?" |
+| `LIFECYCLE_VS_CHANNEL_STATE` | Instância `ACTIVE` com canal persistentemente **não** `connected` | "O cliente perdeu o WhatsApp?" |
+| `ALIVE_AFTER_END` | `lifecycle_state = ENDED` ou `provider_access_until` vencido, e o canal segue vivo | "O encerramento aconteceu de verdade lá fora?" |
 
-**Ajuste semântico obrigatório em `LIFECYCLE_VS_CHANNEL_STATE`:** canal desconectado **não é divergência por si só** — o cliente pode ter derrubado o celular, e isso é rotina operacional, não inconsistência de cadastro. Vira divergência quando **persiste além de um limiar** e contradiz o lifecycle (instância `ACTIVE` com canal caído há muito tempo; instância `ENDED` ou com `provider_access_until` vencido e canal ainda `connected`).
+**Decisões de vocabulário registradas:**
 
-**Nenhuma divergência gera ação automática.** Todas geram linha no ledger. Não há cancelamento automático, desconexão automática ou correção automática de cadastro nesta fase.
+- `PAYING_WITHOUT_CHANNEL` substitui o nome anterior `INSTANCE_WITHOUT_CHANNEL` — diz a consequência, não a topologia.
+- `ALIVE_AFTER_END` foi **separado** de `LIFECYCLE_VS_CHANNEL_STATE`, que antes acumulava os dois sentidos. São perguntas operacionais diferentes: uma é sobre o cliente, a outra é sobre o fornecedor e sobre custo que deveria ter cessado. Manter juntas era exatamente a sobreposição que o vocabulário precisa eliminar.
+- `CHANNEL_DOWN_WHILE_PAYING` **não existe** nesta spec e não deve ser criado — a condição é `LIFECYCLE_VS_CHANNEL_STATE`.
+- `CYCLE_PROJECTION_MISMATCH` **não é divergência** e sai desta tabela: `whatsapp_instances.current_cycle_*` ≠ ciclo `OPEN` é violação de invariante interno (§7.2), não desencontro com o mundo. Vira falha de consistência com `needsAdminAction: true` na telemetria do worker, no passo 5 (§10.2), sem entrar no vocabulário de divergência.
+
+**Limiar de `LIFECYCLE_VS_CHANNEL_STATE`:**
+
+Canal desconectado **não é divergência por si só** — o cliente pode ter derrubado o celular, e isso é rotina operacional. Vira divergência quando **todas** as condições valem:
+
+1. `lifecycle_state = ACTIVE`;
+2. estado do canal persistentemente diferente de `connected`;
+3. **último estado conhecido**, com idade suficiente — status ausente ou nunca sincronizado **não** é interpretado como desconectado há sete dias;
+4. sem explicação administrativa já registrada;
+5. o sétimo dia **completo** transcorrido.
+
+`LIFECYCLE_CHANNEL_DIVERGENCE_DAYS = 7` — constante única em núcleo puro, documentada, **jamais repetida em outro arquivo** e **sem `platform_flag` própria nesta fase**. Cálculo por data/hora consistente com clock injetável nos testes.
+
+O valor é **parâmetro operacional inicial, não verdade comercial**: sete dias é *baseline* prudente enquanto não há histórico de estabilidade do Ren Sushi. Revisão futura exige spec própria com evidência, não ajuste no código.
+
+Desconexão **abaixo** do limiar pode aparecer como informação no painel, mas **não** abre alerta lógico de divergência.
+
+**Resolução, para o alerta não oscilar:** só por evidência persistida de canal `connected` novamente, ou por administrador que resolva/dispense com motivo. A action `test` manual atualiza o estado observado e a próxima avaliação do worker resolve a divergência.
+
+**Nenhuma divergência gera ação automática.** Nenhuma altera `lifecycle_state`, nenhuma cancela instância, nenhuma bloqueia envio, e **nenhuma afirma que a Z-API continua cobrando** — todas pedem revisão. Todas geram linha no ledger.
 
 ### 10.8 Desequilíbrio econômico pertence à organização
 
@@ -481,6 +517,231 @@ Ambas as entradas entram em `supabase/config.toml` **antes** do primeiro deploy,
 
 ---
 
-## Seções pendentes
+## 11. Validação, segurança, rollout e rollback (Seção D — aprovada)
 
-- **D** — validação em três camadas (interna executável hoje; leitura do fornecedor ao vivo contra o canal existente, sem escrita; escrita no fornecedor declarada **inexecutável** com protocolo de evidência para a primeira ocorrência real), segurança/RLS, gates `saas-shield-br`, checklist de redeploy, rollout e rollback.
+### 11.0 A prova de reconstrução do banco, e o que ela mudou
+
+Antes de decidir onde os testes de integração rodam, a spec exigia provar se o histórico de migrations reconstrói o banco. **A prova foi executada.** Resultado, com o método de cada afirmação:
+
+| Verificação | Resultado | Como foi obtido |
+|---|---|---|
+| Tabelas de produção criadas por migration | **48 de 48** | `information_schema.tables` do projeto real × `create table` extraído dos 112 arquivos. As 49 declaradas menos `admin_users`, dropada em migration |
+| Tabela criada fora de migration (Studio/dashboard) | **Nenhuma** | mesmo cruzamento |
+| Versões duplicadas ou faltando | **Nenhuma** — 112 arquivos, 112 linhas em `schema_migrations` | `list_migrations` × nomes de arquivo |
+| Dados de produção embutidos em migration | **Nenhum** — zero UUID literal | varredura por literal UUID |
+| **URL do projeto de produção embutida em migration** | **13 arquivos** | `grep` por `gbabxcrntkwgblgqsiit` |
+| `create extension pg_net` | **Ausente**, embora 13 migrations usem `net.http_post` | `grep` |
+| Vault (`vault.create_secret`, `vault.decrypted_secrets`) | Assumido presente **e semeado** | `grep` |
+
+**A boa notícia é estrutural:** o schema é integralmente derivado de migrations. Não há a dívida clássica de objeto criado no Studio e nunca versionado.
+
+**O bloqueio é outro, e é mais sério do que "as migrations talvez não subam":**
+
+```sql
+project_url text := 'https://gbabxcrntkwgblgqsiit.supabase.co';
+```
+
+Os *wrappers* `trigger_*` de `pg_cron` **embutem a URL de produção**. Um banco local ou de staging reconstruído por este histórico, com `pg_cron` ativo, agenda jobs que fazem `POST` **nas Edge Functions de produção**. A reconstrução não é apenas incerta — **executá-la como está é perigoso**. Some-se a isso: `pg_net` é assumido pré-instalado, e o Vault é assumido semeado com `internal_api_key`, que num banco novo não existe.
+
+**Veredito:** `SCHEMA_REBUILD_LIKELY_OK / EXECUTION_UNVERIFIED / UNSAFE_AS_IS`.
+
+*Unverified* é literal: não há Supabase CLI, Docker nem `psql` na máquina de trabalho, então `supabase db reset` não foi executado. A prova acima é estática e por comparação com o banco real — ela é forte sobre *o que o histórico contém* e silenciosa sobre *se ele roda de ponta a ponta*.
+
+**Isto não é resolvido dentro da Fase 6b.** Parametrizar `project_url`, declarar `pg_net` e semear o Vault de teste é frente estrutural própria — "*baseline* reproduzível de banco" — com seu próprio ciclo de spec. Tentar consertar de passagem aqui expandiria a fase para dentro de treze migrations já aplicadas em produção.
+
+### 11.1 Camada 1 — núcleos puros, executável hoje no CI
+
+Zero dependência de banco, de rede e de provedor. Grupos por responsabilidade:
+
+**A. Rolagem de calendário** — os dez casos enumerados em §6.4. Concorrência **não** pertence a este grupo.
+
+**B. `resolveD1Reasons`** — retorno determinístico; códigos estáveis; sem duplicação; **nenhum motivo ⇒ lista vazia** (é o que torna o D-1 condicional, §10.5); problema resolvido entre D-7 e D-1 elimina o alerta; `GRACE_PERIOD` **não** vira cancelamento automático; `CANCELLATION_REQUESTED` gera motivo próprio; override expirando considera data civil correta; múltiplos motivos mantêm ordem definida.
+
+**C. Receita e margem (§7.3)** — `SUBSCRIPTION_SOLE_INSTANCE`; `AMBIGUOUS_MULTI_INSTANCE`; `LIFETIME_OVERRIDE`; `NO_ENTITLEMENT`; **receita `NULL` ≠ receita zero**; percentual **não aplicável** quando a receita é zero; percentual **pendente** quando a receita é `NULL`; margem consolidada da organização sem duplicar receita.
+
+**D. Dedupe (§10.4)** — `cycle_d7`, `cycle_d1`, `end_confirmation_required`, `date_review_required`, `divergence`, `economic_imbalance`; hash econômico determinístico; **ordem diferente das mesmas instâncias produz o mesmo hash**; mudança material de composição produz hash diferente; campo volátil não altera o hash.
+
+**E. Divergências (§10.7)** — os cinco tipos canônicos, incluindo o limiar de sete dias com clock injetável e o caso "status ausente ou nunca sincronizado **não** conta como sete dias desconectado".
+
+**F. Simulador Partner (§10.10)** — preço-alvo obrigatório; zero e negativo recusados; cenário não altera custo real; cálculo de economia; ponto de equilíbrio; nenhuma persistência; rótulo de simulação explícito.
+
+### 11.2 Camada 1b — integração com banco, **nunca contra produção**
+
+Prova o que teste unitário não alcança, porque **a regra vive no banco**. Foi exatamente o que o hotfix do Risco 7 demonstrou: a classificação estava certa, e a retenção não persistia porque o `UPDATE` violava um `CHECK`. Nenhum mock teria pego.
+
+**Candidatos:** `UNIQUE (instance_id, cycle_start)` · no máximo um ciclo `OPEN` por instância · `UNIQUE (subject_type, subject_id, alert_type, dedupe_key)` do ledger · atomicidade da RPC de rolagem · duas rolagens simultâneas · `FORCE RLS` · `authenticated` sem leitura · `anon` sem leitura · `anon`/`authenticated` sem `EXECUTE` na RPC · `service_role` com `EXECUTE` · integridade cross-tenant · transições de lifecycle (§4) · *constraints* de custo, datas e status · requisitos de `enforcement_hold`, se alguma estrutura compartilhada for usada.
+
+**Todo teste negativo carrega controle positivo** — sem ele, "nada aconteceu" passa por sucesso, e uma EF quebrada é aprovada como se fosse defesa funcionando:
+
+| Negativo | Controle positivo obrigatório |
+|---|---|
+| `authenticated` não lê | `service_role` lê |
+| `anon` não executa a RPC | `service_role` executa |
+| segunda rolagem simultânea não cria ciclo | rolagem legítima cria |
+| *subject* duplicado é rejeitado | combinação diferente é aceita |
+| instância de outra organização é rejeitada | instância coerente é aceita |
+
+Limpeza em `teardown`/`finally`, **mesmo com falha de assertion**.
+
+**Ambiente, por ordem de preferência:** (1) Supabase local descartável reconstruído pelas migrations; (2) projeto Supabase separado de teste/staging; (3) banco temporário criado para o job; (4) roteiro manual em produção — só para evidência inalcançável nos anteriores.
+
+**Consequência direta de §11.0:** a opção (1) está **bloqueada** enquanto a URL de produção estiver embutida nos *wrappers*, e a máquina de trabalho não tem CLI nem Docker. Portanto, nesta fase:
+
+- os grupos de §11.1 rodam **normalmente no CI**;
+- os testes de §11.2 nascem **escritos e marcados `ENVIRONMENT_BLOCKED`**, com o bloqueio nomeado — não são silenciados nem apagados;
+- validação de migration e ACL roda em banco descartável ou ambiente isolado, quando existir;
+- eles saem de `ENVIRONMENT_BLOCKED` quando a frente do *baseline* reproduzível entregar o ambiente, sem reabrir esta spec.
+
+### 11.3 Proibição explícita: produção não é ambiente de teste
+
+**Teste de integração com fixtures em produção não vira rotina da suíte.** O teste do Risco 7 foi intervenção pontual, de alto risco financeiro, explicitamente autorizada, acompanhada e limpa. **Ter funcionado não transforma produção em ambiente permanente de testes.**
+
+Razões, registradas para que a decisão não seja reaberta por conveniência: falha de *cleanup* deixaria fixture administrativa; teste concorrente colidiria com worker real; `FORCE RLS`, cron, *triggers* e notificações produziriam efeito não previsto; id ou organização de teste apareceria no painel; alteração futura no código tornaria destrutivo um teste hoje seguro; o CI não deve possuir credencial de produção capaz de criar e remover dados; e **sucesso na limpeza não prova ausência de efeito colateral** em log, alerta, auditoria ou job concorrente.
+
+**Exceção — validação pontual em produção.** Só com **todos** os critérios satisfeitos: não existir ambiente alternativo capaz de provar o comportamento; ser necessária para um GO operacional; haver autorização explícita **para aquela execução específica**; usar apenas organizações *sandbox* identificadas; **Ren Sushi e Moralles nunca como fixture**; *snapshot* prévio dos registros envolvidos; avaliação dos cron e workers concorrentes; registro dos ids das fixtures; *cleanup* determinístico; auditoria posterior; **nenhuma** chamada externa ao provedor; **nenhum** envio de e-mail ou mensagem; **nenhuma** alteração de billing real; **nenhuma** criação ou cancelamento de instância.
+
+**Nunca acionada pelo CI, nunca automática em merge ou deploy.**
+
+### 11.4 Camada 2 — leitura do fornecedor, ao vivo
+
+Executável hoje contra o canal existente do Ren Sushi, **usando exclusivamente os caminhos que já existem**: `manage-channels` action `test` e `whatsapp-health`, acionados por humano. **Nenhuma integração externa nova é escrita nesta fase.**
+
+**Precisão obrigatória de linguagem — não é "zero escrita" em termos absolutos.** A action `test` pode atualizar dados **locais** já previstos pelo fluxo (status, `last_error`, `last_tested_at`). O correto é:
+
+- **zero escrita no fornecedor**; zero criação, alteração ou cancelamento na Z-API;
+- leitura ativa do provedor pelo caminho existente;
+- eventual atualização **local** dos campos já previstos pelo fluxo de teste;
+- nenhuma implementação nova de integração externa.
+
+**Registro obrigatório:** executor · data e hora · action utilizada · `provider_instance_ref` esperado · identificador legado lido, **mascarado** · status antes · status depois · veredito · campos locais alterados pelo teste · confirmação de ausência de escrita no provedor.
+
+**Nunca registrar** token, *client token* ou URL contendo segredo.
+
+**`INSTANCE_REF_MISMATCH` — regra de manuseio.** A comparação entre `provider_instance_ref` e o identificador dentro de `credentials` continua permitida **apenas** no caminho administrativo autorizado, e: não copiar o segredo nem o objeto `credentials` inteiro; extrair somente o identificador necessário; **não escrever de volta automaticamente**; **não escolher silenciosamente qual referência está correta**; divergência exige revisão humana; correção exige motivo, operador e auditoria; e a referência operacional nova **não substitui** o identificador legado da mensageria antes da 6a.
+
+### 11.5 Camada 3 — escrita no fornecedor: `PROVIDER_WRITE_VALIDATION_NOT_EXECUTABLE_IN_PHASE_6B`
+
+Não há *sandbox* de parceiro; o *trial* de dois dias vale só na primeira instância da conta, e a conta já tem instância; criar instância real custa dinheiro e é proibido antes de pagamento confirmado; cancelamento só se prova cancelando algo em uso.
+
+**Declarado não executável nesta fase:** criar instância no provedor · contratar instância · observar cobrança real de instância nova · cancelar instância real · confirmar fim de acesso no provedor · validar *trial* de primeira instância · validar eventual preço Partner · validar alteração automática de vencimento no fornecedor.
+
+Isso é **limitação conhecida**, registrada com o status acima. **Não marcar como `FAILED`** — falha sugere defeito a corrigir; aqui não há o que corrigir, há um ambiente que não existe.
+
+Esta declaração é a correção direta do erro da Fase 5, onde o roteiro de *sandbox* foi escrito e só depois se descobriu inexecutável no provedor. **A limitação é declarada antes, não descoberta depois.** E o desenho já assume que o fornecedor não é observável: é por isso que o vencimento é fato corrigível com `cycle_source` (§6.2) e que a confirmação de encerramento é humana (§8.2).
+
+### 11.6 Protocolo da primeira ocorrência real
+
+A primeira criação e o primeiro cancelamento reais **são validações operacionais obrigatórias, com checklist e GO/NO-GO** — não operação comum.
+
+**Criação:** autorização e pagamento confirmados · **Fase 6a concluída** · data e hora · operador · organização e unidade · provedor · custo informado · vencimento observado · data e âncora cadastradas · **previsão do sistema × resultado real** · divergências · correções · evidências sanitizadas · confirmação de que nenhum segredo entrou no documento.
+
+**Cancelamento:** solicitação administrativa · motivo · `provider_access_until` esperado · data real de encerramento · cobrança final observada · comportamento do ciclo · abertura de `END_CONFIRMATION_REQUIRED` · confirmação humana no provedor · transição para `ENDED` · **previsão × ocorrido** · correções.
+
+### 11.7 Segurança e RLS
+
+`FORCE RLS` sem policies de acesso direto de tenant · acesso administrativo só por Edge Function · projeção por **lista explícita de colunas** · `organization_id` obrigatório nas três tabelas · validação cross-tenant server-side · `SECURITY DEFINER` · `search_path` explícito · revogação de `PUBLIC`, `anon` e `authenticated` · `grant` somente a `service_role` · **allowlist de ACL atualizada no mesmo PR**.
+
+**Ajuste sobre `search_path`:** `set search_path = public` pode ser insuficiente se a função tocar extensão ou schema auxiliar. Conferir o padrão real do projeto e usar o **menor `search_path` explícito necessário**. `search_path` implícito é proibido.
+
+A migration revoga **tanto `PUBLIC` quanto grants diretos** — é o defeito que originou o hotfix de ACL da [085](../../../supabase/migrations/20260730160000_085_harden_public_function_acl.sql). Função nova em `public` nasce executável por `anon` pelo grant implícito do `CREATE FUNCTION`.
+
+**O que `secret-hunter` precisa provar** (o contrato negativo de §0.3 é verificável, não declaratório): `whatsapp_instances` sem coluna de token · `whatsapp_instance_cycles` sem segredo · `whatsapp_instance_alerts` sem e-mail duplicado · log sem `credentials` · payload de erro sanitizado · `provider_instance_ref` tratado como identificador operacional · nenhum arquivo novo acessando credenciais além do reaproveitamento administrativo aprovado em §11.4 · **o worker não importa cliente Z-API** · **o worker não faz `fetch` externo**.
+
+### 11.8 Gates `saas-shield-br`
+
+`migration-validator` · `rls-auditor` · `tenant-isolation-auditor` · `identity-access-auditor` · `secret-hunter` · `integration-reliability-auditor`.
+
+**Resultados apresentados individualmente** — "gates verdes" não é relatório. *Finding* alto ou crítico é **NO-GO**. *Finding* médio exige correção **ou** aceite explícito com justificativa e *follow-up* nomeado.
+
+### 11.9 Ordem exata de migration, deploy, validação, backfill e cron
+
+O acoplamento por `event_type` (§10.6) determina a ordem: **dispatcher e templates primeiro, produtor depois.** Como `billing_notifications_dispatch` está OFF, não haverá envio — mas `unknown_event_type` ainda precisa ser evitado, porque marca a linha como `failed` e mata o aviso.
+
+1. **Migrations** (`supabase db push` — nunca SQL colado no Studio);
+2. **Validação de schema, grants e RLS** aplicados;
+3. `process-billing-notifications` **com os seis templates novos**;
+4. `manage-whatsapp-instances`;
+5. `process-whatsapp-instance-cycles`;
+6. **Validações de autorização** nas actions administrativas;
+7. **Painel** `/platform/instancias-whatsapp`;
+8. **Backfill do Ren Sushi** (§11.10);
+9. **Conferência dos dados** cadastrados;
+10. **Execução manual controlada do worker**;
+11. **Inspeção do ledger e dos ciclos** gerados;
+12. **Criação e agendamento do cron** (`10 12 * * *` UTC);
+13. Observação diária;
+14. Observação de um ciclo completo.
+
+**Migration antes das Edge Functions**, sempre: coluna ainda inexistente vira 400 do PostgREST e derruba gate *fail-closed* — foi o que aconteceu com `manage-channels`. E **o cron só existe depois** que worker e dispatcher estão publicados e o worker já rodou uma vez sob observação humana.
+
+**Checklist de redeploy (CLAUDE.md, mesmo PR):** núcleos puros novos → `process-whatsapp-instance-cycles` e `manage-whatsapp-instances`. Se algum consumir `billing-notify.ts`, entra na linha dele. Nenhum `_shared/` existente é alterado nesta fase; se virar necessário, a linha correspondente é atualizada no mesmo PR.
+
+### 11.10 Backfill do Ren Sushi
+
+Nasce assim, e **não é cadastrado logo após publicar o painel** — só depois de validados RLS, actions administrativas, *constraints*, worker sem registros, cron ainda inexistente, estado das flags e ausência de chamada externa:
+
+- `lifecycle_state = ACTIVE`;
+- `cycle_source = UNKNOWN` enquanto a data não for confirmada;
+- `provider_due_on` **ausente**;
+- alerta `DATE_REVIEW_REQUIRED` aberto;
+- custo real informado, se conhecido;
+- `revenue_source = LIFETIME_OVERRIDE`, `customer_revenue_cents = 0`;
+- **margem negativa visível** — é o custo conhecido de uma decisão comercial (§10.8), não anomalia;
+- nenhuma criação no provedor · nenhuma alteração no canal existente · nenhuma mudança de entitlement.
+
+Só **depois** de confirmar data e âncora: `cycle_source = ADMIN_CONFIRMED`, ciclo `OPEN` coerente, custo congelado, e alertas de ciclo habilitados para avaliações futuras.
+
+### 11.11 Rollout: por que não há flag própria
+
+**Decisão: a Fase 6b não cria flag própria.** A fase não altera envio ao cliente, não altera `organizations.billing_status`, não altera entitlement, não chama o provedor automaticamente, não cria nem cancela instância — e o cron pode ser desagendado na hora. Criar flag agora aumentaria a quantidade de controles sem consumidor duradouro, **na mesma fase que remove três flags `zapi_auto_*` nascidas sem automação end-to-end** (§9).
+
+**Freio operacional aprovado, em ordem:** desagendar `process-whatsapp-instance-cycles` → manter tabelas e registros intactos → impedir novas ações administrativas sensíveis, se o defeito estiver nelas → corrigir o código → redeploy → **reagendar somente após novo GO**.
+
+**Duas proibições de flag indireta:**
+
+- **Não usar `billing_notifications_dispatch` como flag da fase.** Ela controla apenas o envio de e-mail; ledger e painel funcionam com ela OFF.
+- **Não condicionar cálculo ou persistência de ciclo a `whatsapp_service_enforcement`.** Aquela flag controla consequência operacional da 5b, não inventário nem custo da 6b.
+
+Estado das flags ao fim da fase, inalterado: `whatsapp_service_enforcement` OFF · `whatsapp_implementation_flow` OFF · `whatsapp_subscription_checkout` OFF · `billing_notifications_dispatch` OFF · Asaas em *sandbox*.
+
+### 11.12 Rollback
+
+Desagendar o cron é o freio de primeira linha — efeito imediato, sem deploy. Além dele:
+
+- desabilitar temporariamente ações sensíveis no painel por deploy, se o defeito estiver nelas;
+- **preservar todas as linhas para auditoria**;
+- **não apagar ciclos ou alertas para "voltar ao verde"**;
+- **não alterar lifecycle diretamente por SQL**;
+- não desfazer migrations destrutivamente em produção sem análise;
+- tabelas aditivas ficam instaladas mesmo se a interface for retirada.
+
+**Regra herdada do Risco 7: NO-GO não é corrigido "no dado" para manter o rollout verde.**
+
+**Sobre as três flags `zapi_auto_*` (§9)** — antes de remover, reconfirmar: nenhum consumidor no código · nenhum cron ou RPC lendo os nomes · nenhum *dashboard* externo · nenhuma documentação operacional dependente · nenhuma consulta manual recorrente. *(Verificação atual: o `grep` encontra os nomes apenas na própria migration 061 e em documentação da fase — nenhum consumidor de código.)*
+
+A migration de reversão **não pode depender apenas de comentário no rodapé**: registra os valores anteriores e entrega migration de restauração pronta, ou instrução versionada inequívoca.
+
+### 11.13 O gate da 6a entra como teste
+
+`NEW_REAL_INSTANCE_PROVISIONING_BLOCKED_UNTIL_PHASE_6A` (§2) precisa de teste que **prove** o bloqueio — não confiar em disciplina manual nem em aviso de interface. Mínimo:
+
+| Deve **passar** | Deve **bloquear** |
+|---|---|
+| registro de instância existente / backfill | criação de instância real nova |
+| update administrativo | `AWAITING_PROVISION` inicial |
+| teste de conexão | contorno pelo frontend |
+| rotação de segredo pelo fluxo legado, se já autorizada | contorno por chamada direta à EF |
+| — | ambiguidade entre backfill e criação nova ⇒ **bloqueia** |
+
+E ainda: **nenhuma flag de banco desativa silenciosamente a constante**; o erro retornado é explícito e **não expõe segredo**; e há **controle positivo** — uma ação realmente permitida precisa concluir, provando que o teste não está diante de uma EF quebrada.
+
+---
+
+## Estado da spec
+
+Seções **A, B, C e D aprovadas** pelo dono. A spec está completa para transição a `superpowers:writing-plans`.
+
+Pendências herdadas, fora do escopo desta fase e registradas para não se perderem:
+
+- **Frente estrutural "baseline reproduzível de banco"** (§11.0) — parametrizar `project_url` nos 13 *wrappers* de cron, declarar `pg_net`, semear Vault de teste. Enquanto não existir, os testes de §11.2 permanecem `ENVIRONMENT_BLOCKED`.
+- **Fase 6a** — provisionamento real, criptografia de credenciais e liberação do gate de §2.
