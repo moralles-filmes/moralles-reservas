@@ -34,7 +34,10 @@ serve(async (req) => {
       const since = new Date(Date.now() - 7 * 86400000).toISOString();
       const { data: paidInvoices } = await supabase
         .from("billing_invoices")
-        .select("id, billing_subscription_id, external_reference, purpose")
+        // `provider` e `created_at`: fatos que distinguem fatura LEGADA de
+        // MODERNA no hotfix do Risco 7. Sem eles, uma fatura legada paga sem
+        // vínculo deixaria de desbloquear a organização.
+        .select("id, billing_subscription_id, external_reference, purpose, provider, created_at")
         .eq("organization_id", org.id)
         .eq("status", "paid")
         .gte("paid_at", since);

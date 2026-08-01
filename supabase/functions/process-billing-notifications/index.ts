@@ -227,6 +227,22 @@ const TEMPLATE_BY_EVENT: Record<
       `Concilie manualmente — confira o estado da assinatura no provedor e atualize o registro no painel da plataforma.`,
     ]),
   }),
+  // Aviso INTERNO (hotfix pré-6b do Risco 7): uma fatura vencida não pôde ser
+  // classificada com evidência inequívoca — sem vínculo confiável de plano,
+  // com leitura falhando, com assinatura em status terminal, ou com conflito
+  // entre `purpose` e categoria. Ela foi RETIDA (`enforcement_hold`) e NÃO
+  // escalou; a categoria e o motivo exato ficam nos logs
+  // (`evt: invoice_category_needs_review`) e no painel, nunca no e-mail — o
+  // texto precisa servir aos quatro motivos sem afirmar qual foi.
+  admin_invoice_category_review: (d) => ({
+    subject: `[interno] Fatura retida para conferência — ${d.orgName}`,
+    text: `Uma fatura vencida da organização ${d.orgName} não pôde ser classificada com evidência suficiente e foi retida para conferência. Nenhum acesso foi suspenso e nenhum aviso foi enviado ao cliente por causa dela. Verifique a fatura no painel da plataforma antes de liberar a retenção.`,
+    html: wrapHtml("Fatura retida para conferência", [
+      `Uma fatura vencida da organização <strong>${d.orgName}</strong> não pôde ser classificada com evidência suficiente e foi <strong>retida para conferência</strong>.`,
+      `Nenhum acesso foi suspenso e nenhum aviso foi enviado ao cliente por causa dela.`,
+      `Verifique a fatura no painel da plataforma antes de liberar a retenção.`,
+    ]),
+  }),
   admin_correlation_ambiguity: (d) => ({
     subject: `[interno] Evento de cobrança precisa de conferência — ${d.orgName}`,
     text: `Um evento de cobrança da organização ${d.orgName} precisa de conferência manual antes de qualquer ação automática. Verifique o painel da plataforma e os logs do evento para os detalhes.`,

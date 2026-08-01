@@ -17,7 +17,7 @@ import {
   enqueueBillingNotification,
   hasActiveSystemOverride,
 } from "../_shared/billing-notify.ts";
-import { isSystemInvoice } from "../_shared/billing-category.ts";
+import { resolveInvoiceCategory } from "../_shared/billing-category.ts";
 import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 
 const supabase = createClient(
@@ -44,7 +44,9 @@ serve(async (req) => {
 
     const { data: invoices } = await supabase
       .from("billing_invoices")
-      .select("id, organization_id, due_date, billing_subscription_id, external_reference, purpose")
+      .select(
+        "id, organization_id, due_date, billing_subscription_id, external_reference, purpose, provider, created_at",
+      )
       .eq("status", "open")
       // Fatura retida não gera lembrete: cobrar por e-mail o que o sistema
       // decidiu não escalar é pior que não cobrar. Mesmo filtro e mesmo
@@ -66,7 +68,25 @@ serve(async (req) => {
       // suspenso" é verdade pra fatura de sistema e seria mentira pra fatura
       // da instância de WhatsApp — por isso o texto muda (Task 18), não a
       // decisão de mandar ou não.
-      const isSystem = await isSystemInvoice(supabase, inv);
+      const decision = await resolveInvoiceCategory(supabase, inv);
+
+      // Categoria indeterminada NÃO vira lembrete. Os dois textos disponíveis
+      // afirmam consequências opostas ("seu acesso será suspenso" × "sua
+      // automação será suspensa"), e escolher um sem saber a categoria mente
+      // pro cliente em uma das duas direções. O silêncio aqui não perde a
+      // dívida: `process-billing-overdue` retém a fatura e avisa o admin.
+      if (decision.verdict === "NEEDS_REVIEW") {
+        jsonLog("warn", {
+          reqId,
+          evt: "billing_reminder_skip_needs_review",
+          orgId: inv.organization_id,
+          invoiceId: inv.id,
+          reason: decision.reason,
+        });
+        continue;
+      }
+
+      const isSystem = decision.verdict === "SYSTEM";
 
       // isSystemInvoice devolvendo false NÃO identifica o produto — ela só
       // responde "não é mensalidade de sistema". purpose='implementation'

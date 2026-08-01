@@ -75,7 +75,12 @@ serve(async (req) => {
     // Sync invoices que estão open/draft
     const { data: invoices } = await supabase
       .from("billing_invoices")
-      .select("id, stripe_invoice_id, status, organization_id, billing_subscription_id, external_reference, purpose")
+      // `provider` e `created_at`: fatos do hotfix do Risco 7. Este worker só
+      // varre fatura com `stripe_invoice_id`, que é legada por definição — mas
+      // a classificação não deduz isso do filtro, ela lê o fato.
+      .select(
+        "id, stripe_invoice_id, status, organization_id, billing_subscription_id, external_reference, purpose, provider, created_at",
+      )
       .not("stripe_invoice_id", "is", null)
       .in("status", ["draft", "open"])
       .limit(100);

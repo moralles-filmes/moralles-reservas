@@ -1,0 +1,147 @@
+# Hotfix pré-6b — Risco 7: classificação de fatura e escalada indevida de `billing_status`
+
+> Intervenção **preventiva e estrutural**, autorizada pelo dono em 2026-08-01.
+> **Nenhum dado financeiro precisou ser corrigido.**
+> Risco original: [FASE-5B-RESUMO.md § Risco 7](FASE-5B-RESUMO.md). Bug relacionado: [08](08-BUG-CANCELAMENTO-ASAAS-NAO-PROPAGA.md).
+
+---
+
+## 1. Por que este documento existe
+
+A Fase 5b registrou o Risco 7 como *"o mais grave da lista"* e como **gate a fechar antes de ligar `billing_invoice_ingestion`**. Durante o brainstorming da Fase 6b (2026-08-01), a verificação do estado real do ambiente encontrou a flag **ligada** desde 2026-07-31 15:24 UTC, com o risco ainda aberto.
+
+A investigação subsequente encontrou **um segundo caminho para o mesmo dano, mais alcançável que o documentado**. O dono determinou fechar o risco estruturalmente antes de prosseguir com a Fase 6b.
+
+## 2. O risco documentado (caminho 1)
+
+`isSystemInvoice` ([_shared/billing-category.ts](../../supabase/functions/_shared/billing-category.ts)) resolve em três caminhos. O terceiro — **sem `billing_subscription_id` e sem `plan:<uuid>` no `external_reference`** — devolve `true` por compatibilidade com fatura legada.
+
+Uma renovação de mês 2+ do Asaas nasce sem `checkoutSession` e sem `externalReference`. Se a correlação não resolver a assinatura, a fatura é gravada com os três nulos e passa a ser lida como **fatura de sistema**. A partir daí `process-billing-overdue` escreve `organizations.billing_status='blocked'` em D+6: **o sistema inteiro morre por uma mensalidade de R$149 da automação de WhatsApp.**
+
+## 3. O caminho encontrado nesta investigação (caminho 2) — mais grave
+
+A escada de correlação casa por `provider_subscription_id` **sem filtrar `status`** ([_shared/asaas-billing-events-apply.ts:616-621](../../supabase/functions/_shared/asaas-billing-events-apply.ts)):
+
+```ts
+.from("billing_subscriptions")
+.select("id, organization_id, billing_plan_id")
+.eq("provider", "asaas")
+.eq("provider_subscription_id", providerSubscriptionId)
+.maybeSingle();          // ← nenhum filtro de status
+```
+
+E `process-billing-overdue` **não verifica o status da assinatura em lugar nenhum** ([process-billing-overdue/index.ts:33-47](../../supabase/functions/process-billing-overdue/index.ts)) — ele parte da fatura `open` vencida e pergunta apenas se é de sistema.
+
+Combinados: uma renovação residual de uma assinatura que o **banco local considera cancelada** correlaciona normalmente, classifica-se como sistema (e de fato o plano é de sistema), e **escala a inadimplência de uma organização por uma assinatura que ela já cancelou**.
+
+### 3.1 Por que isso é concreto, e não hipotético
+
+Estado das assinaturas em 2026-08-01:
+
+| assinatura | organização | categoria | status local | `canceled_at` |
+|---|---|---|---|---|
+| `sub_rp0p6o3casfcszuk` | `seu-japa` | SYSTEM_SUBSCRIPTION | `canceled` | **NULL** |
+| `sub_i89jdm76vjl8gxi8` | `seu-japa` | SYSTEM_SUBSCRIPTION | `canceled` | **NULL** |
+| `sub_qn6dpom3q6xr3r8s` | `sandbox-fase-5b-paid` | WHATSAPP_SUBSCRIPTION | `canceled` | 2026-07-31 18:34 |
+
+`status='canceled'` **com `canceled_at` NULL** é a assinatura do [bug 08](08-BUG-CANCELAMENTO-ASAAS-NAO-PROPAGA.md): canceladas localmente *antes* da correção, quando `manage-billing` nunca chamava o provedor. **O estado real dessas duas no Asaas Sandbox é `UNKNOWN`** — não é verificável pelo banco, e o banco local não é prova.
+
+Linguagem obrigatória em painel, documentação e telemetria enquanto não houver verificação manual:
+
+> *"Assinatura cancelada localmente com estado no provider ainda não confirmado."*
+
+### 3.2 Raio de dano
+
+**Limitado a `seu-japa`, que é organização de teste.** `ren-sushi` e `moralles` são inalcançáveis por três motivos independentes: zero assinaturas, zero faturas, e 3 overrides ativos cada — `hasActiveSystemOverride` corta antes de qualquer escalada.
+
+## 4. Auditoria do período com a flag ligada (2026-07-31 15:24 → 2026-08-01)
+
+Todas as consultas abaixo são **somente leitura**, executadas contra o projeto de produção.
+
+| verificação | query (resumida) | resultado |
+|---|---|---|
+| Faturas criadas após a ativação | `count(*) from billing_invoices where created_at >= '2026-07-31 15:24:49+00'` | **0** |
+| Faturas com `ingestion_source` (coluna que só a ingestão preenche) | `count(*) ... where ingestion_source is not null` | **0** |
+| Eventos processados após a ativação | `count(*) from billing_events where processed_at >= '2026-07-31 15:24:49+00'` | **0** |
+| Fatura `open` sem vínculo de plano | `status='open' and billing_subscription_id is null and external_reference not like '%plan:%'` | **1** — legado **Stripe** (`in_1TefEW…`), `due_date` NULL, já documentada como invisível ao worker |
+| Organizações em `past_due`/`blocked` | `select billing_status from organizations` | **0** (3 `active`, 2 `trialing`) |
+| Assinaturas ativas (qualquer categoria) | `status <> 'canceled'` | **0** |
+
+A fatura mais recente do banco é de **2026-07-31 15:13:45 UTC — 11 minutos ANTES** da ativação da flag.
+
+> **Nenhum dado financeiro precisou ser corrigido. A intervenção é preventiva e estrutural.**
+
+Consequência secundária: a flag ficou ligada 8 dias **sem ingerir um único registro**, então sua ativação nunca foi validada por evidência de funcionamento.
+
+## 5. Cobertura de teste antes do hotfix
+
+**`billing-category.ts` não possuía nenhum arquivo de teste.** Os demais núcleos do projeto têm (`billing-delinquency-core`, `billing-correlation-core`, `whatsapp-service-state-core`, `entitlements-core`, …); este não, porque recebe um `SupabaseClient` e nunca coube no padrão de núcleo puro exigido pelo vitest.
+
+O módulo que protege o invariante de maior raio de dano do billing era o único sem teste.
+
+## 6. Contenção aplicada
+
+| campo | valor |
+|---|---|
+| Flag | `billing_invoice_ingestion` |
+| Valor anterior | `true` (desde 2026-07-31 15:24:49 UTC) |
+| Valor novo | `false` |
+| Data/hora | 2026-08-01 (registrado em `platform_flags.updated_at`) |
+| Autorizado por | `morallesfilms@gmail.com` (platform_admin, único administrador da plataforma) |
+| Motivo | Exposição financeira real e **não verificável somente pelo banco**: assinaturas locais `canceled` que podem seguir ativas no Asaas Sandbox, somadas a uma correlação que aceita qualquer status e a workers de inadimplência que não verificam status de assinatura |
+
+**Não alterados** (confirmado por leitura após a mudança): `asaas_enabled` (segue `true`), `whatsapp_service_enforcement` (segue `false`), `billing_invoice_ingestion_since` (segue `"2026-07-31"`), `billing_notifications_dispatch` (segue `false`). Nenhum `UPDATE` em `billing_invoices`, `billing_subscriptions` ou `organizations`.
+
+### 6.1 O que a contenção NÃO interrompe
+
+`asaas_enabled` continua ligada: o webhook segue **recebendo e persistindo** `billing_events`. A trilha de auditoria é preservada; apenas a **criação de fatura** para. Eventos recebidos durante a contenção não podem ser marcados como plenamente aplicados, e a estratégia de reprocessamento precisa ser especificada **antes** da reativação — religar a flag não faz backfill automático do período.
+
+## 7. Correção estrutural
+
+### 7.1 Núcleo puro
+
+Extrair a decisão para um núcleo puro, testável pelo vitest a partir de `src/`, no mesmo contrato dos demais (zero imports de Supabase, Deno, env, provider, rede ou relógio global). O módulo com I/O passa a apenas: buscar fatos → normalizar → chamar o núcleo → aplicar idempotentemente → registrar telemetria e divergência.
+
+Veredito com três valores: **`SYSTEM`**, **`NON_SYSTEM`**, **`NEEDS_REVIEW`**.
+
+### 7.2 Regra de classificação — falha fechada
+
+Para fatura **moderna** (nascida depois do marco de ingestão):
+
+- evidência inequívoca de assinatura de categoria de sistema → `SYSTEM`;
+- evidência inequívoca de categoria não sistêmica → `NON_SYSTEM`;
+- **ausência, conflito ou ambiguidade → `NEEDS_REVIEW`**.
+
+**O default `true` para fatura moderna sem vínculo confiável é removido.**
+
+Não vale como prova isolada: ausência de `billing_subscription_id`; ausência de `checkoutSession`; ausência de `plan:` no `external_reference`; valor da cobrança; "assinatura mais recente"; organização associada; `external_reference` não versionada; status financeiro inferido por compatibilidade.
+
+Compatibilidade legada permanece **apenas** em casos delimitados por fatos objetivos: fatura originada na Stripe, ou anterior ao marco aprovado de ingestão. Nunca como exceção ampla do tipo "se não souber, é sistema".
+
+### 7.3 Assinatura cancelada
+
+A correlação **continua** encontrando a assinatura cancelada — perder o vínculo seria pior. Mas o resultado nunca escala: `NEEDS_REVIEW` (ou categoria conhecida com `enforcement_hold=true`), divergência administrativa registrada, correlação preservada, e **nenhum worker altera `organizations.billing_status` enquanto a revisão estiver pendente**.
+
+O alerta comunica organização, provider, `provider_subscription_id` mascarado, categoria local, status local, evento recebido e ação esperada — **sem secret e sem payload bruto do provedor**.
+
+### 7.4 Invariante, como teste explícito
+
+> **Somente uma obrigação inequivocamente classificada como `SYSTEM` pode escrever ou escalar `organizations.billing_status`.**
+
+Consequências obrigatórias: `WHATSAPP_SUBSCRIPTION`, `WHATSAPP_IMPLEMENTATION`, `AI_CREDIT_PACKAGE` e `NEEDS_REVIEW` **nunca** escrevem `billing_status` global; assinatura local cancelada nunca escala automaticamente; cobrança ambígua nunca é promovida a `SYSTEM` por compatibilidade moderna.
+
+## 8. Fora de escopo
+
+- **Bug do `externalReference` acima de 100 caracteres** ([07](07-BUG-EXTERNALREFERENCE-LIMITE.md)) — segue separado. Formato, parser, tamanho, versionamento e compatibilidade histórica **não** são tocados aqui.
+- **Cancelamento das assinaturas no Asaas** — ação externa com efeito financeiro; só após verificação manual e confirmação explícita.
+- **Reativação da ingestão** — exige nova autorização, precedida do checklist de GO/NO-GO.
+
+## 9. Reativação — não acontece no mesmo passo do hotfix
+
+Checklist de GO/NO-GO a apresentar depois do deploy: testes unitários e de integração verdes · consumidores redeployados · `enforcement_hold` comprovadamente respeitado · fatura de WhatsApp comprovadamente sem efeito no billing global · estado das duas assinaturas no Asaas Sandbox · ausência de duplicidade · telemetria de `NEEDS_REVIEW` · rollback validado · plano de observação · data de corte preservada ou nova estratégia aprovada · estratégia de reprocessamento dos eventos recebidos durante a contenção.
+
+## 10. Rollback
+
+- **Da flag:** `update platform_flags set value='true' where key='billing_invoice_ingestion'`. A ingestão é idempotente por `(provider, provider_event_id)` e por `upsert_open_invoice`. **Ressalva:** com eventos acumulados durante a contenção, religar não é rollback neutro — o plano de retomada precisa declarar o impacto da aplicação em lote.
+- **Do código:** revert do commit + redeploy coordenado dos consumidores confirmados. Sem mudança de schema; `enforcement_hold` e `ingestion_source` preservados; verificação posterior de `billing_status`.
+- **Rollback não é automático diante de alerta ou teste falho** — parar, preservar evidência e apresentar a situação.
