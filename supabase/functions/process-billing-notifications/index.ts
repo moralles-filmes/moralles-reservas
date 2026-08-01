@@ -307,6 +307,75 @@ const TEMPLATE_BY_EVENT: Record<
       `Confira nos logs (<code>evt: asaas_invoice_reconcile_non_collectible_hold</code>) para o status exato antes de qualquer ação.`,
     ]),
   }),
+
+  // ── Fase 6b: calendário e custo da instância Z-API ─────────────────────
+  // Destinatário é SEMPRE platform_admin. O lojista não conhece o ciclo da
+  // Z-API — para ele esse calendário não existe — e mandar o calendário do
+  // FORNECEDOR para o cliente exporia custo interno.
+  //
+  // Texto deliberadamente genérico: TemplateData não carrega instância nem
+  // data, e a spec §10.5 proíbe credencial, token, conteúdo de conversa e dado
+  // pessoal no alerta. O detalhe fica no painel, que é a superfície viva
+  // enquanto billing_notifications_dispatch está OFF.
+  //
+  // São SEIS entradas para os seis event_type de EVENT_TYPE_BY_ALERT em
+  // _shared/whatsapp-instance-alerts-core.ts. A pendência DATE_REVIEW_REQUIRED
+  // NÃO tem entrada aqui de propósito: nenhum e-mail pode afirmar uma data que
+  // ninguém confirmou.
+  admin_zapi_cycle_due_soon: (d) => ({
+    subject: `[interno] Instância Z-API vence em até 7 dias — ${d.orgName}`,
+    text: `Uma instância de WhatsApp da organização ${d.orgName} tem cobrança do fornecedor prevista para os próximos 7 dias. Se ela não for mais necessária, cancele no painel da Z-API antes do vencimento — cancelar depois não devolve o ciclo já pago. Detalhes em Plataforma → Instâncias de WhatsApp.`,
+    html: wrapHtml("Instância Z-API vence em até 7 dias", [
+      `Uma instância de WhatsApp da organização <strong>${d.orgName}</strong> tem cobrança do fornecedor prevista para os <strong>próximos 7 dias</strong>.`,
+      `Se ela não for mais necessária, cancele no painel da Z-API <strong>antes</strong> do vencimento — cancelar depois não devolve o ciclo já pago.`,
+      `Detalhes em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
+    ]),
+  }),
+  admin_zapi_cycle_due_tomorrow: (d) => ({
+    subject: `[interno] Instância Z-API vence amanhã e tem pendência — ${d.orgName}`,
+    text: `Uma instância de WhatsApp da organização ${d.orgName} vence amanhã e tem pendência registrada (custo desconhecido, divergência aberta, cancelamento não registrado ou receita indefinida). Verifique em Plataforma → Instâncias de WhatsApp antes do vencimento.`,
+    html: wrapHtml("Instância Z-API vence amanhã e tem pendência", [
+      `Uma instância de WhatsApp da organização <strong>${d.orgName}</strong> vence <strong>amanhã</strong> e tem pendência registrada.`,
+      `Pode ser custo desconhecido, divergência aberta, cancelamento pretendido e não registrado, ou receita indefinida.`,
+      `Verifique em <strong>Plataforma → Instâncias de WhatsApp</strong> antes do vencimento.`,
+    ]),
+  }),
+  admin_zapi_end_confirmation_required: (d) => ({
+    subject: `[interno] Confirme o encerramento da instância — ${d.orgName}`,
+    text: `O prazo de acesso de uma instância cancelada da organização ${d.orgName} terminou. O sistema NÃO encerrou nada sozinho: confirme no painel do fornecedor se a instância realmente deixou de existir e registre a confirmação em Plataforma → Instâncias de WhatsApp.`,
+    html: wrapHtml("Confirme o encerramento da instância", [
+      `O prazo de acesso de uma instância cancelada da organização <strong>${d.orgName}</strong> terminou.`,
+      `O sistema <strong>não</strong> encerrou nada sozinho — afirmar um encerramento que o fornecedor não fez já custou caro neste projeto.`,
+      `Confirme no painel do fornecedor e registre em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
+    ]),
+  }),
+  admin_zapi_instance_divergence: (d) => ({
+    subject: `[interno] Divergência no inventário de instâncias — ${d.orgName}`,
+    text: `Há divergência entre o inventário de instâncias e o estado registrado dos canais da organização ${d.orgName}. Nenhuma ação automática foi tomada e nenhum envio foi bloqueado. Revise em Plataforma → Instâncias de WhatsApp.`,
+    html: wrapHtml("Divergência no inventário de instâncias", [
+      `Há divergência entre o inventário de instâncias e o estado registrado dos canais da organização <strong>${d.orgName}</strong>.`,
+      `<strong>Nenhuma</strong> ação automática foi tomada e <strong>nenhum</strong> envio foi bloqueado.`,
+      `Revise em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
+    ]),
+  }),
+  admin_zapi_cycle_cost_unknown: (d) => ({
+    subject: `[interno] Ciclo fechado sem custo informado — ${d.orgName}`,
+    text: `Um ciclo de instância da organização ${d.orgName} terminou sem custo informado e ficou pendente de revisão. Custo desconhecido não é zero — enquanto ele não for informado, a margem dessa organização fica indefinida. Informe em Plataforma → Instâncias de WhatsApp.`,
+    html: wrapHtml("Ciclo fechado sem custo informado", [
+      `Um ciclo de instância da organização <strong>${d.orgName}</strong> terminou <strong>sem custo informado</strong> e ficou pendente de revisão.`,
+      `Custo desconhecido não é zero — enquanto ele não for informado, a margem dessa organização fica indefinida.`,
+      `Informe em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
+    ]),
+  }),
+  admin_zapi_org_economic_imbalance: (d) => ({
+    subject: `[interno] Custo de instâncias acima da receita — ${d.orgName}`,
+    text: `O custo conhecido das instâncias de WhatsApp da organização ${d.orgName} está acima da receita atribuída. Isto é informação administrativa, não erro: cortesia vitalícia aparece assim por definição. Nada foi bloqueado. Avalie em Plataforma → Instâncias de WhatsApp.`,
+    html: wrapHtml("Custo de instâncias acima da receita", [
+      `O custo conhecido das instâncias de WhatsApp da organização <strong>${d.orgName}</strong> está <strong>acima</strong> da receita atribuída.`,
+      `Isto é informação administrativa, não erro — cortesia vitalícia aparece assim por definição. <strong>Nada foi bloqueado.</strong>`,
+      `Avalie em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
+    ]),
+  }),
 };
 
 serve(async (req) => {
