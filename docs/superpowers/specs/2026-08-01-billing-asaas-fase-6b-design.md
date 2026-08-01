@@ -1,6 +1,6 @@
 # Fase 6b — Ciclo de vida da instância de WhatsApp (Z-API), fluxo manual assistido
 
-> **Status: EM ELABORAÇÃO.** Seções A e B aprovadas pelo dono. Seções C (worker, alertas, divergência, painel) e D (validação, segurança, rollout) pendentes de apresentação e aprovação.
+> **Status: EM ELABORAÇÃO.** Seções A, B e C aprovadas pelo dono. Seção D (validação, segurança, rollout, rollback) pendente de apresentação e aprovação.
 >
 > Antecessora: [Fase 5b](2026-07-27-billing-asaas-fase-5b-design.md) — enforcement por serviço, validado ao vivo em 2026-07-31.
 > Plano do programa: [docs/billing-asaas/01-PLANO-IMPLEMENTACAO.md](../../billing-asaas/01-PLANO-IMPLEMENTACAO.md).
@@ -338,7 +338,149 @@ Verificações após a remoção: a migration não insere nenhuma das três; nen
 
 ---
 
+## 10. Worker, alertas, divergência e painel (Seção C — aprovada)
+
+### 10.1 Um worker, não vários
+
+`process-whatsapp-instance-cycles`, agendado em **`10 12 * * *` UTC** (09:10 BRT), no padrão obrigatório: `pg_cron` → wrapper `trigger_*` `SECURITY DEFINER` lendo `internal_api_key` do Vault → `pg_net.http_post` com `x-internal-key`.
+
+Um worker e não vários porque os cinco passos leem o mesmo conjunto de instâncias e ciclos: separá-los faria três varreduras da mesma tabela decidindo sobre estados que o passo anterior acabou de mudar.
+
+**Ressalva de UTC, registrada de propósito:** o `pg_cron` agenda em UTC fixo. Hoje o Brasil não tem horário de verão, então `12:10 UTC` = `09:10 BRT`; se o horário de verão voltar, o horário civil desloca e **ninguém será avisado disso pelo sistema**. Isso é aceitável aqui porque **nenhum veredito depende da hora do cron**: toda decisão de data compara contra `todayBrt(now)` ([billing-delinquency-core.ts:12](../../../supabase/functions/_shared/billing-delinquency-core.ts)), então rodar às 09:10 ou às 10:10 BRT muda a hora em que o alerta chega, nunca se ele deve existir. O horário 12:10 e não 12:00 evita colidir com `process-voucher-triggers` (`0 12 * * *`).
+
+### 10.2 Ordem interna e isolamento de falha
+
+```
+1. rolagem dos ciclos vencidos (§7)          ← precede tudo: muda as datas que os passos 2-3 leem
+2. alertas D-7                                (sempre)
+3. alertas D-1                                (condicional — só com motivo)
+4. confirmação de encerramento pendente       (END_CONFIRMATION_REQUIRED, §8.2)
+5. divergências passivas + desequilíbrio econômico por organização
+```
+
+Regras de isolamento, verificáveis em revisão:
+
+- falha em um passo **não** aborta os seguintes;
+- falha em uma instância **não** aborta as demais instâncias do mesmo passo;
+- toda falha loga com `needsAdminAction: true` quando exigir olho humano — o padrão já aplicado no hotfix do Risco 7 ([process-billing-overdue/index.ts:68](../../../supabase/functions/process-billing-overdue/index.ts));
+- o worker responde 200 com o resumo por passo mesmo com falha parcial. `pg_net` é fire-and-forget e não faz retry por status; devolver 500 não recuperaria nada e apagaria o resumo. **O sinal de falha é a telemetria, não o código HTTP.**
+
+### 10.3 Lock: reaproveitado, e explicitamente não é a garantia
+
+Reaproveita o padrão advisory do giftback ([try_giftback_lock](../../../supabase/migrations/20260517110000_giftback_hardening.sql):70) com chave própria: `pg_try_advisory_lock` em função `SECURITY DEFINER`, `revoke all ... from public, anon, authenticated` + `grant execute ... to service_role`, release no `finally`, **falha aberta**.
+
+Registro honesto do que esse lock é e não é: advisory lock é **session-scoped** e não sobrevive de forma confiável ao pooling transaction-mode do PgBouncer em holds de vários segundos — foi exatamente por isso que o lock de conversa usa TTL em coluna e não advisory ([migration 056](../../../supabase/migrations/20260610150000_056_conversation_ai_lock.sql)). Aqui isso é aceitável porque **a correção não depende do lock**: a garantia real é a RPC transacional de rolagem (§7.1) mais `UNIQUE (instance_id, cycle_start)` e `UNIQUE (instance_id) WHERE status = 'OPEN'` (§7.2). Duas execuções simultâneas não podem abrir ciclo duplicado nem com o lock perdido. O lock economiza trabalho; ele não é o invariante.
+
+### 10.4 `whatsapp_instance_alerts` — o ledger
+
+Tabela nova, `FORCE RLS` **sem policies**, lida só via Edge Function — padrão das tabelas administrativas. Não guarda credencial nem payload de provedor.
+
+**Chave de assunto em dois campos, não em `instance_id`:** `subject_type` (`INSTANCE` \| `ORGANIZATION`) + `subject_id`. Alerta econômico pertence à **organização**, e chavear tudo por instância obrigaria a **eleger uma instância arbitrária para representar um desequilíbrio da organização** — o que seria falso e produziria alertas que apontam para o lugar errado. `organization_id` fica denormalizado em todas as linhas (inclusive nas de instância) para escopo de consulta e auditoria; `instance_id` é `NULL` quando `subject_type = 'ORGANIZATION'`.
+
+Campos: `subject_type`, `subject_id`, `organization_id`, `instance_id` (nullable), `alert_type`, `dedupe_key`, `status`, `first_detected_at`, `last_seen_at`, `occurrences`, `last_reminder_at`, `acknowledged_at`/`acknowledged_by`, `resolved_at`/`resolved_by`, `resolution_note`, `payload` (jsonb, sem segredo), `dispatch_enabled_at_enqueue`, timestamps.
+
+`UNIQUE (subject_type, subject_id, alert_type, dedupe_key)`.
+
+**Por que o ledger carrega o próprio tempo e a própria contagem:** verificado no ambiente real — `billing_notifications` **não tem `created_at` nem contador de tentativa**. Hoje não existe telemetria capaz de detectar uma fila de avisos parada. O ledger não repete esse defeito: `first_detected_at`, `last_seen_at`, `occurrences` e `last_reminder_at` são dele, e permitem responder "há quanto tempo isto está aberto sem ninguém olhar" sem depender da fila.
+
+**Ciclo de vida:** `OPEN` → `ACKNOWLEDGED` (admin viu; interrompe o lembrete, não fecha o fato) → `RESOLVED` (o fato deixou de existir, ou o admin resolveu com nota). `SUPERSEDED` quando o fato mudou de forma e virou outro alerta. **Fato que desaparece sozinho é resolvido automaticamente com nota do sistema — nunca apagado.** O histórico de alerta é registro administrativo.
+
+**Dedupe e lembrete, por tipo:**
+
+| Tipo | `dedupe_key` | Reemissão |
+|---|---|---|
+| D-7 | `cycle_start` do ciclo `OPEN` | Nenhuma — um por ciclo |
+| D-1 | `cycle_start` + motivos ordenados | Só se o **conjunto de motivos** mudar |
+| Confirmação de encerramento | `provider_access_until` | Lembrete **mensal** enquanto `OPEN` |
+| Divergência | assinatura do fato divergente | Lembrete **mensal** enquanto o fato persistir |
+| Custo desconhecido | `cycle_start` do ciclo em `PENDING_REVIEW` | Lembrete **mensal** |
+| Desequilíbrio econômico | mês de competência | Um por mês, por organização |
+
+Lembrete **reemite o aviso e incrementa `occurrences`; não cria linha nova.** Cadência mensal e não diária pela mesma razão que descartou o alerta diário na janela dos 7 dias: **aviso diário treina o administrador a ignorar.**
+
+### 10.5 D-7 sempre, D-1 condicional, D-3 não existe
+
+- **D-7** — sempre, um por ciclo. É o alerta que dá tempo de cancelar no painel da Z-API antes da próxima cobrança. Este é o produto da fase.
+- **D-1** — **condicional**: só existe se `resolveD1Reasons(...)` devolver ao menos um motivo (ciclo com custo desconhecido, divergência aberta, cancelamento pretendido e não registrado, receita `NULL` fora dos casos previstos). Sem motivo, silêncio.
+- **D-3 não existe.** Três avisos para a mesma data é a cadência que produz cegueira.
+
+`resolveD1Reasons` é **núcleo puro** — zero imports, importável tanto pela Edge Function quanto por vitest a partir de `src/`. Um único `import` de `esm.sh`, mesmo `import type`, quebra a resolução do Vite e derruba a suíte inteira.
+
+**Destinatário: apenas `platform_admin`.** O lojista não conhece o ciclo da Z-API — para ele, esse calendário não existe — e o aviso da mensalidade dele já existe desde a 5b (`process-billing-reminders`). Mandar o calendário do fornecedor para o cliente seria expor custo interno.
+
+**Conteúdo proibido no alerta:** credencial, token, client token, conteúdo de conversa e dado pessoal do cliente final. O alerta nomeia organização, rótulo interno da instância, data e ação esperada — nada mais.
+
+**Registrado, não escondido:** `resolvePlatformAdminRecipients` para no **primeiro** e-mail utilizável ([billing-notify.ts:101-146](../../../supabase/functions/_shared/billing-notify.ts)). Para aviso administrativo isso é aceitável; deixa de ser no dia em que houver mais de um administrador que precise ser avisado. Fica anotado como limitação conhecida, não como comportamento desejado.
+
+### 10.6 Os seis `event_type` e o acoplamento por string
+
+`admin_zapi_cycle_due_soon` · `admin_zapi_cycle_due_tomorrow` · `admin_zapi_end_confirmation_required` · `admin_zapi_instance_divergence` · `admin_zapi_cycle_cost_unknown` · `admin_zapi_org_economic_imbalance`
+
+Cada um exige entrada em `TEMPLATE_BY_EVENT` de `process-billing-notifications` **no mesmo commit e com deploy conjunto**. As duas funções não compartilham nenhum arquivo `_shared/` para esse acoplamento — é só a string. Sem a entrada, as linhas morrem em `failed/unknown_event_type`. É a **quarta ocorrência** do mesmo padrão (já registrado no CLAUDE.md para `process-asaas-invoice-reconcile`, `process-whatsapp-enforcement` e `manage-billing`).
+
+**Evidência verificada no ambiente real: `billing_notifications_dispatch` está OFF.** Consequência aceita e deliberada: nesta fase o **painel é a superfície viva dos alertas**, e a fila acumula. Por isso o ledger é **independente da fila** — ele registra o alerta mesmo com o dispatcher parado, e grava `dispatch_enabled_at_enqueue = false` para que ninguém leia "não recebi e-mail" como "não houve alerta".
+
+### 10.7 Divergência é passiva; o teste ativo continua onde já está
+
+**O worker nunca chama a Z-API.** Ele compara fatos já presentes no banco. A chamada real ao provedor permanece exclusiva do caminho existente e acionado por humano — `manage-channels` action `test` e `whatsapp-health`.
+
+> **Não copiar lógica de chamada ao provider para `manage-whatsapp-instances` nem para `process-whatsapp-instance-cycles`.**
+
+As cinco divergências:
+
+| Tipo | Fato |
+|---|---|
+| `CHANNEL_WITHOUT_INSTANCE` | Canal `connected` sem instância registrada — **custo invisível**, o mais caro dos cinco: pagamos sem rastro |
+| `INSTANCE_WITHOUT_CHANNEL` | Instância `ACTIVE` sem canal vinculado vivo |
+| `INSTANCE_REF_MISMATCH` | `provider_instance_ref` da instância ≠ identificador presente no canal (§3) |
+| `LIFECYCLE_VS_CHANNEL_STATE` | Estado de lifecycle contradiz o estado do canal |
+| `CYCLE_PROJECTION_MISMATCH` | `whatsapp_instances.current_cycle_*` ≠ ciclo `OPEN` (§7.2) |
+
+**Ajuste semântico obrigatório em `LIFECYCLE_VS_CHANNEL_STATE`:** canal desconectado **não é divergência por si só** — o cliente pode ter derrubado o celular, e isso é rotina operacional, não inconsistência de cadastro. Vira divergência quando **persiste além de um limiar** e contradiz o lifecycle (instância `ACTIVE` com canal caído há muito tempo; instância `ENDED` ou com `provider_access_until` vencido e canal ainda `connected`).
+
+**Nenhuma divergência gera ação automática.** Todas geram linha no ledger. Não há cancelamento automático, desconexão automática ou correção automática de cadastro nesta fase.
+
+### 10.8 Desequilíbrio econômico pertence à organização
+
+`subject_type = 'ORGANIZATION'`. Compara a soma dos custos conhecidos das instâncias da organização no mês contra a receita atribuída (§7.3).
+
+- **`LIFETIME_OVERRIDE` não é erro.** Margem negativa do Ren Sushi é o custo conhecido de uma decisão comercial: aparece rotulada no painel e **nunca** vira alerta de anomalia.
+- Alerta quando: organização com instância `ACTIVE` sem assinatura e sem override (`NO_ENTITLEMENT`), ou receita conhecida menor que custo conhecido fora do caso de override.
+- Receita `NULL` (`AMBIGUOUS_MULTI_INSTANCE`) **não** é desequilíbrio — é dado ausente, e é apresentado como "pendente", nunca como prejuízo.
+
+### 10.9 Painel `/platform/instancias-whatsapp` — três camadas
+
+1. **Rota** sob `/platform/*`, exclusiva de `platform_admin` (`App.tsx`);
+2. **Edge Function** `manage-whatsapp-instances` valida `platform_admin` no JWT, com `verify_jwt = true` explícito em `config.toml`;
+3. **RLS `FORCE` sem policies** nas tabelas da fase — nem `authenticated` lê direto; o acesso é só pela EF.
+
+**Projeção segura, não filtro tardio:** a EF devolve **lista explícita de colunas**, nunca `select("*")` moldado depois. É a lição já paga duas vezes — o vazamento de `billing_email` por privilégio de coluna ([migration 086](../../../supabase/migrations/20260731170000_086_anon_column_grants.sql)) e o molde de `ORG_BILLING_PUBLIC_COLUMNS` em `manage-billing`: campo novo entra por `select("*")` e vaza sozinho.
+
+Conteúdo: ciclo vigente e vencimento, custo, receita atribuída e rótulo da fonte, margem (percentual **derivado**, §7.3), **estimado × realizado**, alertas abertos por assunto, e o simulador do Partner.
+
+**Ações administrativas** — criar e editar instância, corrigir data de ciclo, informar custo, solicitar cancelamento, confirmar encerramento, reconhecer e resolver alerta. Toda ação que altere fato financeiro, data ou estado exige **motivo obrigatório na própria ação**, autoria, valor anterior e valor novo, e gera auditoria. Motivo não é campo opcional preenchido depois.
+
+### 10.10 Simulador do Partner — simulação rotulada, sem preço inventado
+
+Responde "a partir de quantas instâncias o Plano Partner compensa" usando **apenas** custo real registrado nos ciclos e um **preço-alvo do Partner informado pelo administrador no momento da simulação**.
+
+- **Nunca** constante de preço no código, nunca valor "de mercado", nunca estimativa embutida — a Z-API não publicou preço de Partner para nós, e um número inventado viraria base de decisão comercial;
+- rotulado explicitamente como **simulação**, jamais como projeção do sistema;
+- **não escreve nada** — nem instância, nem ciclo, nem alerta.
+
+É o que transforma a decisão do Partner de palpite em conta, que era o item (e) do briefing.
+
+### 10.11 `verify_jwt` — verificação obrigatória antes do deploy
+
+| Função | `verify_jwt` | Por quê |
+|---|---|---|
+| `process-whatsapp-instance-cycles` | **`false`**, entrada explícita | Worker `pg_cron`; sem a entrada, o gateway responde 401 antes do `requireInternalAuth` e o cron silencia — `pg_net` é fire-and-forget |
+| `manage-whatsapp-instances` | **`true`**, entrada explícita | EF de super-admin, defesa em profundidade |
+
+Ambas as entradas entram em `supabase/config.toml` **antes** do primeiro deploy, não depois.
+
+---
+
 ## Seções pendentes
 
-- **C** — worker de ciclo e alertas (D-7 sempre; D-1 condicional; dedupe por `instância + ciclo + tipo`; destinatários só `platform_admin`), detecção de divergência reaproveitando o caminho de status já existente, e painel administrativo (estimado × realizado, decisão do Partner).
 - **D** — validação em três camadas (interna executável hoje; leitura do fornecedor ao vivo contra o canal existente, sem escrita; escrita no fornecedor declarada **inexecutável** com protocolo de evidência para a primeira ocorrência real), segurança/RLS, gates `saas-shield-br`, checklist de redeploy, rollout e rollback.
