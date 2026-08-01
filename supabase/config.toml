@@ -149,3 +149,15 @@ verify_jwt = true
 # requireInternalAuth, cron silencia.
 [functions.process-whatsapp-enforcement]
 verify_jwt = false
+
+# Painel administrativo do inventário de instâncias Z-API (Fase 6b, super-admin).
+# verify_jwt explícito como defesa em profundidade — a EF valida platform_admin
+# por conta própria, e o gateway barra antes.
+[functions.manage-whatsapp-instances]
+verify_jwt = true
+
+# Worker: rolagem de ciclo, alertas e divergências da instância Z-API
+# (pg_cron 12:10 UTC). Obrigatório explicitar — CLI >=2.95 default vira true e
+# o gateway responde 401 antes do requireInternalAuth, cron silencia.
+[functions.process-whatsapp-instance-cycles]
+verify_jwt = false
