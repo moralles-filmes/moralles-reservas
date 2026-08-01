@@ -2827,6 +2827,11 @@ Em `.github/workflows/function-acl-audit.yml`, no job `acl-estatico`, **depois**
 > Rebuild não executado porque o ambiente local não possui Supabase CLI/Docker/psql
 > e migrations com wrappers de `pg_cron` contêm URL de produção, tornando a
 > execução local insegura sem isolamento prévio.
+>
+> **Emenda:** o rebuild também não completaria se o ambiente existisse — o replay
+> reprovou em 2026-07-30 com `42P13 — cannot change return type of existing
+> function` (54 `create or replace function` alterando retorno tabular contra 4
+> `drop function`). Dois bloqueios independentes.
 
 **Desbloqueio:** a frente `BASELINE_REPRODUCIBLE_DATABASE_ENVIRONMENT` entrega o
 ambiente. Nada aqui é reescrito quando isso acontecer — os casos já estão

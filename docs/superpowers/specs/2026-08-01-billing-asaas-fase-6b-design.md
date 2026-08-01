@@ -561,7 +561,13 @@ Antes de decidir onde os testes de integração rodam, a spec exigia provar se o
 
 **A boa notícia é estrutural:** o schema é integralmente derivado de migrations. Não há a dívida clássica de objeto criado no Studio e nunca versionado.
 
-**O bloqueio é outro, e é mais sério do que "as migrations talvez não subam":**
+**Correção de veredito (achada durante a implementação, 2026-08-01).** A tabela acima mede *o que o histórico contém*. Sobre *se ele roda*, a resposta já existia no repositório e esta prova não a alcançou: **o replay foi tentado em 2026-07-30 e falhou.**
+
+> `42P13 — cannot change return type of existing function` — **54 migrations usam `create or replace function` para alterar retorno tabular contra apenas 4 que usam `drop function`.** Evidência em [docs/hotfix-acl/03-ENSAIO-ORDEM-REAL.md §1](../../hotfix-acl/03-ENSAIO-ORDEM-REAL.md), e a mesma constatação está no cabeçalho do job `acl-com-banco` e de [scripts/function-acl-allowlist.test.ts](../../../scripts/function-acl-allowlist.test.ts). **Supabase Branch não resolve** — ele também replaya do zero e estoura no mesmo ponto.
+
+Portanto `EXECUTION_UNVERIFIED` estava **errado por otimismo**: não é que a execução não foi verificada, é que **ela já foi verificada e reprovou**, por uma causa que nada tem a ver com as URLs. São **dois bloqueios independentes**, e consertar um não destrava o outro.
+
+**O segundo bloqueio, o das URLs, continua valendo e é mais sério do que "as migrations talvez não subam":**
 
 ```sql
 project_url text := 'https://gbabxcrntkwgblgqsiit.supabase.co';
@@ -569,13 +575,17 @@ project_url text := 'https://gbabxcrntkwgblgqsiit.supabase.co';
 
 Os *wrappers* `trigger_*` de `pg_cron` **embutem a URL de produção**. Um banco local ou de staging reconstruído por este histórico, com `pg_cron` ativo, agenda jobs que fazem `POST` **nas Edge Functions de produção**. A reconstrução não é apenas incerta — **executá-la como está é perigoso**. Some-se a isso: `pg_net` é assumido pré-instalado, e o Vault é assumido semeado com `internal_api_key`, que num banco novo não existe.
 
-**Veredito:** `SCHEMA_REBUILD_LIKELY_OK / EXECUTION_UNVERIFIED / UNSAFE_AS_IS`.
+**Veredito (corrigido):** `SCHEMA_DERIVED_FROM_MIGRATIONS / REPLAY_FAILS_42P13 / UNSAFE_AS_IS`.
 
-*Unverified* é literal: não há Supabase CLI, Docker nem `psql` na máquina de trabalho, então `supabase db reset` não foi executado. A prova acima é estática e por comparação com o banco real — ela é forte sobre *o que o histórico contém* e silenciosa sobre *se ele roda de ponta a ponta*.
+O veredito anterior — `SCHEMA_REBUILD_LIKELY_OK / EXECUTION_UNVERIFIED / UNSAFE_AS_IS` — fica registrado como **errado no termo do meio**, e a correção está no bloco acima. A prova estática desta seção continua válida: ela é forte sobre *o que o histórico contém* (48 de 48 tabelas versionadas, zero dado de produção, treze URLs embutidas) e era silenciosa sobre *se ele roda* — silêncio que o ensaio de 2026-07-30 já tinha preenchido com um NO-GO.
+
+Consequência prática: **nada muda no plano** (§11.2 permanece `ENVIRONMENT_BLOCKED` de qualquer forma, e produção segue fora de questão), mas o motivo passa a ser dois e a frente estrutural ganha um terceiro item obrigatório.
 
 **Isto não é resolvido dentro da Fase 6b.** Fica registrado como frente estrutural separada, com seu próprio ciclo de spec:
 
-> **`BASELINE_REPRODUCIBLE_DATABASE_ENVIRONMENT`** — eliminar chamada acidental para produção durante reconstrução local · parametrizar *endpoints* de Edge Functions · controlar `pg_cron` em ambiente local · declarar a dependência de `pg_net` · declarar ou preparar o Vault · permitir execução real das migrations em ambiente descartável · impedir que job local chame produção.
+> **`BASELINE_REPRODUCIBLE_DATABASE_ENVIRONMENT`** — **destravar o replay, que hoje estoura em `42P13` (54 `create or replace function` alterando retorno tabular contra 4 `drop function`)** · eliminar chamada acidental para produção durante reconstrução local · parametrizar *endpoints* de Edge Functions · controlar `pg_cron` em ambiente local · declarar a dependência de `pg_net` · declarar ou preparar o Vault · permitir execução real das migrations em ambiente descartável · impedir que job local chame produção.
+
+O primeiro item é **pré-requisito dos demais**: enquanto o replay não completar, não existe banco descartável onde os outros possam ser testados. Ele também é o mais caro — corrigir exige revisar as 54 migrations que trocam retorno tabular sem `drop function` antes.
 
 **As migrations já aplicadas não são alteradas silenciosamente.** A correção futura avaliará: migrations compensatórias · *wrappers* que leiam configuração segura · Vault ou *settings* por ambiente · desativação de cron durante *rebuild* · proteção contra URL de produção em ambiente não produtivo · teste estático no CI que rejeite nova URL de projeto *hardcoded* · estratégia compatível com o histórico já aplicado. Os treze arquivos ficam registrados aqui para a frente futura:
 
@@ -637,6 +647,10 @@ Limpeza em `teardown`/`finally`, **mesmo com falha de assertion**.
 **O texto do `ENVIRONMENT_BLOCKED` é obrigatório e literal — "infra indisponível" não serve:**
 
 > Rebuild não executado porque o ambiente local não possui Supabase CLI/Docker/psql e migrations com wrappers de `pg_cron` contêm URL de produção, tornando a execução local insegura sem isolamento prévio.
+>
+> **Emenda (§11.0, correção de veredito):** o rebuild também **não completaria se o ambiente existisse** — o replay foi tentado em 2026-07-30 e reprovou com `42P13 — cannot change return type of existing function` (54 `create or replace function` alterando retorno tabular contra 4 `drop function`). São dois bloqueios independentes; consertar as URLs não destrava o replay.
+
+A primeira frase é o texto que o dono ditou e fica intacta. A emenda existe porque a frase "rebuild não executado" descreve esta máquina, e não o histórico do projeto — onde ele **foi** executado e falhou.
 
 ### 11.3 Proibição explícita: produção não é ambiente de teste
 
