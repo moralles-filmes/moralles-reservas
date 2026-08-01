@@ -59,19 +59,25 @@ async function holdForReview(
     .eq("id", inv.id)
     .eq("enforcement_hold", false);
 
+  const holdPersisted = !holdErr;
+
   if (holdErr) {
+    // Falha de PERSISTÊNCIA da retenção — distinta da classificação, que já
+    // concluiu com sucesso. Exige intervenção administrativa: a fatura segue
+    // sem freio no banco e voltará a ser avaliada na próxima passada.
     jsonLog("error", {
       reqId,
-      evt: "billing_overdue_hold_failed",
+      evt: "billing_overdue_hold_persist_failed",
       orgId: inv.organization_id,
       invoiceId: inv.id,
       reason,
       err: holdErr.message,
+      needsAdminAction: true,
     });
   } else {
     jsonLog("warn", {
       reqId,
-      evt: "billing_overdue_held_for_review",
+      evt: "billing_overdue_hold_persisted",
       orgId: inv.organization_id,
       invoiceId: inv.id,
       reason,
@@ -82,13 +88,37 @@ async function holdForReview(
   // o que fazer com "não consegui classificar sua fatura", e o dado por trás
   // (categoria, vínculo de assinatura) é administrativo.
   const admins = await resolvePlatformAdminRecipients(supabase);
-  if (admins.length === 0) return;
+  if (admins.length === 0) {
+    jsonLog("error", {
+      reqId,
+      evt: "billing_overdue_review_no_recipient",
+      orgId: inv.organization_id,
+      invoiceId: inv.id,
+      reason,
+      holdPersisted,
+      needsAdminAction: true,
+    });
+    return;
+  }
 
   await enqueueBillingNotification(supabase, {
     organizationId: inv.organization_id,
     eventType: "admin_invoice_category_review",
     recipient: admins[0],
     invoiceId: inv.id,
+  });
+
+  // Aviso criado APESAR de falha parcial na retenção: é o par que impede o
+  // fail-safe de mascarar o defeito. O aviso sozinho pode passar por
+  // "tratado"; esta linha diz que não foi.
+  jsonLog(holdPersisted ? "info" : "error", {
+    reqId,
+    evt: "billing_overdue_review_notified",
+    orgId: inv.organization_id,
+    invoiceId: inv.id,
+    reason,
+    holdPersisted,
+    needsAdminAction: !holdPersisted,
   });
 }
 

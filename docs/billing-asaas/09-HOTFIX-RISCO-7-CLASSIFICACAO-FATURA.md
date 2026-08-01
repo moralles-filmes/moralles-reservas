@@ -164,9 +164,87 @@ Duas lições registradas: (1) o fail-safe funcionou mesmo com o defeito — a f
 - **Cancelamento das assinaturas no Asaas** — ação externa com efeito financeiro; só após verificação manual e confirmação explícita.
 - **Reativação da ingestão** — exige nova autorização, precedida do checklist de GO/NO-GO.
 
-## 9. Reativação — não acontece no mesmo passo do hotfix
+## 8.5 Telemetria — a falha do fail-safe não pode se esconder atrás dele
 
-Checklist de GO/NO-GO a apresentar depois do deploy: testes unitários e de integração verdes · consumidores redeployados · `enforcement_hold` comprovadamente respeitado · fatura de WhatsApp comprovadamente sem efeito no billing global · estado das duas assinaturas no Asaas Sandbox · ausência de duplicidade · telemetria de `NEEDS_REVIEW` · rollback validado · plano de observação · data de corte preservada ou nova estratégia aprovada · estratégia de reprocessamento dos eventos recebidos durante a contenção.
+O fail-safe evitou dano durante a execução defeituosa (§7.5.1), mas "não causou dano" não pode virar "não aconteceu nada". Cinco sinais distintos, para que uma falha parcial nunca passe por sucesso:
+
+| evento | significa |
+|---|---|
+| `invoice_category_needs_review` | classificação concluiu: a fatura é indeterminada (com o motivo preciso) |
+| `billing_overdue_hold_persisted` | retenção gravada com sucesso |
+| `billing_overdue_hold_persist_failed` | **classificação OK, persistência falhou** → `needsAdminAction: true` |
+| `billing_overdue_review_no_recipient` | não há admin notificável → `needsAdminAction: true` |
+| `billing_overdue_review_notified` | aviso criado, carregando `holdPersisted` — nível `error` quando o aviso saiu **apesar** da retenção ter falhado |
+
+**Falha ao persistir a retenção nunca resulta em escalada no mesmo processamento:** o `continue` vem depois do bloco de retenção, independentemente do resultado — a fatura sai do conjunto avaliado naquela passada, com ou sem `hold` gravado.
+
+## 8.6 Reativação — executada em 2026-08-01
+
+| campo | valor |
+|---|---|
+| Flag | `billing_invoice_ingestion` |
+| Valor anterior | `false` (contenção de 2026-08-01 20:41 UTC) |
+| Valor novo | **`true`** (2026-08-01 21:32 UTC) |
+| Autorizado por | `morallesfilms@gmail.com` (platform_admin) |
+| Data de corte | **`"2026-07-31"` PRESERVADA** — decisão explícita |
+| Motivo | Classificador falha FECHADA para fatura moderna ambígua; assinatura cancelada não escala billing global; cobrança não sistêmica não escreve `organizations.billing_status`; raio de dano validado por teste de integração com controle positivo |
+
+**Por que a data de corte não virou `2026-08-01`:** 31/07 foi a data real de entrada em operação da ingestão, gravada antes da ativação conforme o procedimento. Movê-la trataria artificialmente cobranças de 31/07 como pré-go-live, ampliando a compatibilidade legada por conveniência em vez de por fato histórico. A escolha preserva a verdade da ativação.
+
+**Flags conferidas após a mudança, nenhuma alterada como efeito colateral:** `asaas_enabled=true` · `whatsapp_service_enforcement=false` · `billing_notifications_dispatch=false` · `whatsapp_implementation_flow=false` · `whatsapp_subscription_checkout=false` · `billing_invoice_ingestion_since="2026-07-31"`.
+
+### Observação controlada pós-reativação
+
+Nenhuma cobrança artificial foi criada para justificar a reativação — o teste de integração já forneceu a evidência funcional.
+
+| invariante | resultado |
+|---|---|
+| Faturas com `ingestion_source` | 0 (nada ingerido ainda) |
+| Faturas em `enforcement_hold` | 0 |
+| **`hold` sem `held_at`** | **0** |
+| Eventos após a reativação | 0 |
+| **Notificações duplicadas** | **0** |
+| **Organizações em estado anormal** | **0** |
+| **`purpose` fora do vocabulário** | **0** |
+| `ren-sushi` | `active` |
+
+Os 4 `billing_events` em `failed` são de 2026-07-23, anteriores a esta intervenção — não são regressão.
+
+## 8.7 Regra de NO-GO após a reativação
+
+Desligar a ingestão e apresentar evidências **antes de qualquer outra ação** se ocorrer: fatura ambígua classificada como `SYSTEM`; assinatura `canceled` provocando escalada; cobrança de WhatsApp alterando `organizations.billing_status`; `enforcement_hold` sem `enforcement_held_at`; erro de constraint no caminho de retenção; duplicação de fatura ou aviso; consumidor ignorando `enforcement_hold`; divergência entre webhook e reconcile; evento marcado como processado sem aplicação segura.
+
+**Não corrigir dados diretamente para manter o rollout verde.**
+
+## 9. O que este GO significa — e o que NÃO significa
+
+### 9.1 O Risco 7 está fechado ESTRUTURALMENTE
+
+O caminho que transformava ausência de evidência em "fatura de sistema" não existe mais para fatura moderna, e o caminho descoberto nesta investigação (assinatura cancelada correlacionando e escalando) está fechado junto. Ambos comprovados por teste de integração com controle positivo.
+
+### 9.2 O que este GO NÃO autoriza
+
+- **NÃO conclui o rollout da Fase 5b.** O bloqueio D+6 e a restauração ponta a ponta em condições reais continuam sem validação com cobrança de verdade do provedor.
+- **NÃO autoriza ligar `whatsapp_service_enforcement`.** A flag segue `false` e os gates nomeados no [FASE-5B-RESUMO](FASE-5B-RESUMO.md) (Riscos 9, 6 e 4) continuam abertos, sem relação com este hotfix.
+- **NÃO autoriza ligar `billing_notifications_dispatch`.** Ela governa TODAS as notificações de billing, não só as desta correção.
+
+### 9.3 Invariantes financeiros que passaram a ter cobertura
+
+Antes deste hotfix, `billing-category.ts` não tinha nenhum teste. Agora, 42 testes cobrem:
+
+| invariante | como é afirmado |
+|---|---|
+| Só `SYSTEM` inequívoco escreve `organizations.billing_status` | tabela de 10 casos que **nunca** governam × 3 que governam |
+| Fatura moderna sem vínculo nunca é presumida de sistema | A1–A3 |
+| R$149 de WhatsApp nunca bloqueia o sistema | B1–B3 |
+| Assinatura cancelada nunca escala, mesmo sendo de sistema | C1–C2 |
+| Renovação legítima de sistema continua escalando | C3, D1–D2 |
+| Compatibilidade legada exige fato objetivo, nunca "não sei" | E1–E6 |
+| Duplicidade nunca desempata pela mais recente | F1–F2 |
+| Conflito `purpose` × categoria nunca é coagido | G1–G3 |
+| Renovação sem `checkoutSession` classifica pela assinatura | H1 |
+| Leitura indisponível ≠ "não é do sistema" | 4 casos de `READ_FAILED`/`NOT_FOUND` |
+| `holdRequired` ⟺ `NEEDS_REVIEW` | assertiva sobre todos os casos da suíte |
 
 ## 10. Rollback
 
