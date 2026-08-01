@@ -390,7 +390,7 @@ Tabela nova, `FORCE RLS` **sem policies**, lida só via Edge Function — padrã
 
 **Chave de assunto em dois campos, não em `instance_id`:** `subject_type` (`INSTANCE` \| `ORGANIZATION`) + `subject_id`. Alerta econômico pertence à **organização**, e chavear tudo por instância obrigaria a **eleger uma instância arbitrária para representar um desequilíbrio da organização** — o que seria falso e produziria alertas que apontam para o lugar errado. `organization_id` fica denormalizado em todas as linhas (inclusive nas de instância) para escopo de consulta e auditoria; `instance_id` é `NULL` quando `subject_type = 'ORGANIZATION'`.
 
-Campos: `subject_type`, `subject_id`, `organization_id`, `instance_id` (nullable), `alert_type`, `dedupe_key`, `status`, `first_detected_at`, `last_seen_at`, `occurrences`, `last_reminder_at`, `acknowledged_at`/`acknowledged_by`, `resolved_at`/`resolved_by`, `resolution_note`, `payload` (jsonb, sem segredo), `dispatch_enabled_at_enqueue`, timestamps.
+Campos: `subject_type`, `subject_id`, `organization_id`, `instance_id` (nullable), `channel_id` (nullable — só `CHANNEL_WITHOUT_INSTANCE` a preenche, ver §10.7), `alert_type`, `dedupe_key`, `status`, `first_detected_at`, `last_seen_at`, `occurrences`, `last_reminder_at`, `acknowledged_at`/`acknowledged_by`, `resolved_at`/`resolved_by`, `resolution_note`, `payload` (jsonb, sem segredo), `dispatch_enabled_at_enqueue`, timestamps.
 
 `UNIQUE (subject_type, subject_id, alert_type, dedupe_key)`.
 
@@ -443,18 +443,44 @@ Cada um exige entrada em `TEMPLATE_BY_EVENT` de `process-billing-notifications` 
 
 | Tipo | Fato | Pergunta que ele faz |
 |---|---|---|
-| `CHANNEL_WITHOUT_INSTANCE` | Canal ativo sem instância registrada | "Estou pagando algo que não está no inventário?" — **custo invisível**, o mais caro dos cinco |
-| `PAYING_WITHOUT_CHANNEL` | Instância `ACTIVE` sem canal vinculado vivo | "Estou pagando por algo que ninguém usa?" |
-| `INSTANCE_REF_MISMATCH` | `provider_instance_ref` ≠ identificador presente no canal (§3) | "O inventário aponta para a instância certa?" |
-| `LIFECYCLE_VS_CHANNEL_STATE` | Instância `ACTIVE` com canal persistentemente **não** `connected` | "O cliente perdeu o WhatsApp?" |
-| `ALIVE_AFTER_END` | `lifecycle_state = ENDED` ou `provider_access_until` vencido, e o canal segue vivo | "O encerramento aconteceu de verdade lá fora?" |
+| `CHANNEL_WITHOUT_INSTANCE` | Canal operacional existente sem registro correspondente no inventário de instâncias | "Estou pagando algo que não está no inventário?" — **custo invisível**, o mais caro dos cinco |
+| `PAYING_WITHOUT_CHANNEL` | Instância `ACTIVE` no inventário sem `channel_id` associado | "Estou pagando por algo que ninguém usa?" |
+| `INSTANCE_REF_MISMATCH` | `provider_instance_ref` do inventário diverge do identificador legado usado pelo canal (§3) | "O inventário aponta para a instância certa?" |
+| `LIFECYCLE_VS_CHANNEL_STATE` | Instância `ACTIVE` com canal conhecido persistentemente fora de `connected` pelo limiar de sete dias completos | "O cliente perdeu o WhatsApp?" |
+| `ALIVE_AFTER_END` | Instância `ENDED`, mas sinais locais **posteriores** indicam que canal ou integração pode continuar existindo | "O encerramento aconteceu de verdade lá fora?" |
 
 **Decisões de vocabulário registradas:**
 
 - `PAYING_WITHOUT_CHANNEL` substitui o nome anterior `INSTANCE_WITHOUT_CHANNEL` — diz a consequência, não a topologia.
+- `CHANNEL_WITHOUT_INSTANCE` e `PAYING_WITHOUT_CHANNEL` são **direções opostas do mesmo eixo** e ambos existem: o primeiro é canal sem registro de inventário, o segundo é instância `ACTIVE` sem canal. Sem o primeiro, um *backfill* incompleto — do Ren Sushi ou de qualquer instância legada — permaneceria fora do inventário e, portanto, fora do acompanhamento de custo.
 - `ALIVE_AFTER_END` foi **separado** de `LIFECYCLE_VS_CHANNEL_STATE`, que antes acumulava os dois sentidos. São perguntas operacionais diferentes: uma é sobre o cliente, a outra é sobre o fornecedor e sobre custo que deveria ter cessado. Manter juntas era exatamente a sobreposição que o vocabulário precisa eliminar.
 - `CHANNEL_DOWN_WHILE_PAYING` **não existe** nesta spec e não deve ser criado — a condição é `LIFECYCLE_VS_CHANNEL_STATE`.
 - `CYCLE_PROJECTION_MISMATCH` **não é divergência** e sai desta tabela: `whatsapp_instances.current_cycle_*` ≠ ciclo `OPEN` é violação de invariante interno (§7.2), não desencontro com o mundo. Vira falha de consistência com `needsAdminAction: true` na telemetria do worker, no passo 5 (§10.2), sem entrar no vocabulário de divergência.
+- **`SILENT_CHANNEL` sai da fase e não é substituído por nome equivalente.** Não há definição honesta e verificável dentro da fronteira desta fase: "canal conectado sem tráfego há N dias" mede **uso**, não consistência entre inventário, *lifecycle* e estado operacional — e um restaurante pode passar dias sem mensagens sem que exista falha, custo indevido ou divergência técnica. Implementá-lo exigiria definir o que conta como tráfego, ler conversas ou eventos, escolher limiar arbitrário, distinguir sazonalidade de falha e ampliar o worker para uma fonte que não é inventário nem custo — tocando informação operacional e de mensageria desnecessária aqui. **Sem placeholder, sem enum morto, sem constante de limiar, sem teste planejado.** Se um dia houver necessidade de saúde por ausência de atividade, ela entra em spec própria de observabilidade operacional, com definição de evento, janela, sazonalidade, privacidade e ação esperada.
+
+**`CHANNEL_WITHOUT_INSTANCE` — divergência administrativa, nunca inferência:**
+
+Ela **não** cria `whatsapp_instances` automaticamente, **não** presume custo, **não** presume vencimento, **não** altera o canal, **não** altera entitlement, **não** bloqueia envio e **não** chama o provedor. Pede revisão e eventual *backfill* manual.
+
+A detecção usa **apenas evidência persistida e confiável**, e antes de abrir o alerta confirma que o canal representa integração real que deveria estar no inventário. **Não gera alerta para:** registro técnico incompleto · canal de teste descartado · canal explicitamente desativado · registro que não representa instância faturável · registro já associado a uma instância por outro vínculo canônico.
+
+**Havendo ambiguidade** sobre se o canal representa instância real, abre revisão administrativa — **nunca** cria inventário automaticamente.
+
+*Dedupe* e sujeito, já que `subject_type = 'INSTANCE'` não se aplica quando a instância ainda não existe:
+
+- `subject_type = 'ORGANIZATION'`, `subject_id = organization_id`, `instance_id = NULL` — **nenhuma instância fictícia é escolhida**;
+- `dedupe_key = channel_without_instance:<channel_id>:<YYYY-MM BRT>`, que carrega a identidade estável do canal;
+- **`subject_type = 'CHANNEL'` não é criado nesta fase.** Expandir o enum exigiria revisar RLS, *constraints*, consultas e painel, e o escopo `ORGANIZATION` já é suficiente e menos expansivo.
+
+**Decisão sobre `channel_id` no ledger: sim, coluna `channel_id uuid null references whatsapp_channels(id) on delete set null`.** O ganho é concreto e não é duplicação decorativa: o painel precisa mostrar *qual* canal está fora do inventário e ligá-lo à unidade, e a resolução por *backfill* precisa da referência — extrair isso de dentro do `dedupe_key` por parsing de string seria frágil e não indexável. `on delete set null` preserva a linha do ledger, que é registro de auditoria e não pode ser apagada em cascata; a identidade textual sobrevive no `dedupe_key`. A coluna é `NULL` em todos os outros tipos de alerta.
+
+**Resolução:** o canal é associado por *backfill* a uma `whatsapp_instance` válida · ou é confirmado como não faturável / fora de escopo · ou o registro é encerrado administrativamente com motivo.
+
+**`ALIVE_AFTER_END` — evidência local, nunca afirmação sobre cobrança:**
+
+Ele significa apenas que **há evidência local incompatível com o encerramento registrado**. Sinais aceitáveis: status local voltou a `connected` depois de `ended_at` · action `test` posterior encontrou integração viva · `last_event_at` posterior ao encerramento · outro sinal operacional persistido após a transição para `ENDED`. Sinal **anterior** a `ended_at` não conta.
+
+A mensagem é **"Há sinais posteriores ao encerramento registrado. Verifique o estado real no provider."** — nunca "A Z-API continua cobrando". A resolução é administrativa e **não reativa a instância automaticamente**.
 
 **Limiar de `LIFECYCLE_VS_CHANNEL_STATE`:**
 
@@ -547,7 +573,15 @@ Os *wrappers* `trigger_*` de `pg_cron` **embutem a URL de produção**. Um banco
 
 *Unverified* é literal: não há Supabase CLI, Docker nem `psql` na máquina de trabalho, então `supabase db reset` não foi executado. A prova acima é estática e por comparação com o banco real — ela é forte sobre *o que o histórico contém* e silenciosa sobre *se ele roda de ponta a ponta*.
 
-**Isto não é resolvido dentro da Fase 6b.** Parametrizar `project_url`, declarar `pg_net` e semear o Vault de teste é frente estrutural própria — "*baseline* reproduzível de banco" — com seu próprio ciclo de spec. Tentar consertar de passagem aqui expandiria a fase para dentro de treze migrations já aplicadas em produção.
+**Isto não é resolvido dentro da Fase 6b.** Fica registrado como frente estrutural separada, com seu próprio ciclo de spec:
+
+> **`BASELINE_REPRODUCIBLE_DATABASE_ENVIRONMENT`** — eliminar chamada acidental para produção durante reconstrução local · parametrizar *endpoints* de Edge Functions · controlar `pg_cron` em ambiente local · declarar a dependência de `pg_net` · declarar ou preparar o Vault · permitir execução real das migrations em ambiente descartável · impedir que job local chame produção.
+
+**As migrations já aplicadas não são alteradas silenciosamente.** A correção futura avaliará: migrations compensatórias · *wrappers* que leiam configuração segura · Vault ou *settings* por ambiente · desativação de cron durante *rebuild* · proteção contra URL de produção em ambiente não produtivo · teste estático no CI que rejeite nova URL de projeto *hardcoded* · estratégia compatível com o histórico já aplicado. Os treze arquivos ficam registrados aqui para a frente futura:
+
+`022_reservation_source` · `029_outbox_cron` · `043_giftback_cron` · `045_reservation_automation_cron` · `048_waitlist_automation` · `storage_orphan_cleanup_cron` · `stripe_expire_payments_cron` · `billing_crons` · `billing_trial_auto` · `064_process_asaas_reconcile_cron` · `069_process_billing_notifications_cron` · `082_cron_asaas_invoice_reconcile` · `083_cron_whatsapp_enforcement`
+
+**O que a 6b deve garantir é só isto: nenhuma migration nova repete o padrão.** Gate estático sobre os arquivos novos desta fase — nenhuma URL de projeto Supabase *hardcoded* · nenhum *endpoint* de produção · nenhum segredo · nenhum cron apontando para ambiente fixo.
 
 ### 11.1 Camada 1 — núcleos puros, executável hoje no CI
 
@@ -561,7 +595,15 @@ Zero dependência de banco, de rede e de provedor. Grupos por responsabilidade:
 
 **D. Dedupe (§10.4)** — `cycle_d7`, `cycle_d1`, `end_confirmation_required`, `date_review_required`, `divergence`, `economic_imbalance`; hash econômico determinístico; **ordem diferente das mesmas instâncias produz o mesmo hash**; mudança material de composição produz hash diferente; campo volátil não altera o hash.
 
-**E. Divergências (§10.7)** — os cinco tipos canônicos, incluindo o limiar de sete dias com clock injetável e o caso "status ausente ou nunca sincronizado **não** conta como sete dias desconectado".
+**E. Divergências (§10.7)** — os cinco tipos canônicos, por tipo:
+
+- **`CHANNEL_WITHOUT_INSTANCE`** — canal elegível sem instância correspondente **gera**; canal já associado **não** gera; canal desativado ou fora de escopo **não** gera; informação insuficiente **gera revisão, sem inferência automática**.
+- **`PAYING_WITHOUT_CHANNEL`** — instância `ACTIVE` sem `channel_id` **gera**; `AWAITING_PROVISION` **não** é tratada da mesma forma; `ENDED` **não** gera este tipo; *backfill* explicitamente pendente segue a severidade definida.
+- **`INSTANCE_REF_MISMATCH`** — referências diferentes **geram**; iguais **não**; valor ausente **não** vira *mismatch* automaticamente; **nenhuma correção automática** ocorre.
+- **`LIFECYCLE_VS_CHANNEL_STATE`** — `ACTIVE` + desconectado há menos de sete dias **não** gera; sete dias completos **gera**; status desconhecido **não** gera; `connected` resolve; clock injetável e **limite exato** testados.
+- **`ALIVE_AFTER_END`** — `ENDED` com sinal posterior **gera**; sem sinal posterior **não** gera; sinal anterior a `ended_at` **não** gera; **não** altera *lifecycle* automaticamente.
+
+**Nenhum teste de `SILENT_CHANNEL`** — o tipo não existe (§10.7).
 
 **F. Simulador Partner (§10.10)** — preço-alvo obrigatório; zero e negativo recusados; cenário não altera custo real; cálculo de economia; ponto de equilíbrio; nenhuma persistência; rótulo de simulação explícito.
 
@@ -588,9 +630,13 @@ Limpeza em `teardown`/`finally`, **mesmo com falha de assertion**.
 **Consequência direta de §11.0:** a opção (1) está **bloqueada** enquanto a URL de produção estiver embutida nos *wrappers*, e a máquina de trabalho não tem CLI nem Docker. Portanto, nesta fase:
 
 - os grupos de §11.1 rodam **normalmente no CI**;
-- os testes de §11.2 nascem **escritos e marcados `ENVIRONMENT_BLOCKED`**, com o bloqueio nomeado — não são silenciados nem apagados;
+- os testes de §11.2 nascem **escritos e marcados `ENVIRONMENT_BLOCKED`**, com o bloqueio nomeado — não são silenciados nem apagados, e **não fingem execução**;
 - validação de migration e ACL roda em banco descartável ou ambiente isolado, quando existir;
-- eles saem de `ENVIRONMENT_BLOCKED` quando a frente do *baseline* reproduzível entregar o ambiente, sem reabrir esta spec.
+- eles saem de `ENVIRONMENT_BLOCKED` quando a frente `BASELINE_REPRODUCIBLE_DATABASE_ENVIRONMENT` entregar o ambiente, sem reabrir esta spec.
+
+**O texto do `ENVIRONMENT_BLOCKED` é obrigatório e literal — "infra indisponível" não serve:**
+
+> Rebuild não executado porque o ambiente local não possui Supabase CLI/Docker/psql e migrations com wrappers de `pg_cron` contêm URL de produção, tornando a execução local insegura sem isolamento prévio.
 
 ### 11.3 Proibição explícita: produção não é ambiente de teste
 
@@ -674,6 +720,10 @@ O acoplamento por `event_type` (§10.6) determina a ordem: **dispatcher e templa
 
 **Migration antes das Edge Functions**, sempre: coluna ainda inexistente vira 400 do PostgREST e derruba gate *fail-closed* — foi o que aconteceu com `manage-channels`. E **o cron só existe depois** que worker e dispatcher estão publicados e o worker já rodou uma vez sob observação humana.
 
+**Gate antes do passo 8 (*backfill*):** nenhuma falha alta ou crítica nos auditores · worker ainda **sem cron** · actions administrativas validadas · nenhum acesso direto por `authenticated` · nenhuma chamada externa nova.
+
+**Gate antes do passo 12 (cron):** *backfill* conferido · execução manual **idempotente** · nenhuma duplicação de ciclo ou alerta · nenhuma alteração de `billing_status` · nenhuma alteração de entitlement · nenhuma chamada ao provedor · telemetria sanitizada · *rollback* por desagendamento documentado.
+
 **Checklist de redeploy (CLAUDE.md, mesmo PR):** núcleos puros novos → `process-whatsapp-instance-cycles` e `manage-whatsapp-instances`. Se algum consumir `billing-notify.ts`, entra na linha dele. Nenhum `_shared/` existente é alterado nesta fase; se virar necessário, a linha correspondente é atualizada no mesmo PR.
 
 ### 11.10 Backfill do Ren Sushi
@@ -739,9 +789,13 @@ E ainda: **nenhuma flag de banco desativa silenciosamente a constante**; o erro 
 
 ## Estado da spec
 
-Seções **A, B, C e D aprovadas** pelo dono. A spec está completa para transição a `superpowers:writing-plans`.
+Seções **A, B, C e D fechadas** pelo dono. A spec está completa para transição a `superpowers:writing-plans`.
+
+Decisões finais consolidadas: `CHANNEL_WITHOUT_INSTANCE` permanece · `SILENT_CHANNEL` sai · a lista canônica tem **cinco** divergências · integração recorrente com banco permanece `ENVIRONMENT_BLOCKED` · produção não vira ambiente de testes · o *baseline* reproduzível é frente separada · o *rollout* segue a ordem aprovada com os dois gates · **nenhuma flag própria da 6b** · limiar de `LIFECYCLE_VS_CHANNEL_STATE` em sete dias · `billing_notifications_dispatch` OFF · `whatsapp_service_enforcement` OFF · **nenhuma escrita no provedor**.
+
+O plano de implementação deve preservar integralmente as Seções A–D, dividir a execução em etapas pequenas e verificáveis, colocar migrations antes das EFs, templates antes do produtor, cron por último, marcar claramente os testes `ENVIRONMENT_BLOCKED` sem transformá-los em verde falso, incluir *rollback* e evidência por etapa, **não** ampliar escopo para corrigir as treze migrations antigas, abrir o *baseline* reproduzível como *follow-up* separado, e **não** tocar envio, credenciais, entitlement ou `billing_status`.
 
 Pendências herdadas, fora do escopo desta fase e registradas para não se perderem:
 
-- **Frente estrutural "baseline reproduzível de banco"** (§11.0) — parametrizar `project_url` nos 13 *wrappers* de cron, declarar `pg_net`, semear Vault de teste. Enquanto não existir, os testes de §11.2 permanecem `ENVIRONMENT_BLOCKED`.
+- **`BASELINE_REPRODUCIBLE_DATABASE_ENVIRONMENT`** (§11.0) — parametrizar `project_url` nos 13 *wrappers* de cron, declarar `pg_net`, semear Vault de teste. Enquanto não existir, os testes de §11.2 permanecem `ENVIRONMENT_BLOCKED`.
 - **Fase 6a** — provisionamento real, criptografia de credenciais e liberação do gate de §2.
