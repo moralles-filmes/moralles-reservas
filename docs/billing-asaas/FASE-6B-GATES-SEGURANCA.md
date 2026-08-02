@@ -555,19 +555,20 @@ TYPECHECK ....................... GO
 EDGE_FUNCTION_LINT .............. GO
 LOCAL_STATIC_GUARDRAILS ......... GO
 
-MIGRATIONS ...................... WRITTEN / NOT APPLIED
-EDGE FUNCTIONS .................. WRITTEN / NOT DEPLOYED
-PANEL ........................... WRITTEN / NOT DEPLOYED
-DATABASE INTEGRATION ............ ENVIRONMENT_BLOCKED
+MIGRATIONS 087–093 .............. APPLIED  (2026-08-02)
+EDGE FUNCTIONS (9) .............. DEPLOYED (2026-08-02)
+PANEL ........................... PUSHED / VERCEL BUILD
+FK × CHECK (FK-A..FK-G) ......... EXECUTED — 11/11, com controle positivo
+DATABASE INTEGRATION ............ PARTIAL — FK/trigger provados; RLS/grants não
 DOCKER .......................... NOT INSTALLED
-LOCAL SUPABASE STACK ............ UNAVAILABLE
+LOCAL POSTGRES 18.4 ............. AVAILABLE (sem pg_cron, sem pg_net)
 GIT_HISTORY_SECRET_SCAN ......... EXECUTED — 1 incidente, CONTIDO
 ADMIN_ZAPI_TRANSACTIONAL_ENQUEUE  REQUIRED BEFORE DISPATCH ON
 
 BILLING_NOTIFICATIONS_DISPATCH .. OFF
 WHATSAPP_SERVICE_ENFORCEMENT .... OFF
-BACKFILL REN SUSHI .............. NO-GO
-CRON ............................ NO-GO
+BACKFILL REN SUSHI .............. PENDENTE (painel; custo R$99,90, venc. dia 4)
+CRON ............................ SCHEDULED — 10 12 * * *
 MERGE ........................... NO-GO
 REMOTE COMMANDS ................. NO-GO
 ```
