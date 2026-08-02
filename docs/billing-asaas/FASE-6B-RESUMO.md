@@ -16,8 +16,13 @@ coisas de propósito, e a separação é o ponto principal dele.
 
 | | |
 |---|---|
-| **CÓDIGO PRONTO PARA REVISÃO** | ✅ sim — 23 tasks escritas, 610 testes verdes, `typecheck` limpo |
-| **ROLLOUT AUTORIZADO** | ❌ **NÃO** — nenhuma migration aplicada, nenhuma EF deployada, nenhum gate de segurança executado |
+| **CÓDIGO PRONTO PARA REVISÃO** | ✅ sim — 23 tasks, 668 testes verdes, `typecheck` limpo, **`SAAS_SHIELD_OVERALL: GO`** |
+| **ROLLOUT AUTORIZADO** | ❌ **NÃO** — nenhuma migration aplicada, nenhuma EF deployada, integração com banco `ENVIRONMENT_BLOCKED` |
+
+```
+SAAS_SHIELD_OVERALL: GO      ← vale só para o código em 19f8e53 + e446ba3
+FASE_6B_ROLLOUT:     NO-GO
+```
 
 **Nada desta fase tocou o banco de produção.** Nenhuma migration foi aplicada,
 nenhuma Edge Function foi deployada, nenhum cron foi agendado, nenhum *backfill*
@@ -361,6 +366,11 @@ por dia para o mesmo fato. **A cadência mensal vive no ledger, não na fila.**
 | `3899348` | EF, worker e painel |
 | `a2ca27a` | CLAUDE.md — invariantes e checklist de redeploy |
 | `58ce517` | Vocabulário canônico dos seis `event_type` + o enfileiramento que faltava |
+| `ebb1380` · `916c072` · `469ade2` | Continuidade, diagnóstico de ambiente, barreira contra produção |
+| `b255407` | Rodada 1 dos gates — três bloqueantes do worker |
+| `0ca1304` | Rodada 2 — o `ReferenceError` que eu introduzi no caminho de autorização + guardrail `no-undef` |
+| `19f8e53` | **Lote de estabilização** — FK × CHECK do ledger, extração do núcleo do worker |
+| `e446ba3` | **Passada final dos gates** — enqueue em três tempos, oito achados fechados |
 
 Três commits anteriores da branch pertencem ao **hotfix do Risco 7**, não à 6b:
 `d9dbaa5`, `1183d3b`, `d7198bc` (ver
@@ -371,6 +381,17 @@ Eles **também não foram deployados** e entram no mesmo pacote de execução.
 
 ## Próximo passo
 
-[FASE-6B-PACOTE-EXECUCAO.md](FASE-6B-PACOTE-EXECUCAO.md) — para uma máquina com
-Supabase CLI. **Nada aqui é executável nesta máquina:** não há `supabase`, Docker,
-`psql`, `pg_dump` nem Python.
+**Não há próxima rodada de correção de código da 6b.** Os gates convergiram e o
+pacote documental está fechado.
+
+O que resta é externo ao código:
+
+| Pendência | Onde |
+|---|---|
+| `GIT_HISTORY_SECRET_SCAN` — `gitleaks`/`trufflehog` em shell autorizado | [FASE-6B-GATES-SEGURANCA.md](FASE-6B-GATES-SEGURANCA.md) |
+| Ambiente capaz de validar banco (Docker, `psql`, stack isolada) | [FASE-6B-DIAGNOSTICO-AMBIENTE.md](FASE-6B-DIAGNOSTICO-AMBIENTE.md) |
+| `ADMIN_ZAPI_ALERT_TRANSACTIONAL_ENQUEUE` — antes de ligar o dispatch | [FASE-6B-FOLLOWUPS.md](FASE-6B-FOLLOWUPS.md) |
+| Rollout em 21 passos, quando autorizado | [FASE-6B-PACOTE-EXECUCAO.md](FASE-6B-PACOTE-EXECUCAO.md) |
+
+⛔ **Não aplicar migrations · não deployar EFs · não fazer backfill · não criar
+cron · não fazer merge.**

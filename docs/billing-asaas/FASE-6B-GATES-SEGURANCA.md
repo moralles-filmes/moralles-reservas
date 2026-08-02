@@ -9,14 +9,24 @@
 | 1 | `469ade2` | 5 PASS · `integration-reliability` **FAIL** (3 ALTO) → corrigido em `b255407` |
 | 2 | `b255407` | `integration-reliability` PASS · `identity-access` **FAIL** (`ReferenceError` no caminho de autorização) → corrigido em `0ca1304` |
 | 3 | `0ca1304` | 5 PASS/PASS_WITH_WARNINGS · zero P0/P1 · **11 achados abertos**, incluindo o defeito latente FK × CHECK |
-| **Final** | `19f8e53` | lote único de estabilização — resultado na seção final |
+| **Final** | `19f8e53` + `e446ba3` | 6 gates · zero P0/P1/P2 aberto · **`SAAS_SHIELD_OVERALL: GO`** |
 
 ## Como ler a sequência
 
-**A curva 1 → 8 → 9 achados NÃO mede piora de qualidade.** Ela mede
-**profundidade da superfície auditada**: a rodada 1 olhou o worker; a 2 olhou o
-que a 1 havia corrigido; a 3 cruzou objetos de schema que nenhuma anterior havia
-relacionado entre si.
+**A curva 1 → 8 → 9 achados NÃO representa piora linear.** Ela representa:
+
+- aumento da **profundidade** da análise;
+- expansão das **interações** examinadas;
+- descoberta de **defeitos latentes**;
+- melhoria da **testabilidade**;
+- migração de garantias sustentadas por **leitura** para garantias sustentadas
+  por **teste**.
+
+A rodada 1 olhou o worker; a 2 olhou o que a 1 havia corrigido; a 3 cruzou
+objetos de schema que nenhuma anterior havia relacionado entre si.
+
+**A convergência ocorreu quando o worker foi extraído para núcleo injetável** —
+não antes, e não por disciplina de quem corrigia.
 
 O `FINDING-004` é a prova. Ele é **defeito latente da migration 089 desde a
 versão original** (`daf5bba`) — não regressão de correção — e passou por duas
@@ -302,6 +312,24 @@ Registrar isso importa: tratar um defeito latente como regressão da rodada
 anterior distorce a leitura de todo o processo — sugere que corrigir piora,
 quando o que houve foi aprofundamento da leitura.
 
+### `FINDING-004` — registro final
+
+```
+STATICALLY_RESOLVED
+DATABASE_EXECUTION_PENDING
+LATENT_SCHEMA_DEFECT_DISCOVERED_DURING_REAUDIT
+```
+
+- **Não** foi regressão de `0ca1304`; existia desde `daf5bba`.
+- A interação entre `ON DELETE SET NULL` e o CHECK era contraditória.
+- Os **quatro** caminhos de escrita foram revisados; nenhum reabre o buraco.
+- O ledger preserva a **identidade histórica** (`subject_id` imutável).
+- A correção **não** introduz `cascade`, e **não** troca para `restrict` — as
+  duas contrariariam o contrato da tabela por caminhos opostos.
+- A validação real da FK e do CHECK no PostgreSQL **continua bloqueada** pela
+  ausência de ambiente de integração (casos FK-A a FK-G,
+  [supabase/tests/whatsapp-instances.integration.md](../../supabase/tests/whatsapp-instances.integration.md)).
+
 ---
 
 # RODADA FINAL — `19f8e53`
@@ -324,9 +352,23 @@ lembrete "mensal" disparava no dia seguinte ao nascimento).
 não importa Supabase, Deno, `fetch`, variável de ambiente nem cliente de
 provedor.
 
-**W1–W4, que eram `NOT_EXECUTED` e estavam sustentados por leitura, viraram 37
-testes reais.** Controle positivo executado: desativei a checagem de zero linhas
-do F-02 e o bloco L reprovou nomeadamente; restaurei e voltou verde.
+### A extração atingiu o objetivo estrutural
+
+- **W1–W4 deixaram de depender de leitura manual** — eram `NOT_EXECUTED`.
+- **44 testes reais** cobrem o núcleo extraído.
+- O "banco" da bancada é **mutável**, o que permite provar reexecução e mudança
+  de estado. Com `find()` estático, o teste de reexecução provava nada.
+- As asserções verificam **efeitos**, não só retorno ou presença de chamada.
+- Os testes de enqueue distinguem **criação, lembrete, reexecução e falha
+  parcial**.
+
+Controle positivo executado duas vezes: desativando a checagem de zero linhas do
+F-02, o bloco L reprova nomeadamente; revertendo a ordem em três tempos do
+IR-001, 8 testes reprovam. Nos dois casos o estado foi restaurado e a suíte
+voltou verde.
+
+**O que estes testes NÃO provam:** atomicidade no PostgreSQL. Ver a separação de
+cobertura no consolidado.
 
 ## Fronteira preservada
 
@@ -371,16 +413,33 @@ evidência. Tabela completa e o raciocínio de cada decisão em
 
 O P2 (`IR-001`) é a consequência espelhada do próprio F-08: enfileirar antes de
 gravar troca "aviso perdido" por "aviso duplicado". Corrigido com escrita em três
-tempos — toca (pedágio), enfileira, carimba — e **controle positivo executado**:
-com a ordem antiga, 8 testes reprovam.
+tempos, e **o primeiro UPDATE é barreira de persistência, não registro de
+envio** — quem ler o código depois precisa dessa distinção para não "simplificar"
+o passo 1 achando que ele duplica o passo 3. **Controle positivo executado:** com
+a ordem antiga, 8 testes reprovam.
 
-**Aceito explicitamente:** `IAA-03` (`resolvePlatformAdminRecipients` confunde
-falha de leitura com lista vazia) — impacto é adiar 24h, barulhento em log, e a
-correção arrastaria redeploy de billing inteiro. Follow-up registrado.
+**Risco residual explícito e bloqueante para ativação de e-mail:** se o passo 3
+falhar depois do passo 2, o ledger não reflete o enfileiramento e a execução
+seguinte pode duplicar — repetindo enquanto o ledger não registrar o enqueue
+anterior. Como `billing_notifications` não tem dedupe efetiva para `invoice_id`
+nulo, eliminar isso estruturalmente exige operação atômica sobre ledger, fila,
+estado de enqueue e deduplicação. Requisito formal:
+**`ADMIN_ZAPI_ALERT_TRANSACTIONAL_ENQUEUE`**
+([FASE-6B-FOLLOWUPS.md](FASE-6B-FOLLOWUPS.md)).
 
-**Rejeitado com evidência:** `MV-002` (`begin;`/`commit;` na 092) — das oito
-migrations de wrapper de cron do projeto, **zero** usam. A 092 segue o
-precedente. Mesmo achado já julgado improcedente na rodada 1.
+**`ACCEPTED_P3_WITH_FOLLOW_UP`** — `IAA-03`
+(`resolvePlatformAdminRecipients` confunde falha de leitura com lista vazia):
+impacto é adiar a tentativa com log barulhento, a 6b não está deployada, e a
+correção arrastaria redeploy coordenado dos dez consumidores de billing.
+Follow-up próprio registrado. **Código novo não deve esconder falha como lista
+vazia** — isso não autoriza reabrir a 6b para o existente.
+
+**`DISMISSED_WITH_EVIDENCE`** — `MV-002` (`begin;`/`commit;` na 092): das **oito**
+migrations equivalentes de wrapper de cron do projeto (029, 043, 045, storage
+orphan, stripe expire, billing crons, 064, 069), **nenhuma** usa bloco
+explícito. A 092 segue o precedente real; envolvê-la é que seria a exceção. O
+mesmo item já havia sido analisado e rejeitado na rodada 1, e não há evidência
+de regressão específica. **Não reabrir sem evidência nova.**
 
 ## Guardrails locais
 
@@ -395,8 +454,23 @@ acoplamento event_type ↔ template  6/6  (+1: a decisão de enfileirar fica no 
 varredura de secret no diff ..... limpa (único casamento foi falso positivo: `re_` casando `RE_T` em `WORKER_CORE_TESTS`)
 ```
 
-⚠️ **`GIT_HISTORY_SECRET_SCAN`: NÃO EXECUTADO.** O `secret-hunter` não tem shell.
-A varredura de histórico permanece pendente de execução humana:
+## `GIT_HISTORY_SECRET_SCAN: NOT EXECUTED`
+
+**A ausência de Docker NÃO interfere nesta tarefa.** Ela depende só de instalar
+ou executar `gitleaks`, `trufflehog` ou equivalente num shell autorizado.
+
+Não bloqueia o resultado estático dos gates, mas **permanece pendência antes de
+qualquer decisão final de merge ou rollout**, conforme o pacote aprovado.
+
+**Protocolo quando for executada:**
+
+- **não exibir secrets** — nem em log, nem em relatório, nem em issue;
+- registrar apenas **tipo, arquivo/commit e veredito sanitizado**;
+- qualquer secret real é **incidente**, não achado de rotina;
+- **rotacionar no provider ANTES** de apenas remover do histórico — reescrever
+  história não desfaz o que já foi clonado ou indexado.
+
+Comandos:
 
 ```bash
 gitleaks detect --source . --redact
@@ -413,6 +487,9 @@ git fsck --unreachable --no-reflogs
 
 ## Estado consolidado
 
+**O GO abaixo vale EXCLUSIVAMENTE para o código e a documentação auditados em
+`19f8e53` (lote de estabilização) e `e446ba3` (correções da passada final).**
+
 ```
 SAAS_SHIELD_GATES_EXECUTED
   migration-validator ................ PASS_WITH_WARNINGS
@@ -420,23 +497,81 @@ SAAS_SHIELD_GATES_EXECUTED
   tenant-isolation-auditor ........... PASS_WITH_WARNINGS
   identity-access-auditor ............ PASS_WITH_WARNINGS
   integration-reliability-auditor .... PASS_WITH_WARNINGS
-  secret-hunter ...................... PASS_STATIC_ONLY
+  secret-hunter ...................... PASS_STATIC_ONLY — zero achados estáticos
 
-ZERO P0 · ZERO P1 · ZERO P2 ABERTO
-P3: corrigidos, ou aceitos com justificativa e follow-up — nenhum ambíguo
+zero P0 · zero P1 · zero P2 aberto
+11/11 achados das três primeiras rodadas .......... FECHADOS
+ 7/9 achados novos ................................ CORRIGIDOS
+ 1/9 ............................................. ACEITO com justificativa
+ 1/9 ............................................. REJEITADO com evidência
+nenhum finding bloqueante restante
+
 SAAS_SHIELD_OVERALL: GO
 ```
 
-O critério de convergência aprovado está satisfeito: zero P0, zero P1, zero P2
-aberto, P3 decididos explicitamente, guardrails locais verdes, gates
-reexecutados sobre o commit final, histórico das quatro rodadas documentado,
-limitações de integração preservadas.
+**`PASS_WITH_WARNINGS` não é `PASS`.** Cinco dos seis gates carregam ressalvas
+registradas, e elas ficam — reduzi-las a "PASS" apagaria a decisão que foi
+tomada sobre cada uma. Os *warnings* aceitos e rejeitados estão preservados
+adiante e em [FASE-6B-LOTE-ESTABILIZACAO.md](FASE-6B-LOTE-ESTABILIZACAO.md) §6-bis.
 
-**`SAAS_SHIELD_OVERALL: GO` não é `FASE_6B: GO`.** Os gates são estáticos e
-dizem respeito ao código no repositório. Tudo abaixo continua valendo.
+### O que este GO não é
 
-### Demais bloqueios, inalterados
+```
+SAAS_SHIELD_OVERALL: GO
+FASE_6B_ROLLOUT:     NO-GO
+```
 
-`DOCKER_NOT_INSTALLED` · `PSQL_NOT_INSTALLED` · `LINKED_TO_PRODUCTION_REMOTE` ·
-`REPLAY_FAILS_42P13` · `UNSAFE_AS_IS` · `DATABASE_INTEGRATION_ENVIRONMENT_BLOCKED` ·
-`NO_GO_BEFORE_BACKFILL` · `CRON_NO_GO` · `MERGE_NO_GO`
+Não equivale a `FASE_6B: GO`, `ROLLOUT: GO`, `DEPLOY: GO`, `BACKFILL: GO`,
+`CRON: GO` nem `MERGE: GO`. Os gates são estáticos e falam do código no
+repositório — não de nada que tenha sido executado.
+
+### Status operacional
+
+```
+SAAS_SHIELD_OVERALL ............. GO
+LOCAL_TESTS ..................... GO — 668
+TYPECHECK ....................... GO
+EDGE_FUNCTION_LINT .............. GO
+LOCAL_STATIC_GUARDRAILS ......... GO
+
+MIGRATIONS ...................... WRITTEN / NOT APPLIED
+EDGE FUNCTIONS .................. WRITTEN / NOT DEPLOYED
+PANEL ........................... WRITTEN / NOT DEPLOYED
+DATABASE INTEGRATION ............ ENVIRONMENT_BLOCKED
+DOCKER .......................... NOT INSTALLED
+LOCAL SUPABASE STACK ............ UNAVAILABLE
+GIT_HISTORY_SECRET_SCAN ......... NOT EXECUTED
+ADMIN_ZAPI_TRANSACTIONAL_ENQUEUE  REQUIRED BEFORE DISPATCH ON
+
+BILLING_NOTIFICATIONS_DISPATCH .. OFF
+WHATSAPP_SERVICE_ENFORCEMENT .... OFF
+BACKFILL REN SUSHI .............. NO-GO
+CRON ............................ NO-GO
+MERGE ........................... NO-GO
+REMOTE COMMANDS ................. NO-GO
+```
+
+Demais bloqueios inalterados: `PSQL_NOT_INSTALLED` ·
+`LINKED_TO_PRODUCTION_REMOTE` · `REPLAY_FAILS_42P13` · `UNSAFE_AS_IS`.
+
+### Separação de cobertura — não confundir
+
+```
+WORKER_CORE_TESTS ............... EXECUTED
+DATABASE_TRANSACTION_TESTS ...... ENVIRONMENT_BLOCKED
+REAL_SUPABASE_CONSTRAINT_TESTS .. ENVIRONMENT_BLOCKED
+```
+
+Os 668 testes verdes **não** provam atomicidade no PostgreSQL, nem substituem a
+execução real de migrations ou Edge Functions. `FINDING-004` é
+`STATICALLY_RESOLVED` com `DATABASE_EXECUTION_PENDING`.
+
+### A próxima autorização operacional
+
+Só poderá ser avaliada depois de: ambiente capaz de validar banco · migrations
+aplicadas em execução controlada · grants, RLS e RPC verificados · EFs
+deployadas na ordem · backfill autorizado · execução manual do worker ·
+inspeção do ledger · critérios do cron satisfeitos.
+
+E o envio dos seis `admin_zapi_*` permanece bloqueado até existir enqueue
+transacional — ver [FASE-6B-FOLLOWUPS.md](FASE-6B-FOLLOWUPS.md).

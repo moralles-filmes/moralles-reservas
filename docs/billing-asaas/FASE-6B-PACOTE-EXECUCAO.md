@@ -59,12 +59,17 @@ cumpridos **nesta ordem**. Este pacote é a receita; ele **não é** a autoriza�
 CLI 2.111.0 presente; **Docker e `psql` ausentes**, logo **não existe stack local**
 e **todo comando remoto é NO-GO**.
 
-**Duas proibições que valem do início ao fim:**
+**Três proibições que valem do início ao fim:**
 
-- ⛔ **Nenhum *backfill*** antes dos seis gates (passo 4) e da conferência do
-  passo 9.
+- ⛔ **Nenhum *backfill*** antes dos seis gates (passo 4 — hoje `GO`) e da
+  conferência do passo 9.
 - ⛔ **Nenhum cron** antes do *backfill* conferido e de **duas execuções manuais
   idempotentes** (passo 12).
+- ⛔ **`billing_notifications_dispatch` NÃO pode ser ligado para os seis
+  `admin_zapi_*`** enquanto `ADMIN_ZAPI_ALERT_TRANSACTIONAL_ENQUEUE` não estiver
+  implementado e validado. Painel e ledger operam normalmente com o dispatch OFF
+  — é o modo previsto da fase. Requisito em
+  [FASE-6B-FOLLOWUPS.md](FASE-6B-FOLLOWUPS.md).
 
 **Regra herdada do Risco 7: NO-GO não é corrigido "no dado" para manter o rollout
 verde.** Se uma query de prova sair errada, para-se e investiga-se — não se ajusta
@@ -74,7 +79,7 @@ a linha por SQL.
 
 ## 1. Commits exatos
 
-Branch `billing-asaas/fase-6b`, 16 commits sobre `main`. Nada fora desta lista
+Branch `billing-asaas/fase-6b`, **23 commits** sobre `main`. Nada fora desta lista
 pertence ao pacote.
 
 ```
@@ -91,7 +96,16 @@ daf5bba  feat(6b): seis migrations — ESCRITAS, NAO APLICADAS
 3899348  feat(6b): EF de inventario, worker e painel
 a2ca27a  docs(6b): invariantes no CLAUDE.md
 58ce517  fix(6b): vocabulario canonico dos seis event_type + o enfileiramento
+ebb1380  docs(6b): continuidade com taxonomia de status e pacote de execucao
+916c072  docs(6b): diagnostico do ambiente local apos instalacao da CLI
+469ade2  docs(6b): vinculo com producao vira bloqueio, e a correcao sobre os gates
+b255407  fix(6b): tres bloqueantes do worker e os achados dos seis gates  (rodada 1)
+0ca1304  fix(6b): reauditoria — 8 achados, incluindo um ReferenceError   (rodada 2)
+19f8e53  fix(6b): lote de estabilizacao — FK x CHECK + extracao do nucleo (rodada 3)
+e446ba3  fix(6b): achados da passada final — enqueue em tres tempos      (rodada final)
 ```
+
+**Os dois ultimos sao o estado auditado por `SAAS_SHIELD_OVERALL: GO`.**
 
 **Mais três commits de hotfix que estão na mesma branch e também nunca foram
 deployados** — eles entram no pacote porque `_shared/billing-category.ts` mudou:
@@ -107,7 +121,7 @@ Verificação na máquina de destino:
 ```bash
 git fetch origin
 git checkout billing-asaas/fase-6b
-git log --oneline main..HEAD | wc -l        # esperado: 16
+git log --oneline main..HEAD | wc -l        # esperado: 23
 git status                                   # esperado: limpo
 ```
 
@@ -118,8 +132,9 @@ git status                                   # esperado: limpo
 ```bash
 npm install --legacy-peer-deps
 npm run typecheck        # tsc -b --noEmit — NUNCA sem -b
-npm test                 # esperado: 610 passando, 27 arquivos
-npm run lint             # 0 erros; warnings pré-existentes inalterados
+npm test                 # esperado: 668 passando, 28 arquivos
+npm run lint             # 0 erros; 22 warnings pré-existentes, inalterados
+npx eslint supabase/functions --max-warnings=0   # 0 — tambem roda no CI
 ```
 
 **`npm run typecheck` sem `-b` é no-op silencioso** (o root tem `files:[]` +
@@ -160,38 +175,42 @@ um *fallback* transformaria "Vault vazio" em "chama produção".
 
 ---
 
-## 4. Os seis gates `saas-shield-br`
+## 4. Os seis gates `saas-shield-br` — ✅ EXECUTADOS
 
-**Status atual: `SAAS_SHIELD_GATES_NOT_EXECUTED`.** Esta sessão não autorizou
-despacho de subagentes — isso é **bloqueio de execução, não dispensa**. Os gates
-são obrigatórios pelo CLAUDE.md porque a fase toca banco, RLS, Edge Function e
-multi-tenant.
+**`SAAS_SHIELD_OVERALL: GO`**, em quatro rodadas, contra `19f8e53` + `e446ba3`.
+Histórico completo, achados resolvidos, aceitos e rejeitados em
+[FASE-6B-GATES-SEGURANCA.md](FASE-6B-GATES-SEGURANCA.md).
 
-### Os seis gates NÃO dependem do ambiente
+```
+migration-validator ......... PASS_WITH_WARNINGS
+rls-auditor ................. PASS_WITH_WARNINGS
+tenant-isolation-auditor .... PASS_WITH_WARNINGS
+identity-access-auditor ..... PASS_WITH_WARNINGS
+integration-reliability ..... PASS_WITH_WARNINGS
+secret-hunter ............... PASS_STATIC_ONLY
 
-Verificado no *frontmatter* dos seis agentes: **todos declaram
-`tools: Read, Glob, Grep`** — nenhum tem *shell*, nenhum acessa banco. São
-auditorias **puramente estáticas** sobre os arquivos do repositório.
+zero P0 · zero P1 · zero P2 aberto
+```
 
-**Consequência para a ordem de trabalho:** a ausência de Docker **não** explica a
-não execução dos gates, e esperar por Docker para rodá-los seria erro de
-sequenciamento. O único bloqueio deles é **autorização de despacho de subagentes**,
-e eles podem rodar **antes** de qualquer instalação — inclusive agora, numa sessão
-que autorize.
+**Este passo deixa de ser bloqueio.** Os demais permanecem — o GO é do código, não
+do rollout.
 
-*(Nota do `secret-hunter`: ele não tem *shell*, então a varredura de histórico git
-— `gitleaks`/`trufflehog`/`git log` — e o *build* de *bundle* fresco são **emitidos
-como próxima ação**, não executados. Rodar esses comandos é trabalho humano
-separado.)*
+⛔ **`GIT_HISTORY_SECRET_SCAN` continua `NOT EXECUTED`** e é pendência **antes de
+qualquer decisão final de merge ou rollout**. O `secret-hunter` não tem *shell*;
+rodar `gitleaks`/`trufflehog` é trabalho humano separado. A ausência de Docker
+**não** interfere nesta tarefa.
 
 ⛔ **Não substitua os gates por autoavaliação informal.** "Eu li o código e parece
-certo" não é um gate.
+certo" não é um gate. Vale para qualquer reexecução futura.
 
 ⛔ **Guardrail estático local ≠ gate `saas-shield-br`.** O `acl-estatico` do CI, o
-`migration-static-guard`, o teste de acoplamento por string e os 610 testes são
-**guardrails estáticos locais** e estão verdes — registrá-los é correto, chamá-los
-de gate não é. Nenhum dos seis pode ser marcado como executado sem que o mecanismo
-aprovado tenha rodado.
+`migration-static-guard`, o teste de acoplamento por string, o lint das Edge
+Functions e os 668 testes são **guardrails estáticos locais**. Registrá-los é
+correto; chamá-los de gate não é.
+
+⛔ **`PASS_WITH_WARNINGS` não vira `PASS` na releitura.** Cinco gates carregam
+ressalvas com decisão registrada — uma aceita
+(`ACCEPTED_P3_WITH_FOLLOW_UP`) e uma rejeitada (`DISMISSED_WITH_EVIDENCE`).
 
 | Gate | Escopo mínimo nesta fase |
 |---|---|
@@ -575,13 +594,15 @@ bloqueio** — nunca resolvida com a credencial real.
 
 | Frente | Veredito |
 |---|---|
-| Núcleos puros e guardrails estáticos | **GO** — 125 testes por invariante |
+| Núcleos puros e guardrails estáticos | **GO** — 668 testes, por invariante |
 | Migrations 087–092 | **ESCRITO MAS NÃO EXECUTADO CONTRA BANCO** |
 | Edge Functions (9) | **NÃO DEPLOYADO** |
 | Painel | **NÃO DEPLOYADO** |
 | Integração com banco | **`ENVIRONMENT_BLOCKED`** — `42P13` + ambiente inseguro, dois bloqueios independentes |
 | Reconstrução do schema | **`SCHEMA_DERIVED_FROM_MIGRATIONS / REPLAY_FAILS_42P13 / UNSAFE_AS_IS`** |
-| Gates `saas-shield-br` | **`SAAS_SHIELD_GATES_NOT_EXECUTED`** |
+| Gates `saas-shield-br` | **`SAAS_SHIELD_OVERALL: GO`** — 4 rodadas, zero P0/P1/P2 aberto |
+| `GIT_HISTORY_SECRET_SCAN` | **`NOT EXECUTED`** — exige shell autorizado; pendência antes de merge/rollout |
+| Envio dos seis `admin_zapi_*` | **BLOQUEADO** — `ADMIN_ZAPI_TRANSACTIONAL_ENQUEUE: REQUIRED BEFORE DISPATCH ON` |
 | *Backfill* do Ren Sushi | **`NO_GO_BEFORE_BACKFILL`** |
 | Cron | **NO-GO** |
 | Merge em `main` + tag | **NO-GO** — depois dos gates e da observação de 3 dias |
@@ -590,7 +611,13 @@ bloqueio** — nunca resolvida com a credencial real.
 | Comandos remotos | **NO-GO** — nenhuma alteração remota autorizada |
 | Ambiente local (2026-08-02) | **B — apto apenas para validações estáticas** |
 
-**CÓDIGO PRONTO PARA REVISÃO: sim. ROLLOUT AUTORIZADO: não.**
+```
+SAAS_SHIELD_OVERALL: GO
+FASE_6B_ROLLOUT:     NO-GO
+```
+
+**CÓDIGO PRONTO PARA REVISÃO: sim. ROLLOUT AUTORIZADO: não.** O GO dos gates é
+do código auditado em `19f8e53` + `e446ba3` — não de nada executado.
 
 ---
 
