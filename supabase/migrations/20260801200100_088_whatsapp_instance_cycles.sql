@@ -176,7 +176,9 @@ commit;
 -- =====================================================================
 -- Rollback
 -- =====================================================================
+-- Sequência COMPLETA, nesta ordem. A 089 vem primeiro porque a trigger dela usa
+-- a função criada aqui; o Postgres recusa o `drop function` enquanto ela
+-- existir (falha segura, mas o operador perde tempo com erro genérico).
+--   drop table if exists whatsapp_instance_alerts;
 --   drop table if exists whatsapp_instance_cycles;
---   -- só depois de dropar TAMBÉM whatsapp_instance_alerts (089), que usa a
---   -- mesma função de guarda:
 --   drop function if exists public.whatsapp_instance_child_tenant_guard();

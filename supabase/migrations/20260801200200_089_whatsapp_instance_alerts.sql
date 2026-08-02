@@ -24,6 +24,15 @@ create table if not exists whatsapp_instance_alerts (
   -- deleção de uma organização não pode apagá-lo em silêncio. `cascade` aqui
   -- contradizia o `on delete set null` do channel_id logo abaixo, que existe
   -- exatamente para o ledger sobreviver à deleção do que ele descreve.
+  --
+  -- DIVERGE de billing_customers / organization_entitlement_overrides /
+  -- whatsapp_implementations, que usam `cascade` — divergência deliberada.
+  -- CONSEQUÊNCIA PARA QUEM VIER DEPOIS: hoje o `restrict` é inerte (o único
+  -- DELETE de organizations é o rollback de criação em manage-organizations,
+  -- que roda antes de existir linha filha). Uma feature futura de "excluir
+  -- organização" (LGPD, encerramento de conta) VAI bater em violação de FK
+  -- nestas três tabelas — ela precisa arquivar ou anonimizar antes do DELETE,
+  -- e essa é a decisão certa: o histórico de custo não desaparece por tabela.
   organization_id uuid not null references organizations(id) on delete restrict,
   instance_id uuid references whatsapp_instances(id) on delete set null,
   -- Só CHANNEL_WITHOUT_INSTANCE preenche: o painel precisa dizer QUAL canal
@@ -68,9 +77,14 @@ create table if not exists whatsapp_instance_alerts (
   updated_at timestamptz not null default now(),
 
   -- Sujeito coerente: alerta de organização não aponta instância.
+  -- O ramo ORGANIZATION exige `instance_id is null` EXPLICITAMENTE. Sem isso a
+  -- garantia "alerta de organização não aponta instância" existia só no código
+  -- produtor e no comentário — o schema aceitava a linha incoerente, e a guarda
+  -- de tenant não a recusaria (ela valida a organização da instância, que
+  -- bateria). Invariante afirmado no banco, não na intenção.
   constraint whatsapp_alerts_subject_chk check (
     (subject_type = 'INSTANCE' and instance_id is not null and subject_id = instance_id)
-    or (subject_type = 'ORGANIZATION' and subject_id = organization_id)
+    or (subject_type = 'ORGANIZATION' and instance_id is null and subject_id = organization_id)
   ),
 
   -- Resolver e reconhecer exigem registro de quando.

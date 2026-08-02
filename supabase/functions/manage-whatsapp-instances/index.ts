@@ -65,7 +65,13 @@ function jsonResponse(req: Request, body: unknown, status = 200) {
   });
 }
 
-async function isPlatformAdmin(userId: string): Promise<boolean> {
+/**
+ * `reqId` vem por PARÂMETRO, como em `create-billing-checkout`,
+ * `manage-billing`, `process-billing-overdue` e `stripe-webhook`. Não promover a
+ * `let` de módulo: seria exatamente o defeito do `adminRecipient` que o worker
+ * acabou de corrigir — estado de invocação sobrevivendo ao isolate.
+ */
+async function isPlatformAdmin(userId: string, reqId: string): Promise<boolean> {
   const { data, error } = await supabase
     .from("platform_admins")
     .select("user_id")
@@ -119,7 +125,7 @@ serve(async (req) => {
 
     // Sem exceção org-scoped nesta fase: NENHUMA action desta EF é
     // client-friendly. O lojista não vê o que a plataforma paga.
-    if (!(await isPlatformAdmin(callerId))) {
+    if (!(await isPlatformAdmin(callerId, reqId))) {
       return jsonResponse(req, { error: "Acesso restrito a administradores da plataforma." }, 403);
     }
 
@@ -229,6 +235,14 @@ serve(async (req) => {
 
       const costCents = body.current_monthly_cost_cents ?? null;
       const hasCost = costCents !== null && costCents !== undefined;
+      // Mesma validação de `set_cost`. A assimetria deixava um payload não
+      // inteiro cair em erro do Postgres e virar 500 genérico, em vez de 400
+      // dizendo o que está errado.
+      if (hasCost && (!Number.isInteger(costCents) || (costCents as number) < 0)) {
+        return jsonResponse(req, {
+          error: "Custo deve ser inteiro em centavos, ou nulo se desconhecido.",
+        }, 400);
+      }
 
       // Backfill NASCE em UNKNOWN quando a data não for confirmada: data
       // ausente não vira vencimento inventado, vira fila de revisão.

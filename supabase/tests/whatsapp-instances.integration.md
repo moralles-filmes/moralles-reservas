@@ -128,6 +128,49 @@ sucesso e uma EF quebrada é aprovada como se fosse defesa funcionando.
 | 13 | transição `ENDED → ACTIVE` é recusada pela EF | `ACTIVE → CANCELLATION_REQUESTED` conclui |
 | 14 | `provider_instance_ref` duplicado no mesmo provider é rejeitado | ref diferente é aceito |
 | 15 | dois `whatsapp_instances` apontando o mesmo `channel_id` é rejeitado | canal livre é aceito |
+| 16 | ciclo com `organization_id` ≠ org da instância é rejeitado pela guarda filha | par coerente é aceito |
+| 17 | alerta `INSTANCE` com `organization_id` ≠ org da instância é rejeitado | par coerente é aceito |
+| 18 | alerta `ORGANIZATION` (`instance_id` nulo) **passa** pela guarda filha | — é o controle positivo do caminho nulo |
+| 19 | `UPDATE` que troque `instance_id` para instância de outra org é rejeitado | troca dentro da mesma org é aceita |
+| 20 | apagar `organizations` com alerta no ledger é **recusado** (`restrict`) | apagar `whatsapp_channels` só anula `channel_id`, o alerta sobrevive |
+
+**Casos 16–20 nascem da reauditoria de segurança** (`tenant-isolation-auditor` e
+`migration-validator`, 2026-08-02). Eles cobrem
+`whatsapp_instance_child_tenant_guard()` e a FK `on delete restrict` do ledger —
+**regras que vivem no banco**, e por isso inalcançáveis por teste unitário. Como
+todos os anteriores, seguem `ENVIRONMENT_BLOCKED`.
+
+## Comportamento do worker que TAMBÉM não é testável aqui — e por quê
+
+Três correções bloqueantes de 2026-08-02 (`b255407`) são **fluxo de controle
+dentro da Edge Function**, não regra de banco nem aritmética pura:
+
+| # | Comportamento a provar |
+|---|---|
+| W1 | Duas invocações no MESMO isolate: a 1ª sem `platform_admins`, a 2ª com — a 2ª **resolve de novo** e enfileira |
+| W2 | Falha na query de instâncias em `stepDivergences`: **zero** divergências criadas, **zero** resolvidas, `failed` incrementado, erro observável |
+| W2b | Controle positivo: as duas queries OK → canal elegível sem inventário gera `CHANNEL_WITHOUT_INSTANCE` |
+| W3 | Falha na 1ª e na 2ª query de `stepEconomics`: `failed>0`, nenhum alerta criado nem resolvido com dado parcial |
+| W4 | D-1 com motivo A, estado muda, lembrete com motivo B: **mesma linha**, `payload` atualizado para B, sem duplicata |
+
+**Por que não estão em `src/lib/*.test.ts`:**
+`process-whatsapp-instance-cycles/index.ts` importa de
+`https://deno.land/std@0.168.0/http/server.ts` e `https://esm.sh/@supabase/supabase-js@2`,
+e chama `serve()` no carregamento do módulo. **O vitest não consegue importá-lo.**
+
+**Um teste que apenas verificasse "a variável foi zerada" lendo o texto-fonte não
+é o teste pedido** — ele passaria com a variável zerada no lugar errado, e daria
+falsa confiança sobre comportamento que nunca executou.
+
+**Caminho correto, registrado como trabalho pendente:** extrair os cinco passos do
+worker para um núcleo que receba o cliente por injeção, deixando o `index.ts` como
+casca de `serve()` + autenticação. Aí W1–W4 viram teste real de vitest com cliente
+falso, **sem depender de Docker**. É refatoração de código já auditado — precisa
+acontecer entre uma auditoria e a seguinte, nunca durante.
+
+Até lá: **W1–W4 são `NOT_EXECUTED`**, e as correções estão sustentadas por
+verificação de código (leitura direta na consolidação dos gates), não por teste
+automatizado. Não registrar como cobertas.
 
 ## Por que integração e não unitário
 

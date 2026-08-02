@@ -183,19 +183,36 @@ async function upsertAlert(a: {
   const last = existing.last_reminder_at ? Date.parse(existing.last_reminder_at) : 0;
   const due = Date.now() - last >= REMINDER_INTERVAL_MS;
 
+  // O SLOT MENSAL SÓ É GASTO SE HOUVER PARA QUEM AVISAR. Avançar
+  // `last_reminder_at` antes de saber disso empurra o próximo lembrete real
+  // por 30 dias sem que e-mail nenhum tenha saído — o pior dos dois mundos,
+  // porque o ledger registra "lembrado".
+  const recipient = due ? await resolveAdminRecipientOnce() : null;
+  const remind = due && !!recipient;
+  if (due && !recipient) {
+    jsonLog("error", {
+      reqId, evt: "wa_alert_reminder_no_recipient", alertType: a.alertType,
+      needsAdminAction: true,
+    });
+  }
+
   const { error: updErr } = await supabase
     .from("whatsapp_instance_alerts")
     .update({
       last_seen_at: nowIso,
-      occurrences: existing.occurrences + (due ? 1 : 0),
-      last_reminder_at: due ? nowIso : existing.last_reminder_at,
+      occurrences: existing.occurrences + (remind ? 1 : 0),
+      last_reminder_at: remind ? nowIso : existing.last_reminder_at,
       // Payload REESCRITO a cada passada. A chave do D-1 deixou de carregar os
       // motivos justamente para não abrir linha nova quando eles mudam — se o
       // payload não acompanhasse, o admin leria a lista do primeiro dia como se
       // ainda valesse.
       payload: a.payload,
     })
-    .eq("id", existing.id);
+    .eq("id", existing.id)
+    // Defesa em profundidade: a guarda de tenant das filhas dispara em
+    // `update of organization_id, instance_id`, e este UPDATE não toca nenhuma
+    // das duas — então ela NÃO cobre esta escrita. O predicado cobre.
+    .eq("organization_id", a.organizationId);
 
   if (updErr) {
     jsonLog("error", {
@@ -204,7 +221,7 @@ async function upsertAlert(a: {
     });
     return "failed";
   }
-  if (!due) return "seen";
+  if (!remind) return "seen";
   await enqueueAlertNotification(a.alertType, a.organizationId);
   return "reminded";
 }
@@ -346,6 +363,12 @@ async function stepCycleAlerts(today: string): Promise<StepSummary[]> {
   }
 
   for (const r of rows ?? []) {
+    // Fase corrente da iteração. Tudo depois do bloco D-7 — inclusive a leitura
+    // de receita e de divergência, que só alimentam o D-1 — precisa cair no
+    // contador do D-1. Creditar sempre ao D-7 fazia o resumo dizer
+    // `alerts_d1: { failed: 0 }` justamente quando o D-1 falhou, e o D-1 é o
+    // aviso urgente: há cobrança chegando amanhã.
+    let phase: "d7" | "d1" = "d7";
     try {
       // cycle_source UNKNOWN não emite D-7/D-1: a instância está na fila de
       // revisão de data e nenhum aviso pode AFIRMAR uma data que ninguém
@@ -369,6 +392,8 @@ async function stepCycleAlerts(today: string): Promise<StepSummary[]> {
         if (res === "failed") d7.failed++;
         else d7.processed++;
       }
+
+      phase = "d1";
 
       // Receita atribuída para distinguir "receita NULL prevista" de lacuna.
       const revenue = await resolveRevenueForOrg(r.organization_id);
@@ -397,10 +422,11 @@ async function stepCycleAlerts(today: string): Promise<StepSummary[]> {
       }
     } catch (e) {
       jsonLog("error", {
-        reqId, evt: "wa_alerts_exception", instanceId: r.id,
+        reqId, evt: "wa_alerts_exception", instanceId: r.id, phase,
         err: String(e), needsAdminAction: true,
       });
-      d7.failed++;
+      if (phase === "d1") d1.failed++;
+      else d7.failed++;
     }
   }
   return [d7, d1];
@@ -674,19 +700,30 @@ async function stepEconomics(today: string): Promise<StepSummary> {
     return s;
   }
 
+  // try/catch por item, igual a todos os outros laços do arquivo. `upsertAlert`
+  // hoje não lança, mas depender disso transforma qualquer `throw` futuro dentro
+  // dele em aborto silencioso deste passo.
   for (const r of unknownDate ?? []) {
-    const res = await upsertAlert({
-      subjectType: "INSTANCE",
-      subjectId: r.id,
-      organizationId: r.organization_id,
-      instanceId: r.id,
-      channelId: null,
-      alertType: "DATE_REVIEW_REQUIRED",
-      dedupeKey: dedupeKeyDateReview(monthBrt, r.id),
-      payload: { reason: "cycle_source UNKNOWN" },
-    });
-    if (res === "failed") s.failed++;
-    else s.processed++;
+    try {
+      const res = await upsertAlert({
+        subjectType: "INSTANCE",
+        subjectId: r.id,
+        organizationId: r.organization_id,
+        instanceId: r.id,
+        channelId: null,
+        alertType: "DATE_REVIEW_REQUIRED",
+        dedupeKey: dedupeKeyDateReview(monthBrt, r.id),
+        payload: { reason: "cycle_source UNKNOWN" },
+      });
+      if (res === "failed") s.failed++;
+      else s.processed++;
+    } catch (e) {
+      jsonLog("error", {
+        reqId, evt: "wa_econ_date_review_exception", instanceId: r.id,
+        err: String(e), needsAdminAction: true,
+      });
+      s.failed++;
+    }
   }
 
   // CUSTO DESCONHECIDO NÃO TEM ALERTA PRÓPRIO nesta fase. O ciclo em
@@ -762,6 +799,17 @@ async function stepEconomics(today: string): Promise<StepSummary> {
       s.failed++;
     }
   }
+
+  // "Nenhuma organização elegível" e "nenhum desequilíbrio" produziam o MESMO
+  // `{processed: 0, failed: 0}`. Num passo cuja função é detectar prejuízo,
+  // silêncio ambíguo não é resultado — os dois casos passam a ser afirmados.
+  jsonLog("info", {
+    reqId,
+    evt: "wa_econ_scan_done",
+    eligibleOrgs: byOrg.size,
+    dateReviewPending: (unknownDate ?? []).length,
+    imbalancesReported: s.processed,
+  });
 
   return s;
 }
