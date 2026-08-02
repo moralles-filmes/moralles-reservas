@@ -123,8 +123,9 @@ como lista vazia. Isso não autoriza reabrir a 6b para corrigir o existente.
 
 Nenhum dos dois é pendência de rollout da 6b. O rollout está barrado por outros
 motivos — ambiente incapaz de validar banco, migrations não aplicadas, EFs não
-deployadas, `GIT_HISTORY_SECRET_SCAN` pendente. Ver
-[FASE-6B-GATES-SEGURANCA.md](FASE-6B-GATES-SEGURANCA.md).
+deployadas. Ver [FASE-6B-GATES-SEGURANCA.md](FASE-6B-GATES-SEGURANCA.md).
+(`GIT_HISTORY_SECRET_SCAN` deixou de ser pendência em 2026-08-02: executada, um
+incidente encontrado e **contido**.)
 
 O primeiro follow-up entra no GO/NO-GO **de uma decisão futura e específica**:
 ligar o envio de e-mail dos alertas administrativos.

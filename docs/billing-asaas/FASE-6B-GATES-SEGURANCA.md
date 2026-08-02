@@ -448,40 +448,61 @@ npm test ........................ 668/668  (era 611; +44 núcleo do worker, +13 
 npm run typecheck ............... 0 erros
 eslint supabase/functions ....... 0 erros com --max-warnings=0  (agora NO CI)
 npm run lint .................... 0 erros, 22 warnings (baseline inalterada)
-migration-static-guard .......... 5/5
+migration-static-guard .......... 6/6  (+1: header de auth com valor literal, do incidente)
 function-acl-allowlist .......... 8/8
 acoplamento event_type ↔ template  6/6  (+1: a decisão de enfileirar fica no núcleo)
 varredura de secret no diff ..... limpa (único casamento foi falso positivo: `re_` casando `RE_T` em `WORKER_CORE_TESTS`)
 ```
 
-## `GIT_HISTORY_SECRET_SCAN: NOT EXECUTED`
+## `GIT_HISTORY_SECRET_SCAN: EXECUTED — 1 INCIDENTE, CONTIDO`
 
-**A ausência de Docker NÃO interfere nesta tarefa.** Ela depende só de instalar
-ou executar `gitleaks`, `trufflehog` ou equivalente num shell autorizado.
+Executada em 2026-08-02 com `gitleaks` 8.30.1, instalado via `scoop` — sem
+Docker, sem privilégio administrativo, sem reinício. **A ausência de Docker
+nunca interferiu nesta tarefa**, como já estava registrado.
 
-Não bloqueia o resultado estático dos gates, mas **permanece pendência antes de
-qualquer decisão final de merge ou rollout**, conforme o pacote aprovado.
-
-**Protocolo quando for executada:**
-
-- **não exibir secrets** — nem em log, nem em relatório, nem em issue;
-- registrar apenas **tipo, arquivo/commit e veredito sanitizado**;
-- qualquer secret real é **incidente**, não achado de rotina;
-- **rotacionar no provider ANTES** de apenas remover do histórico — reescrever
-  história não desfaz o que já foi clonado ou indexado.
-
-Comandos:
-
-```bash
-gitleaks detect --source . --redact
-trufflehog git file://. --only-verified
-git log -p --all -S "SUPABASE_SERVICE_ROLE_KEY" | head -100
-git log -p --all -S "ZAPI_CLIENT_TOKEN" | head -100
-git log --all --full-history -- "**/.env*"
-git fsck --unreachable --no-reflogs
+```
+commits varridos ................ 361
+achados brutos .................. 5
+  falsos positivos .............. 4
+  secret real ................... 1  → INCIDENTE
 ```
 
-**Working tree limpo é evidência do estado atual, não do histórico.**
+**Achado real:** `INTERNAL_API_KEY` em texto claro dentro de
+`supabase/migrations/022_reservation_source.sql` (renomeada depois para
+`20260506181440_022_reservation_source.sql`), introduzida em `b5098c6`
+(2026-05-06) e **presente em `HEAD`** até o saneamento. Janela de ~88 dias.
+
+**Estado:** `CONTIDO`. Chave rotacionada nos dois lugares (segredo das Edge
+Functions e Vault `internal_api_key`), trigger removido do arquivo, guardrail
+estático estendido para pegar a forma que faltava.
+
+O registro completo — tipo, local, commits, contenção, verificação e risco
+residual, **sem o valor** — está em
+[INCIDENTE-2026-08-02-INTERNAL-API-KEY.md](../INCIDENTE-2026-08-02-INTERNAL-API-KEY.md).
+
+### O protocolo foi seguido, com uma falha registrada
+
+Cumpridos: registrar só tipo/arquivo/commit e veredito sanitizado; tratar secret
+real como incidente; **rotacionar antes** de remover do histórico.
+
+**Não cumprido:** "não exibir secrets". Durante a apuração, o comando usado para
+inspecionar o trecho do commit histórico **não mascarava a saída**, e o valor foi
+impresso antes de a natureza real do achado ser conhecida. Está registrado na
+§4 do documento do incidente, junto da regra que fica: **inspeção de achado usa
+saída mascarada — "real ou falso positivo" se decide pela forma e pelo contexto,
+não por ler o valor.**
+
+### Por que o CI não pegou
+
+`scripts/migration-static-guard.test.ts` cobria `sk-`, `sk-ant-`, `xai-`, `re_`,
+JWT e URL com credencial. **Nenhuma dessas formas casa com um hex de 64 sem
+prefixo.** Corrigido no mesmo lote: nova forma "header de auth com valor
+literal", com controle positivo **e negativo** — o negativo existe porque um
+regex mais amplo reprovaria os 15 wrappers de `pg_cron`, que montam o header por
+concatenação a partir do Vault (padrão correto).
+
+**Working tree limpo é evidência do estado atual, não do histórico** — foi
+exatamente esse o caso aqui.
 
 ---
 
@@ -540,7 +561,7 @@ PANEL ........................... WRITTEN / NOT DEPLOYED
 DATABASE INTEGRATION ............ ENVIRONMENT_BLOCKED
 DOCKER .......................... NOT INSTALLED
 LOCAL SUPABASE STACK ............ UNAVAILABLE
-GIT_HISTORY_SECRET_SCAN ......... NOT EXECUTED
+GIT_HISTORY_SECRET_SCAN ......... EXECUTED — 1 incidente, CONTIDO
 ADMIN_ZAPI_TRANSACTIONAL_ENQUEUE  REQUIRED BEFORE DISPATCH ON
 
 BILLING_NOTIFICATIONS_DISPATCH .. OFF

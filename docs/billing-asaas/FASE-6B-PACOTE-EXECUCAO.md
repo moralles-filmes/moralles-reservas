@@ -195,10 +195,14 @@ zero P0 · zero P1 · zero P2 aberto
 **Este passo deixa de ser bloqueio.** Os demais permanecem — o GO é do código, não
 do rollout.
 
-⛔ **`GIT_HISTORY_SECRET_SCAN` continua `NOT EXECUTED`** e é pendência **antes de
-qualquer decisão final de merge ou rollout**. O `secret-hunter` não tem *shell*;
-rodar `gitleaks`/`trufflehog` é trabalho humano separado. A ausência de Docker
-**não** interfere nesta tarefa.
+✅ **`GIT_HISTORY_SECRET_SCAN` foi executada** em 2026-08-02 (`gitleaks` 8.30.1,
+361 commits): 5 achados, 4 falsos positivos, **1 secret real** — a
+`INTERNAL_API_KEY` em claro na migration 022, presente em `HEAD`. Tratado como
+**incidente** e **CONTIDO**: chave rotacionada nos dois lugares, arquivo saneado,
+guardrail estático estendido. Registro em
+[INCIDENTE-2026-08-02-INTERNAL-API-KEY.md](../INCIDENTE-2026-08-02-INTERNAL-API-KEY.md).
+
+**Este passo deixa de ser bloqueio.** Os demais permanecem.
 
 ⛔ **Não substitua os gates por autoavaliação informal.** "Eu li o código e parece
 certo" não é um gate. Vale para qualquer reexecução futura.
@@ -601,7 +605,7 @@ bloqueio** — nunca resolvida com a credencial real.
 | Integração com banco | **`ENVIRONMENT_BLOCKED`** — `42P13` + ambiente inseguro, dois bloqueios independentes |
 | Reconstrução do schema | **`SCHEMA_DERIVED_FROM_MIGRATIONS / REPLAY_FAILS_42P13 / UNSAFE_AS_IS`** |
 | Gates `saas-shield-br` | **`SAAS_SHIELD_OVERALL: GO`** — 4 rodadas, zero P0/P1/P2 aberto |
-| `GIT_HISTORY_SECRET_SCAN` | **`NOT EXECUTED`** — exige shell autorizado; pendência antes de merge/rollout |
+| `GIT_HISTORY_SECRET_SCAN` | **`EXECUTED`** — 361 commits, 1 secret real → incidente **CONTIDO** (rotação + saneamento + guardrail) |
 | Envio dos seis `admin_zapi_*` | **BLOQUEADO** — `ADMIN_ZAPI_TRANSACTIONAL_ENQUEUE: REQUIRED BEFORE DISPATCH ON` |
 | *Backfill* do Ren Sushi | **`NO_GO_BEFORE_BACKFILL`** |
 | Cron | **NO-GO** |

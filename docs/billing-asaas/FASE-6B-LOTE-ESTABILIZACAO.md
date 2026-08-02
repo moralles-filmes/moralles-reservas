@@ -264,6 +264,9 @@ impacto.
 
 Mesmo com os gates em GO: migrations não aplicadas, EFs não deployadas, painel
 não deployado, integração com banco `ENVIRONMENT_BLOCKED`, Docker ausente,
-backfill NO-GO, cron NO-GO, merge NO-GO, `GIT_HISTORY_SECRET_SCAN` não
-executado, comandos remotos proibidos. O repositório permanece vinculado à
-produção.
+backfill NO-GO, cron NO-GO, merge NO-GO, comandos remotos proibidos. O
+repositório permanece vinculado à produção.
+
+`GIT_HISTORY_SECRET_SCAN` era pendência quando este documento foi escrito;
+foi executada em 2026-08-02, encontrou um secret real e o incidente está
+**contido**. Ver [INCIDENTE-2026-08-02-INTERNAL-API-KEY.md](../INCIDENTE-2026-08-02-INTERNAL-API-KEY.md).

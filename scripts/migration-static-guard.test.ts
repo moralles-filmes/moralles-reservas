@@ -47,6 +47,17 @@ const SECRET_SHAPES: { name: string; re: RegExp }[] = [
   { name: "Resend", re: /\bre_[A-Za-z0-9_-]{16,}/ },
   { name: "JWT", re: /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}/ },
   { name: "URL com credencial", re: /postgres(?:ql)?:\/\/[^\s:'"]+:[^\s@'"]+@/i },
+  // Header de autenticação com valor LITERAL. Nasceu do incidente de
+  // 2026-08-02: a `INTERNAL_API_KEY` estava em claro num header montado dentro
+  // de `create trigger ... supabase_functions.http_request(...)` na 022, e
+  // nenhuma das formas acima casa com um hex de 64 — a chave atravessou o CI
+  // sem ser vista. Detecta só valor literal: o padrão CORRETO monta o header
+  // por concatenação a partir do Vault (`'...' || v_key || '...'`), e a classe
+  // negada `[^"']` faz a concatenação não casar.
+  {
+    name: "header de auth com valor literal",
+    re: /["'](?:x-internal-key|authorization|apikey|x-api-key)["']\s*:\s*["'][^"']{16,}["']/i,
+  },
 ];
 
 function migrationFiles(): string[] {
@@ -97,5 +108,23 @@ describe("guardrail estático de migrations", () => {
     );
     expect(PROJECT_URL.test("url := project_url || '/functions/v1/x'")).toBe(false);
     expect(SECRET_SHAPES[4].re.test("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghij")).toBe(true);
+  });
+
+  it("controle positivo e negativo: header de auth com valor literal", () => {
+    const shape = SECRET_SHAPES.find((s) => s.name === "header de auth com valor literal")!;
+    const fakeHex = "f".repeat(64);
+
+    // A FORMA do incidente de 2026-08-02 (valor fictício, nunca o real).
+    expect(shape.re.test(`'{"Content-type":"application/json","X-Internal-Key":"${fakeHex}"}'`)).toBe(
+      true,
+    );
+    expect(shape.re.test(`'{"Authorization":"Bearer ${fakeHex}"}'`)).toBe(true);
+
+    // O padrão CORRETO — header montado do Vault por concatenação — não casa.
+    // Sem esta asserção, apertar o regex quebraria os 15 wrappers de pg_cron.
+    expect(
+      shape.re.test(`'{"Content-type":"application/json","x-internal-key":"' || v_key || '"}'`),
+    ).toBe(false);
+    expect(shape.re.test(`format('{"x-internal-key":"%s"}', v_key)`)).toBe(false);
   });
 });

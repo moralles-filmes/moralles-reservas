@@ -388,7 +388,7 @@ O que resta é externo ao código:
 
 | Pendência | Onde |
 |---|---|
-| `GIT_HISTORY_SECRET_SCAN` — `gitleaks`/`trufflehog` em shell autorizado | [FASE-6B-GATES-SEGURANCA.md](FASE-6B-GATES-SEGURANCA.md) |
+| ~~`GIT_HISTORY_SECRET_SCAN`~~ — **executada**; 1 incidente **CONTIDO** | [INCIDENTE-2026-08-02-INTERNAL-API-KEY.md](../INCIDENTE-2026-08-02-INTERNAL-API-KEY.md) |
 | Ambiente capaz de validar banco (Docker, `psql`, stack isolada) | [FASE-6B-DIAGNOSTICO-AMBIENTE.md](FASE-6B-DIAGNOSTICO-AMBIENTE.md) |
 | `ADMIN_ZAPI_ALERT_TRANSACTIONAL_ENQUEUE` — antes de ligar o dispatch | [FASE-6B-FOLLOWUPS.md](FASE-6B-FOLLOWUPS.md) |
 | Rollout em 21 passos, quando autorizado | [FASE-6B-PACOTE-EXECUCAO.md](FASE-6B-PACOTE-EXECUCAO.md) |
