@@ -88,4 +88,8 @@ revoke all on function public.trigger_whatsapp_instance_cycles() from public, an
 -- =====================================================================
 -- Rollback
 -- =====================================================================
+-- DEGRAU 1 da sequência, e o único com pré-requisito FORA de migration:
+-- desagendar o job ANTES de remover a função, senão o cron dispara contra
+-- função inexistente até alguém notar. Ordem inversa completa da fase na 088.
+--   select cron.unschedule('whatsapp-instance-cycles');   -- se a 093 foi aplicada
 --   drop function if exists public.trigger_whatsapp_instance_cycles();

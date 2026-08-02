@@ -48,10 +48,23 @@ export async function resolveBillingRecipient(
  * por ciclo (índice é PARCIAL: where invoice_id is not null, logo chamadas com
  * invoiceId: null não são deduplicadas). Best-effort: nunca lança.
  */
+/**
+ * Devolve `true` quando o aviso está NA FILA — inclusive por dedupe, porque
+ * `23505` significa que a linha já existe e alguém vai despachá-la.
+ *
+ * O retorno era `void` e a falha só ia para o log. Isso basta para quem
+ * enfileira e segue, mas NÃO para quem grava um "já avisei" ao lado: o worker
+ * de ciclos avançava `last_reminder_at` em cima de um enfileiramento que podia
+ * ter falhado, e o próximo lembrete real só sairia 30 dias depois — o pior dos
+ * dois mundos, porque o ledger afirmava "lembrado".
+ *
+ * Ampliar `void` → `boolean` é compatível com os chamadores existentes, que
+ * ignoram o retorno: uma cópia antiga em memória continua correta.
+ */
 export async function enqueueBillingNotification(
   supabase: SupabaseClient,
   n: { organizationId: string; eventType: string; invoiceId: string | null; recipient: string },
-): Promise<void> {
+): Promise<boolean> {
   const { error } = await supabase.from("billing_notifications").insert({
     organization_id: n.organizationId,
     event_type: n.eventType,
@@ -66,14 +79,18 @@ export async function enqueueBillingNotification(
       event_type: n.eventType,
       org: n.organizationId,
     });
-  } else if (error) {
+    return true;
+  }
+  if (error) {
     jsonLog("error", {
       evt: "billing_notification_enqueue_failed",
       event_type: n.eventType,
       org: n.organizationId,
       err: error.message,
     });
+    return false;
   }
+  return true;
 }
 
 // Teto de VARREDURA da busca abaixo — não de destinatários. Esta função é

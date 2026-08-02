@@ -171,6 +171,10 @@ commit;
 -- =====================================================================
 -- Rollback
 -- =====================================================================
+-- Estes três drops são o DEGRAU 2 da sequência. A ordem inversa completa da
+-- fase (092 → 090 → 089 → 088 → 087), com a advertência sobre o que o
+-- `drop table` destrói, está publicada na 088 — único lugar onde ela vive
+-- inteira. Não executar este bloco isolado sem ler lá.
 --   drop function if exists public.roll_whatsapp_instance_cycle(uuid, date, date);
 --   drop function if exists public.try_whatsapp_instance_cycles_lock();
 --   drop function if exists public.release_whatsapp_instance_cycles_lock();

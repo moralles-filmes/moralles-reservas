@@ -174,11 +174,60 @@ commit;
 --    where tgname = 'whatsapp_instance_cycles_tenant_guard';
 --
 -- =====================================================================
--- Rollback
+-- Rollback da Fase 6b — ordem inversa COMPLETA (087 → 092)
 -- =====================================================================
--- Sequência COMPLETA, nesta ordem. A 089 vem primeiro porque a trigger dela usa
--- a função criada aqui; o Postgres recusa o `drop function` enquanto ela
--- existir (falha segura, mas o operador perde tempo com erro genérico).
---   drop table if exists whatsapp_instance_alerts;
---   drop table if exists whatsapp_instance_cycles;
+--
+--   ┌───────────────────────────────────────────────────────────────────┐
+--   │  DROP TABLE DE whatsapp_instance_alerts OU                        │
+--   │  whatsapp_instance_cycles DESTRÓI AUDITORIA OPERACIONAL E         │
+--   │  FINANCEIRA DE FORMA IRREVERSÍVEL.                                │
+--   │                                                                   │
+--   │  São as duas únicas tabelas que registram o que a PLATAFORMA      │
+--   │  pagou ao fornecedor e o que um administrador humano decidiu      │
+--   │  sobre cada ciclo. Não há segunda cópia, e o provedor não         │
+--   │  reconstrói o histórico.                                          │
+--   └───────────────────────────────────────────────────────────────────┘
+--
+-- ROLLBACK OPERACIONAL PREFERENCIAL — não destrutivo, e é o caminho padrão:
+--   1. desagendar o cron  (select cron.unschedule('whatsapp-instance-cycles'))
+--   2. retirar o painel   (deploy do frontend sem a rota)
+--   3. desabilitar as actions (deploy da EF, ou remoção dela)
+--   4. parar de usar as tabelas
+--   5. PRESERVAR OS DADOS
+-- Isso interrompe todo comportamento da fase sem perder um registro sequer.
+--
+-- ROLLBACK DESTRUTIVO DE SCHEMA — NÃO é o caminho padrão e EXIGE AUTORIZAÇÃO
+-- ESPECÍFICA de quem responde pelo dado. Só então, nesta ordem — que é a
+-- inversa REAL das dependências, não a ordem numérica invertida:
+--
+--   -- 092: o cron chama a função; desagendar ANTES de removê-la, senão o job
+--   --      dispara contra função inexistente até alguém notar.
+--   select cron.unschedule('whatsapp-instance-cycles');   -- se a 093 foi aplicada
+--   drop function if exists public.trigger_whatsapp_instance_cycles();
+--
+--   -- 090: as RPCs escrevem nas duas tabelas; removê-las antes evita que uma
+--   --      execução em voo grave em tabela que está sendo derrubada.
+--   drop function if exists public.roll_whatsapp_instance_cycle(uuid, date, date);
+--   drop function if exists public.try_whatsapp_instance_cycles_lock();
+--   drop function if exists public.release_whatsapp_instance_cycles_lock();
+--
+--   -- 091: as flags foram REMOVIDAS por ela; restaurá-las é migration nova
+--   --      (docs/billing-asaas/restore-zapi-auto-flags.sql). Não há drop aqui.
+--
+--   -- 089 antes da 088: a trigger de alertas usa a função criada AQUI, e o
+--   --      Postgres recusa o `drop function` enquanto ela existir.
+--   drop trigger if exists whatsapp_instance_alerts_subject_guard on whatsapp_instance_alerts;
+--   drop function if exists public.whatsapp_alert_subject_guard();
+--   drop table if exists whatsapp_instance_alerts;   -- ⚠ destrói auditoria
+--
+--   -- 088:
+--   drop table if exists whatsapp_instance_cycles;   -- ⚠ destrói auditoria
 --   drop function if exists public.whatsapp_instance_child_tenant_guard();
+--
+--   -- 087: por último — as duas tabelas acima referenciam whatsapp_instances.
+--   --      Ver o rollback da própria 087.
+--
+-- ATENÇÃO AO REPLAY: o Postgres NÃO rastreia dependências dentro do corpo de
+-- funções PL/pgSQL (`pg_depend` é cego a elas). Um `drop table` fora de ordem
+-- SUCEDE e deixa a RPC quebrada, falhando só na próxima execução do worker.
+-- A ordem acima existe por isso — o banco não vai avisar.

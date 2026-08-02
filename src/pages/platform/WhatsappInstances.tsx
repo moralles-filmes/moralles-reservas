@@ -367,6 +367,11 @@ export default function WhatsappInstances() {
             (action.variables as { alert_id?: string } | undefined)?.alert_id === a.id;
           const kind = typeof a.payload?.kind === "string" ? a.payload.kind : null;
           const detail = typeof a.payload?.detail === "string" ? a.payload.detail : null;
+          // A instância foi EXCLUÍDA fisicamente: a FK nulou `instance_id` e o
+          // ledger sobreviveu — `subject_id` continua guardando de quem era o
+          // alerta. Sem esta marcação, a linha pareceria um alerta de instância
+          // que simplesmente não abre.
+          const instanceGone = a.subject_type === "INSTANCE" && !a.instance_id;
 
           return (
             <Card key={a.id}>
@@ -374,6 +379,11 @@ export default function WhatsappInstances() {
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge className="bg-warning/10 text-warning">{a.alert_type}</Badge>
                   {kind && <Badge variant="outline">{divergenceLabel(kind)}</Badge>}
+                  {instanceGone && (
+                    <Badge variant="outline" className="text-muted-foreground">
+                      instância removida
+                    </Badge>
+                  )}
                   <span className="text-xs text-muted-foreground">
                     desde {formatDateBR(a.first_detected_at.slice(0, 10))} · {a.occurrences}×
                   </span>

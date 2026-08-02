@@ -140,37 +140,64 @@ sucesso e uma EF quebrada é aprovada como se fosse defesa funcionando.
 **regras que vivem no banco**, e por isso inalcançáveis por teste unitário. Como
 todos os anteriores, seguem `ENVIRONMENT_BLOCKED`.
 
-## Comportamento do worker que TAMBÉM não é testável aqui — e por quê
+### FK × CHECK do ledger — casos FK-A a FK-E
 
-Três correções bloqueantes de 2026-08-02 (`b255407`) são **fluxo de controle
-dentro da Edge Function**, não regra de banco nem aritmética pura:
+Nascem do `FINDING-004` do `rls-auditor` (rodada 3). O defeito é **latente desde
+a versão original da migration 089**, não regressão de correção: a FK
+`instance_id … on delete set null` convivia com um CHECK que exigia
+`instance_id is not null` no ramo INSTANCE, e apagar uma instância com alerta
+abortava a transação inteira com `check_violation` — o oposto do contrato
+"o ledger sobrevive nulando".
 
-| # | Comportamento a provar |
-|---|---|
-| W1 | Duas invocações no MESMO isolate: a 1ª sem `platform_admins`, a 2ª com — a 2ª **resolve de novo** e enfileira |
-| W2 | Falha na query de instâncias em `stepDivergences`: **zero** divergências criadas, **zero** resolvidas, `failed` incrementado, erro observável |
-| W2b | Controle positivo: as duas queries OK → canal elegível sem inventário gera `CHANNEL_WITHOUT_INSTANCE` |
-| W3 | Falha na 1ª e na 2ª query de `stepEconomics`: `failed>0`, nenhum alerta criado nem resolvido com dado parcial |
-| W4 | D-1 com motivo A, estado muda, lembrete com motivo B: **mesma linha**, `payload` atualizado para B, sem duplicata |
+Estes cinco são o único jeito de provar o desenho novo: **três operações
+distintas do banco** (INSERT recusado por trigger, coerção da FK num DELETE,
+CHECK avaliando linha coagida) que nenhum teste de núcleo alcança.
 
-**Por que não estão em `src/lib/*.test.ts`:**
-`process-whatsapp-instance-cycles/index.ts` importa de
-`https://deno.land/std@0.168.0/http/server.ts` e `https://esm.sh/@supabase/supabase-js@2`,
-e chama `serve()` no carregamento do módulo. **O vitest não consegue importá-lo.**
+| # | Situação | Esperado |
+|---|---|---|
+| FK-A | `INSERT` INSTANCE com `instance_id` preenchido e `subject_id = instance_id` | **aceito** |
+| FK-B | `INSERT` INSTANCE com `instance_id` preenchido e `subject_id` diferente | **rejeitado** pela trigger `whatsapp_alert_subject_guard` |
+| FK-B2 | `INSERT` INSTANCE com `instance_id` **nulo** | **rejeitado** — alerta de instância nasce apontando instância viva |
+| FK-C | `DELETE` da `whatsapp_instances` que tem alerta INSTANCE aberto | `instance_id` vira `NULL`; `subject_id` e `organization_id` **inalterados**; o alerta **não é apagado**; a transação conclui **sem** `check_violation` |
+| FK-D | `INSERT` ORGANIZATION com `instance_id` nulo e `subject_id = organization_id` | **aceito** |
+| FK-E | `INSERT` ORGANIZATION com `instance_id` preenchido, **ou** `subject_id` ≠ `organization_id` | **rejeitado** pelo CHECK |
+| FK-F | `UPDATE` que altere `subject_id` de qualquer linha | **rejeitado** — identidade histórica é imutável |
+| FK-G | `UPDATE` que reaponte `instance_id` de uma instância viva para **outra** | **rejeitado** — transferiria custo entre instâncias sem rastro |
 
-**Um teste que apenas verificasse "a variável foi zerada" lendo o texto-fonte não
-é o teste pedido** — ele passaria com a variável zerada no lugar errado, e daria
-falsa confiança sobre comportamento que nunca executou.
+Controle positivo do FK-C: depois do `DELETE`, `select subject_id,
+organization_id, alert_type from whatsapp_instance_alerts where id = <id>`
+devolve **a mesma linha**, com `instance_id is null`. Se a linha sumiu, a FK está
+em `cascade` — regressão grave, porque apaga auditoria financeira.
 
-**Caminho correto, registrado como trabalho pendente:** extrair os cinco passos do
-worker para um núcleo que receba o cliente por injeção, deixando o `index.ts` como
-casca de `serve()` + autenticação. Aí W1–W4 viram teste real de vitest com cliente
-falso, **sem depender de Docker**. É refatoração de código já auditado — precisa
-acontecer entre uma auditoria e a seguinte, nunca durante.
+`WRITTEN / NOT EXECUTED AGAINST DATABASE.` Sem Docker, o comportamento da FK e
+do CHECK **não** é declarável verde. A coerência do SQL foi verificada
+estaticamente; a execução, não.
 
-Até lá: **W1–W4 são `NOT_EXECUTED`**, e as correções estão sustentadas por
-verificação de código (leitura direta na consolidação dos gates), não por teste
-automatizado. Não registrar como cobertas.
+## Comportamento do worker — W1–W4 saíram daqui
+
+Estes quatro eram `NOT_EXECUTED` porque
+`process-whatsapp-instance-cycles/index.ts` chamava `serve()` no carregamento e
+importava `deno.land`/`esm.sh`: **o vitest não conseguia importá-lo**, e as
+correções ficavam sustentadas por leitura.
+
+O lote de estabilização extraiu decisão e fluxo para
+[`_shared/whatsapp-instance-worker-core.ts`](../functions/_shared/whatsapp-instance-worker-core.ts),
+com `clock`, `repo`, `notifier`, `recipients` e `telemetry` injetados. Os quatro
+viraram teste real:
+
+| # | Comportamento | Onde |
+|---|---|---|
+| W1 | Resolução do destinatário é da invocação, não do módulo — sem admin não enfileira e o slot fica livre; com admin, enfileira | núcleo, bloco **A** |
+| W2 | Falha na leitura de instâncias em divergências aborta o passo: zero `CHANNEL_WITHOUT_INSTANCE` falso | núcleo, bloco **G** |
+| W2b | Controle positivo: as duas leituras OK → canal elegível sem inventário gera o alerta | núcleo, bloco **G** |
+| W3 | Falha em cada leitura de economia: `failed>0` e nenhum alerta com dado parcial | núcleo, bloco **H** |
+| W4 | D-1 com motivo A, lembrete com motivo B: mesma linha, `payload` atualizado, sem duplicata | núcleo, bloco **E** |
+
+**`WORKER_CORE_TESTS: EXECUTED`.** Isso NÃO promove nenhum caso de banco: CHECK,
+FK, índice parcial, RLS, grant, `SECURITY DEFINER`, trigger e concorrência real
+da RPC continuam `ENVIRONMENT_BLOCKED`. Teste de núcleo prova a decisão do
+worker, não a regra do banco — e confundir os dois é exatamente o erro que este
+arquivo existe para impedir.
 
 ## Por que integração e não unitário
 

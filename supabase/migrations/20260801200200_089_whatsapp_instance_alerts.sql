@@ -76,14 +76,28 @@ create table if not exists whatsapp_instance_alerts (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  -- Sujeito coerente: alerta de organização não aponta instância.
+  -- Sujeito coerente. O ramo INSTANCE ACEITA `instance_id` nulo — e isso é
+  -- exigência da FK logo acima, não folga.
+  --
+  -- Exigir `instance_id is not null` aqui tornava o `on delete set null`
+  -- INEXECUTÁVEL: apagar a instância fazia a FK gravar NULL, o CHECK avaliar
+  -- FALSE e o DELETE INTEIRO abortar com check_violation — o oposto exato do
+  -- contrato desta tabela, que é sobreviver à deleção do que descreve. Não é
+  -- teórico: um CHECK só reprova em FALSE, então a coerção da FK é a única
+  -- escrita que consegue produzi-lo aqui.
+  --
+  -- Relaxar o CHECK SOZINHO abriria um buraco (INSERT de alerta INSTANCE com
+  -- instance_id nulo e subject_id arbitrário passaria). O rigor original vive
+  -- na trigger `whatsapp_alert_subject_guard` abaixo, que distingue INSERT de
+  -- UPDATE — distinção que um CHECK, por construção, não sabe fazer.
+  --
   -- O ramo ORGANIZATION exige `instance_id is null` EXPLICITAMENTE. Sem isso a
   -- garantia "alerta de organização não aponta instância" existia só no código
   -- produtor e no comentário — o schema aceitava a linha incoerente, e a guarda
   -- de tenant não a recusaria (ela valida a organização da instância, que
   -- bateria). Invariante afirmado no banco, não na intenção.
   constraint whatsapp_alerts_subject_chk check (
-    (subject_type = 'INSTANCE' and instance_id is not null and subject_id = instance_id)
+    (subject_type = 'INSTANCE' and (instance_id is null or subject_id = instance_id))
     or (subject_type = 'ORGANIZATION' and instance_id is null and subject_id = organization_id)
   ),
 
@@ -119,6 +133,66 @@ create index if not exists whatsapp_alerts_reminder_idx
 create index if not exists whatsapp_alerts_instance_idx
   on whatsapp_instance_alerts (instance_id)
   where instance_id is not null;
+
+-- =====================================================================
+-- Identidade do sujeito — o rigor que o CHECK não consegue expressar
+-- =====================================================================
+-- `subject_id` é IDENTIDADE HISTÓRICA e imutável: quando a instância é
+-- fisicamente excluída, a FK nula `instance_id` e é `subject_id` que continua
+-- dizendo de quem era o alerta. O painel marca a linha como "instância
+-- removida" lendo exatamente esse par (INSTANCE + instance_id nulo).
+--
+-- Por que trigger e não CHECK: um CHECK avalia a linha isoladamente e não sabe
+-- se ela está nascendo ou sendo coagida pela FK. A regra aqui é diferente nas
+-- duas operações — no INSERT a instância PRECISA existir; no UPDATE ela pode
+-- desaparecer, mas a identidade não pode ser reescrita.
+create or replace function public.whatsapp_alert_subject_guard()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    -- Alerta de instância NASCE apontando instância viva. Idêntico à garantia
+    -- que o CHECK dava antes de precisar acomodar a nulagem da FK.
+    if new.subject_type = 'INSTANCE'
+       and (new.instance_id is null or new.subject_id <> new.instance_id) then
+      raise exception 'alerta INSTANCE exige instance_id vivo e subject_id igual a ele'
+        using errcode = 'check_violation';
+    end if;
+    return new;
+  end if;
+
+  if new.subject_id is distinct from old.subject_id then
+    raise exception 'subject_id e identidade historica e nao pode ser alterado'
+      using errcode = 'check_violation';
+  end if;
+
+  if new.subject_type is distinct from old.subject_type then
+    raise exception 'subject_type nao pode ser alterado'
+      using errcode = 'check_violation';
+  end if;
+
+  -- `instance_id` só pode ir a NULL (ação da FK). Reapontar para OUTRA
+  -- instância transferiria um registro de custo entre instâncias sem rastro.
+  if old.instance_id is not null
+     and new.instance_id is not null
+     and new.instance_id <> old.instance_id then
+    raise exception 'instance_id nao pode ser reapontado para outra instancia'
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.whatsapp_alert_subject_guard()
+  from public, anon, authenticated;
+
+drop trigger if exists whatsapp_instance_alerts_subject_guard on whatsapp_instance_alerts;
+create trigger whatsapp_instance_alerts_subject_guard
+  before insert or update on whatsapp_instance_alerts
+  for each row execute function public.whatsapp_alert_subject_guard();
 
 -- =====================================================================
 -- Guarda de tenant — reusa whatsapp_instance_child_tenant_guard (088)
@@ -165,7 +239,21 @@ commit;
 --    where table_name = 'whatsapp_instance_alerts'
 --      and column_name ~* 'email|recipient|token|secret';
 --
+-- 4. As DUAS guardas instaladas (esperado: 2 linhas):
+--   select tgname from pg_trigger where tgrelid = 'whatsapp_instance_alerts'::regclass
+--    and tgname in ('whatsapp_instance_alerts_subject_guard',
+--                   'whatsapp_instance_alerts_tenant_guard');
+--
+-- 5. Exclusão de instância PRESERVA o alerta (comportamento, não estrutura —
+--    só verificável com banco; roteiro completo em
+--    supabase/tests/whatsapp-instances.integration.md, casos FK-A..FK-E).
+--
 -- =====================================================================
--- Rollback
+-- Rollback — LEIA A ADVERTÊNCIA DA 088 ANTES
 -- =====================================================================
+-- `drop table whatsapp_instance_alerts` DESTRÓI AUDITORIA OPERACIONAL DE FORMA
+-- IRREVERSÍVEL. A sequência completa e a alternativa não-destrutiva estão na
+-- 088, que é o único lugar onde a ordem inversa inteira está publicada.
+--   drop trigger if exists whatsapp_instance_alerts_subject_guard on whatsapp_instance_alerts;
+--   drop function if exists public.whatsapp_alert_subject_guard();
 --   drop table if exists whatsapp_instance_alerts;

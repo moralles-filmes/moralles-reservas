@@ -17,6 +17,8 @@ import { genRequestId, jsonLog } from "../_shared/security.ts";
 import {
   assertProvisioningAllowed,
   canTransition,
+  normalizeCostSource,
+  parseCostCents,
   validateProviderInstanceRef,
   type LifecycleState,
   type ProvisioningIntent,
@@ -90,24 +92,52 @@ async function isPlatformAdmin(userId: string, reqId: string): Promise<boolean> 
   return !!data;
 }
 
-/**
- * Procedência do custo. `cost_source` é `text` sem CHECK no banco (diferente de
- * `provider`, `lifecycle_state` e `cycle_source`), então a whitelist mora aqui:
- * valor livre vindo do payload poluiria justamente o campo que diz de onde veio
- * o número que a fase inteira existe para registrar.
- */
-const COST_SOURCES = ["ADMIN_INFORMED", "PROVIDER_INVOICE", "PROVIDER_PANEL", "ESTIMATED"];
-
-function normalizeCostSource(raw: unknown): string | null {
-  if (raw === undefined || raw === null) return "ADMIN_INFORMED";
-  const v = String(raw);
-  return COST_SOURCES.indexOf(v) === -1 ? null : v;
-}
-
 /** Motivo é obrigatório NA PRÓPRIA ação. String vazia ou " " não passa. */
 function requireReason(body: Record<string, unknown>): string | null {
   const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
   return reason.length >= MIN_REASON_LENGTH ? reason : null;
+}
+
+/**
+ * Estado da instância para as ações que decidem transição.
+ *
+ * Erro de leitura NÃO pode virar "não encontrada": as quatro ações liam com
+ * `const { data } = await …maybeSingle()` e um banco indisponível produzia 404
+ * — o operador legítimo via "essa instância não existe" e ia procurar o
+ * problema no lugar errado. Ausência e indisponibilidade são desfechos
+ * distintos porque exigem reações distintas.
+ */
+async function loadInstanceState(
+  id: string,
+  columns: string,
+  reqId: string,
+  evt: string,
+): Promise<
+  | { ok: true; row: Record<string, unknown> }
+  | { ok: false; status: 404 | 503; message: string }
+> {
+  const { data, error } = await supabase
+    .from("whatsapp_instances")
+    .select(columns)
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    jsonLog("error", { reqId, evt, err: error.message, needsAdminAction: true });
+    return {
+      ok: false,
+      status: 503,
+      message: "Não foi possível consultar a instância agora. Tente novamente.",
+    };
+  }
+  if (!data) return { ok: false, status: 404, message: "Instância não encontrada." };
+  return { ok: true, row: data as Record<string, unknown> };
+}
+
+/** UUID obrigatório na ação. Vazio vira 400, não 404 — o pedido é que está errado. */
+function requireInstanceId(body: Record<string, unknown>): string | null {
+  const id = String(body.instance_id ?? "").trim();
+  return id.length > 0 ? id : null;
 }
 
 serve(async (req) => {
@@ -233,16 +263,11 @@ serve(async (req) => {
         ref = v.value;
       }
 
-      const costCents = body.current_monthly_cost_cents ?? null;
-      const hasCost = costCents !== null && costCents !== undefined;
-      // Mesma validação de `set_cost`. A assimetria deixava um payload não
-      // inteiro cair em erro do Postgres e virar 500 genérico, em vez de 400
-      // dizendo o que está errado.
-      if (hasCost && (!Number.isInteger(costCents) || (costCents as number) < 0)) {
-        return jsonResponse(req, {
-          error: "Custo deve ser inteiro em centavos, ou nulo se desconhecido.",
-        }, 400);
-      }
+      // MESMA função de `set_cost` — núcleo puro, testado. A validação
+      // duplicada nas duas ações já divergiu uma vez.
+      const cost = parseCostCents(body.current_monthly_cost_cents ?? null);
+      if (cost.ok === false) return jsonResponse(req, { error: cost.message, code: cost.code }, 400);
+      const hasCost = cost.unknownCost === false;
 
       // Backfill NASCE em UNKNOWN quando a data não for confirmada: data
       // ausente não vira vencimento inventado, vira fila de revisão.
@@ -261,7 +286,7 @@ serve(async (req) => {
           provider_instance_ref: ref,
           lifecycle_state: "ACTIVE",
           cycle_source: "UNKNOWN",
-          current_monthly_cost_cents: hasCost ? costCents : null,
+          current_monthly_cost_cents: cost.ok && cost.unknownCost === false ? cost.cents : null,
           cost_source: costSource,
           cost_updated_at: hasCost ? new Date().toISOString() : null,
           cost_updated_by: hasCost ? callerId : null,
@@ -313,18 +338,14 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Informe o dia-âncora do ciclo (1 a 31)." }, 400);
       }
 
-      const { data: inst } = await supabase
-        .from("whatsapp_instances")
-        .select("id, organization_id")
-        .eq("id", id)
-        .maybeSingle();
-      if (!inst) return jsonResponse(req, { error: "Instância não encontrada." }, 404);
+      const found = await loadInstanceState(id, "id, organization_id", reqId, "wa_cycle_lookup_failed");
+      if (found.ok === false) return jsonResponse(req, { error: found.message }, found.status);
 
       const dueOn = nextDueFromAnchor(cycleStart, anchorDay);
 
       const { error: cycleErr } = await supabase.from("whatsapp_instance_cycles").insert({
         instance_id: id,
-        organization_id: inst.organization_id,
+        organization_id: found.row.organization_id,
         cycle_start: cycleStart,
         provider_due_on: dueOn,
         status: "OPEN",
@@ -382,16 +403,12 @@ serve(async (req) => {
       const reason = requireReason(body);
       if (!reason) return jsonResponse(req, { error: "Informe o motivo e a procedência do custo." }, 400);
 
-      const id = String(body.instance_id ?? "");
+      const id = requireInstanceId(body);
       if (!id) return jsonResponse(req, { error: "instance_id é obrigatório." }, 400);
 
-      const raw = body.current_monthly_cost_cents;
-      const isNull = raw === null || raw === undefined;
-      if (!isNull && (!Number.isInteger(raw) || (raw as number) < 0)) {
-        return jsonResponse(req, {
-          error: "Custo deve ser inteiro em centavos, ou nulo se desconhecido.",
-        }, 400);
-      }
+      const cost = parseCostCents(body.current_monthly_cost_cents ?? null);
+      if (cost.ok === false) return jsonResponse(req, { error: cost.message, code: cost.code }, 400);
+      const isNull = cost.unknownCost === true;
 
       const setCostSource = isNull ? null : normalizeCostSource(body.cost_source);
       if (!isNull && setCostSource === null) {
@@ -401,7 +418,7 @@ serve(async (req) => {
       const { data, error } = await supabase
         .from("whatsapp_instances")
         .update({
-          current_monthly_cost_cents: isNull ? null : raw,
+          current_monthly_cost_cents: cost.unknownCost === false ? cost.cents : null,
           cost_source: setCostSource,
           cost_updated_at: isNull ? null : new Date().toISOString(),
           cost_updated_by: isNull ? null : callerId,
@@ -425,17 +442,16 @@ serve(async (req) => {
       const reason = requireReason(body);
       if (!reason) return jsonResponse(req, { error: "Informe o motivo do cancelamento." }, 400);
 
-      const id = String(body.instance_id ?? "");
+      const id = requireInstanceId(body);
       const until = String(body.provider_access_until ?? "");
       if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(until)) {
         return jsonResponse(req, { error: "Informe a instância e a data-limite de acesso." }, 400);
       }
 
-      const { data: cur } = await supabase
-        .from("whatsapp_instances").select("lifecycle_state").eq("id", id).maybeSingle();
-      if (!cur) return jsonResponse(req, { error: "Instância não encontrada." }, 404);
+      const cur = await loadInstanceState(id, "lifecycle_state", reqId, "wa_cancel_lookup_failed");
+      if (cur.ok === false) return jsonResponse(req, { error: cur.message }, cur.status);
 
-      const t = canTransition(cur.lifecycle_state as LifecycleState, "CANCELLATION_REQUESTED", {
+      const t = canTransition(cur.row.lifecycle_state as LifecycleState, "CANCELLATION_REQUESTED", {
         hasProviderEvidence: false,
       });
       if (t.ok === false) return jsonResponse(req, { error: t.message, code: t.code }, 409);
@@ -471,12 +487,13 @@ serve(async (req) => {
         }, 400);
       }
 
-      const id = String(body.instance_id ?? "");
-      const { data: cur } = await supabase
-        .from("whatsapp_instances").select("lifecycle_state").eq("id", id).maybeSingle();
-      if (!cur) return jsonResponse(req, { error: "Instância não encontrada." }, 404);
+      const id = requireInstanceId(body);
+      if (!id) return jsonResponse(req, { error: "instance_id é obrigatório." }, 400);
 
-      const t = canTransition(cur.lifecycle_state as LifecycleState, "ENDED", {
+      const cur = await loadInstanceState(id, "lifecycle_state", reqId, "wa_confirm_end_lookup_failed");
+      if (cur.ok === false) return jsonResponse(req, { error: cur.message }, cur.status);
+
+      const t = canTransition(cur.row.lifecycle_state as LifecycleState, "ENDED", {
         hasProviderEvidence: true,
       });
       if (t.ok === false) return jsonResponse(req, { error: t.message, code: t.code }, 409);
@@ -512,14 +529,15 @@ serve(async (req) => {
         }, 400);
       }
 
-      const id = String(body.instance_id ?? "");
-      const { data: cur } = await supabase
-        .from("whatsapp_instances").select("lifecycle_state").eq("id", id).maybeSingle();
-      if (!cur) return jsonResponse(req, { error: "Instância não encontrada." }, 404);
+      const id = requireInstanceId(body);
+      if (!id) return jsonResponse(req, { error: "instance_id é obrigatório." }, 400);
+
+      const cur = await loadInstanceState(id, "lifecycle_state", reqId, "wa_reactivate_lookup_failed");
+      if (cur.ok === false) return jsonResponse(req, { error: cur.message }, cur.status);
 
       // ENDED nunca volta: o núcleo recusa mesmo com evidência. Instância
       // encerrada que reapareça exige linha NOVA (outra instância física).
-      const t = canTransition(cur.lifecycle_state as LifecycleState, "ACTIVE", {
+      const t = canTransition(cur.row.lifecycle_state as LifecycleState, "ACTIVE", {
         hasProviderEvidence: true,
       });
       if (t.ok === false) return jsonResponse(req, { error: t.message, code: t.code }, 409);

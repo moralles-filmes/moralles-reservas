@@ -27,10 +27,15 @@ const FUNCTIONS = join(__dirname, "..", "..", "supabase", "functions");
 const DISPATCHER = join(FUNCTIONS, "process-billing-notifications", "index.ts");
 const WORKER = join(FUNCTIONS, "process-whatsapp-instance-cycles", "index.ts");
 const CORE = join(FUNCTIONS, "_shared", "whatsapp-instance-alerts-core.ts");
+// O núcleo do worker é quem CHAMA `EVENT_TYPE_BY_ALERT` desde a extração — sem
+// varrê-lo, uma string `admin_zapi_*` hardcoded lá escaparia do guardrail
+// exatamente onde a decisão de enfileirar mora.
+const WORKER_CORE = join(FUNCTIONS, "_shared", "whatsapp-instance-worker-core.ts");
 
 const dispatcherSource = readFileSync(DISPATCHER, "utf8");
 const workerSource = readFileSync(WORKER, "utf8");
 const coreSource = readFileSync(CORE, "utf8");
+const workerCoreSource = readFileSync(WORKER_CORE, "utf8");
 
 describe("acoplamento por string com process-billing-notifications", () => {
   it("todo event_type canônico tem entrada em TEMPLATE_BY_EVENT", () => {
@@ -46,7 +51,7 @@ describe("acoplamento por string com process-billing-notifications", () => {
     // lista. Uma string hardcoded que escape da fonte canônica é exatamente o
     // modo de falha que este teste existe para pegar.
     const found = new Set<string>();
-    for (const src of [workerSource, coreSource]) {
+    for (const src of [workerSource, coreSource, workerCoreSource]) {
       for (const m of src.matchAll(/admin_zapi_[a-z0-9_]+/g)) found.add(m[0]);
     }
     const foreign = [...found].filter((e) => CANONICAL_EVENT_TYPES.indexOf(e) === -1);
@@ -59,6 +64,15 @@ describe("acoplamento por string com process-billing-notifications", () => {
   it("custo desconhecido não virou event_type em lugar nenhum", () => {
     expect(dispatcherSource).not.toContain("admin_zapi_cycle_cost_unknown");
     expect(workerSource).not.toContain("admin_zapi_cycle_cost_unknown");
+    expect(workerCoreSource).not.toContain("admin_zapi_cycle_cost_unknown");
+  });
+
+  it("a decisão de enfileirar continua no núcleo do worker, não no adapter", () => {
+    // Se `EVENT_TYPE_BY_ALERT` voltar a ser consumido no `index.ts`, a regra de
+    // qual evento sai para a fila deixou de ser testável — que é exatamente o
+    // que a extração existe para impedir.
+    expect(workerCoreSource).toContain("EVENT_TYPE_BY_ALERT[alertType]");
+    expect(workerSource).not.toContain("EVENT_TYPE_BY_ALERT");
   });
 
   it("os seis alert_type do ledger mapeiam para os seis event_type", () => {

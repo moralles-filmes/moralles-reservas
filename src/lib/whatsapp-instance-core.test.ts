@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
+  COST_SOURCES,
   NEW_REAL_INSTANCE_PROVISIONING_BLOCKED_UNTIL_PHASE_6A,
   PROVISIONING_BLOCKED_CODE,
   assertProvisioningAllowed,
   canTransition,
+  normalizeCostSource,
+  parseCostCents,
   validateProviderInstanceRef,
 } from "../../supabase/functions/_shared/whatsapp-instance-core";
 
@@ -90,5 +93,87 @@ describe("validateProviderInstanceRef — identificador, nunca credencial (§3.3
   it("recusa valor com espaço interno ou quebra de linha", () => {
     expect(validateProviderInstanceRef("abc def").ok).toBe(false);
     expect(validateProviderInstanceRef("abc\ndef").ok).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// J — custo em centavos
+// ─────────────────────────────────────────────────────────────────────────
+// A validação vivia duplicada em `register_instance` e `set_cost` dentro da
+// Edge Function, e as duas cópias já divergiram uma vez: um payload não inteiro
+// caía em erro do Postgres e virava 500 genérico num dos caminhos e 400 no
+// outro. Agora é UMA função, testada.
+
+describe("parseCostCents", () => {
+  it("aceita inteiro positivo em centavos", () => {
+    const r = parseCostCents(14900);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.unknownCost === false) expect(r.cents).toBe(14900);
+  });
+
+  it("ZERO é custo verdadeiro, não desconhecido — instância cortesia", () => {
+    const r = parseCostCents(0);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.unknownCost).toBe(false);
+    if (r.ok && r.unknownCost === false) expect(r.cents).toBe(0);
+  });
+
+  it("null e undefined são DESCONHECIDO, estado legítimo desta fase", () => {
+    for (const v of [null, undefined]) {
+      const r = parseCostCents(v);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.unknownCost).toBe(true);
+    }
+  });
+
+  it("recusa decimal em vez de arredondar", () => {
+    // Arredondar escreveria no banco um número que ninguém digitou, num campo
+    // cujo propósito é dizer quanto a plataforma paga de verdade.
+    expect(parseCostCents(149.5).ok).toBe(false);
+    expect(parseCostCents(0.1).ok).toBe(false);
+  });
+
+  it("recusa negativo", () => {
+    expect(parseCostCents(-1).ok).toBe(false);
+  });
+
+  it("recusa string, inclusive string numérica", () => {
+    expect(parseCostCents("14900").ok).toBe(false);
+    expect(parseCostCents("").ok).toBe(false);
+    expect(parseCostCents("abc").ok).toBe(false);
+  });
+
+  it("recusa NaN e Infinity", () => {
+    expect(parseCostCents(NaN).ok).toBe(false);
+    expect(parseCostCents(Infinity).ok).toBe(false);
+    expect(parseCostCents(-Infinity).ok).toBe(false);
+  });
+
+  it("recusa booleano, array e objeto", () => {
+    for (const v of [true, false, [], {}, [1]]) {
+      expect(parseCostCents(v).ok).toBe(false);
+    }
+  });
+
+  it("devolve código estável para a UI diferenciar do erro genérico", () => {
+    const r = parseCostCents(1.5);
+    if (r.ok === false) expect(r.code).toBe("COST_NOT_INTEGER_CENTS");
+  });
+});
+
+describe("normalizeCostSource", () => {
+  it("ausência vira ADMIN_INFORMED — o padrão desta fase é entrada manual", () => {
+    expect(normalizeCostSource(undefined)).toBe("ADMIN_INFORMED");
+    expect(normalizeCostSource(null)).toBe("ADMIN_INFORMED");
+  });
+
+  it("aceita as quatro procedências canônicas", () => {
+    for (const s of COST_SOURCES) expect(normalizeCostSource(s)).toBe(s);
+  });
+
+  it("recusa valor livre — a coluna não tem CHECK no banco", () => {
+    expect(normalizeCostSource("CHUTE")).toBeNull();
+    expect(normalizeCostSource("admin_informed")).toBeNull();
+    expect(normalizeCostSource(42)).toBeNull();
   });
 });
