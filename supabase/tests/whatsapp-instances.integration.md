@@ -20,7 +20,29 @@ usam `create or replace function` para alterar retorno tabular contra apenas 4 q
 usam `drop function`** ([docs/hotfix-acl/03-ENSAIO-ORDEM-REAL.md §1](../../docs/hotfix-acl/03-ENSAIO-ORDEM-REAL.md)).
 Supabase Branch não resolve — ele replaya do zero e estoura no mesmo ponto.
 
-São **dois bloqueios independentes**. Consertar as URLs não destrava o replay.
+São **dois bloqueios independentes**, e nenhum deles é consequência do outro:
+
+| | Bloqueio | Natureza | O que acontece se o outro for resolvido |
+|---|---|---|---|
+| **A** | O replay **não completa**: `42P13` | O histórico não é reproduzível | Continua estourando no mesmo ponto |
+| **B** | O banco reconstruído **seria inseguro** | O histórico é reproduzível, mas hostil | Continua apontando para produção |
+
+**O bloqueio B não é só a URL.** Três dependências implícitas de ambiente, todas
+verificadas por `grep` sobre o histórico:
+
+- **`create extension pg_net` não existe em migration nenhuma**, embora treze
+  migrations chamem `net.http_post`. Num banco novo, o replay quebra ou os
+  *wrappers* nascem inertes — nos dois casos, o comportamento não é o de produção.
+- **O Vault é assumido presente e semeado.** `internal_api_key` (e, a partir da
+  092, `project_url`) nunca são criados por migration; são semeadura operacional.
+  Num banco reconstruído eles não existem.
+- **A URL de produção está embutida nos treze *wrappers* de `pg_cron`.** Com
+  `pg_cron` ativo, o banco local agenda `POST` **nas Edge Functions de produção**.
+
+Ordem obrigatória do desbloqueio, e ela não é negociável:
+**1º** tornar o histórico reproduzível sem `42P13`; **2º** tornar o ambiente
+reconstruído seguro. Inverter não adianta — não há o que endurecer enquanto o
+replay não chega ao fim.
 
 ## Desbloqueio
 
@@ -28,6 +50,11 @@ A frente `BASELINE_REPRODUCIBLE_DATABASE_ENVIRONMENT`, cujo **primeiro item é
 destravar o replay** — pré-requisito dos demais, porque sem ele não existe banco
 descartável onde testar nada. Nada deste arquivo é reescrito quando isso
 acontecer: os casos já estão especificados.
+
+**Fora do escopo da Fase 6b, por decisão explícita.** Consertar as treze
+migrations legadas ou parametrizar o histórico **não** entra nesta fase. A 6b
+garante apenas que **nenhuma migration nova repete o padrão**, e isso é testado
+por [scripts/migration-static-guard.test.ts](../../scripts/migration-static-guard.test.ts).
 
 ## Proibições que não mudam
 
