@@ -19,6 +19,7 @@ import {
   canTransition,
   normalizeCostSource,
   parseCostCents,
+  parseUuid,
   validateProviderInstanceRef,
   type LifecycleState,
   type ProvisioningIntent,
@@ -134,10 +135,16 @@ async function loadInstanceState(
   return { ok: true, row: data as Record<string, unknown> };
 }
 
-/** UUID obrigatório na ação. Vazio vira 400, não 404 — o pedido é que está errado. */
+/**
+ * UUID obrigatório na ação — validado na FORMA, não só na presença.
+ *
+ * Pedido malformado é 400. Validar só a presença deixava `"abc"` chegar ao
+ * PostgREST, o Postgres levantar `22P02` e o erro subir pelo caminho de
+ * indisponibilidade: 503 "tente novamente" mais alarme `needsAdminAction` para
+ * algo que repetição nenhuma conserta.
+ */
 function requireInstanceId(body: Record<string, unknown>): string | null {
-  const id = String(body.instance_id ?? "").trim();
-  return id.length > 0 ? id : null;
+  return parseUuid(body.instance_id);
 }
 
 serve(async (req) => {
@@ -178,8 +185,8 @@ serve(async (req) => {
     }
 
     if (action === "get_instance") {
-      const id = String(body.instance_id ?? "");
-      if (!id) return jsonResponse(req, { error: "instance_id é obrigatório." }, 400);
+      const id = requireInstanceId(body);
+      if (!id) return jsonResponse(req, { error: "instance_id inválido." }, 400);
 
       const [inst, cycles, alerts] = await Promise.all([
         supabase.from("whatsapp_instances").select(INSTANCE_COLUMNS).eq("id", id).maybeSingle(),
@@ -189,7 +196,29 @@ serve(async (req) => {
           .eq("instance_id", id).order("first_detected_at", { ascending: false }),
       ]);
 
-      if (inst.error || !inst.data) return jsonResponse(req, { error: "Instância não encontrada." }, 404);
+      // Indisponibilidade NÃO é ausência. `inst.error || !inst.data` colapsava
+      // as duas em 404 e descartava a causa — o quinto caminho de leitura, que
+      // escapou da primeira passada do F-09.
+      if (inst.error) {
+        jsonLog("error", {
+          reqId, evt: "wa_get_instance_lookup_failed",
+          err: inst.error.message, needsAdminAction: true,
+        });
+        return jsonResponse(req, {
+          error: "Não foi possível consultar a instância agora. Tente novamente.",
+        }, 503);
+      }
+      if (!inst.data) return jsonResponse(req, { error: "Instância não encontrada." }, 404);
+      // Ciclos e alertas são acessórios: falha neles não esconde a instância,
+      // mas some do painel sem explicação se não for registrada.
+      for (const [name, res] of [["cycles", cycles], ["alerts", alerts]] as const) {
+        if (res.error) {
+          jsonLog("error", {
+            reqId, evt: "wa_get_instance_related_failed", related: name,
+            err: res.error.message, needsAdminAction: true,
+          });
+        }
+      }
       return jsonResponse(req, {
         instance: inst.data,
         cycles: cycles.data ?? [],
@@ -323,7 +352,7 @@ serve(async (req) => {
       const reason = requireReason(body);
       if (!reason) return jsonResponse(req, { error: "Informe a origem da informação da data." }, 400);
 
-      const id = String(body.instance_id ?? "");
+      const id = requireInstanceId(body);
       const cycleStart = String(body.cycle_start ?? "");
       const anchorDay = Number(body.provider_cycle_anchor_day);
 
@@ -569,8 +598,8 @@ serve(async (req) => {
       const reason = requireReason(body);
       if (!reason) return jsonResponse(req, { error: "Informe o motivo da alteração." }, 400);
 
-      const id = String(body.instance_id ?? "");
-      if (!id) return jsonResponse(req, { error: "instance_id é obrigatório." }, 400);
+      const id = requireInstanceId(body);
+      if (!id) return jsonResponse(req, { error: "instance_id inválido." }, 400);
 
       const patch: Record<string, unknown> = { updated_by: callerId, notes: reason };
       if ("unit_id" in body) patch.unit_id = body.unit_id ?? null;

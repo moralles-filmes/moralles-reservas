@@ -119,8 +119,17 @@ export type AlertRepo = {
     lastReminderAt: string | null;
     payload: Record<string, unknown>;
   }): Promise<TouchResult>;
-  /** Carimba o slot de lembrete consumido pela CRIAÇÃO. */
-  stampReminder(t: { id: string; organizationId: string; nowIso: string }): Promise<TouchResult>;
+  /**
+   * Carimba o slot de lembrete CONSUMIDO — só depois do enfileiramento
+   * confirmado. `occurrences` vem explícito porque a criação carimba sem
+   * incrementar (a linha nasce em 1) e o lembrete incrementa.
+   */
+  stampReminder(t: {
+    id: string;
+    organizationId: string;
+    nowIso: string;
+    occurrences?: number;
+  }): Promise<TouchResult>;
 };
 
 export type Notifier = {
@@ -168,7 +177,11 @@ export type WorkerRepo = {
 
   listDivergenceInstances(): Promise<Query<InstanceRow>>;
   listInventoryChannels(): Promise<Query<ChannelForDivergence>>;
-  recordDivergenceKind(instanceId: string, kind: string, nowIso: string): Promise<void>;
+  recordDivergenceKind(
+    instanceId: string,
+    kind: string,
+    nowIso: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }>;
 
   listDateReviewPending(): Promise<Query<{ id: string; organizationId: string }>>;
   listEconomicInstances(): Promise<Query<{ id: string; organizationId: string; costCents: number | null }>>;
@@ -262,31 +275,26 @@ export async function upsertAlert(deps: WorkerDeps, a: AlertInput): Promise<Aler
     });
   }
 
-  // O enfileiramento vem ANTES da escrita do lembrete: só o que entrou na fila
-  // pode consumir o slot. A ordem inversa gravava "lembrado" sobre um envio que
-  // podia nunca ter sido enfileirado.
-  let enqueued = false;
-  if (due && recipient) {
-    enqueued = await enqueueAlert(deps, a.alertType, a.organizationId);
-    if (!enqueued) {
-      deps.telemetry.error({
-        reqId: deps.reqId, evt: "wa_alert_enqueue_failed_window_preserved",
-        alertType: a.alertType, needsAdminAction: true,
-      });
-    }
-  }
-  const remind = due && !!recipient && enqueued;
-
+  // ORDEM EM TRÊS TEMPOS — e cada tempo existe por um defeito diferente.
+  //
+  // 1. TOCA a linha SEM avançar o lembrete (só `last_seen_at` e `payload`).
+  //    Isto é o pedágio de escrita: se o UPDATE não passa, NADA é enfileirado.
+  //    A versão anterior enfileirava primeiro e só depois descobria que não
+  //    conseguia gravar — e como todo aviso desta fase vai com `invoice_id`
+  //    nulo, e o índice UNIQUE de `billing_notifications` é PARCIAL
+  //    (`where invoice_id is not null`), o banco NÃO recusa a segunda linha.
+  //    Uma falha de escrita persistente enfileirava um aviso idêntico POR DIA,
+  //    indefinidamente. Hoje ela não enfileira nenhum.
   const touched = await deps.alerts.touch({
     id: existing.id,
     organizationId: a.organizationId,
     nowIso,
-    occurrences: existing.occurrences + (remind ? 1 : 0),
+    occurrences: existing.occurrences,
+    lastReminderAt: existing.lastReminderAt,
     // Payload REESCRITO a cada passada. A chave do D-1 deixou de carregar os
     // motivos justamente para não abrir linha nova quando eles mudam — se o
     // payload não acompanhasse, o admin leria a lista do primeiro dia como se
     // ainda valesse.
-    lastReminderAt: remind ? nowIso : existing.lastReminderAt,
     payload: a.payload,
   });
 
@@ -311,7 +319,46 @@ export async function upsertAlert(deps: WorkerDeps, a: AlertInput): Promise<Aler
     return "failed";
   }
 
-  return remind ? "reminded" : "seen";
+  if (!due || !recipient) return "seen";
+
+  // 2. ENFILEIRA. Só agora, com a escrita já provada possível nesta linha.
+  const enqueued = await enqueueAlert(deps, a.alertType, a.organizationId);
+  if (!enqueued) {
+    // Janela preservada: o slot não foi gasto, a próxima passada tenta de novo.
+    deps.telemetry.error({
+      reqId: deps.reqId, evt: "wa_alert_enqueue_failed_window_preserved",
+      alertType: a.alertType, needsAdminAction: true,
+    });
+    return "seen";
+  }
+
+  // 3. CARIMBA o slot consumido. Só o que entrou na fila avança o lembrete —
+  //    a ordem inversa gravaria "lembrado" sobre um envio que podia nunca ter
+  //    sido enfileirado.
+  const stamped = await deps.alerts.stampReminder({
+    id: existing.id,
+    organizationId: a.organizationId,
+    nowIso,
+    occurrences: existing.occurrences + 1,
+  });
+  if (stamped.ok === false || stamped.matched === 0) {
+    // RISCO RESIDUAL ACEITO, e é o menor dos três: o aviso ESTÁ na fila, mas o
+    // ledger não registrou. A próxima passada relembra e enfileira uma segunda
+    // vez. Exige que o passo 1 tenha funcionado e o passo 3 falhe na MESMA
+    // linha, com o MESMO predicado, segundos depois — não é a classe de falha
+    // persistente que o passo 1 agora barra. Fechar isso de vez exigiria uma
+    // RPC transacional cobrindo fila e ledger juntos, que é trabalho de fase
+    // futura e PRÉ-REQUISITO para ligar `billing_notifications_dispatch` nos
+    // seis `admin_zapi_*`.
+    deps.telemetry.error({
+      reqId: deps.reqId, evt: "wa_alert_reminder_stamp_failed",
+      alertType: a.alertType, alertId: existing.id,
+      err: stamped.ok === false ? stamped.message : "zero linhas",
+      needsAdminAction: true,
+    });
+  }
+
+  return "reminded";
 }
 
 async function createAlert(
@@ -611,7 +658,25 @@ export async function runDivergencesStep(deps: WorkerDeps, today: string): Promi
           continue;
         }
         s.processed++;
-        await deps.repo.recordDivergenceKind(row.instanceId, f.kind, deps.clock.nowIso());
+
+        // O alerta JÁ está no ledger — esta escrita é o espelho na instância,
+        // que alimenta o painel. Falhar aqui NÃO invalida o alerta, então não
+        // vira `failed`; mas descartar o erro (como o worker fazia desde a
+        // primeira versão) deixa o painel dizendo "sem divergência recente"
+        // enquanto o ledger tem uma aberta. Divergência entre duas telas do
+        // mesmo fato é exatamente o que esta fase existe para não produzir.
+        const mirrored = await deps.repo.recordDivergenceKind(
+          row.instanceId,
+          f.kind,
+          deps.clock.nowIso(),
+        );
+        if (mirrored.ok === false) {
+          deps.telemetry.error({
+            reqId: deps.reqId, evt: "wa_div_record_kind_failed",
+            instanceId: row.instanceId, kind: f.kind,
+            err: mirrored.message, needsAdminAction: true,
+          });
+        }
       }
     } catch (e) {
       deps.telemetry.error({

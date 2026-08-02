@@ -52,34 +52,56 @@ function makeBench(opts: {
   const logs: Log[] = [];
   const enqueued: { org: string; eventType: string }[] = [];
   const touches: { lastReminderAt: string | null; occurrences: number; payload: unknown }[] = [];
-  const stamps: string[] = [];
+  const stamps: { nowIso: string; occurrences?: number }[] = [];
   const inserted: AlertInput[] = [];
   let recipientCalls = 0;
 
   const nowMs = opts.nowMs ?? Date.parse("2026-08-02T12:00:00.000Z");
 
+  /**
+   * "Banco" MUTÁVEL, e não um `find()` que devolve sempre o mesmo objeto.
+   *
+   * Com mock estático, chamar `upsertAlert` duas vezes seguidas produzia duas
+   * invocações independentes lendo o mesmo estado inicial — nada a ver com
+   * reexecução, que é ler DEPOIS de a primeira ter gravado. O teste de
+   * "reexecução não duplica" passaria com o defeito presente.
+   */
+  let row: ExistingAlert | null = opts.existing ?? null;
+
   const alerts: AlertRepo = {
     async find() {
       if (opts.findThrows) throw new Error("boom");
-      return opts.existing ?? null;
+      return row;
     },
     insert: opts.insert ??
       (async (a) => {
         inserted.push(a);
+        row = { id: "alert-1", status: "OPEN", occurrences: 1, lastReminderAt: null };
         return { ok: true, id: "alert-1" };
       }),
     async touch(t) {
       if (opts.touchFails) return { ok: false, message: opts.touchFails };
+      const matched = opts.touchMatched ?? 1;
       touches.push({
         lastReminderAt: t.lastReminderAt,
         occurrences: t.occurrences,
         payload: t.payload,
       });
-      return { ok: true, matched: opts.touchMatched ?? 1 };
+      if (matched > 0 && row) {
+        row = { ...row, occurrences: t.occurrences, lastReminderAt: t.lastReminderAt };
+      }
+      return { ok: true, matched };
     },
     async stampReminder(t) {
       if (opts.stampFails) return { ok: false, message: opts.stampFails };
-      stamps.push(t.nowIso);
+      stamps.push({ nowIso: t.nowIso, occurrences: t.occurrences });
+      if (row) {
+        row = {
+          ...row,
+          lastReminderAt: t.nowIso,
+          occurrences: t.occurrences ?? row.occurrences,
+        };
+      }
       return { ok: true, matched: 1 };
     },
   };
@@ -123,7 +145,7 @@ function makeBench(opts: {
       stampEndConfirmationRequired: async () => ({ ok: true }),
       listDivergenceInstances: async () => ({ ok: true, rows: [] }),
       listInventoryChannels: async () => ({ ok: true, rows: [] }),
-      recordDivergenceKind: async () => {},
+      recordDivergenceKind: async () => ({ ok: true }),
       listDateReviewPending: async () => ({ ok: true, rows: [] }),
       listEconomicInstances: async () => ({ ok: true, rows: [] }),
       ...(opts.repo ?? {}),
@@ -214,7 +236,10 @@ describe("B — lembrete vencido sem destinatário", () => {
     });
 
     expect(await upsertAlert(b.deps, ALERT)).toBe("reminded");
-    expect(b.touches[0].occurrences).toBe(4);
+    // O incremento vive no CARIMBO, não no toque: o toque é o pedágio de
+    // escrita que acontece antes de qualquer enfileiramento.
+    expect(b.touches[0].occurrences).toBe(3);
+    expect(b.stamps[0].occurrences).toBe(4);
   });
 });
 
@@ -228,7 +253,10 @@ describe("C — a criação consome o slot mensal", () => {
 
     expect(await upsertAlert(b.deps, ALERT)).toBe("created");
     expect(b.enqueued).toHaveLength(1);
-    expect(b.stamps).toEqual([new Date(b.nowMs).toISOString()]);
+    expect(b.stamps).toHaveLength(1);
+    expect(b.stamps[0].nowIso).toBe(new Date(b.nowMs).toISOString());
+    // A criação NÃO incrementa: a linha nasce em `occurrences = 1`.
+    expect(b.stamps[0].occurrences).toBeUndefined();
   });
 
   it("sem o carimbo, o lembrete 'mensal' dispararia no dia seguinte", async () => {
@@ -428,6 +456,42 @@ describe("G — divergências com visão parcial", () => {
     expect(b.enqueued).toHaveLength(0);
     expect(evts(b.logs)).toContain("wa_div_inst_query_failed");
     expect(evts(b.logs)).not.toContain("wa_div_chan_query_failed");
+  });
+
+  it("falha ao espelhar a divergência na instância é observável, sem invalidar o alerta", async () => {
+    const b = makeBench({
+      existing: null,
+      repo: {
+        listDivergenceInstances: async () => ({
+          ok: true,
+          rows: [
+            {
+              instanceId: INST,
+              organizationId: ORG,
+              lifecycleState: "ACTIVE",
+              channelId: null,
+              providerInstanceRef: "abc",
+              legacyChannelInstanceRef: null,
+              channelState: null,
+              channelStateAgeDays: null,
+              hasAdminExplanation: false,
+              endedAtIso: null,
+              lastLocalSignalAtIso: null,
+            },
+          ],
+        }),
+        recordDivergenceKind: async () => ({ ok: false, message: "rls negou" }),
+      },
+    });
+
+    const s = await runDivergencesStep(b.deps, "2026-08-02");
+
+    // O alerta ESTÁ no ledger: o espelho na instância é secundário.
+    expect(s.processed).toBeGreaterThan(0);
+    expect(s.failed).toBe(0);
+    // Mas o painel dizer "sem divergência recente" com o ledger aberto não pode
+    // acontecer em silêncio.
+    expect(evts(b.logs)).toContain("wa_div_record_kind_failed");
   });
 
   it("falha na leitura de canais não apaga o que as instâncias já produziram", async () => {
@@ -688,13 +752,32 @@ describe("K — só created e reminded enfileiram", () => {
     expect(b.enqueued).toHaveLength(0);
   });
 
-  it("reexecução no mesmo dia não produz segundo aviso para o mesmo fato", async () => {
-    const hoje = new Date(Date.parse("2026-08-02T12:00:00.000Z") - 60_000).toISOString();
-    const b = makeBench({ existing: openAlert({ lastReminderAt: hoje }) });
+  it("reexecução LÊ o que a passada anterior gravou e não relembra", async () => {
+    // Bancada com estado mutável: a 2ª chamada enxerga o `last_reminder_at`
+    // que a 1ª carimbou. Com `find()` estático isto seriam duas invocações
+    // idênticas e independentes — nada a ver com reexecução.
+    const antes = new Date(Date.parse("2026-08-02T12:00:00.000Z") - REMINDER_INTERVAL_MS - DAY)
+      .toISOString();
+    const b = makeBench({ existing: openAlert({ occurrences: 1, lastReminderAt: antes }) });
 
+    expect(await upsertAlert(b.deps, ALERT)).toBe("reminded");
     expect(await upsertAlert(b.deps, ALERT)).toBe("seen");
     expect(await upsertAlert(b.deps, ALERT)).toBe("seen");
-    expect(b.enqueued).toHaveLength(0);
+
+    // UM aviso para o fato, não três.
+    expect(b.enqueued).toHaveLength(1);
+    expect(b.stamps).toHaveLength(1);
+  });
+
+  it("criação seguida de reexecução no mesmo dia não relembra", async () => {
+    const b = makeBench({ existing: null });
+
+    expect(await upsertAlert(b.deps, ALERT)).toBe("created");
+    // A 2ª passada encontra a linha JÁ carimbada pela criação — é exatamente o
+    // que o F-12 fecha: sem o carimbo, `last = 0` e o lembrete "mensal"
+    // dispararia aqui.
+    expect(await upsertAlert(b.deps, ALERT)).toBe("seen");
+    expect(b.enqueued).toHaveLength(1);
   });
 });
 
@@ -715,6 +798,27 @@ describe("L — UPDATE que não casa linha nenhuma é falha, não sucesso", () =
 
     expect(out).toBe("failed");
     expect(evts(b.logs)).toContain("wa_alert_touch_no_rows");
+    // A ASSERÇÃO QUE FALTAVA — e sem a qual o título era falso. O toque é o
+    // pedágio: se ele não casa linha, o aviso não entra na fila. Na ordem
+    // anterior (enfileirar primeiro) este `expect` reprovaria, e uma falha de
+    // escrita persistente enfileiraria um aviso idêntico por dia, sem teto: o
+    // índice UNIQUE de `billing_notifications` é parcial e não deduplica com
+    // `invoice_id` nulo, que é o caso de TODO aviso desta fase.
+    expect(b.enqueued).toHaveLength(0);
+  });
+
+  it("falha persistente de escrita não enfileira nada em N passadas", async () => {
+    const antes = new Date(Date.parse("2026-08-02T12:00:00.000Z") - REMINDER_INTERVAL_MS - DAY)
+      .toISOString();
+    const b = makeBench({
+      existing: openAlert({ lastReminderAt: antes }),
+      touchFails: "deadlock detected",
+    });
+
+    for (let i = 0; i < 5; i++) {
+      expect(await upsertAlert(b.deps, ALERT)).toBe("failed");
+    }
+    expect(b.enqueued).toHaveLength(0);
   });
 
   it("erro explícito do UPDATE também é failed", async () => {

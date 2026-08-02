@@ -212,9 +212,11 @@ const alertRepo: AlertRepo = {
   },
 
   async stampReminder(t) {
+    const patch: Record<string, unknown> = { last_reminder_at: t.nowIso };
+    if (typeof t.occurrences === "number") patch.occurrences = t.occurrences;
     const { data, error } = await supabase
       .from("whatsapp_instance_alerts")
-      .update({ last_reminder_at: t.nowIso })
+      .update(patch)
       .eq("id", t.id)
       .eq("organization_id", t.organizationId)
       .select("id");
@@ -388,9 +390,11 @@ const repo: WorkerRepo = {
   },
 
   async recordDivergenceKind(instanceId, kind, nowIso) {
-    await supabase.from("whatsapp_instances")
+    const { error } = await supabase.from("whatsapp_instances")
       .update({ last_divergence_kind: kind, last_divergence_at: nowIso })
       .eq("id", instanceId);
+    if (error) return { ok: false, message: error.message };
+    return { ok: true };
   },
 
   async listDateReviewPending() {

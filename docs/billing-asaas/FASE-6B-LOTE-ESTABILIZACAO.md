@@ -174,6 +174,78 @@ local foi criada e nenhuma integração é declarada verde.
 
 ---
 
+## 6-bis. Achados da rodada final e o que foi feito com cada um
+
+Os seis gates rodaram contra `19f8e53`. **Zero P0, zero P1.** Oito achados
+novos, todos corrigidos ou decididos explicitamente — nenhum ambíguo.
+
+| ID | Gate | Sev | O que era | Decisão |
+|---|---|---|---|---|
+| **IR-001** | integration-reliability | **P2** | Enfileirar ANTES de gravar trocava "aviso perdido" por "aviso duplicado": com escrita falhando de forma persistente, um aviso idêntico por dia, **sem teto** — o UNIQUE de `billing_notifications` é parcial e não deduplica com `invoice_id` nulo, que é o caso de todo aviso desta fase | **CORRIGIDO** — ordem em três tempos |
+| IR-002 | integration-reliability | P3 | O teste L prometia "nada é enfileirado" sem asseverar, e o teste de reexecução usava `find()` estático: passariam com o defeito presente | **CORRIGIDO** — bancada com estado mutável + asserções reais |
+| IAA-01 | identity-access | P3 | `get_instance` — quinto caminho de leitura, escapou do F-09: `if (inst.error \|\| !inst.data)` colapsava indisponibilidade em 404 | **CORRIGIDO** |
+| IAA-02 | identity-access | P3 | `requireInstanceId` validava presença, não forma: `"abc"` virava 503 "tente novamente" + alarme falso | **CORRIGIDO** — `parseUuid`, 400 |
+| IAA-03 | identity-access | P3 | `resolvePlatformAdminRecipients` devolve `[]` tanto em erro quanto em tabela vazia | **ACEITO** — ver abaixo |
+| IAA-04 | identity-access | P3 | O guardrail `no-undef` não rodava em CI — dependia de disciplina local | **CORRIGIDO** — passo novo no workflow |
+| MV-001 | migration-validator | P3 | Rollback da 087 sem referência cruzada nem advertência | **CORRIGIDO** |
+| MV-002 | migration-validator | P3 | 092 sem `begin;`/`commit;` | **REJEITADO** — ver abaixo |
+| MV-003 | migration-validator | P3 | O comentário "089 antes da 088" citava a razão autocontida, não a cruzada | **CORRIGIDO** — texto nomeia a função e adverte contra reordenar |
+| TI-001 | tenant-isolation | P3 | `recordDivergenceKind` descartava erro de escrita | **CORRIGIDO** |
+
+### IR-001 — a ordem em três tempos, e por que não era só inverter
+
+O F-08 mandou enfileirar antes de gravar, para que o slot mensal nunca fosse
+consumido por um aviso que não saiu. Correto para o defeito que endereçava — e
+gerador do defeito espelhado: enfileirar sem conseguir registrar que enfileirou.
+
+Inverter de volta reabriria o F-08. A saída foi separar a escrita em duas:
+
+1. **Toca** a linha sem avançar o lembrete (`last_seen_at` + `payload`). É o
+   **pedágio de escrita**: se o UPDATE não passa, nada é enfileirado. A classe
+   de falha persistente que o auditor descreveu morre aqui.
+2. **Enfileira** — agora com a escrita já provada possível naquela linha.
+3. **Carimba** o slot consumido. Só o que entrou na fila avança o lembrete.
+
+**Risco residual aceito e declarado:** se o passo 1 funcionar e o passo 3 falhar
+— mesma linha, mesmo predicado, segundos depois — a próxima passada relembra e
+enfileira uma segunda vez. Uma duplicata, não um fluxo diário. Fechar isso de
+vez exige RPC transacional cobrindo fila e ledger juntos, e isso é
+**PRÉ-REQUISITO para ligar `billing_notifications_dispatch`** nos seis
+`admin_zapi_*` — não para esta fase, em que a flag está OFF e a fila só acumula.
+
+Controle positivo executado: revertendo para a ordem antiga, **8 testes
+reprovam**, incluindo o L que antes era vazio.
+
+### IAA-03 — aceito, com justificativa e follow-up
+
+`resolvePlatformAdminRecipients` devolve `[]` em erro de leitura e em tabela
+vazia. O worker então trata "não consegui ler" como "não há admin".
+
+**Por que aceitar:** o impacto é contido e barulhento — o núcleo preserva o slot
+mensal quando não há destinatário, loga `wa_alert_no_admin_recipient` e
+`wa_alert_reminder_no_recipient` com `needsAdminAction`, e o worker é diário.
+Nada se perde; adia-se 24h.
+
+**Por que não corrigir aqui:** a função vive em `_shared/billing-notify.ts`, com
+dez consumidores em outras fases. Mudar a assinatura arrasta redeploy cruzado de
+billing inteiro para resolver um adiamento de um dia numa fase que não está
+deployada. É troca ruim dentro do escopo da 6b.
+
+**Follow-up:** agrupar com a próxima mudança legítima de `billing-notify.ts` —
+provavelmente a RPC transacional do IR-001, que toca o mesmo arquivo.
+
+### MV-002 — rejeitado, com evidência
+
+O achado pede `begin;`/`commit;` na 092. Verificado no repositório: das
+**oito** migrations de wrapper de cron do projeto (029, 043, 045, storage
+orphan, stripe expire, billing crons, 064, 069), **zero** usam `begin;`. A 092
+segue o precedente; envolvê-la em transação é que seria a exceção.
+
+Mesmo achado já julgado improcedente na rodada 1, agora com evidência mais
+ampla. Registrado para não voltar numa quinta rodada.
+
+---
+
 ## 7. Critério de convergência da rodada final
 
 Aprovado (item 11 da autorização): zero P0, zero P1, zero P2 aberto, P3

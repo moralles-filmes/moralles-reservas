@@ -244,7 +244,18 @@ commit;
 --   values ('<org A>', '<unidade da org B>', 'zapi', 'ACTIVE');
 --
 -- =====================================================================
--- Rollback
+-- Rollback — LEIA A ADVERTÊNCIA DA 088 ANTES
 -- =====================================================================
---   drop table if exists whatsapp_instances;
+-- `drop table whatsapp_instances` DESTRÓI AUDITORIA ADMINISTRATIVA DE FORMA
+-- IRREVERSÍVEL, igual às duas tabelas filhas: `current_monthly_cost_cents`,
+-- `cost_source`, `cost_note`, `cancellation_reason`, `end_confirmation_note` e
+-- `notes` registram DECISÃO HUMANA sobre o que a plataforma paga ao fornecedor,
+-- e não têm segunda cópia — o painel da Z-API não reconstrói nenhum deles.
+--
+-- Esta tabela é o DEGRAU 5 (o último) da sequência. A ordem inversa completa da
+-- fase, o rollback operacional não-destrutivo preferencial e o gate de
+-- autorização estão publicados na 088 — único lugar onde vivem inteiros. Não
+-- executar este bloco isolado: `whatsapp_instance_cycles` e
+-- `whatsapp_instance_alerts` referenciam esta tabela e precisam sair antes.
+--   drop table if exists whatsapp_instances;   -- ⚠ destrói auditoria
 --   drop function if exists public.whatsapp_instance_tenant_guard();

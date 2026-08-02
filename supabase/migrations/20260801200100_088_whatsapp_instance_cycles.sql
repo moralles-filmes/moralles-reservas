@@ -178,14 +178,17 @@ commit;
 -- =====================================================================
 --
 --   ┌───────────────────────────────────────────────────────────────────┐
---   │  DROP TABLE DE whatsapp_instance_alerts OU                        │
---   │  whatsapp_instance_cycles DESTRÓI AUDITORIA OPERACIONAL E         │
+--   │  DROP TABLE DE whatsapp_instances, whatsapp_instance_cycles OU    │
+--   │  whatsapp_instance_alerts DESTRÓI AUDITORIA OPERACIONAL E         │
 --   │  FINANCEIRA DE FORMA IRREVERSÍVEL.                                │
 --   │                                                                   │
---   │  São as duas únicas tabelas que registram o que a PLATAFORMA      │
---   │  pagou ao fornecedor e o que um administrador humano decidiu      │
---   │  sobre cada ciclo. Não há segunda cópia, e o provedor não         │
---   │  reconstrói o histórico.                                          │
+--   │  São as TRÊS tabelas que registram o que a PLATAFORMA pagou ao    │
+--   │  fornecedor e o que um administrador humano decidiu sobre cada    │
+--   │  ciclo. A 087 entra nesta lista pelo mesmo motivo que as filhas:  │
+--   │  current_monthly_cost_cents, cost_source, cost_note,              │
+--   │  cancellation_reason e end_confirmation_note são decisão humana   │
+--   │  registrada. Não há segunda cópia, e o painel do provedor não     │
+--   │  reconstrói nenhuma delas.                                        │
 --   └───────────────────────────────────────────────────────────────────┘
 --
 -- ROLLBACK OPERACIONAL PREFERENCIAL — não destrutivo, e é o caminho padrão:
@@ -214,8 +217,17 @@ commit;
 --   -- 091: as flags foram REMOVIDAS por ela; restaurá-las é migration nova
 --   --      (docs/billing-asaas/restore-zapi-auto-flags.sql). Não há drop aqui.
 --
---   -- 089 antes da 088: a trigger de alertas usa a função criada AQUI, e o
---   --      Postgres recusa o `drop function` enquanto ela existir.
+--   -- 089 antes da 088. A razão que FORÇA esta ordem é cruzada, não interna:
+--   --      a trigger `whatsapp_instance_alerts_tenant_guard` (definida na 089)
+--   --      executa `whatsapp_instance_child_tenant_guard()`, que é criada
+--   --      NESTE arquivo (088) e reusada lá. Trigger→função É rastreado por
+--   --      `pg_depend`, então o `drop function` da 088 é recusado enquanto a
+--   --      089 existir.
+--   --      NÃO confundir com `whatsapp_alert_subject_guard()`, dropada logo
+--   --      abaixo: essa é da própria 089 e é autocontida — ela obriga
+--   --      drop-trigger-antes-de-drop-function DENTRO da 089, mas não decide
+--   --      nada sobre a posição relativa a este arquivo. Quem remover a
+--   --      `subject_guard` no futuro NÃO fica livre para reordenar.
 --   drop trigger if exists whatsapp_instance_alerts_subject_guard on whatsapp_instance_alerts;
 --   drop function if exists public.whatsapp_alert_subject_guard();
 --   drop table if exists whatsapp_instance_alerts;   -- ⚠ destrói auditoria
@@ -225,7 +237,8 @@ commit;
 --   drop function if exists public.whatsapp_instance_child_tenant_guard();
 --
 --   -- 087: por último — as duas tabelas acima referenciam whatsapp_instances.
---   --      Ver o rollback da própria 087.
+--   drop table if exists whatsapp_instances;   -- ⚠ destrói auditoria
+--   drop function if exists public.whatsapp_instance_tenant_guard();
 --
 -- ATENÇÃO AO REPLAY: o Postgres NÃO rastreia dependências dentro do corpo de
 -- funções PL/pgSQL (`pg_depend` é cego a elas). Um `drop table` fora de ordem

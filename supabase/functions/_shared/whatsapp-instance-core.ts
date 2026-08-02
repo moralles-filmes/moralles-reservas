@@ -123,6 +123,23 @@ export function parseCostCents(raw: unknown): CostParse {
   return { ok: true, unknownCost: false, cents: raw };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * UUID bem-formado, ou `null`.
+ *
+ * Validar só a PRESENÇA não bastava: `instance_id: "abc"` chegava ao PostgREST
+ * como `id=eq.abc`, o Postgres levantava `22P02` e o erro subia pelo caminho de
+ * INDISPONIBILIDADE — devolvendo 503 "tente novamente" e disparando um alarme
+ * `needsAdminAction` para um pedido malformado que nunca vai funcionar por
+ * repetição. Erro do pedido é 400, e não pode gastar o canal de alarme que a
+ * fase inteira construiu.
+ */
+export function parseUuid(raw: unknown): string | null {
+  const v = typeof raw === "string" ? raw.trim() : "";
+  return UUID_RE.test(v) ? v : null;
+}
+
 const MAX_REF_LENGTH = 128;
 
 /**

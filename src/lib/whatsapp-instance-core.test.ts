@@ -7,6 +7,7 @@ import {
   canTransition,
   normalizeCostSource,
   parseCostCents,
+  parseUuid,
   validateProviderInstanceRef,
 } from "../../supabase/functions/_shared/whatsapp-instance-core";
 
@@ -158,6 +159,35 @@ describe("parseCostCents", () => {
   it("devolve código estável para a UI diferenciar do erro genérico", () => {
     const r = parseCostCents(1.5);
     if (r.ok === false) expect(r.code).toBe("COST_NOT_INTEGER_CENTS");
+  });
+});
+
+describe("parseUuid", () => {
+  it("aceita UUID canônico, em qualquer caixa, com espaço em volta", () => {
+    expect(parseUuid("11111111-1111-4111-8111-111111111111"))
+      .toBe("11111111-1111-4111-8111-111111111111");
+    expect(parseUuid("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"))
+      .toBe("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE");
+    expect(parseUuid("  11111111-1111-4111-8111-111111111111  "))
+      .toBe("11111111-1111-4111-8111-111111111111");
+  });
+
+  it("recusa ausência e string vazia", () => {
+    for (const v of [undefined, null, "", "   "]) expect(parseUuid(v)).toBeNull();
+  });
+
+  it("recusa forma inválida — é o que virava 503 e alarme falso", () => {
+    // `id=eq.abc` levantava 22P02 no Postgres, o erro subia pelo caminho de
+    // indisponibilidade e o operador era mandado "tentar de novo".
+    for (const v of ["abc", "1111", "11111111-1111-4111-8111", "11111111111141118111111111111111"]) {
+      expect(parseUuid(v)).toBeNull();
+    }
+  });
+
+  it("recusa tipo não-string", () => {
+    for (const v of [42, true, {}, [], ["11111111-1111-4111-8111-111111111111"]]) {
+      expect(parseUuid(v)).toBeNull();
+    }
   });
 });
 

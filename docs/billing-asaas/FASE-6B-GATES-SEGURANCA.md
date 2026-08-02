@@ -1,8 +1,37 @@
-# FASE 6B — Os seis gates `saas-shield-br` — execução e resolução
+# FASE 6B — Os seis gates `saas-shield-br` — quatro rodadas
 
-> Executados em 2026-08-02 contra `469ade2` (estado da branch antes das correções).
-> Correções aplicadas em seguida; guardrails reexecutados.
-> Continuidade: [FASE-6B-RESUMO.md](FASE-6B-RESUMO.md) · Rollout: [FASE-6B-PACOTE-EXECUCAO.md](FASE-6B-PACOTE-EXECUCAO.md).
+> Continuidade: [FASE-6B-RESUMO.md](FASE-6B-RESUMO.md) · Rollout:
+> [FASE-6B-PACOTE-EXECUCAO.md](FASE-6B-PACOTE-EXECUCAO.md) · Lote final:
+> [FASE-6B-LOTE-ESTABILIZACAO.md](FASE-6B-LOTE-ESTABILIZACAO.md).
+
+| Rodada | Commit auditado | Resultado |
+|---|---|---|
+| 1 | `469ade2` | 5 PASS · `integration-reliability` **FAIL** (3 ALTO) → corrigido em `b255407` |
+| 2 | `b255407` | `integration-reliability` PASS · `identity-access` **FAIL** (`ReferenceError` no caminho de autorização) → corrigido em `0ca1304` |
+| 3 | `0ca1304` | 5 PASS/PASS_WITH_WARNINGS · zero P0/P1 · **11 achados abertos**, incluindo o defeito latente FK × CHECK |
+| **Final** | `19f8e53` | lote único de estabilização — resultado na seção final |
+
+## Como ler a sequência
+
+**A curva 1 → 8 → 9 achados NÃO mede piora de qualidade.** Ela mede
+**profundidade da superfície auditada**: a rodada 1 olhou o worker; a 2 olhou o
+que a 1 havia corrigido; a 3 cruzou objetos de schema que nenhuma anterior havia
+relacionado entre si.
+
+O `FINDING-004` é a prova. Ele é **defeito latente da migration 089 desde a
+versão original** (`daf5bba`) — não regressão de correção — e passou por duas
+auditorias completas antes de alguém analisar a interação entre a FK e a lógica
+ternária do CHECK.
+
+**Atribuição correta:** `LATENT_SCHEMA_DEFECT_DISCOVERED_DURING_REAUDIT`.
+Não `REGRESSION_INTRODUCED_BY_0ca1304`.
+
+O que sustentava o ciclo era estrutural, não humano: **o worker não era
+importável por vitest**. Chamava `serve()` no carregamento e importava
+`deno.land`/`esm.sh`, então toda correção nele só podia ser verificada por
+leitura — e leitura foi exatamente o que deixou passar o `ReferenceError` da
+rodada 2 e o conflito FK × CHECK das rodadas 1 e 2. A rodada final quebra isso
+extraindo o núcleo.
 
 ---
 
@@ -17,6 +46,8 @@ subagentes. Corrigido o sequenciamento: **os gates são o passo 1 do caminho
 crítico**, antes de instalar Docker, `psql` ou qualquer preparo de stack.
 
 ---
+
+# RODADA 1 — `469ade2`
 
 ## Resultado por gate
 
@@ -154,18 +185,13 @@ atribuído à organização errada** — é exatamente a que a fase existe para 
 
 ---
 
-## Estado após as correções
+## Estado ao fim da rodada 1 — `b255407`
 
 ```
-npm test ........................ 611/611 (era 610; +1 teste do D-1)
+npm test ........................ 611/611
 npm run typecheck ............... 0 erros
 npm run lint .................... 0 erros, 22 warnings (baseline inalterada)
-migration-static-guard .......... 5/5
-function-acl-allowlist .......... 8/8
-acoplamento event_type ↔ template  5/5
 ```
-
-### Veredito dos gates
 
 ```
 migration-validator .................. PASS (2 P3: 1 corrigido, 1 improcedente)
@@ -173,14 +199,201 @@ rls-auditor .......................... PASS (1 médio corrigido)
 tenant-isolation-auditor ............. PASS (1 P3 corrigido)
 identity-access-auditor .............. PASS (2 baixos corrigidos, 2 aceitos)
 secret-hunter (estático) ............. PASS
-integration-reliability-auditor ...... FAIL → 5 achados corrigidos, RE-AUDITORIA PENDENTE
+integration-reliability-auditor ...... FAIL → 5 achados corrigidos
 ```
 
-⚠️ **`SAAS_SHIELD_GATES_NOT_EXECUTED` NÃO foi removido.** O
-`integration-reliability-auditor` reprovou e as correções **não foram
-reauditadas pelo mecanismo aprovado**. Guardrail local verde não é gate verde —
-a reexecução daquele gate contra o estado corrigido é obrigatória antes de
-declarar os seis fechados.
+---
+
+# RODADA 2 — `b255407`
+
+Reexecutados os cinco gates cujo domínio o `b255407` tocou.
+
+`integration-reliability-auditor` passou a **PASS**: os três ALTO confirmados
+resolvidos. Mas `identity-access-auditor` **REPROVOU**, e o achado foi meu:
+
+## IAA-6B-05 — `ReferenceError` no caminho de autorização
+
+Ao acrescentar o log de `platform_admin_lookup_failed` em `isPlatformAdmin`, usei
+`reqId` — que é `const` **dentro do callback do `serve`**, enquanto
+`isPlatformAdmin` é função de **módulo**.
+
+| Consequência | Havia? |
+|---|---|
+| `AUTHORIZATION_BYPASS` | **NÃO** — o `throw` sobe para o `catch` externo, que devolve 500. Fail-closed sobreviveu |
+| `ADMINISTRATIVE_PATH_OUTAGE` | **SIM** — toda a EF cai em 500 sempre que o lookup de `platform_admins` falhar |
+| `OBSERVABILITY_LOSS` | **SIM** — o log nunca sai, e o `catch` externo descarta o `error.message` |
+
+O diagnóstico ficou **pior** que o silêncio original: antes era um 403 mudo,
+depois um 500 genérico sem causa registrada.
+
+**Correção (`0ca1304`):** `reqId` por parâmetro — convenção já usada em quatro
+outras EFs do projeto. **Explicitamente NÃO promovido a `let` de módulo**: isso
+seria reintroduzir o defeito do `adminRecipient` da rodada 1.
+
+## Guardrail que nasceu daqui — e as três tentativas
+
+Nenhuma ferramenta do projeto pegaria essa classe de defeito: `tsc -b` não
+alcança `supabase/functions/` e não há Deno instalado. O identificador fora de
+escopo compilava, passava no lint, passava nos 611 testes e só explodia em
+runtime, num ramo que só executa quando o banco falha.
+
+| Tentativa | O que aconteceu |
+|---|---|
+| 1 | Removi o ignore global e ampliei o bloco genérico sobre `supabase/functions` → importei 88 warnings alheios + 1 erro `prefer-const` pré-existente |
+| 2 | Bloco isolado **sem parser TS** → o espree produziu "93 erros" que eram **falhas de parse disfarçadas de achado** |
+| 3 | Bloco com `tseslint.parser`, só `no-undef` → Edge Functions limpas, baseline do app intacta em 22 warnings |
+
+**Controle positivo executado:** injetei um identificador indefinido numa EF, o
+lint reprovou nomeando-o; removi, voltou limpo.
+
+**Limitação registrada, não escondida:** `no-undef` não entende TIPOS de
+TypeScript e acusa identificador que só existe como tipo (por isso
+`RequestInit: "readonly"` na lista de globais). Se essa lista começar a crescer
+toda semana, a regra virou tributo — a saída é um typecheck de verdade sobre
+`supabase/functions`, **nunca desligar `no-undef` em silêncio**.
+
+---
+
+# RODADA 3 — `0ca1304`
+
+Cinco gates reexecutados. **Zero P0, zero P1.** Nenhum bloqueante.
+
+```
+migration-validator .................. PASS_WITH_WARNINGS
+rls-auditor .......................... PASS_WITH_WARNINGS
+tenant-isolation-auditor ............. PASS_WITH_WARNINGS
+identity-access-auditor .............. PASS
+integration-reliability-auditor ...... PASS_WITH_WARNINGS
+```
+
+Mas **onze achados abertos** (3 P2 + 8 P3, dois deles pré-existentes da EF). O
+inventário fechado, com comportamento atual, risco, correção, teste e critério
+de aceite por achado, está em
+[FASE-6B-LOTE-ESTABILIZACAO.md](FASE-6B-LOTE-ESTABILIZACAO.md) §2.
+
+## FINDING-004 — o achado mais importante das três rodadas
+
+A FK `instance_id … on delete set null` convivia com um CHECK que exigia
+`instance_id is not null` no ramo INSTANCE. Apagar uma instância com alerta
+INSTANCE fazia a FK gravar NULL, o CHECK avaliar `FALSE` e **o DELETE inteiro
+abortar** com `check_violation` — o oposto exato do contrato documentado no
+próprio arquivo: *"o ledger é registro de auditoria e não pode ser apagado em
+cascata"*. A promessa era "sobrevive nulando"; o schema entregava "impede o
+delete".
+
+### Correção de atribuição histórica
+
+O relatório afirmou que o achado era *"regressão introduzida pela correção do
+FINDING-002"*, alegando que antes o ramo INSTANCE era só `subject_id =
+instance_id`.
+
+**Verificado no histórico:** `git show daf5bba` mostra `instance_id is not null`
+**já presente** no ramo INSTANCE na versão original do arquivo, e
+`git diff b255407..0ca1304` mostra que a correção do FINDING-002 tocou
+**apenas** o ramo ORGANIZATION.
+
+| | |
+|---|---|
+| Raciocínio técnico do auditor | **CORRETO** — a lógica ternária do CHECK e a coerção da FK estavam bem analisadas |
+| Atribuição histórica | **ERRADA** |
+| Classificação correta | `LATENT_SCHEMA_DEFECT_DISCOVERED_DURING_REAUDIT` |
+
+Registrar isso importa: tratar um defeito latente como regressão da rodada
+anterior distorce a leitura de todo o processo — sugere que corrigir piora,
+quando o que houve foi aprofundamento da leitura.
+
+---
+
+# RODADA FINAL — `19f8e53`
+
+Lote único de estabilização. Fechou os onze achados, mais o **F-12** descoberto
+durante a implementação (a criação do alerta não consumia o slot mensal, então o
+lembrete "mensal" disparava no dia seguinte ao nascimento).
+
+## A medida estrutural — extração do núcleo do worker
+
+| Núcleo `whatsapp-instance-worker-core.ts` | Adapter `index.ts` |
+|---|---|
+| decisão de criar/lembrar/suprimir | cliente Supabase, queries, updates, RPCs |
+| política de avanço do lembrete e do payload | resolução real do destinatário |
+| decisão de enfileirar | relógio real, `serve`, resposta HTTP |
+| contadores e classificação por sub-passo | leitura da credencial legada (só o identificador) |
+| fluxo dos cinco passos e isolamento entre eles | emissão de telemetria |
+
+`clock`, `repo`, `notifier`, `recipients` e `telemetry` são injetados. O núcleo
+não importa Supabase, Deno, `fetch`, variável de ambiente nem cliente de
+provedor.
+
+**W1–W4, que eram `NOT_EXECUTED` e estavam sustentados por leitura, viraram 37
+testes reais.** Controle positivo executado: desativei a checagem de zero linhas
+do F-02 e o bloco L reprovou nomeadamente; restaurei e voltou verde.
+
+## Fronteira preservada
+
+Comportamento aprovado das seções A–D, nomes canônicos, schemas, `event_type`,
+chaves de dedupe, sequência dos cinco passos, ausência de chamada externa,
+ausência de escrita em `billing_status` e em entitlement — tudo intacto. A única
+mudança de regra é o F-12, declarada no documento do lote **antes** de ter sido
+feita.
+
+## Veredito dos gates da rodada final
+
+```
+migration-validator .................. PASS_WITH_WARNINGS
+rls-auditor .......................... PASS_WITH_WARNINGS
+tenant-isolation-auditor ............. PASS_WITH_WARNINGS
+identity-access-auditor .............. PASS_WITH_WARNINGS
+integration-reliability-auditor ...... PASS_WITH_WARNINGS
+secret-hunter (estático) ............. PASS  (zero achados em qualquer severidade)
+
+ZERO P0 · ZERO P1
+```
+
+### Achados anteriores — todos fechados
+
+| Gate | Achado da rodada 3 | Status |
+|---|---|---|
+| migration-validator | P2 rollback sem 090/092 | **RESOLVIDO**, verificado contra `pg_depend` real |
+| rls-auditor | `FINDING-002` ramo ORGANIZATION | **RECONFIRMADO RESOLVED** |
+| rls-auditor | `FINDING-004` FK × CHECK | **RESOLVIDO** — quatro caminhos de escrita traçados, nenhum reabre |
+| rls-auditor | `FINDING-005` rollback destrutivo | **RESOLVIDO** (residual virou `FINDING-006`, corrigido) |
+| tenant-isolation | P2 UPDATE mudo | **RESOLVIDO**, padrão replicado em `stampReminder` |
+| tenant-isolation | P3 predicado de status | **RESOLVIDO** |
+| integration-reliability | REG-01, REG-03, REG-04 | **CONFIRMADO RESOLVED** |
+| integration-reliability | REG-02 (com ressalva na rodada 3) | **RESOLVED — a ressalva foi fechada pelo F-12** |
+| identity-access | R1 estado de módulo · R2 `ReferenceError` | **RESOLVIDO**, com sonda de ESLint executada pelo próprio gate |
+
+### Oito achados novos — nenhum bloqueante
+
+Um P2 e sete P3. Sete corrigidos, um aceito com justificativa, um rejeitado com
+evidência. Tabela completa e o raciocínio de cada decisão em
+[FASE-6B-LOTE-ESTABILIZACAO.md](FASE-6B-LOTE-ESTABILIZACAO.md) §6-bis.
+
+O P2 (`IR-001`) é a consequência espelhada do próprio F-08: enfileirar antes de
+gravar troca "aviso perdido" por "aviso duplicado". Corrigido com escrita em três
+tempos — toca (pedágio), enfileira, carimba — e **controle positivo executado**:
+com a ordem antiga, 8 testes reprovam.
+
+**Aceito explicitamente:** `IAA-03` (`resolvePlatformAdminRecipients` confunde
+falha de leitura com lista vazia) — impacto é adiar 24h, barulhento em log, e a
+correção arrastaria redeploy de billing inteiro. Follow-up registrado.
+
+**Rejeitado com evidência:** `MV-002` (`begin;`/`commit;` na 092) — das oito
+migrations de wrapper de cron do projeto, **zero** usam. A 092 segue o
+precedente. Mesmo achado já julgado improcedente na rodada 1.
+
+## Guardrails locais
+
+```
+npm test ........................ 668/668  (era 611; +44 núcleo do worker, +13 custo)
+npm run typecheck ............... 0 erros
+eslint supabase/functions ....... 0 erros com --max-warnings=0  (agora NO CI)
+npm run lint .................... 0 erros, 22 warnings (baseline inalterada)
+migration-static-guard .......... 5/5
+function-acl-allowlist .......... 8/8
+acoplamento event_type ↔ template  6/6  (+1: a decisão de enfileirar fica no núcleo)
+varredura de secret no diff ..... limpa (único casamento foi falso positivo: `re_` casando `RE_T` em `WORKER_CORE_TESTS`)
+```
 
 ⚠️ **`GIT_HISTORY_SECRET_SCAN`: NÃO EXECUTADO.** O `secret-hunter` não tem shell.
 A varredura de histórico permanece pendente de execução humana:
@@ -195,6 +408,32 @@ git fsck --unreachable --no-reflogs
 ```
 
 **Working tree limpo é evidência do estado atual, não do histórico.**
+
+---
+
+## Estado consolidado
+
+```
+SAAS_SHIELD_GATES_EXECUTED
+  migration-validator ................ PASS_WITH_WARNINGS
+  rls-auditor ........................ PASS_WITH_WARNINGS
+  tenant-isolation-auditor ........... PASS_WITH_WARNINGS
+  identity-access-auditor ............ PASS_WITH_WARNINGS
+  integration-reliability-auditor .... PASS_WITH_WARNINGS
+  secret-hunter ...................... PASS_STATIC_ONLY
+
+ZERO P0 · ZERO P1 · ZERO P2 ABERTO
+P3: corrigidos, ou aceitos com justificativa e follow-up — nenhum ambíguo
+SAAS_SHIELD_OVERALL: GO
+```
+
+O critério de convergência aprovado está satisfeito: zero P0, zero P1, zero P2
+aberto, P3 decididos explicitamente, guardrails locais verdes, gates
+reexecutados sobre o commit final, histórico das quatro rodadas documentado,
+limitações de integração preservadas.
+
+**`SAAS_SHIELD_OVERALL: GO` não é `FASE_6B: GO`.** Os gates são estáticos e
+dizem respeito ao código no repositório. Tudo abaixo continua valendo.
 
 ### Demais bloqueios, inalterados
 

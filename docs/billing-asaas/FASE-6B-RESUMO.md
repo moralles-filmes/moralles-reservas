@@ -31,7 +31,8 @@ foi feito. O comportamento de produção hoje é **idêntico ao de antes da fase
 | `DOCKER_NOT_INSTALLED` | não verificado | 🔴 **verificado: ausente** |
 | `PSQL_NOT_INSTALLED` | não verificado | 🔴 **verificado: ausente** |
 | `LINKED_TO_PRODUCTION_REMOTE` | não existia | 🔴 **NOVO** — o repositório está vinculado a produção; `db push`/`deploy` a atingem sem passo preparatório |
-| `REPLAY_FAILS_42P13` · `UNSAFE_AS_IS` · `DATABASE_INTEGRATION_ENVIRONMENT_BLOCKED` · `SAAS_SHIELD_GATES_NOT_EXECUTED` · `NO_GO_BEFORE_BACKFILL` · `CRON_NO_GO` · `MERGE_NO_GO` | 🔴 | 🔴 **inalterados** |
+| `SAAS_SHIELD_GATES_NOT_EXECUTED` | 🔴 | ✅ **REMOVIDO** — os seis rodaram; ver o estado atual abaixo |
+| `REPLAY_FAILS_42P13` · `UNSAFE_AS_IS` · `DATABASE_INTEGRATION_ENVIRONMENT_BLOCKED` · `NO_GO_BEFORE_BACKFILL` · `CRON_NO_GO` · `MERGE_NO_GO` | 🔴 | 🔴 **inalterados** |
 
 **Sem Docker não existe stack local**, então o ambiente está apto **apenas a
 validações estáticas**. Diagnóstico completo, tabela de risco por arquivo e o
@@ -51,20 +52,28 @@ Credential Manager** · `config.toml` com **43 blocos, todos `[functions.*]`** �
 13 lendo Vault) · segredos esperados `internal_api_key` e `project_url` · replay
 **já falhou** com `42P13`.
 
-### Correção: os seis gates não dependem do ambiente
+### Os seis gates rodaram — quatro rodadas
 
 Os seis auditores `saas-shield-br` declaram `tools: Read, Glob, Grep` — **nenhum
-tem shell, nenhum acessa banco**. São auditorias **puramente estáticas**.
+tem shell, nenhum acessa banco**. São auditorias **puramente estáticas**, e a
+falta de Docker nunca foi o motivo de não terem rodado; o bloqueio era só
+autorização de despacho.
 
-**A falta de Docker nunca foi o motivo de eles não terem rodado**, e esperar por
-Docker para executá-los seria erro de sequenciamento. O único bloqueio é
-**autorização de despacho de subagentes**; eles podem rodar antes de qualquer
-instalação.
+| Rodada | Commit | Resultado |
+|---|---|---|
+| 1 | `469ade2` | 5 PASS · `integration-reliability` FAIL (3 ALTO) → `b255407` |
+| 2 | `b255407` | `integration-reliability` PASS · `identity-access` FAIL (`ReferenceError`) → `0ca1304` |
+| 3 | `0ca1304` | zero P0/P1 · 11 achados abertos, incl. o defeito latente FK × CHECK |
+| Final | `19f8e53` | lote único de estabilização — resultado em [FASE-6B-GATES-SEGURANCA.md](FASE-6B-GATES-SEGURANCA.md) |
 
-**Guardrail estático local não é gate.** Os 610 testes, o `acl-estatico` do CI, o
-`migration-static-guard` e o teste de acoplamento por string estão verdes e são
-**guardrails estáticos locais** — não substituem nenhum dos seis, e
-`SAAS_SHIELD_GATES_NOT_EXECUTED` continua valendo.
+**A curva 1 → 8 → 9 achados não mede piora**, mede profundidade da superfície
+auditada. O `FINDING-004` prova: é defeito latente da migration 089 desde a
+versão original (`daf5bba`), não regressão — e sobreviveu a duas auditorias
+completas antes de alguém cruzar a FK com a lógica ternária do CHECK.
+
+**Guardrail estático local não é gate.** Os 661 testes, o `acl-estatico` do CI, o
+`migration-static-guard` e o teste de acoplamento por string são **guardrails
+locais** — eles não substituem nenhum dos seis.
 
 ### Vínculo com produção — achado de alta severidade operacional
 
@@ -116,18 +125,21 @@ escrito e commitado; aplicação e validação operacional pendentes"*.
 | Item | Status | Evidência |
 |---|---|---|
 | 6 núcleos puros (`whatsapp-instance-*`, `whatsapp-partner-simulator-core`) | **EXECUTADO** | 115 testes verdes, detalhados abaixo |
+| Núcleo injetável do worker (`whatsapp-instance-worker-core`) | **EXECUTADO** | 37 testes — decisão, contadores, lembrete, enfileiramento e isolamento entre passos |
+| Validação de custo (`parseCostCents` / `normalizeCostSource`) | **EXECUTADO** | 13 testes — inteiro, zero, nulo, decimal, negativo, string, NaN/Infinity |
 | Guardrail estático de migrations | **EXECUTADO** | 5 testes + step novo no CI `acl-estatico` |
-| Teste do acoplamento por string | **EXECUTADO** | 5 testes, duas direções |
-| `npm test` / `npm run typecheck` / `npm run lint` | **EXECUTADO** | 610/610 · 0 erros · baseline de *warnings* inalterada |
-| Migrations 087–092 | **ESCRITO MAS NÃO EXECUTADO CONTRA BANCO** | nenhum `db push` — não há Supabase CLI nesta máquina |
+| Teste do acoplamento por string | **EXECUTADO** | 6 testes, duas direções + a decisão de enfileirar tem de ficar no núcleo |
+| `npm test` / `npm run typecheck` / `npm run lint` | **EXECUTADO** | 661/661 · 0 erros · baseline de *warnings* inalterada (22) |
+| `eslint supabase/functions` (`no-undef`) | **EXECUTADO** | 0 erros; guardrail nasceu do `ReferenceError` da rodada 2, com controle positivo |
+| Migrations 087–092 | **ESCRITO MAS NÃO EXECUTADO CONTRA BANCO** | nenhum `db push`; a CLI existe, mas aplicar atingiria produção |
 | Migration 093 (cron) | **NÃO ESCRITA** — pertence ao passo 12 do rollout | por desenho, para que `db push` não agende no passo 1 |
 | `manage-whatsapp-instances` | **NÃO DEPLOYADO** | — |
 | `process-whatsapp-instance-cycles` | **NÃO DEPLOYADO** | — |
 | Os 6 templates em `process-billing-notifications` | **NÃO DEPLOYADO** | — |
 | Painel `/platform/instancias-whatsapp` | **NÃO DEPLOYADO** | commitado; sem push em `main`, a Vercel não construiu |
 | Entradas de `verify_jwt` no `config.toml` | **ESCRITO MAS NÃO EXECUTADO CONTRA BANCO** | valem no deploy, que não houve |
-| Testes de integração com banco (15 casos) | **`ENVIRONMENT_BLOCKED`** | [supabase/tests/whatsapp-instances.integration.md](../../supabase/tests/whatsapp-instances.integration.md) |
-| Os 6 gates `saas-shield-br` | **`SAAS_SHIELD_GATES_NOT_EXECUTED`** | puramente estáticos (`Read, Glob, Grep`); bloqueados **só** por autorização de despacho — **não** pelo ambiente |
+| Testes de integração com banco (20 casos + FK-A a FK-G) | **`ENVIRONMENT_BLOCKED`** | [supabase/tests/whatsapp-instances.integration.md](../../supabase/tests/whatsapp-instances.integration.md) |
+| Os 6 gates `saas-shield-br` | **`SAAS_SHIELD_GATES_EXECUTED`** | quatro rodadas; histórico completo em [FASE-6B-GATES-SEGURANCA.md](FASE-6B-GATES-SEGURANCA.md) |
 | *Backfill* do Ren Sushi | **`NO_GO_BEFORE_BACKFILL`** | depende dos gates e do deploy |
 | Cron | **NO-GO** | depende do *backfill* conferido e da execução manual idempotente |
 
@@ -135,9 +147,10 @@ escrito e commitado; aplicação e validação operacional pendentes"*.
 
 ## Testes — por invariante, não por total
 
-**"610 testes" não é evidência de nada.** O que segue é o que cada teste prova.
-Total da fase: **125 testes novos** (115 de núcleo + 5 do guardrail de migration +
-5 do acoplamento). Baseline imediatamente antes: **485** — já incluindo os 42 do
+**"661 testes" não é evidência de nada.** O que segue é o que cada teste prova.
+Total da fase: **176 testes novos** (115 de núcleo das seções A–D + 37 do núcleo
+do worker + 13 de validação de custo + 5 do guardrail de migration + 6 do
+acoplamento). Baseline imediatamente antes: **485** — já incluindo os 42 do
 hotfix do Risco 7, cujos commits são os mais antigos desta mesma branch.
 
 ### `whatsapp-instance-cycle-core` — 16 testes
