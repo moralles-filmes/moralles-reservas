@@ -189,6 +189,11 @@ async function upsertAlert(a: {
       last_seen_at: nowIso,
       occurrences: existing.occurrences + (due ? 1 : 0),
       last_reminder_at: due ? nowIso : existing.last_reminder_at,
+      // Payload REESCRITO a cada passada. A chave do D-1 deixou de carregar os
+      // motivos justamente para não abrir linha nova quando eles mudam — se o
+      // payload não acompanhasse, o admin leria a lista do primeiro dia como se
+      // ainda valesse.
+      payload: a.payload,
     })
     .eq("id", existing.id);
 
@@ -231,6 +236,15 @@ async function resolveRevenueForOrg(organizationId: string): Promise<RevenueAttr
       .maybeSingle(),
   ]);
 
+  // LANÇA em vez de degradar. `countRes.count ?? 0` viraria "zero instâncias"
+  // e `subRes.data` nulo viraria "sem assinatura" — os dois se confundem com
+  // estado real e alimentam tanto os motivos do D-1 quanto o desequilíbrio
+  // econômico. Receita desconhecida por FALHA DE LEITURA não pode virar
+  // receita desconhecida por ausência de contrato. O laço do caller tem
+  // try/catch por item: a instância entra em `failed` e é revista amanhã.
+  const revErr = countRes.error ?? subRes.error ?? overrideRes.error;
+  if (revErr) throw new Error(`revenue_query_failed: ${revErr.message}`);
+
   const plan = (subRes.data as unknown as { billing_plans?: { amount_cents?: number } } | null)
     ?.billing_plans;
 
@@ -242,13 +256,17 @@ async function resolveRevenueForOrg(organizationId: string): Promise<RevenueAttr
 }
 
 async function hasOpenDivergence(instanceId: string): Promise<boolean> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("whatsapp_instance_alerts")
     .select("id")
     .eq("instance_id", instanceId)
     .eq("alert_type", "DIVERGENCE")
     .in("status", ["OPEN", "ACKNOWLEDGED"])
     .limit(1);
+  // Falha de leitura devolveria `false` — "não há divergência aberta" — que é
+  // justamente um dos motivos que tornam o D-1 acionável. Silenciar o motivo
+  // por soluço de rede é pior que pular a instância nesta passada.
+  if (error) throw new Error(`divergence_lookup_failed: ${error.message}`);
   return (data ?? []).length > 0;
 }
 
@@ -371,7 +389,7 @@ async function stepCycleAlerts(today: string): Promise<StepSummary[]> {
           instanceId: r.id,
           channelId: null,
           alertType: "CYCLE_DUE_TOMORROW",
-          dedupeKey: dedupeKeyD1(r.current_cycle_started_on, reasons),
+          dedupeKey: dedupeKeyD1(r.current_cycle_started_on),
           payload: { days_until_due: days, reasons },
         });
         if (res === "failed") d1.failed++;
@@ -472,6 +490,11 @@ async function stepDivergences(today: string): Promise<StepSummary> {
       reqId, evt: "wa_div_inst_query_failed", err: instErr.message, needsAdminAction: true,
     });
     s.failed++;
+    // ABORTA O PASSO. Sem isto, `instances` fica undefined, `linked` nasce
+    // vazio e TODO canal elegível vira CHANNEL_WITHOUT_INSTANCE — falso
+    // positivo em massa que a chave mensal mantém OPEN por até um mês,
+    // escondendo divergência real no meio do ruído.
+    return s;
   }
 
   for (const r of instances ?? []) {
@@ -633,11 +656,23 @@ async function stepEconomics(today: string): Promise<StepSummary> {
   //
   // Ausência de data NÃO é erro de implantação, NÃO bloqueia o uso da
   // instância existente e NÃO gera data padrão.
-  const { data: unknownDate } = await supabase
+  const { data: unknownDate, error: unknownErr } = await supabase
     .from("whatsapp_instances")
     .select("id, organization_id")
     .eq("cycle_source", "UNKNOWN")
     .in("lifecycle_state", ["ACTIVE", "CANCELLATION_REQUESTED"]);
+
+  // Sem capturar o erro, a falha vira `processed: 0, failed: 0` — indistinguível
+  // de "nada a reportar". É exatamente o que o cabeçalho deste arquivo proíbe:
+  // o sinal de falha é a TELEMETRIA, e ela não pode ser silêncio.
+  if (unknownErr) {
+    jsonLog("error", {
+      reqId, evt: "wa_econ_unknown_date_query_failed",
+      err: unknownErr.message, needsAdminAction: true,
+    });
+    s.failed++;
+    return s;
+  }
 
   for (const r of unknownDate ?? []) {
     const res = await upsertAlert({
@@ -661,10 +696,21 @@ async function stepEconomics(today: string): Promise<StepSummary> {
   // multiplicaria avisos sem multiplicar decisão.
 
   // Desequilíbrio pertence à ORGANIZAÇÃO.
-  const { data: all } = await supabase
+  const { data: all, error: allErr } = await supabase
     .from("whatsapp_instances")
     .select("id, organization_id, current_monthly_cost_cents")
     .in("lifecycle_state", ["ACTIVE", "CANCELLATION_REQUESTED"]);
+
+  // Esta é a base do ÚNICO mecanismo de detecção de prejuízo da fase. Falhar
+  // em silêncio aqui é uma janela cega sobre desequilíbrio econômico.
+  if (allErr) {
+    jsonLog("error", {
+      reqId, evt: "wa_econ_instances_query_failed",
+      err: allErr.message, needsAdminAction: true,
+    });
+    s.failed++;
+    return s;
+  }
 
   const byOrg = new Map<string, { instanceId: string; costCents: number | null }[]>();
   for (const i of all ?? []) {
@@ -726,6 +772,11 @@ serve(async (req) => {
   }
 
   reqId = genRequestId();
+  // Zerado a CADA invocação, pelo mesmo motivo que process-voucher-triggers
+  // zera o unitCache: o isolate sobrevive entre execuções. Sem isto, um `null`
+  // cacheado (nenhum platform_admin no momento da 1ª execução) sobreviveria à
+  // criação de um admin e todo aviso nasceria mudo — sem erro, sem sinal.
+  adminRecipient = undefined;
   const today = todayBrt();
   jsonLog("info", { reqId, evt: "wa_instance_cycles_start", today });
 

@@ -92,12 +92,58 @@ create index if not exists whatsapp_cycles_pending_idx
   on whatsapp_instance_cycles (status)
   where status = 'PENDING_REVIEW';
 
+-- =====================================================================
+-- Guarda de tenant — mesmo padrão de whatsapp_instance_tenant_guard (087)
+-- =====================================================================
+-- As FKs garantem que instance_id e organization_id existem, NÃO que são a
+-- mesma organização. Hoje todo produtor deriva organization_id da própria
+-- linha de whatsapp_instances lida no servidor, então não há caminho
+-- explorável — esta trigger existe para que um bug futuro num produtor não
+-- consiga atribuir CUSTO à organização errada em silêncio, que é exatamente
+-- o erro que esta fase existe para impedir.
+create or replace function public.whatsapp_instance_child_tenant_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_inst_org uuid;
+begin
+  if new.instance_id is null then
+    return new;
+  end if;
+
+  select organization_id into v_inst_org
+  from whatsapp_instances where id = new.instance_id;
+
+  if v_inst_org is null or v_inst_org <> new.organization_id then
+    raise exception 'instance_id pertence a outra organizacao'
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.whatsapp_instance_child_tenant_guard()
+  from public, anon, authenticated;
+
+drop trigger if exists whatsapp_instance_cycles_tenant_guard on whatsapp_instance_cycles;
+create trigger whatsapp_instance_cycles_tenant_guard
+  before insert or update of organization_id, instance_id on whatsapp_instance_cycles
+  for each row execute function public.whatsapp_instance_child_tenant_guard();
+
+-- =====================================================================
+-- RLS
+-- =====================================================================
 alter table whatsapp_instance_cycles enable row level security;
 alter table whatsapp_instance_cycles force row level security;
 
 drop policy if exists platform_admin_all_whatsapp_instance_cycles on whatsapp_instance_cycles;
 create policy platform_admin_all_whatsapp_instance_cycles
   on whatsapp_instance_cycles for all
+  to authenticated
   using (is_platform_admin(auth.uid()))
   with check (is_platform_admin(auth.uid()));
 
@@ -123,7 +169,14 @@ commit;
 --   select indexname from pg_indexes where tablename = 'whatsapp_instance_cycles'
 --    and indexname in ('whatsapp_cycles_instance_start_idx', 'whatsapp_cycles_one_open_idx');
 --
+-- 4. Guarda de tenant instalada (esperado: 1 linha):
+--   select tgname from pg_trigger
+--    where tgname = 'whatsapp_instance_cycles_tenant_guard';
+--
 -- =====================================================================
 -- Rollback
 -- =====================================================================
 --   drop table if exists whatsapp_instance_cycles;
+--   -- só depois de dropar TAMBÉM whatsapp_instance_alerts (089), que usa a
+--   -- mesma função de guarda:
+--   drop function if exists public.whatsapp_instance_child_tenant_guard();

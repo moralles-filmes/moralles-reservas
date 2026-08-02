@@ -127,8 +127,18 @@ export function dedupeKeyD7(cycleStart: string): string {
   return `cycle_d7:${cycleStart}`;
 }
 
-export function dedupeKeyD1(cycleStart: string, reasons: D1Reason[]): string {
-  return `cycle_d1:${cycleStart}:${reasons.slice().sort().join(",")}`;
+/**
+ * Ancorada SÓ no ciclo — os motivos ficam no `payload`, que é reescrito a cada
+ * passada.
+ *
+ * Os motivos NÃO entram na chave porque eles são recalculados a cada execução e
+ * a janela do D-1 tem dois dias (D-1 e D-0): um custo que sincroniza ou uma
+ * divergência que abre no meio muda o conjunto e abriria uma linha NOVA —
+ * dois avisos "created" para o mesmo vencimento, e o primeiro deles congelado
+ * com uma lista de motivos que já não vale. Um vencimento, uma ocorrência.
+ */
+export function dedupeKeyD1(cycleStart: string): string {
+  return `cycle_d1:${cycleStart}`;
 }
 
 export function dedupeKeyEndConfirmation(providerAccessUntil: string): string {

@@ -66,12 +66,36 @@ function jsonResponse(req: Request, body: unknown, status = 200) {
 }
 
 async function isPlatformAdmin(userId: string): Promise<boolean> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("platform_admins")
     .select("user_id")
     .eq("user_id", userId)
     .maybeSingle();
+  // Continua fail-closed: indisponibilidade nega. Mas sem este log, "banco
+  // fora do ar" e "não é admin" produziam o MESMO 403 mudo — o operador
+  // legítimo veria "sem permissão" e nada indicaria a causa real.
+  if (error) {
+    jsonLog("error", {
+      reqId, evt: "platform_admin_lookup_failed",
+      err: error.message, needsAdminAction: true,
+    });
+    return false;
+  }
   return !!data;
+}
+
+/**
+ * Procedência do custo. `cost_source` é `text` sem CHECK no banco (diferente de
+ * `provider`, `lifecycle_state` e `cycle_source`), então a whitelist mora aqui:
+ * valor livre vindo do payload poluiria justamente o campo que diz de onde veio
+ * o número que a fase inteira existe para registrar.
+ */
+const COST_SOURCES = ["ADMIN_INFORMED", "PROVIDER_INVOICE", "PROVIDER_PANEL", "ESTIMATED"];
+
+function normalizeCostSource(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return "ADMIN_INFORMED";
+  const v = String(raw);
+  return COST_SOURCES.indexOf(v) === -1 ? null : v;
 }
 
 /** Motivo é obrigatório NA PRÓPRIA ação. String vazia ou " " não passa. */
@@ -208,6 +232,11 @@ serve(async (req) => {
 
       // Backfill NASCE em UNKNOWN quando a data não for confirmada: data
       // ausente não vira vencimento inventado, vira fila de revisão.
+      const costSource = hasCost ? normalizeCostSource(body.cost_source) : null;
+      if (hasCost && costSource === null) {
+        return jsonResponse(req, { error: "Procedência do custo inválida." }, 400);
+      }
+
       const { data, error } = await supabase
         .from("whatsapp_instances")
         .insert({
@@ -219,7 +248,7 @@ serve(async (req) => {
           lifecycle_state: "ACTIVE",
           cycle_source: "UNKNOWN",
           current_monthly_cost_cents: hasCost ? costCents : null,
-          cost_source: hasCost ? String(body.cost_source ?? "ADMIN_INFORMED") : null,
+          cost_source: costSource,
           cost_updated_at: hasCost ? new Date().toISOString() : null,
           cost_updated_by: hasCost ? callerId : null,
           notes: reason,
@@ -350,11 +379,16 @@ serve(async (req) => {
         }, 400);
       }
 
+      const setCostSource = isNull ? null : normalizeCostSource(body.cost_source);
+      if (!isNull && setCostSource === null) {
+        return jsonResponse(req, { error: "Procedência do custo inválida." }, 400);
+      }
+
       const { data, error } = await supabase
         .from("whatsapp_instances")
         .update({
           current_monthly_cost_cents: isNull ? null : raw,
-          cost_source: isNull ? null : String(body.cost_source ?? "ADMIN_INFORMED"),
+          cost_source: setCostSource,
           cost_updated_at: isNull ? null : new Date().toISOString(),
           cost_updated_by: isNull ? null : callerId,
           cost_note: reason,

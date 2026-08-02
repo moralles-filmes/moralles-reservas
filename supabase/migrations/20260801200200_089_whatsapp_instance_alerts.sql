@@ -20,7 +20,11 @@ create table if not exists whatsapp_instance_alerts (
 
   subject_type text not null check (subject_type in ('INSTANCE', 'ORGANIZATION')),
   subject_id uuid not null,
-  organization_id uuid not null references organizations(id) on delete cascade,
+  -- `restrict`, igual às duas tabelas irmãs: este é registro de auditoria e a
+  -- deleção de uma organização não pode apagá-lo em silêncio. `cascade` aqui
+  -- contradizia o `on delete set null` do channel_id logo abaixo, que existe
+  -- exatamente para o ledger sobreviver à deleção do que ele descreve.
+  organization_id uuid not null references organizations(id) on delete restrict,
   instance_id uuid references whatsapp_instances(id) on delete set null,
   -- Só CHANNEL_WITHOUT_INSTANCE preenche: o painel precisa dizer QUAL canal
   -- está fora do inventário e a resolução por backfill precisa da referência.
@@ -102,12 +106,25 @@ create index if not exists whatsapp_alerts_instance_idx
   on whatsapp_instance_alerts (instance_id)
   where instance_id is not null;
 
+-- =====================================================================
+-- Guarda de tenant — reusa whatsapp_instance_child_tenant_guard (088)
+-- =====================================================================
+-- `whatsapp_alerts_subject_chk` garante que subject_id casa com instance_id
+-- OU com organization_id, mas NÃO que a organização da instância referenciada
+-- é a mesma da coluna organization_id desta linha. A trigger fecha isso.
+-- Alerta de ORGANIZAÇÃO tem instance_id nulo e passa direto.
+drop trigger if exists whatsapp_instance_alerts_tenant_guard on whatsapp_instance_alerts;
+create trigger whatsapp_instance_alerts_tenant_guard
+  before insert or update of organization_id, instance_id on whatsapp_instance_alerts
+  for each row execute function public.whatsapp_instance_child_tenant_guard();
+
 alter table whatsapp_instance_alerts enable row level security;
 alter table whatsapp_instance_alerts force row level security;
 
 drop policy if exists platform_admin_all_whatsapp_instance_alerts on whatsapp_instance_alerts;
 create policy platform_admin_all_whatsapp_instance_alerts
   on whatsapp_instance_alerts for all
+  to authenticated
   using (is_platform_admin(auth.uid()))
   with check (is_platform_admin(auth.uid()));
 

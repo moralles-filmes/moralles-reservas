@@ -129,11 +129,18 @@ describe("dedupe", () => {
     expect(dedupeKeyD7("2026-08-10")).toBe("cycle_d7:2026-08-10");
   });
 
-  it("D-1 muda de chave só quando o CONJUNTO de motivos muda, não a ordem", () => {
-    const a = dedupeKeyD1("2026-08-10", ["OPEN_DIVERGENCE", "COST_UNKNOWN"]);
-    const b = dedupeKeyD1("2026-08-10", ["COST_UNKNOWN", "OPEN_DIVERGENCE"]);
-    expect(a).toBe(b);
-    expect(dedupeKeyD1("2026-08-10", ["COST_UNKNOWN"])).not.toBe(a);
+  it("D-1 deduplica por ciclo: motivo que MUDA entre D-1 e D-0 não abre linha nova", () => {
+    // A janela do D-1 tem dois dias e os motivos são recalculados a cada
+    // passada. Se a chave carregasse os motivos, um custo que sincroniza ou uma
+    // divergência que abre no meio criaria uma SEGUNDA ocorrência para o mesmo
+    // vencimento — dois avisos "created", o primeiro congelado com uma lista
+    // que já não vale. Os motivos vivem no payload, que é reescrito.
+    expect(dedupeKeyD1("2026-08-10")).toBe(dedupeKeyD1("2026-08-10"));
+    expect(dedupeKeyD1("2026-09-10")).not.toBe(dedupeKeyD1("2026-08-10"));
+  });
+
+  it("D-7 e D-1 do mesmo ciclo são ocorrências distintas", () => {
+    expect(dedupeKeyD1("2026-08-10")).not.toBe(dedupeKeyD7("2026-08-10"));
   });
 
   it("a pendência de data usa <YYYY-MM BRT>:<instance_id> — uma ocorrência por mês", () => {

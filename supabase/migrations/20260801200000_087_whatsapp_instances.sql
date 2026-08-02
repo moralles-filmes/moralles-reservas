@@ -207,6 +207,7 @@ alter table whatsapp_instances force row level security;
 drop policy if exists platform_admin_all_whatsapp_instances on whatsapp_instances;
 create policy platform_admin_all_whatsapp_instances
   on whatsapp_instances for all
+  to authenticated
   using (is_platform_admin(auth.uid()))
   with check (is_platform_admin(auth.uid()));
 
