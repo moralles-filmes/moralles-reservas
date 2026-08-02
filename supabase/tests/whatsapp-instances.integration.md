@@ -78,6 +78,34 @@ por [scripts/migration-static-guard.test.ts](../../scripts/migration-static-guar
 4. roteiro manual em produção — só para evidência inalcançável nos anteriores,
    com autorização específica **para aquela execução**.
 
+## Estado da máquina de desenvolvimento (2026-08-02)
+
+**Categoria B — apto apenas para validações estáticas.**
+
+| | |
+|---|---|
+| Supabase CLI | ✅ **2.111.0** (scoop) — mas **fora do `PATH`** da sessão antiga |
+| **Docker** | ❌ **ausente** — logo **não existe stack local** |
+| **`psql` / `pg_dump`** | ❌ **ausentes** |
+| Repositório | 🔴 **vinculado ao projeto de produção** (arquivos de vínculo ignorados pelo Git) |
+| Autenticação da CLI | ativa, via **Windows Credential Manager** |
+| `supabase/config.toml` | **43 blocos, todos `[functions.*]`** — sem `project_id`, sem `[db]`: **não é config de stack local** |
+
+**Instalar a CLI não destravou nada deste arquivo.** Os quinze casos continuam
+`ENVIRONMENT_BLOCKED` — sem Docker não há banco descartável onde executá-los.
+
+**O ensaio por *dump*** (`db dump --linked` → `supabase start` → importação por
+`psql`), usado em 2026-07-30, evita o replay **mas não está autorizado**: é leitura
+remota do projeto vinculado e exige protocolo próprio — autorização específica,
+análise do conteúdo, sanitização, armazenamento seguro, política de exclusão, além
+de Docker e `psql`. **Não é o próximo comando.**
+
+**Quando Docker e `psql` existirem, o ensaio não roda neste diretório.** Ele exige
+*workspace* isolado, sem `supabase/.temp` copiado, sem herdar `project-ref`, token
+ou `.env.local` de produção — e **sem copiar segredo de produção para o ambiente
+subir**. Dependência de segredo se resolve com valor local não sensível ou se
+declara como bloqueio.
+
 ## Casos, com controle positivo obrigatório
 
 Todo teste negativo carrega controle positivo. Sem ele, "nada aconteceu" passa por

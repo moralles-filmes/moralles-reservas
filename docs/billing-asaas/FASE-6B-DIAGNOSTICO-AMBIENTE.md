@@ -196,11 +196,46 @@ chamar de integração verde.
 
 ---
 
+## 4.1 Correção: os seis gates não dependem do ambiente
+
+Verificado no *frontmatter* dos seis agentes `saas-shield-br`: **todos declaram
+`tools: Read, Glob, Grep`**. Nenhum tem *shell*, nenhum acessa banco.
+
+| Gate | Ferramentas | Precisa de banco? |
+|---|---|---|
+| `rls-auditor` | `Read, Glob, Grep` | não |
+| `tenant-isolation-auditor` | `Read, Glob, Grep` | não |
+| `identity-access-auditor` | `Read, Glob, Grep` | não |
+| `migration-validator` | `Read, Glob, Grep` | não |
+| `secret-hunter` | `Read, Glob, Grep` | não |
+| `integration-reliability-auditor` | `Read, Glob, Grep` | não |
+
+**A ausência de Docker nunca explicou a não execução dos gates.** O único bloqueio
+é **autorização de despacho de subagentes** — eles rodam sobre os arquivos do
+repositório e poderiam ter rodado antes de qualquer instalação. Colocá-los depois
+de "instalar Docker" no caminho crítico seria erro de sequenciamento.
+
+**O `secret-hunter` tem uma ressalva própria:** sem *shell*, a varredura de
+histórico git (`gitleaks`/`trufflehog`/`git log`) e o *build* de *bundle* fresco
+são **emitidos como próxima ação**, não executados. Isso é trabalho humano à parte,
+não parte do gate.
+
+**Guardrail estático local ≠ gate.** Os 610 testes, o `acl-estatico` do CI, o
+`migration-static-guard` e o teste de acoplamento por string estão verdes e ficam
+registrados **como guardrails estáticos locais**. Nenhum deles pode ser contado
+como gate, e `SAAS_SHIELD_GATES_NOT_EXECUTED` permanece.
+
+---
+
 ## 5. Status dos bloqueios
 
 **REMOVIDO:**
 
-- ✅ `SUPABASE_CLI_NOT_INSTALLED` — CLI 2.111.0 presente e funcional
+- ✅ `SUPABASE_CLI_NOT_INSTALLED` → agora `SUPABASE_CLI_INSTALLED` (2.111.0)
+
+**A instalação da CLI removeu SOMENTE esse item.** Ela não autoriza: aplicação de
+migrations · deploy de Edge Functions · uso do banco remoto · *dump* remoto ·
+*backfill* · execução do worker · criação do cron · merge.
 
 **VERIFICADO NESTA RODADA, e o resultado é negativo:**
 
@@ -282,6 +317,26 @@ supabase start --help
 aplicação das migrations 087–092 · alteração de `platform_flags` · *backfill* do
 Ren Sushi · execução do worker em produção · criação do cron · merge · qualquer
 `UPDATE`/`INSERT` para "validar" o rollout.
+
+---
+
+## 8.1 Veredito consolidado
+
+```
+VALIDAÇÕES ESTÁTICAS ....... GO
+STACK LOCAL ................ INDISPONÍVEL
+INTEGRAÇÃO COM BANCO ....... ENVIRONMENT_BLOCKED
+COMANDOS REMOTOS ........... NO-GO
+MIGRATIONS ................. WRITTEN / NOT APPLIED
+EDGE FUNCTIONS ............. WRITTEN / NOT DEPLOYED
+PAINEL ..................... WRITTEN / NOT DEPLOYED
+SAAS-SHIELD-BR ............. NOT EXECUTED
+BACKFILL ................... NO-GO
+CRON ....................... NO-GO
+MERGE ...................... NO-GO
+```
+
+**Nenhuma alteração remota foi autorizada.**
 
 ---
 

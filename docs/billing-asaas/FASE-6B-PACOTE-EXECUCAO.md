@@ -12,10 +12,52 @@
 
 ---
 
+# 🔴 BARREIRA CONTRA PRODUÇÃO — leia antes de digitar qualquer comando
+
+> **Neste repositório, todo comando Supabase potencialmente remoto deve ser
+> presumido como direcionado à PRODUÇÃO até prova explícita em contrário.**
+
+`supabase/.temp/linked-project.json` vincula este diretório ao projeto de produção
+desde 2026-08-02. O vínculo persistido **altera o destino padrão** de vários
+subcomandos.
+
+⛔ **Nunca inferir "é local" só porque a linha não tem `--linked` nem
+`--project-ref`.** A ausência da bandeira não prova nada — o vínculo em disco
+supre o argumento.
+
+**O vínculo local NÃO é autorização.** Ele diz para onde o comando vai, não que
+ele pode ir.
+
+### Classificação obrigatória, antes de executar
+
+| Categoria | O que é | Regra |
+|---|---|---|
+| **A** | Local, **sem** conexão remota | Pode executar **depois de verificar que realmente não usa o projeto vinculado** |
+| **B** | Leitura remota autorizada | Exige **autorização específica para aquela leitura** |
+| **C** | Escrita remota | Exige **autorização explícita para aquela alteração** + checklist de GO |
+| **D** | **Ambíguo** | ⛔ **Não executar** até o destino ser comprovado |
+
+**Como verificar antes de classificar** — pela ajuda da versão instalada, não pela
+memória. Um comando deixa de ser categoria A se ele: exige stack local · consulta o
+projeto vinculado · tenta inicializar serviços · usa cache remoto · modifica
+arquivos · realiza autenticação · acessa a rede.
+
+**Não apagar `supabase/.temp` como proteção.** O vínculo é recriado em um comando,
+a CLI segue autenticada, e a segurança tem de viver **no procedimento e no comando
+executado** — não na ausência de um arquivo temporário. Do mesmo modo: não mexer em
+autenticação, credenciais ou temporários apenas para produzir sensação de
+isolamento.
+
+---
+
 ## ⛔ Estado de partida
 
 **`NO-GO PARA APLICAÇÃO E DEPLOY`** até que os passos 1–4 deste documento sejam
 cumpridos **nesta ordem**. Este pacote é a receita; ele **não é** a autorização.
+
+**Ambiente em 2026-08-02: categoria B — apto apenas para validações estáticas.**
+CLI 2.111.0 presente; **Docker e `psql` ausentes**, logo **não existe stack local**
+e **todo comando remoto é NO-GO**.
 
 **Duas proibições que valem do início ao fim:**
 
@@ -27,13 +69,6 @@ cumpridos **nesta ordem**. Este pacote é a receita; ele **não é** a autoriza�
 **Regra herdada do Risco 7: NO-GO não é corrigido "no dado" para manter o rollout
 verde.** Se uma query de prova sair errada, para-se e investiga-se — não se ajusta
 a linha por SQL.
-
-🔴 **O vínculo com produção já existe.** `supabase/.temp/linked-project.json`
-aponta para o projeto de produção desde 2026-08-02. Isso significa que
-**`supabase db push` e `supabase functions deploy` executados a partir deste
-diretório vão para produção sem pedir confirmação de destino** — o passo `link`
-que antes servia de barreira acidental já foi dado. Confira o destino antes de
-cada comando; não confie na ausência de `--linked`.
 
 ---
 
@@ -132,8 +167,31 @@ despacho de subagentes — isso é **bloqueio de execução, não dispensa**. Os
 são obrigatórios pelo CLAUDE.md porque a fase toca banco, RLS, Edge Function e
 multi-tenant.
 
+### Os seis gates NÃO dependem do ambiente
+
+Verificado no *frontmatter* dos seis agentes: **todos declaram
+`tools: Read, Glob, Grep`** — nenhum tem *shell*, nenhum acessa banco. São
+auditorias **puramente estáticas** sobre os arquivos do repositório.
+
+**Consequência para a ordem de trabalho:** a ausência de Docker **não** explica a
+não execução dos gates, e esperar por Docker para rodá-los seria erro de
+sequenciamento. O único bloqueio deles é **autorização de despacho de subagentes**,
+e eles podem rodar **antes** de qualquer instalação — inclusive agora, numa sessão
+que autorize.
+
+*(Nota do `secret-hunter`: ele não tem *shell*, então a varredura de histórico git
+— `gitleaks`/`trufflehog`/`git log` — e o *build* de *bundle* fresco são **emitidos
+como próxima ação**, não executados. Rodar esses comandos é trabalho humano
+separado.)*
+
 ⛔ **Não substitua os gates por autoavaliação informal.** "Eu li o código e parece
 certo" não é um gate.
+
+⛔ **Guardrail estático local ≠ gate `saas-shield-br`.** O `acl-estatico` do CI, o
+`migration-static-guard`, o teste de acoplamento por string e os 610 testes são
+**guardrails estáticos locais** e estão verdes — registrá-los é correto, chamá-los
+de gate não é. Nenhum dos seis pode ser marcado como executado sem que o mecanismo
+aprovado tenha rodado.
 
 | Gate | Escopo mínimo nesta fase |
 |---|---|
@@ -472,6 +530,44 @@ drop table if exists whatsapp_instances;
   `NEW_REAL_INSTANCE_PROVISIONING_BLOCKED_UNTIL_PHASE_6A` está LIGADO e recusa;
   ambiguidade também recusa (fail-closed).
 - ⛔ **Qualquer escrita no provedor.** A 6b nunca chama a Z-API.
+- ⛔ **Qualquer comando que use o projeto vinculado**, inclusive só para "confirmar"
+  o vínculo. Isso inclui `supabase db push`, `migration up` contra remoto,
+  `functions deploy`, `secrets set`, `link` e **`db dump --linked`**.
+
+### Sobre o ensaio por *dump* — não é o próximo comando
+
+O caminho de 2026-07-30 (`db dump --linked` → `supabase start` → importação por
+`psql`) **evita o replay**, mas **não está autorizado agora**. Ele contém uma
+**leitura remota do projeto vinculado** e exige protocolo próprio:
+
+autorização específica para aquela leitura · análise do que o *dump* contém ·
+sanitização · local seguro de armazenamento · política de exclusão · Docker ·
+`psql` · garantia de que nenhum dado pessoal ou segredo venha junto.
+
+É **alternativa futura com protocolo próprio**, nunca um atalho a executar.
+
+### Configuração local é mudança planejada, não verificação
+
+O `supabase/config.toml` do repositório tem **43 blocos, todos `[functions.*]`** —
+sem `project_id`, sem `[db]`, `[api]` ou `[auth]`. Ele **não representa uma
+configuração completa de stack local**; existe para o deploy de Edge Functions.
+
+Portanto: ⛔ não assumir que `supabase start` está configurado · ⛔ não alterar o
+`config.toml` principal para experimentar · ⛔ não misturar configuração local de
+teste com a operacional. Qualquer config local futuro é **isolado, descartável e
+incapaz de alterar o comportamento do deploy de produção**.
+
+### Diretório de teste isolado — quando Docker e `psql` existirem
+
+⛔ **Não subir a stack de integração neste diretório vinculado.** Prepare um
+*workspace* separado que **não** contenha `supabase/.temp` copiado, **não** herde
+`project-ref`, token ou configuração de vínculo, e **não** contenha o `.env.local`
+de produção. Ele tem config local próprio, rede e *jobs* controlados, não chama
+Edge Functions remotas, e é descartável ao final.
+
+⛔ **Não copiar segredos de produção para o ambiente subir.** Migration que dependa
+deles usa **valor local não sensível** ou a dependência é **declarada como
+bloqueio** — nunca resolvida com a credencial real.
 
 ---
 
@@ -489,6 +585,35 @@ drop table if exists whatsapp_instances;
 | *Backfill* do Ren Sushi | **`NO_GO_BEFORE_BACKFILL`** |
 | Cron | **NO-GO** |
 | Merge em `main` + tag | **NO-GO** — depois dos gates e da observação de 3 dias |
-| Ambiente local (2026-08-02) | **B — apto apenas para validações estáticas**: CLI 2.111.0 presente, **Docker e `psql` ausentes**, sem stack local |
+| Validações estáticas | **GO** |
+| Stack local | **INDISPONÍVEL** — Docker e `psql` ausentes |
+| Comandos remotos | **NO-GO** — nenhuma alteração remota autorizada |
+| Ambiente local (2026-08-02) | **B — apto apenas para validações estáticas** |
 
 **CÓDIGO PRONTO PARA REVISÃO: sim. ROLLOUT AUTORIZADO: não.**
+
+---
+
+## 15. Próximo passo operacional aprovado
+
+Preparar a máquina para um ambiente local **isolado** — nesta ordem, e **nenhum
+passo aplica migration, faz deploy ou toca o remoto**:
+
+1. instalar **Docker Desktop** com *backend* WSL adequado;
+2. instalar cliente PostgreSQL (**`psql`** e **`pg_dump`**);
+3. **reiniciar a sessão** para que a CLI entre no `PATH` (hoje ela existe mas não
+   está no `PATH` da sessão antiga);
+4. comprovar `docker info` — *daemon* saudável;
+5. preparar **diretório temporário sem vínculo**;
+6. criar plano de configuração local (config isolado, descartável);
+7. **provar isolamento ANTES de iniciar qualquer stack**;
+8. só então avaliar ensaio local.
+
+⛔ **Ainda não executar:** `supabase start` · `db reset` · *dump* remoto ·
+importação · migration · deploy.
+
+**Instalar Docker e `psql` não muda a categoria por si só.** Para sair de B, é
+preciso **provar**: destino exclusivamente local · ausência de conexão com produção
+· `pg_cron` controlado ou desativado · Vault local vazio · `net._http_response` sem
+chamadas · segredos exclusivamente locais · nenhuma URL de produção nos *jobs*
+executáveis · ambiente descartável · ausência de dependência do projeto vinculado.

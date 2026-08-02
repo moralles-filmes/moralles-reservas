@@ -42,6 +42,46 @@ caminho para destravar em
 deployadas, painel escrito em publicado, testes bloqueados em executados, nem
 gates não executados em verdes.
 
+Ambiente medido: CLI **2.111.0** (scoop), **fora do `PATH` da sessão antiga** ·
+Docker, `psql` e `pg_dump` **ausentes** · repositório **vinculado a produção**,
+arquivos de vínculo ignorados pelo Git · autenticação ativa pelo **Windows
+Credential Manager** · `config.toml` com **43 blocos, todos `[functions.*]`** ·
+**118 migrations** (13 com URL literal de produção, 14 usando `net.http_post`,
+**nenhuma** declarando `pg_net`, 10 declarando `pg_cron`, 14 com `cron.schedule`,
+13 lendo Vault) · segredos esperados `internal_api_key` e `project_url` · replay
+**já falhou** com `42P13`.
+
+### Correção: os seis gates não dependem do ambiente
+
+Os seis auditores `saas-shield-br` declaram `tools: Read, Glob, Grep` — **nenhum
+tem shell, nenhum acessa banco**. São auditorias **puramente estáticas**.
+
+**A falta de Docker nunca foi o motivo de eles não terem rodado**, e esperar por
+Docker para executá-los seria erro de sequenciamento. O único bloqueio é
+**autorização de despacho de subagentes**; eles podem rodar antes de qualquer
+instalação.
+
+**Guardrail estático local não é gate.** Os 610 testes, o `acl-estatico` do CI, o
+`migration-static-guard` e o teste de acoplamento por string estão verdes e são
+**guardrails estáticos locais** — não substituem nenhum dos seis, e
+`SAAS_SHIELD_GATES_NOT_EXECUTED` continua valendo.
+
+### Vínculo com produção — achado de alta severidade operacional
+
+O diretório do repositório **já está vinculado ao projeto Supabase de produção**.
+`db push` e `functions deploy` podem atingir produção **usando o vínculo
+persistido, sem exigir um novo `supabase link`**.
+
+**O vínculo local não é autorização.** Apagar `supabase/.temp` **não** é proteção
+suficiente: o vínculo é recriado num comando, a CLI segue autenticada, e o operador
+pode refazer o `link` — a segurança tem de viver no **procedimento e no comando
+executado**. O vínculo **não foi removido**, e nada de autenticação, credencial ou
+temporário foi alterado para produzir sensação de isolamento.
+
+A barreira operacional — classificação obrigatória de cada comando em A/B/C/D antes
+de executar — está no topo de
+[FASE-6B-PACOTE-EXECUCAO.md](FASE-6B-PACOTE-EXECUCAO.md).
+
 ---
 
 ## O invariante que governa a fase
@@ -87,7 +127,7 @@ escrito e commitado; aplicação e validação operacional pendentes"*.
 | Painel `/platform/instancias-whatsapp` | **NÃO DEPLOYADO** | commitado; sem push em `main`, a Vercel não construiu |
 | Entradas de `verify_jwt` no `config.toml` | **ESCRITO MAS NÃO EXECUTADO CONTRA BANCO** | valem no deploy, que não houve |
 | Testes de integração com banco (15 casos) | **`ENVIRONMENT_BLOCKED`** | [supabase/tests/whatsapp-instances.integration.md](../../supabase/tests/whatsapp-instances.integration.md) |
-| Os 6 gates `saas-shield-br` | **`SAAS_SHIELD_GATES_NOT_EXECUTED`** | exigem despacho de subagentes, não autorizado nesta sessão |
+| Os 6 gates `saas-shield-br` | **`SAAS_SHIELD_GATES_NOT_EXECUTED`** | puramente estáticos (`Read, Glob, Grep`); bloqueados **só** por autorização de despacho — **não** pelo ambiente |
 | *Backfill* do Ren Sushi | **`NO_GO_BEFORE_BACKFILL`** | depende dos gates e do deploy |
 | Cron | **NO-GO** | depende do *backfill* conferido e da execução manual idempotente |
 
