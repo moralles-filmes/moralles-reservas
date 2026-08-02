@@ -147,6 +147,19 @@ function requireInstanceId(body: Record<string, unknown>): string | null {
   return parseUuid(body.instance_id);
 }
 
+/**
+ * Mesma regra, para o id de ALERTA — ver o comentário acima.
+ *
+ * As duas ações de alerta ficaram de fora quando a validação de forma foi
+ * introduzida, e checavam só a presença. Um id malformado chegava ao
+ * PostgREST, virava `22P02` e subia como 500 "Não foi possível resolver o
+ * alerta" — mensagem que culpa o servidor por um pedido inválido e manda o
+ * operador procurar o problema no lugar errado.
+ */
+function requireAlertId(body: Record<string, unknown>): string | null {
+  return parseUuid(body.alert_id);
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeadersFor(req) });
 
@@ -635,8 +648,8 @@ serve(async (req) => {
     // fato deixou de existir. Fato que desaparece sozinho é resolvido pelo
     // worker com nota do sistema — NUNCA apagado.
     if (action === "acknowledge_alert") {
-      const id = String(body.alert_id ?? "");
-      if (!id) return jsonResponse(req, { error: "alert_id é obrigatório." }, 400);
+      const id = requireAlertId(body);
+      if (!id) return jsonResponse(req, { error: "Informe um alert_id válido." }, 400);
 
       const { data, error } = await supabase
         .from("whatsapp_instance_alerts")
@@ -661,8 +674,8 @@ serve(async (req) => {
       const note = requireReason(body);
       if (!note) return jsonResponse(req, { error: "Informe o motivo da resolução." }, 400);
 
-      const id = String(body.alert_id ?? "");
-      if (!id) return jsonResponse(req, { error: "alert_id é obrigatório." }, 400);
+      const id = requireAlertId(body);
+      if (!id) return jsonResponse(req, { error: "Informe um alert_id válido." }, 400);
 
       const { data, error } = await supabase
         .from("whatsapp_instance_alerts")
