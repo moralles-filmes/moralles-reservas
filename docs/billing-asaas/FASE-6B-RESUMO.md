@@ -4,6 +4,7 @@
 > Spec: [../superpowers/specs/2026-08-01-billing-asaas-fase-6b-design.md](../superpowers/specs/2026-08-01-billing-asaas-fase-6b-design.md) (Seções A–D aprovadas).
 > Plano: [../superpowers/plans/2026-08-01-billing-asaas-fase-6b.md](../superpowers/plans/2026-08-01-billing-asaas-fase-6b.md) (23 tasks).
 > Pacote de execução: [FASE-6B-PACOTE-EXECUCAO.md](FASE-6B-PACOTE-EXECUCAO.md).
+> Diagnóstico do ambiente local: [FASE-6B-DIAGNOSTICO-AMBIENTE.md](FASE-6B-DIAGNOSTICO-AMBIENTE.md).
 > Fase anterior: [FASE-5B-RESUMO.md](FASE-5B-RESUMO.md).
 
 ---
@@ -21,6 +22,25 @@ coisas de propósito, e a separação é o ponto principal dele.
 **Nada desta fase tocou o banco de produção.** Nenhuma migration foi aplicada,
 nenhuma Edge Function foi deployada, nenhum cron foi agendado, nenhum *backfill*
 foi feito. O comportamento de produção hoje é **idêntico ao de antes da fase**.
+
+### Atualização de 2026-08-02 — a CLI foi instalada
+
+| Bloqueio | Antes | Agora |
+|---|---|---|
+| `SUPABASE_CLI_NOT_INSTALLED` | 🔴 | ✅ **REMOVIDO** — CLI 2.111.0 (scoop) |
+| `DOCKER_NOT_INSTALLED` | não verificado | 🔴 **verificado: ausente** |
+| `PSQL_NOT_INSTALLED` | não verificado | 🔴 **verificado: ausente** |
+| `LINKED_TO_PRODUCTION_REMOTE` | não existia | 🔴 **NOVO** — o repositório está vinculado a produção; `db push`/`deploy` a atingem sem passo preparatório |
+| `REPLAY_FAILS_42P13` · `UNSAFE_AS_IS` · `DATABASE_INTEGRATION_ENVIRONMENT_BLOCKED` · `SAAS_SHIELD_GATES_NOT_EXECUTED` · `NO_GO_BEFORE_BACKFILL` · `CRON_NO_GO` · `MERGE_NO_GO` | 🔴 | 🔴 **inalterados** |
+
+**Sem Docker não existe stack local**, então o ambiente está apto **apenas a
+validações estáticas**. Diagnóstico completo, tabela de risco por arquivo e o
+caminho para destravar em
+[FASE-6B-DIAGNOSTICO-AMBIENTE.md](FASE-6B-DIAGNOSTICO-AMBIENTE.md).
+
+**Ter a CLI não transformou** migrations escritas em aplicadas, EFs escritas em
+deployadas, painel escrito em publicado, testes bloqueados em executados, nem
+gates não executados em verdes.
 
 ---
 

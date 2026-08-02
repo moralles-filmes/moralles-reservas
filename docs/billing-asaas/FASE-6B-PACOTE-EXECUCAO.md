@@ -1,7 +1,11 @@
 # FASE 6B — Pacote de execução (máquina com Supabase CLI)
 
-> Destino: uma máquina que tenha `supabase` CLI, Docker e `psql`. **Nenhum dos
-> quatro existe na máquina onde o código foi escrito** — por isso este pacote.
+> Destino: uma máquina que tenha `supabase` CLI, Docker e `psql`.
+> **Atualização de 2026-08-02:** a CLI **2.111.0** foi instalada na máquina de
+> desenvolvimento; **Docker e `psql` continuam ausentes**, e o repositório está
+> **vinculado a produção** — `db push` e `functions deploy` a atingem sem passo
+> preparatório. Diagnóstico completo:
+> [FASE-6B-DIAGNOSTICO-AMBIENTE.md](FASE-6B-DIAGNOSTICO-AMBIENTE.md).
 > Continuidade e estado: [FASE-6B-RESUMO.md](FASE-6B-RESUMO.md).
 > Spec: [../superpowers/specs/2026-08-01-billing-asaas-fase-6b-design.md](../superpowers/specs/2026-08-01-billing-asaas-fase-6b-design.md).
 > Plano (Task 23 é o rollout operacional detalhado): [../superpowers/plans/2026-08-01-billing-asaas-fase-6b.md](../superpowers/plans/2026-08-01-billing-asaas-fase-6b.md).
@@ -23,6 +27,13 @@ cumpridos **nesta ordem**. Este pacote é a receita; ele **não é** a autoriza�
 **Regra herdada do Risco 7: NO-GO não é corrigido "no dado" para manter o rollout
 verde.** Se uma query de prova sair errada, para-se e investiga-se — não se ajusta
 a linha por SQL.
+
+🔴 **O vínculo com produção já existe.** `supabase/.temp/linked-project.json`
+aponta para o projeto de produção desde 2026-08-02. Isso significa que
+**`supabase db push` e `supabase functions deploy` executados a partir deste
+diretório vão para produção sem pedir confirmação de destino** — o passo `link`
+que antes servia de barreira acidental já foi dado. Confira o destino antes de
+cada comando; não confie na ausência de `--linked`.
 
 ---
 
@@ -478,5 +489,6 @@ drop table if exists whatsapp_instances;
 | *Backfill* do Ren Sushi | **`NO_GO_BEFORE_BACKFILL`** |
 | Cron | **NO-GO** |
 | Merge em `main` + tag | **NO-GO** — depois dos gates e da observação de 3 dias |
+| Ambiente local (2026-08-02) | **B — apto apenas para validações estáticas**: CLI 2.111.0 presente, **Docker e `psql` ausentes**, sem stack local |
 
 **CÓDIGO PRONTO PARA REVISÃO: sim. ROLLOUT AUTORIZADO: não.**
