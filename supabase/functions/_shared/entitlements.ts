@@ -9,6 +9,9 @@
  * REDEPLOY: quando uma EF passar a importar este módulo, adicionar a linha
  * correspondente no checklist de redeploy do CLAUDE.md (entitlements.ts +
  * entitlements-core.ts mudam juntos).
+ *
+ * ORDEM: a migration 094 (included_features) precisa estar aplicada ANTES do
+ * deploy desta versao. Coluna inexistente vira 400 do PostgREST -> readFailed.
  */
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -44,7 +47,10 @@ export interface OrgEntitlementsResult extends OrgEntitlements {
 interface SubscriptionRow {
   status: string;
   current_period_end: string | null;
-  billing_plans: { category: string | null } | { category: string | null }[] | null;
+  billing_plans:
+    | { category: string | null; included_features: string[] | null }
+    | { category: string | null; included_features: string[] | null }[]
+    | null;
 }
 
 /**
@@ -69,7 +75,7 @@ export async function resolveOrgEntitlements(
       .is("revoked_at", null),
     supabase
       .from("billing_subscriptions")
-      .select("status, current_period_end, billing_plans(category)")
+      .select("status, current_period_end, billing_plans(category, included_features)")
       .eq("organization_id", organizationId),
   ]);
 
@@ -101,6 +107,9 @@ export async function resolveOrgEntitlements(
         status: row.status,
         category: plan?.category ?? "SYSTEM_SUBSCRIPTION",
         current_period_end: row.current_period_end,
+        // Coluna ausente (EF deployada antes da migration) vira [] = legado.
+        // O fail-closed real desse caminho é `readFailed`, já tratado acima.
+        includedFeatures: plan?.included_features ?? [],
       };
     },
   );
