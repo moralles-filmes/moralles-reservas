@@ -47,17 +47,36 @@ const SECRET_SHAPES: { name: string; re: RegExp }[] = [
   { name: "Resend", re: /\bre_[A-Za-z0-9_-]{16,}/ },
   { name: "JWT", re: /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}/ },
   { name: "URL com credencial", re: /postgres(?:ql)?:\/\/[^\s:'"]+:[^\s@'"]+@/i },
-  // Header de autenticação com valor LITERAL. Nasceu do incidente de
-  // 2026-08-02: a `INTERNAL_API_KEY` estava em claro num header montado dentro
-  // de `create trigger ... supabase_functions.http_request(...)` na 022, e
-  // nenhuma das formas acima casa com um hex de 64 — a chave atravessou o CI
-  // sem ser vista. Detecta só valor literal: o padrão CORRETO monta o header
-  // por concatenação a partir do Vault (`'...' || v_key || '...'`), e a classe
-  // negada `[^"']` faz a concatenação não casar.
+  // As três formas abaixo nasceram do incidente de 2026-08-02: a
+  // `INTERNAL_API_KEY` estava em claro num header montado dentro de
+  // `create trigger ... supabase_functions.http_request(...)` na 022, e
+  // nenhuma das formas acima casa com um hex de 64 sem prefixo — a chave
+  // atravessou o CI sem ser vista.
+  //
+  // A primeira versão desta regra cobria só a FORMA exata do incidente. Isso
+  // fecha a instância e deixa a CLASSE aberta: um `Client-Token` da Z-API em
+  // `jsonb_build_object`, ou um segredo atribuído a variável, passariam verde
+  // pelo mesmo caminho. As três juntas cobrem a classe.
+  //
+  // Todas detectam só valor LITERAL. O padrão CORRETO monta o header a partir
+  // do Vault (`jsonb_build_object('x-internal-key', v_key)` ou
+  // `'...' || v_key || '...'`), e a classe negada `[^"']` faz a variável não
+  // casar.
   {
     name: "header de auth com valor literal",
-    re: /["'](?:x-internal-key|authorization|apikey|x-api-key)["']\s*:\s*["'][^"']{16,}["']/i,
+    re: /["'](?:authorization|apikey|client-token|x-[a-z-]*(?:key|token|secret|signature))["']\s*[:,]\s*["'][^"']{16,}["']/i,
   },
+  // Segredo atribuído a variável ou parâmetro — a forma que escapa de qualquer
+  // regra baseada em nome de header.
+  {
+    name: "segredo literal atribuído a variável",
+    // `[a-z_]*` nos DOIS lados de propósito: sem o prefixo, `v_api_key` não
+    // casa — `_` é caractere de palavra, então não há `\b` entre `v_` e `api`.
+    re: /[a-z_]*(?:secret|token|api[_-]?key|client[_-]?token|password|senha)[a-z_]*\s*(?:text\s*)?:?=\s*'[A-Za-z0-9_\-./+]{20,}'/i,
+  },
+  { name: "Stripe", re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9]{16,}/ },
+  { name: "Google AI", re: /\bAIza[0-9A-Za-z_-]{20,}/ },
+  { name: "AWS", re: /\bAKIA[0-9A-Z]{16}\b/ },
 ];
 
 function migrationFiles(): string[] {
@@ -120,11 +139,37 @@ describe("guardrail estático de migrations", () => {
     );
     expect(shape.re.test(`'{"Authorization":"Bearer ${fakeHex}"}'`)).toBe(true);
 
-    // O padrão CORRETO — header montado do Vault por concatenação — não casa.
-    // Sem esta asserção, apertar o regex quebraria os 15 wrappers de pg_cron.
+    // A CLASSE, não só a instância: outros nomes de header e a sintaxe de
+    // jsonb_build_object (vírgula no lugar de dois-pontos).
+    expect(shape.re.test(`jsonb_build_object('Client-Token', '${fakeHex}')`)).toBe(true);
+    expect(shape.re.test(`jsonb_build_object('x-webhook-secret', '${fakeHex}')`)).toBe(true);
+    expect(shape.re.test(`'{"X-Hub-Signature":"${fakeHex}"}'`)).toBe(true);
+
+    // O padrão CORRETO — header montado do Vault — não casa em NENHUMA das
+    // duas sintaxes. Sem estas asserções, apertar o regex quebraria os 15
+    // wrappers de pg_cron.
     expect(
       shape.re.test(`'{"Content-type":"application/json","x-internal-key":"' || v_key || '"}'`),
     ).toBe(false);
     expect(shape.re.test(`format('{"x-internal-key":"%s"}', v_key)`)).toBe(false);
+    expect(shape.re.test(`jsonb_build_object('x-internal-key', api_key)`)).toBe(false);
+    expect(shape.re.test(`jsonb_build_object('Content-Type', 'application/json')`)).toBe(false);
+  });
+
+  it("controle positivo e negativo: segredo literal atribuído a variável", () => {
+    const shape = SECRET_SHAPES.find((s) => s.name === "segredo literal atribuído a variável")!;
+    const fakeHex = "f".repeat(64);
+
+    expect(shape.re.test(`  v_api_key text := '${fakeHex}';`)).toBe(true);
+    expect(shape.re.test(`  client_token := '${fakeHex}';`)).toBe(true);
+    expect(shape.re.test(`  webhook_secret text := '${fakeHex}';`)).toBe(true);
+
+    // Leitura do Vault e comparação por NOME do segredo não casam — é
+    // exatamente o que as 15 migrations de wrapper fazem.
+    expect(shape.re.test(`where name = 'internal_api_key' limit 1`)).toBe(false);
+    expect(shape.re.test(`select decrypted_secret into api_key from vault.decrypted_secrets`)).toBe(
+      false,
+    );
+    expect(shape.re.test(`  api_key text;`)).toBe(false);
   });
 });
