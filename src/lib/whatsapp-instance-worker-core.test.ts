@@ -419,7 +419,7 @@ describe("F — contadores creditam a etapa real", () => {
       },
     });
 
-    const s = await runEconomicsStep(b.deps, "2026-08-02");
+    const [dateReview, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
     const done = b.logs.find((l) => l.evt === "wa_econ_scan_done");
 
     expect(done?.e.dateReviewPending).toBe(3);
@@ -427,7 +427,14 @@ describe("F — contadores creditam a etapa real", () => {
     // O número que antes dizia "3": três pendências de DATA lidas como três
     // desequilíbrios econômicos, num passo cuja função é detectar prejuízo.
     expect(done?.e.imbalancesReported).toBe(0);
-    expect(s.processed).toBe(3);
+
+    // A separação também vale na RESPOSTA, não só na telemetria. Enquanto os
+    // dois somavam num `economics.processed` único, a resposta HTTP repetia
+    // exatamente o erro que a telemetria já tinha corrigido.
+    expect(dateReview.step).toBe("date_review");
+    expect(dateReview.processed).toBe(3);
+    expect(imbalance.step).toBe("economic_imbalance");
+    expect(imbalance.processed).toBe(0);
   });
 });
 
@@ -537,10 +544,17 @@ describe("H — economia distingue ausência de silêncio", () => {
       repo: { listDateReviewPending: async () => ({ ok: false, message: "erro" }) },
     });
 
-    const s = await runEconomicsStep(b.deps, "2026-08-02");
+    const [dateReview, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
 
-    expect(s.failed).toBe(1);
+    expect(dateReview.failed).toBe(1);
     expect(evts(b.logs)).toContain("wa_econ_unknown_date_query_failed");
+
+    // O sub-passo econômico não rodou. Devolver `{processed: 0, failed: 0}`
+    // sem mais nada seria indistinguível de "varri tudo e não achei prejuízo" —
+    // o zero é AFIRMADO como não-executado, por telemetria própria.
+    expect(imbalance.processed).toBe(0);
+    expect(imbalance.failed).toBe(0);
+    expect(evts(b.logs)).toContain("wa_econ_imbalance_skipped");
   });
 
   it("falha na consulta econômica preserva o que a pendência de data já contou", async () => {
@@ -552,10 +566,15 @@ describe("H — economia distingue ausência de silêncio", () => {
       },
     });
 
-    const s = await runEconomicsStep(b.deps, "2026-08-02");
+    const [dateReview, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
 
-    expect(s.processed).toBe(1);
-    expect(s.failed).toBe(1);
+    // A falha é do sub-passo econômico e fica NELE — antes, o total somado
+    // dizia `processed: 1, failed: 1` sem revelar que o processado era data e
+    // a falha era economia.
+    expect(dateReview.processed).toBe(1);
+    expect(dateReview.failed).toBe(0);
+    expect(imbalance.processed).toBe(0);
+    expect(imbalance.failed).toBe(1);
     expect(evts(b.logs)).toContain("wa_econ_instances_query_failed");
   });
 
@@ -583,9 +602,10 @@ describe("H — economia distingue ausência de silêncio", () => {
       },
     });
 
-    const s = await runEconomicsStep(b.deps, "2026-08-02");
+    const [dateReview, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
 
-    expect(s.processed).toBe(0);
+    expect(imbalance.processed).toBe(0);
+    expect(dateReview.processed).toBe(0);
     expect(b.enqueued).toHaveLength(0);
   });
 
@@ -604,8 +624,9 @@ describe("H — economia distingue ausência de silêncio", () => {
       },
     });
 
-    const s = await runEconomicsStep(b.deps, "2026-08-02");
-    expect(s.processed).toBe(1);
+    const [dateReview, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
+    expect(imbalance.processed).toBe(1);
+    expect(dateReview.processed).toBe(0);
   });
 });
 
@@ -873,9 +894,10 @@ describe("M — chave já encerrada no ledger", () => {
       },
     });
 
-    const s = await runEconomicsStep(b.deps, "2026-08-02");
+    const [dateReview, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
 
-    expect(s.failed).toBe(0);
-    expect(s.processed).toBe(1);
+    expect(dateReview.failed).toBe(0);
+    expect(dateReview.processed).toBe(1);
+    expect(imbalance.failed).toBe(0);
   });
 });

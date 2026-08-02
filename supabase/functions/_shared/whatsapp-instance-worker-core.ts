@@ -744,15 +744,22 @@ export async function runDivergencesStep(deps: WorkerDeps, today: string): Promi
 // Passo 5b — pendências (data) e desequilíbrio econômico da organização.
 // ─────────────────────────────────────────────────────────────────────────
 
-export async function runEconomicsStep(deps: WorkerDeps, today: string): Promise<StepSummary> {
-  const s = tally("economics");
+export async function runEconomicsStep(deps: WorkerDeps, today: string): Promise<StepSummary[]> {
   const monthBrt = today.slice(0, 7);
 
-  // CONTADORES SEPARADOS por sub-passo. Um contador único fazia o resumo dizer
-  // `imbalancesReported: 3` quando o que existiam eram três pendências de DATA
-  // — num passo cuja função é detectar prejuízo, isso é um número inventado.
-  const dateReview = { processed: 0, failed: 0 };
-  const imbalance = { processed: 0, failed: 0 };
+  // DOIS RESUMOS, não um. A telemetria já separava (`dateReviewProcessed` vs
+  // `imbalancesReported`), mas a RESPOSTA HTTP somava os dois num único
+  // `economics.processed`. Na primeira operação real da fase isso fez um
+  // `processed: 1` de pendência de DATA ser lido como desequilíbrio econômico
+  // do cliente vitalício — o mesmo número inventado que o comentário original
+  // existia para impedir, só que na outra ponta do cano.
+  //
+  // Mesmo padrão de `runCycleAlertsStep`, que já devolve `alerts_d7` e
+  // `alerts_d1` separados: sub-passo que gera tipo de alerta DIFERENTE tem
+  // contador próprio, porque somar dois tipos produz um total que não responde
+  // a pergunta nenhuma.
+  const dateReview = tally("date_review");
+  const imbalance = tally("economic_imbalance");
 
   // Pendência de DATA: cycle_source UNKNOWN. O aviso NÃO afirma data nenhuma —
   // ele diz que a data falta, e o D-7 segue suprimido até a confirmação.
@@ -767,8 +774,15 @@ export async function runEconomicsStep(deps: WorkerDeps, today: string): Promise
       reqId: deps.reqId, evt: "wa_econ_unknown_date_query_failed",
       err: pending.message, needsAdminAction: true,
     });
-    s.failed++;
-    return s;
+    dateReview.failed++;
+    // ABORTA o passo inteiro, como antes — não é o momento de mudar isso. O que
+    // muda é que o zero do sub-passo econômico deixa de ser silêncio: ele é
+    // AFIRMADO como não-executado, em vez de indistinguível de "nada a relatar".
+    deps.telemetry.info({
+      reqId: deps.reqId, evt: "wa_econ_imbalance_skipped",
+      cause: "date_review_query_failed",
+    });
+    return [dateReview, imbalance];
   }
 
   for (const r of pending.rows) {
@@ -806,9 +820,8 @@ export async function runEconomicsStep(deps: WorkerDeps, today: string): Promise
       reqId: deps.reqId, evt: "wa_econ_instances_query_failed",
       err: all.message, needsAdminAction: true,
     });
-    s.processed = dateReview.processed;
-    s.failed = dateReview.failed + 1;
-    return s;
+    imbalance.failed++;
+    return [dateReview, imbalance];
   }
 
   const byOrg = new Map<string, { instanceId: string; costCents: number | null }[]>();
@@ -878,9 +891,7 @@ export async function runEconomicsStep(deps: WorkerDeps, today: string): Promise
     imbalancesReported: imbalance.processed,
   });
 
-  s.processed = dateReview.processed + imbalance.processed;
-  s.failed = dateReview.failed + imbalance.failed;
-  return s;
+  return [dateReview, imbalance];
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -898,6 +909,6 @@ export async function runAllSteps(deps: WorkerDeps, today: string): Promise<Step
   steps.push(...(await runCycleAlertsStep(deps, today)));
   steps.push(await runEndConfirmationStep(deps, today));
   steps.push(await runDivergencesStep(deps, today));
-  steps.push(await runEconomicsStep(deps, today));
+  steps.push(...(await runEconomicsStep(deps, today)));
   return steps;
 }
