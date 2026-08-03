@@ -93,11 +93,26 @@ simplesmente não renderiza — degradação silenciosa e segura, mesma convenç
 no `"—"` e no botão desabilitado que ele já tratava. **Nenhuma das duas ordens
 afirma preço errado** — mas a ordem acima é a que evita o card antigo.
 
-**Aplicar a 098 sem deployar `manage-whatsapp-implementations` deixa a EF
-projetando três slugs que acabaram de sair da vitrine**: `priceOf` devolve
-`null` nos três, `summarizeMonthlyCosts` colapsa em zero e o lojista lê
-"R$ 0,00" onde deveria ler R$ 449,90. `prices_unavailable` **não** cobre esse
-caso (a leitura não falhou; ela devolveu linhas inativas). Deployar junto.
+**O risco real está na ordem oposta: deployar a EF nova antes de aplicar a
+098.** A EF nova consulta `plano-reservas` e `plano-automacao` pelo slug — mas,
+sem a 098 aplicada, essas duas linhas ainda não existem no catálogo.
+`priceOf` devolve `null` para as duas, `summarizeMonthlyCosts` colapsa em
+zero e o lojista lê "R$ 0,00" onde deveria ler R$ 449,90 (`plano-reservas`) ou
+R$ 799,90 (`plano-automacao`). `prices_unavailable` **não** cobre esse caso — a
+leitura não falhou; ela devolveu um catálogo que ainda não tem o produto. É
+esse mecanismo, e não o inverso, que torna a ordem prescrita acima (migration
+**antes** do deploy da EF) obrigatória: aplicar a 098 primeiro garante que as
+duas linhas já existem quando a EF nova entrar em produção.
+
+*(Fix round 1: a versão anterior deste parágrafo descrevia o mecanismo
+invertido — chegou a citar `sistema-reservas`/`instancia-whatsapp` como se
+`priceOf` devolvesse `null` para eles após a 098. Isso é falso: a EF **antiga**
+não filtra por `active` na query de catálogo — comentário explícito no código
+documenta a omissão —, então essas linhas continuam sendo lidas normalmente
+mesmo com `active = false`; a 098 só desliga a coluna `active`, nunca apaga
+linha nem altera `amount_cents`. E dos "três slugs" originais, só dois saem da
+vitrine pela 098 — `implementacao-whatsapp` permanece `active = true` por
+desenho da própria migration (PART 4). Corrigido após revisão.)*
 
 ## 5. CLAUDE.md a consolidar
 
