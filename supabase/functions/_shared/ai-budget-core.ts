@@ -235,7 +235,13 @@ export function planNextCall(
   }
   const remaining = ctx.reservedCents - ctx.consumedCents;
   if (remaining >= ctx.nextCallEstimateCents) return { kind: "ALLOW" };
-  const deficit = ctx.nextCallEstimateCents - (remaining > 0 ? remaining : 0);
+  // SEM clamp de `remaining` a zero. Quando o turno já gastou mais do que
+  // reservou (overage), `remaining` é NEGATIVO e a extensão precisa cobrir as
+  // duas coisas: o déficit já incorrido E a próxima chamada. Clampar descarta a
+  // magnitude do overage e devolve uma extensão que deixa o restante em zero —
+  // autorizando uma chamada sem cobertura real, que é precisamente o que a
+  // estimativa conservadora existe para impedir.
+  const deficit = ctx.nextCallEstimateCents - remaining;
   return { kind: "EXTEND", additionalCents: deficit };
 }
 

@@ -180,7 +180,9 @@ describe("planNextCall", () => {
     });
     expect(p.kind).toBe("EXTEND");
     if (p.kind !== "EXTEND") return;
-    expect(p.additionalCents).toBeGreaterThanOrEqual(80);
+    // 100 de estimativa − 20 de restante = 80. Valor exato: uma extensão que
+    // não fecha o déficit autoriza uma chamada sem cobertura real.
+    expect(p.additionalCents).toBe(80);
   });
 
   it("usage pendente nega ANTES de qualquer consideração de saldo", () => {
@@ -193,6 +195,11 @@ describe("planNextCall", () => {
       usageUnresolved: false,
     });
     expect(p.kind).toBe("EXTEND");
+    if (p.kind !== "EXTEND") return;
+    // A extensão cobre o overage JÁ INCORRIDO (100) mais a próxima chamada
+    // (100). Pedir só 100 deixaria o restante em zero e autorizaria uma chamada
+    // sem cobertura — que é exatamente o que a estimativa existe para impedir.
+    expect(p.additionalCents).toBe(200);
   });
 });
 
