@@ -299,3 +299,36 @@ describe("RPCs do orçamento (102)", () => {
     expect(body.search(/from ai_cost_reservations[\s\S]{0,200}?for update/i)).toBeGreaterThan(-1);
   });
 });
+
+const milestones = read("103_ai_budget_milestones");
+
+describe("ledger dos marcos (103)", () => {
+  it("RLS habilitada, forçada e só platform_admin", () => {
+    expect(milestones).toContain("alter table ai_budget_milestones enable row level security");
+    expect(milestones).toContain("alter table ai_budget_milestones force row level security");
+    expect(milestones).toContain("platform_admin_all_ai_budget_milestones");
+  });
+
+  it("cada marco dispara no máximo uma vez por ciclo — UNIQUE (cycle_id, milestone_percent)", () => {
+    expect(milestones).toMatch(/unique\s*\(\s*cycle_id\s*,\s*milestone_percent\s*\)/i);
+  });
+
+  it("o vocabulário de marco é fechado nos quatro percentuais", () => {
+    expect(milestones).toMatch(/milestone_percent[\s\S]{0,200}in\s*\(\s*70\s*,\s*80\s*,\s*90\s*,\s*100\s*\)/i);
+  });
+
+  it("distingue 'registrei o marco' de 'o aviso foi enfileirado'", () => {
+    // Sem notified_at separado, uma falha de enfileiramento seria indistinguível
+    // de sucesso e o aviso morreria em silêncio.
+    expect(milestones).toContain("notified_at");
+    expect(milestones).toContain("enqueue_attempts");
+  });
+
+  it("registra se o dispatch estava ligado — 'não recebi e-mail' não é 'não houve alerta'", () => {
+    expect(milestones).toContain("dispatch_enabled_at_enqueue");
+  });
+
+  it("guarda o custo liquidado no momento do marco — auditável depois", () => {
+    expect(milestones).toContain("settled_cents_at_cross");
+  });
+});
