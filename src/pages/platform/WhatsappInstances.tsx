@@ -32,6 +32,7 @@ import {
   type WhatsappInstance,
   type WhatsappInstanceAlert,
 } from "@/hooks/useWhatsappInstances";
+import { useAllUnits } from "@/hooks/useAllUnits";
 
 const MIN_REASON_LENGTH = 5;
 
@@ -141,6 +142,30 @@ export default function WhatsappInstances() {
   const alertsQuery = useWhatsappInstanceAlerts();
   const action = useWhatsappInstanceAction();
   const simulation = usePartnerSimulation();
+
+  const unitsQuery = useAllUnits();
+
+  /**
+   * Nome da organização e da unidade a partir do inventário de unidades.
+   *
+   * `whatsapp_instances` guarda ids, e `manage-whatsapp-instances` devolve ids —
+   * a EF não junta com `organizations` de propósito (projeção explícita). O
+   * nome vem do hook que o painel já teria que carregar para o seletor de
+   * unidade da Tela A.
+   */
+  const orgNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const u of unitsQuery.data ?? []) {
+      if (u.organization_name) m.set(u.organization_id, u.organization_name);
+    }
+    return m;
+  }, [unitsQuery.data]);
+
+  const unitNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const u of unitsQuery.data ?? []) m.set(u.id, u.name);
+    return m;
+  }, [unitsQuery.data]);
 
   const [dialog, setDialog] = useState<ReasonDialogKind>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -269,7 +294,14 @@ export default function WhatsappInstances() {
                       )}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Organização {inst.organization_id}
+                      {/* Ainda carregando ou organização fora do alcance de
+                          `useAllUnits` (rede sem unidade): o id continua sendo
+                          a identificação verdadeira, então ele aparece em vez
+                          de um espaço em branco. */}
+                      {orgNameById.get(inst.organization_id) ?? `Organização ${inst.organization_id}`}
+                      {inst.unit_id && unitNameById.has(inst.unit_id) && (
+                        <> · {unitNameById.get(inst.unit_id)}</>
+                      )}
                     </p>
                   </div>
                 </div>
