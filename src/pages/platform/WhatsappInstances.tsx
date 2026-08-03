@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/responsive-dialog";
 import { toast } from "sonner";
 import { cn, formatDateBR } from "@/lib/utils";
+import { InstanceNotesPanel } from "@/components/platform/InstanceNotesPanel";
 import {
   formatCents,
   formatMargin,
@@ -397,13 +398,20 @@ export default function WhatsappInstances() {
                     variant="ghost"
                     onClick={() => setExpandedId(expandedId === inst.id ? null : inst.id)}
                   >
-                    {expandedId === inst.id ? "Ocultar ciclos" : "Ver ciclos e margem"}
+                    {expandedId === inst.id ? "Ocultar detalhes" : "Ver ciclos, margem e histórico"}
                   </Button>
                 </div>
 
                 {expandedId === inst.id && (
-                  <div className="border-t pt-3">
-                    <CyclesPanel instanceId={inst.id} />
+                  <div className="border-t pt-3 space-y-4">
+                    <div>
+                      <h3 className="text-sm font-semibold mb-2">Ciclos e margem</h3>
+                      <CyclesPanel instanceId={inst.id} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold mb-2">Histórico</h3>
+                      <InstanceNotesPanel instanceId={inst.id} />
+                    </div>
                   </div>
                 )}
               </CardContent>
@@ -580,7 +588,7 @@ export default function WhatsappInstances() {
               {dialog?.kind === "resolve_alert" && "Resolver alerta"}
             </ResponsiveDialogTitle>
             <ResponsiveDialogDescription>
-              O motivo é obrigatório e fica registrado com autoria e data.
+              O motivo é obrigatório e será registrado permanentemente com autoria e data.
             </ResponsiveDialogDescription>
           </ResponsiveDialogHeader>
 
@@ -670,7 +678,7 @@ export default function WhatsappInstances() {
             )}
 
             <div className="space-y-1">
-              <Label htmlFor="reason">Motivo</Label>
+              <Label htmlFor="reason">Motivo (fica registrado no histórico)</Label>
               <Textarea
                 id="reason"
                 value={reason}
