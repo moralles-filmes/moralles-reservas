@@ -654,7 +654,9 @@ describe("planNextCall", () => {
     });
     expect(p.kind).toBe("EXTEND");
     if (p.kind !== "EXTEND") return;
-    expect(p.additionalCents).toBeGreaterThanOrEqual(80);
+    // 100 de estimativa − 20 de restante = 80. Valor exato: uma extensão que
+    // não fecha o déficit autoriza uma chamada sem cobertura real.
+    expect(p.additionalCents).toBe(80);
   });
 
   it("usage pendente nega ANTES de qualquer consideração de saldo", () => {
@@ -667,6 +669,11 @@ describe("planNextCall", () => {
       usageUnresolved: false,
     });
     expect(p.kind).toBe("EXTEND");
+    if (p.kind !== "EXTEND") return;
+    // A extensão cobre o overage JÁ INCORRIDO (100) mais a próxima chamada
+    // (100). Pedir só 100 deixaria o restante em zero e autorizaria uma chamada
+    // sem cobertura — que é exatamente o que a estimativa existe para impedir.
+    expect(p.additionalCents).toBe(200);
   });
 });
 
@@ -1012,7 +1019,13 @@ export function planNextCall(
   }
   const remaining = ctx.reservedCents - ctx.consumedCents;
   if (remaining >= ctx.nextCallEstimateCents) return { kind: "ALLOW" };
-  const deficit = ctx.nextCallEstimateCents - (remaining > 0 ? remaining : 0);
+  // SEM clamp de `remaining` a zero. Quando o turno já gastou mais do que
+  // reservou (overage), `remaining` é NEGATIVO e a extensão precisa cobrir as
+  // duas coisas: o déficit já incorrido E a próxima chamada. Clampar descarta a
+  // magnitude do overage e devolve uma extensão que deixa o restante em zero —
+  // autorizando uma chamada sem cobertura real, que é precisamente o que a
+  // estimativa conservadora existe para impedir.
+  const deficit = ctx.nextCallEstimateCents - remaining;
   return { kind: "EXTEND", additionalCents: deficit };
 }
 
