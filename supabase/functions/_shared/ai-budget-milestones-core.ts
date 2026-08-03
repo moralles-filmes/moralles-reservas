@@ -2,10 +2,12 @@
  * Núcleo PURO dos marcos da franquia (spec §18.2). ZERO IMPORTS.
  *
  * FONTE CANÔNICA ÚNICA dos quatro `event_type`. Nenhum produtor pode emitir
- * string fora daqui — é a SEXTA ocorrência do acoplamento por string com
- * `TEMPLATE_BY_EVENT` de `process-billing-notifications`, e sem a entrada lá a
- * linha enfileirada morre em `failed/unknown_event_type` exatamente quando
- * importa. O teste bidirecional está em `src/lib/ai-budget-dispatcher.test.ts`.
+ * string fora daqui — é a SEXTA ocorrência do acoplamento por string com o
+ * dispatcher de e-mails de billing (mapa de templates por evento), e sem a
+ * entrada lá a linha enfileirada morre em `failed/unknown_event_type`
+ * exatamente quando importa. O teste bidirecional está em
+ * `src/lib/ai-budget-dispatcher.test.ts` — este arquivo não referencia o
+ * dispatcher por nome de propósito: o acoplamento é só a string do evento.
  *
  * Os marcos são PERCENTUAIS do `limit_cents` do ciclo, não valores absolutos.
  * Com o limite de R$ 100 eles caem exatamente em R$ 70/80/90/100 da spec; com

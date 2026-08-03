@@ -15,10 +15,30 @@ const supabase = createClient(
 
 const BATCH = 20;
 
+/**
+ * Bloco EXCLUSIVO dos marcos da franquia de IA (Plano D, §18.2). Ausente em
+ * todos os outros event_type — os avisos de billing não têm ciclo de IA.
+ *
+ * Preenchido por `loadAiBudgetContext` apenas quando o event_type começa com
+ * `admin_ai_budget_`, para não pagar três queries por e-mail de mensalidade.
+ */
+type AiBudgetTemplateData = {
+  cycleStart: string;
+  /** EXCLUSIVO: é a data em que a franquia RENOVA. */
+  cycleEnd: string;
+  settledBrl: string;
+  reservedBrl: string;
+  limitBrl: string;
+  /** Modelos efetivamente usados no ciclo. Vazio = nenhum evento ainda. */
+  models: string;
+};
+
 type TemplateData = {
   orgName: string;
   amountBrl: string;
   paymentUrl: string | null;
+  /** Só nos quatro admin_ai_budget_*. */
+  aiBudget?: AiBudgetTemplateData;
 };
 
 function formatBrl(cents: number): string {
@@ -32,6 +52,88 @@ function wrapHtml(title: string, paragraphs: string[]): string {
 
 function payLine(url: string | null): string {
   return url ? `Para pagar, acesse: ${url}` : "Acesse o painel para regularizar.";
+}
+
+/**
+ * Contexto do ciclo de franquia para os quatro `admin_ai_budget_*`.
+ *
+ * Best-effort: qualquer falha devolve `undefined` e o template cai no texto
+ * mínimo. Um aviso incompleto ao admin é melhor que um aviso que não sai —
+ * mesma postura de `resolvePlatformAdminRecipients`.
+ *
+ * Lê o ciclo mais recente da organização; o marco é sempre do ciclo corrente,
+ * porque a linha é enfileirada no instante do cruzamento.
+ */
+async function loadAiBudgetContext(organizationId: string): Promise<AiBudgetTemplateData | undefined> {
+  const { data: cycle, error } = await supabase
+    .from("ai_cycle_budgets")
+    .select("id, cycle_start, cycle_end, limit_cents, settled_cents")
+    .eq("organization_id", organizationId)
+    .order("cycle_start", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !cycle) return undefined;
+
+  const [{ data: held }, { data: events }] = await Promise.all([
+    supabase
+      .from("ai_cost_reservations")
+      .select("reserved_cents, consumed_cents")
+      .eq("cycle_id", cycle.id)
+      .eq("status", "HELD"),
+    supabase
+      .from("ai_usage_events")
+      .select("model")
+      .eq("cycle_id", cycle.id)
+      .limit(200),
+  ]);
+
+  const reserved = (held ?? []).reduce(
+    (sum: number, r: { reserved_cents: number; consumed_cents: number }) =>
+      sum + Math.max(r.reserved_cents - r.consumed_cents, 0),
+    0,
+  );
+  const models = [...new Set((events ?? []).map((e: { model: string }) => e.model))].sort();
+
+  return {
+    cycleStart: cycle.cycle_start,
+    cycleEnd: cycle.cycle_end,
+    settledBrl: formatBrl(cycle.settled_cents),
+    reservedBrl: formatBrl(reserved),
+    limitBrl: formatBrl(cycle.limit_cents),
+    models: models.length > 0 ? models.join(", ") : "nenhum consumo registrado",
+  };
+}
+
+/**
+ * Corpo comum dos quatro marcos: §18.2 exige organização, ciclo, custo
+ * liquidado, custo reservado, modelo, data da renovação e ação esperada. A
+ * única coisa que varia entre os quatro é o marco e a ação.
+ */
+function aiBudgetText(d: TemplateData, marco: string, acao: string): string {
+  const b = d.aiBudget;
+  if (!b) {
+    return `A franquia de automação com IA de ${d.orgName} atingiu ${marco} do teto do ciclo. ${acao} Detalhes em Plataforma → Automação.`;
+  }
+  return [
+    `A franquia de automação com IA de ${d.orgName} atingiu ${marco} do teto do ciclo.`,
+    `Ciclo: ${b.cycleStart} até ${b.cycleEnd} (renova em ${b.cycleEnd}).`,
+    `Custo liquidado: ${b.settledBrl} de ${b.limitBrl}. Reservado e ainda não liquidado: ${b.reservedBrl}.`,
+    `Modelos usados no ciclo: ${b.models}.`,
+    acao,
+  ].join(" ");
+}
+
+function aiBudgetHtml(d: TemplateData, title: string, acao: string): string {
+  const b = d.aiBudget;
+  const linhas = [`Organização: <strong>${d.orgName}</strong>.`];
+  if (b) {
+    linhas.push(`Ciclo: <strong>${b.cycleStart}</strong> até <strong>${b.cycleEnd}</strong> — renova em <strong>${b.cycleEnd}</strong>.`);
+    linhas.push(`Custo liquidado: <strong>${b.settledBrl}</strong> de <strong>${b.limitBrl}</strong>.`);
+    linhas.push(`Reservado e ainda não liquidado: <strong>${b.reservedBrl}</strong>.`);
+    linhas.push(`Modelos usados no ciclo: ${b.models}.`);
+  }
+  linhas.push(acao);
+  return wrapHtml(title, linhas);
 }
 
 const TEMPLATE_BY_EVENT: Record<
@@ -379,6 +481,63 @@ const TEMPLATE_BY_EVENT: Record<
       `Avalie em <strong>Plataforma → Instâncias de WhatsApp</strong>.`,
     ]),
   }),
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Marcos da franquia de IA (Plano D, §18.2) — QUATRO entradas para os
+  // quatro event_type de EVENT_TYPE_BY_MILESTONE_PERCENT em
+  // _shared/ai-budget-milestones-core.ts, que é a FONTE CANÔNICA.
+  //
+  // AVISOS INTERNOS, ao platform_admin. Nada aqui vai ao lojista, e nada aqui
+  // pode aparecer numa superfície do cliente: custo interno, limite e modelo
+  // são exatamente o que §18.3 proíbe expor.
+  //
+  // Sem fatura por trás: `d.amountBrl` chega zerado e `paymentUrl` é null —
+  // por isso nenhum dos dois é referenciado, mesma razão de `whatsapp_suspended`
+  // e dos seis `admin_zapi_*`.
+  //
+  // `d.aiBudget` pode faltar (falha de leitura): todo template degrada para o
+  // texto mínimo em vez de renderizar "undefined" para o admin.
+  // ─────────────────────────────────────────────────────────────────────
+  admin_ai_budget_70: (d) => ({
+    // d.aiBudget (ciclo, custo liquidado/reservado, modelos) via aiBudgetText/aiBudgetHtml — best-effort, pode faltar.
+    subject: `[interno] Franquia de IA em 70% — ${d.orgName}`,
+    text: aiBudgetText(d, "70%", "Nenhuma ação é necessária agora. Acompanhe a evolução no ciclo."),
+    html: aiBudgetHtml(d, "Franquia de IA em 70%", "Nenhuma ação é necessária agora. Acompanhe a evolução no ciclo."),
+  }),
+  admin_ai_budget_80: (d) => ({
+    // d.aiBudget (ciclo, custo liquidado/reservado, modelos) via aiBudgetText/aiBudgetHtml — best-effort, pode faltar.
+    subject: `[interno] Franquia de IA em 80% — ${d.orgName}`,
+    text: aiBudgetText(d, "80%", "Avalie o volume de atendimento e o modelo configurado para esta organização."),
+    html: aiBudgetHtml(d, "Franquia de IA em 80%", "Avalie o volume de atendimento e o modelo configurado para esta organização."),
+  }),
+  admin_ai_budget_90: (d) => ({
+    // d.aiBudget (ciclo, custo liquidado/reservado, modelos) via aiBudgetText/aiBudgetHtml — best-effort, pode faltar.
+    subject: `[interno] Franquia de IA em 90% — ${d.orgName}`,
+    text: aiBudgetText(
+      d,
+      "90%",
+      "A franquia deve se esgotar antes da renovação. Decida agora se o teto desta organização será revisto.",
+    ),
+    html: aiBudgetHtml(
+      d,
+      "Franquia de IA em 90%",
+      "A franquia deve se esgotar antes da renovação. Decida agora se o teto desta organização será revisto.",
+    ),
+  }),
+  admin_ai_budget_stop: (d) => ({
+    // d.aiBudget (ciclo, custo liquidado/reservado, modelos) via aiBudgetText/aiBudgetHtml — best-effort, pode faltar.
+    subject: `[interno] Franquia de IA esgotada — ${d.orgName}`,
+    text: aiBudgetText(
+      d,
+      "100%",
+      "O atendimento automático desta organização passou para a equipe. O WhatsApp continua recebendo mensagens e o sistema segue funcionando normalmente — nada foi desligado. A franquia volta sozinha na renovação.",
+    ),
+    html: aiBudgetHtml(
+      d,
+      "Franquia de IA esgotada",
+      "O atendimento automático desta organização passou para a equipe. O WhatsApp <strong>continua</strong> recebendo mensagens e o sistema segue funcionando normalmente — nada foi desligado. A franquia volta sozinha na renovação.",
+    ),
+  }),
 };
 
 serve(async (req) => {
@@ -478,10 +637,17 @@ serve(async (req) => {
         continue;
       }
 
+      // Só os marcos da franquia carregam contexto de ciclo — três queries a
+      // mais por e-mail de mensalidade seria desperdício puro.
+      const aiBudget = row.event_type.startsWith("admin_ai_budget_")
+        ? await loadAiBudgetContext(row.organization_id)
+        : undefined;
+
       const body = tmpl({
         orgName: (org?.name as string | undefined) ?? "cliente",
         amountBrl: formatBrl(amountCents),
         paymentUrl,
+        aiBudget,
       });
 
       const result = await sendEmail({
