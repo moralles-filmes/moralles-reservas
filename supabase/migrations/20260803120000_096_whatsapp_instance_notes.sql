@@ -113,9 +113,33 @@ begin
       using errcode = 'check_violation';
   end if;
 
-  if old.instance_id is not null and new.instance_id is not null
-     and new.instance_id <> old.instance_id then
-    raise exception 'instance_id nao pode ser reapontado para outra instancia'
+  -- `instance_id` só pode ir a NULL, e só pela ação da FK. As DUAS direções
+  -- proibidas: reapontar para outra instância transferiria a observação de uma
+  -- instância para outra sem rastro; e reatar uma observação já órfã a uma
+  -- instância viva inventaria um vínculo que nunca existiu — a guarda de tenant
+  -- não recusa isso, porque a organização bate.
+  --
+  -- DIVERGÊNCIA DELIBERADA da trigger irmã `whatsapp_alert_subject_guard`
+  -- (089): lá a condição equivalente usa `<>` puro
+  -- (`old.instance_id is not null and new.instance_id is not null and
+  -- new.instance_id <> old.instance_id`), que só barra uuid→outro-uuid e
+  -- DEIXA PASSAR null→uuid — uma observação/alerta já órfão pode ser reatado a
+  -- uma instância viva da mesma organização, porque a guarda de tenant só
+  -- confere a organização, não a ausência de vínculo anterior. Achado da
+  -- revisão da Fase 6c, adjudicado pelo dono do projeto: a 096 fica mais
+  -- estrita que a 089 de propósito, e a paridade entre as duas migrations não
+  -- é mais importante que a integridade do vínculo. A 089 TEM esse defeito
+  -- latente e não foi tocada aqui — reescrever uma migration já aplicada exige
+  -- análise de impacto e migration própria, fora do escopo deste commit. A
+  -- correção futura APERTA a 089 para igualar esta condição; não é para
+  -- afrouxar esta.
+  --
+  -- Cuidado com NULL em SQL: `<>` sozinho produz UNKNOWN quando um dos lados é
+  -- NULL, e UNKNOWN não dispara o `raise` — por isso `is distinct from`, que é
+  -- a única forma que enxerga NULL como valor comparável.
+  if old.instance_id is distinct from new.instance_id
+     and new.instance_id is not null then
+    raise exception 'instance_id so pode ser nulado pela FK, nunca reapontado'
       using errcode = 'check_violation';
   end if;
 
