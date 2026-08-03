@@ -9,6 +9,13 @@
 //
 // NÃO ESCREVE em organizations.billing_status, billing_subscriptions,
 // organization_entitlement_overrides nem whatsapp_channels. NÃO chama a Z-API.
+//
+// ORDEM DE APLICAÇÃO: `register_instance` lê `billing_plans.included_features` e
+// `billing_plans.included_whatsapp_connections` (migration 094). A guarda de
+// allowance é FAIL-CLOSED, então a migration precisa estar aplicada ANTES do
+// deploy desta versão: coluna inexistente vira 400 do PostgREST → leitura falha
+// → todo registro de instância passa a responder 503. Mesma ordem já registrada
+// para `entitlements.ts` e `manage-channels`.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -26,6 +33,15 @@ import {
 } from "../_shared/whatsapp-instance-core.ts";
 import { nextDueFromAnchor } from "../_shared/whatsapp-instance-cycle-core.ts";
 import { simulatePartner } from "../_shared/whatsapp-partner-simulator-core.ts";
+import {
+  checkConnectionAllowance,
+  type ConnectionAllowance,
+  type ConnectionFundingSource,
+} from "../_shared/whatsapp-connection-allowance-core.ts";
+import {
+  resolveWhatsAppSubscription,
+  type WhatsAppSubscriptionFact,
+} from "../_shared/whatsapp-subscription-resolver-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -159,6 +175,198 @@ function requireInstanceId(body: Record<string, unknown>): string | null {
 function requireAlertId(body: Record<string, unknown>): string | null {
   return parseUuid(body.alert_id);
 }
+
+/**
+ * Linha crua de `billing_subscriptions` com o plano embutido. A relação
+ * aninhada volta do PostgREST como objeto OU array — normalizada abaixo, mesmo
+ * padrão de `whatsapp-service-gate.ts`, `entitlements.ts` e
+ * `process-whatsapp-instance-cycles`.
+ *
+ * `included_features` / `included_whatsapp_connections` podem vir `null` numa
+ * base anterior à migration 094; o `?? []` trata a primeira como plano LEGADO,
+ * que é exatamente o que ela é nesse ponto do rollout, e a segunda vira `null`
+ * = allowance desconhecida, que o núcleo já trata fail-closed.
+ */
+interface SubscriptionPlanRef {
+  category: string | null;
+  included_features: string[] | null;
+  included_whatsapp_connections: number | null;
+}
+
+interface SubscriptionAllowanceRow {
+  id: string;
+  status: string;
+  canceled_at: string | null;
+  suspended_at: string | null;
+  billing_plans: SubscriptionPlanRef | SubscriptionPlanRef[] | null;
+}
+
+type FundingResolution =
+  | {
+      ok: true;
+      fundingSource: ConnectionFundingSource;
+      includedConnections: number | null;
+      provisioningAmbiguous: boolean;
+    }
+  | { ok: false; reason: "READ_FAILED" | "AMBIGUOUS" };
+
+/**
+ * QUEM FINANCIA a conexão de WhatsApp desta organização — pelo núcleo puro
+ * compartilhado `whatsapp-subscription-resolver-core.ts`, o MESMO que o gate de
+ * envio e o worker de suspensão usam. Uma query nova com regra própria aqui é
+ * como duas fontes de verdade nascem: o gate diria que a organização tem
+ * assinatura e o inventário diria que não, sobre a mesma linha e no mesmo dia.
+ *
+ * AMBIGUIDADE COMERCIAL NÃO É AUSÊNCIA DE CONTRATO. "Existe fonte, não sei
+ * qual" é diferente de "não existe fonte", e a segunda é uma acusação. Por isso
+ * `AMBIGUOUS` sai daqui como desfecho PRÓPRIO em vez de virar `fundingSource:
+ * "NONE"` — que faria o núcleo negar um backfill legítimo com
+ * `NO_FUNDING_SOURCE`, o motivo errado. Mesmo tratamento que
+ * `resolveRevenueForOrg` dá ao caso em `process-whatsapp-instance-cycles`.
+ *
+ * Falha de leitura também é desfecho próprio: fail-closed, mas com 503 e não
+ * com um veredito comercial inventado.
+ */
+async function resolveConnectionFunding(
+  organizationId: string,
+  reqId: string,
+): Promise<FundingResolution> {
+  const [subRes, overrideRes] = await Promise.all([
+    // TODAS as candidatas, sem filtro de categoria e sem `.maybeSingle()` —
+    // campo-a-campo a mesma forma da query do gate. `.maybeSingle()` LANÇA com
+    // duas linhas, e a transição entre o modelo antigo e o de dois planos produz
+    // exatamente duas; o filtro por categoria devolvia ZERO linha para uma
+    // organização do Plano 2, que paga o pacote dentro da mensalidade.
+    supabase
+      .from("billing_subscriptions")
+      .select(
+        "id, status, canceled_at, suspended_at, billing_plans!inner(category, included_features, included_whatsapp_connections)",
+      )
+      .eq("organization_id", organizationId)
+      .neq("status", "canceled"),
+    // Cortesia vitalícia não tem assinatura — é o caso do único cliente ativo.
+    // Sem este degrau, ele cairia em `NONE` e nem o backfill do que já existe
+    // passaria.
+    supabase
+      .from("organization_entitlement_overrides")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("feature", "whatsapp")
+      .eq("grant_type", "LIFETIME")
+      .eq("enabled", true)
+      .is("revoked_at", null)
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  if (subRes.error || overrideRes.error) {
+    jsonLog("error", {
+      reqId,
+      evt: "wa_allowance_funding_read_failed",
+      organizationId,
+      subErr: subRes.error?.message ?? null,
+      overrideErr: overrideRes.error?.message ?? null,
+      needsAdminAction: true,
+    });
+    return { ok: false, reason: "READ_FAILED" };
+  }
+
+  // O resolvedor devolve `subscriptionId`, não a linha do plano. A correlação de
+  // volta é por CHAVE, nunca por posição: o PostgREST não garante ordem sem
+  // ORDER BY, e um índice de array casaria o teto de conexões de um plano com a
+  // assinatura de outro sem que nada reclamasse.
+  const planBySubscriptionId = new Map<string, SubscriptionPlanRef>();
+  const facts: WhatsAppSubscriptionFact[] = (
+    (subRes.data ?? []) as unknown as SubscriptionAllowanceRow[]
+  ).map((row) => {
+    const plan = Array.isArray(row.billing_plans) ? row.billing_plans[0] : row.billing_plans;
+    if (plan) planBySubscriptionId.set(row.id, plan);
+    return {
+      id: row.id,
+      status: row.status,
+      category: plan?.category ?? "SYSTEM_SUBSCRIPTION",
+      includedFeatures: plan?.included_features ?? [],
+      canceledAt: row.canceled_at,
+      suspendedAt: row.suspended_at,
+    };
+  });
+
+  const resolution = resolveWhatsAppSubscription({ subscriptions: facts });
+
+  if (resolution.kind === "AMBIGUOUS") {
+    jsonLog("warn", {
+      reqId,
+      evt: "wa_allowance_ambiguous_subscription",
+      organizationId,
+      reason: resolution.reasonCode,
+      candidates: resolution.candidateIds.length,
+      needsAdminAction: true,
+    });
+    return { ok: false, reason: "AMBIGUOUS" };
+  }
+
+  if (resolution.kind === "NONE") {
+    return {
+      ok: true,
+      fundingSource: overrideRes.data ? "LIFETIME_OVERRIDE" : "NONE",
+      includedConnections: null,
+      provisioningAmbiguous: false,
+    };
+  }
+
+  const plan = planBySubscriptionId.get(resolution.subscriptionId);
+  // `!inner` garante o plano; chegar aqui sem ele significa que a correlação não
+  // fechou. Seguir com `null` afirmaria "plano sem teto declarado" sobre uma
+  // assinatura que o resolvedor acabou de escolher.
+  if (!plan) {
+    jsonLog("error", {
+      reqId,
+      evt: "wa_allowance_plan_not_correlated",
+      organizationId,
+      subscriptionId: resolution.subscriptionId,
+      needsAdminAction: true,
+    });
+    return { ok: false, reason: "READ_FAILED" };
+  }
+
+  return {
+    ok: true,
+    fundingSource: resolution.source,
+    includedConnections:
+      typeof plan.included_whatsapp_connections === "number"
+        ? plan.included_whatsapp_connections
+        : null,
+    provisioningAmbiguous: resolution.provisioningAmbiguous,
+  };
+}
+
+/**
+ * Mensagem por motivo de recusa. Curta, em PT-BR, e SEM número de custo ou de
+ * preço: esta EF é exclusiva de platform_admin, mas o corpo da resposta viaja
+ * até um navegador e nada aqui precisa do valor pago.
+ *
+ * `Record` exaustivo de propósito — motivo novo no núcleo cobra a mensagem.
+ */
+const ALLOWANCE_DENIED_MESSAGE: Record<
+  Extract<ConnectionAllowance, { allowed: false }>["reasonCode"],
+  string
+> = {
+  CONNECTION_LIMIT_REACHED:
+    "O plano desta organização não tem conexão de WhatsApp disponível para mais um registro.",
+  ALLOWANCE_UNKNOWN:
+    "O plano desta organização não declara quantas conexões de WhatsApp inclui. Revise o plano antes de registrar.",
+  SUBSCRIPTION_AMBIGUOUS:
+    "Há mais de um contrato de automação de WhatsApp em aberto para esta organização. Resolva a pendência antes de registrar.",
+  BACKFILL_WITHOUT_PROVIDER_REF:
+    "Informe o identificador da instância no fornecedor: só é possível registrar instância que já existe lá.",
+  OVERRIDE_REQUIRES_ADMIN_DECISION:
+    "Esta organização usa a automação em cortesia vitalícia. Conexão nova exige decisão administrativa registrada.",
+  NO_FUNDING_SOURCE:
+    "Não há contrato de automação de WhatsApp que financie uma conexão para esta organização.",
+};
+
+const ALLOWANCE_UNVERIFIABLE =
+  "Não foi possível verificar o direito de uso da automação de WhatsApp agora. Tente novamente em alguns minutos.";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeadersFor(req) });
@@ -295,8 +503,14 @@ serve(async (req) => {
       const reason = requireReason(body);
       if (!reason) return jsonResponse(req, { error: "Informe o motivo do registro." }, 400);
 
-      const orgId = String(body.organization_id ?? "");
-      if (!orgId) return jsonResponse(req, { error: "organization_id é obrigatório." }, 400);
+      // UUID validado na FORMA, não só na presença — mesma razão de
+      // `requireInstanceId`. Sem isso, `"abc"` chegava ao PostgREST, virava
+      // `22P02` e subia pelo caminho de indisponibilidade (503 "tente
+      // novamente") para um pedido que repetição nenhuma conserta. A guarda de
+      // allowance abaixo consulta o banco POR esta org, o que tornaria esse
+      // desvio de motivo o caminho comum.
+      const orgId = parseUuid(body.organization_id);
+      if (!orgId) return jsonResponse(req, { error: "organization_id inválido." }, 400);
 
       let ref: string | null = null;
       if (body.provider_instance_ref) {
@@ -316,6 +530,72 @@ serve(async (req) => {
       const costSource = hasCost ? normalizeCostSource(body.cost_source) : null;
       if (hasCost && costSource === null) {
         return jsonResponse(req, { error: "Procedência do custo inválida." }, 400);
+      }
+
+      // ── Allowance comercial de conexões ──────────────────────────────────
+      // Pergunta DIFERENTE da de `assertProvisioningAllowed`, que já rodou lá em
+      // cima: aquela responde "a plataforma sabe provisionar?", esta responde "o
+      // modelo comercial permite mais uma conexão?". As duas coexistem — uma não
+      // substitui a outra, e responder só uma deixa a outra porta aberta.
+      //
+      // `BACKFILL_EXISTING` fixo: nesta action toda instância nasce na Z-API e
+      // só depois é registrada (decisão da Fase 6c). Não existe caminho de
+      // `NEW_PROVISIONING` aqui hoje — `assertProvisioningAllowed` recusa
+      // `NEW_PROVISION` antes de chegar neste ponto.
+      //
+      // `providerInstanceRefKnown` vem da MESMA validação de
+      // `provider_instance_ref` que já rodou acima: registrar "backfill" sem
+      // referência da instância real no fornecedor é criar conexão nova por
+      // outra porta.
+      const [countRes, funding] = await Promise.all([
+        // `lifecycle_state <> 'ENDED'`, não `= 'ACTIVE'`: instância em
+        // CANCELLATION_REQUESTED ainda custa até a confirmação de encerramento.
+        supabase
+          .from("whatsapp_instances")
+          .select("id", { count: "exact", head: true })
+          .eq("organization_id", orgId)
+          .neq("lifecycle_state", "ENDED"),
+        resolveConnectionFunding(orgId, reqId),
+      ]);
+
+      // FALHA em vez de degradar: `count ?? 0` viraria "zero instâncias" e
+      // liberaria exatamente o registro que o teto existe para barrar.
+      if (countRes.error) {
+        jsonLog("error", {
+          reqId, evt: "wa_allowance_count_failed", organizationId: orgId,
+          err: countRes.error.message, needsAdminAction: true,
+        });
+        return jsonResponse(req, { error: ALLOWANCE_UNVERIFIABLE }, 503);
+      }
+      if (funding.ok === false) {
+        if (funding.reason === "AMBIGUOUS") {
+          return jsonResponse(req, {
+            error: ALLOWANCE_DENIED_MESSAGE.SUBSCRIPTION_AMBIGUOUS,
+            code: "SUBSCRIPTION_AMBIGUOUS",
+          }, 409);
+        }
+        return jsonResponse(req, { error: ALLOWANCE_UNVERIFIABLE }, 503);
+      }
+
+      const allowance = checkConnectionAllowance({
+        fundingSource: funding.fundingSource,
+        includedConnections: funding.includedConnections,
+        operation: "BACKFILL_EXISTING",
+        activeInstanceCount: countRes.count ?? 0,
+        provisioningAmbiguous: funding.provisioningAmbiguous,
+        providerInstanceRefKnown: ref !== null,
+      });
+
+      if (allowance.allowed === false) {
+        jsonLog("warn", {
+          reqId, evt: "wa_allowance_denied", organizationId: orgId,
+          reasonCode: allowance.reasonCode, fundingSource: funding.fundingSource,
+          activeInstances: countRes.count ?? 0, callerId,
+        });
+        return jsonResponse(req, {
+          error: ALLOWANCE_DENIED_MESSAGE[allowance.reasonCode],
+          code: allowance.reasonCode,
+        }, 409);
       }
 
       const { data, error } = await supabase
@@ -353,7 +633,10 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Não foi possível registrar a instância." }, 500);
       }
 
-      jsonLog("info", { reqId, evt: "wa_instance_registered", instanceId: data.id, intent });
+      jsonLog("info", {
+        reqId, evt: "wa_instance_registered", instanceId: data.id, intent,
+        allowancePolicy: allowance.policy, fundingSource: funding.fundingSource,
+      });
       return jsonResponse(req, { instance: data });
     }
 
