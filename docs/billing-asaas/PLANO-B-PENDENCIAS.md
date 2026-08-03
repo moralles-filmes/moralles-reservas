@@ -243,9 +243,21 @@ primeiros commits do Plano B caíram em `dois-planos/plano-d`. Nada foi perdido.
 **Correção aplicada:** `dois-planos/plano-b` foi movido para o commit correto e
 esta frente passou a rodar no worktree isolado `.claude/worktrees/plano-b`.
 
-**Pendência aberta para a frente do Plano D:** `dois-planos/plano-d` continua
-apontando para os commits do Plano B e precisa ser resetado por quem é dono
-dela — não foi tocado por esta frente.
+**Fechado pela frente do Plano D — não era reset de ponteiro.** Quando o
+problema foi diagnosticado, os 4 commits do Plano B já tinham 13 commits do
+Plano D empilhados em cima: mover o ponteiro teria descartado o trabalho de
+outra frente. A correção foi um transplante, precedido de conferência de que não
+havia sobreposição de arquivo nem referência cruzada entre as duas pilhas:
+
+```
+git rebase --onto ce07a4b 62511fd dois-planos/plano-d
+```
+
+13 commits reaplicados sem conflito, com `backup/plano-d-antes-do-reset`
+(`3e8a237`) guardando o estado anterior. Verificado:
+`git merge-base --is-ancestor 62511fd dois-planos/plano-d` responde **não** — a
+branch não contém mais nenhum commit do Plano B. A frente seguiu trabalhando por
+cima do rebase sem incidente.
 
 **Lição registrada:** branch compartilhando diretório de trabalho não é
 isolamento; worktree é.
@@ -365,6 +377,14 @@ migrations. O que **fica registrado sem ação**:
   null])` avalia UNKNOWN e o CHECK **aceita** UNKNOWN. Quem proíbe o elemento
   nulo é `array_position(included_features, null) is null`, na 094. Dropar o
   CHECK da 094 reabre o portão da 097 em silêncio.
+  **Consequência direta para o Plano D, que precisa estar escrita: a última ação
+  do Plano D derruba `billing_plans_ai_plan_not_sellable_chk` e SÓ ele. O CHECK
+  da 094 (`billing_plans_included_features_chk`) nunca é dropado — nem junto,
+  nem depois.** Os dois vivem na mesma tabela, tratam da mesma coluna e nascem
+  do mesmo modelo de dois planos; ler "a última ação do Plano D é derrubar o
+  portão" e levar os dois juntos é o erro natural, não o distraído. E ele
+  reabriria o buraco do NULL exatamente no commit que abre a venda — a hora em
+  que o CHECK da 097 deixa de proteger e o da 094 vira a única barreira restante.
 - **Diagnóstico cru em dois abortos da 098** (`plano-automacao` pré-existente já
   ativo; `plano-reservas` com outra categoria e assinatura viva, barrado pelo
   trigger da 074). Fail-closed corretos, só a mensagem é feia. Pré-condições
