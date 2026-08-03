@@ -327,3 +327,181 @@ describe("resolveEntitlements — modelo de dois planos (declaração explícita
     expect(e.ai.allowed).toBe(false);
   });
 });
+
+describe("Plano D — franquia de IA", () => {
+  const plano2 = {
+    status: "active",
+    category: "SYSTEM_SUBSCRIPTION",
+    current_period_end: "2026-09-04T00:00:00Z",
+    includedFeatures: ["system", "whatsapp", "ai"],
+  };
+  const plano1 = {
+    status: "active",
+    category: "SYSTEM_SUBSCRIPTION",
+    current_period_end: "2026-09-04T00:00:00Z",
+    includedFeatures: ["system"],
+  };
+
+  it("Plano 2 sem orçamento carregado: concede IA por franquia, sem afirmar saldo", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [plano2],
+    });
+    expect(e.ai.allowed).toBe(true);
+    expect(e.ai.source).toBe("franchise");
+    expect(e.ai.status).toBe("within_budget");
+    expect(e.ai.budgetRemainingCents).toBeUndefined();
+  });
+
+  it("Plano 2 com orçamento aberto: concede e informa o restante", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [plano2],
+      aiFranchise: { state: "OPEN", remainingCents: 3500 },
+    });
+    expect(e.ai.allowed).toBe(true);
+    expect(e.ai.source).toBe("franchise");
+    expect(e.ai.status).toBe("within_budget");
+    expect(e.ai.budgetRemainingCents).toBe(3500);
+  });
+
+  it("Plano 2 com franquia esgotada: NEGA a IA sem tocar system nem whatsapp", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [plano2],
+      aiFranchise: { state: "EXHAUSTED", remainingCents: 0 },
+    });
+    expect(e.ai.allowed).toBe(false);
+    expect(e.ai.source).toBe("franchise");
+    expect(e.ai.status).toBe("budget_exhausted");
+    expect(e.ai.budgetRemainingCents).toBe(0);
+    // O hard stop NÃO desliga o canal nem bloqueia o sistema (§18.3).
+    expect(e.system.allowed).toBe(true);
+    expect(e.whatsapp.allowed).toBe(true);
+  });
+
+  it("franquia esgotada com restante positivo ainda é esgotada — o estado manda", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [plano2],
+      aiFranchise: { state: "EXHAUSTED", remainingCents: 12 },
+    });
+    expect(e.ai.allowed).toBe(false);
+  });
+
+  it("balanceCents NÃO é reusado — franquia não é crédito do cliente", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [plano2],
+      aiFranchise: { state: "OPEN", remainingCents: 3500 },
+    });
+    expect(e.ai.balanceCents).toBeUndefined();
+  });
+
+  it("Plano 1 continua negando IA por não declarar — franquia não muda isso", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [plano1],
+      aiFranchise: { state: "OPEN", remainingCents: 10000 },
+    });
+    expect(e.ai.allowed).toBe(false);
+    expect(e.ai.status).toBe("not_included");
+    expect(e.ai.source).not.toBe("franchise");
+  });
+
+  it("REN SUSHI: override LIFETIME vence a franquia esgotada — prioridade 2 intacta", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [
+        { feature: "ai", enabled: true, grant_type: "LIFETIME", starts_at: "2025-01-01T00:00:00Z", ends_at: null, revoked_at: null },
+      ],
+      subscriptions: [plano2],
+      aiFranchise: { state: "EXHAUSTED", remainingCents: 0 },
+    });
+    expect(e.ai.allowed).toBe(true);
+    expect(e.ai.source).toBe("override");
+    expect(e.ai.status).toBe("LIFETIME");
+  });
+
+  it("REN SUSHI sem assinatura nenhuma continua fora de todo caminho do Plano D", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [
+        { feature: "system", enabled: true, grant_type: "LIFETIME", starts_at: "2025-01-01T00:00:00Z", ends_at: null, revoked_at: null },
+        { feature: "whatsapp", enabled: true, grant_type: "LIFETIME", starts_at: "2025-01-01T00:00:00Z", ends_at: null, revoked_at: null },
+        { feature: "ai", enabled: true, grant_type: "LIFETIME", starts_at: "2025-01-01T00:00:00Z", ends_at: null, revoked_at: null },
+      ],
+      subscriptions: [],
+      aiFranchise: { state: "EXHAUSTED", remainingCents: 0 },
+    });
+    expect(e.ai.allowed).toBe(true);
+    expect(e.ai.source).toBe("override");
+  });
+
+  it("bloqueio administrativo de ai vence a franquia disponível", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [
+        { feature: "ai", enabled: false, grant_type: "MANUAL_OVERRIDE", starts_at: "2025-01-01T00:00:00Z", ends_at: null, revoked_at: null },
+      ],
+      subscriptions: [plano2],
+      aiFranchise: { state: "OPEN", remainingCents: 10000 },
+    });
+    expect(e.ai.allowed).toBe(false);
+    expect(e.ai.source).toBe("admin_block");
+  });
+
+  it("plano LEGADO (included_features vazio) não entra na franquia, mesmo com orçamento", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [{ status: "active", category: "SYSTEM_SUBSCRIPTION", current_period_end: null }],
+      aiWalletBalanceCents: undefined,
+      aiFranchise: { state: "EXHAUSTED", remainingCents: 0 },
+    });
+    // Herança pré-carteira, byte a byte como antes.
+    expect(e.ai.allowed).toBe(true);
+    expect(e.ai.source).toBe(e.system.source);
+  });
+
+  it("carteira legada continua no ramo de carteira quando o plano não declara ai", () => {
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [{ status: "active", category: "SYSTEM_SUBSCRIPTION", current_period_end: null }],
+      aiWalletBalanceCents: 500,
+      aiFranchise: { state: "EXHAUSTED", remainingCents: 0 },
+    });
+    expect(e.ai.source).toBe("wallet");
+    expect(e.ai.balanceCents).toBe(500);
+  });
+
+  it("trial continua sem IA — o ramo de franquia não o reintroduz", () => {
+    const e = resolveEntitlements({
+      billingStatus: "trialing",
+      trialEndsAt: "2099-01-01T00:00:00Z",
+      overrides: [],
+      subscriptions: [],
+      aiFranchise: { state: "OPEN", remainingCents: 10000 },
+    });
+    expect(e.ai.allowed).toBe(false);
+    expect(e.ai.status).toBe("trial_no_ai");
+  });
+});

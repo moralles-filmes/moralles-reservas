@@ -18,12 +18,13 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog } from "./security.ts";
 import {
   resolveEntitlements,
+  type AiFranchiseInput,
   type EntitlementOverrideInput,
   type EntitlementSubscriptionInput,
   type OrgEntitlements,
 } from "./entitlements-core.ts";
 
-export type { OrgEntitlements };
+export type { OrgEntitlements, AiFranchiseInput };
 
 /**
  * `OrgEntitlements` + `readFailed`. Mudança ADITIVA (Rodada de correção 1,
@@ -54,13 +55,18 @@ interface SubscriptionRow {
 }
 
 /**
- * @param aiWalletBalanceCents omitir até a Fase 7 (carteira). Quando a carteira
- *   existir, o caller injeta o saldo (evita SELECT extra aqui e mantém o core puro).
+ * @param aiWalletBalanceCents carteira LEGADA. Omitir para organizações no
+ *   modelo de dois planos.
+ * @param aiFranchise Plano D: estado do orçamento do ciclo. Omitir quando o
+ *   caller só precisa saber SE há IA (catálogo, painel) — ausente significa
+ *   "não consultado", nunca "esgotado". O caller que vai gastar (webhook) lê o
+ *   orçamento via ai-budget-gate.ts e injeta aqui, mantendo o núcleo puro.
  */
 export async function resolveOrgEntitlements(
   supabase: SupabaseClient,
   organizationId: string,
   aiWalletBalanceCents?: number | null,
+  aiFranchise?: AiFranchiseInput,
 ): Promise<OrgEntitlementsResult> {
   const [orgRes, overridesRes, subsRes] = await Promise.all([
     supabase
@@ -121,6 +127,7 @@ export async function resolveOrgEntitlements(
       overrides,
       subscriptions,
       aiWalletBalanceCents,
+      aiFranchise,
     }),
     readFailed,
   };
