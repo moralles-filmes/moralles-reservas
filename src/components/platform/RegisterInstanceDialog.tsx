@@ -34,7 +34,7 @@ const NO_CHANNEL = "__none__";
 /**
  * Tela A — registrar no inventário uma instância que JÁ EXISTE na Z-API.
  *
- * TODO REGISTRO É BACKFILL, e por isso não há seletor de intenção: a instância
+ * TODO O REGISTRO É BACKFILL, e por isso não há seletor de intenção: a instância
  * nasce no painel do fornecedor e só depois é registrada aqui. Registrar antes
  * de provisionar não protegeria custo nenhum — o custo começa no clique dentro
  * da Z-API, não no registro — e a fila de "pedido pendente" já existe em
@@ -79,6 +79,19 @@ export function RegisterInstanceDialog({
     if (!open) return;
     if (prefill?.organizationId && units.length === 1) setUnitId(units[0].id);
   }, [open, prefill?.organizationId, units]);
+
+  // O canal pertence à UNIDADE, não à organização: canal escolhido para a
+  // unidade anterior sobrevivendo à troca é vínculo cruzado que só o banco
+  // pega (trigger `whatsapp_instances_tenant_guard`, 23514) — tarde demais, e
+  // a mensagem que a EF traduz fala em "outra organização" quando o problema
+  // real é outra unidade da MESMA organização. Repor aqui evita a viagem.
+  // Roda ANTES do efeito de pré-seleção abaixo (mesma ordem de declaração):
+  // numa troca de unidade que também reaplica o prefill, o reset acontece
+  // primeiro e a pré-seleção decide por último — sem disputa nem laço, porque
+  // nenhum dos dois efeitos depende de `channelId`.
+  useEffect(() => {
+    setChannelId(NO_CHANNEL);
+  }, [unitId]);
 
   // O alerta carrega `channel_id` mas não `unit_id`: o canal só pode ser
   // pré-selecionado depois de a lista da unidade escolhida carregar E conter o
