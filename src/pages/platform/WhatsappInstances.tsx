@@ -33,6 +33,7 @@ import {
   type WhatsappInstanceAlert,
 } from "@/hooks/useWhatsappInstances";
 import { useAllUnits } from "@/hooks/useAllUnits";
+import { RegisterInstanceDialog } from "@/components/platform/RegisterInstanceDialog";
 
 const MIN_REASON_LENGTH = 5;
 
@@ -168,6 +169,14 @@ export default function WhatsappInstances() {
   }, [unitsQuery.data]);
 
   const [dialog, setDialog] = useState<ReasonDialogKind>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [registerPrefill, setRegisterPrefill] =
+    useState<{ organizationId: string; channelId: string | null } | null>(null);
+
+  function openRegister(prefill: { organizationId: string; channelId: string | null } | null) {
+    setRegisterPrefill(prefill);
+    setRegisterOpen(true);
+  }
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [cycleStart, setCycleStart] = useState("");
@@ -222,6 +231,7 @@ export default function WhatsappInstances() {
             interrompe o serviço é o enforcement por inadimplência.
           </p>
         </div>
+        <Button onClick={() => openRegister(null)}>Registrar instância</Button>
       </div>
 
       {dispatcherOff && (
@@ -263,6 +273,11 @@ export default function WhatsappInstances() {
             <CardContent className="py-6 text-sm text-muted-foreground">
               Nenhuma instância registrada. O registro é feito por <em>backfill</em> de instância
               que já existe no fornecedor — criação de instância nova está bloqueada até a Fase 6a.
+              <div className="pt-3">
+                <Button size="sm" onClick={() => openRegister(null)}>
+                  Registrar instância existente
+                </Button>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -422,6 +437,22 @@ export default function WhatsappInstances() {
                 </div>
                 {detail && <p className="text-sm">{detail}</p>}
                 <div className="flex flex-wrap gap-2">
+                  {/* O alerta deixa de ser aviso e vira o começo da tarefa: ele
+                      já carrega organização e canal, então o formulário abre
+                      preenchido. */}
+                  {a.alert_type === "DIVERGENCE" && kind === "CHANNEL_WITHOUT_INSTANCE" && (
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        openRegister({
+                          organizationId: a.organization_id,
+                          channelId: a.channel_id,
+                        })
+                      }
+                    >
+                      Registrar esta instância
+                    </Button>
+                  )}
                   {a.status === "OPEN" && (
                     <Button
                       size="sm"
@@ -674,6 +705,21 @@ export default function WhatsappInstances() {
           </ResponsiveDialogBody>
         </ResponsiveDialogContent>
       </ResponsiveDialog>
+
+      <RegisterInstanceDialog
+        open={registerOpen}
+        onOpenChange={setRegisterOpen}
+        prefill={registerPrefill}
+        onRegistered={(instance) => {
+          // ENCADEAMENTO: a instância nasce em `cycle_source: "UNKNOWN"`, o que
+          // faz o worker abrir DATE_REVIEW_REQUIRED na execução seguinte. Em vez
+          // de esperar um dia, o fluxo emenda direto na confirmação da data —
+          // foi assim que a instância do Ren Sushi foi operada, em dois passos
+          // manuais.
+          setRegisterPrefill(null);
+          setDialog({ kind: "confirm_date", instance });
+        }}
+      />
     </div>
   );
 }
