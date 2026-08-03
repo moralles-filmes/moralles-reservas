@@ -352,6 +352,117 @@ describe("resolveProvisioningEligibility", () => {
   });
 });
 
+// Task 6 (dois planos): ambiguidade da assinatura que financia o WhatsApp —
+// ou porque a organização está em transição entre o modelo antigo e o de dois
+// planos, ou porque há duplicidade inesperada na mesma categoria. É um estado
+// COMERCIAL, deliberadamente separado de `dataReadFailed` (soluço técnico):
+// colapsar os dois faria uma transição legítima parecer banco fora do ar, e o
+// motivo da negação sairia errado na telemetria.
+//
+// As duas polaridades opostas do gate continuam valendo, agora contra DOIS
+// tipos de incerteza: envio existente falha ABERTO aos dois (nenhum deles pode
+// silenciar o WhatsApp de quem paga); provisionamento novo falha FECHADO aos
+// dois, com motivo próprio para cada um.
+describe("subscriptionAmbiguous — ambiguidade comercial ≠ falha de leitura", () => {
+  const ativo = (p: Partial<WhatsAppGateInput> = {}) => gate({ financialState: "PAID", ...p });
+
+  it("transicao valida NAO bloqueia envio existente", () => {
+    const d = ativo({ subscriptionAmbiguous: true });
+    expect(d.state).toBe("ACTIVE");
+    expect(d.sendingBlocked).toBe(false);
+  });
+
+  it("ambiguidade nao altera nenhum dos sete estados nem as duas perguntas", () => {
+    // O record SENDING_BLOCKED_BY_STATE é intocado por esta task: a decisão
+    // com e sem ambiguidade tem que ser IDÊNTICA em todos os sete estados.
+    const cenarios: Array<[string, Partial<WhatsAppGateInput>]> = [
+      ["ACTIVE", { financialState: "PAID" }],
+      ["GRACE_PERIOD", { financialState: "IN_GRACE" }],
+      ["OVERRIDE_ACTIVE", { hasActiveWhatsAppOverride: true }],
+      ["LEGACY_GRANDFATHERED", { financialState: "CANCELED", isLegacyGrandfathered: true }],
+      ["NOT_ENTITLED", {}],
+      ["SUSPENDED_UNPAID", { financialState: "OVERDUE_BEYOND_GRACE" }],
+      ["ADMIN_BLOCKED", { hasWhatsAppAdminBlock: true }],
+    ];
+    for (const [esperado, patch] of cenarios) {
+      const sem = gate(patch);
+      const com = gate({ ...patch, subscriptionAmbiguous: true });
+      expect(sem.state).toBe(esperado);
+      expect(com).toEqual(sem);
+    }
+  });
+
+  it("transicao valida BLOQUEIA provisionamento novo", () => {
+    const d = ativo({ subscriptionAmbiguous: true });
+    const p = resolveProvisioningEligibility({
+      decision: d,
+      dataReadFailed: false,
+      subscriptionAmbiguous: true,
+    });
+    expect(p.allowed).toBe(false);
+    expect(p.blockReason).toBe("SUBSCRIPTION_AMBIGUOUS");
+  });
+
+  it("duplicidade inesperada tambem bloqueia provisionamento", () => {
+    const p = resolveProvisioningEligibility({
+      decision: ativo(),
+      dataReadFailed: false,
+      subscriptionAmbiguous: true,
+    });
+    expect(p.allowed).toBe(false);
+    expect(p.blockReason).toBe("SUBSCRIPTION_AMBIGUOUS");
+  });
+
+  it("falha de leitura mantem a polaridade que ja existia", () => {
+    const p = resolveProvisioningEligibility({
+      decision: ativo(),
+      dataReadFailed: true,
+      subscriptionAmbiguous: false,
+    });
+    expect(p.allowed).toBe(false);
+    expect(p.blockReason).toBe("STATE_READ_FAILED");
+    expect(p.blockReason).not.toBe("SUBSCRIPTION_AMBIGUOUS"); // motivo PRÓPRIO
+  });
+
+  it("os tres estados nao se confundem", () => {
+    const decision = ativo();
+    const normal = resolveProvisioningEligibility({ decision, dataReadFailed: false, subscriptionAmbiguous: false });
+    const ambiguo = resolveProvisioningEligibility({ decision, dataReadFailed: false, subscriptionAmbiguous: true });
+    const semLeitura = resolveProvisioningEligibility({ decision, dataReadFailed: true, subscriptionAmbiguous: false });
+    expect(normal.allowed).toBe(true);
+    expect(ambiguo.allowed).toBe(false);
+    expect(semLeitura.allowed).toBe(false);
+    expect(ambiguo.blockReason).not.toBe(semLeitura.blockReason);
+  });
+
+  it("campo omitido equivale a false — callers anteriores a esta task seguem validos", () => {
+    const decision = ativo();
+    expect(resolveProvisioningEligibility({ decision, dataReadFailed: false })).toEqual(
+      resolveProvisioningEligibility({ decision, dataReadFailed: false, subscriptionAmbiguous: false }),
+    );
+    expect(gate({ financialState: "PAID" })).toEqual(ativo({ subscriptionAmbiguous: false }));
+  });
+
+  it("falha de leitura vence ambiguidade quando as duas ocorrem", () => {
+    // Precedência fixa: transitório antes de comercial, comercial antes de
+    // estado. "Não consegui ler" é a informação mais útil quando é verdade.
+    const p = resolveProvisioningEligibility({
+      decision: ativo(),
+      dataReadFailed: true,
+      subscriptionAmbiguous: true,
+    });
+    expect(p.blockReason).toBe("STATE_READ_FAILED");
+  });
+
+  it("ambiguidade vence o estado do servico quando as duas negam", () => {
+    const d = gate({ financialState: "OVERDUE_BEYOND_GRACE" });
+    expect(d.newProvisioningBlocked).toBe(true);
+    const p = resolveProvisioningEligibility({ decision: d, dataReadFailed: false, subscriptionAmbiguous: true });
+    expect(p.allowed).toBe(false);
+    expect(p.blockReason).toBe("SUBSCRIPTION_AMBIGUOUS");
+  });
+});
+
 // Task 15b: resposta automática a mídia (áudio/imagem/sticker). Os seis casos
 // abaixo são montados pelo caminho REAL — decideWhatsAppGate() via gate()
 // seguido de resolveEnforcement() — nunca por um literal de

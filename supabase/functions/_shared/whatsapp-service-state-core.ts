@@ -32,6 +32,28 @@ export interface WhatsAppGateInput {
   hasWhatsAppAdminBlock: boolean;
   /** `whatsapp_legacy_grandfathered AND whatsapp_grandfather_revoked_at IS NULL`. */
   isLegacyGrandfathered: boolean;
+  /**
+   * A assinatura que FINANCIA o WhatsApp desta organização não é única e
+   * inequívoca — ou porque há transição entre o modelo antigo (assinatura
+   * `WHATSAPP_SUBSCRIPTION` separada) e o de dois planos (plano de sistema que
+   * inclui `whatsapp`), ou porque há duplicidade inesperada na mesma
+   * categoria. Vem de `resolveWhatsAppSubscription`
+   * (whatsapp-subscription-resolver-core.ts).
+   *
+   * DELIBERADAMENTE ≠ `dataReadFailed`: aquilo é soluço técnico, isto é estado
+   * comercial. Colapsar os dois faria uma transição legítima parecer banco
+   * fora do ar, e o motivo da negação sairia errado na telemetria.
+   *
+   * NÃO afeta nenhum dos sete estados nem `sendingBlocked` — envio existente
+   * falha ABERTO à ambiguidade, pelo mesmo motivo que falha aberto ao soluço
+   * técnico: nenhum dos dois pode silenciar o WhatsApp de quem paga. A única
+   * consequência é sobre provisionamento NOVO, em
+   * `resolveProvisioningEligibility`.
+   *
+   * Opcional (default `false`) para que todo caller anterior a esta task siga
+   * válido sem mudança.
+   */
+  subscriptionAmbiguous?: boolean;
 }
 
 export interface WhatsAppGateDecision {
@@ -159,6 +181,11 @@ export function resolveWhatsAppServiceState(i: WhatsAppGateInput): WhatsAppServi
  *
  * POLARIDADE (não confundir com o Record seguinte, forma idêntica):
  * `true` = BLOQUEIA envio.
+ *
+ * `subscriptionAmbiguous` NÃO entra aqui, nem como oitava chave nem como
+ * modificador: envio existente falha ABERTO à ambiguidade comercial pelo mesmo
+ * motivo que falha aberto ao soluço técnico. Ambiguidade só afeta
+ * `resolveProvisioningEligibility`.
  */
 const SENDING_BLOCKED_BY_STATE: Record<WhatsAppServiceState, boolean> = {
   ACTIVE: false,
@@ -266,21 +293,42 @@ export function resolveEnforcement(i: EnforcementInput): EnforcementResult {
 
 /**
  * Motivo do bloqueio de provisionamento, para a UI/log dizerem a coisa certa —
- * "não foi possível verificar agora" é mensagem diferente de "você não tem
- * direito". Precedência FIXA: transitório (leitura falhou) vence sobre
- * definitivo (estado).
+ * "não foi possível verificar agora", "sua assinatura está em transição" e
+ * "você não tem direito" são três mensagens diferentes. Precedência FIXA:
+ * transitório (leitura falhou) vence comercial (assinatura ambígua), que vence
+ * definitivo (estado do serviço).
+ *
+ * `SUBSCRIPTION_AMBIGUOUS` é separado de `STATE_READ_FAILED` de propósito: um
+ * é banco fora do ar, o outro é uma organização em transição entre o modelo
+ * antigo e o de dois planos — ou com duplicidade inesperada de assinatura na
+ * mesma categoria. Colapsá-los mandaria o operador procurar defeito de
+ * infraestrutura onde há pendência comercial.
  *
  * NÃO HÁ motivo ligado à flag de enforcement, e a ausência é o contrato: essa
  * flag governa consequência sobre uso existente, nunca autorização de despesa
  * nova. Acrescentar um `ENFORCEMENT_FLAG_*` aqui reintroduz o acoplamento que
  * esta separação existe para impedir.
  */
-export type ProvisioningBlockReason = "ALLOWED" | "STATE_READ_FAILED" | "SERVICE_STATE";
+export type ProvisioningBlockReason =
+  | "ALLOWED"
+  | "STATE_READ_FAILED"
+  | "SUBSCRIPTION_AMBIGUOUS"
+  | "SERVICE_STATE";
 
 export interface ProvisioningEligibilityInput {
   decision: WhatsAppGateDecision;
   /** Alguma leitura de ESTADO (org, overrides, assinatura, fatura) falhou. */
   dataReadFailed: boolean;
+  /**
+   * A fonte financeira do WhatsApp não é única e inequívoca — mesmo campo de
+   * `WhatsAppGateInput`, repetido aqui porque esta função recebe a DECISÃO já
+   * pronta, e a decisão (de propósito) não carrega a ambiguidade: ela não
+   * altera nenhum dos sete estados.
+   *
+   * Opcional (default `false`), mantendo válidos os callers anteriores a esta
+   * task.
+   */
+  subscriptionAmbiguous?: boolean;
   // SEM campo de flag, de propósito — ver o comentário acima.
 }
 
@@ -294,13 +342,16 @@ export interface ProvisioningEligibility {
  * vale com qualquer valor de `whatsapp_service_enforcement`, inclusive
  * ilegível, porque não consulta a flag.
  *
- * FAIL-CLOSED, e a assimetria com o envio é deliberada: autorizar despesa
+ * FAIL-CLOSED aos DOIS tipos de incerteza (leitura que falhou e assinatura
+ * ambígua), e a assimetria com o envio é deliberada: autorizar despesa
  * recorrente sem conseguir confirmar a autorização é pior do que recusar e
- * pedir para tentar de novo. Envio existente faz o oposto (fail-open) — um
- * soluço técnico não pode suspender quem está pagando.
+ * pedir para tentar de novo. Envio existente faz o oposto (fail-open aos dois)
+ * — nem um soluço técnico nem uma transição comercial legítima podem suspender
+ * quem está pagando.
  */
 export function resolveProvisioningEligibility(i: ProvisioningEligibilityInput): ProvisioningEligibility {
   if (i.dataReadFailed) return { allowed: false, blockReason: "STATE_READ_FAILED" };
+  if (i.subscriptionAmbiguous) return { allowed: false, blockReason: "SUBSCRIPTION_AMBIGUOUS" };
   if (i.decision.newProvisioningBlocked) return { allowed: false, blockReason: "SERVICE_STATE" };
   return { allowed: true, blockReason: "ALLOWED" };
 }
