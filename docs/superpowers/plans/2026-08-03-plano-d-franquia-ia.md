@@ -575,8 +575,13 @@ describe("janela do ciclo", () => {
       subscriptionPeriodEndIso: null,
       orgCreatedAtIso: "2025-01-31T10:00:00Z",
     });
-    // Voltou a 31: a âncora sobreviveu a fevereiro.
-    expect(mar.cycleStart).toBe("2026-03-31");
+    // 15/03 ainda está DENTRO do ciclo que abriu no marco clampado de fevereiro.
+    expect(mar.cycleStart).toBe("2026-02-28");
+    // O que prova que a âncora sobreviveu a fevereiro é o FIM voltar a 31: se
+    // ela tivesse degradado para 28, este ciclo terminaria em 2026-03-28 e
+    // nunca mais voltaria ao dia 31.
+    expect(mar.cycleEnd).toBe("2026-03-31");
+    expect(mar.anchorDay).toBe(31);
   });
 
   it("sem âncora persistida, deriva do fim do período da assinatura", () => {
