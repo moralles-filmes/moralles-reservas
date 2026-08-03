@@ -155,7 +155,11 @@ describe("buildClientImplementationView", () => {
 describe("summarizeMonthlyCosts", () => {
   const plans = {
     systemMonthlyCents: 44900,
-    instanceMonthlyCents: 14900,
+    legacyInstanceMonthlyCents: 14900,
+    // Mesmo total (R$ 449 + R$ 149) do modelo antigo — preserva os números
+    // originais destes testes mecanicamente renomeados; o significado do
+    // campo mudou (agora é o preço do Plano Automação inteiro), não o valor.
+    automationMonthlyCents: 59800,
     implementationOneTimeCents: 75000,
   };
 
@@ -171,6 +175,7 @@ describe("summarizeMonthlyCosts", () => {
       projectedMonthlyCents: 59800,
       oneTimeDueCents: 75000,
       aiVariable: true,
+      automationPlanMonthlyCents: 59800,
     });
   });
 
@@ -209,6 +214,94 @@ describe("summarizeMonthlyCosts", () => {
     });
     expect(s.currentMonthlyCents).toBe(0);
     expect(s.projectedMonthlyCents).toBe(0);
+  });
+});
+
+describe("summarizeMonthlyCosts — modelo de dois planos", () => {
+  const base = {
+    systemMonthlyCents: 44990,        // plano-reservas
+    automationMonthlyCents: 79990,    // plano-automacao (TOTAL, nao incremento)
+    implementationOneTimeCents: 75000,
+    legacyInstanceMonthlyCents: null,
+    hasActiveInstanceSubscription: false,
+    whatsappSponsored: false,
+    implementationSettled: false,
+    systemSponsored: false,
+  };
+
+  it("projetado com automacao e o PLANO INTEIRO, nao sistema + instancia", () => {
+    // R$ 799,90 — nao R$ 449,90 + R$ 149,00. O Plano 2 SUBSTITUI o Plano 1.
+    const s = summarizeMonthlyCosts(base);
+    expect(s.currentMonthlyCents).toBe(44990);
+    expect(s.projectedMonthlyCents).toBe(79990);
+  });
+
+  it("eco do preco do plano de automacao vem no resumo", () => {
+    // A UI usa este campo pra decidir se renderiza o bloco informativo.
+    expect(summarizeMonthlyCosts(base).automationPlanMonthlyCents).toBe(79990);
+  });
+
+  it("plano de automacao ausente do catalogo => null, nunca zero", () => {
+    // Zero significaria "de graca". Ausente significa "nao sei" — e a UI nao
+    // renderiza o bloco.
+    const s = summarizeMonthlyCosts({ ...base, automationMonthlyCents: null });
+    expect(s.automationPlanMonthlyCents).toBeNull();
+    expect(s.projectedMonthlyCents).toBe(44990);
+  });
+
+  it("assinatura de instancia LEGADA usa o valor da PROPRIA assinatura", () => {
+    // R$ 149 de um contrato antigo, vindo do join da assinatura — nunca de
+    // lookup por slug no catalogo.
+    const s = summarizeMonthlyCosts({
+      ...base,
+      hasActiveInstanceSubscription: true,
+      legacyInstanceMonthlyCents: 14900,
+    });
+    expect(s.currentMonthlyCents).toBe(44990 + 14900);
+  });
+
+  it("assinatura legada sem valor conhecido nao inventa numero", () => {
+    const s = summarizeMonthlyCosts({
+      ...base,
+      hasActiveInstanceSubscription: true,
+      legacyInstanceMonthlyCents: null,
+    });
+    expect(s.currentMonthlyCents).toBe(44990);
+  });
+
+  it("Ren Sushi: cortesia de whatsapp zera a projecao de automacao", () => {
+    const s = summarizeMonthlyCosts({
+      ...base,
+      whatsappSponsored: true,
+      systemSponsored: true,
+      hasActiveInstanceSubscription: true,
+      legacyInstanceMonthlyCents: 14900,
+    });
+    expect(s.currentMonthlyCents).toBe(0);
+    expect(s.projectedMonthlyCents).toBe(0);
+  });
+
+  it("cortesia de whatsapp sem cortesia de sistema: projetado e so o sistema", () => {
+    const s = summarizeMonthlyCosts({ ...base, whatsappSponsored: true });
+    expect(s.projectedMonthlyCents).toBe(44990);
+  });
+
+  it("implantacao liquidada zera a cobranca unica", () => {
+    expect(summarizeMonthlyCosts({ ...base, implementationSettled: true }).oneTimeDueCents)
+      .toBe(0);
+  });
+
+  it("catalogo indisponivel: todos os precos null nao viram cobranca fantasma", () => {
+    const s = summarizeMonthlyCosts({
+      ...base,
+      systemMonthlyCents: null,
+      automationMonthlyCents: null,
+      implementationOneTimeCents: null,
+    });
+    expect(s.currentMonthlyCents).toBe(0);
+    expect(s.projectedMonthlyCents).toBe(0);
+    expect(s.oneTimeDueCents).toBe(0);
+    // `prices_unavailable` no payload é quem faz a UI renderizar "—".
   });
 });
 

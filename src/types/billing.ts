@@ -466,6 +466,15 @@ export interface WhatsappServiceStatus {
     projectedMonthlyCents: number;
     oneTimeDueCents: number;
     aiVariable: true;
+    /**
+     * Preço do Plano Automação no catálogo, em centavos. `null` = plano ausente
+     * do catálogo; `undefined` = Edge Function anterior a este deploy (o
+     * frontend sobe pela Vercel automaticamente e a EF é implantada à mão —
+     * mesma convenção de `serviceState`). A UI trata os dois casos igual: **não
+     * renderiza o bloco informativo do Plano Automação**, nunca renderiza "—"
+     * no lugar de um preço de produto.
+     */
+    automationPlanMonthlyCents?: number | null;
   };
   /**
    * `true` quando `manage-whatsapp-implementations` não conseguiu ler o

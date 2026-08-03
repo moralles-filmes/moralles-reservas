@@ -231,9 +231,25 @@ export function buildClientImplementationView(
 }
 
 export interface MonthlyCostInput {
+  /** Preço de vitrine do `plano-reservas` (assinatura do sistema). */
   systemMonthlyCents: number | null;
-  instanceMonthlyCents: number | null;
+  /**
+   * Preço de vitrine do `plano-automacao`, **total** (R$ 799,90) — não o
+   * incremento de R$ 350,00. No modelo de dois planos o Plano 2 SUBSTITUI o
+   * Plano 1; somar sistema + automação cobraria o sistema duas vezes.
+   * `null` = plano ausente do catálogo ou leitura falhou.
+   */
+  automationMonthlyCents: number | null;
   implementationOneTimeCents: number | null;
+  /**
+   * Mensalidade da assinatura de WhatsApp LEGADA **desta organização**, vinda
+   * do join da própria assinatura — nunca de lookup por slug no catálogo. O
+   * contrato legado é dela, e o preço de catálogo pode ter mudado depois da
+   * contratação. É também o que mantém esta EF sem dependência dos slugs
+   * retirados (§A6.2).
+   */
+  legacyInstanceMonthlyCents: number | null;
+  /** Existe assinatura legada de WhatsApp em status cobrável. */
   hasActiveInstanceSubscription: boolean;
   /** Override de whatsapp ativo — a plataforma banca o custo. */
   whatsappSponsored: boolean;
@@ -245,24 +261,45 @@ export interface MonthlyCostInput {
 
 export interface MonthlyCostSummary {
   currentMonthlyCents: number;
+  /**
+   * Total mensal SE a organização passar a ter automação. No modelo de dois
+   * planos é o preço do Plano Automação inteiro, porque ele substitui o Plano
+   * Reservas — não `sistema + instância`, que era a conta do modelo antigo.
+   */
   projectedMonthlyCents: number;
   oneTimeDueCents: number;
   /** O custo de IA é consumo, não assinatura — a tela mostra "variável". */
   aiVariable: true;
+  /**
+   * Eco do preço do Plano Automação no catálogo. `null` = plano ausente ou
+   * catálogo não carregou. A UI usa este campo para decidir se renderiza o
+   * bloco informativo do Plano Automação — renderizar com "—" ofereceria um
+   * produto sem preço.
+   */
+  automationPlanMonthlyCents: number | null;
 }
 
 /** Os quatro números do resumo consolidado da tela de cobrança. */
 export function summarizeMonthlyCosts(i: MonthlyCostInput): MonthlyCostSummary {
   const systemPart = i.systemSponsored ? 0 : (i.systemMonthlyCents ?? 0);
-  const instancePrice = i.instanceMonthlyCents ?? 0;
-  const instanceNow = i.hasActiveInstanceSubscription && !i.whatsappSponsored
-    ? instancePrice
-    : 0;
+
+  // Contrato legado: só entra quando existe assinatura cobrável E não há
+  // cortesia. Valor desconhecido soma zero — não inventa número sobre dinheiro.
+  const legacyInstanceNow =
+    i.hasActiveInstanceSubscription && !i.whatsappSponsored
+      ? (i.legacyInstanceMonthlyCents ?? 0)
+      : 0;
+
+  // Com cortesia de WhatsApp não há automação a cobrar: sobra o sistema.
+  const projected = i.whatsappSponsored
+    ? systemPart
+    : (i.automationMonthlyCents ?? systemPart);
 
   return {
-    currentMonthlyCents: systemPart + instanceNow,
-    projectedMonthlyCents: systemPart + (i.whatsappSponsored ? 0 : instancePrice),
+    currentMonthlyCents: systemPart + legacyInstanceNow,
+    projectedMonthlyCents: projected,
     oneTimeDueCents: i.implementationSettled ? 0 : (i.implementationOneTimeCents ?? 0),
     aiVariable: true,
+    automationPlanMonthlyCents: i.automationMonthlyCents,
   };
 }

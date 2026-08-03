@@ -605,8 +605,12 @@ serve(async (req) => {
         resolveOrgEntitlements(supabase, organizationId),
         supabase
           .from("billing_subscriptions")
-          // Sem `id` (não usado nesta projeção) — Correção 1, M4.
-          .select("status, current_period_end, billing_plans!inner(category)")
+          // `amount_cents` do plano da PRÓPRIA assinatura: é ele que diz quanto
+          // esta organização paga hoje pela instância legada. Buscar esse valor
+          // no catálogo por slug seria errado (o preço de tabela pode ter mudado
+          // depois da contratação) e reintroduziria a dependência de
+          // `instancia-whatsapp` que a §A6.2 proíbe nesta superfície.
+          .select("status, current_period_end, billing_plans!inner(category, amount_cents)")
           .eq("organization_id", organizationId)
           .neq("status", "canceled")
           // Correção 1, M2: sem ORDER BY, PostgREST devolve ordem indefinida —
@@ -616,14 +620,16 @@ serve(async (req) => {
           // dado histórico). Mais recente primeiro.
           .order("created_at", { ascending: false }),
         supabase
+          // Sem filtro de `active` DE PROPÓSITO: `plano-automacao` nasce inativo
+          // pelo NO-GO comercial (PLAN_AUTOMACAO_CHECKOUT) e mesmo assim precisa
+          // ser projetado — é o preço que o bloco informativo apresenta ao
+          // lojista. Filtrar por `active` esconderia exatamente o plano que o
+          // bloco existe para mostrar. Quem gateia a CONTRATAÇÃO é o CHECK da
+          // migration 097 mais o `active` lido em create-billing-checkout, não
+          // esta projeção.
           .from("billing_plans")
-          // Sem `active` — Correção 1, M3: implementacao-whatsapp e
-          // instancia-whatsapp nascem active=false no seed (065) e só ativam
-          // na Task 17; filtrar por active aqui zeraria a vitrine inteira
-          // antes disso. Quem gateia o fluxo são as flags abaixo, não o
-          // catálogo — a coluna não tem uso nesta projeção.
           .select("slug, amount_cents")
-          .in("slug", ["sistema-reservas", "implementacao-whatsapp", "instancia-whatsapp"]),
+          .in("slug", ["plano-reservas", "plano-automacao", "implementacao-whatsapp"]),
         // Fail-closed deliberado (Correção 1, M5): se a leitura da flag falhar,
         // `checkFlagEnabled` devolve enabled=false e o botão de contratar some
         // — isso não AFIRMA nada falso sobre dinheiro (ao contrário do
@@ -673,12 +679,17 @@ serve(async (req) => {
       const subs = (subsRes.data ?? []) as Array<{
         status: string;
         current_period_end: string | null;
-        billing_plans: { category: string } | { category: string }[];
+        billing_plans:
+          | { category: string; amount_cents: number | null }
+          | { category: string; amount_cents: number | null }[];
       }>;
-      const categoryOf = (s: typeof subs[number]) =>
-        (Array.isArray(s.billing_plans) ? s.billing_plans[0] : s.billing_plans)?.category;
+      const planOf = (s: typeof subs[number]) =>
+        Array.isArray(s.billing_plans) ? s.billing_plans[0] : s.billing_plans;
+      const categoryOf = (s: typeof subs[number]) => planOf(s)?.category;
       const instanceSub = subs.find((s) => categoryOf(s) === "WHATSAPP_SUBSCRIPTION") ?? null;
       const systemSub = subs.find((s) => categoryOf(s) === "SYSTEM_SUBSCRIPTION") ?? null;
+      // Mensalidade real do contrato legado desta organização (ver 5a).
+      const legacyInstanceMonthlyCents = instanceSub ? (planOf(instanceSub)?.amount_cents ?? null) : null;
 
       // Correção 1, M1: `has_instance` (venda — "existe assinatura não
       // cancelada?") e o booleano de CUSTO precisam de critérios diferentes de
@@ -735,9 +746,10 @@ serve(async (req) => {
           ends_at: whatsappSponsored ? entitlements.whatsapp.expiresAt : null,
         },
         costs: summarizeMonthlyCosts({
-          systemMonthlyCents: priceOf("sistema-reservas"),
-          instanceMonthlyCents: priceOf("instancia-whatsapp"),
+          systemMonthlyCents: priceOf("plano-reservas"),
+          automationMonthlyCents: priceOf("plano-automacao"),
           implementationOneTimeCents: priceOf("implementacao-whatsapp"),
+          legacyInstanceMonthlyCents,
           // `instanceSubBillable`, não `!!instanceSub` — ver M1 acima.
           hasActiveInstanceSubscription: instanceSubBillable,
           whatsappSponsored,
