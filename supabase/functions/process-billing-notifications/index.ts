@@ -499,44 +499,24 @@ const TEMPLATE_BY_EVENT: Record<
   // texto mínimo em vez de renderizar "undefined" para o admin.
   // ─────────────────────────────────────────────────────────────────────
   admin_ai_budget_70: (d) => ({
-    // d.aiBudget (ciclo, custo liquidado/reservado, modelos) via aiBudgetText/aiBudgetHtml — best-effort, pode faltar.
     subject: `[interno] Franquia de IA em 70% — ${d.orgName}`,
     text: aiBudgetText(d, "70%", "Nenhuma ação é necessária agora. Acompanhe a evolução no ciclo."),
     html: aiBudgetHtml(d, "Franquia de IA em 70%", "Nenhuma ação é necessária agora. Acompanhe a evolução no ciclo."),
   }),
   admin_ai_budget_80: (d) => ({
-    // d.aiBudget (ciclo, custo liquidado/reservado, modelos) via aiBudgetText/aiBudgetHtml — best-effort, pode faltar.
     subject: `[interno] Franquia de IA em 80% — ${d.orgName}`,
     text: aiBudgetText(d, "80%", "Avalie o volume de atendimento e o modelo configurado para esta organização."),
     html: aiBudgetHtml(d, "Franquia de IA em 80%", "Avalie o volume de atendimento e o modelo configurado para esta organização."),
   }),
   admin_ai_budget_90: (d) => ({
-    // d.aiBudget (ciclo, custo liquidado/reservado, modelos) via aiBudgetText/aiBudgetHtml — best-effort, pode faltar.
     subject: `[interno] Franquia de IA em 90% — ${d.orgName}`,
-    text: aiBudgetText(
-      d,
-      "90%",
-      "A franquia deve se esgotar antes da renovação. Decida agora se o teto desta organização será revisto.",
-    ),
-    html: aiBudgetHtml(
-      d,
-      "Franquia de IA em 90%",
-      "A franquia deve se esgotar antes da renovação. Decida agora se o teto desta organização será revisto.",
-    ),
+    text: aiBudgetText(d, "90%", "A franquia deve se esgotar antes da renovação. Decida agora se o teto desta organização será revisto."),
+    html: aiBudgetHtml(d, "Franquia de IA em 90%", "A franquia deve se esgotar antes da renovação. Decida agora se o teto desta organização será revisto."),
   }),
   admin_ai_budget_stop: (d) => ({
-    // d.aiBudget (ciclo, custo liquidado/reservado, modelos) via aiBudgetText/aiBudgetHtml — best-effort, pode faltar.
     subject: `[interno] Franquia de IA esgotada — ${d.orgName}`,
-    text: aiBudgetText(
-      d,
-      "100%",
-      "O atendimento automático desta organização passou para a equipe. O WhatsApp continua recebendo mensagens e o sistema segue funcionando normalmente — nada foi desligado. A franquia volta sozinha na renovação.",
-    ),
-    html: aiBudgetHtml(
-      d,
-      "Franquia de IA esgotada",
-      "O atendimento automático desta organização passou para a equipe. O WhatsApp <strong>continua</strong> recebendo mensagens e o sistema segue funcionando normalmente — nada foi desligado. A franquia volta sozinha na renovação.",
-    ),
+    text: aiBudgetText(d, "100%", "O atendimento automático desta organização passou para a equipe. O WhatsApp continua recebendo mensagens e o sistema segue funcionando normalmente — nada foi desligado. A franquia volta sozinha na renovação."),
+    html: aiBudgetHtml(d, "Franquia de IA esgotada", "O atendimento automático desta organização passou para a equipe. O WhatsApp <strong>continua</strong> recebendo mensagens e o sistema segue funcionando normalmente — nada foi desligado. A franquia volta sozinha na renovação."),
   }),
 };
 

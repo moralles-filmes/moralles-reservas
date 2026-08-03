@@ -26,6 +26,21 @@ const WEBHOOK = join(FUNCTIONS, "webhook-whatsapp", "index.ts");
 const dispatcherSource = readFileSync(DISPATCHER, "utf8");
 const coreSource = readFileSync(CORE, "utf8");
 
+/**
+ * Fatia EXATAMENTE uma entrada de TEMPLATE_BY_EVENT: do cabeçalho dela até o
+ * cabeçalho da entrada seguinte (ou o fim do mapa). Janela de tamanho fixo
+ * sangra para a vizinha — e como as quatro entradas são curtas e adjacentes
+ * por desenho (delegam ao helper), gutar uma nunca esvaziaria a janela: o
+ * guardrail estaria medindo a irmã intacta, não a entrada sob teste.
+ */
+function entryBlock(source: string, evt: string): string {
+  const start = source.indexOf(`${evt}: (d)`);
+  expect(start, `entrada ${evt} não encontrada`).toBeGreaterThan(-1);
+  const rest = source.slice(start + evt.length);
+  const next = rest.match(/\n {2}[A-Za-z_][A-Za-z0-9_]*: \(d\) =>|\n};/);
+  return source.slice(start, start + evt.length + (next ? next.index : rest.length));
+}
+
 describe("acoplamento dos marcos com process-billing-notifications", () => {
   it("todo event_type canônico tem entrada em TEMPLATE_BY_EVENT", () => {
     const missing = CANONICAL_AI_BUDGET_EVENT_TYPES.filter((e) => !dispatcherSource.includes(`${e}: (d)`));
@@ -57,21 +72,46 @@ describe("acoplamento dos marcos com process-billing-notifications", () => {
     expect(CANONICAL_AI_BUDGET_EVENT_TYPES).toHaveLength(4);
   });
 
-  it("os templates carregam o conteúdo obrigatório do alerta interno", () => {
-    // §18.2: organização, ciclo, custo liquidado, custo reservado, modelo,
-    // data da renovação, ação esperada.
+  it("cada marco delega a montagem aos helpers de conteúdo", () => {
+    // A entrada não repete o conteúdo: ela delega. O que se prova aqui é a
+    // delegação; o conteúdo em si é provado no caso seguinte.
     for (const evt of CANONICAL_AI_BUDGET_EVENT_TYPES) {
-      const i = dispatcherSource.indexOf(`${evt}: (d)`);
-      const block = dispatcherSource.slice(i, i + 2000);
+      const block = entryBlock(dispatcherSource, evt);
       expect(block, `${evt} sem orgName`).toContain("d.orgName");
-      expect(block, `${evt} sem dados do ciclo`).toContain("d.aiBudget");
+      expect(block, `${evt} não delega a aiBudgetText`).toMatch(/aiBudgetText\(\s*d\s*,/);
+      expect(block, `${evt} não delega a aiBudgetHtml`).toMatch(/aiBudgetHtml\(\s*d\s*,/);
     }
+  });
+
+  it("os helpers de conteúdo carregam o obrigatório do alerta interno", () => {
+    // §18.2 exige organização, ciclo, custo liquidado, custo reservado,
+    // modelo, data da renovação e ação esperada. O helper é onde isso vive.
+    for (const fn of ["function aiBudgetText(", "function aiBudgetHtml("]) {
+      const i = dispatcherSource.indexOf(fn);
+      expect(i, `${fn} não encontrado`).toBeGreaterThan(-1);
+      const body = dispatcherSource.slice(i, dispatcherSource.indexOf("\n}\n", i));
+      expect(body, `${fn} não usa d.aiBudget`).toContain("d.aiBudget");
+      for (const campo of ["cycleStart", "cycleEnd", "settledBrl", "reservedBrl", "limitBrl", "models"]) {
+        expect(body, `${fn} não renderiza ${campo}`).toContain(campo);
+      }
+      expect(body, `${fn} não recebe a ação esperada`).toContain("acao");
+    }
+  });
+
+  it("controle negativo: gutar um template quebra o guardrail", () => {
+    // Este caso existe porque a versão anterior deste guardrail passava mesmo
+    // com o template esvaziado — bastava o comentário certo por perto.
+    const gutted = dispatcherSource.replace(
+      /admin_ai_budget_70: \(d\) => \(\{[\s\S]*?\}\),/,
+      "admin_ai_budget_70: (d) => ({ subject: `x ${d.orgName}`, text: `x`, html: `x` }),",
+    );
+    const block = entryBlock(gutted, "admin_ai_budget_70");
+    expect(block).not.toMatch(/aiBudgetText\(\s*d\s*,/);
   });
 
   it("os templates são INTERNOS — marcados como tal e sem link de pagamento", () => {
     for (const evt of CANONICAL_AI_BUDGET_EVENT_TYPES) {
-      const i = dispatcherSource.indexOf(`${evt}: (d)`);
-      const block = dispatcherSource.slice(i, i + 2000);
+      const block = entryBlock(dispatcherSource, evt);
       expect(block).toContain("[interno]");
       // Sem fatura por trás: amountBrl chega zerado e paymentUrl é null.
       expect(block).not.toContain("d.amountBrl");
@@ -80,16 +120,14 @@ describe("acoplamento dos marcos com process-billing-notifications", () => {
   });
 
   it("o marco de hard stop diz que o canal continua recebendo", () => {
-    const i = dispatcherSource.indexOf("admin_ai_budget_stop: (d)");
-    const block = dispatcherSource.slice(i, i + 2000);
+    const block = entryBlock(dispatcherSource, "admin_ai_budget_stop");
     // §18.3: não desligar o canal, não bloquear o sistema.
     expect(block).toMatch(/continua|segue/i);
   });
 
   it("nenhum template de marco expõe chave, credencial ou payload de provedor", () => {
     for (const evt of CANONICAL_AI_BUDGET_EVENT_TYPES) {
-      const i = dispatcherSource.indexOf(`${evt}: (d)`);
-      const block = dispatcherSource.slice(i, i + 2000);
+      const block = entryBlock(dispatcherSource, evt);
       expect(block).not.toMatch(/apiKey|api_key|credentials|Bearer/i);
     }
   });
