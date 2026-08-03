@@ -190,3 +190,76 @@ describe("nenhuma migration do Plano D embute segredo ou host", () => {
     expect("Authorization: Bearer eyJhbGciOiJIUzI1").toMatch(/eyJ[A-Za-z0-9_-]{10}/);
   });
 });
+
+const rpcs = read("102_ai_budget_rpcs");
+
+const RPC_NAMES = [
+  "open_ai_cycle_budget",
+  "reserve_ai_budget",
+  "extend_ai_reservation",
+  "record_ai_call_usage",
+  "finalize_ai_reservation",
+];
+
+describe("RPCs do orçamento (102)", () => {
+  for (const fn of RPC_NAMES) {
+    it(`${fn}: existe, é SECURITY DEFINER e fixa o search_path`, () => {
+      const i = rpcs.indexOf(`function public.${fn}(`);
+      expect(i, `${fn} não encontrada`).toBeGreaterThan(-1);
+      const body = rpcs.slice(i, rpcs.indexOf("$$;", i));
+      expect(body).toContain("security definer");
+      expect(body).toMatch(/set search_path\s*=/);
+    });
+
+    it(`${fn}: revoga PUBLIC/anon/authenticated e concede só a service_role`, () => {
+      // CREATE FUNCTION concede EXECUTE a PUBLIC por padrão e o schema public é
+      // exposto ao PostgREST com a anon key.
+      expect(rpcs).toMatch(new RegExp(`revoke all on function public\\.${fn}\\([^)]*\\)\\s*\\n?\\s*from public, anon, authenticated`));
+      expect(rpcs).toMatch(new RegExp(`grant execute on function public\\.${fn}\\([^)]*\\)\\s*\\n?\\s*to service_role`));
+      expect(rpcs).not.toMatch(new RegExp(`grant execute on function public\\.${fn}[^;]*to (anon|authenticated)`));
+    });
+  }
+
+  it("o orçamento é lido sob lock de linha — não advisory lock", () => {
+    expect(rpcs).toMatch(/from ai_cycle_budgets[\s\S]{0,200}for update/i);
+    expect(rpcs).not.toMatch(/pg_try_advisory_lock/);
+  });
+
+  it("a fórmula do disponível separa liquidado de comprometido", () => {
+    expect(rpcs).toMatch(/reserved_cents\s*-\s*consumed_cents/);
+    expect(rpcs).toMatch(/limit_cents\s*-\s*[\s\S]{0,80}settled_cents/);
+  });
+
+  it("a varredura de expiradas NUNCA toca reserva com usage pendente", () => {
+    expect(rpcs).toMatch(/usage_review_required\s*=\s*false/);
+  });
+
+  it("reserva expirada não autoriza chamada e reserva terminal não volta a ativa", () => {
+    expect(rpcs).toMatch(/status\s*=\s*'HELD'/);
+    expect(rpcs).toContain("'EXPIRED'");
+  });
+
+  it("record_ai_call_usage é idempotente por chave", () => {
+    expect(rpcs).toMatch(/on conflict[\s\S]{0,120}do nothing/i);
+    expect(rpcs).toContain("applied");
+  });
+
+  it("usage indeterminado marca a reserva e não libera nada automaticamente", () => {
+    expect(rpcs).toMatch(/USAGE_REVIEW_REQUIRED[\s\S]{0,400}usage_review_required\s*=\s*true/i);
+  });
+
+  it("o esgotamento carimba o momento — não é só um estado derivado", () => {
+    expect(rpcs).toMatch(/state\s*=\s*'EXHAUSTED'[\s\S]{0,160}exhausted_at/);
+  });
+
+  it("nenhuma RPC conta conversa, mensagem ou interação", () => {
+    expect(rpcs).not.toMatch(/count\(\*\)[\s\S]{0,80}from conversations/i);
+    expect(rpcs).not.toMatch(/message_count|conversation_count|interaction_count/i);
+  });
+
+  it("controle positivo: o detector de grant realmente funciona", () => {
+    expect("grant execute on function public.reserve_ai_budget(uuid) to anon").toMatch(
+      /grant execute on function public\.reserve_ai_budget[^;]*to (anon|authenticated)/,
+    );
+  });
+});
