@@ -11,6 +11,8 @@
 // ENVIRONMENT_BLOCKED — sem Docker, nada disso é declarável verde.
 
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   REMINDER_INTERVAL_MS,
   runCycleAlertsStep,
@@ -639,6 +641,10 @@ describe("H — economia distingue ausência de silêncio", () => {
     const [dateReview, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
     expect(imbalance.processed).toBe(1);
     expect(dateReview.processed).toBe(0);
+    // Controle do teste de N: uma atribuição VÁLIDA nunca credita o contador de
+    // fatos inconsistentes. Sem esta linha, `invalidInput: 1` lá poderia ser um
+    // contador que sobe sempre.
+    expect(imbalance.invalidInput).toBe(0);
   });
 });
 
@@ -911,5 +917,186 @@ describe("M — chave já encerrada no ledger", () => {
     expect(dateReview.failed).toBe(0);
     expect(dateReview.processed).toBe(1);
     expect(imbalance.failed).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// N — fatos inconsistentes não viram economia do ciclo
+//
+// `attributeRevenue` devolve união discriminada: `INVALID_INPUT` NÃO é uma
+// origem de receita, é a afirmação de que os fatos recebidos não fecham entre
+// si (hoje: contagem de instâncias ativas < 1 num cálculo feito PARA o ciclo de
+// uma instância). Enquanto esse tratamento vivia no adapter, a regra só podia
+// ser verificada por leitura — que é exatamente o que este arquivo existe para
+// substituir.
+// ─────────────────────────────────────────────────────────────────────────
+
+const REVENUE_INVALIDA = async () =>
+  ({
+    ok: true as const,
+    value: { kind: "INVALID_INPUT" as const, reasonCode: "NO_ACTIVE_INSTANCE" as const },
+  });
+
+describe("N — INVALID_INPUT é sub-passo não executado, nunca acusação comercial", () => {
+  it("INVALID_INPUT nao grava economia do ciclo", async () => {
+    const b = makeBench({
+      existing: null,
+      repo: {
+        listEconomicInstances: async () => ({
+          ok: true,
+          // Custo conhecido e SEM receita: se a inconsistência escorregasse para
+          // o caminho normal, isto abriria ECONOMIC_IMBALANCE rotulado
+          // NO_ENTITLEMENT — uma acusação de "custo sem contrato" fabricada.
+          rows: [{ id: INST, organizationId: ORG, costCents: 14900 }],
+        }),
+        resolveRevenue: REVENUE_INVALIDA,
+      },
+    });
+
+    const [dateReview, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
+
+    // Nenhuma escrita: nem linha nova no ledger, nem toque em linha existente,
+    // nem aviso na fila.
+    expect(b.inserted).toHaveLength(0);
+    expect(b.touches).toHaveLength(0);
+    expect(b.enqueued).toHaveLength(0);
+
+    expect(imbalance.invalidInput).toBe(1);
+    expect(imbalance.processed).toBe(0);
+    // NÃO é falha: repetir amanhã produz o mesmo resultado. Contar como falha
+    // faria um defeito de dados parecer soluço de rede.
+    expect(imbalance.failed).toBe(0);
+    expect(dateReview.invalidInput).toBe(0);
+
+    const log = b.logs.find((l) => l.evt === "wa_revenue_invalid_input");
+    expect(log?.level).toBe("warn");
+    expect(log?.e.reason).toBe("NO_ACTIVE_INSTANCE");
+    expect(log?.e.organizationId).toBe(ORG);
+    expect(log?.e.needsAdminAction).toBe(true);
+  });
+
+  it("a organização não avaliada é AFIRMADA no resumo do passo", async () => {
+    const b = makeBench({
+      existing: null,
+      repo: {
+        listEconomicInstances: async () => ({
+          ok: true,
+          rows: [{ id: INST, organizationId: ORG, costCents: 14900 }],
+        }),
+        resolveRevenue: REVENUE_INVALIDA,
+      },
+    });
+
+    await runEconomicsStep(b.deps, "2026-08-02");
+
+    const done = b.logs.find((l) => l.evt === "wa_econ_scan_done");
+    // `imbalancesReported: 0` sozinho leria como "varri e não achei prejuízo".
+    expect(done?.e.eligibleOrgs).toBe(1);
+    expect(done?.e.imbalancesReported).toBe(0);
+    expect(done?.e.invalidInputOrgs).toBe(1);
+  });
+
+  it("INVALID_INPUT não vira motivo de D-1 e não derruba o D-7 já emitido", async () => {
+    const b = makeBench({
+      existing: null,
+      repo: {
+        listCycleInstances: async () => ({
+          ok: true,
+          rows: [{
+            id: INST, organizationId: ORG, lifecycleState: "ACTIVE",
+            cycleSource: "ADMIN_CONFIRMED", cycleStartedOn: "2026-07-03",
+            // due amanhã ⇒ D-7 e D-1 elegíveis; custo nulo tornaria o D-1
+            // acionável por COST_UNKNOWN se a receita fosse atribuível.
+            cycleDueOn: "2026-08-03", monthlyCostCents: null,
+            providerAccessUntil: null, anchorDay: 3,
+          }],
+        }),
+        resolveRevenue: REVENUE_INVALIDA,
+      },
+    });
+
+    const [d7, d1] = await runCycleAlertsStep(b.deps, "2026-08-02");
+
+    // O D-7 é anterior à leitura de receita e permanece.
+    expect(d7.processed).toBe(1);
+    expect(d7.invalidInput).toBe(0);
+
+    expect(d1.invalidInput).toBe(1);
+    expect(d1.processed).toBe(0);
+    expect(d1.failed).toBe(0);
+
+    // Um único alerta escrito — o D-7. Nenhum CYCLE_DUE_TOMORROW.
+    expect(b.inserted).toHaveLength(1);
+    expect(b.inserted[0].alertType).toBe("CYCLE_DUE_SOON");
+
+    const log = b.logs.find((l) => l.evt === "wa_revenue_invalid_input");
+    expect(log?.e.phase).toBe("d1");
+    expect(log?.e.instanceId).toBe(INST);
+  });
+
+  it("falha de LEITURA continua sendo failed, não invalidInput", async () => {
+    // As duas categorias existem porque exigem respostas diferentes: soluço de
+    // rede se resolve na próxima passada, fatos que não fecham não.
+    const b = makeBench({
+      existing: null,
+      repo: {
+        listEconomicInstances: async () => ({
+          ok: true,
+          rows: [{ id: INST, organizationId: ORG, costCents: 14900 }],
+        }),
+        resolveRevenue: async () => ({ ok: false, message: "timeout" }),
+      },
+    });
+
+    const [, imbalance] = await runEconomicsStep(b.deps, "2026-08-02");
+
+    expect(imbalance.failed).toBe(1);
+    expect(imbalance.invalidInput).toBe(0);
+    expect(evts(b.logs)).toContain("wa_econ_exception");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// O — o adapter usa o resolvedor compartilhado, não uma terceira query
+//
+// Guardrail TEXTUAL: o `index.ts` chama `serve()` no carregamento e importa
+// `deno.land`/`esm.sh`, então vitest não consegue importá-lo. A regra do plano
+// ("a busca da assinatura usa o resolvedor da fase — não uma terceira query com
+// regra própria") só é verificável assim, e é mais do que existia antes.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("O — resolvedor compartilhado no adapter de receita", () => {
+  const adapter = readFileSync(
+    resolve(process.cwd(), "supabase/functions/process-whatsapp-instance-cycles/index.ts"),
+    "utf8",
+  );
+
+  it("CHAMA resolveWhatsAppSubscription, não só importa", () => {
+    expect(adapter).toMatch(/whatsapp-subscription-resolver-core\.ts/);
+    expect(adapter).toMatch(/resolveWhatsAppSubscription\s*\(/);
+  });
+
+  it("não resolve a assinatura financeira com maybeSingle", () => {
+    // maybeSingle LANÇA com duas linhas — e a transição entre os dois modelos
+    // produz exatamente duas.
+    for (const l of adapter.split(/\n/).filter((x) => /maybeSingle/.test(x))) {
+      expect(l).not.toMatch(/billing_subscriptions/);
+    }
+  });
+
+  it("não filtra por WHATSAPP_SUBSCRIPTION na query", () => {
+    // O filtro estrito por categoria é do NÚCLEO. Um `.eq()` aqui devolveria
+    // zero linha para a organização do Plano 2, que paga pelo pacote de
+    // automação dentro da mensalidade do sistema.
+    expect(adapter).not.toMatch(/\.eq\(\s*["'`]billing_plans\.category["'`]/);
+  });
+
+  it("lê o componente contratual do plano", () => {
+    expect(adapter).toMatch(/whatsapp_component_cents/);
+    expect(adapter).toMatch(/planWhatsappComponentCents/);
+  });
+
+  it("não reimplementa a precedência de status localmente", () => {
+    expect(adapter).not.toMatch(/STATUS_RANK/);
   });
 });

@@ -29,8 +29,12 @@ import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.
 import { todayBrt } from "../_shared/billing-delinquency-core.ts";
 import {
   attributeRevenue,
-  type AttributedRevenue,
+  type RevenueAttribution,
 } from "../_shared/whatsapp-instance-revenue-core.ts";
+import {
+  resolveWhatsAppSubscription,
+  type WhatsAppSubscriptionFact,
+} from "../_shared/whatsapp-subscription-resolver-core.ts";
 import {
   resolvePlatformAdminRecipients,
   enqueueBillingNotification,
@@ -98,23 +102,61 @@ function toCycleInstance(r: Record<string, unknown>): CycleInstance {
 }
 
 /**
+ * Linha crua de `billing_subscriptions` com o plano embutido. A relação
+ * aninhada volta do PostgREST como objeto OU array — normalizada abaixo, mesmo
+ * padrão de `whatsapp-service-gate.ts` e `entitlements.ts`.
+ *
+ * `included_features` pode vir `null` numa base anterior à migration 094; `?? []`
+ * a trata como plano LEGADO, que é exatamente o que ela é nesse ponto do rollout.
+ */
+interface SubscriptionPlanRef {
+  category: string | null;
+  included_features: string[] | null;
+  amount_cents: number | null;
+  whatsapp_component_cents: number | null;
+}
+
+interface SubscriptionRevenueRow {
+  id: string;
+  status: string;
+  canceled_at: string | null;
+  suspended_at: string | null;
+  billing_plans: SubscriptionPlanRef | SubscriptionPlanRef[] | null;
+}
+
+/**
  * Receita da organização segundo a política de §7.3. Não escreve nada.
  *
- * A receita atribuível a uma instância é a assinatura da categoria
- * WHATSAPP_SUBSCRIPTION — NÃO a mensalidade do sistema. Somar a mensalidade do
- * sistema aqui misturaria dois produtos e faria toda organização parecer
- * lucrativa no WhatsApp.
+ * QUAL ASSINATURA FINANCIA O WHATSAPP é decisão do núcleo puro compartilhado
+ * `whatsapp-subscription-resolver-core.ts` — o mesmo que `whatsapp-service-gate.ts`
+ * e `process-whatsapp-enforcement` usam. Uma terceira query com regra própria
+ * aqui é como duas fontes de verdade nascem: o gate diria que a organização tem
+ * assinatura e o worker diria que não, sobre a mesma linha e no mesmo dia.
+ *
+ * DUAS ORIGENS DE RECEITA, e a distinção é o coração da task:
+ *  - assinatura de categoria WHATSAPP_SUBSCRIPTION → `amount_cents` É a receita
+ *    de WhatsApp (modelo legado, produto separado);
+ *  - plano de SISTEMA que declara `whatsapp` em `included_features` → o
+ *    `amount_cents` é a mensalidade do SISTEMA e NUNCA entra aqui; a parcela
+ *    atribuível é `whatsapp_component_cents`, declarada no contrato.
+ * Confundir as duas faria toda organização do Plano 2 parecer lucrativa no
+ * WhatsApp pelo valor inteiro da mensalidade.
  */
-async function resolveRevenueForOrg(organizationId: string): Promise<Fetch<AttributedRevenue>> {
+async function resolveRevenueForOrg(organizationId: string): Promise<Fetch<RevenueAttribution>> {
   const [countRes, subRes, overrideRes] = await Promise.all([
     supabase.from("whatsapp_instances").select("id", { count: "exact", head: true })
       .eq("organization_id", organizationId).eq("lifecycle_state", "ACTIVE"),
+    // TODAS as candidatas, sem filtro de categoria e sem `.maybeSingle()` —
+    // campo-a-campo a mesma forma da query do gate. `.maybeSingle()` LANÇA com
+    // duas linhas, e a transição entre o modelo antigo e o de dois planos produz
+    // exatamente duas; o filtro por categoria devolvia ZERO linha para uma
+    // organização do Plano 2, que paga pelo pacote dentro da mensalidade.
     supabase.from("billing_subscriptions")
-      .select("id, billing_plans!inner(amount_cents, category)")
+      .select(
+        "id, status, canceled_at, suspended_at, billing_plans!inner(category, included_features, amount_cents, whatsapp_component_cents)",
+      )
       .eq("organization_id", organizationId)
-      .eq("status", "active")
-      .eq("billing_plans.category", "WHATSAPP_SUBSCRIPTION")
-      .maybeSingle(),
+      .neq("status", "canceled"),
     supabase.from("organization_entitlement_overrides").select("id")
       .eq("organization_id", organizationId)
       .eq("feature", "whatsapp")
@@ -125,36 +167,84 @@ async function resolveRevenueForOrg(organizationId: string): Promise<Fetch<Attri
   ]);
 
   // FALHA em vez de degradar. `countRes.count ?? 0` viraria "zero instâncias" e
-  // `subRes.data` nulo viraria "sem assinatura" — os dois se confundem com
-  // estado real e alimentam tanto os motivos do D-1 quanto o desequilíbrio
-  // econômico. Receita desconhecida por FALHA DE LEITURA não pode virar receita
+  // uma lista vazia viraria "sem assinatura" — os dois se confundem com estado
+  // real e alimentam tanto os motivos do D-1 quanto o desequilíbrio econômico.
+  // Receita desconhecida por FALHA DE LEITURA não pode virar receita
   // desconhecida por ausência de contrato.
   const revErr = countRes.error ?? subRes.error ?? overrideRes.error;
   if (revErr) return { ok: false, message: revErr.message };
 
-  const plan = (subRes.data as unknown as { billing_plans?: { amount_cents?: number } } | null)
-    ?.billing_plans;
+  // O resolvedor devolve `subscriptionId`, não a linha do plano. A correlação de
+  // volta é por CHAVE, nunca por posição: o PostgREST não garante ordem sem
+  // ORDER BY, e um índice de array casaria o componente de um plano com a
+  // assinatura de outro sem que nada reclamasse.
+  const planBySubscriptionId = new Map<string, SubscriptionPlanRef>();
+  const facts: WhatsAppSubscriptionFact[] = (
+    (subRes.data ?? []) as unknown as SubscriptionRevenueRow[]
+  ).map((row) => {
+    const plan = Array.isArray(row.billing_plans) ? row.billing_plans[0] : row.billing_plans;
+    if (plan) planBySubscriptionId.set(row.id, plan);
+    return {
+      id: row.id,
+      status: row.status,
+      category: plan?.category ?? "SYSTEM_SUBSCRIPTION",
+      includedFeatures: plan?.included_features ?? [],
+      canceledAt: row.canceled_at,
+      suspendedAt: row.suspended_at,
+    };
+  });
+
+  const resolution = resolveWhatsAppSubscription({ subscriptions: facts });
+
+  // Ambiguidade COMERCIAL não é `NO_ENTITLEMENT`: "existe fonte, não sei qual" é
+  // diferente de "não existe fonte", e a segunda é uma ACUSAÇÃO que abre
+  // ECONOMIC_IMBALANCE. Sai como falha de resolução — o passo credita a
+  // organização como não avaliada e o admin decide, que é o mesmo destino que a
+  // query antiga com `.maybeSingle()` dava a duas linhas na mesma categoria.
+  if (resolution.kind === "AMBIGUOUS") {
+    jsonLog("warn", {
+      evt: "wa_revenue_ambiguous_subscription",
+      organizationId,
+      reason: resolution.reasonCode,
+      candidates: resolution.candidateIds.length,
+      needsAdminAction: true,
+    });
+    return { ok: false, message: `revenue_subscription_ambiguous:${resolution.reasonCode}` };
+  }
+
+  const chosen =
+    resolution.kind === "RESOLVED" ? planBySubscriptionId.get(resolution.subscriptionId) : null;
+
+  // `!inner` garante o plano; chegar aqui sem ele significa que a correlação não
+  // fechou. Cair no caminho de baixo com `chosen` vazio afirmaria "sem contrato"
+  // sobre uma assinatura que o resolvedor acabou de escolher.
+  if (resolution.kind === "RESOLVED" && !chosen) {
+    jsonLog("error", {
+      evt: "wa_revenue_plan_not_correlated",
+      organizationId,
+      subscriptionId: resolution.subscriptionId,
+      needsAdminAction: true,
+    });
+    return { ok: false, message: "revenue_plan_not_correlated" };
+  }
 
   const attribution = attributeRevenue({
     activeInstanceCount: countRes.count ?? 0,
-    subscriptionAmountCents: typeof plan?.amount_cents === "number" ? plan.amount_cents : null,
+    // Só a categoria WHATSAPP_SUBSCRIPTION tem `amount_cents` de WhatsApp.
+    subscriptionAmountCents:
+      chosen?.category === "WHATSAPP_SUBSCRIPTION" && typeof chosen.amount_cents === "number"
+        ? chosen.amount_cents
+        : null,
     hasLifetimeWhatsappOverride: !!overrideRes.data,
+    // Componente contratual do pacote de automação, quando o plano o declara.
+    planWhatsappComponentCents:
+      typeof chosen?.whatsapp_component_cents === "number"
+        ? chosen.whatsapp_component_cents
+        : null,
   });
 
-  // Fatos internamente inconsistentes NÃO viram economia do ciclo. `kind !==
-  // "ATTRIBUTED"` com early-return porque `strict: false` não estreita união
-  // discriminada por teste booleano implícito. Só identificadores no log —
-  // nunca payload bruto.
-  if (attribution.kind !== "ATTRIBUTED") {
-    jsonLog("warn", {
-      evt: "wa_revenue_invalid_input",
-      reason: attribution.reasonCode,
-      organizationId,
-      needsAdminAction: true,
-    });
-    return { ok: false, message: `revenue_invalid_input:${attribution.reasonCode}` };
-  }
-
+  // A união segue INTEIRA para o núcleo: o que fazer com `INVALID_INPUT` é
+  // decisão, e decisão não mora no adapter — aqui ela seria inauditável.
   return { ok: true, value: attribution };
 }
 

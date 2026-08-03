@@ -33,7 +33,7 @@ import {
 import { nextDueFromAnchor, daysUntil } from "./whatsapp-instance-cycle-core.ts";
 import {
   consolidateOrgMargin,
-  type AttributedRevenue,
+  type RevenueAttribution,
 } from "./whatsapp-instance-revenue-core.ts";
 import {
   detectChannelWithoutInstance,
@@ -48,10 +48,25 @@ export const REMINDER_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
 // Contadores
 // ─────────────────────────────────────────────────────────────────────────
 
-export type StepSummary = { step: string; processed: number; failed: number };
+/**
+ * TRÊS categorias, e a terceira não é um refinamento da segunda.
+ *
+ * `failed` é "tentei e não consegui" — leitura que caiu, escrita recusada.
+ * `invalidInput` é "os fatos que recebi não fecham entre si": não há o que
+ * tentar de novo, e repetir amanhã produz o mesmo resultado. Somar os dois faria
+ * um defeito de dados (que exige alguém olhar) parecer soluço de rede (que se
+ * resolve sozinho na próxima passada), e o worker responde 200 com o resumo
+ * justamente porque o resumo É o sinal.
+ */
+export type StepSummary = {
+  step: string;
+  processed: number;
+  failed: number;
+  invalidInput: number;
+};
 
 export function tally(step: string): StepSummary {
-  return { step, processed: 0, failed: 0 };
+  return { step, processed: 0, failed: 0, invalidInput: 0 };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -169,10 +184,21 @@ export type WorkerRepo = {
   rollCycle(a: { instanceId: string; today: string; nextDueOn: string }): Promise<Fetch<string | null>>;
 
   listCycleInstances(): Promise<Query<CycleInstance>>;
-  // `AttributedRevenue` e nao a uniao: `INVALID_INPUT` NAO chega ate aqui. O
-  // adapter resolve os fatos e recusa antes — atribuicao com fatos
-  // inconsistentes nao pode ser persistida como economia do ciclo.
-  resolveRevenue(organizationId: string): Promise<Fetch<AttributedRevenue>>;
+  /**
+   * A UNIAO INTEIRA, e nao so `AttributedRevenue`.
+   *
+   * O adapter reune os fatos (contagem de instancias ativas, assinatura que
+   * financia o WhatsApp, componente contratual do plano, override vitalicio) e
+   * chama `attributeRevenue`; QUE FAZER com `INVALID_INPUT` e decisao, e decisao
+   * mora aqui — o `index.ts` chama `serve()` no carregamento e vitest nao o
+   * importa, entao regra escrita la so pode ser verificada por leitura. Passar a
+   * uniao adiante e o que torna "fatos inconsistentes nao gravam economia do
+   * ciclo" uma afirmacao testada em vez de uma promessa.
+   *
+   * `ok: false` continua reservado a FALHA DE LEITURA — categoria diferente de
+   * fatos que nao fecham, e os dois contam em campos diferentes do resumo.
+   */
+  resolveRevenue(organizationId: string): Promise<Fetch<RevenueAttribution>>;
   hasOpenDivergence(instanceId: string): Promise<Fetch<boolean>>;
 
   listEndConfirmationCandidates(today: string): Promise<Query<CycleInstance & { endConfirmationRequiredAt: string | null }>>;
@@ -524,6 +550,28 @@ export async function runCycleAlertsStep(deps: WorkerDeps, today: string): Promi
       const revenue = await deps.repo.resolveRevenue(r.organizationId);
       if (revenue.ok === false) throw new Error(`revenue_query_failed: ${revenue.message}`);
 
+      // Fatos internamente inconsistentes NÃO viram motivo de D-1.
+      // `REVENUE_UNKNOWN` é afirmação COMERCIAL ("não há contrato que explique
+      // este custo") e o D-1 é o aviso urgente: gerá-lo a partir de fatos que
+      // não fecham mandaria o admin investigar a conta errada. Nem processado
+      // nem falho — sub-passo NÃO EXECUTADO, contado à parte.
+      // `kind !== "ATTRIBUTED"` com saída imediata: `strict: false` não estreita
+      // união discriminada por teste booleano implícito.
+      if (revenue.value.kind !== "ATTRIBUTED") {
+        deps.telemetry.warn({
+          reqId: deps.reqId,
+          evt: "wa_revenue_invalid_input",
+          phase: "d1",
+          reason: revenue.value.reasonCode,
+          // Só identificadores — nunca o payload dos fatos.
+          instanceId: r.id,
+          organizationId: r.organizationId,
+          needsAdminAction: true,
+        });
+        d1.invalidInput++;
+        continue;
+      }
+
       const divergence = await deps.repo.hasOpenDivergence(r.id);
       // Falha de leitura devolveria `false` — "não há divergência aberta" — que
       // é justamente um dos motivos que tornam o D-1 acionável. Silenciar o
@@ -839,6 +887,25 @@ export async function runEconomicsStep(deps: WorkerDeps, today: string): Promise
       const revenue = await deps.repo.resolveRevenue(orgId);
       if (revenue.ok === false) throw new Error(`revenue_query_failed: ${revenue.message}`);
 
+      // Fatos inconsistentes NÃO viram economia do ciclo. Este é o passo que
+      // AFIRMA desequilíbrio econômico — a única detecção de prejuízo da fase —
+      // e `NO_ENTITLEMENT` ("custo sem contrato") é uma acusação comercial. Ler
+      // uma contagem impossível como se fosse ausência de contrato abriria
+      // ECONOMIC_IMBALANCE com o rótulo errado, num ledger que deduplica e
+      // portanto não se corrige na passada seguinte.
+      if (revenue.value.kind !== "ATTRIBUTED") {
+        deps.telemetry.warn({
+          reqId: deps.reqId,
+          evt: "wa_revenue_invalid_input",
+          phase: "economic_imbalance",
+          reason: revenue.value.reasonCode,
+          organizationId: orgId,
+          needsAdminAction: true,
+        });
+        imbalance.invalidInput++;
+        continue;
+      }
+
       // LIFETIME_OVERRIDE NÃO É ERRO: margem negativa do cliente cortesia é o
       // custo conhecido de uma decisão comercial. Aparece rotulada no painel e
       // nunca vira alerta de anomalia.
@@ -892,6 +959,10 @@ export async function runEconomicsStep(deps: WorkerDeps, today: string): Promise
     dateReviewPending: pending.rows.length,
     dateReviewProcessed: dateReview.processed,
     imbalancesReported: imbalance.processed,
+    // Organização varrida e NÃO avaliada por fatos inconsistentes. Sem este
+    // número, `imbalancesReported: 0` diria "nenhum prejuízo" quando o que
+    // houve foi "não consegui afirmar nada sobre N organizações".
+    invalidInputOrgs: imbalance.invalidInput,
   });
 
   return [dateReview, imbalance];
