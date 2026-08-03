@@ -187,13 +187,19 @@ create policy platform_admin_all_whatsapp_instance_notes
 -- Backfill idempotente
 -- =====================================================================
 -- Cada `notes` não-nulo vira a PRIMEIRA entrada do histórico, com a autoria e a
--- data da criação da instância — que é o que `notes` de fato representava
--- naquele momento. `not exists` guarda a reexecução: a migration é idempotente
--- por design e nada aqui pode duplicar histórico numa segunda passada.
+-- data da CRIAÇÃO DA INSTÂNCIA — não necessariamente as de quem escreveu o
+-- texto: `notes` é sobrescrita por `update_instance` e `reactivate`, então o
+-- texto backfilado pode ter sido redigitado por outro admin, mais tarde.
+-- `not exists` guarda a reexecução: a migration é idempotente por design e
+-- nada aqui pode duplicar histórico numa segunda passada.
 --
 -- `action = 'REGISTER'` para todas: não há como saber, do valor sobrescrito,
 -- qual ação o gravou por último. Afirmar outra coisa seria inventar histórico —
--- e inventar é pior que o buraco que estamos tapando.
+-- e inventar é pior que o buraco que estamos tapando. Nesta linha backfilada,
+-- `action = 'REGISTER'` funciona também como MARCADOR dessa origem: não é
+-- garantia de que a autoria/data acima sejam de quem escreveu o texto, é
+-- garantia de que a linha nasceu do backfill, não de uma ação real capturada
+-- no momento em que aconteceu.
 insert into whatsapp_instance_notes
   (instance_ref, instance_id, organization_id, action, note, created_by, created_at)
 select i.id, i.id, i.organization_id, 'REGISTER', i.notes, i.created_by, i.created_at

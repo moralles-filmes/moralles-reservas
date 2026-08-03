@@ -430,8 +430,9 @@ continua correta — mas a ordem acima evita o buraco.
 - Invariante novo: **o ledger de observações é best-effort e escreve DEPOIS da mutação** —
   `notes` é o resumo, o ledger é o histórico, e divergência entre os dois é detectável pela
   telemetria `needsAdminAction`.
-- Nenhuma linha nova no checklist de redeploy cruzado: nada em `supabase/functions/_shared/`
-  muda (§13).
+- Nenhum `_shared/` **existente** muda (§13), logo nenhuma EF já deployada ganha linha nova
+  no checklist de redeploy cruzado; o arquivo **novo** `whatsapp-instance-notes-core.ts` entra
+  no checklist com seu único consumidor.
 
 ~~`whatsapp_instance_notes` entra na lista de tabelas com `FORCE RLS` sem policies.~~
 **Corrigido:** ela tem policy `platform_admin_all_*` (§8) — a lista do `CLAUDE.md` é de tabelas
