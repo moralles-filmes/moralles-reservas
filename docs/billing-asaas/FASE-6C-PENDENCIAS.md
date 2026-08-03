@@ -12,14 +12,22 @@ prescrito pela spec §11 para o ledger desta fase. Ver §2.
 
 | Gate | Resultado |
 |---|---|
-| `npm run test` | 804 testes, 34 arquivos — todos passando |
+| `npm run test` | 806 testes, 34 arquivos — todos passando |
 | `npm run typecheck` (`tsc -b --noEmit`) | zero erros |
 | `npm run lint` | 0 erros, 22 warnings (baseline pré-existente, nenhum novo em arquivo desta entrega) |
 | `npx eslint supabase/functions --max-warnings=0` | zero erros, zero warnings |
-| `npm run build` | concluiu (`✓ built in 8.08s`); único aviso é o de chunk >500 kB, pré-existente |
+| `npm run build` | concluiu (`✓ built in 8.51s`); único aviso é o de chunk >500 kB, pré-existente |
 
-Os cinco gates rodaram nesta sessão, na raiz do worktree `fase-6c`. Nenhum
-gate falhou; nenhuma correção de código foi necessária.
+Os cinco gates rodaram nesta sessão, na raiz do worktree `fase-6c`, e foram
+**reexecutados depois da onda de correção** do review whole-branch — os números
+acima são os de depois. Nenhum gate falhou em nenhuma das duas passadas.
+
+A onda de correção mudou código: o review encontrou duas conversões
+reais→centavos inline sobreviventes no painel (`set_cost` e simulação de
+parceiro), que liam `99.90` como R$ 9.990,00 — erro de 100× num campo que
+alimenta `gross_margin_cents` e o alerta `ECONOMIC_IMBALANCE`. As duas passaram
+a usar `parseCostReais`, e os dois testes novos (806 − 804) cobrem os casos que
+a §7 tinha deixado descobertos.
 
 ---
 
@@ -269,6 +277,27 @@ silencioso.
 | 7 | Sem opção "Sem unidade" no `Select` de unidade da Tela B (o de canal tem "Sem canal") | consistente com o desenho do plano — instância que chega à Tela B já está vinculada a uma unidade |
 | 7 | "Cancelar" não desabilita durante submissão em voo; abrir o diálogo em outra instância com mutation pendente faz o `onSuccess` antigo fechar o diálogo novo e mostrar toast desencontrado | desencontro de UI/toast — a escrita em si acerta a instância certa, nenhum dado é gravado no lugar errado |
 | 7 | Opção de unidade mostra "organização · unidade" mesmo com tudo já filtrado por uma única organização | redundância visual, sem efeito funcional |
+
+### 7.1 Triagem do review whole-branch
+
+O review triou os oito, um a um. **Sete seguem**; um foi reclassificado:
+
+- **Reclassificado e corrigido** — o cabeçalho de `whatsapp-instance-form-core.ts`
+  não era "prosa desatualizada". A conversão inline que ele descreve no pretérito
+  estava **viva** em duas linhas do painel, com erro de 100×. Virou achado
+  *Important* e foi corrigido na onda (ver o bloco de gates no topo). O primeiro
+  minor da Task 2 (cobertura de `"12.34,56"` e `" 99,90 "`) foi fechado junto,
+  porque os dois casos deixaram de ser hipotéticos.
+- **Seguem sem correção** os outros seis, pelas razões já registradas acima; o
+  revisor reverificou cada uma contra o código em vez de aceitar a justificativa.
+
+O review anotou ainda dois minors que ele mesmo encontrou e que **não foram
+corrigidos**, por decisão explícita:
+
+| Achado | Por que fica |
+|---|---|
+| `RegisterInstanceDialog.tsx` — o efeito de prefill pode sobrepor a escolha do operador se `channelsQuery.data` mudar de referência (refetch) depois de ele escolher "Sem canal por enquanto" | probabilidade baixíssima: `refetchOnWindowFocus` é `false` global e o diálogo não muta canais. Um `useRef` de "prefill já aplicado" fecha, quando o arquivo for tocado de novo |
+| `WhatsappInstances.tsx` — a data do alerta (`first_detected_at`) é calculada em UTC, o mesmo defeito que o histórico teve | é código da **6b**, não desta entrega. Corrigir aqui misturaria escopo; entra na próxima vez que a 6b for tocada |
 
 ## 8. Gate
 
