@@ -1,0 +1,234 @@
+# Pendências da Fase 6c — não declaráveis por teste unitário
+
+Painel de instâncias completo + ledger de observações + runbook.
+Ambiente sem Docker, repo ligado à produção. **Nenhuma migration aplicada,
+nenhuma Edge Function deployada, nenhuma flag alterada, nenhum merge.**
+
+**Gates desta entrega (execução real, 2026-08-03):**
+
+| Gate | Resultado |
+|---|---|
+| `npm run test` | 804 testes, 34 arquivos — todos passando |
+| `npm run typecheck` (`tsc -b --noEmit`) | zero erros |
+| `npm run lint` | 0 erros, 22 warnings (baseline pré-existente, nenhum novo em arquivo desta entrega) |
+| `npx eslint supabase/functions --max-warnings=0` | zero erros, zero warnings |
+| `npm run build` | concluiu (`✓ built in 8.08s`); único aviso é o de chunk >500 kB, pré-existente |
+
+Os cinco gates rodaram nesta sessão, na raiz do worktree `fase-6c`. Nenhum
+gate falhou; nenhuma correção de código foi necessária.
+
+---
+
+## 1. CLAUDE.md a consolidar
+
+**Esta frente NÃO editou `CLAUDE.md`** — três frentes (6c, Plano B, Plano D)
+tocam o mesmo arquivo e a consolidação é um commit único no fim, fora deste
+trabalho. O que entra, quando chegar a hora:
+
+### 1.1 Checklist de redeploy — linha nova
+
+```
+- **`whatsapp-instance-notes-core.ts`** (núcleo puro, testado em
+  [src/lib/whatsapp-instance-notes-core.test.ts](src/lib/whatsapp-instance-notes-core.test.ts))
+  → `manage-whatsapp-instances` (único consumidor de runtime). Carrega o
+  vocabulário das sete ações do ledger; o mesmo teste verifica, nas duas
+  direções, que ele e o CHECK da migration 096 não divergiram. O FRONTEND
+  também importa daqui (`src/lib/whatsapp-instance-format.ts`, rótulos PT-BR)
+  — cross-boundary deliberado, mesmo motivo do `whatsapp-implementation-core.ts`.
+```
+
+Conferido contra o código real (não só contra o rascunho do brief): o único
+import de runtime é `supabase/functions/manage-whatsapp-instances/index.ts:51`
+(`import type { InstanceNoteAction } from "../_shared/whatsapp-instance-notes-core.ts"`),
+e o único import de frontend é `src/lib/whatsapp-instance-format.ts:3`
+(`import { INSTANCE_NOTE_ACTIONS } from "../../supabase/functions/_shared/whatsapp-instance-notes-core"`).
+A linha do rascunho do brief nomeava os consumidores certos — não precisou de
+correção.
+
+### 1.2 Invariantes novos
+
+```
+- **`whatsapp_instances` NÃO usa o trigger genérico `audit_trigger_func()` —
+  o histórico vive em `whatsapp_instance_notes`.** `audit_log` tem a policy
+  `unit_member_read_audit`, que libera leitura para membro da organização;
+  auditar a instância ali entregaria `current_monthly_cost_cents` (o que a
+  plataforma paga ao fornecedor) para os membros do próprio cliente — exatamente
+  o que o FORCE RLS da tabela existe para impedir.
+  [migration 096](supabase/migrations/20260803120000_096_whatsapp_instance_notes.sql).
+
+- **`whatsapp_instance_notes` é `FORCE RLS` COM policy `platform_admin_all_*`,
+  não sem policies.** "FORCE RLS sem policies" é o padrão das tabelas de
+  CREDENCIAL; este é um ledger irmão de `whatsapp_instance_cycles`/`_alerts` e
+  segue o padrão delas (087/088/089).
+
+- **O ledger de observações é escrito DEPOIS da mutação e é best-effort.**
+  `notes` continua sendo o resumo ("última observação") e a tabela nova é o
+  histórico; as duas saem do mesmo `reason`, na mesma operação. Falha do insert
+  não derruba operação já concluída — devolver erro depois do efeito faria o
+  operador repetir uma ação já feita. A divergência entre as duas é detectável
+  pela telemetria `wa_instance_note_write_failed` com `needsAdminAction`.
+  [manage-whatsapp-instances/index.ts](supabase/functions/manage-whatsapp-instances/index.ts).
+
+- **A EF decide o que gravar em `update_instance` por `"campo" in body`** —
+  mandar uma chave significa *escreva isto, inclusive `null`*. Formulário que
+  envie o objeto inteiro APAGA o canal de quem só quis corrigir o identificador.
+  O corpo sai de `buildUpdatePatch`, função pura testada.
+  [src/lib/whatsapp-instance-form-core.ts](src/lib/whatsapp-instance-form-core.ts).
+
+- **A trigger `whatsapp_instance_note_guard()` (096) é deliberadamente MAIS
+  ESTRITA que a trigger irmã `whatsapp_alert_subject_guard()` (089) na guarda
+  de `instance_id`.** A 089 usa `<>` puro
+  (`old.instance_id is not null and new.instance_id is not null and
+  new.instance_id <> old.instance_id`), que só barra `uuid → outro uuid` e
+  DEIXA PASSAR `NULL → uuid` — um alerta/observação já órfão pode ser reatado
+  a uma instância viva da mesma organização, porque a guarda de tenant só
+  confere a organização, não a ausência de vínculo anterior. A 096 usa
+  `is distinct from`, que barra as DUAS direções (`uuid → outro uuid` E
+  `NULL → uuid`). Achado da revisão da Task 1 desta fase, adjudicado pelo dono
+  do projeto: apertar a 096, não afrouxar; não tocar na 089 nesta fase
+  (reescrever uma migration já aplicada exige análise de impacto e migration
+  própria, fora do escopo); registrar que a 089 TEM esse defeito latente e que
+  a correção futura APERTA a 089 para igualar a 096, nunca afrouxa a 096 para
+  igualar a 089. Verificado só estaticamente (leitura do texto SQL + simulação
+  da fórmula em JS) — ver §2 abaixo e o caso `NOTE-C` estendido em
+  [supabase/tests/whatsapp-instances.integration.md](supabase/tests/whatsapp-instances.integration.md).
+```
+
+### 1.3 Tabela de workers — sem mudança
+
+Nenhum worker novo, nenhum cron novo, nenhuma flag nova.
+
+---
+
+## 2. Depende de banco real
+
+- **Migration 096 nunca aplicada.** Idempotência do backfill, guardas de
+  INSERT/UPDATE, guarda de tenant e RLS verificados **só por leitura**.
+- **O controle positivo do §8 da spec — apagar a instância NÃO apaga a
+  observação — não foi executado.** É o caso `NOTE-B` de
+  `supabase/tests/whatsapp-instances.integration.md`, e é o que prova que o
+  conflito FK × CHECK da 089 não voltou nesta tabela.
+- **A divergência deliberada 096/089 na guarda de `instance_id` (§1.2) não foi
+  provada contra banco.** `src/lib/whatsapp-instance-notes-core.test.ts` prova
+  duas coisas estáticas — que o texto da migration usa `is distinct from` e
+  não `<>`, e que a fórmula extraída, avaliada em JS com a semântica de NULL
+  do Postgres, produz o veredito esperado nas quatro transições — mas nenhum
+  `INSERT`/`UPDATE` real correu contra a trigger. O caso `NOTE-C` de
+  `supabase/tests/whatsapp-instances.integration.md` foi estendido nesta
+  entrega com as quatro transições de `instance_id` (inalterado e
+  `uuid → NULL` esperados aceitos; `uuid → outro uuid` e `NULL → uuid`
+  esperados recusados) para ser o roteiro de quando houver banco — ele não é,
+  hoje, resultado.
+- **RLS não foi exercitada pelo client SDK** (casos `NOTE-E`). A afirmação
+  "membro da organização não lê o custo do fornecedor" — que é a razão de não
+  ter usado `audit_log` — continua não provada contra banco.
+- **Nenhum registro de sucesso foi feito.** Toda a verificação manual desta
+  entrega usou caminhos de RECUSA, para não escrever no inventário do Ren Sushi
+  durante a observação da 6b (até 05/08).
+
+## 3. Depende de deploy
+
+- `manage-whatsapp-instances` precisa ser redeployada para o helper e a action
+  `list_instance_notes` existirem. **Enquanto não for, a seção Histórico do
+  painel devolve erro** — e o branch `isError` está implementado exatamente para
+  esse estado (mostra "Não foi possível carregar o histórico" com botão de
+  retry, nunca painel em branco).
+- **Ordem quando autorizado:** `supabase db push` da 096 → `supabase functions
+  deploy manage-whatsapp-instances` → frontend (push em `main` → Vercel),
+  **depois** do merge da 6b → conferir `acl-estatico` na aba Checks.
+- Se a EF subir antes da migration, o insert do ledger falha, é logado com
+  `needsAdminAction` e a operação principal continua correta — mas a ordem acima
+  evita o buraco.
+- **Nenhum arquivo de `_shared/` existente mudou**, então o checklist de
+  redeploy cruzado não é afetado. O arquivo `_shared/` **novo**
+  (`whatsapp-instance-notes-core.ts`) tem um consumidor só.
+
+## 4. Riscos que permanecem (spec §12)
+
+1. **Registrar instância que não existe na Z-API.** O inventário passa a mentir
+   sobre custo. Mitigado pelo identificador obrigatório e pelo motivo
+   registrado; **não eliminado.**
+2. **Disciplina humana.** O fluxo inteiro depende de alguém olhar o painel.
+   Mitigado pela cadência do runbook (toda segunda + entre D-7 e D-1);
+   **não eliminado.** É a razão de existir da 6a.
+3. **`notes` e o ledger podem divergir** se o insert best-effort falhar.
+   Escolha consciente: o alternativo é derrubar uma operação já concluída.
+4. **Os seis avisos `admin_zapi_*` continuam sem virar e-mail.** Pendência
+   `ADMIN_ZAPI_ALERT_TRANSACTIONAL_ENQUEUE`, herdada da 6b. O painel é o único
+   canal.
+5. **A guarda mais estrita da 096 tem uma irmã mais permissiva (089) que
+   continua em produção.** Não é um risco desta tabela — é um risco herdado,
+   registrado aqui porque foi descoberto nesta fase. Ver §1.2 e §2.
+
+## 5. Fora do escopo desta fase
+
+- `NEW_PROVISION` — bloqueado por
+  `NEW_REAL_INSTANCE_PROVISIONING_BLOCKED_UNTIL_PHASE_6A`.
+- `AWAITING_PROVISION` — a fila já vive em `whatsapp_implementations`.
+- Qualquer chamada à Z-API.
+- Flag nova, decisão comercial, mudança no worker ou nos núcleos de decisão.
+- **Reescrever a 089 para igualar o rigor da 096.** Decidido explicitamente
+  como fora de escopo pelo dono do projeto (§1.2) — não esquecido.
+- A concorrência do teto de conexões
+  (`FASE-DOIS-PLANOS-PENDENCIAS.md` §1) — continua em aberto e continua
+  bloqueando o Plano Automação para novas contratações.
+
+## 6. Verificação manual executada
+
+Nenhuma tela desta fase foi verificada em navegador. O ambiente de execução
+não tem ferramenta de automação de navegador disponível (sem Playwright,
+Puppeteer, MCP de browser ou equivalente) nem GUI para operar um navegador
+manualmente, e chamar a Edge Function de produção como substituto foi
+proibido nesta entrega — vários casos (registro repetido, alterar vínculo)
+tocariam a instância real do Ren Sushi em produção. As Tasks 5, 6, 7 e 8
+tentaram subir `npm run dev` com sucesso (log limpo, sem erro de compilação)
+e registraram, cada uma, que a interação com a UI renderizada não é possível
+sem essa ferramenta. Nenhuma linha abaixo foi observada — todas são
+`não executado`, nunca `OK`/`✓`/`esperado`.
+
+| Caso | Resultado |
+|---|---|
+| URL colada no identificador → 400 com a mensagem sobre o token | não executado — sem ferramenta de navegador no ambiente (Task 6, caso 1) |
+| Identificador vazio → botão desabilitado, sem viagem ao servidor | não executado — sem ferramenta de navegador no ambiente (Task 6, caso 2) |
+| Custo `abc` → recusa na UI, procedência desabilitada | não executado — sem ferramenta de navegador no ambiente (Task 6, caso 4) |
+| Custo `99.90` → aceito, sem confundir com 9990 reais | não executado — sem ferramenta de navegador no ambiente (Task 6, caso 5) |
+| Registro repetido da mesma instância → 409, nenhuma linha nova | não executado — sem ferramenta de navegador no ambiente, e chamada direta à EF de produção como substituto foi explicitamente proibida (Task 6, caso 6) |
+| Alterar só o identificador → o corpo NÃO contém `channel_id` | não executado — sem ferramenta de navegador no ambiente, e proibido contra produção até 05/08 por regra do próprio brief (Task 7, caso 1) |
+| Nada alterado → "Salvar correção" desabilitado | não executado — sem ferramenta de navegador no ambiente (Task 7, caso 2) |
+| Instância `ENDED` → botão Reativar ausente | não executado — sem ferramenta de navegador no ambiente (Task 7, caso 4) |
+| Instância `CANCELLATION_REQUESTED` → botão Reativar presente | não executado — sem ferramenta de navegador no ambiente (Task 7, caso 5) |
+| Histórico antes da 096 → branch `isError` com retry, não painel em branco | não executado — sem ferramenta de navegador no ambiente; migration 096 também não aplicada, então este caso nem tem estado de banco para observar (Task 8, caso 2) |
+| Link "Instâncias WhatsApp" no menu lateral navega | não executado — sem ferramenta de navegador no ambiente (Task 5) |
+| Nome da organização no card, no lugar do UUID | não executado — sem ferramenta de navegador no ambiente (Task 5) |
+| Mobile `<640px` → diálogos viram bottom-sheet | não executado — sem ferramenta de navegador no ambiente (Tasks 6 e 7, caso mobile de cada roteiro) |
+
+## 7. Minors adiados — para triagem do review whole-branch
+
+Achados de severidade "minor" que os revisores de cada task decidiram
+adiar em vez de corrigir na hora. Nenhum bloqueou a task correspondente.
+Listados aqui para que o review final da branch decida, um a um, o que
+precisa ser corrigido antes do merge — um roll-up que ninguém lê é descarte
+silencioso.
+
+| Task | Achado | Por que foi adiado |
+|---|---|---|
+| 2 | `parseCostReais` sem caso de teste para separador misto (`"12.34,56"`) nem para valor com espaço em volta (`" 99,90 "`) | os dois se comportam certo no trace manual do revisor — falta só cobertura, não correção de comportamento |
+| 2 | Cabeçalho de `whatsapp-instance-form-core.ts` cita a conversão inline antiga do painel, que não está neste diff | prosa explicativa desatualizada, sem dependência funcional |
+| 4 | `list_instance_notes` não tem `.limit()`/paginação — lista sem teto | volume realista é pequeno (ação manual de admin, não fluxo de cliente); registrado para não crescer sem controle |
+| 6 | `submit()` não re-checa `reasonTooShort` como re-checa `selectedUnit` e `parsed.ok` | inalcançável hoje — o botão já fica desabilitado nesse estado |
+| 6 | `parseCostReais` chamado duas vezes com a mesma entrada (render e submit) | função pura da mesma variável — não podem discordar |
+| 7 | Sem opção "Sem unidade" no `Select` de unidade da Tela B (o de canal tem "Sem canal") | consistente com o desenho do plano — instância que chega à Tela B já está vinculada a uma unidade |
+| 7 | "Cancelar" não desabilita durante submissão em voo; abrir o diálogo em outra instância com mutation pendente faz o `onSuccess` antigo fechar o diálogo novo e mostrar toast desencontrado | desencontro de UI/toast — a escrita em si acerta a instância certa, nenhum dado é gravado no lugar errado |
+| 7 | Opção de unidade mostra "organização · unidade" mesmo com tudo já filtrado por uma única organização | redundância visual, sem efeito funcional |
+
+## 8. Gate
+
+**`FASE_6C_MERGE = aguardando`** — a branch `dois-planos/fase-6c` não é
+mergeada até: (a) a observação da 6b fechar e a `billing-asaas/fase-6b` entrar
+em `main`; (b) os casos `NOTE-A..NOTE-E` (incluindo o `NOTE-C` estendido)
+rodarem contra banco; (c) o review whole-branch (Step 6 do plano desta task,
+não executado por esta frente — ver report) triar os minors da §7 e decidir
+o que precisa de correção antes do merge.
+
+Ren Sushi segue vitalício e grátis — override LIFETIME em `system`, `whatsapp` e
+`ai` intacto. Nada nesta fase o toca.
