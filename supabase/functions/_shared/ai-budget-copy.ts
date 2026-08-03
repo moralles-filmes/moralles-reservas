@@ -22,7 +22,7 @@
 
 /** Hard stop puro: nenhuma ferramenta mutante rodou neste turno. */
 export const AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT =
-  "Vou passar sua conversa para a equipe do restaurante. Sua mensagem já está registrada e alguém responde por aqui em instantes.";
+  "Vou passar sua conversa para a equipe do restaurante. Sua mensagem já está registrada e alguém da equipe continua com você por aqui.";
 
 /**
  * As TRÊS situações de §17.7.4. Usar a mesma frase para as três é o erro que

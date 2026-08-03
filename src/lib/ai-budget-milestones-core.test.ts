@@ -48,7 +48,10 @@ describe("marcos da franquia", () => {
 describe("copy determinística do hard stop", () => {
   it("nunca expõe custo, tokens, modelo, margem ou o limite", () => {
     for (const text of AI_BUDGET_HARDCODED_TEXTS) {
-      expect(text).not.toMatch(/R\$|centavo|token|margem|franquia|limite|100,00|IA|inteligência artificial/i);
+      // `\bIA\b` e não `IA`: sem as bordas, o alternador casaria dentro de
+      // "família", "diária", "sequência" — o teste passaria por sorte de
+      // vocabulário e reprovaria uma reescrita inocente.
+      expect(text).not.toMatch(/R\$|centavo|token|margem|franquia|limite|100,00|\bIA\b|inteligência artificial/i);
     }
   });
 
