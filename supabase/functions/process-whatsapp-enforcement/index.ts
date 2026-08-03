@@ -22,13 +22,30 @@
 // observações de DADO, não a consequência que a flag gateia — ficam sempre
 // visíveis, mesmo em dry-run.
 //
-// AMBIGUIDADE (mais de uma assinatura WHATSAPP_SUBSCRIPTION viva para a mesma
-// organização): não escolhe, não movimenta a organização, avisa o admin da
+// QUAL ASSINATURA FINANCIA O WHATSAPP: decisão do núcleo puro
+// `_shared/whatsapp-subscription-resolver-core.ts`, o MESMO que
+// `_shared/whatsapp-service-gate.ts` usa. As duas queries eram campo-a-campo
+// idênticas por disciplina humana — divergir uma sem a outra fazia este worker
+// e o gate de envio discordarem sobre quem está inadimplente. A garantia agora
+// é estrutural: filtro de categoria e precedência de status vivem no núcleo, e
+// um guardrail estático prova que os dois continuam chamando.
+//
+// AMBIGUIDADE (duplicidade inesperada dentro da MESMA categoria — duas
+// assinaturas legadas de WhatsApp, ou dois planos de sistema declarando
+// `whatsapp`): não escolhe, não movimenta a organização, avisa o admin da
 // plataforma. Mesma política de `resolve_or_activate_subscription`
-// (`ambiguous_subscription_category`, migration 073/079) e da nota da Task 13
-// sobre o `.maybeSingle()` de `resolveWhatsAppGateByOrg` devolver PGRST116
-// nesse cenário — por isso a contagem é feita aqui, ANTES de chamar o gate,
-// numa query própria que nunca lança.
+// (`ambiguous_subscription_category`, migration 073/079). Não confundir com
+// TRANSIÇÃO (uma legada + um plano novo coexistindo): essa o núcleo RESOLVE
+// deterministicamente e o serviço continua — só fica a pendência
+// administrativa de encerrar a legada, registrada em log.
+//
+// ESCOPO DA SUSPENSÃO: este worker escreve `status='unpaid'` na assinatura que
+// o núcleo apontou como fonte. Hoje isso é sempre a assinatura legada de
+// categoria `WHATSAPP_SUBSCRIPTION`, porque nenhum plano tem `included_features`
+// preenchido (a 094 dá `'{}'` a todas as linhas e os seeds são do Plano B). No
+// dia em que existir um Plano 2 vendido, a fonte passa a ser a assinatura de
+// SISTEMA e suspendê-la alcança o sistema inteiro, não só o WhatsApp — decidir
+// o que fazer nesse caso é trabalho do plano que habilitar a venda, não deste.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -40,6 +57,7 @@ import {
   type BillingInvoiceStatus,
 } from "../_shared/billing-financial-state-core.ts";
 import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
+import { resolveWhatsAppSubscription } from "../_shared/whatsapp-subscription-resolver-core.ts";
 import {
   resolveBillingRecipient,
   resolvePlatformAdminRecipients,
@@ -50,8 +68,6 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
-
-const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
 
 /**
  * Teto de assinaturas por execução. Mesmo raciocínio do `BATCH_LIMIT` do
@@ -68,6 +84,15 @@ const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
  * qualquer escrita (suspensão, restauração, troca de plano) volta pro fim da
  * fila, e a que fica parada por mais tempo entra primeiro. Empate quebrado
  * por `id` pra determinismo total.
+ *
+ * O teto passou a contar TODAS as assinaturas não canceladas, não só as de
+ * categoria `WHATSAPP_SUBSCRIPTION`: o filtro de categoria saiu da query
+ * porque devolvia zero linha para uma organização do Plano 2, e quem decide o
+ * que é candidato é o núcleo. Consequência a vigiar quando a base crescer:
+ * linhas irrelevantes consomem orçamento do lote, e uma organização cujas
+ * assinaturas caiam nos dois lados do corte chega ao núcleo incompleta. O
+ * `whatsapp_enforcement_subs_capped` abaixo é o sinal de que isso passou a ser
+ * possível — atingir o teto deixou de ser só "sobrou pra amanhã".
  */
 const BATCH_LIMIT = 200;
 
@@ -89,11 +114,26 @@ const ADMIN_AMBIGUITY_EVENT_TYPE = "admin_correlation_ambiguity";
 // mesma organização ainda pendente ou enviado dentro da janela abaixo.
 const ADMIN_AMBIGUITY_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-interface WhatsAppSub {
+/**
+ * Linha crua de `billing_subscriptions` com o plano embutido. Mesma seleção de
+ * campos de `resolveWhatsAppGateByOrg` mais `organization_id`/`updated_at`
+ * (este worker varre todas as organizações; o gate resolve uma só).
+ *
+ * `included_features` pode vir `null` quando a EF roda antes da migration 094;
+ * `?? []` a trata como plano LEGADO, que é o que ela é nesse ponto do rollout.
+ */
+interface SubscriptionPlanRef {
+  category: string | null;
+  included_features: string[] | null;
+}
+
+interface SubscriptionRow {
   id: string;
   organization_id: string;
   status: string;
   canceled_at: string | null;
+  suspended_at: string | null;
+  billing_plans: SubscriptionPlanRef | SubscriptionPlanRef[] | null;
 }
 
 serve(async (req) => {
@@ -116,10 +156,17 @@ serve(async (req) => {
     const flagCheck = await checkFlagEnabled("whatsapp_service_enforcement");
     const apply = flagCheck.enabled && !flagCheck.readFailed;
 
+    // TODAS as candidatas, sem filtro de categoria e sem `.maybeSingle()` —
+    // query campo-a-campo equivalente à de `resolveWhatsAppGateByOrg` (mais o
+    // escopo de lote deste worker). O filtro `billing_plans.category` saiu
+    // porque devolvia ZERO linha para uma organização do Plano 2, que paga o
+    // pacote de automação dentro da mensalidade do sistema; quem é candidata é
+    // decisão do núcleo compartilhado, não desta query.
     const { data: subsRaw, error: subsErr } = await supabase
       .from("billing_subscriptions")
-      .select("id, organization_id, status, canceled_at, updated_at, billing_plans!inner(category)")
-      .eq("billing_plans.category", WHATSAPP_CATEGORY)
+      .select(
+        "id, organization_id, status, canceled_at, suspended_at, updated_at, billing_plans!inner(category, included_features)",
+      )
       .neq("status", "canceled")
       .order("updated_at", { ascending: true })
       .order("id", { ascending: true })
@@ -130,15 +177,15 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: "internal" }), { status: 500 });
     }
 
-    const subs = (subsRaw ?? []) as unknown as WhatsAppSub[];
+    const subs = (subsRaw ?? []) as unknown as SubscriptionRow[];
     if (subs.length === BATCH_LIMIT) {
       jsonLog("warn", { reqId, evt: "whatsapp_enforcement_subs_capped", cap: BATCH_LIMIT });
     }
 
-    // Agrupar por organização é o que permite detectar ambiguidade SEM passar
-    // por .maybeSingle() (que lançaria PGRST116 em vez de devolver uma
-    // contagem utilizável).
-    const byOrg = new Map<string, WhatsAppSub[]>();
+    // Agrupar por organização é o que dá ao núcleo o conjunto COMPLETO de
+    // candidatas da organização — é ele quem decide fonte, transição e
+    // duplicidade, e ele precisa ver todas as linhas para isso.
+    const byOrg = new Map<string, SubscriptionRow[]>();
     for (const s of subs) {
       const list = byOrg.get(s.organization_id) ?? [];
       list.push(s);
@@ -149,17 +196,41 @@ serve(async (req) => {
     let restored = 0;
     let skippedOverride = 0;
     let ambiguous = 0;
+    let noFundingSource = 0;
     let wouldSuspend = 0;
     let wouldRestore = 0;
 
     for (const [orgId, orgSubs] of byOrg) {
-      if (orgSubs.length > 1) {
+      const resolution = resolveWhatsAppSubscription({
+        subscriptions: orgSubs.map((row) => {
+          // PostgREST devolve relação aninhada como objeto OU array — normalizar.
+          const plan = Array.isArray(row.billing_plans) ? row.billing_plans[0] : row.billing_plans;
+          return {
+            id: row.id,
+            status: row.status,
+            category: plan?.category ?? "SYSTEM_SUBSCRIPTION",
+            includedFeatures: plan?.included_features ?? [],
+            canceledAt: row.canceled_at,
+            suspendedAt: row.suspended_at,
+          };
+        }),
+      });
+
+      // Mesma derivação do gate: duplicidade OU transição. Aqui ela não vira
+      // consequência (este worker não provisiona nada) — vira o log que dá ao
+      // admin a pendência de encerrar a assinatura legada.
+      const subscriptionAmbiguous =
+        resolution.kind === "AMBIGUOUS" ||
+        (resolution.kind === "RESOLVED" && resolution.provisioningAmbiguous);
+
+      if (resolution.kind === "AMBIGUOUS") {
         ambiguous++;
         jsonLog("warn", {
           reqId,
           evt: "whatsapp_ambiguous_subscription",
           org: orgId,
-          count: orgSubs.length,
+          reason: resolution.reasonCode,
+          count: resolution.candidateIds.length,
         });
 
         const dedupSince = new Date(Date.now() - ADMIN_AMBIGUITY_DEDUP_WINDOW_MS).toISOString();
@@ -210,7 +281,35 @@ serve(async (req) => {
         continue;
       }
 
-      const sub = orgSubs[0];
+      if (resolution.kind === "NONE") {
+        // Nenhuma assinatura financia WhatsApp nesta organização (ela só tem
+        // mensalidade de sistema legada, por exemplo). Antes do resolvedor
+        // essas linhas nem chegavam aqui — o filtro de categoria as descartava
+        // na query. Contar é o que mantém o resumo legível agora que o lote
+        // varre todas as categorias.
+        noFundingSource++;
+        continue;
+      }
+
+      if (subscriptionAmbiguous) {
+        // Transição resolvida: o serviço continua pela assinatura escolhida, e
+        // fica registrada a obrigação administrativa de encerrar a legada.
+        jsonLog("info", {
+          reqId,
+          evt: "whatsapp_enforcement_transition_pending",
+          org: orgId,
+          pendency: resolution.adminPendency,
+          source: resolution.source,
+          chosen: resolution.subscriptionId,
+          candidates: resolution.candidateIds.length,
+        });
+      }
+
+      const sub = {
+        id: resolution.subscriptionId,
+        status: resolution.status,
+        canceled_at: resolution.canceledAt,
+      };
 
       // Fatura em aberto mais antiga desta assinatura, excluindo as retidas —
       // mesmo padrão de whatsapp-service-gate.ts / process-billing-overdue:
@@ -264,9 +363,9 @@ serve(async (req) => {
 
       if (financial.state === "OVERDUE_BEYOND_GRACE") {
         // Override ativo de whatsapp: reusa o helper de I/O da Task 13 em vez
-        // de duplicar a leitura de organization_entitlement_overrides. Com
-        // exatamente 1 assinatura confirmada acima, o .maybeSingle() interno
-        // do gate não pode mais lançar PGRST116 por ambiguidade.
+        // de duplicar a leitura de organization_entitlement_overrides. O gate
+        // resolve a assinatura pelo MESMO núcleo chamado acima, então ele não
+        // pode discordar desta resolução nem lançar por duplicidade.
         //
         // Escopado a ESTE branch de propósito (fix round 1, achado Important
         // #2): só a decisão de SUSPENDER depende de "há override ativo?". A
@@ -414,6 +513,7 @@ serve(async (req) => {
       would_restore: wouldRestore,
       skipped_override: skippedOverride,
       ambiguous,
+      no_funding_source: noFundingSource,
     };
 
     jsonLog("info", { reqId, evt: "whatsapp_enforcement_done", ...summary });

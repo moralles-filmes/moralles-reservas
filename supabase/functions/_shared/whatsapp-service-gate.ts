@@ -11,6 +11,14 @@
  * abaixo. Este arquivo só lê o banco, valida o que lê, e repassa aos dois
  * núcleos; não reimplementa nenhuma lógica de consequência.
  *
+ * QUAL ASSINATURA FINANCIA O WHATSAPP é decisão de um terceiro núcleo puro,
+ * `whatsapp-subscription-resolver-core.ts`, compartilhado com
+ * `process-whatsapp-enforcement/index.ts`. As duas queries eram campo-a-campo
+ * idênticas por disciplina humana; agora a garantia é estrutural. Reintroduzir
+ * aqui um filtro de categoria ou uma precedência de status local faz o worker
+ * de suspensão e o gate de envio voltarem a discordar sobre quem está
+ * inadimplente.
+ *
  * CACHE POR INVOCAÇÃO: `orgCache`/`unitToOrg` são zerados no início de cada
  * invocação pelo caller (`clearWhatsAppGateCache()`), mesmo padrão do
  * `unitCache` dos workers — sem isso, um isolate quente serviria estado velho
@@ -40,6 +48,10 @@ import {
   type WhatsAppGateDecision,
   type ProvisioningEligibility,
 } from "./whatsapp-service-state-core.ts";
+import {
+  resolveWhatsAppSubscription,
+  type WhatsAppSubscriptionResolution,
+} from "./whatsapp-subscription-resolver-core.ts";
 
 // Re-exportado para callers que já importam deste módulo (ex.: manage-channels)
 // tipar um `Record` exaustivo sobre os sete estados sem abrir um import novo
@@ -48,7 +60,36 @@ import {
 // whatsapp-service-gate.ts") verdadeiro.
 export type { WhatsAppServiceState } from "./whatsapp-service-state-core.ts";
 
-const WHATSAPP_CATEGORY = "WHATSAPP_SUBSCRIPTION";
+/**
+ * Derivado do próprio núcleo, sem lista paralela: se a pendência ganhar um
+ * segundo valor lá, este tipo acompanha e `tsc -b` cobra os callers.
+ */
+type WhatsAppAdminPendency = Extract<
+  WhatsAppSubscriptionResolution,
+  { kind: "RESOLVED" }
+>["adminPendency"];
+
+/**
+ * Linha crua de `billing_subscriptions` com o plano embutido. A relação
+ * aninhada volta do PostgREST como objeto OU array — normalizada abaixo, mesmo
+ * padrão de `entitlements.ts`.
+ *
+ * `included_features` pode vir `null` quando a EF roda antes da migration 094;
+ * `?? []` a trata como plano LEGADO, que é exatamente o que ela é nesse ponto
+ * do rollout.
+ */
+interface SubscriptionPlanRef {
+  category: string | null;
+  included_features: string[] | null;
+}
+
+interface SubscriptionGateRow {
+  id: string;
+  status: string;
+  canceled_at: string | null;
+  suspended_at: string | null;
+  billing_plans: SubscriptionPlanRef | SubscriptionPlanRef[] | null;
+}
 
 export interface ServiceGateResult extends WhatsAppGateDecision {
   organizationId: string;
@@ -89,6 +130,24 @@ export interface ServiceGateResult extends WhatsAppGateDecision {
    * consome isto não pode tratar `null` aqui como "não está suspenso".
    */
   suspendedAt: string | null;
+  /**
+   * A fonte financeira do WhatsApp não é única e inequívoca — transição entre
+   * o modelo antigo (`WHATSAPP_SUBSCRIPTION` separada) e o de dois planos
+   * (plano de sistema que declara `whatsapp`), ou duplicidade inesperada na
+   * mesma categoria. Vem de `resolveWhatsAppSubscription`.
+   *
+   * DELIBERADAMENTE ≠ `readFailed`: soluço técnico e pendência comercial são
+   * estados diferentes, e colapsá-los faria uma transição legítima parecer
+   * banco fora do ar. Sai daqui porque o painel da plataforma precisa vê-lo —
+   * campo que não sai do adapter é decorativo.
+   */
+  subscriptionAmbiguous: boolean;
+  /**
+   * Obrigação administrativa pendente derivada da mesma resolução (hoje:
+   * encerrar a assinatura legada de WhatsApp que ainda está aberta ao lado do
+   * plano novo). `null` quando não há nada a fazer.
+   */
+  adminPendency: WhatsAppAdminPendency;
 }
 
 const orgCache = new Map<string, ServiceGateResult>();
@@ -122,13 +181,24 @@ export async function resolveWhatsAppGateByOrg(
       .is("revoked_at", null)
       .lte("starts_at", nowIso)
       .or(`ends_at.is.null,ends_at.gt.${nowIso}`),
+    // TODAS as candidatas, sem filtro de categoria e sem `.maybeSingle()`.
+    //
+    // Sem `.maybeSingle()` porque ele LANÇA com mais de uma linha, e a
+    // transição entre o modelo antigo e o de dois planos produz exatamente
+    // duas linhas elegíveis.
+    //
+    // Sem filtro de igualdade sobre a categoria do plano porque ele devolvia
+    // ZERO linha para uma organização do Plano 2 — que paga pelo pacote de
+    // automação dentro da mensalidade do sistema e cairia em `NOT_ENTITLED`.
+    //
+    // Qual delas financia o WhatsApp é decisão do NÚCLEO PURO
+    // (`whatsapp-subscription-resolver-core.ts`), compartilhado com
+    // `process-whatsapp-enforcement` — esta camada só lê e normaliza.
     supabase
       .from("billing_subscriptions")
-      .select("id, status, canceled_at, suspended_at, billing_plans!inner(category)")
+      .select("id, status, canceled_at, suspended_at, billing_plans!inner(category, included_features)")
       .eq("organization_id", organizationId)
-      .eq("billing_plans.category", WHATSAPP_CATEGORY)
-      .neq("status", "canceled")
-      .maybeSingle(),
+      .neq("status", "canceled"),
     checkFlagEnabled("whatsapp_service_enforcement"),
   ]);
 
@@ -149,9 +219,65 @@ export async function resolveWhatsAppGateByOrg(
   }
 
   const overrides = (overridesRes.data ?? []) as { enabled: boolean }[];
-  const sub = subRes.data as
-    | { id: string; status: string; canceled_at: string | null; suspended_at: string | null }
-    | null;
+
+  const resolution = resolveWhatsAppSubscription({
+    subscriptions: ((subRes.data ?? []) as unknown as SubscriptionGateRow[]).map((row) => {
+      // PostgREST devolve relação aninhada como objeto OU array — normalizar.
+      const plan = Array.isArray(row.billing_plans) ? row.billing_plans[0] : row.billing_plans;
+      return {
+        id: row.id,
+        status: row.status,
+        category: plan?.category ?? "SYSTEM_SUBSCRIPTION",
+        includedFeatures: plan?.included_features ?? [],
+        canceledAt: row.canceled_at,
+        suspendedAt: row.suspended_at,
+      };
+    }),
+  });
+
+  // Ambiguidade COMERCIAL — deliberadamente separada de `dataReadFailed`.
+  // Colapsar as duas faria uma transição legítima parecer banco fora do ar e
+  // mandaria o motivo errado para a telemetria e para a UI.
+  const subscriptionAmbiguous =
+    resolution.kind === "AMBIGUOUS" ||
+    (resolution.kind === "RESOLVED" && resolution.provisioningAmbiguous);
+
+  const adminPendency: WhatsAppAdminPendency =
+    resolution.kind === "RESOLVED" ? resolution.adminPendency : null;
+
+  // Dois eventos distintos de propósito: duplicidade inesperada é defeito de
+  // dados (warn), transição entre modelos é pendência administrativa esperada
+  // (info). Só identificadores e contagens — nunca o payload das linhas.
+  if (resolution.kind === "AMBIGUOUS") {
+    jsonLog("warn", {
+      evt: "whatsapp_gate_ambiguous_subscription",
+      org: organizationId,
+      reason: resolution.reasonCode,
+      candidates: resolution.candidateIds.length,
+    });
+  } else if (resolution.kind === "RESOLVED" && resolution.adminPendency) {
+    jsonLog("info", {
+      evt: "whatsapp_gate_transition_pending",
+      org: organizationId,
+      pendency: resolution.adminPendency,
+      source: resolution.source,
+      chosen: resolution.subscriptionId,
+      candidates: resolution.candidateIds.length,
+    });
+  }
+
+  // Mesmo shape que o resto deste arquivo já consumia — a leitura de
+  // `billing_invoices`, `normalizeFinancialState` e `decideWhatsAppGate` não
+  // mudam. `null` = nenhuma fonte financeira (NONE ou AMBIGUOUS).
+  const sub =
+    resolution.kind === "RESOLVED"
+      ? {
+          id: resolution.subscriptionId,
+          status: resolution.status,
+          canceled_at: resolution.canceledAt,
+          suspended_at: resolution.suspendedAt,
+        }
+      : null;
 
   // Fatura em aberto mais antiga da assinatura, JÁ EXCLUINDO as retidas —
   // fatura em revisão administrativa não conta como atraso, por definição.
@@ -228,6 +354,9 @@ export async function resolveWhatsAppGateByOrg(
     isLegacyGrandfathered:
       orgRes.data?.whatsapp_legacy_grandfathered === true &&
       orgRes.data?.whatsapp_grandfather_revoked_at === null,
+    // Não altera nenhum dos sete estados nem `sendingBlocked` — envio existente
+    // falha ABERTO à ambiguidade. Vai junto porque a decisão é uma só.
+    subscriptionAmbiguous,
   });
 
   const enforcement = resolveEnforcement({
@@ -239,7 +368,11 @@ export async function resolveWhatsAppGateByOrg(
 
   // `dataReadFailed`, não `readFailed` — a falha de leitura da flag de
   // enforcement não entra nesta conta (provisionamento nunca consulta a flag).
-  const provisioning = resolveProvisioningEligibility({ decision, dataReadFailed });
+  const provisioning = resolveProvisioningEligibility({
+    decision,
+    dataReadFailed,
+    subscriptionAmbiguous,
+  });
 
   const readFailed = dataReadFailed || flagCheck.readFailed;
 
@@ -252,6 +385,8 @@ export async function resolveWhatsAppGateByOrg(
     readFailed,
     graceEndsAt: financial.graceEndsAt,
     suspendedAt: sub?.suspended_at ?? null,
+    subscriptionAmbiguous,
+    adminPendency,
   };
 
   // Log guiado pelo campo `telemetry` do núcleo — nunca os dois ao mesmo
