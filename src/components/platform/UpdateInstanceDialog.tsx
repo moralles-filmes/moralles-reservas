@@ -127,7 +127,23 @@ export function UpdateInstanceDialog({
         <ResponsiveDialogBody className="space-y-3">
           <div className="space-y-1">
             <Label htmlFor="upd-unit">Unidade</Label>
-            <Select value={unitId} onValueChange={setUnitId}>
+            <Select
+              value={unitId}
+              onValueChange={(v) => {
+                // Repor aqui, não num `useEffect([unitId])`: o efeito de recarga
+                // acima chama `setUnitId` DIRETO, então este handler só vê a
+                // troca deliberada do operador — a carga inicial preserva o
+                // canal salvo. Sem repor, `channel_id` fica de fora do patch
+                // (não mudou) mas `unit_id` entra; a trigger de tenant
+                // (`whatsapp_instances_tenant_guard`) dispara por causa do
+                // `unit_id` e recusa o `channel_id` antigo contra a unidade
+                // nova — erro determinístico com mensagem de "outra
+                // organização" que aqui está sempre errada, porque a lista já
+                // é filtrada pela mesma organização.
+                setUnitId(v);
+                setChannelId(NO_CHANNEL);
+              }}
+            >
               <SelectTrigger id="upd-unit" className="h-12 sm:h-10">
                 <SelectValue placeholder="Escolha a unidade" />
               </SelectTrigger>
