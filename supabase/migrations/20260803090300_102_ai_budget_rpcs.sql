@@ -9,6 +9,10 @@
 -- e session-scoped e nao sobrevive ao pooling transaction-mode do PgBouncer
 -- (licao da migration 056, lock de conversa por TTL em coluna).
 --
+-- ORDEM DE LOCK UNICA — ai_cycle_budgets ANTES de ai_cost_reservations em
+-- TODAS as funcoes; inverter em uma delas reintroduz deadlock (40P01) entre a
+-- varredura de expiradas de reserve_ai_budget e as demais RPCs.
+--
 -- NENHUMA FUNCAO AQUI CONTA CONVERSA, MENSAGEM OU INTERACAO. O unico teto e
 -- financeiro (§18.1).
 --
@@ -237,17 +241,40 @@ security definer
 set search_path = public
 as $$
 declare
-  v_res ai_cost_reservations%rowtype;
-  v_res_id uuid;
+  v_cycle_id uuid;
   v_budget ai_cycle_budgets%rowtype;
+  v_res ai_cost_reservations%rowtype;
   v_committed integer;
   v_available integer;
 begin
-  -- Sob lock: sem isto, a checagem de status abaixo pode ler uma reserva HELD
-  -- que outra invocacao (finalize_ai_reservation, ou a varredura interna de
-  -- reserve_ai_budget) termina de finalizar um instante depois — o UPDATE
-  -- final abaixo e quem fecha essa janela, mas o SELECT precisa do mesmo lock
-  -- pra decisao de disponivel ficar coerente com o estado que sera escrito.
+  -- Passo 1: le a reserva SEM lock, so pra descobrir a que ciclo ela pertence.
+  -- ORDEM DE LOCK UNICA (ver cabecalho do arquivo): ai_cycle_budgets sempre
+  -- antes de ai_cost_reservations — travar a reserva primeiro aqui inverteria
+  -- a ordem de reserve_ai_budget e reabriria o deadlock 40P01 entre a
+  -- varredura de expiradas e esta extensao.
+  select cycle_id into v_cycle_id
+  from ai_cost_reservations
+  where id = p_reservation_id and organization_id = p_organization_id;
+
+  if not found then
+    return query select 'ERROR'::text, 'reservation_not_found'::text, null::uuid, 0, 0, 0;
+    return;
+  end if;
+
+  -- Passo 2: trava o ORCAMENTO primeiro.
+  select * into v_budget
+  from ai_cycle_budgets
+  where id = v_cycle_id and organization_id = p_organization_id
+  for update;
+
+  if not found then
+    return query select 'ERROR'::text, 'cycle_not_found'::text, p_reservation_id, 0, 0, 0;
+    return;
+  end if;
+
+  -- Passo 3: so agora trava a RESERVA. Dali em diante TODAS as decisoes
+  -- (terminal, expiracao, HELD/nao-HELD) usam este snapshot travado — nunca o
+  -- do passo 1.
   select * into v_res
   from ai_cost_reservations
   where id = p_reservation_id and organization_id = p_organization_id
@@ -276,17 +303,6 @@ begin
     return;
   end if;
 
-  select * into v_budget
-  from ai_cycle_budgets
-  where id = v_res.cycle_id and organization_id = p_organization_id
-  for update;
-
-  if not found then
-    return query select 'ERROR'::text, 'cycle_not_found'::text, v_res.id,
-                        v_res.reserved_cents, v_res.consumed_cents, 0;
-    return;
-  end if;
-
   select coalesce(sum(greatest(reserved_cents - consumed_cents, 0)), 0)
     into v_committed
     from ai_cost_reservations
@@ -303,13 +319,9 @@ begin
   end if;
 
   -- `and status = 'HELD'` no WHERE: um UPDATE que nao casa nenhuma linha nao
-  -- pode passar por sucesso silencioso. A checagem de status no topo da
-  -- funcao ja filtrou a maioria dos casos, mas esta e a garantia sob o MESMO
-  -- lock — sem ela, um UPDATE que casa zero linhas ainda devolveria ALLOW com
-  -- os valores antigos de v_res. v_res_id preserva a identidade: um UPDATE
-  -- que casa zero linhas zera os campos de v_res (inclusive v_res.id).
-  v_res_id := v_res.id;
-
+  -- pode passar por sucesso silencioso. Sob o lock adquirido no passo 3 isto e
+  -- inalcancavel na pratica (ninguem mais pode mudar o status entre o passo 3
+  -- e aqui), mas a garantia fica explicita mesmo assim.
   update ai_cost_reservations
      set reserved_cents = reserved_cents + greatest(p_additional_cents, 0)
    where id = v_res.id
@@ -317,7 +329,7 @@ begin
   returning * into v_res;
 
   if not found then
-    return query select 'ERROR'::text, 'reservation_finalized'::text, v_res_id, 0, 0, 0;
+    return query select 'ERROR'::text, 'reservation_finalized'::text, p_reservation_id, 0, 0, 0;
     return;
   end if;
 
@@ -370,8 +382,9 @@ set search_path = public
 as $$
 declare
   v_event_id uuid;
-  v_res ai_cost_reservations%rowtype;
+  v_cycle_id uuid;
   v_budget ai_cycle_budgets%rowtype;
+  v_res ai_cost_reservations%rowtype;
   v_new_settled integer;
   v_state text;
 begin
@@ -393,6 +406,30 @@ begin
   on conflict (organization_id, idempotency_key) do nothing
   returning id into v_event_id;
 
+  -- Passo 1: le a reserva SEM lock, so pra descobrir a que ciclo ela pertence.
+  -- ORDEM DE LOCK UNICA (ver cabecalho do arquivo): ai_cycle_budgets sempre
+  -- antes de ai_cost_reservations, nas cinco funcoes.
+  select cycle_id into v_cycle_id
+  from ai_cost_reservations
+  where id = p_reservation_id and organization_id = p_organization_id;
+
+  if not found then
+    return query select (v_event_id is not null), 0, 0, false;
+    return;
+  end if;
+
+  -- Passo 2: trava o ORCAMENTO primeiro — SEMPRE, mesmo quando o evento e uma
+  -- reexecucao idempotente que nao vai escrever nada e mesmo no ramo HELD que
+  -- nao toca settled_cents. Mais trabalho por chamada em troca de uma unica
+  -- ordem de lock nas cinco RPCs (ver cabecalho do arquivo).
+  select * into v_budget
+  from ai_cycle_budgets
+  where id = v_cycle_id and organization_id = p_organization_id
+  for update;
+
+  -- Passo 3: so agora trava a RESERVA. Dali em diante TODAS as decisoes
+  -- (status terminal, HELD/nao-HELD) usam este snapshot travado — nunca o do
+  -- passo 1.
   select * into v_res
   from ai_cost_reservations
   where id = p_reservation_id and organization_id = p_organization_id
@@ -412,26 +449,20 @@ begin
       -- (estado terminal e terminal) e NAO tocar em consumed_cents dela —
       -- o custo vai direto pro ciclo, porque descarta-lo seria franquia
       -- adicional silenciosa e reabrir violaria a garantia de terminalidade.
-      select * into v_budget
-      from ai_cycle_budgets
-      where id = v_res.cycle_id and organization_id = p_organization_id
-      for update;
+      -- v_budget ja esta travado desde o passo 2.
+      v_new_settled := v_budget.settled_cents + greatest(p_cost_brl_cents, 0);
+      v_state := case when v_new_settled >= v_budget.limit_cents then 'EXHAUSTED' else v_budget.state end;
 
-      if found then
-        v_new_settled := v_budget.settled_cents + greatest(p_cost_brl_cents, 0);
-        v_state := case when v_new_settled >= v_budget.limit_cents then 'EXHAUSTED' else v_budget.state end;
-
-        update ai_cycle_budgets
-           set settled_cents = settled_cents + greatest(p_cost_brl_cents, 0),
-               state = v_state,
-               -- O momento do esgotamento nao e derivavel depois. Carimbado uma vez.
-               exhausted_at = case
-                 when v_state = 'EXHAUSTED' and exhausted_at is null then now()
-                 else exhausted_at
-               end,
-               updated_at = now()
-         where id = v_budget.id;
-      end if;
+      update ai_cycle_budgets
+         set settled_cents = settled_cents + greatest(p_cost_brl_cents, 0),
+             state = v_state,
+             -- O momento do esgotamento nao e derivavel depois. Carimbado uma vez.
+             exhausted_at = case
+               when v_state = 'EXHAUSTED' and exhausted_at is null then now()
+               else exhausted_at
+             end,
+             updated_at = now()
+       where id = v_budget.id;
     else
       -- USAGE_REVIEW_REQUIRED marca a reserva de forma STICKY: uma vez true, so
       -- volta a false por reconciliacao administrativa (fora destas RPCs) —
@@ -483,8 +514,9 @@ security definer
 set search_path = public
 as $$
 declare
-  v_res ai_cost_reservations%rowtype;
+  v_cycle_id uuid;
   v_budget ai_cycle_budgets%rowtype;
+  v_res ai_cost_reservations%rowtype;
   v_new_settled integer;
   v_state text;
 begin
@@ -493,6 +525,31 @@ begin
     return;
   end if;
 
+  -- Passo 1: le a reserva SEM lock, so pra descobrir a que ciclo ela pertence.
+  -- ORDEM DE LOCK UNICA (ver cabecalho do arquivo): ai_cycle_budgets sempre
+  -- antes de ai_cost_reservations, nas cinco funcoes.
+  select cycle_id into v_cycle_id
+  from ai_cost_reservations
+  where id = p_reservation_id and organization_id = p_organization_id;
+
+  if not found then
+    return query select false, 0, 0, 'RESERVATION_NOT_FOUND'::text;
+    return;
+  end if;
+
+  -- Passo 2: trava o ORCAMENTO primeiro.
+  select * into v_budget
+  from ai_cycle_budgets
+  where id = v_cycle_id and organization_id = p_organization_id
+  for update;
+
+  if not found then
+    return query select false, 0, 0, 'CYCLE_NOT_FOUND'::text;
+    return;
+  end if;
+
+  -- Passo 3: so agora trava a RESERVA. Dali em diante toda decisao usa este
+  -- snapshot travado — nunca o do passo 1.
   select * into v_res
   from ai_cost_reservations
   where id = p_reservation_id and organization_id = p_organization_id
@@ -500,16 +557,6 @@ begin
 
   if not found then
     return query select false, 0, 0, 'RESERVATION_NOT_FOUND'::text;
-    return;
-  end if;
-
-  select * into v_budget
-  from ai_cycle_budgets
-  where id = v_res.cycle_id and organization_id = p_organization_id
-  for update;
-
-  if not found then
-    return query select false, 0, 0, 'CYCLE_NOT_FOUND'::text;
     return;
   end if;
 

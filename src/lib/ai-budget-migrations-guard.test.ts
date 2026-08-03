@@ -278,4 +278,24 @@ describe("RPCs do orçamento (102)", () => {
     expect(body).toMatch(/from ai_cost_reservations[\s\S]{0,200}for update/i);
     expect(body).toMatch(/update ai_cost_reservations[\s\S]{0,300}and status = 'HELD'/i);
   });
+
+  it("as cinco RPCs travam o orçamento ANTES da reserva — ordem de lock única", () => {
+    // Inverter em UMA delas reintroduz deadlock entre a varredura de expiradas
+    // (reserve_ai_budget) e a extensão de reserva.
+    for (const fn of RPC_NAMES) {
+      const i = rpcs.indexOf(`function public.${fn}(`);
+      const body = rpcs.slice(i, rpcs.indexOf("$$;", i));
+      const budgetLock = body.search(/from ai_cycle_budgets[\s\S]{0,200}?for update/i);
+      const resLock = body.search(/from ai_cost_reservations[\s\S]{0,200}?for update/i);
+      if (budgetLock === -1 || resLock === -1) continue; // função que só trava um dos dois
+      expect(budgetLock, `${fn} trava a reserva antes do orçamento`).toBeLessThan(resLock);
+    }
+  });
+
+  it("controle positivo: o detector de ordem enxerga os dois locks", () => {
+    const i = rpcs.indexOf("function public.finalize_ai_reservation(");
+    const body = rpcs.slice(i, rpcs.indexOf("$$;", i));
+    expect(body.search(/from ai_cycle_budgets[\s\S]{0,200}?for update/i)).toBeGreaterThan(-1);
+    expect(body.search(/from ai_cost_reservations[\s\S]{0,200}?for update/i)).toBeGreaterThan(-1);
+  });
 });
