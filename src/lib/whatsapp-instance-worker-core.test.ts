@@ -138,7 +138,11 @@ function makeBench(opts: {
       listCycleInstances: async () => ({ ok: true, rows: [] }),
       resolveRevenue: async () => ({
         ok: true,
-        value: { customerRevenueCents: 10000, revenueSource: "SUBSCRIPTION_SOLE_INSTANCE" },
+        value: {
+          kind: "ATTRIBUTED" as const,
+          customerRevenueCents: 10000,
+          revenueSource: "SUBSCRIPTION_SOLE_INSTANCE" as const,
+        },
       }),
       hasOpenDivergence: async () => ({ ok: true, value: false }),
       listEndConfirmationCandidates: async () => ({ ok: true, rows: [] }),
@@ -597,7 +601,11 @@ describe("H — economia distingue ausência de silêncio", () => {
         }),
         resolveRevenue: async () => ({
           ok: true,
-          value: { customerRevenueCents: null, revenueSource: "LIFETIME_OVERRIDE" },
+          value: {
+            kind: "ATTRIBUTED" as const,
+            customerRevenueCents: null,
+            revenueSource: "LIFETIME_OVERRIDE" as const,
+          },
         }),
       },
     });
@@ -619,7 +627,11 @@ describe("H — economia distingue ausência de silêncio", () => {
         }),
         resolveRevenue: async () => ({
           ok: true,
-          value: { customerRevenueCents: null, revenueSource: "NO_ENTITLEMENT" },
+          value: {
+            kind: "ATTRIBUTED" as const,
+            customerRevenueCents: null,
+            revenueSource: "NO_ENTITLEMENT" as const,
+          },
         }),
       },
     });

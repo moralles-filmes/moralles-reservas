@@ -33,7 +33,7 @@ import {
 import { nextDueFromAnchor, daysUntil } from "./whatsapp-instance-cycle-core.ts";
 import {
   consolidateOrgMargin,
-  type RevenueAttribution,
+  type AttributedRevenue,
 } from "./whatsapp-instance-revenue-core.ts";
 import {
   detectChannelWithoutInstance,
@@ -169,7 +169,10 @@ export type WorkerRepo = {
   rollCycle(a: { instanceId: string; today: string; nextDueOn: string }): Promise<Fetch<string | null>>;
 
   listCycleInstances(): Promise<Query<CycleInstance>>;
-  resolveRevenue(organizationId: string): Promise<Fetch<RevenueAttribution>>;
+  // `AttributedRevenue` e nao a uniao: `INVALID_INPUT` NAO chega ate aqui. O
+  // adapter resolve os fatos e recusa antes — atribuicao com fatos
+  // inconsistentes nao pode ser persistida como economia do ciclo.
+  resolveRevenue(organizationId: string): Promise<Fetch<AttributedRevenue>>;
   hasOpenDivergence(instanceId: string): Promise<Fetch<boolean>>;
 
   listEndConfirmationCandidates(today: string): Promise<Query<CycleInstance & { endConfirmationRequiredAt: string | null }>>;

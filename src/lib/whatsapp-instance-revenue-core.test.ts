@@ -14,7 +14,11 @@ describe("attributeRevenue (spec §7.3)", () => {
         subscriptionAmountCents: 14900,
         hasLifetimeWhatsappOverride: false,
       }),
-    ).toEqual({ customerRevenueCents: 14900, revenueSource: "SUBSCRIPTION_SOLE_INSTANCE" });
+    ).toEqual({
+      kind: "ATTRIBUTED",
+      customerRevenueCents: 14900,
+      revenueSource: "SUBSCRIPTION_SOLE_INSTANCE",
+    });
   });
 
   it("N>1 instâncias + 1 assinatura: NULL — copiar os R$149 para cada uma inflaria a receita em N×", () => {
@@ -24,7 +28,11 @@ describe("attributeRevenue (spec §7.3)", () => {
         subscriptionAmountCents: 14900,
         hasLifetimeWhatsappOverride: false,
       }),
-    ).toEqual({ customerRevenueCents: null, revenueSource: "AMBIGUOUS_MULTI_INSTANCE" });
+    ).toEqual({
+      kind: "ATTRIBUTED",
+      customerRevenueCents: null,
+      revenueSource: "AMBIGUOUS_MULTI_INSTANCE",
+    });
   });
 
   it("override vitalício: ZERO verdadeiro, não desconhecido — e vence a assinatura", () => {
@@ -34,17 +42,18 @@ describe("attributeRevenue (spec §7.3)", () => {
         subscriptionAmountCents: 14900,
         hasLifetimeWhatsappOverride: true,
       }),
-    ).toEqual({ customerRevenueCents: 0, revenueSource: "LIFETIME_OVERRIDE" });
+    ).toEqual({ kind: "ATTRIBUTED", customerRevenueCents: 0, revenueSource: "LIFETIME_OVERRIDE" });
   });
 
   it("override vitalício vence também com N instâncias", () => {
-    expect(
-      attributeRevenue({
-        activeInstanceCount: 4,
-        subscriptionAmountCents: null,
-        hasLifetimeWhatsappOverride: true,
-      }).revenueSource,
-    ).toBe("LIFETIME_OVERRIDE");
+    const r = attributeRevenue({
+      activeInstanceCount: 4,
+      subscriptionAmountCents: null,
+      hasLifetimeWhatsappOverride: true,
+    });
+    expect(r.kind).toBe("ATTRIBUTED");
+    if (r.kind !== "ATTRIBUTED") return;
+    expect(r.revenueSource).toBe("LIFETIME_OVERRIDE");
   });
 
   it("sem assinatura e sem override: NULL + NO_ENTITLEMENT (gera alerta no caller)", () => {
@@ -54,7 +63,11 @@ describe("attributeRevenue (spec §7.3)", () => {
         subscriptionAmountCents: null,
         hasLifetimeWhatsappOverride: false,
       }),
-    ).toEqual({ customerRevenueCents: null, revenueSource: "NO_ENTITLEMENT" });
+    ).toEqual({
+      kind: "ATTRIBUTED",
+      customerRevenueCents: null,
+      revenueSource: "NO_ENTITLEMENT",
+    });
   });
 
   it("assinatura de valor zero NÃO é ausência de assinatura", () => {
@@ -64,7 +77,120 @@ describe("attributeRevenue (spec §7.3)", () => {
         subscriptionAmountCents: 0,
         hasLifetimeWhatsappOverride: false,
       }),
-    ).toEqual({ customerRevenueCents: 0, revenueSource: "SUBSCRIPTION_SOLE_INSTANCE" });
+    ).toEqual({
+      kind: "ATTRIBUTED",
+      customerRevenueCents: 0,
+      revenueSource: "SUBSCRIPTION_SOLE_INSTANCE",
+    });
+  });
+});
+
+describe("attributeRevenue — componente do pacote de automação (PLAN_COMPONENT)", () => {
+  it("componente de plano com UMA instancia vira PLAN_COMPONENT", () => {
+    const r = attributeRevenue({
+      activeInstanceCount: 1,
+      subscriptionAmountCents: 79990,
+      hasLifetimeWhatsappOverride: false,
+      planWhatsappComponentCents: 35000,
+    });
+    expect(r.kind).toBe("ATTRIBUTED");
+    if (r.kind !== "ATTRIBUTED") return;
+    expect(r.revenueSource).toBe("PLAN_COMPONENT");
+    expect(r.customerRevenueCents).toBe(35000);
+  });
+
+  it("componente com DUAS instancias e ambiguo, nunca dividido nem duplicado", () => {
+    const r = attributeRevenue({
+      activeInstanceCount: 2,
+      subscriptionAmountCents: 79990,
+      hasLifetimeWhatsappOverride: false,
+      planWhatsappComponentCents: 35000,
+    });
+    expect(r.kind).toBe("ATTRIBUTED");
+    if (r.kind !== "ATTRIBUTED") return;
+    expect(r.revenueSource).toBe("AMBIGUOUS_MULTI_INSTANCE");
+    expect(r.customerRevenueCents).toBeNull();
+  });
+
+  it("ZERO instancias retorna INVALID_INPUT, nunca uma origem de receita", () => {
+    const r = attributeRevenue({
+      activeInstanceCount: 0,
+      subscriptionAmountCents: 79990,
+      hasLifetimeWhatsappOverride: false,
+      planWhatsappComponentCents: 35000,
+    });
+    expect(r.kind).toBe("INVALID_INPUT");
+    if (r.kind !== "INVALID_INPUT") return;
+    expect(r.reasonCode).toBe("NO_ACTIVE_INSTANCE");
+  });
+
+  it("INVALID_INPUT nao possui revenueSource", () => {
+    const r = attributeRevenue({
+      activeInstanceCount: 0,
+      subscriptionAmountCents: 79990,
+      hasLifetimeWhatsappOverride: false,
+      planWhatsappComponentCents: 35000,
+    });
+    expect((r as Record<string, unknown>).revenueSource).toBeUndefined();
+    expect((r as Record<string, unknown>).customerRevenueCents).toBeUndefined();
+  });
+
+  it("INVALID_INPUT vence ate o override vitalicio — fatos inconsistentes nao viram receita zero", () => {
+    const r = attributeRevenue({
+      activeInstanceCount: 0,
+      subscriptionAmountCents: 79990,
+      hasLifetimeWhatsappOverride: true,
+      planWhatsappComponentCents: 35000,
+    });
+    expect(r.kind).toBe("INVALID_INPUT");
+  });
+
+  it("contagem negativa ou nao-numerica tambem e INVALID_INPUT", () => {
+    for (const activeInstanceCount of [-1, Number.NaN]) {
+      const r = attributeRevenue({
+        activeInstanceCount,
+        subscriptionAmountCents: 14900,
+        hasLifetimeWhatsappOverride: false,
+      });
+      expect(r.kind).toBe("INVALID_INPUT");
+    }
+  });
+
+  it("ausencia REAL de entitlement continua sendo NO_ENTITLEMENT", () => {
+    const r = attributeRevenue({
+      activeInstanceCount: 1,
+      subscriptionAmountCents: null,
+      hasLifetimeWhatsappOverride: false,
+    });
+    expect(r.kind).toBe("ATTRIBUTED");
+    if (r.kind !== "ATTRIBUTED") return;
+    expect(r.revenueSource).toBe("NO_ENTITLEMENT");
+    expect(r.customerRevenueCents).toBeNull();
+  });
+
+  it("override vitalicio vence o componente (Ren Sushi)", () => {
+    const r = attributeRevenue({
+      activeInstanceCount: 1,
+      subscriptionAmountCents: 79990,
+      hasLifetimeWhatsappOverride: true,
+      planWhatsappComponentCents: 35000,
+    });
+    expect(r.kind).toBe("ATTRIBUTED");
+    if (r.kind !== "ATTRIBUTED") return;
+    expect(r.revenueSource).toBe("LIFETIME_OVERRIDE");
+    expect(r.customerRevenueCents).toBe(0);
+  });
+
+  it("plano sem componente mantem o caminho legado", () => {
+    const r = attributeRevenue({
+      activeInstanceCount: 1,
+      subscriptionAmountCents: 14900,
+      hasLifetimeWhatsappOverride: false,
+    });
+    expect(r.kind).toBe("ATTRIBUTED");
+    if (r.kind !== "ATTRIBUTED") return;
+    expect(r.revenueSource).toBe("SUBSCRIPTION_SOLE_INSTANCE");
+    expect(r.customerRevenueCents).toBe(14900);
   });
 });
 

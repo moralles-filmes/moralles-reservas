@@ -29,7 +29,7 @@ import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.
 import { todayBrt } from "../_shared/billing-delinquency-core.ts";
 import {
   attributeRevenue,
-  type RevenueAttribution,
+  type AttributedRevenue,
 } from "../_shared/whatsapp-instance-revenue-core.ts";
 import {
   resolvePlatformAdminRecipients,
@@ -105,7 +105,7 @@ function toCycleInstance(r: Record<string, unknown>): CycleInstance {
  * sistema aqui misturaria dois produtos e faria toda organização parecer
  * lucrativa no WhatsApp.
  */
-async function resolveRevenueForOrg(organizationId: string): Promise<Fetch<RevenueAttribution>> {
+async function resolveRevenueForOrg(organizationId: string): Promise<Fetch<AttributedRevenue>> {
   const [countRes, subRes, overrideRes] = await Promise.all([
     supabase.from("whatsapp_instances").select("id", { count: "exact", head: true })
       .eq("organization_id", organizationId).eq("lifecycle_state", "ACTIVE"),
@@ -135,14 +135,27 @@ async function resolveRevenueForOrg(organizationId: string): Promise<Fetch<Reven
   const plan = (subRes.data as unknown as { billing_plans?: { amount_cents?: number } } | null)
     ?.billing_plans;
 
-  return {
-    ok: true,
-    value: attributeRevenue({
-      activeInstanceCount: countRes.count ?? 0,
-      subscriptionAmountCents: typeof plan?.amount_cents === "number" ? plan.amount_cents : null,
-      hasLifetimeWhatsappOverride: !!overrideRes.data,
-    }),
-  };
+  const attribution = attributeRevenue({
+    activeInstanceCount: countRes.count ?? 0,
+    subscriptionAmountCents: typeof plan?.amount_cents === "number" ? plan.amount_cents : null,
+    hasLifetimeWhatsappOverride: !!overrideRes.data,
+  });
+
+  // Fatos internamente inconsistentes NÃO viram economia do ciclo. `kind !==
+  // "ATTRIBUTED"` com early-return porque `strict: false` não estreita união
+  // discriminada por teste booleano implícito. Só identificadores no log —
+  // nunca payload bruto.
+  if (attribution.kind !== "ATTRIBUTED") {
+    jsonLog("warn", {
+      evt: "wa_revenue_invalid_input",
+      reason: attribution.reasonCode,
+      organizationId,
+      needsAdminAction: true,
+    });
+    return { ok: false, message: `revenue_invalid_input:${attribution.reasonCode}` };
+  }
+
+  return { ok: true, value: attribution };
 }
 
 const alertRepo: AlertRepo = {
