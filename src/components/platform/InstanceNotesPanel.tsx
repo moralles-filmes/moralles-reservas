@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDateBR } from "@/lib/utils";
+import { formatDateBR, formatMessageTime, isoToLocalDate } from "@/lib/utils";
 import { instanceNoteActionLabel } from "@/lib/whatsapp-instance-format";
 import { useWhatsappInstanceNotes } from "@/hooks/useWhatsappInstances";
 
@@ -46,7 +46,12 @@ export function InstanceNotesPanel({ instanceId }: { instanceId: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline">{instanceNoteActionLabel(n.action)}</Badge>
             <span className="text-xs text-muted-foreground">
-              {formatDateBR(n.created_at.slice(0, 10))} ·{" "}
+              {/* `created_at` é timestamptz — `.slice(0, 10)` cru lê em UTC e
+                  empurra o dia de uma observação feita à noite BRT para o dia
+                  seguinte. `isoToLocalDate` resolve o dia local antes de
+                  formatar; a hora entra junto porque várias ações no mesmo
+                  dia colapsariam na mesma linha sem ela. */}
+              {formatDateBR(isoToLocalDate(n.created_at))} às {formatMessageTime(n.created_at)} ·{" "}
               {/* Autor não resolvido é dito, não escondido: a informação existe
                   na linha, só não foi traduzida em nome. */}
               {n.created_by_email ?? "autor não identificado"}
