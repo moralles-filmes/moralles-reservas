@@ -262,4 +262,20 @@ describe("RPCs do orçamento (102)", () => {
       /grant execute on function public\.reserve_ai_budget[^;]*to (anon|authenticated)/,
     );
   });
+
+  it("custo tardio de reserva já finalizada conta no ciclo, não some", () => {
+    // O evento fica no ledger de qualquer jeito; o que não pode é o dinheiro
+    // não chegar a settled_cents. Descartá-lo seria franquia adicional silenciosa.
+    const i = rpcs.indexOf("function public.record_ai_call_usage(");
+    const body = rpcs.slice(i, rpcs.indexOf("$$;", i));
+    expect(body).toMatch(/status\s*<>\s*'HELD'/);
+    expect(body).toMatch(/settled_cents\s*=\s*settled_cents\s*\+/);
+  });
+
+  it("extend_ai_reservation lê a reserva sob lock e só amplia reserva HELD", () => {
+    const i = rpcs.indexOf("function public.extend_ai_reservation(");
+    const body = rpcs.slice(i, rpcs.indexOf("$$;", i));
+    expect(body).toMatch(/from ai_cost_reservations[\s\S]{0,200}for update/i);
+    expect(body).toMatch(/update ai_cost_reservations[\s\S]{0,300}and status = 'HELD'/i);
+  });
 });
