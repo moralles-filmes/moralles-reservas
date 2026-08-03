@@ -45,7 +45,9 @@ import {
 import {
   isAiCreditPackage,
   planBillingType,
+  planBlockedFromSale,
   planCategory,
+  planIncludedFeatures,
   planIntervalLabel,
   planProvider,
   showsStripeConfig,
@@ -396,6 +398,11 @@ export default function BillingPlans() {
                       {plan.recommended && (
                         <Badge variant="secondary" className="bg-info/10 text-info text-[10px] px-1.5 py-0">RECOMENDADO</Badge>
                       )}
+                      {planBlockedFromSale(plan) && (
+                        <Badge variant="outline" className="border-warning/40 text-warning">
+                          Não ativável
+                        </Badge>
+                      )}
                     </div>
                     <span className="block xl:hidden text-xs text-muted-foreground font-mono">{plan.slug}</span>
                   </TableCell>
@@ -499,6 +506,53 @@ export default function BillingPlans() {
                 Define onde o produto aparece pro cliente.
               </p>
             </div>
+
+            {/* Campos CONTRATUAIS (migration 094) — somente leitura.
+                São eles que decidem AUTORIZAÇÃO e RECEITA, não a copy de
+                marketing logo abaixo. A escrita auditada é a pendência
+                ADMIN_PLAN_CONTRACT_FIELDS_AUDITED_WRITE: enquanto ela não for
+                entregue, o valor certo vem de migration controlada e este
+                painel não tem como alterá-lo — `manage-billing` nem aceita
+                essas colunas em PLAN_WRITABLE_COLUMNS. */}
+            {editingPlan && (
+              <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                <p className="text-sm font-medium">Contrato do plano (somente leitura)</p>
+                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Features concedidas</dt>
+                    <dd className="font-medium">
+                      {planIncludedFeatures(editingPlan).join(", ") || "— (plano legado)"}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Conexões de WhatsApp</dt>
+                    <dd className="font-medium">
+                      {editingPlan.included_whatsapp_connections ?? 0}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">Componente de automação</dt>
+                    <dd className="font-medium">
+                      {editingPlan.whatsapp_component_cents == null
+                        ? "—"
+                        : formatCentsBRL(editingPlan.whatsapp_component_cents)}
+                    </dd>
+                  </div>
+                </dl>
+                <p className="text-xs text-muted-foreground">
+                  Campos contratuais: decidem o que o plano concede e quanta receita
+                  é atribuída à automação. Não podem ser alterados por este painel —
+                  a mudança é feita por migration controlada.
+                </p>
+                {planBlockedFromSale(editingPlan) && (
+                  <p className="text-xs text-warning">
+                    Este plano inclui franquia de IA e <strong>não pode ser ativado</strong>{" "}
+                    enquanto o teto de custo por ciclo não estiver em produção. O banco
+                    recusa a ativação; marcar "Ativo" aqui devolve erro.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="space-y-1">
               <Label htmlFor="plan-provider">Provedor</Label>
