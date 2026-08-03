@@ -34,6 +34,18 @@ describe("parseCostReais", () => {
     expect(parseCostReais("1.234")).toEqual({ ok: false, message: expect.any(String) });
   });
 
+  it("recusa separador misto (nem milhar válido, nem decimal simples)", () => {
+    // "12.34,56": o grupo antes do ponto não tem 3 dígitos, então não é
+    // milhar BR; e tem dois separadores, então também não bate no formato
+    // simples. As duas gramáticas recusam — igual ao trace manual do revisor
+    // que adiou esta cobertura na Task 2 (§7 do pendências).
+    expect(parseCostReais("12.34,56")).toEqual({ ok: false, message: expect.any(String) });
+  });
+
+  it("ignora espaço em volta do valor", () => {
+    expect(parseCostReais(" 99,90 ")).toEqual({ ok: true, unknownCost: false, cents: 9990 });
+  });
+
   it("não perde centavo por ponto flutuante", () => {
     // 99.9 * 100 === 9990.000000000001 em JS. A conversão é por string.
     expect(parseCostReais("99,90")).toEqual({ ok: true, unknownCost: false, cents: 9990 });

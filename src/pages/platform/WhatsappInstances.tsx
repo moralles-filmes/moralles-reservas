@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { cn, formatDateBR } from "@/lib/utils";
 import { InstanceNotesPanel } from "@/components/platform/InstanceNotesPanel";
+import { parseCostReais } from "@/lib/whatsapp-instance-form-core";
 import {
   formatCents,
   formatMargin,
@@ -531,16 +532,23 @@ export default function WhatsappInstances() {
               <div className="flex items-end">
                 <Button
                   disabled={simulation.isPending || !partnerTargetReais.trim()}
-                  onClick={() =>
+                  onClick={() => {
+                    const parsed = parseCostReais(partnerTargetReais);
+                    if (parsed.ok === false) {
+                      toast.error(parsed.message);
+                      return;
+                    }
+                    // O botão já fica desabilitado com campo vazio, mas não
+                    // assumir que `unknownCost` é inalcançável aqui — tratar
+                    // defensivamente em vez de enviar um valor adivinhado.
+                    // `=== true` + early-return: `strict:false` não estreita
+                    // a união por verdade/falsidade crua do campo.
+                    if (parsed.unknownCost === true) return;
                     simulation.mutate(
-                      {
-                        partner_monthly_target_cents: Math.round(
-                          Number(partnerTargetReais.replace(/\./g, "").replace(",", ".")) * 100,
-                        ),
-                      },
+                      { partner_monthly_target_cents: parsed.cents },
                       { onError: (e: Error) => toast.error(e.message) },
-                    )
-                  }
+                    );
+                  }}
                 >
                   Simular
                 </Button>
@@ -707,14 +715,27 @@ export default function WhatsappInstances() {
                       "Data do ciclo confirmada.",
                     );
                   } else if (dialog.kind === "set_cost") {
-                    const trimmed = costReais.trim();
+                    const parsed = parseCostReais(costReais);
+                    if (parsed.ok === false) {
+                      toast.error(parsed.message);
+                      return;
+                    }
+                    // `unknownCost: true` continua significando
+                    // `current_monthly_cost_cents: null` — campo vazio é
+                    // estado legítimo, não ausência de escolha. `if/else`
+                    // (não ternário) porque `strict:false` não estreita a
+                    // união por verdade/falsidade crua do campo.
+                    let cents: number | null;
+                    if (parsed.unknownCost === true) {
+                      cents = null;
+                    } else {
+                      cents = parsed.cents;
+                    }
                     run(
                       {
                         action: "set_cost",
                         instance_id: dialog.instance.id,
-                        current_monthly_cost_cents: trimmed
-                          ? Math.round(Number(trimmed.replace(/\./g, "").replace(",", ".")) * 100)
-                          : null,
+                        current_monthly_cost_cents: cents,
                         reason,
                       },
                       "Custo atualizado.",
