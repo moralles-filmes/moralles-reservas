@@ -250,6 +250,54 @@ dela — não foi tocado por esta frente.
 **Lição registrada:** branch compartilhando diretório de trabalho não é
 isolamento; worktree é.
 
+## 10. GATE DA ATIVAÇÃO — `billing_plans` expõe coluna a qualquer autenticado
+
+**Não bloqueia o Plano B. Bloqueia a ativação do `plano-automacao`.**
+
+`billing_plans` tem policy de leitura direta para `authenticated`, e ela é cega
+a coluna:
+
+```sql
+-- 20260528000000_billing_module.sql:107-109
+create policy "authenticated_read_active_plans" on billing_plans
+  for select to authenticated
+  using (active = true);
+```
+
+Nenhuma migration faz `revoke` de coluna em `billing_plans`. É a lição da 086
+aplicada a outra tabela: **policy filtra LINHA e é cega a COLUNA.** Qualquer
+usuário autenticado — inclusive um `operador` de qualquer unidade — faz
+`select("*")` em `billing_plans` pelo PostgREST com a anon key do bundle e
+recebe **todas as colunas de todo plano ativo**. `PLAN_PUBLIC_COLUMNS` não
+participa desse caminho: ele só protege a porta do `manage-billing`.
+
+**O que o Plano B expõe hoje, e por que é aceitável.** As linhas que ele semeia
+e deixa ativas publicam `included_features = {system}` e
+`included_whatsapp_connections = 0` — isso é descrição de produto, não segredo.
+O valor que importaria, `whatsapp_component_cents = 35000`, está no
+`plano-automacao`, que nasce `active = false` e é escondido pelo
+`using (active = true)`.
+
+**Mas está protegido por acidente, e o acidente vence exatamente quando o
+Plano D abre o portão.** No instante em que a constraint da 097 cair e alguém
+ativar o `plano-automacao`, o rateio interno de R$ 350,00 passa a ser legível
+por qualquer autenticado, sem Edge Function no meio — junto com
+`provider_metadata` e os `stripe_price_id_*` legados, que já estavam expostos
+para os planos ativos antes desta branch.
+
+**A correção é barata porque a policy não tem consumidor.** `grep` por
+`.from("billing_plans")` em `src/` não encontra nenhuma leitura direta: tudo
+passa por `list_plans`, e Edge Function usa `service_role`, que ignora RLS.
+Duas saídas, ambas válidas:
+
+- derrubar a policy `authenticated_read_active_plans`; ou
+- `revoke select (whatsapp_component_cents, included_features,
+  included_whatsapp_connections, provider_metadata, stripe_price_id_*)` no
+  padrão da 086.
+
+**O lugar certo é a mesma migration que ativar o `plano-automacao`** — para a
+correção viajar acoplada ao risco, em vez de depender de alguém lembrar.
+
 ---
 
 ## Ordem de aplicação (quando autorizada — fora deste plano)
