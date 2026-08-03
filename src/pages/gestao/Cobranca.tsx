@@ -427,7 +427,7 @@ export default function Cobranca() {
         </Card>
       )}
 
-      {/* Automação WhatsApp (implantação avulsa + instância mensal) */}
+      {/* Automação WhatsApp (implantação como cobrança única + apresentação do Plano Automação) */}
       <AutomacaoWhatsappCard organizationId={organizationId} />
 
       {/* Planos disponíveis / cortesia */}

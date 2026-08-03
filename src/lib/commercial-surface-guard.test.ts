@@ -38,6 +38,7 @@ const SCOPE: readonly string[] = [
   "src/pages/platform/BillingPlans.tsx",
   "supabase/functions/create-billing-checkout",
   "supabase/functions/manage-whatsapp-implementations",
+  "supabase/functions/manage-billing",
   "supabase/functions/_shared/implementation-checkout.ts",
   "supabase/functions/_shared/checkout-sessions.ts",
 ];
@@ -119,6 +120,11 @@ const SURFACES: Record<string, SurfaceEntry> = {
     kind: "NOT_COMMERCIAL",
     reason:
       "Persistência de checkoutSession para correlação de webhook; não conhece produto.",
+  },
+  "supabase/functions/manage-billing/index.ts": {
+    kind: "OFFER",
+    reason:
+      "Serve o catálogo à vitrine do lojista (action list_plans, moldado por papel) e processa troca de plano (change_plan/preview_plan_change) — não cita nenhum slug retirado.",
   },
 };
 

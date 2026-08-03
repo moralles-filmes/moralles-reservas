@@ -59,6 +59,27 @@ edição direta não auditada.
 Isso **não** bloqueia a preparação do catálogo. Continua bloqueando: edição
 administrativa desses campos, contratação do Plano 2 e ativação do Plano 2.
 
+**Consequência oposta, nomeada aqui porque é a mesma pendência:** `manage-billing`
+não aceitar `included_features` em `PLAN_WRITABLE_COLUMNS` não é só proteção —
+também significa que **todo plano novo criado em `/platform/planos` nasce com
+`included_features = '{}'`**. Array vazio é o sinal de "plano legado" para
+`resolveOrgEntitlements`, e o ramo legado de
+`supabase/functions/_shared/entitlements-core.ts` (por volta das linhas
+216-219) faz `ai` **herdar** de `system` nesse caso. Na prática: um
+`platform_admin` cria um `SYSTEM_SUBSCRIPTION` qualquer pelo painel, marca
+"Ativo", e o plano fica contratável **e concede `ai`** — sem passar pelo CHECK
+da 097 (que só barra plano que *declara* `'ai'` em `included_features`; um
+plano recém-criado não declara nada) e sem o teto financeiro do Plano D.
+
+Isto **não** é furo para o `plano-automacao`: as cinco camadas de defesa da
+seção 1 seguram aquele slug especificamente, e ele nasce com
+`included_features` explícito pela 098. E é financeiramente inerte hoje,
+porque a chave de IA é BYOK por unidade (`ai_provider_credentials`), a
+plataforma não paga o consumo, e não existe cliente pagante. Mas é o mesmo
+buraco que a escrita auditada desta seção fecha: enquanto
+`ADMIN_PLAN_CONTRACT_FIELDS_AUDITED_WRITE` não existir, todo plano novo criado
+pelo painel nasce legado e herda IA por omissão, não por decisão.
+
 ## 3. Depende de banco real
 
 - **Migrations 097 e 098 nunca aplicadas.** Idempotência, o `do $$` de
@@ -183,9 +204,27 @@ mesmo arquivo.)*
   **Plano C** (upgrade/downgrade), que já vai mexer nessa tela.
 - **Nenhuma assinatura foi migrada de `sistema-reservas` para `plano-reservas`.**
   Deliberado: não há o que migrar, e migrar assinatura é fluxo do Plano C.
+- **A lista de benefícios do Plano Automação está hardcoded em
+  `AutomacaoWhatsappCard.tsx` (`PlanoAutomacaoInfo`, por volta das linhas
+  259-265), duplicando o jsonb `features` semeado pela migration 098** para o
+  plano `plano-automacao`. `features` **é** gravável por `manage-billing`
+  (`PLAN_WRITABLE_COLUMNS`) — um `platform_admin` editando a copy comercial
+  pelo painel faria o card do lojista divergir em silêncio, porque o payload
+  de `get_service_status` (`manage-whatsapp-implementations`) ecoa só o preço
+  (`costs.automationPlanMonthlyCents`), nunca a lista de features. **Não
+  corrigido agora:** fazer o card ler `features` exigiria ampliar esse payload
+  para carregar a copy do plano, o que é escopo novo nesta altura — e o
+  produto ainda não é contratável (`PLAN_AUTOMACAO_CHECKOUT = NO-GO`), então a
+  divergência não tem cliente pagante para enganar hoje. Corrigir junto do
+  Plano D, quando o bloco vira oferta de verdade.
 - **`flags.subscription_checkout` continua no payload da EF sem consumidor no
   frontend** depois da Task 6. Mantida no contrato de propósito — removê-la é
   mudança de payload que o Plano C/D deve decidir junto com o resto do fluxo.
+  **Mesmo caso, mesmo motivo:** `system_allowed` (`src/types/billing.ts`, por
+  volta da linha 506) existia só para gatear o botão "Contratar instância" que
+  saiu do card nesta branch, e perdeu o único consumidor no mesmo commit.
+  Mantido no contrato de propósito pela mesma razão — remoção é decisão do
+  Plano C/D junto com o resto do fluxo.
 
 ## 8. Fora do escopo deste plano
 
