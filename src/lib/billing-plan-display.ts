@@ -82,16 +82,57 @@ export function isAiCreditPackage(plan: Pick<BillingPlan, "category">): boolean 
 /**
  * Planos ofertáveis na pricing table do cliente.
  *
- * Filtra DUAS coisas:
+ * Filtra TRÊS coisas:
+ * - `active !== true` — plano despublicado. **Não é redundante com o filtro do
+ *   servidor:** `manage-billing` action `list_plans` devolve `select("*")` SEM
+ *   filtro de `active` para `platform_admin` (só o caller não-admin recebe
+ *   `.eq("active", true)`). Sem esta linha, um admin abrindo `/g/<slug>/cobranca`
+ *   de um cliente veria `sistema-reservas` e `plano-automacao` com botão de
+ *   contratar — dois produtos que o checkout recusa com "Plano inativo.".
+ *   Fail-CLOSED de propósito: campo ausente esconde o plano. Esconder um plano
+ *   talvez ativo adia uma venda; oferecer um plano talvez inativo entrega um
+ *   400 ao cliente depois do clique.
  * - `is_trial` — trial é aplicado automaticamente pelo `manage-organizations`,
- *   o cliente nunca escolhe (invariante herdado de PricingTable).
+ *   o cliente nunca escolhe.
  * - categoria ≠ SYSTEM_SUBSCRIPTION — implantação de WhatsApp, instância e
- *   pacote de IA não são assinatura do sistema. Cada um ganha fluxo próprio
- *   (Fase 5 e Fase 7); listá-los como "plano" daria ao cliente um botão de
- *   contratar que nenhum checkout processa.
+ *   pacote de IA não são assinatura do sistema. Cada um tem fluxo próprio;
+ *   listá-los como "plano" daria um botão que nenhum checkout processa.
  */
 export function isSelectableSystemPlan(
-  plan: Pick<BillingPlan, "category" | "is_trial">,
+  plan: Pick<BillingPlan, "category" | "is_trial" | "active">,
 ): boolean {
-  return !plan.is_trial && planCategory(plan) === "SYSTEM_SUBSCRIPTION";
+  return plan.active === true && !plan.is_trial && planCategory(plan) === "SYSTEM_SUBSCRIPTION";
+}
+
+/**
+ * `billing_plans.included_features` normalizado (migration 094).
+ *
+ * AUTORIZAÇÃO — o que o plano concede. **Nunca confundir com `plan.features`**,
+ * que é copy de marketing renderizada no `PricingCard` e editada como textarea:
+ * um administrador escrevendo a palavra "whatsapp" numa frase comercial não
+ * pode conceder acesso a nada.
+ *
+ * Ausente ou `null` vira `[]` = plano legado, que resolve por categoria.
+ */
+export function planIncludedFeatures(
+  plan: Pick<BillingPlan, "included_features">,
+): string[] {
+  const raw = plan.included_features;
+  return Array.isArray(raw) ? raw : [];
+}
+
+/**
+ * Plano que declara franquia de IA não pode ser vendido nem ativado enquanto o
+ * teto financeiro por ciclo (Plano D) não existir — `PLAN_AUTOMACAO_CHECKOUT =
+ * NO-GO`.
+ *
+ * Espelha exatamente o CHECK `billing_plans_ai_plan_not_sellable_chk`
+ * (migration 097), que olha **só** `'ai'`. Divergir daqui faria o painel avisar
+ * sobre um bloqueio que o banco não aplica — ou, pior, deixar de avisar sobre
+ * um que ele aplica, e o admin descobriria pelo 23514.
+ */
+export function planBlockedFromSale(
+  plan: Pick<BillingPlan, "included_features">,
+): boolean {
+  return planIncludedFeatures(plan).includes("ai");
 }

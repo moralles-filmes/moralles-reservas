@@ -120,6 +120,27 @@ export interface BillingPlan {
    * e só vem pra platform_admin. Ausente = EF antiga deployada.
    */
   active_subscriptions?: number;
+  // Migration 094 (modelo comercial de dois planos) — CAMPOS CONTRATUAIS.
+  // Opcionais porque `manage-billing` só os devolve para platform_admin:
+  // `PLAN_PUBLIC_COLUMNS` (payload do lojista) não os inclui de propósito.
+  /**
+   * AUTORIZAÇÃO — as features que o plano concede (`system`|`whatsapp`|`ai`).
+   *
+   * **Não confundir com `features` acima**, que é copy de marketing renderizada
+   * no `PricingCard` e editada como textarea. Um administrador escrevendo a
+   * palavra "whatsapp" numa frase comercial não concede acesso a nada.
+   *
+   * Array vazio = plano legado, resolve por categoria.
+   */
+  included_features?: string[] | null;
+  /** Conexões de WhatsApp incluídas. Plano 1 = 0, Plano 2 = 1. */
+  included_whatsapp_connections?: number | null;
+  /**
+   * Parcela contratual da mensalidade atribuível ao pacote de automação
+   * (WhatsApp + IA + operação). Congelada no ciclo na abertura
+   * (`revenue_source = PLAN_COMPONENT`). Não é receita exclusiva da instância.
+   */
+  whatsapp_component_cents?: number | null;
 }
 
 export interface PaymentMethodSummary {

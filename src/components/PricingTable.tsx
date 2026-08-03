@@ -17,9 +17,10 @@ interface Props {
  *  - Com sub ativa em outro plan: "Trocar para este plano"
  */
 export function PricingTable({ plans, currentPlanId, onChoose, onChange, loadingPlanId }: Props) {
-  // Só assinatura do sistema entra aqui — o trial é aplicado automaticamente na
-  // criação da org, e implantação de WhatsApp / instância / pacote de IA têm
-  // fluxo próprio (Fase 5 e 7). Ver isSelectableSystemPlan.
+  // Só assinatura do sistema ATIVA entra aqui. O `active` é load-bearing: o
+  // `list_plans` de platform_admin devolve o catálogo inteiro, inclusive os
+  // produtos retirados da vitrine (`sistema-reservas`) e o Plano Automação, que
+  // nasce inativo pelo NO-GO comercial. Ver isSelectableSystemPlan.
   const visible = plans.filter(isSelectableSystemPlan);
 
   if (!visible.length) {
