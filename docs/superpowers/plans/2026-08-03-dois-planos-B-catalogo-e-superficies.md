@@ -73,8 +73,8 @@
 
 | Arquivo | Responsabilidade | Ação |
 |---|---|---|
-| `supabase/migrations/20260803120000_097_billing_plan_ai_sale_guard.sql` | CHECK: plano que declara `ai` não pode ficar `active` | criar |
-| `supabase/migrations/20260803120100_098_two_plan_commercial_catalog.sql` | seed dos dois + retirada dos antigos + validação pós-condição, uma transação | criar |
+| `supabase/migrations/20260803120200_097_billing_plan_ai_sale_guard.sql` | CHECK: plano que declara `ai` não pode ficar `active` | criar |
+| `supabase/migrations/20260803120300_098_two_plan_commercial_catalog.sql` | seed dos dois + retirada dos antigos + validação pós-condição, uma transação | criar |
 | `src/lib/billing-plan-display.ts` | vitrine respeita `active`; helpers puros dos campos contratuais | modificar |
 | `src/lib/billing-plan-display.test.ts` | testes 9, 10 e 11 da spec no que toca à vitrine | modificar |
 | `src/components/PricingTable.tsx` | comentário do filtro acompanha a regra nova | modificar |
@@ -92,7 +92,7 @@
 ## Task 1: Migration 097 — o NO-GO vira estrutura, não configuração
 
 **Files:**
-- Create: `supabase/migrations/20260803120000_097_billing_plan_ai_sale_guard.sql`
+- Create: `supabase/migrations/20260803120200_097_billing_plan_ai_sale_guard.sql`
 
 **Interfaces:**
 - Produces: constraint `billing_plans_ai_plan_not_sellable_chk` — a Task 2 semeia `plano-automacao` sob ela, e a Task 7 explica o motivo do bloqueio ao admin.
@@ -167,7 +167,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add supabase/migrations/20260803120000_097_billing_plan_ai_sale_guard.sql
+git add supabase/migrations/20260803120200_097_billing_plan_ai_sale_guard.sql
 git commit -m "feat(dois-planos): plano com franquia de IA nao pode ser ativado ate o Plano D"
 ```
 
@@ -176,7 +176,7 @@ git commit -m "feat(dois-planos): plano com franquia de IA nao pode ser ativado 
 ## Task 2: Migration 098 — troca atômica do catálogo
 
 **Files:**
-- Create: `supabase/migrations/20260803120100_098_two_plan_commercial_catalog.sql`
+- Create: `supabase/migrations/20260803120300_098_two_plan_commercial_catalog.sql`
 
 **Interfaces:**
 - Consumes: colunas da 094, CHECK da 097.
@@ -407,7 +407,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add supabase/migrations/20260803120100_098_two_plan_commercial_catalog.sql
+git add supabase/migrations/20260803120300_098_two_plan_commercial_catalog.sql
 git commit -m "feat(dois-planos): catalogo de dois planos e retirada dos produtos antigos da vitrine"
 ```
 
@@ -1708,7 +1708,7 @@ mesmo arquivo.)*
 - **Plano que declara `ai` em `included_features` não pode ficar `active`** —
   CHECK `billing_plans_ai_plan_not_sellable_chk`. `PLAN_AUTOMACAO_CHECKOUT =
   NO-GO` é estrutural, não configuração; dropar o constraint é a última ação do
-  Plano D. [migration 097](../../supabase/migrations/20260803120000_097_billing_plan_ai_sale_guard.sql).
+  Plano D. [migration 097](../../supabase/migrations/20260803120200_097_billing_plan_ai_sale_guard.sql).
 - **`isSelectableSystemPlan` filtra `active` — e isso não é redundante com o
   servidor.** `manage-billing` action `list_plans` devolve `select("*")` sem
   filtro de `active` para `platform_admin`; sem o filtro no cliente, o admin vê

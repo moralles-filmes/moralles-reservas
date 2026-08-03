@@ -155,7 +155,7 @@ mesmo arquivo.)*
 - **Plano que declara `ai` em `included_features` não pode ficar `active`** —
   CHECK `billing_plans_ai_plan_not_sellable_chk`. `PLAN_AUTOMACAO_CHECKOUT =
   NO-GO` é estrutural, não configuração; dropar o constraint é a última ação do
-  Plano D. [migration 097](../../supabase/migrations/20260803120000_097_billing_plan_ai_sale_guard.sql).
+  Plano D. [migration 097](../../supabase/migrations/20260803120200_097_billing_plan_ai_sale_guard.sql).
 - **`isSelectableSystemPlan` filtra `active` — e isso não é redundante com o
   servidor.** `manage-billing` action `list_plans` devolve `select("*")` sem
   filtro de `active` para `platform_admin`; sem o filtro no cliente, o admin vê
@@ -300,10 +300,97 @@ correção viajar acoplada ao risco, em vez de depender de alguém lembrar.
 
 ---
 
+## 11. Colisão de timestamp com a 6c — resolvida renumerando o Plano B
+
+`dois-planos/fase-6c` criou `20260803120000_096_whatsapp_instance_notes.sql` com
+**exatamente o mesmo prefixo de 14 dígitos** que a 097 original deste plano. O
+Supabase CLI deriva a `version` desse prefixo e `schema_migrations.version` é
+chave primária: não eram "096 e 097", eram duas migrations disputando a versão
+`20260803120000`. Invisível enquanto as branches vivem separadas; aparece no
+primeiro `db push` depois do merge, como drift.
+
+Único prefixo duplicado nos cinco branches (`main`, `fase-6b`, `fase-6c`,
+`plano-b`, `plano-d`). **O Plano B renumerou; a 6c não se mexeu:**
+
+| antes | depois |
+|---|---|
+| `20260803120000_097_billing_plan_ai_sale_guard.sql` | `20260803120200_097_…` |
+| `20260803120100_098_two_plan_commercial_catalog.sql` | `20260803120300_098_…` |
+
+Duas razões, nenhuma de precedência:
+
+1. **Ordem numérica tem que casar com ordem de timestamp.** A 6c é a 096, número
+   menor. Se ela recuasse, a 096 aplicaria depois da 097/098 — exatamente a
+   inversão que se quer evitar. O Plano B indo para frente resolve nas duas
+   dimensões.
+2. **Custo assimétrico e mensurável.** A 6c tem o nome do arquivo hardcoded em
+   `src/lib/whatsapp-instance-notes-core.test.ts:24` mais quatro docs — mexer ali
+   é alterar teste de frente já fechada. O Plano B só tinha referência em
+   documento.
+
+**O Plano D não precisa renumerar.** Suas cinco migrations (099–103) estão
+carimbadas às 09h e aplicariam antes das 096–098 das 12h — inversão numérica
+real, mas **cosmética**: nenhuma das cinco cita `billing_plans`,
+`included_features`, `whatsapp_component_cents` nem qualquer slug deste catálogo.
+Sem dependência quebrada, não se mexe.
+
+### O que o Plano D herda desta renumeração
+
+1. **A migration que derruba o CHECK da 097 precisa de timestamp maior que
+   `20260803120300`** — não mais que `120000`. A margem ficou mais apertada e o
+   modo de falha é silencioso: `drop constraint if exists` aplicado antes de a
+   constraint existir é **no-op**, o portão parece aberto, o `plano-automacao`
+   segue invendável e ninguém descobre até a primeira tentativa de venda.
+2. **O número dela não é 099.** 099 a 103 já são do Plano D — é **104** ou o
+   próximo livre na hora da entrega.
+
+Ambos estão escritos no header da própria 097, para viajarem com o arquivo em
+vez de dependerem deste documento.
+
+---
+
+## 12. Achados dos gates de segurança — o que ficou fora de escopo
+
+`migration-validator`: PASS com atenções (0 bloqueante). `identity-access-auditor`:
+PASS (0 bloqueante). O que **foi corrigido** nesta branch: gate do botão
+"Reativar" + discriminação do `23514` por nome de constraint; asserção de
+`provider`/`billing_type`/`interval` no PART 5 da 098; texto do rollback das duas
+migrations. O que **fica registrado sem ação**:
+
+- **`coalesce(active, false)` no CHECK da 097** — cosmético: `active` é `NOT NULL`
+  (`20260528000000_billing_module.sql:93`), o `coalesce` não mudaria nada. **A
+  parte útil do achado é outra e vale registro: o CHECK da 097 depende do
+  `billing_plans_included_features_chk` da 094 continuar vivo.** A 097 sozinha
+  não fecha o caso "elemento NULL dentro do array" — `'ai' = any(array['system',
+  null])` avalia UNKNOWN e o CHECK **aceita** UNKNOWN. Quem proíbe o elemento
+  nulo é `array_position(included_features, null) is null`, na 094. Dropar o
+  CHECK da 094 reabre o portão da 097 em silêncio.
+- **Diagnóstico cru em dois abortos da 098** (`plano-automacao` pré-existente já
+  ativo; `plano-reservas` com outra categoria e assinatura viva, barrado pelo
+  trigger da 074). Fail-closed corretos, só a mensagem é feia. Pré-condições
+  praticamente impossíveis hoje.
+- **Comentário impreciso** em `manage-whatsapp-implementations/index.ts:608-612`:
+  justifica o join dizendo que "o preço de tabela pode ter mudado depois da
+  contratação", mas o join lê o `amount_cents` **atual** do catálogo mesmo assim.
+  `billing_subscriptions` não guarda valor, então a escolha é forçada e não há
+  alternativa — só a justificativa escrita está errada. Sem consequência.
+- **As duas atenções de autorização do `identity-access-auditor`** são as §10 e
+  §2 deste documento, alcançadas de forma independente. Que ele tenha fixado a
+  mesma ordem — **fechar antes de ativar** — é confirmação, não item novo.
+
+---
+
 ## Ordem de aplicação (quando autorizada — fora deste plano)
 
+0. **Snapshot de leitura ANTES do push** — decide se o PART 5 da 098 vai abortar
+   e se o `ADD CONSTRAINT` da 097 valida, além de ser a única forma de o rollback
+   saber quais `AI_CREDIT_PACKAGE` ele tocou:
+   `select slug, category, active, provider, billing_type, "interval", included_features from billing_plans order by active desc, category, slug;`
 1. `supabase db push` — **094, 095, 097, 098** nesta ordem, antes de qualquer deploy.
-2. `supabase functions deploy manage-whatsapp-implementations`.
+2. `supabase functions deploy manage-whatsapp-implementations` **e**
+   `supabase functions deploy manage-billing` (o `planWriteError` passou a
+   discriminar o `23514` por nome de constraint; sem o redeploy, ligar o switch
+   do Plano Automação continua devolvendo a frase errada sobre categoria).
 3. Merge para `main` → Vercel publica o frontend.
 4. Rodar a validação pós-migration do rodapé da 098, **incluindo** a prova de que o CHECK da 097 recusa a ativação do Plano Automação.
 5. Conferir `acl-estatico` na aba Checks.

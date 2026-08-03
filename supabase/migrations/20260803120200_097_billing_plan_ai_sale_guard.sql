@@ -16,10 +16,26 @@
 -- DEPENDE de 094 (coluna included_features, not null default '{}').
 --
 -- ROLLBACK / ENTREGA DO PLANO D:
---   alter table billing_plans
---     drop constraint if exists billing_plans_ai_plan_not_sellable_chk;
 -- Dropar este constraint e a ULTIMA acao do Plano D, depois de o teto estar
 -- provado contra banco real — nunca antes, e nunca "so pra testar".
+--
+-- Entregar como MIGRATION, nunca como SQL avulso no Studio. Duas razoes:
+--   1. SQL colado no Studio grava schema_migrations com timestamp != filename e
+--      trava o proximo `db push` por drift (recovery exige migration repair).
+--   2. Um `db reset` / replay do historico RESSUSCITA o constraint. Sem uma
+--      migration que o derrube, o Plano D seria silenciosamente desfeito.
+--
+-- Numero e timestamp da migration de drop:
+--   - o numero NAO e 099. 099 a 103 ja sao do Plano D — usar 104 ou o proximo
+--     livre no momento da entrega.
+--   - o timestamp precisa ser MAIOR que 20260803120300 (a 098 deste par).
+--     `drop constraint if exists` aplicado ANTES da constraint existir e no-op
+--     SILENCIOSO: o portao parece aberto, o plano-automacao segue invendavel, e
+--     ninguem descobre ate a primeira tentativa de venda.
+--
+--   -- supabase/migrations/<ts > 20260803120300>_104_drop_ai_sale_guard.sql
+--   alter table billing_plans
+--     drop constraint if exists billing_plans_ai_plan_not_sellable_chk;
 
 do $$
 begin

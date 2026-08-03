@@ -230,7 +230,36 @@ function planWriteError(
     }
     return { message: "Já existe um plano com esse slug.", status: 409 };
   }
+  // 23514 vem de CHECKs com causas MUITO diferentes. A frase genérica abaixo
+  // descreve os CHECKs da 063 (enums de categoria/provedor/intervalo) e mente
+  // sobre os das 094/097 — quem ligasse o switch de um plano com franquia de IA
+  // lia "valor inválido para categoria" e não tinha como descobrir que existe
+  // um portão comercial. Discriminar pelo NOME da constraint na mensagem do
+  // Postgres, nunca ecoando err.message cru pro cliente.
   if (err.code === "23514") {
+    const detail = err.message ?? "";
+    if (detail.includes("ai_plan_not_sellable")) {
+      return {
+        message:
+          "Plano com franquia de IA não pode ser ativado enquanto o teto de custo por ciclo não estiver provado (Plano D).",
+        status: 409,
+      };
+    }
+    if (detail.includes("included_features_chk")) {
+      return {
+        message: "Funcionalidades inclusas inválidas: use apenas system, whatsapp e ai, sem valores nulos.",
+        status: 400,
+      };
+    }
+    if (detail.includes("included_connections_chk")) {
+      return { message: "O número de conexões de WhatsApp inclusas não pode ser negativo.", status: 400 };
+    }
+    if (detail.includes("whatsapp_component_chk")) {
+      return {
+        message: "O componente de WhatsApp precisa ficar entre zero e o valor da mensalidade.",
+        status: 400,
+      };
+    }
     return { message: "Valor inválido para categoria, provedor, intervalo ou tipo de cobrança.", status: 400 };
   }
   if (err.code === "23503") {

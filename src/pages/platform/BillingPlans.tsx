@@ -456,6 +456,16 @@ export default function BillingPlans() {
                           >
                             <PowerOff className="mr-2 h-4 w-4" /> Desativar
                           </DropdownMenuItem>
+                        ) : planBlockedFromSale(plan) ? (
+                          /* Espelha o CHECK billing_plans_ai_plan_not_sellable_chk (097).
+                             O servidor recusa de qualquer forma; gatear aqui evita que o
+                             admin descubra o portao por uma mensagem de erro. */
+                          <DropdownMenuItem
+                            disabled
+                            title="Plano com franquia de IA só pode ser ativado quando o teto de custo por ciclo (Plano D) estiver provado contra banco real."
+                          >
+                            <PowerOff className="mr-2 h-4 w-4" /> Reativar — bloqueado até o Plano D
+                          </DropdownMenuItem>
                         ) : (
                           <DropdownMenuItem onClick={() => handleReactivate(plan)}>
                             <PowerOff className="mr-2 h-4 w-4" /> Reativar

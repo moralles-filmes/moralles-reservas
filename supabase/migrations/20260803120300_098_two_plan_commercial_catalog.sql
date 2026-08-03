@@ -16,9 +16,25 @@
 --
 -- DEPENDE de 094 (colunas contratuais) e 097 (CHECK de venda de plano com IA).
 --
--- ROLLBACK (manual, sem migration reversa):
+-- ROLLBACK — entregar como MIGRATION (numero 104+, timestamp > 20260803120300),
+-- nunca como SQL avulso no Studio: SQL colado la grava schema_migrations com
+-- timestamp != filename e trava o proximo `db push` por drift.
+--
 --   update billing_plans set active = true  where slug in ('sistema-reservas','instancia-whatsapp');
 --   update billing_plans set active = false where slug = 'plano-reservas';
+--   -- e a lista capturada no snapshot abaixo:
+--   update billing_plans set active = true  where slug in (<slugs AI_CREDIT_PACKAGE do snapshot>);
+--
+-- SNAPSHOT OBRIGATORIO ANTES DE APLICAR — o PART 4 desativa pacotes de IA por
+-- CATEGORIA (`category = 'AI_CREDIT_PACKAGE'`), de proposito, para pegar slugs
+-- futuros que esta migration nao pode conhecer. A consequencia e que o rollback
+-- NAO tem como saber quais linhas ele tocou. Sem o snapshot, a reversao e
+-- incompleta e silenciosa:
+--   select slug, active, category from billing_plans order by category, slug;
+-- (Hoje deve tocar ZERO linhas: a 065 semeia os cinco credito-ia-* ja com
+-- active = false e nenhuma migration os ativa. Snapshot mesmo assim — "deve"
+-- nao e "prova", e a categoria e aberta a slug novo.)
+--
 -- Os planos novos nunca sao apagados — faturas emitidas neles ficariam orfas.
 
 begin;
@@ -181,6 +197,30 @@ begin
       'plano-reservas nao ficou ativo: a vitrine de assinatura ficaria vazia.'
       using hint = 'Verifique se o INSERT do PART 1 foi no-op por conflito com uma linha inativa.';
   end if;
+
+  -- Terceiro erro, o mais dificil de ver: plano-reservas ATIVO mas roteando
+  -- para o provedor errado. O PART 3 auto-corrige os campos que decidem
+  -- AUTORIZACAO e RECEITA, e NAO toca provider/billing_type/interval — entao
+  -- uma linha pre-existente com esses campos divergentes (criadas a mao pelo
+  -- painel: manage-billing PLAN_WRITABLE_COLUMNS aceita os tres) sobrevive ao
+  -- INSERT no-op e a correcao, e fica ativa apontando para o caminho legado
+  -- Stripe, que escreve organizations.billing_status sem checar categoria.
+  -- Precondicao improvavel — o slug e novo — mas afirmar e barato e transforma
+  -- "improvavel" em demonstravel.
+  if not exists (
+    select 1 from billing_plans
+     where slug = 'plano-reservas'
+       and active = true
+       and provider = 'asaas'
+       and billing_type = 'recurring'
+       and "interval" = 'month'
+  ) then
+    raise exception
+      'plano-reservas ativo com provider/billing_type/interval fora do contrato comercial.'
+      using hint =
+        'Esperado provider=asaas, billing_type=recurring, interval=month. Uma linha pre-existente '
+        'com valores divergentes nao e corrigida pelo PART 3. Ajuste a linha e reaplique.';
+  end if;
 end $$;
 
 commit;
@@ -192,8 +232,8 @@ commit;
 -- sistema-reservas, instancia-whatsapp e os credito-ia inativos;
 -- implementacao-whatsapp e trial-padrao ativos.
 --
---   select slug, amount_cents, category, active, included_features,
---          included_whatsapp_connections, whatsapp_component_cents
+--   select slug, amount_cents, category, active, provider, billing_type, "interval",
+--          included_features, included_whatsapp_connections, whatsapp_component_cents
 --     from billing_plans
 --    order by active desc, sort_order;
 --
