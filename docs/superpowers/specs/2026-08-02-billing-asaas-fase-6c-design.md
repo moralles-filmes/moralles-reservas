@@ -28,6 +28,20 @@ afirmação de volta.
 2. Consertar a perda de histórico em `notes`.
 3. Publicar o runbook operacional do fluxo manual assistido.
 
+### Atualização de status (2026-08-03): deixou de ser conveniência operacional
+
+Quando esta spec foi escrita, a 6c era ergonomia — o registro pelo console do navegador
+funcionava, só era ruim. **Ela virou pré-requisito duro do Plano C (downgrade).**
+
+O downgrade revoga o WhatsApp no SaaS mas **não** cancela a cobrança da Z-API: ele abre um
+`request_cancellation`, e cancelar de fato no fornecedor continua sendo ato humano. Sem o painel
+desta fase, essa pendência não tem superfície — o cliente perde o serviço, a plataforma segue
+pagando **R$ 99,90/mês** por uma instância que ninguém vai olhar, e o único aviso
+(`END_CONFIRMATION_REQUIRED`) hoje não vira e-mail (§10). O custo corre em silêncio.
+
+Consequência para a ordem de trabalho: a 6c precede o Plano C, e o §7 (Reativar) e o §10/R3
+(cancelar) deixam de ser caminhos raros — são o fluxo normal do downgrade.
+
 ## 3. Escopo
 
 ### Entra
@@ -78,8 +92,9 @@ Os dados de preenchimento saem de hooks existentes:
 - `useWhatsAppChannels(unitId)` → canais da unidade, via EF.
 
 **A validação continua autoritativa no backend.** A interface valida para evitar a viagem,
-nunca para substituir o guarda. Nenhuma policy, grant ou RPC nova; a superfície de isolamento
-multi-tenant não muda — exceto pela tabela nova do §8, que nasce `FORCE RLS` sem policies.
+nunca para substituir o guarda. Nenhum grant nem RPC nova; a superfície de isolamento
+multi-tenant não muda — exceto pela tabela nova do §8, que nasce `FORCE RLS` **com** a policy
+`platform_admin_all_*`, no padrão das três irmãs desta fase (087/088/089).
 
 ---
 
@@ -112,6 +127,15 @@ O corpo enviado carrega `intent: "BACKFILL_EXISTING"` fixo e `provider: "zapi"`.
   configurado. É o buraco que a Tela B fecha depois.
 - **Identificador obrigatório.** Sem ele o índice único `(provider, provider_instance_ref)`
   não deduplica, e registrar duas vezes a mesma instância física passa batido.
+
+  **Atualização (Plano A, 2026-08-03): deixou de ser só disciplina de UI — o backend recusa.**
+  O allowance de conexões trata `providerInstanceRefKnown: false` numa operação fixa
+  `BACKFILL_EXISTING` como `BACKFILL_WITHOUT_PROVIDER_REF` → **409**, com a mensagem "Informe o
+  identificador da instância no fornecedor: só é possível registrar instância que já existe lá."
+  (`manage-whatsapp-instances/index.ts`, `ALLOWANCE_DENIED_MESSAGE`). Backfill sem referência é
+  provisionamento novo entrando por outra porta, sem passar pelo teto. **O campo nasce
+  obrigatório no formulário** — não como "melhor preencher", senão o admin descobre pelo 409.
+  Registrado em `FASE-DOIS-PLANOS-PENDENCIAS.md` §2.4.
 
 O campo do identificador leva a advertência **antes** do erro, não só depois:
 *"apenas o identificador da instância, nunca a URL — ela contém o token."*
@@ -219,8 +243,26 @@ create table if not exists whatsapp_instance_notes (
 );
 ```
 
-`enable` + `force row level security`, **sem policies** — leitura só pela EF, como
-`whatsapp_instances`. Índice em `(instance_ref, created_at desc)`.
+`enable` + `force row level security` **mais a policy `platform_admin_all_whatsapp_instance_notes`**
+(`for all to authenticated using/with check (is_platform_admin(auth.uid()))`) — exatamente o que
+087, 088 e 089 fazem, e o padrão das irmãs vence.
+
+> **Correção de spec (2026-08-03).** A redação original dizia "sem policies, como
+> `whatsapp_instances`" — as duas metades da frase se contradiziam: `whatsapp_instances` **tem**
+> `platform_admin_all_whatsapp_instances` (087:207). "FORCE RLS sem policies" é o padrão das
+> tabelas de CREDENCIAL do `CLAUDE.md` (`whatsapp_channels`, `platform_secrets`), onde nem o
+> super-admin lê pelo PostgREST. Esta tabela não guarda credencial e é irmã dos dois ledgers da
+> fase: sem a policy, o painel perderia a leitura direta que as irmãs têm e a divergência
+> apareceria só no dia em que alguém tentasse usá-la. A EF continua sendo o caminho da UI
+> (ela usa `service_role`, que ignora RLS de qualquer forma) — a policy é a paridade com as
+> irmãs, não uma porta nova para o lojista: `is_platform_admin` já exclui todo membro de
+> organização.
+
+Índice em `(instance_ref, created_at desc)`.
+
+A guarda de tenant reusa `whatsapp_instance_child_tenant_guard()` (088), como a 089 faz — ela
+já retorna cedo quando `instance_id` é nulo, que é o estado da linha depois de a instância ser
+apagada.
 
 **Backfill idempotente:** cada `notes` não-nulo existente vira a primeira entrada, com
 `action = 'REGISTER'`, guardado por `where not exists (...)`.
@@ -361,7 +403,11 @@ observação.
 
 ## 13. Ordem de aplicação e redeploy
 
-1. `supabase db push` — migration `094_whatsapp_instance_notes`.
+1. `supabase db push` — migration `096_whatsapp_instance_notes`.
+
+   > **Correção de spec (2026-08-03):** era `094`. O Plano A do modelo de dois planos ocupou
+   > `094` e `095` na mesma branch. A faixa reservada para a 6c é **096** — três frentes
+   > (6c, Plano B, Plano D) numeram migrations em paralelo.
 2. `supabase functions deploy manage-whatsapp-instances`.
 3. Frontend (push em `main` → Vercel), **depois** do merge da 6b.
 
@@ -373,6 +419,20 @@ continua correta — mas a ordem acima evita o buraco.
 
 ## 14. Atualizações no CLAUDE.md
 
-- `whatsapp_instance_notes` entra na lista de tabelas com `FORCE RLS` sem policies.
+> **Coordenação (2026-08-03): esta frente NÃO edita `CLAUDE.md`.** Três frentes (6c, Plano B,
+> Plano D) tocam o mesmo arquivo; a consolidação é um commit único no fim, fora deste trabalho.
+> O que entraria vai para `docs/billing-asaas/FASE-6C-PENDENCIAS.md`, seção
+> "CLAUDE.md a consolidar".
+
 - Invariante novo: **por que `whatsapp_instances` não usa o trigger genérico de auditoria** —
-  `audit_log` é legível por membro da organização, e o custo do fornecedor não pode ser.
+  `audit_log` é legível por membro da organização, e o custo do fornecedor não pode ser. O
+  histórico vive em `whatsapp_instance_notes`, `FORCE RLS` + policy `platform_admin_all_*`.
+- Invariante novo: **o ledger de observações é best-effort e escreve DEPOIS da mutação** —
+  `notes` é o resumo, o ledger é o histórico, e divergência entre os dois é detectável pela
+  telemetria `needsAdminAction`.
+- Nenhuma linha nova no checklist de redeploy cruzado: nada em `supabase/functions/_shared/`
+  muda (§13).
+
+~~`whatsapp_instance_notes` entra na lista de tabelas com `FORCE RLS` sem policies.~~
+**Corrigido:** ela tem policy `platform_admin_all_*` (§8) — a lista do `CLAUDE.md` é de tabelas
+com credencial, e esta não é uma delas.
