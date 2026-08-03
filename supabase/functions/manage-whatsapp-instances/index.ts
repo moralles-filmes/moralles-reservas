@@ -10,12 +10,18 @@
 // NÃO ESCREVE em organizations.billing_status, billing_subscriptions,
 // organization_entitlement_overrides nem whatsapp_channels. NÃO chama a Z-API.
 //
-// ORDEM DE APLICAÇÃO: `register_instance` lê `billing_plans.included_features` e
-// `billing_plans.included_whatsapp_connections` (migration 094). A guarda de
-// allowance é FAIL-CLOSED, então a migration precisa estar aplicada ANTES do
-// deploy desta versão: coluna inexistente vira 400 do PostgREST → leitura falha
-// → todo registro de instância passa a responder 503. Mesma ordem já registrada
-// para `entitlements.ts` e `manage-channels`.
+// ORDEM DE APLICAÇÃO — DUAS migrations precedem esta versão:
+//
+// 1. `register_instance` lê `billing_plans.included_features` e
+//    `billing_plans.included_whatsapp_connections` (migration 094). A guarda de
+//    allowance é FAIL-CLOSED: coluna inexistente vira 400 do PostgREST →
+//    leitura falha → todo registro passa a responder 503.
+//
+// 2. O ledger `whatsapp_instance_notes` (migration 096). Aqui a consequência é
+//    MENOR de propósito: o insert é best-effort, então a EF subir antes da
+//    migration deixa o histórico vazio e um log com `needsAdminAction`, sem
+//    quebrar nenhuma operação. Ainda assim, aplicar a migration primeiro evita
+//    o buraco.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -42,6 +48,7 @@ import {
   resolveWhatsAppSubscription,
   type WhatsAppSubscriptionFact,
 } from "../_shared/whatsapp-subscription-resolver-core.ts";
+import type { InstanceNoteAction } from "../_shared/whatsapp-instance-notes-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -76,6 +83,15 @@ const ALERT_COLUMNS = [
 ].join(", ");
 
 const MIN_REASON_LENGTH = 5;
+
+// Projeção explícita, como as três listas acima.
+const NOTE_COLUMNS = [
+  "id", "instance_ref", "instance_id", "organization_id",
+  "action", "note", "created_by", "created_at",
+].join(", ");
+
+/** Teto de autores distintos resolvidos por listagem — ver `list_instance_notes`. */
+const NOTE_AUTHOR_LOOKUP_CAP = 12;
 
 function jsonResponse(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -149,6 +165,52 @@ async function loadInstanceState(
   }
   if (!data) return { ok: false, status: 404, message: "Instância não encontrada." };
   return { ok: true, row: data as Record<string, unknown> };
+}
+
+/**
+ * Uma linha no ledger de observações — o HISTÓRICO que `whatsapp_instances.notes`
+ * não guardava (ela é sobrescrita a cada ação; cada uma apagava a justificativa
+ * da anterior).
+ *
+ * BEST-EFFORT E NUNCA LANÇA. Falha aqui não derruba a operação já concluída:
+ * devolver erro depois de o efeito ter ocorrido faria o operador repetir uma
+ * ação já feita — que, em `request_cancellation` ou `confirm_end`, é pior que o
+ * buraco no histórico. A divergência entre `notes` e o ledger fica detectável
+ * pela telemetria `needsAdminAction`.
+ *
+ * CHAMAR SEMPRE DEPOIS DA MUTAÇÃO. Observação sobre operação que não aconteceu
+ * é pior que observação ausente.
+ */
+async function recordInstanceNote(args: {
+  instanceId: string;
+  organizationId: string;
+  action: InstanceNoteAction;
+  note: string;
+  callerId: string;
+  reqId: string;
+}): Promise<void> {
+  const { error } = await supabase.from("whatsapp_instance_notes").insert({
+    // `instance_ref` é identidade histórica: quando a instância for apagada, a
+    // FK nula `instance_id` e é `instance_ref` que continua dizendo de quem era
+    // a observação. No INSERT os dois são o mesmo id — a trigger exige.
+    instance_ref: args.instanceId,
+    instance_id: args.instanceId,
+    organization_id: args.organizationId,
+    action: args.action,
+    note: args.note,
+    created_by: args.callerId,
+  });
+
+  if (error) {
+    jsonLog("error", {
+      reqId: args.reqId,
+      evt: "wa_instance_note_write_failed",
+      instanceId: args.instanceId,
+      action: args.action,
+      err: error.message,
+      needsAdminAction: true,
+    });
+  }
 }
 
 /**
@@ -460,6 +522,65 @@ serve(async (req) => {
       return jsonResponse(req, { alerts: data ?? [] });
     }
 
+    /**
+     * Histórico de observações de UMA instância.
+     *
+     * Chaveado por `instance_ref` e NÃO por `instance_id`: depois de a instância
+     * ser apagada, `instance_id` é NULL e o histórico ficaria inalcançável — que
+     * é justamente o oposto do contrato da tabela.
+     *
+     * `instance_id` validado na FORMA e não só na presença — a mesma lição do
+     * defeito de `alert_id` corrigido na 6b: `"abc"` chegava ao PostgREST,
+     * virava `22P02` e subia como 500, culpando o servidor por um pedido
+     * inválido.
+     */
+    if (action === "list_instance_notes") {
+      const id = requireInstanceId(body);
+      if (!id) return jsonResponse(req, { error: "instance_id inválido." }, 400);
+
+      const { data, error } = await supabase
+        .from("whatsapp_instance_notes")
+        .select(NOTE_COLUMNS)
+        .eq("instance_ref", id)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        jsonLog("error", { reqId, evt: "wa_instance_notes_list_failed", err: error.message });
+        return jsonResponse(req, { error: "Não foi possível carregar o histórico." }, 500);
+      }
+
+      const rows = (data ?? []) as Record<string, unknown>[];
+
+      // O autor é um uuid na linha; o painel precisa de um nome. Os autores
+      // distintos de um histórico são platform_admins — realisticamente um ou
+      // dois — mas o teto existe para que um histórico longo não vire dezenas de
+      // chamadas ao Auth Admin dentro de uma resposta. Acima do teto o painel
+      // mostra "autor não identificado", que é honesto: a informação existe,
+      // não foi resolvida aqui.
+      const ids = Array.from(
+        new Set(rows.map((r) => r.created_by).filter((v): v is string => typeof v === "string")),
+      ).slice(0, NOTE_AUTHOR_LOOKUP_CAP);
+
+      const emailById = new Map<string, string>();
+      await Promise.all(
+        ids.map(async (uid) => {
+          const { data: u, error: uErr } = await supabase.auth.admin.getUserById(uid);
+          // Falha de lookup NÃO esconde a observação: o histórico é o dado,
+          // o nome do autor é o enfeite.
+          if (uErr || !u?.user?.email) return;
+          emailById.set(uid, u.user.email);
+        }),
+      );
+
+      return jsonResponse(req, {
+        notes: rows.map((r) => ({
+          ...r,
+          created_by_email:
+            typeof r.created_by === "string" ? emailById.get(r.created_by) ?? null : null,
+        })),
+      });
+    }
+
     if (action === "simulate_partner") {
       // NÃO ESCREVE NADA — nem instância, nem ciclo, nem alerta.
       const orgId = body.organization_id ? String(body.organization_id) : null;
@@ -633,6 +754,11 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Não foi possível registrar a instância." }, 500);
       }
 
+      await recordInstanceNote({
+        instanceId: data.id, organizationId: orgId,
+        action: "REGISTER", note: reason, callerId, reqId,
+      });
+
       jsonLog("info", {
         reqId, evt: "wa_instance_registered", instanceId: data.id, intent,
         allowancePolicy: allowance.policy, fundingSource: funding.fundingSource,
@@ -705,6 +831,11 @@ serve(async (req) => {
         }, 500);
       }
 
+      await recordInstanceNote({
+        instanceId: id, organizationId: found.row.organization_id as string,
+        action: "CONFIRM_CYCLE_DATE", note: reason, callerId, reqId,
+      });
+
       // A pendência de data deixa de existir — RESOLVIDA, nunca apagada: o
       // histórico de alerta é registro administrativo.
       await supabase.from("whatsapp_instance_alerts")
@@ -757,6 +888,12 @@ serve(async (req) => {
         jsonLog("error", { reqId, evt: "wa_cost_update_failed", err: error.message });
         return jsonResponse(req, { error: "Não foi possível atualizar o custo." }, 500);
       }
+
+      await recordInstanceNote({
+        instanceId: id, organizationId: data.organization_id as string,
+        action: "SET_COST", note: reason, callerId, reqId,
+      });
+
       return jsonResponse(req, { instance: data });
     }
 
@@ -799,6 +936,12 @@ serve(async (req) => {
         jsonLog("error", { reqId, evt: "wa_cancel_failed", err: error.message });
         return jsonResponse(req, { error: "Não foi possível registrar o cancelamento." }, 500);
       }
+
+      await recordInstanceNote({
+        instanceId: id, organizationId: data.organization_id as string,
+        action: "REQUEST_CANCELLATION", note: reason, callerId, reqId,
+      });
+
       jsonLog("info", { reqId, evt: "wa_cancellation_requested", instanceId: id });
       return jsonResponse(req, { instance: data });
     }
@@ -842,6 +985,12 @@ serve(async (req) => {
         jsonLog("error", { reqId, evt: "wa_confirm_end_failed", err: error.message });
         return jsonResponse(req, { error: "Não foi possível confirmar o encerramento." }, 500);
       }
+
+      await recordInstanceNote({
+        instanceId: id, organizationId: data.organization_id as string,
+        action: "CONFIRM_END", note: reason, callerId, reqId,
+      });
+
       return jsonResponse(req, { instance: data });
     }
 
@@ -886,6 +1035,12 @@ serve(async (req) => {
         jsonLog("error", { reqId, evt: "wa_reactivate_failed", err: error.message });
         return jsonResponse(req, { error: "Não foi possível reverter o cancelamento." }, 500);
       }
+
+      await recordInstanceNote({
+        instanceId: id, organizationId: data.organization_id as string,
+        action: "REACTIVATE", note: reason, callerId, reqId,
+      });
+
       return jsonResponse(req, { instance: data });
     }
 
@@ -923,6 +1078,12 @@ serve(async (req) => {
         jsonLog("error", { reqId, evt: "wa_instance_update_failed", err: error.message });
         return jsonResponse(req, { error: "Não foi possível atualizar a instância." }, 500);
       }
+
+      await recordInstanceNote({
+        instanceId: id, organizationId: data.organization_id as string,
+        action: "UPDATE", note: reason, callerId, reqId,
+      });
+
       return jsonResponse(req, { instance: data });
     }
 
