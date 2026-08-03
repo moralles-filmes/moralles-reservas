@@ -186,21 +186,50 @@ e registraram, cada uma, que a interação com a UI renderizada não é possíve
 sem essa ferramenta. Nenhuma linha abaixo foi observada — todas são
 `não executado`, nunca `OK`/`✓`/`esperado`.
 
+**Os quatro roteiros somam 20 casos** (Task 5: 3, Task 6: 8, Task 7: 6,
+Task 8: 3 — contagem conferida linha a linha contra o texto de cada brief,
+não só contra os relatórios). A tabela abaixo lista os 20, agrupados por
+tarefa de origem, para que nenhum fique implícito como "fora do roteiro".
+
+### Task 5 — hooks, navegação e nome da organização (3 casos)
+
 | Caso | Resultado |
 |---|---|
-| URL colada no identificador → 400 com a mensagem sobre o token | não executado — sem ferramenta de navegador no ambiente (Task 6, caso 1) |
-| Identificador vazio → botão desabilitado, sem viagem ao servidor | não executado — sem ferramenta de navegador no ambiente (Task 6, caso 2) |
-| Custo `abc` → recusa na UI, procedência desabilitada | não executado — sem ferramenta de navegador no ambiente (Task 6, caso 4) |
-| Custo `99.90` → aceito, sem confundir com 9990 reais | não executado — sem ferramenta de navegador no ambiente (Task 6, caso 5) |
-| Registro repetido da mesma instância → 409, nenhuma linha nova | não executado — sem ferramenta de navegador no ambiente, e chamada direta à EF de produção como substituto foi explicitamente proibida (Task 6, caso 6) |
-| Alterar só o identificador → o corpo NÃO contém `channel_id` | não executado — sem ferramenta de navegador no ambiente, e proibido contra produção até 05/08 por regra do próprio brief (Task 7, caso 1) |
-| Nada alterado → "Salvar correção" desabilitado | não executado — sem ferramenta de navegador no ambiente (Task 7, caso 2) |
-| Instância `ENDED` → botão Reativar ausente | não executado — sem ferramenta de navegador no ambiente (Task 7, caso 4) |
-| Instância `CANCELLATION_REQUESTED` → botão Reativar presente | não executado — sem ferramenta de navegador no ambiente (Task 7, caso 5) |
-| Histórico antes da 096 → branch `isError` com retry, não painel em branco | não executado — sem ferramenta de navegador no ambiente; migration 096 também não aplicada, então este caso nem tem estado de banco para observar (Task 8, caso 2) |
-| Link "Instâncias WhatsApp" no menu lateral navega | não executado — sem ferramenta de navegador no ambiente (Task 5) |
-| Nome da organização no card, no lugar do UUID | não executado — sem ferramenta de navegador no ambiente (Task 5) |
-| Mobile `<640px` → diálogos viram bottom-sheet | não executado — sem ferramenta de navegador no ambiente (Tasks 6 e 7, caso mobile de cada roteiro) |
+| Menu lateral mostra "Instâncias WhatsApp" e o link navega para `/platform/instancias-whatsapp` | não executado — sem ferramenta de navegador no ambiente |
+| Card da instância mostra o nome da organização (Ren Sushi), não o UUID | não executado — sem ferramenta de navegador no ambiente |
+| Colapsar a sidebar e reabrir em largura mobile (`<lg`): a gaveta abre e o item novo aparece | não executado — sem ferramenta de navegador no ambiente |
+
+### Task 6 — Tela A, registrar instância (8 casos)
+
+| Caso | Resultado |
+|---|---|
+| URL colada no identificador → 400 `REF_LOOKS_LIKE_URL` com toast sobre o token | não executado — sem ferramenta de navegador no ambiente |
+| Identificador vazio → botão Registrar desabilitado, sem viagem ao servidor | não executado — sem ferramenta de navegador no ambiente |
+| Unidade não escolhida → botão Registrar desabilitado | não executado — sem ferramenta de navegador no ambiente |
+| Custo `abc` → recusa na UI, procedência desabilitada, botão não submete | não executado — sem ferramenta de navegador no ambiente |
+| Custo `99.90` → aceito, sem confundir com 9990 reais | não executado — sem ferramenta de navegador no ambiente |
+| Registro repetido da mesma instância (ref do Ren Sushi) → 409, nenhuma linha nova | não executado — sem ferramenta de navegador no ambiente, e chamada direta à EF de produção como substituto foi explicitamente proibida |
+| Card do alerta `DIVERGENCE`/`CHANNEL_WITHOUT_INSTANCE` → diálogo abre com a unidade da organização do alerta já filtrada | não executado — sem ferramenta de navegador no ambiente (também depende de haver um alerta desse tipo aberto no momento) |
+| Mobile (`<640px`) → diálogo vira bottom-sheet, inputs com altura de toque, safe-area no rodapé | não executado — sem ferramenta de navegador no ambiente |
+
+### Task 7 — Telas B e C, corrigir vínculo e reativar (6 casos)
+
+| Caso | Resultado |
+|---|---|
+| Alterar só o identificador do Ren Sushi → o corpo da requisição NÃO contém `channel_id` nem `unit_id` | não executado — sem ferramenta de navegador no ambiente, e proibido contra produção até 05/08 por regra do próprio brief |
+| Nada alterado → "Salvar correção" desabilitado, aviso "Sem mudança não há requisição" | não executado — sem ferramenta de navegador no ambiente |
+| Canal esvaziado ("Sem canal") → botão habilita, o patch conteria `channel_id: null` | não executado — sem ferramenta de navegador no ambiente |
+| Instância `ENDED` → botão Reativar ausente no card | não executado — sem ferramenta de navegador no ambiente |
+| Instância `CANCELLATION_REQUESTED` → botão Reativar presente; abrir e fechar sem submeter | não executado — sem ferramenta de navegador no ambiente |
+| Mobile (`<640px`) → os dois diálogos viram bottom-sheet, inputs com altura de toque | não executado — sem ferramenta de navegador no ambiente |
+
+### Task 8 — seção Histórico (3 casos)
+
+| Caso | Resultado |
+|---|---|
+| Expandir a instância do Ren Sushi → aparecem as duas subseções, "Ciclos e margem" e "Histórico" | não executado — sem ferramenta de navegador no ambiente |
+| Histórico antes da 096 → branch `isError` com botão "Tentar de novo", não painel em branco | não executado — sem ferramenta de navegador no ambiente; migration 096 também não aplicada, então este caso nem tem estado de banco para observar |
+| O rótulo do campo de motivo, nos cinco diálogos compartilhados, diz "fica registrado no histórico" | não executado — sem ferramenta de navegador no ambiente |
 
 ## 7. Minors adiados — para triagem do review whole-branch
 
