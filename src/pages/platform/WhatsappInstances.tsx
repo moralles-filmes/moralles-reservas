@@ -34,6 +34,7 @@ import {
 } from "@/hooks/useWhatsappInstances";
 import { useAllUnits } from "@/hooks/useAllUnits";
 import { RegisterInstanceDialog } from "@/components/platform/RegisterInstanceDialog";
+import { UpdateInstanceDialog } from "@/components/platform/UpdateInstanceDialog";
 
 const MIN_REASON_LENGTH = 5;
 
@@ -135,6 +136,7 @@ type ReasonDialogKind =
   | { kind: "set_cost"; instance: WhatsappInstance }
   | { kind: "cancel"; instance: WhatsappInstance }
   | { kind: "confirm_end"; instance: WhatsappInstance }
+  | { kind: "reactivate"; instance: WhatsappInstance }
   | { kind: "resolve_alert"; alert: WhatsappInstanceAlert }
   | null;
 
@@ -172,6 +174,7 @@ export default function WhatsappInstances() {
   const [registerOpen, setRegisterOpen] = useState(false);
   const [registerPrefill, setRegisterPrefill] =
     useState<{ organizationId: string; channelId: string | null } | null>(null);
+  const [updateTarget, setUpdateTarget] = useState<WhatsappInstance | null>(null);
 
   function openRegister(prefill: { organizationId: string; channelId: string | null } | null) {
     setRegisterPrefill(prefill);
@@ -366,6 +369,29 @@ export default function WhatsappInstances() {
                       Confirmar encerramento
                     </Button>
                   )}
+                  {/* Tela C — SÓ em CANCELLATION_REQUESTED. `ENDED` não mostra
+                      nada: `canTransition` recusa mesmo com evidência, e
+                      oferecer um botão que sempre falha é mentir para o
+                      operador. Instância encerrada que reapareça no fornecedor
+                      exige linha nova. */}
+                  {inst.lifecycle_state === "CANCELLATION_REQUESTED" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => setDialog({ kind: "reactivate", instance: inst })}
+                    >
+                      Reativar
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setUpdateTarget(inst)}
+                  >
+                    Corrigir vínculo
+                  </Button>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -550,6 +576,7 @@ export default function WhatsappInstances() {
               {dialog?.kind === "set_cost" && "Informar custo mensal"}
               {dialog?.kind === "cancel" && "Registrar cancelamento no fornecedor"}
               {dialog?.kind === "confirm_end" && "Confirmar encerramento"}
+              {dialog?.kind === "reactivate" && "Reativar instância"}
               {dialog?.kind === "resolve_alert" && "Resolver alerta"}
             </ResponsiveDialogTitle>
             <ResponsiveDialogDescription>
@@ -634,6 +661,14 @@ export default function WhatsappInstances() {
               </p>
             )}
 
+            {dialog?.kind === "reactivate" && (
+              <p className="text-sm text-muted-foreground">
+                Reverter o cancelamento exige <strong>evidência</strong> de que ele foi desfeito no
+                fornecedor. Descreva o que você verificou no painel da Z-API — a data-limite de
+                acesso registrada será apagada.
+              </p>
+            )}
+
             <div className="space-y-1">
               <Label htmlFor="reason">Motivo</Label>
               <Textarea
@@ -691,6 +726,11 @@ export default function WhatsappInstances() {
                       { action: "confirm_end", instance_id: dialog.instance.id, reason },
                       "Encerramento confirmado.",
                     );
+                  } else if (dialog.kind === "reactivate") {
+                    run(
+                      { action: "reactivate", instance_id: dialog.instance.id, reason },
+                      "Cancelamento revertido.",
+                    );
                   } else if (dialog.kind === "resolve_alert") {
                     run(
                       { action: "resolve_alert", alert_id: dialog.alert.id, reason },
@@ -719,6 +759,12 @@ export default function WhatsappInstances() {
           setRegisterPrefill(null);
           setDialog({ kind: "confirm_date", instance });
         }}
+      />
+
+      <UpdateInstanceDialog
+        open={!!updateTarget}
+        onOpenChange={(o) => !o && setUpdateTarget(null)}
+        instance={updateTarget}
       />
     </div>
   );
