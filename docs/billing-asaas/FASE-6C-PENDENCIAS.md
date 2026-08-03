@@ -1,8 +1,12 @@
 # Pendências da Fase 6c — não declaráveis por teste unitário
 
-Painel de instâncias completo + ledger de observações + runbook.
-Ambiente sem Docker, repo ligado à produção. **Nenhuma migration aplicada,
-nenhuma Edge Function deployada, nenhuma flag alterada, nenhum merge.**
+Painel de instâncias completo + ledger de observações + runbook. Repo ligado
+à produção. **Nenhuma migration aplicada, nenhuma Edge Function deployada,
+nenhuma flag alterada, nenhum merge** — vedação desta sessão, não falta de
+ambiente: existe Postgres 18.4 local disponível (`scoop`, sem Docker,
+`127.0.0.1:55432`), o mesmo venue que validou a migration 089 real
+([FASE-6B-ROLLOUT-2026-08-02.md §1](FASE-6B-ROLLOUT-2026-08-02.md)) e o venue
+prescrito pela spec §11 para o ledger desta fase. Ver §2.
 
 **Gates desta entrega (execução real, 2026-08-03):**
 
@@ -100,7 +104,23 @@ Nenhum worker novo, nenhum cron novo, nenhuma flag nova.
 
 ---
 
-## 2. Depende de banco real
+## 2. Casos NOTE-A..NOTE-E — não executados por decisão desta sessão
+
+**Não rodaram porque a sessão vedou execução, não porque faltasse onde
+rodar.** O Postgres 18.4 local (`scoop`, sem Docker, `127.0.0.1:55432`, sem
+`pg_cron`/`pg_net`) está disponível e é o mesmo banco onde a migration 089
+real rodou verbatim, com os casos FK-A..FK-G passando 11/11
+([FASE-6B-ROLLOUT-2026-08-02.md §1](FASE-6B-ROLLOUT-2026-08-02.md), carimbado
+`AVAILABLE` em
+[FASE-6B-GATES-SEGURANCA.md:564](FASE-6B-GATES-SEGURANCA.md)) — e é o venue
+que a spec §11 prescreve para o ledger desta fase, no mesmo procedimento.
+"Ambiente sem Docker" descreve esse Postgres real; não é motivo para os casos
+abaixo estarem pendentes.
+
+De `NOTE-A` a `NOTE-E`, só `NOTE-E` (RLS pelo client SDK) exige Supabase de
+verdade — o Postgres local não tem PostgREST nem `auth.uid()`. Rodar
+`NOTE-A..NOTE-D` (incluindo o `NOTE-C` estendido) contra esse Postgres é a
+**próxima ação recomendada antes do merge**.
 
 - **Migration 096 nunca aplicada.** Idempotência do backfill, guardas de
   INSERT/UPDATE, guarda de tenant e RLS verificados **só por leitura**.
