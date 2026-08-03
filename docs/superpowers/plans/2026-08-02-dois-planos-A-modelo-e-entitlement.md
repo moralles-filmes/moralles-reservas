@@ -827,7 +827,7 @@ it("transicao valida BLOQUEIA provisionamento novo", () => {
   const p = resolveProvisioningEligibility({ decision: d, dataReadFailed: false,
                                              subscriptionAmbiguous: true });
   expect(p.allowed).toBe(false);
-  expect(p.reasonCode).toBe("SUBSCRIPTION_AMBIGUOUS");
+  expect(p.blockReason).toBe("SUBSCRIPTION_AMBIGUOUS");
 });
 
 it("duplicidade inesperada tambem bloqueia provisionamento", () => {
@@ -840,7 +840,7 @@ it("falha de leitura mantem a polaridade que ja existia", () => {
   const p = resolveProvisioningEligibility({ decision: ativoDecision, dataReadFailed: true,
                                              subscriptionAmbiguous: false });
   expect(p.allowed).toBe(false);
-  expect(p.reasonCode).not.toBe("SUBSCRIPTION_AMBIGUOUS");   // motivo PROPRIO
+  expect(p.blockReason).not.toBe("SUBSCRIPTION_AMBIGUOUS");   // motivo PROPRIO
 });
 
 it("os tres estados nao se confundem", () => {
@@ -850,7 +850,7 @@ it("os tres estados nao se confundem", () => {
   expect(normal.allowed).toBe(true);
   expect(ambiguo.allowed).toBe(false);
   expect(semLeitura.allowed).toBe(false);
-  expect(ambiguo.reasonCode).not.toBe(semLeitura.reasonCode);
+  expect(ambiguo.blockReason).not.toBe(semLeitura.blockReason);
 });
 ```
 
@@ -863,7 +863,7 @@ Expected: o record exaustivo dos sete estados. **Anotar o valor de cada um** —
 
 - `WhatsAppGateInput` ganha `subscriptionAmbiguous?: boolean` (opcional → default `false`, mantendo os callers atuais válidos).
 - `SENDING_BLOCKED_BY_STATE` **não muda**.
-- `resolveProvisioningEligibility` ganha `subscriptionAmbiguous` no input e nega com `reasonCode: "SUBSCRIPTION_AMBIGUOUS"`, **distinto** do motivo de `dataReadFailed`.
+- `resolveProvisioningEligibility` ganha `subscriptionAmbiguous` no input e nega com `blockReason: "SUBSCRIPTION_AMBIGUOUS"` (o campo real chama-se `blockReason`, lido em `manage-channels/index.ts`), **distinto** do motivo de `dataReadFailed`.
 
 As duas polaridades opostas da spec são preservadas: **envio fail-OPEN** a soluço técnico e a ambiguidade comercial; **provisionamento fail-CLOSED** a ambos, por motivos separados.
 
@@ -1231,12 +1231,15 @@ git commit -m "feat(dois-planos): componente contratual de automacao como origem
 ## Task 10: Worker de ciclos passa o componente
 
 **Files:**
-- Modify: `supabase/functions/_shared/whatsapp-instance-worker-core.ts`
+- Modify: `supabase/functions/process-whatsapp-instance-cycles/index.ts` (`resolveRevenueForOrg` — **o único call site de runtime**)
+- Modify: `supabase/functions/_shared/whatsapp-instance-worker-core.ts` (só se o contador `invalidInput` subir para o núcleo)
 - Test: `src/lib/whatsapp-instance-worker-core.test.ts`
+
+> **Correção de rota (descoberta na Task 9).** O plano dizia que `attributeRevenue` era chamada no worker-core. **Não é** — o núcleo só consome o resultado via `WorkerRepo.resolveRevenue`; a chamada vive no adapter. A Task 9 já anotou `resolveRevenue` como `Fetch<AttributedRevenue>` (type-only, zero lógica) para manter o typecheck verde, e já trata `INVALID_INPUT` no adapter com `wa_revenue_invalid_input`.
 
 - [ ] **Step 1: Localizar o ponto de chamada**
 
-Run: `grep -n "attributeRevenue\|subscriptionAmountCents" supabase/functions/_shared/whatsapp-instance-worker-core.ts`
+Run: `grep -n "attributeRevenue\|subscriptionAmountCents" supabase/functions/process-whatsapp-instance-cycles/index.ts`
 
 - [ ] **Step 2: Repassar `planWhatsappComponentCents` e tratar a união**
 
