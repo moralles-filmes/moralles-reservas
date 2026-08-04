@@ -74,11 +74,142 @@ function braceBlock(src: string, from: number): [number, number] {
  * Apaga o CONTEÚDO dos comentários preservando os índices (troca por espaço).
  * Necessário quando a regra é sobre CÓDIGO e a prosa cita o mesmo identificador
  * de propósito — como o JSDoc que explica `opts.budget`.
+ *
+ * STRING-AWARE de propósito. A versão anterior era uma expressão regular de
+ * "barra-barra até o fim da linha" sobre texto bruto, e tratava qualquer `//`
+ * como início de comentário — inclusive o de `https://` dentro de uma string ou
+ * template literal. Em `ai-providers.ts` isso branqueava exatamente a linha da
+ * URL do Gemini, que carrega a chave BYOK na query string:
+ * o detector de vazamento de credencial ficava cego justo no vetor que ele
+ * existe para vigiar. Nenhum caso dependia disso ainda, mas passa a depender —
+ * um falso-negativo dormente na infraestrutura do próprio guardrail é pior que
+ * um caso ausente, porque parece cobertura.
+ *
+ * LITERAL DE EXPRESSÃO REGULAR é reconhecido, e não por preciosismo: os
+ * sanitizadores deste projeto trazem aspas DENTRO da regex (`["'\s:=]`), e um
+ * scanner que só conhece string entra em modo string ali e dessincroniza o
+ * arquivo inteiro a partir daquele ponto — trocar um ponto cego por outro maior.
+ * A ambiguidade `/` divisão × `/` regex é resolvida pelo último token
+ * significativo, que é o que todo lexer de JS faz.
  */
 function blankComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+  const out: string[] = [];
+  // Uma entrada por `${` aberto, contando as chaves abertas dentro dele: o `}`
+  // que fecha a interpolação só é o que encontra a contagem em zero.
+  const tpl: number[] = [];
+  let mode: "code" | "line" | "block" | "sq" | "dq" | "tpl" | "re" = "code";
+  let reClass = false;
+  // Último caractere de código significativo e última palavra — juntos decidem
+  // se um `/` abre regex ou é divisão. Depois de identificador, número, `)` ou
+  // `]` é divisão; depois de palavra-chave (`return /x/`), é regex.
+  let lastCh = "";
+  let lastWord = "";
+  const KEYWORDS = new Set([
+    "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
+    "case", "do", "else", "yield", "await", "throw",
+  ]);
+  const regexAllowed = () =>
+    /[A-Za-z0-9_$]/.test(lastCh) ? KEYWORDS.has(lastWord) : !/[)\]'"`]/.test(lastCh);
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const d = src[i + 1];
+    if (mode === "code") {
+      if (c === "/" && d === "/") {
+        mode = "line";
+        out.push(" ", " ");
+        i += 2;
+      } else if (c === "/" && d === "*") {
+        mode = "block";
+        out.push(" ", " ");
+        i += 2;
+      } else if (c === "/" && regexAllowed()) {
+        mode = "re";
+        reClass = false;
+        out.push(c);
+        i++;
+      } else if (c === "'" || c === '"' || c === "`") {
+        mode = c === "'" ? "sq" : c === '"' ? "dq" : "tpl";
+        out.push(c);
+        i++;
+      } else {
+        if (tpl.length && c === "{") tpl[tpl.length - 1]++;
+        if (tpl.length && c === "}") {
+          if (tpl[tpl.length - 1] === 0) {
+            tpl.pop();
+            mode = "tpl";
+          } else {
+            tpl[tpl.length - 1]--;
+          }
+        }
+        out.push(c);
+        i++;
+      }
+      if (mode === "code" && !/\s/.test(c)) {
+        lastWord = /[A-Za-z0-9_$]/.test(c) ? lastWord + c : "";
+        lastCh = c;
+      }
+      continue;
+    }
+    if (mode === "re") {
+      if (c === "\\") {
+        out.push(c);
+        if (i + 1 < src.length) out.push(src[i + 1]);
+        i += 2;
+        continue;
+      }
+      if (c === "[") reClass = true;
+      else if (c === "]") reClass = false;
+      else if (c === "/" && !reClass) {
+        mode = "code";
+        lastCh = "/";
+        lastWord = "";
+      }
+      out.push(c);
+      i++;
+      continue;
+    }
+    if (mode === "line") {
+      out.push(c === "\n" ? "\n" : " ");
+      if (c === "\n") mode = "code";
+      i++;
+      continue;
+    }
+    if (mode === "block") {
+      if (c === "*" && d === "/") {
+        mode = "code";
+        out.push(" ", " ");
+        i += 2;
+      } else {
+        out.push(c === "\n" ? "\n" : " ");
+        i++;
+      }
+      continue;
+    }
+    // Dentro de string/template nada é comentário, e a barra invertida come o
+    // próximo caractere — senão uma aspa escapada fecharia a string cedo demais.
+    if (c === "\\") {
+      out.push(c);
+      if (i + 1 < src.length) out.push(src[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (mode === "tpl" && c === "$" && d === "{") {
+      tpl.push(0);
+      mode = "code";
+      out.push("$", "{");
+      i += 2;
+      continue;
+    }
+    if ((mode === "sq" && c === "'") || (mode === "dq" && c === '"') || (mode === "tpl" && c === "`")) {
+      mode = "code";
+      lastCh = c;
+      lastWord = "";
+    }
+    out.push(c);
+    i++;
+  }
+  return out.join("");
 }
 
 /** Par de parênteses balanceado a partir do primeiro `(` em/depois de `from`. */
@@ -217,6 +348,46 @@ describe("ai-providers.ts — contrato de orçamento", () => {
         );
       }
     }
+  });
+
+  it("controle do apagador de comentários: `//` dentro de string NÃO é comentário", () => {
+    // Falso-negativo dormente na infraestrutura do guardrail: enquanto o
+    // apagador tratava `https://` como início de comentário, todo detector que
+    // roda sobre `blankComments(...)` ficava cego da URL para a frente.
+    const fonte = `const u = "https://a/b"; // some\nconst v = \`x//y\${z}//w\`; /* some */\nconst s = 'p//q';\n`;
+    const limpo = blankComments(fonte);
+    expect(limpo, "índices deixaram de ser preservados").toHaveLength(fonte.length);
+    expect(limpo, "string com // foi tratada como comentário").toContain('"https://a/b"');
+    expect(limpo, "template literal com // foi tratado como comentário").toContain("x//y");
+    expect(limpo, "trecho após a interpolação foi perdido").toContain("//w");
+    expect(limpo, "string simples com // foi tratada como comentário").toContain("p//q");
+    expect(limpo, "comentário de linha sobreviveu").not.toContain("some");
+    // E o que É comentário continua apagado depois de uma string qualquer.
+    expect(blankComments(`const a = "x"; // segredo\n`)).not.toContain("segredo");
+  });
+
+  it("controle do apagador: regex com aspas dentro não dessincroniza o resto", () => {
+    // `["'\s:=]` dentro de uma regex é o padrão real dos sanitizadores deste
+    // projeto. Um scanner que só conhece string entra em modo string ali e todo
+    // o arquivo DEPOIS daquele ponto passa a ser lido errado — o comentário
+    // seguinte sobrevive e o código seguinte é apagado, os dois em silêncio.
+    const fonte = `const r = /["'\\s:=]+/g;\n// segredo\nconst z = 1;\n`;
+    const limpo = blankComments(fonte);
+    expect(limpo, "índices deixaram de ser preservados").toHaveLength(fonte.length);
+    expect(limpo, "a regex foi comida").toContain(`/["'\\s:=]+/g`);
+    expect(limpo, "o comentário depois da regex sobreviveu").not.toContain("segredo");
+    expect(limpo, "o código depois da regex foi apagado").toContain("const z = 1;");
+    // E divisão continua sendo divisão: `a / b // c` tem comentário de verdade.
+    const div = blankComments(`const q = (a) / b; // nota\nconst w = 2;\n`);
+    expect(div, "divisão foi lida como regex e engoliu o comentário").not.toContain("nota");
+    expect(div).toContain("const w = 2;");
+  });
+
+  it("controle positivo no arquivo real: a URL do Gemini sobrevive ao apagador", () => {
+    // É a linha que carrega `key=${apiKey}`. Com o apagador antigo ela sumia
+    // inteira — e o caso "nenhum campo de log pode carregar a chave", que roda
+    // sobre o texto apagado, nunca chegaria a vê-la.
+    expect(blankComments(providers)).toContain("generativelanguage.googleapis.com");
   });
 
   it("importa o autorizador puro em vez de reimplementar a ordem", () => {
