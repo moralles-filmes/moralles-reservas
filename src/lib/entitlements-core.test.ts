@@ -386,6 +386,26 @@ describe("Plano D — franquia de IA", () => {
     expect(e.whatsapp.allowed).toBe(true);
   });
 
+  it("ciclo CLOSED não nega — só EXHAUSTED nega, e os dois não são sinônimos", () => {
+    // `CLOSED` é ciclo ENCERRADO (virou o mês, ou foi fechado por administração),
+    // não teto estourado. O resolvedor compara com `"EXHAUSTED"` e nada mais: se
+    // alguém trocar a comparação por "estado diferente de OPEN", toda organização
+    // de franquia perde a IA na virada do ciclo, antes de o próximo abrir — com o
+    // teto cheio. O restante zerado abaixo é de propósito: é o valor que um ciclo
+    // encerrado tende a ter, e ele não pode participar da decisão.
+    const e = resolveEntitlements({
+      billingStatus: "active",
+      trialEndsAt: null,
+      overrides: [],
+      subscriptions: [plano2],
+      aiFranchise: { state: "CLOSED", remainingCents: 0 },
+    });
+    expect(e.ai.allowed).toBe(true);
+    expect(e.ai.source).toBe("franchise");
+    expect(e.ai.status).toBe("within_budget");
+    expect(e.ai.budgetRemainingCents).toBe(0);
+  });
+
   it("franquia esgotada com restante positivo ainda é esgotada — o estado manda", () => {
     const e = resolveEntitlements({
       billingStatus: "active",

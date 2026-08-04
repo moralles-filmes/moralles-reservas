@@ -23,7 +23,17 @@ function read(nameFragment: string): string {
 const prices = read("099_ai_model_prices");
 const budgets = read("100_ai_cycle_budgets");
 const usage = read("101_ai_usage_and_reservations");
-const all = [prices, budgets, usage];
+const rpcs = read("102_ai_budget_rpcs");
+const milestones = read("103_ai_budget_milestones");
+/**
+ * AS CINCO, não três. A varredura de segredo abaixo itera esta lista, e 102/103
+ * são justamente as migrations que montam funções `SECURITY DEFINER` e
+ * `grant execute` — a superfície onde uma chave literal teria motivo plausível
+ * para aparecer (foi assim que uma `INTERNAL_API_KEY` em claro atravessou 88
+ * dias num `create trigger ... http_request(...)`). Deixá-las de fora era um
+ * ponto cego com cara de cobertura.
+ */
+const all = [prices, budgets, usage, rpcs, milestones];
 
 const TABLES = ["ai_model_prices", "ai_cycle_budgets", "ai_cost_reservations", "ai_usage_events"];
 
@@ -191,8 +201,6 @@ describe("nenhuma migration do Plano D embute segredo ou host", () => {
   });
 });
 
-const rpcs = read("102_ai_budget_rpcs");
-
 const RPC_NAMES = [
   "open_ai_cycle_budget",
   "reserve_ai_budget",
@@ -301,8 +309,6 @@ describe("RPCs do orçamento (102)", () => {
     expect(body.search(/from ai_cost_reservations[\s\S]{0,200}?for update/i)).toBeGreaterThan(-1);
   });
 });
-
-const milestones = read("103_ai_budget_milestones");
 
 describe("ledger dos marcos (103)", () => {
   it("RLS habilitada, forçada e só platform_admin", () => {
