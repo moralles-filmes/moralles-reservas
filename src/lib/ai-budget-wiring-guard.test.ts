@@ -453,17 +453,23 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     expect(div).toContain("const w = 2;");
   });
 
-  it("controle do apagador: regex mal classificada não contamina além da linha", () => {
-    // `return` seguido de divisão é o caso em que a heurística de token erra:
-    // o scanner entra em modo regex numa `/` que não abre regex nenhuma. Sem
-    // escape de fim de linha, ele sairia disso só na próxima `/` do ARQUIVO, e
-    // todo comentário até lá sobreviveria em silêncio — falso-negativo ilimitado.
-    const fonte = `function f() { return /* a */ x; }\nconst e = total /count;\n// segredo\nconst z = 3;\n// outro\n`;
+  it("controle do apagador: regex não terminada não contamina além da linha", () => {
+    // A FIXTURE TEM DE ENTRAR EM MODO REGEX, senão o caso não prova nada. A
+    // primeira versão deste caso usava `total /count`, em que `lastWord` é
+    // "total" — fora de KEYWORDS, logo `regexAllowed()` é false e o scanner
+    // NUNCA entrava em modo `re`: remover o escape de `\n` deixava a saída
+    // idêntica e o caso verde. `return /` entra, porque `return` é palavra-chave.
+    //
+    // Sem o escape, o scanner sai do modo regex só na próxima `/` do ARQUIVO —
+    // que é a do `// segredo` — e tudo até lá sobrevive em silêncio.
+    const fonte = `function f() { return /x; }\n// segredo\nconst z = 3;\n// outro\nconst w = 4 / 2;\n`;
     const limpo = blankComments(fonte);
     expect(limpo, "índices deixaram de ser preservados").toHaveLength(fonte.length);
-    expect(limpo, "o dano passou da linha da barra solta").not.toContain("segredo");
-    expect(limpo, "o dano passou da linha da barra solta").not.toContain("outro");
-    expect(limpo, "o código depois da barra solta sumiu").toContain("const z = 3;");
+    expect(limpo, "a regex não terminada foi engolida").toContain("return /x; }");
+    expect(limpo, "o dano passou da linha da regex não terminada").not.toContain("segredo");
+    expect(limpo, "o dano passou da linha da regex não terminada").not.toContain("outro");
+    expect(limpo, "o código depois da regex não terminada sumiu").toContain("const z = 3;");
+    expect(limpo, "a divisão depois da recuperação foi perdida").toContain("const w = 4 / 2;");
   });
 
   it("controle positivo no arquivo real: a URL do Gemini sobrevive ao apagador", () => {
@@ -1118,8 +1124,8 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     // fresca no momento do report. Uma vigência trocada no meio do turno gravava
     // evento cujo preço não corresponde ao custo.
     const hooks = fnBlock(gate, "makeBudgetHooks");
-    expect(hooks, "o resolvedor compartilhado sumiu").toMatch(
-      /const resolvePrice = makePriceCache\(supabase\)/,
+    expect(hooks, "o resolvedor do turno deixou de ser reaproveitado").toMatch(
+      /const resolvePrice = args\.resolvePrice \?\? makePriceCache\(supabase\)/,
     );
     for (const metodo of ["priceFor", "beforeCall", "reportCall"]) {
       const body = methodBlock(gate, metodo);
@@ -1129,6 +1135,20 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     // E `loadPrice` só é chamada de dentro do cache.
     const cache = fnBlock(gate, "makePriceCache");
     expect(cache).toContain("loadPrice(");
+
+    // O QUARTO ponto: a estimativa da reserva. `openTurnBudget` cria o resolvedor
+    // e o DEVOLVE, senão a afirmação "um resolvedor por turno" valeria só dentro
+    // dos ganchos e o mesmo par seria lido duas vezes, de vigências possivelmente
+    // diferentes.
+    const abre = fnBlock(gate, "openTurnBudget");
+    expect(abre, "openTurnBudget não usa o cache").toContain("makePriceCache(supabase)");
+    expect(abre, "openTurnBudget não devolve o resolvedor do turno").toMatch(
+      /\n\s*resolvePrice,\n/,
+    );
+    const stmt = statementFrom(gate, gate.indexOf("export type OpenTurnResult"));
+    expect(stmt, "o resultado READY não carrega o resolvedor").toMatch(
+      /kind: "READY";[^|]*resolvePrice: PriceResolver/,
+    );
   });
 
   it("custo impossível de precificar é null, nunca sentinela numérico", () => {
@@ -1165,21 +1185,70 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     expect(body).toMatch(/throw new Error\("ai_usage_record_failed"\)/);
   });
 
-  it("o marco é gravado ANTES de enfileirar, e carimbado só DEPOIS", () => {
-    // Disciplina de três tempos (6b): o INSERT é a barreira de persistência; o
-    // carimbo é a última coisa. Inverter reabre um dos dois defeitos opostos —
-    // aviso diário sem teto, ou ledger dizendo "avisei" sobre e-mail que não saiu.
+  it("os três tempos do marco, na ordem: TOCA, enfileira, CARIMBA", () => {
+    // A versão anterior deste caso exigia `.update(` DEPOIS do enqueue, e assim
+    // proibia a própria correção: o primeiro UPDATE é o TOQUE, que consome o
+    // slot e prova que a linha é gravável ANTES de qualquer coisa entrar na fila.
+    // Contar depois de enfileirar deixa o contador parado exatamente quando a
+    // escrita falha, e o teto nunca é alcançado.
     const body = fnBlock(gate, "recordMilestones");
     const insert = body.indexOf(".insert(");
     const enqueue = body.indexOf("enqueueBillingNotification(");
-    const stamp = body.indexOf(".update(");
+    const updates = [...body.matchAll(/\.update\(/g)].map((m) => m.index!);
     expect(insert, "o marco não é gravado").toBeGreaterThan(-1);
     expect(enqueue, "o aviso não é enfileirado").toBeGreaterThan(-1);
-    expect(stamp, "o marco não é carimbado").toBeGreaterThan(-1);
-    expect(insert, "enfileira antes de provar que o ledger grava").toBeLessThan(enqueue);
-    expect(enqueue, "carimba 'avisei' antes de o aviso entrar na fila").toBeLessThan(stamp);
+    expect(updates.length, "os dois UPDATEs dos três tempos não existem").toBe(2);
+    const [toca, carimba] = updates;
+
+    expect(insert, "o ledger deixou de ser a primeira barreira").toBeLessThan(toca);
+    expect(toca, "enfileira antes de provar que a linha é gravável").toBeLessThan(enqueue);
+    expect(enqueue, "carimba 'avisei' antes de o aviso entrar na fila").toBeLessThan(carimba);
+
+    // E cada UPDATE escreve o que lhe cabe: o toque NÃO registra envio.
+    const stmtToca = statementFrom(body, toca);
+    expect(stmtToca, "o toque registra envio — deixou de ser só barreira").not.toContain(
+      "notified_at",
+    );
+    expect(stmtToca, "o toque não consome o slot").toMatch(/enqueue_attempts:\s*attempts \+ 1/);
+    expect(statementFrom(body, carimba), "o carimbo não registra o envio").toContain("notified_at");
+
+    // Toque que não casa linha IMPEDE o enfileiramento — é o que faz dele
+    // barreira, e não decoração.
+    const guarda = body.indexOf("if (touchErr");
+    expect(guarda, "o retorno do toque não é conferido").toBeGreaterThan(toca);
+    expect(guarda, "o toque é conferido só depois de enfileirar").toBeLessThan(enqueue);
+    expect(
+      body.slice(...braceBlock(body, guarda)),
+      "toque falho não impede o enfileiramento",
+    ).toContain("continue");
+
     // 23505 é dedupe (o marco já foi registrado neste ciclo), não erro.
     expect(body, "o dedupe do marco virou erro").toContain("23505");
+  });
+
+  it("o teto de tentativas é lido, interrompe, e só é alcançável porque o toque conta", () => {
+    // A constante entrou na rodada anterior sem contraparte de leitura, num
+    // arquivo cuja regra de projeto é que regra não vigiada não vale a linha.
+    expect(gate, "o teto sumiu").toContain("MILESTONE_ENQUEUE_MAX_ATTEMPTS");
+    const body = fnBlock(gate, "recordMilestones");
+    expect(body, "o teto não é comparado com o que veio do ledger").toMatch(
+      /attempts >= MILESTONE_ENQUEUE_MAX_ATTEMPTS/,
+    );
+    const bloqueio = body.slice(
+      ...braceBlock(body, body.indexOf("attempts >= MILESTONE_ENQUEUE_MAX_ATTEMPTS")),
+    );
+    expect(bloqueio, "estourar o teto não interrompe nada").toContain("continue");
+    expect(bloqueio, "estourar o teto passa em silêncio").toContain("jsonLog");
+    // E o incremento vive no PRIMEIRO update — se migrar para depois do enqueue,
+    // o contador para justamente no cenário que o teto existe para limitar.
+    const [toca] = [...body.matchAll(/\.update\(/g)].map((m) => m.index!);
+    expect(
+      statementFrom(body, toca),
+      "o incremento saiu do toque — o teto virou inalcançável",
+    ).toMatch(/enqueue_attempts:\s*attempts \+ 1/);
+    expect(toca, "o incremento acontece depois de enfileirar").toBeLessThan(
+      body.indexOf("enqueueBillingNotification("),
+    );
   });
 
   it("a franquia lida é escopada pela organização e o restante vem do núcleo", () => {

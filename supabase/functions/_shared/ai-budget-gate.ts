@@ -72,8 +72,13 @@ const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
  * Existe porque o UNIQUE de `billing_notifications` é PARCIAL e não deduplica
  * com `invoice_id` nulo — que é o caso de todo aviso de marco. Se o carimbo de
  * `notified_at` falhar de forma persistente, o retry re-enfileiraria uma linha
- * por turno, sem fim. Cinco tentativas, com log alto em cada uma e um log
- * próprio ao esgotar, é preferível a multiplicar aviso sem multiplicar decisão.
+ * por turno, sem fim. Cinco tentativas, com log em cada uma e um log próprio ao
+ * esgotar, é preferível a multiplicar aviso sem multiplicar decisão.
+ *
+ * O TETO SÓ FUNCIONA PORQUE O SLOT É CONSUMIDO NO TOQUE, antes do
+ * enfileiramento (ver `recordMilestones`). Incrementar depois de enfileirar
+ * deixa o contador parado exatamente no cenário que este teto existe para
+ * limitar — e o limite nunca chega.
  */
 const MILESTONE_ENQUEUE_MAX_ATTEMPTS = 5;
 
@@ -104,7 +109,9 @@ export interface TurnBudget {
  * quatro consequências diferentes — e distingui-las por conteúdo de string
  * dentro de `sanitizedCode` empurraria a decisão para quem só tem o texto.
  *
- * - `READY`: rode com ganchos, medido.
+ * - `READY`: rode com ganchos, medido. Vem com o `resolvePrice` DO TURNO — passe
+ *   o mesmo a `makeBudgetHooks` para que a estimativa da reserva e o ledger
+ *   falem da MESMA vigência de preço.
  * - `EXHAUSTED`: teto comercial atingido, com o gate LIGADO. Handoff.
  * - `UNMETERED`: rode NORMALMENTE, sem ganchos e sem medição. É o modo
  *   observação recusando-se a negar — nunca uma falha.
@@ -112,7 +119,7 @@ export interface TurnBudget {
  *   chamador saiba se o gate estava ligado sem reler a flag.
  */
 export type OpenTurnResult =
-  | { kind: "READY"; budget: TurnBudget }
+  | { kind: "READY"; budget: TurnBudget; resolvePrice: PriceResolver }
   | { kind: "EXHAUSTED"; cycleId: string }
   | { kind: "UNMETERED"; reason: string }
   | { kind: "ERROR"; sanitizedCode: string; enforced: boolean };
@@ -167,15 +174,21 @@ async function loadPrice(
  * próxima requisição, mesma razão de `unitCache` ser zerado no início de cada
  * invocação dos workers.
  *
- * UM RESOLVEDOR PARA OS TRÊS PONTOS (`priceFor`, `beforeCall`, `reportCall`).
- * Três leituras independentes por chamada não custavam só latência (até 24 idas
- * ao banco por turno, dentro do caminho de resposta do WhatsApp): `p_price_id`
- * vinha da resolução do momento da AUTORIZAÇÃO e `cost_brl_cents` de uma leitura
- * fresca no momento do REPORT, então uma vigência trocada no meio do turno
- * gravava evento cujo preço não corresponde ao custo. Com um cache só, os três
- * pontos falam da MESMA linha de preço.
+ * UM RESOLVEDOR POR TURNO, para os QUATRO pontos: a estimativa da reserva em
+ * `openTurnBudget` e os três ganchos (`priceFor`, `beforeCall`, `reportCall`).
+ * Leituras independentes não custavam só latência (até 24 idas ao banco por
+ * turno, dentro do caminho de resposta do WhatsApp): `p_price_id` vinha da
+ * resolução do momento da AUTORIZAÇÃO e `cost_brl_cents` de uma leitura fresca no
+ * momento do REPORT, então uma vigência trocada no meio do turno gravava evento
+ * cujo preço não corresponde ao custo.
+ *
+ * `openTurnBudget` cria o seu e o DEVOLVE no resultado `READY`; `makeBudgetHooks`
+ * o aceita e só cria um próprio se o chamador não passar nada. É o que faz a
+ * afirmação acima valer para o turno inteiro, e não só de dentro dos ganchos.
  */
-function makePriceCache(supabase: SupabaseClient) {
+export type PriceResolver = (provider: string, model: string) => Promise<AiModelPrice | null>;
+
+function makePriceCache(supabase: SupabaseClient): PriceResolver {
   const cache = new Map<string, AiModelPrice | null>();
   return async function resolvePrice(provider: string, model: string): Promise<AiModelPrice | null> {
     const key = `${provider}:${model}`;
@@ -414,6 +427,9 @@ export async function openTurnBudget(
       reservedCents: row?.reserved_cents ?? estimate,
       enforced,
     },
+    // Devolvido para ser REPASSADO a `makeBudgetHooks`: a estimativa desta
+    // reserva e o preço que o ledger vai gravar passam a vir da mesma vigência.
+    resolvePrice,
   };
 }
 
@@ -428,10 +444,15 @@ export function makeBudgetHooks(
     requestId: string;
     turnId: string;
     budget: TurnBudget;
+    /** O que `openTurnBudget` devolveu no `READY`. Ver `makePriceCache`. */
+    resolvePrice?: PriceResolver;
   },
 ): AgentBudgetHooks {
-  // UM resolvedor para os três pontos — ver `makePriceCache`.
-  const resolvePrice = makePriceCache(supabase);
+  // UM resolvedor por TURNO. Sem o do `openTurnBudget`, a estimativa da reserva
+  // e o ledger podem falar de vigências diferentes — sem consequência contábil
+  // (a estimativa só dimensiona a reserva), mas a afirmação do cabeçalho deixaria
+  // de valer para o turno inteiro.
+  const resolvePrice = args.resolvePrice ?? makePriceCache(supabase);
   let consumedCents = 0;
   let reservedCents = args.budget.reservedCents;
   let usageUnresolved = false;
@@ -698,11 +719,19 @@ export async function finalizeTurn(
  * Registra os marcos cruzados e enfileira o aviso INTERNO (destinatário é a
  * plataforma, não o lojista).
  *
- * DISCIPLINA DE TRÊS TEMPOS (6b): o INSERT é a BARREIRA DE PERSISTÊNCIA — se ele
- * não grava, nada é enfileirado; só depois de o enfileiramento confirmar é que
- * `notified_at` é carimbado. Inverter reabre um dos dois defeitos opostos: aviso
- * repetido sem teto de um lado, ledger afirmando "avisei" sobre e-mail que nunca
- * saiu do outro.
+ * DISCIPLINA DE TRÊS TEMPOS (6b), na ordem exata: TOCA → ENFILEIRA → CARIMBA.
+ *
+ * O TOQUE é um UPDATE que **não registra envio** — ele consome o slot
+ * (`enqueue_attempts + 1`) e prova que a linha é gravável. Contar depois de
+ * enfileirar deixa o contador parado justamente quando a escrita falha, e como o
+ * UNIQUE de `billing_notifications` é PARCIAL (não deduplica com `invoice_id`
+ * nulo, o caso de todo aviso daqui), cada passada enfileiraria um aviso idêntico
+ * sem o teto jamais ser alcançado. Inverter para enfileirar-antes-de-tocar
+ * reabre o defeito oposto: ledger dizendo "avisei" sobre e-mail que nunca saiu.
+ *
+ * O INSERT continua sendo a barreira ANTERIOR a tudo isso — se o marco não entra
+ * no ledger, nada é tocado nem enfileirado. A CRIAÇÃO também consome o slot: o
+ * marco recém-inserido passa pelos mesmos três tempos.
  *
  * RETRY DO AVISO, não do registro: `23505` no INSERT quer dizer que o marco já
  * está no ledger, e o índice parcial `where notified_at is null` da migration 103
@@ -807,12 +836,38 @@ export async function recordMilestones(
 
     const recipient = await recipientOnce();
     if (!recipient) {
-      // Sem destinatário o slot NÃO é consumido: `enqueue_attempts` fica onde
-      // está e a próxima passada tenta de novo.
+      // Sem destinatário o slot NÃO é consumido: nada é tocado, e a próxima
+      // passada tenta de novo.
       jsonLog("warn", { evt: "ai_budget_milestone_no_recipient", org: args.organizationId, percent });
       continue;
     }
 
+    // TEMPO 1 — TOCA. Este UPDATE **não registra envio**: ele consome o slot e
+    // PROVA que a linha é gravável, antes de qualquer coisa entrar na fila.
+    // Enfileirar primeiro e contar depois deixa o contador parado exatamente
+    // quando a escrita falha — e como o UNIQUE de `billing_notifications` é
+    // parcial e não deduplica com `invoice_id` nulo, cada passada enfileiraria um
+    // aviso idêntico, para sempre, sem o teto jamais ser alcançado.
+    const { data: touched, error: touchErr } = await supabase
+      .from("ai_budget_milestones")
+      .update({ enqueue_attempts: attempts + 1 })
+      .eq("id", ledger.id)
+      .eq("organization_id", args.organizationId)
+      .select("id");
+
+    // UPDATE que casa ZERO linhas devolve error:null — sem conferir o TAMANHO do
+    // retorno, "o predicado de tenant negou" fica indistinguível de "gravei".
+    if (touchErr || !touched || touched.length === 0) {
+      jsonLog("error", {
+        evt: "ai_budget_milestone_touch_failed",
+        org: args.organizationId,
+        percent,
+        err: touchErr?.message ?? "no_rows",
+      });
+      continue;
+    }
+
+    // TEMPO 2 — ENFILEIRA.
     const queued = await enqueueBillingNotification(supabase, {
       organizationId: args.organizationId,
       // Fonte canônica única do vocabulário de evento — nunca redigitada.
@@ -820,22 +875,26 @@ export async function recordMilestones(
       invoiceId: null,
       recipient,
     });
+    if (!queued) {
+      // O slot já foi consumido no toque: a próxima passada tenta de novo até o
+      // teto, e `notified_at` continua nulo, que é a verdade.
+      jsonLog("error", { evt: "ai_budget_milestone_enqueue_failed", org: args.organizationId, percent });
+      continue;
+    }
 
+    // TEMPO 3 — CARIMBA. Só agora o ledger pode afirmar "avisei".
     const { data: stamped, error: stampErr } = await supabase
       .from("ai_budget_milestones")
       .update({
-        notified_at: queued ? new Date().toISOString() : null,
-        enqueue_attempts: attempts + 1,
+        notified_at: new Date().toISOString(),
         // O nome da coluna é `..._at_enqueue`: o valor pertence ao momento do
         // ENFILEIRAMENTO, não ao do registro do marco.
-        dispatch_enabled_at_enqueue: queued ? await dispatchOnce() : null,
+        dispatch_enabled_at_enqueue: await dispatchOnce(),
       })
       .eq("id", ledger.id)
       .eq("organization_id", args.organizationId)
       .select("id");
 
-    // UPDATE que casa ZERO linhas devolve error:null — sem conferir o TAMANHO do
-    // retorno, "o predicado de tenant negou" fica indistinguível de "gravei".
     if (stampErr || !stamped || stamped.length === 0) {
       jsonLog("error", {
         evt: "ai_budget_milestone_stamp_missed",
