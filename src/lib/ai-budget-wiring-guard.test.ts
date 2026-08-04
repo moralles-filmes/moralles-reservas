@@ -227,6 +227,60 @@ function parenBlock(src: string, from: number): string {
   throw new Error(`parênteses desbalanceados a partir de ${open}`);
 }
 
+/**
+ * Método de um objeto literal (os ganchos devolvidos por `makeBudgetHooks`), do
+ * cabeçalho até a chave que o fecha. Fronteira sintática real — a anotação de
+ * retorno (`: Promise<BeforeCallDecision>`) não tem chave, então o primeiro `{`
+ * depois do cabeçalho é sempre o corpo.
+ */
+function methodBlock(src: string, name: string): string {
+  const m = new RegExp(`\\n\\s+(?:async )?${name}\\(`).exec(src);
+  expect(m, `método ${name} não encontrado`).not.toBeNull();
+  const [a, b] = braceBlock(src, m!.index + m![0].length - 1);
+  return src.slice(a, b);
+}
+
+/**
+ * Statement completo a partir de `from`: até o `;` com TODOS os aninhamentos
+ * fechados. É o recorte certo para uma cadeia PostgREST
+ * (`.from(...).update(...).eq(...).select(...)`), que não cabe em par de chaves
+ * nem de parênteses — e cujo tamanho varia, então janela de N caracteres mediria
+ * o vizinho.
+ */
+function statementFrom(src: string, from: number): string {
+  let paren = 0;
+  let brace = 0;
+  let bracket = 0;
+  for (let i = from; i < src.length; i++) {
+    const c = src[i];
+    if (c === "(") paren++;
+    else if (c === ")") paren--;
+    else if (c === "{") brace++;
+    else if (c === "}") brace--;
+    else if (c === "[") bracket++;
+    else if (c === "]") bracket--;
+    else if (c === ";" && paren === 0 && brace === 0 && bracket === 0) return src.slice(from, i + 1);
+  }
+  throw new Error(`statement sem fim a partir de ${from}`);
+}
+
+/**
+ * As duas pontas da Restrição 2: a expressão que `beforeCall` RECALCULA a partir
+ * do preço do modelo real, e a que ele PASSA em `nextCallEstimateCents`.
+ *
+ * Devolver as duas separadas (em vez de um booleano) é o que permite exigir
+ * IDENTIDADE entre elas. `passed: null` quer dizer que não há chave explícita —
+ * e aí o spread de `ctx` entrega a estimativa precificada no modelo do TURNO,
+ * que é exatamente o defeito que esta task existe para impedir.
+ */
+function estimateWiring(beforeCallBody: string): { recomputed: string | null; passed: string | null } {
+  const assign = beforeCallBody.match(/const\s+([A-Za-z_$][\w$]*)\s*=\s*costOf\(/);
+  const i = beforeCallBody.indexOf("planNextCall(");
+  const plan = i === -1 ? "" : parenBlock(beforeCallBody, i);
+  const passed = plan.match(/nextCallEstimateCents:\s*([A-Za-z_$][\w$.]*)/);
+  return { recomputed: assign ? assign[1] : null, passed: passed ? passed[1] : null };
+}
+
 /** O objeto literal passado a `callWithBudget` dentro de um corpo de runner. */
 function budgetSpec(runnerBody: string): string {
   const i = runnerBody.indexOf("callWithBudget");
@@ -699,5 +753,263 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     expect(providers).not.toMatch(/conversationCount|messageCount|interactionCount/);
     // O único teto é financeiro: MAX_ITERATIONS segue sendo guarda de laço.
     expect(providers).toMatch(/const MAX_ITERATIONS = 12;/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Adapter de I/O do orçamento
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `ai-budget-gate.ts` importa supabase-js por URL e o vitest também não o
+// alcança. Ele não pode conter DECISÃO — toda pergunta é respondida por núcleo
+// puro, que tem teste de verdade. O que se prova aqui é que ele de fato delega,
+// e que as regras que não cabem em núcleo (ordem de escrita, gate da flag,
+// sanitização, escopo de tenant) estão onde deveriam.
+
+const gate = readFileSync(join(SHARED, "ai-budget-gate.ts"), "utf8").replace(/\r\n/g, "\n");
+
+const GATE_FNS = [
+  "loadAiFranchise",
+  "openTurnBudget",
+  "makeBudgetHooks",
+  "finalizeTurn",
+  "recordMilestones",
+  "loadPrice",
+  "costOf",
+  "makePriceResolver",
+  "todayBrt",
+] as const;
+
+describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
+  it("controle dos recortes: nenhum bloco do adapter sangra para a função vizinha", () => {
+    for (const nome of GATE_FNS) {
+      const bloco = fnBlock(gate, nome);
+      expect(bloco.length, `recorte de ${nome} vazio`).toBeGreaterThan(30);
+      expect(bloco.length, `recorte de ${nome} engoliu o arquivo`).toBeLessThan(gate.length * 0.6);
+      for (const outra of GATE_FNS.filter((n) => n !== nome)) {
+        expect(bloco, `recorte de ${nome} inclui o cabeçalho de ${outra}`).not.toMatch(
+          new RegExp(`function ${outra}(?:<|\\()`),
+        );
+      }
+    }
+  });
+
+  it("delega a decisão aos núcleos puros", () => {
+    for (const core of ["ai-budget-core.ts", "ai-price-core.ts", "ai-budget-milestones-core.ts"]) {
+      expect(gate, `não importa ${core}`).toContain(`from "./${core}"`);
+    }
+    for (const fn of [
+      "planNextCall",
+      "mapReserveDecision",
+      "computeAvailableCents",
+      "priceUsage",
+      "selectEffectivePrice",
+      "crossedMilestonePercents",
+      "resolveCycleWindow",
+    ]) {
+      expect(gate, `não usa ${fn}`).toContain(fn);
+    }
+  });
+
+  it("não reimplementa a fórmula do teto nem a escada de marcos", () => {
+    expect(gate).not.toMatch(/limit_?[Cc]ents\s*-\s*settled/);
+    expect(gate).not.toMatch(/\b(7000|8000|9000|10000)\b/);
+  });
+
+  it("não redigita event_type de marco — a fonte canônica é o núcleo", () => {
+    expect(gate).not.toMatch(/"admin_ai_budget_(70|80|90|stop)"/);
+    expect(gate).toContain("EVENT_TYPE_BY_MILESTONE_PERCENT");
+  });
+
+  it("chama as cinco RPCs pelo nome, sem SQL cru", () => {
+    for (const rpc of [
+      "open_ai_cycle_budget",
+      "reserve_ai_budget",
+      "extend_ai_reservation",
+      "record_ai_call_usage",
+      "finalize_ai_reservation",
+    ]) {
+      expect(gate, `não chama ${rpc}`).toContain(`"${rpc}"`);
+    }
+    expect(gate).not.toMatch(/\bselect\s+\*\s+from\b/i);
+  });
+
+  it("todo UPDATE escopado por tenant confere as linhas casadas", () => {
+    // PostgREST devolve error:null num UPDATE que não casa linha nenhuma: sem
+    // conferir o retorno, "o predicado negou" fica indistinguível de "gravei".
+    // Recorte por fim de statement, não por janela — a cadeia PostgREST tem
+    // comprimento variável.
+    const updates = [...gate.matchAll(/\.update\(/g)];
+    expect(updates.length, "nenhum UPDATE encontrado — o detector quebrou").toBeGreaterThan(0);
+    for (const m of updates) {
+      const stmt = statementFrom(gate, m.index!);
+      expect(stmt, `UPDATE sem .select() no índice ${m.index}`).toContain(".select(");
+      expect(stmt, `UPDATE sem predicado de tenant no índice ${m.index}`).toContain(
+        '.eq("organization_id"',
+      );
+    }
+    // E o retorno é REALMENTE conferido, não só pedido.
+    expect(fnBlock(gate, "recordMilestones"), "o tamanho do retorno não é conferido").toMatch(
+      /\.length === 0/,
+    );
+  });
+
+  it("nenhum sanitizedCode carrega mensagem do Postgres ou SQL", () => {
+    const achados = [...gate.matchAll(/sanitizedCode:\s*([^,;}\n]+)/g)];
+    expect(achados.length, "nenhum sanitizedCode — o detector quebrou").toBeGreaterThan(0);
+    for (const m of achados) {
+      const v = m[1].trim();
+      // `sanitizedCode: string` é a ANOTAÇÃO do tipo, não um valor.
+      if (v === "string") continue;
+      expect(v).not.toContain("error.message");
+      expect(v).not.toContain("err.message");
+      expect(v).toMatch(/^"[a-z0-9_]{1,40}"$/);
+    }
+  });
+
+  it("o modo observação nunca nega — e o gate é a flag, não um if solto", () => {
+    expect(gate).toContain("ai_wallet_enforced");
+    // Preço desconhecido com a flag OFF vira ALLOW: medir não pode calar o
+    // agente de ninguém. O ramo é recortado pelas PRÓPRIAS chaves.
+    const body = methodBlock(gate, "beforeCall");
+    const semPreco = body.slice(...braceBlock(body, body.indexOf("if (!price)")));
+    expect(semPreco, "o ramo sem preço ignora a flag").toContain("enforced");
+    expect(semPreco, "o ramo sem preço nunca autoriza em observação").toContain('kind: "ALLOW"');
+    expect(semPreco, "sumiu a negação por preço desconhecido").toContain("DENY_PRICE_UNKNOWN");
+  });
+
+  it("hard stop COMERCIAL é pergunta do núcleo — o adapter não redigita a distinção", () => {
+    // ERROR e DENY_BUDGET levam ao mesmo destino operacional e dizem coisas
+    // OPOSTAS. Reimplementar a distinção aqui é a decisão que este arquivo não
+    // pode ter.
+    expect(gate, "a distinção comercial não vem do núcleo").toContain("isCommercialHardStop");
+    expect(gate, "a distinção comercial foi redigitada").not.toMatch(/kind\s*===\s*"DENY_BUDGET"/);
+  });
+
+  it("EXHAUSTED é afirmação COMERCIAL — falha de infraestrutura nunca vira franquia esgotada", () => {
+    const body = fnBlock(gate, "openTurnBudget");
+    const saidas = [...body.matchAll(/kind: "EXHAUSTED"/g)];
+    expect(saidas.length, "nenhuma saída EXHAUSTED — o detector quebrou").toBeGreaterThan(0);
+    for (const m of saidas) {
+      const guard = body.lastIndexOf("if (", m.index!);
+      expect(guard, `EXHAUSTED sem if que o preceda (índice ${m.index})`).toBeGreaterThan(-1);
+      expect(
+        parenBlock(body, guard),
+        `EXHAUSTED devolvido sem gate comercial (índice ${m.index})`,
+      ).toMatch(/enforced|isCommercialHardStop/);
+    }
+    // E a falha da própria RPC de abertura leva a ERROR, nunca a EXHAUSTED.
+    const falhaAbertura = body.slice(...braceBlock(body, body.indexOf("if (openErr")));
+    expect(falhaAbertura).toContain('kind: "ERROR"');
+    expect(falhaAbertura, "erro de banco virou franquia esgotada").not.toContain("EXHAUSTED");
+  });
+
+  it("beforeCall precifica no MODELO REAL da chamada, nunca na estimativa do contexto", () => {
+    // A RESTRIÇÃO DESTA TASK. `ctx.nextCallEstimateCents` chega precificado no
+    // modelo do INÍCIO DO TURNO; confiar nele autoriza a tentativa de fallback
+    // (Pro) com a folga do modelo barato (Flash). O preço tem de ser recarregado
+    // a partir de `ctx.provider`/`ctx.model` e a estimativa recalculada.
+    const body = methodBlock(gate, "beforeCall");
+    const priceArgs = parenBlock(body, body.indexOf("loadPrice("));
+    expect(priceArgs, "beforeCall não precifica o provedor da chamada").toContain("ctx.provider");
+    expect(priceArgs, "beforeCall não precifica o modelo da chamada").toContain("ctx.model");
+    expect(priceArgs, "beforeCall precifica no modelo do TURNO").not.toMatch(/args\.(provider|model)/);
+
+    const w = estimateWiring(body);
+    expect(w.recomputed, "beforeCall não recalcula a estimativa").not.toBeNull();
+    expect(
+      w.passed,
+      "planNextCall não recebe estimativa explícita — o spread de ctx entrega a do turno",
+    ).not.toBeNull();
+    expect(w.passed, "planNextCall decide com a estimativa do contexto").toBe(w.recomputed);
+
+    // E a ordem: precificar ANTES de planejar. Planejar primeiro seria decidir
+    // com o número velho e só depois descobrir o preço certo.
+    expect(body.indexOf("loadPrice(")).toBeLessThan(body.indexOf("planNextCall("));
+  });
+
+  it("controle do detector acima: pega a estimativa vinda do contexto e a chave ausente", () => {
+    const bom = `{
+      const price = await loadPrice(supabase, ctx.provider, ctx.model);
+      const estimateCents = costOf(price, estimateCallTokens(ctx.iteration), ctx.provider, ctx.model);
+      const plan = planNextCall({ ...ctx, nextCallEstimateCents: estimateCents }, { usageUnresolved });
+    }`;
+    expect(estimateWiring(bom)).toEqual({ recomputed: "estimateCents", passed: "estimateCents" });
+
+    const doContexto = bom.replace("nextCallEstimateCents: estimateCents", "nextCallEstimateCents: ctx.nextCallEstimateCents");
+    const w1 = estimateWiring(doContexto);
+    expect(w1.passed).not.toBe(w1.recomputed);
+
+    const semChave = bom.replace(", nextCallEstimateCents: estimateCents", "");
+    expect(estimateWiring(semChave).passed).toBeNull();
+  });
+
+  it("reportCall apropria o custo no modelo REAL da chamada, não no do turno", () => {
+    // Cobrar Pro a preço de Flash é subcontabilização direta — a mesma regra do
+    // autorizador, na ponta que escreve no ledger.
+    const body = methodBlock(gate, "reportCall");
+    const priceArgs = parenBlock(body, body.indexOf("loadPrice("));
+    expect(priceArgs, "reportCall não usa o provedor da chamada").toContain("meta.provider");
+    expect(priceArgs, "reportCall não usa o modelo da chamada").toContain("meta.model");
+    expect(priceArgs, "reportCall apropria no modelo do TURNO").not.toMatch(/args\.(provider|model)/);
+    // O `price_id` gravado é o que o autorizador já resolveu para ESTA chamada.
+    expect(body).toMatch(/p_price_id:\s*priceId/);
+  });
+
+  it("usage ausente não vira custo zero — e a apropriação perdida nunca é silenciosa", () => {
+    const body = methodBlock(gate, "reportCall");
+    // As três variantes de desfecho existem separadas: zero VERDADEIRO só em
+    // PROVIDER_FAILED; chamada que ocorreu com custo indeterminado vira
+    // USAGE_REVIEW_REQUIRED e tira a reserva da expiração automática.
+    expect(body).toContain("PROVIDER_FAILED");
+    expect(body).toContain("USAGE_REVIEW_REQUIRED");
+    expect(body, "usage indeterminado não trava a próxima chamada").toContain(
+      "usageUnresolved = true",
+    );
+    const zero = body.split("\n").find((l) => l.includes("p_cost_brl_cents"));
+    expect(zero, "não há linha de custo — o detector quebrou").toBeDefined();
+    expect(zero, "o zero deixou de ser exclusivo do PROVIDER_FAILED").toContain("PROVIDER_FAILED");
+    expect(zero, "o custo real deixou de ser gravado").toContain("brlCents");
+    // Falha de gravação PROPAGA: custo real que o orçamento não soube é o pior
+    // caso possível.
+    expect(body).toMatch(/throw new Error\("ai_usage_record_failed"\)/);
+  });
+
+  it("o marco é gravado ANTES de enfileirar, e carimbado só DEPOIS", () => {
+    // Disciplina de três tempos (6b): o INSERT é a barreira de persistência; o
+    // carimbo é a última coisa. Inverter reabre um dos dois defeitos opostos —
+    // aviso diário sem teto, ou ledger dizendo "avisei" sobre e-mail que não saiu.
+    const body = fnBlock(gate, "recordMilestones");
+    const insert = body.indexOf(".insert(");
+    const enqueue = body.indexOf("enqueueBillingNotification(");
+    const stamp = body.indexOf(".update(");
+    expect(insert, "o marco não é gravado").toBeGreaterThan(-1);
+    expect(enqueue, "o aviso não é enfileirado").toBeGreaterThan(-1);
+    expect(stamp, "o marco não é carimbado").toBeGreaterThan(-1);
+    expect(insert, "enfileira antes de provar que o ledger grava").toBeLessThan(enqueue);
+    expect(enqueue, "carimba 'avisei' antes de o aviso entrar na fila").toBeLessThan(stamp);
+    // 23505 é dedupe (o marco já foi registrado neste ciclo), não erro.
+    expect(body, "o dedupe do marco virou erro").toContain("23505");
+  });
+
+  it("a franquia lida é escopada pela organização e o restante vem do núcleo", () => {
+    const body = fnBlock(gate, "loadAiFranchise");
+    expect(body, "leitura de orçamento sem escopo de tenant").toContain('.eq("organization_id"');
+    expect(body, "a fórmula do disponível foi reimplementada").toContain("computeAvailableCents(");
+  });
+
+  it("nenhuma chave de IA é lida ou logada aqui", () => {
+    expect(gate).not.toMatch(/ai_provider_credentials|apiKey|api_key/);
+  });
+
+  it("budgetRemainingCents nunca é devolvido ao frontend do lojista", () => {
+    // O adapter é chamado só por webhook-whatsapp (service_role). Não pode
+    // existir nenhum caminho que devolva o restante numa resposta HTTP.
+    expect(gate).not.toMatch(/new Response\(/);
+  });
+
+  it("nenhuma contagem de conversa autoriza chamada", () => {
+    expect(gate).not.toContain('from("conversations")');
+    expect(gate).not.toMatch(/conversationCount|messageCount|interactionCount/);
   });
 });
