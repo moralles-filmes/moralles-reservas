@@ -1238,8 +1238,11 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     );
     // O teto é ARGUMENTO da RPC — é lá que ele é aplicado, no mesmo UPDATE.
     // Ancorado no `.rpc(`, não no literal: o primeiro `(` depois do literal seria
-    // o da linha seguinte, e o recorte mediria o vizinho.
-    const args = parenBlock(body, body.indexOf('.rpc("touch_ai_budget_milestone"'));
+    // o da linha seguinte, e o recorte mediria o vizinho. E sobre o texto SEM
+    // comentários: um `(` dentro de comentário desbalancearia o recorte, e há
+    // comentário longo dentro da região medida.
+    const codigo = fnBlock(blankComments(gate), "recordMilestones");
+    const args = parenBlock(codigo, codigo.indexOf('.rpc("touch_ai_budget_milestone"'));
     expect(args, "o toque não é escopado por tenant").toContain("p_organization_id");
     expect(args, "o teto não viaja para quem o aplica").toContain(
       "p_max_attempts: MILESTONE_ENQUEUE_MAX_ATTEMPTS",
@@ -1260,16 +1263,25 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     // seguinte sem `reservationId` — logo sem ganchos e sem medição —,
     // permanentemente cega no único modo que existe para medi-la. E a decisão de
     // criar a reserva assim mesmo é da RPC, sob o lock; aqui só se repassa a flag.
-    const body = fnBlock(gate, "openTurnBudget");
-    const args = parenBlock(body, body.indexOf('.rpc("reserve_ai_budget"'));
+    // Sobre o texto SEM comentários: um `(` dentro de comentário desbalancearia
+    // o recorte dos argumentos, e há comentário longo exatamente ali.
+    const codigo = fnBlock(blankComments(gate), "openTurnBudget");
+    const args = parenBlock(codigo, codigo.indexOf('.rpc("reserve_ai_budget"'));
     expect(args, "a reserva não sabe se o gate está ligado").toMatch(
       /p_observation:\s*!enforced\b/,
     );
-    // E o overrun é REGISTRADO — é o dado que responde "quanto passaria do teto".
-    expect(body, "o overrun devolvido pela RPC é descartado").toMatch(/row\?\.overrun/);
-    const log = body.slice(...braceBlock(body, body.indexOf("if (row?.overrun)")));
-    expect(log, "o overrun não é logado").toContain("jsonLog");
-    expect(log, "o overrun virou decisão em vez de registro").not.toContain("return");
+
+    // E o contorno é REGISTRADO. O gate do log inclui `reason_code` além de
+    // `overrun`: quando o único guard contornado foi o de usage pendente,
+    // `overrun` é false e o fato — estado pegajoso até resolução administrativa
+    // — não deixaria rastro nenhum. E inclui o ALLOW, porque `reason_code` é
+    // não-nulo em toda negação legítima.
+    const guarda = codigo.indexOf('if (decision.kind === "ALLOW" && (row?.overrun || row?.reason_code))');
+    expect(guarda, "o contorno em observação não é registrado").toBeGreaterThan(-1);
+    const log = codigo.slice(...braceBlock(codigo, guarda));
+    expect(log, "o contorno não é logado").toContain("jsonLog");
+    expect(log, "o log não distingue overrun de usage pendente").toContain("bypass:");
+    expect(log, "o contorno virou decisão em vez de registro").not.toContain("return");
   });
 
   it("a franquia lida é escopada pela organização e o restante vem do núcleo", () => {

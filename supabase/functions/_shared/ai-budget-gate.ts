@@ -404,20 +404,28 @@ export async function openTurnBudget(
   }
   const row = Array.isArray(reserved) ? reserved[0] : reserved;
 
-  // REGISTRA, não decide: a reserva nasceu excedendo o disponível (só possível
-  // em observação). É o dado que responde "quanto esta organização passaria do
-  // teto se ele estivesse ligado?".
-  if (row?.overrun) {
+  const decision = mapReserveDecision(row);
+
+  // REGISTRA, não decide. "Nunca nega, mas SEMPRE registra" — e o registro é
+  // gateado em `reason_code` ALÉM de `overrun`, porque quando o único guard
+  // contornado foi o de usage pendente `overrun` é `false`: sem isso, um estado
+  // PEGAJOSO até resolução administrativa seria contornado a cada turno sem uma
+  // linha de log. `mapReserveDecision` descarta `reason_code` no ramo ALLOW, e
+  // é por isso que se lê `row` aqui.
+  //
+  // Gateado também no ALLOW: `reason_code` é não-nulo em toda negação legítima
+  // (`insufficient_available`, `prior_usage_unresolved`, `cycle_not_found`), e
+  // logar aquilo como contorno diria o contrário do que aconteceu.
+  if (decision.kind === "ALLOW" && (row?.overrun || row?.reason_code)) {
     jsonLog("warn", {
-      evt: "ai_budget_overrun_observed",
+      evt: "ai_budget_observed_bypass",
       org: args.organizationId,
       cycle: cycle.id,
-      reserved_cents: row.reserved_cents ?? estimate,
+      overrun: row.overrun === true,
       bypass: row.reason_code ?? null,
+      reserved_cents: row.reserved_cents ?? estimate,
     });
   }
-
-  const decision = mapReserveDecision(row);
   if (isCommercialHardStop(decision)) {
     if (!enforced) {
       jsonLog("warn", {

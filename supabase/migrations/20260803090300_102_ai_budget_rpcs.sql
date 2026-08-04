@@ -13,6 +13,17 @@
 -- TODAS as funcoes; inverter em uma delas reintroduz deadlock (40P01) entre a
 -- varredura de expiradas de reserve_ai_budget e as demais RPCs.
 --
+-- TODA COLUNA DE `RETURNS TABLE` E UMA VARIAVEL PLPGSQL EM ESCOPO NO CORPO.
+-- Referenciar uma coluna de tabela HOMONIMA sem qualificar estoura 42702
+-- (column reference is ambiguous) em TEMPO DE EXECUCAO — a migration aplica
+-- limpa e a RPC quebra na PRIMEIRA chamada real. Por isso todo acesso a
+-- `reserved_cents`, `consumed_cents`, `settled_cents`, `limit_cents`, `state`,
+-- `id` e afins usa alias de tabela (`r.`, `b.`). As unicas posicoes isentas sao
+-- as que o proprio Postgres nao substitui: o alvo do SET num UPDATE e a lista
+-- de colunas de um INSERT. `#variable_conflict use_column` NAO e usado: ele
+-- muda a resolucao no corpo inteiro e trocaria um erro barulhento por um bug
+-- quieto onde a intencao era a variavel.
+--
 -- NENHUMA FUNCAO AQUI CONTA CONVERSA, MENSAGEM OU INTERACAO. O unico teto e
 -- financeiro (§18.1).
 --
@@ -189,15 +200,22 @@ begin
   -- Varredura de expiradas, sob o mesmo lock. NUNCA toca reserva com usage
   -- pendente: o TTL de recuperacao de crash nao pode virar porta de saida para
   -- consumo nao contabilizado (§17.2.2).
-  update ai_cost_reservations
+  -- ALIAS OBRIGATORIO: `reserved_cents` e `consumed_cents` sao nomes de coluna
+  -- de saida (RETURNS TABLE), e portanto variaveis plpgsql em escopo. Sem o
+  -- `r.`, o statement estoura 42702 (column reference is ambiguous) em TEMPO DE
+  -- EXECUCAO — a migration aplicaria limpa e a RPC quebraria na primeira
+  -- chamada real. `#variable_conflict use_column` resolveria, e e proibido aqui:
+  -- muda a resolucao no corpo INTEIRO e trocaria um erro barulhento por um bug
+  -- quieto onde a intencao era a variavel.
+  update ai_cost_reservations r
      set status = 'EXPIRED',
-         released_cents = greatest(reserved_cents - consumed_cents, 0),
+         released_cents = greatest(r.reserved_cents - r.consumed_cents, 0),
          finalized_at = now()
-   where organization_id = p_organization_id
-     and cycle_id = p_cycle_id
-     and status = 'HELD'
-     and usage_review_required = false
-     and expires_at <= now();
+   where r.organization_id = p_organization_id
+     and r.cycle_id = p_cycle_id
+     and r.status = 'HELD'
+     and r.usage_review_required = false
+     and r.expires_at <= now();
 
   -- Consumo anterior cujo custo nao pode ser determinado bloqueia chamada nova.
   -- Escopado ao CICLO: o valor comprometido ja foi apropriado neste ciclo, e um
@@ -226,12 +244,13 @@ begin
   -- Capacidade COMPROMETIDA = restante das HELD, nunca o valor original: a parte
   -- ja consumida migra para settled na liquidacao, e conta-la duas vezes
   -- bloquearia organizacoes que ainda tem saldo.
-  select coalesce(sum(greatest(reserved_cents - consumed_cents, 0)), 0)
+  -- Alias pelo mesmo motivo do statement acima (42702 em tempo de execucao).
+  select coalesce(sum(greatest(r.reserved_cents - r.consumed_cents, 0)), 0)
     into v_committed
-    from ai_cost_reservations
-   where organization_id = p_organization_id
-     and cycle_id = p_cycle_id
-     and status = 'HELD';
+    from ai_cost_reservations r
+   where r.organization_id = p_organization_id
+     and r.cycle_id = p_cycle_id
+     and r.status = 'HELD';
 
   v_available := greatest(v_budget.limit_cents - v_budget.settled_cents - v_committed, 0);
 
@@ -340,22 +359,24 @@ begin
 
   -- Reserva expirada NAO autoriza chamada, mesmo antes da varredura passar.
   if v_res.expires_at <= now() and v_res.usage_review_required = false then
-    update ai_cost_reservations
+    -- Alias: `reserved_cents`/`consumed_cents` sao colunas de saida desta
+    -- funcao, logo variaveis em escopo — sem `r.` isto e 42702 em execucao.
+    update ai_cost_reservations r
        set status = 'EXPIRED',
-           released_cents = greatest(reserved_cents - consumed_cents, 0),
+           released_cents = greatest(r.reserved_cents - r.consumed_cents, 0),
            finalized_at = now()
-     where id = v_res.id;
+     where r.id = v_res.id;
     return query select 'ERROR'::text, 'reservation_expired'::text,
                         v_res.id, v_res.reserved_cents, v_res.consumed_cents, 0;
     return;
   end if;
 
-  select coalesce(sum(greatest(reserved_cents - consumed_cents, 0)), 0)
+  select coalesce(sum(greatest(r.reserved_cents - r.consumed_cents, 0)), 0)
     into v_committed
-    from ai_cost_reservations
-   where organization_id = p_organization_id
-     and cycle_id = v_res.cycle_id
-     and status = 'HELD';
+    from ai_cost_reservations r
+   where r.organization_id = p_organization_id
+     and r.cycle_id = v_res.cycle_id
+     and r.status = 'HELD';
 
   v_available := greatest(v_budget.limit_cents - v_budget.settled_cents - v_committed, 0);
 
@@ -369,10 +390,12 @@ begin
   -- pode passar por sucesso silencioso. Sob o lock adquirido no passo 3 isto e
   -- inalcancavel na pratica (ninguem mais pode mudar o status entre o passo 3
   -- e aqui), mas a garantia fica explicita mesmo assim.
-  update ai_cost_reservations
-     set reserved_cents = reserved_cents + greatest(p_additional_cents, 0)
-   where id = v_res.id
-     and status = 'HELD'
+  -- O alvo do SET fica SEM alias (Postgres proibe qualifica-lo); o lado DIREITO
+  -- precisa do `r.`, senao `reserved_cents` ali resolve para a coluna de saida.
+  update ai_cost_reservations r
+     set reserved_cents = r.reserved_cents + greatest(p_additional_cents, 0)
+   where r.id = v_res.id
+     and r.status = 'HELD'
   returning * into v_res;
 
   if not found then
@@ -516,16 +539,19 @@ begin
       -- nunca por decurso de prazo, e nunca liberado automaticamente por esta
       -- funcao. A chamada OCORREU e o custo e indeterminado: a linha sai da
       -- varredura de expiracao e entra em fila de reconciliacao.
+      -- Alias nos DOIS: `consumed_cents` e coluna de saida desta funcao, entao
+      -- o lado direito do SET sem `r.` e 42702 em tempo de execucao. O alvo do
+      -- SET (esquerda) fica sem alias, como Postgres exige.
       if p_usage_state = 'USAGE_REVIEW_REQUIRED' then
-        update ai_cost_reservations
-           set consumed_cents = consumed_cents + greatest(p_cost_brl_cents, 0),
+        update ai_cost_reservations r
+           set consumed_cents = r.consumed_cents + greatest(p_cost_brl_cents, 0),
                usage_review_required = true
-         where id = v_res.id
+         where r.id = v_res.id
         returning * into v_res;
       else
-        update ai_cost_reservations
-           set consumed_cents = consumed_cents + greatest(p_cost_brl_cents, 0)
-         where id = v_res.id
+        update ai_cost_reservations r
+           set consumed_cents = r.consumed_cents + greatest(p_cost_brl_cents, 0)
+         where r.id = v_res.id
         returning * into v_res;
       end if;
     end if;

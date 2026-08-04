@@ -276,7 +276,9 @@ describe("RPCs do orçamento (102)", () => {
     const i = rpcs.indexOf("function public.extend_ai_reservation(");
     const body = rpcs.slice(i, rpcs.indexOf("$$;", i));
     expect(body).toMatch(/from ai_cost_reservations[\s\S]{0,200}for update/i);
-    expect(body).toMatch(/update ai_cost_reservations[\s\S]{0,300}and status = 'HELD'/i);
+    // Com alias: toda referência a coluna homônima de OUT param é qualificada
+    // (ver o bloco "sem ambiguidade de coluna" abaixo).
+    expect(body).toMatch(/update ai_cost_reservations r[\s\S]{0,400}and r\.status = 'HELD'/i);
   });
 
   it("as cinco RPCs travam o orçamento ANTES da reserva — ordem de lock única", () => {
@@ -417,8 +419,12 @@ describe("todo modelo conhecido tem preço semeado", () => {
   });
 
   it("o fallback de cada provedor também tem preço — é o modelo da 2ª tentativa", () => {
-    // `FALLBACK_MODELS` não está em KNOWN_MODELS por construção; um fallback sem
-    // preço interrompe a IA exatamente no momento em que o principal falhou.
+    // GUARDA PARA O FUTURO, e é honesto dizer: hoje o único fallback não-nulo
+    // (`gemini-2.5-pro`) também está em KNOWN_MODELS, então este caso é
+    // subconjunto estrito do anterior e não prova nada sozinho. Ele ganha dente
+    // no dia em que um fallback FORA de KNOWN_MODELS aparecer — e é justamente
+    // esse dia que interromperia a IA no momento em que o modelo principal
+    // falhou, com o preço faltando só na segunda tentativa.
     const block = braceBlock(providersSrc, providersSrc.indexOf("const FALLBACK_MODELS"));
     for (const m of block.matchAll(/(\w+):\s*"([^"]+)"/g)) {
       expect(seeded(m[1], m[2]), `fallback sem preço semeado: ${m[1]}/${m[2]}`).toBe(true);
@@ -459,9 +465,258 @@ describe("touch_ai_budget_milestone (103)", () => {
     expect(stmt, "o teto não é aplicado no mesmo UPDATE").toContain("enqueue_attempts <");
   });
 
-  it("recusa DIZ por que — tenant errado, já avisado e teto estourado são coisas diferentes", () => {
-    for (const reason of ["not_found", "already_notified", "attempts_exhausted"]) {
-      expect(milestones, `motivo ausente: ${reason}`).toContain(`'${reason}'`);
+  it("recusa DIZ por que — e cada motivo está no ramo que o produz", () => {
+    // Só exigir que os três literais existam fica verde se os RAMOS forem
+    // trocados entre si, que é o erro plausível (copiar/colar o bloco e esquecer
+    // de trocar o texto). O recorte é a própria cadeia `if / elsif / else`.
+    const i = milestones.indexOf("function public.touch_ai_budget_milestone(");
+    const body = milestones.slice(i, milestones.indexOf("$$;", i));
+    const chain = body.slice(body.lastIndexOf("if not found then"));
+    const aElsif = chain.indexOf("elsif");
+    const aElse = chain.indexOf("else", aElsif);
+    const aEnd = chain.indexOf("end if;");
+    expect(aElsif, "a cadeia de motivos sumiu").toBeGreaterThan(-1);
+    expect(aElse, "a cadeia perdeu o ramo final").toBeGreaterThan(aElsif);
+    expect(aEnd, "a cadeia não fecha").toBeGreaterThan(aElse);
+
+    const ramoNaoExiste = chain.slice(0, aElsif);
+    const ramoJaAvisado = chain.slice(aElsif, aElse);
+    const ramoTetoEstourado = chain.slice(aElse, aEnd);
+
+    expect(ramoNaoExiste, "linha ausente/tenant errado não devolve not_found").toContain(
+      "'not_found'",
+    );
+    expect(ramoJaAvisado, "o ramo de notified_at não é o de already_notified").toContain(
+      "notified_at is not null",
+    );
+    expect(ramoJaAvisado).toContain("'already_notified'");
+    expect(ramoTetoEstourado, "o ramo restante não devolve attempts_exhausted").toContain(
+      "'attempts_exhausted'",
+    );
+    // E nenhum motivo aparece em dois ramos — troca de blocos ficaria verde.
+    for (const [nome, ramo] of [
+      ["not_found", ramoNaoExiste],
+      ["already_notified", ramoJaAvisado],
+      ["attempts_exhausted", ramoTetoEstourado],
+    ] as const) {
+      for (const outro of ["not_found", "already_notified", "attempts_exhausted"]) {
+        if (outro === nome) continue;
+        expect(ramo, `o ramo de ${nome} também devolve ${outro}`).not.toContain(`'${outro}'`);
+      }
     }
+  });
+});
+
+// ─── Ambiguidade de coluna × OUT param (42702) ─────────────────────────────
+//
+// `RETURNS TABLE` declara cada coluna de saída como VARIÁVEL plpgsql em escopo
+// no corpo inteiro. Referenciar uma coluna de tabela homônima sem qualificar
+// estoura 42702 em TEMPO DE EXECUÇÃO — a migration aplica limpa e a RPC quebra
+// na primeira chamada real, que é o pior lugar possível para descobrir.
+//
+// O detector abaixo codifica a REGRA REAL do Postgres, não uma aproximação: são
+// isentas exatamente as duas posições que o próprio Postgres nunca substitui —
+// o alvo do SET num UPDATE e a lista de colunas de um INSERT — mais, é claro, a
+// referência já qualificada. Nenhuma exceção foi acrescentada para acomodar o
+// código; se fosse preciso, o caso não valeria a linha.
+
+/** Apaga comentários SQL (`--` e blocos), preservando índices. */
+function blankSqlComments(src: string): string {
+  const out: string[] = [];
+  let mode: "code" | "line" | "block" | "str" = "code";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const d = src[i + 1];
+    if (mode === "code") {
+      if (c === "-" && d === "-") {
+        mode = "line";
+        out.push(" ", " ");
+        i += 2;
+        continue;
+      }
+      if (c === "/" && d === "*") {
+        mode = "block";
+        out.push(" ", " ");
+        i += 2;
+        continue;
+      }
+      if (c === "'") mode = "str";
+      out.push(c);
+      i++;
+      continue;
+    }
+    if (mode === "line") {
+      out.push(c === "\n" ? "\n" : " ");
+      if (c === "\n") mode = "code";
+      i++;
+      continue;
+    }
+    if (mode === "block") {
+      if (c === "*" && d === "/") {
+        mode = "code";
+        out.push(" ", " ");
+        i += 2;
+        continue;
+      }
+      out.push(c === "\n" ? "\n" : " ");
+      i++;
+      continue;
+    }
+    // Dentro de literal: `''` é aspa escapada, não fim de literal.
+    if (c === "'" && d === "'") {
+      out.push(c, d);
+      i += 2;
+      continue;
+    }
+    if (c === "'") mode = "code";
+    out.push(c);
+    i++;
+  }
+  return out.join("");
+}
+
+/** Par de parênteses balanceado a partir do primeiro `(` em/depois de `from`. */
+function parenRange(src: string, from: number): [number, number] {
+  const open = src.indexOf("(", from);
+  if (open === -1) throw new Error(`nenhum '(' depois de ${from}`);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")") {
+      depth--;
+      if (depth === 0) return [open, i + 1];
+    }
+  }
+  throw new Error(`parênteses desbalanceados a partir de ${open}`);
+}
+
+interface SqlFunction {
+  name: string;
+  /** Colunas de `returns table (...)` — as variáveis que criam a ambiguidade. */
+  outNames: string[];
+  /** Corpo entre `as $$` e `$$;`, com comentários apagados. */
+  body: string;
+}
+
+function parseSqlFunctions(src: string): SqlFunction[] {
+  const clean = blankSqlComments(src);
+  const out: SqlFunction[] = [];
+  for (const m of clean.matchAll(/create or replace function public\.(\w+)\(/g)) {
+    const head = clean.slice(m.index!);
+    const rt = head.indexOf("returns table");
+    const bodyStart = head.indexOf("as $$");
+    if (rt === -1 || bodyStart === -1 || rt > bodyStart) continue; // não devolve tabela
+    const [a, b] = parenRange(head, rt);
+    const outNames = head
+      .slice(a + 1, b - 1)
+      .split(",")
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter((n) => /^[a-z_][a-z0-9_]*$/.test(n));
+    const bodyEnd = head.indexOf("$$;", bodyStart);
+    out.push({
+      name: m[1],
+      outNames,
+      body: head.slice(bodyStart, bodyEnd === -1 ? head.length : bodyEnd),
+    });
+  }
+  return out;
+}
+
+/** Intervalos das listas de colunas de INSERT — posição que o Postgres não substitui. */
+function insertColumnRanges(body: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (const m of body.matchAll(/insert into\s+\w+\s*\(/g)) {
+    out.push(parenRange(body, m.index! + m[0].length - 1));
+  }
+  return out;
+}
+
+/**
+ * Ocorrências de `name` no corpo que NÃO são: qualificadas (`x.name`), alvo de
+ * SET, ou item de lista de colunas de INSERT. Cada uma dessas é 42702 na
+ * primeira chamada.
+ */
+function ambiguousRefs(fn: SqlFunction, name: string): number[] {
+  const inserts = insertColumnRanges(fn.body);
+  const hits: number[] = [];
+  for (const m of fn.body.matchAll(new RegExp(`\\b${name}\\b`, "g"))) {
+    const i = m.index!;
+    // 1. Qualificada: `alias.name` (ou `v_row.name`, que é campo de record).
+    if (fn.body[i - 1] === ".") continue;
+    // 2. Lista de colunas de INSERT.
+    if (inserts.some(([s, e]) => i > s && i < e)) continue;
+    // 3. Alvo de SET: `set name =` ou `, name =` (dentro de um UPDATE ... set).
+    const depois = fn.body.slice(i + name.length).match(/^\s*=/);
+    const antes = fn.body.slice(0, i).match(/(?:\bset\b|,)\s*$/i);
+    if (depois && antes) continue;
+    hits.push(i);
+  }
+  return hits;
+}
+
+const SQL_FUNCTION_SOURCES: Array<[string, string]> = [
+  ["102", rpcs],
+  ["103", milestones],
+];
+
+describe("nenhuma RPC referencia coluna homônima de OUT param sem qualificar", () => {
+  it("controle do detector: pega a referência crua e ignora as três posições isentas", () => {
+    const sintetico = `
+create or replace function public.f_ruim(p_id uuid)
+returns table (
+  reserved_cents integer,
+  consumed_cents integer
+)
+language plpgsql
+as $$
+begin
+  -- comentario citando reserved_cents de proposito
+  insert into t (reserved_cents, consumed_cents) values (1, 2);
+  update t set reserved_cents = 5 where id = p_id;
+  update t x set consumed_cents = x.consumed_cents + 1 where x.id = p_id;
+  select reserved_cents into v from t where id = p_id;
+end;
+$$;
+`;
+    const [fn] = parseSqlFunctions(sintetico);
+    expect(fn.name).toBe("f_ruim");
+    expect(fn.outNames).toEqual(["reserved_cents", "consumed_cents"]);
+    // A ÚNICA referência crua é a do último select. As outras são: comentário
+    // (apagado), lista de INSERT, alvo de SET, e qualificada por alias.
+    expect(ambiguousRefs(fn, "reserved_cents")).toHaveLength(1);
+    expect(ambiguousRefs(fn, "consumed_cents")).toHaveLength(0);
+  });
+
+  it("as funções com returns table são todas encontradas", () => {
+    const nomes = SQL_FUNCTION_SOURCES.flatMap(([, src]) => parseSqlFunctions(src)).map((f) => f.name);
+    for (const esperada of [...RPC_NAMES, "touch_ai_budget_milestone"]) {
+      expect(nomes, `função não encontrada pelo detector: ${esperada}`).toContain(esperada);
+    }
+  });
+
+  for (const [migration, src] of SQL_FUNCTION_SOURCES) {
+    for (const fn of parseSqlFunctions(src)) {
+      it(`${migration}/${fn.name}: toda coluna homônima de OUT param é qualificada`, () => {
+        expect(fn.outNames.length, "OUT params não extraídos").toBeGreaterThan(0);
+        for (const name of fn.outNames) {
+          const hits = ambiguousRefs(fn, name);
+          expect(
+            hits,
+            `${fn.name}: '${name}' referenciado sem qualificar (42702 na 1ª chamada) nos índices ${hits.join(", ")}`,
+          ).toEqual([]);
+        }
+      });
+    }
+  }
+
+  it("`#variable_conflict use_column` não é usado — troca erro barulhento por bug quieto", () => {
+    // Sobre o CÓDIGO, não sobre a prosa: o cabeçalho da 102 explica de propósito
+    // por que a diretiva é proibida, e citá-la não é usá-la.
+    for (const [, src] of SQL_FUNCTION_SOURCES) {
+      expect(blankSqlComments(src)).not.toMatch(/#variable_conflict/i);
+    }
+    // Controle: a prosa realmente menciona, e o detector não confunde as duas.
+    expect(rpcs, "a explicação da proibição sumiu do cabeçalho").toMatch(/#variable_conflict/i);
   });
 });
