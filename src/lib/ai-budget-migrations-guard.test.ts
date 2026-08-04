@@ -470,7 +470,9 @@ describe("touch_ai_budget_milestone (103)", () => {
 
   it("o incremento é avaliado NO SERVIDOR, e o teto entra no mesmo UPDATE", () => {
     // Read-modify-write no cliente perde tentativa sob concorrência genuína.
-    expect(milestones).toMatch(/set enqueue_attempts = enqueue_attempts \+ 1/);
+    // Alias opcional: `m.enqueue_attempts + 1` é igualmente do servidor, e
+    // qualificar é a doutrina do cabeçalho da 102 (ver o bloco de SET abaixo).
+    expect(milestones).toMatch(/set enqueue_attempts = (?:\w+\.)?enqueue_attempts \+ 1/);
     const i = milestones.indexOf("update ai_budget_milestones");
     const stmt = milestones.slice(i, milestones.indexOf("returning", i));
     expect(stmt, "o toque não é escopado por tenant").toContain("organization_id = p_organization_id");
@@ -802,6 +804,177 @@ describe("record_ai_call_usage: o INSERT não precede o lock do orçamento", () 
       "ai_usage_record_not_applied",
     );
   });
+});
+
+// ─── Coluna crua no lado DIREITO de um SET ─────────────────────────────────
+//
+// O detector genérico de 42702 acima só enxerga coluna que é OUT param DAQUELA
+// função — e é por isso que reverter a qualificação de `settled_cents` (102) ou
+// de `reserved_cents - consumed_cents` (finalize) passava VERDE: nenhuma das
+// duas é OUT param da função onde aparece. As duas estavam corretas por
+// ACIDENTE da lista de retorno vigente, que é a coisa que mais muda no arquivo.
+//
+// A regra é a doutrina do cabeçalho da 102, sem lista de exceção: **no lado
+// direito de um `set`, nenhuma coluna da tabela atualizada aparece crua**. O
+// alvo do SET (esquerda) é isento porque o Postgres proíbe qualificá-lo.
+//
+// LIMITE DECLARADO: a regra cobre o SET, não o WHERE. Qualificar o WHERE
+// exigiria alias em `touch_ai_budget_milestone` inteiro e reescreveria três
+// asserções que hoje leem o predicado por texto — trabalho maior que o risco,
+// já que `id`/`organization_id` não são nome de OUT param em nenhuma das seis
+// funções. Se alguma passar a ser, esta é a fresta.
+
+/** Colunas declaradas por uma `create table if not exists <t> (…)`. */
+function tableColumns(src: string, table: string): string[] {
+  const clean = blankSqlComments(src);
+  const i = clean.indexOf(`create table if not exists ${table} (`);
+  if (i === -1) return [];
+  const [a, b] = parenRange(clean, i);
+  const inner = clean.slice(a + 1, b - 1);
+  const partes: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let k = 0; k < inner.length; k++) {
+    const c = inner[k];
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (c === "," && depth === 0) {
+      partes.push(inner.slice(start, k));
+      start = k + 1;
+    }
+  }
+  partes.push(inner.slice(start));
+  const NAO_COLUNA = new Set(["constraint", "check", "unique", "primary", "foreign", "exclude"]);
+  const out: string[] = [];
+  for (const p of partes) {
+    const tok = p.trim().split(/\s+/)[0];
+    if (!/^[a-z_][a-z0-9_]*$/.test(tok) || NAO_COLUNA.has(tok)) continue;
+    out.push(tok);
+  }
+  return out;
+}
+
+interface SetAssign {
+  tabela: string;
+  alvo: string;
+  rhs: string;
+}
+
+/** Cada `<coluna> = <expressão>` das cláusulas SET de um arquivo. */
+function setAssignments(src: string): SetAssign[] {
+  const clean = blankSqlComments(src);
+  const out: SetAssign[] = [];
+  for (const m of clean.matchAll(/\bupdate\s+([a-z_][a-z0-9_]*)\s+(?:([a-z_][a-z0-9_]*)\s+)?set\b/gi)) {
+    const tabela = m[1];
+    const ini = m.index! + m[0].length;
+    const fim = clean.indexOf(";", ini);
+    const corpo = clean.slice(ini, fim === -1 ? clean.length : fim);
+    // A cláusula SET termina no primeiro `where`/`returning` de profundidade 0.
+    let depth = 0;
+    let setFim = corpo.length;
+    for (let k = 0; k < corpo.length; k++) {
+      const c = corpo[k];
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (depth === 0 && /\s/.test(c) && /^\s(where|returning)\b/i.test(corpo.slice(k, k + 11))) {
+        setFim = k;
+        break;
+      }
+    }
+    const setClause = corpo.slice(0, setFim);
+    // Fatia por vírgulas de profundidade 0 — o `case … end` interno não conta.
+    depth = 0;
+    let start = 0;
+    const pedacos: string[] = [];
+    for (let k = 0; k < setClause.length; k++) {
+      const c = setClause[k];
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "," && depth === 0) {
+        pedacos.push(setClause.slice(start, k));
+        start = k + 1;
+      }
+    }
+    pedacos.push(setClause.slice(start));
+    for (const p of pedacos) {
+      const eq = p.indexOf("=");
+      if (eq === -1) continue;
+      out.push({ tabela, alvo: p.slice(0, eq).trim(), rhs: p.slice(eq + 1) });
+    }
+  }
+  return out;
+}
+
+/** Tokens do RHS que são coluna da tabela e NÃO estão qualificados. */
+function colunasCruasNoRhs(a: SetAssign, colunas: string[]): string[] {
+  const conhecidas = new Set(colunas);
+  const cruas: string[] = [];
+  for (const m of a.rhs.matchAll(/[a-z_][a-z0-9_]*/g)) {
+    if (a.rhs[m.index! - 1] === ".") continue; // qualificada
+    if (conhecidas.has(m[0])) cruas.push(m[0]);
+  }
+  return cruas;
+}
+
+const SCHEMA_SOURCES = [budgets, usage, milestones];
+
+function colunasDe(tabela: string): string[] {
+  for (const src of SCHEMA_SOURCES) {
+    const cols = tableColumns(src, tabela);
+    if (cols.length) return cols;
+  }
+  return [];
+}
+
+describe("nenhum SET referencia coluna crua da tabela atualizada", () => {
+  it("controle do extrator de colunas", () => {
+    const cols = colunasDe("ai_cycle_budgets");
+    expect(cols, "as colunas reais não foram extraídas").toContain("settled_cents");
+    expect(cols).toContain("exhausted_at");
+    expect(cols, "uma constraint entrou como se fosse coluna").not.toContain("constraint");
+    expect(colunasDe("ai_cost_reservations")).toContain("consumed_cents");
+    expect(colunasDe("ai_budget_milestones")).toContain("enqueue_attempts");
+  });
+
+  it("controle do detector: pega a forma crua e ignora a qualificada", () => {
+    const sintetico = `
+update ai_cycle_budgets set settled_cents = settled_cents + 1 where id = v;
+update ai_cycle_budgets b set settled_cents = b.settled_cents + 1 where b.id = v;
+`;
+    const [cru, ok] = setAssignments(sintetico);
+    const cols = colunasDe("ai_cycle_budgets");
+    expect(colunasCruasNoRhs(cru, cols), "o detector não viu a coluna crua").toEqual([
+      "settled_cents",
+    ]);
+    expect(colunasCruasNoRhs(ok, cols), "o detector acusou a forma qualificada").toEqual([]);
+  });
+
+  it("o detector alcança os SET reais das duas migrations", () => {
+    // Sanidade GLOBAL, não por arquivo: a 103 tem um único UPDATE (o toque
+    // atômico), e exigir um piso alto nela reprovaria o arquivo correto.
+    const total = SQL_FUNCTION_SOURCES.reduce((n, [, src]) => n + setAssignments(src).length, 0);
+    expect(total, "o detector deixou de enxergar os UPDATEs — piso de sanidade").toBeGreaterThan(10);
+    const tabelas = new Set(
+      SQL_FUNCTION_SOURCES.flatMap(([, src]) => setAssignments(src).map((a) => a.tabela)),
+    );
+    expect(tabelas, "o detector perdeu os UPDATEs do orçamento").toContain("ai_cycle_budgets");
+    expect(tabelas, "o detector perdeu os UPDATEs da reserva").toContain("ai_cost_reservations");
+    expect(tabelas, "o detector perdeu o toque do marco").toContain("ai_budget_milestones");
+  });
+
+  for (const [migration, src] of SQL_FUNCTION_SOURCES) {
+    it(`${migration}: todo lado direito de SET é qualificado`, () => {
+      const atribuicoes = setAssignments(src);
+      expect(atribuicoes.length, "nenhum SET encontrado neste arquivo").toBeGreaterThan(0);
+      for (const a of atribuicoes) {
+        const cruas = colunasCruasNoRhs(a, colunasDe(a.tabela));
+        expect(
+          cruas,
+          `${migration}: \`set ${a.alvo} = …\` em ${a.tabela} referencia ${cruas.join(", ")} sem qualificar — correto só enquanto essa coluna não for OUT param (42702 na 1ª chamada)`,
+        ).toEqual([]);
+      }
+    });
+  }
 });
 
 // ─── Correções da revisão final de branch ──────────────────────────────────

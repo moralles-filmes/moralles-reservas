@@ -2340,6 +2340,34 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     }
   });
 
+  it("a anomalia da RPC não deixa os contadores zerados serem adotados", () => {
+    // A metade FINANCEIRA do reparo: quando `record_ai_call_usage` devolve
+    // `reason_code`, ela não apropriou nada e os contadores vêm ZERADOS (não há
+    // reserva de onde lê-los). Só logar e cair no bloco de adoção diria ao
+    // `beforeCall` seguinte que a reserva inteira está livre — afrouxar o teto
+    // por causa de uma anomalia. Logar sem interromper fica verde em qualquer
+    // asserção sobre o `evt`, e por isso o caso é sobre o FLUXO.
+    const corpo = gateBlock("reportCall");
+    const iRazao = corpo.indexOf("row?.reason_code");
+    expect(iRazao, "o adapter deixou de olhar a anomalia").toBeGreaterThan(-1);
+    const [a, b] = braceBlock(corpo, iRazao);
+    const ramo = corpo.slice(a, b);
+    // DUAS formas legítimas de impedir a queda, e as duas passam: interromper o
+    // gancho, ou pôr a adoção num `else`. Exigir só a primeira reprovaria uma
+    // refatoração correta, e tripwire que reprova código correto acaba deletado.
+    const interrompe = /\breturn\s*;|\bthrow\b/.test(ramo);
+    const encadeia = /^\s*else\b/.test(corpo.slice(b));
+    expect(
+      interrompe || encadeia,
+      "o ramo da anomalia cai no bloco que adota reserved_cents/consumed_cents zerados",
+    ).toBe(true);
+    // E o alvo existe: sem isto o caso ficaria verde num adapter que nem adota
+    // contador nenhum, medindo uma ausência em vez de uma proteção.
+    expect(corpo, "o bloco de adoção dos contadores sumiu").toMatch(
+      /reservedCents = row\.reserved_cents/,
+    );
+  });
+
   it("o hard stop NÃO desliga o canal nem toca no billing da organização", () => {
     // O WhatsApp continua recebendo, a conversa continua visível e o
     // atendimento humano continua possível. A única escrita é na conversa.

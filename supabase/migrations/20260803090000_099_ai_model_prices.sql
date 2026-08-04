@@ -27,6 +27,13 @@ begin;
 -- plataforma Supabase (e onde vivem pgcrypto/pg_net); se esta migration falhar
 -- com "schema extensions does not exist", e ele que falta, nao a extensao.
 --
+-- E O REVERSO DESSA MESMA SEGURANCA: se `btree_gist` JA estiver instalada em
+-- `public` no ambiente real, esta linha e no-op e a auditoria de ACL continua
+-- suja — a migration nao conserta o que ja esta la. Conferir com
+-- `select extnamespace::regnamespace from pg_extension where extname='btree_gist'`;
+-- mover exige `alter extension btree_gist set schema extensions`, em migration
+-- propria e com o job `acl-com-banco` rodado depois.
+--
 -- A localizacao NAO afeta o EXCLUDE: o opclass default de um tipo e resolvido
 -- por (tipo, access method) em `pg_opclass`, sem consultar o search_path, e os
 -- operadores `=`/`&&` usados abaixo sao de `pg_catalog`.

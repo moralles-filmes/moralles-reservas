@@ -272,21 +272,38 @@ describe("checklist de redeploy dos arquivos novos", () => {
     expect(s, "sumiu o produtor que vem por último").toContain("webhook-whatsapp");
   });
 
-  it("a ordem invertida está descrita pelo PESO real, não como ruído tolerável", () => {
-    // A versão anterior dizia "degrada aberto — tolerável, mas é ruído". É pior:
-    // sem `ai_model_prices` a leitura de preço falha, vira `price_unknown`, e
-    // esse é o ÚNICO código que fecha o caminho mesmo com a flag OFF. Todo
-    // inbound de todo cliente vira handoff. Quem ler "tolerável" vai deployar
-    // fora de ordem numa sexta-feira.
+  it("a ordem invertida é descrita pelos dois erros que ela REALMENTE produz", () => {
+    // Uma rodada anterior escreveu aqui uma cadeia que o código NÃO executa
+    // (`price_unknown` → fail-closed → handoff para todo mundo) e a prendeu com
+    // teste. É inalcançável: `openTurnBudget` resolve o ciclo ANTES do preço e
+    // retorna no primeiro erro, e `ai_model_prices` não pode faltar com as RPCs
+    // presentes (a 101 tem FK para ela). O efeito real degrada ABERTO. Um modelo
+    // causal falso sobre o único fail-closed que ignora a flag é pior que uma
+    // descrição subdimensionada — este caso ancora nos DOIS eventos observáveis.
     const s = secao(3, "Ordem de aplicação");
-    expect(s, "sumiu o mecanismo que torna a inversão fatal").toContain("price_unknown");
-    expect(s, "sumiu o fato de a flag não conter isso").toMatch(/OFF|desligada/);
+    expect(s, "sumiu o erro que aparece em todo inbound").toContain(
+      "ai_budget_franchise_read_failed",
+    );
+    expect(s, "sumiu o erro por turno em organização de franquia").toContain(
+      "ai_budget_open_failed",
+    );
+    expect(s, "sumiu a DIREÇÃO da degradação — é o que muda a decisão").toContain("ABERTO");
     expect(s, "sumiu o alcance: toda organização, não só as de franquia").toContain(
       "loadAiFranchise",
     );
-    expect(s, "a inversão voltou a ser descrita como tolerável").not.toMatch(
-      /tolerável, mas é ruído/,
-    );
+    expect(
+      s,
+      "o modelo causal falso voltou: a inversão de ordem não manda ninguém para handoff",
+    ).not.toContain("AGENT_INSTABILITY_TEXT");
+  });
+
+  it("o acoplamento RPC × adapter da 102 chegou ao documento de entrega", () => {
+    // Estava só no relatório de sessão. `record_ai_call_usage` mudou de
+    // assinatura: adapter novo com RPC antiga volta a adotar contadores zerados
+    // em silêncio, que é a metade financeira do reparo.
+    const s = secao(3, "Ordem de aplicação");
+    expect(s, "sumiu a RPC que mudou de assinatura").toContain("record_ai_call_usage");
+    expect(s, "sumiu o adapter que sobe junto").toContain("ai-budget-gate.ts");
   });
 });
 

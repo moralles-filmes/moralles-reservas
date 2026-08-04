@@ -11,7 +11,7 @@ decisão que essa pessoa precisa tomar, ou um erro que ela evitaria.
 
 | Gate | Resultado |
 |---|---|
-| `npx vitest run` | **1077 testes / 40 arquivos — verde** (1047/40 antes da rodada de correção da revisão final; 1026/39 no início da frente) |
+| `npx vitest run` | **1084 testes / 40 arquivos — verde** (1047/40 antes da rodada de correção da revisão final; 1026/39 no início da frente) |
 | `npm run typecheck` (`tsc -b --noEmit`) | **zero erros** |
 | `npx eslint supabase/functions --max-warnings=0` | **limpo** (exit 0) |
 | `npx eslint <arquivos tocados> --max-warnings=0` | **limpo** (exit 0) |
@@ -99,11 +99,15 @@ ser declarados provados por teste unitário, hoje nem depois:
 Junto, e pelo mesmo motivo:
 
 - **`btree_gist` é PEDIDA pela 099 e nunca foi criada de fato neste projeto.**
-  A migration traz `create extension if not exists btree_gist` (099:19) — o que
-  não se sabe é se a extensão está **disponível na instância**, porque nenhuma
-  migration deste projeto jamais a usou. As duas que dependem dela (099 e 100)
-  falham por inteiro se não estiver — e **falhar é o comportamento certo**: sem o
-  `EXCLUDE`, a não sobreposição deixa de ser garantia de banco e vira promessa.
+  A migration traz `create extension if not exists btree_gist with schema
+  extensions` — o que não se sabe é se a extensão está **disponível na
+  instância**, porque nenhuma migration deste projeto jamais a usou. As duas que
+  dependem dela (099 e 100) falham por inteiro se não estiver — e **falhar é o
+  comportamento certo**: sem o `EXCLUDE`, a não sobreposição deixa de ser
+  garantia de banco e vira promessa. **E o inverso da mesma cláusula:** se ela já
+  estiver instalada em `public`, a linha é no-op e a auditoria de ACL continua
+  suja — conferir com `select extnamespace::regnamespace from pg_extension where
+  extname='btree_gist'`.
 - **RLS, grants e a guarda de tenant nunca foram exercitados** contra INSERT
   real. O que existe é a leitura do texto da migration.
 - **O CHECK `ai_usage_events_zero_chk` nunca foi exercitado.**
@@ -155,7 +159,7 @@ string.
 
 ---
 
-## 4. Identidade de copy, `status` e argumento solta nas três portas — **MÉDIO**
+## 4. Identidade de copy e argumento solta nas três portas — **MÉDIO** (N1 fechado)
 
 Não perde dinheiro. Perde **a fila do operador** e **mente ao cliente**. As três
 portas são: o hard stop anterior ao turno (`if (budgetExhaustedNow …)`), a
@@ -163,19 +167,32 @@ corrida entre resolução e reserva (`if (opened.kind === "EXHAUSTED")`) e o
 fail-closed técnico da abertura (`if (failClosed)`) — mais o bloco de negação do
 laço (`DENIED`).
 
-### N1 — o mais consequente: nenhuma das três portas prende `status: "awaiting_human"`
+**N1 (o `status`) foi fechado** na rodada de correção da revisão final, e o fecho
+cobriu sete portas em vez de três. **N2, N3 e N4 seguem abertos.**
 
-`exigeHardStopCompleto` e `exigeFailClosedTecnico` inspecionam o statement do
-`UPDATE` em `conversations` e exigem a **razão** de handoff. Nenhuma das duas
-exige o **status**. Trocar `status: "awaiting_human"` por `"ai_active"` fica
-**verde nas três**.
+### N1 — **FECHADO** na rodada de correção da revisão final
 
-A consequência é literalmente a do Y1 que uma rodada anterior declarou fechado:
-**cliente avisado, conversa segue `ai_active`, restaurante nunca vê a conversa na
-fila.** Y1 pegava a **remoção** do UPDATE; a **neutralização do campo** passa.
+Era o mais consequente: `exigeHardStopCompleto` e `exigeFailClosedTecnico` exigiam
+a **razão** de handoff e nenhuma das duas exigia o **status**. Trocar
+`status: "awaiting_human"` por `"ai_active"` ficava verde — e não só nas três
+portas do Plano D: a mesma cirurgia neutralizava os handoffs pré-existentes de
+`agent_error` e `api_key_not_configured`, e o da ferramenta
+`request_human_handoff`. Consequência idêntica à do Y1: **cliente avisado,
+conversa segue com a IA, restaurante nunca vê a conversa na fila.**
 
-**Fecho: uma linha por verificador** — exigir `status: "awaiting_human"` no mesmo
-statement já recortado. Não implementado nesta task.
+O fecho cobre as **sete** escritas, não as três. Além da linha em cada
+verificador, há uma enumeração por PROPRIEDADE — toda escrita em `conversations`
+com razão de handoff não-nula **e** rearme do lembrete
+(`last_silenced_reply_at: null`) é uma porta para a fila do operador —, com a
+contagem fixada em 7 e um controle exigindo que exista escrita de handoff FORA
+desse padrão (o eco da mensagem digitada na loja, que grava `human_active`): sem
+esse controle, um discriminador que casasse tudo ficaria verde sem medir nada.
+Porta nova entra sozinha na contagem e reprova com mensagem dizendo isso —
+ajustar o número faz parte de acrescentar a porta.
+
+Sabotadas uma a uma, mais dois decoys: campo ausente, e `human_active` no lugar
+de `awaiting_human` (que silenciaria o alerta em vez de mudar a fila).
+`src/lib/ai-budget-wiring-guard.test.ts`.
 
 ### N2 — copy por valor solta em três formas
 
@@ -231,9 +248,12 @@ extratores (`varsDaPorta`, `ligadoDe`, `guardasDe`) tiram os nomes do próprio
 código, de propósito, para que refatoração legítima não reprove.
 
 **O que morde é o oposto.** O guardrail é robusto a rename e **cego a valor**
-exatamente onde o invariante É o valor: a string `"awaiting_human"`, o literal de
-`finish(...)`, o `evt` do log, o argumento de `resolveMutationStopText`, o texto
-efetivamente enviado. Cada item de N1–N4 é uma instância disso.
+exatamente onde o invariante É o valor: o literal de `finish(...)`, o `evt` do
+log, o argumento de `resolveMutationStopText`, o texto efetivamente enviado.
+Cada item de N2–N4 é uma instância disso. **`"awaiting_human"` era a instância
+mais consequente e deixou de ser** — ver N1, fechado; o padrão do fecho (asserção
+de **valor** ao lado da de estrutura, nunca no lugar dela) é o que as demais
+esperam.
 
 Consequência prática para quem for endurecer isto: **não troque os extratores por
 nomes literais.** O conserto é acrescentar asserção de **valor** ao lado da de
@@ -369,7 +389,7 @@ interrompe a IA da organização **até o fim do ciclo**.
 - **`ai-budget-milestones-core.ts`** (núcleo puro) → `webhook-whatsapp` (via `ai-budget-gate.ts`). **Fonte canônica dos quatro `admin_ai_budget_*`** (`EVENT_TYPE_BY_MILESTONE_PERCENT`) — nunca redigitar a lista.
 - **`ai-budget-copy.ts`** (núcleo puro) → `webhook-whatsapp` (import direto). Os textos determinísticos do bloqueio; mudá-los sem redeployar deixa o `HARDCODED_AGENT_NOISE` filtrando frases que já não são emitidas — e as novas voltam ao prompt como mensagem de assistente.
 - **`ai-call-authorizer-core.ts`** (núcleo puro, testado em `src/lib/ai-call-authorizer-core.test.ts`) → `webhook-whatsapp` (via `ai-providers.ts`). O protocolo ordenado de §17.7.3.
-- **`ai-budget-gate.ts`** (adapter de I/O) → `webhook-whatsapp`. Consumidor único hoje.
+- **`ai-budget-gate.ts`** (adapter de I/O) → `webhook-whatsapp`. Consumidor único hoje. **Acoplado à RPC `record_ai_call_usage` (migration 102), que mudou de assinatura:** os dois sobem juntos. Adapter novo com RPC antiga nunca vê `reason_code`, não loga `ai_usage_record_not_applied` e volta a adotar contadores zerados em silêncio; RPC nova com adapter antigo é compatível (coluna extra ignorada). É acoplamento migration × EF, e por isso não aparece em nenhum `import`.
 - **`whatsapp-instance-cycle-core.ts`** → acrescentar **`webhook-whatsapp`** (via `ai-budget-core.ts`, que reusa `clampDayToMonth` em vez de reimplementar a aritmética de âncora). É a única linha desta frente que cruza com o Plano de instâncias.
 - **`billing-notify.ts`** → acrescentar **`webhook-whatsapp`** (via `ai-budget-gate.ts`: `resolvePlatformAdminRecipients` + `enqueueBillingNotification`).
 - **`platform-flags.ts`** → `webhook-whatsapp` já consta; a flag lida agora inclui `ai_wallet_enforced`.
@@ -401,22 +421,42 @@ produtor sozinho é inofensivo (a linha fica `pending`); deployar com um
 ### Ordem de aplicação — é invariante, não recomendação
 
 **As migrations 099–103 precisam ser aplicadas (`supabase db push`) ANTES do
-deploy da Edge Function que as lê.** Inverter a ordem **não é degradação
-tolerável: é indisponibilidade total do agente, para TODOS os clientes.**
+deploy da Edge Function que as lê.** Inverter a ordem degrada **ABERTO**, não
+fechado — e é por isso que ela precisa ser descrita com precisão, e não pelo pior
+caso imaginável.
 
-O caminho é curto e nenhuma flag o contém. Sem a tabela `ai_model_prices`, a
-leitura de preço falha; falha de leitura e ausência de linha devolvem `null` de
-propósito (mesma consequência, e é a segura); `null` vira `price_unknown`; e
-`price_unknown` é o único código que faz `failClosed = true` **mesmo com
-`ai_wallet_enforced` OFF** — porque sem preço não há `price_id`, que é NOT NULL,
-e o evento financeiro não pode existir. Resultado: **toda conversa de todo
-cliente vira handoff com `AGENT_INSTABILITY_TEXT`**, e o restaurante recebe a
-fila inteira do dia como se o provedor de IA estivesse fora do ar.
+O que acontece de fato, com a flag OFF:
 
-Duas agravantes: `loadAiFranchise` roda para **toda** organização, inclusive as
-sem franquia, então o erro aparece em **100% dos inbounds**; e esse ruído
-contínuo **mascara o item 3** deste documento, que é exatamente o sinal que se
-quer enxergar na primeira execução.
+- **`ai_budget_franchise_read_failed` em 100% dos inbounds.**
+  `loadAiFranchise` roda para **toda** organização, inclusive as sem franquia, no
+  caminho pós-debounce. Sem `ai_cycle_budgets` a leitura falha, devolve `null`, e
+  `null` é tratado como "não consultado" — **nunca** como esgotado. O turno segue.
+- **`ai_budget_open_failed` por turno**, nas organizações de franquia:
+  `openTurnBudget` chama `open_ai_cycle_budget`, a RPC não existe, o resultado é
+  `ERROR/budget_open_failed`, e `failClosed = enforced || code === "price_unknown"`
+  é **false** com a flag desligada. O turno roda **sem ganchos e sem medição**.
+
+**O fail-closed de preço NÃO é este caminho, e afirmar que é constrói um modelo
+causal falso sobre o único fail-closed que ignora a flag.** Duas razões
+independentes: (1) `openTurnBudget` resolve o ciclo **antes** de resolver preço e
+retorna no primeiro erro, então `price_unknown` nem é alcançado; (2) não existe
+estado em que `ai_model_prices` falte com as RPCs presentes — a 101 tem FK para
+`ai_model_prices(id)`, e as três migrations sobem na mesma ordem. `price_unknown`
+com a flag OFF é real, mas o gatilho dele é **modelo sem preço semeado** (seção 8
+e seção 15), não ordem de deploy.
+
+**O custo real da inversão, então, é o da seção 3:** ruído contínuo que
+**mascara** o sinal que se quer enxergar na primeira execução, e — nas
+organizações de franquia — perda da **medição**, que é a única coisa que a fase
+de observação existe para produzir. Nada disso interrompe atendimento. Também
+não há hoje organização alguma com `entitlements.ai.source === "franchise"`, o
+que torna o segundo efeito latente até o primeiro plano de franquia existir.
+
+**Acoplamento novo, do mesmo tamanho:** `record_ai_call_usage` (102) mudou de
+assinatura — a RPC e `_shared/ai-budget-gate.ts` sobem **juntos**. Adapter novo
+com RPC antiga nunca produz o log de anomalia (`ai_usage_record_not_applied`) e
+volta a adotar contadores zerados em silêncio; RPC nova com adapter antigo é
+compatível (a coluna extra é ignorada).
 
 Depois das migrations: **`process-billing-notifications` primeiro**, antes de
 qualquer produtor dos quatro `admin_ai_budget_*`. Só então `webhook-whatsapp`.
@@ -432,6 +472,9 @@ qualquer produtor dos quatro `admin_ai_budget_*`. Só então `webhook-whatsapp`.
 - **`ai_usage_events.price_id` é NOT NULL** — evento financeiro só existe com preço conhecido; é o que torna o fail-closed de preço uma garantia de banco, e é por isso que `price_unknown` ocorre mesmo com a flag OFF.
 - **Modelo novo em `KNOWN_MODELS` exige preço semeado na 099 no mesmo PR.** Sem preço o agente daquela organização **cala** (não degrada), porque o fail-closed é de banco. Guardrail: `src/lib/ai-budget-migrations-guard.test.ts`, bloco "todo modelo conhecido tem preço semeado".
 - **A ordem de lock das RPCs do orçamento vale para os locks IMPLÍCITOS de FK, não só para os `for update`.** Toda checagem de chave estrangeira roda `select … for key share` na linha-pai: um `insert into ai_usage_events` trava sozinho a linha do orçamento e a da reserva, e fazê-lo antes do `for update` do MESMO orçamento é deadlock de upgrade (40P01). Agravante que ninguém deduz: essa ordem é subproduto da **ordem das colunas** na `create table` da 101 — reordená-las inverte a aquisição em silêncio, e o guardrail estático mede posição textual de `for update`, sendo cego a isso. `20260803090300_102`.
+- **O upgrade `KEY SHARE → FOR UPDATE` continua existindo na linha da RESERVA**, e é seguro só porque **todo escritor trava o orçamento antes** — não porque a ordem textual esteja certa. Caminho novo que toque `ai_cost_reservations` sem passar pelo `for update` do orçamento reabre o 40P01. Pré-existente, não regressão. `20260803090300_102`.
+- **`with schema extensions` é no-op se a extensão já existir em `public`.** A 099 não conserta uma `btree_gist` já instalada no schema errado, e a auditoria de ACL continuaria suja — mover exige `alter extension … set schema`, em migration própria.
+- **No lado direito de um `set`, coluna da tabela atualizada é sempre qualificada** (102 e 103). Sem alias, a correção depende de a coluna não ser homônima de OUT param **daquela** função — e a lista de retorno é o que mais muda. Guardrail: `src/lib/ai-budget-migrations-guard.test.ts`, bloco "nenhum SET referencia coluna crua".
 - **A guarda de tenant do orçamento cobre DOIS caminhos de atribuição** (`cycle_id` e `unit_id`), e lê o segundo por `to_jsonb(new)`: a função é compartilhada por tabelas sem a coluna, onde `new.unit_id` seria 42703 em tempo de execução. `20260803090200_101`.
 
 ---
@@ -559,6 +602,44 @@ Fora esses dois, **não restou asserção que passe por proteção sem ser** —
 frase anterior deste parágrafo ("não restou asserção *declarada* como
 não-protetora") era verdade literal e engano prático: sobrava uma **não
 declarada**, que é pior que uma declarada.
+
+### O que a rodada de correção da revisão final acrescentou, e o que ela declara
+
+Duas lacunas foram **encontradas pela sabotagem**, e as duas foram fechadas —
+mas o caminho até elas é o registro que importa, porque as duas eram invisíveis
+para o detector que já existia:
+
+- **Reverter a qualificação de `settled_cents` (102) ou de
+  `reserved_cents - consumed_cents` (`finalize`) passava VERDE.** O detector
+  genérico de 42702 só enxerga coluna que é OUT param **daquela** função, e
+  nenhuma das duas é. Fechado por uma regra sem lista de exceção — **no lado
+  direito de um `set`, nenhuma coluna da tabela atualizada aparece crua** —,
+  que obrigou a qualificar também o `enqueue_attempts` da 103, pelo mesmo
+  motivo latente. **Limite declarado: a regra cobre o SET, não o WHERE.**
+  Qualificar o WHERE exigiria alias em `touch_ai_budget_milestone` inteiro e
+  reescreveria três asserções que leem o predicado por texto; `id` e
+  `organization_id` não são nome de OUT param em nenhuma das seis funções. Se
+  alguma passar a ser, é ali que entra.
+- **Logar a anomalia da RPC e NÃO interromper o gancho passava verde** — ou
+  seja, a metade que importa financeiramente (voltar a adotar os contadores
+  zerados, dizendo ao `beforeCall` seguinte que a reserva inteira está livre).
+  Qualquer asserção sobre o `evt` do log continua verde nesse cenário. Fechado
+  por um caso sobre o FLUXO, que aceita as **duas** formas legítimas de impedir
+  a queda (interromper, ou pôr a adoção num `else`) — exigir só a primeira
+  reprovaria refatoração correta.
+
+E um erro da própria rodada, registrado porque a classe é pior que o defeito:
+**a seção "Ordem de aplicação" chegou a afirmar uma cadeia causal que o código
+não executa** (`price_unknown` → fail-closed → handoff para todo cliente) **e a
+prendeu com teste**. Era inalcançável por duas razões independentes — a abertura
+do ciclo precede a resolução de preço e retorna no primeiro erro, e
+`ai_model_prices` não pode faltar com as RPCs presentes (FK da 101). Trocou-se
+uma descrição correta-mas-subdimensionada por uma incorreta **blindada**, sobre
+justamente o único fail-closed que ignora a flag. O caso agora ancora nos dois
+eventos observáveis (`ai_budget_franchise_read_failed`, `ai_budget_open_failed`)
+e na direção da degradação (**ABERTO**). **Lição de método: um guardrail escrito
+sobre um modelo causal não verificado é pior que nenhum — ele transfere a
+confiança de quem o lê para a afirmação errada.**
 
 ---
 

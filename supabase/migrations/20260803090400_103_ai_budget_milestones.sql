@@ -129,8 +129,14 @@ as $$
 declare
   v_row ai_budget_milestones%rowtype;
 begin
-  update ai_budget_milestones
-     set enqueue_attempts = enqueue_attempts + 1
+  -- ALIAS `m` no lado DIREITO do SET: `enqueue_attempts` nao e OUT param DESTA
+  -- funcao (o retorno chama-se `attempts`), e essa e a UNICA razao de a forma
+  -- crua funcionar. Renomear a coluna de saida para `enqueue_attempts` — o nome
+  -- mais natural que ela poderia ter — tornaria esta linha 42702 na PRIMEIRA
+  -- chamada real, com a migration aplicada limpa. Mesma doutrina do cabecalho
+  -- da 102: qualifica-se toda coluna que POSSA vir a ser homonima.
+  update ai_budget_milestones m
+     set enqueue_attempts = m.enqueue_attempts + 1
    where id = p_milestone_id
      and organization_id = p_organization_id
      and notified_at is null

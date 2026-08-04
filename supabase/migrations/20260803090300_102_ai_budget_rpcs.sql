@@ -29,6 +29,14 @@
 -- em SILENCIO. Nenhum guardrail estatico enxerga isso: o de hoje mede a posicao
 -- TEXTUAL dos `for update` e e estruturalmente cego a lock implicito.
 --
+-- O UPGRADE `KEY SHARE -> FOR UPDATE` CONTINUA EXISTINDO NA LINHA DA RESERVA
+-- (o INSERT do passo 3 a trava por FK, o passo 4 pede UPDATE nela). Isso e
+-- seguro por UM motivo, e so por ele: todo escritor da reserva passa antes pelo
+-- `for update` do orcamento, entao nenhuma outra transacao da organizacao pode
+-- estar enfileirada naquela linha. Quem criar um caminho que toque
+-- ai_cost_reservations SEM travar o orcamento primeiro reabre o 40P01 aqui,
+-- mesmo mantendo a ordem textual das duas clausulas.
+--
 -- TODA COLUNA DE `RETURNS TABLE` E UMA VARIAVEL PLPGSQL EM ESCOPO NO CORPO.
 -- Referenciar uma coluna de tabela HOMONIMA sem qualificar estoura 42702
 -- (column reference is ambiguous) em TEMPO DE EXECUCAO — a migration aplica
