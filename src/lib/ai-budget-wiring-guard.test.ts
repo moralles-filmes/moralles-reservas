@@ -1305,3 +1305,228 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     expect(gate).not.toMatch(/conversationCount|messageCount|interactionCount/);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ligação no webhook-whatsapp
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// O webhook chama `serve()` no carregamento e importa `deno.land`/`esm.sh` — o
+// vitest também não o alcança. Toda DECISÃO continua em núcleo puro; o que se
+// prova aqui é a LIGAÇÃO: que o caminho novo só existe para quem resolve por
+// franquia, que a reserva é finalizada em TODOS os desfechos do turno, que a
+// negação distingue teto comercial de soluço de infraestrutura, e que nada de
+// custo, token ou limite chega ao cliente do restaurante.
+//
+// MESMA REGRA DE PROJETO do resto do arquivo: nada fatia por janela de N
+// caracteres. Os recortes usam as mesmas quatro fronteiras sintáticas.
+
+const webhook = readFileSync(
+  join(__dirname, "..", "..", "supabase", "functions", "webhook-whatsapp", "index.ts"),
+  "utf8",
+).replace(/\r\n/g, "\n");
+
+/**
+ * O webhook SEM o conteúdo dos comentários, para os recortes estruturais: uma
+ * chave ou um parêntese solto dentro de um comentário desbalancearia o recorte
+ * e o bloco escorregaria para a vizinha — o defeito que reprovou uma rodada
+ * anterior desta frente. O caso de controle logo abaixo prova que o apagador
+ * atravessou este arquivo inteiro sem dessincronizar.
+ */
+const webhookCode = blankComments(webhook);
+
+/** O bloco `if (… kind === "DENIED") { … }`, por chaves balanceadas. */
+function deniedBlock(src: string): string {
+  const i = src.indexOf('agentOutcome.kind === "DENIED"');
+  expect(i, "bloco de negação não encontrado").toBeGreaterThan(-1);
+  return src.slice(...braceBlock(src, i));
+}
+
+describe("webhook-whatsapp — ligação da franquia", () => {
+  it("controle do apagador sobre o webhook: strings sobrevivem e comentários somem", () => {
+    // Sem este controle, um apagador dessincronizado devolveria um arquivo
+    // truncado e TODO recorte estrutural abaixo mediria outra coisa em silêncio.
+    expect(webhookCode, "índices deixaram de ser preservados").toHaveLength(webhook.length);
+    expect(webhookCode, "o apagador não chegou ao fim do arquivo").toContain('"webhook_error"');
+    expect(webhookCode, "uma string do meio do arquivo foi comida").toContain("MEDIA_REPLY_TEXT");
+    expect(webhookCode, "comentário real sobreviveu").not.toContain("Grava esta mensagem já");
+  });
+
+  it("importa o adapter e os núcleos, sem reimplementar decisão", () => {
+    expect(webhook).toContain('from "../_shared/ai-budget-gate.ts"');
+    expect(webhook).toContain('from "../_shared/ai-budget-copy.ts"');
+    expect(webhook).toContain('from "../_shared/ai-budget-core.ts"');
+    for (const fn of [
+      "openTurnBudget",
+      "makeBudgetHooks",
+      "finalizeTurn",
+      "recordMilestones",
+      "loadAiFranchise",
+    ]) {
+      expect(webhook, `não usa ${fn}`).toContain(fn);
+    }
+  });
+
+  it("os textos determinísticos entram no HARDCODED_AGENT_NOISE pela LISTA, não redigitados", () => {
+    // Sem isto a mensagem de bloqueio polui o histórico das invocações
+    // seguintes — mesmo motivo de MEDIA_REPLY_TEXT.
+    const i = webhookCode.indexOf("const HARDCODED_AGENT_NOISE");
+    expect(i, "o conjunto de ruído sumiu").toBeGreaterThan(-1);
+    const stmt = statementFrom(webhookCode, i);
+    expect(stmt).toContain("AI_BUDGET_HARDCODED_TEXTS");
+    expect(stmt, "a lista foi redigitada em vez de espalhada").toMatch(
+      /\.\.\.AI_BUDGET_HARDCODED_TEXTS/,
+    );
+  });
+
+  it("o hard stop usa razão de handoff PRÓPRIA, distinta de agent_error", () => {
+    expect(webhook).toContain("AI_BUDGET_HANDOFF_REASON");
+    expect(webhook, "a razão foi redigitada em vez de importada").not.toMatch(
+      /handoff_reason:\s*"ai_budget_exhausted"/,
+    );
+  });
+
+  it("o auto-resolve consulta o núcleo em vez de comparar idade cru", () => {
+    // Devolver a conversa para uma IA que não pode responder é o defeito; quem
+    // sabe disso é o núcleo, e ele precisa do estado do orçamento para saber.
+    expect(webhook).toContain("shouldAutoResolveHandoff");
+    expect(webhook, "a comparação crua de idade voltou").not.toMatch(
+      /handoffAge\s*>\s*HANDOFF_AUTO_RESOLVE_MS/,
+    );
+    expect(webhook, "o núcleo decide sem saber se o orçamento esgotou").toMatch(/budgetExhausted:/);
+  });
+
+  it("a franquia só entra quando o entitlement resolve por franchise", () => {
+    // Override vitalício (Ren Sushi), carteira legada e BYOK puro NÃO entram.
+    expect(webhook).toMatch(/ai\.source\s*===\s*"franchise"/);
+  });
+
+  it("o hard stop anterior ao turno também respeita o modo observação", () => {
+    // Com a flag OFF nenhuma negação COMERCIAL acontece: `openTurnBudget`
+    // devolve UNMETERED em vez de EXHAUSTED. Esta porta é mais curta e chega
+    // antes — sem a mesma disciplina, a organização que estourou o teto é
+    // bloqueada pelo atalho e o modo que existe para MEDIR antes de bloquear
+    // nunca mede nada justamente dela.
+    const i = webhookCode.indexOf("if (budgetExhaustedNow");
+    expect(i, "o hard stop anterior ao turno sumiu").toBeGreaterThan(-1);
+    expect(
+      parenBlock(webhookCode, i),
+      "o hard stop mais curto nega sem consultar o gate",
+    ).toContain("ai_wallet_enforced");
+  });
+
+  it("o texto determinístico NÃO passa por sanitizeForWhatsApp", () => {
+    // sanitizeForWhatsApp aplica-se só a saída de LLM.
+    const chamadas = [...webhookCode.matchAll(/sanitizeForWhatsApp\(([^)]*)\)/g)];
+    expect(chamadas.length, "nenhuma sanitização encontrada — o detector quebrou").toBeGreaterThan(0);
+    for (const m of chamadas) {
+      expect(m[1]).not.toMatch(/AI_BUDGET_|stopText|errText/);
+    }
+  });
+
+  it("negação por orçamento não repete ferramenta mutante nem dá retry integral", () => {
+    const block = deniedBlock(webhookCode);
+    expect(block, "a negação ignora que uma ferramenta mutante rodou").toContain("mutatingToolUsed");
+    expect(block, "as três situações de ferramenta mutante viraram uma frase só").toContain(
+      "resolveMutationStopText",
+    );
+    expect(block, "o turno seria refeito — a chamada negada é justamente a que faltava").not.toContain(
+      "runOnce()",
+    );
+    expect(block, "a negação não encerra o turno").toContain("return new Response");
+  });
+
+  it("a variante ERROR não é tratada como franquia esgotada", () => {
+    const block = deniedBlock(webhookCode);
+    expect(block, "a distinção comercial não é consultada").toContain("isCommercialHardStop(");
+    expect(block, "a distinção comercial foi redigitada no webhook").not.toMatch(
+      /kind\s*===\s*"DENY_BUDGET"/,
+    );
+    // E a copy de franquia é EXCLUSIVA do hard stop: falha técnica não pode
+    // dizer ao cliente que a franquia acabou.
+    const copy = block.indexOf("AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT");
+    expect(copy, "o texto de franquia sumiu do bloco").toBeGreaterThan(-1);
+    expect(
+      block.slice(0, copy),
+      "o texto de franquia é escolhido sem passar pelo hard stop",
+    ).toContain("hardStop");
+  });
+
+  it("cada variante emite telemetria própria", () => {
+    expect(webhook).toContain("telemetryEventFor");
+  });
+
+  it("o resolvePrice do READY é repassado aos ganchos — um resolvedor por turno", () => {
+    // Sem o repasse, a estimativa da reserva e o ledger voltam a ter DOIS caches
+    // independentes e podem falar de vigências diferentes. `makeBudgetHooks`
+    // aceita o campo opcional e cria um próprio quando ele falta: a regressão é
+    // silenciosa, e é por isso que ela precisa de caso.
+    const i = webhookCode.indexOf("makeBudgetHooks(");
+    expect(i, "os ganchos não são montados").toBeGreaterThan(-1);
+    const args = parenBlock(webhookCode, i);
+    const budgetExpr = args.match(/budget:\s*([A-Za-z_$][\w$.]*)/);
+    const priceExpr = args.match(/resolvePrice:\s*([A-Za-z_$][\w$.]*)/);
+    expect(budgetExpr, "os ganchos não recebem a reserva do turno").not.toBeNull();
+    expect(priceExpr, "os ganchos não recebem o resolvedor de preço do turno").not.toBeNull();
+    // MESMA origem: o `READY` que trouxe a reserva é o que traz o preço. Um
+    // `makePriceCache(supabase)` novo aqui satisfaria a presença da chave e
+    // reintroduziria exatamente os dois caches independentes.
+    expect(
+      priceExpr![1].split(".")[0],
+      "o resolvedor não vem do mesmo READY que a reserva",
+    ).toBe(budgetExpr![1].split(".")[0]);
+  });
+
+  it("a reserva é finalizada em TODOS os desfechos do turno", () => {
+    // Sem liquidação/liberação, a reserva fica presa até o TTL e come teto.
+    const settles = [...webhook.matchAll(/finalizeTurn\(/g)];
+    expect(settles.length).toBeGreaterThanOrEqual(3);
+    expect(webhook).toContain('"SETTLED"');
+    expect(webhook).toContain('"RELEASED"');
+  });
+
+  it("o erro do provedor entra em webhook_executions SANITIZADO", () => {
+    // A chave de IA é per-unit (BYOK) e o erro do provedor pode ecoar o request
+    // com o header de autorização, ou a URL do Gemini com `?key=`. `String(err)`
+    // aqui grava isso em `webhook_executions.error`.
+    const atribuicoes = [...webhookCode.matchAll(/agentError = (?!null)([^;\n]+)/g)];
+    expect(atribuicoes.length, "nenhuma atribuição de erro do agente — o detector quebrou")
+      .toBeGreaterThan(0);
+    for (const m of atribuicoes) {
+      expect(m[1], "erro do provedor estringificado cru").toContain("sanitizeProviderError(");
+    }
+  });
+
+  it("o hard stop NÃO desliga o canal nem toca no billing da organização", () => {
+    // O WhatsApp continua recebendo, a conversa continua visível e o
+    // atendimento humano continua possível. A única escrita é na conversa.
+    const block = deniedBlock(webhookCode);
+    for (const tabela of ["whatsapp_channels", "whatsapp_instances", "organizations", "units"]) {
+      expect(block, `a negação escreve em ${tabela}`).not.toContain(`from("${tabela}")`);
+    }
+    expect(block, "a negação não registra o handoff na conversa").toContain('from("conversations")');
+  });
+
+  it("nenhum valor de custo, token ou limite é enviado ao cliente final", () => {
+    const chamadas = [...webhookCode.matchAll(/sendOutbound\(/g)];
+    expect(chamadas.length, "nenhum envio encontrado — o detector quebrou").toBeGreaterThan(0);
+    for (const m of chamadas) {
+      expect(
+        statementFrom(webhookCode, m.index!),
+        `envio com valor financeiro no índice ${m.index}`,
+      ).not.toMatch(/settledCents|limitCents|budgetRemaining|reservedCents|estimated_cost|cost_brl/);
+    }
+  });
+
+  it("budgetRemainingCents nunca sai numa resposta HTTP do webhook", () => {
+    expect(webhook).not.toContain("budgetRemainingCents");
+  });
+
+  it("nenhuma contagem de conversa autoriza a IA", () => {
+    expect(webhook).not.toMatch(/conversationCount|messageQuota|interactionLimit/);
+  });
+
+  it("controle positivo: o detector acha um símbolo que sabidamente existe", () => {
+    expect(webhook.includes("MEDIA_REPLY_TEXT")).toBe(true);
+    expect(webhook.includes("SIMBOLO_QUE_NAO_EXISTE")).toBe(false);
+  });
+});
