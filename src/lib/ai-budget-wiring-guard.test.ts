@@ -1655,23 +1655,112 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // 3. Os ganchos são construídos aqui dentro.
     expect(ready, "os ganchos não são construídos no READY").toContain("makeBudgetHooks(");
 
-    // NADA MAIS sobrescreve esses três. Um `budgetHooks = undefined;` entre a
-    // construção e o laço, ou um `turnBudget = null;` fora da porta, desliga a
-    // franquia com o texto todo no lugar.
-    const reserva = atribuicoesDe(varReserva);
-    expect(reserva.some((a) => a.valor === "opened.budget"), "a reserva nunca é guardada").toBe(true);
+    // NADA MAIS sobrescreve esses TRÊS — e "três" tem de ser três: a porta
+    // guarda com `||`, então anular só o tenant desliga a liquidação inteira
+    // com o mesmo silêncio de anular a reserva. Um `budgetHooks = undefined;`
+    // entre a construção e o laço faz o mesmo do outro lado.
     const [pa, pb] = braceBlock(webhookCode, webhookCode.indexOf("const settleTurnBudget = async"));
-    for (const a of reserva) {
-      if (a.valor === "opened.budget") continue;
-      expect(a.valor, `sobrescrita inesperada de ${varReserva}`).toBe("null");
-      expect(
-        a.index > pa && a.index < pb,
-        `${varReserva} é zerada fora da porta única (índice ${a.index})`,
-      ).toBe(true);
+    const naPorta = (i: number) => i > pa && i < pb;
+
+    for (const [nome, origem] of [
+      [varReserva, "opened.budget"],
+      [varOrg, null],
+    ] as Array<[string, string | null]>) {
+      const escritas = atribuicoesDe(nome);
+      expect(escritas.length, `${nome} nunca é guardado`).toBeGreaterThan(0);
+      if (origem) {
+        expect(
+          escritas.some((a) => a.valor === origem),
+          `${nome} nunca recebe ${origem}`,
+        ).toBe(true);
+      }
+      for (const a of escritas) {
+        if (a.valor === origem) continue;
+        // Fora da origem, só o zerar — e só dentro da porta única.
+        if (a.valor === "null") {
+          expect(
+            naPorta(a.index),
+            `${nome} é zerado fora da porta única (índice ${a.index})`,
+          ).toBe(true);
+          continue;
+        }
+        // Qualquer outro valor tem de estar no bloco READY: é onde o dado nasce.
+        expect(
+          ready.includes(`${nome} = ${a.valor};`),
+          `${nome} recebe "${a.valor}" fora do READY (índice ${a.index})`,
+        ).toBe(true);
+      }
     }
     const ganchos = atribuicoesDe("budgetHooks");
     expect(ganchos.length, "os ganchos são atribuídos mais de uma vez, ou nenhuma").toBe(1);
     expect(ganchos[0].valor, "os ganchos deixaram de vir do adapter").toMatch(/^makeBudgetHooks\(/);
+  });
+
+  it("a corrida entre a resolução e a reserva tem hard stop PRÓPRIO", () => {
+    // Neutralizar este ramo não deixa a organização esgotada sem resposta: faz
+    // ela cair no `else` de ERROR, onde `sanitizedCode` e `enforced` são
+    // `undefined` — logo `failClosed` é falso e o turno roda SEM ganchos e SEM
+    // medição. O pior desfecho possível, com zero sinal.
+    const anc = 'if (opened.kind === "EXHAUSTED")';
+    expect(webhookCode.indexOf(anc), "o hard stop da reserva sumiu").toBeGreaterThan(-1);
+    const bloco = blocoDe(anc);
+    expect(bloco, "a corrida não vira handoff próprio").toContain("AI_BUDGET_HANDOFF_REASON");
+    expect(bloco, "a corrida não responde ao cliente").toContain(
+      "AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT",
+    );
+    expect(bloco, "a corrida não encerra o turno").toContain("return new Response");
+    // E ele decide ANTES do READY: depois, o valor já teria caído noutro ramo.
+    expect(
+      webhookCode.indexOf(anc),
+      "o hard stop da reserva perdeu a precedência",
+    ).toBeLessThan(webhookCode.indexOf('if (opened.kind === "READY")'));
+  });
+
+  it("o resultado do laço é CAPTURADO — sem isso a negação nunca é vista", () => {
+    // `await runOnce();` sem capturar deixa o texto `agentOutcome.kind ===
+    // "DENIED"` intacto e mata, em silêncio, o handoff, a copy determinística,
+    // o outcome `ai_budget_exhausted` e a telemetria por variante.
+    const capturas = atribuicoesDe("agentOutcome");
+    expect(
+      capturas.some((a) => /await runOnce\(\)/.test(a.valor)),
+      "o resultado do laço não é capturado",
+    ).toBe(true);
+  });
+
+  it("o tenant e a identidade do turno atravessam as duas portas iguais", () => {
+    // `organizationId` vai por POSIÇÃO/atalho para as duas: trocá-lo por
+    // `conv.id` falha relativamente fechado, mas é a única superfície
+    // multi-tenant do caminho novo. E `turnId` divergente entre a reserva e os
+    // ganchos quebra a correlação entre a chave de idempotência e os
+    // `ai_usage_events` do mesmo turno.
+    const abre = parenBlock(webhookCode, webhookCode.indexOf("openTurnBudget("));
+    const ganchos = parenBlock(webhookCode, webhookCode.indexOf("makeBudgetHooks("));
+    for (const [nome, args] of [["openTurnBudget", abre], ["makeBudgetHooks", ganchos]] as const) {
+      expect(args, `${nome} não recebe o tenant pelo atalho de propriedade`).toMatch(
+        /[{\s]organizationId\s*,/,
+      );
+      expect(args, `${nome} não recebe a identidade do turno`).toMatch(/[{\s]turnId\s*,/);
+    }
+    // E o tenant guardado para a liquidação é o MESMO — não `conv.id`.
+    expect(webhookCode, "o tenant da liquidação não vem da organização").toMatch(
+      /turnBudgetOrgId = organizationId;/,
+    );
+
+    // As leituras que ALIMENTAM a decisão também são escopadas pela
+    // organização: orçamento lido de outro tenant nunca esgota, e entitlement
+    // de outro tenant decide sobre a franquia errada.
+    const leituras = [...webhookCode.matchAll(/loadAiFranchise\(/g)];
+    expect(leituras.length, "nenhuma leitura de franquia — o detector quebrou").toBeGreaterThan(0);
+    for (const m of leituras) {
+      expect(
+        parenBlock(webhookCode, m.index!),
+        `leitura de franquia fora do escopo da organização (índice ${m.index})`,
+      ).toContain("organizationId");
+    }
+    expect(
+      parenBlock(webhookCode, webhookCode.indexOf("resolveOrgEntitlements(")),
+      "o entitlement é resolvido para outro tenant",
+    ).toContain("organizationId");
   });
 
   it("o estado da franquia viaja de ponta a ponta — cada elo é uma atribuição", () => {
@@ -1736,16 +1825,31 @@ describe("webhook-whatsapp — ligação da franquia", () => {
         `settleTurnBudget(${status})`,
       );
     }
-    // ORDEM: registrar o desfecho ANTES de liquidar. Se a liquidação lançar, o
-    // outcome verdadeiro já está em `webhook_executions` — antes dela, a
-    // exceção o trocaria por `webhook_error`, e dentro do catch externo (onde
-    // um `catch {}` engole tudo) apagaria o registro inteiro da invocação.
+    // ORDEM: DINHEIRO ANTES DE TELEMETRIA. `finish` carimba `processed_messages`
+    // como concluída e a reentrega do provedor passa a ser deduplicada — morrer
+    // entre o `finish` e a liquidação apaga o custo do teto para sempre,
+    // enquanto morrer entre a liquidação e o `finish` custa só o registro, que é
+    // reconstituível. (A ordem inversa chegou a ser escrita para proteger o
+    // registro de uma exceção da liquidação; `settleTurnBudget` não lança —
+    // engole o erro da RPC e volta —, então não havia registro em risco.)
     for (const [nome, bloco] of desfechos) {
       const iFinish = bloco.indexOf("finish(");
       const iSettle = bloco.indexOf("settleTurnBudget(");
       expect(iFinish, `o desfecho "${nome}" não registra a execução`).toBeGreaterThan(-1);
-      expect(iSettle, `o desfecho "${nome}" liquida antes de registrar`).toBeGreaterThan(iFinish);
+      expect(iSettle, `o desfecho "${nome}" não liquida`).toBeGreaterThan(-1);
+      expect(
+        iSettle,
+        `o desfecho "${nome}" registra antes de liquidar — telemetria na frente do dinheiro`,
+      ).toBeLessThan(iFinish);
     }
+    // No catch externo, a liquidação vem antes até do lock: soltá-lo com a
+    // reserva ainda HELD deixa uma inbound irmã abrir orçamento novo contra
+    // capacidade que ainda está comprometida.
+    const excecao = catchExterno();
+    expect(
+      excecao.indexOf("settleTurnBudget("),
+      "o lock é solto com a reserva ainda pendurada",
+    ).toBeLessThan(excecao.indexOf("releaseAiLock()"));
 
     // A liquidação passa por UMA porta, e é ela quem fala com o adapter — para
     // que "todo desfecho liquida" seja uma regra, não seis cópias.
@@ -1773,14 +1877,66 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     expect(chamada, "a porta não finaliza").toBeGreaterThan(-1);
     expect(confere, "o retorno da liquidação não é conferido").toBeGreaterThan(chamada);
     expect(zera, "a porta nunca zera o estado — a liquidação repetiria").toBeGreaterThan(-1);
+
+    // FORA do ramo de falha, não apenas depois do índice dele. Mover as duas
+    // linhas do zerar para DENTRO do `if (!fin)` satisfaz "vem depois" e
+    // restaura o defeito inteiro — falha apaga o estado, sucesso não zera — com
+    // o comentário sobrevivendo ao lado, mentindo.
+    const [fa, fb] = braceBlock(porta, confere);
+    expect(
+      zera > fa && zera < fb,
+      "o zerar foi para dentro do ramo de falha — a falha volta a apagar o estado",
+    ).toBe(false);
     expect(
       zera,
       "o estado é apagado antes de a liquidação ser confirmada — a falha vira custo perdido",
-    ).toBeGreaterThan(confere);
+    ).toBeGreaterThan(fb);
 
-    const ramoFalha = porta.slice(...braceBlock(porta, confere));
+    const ramoFalha = porta.slice(fa, fb);
     expect(ramoFalha, "a falha segue para o zerar em vez de sair").toContain("return");
     expect(ramoFalha, "liquidação que não aplicou passa em silêncio").toContain("jsonLog");
+
+    // O RÓTULO chega ao adapter: com um literal fixo aqui dentro, as seis
+    // asserções de `settleTurnBudget("…")` viram teatro.
+    // O cabeçalho fica FORA do recorte (a porta começa no `{` do corpo).
+    const param = webhookCode.match(/const settleTurnBudget = async \((\w+):/);
+    expect(param, "a porta perdeu o parâmetro de rótulo").not.toBeNull();
+    const argsFinalize = parenBlock(porta, chamada);
+    // Atalho de propriedade (`{ …, status }`) ou explícito — o que não pode é um
+    // literal fixo, que faria das seis asserções de rótulo puro teatro.
+    expect(argsFinalize, "o rótulo é descartado pela porta").toMatch(
+      new RegExp(`status:\\s*${param![1]}\\b|[{,]\\s*${param![1]}\\s*[,}]`),
+    );
+
+    // E os marcos saem dos números REAIS do ciclo, não de zero: com
+    // `settledCents: 0` nenhum marco cruza e o alerta de 100% morre.
+    const recebe = porta.match(/const (\w+) = await finalizeTurn\(/);
+    expect(recebe, "o resultado da liquidação não é capturado").not.toBeNull();
+    const argsMarcos = parenBlock(porta, porta.indexOf("recordMilestones("));
+    expect(argsMarcos, "os marcos não usam o liquidado real do ciclo").toContain(
+      `settledCents: ${recebe![1]}.settledCents`,
+    );
+    expect(argsMarcos, "os marcos não usam o limite real do ciclo").toContain(
+      `limitCents: ${recebe![1]}.limitCents`,
+    );
+
+    // E as duas escritas são escopadas pelo tenant GUARDADO com a reserva, não
+    // por outro id qualquer que esteja à mão — é a última fronteira
+    // multi-tenant do caminho, já dentro do dinheiro.
+    const varOrg = guardaEntrada![2];
+    const captura = porta.match(new RegExp(`const (\\w+) = ${varOrg};`));
+    expect(captura, "a porta não captura o tenant da reserva").not.toBeNull();
+    for (const [nome, args] of [["a liquidação", argsFinalize], ["os marcos", argsMarcos]] as const) {
+      expect(args, `${nome} não é escopada pelo tenant da reserva`).toContain(
+        `organizationId: ${captura![1]}`,
+      );
+    }
+    expect(argsFinalize, "a liquidação não identifica a reserva").toMatch(
+      /[{,]\s*reservationId\s*[,}]|reservationId:\s*\w/,
+    );
+    expect(argsMarcos, "os marcos não identificam o ciclo").toMatch(
+      /[{,]\s*cycleId\s*[,}]|cycleId:\s*\w/,
+    );
   });
 
   it("o erro do provedor entra em webhook_executions SANITIZADO", () => {

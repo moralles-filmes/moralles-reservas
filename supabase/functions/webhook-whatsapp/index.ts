@@ -1272,9 +1272,15 @@ serve(async (req) => {
    * não é `HELD` (migration 102).
    *
    * ISSO NÃO É COBERTURA COMPLETA, e não deve ser lido como tal: nos desfechos
-   * que terminam sem exceção não existe segunda tentativa nenhuma. Fechar de
-   * verdade exige uma varredura que LIQUIDE reserva com `consumed_cents > 0` em
-   * vez de expirá-la — trabalho de outra fase.
+   * que terminam sem exceção não existe segunda tentativa nenhuma — ou seja, no
+   * modo de falha COMUM (a RPC falha e o resto do turno corre normal) a segunda
+   * tentativa nunca acontece; ela só cobre "falhou a liquidação E depois algo
+   * mais explodiu". Fechar de verdade exige uma varredura que LIQUIDE reserva
+   * com `consumed_cents > 0` em vez de expirá-la — trabalho de outra fase.
+   *
+   * O `if (!fin)` também não distingue "a RPC errou" de `RESERVATION_NOT_FOUND`
+   * / `CYCLE_NOT_FOUND`, então o log abaixo pode sair sobre uma reserva que
+   * nunca existiu. É ruído no log, não erro de contabilidade.
    */
   const settleTurnBudget = async (status: "SETTLED" | "RELEASED") => {
     if (!turnBudget || !turnBudgetOrgId) return;
@@ -2973,17 +2979,20 @@ serve(async (req) => {
         mutating_tool_used: mutatingToolUsed,
       });
 
+      // DINHEIRO ANTES DE TELEMETRIA, nos seis desfechos. `finish` carimba
+      // `processed_messages` como concluída, e a partir daí a reentrega do
+      // provedor é DEDUPLICADA: se o isolate morrer entre o `finish` e a
+      // liquidação, o custo real nunca vira `settled_cents` e some do teto para
+      // sempre. Na ordem certa, a mesma morte custa só o registro — que é
+      // telemetria, e reconstituível. `settleTurnBudget` não lança (engole o
+      // erro da RPC e volta), então não há registro em risco aqui.
+      // O turno terminou onde pretendia terminar: `SETTLED`.
+      await settleTurnBudget("SETTLED");
       await finish(hardStop ? "ai_budget_exhausted" : "ai_budget_denied", undefined, {
         decision: decision.kind,
         provider: provider_ai,
         model: agentOutcome.meta.model,
       });
-      // DEPOIS do `finish`, em todos os seis desfechos: se a liquidação lançar,
-      // o desfecho REAL já está gravado em `webhook_executions`. Antes dele, a
-      // exceção trocaria o outcome verdadeiro por `webhook_error` (ou, dentro
-      // do catch externo, por nenhum registro). O turno terminou onde pretendia
-      // terminar, então `SETTLED`.
-      await settleTurnBudget("SETTLED");
       await releaseAiLock();
       return new Response("ok");
     }
@@ -3011,14 +3020,15 @@ serve(async (req) => {
       await appendToConversation(conv.id, [...(conv.messages || []), { role: "user", content: incomingText }], "assistant", handoffText);
 
       jsonLog("warn", { requestId, evt: "agent_error_handoff", provider: provider_ai, model: usedModel, err: agentError });
+      // Turno INTERROMPIDO pelo provedor: o consumido migra para o liquidado e
+      // a diferença volta ao disponível. Antes do `finish` — ver o desfecho de
+      // negação acima.
+      await settleTurnBudget("RELEASED");
       await finish("agent_error", agentError, {
         provider: provider_ai,
         model: usedModel,
         channel_id: channelId,
       });
-      // Turno INTERROMPIDO pelo provedor: o consumido migra para o liquidado e
-      // a diferença volta ao disponível.
-      await settleTurnBudget("RELEASED");
       await releaseAiLock();
       return new Response("ok");
     }
@@ -3032,9 +3042,9 @@ serve(async (req) => {
         toPhone: phone,
         text: "Desculpa, não consegui montar uma resposta agora. Pode reformular ou aguardar um instante?",
       });
-      await finish("empty_response");
       // Mesma razão do ramo de erro: turno interrompido sem produzir resposta.
       await settleTurnBudget("RELEASED");
+      await finish("empty_response");
       await releaseAiLock();
       return new Response("ok");
     }
@@ -3050,24 +3060,24 @@ serve(async (req) => {
     const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: finalTextForWhatsApp });
 
     if (!sendRes.ok) {
-      await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
-        missingCreds: sendRes.missingCreds,
-        bodySnippet: sendRes.bodySnippet,
-      });
       // O TURNO DE IA ACONTECEU: o que falhou foi a entrega ao WhatsApp. O
       // custo é real e já está em `ai_usage_events`; sem liquidar aqui ele
       // jamais contaria contra o teto — a varredura de expiradas devolve a
       // reserva sem incrementar `settled_cents`.
       await settleTurnBudget("SETTLED");
+      await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
+        missingCreds: sendRes.missingCreds,
+        bodySnippet: sendRes.bodySnippet,
+      });
       await releaseAiLock();
       return new Response("ok");
     }
 
-    await finish("success", undefined, { tokens: totalUsage.input_tokens + totalUsage.output_tokens });
     // Fim do turno: liquida o custo real e devolve a diferença ao disponível.
     // Os marcos (70/80/90/100%) saem daqui porque é aqui que o liquidado do
-    // ciclo muda.
+    // ciclo muda. Antes do `finish` — ver o desfecho de negação acima.
     await settleTurnBudget("SETTLED");
+    await finish("success", undefined, { tokens: totalUsage.input_tokens + totalUsage.output_tokens });
     await releaseAiLock();
     return new Response("ok");
   } catch (err) {
@@ -3082,13 +3092,15 @@ serve(async (req) => {
     // pode transformar um erro em outro erro.
     jsonLog("error", { requestId, evt: "webhook_error", err: String(err) });
     try {
+      // PRIMEIRO de todos, aqui: antes do `finish` pela mesma razão dos outros
+      // cinco desfechos, e antes do `releaseAiLock` porque soltar o lock com a
+      // reserva ainda `HELD` deixa uma inbound irmã abrir orçamento novo contra
+      // capacidade que ainda está comprometida. É também a SEGUNDA tentativa de
+      // liquidação quando a primeira não aplicou — o estado local só é zerado
+      // no sucesso.
+      await settleTurnBudget("RELEASED");
       await releaseAiLock();
       await finish("webhook_error", String(err));
-      // DEPOIS do `finish`: aqui dentro uma exceção é ENGOLIDA pelo `catch {}`
-      // abaixo, então liquidar antes podia custar o registro inteiro da
-      // invocação. É também a SEGUNDA tentativa de liquidação quando a primeira
-      // não aplicou — o estado local só é zerado no sucesso.
-      await settleTurnBudget("RELEASED");
     } catch {
       // ignore — TTL de 90s libera o lock
     }
