@@ -1452,7 +1452,14 @@ describe("webhook-whatsapp — ligação da franquia", () => {
   });
 
   it("cada variante emite telemetria própria", () => {
-    expect(webhook).toContain("telemetryEventFor");
+    // SOBRE O BLOCO, não sobre o arquivo: `webhook.toContain("telemetryEventFor")`
+    // é satisfeito pela linha de IMPORT sozinha — apagar a chamada e manter o
+    // import deixava este caso verde com um `evt` fixo no lugar, que é
+    // exatamente a diferença entre as variantes que o boolean apagava.
+    const block = deniedBlock(webhookCode);
+    expect(block, "a negação emite um evento único para todas as variantes").toContain(
+      "telemetryEventFor(decision)",
+    );
   });
 
   it("o resolvePrice do READY é repassado aos ganchos — um resolvedor por turno", () => {
@@ -1478,10 +1485,15 @@ describe("webhook-whatsapp — ligação da franquia", () => {
 
   it("a reserva é finalizada em TODOS os desfechos do turno", () => {
     // Sem liquidação/liberação, a reserva fica presa até o TTL e come teto.
-    const settles = [...webhook.matchAll(/finalizeTurn\(/g)];
+    const settles = [...webhookCode.matchAll(/finalizeTurn\(/g)];
     expect(settles.length).toBeGreaterThanOrEqual(3);
     expect(webhook).toContain('"SETTLED"');
     expect(webhook).toContain('"RELEASED"');
+    // E o desfecho NOVO — a negação no meio do turno — é um deles. Sobre o
+    // bloco, porque a contagem global não sabe QUAIS saídas foram cobertas.
+    expect(deniedBlock(webhookCode), "a negação deixa a reserva presa até o TTL").toContain(
+      "finalizeTurn(",
+    );
   });
 
   it("o erro do provedor entra em webhook_executions SANITIZADO", () => {
