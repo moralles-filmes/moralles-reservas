@@ -3,6 +3,7 @@ import {
   resolveEntitlements,
   type EntitlementInputs,
   type EntitlementOverrideInput,
+  type EntitlementSubscriptionInput,
 } from "../../supabase/functions/_shared/entitlements-core";
 
 // Prioridade documentada (spec §12): 1. bloqueio admin explícito → 2. override
@@ -214,5 +215,115 @@ describe("resolveEntitlements — IA (pré e pós carteira)", () => {
       }),
     );
     expect(r.ai).toMatchObject({ allowed: false, source: "admin_block" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Modelo comercial de dois planos (plano A, Task 3).
+//
+// Matriz contratada:
+//                                   system | whatsapp | ai
+//   Plano 1  ({system})                ✅   |    ❌    | ❌
+//   Plano 2  ({system,whatsapp,ai})    ✅   |    ✅    | ✅
+//   Trial    (sem assinatura)          ✅   |    ❌    | ❌
+//   Legado sistema ({})                ✅   |    ❌    | herança histórica
+//   Legado sistema + WhatsApp ({})     ✅   |    ✅    | herança histórica
+//   Override LIFETIME                  ✅   |    ✅    | ✅
+//
+// `included_features` é AUTORIZAÇÃO; `billing_plans.features` é copy de
+// marketing e não é input deste núcleo.
+// ---------------------------------------------------------------------------
+describe("resolveEntitlements — modelo de dois planos (declaração explícita)", () => {
+  function sub(partial: Partial<EntitlementSubscriptionInput>): EntitlementSubscriptionInput {
+    return {
+      status: "active",
+      category: "SYSTEM_SUBSCRIPTION",
+      current_period_end: null,
+      ...partial,
+    };
+  }
+
+  const planoReservas = sub({ includedFeatures: ["system"] });
+  const planoAutomacao = sub({ includedFeatures: ["system", "whatsapp", "ai"] });
+  const legadoSistema = sub({}); // sem includedFeatures = plano legado
+  const legadoWhatsapp = sub({ category: "WHATSAPP_SUBSCRIPTION" });
+
+  it("teste 3 — Plano 1 concede system", () => {
+    const e = resolveEntitlements(base({ subscriptions: [planoReservas] }));
+    expect(e.system.allowed).toBe(true);
+    expect(e.system.source).toBe("subscription");
+  });
+
+  it("teste 4a — Plano 1 NAO concede whatsapp", () => {
+    const e = resolveEntitlements(base({ subscriptions: [planoReservas] }));
+    expect(e.whatsapp.allowed).toBe(false);
+  });
+
+  it("teste 4b — Plano 1 NAO concede ai POR HERANCA", () => {
+    // Regressao da v1 deste plano: a heranca pre-carteira dava ai=true aqui.
+    const e = resolveEntitlements(base({ subscriptions: [planoReservas] }));
+    expect(e.ai.allowed).toBe(false);
+    expect(e.ai.status).toBe("not_included");
+  });
+
+  it("teste 5 — Plano 2 concede system, whatsapp e ai", () => {
+    const e = resolveEntitlements(base({ subscriptions: [planoAutomacao] }));
+    expect(e.system.allowed).toBe(true);
+    expect(e.whatsapp.allowed).toBe(true);
+    expect(e.ai.allowed).toBe(true);
+  });
+
+  it("teste 6a — legado SO sistema mantem o comportamento historico de ai", () => {
+    // Heranca pre-carteira PRESERVADA para plano legado — e so para ele.
+    const e = resolveEntitlements(base({ subscriptions: [legadoSistema] }));
+    expect(e.system.allowed).toBe(true);
+    expect(e.whatsapp.allowed).toBe(false);
+    expect(e.ai.allowed).toBe(true);
+    expect(e.ai.source).toBe("subscription");
+  });
+
+  it("teste 6b — legado sistema + WhatsApp concede as duas por categoria", () => {
+    const e = resolveEntitlements(base({ subscriptions: [legadoSistema, legadoWhatsapp] }));
+    expect(e.system.allowed).toBe(true);
+    expect(e.whatsapp.allowed).toBe(true);
+  });
+
+  it("teste 8 — trial concede system e NAO concede whatsapp nem ai", () => {
+    const e = resolveEntitlements(
+      base({ billingStatus: "trialing", trialEndsAt: FUTURE, subscriptions: [] }),
+    );
+    expect(e.system.allowed).toBe(true);
+    expect(e.whatsapp.allowed).toBe(false);
+    expect(e.ai.allowed).toBe(false);
+  });
+
+  it("teste 1 — copy de marketing nao concede acesso", () => {
+    // `features` (copy) nao e input do nucleo. Nenhum campo de copy pode
+    // aparecer aqui — este teste trava a fronteira.
+    const e = resolveEntitlements(base({ subscriptions: [planoReservas] }));
+    expect(e.whatsapp.allowed).toBe(false);
+    expect(e.ai.allowed).toBe(false);
+  });
+
+  it("teste 7 — Ren Sushi: override LIFETIME vence a assinatura", () => {
+    const e = resolveEntitlements(
+      base({
+        overrides: [
+          override({ feature: "system" }),
+          override({ feature: "whatsapp" }),
+          override({ feature: "ai" }),
+        ],
+        subscriptions: [],
+      }),
+    );
+    expect(e.system.source).toBe("override");
+    expect(e.whatsapp.source).toBe("override");
+    expect(e.ai.source).toBe("override");
+  });
+
+  it("declaracao explicita vence heranca mesmo com carteira ausente", () => {
+    const e = resolveEntitlements(base({ subscriptions: [planoReservas] }));
+    expect(e.ai.source).not.toBe("wallet");
+    expect(e.ai.allowed).toBe(false);
   });
 });

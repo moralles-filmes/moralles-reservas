@@ -16,8 +16,13 @@
  *   5. Sem acesso
  *
  * IA (pré vs pós carteira):
+ *   - Plano com `includedFeatures` não vazio (modelo de dois planos) GOVERNA a
+ *     IA pela declaração: concede se declara `ai`, nega (`not_included`) se
+ *     não declara. Nunca herda `system`.
+ *   - Trial nunca concede IA (`trial_no_ai`).
  *   - aiWalletBalanceCents === undefined → carteira ainda não implantada
- *     (pré-Fase 7): ai herda o resultado de system (mundo BYOK atual).
+ *     (pré-Fase 7) e plano LEGADO (sem declaração): ai herda o resultado de
+ *     system (mundo BYOK atual).
  *   - aiWalletBalanceCents number|null → carteira implantada: ai exige
  *     (override de ai) OU (system permitido E saldo > 0). Override de system
  *     NÃO libera ai automaticamente (cenário 26 da spec).
@@ -51,6 +56,15 @@ export interface EntitlementSubscriptionInput {
   /** billing_plans.category do plano da assinatura */
   category: string;
   current_period_end: string | null;
+  /**
+   * billing_plans.included_features — features declaradas pelo PLANO.
+   * Ausente ou vazio => plano LEGADO: resolve só por categoria e a IA mantém
+   * a herança histórica.
+   * Não vazio => plano NOVO: a declaração GOVERNA e substitui a herança.
+   *
+   * NÃO confundir com billing_plans.features (copy de marketing).
+   */
+  includedFeatures?: string[];
 }
 
 export interface EntitlementInputs {
@@ -133,10 +147,13 @@ function resolveFeature(
     return { allowed: true, source: "override", status: g.grant_type, expiresAt: g.ends_at };
   }
 
-  // 3. Assinatura paga cobrindo a feature
+  // 3. Assinatura paga cobrindo a feature — por CATEGORIA (plano legado) ou
+  //    por DECLARAÇÃO do plano (included_features, modelo de dois planos).
   const categories = FEATURE_CATEGORIES[feature];
   const sub = inputs.subscriptions.find(
-    (s) => categories.includes(s.category) && ALLOWED_SUB_STATUSES.has(s.status),
+    (s) =>
+      ALLOWED_SUB_STATUSES.has(s.status) &&
+      (categories.includes(s.category) || (s.includedFeatures ?? []).includes(feature)),
   );
   if (sub) {
     return { allowed: true, source: "subscription", status: sub.status, expiresAt: sub.current_period_end };
@@ -167,13 +184,34 @@ export function resolveEntitlements(inputs: EntitlementInputs): OrgEntitlements 
   const system = resolveFeature("system", inputs, nowMs);
   const whatsapp = resolveFeature("whatsapp", inputs, nowMs);
 
-  // IA: override próprio primeiro; depois carteira (ou herança pré-carteira)
+  // Existe alguma assinatura VIVA com declaração explícita? Se sim, o mundo
+  // desta organização é o de dois planos, e a declaração governa a IA — sem
+  // herança implícita de `system`.
+  const hasExplicitPlan = inputs.subscriptions.some(
+    (s) => ALLOWED_SUB_STATUSES.has(s.status) && (s.includedFeatures ?? []).length > 0,
+  );
+
+  // IA: override próprio primeiro; depois declaração do plano; depois carteira
+  // (ou herança pré-carteira).
+  //
+  // A ORDEM DOS RAMOS É LOAD-BEARING: mover o ramo 3 (negação explícita) para
+  // depois do ramo 5 (herança) reintroduz a herança e dá IA ao Plano 1; mover o
+  // ramo 4 para depois do 5 devolve IA ao trial.
   const aiDirect = resolveFeature("ai", inputs, nowMs);
   let ai: FeatureEntitlement;
   if (aiDirect.source === "admin_block" || aiDirect.source === "override") {
-    ai = aiDirect;
+    ai = aiDirect; // 1. override sempre primeiro
+  } else if (aiDirect.source === "subscription") {
+    ai = aiDirect; // 2. declarada pelo plano (included_features)
+  } else if (hasExplicitPlan) {
+    // 3. Plano novo que NÃO declara ai: negação EXPLÍCITA. Sem este ramo, a
+    //    herança abaixo daria IA ao Plano 1.
+    ai = { allowed: false, source: "none", status: "not_included", expiresAt: null };
+  } else if (system.source === "trial") {
+    // 4. Trial nunca concede IA (decisão comercial: custo variável sem receita).
+    ai = { allowed: false, source: "none", status: "trial_no_ai", expiresAt: null };
   } else if (inputs.aiWalletBalanceCents === undefined) {
-    // Pré-Fase 7 (sem carteira): IA acompanha o sistema — mundo BYOK atual.
+    // 5. Pré-Fase 7 (sem carteira): IA acompanha o sistema — mundo BYOK atual.
     ai = { ...system };
   } else {
     const balance = inputs.aiWalletBalanceCents ?? 0;

@@ -9,15 +9,118 @@ import { requireInternalAuth, genRequestId, jsonLog } from "../_shared/security.
 import { todayBrt, decideDelinquencyStatus } from "../_shared/billing-delinquency-core.ts";
 import {
   resolveBillingRecipient,
+  resolvePlatformAdminRecipients,
   enqueueBillingNotification,
   hasActiveSystemOverride,
 } from "../_shared/billing-notify.ts";
-import { isSystemInvoice } from "../_shared/billing-category.ts";
+import { resolveInvoiceCategory } from "../_shared/billing-category.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
+
+/**
+ * Fatura cuja categoria não pôde ser afirmada: retém e avisa o administrador.
+ *
+ * A retenção é o que impede a escalada — `enforcement_hold=true` sai do
+ * conjunto varrido por este worker e pelo de lembretes na próxima execução, e
+ * a liberação é ação administrativa explícita (`manage-billing`).
+ *
+ * Best-effort e idempotente: `.eq("enforcement_hold", false)` faz o UPDATE não
+ * repetir, e o aviso é deduplicado pelo UNIQUE (org, event_type, invoice_id) de
+ * `billing_notifications`. Falha aqui NÃO derruba o lote — a fatura
+ * simplesmente não escala nesta passada, que é a direção segura.
+ */
+async function holdForReview(
+  reqId: string,
+  inv: { id: string; organization_id: string },
+  reason: string,
+): Promise<void> {
+  // `enforcement_hold_reason` tem VOCABULÁRIO FECHADO
+  // (`billing_invoices_hold_reason_chk`, migration 077): INITIAL_BACKFILL,
+  // PRE_GO_LIVE_INVOICE, CORRELATION_AMBIGUITY, VALUE_MISMATCH, MANUAL_REVIEW.
+  // Texto livre viola o CHECK e a retenção não aplica — a coluna existe para
+  // ser enumerável no painel, não para carregar diagnóstico. `MANUAL_REVIEW` é
+  // o valor certo aqui (exige olho humano); o motivo PRECISO da indeterminação
+  // (`MODERN_WITHOUT_LINK`, `SUBSCRIPTION_TERMINAL_STATUS`, …) vai para a
+  // telemetria abaixo, que é onde ele serve para triagem.
+  //
+  // `enforcement_held_at` é obrigatório junto do `hold`
+  // (`billing_invoices_hold_requires_reason_chk`): sem ele o UPDATE inteiro é
+  // recusado.
+  const { error: holdErr } = await supabase
+    .from("billing_invoices")
+    .update({
+      enforcement_hold: true,
+      enforcement_hold_reason: "MANUAL_REVIEW",
+      enforcement_held_at: new Date().toISOString(),
+    })
+    .eq("id", inv.id)
+    .eq("enforcement_hold", false);
+
+  const holdPersisted = !holdErr;
+
+  if (holdErr) {
+    // Falha de PERSISTÊNCIA da retenção — distinta da classificação, que já
+    // concluiu com sucesso. Exige intervenção administrativa: a fatura segue
+    // sem freio no banco e voltará a ser avaliada na próxima passada.
+    jsonLog("error", {
+      reqId,
+      evt: "billing_overdue_hold_persist_failed",
+      orgId: inv.organization_id,
+      invoiceId: inv.id,
+      reason,
+      err: holdErr.message,
+      needsAdminAction: true,
+    });
+  } else {
+    jsonLog("warn", {
+      reqId,
+      evt: "billing_overdue_hold_persisted",
+      orgId: inv.organization_id,
+      invoiceId: inv.id,
+      reason,
+    });
+  }
+
+  // Destinatário é o ADMIN da plataforma, não o lojista: a organização não tem
+  // o que fazer com "não consegui classificar sua fatura", e o dado por trás
+  // (categoria, vínculo de assinatura) é administrativo.
+  const admins = await resolvePlatformAdminRecipients(supabase);
+  if (admins.length === 0) {
+    jsonLog("error", {
+      reqId,
+      evt: "billing_overdue_review_no_recipient",
+      orgId: inv.organization_id,
+      invoiceId: inv.id,
+      reason,
+      holdPersisted,
+      needsAdminAction: true,
+    });
+    return;
+  }
+
+  await enqueueBillingNotification(supabase, {
+    organizationId: inv.organization_id,
+    eventType: "admin_invoice_category_review",
+    recipient: admins[0],
+    invoiceId: inv.id,
+  });
+
+  // Aviso criado APESAR de falha parcial na retenção: é o par que impede o
+  // fail-safe de mascarar o defeito. O aviso sozinho pode passar por
+  // "tratado"; esta linha diz que não foi.
+  jsonLog(holdPersisted ? "info" : "error", {
+    reqId,
+    evt: "billing_overdue_review_notified",
+    orgId: inv.organization_id,
+    invoiceId: inv.id,
+    reason,
+    holdPersisted,
+    needsAdminAction: !holdPersisted,
+  });
+}
 
 serve(async (req) => {
   if (!requireInternalAuth(req)) {
@@ -32,7 +135,12 @@ serve(async (req) => {
 
     const { data: overdueInvoices } = await supabase
       .from("billing_invoices")
-      .select("id, organization_id, due_date, billing_subscription_id, external_reference, purpose")
+      // `provider` e `created_at` entram por causa do hotfix do Risco 7: são os
+      // fatos objetivos que distinguem fatura LEGADA (compatibilidade preservada)
+      // de MODERNA (sem vínculo confiável → revisão, nunca escalada).
+      .select(
+        "id, organization_id, due_date, billing_subscription_id, external_reference, purpose, provider, created_at",
+      )
       .eq("status", "open")
       // Fatura retida para revisão administrativa NÃO conta como atraso — é o
       // freio que impede a primeira varredura da ingestão de suspender alguém
@@ -49,12 +157,25 @@ serve(async (req) => {
     const oldestByOrg = new Map<string, { id: string; due_date: string }>();
     for (const inv of overdueInvoices ?? []) {
       if (!inv.due_date) continue;
-      if (!(await isSystemInvoice(supabase, inv))) {
+
+      const decision = await resolveInvoiceCategory(supabase, inv);
+
+      // NEEDS_REVIEW nunca escala e nunca é silenciado como "não é do sistema":
+      // a fatura é RETIDA e o administrador é avisado. Este é o freio do hotfix
+      // do Risco 7 — antes, ausência de vínculo virava `true` por compatibilidade
+      // e uma renovação de R$149 da instância bloqueava a organização inteira.
+      if (decision.verdict === "NEEDS_REVIEW") {
+        await holdForReview(reqId, inv, decision.reason);
+        continue;
+      }
+
+      if (decision.verdict === "NON_SYSTEM") {
         jsonLog("info", {
           reqId,
           evt: "billing_overdue_skip_non_system",
           orgId: inv.organization_id,
           invoiceId: inv.id,
+          reason: decision.reason,
         });
         continue;
       }

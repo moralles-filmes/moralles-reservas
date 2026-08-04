@@ -184,7 +184,20 @@ O bloqueio de sistema no fluxo de texto do agente (`webhook-whatsapp/index.ts:15
 
 Introduzido pelo próprio estacionamento de jobs desta fase (Task 19): se o `UPDATE` que volta um job estacionado para `pending` falhar, a linha fica `processing` para sempre — não existe worker nem janela de staleness (diferente de `processed_messages`, que tem 90s) que a resgate. O código já loga o suficiente para um reset manual (`process-notification-outbox/index.ts:180-188`), mas a recuperação é manual, via SQL, quando alguém notar o log.
 
-### 7. Fatura de renovação sem vínculo de assinatura ainda pode bloquear a organização inteira — **bloqueante da ingestão automática**
+### 7. ✅ FECHADO em 2026-08-01 — fatura de renovação sem vínculo de assinatura bloqueando a organização inteira
+
+> **Fechado estruturalmente pelo hotfix pré-6b.** Detalhe completo, evidência e teste de integração em [09-HOTFIX-RISCO-7-CLASSIFICACAO-FATURA.md](09-HOTFIX-RISCO-7-CLASSIFICACAO-FATURA.md). Commits `d9dbaa5` e `1183d3b`.
+>
+> A investigação (feita durante o brainstorming da Fase 6b, ao verificar que `billing_invoice_ingestion` estava LIGADA com o risco ainda aberto) encontrou **um segundo caminho, mais alcançável que o descrito abaixo**: a escada de correlação casa por `provider_subscription_id` **sem filtrar status**, e `process-billing-overdue` nunca verifica status de assinatura — então uma renovação residual de assinatura **cancelada localmente** escalava a inadimplência de uma organização que já havia cancelado. Duas assinaturas de `seu-japa` estavam exatamente nesse estado (`status='canceled'` com `canceled_at` NULL — a assinatura do bug 08). Verificado depois no painel: **nada ativo no Asaas Sandbox**, portanto sem exposição residual.
+>
+> **A correção:** a decisão saiu para o núcleo puro [`billing-category-core.ts`](../../supabase/functions/_shared/billing-category-core.ts) (42 testes) com veredito de **três valores** — `SYSTEM` | `NON_SYSTEM` | `NEEDS_REVIEW`. Ausência de evidência deixou de virar `true`; compatibilidade legada passou a exigir fato objetivo (`provider='stripe'` ou `created_at` anterior à data de corte); assinatura em status terminal nunca escala. `process-billing-overdue` **retém** (`enforcement_hold` + `MANUAL_REVIEW` + `enforcement_held_at`) e avisa o admin; `process-billing-reminders` não manda lembrete de fatura não classificada.
+>
+> **Validado ao vivo** com quatro fixtures em orgs sandbox e controle positivo: a mesma fatura vencida bloqueia quando é do sistema (J4 → `blocked`) e é retida quando não dá para afirmar (J1, J3 → org intacta). Ambiente restaurado; `ren-sushi` intacta o tempo todo.
+>
+> **`billing_invoice_ingestion` foi religada** em 2026-08-01, com a data de corte preservada em `2026-07-31`. **Isto NÃO conclui o rollout da 5b e NÃO autoriza ligar `whatsapp_service_enforcement`** — os Riscos 9, 6 e 4 continuam abertos e sem relação com este hotfix.
+
+<details>
+<summary>Descrição original do risco (histórico)</summary>
 
 Este é o risco que a própria fase existe para matar, e ele continua aberto no caso menos comum. O `CLAUDE.md` já registra a regra ("a garantia depende de a fatura carregar vínculo de plano"); o que faltava era nomear o caminho concreto que ainda produz uma fatura sem vínculo.
 
@@ -195,6 +208,10 @@ Com os três nulos, `isSystemInvoice` cai no caminho 3 e devolve **`true` por co
 O comentário em `:645-650` diz "o reconcile pode resolver depois". **Não resolve:** `process-asaas-invoice-reconcile` itera apenas assinaturas com `provider_subscription_id` não-nulo (`index.ts:219-222`), que é exatamente a condição ausente; e mesmo quando encontra a fatura, `decideReconcileAction` devolve `NO_ACTION` (`_shared/asaas-invoice-reconcile-core.ts:406-421`). Nada faz o backfill do vínculo.
 
 **Hoje é inalcançável em produção** — as duas flags estão OFF, não há cliente pagante da automação, e as duas organizações vivas curto-circuitam em `OVERRIDE_ACTIVE` (vitalício). Torna-se crítico no dia em que existir o primeiro cliente pagante do add-on. **Gate: fechar antes de ligar `billing_invoice_ingestion`** — é essa flag, não a de enforcement, que abre o caminho, porque é ela que autoriza a criação automática de fatura. A correção provável é fazer o degrau 5 nunca produzir fatura tratável como de sistema (ou fazer o caminho 3 do `isSystemInvoice` deixar de devolver `true` por default quando a fatura nasceu do Asaas depois do go-live), não mexer na escada de correlação.
+
+</details>
+
+*(Das duas hipóteses de correção previstas acima, a adotada foi a segunda — o caminho 3 deixou de devolver `true` por default para fatura moderna. A escada de correlação não foi alterada.)*
 
 ### 8. Deploy do `manage-channels` antes do `supabase db push` bloqueia todo provisionamento novo — **gate de ordem de deploy**
 
@@ -252,7 +269,7 @@ Os riscos abaixo não bloqueiam o merge (as duas flags sobem OFF e as duas organ
 - Risco 8 — aplicar as migrations 077, 078, 079, 080, 082 e 083 **antes** de deployar `manage-channels`. Ordem obrigatória, não convenção.
 
 **Antes de ligar `billing_invoice_ingestion`:**
-- Risco 7 — fatura de renovação sem vínculo de assinatura lida como fatura de sistema. É esta flag que autoriza a criação automática de fatura, então é aqui que o caminho abre. **O mais grave da lista.**
+- ~~Risco 7~~ — **FECHADO em 2026-08-01** pelo hotfix pré-6b (commits `d9dbaa5`, `1183d3b`). A flag foi religada com a data de corte preservada. Ver o Risco 7 acima e [09-HOTFIX-RISCO-7-CLASSIFICACAO-FATURA.md](09-HOTFIX-RISCO-7-CLASSIFICACAO-FATURA.md).
 - Risco 5 — `shouldSettleOpenInvoice` auto-liquidando fatura retida por divergência de valor. Sem ingestão automática não há retenção a contornar; com ela, há.
 - **`paid_at = now()` no reconcile** (`process-asaas-invoice-reconcile/index.ts:367,407`) — no primeiro backfill, toda fatura histórica fica registrada como paga no dia do backfill. `AsaasPaymentSummary` não carrega a data do pagamento, então corrigir exige um `getPayment` por linha (custo real). Decidir antes do backfill, não depois: qualquer relatório de receita por mês construído sobre esses dados nasce distorcido.
 - **Estorno após pagamento é invisível** — uma fatura já `paid` localmente que vire estornada no Asaas cai em `NO_ACTION` (`_shared/asaas-invoice-reconcile-core.ts:377-380`, o branch de categoria congelada exige `status === "open"`). A regra do dono ("estorno nunca fabrica dívida") é respeitada, mas não há log nem alerta que distinga isso de "nada a fazer". No mínimo, um log próprio.
@@ -286,7 +303,7 @@ O bloqueio do §0.8 (Asaas Sandbox recusa vencimento retroativo) foi contornado 
 
 Ren Sushi verificado antes, durante e depois: intacto, com proteção tripla, e sequer varrido pelo worker.
 
-**Continua sem validação ao vivo:** os cenários de *provider* (correlação real do Asaas) e a ingestão automática de renovação — esses dependem do Asaas de fato. O Risco 7 segue aberto.
+**Continua sem validação ao vivo:** os cenários de *provider* (correlação real do Asaas) e a ingestão automática de renovação — esses dependem do Asaas de fato. ~~O Risco 7 segue aberto.~~ **O Risco 7 foi fechado estruturalmente em 2026-08-01** (ver o risco acima), com teste de integração e controle positivo contra o banco real — mas isso **não** substitui a validação de provedor, que continua pendente.
 
 ## Correções pós-fase (2026-07-31)
 

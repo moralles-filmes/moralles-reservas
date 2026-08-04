@@ -1,5 +1,6 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
+import { configDefaults } from "vitest/config";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
@@ -22,5 +23,12 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // Worktrees de frentes paralelas vivem em `.claude/worktrees/` DENTRO da
+    // raiz do repo, entao o runner do diretorio principal varre os arquivos de
+    // teste das outras branches. Nao e falso positivo: o teste de outra frente
+    // roda contra os arquivos DESTE checkout e falha por ausencia de mudanca
+    // que so existe la. Espalhar `exclude` cru apagaria os defaults do vitest
+    // (node_modules, dist) — por isso o spread de configDefaults.
+    exclude: [...configDefaults.exclude, "**/.claude/worktrees/**"],
   },
 });

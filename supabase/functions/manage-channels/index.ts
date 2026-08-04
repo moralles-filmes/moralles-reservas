@@ -7,6 +7,15 @@ import {
   clearWhatsAppGateCache,
   type WhatsAppServiceState,
 } from "../_shared/whatsapp-service-gate.ts";
+import {
+  checkConnectionAllowance,
+  type ConnectionAllowance,
+  type ConnectionFundingSource,
+} from "../_shared/whatsapp-connection-allowance-core.ts";
+import {
+  resolveWhatsAppSubscription,
+  type WhatsAppSubscriptionFact,
+} from "../_shared/whatsapp-subscription-resolver-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -55,6 +64,221 @@ const NEW_PROVISIONING_MESSAGE: Record<WhatsAppServiceState, string> = {
  */
 const PROVISIONING_UNVERIFIABLE =
   "Não foi possível verificar o direito de uso da automação de WhatsApp agora. Tente novamente em alguns minutos.";
+
+/**
+ * Mensagem por motivo de recusa do allowance. Cliente-facing: nenhum número de
+ * custo, de preço ou de margem — o lojista não vê o que a plataforma paga.
+ *
+ * `Record` exaustivo de propósito — motivo novo no núcleo cobra a mensagem.
+ */
+const ALLOWANCE_DENIED_MESSAGE: Record<
+  Extract<ConnectionAllowance, { allowed: false }>["reasonCode"],
+  string
+> = {
+  CONNECTION_LIMIT_REACHED:
+    "Seu plano já usa todas as conexões de WhatsApp incluídas. Fale com o suporte para ampliar.",
+  ALLOWANCE_UNKNOWN:
+    "Não foi possível confirmar quantas conexões de WhatsApp o seu plano inclui. Fale com o suporte.",
+  SUBSCRIPTION_AMBIGUOUS:
+    "Há mais de um contrato de automação de WhatsApp em aberto para esta organização. Fale com o suporte antes de adicionar um número.",
+  BACKFILL_WITHOUT_PROVIDER_REF:
+    "Informe as credenciais completas da conexão já criada no provedor para configurar o canal.",
+  OVERRIDE_REQUIRES_ADMIN_DECISION:
+    "A automação desta organização é uma cortesia. Adicionar um número exige uma decisão administrativa.",
+  NO_FUNDING_SOURCE:
+    "A automação de WhatsApp não está contratada para esta organização. Contrate em Cobrança para configurar o canal.",
+};
+
+/**
+ * Linha crua de `billing_subscriptions` com o plano embutido — relação aninhada
+ * volta do PostgREST como objeto OU array, mesmo padrão de
+ * `whatsapp-service-gate.ts` e `entitlements.ts`.
+ */
+interface SubscriptionPlanRef {
+  category: string | null;
+  included_features: string[] | null;
+  included_whatsapp_connections: number | null;
+}
+
+interface SubscriptionAllowanceRow {
+  id: string;
+  status: string;
+  canceled_at: string | null;
+  suspended_at: string | null;
+  billing_plans: SubscriptionPlanRef | SubscriptionPlanRef[] | null;
+}
+
+type AllowanceCheck =
+  | { ok: true; allowance: ConnectionAllowance }
+  | { ok: false; reason: "READ_FAILED" | "AMBIGUOUS" };
+
+/**
+ * A conexão já existe no PROVEDOR quando o canal é configurado: esta EF nunca
+ * cria instância na Z-API, no WAHA ou na Meta — ela recebe as credenciais de
+ * algo que já foi criado lá. Por isso a operação é `BACKFILL_EXISTING`, e a
+ * evidência disso é o identificador do lado do provedor dentro das credenciais.
+ *
+ * Sem esse identificador não há como afirmar que a conexão existe, e "backfill"
+ * vira provisionamento novo por outra porta — que o núcleo recusa.
+ */
+function providerConnectionRefKnown(
+  provider: WhatsAppProvider,
+  creds: ChannelCredentials,
+): boolean {
+  const filled = (v: unknown) => typeof v === "string" && v.trim() !== "";
+  if (provider === "zapi") return filled(creds.instance_id);
+  if (provider === "waha") return filled(creds.base_url);
+  return filled(creds.phone_number_id); // official (Meta)
+}
+
+/**
+ * O canal desta unidade cabe no contrato da ORGANIZAÇÃO?
+ *
+ * Guarda SEPARADA de `resolveProvisioningEligibility` (o gate de sete estados,
+ * logo acima na action `create`) e composta com ela, nunca em substituição: o
+ * gate responde "o serviço está ativo?", esta responde "o contrato inclui mais
+ * uma conexão?". Verificar só uma deixa a outra porta aberta — o inventário é
+ * onde o custo entra, o canal é onde o envio se habilita.
+ *
+ * O limite é por ORGANIZAÇÃO, não por unidade: dois canais em duas unidades da
+ * mesma rede são duas conexões. Por isso a contagem é de `whatsapp_instances`
+ * da organização, e por isso esta guarda roda mesmo quando a unidade já tem
+ * canal (o gate acima só roda no primeiro canal da unidade).
+ *
+ * AMBIGUIDADE COMERCIAL NÃO É AUSÊNCIA DE CONTRATO — sai como desfecho próprio
+ * em vez de virar `fundingSource: "NONE"`, que negaria com o motivo errado.
+ * Mesmo tratamento de `process-whatsapp-instance-cycles`.
+ */
+async function checkChannelConnectionAllowance(
+  unitId: string,
+  provider: WhatsAppProvider,
+  credentials: ChannelCredentials,
+): Promise<AllowanceCheck> {
+  const { data: unit, error: unitErr } = await supabase
+    .from("units")
+    .select("organization_id")
+    .eq("id", unitId)
+    .maybeSingle();
+
+  if (unitErr || !unit?.organization_id) {
+    console.error("manage-channels:allowance unit lookup", unitErr ?? "unit_not_found");
+    return { ok: false, reason: "READ_FAILED" };
+  }
+  const organizationId = unit.organization_id as string;
+
+  const [countRes, subRes, overrideRes] = await Promise.all([
+    // `lifecycle_state <> 'ENDED'`: instância em CANCELLATION_REQUESTED ainda
+    // custa até a confirmação de encerramento.
+    supabase
+      .from("whatsapp_instances")
+      .select("id", { count: "exact", head: true })
+      .eq("organization_id", organizationId)
+      .neq("lifecycle_state", "ENDED"),
+    // TODAS as candidatas, sem filtro de categoria e sem `.maybeSingle()` —
+    // mesma forma da query do gate. Qual delas financia o WhatsApp é decisão do
+    // núcleo puro compartilhado, não desta camada.
+    supabase
+      .from("billing_subscriptions")
+      .select(
+        "id, status, canceled_at, suspended_at, billing_plans!inner(category, included_features, included_whatsapp_connections)",
+      )
+      .eq("organization_id", organizationId)
+      .neq("status", "canceled"),
+    supabase
+      .from("organization_entitlement_overrides")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("feature", "whatsapp")
+      .eq("grant_type", "LIFETIME")
+      .eq("enabled", true)
+      .is("revoked_at", null)
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  // FALHA em vez de degradar: `count ?? 0` viraria "zero conexões" e liberaria
+  // exatamente o canal que o teto existe para barrar.
+  if (countRes.error || subRes.error || overrideRes.error) {
+    console.error(
+      "manage-channels:allowance read",
+      countRes.error ?? subRes.error ?? overrideRes.error,
+    );
+    return { ok: false, reason: "READ_FAILED" };
+  }
+
+  // Correlação de volta por CHAVE, nunca por posição: o PostgREST não garante
+  // ordem sem ORDER BY, e um índice de array casaria o teto de conexões de um
+  // plano com a assinatura de outro sem que nada reclamasse.
+  const planBySubscriptionId = new Map<string, SubscriptionPlanRef>();
+  const facts: WhatsAppSubscriptionFact[] = (
+    (subRes.data ?? []) as unknown as SubscriptionAllowanceRow[]
+  ).map((row) => {
+    const plan = Array.isArray(row.billing_plans) ? row.billing_plans[0] : row.billing_plans;
+    if (plan) planBySubscriptionId.set(row.id, plan);
+    return {
+      id: row.id,
+      status: row.status,
+      category: plan?.category ?? "SYSTEM_SUBSCRIPTION",
+      includedFeatures: plan?.included_features ?? [],
+      canceledAt: row.canceled_at,
+      suspendedAt: row.suspended_at,
+    };
+  });
+
+  const resolution = resolveWhatsAppSubscription({ subscriptions: facts });
+
+  if (resolution.kind === "AMBIGUOUS") {
+    console.warn(
+      "manage-channels:allowance ambiguous subscription",
+      JSON.stringify({
+        organizationId,
+        reason: resolution.reasonCode,
+        candidates: resolution.candidateIds.length,
+      }),
+    );
+    return { ok: false, reason: "AMBIGUOUS" };
+  }
+
+  let fundingSource: ConnectionFundingSource;
+  let includedConnections: number | null = null;
+  let provisioningAmbiguous = false;
+
+  if (resolution.kind === "RESOLVED") {
+    const plan = planBySubscriptionId.get(resolution.subscriptionId);
+    // `!inner` garante o plano; sem ele a correlação não fechou, e seguir com
+    // `null` afirmaria "plano sem teto declarado" sobre uma assinatura que o
+    // resolvedor acabou de escolher.
+    if (!plan) {
+      console.error(
+        "manage-channels:allowance plan not correlated",
+        JSON.stringify({ organizationId, subscriptionId: resolution.subscriptionId }),
+      );
+      return { ok: false, reason: "READ_FAILED" };
+    }
+    fundingSource = resolution.source;
+    includedConnections =
+      typeof plan.included_whatsapp_connections === "number"
+        ? plan.included_whatsapp_connections
+        : null;
+    provisioningAmbiguous = resolution.provisioningAmbiguous;
+  } else {
+    // Sem assinatura nenhuma: só a cortesia vitalícia financia — é o caso do
+    // único cliente ativo, que não pode perder o canal que já usa.
+    fundingSource = overrideRes.data ? "LIFETIME_OVERRIDE" : "NONE";
+  }
+
+  return {
+    ok: true,
+    allowance: checkConnectionAllowance({
+      fundingSource,
+      includedConnections,
+      operation: "BACKFILL_EXISTING",
+      activeInstanceCount: countRes.count ?? 0,
+      provisioningAmbiguous,
+      providerInstanceRefKnown: providerConnectionRefKnown(provider, credentials),
+    }),
+  };
+}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -142,6 +366,35 @@ serve(async (req) => {
 
       if (!provider || !["zapi", "waha", "official"].includes(provider)) {
         return jsonResponse(req, { error: "Provedor inválido." }, 400);
+      }
+
+      // Segunda guarda, SOMADA à primeira e não em substituição a ela: o gate
+      // acima pergunta "o serviço está ativo?", esta pergunta "o contrato inclui
+      // mais uma conexão?". Roda em TODO `create`, inclusive quando a unidade já
+      // tem canal — o teto é por organização, e duas unidades da mesma rede com
+      // um canal cada são duas conexões.
+      const allowanceCheck = await checkChannelConnectionAllowance(unitId, provider, credentials);
+      if (allowanceCheck.ok === false) {
+        // Estado indeterminado ≠ sem direito: soluço de leitura não pode dizer
+        // ao cliente que ele não contratou.
+        if (allowanceCheck.reason === "AMBIGUOUS") {
+          return jsonResponse(req, {
+            error: ALLOWANCE_DENIED_MESSAGE.SUBSCRIPTION_AMBIGUOUS,
+            code: "SUBSCRIPTION_AMBIGUOUS",
+          }, 403);
+        }
+        return jsonResponse(req, { error: PROVISIONING_UNVERIFIABLE }, 403);
+      }
+      if (allowanceCheck.allowance.allowed === false) {
+        const reasonCode = allowanceCheck.allowance.reasonCode;
+        console.warn(
+          "manage-channels:allowance denied",
+          JSON.stringify({ unitId, provider, reasonCode }),
+        );
+        return jsonResponse(req, {
+          error: ALLOWANCE_DENIED_MESSAGE[reasonCode],
+          code: reasonCode,
+        }, 403);
       }
 
       // Generate a per-channel webhook secret

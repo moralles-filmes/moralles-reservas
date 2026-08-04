@@ -76,19 +76,65 @@ supabase functions deploy send-confirmation
 
 ## 4. `INTERNAL_API_KEY` — a que mora em dois lugares
 
-Não estava entre as credenciais expostas, mas se a rotação for geral, esta é a que mais quebra quando feita pela metade.
+Esta é a que mais quebra quando feita pela metade. Procedimento **executado e validado** em 2026-08-02 (ver [INCIDENTE-2026-08-02-INTERNAL-API-KEY.md](INCIDENTE-2026-08-02-INTERNAL-API-KEY.md)).
 
-Ela precisa estar **nos dois lugares**:
-
-```bash
-supabase secrets set INTERNAL_API_KEY=<nova>
-```
-
-e no Supabase Vault, sob o nome `internal_api_key`, que é de onde os wrappers `SECURITY DEFINER` do `pg_cron` leem para montar o header `x-internal-key`.
+Ela precisa estar **nos dois lugares**: no segredo das Edge Functions, e no Supabase Vault sob o nome `internal_api_key` — que é de onde os wrappers `SECURITY DEFINER` do `pg_cron` leem para montar o header `x-internal-key`.
 
 Rotacionar só no primeiro faz **todos os workers automáticos pararem em silêncio** — o `pg_net.http_post` é fire-and-forget, então a chamada falha com 401 e ninguém recebe erro. O sintoma aparece dias depois, como lembrete que não saiu e outbox que não drenou.
 
-**Como confirmar:** depois de trocar nos dois, espere o próximo ciclo do `process-notification-outbox` (roda a cada minuto) e verifique que a fila drenou.
+### A ordem importa
+
+[`requireInternalAuth`](../supabase/functions/_shared/security.ts) compara com **uma única** variável de ambiente — **não** há suporte a chave antiga e nova ao mesmo tempo. Alguma janela de 401 é inevitável; o que se escolhe é o tamanho dela.
+
+Troque o **segredo das Edge Functions primeiro** (propagação mais lenta, e só vale na próxima invocação/cold start) e o **Vault depois** (instantâneo). O inverso deixa a janela aberta pelo tempo de propagação, em vez de ~1 minuto.
+
+### Passo a passo
+
+**1. Gerar** (SQL Editor):
+
+```sql
+select encode(gen_random_bytes(32), 'hex');
+```
+
+**2. Conferir que existe exatamente uma linha no Vault:**
+
+```sql
+select id, name, updated_at from vault.secrets where name = 'internal_api_key';
+```
+
+Zero ou duas linhas → pare e investigue antes de continuar.
+
+**3. Edge Functions:** dashboard → *Project Settings → Edge Functions → Secrets* → editar `INTERNAL_API_KEY`.
+
+Pelo painel, não por terminal — ver a seção "Depois de rotacionar" abaixo.
+
+**4. Vault** — deixe o SQL resolver o id, não copie UUID:
+
+```sql
+select vault.update_secret(
+  (select id from vault.secrets where name = 'internal_api_key'),
+  '<A NOVA>'
+);
+```
+
+**5. Verificar.** O `pg_net` guarda a resposta HTTP de cada chamada:
+
+```sql
+select id, status_code, created, left(coalesce(content, ''), 200) as body
+from net._http_response
+order by created desc
+limit 20;
+```
+
+`200` em linhas posteriores ao passo 4 → os dois lados batem. `401` → as Edge Functions ainda estão com a chave velha.
+
+> ⚠️ **Nunca selecione de `net.http_request_queue`.** Aquela tabela guarda os *headers da requisição* — a chave em texto claro no resultado da query. `net._http_response` só tem a resposta.
+
+### Janela segura
+
+Os crons de minuto (`process-notification-outbox` a cada 1, `expire-pending-payments` a cada 2) dão o veredito em até 2 minutos e se recuperam sozinhos: o 401 acontece **antes** de qualquer processamento, então nada é consumido nem marcado.
+
+O que não se recupera no mesmo dia é um **cron diário** perdido. Evite ±10 min de: `03:00 06:00 07:00 08:00 10:00 11:00 12:00 12:10 13:00 17:00` **UTC**. Em BRT, a faixa larga e livre é **15:00–23:00, exceto 14:00**.
 
 ---
 

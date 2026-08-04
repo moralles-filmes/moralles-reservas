@@ -47,6 +47,27 @@ jobs:
       - name: Auditoria estática de ACL
         run: npx vitest run scripts/function-acl-allowlist.test.ts
 
+      # Guardrail de migration (Fase 6b): nenhuma migration NOVA pode embutir a
+      # URL do projeto Supabase nem segredo. Os 13 arquivos legados que fazem
+      # isso estão numa allowlist FECHADA — enquanto eles existirem, um banco
+      # reconstruído por este histórico agenda cron apontando para PRODUÇÃO.
+      # Consertá-los é a frente BASELINE_REPRODUCIBLE_DATABASE_ENVIRONMENT.
+      - name: Guardrail estático de migrations
+        run: npx vitest run scripts/migration-static-guard.test.ts
+
+      # `no-undef` sobre as Edge Functions. Existe porque NENHUMA outra
+      # ferramenta do projeto alcança esta classe de defeito: `tsc -b` não
+      # inclui supabase/functions e não há Deno no CI. Um identificador fora de
+      # escopo compila, passa no lint do app, passa nos testes — e só explode em
+      # runtime. Foi assim que um ReferenceError chegou ao caminho de
+      # autorização de `manage-whatsapp-instances` (achado IAA-6B-05).
+      #
+      # Escopo restrito a supabase/functions de propósito: rodar sobre o repo
+      # inteiro importaria os 22 warnings de baseline do app e `--max-warnings=0`
+      # falharia por ruído, não por defeito.
+      - name: Lint das Edge Functions (no-undef)
+        run: npx eslint supabase/functions --max-warnings=0
+
   # Guardrail com banco: lê o ACL REAL pela RPC audit_function_acl().
   #
   # NÃO roda em PR e NÃO aponta para produção. Fica em workflow_dispatch porque

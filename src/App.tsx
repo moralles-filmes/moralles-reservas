@@ -83,6 +83,7 @@ const PBilling = lazy(() => import("./pages/platform/Billing"));
 const PBillingPlans = lazy(() => import("./pages/platform/BillingPlans"));
 const PBillingDetail = lazy(() => import("./pages/platform/BillingDetail"));
 const PWhatsappImplementations = lazy(() => import("./pages/platform/WhatsappImplementations"));
+const PWhatsappInstances = lazy(() => import("./pages/platform/WhatsappInstances"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -282,6 +283,7 @@ export default function App() {
                   Mantida perto de "planos" (mesmo padrão estático-antes-de-dinâmico)
                   só por legibilidade de quem lê o arquivo de cima pra baixo. */}
               <Route path="/platform/billing/implementacoes" element={<PlatformGuard><PWhatsappImplementations /></PlatformGuard>} />
+              <Route path="/platform/instancias-whatsapp" element={<PlatformGuard><PWhatsappInstances /></PlatformGuard>} />
               <Route path="/platform/billing/:organizationId" element={<PlatformGuard><PBillingDetail /></PlatformGuard>} />
 
               {/* ── Legacy /admin → redirect ─────────────────────────────── */}
