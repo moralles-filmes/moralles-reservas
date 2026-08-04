@@ -48,8 +48,15 @@ create table if not exists ai_cycle_budgets (
   updated_at timestamptz not null default now(),
 
   constraint ai_cycle_budgets_order_chk check (cycle_start < cycle_end),
+  -- IMPLICACAO, nao bicondicional. `(state = 'EXHAUSTED') = (exhausted_at is
+  -- not null)` obrigaria a APAGAR `exhausted_at` para fechar um ciclo esgotado
+  -- (EXHAUSTED -> CLOSED, transicao prevista: o vocabulario admite CLOSED e o
+  -- indice parcial `state <> 'CLOSED'` conta com ela), destruindo exatamente o
+  -- carimbo que a coluna existe para preservar — e o momento do esgotamento nao
+  -- e derivavel depois. O que se exige e so o lado que importa: EXHAUSTED sem
+  -- carimbo e proibido.
   constraint ai_cycle_budgets_exhausted_chk
-    check ((state = 'EXHAUSTED') = (exhausted_at is not null)),
+    check (state <> 'EXHAUSTED' or exhausted_at is not null),
 
   -- Cobre o duplicado EXATO.
   constraint ai_cycle_budgets_org_start_uniq unique (organization_id, cycle_start)

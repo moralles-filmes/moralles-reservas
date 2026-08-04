@@ -234,7 +234,12 @@ describe("RPCs do orçamento (102)", () => {
   });
 
   it("a fórmula do disponível separa liquidado de comprometido", () => {
-    expect(rpcs).toMatch(/reserved_cents\s*-\s*consumed_cents/);
+    // Alias OPCIONAL nos dois lados: a doutrina do cabeçalho da 102 manda
+    // qualificar toda coluna que possa vir a ser homônima de OUT param, e a
+    // versão anterior deste padrão (`reserved_cents - consumed_cents`, cru) só
+    // continuava verde por causa da ÚNICA ocorrência que ainda não estava
+    // qualificada — ou seja, estava ancorada no defeito.
+    expect(rpcs).toMatch(/(?:\w+\.)?reserved_cents\s*-\s*(?:\w+\.)?consumed_cents/);
     expect(rpcs).toMatch(/limit_cents\s*-\s*[\s\S]{0,80}settled_cents/);
   });
 
@@ -274,10 +279,12 @@ describe("RPCs do orçamento (102)", () => {
   it("custo tardio de reserva já finalizada conta no ciclo, não some", () => {
     // O evento fica no ledger de qualquer jeito; o que não pode é o dinheiro
     // não chegar a settled_cents. Descartá-lo seria franquia adicional silenciosa.
+    // O lado direito aceita alias (`b.settled_cents`) — qualificar é a doutrina
+    // do cabeçalho da 102, e exigir a forma crua reprovaria o código correto.
     const i = rpcs.indexOf("function public.record_ai_call_usage(");
     const body = rpcs.slice(i, rpcs.indexOf("$$;", i));
     expect(body).toMatch(/status\s*<>\s*'HELD'/);
-    expect(body).toMatch(/settled_cents\s*=\s*settled_cents\s*\+/);
+    expect(body).toMatch(/settled_cents\s*=\s*(?:\w+\.)?settled_cents\s*\+/);
   });
 
   it("extend_ai_reservation lê a reserva sob lock e só amplia reserva HELD", () => {
@@ -724,5 +731,205 @@ $$;
     }
     // Controle: a prosa realmente menciona, e o detector não confunde as duas.
     expect(rpcs, "a explicação da proibição sumiu do cabeçalho").toMatch(/#variable_conflict/i);
+  });
+});
+
+// ─── Ordem de lock × locks IMPLÍCITOS de FK (40P01) ────────────────────────
+//
+// O caso irmão acima ("as cinco RPCs travam o orçamento ANTES da reserva") mede
+// a posição dos `for update` EXPLÍCITOS e é estruturalmente cego ao lock que
+// uma FK adquire sozinha: toda checagem de chave estrangeira roda
+// `select … for key share` na linha-pai, então um `insert into ai_usage_events`
+// trava, por si só, a linha do orçamento e a da reserva. Com o INSERT antes do
+// `for update` do orçamento, a mesma transação segurava KEY SHARE e depois pedia
+// UPDATE na MESMA linha — deadlock de upgrade contra qualquer concorrente da
+// organização já na fila.
+//
+// Sobre o corpo com COMENTÁRIOS APAGADOS: a prosa do arquivo cita
+// `insert into ai_usage_events` e `for update` de propósito, e medir posição
+// sobre o texto cru mediria a explicação em vez do código.
+
+describe("record_ai_call_usage: o INSERT não precede o lock do orçamento", () => {
+  const cleanRpcs = blankSqlComments(rpcs);
+  const inicio = cleanRpcs.indexOf("create or replace function public.record_ai_call_usage(");
+  const body = cleanRpcs.slice(inicio, cleanRpcs.indexOf("$$;", inicio));
+
+  it("o recorte é o corpo da função, e não o arquivo", () => {
+    expect(inicio, "a função sumiu do arquivo").toBeGreaterThan(-1);
+    expect(body.length, "recorte vazio").toBeGreaterThan(400);
+    expect(body.length, "o recorte engoliu o arquivo").toBeLessThan(rpcs.length * 0.6);
+    expect(body, "o recorte perdeu a função vizinha de propósito").not.toContain(
+      "function public.finalize_ai_reservation(",
+    );
+  });
+
+  it("o `for update` do orçamento vem ANTES do insert em ai_usage_events", () => {
+    const lock = body.search(/from ai_cycle_budgets[\s\S]*?for update/i);
+    const ins = body.indexOf("insert into ai_usage_events");
+    expect(lock, "o lock do orçamento sumiu do corpo").toBeGreaterThan(-1);
+    expect(ins, "o INSERT do evento sumiu do corpo").toBeGreaterThan(-1);
+    expect(
+      ins,
+      "o INSERT voltou a preceder o lock: as FKs dele travam orçamento e reserva em KEY SHARE, e o `for update` seguinte vira upgrade (40P01)",
+    ).toBeGreaterThan(lock);
+  });
+
+  it("a guarda de `not found` do orçamento fica ENTRE o lock e o INSERT", () => {
+    // Sem ela, `v_budget` fica NULL, o ramo de custo tardio calcula NULL e roda
+    // `update … where id = null`: zero linhas, zero erro, custo tardio sumindo
+    // em silêncio. Depois do INSERT ela não serve — o evento já teria entrado
+    // apontando para um ciclo que a transação não conseguiu travar.
+    const lock = body.search(/from ai_cycle_budgets[\s\S]*?for update/i);
+    const ins = body.indexOf("insert into ai_usage_events");
+    const guarda = body.indexOf("if not found then", lock);
+    expect(guarda, "a guarda de orçamento inexistente não existe").toBeGreaterThan(lock);
+    expect(guarda, "a guarda ficou depois do INSERT — não protege mais nada").toBeLessThan(ins);
+  });
+
+  it("a anomalia é DISTINGUÍVEL pelo chamador, não um turno de aparência normal", () => {
+    // `applied = false` sozinho já significava "reexecução idempotente", que é
+    // rotina. Sem uma coluna própria, "o orçamento sumiu" chegava ao adapter com
+    // a mesma forma de um turno em que tudo deu certo.
+    expect(body, "a coluna de motivo sumiu do retorno").toContain("reason_code");
+    expect(body, "o orçamento inexistente deixou de ter motivo próprio").toContain(
+      "'cycle_not_found'",
+    );
+    const gate = readFileSync(
+      join(__dirname, "..", "..", "supabase", "functions", "_shared", "ai-budget-gate.ts"),
+      "utf8",
+    );
+    expect(gate, "o adapter não loga a anomalia que a RPC passou a informar").toContain(
+      "ai_usage_record_not_applied",
+    );
+  });
+});
+
+// ─── Correções da revisão final de branch ──────────────────────────────────
+
+describe("099 — a extensão não polui `public`", () => {
+  it("btree_gist é criada no schema `extensions`", () => {
+    // Sem a cláusula, ~100 funções de suporte nascem em `public` com EXECUTE
+    // para PUBLIC, e `audit_function_acl()` varre `public` SEM filtrar por
+    // extensão: o job `acl-com-banco` passaria a reprovar com dezenas de
+    // violações que ninguém introduziu — e guardrail ruidoso acaba ignorado.
+    expect(prices).toMatch(/create extension if not exists btree_gist\s+with schema extensions/i);
+  });
+
+  it("controle: o detector reprova a forma sem schema", () => {
+    expect("create extension if not exists btree_gist;").not.toMatch(
+      /create extension if not exists btree_gist\s+with schema extensions/i,
+    );
+  });
+});
+
+describe("099 — o seed é reexecutável mesmo com vigência fechada", () => {
+  /** O `where not exists (…)` do seed, por parênteses balanceados. */
+  const predicado = (() => {
+    const clean = blankSqlComments(prices);
+    const i = clean.indexOf("where not exists", clean.indexOf(") as v(provider, model"));
+    const [a, b] = parenRange(clean, i);
+    return clean.slice(a, b);
+  })();
+
+  it("o recorte é o predicado do seed", () => {
+    expect(predicado, "o recorte perdeu a subconsulta").toContain("from ai_model_prices");
+    expect(predicado.length, "o recorte engoliu o arquivo").toBeLessThan(400);
+  });
+
+  it("casa provider+model e IGNORA a vigência", () => {
+    // Com `and p.effective_to is null` no predicado, FECHAR a vigência de um
+    // modelo (o procedimento normal para trocar preço ou câmbio) fazia o seed
+    // recriar `[2026-01-01, ∞)` num replay e estourar 23P01 no EXCLUDE.
+    expect(predicado).toContain("p.provider");
+    expect(predicado).toContain("p.model");
+    expect(
+      predicado,
+      "o predicado voltou a filtrar por vigência — replay estoura 23P01",
+    ).not.toContain("effective_to");
+  });
+});
+
+describe("100 — fechar um ciclo esgotado não apaga o carimbo", () => {
+  const chk = (() => {
+    const clean = blankSqlComments(budgets);
+    const i = clean.indexOf("ai_cycle_budgets_exhausted_chk");
+    return clean.slice(i, clean.indexOf("\n", clean.indexOf("check", i) + 200));
+  })();
+
+  it("o CHECK é implicação, não bicondicional", () => {
+    // `(state = 'EXHAUSTED') = (exhausted_at is not null)` obriga a APAGAR
+    // `exhausted_at` para migrar EXHAUSTED → CLOSED, destruindo o momento que a
+    // coluna existe para preservar — e ele não é derivável depois.
+    expect(chk).toMatch(/state\s*<>\s*'EXHAUSTED'\s+or\s+exhausted_at is not null/i);
+    expect(chk, "o bicondicional voltou").not.toMatch(
+      /\(\s*state\s*=\s*'EXHAUSTED'\s*\)\s*=\s*\(/i,
+    );
+  });
+
+  it("controle: o detector distingue as duas formas", () => {
+    const bicondicional = "check ((state = 'EXHAUSTED') = (exhausted_at is not null))";
+    expect(bicondicional).not.toMatch(/state\s*<>\s*'EXHAUSTED'\s+or\s+exhausted_at is not null/i);
+    expect(bicondicional).toMatch(/\(\s*state\s*=\s*'EXHAUSTED'\s*\)\s*=\s*\(/i);
+  });
+
+  it("`CLOSED` continua no vocabulário — a transição existe", () => {
+    expect(budgets).toMatch(/state\s+text[\s\S]{0,200}'CLOSED'/);
+  });
+});
+
+describe("101 — a guarda de tenant cobre unit_id, não só cycle_id", () => {
+  const cleanUsage = blankSqlComments(usage);
+  const guardStart = cleanUsage.indexOf("function public.ai_budget_child_tenant_guard()");
+  const guard = cleanUsage.slice(guardStart, cleanUsage.indexOf("$$;", guardStart));
+
+  it("o recorte é o corpo da guarda", () => {
+    expect(guardStart, "a guarda sumiu").toBeGreaterThan(-1);
+    expect(guard, "o recorte perdeu a checagem de ciclo").toContain("ai_cycle_budgets");
+    expect(guard.length, "o recorte engoliu o arquivo").toBeLessThan(usage.length * 0.5);
+  });
+
+  it("uma unidade de outra organização é recusada", () => {
+    // As FKs garantem que a unidade EXISTE, não que é da mesma organização. Este
+    // é o segundo caminho de atribuição de custo, e o cabeçalho da própria
+    // função diz que ela existe para que nenhum produtor atribua custo à
+    // organização errada em silêncio.
+    expect(guard, "a guarda não consulta units").toMatch(/from units/i);
+    expect(guard, "a guarda não compara com a organização da linha").toContain(
+      "new.organization_id",
+    );
+    expect(guard, "não há recusa própria de unidade").toContain(
+      "unit_id pertence a outra organizacao",
+    );
+  });
+
+  it("não acessa `new.unit_id` cru — a função é compartilhada com tabelas sem a coluna", () => {
+    // `ai_cost_reservations` e `ai_budget_milestones` não têm `unit_id`: o acesso
+    // cru estoura 42703 em TEMPO DE EXECUÇÃO em todo INSERT delas, com a
+    // migration aplicada limpa.
+    expect(guard, "`new.unit_id` quebra as tabelas irmãs").not.toMatch(/new\.unit_id/);
+    expect(guard, "o campo deixou de ser lido de forma segura").toMatch(/to_jsonb\s*\(\s*new\s*\)/);
+  });
+
+  it("a trigger de ai_usage_events dispara quando SÓ unit_id muda", () => {
+    // Sem `unit_id` na lista do `update of`, a validação acima é letra morta em
+    // tudo que não for INSERT.
+    const i = usage.indexOf("create trigger ai_usage_events_tenant_guard");
+    expect(i, "a trigger sumiu").toBeGreaterThan(-1);
+    const stmt = usage.slice(i, usage.indexOf(";", i) + 1);
+    expect(stmt, "unit_id ficou fora do `update of`").toMatch(/update of[^;]*\bunit_id\b/i);
+  });
+
+  it("as tabelas SEM a coluna não listam unit_id — `update of` inexistente é erro de DDL", () => {
+    for (const [nome, src] of [
+      ["ai_cost_reservations_tenant_guard", usage],
+      ["ai_budget_milestones_tenant_guard", milestones],
+    ] as const) {
+      const i = src.indexOf(`create trigger ${nome}`);
+      expect(i, `${nome}: trigger não encontrada`).toBeGreaterThan(-1);
+      const stmt = src.slice(i, src.indexOf(";", i) + 1);
+      expect(stmt, `${nome}: lista uma coluna que a tabela não tem`).not.toMatch(
+        /update of[^;]*\bunit_id\b/i,
+      );
+    }
   });
 });

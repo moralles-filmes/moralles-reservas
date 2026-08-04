@@ -675,6 +675,24 @@ export function makeBudgetHooks(
         throw new Error("ai_usage_record_failed");
       }
       const row = Array.isArray(data) ? data[0] : data;
+      // `reason_code` NÃO-NULO = a RPC não apropriou nada: o orçamento não pôde
+      // ser travado, ou a reserva não existe mais. NÃO é erro de RPC (não
+      // lança) e NÃO é turno normal — antes desta coluna as duas chegavam aqui
+      // com a mesma forma de um turno em que tudo deu certo, e um custo real
+      // que não virou `consumed_cents` sumia sem uma linha de log.
+      if (row?.reason_code) {
+        jsonLog("error", {
+          evt: "ai_usage_record_not_applied",
+          org: args.organizationId,
+          code: row.reason_code,
+          call: meta.callId,
+        });
+        // E o estado local NÃO é sobrescrito: nesse caminho a RPC devolve os
+        // contadores zerados (não há reserva de onde lê-los), e adotá-los diria
+        // ao `beforeCall` seguinte que a reserva inteira está livre — afrouxar
+        // o teto por causa de uma anomalia é o avesso do que ela pede.
+        return;
+      }
       if (row) {
         reservedCents = row.reserved_cents ?? reservedCents;
         consumedCents = row.consumed_cents ?? consumedCents;

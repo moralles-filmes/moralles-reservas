@@ -191,9 +191,15 @@ create unique index if not exists ai_usage_events_call_uniq
 -- =====================================================================
 -- Guarda de tenant — mesmo padrao de whatsapp_instance_child_tenant_guard (088)
 -- =====================================================================
--- As FKs garantem que cycle_id e organization_id existem, NAO que sao a mesma
--- organizacao. Esta trigger existe para que um bug futuro num produtor nao
--- consiga atribuir CUSTO a organizacao errada em silencio.
+-- As FKs garantem que cycle_id, unit_id e organization_id existem, NAO que sao
+-- a mesma organizacao. Esta trigger existe para que um bug futuro num produtor
+-- nao consiga atribuir CUSTO a organizacao errada em silencio.
+--
+-- SAO DOIS CAMINHOS DE ATRIBUICAO, nao um. Validar so `cycle_id` deixava o
+-- outro aberto: `ai_usage_events.unit_id` e escrito pelo adapter a partir do
+-- canal de WhatsApp, e uma unidade de OUTRA organizacao entraria sem nenhum
+-- barulho — o custo apareceria no ciclo certo e no tenant errado em toda
+-- consulta por unidade.
 create or replace function public.ai_budget_child_tenant_guard()
 returns trigger
 language plpgsql
@@ -202,16 +208,35 @@ set search_path = public
 as $$
 declare
   v_cycle_org uuid;
+  v_new jsonb;
+  v_unit_id uuid;
+  v_unit_org uuid;
 begin
-  if new.cycle_id is null then
-    return new;
+  if new.cycle_id is not null then
+    select organization_id into v_cycle_org from ai_cycle_budgets where id = new.cycle_id;
+
+    if v_cycle_org is null or v_cycle_org <> new.organization_id then
+      raise exception 'cycle_id pertence a outra organizacao'
+        using errcode = 'check_violation';
+    end if;
   end if;
 
-  select organization_id into v_cycle_org from ai_cycle_budgets where id = new.cycle_id;
+  -- `unit_id` E LIDO POR to_jsonb, NAO POR `new.unit_id`. Esta funcao e
+  -- COMPARTILHADA por tabelas de formatos diferentes: ai_cost_reservations e
+  -- ai_budget_milestones nao tem a coluna, e o acesso cru estouraria "record
+  -- new has no field unit_id" (42703) em TEMPO DE EXECUCAO, em todo INSERT
+  -- delas — a migration aplicaria limpa e o ledger quebraria na primeira
+  -- reserva real. Perguntar pelo campo em vez de assumi-lo tambem cobre de
+  -- graca a tabela irma que ganhar a coluna depois.
+  v_new := to_jsonb(new);
+  if v_new ? 'unit_id' and v_new->>'unit_id' is not null then
+    v_unit_id := (v_new->>'unit_id')::uuid;
+    select organization_id into v_unit_org from units where id = v_unit_id;
 
-  if v_cycle_org is null or v_cycle_org <> new.organization_id then
-    raise exception 'cycle_id pertence a outra organizacao'
-      using errcode = 'check_violation';
+    if v_unit_org is null or v_unit_org <> new.organization_id then
+      raise exception 'unit_id pertence a outra organizacao'
+        using errcode = 'check_violation';
+    end if;
   end if;
 
   return new;
@@ -226,9 +251,13 @@ create trigger ai_cost_reservations_tenant_guard
   before insert or update of organization_id, cycle_id on ai_cost_reservations
   for each row execute function public.ai_budget_child_tenant_guard();
 
+-- `unit_id` NA LISTA DO `update of`: sem ele a guarda nao dispara quando o
+-- UPDATE troca SO a unidade, e a validacao de unidade acima seria letra morta
+-- em tudo que nao fosse INSERT. As tabelas irmas nao listam a coluna porque
+-- nao a tem — `update of unit_id` numa tabela sem a coluna e erro de DDL.
 drop trigger if exists ai_usage_events_tenant_guard on ai_usage_events;
 create trigger ai_usage_events_tenant_guard
-  before insert or update of organization_id, cycle_id on ai_usage_events
+  before insert or update of organization_id, cycle_id, unit_id on ai_usage_events
   for each row execute function public.ai_budget_child_tenant_guard();
 
 -- =====================================================================
@@ -279,10 +308,27 @@ commit;
 --   select tgname from pg_trigger where tgname in
 --     ('ai_cost_reservations_tenant_guard','ai_usage_events_tenant_guard');
 --
+-- 5. A guarda cobre os DOIS caminhos de atribuicao (esperado: erro em cada):
+--   -- ciclo de outra organizacao:
+--   insert into ai_usage_events (organization_id, cycle_id, ...) values ('<orgA>','<cicloDaOrgB>', ...);
+--   -- unidade de outra organizacao:
+--   insert into ai_usage_events (organization_id, cycle_id, unit_id, ...)
+--   values ('<orgA>','<cicloDaOrgA>','<unitDaOrgB>', ...);
+--
+-- 6. A guarda compartilhada NAO quebra a tabela sem unit_id (esperado: sucesso):
+--   insert into ai_cost_reservations (organization_id, cycle_id, turn_id, reserved_cents,
+--                                     idempotency_key, expires_at)
+--   values ('<org>','<cicloDaMesmaOrg>','t1',100,'k1', now() + interval '5 min');
+--
 -- =====================================================================
 -- Rollback
 -- =====================================================================
 -- DEGRAU 2. `drop table` destroi o ledger financeiro. Nao executar isolado.
+--
+-- O `drop function` abaixo FALHA enquanto a trigger de `ai_budget_milestones`
+-- (migration 103) existir — a funcao e compartilhada pelas tres tabelas. O
+-- rollback da 103 tem de rodar ANTES deste; a 103 avisa do lado dela, e esta
+-- nota existe para quem chegar por aqui primeiro.
 --   drop trigger if exists ai_usage_events_tenant_guard on ai_usage_events;
 --   drop trigger if exists ai_cost_reservations_tenant_guard on ai_cost_reservations;
 --   drop function if exists public.ai_budget_child_tenant_guard();

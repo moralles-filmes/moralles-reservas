@@ -13,6 +13,22 @@
 -- TODAS as funcoes; inverter em uma delas reintroduz deadlock (40P01) entre a
 -- varredura de expiradas de reserve_ai_budget e as demais RPCs.
 --
+-- A ORDEM VALE PARA OS LOCKS IMPLICITOS DE FK, NAO SO PARA OS `for update`.
+-- Toda checagem de chave estrangeira roda `select ... for key share` na linha
+-- PAI: um `insert into ai_usage_events` trava, sozinho, a linha de
+-- ai_cycle_budgets (cycle_id) E a de ai_cost_reservations (reservation_id).
+-- Enquanto esse INSERT vinha ANTES do `for update` do orcamento, a mesma
+-- transacao segurava KEY SHARE numa linha e depois pedia UPDATE nela — a classe
+-- exata do deadlock de upgrade: a concorrente ja enfileirada no `for update`
+-- segura o tuple lock que a primeira passa a precisar (40P01). Por isso o
+-- INSERT do passo 3 de record_ai_call_usage roda DEPOIS do lock do passo 2.
+--
+-- E o agravante que torna isto uma regra e nao um detalhe: a ordem em que um
+-- unico INSERT adquire esses locks implicitos e subproduto da ordem das COLUNAS
+-- na `create table` da 101 — reordenar colunas numa migration futura a inverte
+-- em SILENCIO. Nenhum guardrail estatico enxerga isso: o de hoje mede a posicao
+-- TEXTUAL dos `for update` e e estruturalmente cego a lock implicito.
+--
 -- TODA COLUNA DE `RETURNS TABLE` E UMA VARIAVEL PLPGSQL EM ESCOPO NO CORPO.
 -- Referenciar uma coluna de tabela HOMONIMA sem qualificar estoura 42702
 -- (column reference is ambiguous) em TEMPO DE EXECUCAO — a migration aplica
@@ -417,6 +433,11 @@ comment on function public.extend_ai_reservation(uuid, uuid, integer) is
 -- =====================================================================
 -- O consumo de cada chamada e apropriado ANTES da proxima autorizacao — sem
 -- isso, a 2a chamada decide com o saldo de antes da 1a.
+--
+-- A assinatura mudou (coluna `reason_code` nova no retorno). O drop mantem o
+-- arquivo reexecutavel: `create or replace` nao muda tipo de retorno (42P13).
+drop function if exists public.record_ai_call_usage(uuid, uuid, uuid, uuid, uuid, text, text, text, text, text, uuid, integer, integer, integer, integer, integer, numeric, numeric, integer, text, text);
+
 create or replace function public.record_ai_call_usage(
   p_organization_id uuid,
   p_cycle_id uuid,
@@ -444,7 +465,11 @@ returns table (
   applied boolean,
   reserved_cents integer,
   consumed_cents integer,
-  usage_review_required boolean
+  usage_review_required boolean,
+  -- NAO-NULO = a apropriacao NAO aconteceu e o chamador precisa logar anomalia.
+  -- Sem esta coluna, "orcamento sumiu" e "reserva ja liquidada" chegavam ao
+  -- adapter com a mesma forma de um turno normal.
+  reason_code text
 )
 language plpgsql
 security definer
@@ -458,6 +483,45 @@ declare
   v_new_settled integer;
   v_state text;
 begin
+  -- Passo 1: le a reserva SEM lock, so pra descobrir a que ciclo ela pertence.
+  -- ORDEM DE LOCK UNICA (ver cabecalho do arquivo): ai_cycle_budgets sempre
+  -- antes de ai_cost_reservations, nas cinco funcoes — e isso inclui os locks
+  -- IMPLICITOS que as FKs do INSERT adquirem, e nao so os `for update`.
+  select cycle_id into v_cycle_id
+  from ai_cost_reservations
+  where id = p_reservation_id and organization_id = p_organization_id;
+
+  -- Passo 2: trava o ORCAMENTO primeiro — SEMPRE, mesmo quando o evento e uma
+  -- reexecucao idempotente que nao vai escrever nada e mesmo no ramo HELD que
+  -- nao toca settled_cents. Mais trabalho por chamada em troca de uma unica
+  -- ordem de lock nas cinco RPCs (ver cabecalho do arquivo).
+  --
+  -- `coalesce`: sem reserva conhecida, o ciclo travado e o que o proprio evento
+  -- vai referenciar. Os dois sao o MESMO por construcao — o adapter passa
+  -- cycle_id e reservation_id do mesmo `READY`.
+  select * into v_budget
+  from ai_cycle_budgets
+  where id = coalesce(v_cycle_id, p_cycle_id) and organization_id = p_organization_id
+  for update;
+
+  -- SEM ESTA GUARDA o ramo de custo tardio calculava sobre v_budget NULL e
+  -- rodava `update ... where id = null`: zero linhas, zero erro, custo tardio
+  -- sumindo em silencio. `extend` e `finalize` ja checavam; esta nao. E como o
+  -- INSERT agora vem depois, tambem nao ha evento gravado apontando para um
+  -- ciclo que a transacao nao conseguiu travar (seria 23503 do FK, ou um
+  -- 'cycle_id pertence a outra organizacao' da guarda de tenant).
+  if not found then
+    return query select false, 0, 0, false, 'cycle_not_found'::text;
+    return;
+  end if;
+
+  -- Passo 3: SO AGORA o INSERT. Ele adquire KEY SHARE, por FK, nas linhas de
+  -- ai_cycle_budgets e ai_cost_reservations; feito antes do passo 2, o KEY
+  -- SHARE no orcamento precedia o `for update` do MESMO orcamento e produzia
+  -- deadlock de upgrade contra qualquer concorrente da mesma organizacao ja na
+  -- fila (40P01). Depois do passo 2, o lock do orcamento serializa a regiao
+  -- inteira e nenhuma outra transacao da organizacao alcanca a linha da reserva
+  -- sem passar por ele.
   insert into ai_usage_events (
     organization_id, cycle_id, reservation_id, unit_id, conversation_id,
     turn_id, request_id, call_id, provider, model, price_id,
@@ -476,28 +540,15 @@ begin
   on conflict (organization_id, idempotency_key) do nothing
   returning id into v_event_id;
 
-  -- Passo 1: le a reserva SEM lock, so pra descobrir a que ciclo ela pertence.
-  -- ORDEM DE LOCK UNICA (ver cabecalho do arquivo): ai_cycle_budgets sempre
-  -- antes de ai_cost_reservations, nas cinco funcoes.
-  select cycle_id into v_cycle_id
-  from ai_cost_reservations
-  where id = p_reservation_id and organization_id = p_organization_id;
-
-  if not found then
-    return query select (v_event_id is not null), 0, 0, false;
+  -- Reserva inexistente: o evento ENTRA no ledger (o custo real aconteceu e
+  -- descarta-lo seria franquia adicional silenciosa), nada e apropriado, e o
+  -- chamador recebe o motivo em vez de um turno de aparencia normal.
+  if v_cycle_id is null then
+    return query select (v_event_id is not null), 0, 0, false, 'reservation_not_found'::text;
     return;
   end if;
 
-  -- Passo 2: trava o ORCAMENTO primeiro — SEMPRE, mesmo quando o evento e uma
-  -- reexecucao idempotente que nao vai escrever nada e mesmo no ramo HELD que
-  -- nao toca settled_cents. Mais trabalho por chamada em troca de uma unica
-  -- ordem de lock nas cinco RPCs (ver cabecalho do arquivo).
-  select * into v_budget
-  from ai_cycle_budgets
-  where id = v_cycle_id and organization_id = p_organization_id
-  for update;
-
-  -- Passo 3: so agora trava a RESERVA. Dali em diante TODAS as decisoes
+  -- Passo 4: so agora trava a RESERVA. Dali em diante TODAS as decisoes
   -- (status terminal, HELD/nao-HELD) usam este snapshot travado — nunca o do
   -- passo 1.
   select * into v_res
@@ -506,7 +557,7 @@ begin
   for update;
 
   if not found then
-    return query select (v_event_id is not null), 0, 0, false;
+    return query select (v_event_id is not null), 0, 0, false, 'reservation_vanished'::text;
     return;
   end if;
 
@@ -523,16 +574,23 @@ begin
       v_new_settled := v_budget.settled_cents + greatest(p_cost_brl_cents, 0);
       v_state := case when v_new_settled >= v_budget.limit_cents then 'EXHAUSTED' else v_budget.state end;
 
-      update ai_cycle_budgets
-         set settled_cents = settled_cents + greatest(p_cost_brl_cents, 0),
+      -- ALIAS `b` no lado DIREITO do SET, embora `settled_cents` nao seja OUT
+      -- param DESTA funcao: a corretude era acidental — ela dependia de qual
+      -- lista de retorno esta funcao tem hoje. Acrescentar `settled_cents` ao
+      -- `returns table` (mudanca natural, o valor ja e util ao chamador) tornaria
+      -- estas referencias 42702 na PRIMEIRA chamada real, com a migration
+      -- aplicada limpa. Qualificar e a doutrina do cabecalho, e ela vale para
+      -- toda coluna que POSSA vir a ser homonima, nao so para as que ja sao.
+      update ai_cycle_budgets b
+         set settled_cents = b.settled_cents + greatest(p_cost_brl_cents, 0),
              state = v_state,
              -- O momento do esgotamento nao e derivavel depois. Carimbado uma vez.
              exhausted_at = case
-               when v_state = 'EXHAUSTED' and exhausted_at is null then now()
-               else exhausted_at
+               when v_state = 'EXHAUSTED' and b.exhausted_at is null then now()
+               else b.exhausted_at
              end,
              updated_at = now()
-       where id = v_budget.id;
+       where b.id = v_budget.id;
     else
       -- USAGE_REVIEW_REQUIRED marca a reserva de forma STICKY: uma vez true, so
       -- volta a false por reconciliacao administrativa (fora destas RPCs) —
@@ -558,12 +616,12 @@ begin
   end if;
 
   return query select (v_event_id is not null), v_res.reserved_cents,
-                      v_res.consumed_cents, v_res.usage_review_required;
+                      v_res.consumed_cents, v_res.usage_review_required, null::text;
 end;
 $$;
 
 comment on function public.record_ai_call_usage(uuid, uuid, uuid, uuid, uuid, text, text, text, text, text, uuid, integer, integer, integer, integer, integer, numeric, numeric, integer, text, text) is
-  'Grava UM evento de uso e avanca consumed_cents da reserva, de forma atomica e idempotente por (organization_id, idempotency_key). usage_state USAGE_REVIEW_REQUIRED marca a reserva (sticky, so true) e a tira da expiracao automatica. Reserva ja terminal (SETTLED/RELEASED/EXPIRED) nao e reaberta: o custo tardio conta direto em settled_cents do ciclo — descarta-lo seria franquia adicional silenciosa.';
+  'Grava UM evento de uso e avanca consumed_cents da reserva, de forma atomica e idempotente por (organization_id, idempotency_key). O INSERT roda DEPOIS do lock do orcamento: as FKs travam as linhas-pai em KEY SHARE e faze-lo antes produzia deadlock de upgrade (40P01). usage_state USAGE_REVIEW_REQUIRED marca a reserva (sticky, so true) e a tira da expiracao automatica. Reserva ja terminal (SETTLED/RELEASED/EXPIRED) nao e reaberta: o custo tardio conta direto em settled_cents do ciclo — descarta-lo seria franquia adicional silenciosa. reason_code nao-nulo = nada foi apropriado, o chamador loga anomalia.';
 
 -- =====================================================================
 -- 5. Finalizacao da reserva
@@ -642,22 +700,26 @@ begin
   v_new_settled := v_budget.settled_cents + greatest(v_res.consumed_cents, 0);
   v_state := case when v_new_settled >= v_budget.limit_cents then 'EXHAUSTED' else v_budget.state end;
 
-  update ai_cycle_budgets
+  update ai_cycle_budgets b
      set settled_cents = v_new_settled,
          state = v_state,
          -- O momento do esgotamento nao e derivavel depois. Carimbado uma vez.
          exhausted_at = case
-           when v_state = 'EXHAUSTED' and exhausted_at is null then now()
-           else exhausted_at
+           when v_state = 'EXHAUSTED' and b.exhausted_at is null then now()
+           else b.exhausted_at
          end,
          updated_at = now()
-   where id = v_budget.id;
+   where b.id = v_budget.id;
 
-  update ai_cost_reservations
+  -- ALIAS `r` no lado direito pelo mesmo motivo do UPDATE de settled_cents em
+  -- record_ai_call_usage: `reserved_cents`/`consumed_cents` nao sao OUT params
+  -- DESTA funcao hoje, e essa e a unica razao de isto funcionar sem qualificar.
+  -- A lista de retorno e o que muda com mais facilidade no arquivo inteiro.
+  update ai_cost_reservations r
      set status = p_final_status,
-         released_cents = greatest(reserved_cents - consumed_cents, 0),
+         released_cents = greatest(r.reserved_cents - r.consumed_cents, 0),
          finalized_at = now()
-   where id = v_res.id;
+   where r.id = v_res.id;
 
   return query select true, v_new_settled, v_budget.limit_cents, v_state;
 end;
@@ -729,6 +791,19 @@ commit;
 --         settled_cents > limit_cents, state = 'EXHAUSTED', exhausted_at nao nulo.
 --      d) repetir (a): continua DENY_BUDGET. O teto nao foi afrouxado — so a
 --         negacao foi suspensa enquanto a flag estava desligada.
+--
+-- 6b. ORDEM DE LOCK COM FK — o INSERT do evento nao pode preceder o lock.
+--    Em DUAS sessoes psql simultaneas, mesma organizacao e mesmo ciclo:
+--      A: begin; select * from record_ai_call_usage(... call_id 'a' ...);
+--      B: begin; select * from reserve_ai_budget('<org>','<cyc>','tB','kB',100,300);
+--      A: commit;  B: commit;
+--    Esperado: NENHUM 40P01. B espera A e prossegue. Com o INSERT antes do
+--    `for update` do passo 2, esta sequencia produzia deadlock de upgrade.
+--
+-- 6c. ANOMALIA DISTINGUIVEL — orcamento inexistente nao apropria em silencio:
+--      select * from record_ai_call_usage('<org>','<ciclo-inexistente>', ...);
+--    Esperado: applied = false, reason_code = 'cycle_not_found', e NENHUMA
+--    linha nova em ai_usage_events (o INSERT vem depois da guarda).
 --
 -- 7. Usage pendente em observacao: com um ai_usage_events em
 --    USAGE_REVIEW_REQUIRED e resolved_at null no ciclo,

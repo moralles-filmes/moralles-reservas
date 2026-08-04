@@ -16,7 +16,21 @@ begin;
 
 -- Necessario para o EXCLUDE abaixo (operador `=` de btree dentro de indice
 -- gist). Extensao padrao do Supabase, criacao idempotente.
-create extension if not exists btree_gist;
+--
+-- `with schema extensions` NAO e cosmetico: sem a clausula, a extensao instala
+-- ~100 funcoes de suporte em `public` com EXECUTE para PUBLIC, e a auditoria de
+-- ACL do projeto (`audit_function_acl()`, job `acl-com-banco`) varre `public`
+-- SEM filtrar por extensao — o guardrail passaria a reprovar com dezenas de
+-- violacoes que ninguem introduziu, e guardrail ruidoso acaba ignorado.
+-- Seguro nos dois sentidos: `if not exists` ignora a clausula se a extensao ja
+-- estiver instalada em qualquer schema. O schema `extensions` e criado pela
+-- plataforma Supabase (e onde vivem pgcrypto/pg_net); se esta migration falhar
+-- com "schema extensions does not exist", e ele que falta, nao a extensao.
+--
+-- A localizacao NAO afeta o EXCLUDE: o opclass default de um tipo e resolvido
+-- por (tipo, access method) em `pg_opclass`, sem consultar o search_path, e os
+-- operadores `=`/`&&` usados abaixo sao de `pg_catalog`.
+create extension if not exists btree_gist with schema extensions;
 
 create table if not exists ai_model_prices (
   id uuid primary key default gen_random_uuid(),
@@ -119,9 +133,15 @@ from (values
   ('grok',     'grok-3',            3.000000, 15.000000, 0.000000, 0.000000, null::numeric),
   ('deepseek', 'deepseek-chat',     0.270000,  1.100000, 0.070000, 0.000000, null::numeric)
 ) as v(provider, model, inp, outp, cr, cw, reas)
+-- O predicado casa provider+model e IGNORA a vigencia DE PROPOSITO. Filtrar por
+-- `p.effective_to is null` parecia mais preciso e reabria o replay: bastava
+-- alguem FECHAR a vigencia de um modelo (que e o procedimento normal para
+-- atualizar preco ou cambio) para a condicao voltar a ser verdadeira, o INSERT
+-- recriar `[2026-01-01, inf)` e o EXCLUDE estourar 23P01 — a migration inteira
+-- falharia por causa do seed.
 where not exists (
   select 1 from ai_model_prices p
-  where p.provider = v.provider and p.model = v.model and p.effective_to is null
+  where p.provider = v.provider and p.model = v.model
 );
 
 commit;
