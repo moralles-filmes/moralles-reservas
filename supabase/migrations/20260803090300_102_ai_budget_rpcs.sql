@@ -96,13 +96,39 @@ comment on function public.open_ai_cycle_budget(uuid, date, date, integer, integ
 -- =====================================================================
 -- 2. Reserva do turno — leitura e criacao ATOMICAS
 -- =====================================================================
+-- p_observation E O MODO OBSERVACAO (flag ai_wallet_enforced OFF): a franquia
+-- MEDE mas nao NEGA. Com true, a reserva nasce mesmo excedendo o disponivel e
+-- mesmo com usage pendente, e a coluna `overrun` diz que ela excedeu. Sem esse
+-- escape, a organizacao que estourou o teto rodaria TODO turno seguinte sem
+-- reserva — e portanto sem medicao — permanentemente cega, no unico modo que
+-- existe justamente para medi-la. Nao e consertavel no chamador: os ganchos
+-- precisam de um reservation_id que nao teria sido criado.
+--
+-- O TETO CONTINUA INTEIRO. A reserva de overrun percorre o ciclo normal:
+-- record_ai_call_usage avanca consumed_cents, finalize_ai_reservation migra o
+-- consumido para settled_cents (que nao tem limite superior) e carimba
+-- state='EXHAUSTED' assim que settled >= limit. Com a flag LIGADA
+-- (p_observation = false), o disponivel ja estara em zero e a negacao volta a
+-- acontecer sem nenhuma mudanca de codigo.
+--
+-- PRECO DESCONHECIDO NAO TEM ESCAPE EQUIVALENTE, e por impedimento estrutural,
+-- nao por escolha: price_id e NOT NULL em ai_usage_events, entao o evento nao
+-- poderia existir. Saldo estourado e usage pendente nao tem esse impedimento —
+-- da para registrar, e por isso se registra.
+--
+-- A assinatura mudou (parametro e coluna novos). O drop abaixo mantem o arquivo
+-- reexecutavel: `create or replace` nao muda tipo de retorno (42P13), e a versao
+-- de 6 argumentos ficaria ambigua com a de 7 com default.
+drop function if exists public.reserve_ai_budget(uuid, uuid, text, text, integer, integer);
+
 create or replace function public.reserve_ai_budget(
   p_organization_id uuid,
   p_cycle_id uuid,
   p_turn_id text,
   p_idempotency_key text,
   p_estimate_cents integer,
-  p_ttl_seconds integer
+  p_ttl_seconds integer,
+  p_observation boolean default false
 )
 returns table (
   decision text,
@@ -110,7 +136,11 @@ returns table (
   reservation_id uuid,
   reserved_cents integer,
   consumed_cents integer,
-  available_cents integer
+  available_cents integer,
+  -- TRUE = esta reserva nasceu EXCEDENDO o disponivel, o que so acontece em
+  -- observacao. Descreve a decisao DESTA chamada: no caminho idempotente
+  -- (reserva ja existente) nada foi decidido e a coluna volta false.
+  overrun boolean
 )
 language plpgsql
 security definer
@@ -122,6 +152,10 @@ declare
   v_committed integer;
   v_available integer;
   v_review boolean;
+  -- Qual guard foi contornado por observacao. NULL quando nenhum — e com
+  -- p_observation = false e SEMPRE null, porque nenhum ramo novo e alcancado.
+  v_bypass text := null;
+  v_overrun boolean := false;
 begin
   -- Serializa as concorrentes da MESMA organizacao. Sem isto, duas invocacoes
   -- leem o mesmo available e ambas reservam contra ele.
@@ -131,7 +165,7 @@ begin
   for update;
 
   if not found then
-    return query select 'ERROR'::text, 'cycle_not_found'::text, null::uuid, 0, 0, 0;
+    return query select 'ERROR'::text, 'cycle_not_found'::text, null::uuid, 0, 0, 0, false;
     return;
   end if;
 
@@ -144,11 +178,11 @@ begin
     if v_res.status <> 'HELD' then
       -- Reserva finalizada nao volta a ativa: SETTLED/RELEASED/EXPIRED sao terminais.
       return query select 'ERROR'::text, 'reservation_finalized'::text,
-                          v_res.id, v_res.reserved_cents, v_res.consumed_cents, 0;
+                          v_res.id, v_res.reserved_cents, v_res.consumed_cents, 0, false;
       return;
     end if;
     return query select 'ALLOW'::text, null::text,
-                        v_res.id, v_res.reserved_cents, v_res.consumed_cents, 0;
+                        v_res.id, v_res.reserved_cents, v_res.consumed_cents, 0, false;
     return;
   end if;
 
@@ -178,9 +212,15 @@ begin
   ) into v_review;
 
   if v_review then
-    return query select 'DENY_USAGE_UNRESOLVED'::text, 'prior_usage_unresolved'::text,
-                        null::uuid, 0, 0, 0;
-    return;
+    if not p_observation then
+      return query select 'DENY_USAGE_UNRESOLVED'::text, 'prior_usage_unresolved'::text,
+                          null::uuid, 0, 0, 0, false;
+      return;
+    end if;
+    -- Observacao: o estado pendente e PEGAJOSO ate resolucao administrativa.
+    -- Negar aqui com a flag desligada deixaria a organizacao no escuro por tempo
+    -- indeterminado. Registra-se o contorno e segue.
+    v_bypass := 'observation_usage_unresolved';
   end if;
 
   -- Capacidade COMPROMETIDA = restante das HELD, nunca o valor original: a parte
@@ -196,9 +236,16 @@ begin
   v_available := greatest(v_budget.limit_cents - v_budget.settled_cents - v_committed, 0);
 
   if p_estimate_cents > v_available then
-    return query select 'DENY_BUDGET'::text, 'insufficient_available'::text,
-                        null::uuid, 0, 0, v_available;
-    return;
+    if not p_observation then
+      return query select 'DENY_BUDGET'::text, 'insufficient_available'::text,
+                          null::uuid, 0, 0, v_available, false;
+      return;
+    end if;
+    -- Observacao: a reserva nasce EXCEDENDO o disponivel, de proposito, para que
+    -- o turno seja medido. O consumo real vai para settled_cents na liquidacao e
+    -- o teto continua integro para quando a flag ligar (ver cabecalho da secao).
+    v_overrun := true;
+    v_bypass := coalesce(v_bypass || '+', '') || 'observation_overrun';
   end if;
 
   insert into ai_cost_reservations (
@@ -209,13 +256,13 @@ begin
   )
   returning * into v_res;
 
-  return query select 'ALLOW'::text, null::text,
-                      v_res.id, v_res.reserved_cents, v_res.consumed_cents, v_available;
+  return query select 'ALLOW'::text, v_bypass,
+                      v_res.id, v_res.reserved_cents, v_res.consumed_cents, v_available, v_overrun;
 end;
 $$;
 
-comment on function public.reserve_ai_budget(uuid, uuid, text, text, integer, integer) is
-  'Reserva ATOMICA de capacidade para um TURNO. Le e cria sob lock de linha do orcamento. Expira HELD vencidas (nunca as com usage pendente). Idempotente por (organization_id, idempotency_key).';
+comment on function public.reserve_ai_budget(uuid, uuid, text, text, integer, integer, boolean) is
+  'Reserva ATOMICA de capacidade para um TURNO. Le e cria sob lock de linha do orcamento. Expira HELD vencidas (nunca as com usage pendente). Idempotente por (organization_id, idempotency_key). p_observation = modo observacao: cria a reserva mesmo excedendo o disponivel ou com usage pendente, devolve overrun=true, e NUNCA nega comercialmente — o teto continua integro porque o consumo real migra para settled_cents normalmente.';
 
 -- =====================================================================
 -- 3. Extensao da reserva — o turno longo nao e punido se o ciclo tem saldo
@@ -599,7 +646,7 @@ comment on function public.finalize_ai_reservation(uuid, uuid, text) is
 -- =====================================================================
 revoke all on function public.open_ai_cycle_budget(uuid, date, date, integer, integer)
   from public, anon, authenticated;
-revoke all on function public.reserve_ai_budget(uuid, uuid, text, text, integer, integer)
+revoke all on function public.reserve_ai_budget(uuid, uuid, text, text, integer, integer, boolean)
   from public, anon, authenticated;
 revoke all on function public.extend_ai_reservation(uuid, uuid, integer)
   from public, anon, authenticated;
@@ -610,7 +657,7 @@ revoke all on function public.finalize_ai_reservation(uuid, uuid, text)
 
 grant execute on function public.open_ai_cycle_budget(uuid, date, date, integer, integer)
   to service_role;
-grant execute on function public.reserve_ai_budget(uuid, uuid, text, text, integer, integer)
+grant execute on function public.reserve_ai_budget(uuid, uuid, text, text, integer, integer, boolean)
   to service_role;
 grant execute on function public.extend_ai_reservation(uuid, uuid, integer)
   to service_role;
@@ -645,6 +692,23 @@ commit;
 -- 5. Reserva expirada nao autoriza:
 --    reserve com ttl=30, esperar 31s, chamar extend -> reservation_expired.
 --
+-- 6. MODO OBSERVACAO — mede quem estourou, e o teto volta inteiro quando ligar.
+--    Com o ciclo em limit=10000 e settled=10000 (disponivel = 0):
+--      a) select * from reserve_ai_budget('<org>','<cyc>','tX','kX',500,300, false);
+--         Esperado: DENY_BUDGET / insufficient_available, overrun = false.
+--      b) select * from reserve_ai_budget('<org>','<cyc>','tX','kX2',500,300, true);
+--         Esperado: ALLOW, reason_code = 'observation_overrun', overrun = TRUE,
+--         e uma linha HELD nova em ai_cost_reservations.
+--      c) apos record_ai_call_usage + finalize_ai_reservation dessa reserva:
+--         settled_cents > limit_cents, state = 'EXHAUSTED', exhausted_at nao nulo.
+--      d) repetir (a): continua DENY_BUDGET. O teto nao foi afrouxado — so a
+--         negacao foi suspensa enquanto a flag estava desligada.
+--
+-- 7. Usage pendente em observacao: com um ai_usage_events em
+--    USAGE_REVIEW_REQUIRED e resolved_at null no ciclo,
+--      reserve_ai_budget(..., false) -> DENY_USAGE_UNRESOLVED
+--      reserve_ai_budget(..., true)  -> ALLOW, reason_code = 'observation_usage_unresolved'.
+--
 -- =====================================================================
 -- Rollback
 -- =====================================================================
@@ -652,5 +716,5 @@ commit;
 --   drop function if exists public.finalize_ai_reservation(uuid, uuid, text);
 --   drop function if exists public.record_ai_call_usage(uuid, uuid, uuid, uuid, uuid, text, text, text, text, text, uuid, integer, integer, integer, integer, integer, numeric, numeric, integer, text, text);
 --   drop function if exists public.extend_ai_reservation(uuid, uuid, integer);
---   drop function if exists public.reserve_ai_budget(uuid, uuid, text, text, integer, integer);
+--   drop function if exists public.reserve_ai_budget(uuid, uuid, text, text, integer, integer, boolean);
 --   drop function if exists public.open_ai_cycle_budget(uuid, date, date, integer, integer);

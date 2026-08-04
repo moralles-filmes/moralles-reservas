@@ -1056,7 +1056,6 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     );
     expect(ramoErro, "a releitura não alimenta o ledger do laço").toMatch(/ledger = existing/);
     expect(body, "o retry não olha se o aviso já saiu").toMatch(/ledger\.notified_at/);
-    expect(body, "as tentativas não são incrementadas").toMatch(/enqueue_attempts:\s*attempts \+ 1/);
     // Sem destinatário o slot NÃO é consumido — senão a falha transitória vira
     // permanente na primeira passada. Sobre o CÓDIGO: o comentário do ramo cita
     // a coluna de propósito, e citar não é escrever.
@@ -1194,23 +1193,25 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     const body = fnBlock(gate, "recordMilestones");
     const insert = body.indexOf(".insert(");
     const enqueue = body.indexOf("enqueueBillingNotification(");
+    const toca = body.indexOf('"touch_ai_budget_milestone"');
     const updates = [...body.matchAll(/\.update\(/g)].map((m) => m.index!);
     expect(insert, "o marco não é gravado").toBeGreaterThan(-1);
     expect(enqueue, "o aviso não é enfileirado").toBeGreaterThan(-1);
-    expect(updates.length, "os dois UPDATEs dos três tempos não existem").toBe(2);
-    const [toca, carimba] = updates;
+    expect(toca, "o toque atômico sumiu").toBeGreaterThan(-1);
+    expect(updates.length, "o carimbo deixou de ser o único UPDATE do cliente").toBe(1);
+    const [carimba] = updates;
 
     expect(insert, "o ledger deixou de ser a primeira barreira").toBeLessThan(toca);
     expect(toca, "enfileira antes de provar que a linha é gravável").toBeLessThan(enqueue);
     expect(enqueue, "carimba 'avisei' antes de o aviso entrar na fila").toBeLessThan(carimba);
 
-    // E cada UPDATE escreve o que lhe cabe: o toque NÃO registra envio.
-    const stmtToca = statementFrom(body, toca);
-    expect(stmtToca, "o toque registra envio — deixou de ser só barreira").not.toContain(
-      "notified_at",
-    );
-    expect(stmtToca, "o toque não consome o slot").toMatch(/enqueue_attempts:\s*attempts \+ 1/);
+    // O carimbo registra o envio; o toque, não — e o toque nem é UPDATE do
+    // cliente, justamente porque o incremento tem de ser avaliado no servidor.
     expect(statementFrom(body, carimba), "o carimbo não registra o envio").toContain("notified_at");
+    expect(
+      statementFrom(body, carimba),
+      "o incremento voltou para o carimbo — o teto vira inalcançável",
+    ).not.toContain("enqueue_attempts");
 
     // Toque que não casa linha IMPEDE o enfileiramento — é o que faz dele
     // barreira, e não decoração.
@@ -1226,29 +1227,49 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     expect(body, "o dedupe do marco virou erro").toContain("23505");
   });
 
-  it("o teto de tentativas é lido, interrompe, e só é alcançável porque o toque conta", () => {
-    // A constante entrou na rodada anterior sem contraparte de leitura, num
-    // arquivo cuja regra de projeto é que regra não vigiada não vale a linha.
-    expect(gate, "o teto sumiu").toContain("MILESTONE_ENQUEUE_MAX_ATTEMPTS");
+  it("o incremento de tentativas é do SERVIDOR, e o teto viaja com ele", () => {
+    // Read-modify-write no cliente perde tentativa sob concorrência genuína:
+    // dois turnos da mesma organização cruzando o mesmo marco leem 0, ambos
+    // gravam 1, ambos enfileiram — e o UNIQUE parcial não deduplica.
     const body = fnBlock(gate, "recordMilestones");
-    expect(body, "o teto não é comparado com o que veio do ledger").toMatch(
-      /attempts >= MILESTONE_ENQUEUE_MAX_ATTEMPTS/,
+    expect(body, "o toque deixou de ser atômico").toContain('"touch_ai_budget_milestone"');
+    expect(body, "o incremento voltou a ser calculado no cliente").not.toMatch(
+      /enqueue_attempts:\s*\w+\s*\+\s*1/,
     );
+    // O teto é ARGUMENTO da RPC — é lá que ele é aplicado, no mesmo UPDATE.
+    // Ancorado no `.rpc(`, não no literal: o primeiro `(` depois do literal seria
+    // o da linha seguinte, e o recorte mediria o vizinho.
+    const args = parenBlock(body, body.indexOf('.rpc("touch_ai_budget_milestone"'));
+    expect(args, "o toque não é escopado por tenant").toContain("p_organization_id");
+    expect(args, "o teto não viaja para quem o aplica").toContain(
+      "p_max_attempts: MILESTONE_ENQUEUE_MAX_ATTEMPTS",
+    );
+    // E a recusa do servidor é honrada, com o motivo que ele devolveu.
+    expect(body, "o motivo da recusa é descartado").toMatch(/touch\?\.reason/);
+    expect(gate, "o teto sumiu").toContain("MILESTONE_ENQUEUE_MAX_ATTEMPTS");
+    // O curto-circuito local continua existindo, mas só para poupar I/O.
     const bloqueio = body.slice(
-      ...braceBlock(body, body.indexOf("attempts >= MILESTONE_ENQUEUE_MAX_ATTEMPTS")),
+      ...braceBlock(body, body.indexOf(">= MILESTONE_ENQUEUE_MAX_ATTEMPTS")),
     );
     expect(bloqueio, "estourar o teto não interrompe nada").toContain("continue");
     expect(bloqueio, "estourar o teto passa em silêncio").toContain("jsonLog");
-    // E o incremento vive no PRIMEIRO update — se migrar para depois do enqueue,
-    // o contador para justamente no cenário que o teto existe para limitar.
-    const [toca] = [...body.matchAll(/\.update\(/g)].map((m) => m.index!);
-    expect(
-      statementFrom(body, toca),
-      "o incremento saiu do toque — o teto virou inalcançável",
-    ).toMatch(/enqueue_attempts:\s*attempts \+ 1/);
-    expect(toca, "o incremento acontece depois de enfileirar").toBeLessThan(
-      body.indexOf("enqueueBillingNotification("),
+  });
+
+  it("o modo observação é REPASSADO à RPC de reserva, não reimplementado aqui", () => {
+    // Sem o escape na RPC, a organização que estourou o teto roda TODO turno
+    // seguinte sem `reservationId` — logo sem ganchos e sem medição —,
+    // permanentemente cega no único modo que existe para medi-la. E a decisão de
+    // criar a reserva assim mesmo é da RPC, sob o lock; aqui só se repassa a flag.
+    const body = fnBlock(gate, "openTurnBudget");
+    const args = parenBlock(body, body.indexOf('.rpc("reserve_ai_budget"'));
+    expect(args, "a reserva não sabe se o gate está ligado").toMatch(
+      /p_observation:\s*!enforced\b/,
     );
+    // E o overrun é REGISTRADO — é o dado que responde "quanto passaria do teto".
+    expect(body, "o overrun devolvido pela RPC é descartado").toMatch(/row\?\.overrun/);
+    const log = body.slice(...braceBlock(body, body.indexOf("if (row?.overrun)")));
+    expect(log, "o overrun não é logado").toContain("jsonLog");
+    expect(log, "o overrun virou decisão em vez de registro").not.toContain("return");
   });
 
   it("a franquia lida é escopada pela organização e o restante vem do núcleo", () => {

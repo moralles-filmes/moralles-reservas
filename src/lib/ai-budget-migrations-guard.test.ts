@@ -332,3 +332,136 @@ describe("ledger dos marcos (103)", () => {
     expect(milestones).toContain("settled_cents_at_cross");
   });
 });
+
+// ─── Cobertura de preço × catálogo de modelos ──────────────────────────────
+//
+// Depois que preço desconhecido passou a FALHAR FECHADO em qualquer modo,
+// acrescentar um modelo a `KNOWN_MODELS` sem semear preço na 099 CALA o agente
+// da organização que o resolver. A cobertura de hoje é exata, mas isso é
+// coincidência, não invariante — este bloco a torna invariante.
+
+const providersSrc = readFileSync(
+  join(__dirname, "..", "..", "supabase", "functions", "_shared", "ai-providers.ts"),
+  "utf8",
+).replace(/\r\n/g, "\n");
+
+/** Par de chaves balanceado a partir do primeiro `{` em/depois de `from`. */
+function braceBlock(src: string, from: number): string {
+  const open = src.indexOf("{", from);
+  if (open === -1) throw new Error(`nenhum '{' depois de ${from}`);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") {
+      depth--;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  throw new Error(`chaves desbalanceadas a partir de ${open}`);
+}
+
+/** Pares (provider, model) declarados em `KNOWN_MODELS`. */
+function knownModelPairs(src: string): Array<[string, string]> {
+  const i = src.indexOf("const KNOWN_MODELS");
+  if (i === -1) throw new Error("KNOWN_MODELS não encontrado em ai-providers.ts");
+  const block = braceBlock(src, i);
+  const out: Array<[string, string]> = [];
+  for (const entry of block.matchAll(/(\w+):\s*new Set\(\[([^\]]*)\]\)/g)) {
+    for (const model of entry[2].matchAll(/"([^"]+)"/g)) out.push([entry[1], model[1]]);
+  }
+  return out;
+}
+
+/** Só o bloco `values (...)` do seed — nunca o arquivo inteiro. */
+const priceSeed = prices.slice(
+  prices.indexOf("insert into ai_model_prices"),
+  prices.indexOf(") as v(provider, model"),
+);
+
+function seeded(provider: string, model: string): boolean {
+  const esc = model.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`'${provider}'\\s*,\\s*'${esc}'`).test(priceSeed);
+}
+
+describe("todo modelo conhecido tem preço semeado", () => {
+  it("o extrator de KNOWN_MODELS funciona, e o recorte do seed não é o arquivo", () => {
+    // Controles do detector, antes de qualquer afirmação sobre o alvo.
+    const sintetico = `const KNOWN_MODELS: Record<AIProvider, ReadonlySet<string>> = {
+  claude: new Set(["a-1", "a-2"]),
+  gemini: new Set(["b-1"]),
+};`;
+    expect(knownModelPairs(sintetico)).toEqual([
+      ["claude", "a-1"],
+      ["claude", "a-2"],
+      ["gemini", "b-1"],
+    ]);
+    expect(priceSeed.length, "o recorte do seed ficou vazio").toBeGreaterThan(200);
+    expect(priceSeed.length, "o recorte do seed engoliu o arquivo").toBeLessThan(prices.length * 0.5);
+    expect(priceSeed, "o recorte perdeu as linhas de preço").toContain("'gemini-2.5-flash'");
+    // Negativo: um par que NÃO está no seed tem de dar falso, senão a checagem
+    // abaixo passaria com qualquer coisa.
+    expect(seeded("gemini", "gemini-9.9-inexistente")).toBe(false);
+    expect(seeded("claude", "claude-haiku-4-5")).toBe(true);
+  });
+
+  it("cada par (provider, model) de KNOWN_MODELS tem linha no seed da 099", () => {
+    // Preço desconhecido falha FECHADO em qualquer modo (sem preço não há
+    // price_id, que é NOT NULL): um modelo conhecido sem preço não degrada, cala.
+    const pairs = knownModelPairs(providersSrc);
+    expect(pairs.length, "o extrator não achou os modelos reais").toBeGreaterThanOrEqual(8);
+    for (const [provider, model] of pairs) {
+      expect(seeded(provider, model), `modelo conhecido sem preço semeado: ${provider}/${model}`).toBe(
+        true,
+      );
+    }
+  });
+
+  it("o fallback de cada provedor também tem preço — é o modelo da 2ª tentativa", () => {
+    // `FALLBACK_MODELS` não está em KNOWN_MODELS por construção; um fallback sem
+    // preço interrompe a IA exatamente no momento em que o principal falhou.
+    const block = braceBlock(providersSrc, providersSrc.indexOf("const FALLBACK_MODELS"));
+    for (const m of block.matchAll(/(\w+):\s*"([^"]+)"/g)) {
+      expect(seeded(m[1], m[2]), `fallback sem preço semeado: ${m[1]}/${m[2]}`).toBe(true);
+    }
+  });
+});
+
+// ─── Toque atômico do marco (103) ──────────────────────────────────────────
+
+describe("touch_ai_budget_milestone (103)", () => {
+  it("existe, é SECURITY DEFINER e fixa o search_path", () => {
+    const i = milestones.indexOf("function public.touch_ai_budget_milestone(");
+    expect(i, "a função de toque não existe").toBeGreaterThan(-1);
+    const body = milestones.slice(i, milestones.indexOf("$$;", i));
+    expect(body).toContain("security definer");
+    expect(body).toMatch(/set search_path\s*=/);
+  });
+
+  it("revoga PUBLIC/anon/authenticated e concede só a service_role", () => {
+    expect(milestones).toMatch(
+      /revoke all on function public\.touch_ai_budget_milestone\([^)]*\)\s*\n?\s*from public, anon, authenticated/,
+    );
+    expect(milestones).toMatch(
+      /grant execute on function public\.touch_ai_budget_milestone\([^)]*\)\s*\n?\s*to service_role/,
+    );
+    expect(milestones).not.toMatch(
+      /grant execute on function public\.touch_ai_budget_milestone[^;]*to (anon|authenticated)/,
+    );
+  });
+
+  it("o incremento é avaliado NO SERVIDOR, e o teto entra no mesmo UPDATE", () => {
+    // Read-modify-write no cliente perde tentativa sob concorrência genuína.
+    expect(milestones).toMatch(/set enqueue_attempts = enqueue_attempts \+ 1/);
+    const i = milestones.indexOf("update ai_budget_milestones");
+    const stmt = milestones.slice(i, milestones.indexOf("returning", i));
+    expect(stmt, "o toque não é escopado por tenant").toContain("organization_id = p_organization_id");
+    expect(stmt, "o toque reenfileira aviso já enviado").toContain("notified_at is null");
+    expect(stmt, "o teto não é aplicado no mesmo UPDATE").toContain("enqueue_attempts <");
+  });
+
+  it("recusa DIZ por que — tenant errado, já avisado e teto estourado são coisas diferentes", () => {
+    for (const reason of ["not_found", "already_notified", "attempts_exhausted"]) {
+      expect(milestones, `motivo ausente: ${reason}`).toContain(`'${reason}'`);
+    }
+  });
+});

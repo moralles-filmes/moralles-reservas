@@ -92,6 +92,83 @@ create trigger ai_budget_milestones_updated_at
   before update on ai_budget_milestones
   for each row execute function update_updated_at();
 
+-- =====================================================================
+-- TOQUE ATOMICO — consome uma tentativa de enfileiramento
+-- =====================================================================
+-- PRIMEIRO dos tres tempos (toca -> enfileira -> carimba). Este UPDATE NAO
+-- registra envio: ele prova que a linha e gravavel e consome o slot ANTES de
+-- qualquer coisa entrar na fila. Contar depois de enfileirar deixa o contador
+-- parado exatamente quando a escrita falha, e como o UNIQUE de
+-- billing_notifications e PARCIAL (nao deduplica com invoice_id nulo, o caso de
+-- todo aviso de marco), cada passada enfileiraria um aviso identico sem o teto
+-- jamais ser alcancado.
+--
+-- POR QUE UMA FUNCAO, e nao um UPDATE do cliente: `enqueue_attempts + 1` tem de
+-- ser avaliado NO SERVIDOR. Ler o valor, somar no cliente e gravar e
+-- read-modify-write: dois turnos concorrentes da mesma organizacao cruzando o
+-- mesmo marco leem 0, ambos gravam 1, ambos enfileiram — duas linhas pending
+-- sem dedupe e um slot consumido a menos que o real.
+--
+-- As duas condicoes do WHERE sao a autoridade sobre repeticao: `notified_at is
+-- null` (aviso ainda nao saiu) e o teto. O cliente pode checa-las antes para
+-- evitar I/O, mas quem decide e esta linha, sob a atomicidade do UPDATE.
+create or replace function public.touch_ai_budget_milestone(
+  p_organization_id uuid,
+  p_milestone_id uuid,
+  p_max_attempts integer
+)
+returns table (
+  touched boolean,
+  attempts integer,
+  reason text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row ai_budget_milestones%rowtype;
+begin
+  update ai_budget_milestones
+     set enqueue_attempts = enqueue_attempts + 1
+   where id = p_milestone_id
+     and organization_id = p_organization_id
+     and notified_at is null
+     and enqueue_attempts < greatest(p_max_attempts, 1)
+  returning * into v_row;
+
+  if found then
+    return query select true, v_row.enqueue_attempts, null::text;
+    return;
+  end if;
+
+  -- Nao casou nenhuma linha. Descobre POR QUE em vez de devolver um "falhou"
+  -- generico: tenant errado, aviso ja enviado e teto estourado exigem log
+  -- diferente, e um UPDATE que casa zero linhas nao distingue os tres sozinho.
+  select * into v_row
+  from ai_budget_milestones
+  where id = p_milestone_id and organization_id = p_organization_id;
+
+  if not found then
+    return query select false, 0, 'not_found'::text;
+  elsif v_row.notified_at is not null then
+    return query select false, v_row.enqueue_attempts, 'already_notified'::text;
+  else
+    return query select false, v_row.enqueue_attempts, 'attempts_exhausted'::text;
+  end if;
+end;
+$$;
+
+comment on function public.touch_ai_budget_milestone(uuid, uuid, integer) is
+  'Consome ATOMICAMENTE uma tentativa de enfileiramento do marco (primeiro dos tres tempos). Nao registra envio. Recusa quando o aviso ja saiu (notified_at) ou o teto de tentativas foi atingido, e diz qual dos dois.';
+
+-- CREATE FUNCTION concede EXECUTE a PUBLIC por padrao e o schema public e
+-- exposto ao PostgREST com a anon key. Revogar PUBLIC **e** os grants diretos.
+revoke all on function public.touch_ai_budget_milestone(uuid, uuid, integer)
+  from public, anon, authenticated;
+grant execute on function public.touch_ai_budget_milestone(uuid, uuid, integer)
+  to service_role;
+
 commit;
 
 -- =====================================================================
@@ -108,8 +185,24 @@ commit;
 -- 3. Percentual fora do vocabulario e rejeitado (esperado: 23514):
 --   ... milestone_percent = 75
 --
+-- 4. TOQUE ATOMICO — o incremento e do servidor, nao do cliente.
+--    Em DUAS sessoes psql simultaneas, com o marco em enqueue_attempts = 0:
+--      A: begin; select * from touch_ai_budget_milestone('<org>','<marco>',5);
+--      B: begin; select * from touch_ai_budget_milestone('<org>','<marco>',5);
+--      A: commit;  B: commit;
+--    Esperado: attempts = 1 e 2 (nunca 1 e 1). B bloqueia ate o commit de A.
+--
+-- 5. O toque recusa e DIZ por que:
+--      com notified_at preenchido -> touched=false, reason='already_notified'
+--      com enqueue_attempts = 5   -> touched=false, reason='attempts_exhausted'
+--      com organization_id de outro tenant -> touched=false, reason='not_found'
+--
+-- 6. ACL (esperado: nenhuma linha com anon= ou authenticated=):
+--   select proname, proacl from pg_proc where proname = 'touch_ai_budget_milestone';
+--
 -- =====================================================================
 -- Rollback
 -- =====================================================================
 -- Executar ANTES da 101 (a trigger usa ai_budget_child_tenant_guard).
+--   drop function if exists public.touch_ai_budget_milestone(uuid, uuid, integer);
 --   drop table if exists ai_budget_milestones;

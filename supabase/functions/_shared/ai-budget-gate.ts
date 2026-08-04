@@ -79,6 +79,10 @@ const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
  * enfileiramento (ver `recordMilestones`). Incrementar depois de enfileirar
  * deixa o contador parado exatamente no cenário que este teto existe para
  * limitar — e o limite nunca chega.
+ *
+ * Quem APLICA o teto é a RPC `touch_ai_budget_milestone`, no mesmo UPDATE
+ * atômico que incrementa. Este valor é o argumento; a checagem local antes dele
+ * é só para poupar I/O.
  */
 const MILESTONE_ENQUEUE_MAX_ATTEMPTS = 5;
 
@@ -168,6 +172,9 @@ async function loadPrice(
   return selectEffectivePrice(toPriceRows(data), provider, model, new Date().toISOString());
 }
 
+/** Resolve o preço vigente de um par (provider, model). Ver `makePriceCache`. */
+export type PriceResolver = (provider: string, model: string) => Promise<AiModelPrice | null>;
+
 /**
  * Resolvedor de preço com cache POR INVOCAÇÃO — não por processo: a Edge
  * Function pode ficar quente e um preço recém-cadastrado precisa valer na
@@ -186,8 +193,6 @@ async function loadPrice(
  * o aceita e só cria um próprio se o chamador não passar nada. É o que faz a
  * afirmação acima valer para o turno inteiro, e não só de dentro dos ganchos.
  */
-export type PriceResolver = (provider: string, model: string) => Promise<AiModelPrice | null>;
-
 function makePriceCache(supabase: SupabaseClient): PriceResolver {
   const cache = new Map<string, AiModelPrice | null>();
   return async function resolvePrice(provider: string, model: string): Promise<AiModelPrice | null> {
@@ -382,6 +387,12 @@ export async function openTurnBudget(
     p_idempotency_key: `turn:${args.turnId}`,
     p_estimate_cents: estimate,
     p_ttl_seconds: AI_RESERVATION_TTL_SECONDS,
+    // MODO OBSERVAÇÃO REPASSADO, não reimplementado. Com o gate desligado a RPC
+    // cria a reserva mesmo excedendo o disponível ou com usage pendente — sem
+    // isso, a organização que estourou o teto rodaria todo turno seguinte sem
+    // `reservationId`, logo sem ganchos e sem medição, permanentemente cega no
+    // único modo que existe para medi-la. Não é consertável aqui.
+    p_observation: !enforced,
   });
   if (resErr) {
     jsonLog("error", {
@@ -392,6 +403,19 @@ export async function openTurnBudget(
     return { kind: "ERROR", sanitizedCode: "reserve_failed", enforced };
   }
   const row = Array.isArray(reserved) ? reserved[0] : reserved;
+
+  // REGISTRA, não decide: a reserva nasceu excedendo o disponível (só possível
+  // em observação). É o dado que responde "quanto esta organização passaria do
+  // teto se ele estivesse ligado?".
+  if (row?.overrun) {
+    jsonLog("warn", {
+      evt: "ai_budget_overrun_observed",
+      org: args.organizationId,
+      cycle: cycle.id,
+      reserved_cents: row.reserved_cents ?? estimate,
+      bypass: row.reason_code ?? null,
+    });
+  }
 
   const decision = mapReserveDecision(row);
   if (isCommercialHardStop(decision)) {
@@ -821,15 +845,17 @@ export async function recordMilestones(
     }
 
     if (!ledger) continue;
-    // Já avisado: a cadência vive no ledger, não na fila.
+    // Curto-circuitos BARATOS, não autoridade: evitam a chamada ao Auth Admin no
+    // caso esmagadoramente comum (marco já avisado, toda passada a partir de
+    // 70%). Quem DECIDE são as duas condições no WHERE do toque, sob a
+    // atomicidade do UPDATE — reler aqui não protege de concorrência.
     if (ledger.notified_at) continue;
-    const attempts = ledger.enqueue_attempts ?? 0;
-    if (attempts >= MILESTONE_ENQUEUE_MAX_ATTEMPTS) {
+    if ((ledger.enqueue_attempts ?? 0) >= MILESTONE_ENQUEUE_MAX_ATTEMPTS) {
       jsonLog("error", {
         evt: "ai_budget_milestone_enqueue_exhausted",
         org: args.organizationId,
         percent,
-        attempts,
+        attempts: ledger.enqueue_attempts ?? 0,
       });
       continue;
     }
@@ -842,27 +868,26 @@ export async function recordMilestones(
       continue;
     }
 
-    // TEMPO 1 — TOCA. Este UPDATE **não registra envio**: ele consome o slot e
-    // PROVA que a linha é gravável, antes de qualquer coisa entrar na fila.
-    // Enfileirar primeiro e contar depois deixa o contador parado exatamente
-    // quando a escrita falha — e como o UNIQUE de `billing_notifications` é
-    // parcial e não deduplica com `invoice_id` nulo, cada passada enfileiraria um
-    // aviso idêntico, para sempre, sem o teto jamais ser alcançado.
-    const { data: touched, error: touchErr } = await supabase
-      .from("ai_budget_milestones")
-      .update({ enqueue_attempts: attempts + 1 })
-      .eq("id", ledger.id)
-      .eq("organization_id", args.organizationId)
-      .select("id");
-
-    // UPDATE que casa ZERO linhas devolve error:null — sem conferir o TAMANHO do
-    // retorno, "o predicado de tenant negou" fica indistinguível de "gravei".
-    if (touchErr || !touched || touched.length === 0) {
+    // TEMPO 1 — TOCA, via RPC. O incremento é do SERVIDOR
+    // (`enqueue_attempts + 1` avaliado no banco), não um read-modify-write:
+    // dois turnos concorrentes da mesma organização cruzando o mesmo marco leem
+    // 0, ambos gravariam 1, ambos enfileirariam — duas linhas `pending` sem
+    // dedupe (UNIQUE parcial, `invoiceId` nulo) e um slot consumido a menos que o
+    // real. O toque NÃO registra envio: prova que a linha é gravável e consome o
+    // slot ANTES de qualquer coisa entrar na fila.
+    const { data: touchData, error: touchErr } = await supabase.rpc("touch_ai_budget_milestone", {
+      p_organization_id: args.organizationId,
+      p_milestone_id: ledger.id,
+      p_max_attempts: MILESTONE_ENQUEUE_MAX_ATTEMPTS,
+    });
+    const touch = Array.isArray(touchData) ? touchData[0] : touchData;
+    if (touchErr || !touch?.touched) {
       jsonLog("error", {
         evt: "ai_budget_milestone_touch_failed",
         org: args.organizationId,
         percent,
-        err: touchErr?.message ?? "no_rows",
+        reason: touch?.reason ?? null,
+        err: touchErr?.message ?? "not_touched",
       });
       continue;
     }
