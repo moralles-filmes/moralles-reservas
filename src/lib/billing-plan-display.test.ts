@@ -7,6 +7,8 @@ import {
   showsStripeConfig,
   isAiCreditPackage,
   isSelectableSystemPlan,
+  planIncludedFeatures,
+  planBlockedFromSale,
 } from "./billing-plan-display";
 import type { BillingPlan } from "@/types/billing";
 
@@ -142,5 +144,85 @@ describe("isSelectableSystemPlan", () => {
 
   it("plano legado sem categoria segue ofertável (era assinatura do sistema)", () => {
     expect(isSelectableSystemPlan(plan())).toBe(true);
+  });
+});
+
+describe("isSelectableSystemPlan — vitrine respeita active", () => {
+  const sistema = (o: Partial<BillingPlan> = {}) =>
+    ({ category: "SYSTEM_SUBSCRIPTION", is_trial: false, active: true, ...o }) as BillingPlan;
+
+  it("plano de sistema ativo e ofertavel", () => {
+    expect(isSelectableSystemPlan(sistema())).toBe(true);
+  });
+
+  it("teste 10 — plano de sistema INATIVO nao e ofertavel", () => {
+    // O list_plans de platform_admin devolve select("*") SEM filtro de active:
+    // sem esta regra, o admin na tela do cliente veria sistema-reservas e
+    // plano-automacao com botao de contratar.
+    expect(isSelectableSystemPlan(sistema({ active: false }))).toBe(false);
+  });
+
+  it("plano-automacao (inativo pelo NO-GO) nao aparece na vitrine", () => {
+    expect(
+      isSelectableSystemPlan(sistema({ slug: "plano-automacao", active: false })),
+    ).toBe(false);
+  });
+
+  it("trial continua fora, ativo ou nao", () => {
+    expect(isSelectableSystemPlan(sistema({ is_trial: true }))).toBe(false);
+    expect(isSelectableSystemPlan(sistema({ is_trial: true, active: false }))).toBe(false);
+  });
+
+  it("categoria nao sistemica continua fora mesmo ativa", () => {
+    for (const category of [
+      "WHATSAPP_IMPLEMENTATION",
+      "WHATSAPP_SUBSCRIPTION",
+      "AI_CREDIT_PACKAGE",
+      "CUSTOM",
+    ] as const) {
+      expect(isSelectableSystemPlan(sistema({ category }))).toBe(false);
+    }
+  });
+
+  it("campo active ausente e tratado como NAO ofertavel (fail-closed)", () => {
+    // Payload de EF antiga sem `active`. Esconder um plano que talvez esteja
+    // ativo custa uma venda adiada; oferecer um plano que talvez esteja inativo
+    // custa um checkout que responde 400 na cara do cliente.
+    const semActive = { category: "SYSTEM_SUBSCRIPTION", is_trial: false } as unknown as BillingPlan;
+    expect(isSelectableSystemPlan(semActive)).toBe(false);
+  });
+});
+
+describe("campos contratuais — helpers puros", () => {
+  it("planIncludedFeatures normaliza ausente, null e vazio para []", () => {
+    expect(planIncludedFeatures({} as BillingPlan)).toEqual([]);
+    expect(planIncludedFeatures({ included_features: null } as BillingPlan)).toEqual([]);
+    expect(planIncludedFeatures({ included_features: [] } as BillingPlan)).toEqual([]);
+  });
+
+  it("planIncludedFeatures devolve a declaracao quando existe", () => {
+    expect(
+      planIncludedFeatures({ included_features: ["system", "whatsapp", "ai"] } as BillingPlan),
+    ).toEqual(["system", "whatsapp", "ai"]);
+  });
+
+  it("planBlockedFromSale — declara ai => bloqueado ate o Plano D", () => {
+    expect(
+      planBlockedFromSale({ included_features: ["system", "whatsapp", "ai"] } as BillingPlan),
+    ).toBe(true);
+  });
+
+  it("planBlockedFromSale — Plano 1 e planos legados NAO sao bloqueados", () => {
+    expect(planBlockedFromSale({ included_features: ["system"] } as BillingPlan)).toBe(false);
+    expect(planBlockedFromSale({ included_features: [] } as BillingPlan)).toBe(false);
+    expect(planBlockedFromSale({} as BillingPlan)).toBe(false);
+  });
+
+  it("planBlockedFromSale espelha o CHECK da 097 — whatsapp sozinho NAO bloqueia", () => {
+    // O CHECK do banco olha SO 'ai'. Divergir aqui faria a UI avisar sobre um
+    // bloqueio que o banco nao aplica (ou o contrario, pior ainda).
+    expect(
+      planBlockedFromSale({ included_features: ["system", "whatsapp"] } as BillingPlan),
+    ).toBe(false);
   });
 });

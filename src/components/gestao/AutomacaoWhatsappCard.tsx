@@ -17,7 +17,7 @@ import {
   useWhatsappServiceStatus,
   useCreateImplementationCheckout,
 } from "@/hooks/useWhatsappImplementation";
-import { useBillingPlans, useCreateBillingCheckout } from "@/hooks/useBilling";
+import { useBillingPlans } from "@/hooks/useBilling";
 
 interface Props {
   organizationId: string;
@@ -59,7 +59,6 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
   const { data, isLoading, isError, refetch } = useWhatsappServiceStatus(organizationId);
   const { data: plans } = useBillingPlans();
   const implCheckout = useCreateImplementationCheckout();
-  const subCheckout = useCreateBillingCheckout();
 
   if (isLoading) return <Skeleton className="h-64 w-full" />;
 
@@ -86,7 +85,6 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
   if (!data.flags.implementation_flow) return null;
 
   const implPlan = (plans ?? []).find((p) => p.slug === "implementacao-whatsapp");
-  const instancePlan = (plans ?? []).find((p) => p.slug === "instancia-whatsapp");
 
   // N6 (review final fase 5a): par da correção I-4 (Task 16) já aplicada no
   // lado admin (BillingDetail.tsx, SUBSCRIPTION_STATUS_LABEL/CLASS) — o
@@ -108,19 +106,6 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
     }
   }
 
-  async function contratarInstancia() {
-    if (!instancePlan) return;
-    try {
-      await subCheckout.mutateAsync({
-        organization_id: organizationId,
-        plan_id: instancePlan.id,
-        purpose: "subscription",
-      });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Falha ao iniciar o checkout.");
-    }
-  }
-
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-3">
@@ -137,8 +122,11 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
 
       <CardContent className="space-y-4">
         {/* Preços SEMPRE visíveis, antes de qualquer clique — vitrine do
-            catálogo, não necessariamente o que esta conta deve. */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+            catálogo, não necessariamente o que esta conta deve. A instância
+            separada e os pacotes de crédito de IA saíram: no modelo de dois
+            planos a automação e a IA vêm dentro do Plano Automação, e a
+            implantação segue como cobrança única. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
           <div className="rounded-md border p-3">
             <p className="text-muted-foreground">Implantação</p>
             <p className="font-semibold">
@@ -147,23 +135,16 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
             </p>
           </div>
           <div className="rounded-md border p-3">
-            <p className="text-muted-foreground">Instância</p>
+            <p className="text-muted-foreground">Agente de IA</p>
             <p className="font-semibold">
-              {instancePlan ? formatCentsBRL(instancePlan.amount_cents) : "—"}
-              <span className="font-normal text-muted-foreground">/mês</span>
-            </p>
-          </div>
-          <div className="rounded-md border p-3">
-            <p className="text-muted-foreground">Créditos de IA</p>
-            <p className="font-semibold">
-              R$ 50 a R$ 200{" "}
-              <span className="font-normal text-muted-foreground">recarga</span>
+              Incluso{" "}
+              <span className="font-normal text-muted-foreground">no Plano Automação</span>
             </p>
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          A mensalidade da instância e os créditos de IA <strong>não</strong> estão
-          inclusos no valor da implantação.
+          A implantação é uma cobrança única e <strong>não</strong> está inclusa na
+          mensalidade do Plano Automação.
         </p>
 
         <Separator />
@@ -186,27 +167,6 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
           {data.implementation.state === "NOT_REQUESTED" && !data.override.active && (
             <Button onClick={contratarImplantacao} disabled={implCheckout.isPending || !implPlan}>
               {implCheckout.isPending ? "Abrindo checkout..." : "Contratar implementação"}
-            </Button>
-          )}
-          {/* I2 (Rodada 1): `system_allowed` espelha `canContractInstance`
-              (núcleo puro) / `eligibility.ts` (servidor) — sem ele, uma org com
-              implantação concluída mas sistema bloqueado (parou de pagar) via
-              esta MESMA rota (única liberada quando bloqueada) via o botão e
-              levava 409 no clique. `has_system_subscription` não serve pra
-              isso: cortesia de sistema tem `systemAllowed=true` e
-              `has_system_subscription=false` — usá-lo aqui esconderia o botão
-              de quem tem direito. */}
-          {data.implementation.state === "COMPLETED"
-            && !data.subscription.has_instance
-            && !data.override.active
-            && (data.system_allowed ?? false)
-            && data.flags.subscription_checkout && (
-            <Button onClick={contratarInstancia} disabled={subCheckout.isPending || !instancePlan}>
-              {subCheckout.isPending
-                ? "Abrindo checkout..."
-                : instancePlan
-                  ? `Contratar instância — ${formatCentsBRL(instancePlan.amount_cents)}/mês`
-                  : "Contratar instância"}
             </Button>
           )}
           {data.subscription.has_instance && data.subscription.next_due && (
@@ -238,6 +198,14 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
           )}
         </div>
 
+        <PlanoAutomacaoInfo
+          monthlyCents={data.costs.automationPlanMonthlyCents}
+          /* Quem já tem a automação — por cortesia da plataforma ou por
+             contrato legado de instância — não precisa de uma oferta de
+             upgrade para o que já usa. */
+          hide={data.override.active || data.subscription.has_instance}
+        />
+
         <Separator />
         <ResumoCustos
           costs={data.costs}
@@ -249,6 +217,56 @@ export function AutomacaoWhatsappCard({ organizationId }: Props) {
         />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Apresentação do Plano Automação — **informativa, sem CTA de compra**.
+ *
+ * `PLAN_AUTOMACAO_CHECKOUT = NO-GO`: o Plano Automação fica visível, preparado,
+ * **não contratável e não ativável** até o Plano D entregar e provar o teto de
+ * R$ 100 por ciclo contra banco real. Sem o teto não existe pior caso de custo,
+ * e a margem de 43% da §13 da spec perde o piso.
+ *
+ * Por isso este bloco **não tem** botão de contratar, botão desabilitado, link
+ * de checkout nem CTA de WhatsApp/e-mail: qualquer um deles seria lido pelo
+ * lojista como o fluxo oficial de aquisição já liberado — e ele não está.
+ * Quando o Plano D destravar a venda, este bloco é substituído por uma oferta
+ * de verdade; até lá, ele informa e só.
+ *
+ * `monthlyCents` ausente (`undefined`, EF anterior a este deploy) ou `null`
+ * (plano fora do catálogo) esconde o bloco inteiro: apresentar um produto sem
+ * preço é pior que não apresentá-lo.
+ */
+function PlanoAutomacaoInfo({
+  monthlyCents,
+  hide,
+}: {
+  monthlyCents: number | null | undefined;
+  hide: boolean;
+}) {
+  if (hide || monthlyCents == null) return null;
+
+  return (
+    <div className="rounded-md border border-info/30 bg-info/5 p-4 space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="font-medium">Plano Automação</p>
+        <p className="font-semibold">
+          {formatCentsBRL(monthlyCents)}
+          <span className="font-normal text-muted-foreground">/mês</span>
+        </p>
+      </div>
+      <ul className="text-sm text-muted-foreground space-y-1">
+        <li>Tudo do Plano Reservas</li>
+        <li>1 conexão de WhatsApp</li>
+        <li>Agente de IA 24 horas</li>
+        <li>Confirmações e lembretes automáticos</li>
+        <li>Chat operacional de WhatsApp</li>
+      </ul>
+      <p className="text-xs text-muted-foreground">
+        A contratação do Plano Automação é feita pela plataforma.
+      </p>
+    </div>
   );
 }
 
@@ -322,7 +340,7 @@ function ResumoCustos({
           <dd className="font-medium">{money(costs.currentMonthlyCents)}</dd>
         </div>
         <div className="flex justify-between gap-2">
-          <dt className="text-muted-foreground">Total mensal com a automação</dt>
+          <dt className="text-muted-foreground">Total mensal com o Plano Automação</dt>
           <dd className="font-medium">{money(costs.projectedMonthlyCents)}</dd>
         </div>
         <div className="flex justify-between gap-2">
@@ -330,8 +348,8 @@ function ResumoCustos({
           <dd className="font-medium">{oneTimeDisplay}</dd>
         </div>
         <div className="flex justify-between gap-2">
-          <dt className="text-muted-foreground">Créditos de IA</dt>
-          <dd className="font-medium">Variável</dd>
+          <dt className="text-muted-foreground">Agente de IA</dt>
+          <dd className="font-medium">Incluso no Plano Automação</dd>
         </div>
       </dl>
       {systemNotBilled && (
