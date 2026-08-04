@@ -11,7 +11,7 @@ decisão que essa pessoa precisa tomar, ou um erro que ela evitaria.
 
 | Gate | Resultado |
 |---|---|
-| `npx vitest run` | **1043 testes / 40 arquivos — verde** (baseline da task era 1026/39) |
+| `npx vitest run` | **1047 testes / 40 arquivos — verde** (baseline da task era 1026/39) |
 | `npm run typecheck` (`tsc -b --noEmit`) | **zero erros** |
 | `npx eslint supabase/functions --max-warnings=0` | **limpo** (exit 0) |
 | `npx eslint <arquivos tocados> --max-warnings=0` | **limpo** (exit 0) |
@@ -47,6 +47,15 @@ não procede**: não existe essa tarefa aqui e ela não entrou. Derrubar o port�
 **ato separado**, depois que as três frentes fecharem. **Se qualquer documento
 afirmar que a franquia de IA fica vendável ao fim do Plano D, corrija: ela fica
 PRONTA, NÃO VENDÁVEL.**
+
+> ⚠️ **CONDIÇÃO — leia antes de mergear o Plano D sozinho.** O CHECK é criado
+> pelas migrations **096–098, que NÃO existem nesta branch**: ela vai da 095
+> direto para a 099. Enquanto as 096–098 não estiverem aplicadas, **a
+> invendabilidade no nível do banco NÃO EXISTE** — nem a migration, nem a
+> constraint. Se o Plano D for para produção antes do Plano B, a **única**
+> barreira comercial passa a ser o `PLAN_AUTOMACAO_CHECKOUT = NO-GO` da seção 14,
+> que é processo, não banco: nada impede alguém de marcar o plano `active` no
+> painel. Quem mergear primeiro herda a obrigação de dizer isso em voz alta.
 
 **2. O CHECK da 094 nunca é dropado.** Quando o portão da 097 for aberto, é só
 ele. O `array_position(included_features, null) is null` de
@@ -89,10 +98,12 @@ ser declarados provados por teste unitário, hoje nem depois:
 
 Junto, e pelo mesmo motivo:
 
-- **`btree_gist` nunca foi criada neste projeto.** As duas migrations que
-  dependem dela (099 e 100) falham por inteiro se a extensão não estiver
-  disponível — e **falhar é o comportamento certo**: sem o `EXCLUDE`, a não
-  sobreposição deixa de ser garantia de banco e vira promessa.
+- **`btree_gist` é PEDIDA pela 099 e nunca foi criada de fato neste projeto.**
+  A migration traz `create extension if not exists btree_gist` (099:19) — o que
+  não se sabe é se a extensão está **disponível na instância**, porque nenhuma
+  migration deste projeto jamais a usou. As duas que dependem dela (099 e 100)
+  falham por inteiro se não estiver — e **falhar é o comportamento certo**: sem o
+  `EXCLUDE`, a não sobreposição deixa de ser garantia de banco e vira promessa.
 - **RLS, grants e a guarda de tenant nunca foram exercitados** contra INSERT
   real. O que existe é a leitura do texto da migration.
 - **O CHECK `ai_usage_events_zero_chk` nunca foi exercitado.**
@@ -289,6 +300,11 @@ vendido como proteção.**
   ausência, porque parece informação. **Fecho: uma entrada em `OUTCOME_LABEL` e
   uma em `OUTCOME_TONE` para cada um dos três** (`ai_budget_exhausted`,
   `ai_budget_denied`, `ai_budget_error`). **Não é painel novo.**
+  **Ressalva sobre a amostra:** a agregação roda sobre `.limit(50)` das últimas
+  execuções de 24h, não sobre o total — num restaurante movimentado um
+  `ai_budget_exhausted` esporádico pode simplesmente **não cair na amostra**.
+  Traduzir os três rótulos conserta a leitura de quem os vê; **não** os torna
+  confiáveis como contagem.
 
 ---
 
@@ -484,10 +500,51 @@ rodada de correção — o que é a evidência mais forte de que a lista da seç
   acima do original. Fechado recortando pela fronteira mais **próxima** (`## ` ou
   `### `) e ancorando o caso no cabeçalho da própria subseção.
 
-**Não restou asserção declarada como não-protetora neste arquivo.** O que
-continua não sendo verificável por teste é a adição de `"franchise"` em
-`FeatureEntitlementView.source` (o valor chega do `manage-billing` como JSON em
-runtime, e o TypeScript não alcança isso) — é correção de tipo, não proteção.
+E uma sexta, que sobreviveu a duas rodadas porque **sabotagem por deleção pura
+dava vermelho e enganava**:
+
+- **`toMatch(/migration[\s\S]{0,200}antes[\s\S]{0,200}deploy/i)`** era a última
+  janela de tamanho fixo sobre o documento inteiro. Apagar a subseção "Ordem de
+  aplicação" **e plantar uma frase banal noutra seção** — *"qualquer migration
+  futura deve ser revisada antes de ir para deploy"* — ficava **VERDE**. Famílias
+  nº 1 e nº 5 juntas. Fechado pelo recorte da subseção, exigindo dela `ANTES`,
+  `deploy`, a faixa `099`–`103` e as duas ordens de deploy.
+  **Lição de método, e é a mais transferível desta frente:** *sabotar por deleção
+  não basta — tem de ser com **decoy**.* Uma asserção por janela larga reprova a
+  deleção e passa a mentira, que é o pior dos dois desfechos.
+
+### Contrato de edição deste documento
+
+O guardrail lê por fronteira sintática, então há três coisas que um editor
+precisa saber — e nenhuma delas é adivinhável:
+
+1. **Prosa sobre o teste fica FORA de item de lista.** Dentro, ela passa a
+   satisfazer sozinha a asserção sobre aquele item. Apagar prosa-sobre-teste tem
+   de ser inofensivo, e é: há controle explícito disso.
+2. **Subdividir uma seção com `###` é seguro.** O recorte de nível 2 inclui as
+   subseções e só termina no próximo `## `. (Não era assim: a versão anterior
+   truncava, e reprovava com mensagem que não apontava a causa.)
+3. **Renomear um cabeçalho ancorado quebra o caso — de propósito, e com mensagem
+   nominal.** As âncoras são: `Nada disto executou`, `Gate comercial`,
+   `fatos de coordenação`, `Acoplamento por string`, `Ordem de aplicação`. Trocar
+   o título é edição legítima; ajustar a âncora junto é parte dela. **Acrescentar
+   texto — inclusive cross-reference a estas seções — é sempre seguro**, porque
+   nenhuma âncora é "primeira ocorrência de uma string".
+
+### O que continua sem proteção, declarado
+
+- **Asserção sobre texto não distingue afirmação de negação.** Reescrever "seguem
+  PENDENTES" como "NÃO seguem mais PENDENTES" fica **verde**: a palavra sobrevive
+  na negação. Nenhum recorte sintático resolve — só leitura humana. Está escrito
+  no cabeçalho do arquivo de teste como limite conhecido, não como proteção.
+- **A adição de `"franchise"` em `FeatureEntitlementView.source`** não é
+  verificável por teste: o valor chega do `manage-billing` como JSON em runtime, e
+  o TypeScript não alcança isso. É correção de tipo, não proteção.
+
+Fora esses dois, **não restou asserção que passe por proteção sem ser** — e a
+frase anterior deste parágrafo ("não restou asserção *declarada* como
+não-protetora") era verdade literal e engano prático: sobrava uma **não
+declarada**, que é pior que uma declarada.
 
 ---
 

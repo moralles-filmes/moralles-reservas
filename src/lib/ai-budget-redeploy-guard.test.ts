@@ -6,31 +6,45 @@
  * que impede metade do sistema de rodar com `_shared/` velho em memória.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * REGRA DESTE ARQUIVO: nada aqui mede PRESENÇA de uma string no documento
- * inteiro, e nada aqui recorta por janela de N caracteres.
+ * REGRA DESTE ARQUIVO
  *
- * As duas primeiras versões destes casos faziam exatamente isso, e as duas
- * eram vácuas — cada uma reproduzindo uma das seis famílias de falso-verde que o
- * PRÓPRIO documento que elas verificam cataloga (seção 7 de
- * `PLANO-D-PENDENCIAS.md`):
+ * Nenhuma asserção aqui pode ser satisfeita por PROSA. Toda âncora é um marcador
+ * sintático do Markdown — abertura de item (`- **\`nome.ts\`**`) ou cabeçalho
+ * (`## ` / `### `) —, e todo conteúdo verificado é lido do BLOCO que esse
+ * marcador delimita. Nenhum recorte é por janela de N caracteres, e nenhum caso
+ * pergunta "esta string existe em algum lugar do documento".
  *
- *   - `toMatch(/42/)` e `/44/` pretendiam prender "os testes 42 e 44 seguem
- *     PENDENTES". Estavam satisfeitas pela TABELA DE GATES do próprio documento,
- *     que traz `244 problemas (2 erros, 242 avisos)`: `242` casa `/42/` e `244`
- *     casa `/44/`. Apagar a seção 1 INTEIRA deixava a suíte verde. (Família 5:
- *     presença × identidade.)
- *   - `toContain("ai-price-core.ts")` pretendia prender "tem linha própria no
- *     checklist". Estava satisfeita por qualquer menção em qualquer parágrafo —
- *     é o corolário que a seção 7 escreve (`toContain` sobre o arquivo inteiro é
- *     satisfeito pela linha de import), aplicado a prosa em vez de código.
- *   - `doc.slice(i, i + 400)` pretendia prender as consumidoras de
- *     `entitlements-core.ts`. A janela sangrava para o bullet SEGUINTE, que
- *     também cita `webhook-whatsapp`. (Família 1: janela de tamanho fixo medindo
- *     a entrada vizinha.)
+ * A razão é histórica e vale mais que a regra: as três primeiras versões destes
+ * casos reproduziram, cada uma, uma das seis famílias de falso-verde que o
+ * PRÓPRIO documento verificado cataloga (seção 7 de `PLANO-D-PENDENCIAS.md`).
  *
- * Todo recorte abaixo é por fronteira sintática real do Markdown: bloco de
- * seção (`## ` até o próximo `## `) ou item de lista (`- ` até o próximo `- ` ou
- * linha em branco).
+ *   1. `toMatch(/42/)` e `/44/` pretendiam prender "os testes 42 e 44 seguem
+ *      PENDENTES". Estavam satisfeitas pela TABELA DE GATES do próprio
+ *      documento, que traz `244 problemas (2 erros, 242 avisos)`. Apagar a seção
+ *      1 INTEIRA ficava verde. (Família 5.)
+ *   2. `toContain("ai-price-core.ts")` pretendia prender "tem linha própria no
+ *      checklist". Cinco dos seis nomes também aparecem em prosa, então apagar o
+ *      bullet ficava verde. (Corolário da seção 7, aplicado a prosa em vez de
+ *      código.)
+ *   3. `doc.slice(i, i + 400)` sangrava para o item vizinho. (Família 1.)
+ *   4. A EXPLICAÇÃO do recorte foi escrita DENTRO do item que ela explica, e a
+ *      palavra `webhook-whatsapp` dessa meta-prosa satisfazia sozinha a asserção
+ *      sobre o item. (Família 5, na correção da 3.)
+ *   5. O recorte de seção só conhecia `## `, e devolvia a seção 11 inteira para
+ *      âncora em subseção: apagar a subseção "Acoplamento por string" ficava
+ *      verde. (Família 1, um nível acima da 3.)
+ *   6. `/migration[\s\S]{0,200}antes[\s\S]{0,200}deploy/i` era a última janela de
+ *      tamanho fixo sobre o documento inteiro. Apagar a subseção "Ordem de
+ *      aplicação" E plantar uma frase banal em outra seção ("qualquer migration
+ *      futura deve ser revisada antes de ir para deploy") ficava VERDE.
+ *      (Famílias 1 e 5 juntas.) É por isso que a sabotagem tem de ser com DECOY,
+ *      não só por deleção: deleção pura dava vermelho e enganava.
+ *
+ * LIMITE CONHECIDO, declarado porque não fecha: asserção sobre TEXTO não
+ * distingue afirmação de negação. Reescrever "seguem PENDENTES" como "NÃO seguem
+ * mais PENDENTES" fica verde, porque a palavra sobrevive na negação. Nenhum
+ * recorte sintático resolve isso — só leitura humana. Não é vendido aqui como
+ * proteção.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -39,7 +53,7 @@ import { join } from "node:path";
 const FUNCTIONS = join(__dirname, "..", "..", "supabase", "functions");
 const PENDENCIAS = join(__dirname, "..", "..", "docs", "billing-asaas", "PLANO-D-PENDENCIAS.md");
 
-/** CRLF normalizado: os recortes procuram `\n- ` e `\n## `. */
+/** CRLF normalizado: os recortes procuram `\n- ` e cabeçalhos em início de linha. */
 const doc = readFileSync(PENDENCIAS, "utf8").replace(/\r\n/g, "\n");
 
 function importersOf(shared: string): string[] {
@@ -59,65 +73,128 @@ function importersOf(shared: string): string[] {
 
 // ─── Recortes por fronteira sintática do Markdown ───────────────────────────
 
-/**
- * O bloco de cabeçalho que CONTÉM a âncora — do `## ` ou `### ` imediatamente
- * anterior até o `## `/`### ` imediatamente seguinte. Apagar a seção inteira faz
- * o `indexOf` da âncora falhar, que é o desfecho que a versão por presença não
- * produzia.
- *
- * Os DOIS níveis contam. Recortar só por `## ` devolvia a seção 11 inteira para
- * uma âncora que vive numa subseção dela: apagar a subseção "Acoplamento por
- * string" ficava verde, porque `process-billing-notifications` e
- * `admin_ai_budget` também aparecem nas subseções irmãs. Fronteira sintática é a
- * mais PRÓXIMA, não a mais conveniente.
- */
-function secaoContendo(ancora: string | RegExp): string {
-  const i = typeof ancora === "string" ? doc.indexOf(ancora) : doc.search(ancora);
-  expect(i, `âncora ausente no documento: ${ancora}`).toBeGreaterThan(-1);
-  const inicio = Math.max(doc.lastIndexOf("\n## ", i), doc.lastIndexOf("\n### ", i));
-  expect(inicio, `âncora fora de qualquer seção: ${ancora}`).toBeGreaterThan(-1);
-  const seguintes = [doc.indexOf("\n## ", i), doc.indexOf("\n### ", i)].filter((n) => n > -1);
-  const fim = seguintes.length ? Math.min(...seguintes) : doc.length;
-  return doc.slice(inicio, fim);
+type Nivel = 2 | 3;
+
+interface Cabecalho {
+  nivel: Nivel;
+  titulo: string;
+  inicio: number;
+}
+
+function cabecalhos(src: string): Cabecalho[] {
+  return [...src.matchAll(/^(#{2,3}) (.+)$/gm)].map((m) => ({
+    nivel: m[1].length as Nivel,
+    titulo: m[2].trim(),
+    inicio: m.index!,
+  }));
 }
 
 /**
- * O item de lista que CONTÉM a âncora: do `- ` que o abre até o próximo `- ` de
+ * O bloco governado por UM cabeçalho, identificado pelo TÍTULO — não pela
+ * primeira ocorrência de uma string qualquer no documento.
+ *
+ * O nível importa: um bloco de nível 2 **inclui** suas subseções `###` e só
+ * termina no próximo `## `. Sem isso, subdividir uma seção longa com um `###`
+ * — a edição mais provável que este documento vai sofrer — truncava o recorte e
+ * reprovava por motivo que o leitor não adivinharia.
+ *
+ * A âncora é o título porque ele é estável sob acréscimo de texto. Ancorar na
+ * primeira menção de "Teste 42" fazia um cross-reference legítimo no preâmbulo
+ * ("ver seção 1") reprovar o caso, com mensagem apontando a causa errada.
+ */
+function secaoDe(src: string, nivel: Nivel, chave: string): string {
+  const todos = cabecalhos(src);
+  const casam = todos.filter((h) => h.nivel === nivel && h.titulo.includes(chave));
+  expect(
+    casam.length,
+    `esperava exatamente 1 cabeçalho de nível ${nivel} contendo "${chave}", achei ${casam.length}`,
+  ).toBe(1);
+  const atual = casam[0];
+  // Fronteira: o próximo cabeçalho de nível MENOR OU IGUAL. Nível 3 termina em
+  // `##` ou `###`; nível 2 só em `##`, e portanto engloba seus `###`.
+  const seguinte = todos.find((h) => h.inicio > atual.inicio && h.nivel <= nivel);
+  return src.slice(atual.inicio, seguinte ? seguinte.inicio : src.length);
+}
+
+const secao = (nivel: Nivel, chave: string) => secaoDe(doc, nivel, chave);
+
+/**
+ * O item de lista aberto pela âncora: do `- ` que o abre até o próximo `- ` de
  * mesmo nível ou a próxima linha em branco — o que vier primeiro.
  *
- * É o recorte que substitui `slice(i, i + 400)`. A posição do item na lista não
- * participa da proteção: com um item novo logo abaixo, o recorte continua sendo
- * o certo, e é por isso que a fronteira é sintática e não posicional.
+ * A âncora é sempre a ABERTURA do item (`- **\`nome\`**`), nunca uma string que
+ * também possa aparecer em prosa: é o que torna o caso imune a cross-reference
+ * acrescentado noutra seção.
  */
-function itemContendo(ancora: string): string {
-  const i = doc.indexOf(ancora);
-  expect(i, `âncora ausente no documento: ${ancora}`).toBeGreaterThan(-1);
-  const inicio = doc.lastIndexOf("\n- ", i);
-  expect(inicio, `âncora fora de qualquer item de lista: ${ancora}`).toBeGreaterThan(-1);
-  const candidatos = [doc.indexOf("\n- ", i), doc.indexOf("\n\n", i)].filter((n) => n > -1);
-  const fim = candidatos.length ? Math.min(...candidatos) : doc.length;
-  return doc.slice(inicio, fim);
+function itemDe(src: string, abertura: string): string {
+  const i = src.indexOf(abertura);
+  expect(i, `item de lista não encontrado (a âncora é a abertura dele): ${abertura}`)
+    .toBeGreaterThan(-1);
+  const candidatos = [src.indexOf("\n- ", i + 1), src.indexOf("\n\n", i)].filter((n) => n > -1);
+  const fim = candidatos.length ? Math.min(...candidatos) : src.length;
+  return src.slice(i, fim);
 }
 
-describe("controle dos recortes do Markdown", () => {
-  it("secaoContendo devolve UMA seção, não o documento", () => {
-    const s = secaoContendo(/[Tt]este 42/);
-    expect(s.length, "o recorte de seção ficou vazio").toBeGreaterThan(200);
-    expect(s.length, "o recorte de seção engoliu o documento").toBeLessThan(doc.length * 0.5);
-    // Não sangra para a seção seguinte: só o próprio cabeçalho `## ` aparece.
-    expect([...s.matchAll(/\n## /g)]).toHaveLength(1);
+const item = (abertura: string) => itemDe(doc, abertura);
+
+// ─── Controles dos recortes, sobre fonte sintética ──────────────────────────
+
+const MD_SINT = `# t
+
+## A — primeira
+alfa
+### A1 — filha
+beta btree
+## B — segunda
+gama
+
+### B1 — filha de B
+delta
+- **\`x.ts\`** alvo
+- **\`y.ts\`** vizinho
+
+fim
+`;
+
+describe("controles dos recortes de Markdown", () => {
+  it("bloco de nível 2 INCLUI suas subseções e para no próximo `## `", () => {
+    const a = secaoDe(MD_SINT, 2, "A — primeira");
+    expect(a, "a subseção filha foi cortada — subdividir reprovaria").toContain("beta btree");
+    expect(a, "o recorte vazou para a seção seguinte").not.toContain("gama");
   });
 
-  it("itemContendo devolve UM item, não a lista", () => {
-    const b = itemContendo("entitlements-core.ts");
-    expect(b.length, "o recorte de item ficou vazio").toBeGreaterThan(80);
-    // Um item só: nenhum `- ` além do que o abre.
-    expect(
-      [...b.matchAll(/\n- /g)],
-      "o recorte de item sangrou para o vizinho — é a família nº 1",
-    ).toHaveLength(1);
+  it("bloco de nível 3 para no próximo cabeçalho, de qualquer nível", () => {
+    const a1 = secaoDe(MD_SINT, 3, "A1 — filha");
+    expect(a1).toContain("beta btree");
+    expect(a1, "o recorte de subseção vazou para a seção irmã").not.toContain("gama");
+  });
+
+  it("âncora ambígua ou ausente é erro do caso, não verde silencioso", () => {
+    expect(() => secaoDe(MD_SINT, 2, "filha")).toThrow(); // nível errado → 0 casam
+    expect(() => secaoDe(MD_SINT, 3, "filha")).toThrow(); // A1 e B1 → 2 casam
+  });
+
+  it("item de lista devolve UM item, não a lista", () => {
+    const b = itemDe(MD_SINT, "- **`x.ts`**");
+    expect(b).toContain("alvo");
+    expect(b, "o recorte de item sangrou para o vizinho — é a família nº 1").not.toContain(
+      "vizinho",
+    );
+  });
+
+  it("os recortes reais do documento não devolvem o documento inteiro", () => {
+    for (const bloco of [
+      secao(2, "Nada disto executou"),
+      secao(3, "Ordem de aplicação"),
+      item("- **`entitlements.ts`"),
+    ]) {
+      expect(bloco.length, "recorte vazio").toBeGreaterThan(80);
+      expect(bloco.length, "recorte engoliu o documento").toBeLessThan(doc.length * 0.5);
+    }
   });
 });
+
+// ─── Casos ──────────────────────────────────────────────────────────────────
 
 describe("teste 46 — só webhook-whatsapp consome ai-providers.ts", () => {
   it("nenhuma outra Edge Function importa ai-providers.ts em runtime", () => {
@@ -132,9 +209,9 @@ describe("teste 47 — manage-ai-providers só entra quando o catálogo mudar", 
   });
 
   it("o documento de pendências registra a distinção, e não põe manage-ai-providers no redeploy do beforeCall", () => {
-    const line = itemContendo("- **`ai-providers.ts`**");
-    expect(line).toContain("webhook-whatsapp");
-    expect(line).not.toContain("manage-ai-providers");
+    const linha = item("- **`ai-providers.ts`**");
+    expect(linha).toContain("webhook-whatsapp");
+    expect(linha).not.toContain("manage-ai-providers");
   });
 });
 
@@ -150,21 +227,18 @@ describe("checklist de redeploy dos arquivos novos", () => {
 
   for (const f of NEW_SHARED) {
     it(`${f} tem linha própria no checklist`, () => {
-      // INÍCIO DE BULLET, não presença. Cinco destes seis nomes aparecem também
-      // em prosa (invariantes, notas, desvios) — a versão por `toContain` ficava
-      // verde com o bullet do checklist APAGADO, que é justamente a linha que o
-      // caso existe para exigir.
-      expect(
-        doc,
-        `${f} não tem bullet próprio no checklist (só menção em prosa não conta)`,
-      ).toContain(`- **\`${f}\`**`);
-      // E o bullet diz para onde redeployar.
-      expect(itemContendo(`- **\`${f}\`**`)).toContain("webhook-whatsapp");
+      // ABERTURA DE ITEM, não presença. Cinco destes seis nomes aparecem também
+      // em prosa (invariantes, notas, desvios) — a versão por `toContain(nome)`
+      // ficava verde com o bullet do checklist APAGADO, que é justamente a linha
+      // que o caso existe para exigir.
+      const bullet = item(`- **\`${f}\`**`);
+      expect(bullet, `${f}: o bullet não diz para onde redeployar`).toContain("webhook-whatsapp");
     });
   }
 
   it("entitlements-core.ts aparece com as três consumidoras já conhecidas", () => {
-    const bullet = itemContendo("entitlements-core.ts");
+    const bullet = item("- **`entitlements.ts`");
+    expect(bullet, "o bullet deixou de citar o núcleo").toContain("entitlements-core.ts");
     for (const ef of ["manage-billing", "create-billing-checkout", "manage-whatsapp-implementations"]) {
       expect(bullet, `${ef} sumiu das consumidoras de entitlements-core.ts`).toContain(ef);
     }
@@ -173,44 +247,82 @@ describe("checklist de redeploy dos arquivos novos", () => {
   });
 
   it("o acoplamento por string com process-billing-notifications está registrado", () => {
-    // Âncora no CABEÇALHO da subseção, não numa string que também aparece nas
-    // irmãs: apagar a subseção inteira tem de derrubar o caso, e a única forma de
-    // garantir isso é ancorar no que só existe dentro dela.
-    const secao = secaoContendo("### Acoplamento por string");
-    expect(secao, "sumiu quem sabe renderizar os avisos").toContain(
-      "process-billing-notifications",
-    );
-    expect(secao, "sumiram os event_type que fazem o acoplamento").toMatch(/admin_ai_budget/);
-    expect(secao, "sumiu o fato de não haver `_shared/` em comum").toContain("_shared/");
+    const s = secao(3, "Acoplamento por string");
+    expect(s, "sumiu quem sabe renderizar os avisos").toContain("process-billing-notifications");
+    expect(s, "sumiram os event_type que fazem o acoplamento").toMatch(/admin_ai_budget/);
+    expect(s, "sumiu o fato de não haver `_shared/` em comum").toContain("_shared/");
   });
 
   it("a ordem obrigatória migration-antes-de-deploy está escrita", () => {
-    expect(doc).toMatch(/migration[\s\S]{0,200}antes[\s\S]{0,200}deploy/i);
+    // SOBRE A SUBSEÇÃO, não sobre o documento. A versão anterior era
+    // `toMatch(/migration[\s\S]{0,200}antes[\s\S]{0,200}deploy/i)` — a última
+    // janela de tamanho fixo do arquivo: apagar esta subseção E plantar
+    // "qualquer migration futura deve ser revisada antes de ir para deploy"
+    // noutra seção ficava VERDE.
+    const s = secao(3, "Ordem de aplicação");
+    expect(s, "a precedência deixou de ser afirmada").toContain("ANTES");
+    expect(s, "sumiu o que vem depois da migration").toContain("deploy");
+    expect(s, "sumiu a faixa de migrations que precisa ir primeiro").toContain("099");
+    expect(s, "sumiu a faixa de migrations que precisa ir primeiro").toContain("103");
+    // E a segunda ordem, que é uma decisão própria: o dispatcher antes do
+    // produtor dos avisos, senão o aviso morre em `failed/unknown_event_type`.
+    expect(s, "sumiu a ordem entre dispatcher e produtor").toContain(
+      "process-billing-notifications",
+    );
+    expect(s, "sumiu o produtor que vem por último").toContain("webhook-whatsapp");
   });
 });
 
 describe("pendências não declaráveis por teste unitário", () => {
   it("os testes 42 e 44 aparecem como PENDENTES, não como concluídos", () => {
-    // SOBRE A SEÇÃO, não sobre dígitos soltos. `toMatch(/42/)` e `/44/` estavam
+    // SOBRE A SEÇÃO, ancorada no TÍTULO. `toMatch(/42/)` e `/44/` estavam
     // satisfeitas pela tabela de gates (`244 problemas … 242 avisos`), e apagar
-    // esta seção inteira deixava a suíte verde. Aqui o recorte é a seção que
-    // CONTÉM a afirmação, e o que se exige dela é a substância: os dois testes
-    // nomeados, o rótulo de pendência, a extensão que nunca foi criada e a
-    // conclusão comercial que depende dos três.
-    const secao = secaoContendo(/[Tt]este 42/);
-    expect(secao, "o teste 42 deixou de ser nomeado").toMatch(/[Tt]este 42/);
-    expect(secao, "o teste 44 deixou de ser nomeado").toMatch(/[Tt]este 44/);
-    expect(secao, "os dois deixaram de estar rotulados como pendentes").toMatch(/PENDENTE/);
-    expect(secao, "sumiu a dependência de btree_gist").toContain("btree_gist");
-    expect(
-      secao,
-      "sumiu a conclusão: sem banco real, não declarar o teto seguro",
-    ).toContain("financeiramente seguro");
+    // esta seção inteira deixava a suíte verde. O que se exige dela é a
+    // substância: os dois testes nomeados, o rótulo de pendência, a extensão de
+    // que as migrations dependem e a conclusão comercial que sai dos três.
+    const s = secao(2, "Nada disto executou");
+    expect(s, "o teste 42 deixou de ser nomeado").toMatch(/[Tt]este 42/);
+    expect(s, "o teste 44 deixou de ser nomeado").toMatch(/[Tt]este 44/);
+    expect(s, "os dois deixaram de estar rotulados como pendentes").toMatch(/PENDENTE/);
+    expect(s, "sumiu a dependência de btree_gist").toContain("btree_gist");
+    expect(s, "sumiu a conclusão: sem banco real, não declarar o teto seguro").toContain(
+      "financeiramente seguro",
+    );
   });
 
   it("o gate comercial continua NO-GO", () => {
-    const secao = secaoContendo("PLAN_AUTOMACAO_CHECKOUT");
-    expect(secao).toContain("PLAN_AUTOMACAO_CHECKOUT");
-    expect(secao).toMatch(/NO-GO/);
+    const s = secao(2, "Gate comercial");
+    expect(s).toContain("PLAN_AUTOMACAO_CHECKOUT");
+    expect(s).toMatch(/NO-GO/);
+  });
+
+  it("a invendabilidade é condicionada às migrations do Plano B, que não estão nesta branch", () => {
+    // Se o Plano D mergear sozinho, o CHECK não existe e a única barreira
+    // declarada seria o NO-GO da seção 14 — que é processo, não banco.
+    const s = secao(2, "fatos de coordenação");
+    expect(s, "sumiu o CHECK que torna o plano invendável").toContain(
+      "billing_plans_ai_plan_not_sellable_chk",
+    );
+    // A CONDIÇÃO vive numa citação (`> `), e é ela que se exige — não a string
+    // "096", que aparece também no fato 3 (timestamps) e deixava este caso verde
+    // com a condição inteira apagada. Recorte pelo bloco de citação: apagá-lo
+    // esvazia o texto verificado.
+    const citacao = s
+      .split("\n")
+      .filter((l) => l.startsWith(">"))
+      .join("\n");
+    expect(citacao.length, "a condição deixou de ser uma citação destacada").toBeGreaterThan(200);
+    // Sem quantificador com teto: o recorte já é a citação, e a afirmação do
+    // cabeçalho deste arquivo ("nenhuma janela de N caracteres") tem de valer
+    // literalmente, inclusive aqui.
+    expect(citacao, "a condição não diz quais migrations faltam").toContain("096");
+    expect(citacao, "a condição não diz quais migrations faltam").toContain("098");
+    expect(citacao, "a condição não diz que esta branch não as tem").toContain("095");
+    expect(citacao, "a condição não afirma que a invendabilidade não existe sem elas").toMatch(
+      /NÃO EXISTE/,
+    );
+    expect(citacao, "a condição não aponta a barreira que sobra").toContain(
+      "PLAN_AUTOMACAO_CHECKOUT",
+    );
   });
 });
