@@ -6,7 +6,13 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist", "build", "coverage"],
+    // Worktrees de frentes paralelas vivem em `.claude/worktrees/` DENTRO da raiz
+    // do repo, entao o lint do diretorio principal varre o codigo das outras
+    // branches — e acusa violacao que so existe la, numa versao velha do arquivo.
+    // Mesmo buraco que o `vite.config.ts` ja fechou pro vitest; sem os dois, o
+    // gate de uma frente reprova por causa de outra e "eslint 0 erros" deixa de
+    // significar a mesma coisa dependendo de onde foi rodado.
+    ignores: ["dist", "build", "coverage", ".claude/worktrees/**"],
   },
   // Edge Functions Deno — SÓ `no-undef`, e existe por um motivo específico.
   //
