@@ -11,7 +11,7 @@ decisão que essa pessoa precisa tomar, ou um erro que ela evitaria.
 
 | Gate | Resultado |
 |---|---|
-| `npx vitest run` | **1047 testes / 40 arquivos — verde** (baseline da task era 1026/39) |
+| `npx vitest run` | **1077 testes / 40 arquivos — verde** (1047/40 antes da rodada de correção da revisão final; 1026/39 no início da frente) |
 | `npm run typecheck` (`tsc -b --noEmit`) | **zero erros** |
 | `npx eslint supabase/functions --max-warnings=0` | **limpo** (exit 0) |
 | `npx eslint <arquivos tocados> --max-warnings=0` | **limpo** (exit 0) |
@@ -401,10 +401,22 @@ produtor sozinho é inofensivo (a linha fica `pending`); deployar com um
 ### Ordem de aplicação — é invariante, não recomendação
 
 **As migrations 099–103 precisam ser aplicadas (`supabase db push`) ANTES do
-deploy da Edge Function que as lê.** Se a EF subir primeiro, `loadAiFranchise`
-loga `ai_budget_franchise_read_failed` **a cada inbound** e degrada **aberto**
-(não fecha) — tolerável, mas é ruído contínuo e **mascara o item 3** deste
-documento, que é exatamente o sinal que se quer enxergar.
+deploy da Edge Function que as lê.** Inverter a ordem **não é degradação
+tolerável: é indisponibilidade total do agente, para TODOS os clientes.**
+
+O caminho é curto e nenhuma flag o contém. Sem a tabela `ai_model_prices`, a
+leitura de preço falha; falha de leitura e ausência de linha devolvem `null` de
+propósito (mesma consequência, e é a segura); `null` vira `price_unknown`; e
+`price_unknown` é o único código que faz `failClosed = true` **mesmo com
+`ai_wallet_enforced` OFF** — porque sem preço não há `price_id`, que é NOT NULL,
+e o evento financeiro não pode existir. Resultado: **toda conversa de todo
+cliente vira handoff com `AGENT_INSTABILITY_TEXT`**, e o restaurante recebe a
+fila inteira do dia como se o provedor de IA estivesse fora do ar.
+
+Duas agravantes: `loadAiFranchise` roda para **toda** organização, inclusive as
+sem franquia, então o erro aparece em **100% dos inbounds**; e esse ruído
+contínuo **mascara o item 3** deste documento, que é exatamente o sinal que se
+quer enxergar na primeira execução.
 
 Depois das migrations: **`process-billing-notifications` primeiro**, antes de
 qualquer produtor dos quatro `admin_ai_budget_*`. Só então `webhook-whatsapp`.
@@ -419,6 +431,8 @@ qualquer produtor dos quatro `admin_ai_budget_*`. Só então `webhook-whatsapp`.
 - **Reserva com `usage_review_required` sai da varredura de expiração.** Sem isso o TTL de recuperação de crash vira porta de saída para consumo não contabilizado. `20260803090200_101`.
 - **`ai_usage_events.price_id` é NOT NULL** — evento financeiro só existe com preço conhecido; é o que torna o fail-closed de preço uma garantia de banco, e é por isso que `price_unknown` ocorre mesmo com a flag OFF.
 - **Modelo novo em `KNOWN_MODELS` exige preço semeado na 099 no mesmo PR.** Sem preço o agente daquela organização **cala** (não degrada), porque o fail-closed é de banco. Guardrail: `src/lib/ai-budget-migrations-guard.test.ts`, bloco "todo modelo conhecido tem preço semeado".
+- **A ordem de lock das RPCs do orçamento vale para os locks IMPLÍCITOS de FK, não só para os `for update`.** Toda checagem de chave estrangeira roda `select … for key share` na linha-pai: um `insert into ai_usage_events` trava sozinho a linha do orçamento e a da reserva, e fazê-lo antes do `for update` do MESMO orçamento é deadlock de upgrade (40P01). Agravante que ninguém deduz: essa ordem é subproduto da **ordem das colunas** na `create table` da 101 — reordená-las inverte a aquisição em silêncio, e o guardrail estático mede posição textual de `for update`, sendo cego a isso. `20260803090300_102`.
+- **A guarda de tenant do orçamento cobre DOIS caminhos de atribuição** (`cycle_id` e `unit_id`), e lê o segundo por `to_jsonb(new)`: a função é compartilhada por tabelas sem a coluna, onde `new.unit_id` seria 42703 em tempo de execução. `20260803090200_101`.
 
 ---
 
@@ -555,7 +569,78 @@ declarada**, que é pior que uma declarada.
 fechar. O teto é parte do modelo econômico de R$ 799,90.
 
 Flags permanecem OFF (`ai_wallet_enforced`, `billing_notifications_dispatch`).
-Nenhum plano publicado — e o CHECK do Plano B garante isso no banco (seção 0).
+Nenhum plano publicado. **A garantia de banco ainda NÃO existe nesta branch:** o
+CHECK `billing_plans_ai_plan_not_sellable_chk` vem das migrations 096–098 do
+Plano B, que não estão aqui (esta branch vai da 095 direto para a 099). Ele
+**passará a garantir** a invendabilidade quando as três forem aplicadas —
+condição escrita por extenso na seção 0. Até lá a única barreira é este NO-GO,
+que é processo, não banco: nada impede alguém de marcar o plano `active` no
+painel. Esta seção é justamente a que se abre para saber o que barra a venda, e
+afirmar aqui, no presente, uma garantia que a seção 0 diz não existir era a pior
+combinação possível.
 **Ren Sushi segue vitalício e grátis — override LIFETIME em `system`, `whatsapp`
 e `ai` intacto, e o ramo de franquia nunca o alcança (prioridade 2 do resolvedor,
 testado por cenário nomeado em `src/lib/entitlements-core.test.ts`).**
+
+---
+
+## 15. Antes de ligar `ai_wallet_enforced` — o que fechar primeiro
+
+Consolidado aqui porque estava espalhado por quatro seções e cada uma dizia
+"reavaliar antes da flag" sem que existisse a lista. **Nada aqui é opcional no
+dia em que a negação comercial passar a acontecer de verdade.**
+
+- **Prova contra banco real** — testes 42 e 44 da spec (seção 1). Enquanto não
+  houver, não declarar o teto financeiramente seguro.
+- **Decisão sobre `entitlements.readFailed`** (seção 3): hoje um soluço de banco
+  faz a organização rodar sem ganchos, sem medição e sem hard stop.
+- **Superfície de resolução de `USAGE_REVIEW_REQUIRED`** (seção 10) — e, junto
+  dela, **alerta de pendência persistente**, que a §17.2.2 da spec pede e não
+  existe: hoje **um único usage indeterminado cala a IA da organização até o fim
+  do ciclo**, sem alerta nenhum e sem caminho de resolução que não seja SQL
+  manual de platform_admin. Com a flag OFF isso nunca bloqueia ninguém; com ela
+  ligada, é uma interrupção comercial que ninguém vê acontecer.
+- **`billing_notifications_dispatch` tem de ser ligada JUNTO.** As duas flags são
+  independentes e a assimetria é armadilha: com o dispatch OFF os quatro marcos
+  entram em `billing_notifications` e ficam `pending` para sempre — inclusive o
+  de **100%**, que é o aviso de que a franquia acabou. Ligar só
+  `ai_wallet_enforced` produz exatamente o pior par: bloqueio acontecendo,
+  ninguém avisado.
+- **`DENY_PRICE_UNKNOWN` não tem `event_type` de e-mail** (seção 9, desvio 2): com
+  a flag ligada, preço ausente interrompe a IA de uma organização e só o log
+  avisa.
+- **O guardrail de "modelo novo exige preço semeado" lê APENAS o seed da 099.**
+  Ele cruza `KNOWN_MODELS` com o bloco `values (…)` daquela migration — preço
+  cadastrado numa migration 104+, ou inserido pelo painel, **não o satisfaz**, e
+  um modelo legitimamente precificado por fora reprovaria a suíte. O inverso
+  também vale e é pior: o guardrail continua verde para um catálogo cujo preço
+  real vive noutro lugar. Quem mover a fonte de preço tem de mover o guardrail
+  junto. `src/lib/ai-budget-migrations-guard.test.ts`.
+
+---
+
+## 16. Overage: três definições em conflito — **decisão aberta**
+
+Três lugares do sistema chamam a mesma coisa por nomes incompatíveis, e **nenhum
+dos três está errado isoladamente** — é a ausência de decisão que é a pendência.
+
+1. **O schema chama de incidente.** `ai_cost_reservations.consumed_cents`
+   (`20260803090200_101`, comentário da coluna): "acima de `reserved_cents` é
+   overage observável (incidente), nunca franquia adicional".
+2. **`planNextCall` trata como rotina.** `_shared/ai-budget-core.ts`: quando
+   `remaining` é negativo, o plano é `EXTEND` com `additionalCents` cobrindo o
+   déficit **e** a próxima chamada — deliberadamente **sem** clamp a zero, porque
+   clampar autorizaria uma chamada sem cobertura. Financeiramente **correto**: o
+   teto do CICLO segue íntegro (a extensão só acontece se o ciclo comportar).
+3. **A §17.5 da spec pede um terceiro comportamento**: liquidar integral,
+   **bloquear** as chamadas posteriores do turno, **registrar incidente** e
+   **alertar o platform_admin**. **Nenhuma das três existe.**
+
+**A consequência prática de não decidir:** nada, em log nenhum, distingue um
+turno que estourou a própria reserva de um turno que simplesmente cresceu — as
+duas coisas aparecem como uma extensão bem-sucedida. Quem for ler o consumo da
+fase de observação para calibrar o teto vai ler os dois como a mesma coisa.
+
+**Quem decide:** engenharia + produto, junto com a seção 15. Se a decisão for
+manter o comportamento de hoje, **o comentário da 101 é que precisa mudar** —
+ele afirma "incidente" sobre algo que o código trata como rotina.

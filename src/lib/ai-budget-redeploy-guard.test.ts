@@ -271,6 +271,64 @@ describe("checklist de redeploy dos arquivos novos", () => {
     );
     expect(s, "sumiu o produtor que vem por último").toContain("webhook-whatsapp");
   });
+
+  it("a ordem invertida está descrita pelo PESO real, não como ruído tolerável", () => {
+    // A versão anterior dizia "degrada aberto — tolerável, mas é ruído". É pior:
+    // sem `ai_model_prices` a leitura de preço falha, vira `price_unknown`, e
+    // esse é o ÚNICO código que fecha o caminho mesmo com a flag OFF. Todo
+    // inbound de todo cliente vira handoff. Quem ler "tolerável" vai deployar
+    // fora de ordem numa sexta-feira.
+    const s = secao(3, "Ordem de aplicação");
+    expect(s, "sumiu o mecanismo que torna a inversão fatal").toContain("price_unknown");
+    expect(s, "sumiu o fato de a flag não conter isso").toMatch(/OFF|desligada/);
+    expect(s, "sumiu o alcance: toda organização, não só as de franquia").toContain(
+      "loadAiFranchise",
+    );
+    expect(s, "a inversão voltou a ser descrita como tolerável").not.toMatch(
+      /tolerável, mas é ruído/,
+    );
+  });
+});
+
+describe("pendências registradas na revisão final de branch", () => {
+  it("o gate comercial não afirma no presente a garantia que a seção 0 nega", () => {
+    // O CHECK vem das migrations 096–098 do Plano B, ausentes nesta branch. A
+    // seção 14 é exatamente a que se abre para saber o que barra a venda.
+    const s = secao(2, "Gate comercial");
+    expect(s, "sumiu quais migrations trazem a garantia").toContain("096");
+    expect(s, "sumiu que a garantia é futura e condicionada").toMatch(/NÃO existe|passará a/i);
+    expect(s, "a afirmação no presente voltou").not.toMatch(
+      /CHECK do Plano B garante isso no banco/,
+    );
+  });
+
+  it("o checklist do dia da flag existe e nomeia as quatro coisas que ninguém deduz", () => {
+    const s = secao(2, "Antes de ligar");
+    // A pendência que CALA a IA sem alerta e sem caminho que não seja SQL.
+    expect(s, "sumiu o estado que silencia a IA até o fim do ciclo").toContain(
+      "USAGE_REVIEW_REQUIRED",
+    );
+    // As duas flags são independentes, e ligar só uma é o pior par possível.
+    expect(s, "sumiu a flag do dispatcher, que precisa subir junto").toContain(
+      "billing_notifications_dispatch",
+    );
+    expect(s, "sumiu o aviso que fica pending — o de 100% é o que importa").toMatch(/100%/);
+    // O guardrail de preço lê o SEED, não o catálogo: preço numa 104+ não conta.
+    expect(s, "sumiu o limite do guardrail de preço semeado").toContain("099");
+    expect(s, "sumiu de onde o guardrail realmente lê").toMatch(/seed|values/i);
+  });
+
+  it("o conflito de definição de overage está registrado como decisão ABERTA", () => {
+    const s = secao(2, "Overage");
+    // As três leituras, cada uma pelo lugar que a produz — sem isso o registro
+    // vira "há um conflito" sem dizer entre o quê.
+    expect(s, "sumiu a leitura do schema").toContain("consumed_cents");
+    expect(s, "sumiu a leitura do núcleo, que é a que roda hoje").toContain("planNextCall");
+    expect(s, "sumiu o que a spec pede e não existe").toMatch(/17\.5/);
+    expect(s, "o registro deixou de dizer que a decisão está aberta").toMatch(
+      /decisão aberta|Quem decide/i,
+    );
+  });
 });
 
 describe("pendências não declaráveis por teste unitário", () => {
