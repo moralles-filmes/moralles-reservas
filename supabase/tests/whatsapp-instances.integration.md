@@ -219,6 +219,18 @@ Nenhum caso abaixo é verificável por vitest. Roteiro para banco local
 migration real sobre bootstrap mínimo — o mesmo procedimento usado para validar
 a 089.
 
+> **EXECUTADO em 2026-08-03: `NOTE-A` a `NOTE-D`, 19 casos, 19 PASS, 0 FAIL**,
+> com a 096 aplicada verbatim (três vezes, para o NOTE-A) sobre 087 e 088
+> também verbatim. Inclui os dois controles positivos: o CHECK da 089
+> reintroduzido faz o `DELETE` abortar (defeito F-01 reproduzido), e a condição
+> da 089 em `<>` puro deixa passar `NULL → uuid` (defeito latente demonstrado).
+> Harness commitado em [local-preflight/](local-preflight/README.md); resultado
+> por caso em
+> [docs/billing-asaas/FASE-6C-PENDENCIAS.md §2](../../docs/billing-asaas/FASE-6C-PENDENCIAS.md).
+>
+> **`NOTE-E` continua pendente** — RLS pelo client SDK exige Supabase de
+> verdade, não um Postgres nu.
+
 ### NOTE-A — Backfill idempotente
 
 1. Com pelo menos uma linha em `whatsapp_instances` com `notes` não-vazio,

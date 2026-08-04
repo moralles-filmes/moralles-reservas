@@ -1,12 +1,15 @@
 # Pendências da Fase 6c — não declaráveis por teste unitário
 
 Painel de instâncias completo + ledger de observações + runbook. Repo ligado
-à produção. **Nenhuma migration aplicada, nenhuma Edge Function deployada,
-nenhuma flag alterada, nenhum merge** — vedação desta sessão, não falta de
-ambiente: existe Postgres 18.4 local disponível (`scoop`, sem Docker,
-`127.0.0.1:55432`), o mesmo venue que validou a migration 089 real
-([FASE-6B-ROLLOUT-2026-08-02.md §1](FASE-6B-ROLLOUT-2026-08-02.md)) e o venue
-prescrito pela spec §11 para o ledger desta fase. Ver §2.
+à produção. **Nada aplicado no Supabase, nenhuma Edge Function deployada,
+nenhuma flag alterada, nenhum merge, nenhum push.**
+
+A migration 096 **foi aplicada verbatim num Postgres 18.4 local e descartável**
+(`scoop`, sem Docker, `127.0.0.1:55432`, sem `pg_cron`/`pg_net`) — o venue que a
+spec §11 prescreve e o mesmo que validou a 089 real
+([FASE-6B-ROLLOUT-2026-08-02.md §1](FASE-6B-ROLLOUT-2026-08-02.md)). Banco local
+não é Supabase e não é produção; os casos `NOTE-A..NOTE-D` rodaram lá, 19/19,
+com dois controles positivos. Ver §2.
 
 **Gates desta entrega (execução real, 2026-08-03):**
 
@@ -112,47 +115,64 @@ Nenhum worker novo, nenhum cron novo, nenhuma flag nova.
 
 ---
 
-## 2. Casos NOTE-A..NOTE-E — não executados por decisão desta sessão
+## 2. Casos NOTE-A..NOTE-D — EXECUTADOS. NOTE-E segue pendente
 
-**Não rodaram porque a sessão vedou execução, não porque faltasse onde
-rodar.** O Postgres 18.4 local (`scoop`, sem Docker, `127.0.0.1:55432`, sem
-`pg_cron`/`pg_net`) está disponível e é o mesmo banco onde a migration 089
-real rodou verbatim, com os casos FK-A..FK-G passando 11/11
-([FASE-6B-ROLLOUT-2026-08-02.md §1](FASE-6B-ROLLOUT-2026-08-02.md), carimbado
-`AVAILABLE` em
-[FASE-6B-GATES-SEGURANCA.md:564](FASE-6B-GATES-SEGURANCA.md)) — e é o venue
-que a spec §11 prescreve para o ledger desta fase, no mesmo procedimento.
-"Ambiente sem Docker" descreve esse Postgres real; não é motivo para os casos
-abaixo estarem pendentes.
+`NOTE-A` a `NOTE-D` **rodaram contra Postgres real** em 2026-08-03, no venue
+que a spec §11 prescreve: PostgreSQL 18.4 local (`scoop`, sem Docker,
+`127.0.0.1:55432`, sem `pg_cron`/`pg_net`), o mesmo onde a 089 real rodou
+verbatim na 6b ([FASE-6B-ROLLOUT-2026-08-02.md §1](FASE-6B-ROLLOUT-2026-08-02.md)).
 
-De `NOTE-A` a `NOTE-E`, só `NOTE-E` (RLS pelo client SDK) exige Supabase de
-verdade — o Postgres local não tem PostgREST nem `auth.uid()`. Rodar
-`NOTE-A..NOTE-D` (incluindo o `NOTE-C` estendido) contra esse Postgres é a
-**próxima ação recomendada antes do merge**.
+```
+19 casos · 19 PASS · 0 FAIL
+```
 
-- **Migration 096 nunca aplicada.** Idempotência do backfill, guardas de
-  INSERT/UPDATE, guarda de tenant e RLS verificados **só por leitura**.
-- **O controle positivo do §8 da spec — apagar a instância NÃO apaga a
-  observação — não foi executado.** É o caso `NOTE-B` de
-  `supabase/tests/whatsapp-instances.integration.md`, e é o que prova que o
-  conflito FK × CHECK da 089 não voltou nesta tabela.
-- **A divergência deliberada 096/089 na guarda de `instance_id` (§1.2) não foi
-  provada contra banco.** `src/lib/whatsapp-instance-notes-core.test.ts` prova
-  duas coisas estáticas — que o texto da migration usa `is distinct from` e
-  não `<>`, e que a fórmula extraída, avaliada em JS com a semântica de NULL
-  do Postgres, produz o veredito esperado nas quatro transições — mas nenhum
-  `INSERT`/`UPDATE` real correu contra a trigger. O caso `NOTE-C` de
-  `supabase/tests/whatsapp-instances.integration.md` foi estendido nesta
-  entrega com as quatro transições de `instance_id` (inalterado e
-  `uuid → NULL` esperados aceitos; `uuid → outro uuid` e `NULL → uuid`
-  esperados recusados) para ser o roteiro de quando houver banco — ele não é,
-  hoje, resultado.
-- **RLS não foi exercitada pelo client SDK** (casos `NOTE-E`). A afirmação
-  "membro da organização não lê o custo do fornecedor" — que é a razão de não
-  ter usado `audit_log` — continua não provada contra banco.
-- **Nenhum registro de sucesso foi feito.** Toda a verificação manual desta
-  entrega usou caminhos de RECUSA, para não escrever no inventário do Ren Sushi
-  durante a observação da 6b (até 05/08).
+**A 096 foi aplicada verbatim**, não transcrita, sobre 087 e 088 também
+verbatim, com um bootstrap mínimo do que elas referenciam. Harness completo e
+instruções em
+[supabase/tests/local-preflight/](../../supabase/tests/local-preflight/README.md)
+— a 6b fez este mesmo trabalho e não deixou nada commitado; a 6c teve de
+reconstruir o ambiente do zero.
+
+**Nada disso tocou Supabase nem produção.** Banco local descartável, apagado ao
+fim.
+
+| Caso | O que provou |
+|---|---|
+| **NOTE-A** | Migration aplicada **três vezes**; a contagem do backfill fica em 1. Instância com `notes` nulo e instância com `notes` só de espaços continuam de fora (`btrim`). |
+| **NOTE-B** | `DELETE` da instância **conclui**; a observação sobrevive com `instance_id` nulo e `instance_ref` intacto. |
+| **NOTE-C 1-3** | `note`, `action` e `instance_ref` recusam `UPDATE` — append-only. |
+| **NOTE-C 4-7** | As quatro transições de `instance_id`: inalterado **aceito**, `uuid → NULL` **aceito**, `uuid → outro uuid` **recusado**, `NULL → uuid` **recusado**. A divergência deliberada contra a 089 deixou de ser afirmação estática. |
+| **NOTE-D 1-4** | INSERT com `instance_id` nulo, com `instance_ref <> instance_id`, com organização alheia (guarda de tenant da 088) e com `note` em branco — os quatro recusados. |
+| **NOTE-D5** | Controle negativo: o INSERT **legítimo** passa. Sem ele, "tudo foi recusado" não distinguiria rigor de tabela quebrada. |
+
+### Os dois controles positivos
+
+Sem eles, "passou" não distingue *a guarda funciona* de *o teste não testa nada*.
+
+- **CONTROLE-1 — o defeito F-01 foi REPRODUZIDO.** Reintroduzido o CHECK
+  `instance_id is not null` (a forma da 089), o `DELETE` da instância **aborta**
+  com `check_violation`. Removido o CHECK, **o mesmo `DELETE` conclui**. É a
+  prova de que o conflito FK × CHECK que a 089 pagou não voltou nesta tabela —
+  e de que o NOTE-B não passou por acidente.
+- **CONTROLE-2 — o defeito latente da 089 foi DEMONSTRADO.** Trocada a condição
+  de `instance_id` pela da 089 (`<>` puro), a transição `NULL → uuid`
+  **passa**. Reaplicada a 096, o mesmo `UPDATE` volta a ser recusado. A
+  afirmação do bloco "DIVERGÊNCIA DELIBERADA" da 096 — e a decisão de apertar a
+  089 no futuro em vez de afrouxar a 096 — deixou de ser leitura de código.
+
+### O que continua pendente
+
+- **`NOTE-E` (RLS pelo client SDK).** Exige Supabase de verdade: o Postgres
+  local não tem PostgREST nem `auth.uid()` real. A afirmação "membro da
+  organização não lê o custo do fornecedor" — que é a razão de não ter usado
+  `audit_log` — **continua não provada**. Só a estrutura foi conferida (RLS
+  `enable` + `force` = `t,t`, uma policy, duas triggers, zero coluna de
+  segredo).
+- **A 096 não foi aplicada em produção.** O replay local prova comportamento,
+  não substitui o `db push` autorizado.
+- **Nenhum registro de sucesso foi feito pela UI.** Toda a verificação manual
+  de painel desta entrega usou caminhos de RECUSA, para não escrever no
+  inventário do Ren Sushi durante a observação da 6b (até 05/08).
 
 ## 3. Depende de deploy
 
@@ -302,11 +322,22 @@ corrigidos**, por decisão explícita:
 ## 8. Gate
 
 **`FASE_6C_MERGE = aguardando`** — a branch `dois-planos/fase-6c` não é
-mergeada até: (a) a observação da 6b fechar e a `billing-asaas/fase-6b` entrar
-em `main`; (b) os casos `NOTE-A..NOTE-E` (incluindo o `NOTE-C` estendido)
-rodarem contra banco; (c) o review whole-branch (Step 6 do plano desta task,
-não executado por esta frente — ver report) triar os minors da §7 e decidir
-o que precisa de correção antes do merge.
+mergeada até que a observação da 6b feche e a `billing-asaas/fase-6b` entre em
+`main`. As outras duas condições estão cumpridas: `NOTE-A..NOTE-D` rodaram
+contra banco (§2, 19/19 com dois controles positivos) e o review whole-branch
+triou os minors da §7 (§7.1), com a onda de correção já aplicada.
+
+**O push e o PR estão retidos de propósito, por motivo técnico.** O
+`acl-estatico` só dispara em `pull_request` com base `main`
+([.github/workflows/function-acl-audit.yml](../../.github/workflows/function-acl-audit.yml)).
+PR contra `billing-asaas/fase-6b` **não roda o guardrail** — e a 096 cria tabela
+com FORCE RLS, duas triggers e uma função nova em `public`, que é exatamente o
+diff que precisa passar por ele. A ordem certa é a 6b entrar em `main` primeiro
+e as três frentes abrirem PR contra `main` juntas, cada uma com o check rodando
+de verdade.
+
+Continua pendente para o merge: `NOTE-E` (RLS pelo client SDK, exige Supabase) e
+os 20 casos de verificação manual de painel da §6.
 
 Ren Sushi segue vitalício e grátis — override LIFETIME em `system`, `whatsapp` e
 `ai` intacto. Nada nesta fase o toca.
