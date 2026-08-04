@@ -11,7 +11,7 @@ decisão que essa pessoa precisa tomar, ou um erro que ela evitaria.
 
 | Gate | Resultado |
 |---|---|
-| `npx vitest run` | **1041 testes / 40 arquivos — verde** (baseline da task era 1026/39) |
+| `npx vitest run` | **1043 testes / 40 arquivos — verde** (baseline da task era 1026/39) |
 | `npm run typecheck` (`tsc -b --noEmit`) | **zero erros** |
 | `npx eslint supabase/functions --max-warnings=0` | **limpo** (exit 0) |
 | `npx eslint <arquivos tocados> --max-warnings=0` | **limpo** (exit 0) |
@@ -20,10 +20,19 @@ decisão que essa pessoa precisa tomar, ou um erro que ela evitaria.
 **Nunca rode `tsc --noEmit` sem `-b`:** o root tem `files: []` + references, e sem
 `-b` o comando é um no-op silencioso que sai 0 sem checar nada.
 
-`supabase/functions/` **não é alcançado** por `tsc -b` nem pelo eslint deste
-repositório. Todo o código novo de Edge Function está lá. É por isso que os
-guardrails de leitura estática existem, e é por isso que a seção
-"Seis famílias de falso-verde" é a parte transferível deste documento.
+**Quem alcança `supabase/functions/`, e com o quê:** `tsc -b` **não** alcança (o
+tsconfig do app não as inclui). O **eslint alcança — com exatamente UMA regra,
+`no-undef`, por decisão**: [eslint.config.js](../../eslint.config.js) tem bloco
+dedicado `files: ["supabase/functions/**/*.ts"]`, criado depois de um
+`ReferenceError` que chegou ao caminho de autorização de
+`manage-whatsapp-instances` sem nenhuma ferramenta do projeto pegá-lo. Ligar o
+conjunto completo ali produziria ruído (imports por URL, globais do Deno) e seria
+abandonado; uma regra só, contra a classe de defeito que passou, se sustenta.
+
+Todo o código novo de Edge Function está lá, **com essa cobertura e nenhuma
+outra**. É por isso que os guardrails de leitura estática existem, e é por isso
+que a seção "Seis famílias de falso-verde" é a parte transferível deste
+documento.
 
 ---
 
@@ -268,10 +277,18 @@ vendido como proteção.**
   `ai_cycle_budgets` + `ai_cost_reservations`) e `resolveOrgEntitlements` (3) —
   **inclusive as sem franquia**, no caminho pós-debounce. Mais **2 no ramo de
   handoff por franquia**. Não foi medido contra carga real.
-- **Os outcomes novos não aparecem em painel nenhum.** `ai_budget_exhausted`,
-  `ai_budget_denied` e `ai_budget_error` entram em `webhook_executions.outcome`,
-  que é `text` **sem CHECK** — nada quebra, e ninguém lê. Painel novo de
-  observabilidade de WhatsApp deveria começar por eles.
+- **Os outcomes novos JÁ aparecem no painel — como slug cru, em cinza neutro.**
+  Não é "falta painel": `whatsapp-health` agrega `by_outcome` **genericamente,
+  sem whitelist** ([whatsapp-health/index.ts](../../supabase/functions/whatsapp-health/index.ts)),
+  e a aba Diagnóstico de `/platform/automacao/:unitSlug` renderiza **toda** chave
+  com `OUTCOME_LABEL[outcome] ?? outcome` e `OUTCOME_TONE[outcome] ?? "neutral"`
+  ([Automacao.tsx](../../src/pages/gestao/Automacao.tsx)). Resultado hoje:
+  **`ai_budget_exhausted` — um hard stop da IA — é exibido sem tradução e com o
+  mesmo cinza de "Duplicada".** `webhook_executions.outcome` é `text` **sem
+  CHECK**, então nada quebra; o defeito é de leitura humana, e é pior que
+  ausência, porque parece informação. **Fecho: uma entrada em `OUTCOME_LABEL` e
+  uma em `OUTCOME_TONE` para cada um dos três** (`ai_budget_exhausted`,
+  `ai_budget_denied`, `ai_budget_error`). **Não é painel novo.**
 
 ---
 
@@ -340,7 +357,17 @@ interrompe a IA da organização **até o fim do ciclo**.
 - **`whatsapp-instance-cycle-core.ts`** → acrescentar **`webhook-whatsapp`** (via `ai-budget-core.ts`, que reusa `clampDayToMonth` em vez de reimplementar a aritmética de âncora). É a única linha desta frente que cruza com o Plano de instâncias.
 - **`billing-notify.ts`** → acrescentar **`webhook-whatsapp`** (via `ai-budget-gate.ts`: `resolvePlatformAdminRecipients` + `enqueueBillingNotification`).
 - **`platform-flags.ts`** → `webhook-whatsapp` já consta; a flag lida agora inclui `ai_wallet_enforced`.
-- **`entitlements.ts` / `entitlements-core.ts`** → acrescentar **`webhook-whatsapp`** às consumidoras já listadas (`manage-billing`, `create-billing-checkout`, `manage-whatsapp-implementations`): o webhook passou a resolver entitlements para descobrir se a organização está no ramo de franquia. **Esta linha fica por último de propósito** — o guardrail a lê por janela de 400 caracteres a partir do nome do arquivo, e com um item abaixo dela a janela sangraria para o vizinho (família nº 1 da seção 7), deixando o caso verde com o `webhook-whatsapp` do bullet seguinte.
+- **`entitlements.ts` / `entitlements-core.ts`** → acrescentar **`webhook-whatsapp`** às consumidoras já listadas (`manage-billing`, `create-billing-checkout`, `manage-whatsapp-implementations`): o webhook passou a resolver entitlements para descobrir se a organização está no ramo de franquia.
+
+**Como o guardrail lê este checklist:** cada linha é recortada pelo **item de
+lista inteiro** — da abertura do `- ` até o próximo `- ` ou linha em branco —,
+nunca por janela de tamanho fixo. A primeira versão media 400 caracteres e
+sangrava para o item vizinho, ficando verde com o conteúdo DELE (família nº 1 da
+seção 7). Duas consequências para quem editar: **a posição de uma linha na lista
+não faz parte da proteção** (reordenar é seguro), e **prosa sobre o teste não
+entra dentro de um item** — se entrar, ela passa a satisfazer sozinha a asserção
+que verifica aquele item. Este parágrafo fica fora da lista exatamente por isso,
+e apagá-lo não quebra nada.
 
 **Nota sobre `import type`:** `ai-providers.ts` importa `BeforeCallContext`/`BeforeCallDecision` de `ai-budget-core.ts` **só como tipo** (apagado na compilação), e `ai-budget-gate.ts` faz o mesmo com `ai-providers.ts` e `ai-call-authorizer-core.ts`. Isso não muda nada hoje — todas as consumidoras são a mesma EF — mas quem for propagar essas dependências para outra EF no futuro precisa saber quais arestas são de runtime.
 
@@ -416,11 +443,51 @@ Três correções menores, além deste documento e de
   toda organização de franquia na virada do ciclo, com o teto cheio. **Sabotado:**
   é o único caso da suíte que fica vermelho com essa troca.
 
-**Duas asserções do guardrail de redeploy são fracas, e é honesto dizer:**
-`expect(doc).toMatch(/42/)` e `/44/` prendem **dígitos em qualquer lugar** do
-documento, não a afirmação de que os testes 42 e 44 seguem pendentes. É a família
-nº 5 outra vez. Elas ficam vermelhas hoje se os números sumirem, mas qualquer
-`42` acidental futuro as satisfaz.
+### O guardrail de redeploy reproduziu três das seis famílias — e foi corrigido
+
+Não é anedota: é a prova de que a lista da seção 7 vale **para quem a escreveu**.
+A primeira versão destes casos foi escrita e revisada por quem acabara de
+catalogar as seis famílias, e caiu em três delas.
+
+- **`toMatch(/42/)` e `/44/` eram VÁCUAS, não "fracas no futuro".** Já estavam
+  satisfeitas pela **tabela de gates deste próprio documento**, que traz
+  `244 problemas (2 erros, 242 avisos)`: `242` casa `/42/`, `244` casa `/44/`.
+  **Apagar a seção 1 inteira** — testes 42/44 pendentes, `btree_gist`, RLS nunca
+  exercitada, a conclusão de não declarar o teto seguro — **deixava a suíte
+  verde**, e essa é a única asserção que protegia a pendência mais importante do
+  documento. Família nº 5. Fechado: o caso recorta a **seção** que contém a
+  afirmação e exige a substância dela.
+- **Cinco dos seis casos "tem linha própria no checklist" não verificavam linha
+  nenhuma** — só presença do nome em qualquer parágrafo. Apagar o bullet de
+  `ai-price-core.ts`, `ai-budget-core.ts`, `ai-budget-copy.ts`,
+  `ai-call-authorizer-core.ts` ou `ai-budget-gate.ts` ficava verde, porque os
+  cinco também são citados em prosa. É **o corolário da seção 7**
+  (`toContain` sobre o arquivo inteiro é satisfeito pela linha de import),
+  aplicado a prosa em vez de código. Fechado: o caso exige **início de bullet**
+  (`- **\`nome.ts\`**`) e lê o item recortado.
+- **`slice(i, i + 400)` no caso de `entitlements-core.ts`** sangrava para o item
+  vizinho. Família nº 1. Fechado pelo recorte de item.
+
+E a **correção** das três caiu em mais duas, achadas pela sabotagem da própria
+rodada de correção — o que é a evidência mais forte de que a lista da seção 7 não
+é conhecimento que se "aplica uma vez":
+
+- **A explicação do recorte foi escrita DENTRO do item que ela explica**, e a
+  palavra `webhook-whatsapp` dessa prosa passou a satisfazer sozinha a asserção
+  sobre aquele item: apagar a consumidora real do bullet ficava verde. Família
+  nº 5 de novo. Fechado movendo o parágrafo para fora da lista — onde apagá-lo é
+  inofensivo, que é como prosa-sobre-teste deve se comportar.
+- **O recorte de seção só conhecia `## `**, então uma âncora dentro de uma
+  subseção devolvia a seção 11 INTEIRA: apagar a subseção "Acoplamento por
+  string" ficava verde, porque as subseções irmãs também citam
+  `process-billing-notifications` e `admin_ai_budget`. Família nº 1 num nível
+  acima do original. Fechado recortando pela fronteira mais **próxima** (`## ` ou
+  `### `) e ancorando o caso no cabeçalho da própria subseção.
+
+**Não restou asserção declarada como não-protetora neste arquivo.** O que
+continua não sendo verificável por teste é a adição de `"franchise"` em
+`FeatureEntitlementView.source` (o valor chega do `manage-billing` como JSON em
+runtime, e o TypeScript não alcança isso) — é correção de tipo, não proteção.
 
 ---
 
