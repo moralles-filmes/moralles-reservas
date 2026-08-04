@@ -1419,6 +1419,14 @@ function exigeHardStopCompleto(bloco: string, nome: string) {
     statementFrom(bloco, upd),
     `${nome}: o handoff não usa a razão própria da franquia`,
   ).toContain("AI_BUDGET_HANDOFF_REASON");
+  // O VALOR do status, não só a razão. Trocá-lo por `"ai_active"` deixa o
+  // cliente avisado, a conversa seguindo com a IA e o restaurante sem NUNCA ver
+  // a conversa na fila — a consequência que a remoção do UPDATE já teve uma vez,
+  // reintroduzida pela neutralização do campo.
+  expect(
+    statementFrom(bloco, upd),
+    `${nome}: o handoff não põe a conversa na fila do operador`,
+  ).toContain('status: "awaiting_human"');
   const envio = bloco.indexOf("sendOutbound(");
   expect(envio, `${nome}: não responde ao cliente`).toBeGreaterThan(-1);
   expect(
@@ -1557,6 +1565,12 @@ function exigeFailClosedTecnico(bloco: string, nome: string) {
   expect(upd, `${nome}: não registra o handoff na conversa`).toBeGreaterThan(-1);
   const escrita = statementFrom(bloco, upd);
   expect(escrita, `${nome}: a razão do handoff não é técnica`).toContain("ai_budget_error:");
+  // Mesma razão do hard stop: fail-closed técnico que não põe a conversa na
+  // fila deixa o cliente com uma resposta e o restaurante sem nenhuma.
+  expect(
+    escrita,
+    `${nome}: o handoff não põe a conversa na fila do operador`,
+  ).toContain('status: "awaiting_human"');
   expect(
     escrita,
     `${nome}: fail-closed técnico virou "franquia esgotada" para o operador`,
@@ -2305,6 +2319,27 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     }
   });
 
+  it("o catch EXTERNO também sanitiza — é o que persiste em webhook_executions", () => {
+    // Defesa em profundidade: o laço já sanitiza o que vem do provedor, mas este
+    // é o único caminho para o que escapar de FORA dele, e o que ele registra vai
+    // para `webhook_executions.error` e `processed_messages` — onde uma URL do
+    // Gemini com `?key=<chave>` ficaria PERSISTIDA. Sobre o bloco do catch, não
+    // sobre o arquivo: há vários `String(err)` legítimos noutros pontos.
+    const bloco = catchExterno();
+    expect(bloco, "o catch externo deixou de registrar o erro").toContain("webhook_error");
+    const usos = [...bloco.matchAll(/\berr:\s*([^,;\n)]+)/g)].map((m) => m[1].trim());
+    const finishes = [...bloco.matchAll(/finish\("webhook_error",\s*([^)]+)\)/g)].map((m) =>
+      m[1].trim(),
+    );
+    expect(usos.length + finishes.length, "o detector não achou nenhum uso do erro")
+      .toBeGreaterThanOrEqual(2);
+    for (const uso of [...usos, ...finishes]) {
+      expect(uso, "erro cru no catch externo — vai persistido para o banco").toContain(
+        "sanitizeProviderError(",
+      );
+    }
+  });
+
   it("o hard stop NÃO desliga o canal nem toca no billing da organização", () => {
     // O WhatsApp continua recebendo, a conversa continua visível e o
     // atendimento humano continua possível. A única escrita é na conversa.
@@ -2338,4 +2373,106 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     expect(webhook.includes("MEDIA_REPLY_TEXT")).toBe(true);
     expect(webhook.includes("SIMBOLO_QUE_NAO_EXISTE")).toBe(false);
   });
+});
+
+// ─── N1: o campo que põe a conversa na FILA DO OPERADOR ────────────────────
+//
+// Os dois verificadores acima (`exigeHardStopCompleto`, `exigeFailClosedTecnico`)
+// prendem o status nas portas da franquia. Este bloco cobre as SETE — inclusive
+// as duas PRÉ-EXISTENTES ao Plano D (`agent_error`, `api_key_not_configured`) e a
+// da ferramenta `request_human_handoff`, que nunca tiveram guarda nenhuma:
+// trocar `"awaiting_human"` por `"ai_active"` nas sete deixava a suíte INTEIRA
+// verde. A consequência é a mesma nas sete — cliente avisado, conversa seguindo
+// com a IA, restaurante nunca vendo a conversa na fila.
+//
+// A enumeração é por PROPRIEDADE, não por lista redigitada de razões: toda
+// escrita em `conversations` que grava uma razão de handoff não-nula E rearma o
+// lembrete (`last_silenced_reply_at: null`) é uma porta para a fila do operador.
+// Uma porta nova entra sozinha na contagem, e a contagem é fixada de propósito —
+// acrescentar porta é edição legítima, e ajustar o número faz parte dela.
+
+/** `status: "..."` de uma escrita, ou `null` quando o campo não é literal. */
+function statusLiteralDe(stmt: string): string | null {
+  const m = stmt.match(/status:\s*"([a-z_]+)"/);
+  return m ? m[1] : null;
+}
+
+/** Toda escrita em `conversations` que grava razão de handoff NÃO-NULA. */
+function escritasDeHandoff(): Array<{ stmt: string; status: string | null; razao: string }> {
+  const out: Array<{ stmt: string; status: string | null; razao: string }> = [];
+  for (const m of webhookCode.matchAll(/\.from\("conversations"\)/g)) {
+    const stmt = statementFrom(webhookCode, m.index!);
+    const razao = stmt.match(/handoff_reason:\s*([^,\n]+)/);
+    // `handoff_reason: null` é o oposto — devolver a conversa à IA.
+    if (!razao || razao[1].trim() === "null") continue;
+    out.push({ stmt, status: statusLiteralDe(stmt), razao: razao[1].trim() });
+  }
+  return out;
+}
+
+/** A escrita da porta ancorada pelo fragmento da RAZÃO que só ela usa. */
+function escritaDaPorta(fragmentoDaRazao: string): string {
+  const i = webhookCode.indexOf(fragmentoDaRazao);
+  expect(i, `porta não encontrada: ${fragmentoDaRazao}`).toBeGreaterThan(-1);
+  const j = webhookCode.lastIndexOf('.from("conversations")', i);
+  expect(j, `a porta ${fragmentoDaRazao} não escreve em conversations`).toBeGreaterThan(-1);
+  return statementFrom(webhookCode, j);
+}
+
+describe("webhook-whatsapp — toda porta de handoff põe a conversa na fila", () => {
+  const escritas = escritasDeHandoff();
+  const portas = escritas.filter((e) => e.stmt.includes("last_silenced_reply_at: null"));
+  const outras = escritas.filter((e) => !e.stmt.includes("last_silenced_reply_at: null"));
+
+  it("o detector separa as portas do handoff de quem NÃO é porta", () => {
+    // Sem este controle, um discriminador que casasse TUDO (ou NADA) deixaria os
+    // casos abaixo verdes sem medir coisa alguma.
+    expect(escritas.length, "nenhuma escrita de handoff — o detector quebrou").toBeGreaterThan(0);
+    expect(outras.length, "o discriminador engoliu todas as escritas").toBeGreaterThan(0);
+    // A escrita que NÃO é porta é o eco da mensagem digitada no celular da loja:
+    // o humano JÁ está atendendo, e o lembrete não é rearmado de propósito.
+    for (const e of outras) {
+      expect(
+        e.status,
+        `escrita de handoff fora do padrão da fila, com status ${e.status}: ${e.razao}`,
+      ).toBe("human_active");
+    }
+  });
+
+  it("são SETE portas, e cada uma escreve o valor que o operador vê", () => {
+    expect(
+      portas.length,
+      "o número de portas de handoff mudou — se foi acréscimo legítimo, ajuste o número junto",
+    ).toBe(7);
+    for (const p of portas) {
+      expect(
+        p.status,
+        `a porta de \`${p.razao}\` não põe a conversa na fila do operador (status: ${p.status})`,
+      ).toBe("awaiting_human");
+    }
+  });
+
+  it("as sete não são a mesma porta repetida — as razões são próprias", () => {
+    // Se as sete colapsassem numa razão só, prender o status ainda ficaria verde
+    // enquanto o operador perderia a distinção entre teto, chave ausente, preço
+    // desconhecido e falha do provedor.
+    const razoes = new Set(portas.map((p) => p.razao));
+    expect(razoes.size, "as portas compartilham a mesma razão de handoff").toBeGreaterThanOrEqual(6);
+  });
+
+  for (const [nome, ancora] of [
+    ["hard stop da franquia", "handoff_reason: AI_BUDGET_HANDOFF_REASON"],
+    ["chave de IA ausente (legado)", "handoff_reason: `api_key_not_configured:"],
+    ["fail-closed técnico da abertura", "handoff_reason: `ai_budget_error:"],
+    ["ferramenta request_human_handoff", "handoff_reason: input.reason"],
+    ["negação do laço", "handoff_reason: handoffReason"],
+    ["erro do agente (legado)", "handoff_reason: `agent_error:"],
+  ] as const) {
+    it(`${nome}: a escrita carrega o status da fila`, () => {
+      expect(
+        escritaDaPorta(ancora),
+        `${nome}: a conversa não vai para a fila do operador`,
+      ).toContain('status: "awaiting_human"');
+    });
+  }
 });

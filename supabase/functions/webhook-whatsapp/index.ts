@@ -3090,7 +3090,12 @@ serve(async (req) => {
     // `RELEASED` porque o turno foi interrompido; e é no-op quando não houve
     // reserva. Fica dentro do try interno pelo mesmo motivo do lock: nada aqui
     // pode transformar um erro em outro erro.
-    jsonLog("error", { requestId, evt: "webhook_error", err: String(err) });
+    // SANITIZADO como todo caminho de erro do agente. O laço já sanitiza o que
+    // vem do provedor, então este `catch` externo é defesa em profundidade — mas
+    // ele é o ÚNICO que captura o que escapar de fora do laço, e o que ele
+    // registra vai para `webhook_executions.error` e para `processed_messages`,
+    // onde uma URL do Gemini com `?key=<chave>` ficaria persistida.
+    jsonLog("error", { requestId, evt: "webhook_error", err: sanitizeProviderError(err) });
     try {
       // PRIMEIRO de todos, aqui: antes do `finish` pela mesma razão dos outros
       // cinco desfechos, e antes do `releaseAiLock` porque soltar o lock com a
@@ -3100,7 +3105,7 @@ serve(async (req) => {
       // no sucesso.
       await settleTurnBudget("RELEASED");
       await releaseAiLock();
-      await finish("webhook_error", String(err));
+      await finish("webhook_error", sanitizeProviderError(err));
     } catch {
       // ignore — TTL de 90s libera o lock
     }
