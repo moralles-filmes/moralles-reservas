@@ -14,9 +14,14 @@
  * REGRA DE PROJETO DESTE ARQUIVO: asserção que continua verde com a regra
  * removida não vale a linha. Nada aqui fatia por janela de N caracteres — a
  * rodada anterior desta frente mediu o vizinho em vez do alvo exatamente assim.
- * Todo recorte é por fronteira sintática real (cabeçalho de função até o `}` de
- * coluna zero; par de chaves balanceado; par de parênteses balanceado), e todo
+ * Todo recorte é por fronteira sintática REAL, e são só quatro: cabeçalho de
+ * função até o `}` de coluna zero; par de chaves balanceado; par de parênteses
+ * balanceado; fim de statement (`;`) ou delimitador de comentário (`/**`). Todo
  * detector tem controle positivo E negativo sobre fonte sintética.
+ *
+ * E toda asserção sobre IDENTIDADE de valor — o modelo que vai ao autorizador é
+ * o modelo que vai ao provedor — compara as duas ocorrências entre si. Só checar
+ * que a chave `model` existe no objeto é verde com um literal fixo dentro.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -65,6 +70,17 @@ function braceBlock(src: string, from: number): [number, number] {
   throw new Error(`chaves desbalanceadas a partir de ${open}`);
 }
 
+/**
+ * Apaga o CONTEÚDO dos comentários preservando os índices (troca por espaço).
+ * Necessário quando a regra é sobre CÓDIGO e a prosa cita o mesmo identificador
+ * de propósito — como o JSDoc que explica `opts.budget`.
+ */
+function blankComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+}
+
 /** Par de parênteses balanceado a partir do primeiro `(` em/depois de `from`. */
 function parenBlock(src: string, from: number): string {
   const open = src.indexOf("(", from);
@@ -86,6 +102,28 @@ function budgetSpec(runnerBody: string): string {
   expect(i, "runner não chama callWithBudget").toBeGreaterThan(-1);
   const [a, b] = braceBlock(runnerBody, i);
   return runnerBody.slice(a, b);
+}
+
+/**
+ * A EXPRESSÃO que o spec passa em `model` — shorthand (`model,`) ou identificador
+ * (`model: attemptModel,`). Um literal fixo (`model: "gpt-4o"`) não casa e o caso
+ * fica vermelho: é a diferença entre "declara um modelo" e "declara O modelo".
+ */
+function specModelExpr(spec: string, runner: string): string {
+  const m = spec.match(/\n\s*model(?::\s*([A-Za-z_$][\w$.]*))?\s*,/);
+  expect(
+    m,
+    `${runner}: spec não passa \`model\` como identificador — literal fixo ou chave ausente`,
+  ).not.toBeNull();
+  return m![1] ?? "model";
+}
+
+/** O bloco `invoke: async () => { … }` de UM spec, por chaves balanceadas. */
+function invokeBlockOf(spec: string, runner: string): string {
+  const i = spec.search(/invoke:\s*async/);
+  expect(i, `${runner}: spec não passa invoke`).toBeGreaterThan(-1);
+  const [a, b] = braceBlock(spec, i);
+  return spec.slice(a, b);
 }
 
 /** Todos os blocos `invoke: async () => { … }` do arquivo, balanceados. */
@@ -157,7 +195,17 @@ describe("ai-providers.ts — contrato de orçamento", () => {
   it("controle dos recortes: nenhum bloco sangra para a função vizinha", () => {
     // Sem isto, um recorte que não encontra sua fronteira devolve o arquivo
     // inteiro e TODAS as asserções de corpo passam a medir todas as funções.
-    const nomes = ["callWithBudget", "callGeminiOnce", "sanitizeProviderError", ...RUNNERS];
+    // A lista precisa conter TODA função que algum caso recorta — uma que fique
+    // de fora sangra sem ninguém notar, que é o defeito original desta classe.
+    const nomes = [
+      "callWithBudget",
+      "callGeminiOnce",
+      "sanitizeProviderError",
+      "shouldTryGeminiFallback",
+      "runAgentLoop",
+      "estimateCostUsd",
+      ...RUNNERS,
+    ];
     for (const nome of nomes) {
       const bloco = fnBlock(providers, nome);
       expect(bloco.length, `recorte de ${nome} vazio`).toBeGreaterThan(50);
@@ -187,8 +235,27 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     expect(body).toMatch(/priceFor:\s*\(provider,\s*model\)\s*=>/);
     for (const runner of RUNNERS) {
       const rb = fnBlock(providers, runner);
-      expect(rb, `${runner} chama beforeCall por fora do núcleo`).not.toContain("beforeCall(");
-      expect(rb, `${runner} chama reportCall por fora do núcleo`).not.toContain("reportCall(");
+      // Sem o `(`: pega `b.beforeCall (ctx)`, `const { beforeCall } = …` e
+      // qualquer alias, porque o NOME tem de aparecer para o alias existir.
+      for (const gancho of ["beforeCall", "reportCall", "priceFor", "newCallId", "snapshot"]) {
+        expect(rb, `${runner} menciona o gancho ${gancho} por fora do núcleo`).not.toContain(gancho);
+      }
+      // E a regra de que ele nasce: `opts.budget` é lido em UM lugar só.
+      expect(rb, `${runner} lê opts.budget direto — só callWithBudget pode`).not.toContain(
+        "opts.budget",
+      );
+    }
+    // `opts.budget` é LIDO num lugar só. Comentários são apagados preservando
+    // índices — a prosa cita o campo de propósito e não é leitura.
+    const codigo = blankComments(providers);
+    const [s, e] = fnRange(codigo, "callWithBudget")!;
+    const donos = [...codigo.matchAll(/opts\.budget/g)];
+    expect(donos.length, "opts.budget não é mais lido em lugar nenhum").toBeGreaterThan(0);
+    for (const m of donos) {
+      expect(
+        m.index! > s && m.index! < e,
+        `opts.budget lido fora de callWithBudget (índice ${m.index})`,
+      ).toBe(true);
     }
   });
 
@@ -251,12 +318,47 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     for (const runner of RUNNERS) {
       const spec = budgetSpec(fnBlock(providers, runner));
       expect(spec, `${runner} não declara o provedor`).toMatch(esperado[runner]);
-      expect(spec, `${runner} não declara o modelo`).toMatch(/model[:,]/);
       expect(spec, `${runner} não declara a iteração`).toMatch(
         /iteration:\s*MAX_ITERATIONS\s*-\s*iterations/,
       );
       expect(spec, `${runner} não passa invoke`).toMatch(/invoke:\s*async/);
+
+      // IDENTIDADE, não presença: o modelo autorizado tem de ser a MESMA
+      // expressão que o `invoke` manda ao provedor. Um literal fixo no spec
+      // (`model: "gpt-4o"`) satisfazia a checagem antiga enquanto o laço chamava
+      // outro modelo — e é exatamente assim que se autoriza Flash e chama Pro.
+      expect(spec, `${runner} fixa o modelo por literal no spec`).not.toMatch(
+        /model:\s*["'`]/,
+      );
+      const expr = specModelExpr(spec, runner);
+      expect(
+        invokeBlockOf(spec, runner),
+        `${runner}: o modelo autorizado (${expr}) não é o que vai ao provedor`,
+      ).toContain(expr);
     }
+  });
+
+  it("o snapshot é pedido para o MODELO da chamada em curso, não para o do turno", () => {
+    // `nextCallEstimateCents` é a estimativa que viaja no BeforeCallContext e
+    // contra a qual `planNextCall` decide ALLOW vs EXTEND. Só com a iteração, o
+    // contrato entrega um número precificado no modelo do TURNO — e a tentativa
+    // de fallback (Pro) chega ao autorizador com folga de Flash. O adapter
+    // recalcula no `beforeCall`; o que se prende aqui é o contrato não mentir.
+    expect(providers, "o hook voltou a receber só a iteração").toMatch(
+      /snapshot\(\s*iteration:\s*number,\s*provider:\s*string,\s*model:\s*string\s*\)/,
+    );
+    const helper = fnBlock(providers, "callWithBudget");
+    const i = helper.indexOf("b.snapshot(");
+    expect(i, "callWithBudget não pede o snapshot").toBeGreaterThan(-1);
+    const args = parenBlock(helper, i);
+    expect(args, "o snapshot não recebe a iteração da chamada").toContain("spec.iteration");
+    expect(args, "o snapshot não recebe o provedor da chamada").toContain("spec.provider");
+    expect(args, "o snapshot não recebe o MODELO da chamada").toContain("spec.model");
+    // E é o mesmo `spec.model` que vai para a autorização — um não pode divergir
+    // do outro, senão estima-se um modelo e autoriza-se outro.
+    expect(helper, "o autorizador recebe um modelo diferente do estimado").toMatch(
+      /model:\s*spec\.model\b/,
+    );
   });
 
   it("negação encerra o turno — nenhum runner segue para a próxima chamada", () => {
@@ -307,9 +409,10 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     expect(spec, "a autorização do Gemini não usa o modelo da TENTATIVA").toMatch(
       /model:\s*attemptModel\b/,
     );
-    expect(spec, "o HTTP do Gemini não usa o modelo da tentativa").toMatch(
-      /callGeminiOnce\([\s\S]{0,200}attemptModel/,
-    );
+    // Argumentos recortados por parênteses balanceados — não por janela de N
+    // caracteres, que mediria o que estivesse por perto.
+    const httpArgs = parenBlock(spec, spec.indexOf("callGeminiOnce("));
+    expect(httpArgs, "o HTTP do Gemini não usa o modelo da tentativa").toContain("attemptModel");
 
     // O helper de UMA chamada não escolhe modelo — quem escolhe é o laço que
     // autoriza cada tentativa.
@@ -322,7 +425,10 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     const body = fnBlock(providers, "runGemini");
     const i = body.indexOf("if (denied)");
     expect(i, "a negação da tentativa não é propagada para fora do laço").toBeGreaterThan(-1);
-    expect(body.slice(i, i + 200)).toMatch(/return \{ kind: "DENIED"/);
+    // Chaves balanceadas: pega o bloco `{ … }` se houver, e o objeto devolvido
+    // na forma de uma linha só. Nos dois casos é fronteira real, não janela.
+    const [a, b] = braceBlock(body, i);
+    expect(body.slice(a, b)).toMatch(/kind: "DENIED"/);
   });
 
   it("o erro do provedor é SANITIZADO antes de virar desfecho financeiro", () => {
@@ -340,22 +446,60 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     }
   });
 
-  it("erro do provedor nunca é estringificado cru para log", () => {
+  it("erro do provedor nunca é estringificado cru — nem por String(), nem por interpolação", () => {
     // A URL do Gemini leva `?key=<chave>` e mensagens de rede do runtime a ecoam.
-    expect(providers).not.toMatch(/String\(\s*(?:err|error|lastError)\b/);
+    // As DUAS formas contam: `String(e)` (o objeto lançado em runGemini se chama
+    // `e`) e `${err}`. Cobrir só uma deixa a outra livre.
+    expect(providers, "String() cru sobre um erro").not.toMatch(
+      /String\(\s*(?:err|error|e|ex|lastError)\s*[).,]/,
+    );
+    expect(providers, "interpolação crua de um erro").not.toMatch(
+      /\$\{\s*(?:err|error|e|ex|lastError)\s*\}/,
+    );
   });
 
-  it("nenhuma chave de API aparece em log", () => {
-    for (const args of consoleCallArgs(providers)) {
-      expect(args).not.toMatch(/apiKey|api_key|Authorization|credentials/);
+  it("todo log é estruturado, e nenhum campo dele pode carregar a chave", () => {
+    // Sobre o CÓDIGO do log, não sobre a prosa: o comentário que explica por que
+    // a URL com `?key=` precisa ser sanitizada não é um vazamento. Índices
+    // preservados, então os blocos recortados são os mesmos.
+    const logs = consoleCallArgs(blankComments(providers));
+    expect(logs.length, "nenhum console encontrado — o detector quebrou").toBeGreaterThan(0);
+    for (const args of logs) {
+      // Valor cru como argumento (`console.warn(url)`) esconde a URL do Gemini,
+      // que leva `?key=<chave>`, de qualquer verificação por NOME de campo.
+      expect(args, "log não estruturado — um valor cru pode carregar a chave").toMatch(
+        /^\(\s*JSON\.stringify\(\{/,
+      );
+      expect(args, "campo com cara de credencial no log").not.toMatch(
+        /apiKey|api_key|Authorization|credentials|key=/,
+      );
+      // E todo VALOR de erro passa pelo sanitizador — o lado direito do campo,
+      // não o nome dele.
+      for (const line of args.split("\n")) {
+        const c = line.indexOf(":");
+        if (c === -1) continue;
+        if (!/\b(?:err|error|lastError|ex)\b/.test(line.slice(c + 1))) continue;
+        expect(line, "valor de erro entra no log sem sanitizador").toContain(
+          "sanitizeProviderError",
+        );
+      }
     }
   });
 
-  it("controle do detector de log: reconhece a chave dentro do console", () => {
-    const bad = `console.warn(JSON.stringify({ evt: "x", key: opts.apiKey }));`;
-    expect(consoleCallArgs(bad)).toHaveLength(1);
-    expect(consoleCallArgs(bad)[0]).toMatch(/apiKey/);
-    expect(consoleCallArgs(`console.warn(JSON.stringify({ evt: "x" }));`)[0]).not.toMatch(/apiKey/);
+  it("controle do detector de log: pega a chave, o log não estruturado e o erro cru", () => {
+    const comChave = `console.warn(JSON.stringify({ evt: "x", key: opts.apiKey }));`;
+    expect(consoleCallArgs(comChave)).toHaveLength(1);
+    expect(consoleCallArgs(comChave)[0]).toMatch(/apiKey/);
+    // Log não estruturado: é assim que a URL com `?key=` escaparia da checagem
+    // por nome de campo.
+    expect(consoleCallArgs(`console.warn(url);`)[0]).not.toMatch(/^\(\s*JSON\.stringify\(\{/);
+    expect(
+      consoleCallArgs(`console.warn(JSON.stringify({ evt: "x" }));`)[0],
+    ).toMatch(/^\(\s*JSON\.stringify\(\{/);
+    // Erro cru no valor de um campo estruturado.
+    const cru = `console.warn(JSON.stringify({\n  error: String(e),\n}));`;
+    const linhaCrua = consoleCallArgs(cru)[0].split("\n").find((l) => l.includes("error:"));
+    expect(linhaCrua).not.toContain("sanitizeProviderError");
   });
 
   it("o catálogo de modelos NÃO muda nesta frente — manage-ai-providers fora do redeploy", () => {

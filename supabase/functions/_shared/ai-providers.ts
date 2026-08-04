@@ -67,8 +67,24 @@ export interface AgentBudgetHooks {
   beforeCall(ctx: BeforeCallContext): Promise<BeforeCallDecision>;
   reportCall(meta: AgentCallMeta, outcome: AgentCallOutcome, priceId: string): Promise<void>;
   newCallId(): string;
-  /** Estado corrente da reserva + estimativa já precificada da próxima chamada. */
-  snapshot(iteration: number): {
+  /**
+   * Estado corrente da reserva + estimativa já precificada da próxima chamada.
+   * SÍNCRONO de propósito: quem faz I/O de preço é o `beforeCall`, que já é async.
+   *
+   * RECEBE PROVEDOR E MODELO para que o contrato não minta. `nextCallEstimateCents`
+   * é a estimativa pré-chamada que viaja no `BeforeCallContext`, e `planNextCall`
+   * a compara contra `reserved − consumed` para decidir ALLOW vs EXTEND. Só com a
+   * iteração, o número entregue aqui seria precificado no modelo do TURNO — e a
+   * tentativa de fallback do Gemini (Pro, ordem de grandeza mais caro por Mtok que
+   * Flash) chegaria ao autorizador com folga de Flash.
+   *
+   * Defesa em profundidade, não correção de sub-reserva ativa: o adapter recalcula
+   * a estimativa a partir de `ctx.provider`/`ctx.model` dentro do `beforeCall`, e
+   * é LÁ que mora a garantia de que a cobertura é a do modelo real. O que se
+   * conserta aqui é o contrato — para que um adapter futuro que confie no valor
+   * recebido não autorize Pro com folga de Flash.
+   */
+  snapshot(iteration: number, provider: string, model: string): {
     consumedCents: number;
     reservedCents: number;
     nextCallEstimateCents: number;
@@ -339,7 +355,7 @@ async function callWithBudget<T>(
     return { kind: "OK", value: r.value };
   }
 
-  const snap = b.snapshot(spec.iteration);
+  const snap = b.snapshot(spec.iteration, spec.provider, spec.model);
   let thrown: unknown = null;
 
   const authorized: AuthorizedCall = await authorizeAndInvoke(
@@ -384,7 +400,14 @@ async function callWithBudget<T>(
   if (thrown) throw thrown;
 
   const res = authorized.result;
-  if (res.kind === "FAILED") throw res.error;
+  if (res.kind === "FAILED") {
+    // Inalcançável: só `spec.invoke()` produz FAILED, e esse caminho já guardou
+    // `thrown` e saiu acima com o erro ORIGINAL. O ramo existe para estreitar a
+    // união — e relança um Error de verdade porque `res.error` aqui é a STRING
+    // já sanitizada: relançá-la crua faria o `err instanceof Error` de quem
+    // recebe tomar o ramo errado.
+    throw new Error(sanitizeProviderError(res.error));
+  }
 
   // Telemetria legada (log `agent_usage`) continua alimentada.
   if (opts.onUsage && authorized.outcome.kind === "USAGE") {
