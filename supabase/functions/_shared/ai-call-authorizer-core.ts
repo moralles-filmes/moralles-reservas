@@ -48,7 +48,22 @@ export interface AgentCallMeta {
 export type AgentCallOutcome =
   | { kind: "USAGE"; usage: AiUsageTokens }
   | { kind: "NO_USAGE" }
-  | { kind: "PROVIDER_FAILED"; error: unknown };
+  | {
+      kind: "PROVIDER_FAILED";
+      /**
+       * Erro CRU do SDK do provedor — não sanitizado por este núcleo. Pode
+       * ecoar o request original, e o request carrega o header de
+       * autorização com a chave de IA BYOK da unit. O núcleo não loga nem
+       * persiste este campo (não há violação aqui), mas o ADAPTER que
+       * implementa `invoke`/consome este outcome (os cinco runners de
+       * provider) DEVE sanitizar antes de logar, telemetrar ou persistir —
+       * nunca repassar cru. Contraste deliberado com `sanitizedCode`
+       * (string, já seguro) da variante `ERROR` do núcleo irmão
+       * `ai-budget-core.ts`: lá a sanitização já aconteceu; aqui ainda é
+       * responsabilidade de quem consome.
+       */
+      error: unknown;
+    };
 
 export type ProviderInvokeResult =
   | { kind: "OK"; value: unknown; rawUsage: unknown }

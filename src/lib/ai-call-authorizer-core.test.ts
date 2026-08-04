@@ -101,6 +101,7 @@ describe("protocolo ordenado por chamada (§17.7.3)", () => {
       const r = await authorizeAndInvoke(base(), d);
       expect(r.kind).toBe("DENIED");
       expect(d.invoke).not.toHaveBeenCalled();
+      expect(d.reportCall).not.toHaveBeenCalled();
     }
   });
 
@@ -131,6 +132,15 @@ describe("protocolo ordenado por chamada (§17.7.3)", () => {
     expect(d.priceFor).toHaveBeenCalledWith("gemini", "gemini-2.5-pro");
   });
 
+  it("usage do provider é propagado intacto — o ramo que faz o orçamento andar", async () => {
+    const d = deps();
+    const r = await authorizeAndInvoke(base(), d);
+    if (r.kind !== "EXECUTED") throw new Error("deveria ter executado");
+    if (r.outcome.kind !== "USAGE") throw new Error("deveria ser USAGE, veio " + r.outcome.kind);
+    expect(r.outcome.usage.input_tokens).toBe(100);
+    expect(r.outcome.usage.output_tokens).toBe(50);
+  });
+
   it("usage ausente vira NO_USAGE — nunca consumo zero", async () => {
     const d = deps({
       invoke: vi.fn(async () => ({ kind: "OK" as const, value: {}, rawUsage: null })),
@@ -152,14 +162,16 @@ describe("protocolo ordenado por chamada (§17.7.3)", () => {
   });
 
   it("falha do provider vira PROVIDER_FAILED e ainda assim é reportada", async () => {
+    const providerError = new Error("503");
     const d = deps({
-      invoke: vi.fn(async () => ({ kind: "FAILED" as const, error: new Error("503") })),
+      invoke: vi.fn(async () => ({ kind: "FAILED" as const, error: providerError })),
     });
     const r = await authorizeAndInvoke(base(), d);
     expect(r.kind).toBe("EXECUTED");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- introspecção de mock.calls
     const [, outcome] = (d.reportCall as any).mock.calls[0];
     expect(outcome.kind).toBe("PROVIDER_FAILED");
+    expect(outcome.error).toBe(providerError);
   });
 
   it("reportCall recebe o priceId da vigência consultada, não um preço inventado", async () => {
