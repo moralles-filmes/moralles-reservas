@@ -22,6 +22,32 @@
  * E toda asserção sobre IDENTIDADE de valor — o modelo que vai ao autorizador é
  * o modelo que vai ao provedor — compara as duas ocorrências entre si. Só checar
  * que a chave `model` existe no objeto é verde com um literal fixo dentro.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * QUANDO ESTE ARQUIVO REPROVAR UMA REFATORAÇÃO QUE VOCÊ SABE ESTAR CERTA
+ *
+ * Acontece: alguns recortes conhecem a FORMA do código de hoje (destructuring
+ * vs acesso de propriedade, guarda num `if` ou em dois, quantos desfechos
+ * existem). Quando um deles reprovar código correto, o conserto é **ajustar o
+ * EXTRATOR** — `ligadoDe`, `guardasDe`, `varsDaPorta`, a lista de blocos
+ * isentos — para reconhecer a forma nova. Nunca é apagar a asserção, e nunca é
+ * trocá-la por uma mais fraca.
+ *
+ * Mais fraca quer dizer, concretamente (são as SEIS famílias de falso-verde que
+ * já reprovaram rodadas desta frente, cada uma um degrau da anterior):
+ *   1. construir um valor em vez de PASSÁ-LO adiante;
+ *   2. passá-lo em vez de GUARDÁ-LO onde quem consome vai ler;
+ *   3. medir a condição que decide em vez da ORIGEM que a alimenta
+ *      (`= false` deixava um gate inteiro verde, duas vezes);
+ *   4. medir POSIÇÃO no arquivo em vez do RAMO que executa;
+ *   5. medir PRESENÇA de um identificador em vez da IDENTIDADE dele;
+ *   6. medir a CONDIÇÃO de um bloco sem medir o CORPO dele (três portas
+ *      tinham gate testado e corpo livre para mentir ao cliente).
+ *
+ * Se a asserção parecer só chata, releia o comentário ao lado dela: cada uma
+ * nomeia a cirurgia concreta que ficava VERDE sem ela. `tsc -b` não alcança
+ * `supabase/functions` e o eslint não diz nada sobre este caminho — aqui não há
+ * segunda rede, e um tripwire deletado por incômodo é a falha final.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -1432,8 +1458,20 @@ function atribuicoesDe(nome: string): Array<{ valor: string; index: number }> {
  */
 function ligadoDe(recorte: string, objeto: string, prop: string): string {
   const m = recorte.match(new RegExp(`const\\s*\\{([^}]*)\\}\\s*=\\s*${objeto};`));
-  expect(m, `o recorte não desestrutura ${objeto}`).not.toBeNull();
-  const campo = m![1]
+  if (!m) {
+    // SEM DESESTRUTURAÇÃO, duas outras formas legítimas — e as duas preservam a
+    // identidade, que é o que interessa. Exigir a forma sintática reprovaria
+    // código correto, e tripwire que reprova código correto acaba deletado.
+    const local = recorte.match(
+      new RegExp(`const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${objeto}\\.${prop};`),
+    );
+    if (local) return local[1];
+    expect(recorte, `${objeto}.${prop} não é lido de forma nenhuma`).toContain(
+      `${objeto}.${prop}`,
+    );
+    return `${objeto}.${prop}`;
+  }
+  const campo = m[1]
     .split(",")
     .map((s) => s.trim())
     .find((s) => s === prop || s.startsWith(`${prop}:`));
@@ -1448,8 +1486,92 @@ function ligadoDe(recorte: string, objeto: string, prop: string): string {
  * diferença entre "endereça uma reserva" e "endereça A reserva".
  */
 function passaIdentidade(args: string, chave: string, ident: string): boolean {
-  if (new RegExp(`${chave}:\\s*${ident}\\b`).test(args)) return true;
-  return chave === ident && new RegExp(`[{,]\\s*${ident}\\s*[,}]`).test(args);
+  const escapado = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(`${chave}:\\s*${escapado}\\b`).test(args)) return true;
+  return chave === ident && new RegExp(`[{,]\\s*${escapado}\\s*[,}]`).test(args);
+}
+
+/**
+ * Os identificadores que uma guarda de entrada EXIGE (`if (!x || !y) return;`),
+ * junto com quantas guardas válidas existem.
+ *
+ * Coleta de TODAS as guardas do recorte, não de uma forma única: partir a
+ * guarda em dois `if` separados é refatoração legítima e derrubava três casos de
+ * uma vez. Guarda "válida" é a que nega ao menos um identificador — `if (true)
+ * return;` casa o formato e NÃO entra, que é o que permite contar saídas.
+ */
+function guardasDe(recorte: string): { nomes: string[]; guardas: number } {
+  const nomes: string[] = [];
+  let guardas = 0;
+  for (const m of recorte.matchAll(/if \(([^)]*)\)\s*return;/g)) {
+    const negados = [...m[1].matchAll(/!\s*([A-Za-z_$][\w$]*)/g)].map((g) => g[1]);
+    if (!negados.length) continue;
+    guardas++;
+    nomes.push(...negados);
+  }
+  return { nomes, guardas };
+}
+
+/**
+ * As duas variáveis que a porta única exige, identificadas por ORIGEM (quem
+ * recebe `opened.budget`), não por posição na guarda.
+ *
+ * A versão anterior casava `if (!x || !y) return;` como forma única e devolvia
+ * `[x, y]` posicionais: partir a guarda em dois `if` — refatoração legítima —
+ * derrubava três casos de uma vez, e a ordem dos operandos virava contrato.
+ */
+function varsDaPorta(porta: string): { varReserva: string; varOrg: string; guardas: number } {
+  const { nomes, guardas } = guardasDe(porta);
+  expect(guardas, "a porta única não guarda mais o estado").toBeGreaterThan(0);
+  expect(nomes.length, "a porta única exige menos de dois valores").toBeGreaterThanOrEqual(2);
+  const reserva = nomes.find((n) => atribuicoesDe(n).some((a) => a.valor === "opened.budget"));
+  expect(reserva, "nenhum valor exigido pela porta recebe a reserva do READY").toBeDefined();
+  const org = nomes.find((n) => n !== reserva);
+  expect(org, "a porta única não exige o tenant além da reserva").toBeDefined();
+  return { varReserva: reserva!, varOrg: org!, guardas };
+}
+
+/** Profundidade de chaves (não fechadas) do início do recorte até `idx`. */
+function profundidade(recorte: string, idx: number): number {
+  let d = 0;
+  for (let i = 0; i < idx; i++) {
+    if (recorte[i] === "{") d++;
+    else if (recorte[i] === "}") d--;
+  }
+  return d;
+}
+
+/**
+ * As obrigações do fail-closed TÉCNICO — a TERCEIRA porta, irmã de
+ * `exigeHardStopCompleto` e o oposto dela na copy.
+ *
+ * `ERROR` não é parada dura e falha de infraestrutura não é franquia esgotada.
+ * A porta tinha caso só sobre a CONDIÇÃO (`failClosed`): trocar o texto por
+ * `AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT` dizia AO CLIENTE que a franquia acabou
+ * quando o que houve foi preço desconhecido ou soluço de banco, e trocar a
+ * razão por `AI_BUDGET_HANDOFF_REASON` dizia o mesmo AO OPERADOR. Os dois
+ * ficavam verdes.
+ */
+function exigeFailClosedTecnico(bloco: string, nome: string) {
+  const upd = bloco.indexOf('from("conversations")');
+  expect(upd, `${nome}: não registra o handoff na conversa`).toBeGreaterThan(-1);
+  const escrita = statementFrom(bloco, upd);
+  expect(escrita, `${nome}: a razão do handoff não é técnica`).toContain("ai_budget_error:");
+  expect(
+    escrita,
+    `${nome}: fail-closed técnico virou "franquia esgotada" para o operador`,
+  ).not.toContain("AI_BUDGET_HANDOFF_REASON");
+  const envio = bloco.indexOf("sendOutbound(");
+  expect(envio, `${nome}: não responde ao cliente`).toBeGreaterThan(-1);
+  const resposta = statementFrom(bloco, envio);
+  expect(resposta, `${nome}: a resposta não é o texto de instabilidade`).toMatch(
+    /AGENT_INSTABILITY_TEXT|errText/,
+  );
+  expect(
+    bloco,
+    `${nome}: fail-closed técnico diz ao cliente que a franquia acabou`,
+  ).not.toContain("AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT");
+  expect(bloco, `${nome}: não encerra o turno`).toContain("return new Response");
 }
 
 describe("webhook-whatsapp — ligação da franquia", () => {
@@ -1619,6 +1741,12 @@ describe("webhook-whatsapp — ligação da franquia", () => {
       stmt,
       "preço desconhecido virou conjunção com a flag — abrandado em observação",
     ).toMatch(/opened\.enforced\s*\|\|/);
+
+    // E o CORPO — TERCEIRA porta, e a última das três sem verificador próprio.
+    // Aqui a copy é o OPOSTO da das outras duas: `ERROR` não é parada dura, e
+    // infraestrutura que falha não pode virar "franquia esgotada" nem para o
+    // cliente nem para o admin.
+    exigeFailClosedTecnico(blocoDe("if (failClosed)"), "o fail-closed técnico da abertura");
   });
 
   it("o hard stop anterior ao turno também respeita o modo observação", () => {
@@ -1733,10 +1861,20 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // MESMA origem: o `READY` que trouxe a reserva é o que traz o preço. Um
     // `makePriceCache(supabase)` novo aqui satisfaria a presença da chave e
     // reintroduziria exatamente os dois caches independentes.
-    expect(
-      priceExpr![1].split(".")[0],
-      "o resolvedor não vem do mesmo READY que a reserva",
-    ).toBe(budgetExpr![1].split(".")[0]);
+    const raiz = budgetExpr![1].split(".")[0];
+    expect(priceExpr![1].split(".")[0], "o resolvedor não vem do mesmo READY que a reserva").toBe(
+      raiz,
+    );
+    // E a PROPRIEDADE, não só a raiz: comparar `split(".")[0]` deixava
+    // `budget: opened.resolvePrice` passar — mesma origem, valor trocado, e os
+    // ganchos recebem um cache de preço onde deviam receber a reserva.
+    // Identidade a meio caminho não é identidade.
+    expect(budgetExpr![1], "os ganchos recebem outra propriedade no lugar da reserva").toBe(
+      `${raiz}.budget`,
+    );
+    expect(priceExpr![1], "os ganchos recebem outra propriedade no lugar do resolvedor").toBe(
+      `${raiz}.resolvePrice`,
+    );
   });
 
   it("o READY é GUARDADO — construir e ligar não bastam se ninguém guarda o dado", () => {
@@ -1751,9 +1889,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
 
     // As variáveis que a PORTA lê, extraídas dela — não redigitadas aqui, senão
     // renomear uma delas deixaria o caso medindo um nome que não existe mais.
-    const guarda = porta.match(/if \(!([A-Za-z_$][\w$]*) \|\| !([A-Za-z_$][\w$]*)\) return;/);
-    expect(guarda, "a porta única não guarda mais o estado da reserva").not.toBeNull();
-    const [, varReserva, varOrg] = guarda!;
+    const { varReserva, varOrg } = varsDaPorta(porta);
 
     // 1. A reserva do READY é guardada NA variável que a porta lê.
     expect(ready, `o READY não guarda a reserva em ${varReserva}`).toMatch(
@@ -1850,10 +1986,14 @@ describe("webhook-whatsapp — ligação da franquia", () => {
       );
       expect(args, `${nome} não recebe a identidade do turno`).toMatch(/[{\s]turnId\s*,/);
     }
-    // E o tenant guardado para a liquidação é o MESMO — não `conv.id`.
-    expect(webhookCode, "o tenant da liquidação não vem da organização").toMatch(
-      /turnBudgetOrgId = organizationId;/,
-    );
+    // E o tenant guardado para a liquidação é o MESMO — não `conv.id`. O nome
+    // da variável sai da PORTA (que já o declara), não redigitado aqui: um
+    // rename é refatoração legítima e não pode reprovar.
+    const { varOrg } = varsDaPorta(blocoDe("const settleTurnBudget = async"));
+    expect(
+      atribuicoesDe(varOrg).some((a) => a.valor === "organizationId"),
+      "o tenant da liquidação não vem da organização",
+    ).toBe(true);
 
     // As leituras que ALIMENTAM a decisão também são escopadas pela
     // organização: orçamento lido de outro tenant nunca esgota, e entitlement
@@ -1933,6 +2073,24 @@ describe("webhook-whatsapp — ligação da franquia", () => {
       expect(bloco, `o desfecho "${nome}" liquida com o rótulo errado`).toContain(
         `settleTurnBudget(${status})`,
       );
+      // AGUARDADA. Promise flutuante depois do `return new Response` pode não
+      // completar no isolate — em Deno Deploy o trabalho pendente morre com a
+      // resposta —, e o custo real some do teto exatamente como se o desfecho
+      // não liquidasse. O gatilho é banal: um autofix de lint, um refactor.
+      expect(bloco, `o desfecho "${nome}" não AGUARDA a liquidação`).toContain(
+        `await settleTurnBudget(${status})`,
+      );
+      // E INCONDICIONAL. `indexOf`/`toContain` não distinguem chamada que roda
+      // de chamada dentro de condição morta: `if (agentError) { await
+      // settleTurnBudget("SETTLED"); }` no desfecho de sucesso deixa o texto
+      // idêntico e nunca liquida. A referência é o `finish` do mesmo desfecho —
+      // os dois estão sempre no mesmo nível, e a exigência é que continuem.
+      const iS = bloco.indexOf("settleTurnBudget(");
+      const iF = bloco.indexOf("finish(");
+      expect(
+        profundidade(bloco, iS),
+        `o desfecho "${nome}" liquida sob condição própria — pode nunca rodar`,
+      ).toBe(profundidade(bloco, iF));
     }
     // ORDEM: DINHEIRO ANTES DE TELEMETRIA. `finish` carimba `processed_messages`
     // como concluída e a reentrega do provedor passa a ser deduplicada — morrer
@@ -1971,12 +2129,26 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // E a porta não pode ser NEUTRALIZADA. `if (true) return;` no topo desliga
     // as seis liquidações de uma vez e deixa idêntico todo o texto que este
     // guardrail lê — a regra "todo desfecho liquida" vira teatro sem que nenhum
-    // recorte perceba. A única saída antes do finalize é a guarda de tenant.
+    // recorte perceba. TODA saída antes do finalize tem de ser guarda de valor
+    // exigido (`if (!x) return;`); a contagem é contra as guardas, não contra o
+    // número 1, para que partir a guarda em dois `if` continue legítimo.
     const antesDoFinalize = porta.slice(0, porta.indexOf("finalizeTurn("));
+    const { guardas } = guardasDe(antesDoFinalize);
+    expect(guardas, "a porta única não guarda mais o estado").toBeGreaterThan(0);
     expect(
       [...antesDoFinalize.matchAll(/\breturn\b/g)].length,
-      "há saída extra antes da liquidação — a porta pode ser neutralizada",
-    ).toBe(1);
+      "há saída antes da liquidação que não é guarda de valor — a porta pode ser neutralizada",
+    ).toBe(guardas);
+    // As duas escritas de dinheiro são AGUARDADAS (mesmo motivo do `await` nos
+    // seis desfechos) e os marcos não ficam sob condição própria — só a guarda
+    // de negação que já tem caso acima.
+    expect(porta, "a liquidação não é aguardada").toContain("await finalizeTurn(");
+    expect(porta, "os marcos não são aguardados").toContain("await recordMilestones(");
+    const entre = porta.slice(porta.indexOf("finalizeTurn("), porta.indexOf("recordMilestones("));
+    expect(
+      [...entre.matchAll(/if \(([^)]*)\)/g)].map((m) => m[1].trim()).filter((c) => !c.startsWith("!")),
+      "os marcos ficaram sob condição própria — podem nunca ser registrados",
+    ).toEqual([]);
   });
 
   it("todo retorno posterior à reserva liquida — a lista de desfechos é exaustiva", () => {
@@ -2000,8 +2172,21 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     ];
     const isento = (i: number) => isentos.some(([a, b]) => i > a && i < b);
 
-    expect(retornos.length, "a lista de retornos posteriores à reserva mudou").toBe(8);
-    expect(retornos.filter(isento).length, "os isentos deixaram de ser dois").toBe(2);
+    // SEM CONTAGEM ABSOLUTA. A primeira versão exigia `retornos.length === 8` e
+    // reprovava a adição de um desfecho NOVO QUE LIQUIDA — código correto — só
+    // porque o número mudava. A parte que aquela contagem realmente protegia é
+    // esta: os isentos continuam sendo exatamente dois, então um retorno novo
+    // enfiado DENTRO de um bloco isento (onde a regra de trecho o dispensaria)
+    // fica vermelho.
+    expect(retornos.length, "nenhum retorno depois da reserva — o detector quebrou")
+      .toBeGreaterThanOrEqual(6);
+    expect(retornos.filter(isento).length, "os retornos isentos deixaram de ser dois").toBe(2);
+    for (const [a, b] of isentos) {
+      expect(
+        webhookCode.slice(a, b),
+        "um desfecho sem reserva passou a liquidar — não há o que finalizar ali",
+      ).not.toContain("settleTurnBudget(");
+    }
 
     // O trecho que LEVA a cada retorno é o que vai do retorno anterior (ou da
     // abertura) até ele: um retorno novo inserido no meio parte o trecho em
@@ -2010,13 +2195,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     for (const i of retornos) {
       const trecho = webhookCode.slice(anterior, i);
       anterior = i;
-      if (isento(i)) {
-        expect(
-          trecho,
-          `um desfecho sem reserva passou a liquidar (índice ${i})`,
-        ).not.toContain("settleTurnBudget(");
-        continue;
-      }
+      if (isento(i)) continue;
       expect(trecho, `retorno sem liquidação no índice ${i}`).toContain("settleTurnBudget(");
     }
   });
@@ -2028,9 +2207,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // e o consumido real sumia do teto. Dupla liquidação continua impossível
     // pela própria RPC, que devolve sem redebitar quando o status não é HELD.
     const porta = blocoDe("const settleTurnBudget = async");
-    const guardaEntrada = porta.match(/if \(!([A-Za-z_$][\w$]*) \|\| !([A-Za-z_$][\w$]*)\) return;/);
-    expect(guardaEntrada, "a porta única não guarda mais o estado").not.toBeNull();
-    const varReserva = guardaEntrada![1];
+    const { varReserva, varOrg } = varsDaPorta(porta);
 
     const chamada = porta.indexOf("finalizeTurn(");
     const confere = porta.indexOf("if (!fin)");
@@ -2084,7 +2261,6 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // E as duas escritas são escopadas pelo tenant GUARDADO com a reserva, não
     // por outro id qualquer que esteja à mão — é a última fronteira
     // multi-tenant do caminho, já dentro do dinheiro.
-    const varOrg = guardaEntrada![2];
     const captura = porta.match(new RegExp(`const (\\w+) = ${varOrg};`));
     expect(captura, "a porta não captura o tenant da reserva").not.toBeNull();
     for (const [nome, args] of [["a liquidação", argsFinalize], ["os marcos", argsMarcos]] as const) {
