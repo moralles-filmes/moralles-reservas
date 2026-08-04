@@ -9,7 +9,7 @@ import {
   SidebarLink,
   SidebarSectionTitle,
 } from "@/components/layouts/SidebarNav";
-import { Bot, Building2, CreditCard, LogOut, Users } from "lucide-react";
+import { Bot, Building2, CreditCard, LogOut, Smartphone, Users } from "lucide-react";
 import { toast } from "sonner";
 
 export function PlatformLayout({ children }: { children: React.ReactNode }) {
@@ -26,6 +26,10 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
     { to: "/platform/empresas", label: "Empresas", icon: Building2 },
     { to: "/platform/automacao", label: "Automação", icon: Bot },
     { to: "/platform/billing", label: "Cobranças", icon: CreditCard },
+    // A rota existia desde a 6b e não era alcançável por navegação — só por URL
+    // digitada. Painel sem link é painel que ninguém abre, e este é hoje o
+    // ÚNICO canal dos alertas de instância (o dispatch de e-mail está OFF).
+    { to: "/platform/instancias-whatsapp", label: "Instâncias WhatsApp", icon: Smartphone },
   ];
 
   return (

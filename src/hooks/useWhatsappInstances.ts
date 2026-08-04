@@ -61,6 +61,19 @@ export type WhatsappInstanceAlert = {
   dispatch_enabled_at_enqueue: boolean;
 };
 
+export type WhatsappInstanceNote = {
+  id: string;
+  instance_ref: string;
+  instance_id: string | null;
+  organization_id: string;
+  action: string;
+  note: string;
+  created_by: string | null;
+  /** Resolvido pela EF; `null` quando o lookup falhou ou passou do teto. */
+  created_by_email: string | null;
+  created_at: string;
+};
+
 export type PartnerSimulation = {
   simulated: true;
   instancesWithKnownCost: number;
@@ -130,6 +143,18 @@ export function useWhatsappInstanceAlerts(status?: string) {
   });
 }
 
+export function useWhatsappInstanceNotes(instanceId: string | null) {
+  return useQuery({
+    queryKey: ["whatsapp-instance-notes", instanceId],
+    enabled: !!instanceId,
+    queryFn: () =>
+      callEf<{ notes: WhatsappInstanceNote[] }>({
+        action: "list_instance_notes",
+        instance_id: instanceId,
+      }).then((r) => r.notes),
+  });
+}
+
 export function useWhatsappInstanceAction() {
   const qc = useQueryClient();
   return useMutation({
@@ -141,6 +166,12 @@ export function useWhatsappInstanceAction() {
       qc.invalidateQueries({ queryKey: ["whatsapp-instances"] });
       qc.invalidateQueries({ queryKey: ["whatsapp-instance"] });
       qc.invalidateQueries({ queryKey: ["whatsapp-instance-alerts"] });
+      // QUARTA key. `invalidateQueries` é prefix-match POR ELEMENTO do array:
+      // ["whatsapp-instance"] NÃO casa ["whatsapp-instance-notes", id] — são
+      // strings diferentes na posição 0. Sem esta linha, o histórico só
+      // atualizaria no próximo refetch e a observação recém-gravada não
+      // apareceria depois da ação que a criou.
+      qc.invalidateQueries({ queryKey: ["whatsapp-instance-notes"] });
     },
   });
 }

@@ -1,4 +1,6 @@
 import { grossMarginDisplay } from "../../supabase/functions/_shared/whatsapp-instance-revenue-core";
+import { COST_SOURCES } from "../../supabase/functions/_shared/whatsapp-instance-core";
+import { INSTANCE_NOTE_ACTIONS } from "../../supabase/functions/_shared/whatsapp-instance-notes-core";
 
 /**
  * Formatação do painel de instâncias (Fase 6b).
@@ -70,4 +72,42 @@ const DIVERGENCE_LABEL: Record<string, string> = {
  *  um texto inventado sobre um fato que a UI não conhece. */
 export function divergenceLabel(kind: string): string {
   return DIVERGENCE_LABEL[kind] ?? kind;
+}
+
+/**
+ * Procedência do custo, em português.
+ *
+ * `COST_SOURCES` é a fonte canônica (a whitelist é a ÚNICA barreira: `cost_source`
+ * é `text` sem CHECK no banco). O mapa abaixo é derivado dela — nunca redigitado —
+ * e o teste reprova nas duas direções.
+ */
+const COST_SOURCE_LABEL: Record<(typeof COST_SOURCES)[number], string> = {
+  ADMIN_INFORMED: "informado pelo administrador",
+  PROVIDER_INVOICE: "fatura do fornecedor",
+  PROVIDER_PANEL: "painel do fornecedor",
+  ESTIMATED: "estimado",
+};
+
+export const COST_SOURCE_OPTIONS: readonly { value: string; label: string }[] =
+  COST_SOURCES.map((value) => ({ value, label: COST_SOURCE_LABEL[value] }));
+
+/** Ausente é travessão, nunca um rótulo inventado — custo sem procedência é um fato. */
+export function costSourceLabel(source: string | null): string {
+  if (!source) return "—";
+  return COST_SOURCE_LABEL[source as (typeof COST_SOURCES)[number]] ?? source;
+}
+
+/** Ações do ledger de observações, em português. */
+const NOTE_ACTION_LABEL: Record<(typeof INSTANCE_NOTE_ACTIONS)[number], string> = {
+  REGISTER: "registro da instância",
+  UPDATE: "correção de vínculo",
+  REACTIVATE: "reativação",
+  SET_COST: "custo informado",
+  CONFIRM_CYCLE_DATE: "data do ciclo confirmada",
+  REQUEST_CANCELLATION: "cancelamento solicitado",
+  CONFIRM_END: "encerramento confirmado",
+};
+
+export function instanceNoteActionLabel(action: string): string {
+  return NOTE_ACTION_LABEL[action as (typeof INSTANCE_NOTE_ACTIONS)[number]] ?? action;
 }

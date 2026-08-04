@@ -209,3 +209,115 @@ banco pode reprová-la.
 **O caso 4 está aqui e não no núcleo puro de propósito:** concorrência é fato de
 banco, não aritmética de calendário. Simulá-la com mock provaria apenas que o mock
 foi escrito de acordo com o mock.
+
+---
+
+## Fase 6c — ledger `whatsapp_instance_notes` (migration 096)
+
+Nenhum caso abaixo é verificável por vitest. Roteiro para banco local
+(PostgreSQL 18.4 em `127.0.0.1:55432`, sem `pg_cron`/`pg_net`), aplicando a
+migration real sobre bootstrap mínimo — o mesmo procedimento usado para validar
+a 089.
+
+> **EXECUTADO em 2026-08-03: `NOTE-A` a `NOTE-D`, 19 casos, 19 PASS, 0 FAIL**,
+> com a 096 aplicada verbatim (três vezes, para o NOTE-A) sobre 087 e 088
+> também verbatim. Inclui os dois controles positivos: o CHECK da 089
+> reintroduzido faz o `DELETE` abortar (defeito F-01 reproduzido), e a condição
+> da 089 em `<>` puro deixa passar `NULL → uuid` (defeito latente demonstrado).
+> Harness commitado em [local-preflight/](local-preflight/README.md); resultado
+> por caso em
+> [docs/billing-asaas/FASE-6C-PENDENCIAS.md §2](../../docs/billing-asaas/FASE-6C-PENDENCIAS.md).
+>
+> **`NOTE-E` continua pendente** — RLS pelo client SDK exige Supabase de
+> verdade, não um Postgres nu.
+
+### NOTE-A — Backfill idempotente
+
+1. Com pelo menos uma linha em `whatsapp_instances` com `notes` não-vazio,
+   aplicar a 096.
+2. `select count(*) from whatsapp_instance_notes where action = 'REGISTER';`
+   → uma linha por instância com `notes`.
+3. **Aplicar a migration de novo, inteira.**
+4. Repetir a contagem. **Esperado: o mesmo número.**
+
+**Reprova se:** a segunda aplicação duplicar qualquer linha.
+
+### NOTE-B — Controle positivo: apagar a instância NÃO apaga a observação
+
+1. Inserir uma observação para uma instância de teste.
+2. `delete from whatsapp_instances where id = '<id de teste>';`
+3. **Esperado:** o DELETE conclui; a linha em `whatsapp_instance_notes`
+   continua existindo, com `instance_id` nulo e `instance_ref` intacto.
+
+**Reprova se:** o DELETE abortar com `check_violation` — foi exatamente esse o
+defeito que a 089 pagou, e este caso é o controle que prova que ele não voltou.
+
+### NOTE-C — Append-only
+
+1. `update whatsapp_instance_notes set note = 'outro texto' where id = '<id>';`
+   **Esperado:** exceção `check_violation`, "observacao e registro append-only".
+2. `update whatsapp_instance_notes set action = 'UPDATE' where id = '<id>';`
+   **Esperado:** a mesma exceção.
+3. `update whatsapp_instance_notes set instance_ref = gen_random_uuid() where id = '<id>';`
+   **Esperado:** a mesma exceção.
+
+**As quatro transições de `instance_id`** — a coluna é o único campo que a
+guarda append-only deixa mudar, e só numa direção. A 096 foi deliberadamente
+escrita mais estrita que a trigger irmã da 089
+(`whatsapp_alert_subject_guard`), que usa `<>` puro e por isso deixa passar
+`NULL → uuid`; ver o comentário na própria migration
+(`supabase/migrations/20260803120000_096_whatsapp_instance_notes.sql`, bloco
+"DIVERGÊNCIA DELIBERADA"). Os quatro casos abaixo são o que prova essa
+diferença contra banco real — hoje só verificada estaticamente por
+`src/lib/whatsapp-instance-notes-core.test.ts` (que lê o texto SQL e simula a
+fórmula em JS, não executa a trigger).
+
+4. `update whatsapp_instance_notes set instance_id = instance_id where id = '<id>';`
+   (ou qualquer `UPDATE` que mantenha o mesmo valor, nulo ou não)
+   **Esperado:** conclui sem exceção — `old.instance_id is distinct from
+   new.instance_id` é `false` quando os dois lados são iguais, então a
+   cláusula de guarda nem entra no `if`.
+5. `update whatsapp_instance_notes set instance_id = null where id = '<id com
+   instance_id preenchido>';`
+   **Esperado:** conclui sem exceção. É a transição que a FK `on delete set
+   null` produz sozinha quando a instância é apagada (caso NOTE-B); este caso
+   simula o mesmo `UPDATE` direto, porque a trigger não distingue quem gerou a
+   mudança.
+6. `update whatsapp_instance_notes set instance_id = '<uuid de OUTRA instância
+   viva, mesma organização>' where id = '<id>';`
+   **Esperado:** exceção `check_violation`, "instance_id so pode ser nulado
+   pela FK, nunca reapontado" — transferiria a observação de uma instância
+   para outra sem rastro.
+7. `update whatsapp_instance_notes set instance_id = '<uuid de instância viva>'
+   where id = '<id com instance_id já nulo>';`
+   **Esperado:** a mesma exceção do caso 6 — reatar uma observação já órfã a
+   uma instância viva (`NULL → uuid`) inventaria um vínculo que nunca existiu.
+   É exatamente a transição que a 089 permite e a 096 recusa de propósito.
+
+**Reprova se:** qualquer um dos sete casos produzir o resultado oposto do
+esperado — em particular, se os casos 6 ou 7 (`uuid → outro uuid`, `NULL →
+uuid`) forem aceitos (regressão para a permissividade da 089), ou se os casos
+4 ou 5 (inalterado, `uuid → NULL`) forem recusados (regressão que reintroduz o
+defeito original que a 089 pagou e que este ledger existe para não repetir).
+
+### NOTE-D — Rigor de INSERT
+
+1. `insert ... (instance_ref, instance_id, ...) values (gen_random_uuid(), null, ...)`
+   **Esperado:** exceção, "observacao nasce apontando instancia viva".
+2. `insert` com `instance_ref` diferente de `instance_id`
+   **Esperado:** a mesma exceção.
+3. `insert` com `organization_id` de OUTRA organização que não a da instância
+   **Esperado:** exceção da trigger de tenant, "instance_id pertence a outra organizacao".
+4. `insert` com `note = '   '`
+   **Esperado:** violação do CHECK `btrim(note) <> ''`.
+
+### NOTE-E — RLS
+
+Pelo **client SDK**, nunca pelo SQL Editor (que bypassa RLS):
+
+1. Como usuário `authenticated` **sem** linha em `platform_admins`:
+   `select` em `whatsapp_instance_notes` → **zero linhas**.
+2. Como usuário membro (`unit_members`) da organização dona da instância:
+   **zero linhas**. É a diferença que justifica não ter usado `audit_log`.
+3. Como `platform_admin`: as linhas aparecem.
+4. Como `anon`: **erro ou zero linhas**, nunca dados.

@@ -16,6 +16,8 @@ import {
 } from "@/components/ui/responsive-dialog";
 import { toast } from "sonner";
 import { cn, formatDateBR } from "@/lib/utils";
+import { InstanceNotesPanel } from "@/components/platform/InstanceNotesPanel";
+import { parseCostReais } from "@/lib/whatsapp-instance-form-core";
 import {
   formatCents,
   formatMargin,
@@ -32,6 +34,9 @@ import {
   type WhatsappInstance,
   type WhatsappInstanceAlert,
 } from "@/hooks/useWhatsappInstances";
+import { useAllUnits } from "@/hooks/useAllUnits";
+import { RegisterInstanceDialog } from "@/components/platform/RegisterInstanceDialog";
+import { UpdateInstanceDialog } from "@/components/platform/UpdateInstanceDialog";
 
 const MIN_REASON_LENGTH = 5;
 
@@ -133,6 +138,7 @@ type ReasonDialogKind =
   | { kind: "set_cost"; instance: WhatsappInstance }
   | { kind: "cancel"; instance: WhatsappInstance }
   | { kind: "confirm_end"; instance: WhatsappInstance }
+  | { kind: "reactivate"; instance: WhatsappInstance }
   | { kind: "resolve_alert"; alert: WhatsappInstanceAlert }
   | null;
 
@@ -142,7 +148,40 @@ export default function WhatsappInstances() {
   const action = useWhatsappInstanceAction();
   const simulation = usePartnerSimulation();
 
+  const unitsQuery = useAllUnits();
+
+  /**
+   * Nome da organização e da unidade a partir do inventário de unidades.
+   *
+   * `whatsapp_instances` guarda ids, e `manage-whatsapp-instances` devolve ids —
+   * a EF não junta com `organizations` de propósito (projeção explícita). O
+   * nome vem do hook que o painel já teria que carregar para o seletor de
+   * unidade da Tela A.
+   */
+  const orgNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const u of unitsQuery.data ?? []) {
+      if (u.organization_name) m.set(u.organization_id, u.organization_name);
+    }
+    return m;
+  }, [unitsQuery.data]);
+
+  const unitNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const u of unitsQuery.data ?? []) m.set(u.id, u.name);
+    return m;
+  }, [unitsQuery.data]);
+
   const [dialog, setDialog] = useState<ReasonDialogKind>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [registerPrefill, setRegisterPrefill] =
+    useState<{ organizationId: string; channelId: string | null } | null>(null);
+  const [updateTarget, setUpdateTarget] = useState<WhatsappInstance | null>(null);
+
+  function openRegister(prefill: { organizationId: string; channelId: string | null } | null) {
+    setRegisterPrefill(prefill);
+    setRegisterOpen(true);
+  }
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [cycleStart, setCycleStart] = useState("");
@@ -197,6 +236,7 @@ export default function WhatsappInstances() {
             interrompe o serviço é o enforcement por inadimplência.
           </p>
         </div>
+        <Button onClick={() => openRegister(null)}>Registrar instância</Button>
       </div>
 
       {dispatcherOff && (
@@ -238,6 +278,11 @@ export default function WhatsappInstances() {
             <CardContent className="py-6 text-sm text-muted-foreground">
               Nenhuma instância registrada. O registro é feito por <em>backfill</em> de instância
               que já existe no fornecedor — criação de instância nova está bloqueada até a Fase 6a.
+              <div className="pt-3">
+                <Button size="sm" onClick={() => openRegister(null)}>
+                  Registrar instância existente
+                </Button>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -269,7 +314,14 @@ export default function WhatsappInstances() {
                       )}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Organização {inst.organization_id}
+                      {/* Ainda carregando ou organização fora do alcance de
+                          `useAllUnits` (rede sem unidade): o id continua sendo
+                          a identificação verdadeira, então ele aparece em vez
+                          de um espaço em branco. */}
+                      {orgNameById.get(inst.organization_id) ?? `Organização ${inst.organization_id}`}
+                      {inst.unit_id && unitNameById.has(inst.unit_id) && (
+                        <> · {unitNameById.get(inst.unit_id)}</>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -319,18 +371,48 @@ export default function WhatsappInstances() {
                       Confirmar encerramento
                     </Button>
                   )}
+                  {/* Tela C — SÓ em CANCELLATION_REQUESTED. `ENDED` não mostra
+                      nada: `canTransition` recusa mesmo com evidência, e
+                      oferecer um botão que sempre falha é mentir para o
+                      operador. Instância encerrada que reapareça no fornecedor
+                      exige linha nova. */}
+                  {inst.lifecycle_state === "CANCELLATION_REQUESTED" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => setDialog({ kind: "reactivate", instance: inst })}
+                    >
+                      Reativar
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setUpdateTarget(inst)}
+                  >
+                    Corrigir vínculo
+                  </Button>
                   <Button
                     size="sm"
                     variant="ghost"
                     onClick={() => setExpandedId(expandedId === inst.id ? null : inst.id)}
                   >
-                    {expandedId === inst.id ? "Ocultar ciclos" : "Ver ciclos e margem"}
+                    {expandedId === inst.id ? "Ocultar detalhes" : "Ver ciclos, margem e histórico"}
                   </Button>
                 </div>
 
                 {expandedId === inst.id && (
-                  <div className="border-t pt-3">
-                    <CyclesPanel instanceId={inst.id} />
+                  <div className="border-t pt-3 space-y-4">
+                    <div>
+                      <h3 className="text-sm font-semibold mb-2">Ciclos e margem</h3>
+                      <CyclesPanel instanceId={inst.id} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold mb-2">Histórico</h3>
+                      <InstanceNotesPanel instanceId={inst.id} />
+                    </div>
                   </div>
                 )}
               </CardContent>
@@ -390,6 +472,22 @@ export default function WhatsappInstances() {
                 </div>
                 {detail && <p className="text-sm">{detail}</p>}
                 <div className="flex flex-wrap gap-2">
+                  {/* O alerta deixa de ser aviso e vira o começo da tarefa: ele
+                      já carrega organização e canal, então o formulário abre
+                      preenchido. */}
+                  {a.alert_type === "DIVERGENCE" && kind === "CHANNEL_WITHOUT_INSTANCE" && (
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        openRegister({
+                          organizationId: a.organization_id,
+                          channelId: a.channel_id,
+                        })
+                      }
+                    >
+                      Registrar esta instância
+                    </Button>
+                  )}
                   {a.status === "OPEN" && (
                     <Button
                       size="sm"
@@ -434,16 +532,23 @@ export default function WhatsappInstances() {
               <div className="flex items-end">
                 <Button
                   disabled={simulation.isPending || !partnerTargetReais.trim()}
-                  onClick={() =>
+                  onClick={() => {
+                    const parsed = parseCostReais(partnerTargetReais);
+                    if (parsed.ok === false) {
+                      toast.error(parsed.message);
+                      return;
+                    }
+                    // O botão já fica desabilitado com campo vazio, mas não
+                    // assumir que `unknownCost` é inalcançável aqui — tratar
+                    // defensivamente em vez de enviar um valor adivinhado.
+                    // `=== true` + early-return: `strict:false` não estreita
+                    // a união por verdade/falsidade crua do campo.
+                    if (parsed.unknownCost === true) return;
                     simulation.mutate(
-                      {
-                        partner_monthly_target_cents: Math.round(
-                          Number(partnerTargetReais.replace(/\./g, "").replace(",", ".")) * 100,
-                        ),
-                      },
+                      { partner_monthly_target_cents: parsed.cents },
                       { onError: (e: Error) => toast.error(e.message) },
-                    )
-                  }
+                    );
+                  }}
                 >
                   Simular
                 </Button>
@@ -487,10 +592,11 @@ export default function WhatsappInstances() {
               {dialog?.kind === "set_cost" && "Informar custo mensal"}
               {dialog?.kind === "cancel" && "Registrar cancelamento no fornecedor"}
               {dialog?.kind === "confirm_end" && "Confirmar encerramento"}
+              {dialog?.kind === "reactivate" && "Reativar instância"}
               {dialog?.kind === "resolve_alert" && "Resolver alerta"}
             </ResponsiveDialogTitle>
             <ResponsiveDialogDescription>
-              O motivo é obrigatório e fica registrado com autoria e data.
+              O motivo é obrigatório e será registrado permanentemente com autoria e data.
             </ResponsiveDialogDescription>
           </ResponsiveDialogHeader>
 
@@ -571,8 +677,16 @@ export default function WhatsappInstances() {
               </p>
             )}
 
+            {dialog?.kind === "reactivate" && (
+              <p className="text-sm text-muted-foreground">
+                Reverter o cancelamento exige <strong>evidência</strong> de que ele foi desfeito no
+                fornecedor. Descreva o que você verificou no painel da Z-API — a data-limite de
+                acesso registrada será apagada.
+              </p>
+            )}
+
             <div className="space-y-1">
-              <Label htmlFor="reason">Motivo</Label>
+              <Label htmlFor="reason">Motivo (fica registrado no histórico)</Label>
               <Textarea
                 id="reason"
                 value={reason}
@@ -601,14 +715,27 @@ export default function WhatsappInstances() {
                       "Data do ciclo confirmada.",
                     );
                   } else if (dialog.kind === "set_cost") {
-                    const trimmed = costReais.trim();
+                    const parsed = parseCostReais(costReais);
+                    if (parsed.ok === false) {
+                      toast.error(parsed.message);
+                      return;
+                    }
+                    // `unknownCost: true` continua significando
+                    // `current_monthly_cost_cents: null` — campo vazio é
+                    // estado legítimo, não ausência de escolha. `if/else`
+                    // (não ternário) porque `strict:false` não estreita a
+                    // união por verdade/falsidade crua do campo.
+                    let cents: number | null;
+                    if (parsed.unknownCost === true) {
+                      cents = null;
+                    } else {
+                      cents = parsed.cents;
+                    }
                     run(
                       {
                         action: "set_cost",
                         instance_id: dialog.instance.id,
-                        current_monthly_cost_cents: trimmed
-                          ? Math.round(Number(trimmed.replace(/\./g, "").replace(",", ".")) * 100)
-                          : null,
+                        current_monthly_cost_cents: cents,
                         reason,
                       },
                       "Custo atualizado.",
@@ -628,6 +755,11 @@ export default function WhatsappInstances() {
                       { action: "confirm_end", instance_id: dialog.instance.id, reason },
                       "Encerramento confirmado.",
                     );
+                  } else if (dialog.kind === "reactivate") {
+                    run(
+                      { action: "reactivate", instance_id: dialog.instance.id, reason },
+                      "Cancelamento revertido.",
+                    );
                   } else if (dialog.kind === "resolve_alert") {
                     run(
                       { action: "resolve_alert", alert_id: dialog.alert.id, reason },
@@ -642,6 +774,27 @@ export default function WhatsappInstances() {
           </ResponsiveDialogBody>
         </ResponsiveDialogContent>
       </ResponsiveDialog>
+
+      <RegisterInstanceDialog
+        open={registerOpen}
+        onOpenChange={setRegisterOpen}
+        prefill={registerPrefill}
+        onRegistered={(instance) => {
+          // ENCADEAMENTO: a instância nasce em `cycle_source: "UNKNOWN"`, o que
+          // faz o worker abrir DATE_REVIEW_REQUIRED na execução seguinte. Em vez
+          // de esperar um dia, o fluxo emenda direto na confirmação da data —
+          // foi assim que a instância do Ren Sushi foi operada, em dois passos
+          // manuais.
+          setRegisterPrefill(null);
+          setDialog({ kind: "confirm_date", instance });
+        }}
+      />
+
+      <UpdateInstanceDialog
+        open={!!updateTarget}
+        onOpenChange={(o) => !o && setUpdateTarget(null)}
+        instance={updateTarget}
+      />
     </div>
   );
 }
