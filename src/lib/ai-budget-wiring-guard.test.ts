@@ -152,6 +152,22 @@ function blankComments(src: string): string {
       continue;
     }
     if (mode === "re") {
+      // ESCAPE DE FIM DE LINHA. Um literal de regex não atravessa `\n`; sem esta
+      // saída, uma única `/` mal classificada (divisão cujo token anterior pareça
+      // palavra-chave) põe o scanner em modo regex até a próxima `/` em QUALQUER
+      // lugar do arquivo, e todo comentário no meio sobrevive sem aviso. Um lexer
+      // de verdade trataria isso como erro; aqui o limite barato é ressincronizar
+      // na quebra de linha, que troca um falso-negativo ilimitado por um de uma
+      // linha.
+      if (c === "\n") {
+        mode = "code";
+        reClass = false;
+        lastCh = "\n";
+        lastWord = "";
+        out.push("\n");
+        i++;
+        continue;
+      }
       if (c === "\\") {
         out.push(c);
         if (i + 1 < src.length) out.push(src[i + 1]);
@@ -435,6 +451,19 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     const div = blankComments(`const q = (a) / b; // nota\nconst w = 2;\n`);
     expect(div, "divisão foi lida como regex e engoliu o comentário").not.toContain("nota");
     expect(div).toContain("const w = 2;");
+  });
+
+  it("controle do apagador: regex mal classificada não contamina além da linha", () => {
+    // `return` seguido de divisão é o caso em que a heurística de token erra:
+    // o scanner entra em modo regex numa `/` que não abre regex nenhuma. Sem
+    // escape de fim de linha, ele sairia disso só na próxima `/` do ARQUIVO, e
+    // todo comentário até lá sobreviveria em silêncio — falso-negativo ilimitado.
+    const fonte = `function f() { return /* a */ x; }\nconst e = total /count;\n// segredo\nconst z = 3;\n// outro\n`;
+    const limpo = blankComments(fonte);
+    expect(limpo, "índices deixaram de ser preservados").toHaveLength(fonte.length);
+    expect(limpo, "o dano passou da linha da barra solta").not.toContain("segredo");
+    expect(limpo, "o dano passou da linha da barra solta").not.toContain("outro");
+    expect(limpo, "o código depois da barra solta sumiu").toContain("const z = 3;");
   });
 
   it("controle positivo no arquivo real: a URL do Gemini sobrevive ao apagador", () => {
@@ -776,9 +805,40 @@ const GATE_FNS = [
   "recordMilestones",
   "loadPrice",
   "costOf",
-  "makePriceResolver",
+  "makePriceCache",
   "todayBrt",
 ] as const;
+
+/** Os ganchos são MÉTODOS de um objeto literal, não funções de topo. */
+const GATE_METHODS = new Set(["beforeCall", "reportCall", "snapshot", "priceFor"]);
+
+function gateBlock(name: string): string {
+  return GATE_METHODS.has(name) ? methodBlock(gate, name) : fnBlock(gate, name);
+}
+
+/**
+ * "Esta função tem de CHAMAR aquele núcleo." O `(` no fim é o que separa chamada
+ * de menção — sem ele, a linha de import satisfaz a asserção sozinha, que é
+ * exatamente como um caso desta suíte ficava verde com todos os pontos de
+ * chamada apagados.
+ */
+const CHAMADAS_OBRIGATORIAS: Array<[string, string]> = [
+  ["resolveCycleWindow(", "openTurnBudget"],
+  ["estimateTurnCents(", "openTurnBudget"],
+  ["mapReserveDecision(", "openTurnBudget"],
+  ["isCommercialHardStop(", "openTurnBudget"],
+  ["computeAvailableCents(", "loadAiFranchise"],
+  ["selectEffectivePrice(", "loadPrice"],
+  ["priceUsage(", "costOf"],
+  ["planNextCall(", "beforeCall"],
+  ["mapReserveDecision(", "beforeCall"],
+  ["isCommercialHardStop(", "beforeCall"],
+  ["estimateCallTokens(", "beforeCall"],
+  ["estimateCallTokens(", "reportCall"],
+  ["priceUsage(", "reportCall"],
+  ["crossedMilestonePercents(", "recordMilestones"],
+  ["EVENT_TYPE_BY_MILESTONE_PERCENT[", "recordMilestones"],
+];
 
 describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
   it("controle dos recortes: nenhum bloco do adapter sangra para a função vizinha", () => {
@@ -798,16 +858,12 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     for (const core of ["ai-budget-core.ts", "ai-price-core.ts", "ai-budget-milestones-core.ts"]) {
       expect(gate, `não importa ${core}`).toContain(`from "./${core}"`);
     }
-    for (const fn of [
-      "planNextCall",
-      "mapReserveDecision",
-      "computeAvailableCents",
-      "priceUsage",
-      "selectEffectivePrice",
-      "crossedMilestonePercents",
-      "resolveCycleWindow",
-    ]) {
-      expect(gate, `não usa ${fn}`).toContain(fn);
+    // SOBRE O CORPO, não sobre o arquivo. `gate.toContain("planNextCall")` é
+    // satisfeito pela linha de IMPORT sozinha: apagar todos os pontos de chamada
+    // e manter os imports deixava o caso verde com o adapter decidindo por conta
+    // própria. Cada par abaixo é "esta função tem de CHAMAR aquele núcleo".
+    for (const [chamada, dono] of CHAMADAS_OBRIGATORIAS) {
+      expect(gateBlock(dono), `${dono} não chama ${chamada}`).toContain(chamada);
     }
   });
 
@@ -867,22 +923,52 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     }
   });
 
-  it("o modo observação nunca nega — e o gate é a flag, não um if solto", () => {
+  it("preço desconhecido FALHA FECHADO — nenhum modo converte ignorância em autorização", () => {
+    // O modo observação abranda TETO, nunca PREÇO. Sem preço não há `price_id`
+    // (NOT NULL em ai_usage_events) e o evento não pode existir: autorizar seria
+    // consumo real sem nenhum registro possível. `authorizeAndInvoke` já nega no
+    // passo 2, ANTES do beforeCall — um segundo caminho que abrandasse aqui seria
+    // código morto afirmando o contrário do que produção faz.
+    const ramos = [...gate.matchAll(/if \(!price\)/g)];
+    expect(ramos.length, "nenhum ramo de preço ausente — o detector quebrou").toBeGreaterThan(2);
+    for (const m of ramos) {
+      const bloco = gate.slice(...braceBlock(gate, m.index!));
+      expect(bloco, `ramo sem preço autoriza a chamada (índice ${m.index})`).not.toContain('"ALLOW"');
+      expect(bloco, `ramo sem preço não sai (índice ${m.index})`).toContain("return");
+    }
+    // E nenhum deles consulta a flag: consultar já é abrandar.
+    const semPreco = (() => {
+      const body = methodBlock(gate, "beforeCall");
+      return body.slice(...braceBlock(body, body.indexOf("if (!price)")));
+    })();
+    expect(semPreco, "sumiu a negação por preço desconhecido").toContain('kind: "DENY_PRICE_UNKNOWN"');
+    expect(semPreco, "o modo observação voltou a abrandar preço desconhecido").not.toContain(
+      "enforced",
+    );
+    const noPriceFor = (() => {
+      const body = methodBlock(gate, "priceFor");
+      return body.slice(...braceBlock(body, body.indexOf("if (!price)")));
+    })();
+    expect(noPriceFor, "priceFor deixou de devolver a ignorância tipada").toContain("PRICE_UNKNOWN");
+    expect(noPriceFor, "priceFor passou a consultar a flag").not.toContain("enforced");
+  });
+
+  it("o modo observação abranda TETO, e só com a flag na mão", () => {
     expect(gate).toContain("ai_wallet_enforced");
-    // Preço desconhecido com a flag OFF vira ALLOW: medir não pode calar o
-    // agente de ninguém. O ramo é recortado pelas PRÓPRIAS chaves.
+    // Cada conversão de negação comercial em autorização vive dentro de um ramo
+    // que consulta `enforced`. Recorte pelas próprias chaves do `if`.
     const body = methodBlock(gate, "beforeCall");
-    const semPreco = body.slice(...braceBlock(body, body.indexOf("if (!price)")));
-    expect(semPreco, "o ramo sem preço ignora a flag").toContain("enforced");
-    expect(semPreco, "o ramo sem preço nunca autoriza em observação").toContain('kind: "ALLOW"');
-    expect(semPreco, "sumiu a negação por preço desconhecido").toContain("DENY_PRICE_UNKNOWN");
+    const i = body.indexOf("isCommercialHardStop(decision) && !args.budget.enforced");
+    expect(i, "o abrandamento do teto sumiu do beforeCall").toBeGreaterThan(-1);
+    const ramo = body.slice(...braceBlock(body, i));
+    expect(ramo, "o abrandamento não autoriza").toContain('kind: "ALLOW"');
   });
 
   it("hard stop COMERCIAL é pergunta do núcleo — o adapter não redigita a distinção", () => {
     // ERROR e DENY_BUDGET levam ao mesmo destino operacional e dizem coisas
     // OPOSTAS. Reimplementar a distinção aqui é a decisão que este arquivo não
-    // pode ter.
-    expect(gate, "a distinção comercial não vem do núcleo").toContain("isCommercialHardStop");
+    // pode ter. A metade positiva vive em CHAMADAS_OBRIGATORIAS (sobre o CORPO
+    // das duas funções que decidem); aqui fica a negativa.
     expect(gate, "a distinção comercial foi redigitada").not.toMatch(/kind\s*===\s*"DENY_BUDGET"/);
   });
 
@@ -902,6 +988,76 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     const falhaAbertura = body.slice(...braceBlock(body, body.indexOf("if (openErr")));
     expect(falhaAbertura).toContain('kind: "ERROR"');
     expect(falhaAbertura, "erro de banco virou franquia esgotada").not.toContain("EXHAUSTED");
+
+    // O ramo comercial tem as DUAS saídas dentro dele. Sem esta asserção, apagar
+    // o `if (!enforced)` interno deixava o caso verde — o `if` externo ainda
+    // casaria o regex acima — e o modo observação sumia do caminho de reserva.
+    const comercial = body.slice(...braceBlock(body, body.indexOf("isCommercialHardStop(decision)")));
+    expect(comercial, "o modo observação sumiu do caminho de reserva").toMatch(/if \(!enforced\)/);
+    expect(comercial, "observação deixou de ter saída própria").toContain('kind: "UNMETERED"');
+    expect(comercial, "sumiu a afirmação de teto").toContain('kind: "EXHAUSTED"');
+  });
+
+  it("'prossiga sem medição' é VARIANTE, não string dentro de um erro", () => {
+    // `observed_only` (o turno DEVE rodar) e `price_unknown` (deve falhar
+    // fechado) eram a mesma variante, separáveis só por casar texto dentro de um
+    // `sanitizedCode` opaco — decisão empurrada para quem só tem a string.
+    expect(gate, "sumiu a variante de turno não medido").toContain('kind: "UNMETERED"');
+    expect(gate, "a variante voltou a ser um código de erro").not.toContain('"observed_only"');
+    // E `ERROR` carrega `enforced`, senão o chamador não consegue nem re-derivar
+    // se o gate estava ligado.
+    // Statement inteiro: a união tem `;` DENTRO de cada variante, então cortar no
+    // primeiro `;` mediria só a primeira delas.
+    const stmt = statementFrom(gate, gate.indexOf("export type OpenTurnResult"));
+    expect(stmt, "a variante ERROR não carrega o estado do gate").toMatch(
+      /kind: "ERROR";[^|]*enforced: boolean/,
+    );
+    expect(stmt, "UNMETERED não declara motivo legível").toMatch(/kind: "UNMETERED"; reason: string/);
+  });
+
+  it("finalizeTurn não devolve instantâneo plausível quando a RPC não aplicou nada", () => {
+    // RESERVATION_NOT_FOUND / CYCLE_NOT_FOUND / INVALID_STATUS vêm com
+    // settled=0 e limit=0, e crossedMilestonePercents(0, 0) é lista vazia: um
+    // finalize que nunca aconteceu silenciaria TODO alerta de marco.
+    const body = fnBlock(gate, "finalizeTurn");
+    expect(body, "o discriminador de estado real sumiu").toContain("CYCLE_STATES.has(row.state)");
+    const ramo = body.slice(...braceBlock(body, body.indexOf("!CYCLE_STATES.has(row.state)")));
+    expect(ramo, "a não-aplicação não é registrada").toContain("jsonLog");
+    expect(ramo, "a não-aplicação devolve números plausíveis").toContain("return null");
+    // E `finalized` é EXPOSTO, não descartado — o caminho idempotente devolve
+    // números legítimos e precisa ser distinguível do caminho que aplicou.
+    expect(body, "finalized voltou a ser descartado").toMatch(/finalized:\s*row\.finalized === true/);
+  });
+
+  it("o aviso de marco tem caminho de retry — 23505 não é o fim da linha", () => {
+    // A migration 103 desenhou para isto: `notified_at` NULL com
+    // enqueue_attempts > 0 = marco registrado, aviso não enfileirado, e há índice
+    // parcial `where notified_at is null`. Sem o retry, uma falha transitória em
+    // resolver o destinatário perde o aviso para sempre — inclusive o de 100%.
+    const body = fnBlock(gate, "recordMilestones");
+    expect(body, "23505 deixou de ser tratado").toContain("23505");
+    // DENTRO do ramo de erro do INSERT. Afirmar só que o arquivo contém
+    // `.select("id, notified_at, …")` seria verde sem retry nenhum — o próprio
+    // INSERT pede essas colunas. O que prende o retry é a RELEITURA escopada
+    // pelo marco, e ela só existe dentro deste ramo.
+    const ramoErro = body.slice(...braceBlock(body, body.indexOf("if (error) {")));
+    expect(ramoErro, "erro que não é 23505 deixou de sair").toContain("continue");
+    expect(ramoErro, "23505 não relê o marco existente").toContain(
+      '.eq("milestone_percent", percent)',
+    );
+    expect(ramoErro, "a releitura não traz o que decide o retry").toContain(
+      '"id, notified_at, enqueue_attempts"',
+    );
+    expect(ramoErro, "a releitura não alimenta o ledger do laço").toMatch(/ledger = existing/);
+    expect(body, "o retry não olha se o aviso já saiu").toMatch(/ledger\.notified_at/);
+    expect(body, "as tentativas não são incrementadas").toMatch(/enqueue_attempts:\s*attempts \+ 1/);
+    // Sem destinatário o slot NÃO é consumido — senão a falha transitória vira
+    // permanente na primeira passada. Sobre o CÓDIGO: o comentário do ramo cita
+    // a coluna de propósito, e citar não é escrever.
+    const codigo = fnBlock(blankComments(gate), "recordMilestones");
+    const semDest = codigo.slice(...braceBlock(codigo, codigo.indexOf("if (!recipient)")));
+    expect(semDest, "sem destinatário o slot é consumido").not.toContain("enqueue_attempts");
+    expect(semDest).toContain("continue");
   });
 
   it("beforeCall precifica no MODELO REAL da chamada, nunca na estimativa do contexto", () => {
@@ -910,7 +1066,7 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     // (Pro) com a folga do modelo barato (Flash). O preço tem de ser recarregado
     // a partir de `ctx.provider`/`ctx.model` e a estimativa recalculada.
     const body = methodBlock(gate, "beforeCall");
-    const priceArgs = parenBlock(body, body.indexOf("loadPrice("));
+    const priceArgs = parenBlock(body, body.indexOf("resolvePrice("));
     expect(priceArgs, "beforeCall não precifica o provedor da chamada").toContain("ctx.provider");
     expect(priceArgs, "beforeCall não precifica o modelo da chamada").toContain("ctx.model");
     expect(priceArgs, "beforeCall precifica no modelo do TURNO").not.toMatch(/args\.(provider|model)/);
@@ -925,7 +1081,7 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
 
     // E a ordem: precificar ANTES de planejar. Planejar primeiro seria decidir
     // com o número velho e só depois descobrir o preço certo.
-    expect(body.indexOf("loadPrice(")).toBeLessThan(body.indexOf("planNextCall("));
+    expect(body.indexOf("resolvePrice(")).toBeLessThan(body.indexOf("planNextCall("));
   });
 
   it("controle do detector acima: pega a estimativa vinda do contexto e a chave ausente", () => {
@@ -948,12 +1104,46 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
     // Cobrar Pro a preço de Flash é subcontabilização direta — a mesma regra do
     // autorizador, na ponta que escreve no ledger.
     const body = methodBlock(gate, "reportCall");
-    const priceArgs = parenBlock(body, body.indexOf("loadPrice("));
+    const priceArgs = parenBlock(body, body.indexOf("resolvePrice("));
     expect(priceArgs, "reportCall não usa o provedor da chamada").toContain("meta.provider");
     expect(priceArgs, "reportCall não usa o modelo da chamada").toContain("meta.model");
     expect(priceArgs, "reportCall apropria no modelo do TURNO").not.toMatch(/args\.(provider|model)/);
     // O `price_id` gravado é o que o autorizador já resolveu para ESTA chamada.
     expect(body).toMatch(/p_price_id:\s*priceId/);
+  });
+
+  it("os três pontos de preço falam da MESMA linha — um resolvedor por turno", () => {
+    // Três leituras independentes não custavam só latência: `p_price_id` vinha da
+    // resolução do momento da autorização e `cost_brl_cents` de uma leitura
+    // fresca no momento do report. Uma vigência trocada no meio do turno gravava
+    // evento cujo preço não corresponde ao custo.
+    const hooks = fnBlock(gate, "makeBudgetHooks");
+    expect(hooks, "o resolvedor compartilhado sumiu").toMatch(
+      /const resolvePrice = makePriceCache\(supabase\)/,
+    );
+    for (const metodo of ["priceFor", "beforeCall", "reportCall"]) {
+      const body = methodBlock(gate, metodo);
+      expect(body, `${metodo} não usa o resolvedor compartilhado`).toContain("resolvePrice(");
+      expect(body, `${metodo} voltou a ler o preço por fora do cache`).not.toContain("loadPrice(");
+    }
+    // E `loadPrice` só é chamada de dentro do cache.
+    const cache = fnBlock(gate, "makePriceCache");
+    expect(cache).toContain("loadPrice(");
+  });
+
+  it("custo impossível de precificar é null, nunca sentinela numérico", () => {
+    // Um valor máximo estouraria os parâmetros `integer` das RPCs, e `0` em
+    // silêncio é a falha que esta frente existe para matar.
+    const body = fnBlock(gate, "costOf");
+    expect(body, "costOf voltou a devolver sentinela numérico").not.toContain("MAX_SAFE_INTEGER");
+    expect(body, "costOf não devolve a ignorância tipada").toContain("return null");
+    // E quem chama trata: os dois call sites têm ramo explícito para o null.
+    expect(fnBlock(gate, "openTurnBudget"), "a estimativa do turno ignora o null").toMatch(
+      /c === null/,
+    );
+    expect(methodBlock(gate, "beforeCall"), "a estimativa da chamada ignora o null").toMatch(
+      /estimateCents === null/,
+    );
   });
 
   it("usage ausente não vira custo zero — e a apropriação perdida nunca é silenciosa", () => {

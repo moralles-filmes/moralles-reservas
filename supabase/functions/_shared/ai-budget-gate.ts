@@ -11,11 +11,18 @@
  * sanitização — e mesmo isso é vigiado por `src/lib/ai-budget-wiring-guard.test.ts`.
  *
  * MODO OBSERVAÇÃO (flag `ai_wallet_enforced` OFF): medição e ledger funcionam,
- * hard stop NÃO aplica. Nenhuma negação comercial acontece — é assim que se vê
+ * hard stop NÃO aplica. Nenhuma negação COMERCIAL acontece — é assim que se vê
  * o custo real por organização ANTES de qualquer bloqueio ligar. A flag é lida
  * por `isFlagEnabled`, que devolve `false` também quando a leitura falha: falhar
- * para o lado de NÃO negar é a única direção aceitável aqui, porque a
- * consequência de negar por engano recai sobre o cliente do restaurante.
+ * para o lado de NÃO negar é a direção certa aqui, porque a consequência de
+ * negar por engano recai sobre o cliente do restaurante.
+ *
+ * O MODO OBSERVAÇÃO NÃO ABRANDA PREÇO DESCONHECIDO. Modelo sem preço vigente
+ * falha FECHADO em qualquer modo: sem preço não existe `price_id`, que é NOT
+ * NULL em `ai_usage_events`, então "medir sem preço" não é uma coisa que exista
+ * — a chamada seria consumo real sem nenhum registro possível. Negar é a única
+ * saída honesta, e é o que `authorizeAndInvoke` já faz no passo 2, antes mesmo
+ * de a decisão chegar aqui.
  *
  * O ÚNICO TETO É FINANCEIRO. Nenhuma contagem de conversa, mensagem ou
  * interação aparece neste arquivo.
@@ -59,6 +66,20 @@ import { enqueueBillingNotification, resolvePlatformAdminRecipients } from "./bi
 
 const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
 
+/**
+ * Teto de tentativas de enfileiramento do MESMO marco.
+ *
+ * Existe porque o UNIQUE de `billing_notifications` é PARCIAL e não deduplica
+ * com `invoice_id` nulo — que é o caso de todo aviso de marco. Se o carimbo de
+ * `notified_at` falhar de forma persistente, o retry re-enfileiraria uma linha
+ * por turno, sem fim. Cinco tentativas, com log alto em cada uma e um log
+ * próprio ao esgotar, é preferível a multiplicar aviso sem multiplicar decisão.
+ */
+const MILESTONE_ENQUEUE_MAX_ATTEMPTS = 5;
+
+/** Estados REAIS de um ciclo. Ver `finalizeTurn` para por que a lista importa. */
+const CYCLE_STATES = new Set(["OPEN", "EXHAUSTED", "CLOSED"]);
+
 /** Data de HOJE em BRT. Deno roda em UTC; sem isto a virada do ciclo erra 3h. */
 function todayBrt(): string {
   return new Date(Date.now() - BRT_OFFSET_MS).toISOString().slice(0, 10);
@@ -78,10 +99,23 @@ export interface TurnBudget {
   enforced: boolean;
 }
 
+/**
+ * Resultado da abertura do turno. QUATRO variantes, porque o chamador precisa de
+ * quatro consequências diferentes — e distingui-las por conteúdo de string
+ * dentro de `sanitizedCode` empurraria a decisão para quem só tem o texto.
+ *
+ * - `READY`: rode com ganchos, medido.
+ * - `EXHAUSTED`: teto comercial atingido, com o gate LIGADO. Handoff.
+ * - `UNMETERED`: rode NORMALMENTE, sem ganchos e sem medição. É o modo
+ *   observação recusando-se a negar — nunca uma falha.
+ * - `ERROR`: não deu para abrir o orçamento. `enforced` viaja junto para que o
+ *   chamador saiba se o gate estava ligado sem reler a flag.
+ */
 export type OpenTurnResult =
   | { kind: "READY"; budget: TurnBudget }
   | { kind: "EXHAUSTED"; cycleId: string }
-  | { kind: "ERROR"; sanitizedCode: string };
+  | { kind: "UNMETERED"; reason: string }
+  | { kind: "ERROR"; sanitizedCode: string; enforced: boolean };
 
 // ─── Preços ────────────────────────────────────────────────────────────────
 
@@ -128,40 +162,43 @@ async function loadPrice(
 }
 
 /**
- * Resolvedor de `price_id` para o autorizador, com cache POR INVOCAÇÃO — não por
- * processo: a Edge Function pode ficar quente e um preço recém-cadastrado
- * precisa valer na próxima requisição, mesma razão de `unitCache` ser zerado no
- * início de cada invocação dos workers.
+ * Resolvedor de preço com cache POR INVOCAÇÃO — não por processo: a Edge
+ * Function pode ficar quente e um preço recém-cadastrado precisa valer na
+ * próxima requisição, mesma razão de `unitCache` ser zerado no início de cada
+ * invocação dos workers.
+ *
+ * UM RESOLVEDOR PARA OS TRÊS PONTOS (`priceFor`, `beforeCall`, `reportCall`).
+ * Três leituras independentes por chamada não custavam só latência (até 24 idas
+ * ao banco por turno, dentro do caminho de resposta do WhatsApp): `p_price_id`
+ * vinha da resolução do momento da AUTORIZAÇÃO e `cost_brl_cents` de uma leitura
+ * fresca no momento do REPORT, então uma vigência trocada no meio do turno
+ * gravava evento cujo preço não corresponde ao custo. Com um cache só, os três
+ * pontos falam da MESMA linha de preço.
  */
-function makePriceResolver(supabase: SupabaseClient) {
+function makePriceCache(supabase: SupabaseClient) {
   const cache = new Map<string, AiModelPrice | null>();
-  return async function priceFor(provider: string, model: string): Promise<PriceLookup> {
+  return async function resolvePrice(provider: string, model: string): Promise<AiModelPrice | null> {
     const key = `${provider}:${model}`;
-    let price = cache.get(key);
-    if (price === undefined) {
-      price = await loadPrice(supabase, provider, model);
-      cache.set(key, price);
-    }
-    if (!price) {
-      // Registro sanitizado: provedor e modelo. NUNCA a credencial da unidade.
-      jsonLog("warn", { evt: "ai_price_unknown", provider, model });
-      return { kind: "PRICE_UNKNOWN", provider, model };
-    }
-    return { kind: "PRICED", priceId: price.id };
+    if (!cache.has(key)) cache.set(key, await loadPrice(supabase, provider, model));
+    return cache.get(key) ?? null;
   };
 }
 
 /**
- * Custo em centavos de BRL de um consumo, já precificado.
+ * Custo em centavos de BRL de um consumo, ou `null` quando não há como precificar.
  *
- * `PRICE_UNKNOWN` aqui é inalcançável (o preço chega carregado), e devolver 0 em
- * silêncio seria exatamente a falha que esta frente existe para matar — daí o
- * valor máximo, que faz qualquer decisão de cobertura recusar em vez de
- * autorizar de graça.
+ * `null`, e não um sentinela numérico: um valor máximo estouraria os parâmetros
+ * `integer` das RPCs, e devolver `0` em silêncio é exatamente a falha que esta
+ * frente existe para matar. O chamador é obrigado a tratar a ignorância.
  */
-function costOf(price: AiModelPrice, usage: AiUsageTokens, provider: string, model: string): number {
+function costOf(
+  price: AiModelPrice,
+  usage: AiUsageTokens,
+  provider: string,
+  model: string,
+): number | null {
   const r = priceUsage(price, usage, provider, model);
-  if (r.kind !== "PRICED") return Number.MAX_SAFE_INTEGER;
+  if (r.kind !== "PRICED") return null;
   return r.brlCents;
 }
 
@@ -186,7 +223,11 @@ export async function loadAiFranchise(
     .gt("cycle_end", today)
     .maybeSingle();
   if (error) {
-    jsonLog("error", { evt: "ai_budget_franchise_read_failed", org: organizationId, err: error.message });
+    jsonLog("error", {
+      evt: "ai_budget_franchise_read_failed",
+      org: organizationId,
+      err: error.message,
+    });
     return null;
   }
   if (!data) return null;
@@ -225,9 +266,9 @@ export async function loadAiFranchise(
 /**
  * Abre (ou reencontra) o ciclo e reserva capacidade para UM turno.
  *
- * `ERROR` NÃO é "franquia esgotada": as duas levam ao mesmo destino operacional
- * e dizem coisas opostas ao cliente e ao admin. Só `EXHAUSTED` afirma teto, e só
- * quando o gate está ligado.
+ * `ERROR` NÃO é "franquia esgotada" e `UNMETERED` não é falha: as três levam a
+ * consequências diferentes e dizem coisas diferentes ao cliente e ao admin. Só
+ * `EXHAUSTED` afirma teto, e só quando o gate está ligado.
  */
 export async function openTurnBudget(
   supabase: SupabaseClient,
@@ -286,7 +327,7 @@ export async function openTurnBudget(
       org: args.organizationId,
       err: openErr?.message ?? "no_row",
     });
-    return { kind: "ERROR", sanitizedCode: "budget_open_failed" };
+    return { kind: "ERROR", sanitizedCode: "budget_open_failed", enforced };
   }
 
   if (cycle.state === "EXHAUSTED" && enforced) {
@@ -294,21 +335,32 @@ export async function openTurnBudget(
   }
 
   // Estimativa da reserva inicial, precificada pelo modelo REAL do turno.
-  const price = await loadPrice(supabase, args.provider, args.model);
+  // FAIL-CLOSED em qualquer modo — ver o cabeçalho: sem preço não há `price_id`.
+  const resolvePrice = makePriceCache(supabase);
+  const price = await resolvePrice(args.provider, args.model);
   if (!price) {
-    // Sem preço não há como estimar, e sem estimar não há reserva honesta. Em
-    // modo observação isto NÃO cala o agente: o chamador segue sem ganchos e o
-    // turno roda — apenas não é medido.
     jsonLog("warn", {
       evt: "ai_price_unknown",
       org: args.organizationId,
       provider: args.provider,
       model: args.model,
     });
-    return { kind: "ERROR", sanitizedCode: "price_unknown" };
+    return { kind: "ERROR", sanitizedCode: "price_unknown", enforced };
   }
 
-  const estimate = estimateTurnCents((usage) => costOf(price, usage, args.provider, args.model));
+  let unpriced = false;
+  const estimate = estimateTurnCents((usage) => {
+    const c = costOf(price, usage, args.provider, args.model);
+    if (c === null) {
+      unpriced = true;
+      return 0;
+    }
+    return c;
+  });
+  if (unpriced) {
+    jsonLog("error", { evt: "ai_price_unpriceable_estimate", org: args.organizationId });
+    return { kind: "ERROR", sanitizedCode: "price_unknown", enforced };
+  }
 
   const { data: reserved, error: resErr } = await supabase.rpc("reserve_ai_budget", {
     p_organization_id: args.organizationId,
@@ -324,7 +376,7 @@ export async function openTurnBudget(
       org: args.organizationId,
       err: resErr.message,
     });
-    return { kind: "ERROR", sanitizedCode: "reserve_failed" };
+    return { kind: "ERROR", sanitizedCode: "reserve_failed", enforced };
   }
   const row = Array.isArray(reserved) ? reserved[0] : reserved;
 
@@ -336,9 +388,9 @@ export async function openTurnBudget(
         org: args.organizationId,
         note: "flag_off_no_denial",
       });
-      // Modo observação: segue sem ganchos. A medição DESTE turno se perde, e é
-      // o preço de não bloquear — nunca o contrário.
-      return { kind: "ERROR", sanitizedCode: "observed_only" };
+      // Modo observação: o turno DEVE rodar, e roda sem ganchos. A medição
+      // DESTE turno se perde, e é o preço de não bloquear — nunca o contrário.
+      return { kind: "UNMETERED", reason: "budget_denied_observed" };
     }
     return { kind: "EXHAUSTED", cycleId: cycle.id };
   }
@@ -348,7 +400,7 @@ export async function openTurnBudget(
       org: args.organizationId,
       kind: decision.kind,
     });
-    return { kind: "ERROR", sanitizedCode: "reserve_not_allowed" };
+    return { kind: "ERROR", sanitizedCode: "reserve_not_allowed", enforced };
   }
 
   return {
@@ -376,10 +428,10 @@ export function makeBudgetHooks(
     requestId: string;
     turnId: string;
     budget: TurnBudget;
-    provider: string;
   },
 ): AgentBudgetHooks {
-  const priceFor = makePriceResolver(supabase);
+  // UM resolvedor para os três pontos — ver `makePriceCache`.
+  const resolvePrice = makePriceCache(supabase);
   let consumedCents = 0;
   let reservedCents = args.budget.reservedCents;
   let usageUnresolved = false;
@@ -393,21 +445,29 @@ export function makeBudgetHooks(
     requestId: args.requestId,
     reservationId: args.budget.reservationId,
     newCallId: () => `${args.turnId}:${++callSeq}`,
-    priceFor,
+
+    async priceFor(provider: string, model: string): Promise<PriceLookup> {
+      const price = await resolvePrice(provider, model);
+      if (!price) {
+        // Registro sanitizado: provedor e modelo. NUNCA a credencial da unidade.
+        // FAIL-CLOSED em qualquer modo — o autorizador nega no passo 2 e a
+        // chamada não acontece. Ver o cabeçalho do arquivo.
+        jsonLog("warn", { evt: "ai_price_unknown", provider, model });
+        return { kind: "PRICE_UNKNOWN", provider, model };
+      }
+      return { kind: "PRICED", priceId: price.id };
+    },
 
     snapshot(iteration: number, provider: string, model: string) {
-      // Provedor e modelo viajam no contrato para que ele não minta, mas a
-      // AUTORIDADE sobre a cobertura não está aqui: `beforeCall` recarrega o
-      // preço do modelo real e recalcula a estimativa antes de decidir. O que
-      // este método devolve é o último número calculado, útil para telemetria e
-      // inofensivo se estiver defasado — nenhuma autorização depende dele.
-      jsonLog("info", {
-        evt: "ai_budget_snapshot",
-        org: args.organizationId,
-        iteration,
-        provider,
-        model,
-      });
+      // NÃO CONFIE NESTE NÚMERO. `nextCallEstimateCents` aqui é o último valor
+      // calculado — defasado em uma chamada e precificado no modelo da chamada
+      // ANTERIOR. Nada autoriza sobre ele: `beforeCall` recarrega o preço de
+      // `ctx.provider`/`ctx.model` e RECALCULA a estimativa antes de decidir, e é
+      // lá que mora a garantia de cobertura. Provedor e modelo estão na
+      // assinatura para que o contrato não minta para um adapter futuro.
+      void iteration;
+      void provider;
+      void model;
       return { consumedCents, reservedCents, nextCallEstimateCents: lastEstimateCents };
     },
 
@@ -416,22 +476,16 @@ export function makeBudgetHooks(
       // precificado no modelo do INÍCIO DO TURNO; confiar nele autoriza a
       // tentativa de fallback (Pro) com a folga do modelo barato (Flash), que é
       // subcontabilização direta. Recarrega-se e recalcula-se aqui, sempre.
-      const price = await loadPrice(supabase, ctx.provider, ctx.model);
+      const price = await resolvePrice(ctx.provider, ctx.model);
       if (!price) {
-        if (!args.budget.enforced) {
-          // Modo observação: medir não pode calar o agente de ninguém. A chamada
-          // segue e simplesmente NÃO gera evento — `price_id` é NOT NULL.
-          jsonLog("warn", {
-            evt: "ai_budget_price_unknown_observed",
-            org: args.organizationId,
-            provider: ctx.provider,
-            model: ctx.model,
-          });
-          return { kind: "ALLOW", reservationId: args.budget.reservationId, remainingReservedCents: 0 };
-        }
+        // FAIL-CLOSED, inclusive em modo observação: sem preço não há `price_id`
+        // (NOT NULL) e o evento não pode existir. Ver o cabeçalho do arquivo.
         return { kind: "DENY_PRICE_UNKNOWN", provider: ctx.provider, model: ctx.model };
       }
       const estimateCents = costOf(price, estimateCallTokens(ctx.iteration), ctx.provider, ctx.model);
+      if (estimateCents === null) {
+        return { kind: "DENY_PRICE_UNKNOWN", provider: ctx.provider, model: ctx.model };
+      }
       lastEstimateCents = estimateCents;
 
       const plan = planNextCall(
@@ -488,9 +542,9 @@ export function makeBudgetHooks(
     },
 
     async reportCall(meta: AgentCallMeta, outcome: AgentCallOutcome, priceId: string) {
-      // Apropriação no MODELO REAL da chamada — a mesma regra da autorização, na
-      // ponta que escreve no ledger.
-      const price = await loadPrice(supabase, meta.provider, meta.model);
+      // Apropriação no MODELO REAL da chamada, pela MESMA linha de preço que o
+      // autorizador usou para resolver `priceId` — é o mesmo cache.
+      const price = await resolvePrice(meta.provider, meta.model);
       if (!price) {
         jsonLog("error", {
           evt: "ai_usage_price_vanished",
@@ -579,10 +633,36 @@ export function makeBudgetHooks(
 
 // ─── Liquidação e marcos ───────────────────────────────────────────────────
 
+export interface FinalizeResult {
+  /**
+   * `false` = a reserva JÁ estava finalizada e a RPC não reprocessou (caminho
+   * idempotente). Os números abaixo continuam sendo os do ciclo, e valem.
+   */
+  finalized: boolean;
+  settledCents: number;
+  limitCents: number;
+  state: string;
+}
+
+/**
+ * Liquida (`SETTLED`) ou libera (`RELEASED`) a reserva do turno.
+ *
+ * `null` = a RPC NÃO APLICOU e não devolveu números de ciclo nenhum. Os três
+ * casos (`RESERVATION_NOT_FOUND`, `CYCLE_NOT_FOUND`, `INVALID_STATUS`) vêm com
+ * `settled_cents = 0` e `limit_cents = 0` — indistinguíveis de um ciclo
+ * legitimamente zerado, e `crossedMilestonePercents(0, 0)` devolve lista vazia:
+ * um finalize que nunca aconteceu silenciaria TODO alerta de marco. Por isso o
+ * discriminador é o `state`: se não é um estado real de ciclo, é sentinela de
+ * erro e vira `null` com log — nunca instantâneo plausível.
+ *
+ * `finalized: false` COM estado real é outra coisa, e é legítima: a reserva já
+ * havia sido finalizada antes (reexecução idempotente) e os números do ciclo
+ * continuam valendo para os marcos.
+ */
 export async function finalizeTurn(
   supabase: SupabaseClient,
   args: { organizationId: string; reservationId: string; status: "SETTLED" | "RELEASED" },
-): Promise<{ settledCents: number; limitCents: number; state: string } | null> {
+): Promise<FinalizeResult | null> {
   const { data, error } = await supabase.rpc("finalize_ai_reservation", {
     p_organization_id: args.organizationId,
     p_reservation_id: args.reservationId,
@@ -598,7 +678,20 @@ export async function finalizeTurn(
   }
   const row = Array.isArray(data) ? data[0] : data;
   if (!row) return null;
-  return { settledCents: row.settled_cents, limitCents: row.limit_cents, state: row.state };
+  if (!CYCLE_STATES.has(row.state)) {
+    jsonLog("error", {
+      evt: "ai_budget_finalize_not_applied",
+      org: args.organizationId,
+      code: row.state,
+    });
+    return null;
+  }
+  return {
+    finalized: row.finalized === true,
+    settledCents: row.settled_cents,
+    limitCents: row.limit_cents,
+    state: row.state,
+  };
 }
 
 /**
@@ -611,8 +704,15 @@ export async function finalizeTurn(
  * repetido sem teto de um lado, ledger afirmando "avisei" sobre e-mail que nunca
  * saiu do outro.
  *
+ * RETRY DO AVISO, não do registro: `23505` no INSERT quer dizer que o marco já
+ * está no ledger, e o índice parcial `where notified_at is null` da migration 103
+ * existe exatamente para reencontrar o marco cujo AVISO não saiu. Sem este
+ * caminho, uma falha transitória em resolver o destinatário perderia o aviso para
+ * sempre — inclusive o do marco de 100%, que é o que mais importa.
+ *
  * A CADÊNCIA VIVE NO LEDGER: o UNIQUE de `billing_notifications` é parcial e não
- * deduplica com `invoice_id` nulo — e nenhum destes avisos tem fatura.
+ * deduplica com `invoice_id` nulo — e nenhum destes avisos tem fatura. Quem
+ * impede a repetição é `notified_at`, não a fila.
  *
  * Best-effort: nunca derruba o turno. O custo já está liquidado.
  */
@@ -625,9 +725,24 @@ export async function recordMilestones(
   const crossed = crossedMilestonePercents(args.settledCents, args.limitCents);
   if (crossed.length === 0) return;
 
-  const recipients = await resolvePlatformAdminRecipients(supabase);
-  const recipient = recipients[0] ?? null;
-  const dispatchOn = await isFlagEnabled("billing_notifications_dispatch");
+  // PREGUIÇOSOS: a partir de 70% esta função roda a cada turno e, na esmagadora
+  // maioria das vezes, todo marco já está registrado e avisado. Resolver
+  // destinatário (que faz chamada ao Auth Admin) e ler flag antes de saber se há
+  // algo a enfileirar seria I/O por turno para nada.
+  let recipientCache: { value: string | null } | null = null;
+  const recipientOnce = async (): Promise<string | null> => {
+    if (!recipientCache) {
+      recipientCache = { value: (await resolvePlatformAdminRecipients(supabase))[0] ?? null };
+    }
+    return recipientCache.value;
+  };
+  let dispatchCache: { value: boolean } | null = null;
+  const dispatchOnce = async (): Promise<boolean> => {
+    if (!dispatchCache) {
+      dispatchCache = { value: await isFlagEnabled("billing_notifications_dispatch") };
+    }
+    return dispatchCache.value;
+  };
 
   for (const percent of crossed) {
     const { data: inserted, error } = await supabase
@@ -638,25 +753,62 @@ export async function recordMilestones(
         milestone_percent: percent,
         settled_cents_at_cross: args.settledCents,
         limit_cents_at_cross: args.limitCents,
-        dispatch_enabled_at_enqueue: dispatchOn,
       })
-      .select("id")
+      .select("id, notified_at, enqueue_attempts")
       .maybeSingle();
 
-    // 23505 = o marco já foi registrado neste ciclo. Cada marco dispara NO
-    // MÁXIMO UMA VEZ por ciclo, e a garantia é do UNIQUE, não deste laço.
+    type LedgerRow = { id: string; notified_at: string | null; enqueue_attempts: number };
+    let ledger = (inserted ?? null) as LedgerRow | null;
+
     if (error) {
+      // 23505 = o marco já foi registrado neste ciclo. Cada marco dispara NO
+      // MÁXIMO UMA VEZ por ciclo, e a garantia é do UNIQUE, não deste laço — mas
+      // o AVISO pode não ter saído, e é isso que se reencontra aqui.
       if (error.code !== "23505") {
         jsonLog("error", {
           evt: "ai_budget_milestone_insert_failed",
           org: args.organizationId,
           err: error.message,
         });
+        continue;
       }
+      const { data: existing, error: readErr } = await supabase
+        .from("ai_budget_milestones")
+        .select("id, notified_at, enqueue_attempts")
+        .eq("organization_id", args.organizationId)
+        .eq("cycle_id", args.cycleId)
+        .eq("milestone_percent", percent)
+        .maybeSingle();
+      if (readErr || !existing) {
+        jsonLog("error", {
+          evt: "ai_budget_milestone_reread_failed",
+          org: args.organizationId,
+          percent,
+          err: readErr?.message ?? "no_row",
+        });
+        continue;
+      }
+      ledger = existing as LedgerRow;
+    }
+
+    if (!ledger) continue;
+    // Já avisado: a cadência vive no ledger, não na fila.
+    if (ledger.notified_at) continue;
+    const attempts = ledger.enqueue_attempts ?? 0;
+    if (attempts >= MILESTONE_ENQUEUE_MAX_ATTEMPTS) {
+      jsonLog("error", {
+        evt: "ai_budget_milestone_enqueue_exhausted",
+        org: args.organizationId,
+        percent,
+        attempts,
+      });
       continue;
     }
-    if (!inserted) continue;
+
+    const recipient = await recipientOnce();
     if (!recipient) {
+      // Sem destinatário o slot NÃO é consumido: `enqueue_attempts` fica onde
+      // está e a próxima passada tenta de novo.
       jsonLog("warn", { evt: "ai_budget_milestone_no_recipient", org: args.organizationId, percent });
       continue;
     }
@@ -673,9 +825,12 @@ export async function recordMilestones(
       .from("ai_budget_milestones")
       .update({
         notified_at: queued ? new Date().toISOString() : null,
-        enqueue_attempts: 1,
+        enqueue_attempts: attempts + 1,
+        // O nome da coluna é `..._at_enqueue`: o valor pertence ao momento do
+        // ENFILEIRAMENTO, não ao do registro do marco.
+        dispatch_enabled_at_enqueue: queued ? await dispatchOnce() : null,
       })
-      .eq("id", inserted.id)
+      .eq("id", ledger.id)
       .eq("organization_id", args.organizationId)
       .select("id");
 
