@@ -1363,7 +1363,9 @@ function catchExterno(): string {
 /**
  * O trecho de SUCESSO: do fim do bloco de falha de envio até o início do catch
  * externo. Duas âncoras sintáticas reais — cortar no `finish("success")` mediria
- * só metade do desfecho, e a liquidação roda DEPOIS dele de propósito.
+ * só metade do desfecho, e é justamente a ORDEM entre a liquidação e o `finish`
+ * que se prende aqui: dinheiro antes de telemetria. (A ordem inversa chegou a
+ * ser escrita e foi desfeita — o comentário do caso da ordem diz por quê.)
  */
 function trechoSucesso(): string {
   const [, fimEnvio] = braceBlock(webhookCode, webhookCode.indexOf("if (!sendRes.ok)"));
@@ -1371,6 +1373,34 @@ function trechoSucesso(): string {
   const fim = webhookCode.lastIndexOf("catch (err) {", marca);
   expect(fim, "o desfecho de sucesso sumiu").toBeGreaterThan(fimEnvio);
   return webhookCode.slice(fimEnvio, fim);
+}
+
+/**
+ * As quatro obrigações de um hard stop comercial, sobre o CORPO do bloco.
+ *
+ * São duas portas (o entitlement, antes do turno; e a corrida na reserva) e as
+ * duas devem o mesmo: handoff com razão própria, resposta determinística ao
+ * cliente, registro da execução e fim do turno. Prender só a CONDIÇÃO deixava
+ * passar remover o handoff — o cliente é avisado, a conversa segue `ai_active`,
+ * e o restaurante nunca vê a fila — ou remover a resposta, deixando o cliente
+ * no escuro. E é sobre o STATEMENT de cada escrita, não sobre o bloco inteiro:
+ * `toContain` no bloco fica verde quando sobra só o append no histórico.
+ */
+function exigeHardStopCompleto(bloco: string, nome: string) {
+  const upd = bloco.indexOf('from("conversations")');
+  expect(upd, `${nome}: não registra o handoff na conversa`).toBeGreaterThan(-1);
+  expect(
+    statementFrom(bloco, upd),
+    `${nome}: o handoff não usa a razão própria da franquia`,
+  ).toContain("AI_BUDGET_HANDOFF_REASON");
+  const envio = bloco.indexOf("sendOutbound(");
+  expect(envio, `${nome}: não responde ao cliente`).toBeGreaterThan(-1);
+  expect(
+    statementFrom(bloco, envio),
+    `${nome}: a resposta ao cliente não é o texto determinístico`,
+  ).toContain("AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT");
+  expect(bloco, `${nome}: não registra a execução`).toContain('finish("ai_budget_exhausted")');
+  expect(bloco, `${nome}: não encerra o turno`).toContain("return new Response");
 }
 
 /** O bloco `if (opened.kind === "READY") { … }`, onde o dado é GUARDADO. */
@@ -1389,6 +1419,37 @@ function atribuicoesDe(nome: string): Array<{ valor: string; index: number }> {
     valor: m[1].trim(),
     index: m.index!,
   }));
+}
+
+/**
+ * O identificador local a que um recorte liga UMA propriedade de um objeto
+ * desestruturado (`const { reservationId, cycleId } = turnBudget;`), com ou sem
+ * renomeação.
+ *
+ * O nome sai do CÓDIGO, não é redigitado aqui — mesmo padrão de `captura`/
+ * `orgId`. Renomear a variável na porta não pode deixar o caso medindo um nome
+ * que não existe mais.
+ */
+function ligadoDe(recorte: string, objeto: string, prop: string): string {
+  const m = recorte.match(new RegExp(`const\\s*\\{([^}]*)\\}\\s*=\\s*${objeto};`));
+  expect(m, `o recorte não desestrutura ${objeto}`).not.toBeNull();
+  const campo = m![1]
+    .split(",")
+    .map((s) => s.trim())
+    .find((s) => s === prop || s.startsWith(`${prop}:`));
+  expect(campo, `${objeto}.${prop} não é lido`).toBeDefined();
+  return campo!.includes(":") ? campo!.split(":")[1].trim() : campo!;
+}
+
+/**
+ * IDENTIDADE, não presença: a chave `x` do objeto recebe EXATAMENTE o
+ * identificador `ident` — pelo atalho de propriedade (`{ …, x, … }`, só quando
+ * o nome coincide) ou explícito (`x: ident`). `x: outraCoisa` é falso, que é a
+ * diferença entre "endereça uma reserva" e "endereça A reserva".
+ */
+function passaIdentidade(args: string, chave: string, ident: string): boolean {
+  if (new RegExp(`${chave}:\\s*${ident}\\b`).test(args)) return true;
+  return chave === ident && new RegExp(`[{,]\\s*${ident}\\s*[,}]`).test(args);
 }
 
 describe("webhook-whatsapp — ligação da franquia", () => {
@@ -1468,9 +1529,26 @@ describe("webhook-whatsapp — ligação da franquia", () => {
       );
     }
     // E a constante é REALMENTE usada onde importa.
-    expect(deniedBlock(webhookCode), "o bloco de negação não usa a constante").toContain(
-      "AI_BUDGET_HANDOFF_REASON",
-    );
+    const bloco = deniedBlock(webhookCode);
+    expect(bloco, "o bloco de negação não usa a constante").toContain("AI_BUDGET_HANDOFF_REASON");
+
+    // PRESENÇA NÃO É EXCLUSIVIDADE. Reduzir a cadeia inteira a
+    // `const handoffReason = AI_BUDGET_HANDOFF_REASON;` mantinha a constante no
+    // bloco e a suíte verde — e faz o operador ler "franquia esgotada" num
+    // fail-closed técnico (preço desconhecido, usage irresolvido), que é
+    // exatamente a afirmação que a razão própria existe para impedir.
+    const razoes = [...bloco.matchAll(/handoffReason = ([^;\n]+);/g)].map((m) => m[1].trim());
+    expect(
+      new Set(razoes).size,
+      "as variantes de negação compartilham a mesma razão de handoff",
+    ).toBeGreaterThanOrEqual(3);
+    const iCadeia = bloco.indexOf("handoffReason");
+    const iFranquia = bloco.indexOf("handoffReason = AI_BUDGET_HANDOFF_REASON");
+    expect(iFranquia, "a razão da franquia sumiu da cadeia").toBeGreaterThan(-1);
+    expect(
+      bloco.slice(iCadeia, iFranquia),
+      "a razão da franquia é escolhida sem passar por um teste de hardStop",
+    ).toMatch(/if \([^)]*hardStop[^)]*\)/);
   });
 
   it("o auto-resolve consulta o núcleo em vez de comparar idade cru", () => {
@@ -1483,9 +1561,29 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     expect(webhookCode, "a comparação crua de idade voltou").not.toMatch(
       /handoffAge\s*>\s*HANDOFF_AUTO_RESOLVE_MS/,
     );
-    expect(webhookCode, "o núcleo decide sem saber se o orçamento esgotou").toMatch(
-      /budgetExhausted:/,
+    // ORIGEM, NÃO PRESENÇA. É letra por letra o defeito que `budgetExhaustedNow`
+    // já teve nesta task: reduzir o bloco inteiro a
+    // `const budgetStillExhausted = false;` mantém a chave no lugar e a suíte
+    // verde. A consequência é um laço: o handoff por franquia esgotada volta
+    // para `ai_active` por decurso de prazo, o cliente recebe "Voltei a te
+    // atender por aqui", a próxima inbound bate no hard stop e tudo se repete de
+    // 12 em 12 horas — com a IA devolvida a um estado em que não pode responder.
+    const passado = webhookCode.match(/budgetExhausted:\s*([A-Za-z_$][\w$]*)\s*,/);
+    expect(passado, "o núcleo decide sem saber se o orçamento esgotou").not.toBeNull();
+    const estado = passado![1];
+    expect(["true", "false"], "o estado do orçamento virou literal").not.toContain(estado);
+    const origem = atribuicoesDe(estado).find((a) => a.valor.includes('"EXHAUSTED"'));
+    expect(
+      origem,
+      `${estado} nunca é comparado com "EXHAUSTED" — a origem do estado sumiu`,
+    ).toBeDefined();
+    const raiz = origem!.valor.match(/^([A-Za-z_$][\w$]*)/);
+    expect(raiz, "a comparação não parte de uma variável").not.toBeNull();
+    // E essa variável é a franquia REALMENTE lida — não outro objeto à mão.
+    const lidas = [...webhookCode.matchAll(/([A-Za-z_$][\w$]*) = await loadAiFranchise\(/g)].map(
+      (m) => m[1],
     );
+    expect(lidas, `${raiz![1]} não vem de loadAiFranchise`).toContain(raiz![1]);
   });
 
   it("a franquia só entra quando o entitlement resolve por franchise", () => {
@@ -1547,6 +1645,11 @@ describe("webhook-whatsapp — ligação da franquia", () => {
       parenBlock(webhookCode, i),
       "o hard stop mais curto nega sem exigir o gate ligado",
     ).toMatch(/budgetExhaustedNow\s*&&[\s\S]*ai_wallet_enforced/);
+
+    // E o CORPO. Esta porta tinha caso só sobre a condição: apagar o handoff
+    // ficava verde, e com ele a conversa segue `ai_active` — o cliente ouve que
+    // o atendimento parou e o restaurante nunca vê a conversa na fila.
+    exigeHardStopCompleto(blocoDe("if (budgetExhaustedNow"), "o hard stop do entitlement");
   });
 
   it("o texto de instabilidade vive numa constante só", () => {
@@ -1590,10 +1693,18 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // dizer ao cliente que a franquia acabou.
     const copy = block.indexOf("AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT");
     expect(copy, "o texto de franquia sumiu do bloco").toBeGreaterThan(-1);
+    // A PARTIR DA CADEIA DE COPY, não do início do bloco: `const hardStop = …` e
+    // o `if` da razão de handoff já põem a palavra lá em cima sozinhos, e com
+    // isso um `let stopText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT;` no topo da
+    // cadeia ficava verde — dizendo ao CLIENTE que a franquia acabou quando o
+    // que houve foi preço desconhecido ou usage irresolvido.
+    const cadeia = block.indexOf("stopText");
+    expect(cadeia, "a cadeia de copy sumiu").toBeGreaterThan(-1);
+    expect(cadeia, "o texto de franquia é escolhido antes da cadeia de copy").toBeLessThan(copy);
     expect(
-      block.slice(0, copy),
-      "o texto de franquia é escolhido sem passar pelo hard stop",
-    ).toContain("hardStop");
+      block.slice(cadeia, copy),
+      "o texto de franquia é escolhido sem passar por um teste de hardStop",
+    ).toMatch(/if \([^)]*hardStop[^)]*\)/);
   });
 
   it("cada variante emite telemetria própria", () => {
@@ -1703,12 +1814,10 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // medição. O pior desfecho possível, com zero sinal.
     const anc = 'if (opened.kind === "EXHAUSTED")';
     expect(webhookCode.indexOf(anc), "o hard stop da reserva sumiu").toBeGreaterThan(-1);
-    const bloco = blocoDe(anc);
-    expect(bloco, "a corrida não vira handoff próprio").toContain("AI_BUDGET_HANDOFF_REASON");
-    expect(bloco, "a corrida não responde ao cliente").toContain(
-      "AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT",
-    );
-    expect(bloco, "a corrida não encerra o turno").toContain("return new Response");
+    // Mesmas quatro obrigações da porta irmã, e pelo STATEMENT de cada escrita:
+    // `toContain` no bloco inteiro fica verde quando sobra só o append no
+    // histórico e o cliente não recebe nada.
+    exigeHardStopCompleto(blocoDe(anc), "a corrida entre resolução e reserva");
     // E ele decide ANTES do READY: depois, o valor já teria caído noutro ramo.
     expect(
       webhookCode.indexOf(anc),
@@ -1858,6 +1967,58 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     expect(porta, "a porta única não registra marcos").toContain("recordMilestones(");
     const fora = [...webhookCode.matchAll(/finalizeTurn\(/g)];
     expect(fora.length, "voltou a haver finalização fora da porta única").toBe(1);
+
+    // E a porta não pode ser NEUTRALIZADA. `if (true) return;` no topo desliga
+    // as seis liquidações de uma vez e deixa idêntico todo o texto que este
+    // guardrail lê — a regra "todo desfecho liquida" vira teatro sem que nenhum
+    // recorte perceba. A única saída antes do finalize é a guarda de tenant.
+    const antesDoFinalize = porta.slice(0, porta.indexOf("finalizeTurn("));
+    expect(
+      [...antesDoFinalize.matchAll(/\breturn\b/g)].length,
+      "há saída extra antes da liquidação — a porta pode ser neutralizada",
+    ).toBe(1);
+  });
+
+  it("todo retorno posterior à reserva liquida — a lista de desfechos é exaustiva", () => {
+    // O caso acima prende SEIS blocos PELO NOME. Enumeração correta hoje não é
+    // regra: um `return new Response(...)` novo entre a reserva e os desfechos,
+    // com `finish` e sem liquidar, ficava verde — e cada turno que saísse por
+    // ele deixaria a reserva HELD, para a varredura marcar EXPIRED sem tocar
+    // `settled_cents`. Aqui a pergunta é sobre TODO retorno depois da abertura.
+    const reserva = webhookCode.indexOf("openTurnBudget(");
+    expect(reserva, "a abertura do orçamento sumiu").toBeGreaterThan(-1);
+    const retornos = [...webhookCode.matchAll(/return new Response\(/g)]
+      .map((m) => m.index!)
+      .filter((i) => i > reserva);
+
+    // Os DOIS isentos: neles a RPC recusou a reserva, então não existe
+    // `reservation_id` para finalizar. Recortados pelos próprios blocos — se
+    // algum dia passarem a receber um id, entram na regra.
+    const isentos = [
+      braceBlock(webhookCode, webhookCode.indexOf('if (opened.kind === "EXHAUSTED")')),
+      braceBlock(webhookCode, webhookCode.indexOf("if (failClosed)")),
+    ];
+    const isento = (i: number) => isentos.some(([a, b]) => i > a && i < b);
+
+    expect(retornos.length, "a lista de retornos posteriores à reserva mudou").toBe(8);
+    expect(retornos.filter(isento).length, "os isentos deixaram de ser dois").toBe(2);
+
+    // O trecho que LEVA a cada retorno é o que vai do retorno anterior (ou da
+    // abertura) até ele: um retorno novo inserido no meio parte o trecho em
+    // dois, e o pedaço novo não tem liquidação nenhuma.
+    let anterior = reserva;
+    for (const i of retornos) {
+      const trecho = webhookCode.slice(anterior, i);
+      anterior = i;
+      if (isento(i)) {
+        expect(
+          trecho,
+          `um desfecho sem reserva passou a liquidar (índice ${i})`,
+        ).not.toContain("settleTurnBudget(");
+        continue;
+      }
+      expect(trecho, `retorno sem liquidação no índice ${i}`).toContain("settleTurnBudget(");
+    }
   });
 
   it("liquidação que falha NÃO apaga o estado, e não passa em silêncio", () => {
@@ -1931,12 +2092,29 @@ describe("webhook-whatsapp — ligação da franquia", () => {
         `organizationId: ${captura![1]}`,
       );
     }
-    expect(argsFinalize, "a liquidação não identifica a reserva").toMatch(
-      /[{,]\s*reservationId\s*[,}]|reservationId:\s*\w/,
-    );
-    expect(argsMarcos, "os marcos não identificam o ciclo").toMatch(
-      /[{,]\s*cycleId\s*[,}]|cycleId:\s*\w/,
-    );
+    // IDENTIDADE, NÃO PRESENÇA — e são justamente os dois identificadores que
+    // endereçam o dinheiro. A checagem anterior aceitava qualquer coisa:
+    // `reservationId: turnId`, `reservationId: cycleId` e
+    // `reservationId: requestId` passavam os três com a suíte inteira verde,
+    // enquanto as outras três chaves das MESMAS duas chamadas já eram presas
+    // por identidade.
+    //
+    // Com id errado, `finalize_ai_reservation` cai em RESERVATION_NOT_FOUND
+    // (migration 102), `finalizeTurn` devolve null, a porta loga
+    // `ai_budget_settle_not_applied` e sai SEM zerar: a reserva real fica HELD
+    // para sempre, a varredura marca EXPIRED sem tocar `settled_cents` e o
+    // custo real de TODO turno some do teto. Uma linha de log por turno é o
+    // único sinal.
+    const idReserva = ligadoDe(porta, varReserva, "reservationId");
+    const idCiclo = ligadoDe(porta, varReserva, "cycleId");
+    expect(
+      passaIdentidade(argsFinalize, "reservationId", idReserva),
+      `a liquidação endereça outra coisa no lugar de ${idReserva}`,
+    ).toBe(true);
+    expect(
+      passaIdentidade(argsMarcos, "cycleId", idCiclo),
+      `os marcos endereçam outro ciclo no lugar de ${idCiclo}`,
+    ).toBe(true);
   });
 
   it("o erro do provedor entra em webhook_executions SANITIZADO", () => {
