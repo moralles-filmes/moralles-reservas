@@ -1,5 +1,15 @@
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.27.3";
 import { fetchWithRetry } from "./retry.ts";
+import {
+  authorizeAndInvoke,
+  type AgentCallMeta,
+  type AgentCallOutcome,
+  type AuthorizedCall,
+  type PriceLookup,
+} from "./ai-call-authorizer-core.ts";
+import type { BeforeCallContext, BeforeCallDecision } from "./ai-budget-core.ts";
+
+export type { AgentCallMeta, AgentCallOutcome, BeforeCallDecision };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,7 +35,71 @@ export interface AgentUsage {
   output_tokens: number;
   cache_creation_tokens: number;
   cache_read_tokens: number;
+  /**
+   * OpenAI `completion_tokens_details.reasoning_tokens` e Gemini
+   * `thoughtsTokenCount`. OPCIONAL para não quebrar caller existente; ausente é
+   * tratado como zero em telemetria — mas o caminho de ORÇAMENTO usa
+   * `ai-price-core.ts`, onde token de raciocínio sem faixa própria é cobrado
+   * como output, nunca como grátis.
+   */
+  reasoning_tokens?: number;
 }
+
+/**
+ * Autorização financeira POR CHAMADA (Plano D, spec §17.7).
+ *
+ * AUSENTE = comportamento de hoje, byte a byte: nenhuma autorização, nenhuma
+ * apropriação, nenhum custo persistido. É o que mantém fora deste caminho as
+ * organizações com override vitalício (Ren Sushi), a carteira legada e o BYOK
+ * puro — nenhuma delas tem franquia, e nenhuma pode ser afetada por ela.
+ *
+ * `snapshot()` é lido ANTES de cada chamada: o adapter mantém consumido e
+ * reservado atualizados a cada `reportCall`, e é isso que permite revalidar por
+ * chamada sem consultar o ledger financeiro inteiro a cada iteração.
+ */
+export interface AgentBudgetHooks {
+  organizationId: string;
+  cycleId: string;
+  turnId: string;
+  requestId: string;
+  reservationId: string;
+  priceFor(provider: string, model: string): Promise<PriceLookup>;
+  beforeCall(ctx: BeforeCallContext): Promise<BeforeCallDecision>;
+  reportCall(meta: AgentCallMeta, outcome: AgentCallOutcome, priceId: string): Promise<void>;
+  newCallId(): string;
+  /**
+   * Estado corrente da reserva + estimativa já precificada da próxima chamada.
+   * SÍNCRONO de propósito: quem faz I/O de preço é o `beforeCall`, que já é async.
+   *
+   * RECEBE PROVEDOR E MODELO para que o contrato não minta. `nextCallEstimateCents`
+   * é a estimativa pré-chamada que viaja no `BeforeCallContext`, e `planNextCall`
+   * a compara contra `reserved − consumed` para decidir ALLOW vs EXTEND. Só com a
+   * iteração, o número entregue aqui seria precificado no modelo do TURNO — e a
+   * tentativa de fallback do Gemini (Pro, ordem de grandeza mais caro por Mtok que
+   * Flash) chegaria ao autorizador com folga de Flash.
+   *
+   * Defesa em profundidade, não correção de sub-reserva ativa: o adapter recalcula
+   * a estimativa a partir de `ctx.provider`/`ctx.model` dentro do `beforeCall`, e
+   * é LÁ que mora a garantia de que a cobertura é a do modelo real. O que se
+   * conserta aqui é o contrato — para que um adapter futuro que confie no valor
+   * recebido não autorize Pro com folga de Flash.
+   */
+  snapshot(iteration: number, provider: string, model: string): {
+    consumedCents: number;
+    reservedCents: number;
+    nextCallEstimateCents: number;
+  };
+}
+
+/**
+ * O loop deixou de devolver só texto porque "parei porque o orçamento acabou"
+ * e "terminei de responder" exigem consequências opostas: handoff com razão
+ * própria, copy determinística e alerta administrativo num caso; envio normal
+ * no outro. Devolver `""` para o primeiro apagaria a diferença.
+ */
+export type AgentLoopResult =
+  | { kind: "TEXT"; text: string }
+  | { kind: "DENIED"; decision: BeforeCallDecision; meta: AgentCallMeta };
 
 export interface AgentLoopOptions {
   provider: AIProvider;
@@ -44,6 +118,8 @@ export interface AgentLoopOptions {
   requestTimeoutMs?: number;
   /** Telemetry callback fired once per HTTP turn (the loop may have multiple). */
   onUsage?: (usage: AgentUsage) => void;
+  /** Plano D. Ausente = nenhuma autorização financeira (comportamento legado). */
+  budget?: AgentBudgetHooks;
 }
 
 export const DEFAULT_MODELS: Record<AIProvider, string> = {
@@ -104,9 +180,18 @@ const OPENAI_BASE_URLS: Partial<Record<AIProvider, string>> = {
 };
 
 /**
- * Preços em USD por milhão de tokens. Usado só para telemetria — não é
- * faturamento real, e segue valores públicos de cada provedor (atualizar
- * quando mudarem). Modelos sem entrada caem em fallback genérico.
+ * Preços em USD por milhão de tokens — TELEMETRIA APENAS.
+ *
+ * ESTE CAMINHO NÃO É O DO ORÇAMENTO. `estimateCostUsd` devolve `0` para modelo
+ * desconhecido, e no caminho protegido por franquia esse zero significaria
+ * consumo ilimitado sem nunca tocar o teto. O caminho de orçamento usa
+ * `ai-price-core.ts` contra a tabela versionada `ai_model_prices`, onde a
+ * ausência de preço tem tipo próprio (`PRICE_UNKNOWN`) e falha FECHADO.
+ *
+ * Telemetria pura pode tolerar desconhecido; orçamento, não. As duas coexistem
+ * de propósito — não unificar sem mover o log `agent_usage` para a tabela.
+ *
+ * Segue valores públicos de cada provedor (atualizar quando mudarem).
  */
 const PRICING_USD_PER_MTOK: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> = {
   "claude-haiku-4-5":   { input: 1,    output: 5,   cache_read: 0.10, cache_write: 1.25 },
@@ -206,9 +291,134 @@ function timeoutSignal(ms: number): AbortSignal {
   return controller.signal;
 }
 
+// ─── Chamada autorizada ───────────────────────────────────────────────────────
+
+/**
+ * Torna um erro de provedor seguro para LOG, TELEMETRIA e PERSISTÊNCIA.
+ *
+ * A chave de IA é per-unit (BYOK) e não pode aparecer em lugar nenhum. Dois
+ * vetores reais: (a) a URL do Gemini carrega `?key=<chave>` e a mensagem de erro
+ * de rede do runtime ecoa a URL inteira; (b) erro de SDK que reproduz o request
+ * pode trazer o header `Authorization: Bearer <chave>`. É por isso que a
+ * variante `PROVIDER_FAILED` de `AgentCallOutcome` — que carrega o erro CRU —
+ * traz no próprio tipo a obrigação de sanitizar no adapter: o adapter é aqui.
+ *
+ * O erro ORIGINAL continua sendo relançado ao chamador (controle de fluxo, não
+ * log): o webhook segue tratando exceção do provedor exatamente como sempre.
+ */
+export function sanitizeProviderError(err: unknown): string {
+  const raw =
+    err instanceof Error
+      ? `${err.name}: ${err.message}`
+      : typeof err === "string"
+        ? err
+        : "erro desconhecido do provedor";
+  return raw
+    .replace(/([?&]key=)[^&\s"']+/gi, "$1[REDACTED]")
+    .replace(/(Bearer\s+)\S+/gi, "$1[REDACTED]")
+    .replace(/((?:x-api-key|api[_-]?key|authorization)["'\s:=]+)\S{8,}/gi, "$1[REDACTED]")
+    .replace(/\b(?:sk-|sk-ant-|xai-|AIza)[A-Za-z0-9._-]{6,}/g, "[REDACTED]")
+    .slice(0, 300);
+}
+
+/**
+ * Executa UMA chamada ao provedor, autorizada quando há orçamento.
+ *
+ * Sem `opts.budget`: chama direto e reporta `onUsage` — exatamente o que o
+ * código fazia antes desta frente.
+ *
+ * Com `opts.budget`: delega ao núcleo puro `authorizeAndInvoke`, que fixa a
+ * ordem preço → autorização → chamada → apropriação (§17.7.3). O helper NÃO
+ * decide nada; ele só liga os fios.
+ *
+ * `invoke` recebe o modelo REAL e devolve `{ value, rawUsage }`. Um erro
+ * lançado lá dentro vira `PROVIDER_FAILED` (consumo zero VERDADEIRO) e é
+ * relançado ao chamador depois de reportado — o loop continua tratando exceção
+ * do provedor como sempre tratou.
+ */
+async function callWithBudget<T>(
+  opts: AgentLoopOptions,
+  spec: {
+    provider: AIProvider;
+    model: string;
+    iteration: number;
+    invoke: () => Promise<{ value: T; rawUsage: unknown }>;
+  },
+): Promise<
+  { kind: "OK"; value: T } | { kind: "DENIED"; decision: BeforeCallDecision; meta: AgentCallMeta }
+> {
+  const b = opts.budget;
+
+  if (!b) {
+    const r = await spec.invoke();
+    if (opts.onUsage && r.rawUsage) opts.onUsage(r.rawUsage as AgentUsage);
+    return { kind: "OK", value: r.value };
+  }
+
+  const snap = b.snapshot(spec.iteration, spec.provider, spec.model);
+  let thrown: unknown = null;
+
+  const authorized: AuthorizedCall = await authorizeAndInvoke(
+    {
+      organizationId: b.organizationId,
+      cycleId: b.cycleId,
+      turnId: b.turnId,
+      requestId: b.requestId,
+      reservationId: b.reservationId,
+      provider: spec.provider,
+      model: spec.model,
+      iteration: spec.iteration,
+      maxIterations: MAX_ITERATIONS,
+      consumedCents: snap.consumedCents,
+      reservedCents: snap.reservedCents,
+      nextCallEstimateCents: snap.nextCallEstimateCents,
+    },
+    {
+      priceFor: (provider, model) => b.priceFor(provider, model),
+      beforeCall: (ctx) => b.beforeCall(ctx),
+      reportCall: (meta, outcome, priceId) => b.reportCall(meta, outcome, priceId),
+      newCallId: () => b.newCallId(),
+      invoke: async () => {
+        try {
+          const r = await spec.invoke();
+          return { kind: "OK", value: r.value, rawUsage: r.rawUsage };
+        } catch (err) {
+          // Guardado CRU para relançar depois da apropriação (controle de fluxo);
+          // o que segue para `reportCall` é a versão sanitizada, porque esse
+          // desfecho é persistido e telemetrado e o erro pode carregar a chave.
+          thrown = err;
+          return { kind: "FAILED", error: sanitizeProviderError(err) };
+        }
+      },
+    },
+  );
+
+  if (authorized.kind === "DENIED") {
+    return { kind: "DENIED", decision: authorized.decision, meta: authorized.meta };
+  }
+
+  if (thrown) throw thrown;
+
+  const res = authorized.result;
+  if (res.kind === "FAILED") {
+    // Inalcançável: só `spec.invoke()` produz FAILED, e esse caminho já guardou
+    // `thrown` e saiu acima com o erro ORIGINAL. O ramo existe para estreitar a
+    // união — e relança um Error de verdade porque `res.error` aqui é a STRING
+    // já sanitizada: relançá-la crua faria o `err instanceof Error` de quem
+    // recebe tomar o ramo errado.
+    throw new Error(sanitizeProviderError(res.error));
+  }
+
+  // Telemetria legada (log `agent_usage`) continua alimentada.
+  if (opts.onUsage && authorized.outcome.kind === "USAGE") {
+    opts.onUsage(authorized.outcome.usage as AgentUsage);
+  }
+  return { kind: "OK", value: res.value as T };
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
-export async function runAgentLoop(opts: AgentLoopOptions): Promise<string> {
+export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const model = opts.model || DEFAULT_MODELS[opts.provider];
   const trimmedHistory = truncateHistory(
     opts.history,
@@ -270,7 +480,7 @@ function markLastBlockForCache(messages: Anthropic.MessageParam[]): void {
   }
 }
 
-async function runClaude(opts: AgentLoopOptions, model: string): Promise<string> {
+async function runClaude(opts: AgentLoopOptions, model: string): Promise<AgentLoopResult> {
   // SDK Anthropic faz retry built-in em 429/5xx/network errors com backoff
   // exponencial. Defaults: 2 retries. Setamos explícito pra deixar claro.
   const anthropic = new Anthropic({
@@ -312,29 +522,45 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<string>
     clearMessagesCache(messages);
     markLastBlockForCache(messages);
 
-    const response = await anthropic.messages.create(
-      {
-        model,
-        max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
-        system: systemBlocks,
-        tools: claudeTools,
-        messages,
+    const call = await callWithBudget<Anthropic.Message>(opts, {
+      provider: "claude",
+      model,
+      iteration: MAX_ITERATIONS - iterations,
+      invoke: async () => {
+        const r = await anthropic.messages.create(
+          {
+            model,
+            max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+            system: systemBlocks,
+            tools: claudeTools,
+            messages,
+          },
+          { signal: timeoutSignal(timeoutMs) },
+        );
+        return {
+          value: r,
+          rawUsage: r.usage
+            ? {
+                input_tokens: r.usage.input_tokens ?? 0,
+                output_tokens: r.usage.output_tokens ?? 0,
+                cache_creation_tokens: (r.usage as any).cache_creation_input_tokens ?? 0,
+                cache_read_tokens: (r.usage as any).cache_read_input_tokens ?? 0,
+                reasoning_tokens: 0,
+              }
+            : null,
+        };
       },
-      { signal: timeoutSignal(timeoutMs) },
-    );
+    });
 
-    if (opts.onUsage && response.usage) {
-      opts.onUsage({
-        input_tokens: response.usage.input_tokens ?? 0,
-        output_tokens: response.usage.output_tokens ?? 0,
-        cache_creation_tokens: (response.usage as any).cache_creation_input_tokens ?? 0,
-        cache_read_tokens: (response.usage as any).cache_read_input_tokens ?? 0,
-      });
-    }
+    // Negado: NÃO iniciar nova chamada, NÃO truncar resposta já recebida,
+    // encerrar o loop de forma controlada e preservar mensagens e ferramentas
+    // já executadas. Quem decide a copy e o handoff é o webhook.
+    if (call.kind === "DENIED") return { kind: "DENIED", decision: call.decision, meta: call.meta };
+    const response = call.value;
 
     if (response.stop_reason === "end_turn") {
       const text = response.content.find((b) => b.type === "text");
-      return text?.text ?? "";
+      return { kind: "TEXT", text: text?.text ?? "" };
     }
 
     if (response.stop_reason === "tool_use") {
@@ -365,7 +591,7 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<string>
     break;
   }
 
-  return "Desculpe, não consegui processar sua solicitação. Tente novamente.";
+  return { kind: "TEXT", text: "Desculpe, não consegui processar sua solicitação. Tente novamente." };
 }
 
 // ─── OpenAI-compatible (OpenAI, Grok, DeepSeek) ───────────────────────────────
@@ -374,7 +600,7 @@ async function runOpenAICompatible(
   opts: AgentLoopOptions,
   model: string,
   baseUrl: string,
-): Promise<string> {
+): Promise<AgentLoopResult> {
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const openaiTools = opts.tools.map((t) => ({
     type: "function",
@@ -389,52 +615,65 @@ async function runOpenAICompatible(
 
   let iterations = MAX_ITERATIONS;
   while (iterations-- > 0) {
-    const resp = await fetchWithRetry(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${opts.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        tools: openaiTools,
-        tool_choice: "auto",
-        max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
-      }),
-      signal: timeoutSignal(timeoutMs),
-    }, {
-      retries: DEFAULT_HTTP_RETRIES,
-      baseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
-      onRetry: ({ attempt, status, error, delayMs }) => {
-        console.warn(JSON.stringify({
-          level: "warn",
-          evt: "agent_http_retry",
-          provider: opts.provider,
-          model,
-          attempt,
-          status: status ?? null,
-          error: error ? String(error) : null,
-          delay_ms: Math.round(delayMs),
-        }));
+    const call = await callWithBudget<any>(opts, {
+      provider: opts.provider,
+      model,
+      iteration: MAX_ITERATIONS - iterations,
+      invoke: async () => {
+        const resp = await fetchWithRetry(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${opts.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            tools: openaiTools,
+            tool_choice: "auto",
+            max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+          }),
+          signal: timeoutSignal(timeoutMs),
+        }, {
+          retries: DEFAULT_HTTP_RETRIES,
+          baseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
+          onRetry: ({ attempt, status, error, delayMs }) => {
+            console.warn(JSON.stringify({
+              level: "warn",
+              evt: "agent_http_retry",
+              provider: opts.provider,
+              model,
+              attempt,
+              status: status ?? null,
+              error: error ? sanitizeProviderError(error) : null,
+              delay_ms: Math.round(delayMs),
+            }));
+          },
+        });
+
+        if (!resp.ok) {
+          const errBody = await resp.text();
+          throw new Error(`${opts.provider} API error ${resp.status}: ${errBody}`);
+        }
+
+        const d = await resp.json();
+        return {
+          value: d,
+          rawUsage: d.usage
+            ? {
+                input_tokens: d.usage.prompt_tokens ?? 0,
+                output_tokens: d.usage.completion_tokens ?? 0,
+                cache_creation_tokens: 0,
+                cache_read_tokens: d.usage.prompt_tokens_details?.cached_tokens ?? 0,
+                reasoning_tokens: d.usage.completion_tokens_details?.reasoning_tokens ?? 0,
+              }
+            : null,
+        };
       },
     });
 
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`${opts.provider} API error ${resp.status}: ${err}`);
-    }
-
-    const data = await resp.json();
-
-    if (opts.onUsage && data.usage) {
-      opts.onUsage({
-        input_tokens: data.usage.prompt_tokens ?? 0,
-        output_tokens: data.usage.completion_tokens ?? 0,
-        cache_creation_tokens: 0,
-        cache_read_tokens: data.usage.prompt_tokens_details?.cached_tokens ?? 0,
-      });
-    }
+    if (call.kind === "DENIED") return { kind: "DENIED", decision: call.decision, meta: call.meta };
+    const data = call.value;
 
     const choice = data.choices?.[0];
     if (!choice) break;
@@ -455,7 +694,7 @@ async function runOpenAICompatible(
           iterations_left: iterations,
         }));
       }
-      return msg.content ?? "";
+      return { kind: "TEXT", text: msg.content ?? "" };
     }
 
     for (const toolCall of msg.tool_calls) {
@@ -466,7 +705,7 @@ async function runOpenAICompatible(
     }
   }
 
-  return "Desculpe, não consegui processar sua solicitação. Tente novamente.";
+  return { kind: "TEXT", text: "Desculpe, não consegui processar sua solicitação. Tente novamente." };
 }
 
 // ─── Gemini ───────────────────────────────────────────────────────────────────
@@ -489,28 +728,34 @@ function toGeminiSchema(schema: any): any {
   return result;
 }
 
-// Faz uma chamada Gemini com retry e fallback de modelo:
-// 1) Tenta `primaryModel` com fetchWithRetry (3 tentativas, 5xx/429/network).
-// 2) Se ainda assim retornar 5xx (Flash saturado regionalmente), tenta UMA vez
-//    o `fallbackModel` (Pro, com cota TPM separada).
-// Retorna a Response da chamada que funcionou. Se ambos falham, lança a última.
-async function callGeminiWithFallback(
+/**
+ * UMA chamada Gemini, com retry HTTP dentro do MESMO modelo.
+ *
+ * Os retries de `fetchWithRetry` NÃO são chamadas financeiras novas: mesma
+ * chamada lógica, mesmo modelo, e uma tentativa que falha não produz usage.
+ *
+ * O FALLBACK DE MODELO SAIU DAQUI de propósito. Ele realiza uma segunda chamada
+ * HTTP com outro modelo, e Pro custa múltiplas vezes Flash: cobrar Pro a preço
+ * de Flash é subcontabilização direta. A escolha do fallback subiu para
+ * `runGemini`, onde cada modelo passa por `callWithBudget` e recebe autorização
+ * própria, preço do modelo real e `call_id` próprio (§17.7.6).
+ */
+async function callGeminiOnce(
   body: string,
   apiKey: string,
-  primaryModel: string,
-  fallbackModel: string | null,
+  model: string,
   timeoutMs: number,
-): Promise<{ resp: Response; modelUsed: string }> {
-  const buildUrl = (m: string) =>
-    `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`;
-
-  const callOnce = (m: string, retries: number) =>
-    fetchWithRetry(buildUrl(m), {
+  retries: number,
+): Promise<Response> {
+  return fetchWithRetry(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body,
       signal: timeoutSignal(timeoutMs),
-    }, {
+    },
+    {
       retries,
       baseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
       onRetry: ({ attempt, status, error, delayMs }) => {
@@ -518,59 +763,34 @@ async function callGeminiWithFallback(
           level: "warn",
           evt: "agent_http_retry",
           provider: "gemini",
-          model: m,
+          model,
           attempt,
           status: status ?? null,
-          error: error ? String(error) : null,
+          // Sanitizado: a URL do Gemini leva `?key=<chave>` e a mensagem de erro
+          // de rede do runtime ecoa a URL inteira.
+          error: error ? sanitizeProviderError(error) : null,
           delay_ms: Math.round(delayMs),
         }));
       },
-    });
-
-  // Primary: 1 retry (2 tentativas total) — se Flash falha 2x seguidas, a
-  // sobrecarga regional persiste; mais espera só atrasa a resposta ao cliente.
-  // Cai pro fallback logo. Pro tem cota TPM separada e geralmente está livre.
-  let primary: Response;
-  try {
-    primary = await callOnce(primaryModel, 1);
-  } catch (err) {
-    // Timeout / erro de rede esgotou os retries no primary. Antes de propagar
-    // (→ agent_error → handoff), tenta o fallback (Pro): cota TPM separada,
-    // geralmente livre quando o Flash está saturado regionalmente.
-    if (!fallbackModel) throw err;
-    console.warn(JSON.stringify({
-      level: "warn",
-      evt: "agent_model_fallback",
-      provider: "gemini",
-      from_model: primaryModel,
-      to_model: fallbackModel,
-      primary_error: String(err),
-    }));
-    const fb = await callOnce(fallbackModel, DEFAULT_HTTP_RETRIES);
-    return { resp: fb, modelUsed: fallbackModel };
-  }
-  if (primary.ok || primary.status < 500 || !fallbackModel) {
-    return { resp: primary, modelUsed: primaryModel };
-  }
-
-  // Primary esgotou retries em 5xx — log e tenta fallback.
-  const primaryErr = await primary.text().catch(() => "<unreadable>");
-  console.warn(JSON.stringify({
-    level: "warn",
-    evt: "agent_model_fallback",
-    provider: "gemini",
-    from_model: primaryModel,
-    to_model: fallbackModel,
-    primary_status: primary.status,
-    primary_body_snippet: primaryErr.slice(0, 200),
-  }));
-
-  // Fallback: usa retries default (Pro tem cota maior, retry vale mais).
-  const fallback = await callOnce(fallbackModel, DEFAULT_HTTP_RETRIES);
-  return { resp: fallback, modelUsed: fallbackModel };
+    },
+  );
 }
 
-async function runGemini(opts: AgentLoopOptions, model: string): Promise<string> {
+/**
+ * Erro que justifica tentar o modelo de fallback.
+ *
+ * Preserva o gatilho de hoje: 5xx persistente (saturação regional) e erro de
+ * rede/timeout caem para o Pro; 4xx (chave inválida, request malformado, modelo
+ * inexistente) propaga direto, porque o Pro falharia igual e a segunda chamada
+ * seria custo sem chance de sucesso.
+ */
+function shouldTryGeminiFallback(err: unknown): boolean {
+  const status = (err as { status?: unknown })?.status;
+  if (typeof status === "number") return status >= 500;
+  return true;
+}
+
+async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLoopResult> {
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fallbackModel = FALLBACK_MODELS.gemini;
 
@@ -600,32 +820,97 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<string>
       generationConfig: { maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
     });
 
-    const { resp, modelUsed } = await callGeminiWithFallback(
-      body,
-      opts.apiKey,
-      activeModel,
-      fallbackModel,
-      timeoutMs,
-    );
-    // Sticky fallback: se caímos no Pro nessa iteração do loop de tools,
-    // mantemos Pro nas próximas (cota Flash continua saturada, não adianta voltar).
-    activeModel = modelUsed;
+    // Uma tentativa por modelo, cada uma com autorização financeira PRÓPRIA.
+    // `attemptModels` é [ativo] ou [ativo, fallback] — a segunda entrada só é
+    // tentada quando a primeira falha com 5xx ou erro de rede.
+    const attemptModels = fallbackModel && fallbackModel !== activeModel
+      ? [activeModel, fallbackModel]
+      : [activeModel];
 
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`Gemini API error ${resp.status}: ${err}`);
+    let data: any = null;
+    let denied: { decision: BeforeCallDecision; meta: AgentCallMeta } | null = null;
+    let lastError: unknown = null;
+
+    for (let a = 0; a < attemptModels.length; a++) {
+      const attemptModel = attemptModels[a];
+      const isFallbackAttempt = a > 0;
+
+      if (isFallbackAttempt) {
+        console.warn(JSON.stringify({
+          level: "warn",
+          evt: "agent_model_fallback",
+          provider: "gemini",
+          from_model: attemptModels[0],
+          to_model: attemptModel,
+          primary_error: sanitizeProviderError(lastError),
+        }));
+      }
+
+      try {
+        const call = await callWithBudget<any>(opts, {
+          provider: "gemini",
+          model: attemptModel,
+          iteration: MAX_ITERATIONS - iterations,
+          invoke: async () => {
+            const resp = await callGeminiOnce(
+              body,
+              opts.apiKey,
+              attemptModel,
+              timeoutMs,
+              // Primary: 1 retry — se Flash falha 2x seguidas a sobrecarga
+              // regional persiste e mais espera só atrasa o cliente. Fallback:
+              // retries default, porque Pro tem cota TPM separada.
+              isFallbackAttempt ? DEFAULT_HTTP_RETRIES : 1,
+            );
+            if (!resp.ok) {
+              const errBody = await resp.text();
+              // `status` anexado: é o que decide se vale tentar o fallback, sem
+              // reintroduzir a decisão de modelo dentro do helper HTTP.
+              const e: any = new Error(`Gemini API error ${resp.status}: ${errBody}`);
+              e.status = resp.status;
+              throw e;
+            }
+            const d = await resp.json();
+            return {
+              value: d,
+              rawUsage: d.usageMetadata
+                ? {
+                    input_tokens: d.usageMetadata.promptTokenCount ?? 0,
+                    output_tokens: d.usageMetadata.candidatesTokenCount ?? 0,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: d.usageMetadata.cachedContentTokenCount ?? 0,
+                    reasoning_tokens: d.usageMetadata.thoughtsTokenCount ?? 0,
+                  }
+                : null,
+            };
+          },
+        });
+
+        // Negação vale para a tentativa ATUAL e encerra o turno — inclusive a
+        // do fallback. Quando a 1ª chamada não devolveu usage, a autorização do
+        // fallback volta DENY_USAGE_UNRESOLVED e a 2ª chamada não acontece: é
+        // exatamente o buraco de "resposta vazia + fallback = duas chamadas,
+        // uma contabilizada" (§17.7.6).
+        if (call.kind === "DENIED") {
+          denied = { decision: call.decision, meta: call.meta };
+          break;
+        }
+
+        data = call.value;
+        // Sticky: se caímos no Pro, seguimos no Pro (a cota do Flash continua
+        // saturada — não adianta voltar).
+        activeModel = attemptModel;
+        break;
+      } catch (err) {
+        lastError = err;
+        // Última tentativa, ou erro que o fallback não resolveria (4xx):
+        // propaga como sempre propagou (→ agent_error → handoff).
+        if (a === attemptModels.length - 1 || !shouldTryGeminiFallback(err)) throw err;
+      }
     }
 
-    const data = await resp.json();
-
-    if (opts.onUsage && data.usageMetadata) {
-      opts.onUsage({
-        input_tokens: data.usageMetadata.promptTokenCount ?? 0,
-        output_tokens: data.usageMetadata.candidatesTokenCount ?? 0,
-        cache_creation_tokens: 0,
-        cache_read_tokens: data.usageMetadata.cachedContentTokenCount ?? 0,
-      });
-    }
+    if (denied) return { kind: "DENIED", decision: denied.decision, meta: denied.meta };
+    if (!data) throw lastError ?? new Error("Gemini: sem resposta utilizável");
 
     const candidate = data.candidates?.[0];
     const parts: any[] = candidate?.content?.parts ?? [];
@@ -647,7 +932,7 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<string>
             iterations_left: iterations,
           }));
         }
-        return text;
+        return { kind: "TEXT", text };
       }
       // Resposta VAZIA (Gemini sob carga / safety devolve candidate sem texto e
       // sem tool call, ou nenhum candidate). É a causa nº1 do "Desculpa, não
@@ -665,7 +950,7 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<string>
         }));
         continue;
       }
-      return "";
+      return { kind: "TEXT", text: "" };
     }
 
     // Turno com tool calls: registra o turno do modelo e executa as tools.
@@ -680,5 +965,5 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<string>
     contents.push({ role: "user", parts: responseParts });
   }
 
-  return "Desculpe, não consegui processar sua solicitação. Tente novamente.";
+  return { kind: "TEXT", text: "Desculpe, não consegui processar sua solicitação. Tente novamente." };
 }

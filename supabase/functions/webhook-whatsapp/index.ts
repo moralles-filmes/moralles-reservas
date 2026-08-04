@@ -4,9 +4,37 @@ import {
   runAgentLoop,
   resolveModel,
   estimateCostUsd,
+  sanitizeProviderError,
+  type AgentBudgetHooks,
+  type AgentLoopResult,
   type AIProvider,
   type AgentTool,
 } from "../_shared/ai-providers.ts";
+// ─── Franquia de IA (Plano D) ────────────────────────────────────────────────
+// O adapter faz I/O; a decisão é dos núcleos puros. Nada aqui reimplementa
+// "cabe?", "isto é teto ou soluço?" ou "o que dizer ao cliente".
+import {
+  finalizeTurn,
+  loadAiFranchise,
+  makeBudgetHooks,
+  openTurnBudget,
+  recordMilestones,
+  type TurnBudget,
+} from "../_shared/ai-budget-gate.ts";
+import {
+  AI_BUDGET_HANDOFF_REASON,
+  isCommercialHardStop,
+  shouldAutoResolveHandoff,
+  telemetryEventFor,
+} from "../_shared/ai-budget-core.ts";
+import {
+  AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT,
+  AI_BUDGET_HARDCODED_TEXTS,
+  resolveMutationStopText,
+  type MutationOutcome,
+} from "../_shared/ai-budget-copy.ts";
+import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
+import { isFlagEnabled } from "../_shared/platform-flags.ts";
 import {
   parseInbound,
   peekInboundMedia,
@@ -793,6 +821,17 @@ const STUCK_PROCESSING_TIMEOUT_MS = 90_000;
 const HANDOFF_AUTO_RESOLVE_MS = 12 * 60 * 60 * 1000;       // 12h
 const HANDOFF_REMINDER_THROTTLE_MS = 6 * 60 * 60 * 1000;   // 6h
 
+/**
+ * Texto de instabilidade — UMA constante, não quatro literais.
+ *
+ * Ele é enviado em três desfechos diferentes E precisa estar no
+ * `HARDCODED_AGENT_NOISE`. Redigitado, editar um sem os outros faz a mensagem
+ * escapar do filtro e poluir o histórico das invocações seguintes, que é
+ * exatamente a razão de os textos do Plano D entrarem por lista importada.
+ */
+const AGENT_INSTABILITY_TEXT =
+  "Tive um instante de instabilidade aqui. Já chamei alguém da equipe pra te responder. Em breve um humano assume.";
+
 // Janela de agregação (debounce) de rajada: cliente costuma mandar várias
 // mensagens picadas em poucos segundos. Esperamos esse intervalo antes de
 // acionar o LLM; se chegar mensagem mais nova na MESMA conversa durante a
@@ -1197,6 +1236,83 @@ serve(async (req) => {
   let convIdForLock: string | null = null;
   let aiLockToken: string | null = null;
   let lockAcquired = false;
+
+  // Reserva de orçamento do turno (Plano D). Hasteada aqui pelo MESMO motivo do
+  // lock: o catch externo é irmão do try, e sem enxergar a reserva ele deixaria
+  // o custo real do turno fora do teto para sempre.
+  let turnBudget: TurnBudget | null = null;
+  let turnBudgetOrgId: string | null = null;
+
+  /**
+   * REGRA ÚNICA: todo desfecho do turno liquida a reserva.
+   *
+   * Enquanto a reserva fica `HELD`, o consumido não é `settled_cents` — e só
+   * `finalize_ai_reservation` incrementa esse campo. A varredura de expiradas
+   * marca `EXPIRED` e devolve `released_cents` SEM incrementar o liquidado
+   * (migration 102): deixar um desfecho sem liquidar não atrasa a contabilidade,
+   * apaga-a. Custo real de LLM que some do teto é a classe de falha que esta
+   * frente existe para impedir.
+   *
+   * `SETTLED` quando o turno chegou ao fim que pretendia (resposta produzida,
+   * ou negação que encerrou o turno de propósito); `RELEASED` quando ele foi
+   * interrompido. Os dois movem exatamente o mesmo dinheiro — a RPC só apropria
+   * `consumed_cents`, escrito unicamente por `record_ai_call_usage` para
+   * chamadas que OCORRERAM —, então a escolha é de rótulo para quem audita, não
+   * de valor.
+   *
+   * No-op fora da franquia e quando não houve reserva.
+   *
+   * O ESTADO LOCAL SÓ É ZERADO NO SUCESSO. Zerar antes do `await` fazia de uma
+   * RPC que falha um custo perdido para sempre: ninguém mais tentava, nem o
+   * catch externo, porque o estado já tinha sido apagado — a reserva ficava
+   * `HELD`, a varredura marcava `EXPIRED` e o consumido real sumia do teto.
+   * Mantido o estado, o catch externo tem uma segunda tentativa (duas no total,
+   * nunca um laço). Dupla liquidação continua impossível nos DOIS níveis: a
+   * guarda local, e a própria RPC, que devolve sem redebitar quando o status já
+   * não é `HELD` (migration 102).
+   *
+   * ISSO NÃO É COBERTURA COMPLETA, e não deve ser lido como tal: nos desfechos
+   * que terminam sem exceção não existe segunda tentativa nenhuma — ou seja, no
+   * modo de falha COMUM (a RPC falha e o resto do turno corre normal) a segunda
+   * tentativa nunca acontece; ela só cobre "falhou a liquidação E depois algo
+   * mais explodiu". Fechar de verdade exige uma varredura que LIQUIDE reserva
+   * com `consumed_cents > 0` em vez de expirá-la — trabalho de outra fase.
+   *
+   * O `if (!fin)` também não distingue "a RPC errou" de `RESERVATION_NOT_FOUND`
+   * / `CYCLE_NOT_FOUND`, então o log abaixo pode sair sobre uma reserva que
+   * nunca existiu. É ruído no log, não erro de contabilidade.
+   */
+  const settleTurnBudget = async (status: "SETTLED" | "RELEASED") => {
+    if (!turnBudget || !turnBudgetOrgId) return;
+    const { reservationId, cycleId } = turnBudget;
+    const orgId = turnBudgetOrgId;
+    const fin = await finalizeTurn(supabase, { organizationId: orgId, reservationId, status });
+    if (!fin) {
+      // NÃO zera: a RPC não aplicou (erro, ou reserva/ciclo não encontrados) e o
+      // consumido ainda não virou `settled_cents`.
+      jsonLog("error", {
+        requestId,
+        evt: "ai_budget_settle_not_applied",
+        reservation: reservationId,
+        status,
+      });
+      return;
+    }
+    turnBudget = null;
+    turnBudgetOrgId = null;
+    try {
+      // Best-effort por contrato: o custo já está liquidado, e um aviso de
+      // marco que falha não pode derrubar a resposta ao cliente.
+      await recordMilestones(supabase, {
+        organizationId: orgId,
+        cycleId,
+        settledCents: fin.settledCents,
+        limitCents: fin.limitCents,
+      });
+    } catch (e) {
+      jsonLog("error", { requestId, evt: "ai_budget_milestones_failed", err: String(e) });
+    }
+  };
 
   // Helper local que finaliza a execução (grava processed_messages.outcome
   // se já houver message_id, e registra webhook_executions). Nunca lança.
@@ -1826,7 +1942,25 @@ serve(async (req) => {
 
       const silenceStart = Math.max(handoffStart, lastHumanTs);
       const handoffAge = silenceStart ? Date.now() - silenceStart : 0;
-      const shouldAutoResolve = silenceStart > 0 && handoffAge > HANDOFF_AUTO_RESOLVE_MS;
+
+      // Handoff por franquia esgotada NÃO volta para a IA pelo decurso do
+      // prazo: devolveria a conversa a uma IA que não pode responder. Só a
+      // virada do ciclo — orçamento não mais esgotado — devolve. A leitura do
+      // orçamento só acontece quando a razão é essa; nenhum custo nas demais.
+      let budgetStillExhausted = false;
+      if (conv.handoff_reason === AI_BUDGET_HANDOFF_REASON) {
+        const franchise = await loadAiFranchise(supabase, organizationId);
+        budgetStillExhausted = franchise?.state === "EXHAUSTED";
+      }
+
+      const shouldAutoResolve =
+        silenceStart > 0 &&
+        shouldAutoResolveHandoff({
+          handoffReason: conv.handoff_reason ?? null,
+          ageMs: handoffAge,
+          thresholdMs: HANDOFF_AUTO_RESOLVE_MS,
+          budgetExhausted: budgetStillExhausted,
+        });
 
       if (shouldAutoResolve) {
         await supabase
@@ -1995,9 +2129,15 @@ serve(async (req) => {
     //     relevantes pro pedido atual. Cortar reduz input tokens e melhora
     //     latência. Sem timestamp (legado pré-backfill) → mantém.
     const HARDCODED_AGENT_NOISE = new Set<string>([
-      "Tive um instante de instabilidade aqui. Já chamei alguém da equipe pra te responder. Em breve um humano assume.",
+      AGENT_INSTABILITY_TEXT,
       "Desculpa, não consegui montar uma resposta agora. Pode reformular ou aguardar um instante?",
       "Desculpe, não consegui processar sua solicitação. Tente novamente.",
+      // Plano D: os textos determinísticos do bloqueio por franquia entram pela
+      // LISTA, nunca redigitados — é o que impede que um texto novo apareça sem
+      // entrar no filtro. Mesmo motivo de MEDIA_REPLY_TEXT: sem isso a mensagem
+      // polui o histórico das invocações seguintes e ensina o modelo que
+      // "atendimento interrompido" é o padrão.
+      ...AI_BUDGET_HARDCODED_TEXTS,
     ]);
     const HISTORY_WINDOW_MS = 72 * 60 * 60 * 1000;
     const cutoffMs = Date.now() - HISTORY_WINDOW_MS;
@@ -2047,6 +2187,90 @@ serve(async (req) => {
     const combinedUserMessage =
       // deno-lint-ignore no-explicit-any
       pendingUserMsgs.map((m: any) => m.content.trim()).join("\n").trim() || incomingText;
+
+    // ─── Franquia de IA (Plano D) ────────────────────────────────────────────
+    // Resolve o entitlement de IA COM o estado do orçamento. Só o ramo
+    // `franchise` entra no caminho novo: override vitalício (Ren Sushi),
+    // carteira legada e BYOK puro seguem exatamente como antes — `budgetHooks`
+    // fica `undefined` e o laço roda byte a byte como hoje.
+    //
+    // NENHUMA CONTAGEM DE CONVERSA, MENSAGEM OU INTERAÇÃO AUTORIZA NADA AQUI.
+    // O único teto é financeiro e por organização.
+    const aiFranchiseState = await loadAiFranchise(supabase, organizationId);
+    const entitlements = await resolveOrgEntitlements(
+      supabase,
+      organizationId,
+      undefined,
+      aiFranchiseState ?? undefined,
+    );
+    const isFranchise = entitlements.ai.source === "franchise";
+
+    if (entitlements.readFailed) {
+      // Leitura degradada resolve com os defaults de quem NÃO leu (sem
+      // overrides, sem assinaturas), então a franquia deixa de ser reconhecida
+      // e o turno roda SEM ganchos e SEM medição. NÃO negamos — a consequência
+      // recairia sobre o cliente do restaurante, e negar é decisão comercial.
+      // Mas o silêncio era o defeito: sem esta linha, gasto não medido é
+      // invisível justamente quando o banco está com soluço.
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_budget_entitlements_read_failed",
+        unitId,
+        organizationId,
+        franchise: isFranchise,
+      });
+    }
+
+    // Com `source: "franchise"`, `allowed: false` significa UMA coisa só: o
+    // ciclo está EXHAUSTED. É teto comercial, e por isso obedece à mesma flag
+    // que `openTurnBudget` — que devolve `UNMETERED` em vez de `EXHAUSTED` com
+    // o gate desligado. Esta porta é mais curta e chegaria antes: sem a mesma
+    // disciplina, a organização que estourou o teto seria bloqueada pelo
+    // atalho, e o modo que existe para MEDIR antes de bloquear nunca mediria
+    // nada justamente dela. A flag é lida só quando já se sabe que o teto
+    // estourou — nenhuma leitura no caminho comum.
+    const budgetExhaustedNow = isFranchise && !entitlements.ai.allowed;
+    if (budgetExhaustedNow && (await isFlagEnabled("ai_wallet_enforced"))) {
+      // HARD STOP. O canal NÃO é desligado, o sistema NÃO é bloqueado, a
+      // conversa continua visível e o atendimento humano continua possível
+      // (§18.3). Nada de "falha técnica": não houve falha nenhuma.
+      //
+      // A mensagem do cliente JÁ ESTÁ no histórico — foi appendada antes do
+      // debounce. Reappendá-la aqui duplicaria a linha na thread.
+      await supabase
+        .from("conversations")
+        .update({
+          status: "awaiting_human",
+          handoff_reason: AI_BUDGET_HANDOFF_REASON,
+          handoff_at: new Date().toISOString(),
+          last_silenced_reply_at: null,
+        })
+        .eq("id", conv.id);
+
+      // Texto determinístico, hardcoded. NÃO passa por sanitizeForWhatsApp
+      // (só saída de LLM passa) e NÃO expõe custo, tokens, modelo ou limite.
+      await sendOutbound(provider, credentials, {
+        toPhone: phone,
+        text: AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT,
+      });
+      await appendToConversation(
+        conv.id,
+        conv.messages || [],
+        "assistant",
+        AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT,
+      );
+
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_budget_exhausted_handoff",
+        unitId,
+        organizationId,
+        convId: conv.id,
+      });
+      await finish("ai_budget_exhausted");
+      await releaseAiLock();
+      return new Response("ok");
+    }
 
     // Load AI config from settings (unit-scoped)
     const { data: configSetting } = await supabase
@@ -2448,11 +2672,135 @@ serve(async (req) => {
         : "") +
       (customPrompt ? `\n\nInstruções adicionais: ${customPrompt}` : "");
 
+    // Reserva ATÔMICA antes de iniciar o turno. O passo é onde o teto é
+    // aplicado — verificar depois da chamada não é proteção, é detecção.
+    const turnId = `${conv.id}:${requestId}`;
+    let budgetHooks: AgentBudgetHooks | undefined;
+
+    if (isFranchise) {
+      const opened = await openTurnBudget(supabase, {
+        organizationId,
+        turnId,
+        requestId,
+        provider: provider_ai,
+        model: modelOverride,
+      });
+
+      if (opened.kind === "EXHAUSTED") {
+        // A franquia esgotou entre a resolução do entitlement e a reserva
+        // (turno concorrente liquidou). Mesmo desfecho do hard stop acima.
+        await supabase
+          .from("conversations")
+          .update({
+            status: "awaiting_human",
+            handoff_reason: AI_BUDGET_HANDOFF_REASON,
+            handoff_at: new Date().toISOString(),
+            last_silenced_reply_at: null,
+          })
+          .eq("id", conv.id);
+        await sendOutbound(provider, credentials, {
+          toPhone: phone,
+          text: AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT,
+        });
+        await appendToConversation(
+          conv.id,
+          conv.messages || [],
+          "assistant",
+          AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT,
+        );
+        jsonLog("warn", {
+          requestId,
+          evt: "ai_budget_exhausted_on_reserve",
+          unitId,
+          organizationId,
+          convId: conv.id,
+        });
+        await finish("ai_budget_exhausted");
+        await releaseAiLock();
+        return new Response("ok");
+      }
+
+      if (opened.kind === "READY") {
+        turnBudget = opened.budget;
+        turnBudgetOrgId = organizationId;
+        budgetHooks = makeBudgetHooks(supabase, {
+          organizationId,
+          unitId,
+          conversationId: conv.id,
+          requestId,
+          turnId,
+          budget: opened.budget,
+          // O MESMO resolvedor da estimativa da reserva. Sem o repasse, a
+          // reserva e o ledger voltam a ter caches independentes e podem falar
+          // de vigências de preço diferentes dentro do mesmo turno.
+          resolvePrice: opened.resolvePrice,
+        });
+      } else if (opened.kind === "UNMETERED") {
+        // Flag OFF: nenhuma negação comercial acontece. O turno segue SEM
+        // medição — o preço de não bloquear, nunca o contrário.
+        jsonLog("warn", {
+          requestId,
+          evt: "ai_budget_observed_only",
+          unitId,
+          organizationId,
+          reason: opened.reason,
+        });
+      } else {
+        // ERROR de infraestrutura. NÃO é franquia esgotada, e a copy tem de
+        // dizer outra coisa. Com o gate LIGADO não podemos chamar o LLM sem
+        // medir (consumo não contabilizado); com ele desligado, seguimos.
+        //
+        // `opened.enforced` é o estado do gate no MOMENTO da abertura, e vem no
+        // resultado exatamente para não ser relido: reler traria I/O extra e
+        // permitiria que a mesma invocação decidisse com dois valores.
+        jsonLog("error", {
+          requestId,
+          evt: "ai_budget_open_error",
+          unitId,
+          organizationId,
+          code: opened.sanitizedCode,
+        });
+        // PREÇO DESCONHECIDO FALHA FECHADO EM QUALQUER MODO — é a MESMA
+        // política do `beforeCall` do adapter, e duas portas para a mesma
+        // ignorância não podem ter políticas opostas. Sem preço não há
+        // `price_id` (NOT NULL em `ai_usage_events`) e o evento não pode
+        // existir: rodar seria consumo real sem nenhum registro possível. Vale
+        // inclusive quando o `null` veio de FALHA DE LEITURA da tabela de
+        // preços, que é indistinguível de ausência de linha — e é por isso que
+        // o gatilho não é hipotético. O modo observação abranda TETO, nunca
+        // preço.
+        const failClosed = opened.enforced || opened.sanitizedCode === "price_unknown";
+        if (failClosed) {
+          await supabase
+            .from("conversations")
+            .update({
+              status: "awaiting_human",
+              handoff_reason: `ai_budget_error:${opened.sanitizedCode}`,
+              handoff_at: new Date().toISOString(),
+              last_silenced_reply_at: null,
+            })
+            .eq("id", conv.id);
+          // Texto de instabilidade JÁ EXISTENTE no noise set — não é franquia
+          // esgotada e não pode dizer que é.
+          const errText = AGENT_INSTABILITY_TEXT;
+          await sendOutbound(provider, credentials, { toPhone: phone, text: errText });
+          await appendToConversation(conv.id, conv.messages || [], "assistant", errText);
+          await finish("ai_budget_error", opened.sanitizedCode);
+          await releaseAiLock();
+          return new Response("ok");
+        }
+      }
+    }
+
     const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 };
     let agentError: string | null = null;
     let finalText = "";
 
     let mutatingToolUsed = false;
+    // Desfecho da ÚLTIMA ferramenta mutante. Na dúvida, UNKNOWN: afirmar
+    // conclusão de uma ação que ainda exige validação é o erro que produz
+    // cliente aparecendo no restaurante sem mesa (§17.7.4).
+    let lastMutationOutcome: MutationOutcome = "UNKNOWN";
     const runOnce = () => runAgentLoop({
         provider: provider_ai,
         apiKey,
@@ -2461,6 +2809,9 @@ serve(async (req) => {
         history,
         userMessage: combinedUserMessage,
         tools: agentTools,
+        // AUSENTE fora da franquia: nenhuma autorização, nenhuma apropriação,
+        // nenhum custo persistido — o caminho legado inteiro depende disso.
+        budget: budgetHooks,
         onUsage: (u) => {
           totalUsage.input_tokens += u.input_tokens;
           totalUsage.output_tokens += u.output_tokens;
@@ -2480,6 +2831,12 @@ serve(async (req) => {
               case "create_reservation":
                 mutatingToolUsed = true; // desliga o retry silencioso (evita reserva duplicada)
                 result = await createReservation({ ...input, phone, unit_id: unitId!, organization_id: organizationId });
+                // Classificação do desfecho para a copy de §17.7.4. A reserva
+                // do agente nasce `confirmed` e é ISENTA de caução — não existe
+                // desfecho PENDING neste caminho, e inventar um seria afirmar
+                // ao cliente uma espera que não vai acontecer. `success: false`
+                // é ignorância sobre o que ficou de pé: UNKNOWN.
+                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
                 break;
               case "get_reservation":
                 result = await getReservation(input.reservation_code ? input : { ...input, phone }, unitId!);
@@ -2487,10 +2844,12 @@ serve(async (req) => {
               case "update_reservation":
                 mutatingToolUsed = true; // desliga o retry silencioso (evita alteração duplicada)
                 result = await updateReservation(input);
+                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
                 break;
               case "cancel_reservation":
                 mutatingToolUsed = true; // desliga o retry silencioso (evita cancelamento duplicado)
                 result = await cancelReservation(input.reservation_code);
+                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
                 break;
               case "list_customer_reservations":
                 result = await listCustomerReservations(customer.id, unitId!);
@@ -2522,13 +2881,18 @@ serve(async (req) => {
     // antes de cair pra handoff — desde que ainda dentro do orçamento de tempo.
     // Nunca retenta se uma reserva já foi criada/alterada/cancelada (evita
     // duplicar) nem se o tempo estourar (evita deixar o cliente sem resposta).
+    let agentOutcome: AgentLoopResult | null = null;
     for (let attempt = 0; attempt <= 1; attempt++) {
       try {
-        finalText = await runOnce();
+        agentOutcome = await runOnce();
         agentError = null;
         break;
       } catch (err) {
-        agentError = String(err);
+        // SANITIZADO, sempre. A chave de IA é per-unit (BYOK) e o erro do
+        // provedor pode ecoar o request com o header de autorização — ou a URL
+        // do Gemini, que carrega `?key=<chave>` na query string. Este valor é
+        // persistido em `webhook_executions.error` e em `processed_messages`.
+        agentError = sanitizeProviderError(err);
         jsonLog("error", { requestId, evt: "agent_loop_error", attempt, err: agentError });
         const elapsed = Date.now() - t0;
         if (attempt === 0 && !mutatingToolUsed && elapsed < AGENT_RETRY_BUDGET_MS) {
@@ -2538,6 +2902,7 @@ serve(async (req) => {
         break;
       }
     }
+    finalText = agentOutcome && agentOutcome.kind === "TEXT" ? agentOutcome.text : "";
 
     const usedModel = modelOverride;
     jsonLog("info", {
@@ -2551,6 +2916,87 @@ serve(async (req) => {
       estimated_cost_usd: estimateCostUsd(usedModel, totalUsage),
     });
 
+    // ─── Negação de orçamento durante o turno ────────────────────────────────
+    // O efeito de ferramenta mutante já persistido NÃO é descartado, a
+    // ferramenta NÃO é repetida, o turno NÃO recebe retry integral, e a
+    // resposta é texto DETERMINÍSTICO — gerar com IA a explicação de que a IA
+    // foi bloqueada exigiria justamente a chamada que foi negada.
+    if (agentOutcome && agentOutcome.kind === "DENIED") {
+      const decision = agentOutcome.decision;
+      // A pergunta é do núcleo. `ERROR` e `DENY_BUDGET` levam ao mesmo destino
+      // operacional e dizem coisas OPOSTAS: só uma significa que a franquia
+      // acabou.
+      const hardStop = isCommercialHardStop(decision);
+
+      // Razão PRÓPRIA por variante: `ai_budget_exhausted` é a única que
+      // significa que a franquia acabou. As demais são fail-closed técnico e
+      // não podem afirmar isso nem ao cliente nem ao admin.
+      let handoffReason: string;
+      if (hardStop) {
+        handoffReason = AI_BUDGET_HANDOFF_REASON;
+      } else if (decision.kind === "DENY_PRICE_UNKNOWN") {
+        handoffReason = `ai_price_unknown:${decision.provider}:${decision.model}`;
+      } else if (decision.kind === "DENY_USAGE_UNRESOLVED") {
+        handoffReason = "ai_usage_unresolved";
+      } else {
+        handoffReason = "ai_budget_error";
+      }
+
+      await supabase
+        .from("conversations")
+        .update({
+          status: "awaiting_human",
+          handoff_reason: handoffReason,
+          handoff_at: new Date().toISOString(),
+          last_silenced_reply_at: null,
+        })
+        .eq("id", conv.id);
+
+      // Copy: só o hard stop usa o texto de franquia. As três situações de
+      // ferramenta mutante têm textos distintos — usar a mesma frase para as
+      // três é o erro que produz cliente aparecendo no restaurante sem mesa.
+      let stopText: string;
+      if (!hardStop) {
+        stopText = AGENT_INSTABILITY_TEXT;
+      } else if (mutatingToolUsed) {
+        stopText = resolveMutationStopText(lastMutationOutcome);
+      } else {
+        stopText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT;
+      }
+
+      await sendOutbound(provider, credentials, { toPhone: phone, text: stopText });
+      await appendToConversation(conv.id, conv.messages || [], "assistant", stopText);
+
+      jsonLog("warn", {
+        requestId,
+        evt: telemetryEventFor(decision),
+        unitId,
+        organizationId,
+        convId: conv.id,
+        provider: provider_ai,
+        model: agentOutcome.meta.model,
+        iteration: agentOutcome.meta.iteration,
+        mutating_tool_used: mutatingToolUsed,
+      });
+
+      // DINHEIRO ANTES DE TELEMETRIA, nos seis desfechos. `finish` carimba
+      // `processed_messages` como concluída, e a partir daí a reentrega do
+      // provedor é DEDUPLICADA: se o isolate morrer entre o `finish` e a
+      // liquidação, o custo real nunca vira `settled_cents` e some do teto para
+      // sempre. Na ordem certa, a mesma morte custa só o registro — que é
+      // telemetria, e reconstituível. `settleTurnBudget` não lança (engole o
+      // erro da RPC e volta), então não há registro em risco aqui.
+      // O turno terminou onde pretendia terminar: `SETTLED`.
+      await settleTurnBudget("SETTLED");
+      await finish(hardStop ? "ai_budget_exhausted" : "ai_budget_denied", undefined, {
+        decision: decision.kind,
+        provider: provider_ai,
+        model: agentOutcome.meta.model,
+      });
+      await releaseAiLock();
+      return new Response("ok");
+    }
+
     if (agentError) {
       // Agente falhou (timeout, modelo descontinuado, 4xx do provider, tool error
       // não tratado, etc). Em vez de só pedir pro cliente repetir — o que não
@@ -2558,6 +3004,7 @@ serve(async (req) => {
       // conversa awaiting_human pra atendente assumir, registra provider/model
       // no handoff_reason e em webhook_executions.meta, e avisa o cliente.
       const usedModel = modelOverride;
+
       await supabase
         .from("conversations")
         .update({
@@ -2568,11 +3015,15 @@ serve(async (req) => {
         })
         .eq("id", conv.id);
 
-      const handoffText = "Tive um instante de instabilidade aqui. Já chamei alguém da equipe pra te responder. Em breve um humano assume.";
+      const handoffText = AGENT_INSTABILITY_TEXT;
       await sendOutbound(provider, credentials, { toPhone: phone, text: handoffText });
       await appendToConversation(conv.id, [...(conv.messages || []), { role: "user", content: incomingText }], "assistant", handoffText);
 
       jsonLog("warn", { requestId, evt: "agent_error_handoff", provider: provider_ai, model: usedModel, err: agentError });
+      // Turno INTERROMPIDO pelo provedor: o consumido migra para o liquidado e
+      // a diferença volta ao disponível. Antes do `finish` — ver o desfecho de
+      // negação acima.
+      await settleTurnBudget("RELEASED");
       await finish("agent_error", agentError, {
         provider: provider_ai,
         model: usedModel,
@@ -2586,10 +3037,13 @@ serve(async (req) => {
       // Modelo não devolveu texto algum — ainda assim respondemos pra não
       // deixar o cliente no escuro.
       jsonLog("warn", { requestId, evt: "agent_empty_response", channelId, unitId });
+
       await sendOutbound(provider, credentials, {
         toPhone: phone,
         text: "Desculpa, não consegui montar uma resposta agora. Pode reformular ou aguardar um instante?",
       });
+      // Mesma razão do ramo de erro: turno interrompido sem produzir resposta.
+      await settleTurnBudget("RELEASED");
       await finish("empty_response");
       await releaseAiLock();
       return new Response("ok");
@@ -2606,6 +3060,11 @@ serve(async (req) => {
     const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: finalTextForWhatsApp });
 
     if (!sendRes.ok) {
+      // O TURNO DE IA ACONTECEU: o que falhou foi a entrega ao WhatsApp. O
+      // custo é real e já está em `ai_usage_events`; sem liquidar aqui ele
+      // jamais contaria contra o teto — a varredura de expiradas devolve a
+      // reserva sem incrementar `settled_cents`.
+      await settleTurnBudget("SETTLED");
       await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
         missingCreds: sendRes.missingCreds,
         bodySnippet: sendRes.bodySnippet,
@@ -2614,14 +3073,39 @@ serve(async (req) => {
       return new Response("ok");
     }
 
+    // Fim do turno: liquida o custo real e devolve a diferença ao disponível.
+    // Os marcos (70/80/90/100%) saem daqui porque é aqui que o liquidado do
+    // ciclo muda. Antes do `finish` — ver o desfecho de negação acima.
+    await settleTurnBudget("SETTLED");
     await finish("success", undefined, { tokens: totalUsage.input_tokens + totalUsage.output_tokens });
     await releaseAiLock();
     return new Response("ok");
   } catch (err) {
-    jsonLog("error", { requestId, evt: "webhook_error", err: String(err) });
+    // A reserva TAMBÉM é liquidada aqui — este é um desfecho do turno como
+    // qualquer outro. Liquidar não inventa custo: `finalize_ai_reservation` só
+    // apropria `consumed_cents`, que é escrito exclusivamente por
+    // `record_ai_call_usage` para chamadas que OCORRERAM. Não liquidar é que
+    // apagaria custo real, porque a varredura de expiradas marca `EXPIRED` e
+    // devolve `released_cents` SEM tocar em `settled_cents` (migration 102).
+    // `RELEASED` porque o turno foi interrompido; e é no-op quando não houve
+    // reserva. Fica dentro do try interno pelo mesmo motivo do lock: nada aqui
+    // pode transformar um erro em outro erro.
+    // SANITIZADO como todo caminho de erro do agente. O laço já sanitiza o que
+    // vem do provedor, então este `catch` externo é defesa em profundidade — mas
+    // ele é o ÚNICO que captura o que escapar de fora do laço, e o que ele
+    // registra vai para `webhook_executions.error` e para `processed_messages`,
+    // onde uma URL do Gemini com `?key=<chave>` ficaria persistida.
+    jsonLog("error", { requestId, evt: "webhook_error", err: sanitizeProviderError(err) });
     try {
+      // PRIMEIRO de todos, aqui: antes do `finish` pela mesma razão dos outros
+      // cinco desfechos, e antes do `releaseAiLock` porque soltar o lock com a
+      // reserva ainda `HELD` deixa uma inbound irmã abrir orçamento novo contra
+      // capacidade que ainda está comprometida. É também a SEGUNDA tentativa de
+      // liquidação quando a primeira não aplicou — o estado local só é zerado
+      // no sucesso.
+      await settleTurnBudget("RELEASED");
       await releaseAiLock();
-      await finish("webhook_error", String(err));
+      await finish("webhook_error", sanitizeProviderError(err));
     } catch {
       // ignore — TTL de 90s libera o lock
     }

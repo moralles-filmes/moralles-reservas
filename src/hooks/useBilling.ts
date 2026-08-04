@@ -375,7 +375,23 @@ export function useSyncFromStripe() {
 
 export interface FeatureEntitlementView {
   allowed: boolean;
-  source: "admin_block" | "override" | "subscription" | "trial" | "wallet" | "legacy" | "none";
+  /**
+   * Espelha `EntitlementSource` de `supabase/functions/_shared/entitlements-core.ts`.
+   * `"franchise"` é a IA declarada pelo plano e financiada pela plataforma — o
+   * lojista não compra nada e o teto é interno. Sem ela aqui, um `switch` de UI
+   * sobre `source` cai no ramo desconhecido para toda organização de franquia.
+   * `budgetRemainingCents` NÃO entra nesta view: é valor financeiro interno e
+   * não pode chegar ao painel do lojista por caminho compartilhado.
+   */
+  source:
+    | "admin_block"
+    | "override"
+    | "subscription"
+    | "franchise"
+    | "trial"
+    | "wallet"
+    | "legacy"
+    | "none";
   status: string;
   expires_at: string | null;
 }

@@ -26,6 +26,10 @@
  *   - aiWalletBalanceCents number|null → carteira implantada: ai exige
  *     (override de ai) OU (system permitido E saldo > 0). Override de system
  *     NÃO libera ai automaticamente (cenário 26 da spec).
+ *   - Plano que declara `ai` resolve por FRANQUIA (`source: "franchise"`), com
+ *     `status: within_budget | budget_exhausted`. Franquia é teto financeiro
+ *     interno da plataforma — nunca crédito comprado pelo cliente, e por isso
+ *     `budgetRemainingCents` é campo próprio, não `balanceCents`.
  */
 
 export type EntitlementFeature = "system" | "whatsapp" | "ai";
@@ -34,6 +38,8 @@ export type EntitlementSource =
   | "admin_block"
   | "override"
   | "subscription"
+  /** Franquia de IA inclusa no plano (Plano D). NÃO é crédito do cliente. */
+  | "franchise"
   | "trial"
   | "wallet"
   | "legacy"
@@ -67,6 +73,20 @@ export interface EntitlementSubscriptionInput {
   includedFeatures?: string[];
 }
 
+/**
+ * Estado do orçamento de franquia do ciclo corrente (Plano D, spec §17.3).
+ *
+ * OPCIONAL de propósito: o caller que só quer saber "esta organização tem IA?"
+ * (catálogo, painel administrativo) não paga uma leitura de orçamento, e o
+ * resultado continua `allowed: true`. Só quem vai efetivamente gastar carrega
+ * o estado.
+ */
+export interface AiFranchiseInput {
+  state: "OPEN" | "EXHAUSTED" | "CLOSED";
+  /** limit − settled − comprometido. NUNCA vai ao frontend do lojista (§18.4). */
+  remainingCents: number;
+}
+
 export interface EntitlementInputs {
   /** Injetável nos testes; default = agora. */
   now?: string | Date;
@@ -78,6 +98,8 @@ export interface EntitlementInputs {
   subscriptions: EntitlementSubscriptionInput[];
   /** Ver doc do módulo: undefined = pré-carteira (ai herda system). */
   aiWalletBalanceCents?: number | null;
+  /** Plano D: orçamento do ciclo. Ausente = não consultado, não "esgotado". */
+  aiFranchise?: AiFranchiseInput;
 }
 
 export interface FeatureEntitlement {
@@ -88,6 +110,12 @@ export interface FeatureEntitlement {
   expiresAt: string | null;
   /** Só ai com carteira implantada. */
   balanceCents?: number;
+  /**
+   * Só ai por franquia. Campo PRÓPRIO — `balanceCents` significa "crédito do
+   * cliente", e franquia não é crédito do cliente. NUNCA vai ao frontend do
+   * lojista: caminho de resposta separado, não filtragem pós-montagem (§18.4).
+   */
+  budgetRemainingCents?: number;
 }
 
 export interface OrgEntitlements {
@@ -191,18 +219,34 @@ export function resolveEntitlements(inputs: EntitlementInputs): OrgEntitlements 
     (s) => ALLOWED_SUB_STATUSES.has(s.status) && (s.includedFeatures ?? []).length > 0,
   );
 
-  // IA: override próprio primeiro; depois declaração do plano; depois carteira
-  // (ou herança pré-carteira).
+  // IA: override próprio primeiro; depois declaração do plano (FRANQUIA);
+  // depois carteira (ou herança pré-carteira).
   //
   // A ORDEM DOS RAMOS É LOAD-BEARING: mover o ramo 3 (negação explícita) para
   // depois do ramo 5 (herança) reintroduz a herança e dá IA ao Plano 1; mover o
-  // ramo 4 para depois do 5 devolve IA ao trial.
+  // ramo 4 para depois do 5 devolve IA ao trial; mover o ramo 2 (franquia) para
+  // depois do 3 faria o Plano 2 cair em `not_included`.
   const aiDirect = resolveFeature("ai", inputs, nowMs);
   let ai: FeatureEntitlement;
   if (aiDirect.source === "admin_block" || aiDirect.source === "override") {
     ai = aiDirect; // 1. override sempre primeiro
   } else if (aiDirect.source === "subscription") {
-    ai = aiDirect; // 2. declarada pelo plano (included_features)
+    // 2. Declarada pelo plano (included_features) → FRANQUIA financiada pela
+    //    plataforma. O cliente não compra nada e o teto é interno.
+    //
+    //    `aiFranchise` AUSENTE não é "esgotada": é "não consultada". Negar aqui
+    //    faria todo caller que só lista entitlements (catálogo, painel) reportar
+    //    IA bloqueada para quem tem franquia cheia.
+    const franchise = inputs.aiFranchise;
+    const exhausted = franchise ? franchise.state === "EXHAUSTED" : false;
+    ai = {
+      allowed: !exhausted,
+      source: "franchise",
+      status: exhausted ? "budget_exhausted" : "within_budget",
+      expiresAt: aiDirect.expiresAt,
+      // `balanceCents` NÃO é reusado: significa crédito do cliente.
+      ...(franchise ? { budgetRemainingCents: franchise.remainingCents } : {}),
+    };
   } else if (hasExplicitPlan) {
     // 3. Plano novo que NÃO declara ai: negação EXPLÍCITA. Sem este ramo, a
     //    herança abaixo daria IA ao Plano 1.
