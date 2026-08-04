@@ -1260,16 +1260,40 @@ serve(async (req) => {
    * chamadas que OCORRERAM —, então a escolha é de rótulo para quem audita, não
    * de valor.
    *
-   * No-op fora da franquia e quando não houve reserva. Chamável mais de uma vez:
-   * o estado local é zerado, e a própria RPC é idempotente.
+   * No-op fora da franquia e quando não houve reserva.
+   *
+   * O ESTADO LOCAL SÓ É ZERADO NO SUCESSO. Zerar antes do `await` fazia de uma
+   * RPC que falha um custo perdido para sempre: ninguém mais tentava, nem o
+   * catch externo, porque o estado já tinha sido apagado — a reserva ficava
+   * `HELD`, a varredura marcava `EXPIRED` e o consumido real sumia do teto.
+   * Mantido o estado, o catch externo tem uma segunda tentativa (duas no total,
+   * nunca um laço). Dupla liquidação continua impossível nos DOIS níveis: a
+   * guarda local, e a própria RPC, que devolve sem redebitar quando o status já
+   * não é `HELD` (migration 102).
+   *
+   * ISSO NÃO É COBERTURA COMPLETA, e não deve ser lido como tal: nos desfechos
+   * que terminam sem exceção não existe segunda tentativa nenhuma. Fechar de
+   * verdade exige uma varredura que LIQUIDE reserva com `consumed_cents > 0` em
+   * vez de expirá-la — trabalho de outra fase.
    */
   const settleTurnBudget = async (status: "SETTLED" | "RELEASED") => {
     if (!turnBudget || !turnBudgetOrgId) return;
     const { reservationId, cycleId } = turnBudget;
     const orgId = turnBudgetOrgId;
-    turnBudget = null;
     const fin = await finalizeTurn(supabase, { organizationId: orgId, reservationId, status });
-    if (!fin) return;
+    if (!fin) {
+      // NÃO zera: a RPC não aplicou (erro, ou reserva/ciclo não encontrados) e o
+      // consumido ainda não virou `settled_cents`.
+      jsonLog("error", {
+        requestId,
+        evt: "ai_budget_settle_not_applied",
+        reservation: reservationId,
+        status,
+      });
+      return;
+    }
+    turnBudget = null;
+    turnBudgetOrgId = null;
     try {
       // Best-effort por contrato: o custo já está liquidado, e um aviso de
       // marco que falha não pode derrubar a resposta ao cliente.
@@ -2898,10 +2922,6 @@ serve(async (req) => {
       // acabou.
       const hardStop = isCommercialHardStop(decision);
 
-      // Liquida o que JÁ foi consumido antes da negação: o turno terminou onde
-      // pretendia terminar, e a reserva não pode ficar presa comendo teto.
-      await settleTurnBudget("SETTLED");
-
       // Razão PRÓPRIA por variante: `ai_budget_exhausted` é a única que
       // significa que a franquia acabou. As demais são fail-closed técnico e
       // não podem afirmar isso nem ao cliente nem ao admin.
@@ -2958,6 +2978,12 @@ serve(async (req) => {
         provider: provider_ai,
         model: agentOutcome.meta.model,
       });
+      // DEPOIS do `finish`, em todos os seis desfechos: se a liquidação lançar,
+      // o desfecho REAL já está gravado em `webhook_executions`. Antes dele, a
+      // exceção trocaria o outcome verdadeiro por `webhook_error` (ou, dentro
+      // do catch externo, por nenhum registro). O turno terminou onde pretendia
+      // terminar, então `SETTLED`.
+      await settleTurnBudget("SETTLED");
       await releaseAiLock();
       return new Response("ok");
     }
@@ -2969,10 +2995,6 @@ serve(async (req) => {
       // conversa awaiting_human pra atendente assumir, registra provider/model
       // no handoff_reason e em webhook_executions.meta, e avisa o cliente.
       const usedModel = modelOverride;
-
-      // Turno INTERROMPIDO pelo provedor: o consumido migra para o liquidado e
-      // a diferença volta ao disponível.
-      await settleTurnBudget("RELEASED");
 
       await supabase
         .from("conversations")
@@ -2994,6 +3016,9 @@ serve(async (req) => {
         model: usedModel,
         channel_id: channelId,
       });
+      // Turno INTERROMPIDO pelo provedor: o consumido migra para o liquidado e
+      // a diferença volta ao disponível.
+      await settleTurnBudget("RELEASED");
       await releaseAiLock();
       return new Response("ok");
     }
@@ -3003,14 +3028,13 @@ serve(async (req) => {
       // deixar o cliente no escuro.
       jsonLog("warn", { requestId, evt: "agent_empty_response", channelId, unitId });
 
-      // Mesma razão do ramo de erro: turno interrompido sem produzir resposta.
-      await settleTurnBudget("RELEASED");
-
       await sendOutbound(provider, credentials, {
         toPhone: phone,
         text: "Desculpa, não consegui montar uma resposta agora. Pode reformular ou aguardar um instante?",
       });
       await finish("empty_response");
+      // Mesma razão do ramo de erro: turno interrompido sem produzir resposta.
+      await settleTurnBudget("RELEASED");
       await releaseAiLock();
       return new Response("ok");
     }
@@ -3026,26 +3050,24 @@ serve(async (req) => {
     const sendRes = await sendOutbound(provider, credentials, { toPhone: phone, text: finalTextForWhatsApp });
 
     if (!sendRes.ok) {
+      await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
+        missingCreds: sendRes.missingCreds,
+        bodySnippet: sendRes.bodySnippet,
+      });
       // O TURNO DE IA ACONTECEU: o que falhou foi a entrega ao WhatsApp. O
       // custo é real e já está em `ai_usage_events`; sem liquidar aqui ele
       // jamais contaria contra o teto — a varredura de expiradas devolve a
       // reserva sem incrementar `settled_cents`.
       await settleTurnBudget("SETTLED");
-
-      await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
-        missingCreds: sendRes.missingCreds,
-        bodySnippet: sendRes.bodySnippet,
-      });
       await releaseAiLock();
       return new Response("ok");
     }
 
+    await finish("success", undefined, { tokens: totalUsage.input_tokens + totalUsage.output_tokens });
     // Fim do turno: liquida o custo real e devolve a diferença ao disponível.
     // Os marcos (70/80/90/100%) saem daqui porque é aqui que o liquidado do
     // ciclo muda.
     await settleTurnBudget("SETTLED");
-
-    await finish("success", undefined, { tokens: totalUsage.input_tokens + totalUsage.output_tokens });
     await releaseAiLock();
     return new Response("ok");
   } catch (err) {
@@ -3060,9 +3082,13 @@ serve(async (req) => {
     // pode transformar um erro em outro erro.
     jsonLog("error", { requestId, evt: "webhook_error", err: String(err) });
     try {
-      await settleTurnBudget("RELEASED");
       await releaseAiLock();
       await finish("webhook_error", String(err));
+      // DEPOIS do `finish`: aqui dentro uma exceção é ENGOLIDA pelo `catch {}`
+      // abaixo, então liquidar antes podia custar o registro inteiro da
+      // invocação. É também a SEGUNDA tentativa de liquidação quando a primeira
+      // não aplicou — o estado local só é zerado no sucesso.
+      await settleTurnBudget("RELEASED");
     } catch {
       // ignore — TTL de 90s libera o lock
     }
