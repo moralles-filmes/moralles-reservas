@@ -789,21 +789,41 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Informe o dia-âncora do ciclo (1 a 31)." }, 400);
       }
 
-      const found = await loadInstanceState(id, "id, organization_id", reqId, "wa_cycle_lookup_failed");
+      // Lê TAMBÉM o custo: o ciclo que nasce aqui precisa fotografá-lo, como a
+      // rolagem 090 faz. Sem isso, o PRIMEIRO ciclo de toda instância nasce
+      // cego mesmo quando o número já está gravado, e só a correção manual o
+      // conserta depois.
+      const found = await loadInstanceState(
+        id,
+        "id, organization_id, current_monthly_cost_cents, cost_source",
+        reqId,
+        "wa_cycle_lookup_failed",
+      );
       if (found.ok === false) return jsonResponse(req, { error: found.message }, found.status);
 
       const dueOn = nextDueFromAnchor(cycleStart, anchorDay);
 
+      // MESMA FORMA DA 090: `cost_snapshot_at` é nulo quando o custo é nulo —
+      // carimbo sem valor afirmaria que alguém informou algo.
+      const snapshotCost = found.row.current_monthly_cost_cents as number | null;
       const { error: cycleErr } = await supabase.from("whatsapp_instance_cycles").insert({
         instance_id: id,
         organization_id: found.row.organization_id,
         cycle_start: cycleStart,
         provider_due_on: dueOn,
         status: "OPEN",
+        provider_cost_cents: snapshotCost,
+        cost_source: snapshotCost === null ? null : found.row.cost_source,
+        cost_snapshot_at: snapshotCost === null ? null : new Date().toISOString(),
         notes: reason,
         created_by: callerId,
       });
-      // 23505 = o ciclo já existia (reexecução). Idempotente, não é erro.
+      // 23505 = o ciclo já existia (reexecução). Idempotente, não é erro — e o
+      // ciclo que já estava lá NÃO é preenchido por este caminho: ele pode ter
+      // sido rolado ou fechado desde então, e mexer nele como efeito colateral
+      // de uma reexecução é o tipo de escrita não-auditada que esta frente
+      // combate. Reparo de ciclo existente tem porta própria
+      // (`correct_cycle_cost`).
       if (cycleErr && cycleErr.code !== "23505") {
         jsonLog("error", { reqId, evt: "wa_cycle_confirm_failed", err: cycleErr.message });
         return jsonResponse(req, { error: "Não foi possível registrar o ciclo." }, 500);
