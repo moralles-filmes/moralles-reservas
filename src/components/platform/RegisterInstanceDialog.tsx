@@ -61,6 +61,14 @@ export function RegisterInstanceDialog({
   const [costReais, setCostReais] = useState("");
   const [costSource, setCostSource] = useState(COST_SOURCE_OPTIONS[0].value);
   const [reason, setReason] = useState("");
+  /**
+   * Instâncias vivas que a unidade escolhida já tem. O servidor recusa uma vez
+   * e devolve a lista; a tela mostra o que existe e o operador decide. Segunda
+   * instância legítima continua possível — como ATO CONSCIENTE.
+   */
+  const [unitConflicts, setUnitConflicts] = useState<
+    { id: string; lifecycle_state: string; provider_instance_ref: string | null }[] | null
+  >(null);
 
   const channelsQuery = useWhatsAppChannels(unitId);
 
@@ -91,6 +99,7 @@ export function RegisterInstanceDialog({
   // nenhum dos dois efeitos depende de `channelId`.
   useEffect(() => {
     setChannelId(NO_CHANNEL);
+    setUnitConflicts(null);
   }, [unitId]);
 
   // O alerta carrega `channel_id` mas não `unit_id`: o canal só pode ser
@@ -109,6 +118,7 @@ export function RegisterInstanceDialog({
     setCostReais("");
     setCostSource(COST_SOURCE_OPTIONS[0].value);
     setReason("");
+    setUnitConflicts(null);
   }
 
   const selectedUnit = units.find((u) => u.id === unitId) ?? null;
@@ -118,7 +128,7 @@ export function RegisterInstanceDialog({
   const canSubmit =
     !!selectedUnit && ref.trim().length > 0 && !costInvalid && !reasonTooShort && !action.isPending;
 
-  function submit() {
+  function submit(acknowledgeConflict = false) {
     if (!selectedUnit) return;
     const parsed = parseCostReais(costReais);
     if (parsed.ok === false) return;
@@ -139,6 +149,7 @@ export function RegisterInstanceDialog({
         // Procedência só faz sentido quando existe número. Mandá-la com custo
         // nulo afirmaria a origem de um valor que não foi informado.
         ...(hasCost ? { cost_source: costSource } : {}),
+        ...(acknowledgeConflict ? { acknowledge_unit_conflict: true } : {}),
         reason,
       },
       {
@@ -152,7 +163,21 @@ export function RegisterInstanceDialog({
         // A EF devolve mensagem curta em PT-BR (409 de duplicata, 409 de tenant,
         // 400 do identificador com URL); o hook já a extraiu do corpo non-2xx
         // que o `invoke` mascara.
-        onError: (e: Error) => toast.error(e.message),
+        onError: (e: Error & { code?: string; body?: Record<string, unknown> }) => {
+          // 409 de unidade ocupada não é erro terminal: é uma pergunta. A tela
+          // mostra o que já existe e oferece a confirmação.
+          if (e.code === "UNIT_ALREADY_HAS_INSTANCE") {
+            setUnitConflicts(
+              (e.body?.conflicts as {
+                id: string;
+                lifecycle_state: string;
+                provider_instance_ref: string | null;
+              }[]) ?? [],
+            );
+            return;
+          }
+          toast.error(e.message);
+        },
       },
     );
   }
@@ -280,8 +305,8 @@ export function RegisterInstanceDialog({
             <p className="text-sm text-destructive">{cost.message}</p>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Vazio grava <strong>desconhecido</strong>, nunca zero — e o ciclo fica pendente de
-              revisão até o número existir.
+              Vazio grava <strong>desconhecido</strong>, nunca zero — e aí o ciclo fica pendente de
+              revisão até o número existir. Com o valor preenchido, o ciclo já nasce com ele.
             </p>
           )}
 
@@ -296,6 +321,27 @@ export function RegisterInstanceDialog({
             />
           </div>
 
+          {unitConflicts && unitConflicts.length > 0 && (
+            <div className="rounded-md border border-warning bg-warning/10 p-3 space-y-2 text-sm">
+              <p className="font-medium">Esta unidade já tem instância registrada.</p>
+              <ul className="space-y-1 text-xs">
+                {unitConflicts.map((c) => (
+                  <li key={c.id}>
+                    <span className="font-mono">{c.provider_instance_ref ?? "sem identificador"}</span>
+                    {" — "}
+                    {c.lifecycle_state === "CANCELLATION_REQUESTED"
+                      ? "cancelamento solicitado (ainda custa)"
+                      : "ativa"}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs">
+                Registrar uma segunda instância significa que a plataforma passa a pagar duas.
+                Confirme só se for isso mesmo.
+              </p>
+            </div>
+          )}
+
           <div className="flex justify-end gap-2 pt-2">
             <Button
               variant="outline"
@@ -306,8 +352,11 @@ export function RegisterInstanceDialog({
             >
               Cancelar
             </Button>
-            <Button disabled={!canSubmit} onClick={submit}>
-              Registrar
+            <Button
+              disabled={!canSubmit}
+              onClick={() => submit(unitConflicts !== null && unitConflicts.length > 0)}
+            >
+              {unitConflicts && unitConflicts.length > 0 ? "Registrar mesmo assim" : "Registrar"}
             </Button>
           </div>
         </ResponsiveDialogBody>

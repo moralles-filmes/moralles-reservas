@@ -7,6 +7,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   ResponsiveDialog,
   ResponsiveDialogContent,
   ResponsiveDialogHeader,
@@ -24,6 +31,7 @@ import {
   lastAccessDayLabel,
   cycleSourceLabel,
   divergenceLabel,
+  COST_SOURCE_OPTIONS,
 } from "@/lib/whatsapp-instance-format";
 import {
   useWhatsappInstances,
@@ -33,6 +41,7 @@ import {
   usePartnerSimulation,
   type WhatsappInstance,
   type WhatsappInstanceAlert,
+  type WhatsappInstanceCycle,
 } from "@/hooks/useWhatsappInstances";
 import { useAllUnits } from "@/hooks/useAllUnits";
 import { RegisterInstanceDialog } from "@/components/platform/RegisterInstanceDialog";
@@ -70,7 +79,13 @@ const CYCLE_STATUS_LABEL: Record<string, string> = {
  * margem negativa do cliente cortesia é o custo conhecido de uma decisão
  * comercial, não erro — e essa distinção é o ponto da tela.
  */
-function CyclesPanel({ instanceId }: { instanceId: string }) {
+function CyclesPanel({
+  instanceId,
+  onCorrect,
+}: {
+  instanceId: string;
+  onCorrect: (cycle: WhatsappInstanceCycle) => void;
+}) {
   const detail = useWhatsappInstance(instanceId);
 
   if (detail.isLoading) return <Skeleton className="h-24 w-full" />;
@@ -121,10 +136,15 @@ function CyclesPanel({ instanceId }: { instanceId: string }) {
               </p>
             </div>
             {c.status === "PENDING_REVIEW" && (
-              <p className="text-xs text-warning">
-                Ciclo terminou sem custo informado. Custo desconhecido não é zero — a margem fica
-                indefinida até alguém informar.
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-warning">
+                  Ciclo terminou sem custo informado. Custo desconhecido não é zero — a margem fica
+                  indefinida até alguém informar.
+                </p>
+                <Button size="sm" variant="outline" onClick={() => onCorrect(c)}>
+                  Corrigir custo
+                </Button>
+              </div>
             )}
           </div>
         );
@@ -136,6 +156,7 @@ function CyclesPanel({ instanceId }: { instanceId: string }) {
 type ReasonDialogKind =
   | { kind: "confirm_date"; instance: WhatsappInstance }
   | { kind: "set_cost"; instance: WhatsappInstance }
+  | { kind: "correct_cycle"; cycle: WhatsappInstanceCycle }
   | { kind: "cancel"; instance: WhatsappInstance }
   | { kind: "confirm_end"; instance: WhatsappInstance }
   | { kind: "reactivate"; instance: WhatsappInstance }
@@ -187,6 +208,7 @@ export default function WhatsappInstances() {
   const [cycleStart, setCycleStart] = useState("");
   const [anchorDay, setAnchorDay] = useState("");
   const [costReais, setCostReais] = useState("");
+  const [costSource, setCostSource] = useState(COST_SOURCE_OPTIONS[0].value);
   const [accessUntil, setAccessUntil] = useState("");
   const [partnerTargetReais, setPartnerTargetReais] = useState("");
 
@@ -206,6 +228,7 @@ export default function WhatsappInstances() {
     setCycleStart("");
     setAnchorDay("");
     setCostReais("");
+    setCostSource(COST_SOURCE_OPTIONS[0].value);
     setAccessUntil("");
   }
 
@@ -407,7 +430,14 @@ export default function WhatsappInstances() {
                   <div className="border-t pt-3 space-y-4">
                     <div>
                       <h3 className="text-sm font-semibold mb-2">Ciclos e margem</h3>
-                      <CyclesPanel instanceId={inst.id} />
+                      <CyclesPanel
+                        instanceId={inst.id}
+                        onCorrect={(cycle) => {
+                          setCostReais("");
+                          setCostSource(cycle.cost_source ?? COST_SOURCE_OPTIONS[0].value);
+                          setDialog({ kind: "correct_cycle", cycle });
+                        }}
+                      />
                     </div>
                     <div>
                       <h3 className="text-sm font-semibold mb-2">Histórico</h3>
@@ -590,6 +620,7 @@ export default function WhatsappInstances() {
             <ResponsiveDialogTitle>
               {dialog?.kind === "confirm_date" && "Confirmar data do ciclo"}
               {dialog?.kind === "set_cost" && "Informar custo mensal"}
+              {dialog?.kind === "correct_cycle" && "Corrigir custo de ciclo fechado"}
               {dialog?.kind === "cancel" && "Registrar cancelamento no fornecedor"}
               {dialog?.kind === "confirm_end" && "Confirmar encerramento"}
               {dialog?.kind === "reactivate" && "Reativar instância"}
@@ -635,20 +666,81 @@ export default function WhatsappInstances() {
             )}
 
             {dialog?.kind === "set_cost" && (
-              <div className="space-y-1">
-                <Label htmlFor="cost">Custo mensal (R$) — deixe vazio se desconhecido</Label>
-                <Input
-                  id="cost"
-                  inputMode="decimal"
-                  className="h-12 sm:h-10"
-                  value={costReais}
-                  onChange={(e) => setCostReais(e.target.value)}
-                  placeholder="Ex.: 100,00"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Vazio grava <strong>desconhecido</strong>, nunca zero. E a mudança vale só para
-                  ciclos futuros: o custo do ciclo corrente foi congelado na abertura.
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <Label htmlFor="cost">Custo mensal (R$) — deixe vazio se desconhecido</Label>
+                  <Input
+                    id="cost"
+                    inputMode="decimal"
+                    className="h-12 sm:h-10"
+                    value={costReais}
+                    onChange={(e) => setCostReais(e.target.value)}
+                    placeholder="Ex.: 100,00"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Vazio grava <strong>desconhecido</strong>, nunca zero. Se o ciclo em curso estiver
+                    sem custo, ele é preenchido agora; se já tiver um valor congelado, ele não é
+                    sobrescrito. Ciclo já fechado só muda pela correção, no histórico.
+                  </p>
+                </div>
+                {/* A procedência agora vai junto para o CICLO, onde vira parte do
+                    registro financeiro congelado. Sem o seletor, o padrão do
+                    servidor ("informado pelo administrador") entraria no ciclo
+                    mesmo quando o número veio da fatura. */}
+                <div className="space-y-1">
+                  <Label htmlFor="cost-source">Procedência do custo</Label>
+                  <Select value={costSource} onValueChange={setCostSource}>
+                    <SelectTrigger id="cost-source" className="h-12 sm:h-10">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {COST_SOURCE_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
+
+            {dialog?.kind === "correct_cycle" && (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Ciclo de {formatDateBR(dialog.cycle.cycle_start)} a{" "}
+                  {formatDateBR(dialog.cycle.provider_due_on)}. A correção fecha o ciclo com o valor
+                  informado e fica registrada com autoria e data.
                 </p>
+                <div className="space-y-1">
+                  <Label htmlFor="corr-cost">Custo do período (R$)</Label>
+                  <Input
+                    id="corr-cost"
+                    inputMode="decimal"
+                    className="h-12 sm:h-10"
+                    value={costReais}
+                    onChange={(e) => setCostReais(e.target.value)}
+                    placeholder="Ex.: 99,90"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Deixar em branco não corrige — a correção precisa de um valor.
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="corr-source">Procedência do custo</Label>
+                  <Select value={costSource} onValueChange={setCostSource}>
+                    <SelectTrigger id="corr-source" className="h-12 sm:h-10">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {COST_SOURCE_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             )}
 
@@ -736,9 +828,30 @@ export default function WhatsappInstances() {
                         action: "set_cost",
                         instance_id: dialog.instance.id,
                         current_monthly_cost_cents: cents,
+                        ...(cents === null ? {} : { cost_source: costSource }),
                         reason,
                       },
                       "Custo atualizado.",
+                    );
+                  } else if (dialog.kind === "correct_cycle") {
+                    const parsed = parseCostReais(costReais);
+                    if (parsed.ok === false) {
+                      toast.error(parsed.message);
+                      return;
+                    }
+                    if (parsed.unknownCost === true) {
+                      toast.error("A correção precisa de um valor.");
+                      return;
+                    }
+                    run(
+                      {
+                        action: "correct_cycle_cost",
+                        cycle_id: dialog.cycle.id,
+                        current_monthly_cost_cents: parsed.cents,
+                        cost_source: costSource,
+                        reason,
+                      },
+                      "Custo do ciclo corrigido.",
                     );
                   } else if (dialog.kind === "cancel") {
                     run(
