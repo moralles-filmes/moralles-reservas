@@ -48,6 +48,10 @@ import {
   resolveWhatsAppSubscription,
   type WhatsAppSubscriptionFact,
 } from "../_shared/whatsapp-subscription-resolver-core.ts";
+import {
+  checkUnitInstanceConflict,
+  UNIT_ALREADY_HAS_INSTANCE_MESSAGE,
+} from "../_shared/whatsapp-instance-registration-core.ts";
 import type { InstanceNoteAction } from "../_shared/whatsapp-instance-notes-core.ts";
 
 const supabase = createClient(
@@ -719,11 +723,76 @@ serve(async (req) => {
         }, 409);
       }
 
+      // ── Unidade já ocupada ───────────────────────────────────────────────
+      // TERCEIRA pergunta, independente das duas acima. `assertProvisioningAllowed`
+      // responde "a plataforma sabe provisionar?"; `checkConnectionAllowance`
+      // responde "o modelo comercial permite mais uma conexão?"; esta responde
+      // "esta unidade já está ocupada?".
+      //
+      // Ela existe porque a segunda NÃO cobre a cortesia vitalícia: naquele
+      // núcleo, `activeInstanceCount` só é lido no ramo PLAN_DECLARED, então sob
+      // override vitalício duas instâncias na mesma unidade coexistiam sem que
+      // nada reclamasse (§2.1 da verificação manual).
+      //
+      // FORA do `checkConnectionAllowance` de propósito: aquele núcleo é
+      // compartilhado com `manage-channels`, que não tem nada a ver com unidade
+      // duplicada.
+      const unitId = body.unit_id ? parseUuid(body.unit_id) : null;
+      if (body.unit_id && !unitId) {
+        return jsonResponse(req, { error: "unit_id inválido." }, 400);
+      }
+
+      let unitConflicts: Record<string, unknown>[] = [];
+      if (unitId) {
+        const { data: sameUnit, error: sameUnitErr } = await supabase
+          .from("whatsapp_instances")
+          .select("id, lifecycle_state, provider_instance_ref, created_at")
+          .eq("unit_id", unitId)
+          .neq("lifecycle_state", "ENDED");
+
+        // FALHA em vez de degradar, como a contagem de allowance acima: lista
+        // vazia por erro de leitura liberaria exatamente o registro que a guarda
+        // existe para barrar.
+        if (sameUnitErr) {
+          jsonLog("error", {
+            reqId, evt: "wa_unit_conflict_read_failed", unitId,
+            err: sameUnitErr.message, needsAdminAction: true,
+          });
+          return jsonResponse(req, { error: ALLOWANCE_UNVERIFIABLE }, 503);
+        }
+        unitConflicts = (sameUnit ?? []) as Record<string, unknown>[];
+      }
+
+      const unitCheck = checkUnitInstanceConflict({
+        unitScoped: unitId !== null,
+        conflicts: unitConflicts.map((c) => ({
+          id: String(c.id),
+          lifecycleState: String(c.lifecycle_state),
+        })),
+        acknowledged: body.acknowledge_unit_conflict === true,
+      });
+
+      if (unitCheck.ok === false) {
+        jsonLog("warn", {
+          reqId, evt: "wa_unit_conflict_denied", unitId,
+          conflicts: unitConflicts.length, callerId,
+        });
+        // Devolve as conflitantes para a tela poder mostrá-las. São
+        // identificadores e datas — `provider_instance_ref` é identificador no
+        // painel do fornecedor, não credencial, e esta EF é exclusiva de
+        // platform_admin.
+        return jsonResponse(req, {
+          error: UNIT_ALREADY_HAS_INSTANCE_MESSAGE,
+          code: "UNIT_ALREADY_HAS_INSTANCE",
+          conflicts: unitConflicts,
+        }, 409);
+      }
+
       const { data, error } = await supabase
         .from("whatsapp_instances")
         .insert({
           organization_id: orgId,
-          unit_id: body.unit_id ?? null,
+          unit_id: unitId,
           channel_id: body.channel_id ?? null,
           provider: String(body.provider ?? "zapi"),
           provider_instance_ref: ref,
@@ -762,6 +831,7 @@ serve(async (req) => {
       jsonLog("info", {
         reqId, evt: "wa_instance_registered", instanceId: data.id, intent,
         allowancePolicy: allowance.policy, fundingSource: funding.fundingSource,
+        unitConflictPolicy: unitCheck.ok === true ? unitCheck.policy : null,
       });
       return jsonResponse(req, { instance: data });
     }
