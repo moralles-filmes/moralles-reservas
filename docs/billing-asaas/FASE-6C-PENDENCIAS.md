@@ -204,6 +204,44 @@ A linha de teste foi apagada em produção no mesmo dia. **A exclusão confirmou
 o NOTE-B ao vivo:** o `DELETE` concluiu, o ciclo caiu por `CASCADE` e as duas
 observações sobreviveram com `instance_id` nulo e `instance_ref` intacto.
 
+### 2.2 `set_cost` não alcança o ciclo aberto — ciclo nasce sem custo e fica irreparável
+
+Encontrado ao executar os quatro casos restantes numa fixture (07/08/2026).
+Registrar instância com **custo vazio** e informar o valor minutos depois
+deixa a instância correta (`current_monthly_cost_cents = 14990`,
+`cost_source = ADMIN_INFORMED`) e o **ciclo aberto intacto**:
+`provider_cost_cents`, `cost_source`, `cost_snapshot_at` e
+`gross_margin_cents` todos nulos.
+
+**Por que, e por que não se resolve sozinho.** O custo é fotografado na
+ABERTURA do ciclo — [migration 090](supabase/migrations/20260801200300_090_whatsapp_instance_cycle_rpc.sql)
+cria o ciclo novo com `v_inst.current_monthly_cost_cents` do instante da
+rolagem. No fechamento, a classificação lê o valor **do próprio ciclo**
+(`case when v_open.provider_cost_cents is null then 'PENDING_REVIEW' else
+'CLOSED'`), não o da instância. E a action `set_cost` de
+`manage-whatsapp-instances` grava **somente** em `whatsapp_instances` —
+nenhuma action do painel escreve `provider_cost_cents`.
+
+Resultado: ciclo aberto sem custo fecha como `PENDING_REVIEW`
+**permanentemente**, com margem nula naquele mês, e o D-1 segue citando custo
+desconhecido como motivo — mesmo com o administrador tendo informado o número
+no mesmo dia. Só o ciclo SEGUINTE nasce correto.
+
+**A copy do diálogo promete o contrário:** "Vazio grava desconhecido, nunca
+zero — e o ciclo fica pendente de revisão **até o número existir**". O número
+passou a existir e o ciclo não mudou.
+
+**Probabilidade alta, não caso de borda:** "registro agora, descubro o valor
+exato depois" é exatamente o fluxo que o campo vazio convida a usar.
+
+**Duas saídas, e a escolha não é óbvia:**
+- `set_cost` passar a preencher o ciclo ABERTO quando ele está sem custo —
+  simples, mas escreve retroativamente num ciclo em curso;
+- ou uma action própria de correção de custo de ciclo, auditada — mais
+  trabalho, e a única que resolve ciclo já `PENDING_REVIEW` do passado.
+
+Nenhuma das duas deve inventar custo para ciclo já `CLOSED`.
+
 ## 3. Depende de deploy
 
 - `manage-whatsapp-instances` precisa ser redeployada para o helper e a action
