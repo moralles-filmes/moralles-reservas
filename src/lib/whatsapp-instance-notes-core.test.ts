@@ -24,8 +24,29 @@ const MIGRATION = join(
   "20260803120000_096_whatsapp_instance_notes.sql",
 );
 
-/** Os valores literais dentro de `check (action in ( ... ))`. */
+const MIGRATION_104 = join(
+  __dirname,
+  "..",
+  "..",
+  "supabase",
+  "migrations",
+  "20260807100000_104_whatsapp_cycle_cost_and_end.sql",
+);
+
+/**
+ * Os valores do CHECK **EFETIVO** de `action`, e nao os da 096 isolada.
+ *
+ * A 104 faz `drop constraint if exists` + `add constraint` com a lista
+ * estendida: depois de aplicada, o CHECK que o banco tem e o DELA. Ler so a
+ * 096 fixaria o teste numa foto anterior a migration seguinte — e o proximo
+ * valor novo passaria a exigir editar a 096, que e migration aplicada e nao se
+ * reescreve.
+ */
 function actionsInMigrationCheck(): string[] {
+  const sql104 = readFileSync(MIGRATION_104, "utf8");
+  const m104 = sql104.match(/add\s+constraint\s+whatsapp_instance_notes_action_check\s+check\s*\(\s*action\s+in\s*\(([^)]*)\)/i);
+  if (m104) return Array.from(m104[1].matchAll(/'([A-Z_]+)'/g)).map((x) => x[1]);
+
   const sql = readFileSync(MIGRATION, "utf8");
   const m = sql.match(/action\s+text\s+not\s+null\s+check\s*\(\s*action\s+in\s*\(([^)]*)\)/i);
   if (!m) throw new Error("CHECK de `action` não encontrado na migration 096");
@@ -77,7 +98,7 @@ function raisesForInstanceIdTransition(oldId: string | null, newId: string | nul
 }
 
 describe("INSTANCE_NOTE_ACTIONS", () => {
-  it("tem exatamente as sete ações que mudam a instância e pedem motivo", () => {
+  it("tem as sete ações que mudam a instância mais a correção de ciclo passado", () => {
     expect([...INSTANCE_NOTE_ACTIONS]).toEqual([
       "REGISTER",
       "UPDATE",
@@ -86,6 +107,7 @@ describe("INSTANCE_NOTE_ACTIONS", () => {
       "CONFIRM_CYCLE_DATE",
       "REQUEST_CANCELLATION",
       "CONFIRM_END",
+      "CORRECT_CYCLE_COST",
     ]);
   });
 
