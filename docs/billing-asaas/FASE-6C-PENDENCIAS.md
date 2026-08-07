@@ -242,6 +242,35 @@ exato depois" é exatamente o fluxo que o campo vazio convida a usar.
 
 Nenhuma das duas deve inventar custo para ciclo já `CLOSED`.
 
+### 2.3 Encerramento confirmado ANTES do vencimento deixa o último ciclo `OPEN` para sempre
+
+Encontrado ao fechar o roteiro (07/08/2026). Instância em `ENDED`
+(`ended_at` gravado, acesso até 31/08) com o ciclo ainda
+`status = 'OPEN'`, `provider_due_on = 2026-09-07`, `closed_at` nulo.
+
+**Não há custo fantasma** — este ponto está correto e é o que mais importa:
+a RPC de rolagem tem guarda explícita
+([090](supabase/migrations/20260801200300_090_whatsapp_instance_cycle_rpc.sql):
+`if v_inst.lifecycle_state not in ('ACTIVE','CANCELLATION_REQUESTED')` →
+`SKIPPED_LIFECYCLE`), então nenhum ciclo novo nasce para instância encerrada.
+
+**O que fica errado é o fecho.** O desenho previsto é `CANCELLATION_REQUESTED`
+→ no vencimento o ciclo fecha por `CLOSED_NO_REOPEN` (linha 76). Confirmar o
+encerramento **antes** do vencimento tira a instância desse caminho: a RPC
+passa a pulá-la para sempre, e `confirm_end` em
+`manage-whatsapp-instances` atualiza só `whatsapp_instances` — nunca o ciclo.
+
+Consequências: o painel mostra "EM CURSO" numa instância `ENCERRADA`
+(contradição visível ao operador); o último período nunca vira registro de
+margem, deixando um buraco permanente no fim da vida de **toda** instância
+encerrada antecipadamente; e qualquer agregação sobre ciclos abertos conta
+uma instância morta indefinidamente.
+
+**Correção sugerida:** `confirm_end` fechar o ciclo aberto no mesmo ato,
+classificando como `CLOSED` ou `PENDING_REVIEW` pela mesma regra do
+vencimento — sem reabrir. É o mesmo lugar onde a correção de 2.2 encosta, o
+que reforça tratar os três achados numa frente só.
+
 ## 3. Depende de deploy
 
 - `manage-whatsapp-instances` precisa ser redeployada para o helper e a action
