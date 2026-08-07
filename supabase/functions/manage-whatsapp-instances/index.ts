@@ -10,7 +10,7 @@
 // NÃO ESCREVE em organizations.billing_status, billing_subscriptions,
 // organization_entitlement_overrides nem whatsapp_channels. NÃO chama a Z-API.
 //
-// ORDEM DE APLICAÇÃO — DUAS migrations precedem esta versão:
+// ORDEM DE APLICAÇÃO — TRÊS migrations precedem esta versão:
 //
 // 1. `register_instance` lê `billing_plans.included_features` e
 //    `billing_plans.included_whatsapp_connections` (migration 094). A guarda de
@@ -22,6 +22,12 @@
 //    migration deixa o histórico vazio e um log com `needsAdminAction`, sem
 //    quebrar nenhuma operação. Ainda assim, aplicar a migration primeiro evita
 //    o buraco.
+//
+// 3. As RPCs `set_whatsapp_instance_cost` e `confirm_whatsapp_instance_end` e a
+//    ação `CORRECT_CYCLE_COST` no CHECK de `whatsapp_instance_notes` (migration
+//    104). Consequência TOTAL, não degradada: sem ela, `set_cost` e
+//    `confirm_end` respondem 500 em toda invocação, e as notas de correção são
+//    recusadas pelo CHECK e somem em silêncio.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -737,8 +743,13 @@ serve(async (req) => {
       // FORA do `checkConnectionAllowance` de propósito: aquele núcleo é
       // compartilhado com `manage-channels`, que não tem nada a ver com unidade
       // duplicada.
-      const unitId = body.unit_id ? parseUuid(body.unit_id) : null;
-      if (body.unit_id && !unitId) {
+      // Trata a PRESENÇA da chave, não a verdade dela: `unit_id: ""` é falsy e
+      // cairia no ramo "sem unidade" em silêncio, nascendo sem a guarda de
+      // unidade duplicada acima (NO_UNIT_SCOPE). Ausente ou `null` explícito
+      // continua significando "sem unidade".
+      const unitIdProvided = "unit_id" in body && body.unit_id != null;
+      const unitId = unitIdProvided ? parseUuid(body.unit_id) : null;
+      if (unitIdProvided && !unitId) {
         return jsonResponse(req, { error: "unit_id inválido." }, 400);
       }
 

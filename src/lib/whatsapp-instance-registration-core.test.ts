@@ -43,7 +43,10 @@ describe("checkUnitInstanceConflict", () => {
     if (r.ok === false) expect(r.code).toBe("UNIT_ALREADY_HAS_INSTANCE");
   });
 
-  it("CANCELLATION_REQUESTED conta como viva — ela custa ate a confirmacao do fim", () => {
+  it("uma instancia em CANCELLATION_REQUESTED chega como conflito e e recusada como qualquer outra", () => {
+    // O nucleo decide so por `conflicts.length` — ele nunca le `lifecycleState`.
+    // Quem exclui ENDED e o `.neq("lifecycle_state", "ENDED")` da query em
+    // manage-whatsapp-instances/index.ts, antes de chegar aqui.
     const r = checkUnitInstanceConflict({
       unitScoped: true,
       conflicts: [{ id: "i-1", lifecycleState: "CANCELLATION_REQUESTED" }],

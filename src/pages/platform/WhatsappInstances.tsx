@@ -620,7 +620,7 @@ export default function WhatsappInstances() {
             <ResponsiveDialogTitle>
               {dialog?.kind === "confirm_date" && "Confirmar data do ciclo"}
               {dialog?.kind === "set_cost" && "Informar custo mensal"}
-              {dialog?.kind === "correct_cycle" && "Corrigir custo de ciclo fechado"}
+              {dialog?.kind === "correct_cycle" && "Corrigir custo pendente"}
               {dialog?.kind === "cancel" && "Registrar cancelamento no fornecedor"}
               {dialog?.kind === "confirm_end" && "Confirmar encerramento"}
               {dialog?.kind === "reactivate" && "Reativar instância"}
