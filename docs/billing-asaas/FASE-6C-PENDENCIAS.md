@@ -162,17 +162,47 @@ Sem eles, "passou" não distingue *a guarda funciona* de *o teste não testa nad
 
 ### O que continua pendente
 
-- **`NOTE-E` (RLS pelo client SDK).** Exige Supabase de verdade: o Postgres
-  local não tem PostgREST nem `auth.uid()` real. A afirmação "membro da
-  organização não lê o custo do fornecedor" — que é a razão de não ter usado
-  `audit_log` — **continua não provada**. Só a estrutura foi conferida (RLS
-  `enable` + `force` = `t,t`, uma policy, duas triggers, zero coluna de
-  segredo).
-- **A 096 não foi aplicada em produção.** O replay local prova comportamento,
-  não substitui o `db push` autorizado.
-- **Nenhum registro de sucesso foi feito pela UI.** Toda a verificação manual
-  de painel desta entrega usou caminhos de RECUSA, para não escrever no
-  inventário do Ren Sushi durante a observação da 6b (até 05/08).
+- ~~**`NOTE-E` (RLS pelo client SDK).**~~ **EXECUTADO e APROVADO em produção
+  (07/08/2026).** Sessão real de `gerente` (não `platform_admin`), chamada
+  direta ao PostgREST com a anon key do bundle e o JWT da sessão. As três
+  tabelas responderam **HTTP 200 com lista vazia** — que é o resultado certo:
+  a policy é `is_platform_admin(auth.uid())` sob FORCE RLS, e RLS filtra
+  LINHA, não recusa a chamada. A afirmação "membro da organização não lê o
+  custo do fornecedor" está provada.
+- ~~**A 096 não foi aplicada em produção.**~~ Aplicada em 04/08/2026 junto com
+  as outras nove pendentes.
+- ~~**Nenhum registro de sucesso foi feito pela UI.**~~ Feito em 07/08 — e o
+  caminho de sucesso revelou o achado da seção 2.1 abaixo.
+
+### 2.1 Achado do primeiro registro de sucesso pela UI — backfill sob cortesia vitalícia não tem teto
+
+Um `register_instance` com intent `BACKFILL_EXISTING` criou uma **segunda
+instância ativa** para a mesma unidade do Ren Sushi, com referência de
+fornecedor inventada (`13218dasdsa88dsa`). **Não é defeito de código** —
+`checkConnectionAllowance` fez exatamente o que a regra 4 manda: para
+`fundingSource: LIFETIME_OVERRIDE`, backfill é `OVERRIDE_OPERATIONAL` e
+passa. O `activeInstanceCount` **só é consultado no ramo `PLAN_DECLARED`**
+(regra 6); no ramo do vitalício ele nunca entra na conta.
+
+O que falhou foi a **premissa**, não a regra. O desenho assume "registrar o
+que já existe nunca piora a posição", e `providerInstanceRefKnown` significa
+apenas *o admin preencheu o campo* — nunca *a instância existe no
+fornecedor*. Sem a API de Parceiro da Z-API (Fase 6a), não há como verificar,
+e o diálogo já diz isso ("este registro é a afirmação da plataforma sobre o
+que existe lá").
+
+**Consequência real:** organização com cortesia vitalícia aceita backfill
+ilimitado, e cada linha nova entra no inventário como custo de fornecedor —
+contaminando margem e alertas do worker de ciclos.
+
+**Correção sugerida, sem mexer na regra:** avisar na UI quando a unidade
+escolhida já tem instância `lifecycle_state <> 'ENDED'`, exigindo confirmação
+explícita. Bloquear backfill seria errado — backfill legítimo de segunda
+instância existe. A verificação de existência real é trabalho da Fase 6a.
+
+A linha de teste foi apagada em produção no mesmo dia. **A exclusão confirmou
+o NOTE-B ao vivo:** o `DELETE` concluiu, o ciclo caiu por `CASCADE` e as duas
+observações sobreviveram com `instance_id` nulo e `instance_ref` intacto.
 
 ## 3. Depende de deploy
 
