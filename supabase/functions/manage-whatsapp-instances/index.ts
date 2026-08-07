@@ -1019,7 +1019,14 @@ serve(async (req) => {
         action: "SET_COST", note: reason, callerId, reqId,
       });
 
-      return jsonResponse(req, { instance: after.row, cycle_filled: outcome.cycle_filled });
+      // `has_open_cycle` é BOOLEANO, não o id: a tela precisa distinguir "o
+      // ciclo manteve o valor dele" de "não há ciclo aberto", e não precisa do
+      // identificador para isso.
+      return jsonResponse(req, {
+        instance: after.row,
+        cycle_filled: outcome.cycle_filled,
+        has_open_cycle: outcome.open_cycle_id !== null,
+      });
     }
 
     // ── Correção de custo de ciclo passado ───────────────────────────────

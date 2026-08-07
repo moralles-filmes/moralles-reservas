@@ -32,6 +32,8 @@ import {
   cycleSourceLabel,
   divergenceLabel,
   COST_SOURCE_OPTIONS,
+  setCostToastFromResponse,
+  confirmEndToastFromResponse,
 } from "@/lib/whatsapp-instance-format";
 import {
   useWhatsappInstances,
@@ -232,10 +234,16 @@ export default function WhatsappInstances() {
     setAccessUntil("");
   }
 
-  function run(body: { action: string; [k: string]: unknown }, successMsg: string) {
+  function run(
+    body: { action: string; [k: string]: unknown },
+    // Função quando a mensagem depende do que a EF respondeu — o toast é o
+    // único retorno no instante da ação, e afirmar sucesso genérico esconde
+    // justamente os casos que exigem uma segunda providência.
+    successMsg: string | ((data: unknown) => string),
+  ) {
     action.mutate(body, {
-      onSuccess: () => {
-        toast.success(successMsg);
+      onSuccess: (data: unknown) => {
+        toast.success(typeof successMsg === "function" ? successMsg(data) : successMsg);
         closeDialog();
       },
       // A EF devolve mensagem curta em PT-BR; o hook já a extraiu do corpo
@@ -831,7 +839,7 @@ export default function WhatsappInstances() {
                         ...(cents === null ? {} : { cost_source: costSource }),
                         reason,
                       },
-                      "Custo atualizado.",
+                      setCostToastFromResponse,
                     );
                   } else if (dialog.kind === "correct_cycle") {
                     const parsed = parseCostReais(costReais);
@@ -866,7 +874,7 @@ export default function WhatsappInstances() {
                   } else if (dialog.kind === "confirm_end") {
                     run(
                       { action: "confirm_end", instance_id: dialog.instance.id, reason },
-                      "Encerramento confirmado.",
+                      confirmEndToastFromResponse,
                     );
                   } else if (dialog.kind === "reactivate") {
                     run(

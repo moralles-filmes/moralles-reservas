@@ -10,6 +10,10 @@ import {
   COST_SOURCE_OPTIONS,
   costSourceLabel,
   instanceNoteActionLabel,
+  setCostToast,
+  setCostToastFromResponse,
+  confirmEndToast,
+  confirmEndToastFromResponse,
 } from "./whatsapp-instance-format";
 
 describe("formatCents — desconhecido nunca vira R$ 0,00", () => {
@@ -137,5 +141,83 @@ describe("rótulos das ações do ledger de observações", () => {
 
   it("ação desconhecida volta como ela mesma", () => {
     expect(instanceNoteActionLabel("ACKNOWLEDGE_ALERT")).toBe("ACKNOWLEDGE_ALERT");
+  });
+});
+
+describe("copy do toast — a tela não afirma o que não sabe", () => {
+  it("custo aplicado ao ciclo aberto", () => {
+    expect(setCostToast({ filled: true, hasOpenCycle: true })).toBe(
+      "Custo atualizado e aplicado ao ciclo em aberto.",
+    );
+  });
+
+  it("ciclo aberto existe mas não mudou", () => {
+    expect(setCostToast({ filled: false, hasOpenCycle: true })).toBe(
+      "Custo atualizado na instância. O ciclo em aberto não mudou.",
+    );
+  });
+
+  it("não há ciclo aberto", () => {
+    expect(setCostToast({ filled: false, hasOpenCycle: false })).toBe(
+      "Custo atualizado na instância. Não há ciclo em aberto.",
+    );
+  });
+
+  it("a EF não disse se há ciclo aberto: NÃO afirma nada sobre o ciclo", () => {
+    // Janela de deploy (EF antiga, frontend novo). Tratar ausente como `false`
+    // faria a tela afirmar "não há ciclo em aberto" sem saber — o mesmo defeito
+    // que este item fecha, por outra porta.
+    const msg = setCostToast({ filled: false, hasOpenCycle: null });
+    expect(msg).toBe("Custo atualizado na instância.");
+    expect(msg).not.toMatch(/ciclo/);
+  });
+
+  it("filled=true vence mesmo com hasOpenCycle desconhecido", () => {
+    // `filled` só pode ser true se havia ciclo aberto — é fato próprio.
+    expect(setCostToast({ filled: true, hasOpenCycle: null })).toBe(
+      "Custo atualizado e aplicado ao ciclo em aberto.",
+    );
+  });
+
+  it("encerramento com o último ciclo fechado", () => {
+    expect(confirmEndToast("CLOSED")).toBe(
+      "Encerramento confirmado. O último ciclo foi fechado.",
+    );
+  });
+
+  it("encerramento com o último ciclo sem custo aponta a tarefa pendente", () => {
+    expect(confirmEndToast("PENDING_REVIEW")).toBe(
+      "Encerramento confirmado. O último ciclo fechou sem custo — informe o valor em Ciclos e margem.",
+    );
+  });
+
+  it("encerramento sem ciclo aberto", () => {
+    expect(confirmEndToast(null)).toBe(
+      "Encerramento confirmado. Não havia ciclo em aberto.",
+    );
+  });
+
+  it("lê a resposta da EF sem confiar no formato", () => {
+    expect(setCostToastFromResponse({ cycle_filled: true, has_open_cycle: true })).toBe(
+      "Custo atualizado e aplicado ao ciclo em aberto.",
+    );
+    expect(setCostToastFromResponse({ cycle_filled: false, has_open_cycle: false })).toBe(
+      "Custo atualizado na instância. Não há ciclo em aberto.",
+    );
+    // EF antiga: `has_open_cycle` ausente.
+    expect(setCostToastFromResponse({ cycle_filled: false })).toBe(
+      "Custo atualizado na instância.",
+    );
+    expect(setCostToastFromResponse(null)).toBe("Custo atualizado na instância.");
+
+    expect(confirmEndToastFromResponse({ closed_cycle_status: "PENDING_REVIEW" })).toMatch(
+      /sem custo/,
+    );
+    expect(confirmEndToastFromResponse({})).toBe(
+      "Encerramento confirmado. Não havia ciclo em aberto.",
+    );
+    expect(confirmEndToastFromResponse(undefined)).toBe(
+      "Encerramento confirmado. Não havia ciclo em aberto.",
+    );
   });
 });
