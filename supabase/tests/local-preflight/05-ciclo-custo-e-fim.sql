@@ -113,6 +113,8 @@ begin
     case when v_status = 'CLOSED'
       and (select lifecycle_state from whatsapp_instances
             where id = 'cc000000-0000-4000-8000-000000000001') = 'ENDED'
+      and (select current_cycle_started_on from whatsapp_instances
+            where id = 'cc000000-0000-4000-8000-000000000001') is null
       and (select current_cycle_due_on from whatsapp_instances
             where id = 'cc000000-0000-4000-8000-000000000001') is null
       and (select count(*) from whatsapp_instance_cycles

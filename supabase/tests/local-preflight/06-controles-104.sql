@@ -77,6 +77,20 @@ $$;
 do $$
 declare v_open int;
 begin
+  -- Setup PROPRIO deste caso, nao herdado do CONTROLE-3: sem isso, o `v_open
+  -- = 1` medido abaixo dependeria de o ciclo OPEN que o CONTROLE-3 deixa para
+  -- tras (aberto so como efeito colateral de exercitar a RPC de custo) ainda
+  -- existir quando este bloco roda. Reordenar, remover ou alterar o
+  -- CONTROLE-3 para nao deixar ciclo aberto degradaria este caso em silencio
+  -- para NAO REPRODUZIU. Datas exclusivas (2027-01-04/2027-02-04): nao colidem
+  -- com COST-1 (2026-07), END-1 (2026-09) nem CONTROLE-3 (2026-11) na mesma
+  -- instancia.
+  delete from whatsapp_instance_cycles where instance_id = 'cc000000-0000-4000-8000-000000000001';
+  insert into whatsapp_instance_cycles (instance_id, organization_id, cycle_start, provider_due_on, status)
+  values ('cc000000-0000-4000-8000-000000000001',
+          (select organization_id from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000001'),
+          date '2027-01-04', date '2027-02-04', 'OPEN');
+
   perform confirm_whatsapp_instance_end('cc000000-0000-4000-8000-000000000001', 'x', null);
   select count(*) into v_open from whatsapp_instance_cycles
    where instance_id = 'cc000000-0000-4000-8000-000000000001' and status = 'OPEN';
