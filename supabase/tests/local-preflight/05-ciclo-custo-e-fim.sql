@@ -1,4 +1,5 @@
--- COST-1..4, END-1..3, CORR-1..2 — comportamento das RPCs da migration 104.
+-- COST-1..4, END-1..4, CORR-1..2, CYCLE-1..2 — comportamento das RPCs das
+-- migrations 104 e 105, e a colisao dos dois indices que produzem 23505.
 --
 -- Cada caso numa subtransacao, veredito em `t_res`. Os ids sao FIXOS: o
 -- harness e descartavel e reproduzivel, e id gerado tornaria a leitura do
@@ -247,4 +248,69 @@ begin
     case when v_rows = 0
       and (select provider_cost_cents from whatsapp_instance_cycles where id = v_id) = 9990
     then 'PASSOU' else 'FALHOU' end);
+end $$;
+
+-- ── CYCLE-1 / CYCLE-2: os DOIS indices que produzem 23505 ────────────
+-- `whatsapp_cycles_instance_start_idx (instance_id, cycle_start)` significa
+-- reexecucao com a MESMA data (idempotencia genuina).
+-- `whatsapp_cycles_one_open_idx (instance_id) WHERE status='OPEN'` significa
+-- que existe OUTRO ciclo aberto, com data DIFERENTE.
+--
+-- Os dois erros sao 23505. O par de casos abaixo torna a colisao visivel e
+-- prova o DISCRIMINADOR que a Edge Function usa: existe linha com ESTA
+-- cycle_start? Sem eles, alguem "simplificando" os indices da 088 quebraria o
+-- discriminador em silencio.
+
+-- ── CYCLE-1: mesma data — 23505 E a linha daquela data existe ────────
+do $$
+declare v_code text; v_exists boolean;
+begin
+  insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source)
+  values ('cc000000-0000-4000-8000-000000000004',
+          (select id from organizations order by id limit 1), 'zapi', 'ACTIVE', 'UNKNOWN')
+  on conflict (id) do nothing;
+  delete from whatsapp_instance_cycles where instance_id = 'cc000000-0000-4000-8000-000000000004';
+  insert into whatsapp_instance_cycles (instance_id, organization_id, cycle_start, provider_due_on, status)
+  values ('cc000000-0000-4000-8000-000000000004',
+          (select organization_id from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000004'),
+          date '2026-05-01', date '2026-06-01', 'OPEN');
+
+  begin
+    insert into whatsapp_instance_cycles (instance_id, organization_id, cycle_start, provider_due_on, status)
+    values ('cc000000-0000-4000-8000-000000000004',
+            (select organization_id from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000004'),
+            date '2026-05-01', date '2026-06-01', 'OPEN');
+  exception when unique_violation then
+    v_code := sqlstate;
+  end;
+
+  select exists (select 1 from whatsapp_instance_cycles
+                  where instance_id = 'cc000000-0000-4000-8000-000000000004'
+                    and cycle_start = date '2026-05-01') into v_exists;
+
+  insert into t_res (ord, caso, veredito) values (63,
+    'CYCLE-1 mesma data: 23505 e a linha daquela cycle_start EXISTE (reexecucao)',
+    case when v_code = '23505' and v_exists then 'PASSOU' else 'FALHOU' end);
+end $$;
+
+-- ── CYCLE-2: data diferente — 23505 E nenhuma linha daquela data ─────
+do $$
+declare v_code text; v_exists boolean;
+begin
+  begin
+    insert into whatsapp_instance_cycles (instance_id, organization_id, cycle_start, provider_due_on, status)
+    values ('cc000000-0000-4000-8000-000000000004',
+            (select organization_id from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000004'),
+            date '2026-06-15', date '2026-07-15', 'OPEN');
+  exception when unique_violation then
+    v_code := sqlstate;
+  end;
+
+  select exists (select 1 from whatsapp_instance_cycles
+                  where instance_id = 'cc000000-0000-4000-8000-000000000004'
+                    and cycle_start = date '2026-06-15') into v_exists;
+
+  insert into t_res (ord, caso, veredito) values (64,
+    'CYCLE-2 data diferente: 23505 e NENHUMA linha daquela cycle_start (divergencia)',
+    case when v_code = '23505' and v_exists = false then 'PASSOU' else 'FALHOU' end);
 end $$;

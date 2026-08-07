@@ -899,15 +899,67 @@ serve(async (req) => {
         notes: reason,
         created_by: callerId,
       });
-      // 23505 = o ciclo já existia (reexecução). Idempotente, não é erro — e o
-      // ciclo que já estava lá NÃO é preenchido por este caminho: ele pode ter
-      // sido rolado ou fechado desde então, e mexer nele como efeito colateral
-      // de uma reexecução é o tipo de escrita não-auditada que esta frente
-      // combate. Reparo de ciclo existente tem porta própria
-      // (`correct_cycle_cost`).
-      if (cycleErr && cycleErr.code !== "23505") {
-        jsonLog("error", { reqId, evt: "wa_cycle_confirm_failed", err: cycleErr.message });
-        return jsonResponse(req, { error: "Não foi possível registrar o ciclo." }, 500);
+      if (cycleErr) {
+        if (cycleErr.code === "23505") {
+          // DOIS índices produzem 23505 aqui, e significam coisas OPOSTAS:
+          //
+          //   whatsapp_cycles_instance_start_idx (instance_id, cycle_start)
+          //     -> reexecução com a MESMA data. Idempotência genuína.
+          //   whatsapp_cycles_one_open_idx (instance_id) WHERE status='OPEN'
+          //     -> já existe OUTRO ciclo aberto, com data DIFERENTE.
+          //
+          // Tratar os dois como reexecução gravava a projeção com a data NOVA
+          // sobre um ciclo que guarda outra: instância e ciclo passavam a
+          // discordar da janela em silêncio, o D-7/D-1 disparava pela data
+          // errada e a rolagem 090 abria o ciclo seguinte a partir do
+          // `provider_due_on` do CICLO, deixando um buraco permanente.
+          //
+          // ALCANÇÁVEL por uma porta só, rastreada: a falha parcial logo abaixo
+          // (insert OK, projeção falha) deixa `cycle_source = 'UNKNOWN'` COM
+          // ciclo OPEN, e o botão "Confirmar data" continua visível.
+          //
+          // O discriminador é a existência da linha com ESTA `cycle_start` —
+          // `(instance_id, cycle_start)` é UNIQUE, então `maybeSingle` aqui não
+          // pode receber duas linhas.
+          const { data: sameStart, error: sameStartErr } = await supabase
+            .from("whatsapp_instance_cycles")
+            .select("id")
+            .eq("instance_id", id)
+            .eq("cycle_start", cycleStart)
+            .maybeSingle();
+
+          if (sameStartErr) {
+            jsonLog("error", {
+              reqId, evt: "wa_cycle_conflict_read_failed", instanceId: id,
+              err: sameStartErr.message, needsAdminAction: true,
+            });
+            // FAIL-CLOSED: gravar a projeção sem saber qual índice recusou é
+            // exatamente a divergência que este ramo existe para impedir.
+            return jsonResponse(req, {
+              error: "Não foi possível verificar o ciclo já existente. Tente de novo.",
+            }, 503);
+          }
+
+          if (!sameStart) {
+            jsonLog("warn", {
+              reqId, evt: "wa_cycle_open_date_mismatch", instanceId: id,
+              cycleStart, needsAdminAction: true,
+            });
+            return jsonResponse(req, {
+              error: "Já existe um ciclo em aberto com outra data de início. Confira os ciclos desta instância antes de confirmar a data.",
+              code: "OPEN_CYCLE_DATE_MISMATCH",
+            }, 409);
+          }
+
+          // Mesma data: reexecução. Segue — e o ciclo que já estava lá NÃO é
+          // preenchido por este caminho: ele pode ter sido rolado ou fechado
+          // desde então, e mexer nele como efeito colateral de uma reexecução é
+          // o tipo de escrita não-auditada que esta frente combate. Reparo de
+          // ciclo existente tem porta própria (`correct_cycle_cost`).
+        } else {
+          jsonLog("error", { reqId, evt: "wa_cycle_confirm_failed", err: cycleErr.message });
+          return jsonResponse(req, { error: "Não foi possível registrar o ciclo." }, 500);
+        }
       }
 
       const { data, error } = await supabase
