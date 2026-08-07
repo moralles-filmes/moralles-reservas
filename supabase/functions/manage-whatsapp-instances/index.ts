@@ -1011,6 +1011,103 @@ serve(async (req) => {
       return jsonResponse(req, { instance: after.row, cycle_filled: outcome.cycle_filled });
     }
 
+    // ── Correção de custo de ciclo passado ───────────────────────────────
+    // A ÚNICA porta que muda custo já gravado, e ela é estreita de propósito.
+    //
+    // Só `PENDING_REVIEW` — o estado que significa "terminou sem custo". Ciclo
+    // `CLOSED` fechou financeiramente concluído, e reabrir esse caso exigiria
+    // política própria que não existe. Ciclo `OPEN` não precisa daqui: `set_cost`
+    // o preenche.
+    //
+    // NÃO PRECISA DE RPC: escreve UMA tabela, e o predicado `status =
+    // 'PENDING_REVIEW'` no próprio UPDATE é o compare-and-set que a trava faria.
+    if (action === "correct_cycle_cost") {
+      const reason = requireReason(body);
+      if (!reason) {
+        return jsonResponse(req, { error: "Informe a origem do valor corrigido." }, 400);
+      }
+
+      const cycleId = parseUuid(body.cycle_id);
+      if (!cycleId) return jsonResponse(req, { error: "cycle_id inválido." }, 400);
+
+      const cost = parseCostCents(body.current_monthly_cost_cents ?? null);
+      if (cost.ok === false) return jsonResponse(req, { error: cost.message, code: cost.code }, 400);
+      // Corrigir para "não sei" não é correção — e deixaria o ciclo num estado
+      // que o CHECK `whatsapp_cycles_closed_needs_cost_chk` recusaria.
+      if (cost.unknownCost === true) {
+        return jsonResponse(req, { error: "A correção precisa de um valor. Deixar em branco não corrige." }, 400);
+      }
+
+      const costSource = normalizeCostSource(body.cost_source);
+      if (costSource === null) {
+        return jsonResponse(req, { error: "Procedência do custo inválida." }, 400);
+      }
+
+      const { data: current, error: readErr } = await supabase
+        .from("whatsapp_instance_cycles")
+        .select("id, instance_id, organization_id, status, notes")
+        .eq("id", cycleId)
+        .maybeSingle();
+      if (readErr) {
+        jsonLog("error", {
+          reqId, evt: "wa_cycle_correct_lookup_failed", err: readErr.message,
+          needsAdminAction: true,
+        });
+        return jsonResponse(req, { error: "Não foi possível consultar o ciclo agora. Tente novamente." }, 503);
+      }
+      if (!current) return jsonResponse(req, { error: "Ciclo não encontrado." }, 404);
+
+      // APPEND, nunca sobrescrita: a nota original do ciclo é registro próprio.
+      const mergedNotes = current.notes
+        ? `${current.notes}\n[correção de custo] ${reason}`
+        : `[correção de custo] ${reason}`;
+
+      const { data: updated, error: updErr } = await supabase
+        .from("whatsapp_instance_cycles")
+        .update({
+          provider_cost_cents: cost.cents,
+          cost_source: costSource,
+          cost_snapshot_at: new Date().toISOString(),
+          // Custo e status mudam JUNTOS — é isso que satisfaz o CHECK
+          // `whatsapp_cycles_closed_needs_cost_chk`. `closed_at` já é não-nulo:
+          // PENDING_REVIEW o exige.
+          status: "CLOSED",
+          closed_by: callerId,
+          notes: mergedNotes,
+        })
+        .eq("id", cycleId)
+        .eq("status", "PENDING_REVIEW")
+        .select(CYCLE_COLUMNS);
+
+      if (updErr) {
+        jsonLog("error", { reqId, evt: "wa_cycle_correct_failed", err: updErr.message });
+        return jsonResponse(req, { error: "Não foi possível corrigir o custo do ciclo." }, 500);
+      }
+      // UPDATE que casa ZERO linhas devolve `error: null` no Supabase JS. Sem
+      // esta conferência, "o predicado negou" seria indistinguível de "gravei".
+      if (!updated || updated.length === 0) {
+        return jsonResponse(req, {
+          error: "Só é possível corrigir ciclo pendente de revisão. Ciclo já fechado não é reaberto.",
+          code: "CYCLE_NOT_PENDING_REVIEW",
+        }, 409);
+      }
+
+      await recordInstanceNote({
+        instanceId: current.instance_id as string,
+        organizationId: current.organization_id as string,
+        action: "CORRECT_CYCLE_COST",
+        note: reason,
+        callerId,
+        reqId,
+      });
+
+      jsonLog("info", {
+        reqId, evt: "wa_cycle_cost_corrected", cycleId,
+        instanceId: current.instance_id, callerId,
+      });
+      return jsonResponse(req, { cycle: updated[0] });
+    }
+
     // ── Cancelamento: congela no ato ─────────────────────────────────────
     // NÃO altera assinatura, billing_status, entitlement, envio, canal nem
     // credencial. Registra o término planejado do CUSTO — nada mais.
