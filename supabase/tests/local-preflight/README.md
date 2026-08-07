@@ -25,6 +25,8 @@ presentes agendaria jobs apontando para lá.
 | `02-seed.sql` | Duas organizações, cinco instâncias com ids fixos. A segunda organização existe só para o caso NOTE-D3 (tenant cruzado). |
 | `03-notes-b-c-d.sql` | NOTE-B, NOTE-C (7 casos) e NOTE-D (4 + 1 controle negativo). Cada caso numa subtransação; grava veredito em `t_res`. |
 | `04-controles.sql` | Os dois **controles positivos**. Sem eles, "passou" não distingue *a guarda funciona* de *o teste não testa nada*. |
+| `05-ciclo-custo-e-fim.sql` | COST-1..4, END-1..3 e CORR-1..2 — comportamento das RPCs `set_whatsapp_instance_cost` e `confirm_whatsapp_instance_end` da migration 104. Mesmo padrão: cada caso numa subtransação, veredito em `t_res`. |
+| `06-controles-104.sql` | Os dois **controles positivos** da 104. Sem eles, "COST-2 passou" e "END-1 passou" não distinguem a guarda funcionando de teste sem força. |
 
 ## Rodar
 
@@ -41,6 +43,7 @@ P -f supabase/tests/local-preflight/00-bootstrap.sql
 P -f supabase/tests/local-preflight/01-audit.sql
 P -f supabase/migrations/20260801200000_087_whatsapp_instances.sql
 P -f supabase/migrations/20260801200100_088_whatsapp_instance_cycles.sql
+P -f supabase/migrations/20260801200300_090_whatsapp_instance_cycle_rpc.sql
 P -f supabase/tests/local-preflight/02-seed.sql
 
 # NOTE-A: aplicar a 096 três vezes e conferir que a contagem não muda
@@ -51,6 +54,12 @@ P -f supabase/tests/local-preflight/03-notes-b-c-d.sql
 P -f supabase/tests/local-preflight/04-controles.sql   # SEM ON_ERROR_STOP
 # 04 mexe na guarda de propósito — reaplicar a 096 restaura a versão real:
 P -f supabase/migrations/20260803120000_096_whatsapp_instance_notes.sql
+
+P -f supabase/migrations/20260807100000_104_whatsapp_cycle_cost_and_end.sql
+P -f supabase/tests/local-preflight/05-ciclo-custo-e-fim.sql
+P -f supabase/tests/local-preflight/06-controles-104.sql   # SEM ON_ERROR_STOP
+# 06 mexe nas duas RPCs de propósito — reaplicar a 104 restaura as reais:
+P -f supabase/migrations/20260807100000_104_whatsapp_cycle_cost_and_end.sql
 
 P -c "select ord, caso, veredito from t_res order by ord;"
 ```
@@ -70,3 +79,10 @@ puro) e repete o caso NOTE-C7: `NULL → uuid` **passa**. É a demonstração, c
 banco, de que a divergência deliberada da 096 é real e de que a 089 carrega o
 defeito latente descrito no bloco "DIVERGÊNCIA DELIBERADA" da 096. Reaplicar a
 096 restaura a guarda estrita e o mesmo `UPDATE` volta a ser recusado.
+
+## O que os dois controles do `06` fazem
+
+**CONTROLE-3** remove da RPC de custo a condição `provider_cost_cents is null`
+e mostra o custo já congelado sendo sobrescrito. **CONTROLE-4** remove do
+encerramento o fecho do ciclo e mostra o ciclo ficando `OPEN` — é literalmente
+o defeito §2.3 reintroduzido. Os dois se desfazem reaplicando a 104.
