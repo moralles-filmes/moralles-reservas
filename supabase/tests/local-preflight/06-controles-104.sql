@@ -98,3 +98,64 @@ begin
   insert into t_res (ord, caso, veredito) values (62, 'CONTROLE-4 sem o fecho, o ciclo fica OPEN para sempre',
     case when v_open = 1 then 'REPRODUZIU' else 'NAO REPRODUZIU' end);
 end $$;
+
+-- ── CONTROLE-5: reintroduzir a sobrescrita de autoria e nota (105) ───
+-- Sem ele, "END-4 passou" nao distingue *a guarda funciona* de *o teste nao
+-- testa nada*. `ended_at` MANTEM o coalesce aqui: o defeito isolado e o dos
+-- OUTROS DOIS campos, e mexer nos tres borraria o que este controle mede.
+--
+-- Restaurar = reaplicar a 104 e DEPOIS a 105, nesta ordem (a 105 supera a 104
+-- em confirm_whatsapp_instance_end).
+create or replace function public.confirm_whatsapp_instance_end(
+  p_instance_id uuid, p_note text, p_actor uuid
+)
+returns table (instance_found boolean, lifecycle_before text,
+               closed_cycle_id uuid, closed_cycle_status text)
+language plpgsql security definer set search_path = public
+as $$
+declare v_inst record;
+begin
+  select * into v_inst from whatsapp_instances where id = p_instance_id for update;
+  if not found then
+    return query select false, null::text, null::uuid, null::text;
+    return;
+  end if;
+  -- DEFEITO REINTRODUZIDO (105): autoria e nota sobrescritas na repeticao.
+  update whatsapp_instances
+     set lifecycle_state = 'ENDED',
+         ended_at = coalesce(ended_at, now()),
+         ended_by = p_actor,
+         end_confirmation_note = p_note,
+         updated_at = now()
+   where id = p_instance_id;
+  return query select true, v_inst.lifecycle_state::text, null::uuid, null::text;
+end;
+$$;
+
+do $$
+declare v_at1 timestamptz; v_at2 timestamptz; v_by uuid; v_note text;
+begin
+  -- Instancia PROPRIA deste controle: a do END-4 (…0003) ja esta ENDED com a
+  -- autoria da primeira confirmacao, e reusa-la mediria a linha errada.
+  insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source)
+  values ('cc000000-0000-4000-8000-000000000005',
+          (select id from organizations order by id limit 1), 'zapi', 'ACTIVE', 'ADMIN_CONFIRMED')
+  on conflict (id) do nothing;
+
+  perform confirm_whatsapp_instance_end('cc000000-0000-4000-8000-000000000005',
+    'primeira', '11111111-1111-1111-1111-111111111111');
+  select ended_at into v_at1 from whatsapp_instances
+   where id = 'cc000000-0000-4000-8000-000000000005';
+
+  perform confirm_whatsapp_instance_end('cc000000-0000-4000-8000-000000000005',
+    'segunda', '22222222-2222-2222-2222-222222222222');
+  select ended_at, ended_by, end_confirmation_note into v_at2, v_by, v_note
+    from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000005';
+
+  insert into t_res (ord, caso, veredito) values (65,
+    'CONTROLE-5 sem o coalesce, a repeticao reescreve autoria e nota sobre a data da primeira',
+    case when v_at1 = v_at2
+      and v_by = '22222222-2222-2222-2222-222222222222'
+      and v_note = 'segunda'
+    then 'REPRODUZIU' else 'NAO REPRODUZIU' end);
+end $$;

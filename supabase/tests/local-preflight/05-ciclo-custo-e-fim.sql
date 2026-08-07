@@ -170,6 +170,42 @@ begin
     then 'PASSOU' else 'FALHOU' end);
 end $$;
 
+-- ── END-4: repeticao NAO reescreve autoria nem nota do encerramento ──
+-- A porta NAO e corrida. `canTransition` tem curto-circuito de mesmo estado
+-- (ENDED -> ENDED passa) e o botao do painel e renderizado a partir do
+-- lifecycle_state EM CACHE do React Query, com refetchOnWindowFocus desligado:
+-- uma aba parada de outro administrador continua oferecendo o botao.
+--
+-- Os dois atores sao os usuarios do 02-seed.sql — `ended_by` tem FK para
+-- auth.users, entao uuid inventado abortaria o caso com foreign_key_violation.
+--
+-- Instancia PROPRIA (…0003): …0001 e …0002 ja foram encerradas por END-1/END-2.
+do $$
+declare v_at1 timestamptz; v_at2 timestamptz; v_by uuid; v_note text;
+begin
+  insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source)
+  values ('cc000000-0000-4000-8000-000000000003',
+          (select id from organizations order by id limit 1), 'zapi', 'ACTIVE', 'ADMIN_CONFIRMED')
+  on conflict (id) do nothing;
+
+  perform confirm_whatsapp_instance_end('cc000000-0000-4000-8000-000000000003',
+    'primeira', '11111111-1111-1111-1111-111111111111');
+  select ended_at into v_at1 from whatsapp_instances
+   where id = 'cc000000-0000-4000-8000-000000000003';
+
+  perform confirm_whatsapp_instance_end('cc000000-0000-4000-8000-000000000003',
+    'segunda', '22222222-2222-2222-2222-222222222222');
+  select ended_at, ended_by, end_confirmation_note into v_at2, v_by, v_note
+    from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000003';
+
+  insert into t_res (ord, caso, veredito) values (60,
+    'END-4 repeticao nao reescreve ended_by nem end_confirmation_note',
+    case when v_at1 = v_at2
+      and v_by = '11111111-1111-1111-1111-111111111111'
+      and v_note = 'primeira'
+    then 'PASSOU' else 'FALHOU' end);
+end $$;
+
 -- ── CORR-1: correcao promove PENDING_REVIEW -> CLOSED ────────────────
 -- O compare-and-set e o mesmo predicado que a Edge Function usa
 -- (`status = 'PENDING_REVIEW'` no WHERE). O que este caso prova e a metade do
