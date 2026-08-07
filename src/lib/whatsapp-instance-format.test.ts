@@ -14,6 +14,7 @@ import {
   setCostToastFromResponse,
   confirmEndToast,
   confirmEndToastFromResponse,
+  conflictLifecycleLabel,
 } from "./whatsapp-instance-format";
 
 describe("formatCents — desconhecido nunca vira R$ 0,00", () => {
@@ -219,5 +220,30 @@ describe("copy do toast — a tela não afirma o que não sabe", () => {
     expect(confirmEndToastFromResponse(undefined)).toBe(
       "Encerramento confirmado. Não havia ciclo em aberto.",
     );
+  });
+});
+
+describe("conflictLifecycleLabel — AWAITING_PROVISION nunca é 'ativa'", () => {
+  it("cancelamento solicitado diz que ainda custa", () => {
+    expect(conflictLifecycleLabel("CANCELLATION_REQUESTED")).toBe(
+      "cancelamento solicitado (ainda custa)",
+    );
+  });
+
+  it("aguardando provisionamento NÃO é rotulada como ativa", () => {
+    // A forma antiga era um ternário contra CANCELLATION_REQUESTED com "ativa"
+    // no else — e o operador está decidindo se aceita pagar uma segunda
+    // instância, então o rótulo pesa numa decisão que custa dinheiro.
+    const label = conflictLifecycleLabel("AWAITING_PROVISION");
+    expect(label).toBe("aguardando provisionamento");
+    expect(label).not.toBe("ativa");
+  });
+
+  it("ativa é ativa", () => {
+    expect(conflictLifecycleLabel("ACTIVE")).toBe("ativa");
+  });
+
+  it("estado desconhecido volta como ele mesmo, sem inventar rótulo", () => {
+    expect(conflictLifecycleLabel("QUALQUER_COISA")).toBe("QUALQUER_COISA");
   });
 });

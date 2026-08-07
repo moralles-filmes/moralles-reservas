@@ -65,11 +65,17 @@ describe("correct_cycle_cost — a única porta que muda custo já gravado", () 
 describe("confirm_cycle_date — o 23505 não é presumido reexecução", () => {
   const bloco = blocoDaAcao("confirm_cycle_date");
 
-  it("desambigua o 23505 consultando a cycle_start", () => {
+  it("desambigua o 23505 consultando o ciclo OPEN, não a cycle_start", () => {
     // Dois índices produzem 23505 e significam coisas opostas. O discriminador
-    // é a existência da linha com ESTA `cycle_start`.
+    // EXATO é o ciclo OPEN: "existe linha com esta cycle_start?" é apenas uma
+    // aproximação e erra quando coexistem um CLOSED em X e um OPEN em Y —
+    // confirmar X acharia a linha de X e gravaria a projeção divergente, que é
+    // o dano que este ramo existe para impedir.
     expect(bloco).toMatch(/23505/);
-    expect(bloco).toMatch(/\.eq\(\s*["'`]cycle_start["'`]\s*,\s*cycleStart\s*\)/);
+    expect(bloco).toMatch(/\.eq\(\s*["'`]status["'`]\s*,\s*["'`]OPEN["'`]\s*\)/);
+    expect(bloco).toMatch(/cycle_start\s*!==\s*cycleStart/);
+    // A forma aproximada não pode voltar.
+    expect(bloco).not.toMatch(/\.eq\(\s*["'`]cycle_start["'`]\s*,\s*cycleStart\s*\)/);
   });
 
   it("recusa com OPEN_CYCLE_DATE_MISMATCH a data divergente", () => {
@@ -108,6 +114,13 @@ describe("update_instance — a guarda de unidade vale nesta porta também", () 
   it("falha fechado quando a leitura do conflito falha", () => {
     // Lista vazia por erro de leitura liberaria exatamente o que a guarda barra.
     expect(bloco).toMatch(/ALLOWANCE_UNVERIFIABLE/);
+  });
+
+  it("não cobra confirmação para mover instância JÁ ENCERRADA", () => {
+    // Instância ENDED não pode produzir "duas vivas na mesma unidade" — a
+    // consulta exclui ENDED. Recusá-la diria "a unidade passa a ter duas", que
+    // é falso.
+    expect(bloco).toMatch(/lifecycle_state\s*!==\s*["'`]ENDED["'`]/);
   });
 
   it("valida o unit_id como uuid antes de consultar", () => {

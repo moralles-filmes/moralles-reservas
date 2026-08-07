@@ -29,6 +29,7 @@ import {
   buildUpdatePatch,
   type InstanceLinkFields,
 } from "@/lib/whatsapp-instance-form-core";
+import { conflictLifecycleLabel } from "@/lib/whatsapp-instance-format";
 
 const MIN_REASON_LENGTH = 5;
 const NO_CHANNEL = "__none__";
@@ -130,13 +131,19 @@ export function UpdateInstanceDialog({
           // 409 de unidade ocupada não é erro terminal: a tela mostra o que já
           // existe lá e oferece a confirmação explícita.
           if (e.code === "UNIT_ALREADY_HAS_INSTANCE") {
-            setUnitConflicts(
-              (e.body?.conflicts as {
-                id: string;
-                lifecycle_state: string;
-                provider_instance_ref: string | null;
-              }[]) ?? [],
-            );
+            const list = (e.body?.conflicts as {
+              id: string;
+              lifecycle_state: string;
+              provider_instance_ref: string | null;
+            }[]) ?? [];
+            // Lista vazia não rende banner: sem este ramo, o 409 não produziria
+            // banner NEM toast, o botão continuaria "Salvar correção" e clicar
+            // repetiria a mesma recusa sem nenhum retorno na tela.
+            if (list.length === 0) {
+              toast.error(e.message);
+              return;
+            }
+            setUnitConflicts(list);
             return;
           }
           toast.error(e.message);
@@ -257,9 +264,7 @@ export function UpdateInstanceDialog({
                       {c.provider_instance_ref ?? "sem identificador"}
                     </span>
                     {" — "}
-                    {c.lifecycle_state === "CANCELLATION_REQUESTED"
-                      ? "cancelamento solicitado (ainda custa)"
-                      : "ativa"}
+                    {conflictLifecycleLabel(c.lifecycle_state)}
                   </li>
                 ))}
               </ul>

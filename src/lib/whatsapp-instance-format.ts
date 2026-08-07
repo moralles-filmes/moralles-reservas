@@ -162,3 +162,19 @@ export function confirmEndToastFromResponse(data: unknown): string {
   const d = (data ?? {}) as { closed_cycle_status?: unknown };
   return confirmEndToast(typeof d.closed_cycle_status === "string" ? d.closed_cycle_status : null);
 }
+
+/**
+ * Rótulo do `lifecycle_state` na lista de conflito de unidade.
+ *
+ * EXTRAÍDO em vez de duplicado: os dois diálogos (registrar e mover) mostram a
+ * mesma lista, e a forma antiga — um ternário contra `CANCELLATION_REQUESTED`
+ * com "ativa" no `else` — rotulava `AWAITING_PROVISION` como "ativa". Instância
+ * aguardando provisionamento não está ativa, e chamá-la assim pesa numa decisão
+ * que custa dinheiro (o operador está decidindo se aceita pagar uma segunda).
+ */
+export function conflictLifecycleLabel(state: string): string {
+  if (state === "CANCELLATION_REQUESTED") return "cancelamento solicitado (ainda custa)";
+  if (state === "AWAITING_PROVISION") return "aguardando provisionamento";
+  if (state === "ACTIVE") return "ativa";
+  return state;
+}

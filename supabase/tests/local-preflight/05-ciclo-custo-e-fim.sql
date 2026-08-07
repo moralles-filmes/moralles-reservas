@@ -1,4 +1,4 @@
--- COST-1..4, END-1..4, CORR-1..2, CYCLE-1..2 — comportamento das RPCs das
+-- COST-1..4, END-1..4, CORR-1..2, CYCLE-1..3 — comportamento das RPCs das
 -- migrations 104 e 105, e a colisao dos dois indices que produzem 23505.
 --
 -- Cada caso numa subtransacao, veredito em `t_res`. Os ids sao FIXOS: o
@@ -313,4 +313,57 @@ begin
   insert into t_res (ord, caso, veredito) values (64,
     'CYCLE-2 data diferente: 23505 e NENHUMA linha daquela cycle_start (divergencia)',
     case when v_code = '23505' and v_exists = false then 'PASSOU' else 'FALHOU' end);
+end $$;
+
+-- ── CYCLE-3: por que "existe linha com esta cycle_start" NAO basta ───
+-- Com um ciclo CLOSED comecando em X e um OPEN comecando em Y, confirmar X
+-- produz 23505 (pelo instance_start_idx) E a linha de X EXISTE. A aproximacao
+-- "existe linha com esta cycle_start?" concluiria REEXECUCAO e gravaria a
+-- projecao com X, enquanto o ciclo corrente comeca em Y — exatamente a
+-- divergencia que o ramo do 23505 existe para impedir.
+--
+-- O discriminador EXATO e o ciclo OPEN. Este caso mede os dois lados no mesmo
+-- estado: a aproximacao diz "reexecucao", o exato diz "divergencia".
+do $$
+declare v_code text; v_row_exists boolean; v_open_start date;
+begin
+  insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source)
+  values ('cc000000-0000-4000-8000-000000000006',
+          (select id from organizations order by id limit 1), 'zapi', 'ACTIVE', 'UNKNOWN')
+  on conflict (id) do nothing;
+  delete from whatsapp_instance_cycles where instance_id = 'cc000000-0000-4000-8000-000000000006';
+
+  -- CLOSED em X (custo obrigatorio pelo whatsapp_cycles_closed_needs_cost_chk).
+  insert into whatsapp_instance_cycles (instance_id, organization_id, cycle_start, provider_due_on,
+                                        status, provider_cost_cents, cost_source, cost_snapshot_at, closed_at)
+  values ('cc000000-0000-4000-8000-000000000006',
+          (select organization_id from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000006'),
+          date '2026-03-01', date '2026-04-01', 'CLOSED', 9990, 'PROVIDER_PANEL', now(), now());
+  -- OPEN em Y.
+  insert into whatsapp_instance_cycles (instance_id, organization_id, cycle_start, provider_due_on, status)
+  values ('cc000000-0000-4000-8000-000000000006',
+          (select organization_id from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000006'),
+          date '2026-04-01', date '2026-05-01', 'OPEN');
+
+  begin
+    insert into whatsapp_instance_cycles (instance_id, organization_id, cycle_start, provider_due_on, status)
+    values ('cc000000-0000-4000-8000-000000000006',
+            (select organization_id from whatsapp_instances where id = 'cc000000-0000-4000-8000-000000000006'),
+            date '2026-03-01', date '2026-04-01', 'OPEN');
+  exception when unique_violation then
+    v_code := sqlstate;
+  end;
+
+  -- A APROXIMACAO: existe linha com cycle_start = X? Sim -> diria reexecucao.
+  select exists (select 1 from whatsapp_instance_cycles
+                  where instance_id = 'cc000000-0000-4000-8000-000000000006'
+                    and cycle_start = date '2026-03-01') into v_row_exists;
+  -- O EXATO: qual e a cycle_start do ciclo OPEN? Y -> diz divergencia.
+  select cycle_start into v_open_start from whatsapp_instance_cycles
+   where instance_id = 'cc000000-0000-4000-8000-000000000006' and status = 'OPEN';
+
+  insert into t_res (ord, caso, veredito) values (66,
+    'CYCLE-3 CLOSED em X + OPEN em Y: a linha de X existe, mas o ciclo OPEN comeca em Y',
+    case when v_code = '23505' and v_row_exists and v_open_start = date '2026-04-01'
+    then 'PASSOU' else 'FALHOU' end);
 end $$;
