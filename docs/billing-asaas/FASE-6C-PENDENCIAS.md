@@ -1,5 +1,13 @@
 # Pendências da Fase 6c — não declaráveis por teste unitário
 
+> **Os três achados da §2 (§2.1 unidade duplicada, §2.2 `set_cost` não alcança
+> o ciclo aberto, §2.3 encerramento antes do vencimento) foram fechados por
+> uma frente nova (07/08/2026).** Spec:
+> [../superpowers/specs/2026-08-07-fase-6c-ciclo-custo-e-encerramento-design.md](../superpowers/specs/2026-08-07-fase-6c-ciclo-custo-e-encerramento-design.md).
+> Plano: [../superpowers/plans/2026-08-07-fase-6c-ciclo-custo-e-encerramento.md](../superpowers/plans/2026-08-07-fase-6c-ciclo-custo-e-encerramento.md).
+> O texto original abaixo não foi apagado — registra o que a verificação viu
+> na hora. Correção do diagnóstico do §2.2 marcada no próprio parágrafo.
+
 Painel de instâncias completo + ledger de observações + runbook. Repo ligado
 à produção. **Nada aplicado no Supabase, nenhuma Edge Function deployada,
 nenhuma flag alterada, nenhum merge, nenhum push.**
@@ -205,6 +213,22 @@ o NOTE-B ao vivo:** o `DELETE` concluiu, o ciclo caiu por `CASCADE` e as duas
 observações sobreviveram com `instance_id` nulo e `instance_ref` intacto.
 
 ### 2.2 `set_cost` não alcança o ciclo aberto — ciclo nasce sem custo e fica irreparável
+
+> **Correção do diagnóstico (07/08/2026).** O achado culpava apenas o `set_cost`.
+> A investigação do desenho encontrou a causa raiz um degrau antes:
+> `confirm_cycle_date` cria o ciclo `OPEN` **sem fotografar o custo mesmo quando
+> ele já é conhecido**. Os carimbos provam — o custo da instância foi informado
+> às 17:31:07 de 02/08 e o ciclo de julho foi criado às 17:47:03 do mesmo dia,
+> com `provider_cost_cents` nulo. Toda instância registrada por esse caminho
+> perdia o custo do primeiro ciclo.
+>
+> **Segunda correção.** O achado diz que o período "nunca vira registro de
+> margem". Isso vale para TODO ciclo: `customer_revenue_cents`, `revenue_source`
+> e `gross_margin_cents` não são escritos por produtor nenhum, e a margem é
+> calculada em memória pelo worker apenas para o alerta `ECONOMIC_IMBALANCE`. O
+> que os §2.2 e §2.3 de fato perdiam era o **custo**. Persistir margem ficou
+> fora de escopo por decisão; os comentários que prometiam o contrário estão
+> corrigidos na migration 104.
 
 Encontrado ao executar os quatro casos restantes numa fixture (07/08/2026).
 Registrar instância com **custo vazio** e informar o valor minutos depois

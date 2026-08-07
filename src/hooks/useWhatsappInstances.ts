@@ -40,6 +40,7 @@ export type WhatsappInstanceCycle = {
   customer_revenue_cents: number | null;
   revenue_source: string | null;
   gross_margin_cents: number | null;
+  cost_source: string | null;
   closed_at: string | null;
 };
 
@@ -96,15 +97,24 @@ async function callEf<T>(body: Record<string, unknown>): Promise<T> {
     let message = error.message;
     let code: string | undefined;
     let httpStatus: number | undefined;
+    let parsedBody: Record<string, unknown> | null = null;
     if (error instanceof FunctionsHttpError) {
       httpStatus = error.context?.status;
       const parsed = await error.context.json().catch(() => null);
+      parsedBody = parsed;
       if (parsed?.error) message = parsed.error;
       code = parsed?.code;
     }
-    const e = new Error(message) as Error & { code?: string; httpStatus?: number };
+    const e = new Error(message) as Error & {
+      code?: string;
+      httpStatus?: number;
+      /** Corpo non-2xx completo. O 409 de unidade ocupada traz `conflicts`, que
+       *  a tela precisa MOSTRAR — mensagem sozinha não diz o que já existe. */
+      body?: Record<string, unknown>;
+    };
     e.code = code;
     e.httpStatus = httpStatus;
+    e.body = parsedBody ?? undefined;
     throw e;
   }
   return data as T;

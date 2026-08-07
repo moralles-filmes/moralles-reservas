@@ -10,7 +10,7 @@
 // NÃO ESCREVE em organizations.billing_status, billing_subscriptions,
 // organization_entitlement_overrides nem whatsapp_channels. NÃO chama a Z-API.
 //
-// ORDEM DE APLICAÇÃO — DUAS migrations precedem esta versão:
+// ORDEM DE APLICAÇÃO — TRÊS migrations precedem esta versão:
 //
 // 1. `register_instance` lê `billing_plans.included_features` e
 //    `billing_plans.included_whatsapp_connections` (migration 094). A guarda de
@@ -22,6 +22,12 @@
 //    migration deixa o histórico vazio e um log com `needsAdminAction`, sem
 //    quebrar nenhuma operação. Ainda assim, aplicar a migration primeiro evita
 //    o buraco.
+//
+// 3. As RPCs `set_whatsapp_instance_cost` e `confirm_whatsapp_instance_end` e a
+//    ação `CORRECT_CYCLE_COST` no CHECK de `whatsapp_instance_notes` (migration
+//    104). Consequência TOTAL, não degradada: sem ela, `set_cost` e
+//    `confirm_end` respondem 500 em toda invocação, e as notas de correção são
+//    recusadas pelo CHECK e somem em silêncio.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -48,6 +54,10 @@ import {
   resolveWhatsAppSubscription,
   type WhatsAppSubscriptionFact,
 } from "../_shared/whatsapp-subscription-resolver-core.ts";
+import {
+  checkUnitInstanceConflict,
+  UNIT_ALREADY_HAS_INSTANCE_MESSAGE,
+} from "../_shared/whatsapp-instance-registration-core.ts";
 import type { InstanceNoteAction } from "../_shared/whatsapp-instance-notes-core.ts";
 
 const supabase = createClient(
@@ -719,11 +729,81 @@ serve(async (req) => {
         }, 409);
       }
 
+      // ── Unidade já ocupada ───────────────────────────────────────────────
+      // TERCEIRA pergunta, independente das duas acima. `assertProvisioningAllowed`
+      // responde "a plataforma sabe provisionar?"; `checkConnectionAllowance`
+      // responde "o modelo comercial permite mais uma conexão?"; esta responde
+      // "esta unidade já está ocupada?".
+      //
+      // Ela existe porque a segunda NÃO cobre a cortesia vitalícia: naquele
+      // núcleo, `activeInstanceCount` só é lido no ramo PLAN_DECLARED, então sob
+      // override vitalício duas instâncias na mesma unidade coexistiam sem que
+      // nada reclamasse (§2.1 da verificação manual).
+      //
+      // FORA do `checkConnectionAllowance` de propósito: aquele núcleo é
+      // compartilhado com `manage-channels`, que não tem nada a ver com unidade
+      // duplicada.
+      // Trata a PRESENÇA da chave, não a verdade dela: `unit_id: ""` é falsy e
+      // cairia no ramo "sem unidade" em silêncio, nascendo sem a guarda de
+      // unidade duplicada acima (NO_UNIT_SCOPE). Ausente ou `null` explícito
+      // continua significando "sem unidade".
+      const unitIdProvided = "unit_id" in body && body.unit_id != null;
+      const unitId = unitIdProvided ? parseUuid(body.unit_id) : null;
+      if (unitIdProvided && !unitId) {
+        return jsonResponse(req, { error: "unit_id inválido." }, 400);
+      }
+
+      let unitConflicts: Record<string, unknown>[] = [];
+      if (unitId) {
+        const { data: sameUnit, error: sameUnitErr } = await supabase
+          .from("whatsapp_instances")
+          .select("id, lifecycle_state, provider_instance_ref, created_at")
+          .eq("unit_id", unitId)
+          .neq("lifecycle_state", "ENDED");
+
+        // FALHA em vez de degradar, como a contagem de allowance acima: lista
+        // vazia por erro de leitura liberaria exatamente o registro que a guarda
+        // existe para barrar.
+        if (sameUnitErr) {
+          jsonLog("error", {
+            reqId, evt: "wa_unit_conflict_read_failed", unitId,
+            err: sameUnitErr.message, needsAdminAction: true,
+          });
+          return jsonResponse(req, { error: ALLOWANCE_UNVERIFIABLE }, 503);
+        }
+        unitConflicts = (sameUnit ?? []) as Record<string, unknown>[];
+      }
+
+      const unitCheck = checkUnitInstanceConflict({
+        unitScoped: unitId !== null,
+        conflicts: unitConflicts.map((c) => ({
+          id: String(c.id),
+          lifecycleState: String(c.lifecycle_state),
+        })),
+        acknowledged: body.acknowledge_unit_conflict === true,
+      });
+
+      if (unitCheck.ok === false) {
+        jsonLog("warn", {
+          reqId, evt: "wa_unit_conflict_denied", unitId,
+          conflicts: unitConflicts.length, callerId,
+        });
+        // Devolve as conflitantes para a tela poder mostrá-las. São
+        // identificadores e datas — `provider_instance_ref` é identificador no
+        // painel do fornecedor, não credencial, e esta EF é exclusiva de
+        // platform_admin.
+        return jsonResponse(req, {
+          error: UNIT_ALREADY_HAS_INSTANCE_MESSAGE,
+          code: "UNIT_ALREADY_HAS_INSTANCE",
+          conflicts: unitConflicts,
+        }, 409);
+      }
+
       const { data, error } = await supabase
         .from("whatsapp_instances")
         .insert({
           organization_id: orgId,
-          unit_id: body.unit_id ?? null,
+          unit_id: unitId,
           channel_id: body.channel_id ?? null,
           provider: String(body.provider ?? "zapi"),
           provider_instance_ref: ref,
@@ -762,6 +842,7 @@ serve(async (req) => {
       jsonLog("info", {
         reqId, evt: "wa_instance_registered", instanceId: data.id, intent,
         allowancePolicy: allowance.policy, fundingSource: funding.fundingSource,
+        unitConflictPolicy: unitCheck.ok === true ? unitCheck.policy : null,
       });
       return jsonResponse(req, { instance: data });
     }
@@ -789,21 +870,41 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Informe o dia-âncora do ciclo (1 a 31)." }, 400);
       }
 
-      const found = await loadInstanceState(id, "id, organization_id", reqId, "wa_cycle_lookup_failed");
+      // Lê TAMBÉM o custo: o ciclo que nasce aqui precisa fotografá-lo, como a
+      // rolagem 090 faz. Sem isso, o PRIMEIRO ciclo de toda instância nasce
+      // cego mesmo quando o número já está gravado, e só a correção manual o
+      // conserta depois.
+      const found = await loadInstanceState(
+        id,
+        "id, organization_id, current_monthly_cost_cents, cost_source",
+        reqId,
+        "wa_cycle_lookup_failed",
+      );
       if (found.ok === false) return jsonResponse(req, { error: found.message }, found.status);
 
       const dueOn = nextDueFromAnchor(cycleStart, anchorDay);
 
+      // MESMA FORMA DA 090: `cost_snapshot_at` é nulo quando o custo é nulo —
+      // carimbo sem valor afirmaria que alguém informou algo.
+      const snapshotCost = found.row.current_monthly_cost_cents as number | null;
       const { error: cycleErr } = await supabase.from("whatsapp_instance_cycles").insert({
         instance_id: id,
         organization_id: found.row.organization_id,
         cycle_start: cycleStart,
         provider_due_on: dueOn,
         status: "OPEN",
+        provider_cost_cents: snapshotCost,
+        cost_source: snapshotCost === null ? null : found.row.cost_source,
+        cost_snapshot_at: snapshotCost === null ? null : new Date().toISOString(),
         notes: reason,
         created_by: callerId,
       });
-      // 23505 = o ciclo já existia (reexecução). Idempotente, não é erro.
+      // 23505 = o ciclo já existia (reexecução). Idempotente, não é erro — e o
+      // ciclo que já estava lá NÃO é preenchido por este caminho: ele pode ter
+      // sido rolado ou fechado desde então, e mexer nele como efeito colateral
+      // de uma reexecução é o tipo de escrita não-auditada que esta frente
+      // combate. Reparo de ciclo existente tem porta própria
+      // (`correct_cycle_cost`).
       if (cycleErr && cycleErr.code !== "23505") {
         jsonLog("error", { reqId, evt: "wa_cycle_confirm_failed", err: cycleErr.message });
         return jsonResponse(req, { error: "Não foi possível registrar o ciclo." }, 500);
@@ -853,8 +954,18 @@ serve(async (req) => {
     }
 
     // ── Custo ────────────────────────────────────────────────────────────
-    // Muda SÓ ciclos futuros: o custo do ciclo corrente foi congelado na
-    // abertura e representa a competência que já começou.
+    // Grava na instância E PREENCHE o ciclo aberto quando ele está sem custo.
+    //
+    // Valor JÁ CONGELADO no ciclo não é sobrescrito — o princípio da
+    // competência continua de pé, porque preencher um nulo não é reescrever
+    // história: é registrar o que nunca se soube. Custo errado já gravado tem
+    // porta própria (`correct_cycle_cost`, restrita a PENDING_REVIEW).
+    //
+    // VIA RPC porque são DUAS tabelas e PostgREST não tem transação: com duas
+    // escritas soltas, a segunda falhando devolve exatamente o bug que esta
+    // frente corrige, em silêncio. A RPC toma `FOR UPDATE` na mesma linha de
+    // instância que a rolagem 090 trava, o que fecha a corrida com o worker
+    // diário.
     if (action === "set_cost") {
       const reason = requireReason(body);
       if (!reason) return jsonResponse(req, { error: "Informe o motivo e a procedência do custo." }, 400);
@@ -871,30 +982,141 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Procedência do custo inválida." }, 400);
       }
 
-      const { data, error } = await supabase
-        .from("whatsapp_instances")
-        .update({
-          current_monthly_cost_cents: cost.unknownCost === false ? cost.cents : null,
-          cost_source: setCostSource,
-          cost_updated_at: isNull ? null : new Date().toISOString(),
-          cost_updated_by: isNull ? null : callerId,
-          cost_note: reason,
-          updated_by: callerId,
-        })
-        .eq("id", id)
-        .select(INSTANCE_COLUMNS)
-        .single();
-      if (error) {
-        jsonLog("error", { reqId, evt: "wa_cost_update_failed", err: error.message });
+      // `strict: false` não estreita a união por verdade crua do campo — o
+      // if/else explícito estreita nos dois modos.
+      let cents: number | null;
+      if (cost.unknownCost === true) {
+        cents = null;
+      } else {
+        cents = cost.cents;
+      }
+
+      const { data: rpc, error: rpcErr } = await supabase.rpc("set_whatsapp_instance_cost", {
+        p_instance_id: id,
+        p_cost_cents: cents,
+        p_cost_source: setCostSource,
+        p_cost_note: reason,
+        p_actor: callerId,
+      });
+      if (rpcErr) {
+        jsonLog("error", { reqId, evt: "wa_cost_update_failed", err: rpcErr.message });
         return jsonResponse(req, { error: "Não foi possível atualizar o custo." }, 500);
       }
 
+      // A RPC devolve `returns table`, que o PostgREST entrega como array.
+      const outcome = (Array.isArray(rpc) ? rpc[0] : rpc) as
+        | { instance_found: boolean; open_cycle_id: string | null; cycle_filled: boolean }
+        | undefined;
+      if (!outcome?.instance_found) {
+        return jsonResponse(req, { error: "Instância não encontrada." }, 404);
+      }
+
+      const after = await loadInstanceState(id, INSTANCE_COLUMNS, reqId, "wa_cost_reload_failed");
+      if (after.ok === false) return jsonResponse(req, { error: after.message }, after.status);
+
       await recordInstanceNote({
-        instanceId: id, organizationId: data.organization_id as string,
+        instanceId: id, organizationId: after.row.organization_id as string,
         action: "SET_COST", note: reason, callerId, reqId,
       });
 
-      return jsonResponse(req, { instance: data });
+      return jsonResponse(req, { instance: after.row, cycle_filled: outcome.cycle_filled });
+    }
+
+    // ── Correção de custo de ciclo passado ───────────────────────────────
+    // A ÚNICA porta que muda custo já gravado, e ela é estreita de propósito.
+    //
+    // Só `PENDING_REVIEW` — o estado que significa "terminou sem custo". Ciclo
+    // `CLOSED` fechou financeiramente concluído, e reabrir esse caso exigiria
+    // política própria que não existe. Ciclo `OPEN` não precisa daqui: `set_cost`
+    // o preenche.
+    //
+    // NÃO PRECISA DE RPC: escreve UMA tabela, e o predicado `status =
+    // 'PENDING_REVIEW'` no próprio UPDATE é o compare-and-set que a trava faria.
+    if (action === "correct_cycle_cost") {
+      const reason = requireReason(body);
+      if (!reason) {
+        return jsonResponse(req, { error: "Informe a origem do valor corrigido." }, 400);
+      }
+
+      const cycleId = parseUuid(body.cycle_id);
+      if (!cycleId) return jsonResponse(req, { error: "cycle_id inválido." }, 400);
+
+      const cost = parseCostCents(body.current_monthly_cost_cents ?? null);
+      if (cost.ok === false) return jsonResponse(req, { error: cost.message, code: cost.code }, 400);
+      // Corrigir para "não sei" não é correção — e deixaria o ciclo num estado
+      // que o CHECK `whatsapp_cycles_closed_needs_cost_chk` recusaria.
+      if (cost.unknownCost === true) {
+        return jsonResponse(req, { error: "A correção precisa de um valor. Deixar em branco não corrige." }, 400);
+      }
+
+      const costSource = normalizeCostSource(body.cost_source);
+      if (costSource === null) {
+        return jsonResponse(req, { error: "Procedência do custo inválida." }, 400);
+      }
+
+      const { data: current, error: readErr } = await supabase
+        .from("whatsapp_instance_cycles")
+        .select("id, instance_id, organization_id, status, notes")
+        .eq("id", cycleId)
+        .maybeSingle();
+      if (readErr) {
+        jsonLog("error", {
+          reqId, evt: "wa_cycle_correct_lookup_failed", err: readErr.message,
+          needsAdminAction: true,
+        });
+        return jsonResponse(req, { error: "Não foi possível consultar o ciclo agora. Tente novamente." }, 503);
+      }
+      if (!current) return jsonResponse(req, { error: "Ciclo não encontrado." }, 404);
+
+      // APPEND, nunca sobrescrita: a nota original do ciclo é registro próprio.
+      const mergedNotes = current.notes
+        ? `${current.notes}\n[correção de custo] ${reason}`
+        : `[correção de custo] ${reason}`;
+
+      const { data: updated, error: updErr } = await supabase
+        .from("whatsapp_instance_cycles")
+        .update({
+          provider_cost_cents: cost.cents,
+          cost_source: costSource,
+          cost_snapshot_at: new Date().toISOString(),
+          // Custo e status mudam JUNTOS — é isso que satisfaz o CHECK
+          // `whatsapp_cycles_closed_needs_cost_chk`. `closed_at` já é não-nulo:
+          // PENDING_REVIEW o exige.
+          status: "CLOSED",
+          closed_by: callerId,
+          notes: mergedNotes,
+        })
+        .eq("id", cycleId)
+        .eq("status", "PENDING_REVIEW")
+        .select(CYCLE_COLUMNS);
+
+      if (updErr) {
+        jsonLog("error", { reqId, evt: "wa_cycle_correct_failed", err: updErr.message });
+        return jsonResponse(req, { error: "Não foi possível corrigir o custo do ciclo." }, 500);
+      }
+      // UPDATE que casa ZERO linhas devolve `error: null` no Supabase JS. Sem
+      // esta conferência, "o predicado negou" seria indistinguível de "gravei".
+      if (!updated || updated.length === 0) {
+        return jsonResponse(req, {
+          error: "Só é possível corrigir ciclo pendente de revisão. Ciclo já fechado não é reaberto.",
+          code: "CYCLE_NOT_PENDING_REVIEW",
+        }, 409);
+      }
+
+      await recordInstanceNote({
+        instanceId: current.instance_id as string,
+        organizationId: current.organization_id as string,
+        action: "CORRECT_CYCLE_COST",
+        note: reason,
+        callerId,
+        reqId,
+      });
+
+      jsonLog("info", {
+        reqId, evt: "wa_cycle_cost_corrected", cycleId,
+        instanceId: current.instance_id, callerId,
+      });
+      return jsonResponse(req, { cycle: updated[0] });
     }
 
     // ── Cancelamento: congela no ato ─────────────────────────────────────
@@ -966,32 +1188,49 @@ serve(async (req) => {
       });
       if (t.ok === false) return jsonResponse(req, { error: t.message, code: t.code }, 409);
 
-      const { data, error } = await supabase
-        .from("whatsapp_instances")
-        .update({
-          lifecycle_state: "ENDED",
-          ended_at: new Date().toISOString(),
-          ended_by: callerId,
-          end_confirmation_note: reason,
-          // Encerrada não guarda vínculo de canal: libera o índice único para
-          // uma instância futura no mesmo canal.
-          channel_id: null,
-          updated_by: callerId,
-        })
-        .eq("id", id)
-        .select(INSTANCE_COLUMNS)
-        .single();
-      if (error) {
-        jsonLog("error", { reqId, evt: "wa_confirm_end_failed", err: error.message });
+      // VIA RPC: marcar ENDED e fechar o ciclo aberto são duas tabelas, e sem
+      // transação a segunda falhando deixa o ciclo OPEN para sempre — a rolagem
+      // 090 pula `lifecycle_state` fora de ACTIVE/CANCELLATION_REQUESTED, então
+      // nada o fecharia depois. A transição já foi validada por `canTransition`
+      // acima; a RPC não a revalida, de propósito.
+      const { data: rpc, error: rpcErr } = await supabase.rpc("confirm_whatsapp_instance_end", {
+        p_instance_id: id,
+        p_note: reason,
+        p_actor: callerId,
+      });
+      if (rpcErr) {
+        jsonLog("error", { reqId, evt: "wa_confirm_end_failed", err: rpcErr.message });
         return jsonResponse(req, { error: "Não foi possível confirmar o encerramento." }, 500);
       }
 
+      const outcome = (Array.isArray(rpc) ? rpc[0] : rpc) as
+        | {
+            instance_found: boolean;
+            lifecycle_before: string | null;
+            closed_cycle_id: string | null;
+            closed_cycle_status: string | null;
+          }
+        | undefined;
+      if (!outcome?.instance_found) {
+        return jsonResponse(req, { error: "Instância não encontrada." }, 404);
+      }
+
+      const after = await loadInstanceState(id, INSTANCE_COLUMNS, reqId, "wa_confirm_end_reload_failed");
+      if (after.ok === false) return jsonResponse(req, { error: after.message }, after.status);
+
       await recordInstanceNote({
-        instanceId: id, organizationId: data.organization_id as string,
+        instanceId: id, organizationId: after.row.organization_id as string,
         action: "CONFIRM_END", note: reason, callerId, reqId,
       });
 
-      return jsonResponse(req, { instance: data });
+      jsonLog("info", {
+        reqId, evt: "wa_instance_ended", instanceId: id,
+        closedCycleStatus: outcome.closed_cycle_status,
+      });
+      return jsonResponse(req, {
+        instance: after.row,
+        closed_cycle_status: outcome.closed_cycle_status,
+      });
     }
 
     // ── Reversão do cancelamento, só com evidência ───────────────────────

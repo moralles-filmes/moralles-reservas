@@ -6,9 +6,11 @@
 // disciplina de `EVENT_TYPE_BY_ALERT` (Fase 6b) — lista redigitada é lista que
 // diverge, e a divergência aparece só no dia em que alguém usa o valor novo.
 //
-// AS SETE SÃO AS AÇÕES QUE MUDAM A INSTÂNCIA E PEDEM MOTIVO. Cobrir as sete é
-// o que torna a propriedade difícil de perder: ação nova que peça motivo já tem
-// onde registrar.
+// AS SETE PRIMEIRAS SAO AS ACOES QUE MUDAM A INSTANCIA E PEDEM MOTIVO. A
+// oitava, `CORRECT_CYCLE_COST`, muda um CICLO PASSADO e nao a instancia — ela
+// entra aqui, e nao num ledger proprio, porque e a unica escrita capaz de
+// alterar custo ja gravado, e o lugar onde alguem procura por isso e a linha do
+// tempo da instancia.
 //
 // `acknowledge_alert` e `resolve_alert` ficam de FORA de propósito — elas
 // também pedem motivo, mas escrevem no ledger de ALERTAS, que já guarda uma
@@ -23,6 +25,7 @@ export const INSTANCE_NOTE_ACTIONS = [
   "CONFIRM_CYCLE_DATE",
   "REQUEST_CANCELLATION",
   "CONFIRM_END",
+  "CORRECT_CYCLE_COST",
 ] as const;
 
 export type InstanceNoteAction = (typeof INSTANCE_NOTE_ACTIONS)[number];
