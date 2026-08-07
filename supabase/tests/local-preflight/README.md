@@ -96,3 +96,25 @@ o defeito §2.3 reintroduzido. Os dois se desfazem reaplicando a 104.
 com a nota de B", que é o registro falso. Manter `ended_at` intacto é o que
 isola o que este controle mede. Restaurar exige reaplicar a **104 e depois a
 105**, nesta ordem.
+
+## O que CORR-1 e CORR-2 NÃO provam
+
+Os dois casos **reescrevem o `UPDATE` à mão em SQL**. Eles provam a metade do
+banco: que o CHECK `whatsapp_cycles_closed_needs_cost_chk` aceita custo e status
+mudando juntos, e que o predicado `status = 'PENDING_REVIEW'` casa (CORR-1) e
+deixa de casar (CORR-2).
+
+Eles **não exercitam a Edge Function**. Se o `UPDATE` real de
+`correct_cycle_cost` perdesse o `.eq("status", "PENDING_REVIEW")` ou a
+conferência de zero linhas — lembrando que `UPDATE` do Supabase JS que casa zero
+linhas devolve `error: null` —, nenhum caso deste diretório ficaria vermelho.
+
+Essa metade é fechada por
+[../../../src/lib/whatsapp-instance-ef-write-guard.test.ts](../../../src/lib/whatsapp-instance-ef-write-guard.test.ts),
+guardrail **estático textual** sobre a fonte da EF: os `index.ts` importam
+`deno.land`/`esm.sh` e chamam `serve()` no carregamento, então o vitest não
+consegue importá-los. É uma afirmação mais estreita que "a EF foi testada" — *o
+predicado não pode sumir sem teste vermelho* — e é o que existe.
+
+O mesmo par (caso de banco aqui + guardrail estático lá) cobre `CYCLE-1`/`CYCLE-2`
+e a guarda de unidade duplicada do `update_instance`.
