@@ -1351,7 +1351,18 @@ serve(async (req) => {
       if (!id) return jsonResponse(req, { error: "instance_id inválido." }, 400);
 
       const patch: Record<string, unknown> = { updated_by: callerId, notes: reason };
-      if ("unit_id" in body) patch.unit_id = body.unit_id ?? null;
+      // `parseUuid` como no registro. Sem ele, um valor malformado cairia na
+      // consulta de conflito abaixo e viraria 503 — mensagem errada para o que é
+      // erro do cliente (hoje o banco recusa com 22P02 e a EF devolve 500).
+      if ("unit_id" in body) {
+        if (body.unit_id == null) {
+          patch.unit_id = null;
+        } else {
+          const parsedUnitId = parseUuid(body.unit_id);
+          if (!parsedUnitId) return jsonResponse(req, { error: "unit_id inválido." }, 400);
+          patch.unit_id = parsedUnitId;
+        }
+      }
       if ("channel_id" in body) patch.channel_id = body.channel_id ?? null;
       if ("planned_provision_on" in body) patch.planned_provision_on = body.planned_provision_on ?? null;
       if ("provider_instance_ref" in body) {
@@ -1360,6 +1371,73 @@ serve(async (req) => {
           const v = validateProviderInstanceRef(String(body.provider_instance_ref));
           if (v.ok === false) return jsonResponse(req, { error: v.message, code: v.code }, 400);
           patch.provider_instance_ref = v.value;
+        }
+      }
+
+      // A GUARDA DE UNIDADE DUPLICADA VALE NAS DUAS PORTAS. O registro a tem
+      // desde a 6c; sem ela aqui, mover uma instância para uma unidade já
+      // ocupada produz exatamente o estado que o registro recusa — e "registro
+      // recusa, mover aceita" é pior que nenhum dos dois conferir: cria
+      // confiança falsa numa guarda que existe.
+      //
+      // MESMO núcleo do registro (`checkUnitInstanceConflict`), não uma segunda
+      // regra. `whatsapp-connection-allowance-core.ts` continua fora disto: ele
+      // responde "o modelo comercial permite mais uma conexão?" e é
+      // compartilhado com `manage-channels`, que não tem nada a ver com unidade
+      // ocupada.
+      const nextUnitId = typeof patch.unit_id === "string" ? patch.unit_id : null;
+      if (nextUnitId) {
+        const cur = await loadInstanceState(
+          id, "unit_id", reqId, "wa_instance_update_lookup_failed",
+        );
+        if (cur.ok === false) return jsonResponse(req, { error: cur.message }, cur.status);
+
+        // Patch que reenvia a MESMA unidade não é conflito. Sem este pulo, uma
+        // unidade com duas instâncias legitimamente reconhecidas no passado
+        // exigiria nova confirmação a cada correção de identificador.
+        if (cur.row.unit_id !== nextUnitId) {
+          const { data: sameUnit, error: sameUnitErr } = await supabase
+            .from("whatsapp_instances")
+            .select("id, lifecycle_state, provider_instance_ref, created_at")
+            .eq("unit_id", nextUnitId)
+            .neq("lifecycle_state", "ENDED")
+            // Única diferença de desenho contra o registro. Redundante DADO o
+            // pulo acima — e de propósito: mantém a consulta correta por si só,
+            // para que reestruturar o pulo não reintroduza o auto-conflito em
+            // silêncio.
+            .neq("id", id);
+
+          // FALHA em vez de degradar, como no registro: lista vazia por erro de
+          // leitura liberaria exatamente o que a guarda existe para barrar.
+          if (sameUnitErr) {
+            jsonLog("error", {
+              reqId, evt: "wa_unit_conflict_read_failed", unitId: nextUnitId,
+              err: sameUnitErr.message, needsAdminAction: true,
+            });
+            return jsonResponse(req, { error: ALLOWANCE_UNVERIFIABLE }, 503);
+          }
+
+          const moveConflicts = (sameUnit ?? []) as Record<string, unknown>[];
+          const moveCheck = checkUnitInstanceConflict({
+            unitScoped: true,
+            conflicts: moveConflicts.map((c) => ({
+              id: String(c.id),
+              lifecycleState: String(c.lifecycle_state),
+            })),
+            acknowledged: body.acknowledge_unit_conflict === true,
+          });
+
+          if (moveCheck.ok === false) {
+            jsonLog("warn", {
+              reqId, evt: "wa_unit_conflict_denied", unitId: nextUnitId,
+              conflicts: moveConflicts.length, callerId, whichAction: "update_instance",
+            });
+            return jsonResponse(req, {
+              error: UNIT_ALREADY_HAS_INSTANCE_MESSAGE,
+              code: "UNIT_ALREADY_HAS_INSTANCE",
+              conflicts: moveConflicts,
+            }, 409);
+          }
         }
       }
 

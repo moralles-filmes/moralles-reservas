@@ -70,6 +70,15 @@ export function UpdateInstanceDialog({
   const [plannedOn, setPlannedOn] = useState("");
   const [reason, setReason] = useState("");
 
+  /**
+   * 409 de unidade ocupada NÃO é erro terminal: é uma pergunta. Mover uma
+   * segunda instância para a mesma unidade continua possível — como ATO
+   * CONSCIENTE. Mesmo fluxo do `RegisterInstanceDialog`.
+   */
+  const [unitConflicts, setUnitConflicts] = useState<
+    { id: string; lifecycle_state: string; provider_instance_ref: string | null }[] | null
+  >(null);
+
   // Reabrir o diálogo em OUTRA instância precisa recarregar o formulário — sem
   // isto, o estado da instância anterior viraria "mudança" na próxima.
   useEffect(() => {
@@ -79,6 +88,7 @@ export function UpdateInstanceDialog({
     setRef(original.provider_instance_ref ?? "");
     setPlannedOn(original.planned_provision_on ?? "");
     setReason("");
+    setUnitConflicts(null);
   }, [open, original]);
 
   const channelsQuery = useWhatsAppChannels(unitId);
@@ -100,16 +110,37 @@ export function UpdateInstanceDialog({
   const hasChanges = Object.keys(patch).length > 0;
   const reasonTooShort = reason.trim().length < MIN_REASON_LENGTH;
 
-  function submit() {
+  function submit(acknowledgeConflict = false) {
     if (!instance || !hasChanges) return;
     action.mutate(
-      { action: "update_instance", instance_id: instance.id, ...patch, reason },
+      {
+        action: "update_instance",
+        instance_id: instance.id,
+        ...patch,
+        ...(acknowledgeConflict ? { acknowledge_unit_conflict: true } : {}),
+        reason,
+      },
       {
         onSuccess: () => {
           toast.success("Vínculo corrigido.");
+          setUnitConflicts(null);
           onOpenChange(false);
         },
-        onError: (e: Error) => toast.error(e.message),
+        onError: (e: Error & { code?: string; body?: Record<string, unknown> }) => {
+          // 409 de unidade ocupada não é erro terminal: a tela mostra o que já
+          // existe lá e oferece a confirmação explícita.
+          if (e.code === "UNIT_ALREADY_HAS_INSTANCE") {
+            setUnitConflicts(
+              (e.body?.conflicts as {
+                id: string;
+                lifecycle_state: string;
+                provider_instance_ref: string | null;
+              }[]) ?? [],
+            );
+            return;
+          }
+          toast.error(e.message);
+        },
       },
     );
   }
@@ -142,6 +173,9 @@ export function UpdateInstanceDialog({
                 // é filtrada pela mesma organização.
                 setUnitId(v);
                 setChannelId(NO_CHANNEL);
+                // Trocar a unidade de destino invalida o conflito já mostrado:
+                // ele era sobre a unidade anterior.
+                setUnitConflicts(null);
               }}
             >
               <SelectTrigger id="upd-unit" className="h-12 sm:h-10">
@@ -213,6 +247,29 @@ export function UpdateInstanceDialog({
             />
           </div>
 
+          {unitConflicts && unitConflicts.length > 0 && (
+            <div className="rounded-md border border-warning bg-warning/10 p-3 space-y-2 text-sm">
+              <p className="font-medium">A unidade de destino já tem instância registrada.</p>
+              <ul className="space-y-1 text-xs">
+                {unitConflicts.map((c) => (
+                  <li key={c.id}>
+                    <span className="font-mono">
+                      {c.provider_instance_ref ?? "sem identificador"}
+                    </span>
+                    {" — "}
+                    {c.lifecycle_state === "CANCELLATION_REQUESTED"
+                      ? "cancelamento solicitado (ainda custa)"
+                      : "ativa"}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs">
+                Mover esta instância para lá significa que a unidade passa a ter duas. Confirme só
+                se for isso mesmo.
+              </p>
+            </div>
+          )}
+
           {!hasChanges && (
             <p className="text-xs text-muted-foreground">
               Nada foi alterado ainda. Sem mudança não há requisição.
@@ -225,9 +282,9 @@ export function UpdateInstanceDialog({
             </Button>
             <Button
               disabled={!hasChanges || reasonTooShort || action.isPending}
-              onClick={submit}
+              onClick={() => submit(unitConflicts !== null && unitConflicts.length > 0)}
             >
-              Salvar correção
+              {unitConflicts && unitConflicts.length > 0 ? "Mover mesmo assim" : "Salvar correção"}
             </Button>
           </div>
         </ResponsiveDialogBody>
