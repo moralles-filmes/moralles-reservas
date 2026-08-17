@@ -112,3 +112,69 @@ const NOTE_ACTION_LABEL: Record<(typeof INSTANCE_NOTE_ACTIONS)[number], string> 
 export function instanceNoteActionLabel(action: string): string {
   return NOTE_ACTION_LABEL[action as (typeof INSTANCE_NOTE_ACTIONS)[number]] ?? action;
 }
+
+/**
+ * Copy do toast das duas ações que a EF sabe descrever e a tela não usava.
+ *
+ * O PROBLEMA QUE ISTO FECHA: `"Custo atualizado."` seco afirma que a promessa
+ * do diálogo ("o ciclo fica pendente de revisão até o número existir") foi
+ * cumprida — mesmo quando `cycle_filled` é `false` e o ciclo aberto não mudou.
+ * E o `PENDING_REVIEW` só aparece DENTRO da seção expandida, que o operador
+ * precisa abrir: o toast é o único retorno no instante da ação.
+ *
+ * `hasOpenCycle: null` é *a EF não disse* — janela entre os deploys. Ele não
+ * afirma nada sobre o ciclo, em vez de afirmar o negativo por default.
+ */
+export function setCostToast(r: { filled: boolean; hasOpenCycle: boolean | null }): string {
+  // `filled` é fato próprio: só é `true` se havia ciclo aberto para preencher.
+  if (r.filled) return "Custo atualizado e aplicado ao ciclo em aberto.";
+  if (r.hasOpenCycle === true) {
+    // "não mudou", não "manteve o valor congelado": com custo submetido nulo o
+    // ciclo pode não ter valor nenhum a manter. A frase precisa ser verdadeira
+    // nos dois casos.
+    return "Custo atualizado na instância. O ciclo em aberto não mudou.";
+  }
+  if (r.hasOpenCycle === false) return "Custo atualizado na instância. Não há ciclo em aberto.";
+  return "Custo atualizado na instância.";
+}
+
+export function confirmEndToast(closedCycleStatus: string | null): string {
+  if (closedCycleStatus === "CLOSED") return "Encerramento confirmado. O último ciclo foi fechado.";
+  if (closedCycleStatus === "PENDING_REVIEW") {
+    return "Encerramento confirmado. O último ciclo fechou sem custo — informe o valor em Ciclos e margem.";
+  }
+  return "Encerramento confirmado. Não havia ciclo em aberto.";
+}
+
+/** Lê a resposta da EF sem confiar no formato — `unknown` é o que o hook entrega. */
+export function setCostToastFromResponse(data: unknown): string {
+  const d = (data ?? {}) as { cycle_filled?: unknown; has_open_cycle?: unknown };
+  let hasOpenCycle: boolean | null;
+  if (typeof d.has_open_cycle === "boolean") {
+    hasOpenCycle = d.has_open_cycle;
+  } else {
+    hasOpenCycle = null;
+  }
+  return setCostToast({ filled: d.cycle_filled === true, hasOpenCycle });
+}
+
+export function confirmEndToastFromResponse(data: unknown): string {
+  const d = (data ?? {}) as { closed_cycle_status?: unknown };
+  return confirmEndToast(typeof d.closed_cycle_status === "string" ? d.closed_cycle_status : null);
+}
+
+/**
+ * Rótulo do `lifecycle_state` na lista de conflito de unidade.
+ *
+ * EXTRAÍDO em vez de duplicado: os dois diálogos (registrar e mover) mostram a
+ * mesma lista, e a forma antiga — um ternário contra `CANCELLATION_REQUESTED`
+ * com "ativa" no `else` — rotulava `AWAITING_PROVISION` como "ativa". Instância
+ * aguardando provisionamento não está ativa, e chamá-la assim pesa numa decisão
+ * que custa dinheiro (o operador está decidindo se aceita pagar uma segunda).
+ */
+export function conflictLifecycleLabel(state: string): string {
+  if (state === "CANCELLATION_REQUESTED") return "cancelamento solicitado (ainda custa)";
+  if (state === "AWAITING_PROVISION") return "aguardando provisionamento";
+  if (state === "ACTIVE") return "ativa";
+  return state;
+}

@@ -7,7 +7,12 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeadersFor } from "../_shared/cors.ts";
-import type { ChannelCredentials, WhatsAppProvider } from "../_shared/whatsapp-providers.ts";
+import {
+  getWhatsAppProvider,
+  type ChannelCredentials,
+  type WhatsAppProvider,
+} from "../_shared/whatsapp-providers.ts";
+import { resolveChannelCredentials } from "../_shared/whatsapp-channel-credentials.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -43,6 +48,8 @@ function presentCredentialKeys(provider: WhatsAppProvider, creds: ChannelCredent
   const keys: Array<keyof ChannelCredentials> =
     provider === "zapi"
       ? ["instance_id", "token", "client_token"]
+      : provider === "uazapi"
+        ? []
       : provider === "waha"
         ? ["base_url", "api_key", "session_name"]
         : ["phone_number_id", "business_account_id", "access_token", "app_secret"];
@@ -74,19 +81,44 @@ serve(async (req) => {
     if (!unitId) return jsonResponse(req, { error: "unit_id é obrigatório." }, 400);
 
     // ── Channel ────────────────────────────────────────────────────────────────
-    const { data: channelRow } = await supabase
+    const { data: channelRows } = await supabase
       .from("whatsapp_channels")
-      .select("id, provider, status, display_phone, last_event_at, last_error, credentials, created_at, updated_at")
+      .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, credentials, is_active, instance_token_secret_id, external_instance_id, connected_at, last_health_check_at, created_at, updated_at")
       .eq("unit_id", unitId)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .order("created_at", { ascending: true });
+
+    const rows = channelRows ?? [];
+    const channelRow = rows.find((row) => row.is_active === true)
+      ?? rows.find((row) => row.is_active === null && row.status === "connected")
+      ?? rows.find((row) => row.is_active === null)
+      ?? null;
+
+    let providerObserved: unknown = null;
+    if (channelRow) {
+      try {
+        const provider = channelRow.provider as WhatsAppProvider;
+        const adapter = getWhatsAppProvider(provider);
+        if (adapter.getConnectionStatus) {
+          const credentials = await resolveChannelCredentials(supabase, {
+            id: channelRow.id,
+            provider,
+            credentials: (channelRow.credentials ?? {}) as ChannelCredentials,
+            instance_token_secret_id: channelRow.instance_token_secret_id,
+          });
+          providerObserved = await adapter.getConnectionStatus(credentials);
+        }
+      } catch (error) {
+        providerObserved = { status: "provider_error", error: "provider_status_unavailable" };
+        console.error("whatsapp-health:provider status", String(error));
+      }
+    }
 
     const channelInfo = channelRow
       ? {
           id: channelRow.id,
           provider: channelRow.provider,
           status: channelRow.status,
+          is_active: channelRow.is_active,
           display_phone: channelRow.display_phone,
           last_event_at: channelRow.last_event_at,
           last_error: channelRow.last_error,
@@ -94,6 +126,13 @@ serve(async (req) => {
             channelRow.provider as WhatsAppProvider,
             (channelRow.credentials ?? {}) as ChannelCredentials
           ),
+          instance_token_configured: channelRow.provider === "uazapi"
+            ? !!channelRow.instance_token_secret_id
+            : null,
+          provider_observed: providerObserved,
+          external_instance_id: channelRow.external_instance_id,
+          connected_at: channelRow.connected_at,
+          last_health_check_at: channelRow.last_health_check_at,
           created_at: channelRow.created_at,
           updated_at: channelRow.updated_at,
         }

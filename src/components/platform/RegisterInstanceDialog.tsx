@@ -26,7 +26,10 @@ import {
   type WhatsappInstance,
 } from "@/hooks/useWhatsappInstances";
 import { parseCostReais } from "@/lib/whatsapp-instance-form-core";
-import { COST_SOURCE_OPTIONS } from "@/lib/whatsapp-instance-format";
+import {
+  COST_SOURCE_OPTIONS,
+  conflictLifecycleLabel,
+} from "@/lib/whatsapp-instance-format";
 
 const MIN_REASON_LENGTH = 5;
 const NO_CHANNEL = "__none__";
@@ -329,9 +332,7 @@ export function RegisterInstanceDialog({
                   <li key={c.id}>
                     <span className="font-mono">{c.provider_instance_ref ?? "sem identificador"}</span>
                     {" — "}
-                    {c.lifecycle_state === "CANCELLATION_REQUESTED"
-                      ? "cancelamento solicitado (ainda custa)"
-                      : "ativa"}
+                    {conflictLifecycleLabel(c.lifecycle_state)}
                   </li>
                 ))}
               </ul>

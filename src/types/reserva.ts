@@ -63,8 +63,19 @@ export interface UnitMember {
   unit?: Unit;
 }
 
-export type WhatsAppProvider = "zapi" | "waha" | "official";
-export type ChannelStatus = "connected" | "disconnected" | "error";
+export type WhatsAppProvider = "zapi" | "uazapi" | "waha" | "official";
+export type ChannelStatus =
+  | "not_configured"
+  | "provisioning"
+  | "waiting_qr"
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "reconnecting"
+  | "suspended"
+  | "provider_error"
+  | "switching_provider"
+  | "error";
 
 export interface WhatsAppChannel {
   id: string;
@@ -75,8 +86,24 @@ export interface WhatsAppChannel {
   last_event_at: string | null;
   last_error: string | null;
   webhook_secret: string;
+  is_active: boolean | null;
+  connected_at: string | null;
+  last_health_check_at: string | null;
+  activation_requested_at: string | null;
+  capabilities?: WhatsAppProviderCapabilities;
   created_at: string;
   updated_at: string;
+}
+
+export interface WhatsAppProviderCapabilities {
+  manualCredentials: boolean;
+  automaticProvisioning: boolean;
+  qrConnection: boolean;
+  pairCode: boolean;
+  automaticWebhook: boolean;
+  disconnect: boolean;
+  restart: boolean;
+  deliveryReceipts: boolean;
 }
 
 // ── Operacional ───────────────────────────────────────────────────────────────

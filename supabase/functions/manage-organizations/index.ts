@@ -3,6 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 import { corsHeadersFor } from "../_shared/cors.ts";
 import { isValidTaxId, normalizeTaxId } from "../_shared/tax-id.ts";
+import { getWhatsAppProvider } from "../_shared/whatsapp-providers.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -18,6 +19,13 @@ function jsonResponse(req: Request, body: unknown, status = 200) {
 
 function slugValid(s: string) {
   return /^[a-z0-9-]+$/.test(s) && s.length >= 2 && s.length <= 60;
+}
+
+const DEFAULT_WHATSAPP_PROVIDERS = new Set(["zapi", "uazapi"]);
+
+function parseDefaultWhatsAppProvider(value: unknown): string | null {
+  const provider = String(value ?? "").trim().toLowerCase();
+  return DEFAULT_WHATSAPP_PROVIDERS.has(provider) ? provider : null;
 }
 
 async function isPlatformAdmin(userId: string): Promise<boolean> {
@@ -55,7 +63,7 @@ serve(async (req) => {
       const { data, error } = await supabase
         .from("organizations")
         .select(`
-          id, name, slug, plan, created_at,
+          id, name, slug, plan, default_whatsapp_provider, created_at,
           units(id, slug, name,
             unit_members(id)
           )
@@ -70,6 +78,10 @@ serve(async (req) => {
         name: org.name,
         slug: org.slug,
         plan: org.plan,
+        default_whatsapp_provider: org.default_whatsapp_provider,
+        default_whatsapp_provider_label: getWhatsAppProvider(
+          String(org.default_whatsapp_provider ?? "zapi"),
+        ).label,
         created_at: org.created_at,
         units_count: (org.units ?? []).length,
         members_count: (org.units ?? []).reduce(
@@ -93,6 +105,9 @@ serve(async (req) => {
       const ownerPassword = String(body.owner_password ?? "");
       const taxId = normalizeTaxId(String(body.tax_id ?? ""));
       const billingEmail = String(body.billing_email ?? "").trim().toLowerCase();
+      const defaultWhatsappProvider = parseDefaultWhatsAppProvider(
+        body.default_whatsapp_provider ?? "zapi",
+      );
 
       if (!orgName) return jsonResponse(req, { error: "Nome da empresa é obrigatório." }, 400);
       if (!slugValid(orgSlug)) return jsonResponse(req, { error: "Slug da empresa inválido (letras minúsculas, números e hífens)." }, 400);
@@ -109,6 +124,9 @@ serve(async (req) => {
       }
       if (!billingEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmail)) {
         return jsonResponse(req, { error: "E-mail de cobrança inválido." }, 400);
+      }
+      if (!defaultWhatsappProvider) {
+        return jsonResponse(req, { error: "Provider padrão do WhatsApp inválido." }, 400);
       }
 
       // 1. Criar auth user do owner.
@@ -128,7 +146,12 @@ serve(async (req) => {
       // 2. Criar organization (com rollback em falha)
       const { data: org, error: orgErr } = await supabase
         .from("organizations")
-        .insert({ name: orgName, slug: orgSlug, billing_email: billingEmail })
+        .insert({
+          name: orgName,
+          slug: orgSlug,
+          billing_email: billingEmail,
+          default_whatsapp_provider: defaultWhatsappProvider,
+        })
         .select("id")
         .single();
 
@@ -138,6 +161,27 @@ serve(async (req) => {
           console.error("manage-organizations:rollback deleteUser failed", e)
         );
         return jsonResponse(req, { error: "Falha ao criar empresa." }, 500);
+      }
+
+      // A preferência não provisiona nada, mas é a decisão administrativa
+      // auditável que autoriza o owner/gerente a iniciar UazAPI depois. A RPC
+      // grava escolha + ledger na mesma transação.
+      const { error: providerAuditErr } = await supabase.rpc(
+        "set_organization_default_whatsapp_provider",
+        {
+          p_organization_id: org.id,
+          p_provider: defaultWhatsappProvider,
+          p_actor_id: callerData.user.id,
+          p_request_id: crypto.randomUUID(),
+        },
+      );
+      if (providerAuditErr) {
+        console.error("manage-organizations:create provider audit failed", providerAuditErr);
+        await supabase.from("organizations").delete().eq("id", org.id);
+        await supabase.auth.admin.deleteUser(ownerId).catch((e) =>
+          console.error("manage-organizations:rollback deleteUser failed", e)
+        );
+        return jsonResponse(req, { error: "Falha ao registrar preferência do WhatsApp." }, 500);
       }
 
       // 3. Criar unit
@@ -240,13 +284,19 @@ serve(async (req) => {
       const orgId = String(body.org_id ?? "").trim();
       const orgName = String(body.org_name ?? "").trim();
       const plan = body.plan ? String(body.plan).trim() : undefined;
+      const hasDefaultWhatsappProvider = body.default_whatsapp_provider !== undefined;
+      const defaultWhatsappProvider = hasDefaultWhatsappProvider
+        ? parseDefaultWhatsAppProvider(body.default_whatsapp_provider)
+        : null;
 
       if (!orgId) return jsonResponse(req, { error: "org_id é obrigatório." }, 400);
       if (!orgName) return jsonResponse(req, { error: "Nome da empresa é obrigatório." }, 400);
+      if (hasDefaultWhatsappProvider && !defaultWhatsappProvider) {
+        return jsonResponse(req, { error: "Provider padrão do WhatsApp inválido." }, 400);
+      }
 
       const updatePayload: Record<string, string> = { name: orgName };
       if (plan) updatePayload.plan = plan;
-
       const { error: updateErr } = await supabase
         .from("organizations")
         .update(updatePayload)
@@ -255,6 +305,25 @@ serve(async (req) => {
       if (updateErr) {
         console.error("manage-organizations:update", updateErr);
         return jsonResponse(req, { error: "Falha ao atualizar empresa." }, 500);
+      }
+
+      if (defaultWhatsappProvider) {
+        const { error: providerErr } = await supabase.rpc(
+          "set_organization_default_whatsapp_provider",
+          {
+            p_organization_id: orgId,
+            p_provider: defaultWhatsappProvider,
+            p_actor_id: callerData.user.id,
+            p_request_id: crypto.randomUUID(),
+          },
+        );
+        if (providerErr) {
+          console.error("manage-organizations:update provider", providerErr);
+          return jsonResponse(req, {
+            error: "Empresa atualizada, mas a preferência do WhatsApp precisa ser reconciliada.",
+            code: "WHATSAPP_PROVIDER_RECONCILIATION_REQUIRED",
+          }, 500);
+        }
       }
       return jsonResponse(req, { success: true });
     }

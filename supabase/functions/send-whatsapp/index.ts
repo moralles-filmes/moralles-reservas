@@ -105,6 +105,8 @@ async function recordNotification(
   reservationId: string | null,
   waitlistId: string | null,
   providerMessageId: string | null,
+  whatsappProvider: string | null = null,
+  whatsappChannelId: string | null = null,
 ) {
   const sentAt = new Date().toISOString();
   // provider_message_id correlaciona o callback de status (entregue/lido).
@@ -117,6 +119,8 @@ async function recordNotification(
     reservation_id: reservationId,
     waitlist_id: waitlistId,
     provider_message_id: providerMessageId,
+    whatsapp_provider: whatsappProvider,
+    whatsapp_channel_id: whatsappChannelId,
     sent_at: sentAt,
   });
   if (!insErr) return;
@@ -133,6 +137,8 @@ async function recordNotification(
         status,
         error,
         provider_message_id: providerMessageId,
+        whatsapp_provider: whatsappProvider,
+        whatsapp_channel_id: whatsappChannelId,
         sent_at: sentAt,
         delivered_at: null,
         read_at: null,
@@ -224,6 +230,8 @@ serve(async (req) => {
         reservation_id ?? null,
         waitlist_id ?? null,
         result.providerMessageId ?? null,
+        result.provider ?? null,
+        result.channelId ?? null,
       );
     }
 

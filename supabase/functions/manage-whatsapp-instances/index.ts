@@ -899,15 +899,81 @@ serve(async (req) => {
         notes: reason,
         created_by: callerId,
       });
-      // 23505 = o ciclo já existia (reexecução). Idempotente, não é erro — e o
-      // ciclo que já estava lá NÃO é preenchido por este caminho: ele pode ter
-      // sido rolado ou fechado desde então, e mexer nele como efeito colateral
-      // de uma reexecução é o tipo de escrita não-auditada que esta frente
-      // combate. Reparo de ciclo existente tem porta própria
-      // (`correct_cycle_cost`).
-      if (cycleErr && cycleErr.code !== "23505") {
-        jsonLog("error", { reqId, evt: "wa_cycle_confirm_failed", err: cycleErr.message });
-        return jsonResponse(req, { error: "Não foi possível registrar o ciclo." }, 500);
+      if (cycleErr) {
+        if (cycleErr.code === "23505") {
+          // DOIS índices produzem 23505 aqui, e significam coisas OPOSTAS:
+          //
+          //   whatsapp_cycles_instance_start_idx (instance_id, cycle_start)
+          //     -> reexecução com a MESMA data. Idempotência genuína.
+          //   whatsapp_cycles_one_open_idx (instance_id) WHERE status='OPEN'
+          //     -> já existe OUTRO ciclo aberto, com data DIFERENTE.
+          //
+          // Tratar os dois como reexecução gravava a projeção com a data NOVA
+          // sobre um ciclo que guarda outra: instância e ciclo passavam a
+          // discordar da janela em silêncio, o D-7/D-1 disparava pela data
+          // errada e a rolagem 090 abria o ciclo seguinte a partir do
+          // `provider_due_on` do CICLO, deixando um buraco permanente.
+          //
+          // ALCANÇÁVEL por uma porta só, rastreada: a falha parcial logo abaixo
+          // (insert OK, projeção falha) deixa `cycle_source = 'UNKNOWN'` COM
+          // ciclo OPEN, e o botão "Confirmar data" continua visível.
+          //
+          // O DISCRIMINADOR É O CICLO OPEN, não "existe linha com esta
+          // cycle_start". Os dois não são equivalentes: com um ciclo CLOSED
+          // começando em X e um OPEN começando em Y, confirmar X encontraria a
+          // linha de X e concluiria "reexecução" — gravando a projeção
+          // divergente, que é exatamente o dano que este ramo existe para
+          // impedir. Perguntar pelo ciclo OPEN responde a pergunta certa:
+          //
+          //   OPEN com a MESMA data      -> o instance_start_idx recusou. Reexecução.
+          //   OPEN com data DIFERENTE    -> o one_open_idx recusou. Divergência.
+          //   nenhum OPEN                -> só o instance_start_idx pode ter recusado,
+          //                                 e sem ciclo aberto não há do que divergir.
+          //
+          // `maybeSingle` é seguro: `whatsapp_cycles_one_open_idx` é UNIQUE
+          // PARCIAL em (instance_id) WHERE status='OPEN', então há no máximo um.
+          const { data: openCycle, error: openCycleErr } = await supabase
+            .from("whatsapp_instance_cycles")
+            .select("id, cycle_start")
+            .eq("instance_id", id)
+            .eq("status", "OPEN")
+            .maybeSingle();
+
+          if (openCycleErr) {
+            jsonLog("error", {
+              reqId, evt: "wa_cycle_conflict_read_failed", instanceId: id,
+              err: openCycleErr.message, needsAdminAction: true,
+            });
+            // FAIL-CLOSED: gravar a projeção sem saber qual índice recusou é
+            // exatamente a divergência que este ramo existe para impedir.
+            return jsonResponse(req, {
+              error: "Não foi possível verificar o ciclo já existente. Tente novamente.",
+            }, 503);
+          }
+
+          // Coluna `date` do Postgres volta como 'YYYY-MM-DD', e `cycleStart` já
+          // passou pelo mesmo formato na validação acima — comparação de string
+          // é exata aqui.
+          if (openCycle && openCycle.cycle_start !== cycleStart) {
+            jsonLog("warn", {
+              reqId, evt: "wa_cycle_open_date_mismatch", instanceId: id,
+              cycleStart, openCycleStart: openCycle.cycle_start, needsAdminAction: true,
+            });
+            return jsonResponse(req, {
+              error: "Já existe um ciclo em aberto com outra data de início. Confira os ciclos desta instância antes de confirmar a data.",
+              code: "OPEN_CYCLE_DATE_MISMATCH",
+            }, 409);
+          }
+
+          // Mesma data: reexecução. Segue — e o ciclo que já estava lá NÃO é
+          // preenchido por este caminho: ele pode ter sido rolado ou fechado
+          // desde então, e mexer nele como efeito colateral de uma reexecução é
+          // o tipo de escrita não-auditada que esta frente combate. Reparo de
+          // ciclo existente tem porta própria (`correct_cycle_cost`).
+        } else {
+          jsonLog("error", { reqId, evt: "wa_cycle_confirm_failed", err: cycleErr.message });
+          return jsonResponse(req, { error: "Não foi possível registrar o ciclo." }, 500);
+        }
       }
 
       const { data, error } = await supabase
@@ -1019,7 +1085,14 @@ serve(async (req) => {
         action: "SET_COST", note: reason, callerId, reqId,
       });
 
-      return jsonResponse(req, { instance: after.row, cycle_filled: outcome.cycle_filled });
+      // `has_open_cycle` é BOOLEANO, não o id: a tela precisa distinguir "o
+      // ciclo manteve o valor dele" de "não há ciclo aberto", e não precisa do
+      // identificador para isso.
+      return jsonResponse(req, {
+        instance: after.row,
+        cycle_filled: outcome.cycle_filled,
+        has_open_cycle: outcome.open_cycle_id !== null,
+      });
     }
 
     // ── Correção de custo de ciclo passado ───────────────────────────────
@@ -1292,7 +1365,18 @@ serve(async (req) => {
       if (!id) return jsonResponse(req, { error: "instance_id inválido." }, 400);
 
       const patch: Record<string, unknown> = { updated_by: callerId, notes: reason };
-      if ("unit_id" in body) patch.unit_id = body.unit_id ?? null;
+      // `parseUuid` como no registro. Sem ele, um valor malformado cairia na
+      // consulta de conflito abaixo e viraria 503 — mensagem errada para o que é
+      // erro do cliente (hoje o banco recusa com 22P02 e a EF devolve 500).
+      if ("unit_id" in body) {
+        if (body.unit_id == null) {
+          patch.unit_id = null;
+        } else {
+          const parsedUnitId = parseUuid(body.unit_id);
+          if (!parsedUnitId) return jsonResponse(req, { error: "unit_id inválido." }, 400);
+          patch.unit_id = parsedUnitId;
+        }
+      }
       if ("channel_id" in body) patch.channel_id = body.channel_id ?? null;
       if ("planned_provision_on" in body) patch.planned_provision_on = body.planned_provision_on ?? null;
       if ("provider_instance_ref" in body) {
@@ -1301,6 +1385,87 @@ serve(async (req) => {
           const v = validateProviderInstanceRef(String(body.provider_instance_ref));
           if (v.ok === false) return jsonResponse(req, { error: v.message, code: v.code }, 400);
           patch.provider_instance_ref = v.value;
+        }
+      }
+
+      // A GUARDA DE UNIDADE DUPLICADA VALE NAS DUAS PORTAS. O registro a tem
+      // desde a 6c; sem ela aqui, mover uma instância para uma unidade já
+      // ocupada produz exatamente o estado que o registro recusa — e "registro
+      // recusa, mover aceita" é pior que nenhum dos dois conferir: cria
+      // confiança falsa numa guarda que existe.
+      //
+      // MESMO núcleo do registro (`checkUnitInstanceConflict`), não uma segunda
+      // regra. `whatsapp-connection-allowance-core.ts` continua fora disto: ele
+      // responde "o modelo comercial permite mais uma conexão?" e é
+      // compartilhado com `manage-channels`, que não tem nada a ver com unidade
+      // ocupada.
+      const nextUnitId = typeof patch.unit_id === "string" ? patch.unit_id : null;
+      if (nextUnitId) {
+        const cur = await loadInstanceState(
+          id, "unit_id, lifecycle_state", reqId, "wa_instance_update_lookup_failed",
+        );
+        if (cur.ok === false) return jsonResponse(req, { error: cur.message }, cur.status);
+
+        // DUAS razões para pular, e as duas evitam recusa de operação legítima:
+        //
+        // 1. Patch que reenvia a MESMA unidade não é conflito — sem isto, uma
+        //    unidade com duas instâncias legitimamente reconhecidas no passado
+        //    exigiria nova confirmação a cada correção de identificador.
+        // 2. Instância JÁ ENCERRADA não pode produzir "duas vivas na mesma
+        //    unidade" (a consulta abaixo exclui ENDED). Corrigir o vínculo
+        //    histórico de uma encerrada é registro, não custo novo — e recusá-lo
+        //    diria "a unidade passa a ter duas", que é falso.
+        const movingLiveInstance =
+          cur.row.unit_id !== nextUnitId && cur.row.lifecycle_state !== "ENDED";
+        if (movingLiveInstance) {
+          const { data: sameUnit, error: sameUnitErr } = await supabase
+            .from("whatsapp_instances")
+            .select("id, lifecycle_state, provider_instance_ref, created_at")
+            .eq("unit_id", nextUnitId)
+            .neq("lifecycle_state", "ENDED")
+            // Única diferença de desenho contra o registro. Redundante DADO o
+            // pulo acima — e de propósito: mantém a consulta correta por si só,
+            // para que reestruturar o pulo não reintroduza o auto-conflito em
+            // silêncio.
+            .neq("id", id);
+
+          // FALHA em vez de degradar, como no registro: lista vazia por erro de
+          // leitura liberaria exatamente o que a guarda existe para barrar.
+          if (sameUnitErr) {
+            jsonLog("error", {
+              reqId, evt: "wa_unit_conflict_read_failed", unitId: nextUnitId,
+              err: sameUnitErr.message, needsAdminAction: true,
+            });
+            return jsonResponse(req, { error: ALLOWANCE_UNVERIFIABLE }, 503);
+          }
+
+          const moveConflicts = (sameUnit ?? []) as Record<string, unknown>[];
+          const moveCheck = checkUnitInstanceConflict({
+            unitScoped: true,
+            conflicts: moveConflicts.map((c) => ({
+              id: String(c.id),
+              lifecycleState: String(c.lifecycle_state),
+            })),
+            acknowledged: body.acknowledge_unit_conflict === true,
+          });
+
+          if (moveCheck.ok === false) {
+            jsonLog("warn", {
+              reqId, evt: "wa_unit_conflict_denied", unitId: nextUnitId,
+              conflicts: moveConflicts.length, callerId, whichAction: "update_instance",
+            });
+            return jsonResponse(req, {
+              // MESMO `code` do registro (a tela trata os dois igual), mensagem
+              // PRÓPRIA: `UNIT_ALREADY_HAS_INSTANCE_MESSAGE` diz "confirme que
+              // quer REGISTRAR uma segunda", e aqui nada é registrado. O
+              // diálogo intercepta o 409 e nunca exibe este texto, então quem o
+              // lê é chamador de API — justamente para quem a frase do registro
+              // seria falsa.
+              error: "Esta unidade já tem instância registrada. Confirme que quer mover uma segunda para ela.",
+              code: "UNIT_ALREADY_HAS_INSTANCE",
+              conflicts: moveConflicts,
+            }, 409);
+          }
         }
       }
 

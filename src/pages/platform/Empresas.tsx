@@ -28,6 +28,13 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -70,6 +77,7 @@ function CreateOrgDialog({
       owner_password: "",
       tax_id: "",
       billing_email: "",
+      default_whatsapp_provider: "zapi",
     },
   });
 
@@ -115,6 +123,31 @@ function CreateOrgDialog({
                 )}
               />
             </div>
+
+            <FormField
+              control={form.control}
+              name="default_whatsapp_provider"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Integração do WhatsApp</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger className="min-h-11">
+                        <SelectValue placeholder="Selecione a integração" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="zapi">Z-API</SelectItem>
+                      <SelectItem value="uazapi">UazAPI</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    Define a preferência inicial. A conexão do número é feita separadamente.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <FormField
@@ -253,7 +286,13 @@ function EditOrgDialog({
     // `plan` (coluna legada organizations.plan) saiu do form na Fase 3 da
     // migração billing-asaas: o plano real vive em billing_subscriptions →
     // billing_plans. A coluna continua no banco, só não é mais editável aqui.
-    values: org ? { org_id: org.id, org_name: org.name } : undefined,
+    values: org
+      ? {
+          org_id: org.id,
+          org_name: org.name,
+          default_whatsapp_provider: org.default_whatsapp_provider,
+        }
+      : undefined,
   });
 
   const onSubmit = async (values: UpdateOrganizationInput) => {
@@ -282,6 +321,30 @@ function EditOrgDialog({
                 </FormItem>
               )}
             />
+            <FormField
+              control={form.control}
+              name="default_whatsapp_provider"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Integração do WhatsApp</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger className="min-h-11">
+                        <SelectValue placeholder="Selecione a integração" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="zapi">Z-API</SelectItem>
+                      <SelectItem value="uazapi">UazAPI</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    Alterar esta preferência não conecta nem desconecta o número atual.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancelar
@@ -300,7 +363,7 @@ function EditOrgDialog({
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function Empresas() {
-  const { data: orgs, isLoading } = useOrganizations();
+  const { data: orgs, isLoading, isError, error, refetch } = useOrganizations();
   const [createOpen, setCreateOpen] = useState(false);
   const [editOrg, setEditOrg] = useState<OrganizationRow | null>(null);
 
@@ -325,6 +388,7 @@ export default function Empresas() {
             <TableRow>
               <TableHead>Empresa</TableHead>
               <TableHead>Slug</TableHead>
+              <TableHead>WhatsApp</TableHead>
               <TableHead className="text-center">Unidades</TableHead>
               <TableHead className="text-center">Membros</TableHead>
               <TableHead className="w-10" />
@@ -333,14 +397,22 @@ export default function Empresas() {
           <TableBody>
             {isLoading && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                   Carregando…
                 </TableCell>
               </TableRow>
             )}
-            {!isLoading && (!orgs || orgs.length === 0) && (
+            {!isLoading && isError && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={6} className="text-center py-8 space-y-3">
+                  <p className="text-sm text-destructive">{error?.message ?? "Falha ao carregar empresas."}</p>
+                  <Button variant="outline" size="sm" onClick={() => refetch()}>Tentar novamente</Button>
+                </TableCell>
+              </TableRow>
+            )}
+            {!isLoading && !isError && (!orgs || orgs.length === 0) && (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                   <Building2 className="mx-auto h-8 w-8 mb-2 opacity-30" />
                   Nenhuma empresa cadastrada ainda.
                 </TableCell>
@@ -351,6 +423,9 @@ export default function Empresas() {
                 <TableCell className="font-medium">{org.name}</TableCell>
                 <TableCell className="text-muted-foreground font-mono text-xs">
                   {org.slug}
+                </TableCell>
+                <TableCell>
+                  {org.default_whatsapp_provider_label}
                 </TableCell>
                 <TableCell className="text-center">{org.units_count}</TableCell>
                 <TableCell className="text-center">{org.members_count}</TableCell>

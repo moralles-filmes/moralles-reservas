@@ -41,11 +41,14 @@ import {
   sendOutbound,
   validateChannelSecret,
   validateMetaSignature,
+  validateProviderToken,
+  getWhatsAppProvider,
   type WhatsAppProvider,
   type ChannelCredentials,
   type InboundMediaKind,
 } from "../_shared/whatsapp-providers.ts";
 import { parseStatusCallback, type StatusUpdate } from "../_shared/whatsapp-status.ts";
+import { resolveChannelCredentials } from "../_shared/whatsapp-channel-credentials.ts";
 import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
@@ -77,7 +80,12 @@ const supabase = createClient(
 // provider_message_id. MONOTÔNICO: só preenche um carimbo se ainda nulo, e
 // `read` garante `delivered` (não regride entregue→enviado). Best-effort:
 // linhas antigas sem provider_message_id simplesmente não casam.
-async function applyDeliveryStatus(updates: StatusUpdate[]): Promise<void> {
+async function applyDeliveryStatus(
+  updates: StatusUpdate[],
+  unitId: string,
+  provider: WhatsAppProvider,
+  channelId: string,
+): Promise<void> {
   const nowIso = new Date().toISOString();
   for (const u of updates) {
     const id = u.providerMessageId;
@@ -86,6 +94,9 @@ async function applyDeliveryStatus(updates: StatusUpdate[]): Promise<void> {
         await supabase
           .from("notifications_sent")
           .update({ delivered_at: nowIso })
+          .eq("unit_id", unitId)
+          .eq("whatsapp_provider", provider)
+          .eq("whatsapp_channel_id", channelId)
           .eq("provider_message_id", id)
           .is("delivered_at", null);
       } else if (u.status === "read") {
@@ -93,17 +104,26 @@ async function applyDeliveryStatus(updates: StatusUpdate[]): Promise<void> {
         await supabase
           .from("notifications_sent")
           .update({ delivered_at: nowIso })
+          .eq("unit_id", unitId)
+          .eq("whatsapp_provider", provider)
+          .eq("whatsapp_channel_id", channelId)
           .eq("provider_message_id", id)
           .is("delivered_at", null);
         await supabase
           .from("notifications_sent")
           .update({ read_at: nowIso })
+          .eq("unit_id", unitId)
+          .eq("whatsapp_provider", provider)
+          .eq("whatsapp_channel_id", channelId)
           .eq("provider_message_id", id)
           .is("read_at", null);
       } else if (u.status === "failed") {
         await supabase
           .from("notifications_sent")
           .update({ failed_at: nowIso, status: "failed" })
+          .eq("unit_id", unitId)
+          .eq("whatsapp_provider", provider)
+          .eq("whatsapp_channel_id", channelId)
           .eq("provider_message_id", id)
           .is("failed_at", null);
       }
@@ -626,8 +646,16 @@ async function handleOwnMessageEcho(
   finish: (outcome: string, error?: string, meta?: Record<string, unknown>) => Promise<void>,
 ): Promise<void> {
   const shape = describeIgnoredPayload(provider, payload);
-  const done = (outcome: string, reason: string, extra?: Record<string, unknown>) =>
-    finish(outcome, undefined, { ...shape, reason, ...extra });
+  let echoMessageId: string | null = null;
+  let echoClaimId: string | null = null;
+  const done = async (outcome: string, reason: string, extra?: Record<string, unknown>) => {
+    if (echoMessageId && echoClaimId) {
+      await markProcessed(provider, echoMessageId, echoClaimId, outcome);
+      echoMessageId = null;
+      echoClaimId = null;
+    }
+    await finish(outcome, undefined, { ...shape, reason, ...extra });
+  };
 
   try {
     if (provider !== "zapi" || !unitId) return await done("own_message_echo", "provider_unsupported");
@@ -642,16 +670,24 @@ async function handleOwnMessageEcho(
     const messageId = typeof p.messageId === "string" ? p.messageId.trim() : "";
     if (messageId) {
       // A Z-API reentrega o mesmo evento (observado em produção nos callbacks de
-      // status). Sem idempotência, a mensagem do atendente sai duplicada.
-      const nowIso = new Date().toISOString();
-      const { error: dupErr } = await supabase.from("processed_messages").insert({
-        message_id: messageId,
-        unit_id: unitId,
-        started_at: nowIso,
-        completed_at: nowIso,
-        outcome: "own_message_echo",
-      });
-      if (dupErr) return await done("own_message_echo", "duplicate");
+      // status). A RPC distingue duplicata de indisponibilidade do banco e
+      // cerca takeover/finalização com UUID; erro de persistência nunca vira 200.
+      const { data: echoClaimData, error: echoClaimError } = await supabase.rpc(
+        "claim_processed_whatsapp_message",
+        {
+          p_provider: provider,
+          p_message_id: messageId,
+          p_unit_id: unitId,
+          p_stale_after_seconds: Math.ceil(STUCK_PROCESSING_TIMEOUT_MS / 1000),
+        },
+      );
+      if (echoClaimError) throw new Error("processed_message_claim_failed");
+      const echoClaim = Array.isArray(echoClaimData) ? echoClaimData[0] : echoClaimData;
+      if (!echoClaim?.claimed || !echoClaim.claim_id) {
+        return await done("own_message_echo", "duplicate");
+      }
+      echoMessageId = messageId;
+      echoClaimId = String(echoClaim.claim_id);
 
       // Trava extra: se o id é de notificação NOSSA, não veio do atendente.
       // Protege se `fromApi` mudar de semântica numa versão futura da Z-API.
@@ -726,8 +762,10 @@ async function handleOwnMessageEcho(
       silenced: !statusErr,
     });
   } catch (e) {
+    if (e instanceof Error && e.message === "processed_message_claim_failed") throw e;
     // Nunca derruba o webhook por causa do eco: pior caso é a mensagem do
-    // atendente não aparecer, que é exatamente o estado anterior.
+    // atendente não aparecer, que é exatamente o estado anterior. A exceção é
+    // indisponibilidade da idempotência: nesse caso 5xx força reentrega segura.
     jsonLog("warn", { evt: "own_message_echo_failed", err: String(e) });
     return await done("own_message_echo", "handler_error");
   }
@@ -850,16 +888,27 @@ const AI_LOCK_TTL_SECONDS = 90;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Marca o ciclo de vida da mensagem em processed_messages.
-async function markProcessed(messageId: string, outcome: string, error?: string): Promise<void> {
+async function markProcessed(
+  provider: WhatsAppProvider,
+  messageId: string,
+  claimId: string,
+  outcome: string,
+  error?: string,
+): Promise<void> {
   try {
-    await supabase
-      .from("processed_messages")
-      .update({
-        completed_at: new Date().toISOString(),
-        outcome,
-        error: error ?? null,
-      })
-      .eq("message_id", messageId);
+    const { data, error: completeError } = await supabase.rpc(
+      "complete_processed_whatsapp_message",
+      {
+        p_provider: provider,
+        p_message_id: messageId,
+        p_claim_id: claimId,
+        p_outcome: outcome,
+        p_error: error ?? null,
+      },
+    );
+    if (completeError || data !== true) {
+      jsonLog("warn", { evt: "mark_processed_fence_lost", messageId });
+    }
   } catch (e) {
     jsonLog("error", { evt: "mark_processed_failed", messageId, err: String(e) });
   }
@@ -1212,6 +1261,7 @@ async function buildHallSchedulesBlock(unitId: string): Promise<string | null> {
 
 const RATE_LIMIT_WINDOW_SECONDS = 60;
 const RATE_LIMIT_MAX = 10;
+const MAX_WEBHOOK_BODY_BYTES = 1_000_000;
 
 serve(async (req) => {
   const requestId = genRequestId();
@@ -1230,6 +1280,8 @@ serve(async (req) => {
   let channelId: string | null = null;
   let phoneHash: string | null = null;
   let messageIdForOutcome: string | null = null;
+  let messageProvider: WhatsAppProvider | null = null;
+  let messageProcessingClaimId: string | null = null;
   // Estado do lock de exclusão do agente por conversa. Hasteado aqui (e não só
   // dentro do try) pra que releaseAiLock seja visível no outer catch — que é
   // irmão do try e está fora do escopo de `conv`.
@@ -1318,8 +1370,14 @@ serve(async (req) => {
   // se já houver message_id, e registra webhook_executions). Nunca lança.
   const finish = async (outcome: string, error?: string, meta?: Record<string, unknown>) => {
     const duration_ms = Date.now() - t0;
-    if (messageIdForOutcome) {
-      await markProcessed(messageIdForOutcome, outcome, error);
+    if (messageIdForOutcome && messageProvider && messageProcessingClaimId) {
+      await markProcessed(
+        messageProvider,
+        messageIdForOutcome,
+        messageProcessingClaimId,
+        outcome,
+        error,
+      );
     }
     await recordExecution({
       request_id: requestId,
@@ -1360,7 +1418,7 @@ serve(async (req) => {
     // Resolve channel → unit_id, provider, credentials, webhook_secret
     const { data: channel, error: channelErr } = await supabase
       .from("whatsapp_channels")
-      .select("id, unit_id, provider, credentials, webhook_secret, status")
+      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at")
       .eq("id", channelId)
       .maybeSingle();
 
@@ -1372,12 +1430,25 @@ serve(async (req) => {
 
     unitId = channel.unit_id;
     const provider: WhatsAppProvider = channel.provider;
-    const credentials: ChannelCredentials = channel.credentials ?? {};
+    messageProvider = provider;
+    let credentials: ChannelCredentials = channel.credentials ?? {};
+
+    const declaredLength = Number(req.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_WEBHOOK_BODY_BYTES) {
+      jsonLog("warn", { requestId, evt: "webhook_payload_too_large", channelId, declaredLength });
+      await finish("payload_too_large");
+      return new Response("payload too large", { status: 413 });
+    }
 
     // Lê o body como texto antes do parse — para Meta a validação HMAC precisa
     // do body cru (JSON.stringify de volta não preserva whitespace/ordering e
     // quebra a assinatura).
     const bodyText = await req.text();
+    if (new TextEncoder().encode(bodyText).byteLength > MAX_WEBHOOK_BODY_BYTES) {
+      jsonLog("warn", { requestId, evt: "webhook_payload_too_large", channelId });
+      await finish("payload_too_large");
+      return new Response("payload too large", { status: 413 });
+    }
 
     // Validate por provider:
     //  - Meta Cloud API: HMAC-SHA256 do body com app_secret (header x-hub-signature-256)
@@ -1405,17 +1476,115 @@ serve(async (req) => {
       return new Response("invalid json", { status: 400 });
     }
 
+    // O token UazAPI nunca mora no JSONB. Ele é resolvido do Vault somente
+    // depois da autenticação por secret do webhook. Quando o provider inclui
+    // `token` no payload, ele precisa coincidir; ausência continua permitida
+    // porque esse campo não é garantido em todos os tipos de evento oficiais.
+    if (provider === "uazapi") {
+      try {
+        credentials = await resolveChannelCredentials(supabase, {
+          id: channel.id,
+          provider,
+          credentials,
+          instance_token_secret_id: channel.instance_token_secret_id,
+        });
+      } catch (error) {
+        jsonLog("error", { requestId, evt: "uazapi_token_unavailable", channelId, err: String(error) });
+        await finish("provider_credentials_unavailable");
+        return new Response("provider unavailable", { status: 503 });
+      }
+
+      const payloadToken = payload && typeof payload === "object"
+        ? (payload as Record<string, unknown>).token
+        : null;
+      if (
+        typeof payloadToken === "string"
+        && !validateProviderToken(payloadToken, credentials.instance_token ?? "")
+      ) {
+        jsonLog("warn", { requestId, evt: "webhook_provider_token_mismatch", channelId, provider });
+        await finish("webhook_unauthorized");
+        return new Response("unauthorized", { status: 401 });
+      }
+
+      const payloadRecord = payload && typeof payload === "object"
+        ? payload as Record<string, unknown>
+        : {};
+      const payloadInstance = payloadRecord.instance && typeof payloadRecord.instance === "object"
+        ? payloadRecord.instance as Record<string, unknown>
+        : {};
+      const payloadInstanceId = [
+        payloadRecord.instanceId,
+        payloadRecord.instance_id,
+        payloadInstance.id,
+      ].find((value) => typeof value === "string" && value.length > 0);
+      if (
+        typeof payloadInstanceId === "string"
+        && channel.external_instance_id
+        && payloadInstanceId !== channel.external_instance_id
+      ) {
+        jsonLog("warn", { requestId, evt: "webhook_instance_mismatch", channelId, provider });
+        await finish("webhook_unauthorized");
+        return new Response("unauthorized", { status: 401 });
+      }
+    }
+
     // Callback de STATUS (entregue/lido/falhou) das NOSSAS mensagens enviadas —
     // NÃO é mensagem do cliente. Atualiza notifications_sent por
     // provider_message_id e encerra: não roda agente, debounce nem lock de
     // conversa (status ≠ inbound). Antes caía em `ignored_non_text` e sumia.
     const statusUpdates = parseStatusCallback(provider, payload);
     if (statusUpdates) {
-      await applyDeliveryStatus(statusUpdates);
+      await applyDeliveryStatus(statusUpdates, unitId, provider, channelId);
       await finish("status_callback", undefined, {
         statuses: statusUpdates.map((u) => u.status),
         ids: statusUpdates.map((u) => u.providerMessageId).slice(0, 5),
       });
+      return new Response("ok");
+    }
+
+    const connectionUpdate = getWhatsAppProvider(provider).parseConnectionCallback?.(payload) ?? null;
+    if (connectionUpdate) {
+      const displayPhone = connectionUpdate.displayPhone?.replace(/\D/g, "") || null;
+      const { error: recordError } = await supabase.rpc("record_whatsapp_channel_status", {
+        p_unit_id: unitId,
+        p_channel_id: channelId,
+        p_status: connectionUpdate.status,
+        p_display_phone: displayPhone,
+        p_error_code: connectionUpdate.status === "provider_error" ? "PROVIDER_CALLBACK_ERROR" : null,
+        p_actor_id: null,
+        p_request_id: requestId,
+      });
+      if (recordError) throw new Error("connection_status_persist_failed");
+      if (connectionUpdate.connected && channel.activation_requested_at) {
+        const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {
+          p_unit_id: unitId,
+          p_channel_id: channelId,
+          p_actor_id: null,
+          p_request_id: requestId,
+        });
+        if (activateError) throw new Error("connection_callback_activation_failed");
+      }
+      await finish("connection_callback", undefined, {
+        status: connectionUpdate.status,
+        connected: connectionUpdate.connected,
+      });
+      return new Response("ok");
+    }
+
+    // Canal preparado/inativo pode receber callbacks de conexão, mas nunca
+    // entra na pipeline de conversa/IA. Em rollout legado (nenhum true), linhas
+    // NULL mantêm a semântica antiga; false é sempre inativo.
+    const { count: explicitActiveCount, error: explicitActiveError } = await supabase
+      .from("whatsapp_channels")
+      .select("id", { count: "exact", head: true })
+      .eq("unit_id", unitId)
+      .eq("is_active", true);
+    if (explicitActiveError) throw new Error("active_channel_projection_read_failed");
+    const channelInactive = channel.is_active === false
+      || ((explicitActiveCount ?? 0) > 0 && channel.is_active !== true);
+    if (channelInactive) {
+      jsonLog("info", { requestId, evt: "inactive_channel_event_ignored", channelId, provider });
+      await finish("inactive_channel");
       return new Response("ok");
     }
 
@@ -1465,14 +1634,25 @@ serve(async (req) => {
       messageIdForOutcome = media.providerMessageId;
 
       // Idempotência: se a mensagem já foi processada, não responde de novo.
-      const { error: idemErr } = await supabase
-        .from("processed_messages")
-        .insert({ message_id: media.providerMessageId, unit_id: unitId, started_at: new Date().toISOString() });
-      if (idemErr) {
+      const { data: mediaClaimData, error: mediaClaimError } = await supabase.rpc(
+        "claim_processed_whatsapp_message",
+        {
+          p_provider: provider,
+          p_message_id: media.providerMessageId,
+          p_unit_id: unitId,
+          p_stale_after_seconds: Math.ceil(STUCK_PROCESSING_TIMEOUT_MS / 1000),
+        },
+      );
+      if (mediaClaimError) {
+        throw new Error("processed_message_claim_failed");
+      }
+      const mediaClaim = Array.isArray(mediaClaimData) ? mediaClaimData[0] : mediaClaimData;
+      if (!mediaClaim?.claimed || !mediaClaim.claim_id) {
         messageIdForOutcome = null;
         await finish("duplicate_media");
         return new Response("ok");
       }
+      messageProcessingClaimId = String(mediaClaim.claim_id);
 
       // Resolve org → customer → conversation (mesmo padrão do path de texto).
       const { data: unitRow2 } = await supabase
@@ -1592,27 +1772,24 @@ serve(async (req) => {
     // (started_at antigo + completed_at NULL) e, se sim, reprocessamos.
     messageIdForOutcome = inbound.providerMessageId;
 
-    const { error: idemError } = await supabase
-      .from("processed_messages")
-      .insert({ message_id: inbound.providerMessageId, unit_id: unitId, started_at: new Date().toISOString() });
+    const { data: claimData, error: claimError } = await supabase.rpc(
+      "claim_processed_whatsapp_message",
+      {
+        p_provider: provider,
+        p_message_id: inbound.providerMessageId,
+        p_unit_id: unitId,
+        p_stale_after_seconds: Math.ceil(STUCK_PROCESSING_TIMEOUT_MS / 1000),
+      },
+    );
+    if (claimError) throw new Error("processed_message_claim_failed");
+    const processingClaim = Array.isArray(claimData) ? claimData[0] : claimData;
 
-    if (idemError) {
-      const { data: existing } = await supabase
-        .from("processed_messages")
-        .select("started_at, completed_at, outcome")
-        .eq("message_id", inbound.providerMessageId)
-        .maybeSingle();
-
-      const isStuck = !!existing
-        && !existing.completed_at
-        && (Date.now() - new Date(existing.started_at).getTime()) > STUCK_PROCESSING_TIMEOUT_MS;
-
-      if (!isStuck) {
+    if (!processingClaim?.claimed || !processingClaim.claim_id) {
         jsonLog("info", {
           requestId,
           evt: "duplicate_message",
           phone: phoneHash,
-          prev_outcome: existing?.outcome ?? null,
+          prev_outcome: processingClaim?.previous_outcome ?? null,
         });
         await recordExecution({
           request_id: requestId,
@@ -1622,30 +1799,19 @@ serve(async (req) => {
           outcome: "duplicate",
           error: null,
           duration_ms: Date.now() - t0,
-          meta: { prev_outcome: existing?.outcome ?? null },
+          meta: { prev_outcome: processingClaim?.previous_outcome ?? null },
         });
         // Não chama markProcessed (já estava completed_at correto).
         messageIdForOutcome = null;
         return new Response("ok");
-      }
-
-      // Take over the stuck record
-      await supabase
-        .from("processed_messages")
-        .update({
-          started_at: new Date().toISOString(),
-          completed_at: null,
-          outcome: null,
-          error: null,
-          unit_id: unitId,
-        })
-        .eq("message_id", inbound.providerMessageId);
-
+    }
+    messageProcessingClaimId = String(processingClaim.claim_id);
+    if (processingClaim.previous_outcome !== null) {
       jsonLog("warn", {
         requestId,
         evt: "reprocessing_stuck_message",
         message_id: inbound.providerMessageId,
-        prev_outcome: existing?.outcome ?? null,
+        prev_outcome: processingClaim.previous_outcome,
       });
     }
 

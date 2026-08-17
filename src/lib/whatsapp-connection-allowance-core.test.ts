@@ -96,6 +96,31 @@ describe("checkConnectionAllowance — allowance por origem de financiamento e o
     expect(r.reasonCode).toBe("OVERRIDE_REQUIRES_ADMIN_DECISION");
   });
 
+  it("permite substituição explícita da conexão inventariada no limite", () => {
+    const r = checkConnectionAllowance({
+      ...P2,
+      operation: "NEW_PROVISIONING",
+      activeInstanceCount: 1,
+      provisioningAmbiguous: false,
+      providerInstanceRefKnown: false,
+      replacementConnectionRecorded: true,
+    });
+    expect(r).toEqual({ allowed: true, policy: "PLAN_DECLARED" });
+  });
+
+  it("LIFETIME: decisão explícita de platform_admin libera o custo novo", () => {
+    const r = checkConnectionAllowance({
+      fundingSource: "LIFETIME_OVERRIDE",
+      includedConnections: null,
+      operation: "NEW_PROVISIONING",
+      activeInstanceCount: 1,
+      provisioningAmbiguous: false,
+      providerInstanceRefKnown: false,
+      adminDecisionRecorded: true,
+    });
+    expect(r).toEqual({ allowed: true, policy: "OVERRIDE_OPERATIONAL" });
+  });
+
   it("BACKFILL legitimo de instancia que ja existe no provider passa", () => {
     const r = checkConnectionAllowance({
       ...P2,

@@ -1,0 +1,735 @@
+import { canonicalBrPhone } from "./phone.ts";
+
+export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi"] as const;
+
+export type WhatsAppProviderName = typeof WHATSAPP_PROVIDER_NAMES[number];
+
+export interface WhatsAppProviderCapabilities {
+  manualCredentials: boolean;
+  automaticProvisioning: boolean;
+  qrConnection: boolean;
+  pairCode: boolean;
+  automaticWebhook: boolean;
+  disconnect: boolean;
+  restart: boolean;
+  deliveryReceipts: boolean;
+}
+
+export type WhatsAppOperationalStatus =
+  | "not_configured"
+  | "provisioning"
+  | "waiting_qr"
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "reconnecting"
+  | "suspended"
+  | "provider_error"
+  | "switching_provider"
+  | "error";
+
+export type WhatsAppProviderErrorCode =
+  | "AUTH_ERROR"
+  | "INSTANCE_NOT_FOUND"
+  | "NOT_CONNECTED"
+  | "QR_REQUIRED"
+  | "CAPACITY_EXCEEDED"
+  | "RATE_LIMITED"
+  | "PROVIDER_UNAVAILABLE"
+  | "TIMEOUT"
+  | "INVALID_REQUEST"
+  | "UNKNOWN_PROVIDER_ERROR";
+
+export interface InboundMessage {
+  providerMessageId: string;
+  fromPhone: string;
+  text: string;
+  isFromMe: boolean;
+  timestamp: number;
+  contactName?: string;
+  // deno-lint-ignore no-explicit-any
+  raw: any;
+}
+
+export type InboundMediaKind =
+  | "audio"
+  | "image"
+  | "video"
+  | "document"
+  | "sticker"
+  | "location"
+  | "contacts"
+  | "other";
+
+export interface InboundMediaPeek {
+  providerMessageId: string;
+  fromPhone: string;
+  mediaKind: InboundMediaKind;
+  contactName?: string;
+}
+
+export type DeliveryStatus = "sent" | "delivered" | "read" | "failed";
+
+export interface StatusUpdate {
+  providerMessageId: string;
+  status: DeliveryStatus;
+}
+
+export interface OutboundMessage {
+  toPhone: string;
+  text: string;
+}
+
+export interface ChannelCredentials {
+  // Z-API (legado; estes nomes e seu significado não podem mudar)
+  instance_id?: string;
+  token?: string;
+  client_token?: string;
+  // WAHA
+  base_url?: string;
+  api_key?: string;
+  session_name?: string;
+  // Official (Meta Cloud API)
+  phone_number_id?: string;
+  business_account_id?: string;
+  access_token?: string;
+  app_secret?: string;
+  // UazAPI. Resolvido efemeramente do Vault; nunca persistido em credentials.
+  instance_token?: string;
+}
+
+export interface SendResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
+  errorCode?: WhatsAppProviderErrorCode;
+  bodySnippet?: string;
+  missingCreds?: string[];
+  providerMessageId?: string;
+  provider?: WhatsAppProviderName;
+  channelId?: string;
+}
+
+export interface ProviderConnectionSnapshot {
+  status: WhatsAppOperationalStatus;
+  nativeStatus: string | null;
+  connected: boolean;
+  qrRequired: boolean;
+  displayPhone?: string | null;
+}
+
+export interface ManagedProviderInstanceSnapshot {
+  id: string;
+  name: string | null;
+  token: string | null;
+  adminField01: string | null;
+  adminField02: string | null;
+  status: string | null;
+  connected: boolean;
+  loggedIn: boolean;
+  jid: string | null;
+  qrCode: string | null;
+  pairCode: string | null;
+}
+
+export interface ManagedProviderLifecycleAdapter {
+  listInstances(): Promise<ManagedProviderInstanceSnapshot[]>;
+  provision(input: { name: string; adminField01: string; adminField02?: string }): Promise<ManagedProviderInstanceSnapshot>;
+  configureWebhook(token: string, input: { url: string; events?: string[] }): Promise<void>;
+  connect(token: string): Promise<ManagedProviderInstanceSnapshot>;
+  status(token: string): Promise<ManagedProviderInstanceSnapshot>;
+  disconnect(token: string): Promise<void>;
+  restart(token: string): Promise<void>;
+}
+
+export interface WhatsAppProviderAdapter {
+  name: WhatsAppProviderName;
+  label: string;
+  capabilities: WhatsAppProviderCapabilities;
+  // deno-lint-ignore no-explicit-any
+  parseInbound(payload: any): InboundMessage | null;
+  // deno-lint-ignore no-explicit-any
+  peekInboundMedia(payload: any): InboundMediaPeek | null;
+  // deno-lint-ignore no-explicit-any
+  parseStatusCallback(payload: any): StatusUpdate[] | null;
+  // deno-lint-ignore no-explicit-any
+  parseConnectionCallback?(payload: any): ProviderConnectionSnapshot | null;
+  sendText(credentials: ChannelCredentials, message: OutboundMessage): Promise<SendResult>;
+  getConnectionStatus?(credentials: ChannelCredentials): Promise<ProviderConnectionSnapshot>;
+  lifecycle?: ManagedProviderLifecycleAdapter;
+}
+
+export interface WhatsAppProviderMetadata {
+  name: WhatsAppProviderName;
+  label: string;
+  capabilities: WhatsAppProviderCapabilities;
+}
+
+export interface WhatsAppProviderRegistry {
+  get(name: string): WhatsAppProviderAdapter;
+  tryGet(name: string): WhatsAppProviderAdapter | null;
+  list(): WhatsAppProviderAdapter[];
+  metadata(): WhatsAppProviderMetadata[];
+}
+
+export function createWhatsAppProviderRegistry(
+  adapters: readonly WhatsAppProviderAdapter[],
+): WhatsAppProviderRegistry {
+  const byName = new Map<string, WhatsAppProviderAdapter>();
+  for (const adapter of adapters) {
+    if (byName.has(adapter.name)) {
+      throw new Error(`duplicate_whatsapp_provider:${adapter.name}`);
+    }
+    byName.set(adapter.name, adapter);
+  }
+
+  return {
+    get(name: string) {
+      const adapter = byName.get(name);
+      if (!adapter) throw new Error(`unknown_whatsapp_provider:${name}`);
+      return adapter;
+    },
+    tryGet(name: string) {
+      return byName.get(name) ?? null;
+    },
+    list() {
+      return Array.from(byName.values());
+    },
+    metadata() {
+      return Array.from(byName.values(), ({ name, label, capabilities }) => ({
+        name,
+        label,
+        capabilities: { ...capabilities },
+      }));
+    },
+  };
+}
+
+export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsAppProviderCapabilities>> = {
+  zapi: {
+    manualCredentials: true,
+    automaticProvisioning: false,
+    qrConnection: false,
+    pairCode: false,
+    automaticWebhook: false,
+    disconnect: false,
+    restart: false,
+    deliveryReceipts: true,
+  },
+  waha: {
+    manualCredentials: true,
+    automaticProvisioning: false,
+    qrConnection: false,
+    pairCode: false,
+    automaticWebhook: false,
+    disconnect: false,
+    restart: false,
+    deliveryReceipts: true,
+  },
+  official: {
+    manualCredentials: true,
+    automaticProvisioning: false,
+    qrConnection: false,
+    pairCode: false,
+    automaticWebhook: false,
+    disconnect: false,
+    restart: false,
+    deliveryReceipts: true,
+  },
+  uazapi: {
+    manualCredentials: false,
+    automaticProvisioning: true,
+    qrConnection: true,
+    pairCode: false,
+    automaticWebhook: true,
+    disconnect: true,
+    restart: true,
+    deliveryReceipts: true,
+  },
+};
+
+function sanitizeContactName(raw: unknown, phone: string): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const digitsOnly = trimmed.replace(/\D/g, "");
+  if (digitsOnly && digitsOnly === phone) return undefined;
+  return trimmed.slice(0, 100);
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function phoneFromJid(value: unknown): string {
+  const jid = String(value ?? "").trim().toLowerCase();
+  if (!jid || jid.endsWith("@lid")) return "";
+  if (jid.includes("@") && !jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@c.us")) return "";
+  const raw = jid.split("@")[0].split(":")[0];
+  return canonicalBrPhone(raw);
+}
+
+function phoneFromUazMessage(message: Record<string, unknown>): string {
+  return phoneFromJid(message.sender) || phoneFromJid(message.chatid);
+}
+
+// O webhook usa EventType/token no envelope e pode colocar o schema Message em
+// `message`/`data` conforme o modo de entrega. Só esses envelopes documentados
+// são aceitos; não fazemos busca recursiva em payload arbitrário.
+// deno-lint-ignore no-explicit-any
+function uazApiMessageFromEnvelope(payload: any): any {
+  if (payload?.message && typeof payload.message === "object" && !Array.isArray(payload.message)) {
+    return payload.message;
+  }
+  if (payload?.data && typeof payload.data === "object" && !Array.isArray(payload.data)) {
+    return payload.data;
+  }
+  return payload;
+}
+
+// ─── Parsers inbound ────────────────────────────────────────────────────────
+
+// deno-lint-ignore no-explicit-any
+export function parseZApiInbound(p: any): InboundMessage | null {
+  if (!p.text?.message || p.fromMe || p.isFromMe) return null;
+  const digits = canonicalBrPhone(String(p.phone ?? ""));
+  const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
+  const contactName = sanitizeContactName(
+    p.senderName ?? p.chatName ?? p.notifyName ?? p.contactName,
+    digits,
+  );
+  return {
+    providerMessageId: id,
+    fromPhone: digits,
+    text: p.text.message.trim(),
+    isFromMe: false,
+    timestamp: Date.now(),
+    contactName,
+    raw: p,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+export function parseWahaInbound(p: any): InboundMessage | null {
+  const msg = p.payload ?? p;
+  if (msg.fromMe) return null;
+  const textBody = msg.body ?? msg.text?.body;
+  if (!textBody) return null;
+  const rawFrom = canonicalBrPhone(String(msg.from ?? "").replace("@c.us", ""));
+  const contactName = sanitizeContactName(
+    msg._data?.notifyName ?? msg.notifyName ?? msg.pushName ?? msg._data?.pushName ?? p.payload?._data?.notifyName,
+    rawFrom,
+  );
+  return {
+    providerMessageId: msg.id ?? `${rawFrom}:${Date.now()}`,
+    fromPhone: rawFrom,
+    text: String(textBody).trim(),
+    isFromMe: false,
+    timestamp: (msg.timestamp ?? 0) * 1000 || Date.now(),
+    contactName,
+    raw: p,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+export function parseOfficialInbound(p: any): InboundMessage | null {
+  const value = p.entry?.[0]?.changes?.[0]?.value;
+  const msgObj = value?.messages?.[0];
+  if (!msgObj || msgObj.type !== "text") return null;
+  const digits = canonicalBrPhone(String(msgObj.from ?? ""));
+  const contactName = sanitizeContactName(value?.contacts?.[0]?.profile?.name, digits);
+  return {
+    providerMessageId: msgObj.id ?? `${digits}:${Date.now()}`,
+    fromPhone: digits,
+    text: (msgObj.text?.body ?? "").trim(),
+    isFromMe: false,
+    timestamp: Number(msgObj.timestamp ?? 0) * 1000 || Date.now(),
+    contactName,
+    raw: p,
+  };
+}
+
+// UazAPI v2.1.1 envia o schema Message no envelope do evento. Diferente dos
+// providers legados, ID e timestamp não ganham fallbacks locais: sem os campos
+// oficiais o evento é inválido e não pode chegar ao dedupe/IA.
+// deno-lint-ignore no-explicit-any
+export function parseUazApiInbound(p: any): InboundMessage | null {
+  if (p?.EventType !== "messages") return null;
+  const message = uazApiMessageFromEnvelope(p);
+  if (message?.fromMe || message?.wasSentByApi || message?.isGroup) return null;
+  const id = nonEmptyString(message?.messageid);
+  const text = nonEmptyString(message?.text);
+  const timestamp = message?.messageTimestamp;
+  const phone = phoneFromUazMessage(message ?? {});
+  if (!id || !text || !Number.isFinite(timestamp) || timestamp <= 0 || !phone) return null;
+
+  const type = String(message?.messageType ?? "").toLowerCase();
+  if (UAZAPI_MEDIA_TYPE[type]) return null;
+
+  return {
+    providerMessageId: id,
+    fromPhone: phone,
+    text,
+    isFromMe: false,
+    timestamp,
+    contactName: sanitizeContactName(message?.senderName, phone),
+    raw: p,
+  };
+}
+
+// ─── Peek de mídia ──────────────────────────────────────────────────────────
+
+// deno-lint-ignore no-explicit-any
+export function peekZApiMedia(p: any): InboundMediaPeek | null {
+  if (p.fromMe || p.isFromMe || p.text?.message) return null;
+  let kind: InboundMediaKind | null = null;
+  if (p.audio || p.ptt) kind = "audio";
+  else if (p.image) kind = "image";
+  else if (p.video) kind = "video";
+  else if (p.document) kind = "document";
+  else if (p.sticker) kind = "sticker";
+  else if (p.location) kind = "location";
+  else if (p.contact || p.contacts) kind = "contacts";
+  if (!kind) return null;
+  const digits = canonicalBrPhone(String(p.phone ?? ""));
+  if (!digits) return null;
+  const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
+  const contactName = sanitizeContactName(
+    p.senderName ?? p.chatName ?? p.notifyName ?? p.contactName,
+    digits,
+  );
+  return { providerMessageId: id, fromPhone: digits, mediaKind: kind, contactName };
+}
+
+// deno-lint-ignore no-explicit-any
+export function peekWahaMedia(p: any): InboundMediaPeek | null {
+  const msg = p.payload ?? p;
+  if (msg.fromMe) return null;
+  const textBody = msg.body ?? msg.text?.body;
+  const wahaType = String(msg.type ?? "").toLowerCase();
+  const mediaTypes: Record<string, InboundMediaKind> = {
+    image: "image", audio: "audio", voice: "audio", ptt: "audio",
+    video: "video", document: "document", sticker: "sticker",
+    location: "location", vcard: "contacts", contacts: "contacts",
+    contact_card: "contacts",
+  };
+  let kind: InboundMediaKind | null = mediaTypes[wahaType] ?? null;
+  if (!kind && msg.hasMedia && !textBody) kind = "other";
+  if (!kind) return null;
+  const rawFrom = canonicalBrPhone(String(msg.from ?? "").replace("@c.us", ""));
+  if (!rawFrom) return null;
+  const contactName = sanitizeContactName(
+    msg._data?.notifyName ?? msg.notifyName ?? msg.pushName ?? msg._data?.pushName ?? p.payload?._data?.notifyName,
+    rawFrom,
+  );
+  return {
+    providerMessageId: msg.id ?? `${rawFrom}:${Date.now()}`,
+    fromPhone: rawFrom,
+    mediaKind: kind,
+    contactName,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+export function peekOfficialMedia(p: any): InboundMediaPeek | null {
+  const value = p.entry?.[0]?.changes?.[0]?.value;
+  const msgObj = value?.messages?.[0];
+  if (!msgObj || msgObj.type === "text") return null;
+  const map: Record<string, InboundMediaKind> = {
+    audio: "audio", voice: "audio", image: "image", video: "video",
+    document: "document", sticker: "sticker", location: "location",
+    contacts: "contacts",
+  };
+  const digits = canonicalBrPhone(String(msgObj.from ?? ""));
+  if (!digits) return null;
+  return {
+    providerMessageId: msgObj.id ?? `${digits}:${Date.now()}`,
+    fromPhone: digits,
+    mediaKind: map[String(msgObj.type ?? "")] ?? "other",
+    contactName: sanitizeContactName(value?.contacts?.[0]?.profile?.name, digits),
+  };
+}
+
+const UAZAPI_MEDIA_TYPE: Readonly<Record<string, InboundMediaKind>> = {
+  audio: "audio",
+  audiomessage: "audio",
+  voice: "audio",
+  ptt: "audio",
+  image: "image",
+  imagemessage: "image",
+  video: "video",
+  videomessage: "video",
+  document: "document",
+  documentmessage: "document",
+  sticker: "sticker",
+  stickermessage: "sticker",
+  location: "location",
+  locationmessage: "location",
+  contact: "contacts",
+  contacts: "contacts",
+  contactmessage: "contacts",
+  contactsarraymessage: "contacts",
+  vcard: "contacts",
+};
+
+// deno-lint-ignore no-explicit-any
+export function peekUazApiMedia(p: any): InboundMediaPeek | null {
+  if (p?.EventType !== "messages") return null;
+  const message = uazApiMessageFromEnvelope(p);
+  if (message?.fromMe || message?.wasSentByApi || message?.isGroup) return null;
+  const id = nonEmptyString(message?.messageid);
+  const phone = phoneFromUazMessage(message ?? {});
+  const kind = UAZAPI_MEDIA_TYPE[String(message?.messageType ?? "").toLowerCase()];
+  if (!id || !phone || !kind) return null;
+  return {
+    providerMessageId: id,
+    fromPhone: phone,
+    mediaKind: kind,
+    contactName: sanitizeContactName(message?.senderName, phone),
+  };
+}
+
+// ─── Callbacks de entrega ───────────────────────────────────────────────────
+
+// deno-lint-ignore no-explicit-any
+export function parseZApiStatus(p: any): StatusUpdate[] | null {
+  const type = String(p?.type ?? "");
+  if (type !== "MessageStatusCallback" && type !== "DeliveryCallback") return null;
+  const status = mapZApiStatus(String(p?.status ?? ""));
+  if (!status) return null;
+  const ids: string[] = Array.isArray(p?.ids)
+    ? p.ids.filter((x: unknown): x is string => typeof x === "string" && !!x)
+    : typeof p?.messageId === "string" && p.messageId ? [p.messageId] : [];
+  return ids.length ? ids.map((id) => ({ providerMessageId: id, status })) : null;
+}
+
+function mapZApiStatus(value: string): DeliveryStatus | null {
+  const status = value.toUpperCase();
+  if (status === "RECEIVED") return "delivered";
+  if (status === "READ" || status === "PLAYED") return "read";
+  if (status === "SENT") return "sent";
+  if (status.includes("FAIL") || status.includes("ERROR")) return "failed";
+  return null;
+}
+
+// deno-lint-ignore no-explicit-any
+export function parseWahaStatus(p: any): StatusUpdate[] | null {
+  if (!String(p?.event ?? "").includes("ack")) return null;
+  const payload = p?.payload ?? {};
+  const rawId = payload?.id?._serialized ?? payload?.id;
+  if (typeof rawId !== "string" || !rawId) return null;
+  const status = mapWahaAck(
+    typeof payload?.ack === "number" ? payload.ack : null,
+    String(payload?.ackName ?? ""),
+  );
+  return status ? [{ providerMessageId: rawId, status }] : null;
+}
+
+function mapWahaAck(ack: number | null, ackName: string): DeliveryStatus | null {
+  const name = ackName.toUpperCase();
+  if (name === "ERROR") return "failed";
+  if (name === "READ" || name === "PLAYED") return "read";
+  if (name === "DEVICE") return "delivered";
+  if (name === "SERVER") return "sent";
+  if (ack === -1) return "failed";
+  if (ack === 3 || ack === 4) return "read";
+  if (ack === 2) return "delivered";
+  if (ack === 1) return "sent";
+  return null;
+}
+
+// deno-lint-ignore no-explicit-any
+export function parseOfficialStatus(p: any): StatusUpdate[] | null {
+  const statuses = p?.entry?.[0]?.changes?.[0]?.value?.statuses;
+  if (!Array.isArray(statuses) || !statuses.length) return null;
+  const out: StatusUpdate[] = [];
+  for (const item of statuses) {
+    const id = item?.id;
+    const status = mapOfficialStatus(String(item?.status ?? ""));
+    if (typeof id === "string" && id && status) out.push({ providerMessageId: id, status });
+  }
+  return out.length ? out : null;
+}
+
+function mapOfficialStatus(value: string): DeliveryStatus | null {
+  const status = value.toLowerCase();
+  if (status === "sent" || status === "delivered" || status === "read" || status === "failed") {
+    return status;
+  }
+  return null;
+}
+
+// deno-lint-ignore no-explicit-any
+export function parseUazApiStatus(p: any): StatusUpdate[] | null {
+  if (p?.EventType !== "messages_update") return null;
+  const message = uazApiMessageFromEnvelope(p);
+  const id = nonEmptyString(message?.messageid);
+  const nativeStatus = String(message?.status ?? "").toLowerCase();
+  let status: DeliveryStatus | null = null;
+  if (nativeStatus === "sent" || nativeStatus === "queued") status = "sent";
+  else if (nativeStatus === "delivered") status = "delivered";
+  else if (nativeStatus === "read" || nativeStatus === "played") status = "read";
+  else if (nativeStatus === "failed" || nativeStatus === "canceled" || nativeStatus === "cancelled") status = "failed";
+  return id && status ? [{ providerMessageId: id, status }] : null;
+}
+
+// deno-lint-ignore no-explicit-any
+export function mapUazApiConnectionStatus(payload: any): ProviderConnectionSnapshot {
+  const instance = payload?.instance ?? payload;
+  const statusEnvelope = instance?.status && typeof instance.status === "object"
+    ? instance.status
+    : payload?.status && typeof payload.status === "object"
+      ? payload.status
+      : {};
+  const nativeStatus = nonEmptyString(
+    typeof instance?.status === "string" ? instance.status : statusEnvelope?.status,
+  );
+  const hasQr = !!nonEmptyString(
+    instance?.qrcode ?? instance?.qrCode ?? instance?.qr ?? payload?.qrcode ?? payload?.qrCode ?? payload?.qr,
+  );
+  const connected = payload?.connected === true
+    || instance?.connected === true
+    || statusEnvelope?.connected === true
+    || nativeStatus === "connected";
+  const rawJid = statusEnvelope?.jid ?? instance?.jid ?? payload?.jid;
+  const displayPhone = typeof rawJid === "string"
+    ? phoneFromJid(rawJid)
+    : rawJid && typeof rawJid === "object"
+      ? canonicalBrPhone(String(rawJid.user ?? ""))
+      : null;
+  let status: WhatsAppOperationalStatus;
+  if (connected) status = "connected";
+  else if (nativeStatus === "hibernated") status = "suspended";
+  else if (nativeStatus === "connecting" && hasQr) status = "waiting_qr";
+  else if (nativeStatus === "connecting") status = "connecting";
+  else if (nativeStatus === "disconnected") status = "disconnected";
+  else status = "provider_error";
+  return { status, nativeStatus, connected, qrRequired: hasQr && !connected, displayPhone };
+}
+
+// ─── Envio UazAPI ───────────────────────────────────────────────────────────
+
+export interface UazApiSendDependencies {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}
+
+export type ZApiTextRequest =
+  | { ok: true; url: string; init: RequestInit }
+  | { ok: false; missingCreds: string[] };
+
+/** Constrói o request legado sem alterar URL, headers ou payload da Z-API. */
+export function buildZApiTextRequest(
+  credentials: ChannelCredentials,
+  message: OutboundMessage,
+): ZApiTextRequest {
+  const { instance_id, token, client_token } = credentials;
+  const missingCreds: string[] = [];
+  if (!instance_id) missingCreds.push("instance_id");
+  if (!token) missingCreds.push("token");
+  if (missingCreds.length) return { ok: false, missingCreds };
+
+  const digits = message.toPhone.replace(/\D/g, "");
+  const phone = digits.startsWith("55") ? digits : `55${digits}`;
+  return {
+    ok: true,
+    url: `https://api.z-api.io/instances/${instance_id}/token/${token}/send-text`,
+    init: {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(client_token ? { "Client-Token": client_token } : {}),
+      },
+      body: JSON.stringify({ phone, message: message.text }),
+    },
+  };
+}
+
+export async function sendUazApiText(
+  credentials: ChannelCredentials,
+  message: OutboundMessage,
+  dependencies: UazApiSendDependencies = {},
+): Promise<SendResult> {
+  const baseUrl = credentials.base_url?.trim().replace(/\/+$/, "");
+  const instanceToken = credentials.instance_token?.trim();
+  const missing: string[] = [];
+  if (!baseUrl) missing.push("base_url");
+  if (!instanceToken) missing.push("instance_token");
+  if (missing.length) {
+    return { ok: false, missingCreds: missing, error: "missing_credentials", errorCode: "INVALID_REQUEST" };
+  }
+  if (!/^https?:\/\//i.test(baseUrl!)) {
+    return { ok: false, error: "uazapi_invalid_base_url", errorCode: "INVALID_REQUEST" };
+  }
+
+  const digits = message.toPhone.replace(/\D/g, "");
+  const number = digits.startsWith("55") ? digits : `55${digits}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), dependencies.timeoutMs ?? 12_000);
+  try {
+    const response = await (dependencies.fetchImpl ?? fetch)(`${baseUrl}/send/text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", token: instanceToken! },
+      body: JSON.stringify({ number, text: message.text }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) return uazApiSendError(response.status);
+    const body = await response.json().catch(() => null);
+    return {
+      ok: true,
+      status: response.status,
+      providerMessageId: pickProviderMessageId(body),
+    };
+  } catch (error) {
+    const name = error && typeof error === "object" && "name" in error
+      ? String((error as { name?: unknown }).name ?? "")
+      : "";
+    if (controller.signal.aborted || name === "AbortError") {
+      return { ok: false, error: "uazapi_timeout", errorCode: "TIMEOUT" };
+    }
+    return { ok: false, error: "uazapi_unavailable", errorCode: "PROVIDER_UNAVAILABLE" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function uazApiSendError(status: number): SendResult {
+  if (status === 401 || status === 403) {
+    return { ok: false, status, error: "uazapi_auth_error", errorCode: "AUTH_ERROR" };
+  }
+  if (status === 404) {
+    return { ok: false, status, error: "uazapi_instance_not_found", errorCode: "INSTANCE_NOT_FOUND" };
+  }
+  if (status === 409) {
+    return { ok: false, status, error: "uazapi_not_connected", errorCode: "NOT_CONNECTED" };
+  }
+  if (status === 429) {
+    return { ok: false, status, error: "uazapi_rate_limited", errorCode: "RATE_LIMITED" };
+  }
+  if (status === 400 || status === 422) {
+    return { ok: false, status, error: "uazapi_invalid_request", errorCode: "INVALID_REQUEST" };
+  }
+  if (status >= 500) {
+    return { ok: false, status, error: "uazapi_unavailable", errorCode: "PROVIDER_UNAVAILABLE" };
+  }
+  return { ok: false, status, error: "uazapi_unknown_error", errorCode: "UNKNOWN_PROVIDER_ERROR" };
+}
+
+// deno-lint-ignore no-explicit-any
+export function pickProviderMessageId(body: any): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const candidates = [
+    body.messageId,
+    body.messageid,
+    body.id,
+    body.zaapId,
+    body.messages?.[0]?.id,
+    body.key?.id,
+    body._data?.id?._serialized,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return undefined;
+}

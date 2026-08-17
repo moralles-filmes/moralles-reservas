@@ -22,6 +22,16 @@ describe("gate de provisionamento (spec §2)", () => {
     if (r.ok === false) expect(r.code).toBe(PROVISIONING_BLOCKED_CODE);
   });
 
+  it("libera somente o caminho que comprova token criptografado no Vault", () => {
+    expect(assertProvisioningAllowed("NEW_PROVISION", {
+      credentialsEncryptedAtRest: true,
+    })).toEqual({ ok: true });
+
+    expect(assertProvisioningAllowed("AMBIGUOUS", {
+      credentialsEncryptedAtRest: true,
+    }).ok).toBe(false);
+  });
+
   it("backfill de instância que já existe no fornecedor é PERMITIDO", () => {
     expect(assertProvisioningAllowed("BACKFILL_EXISTING").ok).toBe(true);
   });

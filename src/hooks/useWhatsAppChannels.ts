@@ -2,7 +2,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
-import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
+import type {
+  WhatsAppChannel,
+  WhatsAppProvider,
+  WhatsAppProviderCapabilities,
+} from "@/types/reserva";
+
+export interface WhatsAppProviderMetadata {
+  name: WhatsAppProvider;
+  label: string;
+  capabilities: WhatsAppProviderCapabilities;
+}
 
 export function useWhatsAppChannels(unitId: string) {
   return useQuery({
@@ -34,6 +44,33 @@ export interface ChannelCredentials {
   business_account_id?: string;
   access_token?: string;
   app_secret?: string;
+}
+
+export function useWhatsAppProviderMetadata(unitId: string) {
+  return useQuery({
+    queryKey: ["whatsapp-provider-metadata"],
+    queryFn: async () => {
+      const data = await invokeManageChannels({
+        action: "list_provider_metadata",
+        unit_id: unitId,
+      }) as { providers?: WhatsAppProviderMetadata[] } | null;
+      return data?.providers ?? [];
+    },
+    enabled: !!unitId,
+    staleTime: 30 * 60 * 1000,
+  });
+}
+
+export interface ChannelConnectionResponse {
+  connection?: {
+    channel_id: string | null;
+    status: string;
+    display_phone: string | null;
+    connected_at: string | null;
+    last_health_check_at: string | null;
+    qr_code: string | null;
+  };
+  warnings?: string[];
 }
 
 async function invokeManageChannels(body: Record<string, unknown>) {
@@ -77,12 +114,49 @@ export function useCreateChannel(unitId: string) {
         credentials,
       });
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
-      toast.success("Canal criado. Configure o webhook no painel do provedor.");
+      toast.success(`Canal ${variables.provider} preparado.`);
     },
     onError: (err: Error) => toast.error(err.message),
   });
+}
+
+function useChannelLifecycleAction(
+  unitId: string,
+  action: "connect" | "status" | "begin_switch",
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      channelId,
+      targetProvider,
+    }: {
+      channelId?: string;
+      targetProvider?: WhatsAppProvider;
+    }) => invokeManageChannels({
+      action,
+      unit_id: unitId,
+      ...(channelId ? { channel_id: channelId } : {}),
+      ...(targetProvider ? { target_provider: targetProvider } : {}),
+    }) as Promise<ChannelConnectionResponse>,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+}
+
+export function useConnectChannel(unitId: string) {
+  return useChannelLifecycleAction(unitId, "connect");
+}
+
+export function useRefreshChannelStatus(unitId: string) {
+  return useChannelLifecycleAction(unitId, "status");
+}
+
+export function useBeginChannelSwitch(unitId: string) {
+  return useChannelLifecycleAction(unitId, "begin_switch");
 }
 
 export function useUpdateChannel(unitId: string) {

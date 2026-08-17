@@ -29,8 +29,17 @@ export type ProvisioningIntent = "BACKFILL_EXISTING" | "NEW_PROVISION" | "AMBIGU
  * AMBIGUOUS bloqueia junto com NEW_PROVISION: na dúvida entre "já existe lá
  * fora" e "vamos criar", a direção segura é não autorizar custo novo.
  */
-export function assertProvisioningAllowed(intent: ProvisioningIntent): CoreResult {
+export function assertProvisioningAllowed(
+  intent: ProvisioningIntent,
+  evidence: { credentialsEncryptedAtRest?: boolean } = {},
+): CoreResult {
   if (intent === "BACKFILL_EXISTING") return { ok: true };
+  // Callers antigos permanecem fail-closed. A UazAPI só atravessa a trava
+  // quando o lifecycle comprova que o token será persistido no Vault, nunca
+  // no JSONB de credenciais que originou esta proibição.
+  if (intent === "NEW_PROVISION" && evidence.credentialsEncryptedAtRest === true) {
+    return { ok: true };
+  }
   if (!NEW_REAL_INSTANCE_PROVISIONING_BLOCKED_UNTIL_PHASE_6A) return { ok: true };
   return {
     ok: false,

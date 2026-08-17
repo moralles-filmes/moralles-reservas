@@ -1,6 +1,12 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { type WhatsAppProvider, type ChannelCredentials } from "../_shared/whatsapp-providers.ts";
+import {
+  getWhatsAppProvider,
+  tryGetWhatsAppProvider,
+  listWhatsAppProviderMetadata,
+  type WhatsAppProvider,
+  type ChannelCredentials,
+} from "../_shared/whatsapp-providers.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
 import {
   resolveWhatsAppGateByUnit,
@@ -11,11 +17,24 @@ import {
   checkConnectionAllowance,
   type ConnectionAllowance,
   type ConnectionFundingSource,
+  type ConnectionOperation,
 } from "../_shared/whatsapp-connection-allowance-core.ts";
 import {
   resolveWhatsAppSubscription,
   type WhatsAppSubscriptionFact,
 } from "../_shared/whatsapp-subscription-resolver-core.ts";
+import {
+  UazApiError,
+  type UazInstanceSnapshot,
+} from "../_shared/uazapi-client.ts";
+import { resolveChannelCredentials } from "../_shared/whatsapp-channel-credentials.ts";
+import {
+  normalizeUazConnectionStatus,
+  shouldActivateConnectedChannel,
+  type WhatsAppChannelStatus,
+} from "../_shared/whatsapp-channel-lifecycle-core.ts";
+import { assertProvisioningAllowed } from "../_shared/whatsapp-instance-core.ts";
+import { genRequestId } from "../_shared/security.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -36,6 +55,146 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
     .eq("user_id", userId)
     .maybeSingle();
   return !!data;
+}
+
+const CLIENT_LIFECYCLE_ACTIONS = new Set([
+  "list_client",
+  "connect",
+  "refresh_qr",
+  "status",
+  "disconnect",
+  "restart",
+]);
+
+interface ChannelRow {
+  id: string;
+  unit_id: string;
+  provider: WhatsAppProvider;
+  status: string;
+  credentials: ChannelCredentials | null;
+  webhook_secret: string | null;
+  display_phone: string | null;
+  is_active: boolean | null;
+  instance_token_secret_id: string | null;
+  external_instance_id: string | null;
+  activation_requested_at: string | null;
+  connected_at: string | null;
+  last_health_check_at: string | null;
+  last_error: string | null;
+  provisioning_create_attempted_at: string | null;
+}
+
+function generateWebhookSecret(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function webhookUrlFor(channelId: string, secret?: string | null): string {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const projectRef = supabaseUrl.match(/^https:\/\/([^.]+)\./)?.[1];
+  if (!projectRef) throw new Error("supabase_project_ref_unavailable");
+  const url = new URL(`https://${projectRef}.supabase.co/functions/v1/webhook-whatsapp`);
+  url.searchParams.set("channel", channelId);
+  if (secret) url.searchParams.set("secret", secret);
+  return url.toString();
+}
+
+function displayPhoneFromSnapshot(snapshot: UazInstanceSnapshot): string | null {
+  const digits = (snapshot.jid ?? "").split("@")[0].replace(/\D/g, "");
+  return digits.length >= 10 && digits.length <= 15 ? digits : null;
+}
+
+function clientConnection(
+  channel: Partial<ChannelRow> | null,
+  snapshot?: UazInstanceSnapshot,
+  lifecycleAvailable = channel?.provider
+    ? supportsClientLifecycle(String(channel.provider))
+    : false,
+) {
+  return {
+    channel_id: channel?.id ?? null,
+    status: snapshot
+      ? normalizeUazConnectionStatus(snapshot)
+      : channel?.status ?? "not_configured",
+    display_phone: snapshot ? displayPhoneFromSnapshot(snapshot) : channel?.display_phone ?? null,
+    connected_at: channel?.connected_at ?? null,
+    last_health_check_at: channel?.last_health_check_at ?? null,
+    qr_code: snapshot?.qrCode ?? null,
+    lifecycle_available: lifecycleAvailable,
+  };
+}
+
+function supportsClientLifecycle(provider: string): boolean {
+  const adapter = tryGetWhatsAppProvider(provider);
+  return !!adapter
+    && adapter.capabilities.automaticProvisioning
+    && adapter.capabilities.qrConnection;
+}
+
+function managedLifecycle(provider: WhatsAppProvider) {
+  const lifecycle = getWhatsAppProvider(provider).lifecycle;
+  if (!lifecycle) {
+    throw new ChannelActionError(
+      409,
+      "MANUAL_PROVIDER_LIFECYCLE",
+      "Esta conexão é administrada pelo suporte.",
+    );
+  }
+  return lifecycle;
+}
+
+async function memberLifecycleRole(userId: string, unitId: string): Promise<"owner" | "gerente" | null> {
+  const { data, error } = await supabase
+    .from("unit_members")
+    .select("role")
+    .eq("user_id", userId)
+    .eq("unit_id", unitId)
+    .in("role", ["owner", "gerente"])
+    .maybeSingle();
+  if (error) return null;
+  return data?.role === "owner" || data?.role === "gerente" ? data.role : null;
+}
+
+async function loadChannel(unitId: string, channelId: string): Promise<ChannelRow | null> {
+  const { data } = await supabase
+    .from("whatsapp_channels")
+    .select("id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at")
+    .eq("id", channelId)
+    .eq("unit_id", unitId)
+    .maybeSingle();
+  return data as ChannelRow | null;
+}
+
+async function findUazChannel(unitId: string): Promise<ChannelRow | null> {
+  const { data } = await supabase
+    .from("whatsapp_channels")
+    .select("id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at")
+    .eq("unit_id", unitId)
+    .eq("provider", "uazapi")
+    .maybeSingle();
+  return data as ChannelRow | null;
+}
+
+async function createUazPlaceholder(unitId: string): Promise<ChannelRow> {
+  const { data, error } = await supabase
+    .from("whatsapp_channels")
+    .insert({
+      unit_id: unitId,
+      provider: "uazapi",
+      credentials: {},
+      webhook_secret: generateWebhookSecret(),
+      status: "not_configured",
+      is_active: false,
+    })
+    .select("id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at")
+    .single();
+  if (error?.code === "23505") {
+    const concurrent = await findUazChannel(unitId);
+    if (concurrent) return concurrent;
+  }
+  if (error || !data) throw new Error("uazapi_channel_create_failed");
+  return data as ChannelRow;
 }
 
 /**
@@ -127,6 +286,7 @@ function providerConnectionRefKnown(
 ): boolean {
   const filled = (v: unknown) => typeof v === "string" && v.trim() !== "";
   if (provider === "zapi") return filled(creds.instance_id);
+  if (provider === "uazapi") return filled(creds.instance_id);
   if (provider === "waha") return filled(creds.base_url);
   return filled(creds.phone_number_id); // official (Meta)
 }
@@ -153,6 +313,9 @@ async function checkChannelConnectionAllowance(
   unitId: string,
   provider: WhatsAppProvider,
   credentials: ChannelCredentials,
+  operation: ConnectionOperation = "BACKFILL_EXISTING",
+  adminDecisionRecorded = false,
+  replacementConnectionRecorded = false,
 ): Promise<AllowanceCheck> {
   const { data: unit, error: unitErr } = await supabase
     .from("units")
@@ -272,12 +435,459 @@ async function checkChannelConnectionAllowance(
     allowance: checkConnectionAllowance({
       fundingSource,
       includedConnections,
-      operation: "BACKFILL_EXISTING",
+      operation,
       activeInstanceCount: countRes.count ?? 0,
       provisioningAmbiguous,
       providerInstanceRefKnown: providerConnectionRefKnown(provider, credentials),
+      adminDecisionRecorded,
+      replacementConnectionRecorded,
     }),
   };
+}
+
+class ChannelActionError extends Error {
+  constructor(
+    readonly httpStatus: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function firstRpcRow<T>(data: unknown): T | null {
+  if (Array.isArray(data)) return (data[0] as T | undefined) ?? null;
+  return data && typeof data === "object" ? data as T : null;
+}
+
+function publicErrorForUaz(error: unknown): ChannelActionError {
+  if (error instanceof ChannelActionError) return error;
+  if (error instanceof UazApiError) {
+    const status = error.code === "CAPACITY_EXCEEDED" || error.code === "RATE_LIMITED"
+      ? 429
+      : error.code === "INVALID_REQUEST"
+        ? 400
+        : 503;
+    const message = error.code === "CAPACITY_EXCEEDED"
+      ? "Não há capacidade disponível para conectar outro número agora. Fale com o suporte."
+      : error.code === "AUTH_ERROR"
+        ? "A integração está temporariamente indisponível. Fale com o suporte."
+        : "Não foi possível acessar o serviço de conexão agora. Tente novamente.";
+    return new ChannelActionError(status, error.code, message);
+  }
+  return new ChannelActionError(
+    500,
+    "CHANNEL_LIFECYCLE_FAILED",
+    "Não foi possível atualizar a conexão. Tente novamente.",
+  );
+}
+
+async function getUnitContext(unitId: string): Promise<{
+  organizationId: string;
+  defaultProvider: string;
+}> {
+  const { data: unit, error } = await supabase
+    .from("units")
+    .select("organization_id, organizations!inner(default_whatsapp_provider)")
+    .eq("id", unitId)
+    .maybeSingle();
+  if (error || !unit?.organization_id) {
+    throw new ChannelActionError(404, "UNIT_NOT_FOUND", "Unidade não encontrada.");
+  }
+  const organization = Array.isArray(unit.organizations)
+    ? unit.organizations[0]
+    : unit.organizations;
+  return {
+    organizationId: unit.organization_id as string,
+    defaultProvider: String(organization?.default_whatsapp_provider ?? "zapi"),
+  };
+}
+
+async function assertProvisioningCommerciallyAllowed(
+  unitId: string,
+  targetChannel: ChannelRow,
+  operation: ConnectionOperation,
+  providerRef: string | null,
+  platformAdminDecision: boolean,
+): Promise<void> {
+  if (operation === "NEW_PROVISIONING") {
+    const structural = assertProvisioningAllowed("NEW_PROVISION", {
+      credentialsEncryptedAtRest: true,
+    });
+    if (structural.ok === false) {
+      throw new ChannelActionError(403, structural.code, structural.message);
+    }
+
+    const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
+    if (!gate || !gate.provisioning.allowed) {
+      const message = !gate || gate.provisioning.blockReason === "STATE_READ_FAILED"
+        ? PROVISIONING_UNVERIFIABLE
+        : NEW_PROVISIONING_MESSAGE[gate.state];
+      throw new ChannelActionError(403, "PROVISIONING_NOT_ALLOWED", message);
+    }
+  }
+
+  const context = await getUnitContext(unitId);
+  // O default UazAPI só pode ser escrito pela EF exclusiva de platform_admin;
+  // ele é a decisão administrativa durável que autoriza o owner/gerente a
+  // completar a conexão sem transformar a cortesia em autorização implícita.
+  const adminDecisionRecorded = platformAdminDecision || context.defaultProvider === "uazapi";
+  let replacementConnectionRecorded = false;
+  if (operation === "NEW_PROVISIONING" && targetChannel.activation_requested_at) {
+    const { data: explicitPrevious, error: explicitPreviousError } = await supabase
+      .from("whatsapp_channels")
+      .select("id")
+      .eq("unit_id", unitId)
+      .eq("is_active", true)
+      .neq("id", targetChannel.id)
+      .maybeSingle();
+    if (explicitPreviousError) {
+      throw new ChannelActionError(503, "ALLOWANCE_UNAVAILABLE", PROVISIONING_UNVERIFIABLE);
+    }
+    let previousId = explicitPrevious?.id ?? null;
+    if (!previousId) {
+      const { data: legacyPrevious, error: legacyPreviousError } = await supabase
+        .from("whatsapp_channels")
+        .select("id")
+        .eq("unit_id", unitId)
+        .is("is_active", null)
+        .eq("status", "connected")
+        .neq("id", targetChannel.id)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (legacyPreviousError) {
+        throw new ChannelActionError(503, "ALLOWANCE_UNAVAILABLE", PROVISIONING_UNVERIFIABLE);
+      }
+      previousId = legacyPrevious?.id ?? null;
+    }
+    if (previousId) {
+      const { count, error } = await supabase
+        .from("whatsapp_instances")
+        .select("id", { count: "exact", head: true })
+        .eq("channel_id", previousId)
+        .neq("lifecycle_state", "ENDED");
+      if (error) {
+        throw new ChannelActionError(503, "ALLOWANCE_UNAVAILABLE", PROVISIONING_UNVERIFIABLE);
+      }
+      replacementConnectionRecorded = (count ?? 0) === 1;
+    }
+  }
+  const allowance = await checkChannelConnectionAllowance(
+    unitId,
+    "uazapi",
+    providerRef ? ({ instance_id: providerRef } as ChannelCredentials) : {},
+    operation,
+    adminDecisionRecorded,
+    replacementConnectionRecorded,
+  );
+  if (allowance.ok === false) {
+    throw new ChannelActionError(
+      403,
+      allowance.reason === "AMBIGUOUS" ? "SUBSCRIPTION_AMBIGUOUS" : "ALLOWANCE_UNAVAILABLE",
+      allowance.reason === "AMBIGUOUS"
+        ? ALLOWANCE_DENIED_MESSAGE.SUBSCRIPTION_AMBIGUOUS
+        : PROVISIONING_UNVERIFIABLE,
+    );
+  }
+  if (allowance.allowance.allowed === false) {
+    throw new ChannelActionError(
+      403,
+      allowance.allowance.reasonCode,
+      ALLOWANCE_DENIED_MESSAGE[allowance.allowance.reasonCode],
+    );
+  }
+}
+
+async function ensureInstanceInventory(
+  channel: ChannelRow,
+  providerInstanceId: string,
+  actorId: string,
+): Promise<boolean> {
+  const context = await getUnitContext(channel.unit_id);
+  const { data: existing, error: readError } = await supabase
+    .from("whatsapp_instances")
+    .select("id, organization_id, unit_id, channel_id")
+    .eq("provider", "uazapi")
+    .eq("provider_instance_ref", providerInstanceId)
+    .maybeSingle();
+  if (readError) return false;
+  if (existing) {
+    return existing.organization_id === context.organizationId
+      && existing.unit_id === channel.unit_id
+      && existing.channel_id === channel.id;
+  }
+
+  const { error } = await supabase.from("whatsapp_instances").insert({
+    organization_id: context.organizationId,
+    unit_id: channel.unit_id,
+    channel_id: channel.id,
+    provider: "uazapi",
+    provider_instance_ref: providerInstanceId,
+    lifecycle_state: "ACTIVE",
+    cycle_source: "UNKNOWN",
+    created_by: actorId,
+    updated_by: actorId,
+  });
+  return !error;
+}
+
+async function recordUazStatus(
+  channel: ChannelRow,
+  snapshot: UazInstanceSnapshot,
+  actorId: string,
+  requestId: string,
+  errorCode?: string | null,
+  eventType?: "disconnect" | "restart" | "status_changed" | null,
+): Promise<ChannelRow> {
+  const normalized = normalizeUazConnectionStatus(snapshot);
+  const { data, error } = await supabase.rpc("record_whatsapp_channel_status", {
+    p_unit_id: channel.unit_id,
+    p_channel_id: channel.id,
+    p_status: normalized,
+    p_display_phone: displayPhoneFromSnapshot(snapshot),
+    p_error_code: errorCode ?? null,
+    p_actor_id: actorId,
+    p_request_id: requestId,
+    p_event_type: eventType ?? null,
+  });
+  if (error) throw new Error("channel_status_persist_failed");
+  return (firstRpcRow<ChannelRow>(data) ?? await loadChannel(channel.unit_id, channel.id) ?? channel);
+}
+
+async function maybeActivateConnectedChannel(
+  channel: ChannelRow,
+  actorId: string,
+  requestId: string,
+): Promise<ChannelRow> {
+  if (channel.status !== "connected") return channel;
+  const { data: active } = await supabase
+    .from("whatsapp_channels")
+    .select("id")
+    .eq("unit_id", channel.unit_id)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (shouldActivateConnectedChannel({
+    targetChannelId: channel.id,
+    explicitActiveChannelId: active?.id ?? null,
+    activationRequested: !!channel.activation_requested_at,
+  })) {
+    const { error } = await supabase.rpc("activate_whatsapp_channel", {
+      p_unit_id: channel.unit_id,
+      p_channel_id: channel.id,
+      p_actor_id: actorId,
+      p_request_id: requestId,
+    });
+    if (error) throw new Error("channel_activation_failed");
+    return await loadChannel(channel.unit_id, channel.id) ?? channel;
+  }
+  return channel;
+}
+
+async function getUazSnapshot(
+  channel: ChannelRow,
+  actorId: string,
+  requestId: string,
+): Promise<{ channel: ChannelRow; snapshot: UazInstanceSnapshot }> {
+  const credentials = await resolveChannelCredentials(supabase, channel);
+  const client = managedLifecycle(channel.provider);
+  try {
+    const snapshot = await client.status(credentials.instance_token ?? "");
+    let updated = await recordUazStatus(channel, snapshot, actorId, requestId);
+    updated = await maybeActivateConnectedChannel(updated, actorId, requestId);
+    return { channel: updated, snapshot };
+  } catch (error) {
+    if (error instanceof UazApiError) {
+      await supabase.rpc("record_whatsapp_channel_status", {
+        p_unit_id: channel.unit_id,
+        p_channel_id: channel.id,
+        p_status: "provider_error",
+        p_display_phone: null,
+        p_error_code: error.code,
+        p_actor_id: actorId,
+        p_request_id: requestId,
+      });
+    }
+    throw error;
+  }
+}
+
+async function connectUazChannel(
+  initialChannel: ChannelRow,
+  actorId: string,
+  requestId: string,
+  platformAdminDecision: boolean,
+): Promise<{ connection: ReturnType<typeof clientConnection>; warnings: string[] }> {
+  const { data: claimData, error: claimError } = await supabase.rpc(
+    "claim_whatsapp_channel_provisioning",
+    {
+      p_channel_id: initialChannel.id,
+      p_actor_id: actorId,
+      p_stale_after_seconds: 120,
+      p_request_id: requestId,
+    },
+  );
+  if (claimError) throw new Error("channel_provisioning_claim_failed");
+  const claim = firstRpcRow<{
+    claimed: boolean;
+    claim_id: string | null;
+    status: string;
+    instance_token_secret_id: string | null;
+  }>(claimData);
+  if (!claim) throw new Error("channel_provisioning_claim_missing");
+
+  if (!claim.claimed) {
+    if (claim.status === "connected" && initialChannel.instance_token_secret_id) {
+      const current = await getUazSnapshot(initialChannel, actorId, requestId);
+      return { connection: clientConnection(current.channel, current.snapshot), warnings: [] };
+    }
+    const current = await loadChannel(initialChannel.unit_id, initialChannel.id) ?? initialChannel;
+    return { connection: clientConnection(current), warnings: [] };
+  }
+  if (!claim.claim_id) throw new Error("channel_provisioning_claim_id_missing");
+
+  const warnings: string[] = [];
+  const client = managedLifecycle(initialChannel.provider);
+  let providerInstance: UazInstanceSnapshot | null = null;
+  let instanceToken: string | null = null;
+
+  try {
+    const claimedChannel = await loadChannel(initialChannel.unit_id, initialChannel.id) ?? initialChannel;
+    if (claimedChannel.instance_token_secret_id) {
+      const credentials = await resolveChannelCredentials(supabase, claimedChannel);
+      instanceToken = credentials.instance_token ?? null;
+      providerInstance = claimedChannel.external_instance_id
+        ? {
+            id: claimedChannel.external_instance_id,
+            name: null,
+            token: instanceToken,
+            adminField01: claimedChannel.id,
+            adminField02: claimedChannel.unit_id,
+            status: claimedChannel.status,
+            connected: false,
+            loggedIn: false,
+            jid: null,
+            qrCode: null,
+            pairCode: null,
+          }
+        : (await client.listInstances())
+          .find((instance) => instance.adminField01 === claimedChannel.id) ?? null;
+      if (!providerInstance) {
+        throw new UazApiError("INSTANCE_NOT_FOUND", "A instância vinculada não foi encontrada.");
+      }
+    } else {
+      const existing = (await client.listInstances())
+        .find((instance) => instance.adminField01 === claimedChannel.id) ?? null;
+      const operation: ConnectionOperation = existing ? "BACKFILL_EXISTING" : "NEW_PROVISIONING";
+      await assertProvisioningCommerciallyAllowed(
+        claimedChannel.unit_id,
+        claimedChannel,
+        operation,
+        existing?.id ?? null,
+        platformAdminDecision,
+      );
+
+      if (!existing && claimedChannel.provisioning_create_attempted_at) {
+        const elapsed = Date.now() - new Date(claimedChannel.provisioning_create_attempted_at).getTime();
+        if (Number.isFinite(elapsed) && elapsed < 5 * 60_000) {
+          warnings.push("PROVISIONING_RECONCILIATION_PENDING");
+          return {
+            connection: clientConnection(claimedChannel),
+            warnings,
+          };
+        }
+      }
+
+      if (existing) {
+        providerInstance = existing;
+      } else {
+        const { data: attemptFence, error: attemptError } = await supabase
+          .from("whatsapp_channels")
+          .update({ provisioning_create_attempted_at: new Date().toISOString() })
+          .eq("id", claimedChannel.id)
+          .eq("provisioning_claim_id", claim.claim_id)
+          .select("id")
+          .maybeSingle();
+        if (attemptError || !attemptFence) {
+          throw new ChannelActionError(409, "STALE_PROVISIONING_CLAIM", "A conexão já está sendo atualizada.");
+        }
+        providerInstance = await client.provision({
+          name: `moralles-${claimedChannel.unit_id.slice(0, 8)}-${claimedChannel.id.slice(0, 8)}`,
+          adminField01: claimedChannel.id,
+          adminField02: claimedChannel.unit_id,
+        });
+      }
+      instanceToken = providerInstance.token;
+      if (!instanceToken) {
+        throw new UazApiError(
+          "AUTH_ERROR",
+          "A instância reconciliada não expõe token para configuração automática.",
+        );
+      }
+
+      const { error: storeError } = await supabase.rpc("store_whatsapp_channel_instance_token", {
+        p_channel_id: claimedChannel.id,
+        p_claim_id: claim.claim_id,
+        p_token: instanceToken,
+        p_actor_id: actorId,
+        p_request_id: requestId,
+      });
+      if (storeError) throw new Error("channel_token_store_failed");
+
+    }
+
+    if (!instanceToken || !providerInstance) throw new Error("uazapi_instance_not_resolved");
+    if (!(await ensureInstanceInventory(claimedChannel, providerInstance.id, actorId))) {
+      warnings.push("INSTANCE_INVENTORY_RECONCILIATION_REQUIRED");
+    }
+    await client.configureWebhook(instanceToken, {
+      url: webhookUrlFor(initialChannel.id, initialChannel.webhook_secret),
+    });
+    const snapshot = await client.connect(instanceToken);
+    const normalized = normalizeUazConnectionStatus(snapshot);
+    const { data: releasedData, error: releaseError } = await supabase.rpc(
+      "release_whatsapp_channel_provisioning",
+      {
+        p_channel_id: initialChannel.id,
+        p_claim_id: claim.claim_id,
+        p_status: normalized,
+        p_external_instance_id: providerInstance.id,
+        p_display_phone: displayPhoneFromSnapshot(snapshot),
+        p_error_code: null,
+        p_actor_id: actorId,
+        p_request_id: requestId,
+      },
+    );
+    if (releaseError) throw new Error("channel_provisioning_release_failed");
+    let released = firstRpcRow<ChannelRow>(releasedData)
+      ?? await loadChannel(initialChannel.unit_id, initialChannel.id)
+      ?? initialChannel;
+    released = await maybeActivateConnectedChannel(released, actorId, requestId);
+    return { connection: clientConnection(released, snapshot), warnings };
+  } catch (error) {
+    if (
+      error instanceof UazApiError
+      && ["TIMEOUT", "PROVIDER_UNAVAILABLE", "UNKNOWN_PROVIDER_ERROR"].includes(error.code)
+      && !providerInstance
+    ) {
+      warnings.push("PROVISIONING_RECONCILIATION_PENDING");
+      const current = await loadChannel(initialChannel.unit_id, initialChannel.id) ?? initialChannel;
+      return { connection: clientConnection(current), warnings };
+    }
+    const code = error instanceof UazApiError ? error.code : "CHANNEL_LIFECYCLE_FAILED";
+    await supabase.rpc("release_whatsapp_channel_provisioning", {
+      p_channel_id: initialChannel.id,
+      p_claim_id: claim.claim_id,
+      p_status: "provider_error",
+      p_external_instance_id: providerInstance?.id ?? null,
+      p_display_phone: null,
+      p_error_code: code,
+      p_actor_id: actorId,
+      p_request_id: requestId,
+    });
+    throw error;
+  }
 }
 
 serve(async (req) => {
@@ -303,8 +913,316 @@ serve(async (req) => {
 
     if (!unitId) return jsonResponse(req, { error: "unit_id é obrigatório." }, 400);
 
-    if (!(await isPlatformAdmin(callerId))) {
-      return jsonResponse(req, { error: "Apenas administradores da plataforma." }, 403);
+    const platformAdmin = await isPlatformAdmin(callerId);
+    if (!platformAdmin) {
+      if (!CLIENT_LIFECYCLE_ACTIONS.has(String(action))) {
+        return jsonResponse(req, { error: "Apenas administradores da plataforma." }, 403);
+      }
+      if (!(await memberLifecycleRole(callerId, unitId))) {
+        return jsonResponse(req, { error: "Apenas proprietários e gerentes da unidade." }, 403);
+      }
+    }
+    const requestId = genRequestId();
+
+    const resolveLifecycleChannel = async (createWhenMissing: boolean): Promise<ChannelRow | null> => {
+      const requestedId = String(body.channel_id ?? "").trim();
+      let requested: ChannelRow | null = null;
+      if (requestedId) {
+        requested = await loadChannel(unitId, requestedId);
+        if (!requested) throw new ChannelActionError(404, "CHANNEL_NOT_FOUND", "Canal não encontrado.");
+        if (requested.provider !== "uazapi") {
+          throw new ChannelActionError(
+            409,
+            "MANUAL_PROVIDER_LIFECYCLE",
+            "Esta conexão é administrada pelo suporte.",
+          );
+        }
+      }
+
+      const existing = requested ?? await findUazChannel(unitId);
+      const { data: active, error: activeError } = await supabase
+        .from("whatsapp_channels")
+        .select("id, provider")
+        .eq("unit_id", unitId)
+        .eq("is_active", true)
+        .maybeSingle();
+      if (activeError) {
+        throw new ChannelActionError(503, "ACTIVE_CHANNEL_UNAVAILABLE", "Não foi possível validar o canal ativo.");
+      }
+      if (!platformAdmin && active && active.provider !== "uazapi") {
+        throw new ChannelActionError(
+          409,
+          "PROVIDER_SWITCH_REQUIRES_PLATFORM_ADMIN",
+          "A troca da conexão precisa ser preparada pelo suporte.",
+        );
+      }
+
+      if (!platformAdmin && existing && active?.id !== existing.id && !existing.activation_requested_at) {
+        const context = await getUnitContext(unitId);
+        if (active || !supportsClientLifecycle(context.defaultProvider)) {
+          throw new ChannelActionError(
+            409,
+            "UAZAPI_NOT_SELECTED",
+            "A conexão automática ainda não está habilitada para esta empresa.",
+          );
+        }
+      }
+
+      if (existing) return existing;
+      if (!createWhenMissing) return null;
+      if (!platformAdmin) {
+        const context = await getUnitContext(unitId);
+        if (active || !supportsClientLifecycle(context.defaultProvider)) {
+          throw new ChannelActionError(
+            409,
+            "UAZAPI_NOT_SELECTED",
+            "A conexão automática ainda não está habilitada para esta empresa.",
+          );
+        }
+      }
+      return await createUazPlaceholder(unitId);
+    };
+
+    // ── client-safe lifecycle ────────────────────────────────────────────────
+    if (action === "list_client") {
+      const { data, error } = await supabase
+        .from("whatsapp_channels")
+        .select("id, unit_id, provider, status, display_phone, is_active, connected_at, last_health_check_at, created_at")
+        .eq("unit_id", unitId)
+        .order("created_at", { ascending: true });
+      if (error) return jsonResponse(req, { error: "Falha ao consultar a conexão." }, 500);
+      const rows = (data ?? []) as Array<Partial<ChannelRow> & { created_at?: string }>;
+      const selected = rows.find((row) => row.is_active === true)
+        ?? rows.find((row) => row.is_active === null && row.status === "connected")
+        ?? rows.find((row) => row.provider === "uazapi")
+        ?? rows.find((row) => row.is_active === null)
+        ?? null;
+      const lifecycleAvailable = selected
+        ? supportsClientLifecycle(String(selected.provider))
+        : supportsClientLifecycle((await getUnitContext(unitId)).defaultProvider);
+      return jsonResponse(req, {
+        success: true,
+        connection: clientConnection(selected, undefined, lifecycleAvailable),
+      });
+    }
+
+    if (["connect", "refresh_qr"].includes(String(action))) {
+      try {
+        const channel = await resolveLifecycleChannel(true);
+        if (!channel) throw new Error("uazapi_channel_missing");
+        const result = await connectUazChannel(
+          channel,
+          callerId,
+          requestId,
+          platformAdmin,
+        );
+        return jsonResponse(req, { success: true, ...result });
+      } catch (error) {
+        const safe = publicErrorForUaz(error);
+        console.error("manage-channels:uazapi connect", JSON.stringify({
+          requestId,
+          unitId,
+          code: safe.code,
+        }));
+        return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
+      }
+    }
+
+    if (action === "status") {
+      try {
+        const channel = await resolveLifecycleChannel(false);
+        if (!channel) {
+          const context = await getUnitContext(unitId);
+          return jsonResponse(req, {
+            success: true,
+            connection: clientConnection(null, undefined, supportsClientLifecycle(context.defaultProvider)),
+          });
+        }
+        if (channel.status === "provisioning" && !channel.instance_token_secret_id) {
+          return jsonResponse(req, { success: true, connection: clientConnection(channel) });
+        }
+        const current = await getUazSnapshot(channel, callerId, requestId);
+        return jsonResponse(req, {
+          success: true,
+          connection: clientConnection(current.channel, current.snapshot),
+        });
+      } catch (error) {
+        const safe = publicErrorForUaz(error);
+        console.error("manage-channels:uazapi status", JSON.stringify({ requestId, unitId, code: safe.code }));
+        return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
+      }
+    }
+
+    if (action === "disconnect") {
+      try {
+        const channel = await resolveLifecycleChannel(false);
+        if (!channel) return jsonResponse(req, { success: true, connection: clientConnection(null) });
+        const credentials = await resolveChannelCredentials(supabase, channel);
+        await managedLifecycle(channel.provider).disconnect(credentials.instance_token ?? "");
+        const snapshot: UazInstanceSnapshot = {
+          id: channel.external_instance_id ?? "",
+          name: null,
+          token: null,
+          adminField01: channel.id,
+          adminField02: channel.unit_id,
+          status: "disconnected",
+          connected: false,
+          loggedIn: false,
+          jid: null,
+          qrCode: null,
+          pairCode: null,
+        };
+        let updated: ChannelRow;
+        try {
+          updated = await recordUazStatus(channel, snapshot, callerId, requestId, null, "disconnect");
+        } catch {
+          return jsonResponse(req, {
+            success: true,
+            external_success: true,
+            local_success: false,
+            warning: "CHANNEL_STATUS_RECONCILIATION_REQUIRED",
+            connection: clientConnection({ ...channel, status: "disconnected" }, snapshot),
+          }, 202);
+        }
+        return jsonResponse(req, { success: true, connection: clientConnection(updated, snapshot) });
+      } catch (error) {
+        const safe = publicErrorForUaz(error);
+        return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
+      }
+    }
+
+    if (action === "restart") {
+      try {
+        const channel = await resolveLifecycleChannel(false);
+        if (!channel) throw new ChannelActionError(404, "CHANNEL_NOT_FOUND", "Canal não encontrado.");
+        const credentials = await resolveChannelCredentials(supabase, channel);
+        await managedLifecycle(channel.provider).restart(credentials.instance_token ?? "");
+        const disconnected: UazInstanceSnapshot = {
+          id: channel.external_instance_id ?? "",
+          name: null,
+          token: null,
+          adminField01: channel.id,
+          adminField02: channel.unit_id,
+          status: "disconnected",
+          connected: false,
+          loggedIn: false,
+          jid: null,
+          qrCode: null,
+          pairCode: null,
+        };
+        let resetChannel: ChannelRow;
+        try {
+          resetChannel = await recordUazStatus(channel, disconnected, callerId, requestId, null, "restart");
+        } catch {
+          return jsonResponse(req, {
+            success: true,
+            external_success: true,
+            local_success: false,
+            warning: "CHANNEL_STATUS_RECONCILIATION_REQUIRED",
+            connection: clientConnection({ ...channel, status: "disconnected" }, disconnected),
+          }, 202);
+        }
+        const result = await connectUazChannel(resetChannel, callerId, requestId, platformAdmin);
+        return jsonResponse(req, { success: true, ...result });
+      } catch (error) {
+        const safe = publicErrorForUaz(error);
+        return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
+      }
+    }
+
+    // ── switch seguro (platform admin) ──────────────────────────────────────
+    if (action === "begin_switch") {
+      const targetProvider = String(body.target_provider ?? "") as WhatsAppProvider;
+      if (!["zapi", "uazapi", "waha", "official"].includes(targetProvider)) {
+        return jsonResponse(req, { error: "Provedor alvo inválido." }, 400);
+      }
+
+      try {
+        let target: ChannelRow | null = null;
+        const requestedTargetId = String(body.channel_id ?? "").trim();
+        if (requestedTargetId) {
+          target = await loadChannel(unitId, requestedTargetId);
+          if (!target || target.provider !== targetProvider) {
+            throw new ChannelActionError(404, "TARGET_CHANNEL_NOT_FOUND", "Canal alvo não encontrado.");
+          }
+        } else if (targetProvider === "uazapi") {
+          target = await findUazChannel(unitId) ?? await createUazPlaceholder(unitId);
+        } else {
+          const { data } = await supabase
+            .from("whatsapp_channels")
+            .select("id")
+            .eq("unit_id", unitId)
+            .eq("provider", targetProvider)
+            .order("created_at", { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          if (data?.id) target = await loadChannel(unitId, data.id);
+        }
+        if (!target) {
+          throw new ChannelActionError(
+            409,
+            "TARGET_CHANNEL_NOT_CONFIGURED",
+            "Configure e teste o canal alvo antes de iniciar a troca.",
+          );
+        }
+
+        const { error: intentError } = await supabase.rpc(
+          "request_whatsapp_channel_activation",
+          {
+            p_unit_id: unitId,
+            p_channel_id: target.id,
+            p_actor_id: callerId,
+            p_request_id: requestId,
+          },
+        );
+        if (intentError) throw new Error("activation_request_failed");
+        target = await loadChannel(unitId, target.id) ?? target;
+
+        const targetAdapter = getWhatsAppProvider(target.provider);
+        if (targetAdapter.capabilities.automaticProvisioning) {
+          const result = await connectUazChannel(target, callerId, requestId, true);
+          return jsonResponse(req, { success: true, ...result });
+        }
+        if (!targetAdapter.getConnectionStatus) {
+          throw new ChannelActionError(
+            409,
+            "TARGET_HEALTH_UNAVAILABLE",
+            "Teste o canal alvo antes de concluir a troca.",
+          );
+        }
+        const targetCredentials = await resolveChannelCredentials(supabase, target);
+        const health = await targetAdapter.getConnectionStatus(targetCredentials);
+        if (!health.connected) {
+          throw new ChannelActionError(
+            409,
+            "TARGET_NOT_CONNECTED",
+            "O canal alvo não está conectado. O canal atual foi preservado.",
+          );
+        }
+        const { error: healthWriteError } = await supabase
+          .from("whatsapp_channels")
+          .update({
+            status: "connected",
+            last_health_check_at: new Date().toISOString(),
+            last_error: null,
+            ...(health.displayPhone ? { display_phone: health.displayPhone.replace(/\D/g, "") } : {}),
+          })
+          .eq("id", target.id)
+          .eq("unit_id", unitId);
+        if (healthWriteError) throw new Error("target_health_persist_failed");
+        const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {
+          p_unit_id: unitId,
+          p_channel_id: target.id,
+          p_actor_id: callerId,
+          p_request_id: requestId,
+        });
+        if (activateError) throw new Error("channel_activation_failed");
+        target = await loadChannel(unitId, target.id) ?? target;
+        return jsonResponse(req, { success: true, channel: target });
+      } catch (error) {
+        const safe = publicErrorForUaz(error);
+        return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
+      }
     }
 
     // ── list ──────────────────────────────────────────────────────────────────
@@ -314,7 +1232,7 @@ serve(async (req) => {
     if (action === "list") {
       const { data, error } = await supabase
         .from("whatsapp_channels")
-        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, created_at, updated_at")
+        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, is_active, connected_at, last_health_check_at, activation_requested_at, created_at, updated_at")
         .eq("unit_id", unitId)
         .order("created_at", { ascending: true });
 
@@ -322,11 +1240,37 @@ serve(async (req) => {
         console.error("manage-channels:list", error);
         return jsonResponse(req, { error: "Falha ao listar canais." }, 500);
       }
-      return jsonResponse(req, { success: true, channels: data ?? [] });
+      return jsonResponse(req, {
+        success: true,
+        channels: (data ?? []).map((channel) => ({
+          ...channel,
+          capabilities: getWhatsAppProvider(channel.provider).capabilities,
+        })),
+      });
+    }
+
+    if (action === "list_provider_metadata") {
+      return jsonResponse(req, {
+        success: true,
+        providers: listWhatsAppProviderMetadata(),
+      });
     }
 
     // ── create ─────────────────────────────────────────────────────────────────
     if (action === "create") {
+      if (body.provider === "uazapi") {
+        try {
+          const existing = await findUazChannel(unitId);
+          const channel = existing ?? await createUazPlaceholder(unitId);
+          return jsonResponse(req, {
+            success: true,
+            channel: clientConnection(channel),
+          });
+        } catch (error) {
+          console.error("manage-channels:create uazapi", error);
+          return jsonResponse(req, { error: "Falha ao preparar canal UazAPI." }, 500);
+        }
+      }
       // Gate de NOVO provisionamento: só ACTIVE e OVERRIDE_ACTIVE autorizam
       // gerar custo externo novo. GRACE_PERIOD preserva a instância existente
       // mas não cria outra; LEGACY_GRANDFATHERED preserva o uso existente mas
@@ -448,7 +1392,7 @@ serve(async (req) => {
 
       const { data: existing, error: fetchErr } = await supabase
         .from("whatsapp_channels")
-        .select("credentials")
+        .select("provider, credentials")
         .eq("id", channelId)
         .eq("unit_id", unitId)
         .maybeSingle();
@@ -458,6 +1402,11 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao carregar canal." }, 500);
       }
       if (!existing) return jsonResponse(req, { error: "Canal não encontrado." }, 404);
+      if (existing.provider === "uazapi") {
+        return jsonResponse(req, {
+          error: "Credenciais UazAPI são gerenciadas automaticamente no Vault.",
+        }, 409);
+      }
 
       // Whitelist de chaves conhecidas — evita injeção de campos arbitrários no JSONB.
       const ALLOWED_CRED_KEYS = [
@@ -508,6 +1457,19 @@ serve(async (req) => {
     if (action === "rotate_secret") {
       const channelId = String(body.channel_id ?? "");
       if (!channelId) return jsonResponse(req, { error: "channel_id é obrigatório." }, 400);
+
+      const { data: rotateTarget } = await supabase
+        .from("whatsapp_channels")
+        .select("provider")
+        .eq("id", channelId)
+        .eq("unit_id", unitId)
+        .maybeSingle();
+      if (!rotateTarget) return jsonResponse(req, { error: "Canal não encontrado." }, 404);
+      if (rotateTarget.provider === "uazapi") {
+        return jsonResponse(req, {
+          error: "O webhook UazAPI é gerenciado automaticamente; reconecte para reconfigurá-lo.",
+        }, 409);
+      }
 
       const newSecret = Array.from(
         crypto.getRandomValues(new Uint8Array(32))
@@ -581,46 +1543,16 @@ serve(async (req) => {
 
       let connected = false;
       let errorMsg: string | null = null;
+      let displayPhone: string | null = null;
 
       try {
-        if (provider === "zapi") {
-          const { instance_id, token, client_token } = creds;
-          if (!instance_id || !token) throw new Error("Credenciais Z-API incompletas.");
-          const url = `https://api.z-api.io/instances/${instance_id}/token/${token}/status`;
-          const res = await fetch(url, {
-            headers: client_token ? { "Client-Token": client_token } : {},
-          });
-          connected = res.ok;
-          if (!connected) errorMsg = `HTTP ${res.status}`;
-        } else if (provider === "waha") {
-          const { base_url, api_key, session_name = "default" } = creds;
-          if (!base_url) throw new Error("URL base WAHA não configurada.");
-          const url = `${base_url.replace(/\/$/, "")}/api/sessions/${session_name}`;
-          const res = await fetch(url, {
-            headers: api_key ? { "X-Api-Key": api_key } : {},
-          });
-          connected = res.ok;
-          if (!connected) errorMsg = `HTTP ${res.status}`;
-        } else if (provider === "official") {
-          const { phone_number_id, access_token } = creds;
-          if (!phone_number_id || !access_token) throw new Error("Credenciais Meta incompletas.");
-          const url = `https://graph.facebook.com/v19.0/${phone_number_id}?fields=id,display_phone_number`;
-          const res = await fetch(url, {
-            headers: { "Authorization": `Bearer ${access_token}` },
-          });
-          connected = res.ok;
-          if (!connected) errorMsg = `HTTP ${res.status}`;
-          if (connected) {
-            const data = await res.json();
-            // Update display_phone from Meta
-            if (data.display_phone_number) {
-              await supabase
-                .from("whatsapp_channels")
-                .update({ display_phone: data.display_phone_number })
-                .eq("id", channelId);
-            }
-          }
-        }
+        const runtimeCredentials = await resolveChannelCredentials(supabase, channel as ChannelRow);
+        const adapter = getWhatsAppProvider(provider);
+        if (!adapter.getConnectionStatus) throw new Error("status_not_supported");
+        const snapshot = await adapter.getConnectionStatus(runtimeCredentials);
+        connected = snapshot.connected;
+        displayPhone = snapshot.displayPhone ?? null;
+        if (!connected) errorMsg = snapshot.nativeStatus ?? "provider_error";
       } catch (e) {
         errorMsg = String(e);
         connected = false;
@@ -633,8 +1565,24 @@ serve(async (req) => {
           status: newStatus,
           last_event_at: connected ? new Date().toISOString() : undefined,
           last_error: connected ? null : errorMsg,
+          ...(displayPhone ? { display_phone: displayPhone } : {}),
         })
         .eq("id", channelId);
+
+      if (connected && channel.activation_requested_at) {
+        const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {
+          p_unit_id: unitId,
+          p_channel_id: channelId,
+          p_actor_id: callerId,
+          p_request_id: requestId,
+        });
+        if (activateError) {
+          return jsonResponse(req, {
+            error: "Canal conectado, mas o cutover não foi concluído. Tente novamente.",
+            code: "ACTIVATION_RECONCILIATION_REQUIRED",
+          }, 500);
+        }
+      }
 
       return jsonResponse(req, { success: connected, status: newStatus, error: errorMsg });
     }
