@@ -34,6 +34,10 @@ export interface ConnectionAllowanceInput {
   provisioningAmbiguous: boolean;
   /** o provider_instance_ref informado corresponde a instancia REAL ja criada */
   providerInstanceRefKnown: boolean;
+  /** decisão explícita e auditável de platform_admin para custo novo em cortesia */
+  adminDecisionRecorded?: boolean;
+  /** troca explícita: uma instância inventariada existente será substituída */
+  replacementConnectionRecorded?: boolean;
 }
 
 export type ConnectionAllowancePolicy =
@@ -87,6 +91,9 @@ export function checkConnectionAllowance(input: ConnectionAllowanceInput): Conne
     if (input.operation === "BACKFILL_EXISTING") {
       return { allowed: true, policy: "OVERRIDE_OPERATIONAL" };
     }
+    if (input.adminDecisionRecorded === true) {
+      return { allowed: true, policy: "OVERRIDE_OPERATIONAL" };
+    }
     return deny("OVERRIDE_REQUIRES_ADMIN_DECISION");
   }
 
@@ -102,7 +109,11 @@ export function checkConnectionAllowance(input: ConnectionAllowanceInput): Conne
   }
   // Backfill tambem respeita o teto: registrar duas instancias reais num plano
   // de uma conexao e um problema comercial que precisa aparecer, nao ser aceito.
-  if (input.activeInstanceCount >= input.includedConnections) {
+  const billableCountForDecision = Math.max(
+    0,
+    input.activeInstanceCount - (input.replacementConnectionRecorded === true ? 1 : 0),
+  );
+  if (billableCountForDecision >= input.includedConnections) {
     return deny("CONNECTION_LIMIT_REACHED");
   }
   return { allowed: true, policy: "PLAN_DECLARED" };

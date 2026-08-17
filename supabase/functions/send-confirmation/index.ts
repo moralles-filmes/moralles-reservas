@@ -191,6 +191,8 @@ async function recordNotification(
   status: "sent" | "failed",
   error?: string,
   providerMessageId?: string | null,
+  whatsappProvider?: string | null,
+  whatsappChannelId?: string | null,
 ) {
   const sentAt = new Date().toISOString();
   // provider_message_id correlaciona o callback de status (entregue/lido).
@@ -203,6 +205,8 @@ async function recordNotification(
       status,
       error: error ?? null,
       provider_message_id: providerMessageId ?? null,
+      whatsapp_provider: whatsappProvider ?? null,
+      whatsapp_channel_id: whatsappChannelId ?? null,
       sent_at: sentAt,
     });
   if (!insertErr) return;
@@ -218,6 +222,8 @@ async function recordNotification(
         status,
         error: error ?? null,
         provider_message_id: providerMessageId ?? null,
+        whatsapp_provider: whatsappProvider ?? null,
+        whatsapp_channel_id: whatsappChannelId ?? null,
         sent_at: sentAt,
         delivered_at: null,
         read_at: null,
@@ -325,20 +331,6 @@ serve(async (req) => {
     const restaurantWebsite =
       trimOrEmpty(unit?.website) || trimOrEmpty(settingsMap.get("restaurant_website"));
 
-    const { data: channel } = unit_id
-      ? await supabase
-          .from("whatsapp_channels")
-          .select("id")
-          .eq("unit_id", unit_id)
-          .eq("status", "connected")
-          .limit(1)
-          .maybeSingle()
-      : { data: null };
-
-    // Só há WhatsApp se a unit tem canal `connected` próprio. O antigo fallback
-    // global (env ZAPI_*) foi removido — sem canal, send pula com reason "no_channel".
-    const hasWhatsappChannel = !!channel;
-
     const discountLine = discountPercent
       ? `💸 Desconto: ${discountPercent}% off\n`
       : "";
@@ -367,10 +359,12 @@ serve(async (req) => {
       discountPercent,
     };
 
-    const whatsappPromise = hasWhatsappChannel
+    // A seleção do canal é centralizada em sendWhatsApp: quando há `is_active`,
+    // ela vence; sem projeção explícita, o fallback aceita só legado NULL.
+    // Pré-selecionar aqui poderia passar um canal preservado/inativo no cutover.
+    const whatsappPromise = unit_id
       ? sendWhatsApp(customer.phone, message, {
-          channel_id: channel?.id,
-          unit_id: unit_id ?? undefined,
+          unit_id,
         }).then(
           (res) => ({
             kind: "whatsapp" as const,
@@ -378,6 +372,8 @@ serve(async (req) => {
             skipped: false as const,
             error: res.ok ? undefined : (res.error ?? `status_${res.status ?? "unknown"}`),
             providerMessageId: res.providerMessageId,
+            whatsappProvider: res.provider,
+            whatsappChannelId: res.channelId,
           }),
           (err) => ({ kind: "whatsapp" as const, ok: false, skipped: false as const, error: String(err), providerMessageId: undefined })
         )
@@ -410,6 +406,8 @@ serve(async (req) => {
         "sent",
         undefined,
         (whatsappResult as { providerMessageId?: string }).providerMessageId ?? null,
+        (whatsappResult as { whatsappProvider?: string }).whatsappProvider ?? null,
+        (whatsappResult as { whatsappChannelId?: string }).whatsappChannelId ?? null,
       );
       if (unit_id) {
         await appendOutboundToConversation({

@@ -20,13 +20,15 @@ presentes agendaria jobs apontando para lá.
 
 | Arquivo | O que é |
 |---|---|
-| `00-bootstrap.sql` | O mínimo que as migrations REFERENCIAM: papéis `anon`/`authenticated`/`service_role`, `auth.users`, `auth.uid()`, `organizations`, `units`, `whatsapp_channels`, `platform_admins`, `is_platform_admin`, `update_updated_at`. Escrito à mão — é stub, e diz isso. |
+| `00-bootstrap.sql` | O mínimo que as migrations REFERENCIAM: papéis, auth, tenancy, canais, `processed_messages`, `notifications_sent` e um stub local explícito do Vault. Escrito à mão — não simula cifra/RLS/PostgREST. |
+| `00a-whatsapp-legacy-seed.sql` | Três topologias legadas para provar o backfill conservador de `is_active`: único canal, único connected e ambiguidade. |
 | `01-audit.sql` | `audit_log` e `audit_trigger_func()` **extraídos verbatim** das migrations 009 e 013. Não é transcrição livre: a 087 pendura o trigger de auditoria em `whatsapp_instances`, e o `DELETE` do caso NOTE-B passa por ele. |
 | `02-seed.sql` | Duas organizações, cinco instâncias com ids fixos. A segunda organização existe só para o caso NOTE-D3 (tenant cruzado). |
 | `03-notes-b-c-d.sql` | NOTE-B, NOTE-C (7 casos) e NOTE-D (4 + 1 controle negativo). Cada caso numa subtransação; grava veredito em `t_res`. |
 | `04-controles.sql` | Os dois **controles positivos**. Sem eles, "passou" não distingue *a guarda funciona* de *o teste não testa nada*. |
 | `05-ciclo-custo-e-fim.sql` | COST-1..4, END-1..4, CORR-1..2 e CYCLE-1..3 — comportamento das RPCs `set_whatsapp_instance_cost` (104) e `confirm_whatsapp_instance_end` (104 + 105), e a colisão dos dois índices que produzem `23505`. `CYCLE-3` é o que mostra por que "existe linha com esta `cycle_start`?" é uma aproximação insuficiente e o discriminador tem de ser o ciclo OPEN. Mesmo padrão: cada caso numa subtransação, veredito em `t_res`. |
 | `06-controles-104.sql` | Os **três controles positivos** (104 e 105). Sem eles, "COST-2 passou", "END-1 passou" e "END-4 passou" não distinguem a guarda funcionando de teste sem força. |
+| `07-whatsapp-multiprovider.sql` | MP-1..18: backfill, CHECK/uniqueness, Vault RPC, claim fence/double-click, intenção/cutover, ledger append-only, dedupe por provider e ACL estática. |
 
 ## Rodar
 
@@ -40,11 +42,14 @@ PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
 P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -v ON_ERROR_STOP=1 "$@"; }
 
 P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/00a-whatsapp-legacy-seed.sql
 P -f supabase/tests/local-preflight/01-audit.sql
 P -f supabase/migrations/20260801200000_087_whatsapp_instances.sql
 P -f supabase/migrations/20260801200100_088_whatsapp_instance_cycles.sql
 P -f supabase/migrations/20260801200300_090_whatsapp_instance_cycle_rpc.sql
+P -f supabase/migrations/20260817170753_whatsapp_multiprovider_uazapi.sql
 P -f supabase/tests/local-preflight/02-seed.sql
+P -f supabase/tests/local-preflight/07-whatsapp-multiprovider.sql
 
 # NOTE-A: aplicar a 096 três vezes e conferir que a contagem não muda
 P -f supabase/migrations/20260803120000_096_whatsapp_instance_notes.sql   # x3

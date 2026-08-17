@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 
+type WhatsAppHealthProvider = "zapi" | "uazapi" | "waha" | "official";
+
 export interface WhatsAppHealthChannel {
   id: string;
-  provider: "zapi" | "waha" | "official";
+  provider: WhatsAppHealthProvider;
   status: "connected" | "disconnected" | "error";
   display_phone: string | null;
   last_event_at: string | null;

@@ -1,0 +1,136 @@
+# moralles-reservas — regras para agentes
+
+Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organizations → units → unit_members`.
+
+> Este arquivo é o espelho operacional condensado de [CLAUDE.md](CLAUDE.md). **Todas as invariantes detalhadas em `CLAUDE.md` continuam obrigatórias mesmo quando resumidas aqui.** Em dúvida ou antes de alterar domínio sensível, leia a seção correspondente lá; divergência entre os arquivos é defeito e deve ser corrigida antes de continuar.
+
+---
+
+## Manutenção deste par
+
+- **Só documente o que muda decisões futuras:** invariantes, contratos cross-feature, gotchas da stack e regras de segurança/multi-tenancy. Não registre histórico, status transitório nem algo trivialmente descobrível por código/Git.
+- **Atualize proativamente `CLAUDE.md` E `AGENTS.md` no mesmo change/commit** ao descobrir, corrigir ou remover regra permanente. O primeiro guarda o detalhe; este mantém o equivalente resumido. Nunca commitar, mergear ou fazer push de alteração em apenas um.
+- Formato preferido: **regra em uma frase**, motivo em uma frase e ponteiro para arquivo. Sem storytelling.
+- **40K caracteres é alvo de concisão, não teto.** Antes de ultrapassar, audite e consolide; crescer é permitido quando a invariante necessária não for descobrível ou perder precisão no resumo.
+- Antes de finalizar mudança de regras, confira `git diff -- CLAUDE.md AGENTS.md` e elimine conflitos semânticos.
+
+---
+
+## Fluxo obrigatório e Git
+
+- Mudança comportamental/estrutural ou feature segue `superpowers:brainstorming` → spec em `docs/superpowers/specs/` → `superpowers:writing-plans` → plano em `docs/superpowers/plans/` → `superpowers:subagent-driven-development`, com implementador e reviews por tarefa e whole-branch. Exceção apenas para typo/comentário/doc trivial.
+- Use os agentes `saas-builder-br:*` adequados. Antes de merge/push que toque banco, auth, Edge Function, webhook, RLS ou multi-tenant, execute os gates `saas-shield-br:*`: RLS, isolamento de tenant, identidade/acesso, migration, secrets e confiabilidade de integrações.
+- Antes de commit/merge/push, rode gates proporcionais ao risco, `git status`, `git diff` e `git diff --cached`; revise 100% do staged. Nunca mergeie gate vermelho ou conflito não resolvido.
+- Adicione apenas caminhos explícitos (`git add <arquivo>`), nunca `git add .`/`git add -A` sem revisão. Preserve mudanças do usuário e nunca use `git reset --hard` ou descarte trabalho alheio.
+- Trabalho autorizado feito em branch/worktree termina com commit e merge na branch de destino após reviews/gates; não deixe a entrega isolada. Push depende do escopo/autorização; push em `main` dispara deploy Vercel.
+- PR com migration, função SQL, `grant`/`revoke` ou ACL só pode ser mergeado após conferir `acl-estatico` em Checks. O audit autoritativo contra banco real é `scripts/audit-function-acl.ts`/job `acl-com-banco`.
+
+### Segurança antes de commitar
+
+- Procure secrets em todas as linhas staged: prefixos `sk-`, `sk-ant-`, `xai-`, `re_`, `AIza`, JWT `eyJ`, `Bearer`, `Basic`, `service_role` e chaves/senhas/tokens/URLs/webhooks com credencial real.
+- Nunca commite `.env*`, `*.pem`, `*.key`, `id_rsa*`, service accounts, `supabase/.env` ou dumps. `VITE_*` é público no bundle; somente URL e anon key do Supabase podem usá-lo.
+- Secret de Edge Function vai por `supabase secrets set`; migrations nunca embutem segredo nem URL do projeto — leem Vault (`internal_api_key`, `project_url`).
+- Se um secret entrou no Git, pare e rotacione primeiro no provider; reescrever histórico não neutraliza exposição. Em dúvida, não commite.
+
+---
+
+## Comandos e stack
+
+- Frontend: Vite + React + TypeScript + Tailwind/shadcn, TanStack Query, React Hook Form + Zod, Supabase e Vitest.
+- `npm run dev` usa `localhost:8080`; gates: `npm run lint`, `npm run test`, `npm run typecheck`, `npm run build` conforme o risco.
+- **Typecheck é `tsc -b --noEmit`; nunca `tsc --noEmit` sem `-b`**, pois o root com references vira no-op. Baseline é zero erro.
+- Instalação usa `npm install --legacy-peer-deps`; `.npmrc` mantém isso por `react-day-picker` × `date-fns v4`.
+- Worktrees paralelas ficam em `.claude/worktrees/` e precisam continuar excluídas de Vitest, ESLint e qualquer nova ferramenta que varra o repositório.
+
+---
+
+## Arquitetura, autenticação e tenancy
+
+- `organizations` é o cliente SaaS; `units` são restaurantes físicos; `unit_members` liga usuário/unidade com `owner|gerente|operador`. `customers` pertencem à organização; demais dados de negócio carregam `unit_id`.
+- `platform_admin` opera `/platform/*`; toda policy/guard unit-scoped precisa do paralelo `is_platform_admin`. O pseudo-membership da UI não substitui RLS/guard server-side.
+- Edge Function com service role sempre autentica o caller e valida `unit_id` contra o recurso; service role contorna RLS e triggers dependentes de `auth.uid()`.
+- `owner` cria units e tem acesso total; `gerente` configura/membros/dados sem automação; `operador` atua em reservas/fila/passantes e não cancela reservas. Não ressuscitar `admin_users`/`manage-admins`.
+- `/r/:slug` aceita `mode=embed` e `action=reservar|waitlist`; `/acompanhar/:token` é público via `get_public_tracking`; `/g/:unitSlug/cobranca` é a única rota liberada pelo `BillingGuard` para org bloqueada.
+
+---
+
+## Banco, migrations, RLS e storage
+
+- Migration: `YYYYMMDDHHMMSS_nome.sql`, idempotente, aplicada somente com `supabase db push`; nunca colar SQL no Studio. Mudança de coluna lida por gate fail-closed entra no banco antes do deploy da EF.
+- Função nova em `public` revoga explicitamente execução de `PUBLIC`, `anon` e `authenticated`, depois concede ao papel mínimo. Teste trigger/CHECK/FK/idempotência no harness `supabase/tests/local-preflight/`; ele não prova RLS/ACL/PostgREST.
+- Anon escreve somente onde previsto e lê negócio por RPCs `SECURITY DEFINER` públicas e privacy-safe. Policy anon direta de leitura em tabela de negócio é regressão. `units`/`organizations` expõem ao anon apenas colunas concedidas explicitamente; coluna nova nasce privada.
+- Credenciais e tabelas sensíveis usam `FORCE RLS` sem policies e são acessadas por EF. Toda tabela/storage unit-scoped precisa de policy de membro e contraparte `platform_admin`.
+- `audit_log` de reservas/membros usa `unit_id`; cliente usa `organization_id`. Consultas precisam cobrir os dois.
+- Bucket `unit-assets`: path `<unit_id>/...`, leitura CDN pública, write owner/gerente. Save faz cleanup DB-vs-form e tracking de uploads da sessão; valide `extractStoragePath()` e prefixo da unidade, trate `{ error }` de `storage.remove`. Nunca delete `storage.objects` via SQL.
+
+### Reservas e clientes
+
+- `_shared/availability.ts` é a fonte única: janela → datas especiais → halls/schedules → antecedência → capacidade → blocks → first-fit → overbooking. Timestamps nele usam offset BRT `-03:00`; `time` do Postgres é `HH:MM:SS` e deve virar `.slice(0,5)` antes de compor timestamp.
+- `reservations.source` é load-bearing: agente usa `whatsapp`; web usa `web`. Reserva manual separa origem de intenção de notificar; `override:true` é exclusivo do operador e cria floating.
+- Operador não cancela; qualquer EF service-role que cancele valida o papel por conta própria.
+- `customers.phone` é canônico, sem `55`, e sincronizado entre `_shared/phone.ts`, `src/lib/phone.ts` e SQL `normalize_br_phone`; nunca remova `55` com regex cega (DDD 55 existe). `customers.email` é array append-only.
+- Customer create/merge passa por `_shared/resolve-customer.ts`; conversas nunca fazem INSERT manual de customer.
+- `business_hours` não é fonte nova: use `halls + hall_schedules`. `units.price_range_max` representa o campo único de ticket médio; `price_range_min` fica `NULL`.
+- Índices/constraints de vouchers são parte da idempotência: INSERT e trate `23505`; voucher `after_rating` exige `min_rating`.
+
+---
+
+## Frontend e domínio público
+
+- Componentes PascalCase; hooks `use*`; alias `@/`; hook remoto recebe `unitId` primeiro. React Query para remoto, RHF+Zod para forms, Sonner para toast, `cn()` para classes, tokens do tema para cores.
+- Query lists distinguem loading, error com retry, empty e data. `invalidateQueries` respeita a ordem exata da key; batch de tabela inteira pagina com `.range()` até o fim.
+- Não use `useState+useEffect` para remoto. `refetchOnWindowFocus:false` preserva forms; telas operacionais usam polling visibility-aware.
+- Datas DB são `YYYY-MM-DD`; timestamps UTC agrupam por dia local com `isoToLocalDate`; ordene pelo epoch, nunca por `localeCompare`. Telefones armazenam dígitos e exibem com `formatPhone()`.
+- Busca injetada em PostgREST `.or/.ilike` passa por `sanitizeSearchTerm`; URL persistida e renderizada passa por `isSafeHttpUrl`. EF nunca devolve `error.message` cru do Postgres.
+- Layout admin usa `AdminShell`; mobile usa `ResponsiveDialog`, inputs com tap target ≥44px, `100dvh`, safe-area e `viewport-fit=cover`. Forms de dois campos empilham antes de `sm`.
+- Wizard público mantém email obrigatório só no frontend; backend/WhatsApp aceitam sem email. `partitionHalls` é filtro visual, não autoridade de disponibilidade. Não confundir bloqueio de reservas com restaurante fechado.
+- Métricas mantêm fórmulas de `CLAUDE.md`: cancelamento exclui pending; no-show usa confirmed+no_show; pessoas esperadas só pending/confirmed; valor inválido renderiza “—”.
+
+---
+
+## WhatsApp, IA e conversas
+
+- IA é BYOK per-unit, sem fallback global de chave. Defaults/listas de modelos ficam sincronizados em `src/lib/aiModels.ts` e `_shared/ai-providers.ts`; alteração requer redeploy de `webhook-whatsapp` e `manage-ai-providers`.
+- Erro do agente vira handoff humano. Retry silencioso só uma vez, antes de tool mutante; tool mutante nova marca `mutatingToolUsed`.
+- Toda saída do LLM passa por `sanitizeForWhatsApp`; hardcodes/templates/mensagem manual não. JSONB nunca é interpolado diretamente em prompt/template.
+- Datas/dias do prompt derivam do mesmo relógio BRT. Horários vêm de halls/schedules; datas especiais e blocks macro entram no contexto. Ausência de promoção precisa de âncora negativa; o agente nunca inventa desconto/brinde.
+- Inbound passa por debounce e lock de conversa; o último vence. Eco usa `fromMe`, mensagens humanas da loja silenciam IA, LID não vira telefone e remetente precisa ter 10–13 dígitos plausíveis.
+- Áudio/imagem/sticker recebe resposta hardcoded salvo durante handoff. Nova resposta hardcoded entra em `HARDCODED_AGENT_NOISE`.
+- Consumo de IA reserva e liquida capacidade pelas RPCs atômicas `reserve_ai_budget`/`settle_ai_reservation`; nunca SELECT + decisão local. Marcos 70/80/90/100 vivem no ledger, não na fila.
+- Append em `conversations.messages` é somente pela RPC `append_conversation_message`; saída automatizada usa `_shared/conversation-log.ts`. Shape exige `role`, `content`, timestamp ISO e opcionais canônicos.
+- Mensagem WhatsApp limita 4096 chars em front e backend. `supabase.functions.invoke` non-2xx deve extrair o corpo de `FunctionsHttpError.context.json()`.
+- Envio não tem canal global: unit sem canal connected falha. “sent” só significa aceito pelo provider; entrega/leitura/falha correlaciona callback por `(unit_id, provider, channel_id, provider_message_id)`. Reenvio usa UPSERT e a EF única `resend-notification`.
+- Providers WhatsApp entram no registry `_shared/whatsapp-provider-core.ts`/`whatsapp-providers.ts`; não crie branching novo em UI/worker. `whatsapp_channels.is_active` é a projeção operacional: `true` é único, `false` nunca envia/processa inbound e fallback legado usa apenas `NULL`; troca preserva linhas e faz cutover atômico após conectar.
+- UazAPI provisiona idempotente por claim com fence UUID e reconcilia timeout de create por `adminField01=channel_id`; POST mutante não tem retry cego. `admintoken` fica em Edge secret, token da instância só no Vault, QR nunca persiste/loga e webhook usa secret por canal + token/instance quando presentes, pois o OpenAPI não define HMAC.
+- Dedupe inbound é `(provider,message_id)` com claim UUID cercado em takeover/finalização via RPCs service-role-only; erro de banco não é duplicata. `manage-channels` libera somente lifecycle client-safe indicado por capabilities a owner/gerente da própria unit; default/credenciais/switch/diagnóstico continuam platform admin, operador é negado.
+
+---
+
+## Pagamentos, billing e workers
+
+- Caução Stripe Connect é per-unit e separada da mensalidade da organização. Reservas WhatsApp são isentas; pagamento pending expira em 15 min; webhook confirma e enfileira notificação, worker/webhook expiram em defesa dupla.
+- Secrets Stripe/Asaas ficam em `platform_secrets`, nunca no frontend. O fallback `Deno.env` torna cópia antiga ainda ativa: rotação sincroniza painel e `supabase secrets set` conforme o runbook.
+- Billing novo usa `provider`/`provider_*_id`; `stripe_*` é legado read-only. Antes de alterar billing/IA/Z-API, leia `docs/billing-asaas/`.
+- Flags globais são `platform_flags`, lidas só por `_shared/platform-flags.ts`, fail-closed e sem leitura frontend. `asaas_enabled` gateia criação e webhook.
+- Webhook Asaas respeita orçamento de I/O inferior ao timeout do provider; cron/reconcile faz retry completo. Checkout Asaas correlaciona pelo identificador próprio descrito no `CLAUDE.md`, nunca por aproximação de customer/externalReference.
+- Não derive categoria de cobrança por negação (`!isSystemInvoice` não significa WhatsApp). Resolvers de assinatura, correlação, cancelamento e estado financeiro em `_shared/*-core.ts` são autoridades; não replique decisão no adapter.
+- Workers autenticam com `INTERNAL_API_KEY`, que existe em Edge secrets e Vault. Rotacione Edge primeiro e Vault depois; valide pelo runbook.
+- Outbox/workers preservam idempotência. Templates default do frontend ficam sincronizados com workers; voucher só persiste após envio OK; telefone inválido/vazio é skip.
+- Ação externa + UPDATE local retorna estados separados; sucesso externo com falha local exige warning e reconciliação, não repetição cega.
+
+---
+
+## Deploy e acoplamentos
+
+- Edge Functions têm bundles independentes. Alterar `_shared/X.ts` exige redeploy de **todas** as importadoras diretas e transitivas listadas no checklist completo de [CLAUDE.md](CLAUDE.md); consumidor novo atualiza o checklist nos dois arquivos no mesmo change.
+- Mantenha pares sincronizados: disponibilidade e suas EFs; modelos UI/backend; normalização de telefone; `tax-id.ts` front/backend; templates front/workers; cores/tokens; produtores e consumidores de `billing_notifications.event_type`.
+- `event_type` é contrato por string: adicionar/renomear tipo exige atualizar produtor, `process-billing-notifications`, testes bidirecionais e deploy conjunto. Não redigite listas canônicas (`EVENT_TYPE_BY_ALERT`, `EVENT_TYPE_BY_MILESTONE_PERCENT`).
+- Mudança em `availability.ts`, logs/conversas, resolver de customer, telefone, providers WhatsApp, billing/entitlements/flags/gates ou cores financeiros deve seguir exatamente a matriz de redeploy do `CLAUDE.md`; deploy parcial deixa bundle antigo em memória.
+- Mudança no registry/credenciais WhatsApp redeploya `webhook-whatsapp`, as quatro EFs de envio (`send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`), `manage-channels` e `whatsapp-health`; lifecycle/cliente UazAPI redeploya `manage-channels` e valida admin+portal juntos.
+- Frontend em `main` faz deploy automático. Edge Function usa `supabase functions deploy <nome>` só depois de migrations/flags/segredos compatíveis estarem aplicados na ordem segura.
+
+---
+
+## Regra final
+
+Quando este resumo não carregar detalhe suficiente para decidir com segurança, **a regra não desapareceu**: consulte [CLAUDE.md](CLAUDE.md), código e testes indicados. Depois mantenha `CLAUDE.md` detalhado e `AGENTS.md` condensado semanticamente equivalentes antes de commit, merge ou push.

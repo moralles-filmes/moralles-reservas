@@ -35,7 +35,8 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import QRCode from "qrcode";
 import {
   Activity,
   AlertTriangle,
@@ -64,7 +65,13 @@ import {
   useDeleteChannel,
   useTestChannel,
   useRotateChannelSecret,
+  useConnectChannel,
+  useRefreshChannelStatus,
+  useBeginChannelSwitch,
+  useWhatsAppProviderMetadata,
+  type ChannelConnectionResponse,
   type ChannelCredentials,
+  type WhatsAppProviderMetadata,
 } from "@/hooks/useWhatsAppChannels";
 import {
   useAiProviderKeys,
@@ -80,6 +87,7 @@ import {
 import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
+import { formatPhone } from "@/lib/utils";
 import {
   MODELS_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -107,6 +115,7 @@ const PROVIDERS: Array<{
 
 const PROVIDER_LABELS: Record<WhatsAppProvider, string> = {
   zapi: "Z-API",
+  uazapi: "UazAPI",
   waha: "WAHA (self-hosted)",
   official: "API Oficial (Meta)",
 };
@@ -114,6 +123,14 @@ const PROVIDER_LABELS: Record<WhatsAppProvider, string> = {
 const STATUS_CONFIG: Record<string, { label: string; icon: React.ReactNode; className: string }> = {
   connected: { label: "Conectado", icon: <Wifi className="h-3 w-3" />, className: "text-success bg-success/10 border-success/20" },
   disconnected: { label: "Desconectado", icon: <WifiOff className="h-3 w-3" />, className: "text-muted-foreground bg-muted" },
+  not_configured: { label: "Não configurado", icon: <WifiOff className="h-3 w-3" />, className: "text-muted-foreground bg-muted" },
+  provisioning: { label: "Preparando", icon: <RefreshCw className="h-3 w-3 animate-spin" />, className: "text-info bg-info/10 border-info/20" },
+  waiting_qr: { label: "Aguardando QR", icon: <Phone className="h-3 w-3" />, className: "text-info bg-info/10 border-info/20" },
+  connecting: { label: "Conectando", icon: <RefreshCw className="h-3 w-3 animate-spin" />, className: "text-info bg-info/10 border-info/20" },
+  reconnecting: { label: "Reconectando", icon: <RefreshCw className="h-3 w-3 animate-spin" />, className: "text-info bg-info/10 border-info/20" },
+  suspended: { label: "Suspenso", icon: <WifiOff className="h-3 w-3" />, className: "text-warning bg-warning/10 border-warning/20" },
+  provider_error: { label: "Erro do provider", icon: <WifiOff className="h-3 w-3" />, className: "text-destructive bg-destructive/10 border-destructive/20" },
+  switching_provider: { label: "Preparando troca", icon: <RefreshCw className="h-3 w-3 animate-spin" />, className: "text-info bg-info/10 border-info/20" },
   error: { label: "Erro", icon: <WifiOff className="h-3 w-3" />, className: "text-destructive bg-destructive/10 border-destructive/20" },
 };
 
@@ -236,14 +253,48 @@ function buildWebhookUrl(channelId: string, secret: string): string {
   return `${base}/functions/v1/webhook-whatsapp?channel=${channelId}&secret=${secret}`;
 }
 
+function AdminQrCode({ value }: { value: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const inlineImage = /^data:image\/(?:png|jpeg);base64,/i.test(value)
+    ? value
+    : /^iVBOR/i.test(value)
+      ? `data:image/png;base64,${value}`
+      : null;
+
+  useEffect(() => {
+    if (!canvasRef.current || inlineImage) return;
+    QRCode.toCanvas(canvasRef.current, value, { width: 260, margin: 2 }).catch(() => undefined);
+  }, [inlineImage, value]);
+
+  return inlineImage
+    ? <img src={inlineImage} alt="QR Code da conexão UazAPI" className="mx-auto h-64 w-64 object-contain" />
+    : <canvas ref={canvasRef} aria-label="QR Code da conexão UazAPI" className="mx-auto h-64 w-64 max-w-full" />;
+}
+
 function ChannelsTab({ unitId }: { unitId: string }) {
-  const { data: channels, isLoading } = useWhatsAppChannels(unitId);
+  const { data: channels, isLoading, isError, error, refetch } = useWhatsAppChannels(unitId);
+  const { data: providerMetadata = [] } = useWhatsAppProviderMetadata(unitId);
   const deleteChannel = useDeleteChannel(unitId);
   const testChannel = useTestChannel(unitId);
   const rotateSecret = useRotateChannelSecret(unitId);
+  const connectChannel = useConnectChannel(unitId);
+  const refreshChannelStatus = useRefreshChannelStatus(unitId);
+  const beginSwitch = useBeginChannelSwitch(unitId);
   const [addOpen, setAddOpen] = useState(false);
   const [editChannel, setEditChannel] = useState<WhatsAppChannel | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [qrCode, setQrCode] = useState<string | null>(null);
+
+  const handleLifecycleResult = (data: ChannelConnectionResponse, success: string) => {
+    if (data.connection?.qr_code) setQrCode(data.connection.qr_code);
+    if (data.warnings?.includes("PROVISIONING_RECONCILIATION_PENDING")) {
+      toast.warning("A criação ainda está sendo conciliada. Aguarde alguns minutos antes de tentar novamente.");
+    } else if (data.warnings?.includes("INSTANCE_INVENTORY_RECONCILIATION_REQUIRED")) {
+      toast.warning("Conexão criada; o inventário financeiro precisa de reconciliação.");
+    } else {
+      toast.success(success);
+    }
+  };
 
   const handleCopy = async (channelId: string, url: string) => {
     try {
@@ -269,6 +320,14 @@ function ChannelsTab({ unitId }: { unitId: string }) {
 
       {isLoading ? (
         <div className="space-y-3">{[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
+      ) : isError ? (
+        <Card>
+          <CardContent className="py-10 text-center space-y-3">
+            <AlertTriangle className="h-8 w-8 mx-auto text-destructive" />
+            <p className="text-sm text-destructive">{error?.message ?? "Falha ao carregar os canais."}</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Tentar novamente</Button>
+          </CardContent>
+        </Card>
       ) : !channels?.length ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
@@ -280,6 +339,10 @@ function ChannelsTab({ unitId }: { unitId: string }) {
         <div className="grid gap-3">
           {channels.map((ch) => {
             const statusCfg = STATUS_CONFIG[ch.status] ?? STATUS_CONFIG.disconnected;
+            const capabilities = ch.capabilities;
+            const automaticLifecycle = capabilities?.automaticProvisioning === true;
+            const automaticWebhook = capabilities?.automaticWebhook === true;
+            const hasAlternativeChannel = channels.some((row) => row.id !== ch.id);
             return (
               <Card key={ch.id}>
                 <CardContent className="py-4 space-y-3">
@@ -290,29 +353,106 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                         {statusCfg.icon}
                         {statusCfg.label}
                       </Badge>
+                      {ch.is_active === true && <Badge variant="success">Ativo</Badge>}
+                      {ch.is_active === false && <Badge variant="secondary">Preparado</Badge>}
                       {ch.display_phone && (
-                        <span className="text-sm text-muted-foreground">{ch.display_phone}</span>
+                        <span className="text-sm text-muted-foreground">{formatPhone(ch.display_phone)}</span>
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => testChannel.mutate(ch.id)}
-                        disabled={testChannel.isPending}
-                      >
-                        <RefreshCw className="h-3 w-3 mr-1" />
-                        Testar
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setEditChannel(ch)}
-                      >
-                        <Pencil className="h-3 w-3 mr-1" />
-                        Editar
-                      </Button>
-                      <AlertDialog>
+                      {automaticLifecycle ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => connectChannel.mutate(
+                              { channelId: ch.id },
+                              { onSuccess: (data) => handleLifecycleResult(data, "Conexão UazAPI iniciada.") },
+                            )}
+                            disabled={connectChannel.isPending}
+                          >
+                            <Phone className="h-3 w-3 mr-1" />
+                            Conectar / QR
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => refreshChannelStatus.mutate(
+                              { channelId: ch.id },
+                              { onSuccess: (data) => handleLifecycleResult(data, "Status atualizado.") },
+                            )}
+                            disabled={refreshChannelStatus.isPending}
+                          >
+                            <RefreshCw className="h-3 w-3 mr-1" />
+                            Status
+                          </Button>
+                          {ch.is_active !== true && hasAlternativeChannel && (
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button size="sm">Ativar / trocar</Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Preparar troca para UazAPI?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    O canal atual permanece ativo até a UazAPI conectar. O cutover só ocorre depois da validação.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                  <AlertDialogAction onClick={() => beginSwitch.mutate(
+                                    { channelId: ch.id, targetProvider: ch.provider },
+                                    { onSuccess: (data) => handleLifecycleResult(data, "Troca preparada.") },
+                                  )}>
+                                    Preparar troca
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => testChannel.mutate(ch.id)}
+                            disabled={testChannel.isPending}
+                          >
+                            <RefreshCw className="h-3 w-3 mr-1" />
+                            Testar
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditChannel(ch)}>
+                            <Pencil className="h-3 w-3 mr-1" />
+                            Editar
+                          </Button>
+                          {ch.is_active !== true && hasAlternativeChannel && (
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button size="sm">Ativar / trocar</Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Validar e ativar {PROVIDER_LABELS[ch.provider]}?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    O canal atual só será substituído se uma verificação ao vivo confirmar o canal alvo.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                  <AlertDialogAction onClick={() => beginSwitch.mutate(
+                                    { channelId: ch.id, targetProvider: ch.provider },
+                                    { onSuccess: (data) => handleLifecycleResult(data, "Canal validado e ativado.") },
+                                  )}>
+                                    Validar e ativar
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          )}
+                        </>
+                      )}
+                      {!automaticWebhook && <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button size="sm" variant="outline">
                             <KeyRound className="h-3 w-3 mr-1" />
@@ -338,7 +478,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                             </AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
-                      </AlertDialog>
+                      </AlertDialog>}
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -378,7 +518,11 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                     <p className="text-xs text-destructive truncate">{ch.last_error}</p>
                   )}
 
-                  <div className="space-y-1">
+                  {automaticWebhook ? (
+                    <p className="text-xs text-muted-foreground">
+                      Instância, webhook e token são gerenciados automaticamente; o token fica no Vault.
+                    </p>
+                  ) : <div className="space-y-1">
                     <p className="text-xs text-muted-foreground">
                       Webhook (configure no painel do provedor):
                     </p>
@@ -404,7 +548,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                         )}
                       </Button>
                     </div>
-                  </div>
+                  </div>}
                 </CardContent>
               </Card>
             );
@@ -412,12 +556,26 @@ function ChannelsTab({ unitId }: { unitId: string }) {
         </div>
       )}
 
-      <AddChannelDialog unitId={unitId} open={addOpen} onClose={() => setAddOpen(false)} />
+      <AddChannelDialog
+        unitId={unitId}
+        providers={providerMetadata}
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+      />
       <EditChannelDialog
         unitId={unitId}
         channel={editChannel}
         onClose={() => setEditChannel(null)}
       />
+      <Dialog open={!!qrCode} onOpenChange={(open) => { if (!open) setQrCode(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Conectar WhatsApp</DialogTitle></DialogHeader>
+          {qrCode && <AdminQrCode value={qrCode} />}
+          <p className="text-sm text-muted-foreground text-center">
+            Abra WhatsApp → Aparelhos conectados → Conectar um aparelho.
+          </p>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -575,15 +733,18 @@ function EditChannelDialog({
 
 function AddChannelDialog({
   unitId,
+  providers,
   open,
   onClose,
 }: {
   unitId: string;
+  providers: WhatsAppProviderMetadata[];
   open: boolean;
   onClose: () => void;
 }) {
   const createChannel = useCreateChannel(unitId);
   const [provider, setProvider] = useState<WhatsAppProvider>("zapi");
+  const selectedProvider = providers.find((item) => item.name === provider);
 
   // Z-API fields
   const [instanceId, setInstanceId] = useState("");
@@ -609,6 +770,7 @@ function AddChannelDialog({
   };
 
   const getCredentials = () => {
+    if (selectedProvider?.capabilities.manualCredentials === false) return {};
     if (provider === "zapi") return { instance_id: instanceId, token, client_token: clientToken };
     if (provider === "waha") return { base_url: baseUrl, api_key: apiKey, session_name: sessionName };
     return { phone_number_id: phoneNumberId, business_account_id: businessAccountId, access_token: accessToken, app_secret: appSecret };
@@ -618,8 +780,7 @@ function AddChannelDialog({
     createChannel.mutate(
       { provider, credentials: getCredentials() },
       {
-        onSuccess: () => { toast.success("Canal adicionado."); onClose(); reset(); },
-        onError: (err: Error) => toast.error(err.message || "Erro ao adicionar canal."),
+        onSuccess: () => { onClose(); reset(); },
       }
     );
   };
@@ -634,8 +795,8 @@ function AddChannelDialog({
             <Select value={provider} onValueChange={(v) => setProvider(v as WhatsAppProvider)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {Object.entries(PROVIDER_LABELS).map(([k, v]) => (
-                  <SelectItem key={k} value={k}>{v}</SelectItem>
+                {providers.map((item) => (
+                  <SelectItem key={item.name} value={item.name}>{item.label}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -696,11 +857,18 @@ function AddChannelDialog({
             </>
           )}
 
+          {selectedProvider?.capabilities.manualCredentials === false && (
+            <div className="rounded-lg border border-info/20 bg-info/10 p-3 text-sm">
+              Nenhuma credencial manual é necessária. A instância e o webhook serão configurados ao conectar.
+            </div>
+          )}
+
           <div className="rounded-lg border border-dashed p-3 bg-muted/30 text-xs text-muted-foreground space-y-1">
             <p className="font-medium text-foreground">Após adicionar:</p>
             <p>
-              A URL completa do webhook (com o secret) será exibida no card do canal.
-              Copie e cole no painel do provedor (campo "Ao receber" / "On receive").
+              {selectedProvider?.capabilities.automaticWebhook
+                ? "Clique em Conectar / QR no card. O webhook será configurado automaticamente."
+                : "A URL completa do webhook será exibida no card. Copie e cole no painel do provedor."}
             </p>
           </div>
 
@@ -1451,7 +1619,7 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Número</p>
-                  <p className="font-medium">{channel.display_phone ?? "—"}</p>
+                  <p className="font-medium">{channel.display_phone ? formatPhone(channel.display_phone) : "—"}</p>
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Último evento</p>

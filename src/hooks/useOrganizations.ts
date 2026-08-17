@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
-import type { CreateOrganizationInput, UpdateOrganizationInput } from "@/lib/validators/organization";
+import type {
+  CreateOrganizationInput,
+  DefaultWhatsappProvider,
+  UpdateOrganizationInput,
+} from "@/lib/validators/organization";
 
 export interface OrganizationRow {
   id: string;
@@ -12,6 +16,8 @@ export interface OrganizationRow {
   units_count: number;
   members_count: number;
   first_unit_slug: string | null;
+  default_whatsapp_provider: DefaultWhatsappProvider;
+  default_whatsapp_provider_label: string;
 }
 
 async function invokeManageOrganizations(body: Record<string, unknown>) {

@@ -135,6 +135,9 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
     },
     { to: `${base}/clientes`,       label: "Clientes",       icon: Users },
     { to: `${base}/conversas`,      label: "Conversas",      icon: MessageCircle, badge: awaitingCount },
+    ...(unit?.isGerente
+      ? [{ to: `${base}/whatsapp`, label: "WhatsApp", icon: MessageSquare }]
+      : []),
     { to: `${base}/conta`,          label: "Conta",          icon: Store },
     { to: `${base}/cobranca`,       label: "Cobrança",       icon: CreditCard },
     { to: `${base}/auditoria`,      label: "Auditoria",      icon: ScrollText },

@@ -2,6 +2,8 @@ import { z } from "zod";
 import { isValidTaxId, normalizeTaxId } from "@/lib/tax-id";
 
 const slugRegex = /^[a-z0-9-]+$/;
+export const defaultWhatsappProviderSchema = z.enum(["zapi", "uazapi"]);
+export type DefaultWhatsappProvider = z.infer<typeof defaultWhatsappProviderSchema>;
 
 export const createOrganizationSchema = z.object({
   org_name: z.string().min(2, "Nome deve ter ao menos 2 caracteres."),
@@ -31,11 +33,13 @@ export const createOrganizationSchema = z.object({
   // Canal de cobrança da org. Antes desta fase nascia nulo em toda org, o que
   // deixava os lembretes de billing sem destinatário.
   billing_email: z.string().email("E-mail de cobrança inválido."),
+  default_whatsapp_provider: defaultWhatsappProviderSchema.default("zapi"),
 });
 
 export const updateOrganizationSchema = z.object({
   org_id: z.string().uuid(),
   org_name: z.string().min(2, "Nome deve ter ao menos 2 caracteres."),
+  default_whatsapp_provider: defaultWhatsappProviderSchema,
   // `plan` (coluna legada organizations.plan) saiu daqui na Fase 3 da migração
   // billing-asaas. O plano contratado vive em billing_subscriptions →
   // billing_plans; a coluna antiga é texto livre sem relação com o catálogo.
