@@ -153,20 +153,28 @@ Resultado: 25 → 23.
 
 ## 5. Fase 3 — aceite auditável dos 23 restantes
 
-1. **Allowlist estendido**: cada entrada ganha o lint aceito (`"0028"`/`"0029"`)
-   ao lado do `why`. O `audit-function-acl.ts` ignora campo desconhecido, então
-   a mudança é compatível com o guardrail existente.
-2. **`scripts/audit-advisor.ts` + `npm run audit:advisor`**: lê os advisors do
-   projeto, cruza com o esperado e **falha nomeando** qualquer warning fora da
-   lista. Mesmo padrão do `audit-function-acl.ts`: allowlist é política
-   versionada, o banco é fato, o script só cruza os dois. Roda por
-   `workflow_dispatch` contra alvo não-produção, como o job `acl-com-banco` —
-   pelo mesmo motivo (o histórico de migrations não reconstrói um banco vazio).
-3. Imprime **sempre** o total observado por lint, inclusive os INFO. É o que
-   transforma "acho que eram 32" em número conferível.
-4. Os 17 INFO `rls_enabled_no_policy` entram como bucket aceito por design:
-   tabela com credencial usa `FORCE RLS` sem policy e a UI acessa por Edge
-   Function — invariante já registrado no CLAUDE.md.
+**Decisão revista durante o planejamento:** a spec previa um
+`scripts/audit-advisor.ts` novo. Ele seria quase duplicata do
+[audit-function-acl.ts](../../../scripts/audit-function-acl.ts), que já lê o ACL
+real pela RPC `audit_function_acl()` e já sabe quem é `SECURITY DEFINER` — que é
+exatamente o que os lints 0028/0029 medem. Dois guardrails com a mesma fonte
+divergem; o existente é estendido no lugar.
+
+1. **Allowlist estendido**: cada entrada ganha `advisor_lints` (`"0028"` e/ou
+   `"0029"`) ao lado do `why`. `loadAllowlist()` ignora campo desconhecido, então
+   a mudança é retrocompatível.
+2. **Bloco `_expected_advisor`** na allowlist: o total de WARN esperado por lint.
+   É a única forma de "23" virar número conferível em vez de memória.
+3. **`audit-function-acl.ts` ganha a regra 6**: calcula o equivalente-advisor a
+   partir das mesmas linhas (`is_secdef && (anon_execute || auth_execute)`) e
+   **falha nomeando** a divergência contra `_expected_advisor`. Continua rodando
+   por `workflow_dispatch` no job `acl-com-banco`, contra alvo não-produção.
+4. **`function-acl-allowlist.test.ts` ganha a checagem de consistência** entre
+   `_expected_advisor` e as entradas — roda em todo PR, sem banco.
+5. Os 17 INFO `rls_enabled_no_policy` **ficam fora do guardrail**: vêm de tabelas,
+   não de funções, e cobri-los exigiria RPC nova. São documentados como aceitos
+   por design (tabela com credencial usa `FORCE RLS` sem policy e a UI acessa por
+   Edge Function — invariante já no CLAUDE.md), não automatizados.
 
 ## 6. Testes — nenhuma loja pode ser afetada
 
@@ -210,8 +218,9 @@ controle desfaz.
   padrão não pode voltar sem teste vermelho*) e é o que existe.
 - `scripts/migration-static-guard.test.ts`: caso novo garantindo que migration
   futura não recrie os três helpers em `public`.
-- Teste do `audit-advisor.ts`: allowlist ↔ lista esperada, com controle negativo
-  (entrada legítima não pode reprovar).
+- `scripts/function-acl-allowlist.test.ts`: consistência entre
+  `_expected_advisor` e as entradas, com **controle negativo** — entrada legítima
+  não pode reprovar.
 
 ### 6.3 Gates obrigatórios antes do merge
 
@@ -229,8 +238,8 @@ envio manual de mensagem, cancelamento e edição de reserva — os 4 caminhos q
 mudaram de guard. Depois da 106: entrada pública na fila em
 `/r/:slug?action=waitlist`, painel Operacional → Entregas, ficha de cliente.
 Depois da 107: busca por código e ficha de cliente de novo.
-Ao final de cada uma, `npm run audit:advisor` e conferir o número esperado
-(25 e depois 23).
+Ao final de cada uma, rodar o `audit-function-acl.ts` contra o projeto e
+conferir o número esperado (25 e depois 23).
 
 ## 7. Rollback
 
@@ -267,6 +276,7 @@ de aplicar.
    falha ao reintroduzir cada defeito.
 4. `npm run typecheck`, `test`, `lint` verdes; `acl-estatico` verde.
 5. Os 4 gates `saas-shield-br:*` sem bloqueante.
-6. `npm run audit:advisor` verde e imprimindo o inventário completo.
+6. `audit-function-acl.ts` verde contra o projeto, com a regra 6 conferindo
+   `_expected_advisor` e imprimindo o inventário por lint.
 7. CLAUDE.md e AGENTS.md atualizados **no mesmo commit**, com o invariante novo:
    helper de RLS mora em `app_private`, e guard de EF usa `_shared/authz.ts`.
