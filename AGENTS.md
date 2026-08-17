@@ -57,7 +57,7 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 ## Banco, migrations, RLS e storage
 
 - Migration: `YYYYMMDDHHMMSS_nome.sql`, idempotente, aplicada somente com `supabase db push`; nunca colar SQL no Studio. Mudança de coluna lida por gate fail-closed entra no banco antes do deploy da EF.
-- Função nova em `public` revoga explicitamente execução de `PUBLIC`, `anon` e `authenticated`, depois concede ao papel mínimo. Teste trigger/CHECK/FK/idempotência no harness `supabase/tests/local-preflight/`; ele não prova RLS/ACL/PostgREST.
+- Função nova em `public` revoga explicitamente execução de `PUBLIC`, `anon` e `authenticated`, depois concede ao papel mínimo; toda trigger function faz esse revoke independente do nome. Teste trigger/CHECK/FK/idempotência no harness `supabase/tests/local-preflight/`; ele não prova RLS/ACL/PostgREST.
 - Anon escreve somente onde previsto e lê negócio por RPCs `SECURITY DEFINER` públicas e privacy-safe. Policy anon direta de leitura em tabela de negócio é regressão. `units`/`organizations` expõem ao anon apenas colunas concedidas explicitamente; coluna nova nasce privada.
 - Credenciais e tabelas sensíveis usam `FORCE RLS` sem policies e são acessadas por EF. Toda tabela/storage unit-scoped precisa de policy de membro e contraparte `platform_admin`.
 - `audit_log` de reservas/membros usa `unit_id`; cliente usa `organization_id`. Consultas precisam cobrir os dois.
