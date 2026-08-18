@@ -129,7 +129,7 @@ function CreateOrgDialog({
               name="default_whatsapp_provider"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Integração do WhatsApp</FormLabel>
+                  <FormLabel>Integração padrão do WhatsApp</FormLabel>
                   <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
                       <SelectTrigger className="min-h-11">
@@ -326,7 +326,7 @@ function EditOrgDialog({
               name="default_whatsapp_provider"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Integração do WhatsApp</FormLabel>
+                  <FormLabel>Integração padrão do WhatsApp</FormLabel>
                   <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
                       <SelectTrigger className="min-h-11">
@@ -425,7 +425,15 @@ export default function Empresas() {
                   {org.slug}
                 </TableCell>
                 <TableCell>
-                  {org.default_whatsapp_provider_label}
+                  {org.whatsapp_provider_source === "channels" ? (
+                    org.whatsapp_provider_labels.join(" + ")
+                  ) : (
+                    // Sem canal, a preferencia e a unica informacao que existe —
+                    // e ela nao autoriza dizer que algo esta em uso.
+                    <span className="text-muted-foreground text-xs">
+                      Sem canal · padrão {org.default_whatsapp_provider_label}
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="text-center">{org.units_count}</TableCell>
                 <TableCell className="text-center">{org.members_count}</TableCell>

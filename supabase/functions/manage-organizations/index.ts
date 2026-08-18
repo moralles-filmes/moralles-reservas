@@ -3,7 +3,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 import { corsHeadersFor } from "../_shared/cors.ts";
 import { isValidTaxId, normalizeTaxId } from "../_shared/tax-id.ts";
-import { getWhatsAppProvider } from "../_shared/whatsapp-providers.ts";
+import { getWhatsAppProvider, tryGetWhatsAppProvider } from "../_shared/whatsapp-providers.ts";
+import { resolveOrganizationWhatsAppProviders } from "../_shared/whatsapp-org-provider-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -65,7 +66,8 @@ serve(async (req) => {
         .select(`
           id, name, slug, plan, default_whatsapp_provider, created_at,
           units(id, slug, name,
-            unit_members(id)
+            unit_members(id),
+            whatsapp_channels(provider, status, is_active, created_at)
           )
         `)
         .order("created_at", { ascending: true })
@@ -73,23 +75,41 @@ serve(async (req) => {
 
       if (error) return jsonResponse(req, { error: error.message }, 500);
 
-      const rows = (data ?? []).map((org: any) => ({
-        id: org.id,
-        name: org.name,
-        slug: org.slug,
-        plan: org.plan,
-        default_whatsapp_provider: org.default_whatsapp_provider,
-        default_whatsapp_provider_label: getWhatsAppProvider(
-          String(org.default_whatsapp_provider ?? "zapi"),
-        ).label,
-        created_at: org.created_at,
-        units_count: (org.units ?? []).length,
-        members_count: (org.units ?? []).reduce(
-          (acc: number, u: any) => acc + (u.unit_members ?? []).length,
-          0
-        ),
-        first_unit_slug: (org.units ?? [])[0]?.slug ?? null,
-      }));
+      const rows = (data ?? []).map((org: any) => {
+        // O provedor EM OPERACAO sai de `whatsapp_channels`, nao da preferencia:
+        // `activate_whatsapp_channel` troca o canal sem reescrever
+        // `default_whatsapp_provider`, entao ler a coluna como realidade mostra
+        // Z-API para unidade rodando UazAPI.
+        const inUse = resolveOrganizationWhatsAppProviders({
+          units: org.units ?? [],
+          defaultProvider: org.default_whatsapp_provider,
+        });
+
+        return {
+          id: org.id,
+          name: org.name,
+          slug: org.slug,
+          plan: org.plan,
+          default_whatsapp_provider: org.default_whatsapp_provider,
+          default_whatsapp_provider_label: getWhatsAppProvider(
+            String(org.default_whatsapp_provider ?? "zapi"),
+          ).label,
+          whatsapp_providers: inUse.providers,
+          // Provider fora do registry (linha legada) nao pode derrubar a lista
+          // inteira — cai para o proprio nome em vez de lancar.
+          whatsapp_provider_labels: inUse.providers.map(
+            (name) => tryGetWhatsAppProvider(name)?.label ?? name,
+          ),
+          whatsapp_provider_source: inUse.source,
+          created_at: org.created_at,
+          units_count: (org.units ?? []).length,
+          members_count: (org.units ?? []).reduce(
+            (acc: number, u: any) => acc + (u.unit_members ?? []).length,
+            0
+          ),
+          first_unit_slug: (org.units ?? [])[0]?.slug ?? null,
+        };
+      });
 
       return jsonResponse(req, { organizations: rows });
     }
