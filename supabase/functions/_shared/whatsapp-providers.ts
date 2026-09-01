@@ -13,6 +13,8 @@ import {
   parseUazApiStatus,
   parseWahaInbound,
   parseWahaStatus,
+  parseZApiConnectionCallback,
+  parseZApiConnectionStatus,
   parseZApiInbound,
   parseZApiStatus,
   mapUazApiConnectionStatus,
@@ -71,16 +73,11 @@ async function getZApiConnectionStatus(
 ): Promise<ProviderConnectionSnapshot> {
   const { instance_id, token, client_token } = credentials;
   if (!instance_id || !token) throw new Error("missing_credentials");
-  const { response } = await fetchConnectionStatus(
+  const { response, body } = await fetchConnectionStatus(
     `https://api.z-api.io/instances/${instance_id}/token/${token}/status`,
     client_token ? { "Client-Token": client_token } : {},
   );
-  return {
-    status: response.ok ? "connected" : "provider_error",
-    nativeStatus: response.ok ? "http_ok" : `http_${response.status}`,
-    connected: response.ok,
-    qrRequired: false,
-  };
+  return parseZApiConnectionStatus(response.status, body);
 }
 
 async function getWahaConnectionStatus(
@@ -261,6 +258,7 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     parseInbound: parseZApiInbound,
     peekInboundMedia: peekZApiMedia,
     parseStatusCallback: parseZApiStatus,
+    parseConnectionCallback: parseZApiConnectionCallback,
     sendText: sendZApi,
     getConnectionStatus: getZApiConnectionStatus,
   },

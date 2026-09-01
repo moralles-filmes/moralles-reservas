@@ -7,6 +7,8 @@ import {
   parseUazApiInbound,
   parseUazApiStatus,
   parseZApiInbound,
+  parseZApiConnectionCallback,
+  parseZApiConnectionStatus,
   parseZApiStatus,
   peekUazApiMedia,
   sendUazApiText,
@@ -100,6 +102,75 @@ describe("caracterização Z-API", () => {
       type: "MessageStatusCallback",
       status: "READ_BY_ME",
       ids: ["one"],
+    })).toBeNull();
+  });
+
+  it("usa o booleano connected como autoridade no snapshot HTTP", () => {
+    expect(parseZApiConnectionStatus(200, { connected: true })).toEqual({
+      status: "connected",
+      nativeStatus: "connected",
+      connected: true,
+      qrRequired: false,
+    });
+    expect(parseZApiConnectionStatus(200, { connected: false })).toEqual({
+      status: "disconnected",
+      nativeStatus: "disconnected",
+      connected: false,
+      qrRequired: false,
+    });
+  });
+
+  it("falha fechado para HTTP não-2xx e payload de status inválido", () => {
+    expect(parseZApiConnectionStatus(401, { connected: true })).toEqual({
+      status: "provider_error",
+      nativeStatus: "http_401",
+      connected: false,
+      qrRequired: false,
+    });
+    expect(parseZApiConnectionStatus(200, {})).toEqual({
+      status: "provider_error",
+      nativeStatus: "invalid_payload",
+      connected: false,
+      qrRequired: false,
+    });
+  });
+
+  it("normaliza callbacks documentados de conexão e desconexão", () => {
+    expect(parseZApiConnectionCallback({
+      type: "ConnectedCallback",
+      connected: true,
+      phone: "5511987654321",
+    })).toEqual({
+      status: "connected",
+      nativeStatus: "ConnectedCallback",
+      connected: true,
+      qrRequired: false,
+      displayPhone: "11987654321",
+    });
+    expect(parseZApiConnectionCallback({
+      type: "DisconnectedCallback",
+      disconnected: true,
+    })).toEqual({
+      status: "disconnected",
+      nativeStatus: "DisconnectedCallback",
+      connected: false,
+      qrRequired: false,
+      displayPhone: null,
+    });
+  });
+
+  it("ignora callbacks alheios ou com indicador incoerente", () => {
+    expect(parseZApiConnectionCallback({
+      type: "MessageStatusCallback",
+      connected: true,
+    })).toBeNull();
+    expect(parseZApiConnectionCallback({
+      type: "ConnectedCallback",
+      connected: false,
+    })).toBeNull();
+    expect(parseZApiConnectionCallback({
+      type: "DisconnectedCallback",
+      disconnected: false,
     })).toBeNull();
   });
 

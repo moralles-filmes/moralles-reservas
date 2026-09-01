@@ -220,12 +220,23 @@ export function useTestChannel(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (channelId: string) => {
-      return invokeManageChannels({ action: "test", unit_id: unitId, channel_id: channelId });
+      return invokeManageChannels({ action: "test", unit_id: unitId, channel_id: channelId }) as Promise<{
+        success: boolean;
+        status: string;
+        error?: string | null;
+      }>;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
-      toast.success("Conexão testada com sucesso.");
+      if (data.status === "disconnected") {
+        toast.warning("A instância está desconectada.");
+      } else {
+        toast.success("Conexão testada com sucesso.");
+      }
     },
-    onError: (err: Error) => toast.error(`Falha na conexão: ${err.message}`),
+    onError: (err: Error) => {
+      queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
+      toast.error(`Falha na conexão: ${err.message}`);
+    },
   });
 }
