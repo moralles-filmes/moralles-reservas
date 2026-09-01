@@ -1566,6 +1566,7 @@ serve(async (req) => {
       let connected = false;
       let errorMsg: string | null = null;
       let displayPhone: string | null = null;
+      let observedStatus = "provider_error";
 
       try {
         const runtimeCredentials = await resolveChannelCredentials(supabase, channel as ChannelRow);
@@ -1573,23 +1574,31 @@ serve(async (req) => {
         if (!adapter.getConnectionStatus) throw new Error("status_not_supported");
         const snapshot = await adapter.getConnectionStatus(runtimeCredentials);
         connected = snapshot.connected;
+        observedStatus = snapshot.status;
         displayPhone = snapshot.displayPhone ?? null;
         if (!connected) errorMsg = snapshot.nativeStatus ?? "provider_error";
       } catch (e) {
         errorMsg = String(e);
         connected = false;
+        observedStatus = "provider_error";
       }
 
-      const newStatus = connected ? "connected" : "error";
-      await supabase
+      const newStatus = observedStatus;
+      const { error: statusWriteError } = await supabase
         .from("whatsapp_channels")
         .update({
           status: newStatus,
           last_event_at: connected ? new Date().toISOString() : undefined,
-          last_error: connected ? null : errorMsg,
+          last_health_check_at: new Date().toISOString(),
+          last_error: newStatus === "provider_error" || newStatus === "error" ? errorMsg : null,
           ...(displayPhone ? { display_phone: displayPhone } : {}),
         })
-        .eq("id", channelId);
+        .eq("id", channelId)
+        .eq("unit_id", unitId);
+      if (statusWriteError) {
+        console.error("manage-channels:test status persist", statusWriteError);
+        return jsonResponse(req, { error: "Falha ao registrar o status do canal." }, 500);
+      }
 
       if (connected && channel.activation_requested_at) {
         const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {
@@ -1606,7 +1615,11 @@ serve(async (req) => {
         }
       }
 
-      return jsonResponse(req, { success: connected, status: newStatus, error: errorMsg });
+      return jsonResponse(req, {
+        success: connected,
+        status: newStatus,
+        error: newStatus === "provider_error" || newStatus === "error" ? errorMsg : null,
+      });
     }
 
     return jsonResponse(req, { error: "Ação inválida." }, 400);

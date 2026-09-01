@@ -56,6 +56,32 @@ end $$;
 
 set role service_role;
 
+-- A projeção de status é compartilhada pelo registry: callback Z-API precisa
+-- persistir sem perder tenant/provider e sem relaxar a ACL service-role-only.
+select record_whatsapp_channel_status(
+  'bbbbbbbb-0000-0000-0000-000000000002',
+  'dddddddd-0000-0000-0000-000000000002',
+  'disconnected', null, null, null, 'preflight.zapi-disconnected'
+);
+
+do $$
+begin
+  if (select status from whatsapp_channels
+      where id = 'dddddddd-0000-0000-0000-000000000002') <> 'disconnected' then
+    raise exception 'MP-5b: callback Z-API nao atualizou a projecao';
+  end if;
+  if not exists (
+    select 1 from whatsapp_channel_lifecycle_events
+    where channel_ref = 'dddddddd-0000-0000-0000-000000000002'
+      and provider = 'zapi'
+      and to_status = 'disconnected'
+      and request_id = 'preflight.zapi-disconnected'
+  ) then
+    raise exception 'MP-5c: callback Z-API nao preservou provider no ledger';
+  end if;
+end;
+$$;
+
 select set_organization_default_whatsapp_provider(
   'aaaaaaaa-0000-0000-0000-000000000003', 'uazapi',
   '11111111-1111-1111-1111-111111111111', 'preflight.default'
@@ -273,7 +299,7 @@ begin
   from pg_proc p
   join pg_namespace n on n.oid = p.pronamespace
   cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
-  join pg_roles r on r.oid = a.grantee
+  left join pg_roles r on r.oid = a.grantee
   where n.nspname = 'public'
     and p.proname in (
       'set_organization_default_whatsapp_provider',
@@ -287,7 +313,7 @@ begin
       'claim_processed_whatsapp_message',
       'complete_processed_whatsapp_message'
     )
-    and r.rolname in ('anon', 'authenticated')
+    and (a.grantee = 0 or r.rolname in ('anon', 'authenticated'))
     and a.privilege_type = 'EXECUTE';
   if v_count <> 0 then
     raise exception 'MP-18: RPC privilegiada exposta a anon/authenticated';

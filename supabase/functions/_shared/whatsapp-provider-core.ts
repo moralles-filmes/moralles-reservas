@@ -573,6 +573,53 @@ export function parseUazApiStatus(p: any): StatusUpdate[] | null {
   return id && status ? [{ providerMessageId: id, status }] : null;
 }
 
+// ─── Snapshots de conexão ──────────────────────────────────────────────────
+
+// deno-lint-ignore no-explicit-any
+export function parseZApiConnectionStatus(
+  httpStatus: number,
+  payload: any,
+): ProviderConnectionSnapshot {
+  if (httpStatus < 200 || httpStatus >= 300) {
+    return {
+      status: "provider_error",
+      nativeStatus: `http_${httpStatus}`,
+      connected: false,
+      qrRequired: false,
+    };
+  }
+  if (!payload || typeof payload !== "object" || typeof payload.connected !== "boolean") {
+    return {
+      status: "provider_error",
+      nativeStatus: "invalid_payload",
+      connected: false,
+      qrRequired: false,
+    };
+  }
+  return {
+    status: payload.connected ? "connected" : "disconnected",
+    nativeStatus: payload.connected ? "connected" : "disconnected",
+    connected: payload.connected,
+    qrRequired: false,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+export function parseZApiConnectionCallback(payload: any): ProviderConnectionSnapshot | null {
+  const type = String(payload?.type ?? "");
+  if (type === "ConnectedCallback" && payload?.connected !== true) return null;
+  if (type === "DisconnectedCallback" && payload?.disconnected !== true) return null;
+  if (type !== "ConnectedCallback" && type !== "DisconnectedCallback") return null;
+  const connected = type === "ConnectedCallback";
+  return {
+    status: connected ? "connected" : "disconnected",
+    nativeStatus: type,
+    connected,
+    qrRequired: false,
+    displayPhone: connected ? canonicalBrPhone(String(payload?.phone ?? "")) || null : null,
+  };
+}
+
 // deno-lint-ignore no-explicit-any
 export function mapUazApiConnectionStatus(payload: any): ProviderConnectionSnapshot {
   const instance = payload?.instance ?? payload;

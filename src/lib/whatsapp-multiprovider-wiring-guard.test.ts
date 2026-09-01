@@ -13,6 +13,22 @@ describe("guardrails de wiring WhatsApp multi-provider", () => {
     expect(core).toContain("manualCredentials: false");
   });
 
+  it("callback e teste manual Z-API preservam o status observado até o banco", () => {
+    const providers = read("supabase/functions/_shared/whatsapp-providers.ts");
+    const webhook = read("supabase/functions/webhook-whatsapp/index.ts");
+    const manageChannels = read("supabase/functions/manage-channels/index.ts");
+    const channelsHook = read("src/hooks/useWhatsAppChannels.ts");
+    const migration = read("supabase/migrations/20260901225539_generalize_whatsapp_channel_status.sql");
+    expect(providers).toContain("parseConnectionCallback: parseZApiConnectionCallback");
+    expect(providers).toContain("parseZApiConnectionStatus(response.status, body)");
+    expect(webhook).toContain('rpc("record_whatsapp_channel_status"');
+    expect(manageChannels).toContain("observedStatus = snapshot.status");
+    expect(manageChannels).toContain('error: newStatus === "provider_error" || newStatus === "error" ? errorMsg : null');
+    expect(channelsHook).toContain('data.status === "disconnected"');
+    expect(migration).toContain("v_channel.provider, v_channel.status, p_status");
+    expect(migration).not.toContain("channel_provider_not_uazapi");
+  });
+
   it("UazAPI outbound exige token efêmero e usa endpoint oficial", () => {
     const core = read("supabase/functions/_shared/whatsapp-provider-core.ts");
     expect(core).toMatch(/instance_token/);
