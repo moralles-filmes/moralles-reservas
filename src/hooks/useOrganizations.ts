@@ -16,8 +16,17 @@ export interface OrganizationRow {
   units_count: number;
   members_count: number;
   first_unit_slug: string | null;
+  /** Preferencia administrativa (o que o admin autoriza provisionar). */
   default_whatsapp_provider: DefaultWhatsappProvider;
   default_whatsapp_provider_label: string;
+  /**
+   * Provedor(es) REALMENTE em operacao, lidos de `whatsapp_channels`. Com
+   * `whatsapp_provider_source === "default"` a org nao tem canal nenhum e a
+   * lista traz so a preferencia — nao afirmar que esta em uso.
+   */
+  whatsapp_providers: string[];
+  whatsapp_provider_labels: string[];
+  whatsapp_provider_source: "channels" | "default";
 }
 
 async function invokeManageOrganizations(body: Record<string, unknown>) {

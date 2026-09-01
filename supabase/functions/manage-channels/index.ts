@@ -460,6 +460,25 @@ function firstRpcRow<T>(data: unknown): T | null {
   return data && typeof data === "object" ? data as T : null;
 }
 
+/**
+ * `record_whatsapp_channel_status` e `release_whatsapp_channel_provisioning`
+ * devolvem uma PROJEÇÃO (`channel_id` + subconjunto de colunas), não o
+ * `ChannelRow` inteiro. Fazer `firstRpcRow<ChannelRow>()` direto entrega uma
+ * linha sem `id`/`webhook_secret`/`activation_requested_at`, e o próximo RPC
+ * do lifecycle sai com `p_channel_id: undefined` — o PostgREST omite a chave e
+ * responde PGRST202 (assinatura não encontrada), o que virava 500 no cliente.
+ * Sobrepor a projeção na linha já carregada preserva o resto.
+ */
+function mergeChannelProjection(base: ChannelRow, row: Record<string, unknown>): ChannelRow {
+  const { channel_id: channelId, ...rest } = row;
+  const merged = { ...base } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(rest)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  if (typeof channelId === "string") merged.id = channelId;
+  return merged as ChannelRow;
+}
+
 function publicErrorForUaz(error: unknown): ChannelActionError {
   if (error instanceof ChannelActionError) return error;
   if (error instanceof UazApiError) {
@@ -652,7 +671,9 @@ async function recordUazStatus(
     p_event_type: eventType ?? null,
   });
   if (error) throw new Error("channel_status_persist_failed");
-  return (firstRpcRow<ChannelRow>(data) ?? await loadChannel(channel.unit_id, channel.id) ?? channel);
+  const row = firstRpcRow<Record<string, unknown>>(data);
+  if (!row) return await loadChannel(channel.unit_id, channel.id) ?? channel;
+  return mergeChannelProjection(channel, row);
 }
 
 async function maybeActivateConnectedChannel(
@@ -860,9 +881,10 @@ async function connectUazChannel(
       },
     );
     if (releaseError) throw new Error("channel_provisioning_release_failed");
-    let released = firstRpcRow<ChannelRow>(releasedData)
-      ?? await loadChannel(initialChannel.unit_id, initialChannel.id)
-      ?? initialChannel;
+    const releasedRow = firstRpcRow<Record<string, unknown>>(releasedData);
+    let released = releasedRow
+      ? mergeChannelProjection(claimedChannel, releasedRow)
+      : await loadChannel(initialChannel.unit_id, initialChannel.id) ?? initialChannel;
     released = await maybeActivateConnectedChannel(released, actorId, requestId);
     return { connection: clientConnection(released, snapshot), warnings };
   } catch (error) {
