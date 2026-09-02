@@ -143,9 +143,20 @@ export function whatsappPollingInterval(
   snapshot: WhatsappConnectionSnapshot | undefined,
   isPageVisible: boolean,
 ): number | false {
-  return isPageVisible && snapshot && isWhatsappConnectionTransient(snapshot.status)
-    ? 5_000
-    : false;
+  if (!isPageVisible || !snapshot) return false;
+  if (isWhatsappConnectionTransient(snapshot.status)) return 5_000;
+  if (
+    snapshot.channel_id
+    && snapshot.status !== "not_configured"
+    && snapshot.status !== "suspended"
+  ) return 30_000;
+  return false;
+}
+
+export function whatsappConnectionReadAction(
+  snapshot: WhatsappConnectionSnapshot | undefined,
+): "list_client" | "status" {
+  return snapshot?.lifecycle_available ? "status" : "list_client";
 }
 
 function subscribePageVisibility(onStoreChange: () => void) {
@@ -198,9 +209,7 @@ export function useWhatsappConnection(unitId: string) {
     queryKey,
     queryFn: async () => {
       const cached = queryClient.getQueryData<WhatsappConnectionSnapshot>(queryKey);
-      const action: ClientAction = cached && isWhatsappConnectionTransient(cached.status)
-        ? "status"
-        : "list_client";
+      const action: ClientAction = whatsappConnectionReadAction(cached);
       return normalizeWhatsappConnection(
         await invokeClientAction(action, unitId, cached?.channel_id),
       );

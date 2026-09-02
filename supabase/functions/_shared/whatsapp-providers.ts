@@ -11,6 +11,7 @@ import {
   parseOfficialStatus,
   parseUazApiInbound,
   parseUazApiStatus,
+  parseWahaConnectionStatus,
   parseWahaInbound,
   parseWahaStatus,
   parseZApiConnectionCallback,
@@ -85,16 +86,11 @@ async function getWahaConnectionStatus(
 ): Promise<ProviderConnectionSnapshot> {
   const { base_url, api_key, session_name = "default" } = credentials;
   if (!base_url) throw new Error("missing_credentials");
-  const { response } = await fetchConnectionStatus(
+  const { response, body } = await fetchConnectionStatus(
     `${base_url.replace(/\/$/, "")}/api/sessions/${session_name}`,
     api_key ? { "X-Api-Key": api_key } : {},
   );
-  return {
-    status: response.ok ? "connected" : "provider_error",
-    nativeStatus: response.ok ? "http_ok" : `http_${response.status}`,
-    connected: response.ok,
-    qrRequired: false,
-  };
+  return parseWahaConnectionStatus(response.status, body);
 }
 
 async function getOfficialConnectionStatus(
