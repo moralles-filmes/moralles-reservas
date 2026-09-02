@@ -88,6 +88,35 @@ interface ChannelRow {
   provisioning_create_attempted_at: string | null;
 }
 
+type ClientChannelRow = ChannelRow & { created_at?: string };
+
+const CLIENT_CHANNEL_COLUMNS = "id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at, created_at";
+
+function selectClientChannel(rows: readonly ClientChannelRow[]): ClientChannelRow | null {
+  return rows.find((row) => row.is_active === true)
+    ?? rows.find((row) => row.is_active === null && row.status === "connected")
+    ?? rows.find((row) => row.provider === "uazapi")
+    ?? rows.find((row) => row.is_active === null)
+    ?? null;
+}
+
+function hasValidActivationRequest(channel: ChannelRow): boolean {
+  return !!channel.activation_requested_at
+    && Number.isFinite(Date.parse(channel.activation_requested_at));
+}
+
+async function loadClientChannels(unitId: string): Promise<ClientChannelRow[]> {
+  const { data, error } = await supabase
+    .from("whatsapp_channels")
+    .select(CLIENT_CHANNEL_COLUMNS)
+    .eq("unit_id", unitId)
+    .order("created_at", { ascending: true });
+  if (error) {
+    throw new ChannelActionError(500, "CHANNEL_LIST_FAILED", "Falha ao consultar a conexão.");
+  }
+  return (data ?? []) as ClientChannelRow[];
+}
+
 function generateWebhookSecret(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(32)))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -112,10 +141,16 @@ function displayPhoneFromSnapshot(snapshot: UazInstanceSnapshot): string | null 
 function clientConnection(
   channel: Partial<ChannelRow> | null,
   snapshot?: UazInstanceSnapshot,
-  lifecycleAvailable = channel?.provider
-    ? supportsClientLifecycle(String(channel.provider))
-    : false,
+  providerOverride?: string,
+  qrCode?: string | null,
 ) {
+  const provider = channel?.provider ? String(channel.provider) : providerOverride;
+  const adapter = provider ? tryGetWhatsAppProvider(provider) : null;
+  const lifecycleAvailable = !!adapter
+    && adapter.capabilities.automaticProvisioning
+    && adapter.capabilities.qrConnection;
+  const qrBlockedByProviderState = ["PASSKEY_REQUIRED", "PASSKEY_CONFIRMATION_REQUIRED"]
+    .includes(String(channel?.last_error ?? "").toUpperCase());
   return {
     channel_id: channel?.id ?? null,
     status: snapshot
@@ -124,8 +159,13 @@ function clientConnection(
     display_phone: snapshot ? displayPhoneFromSnapshot(snapshot) : channel?.display_phone ?? null,
     connected_at: channel?.connected_at ?? null,
     last_health_check_at: channel?.last_health_check_at ?? null,
-    qr_code: snapshot?.qrCode ?? null,
+    qr_code: qrCode === undefined ? snapshot?.qrCode ?? null : qrCode,
     lifecycle_available: lifecycleAvailable,
+    qr_available: provider && !qrBlockedByProviderState
+      ? supportsClientQr(provider, channel?.credentials ?? null)
+      : false,
+    restart_available: adapter?.capabilities.restart === true && !!adapter.lifecycle,
+    disconnect_available: adapter?.capabilities.disconnect === true && !!adapter.lifecycle,
   };
 }
 
@@ -483,6 +523,19 @@ function mergeChannelProjection(base: ChannelRow, row: Record<string, unknown>):
   return merged as ChannelRow;
 }
 
+function supportsClientQr(
+  provider: string,
+  credentials: ChannelCredentials | null = null,
+): boolean {
+  const adapter = tryGetWhatsAppProvider(provider);
+  return !!adapter
+    && adapter.capabilities.qrConnection
+    && (
+      !!adapter.lifecycle
+      || (!!adapter.getQrCode && (adapter.canRequestQr?.(credentials ?? {}) ?? true))
+    );
+}
+
 function providerStatusErrorCode(value: string | null | undefined): string {
   const normalized = String(value ?? "PROVIDER_STATUS_UNAVAILABLE")
     .toUpperCase()
@@ -493,16 +546,18 @@ function providerStatusErrorCode(value: string | null | undefined): string {
 }
 
 /**
- * Providers manuais não expõem lifecycle ao lojista, mas o portal ainda
- * precisa reconciliar a projeção com o status real. A observação e as
+ * Providers manuais não expõem lifecycle administrativo ao lojista, mas o
+ * portal pode observar status e, quando suportado, obter QR efêmero. As
  * credenciais ficam nesta fronteira service-role; o retorno segue client-safe.
  */
 async function refreshManualProviderStatus(
   initialChannel: ChannelRow,
   actorId: string,
   requestId: string,
-): Promise<ChannelRow> {
-  if (supportsClientLifecycle(initialChannel.provider)) return initialChannel;
+): Promise<{ channel: ChannelRow; qrCode: string | null }> {
+  if (supportsClientLifecycle(initialChannel.provider)) {
+    return { channel: initialChannel, qrCode: null };
+  }
 
   const claimedAt = new Date().toISOString();
   const staleBefore = new Date(Date.now() - MANUAL_STATUS_REFRESH_INTERVAL_MS).toISOString();
@@ -541,24 +596,38 @@ async function refreshManualProviderStatus(
       provider: initialChannel.provider,
       code: claimError.code ?? "STATUS_CLAIM_FAILED",
     }));
-    return { ...initialChannel, status: "provider_error", last_error: "STATUS_CLAIM_FAILED" };
+    return {
+      channel: { ...initialChannel, status: "provider_error", last_error: "STATUS_CLAIM_FAILED" },
+      qrCode: null,
+    };
   }
 
   if (!claimed) {
     const current = await loadChannel(initialChannel.unit_id, initialChannel.id) ?? initialChannel;
-    return current.last_error === HEALTH_CHECK_IN_PROGRESS
-      ? { ...current, status: "provider_error" }
-      : current;
+    return {
+      channel: current.last_error === HEALTH_CHECK_IN_PROGRESS
+        ? { ...current, status: "provider_error" }
+        : current,
+      qrCode: null,
+    };
   }
 
   const channel = claimed as ChannelRow;
 
   let snapshot: ProviderConnectionSnapshot;
+  let qrCode: string | null = null;
   try {
     const adapter = getWhatsAppProvider(channel.provider);
     if (!adapter.getConnectionStatus) throw new Error("status_not_supported");
     const credentials = await resolveChannelCredentials(supabase, channel);
     snapshot = await adapter.getConnectionStatus(credentials);
+    if (
+      snapshot.qrRequired
+      && supportsClientQr(channel.provider, channel.credentials)
+      && adapter.getQrCode
+    ) {
+      qrCode = (await adapter.getQrCode(credentials)).qrCode;
+    }
   } catch (error) {
     snapshot = {
       status: "provider_error",
@@ -593,14 +662,44 @@ async function refreshManualProviderStatus(
       provider: channel.provider,
       code: error.code ?? "STATUS_PERSIST_FAILED",
     }));
-    return { ...channel, status: "provider_error", last_error: "STATUS_PERSIST_FAILED" };
+    return {
+      channel: { ...channel, status: "provider_error", last_error: "STATUS_PERSIST_FAILED" },
+      qrCode: null,
+    };
   }
 
   const row = firstRpcRow<Record<string, unknown>>(data);
-  return row ? mergeChannelProjection(channel, row) : channel;
+  const projectedChannel = row ? mergeChannelProjection(channel, row) : channel;
+  return {
+    channel: { ...projectedChannel, last_error: errorCode },
+    qrCode,
+  };
 }
 
-function publicErrorForUaz(error: unknown): ChannelActionError {
+async function getManualProviderQr(
+  channel: ChannelRow,
+): Promise<ReturnType<typeof clientConnection>> {
+  const adapter = getWhatsAppProvider(channel.provider);
+  if (!supportsClientQr(channel.provider, channel.credentials) || !adapter.getQrCode) {
+    throw new ChannelActionError(
+      409,
+      "QR_NOT_SUPPORTED",
+      "Este tipo de conexão não usa pareamento por QR Code.",
+    );
+  }
+  const credentials = await resolveChannelCredentials(supabase, channel);
+  const qrCode = (await adapter.getQrCode(credentials)).qrCode;
+  if (!qrCode) {
+    throw new ChannelActionError(
+      503,
+      "QR_UNAVAILABLE",
+      "Não foi possível gerar o QR Code agora. Tente novamente.",
+    );
+  }
+  return clientConnection({ ...channel, status: "waiting_qr" }, undefined, undefined, qrCode);
+}
+
+function publicErrorForLifecycle(error: unknown): ChannelActionError {
   if (error instanceof ChannelActionError) return error;
   if (error instanceof UazApiError) {
     const status = error.code === "CAPACITY_EXCEEDED" || error.code === "RATE_LIMITED"
@@ -614,6 +713,13 @@ function publicErrorForUaz(error: unknown): ChannelActionError {
         ? "A integração está temporariamente indisponível. Fale com o suporte."
         : "Não foi possível acessar o serviço de conexão agora. Tente novamente.";
     return new ChannelActionError(status, error.code, message);
+  }
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return new ChannelActionError(
+      503,
+      "TIMEOUT",
+      "Não foi possível acessar o serviço de conexão agora. Tente novamente.",
+    );
   }
   return new ChannelActionError(
     500,
@@ -1074,11 +1180,17 @@ serve(async (req) => {
         requested = await loadChannel(unitId, requestedId);
         if (!requested) throw new ChannelActionError(404, "CHANNEL_NOT_FOUND", "Canal não encontrado.");
         if (requested.provider !== "uazapi") {
-          throw new ChannelActionError(
-            409,
-            "MANUAL_PROVIDER_LIFECYCLE",
-            "Esta conexão é administrada pelo suporte.",
-          );
+          const selected = selectClientChannel(await loadClientChannels(unitId));
+          if (selected?.id !== requested.id && !hasValidActivationRequest(requested)) {
+            throw new ChannelActionError(
+              409,
+              "CHANNEL_NOT_SELECTED",
+              "Este canal ainda não está selecionado para a unidade.",
+            );
+          }
+          // Provisionamento sem canal continua exclusivo da UazAPI; canal
+          // manual passa somente depois do binding e da seleção acima.
+          return requested;
         }
       }
 
@@ -1128,25 +1240,29 @@ serve(async (req) => {
 
     // ── client-safe lifecycle ────────────────────────────────────────────────
     if (action === "list_client") {
-      const { data, error } = await supabase
-        .from("whatsapp_channels")
-        .select("id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at, created_at")
-        .eq("unit_id", unitId)
-        .order("created_at", { ascending: true });
-      if (error) return jsonResponse(req, { error: "Falha ao consultar a conexão." }, 500);
-      const rows = (data ?? []) as Array<ChannelRow & { created_at?: string }>;
-      let selected = rows.find((row) => row.is_active === true)
-        ?? rows.find((row) => row.is_active === null && row.status === "connected")
-        ?? rows.find((row) => row.provider === "uazapi")
-        ?? rows.find((row) => row.is_active === null)
-        ?? null;
-      if (selected) selected = await refreshManualProviderStatus(selected, callerId, requestId);
-      const lifecycleAvailable = selected
-        ? supportsClientLifecycle(String(selected.provider))
-        : supportsClientLifecycle((await getUnitContext(unitId)).defaultProvider);
+      let rows: ClientChannelRow[];
+      try {
+        rows = await loadClientChannels(unitId);
+      } catch (error) {
+        const safe = publicErrorForLifecycle(error);
+        return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
+      }
+      let selected = selectClientChannel(rows);
+      let qrCode: string | null = null;
+      if (selected) {
+        const refreshed = await refreshManualProviderStatus(selected, callerId, requestId);
+        selected = refreshed.channel;
+        qrCode = refreshed.qrCode;
+      }
+      const defaultProvider = selected ? null : (await getUnitContext(unitId)).defaultProvider;
+      const capabilityProvider = selected
+        ? String(selected.provider)
+        : defaultProvider && supportsClientLifecycle(defaultProvider)
+          ? defaultProvider
+          : undefined;
       return jsonResponse(req, {
         success: true,
-        connection: clientConnection(selected, undefined, lifecycleAvailable),
+        connection: clientConnection(selected, undefined, capabilityProvider, qrCode),
       });
     }
 
@@ -1154,6 +1270,12 @@ serve(async (req) => {
       try {
         const channel = await resolveLifecycleChannel(true);
         if (!channel) throw new Error("uazapi_channel_missing");
+        if (!getWhatsAppProvider(channel.provider).capabilities.automaticProvisioning) {
+          return jsonResponse(req, {
+            success: true,
+            connection: await getManualProviderQr(channel),
+          });
+        }
         const result = await connectUazChannel(
           channel,
           callerId,
@@ -1162,8 +1284,8 @@ serve(async (req) => {
         );
         return jsonResponse(req, { success: true, ...result });
       } catch (error) {
-        const safe = publicErrorForUaz(error);
-        console.error("manage-channels:uazapi connect", JSON.stringify({
+        const safe = publicErrorForLifecycle(error);
+        console.error("manage-channels:client connect", JSON.stringify({
           requestId,
           unitId,
           code: safe.code,
@@ -1179,7 +1301,23 @@ serve(async (req) => {
           const context = await getUnitContext(unitId);
           return jsonResponse(req, {
             success: true,
-            connection: clientConnection(null, undefined, supportsClientLifecycle(context.defaultProvider)),
+            connection: clientConnection(
+              null,
+              undefined,
+              supportsClientLifecycle(context.defaultProvider) ? context.defaultProvider : undefined,
+            ),
+          });
+        }
+        if (!getWhatsAppProvider(channel.provider).capabilities.automaticProvisioning) {
+          const refreshed = await refreshManualProviderStatus(channel, callerId, requestId);
+          return jsonResponse(req, {
+            success: true,
+            connection: clientConnection(
+              refreshed.channel,
+              undefined,
+              channel.provider,
+              refreshed.qrCode,
+            ),
           });
         }
         if (channel.status === "provisioning" && !channel.instance_token_secret_id) {
@@ -1191,8 +1329,8 @@ serve(async (req) => {
           connection: clientConnection(current.channel, current.snapshot),
         });
       } catch (error) {
-        const safe = publicErrorForUaz(error);
-        console.error("manage-channels:uazapi status", JSON.stringify({ requestId, unitId, code: safe.code }));
+        const safe = publicErrorForLifecycle(error);
+        console.error("manage-channels:client status", JSON.stringify({ requestId, unitId, code: safe.code }));
         return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
       }
     }
@@ -1230,7 +1368,7 @@ serve(async (req) => {
         }
         return jsonResponse(req, { success: true, connection: clientConnection(updated, snapshot) });
       } catch (error) {
-        const safe = publicErrorForUaz(error);
+        const safe = publicErrorForLifecycle(error);
         return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
       }
     }
@@ -1269,7 +1407,7 @@ serve(async (req) => {
         const result = await connectUazChannel(resetChannel, callerId, requestId, platformAdmin);
         return jsonResponse(req, { success: true, ...result });
       } catch (error) {
-        const safe = publicErrorForUaz(error);
+        const safe = publicErrorForLifecycle(error);
         return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
       }
     }
@@ -1364,7 +1502,7 @@ serve(async (req) => {
         target = await loadChannel(unitId, target.id) ?? target;
         return jsonResponse(req, { success: true, channel: target });
       } catch (error) {
-        const safe = publicErrorForUaz(error);
+        const safe = publicErrorForLifecycle(error);
         return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
       }
     }

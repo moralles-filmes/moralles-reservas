@@ -118,6 +118,26 @@ export interface ProviderConnectionSnapshot {
   displayPhone?: string | null;
 }
 
+/** QR efêmero obtido do provider. Nunca deve ser persistido ou logado. */
+export interface ProviderQrSnapshot {
+  qrCode: string | null;
+}
+
+export type ProviderQrRequest =
+  | { ok: true; url: string; headers: Record<string, string>; method?: "GET" | "POST" }
+  | { ok: false; missingCreds: string[] };
+
+export const MAX_WAHA_QR_RAW_LENGTH = 16_384;
+
+export type WahaQrFlowDecision =
+  | "ready"
+  | "start"
+  | "restart"
+  | "wait"
+  | "connected"
+  | "unsupported"
+  | "terminal";
+
 export interface ManagedProviderInstanceSnapshot {
   id: string;
   name: string | null;
@@ -156,6 +176,8 @@ export interface WhatsAppProviderAdapter {
   parseConnectionCallback?(payload: any): ProviderConnectionSnapshot | null;
   sendText(credentials: ChannelCredentials, message: OutboundMessage): Promise<SendResult>;
   getConnectionStatus?(credentials: ChannelCredentials): Promise<ProviderConnectionSnapshot>;
+  getQrCode?(credentials: ChannelCredentials): Promise<ProviderQrSnapshot>;
+  canRequestQr?(credentials: ChannelCredentials): boolean;
   lifecycle?: ManagedProviderLifecycleAdapter;
 }
 
@@ -209,7 +231,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
   zapi: {
     manualCredentials: true,
     automaticProvisioning: false,
-    qrConnection: false,
+    qrConnection: true,
     pairCode: false,
     automaticWebhook: false,
     disconnect: false,
@@ -219,7 +241,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
   waha: {
     manualCredentials: true,
     automaticProvisioning: false,
-    qrConnection: false,
+    qrConnection: true,
     pairCode: false,
     automaticWebhook: false,
     disconnect: false,
@@ -600,8 +622,11 @@ export function parseWahaConnectionStatus(
   if (nativeStatus === "STARTING") {
     return { status: "connecting", nativeStatus, connected: false, qrRequired: false };
   }
-  if (["SCAN_QR_CODE", "PASSKEY_REQUIRED", "PASSKEY_CONFIRMATION_REQUIRED"].includes(nativeStatus ?? "")) {
+  if (nativeStatus === "SCAN_QR_CODE") {
     return { status: "waiting_qr", nativeStatus, connected: false, qrRequired: true };
+  }
+  if (["PASSKEY_REQUIRED", "PASSKEY_CONFIRMATION_REQUIRED"].includes(nativeStatus ?? "")) {
+    return { status: "provider_error", nativeStatus, connected: false, qrRequired: false };
   }
   if (nativeStatus === "FAILED") {
     return { status: "error", nativeStatus, connected: false, qrRequired: false };
@@ -641,6 +666,141 @@ export function parseZApiConnectionStatus(
     connected: payload.connected,
     qrRequired: false,
   };
+}
+
+// QR de providers manuais é tratado separadamente do status e sempre falha
+// fechado: HTTP sem sucesso ou payload fora do contrato nunca chega à UI.
+// deno-lint-ignore no-explicit-any
+export function parseZApiQrCode(httpStatus: number, payload: any): ProviderQrSnapshot {
+  if (httpStatus < 200 || httpStatus >= 300) return { qrCode: null };
+  const value = nonEmptyString(payload?.value);
+  if (!value || !/^data:image\/png;base64,[a-z0-9+/=]+$/i.test(value)) {
+    return { qrCode: null };
+  }
+  return { qrCode: value };
+}
+
+// WAHA com `format=raw` e `Accept: application/json` devolve `{ value }`.
+// deno-lint-ignore no-explicit-any
+export function parseWahaQrCode(httpStatus: number, payload: any): ProviderQrSnapshot {
+  if (httpStatus < 200 || httpStatus >= 300) return { qrCode: null };
+  const value = nonEmptyString(payload?.value);
+  return { qrCode: value && value.length <= MAX_WAHA_QR_RAW_LENGTH ? value : null };
+}
+
+export function buildZApiQrRequest(credentials: ChannelCredentials): ProviderQrRequest {
+  const missingCreds: string[] = [];
+  if (!credentials.instance_id) missingCreds.push("instance_id");
+  if (!credentials.token) missingCreds.push("token");
+  if (missingCreds.length) return { ok: false, missingCreds };
+  return {
+    ok: true,
+    url: `https://api.z-api.io/instances/${credentials.instance_id}/token/${credentials.token}/qr-code`,
+    headers: credentials.client_token ? { "Client-Token": credentials.client_token } : {},
+  };
+}
+
+function isPrivateOrLocalHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) {
+    return true;
+  }
+  if (!host.includes(".") && !host.includes(":")) return true;
+  if (
+    host === "::"
+    || host === "::1"
+    || host.startsWith("::ffff:")
+    || /^(?:fc|fd|fe8|fe9|fea|feb)/i.test(host)
+  ) {
+    return true;
+  }
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!ipv4) return false;
+  const octets = ipv4.slice(1).map(Number);
+  if (octets.some((part) => part > 255)) return true;
+  const [a, b] = octets;
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 198 && (b === 18 || b === 19));
+}
+
+export function isSafeWahaBaseUrl(value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:"
+      && !url.username
+      && !url.password
+      && !isPrivateOrLocalHostname(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function buildWahaRequest(
+  credentials: ChannelCredentials,
+  path: string,
+  method?: "GET" | "POST",
+): ProviderQrRequest {
+  if (!credentials.base_url || !isSafeWahaBaseUrl(credentials.base_url)) {
+    return { ok: false, missingCreds: ["base_url"] };
+  }
+  const baseUrl = credentials.base_url.trim().replace(/\/$/, "");
+  return {
+    ok: true,
+    url: `${baseUrl}${path}`,
+    headers: {
+      Accept: "application/json",
+      ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
+      ...(credentials.api_key ? { "X-Api-Key": credentials.api_key } : {}),
+    },
+    ...(method ? { method } : {}),
+  };
+}
+
+export function buildWahaStatusRequest(credentials: ChannelCredentials): ProviderQrRequest {
+  const session = encodeURIComponent(credentials.session_name || "default");
+  return buildWahaRequest(credentials, `/api/sessions/${session}`);
+}
+
+export function buildWahaSessionActionRequest(
+  credentials: ChannelCredentials,
+  action: "start" | "restart",
+): ProviderQrRequest {
+  const session = encodeURIComponent(credentials.session_name || "default");
+  return buildWahaRequest(credentials, `/api/sessions/${session}/${action}`, "POST");
+}
+
+export function wahaSessionPreparationAction(
+  nativeStatus: string | null | undefined,
+): "start" | "restart" | null {
+  const decision = decideWahaQrFlow(nativeStatus);
+  return decision === "start" || decision === "restart" ? decision : null;
+}
+
+export function decideWahaQrFlow(
+  nativeStatus: string | null | undefined,
+): WahaQrFlowDecision {
+  const normalized = nativeStatus?.toUpperCase();
+  if (normalized === "SCAN_QR_CODE") return "ready";
+  if (normalized === "STOPPED") return "start";
+  if (normalized === "FAILED") return "restart";
+  if (normalized === "STARTING") return "wait";
+  if (normalized === "WORKING") return "connected";
+  if (normalized === "PASSKEY_REQUIRED" || normalized === "PASSKEY_CONFIRMATION_REQUIRED") {
+    return "unsupported";
+  }
+  return "terminal";
+}
+
+export function buildWahaQrRequest(credentials: ChannelCredentials): ProviderQrRequest {
+  const session = encodeURIComponent(credentials.session_name || "default");
+  return buildWahaRequest(credentials, `/api/${session}/auth/qr?format=raw`);
 }
 
 // deno-lint-ignore no-explicit-any
