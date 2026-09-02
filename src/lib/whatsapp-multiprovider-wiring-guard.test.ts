@@ -21,12 +21,25 @@ describe("guardrails de wiring WhatsApp multi-provider", () => {
     const migration = read("supabase/migrations/20260901225539_generalize_whatsapp_channel_status.sql");
     expect(providers).toContain("parseConnectionCallback: parseZApiConnectionCallback");
     expect(providers).toContain("parseZApiConnectionStatus(response.status, body)");
+    expect(providers).toContain("parseWahaConnectionStatus(response.status, body)");
     expect(webhook).toContain('rpc("record_whatsapp_channel_status"');
     expect(manageChannels).toContain("observedStatus = snapshot.status");
     expect(manageChannels).toContain('error: newStatus === "provider_error" || newStatus === "error" ? errorMsg : null');
     expect(channelsHook).toContain('data.status === "disconnected"');
     expect(migration).toContain("v_channel.provider, v_channel.status, p_status");
     expect(migration).not.toContain("channel_provider_not_uazapi");
+  });
+
+  it("listagem client-safe reconcilia provider manual antes de responder", () => {
+    const manageChannels = read("supabase/functions/manage-channels/index.ts");
+    expect(manageChannels).toContain("async function refreshManualProviderStatus");
+    expect(manageChannels).toContain("MANUAL_STATUS_REFRESH_INTERVAL_MS = 30_000");
+    expect(manageChannels).toContain('.is("last_health_check_at", null)');
+    expect(manageChannels).toContain('.lt("last_health_check_at", staleBefore)');
+    expect(manageChannels).toContain('rpc("record_whatsapp_channel_status"');
+    expect(manageChannels).toContain("selected = await refreshManualProviderStatus");
+    expect(manageChannels.indexOf("selected = await refreshManualProviderStatus"))
+      .toBeLessThan(manageChannels.indexOf("connection: clientConnection(selected"));
   });
 
   it("UazAPI outbound exige token efêmero e usa endpoint oficial", () => {

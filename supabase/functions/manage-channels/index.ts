@@ -6,6 +6,7 @@ import {
   listWhatsAppProviderMetadata,
   type WhatsAppProvider,
   type ChannelCredentials,
+  type ProviderConnectionSnapshot,
 } from "../_shared/whatsapp-providers.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
 import {
@@ -65,6 +66,9 @@ const CLIENT_LIFECYCLE_ACTIONS = new Set([
   "disconnect",
   "restart",
 ]);
+
+const MANUAL_STATUS_REFRESH_INTERVAL_MS = 30_000;
+const HEALTH_CHECK_IN_PROGRESS = "HEALTH_CHECK_IN_PROGRESS";
 
 interface ChannelRow {
   id: string;
@@ -477,6 +481,123 @@ function mergeChannelProjection(base: ChannelRow, row: Record<string, unknown>):
   }
   if (typeof channelId === "string") merged.id = channelId;
   return merged as ChannelRow;
+}
+
+function providerStatusErrorCode(value: string | null | undefined): string {
+  const normalized = String(value ?? "PROVIDER_STATUS_UNAVAILABLE")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+  return normalized || "PROVIDER_STATUS_UNAVAILABLE";
+}
+
+/**
+ * Providers manuais não expõem lifecycle ao lojista, mas o portal ainda
+ * precisa reconciliar a projeção com o status real. A observação e as
+ * credenciais ficam nesta fronteira service-role; o retorno segue client-safe.
+ */
+async function refreshManualProviderStatus(
+  initialChannel: ChannelRow,
+  actorId: string,
+  requestId: string,
+): Promise<ChannelRow> {
+  if (supportsClientLifecycle(initialChannel.provider)) return initialChannel;
+
+  const claimedAt = new Date().toISOString();
+  const staleBefore = new Date(Date.now() - MANUAL_STATUS_REFRESH_INTERVAL_MS).toISOString();
+  const claimPatch = {
+    last_health_check_at: claimedAt,
+    last_error: HEALTH_CHECK_IN_PROGRESS,
+  };
+  const claimColumns = "id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at";
+
+  let { data: claimed, error: claimError } = await supabase
+    .from("whatsapp_channels")
+    .update(claimPatch)
+    .eq("id", initialChannel.id)
+    .eq("unit_id", initialChannel.unit_id)
+    .is("last_health_check_at", null)
+    .select(claimColumns)
+    .maybeSingle();
+
+  if (!claimed && !claimError) {
+    const staleClaim = await supabase
+      .from("whatsapp_channels")
+      .update(claimPatch)
+      .eq("id", initialChannel.id)
+      .eq("unit_id", initialChannel.unit_id)
+      .lt("last_health_check_at", staleBefore)
+      .select(claimColumns)
+      .maybeSingle();
+    claimed = staleClaim.data;
+    claimError = staleClaim.error;
+  }
+
+  if (claimError) {
+    console.error("manage-channels:list_client status claim", JSON.stringify({
+      requestId,
+      unitId: initialChannel.unit_id,
+      provider: initialChannel.provider,
+      code: claimError.code ?? "STATUS_CLAIM_FAILED",
+    }));
+    return { ...initialChannel, status: "provider_error", last_error: "STATUS_CLAIM_FAILED" };
+  }
+
+  if (!claimed) {
+    const current = await loadChannel(initialChannel.unit_id, initialChannel.id) ?? initialChannel;
+    return current.last_error === HEALTH_CHECK_IN_PROGRESS
+      ? { ...current, status: "provider_error" }
+      : current;
+  }
+
+  const channel = claimed as ChannelRow;
+
+  let snapshot: ProviderConnectionSnapshot;
+  try {
+    const adapter = getWhatsAppProvider(channel.provider);
+    if (!adapter.getConnectionStatus) throw new Error("status_not_supported");
+    const credentials = await resolveChannelCredentials(supabase, channel);
+    snapshot = await adapter.getConnectionStatus(credentials);
+  } catch (error) {
+    snapshot = {
+      status: "provider_error",
+      nativeStatus: error instanceof Error ? error.message : "provider_status_unavailable",
+      connected: false,
+      qrRequired: false,
+    };
+  }
+
+  const displayPhoneDigits = snapshot.displayPhone?.replace(/\D/g, "") ?? "";
+  const displayPhone = displayPhoneDigits.length >= 10 && displayPhoneDigits.length <= 15
+    ? displayPhoneDigits
+    : null;
+  const errorCode = snapshot.status === "provider_error" || snapshot.status === "error"
+    ? providerStatusErrorCode(snapshot.nativeStatus)
+    : null;
+  const { data, error } = await supabase.rpc("record_whatsapp_channel_status", {
+    p_unit_id: channel.unit_id,
+    p_channel_id: channel.id,
+    p_status: snapshot.status,
+    p_display_phone: displayPhone,
+    p_error_code: errorCode,
+    p_actor_id: actorId,
+    p_request_id: requestId,
+    p_event_type: null,
+  });
+
+  if (error) {
+    console.error("manage-channels:list_client status persist", JSON.stringify({
+      requestId,
+      unitId: channel.unit_id,
+      provider: channel.provider,
+      code: error.code ?? "STATUS_PERSIST_FAILED",
+    }));
+    return { ...channel, status: "provider_error", last_error: "STATUS_PERSIST_FAILED" };
+  }
+
+  const row = firstRpcRow<Record<string, unknown>>(data);
+  return row ? mergeChannelProjection(channel, row) : channel;
 }
 
 function publicErrorForUaz(error: unknown): ChannelActionError {
@@ -1009,16 +1130,17 @@ serve(async (req) => {
     if (action === "list_client") {
       const { data, error } = await supabase
         .from("whatsapp_channels")
-        .select("id, unit_id, provider, status, display_phone, is_active, connected_at, last_health_check_at, created_at")
+        .select("id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at, created_at")
         .eq("unit_id", unitId)
         .order("created_at", { ascending: true });
       if (error) return jsonResponse(req, { error: "Falha ao consultar a conexão." }, 500);
-      const rows = (data ?? []) as Array<Partial<ChannelRow> & { created_at?: string }>;
-      const selected = rows.find((row) => row.is_active === true)
+      const rows = (data ?? []) as Array<ChannelRow & { created_at?: string }>;
+      let selected = rows.find((row) => row.is_active === true)
         ?? rows.find((row) => row.is_active === null && row.status === "connected")
         ?? rows.find((row) => row.provider === "uazapi")
         ?? rows.find((row) => row.is_active === null)
         ?? null;
+      if (selected) selected = await refreshManualProviderStatus(selected, callerId, requestId);
       const lifecycleAvailable = selected
         ? supportsClientLifecycle(String(selected.provider))
         : supportsClientLifecycle((await getUnitContext(unitId)).defaultProvider);

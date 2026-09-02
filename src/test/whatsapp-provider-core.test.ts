@@ -4,6 +4,7 @@ import {
   buildZApiTextRequest,
   createWhatsAppProviderRegistry,
   mapUazApiConnectionStatus,
+  parseWahaConnectionStatus,
   parseUazApiInbound,
   parseUazApiStatus,
   parseZApiInbound,
@@ -63,6 +64,39 @@ describe("registry WhatsApp", () => {
     expect(() => registry.get("nao-existe")).toThrow("unknown_whatsapp_provider:nao-existe");
     expect(() => createWhatsAppProviderRegistry([stubAdapter("zapi"), stubAdapter("zapi")]))
       .toThrow("duplicate_whatsapp_provider:zapi");
+  });
+});
+
+describe("caracterização WAHA", () => {
+  it("considera apenas WORKING como conectado", () => {
+    expect(parseWahaConnectionStatus(200, {
+      status: "WORKING",
+      me: { id: "5511987654321@c.us" },
+    })).toEqual({
+      status: "connected",
+      nativeStatus: "WORKING",
+      connected: true,
+      qrRequired: false,
+      displayPhone: "11987654321",
+    });
+    expect(parseWahaConnectionStatus(200, { status: "STOPPED" })).toEqual({
+      status: "disconnected",
+      nativeStatus: "STOPPED",
+      connected: false,
+      qrRequired: false,
+    });
+  });
+
+  it("mapeia estados intermediários e falha fechado para payload inválido", () => {
+    expect(parseWahaConnectionStatus(200, { status: "STARTING" }).status).toBe("connecting");
+    expect(parseWahaConnectionStatus(200, { status: "SCAN_QR_CODE" })).toMatchObject({
+      status: "waiting_qr",
+      connected: false,
+      qrRequired: true,
+    });
+    expect(parseWahaConnectionStatus(200, { status: "FAILED" }).status).toBe("error");
+    expect(parseWahaConnectionStatus(200, {}).status).toBe("provider_error");
+    expect(parseWahaConnectionStatus(503, { status: "WORKING" }).status).toBe("provider_error");
   });
 });
 

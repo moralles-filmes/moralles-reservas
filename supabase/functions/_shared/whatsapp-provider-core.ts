@@ -576,6 +576,45 @@ export function parseUazApiStatus(p: any): StatusUpdate[] | null {
 // ─── Snapshots de conexão ──────────────────────────────────────────────────
 
 // deno-lint-ignore no-explicit-any
+export function parseWahaConnectionStatus(
+  httpStatus: number,
+  payload: any,
+): ProviderConnectionSnapshot {
+  if (httpStatus < 200 || httpStatus >= 300) {
+    return {
+      status: "provider_error",
+      nativeStatus: `http_${httpStatus}`,
+      connected: false,
+      qrRequired: false,
+    };
+  }
+
+  const nativeStatus = nonEmptyString(payload?.status)?.toUpperCase() ?? null;
+  const displayPhone = canonicalBrPhone(String(payload?.me?.id ?? "")) || null;
+  if (nativeStatus === "WORKING") {
+    return { status: "connected", nativeStatus, connected: true, qrRequired: false, displayPhone };
+  }
+  if (nativeStatus === "STOPPED") {
+    return { status: "disconnected", nativeStatus, connected: false, qrRequired: false };
+  }
+  if (nativeStatus === "STARTING") {
+    return { status: "connecting", nativeStatus, connected: false, qrRequired: false };
+  }
+  if (["SCAN_QR_CODE", "PASSKEY_REQUIRED", "PASSKEY_CONFIRMATION_REQUIRED"].includes(nativeStatus ?? "")) {
+    return { status: "waiting_qr", nativeStatus, connected: false, qrRequired: true };
+  }
+  if (nativeStatus === "FAILED") {
+    return { status: "error", nativeStatus, connected: false, qrRequired: false };
+  }
+  return {
+    status: "provider_error",
+    nativeStatus: nativeStatus ?? "invalid_payload",
+    connected: false,
+    qrRequired: false,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
 export function parseZApiConnectionStatus(
   httpStatus: number,
   payload: any,
