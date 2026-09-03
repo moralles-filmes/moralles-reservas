@@ -34,3 +34,9 @@
 - Rodar testes direcionados, `npm run typecheck`, `npm run lint`, `npm run test` e `npm run build`.
 - Fazer reviews de spec, qualidade, identidade/acesso, isolamento de tenant, secrets e confiabilidade da integração.
 - Revisar diff/staged integralmente, procurar secrets e commitar em caminhos explícitos.
+
+## Correção de compatibilidade Z-API
+
+- Aceitar o payload HTTPS de pareamento que a Z-API retorna em `value`, limitado ao host exato `wa.me` e a tamanho seguro.
+- Manter PNG inline compatível, rejeitar URL arbitrária e deixar a conversão do texto em QR no canvas já existente do portal.
+- Reexecutar testes direcionados e os gates completos antes do redeploy conjunto das funções consumidoras do registry.

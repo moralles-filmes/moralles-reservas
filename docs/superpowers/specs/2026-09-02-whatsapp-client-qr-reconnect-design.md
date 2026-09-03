@@ -14,7 +14,7 @@ Separar as capabilities client-safe por operação e tornar a obtenção de QR u
 - `disconnect` e `restart`: continuam independentes, para a UI não oferecer ações que o adapter não suporta;
 - `status`: continua disponível para qualquer canal com `getConnectionStatus`.
 
-O registry ganhará um contrato de leitura de QR para providers manuais. Z-API buscará `GET /instances/{instanceId}/token/{token}/qr-code` e WAHA buscará `GET /api/{session}/auth/qr?format=raw`, ambos com timeout, autenticação server-side e parsing fail-closed. UazAPI preserva seu lifecycle gerenciado. Meta Cloud API manterá `qrConnection:false`.
+O registry ganhará um contrato de leitura de QR para providers manuais. Z-API buscará `GET /instances/{instanceId}/token/{token}/qr-code` e aceitará os dois formatos observados desse contrato: PNG inline ou payload HTTPS de pareamento no host exato `wa.me`, que o frontend codifica em canvas. WAHA buscará `GET /api/{session}/auth/qr?format=raw`; ambos usam timeout, autenticação server-side e parsing fail-closed. UazAPI preserva seu lifecycle gerenciado. Meta Cloud API manterá `qrConnection:false`.
 
 O endpoint `manage-channels` continuará autenticando owner/gerente por `(user_id, unit_id)`. Para `connect|refresh_qr`, um canal manual precisa ser explicitamente resolvido dentro da unidade; nenhuma credencial, provider, external ID ou erro bruto cruza o shape client-safe. A resposta efêmera contém somente o QR e capabilities booleanas.
 
@@ -40,7 +40,7 @@ O QR nunca será persistido no banco nem logado. `status` para provider manual r
 - Canal manual de outra unidade não pode ser usado, mesmo fornecendo `channel_id` diretamente.
 - Operador e usuário sem membership recebem 403 nas ações client-safe.
 - Resposta client-safe não contém provider, credenciais, token, secret ou external instance ID.
-- Resposta malformada/non-2xx do provider não é renderizada como QR.
+- Resposta malformada/non-2xx do provider não é renderizada como QR; URL Z-API fora de `https://wa.me` é rejeitada.
 - QR não é gravado em `whatsapp_channels`, logs ou audit payloads.
 
 ## Deploy
