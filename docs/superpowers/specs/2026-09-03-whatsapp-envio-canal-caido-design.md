@@ -10,7 +10,9 @@ Incidente medido em produção (organização Ren Sushi, canal Z-API único e at
 
 A cadeia que produziu isso tem três elos, e cada um é uma decisão do nosso código:
 
-1. **Ninguém observou a queda.** `record_whatsapp_channel_status` só é chamado pelo callback do provider (`webhook-whatsapp`) e por quem abre o portal (`manage-channels`). Não existe worker periódico. A revalidação de 30s introduzida em [2026-09-01-zapi-connection-status-design.md](2026-09-01-zapi-connection-status-design.md) é gateada por aba visível — e durante os 6,6 dias ninguém abriu o painel. `whatsapp_channels.status` permaneceu `connected`.
+1. **A queda só foi observada 4,5 dias depois, e por acaso.** `record_whatsapp_channel_status` só é chamado pelo callback do provider (`webhook-whatsapp`) e por quem abre o portal (`manage-channels`). Não existe worker periódico, e a revalidação de 30s introduzida em [2026-09-01-zapi-connection-status-design.md](2026-09-01-zapi-connection-status-design.md) é gateada por aba visível.
+
+   Medido em `notifications_sent`: a projeção seguiu dizendo `connected` de 28/08 01:45 até **02/09 15:40**, quando alguém abriu o painel e ela virou `disconnected` — a partir daí os 14 envios seguintes foram corretamente recusados com `whatsapp_not_configured`. Ou seja, o filtro `.eq("status","connected")` do caminho por `unit_id` FUNCIONA; o que faltava era alguém dizer a verdade a ele. Todas as 88 mensagens foram postadas na janela em que a projeção ainda mentia.
 
 2. **O envio confiou na projeção congelada.** Em `_shared/whatsapp-send.ts`, o caminho por `unit_id` filtra `.eq("status","connected")` — que era verdadeiro e mentiroso. O caminho por `channel_id` nem chega a perguntar: `requiresConnectedProjection = channel.provider === "uazapi"` isenta explicitamente a Z-API da checagem.
 
@@ -27,6 +29,10 @@ O TTL cobre um conjunto diferente e real de caminhos, todos em que a mensagem fi
 - `resend-notification`, alimentado pelo painel Entregas. Depois de uma queda longa esse painel fica cheio de não-entregues antigos, e reenviar em lote é um clique — foi o caminho mais provável para uma segunda rajada.
 - `notification_outbox`, único caminho com retry nosso (backoff até ~5,5h). Já tem `stillValid`, restrito a `confirmation`.
 - Qualquer represamento futuro criado pela própria peça 2: com o envio barrado, uma execução posterior do worker pode alcançar um fato já vencido.
+
+### Nota sobre o cabeçalho da migration
+
+O comentário de [20260903180000_whatsapp_channel_health_cron.sql](../../../supabase/migrations/20260903180000_whatsapp_channel_health_cron.sql) diz que a projeção ficou `connected` por 6,6 dias. A janela real em que ela mentiu é de 4,5 dias (28/08 01:45 → 02/09 15:40); os 6,6 dias são o tempo de canal fora do ar. A imprecisão foi encontrada **depois** do `db push`, e migration aplicada não se reescreve — mesma razão pela qual a 104 corrigiu por `comment on column` o comentário falso da 090, em vez de editá-la. O registro correto é este documento.
 
 ## Decisão
 

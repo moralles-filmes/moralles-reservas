@@ -312,7 +312,7 @@ export async function sendWhatsApp(
       }
       // A checagem de conexão saiu daqui e virou parte do despacho. Antes ela
       // era `provider === "uazapi"`, isentando a Z-API por este caminho — a
-      // porta por onde o envio para canal caído passou durante 6,6 dias.
+      // porta por onde o envio para canal caído passava sem ser perguntado.
       return await dispatchToChannel(channel as unknown as RoutableChannel, phone, message);
     }
     // channel_id não encontrado/não pertence à unit informada — sem fallback.

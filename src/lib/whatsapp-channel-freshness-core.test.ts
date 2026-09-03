@@ -34,12 +34,14 @@ describe("decideChannelUsability — projeção fresca responde sozinha", () => 
 
 describe("decideChannelUsability — o incidente de 2026-09-03", () => {
   // Controle POSITIVO da guarda: a projeção do Ren Sushi dizia `connected` com
-  // `last_health_check_at` de 6,6 dias antes. Antes desta peça isso autorizava
-  // o POST. Se este teste voltar a esperar "use", a guarda virou no-op.
-  it("connected há 6,6 dias NÃO é aceito de graça", () => {
-    const seisDias = new Date(NOW - 6.6 * 24 * 3600_000).toISOString();
-    expect(decideChannelUsability({ status: "connected", lastHealthCheckAt: seisDias, now: NOW }))
-      .toBe("recheck");
+  // o carimbo parado havia dias, e foi nessa janela que as 88 mensagens foram
+  // postadas. Antes desta peça isso autorizava o POST. Se este teste voltar a
+  // esperar "use", a guarda virou no-op.
+  it("connected com carimbo de 4,5 dias NÃO é aceito de graça", () => {
+    const quatroDiasEMeio = new Date(NOW - 4.5 * 24 * 3600_000).toISOString();
+    expect(
+      decideChannelUsability({ status: "connected", lastHealthCheckAt: quatroDiasEMeio, now: NOW }),
+    ).toBe("recheck");
   });
 });
 

@@ -2,12 +2,16 @@
 /**
  * `whatsapp_channels.status` é uma PROJEÇÃO, e projeção pode estar velha.
  *
- * Medido em produção: o canal Z-API do Ren Sushi permaneceu `connected` de
- * 2026-08-28 a 2026-09-03 com a instância fora do ar o tempo todo. A Z-API não
- * mandou `DisconnectedCallback`, e a revalidação de 30s do portal
- * (2026-09-01-zapi-connection-status-design.md) é gateada por aba visível —
- * ninguém abriu o painel. Durante 6,6 dias o envio leu `connected`, postou, e a
- * Z-API respondeu 2xx enfileirando tudo para despejar na reconexão.
+ * Medido em produção: a instância Z-API do Ren Sushi caiu em 2026-08-28 01:45
+ * e a projeção seguiu dizendo `connected` até 2026-09-02 15:40 — 4,5 dias. A
+ * Z-API não mandou `DisconnectedCallback`, e a revalidação de 30s do portal
+ * (2026-09-01-zapi-connection-status-design.md) é gateada por aba visível.
+ * Nessa janela o envio leu `connected`, postou 88 mensagens, e a Z-API
+ * respondeu 2xx enfileirando todas para despejar na reconexão.
+ *
+ * O que encerrou a mentira não foi mecanismo nenhum: foi alguém abrir o
+ * painel. Depois disso a projeção passou a recusar envio corretamente — o
+ * filtro de status sempre funcionou, faltava quem dissesse a verdade a ele.
  *
  * A correção não é ler o status com mais cuidado: é parar de tratá-lo como
  * verdade atemporal. Este núcleo responde uma pergunta só — dá para confiar na

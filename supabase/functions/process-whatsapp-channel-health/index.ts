@@ -7,11 +7,14 @@
 // do portal (`manage-channels`). A revalidação de 30s da
 // 2026-09-01-zapi-connection-status-design.md é gateada por aba visível.
 //
-// Medido: o canal Z-API do Ren Sushi ficou `connected` de 2026-08-28 a
-// 2026-09-03 com a instância fora do ar. A Z-API não mandou
-// `DisconnectedCallback` e ninguém abriu o painel. Durante 6,6 dias o envio leu
-// a projeção congelada, postou, e a Z-API aceitou com 2xx enfileirando tudo —
-// 88 mensagens despejadas em 2,5 minutos na reconexão.
+// Medido: a instância Z-API do Ren Sushi caiu em 2026-08-28 01:45 e a projeção
+// seguiu dizendo `connected` até 2026-09-02 15:40 — 4,5 dias em que o envio leu
+// a projeção congelada, postou, e a Z-API aceitou com 2xx enfileirando tudo (88
+// mensagens despejadas em 2,5 minutos quando o canal voltou, em 03/09 17:12).
+//
+// O que finalmente atualizou a projeção foi alguém abrir o painel, por acaso,
+// no quinto dia. É esse "por acaso" que este worker substitui: com ele, a queda
+// teria sido vista às 01:50 de 28/08 e nenhuma das 88 teria sido postada.
 //
 // Este worker é o terceiro escritor, o único que não depende de ninguém. Ele
 // também é o que mantém `last_health_check_at` fresco o bastante para que a
