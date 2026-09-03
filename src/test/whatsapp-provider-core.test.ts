@@ -1,18 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PROVIDER_CAPABILITIES,
+  MAX_WAHA_QR_RAW_LENGTH,
+  buildWahaSessionActionRequest,
+  buildWahaStatusRequest,
+  buildWahaQrRequest,
+  buildZApiQrRequest,
   buildZApiTextRequest,
   createWhatsAppProviderRegistry,
+  decideWahaQrFlow,
+  isSafeWahaBaseUrl,
   mapUazApiConnectionStatus,
   parseWahaConnectionStatus,
+  parseWahaQrCode,
   parseUazApiInbound,
   parseUazApiStatus,
   parseZApiInbound,
   parseZApiConnectionCallback,
   parseZApiConnectionStatus,
+  parseZApiQrCode,
   parseZApiStatus,
   peekUazApiMedia,
   sendUazApiText,
+  wahaSessionPreparationAction,
   type WhatsAppProviderAdapter,
   type WhatsAppProviderName,
 } from "../../supabase/functions/_shared/whatsapp-provider-core";
@@ -55,6 +65,13 @@ describe("registry WhatsApp", () => {
       automaticWebhook: true,
       deliveryReceipts: true,
     });
+    expect(registry.get("zapi").capabilities).toMatchObject({
+      qrConnection: true,
+      restart: false,
+      disconnect: false,
+    });
+    expect(registry.get("waha").capabilities.qrConnection).toBe(true);
+    expect(registry.get("official").capabilities.qrConnection).toBe(false);
     expect(registry.metadata()[0]).not.toBe(registry.list()[0]);
   });
 
@@ -68,6 +85,86 @@ describe("registry WhatsApp", () => {
 });
 
 describe("caracterização WAHA", () => {
+  it("aceita somente o value do QR raw em resposta 2xx", () => {
+    expect(parseWahaQrCode(200, { value: "raw-qr-value" }))
+      .toEqual({ qrCode: "raw-qr-value" });
+    expect(parseWahaQrCode(200, { data: "base64-fora-do-contrato" }))
+      .toEqual({ qrCode: null });
+    expect(parseWahaQrCode(503, { value: "nao-pode-renderizar" }))
+      .toEqual({ qrCode: null });
+    expect(parseWahaQrCode(200, { value: "x".repeat(MAX_WAHA_QR_RAW_LENGTH + 1) }))
+      .toEqual({ qrCode: null });
+  });
+
+  it("monta o GET de QR raw com sessão codificada e Accept JSON", () => {
+    expect(buildWahaQrRequest({
+      base_url: "https://waha.example/",
+      api_key: "api-key",
+      session_name: "sessão principal",
+    })).toEqual({
+      ok: true,
+      url: "https://waha.example/api/sess%C3%A3o%20principal/auth/qr?format=raw",
+      headers: { Accept: "application/json", "X-Api-Key": "api-key" },
+    });
+    expect(buildWahaQrRequest({})).toEqual({ ok: false, missingCreds: ["base_url"] });
+  });
+
+  it("monta status/start/restart sem retry implícito e codifica a sessão", () => {
+    const credentials = {
+      base_url: "https://waha.example/",
+      api_key: "api-key",
+      session_name: "sessão principal",
+    };
+    expect(buildWahaStatusRequest(credentials)).toMatchObject({
+      url: "https://waha.example/api/sessions/sess%C3%A3o%20principal",
+    });
+    expect(buildWahaSessionActionRequest(credentials, "start")).toEqual({
+      ok: true,
+      url: "https://waha.example/api/sessions/sess%C3%A3o%20principal/start",
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Api-Key": "api-key",
+      },
+    });
+    expect(buildWahaSessionActionRequest(credentials, "restart")).toMatchObject({
+      url: "https://waha.example/api/sessions/sess%C3%A3o%20principal/restart",
+      method: "POST",
+    });
+    expect(wahaSessionPreparationAction("STOPPED")).toBe("start");
+    expect(wahaSessionPreparationAction("FAILED")).toBe("restart");
+    expect(wahaSessionPreparationAction("SCAN_QR_CODE")).toBeNull();
+    expect(wahaSessionPreparationAction("PASSKEY_REQUIRED")).toBeNull();
+    expect(decideWahaQrFlow("SCAN_QR_CODE")).toBe("ready");
+    expect(decideWahaQrFlow("STARTING")).toBe("wait");
+    expect(decideWahaQrFlow("WORKING")).toBe("connected");
+    expect(decideWahaQrFlow("PASSKEY_REQUIRED")).toBe("unsupported");
+    expect(decideWahaQrFlow("UNKNOWN")).toBe("terminal");
+  });
+
+  it("recusa base WAHA insegura antes do fetch", () => {
+    expect(isSafeWahaBaseUrl("https://waha.example")).toBe(true);
+    for (const value of [
+      "http://waha.example",
+      "https://user:password@waha.example",
+      "https://localhost:3000",
+      "https://127.0.0.1",
+      "https://10.0.0.8",
+      "https://169.254.169.254",
+      "https://192.168.1.8",
+      "https://[::1]",
+      "https://[::ffff:127.0.0.1]",
+      "https://[fe80::1]",
+    ]) {
+      expect(isSafeWahaBaseUrl(value), value).toBe(false);
+      expect(buildWahaQrRequest({ base_url: value })).toEqual({
+        ok: false,
+        missingCreds: ["base_url"],
+      });
+    }
+  });
+
   it("considera apenas WORKING como conectado", () => {
     expect(parseWahaConnectionStatus(200, {
       status: "WORKING",
@@ -95,12 +192,43 @@ describe("caracterização WAHA", () => {
       qrRequired: true,
     });
     expect(parseWahaConnectionStatus(200, { status: "FAILED" }).status).toBe("error");
+    expect(parseWahaConnectionStatus(200, { status: "PASSKEY_REQUIRED" })).toMatchObject({
+      status: "provider_error",
+      qrRequired: false,
+    });
+    expect(parseWahaConnectionStatus(200, { status: "PASSKEY_CONFIRMATION_REQUIRED" })).toMatchObject({
+      status: "provider_error",
+      qrRequired: false,
+    });
     expect(parseWahaConnectionStatus(200, {}).status).toBe("provider_error");
     expect(parseWahaConnectionStatus(503, { status: "WORKING" }).status).toBe("provider_error");
   });
 });
 
 describe("caracterização Z-API", () => {
+  it("aceita somente o value do QR em resposta 2xx", () => {
+    const value = "data:image/png;base64,iVBORw0KGgoAAA";
+    expect(parseZApiQrCode(200, { value })).toEqual({ qrCode: value });
+    expect(parseZApiQrCode(200, { value: "conteudo-fora-do-contrato" }))
+      .toEqual({ qrCode: null });
+    expect(parseZApiQrCode(200, { value: "   " })).toEqual({ qrCode: null });
+    expect(parseZApiQrCode(401, { value })).toEqual({ qrCode: null });
+  });
+
+  it("monta o endpoint de QR com as credenciais legadas e Client-Token", () => {
+    expect(buildZApiQrRequest({
+      instance_id: "instance-1",
+      token: "instance-token",
+      client_token: "client-token",
+    })).toEqual({
+      ok: true,
+      url: "https://api.z-api.io/instances/instance-1/token/instance-token/qr-code",
+      headers: { "Client-Token": "client-token" },
+    });
+    expect(buildZApiQrRequest({ instance_id: "instance-1" }))
+      .toEqual({ ok: false, missingCreds: ["token"] });
+  });
+
   it("preserva payload inbound, normalização de telefone e bloqueio de eco", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-17T12:00:00.000Z"));

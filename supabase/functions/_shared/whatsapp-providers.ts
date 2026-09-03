@@ -5,17 +5,25 @@ import { jsonLog, sanitizePhone } from "./security.ts";
 import { createUazApiClientFromEnv } from "./uazapi-client.ts";
 import {
   PROVIDER_CAPABILITIES,
+  buildWahaSessionActionRequest,
+  buildWahaStatusRequest,
+  buildWahaQrRequest,
+  buildZApiQrRequest,
   buildZApiTextRequest,
   createWhatsAppProviderRegistry,
+  decideWahaQrFlow,
+  isSafeWahaBaseUrl,
   parseOfficialInbound,
   parseOfficialStatus,
   parseUazApiInbound,
   parseUazApiStatus,
   parseWahaConnectionStatus,
+  parseWahaQrCode,
   parseWahaInbound,
   parseWahaStatus,
   parseZApiConnectionCallback,
   parseZApiConnectionStatus,
+  parseZApiQrCode,
   parseZApiInbound,
   parseZApiStatus,
   mapUazApiConnectionStatus,
@@ -25,11 +33,13 @@ import {
   peekZApiMedia,
   pickProviderMessageId,
   sendUazApiText,
+  wahaSessionPreparationAction,
   type ChannelCredentials,
   type InboundMediaPeek,
   type InboundMessage,
   type OutboundMessage,
   type ProviderConnectionSnapshot,
+  type ProviderQrSnapshot,
   type SendResult,
   type WhatsAppProviderAdapter,
   type WhatsAppProviderMetadata,
@@ -45,6 +55,62 @@ async function fetchConnectionStatus(
   try {
     const response = await fetch(url, { headers, signal: controller.signal });
     const body = await response.clone().json().catch(() => null);
+    return { response, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchSafeWahaQrJson(
+  url: string,
+  headers: Record<string, string>,
+  init: Pick<RequestInit, "method"> = {},
+  maxBodyBytes = 128 * 1024,
+  timeoutMs = 10_000,
+): Promise<{ response: Response; body: unknown }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...init,
+      headers,
+      redirect: "error",
+      signal: controller.signal,
+    });
+    const contentLength = Number(response.headers.get("content-length") ?? "0");
+    if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
+      await response.body?.cancel().catch(() => undefined);
+      return { response, body: null };
+    }
+    const reader = response.body?.getReader();
+    if (!reader) return { response, body: null };
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBodyBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { response, body: null };
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const text = new TextDecoder().decode(bytes);
+    let body: unknown = null;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = null;
+      }
+    }
     return { response, body };
   } finally {
     clearTimeout(timer);
@@ -86,11 +152,94 @@ async function getWahaConnectionStatus(
 ): Promise<ProviderConnectionSnapshot> {
   const { base_url, api_key, session_name = "default" } = credentials;
   if (!base_url) throw new Error("missing_credentials");
+  const session = encodeURIComponent(session_name);
   const { response, body } = await fetchConnectionStatus(
-    `${base_url.replace(/\/$/, "")}/api/sessions/${session_name}`,
+    `${base_url.replace(/\/$/, "")}/api/sessions/${session}`,
     api_key ? { "X-Api-Key": api_key } : {},
   );
   return parseWahaConnectionStatus(response.status, body);
+}
+
+async function getZApiQrCode(
+  credentials: ChannelCredentials,
+): Promise<ProviderQrSnapshot> {
+  const request = buildZApiQrRequest(credentials);
+  if (!request.ok) throw new Error("missing_credentials");
+  const { response, body } = await fetchConnectionStatus(request.url, request.headers);
+  return parseZApiQrCode(response.status, body);
+}
+
+async function getWahaQrCode(
+  credentials: ChannelCredentials,
+): Promise<ProviderQrSnapshot> {
+  if (!isSafeWahaBaseUrl(credentials.base_url)) throw new Error("missing_credentials");
+  const deadline = Date.now() + 8_000;
+  const statusRequest = buildWahaStatusRequest(credentials);
+  if (!statusRequest.ok) throw new Error("missing_credentials");
+  const readStatus = async (): Promise<ProviderConnectionSnapshot> => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return {
+        status: "provider_error",
+        nativeStatus: "qr_preparation_timeout",
+        connected: false,
+        qrRequired: false,
+      };
+    }
+    const result = await fetchSafeWahaQrJson(
+      statusRequest.url,
+      statusRequest.headers,
+      {},
+      128 * 1024,
+      Math.min(2_000, remaining),
+    );
+    return parseWahaConnectionStatus(result.response.status, result.body);
+  };
+
+  let status = await readStatus();
+  let decision = decideWahaQrFlow(status.nativeStatus);
+  const preparationAction = wahaSessionPreparationAction(status.nativeStatus);
+  if (preparationAction) {
+    const actionRequest = buildWahaSessionActionRequest(
+      credentials,
+      preparationAction,
+    );
+    if (!actionRequest.ok) throw new Error("missing_credentials");
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { qrCode: null };
+    const actionResult = await fetchSafeWahaQrJson(
+      actionRequest.url,
+      actionRequest.headers,
+      { method: actionRequest.method },
+      128 * 1024,
+      Math.min(2_000, remaining),
+    );
+    if (!actionResult.response.ok) return { qrCode: null };
+    decision = "wait";
+  }
+
+  while (decision !== "ready") {
+    if (["connected", "unsupported", "terminal", "start", "restart"].includes(decision)) {
+      return { qrCode: null };
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 350) return { qrCode: null };
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    status = await readStatus();
+    decision = decideWahaQrFlow(status.nativeStatus);
+  }
+  const request = buildWahaQrRequest(credentials);
+  if (!request.ok) throw new Error("missing_credentials");
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return { qrCode: null };
+  const { response, body } = await fetchSafeWahaQrJson(
+    request.url,
+    request.headers,
+    {},
+    64 * 1024,
+    Math.min(2_000, remaining),
+  );
+  return parseWahaQrCode(response.status, body);
 }
 
 async function getOfficialConnectionStatus(
@@ -141,6 +290,7 @@ export type {
   InboundMessage,
   OutboundMessage,
   ProviderConnectionSnapshot,
+  ProviderQrSnapshot,
   SendResult,
   StatusUpdate,
   WhatsAppOperationalStatus,
@@ -257,6 +407,8 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     parseConnectionCallback: parseZApiConnectionCallback,
     sendText: sendZApi,
     getConnectionStatus: getZApiConnectionStatus,
+    getQrCode: getZApiQrCode,
+    canRequestQr: (credentials) => !!credentials.instance_id && !!credentials.token,
   },
   {
     name: "waha",
@@ -267,6 +419,8 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     parseStatusCallback: parseWahaStatus,
     sendText: sendWaha,
     getConnectionStatus: getWahaConnectionStatus,
+    getQrCode: getWahaQrCode,
+    canRequestQr: (credentials) => isSafeWahaBaseUrl(credentials.base_url),
   },
   {
     name: "official",
