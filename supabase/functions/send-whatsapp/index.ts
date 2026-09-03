@@ -235,6 +235,51 @@ serve(async (req) => {
 
   const normalizedKind = kind && VALID_KINDS.has(kind) ? kind : null;
 
+  // O recurso referenciado tem que ser DESTA unidade.
+  //
+  // `authorize()` prova que o caller é membro do `unit_id` do body, e nada mais
+  // — `waitlist_id`/`reservation_id` chegam soltos. Sem esta checagem, um
+  // membro da unidade A que conhecesse o UUID de uma entry da unidade B
+  // gravava `notifications_sent` com `unit_id = A` apontando para o recurso de
+  // B, consumindo o slot da UNIQUE `(waitlist_id, kind)`: o aviso legítimo de B
+  // virava "reenvio" em vez de envio novo, com o rastreio de entrega resetado.
+  //
+  // Roda ANTES do envio, não só antes da gravação: mandar mensagem sobre a fila
+  // de outro restaurante é o dano maior, e ele aconteceria mesmo que a
+  // gravação fosse recusada depois.
+  //
+  // `customerId` sai daqui reaproveitado pelo log de conversa mais abaixo — a
+  // consulta que valida é a mesma que já era feita depois do envio.
+  let resourceCustomerId: string | null = null;
+  if (normalizedKind && unit_id && (waitlist_id || reservation_id)) {
+    const table = waitlist_id ? "waitlist" : "reservations";
+    const id = (waitlist_id ?? reservation_id) as string;
+    const { data: owner, error: ownerErr } = await supabaseAdmin
+      .from(table)
+      .select("unit_id, customer_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    // Fail-closed: não conseguir confirmar a titularidade não autoriza escrever
+    // sobre o recurso. Diferente do gate de conexão, aqui uma leitura que falha
+    // não tem lado seguro "permitir" — o dano é sobre dado de outro tenant.
+    if (ownerErr || !owner || owner.unit_id !== unit_id) {
+      jsonLog("warn", {
+        evt: "send_whatsapp_cross_tenant_ref",
+        unit_id,
+        kind: normalizedKind,
+        table,
+        read_failed: !!ownerErr,
+        found: !!owner,
+      });
+      return new Response(
+        JSON.stringify({ success: false, error: "not_found_or_cross_tenant" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+    resourceCustomerId = (owner.customer_id as string | undefined) ?? null;
+  }
+
   // Prazo de validade ANTES de qualquer contato com o provedor. Descarte
   // silencioso, sem linha em `notifications_sent`: uma linha `failed` ali
   // bloquearia reenvio manual legítimo depois, e o operador não precisa ver
@@ -299,34 +344,15 @@ serve(async (req) => {
     }
 
     if (result.ok && normalizedKind && unit_id) {
-      let customerId: string | null = null;
-      try {
-        if (reservation_id) {
-          const { data: r } = await supabaseAdmin
-            .from("reservations")
-            .select("customer_id")
-            .eq("id", reservation_id)
-            .maybeSingle();
-          customerId = (r?.customer_id as string | undefined) ?? null;
-        } else if (waitlist_id) {
-          const { data: w } = await supabaseAdmin
-            .from("waitlist")
-            .select("customer_id")
-            .eq("id", waitlist_id)
-            .maybeSingle();
-          customerId = (w?.customer_id as string | undefined) ?? null;
-        }
-      } catch (err) {
-        jsonLog("warn", {
-          evt: "conversation_log_customer_lookup_failed",
-          kind: normalizedKind,
-          err: String(err).slice(0, 200),
-        });
-      }
+      // `resourceCustomerId` já veio da checagem de titularidade lá em cima —
+      // é a MESMA linha que este bloco consultava por conta própria. Reusar
+      // troca duas consultas por uma e, mais importante, garante que o
+      // `customer_id` usado no log de conversa é o da linha cuja unidade foi
+      // validada, e não o de uma segunda leitura sem esse escopo.
       await appendOutboundToConversation({
         supabase: supabaseAdmin,
         unitId: unit_id,
-        customerId,
+        customerId: resourceCustomerId,
         phone,
         content: message,
         kind: normalizedKind as OutboundKind,
