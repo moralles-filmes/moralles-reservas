@@ -20,6 +20,14 @@ function friendlyWhatsAppError(code?: string | null): string {
     return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Automação para enviar avisos.";
   if (code === "whatsapp_service_suspended")
     return "Envio de WhatsApp suspenso por falta de pagamento da mensalidade da automação. Regularize em Cobrança para voltar a enviar.";
+  // Passou a ser o retorno COMUM desde que o envio exige conexão confirmada:
+  // antes o canal caído era mascarado como "não configurado" (ou nem checado,
+  // no caso da Z-API). A frase precisa dizer o que resolve — reconectar — em
+  // vez de mandar o operador configurar um canal que já existe.
+  if (code === "whatsapp_not_connected")
+    return "O WhatsApp desta unidade está desconectado. Reconecte o canal em Plataforma → Automação e tente de novo.";
+  if (code === "whatsapp_channel_inactive")
+    return "O canal de WhatsApp desta unidade está inativo. Ative-o em Plataforma → Automação.";
   if (code === "channel_mismatch")
     return "Canal de WhatsApp inválido para esta unidade.";
   if (code === "missing_credentials")
@@ -231,6 +239,11 @@ export function useNotifyWaitlist(unitId: string) {
           unit_id: unitId,
           kind: "waitlist_table_ready",
           waitlist_id: id,
+          // Fato = o clique do operador. O aviso de mesa pronta tem o prazo
+          // mais curto de todos (30 min) porque é o mais nocivo atrasado: a
+          // mesa já foi para outra pessoa. Enviado agora, isto nunca barra o
+          // clique — serve para o reenvio posterior pelo painel Entregas.
+          fact_at: new Date().toISOString(),
         },
       });
       if (funcErr) {
