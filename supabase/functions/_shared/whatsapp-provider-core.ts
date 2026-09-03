@@ -128,6 +128,7 @@ export type ProviderQrRequest =
   | { ok: false; missingCreds: string[] };
 
 export const MAX_WAHA_QR_RAW_LENGTH = 16_384;
+export const MAX_ZAPI_QR_PAIRING_URL_LENGTH = 2_048;
 
 export type WahaQrFlowDecision =
   | "ready"
@@ -668,13 +669,33 @@ export function parseZApiConnectionStatus(
   };
 }
 
-// QR de providers manuais é tratado separadamente do status e sempre falha
-// fechado: HTTP sem sucesso ou payload fora do contrato nunca chega à UI.
+function isSafeZApiQrPairingUrl(value: string): boolean {
+  if (value.length > MAX_ZAPI_QR_PAIRING_URL_LENGTH) return false;
+  try {
+    const url = new URL(value);
+    return url.origin === "https://wa.me"
+      && !url.username
+      && !url.password
+      && url.pathname !== "/";
+  } catch {
+    return false;
+  }
+}
+
+// A Z-API pode devolver tanto a imagem inline documentada quanto o payload
+// de pareamento em https://wa.me. O segundo formato é codificado em canvas
+// pelo frontend; URLs fora desse host nunca atravessam a fronteira client-safe.
 // deno-lint-ignore no-explicit-any
 export function parseZApiQrCode(httpStatus: number, payload: any): ProviderQrSnapshot {
   if (httpStatus < 200 || httpStatus >= 300) return { qrCode: null };
   const value = nonEmptyString(payload?.value);
-  if (!value || !/^data:image\/png;base64,[a-z0-9+/=]+$/i.test(value)) {
+  if (
+    !value
+    || (
+      !/^data:image\/png;base64,[a-z0-9+/=]+$/i.test(value)
+      && !isSafeZApiQrPairingUrl(value)
+    )
+  ) {
     return { qrCode: null };
   }
   return { qrCode: value };

@@ -206,10 +206,20 @@ describe("caracterização WAHA", () => {
 });
 
 describe("caracterização Z-API", () => {
-  it("aceita somente o value do QR em resposta 2xx", () => {
+  it("aceita somente formatos seguros de QR no value de resposta 2xx", () => {
     const value = "data:image/png;base64,iVBORw0KGgoAAA";
     expect(parseZApiQrCode(200, { value })).toEqual({ qrCode: value });
+    const pairingUrl = "https://wa.me/device-pairing,opaque@example:payload";
+    expect(parseZApiQrCode(200, { value: pairingUrl })).toEqual({ qrCode: pairingUrl });
     expect(parseZApiQrCode(200, { value: "conteudo-fora-do-contrato" }))
+      .toEqual({ qrCode: null });
+    expect(parseZApiQrCode(200, { value: "https://evil.example/qr" }))
+      .toEqual({ qrCode: null });
+    expect(parseZApiQrCode(200, { value: "https://wa.me.evil.example/qr" }))
+      .toEqual({ qrCode: null });
+    expect(parseZApiQrCode(200, { value: "https://user@wa.me/qr" }))
+      .toEqual({ qrCode: null });
+    expect(parseZApiQrCode(200, { value: `https://wa.me/${"a".repeat(2_100)}` }))
       .toEqual({ qrCode: null });
     expect(parseZApiQrCode(200, { value: "   " })).toEqual({ qrCode: null });
     expect(parseZApiQrCode(401, { value })).toEqual({ qrCode: null });
