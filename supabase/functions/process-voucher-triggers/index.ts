@@ -171,6 +171,8 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
         message,
         unit_id: unitId,
         kind: "voucher_issued",
+        // Fato = emissão, que é agora: o voucher nasce neste disparo.
+        fact_at: new Date().toISOString(),
       }),
     });
 

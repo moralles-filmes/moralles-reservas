@@ -20,6 +20,7 @@ import {
   resolveWhatsAppGateByUnit,
   clearWhatsAppGateCache,
 } from "../_shared/whatsapp-service-gate.ts";
+import { brtFactAt } from "../_shared/whatsapp-message-ttl-core.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -222,6 +223,8 @@ serve(async (req) => {
             unit_id: unitId,
             kind: "reminder_d1",
             reservation_id: row.reservation_id,
+            // Fato = horário da reserva: o lembrete perde o sentido quando ela começa.
+            fact_at: brtFactAt(targetDate, row.reservation_time),
           }),
         });
 

@@ -59,7 +59,26 @@ function friendlyResendError(code?: string | null): string {
   if (code === "whatsapp_service_suspended")
     return "Envio de WhatsApp suspenso por falta de pagamento da mensalidade da automação. Regularize em Cobrança para voltar a enviar.";
   if (code === "not_found_or_cross_tenant") return "Registro não encontrado nesta unidade.";
+  // Retorno comum no painel Entregas: é justamente o canal caído que encheu a
+  // lista de não-entregues. Mandar "configure o canal" seria o conselho errado.
+  if (code === "whatsapp_not_connected")
+    return "O WhatsApp desta unidade está desconectado. Reconecte o canal e tente o reenvio depois.";
+  if (code === "whatsapp_channel_inactive")
+    return "O canal de WhatsApp desta unidade está inativo. Ative-o em Plataforma → Automação.";
+  if (code === "message_expired")
+    return "Esta mensagem é antiga demais para ser reenviada.";
   return "Falha ao reenviar a mensagem.";
+}
+
+/**
+ * Recusa por prazo NÃO é falha de envio, e o painel não pode mostrar as duas
+ * do mesmo jeito: depois de uma queda longa de canal a lista fica cheia de
+ * antigos, e um toast vermelho a cada clique faria o operador ler "o sistema
+ * está quebrado" onde o sistema está justamente protegendo o número do
+ * restaurante de um bloqueio.
+ */
+class ResendRefused extends Error {
+  readonly discarded = true;
 }
 
 /**
@@ -90,9 +109,12 @@ export function useResendNotification(unitId: string) {
         }
         throw funcErr;
       }
-      const result = data as { success?: boolean; error?: string } | null;
+      const result = data as
+        | { success?: boolean; error?: string; message?: string; discarded?: boolean }
+        | null;
       if (result && result.success === false) {
-        throw new Error(friendlyResendError(result.error));
+        const text = result.message ?? friendlyResendError(result.error);
+        throw result.discarded === true ? new ResendRefused(text) : new Error(text);
       }
     },
     onSuccess: () => {
@@ -100,6 +122,9 @@ export function useResendNotification(unitId: string) {
       queryClient.invalidateQueries({ queryKey: ["notification-deliveries"] });
       toast.success("Mensagem reenviada.");
     },
-    onError: (err: Error) => toast.error(err.message ?? "Erro ao reenviar."),
+    onError: (err: Error) => {
+      if (err instanceof ResendRefused) toast.warning(err.message);
+      else toast.error(err.message ?? "Erro ao reenviar.");
+    },
   });
 }

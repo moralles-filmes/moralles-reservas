@@ -161,3 +161,9 @@ verify_jwt = true
 # o gateway responde 401 antes do requireInternalAuth, cron silencia.
 [functions.process-whatsapp-instance-cycles]
 verify_jwt = false
+
+# Worker: observação periódica da conexão dos canais (pg_cron a cada 5 min).
+# Terceiro escritor de `whatsapp_channels.status`, e o único que não depende de
+# callback do provider nem de aba aberta — ver o cabeçalho da função.
+[functions.process-whatsapp-channel-health]
+verify_jwt = false

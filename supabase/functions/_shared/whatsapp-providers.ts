@@ -45,7 +45,24 @@ import {
   type WhatsAppProviderMetadata,
   type WhatsAppProviderName,
 } from "./whatsapp-provider-core.ts";
+import { redactProviderFetchError } from "./provider-error-redaction-core.ts";
 
+/**
+ * A Z-API carrega `instance_id` e `token` NO PATH da URL
+ * (`/instances/<id>/token/<token>/status`) — é o único provider assim; WAHA,
+ * UazAPI e Meta usam header. Quando o `fetch` do Deno falha, a mensagem do
+ * `TypeError` inclui a URL completa: "error sending request for url (https://
+ * api.z-api.io/instances/<ID>/token/<TOKEN>/status)". Qualquer caller que
+ * registre `String(error)` publica a credencial no log.
+ *
+ * Por isso a redação é AQUI, e não em cada call site: são quatro caminhos que
+ * montam essa URL (status, QR, e os dois consumidores novos — a guarda de
+ * envio e o worker de health, este último rodando 288x/dia por canal), e um
+ * call site novo que esqueça de redigir volta a vazar sem ninguém notar.
+ *
+ * O erro relançado preserva o que serve para diagnóstico (é timeout? é rede?)
+ * e descarta o que identifica a conta.
+ */
 async function fetchConnectionStatus(
   url: string,
   headers: Record<string, string> = {},
@@ -56,6 +73,8 @@ async function fetchConnectionStatus(
     const response = await fetch(url, { headers, signal: controller.signal });
     const body = await response.clone().json().catch(() => null);
     return { response, body };
+  } catch (error) {
+    throw redactProviderFetchError(error);
   } finally {
     clearTimeout(timer);
   }
