@@ -14,17 +14,21 @@ import {
   decideWahaQrFlow,
   isSafeWahaBaseUrl,
   parseOfficialInbound,
+  parseOfficialOwnMessageEchoes,
   parseOfficialStatus,
   parseUazApiInbound,
+  parseUazApiOwnMessageEcho,
   parseUazApiStatus,
   parseWahaConnectionStatus,
   parseWahaQrCode,
   parseWahaInbound,
+  parseWahaOwnMessageEcho,
   parseWahaStatus,
   parseZApiConnectionCallback,
   parseZApiConnectionStatus,
   parseZApiQrCode,
   parseZApiInbound,
+  parseZApiOwnMessageEcho,
   parseZApiStatus,
   mapUazApiConnectionStatus,
   peekOfficialMedia,
@@ -37,6 +41,7 @@ import {
   type ChannelCredentials,
   type InboundMediaPeek,
   type InboundMessage,
+  type OwnMessageEcho,
   type OutboundMessage,
   type ProviderConnectionSnapshot,
   type ProviderQrSnapshot,
@@ -307,6 +312,8 @@ export type {
   InboundMediaKind,
   InboundMediaPeek,
   InboundMessage,
+  OwnMessageEcho,
+  OwnMessageEchoSource,
   OutboundMessage,
   ProviderConnectionSnapshot,
   ProviderQrSnapshot,
@@ -421,6 +428,10 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     label: "Z-API",
     capabilities: PROVIDER_CAPABILITIES.zapi,
     parseInbound: parseZApiInbound,
+    parseOwnMessageEchoes: (payload) => {
+      const echo = parseZApiOwnMessageEcho(payload);
+      return echo ? [echo] : [];
+    },
     peekInboundMedia: peekZApiMedia,
     parseStatusCallback: parseZApiStatus,
     parseConnectionCallback: parseZApiConnectionCallback,
@@ -434,6 +445,10 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     label: "WAHA",
     capabilities: PROVIDER_CAPABILITIES.waha,
     parseInbound: parseWahaInbound,
+    parseOwnMessageEchoes: (payload) => {
+      const echo = parseWahaOwnMessageEcho(payload);
+      return echo ? [echo] : [];
+    },
     peekInboundMedia: peekWahaMedia,
     parseStatusCallback: parseWahaStatus,
     sendText: sendWaha,
@@ -446,6 +461,7 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     label: "Meta Cloud API",
     capabilities: PROVIDER_CAPABILITIES.official,
     parseInbound: parseOfficialInbound,
+    parseOwnMessageEchoes: parseOfficialOwnMessageEchoes,
     peekInboundMedia: peekOfficialMedia,
     parseStatusCallback: parseOfficialStatus,
     sendText: sendOfficial,
@@ -456,6 +472,10 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     label: "UazAPI",
     capabilities: PROVIDER_CAPABILITIES.uazapi,
     parseInbound: parseUazApiInbound,
+    parseOwnMessageEchoes: (payload) => {
+      const echo = parseUazApiOwnMessageEcho(payload);
+      return echo ? [echo] : [];
+    },
     peekInboundMedia: peekUazApiMedia,
     parseStatusCallback: parseUazApiStatus,
     parseConnectionCallback: (payload) => payload?.EventType === "connection"
@@ -500,6 +520,20 @@ export function parseInbound(provider: WhatsAppProvider, payload: any): InboundM
   } catch {
     return null;
   }
+}
+
+// deno-lint-ignore no-explicit-any
+export function parseOwnMessageEchoes(provider: WhatsAppProvider, payload: any): OwnMessageEcho[] {
+  try {
+    return providerRegistry.tryGet(provider)?.parseOwnMessageEchoes(payload) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Compatibilidade para callers que só aceitam um evento por request. */
+export function parseOwnMessageEcho(provider: WhatsAppProvider, payload: any): OwnMessageEcho | null {
+  return parseOwnMessageEchoes(provider, payload)[0] ?? null;
 }
 
 // deno-lint-ignore no-explicit-any

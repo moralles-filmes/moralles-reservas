@@ -391,6 +391,7 @@ serve(async (req) => {
       : Promise.resolve({ kind: "email" as const, ok: false, skipped: true as const, reason: "no_email" });
 
     const [whatsappResult, emailResult] = await Promise.all([whatsappPromise, emailPromise]);
+    let whatsappHistoryPersisted = true;
 
     if (whatsappResult.skipped) {
       jsonLog("info", {
@@ -412,14 +413,18 @@ serve(async (req) => {
         (whatsappResult as { whatsappChannelId?: string }).whatsappChannelId ?? null,
       );
       if (unit_id) {
-        await appendOutboundToConversation({
+        const conversationLog = await appendOutboundToConversation({
           supabase,
           unitId: unit_id,
           customerId: customer?.id ?? null,
           phone: customer?.phone ?? null,
           content: message,
           kind: "confirmation",
+          eventId: (whatsappResult as { providerMessageId?: string }).providerMessageId
+            ? `wa-out:${(whatsappResult as { whatsappProvider?: string }).whatsappProvider ?? "unknown"}:${(whatsappResult as { providerMessageId?: string }).providerMessageId}`
+            : undefined,
         });
+        whatsappHistoryPersisted = conversationLog.persisted;
       }
     } else {
       jsonLog("warn", {
@@ -464,7 +469,12 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: anySent,
-        whatsapp: { sent: whatsappResult.ok, skipped: whatsappResult.skipped },
+        whatsapp: {
+          sent: whatsappResult.ok,
+          skipped: whatsappResult.skipped,
+          local_success: whatsappResult.ok ? whatsappHistoryPersisted : false,
+          warning: whatsappResult.ok && !whatsappHistoryPersisted ? "CONVERSATION_RECONCILIATION_REQUIRED" : undefined,
+        },
         email: { sent: emailResult.ok, skipped: emailResult.skipped },
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }

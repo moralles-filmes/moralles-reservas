@@ -110,6 +110,26 @@ export async function resolveOrCreateCustomer(
     })
     .select("id, name, phone, email, emails, birthday")
     .single();
+  if (insErr?.code === "23505") {
+    // Dois webhooks do mesmo telefone podem chegar juntos (inclusive no mesmo
+    // lote Meta). O UNIQUE escolhe o vencedor; o perdedor relê a linha
+    // canônica em vez de transformar uma corrida esperada em mensagem perdida.
+    const { data: winner, error: winnerErr } = await supabase
+      .from("customers")
+      .select("id, name, phone, email, emails, birthday")
+      .eq("organization_id", input.organizationId)
+      .eq("phone", normPhone)
+      .single();
+    if (winnerErr) throw winnerErr;
+    return {
+      id: winner.id,
+      name: winner.name,
+      phone: winner.phone,
+      email: winner.email,
+      emails: Array.isArray(winner.emails) ? winner.emails : [],
+      birthday: winner.birthday,
+    };
+  }
   if (insErr) throw insErr;
   return {
     id: created.id,

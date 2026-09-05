@@ -133,29 +133,43 @@ serve(async (req) => {
     // Append human message to conversation history (RPC atômica — evita race com inbound concorrente)
     const now = new Date().toISOString();
     const humanMsg = {
+      event_id: crypto.randomUUID(),
       role: "human",
+      author: "human",
       content: trimmedMessage,
       timestamp: now,
       human_user_id: user.id,
     };
 
-    const { error: appendErr } = await supabase.rpc("append_conversation_message", {
-      p_conversation_id: conversation_id,
-      p_message: humanMsg,
-    });
+    let appendErr: { message: string } | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await supabase.rpc("record_whatsapp_human_message", {
+        p_conversation_id: conversation_id,
+        p_unit_id: conv.unit_id,
+        p_message: humanMsg,
+        p_handoff_reason: "atendente respondeu pelo painel",
+      });
+      appendErr = result.error;
+      if (!appendErr) break;
+    }
     if (appendErr) {
       jsonLog("error", {
         evt: "manual_append_failed",
         convId: conversation_id,
         err: appendErr.message,
       });
-      // WhatsApp já foi enviado — não falhamos o request, só logamos
+      // O provider já aceitou o envio: não há retry cego. Expomos a falha
+      // parcial para reconciliação, em vez de afirmar persistência completa.
+      return new Response(JSON.stringify({
+        success: true,
+        external_success: true,
+        local_success: false,
+        warning: "CONVERSATION_RECONCILIATION_REQUIRED",
+      }), {
+        status: 202,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
-
-    await supabase
-      .from("conversations")
-      .update({ status: "human_active", updated_at: now })
-      .eq("id", conversation_id);
 
     jsonLog("info", { evt: "human_replied", convId: conversation_id, userId: user.id });
 

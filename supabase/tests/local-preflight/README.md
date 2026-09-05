@@ -29,6 +29,7 @@ presentes agendaria jobs apontando para lá.
 | `05-ciclo-custo-e-fim.sql` | COST-1..4, END-1..4, CORR-1..2 e CYCLE-1..3 — comportamento das RPCs `set_whatsapp_instance_cost` (104) e `confirm_whatsapp_instance_end` (104 + 105), e a colisão dos dois índices que produzem `23505`. `CYCLE-3` é o que mostra por que "existe linha com esta `cycle_start`?" é uma aproximação insuficiente e o discriminador tem de ser o ciclo OPEN. Mesmo padrão: cada caso numa subtransação, veredito em `t_res`. |
 | `06-controles-104.sql` | Os **três controles positivos** (104 e 105). Sem eles, "COST-2 passou", "END-1 passou" e "END-4 passou" não distinguem a guarda funcionando de teste sem força. |
 | `07-whatsapp-multiprovider.sql` | MP-1..18 + MP-5b/5c: backfill, CHECK/uniqueness, Vault RPC, claim fence/double-click, intenção/cutover, status Z-API/UazAPI, provider correto no ledger, dedupe por provider e ACL estática. |
+| `08-whatsapp-conversation-parity.sql` | CP: append idempotente com `last_message_at` monotônico, mensagem humana + handoff/lock atômicos, resolver de conversa serializado, validação de shape/tenant, liberação cercada do claim, cutover fail-closed sem prova de eco e ACL. |
 
 ## Rodar
 
@@ -51,6 +52,8 @@ P -f supabase/migrations/20260817170753_whatsapp_multiprovider_uazapi.sql
 P -f supabase/migrations/20260901225539_generalize_whatsapp_channel_status.sql
 P -f supabase/tests/local-preflight/02-seed.sql
 P -f supabase/tests/local-preflight/07-whatsapp-multiprovider.sql
+P -f supabase/migrations/20260905143453_whatsapp_conversation_provider_parity.sql
+P -f supabase/tests/local-preflight/08-whatsapp-conversation-parity.sql
 
 # NOTE-A: aplicar a 096 três vezes e conferir que a contagem não muda
 P -f supabase/migrations/20260803120000_096_whatsapp_instance_notes.sql   # x3

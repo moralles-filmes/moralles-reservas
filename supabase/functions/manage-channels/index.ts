@@ -86,11 +86,13 @@ interface ChannelRow {
   last_health_check_at: string | null;
   last_error: string | null;
   provisioning_create_attempted_at: string | null;
+  manual_echo_verified_at: string | null;
+  manual_echo_verification_source: "provider_callback" | "managed_configuration" | null;
 }
 
 type ClientChannelRow = ChannelRow & { created_at?: string };
 
-const CLIENT_CHANNEL_COLUMNS = "id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at, created_at";
+const CLIENT_CHANNEL_COLUMNS = "id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at, manual_echo_verified_at, manual_echo_verification_source, created_at";
 
 function selectClientChannel(rows: readonly ClientChannelRow[]): ClientChannelRow | null {
   return rows.find((row) => row.is_active === true)
@@ -203,7 +205,7 @@ async function memberLifecycleRole(userId: string, unitId: string): Promise<"own
 async function loadChannel(unitId: string, channelId: string): Promise<ChannelRow | null> {
   const { data } = await supabase
     .from("whatsapp_channels")
-    .select("id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at")
+    .select(CLIENT_CHANNEL_COLUMNS)
     .eq("id", channelId)
     .eq("unit_id", unitId)
     .maybeSingle();
@@ -213,7 +215,7 @@ async function loadChannel(unitId: string, channelId: string): Promise<ChannelRo
 async function findUazChannel(unitId: string): Promise<ChannelRow | null> {
   const { data } = await supabase
     .from("whatsapp_channels")
-    .select("id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at")
+    .select(CLIENT_CHANNEL_COLUMNS)
     .eq("unit_id", unitId)
     .eq("provider", "uazapi")
     .maybeSingle();
@@ -231,7 +233,7 @@ async function createUazPlaceholder(unitId: string): Promise<ChannelRow> {
       status: "not_configured",
       is_active: false,
     })
-    .select("id, unit_id, provider, status, credentials, webhook_secret, display_phone, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, connected_at, last_health_check_at, last_error, provisioning_create_attempted_at")
+    .select(CLIENT_CHANNEL_COLUMNS)
     .single();
   if (error?.code === "23505") {
     const concurrent = await findUazChannel(unitId);
@@ -908,7 +910,7 @@ async function maybeActivateConnectedChannel(
   actorId: string,
   requestId: string,
 ): Promise<ChannelRow> {
-  if (channel.status !== "connected") return channel;
+  if (channel.status !== "connected" || !channel.manual_echo_verified_at) return channel;
   const { data: active } = await supabase
     .from("whatsapp_channels")
     .select("id")
@@ -1092,6 +1094,18 @@ async function connectUazChannel(
     await client.configureWebhook(instanceToken, {
       url: webhookUrlFor(initialChannel.id, initialChannel.webhook_secret),
     });
+    const verificationNow = new Date().toISOString();
+    const { error: parityWriteError } = await supabase
+      .from("whatsapp_channels")
+      .update({
+        manual_echo_verified_at: verificationNow,
+        manual_echo_verification_source: "managed_configuration",
+      })
+      .eq("id", initialChannel.id)
+      .eq("unit_id", initialChannel.unit_id);
+    if (parityWriteError) throw new Error("channel_parity_verification_persist_failed");
+    claimedChannel.manual_echo_verified_at = verificationNow;
+    claimedChannel.manual_echo_verification_source = "managed_configuration";
     const snapshot = await client.connect(instanceToken);
     const normalized = normalizeUazConnectionStatus(snapshot);
     const { data: releasedData, error: releaseError } = await supabase.rpc(
@@ -1472,6 +1486,13 @@ serve(async (req) => {
             "Teste o canal alvo antes de concluir a troca.",
           );
         }
+        if (!target.manual_echo_verified_at) {
+          throw new ChannelActionError(
+            409,
+            "TARGET_CONVERSATION_PARITY_UNVERIFIED",
+            "Envie uma mensagem de teste pelo celular da loja e aguarde o callback antes de concluir a troca.",
+          );
+        }
         const targetCredentials = await resolveChannelCredentials(supabase, target);
         const health = await targetAdapter.getConnectionStatus(targetCredentials);
         if (!health.connected) {
@@ -1514,7 +1535,7 @@ serve(async (req) => {
     if (action === "list") {
       const { data, error } = await supabase
         .from("whatsapp_channels")
-        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, is_active, connected_at, last_health_check_at, activation_requested_at, created_at, updated_at")
+        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, is_active, connected_at, last_health_check_at, activation_requested_at, manual_echo_verified_at, manual_echo_verification_source, created_at, updated_at")
         .eq("unit_id", unitId)
         .order("created_at", { ascending: true });
 
@@ -1636,6 +1657,9 @@ serve(async (req) => {
           credentials,       // stored as JSONB — add pgcrypto encryption in production
           webhook_secret: webhookSecret,
           status: "disconnected",
+          // Canal novo nunca participa do fallback legado (NULL). Ele só pode
+          // enviar/processar depois de provar conexão + eco manual e ser ativado.
+          is_active: false,
         })
         .select("id, unit_id, provider, status, display_phone, created_at")
         .single();
@@ -1713,7 +1737,13 @@ serve(async (req) => {
 
       const { error: updateErr } = await supabase
         .from("whatsapp_channels")
-        .update({ credentials: merged, updated_at: new Date().toISOString() })
+        .update({
+          credentials: merged,
+          is_active: false,
+          manual_echo_verified_at: null,
+          manual_echo_verification_source: null,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", channelId)
         .eq("unit_id", unitId);
 
@@ -1759,7 +1789,13 @@ serve(async (req) => {
 
       const { data: rotated, error: rotErr } = await supabase
         .from("whatsapp_channels")
-        .update({ webhook_secret: newSecret, updated_at: new Date().toISOString() })
+        .update({
+          webhook_secret: newSecret,
+          is_active: false,
+          manual_echo_verified_at: null,
+          manual_echo_verification_source: null,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", channelId)
         .eq("unit_id", unitId)
         .select("id")
@@ -1860,7 +1896,7 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao registrar o status do canal." }, 500);
       }
 
-      if (connected && channel.activation_requested_at) {
+      if (connected && channel.activation_requested_at && channel.manual_echo_verified_at) {
         const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {
           p_unit_id: unitId,
           p_channel_id: channelId,

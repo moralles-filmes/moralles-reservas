@@ -1,11 +1,12 @@
 // Helper compartilhado para appendar mensagens outbound automáticas
 // (confirmação, lembrete, pesquisa, cancelamento, voucher, waitlist) na
-// timeline de `conversations.messages`. Best-effort: nunca lança — falha
-// no log não pode interromper o envio do WhatsApp.
+// timeline de `conversations.messages`. Não lança depois do envio externo;
+// devolve `persisted:false` para o caller expor reconciliação necessária.
 //
 // Quando o cliente não tem `conversation` ainda (nunca conversou pelo
 // WhatsApp), cria uma com status `ai_active` para que o operador veja o
-// histórico completo desde a primeira interação automática.
+// histórico completo desde a primeira interação automática. A criação passa
+// pela RPC serializada por unit+customer, nunca por SELECT→INSERT local.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog } from "./security.ts";
@@ -27,11 +28,17 @@ export interface AppendOutboundParams {
   phone: string | null;
   content: string;
   kind: OutboundKind;
+  eventId?: string;
+}
+
+export interface AppendOutboundResult {
+  persisted: boolean;
+  reason?: string;
 }
 
 export async function appendOutboundToConversation(
   params: AppendOutboundParams,
-): Promise<void> {
+): Promise<AppendOutboundResult> {
   try {
     const { supabase, unitId, content, kind } = params;
     let customerId = params.customerId;
@@ -60,60 +67,58 @@ export async function appendOutboundToConversation(
         kind,
         unit_id: unitId,
       });
-      return;
+      return { persisted: false, reason: "no_customer_id" };
     }
 
     const now = new Date().toISOString();
     const msg = {
+      event_id: params.eventId ?? crypto.randomUUID(),
       role: "assistant" as const,
+      author: "automation" as const,
       content,
       timestamp: now,
       kind,
     };
 
-    const { data: conv } = await supabase
-      .from("conversations")
-      .select("id")
-      .eq("unit_id", unitId)
-      .eq("customer_id", customerId)
-      .maybeSingle();
+    const { data: conversationId, error: conversationError } = await supabase.rpc(
+      "get_or_create_whatsapp_conversation",
+      {
+        p_customer_id: customerId,
+        p_unit_id: unitId,
+        p_contact_name: null,
+        p_chat_lid: null,
+      },
+    );
+    if (conversationError || !conversationId) {
+      jsonLog("warn", { evt: "conversation_log_resolve_failed", kind, unit_id: unitId });
+      return { persisted: false, reason: "conversation_resolve_failed" };
+    }
 
-    if (conv) {
-      const { error } = await supabase.rpc("append_conversation_message", {
-        p_conversation_id: conv.id,
+    let error: { message: string } | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await supabase.rpc("append_conversation_message", {
+        p_conversation_id: conversationId,
         p_message: msg,
       });
-      if (error) {
-        jsonLog("warn", {
-          evt: "conversation_log_update_failed",
-          kind,
-          conversation_id: conv.id,
-          err: error.message,
-        });
-      }
-    } else {
-      const { error } = await supabase.from("conversations").insert({
-        unit_id: unitId,
-        customer_id: customerId,
-        messages: [msg],
-        status: "ai_active",
-        last_message_at: now,
-      });
-      if (error) {
-        jsonLog("warn", {
-          evt: "conversation_log_insert_failed",
-          kind,
-          customer_id: customerId,
-          unit_id: unitId,
-          err: error.message,
-        });
-      }
+      error = result.error;
+      if (!error) break;
     }
+    if (error) {
+      jsonLog("warn", {
+        evt: "conversation_log_update_failed",
+        kind,
+        conversation_id: conversationId,
+        err: error.message,
+      });
+      return { persisted: false, reason: "conversation_append_failed" };
+    }
+    return { persisted: true };
   } catch (err) {
     jsonLog("warn", {
       evt: "conversation_log_error",
       kind: params.kind,
       err: String(err).slice(0, 200),
     });
+    return { persisted: false, reason: "conversation_log_error" };
   }
 }
