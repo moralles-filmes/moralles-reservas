@@ -210,7 +210,9 @@ export function useRotateChannelSecret(unitId: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
-      toast.success("Secret rotacionado. Atualize a URL do webhook no painel do provedor.");
+      toast.success(
+        "Secret rotacionado. Atualize a URL, envie uma mensagem pelo celular e use Ativar / trocar.",
+      );
     },
     onError: (err: Error) => toast.error(err.message),
   });

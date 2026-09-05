@@ -156,18 +156,23 @@ serve(async (req) => {
         { onConflict: "reservation_id,kind" }
       );
 
+    let conversationHistoryPersisted = true;
     if (result.ok) {
       jsonLog("info", { evt: "cancellation_sent", reservation_id, phone: sanitizePhone(customerPhone) });
       // deno-lint-ignore no-explicit-any
       const cust = customer as any;
-      await appendOutboundToConversation({
+      const conversationLog = await appendOutboundToConversation({
         supabase,
         unitId: reserva.unit_id,
         customerId: cust?.id ?? null,
         phone: customerPhone || null,
         content: message,
         kind: "cancellation",
+        eventId: result.providerMessageId
+          ? `wa-out:${result.provider ?? "unknown"}:${result.providerMessageId}`
+          : undefined,
       });
+      conversationHistoryPersisted = conversationLog.persisted;
     } else {
       jsonLog("error", {
         evt: "cancellation_failed",
@@ -179,8 +184,14 @@ serve(async (req) => {
       });
     }
 
-    return new Response(JSON.stringify({ success: result.ok, error: result.error }), {
-      status: result.ok ? 200 : 502,
+    return new Response(JSON.stringify({
+      success: result.ok,
+      external_success: result.ok,
+      local_success: result.ok ? conversationHistoryPersisted : false,
+      warning: result.ok && !conversationHistoryPersisted ? "CONVERSATION_RECONCILIATION_REQUIRED" : undefined,
+      error: result.error,
+    }), {
+      status: result.ok ? (conversationHistoryPersisted ? 200 : 202) : 502,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {

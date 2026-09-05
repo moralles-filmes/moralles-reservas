@@ -12,20 +12,32 @@ import {
   isSafeWahaBaseUrl,
   mapUazApiConnectionStatus,
   parseWahaConnectionStatus,
+  parseWahaInbound,
+  parseWahaOwnMessageEcho,
   parseWahaQrCode,
   parseUazApiInbound,
+  parseUazApiOwnMessageEcho,
   parseUazApiStatus,
   parseZApiInbound,
+  parseZApiOwnMessageEcho,
+  parseOfficialOwnMessageEcho,
+  parseOfficialOwnMessageEchoes,
+  parseOfficialInbound,
+  parseOfficialStatus,
   parseZApiConnectionCallback,
   parseZApiConnectionStatus,
   parseZApiQrCode,
   parseZApiStatus,
+  peekOfficialMedia,
   peekUazApiMedia,
+  peekWahaMedia,
+  peekZApiMedia,
   sendUazApiText,
   wahaSessionPreparationAction,
   type WhatsAppProviderAdapter,
   type WhatsAppProviderName,
 } from "../../supabase/functions/_shared/whatsapp-provider-core";
+import { splitMetaWebhookPayloadCore } from "../../supabase/functions/_shared/whatsapp-meta-batch-core";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -38,6 +50,7 @@ function stubAdapter(name: WhatsAppProviderName): WhatsAppProviderAdapter {
     label: name,
     capabilities: PROVIDER_CAPABILITIES[name],
     parseInbound: () => null,
+    parseOwnMessageEchoes: () => [],
     peekInboundMedia: () => null,
     parseStatusCallback: () => null,
     sendText: async () => ({ ok: true }),
@@ -64,6 +77,7 @@ describe("registry WhatsApp", () => {
       qrConnection: true,
       automaticWebhook: true,
       deliveryReceipts: true,
+      manualDeviceEcho: "supported",
     });
     expect(registry.get("zapi").capabilities).toMatchObject({
       qrConnection: true,
@@ -72,6 +86,7 @@ describe("registry WhatsApp", () => {
     });
     expect(registry.get("waha").capabilities.qrConnection).toBe(true);
     expect(registry.get("official").capabilities.qrConnection).toBe(false);
+    expect(registry.get("official").capabilities.manualDeviceEcho).toBe("conditional");
     expect(registry.metadata()[0]).not.toBe(registry.list()[0]);
   });
 
@@ -248,17 +263,20 @@ describe("caracterização Z-API", () => {
       senderName: "  Maria  ",
       text: { message: "  Quero reservar  " },
       fromMe: false,
+      momment: 1_700_000_000_123,
     };
 
     expect(parseZApiInbound(payload)).toMatchObject({
       providerMessageId: "zapi-message-1",
       fromPhone: "11987654321",
       text: "Quero reservar",
-      timestamp: 1_786_968_000_000,
+      timestamp: 1_700_000_000_123,
       contactName: "Maria",
     });
     expect(parseZApiInbound({ ...payload, fromMe: true })).toBeNull();
     expect(parseZApiInbound({ ...payload, fromMe: false, isFromMe: true })).toBeNull();
+    expect(parseZApiInbound({ ...payload, momment: undefined })).toBeNull();
+    expect(parseZApiInbound({ ...payload, messageId: undefined })).toBeNull();
   });
 
   it("preserva callback de entrega e ignora READ_BY_ME", () => {
@@ -365,6 +383,264 @@ describe("caracterização Z-API", () => {
   });
 });
 
+describe("ecos de mensagens próprias", () => {
+  it("normaliza Z-API raiz ou aninhada e distingue aparelho de API", () => {
+    const payload = {
+      fromMe: true,
+      fromApi: false,
+      messageId: "zapi-own-1",
+      phone: "5511987654321",
+      connectedPhone: "5511999999999",
+      chatLid: "12345678901234@lid",
+      chatName: "Maria",
+      momment: 1_700_000_000_123,
+      text: { message: "  Já confirmei sua reserva  " },
+    };
+
+    expect(parseZApiOwnMessageEcho(payload)).toMatchObject({
+      providerMessageId: "zapi-own-1",
+      peerPhone: "11987654321",
+      peerChatId: "12345678901234@lid",
+      peerLid: "12345678901234@lid",
+      text: "Já confirmei sua reserva",
+      source: "manual_device",
+      timestamp: 1_700_000_000_123,
+      contactName: "Maria",
+    });
+    expect(parseZApiOwnMessageEcho({ payload: { ...payload, fromApi: true } })?.source)
+      .toBe("provider_api");
+    expect(parseZApiOwnMessageEcho({ ...payload, fromMe: false, fromApi: false })).toBeNull();
+    expect(parseZApiOwnMessageEcho({ ...payload, fromApi: undefined })).toBeNull();
+    expect(parseZApiOwnMessageEcho({ ...payload, messageId: undefined })).toBeNull();
+  });
+
+  it("normaliza WAHA payload/message.any usando source app|api", () => {
+    const payload = {
+      event: "message.any",
+      payload: {
+        id: "true_5511987654321@c.us_ABC",
+        timestamp: 1_700_000_000,
+        from: "5511987654321@c.us",
+        to: "5511987654321@c.us",
+        fromMe: true,
+        source: "app",
+        body: "Posso ajudar em algo mais?",
+      },
+    };
+
+    expect(parseWahaOwnMessageEcho(payload)).toMatchObject({
+      providerMessageId: "true_5511987654321@c.us_ABC",
+      peerPhone: "11987654321",
+      peerChatId: "5511987654321@c.us",
+      text: "Posso ajudar em algo mais?",
+      source: "manual_device",
+      timestamp: 1_700_000_000_000,
+    });
+    expect(parseWahaOwnMessageEcho({
+      ...payload,
+      payload: { ...payload.payload, source: "api" },
+    })?.source).toBe("provider_api");
+    expect(parseWahaOwnMessageEcho({
+      ...payload,
+      payload: { ...payload.payload, source: undefined },
+    })).toBeNull();
+    expect(parseWahaOwnMessageEcho({ ...payload, event: "message.ack" })).toBeNull();
+  });
+
+  it("normaliza UazAPI em message/data, prioriza chatid e distingue wasSentByApi", () => {
+    const message = {
+      messageid: "uaz-own-1",
+      chatid: "5511976543210@s.whatsapp.net",
+      sender: "5511999999999@s.whatsapp.net",
+      senderName: "Loja",
+      fromMe: true,
+      wasSentByApi: false,
+      isGroup: false,
+      messageType: "Conversation",
+      messageTimestamp: 1_700_000_000_456,
+      text: "Sua mesa está confirmada",
+    };
+
+    expect(parseUazApiOwnMessageEcho({ EventType: "messages", message })).toMatchObject({
+      providerMessageId: "uaz-own-1",
+      peerPhone: "11976543210",
+      peerChatId: "5511976543210@s.whatsapp.net",
+      text: "Sua mesa está confirmada",
+      source: "manual_device",
+      timestamp: 1_700_000_000_456,
+    });
+    expect(parseUazApiOwnMessageEcho({
+      EventType: "messages",
+      data: { ...message, wasSentByApi: true },
+    })?.source).toBe("provider_api");
+    expect(parseUazApiOwnMessageEcho({ EventType: "messages", message: { ...message, fromMe: false } }))
+      .toBeNull();
+    expect(parseUazApiOwnMessageEcho({ EventType: "messages", message: { ...message, wasSentByApi: undefined } }))
+      .toBeNull();
+  });
+
+  it("normaliza somente o smb_message_echoes da Meta Coexistence", () => {
+    const payload = {
+      object: "whatsapp_business_account",
+      entry: [{
+        changes: [{
+          field: "smb_message_echoes",
+          value: {
+            metadata: { display_phone_number: "5511999999999", phone_number_id: "123" },
+            contacts: [{ wa_id: "5511987654321", profile: { name: "Maria" } }],
+            message_echoes: [{
+              from: "5511999999999",
+              to: "5511987654321",
+              id: "wamid.own-1",
+              timestamp: "1700000000",
+              type: "text",
+              text: { body: "Mensagem pelo WhatsApp Business" },
+            }],
+          },
+        }],
+      }],
+    };
+
+    expect(parseOfficialOwnMessageEcho(payload)).toMatchObject({
+      providerMessageId: "wamid.own-1",
+      peerPhone: "11987654321",
+      peerChatId: "5511987654321",
+      text: "Mensagem pelo WhatsApp Business",
+      source: "manual_device",
+      timestamp: 1_700_000_000_000,
+      contactName: "Maria",
+    });
+    const ordinary = structuredClone(payload);
+    ordinary.entry[0].changes[0].field = "messages";
+    expect(parseOfficialOwnMessageEcho(ordinary)).toBeNull();
+
+    const batched = structuredClone(payload);
+    batched.entry[0].changes[0].value.message_echoes.push({
+      from: "5511999999999",
+      to: "5511976543210",
+      id: "wamid.own-2",
+      timestamp: "1700000001",
+      type: "text",
+      text: { body: "Segunda mensagem" },
+    });
+    expect(parseOfficialOwnMessageEchoes(batched).map((echo) => echo.providerMessageId))
+      .toEqual(["wamid.own-1", "wamid.own-2"]);
+  });
+
+  it("normaliza todos os status de todos os changes do lote Meta", () => {
+    expect(parseOfficialStatus({
+      entry: [
+        { changes: [{ value: { statuses: [{ id: "wamid.1", status: "sent" }] } }] },
+        { changes: [
+          { value: { statuses: [{ id: "wamid.2", status: "delivered" }] } },
+          { value: { statuses: [{ id: "wamid.3", status: "read" }] } },
+        ] },
+      ],
+    })).toEqual([
+      { providerMessageId: "wamid.1", status: "sent" },
+      { providerMessageId: "wamid.2", status: "delivered" },
+      { providerMessageId: "wamid.3", status: "read" },
+    ]);
+  });
+
+  it("separa lote Meta e mantém apenas o contato do remetente de cada mensagem", () => {
+    const parts = splitMetaWebhookPayloadCore({
+      object: "whatsapp_business_account",
+      entry: [{ changes: [{ field: "messages", value: {
+        metadata: { phone_number_id: "123" },
+        contacts: [
+          { wa_id: "5511987654321", profile: { name: "Maria" } },
+          { wa_id: "5511976543210", profile: { name: "João" } },
+        ],
+        messages: [
+          { id: "m1", from: "5511987654321", timestamp: "1700000000", type: "text", text: { body: "A" } },
+          { id: "m2", from: "5511976543210", timestamp: "1700000001", type: "text", text: { body: "B" } },
+        ],
+      } }] }],
+    });
+    expect(parts).toHaveLength(2);
+    expect(parts).toMatchObject([
+      { entry: [{ changes: [{ value: { contacts: [{ profile: { name: "Maria" } }] } }] }] },
+      { entry: [{ changes: [{ value: { contacts: [{ profile: { name: "João" } }] } }] }] },
+    ]);
+  });
+
+  it("rejeita timestamp impossível ou muito futuro", () => {
+    const base = {
+      fromMe: true,
+      fromApi: false,
+      messageId: "zapi-time",
+      phone: "5511987654321",
+      connectedPhone: "5511999999999",
+      text: { message: "teste" },
+    };
+    expect(parseZApiOwnMessageEcho({ ...base, momment: 253402300800000 })).toBeNull();
+    expect(parseZApiOwnMessageEcho({ ...base, momment: Date.now() + 11 * 60_000 })).toBeNull();
+  });
+
+  it("usa timestamp Z-API válido quando momment veio inválido", () => {
+    expect(parseZApiOwnMessageEcho({
+      fromMe: true,
+      fromApi: false,
+      messageId: "zapi-time-fallback",
+      phone: "5511987654321",
+      connectedPhone: "5511999999999",
+      text: { message: "teste" },
+      momment: "bad",
+      timestamp: 1_700_000_000_789,
+    })?.timestamp).toBe(1_700_000_000_789);
+  });
+
+  it("falha fechado sem ID ou timestamp nativo nos inbounds legados", () => {
+    expect(parseWahaInbound({
+      event: "message.any",
+      payload: { id: "w1", from: "5511987654321@c.us", body: "oi" },
+    })).toBeNull();
+    expect(parseWahaInbound({
+      event: "message.any",
+      payload: { from: "5511987654321@c.us", body: "oi", timestamp: 1_700_000_000 },
+    })).toBeNull();
+    const metaWithoutId = { entry: [{ changes: [{ value: { messages: [{
+      from: "5511987654321", type: "text", text: { body: "oi" }, timestamp: "1700000000",
+    }] } }] }] };
+    expect(parseOfficialInbound(metaWithoutId)).toBeNull();
+    expect(parseOfficialInbound({ entry: [{ changes: [{ value: { messages: [{
+      id: "m1", from: "5511987654321", type: "text", text: { body: "oi" }, timestamp: "bad",
+    }] } }] }] })).toBeNull();
+  });
+});
+
+describe("timestamp de mídia inbound", () => {
+  it("normaliza o timestamp nativo dos quatro providers para epoch ms", () => {
+    expect(peekZApiMedia({
+      messageId: "z-media",
+      phone: "5511987654321",
+      momment: 1_700_000_000_111,
+      image: {},
+    })?.timestamp).toBe(1_700_000_000_111);
+
+    expect(peekWahaMedia({
+      event: "message",
+      payload: {
+        id: "w-media",
+        from: "5511987654321@c.us",
+        timestamp: 1_700_000_000,
+        type: "image",
+        hasMedia: true,
+      },
+    })?.timestamp).toBe(1_700_000_000_000);
+
+    expect(peekOfficialMedia({
+      entry: [{ changes: [{ value: { messages: [{
+        id: "m-media",
+        from: "5511987654321",
+        timestamp: "1700000000",
+        type: "image",
+      }] } }] }],
+    })?.timestamp).toBe(1_700_000_000_000);
+  });
+});
+
 describe("UazAPI v2.1.1", () => {
   const textPayload = {
     EventType: "messages",
@@ -410,9 +686,11 @@ describe("UazAPI v2.1.1", () => {
       providerMessageId: "uaz-message-1",
       fromPhone: "11987654321",
       mediaKind: "audio",
+      timestamp: 1_776_597_600_000,
       contactName: "Cliente Uaz",
     });
     expect(peekUazApiMedia({ ...media, messageid: "" })).toBeNull();
+    expect(peekUazApiMedia({ ...media, messageTimestamp: undefined })).toBeNull();
   });
 
   it("normaliza delivery status e estado de conexão", () => {

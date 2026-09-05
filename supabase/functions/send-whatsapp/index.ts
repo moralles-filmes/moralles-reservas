@@ -343,32 +343,40 @@ serve(async (req) => {
       );
     }
 
+    let conversationHistoryPersisted = true;
     if (result.ok && normalizedKind && unit_id) {
       // `resourceCustomerId` já veio da checagem de titularidade lá em cima —
       // é a MESMA linha que este bloco consultava por conta própria. Reusar
       // troca duas consultas por uma e, mais importante, garante que o
       // `customer_id` usado no log de conversa é o da linha cuja unidade foi
       // validada, e não o de uma segunda leitura sem esse escopo.
-      await appendOutboundToConversation({
+      const conversationLog = await appendOutboundToConversation({
         supabase: supabaseAdmin,
         unitId: unit_id,
         customerId: resourceCustomerId,
         phone,
         content: message,
         kind: normalizedKind as OutboundKind,
+        eventId: result.providerMessageId
+          ? `wa-out:${result.provider}:${result.providerMessageId}`
+          : undefined,
       });
+      conversationHistoryPersisted = conversationLog.persisted;
     }
 
     return new Response(
       JSON.stringify({
         success: result.ok,
+        external_success: result.ok,
+        local_success: result.ok ? conversationHistoryPersisted : false,
+        warning: result.ok && !conversationHistoryPersisted ? "CONVERSATION_RECONCILIATION_REQUIRED" : undefined,
         error: result.error,
         status: result.status,
         bodySnippet: result.bodySnippet,
         missingCreds: result.missingCreds,
       }),
       {
-        status: result.ok ? 200 : 502,
+        status: result.ok ? (conversationHistoryPersisted ? 200 : 202) : 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       },
     );

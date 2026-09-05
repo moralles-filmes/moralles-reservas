@@ -90,6 +90,8 @@ export interface WhatsAppChannel {
   connected_at: string | null;
   last_health_check_at: string | null;
   activation_requested_at: string | null;
+  manual_echo_verified_at: string | null;
+  manual_echo_verification_source: "provider_callback" | "managed_configuration" | null;
   capabilities?: WhatsAppProviderCapabilities;
   created_at: string;
   updated_at: string;
@@ -104,6 +106,7 @@ export interface WhatsAppProviderCapabilities {
   disconnect: boolean;
   restart: boolean;
   deliveryReceipts: boolean;
+  manualDeviceEcho: "supported" | "conditional" | "unsupported";
 }
 
 // ── Operacional ───────────────────────────────────────────────────────────────
@@ -518,10 +521,18 @@ export type OutboundMessageKind =
   | "waitlist_table_ready"
   | "waitlist_feedback";
 
+export type ConversationMessageAuthor = "customer" | "ai" | "automation" | "human";
+
 export interface ConversationMessage {
+  /** Identidade idempotente dos writers novos; ausente no histórico legado. */
+  event_id?: string;
   role: "user" | "assistant" | "human";
   content: string;
   timestamp: string;
+  /** Ausente em mensagens legadas, cuja autoria precisa ser inferida pelo role/kind. */
+  author?: ConversationMessageAuthor;
+  /** Instante de chegada usado pelo debounce; separado do horário original do provider. */
+  received_at?: string;
   human_user_id?: string;
   kind?: OutboundMessageKind;
 }
