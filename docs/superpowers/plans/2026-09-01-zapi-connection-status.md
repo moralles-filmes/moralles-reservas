@@ -25,3 +25,15 @@
 - Rodar testes direcionados, `npm run typecheck`, `npm run lint`, suíte e build conforme o risco.
 - Revisar diff, secrets staged e matriz de redeploy.
 - Fazer reviews de implementação, segurança/tenancy e branch completa antes de integrar.
+
+## Tarefa 5 — Fechar a lacuna encontrada em produção
+
+- Fazer `list_client` observar canais manuais pelo adapter do registry e persistir o snapshot com `record_whatsapp_channel_status` antes de devolver o shape client-safe.
+- Fazer WAHA interpretar o `status` do payload (`WORKING` como único conectado) antes de habilitar a reconciliação genérica.
+- Em falha de transporte, credencial ou persistência, falhar fechado como `provider_error`; nunca conservar `connected` sem uma observação válida.
+- Manter credenciais e detalhes do provider apenas na Edge Function.
+- Adicionar polling visibility-aware de 30 segundos para estados configurados estáveis, preservando 5 segundos para transitórios e desabilitando-o para aba oculta, `not_configured` e `suspended`.
+- Escolher `status` versus `list_client` pela capability `lifecycle_available`, não pelo valor transitório/estável do status.
+- Aplicar freshness/lease atômico de 30 segundos no backend para coalescer chamadas concorrentes e impedir bypass do intervalo do frontend.
+- Cobrir a reconciliação no guardrail de wiring e os intervalos no teste do hook.
+- Publicar o frontend e as oito EFs da matriz do registry (`webhook-whatsapp`, quatro envios, `manage-channels`, `whatsapp-health`, `manage-organizations`), depois validar o fluxo real na unidade afetada.

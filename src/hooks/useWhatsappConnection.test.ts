@@ -7,6 +7,8 @@ vi.mock("@/lib/supabase", () => ({
 import {
   isWhatsappConnectionTransient,
   normalizeWhatsappConnection,
+  reconcileWhatsappConnectionPoll,
+  whatsappConnectionReadAction,
   whatsappPollingInterval,
 } from "@/hooks/useWhatsappConnection";
 import { defaultWhatsappProviderSchema } from "@/lib/validators/organization";
@@ -42,6 +44,9 @@ describe("normalizeWhatsappConnection", () => {
       connected_at: null,
       last_health_check_at: null,
       lifecycle_available: false,
+      qr_available: false,
+      restart_available: false,
+      disconnect_available: false,
     });
     expect(snapshot).not.toHaveProperty("provider");
     expect(snapshot).not.toHaveProperty("credentials");
@@ -62,6 +67,58 @@ describe("normalizeWhatsappConnection", () => {
 });
 
 describe("polling da conexão", () => {
+  it("escolhe a leitura pela capability do canal, não pelo status", () => {
+    const manualTransient = normalizeWhatsappConnection({
+      id: "zapi-1",
+      status: "connecting",
+      lifecycle_available: false,
+      qr_available: true,
+    });
+    const manualWaitingQr = normalizeWhatsappConnection({
+      id: "waha-1",
+      status: "waiting_qr",
+      qr_available: true,
+    });
+    const managedStable = normalizeWhatsappConnection({
+      id: "uazapi-1",
+      status: "connected",
+      lifecycle_available: true,
+    });
+
+    expect(whatsappConnectionReadAction(undefined)).toBe("list_client");
+    expect(whatsappConnectionReadAction(manualTransient)).toBe("list_client");
+    expect(whatsappConnectionReadAction(manualWaitingQr)).toBe("status");
+    expect(whatsappConnectionReadAction(managedStable)).toBe("status");
+  });
+
+  it("preserva QR manual durante espera e reconhece a transição para connected", () => {
+    const pending = normalizeWhatsappConnection({
+      id: "zapi-1",
+      status: "waiting_qr",
+      qr_code: "qr-efemero",
+      qr_available: true,
+      lifecycle_available: false,
+    });
+
+    expect(reconcileWhatsappConnectionPoll(
+      pending,
+      normalizeWhatsappConnection({
+        id: "zapi-1",
+        status: "disconnected",
+        qr_available: true,
+      }),
+    )).toMatchObject({ status: "waiting_qr", qr_code: "qr-efemero" });
+
+    expect(reconcileWhatsappConnectionPoll(
+      pending,
+      normalizeWhatsappConnection({
+        id: "zapi-1",
+        status: "connected",
+        qr_available: true,
+      }),
+    )).toMatchObject({ status: "connected", qr_code: null });
+  });
+
   it.each(["provisioning", "waiting_qr", "connecting", "reconnecting", "switching_provider"])(
     "trata %s como transitório",
     (status) => {
@@ -75,11 +132,21 @@ describe("polling da conexão", () => {
     },
   );
 
-  it("não faz polling em estado estável nem com a página oculta", () => {
-    const connected = normalizeWhatsappConnection({ status: "connected" });
+  it.each(["connected", "disconnected", "provider_error", "error"])(
+    "revalida o estado configurado %s a cada 30 segundos",
+    (status) => {
+      const snapshot = normalizeWhatsappConnection({ id: "channel-1", status });
+      expect(whatsappPollingInterval(snapshot, true)).toBe(30_000);
+    },
+  );
+
+  it("não faz polling sem canal, suspenso ou com a página oculta", () => {
+    const notConfigured = normalizeWhatsappConnection({ status: "not_configured" });
+    const suspended = normalizeWhatsappConnection({ id: "channel-1", status: "suspended" });
     const connecting = normalizeWhatsappConnection({ status: "connecting" });
 
-    expect(whatsappPollingInterval(connected, true)).toBe(false);
+    expect(whatsappPollingInterval(notConfigured, true)).toBe(false);
+    expect(whatsappPollingInterval(suspended, true)).toBe(false);
     expect(whatsappPollingInterval(connecting, false)).toBe(false);
   });
 });

@@ -2,6 +2,11 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp, type SendMessagePayload } from "../_shared/whatsapp-send.ts";
 import { clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
+import { clearChannelConnectivityCache } from "../_shared/whatsapp-send.ts";
+import {
+  decideMessageTtl,
+  isProducerDefect,
+} from "../_shared/whatsapp-message-ttl-core.ts";
 import { jsonLog, requireInternalAuth, sanitizePhone } from "../_shared/security.ts";
 import {
   appendOutboundToConversation,
@@ -40,6 +45,12 @@ const VALID_KINDS = new Set([
 interface ExtendedPayload extends SendMessagePayload {
   /** Quando presente, grava notifications_sent. */
   kind?: string;
+  /**
+   * ISO COM offset do FATO que originou a mensagem (entrada na fila, horário
+   * da reserva, emissão do voucher). Não é o instante do envio. Ausente =
+   * fail-open com telemetria — ver `whatsapp-message-ttl-core.ts`.
+   */
+  fact_at?: string | null;
   // Quando presente junto com kind, grava `notifications_sent.reservation_id`
   // — necessário pra reminder_d1/survey_d1, cuja idempotência depende da
   // UNIQUE (reservation_id, kind). Para waitlist e voucher_issued, deixe nulo.
@@ -144,16 +155,34 @@ async function recordNotification(
         read_at: null,
         failed_at: null,
       })
-      .eq("kind", kind);
+      .eq("kind", kind)
+      // `unit_id` no predicado: `waitlist_id`/`reservation_id` chegam do body e
+      // NÃO são validados contra a unit do caller. Sem esta linha, um membro da
+      // unidade A que conhecesse o UUID de uma entry da unidade B sobrescrevia a
+      // linha de entrega de B (status, provider_message_id, e o reset de
+      // delivered/read/failed) e consumia o slot da UNIQUE (waitlist_id, kind)
+      // — o aviso legítimo de B viraria "reenvio" em vez de envio novo.
+      .eq("unit_id", unitId);
     if (waitlistId) q = q.eq("waitlist_id", waitlistId);
     else if (reservationId) q = q.eq("reservation_id", reservationId);
     else {
       jsonLog("warn", { evt: "record_notification_conflict_no_key", unit_id: unitId, kind });
       return;
     }
-    const { error: updErr } = await q;
+    // `.select()` obrigatório: UPDATE do Supabase JS que casa ZERO linhas devolve
+    // `error: null` (invariante do CLAUDE.md). Sem conferir o tamanho do
+    // retorno, "o predicado de tenant negou" seria indistinguível de "gravei".
+    const { data: updated, error: updErr } = await q.select("id");
     if (updErr) {
       jsonLog("warn", { evt: "record_notification_update_failed", unit_id: unitId, kind, err: updErr.message });
+    } else if ((updated?.length ?? 0) === 0) {
+      jsonLog("warn", {
+        evt: "record_notification_update_no_match",
+        unit_id: unitId,
+        kind,
+        has_waitlist_id: !!waitlistId,
+        has_reservation_id: !!reservationId,
+      });
     }
     return;
   }
@@ -169,6 +198,7 @@ serve(async (req) => {
   // Cache do gate é por invocação — zera aqui, mesmo padrão do unitCache dos
   // workers, senão um isolate quente serve estado de suspensão velho.
   clearWhatsAppGateCache();
+  clearChannelConnectivityCache();
 
   let body: ExtendedPayload;
   try {
@@ -180,7 +210,7 @@ serve(async (req) => {
     });
   }
 
-  const { phone, message, channel_id, unit_id, kind, reservation_id, waitlist_id } = body;
+  const { phone, message, channel_id, unit_id, kind, reservation_id, waitlist_id, fact_at } = body;
 
   const authResult = await authorize(req, unit_id);
   if (!authResult.ok) {
@@ -204,6 +234,84 @@ serve(async (req) => {
   }
 
   const normalizedKind = kind && VALID_KINDS.has(kind) ? kind : null;
+
+  // O recurso referenciado tem que ser DESTA unidade.
+  //
+  // `authorize()` prova que o caller é membro do `unit_id` do body, e nada mais
+  // — `waitlist_id`/`reservation_id` chegam soltos. Sem esta checagem, um
+  // membro da unidade A que conhecesse o UUID de uma entry da unidade B
+  // gravava `notifications_sent` com `unit_id = A` apontando para o recurso de
+  // B, consumindo o slot da UNIQUE `(waitlist_id, kind)`: o aviso legítimo de B
+  // virava "reenvio" em vez de envio novo, com o rastreio de entrega resetado.
+  //
+  // Roda ANTES do envio, não só antes da gravação: mandar mensagem sobre a fila
+  // de outro restaurante é o dano maior, e ele aconteceria mesmo que a
+  // gravação fosse recusada depois.
+  //
+  // `customerId` sai daqui reaproveitado pelo log de conversa mais abaixo — a
+  // consulta que valida é a mesma que já era feita depois do envio.
+  let resourceCustomerId: string | null = null;
+  if (normalizedKind && unit_id && (waitlist_id || reservation_id)) {
+    const table = waitlist_id ? "waitlist" : "reservations";
+    const id = (waitlist_id ?? reservation_id) as string;
+    const { data: owner, error: ownerErr } = await supabaseAdmin
+      .from(table)
+      .select("unit_id, customer_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    // Fail-closed: não conseguir confirmar a titularidade não autoriza escrever
+    // sobre o recurso. Diferente do gate de conexão, aqui uma leitura que falha
+    // não tem lado seguro "permitir" — o dano é sobre dado de outro tenant.
+    if (ownerErr || !owner || owner.unit_id !== unit_id) {
+      jsonLog("warn", {
+        evt: "send_whatsapp_cross_tenant_ref",
+        unit_id,
+        kind: normalizedKind,
+        table,
+        read_failed: !!ownerErr,
+        found: !!owner,
+      });
+      return new Response(
+        JSON.stringify({ success: false, error: "not_found_or_cross_tenant" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+    resourceCustomerId = (owner.customer_id as string | undefined) ?? null;
+  }
+
+  // Prazo de validade ANTES de qualquer contato com o provedor. Descarte
+  // silencioso, sem linha em `notifications_sent`: uma linha `failed` ali
+  // bloquearia reenvio manual legítimo depois, e o operador não precisa ver
+  // "falhou" sobre um lembrete de reserva que já passou.
+  //
+  // O motivo mais provável de cair aqui NÃO é o worker atrasado, é o reenvio em
+  // lote pelo painel Entregas depois de uma queda longa de canal.
+  if (normalizedKind) {
+    const ttl = decideMessageTtl({ kind: normalizedKind, factAt: fact_at, now: Date.now() });
+    if (isProducerDefect(ttl.reason)) {
+      jsonLog("warn", {
+        evt: "message_ttl_producer_defect",
+        kind: normalizedKind,
+        reason: ttl.reason,
+        unit_id,
+      });
+    }
+    if (ttl.decision === "discard") {
+      jsonLog("info", {
+        evt: "message_expired_discarded",
+        kind: normalizedKind,
+        unit_id,
+        fact_at,
+        expires_at: ttl.expiresAt,
+        phone: sanitizePhone(phone),
+      });
+      return new Response(
+        JSON.stringify({ success: false, discarded: true, reason: ttl.reason }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+  }
 
   try {
     const result = await sendWhatsApp(phone, message, { channel_id, unit_id });
@@ -236,34 +344,15 @@ serve(async (req) => {
     }
 
     if (result.ok && normalizedKind && unit_id) {
-      let customerId: string | null = null;
-      try {
-        if (reservation_id) {
-          const { data: r } = await supabaseAdmin
-            .from("reservations")
-            .select("customer_id")
-            .eq("id", reservation_id)
-            .maybeSingle();
-          customerId = (r?.customer_id as string | undefined) ?? null;
-        } else if (waitlist_id) {
-          const { data: w } = await supabaseAdmin
-            .from("waitlist")
-            .select("customer_id")
-            .eq("id", waitlist_id)
-            .maybeSingle();
-          customerId = (w?.customer_id as string | undefined) ?? null;
-        }
-      } catch (err) {
-        jsonLog("warn", {
-          evt: "conversation_log_customer_lookup_failed",
-          kind: normalizedKind,
-          err: String(err).slice(0, 200),
-        });
-      }
+      // `resourceCustomerId` já veio da checagem de titularidade lá em cima —
+      // é a MESMA linha que este bloco consultava por conta própria. Reusar
+      // troca duas consultas por uma e, mais importante, garante que o
+      // `customer_id` usado no log de conversa é o da linha cuja unidade foi
+      // validada, e não o de uma segunda leitura sem esse escopo.
       await appendOutboundToConversation({
         supabase: supabaseAdmin,
         unitId: unit_id,
-        customerId,
+        customerId: resourceCustomerId,
         phone,
         content: message,
         kind: normalizedKind as OutboundKind,

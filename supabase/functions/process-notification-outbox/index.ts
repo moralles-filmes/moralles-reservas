@@ -15,6 +15,10 @@ import {
   resolveWhatsAppGateByUnit,
   clearWhatsAppGateCache,
 } from "../_shared/whatsapp-service-gate.ts";
+import {
+  decideMessageTtl,
+  brtFactAt,
+} from "../_shared/whatsapp-message-ttl-core.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -92,16 +96,18 @@ async function stillValid(row: OutboxRow): Promise<{ ok: true } | { ok: false; r
   if (!r) return { ok: false, reason: "reservation_missing" };
   if (r.status === "cancelled") return { ok: false, reason: "reservation_cancelled" };
 
-  // Data e hora da reserva são horário local (BRT); comparar em BRT.
-  // `r.time` chega do Postgres como "HH:MM:SS" (coluna `time`, mesmo padrão de
-  // `formatTime` em process-reservation-reminders) — normaliza pra "HH:MM"
-  // antes de montar o literal ISO. Sem o slice, o literal ficaria com dois
-  // blocos de segundos ("...T19:00:00:00-03:00"), o `Date` resultante vira
-  // Invalid Date (NaN) e a comparação `when < Date.now()` nunca é verdadeira
-  // — a checagem de "reserva no passado" fica sempre desligada.
-  const timeHHMM = (r.time ?? "23:59").slice(0, 5);
-  const when = new Date(`${r.date}T${timeHHMM}:00-03:00`).getTime();
-  if (when < Date.now()) return { ok: false, reason: "reservation_in_the_past" };
+  // "Reserva no passado" deixou de ser conta local e passou a ser o prazo de
+  // validade compartilhado (`confirmation` vence no horário da reserva). A
+  // regra vive num lugar só — este arquivo e `send-whatsapp` divergiriam no
+  // primeiro que fosse editado, e os dois decidem sobre a MESMA mensagem.
+  //
+  // `brtFactAt` carrega o gotcha que este bloco resolvia à mão: coluna `time`
+  // volta como "HH:MM:SS" e interpolar direto geraria dois blocos de segundos
+  // → Invalid Date → comparação sempre falsa, com a checagem desligada em
+  // silêncio. Sem hora, cai em "23:59" para não vencer a reserva cedo demais.
+  const factAt = brtFactAt(r.date as string, (r.time as string) ?? "23:59");
+  const ttl = decideMessageTtl({ kind: "confirmation", factAt, now: Date.now() });
+  if (ttl.decision === "discard") return { ok: false, reason: "reservation_in_the_past" };
 
   const { data: sent } = await supabase
     .from("notifications_sent")

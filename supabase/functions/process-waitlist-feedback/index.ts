@@ -24,6 +24,7 @@ import {
   resolveWhatsAppGateByUnit,
   clearWhatsAppGateCache,
 } from "../_shared/whatsapp-service-gate.ts";
+import { brtFactAt } from "../_shared/whatsapp-message-ttl-core.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -181,6 +182,8 @@ serve(async (req) => {
             unit_id: unitId,
             kind: "waitlist_feedback",
             waitlist_id: row.waitlist_id,
+            // Mesma razão do survey: a RPC filtra por dia, não devolve `seated_at`.
+            fact_at: brtFactAt(targetDate, "23:59"),
           }),
         });
 

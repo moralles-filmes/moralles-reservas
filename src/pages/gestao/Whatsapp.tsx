@@ -55,7 +55,7 @@ const TRANSIENT_COPY: Partial<Record<WhatsappConnectionStatus, { title: string; 
   },
   connecting: {
     title: "Conectando o número",
-    text: "Conclua a leitura do QR Code no celular e aguarde a confirmação.",
+    text: "Aguarde enquanto preparamos e confirmamos a conexão com o WhatsApp.",
   },
   reconnecting: {
     title: "Reconectando",
@@ -271,7 +271,7 @@ export default function Whatsapp() {
             <StatusBadge status={snapshot.status} />
           </CardHeader>
 
-          {snapshot.status === "waiting_qr" ? (
+          {snapshot.status === "waiting_qr" && snapshot.qr_available ? (
             <WaitingQrState
               snapshot={snapshot}
               refreshing={refreshQr.isPending}
@@ -307,7 +307,7 @@ export default function Whatsapp() {
                 </div>
               </dl>
 
-              {snapshot.lifecycle_available ? <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 <Button
                   type="button"
                   variant="outline"
@@ -318,51 +318,51 @@ export default function Whatsapp() {
                   <RefreshCw className={refreshStatus.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
                   Atualizar estado
                 </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="min-h-11 gap-2"
-                  onClick={() => restart.mutate(snapshot.channel_id)}
-                  disabled={actionPending}
-                >
-                  <RotateCw className={restart.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                  Reiniciar conexão
-                </Button>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      className="min-h-11 gap-2"
-                      disabled={actionPending}
-                    >
-                      <Power className="h-4 w-4" />
-                      Desconectar
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Desconectar o WhatsApp?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        A automação deixará de receber e enviar mensagens até uma nova conexão.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={() => disconnect.mutate(snapshot.channel_id)}
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                {snapshot.restart_available && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="min-h-11 gap-2"
+                    onClick={() => restart.mutate(snapshot.channel_id)}
+                    disabled={actionPending}
+                  >
+                    <RotateCw className={restart.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                    Reiniciar conexão
+                  </Button>
+                )}
+                {snapshot.disconnect_available && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        className="min-h-11 gap-2"
+                        disabled={actionPending}
                       >
+                        <Power className="h-4 w-4" />
                         Desconectar
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </div> : (
-                <p className="text-sm text-muted-foreground">
-                  Esta conexão é administrada pelo suporte. O status continua disponível aqui.
-                </p>
-              )}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Desconectar o WhatsApp?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          A automação deixará de receber e enviar mensagens até uma nova conexão.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => disconnect.mutate(snapshot.channel_id)}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          Desconectar
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
+              </div>
             </CardContent>
           ) : ["not_configured", "disconnected"].includes(snapshot.status) ? (
             <CardContent className="space-y-5">
@@ -375,7 +375,7 @@ export default function Whatsapp() {
                   </p>
                 </div>
               </div>
-              {snapshot.lifecycle_available ? (
+              {snapshot.qr_available ? (
                 <Button
                   type="button"
                   className="min-h-11 gap-2"
@@ -387,7 +387,7 @@ export default function Whatsapp() {
                 </Button>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Fale com o suporte para conectar ou alterar este número.
+                  Este tipo de conexão é administrado sem pareamento por QR Code.
                 </p>
               )}
             </CardContent>
@@ -402,16 +402,28 @@ export default function Whatsapp() {
                   </p>
                 </div>
               </div>
-              {snapshot.lifecycle_available ? <div className="flex flex-col gap-2 sm:flex-row">
-                <Button
-                  type="button"
-                  className="min-h-11 gap-2"
-                  onClick={() => restart.mutate(snapshot.channel_id)}
-                  disabled={actionPending}
-                >
-                  <RotateCw className={restart.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                  Tentar reconectar
-                </Button>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                {snapshot.restart_available ? (
+                  <Button
+                    type="button"
+                    className="min-h-11 gap-2"
+                    onClick={() => restart.mutate(snapshot.channel_id)}
+                    disabled={actionPending}
+                  >
+                    <RotateCw className={restart.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                    Tentar reconectar
+                  </Button>
+                ) : snapshot.qr_available ? (
+                  <Button
+                    type="button"
+                    className="min-h-11 gap-2"
+                    onClick={() => connect.mutate(snapshot.channel_id)}
+                    disabled={actionPending}
+                  >
+                    <QrCode className="h-4 w-4" />
+                    {connect.isPending ? "Preparando…" : "Gerar novo QR Code"}
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant="outline"
@@ -422,9 +434,10 @@ export default function Whatsapp() {
                   <RefreshCw className={refreshStatus.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
                   Atualizar estado
                 </Button>
-              </div> : (
+              </div>
+              {!snapshot.restart_available && !snapshot.qr_available && (
                 <p className="text-sm text-muted-foreground">
-                  Fale com o suporte para diagnosticar esta conexão.
+                  Esta conexão exige uma etapa adicional no provedor. Fale com o suporte.
                 </p>
               )}
             </CardContent>

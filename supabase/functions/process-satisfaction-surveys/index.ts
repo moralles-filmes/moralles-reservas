@@ -26,6 +26,7 @@ import {
   resolveWhatsAppGateByUnit,
   clearWhatsAppGateCache,
 } from "../_shared/whatsapp-service-gate.ts";
+import { brtFactAt } from "../_shared/whatsapp-message-ttl-core.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -199,6 +200,10 @@ serve(async (req) => {
             unit_id: unitId,
             kind: "survey_d1",
             reservation_id: row.reservation_id,
+            // A RPC não devolve a hora da reserva, só a data. Fim do dia dá ao
+            // prazo de 48h a folga máxima dentro do dia certo — arredondar para
+            // o início encurtaria a validade por um detalhe de shape da query.
+            fact_at: brtFactAt(targetDate, "23:59"),
           }),
         });
 

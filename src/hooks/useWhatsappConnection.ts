@@ -27,6 +27,9 @@ export interface WhatsappConnectionSnapshot {
   connected_at: string | null;
   last_health_check_at: string | null;
   lifecycle_available: boolean;
+  qr_available: boolean;
+  restart_available: boolean;
+  disconnect_available: boolean;
 }
 
 type ClientAction =
@@ -68,6 +71,9 @@ const EMPTY_SNAPSHOT: WhatsappConnectionSnapshot = {
   connected_at: null,
   last_health_check_at: null,
   lifecycle_available: false,
+  qr_available: false,
+  restart_available: false,
+  disconnect_available: false,
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -132,6 +138,9 @@ export function normalizeWhatsappConnection(payload: unknown): WhatsappConnectio
     connected_at: nullableString(candidate.connected_at),
     last_health_check_at: nullableString(candidate.last_health_check_at),
     lifecycle_available: candidate.lifecycle_available === true,
+    qr_available: candidate.qr_available === true,
+    restart_available: candidate.restart_available === true,
+    disconnect_available: candidate.disconnect_available === true,
   };
 }
 
@@ -143,9 +152,52 @@ export function whatsappPollingInterval(
   snapshot: WhatsappConnectionSnapshot | undefined,
   isPageVisible: boolean,
 ): number | false {
-  return isPageVisible && snapshot && isWhatsappConnectionTransient(snapshot.status)
-    ? 5_000
-    : false;
+  if (!isPageVisible || !snapshot) return false;
+  if (isWhatsappConnectionTransient(snapshot.status)) return 5_000;
+  if (
+    snapshot.channel_id
+    && snapshot.status !== "not_configured"
+    && snapshot.status !== "suspended"
+  ) return 30_000;
+  return false;
+}
+
+export function whatsappConnectionReadAction(
+  snapshot: WhatsappConnectionSnapshot | undefined,
+): "list_client" | "status" {
+  if (snapshot?.lifecycle_available || (snapshot?.qr_available && snapshot.status === "waiting_qr")) {
+    return "status";
+  }
+  return "list_client";
+}
+
+const MANUAL_QR_PENDING_STATUSES = new Set<WhatsappConnectionStatus>([
+  "disconnected",
+  "connecting",
+  "waiting_qr",
+]);
+
+/**
+ * O QR manual não é persistido no backend. Enquanto o status ainda não
+ * confirmou conexão, mantemos o valor efêmero no cache sem chamar refresh_qr
+ * automaticamente. Connected (ou erro terminal) limpa o QR.
+ */
+export function reconcileWhatsappConnectionPoll(
+  previous: WhatsappConnectionSnapshot | undefined,
+  observed: WhatsappConnectionSnapshot,
+): WhatsappConnectionSnapshot {
+  const hasPendingManualQr = !!previous?.qr_available
+    && !previous.lifecycle_available
+    && previous.status === "waiting_qr"
+    && !!previous.qr_code;
+  if (!hasPendingManualQr || !MANUAL_QR_PENDING_STATUSES.has(observed.status)) {
+    return observed;
+  }
+  return {
+    ...observed,
+    status: "waiting_qr",
+    qr_code: observed.qr_code ?? previous.qr_code,
+  };
 }
 
 function subscribePageVisibility(onStoreChange: () => void) {
@@ -198,11 +250,12 @@ export function useWhatsappConnection(unitId: string) {
     queryKey,
     queryFn: async () => {
       const cached = queryClient.getQueryData<WhatsappConnectionSnapshot>(queryKey);
-      const action: ClientAction = cached && isWhatsappConnectionTransient(cached.status)
-        ? "status"
-        : "list_client";
-      return normalizeWhatsappConnection(
-        await invokeClientAction(action, unitId, cached?.channel_id),
+      const action: ClientAction = whatsappConnectionReadAction(cached);
+      return reconcileWhatsappConnectionPoll(
+        cached,
+        normalizeWhatsappConnection(
+          await invokeClientAction(action, unitId, cached?.channel_id),
+        ),
       );
     },
     enabled: !!unitId,

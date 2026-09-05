@@ -72,7 +72,7 @@ serve(async (req) => {
   // 1. Carrega entry
   const { data: entry, error: entryErr } = await supabase
     .from("waitlist")
-    .select("id, unit_id, customer_name, customer_phone, party_size, code, status")
+    .select("id, unit_id, customer_name, customer_phone, party_size, code, status, created_at")
     .eq("id", waitlistId)
     .maybeSingle();
 
@@ -179,6 +179,9 @@ serve(async (req) => {
         unit_id: unitId,
         kind: "waitlist_entered",
         waitlist_id: waitlistId,
+        // Fato = entrada na fila. "Você entrou na fila" chegando horas depois é
+        // ruído para o cliente e risco de bloqueio para o lojista.
+        fact_at: entry.created_at,
       }),
     });
 
