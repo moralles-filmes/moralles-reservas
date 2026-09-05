@@ -6,6 +6,7 @@ vi.mock("@/lib/supabase", () => ({
 
 import {
   isWhatsappConnectionTransient,
+  markExplicitWhatsappQr,
   normalizeWhatsappConnection,
   reconcileWhatsappConnectionPoll,
   whatsappConnectionReadAction,
@@ -47,6 +48,7 @@ describe("normalizeWhatsappConnection", () => {
       qr_available: false,
       restart_available: false,
       disconnect_available: false,
+      qr_from_explicit_action: false,
     });
     expect(snapshot).not.toHaveProperty("provider");
     expect(snapshot).not.toHaveProperty("credentials");
@@ -92,13 +94,13 @@ describe("polling da conexão", () => {
   });
 
   it("preserva QR manual durante espera e reconhece a transição para connected", () => {
-    const pending = normalizeWhatsappConnection({
+    const pending = markExplicitWhatsappQr(normalizeWhatsappConnection({
       id: "zapi-1",
       status: "waiting_qr",
       qr_code: "qr-efemero",
       qr_available: true,
       lifecycle_available: false,
-    });
+    }));
 
     expect(reconcileWhatsappConnectionPoll(
       pending,
@@ -117,6 +119,63 @@ describe("polling da conexão", () => {
         qr_available: true,
       }),
     )).toMatchObject({ status: "connected", qr_code: null });
+  });
+
+  it("preserva QR explícito da UazAPI no polling, mas rejeita QR vindo de status", () => {
+    const explicitConnect = markExplicitWhatsappQr(normalizeWhatsappConnection({
+      id: "uazapi-1",
+      status: "waiting_qr",
+      qr_code: "qr-novo",
+      qr_available: true,
+      lifecycle_available: true,
+    }));
+    const passiveConnecting = normalizeWhatsappConnection({
+      id: "uazapi-1",
+      status: "connecting",
+      qr_available: true,
+      lifecycle_available: true,
+    });
+
+    expect(reconcileWhatsappConnectionPoll(explicitConnect, passiveConnecting)).toMatchObject({
+      status: "waiting_qr",
+      qr_code: "qr-novo",
+      qr_from_explicit_action: true,
+    });
+
+    expect(reconcileWhatsappConnectionPoll(
+      explicitConnect,
+      normalizeWhatsappConnection({
+        id: "uazapi-1",
+        status: "disconnected",
+        qr_available: true,
+        lifecycle_available: true,
+      }),
+    )).toMatchObject({
+      status: "disconnected",
+      qr_code: null,
+      qr_from_explicit_action: false,
+    });
+
+    const staleStatus = normalizeWhatsappConnection({
+      id: "uazapi-1",
+      status: "waiting_qr",
+      qr_code: "qr-expirado",
+      qr_available: true,
+      lifecycle_available: true,
+    });
+    expect(reconcileWhatsappConnectionPoll(
+      staleStatus,
+      normalizeWhatsappConnection({
+        id: "uazapi-1",
+        status: "disconnected",
+        qr_available: true,
+        lifecycle_available: true,
+      }),
+    )).toMatchObject({
+      status: "disconnected",
+      qr_code: null,
+      qr_from_explicit_action: false,
+    });
   });
 
   it.each(["provisioning", "waiting_qr", "connecting", "reconnecting", "switching_provider"])(

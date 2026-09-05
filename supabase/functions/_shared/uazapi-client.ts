@@ -310,7 +310,11 @@ export class UazApiClient {
       token: instanceToken,
     });
     const envelope = asObject(payload);
-    return normalizeInstance(envelope.instance ?? envelope.data ?? envelope, envelope);
+    const snapshot = normalizeInstance(envelope.instance ?? envelope.data ?? envelope, envelope);
+    // A UazAPI pode repetir o último QR mesmo depois de encerrar o pareamento
+    // com `QR Code timeout`. Status é observação passiva: somente o POST
+    // explícito de connect pode entregar material de pareamento ao cliente.
+    return { ...snapshot, qrCode: null, pairCode: null };
   }
 
   async disconnect(instanceToken: string): Promise<void> {
