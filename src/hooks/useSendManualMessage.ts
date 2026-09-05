@@ -4,6 +4,13 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
 import type { Conversation, ConversationMessage } from "@/types/reserva";
 
+export interface ManualMessageSendResult {
+  success: boolean;
+  external_success?: boolean;
+  local_success?: boolean;
+  warning?: string;
+}
+
 export function useSendManualMessage(unitId: string) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -29,6 +36,7 @@ export function useSendManualMessage(unitId: string) {
         throw error;
       }
       if (!data?.success) throw new Error(data?.error ?? "Falha ao enviar mensagem");
+      return data as ManualMessageSendResult;
     },
     onMutate: async ({ conversationId, message }) => {
       // Optimistic: empurra a mensagem na thread imediatamente. Se a Edge Function
@@ -37,7 +45,9 @@ export function useSendManualMessage(unitId: string) {
       const previous = queryClient.getQueryData<Conversation>(["conversation-detail", conversationId]);
       if (previous) {
         const optimistic: ConversationMessage = {
+          event_id: crypto.randomUUID(),
           role: "human",
+          author: "human",
           content: message,
           timestamp: new Date().toISOString(),
           human_user_id: user?.id,

@@ -1359,6 +1359,10 @@ const webhook = readFileSync(
  * atravessou este arquivo inteiro sem dessincronizar.
  */
 const webhookCode = blankComments(webhook);
+const conversationParityMigration = readFileSync(
+  join(__dirname, "..", "..", "supabase", "migrations", "20260905143453_whatsapp_conversation_provider_parity.sql"),
+  "utf8",
+).replace(/\r\n/g, "\n");
 
 /** O bloco `if (… kind === "DENIED") { … }`, por chaves balanceadas. */
 function deniedBlock(src: string): string {
@@ -1427,7 +1431,7 @@ function exigeHardStopCompleto(bloco: string, nome: string) {
     statementFrom(bloco, upd),
     `${nome}: o handoff não põe a conversa na fila do operador`,
   ).toContain('status: "awaiting_human"');
-  const envio = bloco.indexOf("sendOutbound(");
+  const envio = bloco.search(/send(?:Outbound|Automatic)\(/);
   expect(envio, `${nome}: não responde ao cliente`).toBeGreaterThan(-1);
   expect(
     statementFrom(bloco, envio),
@@ -1575,7 +1579,7 @@ function exigeFailClosedTecnico(bloco: string, nome: string) {
     escrita,
     `${nome}: fail-closed técnico virou "franquia esgotada" para o operador`,
   ).not.toContain("AI_BUDGET_HANDOFF_REASON");
-  const envio = bloco.indexOf("sendOutbound(");
+  const envio = bloco.search(/send(?:Outbound|Automatic)\(/);
   expect(envio, `${nome}: não responde ao cliente`).toBeGreaterThan(-1);
   const resposta = statementFrom(bloco, envio);
   expect(resposta, `${nome}: a resposta não é o texto de instabilidade`).toMatch(
@@ -2456,9 +2460,16 @@ describe("webhook-whatsapp — toda porta de handoff põe a conversa na fila", (
     // Sem este controle, um discriminador que casasse TUDO (ou NADA) deixaria os
     // casos abaixo verdes sem medir coisa alguma.
     expect(escritas.length, "nenhuma escrita de handoff — o detector quebrou").toBeGreaterThan(0);
-    expect(outras.length, "o discriminador engoliu todas as escritas").toBeGreaterThan(0);
-    // A escrita que NÃO é porta é o eco da mensagem digitada no celular da loja:
-    // o humano JÁ está atendendo, e o lembrete não é rearmado de propósito.
+    // O eco humano deixou de ser UPDATE direto e agora usa uma RPC atômica;
+    // ele continua sendo o controle negativo que prova que o discriminador não
+    // classificou toda mudança de handoff como porta para awaiting_human.
+    const ecoHumanoAtomico = webhookCode.includes('rpc("record_whatsapp_human_message"')
+      && conversationParityMigration.includes("status = 'human_active'")
+      && conversationParityMigration.includes("last_silenced_reply_at = now()");
+    expect(
+      outras.length + Number(ecoHumanoAtomico),
+      "o discriminador engoliu todas as escritas e não reconheceu o eco humano atômico",
+    ).toBeGreaterThan(0);
     for (const e of outras) {
       expect(
         e.status,

@@ -13,6 +13,11 @@ export interface WhatsAppProviderCapabilities {
   disconnect: boolean;
   restart: boolean;
   deliveryReceipts: boolean;
+  /**
+   * Se o provider consegue ecoar mensagens digitadas no aparelho da loja.
+   * `conditional` exige um modo específico, como Meta Cloud API Coexistence.
+   */
+  manualDeviceEcho: "supported" | "conditional" | "unsupported";
 }
 
 export type WhatsAppOperationalStatus =
@@ -51,6 +56,26 @@ export interface InboundMessage {
   raw: any;
 }
 
+export type OwnMessageEchoSource = "manual_device" | "provider_api";
+
+/**
+ * Mensagem que saiu do número da loja e retornou pelo webhook do provider.
+ * `peer*` sempre identifica o outro lado da conversa, nunca o número da loja.
+ */
+export interface OwnMessageEcho {
+  providerMessageId: string;
+  peerPhone: string | null;
+  peerChatId: string | null;
+  peerLid: string | null;
+  text: string;
+  source: OwnMessageEchoSource;
+  /** Epoch Unix em milissegundos, normalizado do timestamp do provider. */
+  timestamp: number;
+  contactName?: string;
+  // deno-lint-ignore no-explicit-any
+  raw: any;
+}
+
 export type InboundMediaKind =
   | "audio"
   | "image"
@@ -65,6 +90,8 @@ export interface InboundMediaPeek {
   providerMessageId: string;
   fromPhone: string;
   mediaKind: InboundMediaKind;
+  /** Epoch Unix em milissegundos, normalizado do timestamp do provider. */
+  timestamp: number;
   contactName?: string;
 }
 
@@ -170,6 +197,8 @@ export interface WhatsAppProviderAdapter {
   // deno-lint-ignore no-explicit-any
   parseInbound(payload: any): InboundMessage | null;
   // deno-lint-ignore no-explicit-any
+  parseOwnMessageEchoes(payload: any): OwnMessageEcho[];
+  // deno-lint-ignore no-explicit-any
   peekInboundMedia(payload: any): InboundMediaPeek | null;
   // deno-lint-ignore no-explicit-any
   parseStatusCallback(payload: any): StatusUpdate[] | null;
@@ -238,6 +267,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     disconnect: false,
     restart: false,
     deliveryReceipts: true,
+    manualDeviceEcho: "supported",
   },
   waha: {
     manualCredentials: true,
@@ -248,6 +278,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     disconnect: false,
     restart: false,
     deliveryReceipts: true,
+    manualDeviceEcho: "supported",
   },
   official: {
     manualCredentials: true,
@@ -258,6 +289,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     disconnect: false,
     restart: false,
     deliveryReceipts: true,
+    manualDeviceEcho: "conditional",
   },
   uazapi: {
     manualCredentials: false,
@@ -268,6 +300,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     disconnect: true,
     restart: true,
     deliveryReceipts: true,
+    manualDeviceEcho: "supported",
   },
 };
 
@@ -282,6 +315,44 @@ function sanitizeContactName(raw: unknown, phone: string): string | undefined {
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function epochMs(value: unknown, unit: "seconds" | "milliseconds"): number | null {
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim()
+    ? Number(value)
+    : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  const milliseconds = unit === "seconds" ? parsed * 1000 : parsed;
+  const earliestAccepted = Date.UTC(2000, 0, 1);
+  const latestAccepted = Date.now() + 10 * 60_000;
+  return Number.isFinite(milliseconds)
+      && milliseconds >= earliestAccepted
+      && milliseconds <= latestAccepted
+      && Number.isFinite(new Date(milliseconds).getTime())
+    ? milliseconds
+    : null;
+}
+
+function peerIdentityFromJid(value: unknown): {
+  phone: string | null;
+  chatId: string | null;
+  lid: string | null;
+} {
+  const chatId = nonEmptyString(value);
+  if (!chatId) return { phone: null, chatId: null, lid: null };
+  const lower = chatId.toLowerCase();
+  const lid = lower.endsWith("@lid") ? chatId : null;
+  const phone = lid ? null : (phoneFromJid(chatId) || null);
+  return { phone, chatId, lid };
+}
+
+function plausiblePeerPhone(value: unknown, connectedPhone?: unknown): string | null {
+  const phone = canonicalBrPhone(String(value ?? ""));
+  const connected = canonicalBrPhone(String(connectedPhone ?? ""));
+  if (!phone || phone === connected || phone.length < 10 || phone.length > 13) return null;
+  return phone;
 }
 
 function phoneFromJid(value: unknown): string {
@@ -316,7 +387,10 @@ function uazApiMessageFromEnvelope(payload: any): any {
 export function parseZApiInbound(p: any): InboundMessage | null {
   if (!p.text?.message || p.fromMe || p.isFromMe) return null;
   const digits = canonicalBrPhone(String(p.phone ?? ""));
-  const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
+  const id = nonEmptyString(p.messageId ?? p.message?.id ?? p.id);
+  const timestamp = epochMs(p.momment, "milliseconds")
+    ?? epochMs(p.timestamp, "milliseconds");
+  if (!digits || !id || !timestamp) return null;
   const contactName = sanitizeContactName(
     p.senderName ?? p.chatName ?? p.notifyName ?? p.contactName,
     digits,
@@ -326,7 +400,7 @@ export function parseZApiInbound(p: any): InboundMessage | null {
     fromPhone: digits,
     text: p.text.message.trim(),
     isFromMe: false,
-    timestamp: Date.now(),
+    timestamp,
     contactName,
     raw: p,
   };
@@ -339,16 +413,19 @@ export function parseWahaInbound(p: any): InboundMessage | null {
   const textBody = msg.body ?? msg.text?.body;
   if (!textBody) return null;
   const rawFrom = canonicalBrPhone(String(msg.from ?? "").replace("@c.us", ""));
+  const id = nonEmptyString(msg.id?._serialized ?? msg.id);
+  const timestamp = epochMs(msg.timestamp, "seconds");
+  if (!rawFrom || !id || !timestamp) return null;
   const contactName = sanitizeContactName(
     msg._data?.notifyName ?? msg.notifyName ?? msg.pushName ?? msg._data?.pushName ?? p.payload?._data?.notifyName,
     rawFrom,
   );
   return {
-    providerMessageId: msg.id ?? `${rawFrom}:${Date.now()}`,
+    providerMessageId: id,
     fromPhone: rawFrom,
     text: String(textBody).trim(),
     isFromMe: false,
-    timestamp: (msg.timestamp ?? 0) * 1000 || Date.now(),
+    timestamp,
     contactName,
     raw: p,
   };
@@ -360,13 +437,16 @@ export function parseOfficialInbound(p: any): InboundMessage | null {
   const msgObj = value?.messages?.[0];
   if (!msgObj || msgObj.type !== "text") return null;
   const digits = canonicalBrPhone(String(msgObj.from ?? ""));
+  const id = nonEmptyString(msgObj.id);
+  const timestamp = epochMs(msgObj.timestamp, "seconds");
+  if (!digits || !id || !timestamp) return null;
   const contactName = sanitizeContactName(value?.contacts?.[0]?.profile?.name, digits);
   return {
-    providerMessageId: msgObj.id ?? `${digits}:${Date.now()}`,
+    providerMessageId: id,
     fromPhone: digits,
     text: (msgObj.text?.body ?? "").trim(),
     isFromMe: false,
-    timestamp: Number(msgObj.timestamp ?? 0) * 1000 || Date.now(),
+    timestamp,
     contactName,
     raw: p,
   };
@@ -382,9 +462,9 @@ export function parseUazApiInbound(p: any): InboundMessage | null {
   if (message?.fromMe || message?.wasSentByApi || message?.isGroup) return null;
   const id = nonEmptyString(message?.messageid);
   const text = nonEmptyString(message?.text);
-  const timestamp = message?.messageTimestamp;
+  const timestamp = epochMs(message?.messageTimestamp, "milliseconds");
   const phone = phoneFromUazMessage(message ?? {});
-  if (!id || !text || !Number.isFinite(timestamp) || timestamp <= 0 || !phone) return null;
+  if (!id || !text || !timestamp || !phone) return null;
 
   const type = String(message?.messageType ?? "").toLowerCase();
   if (UAZAPI_MEDIA_TYPE[type]) return null;
@@ -398,6 +478,164 @@ export function parseUazApiInbound(p: any): InboundMessage | null {
     contactName: sanitizeContactName(message?.senderName, phone),
     raw: p,
   };
+}
+
+// ─── Ecos de mensagens enviadas pela loja ───────────────────────────────────
+
+// deno-lint-ignore no-explicit-any
+export function parseZApiOwnMessageEcho(payload: any): OwnMessageEcho | null {
+  const p = payload?.payload && typeof payload.payload === "object" ? payload.payload : payload;
+  if (!p || typeof p !== "object") return null;
+  if (p.fromMe !== true && p.isFromMe !== true && p.sentByMe !== true) return null;
+  // Sem o discriminador booleano não há como distinguir aparelho de API com
+  // segurança. Falha fechado para não duplicar resposta automática como humana.
+  if (typeof p.fromApi !== "boolean") return null;
+  if (p.isGroup === true || p.isNewsletter === true || p.broadcast === true) return null;
+
+  const providerMessageId = nonEmptyString(p.messageId ?? p.message?.id ?? p.id);
+  const text = nonEmptyString(p.text?.message);
+  const timestamp = epochMs(p.momment, "milliseconds")
+    ?? epochMs(p.timestamp, "milliseconds");
+  if (!providerMessageId || !text || !timestamp) return null;
+
+  const chatIdentity = peerIdentityFromJid(p.chatLid ?? p.chatId);
+  const peerPhone = plausiblePeerPhone(p.phone, p.connectedPhone) ?? chatIdentity.phone;
+  const peerLid = chatIdentity.lid ?? (!peerPhone ? nonEmptyString(p.chatLid) : null);
+  if (!peerPhone && !peerLid) return null;
+
+  return {
+    providerMessageId,
+    peerPhone,
+    peerChatId: chatIdentity.chatId,
+    peerLid,
+    text,
+    source: p.fromApi === true ? "provider_api" : "manual_device",
+    timestamp,
+    contactName: sanitizeContactName(p.chatName ?? p.senderName, peerPhone ?? ""),
+    raw: payload,
+  };
+}
+
+// WAHA exige assinatura em `message.any` para observar todas as mensagens
+// próprias. `source` é o discriminador documentado entre aparelho e API.
+// deno-lint-ignore no-explicit-any
+export function parseWahaOwnMessageEcho(payload: any): OwnMessageEcho | null {
+  const p = payload?.payload && typeof payload.payload === "object" ? payload.payload : payload;
+  const event = nonEmptyString(payload?.event);
+  if (!p || typeof p !== "object" || p.fromMe !== true) return null;
+  if (event && event !== "message" && event !== "message.any") return null;
+  if (p.source !== "app" && p.source !== "api") return null;
+
+  const providerMessageId = nonEmptyString(p.id);
+  const text = nonEmptyString(p.body ?? p.text?.body);
+  const timestamp = epochMs(p.timestamp, "seconds");
+  if (!providerMessageId || !text || !timestamp) return null;
+
+  const candidates = [p.to, p.chatId, p.from];
+  let identity = { phone: null, chatId: null, lid: null } as ReturnType<typeof peerIdentityFromJid>;
+  for (const candidate of candidates) {
+    const parsed = peerIdentityFromJid(candidate);
+    if (parsed.phone || parsed.lid) {
+      identity = parsed;
+      break;
+    }
+  }
+  if (!identity.phone && !identity.lid) return null;
+
+  return {
+    providerMessageId,
+    peerPhone: identity.phone,
+    peerChatId: identity.chatId,
+    peerLid: identity.lid,
+    text,
+    source: p.source === "api" ? "provider_api" : "manual_device",
+    timestamp,
+    contactName: sanitizeContactName(
+      p._data?.notifyName ?? p.notifyName ?? p.pushName ?? p._data?.pushName,
+      identity.phone ?? "",
+    ),
+    raw: payload,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+export function parseUazApiOwnMessageEcho(payload: any): OwnMessageEcho | null {
+  if (payload?.EventType !== "messages") return null;
+  const p = uazApiMessageFromEnvelope(payload);
+  if (!p || typeof p !== "object" || p.fromMe !== true || p.isGroup === true) return null;
+  if (typeof p.wasSentByApi !== "boolean") return null;
+
+  const providerMessageId = nonEmptyString(p.messageid);
+  const text = nonEmptyString(p.text);
+  const timestamp = epochMs(p.messageTimestamp, "milliseconds");
+  if (!providerMessageId || !text || !timestamp) return null;
+
+  // Em outbound, `sender` pode ser a própria loja; `chatid` é o peer.
+  const chatIdentity = peerIdentityFromJid(p.chatid ?? p.chatId ?? p.chatLid);
+  const senderIdentity = peerIdentityFromJid(p.sender);
+  const identity = chatIdentity.phone || chatIdentity.lid ? chatIdentity : senderIdentity;
+  if (!identity.phone && !identity.lid) return null;
+
+  return {
+    providerMessageId,
+    peerPhone: identity.phone,
+    peerChatId: identity.chatId,
+    peerLid: identity.lid,
+    text,
+    source: p.wasSentByApi === true ? "provider_api" : "manual_device",
+    timestamp,
+    contactName: sanitizeContactName(p.senderName, identity.phone ?? ""),
+    raw: payload,
+  };
+}
+
+// Meta só oferece eco do aparelho no modo Cloud API Coexistence, pelo campo
+// `smb_message_echoes`. Esse evento representa exclusivamente app/linked device.
+// deno-lint-ignore no-explicit-any
+export function parseOfficialOwnMessageEcho(payload: any): OwnMessageEcho | null {
+  return parseOfficialOwnMessageEchoes(payload)[0] ?? null;
+}
+
+// O webhook da Meta pode agrupar vários entries/changes/echoes na mesma
+// entrega. Todos são normalizados; descartar os demais criaria buracos na
+// timeline e poderia deixar a IA ativa após uma resposta humana.
+// deno-lint-ignore no-explicit-any
+export function parseOfficialOwnMessageEchoes(payload: any): OwnMessageEcho[] {
+  const entries = Array.isArray(payload?.entry) ? payload.entry : [];
+  const echoes: OwnMessageEcho[] = [];
+  for (const entry of entries) {
+    const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+    for (const change of changes) {
+      if (change?.field !== "smb_message_echoes" || !change?.value) continue;
+      const value = change.value;
+      const messages = Array.isArray(value?.message_echoes) ? value.message_echoes : [];
+      for (const message of messages) {
+        if (!message || message.type !== "text") continue;
+
+        const providerMessageId = nonEmptyString(message.id);
+        const text = nonEmptyString(message.text?.body);
+        const timestamp = epochMs(message.timestamp, "seconds");
+        const peerPhone = plausiblePeerPhone(message.to, value?.metadata?.display_phone_number);
+        if (!providerMessageId || !text || !timestamp || !peerPhone) continue;
+
+        const matchingContact = Array.isArray(value?.contacts)
+          ? value.contacts.find((contact: any) => canonicalBrPhone(String(contact?.wa_id ?? "")) === peerPhone)
+          : null;
+        echoes.push({
+          providerMessageId,
+          peerPhone,
+          peerChatId: nonEmptyString(message.to),
+          peerLid: null,
+          text,
+          source: "manual_device",
+          timestamp,
+          contactName: sanitizeContactName(matchingContact?.profile?.name ?? matchingContact?.name, peerPhone),
+          raw: payload,
+        });
+      }
+    }
+  }
+  return echoes;
 }
 
 // ─── Peek de mídia ──────────────────────────────────────────────────────────
@@ -416,12 +654,15 @@ export function peekZApiMedia(p: any): InboundMediaPeek | null {
   if (!kind) return null;
   const digits = canonicalBrPhone(String(p.phone ?? ""));
   if (!digits) return null;
-  const id = p.messageId ?? p.message?.id ?? p.id ?? `${digits}:${Date.now()}`;
+  const id = nonEmptyString(p.messageId ?? p.message?.id ?? p.id);
+  const timestamp = epochMs(p.momment, "milliseconds")
+    ?? epochMs(p.timestamp, "milliseconds");
+  if (!digits || !id || !timestamp) return null;
   const contactName = sanitizeContactName(
     p.senderName ?? p.chatName ?? p.notifyName ?? p.contactName,
     digits,
   );
-  return { providerMessageId: id, fromPhone: digits, mediaKind: kind, contactName };
+  return { providerMessageId: id, fromPhone: digits, mediaKind: kind, timestamp, contactName };
 }
 
 // deno-lint-ignore no-explicit-any
@@ -440,15 +681,18 @@ export function peekWahaMedia(p: any): InboundMediaPeek | null {
   if (!kind && msg.hasMedia && !textBody) kind = "other";
   if (!kind) return null;
   const rawFrom = canonicalBrPhone(String(msg.from ?? "").replace("@c.us", ""));
-  if (!rawFrom) return null;
+  const id = nonEmptyString(msg.id?._serialized ?? msg.id);
+  const timestamp = epochMs(msg.timestamp, "seconds");
+  if (!rawFrom || !id || !timestamp) return null;
   const contactName = sanitizeContactName(
     msg._data?.notifyName ?? msg.notifyName ?? msg.pushName ?? msg._data?.pushName ?? p.payload?._data?.notifyName,
     rawFrom,
   );
   return {
-    providerMessageId: msg.id ?? `${rawFrom}:${Date.now()}`,
+    providerMessageId: id,
     fromPhone: rawFrom,
     mediaKind: kind,
+    timestamp,
     contactName,
   };
 }
@@ -464,11 +708,14 @@ export function peekOfficialMedia(p: any): InboundMediaPeek | null {
     contacts: "contacts",
   };
   const digits = canonicalBrPhone(String(msgObj.from ?? ""));
-  if (!digits) return null;
+  const id = nonEmptyString(msgObj.id);
+  const timestamp = epochMs(msgObj.timestamp, "seconds");
+  if (!digits || !id || !timestamp) return null;
   return {
-    providerMessageId: msgObj.id ?? `${digits}:${Date.now()}`,
+    providerMessageId: id,
     fromPhone: digits,
     mediaKind: map[String(msgObj.type ?? "")] ?? "other",
+    timestamp,
     contactName: sanitizeContactName(value?.contacts?.[0]?.profile?.name, digits),
   };
 }
@@ -503,11 +750,13 @@ export function peekUazApiMedia(p: any): InboundMediaPeek | null {
   const id = nonEmptyString(message?.messageid);
   const phone = phoneFromUazMessage(message ?? {});
   const kind = UAZAPI_MEDIA_TYPE[String(message?.messageType ?? "").toLowerCase()];
-  if (!id || !phone || !kind) return null;
+  const timestamp = epochMs(message?.messageTimestamp, "milliseconds");
+  if (!id || !phone || !kind || !timestamp) return null;
   return {
     providerMessageId: id,
     fromPhone: phone,
     mediaKind: kind,
+    timestamp,
     contactName: sanitizeContactName(message?.senderName, phone),
   };
 }
@@ -563,13 +812,18 @@ function mapWahaAck(ack: number | null, ackName: string): DeliveryStatus | null 
 
 // deno-lint-ignore no-explicit-any
 export function parseOfficialStatus(p: any): StatusUpdate[] | null {
-  const statuses = p?.entry?.[0]?.changes?.[0]?.value?.statuses;
-  if (!Array.isArray(statuses) || !statuses.length) return null;
   const out: StatusUpdate[] = [];
-  for (const item of statuses) {
-    const id = item?.id;
-    const status = mapOfficialStatus(String(item?.status ?? ""));
-    if (typeof id === "string" && id && status) out.push({ providerMessageId: id, status });
+  const entries = Array.isArray(p?.entry) ? p.entry : [];
+  for (const entry of entries) {
+    const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+    for (const change of changes) {
+      const statuses = Array.isArray(change?.value?.statuses) ? change.value.statuses : [];
+      for (const item of statuses) {
+        const id = item?.id;
+        const status = mapOfficialStatus(String(item?.status ?? ""));
+        if (typeof id === "string" && id && status) out.push({ providerMessageId: id, status });
+      }
+    }
   }
   return out.length ? out : null;
 }

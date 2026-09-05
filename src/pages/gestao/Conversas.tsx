@@ -5,6 +5,10 @@ import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useConversations, useConversationActions } from "@/hooks/useConversations";
 import { useSendManualMessage } from "@/hooks/useSendManualMessage";
 import { useDebounce } from "@/hooks/useDebounce";
+import {
+  getConversationMessageAuthorLabel,
+  sortConversationMessages,
+} from "@/lib/conversation-message";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,23 +29,7 @@ import {
 } from "@/lib/utils";
 import { toast } from "sonner";
 import { ArrowLeft, MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2, Search } from "lucide-react";
-import type {
-  Conversation,
-  ConversationMessage,
-  ConversationStatus,
-  OutboundMessageKind,
-} from "@/types/reserva";
-
-const OUTBOUND_KIND_LABEL: Record<OutboundMessageKind, string> = {
-  confirmation: "Confirmação",
-  reminder_d1: "Lembrete",
-  survey_d1: "Pesquisa",
-  cancellation: "Cancelamento",
-  voucher_issued: "Voucher",
-  waitlist_entered: "Fila — entrada",
-  waitlist_table_ready: "Fila — mesa pronta",
-  waitlist_feedback: "Fila — feedback",
-};
+import type { Conversation, ConversationMessage, ConversationStatus } from "@/types/reserva";
 
 // ── Status display helpers ─────────────────────────────────────────────────────
 
@@ -74,7 +62,7 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
   const isBot = msg.role === "assistant";
   const isHuman = msg.role === "human";
   const isUser = msg.role === "user";
-  const kindLabel = msg.kind ? (OUTBOUND_KIND_LABEL[msg.kind] ?? msg.kind) : undefined;
+  const authorLabel = getConversationMessageAuthorLabel(msg);
 
   return (
     <div className={`flex ${isUser ? "justify-start" : "justify-end"}`}>
@@ -87,14 +75,9 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
             : "bg-muted rounded-bl-sm"
         }`}
       >
-        {isHuman && (
-          <p className="text-[10px] font-semibold mb-0.5 text-success-foreground">Atendente</p>
-        )}
-        {isBot && kindLabel && (
-          <p className="text-[10px] font-semibold uppercase tracking-wide opacity-80 mb-0.5">
-            {kindLabel}
-          </p>
-        )}
+        <p className="text-[10px] font-semibold tracking-wide opacity-80 mb-0.5">
+          {authorLabel}
+        </p>
         <p className="whitespace-pre-wrap">{msg.content}</p>
         <p
           className={`text-[10px] mt-1 ${
@@ -189,6 +172,10 @@ function ConversationDetail({
   }, [liveConv?.messages?.length, conv.id]);
 
   const current = liveConv ?? conv;
+  const orderedMessages = useMemo(
+    () => sortConversationMessages(current.messages ?? []),
+    [current.messages],
+  );
   const isHumanMode = current.status === "human_active" || current.status === "awaiting_human";
 
   function handleAssume() {
@@ -223,9 +210,15 @@ function ConversationDetail({
     sendMessage.mutate(
       { conversationId: current.id, message: msg },
       {
-        onSuccess: () => {
+        onSuccess: (result) => {
           setReplyText("");
-          toast.success("Mensagem enviada.");
+          if (result.local_success === false) {
+            toast.warning(
+              "Mensagem enviada no WhatsApp, mas o histórico não foi confirmado. Recarregue a conversa ou avise o suporte.",
+            );
+          } else {
+            toast.success("Mensagem enviada.");
+          }
         },
         onError: (e) => toast.error(`Erro: ${(e as Error).message}`),
       }
@@ -318,7 +311,7 @@ function ConversationDetail({
       ) : (
         <ScrollArea className="flex-1 p-4" ref={scrollRef as React.RefObject<HTMLDivElement>}>
           <div className="space-y-3">
-            {current.messages.map((msg, i, arr) => {
+            {orderedMessages.map((msg, i, arr) => {
               const prev = i > 0 ? arr[i - 1] : null;
               const showDivider =
                 !prev || getMessageDayKey(msg.timestamp) !== getMessageDayKey(prev.timestamp);

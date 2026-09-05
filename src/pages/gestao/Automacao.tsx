@@ -355,6 +355,17 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                       </Badge>
                       {ch.is_active === true && <Badge variant="success">Ativo</Badge>}
                       {ch.is_active === false && <Badge variant="secondary">Preparado</Badge>}
+                      {ch.manual_echo_verified_at ? (
+                        <Badge variant="outline">
+                          {ch.manual_echo_verification_source === "provider_callback"
+                            ? "Eco manual validado"
+                            : "Webhook de conversa configurado"}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-warning border-warning/40">
+                          Validação de conversa pendente
+                        </Badge>
+                      )}
                       {ch.display_phone && (
                         <span className="text-sm text-muted-foreground">{formatPhone(ch.display_phone)}</span>
                       )}
@@ -386,7 +397,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                             <RefreshCw className="h-3 w-3 mr-1" />
                             Status
                           </Button>
-                          {ch.is_active !== true && hasAlternativeChannel && (
+                          {ch.is_active !== true && (
                             <AlertDialog>
                               <AlertDialogTrigger asChild>
                                 <Button size="sm">Ativar / trocar</Button>
@@ -395,7 +406,9 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                                 <AlertDialogHeader>
                                   <AlertDialogTitle>Preparar troca para UazAPI?</AlertDialogTitle>
                                   <AlertDialogDescription>
-                                    O canal atual permanece ativo até a UazAPI conectar. O cutover só ocorre depois da validação.
+                                    {hasAlternativeChannel
+                                      ? "O canal atual permanece ativo até a UazAPI conectar. O cutover só ocorre depois da validação."
+                                      : "A UazAPI só será ativada depois de conectar e concluir a validação."}
                                   </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
@@ -426,7 +439,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                             <Pencil className="h-3 w-3 mr-1" />
                             Editar
                           </Button>
-                          {ch.is_active !== true && hasAlternativeChannel && (
+                          {ch.is_active !== true && (
                             <AlertDialog>
                               <AlertDialogTrigger asChild>
                                 <Button size="sm">Ativar / trocar</Button>
@@ -435,7 +448,9 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                                 <AlertDialogHeader>
                                   <AlertDialogTitle>Validar e ativar {PROVIDER_LABELS[ch.provider]}?</AlertDialogTitle>
                                   <AlertDialogDescription>
-                                    O canal atual só será substituído se uma verificação ao vivo confirmar o canal alvo.
+                                    {hasAlternativeChannel
+                                      ? "O canal atual só será substituído depois que conexão e eco manual forem confirmados ao vivo."
+                                      : "O canal só será ativado depois que conexão e eco manual forem confirmados ao vivo."}
                                   </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
@@ -465,7 +480,8 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                             <AlertDialogDescription>
                               A URL antiga do webhook para de funcionar imediatamente.
                               Depois de rotacionar, copie a URL nova neste card e configure-a
-                              no painel do provedor.
+                              no painel do provedor. O canal ficará inativo: envie uma mensagem
+                              pelo celular para validar o novo eco e depois use "Ativar / trocar".
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
@@ -664,7 +680,11 @@ function EditChannelDialog({
               Deixe em branco o que quer manter — só os campos preenchidos são
               atualizados. O webhook não muda, então <span className="font-medium text-foreground">não precisa reconfigurar no provedor</span>.
             </p>
-            <p>Depois de salvar, clique em "Testar" no card para validar a conexão.</p>
+            <p>
+              Depois de salvar, reconfigure o webhook se a identidade do canal mudou,
+              envie uma mensagem pelo celular para validar o eco e só então use
+              "Testar" e "Ativar / trocar".
+            </p>
           </div>
 
           {provider === "zapi" && (
@@ -869,6 +889,9 @@ function AddChannelDialog({
               {selectedProvider?.capabilities.automaticWebhook
                 ? "Clique em Conectar / QR no card. O webhook será configurado automaticamente."
                 : "A URL completa do webhook será exibida no card. Copie e cole no painel do provedor."}
+            </p>
+            <p>
+              Antes de ativar, envie uma mensagem pelo celular da loja. O sistema só libera a troca depois de receber e validar esse eco; na Meta isso exige Coexistence.
             </p>
           </div>
 
