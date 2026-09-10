@@ -40,8 +40,8 @@ presentes agendaria jobs apontando para lá.
 | `06-controles-104.sql` | Os **três controles positivos** (104 e 105). Sem eles, "COST-2 passou", "END-1 passou" e "END-4 passou" não distinguem a guarda funcionando de teste sem força. |
 | `07-whatsapp-multiprovider.sql` | MP-1..18 + MP-5b/5c: backfill, CHECK/uniqueness, Vault RPC, claim fence/double-click, intenção/cutover, status Z-API/UazAPI, provider correto no ledger, dedupe por provider e ACL estática. |
 | `08-whatsapp-conversation-parity.sql` | CP: append idempotente com `last_message_at` monotônico, mensagem humana + handoff/lock atômicos, resolver de conversa serializado, validação de shape/tenant, liberação cercada do claim, cutover fail-closed sem prova de eco e ACL. |
-| `09a-advisor-bootstrap.sql` | O que a sequência do advisor precisa e o `00-bootstrap.sql` não tem: `unit_members`, `customers`, `reservations`, `waitlist`, `settings`, `is_public` nas duas tabelas de tenancy, `auth.uid()` lendo as duas formas de GUC, e as **sete funções extraídas verbatim de produção** (os 3 helpers + as 4 SECURITY DEFINER que os chamam pelo nome, na forma PRÉ-106). Substitui o `02-seed.sql` nesta sequência — o `02` insere em `whatsapp_instances`, que só existe depois da 087. |
-| `09-advisor-hardening.sql` | ACL-1..ACL-5 da migration 106: policy TO PUBLIC sobrevivendo ao `SET SCHEMA`, os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, e idempotência medida **através de duas execuções** do arquivo. |
+| `09a-advisor-bootstrap.sql` | O que a sequência do advisor precisa e o `00-bootstrap.sql` não tem: `unit_members`, `customers`, `reservations`, `waitlist`, `settings`, `is_public` nas duas tabelas de tenancy, `auth.uid()` lendo as duas formas de GUC, e as **oito funções extraídas verbatim de produção** (os 3 helpers, as 4 SECURITY DEFINER que os chamam pelo nome — na forma PRÉ-106 — e `next_waitlist_code`, que `enter_waitlist` chama). Reproduz também a ACL de produção de cada uma, revogando de PUBLIC antes de conceder: ACL local mais larga que a real esvaziaria o snapshot de `proacl` do ACL-5. Substitui o `02-seed.sql` nesta sequência — o `02` insere em `whatsapp_instances`, que só existe depois da 087. |
+| `09-advisor-hardening.sql` | ACL-1..ACL-5 + ACL-1b da migration 106: policy TO PUBLIC sobrevivendo ao `SET SCHEMA`, os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, idempotência medida **através de duas execuções** do arquivo, e o lado negativo (`ACL-1b`): não-membro vê zero e tenant cruzado não vaza — sem ele, ACL-1 passaria contra um helper que devolvesse TRUE sempre. |
 | `10-controles-106.sql` | Os dois **controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies. |
 
 ## Rodar
@@ -95,7 +95,19 @@ tem relação nenhuma com produção nem com o Supabase do projeto.
 ### Sequência da migration 106 (advisor)
 
 Banco próprio e independente do `fase6c` — **não usa o `02-seed.sql`**, que
-insere em `whatsapp_instances` e portanto exigiria a 087.
+insere em `whatsapp_instances` e portanto exigiria a 087. O `09` declara `t_res`
+com `ord int primary key`, enquanto o `03` e o `05` declaram sem chave primária:
+os dois conjuntos de arquivos **não são intercambiáveis num mesmo banco**, e é
+por isso que esta sequência tem banco próprio.
+
+> **Ordem de deploy em produção.** As quatro Edge Functions da Task 2
+> (`create-manual-reservation`, `update-reservation`, `send-cancellation`,
+> `send-manual-message`) precisam estar deployadas e verificadas **antes** de a
+> 106 ser aplicada. Elas chamavam `rpc("is_unit_member")`, que deixa de existir
+> em `public`; com a versão antiga em memória, o lojista leva 403 na reserva
+> manual, na edição de reserva, no aviso de cancelamento e na mensagem manual.
+> Essa metade-aplicada é invisível no SQL — daí a nota estar aqui e no cabeçalho
+> da migration.
 
 ```bash
 "$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists advisor106
@@ -110,22 +122,25 @@ P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
 # na criação da policy de acl_probe. É o RED que dá sentido ao GREEN.
 P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # esperado: ERROR
 
-P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # 1a passada
 # ACL-5 mede idempotência ATRAVÉS DE DUAS EXECUÇÕES: a 1a grava o snapshot de
 # `proacl` em t_acl_snap, a 2a compara. Reaplicar a 106 no meio é o que está
 # sendo medido — as duas leituras num único `do $$` veriam o mesmo estado.
-P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # 2a passada
 
 "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 \
   -f supabase/tests/local-preflight/10-controles-106.sql   # SEM ON_ERROR_STOP
 # O 10 desfaz a reescrita de enter_waitlist de propósito — reaplicar a 106
 # restaura a versão real:
-P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 
-P -c "select ord, caso, veredito from t_res order by ord;"   # 7 linhas, todas OK
+P -c "select ord, caso, veredito from t_res order by ord;"   # 8 linhas, todas OK
 ```
+
+O ordinal 8 é o `ACL-1b`, e ele fica depois dos controles porque 6 e 7 são os
+ordinais dos controles no roteiro da fase — ordinal de caso não se renumera.
 
 ## O que os dois controles do `04` fazem
 

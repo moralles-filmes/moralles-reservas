@@ -16,14 +16,24 @@
 -- com a função — e o PostgREST só expõe `public`, então o oráculo fecha sem que
 -- nenhuma policy perceba.
 --
--- SOBRE O `grant usage on schema` ABAIXO. Ele NÃO é o que sustenta as policies.
--- Expressão de policy fica guardada no catálogo já resolvida por OID, então
--- nenhum nome é procurado na hora da consulta e revogar USAGE do schema não
--- afeta policy nenhuma — medido no CONTROLE-7 de 10-controles-106.sql, que
--- mostra as duas metades lado a lado: USAGE revogado não muda nada, EXECUTE
--- revogado estoura. O USAGE existe para as chamadas POR NOME que continuam
--- existindo (service_role em worker/RPC, SQL futuro, o `create or replace` das
--- quatro funções abaixo) — é defesa em profundidade, não a trava.
+-- SOBRE O `grant usage on schema` ABAIXO: É DEFENSIVO, NÃO LOAD-BEARING.
+-- Quem sustenta a avaliação das policies é o EXECUTE, conferido por OID em tempo
+-- de execução e que viaja com a função; USAGE de schema é consultado apenas em
+-- caminho de RESOLUÇÃO DE NOME, e expressão de policy guardada no catálogo nunca
+-- toma esse caminho. Medido no CONTROLE-7 de 10-controles-106.sql, que mostra as
+-- duas metades lado a lado: USAGE revogado não muda nada, EXECUTE revogado
+-- estoura 42501.
+--
+-- Nenhum caller conhecido hoje resolve estes helpers PELO NOME como `anon` ou
+-- `authenticated`: as quatro referências por nome que existem estão dentro de
+-- funções SECURITY DEFINER, e lá o nome resolve como o DEFINER, não como quem
+-- chama. O grant é mantido para não transformar em `permission denied for schema
+-- app_private` algum caminho de resolução de nome que a varredura de `pg_depend`
+-- + `prosrc` não enxerga — SQL dinâmico dentro de função SECURITY INVOKER, ou
+-- expressão de default avaliada em runtime. Ele NÃO é mantido porque um caller
+-- conhecido precise dele. Do outro lado a conta é barata: `anon` não tem caminho
+-- de SQL direto neste banco e o PostgREST não vê o schema, então é acesso de
+-- resolução de nome que ele nunca chega a exercer.
 --
 -- O QUE TORNA ESTA MIGRATION PERIGOSA SE COPIADA PELA METADE. Quatro funções
 -- SECURITY DEFINER chamam os helpers PELO NOME dentro do corpo. Em plpgsql o
@@ -35,13 +45,28 @@
 --
 -- As policies referenciam a função por OID, não por nome, então elas NÃO
 -- precisam ser reescritas — provado em ACL-1 do pré-voo local.
+--
+-- ORDEM DE DEPLOY — LEIA ANTES DE RODAR `db push`. As quatro Edge Functions da
+-- Task 2 (`create-manual-reservation`, `update-reservation`, `send-cancellation`,
+-- `send-manual-message`) precisam estar DEPLOYADAS E VERIFICADAS em produção
+-- ANTES desta migration. Elas chamavam `rpc("is_unit_member")`, que deixa de
+-- existir em `public` aqui; com a versão antiga ainda em memória, o lojista leva
+-- 403 na reserva manual, na edição de reserva, no aviso de cancelamento e na
+-- mensagem manual. É a outra metade-aplicada desta fase, e é invisível no SQL.
 
 begin;
 
 create schema if not exists app_private;
 comment on schema app_private is
   'Helpers de RLS e utilitários internos. NUNCA exposto ao PostgREST: expor '
-  'reabre os lints 0028/0029 do Security Advisor e o oráculo de membership.';
+  'reabre os lints 0028/0029 do Security Advisor e o oráculo de membership. '
+  'REGRA PARA FUNÇÃO NOVA AQUI: ela nasce com EXECUTE implícito para PUBLIC (o '
+  '`CREATE FUNCTION` concede), e aí passa a ser chamável PELO NOME por quem tem '
+  'USAGE no schema. Portanto revogue explicitamente — `revoke all on function '
+  '<assinatura completa> from public, anon, authenticated;` — e só então conceda '
+  'ao papel mínimo, exatamente como se exige de função em `public`. Não confie em '
+  '`alter default privileges ... revoke ... from public`: nesta plataforma isso é '
+  'no-op silencioso (medido; ver docs/hotfix-acl/).';
 
 -- PUBLIC não tem privilégio em schema novo por default; o revoke é explícito
 -- para que um `alter default privileges` futuro não abra o schema em silêncio.

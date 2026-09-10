@@ -7,9 +7,11 @@
 -- por isso a sequência do advisor NÃO usa o `02`. O que falta está aqui, e nada
 -- aqui altera arquivo compartilhado com a outra sequência.
 --
--- ORIGEM DE CADA OBJETO. As sete funções abaixo foram **extraídas verbatim de
+-- ORIGEM DE CADA OBJETO. As OITO funções abaixo foram **extraídas verbatim de
 -- produção** via `pg_get_functiondef(oid)` (projeto gbabxcrntkwgblgqsiit,
--- 2026-09-10), na mesma disciplina que o `01-audit.sql` declara no cabeçalho.
+-- 2026-09-10) — os 3 helpers, as 4 SECURITY DEFINER que os chamam pelo nome e
+-- `next_waitlist_code`, que `enter_waitlist` chama — na mesma disciplina que o
+-- `01-audit.sql` declara no cabeçalho.
 -- Isso é o que dá força ao CONTROLE-6: ele reintroduz `public.is_*` num corpo
 -- REAL. Corpo parafraseado provaria apenas que a paráfrase quebra.
 -- As tabelas foram conferidas coluna a coluna contra
@@ -57,6 +59,7 @@ create table if not exists customers (
   phone                    text not null,
   email                    text,
   emails                   jsonb not null default '[]'::jsonb,
+  birthday                 date,
   allergies                text,
   dietary_restrictions     text,
   vip_notes                text,
@@ -72,6 +75,7 @@ create table if not exists reservations (
   unit_id          uuid not null references units(id) on delete cascade,
   customer_id      uuid not null references customers(id) on delete cascade,
   status           text not null default 'pending',
+  party_size       integer not null,
   date             date not null,
   time             time without time zone not null,
   reservation_code text not null,
@@ -477,12 +481,26 @@ begin
 end;
 $function$;
 
--- Grants que produção tem nas quatro (o que as põe nos lints 0028/0029).
+-- ACL que produção tem nas quatro (o que as põe nos lints 0028/0029) e em
+-- `next_waitlist_code` (que NÃO está nos lints, justamente por não ter grant
+-- para anon/authenticated). O `revoke ... from public` antes de cada grant não é
+-- cerimônia: `CREATE FUNCTION` concede EXECUTE a PUBLIC por default, e sem
+-- revogar a ACL local ficaria MAIS LARGA que a de produção — o que esvaziaria o
+-- sentido do snapshot de `proacl` do ACL-5 e do controle de ACL em geral.
+revoke all on function public.enter_waitlist(uuid, text, text, integer, text, text, time without time zone)
+  from public;
+revoke all on function public.anonymize_customer(uuid)                            from public;
+revoke all on function public.get_customer_stats_bulk(uuid[], uuid)               from public;
+revoke all on function public.get_undelivered_notifications(uuid, timestamptz)    from public;
+revoke all on function public.next_waitlist_code(uuid)                            from public;
+
 grant execute on function public.enter_waitlist(uuid, text, text, integer, text, text, time without time zone)
   to anon, authenticated, service_role;
-grant execute on function public.anonymize_customer(uuid)                    to authenticated, service_role;
-grant execute on function public.get_customer_stats_bulk(uuid[], uuid)       to authenticated, service_role;
+grant execute on function public.anonymize_customer(uuid)                         to authenticated, service_role;
+grant execute on function public.get_customer_stats_bulk(uuid[], uuid)            to authenticated, service_role;
 grant execute on function public.get_undelivered_notifications(uuid, timestamptz) to authenticated, service_role;
+grant execute on function public.next_waitlist_code(uuid)                         to service_role;
+
 grant select on waitlist to anon, authenticated;
 
 -- ─── Seed ────────────────────────────────────────────────────────────────────
@@ -490,26 +508,48 @@ grant select on waitlist to anon, authenticated;
 -- eles. NADA aqui depende de whatsapp_instances — é por isso que a sequência do
 -- advisor dispensa o 02.
 insert into auth.users (id, email) values
-  ('11111111-1111-1111-1111-111111111111', 'membro@teste.local')
+  ('11111111-1111-1111-1111-111111111111', 'membro-a@teste.local'),
+  -- Membro da SEGUNDA organização: alvo do lado cross-tenant do ACL-1b.
+  ('22222222-2222-2222-2222-222222222222', 'membro-b@teste.local'),
+  -- Usuário SEM nenhuma linha em unit_members: alvo do lado negativo do ACL-1b.
+  -- Sem ele, ACL-1 passaria idêntico contra um helper que devolvesse TRUE sempre.
+  ('33333333-3333-3333-3333-333333333333', 'sem-vinculo@teste.local')
 on conflict do nothing;
 
 insert into organizations (id, name, is_public) values
-  ('aaaaaaaa-0000-0000-0000-000000000001', 'Org Advisor', true)
-on conflict (id) do update set is_public = true;
+  ('aaaaaaaa-0000-0000-0000-000000000001', 'Org Advisor A', true),
+  ('aaaaaaaa-0000-0000-0000-000000000002', 'Org Advisor B', false)
+on conflict (id) do nothing;
+update organizations set is_public = true  where id = 'aaaaaaaa-0000-0000-0000-000000000001';
+update organizations set is_public = false where id = 'aaaaaaaa-0000-0000-0000-000000000002';
 
+-- A unidade B é NÃO pública de propósito: os casos ACL-1..4 resolvem a unidade
+-- por `where is_public limit 1`, e uma segunda unidade pública tornaria essa
+-- escolha não-determinística — e o ACL-3 casa a org do cliente com a da unidade.
 insert into units (id, organization_id, name, slug, is_public) values
   ('bbbbbbbb-0000-0000-0000-000000000001',
-   'aaaaaaaa-0000-0000-0000-000000000001', 'Unidade Advisor', 'unidade-advisor', true)
-on conflict (id) do update set is_public = true;
+   'aaaaaaaa-0000-0000-0000-000000000001', 'Unidade Advisor A', 'unidade-advisor-a', true),
+  ('bbbbbbbb-0000-0000-0000-000000000002',
+   'aaaaaaaa-0000-0000-0000-000000000002', 'Unidade Advisor B', 'unidade-advisor-b', false)
+on conflict (id) do nothing;
+update units set is_public = true  where id = 'bbbbbbbb-0000-0000-0000-000000000001';
+update units set is_public = false where id = 'bbbbbbbb-0000-0000-0000-000000000002';
 
 insert into unit_members (user_id, unit_id, role) values
   ('11111111-1111-1111-1111-111111111111',
-   'bbbbbbbb-0000-0000-0000-000000000001', 'gerente')
+   'bbbbbbbb-0000-0000-0000-000000000001', 'gerente'),
+  ('22222222-2222-2222-2222-222222222222',
+   'bbbbbbbb-0000-0000-0000-000000000002', 'gerente')
 on conflict (user_id, unit_id) do nothing;
 
 insert into customers (id, organization_id, name, phone) values
   ('eeeeeeee-0000-0000-0000-000000000001',
-   'aaaaaaaa-0000-0000-0000-000000000001', 'Cliente Advisor', '11999990001')
+   'aaaaaaaa-0000-0000-0000-000000000001', 'Cliente Advisor', '11999990001'),
+  -- Cliente NÃO anonimizado, dedicado ao trecho de get_customer_stats_bulk do
+  -- ACL-3: usar o mesmo cliente que acabou de ser anonimizado acoplaria a
+  -- asserção ao fato de o CTE `allowed` não filtrar `deleted_at`.
+  ('eeeeeeee-0000-0000-0000-000000000004',
+   'aaaaaaaa-0000-0000-0000-000000000001', 'Cliente Stats', '11999990004')
 on conflict (id) do nothing;
 
 -- Uma notificação não entregue, para o painel de Entregas ter o que devolver

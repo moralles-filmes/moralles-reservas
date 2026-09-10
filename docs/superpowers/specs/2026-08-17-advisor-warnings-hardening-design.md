@@ -85,7 +85,7 @@ leitura como negação. O helper novo mantém exatamente isso (fail-closed,
 status em nenhum caminho — trocar 403 por 503 em falha de banco seria melhoria
 defensável, mas é mudança de comportamento e fica fora daqui.
 
-### 3.2 Migration `20260817230000_106_advisor_private_rls_helpers.sql`
+### 3.2 Migration `20260910120000_106_advisor_private_rls_helpers.sql`
 
 Numeração: 106 é o próximo livre (105 é a última numerada); timestamp maior que
 `20260817212500`, a última aplicada.

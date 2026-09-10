@@ -27,7 +27,7 @@
 **Valores exatos, copiados da spec:**
 
 - Schema novo: `app_private`. Não entra na configuração de schemas expostos do PostgREST.
-- Migration da Fase 1: `supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql`
+- Migration da Fase 1: `supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql`
 - Migration da Fase 2: `supabase/migrations/20260817231000_107_drop_dead_rpc_overloads.sql`
 - Assinaturas exatas dos três helpers: `is_unit_member(p_user_id uuid, p_unit_id uuid)`, `is_platform_admin(p_user_id uuid)`, `is_org_member(p_user_id uuid, p_org_id uuid)`.
 - ACL atual, a preservar: `is_unit_member` → `anon`, `authenticated`, `service_role`; `is_platform_admin` → `authenticated`, `service_role`; `is_org_member` → `authenticated`, `service_role`.
@@ -45,7 +45,7 @@
 | `supabase/functions/send-cancellation/index.ts` | **Modificar** (linhas 75-87). Idem. | 1 |
 | `supabase/functions/send-manual-message/index.ts` | **Modificar** (linhas 79-91). Idem. | 1 |
 | `src/lib/authz-ef-guard.test.ts` | **Criar.** Guardrail estático: o padrão `rpc("is_unit_member"…)` não pode voltar. | 1 |
-| `supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql` | **Criar.** Move os 3 helpers e reescreve os 4 corpos que os chamam pelo nome. | 3 |
+| `supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql` | **Criar.** Move os 3 helpers e reescreve os 4 corpos que os chamam pelo nome. | 3 |
 | `supabase/tests/local-preflight/08-advisor-hardening.sql` | **Criar.** ACL-1..ACL-5 (comportamento) num arquivo. | 3 |
 | `supabase/tests/local-preflight/09-controles-106.sql` | **Criar.** CONTROLE-6 e CONTROLE-7, que quebram de propósito. Arquivo separado porque roda **sem** `ON_ERROR_STOP`, como o `04-controles.sql`. | 3 |
 | `scripts/function-acl-allowlist.json` | **Modificar.** Remove `rls_helpers`, acrescenta `advisor_lints` e `_expected_advisor`. | 3, 5, 7 |
@@ -396,7 +396,7 @@ Procurar `authz_member_read_error` / `authz_admin_read_error` nos logs das 4 fun
 ### Task 3: Migration 106 — helpers para `app_private`
 
 **Files:**
-- Create: `supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql`
+- Create: `supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql`
 - Create: `supabase/tests/local-preflight/08-advisor-hardening.sql`
 - Create: `supabase/tests/local-preflight/09-controles-106.sql`
 - Modify: `scripts/function-acl-allowlist.json`
@@ -695,10 +695,10 @@ Fechar a migration com `commit;`.
 P -f supabase/tests/local-preflight/00-bootstrap.sql
 P -f supabase/tests/local-preflight/01-audit.sql
 P -f supabase/tests/local-preflight/02-seed.sql
-P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -f supabase/tests/local-preflight/08-advisor-hardening.sql
 # ACL-5 mede idempotência: reaplicar entre as duas leituras
-P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -c "select ord, caso, veredito from t_res order by ord;"
 ```
 
@@ -710,7 +710,7 @@ Expected: ACL-1..ACL-5 todos `OK`.
 "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 \
   -f supabase/tests/local-preflight/09-controles-106.sql   # SEM ON_ERROR_STOP
 # 09 desfaz a reescrita de propósito — reaplicar a 106 restaura a versão real:
-P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -c "select ord, caso, veredito from t_res order by ord;"
 ```
 
@@ -752,7 +752,7 @@ Rodar os 4 gates `saas-shield-br:*` (`migration-validator`, `rls-auditor`, `tena
 - [ ] **Step 11: Commit**
 
 ```bash
-git add supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql \
+git add supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql \
         supabase/tests/local-preflight/08-advisor-hardening.sql \
         supabase/tests/local-preflight/09-controles-106.sql \
         supabase/tests/local-preflight/README.md \
@@ -1105,7 +1105,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 Na seção **RLS**, uma linha:
 
 ```markdown
-- **Helper de RLS vive em `app_private`, nunca em `public` — e guard de Edge Function usa `hasUnitAccess` de [_shared/authz.ts](supabase/functions/_shared/authz.ts), nunca `rpc("is_unit_member")`.** `public` é exposto ao PostgREST, então o helper virava oráculo de enumeração de membership com a anon key do bundle; e como 24 policies `TO PUBLIC` o chamam, revogar `EXECUTE` faria a query estourar em vez de negar — por isso mover, não revogar. Função nova de policy nasce em `app_private` com `grant usage` para `anon`/`authenticated`. [migration 106](supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql).
+- **Helper de RLS vive em `app_private`, nunca em `public` — e guard de Edge Function usa `hasUnitAccess` de [_shared/authz.ts](supabase/functions/_shared/authz.ts), nunca `rpc("is_unit_member")`.** `public` é exposto ao PostgREST, então o helper virava oráculo de enumeração de membership com a anon key do bundle; e como 24 policies `TO PUBLIC` o chamam, revogar `EXECUTE` faria a query estourar em vez de negar — por isso mover, não revogar. Função nova de policy nasce em `app_private` com `grant usage` para `anon`/`authenticated`. [migration 106](supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql).
 ```
 
 Na seção **Deploy → CI**, uma linha:

@@ -81,7 +81,9 @@ end $$;
 -- Um helper que resolvesse e devolvesse FALSE faria anonymize_customer e
 -- get_customer_stats_bulk falharem silenciosamente (forbidden / zero linhas).
 do $$
-declare v_unit uuid; v_user uuid; v_cust uuid := 'eeeeeeee-0000-0000-0000-000000000003';
+declare v_unit uuid; v_user uuid;
+        v_cust  uuid := 'eeeeeeee-0000-0000-0000-000000000003';  -- descartável, será anonimizado
+        v_stats uuid := 'eeeeeeee-0000-0000-0000-000000000004';  -- vivo, para o stats
         v_n_stats int; v_n_undel int; v_deleted timestamptz;
 begin
   delete from t_res where ord = 3;
@@ -98,7 +100,11 @@ begin
   set local role authenticated;
 
   perform anonymize_customer(v_cust);
-  select count(*) into v_n_stats from get_customer_stats_bulk(array[v_cust], v_unit);
+  -- Cliente DIFERENTE aqui de propósito: alimentar o stats com o cliente que
+  -- acabou de ser anonimizado faria a asserção "exatamente 1 linha" depender de
+  -- o CTE `allowed` não filtrar `deleted_at` — verdade hoje, mas nada a ver com
+  -- a 106. O que se quer medir é `is_org_member` devolvendo TRUE.
+  select count(*) into v_n_stats from get_customer_stats_bulk(array[v_stats], v_unit);
   select count(*) into v_n_undel from get_undelivered_notifications(v_unit, now() - interval '7 days');
 
   reset role;
@@ -154,7 +160,16 @@ declare
 begin
   delete from t_res where ord = 5;
 
-  select count(*), coalesce(string_agg(p.proname || '=' || coalesce(p.proacl::text, '(default)'), '|' order by p.proname), '')
+  -- A ACL é serializada ORDENADA por concessionário, não na ordem em que o
+  -- catálogo guarda: `proacl::text` cru preserva a ordem em que os grants foram
+  -- feitos, e uma reconcessão semanticamente idêntica em outra ordem faria este
+  -- caso reprovar por nada. O que se quer comparar é QUEM tem O QUÊ.
+  select count(*),
+         coalesce(string_agg(
+           p.proname || '=' || coalesce(
+             (select string_agg(a::text, ',' order by a::text) from unnest(p.proacl) a),
+             '(default)'),
+           '|' order by p.proname), '')
     into v_n, v_acl
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'app_private';
@@ -173,4 +188,60 @@ begin
         else 'FALHOU (ACL mudou: ' || v_acl_antes || ' -> ' || v_acl || ')'
       end);
   end if;
+end $$;
+
+-- ─── ACL-1b: o lado NEGATIVO, e o tenant cruzado ────────────────────────────
+-- ACL-1 prova que a policy CONTINUA avaliando; ela passaria idêntica contra um
+-- helper reescrito para devolver TRUE sempre. Este caso é o que fecha essa
+-- lacuna, e ele é uma asserção de isolamento multi-tenant, não de fumaça:
+--   • usuário autenticado SEM linha em `unit_members` vê ZERO;
+--   • membro da unidade A vê a linha de A e NÃO a de B;
+--   • membro da unidade B vê a linha de B e NÃO a de A.
+--
+-- Ordinal 8 porque 6 e 7 são dos controles positivos do `10`, e os ordinais do
+-- roteiro não se renumeram.
+do $$
+declare v_unit_a uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+        v_unit_b uuid := 'bbbbbbbb-0000-0000-0000-000000000002';
+        v_user_a uuid := '11111111-1111-1111-1111-111111111111';
+        v_user_b uuid := '22222222-2222-2222-2222-222222222222';
+        v_sem    uuid := '33333333-3333-3333-3333-333333333333';
+        v_n_sem int; v_nota_a text; v_n_a int; v_nota_b text; v_n_b int;
+begin
+  delete from t_res where ord = 8;
+
+  delete from acl_probe;
+  insert into acl_probe (unit_id, nota) values (v_unit_a, 'linha da unidade A');
+  insert into acl_probe (unit_id, nota) values (v_unit_b, 'linha da unidade B');
+
+  -- 1) sem vínculo nenhum
+  perform set_config('request.jwt.claims', json_build_object('sub', v_sem)::text, true);
+  set local role authenticated;
+  select count(*) into v_n_sem from acl_probe;
+  reset role;
+
+  -- 2) membro da unidade A
+  perform set_config('request.jwt.claims', json_build_object('sub', v_user_a)::text, true);
+  set local role authenticated;
+  select count(*), min(nota) into v_n_a, v_nota_a from acl_probe;
+  reset role;
+
+  -- 3) membro da unidade B
+  perform set_config('request.jwt.claims', json_build_object('sub', v_user_b)::text, true);
+  set local role authenticated;
+  select count(*), min(nota) into v_n_b, v_nota_b from acl_probe;
+  reset role;
+
+  insert into t_res values (8, 'ACL-1b nao-membro ve zero, tenant cruzado nao vaza',
+    case
+      when v_n_sem <> 0 then 'FALHOU (sem vinculo viu ' || v_n_sem || ' linha(s))'
+      when v_n_a <> 1 or v_nota_a <> 'linha da unidade A'
+        then 'FALHOU (membro A viu ' || v_n_a || ' linha(s): ' || coalesce(v_nota_a, '<nada>') || ')'
+      when v_n_b <> 1 or v_nota_b <> 'linha da unidade B'
+        then 'FALHOU (membro B viu ' || v_n_b || ' linha(s): ' || coalesce(v_nota_b, '<nada>') || ')'
+      else 'OK'
+    end);
+exception when others then
+  reset role;
+  insert into t_res values (8, 'ACL-1b nao-membro ve zero, tenant cruzado nao vaza', 'FALHOU: ' || sqlerrm);
 end $$;

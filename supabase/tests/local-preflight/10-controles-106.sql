@@ -52,6 +52,12 @@ begin
     insert into t_res values (6, 'CONTROLE-6 corpo sem reescrita',
       'OK (estourou como esperado: ' || v_err || ')');
   end;
+-- Handler do bloco EXTERNO: sem ele, uma falha na reconstrução (o `select` do
+-- functiondef, o `execute`, a resolução da unidade) deixaria o ordinal 6
+-- simplesmente AUSENTE de t_res — e ausência não se lê como reprovação sem
+-- alguém contar as linhas.
+exception when others then
+  insert into t_res values (6, 'CONTROLE-6 corpo sem reescrita', 'FALHOU: ' || sqlerrm);
 end $$;
 
 -- ═══ CONTROLE-7 — qual grant é load-bearing para as policies ═══
