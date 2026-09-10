@@ -136,6 +136,7 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 - Mudança em `availability.ts`, logs/conversas, resolver de customer, telefone, providers WhatsApp, billing/entitlements/flags/gates ou cores financeiros deve seguir exatamente a matriz de redeploy do `CLAUDE.md`; deploy parcial deixa bundle antigo em memória.
 - Mudança no registry/credenciais WhatsApp redeploya `webhook-whatsapp`, as quatro EFs de envio (`send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-manual-message`), `manage-channels`, `whatsapp-health`, `manage-organizations` e `process-whatsapp-channel-health`; lifecycle/cliente UazAPI redeploya `manage-channels` e valida admin+portal juntos.
 - `_shared/whatsapp-meta-batch-core.ts` tem `webhook-whatsapp` como único consumidor; mudança nele redeploya essa EF e mantém fixtures de lote/contato por remetente.
+- **`authz.ts`** (guard "membro da unit OU platform_admin", consulta direta a `unit_members`/`platform_admins` em vez de RPC) → `create-manual-reservation`, `update-reservation`, `send-cancellation`, `send-manual-message`. Deploy parcial deixa uma EF chamando `rpc("is_unit_member"/"is_platform_admin")`, que a migration 106 removeu de `public` — 403 até para o dono da loja.
 - Frontend em `main` faz deploy automático. Edge Function usa `supabase functions deploy <nome>` só depois de migrations/flags/segredos compatíveis estarem aplicados na ordem segura.
 
 ---

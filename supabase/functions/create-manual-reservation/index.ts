@@ -20,6 +20,7 @@ import { genRequestId, jsonLog, sanitizePhone } from "../_shared/security.ts";
 import { reserveSlot } from "../_shared/availability.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
+import { hasUnitAccess } from "../_shared/authz.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -128,11 +129,7 @@ serve(async (req) => {
 
     // Autorização: membro da unit OU platform_admin. useCurrentUnit.ts fabrica
     // pseudo-membership "owner" pra super-admin; sem o paralelo, write é bloqueada.
-    const [memberResult, adminResult] = await Promise.all([
-      supabase.rpc("is_unit_member", { p_user_id: user.id, p_unit_id: unitId }),
-      supabase.rpc("is_platform_admin", { p_user_id: user.id }),
-    ]);
-    if (!memberResult.data && !adminResult.data) {
+    if (!(await hasUnitAccess(supabase, user.id, unitId))) {
       jsonLog("warn", { requestId, evt: "manual_reservation_forbidden", unitId, userId: user.id });
       return json({ success: false, reason: "forbidden", message: "Sem permissão nesta unidade." }, 403);
     }

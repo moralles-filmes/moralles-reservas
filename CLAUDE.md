@@ -548,6 +548,7 @@ Checklist de redeploy quando `_shared/X.ts` muda:
 - **`whatsapp-partner-simulator-core.ts`** (núcleo puro) → `manage-whatsapp-instances`.
 - **`whatsapp-subscription-resolver-core.ts`** (núcleo puro, testado em [src/lib/whatsapp-subscription-resolver-core.test.ts](src/lib/whatsapp-subscription-resolver-core.test.ts)) → `process-whatsapp-enforcement`, `process-whatsapp-instance-cycles`, `manage-whatsapp-instances`, `manage-channels` (os quatro por import DIRETO) + todas as consumidoras de `whatsapp-service-gate.ts` (que passou a importá-lo). Decide QUAL assinatura financia o WhatsApp (legada por categoria, plano novo que declara `whatsapp`, transição entre as duas, ambiguidade); redeploy parcial faz gate de envio e worker de enforcement discordarem sobre quem está inadimplente — a divergência que o guardrail estático prova não existir no código.
 - **`whatsapp-connection-allowance-core.ts`** (núcleo puro, testado em [src/lib/whatsapp-connection-allowance-core.test.ts](src/lib/whatsapp-connection-allowance-core.test.ts)) → `manage-whatsapp-instances`, `manage-channels`. As duas portas do teto de conexões; deployar uma só deixa a outra autorizando custo novo com a política velha em memória.
+- **`authz.ts`** → `create-manual-reservation`, `update-reservation`, `send-cancellation`, `send-manual-message`. Guard de unidade; deploy parcial deixa uma EF chamando RPC que a 106 já removeu de `public` — 403 para o dono da loja.
 
 Worker/EF novo que importe um helper aqui = atualizar este checklist no mesmo PR.
 
