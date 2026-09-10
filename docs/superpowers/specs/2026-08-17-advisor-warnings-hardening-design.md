@@ -92,7 +92,9 @@ Numeração: 106 é o próximo livre (105 é a última numerada); timestamp maio
 
 ```sql
 create schema if not exists app_private;
-grant usage on schema app_private to anon, authenticated;
+revoke all on schema app_private from public;
+revoke all on schema app_private from anon, authenticated;
+grant usage on schema app_private to service_role;
 
 alter function public.is_unit_member(uuid, uuid)    set schema app_private;
 alter function public.is_platform_admin(uuid)       set schema app_private;
@@ -101,8 +103,17 @@ alter function public.is_org_member(uuid, uuid)     set schema app_private;
 
 - `app_private` **não** entra na configuração de schemas expostos do PostgREST.
   Expor o schema reabriria o mesmo lint — é o ponto inteiro da mudança.
-- `grant usage ... to anon, authenticated` é **load-bearing**, não higiene: as 24
-  policies `TO PUBLIC` avaliam o helper sob o papel de quem consulta.
+- `USAGE` de schema **não** é load-bearing, e por isso `anon`/`authenticated`
+  **não** o recebem. As 24 policies `TO PUBLIC` avaliam o helper sob o papel de
+  quem consulta, mas o que é conferido ali é o `EXECUTE` da função, por
+  identificador já resolvido, em tempo de execução — `USAGE` só governa resolução
+  de NOME, que expressão de policy guardada no catálogo nunca faz. Medido no
+  pré-voo: a suíte inteira roda com `anon` sem `USAGE` e ACL-1 (policy
+  `TO PUBLIC`), ACL-1b (tenant cruzado) e ACL-4 (`anon` na fila ponta a ponta)
+  ficam verdes. Negá-lo é defesa em profundidade: se `app_private` for exposto à
+  API por engano, `is_unit_member` já carrega `EXECUTE` para `anon`, e a ausência
+  de `USAGE` é a única tranca que ainda segura o oráculo. `service_role` mantém
+  `USAGE` porque já é todo-poderoso.
 - As policies referenciam a função por **OID**, então `SET SCHEMA` é transparente
   para elas. Isso é asserção a **provar no pré-voo** (caso ACL-1), não a assumir.
 - Os grants de `EXECUTE` viajam com a função; nenhum `grant`/`revoke` extra.
@@ -145,7 +156,7 @@ undefined — o hook monta `p_unit_id` condicionalmente. O único consumidor
 ([Clientes.tsx:405](../../../src/pages/gestao/Clientes.tsx)) já passa `unitId`.
 
 Trabalho: tornar `unitId` obrigatório em `useCustomerStats` e gatear o `enabled`
-da query, depois migration `20260817231000_107_drop_dead_rpc_overloads.sql` com
+da query, depois migration `20260910121000_107_drop_dead_rpc_overloads.sql` com
 os dois `drop function`. Migration separada da 106 de propósito — as duas fases
 têm perfil de risco diferente e devem poder ser revertidas em separado.
 
@@ -183,7 +194,7 @@ verdes, e cada guarda nova entra com **controle positivo**: reintroduzir o
 defeito e ver o teste falhar é o que distingue "a guarda funciona" de "o teste
 não testa nada".
 
-### 6.1 Pré-voo local — `supabase/tests/local-preflight/08-advisor-hardening.sql`
+### 6.1 Pré-voo local — `supabase/tests/local-preflight/09-advisor-hardening.sql`
 
 O harness roda Postgres local descartável, sem Docker e sem `pg_cron`/`pg_net`.
 O `00-bootstrap.sql` já cria os papéis `anon`, `authenticated` e `service_role`,
@@ -201,7 +212,7 @@ projeto real.
 | ACL-5 | Reaplicar a 106 três vezes não muda contagem nem ACL (idempotência). |
 | ACL-6 | Após a 107, a chamada de 2 argumentos de `get_reservation_by_code`/`get_customer_stats` segue funcionando. |
 | **CONTROLE-6** | Aplica o `SET SCHEMA` **sem** reescrever os corpos → `enter_waitlist` **falha** com função inexistente. Reintroduz o defeito central desta fase. Sem ele, "ACL-2 passou" não significa nada. |
-| **CONTROLE-7** | `revoke usage on schema app_private from anon` → a query da policy `TO PUBLIC` **estoura**. Prova que o grant é load-bearing e não decorativo. |
+| **CONTROLE-7** | Duas metades, e a primeira mudou de forma depois de medida. **7a:** afirma a postura entregue — `has_schema_privilege('anon'\|'authenticated', 'app_private', 'usage')` é `false` nas duas —, e quem prova que ela basta são ACL-1/1b/4 verdes ao lado. **7b:** `revoke execute on function app_private.is_unit_member(...) from anon` → a query da policy `TO PUBLIC` **estoura 42501**. É o `EXECUTE` que é load-bearing; revogar o `USAGE` do schema, medido, **não** afeta policy nenhuma — foi o que derrubou a suposição inicial desta spec. |
 | **CONTROLE-8** | Dropar o overload de 2 argumentos por engano → o call site real quebra. Delimita o que a 107 pode dropar com segurança. |
 
 O README do diretório é atualizado com a sequência de execução e com o que cada
@@ -272,7 +283,7 @@ de aplicar.
 
 1. Advisor do projeto em **23 WARN**, com a diferença explicada linha a linha.
 2. `/rest/v1/rpc/is_unit_member` responde 404 para a anon key.
-3. Pré-voo `08-advisor-hardening.sql` verde, com CONTROLE-6/7/8 demonstrando
+3. Pré-voo `09-advisor-hardening.sql` verde, com CONTROLE-6/7/8 demonstrando
    falha ao reintroduzir cada defeito.
 4. `npm run typecheck`, `test`, `lint` verdes; `acl-estatico` verde.
 5. Os 4 gates `saas-shield-br:*` sem bloqueante.

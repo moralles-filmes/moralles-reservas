@@ -28,7 +28,7 @@
 
 - Schema novo: `app_private`. Não entra na configuração de schemas expostos do PostgREST.
 - Migration da Fase 1: `supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql`
-- Migration da Fase 2: `supabase/migrations/20260817231000_107_drop_dead_rpc_overloads.sql`
+- Migration da Fase 2: `supabase/migrations/20260910121000_107_drop_dead_rpc_overloads.sql`
 - Assinaturas exatas dos três helpers: `is_unit_member(p_user_id uuid, p_unit_id uuid)`, `is_platform_admin(p_user_id uuid)`, `is_org_member(p_user_id uuid, p_org_id uuid)`.
 - ACL atual, a preservar: `is_unit_member` → `anon`, `authenticated`, `service_role`; `is_platform_admin` → `authenticated`, `service_role`; `is_org_member` → `authenticated`, `service_role`.
 - Contagem esperada de WARN: **29** hoje → **25** após a Fase 1 → **23** após a Fase 2.
@@ -46,12 +46,13 @@
 | `supabase/functions/send-manual-message/index.ts` | **Modificar** (linhas 79-91). Idem. | 1 |
 | `src/lib/authz-ef-guard.test.ts` | **Criar.** Guardrail estático: o padrão `rpc("is_unit_member"…)` não pode voltar. | 1 |
 | `supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql` | **Criar.** Move os 3 helpers e reescreve os 4 corpos que os chamam pelo nome. | 3 |
-| `supabase/tests/local-preflight/08-advisor-hardening.sql` | **Criar.** ACL-1..ACL-5 (comportamento) num arquivo. | 3 |
-| `supabase/tests/local-preflight/09-controles-106.sql` | **Criar.** CONTROLE-6 e CONTROLE-7, que quebram de propósito. Arquivo separado porque roda **sem** `ON_ERROR_STOP`, como o `04-controles.sql`. | 3 |
+| `supabase/tests/local-preflight/09a-advisor-bootstrap.sql` | **Criar.** Tenancy, `auth.uid()` e as 8 funções extraídas verbatim de produção que o `00-bootstrap.sql` não tem. Substitui o `02-seed.sql` nesta sequência. | 3 |
+| `supabase/tests/local-preflight/09-advisor-hardening.sql` | **Criar.** ACL-1..ACL-5 (permitir) + ACL-1b e ACL-3b/3c/3d (negar) num arquivo. | 3 |
+| `supabase/tests/local-preflight/10-controles-106.sql` | **Criar.** CONTROLE-6, 7, 9 e 10, que quebram de propósito. Arquivo separado porque roda **sem** `ON_ERROR_STOP`, como o `04-controles.sql`. Ordinal 8 reservado ao `11-overloads-107.sql`. | 3 |
 | `scripts/function-acl-allowlist.json` | **Modificar.** Remove `rls_helpers`, acrescenta `advisor_lints` e `_expected_advisor`. | 3, 5, 7 |
 | `src/hooks/useCustomers.ts` | **Modificar** (linhas 67-74). `unitId` obrigatório. | 5 |
-| `supabase/migrations/20260817231000_107_drop_dead_rpc_overloads.sql` | **Criar.** Dropa os 2 overloads sem caller. | 5 |
-| `supabase/tests/local-preflight/10-overloads-107.sql` | **Criar.** ACL-6 e CONTROLE-8. | 5 |
+| `supabase/migrations/20260910121000_107_drop_dead_rpc_overloads.sql` | **Criar.** Dropa os 2 overloads sem caller. | 5 |
+| `supabase/tests/local-preflight/11-overloads-107.sql` | **Criar.** ACL-6 e CONTROLE-8. | 5 |
 | `scripts/audit-function-acl.ts` | **Modificar.** Regra 6: equivalente-advisor vs. `_expected_advisor`. | 7 |
 | `scripts/function-acl-allowlist.test.ts` | **Modificar.** Consistência de `_expected_advisor` + controle negativo. | 7 |
 | `supabase/tests/local-preflight/README.md` | **Modificar.** Sequência de execução dos arquivos novos. | 3, 5 |
@@ -397,8 +398,8 @@ Procurar `authz_member_read_error` / `authz_admin_read_error` nos logs das 4 fun
 
 **Files:**
 - Create: `supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql`
-- Create: `supabase/tests/local-preflight/08-advisor-hardening.sql`
-- Create: `supabase/tests/local-preflight/09-controles-106.sql`
+- Create: `supabase/tests/local-preflight/09-advisor-hardening.sql`
+- Create: `supabase/tests/local-preflight/10-controles-106.sql`
 - Modify: `scripts/function-acl-allowlist.json`
 - Modify: `supabase/tests/local-preflight/README.md`
 
@@ -406,12 +407,12 @@ Procurar `authz_member_read_error` / `authz_admin_read_error` nos logs das 4 fun
 - Consumes: produção sem dependência da RPC (Task 2).
 - Produces: `app_private.is_unit_member(uuid, uuid)`, `app_private.is_platform_admin(uuid)`, `app_private.is_org_member(uuid, uuid)`.
 
-- [ ] **Step 1: Escrever os casos de comportamento — `08-advisor-hardening.sql`**
+- [ ] **Step 1: Escrever os casos de comportamento — `09-advisor-hardening.sql`**
 
 Cada caso numa subtransação, veredito em `t_res`, no mesmo padrão de `03-notes-b-c-d.sql`.
 
 ```sql
--- supabase/tests/local-preflight/08-advisor-hardening.sql
+-- supabase/tests/local-preflight/09-advisor-hardening.sql
 --
 -- ACL-1..ACL-5: comportamento da migration 106 contra Postgres real.
 --
@@ -519,10 +520,10 @@ begin
 end $$;
 ```
 
-- [ ] **Step 2: Escrever os controles positivos — `09-controles-106.sql`**
+- [ ] **Step 2: Escrever os controles positivos — `10-controles-106.sql`**
 
 ```sql
--- supabase/tests/local-preflight/09-controles-106.sql
+-- supabase/tests/local-preflight/10-controles-106.sql
 --
 -- Rodar SEM ON_ERROR_STOP: os dois casos quebram de propósito.
 --
@@ -556,27 +557,18 @@ begin
   end;
 end $$;
 
--- CONTROLE-7: o grant de USAGE no schema é load-bearing, não decorativo.
-do $$
-declare v_unit uuid; v_user uuid; v_n int;
-begin
-  revoke usage on schema app_private from anon;
-  select id into v_unit from units limit 1;
-  select user_id into v_user from unit_members where unit_id = v_unit limit 1;
-
-  set local role anon;
-  perform set_config('request.jwt.claims', json_build_object('sub', v_user)::text, true);
-  begin
-    select count(*) into v_n from acl_probe;
-    reset role;
-    insert into t_res values (7, 'CONTROLE-7 usage revogado', 'FALHOU: deveria ter estourado');
-  exception when insufficient_privilege then
-    reset role;
-    insert into t_res values (7, 'CONTROLE-7 usage revogado', 'OK (permission denied como esperado)');
-  end;
-
-  grant usage on schema app_private to anon;
-end $$;
+-- CONTROLE-7: qual privilégio é load-bearing.
+--
+-- ⚠️ ESTE RASCUNHO ESTAVA ERRADO E FOI SUBSTITUÍDO NA IMPLEMENTAÇÃO. Ele revogava
+-- o USAGE do schema esperando `insufficient_privilege`, e MEDIDO contra Postgres
+-- real isso NÃO estoura: expressão de policy fica guardada no catálogo já
+-- resolvida, e USAGE só governa resolução de NOME. O privilégio load-bearing é o
+-- EXECUTE da função. Como escrito aqui, o caso reportaria
+-- "FALHOU: deveria ter estourado" — controle inerte.
+--
+-- A forma entregue tem duas metades: 7a AFIRMA a postura (`anon`/`authenticated`
+-- sem USAGE, que é o que a 106 passou a garantir) e 7b sabota o EXECUTE e vê
+-- 42501. Ver `supabase/tests/local-preflight/10-controles-106.sql`.
 ```
 
 - [ ] **Step 3: Rodar o pré-voo e confirmar que falha**
@@ -591,7 +583,7 @@ P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 -v ON_ERROR
 P -f supabase/tests/local-preflight/00-bootstrap.sql
 P -f supabase/tests/local-preflight/01-audit.sql
 P -f supabase/tests/local-preflight/02-seed.sql
-P -f supabase/tests/local-preflight/08-advisor-hardening.sql
+P -f supabase/tests/local-preflight/09-advisor-hardening.sql
 ```
 
 Expected: FAIL já na criação da policy de `acl_probe` — `schema "app_private" does not exist`. A migration ainda não existe.
@@ -612,8 +604,9 @@ Cabeçalho e move:
 -- POR QUE NÃO REVOGAR EM VEZ DE MOVER. `is_unit_member` é referenciado por 42
 -- policies, 24 delas TO PUBLIC. Policy é avaliada com o privilégio de quem
 -- consulta: revogar EXECUTE de anon faz a query ESTOURAR com permission denied,
--- não negar linha. O grant é load-bearing, e é por isso que `grant usage on
--- schema app_private to anon` abaixo não é higiene.
+-- não negar linha. É o EXECUTE que é load-bearing — o USAGE do schema NÃO é
+-- (medido), e por isso `anon`/`authenticated` não o recebem: negá-lo é a última
+-- tranca se `app_private` for exposto à API por engano.
 --
 -- O QUE TORNA ESTA MIGRATION PERIGOSA SE COPIADA PELA METADE. Quatro funções
 -- SECURITY DEFINER chamam os helpers PELO NOME dentro do corpo. Em plpgsql o
@@ -623,8 +616,8 @@ Cabeçalho e move:
 -- transação de propósito.
 --
 -- As policies referenciam a função por OID, não por nome, então elas NÃO
--- precisam ser reescritas — provado em ACL-1 do pré-voo local, com CONTROLE-7
--- mostrando o que acontece quando o USAGE falta.
+-- precisam ser reescritas — provado em ACL-1 do pré-voo local, com CONTROLE-7b
+-- mostrando que o que faz a query estourar é o EXECUTE faltando, não o USAGE.
 
 begin;
 
@@ -633,7 +626,12 @@ comment on schema app_private is
   'Helpers de RLS e utilitários internos. NUNCA exposto ao PostgREST: expor '
   'reabre os lints 0028/0029 do Security Advisor e o oráculo de membership.';
 
-grant usage on schema app_private to anon, authenticated, service_role;
+-- Os revokes são load-bearing na REAPLICAÇÃO: `create schema if not exists` é
+-- no-op em banco existente, então sem eles um banco que carregue a postura larga
+-- de um rascunho anterior a manteria para sempre.
+revoke all on schema app_private from public;
+revoke all on schema app_private from anon, authenticated;
+grant usage on schema app_private to service_role;
 
 -- Idempotente: só move o que ainda estiver em `public`.
 do $$
@@ -696,7 +694,7 @@ P -f supabase/tests/local-preflight/00-bootstrap.sql
 P -f supabase/tests/local-preflight/01-audit.sql
 P -f supabase/tests/local-preflight/02-seed.sql
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
-P -f supabase/tests/local-preflight/08-advisor-hardening.sql
+P -f supabase/tests/local-preflight/09-advisor-hardening.sql
 # ACL-5 mede idempotência: reaplicar entre as duas leituras
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -c "select ord, caso, veredito from t_res order by ord;"
@@ -708,7 +706,7 @@ Expected: ACL-1..ACL-5 todos `OK`.
 
 ```bash
 "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 \
-  -f supabase/tests/local-preflight/09-controles-106.sql   # SEM ON_ERROR_STOP
+  -f supabase/tests/local-preflight/10-controles-106.sql   # SEM ON_ERROR_STOP
 # 09 desfaz a reescrita de propósito — reaplicar a 106 restaura a versão real:
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -c "select ord, caso, veredito from t_res order by ord;"
@@ -753,8 +751,8 @@ Rodar os 4 gates `saas-shield-br:*` (`migration-validator`, `rls-auditor`, `tena
 
 ```bash
 git add supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql \
-        supabase/tests/local-preflight/08-advisor-hardening.sql \
-        supabase/tests/local-preflight/09-controles-106.sql \
+        supabase/tests/local-preflight/09-advisor-hardening.sql \
+        supabase/tests/local-preflight/10-controles-106.sql \
         supabase/tests/local-preflight/README.md \
         scripts/function-acl-allowlist.json
 git commit -m "fix(security): helpers de RLS saem do schema exposto (migration 106)
@@ -819,8 +817,8 @@ Rodar o Security Advisor do projeto. Expected: **25 WARN** (29 − 4). Se vier o
 
 **Files:**
 - Modify: `src/hooks/useCustomers.ts:67-74`
-- Create: `supabase/migrations/20260817231000_107_drop_dead_rpc_overloads.sql`
-- Create: `supabase/tests/local-preflight/10-overloads-107.sql`
+- Create: `supabase/migrations/20260910121000_107_drop_dead_rpc_overloads.sql`
+- Create: `supabase/tests/local-preflight/11-overloads-107.sql`
 - Modify: `scripts/function-acl-allowlist.json`
 - Modify: `supabase/tests/local-preflight/README.md`
 
@@ -831,7 +829,7 @@ Rodar o Security Advisor do projeto. Expected: **25 WARN** (29 − 4). Se vier o
 - [ ] **Step 1: Escrever ACL-6 e CONTROLE-8**
 
 ```sql
--- supabase/tests/local-preflight/10-overloads-107.sql
+-- supabase/tests/local-preflight/11-overloads-107.sql
 --
 -- ACL-6 e CONTROLE-8: a 107 dropa DOIS overloads sem caller e não pode
 -- encostar nos de 2 argumentos, que são os que a UI usa.
@@ -937,8 +935,8 @@ Expected: verdes. O typecheck é quem pega qualquer outro caller de `useCustomer
 
 ```bash
 git add src/hooks/useCustomers.ts \
-        supabase/migrations/20260817231000_107_drop_dead_rpc_overloads.sql \
-        supabase/tests/local-preflight/10-overloads-107.sql \
+        supabase/migrations/20260910121000_107_drop_dead_rpc_overloads.sql \
+        supabase/tests/local-preflight/11-overloads-107.sql \
         supabase/tests/local-preflight/README.md \
         scripts/function-acl-allowlist.json
 git commit -m "fix(security): dropa dois overloads de RPC sem caller (migration 107)
@@ -1105,7 +1103,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 Na seção **RLS**, uma linha:
 
 ```markdown
-- **Helper de RLS vive em `app_private`, nunca em `public` — e guard de Edge Function usa `hasUnitAccess` de [_shared/authz.ts](supabase/functions/_shared/authz.ts), nunca `rpc("is_unit_member")`.** `public` é exposto ao PostgREST, então o helper virava oráculo de enumeração de membership com a anon key do bundle; e como 24 policies `TO PUBLIC` o chamam, revogar `EXECUTE` faria a query estourar em vez de negar — por isso mover, não revogar. Função nova de policy nasce em `app_private` com `grant usage` para `anon`/`authenticated`. [migration 106](supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql).
+- **Helper de RLS vive em `app_private`, nunca em `public` — e guard de Edge Function usa `hasUnitAccess` de [_shared/authz.ts](supabase/functions/_shared/authz.ts), nunca `rpc("is_unit_member")`.** `public` é exposto ao PostgREST, então o helper virava oráculo de enumeração de membership com a anon key do bundle; e como 24 policies `TO PUBLIC` o chamam, revogar `EXECUTE` faria a query estourar em vez de negar — por isso mover, não revogar. Helper novo de policy nasce em `app_private` com `EXECUTE` para o papel mínimo e **sem** `USAGE` de schema para `anon`/`authenticated`: a policy avalia pelo `EXECUTE` conferido por identificador, então o `USAGE` não é load-bearing e negá-lo é a última tranca se o schema for exposto à API por engano. [migration 106](supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql).
 ```
 
 Na seção **Deploy → CI**, uma linha:

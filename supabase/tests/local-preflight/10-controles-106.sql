@@ -1,13 +1,26 @@
--- DOIS CONTROLES POSITIVOS da migration 106.
+-- QUATRO CONTROLES POSITIVOS da migration 106 — ordinais 6, 7, 9 e 10.
 --
--- Rodar SEM ON_ERROR_STOP: os dois casos quebram de propósito.
+-- Rodar SEM ON_ERROR_STOP: os casos de sabotagem quebram de propósito.
 --
--- Sem eles, "ACL-2 passou" e "ACL-1 passou" não distinguem a guarda funcionando
--- de teste sem força. CONTROLE-6 reintroduz o defeito central desta fase;
--- CONTROLE-7 responde QUAL grant sustenta as policies.
+-- Sem eles, "ACL-x passou" não distingue a guarda funcionando de teste sem
+-- força:
+--   CONTROLE-6   reintroduz o defeito central desta fase (qualificador do helper
+--                num corpo plpgsql) e vê a fila pública quebrar.
+--   CONTROLE-7   responde QUAL privilégio sustenta as policies — 7a afirma a
+--                postura entregue (sem USAGE para papel público), 7b sabota o
+--                EXECUTE e vê 42501.
+--   CONTROLE-9   sabota `is_unit_member` e vê o ACL-1b reprovar.
+--   CONTROLE-10  sabota `is_org_member` e vê o agregado de outro tenant vazar no
+--                ACL-3d.
 --
--- CONTROLE-6 desfaz a reescrita de enter_waitlist. Reaplicar a 106 restaura a
--- versão real — ver o README.
+-- O ordinal 8 está RESERVADO ao controle de overload errado de
+-- `11-overloads-107.sql`, que vive em outro banco — daí o salto de 7 para 9.
+--
+-- RESTORE, e as duas formas dele: CONTROLE-6 desfaz a reescrita de
+-- `enter_waitlist` e é REAPLICAR A 106 que restaura. CONTROLE-9 e CONTROLE-10
+-- sabotam CORPO DE HELPER, e aí a 106 não restaura nada (ela só move o helper,
+-- nunca define o corpo) — cada um restaura de dentro, a partir de
+-- `pg_get_functiondef` capturado antes de sabotar. Ver o README.
 
 -- ═══ CONTROLE-6 — desfaz a reescrita e mostra a fila quebrando ═══
 --
@@ -125,6 +138,16 @@ begin
          then 'OK (anon/authenticated sem usage no schema, e ainda assim ACL-1/1b/4 passam; '
               || 'EXECUTE revogado estoura 42501)'
          else 'FALHOU: 7a postura=' || v_7a || ' / 7b EXECUTE=' || v_7b end);
+-- Handler do bloco EXTERNO, mesma razão do CONTROLE-6: sem ele, falha FORA do
+-- handler interno — o `revoke`/`grant` do 7b, um papel ausente, a resolução da
+-- unidade — deixaria o ordinal 7 simplesmente AUSENTE de t_res, e ausência não se
+-- lê como reprovação sem alguém contar as linhas. Como DDL/GRANT em plpgsql roda
+-- na subtransação do bloco, a falha também desfaz por rollback um EXECUTE que
+-- tivesse sido revogado e não reconcedido.
+exception when others then
+  reset role;
+  insert into t_res values (7, 'CONTROLE-7 EXECUTE e load-bearing, USAGE nao',
+    'FALHOU: ' || sqlerrm || ' (revoke/grant desfeitos por rollback da subtransacao)');
 end $$;
 
 -- ═══ CONTROLE-9 — o predicado de tenant é o que o ACL-1b mede ═══

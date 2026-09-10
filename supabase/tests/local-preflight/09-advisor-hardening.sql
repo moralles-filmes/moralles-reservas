@@ -1,4 +1,18 @@
--- ACL-1..ACL-5: comportamento da migration 106 contra Postgres real.
+-- ACL-1..ACL-5, ACL-1b e ACL-3b/3c/3d: comportamento da migration 106 contra
+-- Postgres real.
+--
+-- Os cinco primeiros são o caminho de PERMITIR (policy sobrevive ao SET SCHEMA,
+-- os quatro corpos reescritos resolvem o helper, `anon` entra na fila,
+-- idempotência). Os quatro últimos são o de NEGAR, acrescentados depois porque
+-- guard só testado no allow não notaria um `is_org_member` trocado por
+-- `is_unit_member` nem um `if not (...)` invertido: ACL-1b (não-membro vê zero e
+-- tenant cruzado não vaza), ACL-3b (anonimização recusa cliente de outra org),
+-- ACL-3c (painel de Entregas recusa não-membro) e ACL-3d (listagem de clientes
+-- não devolve agregado de outra org).
+--
+-- Ordinais casam com o número do NOME, não com a ordem de execução, e por isso
+-- não são contíguos aqui: 1–5, 8, 11, 12, 13. Os ordinais 6, 7, 9 e 10 são dos
+-- controles positivos de `10-controles-106.sql`. Tabela completa no README.
 --
 -- O README deste diretório diz que o harness "não prova RLS, grants, ACL". Isso
 -- descreve o conjunto de arquivos que existia, não um limite do ambiente: o

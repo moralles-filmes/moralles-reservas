@@ -112,12 +112,21 @@ comment on schema app_private is
   '`alter default privileges ... revoke ... from public`: nesta plataforma isso é '
   'no-op silencioso (medido; ver docs/hotfix-acl/). '
   'USAGE NESTE SCHEMA É SÓ DE `service_role`. `anon` e `authenticated` não têm, e '
-  'não devem ganhar: sem USAGE eles não resolvem nome aqui e nem enumeram as '
-  'funções por `information_schema.routines`. A avaliação das policies não depende '
-  'disso — ela usa o EXECUTE da função, conferido por identificador em tempo de '
-  'execução — e a ausência de USAGE é a última tranca que ainda segura o oráculo '
-  'de membership se este schema for exposto à API por engano. Conceder USAGE a '
-  'papel público aqui é regressão de segurança, não conveniência.';
+  'não devem ganhar: sem USAGE eles não CHAMAM nada aqui pelo nome — a tentativa '
+  'morre em `permission denied for schema app_private` (42501). A avaliação das '
+  'policies não depende disso: ela usa o EXECUTE da função, conferido por '
+  'identificador em tempo de execução. E a ausência de USAGE é a última tranca que '
+  'ainda segura o oráculo de membership se este schema for exposto à API por '
+  'engano — `is_unit_member` conserva EXECUTE para `anon`, herdado de antes do '
+  'move. Conceder USAGE a papel público aqui é regressão de segurança, não '
+  'conveniência. '
+  'O QUE NÃO SE FECHA, e não se pretende fechar: nome e assinatura de uma função '
+  'seguem ENUMERÁVEIS por `information_schema.routines` para quem tenha EXECUTE '
+  'nela — a view filtra por `pg_has_role(proowner) OR '
+  'has_function_privilege(EXECUTE)`, sem nenhum predicado de USAGE de schema. '
+  'Medido: `anon` lista 1 rotina daqui (a que tem EXECUTE) e `authenticated` '
+  'lista as 3. É METADADO, não dado — nenhuma linha de `unit_members` sai por aí, '
+  'e chamar continua exigindo USAGE, que é a tranca que importa.';
 
 -- PUBLIC não tem privilégio em schema novo por default; o revoke é explícito
 -- para que um `alter default privileges` futuro não abra o schema em silêncio.
