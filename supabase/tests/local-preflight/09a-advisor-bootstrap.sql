@@ -549,7 +549,13 @@ insert into customers (id, organization_id, name, phone) values
   -- ACL-3: usar o mesmo cliente que acabou de ser anonimizado acoplaria a
   -- asserção ao fato de o CTE `allowed` não filtrar `deleted_at`.
   ('eeeeeeee-0000-0000-0000-000000000004',
-   'aaaaaaaa-0000-0000-0000-000000000001', 'Cliente Stats', '11999990004')
+   'aaaaaaaa-0000-0000-0000-000000000001', 'Cliente Stats', '11999990004'),
+  -- Cliente da SEGUNDA organização. Alvo dos casos negativos ACL-3d (o membro da
+  -- org A não pode receber a agregação dele) e do CONTROLE-10. `customers`
+  -- pertence à ORGANIZATION, não à unit — é o que faz `is_org_member` ser o
+  -- guard certo nestas três funções, e não `is_unit_member`.
+  ('eeeeeeee-0000-0000-0000-000000000005',
+   'aaaaaaaa-0000-0000-0000-000000000002', 'Cliente Org B', '11999990005')
 on conflict (id) do nothing;
 
 -- Uma notificação não entregue, para o painel de Entregas ter o que devolver

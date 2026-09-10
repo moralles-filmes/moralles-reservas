@@ -41,12 +41,22 @@ presentes agendaria jobs apontando para lá.
 | `07-whatsapp-multiprovider.sql` | MP-1..18 + MP-5b/5c: backfill, CHECK/uniqueness, Vault RPC, claim fence/double-click, intenção/cutover, status Z-API/UazAPI, provider correto no ledger, dedupe por provider e ACL estática. |
 | `08-whatsapp-conversation-parity.sql` | CP: append idempotente com `last_message_at` monotônico, mensagem humana + handoff/lock atômicos, resolver de conversa serializado, validação de shape/tenant, liberação cercada do claim, cutover fail-closed sem prova de eco e ACL. |
 | `09a-advisor-bootstrap.sql` | O que a sequência do advisor precisa e o `00-bootstrap.sql` não tem: `unit_members`, `customers`, `reservations`, `waitlist`, `settings`, `is_public` nas duas tabelas de tenancy, `auth.uid()` lendo as duas formas de GUC, e as **oito funções extraídas verbatim de produção** (os 3 helpers, as 4 SECURITY DEFINER que os chamam pelo nome — na forma PRÉ-106 — e `next_waitlist_code`, que `enter_waitlist` chama). Reproduz também a ACL de produção de cada uma, revogando de PUBLIC antes de conceder: ACL local mais larga que a real esvaziaria o snapshot de `proacl` do ACL-5. Substitui o `02-seed.sql` nesta sequência — o `02` insere em `whatsapp_instances`, que só existe depois da 087. |
-| `09-advisor-hardening.sql` | ACL-1..ACL-5 + ACL-1b da migration 106: policy TO PUBLIC sobrevivendo ao `SET SCHEMA`, os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, idempotência medida **através de duas execuções** do arquivo, e o lado negativo (`ACL-1b`): não-membro vê zero e tenant cruzado não vaza — sem ele, ACL-1 passaria contra um helper que devolvesse TRUE sempre. |
-| `10-controles-106.sql` | Os **três controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies; CONTROLE-9 sabota o predicado de tenant e vê o `ACL-1b` reprovar. |
+| `09-advisor-hardening.sql` | ACL-1..ACL-5, ACL-1b e ACL-3b/3c/3d da migration 106: policy TO PUBLIC sobrevivendo ao `SET SCHEMA`, os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, idempotência medida **através de duas execuções** do arquivo, e os lados negativos — `ACL-1b` (não-membro vê zero, tenant cruzado não vaza) e `ACL-3b/3c/3d`, o lado de NEGAR das outras três funções: recusa cross-org na anonimização, recusa a não-membro no painel de Entregas, e agregado de outra organização não voltando na listagem de clientes. |
+| `10-controles-106.sql` | Os **quatro controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies; CONTROLE-9 sabota `is_unit_member`; CONTROLE-10 sabota `is_org_member` e vê o agregado de outro tenant vazar. |
 
 ## Rodar
 
+**`PGCLIENTENCODING=UTF8` não é opcional.** O `psql` do Windows, sem essa
+variável, converte errado a entrada de arquivo `-f` e grava todo texto acentuado
+**duplamente codificado** — mesmo reportando `client_encoding = UTF8` no `show`.
+Medido: o `comment on schema app_private` da 106 tem 1317 caracteres / 1356 bytes
+no arquivo, e sem a variável o banco guarda 1356 *caracteres* (cada acento virou
+dois). Nenhum veredito depende disso (os casos comparam números e literais ASCII),
+e produção não é afetada porque o `supabase db push` fala UTF-8; mas comentário e
+mensagem de erro guardados errados são falso-vermelho esperando acontecer.
+
 ```bash
+export PGCLIENTENCODING=UTF8
 PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
 "$PG/pg_ctl.exe" -D "$USERPROFILE/scoop/apps/postgresql/current/data" \
   -l /tmp/pg.log -o "-p 55432" start
@@ -110,6 +120,7 @@ por isso que esta sequência tem banco próprio.
 > da migration.
 
 ```bash
+export PGCLIENTENCODING=UTF8          # obrigatório; ver a nota na seção "Rodar"
 "$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists advisor106
 "$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres advisor106
 P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 -v ON_ERROR_STOP=1 "$@"; }
@@ -136,13 +147,23 @@ P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # 2a passada
 # restaura a versão real:
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 
-P -c "select ord, caso, veredito from t_res order by ord;"   # 9 linhas, todas OK
+P -c "select ord, caso, veredito from t_res order by ord;"   # 13 linhas, todas OK
 ```
 
-Ordinais: 1–5 são os casos ACL do roteiro da fase, 6 e 7 os dois primeiros
-controles, **8 é o `ACL-1b`** (fica depois dos controles porque ordinal de caso
-não se renumera) e **9 é o CONTROLE-9**. O 8 dos CONTROLES está reservado ao
-`11-overloads-107.sql`, que vive em outro banco.
+**Ordinais casam com o número do NOME do caso, não com a ordem de execução** —
+por isso o `order by ord` intercala casos do `09` com controles do `10`:
+
+| ord | caso | arquivo |
+|---|---|---|
+| 1–5 | `ACL-1` .. `ACL-5` | `09` |
+| 6, 7 | `CONTROLE-6`, `CONTROLE-7` | `10` |
+| 8 | `ACL-1b` | `09` |
+| 9 | `CONTROLE-9` | `10` |
+| 10 | `CONTROLE-10` | `10` |
+| 11, 12, 13 | `ACL-3b`, `ACL-3c`, `ACL-3d` | `09` |
+
+O ordinal **8 dos CONTROLES** está reservado ao `11-overloads-107.sql`, que vive
+em outro banco — daí os controles saltarem de 7 para 9.
 
 ## O que os dois controles do `04` fazem
 
@@ -171,7 +192,7 @@ com a nota de B", que é o registro falso. Manter `ended_at` intacto é o que
 isola o que este controle mede. Restaurar exige reaplicar a **104 e depois a
 105**, nesta ordem.
 
-## O que os três controles do `10` fazem
+## O que os quatro controles do `10` fazem
 
 **CONTROLE-6** reconstrói `enter_waitlist` a partir de `pg_get_functiondef` com
 uma única troca — `app_private.is_` volta a `public.is_` — e chama a função como
@@ -212,6 +233,24 @@ esquecido faria **todo caso posterior naquele banco passar em silêncio**.
 
 O ordinal **8 está reservado** para o controle de overload errado que a fase
 acrescenta em `11-overloads-107.sql`; é por isso que este é o 9, e não o 8.
+
+**CONTROLE-10** sabota o outro guard de tenant: `app_private.is_org_member`, que
+é o de `anonymize_customer` e `get_customer_stats_bulk`. Ele mede pelo `ACL-3d`
+porque ali um guard quebrado **não estoura — ele vaza formato de dado**: com o
+helper devolvendo TRUE, `get_customer_stats_bulk` devolve a agregação do cliente
+da outra organização junto com a do chamador (2 linhas em vez de 1). Recusa que
+deixa de recusar é visível; agregado que aparece a mais é o que passa
+despercebido. O `ACL-3b` ficaria vermelho pelo mesmo helper, então um controle
+sobre `is_org_member` cobre os dois — não há um por função. Mesma disciplina de
+restore do CONTROLE-9, e vale o mesmo aviso: **reaplicar a 106 não restauraria**,
+porque ela só move o helper e nunca define o corpo.
+
+Os dois controles de sabotagem cobrem `is_unit_member` (9) e `is_org_member`
+(10). `is_platform_admin` fica sem controle de mutação de propósito: nas quatro
+funções ele aparece sempre como o segundo termo de um `or`, sempre com
+`platform_admins` vazia neste harness — sabotá-lo para TRUE tornaria todo
+chamador super-admin e o que ficaria vermelho seriam os mesmos casos que 9 e 10
+já cobrem, sem isolar nada de novo.
 
 ## O que CORR-1 e CORR-2 NÃO provam
 

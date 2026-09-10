@@ -66,7 +66,16 @@ comment on schema app_private is
   '<assinatura completa> from public, anon, authenticated;` — e só então conceda '
   'ao papel mínimo, exatamente como se exige de função em `public`. Não confie em '
   '`alter default privileges ... revoke ... from public`: nesta plataforma isso é '
-  'no-op silencioso (medido; ver docs/hotfix-acl/).';
+  'no-op silencioso (medido; ver docs/hotfix-acl/). '
+  'RISCO ACEITO, com a precondição dita: o `grant usage` para `anon` permite, em '
+  'princípio, ENUMERAR nome e assinatura das funções deste schema por '
+  '`information_schema.routines`. É METADADO, não dado — nenhuma linha de '
+  '`unit_members` ou de qualquer tabela sai por aí, e executar continua exigindo '
+  'EXECUTE. Aceito porque `anon` não tem caminho de SQL direto neste banco: o '
+  'único acesso é o PostgREST, que não expõe `app_private`. A premissa é '
+  'AMBIENTAL, não estrutural — se algum dia `anon` ganhar sessão SQL, ou se '
+  '`app_private` entrar nos Exposed schemas da API, este risco deixa de ser '
+  'aceitável e o grant tem de ser reduzido a `authenticated`/`service_role`.';
 
 -- PUBLIC não tem privilégio em schema novo por default; o revoke é explícito
 -- para que um `alter default privileges` futuro não abra o schema em silêncio.

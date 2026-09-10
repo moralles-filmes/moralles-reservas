@@ -208,3 +208,76 @@ exception when others then
   insert into t_res values (9, 'CONTROLE-9 helper permissivo faz o ACL-1b reprovar',
     'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)');
 end $$;
+
+-- ═══ CONTROLE-10 — `is_org_member` permissivo VAZA agregado de outro tenant ═══
+--
+-- O CONTROLE-9 sabota `is_unit_member`, alcançado por `acl_probe`. Este sabota
+-- `is_org_member`, que é o guard das outras duas funções de cliente — sem ele,
+-- os casos ACL-3b e ACL-3d passariam sem nada provar que eles pegam o defeito.
+--
+-- Mede pelo ACL-3d, e não pelo ACL-3b, porque ACL-3d é o caso de VAZAMENTO DE
+-- DADO: com o helper devolvendo TRUE, `get_customer_stats_bulk` não estoura —
+-- ele devolve a agregação do cliente da outra organização junto com a do
+-- chamador. Recusa que deixa de recusar é visível; agregado que aparece a mais é
+-- o que passa despercebido, e é o que este controle torna vermelho.
+-- (O ACL-3b também ficaria vermelho: `anonymize_customer` usa o mesmo helper.
+-- Um controle sobre `is_org_member` cobre os dois.)
+--
+-- Mesma disciplina do CONTROLE-9: captura de `pg_get_functiondef` ANTES de
+-- sabotar, restore a partir dessa captura, restore VERIFICADO por comportamento
+-- observável (a contagem tem de voltar a 1) e handler `when others` — DDL em
+-- plpgsql roda na subtransação do bloco, então falha no meio desfaz a sabotagem
+-- por rollback. E vale aqui o mesmo aviso do CONTROLE-9: reaplicar a 106 NÃO
+-- restauraria, porque a 106 só move o helper e nunca define o corpo.
+do $$
+declare v_def text;
+        v_unit uuid; v_membro_a uuid := '11111111-1111-1111-1111-111111111111';
+        v_cust_a uuid := 'eeeeeeee-0000-0000-0000-000000000004';  -- org A
+        v_cust_b uuid := 'eeeeeeee-0000-0000-0000-000000000005';  -- org B
+        v_sabotado int; v_restaurado int;
+begin
+  delete from t_res where ord = 10;
+  select id into v_unit from units where is_public limit 1;
+
+  select pg_get_functiondef(p.oid) into v_def
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'app_private' and p.proname = 'is_org_member';
+  if v_def is null then
+    raise exception 'app_private.is_org_member nao existe — a 106 foi aplicada?';
+  end if;
+
+  -- Sabota. Nomes de parâmetro têm de bater com os reais (`p_user_id`,
+  -- `p_org_id`), senão `create or replace` recusa.
+  create or replace function app_private.is_org_member(p_user_id uuid, p_org_id uuid)
+  returns boolean language sql stable security definer set search_path = public
+  as $body$ select true $body$;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', v_membro_a)::text, true);
+  set local role authenticated;
+  select count(*) into v_sabotado from get_customer_stats_bulk(array[v_cust_a, v_cust_b], v_unit);
+  reset role;
+
+  -- Restaura da captura e confere pelo comportamento.
+  execute v_def;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', v_membro_a)::text, true);
+  set local role authenticated;
+  select count(*) into v_restaurado from get_customer_stats_bulk(array[v_cust_a, v_cust_b], v_unit);
+  reset role;
+
+  insert into t_res values (10, 'CONTROLE-10 is_org_member permissivo vaza agregado alheio',
+    case
+      when v_sabotado <= 1
+        then 'FALHOU: deveria ter estourado (com helper TRUE o agregado alheio nao apareceu; veio '
+             || v_sabotado || ' linha(s))'
+      when v_restaurado <> 1
+        then 'FALHOU: vazamento detectado (' || v_sabotado
+             || ' linhas), mas o RESTORE nao voltou (ainda vem ' || v_restaurado || ')'
+      else 'OK (com helper TRUE vazaram ' || v_sabotado
+           || ' linhas em vez de 1; restaurado, voltou a 1)'
+    end);
+exception when others then
+  reset role;
+  insert into t_res values (10, 'CONTROLE-10 is_org_member permissivo vaza agregado alheio',
+    'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)');
+end $$;

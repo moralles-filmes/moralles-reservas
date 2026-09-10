@@ -245,3 +245,128 @@ exception when others then
   reset role;
   insert into t_res values (8, 'ACL-1b nao-membro ve zero, tenant cruzado nao vaza', 'FALHOU: ' || sqlerrm);
 end $$;
+
+-- ─── ACL-3b/3c/3d: o lado NEGATIVO das outras três funções ──────────────────
+-- O ACL-3 exercita `anonymize_customer`, `get_customer_stats_bulk` e
+-- `get_undelivered_notifications` só pelo caminho de PERMITIR. Isso deixava
+-- `is_org_member` e `is_platform_admin`, COMO USADOS NESSES TRÊS CORPOS, sem
+-- nenhum caso negativo — nada notaria um `is_org_member` trocado por
+-- `is_unit_member`, ou um `if not (...)` invertido, numa reescrita futura.
+--
+-- O risco vindo DESTA migration é nulo (os corpos são idênticos aos de produção
+-- a menos do qualificador, e o CONTROLE-6 mostra que qualificador errado falha
+-- fechado com `undefined_function`). O motivo destes três casos existirem é a
+-- fase ter reescrito quatro guards de tenant e ter deixado três sem rede.
+--
+-- Ordinais 11/12/13 para casar com o número do nome; o 10 é do CONTROLE-10.
+
+-- ACL-3b: anonymize_customer NÃO anonimiza cliente de organização alheia.
+--
+-- O guard é `is_org_member(...) or is_platform_admin(...)`, então o chamador tem
+-- de ser membro de uma segunda organização REAL e NÃO ser platform admin —
+-- `platform_admins` fica vazia neste harness, o que garante a segunda metade.
+--
+-- Duas asserções, e a segunda é a que importa: além de a chamada ser RECUSADA,
+-- o cliente tem de continuar NÃO anonimizado. Sem ela o caso não distinguiria
+-- "recusou" de "anonimizou e estourou depois". E o cliente-alvo é escolhido
+-- VIVO de propósito: `anonymize_customer` devolve no-op SILENCIOSO para cliente
+-- já anonimizado (`deleted_at` não nulo), e um alvo morto faria o caso passar
+-- sem o guard sequer ser alcançado.
+do $$
+declare v_alvo uuid := 'eeeeeeee-0000-0000-0000-000000000001';   -- org A, vivo
+        v_intruso uuid := '22222222-2222-2222-2222-222222222222'; -- membro da org B
+        v_recusou boolean := false; v_deleted timestamptz; v_err text;
+begin
+  delete from t_res where ord = 11;
+  update customers set deleted_at = null where id = v_alvo;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', v_intruso)::text, true);
+  set local role authenticated;
+  begin
+    perform anonymize_customer(v_alvo);
+  exception when insufficient_privilege then
+    v_recusou := true;
+    get stacked diagnostics v_err = message_text;
+  end;
+  reset role;
+
+  select deleted_at into v_deleted from customers where id = v_alvo;
+
+  insert into t_res values (11, 'ACL-3b anonymize_customer recusa cliente de outra org',
+    case
+      when not v_recusou then 'FALHOU (nao recusou: membro da org B passou pelo guard)'
+      when v_deleted is not null then 'FALHOU (recusou com "' || v_err
+                                      || '" mas o cliente FOI anonimizado)'
+      else 'OK (recusado com "' || v_err || '" e cliente intacto)'
+    end);
+exception when others then
+  reset role;
+  insert into t_res values (11, 'ACL-3b anonymize_customer recusa cliente de outra org', 'FALHOU: ' || sqlerrm);
+end $$;
+
+-- ACL-3c: get_undelivered_notifications recusa não-membro.
+--
+-- Li o corpo: ele RAISE `forbidden` com errcode 42501 antes de qualquer query —
+-- não devolve lista vazia. Portanto o caso captura `insufficient_privilege`
+-- ESPECIFICAMENTE, e não `when others`: lista vazia e recusa são resultados
+-- diferentes, e um `when others` confundiria os dois com qualquer outro erro.
+-- O contra-caso está no ACL-3, que chama a mesma função como membro e recebe
+-- linha — ou seja, "recusou" aqui não é "a função está quebrada".
+do $$
+declare v_unit uuid; v_sem uuid := '33333333-3333-3333-3333-333333333333';
+        v_n int; v_recusou boolean := false; v_err text;
+begin
+  delete from t_res where ord = 12;
+  select id into v_unit from units where is_public limit 1;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', v_sem)::text, true);
+  set local role authenticated;
+  begin
+    select count(*) into v_n from get_undelivered_notifications(v_unit, now() - interval '7 days');
+  exception when insufficient_privilege then
+    v_recusou := true;
+    get stacked diagnostics v_err = message_text;
+  end;
+  reset role;
+
+  insert into t_res values (12, 'ACL-3c get_undelivered_notifications recusa nao-membro',
+    case
+      when v_recusou then 'OK (raise 42501 "' || v_err || '", nao lista vazia)'
+      else 'FALHOU (nao recusou: devolveu ' || coalesce(v_n::text, 'null') || ' linha(s))'
+    end);
+exception when others then
+  reset role;
+  insert into t_res values (12, 'ACL-3c get_undelivered_notifications recusa nao-membro', 'FALHOU: ' || sqlerrm);
+end $$;
+
+-- ACL-3d: get_customer_stats_bulk não devolve agregado de outra organização.
+--
+-- O mais valioso dos três: aqui um guard quebrado não estoura, ele VAZA FORMATO
+-- DE DADO — devolve a agregação de outro tenant em vez de um erro. O caso passa
+-- ids das DUAS organizações e exige que volte exatamente a linha da org do
+-- chamador. Contar linhas não basta: confere-se QUAL id voltou.
+do $$
+declare v_unit uuid; v_membro_a uuid := '11111111-1111-1111-1111-111111111111';
+        v_cust_a uuid := 'eeeeeeee-0000-0000-0000-000000000004';  -- org A
+        v_cust_b uuid := 'eeeeeeee-0000-0000-0000-000000000005';  -- org B
+        v_n int; v_ids text;
+begin
+  delete from t_res where ord = 13;
+  select id into v_unit from units where is_public limit 1;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', v_membro_a)::text, true);
+  set local role authenticated;
+  select count(*), coalesce(string_agg(customer_id::text, ',' order by customer_id::text), '<vazio>')
+    into v_n, v_ids
+    from get_customer_stats_bulk(array[v_cust_a, v_cust_b], v_unit);
+  reset role;
+
+  insert into t_res values (13, 'ACL-3d get_customer_stats_bulk nao vaza agregado de outra org',
+    case
+      when v_n = 1 and v_ids = v_cust_a::text then 'OK (voltou so o cliente da org do chamador)'
+      else 'FALHOU (esperado 1 linha [' || v_cust_a || '], veio ' || v_n || ': ' || v_ids || ')'
+    end);
+exception when others then
+  reset role;
+  insert into t_res values (13, 'ACL-3d get_customer_stats_bulk nao vaza agregado de outra org', 'FALHOU: ' || sqlerrm);
+end $$;
