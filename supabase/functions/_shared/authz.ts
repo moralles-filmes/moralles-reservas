@@ -18,15 +18,38 @@
 // leitura como negação. A semântica é preservada byte a byte de propósito: esta
 // frente não muda código de status em nenhum caminho. Trocar 403 por 503 em
 // falha de banco é melhoria defensável, e está explicitamente fora de escopo.
+//
+// TIPO LOCAL, NÃO `SupabaseClient` DE ESM.SH. `src/lib/authz.test.ts` importa
+// `hasUnitAccess` direto daqui pra testar comportamento (não só o guardrail
+// textual). `import type` é apagado em runtime pelo esbuild do Vitest, mas
+// `tsc -b` ainda resolve tipos do fechamento do projeto — e falha (`TS2307`)
+// tentando resolver uma URL. Mesmo risco documentado em `whatsapp-instance-
+// cycle-core.ts`/`billing-category-core.ts`/outros núcleos cross-boundary;
+// a superfície mínima abaixo evita o import e o client real a satisfaz
+// estruturalmente, sem mudar nenhuma chamada.
 
-import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+interface SupabaseReadResult {
+  data: { user_id: string } | null;
+  error: { message: string } | null;
+}
+
+interface SupabaseFilterBuilder extends PromiseLike<SupabaseReadResult> {
+  eq(column: string, value: string): SupabaseFilterBuilder;
+  maybeSingle(): PromiseLike<SupabaseReadResult>;
+}
+
+interface MinimalSupabaseClient {
+  from(table: string): {
+    select(columns: string): SupabaseFilterBuilder;
+  };
+}
 
 /**
  * `true` se o usuário é membro da unidade OU platform_admin.
  * Erro de leitura devolve `false` (fail-closed) e é logado no console.
  */
 export async function hasUnitAccess(
-  supabase: SupabaseClient,
+  supabase: MinimalSupabaseClient,
   userId: string,
   unitId: string,
 ): Promise<boolean> {
