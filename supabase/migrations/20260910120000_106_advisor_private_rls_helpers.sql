@@ -16,24 +16,36 @@
 -- com a função — e o PostgREST só expõe `public`, então o oráculo fecha sem que
 -- nenhuma policy perceba.
 --
--- SOBRE O `grant usage on schema` ABAIXO: É DEFENSIVO, NÃO LOAD-BEARING.
--- Quem sustenta a avaliação das policies é o EXECUTE, conferido por OID em tempo
--- de execução e que viaja com a função; USAGE de schema é consultado apenas em
--- caminho de RESOLUÇÃO DE NOME, e expressão de policy guardada no catálogo nunca
--- toma esse caminho. Medido no CONTROLE-7 de 10-controles-106.sql, que mostra as
--- duas metades lado a lado: USAGE revogado não muda nada, EXECUTE revogado
--- estoura 42501.
+-- SOBRE O `grant usage on schema` ABAIXO: SÓ `service_role`. `anon` e
+-- `authenticated` NÃO recebem USAGE, e isso é deliberado.
 --
--- Nenhum caller conhecido hoje resolve estes helpers PELO NOME como `anon` ou
--- `authenticated`: as quatro referências por nome que existem estão dentro de
--- funções SECURITY DEFINER, e lá o nome resolve como o DEFINER, não como quem
--- chama. O grant é mantido para não transformar em `permission denied for schema
--- app_private` algum caminho de resolução de nome que a varredura de `pg_depend`
--- + `prosrc` não enxerga — SQL dinâmico dentro de função SECURITY INVOKER, ou
--- expressão de default avaliada em runtime. Ele NÃO é mantido porque um caller
--- conhecido precise dele. Do outro lado a conta é barata: `anon` não tem caminho
--- de SQL direto neste banco e o PostgREST não vê o schema, então é acesso de
--- resolução de nome que ele nunca chega a exercer.
+-- USAGE de schema NÃO é o que sustenta a avaliação das policies. Quem sustenta é
+-- o EXECUTE, conferido POR IDENTIFICADOR da função em tempo de execução, e que
+-- viaja com ela no `SET SCHEMA`; USAGE só é consultado em caminho de RESOLUÇÃO DE
+-- NOME, e expressão de policy guardada no catálogo (já resolvida) nunca toma esse
+-- caminho. Medido: CONTROLE-7b revoga EXECUTE e a consulta estoura 42501; a
+-- suíte inteira roda com `anon` SEM usage neste schema e ACL-1/ACL-1b/ACL-4
+-- seguem verdes — ou seja, policy `TO PUBLIC`, tenant cruzado e a fila pública
+-- ponta a ponta funcionam sem o grant.
+--
+-- POR QUE NEGAR EM VEZ DE CONCEDER "POR SEGURANÇA". O único evento que desfaz
+-- esta migration inteira é `app_private` entrar por engano na lista de Exposed
+-- schemas da API. Nesse cenário `is_unit_member` JÁ carrega EXECUTE para `anon`
+-- (herdado de antes do move, e preservado de propósito), então a ausência de
+-- USAGE é a última tranca que ainda segura o oráculo. Concedê-la hoje é entregar
+-- essa tranca de graça, contra um ganho que a evidência não sustenta: varredura
+-- de produção em `pg_proc` de todos os schemas não-sistema, `pg_depend`, views,
+-- constraints, defaults de coluna, expressões de índice e rules não achou UMA
+-- referência aos três helpers fora das quatro funções SECURITY DEFINER conhecidas
+-- — e nelas o nome resolve como o DEFINER, que não precisa de grant nenhum.
+-- (`prosrc` guarda a string de formato do SQL dinâmico, então a varredura ALCANÇA
+-- `execute format('... is_unit_member ...')`; o que escaparia é nome montado por
+-- concatenação de fragmentos, que não existe aqui.)
+--
+-- É o mesmo princípio que a 086 já escreveu para coluna: coisa nova nasce
+-- INVISÍVEL para `anon`, e quem precisar dela concede na mesma migration que cria
+-- a necessidade. `service_role` fica porque já é todo-poderoso — ali o grant não
+-- custa nada e mantém worker futuro capaz de chamar o helper pelo nome.
 --
 -- O QUE TORNA ESTA MIGRATION PERIGOSA SE COPIADA PELA METADE. Quatro funções
 -- SECURITY DEFINER chamam os helpers PELO NOME dentro do corpo. Em plpgsql o
@@ -53,6 +65,38 @@
 -- existir em `public` aqui; com a versão antiga ainda em memória, o lojista leva
 -- 403 na reserva manual, na edição de reserva, no aviso de cancelamento e na
 -- mensagem manual. É a outra metade-aplicada desta fase, e é invisível no SQL.
+--
+-- ═══ ROLLBACK — A ORDEM INVERSA TEM A MESMA ARMADILHA ═══════════════════════
+-- Quem desfaz isto está sob pressão e lendo ESTE arquivo, não o documento de
+-- design (spec §7). Então:
+--
+-- 1º REVERTER AS EDGE FUNCTIONS, 2º REVERTER A MIGRATION. Se a migration voltar
+--    primeiro, os quatro corpos abaixo passam a apontar para `public.is_*` num
+--    instante em que o helper ainda está em `app_private` — e é o MESMO 403 da
+--    ordem de ida, pelos mesmos quatro caminhos. A ordem de deploy é
+--    EF → migration na ida e EF → migration na volta: em ambas, o código que
+--    chama muda antes do endereço da função.
+--
+-- SQL inverso (comentado de propósito — nada aqui deve rodar por acidente):
+--
+--   begin;
+--   alter function app_private.is_unit_member(uuid, uuid)    set schema public;
+--   alter function app_private.is_platform_admin(uuid)       set schema public;
+--   alter function app_private.is_org_member(uuid, uuid)     set schema public;
+--   -- as ACLs voltam com as funções; nenhum grant a refazer.
+--   -- Em seguida, os quatro corpos na forma PRÉ-106: reaplicar cada
+--   -- `create or replace` deste arquivo trocando `app_private.is_` por
+--   -- `public.is_` e removendo `app_private` do search_path de cada um
+--   -- (enter_waitlist e get_undelivered_notifications voltam a `public`;
+--   -- anonymize_customer e get_customer_stats_bulk, a `public, pg_temp`).
+--   -- A cópia verbatim dessa forma PRÉ-106 está preservada em
+--   -- supabase/tests/local-preflight/09a-advisor-bootstrap.sql.
+--   drop schema if exists app_private;   -- só depois de os três terem saído
+--   commit;
+--
+-- NÃO derrube o schema antes de mover os três helpers de volta: `drop schema`
+-- sem `cascade` recusa (bom), e COM `cascade` apagaria os helpers e, com eles,
+-- as 83 policies que dependem deles por OID. Nunca use `cascade` aqui.
 
 begin;
 
@@ -67,20 +111,22 @@ comment on schema app_private is
   'ao papel mínimo, exatamente como se exige de função em `public`. Não confie em '
   '`alter default privileges ... revoke ... from public`: nesta plataforma isso é '
   'no-op silencioso (medido; ver docs/hotfix-acl/). '
-  'RISCO ACEITO, com a precondição dita: o `grant usage` para `anon` permite, em '
-  'princípio, ENUMERAR nome e assinatura das funções deste schema por '
-  '`information_schema.routines`. É METADADO, não dado — nenhuma linha de '
-  '`unit_members` ou de qualquer tabela sai por aí, e executar continua exigindo '
-  'EXECUTE. Aceito porque `anon` não tem caminho de SQL direto neste banco: o '
-  'único acesso é o PostgREST, que não expõe `app_private`. A premissa é '
-  'AMBIENTAL, não estrutural — se algum dia `anon` ganhar sessão SQL, ou se '
-  '`app_private` entrar nos Exposed schemas da API, este risco deixa de ser '
-  'aceitável e o grant tem de ser reduzido a `authenticated`/`service_role`.';
+  'USAGE NESTE SCHEMA É SÓ DE `service_role`. `anon` e `authenticated` não têm, e '
+  'não devem ganhar: sem USAGE eles não resolvem nome aqui e nem enumeram as '
+  'funções por `information_schema.routines`. A avaliação das policies não depende '
+  'disso — ela usa o EXECUTE da função, conferido por identificador em tempo de '
+  'execução — e a ausência de USAGE é a última tranca que ainda segura o oráculo '
+  'de membership se este schema for exposto à API por engano. Conceder USAGE a '
+  'papel público aqui é regressão de segurança, não conveniência.';
 
 -- PUBLIC não tem privilégio em schema novo por default; o revoke é explícito
 -- para que um `alter default privileges` futuro não abra o schema em silêncio.
+-- Os revokes de `anon`/`authenticated` são para o caso de a migration rodar sobre
+-- um banco onde uma versão anterior dela concedeu USAGE aos dois — sem eles, a
+-- reaplicação deixaria o grant antigo de pé e a postura não convergiria.
 revoke all on schema app_private from public;
-grant usage on schema app_private to anon, authenticated, service_role;
+revoke all on schema app_private from anon, authenticated;
+grant usage on schema app_private to service_role;
 
 -- Idempotente: só move o que ainda estiver em `public`. `to_regprocedure`
 -- devolve NULL em vez de estourar quando a função não existe, e casa a

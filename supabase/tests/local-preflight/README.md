@@ -203,14 +203,29 @@ medir: a definição vem do banco (redigitada à mão, erraria o tipo de retorno
 falharia por outro motivo) e o claim JWT é setado (sem ele a função tomaria o
 ramo anon e não chamaria helper nenhum).
 
-**CONTROLE-7** responde **qual grant é load-bearing**, porque o rascunho desta
-fase supôs errado. Ele mede as duas metades: revogar `usage` no schema
-`app_private` de `anon` **não afeta** as policies — expressão de policy fica
-guardada resolvida por OID, e `USAGE` só governa procura de NOME; revogar
-`execute` da função **estoura 42501**, porque o privilégio de função é conferido
-na inicialização da expressão mesmo por OID. É por isso que a 106 move em vez de
-revogar, e é por isso que o `grant usage on schema` dela é defesa em
-profundidade, não a trava.
+**CONTROLE-7** responde **qual privilégio é load-bearing**, porque o rascunho
+desta fase supôs errado. `USAGE` de schema não é: expressão de policy fica
+guardada no catálogo já resolvida, e `USAGE` só governa procura de NOME. `EXECUTE`
+de função é: ele é conferido na inicialização da expressão mesmo quando a função
+é referenciada por identificador já resolvido — revogá-lo **estoura 42501**. É
+por isso que a 106 move em vez de revogar.
+
+**O `7a` mudou de forma na rodada 4, e a mudança é um fortalecimento.** Antes ele
+revogava `usage` de `anon` para mostrar que a policy seguia avaliando. A 106
+passou a **negar** esse `usage` a `anon` e `authenticated` (só `service_role`
+recebe), então revogá-lo deixou de ser sabotagem — **a suíte inteira agora roda
+nesse estado**, o que prova mais que o controle antigo provava. O `7a` virou a
+afirmação explícita da postura entregue:
+`has_schema_privilege('anon'|'authenticated', 'app_private', 'usage')` é `false`
+nas duas. Quem prova que a postura é *suficiente* são os casos do `09` rodando ao
+lado: `ACL-1` (policy `TO PUBLIC`), `ACL-1b` (tenant cruzado) e `ACL-4` (`anon`
+entrando na fila ponta a ponta), todos verdes sem `usage`. O `7b` ficou intacto —
+é ele o controle positivo de verdade.
+
+O `7a` tem força: reconceder `usage` a `anon` e rodar o `10` devolve
+`FALHOU: 7a postura=divergiu (usage concedido: anon=true, authenticated=false)`,
+nomeando o papel. E reaplicar a 106 sobre um banco com a postura antiga
+**converge** — os `revoke` dela derrubam o `usage` herdado.
 
 **CONTROLE-9** sabota o **predicado de tenant**: troca o corpo de
 `app_private.is_unit_member` por `select true` e confere que o não-membro passa a

@@ -60,43 +60,48 @@ exception when others then
   insert into t_res values (6, 'CONTROLE-6 corpo sem reescrita', 'FALHOU: ' || sqlerrm);
 end $$;
 
--- ═══ CONTROLE-7 — qual grant é load-bearing para as policies ═══
+-- ═══ CONTROLE-7 — qual privilégio é load-bearing para as policies ═══
 --
 -- O rascunho desta fase supunha que `grant usage on schema app_private to anon`
--- era o que sustentava as 24 policies TO PUBLIC. NÃO É, e este controle mede as
--- duas metades para que ninguém volte a supor:
+-- era o que sustentava as 24 policies TO PUBLIC. NÃO É — e a 106 passou a NEGAR
+-- esse USAGE a `anon` e `authenticated` justamente porque ele não é load-bearing
+-- e é a última tranca se o schema for exposto à API por engano.
 --
---   7a  USAGE revogado do schema  → a consulta CONTINUA funcionando. Expressão de
---       policy fica guardada no catálogo já resolvida por OID; nenhum nome é
---       procurado na hora da consulta, e USAGE só governa procura de nome.
+-- POR QUE O 7a MUDOU DE FORMA. Ele revogava USAGE de `anon` para mostrar que a
+-- policy seguia avaliando. Isso deixou de ser uma sabotagem: `anon` já não tem
+-- USAGE nenhum, e a SUÍTE INTEIRA passou a rodar nesse estado — o que é mais
+-- forte que o controle antigo, não mais fraco. Então o 7a virou a AFIRMAÇÃO
+-- EXPLÍCITA da postura entregue, e quem prova que ela é suficiente são os casos
+-- do `09` rodando ao lado dela: ACL-1 (policy TO PUBLIC), ACL-1b (tenant
+-- cruzado) e ACL-4 (`anon` entra na fila ponta a ponta), todos verdes sem USAGE.
+--
+--   7a  postura: `anon` e `authenticated` NÃO têm usage em `app_private`.
 --   7b  EXECUTE revogado da função → a consulta ESTOURA com 42501. O privilégio
---       de função é conferido na inicialização da expressão, mesmo referenciada
---       por OID. É ESTE o grant que, se revogado, faz a query estourar em vez de
---       negar linha — a razão de mover em vez de revogar.
+--       de função é conferido na inicialização da expressão, mesmo a expressão
+--       sendo referenciada por identificador já resolvido. É ESTE o privilégio
+--       que, se revogado, faz a query estourar em vez de negar linha — a razão
+--       de mover em vez de revogar.
 --
--- O veredito exige as DUAS metades: se 7a passar a estourar, o cabeçalho da 106
--- está desatualizado; se 7b parar de estourar, o argumento inteiro cai.
+-- O veredito exige as DUAS metades: se 7a falhar, alguém reconcedeu USAGE a papel
+-- público (regressão); se 7b parar de estourar, o argumento inteiro cai.
 do $$
 declare v_unit uuid; v_user uuid; v_n int;
+        v_anon_usage boolean; v_auth_usage boolean;
         v_7a text; v_7b text;
 begin
   delete from t_res where ord = 7;
   select id into v_unit from units where is_public limit 1;
   select user_id into v_user from unit_members where unit_id = v_unit limit 1;
 
-  -- ── 7a: revogar USAGE do schema ────────────────────────────────────────────
-  revoke usage on schema app_private from anon;
-  begin
-    perform set_config('request.jwt.claims', json_build_object('sub', v_user)::text, true);
-    set local role anon;
-    select count(*) into v_n from acl_probe;
-    reset role;
-    v_7a := case when v_n = 1 then 'ok' else 'divergiu (contou ' || v_n || ')' end;
-  exception when others then
-    reset role;
-    v_7a := 'divergiu (estourou: ' || sqlerrm || ')';
-  end;
-  grant usage on schema app_private to anon;
+  -- ── 7a: a postura entregue, afirmada e não suposta ────────────────────────
+  v_anon_usage := has_schema_privilege('anon',          'app_private', 'usage');
+  v_auth_usage := has_schema_privilege('authenticated', 'app_private', 'usage');
+  v_7a := case
+            when v_anon_usage or v_auth_usage
+              then 'divergiu (usage concedido: anon=' || v_anon_usage
+                   || ', authenticated=' || v_auth_usage || ')'
+            else 'ok'
+          end;
 
   -- ── 7b: revogar EXECUTE da função ─────────────────────────────────────────
   revoke execute on function app_private.is_unit_member(uuid, uuid) from anon;
@@ -117,8 +122,9 @@ begin
 
   insert into t_res values (7, 'CONTROLE-7 EXECUTE e load-bearing, USAGE nao',
     case when v_7a = 'ok' and v_7b = 'ok'
-         then 'OK (USAGE revogado nao afeta policy; EXECUTE revogado estoura 42501)'
-         else 'FALHOU: 7a USAGE=' || v_7a || ' / 7b EXECUTE=' || v_7b end);
+         then 'OK (anon/authenticated sem usage no schema, e ainda assim ACL-1/1b/4 passam; '
+              || 'EXECUTE revogado estoura 42501)'
+         else 'FALHOU: 7a postura=' || v_7a || ' / 7b EXECUTE=' || v_7b end);
 end $$;
 
 -- ═══ CONTROLE-9 — o predicado de tenant é o que o ACL-1b mede ═══
