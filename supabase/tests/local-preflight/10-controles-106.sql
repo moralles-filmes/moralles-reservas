@@ -120,3 +120,91 @@ begin
          then 'OK (USAGE revogado nao afeta policy; EXECUTE revogado estoura 42501)'
          else 'FALHOU: 7a USAGE=' || v_7a || ' / 7b EXECUTE=' || v_7b end);
 end $$;
+
+-- ═══ CONTROLE-9 — o predicado de tenant é o que o ACL-1b mede ═══
+--
+-- Ordinal 9 porque o 8 está RESERVADO para o controle de overload errado que a
+-- fase acrescenta em 11-overloads-107.sql. Os dois vivem em bancos diferentes,
+-- mas ordinal repetido na documentação confunde de graça.
+--
+-- Reintroduz o defeito que o ACL-1b existe para pegar: helper que devolve TRUE
+-- sem olhar `unit_members`. O que este caso mede é a metade do ACL-1b — que um
+-- não-membro passa a VER linha. É a asserção de isolamento multi-tenant desta
+-- migration, e sem este controle "ACL-1b passou" não distingue a guarda
+-- funcionando de teste sem força. (Que o ACL-1 sozinho passaria contra este
+-- mesmo helper é o motivo de o ACL-1b existir, e está dito no `09`.)
+--
+-- POR QUE O RESTORE MORA AQUI DENTRO, e não no reapply da 106 como nos controles
+-- 6 e 7: a 106 apenas MOVE o helper (`alter function ... set schema`), guardada
+-- por `to_regprocedure('public.is_unit_member(uuid,uuid)') is not null` — que é
+-- NULL depois do move. Ela nunca redefine o corpo. Medido: sabotar, reaplicar a
+-- 106 e reler `prosrc` devolve `select true` intacto. Se o restore dependesse do
+-- reapply, este controle deixaria um helper permissivo no banco e TODO caso
+-- posterior passaria em silêncio — que é o pior resultado possível num arquivo
+-- de controle.
+--
+-- Duas coisas tornam o restore inequívoco:
+--   1. a definição real é capturada de `pg_get_functiondef` ANTES da sabotagem,
+--      então o que volta é o que estava lá — não uma cópia redigitada;
+--   2. o restore é VERIFICADO no próprio caso (o não-membro tem de voltar a ver
+--      zero), e o veredito só é OK se as duas metades casarem.
+-- E o bloco tem handler `when others`: como DDL em plpgsql roda na subtransação
+-- do bloco, qualquer falha no meio faz a sabotagem ser DESFEITA por rollback.
+-- Não há caminho que deixe o helper permissivo de pé.
+do $$
+declare v_def text;
+        v_unit_a uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+        v_unit_b uuid := 'bbbbbbbb-0000-0000-0000-000000000002';
+        v_sem    uuid := '33333333-3333-3333-3333-333333333333';
+        v_sabotado int; v_restaurado int;
+begin
+  delete from t_res where ord = 9;
+
+  select pg_get_functiondef(p.oid) into v_def
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'app_private' and p.proname = 'is_unit_member';
+  if v_def is null then
+    raise exception 'app_private.is_unit_member nao existe — a 106 foi aplicada?';
+  end if;
+
+  -- Cenário próprio: uma linha por unidade, para não depender do estado deixado
+  -- pelo ACL-1b.
+  delete from acl_probe;
+  insert into acl_probe (unit_id, nota) values (v_unit_a, 'linha da unidade A');
+  insert into acl_probe (unit_id, nota) values (v_unit_b, 'linha da unidade B');
+
+  -- ── Sabota: nomes de parâmetro têm de ser os mesmos, senão o
+  -- `create or replace` recusa ("cannot change name of input parameter").
+  create or replace function app_private.is_unit_member(p_user_id uuid, p_unit_id uuid)
+  returns boolean language sql stable security definer set search_path = public
+  as $body$ select true $body$;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', v_sem)::text, true);
+  set local role authenticated;
+  select count(*) into v_sabotado from acl_probe;
+  reset role;
+
+  -- ── Restaura a definição capturada e CONFERE que restaurou.
+  execute v_def;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', v_sem)::text, true);
+  set local role authenticated;
+  select count(*) into v_restaurado from acl_probe;
+  reset role;
+
+  insert into t_res values (9, 'CONTROLE-9 helper permissivo faz o ACL-1b reprovar',
+    case
+      when v_sabotado = 0
+        then 'FALHOU: deveria ter estourado (nao-membro seguiu vendo zero com helper TRUE)'
+      when v_restaurado <> 0
+        then 'FALHOU: sabotagem detectada (' || v_sabotado
+             || ' linhas), mas o RESTORE nao voltou (nao-membro ainda ve '
+             || v_restaurado || ')'
+      else 'OK (com helper TRUE o nao-membro viu ' || v_sabotado
+           || ' linha(s); restaurado, voltou a ver zero)'
+    end);
+exception when others then
+  reset role;
+  insert into t_res values (9, 'CONTROLE-9 helper permissivo faz o ACL-1b reprovar',
+    'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)');
+end $$;

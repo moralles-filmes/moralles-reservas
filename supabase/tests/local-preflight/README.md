@@ -42,7 +42,7 @@ presentes agendaria jobs apontando para lá.
 | `08-whatsapp-conversation-parity.sql` | CP: append idempotente com `last_message_at` monotônico, mensagem humana + handoff/lock atômicos, resolver de conversa serializado, validação de shape/tenant, liberação cercada do claim, cutover fail-closed sem prova de eco e ACL. |
 | `09a-advisor-bootstrap.sql` | O que a sequência do advisor precisa e o `00-bootstrap.sql` não tem: `unit_members`, `customers`, `reservations`, `waitlist`, `settings`, `is_public` nas duas tabelas de tenancy, `auth.uid()` lendo as duas formas de GUC, e as **oito funções extraídas verbatim de produção** (os 3 helpers, as 4 SECURITY DEFINER que os chamam pelo nome — na forma PRÉ-106 — e `next_waitlist_code`, que `enter_waitlist` chama). Reproduz também a ACL de produção de cada uma, revogando de PUBLIC antes de conceder: ACL local mais larga que a real esvaziaria o snapshot de `proacl` do ACL-5. Substitui o `02-seed.sql` nesta sequência — o `02` insere em `whatsapp_instances`, que só existe depois da 087. |
 | `09-advisor-hardening.sql` | ACL-1..ACL-5 + ACL-1b da migration 106: policy TO PUBLIC sobrevivendo ao `SET SCHEMA`, os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, idempotência medida **através de duas execuções** do arquivo, e o lado negativo (`ACL-1b`): não-membro vê zero e tenant cruzado não vaza — sem ele, ACL-1 passaria contra um helper que devolvesse TRUE sempre. |
-| `10-controles-106.sql` | Os dois **controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies. |
+| `10-controles-106.sql` | Os **três controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies; CONTROLE-9 sabota o predicado de tenant e vê o `ACL-1b` reprovar. |
 
 ## Rodar
 
@@ -136,11 +136,13 @@ P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # 2a passada
 # restaura a versão real:
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 
-P -c "select ord, caso, veredito from t_res order by ord;"   # 8 linhas, todas OK
+P -c "select ord, caso, veredito from t_res order by ord;"   # 9 linhas, todas OK
 ```
 
-O ordinal 8 é o `ACL-1b`, e ele fica depois dos controles porque 6 e 7 são os
-ordinais dos controles no roteiro da fase — ordinal de caso não se renumera.
+Ordinais: 1–5 são os casos ACL do roteiro da fase, 6 e 7 os dois primeiros
+controles, **8 é o `ACL-1b`** (fica depois dos controles porque ordinal de caso
+não se renumera) e **9 é o CONTROLE-9**. O 8 dos CONTROLES está reservado ao
+`11-overloads-107.sql`, que vive em outro banco.
 
 ## O que os dois controles do `04` fazem
 
@@ -169,7 +171,7 @@ com a nota de B", que é o registro falso. Manter `ended_at` intacto é o que
 isola o que este controle mede. Restaurar exige reaplicar a **104 e depois a
 105**, nesta ordem.
 
-## O que os dois controles do `10` fazem
+## O que os três controles do `10` fazem
 
 **CONTROLE-6** reconstrói `enter_waitlist` a partir de `pg_get_functiondef` com
 uma única troca — `app_private.is_` volta a `public.is_` — e chama a função como
@@ -188,6 +190,28 @@ guardada resolvida por OID, e `USAGE` só governa procura de NOME; revogar
 na inicialização da expressão mesmo por OID. É por isso que a 106 move em vez de
 revogar, e é por isso que o `grant usage on schema` dela é defesa em
 profundidade, não a trava.
+
+**CONTROLE-9** sabota o **predicado de tenant**: troca o corpo de
+`app_private.is_unit_member` por `select true` e confere que o não-membro passa a
+VER linha em `acl_probe` — o defeito que o `ACL-1b` existe para pegar. Sem ele,
+"ACL-1b passou" não distingue a guarda funcionando de teste sem força, e o
+`ACL-1b` é justamente a asserção de isolamento multi-tenant desta migration.
+
+**O restore do CONTROLE-9 mora dentro do próprio controle, não no reapply da
+106** — diferente dos controles 6 e 7. A 106 só MOVE o helper
+(`alter function ... set schema`, guardada por `to_regprocedure(...) is not
+null`, que é NULL depois do move) e **nunca redefine o corpo**. Medido: sabotar,
+reaplicar a 106 e reler `prosrc` devolve `select true` intacto. Por isso o caso
+captura a definição real de `pg_get_functiondef` **antes** de sabotar, restaura a
+partir dela, e **verifica** o restore (o não-membro tem de voltar a ver zero) —
+o veredito só é `OK` se as duas metades casarem. O bloco também tem handler
+`when others`: DDL em plpgsql roda na subtransação do bloco, então falha no meio
+desfaz a sabotagem por rollback. Nenhum caminho deixa helper permissivo de pé —
+o que importa aqui mais que nos outros dois, porque um helper permissivo
+esquecido faria **todo caso posterior naquele banco passar em silêncio**.
+
+O ordinal **8 está reservado** para o controle de overload errado que a fase
+acrescenta em `11-overloads-107.sql`; é por isso que este é o 9, e não o 8.
 
 ## O que CORR-1 e CORR-2 NÃO provam
 
