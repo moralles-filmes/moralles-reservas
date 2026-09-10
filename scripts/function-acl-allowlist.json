@@ -79,26 +79,18 @@
     }
   ],
 
-  "rls_helpers": [
-    {
-      "name": "is_unit_member",
-      "args": "p_user_id uuid, p_unit_id uuid",
-      "roles": ["anon", "authenticated"],
-      "why": "Chamada de dentro de policies RLS. 24 policies com roles={public} (waitlist, vouchers, voucher_rules, walk_ins, *_message_templates) a invocam — policy é avaliada no contexto de privilégio de quem consulta, então revogar de anon faz a query ESTOURAR com permission denied, não negar. Ver inventário §1.1 e follow-up §4.1."
-    },
-    {
-      "name": "is_platform_admin",
-      "args": "p_user_id uuid",
-      "roles": ["authenticated"],
-      "why": "Chamada por 26 policies RLS de papel authenticated e ZERO policies roles={public}. Nenhuma função SECURITY INVOKER a referencia (as SECURITY DEFINER que a chamam rodam como o dono). anon foi revogado pela 085 §5.2: sem caller, só entregava oráculo de enumeração de super-admin a quem tem a anon key."
-    },
-    {
-      "name": "is_org_member",
-      "args": "p_user_id uuid, p_org_id uuid",
-      "roles": ["authenticated"],
-      "why": "Chamada por 3 policies RLS de papel authenticated e ZERO policies roles={public}. Mesma evidência e mesma revogação de anon na 085 §5.2 — oráculo de pertencimento a organização."
-    }
+  "_doc_rls_helpers": [
+    "O grupo `rls_helpers` foi esvaziado pela migration 106: is_unit_member,",
+    "is_platform_admin e is_org_member vivem em `app_private`, schema que o",
+    "PostgREST não expõe. `audit_function_acl()` varre apenas `public`, então",
+    "elas deixaram de aparecer — e por isso deixaram de precisar de exceção.",
+    "",
+    "Se alguma delas reaparecer aqui, é REGRESSÃO: alguém recriou o helper em",
+    "`public`. O caminho certo é `app_private`, e a justificativa está no",
+    "cabeçalho da migration 106."
   ],
+
+  "rls_helpers": [],
 
   "authenticated_tenant": [
     {

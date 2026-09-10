@@ -7,10 +7,20 @@ terceira vez em diante, é só rodar.
 
 **O que este ambiente prova:** comportamento de trigger, CHECK, FK, ordem de
 execução, idempotência de migration.
-**O que ele NÃO prova:** RLS, grants, ACL, `verify_jwt`, PostgREST — tudo isso
-depende de Supabase de verdade. É por isso que o caso `NOTE-E` de
+**O que ele NÃO prova:** `verify_jwt` e PostgREST — isso depende de Supabase de
+verdade. É por isso que o caso `NOTE-E` de
 [../whatsapp-instances.integration.md](../whatsapp-instances.integration.md)
 continua pendente mesmo com NOTE-A..NOTE-D verdes.
+
+**Sobre RLS, grants e ACL:** a frase anterior deste README dizia que o ambiente
+não os provava. Aquilo descrevia o conjunto de ARQUIVOS que existia, não um
+limite do ambiente — o `00-bootstrap.sql` já cria os papéis
+`anon`/`authenticated`/`service_role`, então `set local role` mais
+`set local request.jwt.claims` exercitam policy, grant de tabela e ACL de função
+de verdade. É o que `09-advisor-hardening.sql` faz. O que segue fora do alcance
+local é a **exposição PostgREST**: essa metade é do
+[../../../scripts/audit-function-acl.ts](../../../scripts/audit-function-acl.ts)
+contra o projeto real.
 
 **Sem `pg_cron` e sem `pg_net`, de propósito:** treze migrations legadas embutem
 a URL de produção nos wrappers de cron, e um replay com as duas extensões
@@ -30,6 +40,9 @@ presentes agendaria jobs apontando para lá.
 | `06-controles-104.sql` | Os **três controles positivos** (104 e 105). Sem eles, "COST-2 passou", "END-1 passou" e "END-4 passou" não distinguem a guarda funcionando de teste sem força. |
 | `07-whatsapp-multiprovider.sql` | MP-1..18 + MP-5b/5c: backfill, CHECK/uniqueness, Vault RPC, claim fence/double-click, intenção/cutover, status Z-API/UazAPI, provider correto no ledger, dedupe por provider e ACL estática. |
 | `08-whatsapp-conversation-parity.sql` | CP: append idempotente com `last_message_at` monotônico, mensagem humana + handoff/lock atômicos, resolver de conversa serializado, validação de shape/tenant, liberação cercada do claim, cutover fail-closed sem prova de eco e ACL. |
+| `09a-advisor-bootstrap.sql` | O que a sequência do advisor precisa e o `00-bootstrap.sql` não tem: `unit_members`, `customers`, `reservations`, `waitlist`, `settings`, `is_public` nas duas tabelas de tenancy, `auth.uid()` lendo as duas formas de GUC, e as **sete funções extraídas verbatim de produção** (os 3 helpers + as 4 SECURITY DEFINER que os chamam pelo nome, na forma PRÉ-106). Substitui o `02-seed.sql` nesta sequência — o `02` insere em `whatsapp_instances`, que só existe depois da 087. |
+| `09-advisor-hardening.sql` | ACL-1..ACL-5 da migration 106: policy TO PUBLIC sobrevivendo ao `SET SCHEMA`, os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, e idempotência medida **através de duas execuções** do arquivo. |
+| `10-controles-106.sql` | Os dois **controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies. |
 
 ## Rodar
 
@@ -79,6 +92,41 @@ P -c "select ord, caso, veredito from t_res order by ord;"
 Ao terminar: `dropdb fase6c` e `pg_ctl stop`. Este banco é descartável e não
 tem relação nenhuma com produção nem com o Supabase do projeto.
 
+### Sequência da migration 106 (advisor)
+
+Banco próprio e independente do `fase6c` — **não usa o `02-seed.sql`**, que
+insere em `whatsapp_instances` e portanto exigiria a 087.
+
+```bash
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists advisor106
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres advisor106
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 -v ON_ERROR_STOP=1 "$@"; }
+
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/01-audit.sql
+P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
+
+# ANTES da migration, o 09 tem de FALHAR: `schema "app_private" does not exist`,
+# na criação da policy de acl_probe. É o RED que dá sentido ao GREEN.
+P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # esperado: ERROR
+
+P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # 1a passada
+# ACL-5 mede idempotência ATRAVÉS DE DUAS EXECUÇÕES: a 1a grava o snapshot de
+# `proacl` em t_acl_snap, a 2a compara. Reaplicar a 106 no meio é o que está
+# sendo medido — as duas leituras num único `do $$` veriam o mesmo estado.
+P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # 2a passada
+
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 \
+  -f supabase/tests/local-preflight/10-controles-106.sql   # SEM ON_ERROR_STOP
+# O 10 desfaz a reescrita de enter_waitlist de propósito — reaplicar a 106
+# restaura a versão real:
+P -f supabase/migrations/20260817230000_106_advisor_private_rls_helpers.sql
+
+P -c "select ord, caso, veredito from t_res order by ord;"   # 7 linhas, todas OK
+```
+
 ## O que os dois controles do `04` fazem
 
 **CONTROLE-1** reintroduz o CHECK `instance_id is not null` (a forma da 089) e
@@ -105,6 +153,26 @@ o defeito §2.3 reintroduzido. Os dois se desfazem reaplicando a 104.
 com a nota de B", que é o registro falso. Manter `ended_at` intacto é o que
 isola o que este controle mede. Restaurar exige reaplicar a **104 e depois a
 105**, nesta ordem.
+
+## O que os dois controles do `10` fazem
+
+**CONTROLE-6** reconstrói `enter_waitlist` a partir de `pg_get_functiondef` com
+uma única troca — `app_private.is_` volta a `public.is_` — e chama a função como
+membro autenticado: ela **estoura** com `function public.is_unit_member(uuid,
+uuid) does not exist`. É o defeito central desta fase reproduzido em vez de
+argumentado; sem ele, "ACL-2 passou" não significaria nada. Duas coisas o fazem
+medir: a definição vem do banco (redigitada à mão, erraria o tipo de retorno e
+falharia por outro motivo) e o claim JWT é setado (sem ele a função tomaria o
+ramo anon e não chamaria helper nenhum).
+
+**CONTROLE-7** responde **qual grant é load-bearing**, porque o rascunho desta
+fase supôs errado. Ele mede as duas metades: revogar `usage` no schema
+`app_private` de `anon` **não afeta** as policies — expressão de policy fica
+guardada resolvida por OID, e `USAGE` só governa procura de NOME; revogar
+`execute` da função **estoura 42501**, porque o privilégio de função é conferido
+na inicialização da expressão mesmo por OID. É por isso que a 106 move em vez de
+revogar, e é por isso que o `grant usage on schema` dela é defesa em
+profundidade, não a trava.
 
 ## O que CORR-1 e CORR-2 NÃO provam
 
