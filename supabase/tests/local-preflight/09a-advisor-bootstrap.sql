@@ -7,15 +7,27 @@
 -- por isso a sequência do advisor NÃO usa o `02`. O que falta está aqui, e nada
 -- aqui altera arquivo compartilhado com a outra sequência.
 --
--- ORIGEM DE CADA OBJETO. As OITO funções abaixo foram **extraídas verbatim de
--- produção** via `pg_get_functiondef(oid)` (projeto gbabxcrntkwgblgqsiit,
--- 2026-09-10) — os 3 helpers, as 4 SECURITY DEFINER que os chamam pelo nome e
--- `next_waitlist_code`, que `enter_waitlist` chama — na mesma disciplina que o
--- `01-audit.sql` declara no cabeçalho.
+-- ORIGEM DE CADA OBJETO. As OITO funções da migration 106 (3 helpers, as 4
+-- SECURITY DEFINER que os chamam pelo nome e `next_waitlist_code`, que
+-- `enter_waitlist` chama) foram **extraídas verbatim de produção** via
+-- `pg_get_functiondef(oid)` (projeto gbabxcrntkwgblgqsiit, 2026-09-10) — na
+-- mesma disciplina que o `01-audit.sql` declara no cabeçalho.
 -- Isso é o que dá força ao CONTROLE-6: ele reintroduz `public.is_*` num corpo
 -- REAL. Corpo parafraseado provaria apenas que a paráfrase quebra.
 -- As tabelas foram conferidas coluna a coluna contra
 -- `information_schema.columns` e `pg_indexes` do mesmo projeto — não inventadas.
+--
+-- MAIS QUATRO, para a Task 5 (migration 107): `get_reservation_by_code` e
+-- `get_customer_stats`, os dois overloads de cada — 12 funções ao todo. Não
+-- pertencem ao escopo da 106 (que só toca os 3 helpers e quem os chama), por
+-- isso não estavam aqui antes. ORIGEM DESTAS QUATRO: o MCP `execute_sql` contra
+-- gbabxcrntkwgblgqsiit estava com o token expirado nesta sessão (ver
+-- task-5-report.md); o fallback foi `supabase db dump --linked --schema public`
+-- (CLI, 2026-09-10) — pg_dump de verdade contra o projeto LINKED, leitura pura,
+-- nenhum `db push`/`apply_migration`/DDL executado. O dump emite a mesma
+-- definição que `pg_get_functiondef` leria, mais os GRANT/REVOKE reais tal como
+-- estão — é catálogo de produção, não reconstrução a partir de migration. Ainda
+-- assim fica marcado para reconferência quando o MCP voltar.
 --
 -- Rodar depois de `00-bootstrap.sql` e `01-audit.sql`, com ON_ERROR_STOP=1.
 
@@ -79,7 +91,11 @@ create table if not exists reservations (
   date             date not null,
   time             time without time zone not null,
   reservation_code text not null,
-  created_at       timestamptz not null default now()
+  created_at       timestamptz not null default now(),
+  -- `notes`/`updated_at`: lidas por get_reservation_by_code (Task 5); o resto
+  -- das 8 funções originais não toca nelas, por isso não estavam aqui antes.
+  notes            text,
+  updated_at       timestamptz not null default now()
 );
 
 create table if not exists waitlist (
@@ -500,6 +516,103 @@ grant execute on function public.anonymize_customer(uuid)                       
 grant execute on function public.get_customer_stats_bulk(uuid[], uuid)            to authenticated, service_role;
 grant execute on function public.get_undelivered_notifications(uuid, timestamptz) to authenticated, service_role;
 grant execute on function public.next_waitlist_code(uuid)                         to service_role;
+
+-- ─── As quatro RPCs da Task 5 (migration 107), verbatim de produção ──────────
+-- `get_customer_stats`/`get_reservation_by_code`, os dois overloads de cada.
+-- A 107 dropa só os de 1 argumento (sem caller); os de 2 ficam. As duas versões
+-- de cada precisam estar aqui: sem o overload de 1 argumento, `drop function if
+-- exists` da 107 seria um no-op vazio contra este ambiente, e não provaria nada
+-- sobre a migration em si — e o CONTROLE-8 precisa conseguir restaurar o que
+-- dropar de propósito, então a definição capturável tem de vir de um objeto que
+-- existe de verdade, não de uma migration redigitada.
+CREATE OR REPLACE FUNCTION public.get_customer_stats(p_customer_id uuid, p_unit_id uuid DEFAULT NULL::uuid)
+ RETURNS TABLE(total integer, confirmed integer, no_shows integer, cancelled integer, no_show_rate numeric, last_visit date)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  with r as (
+    select status, date from reservations
+    where customer_id = p_customer_id and (p_unit_id is null or unit_id = p_unit_id)
+  ),
+  agg as (
+    select count(*)::int as total,
+      count(*) filter (where status = 'confirmed')::int as confirmed,
+      count(*) filter (where status = 'no_show')::int as no_shows,
+      count(*) filter (where status = 'cancelled')::int as cancelled,
+      max(date) filter (where status in ('confirmed', 'no_show')) as last_visit
+    from r
+  )
+  select total, confirmed, no_shows, cancelled,
+    case when (confirmed + no_shows) > 0 then round(no_shows::numeric / (confirmed + no_shows), 3) else 0::numeric end,
+    last_visit
+  from agg;
+$function$;
+
+-- Overload de 1 argumento — a 107 dropa esta.
+CREATE OR REPLACE FUNCTION public.get_customer_stats(p_customer_id uuid)
+ RETURNS TABLE(total integer, confirmed integer, no_shows integer, cancelled integer, no_show_rate numeric, last_visit date)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select * from public.get_customer_stats(p_customer_id, null);
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_reservation_by_code(p_code text, p_unit_id uuid DEFAULT NULL::uuid)
+ RETURNS TABLE(id uuid, reservation_code text, date date, "time" time without time zone, party_size integer, status text, notes text, created_at timestamptz, updated_at timestamptz, customer_name text, customer_phone text, customer_email text)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select r.id, r.reservation_code, r.date, r.time, r.party_size, r.status, r.notes,
+         r.created_at, r.updated_at, c.name, c.phone, c.email
+  from reservations r
+  join customers c on c.id = r.customer_id
+  where r.reservation_code = upper(p_code)
+    and (p_unit_id is null or r.unit_id = p_unit_id)
+  limit 1;
+$function$;
+
+-- Overload de 1 argumento — a 107 dropa esta também.
+CREATE OR REPLACE FUNCTION public.get_reservation_by_code(p_code text)
+ RETURNS TABLE(id uuid, reservation_code text, date date, "time" time without time zone, party_size integer, status text, notes text, created_at timestamptz, updated_at timestamptz, customer_name text, customer_phone text, customer_email text)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select
+    r.id,
+    r.reservation_code,
+    r.date,
+    r.time,
+    r.party_size,
+    r.status,
+    r.notes,
+    r.created_at,
+    r.updated_at,
+    c.name,
+    c.phone,
+    c.email
+  from reservations r
+  join customers c on c.id = r.customer_id
+  where r.reservation_code = upper(p_code)
+  limit 1;
+$function$;
+
+-- ACL real (dump 2026-09-10): authenticated + service_role nas quatro, SEM
+-- anon — diferente das quatro SECURITY DEFINER acima, nenhuma destas serve o
+-- caminho público. `revoke ... from public` antes do grant pela mesma razão de
+-- sempre: CREATE FUNCTION concede EXECUTE a PUBLIC por default.
+revoke all on function public.get_customer_stats(uuid, uuid)          from public;
+revoke all on function public.get_customer_stats(uuid)                from public;
+revoke all on function public.get_reservation_by_code(text, uuid)     from public;
+revoke all on function public.get_reservation_by_code(text)           from public;
+
+grant execute on function public.get_customer_stats(uuid, uuid)       to authenticated, service_role;
+grant execute on function public.get_customer_stats(uuid)             to authenticated, service_role;
+grant execute on function public.get_reservation_by_code(text, uuid)  to authenticated, service_role;
+grant execute on function public.get_reservation_by_code(text)        to authenticated, service_role;
 
 grant select on waitlist to anon, authenticated;
 

@@ -96,6 +96,8 @@ const GRANT_RE =
 const REVOKE_PUBLIC_RE =
   /revoke\s+(?:all|execute)[^;]*?\son\s+function\s+(?:public\.)?([a-z0-9_]+)\s*\(([^)]*)\)\s*from\s+([^;]+);/gi;
 const BROAD_GRANT_RE = /grant\s+execute\s+on\s+all\s+functions\s+in\s+schema/i;
+const DROP_RE =
+  /drop\s+function\s+(?:if\s+exists\s+)?(?:public\.)?([a-z0-9_]+)\s*\(([^)]*)\)\s*;/gi;
 
 function migrationFiles(): string[] {
   return readdirSync(MIGRATIONS_DIR)
@@ -107,14 +109,24 @@ function versionOf(file: string): string {
   return file.split("_")[0];
 }
 
-function readMigration(file: string): string {
-  // Comentários de linha carregam SQL de exemplo (blocos de rollback e de
-  // verificação); contá-los como statement real produziria falso positivo.
-  return readFileSync(join(MIGRATIONS_DIR, file), "utf8")
+/**
+ * Comentários de linha carregam SQL de exemplo (blocos de rollback e de
+ * verificação); contá-los como statement real produziria falso positivo. Todo
+ * matching neste arquivo (grant, revoke E drop) passa por aqui primeiro — é o
+ * que garante que um `drop function` dentro de um comentário não isenta nada.
+ */
+function stripComments(raw: string): string {
+  return raw
     .split("\n")
     .filter((l) => !l.trimStart().startsWith("--"))
     .join("\n");
 }
+
+function readMigration(file: string): string {
+  return stripComments(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
+}
+
+const EXTERNAL_ROLES = ["anon", "authenticated", "public"];
 
 function grantsIn(file: string): GrantStmt[] {
   const sql = readMigration(file);
@@ -133,7 +145,82 @@ function grantsIn(file: string): GrantStmt[] {
   return out;
 }
 
-const EXTERNAL_ROLES = ["anon", "authenticated", "public"];
+/**
+ * `drop function` já sem comentário (`sql` sempre vem de `stripComments`,
+ * direto ou via `readMigration`) — mesma identidade do resto do arquivo:
+ * nome + aridade via `key`/`splitArgs`, nunca tipo.
+ */
+function dropsInSql(sql: string): { name: string; argCount: number }[] {
+  const out: { name: string; argCount: number }[] = [];
+  for (const m of sql.matchAll(DROP_RE)) {
+    out.push({ name: m[1], argCount: splitArgs(m[2]).length });
+  }
+  return out;
+}
+
+function dropsIn(file: string): { name: string; argCount: number }[] {
+  return dropsInSql(readMigration(file));
+}
+
+/**
+ * Assinaturas (name/argCount) dropadas por QUALQUER migration num dos
+ * `files` dados. Usada só com migrations POSTERIORES à 085 — ver o
+ * comentário em `unclassifiedHotfixGrants`.
+ */
+function droppedKeysIn(files: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const f of files) {
+    for (const d of dropsIn(f)) out.add(key(d.name, d.argCount));
+  }
+  return out;
+}
+
+/**
+ * O predicado central do describe "migration 085 vs allowlist": todo grant a
+ * anon/authenticated/PUBLIC feito pela 085 precisa de entrada na allowlist —
+ * EXCETO se uma migration posterior à 085 dropou aquela mesma assinatura
+ * (mesmo nome, MESMA aridade — dropar `f(uuid)` não isenta `f(uuid, uuid)`).
+ *
+ * POR QUÊ A EXCEÇÃO NÃO ABRE BRECHA PARA RECRIAÇÃO: se uma migration futura
+ * recriasse a função dropada e concedesse EXECUTE de novo, isso seria, por
+ * definição, um grant NOVO numa migration posterior à 085 — e o describe
+ * "migrations posteriores ao hotfix não reabrem a superfície" (mais abaixo
+ * neste arquivo) já exige entrada na allowlist para todo grant novo dessas,
+ * sem exceção. A propriedade continua garantida pelo checador irmão; por isso
+ * não há (nem foi adicionada) nenhuma lógica de ORDEM entre o drop e um
+ * eventual re-grant aqui — uma segunda noção de sequência dentro de um
+ * guardrail de segurança é mais risco do que o caso vale.
+ *
+ * Extraída como função pura (em vez de só o corpo do `it`) para que as duas
+ * pontas da exceção — "sem drop depois, a exigência original continua de pé"
+ * e "drop em aridade diferente não isenta a aridade concedida" — sejam
+ * provadas contra dados sintéticos, não só contra o estado atual das
+ * migrations reais.
+ */
+function unclassifiedHotfixGrants(
+  grants: GrantStmt[],
+  allow: Map<string, AllowEntry>,
+  droppedLater: Set<string>,
+): string[] {
+  const missing: string[] = [];
+  for (const g of grants) {
+    const external = g.roles.filter((r) => EXTERNAL_ROLES.includes(r));
+    if (external.length === 0) continue;
+    const k = key(g.name, g.argCount);
+    if (droppedLater.has(k)) continue;
+    const entry = allow.get(k);
+    if (!entry) {
+      missing.push(`${g.name}/${g.argCount} sem entrada na allowlist`);
+      continue;
+    }
+    for (const r of external) {
+      if (!entry.roles.includes(r)) {
+        missing.push(`${g.name}/${g.argCount} -> "${r}" que a allowlist não aprova`);
+      }
+    }
+  }
+  return missing;
+}
 
 describe("allowlist de ACL de funções", () => {
   it("está bem formada", () => {
@@ -161,6 +248,10 @@ describe("allowlist de ACL de funções", () => {
   });
 });
 
+/** Migrations com versão estritamente posterior à 085 — usada tanto para
+ * achar assinaturas dropadas depois da 085 quanto para o describe seguinte. */
+const posterioresFiles = migrationFiles().filter((f) => versionOf(f) > HOTFIX_VERSION);
+
 describe("migration 085 vs allowlist", () => {
   const file = migrationFiles().find((f) => versionOf(f) === HOTFIX_VERSION);
 
@@ -168,22 +259,61 @@ describe("migration 085 vs allowlist", () => {
     expect(file, `nenhuma migration com versão ${HOTFIX_VERSION}`).toBeTruthy();
   });
 
-  it("todo grant a anon/authenticated tem entrada na allowlist", () => {
-    for (const g of grantsIn(file!)) {
-      const external = g.roles.filter((r) => EXTERNAL_ROLES.includes(r));
-      if (external.length === 0) continue;
-      const entry = allowByKey.get(key(g.name, g.argCount));
-      expect(
-        entry,
-        `085 concede ${g.name}/${g.argCount} a [${external.join(", ")}] sem entrada na allowlist`,
-      ).toBeTruthy();
-      for (const r of external) {
-        expect(
-          entry!.roles,
-          `085 concede ${g.name}/${g.argCount} a "${r}", que a allowlist não aprova`,
-        ).toContain(r);
-      }
-    }
+  it("todo grant a anon/authenticated tem entrada na allowlist, exceto assinatura dropada depois", () => {
+    const droppedLater = droppedKeysIn(posterioresFiles);
+    const missing = unclassifiedHotfixGrants(grantsIn(file!), allowByKey, droppedLater);
+    expect(
+      missing,
+      "085 concede assinatura sem entrada na allowlist (e nenhuma migration posterior dropou):\n" +
+        missing.join("\n"),
+    ).toEqual([]);
+  });
+
+  // Os quatro casos abaixo provam a exceção em si, contra dados SINTÉTICOS —
+  // não dependem de nenhuma migration real continuar (ou deixar de) dropar
+  // algo. Sem eles, "o teste acima passou" não distingue a exceção
+  // funcionando da exceção tendo engolido o checador inteiro.
+  describe("a exceção de assinatura dropada depois da 085 (unclassifiedHotfixGrants)", () => {
+    it("assinatura concedida e NUNCA dropada depois continua exigindo entrada — a propriedade original", () => {
+      const grants: GrantStmt[] = [
+        { file: "fake", name: "nunca_dropada", argCount: 1, roles: ["authenticated"] },
+      ];
+      const missing = unclassifiedHotfixGrants(grants, new Map(), new Set());
+      expect(missing).toEqual(["nunca_dropada/1 sem entrada na allowlist"]);
+    });
+
+    it("drop numa aridade DIFERENTE não isenta a aridade que a 085 concedeu", () => {
+      const grants: GrantStmt[] = [
+        { file: "fake", name: "minha_funcao", argCount: 2, roles: ["authenticated"] },
+      ];
+      // Só a forma de 1 argumento foi dropada — a de 2 continua precisando de
+      // entrada. É exatamente o caso desta task: a 107 dropa os overloads de
+      // 1 argumento e NÃO toca nos de 2.
+      const droppedLater = dropsInSql("drop function if exists public.minha_funcao(p_x uuid);");
+      const droppedKeys = new Set(droppedLater.map((d) => key(d.name, d.argCount)));
+      const missing = unclassifiedHotfixGrants(grants, new Map(), droppedKeys);
+      expect(missing).toEqual(["minha_funcao/2 sem entrada na allowlist"]);
+    });
+
+    it("drop na MESMA aridade isenta a assinatura — o caso que a exceção existe para cobrir", () => {
+      const grants: GrantStmt[] = [
+        { file: "fake", name: "minha_funcao", argCount: 1, roles: ["authenticated"] },
+      ];
+      const droppedLater = dropsInSql("drop function if exists public.minha_funcao(p_x uuid);");
+      const droppedKeys = new Set(droppedLater.map((d) => key(d.name, d.argCount)));
+      const missing = unclassifiedHotfixGrants(grants, new Map(), droppedKeys);
+      expect(missing).toEqual([]);
+    });
+
+    it("drop function dentro de comentário não isenta nada — o matching passa por stripComments", () => {
+      // Mesma composição que dropsIn(file) usa de verdade: stripComments
+      // primeiro, dropsInSql depois. Uma linha comentada não deve nem chegar
+      // no regex.
+      const raw =
+        "-- drop function if exists public.minha_funcao(p_x uuid); (exemplo em bloco de rollback)\nselect 1;";
+      const dropped = dropsInSql(stripComments(raw));
+      expect(dropped).toEqual([]);
+    });
   });
 
   it("toda função pública allowlisted é revogada de PUBLIC antes de ser concedida", () => {
@@ -212,7 +342,9 @@ describe("migration 085 vs allowlist", () => {
 });
 
 describe("migrations posteriores ao hotfix não reabrem a superfície", () => {
-  const posteriores = migrationFiles().filter((f) => versionOf(f) > HOTFIX_VERSION);
+  // Mesma lista que droppedKeysIn(posterioresFiles) usa acima — uma lista só,
+  // não duas que podem divergir.
+  const posteriores = posterioresFiles;
 
   it("todo grant novo a anon/authenticated/PUBLIC está classificado", () => {
     const naoClassificados: string[] = [];

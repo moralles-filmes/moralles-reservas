@@ -43,6 +43,7 @@ presentes agendaria jobs apontando para lá.
 | `09a-advisor-bootstrap.sql` | O que a sequência do advisor precisa e o `00-bootstrap.sql` não tem: `unit_members`, `customers`, `reservations`, `waitlist`, `settings`, `is_public` nas duas tabelas de tenancy, `auth.uid()` lendo as duas formas de GUC, e as **oito funções extraídas verbatim de produção** (os 3 helpers, as 4 SECURITY DEFINER que os chamam pelo nome — na forma PRÉ-106 — e `next_waitlist_code`, que `enter_waitlist` chama). Reproduz também a ACL de produção de cada uma, revogando de PUBLIC antes de conceder: ACL local mais larga que a real esvaziaria o snapshot de `proacl` do ACL-5. Substitui o `02-seed.sql` nesta sequência — o `02` insere em `whatsapp_instances`, que só existe depois da 087. |
 | `09-advisor-hardening.sql` | ACL-1..ACL-5, ACL-1b e ACL-3b/3c/3d da migration 106: policy TO PUBLIC sobrevivendo ao `SET SCHEMA`, os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, idempotência medida **através de duas execuções** do arquivo, e os lados negativos — `ACL-1b` (não-membro vê zero, tenant cruzado não vaza) e `ACL-3b/3c/3d`, o lado de NEGAR das outras três funções: recusa cross-org na anonimização, recusa a não-membro no painel de Entregas, e agregado de outra organização não voltando na listagem de clientes. |
 | `10-controles-106.sql` | Os **quatro controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies; CONTROLE-9 sabota `is_unit_member`; CONTROLE-10 sabota `is_org_member` e vê o agregado de outro tenant vazar. |
+| `11-overloads-107.sql` | Task 5 (migration 107, Fase 2 do front de advisor): ACL-6 (ord 14) confere que os overloads de 2 argumentos sobrevivem à 107; CONTROLE-8 (ord 15) dropa o de 2 argumentos por engano, vê o call site real estourar, e restaura corpo + ACL de dentro do próprio caso. Roda no mesmo banco `advisor106`, ao final da sequência do advisor — não em banco separado. Os dois vivem no mesmo arquivo, com `ON_ERROR_STOP=1`: diferente de CONTROLE-6, CONTROLE-8 nunca deixa sabotagem residual para um reapply externo resolver, então não precisa da rede de segurança que os arquivos `NN-controles-*.sql` têm. |
 
 ## Rodar
 
@@ -148,10 +149,26 @@ P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # 2a passada
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 
 P -c "select ord, caso, veredito from t_res order by ord;"   # 13 linhas, todas OK
+
+# ── Task 5 (migration 107): dropar os dois overloads de RPC sem caller ──────
+# 11-overloads-107.sql roda no MESMO banco advisor106, apendado ao fim desta
+# sequência — não é "outro banco" como uma nota antiga deste README chegou a
+# dizer. ACL-6/CONTROLE-8 não dependem da 107 ter rodado (nenhum dos dois toca
+# os overloads de 1 argumento que ela dropa), então já dão OK aqui, ANTES da
+# migration existir:
+P -f supabase/tests/local-preflight/11-overloads-107.sql
+
+P -f supabase/migrations/20260910121000_107_drop_dead_rpc_overloads.sql
+
+# E continuam OK depois — é isso que prova que a 107 não encostou nos
+# overloads de 2 argumentos:
+P -f supabase/tests/local-preflight/11-overloads-107.sql
+
+P -c "select ord, caso, veredito from t_res order by ord;"   # 15 linhas, todas OK
 ```
 
 **Ordinais casam com o número do NOME do caso, não com a ordem de execução** —
-por isso o `order by ord` intercala casos do `09` com controles do `10`:
+por isso o `order by ord` intercala casos do `09`/`11` com controles do `10`:
 
 | ord | caso | arquivo |
 |---|---|---|
@@ -161,9 +178,18 @@ por isso o `order by ord` intercala casos do `09` com controles do `10`:
 | 9 | `CONTROLE-9` | `10` |
 | 10 | `CONTROLE-10` | `10` |
 | 11, 12, 13 | `ACL-3b`, `ACL-3c`, `ACL-3d` | `09` |
+| 14, 15 | `ACL-6`, `CONTROLE-8` | `11` |
 
-O ordinal **8 dos CONTROLES** está reservado ao `11-overloads-107.sql`, que vive
-em outro banco — daí os controles saltarem de 7 para 9.
+**Os ordinais 8 e 9 já estavam ocupados** por `ACL-1b` e `CONTROLE-9` quando a
+Task 5 chegou — uma nota anterior deste README reservava o 8 para o controle de
+overload errado, escrita antes de `09a-advisor-bootstrap.sql`/`09`/`10`
+existirem com essa numeração. `11-overloads-107.sql` usa 14 e 15, os primeiros
+ordinais livres depois de `ACL-3d` (13). Ele também é o motivo de
+`09a-advisor-bootstrap.sql` ter, além das oito funções da 106, mais quatro:
+`get_reservation_by_code`/`get_customer_stats` (os dois overloads de cada) —
+extraídas de produção via `supabase db dump --linked` (o MCP `execute_sql`
+estava com o token expirado quando a Task 5 rodou; ver
+`.superpowers/sdd/2026-08-17-advisor-warnings-hardening/task-5-report.md`).
 
 ## O que os dois controles do `04` fazem
 
@@ -246,8 +272,10 @@ desfaz a sabotagem por rollback. Nenhum caminho deixa helper permissivo de pé �
 o que importa aqui mais que nos outros dois, porque um helper permissivo
 esquecido faria **todo caso posterior naquele banco passar em silêncio**.
 
-O ordinal **8 está reservado** para o controle de overload errado que a fase
-acrescenta em `11-overloads-107.sql`; é por isso que este é o 9, e não o 8.
+Este é o 9, e não o 8, porque o 8 já pertencia a `ACL-1b` quando este arquivo
+foi escrito. O controle de overload errado que a Task 5 acrescenta em
+`11-overloads-107.sql` (`CONTROLE-8`, no nome — não no ordinal) usa 14 e 15; ver
+a tabela de ordinais acima.
 
 **CONTROLE-10** sabota o outro guard de tenant: `app_private.is_org_member`, que
 é o de `anonymize_customer` e `get_customer_stats_bulk`. Ele mede pelo `ACL-3d`

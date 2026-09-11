@@ -13,6 +13,15 @@
     "`args` tem que bater EXATAMENTE com pg_get_function_identity_arguments(oid)",
     "— é o que distingue overloads. Compare com a saída de audit_function_acl().",
     "",
+    "Assinatura DROPADA por uma migration posterior à 085 sai daqui — nada pode",
+    "executar uma função que não existe mais, então ela para de ser superfície",
+    "viva e para de precisar de classificação. scripts/function-acl-allowlist.test.ts",
+    "sabe disso: uma assinatura que a 085 concedeu e que uma migration posterior",
+    "dropa (mesmo nome, mesma aridade) fica isenta da exigência de entrada. Se uma",
+    "migration futura recriar e reconceder a mesma função, o próprio checador de",
+    "'migrations posteriores não reabrem a superfície' exige entrada nova — não é",
+    "preciso (nem vale) reinserir a entrada antiga só porque ela existiu um dia.",
+    "",
     "Origem da classificação: docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md"
   ],
 
@@ -112,12 +121,6 @@
       "why": "Busca por código no painel (src/hooks/useReservas.ts)."
     },
     {
-      "name": "get_reservation_by_code",
-      "args": "p_code text",
-      "roles": ["authenticated"],
-      "why": "Overload sem caller localizado no repositório. Mantido em authenticated para não quebrar consumidor não mapeado; candidato a remoção após confirmação."
-    },
-    {
       "name": "anonymize_customer",
       "args": "p_id uuid",
       "roles": ["authenticated"],
@@ -128,12 +131,6 @@
       "args": "p_customer_id uuid, p_unit_id uuid",
       "roles": ["authenticated"],
       "why": "Ficha do cliente no painel."
-    },
-    {
-      "name": "get_customer_stats",
-      "args": "p_customer_id uuid",
-      "roles": ["authenticated"],
-      "why": "Overload legado da ficha do cliente."
     },
     {
       "name": "get_customer_stats_bulk",
