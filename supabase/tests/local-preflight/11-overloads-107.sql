@@ -44,20 +44,23 @@ declare
   v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';  -- Unidade Advisor A
   v_cust uuid := 'eeeeeeee-0000-0000-0000-000000000004';  -- Cliente Stats, org A
   v_user uuid;
-  v_n    int;
 begin
   delete from t_res where ord = 14;
 
   select user_id into v_user from unit_members where unit_id = v_unit limit 1;
 
+  -- A asserção real é "não estourou" (o `exception when others` abaixo pega
+  -- tanto ACL negado quanto assinatura ausente) — nenhuma das duas chamadas
+  -- tem contagem esperada pra comparar, então nenhuma é impressa como se
+  -- tivesse sido conferida.
   perform set_config('request.jwt.claims', json_build_object('sub', v_user)::text, true);
   set local role authenticated;
-  select count(*) into v_n from get_customer_stats(v_cust, v_unit);
+  perform * from get_customer_stats(v_cust, v_unit);
   perform * from get_reservation_by_code('QUALQUER', v_unit);
   reset role;
 
   insert into t_res values (14, 'ACL-6 overloads de 2 args sobrevivem',
-    'OK (get_customer_stats devolveu ' || v_n || ' linha(s); get_reservation_by_code nao estourou)');
+    'OK (get_customer_stats e get_reservation_by_code nao estouraram como authenticated)');
 exception when others then
   reset role;
   insert into t_res values (14, 'ACL-6 overloads de 2 args sobrevivem', 'FALHOU: ' || sqlerrm);
@@ -79,7 +82,7 @@ end $$;
 -- nasceria com EXECUTE concedido a PUBLIC por default (a mesma razão pela qual
 -- este bootstrap inteiro revoga antes de conceder). Por isso o restore refaz
 -- as DUAS metades: o corpo (da captura de `pg_get_functiondef`) e o ACL
--- (`revoke`/`grant` explícitos), e só then confere que `authenticated` volta a
+-- (`revoke`/`grant` explícitos), e só então confere que `authenticated` volta a
 -- ver a RPC responder.
 --
 -- Nenhuma migration real restauraria isto: não existe migration que crie só

@@ -149,6 +149,17 @@ function grantsIn(file: string): GrantStmt[] {
  * `drop function` já sem comentário (`sql` sempre vem de `stripComments`,
  * direto ou via `readMigration`) — mesma identidade do resto do arquivo:
  * nome + aridade via `key`/`splitArgs`, nunca tipo.
+ *
+ * DIREÇÃO DE FALHA: `DROP_RE` é o primeiro padrão deste arquivo cujo falso
+ * positivo CONCEDE uma isenção em vez de ACRESCENTAR uma exigência — GRANT_RE
+ * e REVOKE_PUBLIC_RE casando de mais só fariam o teste exigir/reconhecer mais
+ * entrada na allowlist, nunca dispensar uma. `stripComments` só tira
+ * comentário de LINHA (`--`); um texto `drop function ...;` dentro do corpo
+ * `$$...$$` de uma função futura (exemplo em docstring, nome de variável,
+ * literal) leria como drop real e poderia isentar da allowlist um grant que
+ * continua vivo. Não é o caso de nenhuma migration hoje — checado —, mas quem
+ * mexer aqui de novo precisa saber que o risco é dispensar exigência, não só
+ * deixar de detectar.
  */
 function dropsInSql(sql: string): { name: string; argCount: number }[] {
   const out: { name: string; argCount: number }[] = [];
