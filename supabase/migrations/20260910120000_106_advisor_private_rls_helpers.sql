@@ -66,7 +66,7 @@
 -- 403 na reserva manual, na edição de reserva, no aviso de cancelamento e na
 -- mensagem manual. É a outra metade-aplicada desta fase, e é invisível no SQL.
 --
--- ═══ ROLLBACK — A ORDEM INVERSA TEM A MESMA ARMADILHA ═══════════════════════
+-- ═══ ROLLBACK — A ORDEM É O ESPELHO DA IDA, NÃO A REPETIÇÃO ═════════════════
 -- Quem desfaz isto está sob pressão e lendo ESTE arquivo, não o documento de
 -- design (spec §7). Então:
 --
