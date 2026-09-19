@@ -720,6 +720,125 @@ describe("UazAPI v2.1.1", () => {
     expect(mapUazApiConnectionStatus({ status: "connected" }).status).toBe("connected");
   });
 
+  // Envelope MEDIDO em produção (19/09/2026), não deduzido da documentação: o recibo
+  // chega em `event`, e `event.Type` usa vocabulário PascalCase próprio da UazAPI — não
+  // o enum do whatsmeow (""/delivery/read/played). Os casos acima, que põem
+  // `messageid`/`status` na raiz, descrevem uma forma que a UazAPI nunca enviou: ficaram
+  // verdes por 14 dias enquanto o painel Entregas estava 100% cego.
+  const receiptEnvelope = (event: Record<string, unknown>) => ({
+    EventType: "messages_update",
+    type: "ReadReceipt",
+    token: "instance-token-nao-usado-pelo-parser",
+    BaseUrl: "https://tenant.uazapi.example",
+    instanceName: "ren-sushi",
+    owner: "5514999998888",
+    state: "open",
+    event,
+  });
+
+  const baseReceipt = {
+    Chat: "5514999997777@s.whatsapp.net",
+    Sender: "5514999997777@s.whatsapp.net",
+    IsFromMe: false,
+    IsGroup: false,
+    Timestamp: 1_789_000_000,
+    chatid: "5514999997777@s.whatsapp.net",
+    chatlid: "123456789012345@lid",
+    sender_pn: "5514999997777@s.whatsapp.net",
+    sender_lid: "123456789012345@lid",
+  };
+
+  it("lê o recibo de entrega do envelope `event` medido em produção", () => {
+    expect(parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      Type: "Delivered",
+      MessageIDs: ["3EB0A1B2C3D4E5F60718"],
+    }))).toEqual([{ providerMessageId: "3EB0A1B2C3D4E5F60718", status: "delivered" }]);
+
+    expect(parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      Type: "Read",
+      MessageIDs: ["3EB0A1B2C3D4E5F60718"],
+    }))).toEqual([{ providerMessageId: "3EB0A1B2C3D4E5F60718", status: "read" }]);
+
+    // Áudio ouvido. Não observado em produção até 19/09/2026, mapeado por simetria
+    // com os outros providers (WAHA e Meta já tratam played como read).
+    expect(parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      Type: "Played",
+      MessageIDs: ["3EB0A1B2C3D4E5F60718"],
+    }))).toEqual([{ providerMessageId: "3EB0A1B2C3D4E5F60718", status: "read" }]);
+  });
+
+  it("devolve um StatusUpdate por entrada de MessageIDs", () => {
+    // Recibo é plural por natureza: o `Read` observado em produção carregou 6 ids.
+    expect(parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      Type: "Delivered",
+      MessageIDs: ["3EB0AAAA1111", "3EB0BBBB2222", "3EB0CCCC3333"],
+    }))).toEqual([
+      { providerMessageId: "3EB0AAAA1111", status: "delivered" },
+      { providerMessageId: "3EB0BBBB2222", status: "delivered" },
+      { providerMessageId: "3EB0CCCC3333", status: "delivered" },
+    ]);
+    // Entrada vazia/não-string é descartada sem derrubar as demais.
+    expect(parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      Type: "Delivered",
+      MessageIDs: ["3EB0AAAA1111", "", null, 42, "3EB0BBBB2222"],
+    }))).toEqual([
+      { providerMessageId: "3EB0AAAA1111", status: "delivered" },
+      { providerMessageId: "3EB0BBBB2222", status: "delivered" },
+    ]);
+  });
+
+  it("limita a rajada de ids para não amplificar escrita no webhook síncrono", () => {
+    // applyDeliveryStatus faz UPDATE sequencial por id dentro da resposta do webhook:
+    // um MessageIDs enorme estoura o timeout, o provider reentrega o mesmo payload e a
+    // fila daquele canal trava. O teto é folga de duas ordens sobre o máximo medido (6).
+    const ids = Array.from({ length: 900 }, (_, i) => `3EB0${String(i).padStart(16, "0")}`);
+    const parsed = parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      Type: "Delivered",
+      MessageIDs: ids,
+    }));
+    expect(parsed).toHaveLength(500);
+    expect(parsed?.[0]).toEqual({ providerMessageId: ids[0], status: "delivered" });
+    expect(parsed?.[499]).toEqual({ providerMessageId: ids[499], status: "delivered" });
+  });
+
+  it("descarta recibo com IsFromMe: a loja lendo as mensagens DO CLIENTE", () => {
+    // Medido: 7 recibos `Read` com IsFromMe true, carregando 6 ids de uma vez — o
+    // atendente abrindo a conversa no aparelho e zerando as não-lidas do cliente. Os
+    // ids ali são das mensagens que o cliente enviou, não das nossas; aplicá-los diria
+    // ao operador que a nossa mensagem foi lida.
+    expect(parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      IsFromMe: true,
+      Type: "Read",
+      MessageIDs: ["3EB0AAAA1111", "3EB0BBBB2222"],
+    }))).toBeNull();
+  });
+
+  it("não adivinha status desconhecido nem recibo sem id", () => {
+    expect(parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      Type: "Inventado",
+      MessageIDs: ["3EB0AAAA1111"],
+    }))).toBeNull();
+    expect(parseUazApiStatus(receiptEnvelope({
+      ...baseReceipt,
+      Type: "Delivered",
+      MessageIDs: [],
+    }))).toBeNull();
+    expect(parseUazApiStatus(receiptEnvelope({ ...baseReceipt, Type: "Delivered" }))).toBeNull();
+    // A guarda de EventType continua sendo o portão único.
+    expect(parseUazApiStatus({
+      ...receiptEnvelope({ ...baseReceipt, Type: "Delivered", MessageIDs: ["3EB0AAAA1111"] }),
+      EventType: "messages",
+    })).toBeNull();
+  });
+
   it("envia texto uma única vez no endpoint oficial e captura messageid", async () => {
     const fetchImpl = vi.fn(async () => new Response(
       JSON.stringify({ messageid: "uaz-outbound-1", status: "Sent" }),
