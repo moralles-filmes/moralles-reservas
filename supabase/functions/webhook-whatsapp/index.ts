@@ -55,6 +55,7 @@ import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/wha
 import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { splitMetaWebhookPayloadCore } from "../_shared/whatsapp-meta-batch-core.ts";
+import { shapeOf } from "../_shared/webhook-payload-shape-core.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
   genRequestId,
@@ -928,23 +929,6 @@ function identityShape(p: any): Record<string, unknown> {
     from_api: p.fromApi === true,
     is_group: p.isGroup === true,
   };
-}
-
-// Estrutura de um objeto ANINHADO: nomes de campo e TIPOS, nunca valores.
-// `keys` no nível raiz não bastou: a UazAPI entrega recibo de entrega/leitura
-// numa família de envelope que guarda o evento inteiro dentro de `event`, e sem
-// enxergar lá dentro não dá pra saber por que `parseStatusCallback` recusou.
-// Profundidade 1 é de propósito — o que interessa é onde moram os ids e o
-// status, não o objeto inteiro.
-function shapeOf(value: unknown, depth = 0): unknown {
-  if (Array.isArray(value)) return `array[${value.length}]`;
-  if (value && typeof value === "object") {
-    if (depth >= 1) return "object";
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value).slice(0, 25)) out[k] = shapeOf(v, depth + 1);
-    return out;
-  }
-  return typeof value;
 }
 
 // Sumário PRIVACY-SAFE do payload que caiu em `ignored_non_text` — só NOMES de
