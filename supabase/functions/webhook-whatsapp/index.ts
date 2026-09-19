@@ -930,6 +930,23 @@ function identityShape(p: any): Record<string, unknown> {
   };
 }
 
+// Estrutura de um objeto ANINHADO: nomes de campo e TIPOS, nunca valores.
+// `keys` no nível raiz não bastou: a UazAPI entrega recibo de entrega/leitura
+// numa família de envelope que guarda o evento inteiro dentro de `event`, e sem
+// enxergar lá dentro não dá pra saber por que `parseStatusCallback` recusou.
+// Profundidade 1 é de propósito — o que interessa é onde moram os ids e o
+// status, não o objeto inteiro.
+function shapeOf(value: unknown, depth = 0): unknown {
+  if (Array.isArray(value)) return `array[${value.length}]`;
+  if (value && typeof value === "object") {
+    if (depth >= 1) return "object";
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value).slice(0, 25)) out[k] = shapeOf(v, depth + 1);
+    return out;
+  }
+  return typeof value;
+}
+
 // Sumário PRIVACY-SAFE do payload que caiu em `ignored_non_text` — só NOMES de
 // chave, flags booleanas e o discriminador de tipo/evento; nunca conteúdo,
 // telefone ou credencial. Sem isso o outcome é um ponto cego: é o 2º evento
@@ -952,6 +969,18 @@ function describeIgnoredPayload(provider: WhatsAppProvider, payload: any): Recor
       keys: Object.keys(p).slice(0, 30),
       type: typeof (metaMsg?.type ?? p.type) === "string" ? (metaMsg?.type ?? p.type) : null,
       event: typeof payload.event === "string" ? payload.event : null,
+      // Discriminador de FAMÍLIA de envelope do provedor (ex.: "messages" x
+      // "messages_update" na UazAPI), não é dado do cliente. É ele que decide
+      // qual parser roda — e o que `keys` sozinho não revelava.
+      event_type: typeof p.EventType === "string" ? p.EventType : null,
+      // Só a FORMA do evento aninhado (nomes + tipos). É aqui que a UazAPI põe
+      // os ids e o status de um recibo, e é o que falta pra escrever o parser.
+      nested_shape: p.event && typeof p.event === "object" ? shapeOf(p.event) : null,
+      // Enum de recibo do whatsmeow ("", "delivery", "read", "read-self",
+      // "played", ...) — é ELE que separa entregue de lida. String vazia é um
+      // valor legítimo (entrega), por isso `null` só quando o campo não existe.
+      receipt_type: typeof p.event?.Type === "string" ? p.event.Type : null,
+      receipt_from_me: typeof p.event?.IsFromMe === "boolean" ? p.event.IsFromMe : null,
       // Enum do provedor (SENT/RECEIVED/READ/READ_BY_ME/...), não é dado do cliente.
       // É o discriminador de qual status o mapa de whatsapp-status.ts não cobre.
       status: typeof p.status === "string" ? p.status : null,
