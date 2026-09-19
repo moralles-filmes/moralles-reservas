@@ -836,9 +836,64 @@ function mapOfficialStatus(value: string): DeliveryStatus | null {
   return null;
 }
 
+// Vocabulário de recibo da UazAPI, MEDIDO em produção (19/09/2026), não deduzido da
+// documentação: é PascalCase próprio do provider, NÃO o enum do whatsmeow
+// (""/"delivery"/"read"/"played"). Escrever o mapa a partir da doc do whatsmeow
+// produziria um parser que não casa com nada, com testes verdes sobre enum inventado.
+// "Played" (áudio ouvido) ainda não foi observado; mapeado por simetria com WAHA/Meta.
+const MAX_UAZAPI_RECEIPT_IDS = 500;
+
+function mapUazApiReceiptType(value: string): DeliveryStatus | null {
+  const type = value.trim().toLowerCase();
+  if (type === "delivered") return "delivered";
+  if (type === "read" || type === "played") return "read";
+  return null;
+}
+
+// Duas famílias de envelope convivem sob `EventType: "messages_update"`:
+//
+//  • RECIBO (a única observada em produção): payload em `event`, com `Type` no
+//    vocabulário acima e `MessageIDs: string[]` — plural por natureza, um recibo
+//    `Read` medido carregava 6 ids de uma vez.
+//  • MENSAGEM (documentada, nunca observada): schema Message em `message`/`data`/raiz,
+//    com `messageid` + `status`. Preservada: removê-la seria regressão não forçada.
+//
+// `event.IsFromMe` diz quem EMITIU o recibo, não de quem é a mensagem confirmada:
+// `true` é a própria loja zerando pelo aparelho as não-lidas DO CLIENTE, e os ids ali
+// são das mensagens que o cliente enviou. Aplicá-los afirmaria ao operador que a NOSSA
+// mensagem foi lida.
+//
+// O que impede recibo alheio de contaminar o painel NÃO é esse filtro: é a correlação
+// por (unit_id, whatsapp_provider, whatsapp_channel_id, provider_message_id) em
+// `applyDeliveryStatus`, que simplesmente não casa linha nenhuma. O filtro é correção
+// semântica e defesa em profundidade.
 // deno-lint-ignore no-explicit-any
 export function parseUazApiStatus(p: any): StatusUpdate[] | null {
   if (p?.EventType !== "messages_update") return null;
+
+  const receipt = p?.event;
+  if (receipt && typeof receipt === "object" && !Array.isArray(receipt)) {
+    if (receipt.IsFromMe === true) return null;
+    const receiptStatus = mapUazApiReceiptType(String(receipt.Type ?? ""));
+    if (!receiptStatus) return null;
+    // Teto defensivo: `applyDeliveryStatus` faz UPDATE sequencial por id (dois quando
+    // `read`) dentro da resposta síncrona do webhook, então um `MessageIDs` enorme vira
+    // amplificação de escrita — a function estoura o timeout, o provider reentrega o
+    // MESMO payload e a fila daquele canal trava nele. `MessageIDs` agrupa só recibos do
+    // mesmo chat/remetente/instante, logo é limitado pelo que enviamos a UM cliente:
+    // o máximo medido é 6, e o batch grande de verdade (loja zerando não-lidas) já sai
+    // pelo filtro de `IsFromMe` acima. 500 é folga de duas ordens de grandeza.
+    const ids = Array.isArray(receipt.MessageIDs)
+      ? receipt.MessageIDs.slice(0, MAX_UAZAPI_RECEIPT_IDS)
+      : [];
+    const updates: StatusUpdate[] = [];
+    for (const rawId of ids) {
+      const messageId = nonEmptyString(rawId);
+      if (messageId) updates.push({ providerMessageId: messageId, status: receiptStatus });
+    }
+    return updates.length ? updates : null;
+  }
+
   const message = uazApiMessageFromEnvelope(p);
   const id = nonEmptyString(message?.messageid);
   const nativeStatus = String(message?.status ?? "").toLowerCase();
