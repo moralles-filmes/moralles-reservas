@@ -140,13 +140,87 @@ interface GrantStmt {
   roles: string[];
 }
 
-const GRANT_RE =
-  /grant\s+execute\s+on\s+function\s+(?:public\.)?([a-z0-9_]+)\s*\(([^)]*)\)\s*to\s+([^;]+);/gi;
-const REVOKE_PUBLIC_RE =
-  /revoke\s+(?:all|execute)[^;]*?\son\s+function\s+(?:public\.)?([a-z0-9_]+)\s*\(([^)]*)\)\s*from\s+([^;]+);/gi;
+/**
+ * Lista de argumentos de uma assinatura, com UM nível de parênteses aninhado —
+ * o bastante para tipo com precisão (`numeric(10,2)`, `varchar(255)`,
+ * `character varying(255)`).
+ *
+ * O padrão anterior era `([^)]*)`, que NÃO casa nenhuma dessas formas: `[^)]*`
+ * para no primeiro `)`, o `\)` seguinte cai sobre o `2` em vez do
+ * fecha-parênteses, e o match INTEIRO falha — o statement vira invisível. Ver
+ * a nota de direção de falha abaixo, que é o defeito que isso corrige.
+ *
+ * A troca é ampliação ESTRITA: conferido contra as migrations reais, zero
+ * diferença de match nos três padrões (nenhuma usa tipo com precisão em
+ * grant/revoke/drop hoje), e as formas com parênteses passam a casar.
+ * `numeric[]` já casava nos dois. A aridade não infla com a vírgula de dentro
+ * dos parênteses porque `splitArgs` conta profundidade.
+ */
+const FN_ARGS = String.raw`((?:[^()]|\([^()]*\))*)`;
+
+/**
+ * ─── DIREÇÃO DE FALHA DOS TRÊS PADRÕES — leia antes de mexer em qualquer um ──
+ *
+ * Não é "casar de mais é o único risco", que é o que esta nota dizia antes e
+ * está errado na direção que importa. Cada padrão alimenta uma EXIGÊNCIA ou uma
+ * ISENÇÃO, e é isso que decide qual direção abre brecha — elas não são a mesma
+ * nos três:
+ *
+ * • GRANT_RE alimenta uma EXIGÊNCIA (todo grant a papel externo precisa de
+ *   entrada na allowlist).
+ *     – NÃO casar um grant real ⇒ grant INVISÍVEL ⇒ zero exigência ⇒ FALHA
+ *       ABERTA. Era o estado real: `([^)]*)` não casava
+ *       `grant execute on function public.f(numeric(10,2)) to anon;` nem
+ *       `varchar(255)`, então um grant a `anon` numa função com tipo de
+ *       precisão passava sem pedir classificação nenhuma. Fechado por
+ *       `FN_ARGS`, com controle positivo mais abaixo neste arquivo.
+ *     – casar de MAIS ⇒ exige entrada que talvez não precisasse ⇒ ruído, falha
+ *       FECHADA.
+ *   O que AINDA escapa, por escolha de escopo: schema diferente de `public`
+ *   (`grant execute on function app_private.f(uuid) to anon;` é invisível aqui
+ *   — `(?:public\.)?([a-z0-9_]+)\s*\(` não casa um qualificador que não seja
+ *   `public.`), e statement sem `;`.
+ *
+ * • REVOKE_PUBLIC_RE alimenta uma ISENÇÃO (a função consta como revogada de
+ *   PUBLIC). Polaridade INVERTIDA em relação ao GRANT_RE:
+ *     – casar de MAIS ⇒ isenção falsa ⇒ FALHA ABERTA. A frase anterior desta
+ *       nota — "GRANT_RE e REVOKE_PUBLIC_RE casando de mais só fariam o teste
+ *       exigir/reconhecer mais entrada, nunca dispensar uma" — erra exatamente
+ *       aqui: reconhecer um revoke a mais DISPENSA a exigência de revoke.
+ *     – NÃO casar ⇒ cobra um revoke que existe ⇒ ruído, falha FECHADA (mesma
+ *       forma de truncamento do GRANT_RE, consequência oposta).
+ *
+ * • DROP_RE alimenta uma ISENÇÃO (assinatura dropada depois da 085 dispensa
+ *   entrada). Mesma polaridade do REVOKE_PUBLIC_RE: casar de MAIS é FALHA
+ *   ABERTA, não casar é ruído. Ver também a nota em `dropsInSql`.
+ *
+ * VALE PARA OS TRÊS: `stripComments` remove só comentário de LINHA (`--`). Um
+ * comentário de BLOCO (abre com `/*`) contendo `drop function ...;` ou
+ * `revoke all ... from public;` seria lido como statement REAL e concederia
+ * isenção de verdade — e o mesmo vale para esse texto dentro de um corpo
+ * `$$...$$` (docstring, literal, nome de variável). Nenhuma migration usa
+ * comentário de bloco hoje — conferido —, e há um caso adiante que fixa essa
+ * lacuna por escrito em vez de deixá-la implícita.
+ */
+const GRANT_RE = new RegExp(
+  String.raw`grant\s+execute\s+on\s+function\s+(?:public\.)?([a-z0-9_]+)\s*\(` +
+    FN_ARGS +
+    String.raw`\)\s*to\s+([^;]+);`,
+  "gi",
+);
+const REVOKE_PUBLIC_RE = new RegExp(
+  String.raw`revoke\s+(?:all|execute)[^;]*?\son\s+function\s+(?:public\.)?([a-z0-9_]+)\s*\(` +
+    FN_ARGS +
+    String.raw`\)\s*from\s+([^;]+);`,
+  "gi",
+);
 const BROAD_GRANT_RE = /grant\s+execute\s+on\s+all\s+functions\s+in\s+schema/i;
-const DROP_RE =
-  /drop\s+function\s+(?:if\s+exists\s+)?(?:public\.)?([a-z0-9_]+)\s*\(([^)]*)\)\s*;/gi;
+const DROP_RE = new RegExp(
+  String.raw`drop\s+function\s+(?:if\s+exists\s+)?(?:public\.)?([a-z0-9_]+)\s*\(` +
+    FN_ARGS +
+    String.raw`\)\s*;`,
+  "gi",
+);
 
 function migrationFiles(): string[] {
   return readdirSync(MIGRATIONS_DIR)
@@ -177,8 +251,14 @@ function readMigration(file: string): string {
 
 const EXTERNAL_ROLES = ["anon", "authenticated", "public"];
 
-function grantsIn(file: string): GrantStmt[] {
-  const sql = readMigration(file);
+/**
+ * `sql` já sem comentário de linha. Extraída de `grantsIn` para que o controle
+ * positivo do `FN_ARGS` possa ir do TEXTO SQL até a exigência
+ * (`unclassifiedHotfixGrants`) sem precisar de arquivo em disco — provar só que
+ * "o regex casa" deixaria de fora a parte que importa, que é a exigência
+ * chegar a existir.
+ */
+function grantsInSql(sql: string, file: string): GrantStmt[] {
   const out: GrantStmt[] = [];
   for (const m of sql.matchAll(GRANT_RE)) {
     out.push({
@@ -194,21 +274,28 @@ function grantsIn(file: string): GrantStmt[] {
   return out;
 }
 
+function grantsIn(file: string): GrantStmt[] {
+  return grantsInSql(readMigration(file), file);
+}
+
 /**
  * `drop function` já sem comentário (`sql` sempre vem de `stripComments`,
  * direto ou via `readMigration`) — mesma identidade do resto do arquivo:
  * nome + aridade via `key`/`splitArgs`, nunca tipo.
  *
- * DIREÇÃO DE FALHA: `DROP_RE` é o primeiro padrão deste arquivo cujo falso
- * positivo CONCEDE uma isenção em vez de ACRESCENTAR uma exigência — GRANT_RE
- * e REVOKE_PUBLIC_RE casando de mais só fariam o teste exigir/reconhecer mais
- * entrada na allowlist, nunca dispensar uma. `stripComments` só tira
- * comentário de LINHA (`--`); um texto `drop function ...;` dentro do corpo
- * `$$...$$` de uma função futura (exemplo em docstring, nome de variável,
- * literal) leria como drop real e poderia isentar da allowlist um grant que
- * continua vivo. Não é o caso de nenhuma migration hoje — checado —, mas quem
- * mexer aqui de novo precisa saber que o risco é dispensar exigência, não só
- * deixar de detectar.
+ * DIREÇÃO DE FALHA: `DROP_RE` casando de MAIS concede uma isenção em vez de
+ * acrescentar uma exigência — é falha ABERTA, e é o risco a ter em mente aqui.
+ * Um texto `drop function ...;` dentro do corpo `$$...$$` de uma função futura
+ * (exemplo em docstring, nome de variável, literal) ou dentro de comentário de
+ * bloco leria como drop real e isentaria da allowlist um grant que continua
+ * vivo; `stripComments` só tira comentário de LINHA (`--`). Não é o caso de
+ * nenhuma migration hoje — checado.
+ *
+ * NÃO é o único padrão com essa polaridade, ao contrário do que esta nota
+ * afirmava: `REVOKE_PUBLIC_RE` tem a mesma, e `GRANT_RE` tem a oposta, com o
+ * risco no lado de NÃO casar. A análise dos três, junto com a forma concreta
+ * que escapava, está na nota acima das três constantes — é lá que se lê antes
+ * de mexer em qualquer uma delas.
  */
 function dropsInSql(sql: string): { name: string; argCount: number }[] {
   const out: { name: string; argCount: number }[] = [];
@@ -535,6 +622,106 @@ describe("migrations posteriores ao hotfix não reabrem a superfície", () => {
       expect(BROAD_GRANT_RE.test(readMigration(f)), `${f} concede EXECUTE ao schema inteiro`).toBe(false);
     }
   });
+});
+
+/**
+ * Prova a correção do `FN_ARGS` e fixa as duas lacunas que continuam abertas.
+ * Cada caso compara contra o padrão ANTIGO escrito aqui à mão: sem isso,
+ * "o padrão novo casa" não distingue uma correção de um padrão que sempre casou
+ * e nunca teve defeito nenhum.
+ */
+describe("FN_ARGS — tipo com parênteses não é mais invisível ao GRANT_RE", () => {
+  /** O `([^)]*)` que estava no lugar do `FN_ARGS`, só como controle. */
+  const ARGS_ANTIGO = String.raw`([^)]*)`;
+  const GRANT_RE_ANTIGO = new RegExp(
+    String.raw`grant\s+execute\s+on\s+function\s+(?:public\.)?([a-z0-9_]+)\s*\(` +
+      ARGS_ANTIGO +
+      String.raw`\)\s*to\s+([^;]+);`,
+    "gi",
+  );
+
+  it(
+    "CONTROLE POSITIVO: grant a anon numa função com tipo de precisão era INVISÍVEL " +
+      "(falha ABERTA) e agora produz exigência de classificação",
+    () => {
+      const sql = "grant execute on function public.oraculo(numeric(10,2)) to anon;";
+
+      // O defeito, demonstrado: o padrão antigo não vê este grant.
+      expect(
+        [...sql.matchAll(GRANT_RE_ANTIGO)],
+        "o padrão antigo não casava — grant a anon passava sem exigir nada",
+      ).toEqual([]);
+
+      // A correção, ponta a ponta: do texto SQL até a exigência.
+      const grants = grantsInSql(sql, "fake.sql");
+      expect(grants).toEqual([
+        { file: "fake.sql", name: "oraculo", argCount: 1, roles: ["anon"] },
+      ]);
+      const missing = unclassifiedHotfixGrants(grants, new Map(), new Set());
+      expect(missing).toEqual(["oraculo/1 sem entrada na allowlist"]);
+    },
+  );
+
+  it("a vírgula DENTRO dos parênteses não infla a aridade — `numeric(10,2)` é 1 argumento", () => {
+    // `splitArgs` conta profundidade; se contasse vírgulas cruas, a chave viraria
+    // `oraculo/2` e nunca casaria a entrada certa da allowlist.
+    expect(splitArgs("numeric(10,2)")).toEqual(["numeric(10,2)"]);
+    expect(splitArgs("uuid, numeric(10,2), text")).toEqual(["uuid", "numeric(10,2)", "text"]);
+  });
+
+  it("`varchar(255)` também era invisível; e `numeric[]`, que já casava, continua casando igual", () => {
+    const comPrecisao = "grant execute on function public.f(varchar(255)) to authenticated;";
+    expect([...comPrecisao.matchAll(GRANT_RE_ANTIGO)]).toEqual([]);
+    expect(grantsInSql(comPrecisao, "fake.sql").map((g) => g.argCount)).toEqual([1]);
+
+    const comArray = "grant execute on function public.f(numeric[]) to anon;";
+    expect([...comArray.matchAll(GRANT_RE_ANTIGO)].length).toBe(1);
+    expect(grantsInSql(comArray, "fake.sql")).toEqual([
+      { file: "fake.sql", name: "f", argCount: 1, roles: ["anon"] },
+    ]);
+  });
+
+  it("REVOKE_PUBLIC_RE e DROP_RE ganharam a mesma correção — os três padrões usam FN_ARGS", () => {
+    const revoked = new Set<string>();
+    for (const m of "revoke all on function public.f(numeric(10,2)) from public;".matchAll(
+      REVOKE_PUBLIC_RE,
+    )) {
+      const targets = m[3].split(",").map((t) => t.trim().toLowerCase());
+      if (targets.includes("public")) revoked.add(key(m[1], splitArgs(m[2]).length));
+    }
+    expect([...revoked]).toEqual(["f/1"]);
+
+    expect(dropsInSql("drop function if exists public.f(numeric(10,2));")).toEqual([
+      { name: "f", argCount: 1 },
+    ]);
+  });
+
+  it(
+    "LACUNA CONHECIDA, fixada por escrito: comentário de BLOCO não é removido, então um " +
+      "`drop function` dentro dele concede isenção de VERDADE",
+    () => {
+      // `stripComments` só conhece `--`. Este caso descreve o comportamento
+      // ATUAL, não o desejado: se alguém ensinar stripComments a remover
+      // comentário de bloco, ele reprova — e aí a correção é trocar a
+      // expectativa para `[]` e apagar este parágrafo, não relaxar o teste.
+      const raw = "/*\ndrop function if exists public.minha_funcao(p_x uuid);\n*/\nselect 1;";
+      expect(dropsInSql(stripComments(raw))).toEqual([{ name: "minha_funcao", argCount: 1 }]);
+    },
+  );
+
+  it(
+    "LACUNA CONHECIDA, fixada por escrito: grant em schema que não é `public` é invisível " +
+      "ao GRANT_RE — o escopo deste checador é `public`",
+    () => {
+      // Não é descuido: `audit_function_acl()` varre só `public`, e o que
+      // protege `app_private` são os dois describes do fim deste arquivo (revoke
+      // de PUBLIC na criação, e nenhum privilégio de schema a papel público).
+      // Se algum dia o escopo crescer, este caso reprova e obriga a decidir.
+      expect(
+        grantsInSql("grant execute on function app_private.f(uuid) to anon;", "fake.sql"),
+      ).toEqual([]);
+    },
+  );
 });
 
 /**
