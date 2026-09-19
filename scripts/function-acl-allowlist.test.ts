@@ -899,3 +899,187 @@ describe("os três helpers de RLS não são recriados em public (106)", () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * `grant <privilégios> on schema <lista> to <papéis>;`
+ *
+ * A lista de schemas é capturada como lista, não como nome único, porque
+ * `GRANT ... ON SCHEMA a, b TO c` é SQL válido: casar só `on\s+schema\s+
+ * app_private\s+to` deixaria `on schema app_private, public to anon` passar
+ * sem match nenhum — falha ABERTA por uma vírgula. O `;` final é a barreira
+ * natural entre statements (`[^;]` nunca atravessa um), então nenhum dos três
+ * grupos vaza para o statement vizinho.
+ */
+const SCHEMA_GRANT_RE = /grant\s+([^;]*?)\bon\s+schema\s+([^;]*?)\s+to\s+([^;]+);/gi;
+
+/** Lista SQL separada por vírgula → itens minúsculos, sem aspas nem espaço. */
+function splitSqlList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((x) => x.trim().toLowerCase().replace(/^"(.*)"$/, "$1"))
+    .filter(Boolean);
+}
+
+interface SchemaGrant {
+  file: string;
+  privileges: string;
+  schemas: string[];
+  roles: string[];
+}
+
+function schemaGrantsIn(sql: string, file: string): SchemaGrant[] {
+  const out: SchemaGrant[] = [];
+  for (const m of sql.matchAll(SCHEMA_GRANT_RE)) {
+    out.push({
+      file,
+      // Normalizado (minúsculo, espaço único) como schemas e papéis — a
+      // mensagem de reprovação não deve variar com a caixa de quem escreveu.
+      privileges: m[1].trim().toLowerCase().replace(/\s+/g, " "),
+      schemas: splitSqlList(m[2]),
+      roles: splitSqlList(m[3]),
+    });
+  }
+  return out;
+}
+
+/**
+ * Qualquer privilégio de schema em `app_private` concedido a
+ * `anon`/`authenticated`/`public`.
+ *
+ * NÃO filtra pelo privilégio de propósito. USAGE é o que destranca a chamada
+ * por nome e é o caso da task; ALL contém USAGE; e CREATE, que não contém, é
+ * pior ainda (deixaria papel público criar objeto DENTRO do schema privado).
+ * Não existe privilégio de schema que esses três papéis devam ter aqui, então
+ * a pergunta certa é "concedeu algo?", não "concedeu USAGE?". O privilégio
+ * entra na mensagem para quem for ler a reprovação.
+ */
+function appPrivateGrantsToPublicRoles(grants: SchemaGrant[]): string[] {
+  const ofensas: string[] = [];
+  for (const g of grants) {
+    if (!g.schemas.includes("app_private")) continue;
+    const externos = g.roles.filter((r) => EXTERNAL_ROLES.includes(r));
+    if (externos.length === 0) continue;
+    ofensas.push(
+      `${g.file}: grant ${g.privileges} on schema app_private to ${externos.join(", ")}`,
+    );
+  }
+  return ofensas;
+}
+
+/**
+ * ─── A última tranca: `anon`/`authenticated` sem USAGE em `app_private` ─────
+ *
+ * A 106 (linhas 31-35) nomeia UM evento como capaz de desfazer a migration
+ * inteira: `app_private` entrar por engano na lista de Exposed schemas da API.
+ * Nada detectava a preparação desse cenário, e é isto.
+ *
+ * POR QUE A AUSÊNCIA DE USAGE É A ÚLTIMA TRANCA, e não redundância. O move NÃO
+ * mexeu na ACL das funções — ela vive na linha de `pg_proc` e viaja com o `SET
+ * SCHEMA` —, então `app_private.is_unit_member` AINDA carrega EXECUTE para
+ * `anon`. Isso é deliberado: 24 das 42 policies que a referenciam são `TO
+ * PUBLIC`, o EXECUTE é conferido em tempo de execução, e revogá-lo faria a
+ * query ESTOURAR com `permission denied for function` (42501) em vez de negar
+ * linha. Ou seja: se o schema for exposto, o EXECUTE já está lá e a única coisa
+ * que ainda segura o oráculo é o papel não ter USAGE no schema — a tentativa
+ * morre em `permission denied for schema app_private`.
+ *
+ * POR QUE CONCEDER NÃO COMPRA NADA. USAGE de schema só é consultado em caminho
+ * de RESOLUÇÃO DE NOME. Expressão de policy guardada no catálogo já está
+ * resolvida: ela referencia a função por OID e nunca toma esse caminho — daí a
+ * suíte de pré-voo da 106 rodar inteira com `anon` SEM USAGE aqui e ACL-1
+ * (policy `TO PUBLIC`), ACL-1b (tenant cruzado) e ACL-4 (fila pública ponta a
+ * ponta) seguirem verdes, enquanto CONTROLE-7b mostra que quem quebra de fato é
+ * revogar o EXECUTE. Então o grant é custo puro: zero ganho de funcionamento,
+ * e entrega a tranca. É o mesmo princípio de coluna da 086 — coisa nova nasce
+ * INVISÍVEL para `anon`.
+ *
+ * O QUE NÃO ALCANÇA: `alter default privileges ... grant usage on schemas to
+ * anon` (SCHEMAS no plural) atinge schema FUTURO, não o `app_private` que já
+ * existe, então não é este vetor. E grant feito fora de migration (dashboard,
+ * psql) é a lacuna estrutural de todo este arquivo — quem enxerga aquilo é o
+ * guardrail com banco.
+ */
+describe("app_private nunca concede privilégio de schema a papel público (106)", () => {
+  it("CONTROLE POSITIVO: `grant usage ... to anon` reprova, nomeando arquivo e papel", () => {
+    const ofensas = appPrivateGrantsToPublicRoles(
+      schemaGrantsIn("grant usage on schema app_private to anon;", "fake.sql"),
+    );
+    expect(ofensas).toEqual(["fake.sql: grant usage on schema app_private to anon"]);
+  });
+
+  it("CONTROLE POSITIVO: `grant all`, lista de papéis e quebra de linha — os três juntos", () => {
+    const ofensas = appPrivateGrantsToPublicRoles(
+      schemaGrantsIn(
+        "GRANT   ALL\n  ON   SCHEMA   app_private\n  TO   service_role,\n  anon ,  authenticated ;",
+        "fake.sql",
+      ),
+    );
+    expect(ofensas).toEqual(["fake.sql: grant all on schema app_private to anon, authenticated"]);
+  });
+
+  it("CONTROLE POSITIVO: schema listado ao lado de outro não escapa por causa da vírgula", () => {
+    const ofensas = appPrivateGrantsToPublicRoles(
+      schemaGrantsIn("grant usage on schema app_private, public to authenticated;", "fake.sql"),
+    );
+    expect(ofensas).toEqual([
+      "fake.sql: grant usage on schema app_private to authenticated",
+    ]);
+  });
+
+  it("CONTROLE POSITIVO: o pseudo-papel PUBLIC também reprova — alcança todo papel futuro", () => {
+    const ofensas = appPrivateGrantsToPublicRoles(
+      schemaGrantsIn("grant usage on schema app_private to public;", "fake.sql"),
+    );
+    expect(ofensas).toEqual(["fake.sql: grant usage on schema app_private to public"]);
+  });
+
+  it("service_role NÃO reprova — é o grant que a própria 106 faz", () => {
+    const ofensas = appPrivateGrantsToPublicRoles(
+      schemaGrantsIn("grant usage on schema app_private to service_role;", "fake.sql"),
+    );
+    expect(ofensas).toEqual([]);
+  });
+
+  it("grant em OUTRO schema não reprova — este describe é sobre app_private", () => {
+    const ofensas = appPrivateGrantsToPublicRoles(
+      schemaGrantsIn("grant usage on schema public to anon;", "fake.sql"),
+    );
+    expect(ofensas).toEqual([]);
+  });
+
+  it("grant dentro de comentário não reprova — mesma disciplina de stripComments", () => {
+    const raw = "-- grant usage on schema app_private to anon;  (exemplo do que NÃO fazer)\nselect 1;";
+    expect(appPrivateGrantsToPublicRoles(schemaGrantsIn(stripComments(raw), "fake.sql"))).toEqual([]);
+  });
+
+  it(
+    "CONTROLE POSITIVO real (não sintético): aplicado à 106, o detector VÊ o grant de " +
+      "service_role — o parser está vivo, e o que mantém o teste verde é o papel ser " +
+      "permitido, não o regex não casar nada",
+    () => {
+      const f = migrationFiles().find((x) => versionOf(x) === PRIVATE_HELPERS_VERSION);
+      expect(f, "a 106 precisa existir").toBeTruthy();
+      const grants = schemaGrantsIn(readMigration(f!), f!).filter((g) =>
+        g.schemas.includes("app_private"),
+      );
+      expect(grants.map((g) => `${g.privileges} → ${g.roles.join(", ")}`)).toEqual([
+        "usage → service_role",
+      ]);
+      expect(appPrivateGrantsToPublicRoles(grants)).toEqual([]);
+    },
+  );
+
+  it("nenhuma migration da 106 em diante concede privilégio de schema app_private a papel público", () => {
+    const ofensas: string[] = [];
+    for (const f of desde106Files) {
+      ofensas.push(...appPrivateGrantsToPublicRoles(schemaGrantsIn(readMigration(f), f)));
+    }
+    expect(
+      ofensas,
+      "USAGE em `app_private` para papel público é a ÚLTIMA tranca do oráculo de membership " +
+        "(as funções conservam EXECUTE para anon de propósito) e não compra funcionamento " +
+        "nenhum — policy referencia função por OID e nunca resolve nome. Ver o cabeçalho " +
+        "deste describe e a 106 §31-35:\n" + ofensas.join("\n"),
+    ).toEqual([]);
+  });
+});
