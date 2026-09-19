@@ -29,7 +29,26 @@
 -- estão — é catálogo de produção, não reconstrução a partir de migration. Ainda
 -- assim fica marcado para reconferência quando o MCP voltar.
 --
--- Rodar depois de `00-bootstrap.sql` e `01-audit.sql`, com ON_ERROR_STOP=1.
+-- A FIXTURE `acl_probe` TAMBÉM MORA AQUI, e não no `09-advisor-hardening.sql`,
+-- porque é a PROCEDÊNCIA dela que dá sentido ao ACL-1: policy criada contra
+-- `public.is_unit_member` ANTES do `SET SCHEMA`. Detalhe na seção dela, abaixo.
+--
+-- Rodar depois de `00-bootstrap.sql` e `01-audit.sql`, com ON_ERROR_STOP=1, e
+-- ANTES da migration 106 — o guard logo abaixo recusa a ordem inversa.
+
+-- ─── GUARDA: este arquivo roda ANTES da migration 106 ────────────────────────
+-- Não é cerimônia. Rodado DEPOIS da 106, este arquivo faria duas coisas
+-- silenciosas e ruins: o `create or replace function public.is_unit_member`
+-- abaixo REPORIA um segundo helper em `public` (a 106 já moveu o original, e o
+-- OID deste sósia é outro), e a fixture `acl_probe` passaria a apontar para ele —
+-- ACL-1 ficaria verde medindo nada, que é exatamente o defeito de evidência que
+-- esta sequência existe para não ter. Falha alto, aqui, com a saída dita.
+do $$
+begin
+  if to_regprocedure('app_private.is_unit_member(uuid,uuid)') is not null then
+    raise exception '09a-advisor-bootstrap.sql roda ANTES da migration 106, e a 106 JA foi aplicada neste banco (app_private.is_unit_member existe). Recrie o banco: dropdb advisor106 / createdb advisor106, e siga a sequencia do README (00 -> 01 -> 09a -> 106 -> 09 ...).';
+  end if;
+end $$;
 
 -- ─── auth.uid() ──────────────────────────────────────────────────────────────
 -- O stub do 00-bootstrap só lê o GUC `request.jwt.claim.sub`; os casos ACL
@@ -182,6 +201,95 @@ revoke all on function public.is_org_member(uuid, uuid)      from public;
 grant execute on function public.is_unit_member(uuid, uuid)  to anon, authenticated, service_role;
 grant execute on function public.is_platform_admin(uuid)     to authenticated, service_role;
 grant execute on function public.is_org_member(uuid, uuid)    to authenticated, service_role;
+
+-- ─── Fixture do ACL-1: policy na forma de produção, nascida ANTES do move ────
+-- POR QUE AQUI. Este arquivo roda ANTES da 106; o `09` roda depois. O que o
+-- ACL-1 precisa medir é uma policy criada contra `public.is_unit_member`
+-- continuando a avaliar depois do `SET SCHEMA` — porque é essa a situação das 42
+-- policies reais de produção (24 delas TO PUBLIC), todas escritas anos antes da
+-- migration. Fixture criada DEPOIS do move já nasce apontando para o endereço
+-- novo: ela mede "policy que referencia app_private funciona", que é verdade
+-- trivial e não sustenta a frase da 106.
+--
+-- A FORMA É A REAL, não uma aproximação. Sem qualificar o schema e sem cláusula
+-- `TO` (portanto TO PUBLIC), exatamente como a
+-- [014](../../migrations/20260504170312_014_operacional.sql) escreveu
+-- `waitlist_member_select` e `walk_ins_member_*`:
+--   `for select using (is_unit_member(auth.uid(), unit_id))`
+-- O nome sem qualificação é resolvido no instante do `create policy`, contra o
+-- `search_path` da sessão (`public`), e o que fica guardado em `polqual` é o OID.
+-- Essa é a mecânica sob teste — e é o motivo de a forma importar: qualificar
+-- `public.` aqui daria o mesmo OID, mas deixaria de espelhar o que produção tem.
+--
+-- Nada no `09` recria esta policy, de propósito. Quem confere isso é o próprio
+-- ACL-1, comparando o OID da linha de `pg_policy` com o gravado abaixo.
+create table if not exists acl_probe (
+  id      uuid primary key default gen_random_uuid(),
+  unit_id uuid not null,
+  nota    text
+);
+alter table acl_probe enable row level security;
+
+-- O helper tem de estar em `public` para o nome sem qualificação resolver. Se não
+-- estiver, o `create policy` abaixo falharia com `function is_unit_member(uuid,
+-- uuid) does not exist` — mensagem que não diz o que fazer. Esta diz.
+do $$
+begin
+  if to_regprocedure('public.is_unit_member(uuid,uuid)') is null then
+    raise exception 'fixture acl_probe exige public.is_unit_member(uuid, uuid), que nao existe neste banco. A policy tem de nascer na forma PRE-106 (nome resolvendo para public); nao a reescreva para app_private — isso apagaria o que o ACL-1 mede.';
+  end if;
+end $$;
+
+drop policy if exists acl_probe_member on acl_probe;
+create policy acl_probe_member on acl_probe
+  for select using (is_unit_member(auth.uid(), unit_id));
+grant select on acl_probe to anon, authenticated;
+
+-- PROCEDÊNCIA GRAVADA. O ACL-1 não tem como perguntar ao catálogo "esta policy
+-- nasceu antes do move": o catálogo só guarda o estado de agora, e depois do move
+-- a expressão já renderiza `app_private.is_unit_member(...)` — indistinguível de
+-- uma policy escrita assim desde o início. Então o estado de ANTES fica gravado
+-- aqui: o OID que o nome sem qualificação resolveu, o schema em que ele estava
+-- (`public`) e o OID da própria linha de `pg_policy`. Com os três, o ACL-1 afirma
+-- o que sozinho não se vê — o alvo era `public`, o OID não mudou, e a policy é a
+-- MESMA linha (ninguém a recriou no caminho: nem a 2a passada do `09`, nem o
+-- CONTROLE-16).
+create table if not exists t_probe_prov (
+  probe       text primary key,
+  policy_oid  oid  not null,
+  func_oid    oid  not null,
+  func_schema text not null,
+  qual        text not null
+);
+
+delete from t_probe_prov where probe = 'acl_probe_member';
+insert into t_probe_prov (probe, policy_oid, func_oid, func_schema, qual)
+select 'acl_probe_member', pol.oid, p.oid, n.nspname,
+       pg_get_expr(pol.polqual, pol.polrelid)
+  from pg_policy     pol
+  join pg_class      c on c.oid = pol.polrelid
+  -- `pg_depend` de uma policy lista TODAS as funções da expressão, e esta tem
+  -- duas (`auth.uid()` e o helper) — daí o filtro por `proname`.
+  join pg_depend     d on d.classid = 'pg_policy'::regclass and d.objid = pol.oid
+                      and d.refclassid = 'pg_proc'::regclass
+  join pg_proc       p on p.oid = d.refobjid
+  join pg_namespace  n on n.oid = p.pronamespace
+ where c.relname = 'acl_probe'
+   and pol.polname = 'acl_probe_member'
+   and p.proname = 'is_unit_member';
+
+-- Sem procedência gravada o ACL-1 não tem o que comparar, e caso que não compara
+-- nada é pior que caso ausente — então falha alto aqui, não lá.
+do $$
+declare v_n int; v_schema text;
+begin
+  select count(*) into v_n from t_probe_prov where probe = 'acl_probe_member';
+  select func_schema into v_schema from t_probe_prov where probe = 'acl_probe_member';
+  if v_n <> 1 or v_schema is distinct from 'public' then
+    raise exception 'fixture acl_probe: procedencia nao gravada como esperado (linhas=%, schema=%). A policy deveria ter resolvido public.is_unit_member(uuid, uuid).',
+      v_n, coalesce(v_schema, '<nulo>');
+  end if;
+end $$;
 
 -- ─── As quatro SECURITY DEFINER, verbatim de produção (forma PRÉ-106) ────────
 -- Elas chegam aqui como estão em produção HOJE, chamando `public.is_*` (e, no

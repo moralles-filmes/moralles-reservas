@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 const MIGRATIONS_DIR = join(__dirname, "..", "supabase", "migrations");
 const ALLOWLIST_PATH = join(__dirname, "function-acl-allowlist.json");
+const AUDIT_SCRIPT_PATH = join(__dirname, "audit-function-acl.ts");
 
 /** Versão da 085 — o marco a partir do qual a superfície está classificada. */
 const HOTFIX_VERSION = "20260730160000";
@@ -55,13 +56,44 @@ interface ExpectedAdvisorCounts {
 
 const allowlist = JSON.parse(readFileSync(ALLOWLIST_PATH, "utf8")) as Record<string, unknown>;
 
-const GROUPS = ["public_anon", "rls_helpers", "authenticated_tenant"] as const;
-
-function entriesOf(group: (typeof GROUPS)[number]): AllowEntry[] {
-  return (allowlist[group] ?? []) as AllowEntry[];
+/**
+ * Grupos de entrada da allowlist, DERIVADOS: todo par de nível superior cujo
+ * valor é array e cujo nome não começa com `_`.
+ *
+ * Era uma constante com três nomes escritos à mão, enquanto
+ * scripts/audit-function-acl.ts (linhas 103-104) sempre derivou. Duas noções de
+ * "todas as entradas" dentro do MESMO guardrail: um grupo novo no JSON seria
+ * somado pelo script e ignorado em silêncio por este arquivo — as entradas
+ * dele não passariam por "está bem formada", nem por "nunca aprova PUBLIC",
+ * nem pela coerência de `advisor_lints`. Grupo novo é exatamente o momento em
+ * que alguém classifica superfície nova.
+ *
+ * O prefixo `_` não é detalhe: `_doc` e `_doc_rls_helpers` são arrays DE PROSA,
+ * então filtrar só por `Array.isArray` engoliria prosa como se fosse entrada.
+ * São os dois critérios juntos, iguais aos do script.
+ */
+function arrayGroupNamesIn(al: Record<string, unknown>): string[] {
+  return Object.entries(al)
+    .filter(([name, value]) => !name.startsWith("_") && Array.isArray(value))
+    .map(([name]) => name);
 }
 
-const allEntries: AllowEntry[] = GROUPS.flatMap(entriesOf);
+function entriesOfIn(al: Record<string, unknown>, group: string): AllowEntry[] {
+  return (al[group] ?? []) as AllowEntry[];
+}
+
+/** Todas as entradas de `al`, sobre os grupos derivados dela mesma. */
+function allEntriesIn(al: Record<string, unknown>): AllowEntry[] {
+  return arrayGroupNamesIn(al).flatMap((g) => entriesOfIn(al, g));
+}
+
+const GROUPS: string[] = arrayGroupNamesIn(allowlist);
+
+function entriesOf(group: string): AllowEntry[] {
+  return entriesOfIn(allowlist, group);
+}
+
+const allEntries: AllowEntry[] = allEntriesIn(allowlist);
 
 /**
  * Divide a lista de argumentos por vírgulas de nível zero. `timestamp with time
@@ -273,6 +305,101 @@ describe("allowlist de ACL de funções", () => {
     for (const e of allEntries) {
       expect(e.roles, `${e.name}: PUBLIC não pode entrar na allowlist`).not.toContain("public");
     }
+  });
+});
+
+/**
+ * ─── "Todas as entradas" quer dizer a MESMA coisa nas duas peças ────────────
+ *
+ * Este arquivo e scripts/audit-function-acl.ts são as duas metades de um
+ * guardrail só: o script cruza a allowlist com o ACL real do banco, este
+ * arquivo confere a coerência interna da allowlist e das migrations sem banco.
+ * Se eles discordarem sobre QUAIS grupos do JSON contam como entrada, um grupo
+ * novo é somado por um e ignorado pelo outro — em silêncio, que é o modo de
+ * falha que este projeto já pagou várias vezes por acoplamento só-por-string.
+ *
+ * POR QUE NÃO COMPARTILHAR O CÓDIGO LITERALMENTE, que seria o certo: o script é
+ * Deno e importa `https://esm.sh/@supabase/supabase-js@2`. Importá-lo do vitest
+ * quebra a resolução de tipos com TS2307 na URL remota — já custou uma rodada
+ * de correção nesta frente. Então a derivação é INDEPENDENTE (a função
+ * `arrayGroupNamesIn` acima) e a equivalência é AFIRMADA aqui: o último caso
+ * deste describe lê o texto do script e exige que a linha do filtro continue
+ * literalmente a mesma. Mexer em um lado sem o outro reprova, que é o serviço
+ * que a importação prestaria.
+ */
+describe("os grupos da allowlist são derivados, não escritos à mão", () => {
+  /** A linha exata do filtro em scripts/audit-function-acl.ts:104. */
+  const FILTRO_DO_SCRIPT = 'if (group.startsWith("_") || !Array.isArray(value)) continue;';
+
+  /** A constante que ESTAVA escrita à mão aqui — usada só como controle. */
+  const HARDCODED_ANTIGO = ["public_anon", "rls_helpers", "authenticated_tenant"];
+
+  it("a lista derivada não é vazia e cobre os três grupos de hoje", () => {
+    // Sem esta asserção, um bug na derivação que devolvesse [] deixaria TODO
+    // este arquivo passando sobre zero entradas — verde e vazio.
+    expect(GROUPS.length).toBeGreaterThan(0);
+    for (const g of HARDCODED_ANTIGO) {
+      expect(GROUPS, `grupo "${g}" desapareceu da derivação`).toContain(g);
+    }
+    expect(allEntries.length, "allEntries não pode ser vazio").toBeGreaterThan(0);
+  });
+
+  it("nenhuma chave de array sem prefixo `_` fica fora — e nenhuma com prefixo entra", () => {
+    for (const [name, value] of Object.entries(allowlist)) {
+      if (!Array.isArray(value)) {
+        expect(GROUPS, `"${name}" não é array e não devia ser grupo`).not.toContain(name);
+        continue;
+      }
+      if (name.startsWith("_")) {
+        expect(GROUPS, `"${name}" tem prefixo _ e é prosa, não entrada`).not.toContain(name);
+      } else {
+        expect(GROUPS, `"${name}" é array de entrada e ficou fora da derivação`).toContain(name);
+      }
+    }
+  });
+
+  it("o filtro de prefixo está VIVO: `_doc` e `_doc_rls_helpers` são arrays de verdade e ficam fora", () => {
+    // Se fossem objetos, o `!Array.isArray` sozinho já os excluiria e o teste
+    // acima não provaria nada sobre o prefixo. São arrays — então é o prefixo
+    // que os exclui, e é isso que este caso fixa.
+    expect(Array.isArray(allowlist["_doc"]), "_doc precisa ser array para este controle valer").toBe(true);
+    expect(Array.isArray(allowlist["_doc_rls_helpers"])).toBe(true);
+    expect(GROUPS).not.toContain("_doc");
+    expect(GROUPS).not.toContain("_doc_rls_helpers");
+  });
+
+  it(
+    "CONTROLE POSITIVO: grupo novo é somado pela derivação e ERA invisível para a " +
+      "constante escrita à mão — a divergência que este item fecha",
+    () => {
+      const grupoNovo: AllowEntry[] = [
+        { name: "oraculo_novo", args: "p_x uuid", roles: ["anon"], why: "sintético" },
+      ];
+      const sabotada = { ...allowlist, grupo_futuro: grupoNovo } as Record<string, unknown>;
+
+      // Derivado: vê o grupo novo e a entrada dele.
+      expect(arrayGroupNamesIn(sabotada)).toContain("grupo_futuro");
+      expect(allEntriesIn(sabotada).some((e) => e.name === "oraculo_novo")).toBe(true);
+
+      // Escrito à mão: cego. É o defeito, demonstrado e não descrito.
+      const comHardcoded = HARDCODED_ANTIGO.flatMap((g) => entriesOfIn(sabotada, g));
+      expect(
+        comHardcoded.some((e) => e.name === "oraculo_novo"),
+        "a lista escrita à mão não enxerga grupo novo — por isso ela saiu",
+      ).toBe(false);
+    },
+  );
+
+  it("o filtro de grupos do audit-function-acl.ts continua literalmente o mesmo", () => {
+    const script = readFileSync(AUDIT_SCRIPT_PATH, "utf8");
+    expect(
+      script.includes(FILTRO_DO_SCRIPT),
+      "scripts/audit-function-acl.ts mudou o critério de quais grupos da allowlist contam.\n" +
+        `Esperado encontrar a linha: ${FILTRO_DO_SCRIPT}\n` +
+        "Atualize `arrayGroupNamesIn` neste arquivo NO MESMO commit — as duas peças do " +
+        "guardrail precisam somar as mesmas entradas, e não há como compartilhar o código " +
+        "(o script é Deno com import de esm.sh; importá-lo daqui dá TS2307).",
+    ).toBe(true);
   });
 });
 
