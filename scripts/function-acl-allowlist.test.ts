@@ -36,6 +36,23 @@ interface AllowEntry {
   why: string;
 }
 
+/**
+ * Entrada como ela é lida pelo bloco `_expected_advisor` — os dois campos que
+ * `AllowEntry` não carrega porque o resto do arquivo (grant/drop matching)
+ * não precisa deles. Tipada à parte para não forçar as ~30 outras leituras de
+ * `AllowEntry` neste arquivo a lidar com campo opcional.
+ */
+interface AdvisorEntry extends AllowEntry {
+  security_definer: boolean;
+  advisor_lints: string[];
+}
+
+interface ExpectedAdvisorCounts {
+  "0028": number;
+  "0029": number;
+  total: number;
+}
+
 const allowlist = JSON.parse(readFileSync(ALLOWLIST_PATH, "utf8")) as Record<string, unknown>;
 
 const GROUPS = ["public_anon", "rls_helpers", "authenticated_tenant"] as const;
@@ -390,5 +407,286 @@ describe("migrations posteriores ao hotfix não reabrem a superfície", () => {
     for (const f of posteriores) {
       expect(BROAD_GRANT_RE.test(readMigration(f)), `${f} concede EXECUTE ao schema inteiro`).toBe(false);
     }
+  });
+});
+
+/**
+ * O bloco `_expected_advisor` existe para que "23 warnings" seja número
+ * conferível e não memória. Esta camada confere a consistência interna sem
+ * banco; quem compara com o ACL real é a regra 6 do audit-function-acl.ts
+ * (núcleo puro em scripts/advisor-divergence-core.ts, testado à parte porque
+ * este arquivo não tem acesso ao banco em CI).
+ *
+ * CORREÇÃO SOBRE O TEXTO ORIGINAL DO PLANO (Ruling 4/22 do progress.md): a
+ * regra do brief — `advisor_lints.includes("0028") === roles.includes("anon")`
+ * — REPROVA dado correto. Os lints 0028/0029 do Security Advisor só disparam
+ * para função SECURITY DEFINER; duas entradas (`normalize_br_phone`,
+ * `search_reservations`) são SECURITY INVOKER, concedem a anon/authenticated
+ * e não produzem NENHUMA linha de advisor. A regra certa cruza `roles` com
+ * `security_definer`.
+ */
+function advisorLintsCoherent(entry: AdvisorEntry): boolean {
+  const expects0028 = entry.roles.includes("anon") && entry.security_definer === true;
+  const expects0029 = entry.roles.includes("authenticated") && entry.security_definer === true;
+  return (
+    entry.advisor_lints.includes("0028") === expects0028 &&
+    entry.advisor_lints.includes("0029") === expects0029
+  );
+}
+
+/** Soma quantas entradas declaram cada lint — o que o script real também faz
+ * contra o ACL do banco, mas aqui é só a allowlist somando a si mesma. */
+function sumAdvisorLints(entries: AdvisorEntry[]): ExpectedAdvisorCounts {
+  let n0028 = 0;
+  let n0029 = 0;
+  for (const e of entries) {
+    if (e.advisor_lints.includes("0028")) n0028++;
+    if (e.advisor_lints.includes("0029")) n0029++;
+  }
+  return { "0028": n0028, "0029": n0029, total: n0028 + n0029 };
+}
+
+describe("_expected_advisor", () => {
+  const expected = (allowlist as Record<string, unknown>)["_expected_advisor"] as
+    | ExpectedAdvisorCounts
+    | undefined;
+  const advisorEntries = allEntries as AdvisorEntry[];
+
+  it("existe e soma", () => {
+    expect(expected, "_expected_advisor ausente na allowlist").toBeDefined();
+    expect(expected!.total).toBe(expected!["0028"] + expected!["0029"]);
+  });
+
+  it("toda entrada declara security_definer e advisor_lints coerentes com seus papéis", () => {
+    for (const entry of advisorEntries) {
+      expect(entry.advisor_lints, `${entry.name}(${entry.args}) sem advisor_lints`).toBeDefined();
+      expect(
+        typeof entry.security_definer,
+        `${entry.name}(${entry.args}) sem security_definer`,
+      ).toBe("boolean");
+      expect(
+        advisorLintsCoherent(entry),
+        `${entry.name}(${entry.args}): advisor_lints=[${entry.advisor_lints}] incoerente com ` +
+          `roles=[${entry.roles}] e security_definer=${entry.security_definer}`,
+      ).toBe(true);
+    }
+  });
+
+  it("os totais somados das entradas batem com o bloco _expected_advisor (nenhum dos dois drifta sozinho)", () => {
+    const summed = sumAdvisorLints(advisorEntries);
+    // `expected` carrega um `_doc` de prosa que sumAdvisorLints não produz —
+    // comparar campo a campo, não com toEqual do objeto inteiro.
+    expect(summed["0028"]).toBe(expected!["0028"]);
+    expect(summed["0029"]).toBe(expected!["0029"]);
+    expect(summed.total).toBe(expected!.total);
+  });
+
+  // Os quatro casos abaixo são o controle positivo real do plano (Ruling 22):
+  // provam a regra contra as DUAS entradas SECURITY INVOKER de verdade da
+  // allowlist, não contra um literal desconectado dela, e contra sabotagem
+  // sintética que a regra tem que pegar.
+  describe("advisorLintsCoherent — controle positivo", () => {
+    it("SECURITY DEFINER com anon: [\"0028\",\"0029\"] é coerente", () => {
+      const entry: AdvisorEntry = {
+        name: "get_unit_public",
+        args: "p_slug text",
+        roles: ["anon", "authenticated"],
+        why: "sintético",
+        security_definer: true,
+        advisor_lints: ["0028", "0029"],
+      };
+      expect(advisorLintsCoherent(entry)).toBe(true);
+    });
+
+    it(
+      "CONTROLE POSITIVO real: normalize_br_phone (anon, SECURITY INVOKER) com " +
+        "advisor_lints=[] é coerente — é a exceção que o plano original não previa",
+      () => {
+        const real = advisorEntries.find((e) => e.name === "normalize_br_phone");
+        expect(real, "normalize_br_phone precisa existir em public_anon").toBeDefined();
+        expect(real!.security_definer).toBe(false);
+        expect(advisorLintsCoherent(real!)).toBe(true);
+      },
+    );
+
+    it(
+      "CONTROLE POSITIVO real: search_reservations (authenticated, SECURITY INVOKER) " +
+        "com advisor_lints=[] é coerente — a segunda exceção",
+      () => {
+        const real = advisorEntries.find((e) => e.name === "search_reservations");
+        expect(real, "search_reservations precisa existir em authenticated_tenant").toBeDefined();
+        expect(real!.security_definer).toBe(false);
+        expect(advisorLintsCoherent(real!)).toBe(true);
+      },
+    );
+
+    it(
+      "CONTROLE POSITIVO — sabotagem: aplicar a regra ERRADA do brief " +
+        "(advisor_lints == roles.includes('anon'), ignorando security_definer) " +
+        "à entrada real de normalize_br_phone reprovaria dado correto",
+      () => {
+        const real = advisorEntries.find((e) => e.name === "normalize_br_phone")!;
+        // Regra do brief, tal como escrita — sem cruzar com security_definer.
+        const regraDoBriefOriginal = real.advisor_lints.includes("0028") === real.roles.includes("anon");
+        expect(
+          regraDoBriefOriginal,
+          "a regra do brief (sem security_definer) reprova normalize_br_phone, que é dado CORRETO",
+        ).toBe(false);
+        // A regra corrigida, sobre o mesmo dado, aprova.
+        expect(advisorLintsCoherent(real)).toBe(true);
+      },
+    );
+
+    it("CONTROLE POSITIVO — sabotagem: entrada INVOKER que declara 0028 mentindo é rejeitada", () => {
+      const sabotada: AdvisorEntry = {
+        name: "normalize_br_phone",
+        args: "raw text",
+        roles: ["anon", "authenticated"],
+        why: "sintético — sabotado de propósito",
+        security_definer: false,
+        advisor_lints: ["0028", "0029"], // mentira: invoker não produz linha de advisor
+      };
+      expect(advisorLintsCoherent(sabotada)).toBe(false);
+    });
+
+    it("CONTROLE POSITIVO — sabotagem: entrada DEFINER que omite 0029 apesar de conceder a authenticated é rejeitada", () => {
+      const sabotada: AdvisorEntry = {
+        name: "get_customer_stats",
+        args: "p_customer_id uuid, p_unit_id uuid",
+        roles: ["authenticated"],
+        why: "sintético — sabotado de propósito",
+        security_definer: true,
+        advisor_lints: [], // devia declarar 0029
+      };
+      expect(advisorLintsCoherent(sabotada)).toBe(false);
+    });
+  });
+
+  // Controle positivo da regra de soma: um bloco _expected_advisor que não
+  // reflete as entradas reais tem que reprovar, nomeado por `toEqual`
+  // (Vitest imprime o diff campo a campo), não só um booleano mudo.
+  it("CONTROLE POSITIVO — sabotagem: bloco _expected_advisor desatualizado reprova a checagem de soma", () => {
+    const summed = sumAdvisorLints(advisorEntries);
+    const blocoDesatualizado: ExpectedAdvisorCounts = { "0028": 1, "0029": 1, total: 2 };
+    expect(summed).not.toEqual(blocoDesatualizado);
+  });
+});
+
+/**
+ * Ruling 17 do progress.md: a migration 106 criou o schema `app_private`
+ * precisamente para ser inalcançável por PostgREST — mas `CREATE FUNCTION`
+ * concede EXECUTE a PUBLIC por padrão (mesmo defeito que a 085 fechou em
+ * `public`, e `alter default privileges ... revoke ... from public` é no-op
+ * medido nesta plataforma, ver CLAUDE.md). `audit_function_acl()` varre só
+ * `public`, então uma função nova em `app_private` sem revoke explícito não
+ * seria pega por NENHUM guardrail de banco. Este describe é o guardrail
+ * estático equivalente ao "toda função pública allowlisted é revogada de
+ * PUBLIC" de cima, mas para `app_private` — reusa a mesma máquina de parsing
+ * de migration (stripComments, GRANT_RE-equivalente) em vez de escrever um
+ * segundo parser.
+ */
+const APP_PRIVATE_CREATE_RE =
+  /create\s+(?:or\s+replace\s+)?function\s+app_private\.([a-z0-9_]+)\s*\(([^)]*)\)/gi;
+const APP_PRIVATE_REVOKE_PUBLIC_RE =
+  /revoke\s+all[^;]*?\son\s+function\s+app_private\.([a-z0-9_]+)\s*\(([^)]*)\)\s*from\s+([^;]+);/gi;
+
+interface AppPrivateFunction {
+  file: string;
+  name: string;
+  argCount: number;
+}
+
+function appPrivateFunctionsCreatedIn(sql: string, file: string): AppPrivateFunction[] {
+  const out: AppPrivateFunction[] = [];
+  for (const m of sql.matchAll(APP_PRIVATE_CREATE_RE)) {
+    out.push({ file, name: m[1], argCount: splitArgs(m[2]).length });
+  }
+  return out;
+}
+
+function appPrivateRevokedFromPublicIn(sql: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of sql.matchAll(APP_PRIVATE_REVOKE_PUBLIC_RE)) {
+    const targets = m[3].split(",").map((t) => t.trim().toLowerCase());
+    if (targets.includes("public")) out.add(key(m[1], splitArgs(m[2]).length));
+  }
+  return out;
+}
+
+/**
+ * O predicado central: toda função CRIADA em `app_private` por uma migration
+ * precisa de um `revoke all ... from public` explícito NA MESMA migration.
+ * Extraída como função pura pelo mesmo motivo de `unclassifiedHotfixGrants`
+ * acima — provar as duas pontas (função revogada passa; função não revogada
+ * reprova nomeando-a) contra dados sintéticos, não só contra o estado atual
+ * do repositório.
+ */
+function appPrivateFunctionsWithoutPublicRevoke(
+  created: AppPrivateFunction[],
+  revokedFromPublic: Set<string>,
+): string[] {
+  const missing: string[] = [];
+  for (const fn of created) {
+    const k = key(fn.name, fn.argCount);
+    if (!revokedFromPublic.has(k)) {
+      missing.push(`${fn.file}: app_private.${fn.name}/${fn.argCount} sem "revoke all ... from public"`);
+    }
+  }
+  return missing;
+}
+
+describe("função nova em app_private revoga de PUBLIC (Ruling 17)", () => {
+  it("controle positivo: função sintética SEM revoke reprova, nomeando-a", () => {
+    const created = appPrivateFunctionsCreatedIn(
+      "create function app_private.oraculo(p_x uuid) returns boolean language sql as $$ select true $$;",
+      "fake.sql",
+    );
+    const missing = appPrivateFunctionsWithoutPublicRevoke(created, new Set());
+    expect(missing).toEqual(["fake.sql: app_private.oraculo/1 sem \"revoke all ... from public\""]);
+  });
+
+  it("controle positivo: função sintética COM revoke não reprova", () => {
+    const sql =
+      "create function app_private.oraculo(p_x uuid) returns boolean language sql as $$ select true $$;\n" +
+      "revoke all on function app_private.oraculo(uuid) from public;";
+    const created = appPrivateFunctionsCreatedIn(sql, "fake.sql");
+    const revoked = appPrivateRevokedFromPublicIn(sql);
+    const missing = appPrivateFunctionsWithoutPublicRevoke(created, revoked);
+    expect(missing).toEqual([]);
+  });
+
+  it("revoke de outra função (nome ou aridade diferente) não cobre a que falta", () => {
+    const created = appPrivateFunctionsCreatedIn(
+      "create function app_private.oraculo(p_x uuid, p_y uuid) returns boolean language sql as $$ select true $$;",
+      "fake.sql",
+    );
+    const revoked = appPrivateRevokedFromPublicIn(
+      "revoke all on function app_private.oraculo(uuid) from public;", // aridade 1, a criada é 2
+    );
+    const missing = appPrivateFunctionsWithoutPublicRevoke(created, revoked);
+    expect(missing).toEqual(["fake.sql: app_private.oraculo/2 sem \"revoke all ... from public\""]);
+  });
+
+  it("drop function dentro de comentário não conta como create — mesma disciplina de stripComments", () => {
+    const raw =
+      "-- create function app_private.oraculo(p_x uuid) returns boolean language sql as $$ select true $$;\nselect 1;";
+    const created = appPrivateFunctionsCreatedIn(stripComments(raw), "fake.sql");
+    expect(created).toEqual([]);
+  });
+
+  it("toda função criada em app_private pelas migrations reais do repositório é revogada de PUBLIC", () => {
+    const missing: string[] = [];
+    for (const f of migrationFiles()) {
+      const sql = readMigration(f);
+      const created = appPrivateFunctionsCreatedIn(sql, f);
+      if (created.length === 0) continue;
+      const revoked = appPrivateRevokedFromPublicIn(sql);
+      missing.push(...appPrivateFunctionsWithoutPublicRevoke(created, revoked));
+    }
+    expect(
+      missing,
+      "Função nova em app_private sem revoke de PUBLIC — app_private existe pra ser " +
+        "inalcançável, e CREATE FUNCTION concede a PUBLIC por padrão:\n" + missing.join("\n"),
+    ).toEqual([]);
   });
 });

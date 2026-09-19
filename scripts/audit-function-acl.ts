@@ -30,6 +30,13 @@
 // (migration 085). O script só cruza os dois — nenhuma regra fica implícita.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  computeAdvisorDivergence,
+  countsMatchExpected,
+  type AdvisorDivergence,
+  type ExpectedAdvisorCounts,
+  type LintInventory,
+} from "./advisor-divergence-core.ts";
 
 interface AuditRow {
   function_name: string;
@@ -48,6 +55,18 @@ interface AllowEntry {
   args: string;
   roles: string[];
   why: string;
+  /**
+   * Assinatura realmente SECURITY DEFINER? Os lints 0028/0029 do advisor só
+   * disparam para SECURITY DEFINER — duas entradas da allowlist
+   * (`normalize_br_phone`, `search_reservations`) são SECURITY INVOKER,
+   * concedem a papel externo e não produzem NENHUMA linha de advisor. Ver
+   * Ruling 4/22 em .superpowers/sdd/2026-08-17-advisor-warnings-hardening/progress.md.
+   */
+  security_definer: boolean;
+  /** Lints do advisor que esta assinatura DEVE produzir, segundo a política
+   * revisada. Fonte da verdade "esperada" da regra 6 — comparada abaixo
+   * contra o que o banco REALMENTE produz. */
+  advisor_lints: string[];
 }
 
 interface Violation {
@@ -71,7 +90,12 @@ function sig(name: string, args: string): string {
   return `${name}(${args})`;
 }
 
-function loadAllowlist(): Map<string, AllowEntry> {
+interface LoadedAllowlist {
+  byKey: Map<string, AllowEntry>;
+  expectedAdvisor: ExpectedAdvisorCounts;
+}
+
+function loadAllowlist(): LoadedAllowlist {
   const raw = Deno.readTextFileSync(ALLOWLIST_PATH);
   const parsed = JSON.parse(raw) as Record<string, unknown>;
   const map = new Map<string, AllowEntry>();
@@ -79,7 +103,13 @@ function loadAllowlist(): Map<string, AllowEntry> {
   for (const [group, value] of Object.entries(parsed)) {
     if (group.startsWith("_") || !Array.isArray(value)) continue;
     for (const entry of value as AllowEntry[]) {
-      if (!entry?.name || typeof entry.args !== "string" || !Array.isArray(entry.roles)) {
+      if (
+        !entry?.name ||
+        typeof entry.args !== "string" ||
+        !Array.isArray(entry.roles) ||
+        typeof entry.security_definer !== "boolean" ||
+        !Array.isArray(entry.advisor_lints)
+      ) {
         console.error(`allowlist: entrada malformada no grupo "${group}": ${JSON.stringify(entry)}`);
         Deno.exit(2);
       }
@@ -91,7 +121,19 @@ function loadAllowlist(): Map<string, AllowEntry> {
       map.set(key, entry);
     }
   }
-  return map;
+
+  const expectedAdvisor = parsed["_expected_advisor"] as ExpectedAdvisorCounts | undefined;
+  if (
+    !expectedAdvisor ||
+    typeof expectedAdvisor["0028"] !== "number" ||
+    typeof expectedAdvisor["0029"] !== "number" ||
+    typeof expectedAdvisor.total !== "number"
+  ) {
+    console.error('allowlist: bloco "_expected_advisor" ausente ou malformado.');
+    Deno.exit(2);
+  }
+
+  return { byKey: map, expectedAdvisor };
 }
 
 /**
@@ -129,8 +171,15 @@ function expectedRoles(entry: AllowEntry | undefined): string {
  * várias violações distintas. Um `continue` aqui já escondeu um defeito real de
  * `search_path` atrás de um achado de allowlist; não reintroduza.
  */
-function audit(rows: AuditRow[], allow: Map<string, AllowEntry>): Violation[] {
+interface AuditResult {
+  violations: Violation[];
+  /** Assinaturas que o BANCO realmente produz para cada lint — regra 6. */
+  observedAdvisor: LintInventory;
+}
+
+function audit(rows: AuditRow[], allow: Map<string, AllowEntry>): AuditResult {
   const violations: Violation[] = [];
+  const observedAdvisor: LintInventory = { "0028": [], "0029": [] };
 
   for (const r of rows) {
     const key = sig(r.function_name, r.identity_args);
@@ -209,12 +258,83 @@ function audit(rows: AuditRow[], allow: Map<string, AllowEntry>): Violation[] {
         detail: `SECURITY DEFINER sem "set search_path". Adicione "set search_path = public".`,
       });
     }
+
+    // 6. Equivalente-advisor: os lints 0028/0029 medem exatamente
+    //    "SECURITY DEFINER de um schema exposto, executável por anon/authenticated".
+    //    A mesma linha que alimenta as regras acima já responde isso, então o
+    //    guardrail confere a ASSINATURA (não só o total) contra o que a
+    //    allowlist declara em `advisor_lints`, comparado depois do laço.
+    if (r.is_secdef && r.anon_execute) observedAdvisor["0028"].push(key);
+    if (r.is_secdef && r.auth_execute) observedAdvisor["0029"].push(key);
   }
 
+  sortViolations(violations);
+  return { violations, observedAdvisor };
+}
+
+/** Mesma ordem sempre — usada tanto ao fim de `audit()` quanto depois que o
+ * `main` empurra as violações da regra 6, para o relatório final não ficar
+ * com as `advisor-divergente` soltas no fim fora de ordem de severidade. */
+function sortViolations(violations: Violation[]): void {
   const ordem = { CRITICO: 0, ALTO: 1, MEDIO: 2 };
-  return violations.sort(
+  violations.sort(
     (a, b) => ordem[a.severity] - ordem[b.severity] || a.fn.localeCompare(b.fn) || a.rule.localeCompare(b.rule),
   );
+}
+
+/**
+ * Deriva o inventário ESPERADO por lint a partir do que a allowlist declara
+ * (`advisor_lints` de cada entrada) — é a política revisada, não o banco.
+ * `computeAdvisorDivergence` compara este lado contra `observedAdvisor`.
+ */
+function expectedAdvisorFromAllowlist(allow: Map<string, AllowEntry>): LintInventory {
+  const expected: LintInventory = { "0028": [], "0029": [] };
+  for (const [key, entry] of allow.entries()) {
+    if (entry.advisor_lints.includes("0028")) expected["0028"].push(key);
+    if (entry.advisor_lints.includes("0029")) expected["0029"].push(key);
+  }
+  return expected;
+}
+
+function advisorDivergenceViolations(
+  divergence: AdvisorDivergence,
+  observed: LintInventory,
+  expectedCounts: ExpectedAdvisorCounts,
+): Violation[] {
+  const out: Violation[] = [];
+
+  for (const lint of ["0028", "0029"] as const) {
+    const d = divergence[lint];
+    if (d.entered.length === 0 && d.left.length === 0) continue;
+    const partes: string[] = [];
+    if (d.entered.length > 0) partes.push(`entraram (banco produz, allowlist não declara): ${d.entered.join(", ")}`);
+    if (d.left.length > 0) partes.push(`saíram (allowlist declara, banco não produz mais): ${d.left.join(", ")}`);
+    out.push({
+      severity: "ALTO",
+      fn: `advisor ${lint}`,
+      rule: "advisor-divergente",
+      observed: `${observed[lint].length} assinatura(s)`,
+      expected: `${lint === "0028" ? expectedCounts["0028"] : expectedCounts["0029"]} assinatura(s)`,
+      detail: `Divergência no lint ${lint} do Security Advisor. ${partes.join(" | ")}`,
+    });
+  }
+
+  if (!countsMatchExpected(observed, expectedCounts)) {
+    out.push({
+      severity: "ALTO",
+      fn: "advisor _expected_advisor",
+      rule: "advisor-divergente",
+      observed: `0028=${observed["0028"].length}, 0029=${observed["0029"].length}, total=${
+        observed["0028"].length + observed["0029"].length
+      }`,
+      expected: `0028=${expectedCounts["0028"]}, 0029=${expectedCounts["0029"]}, total=${expectedCounts.total}`,
+      detail:
+        `O bloco "_expected_advisor" da allowlist não bate com o que a própria allowlist ` +
+        `declara por assinatura (advisor_lints). Atualize function-acl-allowlist.json.`,
+    });
+  }
+
+  return out;
 }
 
 // ─── main ────────────────────────────────────────────────────────────────────
@@ -231,7 +351,7 @@ if (!url || !key) {
   Deno.exit(2);
 }
 
-const allow = loadAllowlist();
+const { byKey: allow, expectedAdvisor } = loadAllowlist();
 const supabase = createClient(url, key, { auth: { persistSession: false } });
 
 const { data, error } = await supabase.rpc("audit_function_acl");
@@ -251,10 +371,25 @@ if (rows.length === 0) {
   Deno.exit(2);
 }
 
-const violations = audit(rows, allow);
+const { violations, observedAdvisor } = audit(rows, allow);
+
+// Regra 6 (equivalente-advisor): sempre calculada e sempre impressa, mesmo
+// limpa — é o que torna "23 warnings" conferível em vez de memorizado.
+const expectedAdvisorInventory = expectedAdvisorFromAllowlist(allow);
+const advisorDivergence = computeAdvisorDivergence(expectedAdvisorInventory, observedAdvisor);
+violations.push(...advisorDivergenceViolations(advisorDivergence, observedAdvisor, expectedAdvisor));
+sortViolations(violations);
 
 console.log(`Funções analisadas (não-trigger, schema public): ${rows.length}`);
 console.log(`Entradas na allowlist: ${allow.size}`);
+console.log(
+  `\nEquivalente-advisor (regra 6): 0028=${observedAdvisor["0028"].length} | ` +
+    `0029=${observedAdvisor["0029"].length} | total=${
+      observedAdvisor["0028"].length + observedAdvisor["0029"].length
+    }`,
+);
+console.log(`  0028 (anon):          ${observedAdvisor["0028"].sort().join(", ") || "(nenhuma)"}`);
+console.log(`  0029 (authenticated): ${observedAdvisor["0029"].sort().join(", ") || "(nenhuma)"}`);
 
 if (violations.length === 0) {
   console.log("\n✅ Sem violações. Nenhuma função exposta fora da allowlist.");
