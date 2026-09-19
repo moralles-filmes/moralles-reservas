@@ -562,14 +562,32 @@ describe("_expected_advisor", () => {
     });
   });
 
-  // Controle positivo da regra de soma: um bloco _expected_advisor que não
-  // reflete as entradas reais tem que reprovar, nomeado por `toEqual`
-  // (Vitest imprime o diff campo a campo), não só um booleano mudo.
-  it("CONTROLE POSITIVO — sabotagem: bloco _expected_advisor desatualizado reprova a checagem de soma", () => {
-    const summed = sumAdvisorLints(advisorEntries);
-    const blocoDesatualizado: ExpectedAdvisorCounts = { "0028": 1, "0029": 1, total: 2 };
-    expect(summed).not.toEqual(blocoDesatualizado);
-  });
+  // Controle positivo da regra de soma. A versão anterior deste caso comparava
+  // os dados reais contra um literal ["0028":1,"0029":1,total:2] desconectado
+  // — passa esteja a lógica de soma certa ou quebrada, é a mesma vacuidade que
+  // o "controle negativo" original do brief tinha (ver Correction 1). A
+  // reprovação aqui precisa vir do MESMO comparador da asserção substantiva
+  // acima (`sumAdvisorLints`), alimentado por um input GENUINAMENTE sabotado
+  // — uma entrada real removida — não por um número inventado.
+  it(
+    "CONTROLE POSITIVO — sabotagem: remover uma entrada real muda o total que sumAdvisorLints " +
+      "produz (mesmo comparador da asserção substantiva acima, não um literal desconectado)",
+    () => {
+      const semAnonymizeCustomer = advisorEntries.filter((e) => e.name !== "anonymize_customer");
+      expect(
+        semAnonymizeCustomer.length,
+        "o controle depende de anonymize_customer existir na allowlist",
+      ).toBe(advisorEntries.length - 1);
+
+      const summedSabotado = sumAdvisorLints(semAnonymizeCustomer);
+      // anonymize_customer é SECURITY DEFINER + authenticated: só declara 0029.
+      // Removê-la tem que derrubar 0029 e o total em exatamente 1 — não só
+      // "diferente", para o controle não passar por acidente com a conta errada.
+      expect(summedSabotado["0028"]).toBe(expected!["0028"]);
+      expect(summedSabotado["0029"]).toBe(expected!["0029"] - 1);
+      expect(summedSabotado.total).toBe(expected!.total - 1);
+    },
+  );
 });
 
 /**

@@ -296,6 +296,15 @@ function expectedAdvisorFromAllowlist(allow: Map<string, AllowEntry>): LintInven
   return expected;
 }
 
+/**
+ * Nome da regra 6, numa constante só — usado tanto para RÓTULO de cada
+ * violação quanto para EXCLUIR essas pseudo-assinaturas ("advisor 0028",
+ * "advisor _expected_advisor") da contagem de "N função(ões) afetadas", lá
+ * embaixo no main. Duas strings literais idênticas que precisam concordar é
+ * exatamente o tipo de acoplamento que quebra em silêncio.
+ */
+const ADVISOR_DIVERGENTE_RULE = "advisor-divergente";
+
 function advisorDivergenceViolations(
   divergence: AdvisorDivergence,
   observed: LintInventory,
@@ -312,7 +321,7 @@ function advisorDivergenceViolations(
     out.push({
       severity: "ALTO",
       fn: `advisor ${lint}`,
-      rule: "advisor-divergente",
+      rule: ADVISOR_DIVERGENTE_RULE,
       observed: `${observed[lint].length} assinatura(s)`,
       expected: `${lint === "0028" ? expectedCounts["0028"] : expectedCounts["0029"]} assinatura(s)`,
       detail: `Divergência no lint ${lint} do Security Advisor. ${partes.join(" | ")}`,
@@ -323,7 +332,7 @@ function advisorDivergenceViolations(
     out.push({
       severity: "ALTO",
       fn: "advisor _expected_advisor",
-      rule: "advisor-divergente",
+      rule: ADVISOR_DIVERGENTE_RULE,
       observed: `0028=${observed["0028"].length}, 0029=${observed["0029"].length}, total=${
         observed["0028"].length + observed["0029"].length
       }`,
@@ -388,15 +397,25 @@ console.log(
       observedAdvisor["0028"].length + observedAdvisor["0029"].length
     }`,
 );
-console.log(`  0028 (anon):          ${observedAdvisor["0028"].sort().join(", ") || "(nenhuma)"}`);
-console.log(`  0029 (authenticated): ${observedAdvisor["0029"].sort().join(", ") || "(nenhuma)"}`);
+// Cópia antes de ordenar — `observedAdvisor` já foi consumido acima por
+// `computeAdvisorDivergence`/`advisorDivergenceViolations`; `.sort()` muta o
+// array in-place, e ordenar o original aqui só é inofensivo hoje porque
+// nada mais o lê depois. Copiar remove essa dependência de ordem.
+console.log(`  0028 (anon):          ${[...observedAdvisor["0028"]].sort().join(", ") || "(nenhuma)"}`);
+console.log(`  0029 (authenticated): ${[...observedAdvisor["0029"]].sort().join(", ") || "(nenhuma)"}`);
 
 if (violations.length === 0) {
   console.log("\n✅ Sem violações. Nenhuma função exposta fora da allowlist.");
   Deno.exit(0);
 }
 
-const fnsAfetadas = new Set(violations.map((v) => v.fn)).size;
+// As violações da regra 6 (`advisor-divergente`) não têm `fn` de assinatura
+// real — são "advisor 0028"/"advisor 0029"/"advisor _expected_advisor",
+// pseudo-chaves de agregado. Contá-las junto inflaria "N função(ões)" em até
+// 3 numa divergência, e essa é a linha que um operador lê durante incidente.
+const fnsAfetadas = new Set(
+  violations.filter((v) => v.rule !== ADVISOR_DIVERGENTE_RULE).map((v) => v.fn),
+).size;
 console.error(`\n❌ ${violations.length} violação(ões) em ${fnsAfetadas} função(ões):\n`);
 for (const v of violations) {
   console.error(`  [${v.severity}] ${v.fn}`);
