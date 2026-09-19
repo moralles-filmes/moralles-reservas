@@ -81,6 +81,7 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 - Query lists distinguem loading, error com retry, empty e data. `invalidateQueries` respeita a ordem exata da key; batch de tabela inteira pagina com `.range()` até o fim.
 - Não use `useState+useEffect` para remoto. `refetchOnWindowFocus:false` preserva forms; telas operacionais usam polling visibility-aware.
 - Datas DB são `YYYY-MM-DD`; timestamps UTC agrupam por dia local com `isoToLocalDate`; ordene pelo epoch, nunca por `localeCompare`. Telefones armazenam dígitos e exibem com `formatPhone()`.
+- Calendário `mode="range"` nunca recebe intervalo completo como rascunho: o `addToRange` do react-day-picker ajusta uma ponta e devolve intervalo completo, fazendo o primeiro clique filtrar sozinho. Use `nextRangeDraft`/`isCompleteRange` de `src/lib/date-range-draft-core.ts`, não a saída crua do `onSelect`.
 - Busca injetada em PostgREST `.or/.ilike` passa por `sanitizeSearchTerm`; URL persistida e renderizada passa por `isSafeHttpUrl`. EF nunca devolve `error.message` cru do Postgres.
 - Layout admin usa `AdminShell`; mobile usa `ResponsiveDialog`, inputs com tap target ≥44px, `100dvh`, safe-area e `viewport-fit=cover`. Forms de dois campos empilham antes de `sm`.
 - Wizard público mantém email obrigatório só no frontend; backend/WhatsApp aceitam sem email. `partitionHalls` é filtro visual, não autoridade de disponibilidade. Não confundir bloqueio de reservas com restaurante fechado.
