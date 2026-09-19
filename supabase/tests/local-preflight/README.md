@@ -40,8 +40,8 @@ presentes agendaria jobs apontando para lá.
 | `06-controles-104.sql` | Os **três controles positivos** (104 e 105). Sem eles, "COST-2 passou", "END-1 passou" e "END-4 passou" não distinguem a guarda funcionando de teste sem força. |
 | `07-whatsapp-multiprovider.sql` | MP-1..18 + MP-5b/5c: backfill, CHECK/uniqueness, Vault RPC, claim fence/double-click, intenção/cutover, status Z-API/UazAPI, provider correto no ledger, dedupe por provider e ACL estática. |
 | `08-whatsapp-conversation-parity.sql` | CP: append idempotente com `last_message_at` monotônico, mensagem humana + handoff/lock atômicos, resolver de conversa serializado, validação de shape/tenant, liberação cercada do claim, cutover fail-closed sem prova de eco e ACL. |
-| `09a-advisor-bootstrap.sql` | O que a sequência do advisor precisa e o `00-bootstrap.sql` não tem: `unit_members`, `customers`, `reservations`, `waitlist`, `settings`, `is_public` nas duas tabelas de tenancy, `auth.uid()` lendo as duas formas de GUC, e as **oito funções extraídas verbatim de produção** (os 3 helpers, as 4 SECURITY DEFINER que os chamam pelo nome — na forma PRÉ-106 — e `next_waitlist_code`, que `enter_waitlist` chama). Reproduz também a ACL de produção de cada uma, revogando de PUBLIC antes de conceder: ACL local mais larga que a real esvaziaria o snapshot de `proacl` do ACL-5. Substitui o `02-seed.sql` nesta sequência — o `02` insere em `whatsapp_instances`, que só existe depois da 087. |
-| `09-advisor-hardening.sql` | ACL-1..ACL-5, ACL-1b e ACL-3b/3c/3d da migration 106: policy TO PUBLIC sobrevivendo ao `SET SCHEMA`, os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, idempotência medida **através de duas execuções** do arquivo, e os lados negativos — `ACL-1b` (não-membro vê zero, tenant cruzado não vaza) e `ACL-3b/3c/3d`, o lado de NEGAR das outras três funções: recusa cross-org na anonimização, recusa a não-membro no painel de Entregas, e agregado de outra organização não voltando na listagem de clientes. |
+| `09a-advisor-bootstrap.sql` | O que a sequência do advisor precisa e o `00-bootstrap.sql` não tem: `unit_members`, `customers`, `reservations`, `waitlist`, `settings`, `is_public` nas duas tabelas de tenancy, `auth.uid()` lendo as duas formas de GUC, e as **oito funções extraídas verbatim de produção** (os 3 helpers, as 4 SECURITY DEFINER que os chamam pelo nome — na forma PRÉ-106 — e `next_waitlist_code`, que `enter_waitlist` chama). Reproduz também a ACL de produção de cada uma, revogando de PUBLIC antes de conceder: ACL local mais larga que a real esvaziaria o snapshot de `proacl` do ACL-5. Substitui o `02-seed.sql` nesta sequência — o `02` insere em `whatsapp_instances`, que só existe depois da 087. Traz ainda a **fixture `acl_probe`**, com a policy do ACL-1 escrita na forma das reais (`is_unit_member(auth.uid(), unit_id)` — sem qualificar o schema, sem cláusula `TO`, como a 014 escreveu `waitlist_member_select`) e a **procedência dela gravada em `t_probe_prov`**: o OID que esse nome resolveu, o schema (`public`) e o OID da própria linha de `pg_policy`. A fixture mora aqui, e não no `09`, porque precisa NASCER ANTES da 106 — é esse o fato que o ACL-1 mede. Por isso o arquivo **recusa rodar se a 106 já foi aplicada**: o `create or replace` dele reporia um segundo helper em `public`, a fixture apontaria para o sósia e o ACL-1 ficaria verde medindo nada. |
+| `09-advisor-hardening.sql` | ACL-1..ACL-5, ACL-1b, ACL-3b/3c/3d e CONTROLE-16 da migration 106: policy **criada antes do move** continuando a avaliar depois dele (mesmo OID, mesma linha de `pg_policy`, `public.is_unit_member` já inexistente), os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, idempotência medida **através de duas execuções** do arquivo, e os lados negativos — `ACL-1b` (não-membro vê zero, tenant cruzado não vaza) e `ACL-3b/3c/3d`, o lado de NEGAR das outras três funções: recusa cross-org na anonimização, recusa a não-membro no painel de Entregas, e agregado de outra organização não voltando na listagem de clientes. Nada aqui cria ou recria a policy da fixture; o arquivo **recusa rodar antes da 106 ou sem o `09a`**. `CONTROLE-16` é o controle positivo do ACL-1 e vive neste arquivo, não no `10`, pela razão que o `CONTROLE-8` já usa no `11`: desfaz a sabotagem por rollback de subtransação e não deixa resíduo nenhum. |
 | `10-controles-106.sql` | Os **quatro controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies; CONTROLE-9 sabota `is_unit_member`; CONTROLE-10 sabota `is_org_member` e vê o agregado de outro tenant vazar. |
 | `11-overloads-107.sql` | Task 5 (migration 107, Fase 2 do front de advisor): ACL-6 (ord 14) confere que os overloads de 2 argumentos sobrevivem à 107; CONTROLE-8 (ord 15) dropa o de 2 argumentos por engano, vê o call site real estourar, e restaura corpo + ACL de dentro do próprio caso. Roda no mesmo banco `advisor106`, ao final da sequência do advisor — não em banco separado. Os dois vivem no mesmo arquivo, com `ON_ERROR_STOP=1`: diferente de CONTROLE-6, CONTROLE-8 nunca deixa sabotagem residual para um reapply externo resolver, então não precisa da rede de segurança que os arquivos `NN-controles-*.sql` têm. |
 
@@ -130,8 +130,15 @@ P -f supabase/tests/local-preflight/00-bootstrap.sql
 P -f supabase/tests/local-preflight/01-audit.sql
 P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
 
-# ANTES da migration, o 09 tem de FALHAR: `schema "app_private" does not exist`,
-# na criação da policy de acl_probe. É o RED que dá sentido ao GREEN.
+# ANTES da migration, o 09 tem de FALHAR — hoje pelo guard do topo do arquivo:
+# `exige a migration 106 aplicada (app_private.is_unit_member nao existe)`.
+# É o RED que dá sentido ao GREEN, e ele é EXPLÍCITO de propósito: enquanto a
+# fixture `acl_probe` era criada dentro do `09`, o RED vinha de um acidente feliz
+# (`schema "app_private" does not exist` na criação da policy). Com a fixture no
+# `09a`, onde ela precisa estar, esse acidente sumiu — e sem o guard este arquivo
+# rodaria inteiro contra o mundo PRÉ-migration: ACL-2/3/4 passariam (produção
+# funciona hoje) e o ACL-5 gravaria em `t_acl_snap` um snapshot de ZERO funções,
+# contra o qual a 1a passada de verdade reprovaria.
 P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # esperado: ERROR
 
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
@@ -148,7 +155,7 @@ P -f supabase/tests/local-preflight/09-advisor-hardening.sql   # 2a passada
 # restaura a versão real:
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 
-P -c "select ord, caso, veredito from t_res order by ord;"   # 13 linhas, todas OK
+P -c "select ord, caso, veredito from t_res order by ord;"   # 14 linhas, todas OK
 
 # ── Task 5 (migration 107): dropar os dois overloads de RPC sem caller ──────
 # 11-overloads-107.sql roda no MESMO banco advisor106, apendado ao fim desta
@@ -164,7 +171,7 @@ P -f supabase/migrations/20260910121000_107_drop_dead_rpc_overloads.sql
 # overloads de 2 argumentos:
 P -f supabase/tests/local-preflight/11-overloads-107.sql
 
-P -c "select ord, caso, veredito from t_res order by ord;"   # 15 linhas, todas OK
+P -c "select ord, caso, veredito from t_res order by ord;"   # 16 linhas, todas OK
 ```
 
 **Ordinais casam com o número do NOME do caso, não com a ordem de execução** —
@@ -179,6 +186,7 @@ por isso o `order by ord` intercala casos do `09`/`11` com controles do `10`:
 | 10 | `CONTROLE-10` | `10` |
 | 11, 12, 13 | `ACL-3b`, `ACL-3c`, `ACL-3d` | `09` |
 | 14, 15 | `ACL-6`, `CONTROLE-8` | `11` |
+| 16 | `CONTROLE-16` | `09` |
 
 **Os ordinais 8 e 9 já estavam ocupados** por `ACL-1b` e `CONTROLE-9` quando a
 Task 5 chegou — uma nota anterior deste README reservava o 8 para o controle de
@@ -294,6 +302,42 @@ funções ele aparece sempre como o segundo termo de um `or`, sempre com
 `platform_admins` vazia neste harness — sabotá-lo para TRUE tornaria todo
 chamador super-admin e o que ficaria vermelho seriam os mesmos casos que 9 e 10
 já cobrem, sem isolar nada de novo.
+
+## O que o CONTROLE-16 do `09` faz
+
+É o controle positivo do `ACL-1` — e o `ACL-1` é o único caso desta suíte que
+sustenta a frase da 106 sobre as policies não precisarem de reescrita, que é o
+que autoriza deixar **42 policies de produção intocadas** (24 delas `TO PUBLIC`).
+
+A sabotagem disponível é uma só, e é justamente ela que demonstra a propriedade:
+**depois do move não existe como escrever uma policy que resolva
+`public.is_unit_member`**. O caso dropa a policy da fixture, observa a asserção do
+`ACL-1` virar zero (o vermelho), e tenta reconstruí-la pelo nome antigo — o
+`create policy` estoura `undefined_function`. Num mundo em que policy dependesse
+de nome, a fixture não poderia nem existir neste banco.
+
+**O restore é rollback de subtransação, não um `create policy` de volta**, e a
+escolha é o ponto: recriar a policy a resolveria pelo endereço NOVO, e a 2a
+passada do `09` (a que o `ACL-5` exige) leria uma policy nascida DEPOIS do move —
+o controle reintroduziria, pela porta de trás, exatamente o defeito de evidência
+que ele existe para fechar. Um `raise` com SQLSTATE próprio desfaz o `drop` e
+devolve a MESMA linha de `pg_policy`; quem confere isso é o `ACL-1`, comparando
+com o OID gravado pelo `09a`. Variável de plpgsql não é transacional, então os
+valores observados durante a sabotagem sobrevivem ao rollback e dá para julgar
+depois de desfazer.
+
+Por não deixar resíduo, ele roda sob `ON_ERROR_STOP=1` junto dos casos, em vez de
+morar num `NN-controles-*.sql` — mesma situação do `CONTROLE-8` no `11`.
+
+**Achado colateral, e vale para ler qualquer veredito:** os handlers
+`when others` do `09` gravam com `on conflict (ord) do update`. O `delete from
+t_res where ord = N` do início de cada caso é DESFEITO pelo próprio `exception`
+que o handler está tratando (em plpgsql o handler roda depois do rollback da
+subtransação do bloco), então, na 2a passada, caso que estoura tentava inserir um
+ordinal já gravado e morria com `duplicate key`. Sob `ON_ERROR_STOP=1` isso
+**abortava o arquivo** — sumiam o veredito do caso que falhou e os de todos os
+seguintes, exatamente quando alguém precisa deles. Não foi deduzido: apareceu ao
+sabotar a fixture de propósito para ver o `CONTROLE-16` ficar vermelho.
 
 ## O que CORR-1 e CORR-2 NÃO provam
 

@@ -56,7 +56,16 @@
 -- fila pública quebrar.
 --
 -- As policies referenciam a função por OID, não por nome, então elas NÃO
--- precisam ser reescritas — provado em ACL-1 do pré-voo local.
+-- precisam ser reescritas — MEDIDO em ACL-1 do pré-voo local, contra uma policy
+-- que nasce ANTES deste move e na forma das reais: `is_unit_member(auth.uid(),
+-- unit_id)`, sem qualificar o schema e sem cláusula `TO`, como a 014 escreveu
+-- `waitlist_member_select`. O `09a-advisor-bootstrap.sql` cria essa policy e
+-- grava o OID que o nome resolveu em `public`; o ACL-1, DEPOIS do move, confere
+-- que continua sendo a MESMA linha de `pg_policy`, apontando para o MESMO OID,
+-- agora em `app_private`, com `public.is_unit_member` já inexistente — e que o
+-- membro segue vendo a linha. CONTROLE-16 é o controle positivo: dropa a policy,
+-- vê a asserção virar zero, e mostra que reconstruí-la pelo nome antigo é
+-- IMPOSSÍVEL depois do move (`undefined_function`).
 --
 -- ORDEM DE DEPLOY — LEIA ANTES DE RODAR `db push`. As quatro Edge Functions da
 -- Task 2 (`create-manual-reservation`, `update-reservation`, `send-cancellation`,
