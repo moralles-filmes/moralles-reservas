@@ -47,6 +47,15 @@ jobs:
       - name: Auditoria estática de ACL
         run: npx vitest run scripts/function-acl-allowlist.test.ts
 
+      # Núcleo puro da regra 6 do audit-function-acl.ts: a divergência entre o
+      # que a allowlist declara para os lints 0028/0029 do Security Advisor e o
+      # que o banco realmente produz. Roda AQUI porque é a metade da regra que
+      # não precisa de banco — o cruzamento com o ACL real fica no job
+      # acl-com-banco, que é manual. Sem este passo o arquivo só era exercitado
+      # por quem rodasse a suíte completa localmente.
+      - name: Núcleo de divergência do advisor
+        run: npx vitest run scripts/advisor-divergence-core.test.ts
+
       # Guardrail de migration (Fase 6b): nenhuma migration NOVA pode embutir a
       # URL do projeto Supabase nem segredo. Os 13 arquivos legados que fazem
       # isso estão numa allowlist FECHADA — enquanto eles existirem, um banco
