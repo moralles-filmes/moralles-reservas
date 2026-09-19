@@ -55,6 +55,7 @@ import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/wha
 import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { splitMetaWebhookPayloadCore } from "../_shared/whatsapp-meta-batch-core.ts";
+import { shapeOf } from "../_shared/webhook-payload-shape-core.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
   genRequestId,
@@ -952,6 +953,18 @@ function describeIgnoredPayload(provider: WhatsAppProvider, payload: any): Recor
       keys: Object.keys(p).slice(0, 30),
       type: typeof (metaMsg?.type ?? p.type) === "string" ? (metaMsg?.type ?? p.type) : null,
       event: typeof payload.event === "string" ? payload.event : null,
+      // Discriminador de FAMÍLIA de envelope do provedor (ex.: "messages" x
+      // "messages_update" na UazAPI), não é dado do cliente. É ele que decide
+      // qual parser roda — e o que `keys` sozinho não revelava.
+      event_type: typeof p.EventType === "string" ? p.EventType : null,
+      // Só a FORMA do evento aninhado (nomes + tipos). É aqui que a UazAPI põe
+      // os ids e o status de um recibo, e é o que falta pra escrever o parser.
+      nested_shape: p.event && typeof p.event === "object" ? shapeOf(p.event) : null,
+      // Enum de recibo do whatsmeow ("", "delivery", "read", "read-self",
+      // "played", ...) — é ELE que separa entregue de lida. String vazia é um
+      // valor legítimo (entrega), por isso `null` só quando o campo não existe.
+      receipt_type: typeof p.event?.Type === "string" ? p.event.Type : null,
+      receipt_from_me: typeof p.event?.IsFromMe === "boolean" ? p.event.IsFromMe : null,
       // Enum do provedor (SENT/RECEIVED/READ/READ_BY_ME/...), não é dado do cliente.
       // É o discriminador de qual status o mapa de whatsapp-status.ts não cobre.
       status: typeof p.status === "string" ? p.status : null,

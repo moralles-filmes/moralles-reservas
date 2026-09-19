@@ -30,6 +30,8 @@ export interface WhatsappConnectionSnapshot {
   qr_available: boolean;
   restart_available: boolean;
   disconnect_available: boolean;
+  /** Proveniência somente do cache local; nunca vem de status/list_client. */
+  qr_from_explicit_action: boolean;
 }
 
 type ClientAction =
@@ -74,6 +76,7 @@ const EMPTY_SNAPSHOT: WhatsappConnectionSnapshot = {
   qr_available: false,
   restart_available: false,
   disconnect_available: false,
+  qr_from_explicit_action: false,
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -141,7 +144,16 @@ export function normalizeWhatsappConnection(payload: unknown): WhatsappConnectio
     qr_available: candidate.qr_available === true,
     restart_available: candidate.restart_available === true,
     disconnect_available: candidate.disconnect_available === true,
+    qr_from_explicit_action: false,
   };
+}
+
+export function markExplicitWhatsappQr(
+  snapshot: WhatsappConnectionSnapshot,
+): WhatsappConnectionSnapshot {
+  return snapshot.qr_code
+    ? { ...snapshot, qr_from_explicit_action: true }
+    : snapshot;
 }
 
 export function isWhatsappConnectionTransient(status: WhatsappConnectionStatus): boolean {
@@ -176,27 +188,36 @@ const MANUAL_QR_PENDING_STATUSES = new Set<WhatsappConnectionStatus>([
   "connecting",
   "waiting_qr",
 ]);
+const MANAGED_QR_PENDING_STATUSES = new Set<WhatsappConnectionStatus>([
+  "connecting",
+  "waiting_qr",
+]);
 
 /**
- * O QR manual não é persistido no backend. Enquanto o status ainda não
- * confirmou conexão, mantemos o valor efêmero no cache sem chamar refresh_qr
- * automaticamente. Connected (ou erro terminal) limpa o QR.
+ * QR de ação explícita não é persistido no backend. Mantemos o valor efêmero
+ * no cache sem renovar automaticamente; lifecycle gerenciado trata
+ * `disconnected` como terminal, enquanto providers manuais preservam o
+ * comportamento compatível até confirmação ou erro.
  */
 export function reconcileWhatsappConnectionPoll(
   previous: WhatsappConnectionSnapshot | undefined,
   observed: WhatsappConnectionSnapshot,
 ): WhatsappConnectionSnapshot {
-  const hasPendingManualQr = !!previous?.qr_available
-    && !previous.lifecycle_available
+  const hasPendingExplicitQr = !!previous?.qr_available
+    && previous.qr_from_explicit_action
     && previous.status === "waiting_qr"
     && !!previous.qr_code;
-  if (!hasPendingManualQr || !MANUAL_QR_PENDING_STATUSES.has(observed.status)) {
+  const pendingStatuses = previous?.lifecycle_available
+    ? MANAGED_QR_PENDING_STATUSES
+    : MANUAL_QR_PENDING_STATUSES;
+  if (!hasPendingExplicitQr || !pendingStatuses.has(observed.status)) {
     return observed;
   }
   return {
     ...observed,
     status: "waiting_qr",
     qr_code: observed.qr_code ?? previous.qr_code,
+    qr_from_explicit_action: true,
   };
 }
 
@@ -276,7 +297,7 @@ function useWhatsappConnectionAction(
     mutationFn: async (channelId?: string | null) => {
       const payload = await invokeClientAction(action, unitId, channelId);
       return responseContainsSnapshot(payload)
-        ? normalizeWhatsappConnection(payload)
+        ? markExplicitWhatsappQr(normalizeWhatsappConnection(payload))
         : queryClient.getQueryData<WhatsappConnectionSnapshot>(queryKey) ?? {
             ...EMPTY_SNAPSHOT,
           };

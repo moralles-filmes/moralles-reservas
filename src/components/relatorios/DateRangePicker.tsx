@@ -9,6 +9,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { CalendarIcon, ChevronDown } from "lucide-react";
 import type { DateRange as RDPRange } from "react-day-picker";
 import type { DateRange } from "@/hooks/useFluxoClientes";
+import { isCompleteRange, nextRangeDraft } from "@/lib/date-range-draft-core";
 
 const PRESETS: Array<{ label: string; days: number }> = [
   { label: "Últimos 7 dias", days: 7 },
@@ -63,20 +64,29 @@ export function DateRangePicker({ value, onChange }: DateRangePickerProps) {
     setOpen(false);
   };
 
-  const handleCalendar = (range: RDPRange | undefined) => {
-    setDraft(range);
-    if (range?.from && range?.to) {
-      const from = new Date(range.from);
-      from.setHours(0, 0, 0, 0);
-      const to = new Date(range.to);
-      to.setHours(23, 59, 59, 999);
-      onChange({ from, to });
-      setOpen(false);
-    }
+  const handleCalendar = (range: RDPRange | undefined, clickedDay: Date) => {
+    const next = nextRangeDraft(draft, range, clickedDay);
+    setDraft(next);
+    // Uma ponta só: espera o segundo clique em vez de aplicar o filtro.
+    if (!isCompleteRange(next)) return;
+    const from = new Date(next.from);
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(next.to);
+    to.setHours(23, 59, 59, 999);
+    onChange({ from, to });
+    setOpen(false);
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    // Reabrir parte do filtro em vigor. Sem isso o calendário destacaria o
+    // rascunho da última interação — um preset troca `value` sem passar pelo
+    // calendário e deixaria o realce no intervalo antigo.
+    if (next) setDraft({ from: value.from, to: value.to });
+    setOpen(next);
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button variant="outline" className="gap-2 font-normal">
           <CalendarIcon className="h-4 w-4 text-muted-foreground" />

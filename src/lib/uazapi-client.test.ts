@@ -93,6 +93,45 @@ describe("UazApiClient", () => {
     });
   });
 
+  it("descarta QR residual do status passivo depois de timeout", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      status: "disconnected",
+      qrcode: "expired-qr",
+      paircode: "expired-pair-code",
+    }));
+    const client = new UazApiClient({
+      baseUrl: "https://uaz.example.test",
+      adminToken: "admin-token",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(client.getStatus("instance-token")).resolves.toMatchObject({
+      status: "disconnected",
+      connected: false,
+      qrCode: null,
+      pairCode: null,
+    });
+  });
+
+  it("preserva o QR novo retornado pelo connect explícito", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      status: "connecting",
+      qrcode: "fresh-qr",
+      paircode: "fresh-pair-code",
+    }));
+    const client = new UazApiClient({
+      baseUrl: "https://uaz.example.test",
+      adminToken: "admin-token",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(client.connect("instance-token")).resolves.toMatchObject({
+      status: "connecting",
+      qrCode: "fresh-qr",
+      pairCode: "fresh-pair-code",
+    });
+  });
+
   it("normaliza 429 de connect como capacidade e preserva Retry-After", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(response(
       { error: "connection limit" },
