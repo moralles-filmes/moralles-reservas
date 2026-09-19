@@ -12,7 +12,8 @@
 //     override?: boolean  // se true, pula a checagem (escape hatch)
 //   }
 //
-// Auth: JWT do member. Valida via `is_unit_member` na unit da reserva.
+// Auth: JWT do member. Valida membro da unit da reserva OU platform_admin via
+// hasUnitAccess (_shared/authz.ts, consulta direta — os helpers saíram de `public`).
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";

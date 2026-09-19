@@ -3,7 +3,8 @@
 // (_shared/availability.ts) e merge de cliente (_shared/resolve-customer.ts) da
 // create-reservation pública, mas:
 //
-//   - Exige JWT e valida is_unit_member OU is_platform_admin (painel autenticado).
+//   - Exige JWT e valida membro da unit OU platform_admin via hasUnitAccess
+//     (_shared/authz.ts, consulta direta às tabelas — os helpers saíram de `public`).
 //   - Aceita `source` ('web'|'whatsapp') — escolhido pelo operador SÓ pra relatório
 //     "Origem das reservas". A notificação é DESACOPLADA da origem (ver abaixo).
 //   - SEM rate-limit (operador autenticado) e SEM caução/Stripe (reserva isenta).
