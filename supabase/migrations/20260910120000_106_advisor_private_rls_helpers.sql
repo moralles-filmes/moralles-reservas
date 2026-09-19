@@ -70,12 +70,25 @@
 -- Quem desfaz isto está sob pressão e lendo ESTE arquivo, não o documento de
 -- design (spec §7). Então:
 --
--- 1º REVERTER AS EDGE FUNCTIONS, 2º REVERTER A MIGRATION. Se a migration voltar
---    primeiro, os quatro corpos abaixo passam a apontar para `public.is_*` num
---    instante em que o helper ainda está em `app_private` — e é o MESMO 403 da
---    ordem de ida, pelos mesmos quatro caminhos. A ordem de deploy é
---    EF → migration na ida e EF → migration na volta: em ambas, o código que
---    chama muda antes do endereço da função.
+-- 1º REVERTER A MIGRATION, 2º (só se for mesmo necessário) AS EDGE FUNCTIONS.
+--    A volta é o ESPELHO da ida, não a repetição dela. O princípio é o mesmo nas
+--    duas direções — o ENDEREÇO da função tem de estar no lugar que o código
+--    chamador espera ANTES de esse código entrar em serviço — mas ele inverte a
+--    ordem, porque na volta quem muda de expectativa é a EF, não o SQL:
+--
+--    • Reverter SÓ a migration é seguro por si, em qualquer momento, sem janela.
+--      O SQL inverso abaixo é UMA transação: os três helpers voltam para `public`
+--      e os quatro corpos voltam a chamá-los de lá no mesmo commit, então não
+--      existe instante em que um aponte para o outro no lugar errado. E as EFs
+--      ATUAIS (`hasUnitAccess`, leitura direta em `unit_members`/`platform_admins`)
+--      não dependem do schema do helper — funcionam antes e depois.
+--    • Só se ALÉM disso o CÓDIGO das EFs voltar à versão pré-branch, que chamava
+--      `rpc("is_unit_member")`, a ordem passa a importar: aquele código exige o
+--      helper em `public`. Redeployá-lo ANTES de reverter a migration é o MESMO
+--      403 da ordem de ida, pelos mesmos quatro caminhos — PostgREST responde 404
+--      à RPC que saiu de `public` e o `if (!data)` lê isso como "não é membro".
+--      Reverter a migration primeiro fecha essa janela: o helper já está em
+--      `public` quando o código antigo sobe.
 --
 -- SQL inverso (comentado de propósito — nada aqui deve rodar por acidente):
 --
