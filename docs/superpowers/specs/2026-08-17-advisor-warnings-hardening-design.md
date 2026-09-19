@@ -257,8 +257,15 @@ conferir o número esperado (25 e depois 23).
 Cada fase reverte sozinha.
 
 - **106**: migration reversa devolve os três helpers a `public`
-  (`set schema public`), regrant, e `create or replace` dos 4 corpos com a
-  qualificação antiga. As EFs já não dependem da RPC, então não precisam voltar.
+  (`set schema public`) e `create or replace` dos 4 corpos com a qualificação
+  antiga, tudo numa transação. **Nenhum regrant**: a ACL vive em
+  `pg_proc.proacl` e viaja com a função no `set schema`, então refazer grant na
+  volta é, na melhor hipótese, redundante — e na pior concede o que não estava
+  concedido, porque quem redigita de memória erra o papel. As EFs já não
+  dependem da RPC, então não precisam voltar; se ainda assim voltarem à versão
+  pré-branch (que chamava `rpc("is_unit_member")`), a migration reverte PRIMEIRO
+  e as EFs depois — o helper tem de estar de novo em `public` antes de subir
+  código que o chama por nome.
 - **107**: recriar os dois overloads a partir do git.
 - **EFs**: redeploy da versão anterior.
 
