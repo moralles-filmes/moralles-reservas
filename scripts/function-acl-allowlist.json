@@ -13,141 +13,224 @@
     "`args` tem que bater EXATAMENTE com pg_get_function_identity_arguments(oid)",
     "— é o que distingue overloads. Compare com a saída de audit_function_acl().",
     "",
+    "Assinatura DROPADA por uma migration posterior à 085 sai daqui — nada pode",
+    "executar uma função que não existe mais, então ela para de ser superfície",
+    "viva e para de precisar de classificação. scripts/function-acl-allowlist.test.ts",
+    "sabe disso: uma assinatura que a 085 concedeu e que uma migration posterior",
+    "dropa (mesmo nome, mesma aridade) fica isenta da exigência de entrada. Se uma",
+    "migration futura recriar e reconceder a mesma função, o próprio checador de",
+    "'migrations posteriores não reabrem a superfície' exige entrada nova — não é",
+    "preciso (nem vale) reinserir a entrada antiga só porque ela existiu um dia.",
+    "",
     "Origem da classificação: docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md"
   ],
+
+  "_expected_advisor": {
+    "_doc": [
+      "Total de WARN que o Security Advisor deve reportar para os lints 0028 e",
+      "0029 depois das migrations 106 e 107. Divergência reprova o",
+      "audit-function-acl.ts nomeando a assinatura que entrou ou saiu.",
+      "",
+      "Os dois lints só disparam para SECURITY DEFINER — cada entrada abaixo",
+      "carrega `security_definer` e `advisor_lints` derivados dele; ver o teste",
+      "'_expected_advisor' em function-acl-allowlist.test.ts, que confere a",
+      "coerência de cada entrada E que a soma bate com estes três números.",
+      "",
+      "NÃO cobre o lint INFO 0008 (rls_enabled_no_policy, 17 tabelas): ele vem de",
+      "tabela, não de função, e é aceito por design — tabela com credencial usa",
+      "FORCE RLS sem policy e a UI acessa por Edge Function.",
+      "",
+      "PREMISSA, porque o número 23 depende dela: os dois lints são ESCOPADOS A",
+      "SCHEMA EXPOSTO. A 106 mantém `EXECUTE` de `anon` no `is_unit_member` de",
+      "propósito (24 policies `TO PUBLIC` dependem dele) — o que some do advisor é",
+      "o schema, não o grant. Se os lints varressem todo schema, mover não",
+      "reduziria nada e o real seria 0028=10 / 0029=17 / total=27, com o painel",
+      "discordando deste arquivo e a regra 6 (que só olha `public`) ainda dizendo",
+      "23 limpo.",
+      "",
+      "DERIVAÇÃO A PARTIR DO PRÉ-ESTADO — é o que torna 23 falsificável contra o",
+      "painel, e não só coerente consigo mesmo. Medido ao vivo antes das duas",
+      "migrations: 0028=10, 0029=19 (29 WARN). Reconcilia exato: 9 RPCs de portal",
+      "DEFINER com anon+authenticated, + `is_unit_member` (anon+auth), +",
+      "`is_platform_admin` e `is_org_member` (auth), + `get_reservation_by_code`",
+      "(text) e `get_customer_stats`(uuid) (auth) = 10 e 19 na mosca, com",
+      "`normalize_br_phone` e `search_reservations` contribuindo zero por serem",
+      "INVOKER. A 106 remove os 3 helpers (−1 em 0028, −3 em 0029) e a 107 os 2",
+      "overloads (−2 em 0029): 9 / 14 / 23. Se os lints não fossem escopados a",
+      "schema, as funções DEFINER de `graphql_public`/`storage` concedidas a",
+      "anon/authenticated teriam inflado o pré-estado muito além de 29 e essa",
+      "reconciliação não fecharia — é evidência indireta, mas é a que existe.",
+      "No checkpoint final, leia o Advisor DE VERDADE (painel ou API), não só a",
+      "linha `Equivalente-advisor` do script: o script prova que a allowlist",
+      "concorda com o ACL de `public`; só o Advisor prova o Advisor.",
+      "",
+      "COMO ESTABELECER `security_definer` (campo digitado à mão, sem cross-check",
+      "estático — quem pega drift é a regra 6 em runtime, contra o banco real):",
+      "ache TODO `create or replace function public.<nome>(<args>)` da assinatura",
+      "nas migrations e leia a cláusula `security` da definição de MAIOR",
+      "timestamp; ausência de cláusula é SECURITY INVOKER (default do Postgres),",
+      "não DEFINER. Isso NÃO fecha a pergunta sozinho: depois do create mais",
+      "recente, procure também `alter function public.<nome>(<args>) ...",
+      "security (invoker|definer)` em migration de timestamp AINDA MAIOR — um",
+      "alter desses sobrepõe até o create mais recente. `normalize_br_phone(text)`",
+      "é o caso real: a única `create or replace` (060) já nasceu SECURITY",
+      "INVOKER por omissão de cláusula, e uma migration posterior",
+      "(20260817212500_harden_advisor_function_warnings.sql) tornou isso",
+      "explícito via `alter function ... security invoker set search_path =",
+      "pg_catalog`. Quem lê só o create sem varrer alter function posteriores",
+      "acerta aqui por coincidência (a omissão já era invoker); numa assinatura",
+      "onde o alter muda o modo de verdade (definer→invoker ou o inverso), a",
+      "mesma leitura incompleta erraria o veredito."
+    ],
+    "0028": 9,
+    "0029": 14,
+    "total": 23
+  },
 
   "public_anon": [
     {
       "name": "get_unit_public",
       "args": "p_slug text",
       "roles": ["anon", "authenticated"],
-      "why": "Portal público /r/:slug — RPC SECURITY DEFINER prevista pelo CLAUDE.md."
+      "why": "Portal público /r/:slug — RPC SECURITY DEFINER prevista pelo CLAUDE.md.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "get_unit_public_full",
       "args": "p_slug text",
       "roles": ["anon", "authenticated"],
-      "why": "Portal público — payload completo da unidade."
+      "why": "Portal público — payload completo da unidade.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "get_widget_public",
       "args": "p_slug text",
       "roles": ["anon", "authenticated"],
-      "why": "Widget embutível /w/:slug."
+      "why": "Widget embutível /w/:slug.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "get_menu_public",
       "args": "p_slug text",
       "roles": ["anon", "authenticated"],
-      "why": "Cardápio público."
+      "why": "Cardápio público.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "get_public_tracking",
       "args": "p_token uuid",
       "roles": ["anon", "authenticated"],
-      "why": "Página /acompanhar/:token, sem login. Só devolve dado privacy-safe e é gateada por units.is_public."
+      "why": "Página /acompanhar/:token, sem login. Só devolve dado privacy-safe e é gateada por units.is_public.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "get_public_business_hours",
       "args": "p_unit_id uuid",
       "roles": ["anon", "authenticated"],
-      "why": "Portal público."
+      "why": "Portal público.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "get_public_hall_schedules",
       "args": "p_hall_id uuid, p_date date",
       "roles": ["anon", "authenticated"],
-      "why": "Portal público — disponibilidade por salão."
+      "why": "Portal público — disponibilidade por salão.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "list_public_units",
       "args": "",
       "roles": ["anon", "authenticated"],
-      "why": "Listagem pública de unidades."
+      "why": "Listagem pública de unidades.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "enter_waitlist",
       "args": "p_unit_id uuid, p_customer_name text, p_customer_phone text, p_party_size integer, p_notes text, p_priority_category text, p_requested_for_time time without time zone",
       "roles": ["anon", "authenticated"],
-      "why": "Entrada pública na fila de espera."
+      "why": "Entrada pública na fila de espera.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
     },
     {
       "name": "normalize_br_phone",
       "args": "raw text",
       "roles": ["anon", "authenticated"],
-      "why": "NÃO é RPC de portal. Dependência do trigger customers_canonical_phone_trg, que é SECURITY INVOKER: num INSERT anônimo em customers ele roda COMO anon e a chamada interna é checada em runtime nesse papel. Revogar quebra a inserção pública de cliente."
+      "why": "NÃO é RPC de portal. Dependência do trigger customers_canonical_phone_trg, que é SECURITY INVOKER: num INSERT anônimo em customers ele roda COMO anon e a chamada interna é checada em runtime nesse papel. Revogar quebra a inserção pública de cliente.",
+      "security_definer": false,
+      "advisor_lints": []
     }
   ],
 
-  "rls_helpers": [
-    {
-      "name": "is_unit_member",
-      "args": "p_user_id uuid, p_unit_id uuid",
-      "roles": ["anon", "authenticated"],
-      "why": "Chamada de dentro de policies RLS. 24 policies com roles={public} (waitlist, vouchers, voucher_rules, walk_ins, *_message_templates) a invocam — policy é avaliada no contexto de privilégio de quem consulta, então revogar de anon faz a query ESTOURAR com permission denied, não negar. Ver inventário §1.1 e follow-up §4.1."
-    },
-    {
-      "name": "is_platform_admin",
-      "args": "p_user_id uuid",
-      "roles": ["authenticated"],
-      "why": "Chamada por 26 policies RLS de papel authenticated e ZERO policies roles={public}. Nenhuma função SECURITY INVOKER a referencia (as SECURITY DEFINER que a chamam rodam como o dono). anon foi revogado pela 085 §5.2: sem caller, só entregava oráculo de enumeração de super-admin a quem tem a anon key."
-    },
-    {
-      "name": "is_org_member",
-      "args": "p_user_id uuid, p_org_id uuid",
-      "roles": ["authenticated"],
-      "why": "Chamada por 3 policies RLS de papel authenticated e ZERO policies roles={public}. Mesma evidência e mesma revogação de anon na 085 §5.2 — oráculo de pertencimento a organização."
-    }
+  "_doc_rls_helpers": [
+    "O grupo `rls_helpers` foi esvaziado pela migration 106: is_unit_member,",
+    "is_platform_admin e is_org_member vivem em `app_private`, schema que o",
+    "PostgREST não expõe. `audit_function_acl()` varre apenas `public`, então",
+    "elas deixaram de aparecer — e por isso deixaram de precisar de exceção.",
+    "",
+    "Se alguma delas reaparecer aqui, é REGRESSÃO: alguém recriou o helper em",
+    "`public`. O caminho certo é `app_private`, e a justificativa está no",
+    "cabeçalho da migration 106."
   ],
+
+  "rls_helpers": [],
 
   "authenticated_tenant": [
     {
       "name": "get_undelivered_notifications",
       "args": "p_unit_id uuid, p_since timestamp with time zone",
       "roles": ["authenticated"],
-      "why": "Painel Operacional → Entregas. Tem guarda interna is_unit_member OR is_platform_admin."
+      "why": "Painel Operacional → Entregas. Tem guarda interna is_unit_member OR is_platform_admin.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     },
     {
       "name": "search_reservations",
       "args": "p_unit_id uuid, p_term text, p_date date, p_status text",
       "roles": ["authenticated"],
-      "why": "Busca do painel. SECURITY INVOKER — a RLS da tabela aplica."
+      "why": "Busca do painel. SECURITY INVOKER — a RLS da tabela aplica.",
+      "security_definer": false,
+      "advisor_lints": []
     },
     {
       "name": "get_reservation_by_code",
       "args": "p_code text, p_unit_id uuid",
       "roles": ["authenticated"],
-      "why": "Busca por código no painel (src/hooks/useReservas.ts)."
-    },
-    {
-      "name": "get_reservation_by_code",
-      "args": "p_code text",
-      "roles": ["authenticated"],
-      "why": "Overload sem caller localizado no repositório. Mantido em authenticated para não quebrar consumidor não mapeado; candidato a remoção após confirmação."
+      "why": "Busca por código no painel (src/hooks/useReservas.ts).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     },
     {
       "name": "anonymize_customer",
       "args": "p_id uuid",
       "roles": ["authenticated"],
-      "why": "LGPD. Guarda interna: is_org_member ou platform_admin."
+      "why": "LGPD. Guarda interna: is_org_member ou platform_admin.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     },
     {
       "name": "get_customer_stats",
       "args": "p_customer_id uuid, p_unit_id uuid",
       "roles": ["authenticated"],
-      "why": "Ficha do cliente no painel."
-    },
-    {
-      "name": "get_customer_stats",
-      "args": "p_customer_id uuid",
-      "roles": ["authenticated"],
-      "why": "Overload legado da ficha do cliente."
+      "why": "Ficha do cliente no painel. ATENÇÃO — este aceite é do lint 0029, NÃO é atestado de segurança: é a única entrada `authenticated` daqui SEM guard interno de tenant. O corpo (013:701-748) não tem `auth.uid()` em lugar nenhum, e com `p_unit_id => null` o filtro de unit é pulado e ela agrega reservas de toda unit de toda organização — qualquer usuário logado, inclusive sem membership, lê estatística de cliente alheio por REST. Pré-existente à frente do advisor (a 107 dropou o irmão de 1 argumento, que era pior). A irmã `get_customer_stats_bulk` guarda por `is_org_member`; esta ficou atrás. Fecha com o MESMO padrão, resolvendo `organization_id` a partir de `customers` pelo `p_customer_id`. Estreitar o grant não resolve: `authenticated` é o único papel Postgres que significa 'logado', e todo caller legítimo também é só `authenticated`.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     },
     {
       "name": "get_customer_stats_bulk",
       "args": "p_customer_ids uuid[], p_unit_id uuid",
       "roles": ["authenticated"],
-      "why": "Listagem de clientes — stats agregadas em uma chamada."
+      "why": "Listagem de clientes — stats agregadas em uma chamada.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     }
   ]
 }

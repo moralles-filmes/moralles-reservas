@@ -3,7 +3,8 @@
 // (_shared/availability.ts) e merge de cliente (_shared/resolve-customer.ts) da
 // create-reservation pública, mas:
 //
-//   - Exige JWT e valida is_unit_member OU is_platform_admin (painel autenticado).
+//   - Exige JWT e valida membro da unit OU platform_admin via hasUnitAccess
+//     (_shared/authz.ts, consulta direta às tabelas — os helpers saíram de `public`).
 //   - Aceita `source` ('web'|'whatsapp') — escolhido pelo operador SÓ pra relatório
 //     "Origem das reservas". A notificação é DESACOPLADA da origem (ver abaixo).
 //   - SEM rate-limit (operador autenticado) e SEM caução/Stripe (reserva isenta).
@@ -20,6 +21,7 @@ import { genRequestId, jsonLog, sanitizePhone } from "../_shared/security.ts";
 import { reserveSlot } from "../_shared/availability.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
+import { hasUnitAccess } from "../_shared/authz.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -128,11 +130,7 @@ serve(async (req) => {
 
     // Autorização: membro da unit OU platform_admin. useCurrentUnit.ts fabrica
     // pseudo-membership "owner" pra super-admin; sem o paralelo, write é bloqueada.
-    const [memberResult, adminResult] = await Promise.all([
-      supabase.rpc("is_unit_member", { p_user_id: user.id, p_unit_id: unitId }),
-      supabase.rpc("is_platform_admin", { p_user_id: user.id }),
-    ]);
-    if (!memberResult.data && !adminResult.data) {
+    if (!(await hasUnitAccess(supabase, user.id, unitId))) {
       jsonLog("warn", { requestId, evt: "manual_reservation_forbidden", unitId, userId: user.id });
       return json({ success: false, reason: "forbidden", message: "Sem permissão nesta unidade." }, 403);
     }

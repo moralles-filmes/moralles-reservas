@@ -64,13 +64,16 @@ export function useAnonymizeCustomer(unitId: string) {
   });
 }
 
-export function useCustomerStats(customerId: string | undefined, unitId?: string) {
+export function useCustomerStats(customerId: string | undefined, unitId: string | undefined) {
   return useQuery({
     queryKey: ["customer-stats", customerId, unitId],
     queryFn: async () => {
+      // p_unit_id é sempre enviado: o overload de 1 argumento foi dropado pela
+      // migration 107 por não ter caller. Montar o parâmetro condicionalmente
+      // faria a chamada cair numa assinatura que não existe mais.
       const { data, error } = await supabase.rpc("get_customer_stats", {
         p_customer_id: customerId,
-        ...(unitId ? { p_unit_id: unitId } : {}),
+        p_unit_id: unitId,
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
@@ -83,6 +86,6 @@ export function useCustomerStats(customerId: string | undefined, unitId?: string
         last_visit: null,
       }) as CustomerStats;
     },
-    enabled: !!customerId,
+    enabled: !!customerId && !!unitId,
   });
 }

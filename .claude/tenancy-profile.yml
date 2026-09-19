@@ -27,5 +27,5 @@ super_admin:
 
 secrets_boundary: edge-function   # ~40+ Supabase Edge Functions; secrets no Vault + tabela platform_secrets; workers via pg_cron → pg_net (x-internal-key)
 client_env_prefix: VITE_
-rls_helper_namespace: public
+rls_helper_namespace: app_private   # 106 moveu os 3 helpers de public; EXECUTE segue concedido (24 policies TO PUBLIC dependem dele), o que mudou é o schema não ser exposto ao PostgREST
 display_term: Unidade

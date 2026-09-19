@@ -4,6 +4,7 @@ import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
 import { clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { clearChannelConnectivityCache } from "../_shared/whatsapp-send.ts";
 import { jsonLog, sanitizePhone } from "../_shared/security.ts";
+import { hasUnitAccess } from "../_shared/authz.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -81,11 +82,7 @@ serve(async (req) => {
     // Verify caller is a member of this unit OR a platform admin.
     // useCurrentUnit.ts fabrica pseudo-membership "owner" pra platform_admin operar
     // unidades alheias na UI; sem o paralelo aqui, super-admin é bloqueado pelo backend.
-    const [memberResult, adminResult] = await Promise.all([
-      supabase.rpc("is_unit_member", { p_user_id: user.id, p_unit_id: conv.unit_id }),
-      supabase.rpc("is_platform_admin", { p_user_id: user.id }),
-    ]);
-    if (!memberResult.data && !adminResult.data) {
+    if (!(await hasUnitAccess(supabase, user.id, conv.unit_id))) {
       return new Response(JSON.stringify({ error: "forbidden" }), {
         status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

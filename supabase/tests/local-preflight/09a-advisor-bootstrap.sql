@@ -1,0 +1,788 @@
+-- Ambiente mínimo para os casos ACL-1..ACL-5 da migration 106.
+--
+-- POR QUE ESTE ARQUIVO EXISTE. O `00-bootstrap.sql` foi escrito para a sequência
+-- de WhatsApp/instâncias e não tem `unit_members`, `customers`, `waitlist`,
+-- `reservations`, `settings`, nem `units.is_public`/`organizations.is_public`. E
+-- o `02-seed.sql` insere em `whatsapp_instances`, que só existe depois da 087 —
+-- por isso a sequência do advisor NÃO usa o `02`. O que falta está aqui, e nada
+-- aqui altera arquivo compartilhado com a outra sequência.
+--
+-- ORIGEM DE CADA OBJETO. As OITO funções da migration 106 (3 helpers, as 4
+-- SECURITY DEFINER que os chamam pelo nome e `next_waitlist_code`, que
+-- `enter_waitlist` chama) foram **extraídas verbatim de produção** via
+-- `pg_get_functiondef(oid)` (projeto gbabxcrntkwgblgqsiit, 2026-09-10) — na
+-- mesma disciplina que o `01-audit.sql` declara no cabeçalho.
+-- Isso é o que dá força ao CONTROLE-6: ele reintroduz `public.is_*` num corpo
+-- REAL. Corpo parafraseado provaria apenas que a paráfrase quebra.
+-- As tabelas foram conferidas coluna a coluna contra
+-- `information_schema.columns` e `pg_indexes` do mesmo projeto — não inventadas.
+--
+-- MAIS QUATRO, para a Task 5 (migration 107): `get_reservation_by_code` e
+-- `get_customer_stats`, os dois overloads de cada — 12 funções ao todo. Não
+-- pertencem ao escopo da 106 (que só toca os 3 helpers e quem os chama), por
+-- isso não estavam aqui antes. ORIGEM DESTAS QUATRO: o MCP `execute_sql` contra
+-- gbabxcrntkwgblgqsiit estava com o token expirado nesta sessão (ver
+-- task-5-report.md); o fallback foi `supabase db dump --linked --schema public`
+-- (CLI, 2026-09-10) — pg_dump de verdade contra o projeto LINKED, leitura pura,
+-- nenhum `db push`/`apply_migration`/DDL executado. O dump emite a mesma
+-- definição que `pg_get_functiondef` leria, mais os GRANT/REVOKE reais tal como
+-- estão — é catálogo de produção, não reconstrução a partir de migration. Ainda
+-- assim fica marcado para reconferência quando o MCP voltar.
+--
+-- A FIXTURE `acl_probe` TAMBÉM MORA AQUI, e não no `09-advisor-hardening.sql`,
+-- porque é a PROCEDÊNCIA dela que dá sentido ao ACL-1: policy criada contra
+-- `public.is_unit_member` ANTES do `SET SCHEMA`. Detalhe na seção dela, abaixo.
+--
+-- Rodar depois de `00-bootstrap.sql` e `01-audit.sql`, com ON_ERROR_STOP=1, e
+-- ANTES da migration 106 — o guard logo abaixo recusa a ordem inversa.
+
+-- ─── GUARDA: este arquivo roda ANTES da migration 106 ────────────────────────
+-- Não é cerimônia. Rodado DEPOIS da 106, este arquivo faria duas coisas
+-- silenciosas e ruins: o `create or replace function public.is_unit_member`
+-- abaixo REPORIA um segundo helper em `public` (a 106 já moveu o original, e o
+-- OID deste sósia é outro), e a fixture `acl_probe` passaria a apontar para ele —
+-- ACL-1 ficaria verde medindo nada, que é exatamente o defeito de evidência que
+-- esta sequência existe para não ter. Falha alto, aqui, com a saída dita.
+do $$
+begin
+  if to_regprocedure('app_private.is_unit_member(uuid,uuid)') is not null then
+    raise exception '09a-advisor-bootstrap.sql roda ANTES da migration 106, e a 106 JA foi aplicada neste banco (app_private.is_unit_member existe). Recrie o banco: dropdb advisor106 / createdb advisor106, e siga a sequencia do README (00 -> 01 -> 09a -> 106 -> 09 ...).';
+  end if;
+end $$;
+
+-- ─── auth.uid() ──────────────────────────────────────────────────────────────
+-- O stub do 00-bootstrap só lê o GUC `request.jwt.claim.sub`; os casos ACL
+-- setam `request.jwt.claims` como objeto JSON, que é a forma que o GoTrue usa
+-- hoje. Sem as duas, `auth.uid()` devolveria NULL e ACL-1 falharia pelo motivo
+-- errado. Esta é a definição real do Supabase, reproduzida aqui — e é
+-- `create or replace` NESTE arquivo de propósito: o 00-bootstrap é compartilhado
+-- com a sequência de WhatsApp e não pode mudar.
+create or replace function auth.uid() returns uuid
+language sql stable as $$
+  select coalesce(
+    nullif(current_setting('request.jwt.claim.sub', true), ''),
+    nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub'
+  )::uuid
+$$;
+
+-- ─── Tenancy que o 00-bootstrap não tem ──────────────────────────────────────
+-- `is_public` nas duas: `enter_waitlist` exige as DUAS verdadeiras no caminho
+-- anon (ACL-4), e o 00-bootstrap não declara nenhuma delas.
+alter table organizations add column if not exists is_public boolean not null default false;
+alter table units         add column if not exists is_public boolean not null default false;
+alter table units         add column if not exists slug text;
+
+create table if not exists unit_members (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  unit_id    uuid not null references units(id) on delete cascade,
+  role       text not null default 'operador' check (role in ('owner','gerente','operador')),
+  created_at timestamptz not null default now(),
+  email      text,
+  name       text,
+  unique (user_id, unit_id)
+);
+
+create table if not exists customers (
+  id                       uuid primary key default gen_random_uuid(),
+  organization_id          uuid not null references organizations(id) on delete cascade,
+  name                     text not null,
+  phone                    text not null,
+  email                    text,
+  emails                   jsonb not null default '[]'::jsonb,
+  birthday                 date,
+  allergies                text,
+  dietary_restrictions     text,
+  vip_notes                text,
+  preferred_table_location text,
+  do_not_contact           boolean not null default false,
+  deleted_at               timestamptz,
+  created_at               timestamptz not null default now()
+);
+create unique index if not exists customers_org_phone_unique on customers (organization_id, phone);
+
+create table if not exists reservations (
+  id               uuid primary key default gen_random_uuid(),
+  unit_id          uuid not null references units(id) on delete cascade,
+  customer_id      uuid not null references customers(id) on delete cascade,
+  status           text not null default 'pending',
+  party_size       integer not null,
+  date             date not null,
+  time             time without time zone not null,
+  reservation_code text not null,
+  created_at       timestamptz not null default now(),
+  -- `notes`/`updated_at`: lidas por get_reservation_by_code (Task 5); o resto
+  -- das 8 funções originais não toca nelas, por isso não estavam aqui antes.
+  notes            text,
+  updated_at       timestamptz not null default now()
+);
+
+create table if not exists waitlist (
+  id                 uuid primary key default gen_random_uuid(),
+  unit_id            uuid not null references units(id) on delete cascade,
+  customer_id        uuid references customers(id) on delete set null,
+  customer_name      text not null,
+  customer_phone     text,
+  party_size         integer not null,
+  requested_for_time time without time zone,
+  priority           integer not null default 0,
+  status             text not null default 'waiting',
+  notes              text,
+  notified_at        timestamptz,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  code               integer,
+  priority_category  text not null default 'normal',
+  seated_at          timestamptz
+);
+-- Reproduzido de produção: é o índice que torna o laço de `next_waitlist_code`
+-- necessário em vez de decorativo.
+create unique index if not exists waitlist_unit_active_code_unique
+  on waitlist (unit_id, code)
+  where status in ('waiting','notified') and code is not null;
+
+create table if not exists settings (
+  id      uuid primary key default gen_random_uuid(),
+  key     text not null,
+  value   jsonb not null,
+  unit_id uuid not null references units(id) on delete cascade,
+  unique (unit_id, key)
+);
+
+-- A 013 pendura o trigger genérico de auditoria em `customers`; `anonymize_customer`
+-- passa por ele em produção, então passa aqui também.
+drop trigger if exists audit_customers on customers;
+create trigger audit_customers
+  after insert or update or delete on customers
+  for each row execute function public.audit_trigger_func();
+
+-- ─── Os três helpers, verbatim de produção ───────────────────────────────────
+-- `drop` antes de `create` no is_platform_admin: o stub do 00-bootstrap chama o
+-- parâmetro `p_user` e produção chama `p_user_id`; `create or replace` não
+-- renomeia parâmetro de entrada.
+drop function if exists public.is_platform_admin(uuid);
+
+CREATE OR REPLACE FUNCTION public.is_unit_member(p_user_id uuid, p_unit_id uuid)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select exists (select 1 from unit_members where user_id = p_user_id and unit_id = p_unit_id);
+$function$;
+
+CREATE OR REPLACE FUNCTION public.is_platform_admin(p_user_id uuid)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select exists (select 1 from platform_admins where user_id = p_user_id);
+$function$;
+
+CREATE OR REPLACE FUNCTION public.is_org_member(p_user_id uuid, p_org_id uuid)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select exists (
+    select 1 from unit_members um join units u on u.id = um.unit_id
+    where um.user_id = p_user_id and u.organization_id = p_org_id
+  );
+$function$;
+
+-- Os grants que produção tem hoje. Reproduzi-los é o que dá sentido ao snapshot
+-- de `proacl` do ACL-5: o move tem de PRESERVAR esta ACL, incluindo o fato de
+-- que só `is_unit_member` tem `anon` (revogado das outras duas pela 085 §5.2).
+revoke all on function public.is_unit_member(uuid, uuid)     from public;
+revoke all on function public.is_platform_admin(uuid)        from public;
+revoke all on function public.is_org_member(uuid, uuid)      from public;
+grant execute on function public.is_unit_member(uuid, uuid)  to anon, authenticated, service_role;
+grant execute on function public.is_platform_admin(uuid)     to authenticated, service_role;
+grant execute on function public.is_org_member(uuid, uuid)    to authenticated, service_role;
+
+-- ─── Fixture do ACL-1: policy na forma de produção, nascida ANTES do move ────
+-- POR QUE AQUI. Este arquivo roda ANTES da 106; o `09` roda depois. O que o
+-- ACL-1 precisa medir é uma policy criada contra `public.is_unit_member`
+-- continuando a avaliar depois do `SET SCHEMA` — porque é essa a situação das 42
+-- policies reais de produção (24 delas TO PUBLIC), todas escritas anos antes da
+-- migration. Fixture criada DEPOIS do move já nasce apontando para o endereço
+-- novo: ela mede "policy que referencia app_private funciona", que é verdade
+-- trivial e não sustenta a frase da 106.
+--
+-- A FORMA É A REAL, não uma aproximação. Sem qualificar o schema e sem cláusula
+-- `TO` (portanto TO PUBLIC), exatamente como a
+-- [014](../../migrations/20260504170312_014_operacional.sql) escreveu
+-- `waitlist_member_select` e `walk_ins_member_*`:
+--   `for select using (is_unit_member(auth.uid(), unit_id))`
+-- O nome sem qualificação é resolvido no instante do `create policy`, contra o
+-- `search_path` da sessão (`public`), e o que fica guardado em `polqual` é o OID.
+-- Essa é a mecânica sob teste — e é o motivo de a forma importar: qualificar
+-- `public.` aqui daria o mesmo OID, mas deixaria de espelhar o que produção tem.
+--
+-- Nada no `09` recria esta policy, de propósito. Quem confere isso é o próprio
+-- ACL-1, comparando o OID da linha de `pg_policy` com o gravado abaixo.
+create table if not exists acl_probe (
+  id      uuid primary key default gen_random_uuid(),
+  unit_id uuid not null,
+  nota    text
+);
+alter table acl_probe enable row level security;
+
+-- O helper tem de estar em `public` para o nome sem qualificação resolver. Se não
+-- estiver, o `create policy` abaixo falharia com `function is_unit_member(uuid,
+-- uuid) does not exist` — mensagem que não diz o que fazer. Esta diz.
+do $$
+begin
+  if to_regprocedure('public.is_unit_member(uuid,uuid)') is null then
+    raise exception 'fixture acl_probe exige public.is_unit_member(uuid, uuid), que nao existe neste banco. A policy tem de nascer na forma PRE-106 (nome resolvendo para public); nao a reescreva para app_private — isso apagaria o que o ACL-1 mede.';
+  end if;
+end $$;
+
+drop policy if exists acl_probe_member on acl_probe;
+create policy acl_probe_member on acl_probe
+  for select using (is_unit_member(auth.uid(), unit_id));
+grant select on acl_probe to anon, authenticated;
+
+-- PROCEDÊNCIA GRAVADA. O ACL-1 não tem como perguntar ao catálogo "esta policy
+-- nasceu antes do move": o catálogo só guarda o estado de agora, e depois do move
+-- a expressão já renderiza `app_private.is_unit_member(...)` — indistinguível de
+-- uma policy escrita assim desde o início. Então o estado de ANTES fica gravado
+-- aqui: o OID que o nome sem qualificação resolveu, o schema em que ele estava
+-- (`public`) e o OID da própria linha de `pg_policy`. Com os três, o ACL-1 afirma
+-- o que sozinho não se vê — o alvo era `public`, o OID não mudou, e a policy é a
+-- MESMA linha (ninguém a recriou no caminho: nem a 2a passada do `09`, nem o
+-- CONTROLE-16).
+create table if not exists t_probe_prov (
+  probe       text primary key,
+  policy_oid  oid  not null,
+  func_oid    oid  not null,
+  func_schema text not null,
+  qual        text not null
+);
+
+delete from t_probe_prov where probe = 'acl_probe_member';
+insert into t_probe_prov (probe, policy_oid, func_oid, func_schema, qual)
+select 'acl_probe_member', pol.oid, p.oid, n.nspname,
+       pg_get_expr(pol.polqual, pol.polrelid)
+  from pg_policy     pol
+  join pg_class      c on c.oid = pol.polrelid
+  -- `pg_depend` de uma policy lista TODAS as funções da expressão, e esta tem
+  -- duas (`auth.uid()` e o helper) — daí o filtro por `proname`.
+  join pg_depend     d on d.classid = 'pg_policy'::regclass and d.objid = pol.oid
+                      and d.refclassid = 'pg_proc'::regclass
+  join pg_proc       p on p.oid = d.refobjid
+  join pg_namespace  n on n.oid = p.pronamespace
+ where c.relname = 'acl_probe'
+   and pol.polname = 'acl_probe_member'
+   and p.proname = 'is_unit_member';
+
+-- Sem procedência gravada o ACL-1 não tem o que comparar, e caso que não compara
+-- nada é pior que caso ausente — então falha alto aqui, não lá.
+do $$
+declare v_n int; v_schema text;
+begin
+  select count(*) into v_n from t_probe_prov where probe = 'acl_probe_member';
+  select func_schema into v_schema from t_probe_prov where probe = 'acl_probe_member';
+  if v_n <> 1 or v_schema is distinct from 'public' then
+    raise exception 'fixture acl_probe: procedencia nao gravada como esperado (linhas=%, schema=%). A policy deveria ter resolvido public.is_unit_member(uuid, uuid).',
+      v_n, coalesce(v_schema, '<nulo>');
+  end if;
+end $$;
+
+-- ─── As quatro SECURITY DEFINER, verbatim de produção (forma PRÉ-106) ────────
+-- Elas chegam aqui como estão em produção HOJE, chamando `public.is_*` (e, no
+-- caso do get_undelivered_notifications, sem qualificar). É a migration 106 que
+-- reescreve as quatro; é isso que o RED→GREEN mede.
+
+CREATE OR REPLACE FUNCTION public.next_waitlist_code(p_unit_id uuid)
+ RETURNS integer
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_min int;
+  v_max int;
+  v_next int;
+begin
+  select coalesce((value)::text::int, 1) into v_min
+    from settings where unit_id = p_unit_id and key = 'waitlist_code_min';
+  if v_min is null then v_min := 1; end if;
+
+  select coalesce((value)::text::int, 1000) into v_max
+    from settings where unit_id = p_unit_id and key = 'waitlist_code_max';
+  if v_max is null then v_max := 1000; end if;
+
+  if v_min < 1 then v_min := 1; end if;
+  if v_max < v_min then v_max := v_min; end if;
+
+  select coalesce(max(code) + 1, v_min) into v_next
+    from waitlist
+    where unit_id = p_unit_id
+      and code is not null
+      and status in ('waiting', 'notified');
+
+  if v_next < v_min or v_next > v_max then
+    v_next := v_min;
+  end if;
+
+  for i in 0..(v_max - v_min) loop
+    if not exists (
+      select 1 from waitlist
+      where unit_id = p_unit_id
+        and code = v_next
+        and status in ('waiting', 'notified')
+    ) then
+      return v_next;
+    end if;
+    v_next := v_next + 1;
+    if v_next > v_max then v_next := v_min; end if;
+  end loop;
+
+  return v_min;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.enter_waitlist(p_unit_id uuid, p_customer_name text, p_customer_phone text DEFAULT NULL::text, p_party_size integer DEFAULT 1, p_notes text DEFAULT NULL::text, p_priority_category text DEFAULT 'normal'::text, p_requested_for_time time without time zone DEFAULT NULL::time without time zone)
+ RETURNS TABLE(waitlist_id uuid, code integer)
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_role text := current_setting('request.jwt.claim.role', true);
+  v_uid  uuid := auth.uid();
+  v_code int;
+  v_id   uuid;
+begin
+  -- ── Validação de inputs ──────────────────────────────────────────────────
+  if p_unit_id is null then
+    raise exception 'enter_waitlist: p_unit_id is required' using errcode = '22023';
+  end if;
+
+  if p_customer_name is null or btrim(p_customer_name) = '' then
+    raise exception 'enter_waitlist: p_customer_name is required' using errcode = '22023';
+  end if;
+
+  if p_party_size is null or p_party_size < 1 then
+    raise exception 'enter_waitlist: p_party_size must be >= 1' using errcode = '22023';
+  end if;
+
+  if p_priority_category not in ('normal','senior','pregnant','disabled','other') then
+    raise exception 'enter_waitlist: invalid priority_category' using errcode = '22023';
+  end if;
+
+  -- ── Auth por role ────────────────────────────────────────────────────────
+  -- service_role bypassa checks (chamadas internas confiáveis).
+  if v_role is distinct from 'service_role' then
+    if v_uid is null then
+      -- anon: unit precisa ser pública (org + unit) e party_size <= 20
+      if p_party_size > 20 then
+        raise exception 'enter_waitlist: anon party_size must be <= 20' using errcode = '22023';
+      end if;
+
+      if not exists (
+        select 1
+          from units u
+          join organizations o on o.id = u.organization_id
+         where u.id = p_unit_id
+           and u.is_public = true
+           and o.is_public = true
+      ) then
+        raise exception 'enter_waitlist: unit not public' using errcode = '42501';
+      end if;
+    else
+      -- authenticated: membro da unit OU platform_admin (super-admin opera units
+      -- alheias via pseudo-membership fabricada em useCurrentUnit.ts).
+      if not (public.is_unit_member(v_uid, p_unit_id)
+              or public.is_platform_admin(v_uid)) then
+        raise exception 'enter_waitlist: not a unit member' using errcode = '42501';
+      end if;
+    end if;
+  end if;
+
+  -- ── Lock por tenant ─ serializa next_code+insert na mesma unit ──────────
+  -- Advisory xact lock libera no commit/rollback automaticamente. hashtext
+  -- mantém a chave dentro do range int4 e evita colisão entre namespaces.
+  perform pg_advisory_xact_lock(hashtext('waitlist_code:' || p_unit_id::text));
+
+  -- ── Gera próximo código (cíclico) usando lógica existente ────────────────
+  v_code := public.next_waitlist_code(p_unit_id);
+
+  -- ── INSERT ───────────────────────────────────────────────────────────────
+  insert into public.waitlist (
+    unit_id,
+    customer_name,
+    customer_phone,
+    party_size,
+    notes,
+    priority_category,
+    requested_for_time,
+    status,
+    code
+  ) values (
+    p_unit_id,
+    btrim(p_customer_name),
+    nullif(btrim(coalesce(p_customer_phone, '')), ''),
+    p_party_size,
+    nullif(btrim(coalesce(p_notes, '')), ''),
+    p_priority_category,
+    p_requested_for_time,
+    'waiting',
+    v_code
+  )
+  returning id into v_id;
+
+  return query select v_id, v_code;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.anonymize_customer(p_id uuid)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_org_id   uuid;
+  v_caller   uuid := auth.uid();
+begin
+  if v_caller is null then
+    raise exception 'unauthenticated' using errcode = '42501';
+  end if;
+
+  select organization_id
+    into v_org_id
+    from public.customers
+   where id = p_id
+     and deleted_at is null;
+
+  -- Customer inexistente ou já anonimizado: trata como no-op silencioso
+  -- (não vaza existência do UUID para tenants alheios).
+  if v_org_id is null then
+    return;
+  end if;
+
+  if not public.is_org_member(v_caller, v_org_id)
+     and not public.is_platform_admin(v_caller) then
+    raise exception 'forbidden' using errcode = '42501';
+  end if;
+
+  update public.customers
+     set name = 'Cliente removido',
+         phone = 'anon-' || substring(id::text, 1, 8),
+         email = null,
+         emails = '[]'::jsonb,
+         allergies = null,
+         dietary_restrictions = null,
+         vip_notes = null,
+         preferred_table_location = null,
+         do_not_contact = true,
+         deleted_at = now()
+   where id = p_id and deleted_at is null;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_customer_stats_bulk(p_customer_ids uuid[], p_unit_id uuid DEFAULT NULL::uuid)
+ RETURNS TABLE(customer_id uuid, total_unit integer, total_org integer, confirmed integer, no_shows integer, cancelled integer, no_show_rate numeric, last_visit date)
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_caller uuid := auth.uid();
+begin
+  if v_caller is null then
+    raise exception 'unauthenticated' using errcode = '42501';
+  end if;
+
+  if p_customer_ids is null or array_length(p_customer_ids, 1) is null then
+    return;
+  end if;
+
+  return query
+  with
+    -- Customers pedidos que existem e pertencem a uma org da qual o caller é membro
+    -- (ou caller é platform_admin)
+    allowed as (
+      select c.id, c.organization_id
+        from public.customers c
+       where c.id = any(p_customer_ids)
+         and (
+           public.is_platform_admin(v_caller)
+           or public.is_org_member(v_caller, c.organization_id)
+         )
+    ),
+    -- Agregação por customer escopada na unidade
+    by_unit as (
+      select r.customer_id,
+             count(*)::int                                              as total_unit,
+             count(*) filter (where r.status = 'confirmed')::int        as confirmed,
+             count(*) filter (where r.status = 'no_show')::int          as no_shows,
+             count(*) filter (where r.status = 'cancelled')::int        as cancelled,
+             max(r.date) filter (where r.status in ('confirmed','no_show')) as last_visit
+        from public.reservations r
+        join allowed a on a.id = r.customer_id
+       where (p_unit_id is null or r.unit_id = p_unit_id)
+       group by r.customer_id
+    ),
+    -- Agregação por customer em toda a org (sem filtro de unit)
+    by_org as (
+      select r.customer_id,
+             count(*)::int as total_org
+        from public.reservations r
+        join allowed a on a.id = r.customer_id
+       group by r.customer_id
+    )
+  select
+    a.id                                            as customer_id,
+    coalesce(bu.total_unit, 0)                      as total_unit,
+    coalesce(bo.total_org, 0)                       as total_org,
+    coalesce(bu.confirmed, 0)                       as confirmed,
+    coalesce(bu.no_shows, 0)                        as no_shows,
+    coalesce(bu.cancelled, 0)                       as cancelled,
+    case
+      when coalesce(bu.confirmed, 0) + coalesce(bu.no_shows, 0) > 0
+        then round(
+               coalesce(bu.no_shows, 0)::numeric
+               / (coalesce(bu.confirmed, 0) + coalesce(bu.no_shows, 0)),
+               3
+             )
+      else null
+    end                                             as no_show_rate,
+    bu.last_visit                                   as last_visit
+  from allowed a
+  left join by_unit bu on bu.customer_id = a.id
+  left join by_org  bo on bo.customer_id = a.id;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_undelivered_notifications(p_unit_id uuid, p_since timestamp with time zone DEFAULT (now() - '7 days'::interval))
+ RETURNS TABLE(id uuid, kind text, status text, provider_message_id text, sent_at timestamp with time zone, delivered_at timestamp with time zone, read_at timestamp with time zone, failed_at timestamp with time zone, waitlist_id uuid, reservation_id uuid, customer_name text, customer_phone text, ref_code text, ref_date date, ref_time text)
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  if not (is_unit_member(auth.uid(), p_unit_id) or is_platform_admin(auth.uid())) then
+    raise exception 'forbidden' using errcode = '42501';
+  end if;
+
+  return query
+    select
+      ns.id,
+      ns.kind,
+      ns.status,
+      ns.provider_message_id,
+      ns.sent_at,
+      ns.delivered_at,
+      ns.read_at,
+      ns.failed_at,
+      ns.waitlist_id,
+      ns.reservation_id,
+      coalesce(w.customer_name, rc.name)        as customer_name,
+      coalesce(w.customer_phone, rc.phone)       as customer_phone,
+      coalesce(w.code::text, r.reservation_code) as ref_code,
+      r.date                                     as ref_date,
+      to_char(r.time, 'HH24:MI')                 as ref_time
+    from notifications_sent ns
+    left join waitlist     w  on w.id = ns.waitlist_id
+    left join reservations r  on r.id = ns.reservation_id
+    left join customers    rc on rc.id = r.customer_id
+    where ns.unit_id = p_unit_id
+      and ns.sent_at >= p_since
+      and ns.kind <> 'confirmation_email'  -- painel é de WhatsApp; e-mail é outro canal
+      and (
+            ns.status = 'failed' or ns.failed_at is not null
+         or (ns.status = 'sent'
+             and ns.provider_message_id is not null
+             and ns.delivered_at is null
+             and ns.sent_at < now() - interval '5 minutes')
+      )
+    order by ns.sent_at desc;
+end;
+$function$;
+
+-- ACL que produção tem nas quatro (o que as põe nos lints 0028/0029) e em
+-- `next_waitlist_code` (que NÃO está nos lints, justamente por não ter grant
+-- para anon/authenticated). O `revoke ... from public` antes de cada grant não é
+-- cerimônia: `CREATE FUNCTION` concede EXECUTE a PUBLIC por default, e sem
+-- revogar a ACL local ficaria MAIS LARGA que a de produção — o que esvaziaria o
+-- sentido do snapshot de `proacl` do ACL-5 e do controle de ACL em geral.
+revoke all on function public.enter_waitlist(uuid, text, text, integer, text, text, time without time zone)
+  from public;
+revoke all on function public.anonymize_customer(uuid)                            from public;
+revoke all on function public.get_customer_stats_bulk(uuid[], uuid)               from public;
+revoke all on function public.get_undelivered_notifications(uuid, timestamptz)    from public;
+revoke all on function public.next_waitlist_code(uuid)                            from public;
+
+grant execute on function public.enter_waitlist(uuid, text, text, integer, text, text, time without time zone)
+  to anon, authenticated, service_role;
+grant execute on function public.anonymize_customer(uuid)                         to authenticated, service_role;
+grant execute on function public.get_customer_stats_bulk(uuid[], uuid)            to authenticated, service_role;
+grant execute on function public.get_undelivered_notifications(uuid, timestamptz) to authenticated, service_role;
+grant execute on function public.next_waitlist_code(uuid)                         to service_role;
+
+-- ─── As quatro RPCs da Task 5 (migration 107), verbatim de produção ──────────
+-- `get_customer_stats`/`get_reservation_by_code`, os dois overloads de cada.
+-- A 107 dropa só os de 1 argumento (sem caller); os de 2 ficam. As duas versões
+-- de cada precisam estar aqui: sem o overload de 1 argumento, `drop function if
+-- exists` da 107 seria um no-op vazio contra este ambiente, e não provaria nada
+-- sobre a migration em si — e o CONTROLE-8 precisa conseguir restaurar o que
+-- dropar de propósito, então a definição capturável tem de vir de um objeto que
+-- existe de verdade, não de uma migration redigitada.
+CREATE OR REPLACE FUNCTION public.get_customer_stats(p_customer_id uuid, p_unit_id uuid DEFAULT NULL::uuid)
+ RETURNS TABLE(total integer, confirmed integer, no_shows integer, cancelled integer, no_show_rate numeric, last_visit date)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  with r as (
+    select status, date from reservations
+    where customer_id = p_customer_id and (p_unit_id is null or unit_id = p_unit_id)
+  ),
+  agg as (
+    select count(*)::int as total,
+      count(*) filter (where status = 'confirmed')::int as confirmed,
+      count(*) filter (where status = 'no_show')::int as no_shows,
+      count(*) filter (where status = 'cancelled')::int as cancelled,
+      max(date) filter (where status in ('confirmed', 'no_show')) as last_visit
+    from r
+  )
+  select total, confirmed, no_shows, cancelled,
+    case when (confirmed + no_shows) > 0 then round(no_shows::numeric / (confirmed + no_shows), 3) else 0::numeric end,
+    last_visit
+  from agg;
+$function$;
+
+-- Overload de 1 argumento — a 107 dropa esta.
+CREATE OR REPLACE FUNCTION public.get_customer_stats(p_customer_id uuid)
+ RETURNS TABLE(total integer, confirmed integer, no_shows integer, cancelled integer, no_show_rate numeric, last_visit date)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select * from public.get_customer_stats(p_customer_id, null);
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_reservation_by_code(p_code text, p_unit_id uuid DEFAULT NULL::uuid)
+ RETURNS TABLE(id uuid, reservation_code text, date date, "time" time without time zone, party_size integer, status text, notes text, created_at timestamptz, updated_at timestamptz, customer_name text, customer_phone text, customer_email text)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select r.id, r.reservation_code, r.date, r.time, r.party_size, r.status, r.notes,
+         r.created_at, r.updated_at, c.name, c.phone, c.email
+  from reservations r
+  join customers c on c.id = r.customer_id
+  where r.reservation_code = upper(p_code)
+    and (p_unit_id is null or r.unit_id = p_unit_id)
+  limit 1;
+$function$;
+
+-- Overload de 1 argumento — a 107 dropa esta também.
+CREATE OR REPLACE FUNCTION public.get_reservation_by_code(p_code text)
+ RETURNS TABLE(id uuid, reservation_code text, date date, "time" time without time zone, party_size integer, status text, notes text, created_at timestamptz, updated_at timestamptz, customer_name text, customer_phone text, customer_email text)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select
+    r.id,
+    r.reservation_code,
+    r.date,
+    r.time,
+    r.party_size,
+    r.status,
+    r.notes,
+    r.created_at,
+    r.updated_at,
+    c.name,
+    c.phone,
+    c.email
+  from reservations r
+  join customers c on c.id = r.customer_id
+  where r.reservation_code = upper(p_code)
+  limit 1;
+$function$;
+
+-- ACL real (dump 2026-09-10): authenticated + service_role nas quatro, SEM
+-- anon — diferente das quatro SECURITY DEFINER acima, nenhuma destas serve o
+-- caminho público. `revoke ... from public` antes do grant pela mesma razão de
+-- sempre: CREATE FUNCTION concede EXECUTE a PUBLIC por default.
+revoke all on function public.get_customer_stats(uuid, uuid)          from public;
+revoke all on function public.get_customer_stats(uuid)                from public;
+revoke all on function public.get_reservation_by_code(text, uuid)     from public;
+revoke all on function public.get_reservation_by_code(text)           from public;
+
+grant execute on function public.get_customer_stats(uuid, uuid)       to authenticated, service_role;
+grant execute on function public.get_customer_stats(uuid)             to authenticated, service_role;
+grant execute on function public.get_reservation_by_code(text, uuid)  to authenticated, service_role;
+grant execute on function public.get_reservation_by_code(text)        to authenticated, service_role;
+
+grant select on waitlist to anon, authenticated;
+
+-- ─── Seed ────────────────────────────────────────────────────────────────────
+-- Ids fixos, no mesmo estilo do 02-seed.sql, para os casos poderem se referir a
+-- eles. NADA aqui depende de whatsapp_instances — é por isso que a sequência do
+-- advisor dispensa o 02.
+insert into auth.users (id, email) values
+  ('11111111-1111-1111-1111-111111111111', 'membro-a@teste.local'),
+  -- Membro da SEGUNDA organização: alvo do lado cross-tenant do ACL-1b.
+  ('22222222-2222-2222-2222-222222222222', 'membro-b@teste.local'),
+  -- Usuário SEM nenhuma linha em unit_members: alvo do lado negativo do ACL-1b.
+  -- Sem ele, ACL-1 passaria idêntico contra um helper que devolvesse TRUE sempre.
+  ('33333333-3333-3333-3333-333333333333', 'sem-vinculo@teste.local')
+on conflict do nothing;
+
+insert into organizations (id, name, is_public) values
+  ('aaaaaaaa-0000-0000-0000-000000000001', 'Org Advisor A', true),
+  ('aaaaaaaa-0000-0000-0000-000000000002', 'Org Advisor B', false)
+on conflict (id) do nothing;
+update organizations set is_public = true  where id = 'aaaaaaaa-0000-0000-0000-000000000001';
+update organizations set is_public = false where id = 'aaaaaaaa-0000-0000-0000-000000000002';
+
+-- A unidade B é NÃO pública de propósito: os casos ACL-1..4 resolvem a unidade
+-- por `where is_public limit 1`, e uma segunda unidade pública tornaria essa
+-- escolha não-determinística — e o ACL-3 casa a org do cliente com a da unidade.
+insert into units (id, organization_id, name, slug, is_public) values
+  ('bbbbbbbb-0000-0000-0000-000000000001',
+   'aaaaaaaa-0000-0000-0000-000000000001', 'Unidade Advisor A', 'unidade-advisor-a', true),
+  ('bbbbbbbb-0000-0000-0000-000000000002',
+   'aaaaaaaa-0000-0000-0000-000000000002', 'Unidade Advisor B', 'unidade-advisor-b', false)
+on conflict (id) do nothing;
+update units set is_public = true  where id = 'bbbbbbbb-0000-0000-0000-000000000001';
+update units set is_public = false where id = 'bbbbbbbb-0000-0000-0000-000000000002';
+
+insert into unit_members (user_id, unit_id, role) values
+  ('11111111-1111-1111-1111-111111111111',
+   'bbbbbbbb-0000-0000-0000-000000000001', 'gerente'),
+  ('22222222-2222-2222-2222-222222222222',
+   'bbbbbbbb-0000-0000-0000-000000000002', 'gerente')
+on conflict (user_id, unit_id) do nothing;
+
+insert into customers (id, organization_id, name, phone) values
+  ('eeeeeeee-0000-0000-0000-000000000001',
+   'aaaaaaaa-0000-0000-0000-000000000001', 'Cliente Advisor', '11999990001'),
+  -- Cliente NÃO anonimizado, dedicado ao trecho de get_customer_stats_bulk do
+  -- ACL-3: usar o mesmo cliente que acabou de ser anonimizado acoplaria a
+  -- asserção ao fato de o CTE `allowed` não filtrar `deleted_at`.
+  ('eeeeeeee-0000-0000-0000-000000000004',
+   'aaaaaaaa-0000-0000-0000-000000000001', 'Cliente Stats', '11999990004'),
+  -- Cliente da SEGUNDA organização. Alvo dos casos negativos ACL-3d (o membro da
+  -- org A não pode receber a agregação dele) e do CONTROLE-10. `customers`
+  -- pertence à ORGANIZATION, não à unit — é o que faz `is_org_member` ser o
+  -- guard certo nestas três funções, e não `is_unit_member`.
+  ('eeeeeeee-0000-0000-0000-000000000005',
+   'aaaaaaaa-0000-0000-0000-000000000002', 'Cliente Org B', '11999990005')
+on conflict (id) do nothing;
+
+-- Uma notificação não entregue, para o painel de Entregas ter o que devolver
+-- em ACL-3 em vez de percorrer zero linhas.
+insert into notifications_sent (id, unit_id, kind, status, provider_message_id, sent_at)
+values ('ffffffff-0000-0000-0000-000000000001',
+        'bbbbbbbb-0000-0000-0000-000000000001', 'waitlist_ready', 'sent',
+        'MSG-ADVISOR-1', now() - interval '1 hour')
+on conflict (id) do nothing;
