@@ -708,3 +708,194 @@ describe("função nova em app_private revoga de PUBLIC (Ruling 17)", () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * Versão da 106 — a migration que tirou os três helpers de RLS de `public`.
+ *
+ * O corte dos dois describes abaixo é INCLUSIVO (`>=`), um grau mais estrito do
+ * que "posterior à 106": a própria 106 não cria nenhum dos três em `public`
+ * (ela usa `alter function ... set schema`) e o único `grant ... on schema
+ * app_private` dela é para `service_role`, que é permitido. Incluí-la é de
+ * graça, e cobre o caso de alguém EDITAR a 106 já aplicada em vez de escrever
+ * migration nova — que é drift de `schema_migrations`, mas não deixa de ser um
+ * jeito de reabrir o oráculo.
+ */
+const PRIVATE_HELPERS_VERSION = "20260910120000";
+
+/** Migrations da 106 em diante — inclusive. Ver `PRIVATE_HELPERS_VERSION`. */
+const desde106Files = migrationFiles().filter((f) => versionOf(f) >= PRIVATE_HELPERS_VERSION);
+
+const RLS_HELPER_NAMES = ["is_unit_member", "is_platform_admin", "is_org_member"] as const;
+
+/**
+ * `create [or replace] function [<schema>.]is_unit_member(` e as duas irmãs,
+ * em todas as grafias que ocorrem de verdade neste repositório e nas que
+ * ocorreriam:
+ *  • COM e SEM o qualificador `public.` — sem qualificador a função nasce em
+ *    `public` pelo search_path default, então as duas formas são o MESMO
+ *    defeito e o guardrail não pode pedir que o autor escreva `public.`;
+ *  • com quebra de linha entre `function`, o nome e a lista de argumentos
+ *    (`\s` casa `\n`);
+ *  • em qualquer caixa (flag `i`).
+ * Identificador entre aspas (`"public"."is_unit_member"`) também casa — não
+ * ocorre hoje, custa dois `"?` e fecha uma evasão trivial.
+ *
+ * O `\(` no fim é o que distingue `is_unit_member` de um futuro
+ * `is_unit_member_v2`: sem ele o guardrail reprovaria nome novo que apenas
+ * COMEÇA igual. Há controle negativo para isso abaixo.
+ */
+const RLS_HELPER_CREATE_RE = new RegExp(
+  String.raw`create\s+(?:or\s+replace\s+)?function\s+` +
+    String.raw`(?:"?([a-z0-9_]+)"?\s*\.\s*)?` +
+    String.raw`"?(${RLS_HELPER_NAMES.join("|")})"?\s*\(`,
+  "gi",
+);
+
+interface HelperCreate {
+  file: string;
+  name: string;
+  /** Como a migration escreveu o schema — string vazia quando não qualificou. */
+  schema: string;
+}
+
+/**
+ * Recriações dos três helpers que caem em `public`: qualificadas com `public.`
+ * ou sem qualificador nenhum. Qualquer outro schema (`app_private.` à frente)
+ * é ignorado — mover para schema privado é o que a 106 fez, é o estado
+ * desejado, não o defeito.
+ */
+function publicRlsHelperCreatesIn(sql: string, file: string): HelperCreate[] {
+  const out: HelperCreate[] = [];
+  for (const m of sql.matchAll(RLS_HELPER_CREATE_RE)) {
+    const schema = (m[1] ?? "").toLowerCase();
+    if (schema !== "" && schema !== "public") continue;
+    out.push({ file, name: m[2].toLowerCase(), schema });
+  }
+  return out;
+}
+
+function describeHelperCreate(c: HelperCreate): string {
+  const onde = c.schema === "" ? "<sem qualificador → public>." : "public.";
+  return `${c.file}: create function ${onde}${c.name}(...)`;
+}
+
+/**
+ * ─── Os três helpers de RLS não voltam para `public` ────────────────────────
+ *
+ * A 106 moveu `is_unit_member`, `is_platform_admin` e `is_org_member` para
+ * `app_private` porque `public` é o schema exposto ao PostgREST com a anon key
+ * que viaja no bundle do frontend: os três respondiam um booleano sobre o
+ * membership de qualquer `(user_id, unit_id)` para quem chamasse
+ * `/rest/v1/rpc/is_unit_member` — oráculo de enumeração. Ver o cabeçalho de
+ * supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql.
+ *
+ * POR QUE UM CHECADOR DE `grant` NÃO ALCANÇA ISTO, que é a razão deste describe
+ * existir em vez de confiar nos dois de cima: nesta plataforma `CREATE FUNCTION`
+ * concede EXECUTE a PUBLIC implicitamente, e `alter default privileges ...
+ * revoke ... from public` é no-op MEDIDO (ver CLAUDE.md e docs/hotfix-acl/).
+ * Então uma migration futura que recrie qualquer um dos três em `public`
+ * reabre o oráculo SEM ESCREVER UM ÚNICO `grant` — nenhum dos checadores de
+ * grant deste arquivo veria nada. O que se proíbe aqui é o `create`, não o
+ * grant.
+ *
+ * ONDE MORA E POR QUÊ: a spec de design
+ * (docs/superpowers/specs/2026-08-17-advisor-warnings-hardening-design.md,
+ * §230-231) prometia este caso em scripts/migration-static-guard.test.ts. Ele
+ * ficou aqui porque é aqui que já existe a máquina de parsing de migration
+ * (`stripComments`, `migrationFiles`, `versionOf`) e o vocabulário de
+ * assinatura; um segundo parser no outro arquivo divergiria deste.
+ *
+ * O QUE ISTO NÃO COBRE: `alter function app_private.is_unit_member(uuid, uuid)
+ * set schema public;` — mover de volta em vez de recriar. Não foi adicionado
+ * porque `alter ... set schema public` é a linha literal do bloco de rollback
+ * da própria 106 e de supabase/tests/local-preflight/, e um segundo padrão com
+ * allowlist de arquivos para não reprovar o rollback documentado troca uma
+ * lacuna estreita por um guardrail que reprova o procedimento de emergência.
+ */
+describe("os três helpers de RLS não são recriados em public (106)", () => {
+  it("CONTROLE POSITIVO: recriação qualificada com public. reprova, nomeando a função", () => {
+    const created = publicRlsHelperCreatesIn(
+      "create or replace function public.is_unit_member(p_user_id uuid, p_unit_id uuid)\n" +
+        "returns boolean language sql security definer as $$ select true $$;",
+      "fake.sql",
+    );
+    expect(created.map(describeHelperCreate)).toEqual([
+      "fake.sql: create function public.is_unit_member(...)",
+    ]);
+  });
+
+  it("CONTROLE POSITIVO: recriação SEM qualificador reprova igual — sem `public.` ela nasce em public", () => {
+    const created = publicRlsHelperCreatesIn(
+      "create function is_platform_admin(p_user_id uuid) returns boolean language sql as $$ select true $$;",
+      "fake.sql",
+    );
+    expect(created.map(describeHelperCreate)).toEqual([
+      "fake.sql: create function <sem qualificador → public>.is_platform_admin(...)",
+    ]);
+  });
+
+  it("CONTROLE POSITIVO: caixa alta e quebra de linha entre o nome e os argumentos não escapam", () => {
+    const created = publicRlsHelperCreatesIn(
+      "CREATE OR REPLACE FUNCTION PUBLIC.IS_ORG_MEMBER\n  (p_user_id uuid, p_org_id uuid)\nRETURNS boolean AS $$ select true $$ LANGUAGE sql;",
+      "fake.sql",
+    );
+    expect(created.map((c) => c.name)).toEqual(["is_org_member"]);
+  });
+
+  it("recriação em app_private NÃO reprova — é o estado que a 106 estabeleceu", () => {
+    const created = publicRlsHelperCreatesIn(
+      "create or replace function app_private.is_unit_member(p_user_id uuid, p_unit_id uuid)\n" +
+        "returns boolean language sql as $$ select true $$;",
+      "fake.sql",
+    );
+    expect(created).toEqual([]);
+  });
+
+  it("create dentro de comentário não reprova — mesma disciplina de stripComments", () => {
+    const raw =
+      "--   create or replace function public.is_unit_member(p_user_id uuid, p_unit_id uuid) -- forma PRÉ-106, só exemplo\nselect 1;";
+    expect(publicRlsHelperCreatesIn(stripComments(raw), "fake.sql")).toEqual([]);
+  });
+
+  it("CONTROLE NEGATIVO: nome que só COMEÇA igual (is_unit_member_v2) não é falso positivo", () => {
+    const created = publicRlsHelperCreatesIn(
+      "create function public.is_unit_member_v2(p_user_id uuid) returns boolean language sql as $$ select true $$;",
+      "fake.sql",
+    );
+    expect(created).toEqual([]);
+  });
+
+  it(
+    "CONTROLE POSITIVO real (não sintético): aplicado à 013, que cria os três em public de " +
+      "verdade, o detector acha os três — é o filtro de VERSÃO que mantém o teste abaixo " +
+      "verde, não um regex morto",
+    () => {
+      const f = migrationFiles().find((x) => x.startsWith("20260504170218_013_"));
+      expect(f, "a 013 (multi_tenant) precisa existir — é ela que cria os três em public").toBeTruthy();
+      const created = publicRlsHelperCreatesIn(readMigration(f!), f!);
+      expect(created.map((c) => c.name).sort()).toEqual([
+        "is_org_member",
+        "is_platform_admin",
+        "is_unit_member",
+      ]);
+      // E ela está FORA do recorte, porque é anterior à 106.
+      expect(versionOf(f!) >= PRIVATE_HELPERS_VERSION).toBe(false);
+    },
+  );
+
+  it("nenhuma migration da 106 em diante recria os três helpers em public", () => {
+    const ofensas: string[] = [];
+    for (const f of desde106Files) {
+      for (const c of publicRlsHelperCreatesIn(readMigration(f), f)) {
+        ofensas.push(describeHelperCreate(c));
+      }
+    }
+    expect(
+      ofensas,
+      "Helper de RLS recriado em `public` — isso reabre o oráculo de membership pelo grant " +
+        "IMPLÍCITO do CREATE FUNCTION a PUBLIC, sem nenhum `grant` no arquivo. Crie em " +
+        "`app_private` (e revogue de PUBLIC lá, como exige o describe acima):\n" +
+        ofensas.join("\n"),
+    ).toEqual([]);
+  });
+});
