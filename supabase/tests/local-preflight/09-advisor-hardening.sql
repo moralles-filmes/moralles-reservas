@@ -32,6 +32,18 @@
 -- Rodar depois de 00-bootstrap.sql, 01-audit.sql, 09a-advisor-bootstrap.sql e da
 -- própria 106, com ON_ERROR_STOP=1. Este arquivo é RODADO DUAS VEZES, com a 106
 -- reaplicada no meio — é assim que ACL-5 mede idempotência (ver o caso).
+--
+-- POR QUE OS HANDLERS `when others` GRAVAM COM `on conflict (ord) do update`.
+-- Cada caso começa com `delete from t_res where ord = N`, mas esse delete é
+-- DESFEITO pelo próprio `exception` que o handler está tratando — em plpgsql o
+-- handler roda depois do rollback da subtransação do bloco. Então, na 2a passada,
+-- caso que estoura tentava INSERIR um ordinal que a 1a passada já gravara e morria
+-- com `duplicate key value violates unique constraint "t_res_pkey"`. Sob
+-- ON_ERROR_STOP=1 isso ABORTA O ARQUIVO: some o veredito do caso que falhou e o de
+-- todos os seguintes, exatamente quando alguém precisa deles. Medido ao sabotar a
+-- fixture de propósito para ver o CONTROLE-16 ficar vermelho — o que se viu foi o
+-- erro de chave duplicada, não o vermelho. Só os handlers levam a cláusula: no
+-- caminho de sucesso o delete vigora e não há conflito possível.
 
 -- ─── GUARDA: este arquivo só faz sentido DEPOIS da 106 e DEPOIS do `09a` ─────
 -- Até a rodada em que a fixture `acl_probe` saiu daqui, rodar este arquivo sem a
@@ -148,7 +160,8 @@ begin
     end);
 exception when others then
   reset role;
-  insert into t_res values (1, 'ACL-1 policy pre-106 sobrevive ao SET SCHEMA', 'FALHOU: ' || sqlerrm);
+  insert into t_res values (1, 'ACL-1 policy pre-106 sobrevive ao SET SCHEMA', 'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
 -- ─── ACL-2: enter_waitlist conclui com os corpos reescritos ──────────────────
@@ -173,7 +186,8 @@ begin
     case when v_id is not null then 'OK' else 'FALHOU (retorno nulo)' end);
 exception when others then
   reset role;
-  insert into t_res values (2, 'ACL-2 enter_waitlist apos o move', 'FALHOU: ' || sqlerrm);
+  insert into t_res values (2, 'ACL-2 enter_waitlist apos o move', 'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
 -- ─── ACL-3: os outros três corpos reescritos resolvem o helper ──────────────
@@ -219,7 +233,8 @@ begin
     end);
 exception when others then
   reset role;
-  insert into t_res values (3, 'ACL-3 os outros tres corpos reescritos', 'FALHOU: ' || sqlerrm);
+  insert into t_res values (3, 'ACL-3 os outros tres corpos reescritos', 'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
 -- ─── ACL-4: caminho da loja — anon entra na fila ponta a ponta ──────────────
@@ -240,7 +255,8 @@ begin
     case when v_id is not null then 'OK' else 'FALHOU (retorno nulo)' end);
 exception when others then
   reset role;
-  insert into t_res values (4, 'ACL-4 anon entra na fila', 'FALHOU: ' || sqlerrm);
+  insert into t_res values (4, 'ACL-4 anon entra na fila', 'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
 -- ─── ACL-5: idempotência — reaplicar a 106 não muda ACL nem contagem ────────
@@ -343,7 +359,8 @@ begin
     end);
 exception when others then
   reset role;
-  insert into t_res values (8, 'ACL-1b nao-membro ve zero, tenant cruzado nao vaza', 'FALHOU: ' || sqlerrm);
+  insert into t_res values (8, 'ACL-1b nao-membro ve zero, tenant cruzado nao vaza', 'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
 -- ─── ACL-3b/3c/3d: o lado NEGATIVO das outras três funções ──────────────────
@@ -401,7 +418,8 @@ begin
     end);
 exception when others then
   reset role;
-  insert into t_res values (11, 'ACL-3b anonymize_customer recusa cliente de outra org', 'FALHOU: ' || sqlerrm);
+  insert into t_res values (11, 'ACL-3b anonymize_customer recusa cliente de outra org', 'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
 -- ACL-3c: get_undelivered_notifications recusa não-membro.
@@ -436,7 +454,8 @@ begin
     end);
 exception when others then
   reset role;
-  insert into t_res values (12, 'ACL-3c get_undelivered_notifications recusa nao-membro', 'FALHOU: ' || sqlerrm);
+  insert into t_res values (12, 'ACL-3c get_undelivered_notifications recusa nao-membro', 'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
 -- ACL-3d: get_customer_stats_bulk não devolve agregado de outra organização.
@@ -468,7 +487,8 @@ begin
     end);
 exception when others then
   reset role;
-  insert into t_res values (13, 'ACL-3d get_customer_stats_bulk nao vaza agregado de outra org', 'FALHOU: ' || sqlerrm);
+  insert into t_res values (13, 'ACL-3d get_customer_stats_bulk nao vaza agregado de outra org', 'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
 -- ═══ CONTROLE-16 — o ACL-1 fica VERMELHO se a policy depender do NOME ════════
@@ -590,5 +610,6 @@ begin
 exception when others then
   reset role;
   insert into t_res values (16, 'CONTROLE-16 ACL-1 vermelho se a policy depender do nome',
-    'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)');
+    'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)')
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
