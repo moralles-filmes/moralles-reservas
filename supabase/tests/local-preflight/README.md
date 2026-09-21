@@ -44,6 +44,8 @@ presentes agendaria jobs apontando para lá.
 | `09-advisor-hardening.sql` | ACL-1..ACL-5, ACL-1b, ACL-3b/3c/3d e CONTROLE-16 da migration 106: policy **criada antes do move** continuando a avaliar depois dele (mesmo OID, mesma linha de `pg_policy`, `public.is_unit_member` já inexistente), os quatro corpos reescritos resolvendo o helper, o caminho anon da fila ponta a ponta, idempotência medida **através de duas execuções** do arquivo, e os lados negativos — `ACL-1b` (não-membro vê zero, tenant cruzado não vaza) e `ACL-3b/3c/3d`, o lado de NEGAR das outras três funções: recusa cross-org na anonimização, recusa a não-membro no painel de Entregas, e agregado de outra organização não voltando na listagem de clientes. Nada aqui cria ou recria a policy da fixture; o arquivo **recusa rodar antes da 106 ou sem o `09a`**. `CONTROLE-16` é o controle positivo do ACL-1 e vive neste arquivo, não no `10`, pela razão que o `CONTROLE-8` já usa no `11`: desfaz a sabotagem por rollback de subtransação e não deixa resíduo nenhum. |
 | `10-controles-106.sql` | Os **quatro controles positivos** da 106. CONTROLE-6 reintroduz o defeito central da fase; CONTROLE-7 mede qual grant sustenta as policies; CONTROLE-9 sabota `is_unit_member`; CONTROLE-10 sabota `is_org_member` e vê o agregado de outro tenant vazar. |
 | `11-overloads-107.sql` | Task 5 (migration 107, Fase 2 do front de advisor): ACL-6 (ord 14) confere que os overloads de 2 argumentos sobrevivem à 107; CONTROLE-8 (ord 15) dropa o de 2 argumentos por engano, vê o call site real estourar, e restaura corpo + ACL de dentro do próprio caso. Roda no mesmo banco `advisor106`, ao final da sequência do advisor — não em banco separado. Os dois vivem no mesmo arquivo, com `ON_ERROR_STOP=1`: diferente de CONTROLE-6, CONTROLE-8 nunca deixa sabotagem residual para um reapply externo resolver, então não precisa da rede de segurança que os arquivos `NN-controles-*.sql` têm. |
+| `12-customer-stats-108.sql` | STATS-1..8 (ordinais 17–24, migration 108): o guard de tenant da `get_customer_stats`. Permitir (membro lê o próprio cliente com os números certos, `platform_admin` **sem** linha em `unit_members` passa, `p_unit_id => null` segue agregando a org) e negar (cliente de outra org, sem sessão, e id inexistente caindo no MESMO ramo do proibido — senão a recusa vira oráculo de existência), mais ACL e idempotência através de duas execuções. **Traz as reservas**, que nenhum arquivo do harness tinha: sem elas todo agregado é zero e o controle positivo não distinguiria vazamento de "cliente sem reserva nenhuma". A segunda unidade da org A nasce **não pública** de propósito — os casos do `09` resolvem a unidade por `where is_public limit 1`, e uma segunda pública tornaria aquela escolha não-determinística. O corpo pré-108 **não** é recriado aqui: o `09a` já traz `get_customer_stats` desde a Task 5 da 107. |
+| `13-controles-108.sql` | Os **dois controles positivos** da 108. CONTROLE-25 neutraliza só o `raise` de `forbidden` (delta mínimo sobre `pg_get_functiondef`) e vê o agregado da org B chegar ao membro da org A; CONTROLE-26 repõe o corpo `language sql` pré-108 inteiro e vê as DUAS regressões de uma vez — o vazamento cross-org e a chamada sem sessão devolvendo linha de zeros em vez de `42501`. **A sabotagem é o `raise`, não o `if`, e isso foi medido:** trocar `if v_org is null` por `if false and v_org is null` não neutraliza nada, porque `and` liga mais forte que `or` e o segundo disjunto (`not (is_platform_admin or is_org_member)`) continua verdadeiro — o raise dispararia igual e o controle ficaria verde tendo sabotado coisa nenhuma. Reaplicar a 108 restaura, como no CONTROLE-6. |
 
 ## Rodar
 
@@ -55,6 +57,17 @@ no arquivo, e sem a variável o banco guarda 1356 *caracteres* (cada acento viro
 dois). Nenhum veredito depende disso (os casos comparam números e literais ASCII),
 e produção não é afetada porque o `supabase db push` fala UTF-8; mas comentário e
 mensagem de erro guardados errados são falso-vermelho esperando acontecer.
+
+**Se o `pg_ctl start` disser "outro servidor pode estar executando", confira a
+porta antes de tentar destravar.** `apps/postgresql/current/data` é junção para
+`persist/postgresql/data`, que é o data dir da instância *default* do scoop — se
+ela já estiver no ar (na 5432, normalmente), não existe segundo postmaster
+possível sobre o mesmo diretório, e o `postmaster.pid` que parece resíduo é de um
+servidor vivo. `cat "$USERPROFILE/scoop/apps/postgresql/current/data/postmaster.pid"`
+mostra PID, data dir e porta nas primeiras linhas. Nesse caso o certo é **usar a
+porta que já está no ar** trocando `-p 55432` pela dela, não parar a instância do
+usuário: o banco desta suíte é descartável e conviver com os outros no mesmo
+servidor não muda nenhum veredito.
 
 ```bash
 export PGCLIENTENCODING=UTF8
@@ -172,6 +185,28 @@ P -f supabase/migrations/20260910121000_107_drop_dead_rpc_overloads.sql
 P -f supabase/tests/local-preflight/11-overloads-107.sql
 
 P -c "select ord, caso, veredito from t_res order by ord;"   # 16 linhas, todas OK
+
+# ── Migration 108: guard de tenant na get_customer_stats ───────────────────
+# ANTES da migration, o 12 tem de FALHAR pelo guard do topo do arquivo
+# (`o corpo de public.get_customer_stats nao chama is_org_member`). É o RED que
+# dá sentido ao GREEN, e é explícito pelo mesmo motivo do guard do `09`: sem ele
+# STATS-1/6/7 passariam medindo o mundo pré-migration e o STATS-8 gravaria um
+# snapshot do corpo SEM guard, contra o qual a 1a passada de verdade reprovaria.
+P -f supabase/tests/local-preflight/12-customer-stats-108.sql   # esperado: ERROR
+
+P -f supabase/migrations/20260921120000_108_customer_stats_tenant_guard.sql
+P -f supabase/tests/local-preflight/12-customer-stats-108.sql   # 1a passada
+# STATS-8 mede idempotência ATRAVÉS DE DUAS EXECUÇÕES, igual ao ACL-5:
+P -f supabase/migrations/20260921120000_108_customer_stats_tenant_guard.sql
+P -f supabase/tests/local-preflight/12-customer-stats-108.sql   # 2a passada
+
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 \
+  -f supabase/tests/local-preflight/13-controles-108.sql   # SEM ON_ERROR_STOP
+# O 13 sabota o CORPO da get_customer_stats de propósito, e a 108 DEFINE o corpo
+# (diferente da 106, que só move helpers) — então reaplicar restaura:
+P -f supabase/migrations/20260921120000_108_customer_stats_tenant_guard.sql
+
+P -c "select ord, caso, veredito from t_res order by ord;"   # 26 linhas, todas OK
 ```
 
 **Ordinais casam com o número do NOME do caso, não com a ordem de execução** —
@@ -187,6 +222,8 @@ por isso o `order by ord` intercala casos do `09`/`11` com controles do `10`:
 | 11, 12, 13 | `ACL-3b`, `ACL-3c`, `ACL-3d` | `09` |
 | 14, 15 | `ACL-6`, `CONTROLE-8` | `11` |
 | 16 | `CONTROLE-16` | `09` |
+| 17–24 | `STATS-1` .. `STATS-8` | `12` |
+| 25, 26 | `CONTROLE-25`, `CONTROLE-26` | `13` |
 
 **Os ordinais 8 e 9 já estavam ocupados** por `ACL-1b` e `CONTROLE-9` quando a
 Task 5 chegou — uma nota anterior deste README reservava o 8 para o controle de
