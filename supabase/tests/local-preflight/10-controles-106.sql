@@ -5,7 +5,10 @@
 -- Sem eles, "ACL-x passou" não distingue a guarda funcionando de teste sem
 -- força:
 --   CONTROLE-6   reintroduz o defeito central desta fase (qualificador do helper
---                num corpo plpgsql) e vê a fila pública quebrar.
+--                num corpo plpgsql) e vê a fila quebrar PELO RAMO AUTENTICADO —
+--                é o ramo que chama o helper. A entrada anon confere `is_public`
+--                direto e não passa por ele, então ela NÃO quebra: por isso este
+--                caso preenche `request.jwt.claims` antes de chamar a RPC.
 --   CONTROLE-7   responde QUAL privilégio sustenta as policies — 7a afirma a
 --                postura entregue (sem USAGE para papel público), 7b sabota o
 --                EXECUTE e vê 42501.
@@ -13,8 +16,11 @@
 --   CONTROLE-10  sabota `is_org_member` e vê o agregado de outro tenant vazar no
 --                ACL-3d.
 --
--- O ordinal 8 está RESERVADO ao controle de overload errado de
--- `11-overloads-107.sql`, que vive em outro banco — daí o salto de 7 para 9.
+-- O salto de 7 para 9 é porque o ordinal 8 é do `ACL-1b`, no `09`: ordinal casa
+-- com o NOME do caso, não com a ordem de execução. `11-overloads-107.sql` usa 14
+-- e 15, e roda no MESMO banco `advisor106` — uma nota anterior aqui reservava o 8
+-- a ele e o dizia em outro banco; as duas coisas são falsas. Ver a tabela de
+-- ordinais no README.
 --
 -- RESTORE, e as duas formas dele: CONTROLE-6 desfaz a reescrita de
 -- `enter_waitlist` e é REAPLICAR A 106 que restaura. CONTROLE-9 e CONTROLE-10
@@ -22,7 +28,7 @@
 -- nunca define o corpo) — cada um restaura de dentro, a partir de
 -- `pg_get_functiondef` capturado antes de sabotar. Ver o README.
 
--- ═══ CONTROLE-6 — desfaz a reescrita e mostra a fila quebrando ═══
+-- ═══ CONTROLE-6 — desfaz a reescrita e mostra a fila do PAINEL quebrando ═══
 --
 -- Reproduz o achado que decide a fase: em plpgsql o nome da função é resolvido
 -- em TEMPO DE EXECUÇÃO, então `public.is_unit_member` num corpo que sobreviveu
