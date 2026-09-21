@@ -456,7 +456,7 @@ returns table (total integer, confirmed integer, no_shows integer,
 language plpgsql
 stable
 security definer
-set search_path to 'public', 'app_private', 'pg_temp'
+set search_path = 'public', 'app_private', 'pg_temp'
 as $$
 declare
   v_caller uuid := auth.uid();
@@ -547,7 +547,7 @@ Três lugares, todos em `supabase/tests/local-preflight/README.md`:
 
 ```markdown
 | `12-customer-stats-108.sql` | STATS-1..8 (migration 108): o guard de tenant da `get_customer_stats`. Permitir (membro, `platform_admin` sem linha em `unit_members`, `p_unit_id => null` seguindo agregado de org) e negar (cliente de outra org, sem sessão, id inexistente caindo no MESMO ramo do proibido — senão a recusa vira oráculo de existência), mais ACL e idempotência através de duas execuções. Traz as **reservas**, que nenhum arquivo do harness tinha: sem elas todo agregado é zero e o controle positivo não distinguiria vazamento de "cliente sem reserva". A segunda unidade da org A nasce **não pública** de propósito — os casos do `09` resolvem a unidade por `where is_public limit 1`. |
-| `13-controles-108.sql` | Os **dois controles positivos** da 108. CONTROLE-25 neutraliza só o `if` do guard (delta mínimo sobre `pg_get_functiondef`) e vê o agregado da org B chegar ao membro da org A; CONTROLE-26 repõe o corpo `language sql` pré-108 inteiro e vê as DUAS regressões de uma vez — o vazamento cross-org e a chamada sem sessão devolvendo zeros em vez de `42501`. Reaplicar a 108 restaura, como no CONTROLE-6. |
+| `13-controles-108.sql` | Os **dois controles positivos** da 108. CONTROLE-25 neutraliza só o `raise` de `forbidden` (delta mínimo sobre `pg_get_functiondef`) e vê o agregado da org B chegar ao membro da org A; CONTROLE-26 repõe o corpo `language sql` pré-108 inteiro e vê as DUAS regressões de uma vez — o vazamento cross-org e a chamada sem sessão devolvendo zeros em vez de `42501`. Reaplicar a 108 restaura, como no CONTROLE-6. |
 ```
 
 2. Ao fim do bloco `bash` da "Sequência da migration 106 (advisor)", depois do segundo `11-overloads-107.sql`:
@@ -614,7 +614,7 @@ Mensagem: assunto `feat(108): guard de tenant na get_customer_stats, resolvido p
 --
 -- Sem eles, "STATS-2 passou" não distingue a guarda funcionando de teste sem
 -- força:
---   CONTROLE-25  neutraliza SÓ o `if` do guard, com delta mínimo sobre
+--   CONTROLE-25  neutraliza SÓ o `raise` de `forbidden`, com delta mínimo sobre
 --                `pg_get_functiondef`, e vê o agregado da org B chegar ao membro
 --                da org A. É o defeito central desta migration.
 --   CONTROLE-26  repõe o corpo `language sql` pré-108 INTEIRO e vê as DUAS
@@ -637,51 +637,63 @@ begin
   end if;
 end $$;
 
--- ═══ CONTROLE-25 — neutraliza o `if` do guard e vê o tenant cruzado vazar ═══
+-- ═══ CONTROLE-25 — sem o raise do guard, o agregado de outra org vaza ═══════
+--
+-- CORREÇÃO NA EXECUÇÃO: este plano descrevia a sabotagem como trocar
+-- `if v_org is null` por `if false and v_org is null`. Isso NÃO neutraliza nada,
+-- e foi medido: `and` liga mais forte que `or`, então a condição vira
+-- `(false and v_org is null) or not (is_platform_admin or is_org_member)`, e o
+-- segundo disjunto continua verdadeiro para membro da org A pedindo cliente da
+-- org B — o raise dispararia igual e o controle ficaria VERDE tendo sabotado
+-- coisa nenhuma. A sabotagem certa é trocar o `raise` de `forbidden` por
+-- `null;`: neutraliza o ramo inteiro sem tocar em precedência e deixa o ramo
+-- `unauthenticated` intacto.
 --
 -- Duas coisas fazem este controle medir de fato:
 --   1. A definição sabotada é construída a partir de `pg_get_functiondef`, não
 --      redigitada: assinatura, DEFAULTs, volatilidade, modo de segurança e
---      search_path vêm do banco, e o ÚNICO delta é o `if` do guard. Mesmo método
---      do CONTROLE-6.
+--      search_path vêm do banco, e o ÚNICO delta é o `raise`. Mesmo método do
+--      CONTROLE-6. O caso confere que o `replace` mudou o texto — sabotagem que
+--      não sabota é o modo silencioso de um controle positivo mentir.
 --   2. A asserção é sobre o NÚMERO que voltou (3, da org B), não sobre "não
 --      estourou": um guard quebrado aqui vaza dado, não erro.
-do $$
-declare v_def text; v_membro_a uuid := '11111111-1111-1111-1111-111111111111';
-        v_unit_a uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+do $ctrl$
+declare v_def text; v_sab text;
+        v_membro_a uuid := '11111111-1111-1111-1111-111111111111';
         v_cust_b uuid := 'eeeeeeee-0000-0000-0000-000000000005';
-        v_total int; v_vazou boolean := false;
+        v_total int;
 begin
   delete from t_res where ord = 25;
 
   v_def := pg_get_functiondef('public.get_customer_stats(uuid,uuid)'::regprocedure);
-  if position('if v_org is null' in v_def) = 0 then
-    insert into t_res values (25, 'CONTROLE-25 sem o if do guard, o agregado de outra org vaza',
-      'FALHOU (nao achei o `if v_org is null` no corpo — a 108 nao esta aplicada ou o corpo mudou)');
+  v_sab := replace(v_def,
+                   'raise exception ''forbidden'' using errcode = ''42501'';',
+                   'null;');
+
+  if v_sab = v_def then
+    insert into t_res values (25, 'CONTROLE-25 sem o raise do guard, o agregado de outra org vaza',
+      'FALHOU (o replace nao mudou nada: a 108 nao esta aplicada ou o corpo mudou)');
     return;
   end if;
 
-  -- O delta: `if false and v_org is null ...` nunca é verdadeiro, então o raise
-  -- de `forbidden` deixa de acontecer. Todo o resto do corpo é o de produção.
-  execute replace(v_def, 'if v_org is null', 'if false and v_org is null');
+  execute v_sab;
 
   perform set_config('request.jwt.claims', json_build_object('sub', v_membro_a)::text, true);
   set local role authenticated;
   select total into v_total from get_customer_stats(v_cust_b, null);
   reset role;
-  v_vazou := (v_total = 3);
 
-  insert into t_res values (25, 'CONTROLE-25 sem o if do guard, o agregado de outra org vaza',
+  insert into t_res values (25, 'CONTROLE-25 sem o raise do guard, o agregado de outra org vaza',
     case
-      when v_vazou then 'OK (vazou total=3 da org B para membro da org A — o guard do STATS-2 tem forca)'
+      when v_total = 3 then 'OK (vazou total=3 da org B para membro da org A — o guard do STATS-2 tem forca)'
       else 'FALHOU (sabotado e ainda assim nao vazou: total=' || coalesce(v_total::text,'null')
              || '; o STATS-2 pode estar passando por outro motivo)'
     end);
 exception when others then
   reset role;
-  insert into t_res values (25, 'CONTROLE-25 sem o if do guard, o agregado de outra org vaza', 'FALHOU: ' || sqlerrm)
+  insert into t_res values (25, 'CONTROLE-25 sem o raise do guard, o agregado de outra org vaza', 'FALHOU: ' || sqlerrm)
     on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
-end $$;
+end $ctrl$;
 
 -- ═══ CONTROLE-26 — repõe o corpo pré-108 e vê as DUAS regressões ═══════════
 --

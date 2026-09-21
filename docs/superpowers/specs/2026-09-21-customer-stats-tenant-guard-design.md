@@ -95,7 +95,7 @@ returns table (total integer, confirmed integer, no_shows integer,
                cancelled integer, no_show_rate numeric, last_visit date)
 language plpgsql
 stable security definer
-set search_path to 'public', 'app_private', 'pg_temp'
+set search_path = 'public', 'app_private', 'pg_temp'
 as $$
 declare
   v_caller uuid := auth.uid();
