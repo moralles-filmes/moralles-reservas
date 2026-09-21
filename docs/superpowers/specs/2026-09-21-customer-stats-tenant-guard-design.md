@@ -206,9 +206,15 @@ Par obrigatório, mesmo commit. A lição que ainda não está escrita:
 
 Mesmo harness de [supabase/tests/local-preflight/](../../../supabase/tests/local-preflight/README.md),
 mesmo banco `advisor106`, depois do `11-overloads-107.sql`. Arquivo novo
-`12-customer-stats-108.sql`, que **extrai o corpo de hoje verbatim** antes de
-aplicar a 108 — o `09a-advisor-bootstrap.sql` não traz esta função (ela não
-chamava helper nenhum, então não era peça da 106).
+`12-customer-stats-108.sql`.
+
+O corpo pré-108 **já está versionado no harness**: o
+`09a-advisor-bootstrap.sql` traz `get_customer_stats` (os dois overloads,
+extraídos de produção) desde a Task 5 da 107. O `12` portanto não precisa
+recriar a função — quando ele roda, `public.get_customer_stats(uuid,uuid)` já
+existe na forma sem guard. O que o `12` precisa criar, e nenhum arquivo do
+harness tem, são as **reservas**: sem elas todo agregado é zero e o controle
+positivo não distinguiria vazamento de "cliente sem reserva nenhuma".
 
 | Caso | O que mede |
 |---|---|
@@ -279,8 +285,9 @@ de service role limpa do ambiente no fim.
 
 ## 10. Rollback
 
-`create or replace` com o corpo pré-108 (preservado verbatim no
-`12-customer-stats-108.sql`, que é onde ele fica versionado). Reverter reabre o
+`create or replace` com o corpo pré-108, que fica versionado em dois lugares do
+harness: `09a-advisor-bootstrap.sql` (extraído de produção) e o `CONTROLE-26` do
+`13-controles-108.sql`, que o repõe de propósito. Reverter reabre o
 buraco, então só se o guard quebrar chamador legítimo em produção — cenário que
 `STATS-1`/`STATS-4` existem para tornar improvável. Não há dado migrado, então o
 rollback não perde nada.
