@@ -35,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CustomerStatsBlock } from "@/components/gestao/CustomerStatsBlock";
 import { formatDateBR, formatPhone, sanitizeSearchTerm } from "@/lib/utils";
 import { validateBrPhone } from "@/lib/phone";
 import type { Customer } from "@/types/reserva";
@@ -402,13 +403,15 @@ function CustomerDetailsDialog({
 }) {
   const update = useUpdateCustomer(unitId);
   const anonymize = useAnonymizeCustomer(unitId);
-  const { data: stats, isLoading: loadingStats } = useCustomerStats(customer?.id, unitId);
+  const {
+    data: stats,
+    isLoading: loadingStats,
+    isError: statsError,
+    refetch: refetchStats,
+  } = useCustomerStats(customer?.id, unitId);
 
   if (!customer) return null;
   const emailsArr = getEmailsArray(customer);
-  const noShowRate = stats?.no_show_rate ?? null;
-  const hasShowDecision =
-    stats != null && stats.confirmed + stats.no_shows >= 3 && noShowRate != null;
   return (
     <Dialog open={!!customer} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
@@ -421,30 +424,12 @@ function CustomerDetailsDialog({
             {emailsArr[0] && <span className="ml-2">· {emailsArr[0]}</span>}
           </div>
 
-          <div className="rounded-lg border p-4">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground mb-3">
-              Histórico
-            </p>
-            {loadingStats ? (
-              <Skeleton className="h-12 w-full" />
-            ) : stats ? (
-              <div className="grid grid-cols-4 gap-3 text-center">
-                <Stat label="Reservas" value={stats.total} />
-                <Stat label="Confirmadas" value={stats.confirmed} />
-                <Stat label="Não vieram" value={stats.no_shows} />
-                <Stat
-                  label="Taxa no-show"
-                  value={noShowRate != null ? `${Math.round(noShowRate * 100)}%` : "—"}
-                  highlight={hasShowDecision && noShowRate! >= 0.3}
-                />
-              </div>
-            ) : null}
-            {stats?.last_visit && (
-              <p className="text-xs text-muted-foreground mt-3 text-center">
-                Última presença: {formatDateBR(stats.last_visit)}
-              </p>
-            )}
-          </div>
+          <CustomerStatsBlock
+            stats={stats}
+            isLoading={loadingStats}
+            isError={statsError}
+            onRetry={() => void refetchStats()}
+          />
 
           <CustomerEditForm
             customer={customer}
@@ -523,23 +508,6 @@ function CustomerDetailsDialog({
         </div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  highlight = false,
-}: {
-  label: string;
-  value: number | string;
-  highlight?: boolean;
-}) {
-  return (
-    <div>
-      <p className={`text-xl font-bold ${highlight ? "text-destructive" : ""}`}>{value}</p>
-      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
-    </div>
   );
 }
 
