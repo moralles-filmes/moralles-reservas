@@ -25,6 +25,14 @@
 - **Deno roda em UTC.** Qualquer timestamp comparado com dado BRT leva offset `-03:00` explícito.
 - **Testes:** `npm run test` (vitest). Núcleo puro em `supabase/functions/_shared/`, teste em `src/lib/*.test.ts` importando por caminho relativo `../../supabase/functions/_shared/X.ts`.
 
+## Ordem de execução
+
+**1 → 2 → 3 → 5 → 4 → 6.** A Task 5 roda **antes** da Task 4.
+
+Motivo: registrar `"datafy"` em `WHATSAPP_PROVIDER_NAMES` sem o adapter deixa o registry anunciando um provider que `getWhatsAppProvider` não resolve, e o guard da Task 1 estoura com `unknown_whatsapp_provider:datafy`. A ordem original mascarava isso pedindo ao implementador que afrouxasse o guard — trocar um teste por causa da ordem das tarefas é o defeito, não a solução. Com a Task 5 antes, nome e adapter nascem no mesmo commit e nenhum teste precisa ceder.
+
+A Task 4 (migration) continua antes da Task 6, que é a primeira a inserir canal `datafy` no banco.
+
 ## Review Focus
 
 Cinco classes de entrada que a spec implica, que nenhuma tarefa exercita por padrão, e que mordem um usuário real. Cada linha ganhou um teste na tarefa que é dona do código.
@@ -787,13 +795,9 @@ describe("migration 110 — datafy nos CHECKs de provider", () => {
 Run: `npm run test -- src/lib/datafy-provider-migration-guard.test.ts`
 Expected: FAIL — o arquivo de migration não existe e `WHATSAPP_PROVIDER_NAMES` ainda não tem `datafy`.
 
-- [ ] **Step 3: Escrever a migration e registrar o provider**
+- [ ] **Step 3: Escrever a migration**
 
-Em `supabase/functions/_shared/whatsapp-provider-core.ts`, linha 3:
-
-```ts
-export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi", "datafy"] as const;
-```
+`WHATSAPP_PROVIDER_NAMES` já ganhou `"datafy"` na Task 5, que roda antes desta — ver **Ordem de execução** no topo. Não altere `whatsapp-provider-core.ts` aqui.
 
 Cria `supabase/migrations/20260922170000_110_datafy_provider.sql`:
 
@@ -835,7 +839,7 @@ comment on constraint whatsapp_channels_provider_check on public.whatsapp_channe
 npm run test -- src/lib/datafy-provider-migration-guard.test.ts src/lib/whatsapp-capability-guard.test.ts src/test/whatsapp-provider-core.test.ts
 ```
 
-Expected: PASS. `whatsapp-capability-guard` agora itera 5 providers; se falhar com `unknown_whatsapp_provider:datafy`, é porque o adapter ainda não existe — **isso é esperado até a Task 5**. Neste caso ajuste o guard para iterar `getWhatsAppProvider` só sobre providers registrados usando `tryGetWhatsAppProvider` e pule `null`, e adicione um caso que exige que todo nome em `WHATSAPP_PROVIDER_NAMES` tenha adapter — que vai passar ao fim da Task 5.
+Expected: PASS nos três. Como a Task 5 já registrou o adapter `datafy`, `whatsapp-capability-guard` itera os cinco providers sem encontrar `unknown_whatsapp_provider`.
 
 - [ ] **Step 5: Aplicar e commitar**
 
@@ -871,8 +875,11 @@ Registra o adapter reusando os parsers `official` e converte os pontos que pergu
 **Interfaces:**
 - Consumes: Task 1 (`CloudApiRequest`, capabilities), Task 2 (`decideDatafySignaturePreconditions`, `buildDatafySignedPayload`), Task 3 (`buildDatafyRequest`, `classifyDatafyStatus`, `pickDatafyMessageId`, `parseDatafyAccount`).
 - Produces:
+  - `WHATSAPP_PROVIDER_NAMES` passa a incluir `"datafy"` (nome e adapter no mesmo commit)
   - `META_SHAPED_PROVIDERS: ReadonlySet<WhatsAppProviderName>` = `{"official","datafy"}`
   - `isMetaShapedProvider(provider: string): boolean`
+  - `type WebhookSignatureScheme = "meta_app_secret" | "datafy_whsec" | "channel_secret"`
+  - `WEBHOOK_SIGNATURE_SCHEME: Readonly<Record<WhatsAppProviderName, WebhookSignatureScheme>>`
   - `verifyDatafySignature(req: Request, bodyText: string, secret: string, nowMs: number): Promise<boolean>` em `whatsapp-providers.ts`
   - Adapter `datafy` no registry, com `credentials.access_token` = `sk_live_…` e `credentials.phone_number_id`/`business_account_id` preenchidos pela descoberta.
 
@@ -887,6 +894,7 @@ import { resolve } from "node:path";
 import {
   META_SHAPED_PROVIDERS,
   PROVIDER_CAPABILITIES,
+  WEBHOOK_SIGNATURE_SCHEME,
   WHATSAPP_PROVIDER_NAMES,
   isMetaShapedProvider,
 } from "../../supabase/functions/_shared/whatsapp-provider-core.ts";
@@ -960,6 +968,19 @@ describe("datafy é Meta-shaped e reusa os parsers official", () => {
     );
   });
 
+  it("todo provider tem esquema de assinatura declarado, e datafy não usa o da Meta", () => {
+    for (const name of WHATSAPP_PROVIDER_NAMES) {
+      expect(WEBHOOK_SIGNATURE_SCHEME[name], `sem esquema: ${name}`).toBeDefined();
+    }
+    expect(WEBHOOK_SIGNATURE_SCHEME.official).toBe("meta_app_secret");
+    expect(WEBHOOK_SIGNATURE_SCHEME.datafy).toBe("datafy_whsec");
+    expect(WEBHOOK_SIGNATURE_SCHEME.zapi).toBe("channel_secret");
+  });
+
+  it("o webhook ramifica a assinatura pelo mapa, não por string", () => {
+    expect(WEBHOOK).toContain("WEBHOOK_SIGNATURE_SCHEME[provider]");
+  });
+
   it("o re-dispatch de lote apaga as assinaturas dos DOIS esquemas", () => {
     const bloco = WEBHOOK.slice(WEBHOOK.indexOf("splitMetaWebhookPayload(payload)"));
     expect(bloco).toContain('headers.delete("x-hub-signature-256")');
@@ -975,7 +996,13 @@ Expected: FAIL — `META_SHAPED_PROVIDERS` não existe e há 5 ocorrências de `
 
 - [ ] **Step 3: Implementar adapter e conjunto**
 
-Em `whatsapp-provider-core.ts`, depois de `PROVIDER_CAPABILITIES`, acrescente a entrada `datafy` ao objeto:
+Em `whatsapp-provider-core.ts`, linha 3, registre o nome — junto com o adapter, nunca antes dele, para não existir um instante em que o registry anuncia um provider sem implementação:
+
+```ts
+export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi", "datafy"] as const;
+```
+
+Depois de `PROVIDER_CAPABILITIES`, acrescente a entrada `datafy` ao objeto:
 
 ```ts
   datafy: {
@@ -1018,6 +1045,27 @@ export const META_SHAPED_PROVIDERS: ReadonlySet<WhatsAppProviderName> = new Set(
 export function isMetaShapedProvider(provider: string): boolean {
   return META_SHAPED_PROVIDERS.has(provider as WhatsAppProviderName);
 }
+
+/**
+ * Esquema de autenticação do webhook, por provider. É uma pergunta DIFERENTE de
+ * `META_SHAPED_PROVIDERS`: `official` e `datafy` têm o mesmo formato de payload
+ * e esquemas de assinatura distintos — a Meta assina o corpo com o app_secret,
+ * a Datafy assina `{timestamp}.{corpo}` com o whsec_ do canal.
+ *
+ * Existe como mapa para que o webhook não volte a discriminar por string: um
+ * `provider === "official"` no ramo de assinatura é indistinguível, à leitura,
+ * de um que decide forma de payload — e é assim que o próximo provider
+ * Meta-shaped entra sem ninguém notar.
+ */
+export type WebhookSignatureScheme = "meta_app_secret" | "datafy_whsec" | "channel_secret";
+
+export const WEBHOOK_SIGNATURE_SCHEME: Readonly<Record<WhatsAppProviderName, WebhookSignatureScheme>> = {
+  zapi: "channel_secret",
+  waha: "channel_secret",
+  uazapi: "channel_secret",
+  official: "meta_app_secret",
+  datafy: "datafy_whsec",
+};
 ```
 
 Em `whatsapp-providers.ts`, acrescente os imports de `datafy-signature-core.ts` e `datafy-client.ts`, e antes do array `adapters`:
@@ -1161,19 +1209,26 @@ Em `webhook-whatsapp/index.ts`, troque as cinco comparações cruas:
 
 ```ts
     let isValid = false;
-    if (provider === "official") {
-      isValid = trustedMetaPayload
-        || await validateMetaSignature(req, bodyText, credentials.app_secret ?? "");
-    } else if (provider === "datafy") {
-      // O whsec_ da Datafy mora em webhook_secret; o sk_live_ fica em
-      // credentials.access_token. Segredo ausente falha fechado no núcleo.
-      isValid = trustedMetaPayload
-        || await verifyDatafySignature(req, bodyText, channel.webhook_secret ?? "", Date.now());
-    } else {
-      const secret = channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET") ?? "";
-      isValid = validateChannelSecret(req, secret);
+    switch (WEBHOOK_SIGNATURE_SCHEME[provider]) {
+      case "meta_app_secret":
+        isValid = trustedMetaPayload
+          || await validateMetaSignature(req, bodyText, credentials.app_secret ?? "");
+        break;
+      case "datafy_whsec":
+        // O whsec_ da Datafy mora em webhook_secret; o sk_live_ fica em
+        // credentials.access_token. Segredo ausente falha fechado no núcleo.
+        isValid = trustedMetaPayload
+          || await verifyDatafySignature(req, bodyText, channel.webhook_secret ?? "", Date.now());
+        break;
+      case "channel_secret": {
+        const secret = channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET") ?? "";
+        isValid = validateChannelSecret(req, secret);
+        break;
+      }
     }
 ```
+
+O `switch` sobre o mapa — em vez de `if (provider === "official")` — é o que mantém o guard do Step 1 verdadeiro. Um `provider === "official"` no ramo de assinatura é indistinguível, à leitura, de um que decide forma de payload, e é por essa porta que o próximo provider Meta-shaped entraria sem ninguém notar.
 
 - l. ~1700 (identidade) e l. ~1709 (split de lote): `if (isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(...))` e `if (isMetaShapedProvider(provider)) { const parts = splitMetaWebhookPayload(payload); ... }`. No re-dispatch do lote, apague também o header da Datafy, senão o filho recalcula assinatura sobre um corpo diferente:
 
