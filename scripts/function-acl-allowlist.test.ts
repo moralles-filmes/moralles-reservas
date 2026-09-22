@@ -369,6 +369,76 @@ function unclassifiedHotfixGrants(
   return missing;
 }
 
+/**
+ * Visão de UMA migration para `grantsWithoutAtomicPublicRevoke`: o que ela
+ * concede (via `grantsInSql`, sem varredura própria) e o que ela revoga de
+ * PUBLIC nela mesma. `revokedFromPublic` só existe para amarrar revoke e
+ * grant ao MESMO arquivo — não é um índice global do histórico.
+ */
+interface FileAcl {
+  file: string;
+  grants: GrantStmt[];
+  revokedFromPublic: Set<string>;
+}
+
+function aclOf(file: string): FileAcl {
+  const sql = readMigration(file);
+  const revokedFromPublic = new Set<string>();
+  for (const m of sql.matchAll(REVOKE_PUBLIC_RE)) {
+    const targets = m[3].split(",").map((t) => t.trim().toLowerCase());
+    if (targets.includes("public")) revokedFromPublic.add(key(m[1], splitArgs(m[2]).length));
+  }
+  return { file, grants: grantsInSql(sql, file), revokedFromPublic };
+}
+
+/**
+ * O predicado central de "revogada de PUBLIC antes de ser concedida": para
+ * cada entrada da allowlist, TODA migration do pool que concede aquela
+ * assinatura a anon/authenticated precisa revogar de PUBLIC NELA MESMA — não
+ * em qualquer outra migration do histórico que contenha um revoke com
+ * nome+aridade coincidentes.
+ *
+ * A amarração ao MESMO arquivo é o que a asserção mede, não detalhe de
+ * implementação: sem ela, uma migration de hardening genérica que revoga
+ * várias funções de uma vez (é o caso real de
+ * 20260817212500_harden_advisor_function_warnings.sql neste repo) "cobriria"
+ * qualquer função futura que nunca revogou de PUBLIC na própria migration que
+ * a concedeu — entre o deploy de uma e o da outra, a função fica executável
+ * por PUBLIC em produção. É o defeito D1 que este predicado existe para
+ * pegar; um revoke solto em qualquer arquivo do pool mediria uma propriedade
+ * mais fraca do que essa.
+ *
+ * Assinatura concedida em MAIS de um arquivo do pool exige revoke em CADA um
+ * — conceder de novo sem revogar de novo é o mesmo defeito, só que na
+ * segunda migration em vez da primeira.
+ *
+ * Extraída como função pura pelo mesmo motivo de `unclassifiedHotfixGrants`
+ * acima: provar a correlação (grant num arquivo, revoke só no outro) contra
+ * dados SINTÉTICOS é o que distingue esta exigência de uma que aceitaria
+ * revoke solto em qualquer lugar do pool.
+ */
+function grantsWithoutAtomicPublicRevoke(entries: AllowEntry[], files: FileAcl[]): string[] {
+  const missing: string[] = [];
+  for (const e of entries) {
+    const k = key(e.name, splitArgs(e.args).length);
+    const grantingFiles = files.filter((f) =>
+      f.grants.some(
+        (g) => key(g.name, g.argCount) === k && (g.roles.includes("anon") || g.roles.includes("authenticated")),
+      ),
+    );
+    if (grantingFiles.length === 0) {
+      missing.push(`${e.name}(${e.args}): nenhuma migration do pool concede a anon/authenticated`);
+      continue;
+    }
+    for (const f of grantingFiles) {
+      if (!f.revokedFromPublic.has(k)) {
+        missing.push(`${e.name}(${e.args}) concedida em ${f.file} sem "revoke ... from public" na MESMA migration`);
+      }
+    }
+  }
+  return missing;
+}
+
 describe("allowlist de ACL de funções", () => {
   it("está bem formada", () => {
     const seen = new Set<string>();
@@ -563,29 +633,68 @@ describe("migration 085 vs allowlist", () => {
     // sobrevive e a função fica executável por todo papel. Foi exatamente o
     // defeito D1 encontrado no ensaio.
     //
-    // A varredura não pode se limitar à 085: ela classificou a superfície que
-    // existia ATÉ ela, mas `public_anon` não para de crescer ali — toda
-    // migration POSTERIOR que cria função pública nova faz o próprio
-    // revoke+grant NA PRÓPRIA migration, não na 085. Fixar a busca num arquivo
-    // só faria qualquer função pública futura reprovar aqui por construção,
-    // não por falta de revoke de verdade. `posterioresFiles` é a MESMA lista
-    // usada acima para achar assinatura dropada depois da 085 — uma lista só,
-    // para as duas não poderem divergir entre si.
-    const revokedFromPublic = new Set<string>();
-    for (const f of [file!, ...posterioresFiles]) {
-      for (const m of readMigration(f).matchAll(REVOKE_PUBLIC_RE)) {
-        const targets = m[3].split(",").map((t) => t.trim().toLowerCase());
-        if (targets.includes("public")) revokedFromPublic.add(key(m[1], splitArgs(m[2]).length));
-      }
-    }
+    // "Antes de ser concedida" é atomicidade, não só presença: o revoke tem de
+    // estar NA MESMA migration que concede a anon/authenticated — ver o
+    // comentário de `grantsWithoutAtomicPublicRevoke` para o porquê de a busca
+    // não poder se limitar à 085 nem aceitar revoke solto em qualquer arquivo
+    // do pool. `posterioresFiles` é a MESMA lista usada acima para achar
+    // assinatura dropada depois da 085 — uma lista só, para as duas não
+    // poderem divergir entre si.
+    const files = [file!, ...posterioresFiles].map(aclOf);
+    const missing = grantsWithoutAtomicPublicRevoke(entriesOf("public_anon"), files);
+    expect(
+      missing,
+      "Entrada de public_anon sem revoke-from-public atômico na migration que concede:\n" + missing.join("\n"),
+    ).toEqual([]);
+  });
 
-    for (const e of entriesOf("public_anon")) {
-      const k = key(e.name, splitArgs(e.args).length);
-      expect(
-        revokedFromPublic.has(k),
-        `${e.name}(${e.args}) é concedida a anon mas nenhuma migration (085 ou posterior) faz "revoke ... from public"`,
-      ).toBe(true);
-    }
+  // Prova a atomicidade em si, contra dados SINTÉTICOS — sem eles, "o it acima
+  // passou" não distingue exigir revoke NA MESMA migration de aceitar revoke
+  // solto em qualquer arquivo do pool (a versão mais fraca que esta substitui).
+  describe("grantsWithoutAtomicPublicRevoke — controle positivo", () => {
+    it("revoke existe no histórico, mas NÃO na migration que concede — reprova nomeando a assinatura", () => {
+      const entries: AllowEntry[] = [{ name: "foo", args: "p_x uuid", roles: ["anon"], why: "sintético" }];
+      const files: FileAcl[] = [
+        {
+          file: "A",
+          grants: [{ file: "A", name: "foo", argCount: 1, roles: ["anon"] }],
+          revokedFromPublic: new Set(),
+        },
+        { file: "B", grants: [], revokedFromPublic: new Set(["foo/1"]) },
+      ];
+      const missing = grantsWithoutAtomicPublicRevoke(entries, files);
+      expect(missing).toEqual([`foo(p_x uuid) concedida em A sem "revoke ... from public" na MESMA migration`]);
+    });
+
+    it("revoke NA MESMA migration que concede não reprova — o caso positivo", () => {
+      const entries: AllowEntry[] = [{ name: "foo", args: "p_x uuid", roles: ["anon"], why: "sintético" }];
+      const files: FileAcl[] = [
+        {
+          file: "A",
+          grants: [{ file: "A", name: "foo", argCount: 1, roles: ["anon"] }],
+          revokedFromPublic: new Set(["foo/1"]),
+        },
+      ];
+      expect(grantsWithoutAtomicPublicRevoke(entries, files)).toEqual([]);
+    });
+
+    it("concedida em DOIS arquivos exige revoke em CADA um — conceder de novo sem revogar de novo é o mesmo defeito", () => {
+      const entries: AllowEntry[] = [{ name: "foo", args: "p_x uuid", roles: ["anon"], why: "sintético" }];
+      const files: FileAcl[] = [
+        {
+          file: "A",
+          grants: [{ file: "A", name: "foo", argCount: 1, roles: ["anon"] }],
+          revokedFromPublic: new Set(["foo/1"]),
+        },
+        {
+          file: "B",
+          grants: [{ file: "B", name: "foo", argCount: 1, roles: ["authenticated"] }],
+          revokedFromPublic: new Set(),
+        },
+      ];
+      const missing = grantsWithoutAtomicPublicRevoke(entries, files);
+      expect(missing).toEqual([`foo(p_x uuid) concedida em B sem "revoke ... from public" na MESMA migration`]);
+    });
   });
 
   it("não concede EXECUTE ao schema inteiro", () => {
