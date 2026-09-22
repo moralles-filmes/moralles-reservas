@@ -725,7 +725,26 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ### Task 4: Migration — `datafy` nos CHECKs de provider
 
-Três tabelas restringem `provider` por CHECK. Sem a migration, o primeiro insert de canal, de mensagem processada ou de notificação falha com `23514`.
+> **CORREÇÃO DE PLANO (pós-auditoria, antes do despacho).** Este texto dizia "três tabelas". São **seis CHECKs de tabela e dois corpos de função**, todos em `20260817170753_whatsapp_multiprovider_uazapi.sql`:
+>
+> | # | Onde | Linha |
+> |---|---|---|
+> | 1 | `organizations_default_whatsapp_provider_check` | `:30` |
+> | 2 | `whatsapp_channels.provider` | `:63` |
+> | 3 | `whatsapp_instances_provider_check` | `:150` |
+> | 4 | `processed_messages_provider_check` | `:170` |
+> | 5 | `notifications_sent_whatsapp_provider_check` | `:191` |
+> | 6 | `whatsapp_channel_lifecycle_events.provider` **e** `.previous_provider` (duas expressões, uma tabela) | `:218`, `:220` |
+> | 7 | **corpo** de `claim_processed_whatsapp_message()` | `:261-327`, guarda em `:281` |
+> | 8 | **corpo** de `set_organization_default_whatsapp_provider()` | `:386-436`, guarda em `:404` |
+>
+> O item 7 é o que quebraria tudo em silêncio: é a RPC de idempotência, por onde passa **todo** inbound. Com o CHECK da tabela liberado e o corpo da função não, o primeiro inbound Datafy levanta exceção dentro da RPC — e o invariante do repo diz que erro de banco nunca vira duplicata/200, então o inbound se perde ou duas IAs rodam concorrentes. `ALTER ... CHECK` **não alcança corpo de função**: exige `create or replace` na mesma migration.
+>
+> O item 8 importa porque a decisão de produto é "Datafy vira o padrão novo", o que significa gravar `organizations.default_whatsapp_provider`.
+>
+> **Não tocar em `record_whatsapp_channel_status`:** ela foi redefinida em `20260901225539_generalize_whatsapp_channel_status.sql` e a versão viva já **não** guarda provider. As outras duas nunca foram redefinidas — as definições vivas são as de agosto.
+
+Sem a migration, o primeiro insert de canal, de mensagem processada ou de notificação falha com `23514`; e, com só os CHECKs corrigidos, o primeiro inbound falha dentro da RPC de idempotência.
 
 **Files:**
 - Create: `supabase/migrations/20260922170000_110_datafy_provider.sql`
@@ -733,11 +752,11 @@ Três tabelas restringem `provider` por CHECK. Sem a migration, o primeiro inser
 
 **Interfaces:**
 - Consumes: `WHATSAPP_PROVIDER_NAMES` de `whatsapp-provider-core.ts` (Task 1).
-- Produces: CHECKs aceitando `datafy` em `whatsapp_channels.provider`, `processed_messages.provider` e `notifications_sent.whatsapp_provider`.
+- Produces: `datafy` aceito nos sete CHECKs (`organizations.default_whatsapp_provider`, `whatsapp_channels.provider`, `whatsapp_instances.provider`, `processed_messages.provider`, `notifications_sent.whatsapp_provider`, `whatsapp_channel_lifecycle_events.provider` e `.previous_provider`) **e** nos corpos de `claim_processed_whatsapp_message` e `set_organization_default_whatsapp_provider`. Sem os dois últimos, os CHECKs não bastam.
 
 - [ ] **Step 1: Escrever o guard estático que falha**
 
-Cria `src/lib/datafy-provider-migration-guard.test.ts`. Ele lê o SQL e prova que os três CHECKs foram atualizados — o pré-voo com banco roda em outra suíte, mas a divergência entre a lista TypeScript e o SQL é exatamente o defeito que passa despercebido.
+Cria `src/lib/datafy-provider-migration-guard.test.ts`. Ele lê o SQL e prova que as sete constraints **e os dois corpos de função** foram atualizados — o pré-voo com banco roda em outra suíte, mas a divergência entre a lista TypeScript e o SQL é exatamente o defeito que passa despercebido, e a guarda dentro da RPC é a que nenhum `ALTER ... CHECK` alcança.
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -750,31 +769,52 @@ const SQL = readFileSync(
   "utf8",
 );
 
-const TABELAS = [
+const CONSTRAINTS = [
+  "organizations_default_whatsapp_provider_check",
   "whatsapp_channels_provider_check",
+  "whatsapp_instances_provider_check",
   "processed_messages_provider_check",
   "notifications_sent_whatsapp_provider_check",
+  "whatsapp_channel_lifecycle_events_provider_check",
+  "whatsapp_channel_lifecycle_events_previous_provider_check",
 ];
+
+// Os dois corpos de função: um ALTER ... CHECK nunca os alcança.
+const FUNCOES = [
+  "public.claim_processed_whatsapp_message",
+  "public.set_organization_default_whatsapp_provider",
+];
+
+// Uma expressão de lista por constraint, mais uma por corpo de função.
+const LISTAS_ESPERADAS = CONSTRAINTS.length + FUNCOES.length;
 
 describe("migration 110 — datafy nos CHECKs de provider", () => {
   it("o registry declara datafy", () => {
     expect(WHATSAPP_PROVIDER_NAMES).toContain("datafy");
   });
 
-  it("dropa e recria os três CHECKs de forma idempotente", () => {
-    for (const constraint of TABELAS) {
+  it("dropa e recria cada CHECK de forma idempotente", () => {
+    for (const constraint of CONSTRAINTS) {
       expect(SQL).toContain(`drop constraint if exists ${constraint}`);
       expect(SQL).toContain(`add constraint ${constraint}`);
     }
   });
 
-  it("cada CHECK recriado lista TODOS os providers do registry", () => {
+  // O defeito que este teste existe para pegar: liberar o CHECK da tabela e
+  // esquecer a guarda DENTRO da RPC de idempotência, por onde passa todo inbound.
+  it("reescreve os dois corpos de função que guardam o nome do provider", () => {
+    for (const fn of FUNCOES) {
+      expect(SQL).toContain(`create or replace function ${fn}`);
+    }
+  });
+
+  it("cada lista recriada inclui TODOS os providers do registry", () => {
     for (const provider of WHATSAPP_PROVIDER_NAMES) {
       const ocorrencias = SQL.split(`'${provider}'`).length - 1;
       expect(
         ocorrencias,
-        `provider ${provider} aparece ${ocorrencias}x; esperado ao menos 3 (um por CHECK)`,
-      ).toBeGreaterThanOrEqual(TABELAS.length);
+        `provider ${provider} aparece ${ocorrencias}x; esperado ao menos ${LISTAS_ESPERADAS} (um por CHECK e por corpo de função)`,
+      ).toBeGreaterThanOrEqual(LISTAS_ESPERADAS);
     }
   });
 
@@ -802,19 +842,52 @@ Expected: FAIL — o arquivo de migration não existe e `WHATSAPP_PROVIDER_NAMES
 
 Cria `supabase/migrations/20260922170000_110_datafy_provider.sql`:
 
+**Antes de escrever o SQL, confirme os nomes reais das constraints.** Quatro das sete nasceram como `check (...)` inline num `create table`, então o nome é o que o Postgres gerou — e `drop constraint if exists <nome errado>` é **no-op silencioso**: o `add` cria uma segunda constraint e a antiga, restritiva, continua valendo. O resultado é uma migration que aplica limpa e mesmo assim recusa `datafy`. Rode primeiro:
+
+```bash
+npx supabase db query --linked "
+select rel.relname as tabela, con.conname as constraint, pg_get_constraintdef(con.oid) as definicao
+from pg_constraint con
+join pg_class rel on rel.oid = con.conrelid
+where con.contype = 'c'
+  and pg_get_constraintdef(con.oid) like '%uazapi%'
+order by rel.relname, con.conname;
+"
+```
+
+Use os nomes que essa consulta devolver. Se algum divergir do assumido abaixo, o nome da consulta vence.
+
 ```sql
 -- 110 — Datafy como provider de WhatsApp (proxy oficial da Meta Cloud API).
 --
--- Três CHECKs restringem o nome do provider. Sem os três, o primeiro canal
--- Datafy falha no insert (23514), e as duas tabelas seguintes só falhariam
--- depois — na primeira mensagem processada e no primeiro recibo de entrega.
+-- O nome do provider é restringido em OITO lugares: sete CHECKs de tabela e
+-- dois corpos de função (um deles tem duas expressões). Liberar só os CHECKs
+-- deixa o primeiro inbound Datafy estourando DENTRO de
+-- claim_processed_whatsapp_message, que é a RPC de idempotência por onde passa
+-- todo inbound — e erro de banco ali nunca é tratado como duplicata, então o
+-- inbound se perde ou duas IAs rodam concorrentes.
 --
--- Idempotente: drop-if-exists + add, seguro em replay.
+-- ALTER ... CHECK não alcança corpo de função: as duas são reescritas aqui por
+-- create or replace, com a assinatura idêntica (mudar o tipo de retorno daria 42P13).
+--
+-- Idempotente: drop-if-exists + add nas constraints, create or replace nas funções.
+
+alter table public.organizations
+  drop constraint if exists organizations_default_whatsapp_provider_check;
+alter table public.organizations
+  add constraint organizations_default_whatsapp_provider_check
+  check (default_whatsapp_provider in ('zapi', 'uazapi', 'waha', 'official', 'datafy'));
 
 alter table public.whatsapp_channels
   drop constraint if exists whatsapp_channels_provider_check;
 alter table public.whatsapp_channels
   add constraint whatsapp_channels_provider_check
+  check (provider in ('zapi', 'uazapi', 'waha', 'official', 'datafy'));
+
+alter table public.whatsapp_instances
+  drop constraint if exists whatsapp_instances_provider_check;
+alter table public.whatsapp_instances
+  add constraint whatsapp_instances_provider_check
   check (provider in ('zapi', 'uazapi', 'waha', 'official', 'datafy'));
 
 alter table public.processed_messages
@@ -830,8 +903,29 @@ alter table public.notifications_sent
   check (whatsapp_provider is null
          or whatsapp_provider in ('zapi', 'uazapi', 'waha', 'official', 'datafy'));
 
+alter table public.whatsapp_channel_lifecycle_events
+  drop constraint if exists whatsapp_channel_lifecycle_events_provider_check;
+alter table public.whatsapp_channel_lifecycle_events
+  add constraint whatsapp_channel_lifecycle_events_provider_check
+  check (provider in ('zapi', 'uazapi', 'waha', 'official', 'datafy'));
+
+alter table public.whatsapp_channel_lifecycle_events
+  drop constraint if exists whatsapp_channel_lifecycle_events_previous_provider_check;
+alter table public.whatsapp_channel_lifecycle_events
+  add constraint whatsapp_channel_lifecycle_events_previous_provider_check
+  check (previous_provider is null
+         or previous_provider in ('zapi', 'uazapi', 'waha', 'official', 'datafy'));
+
 comment on constraint whatsapp_channels_provider_check on public.whatsapp_channels is
   'Providers suportados. datafy é proxy da Meta Cloud API: mesmos payloads do provider official, transporte e assinatura próprios.';
+```
+
+**Os dois corpos de função.** Copie cada um **verbatim** de `supabase/migrations/20260817170753_whatsapp_multiprovider_uazapi.sql` — `claim_processed_whatsapp_message` das linhas 261–327, `set_organization_default_whatsapp_provider` das linhas 386–436 — e mude **somente** a lista de providers dentro da guarda (`:281` e `:404`, respectivamente), acrescentando `'datafy'`. Não reescreva mais nada do corpo: qualquer outra diferença é uma mudança de comportamento que ninguém pediu e que a review não vai conseguir distinguir da correção.
+
+Reafirme, depois de cada função, o `revoke`/`grant` que a migration de agosto já aplica a ela. `create or replace` preserva a ACL, então isso é redundante por construção — mas o guardrail `acl-estatico` lê as migrations, não o banco, e uma função que aparece recriada sem ACL declarada é exatamente a forma que ele existe para sinalizar. Localize as linhas com:
+
+```bash
+grep -n "claim_processed_whatsapp_message\|set_organization_default_whatsapp_provider" supabase/migrations/*.sql | grep -E "revoke|grant"
 ```
 
 - [ ] **Step 4: Rodar e ver passar**
@@ -844,20 +938,51 @@ Expected: PASS nos três. Como a Task 5 já registrou o adapter `datafy`, `whats
 
 - [ ] **Step 5: Aplicar e commitar**
 
+**Aplicar duas vezes**, para provar a idempotência que o cabeçalho promete — a segunda passada tem que ser limpa:
+
 ```bash
 npx supabase db push
+npx supabase db push   # replay: deve ser no-op, sem erro
 npm run typecheck
-git add supabase/migrations/20260922170000_110_datafy_provider.sql supabase/functions/_shared/whatsapp-provider-core.ts src/lib/datafy-provider-migration-guard.test.ts src/lib/whatsapp-capability-guard.test.ts
-git commit -m "feat(datafy): registrar provider e liberar nos três CHECKs
+```
 
-whatsapp_channels, processed_messages e notifications_sent restringem o
-nome do provider. Sem os três, o canal falha no insert e as outras duas
-só apareceriam depois — na primeira mensagem e no primeiro recibo.
+Depois de aplicar, **confirme no banco** que as sete constraints ficaram únicas por tabela/coluna (uma constraint órfã com o nome antigo continuaria recusando `datafy` sem que nada falhasse no push):
 
-Guard estático cruza a lista SQL com WHATSAPP_PROVIDER_NAMES, com
-controle positivo.
+```bash
+npx supabase db query --linked "
+select rel.relname as tabela, con.conname as constraint, pg_get_constraintdef(con.oid) as definicao
+from pg_constraint con
+join pg_class rel on rel.oid = con.conrelid
+where con.contype = 'c' and pg_get_constraintdef(con.oid) like '%uazapi%'
+order by rel.relname, con.conname;
+"
+```
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Toda linha devolvida tem que conter `'datafy'`. Qualquer uma que não contenha é uma constraint que sobrou e vai recusar o primeiro canal.
+
+```bash
+git add supabase/migrations/20260922170000_110_datafy_provider.sql src/lib/datafy-provider-migration-guard.test.ts
+git commit -F - <<'EOF'
+feat(datafy): liberar o provider nos sete CHECKs e nos dois corpos de funcao
+
+O plano dizia tres CHECKs. Sao sete, em seis tabelas, mais duas guardas
+DENTRO de funcoes — que nenhum ALTER ... CHECK alcanca.
+
+A que importa e claim_processed_whatsapp_message: e a RPC de idempotencia,
+por onde passa todo inbound. Com o CHECK da tabela liberado e o corpo da
+funcao nao, o primeiro inbound Datafy levanta excecao la dentro, e erro de
+banco nunca e tratado como duplicata — o inbound se perde ou duas IAs rodam
+concorrentes. A segunda e set_organization_default_whatsapp_provider, porque
+a decisao de produto e que Datafy vira o padrao de unidade nova.
+
+record_whatsapp_channel_status nao entra: foi redefinida em 20260901225539 e
+a versao viva ja nao guarda provider.
+
+Guard estatico cruza a lista do SQL com WHATSAPP_PROVIDER_NAMES e exige as
+duas funcoes recriadas, com controle positivo.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+EOF
 ```
 
 ---
