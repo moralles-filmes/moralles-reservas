@@ -13,12 +13,45 @@ export interface WhatsAppProviderCapabilities {
   disconnect: boolean;
   restart: boolean;
   deliveryReceipts: boolean;
+  /** Envio de templates aprovados pela Meta. */
+  templateMessages: boolean;
+  /** Envio de imagem, áudio, vídeo, documento ou sticker. */
+  mediaMessages: boolean;
+  /** Download da mídia recebida do cliente. */
+  inboundMediaDownload: boolean;
+  /** Botões, listas e demais formatos interativos. */
+  interactiveMessages: boolean;
+  /** Entrega o objeto referral de anúncio Click-to-WhatsApp no payload. */
+  adReferral: boolean;
+  /** Requisição de baixo nível a endpoints da Cloud API. */
+  rawCloudApiProxy: boolean;
   /**
    * Se o provider consegue ecoar mensagens digitadas no aparelho da loja.
    * `conditional` exige um modo específico, como Meta Cloud API Coexistence.
    */
   manualDeviceEcho: "supported" | "conditional" | "unsupported";
 }
+
+export interface CloudApiRequest {
+  method: "GET" | "POST" | "DELETE";
+  /** Caminho relativo à base do provider, sem barra inicial. */
+  path: string;
+  body?: unknown;
+}
+
+export interface CloudApiResponse {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * Capability → método exigido pelo guard de acoplamento.
+ * Capabilities de payload, como adReferral, não exigem chamada própria.
+ * Acrescentar o método ao contrato exige mapear sua capability aqui.
+ */
+export const CAPABILITY_REQUIRED_METHOD = {
+  rawCloudApiProxy: "cloudApiRequest",
+} as const satisfies Readonly<Partial<Record<keyof WhatsAppProviderCapabilities, keyof WhatsAppProviderAdapter>>>;
 
 export type WhatsAppOperationalStatus =
   | "not_configured"
@@ -208,6 +241,8 @@ export interface WhatsAppProviderAdapter {
   getConnectionStatus?(credentials: ChannelCredentials): Promise<ProviderConnectionSnapshot>;
   getQrCode?(credentials: ChannelCredentials): Promise<ProviderQrSnapshot>;
   canRequestQr?(credentials: ChannelCredentials): boolean;
+  /** Uso exclusivo de Edge Functions que já resolveram tenant e credenciais. */
+  cloudApiRequest?(credentials: ChannelCredentials, request: CloudApiRequest): Promise<CloudApiResponse>;
   lifecycle?: ManagedProviderLifecycleAdapter;
 }
 
@@ -268,6 +303,12 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: false,
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: false,
+    rawCloudApiProxy: false,
   },
   waha: {
     manualCredentials: true,
@@ -279,6 +320,12 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: false,
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: false,
+    rawCloudApiProxy: false,
   },
   official: {
     manualCredentials: true,
@@ -290,6 +337,12 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: false,
     deliveryReceipts: true,
     manualDeviceEcho: "conditional",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: true,
+    rawCloudApiProxy: false,
   },
   uazapi: {
     manualCredentials: false,
@@ -301,6 +354,12 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: true,
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: false,
+    rawCloudApiProxy: false,
   },
 };
 

@@ -90,6 +90,24 @@ describe("registry WhatsApp", () => {
     expect(registry.metadata()[0]).not.toBe(registry.list()[0]);
   });
 
+  it("serializa as seis capabilities de Cloud API sem habilitar novas operações", () => {
+    const names = ["zapi", "waha", "official", "uazapi"] as const;
+    const registry = createWhatsAppProviderRegistry(names.map(stubAdapter));
+
+    for (const metadata of registry.metadata()) {
+      expect(metadata.capabilities).toMatchObject({
+        templateMessages: false,
+        mediaMessages: false,
+        inboundMediaDownload: false,
+        interactiveMessages: false,
+        adReferral: metadata.name === "official",
+        rawCloudApiProxy: false,
+      });
+      expect(metadata.capabilities).not.toBe(registry.get(metadata.name).capabilities);
+      expect(registry.get(metadata.name).cloudApiRequest).toBeUndefined();
+    }
+  });
+
   it("falha fechado para provider desconhecido e duplicado", () => {
     const registry = createWhatsAppProviderRegistry([stubAdapter("zapi")]);
     expect(registry.tryGet("nao-existe")).toBeNull();
