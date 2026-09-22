@@ -36,6 +36,8 @@ import {
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
 import { isFlagEnabled } from "../_shared/platform-flags.ts";
 import {
+  WEBHOOK_SIGNATURE_SCHEME,
+  isMetaShapedProvider,
   parseInbound,
   parseOwnMessageEchoes,
   peekInboundMedia,
@@ -43,6 +45,7 @@ import {
   validateChannelSecret,
   validateMetaSignature,
   validateProviderToken,
+  verifyDatafySignature,
   getWhatsAppProvider,
   type WhatsAppProvider,
   type ChannelCredentials,
@@ -126,7 +129,7 @@ function manualEchoMatchesConfiguredChannel(
     ? root.payload as Record<string, unknown>
     : root;
 
-  if (provider === "official") return metaPayloadMatchesChannel(payload, credentials);
+  if (isMetaShapedProvider(provider)) return metaPayloadMatchesChannel(payload, credentials);
   if (provider === "zapi") {
     const actual = [nested.instanceId, nested.instance_id, root.instanceId, root.instance_id]
       .find((value) => typeof value === "string" && value.trim()) as string | undefined;
@@ -943,11 +946,11 @@ function describeIgnoredPayload(provider: WhatsAppProvider, payload: any): Recor
     // WAHA aninha em `payload`; Meta aninha em entry[0].changes[0].value.
     const inner = provider === "waha"
       ? (payload.payload ?? payload)
-      : provider === "official"
+      : isMetaShapedProvider(provider)
       ? (payload.entry?.[0]?.changes?.[0]?.value ?? payload)
       : payload;
     const p = inner && typeof inner === "object" ? inner : {};
-    const metaMsg = provider === "official" ? p.messages?.[0] : null;
+    const metaMsg = isMetaShapedProvider(provider) ? p.messages?.[0] : null;
     return {
       provider,
       keys: Object.keys(p).slice(0, 30),
@@ -1609,16 +1612,30 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
       return new Response("payload too large", { status: 413 });
     }
 
-    // Validate por provider:
+    // Validate por provider, ramificado pelo esquema declarado em
+    // WEBHOOK_SIGNATURE_SCHEME — nunca por uma comparação crua com o nome de
+    // um provider específico, que é indistinguível à leitura de uma checagem
+    // de FORMA de payload:
     //  - Meta Cloud API: HMAC-SHA256 do body com app_secret (header x-hub-signature-256)
-    //  - Z-API / WAHA: secret per-channel (header x-webhook-secret OU query ?secret=)
+    //  - Datafy: HMAC-SHA256 de `{timestamp}.{corpo}` com o whsec_ do canal (header x-datafy-signature-256)
+    //  - Z-API / WAHA / UazAPI: secret per-channel (header x-webhook-secret OU query ?secret=)
     let isValid = false;
-    if (provider === "official") {
-      isValid = trustedMetaPayload
-        || await validateMetaSignature(req, bodyText, credentials.app_secret ?? "");
-    } else {
-      const secret = channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET") ?? "";
-      isValid = validateChannelSecret(req, secret);
+    switch (WEBHOOK_SIGNATURE_SCHEME[provider]) {
+      case "meta_app_secret":
+        isValid = trustedMetaPayload
+          || await validateMetaSignature(req, bodyText, credentials.app_secret ?? "");
+        break;
+      case "datafy_whsec":
+        // O whsec_ da Datafy mora em webhook_secret; o sk_live_ fica em
+        // credentials.access_token. Segredo ausente falha fechado no núcleo.
+        isValid = trustedMetaPayload
+          || await verifyDatafySignature(req, bodyText, channel.webhook_secret ?? "", Date.now());
+        break;
+      case "channel_secret": {
+        const secret = channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET") ?? "";
+        isValid = validateChannelSecret(req, secret);
+        break;
+      }
     }
 
     if (!isValid) {
@@ -1694,25 +1711,28 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
       }
     }
 
-    // O HMAC da Meta só comprova qual app enviou o lote. Sem conferir o
-    // phone_number_id, um callback válido de outro número do mesmo app poderia
-    // ser encaminhado ao channel_id errado e atravessar tenants.
-    if (provider === "official" && !metaPayloadMatchesChannel(payload, credentials)) {
+    // O HMAC (Meta ou Datafy) só comprova qual app/canal enviou o lote. Sem
+    // conferir o phone_number_id, um callback válido de outro número do mesmo
+    // app/cliente poderia ser encaminhado ao channel_id errado e atravessar
+    // tenants. Vale para todo provider Meta-shaped, não só "official".
+    if (isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(payload, credentials)) {
       jsonLog("warn", { requestId, evt: "webhook_channel_identity_mismatch", channelId, provider });
       await finish("webhook_unauthorized");
       return new Response("unauthorized", { status: 401 });
     }
 
-    // Meta pode agrupar entries/changes e várias mensagens no mesmo POST. Cada
-    // inbound precisa atravessar claim/debounce/lock separadamente; status e
-    // ecos também não podem fazer o handler retornar antes dos demais itens.
-    if (provider === "official") {
+    // Meta (e a Datafy, que encaminha o mesmo envelope) pode agrupar
+    // entries/changes e várias mensagens no mesmo POST. Cada inbound precisa
+    // atravessar claim/debounce/lock separadamente; status e ecos também não
+    // podem fazer o handler retornar antes dos demais itens.
+    if (isMetaShapedProvider(provider)) {
       const parts = splitMetaWebhookPayload(payload);
       if (parts.length > 1) {
         const results = await Promise.all(parts.map((part) => {
           const headers = new Headers(req.headers);
           headers.delete("content-length");
           headers.delete("x-hub-signature-256");
+          headers.delete("x-datafy-signature-256");
           return handleWebhookRequest(new Request(req.url, {
             method: "POST",
             headers,

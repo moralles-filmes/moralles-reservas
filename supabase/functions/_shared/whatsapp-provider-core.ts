@@ -1,6 +1,6 @@
 import { canonicalBrPhone } from "./phone.ts";
 
-export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi"] as const;
+export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi", "datafy"] as const;
 
 export type WhatsAppProviderName = typeof WHATSAPP_PROVIDER_NAMES[number];
 
@@ -361,6 +361,63 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     adReferral: false,
     rawCloudApiProxy: false,
   },
+  datafy: {
+    manualCredentials: true,
+    automaticProvisioning: false,
+    qrConnection: false,
+    pairCode: false,
+    // A Datafy responde 403 a webhook_configuration: a URL é colada à mão no painel.
+    automaticWebhook: false,
+    disconnect: false,
+    restart: false,
+    deliveryReceipts: true,
+    manualDeviceEcho: "conditional",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: true,
+    rawCloudApiProxy: true,
+  },
+};
+
+/**
+ * Providers cujo payload de webhook é o envelope da Meta
+ * (`object`/`entry[]`/`changes[]`/`value`). A Datafy encaminha o payload da Meta
+ * sem modificar, então tudo que decide FORMA de payload pergunta a este conjunto.
+ *
+ * Existe como conjunto, e não como `provider === "official"` espalhado, porque a
+ * omissão de um único call site não produz erro: o evento simplesmente não casa
+ * nenhum parser e some como `ignored_non_text`.
+ */
+export const META_SHAPED_PROVIDERS: ReadonlySet<WhatsAppProviderName> = new Set([
+  "official",
+  "datafy",
+]);
+
+export function isMetaShapedProvider(provider: string): boolean {
+  return META_SHAPED_PROVIDERS.has(provider as WhatsAppProviderName);
+}
+
+/**
+ * Esquema de autenticação do webhook, por provider. É uma pergunta DIFERENTE de
+ * `META_SHAPED_PROVIDERS`: `official` e `datafy` têm o mesmo formato de payload
+ * e esquemas de assinatura distintos — a Meta assina o corpo com o app_secret,
+ * a Datafy assina `{timestamp}.{corpo}` com o whsec_ do canal.
+ *
+ * Existe como mapa para que o webhook não volte a discriminar por string: um
+ * `provider === "official"` no ramo de assinatura é indistinguível, à leitura,
+ * de um que decide forma de payload — e é assim que o próximo provider
+ * Meta-shaped entra sem ninguém notar.
+ */
+export type WebhookSignatureScheme = "meta_app_secret" | "datafy_whsec" | "channel_secret";
+
+export const WEBHOOK_SIGNATURE_SCHEME: Readonly<Record<WhatsAppProviderName, WebhookSignatureScheme>> = {
+  zapi: "channel_secret",
+  waha: "channel_secret",
+  uazapi: "channel_secret",
+  official: "meta_app_secret",
+  datafy: "datafy_whsec",
 };
 
 function sanitizeContactName(raw: unknown, phone: string): string | undefined {

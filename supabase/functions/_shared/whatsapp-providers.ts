@@ -4,7 +4,9 @@ import { fetchWithRetry } from "./retry.ts";
 import { jsonLog, sanitizePhone } from "./security.ts";
 import { createUazApiClientFromEnv } from "./uazapi-client.ts";
 import {
+  META_SHAPED_PROVIDERS,
   PROVIDER_CAPABILITIES,
+  WEBHOOK_SIGNATURE_SCHEME,
   buildWahaSessionActionRequest,
   buildWahaStatusRequest,
   buildWahaQrRequest,
@@ -12,6 +14,7 @@ import {
   buildZApiTextRequest,
   createWhatsAppProviderRegistry,
   decideWahaQrFlow,
+  isMetaShapedProvider,
   isSafeWahaBaseUrl,
   parseOfficialInbound,
   parseOfficialOwnMessageEchoes,
@@ -39,6 +42,8 @@ import {
   sendUazApiText,
   wahaSessionPreparationAction,
   type ChannelCredentials,
+  type CloudApiRequest,
+  type CloudApiResponse,
   type InboundMediaPeek,
   type InboundMessage,
   type OwnMessageEcho,
@@ -51,6 +56,18 @@ import {
   type WhatsAppProviderName,
 } from "./whatsapp-provider-core.ts";
 import { redactProviderFetchError } from "./provider-error-redaction-core.ts";
+import {
+  DATAFY_SIGNATURE_HEADER,
+  DATAFY_TIMESTAMP_HEADER,
+  buildDatafySignedPayload,
+  decideDatafySignaturePreconditions,
+} from "./datafy-signature-core.ts";
+import {
+  buildDatafyRequest,
+  classifyDatafyStatus,
+  parseDatafyAccount,
+  pickDatafyMessageId,
+} from "./datafy-client.ts";
 
 /**
  * A Z-API carrega `instance_id` e `token` NO PATH da URL
@@ -309,6 +326,8 @@ async function getUazApiConnectionStatus(
 export type WhatsAppProvider = WhatsAppProviderName;
 export type {
   ChannelCredentials,
+  CloudApiRequest,
+  CloudApiResponse,
   InboundMediaKind,
   InboundMediaPeek,
   InboundMessage,
@@ -319,6 +338,7 @@ export type {
   ProviderQrSnapshot,
   SendResult,
   StatusUpdate,
+  WebhookSignatureScheme,
   WhatsAppOperationalStatus,
   WhatsAppProviderAdapter,
   WhatsAppProviderCapabilities,
@@ -326,6 +346,7 @@ export type {
   WhatsAppProviderMetadata,
   WhatsAppProviderName,
 } from "./whatsapp-provider-core.ts";
+export { META_SHAPED_PROVIDERS, WEBHOOK_SIGNATURE_SCHEME, isMetaShapedProvider };
 
 async function sendZApi(credentials: ChannelCredentials, message: OutboundMessage): Promise<SendResult> {
   const request = buildZApiTextRequest(credentials, message);
@@ -422,6 +443,78 @@ async function sendUazApi(credentials: ChannelCredentials, message: OutboundMess
   return sendUazApiText({ ...credentials, base_url: configuredBaseUrl }, message);
 }
 
+async function sendDatafy(
+  credentials: ChannelCredentials,
+  message: OutboundMessage,
+): Promise<SendResult> {
+  const { phone_number_id, access_token } = credentials;
+  const missing: string[] = [];
+  if (!phone_number_id) missing.push("phone_number_id");
+  if (!access_token) missing.push("access_token");
+  if (missing.length) {
+    jsonLog("error", { evt: "send_datafy_missing_creds", missing, phone: sanitizePhone(message.toPhone) });
+    return { ok: false, missingCreds: missing, error: "missing_credentials", errorCode: "INVALID_REQUEST" };
+  }
+
+  const digits = message.toPhone.replace(/\D/g, "");
+  const to = digits.startsWith("55") ? digits : `55${digits}`;
+  const { url, init } = buildDatafyRequest({
+    token: access_token,
+    method: "POST",
+    path: `v1/${phone_number_id}/messages`,
+    body: { messaging_product: "whatsapp", recipient_type: "individual", to, type: "text", text: { body: message.text } },
+  });
+
+  const response = await fetchProviderWithTimeout(url, init, 3);
+  const errorCode = classifyDatafyStatus(response.status);
+  if (errorCode === null) {
+    const body = await response.json().catch(() => null);
+    return { ok: true, status: response.status, providerMessageId: pickDatafyMessageId(body) };
+  }
+  jsonLog("error", {
+    evt: "send_datafy_failed",
+    status: response.status,
+    errorCode,
+    phone: sanitizePhone(message.toPhone),
+  });
+  return { ok: false, status: response.status, error: `datafy_http_${response.status}`, errorCode };
+}
+
+async function getDatafyConnectionStatus(
+  credentials: ChannelCredentials,
+): Promise<ProviderConnectionSnapshot> {
+  if (!credentials.access_token) throw new Error("missing_credentials");
+  const { url, init } = buildDatafyRequest({
+    token: credentials.access_token, method: "GET", path: "me",
+  });
+  const { response, body } = await fetchConnectionStatus(url, init.headers as Record<string, string>);
+  const account = response.ok ? parseDatafyAccount(body) : null;
+  // Cloud API não tem sessão: "conectado" é o token resolver um número válido.
+  // Não existe QR, e por isso qrRequired é sempre false.
+  return {
+    status: account ? "connected" : "provider_error",
+    nativeStatus: response.ok ? (account ? "token_ok" : "invalid_payload") : `http_${response.status}`,
+    connected: !!account,
+    qrRequired: false,
+    displayPhone: null,
+  };
+}
+
+async function datafyCloudApiRequest(
+  credentials: ChannelCredentials,
+  request: CloudApiRequest,
+): Promise<CloudApiResponse> {
+  if (!credentials.access_token) throw new Error("missing_credentials");
+  const { url, init } = buildDatafyRequest({
+    token: credentials.access_token,
+    method: request.method,
+    path: request.path,
+    body: request.body,
+  });
+  const response = await fetchProviderWithTimeout(url, init, 0);
+  return { status: response.status, body: await response.json().catch(() => null) };
+}
+
 const adapters: readonly WhatsAppProviderAdapter[] = [
   {
     name: "zapi",
@@ -492,6 +585,20 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
       disconnect: (token) => createUazApiClientFromEnv().disconnect(token),
       restart: (token) => createUazApiClientFromEnv().reset(token),
     },
+  },
+  {
+    name: "datafy",
+    label: "Datafy (API Oficial)",
+    capabilities: PROVIDER_CAPABILITIES.datafy,
+    // Mesmas funções do adapter official, por referência: a Datafy encaminha o
+    // payload da Meta sem modificar. Copiá-las criaria duas verdades.
+    parseInbound: parseOfficialInbound,
+    parseOwnMessageEchoes: parseOfficialOwnMessageEchoes,
+    peekInboundMedia: peekOfficialMedia,
+    parseStatusCallback: parseOfficialStatus,
+    sendText: sendDatafy,
+    getConnectionStatus: getDatafyConnectionStatus,
+    cloudApiRequest: datafyCloudApiRequest,
   },
 ];
 
@@ -624,6 +731,40 @@ export async function validateMetaSignature(
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
     return constantTimeEquals(expectedHex, computedHex);
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyDatafySignature(
+  req: Request,
+  bodyText: string,
+  secret: string,
+  nowMs: number = Date.now(),
+): Promise<boolean> {
+  const verdict = decideDatafySignaturePreconditions({
+    secret,
+    signatureHeader: req.headers.get(DATAFY_SIGNATURE_HEADER),
+    timestampHeader: req.headers.get(DATAFY_TIMESTAMP_HEADER),
+    nowMs,
+  });
+  if (verdict.ok === false) {
+    jsonLog("warn", { evt: "datafy_signature_refused", reason: verdict.reason });
+    return false;
+  }
+
+  try {
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+    );
+    const signature = await crypto.subtle.sign(
+      "HMAC", key, encoder.encode(buildDatafySignedPayload(verdict.signedPayloadPrefix, bodyText)),
+    );
+    const computedHex = Array.from(new Uint8Array(signature))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    return constantTimeEquals(verdict.expectedHex, computedHex);
   } catch {
     return false;
   }

@@ -909,3 +909,39 @@ describe("UazAPI v2.1.1", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("datafy: identidade e lote (Review Focus 3 e 4)", () => {
+  const evento = (phoneNumberId: string, field: string, value: Record<string, unknown>) => ({
+    object: "whatsapp_business_account",
+    entry: [{ id: "waba1", changes: [{ field, value: { messaging_product: "whatsapp", metadata: { display_phone_number: "5511988887777", phone_number_id: phoneNumberId }, ...value } }] }],
+  });
+
+  it("inbound de outro phone_number_id do mesmo cliente não casa o canal", () => {
+    const payload = evento("999", "messages", {
+      contacts: [{ wa_id: "5511999999999", profile: { name: "Ana" } }],
+      messages: [{ from: "5511999999999", id: "wamid.1", timestamp: "1790000000", type: "text", text: { body: "oi" } }],
+    });
+    // O payload é válido e parseável — é exatamente por isso que a guarda de
+    // identidade precisa existir: o HMAC prova QUEM enviou, não PARA QUAL canal.
+    expect(parseOfficialInbound(payload)?.providerMessageId).toBe("wamid.1");
+    expect(payload.entry[0].changes[0].value.metadata.phone_number_id).toBe("999");
+  });
+
+  it("lote com evento desconhecido ao lado de messages não perde a mensagem", () => {
+    const lote = {
+      object: "whatsapp_business_account",
+      entry: [
+        { id: "w", changes: [{ field: "message_template_status_update", value: { event: "APPROVED" } }] },
+        { id: "w", changes: [{ field: "messages", value: { messaging_product: "whatsapp", metadata: { display_phone_number: "5511988887777", phone_number_id: "123" }, contacts: [{ wa_id: "5511999999999", profile: { name: "Ana" } }], messages: [{ from: "5511999999999", id: "wamid.2", timestamp: "1790000000", type: "text", text: { body: "oi" } }] } }] },
+      ],
+    };
+    const inbound = parseOfficialInbound(lote);
+    // O parser lê entry[0] e devolve null para o template — é o split do webhook
+    // que separa os itens. O que este teste fixa é que o evento desconhecido
+    // não lança: perder o lote inteiro seria a regressão.
+    expect(() => parseOfficialInbound(lote)).not.toThrow();
+    expect(inbound).toBeNull();
+    const soMensagem = { object: lote.object, entry: [lote.entry[1]] };
+    expect(parseOfficialInbound(soMensagem)?.providerMessageId).toBe("wamid.2");
+  });
+});

@@ -8,7 +8,7 @@ const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 describe("guardrails de wiring WhatsApp multi-provider", () => {
   it("registry canônico inclui UazAPI sem remover os providers legados", () => {
     const core = read("supabase/functions/_shared/whatsapp-provider-core.ts");
-    expect(core).toContain('["zapi", "waha", "official", "uazapi"]');
+    expect(core).toContain('["zapi", "waha", "official", "uazapi", "datafy"]');
     expect(core).toContain("automaticProvisioning: true");
     expect(core).toContain("manualCredentials: false");
   });
