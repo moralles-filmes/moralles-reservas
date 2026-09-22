@@ -24,6 +24,7 @@
 - **Segredo nunca em log.** Erro de transporte passa por `redactProviderFetchError`.
 - **Deno roda em UTC.** Qualquer timestamp comparado com dado BRT leva offset `-03:00` explícito.
 - **Testes:** `npm run test` (vitest). Núcleo puro em `supabase/functions/_shared/`, teste em `src/lib/*.test.ts` importando por caminho relativo `../../supabase/functions/_shared/X.ts`.
+- **Teste que precise dos adapters reais carrega `whatsapp-providers.ts` por `import.meta.glob(..., { eager: true })`, nunca por `import` direto.** Medido na Task 1: o import direto passa no vitest mas puxa o arquivo para o grafo do `tsc -b` do frontend e quebra o typecheck com 6 erros — o global `Deno` não existe ali, e o arquivo ainda carrega um `TS2339` latente (`request.missingCreds` em `whatsapp-providers.ts:333`, a armadilha de `strict: false` já documentada no `CLAUDE.md`). Módulo `_shared` que importe `Deno.env`, `deno.land` ou `esm.sh` cai na mesma regra. Núcleo puro sem Deno continua com `import` normal.
 
 ## Ordem de execução
 
@@ -898,7 +899,19 @@ import {
   WHATSAPP_PROVIDER_NAMES,
   isMetaShapedProvider,
 } from "../../supabase/functions/_shared/whatsapp-provider-core.ts";
-import { tryGetWhatsAppProvider } from "../../supabase/functions/_shared/whatsapp-providers.ts";
+import type { WhatsAppProviderAdapter } from "../../supabase/functions/_shared/whatsapp-provider-core.ts";
+
+// NÃO troque por `import { tryGetWhatsAppProvider } from ".../whatsapp-providers.ts"`.
+// Medido na Task 1: o import direto passa no vitest mas puxa o arquivo para o
+// grafo do `tsc -b` do frontend e quebra o typecheck com 6 erros — o global
+// `Deno` não existe ali, e o próprio arquivo carrega um TS2339 latente. O glob
+// carrega os adapters reais em runtime sem entrar no grafo de tipos.
+// Mesmo padrão de `src/lib/whatsapp-capability-guard.test.ts`.
+const FACADE = "../../supabase/functions/_shared/whatsapp-providers.ts";
+const modules = import.meta.glob<{
+  tryGetWhatsAppProvider(name: string): WhatsAppProviderAdapter | null;
+}>("../../supabase/functions/_shared/whatsapp-providers.ts", { eager: true });
+const { tryGetWhatsAppProvider } = modules[FACADE];
 
 const WEBHOOK = readFileSync(
   resolve(__dirname, "../../supabase/functions/webhook-whatsapp/index.ts"),
