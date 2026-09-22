@@ -182,4 +182,71 @@ describe("ReservaCodeLookup", () => {
       p_unit_id: UNIT,
     });
   });
+
+  // FIX ROUND 3 — o lembrete D-0 (process-reservation-reminders) NÃO usa
+  // template hardcoded: usa `reservation_message_templates.body`, texto
+  // LIVRE editado pelo lojista no painel (useReservationTemplates.ts, até
+  // 600 chars, com "{{codigo}}" inserível em qualquer posição). Um lojista
+  // pode plausivelmente incluir uma hashtag de Instagram no corpo — e
+  // "último #" (round 2) pega a hashtag em vez do código. String reproduzida
+  // literalmente do achado da revisão.
+  it("cola lembrete customizado com hashtag de Instagram depois do código e busca só pelo código", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i);
+    await userEvent.click(input);
+    await userEvent.paste("Codigo #8GY6EG9X. Segue a gente no insta #renSushiOficial");
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "8GY6EG9X",
+      p_unit_id: UNIT,
+    });
+  });
+
+  // Regressão menor da round 2: "#" avulso DEPOIS de um código já válido
+  // apagava o campo inteiro (afterHash de um "#" final é "", e round 2
+  // retornava isso direto). Na round 1 esse "#" avulso era só descartado.
+  it("digita '#' por engano DEPOIS de um código válido — o código não some", async () => {
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i) as HTMLInputElement;
+    await userEvent.type(input, "AB1C2DEF#");
+
+    expect(input.value).toBe("AB1C2DEF");
+  });
+
+  // O texto que a PRODUÇÃO de fato envia na confirmação é este, linha a linha
+  // de supabase/functions/send-confirmation/index.ts:340-348 — não
+  // buildConfirmationMessage de src/lib/zapi.ts, que é código morto para esse
+  // fim (zero imports em supabase/functions/). O teste de zapi.ts acima
+  // continua válido como proxy (mesma disposição do "#"), mas foi essa
+  // imprecisão que deixou o lembrete customizável fora da primeira verificação.
+  it("cola o template REAL de confirmação de send-confirmation/index.ts:340-348 (sem desconto) e busca só pelo código", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    const templateVivo =
+      `✅ *Reserva Confirmada!*\n\n` +
+      `Olá Maria, sua reserva está confirmada.\n\n` +
+      `📅 Data: 22/09/2026\n` +
+      `⏰ Horário: 20:00\n` +
+      `👥 Pessoas: 2\n` +
+      `🔑 Código: #8GY6EG9X\n\n` +
+      `Para alterar ou cancelar, é só responder aqui. Até logo! 😊`;
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i);
+    await userEvent.click(input);
+    await userEvent.paste(templateVivo);
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "8GY6EG9X",
+      p_unit_id: UNIT,
+    });
+  });
 });
