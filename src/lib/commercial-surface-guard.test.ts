@@ -71,6 +71,11 @@ const SURFACES: Record<string, SurfaceEntry> = {
     reason:
       "Card de automação do lojista: preços, implantação e o bloco informativo do Plano Automação.",
   },
+  "src/components/gestao/CustomerStatsBlock.tsx": {
+    kind: "NOT_COMMERCIAL",
+    reason:
+      "Histórico de reservas do cliente na ficha (contagens, taxa de no-show, última presença). Não apresenta produto, plano nem preço — caiu no escopo só por morar em src/components/gestao.",
+  },
   "src/components/billing/WhatsappServiceBanner.tsx": {
     kind: "NOT_COMMERCIAL",
     reason:

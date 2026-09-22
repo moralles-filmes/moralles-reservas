@@ -213,7 +213,7 @@
       "name": "get_reservation_by_code",
       "args": "p_code text, p_unit_id uuid",
       "roles": ["authenticated"],
-      "why": "Busca por código no painel (src/hooks/useReservas.ts).",
+      "why": "Busca por código no painel (src/hooks/useReservas.ts). ATENÇÃO — este aceite é do lint 0029 e NÃO é atestado de segurança: é a entrada `authenticated` que ficou SEM guard interno de tenant depois da 108. Medido em produção: `language sql`, SECURITY DEFINER, sem `auth.uid()` em lugar nenhum e sem nenhum helper de membership; `p_unit_id` tem `default null` e só filtra, nunca autoriza. Qualquer usuário logado que POSSUA um `reservation_code` lê `customer_name`, `customer_phone`, `customer_email` e `notes` da reserva de qualquer organização passando `p_unit_id => null`. Não é enumerável em massa (o código é 8 chars de um alfabeto de 32, ~1,1e12), então o vetor é dirigido — código vazado, colhido ou impresso, ou ex-funcionário com conta ainda ativa em alguma org. Fecha com o MESMO padrão da 108, resolvendo `unit_id`/`organization_id` a partir da PRÓPRIA reserva encontrada e não do parâmetro. Frente própria; enquanto não fechar, esta linha é o registro de que se sabe.",
       "security_definer": true,
       "advisor_lints": ["0029"]
     },
@@ -229,7 +229,7 @@
       "name": "get_customer_stats",
       "args": "p_customer_id uuid, p_unit_id uuid",
       "roles": ["authenticated"],
-      "why": "Ficha do cliente no painel. ATENÇÃO — este aceite é do lint 0029, NÃO é atestado de segurança: é a única entrada `authenticated` daqui SEM guard interno de tenant. O corpo (013:701-748) não tem `auth.uid()` em lugar nenhum, e com `p_unit_id => null` o filtro de unit é pulado e ela agrega reservas de toda unit de toda organização — qualquer usuário logado, inclusive sem membership, lê estatística de cliente alheio por REST. Pré-existente à frente do advisor (a 107 dropou o irmão de 1 argumento, que era pior). A irmã `get_customer_stats_bulk` guarda por `is_org_member`; esta ficou atrás. Fecha com o MESMO padrão, resolvendo `organization_id` a partir de `customers` pelo `p_customer_id`. Estreitar o grant não resolve: `authenticated` é o único papel Postgres que significa 'logado', e todo caller legítimo também é só `authenticated`.",
+      "why": "Ficha do cliente no painel. Guard interno desde a migration 108: a organização é resolvida a partir de `customers` pelo `p_customer_id` — nunca do `p_unit_id`, que é parâmetro do chamador — e exige `app_private.is_org_member` ou `app_private.is_platform_admin`, recusando com `42501`. Cliente inexistente e cliente alheio caem no MESMO ramo, então a recusa não é oráculo de existência. `p_unit_id => null` segue significando agregado da org, igual à irmã `get_customer_stats_bulk`. Até a 108 esta era a única entrada `authenticated` daqui SEM guard: o corpo não tinha `auth.uid()` em lugar nenhum e qualquer usuário logado, inclusive sem membership, lia estatística de cliente de qualquer organização por REST (a 107 dropou o irmão de 1 argumento, que era pior). Estreitar o grant não resolveria: `authenticated` é o único papel Postgres que significa 'logado', e todo caller legítimo também é só `authenticated`. Medido em supabase/tests/local-preflight/12-customer-stats-108.sql (STATS-1..8), com controle positivo em 13-controles-108.sql.",
       "security_definer": true,
       "advisor_lints": ["0029"]
     },
