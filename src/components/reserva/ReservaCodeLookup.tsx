@@ -13,6 +13,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { extractReservationCode } from "@/lib/reservation-code";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -92,9 +93,10 @@ export function ReservaCodeLookup({ unitId }: { unitId: string }) {
         : "idle";
 
   const buscar = () => {
-    const limpo = code.trim().toUpperCase();
-    if (limpo.length < 4) return;
-    lookup.mutate(limpo);
+    // `code` já chega limpo do onChange (extractReservationCode) — o único
+    // resíduo possível é comprimento curto demais.
+    if (code.length < 4) return;
+    lookup.mutate(code);
   };
 
   return (
@@ -130,29 +132,23 @@ export function ReservaCodeLookup({ unitId }: { unitId: string }) {
             <Input
               placeholder="Ex: AB1C2DEF"
               value={code}
-              onChange={(e) =>
-                setCode(
-                  e.target.value
-                    .toUpperCase()
-                    .replace(/[^A-Z0-9]/g, "")
-                    .slice(0, 8)
-                )
-              }
+              onChange={(e) => setCode(extractReservationCode(e.target.value))}
               onKeyDown={(e) => {
                 if (e.key === "Enter") buscar();
               }}
               className="font-mono"
-              // O limite real de 8 é aplicado no onChange (.slice(0, 8)), DEPOIS
-              // de remover a cerquilha e qualquer não-alfanumérico. maxLength do
-              // DOM tem que ficar folgado — se ficasse em 8, colar "#8GY6EG9X"
-              // (9 chars, cerquilha incluída) seria truncado pelo navegador ANTES
-              // do onChange rodar, comendo o último caractere real do código.
-              maxLength={16}
+              // SEM maxLength no DOM, de propósito: qualquer limite aqui trunca a
+              // colagem ANTES do onChange rodar — é a mesma falha do round 1
+              // (maxLength=8 cortava o "#"), só que reaparece em outro número
+              // assim que o cliente cola a mensagem inteira do WhatsApp em vez
+              // do código puro. extractReservationCode() é o ÚNICO lugar que
+              // limita o tamanho (sempre ≤ 8), e só depois de achar o código de
+              // verdade.
             />
             <Button
               variant="secondary"
               onClick={buscar}
-              disabled={code.trim().length < 4 || lookup.isPending}
+              disabled={code.length < 4 || lookup.isPending}
               aria-label="Buscar"
             >
               <Search className="h-4 w-4" />

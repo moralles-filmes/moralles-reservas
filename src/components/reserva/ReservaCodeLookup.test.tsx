@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ReservaCodeLookup, ReservaCodeLookupResult } from "./ReservaCodeLookup";
+import { buildConfirmationMessage } from "@/lib/zapi";
 
 const navigate = vi.fn();
 vi.mock("react-router-dom", async () => {
@@ -135,5 +136,50 @@ describe("ReservaCodeLookup", () => {
     await userEvent.type(input, "#AB1C2DEF");
 
     expect(input.value).toBe("AB1C2DEF");
+  });
+
+  // FIX ROUND 2 — caso mais provável que o da round 1: a DialogDescription
+  // deste componente diz "recebido no WhatsApp", e a mensagem que o próprio
+  // sistema manda (zapi.ts) é isso que o cliente tem na tela pra copiar. Ele
+  // não recorta só o código — copia a bolha inteira. A string aqui vem do
+  // PRÓPRIO template de produção, não de um exemplo inventado.
+  it("cola a mensagem REAL de confirmação (gerada por buildConfirmationMessage) e busca só pelo código", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    const mensagemReal = buildConfirmationMessage({
+      name: "Maria",
+      date: "22/09/2026",
+      time: "20:00",
+      partySize: 2,
+      code: "8GY6EG9X",
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i);
+    await userEvent.click(input);
+    await userEvent.paste(mensagemReal);
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "8GY6EG9X",
+      p_unit_id: UNIT,
+    });
+  });
+
+  it("cola 'Código: #8GY6EG9X' sem emoji e busca só pelo código", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i);
+    await userEvent.click(input);
+    await userEvent.paste("Código: #8GY6EG9X");
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "8GY6EG9X",
+      p_unit_id: UNIT,
+    });
   });
 });
