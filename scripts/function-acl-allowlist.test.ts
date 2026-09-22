@@ -562,18 +562,28 @@ describe("migration 085 vs allowlist", () => {
     // Sem o revoke, o grant implícito do CREATE FUNCTION ao pseudo-papel PUBLIC
     // sobrevive e a função fica executável por todo papel. Foi exatamente o
     // defeito D1 encontrado no ensaio.
-    const sql = readMigration(file!);
+    //
+    // A varredura não pode se limitar à 085: ela classificou a superfície que
+    // existia ATÉ ela, mas `public_anon` não para de crescer ali — toda
+    // migration POSTERIOR que cria função pública nova faz o próprio
+    // revoke+grant NA PRÓPRIA migration, não na 085. Fixar a busca num arquivo
+    // só faria qualquer função pública futura reprovar aqui por construção,
+    // não por falta de revoke de verdade. `posterioresFiles` é a MESMA lista
+    // usada acima para achar assinatura dropada depois da 085 — uma lista só,
+    // para as duas não poderem divergir entre si.
     const revokedFromPublic = new Set<string>();
-    for (const m of sql.matchAll(REVOKE_PUBLIC_RE)) {
-      const targets = m[3].split(",").map((t) => t.trim().toLowerCase());
-      if (targets.includes("public")) revokedFromPublic.add(key(m[1], splitArgs(m[2]).length));
+    for (const f of [file!, ...posterioresFiles]) {
+      for (const m of readMigration(f).matchAll(REVOKE_PUBLIC_RE)) {
+        const targets = m[3].split(",").map((t) => t.trim().toLowerCase());
+        if (targets.includes("public")) revokedFromPublic.add(key(m[1], splitArgs(m[2]).length));
+      }
     }
 
     for (const e of entriesOf("public_anon")) {
       const k = key(e.name, splitArgs(e.args).length);
       expect(
         revokedFromPublic.has(k),
-        `${e.name}(${e.args}) é concedida a anon mas a 085 nunca faz "revoke ... from public"`,
+        `${e.name}(${e.args}) é concedida a anon mas nenhuma migration (085 ou posterior) faz "revoke ... from public"`,
       ).toBe(true);
     }
   });
