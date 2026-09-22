@@ -90,9 +90,12 @@ describe("registry WhatsApp", () => {
     expect(registry.metadata()[0]).not.toBe(registry.list()[0]);
   });
 
-  it("serializa as seis capabilities de Cloud API sem habilitar novas operações", () => {
-    const names = ["zapi", "waha", "official", "uazapi"] as const;
-    const registry = createWhatsAppProviderRegistry(names.map(stubAdapter));
+  it("serializa as seis capabilities de Cloud API sem habilitar novas operações nos quatro providers legados", () => {
+    // Os quatro legados de propósito: datafy liga rawCloudApiProxy e adReferral,
+    // então incluí-lo aqui faria o teste falhar. Cobertura do datafy vive em
+    // whatsapp-capability-guard.test.ts e datafy-adapter-coupling-guard.test.ts.
+    const LEGACY_NAMES = ["zapi", "waha", "official", "uazapi"] as const;
+    const registry = createWhatsAppProviderRegistry(LEGACY_NAMES.map(stubAdapter));
 
     for (const metadata of registry.metadata()) {
       expect(metadata.capabilities).toMatchObject({
@@ -927,7 +930,12 @@ describe("datafy: identidade e lote (Review Focus 3 e 4)", () => {
     expect(payload.entry[0].changes[0].value.metadata.phone_number_id).toBe("999");
   });
 
-  it("lote com evento desconhecido ao lado de messages não perde a mensagem", () => {
+  // NÃO cobre o caminho do webhook: um evento WABA sem `metadata.phone_number_id`
+  // (message_template_status_update) faz metaPayloadMatchesChannel recusar por lista
+  // vazia → 401 no filho → 500 no lote. Dormente nas Fases A–D (o referral da CTWA
+  // chega dentro de messages[], que tem metadata) e bloqueante para a Fase F.
+  // Decisão registrada na spec, seção "Pendência bloqueante para a Fase F".
+  it("parseOfficialInbound devolve null para lote misto e a parte isolada de messages segue parseável", () => {
     const lote = {
       object: "whatsapp_business_account",
       entry: [

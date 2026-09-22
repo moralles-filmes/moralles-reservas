@@ -208,3 +208,13 @@ Cada fase fecha com gates do projeto (`typecheck`, `vitest`, pré-voo local, `sa
 - 1 webhook real recebido → confirmar envelope, headers e assinatura (instrumentação de **forma**, nunca de valor)
 - 1 envio de texto → confirmar `messages[0].id` e o formato de `wamid.`
 - 1 recibo de status → confirmar correlação
+
+## Pendência bloqueante para a Fase F (templates)
+
+Evento WABA sem `metadata.phone_number_id` — `message_template_status_update`, `account_update`, `phone_number_quality_update` — faz o webhook responder **401**; num lote misto derruba o lote inteiro em 500, e a Meta reentrega indefinidamente.
+
+Cadeia, verificada no código durante a review da Task 5: `metaPhoneNumberIds` só coleta ids de `changes[].value.metadata`; evento de template não tem `metadata`; `splitMetaWebhookPayload` re-despacha a parte não categorizada; o filho roda `metaPayloadMatchesChannel`, obtém lista vazia e recusa; o pai devolve `meta_batch_partial_failure`.
+
+**Não é regressão da Task 5** — é byte-a-byte o que o provider `official` já fazia, e corrigir agora violaria a constraint "nenhum canal existente muda". Está dormente porque nenhum WABA assina esses eventos antes de existir template, e segue dormente nas Fases A–D: o `referral`/`ctwa_clid` da Fase D chega dentro de `messages[]`, que tem `metadata`.
+
+**A Fase F não sobe sem decidir entre:** (a) 401 fail-closed, e então a assinatura desses eventos fica desligada no WABA; ou (b) 200 ignorando evento sem `metadata`, e então a decisão vale também para `official`.
