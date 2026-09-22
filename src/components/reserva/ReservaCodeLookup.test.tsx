@@ -104,4 +104,36 @@ describe("ReservaCodeLookup", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/não encontrada/i)).not.toBeInTheDocument();
   });
+
+  // Defeito real de produção: o cliente copia o código exatamente como o
+  // sistema o exibe (com "#" — WizardSuccess, AcompanharReserva, WhatsApp) e
+  // COLA no campo. maxLength=8 cortava a colagem ANTES de qualquer sanitização
+  // rodar, comendo o último caractere real do código ("#8GY6EG9X" virava
+  // "#8GY6EG9" no DOM). Usa paste (não type) porque é isso que reproduz o
+  // truncamento pela colagem de uma vez só — ver relatório.
+  it("cola '#8GY6EG9X' do WhatsApp e busca pelo código sem a cerquilha, sem perder o último caractere", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i);
+    await userEvent.click(input);
+    await userEvent.paste("#8GY6EG9X");
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "8GY6EG9X",
+      p_unit_id: UNIT,
+    });
+  });
+
+  it("digita '#' no começo e o caractere não aparece no campo", async () => {
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i) as HTMLInputElement;
+    await userEvent.type(input, "#AB1C2DEF");
+
+    expect(input.value).toBe("AB1C2DEF");
+  });
 });

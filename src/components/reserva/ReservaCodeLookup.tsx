@@ -130,12 +130,24 @@ export function ReservaCodeLookup({ unitId }: { unitId: string }) {
             <Input
               placeholder="Ex: AB1C2DEF"
               value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              onChange={(e) =>
+                setCode(
+                  e.target.value
+                    .toUpperCase()
+                    .replace(/[^A-Z0-9]/g, "")
+                    .slice(0, 8)
+                )
+              }
               onKeyDown={(e) => {
                 if (e.key === "Enter") buscar();
               }}
               className="font-mono"
-              maxLength={8}
+              // O limite real de 8 é aplicado no onChange (.slice(0, 8)), DEPOIS
+              // de remover a cerquilha e qualquer não-alfanumérico. maxLength do
+              // DOM tem que ficar folgado — se ficasse em 8, colar "#8GY6EG9X"
+              // (9 chars, cerquilha incluída) seria truncado pelo navegador ANTES
+              // do onChange rodar, comendo o último caractere real do código.
+              maxLength={16}
             />
             <Button
               variant="secondary"
