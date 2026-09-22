@@ -218,3 +218,11 @@ Cadeia, verificada no código durante a review da Task 5: `metaPhoneNumberIds` s
 **Não é regressão da Task 5** — é byte-a-byte o que o provider `official` já fazia, e corrigir agora violaria a constraint "nenhum canal existente muda". Está dormente porque nenhum WABA assina esses eventos antes de existir template, e segue dormente nas Fases A–D: o `referral`/`ctwa_clid` da Fase D chega dentro de `messages[]`, que tem `metadata`.
 
 **A Fase F não sobe sem decidir entre:** (a) 401 fail-closed, e então a assinatura desses eventos fica desligada no WABA; ou (b) 200 ignorando evento sem `metadata`, e então a decisão vale também para `official`.
+
+### A superfície é mais larga que o caso do `metadata` (auditoria de confiabilidade)
+
+A auditoria pós-Task 5 corrigiu o recorte acima: o `500` do pai não depende de o filho ter falhado por `metadata` ausente. Em `webhook-whatsapp/index.ts:1745`, **qualquer** `result.ok === false` de qualquer parte do lote propaga como 500 — 401 de assinatura, 404 de canal não encontrado, 400 de JSON inválido, 413 de payload grande. O caso do `metadata` é o mais provável, não o único.
+
+Consequência para a decisão: a saída (b) não pode ser "200 quando falta `metadata`". Ela tem que responder, parte a parte, **quais falhas de filho são retentáveis pela Meta e quais não são** — uma assinatura inválida num filho merece 401 de verdade; um evento que este canal simplesmente não sabe tratar merece 200 e descarte registrado. Hoje os dois produzem o mesmo 500.
+
+Esse caminho passou a ter duas portas de entrada (`official` e `datafy`, ambos sob `isMetaShapedProvider`), então a correção alcança os dois de uma vez — o que reforça que ela não cabe nas Fases A–D, cuja constraint é não mudar canal existente.
