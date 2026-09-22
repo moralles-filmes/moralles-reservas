@@ -89,11 +89,17 @@
       "pg_catalog`. Quem lê só o create sem varrer alter function posteriores",
       "acerta aqui por coincidência (a omissão já era invoker); numa assinatura",
       "onde o alter muda o modo de verdade (definer→invoker ou o inverso), a",
-      "mesma leitura incompleta erraria o veredito."
+      "mesma leitura incompleta erraria o veredito.",
+      "",
+      "DELTA DA 109: `get_reservation_by_code`(text,uuid) sai (era DEFINER só com",
+      "`authenticated`, logo declarava só 0029) e `resolve_tracking_token_by_code`",
+      "entra em `public_anon` (DEFINER com `anon`, logo declara os dois, como a",
+      "`get_public_tracking`). Então 0028 sobe de 9 para 10, 0029 fica em 14 (−1",
+      "da saída, +1 da entrada) e o total vai a 24."
     ],
-    "0028": 9,
+    "0028": 10,
     "0029": 14,
-    "total": 23
+    "total": 24
   },
 
   "public_anon": [
@@ -134,6 +140,14 @@
       "args": "p_token uuid",
       "roles": ["anon", "authenticated"],
       "why": "Página /acompanhar/:token, sem login. Só devolve dado privacy-safe e é gateada por units.is_public.",
+      "security_definer": true,
+      "advisor_lints": ["0028", "0029"]
+    },
+    {
+      "name": "resolve_tracking_token_by_code",
+      "args": "p_code text, p_unit_id uuid",
+      "roles": ["anon", "authenticated"],
+      "why": "Consulta por código no rodapé do portal público /r/:slug (src/components/reserva/ReservaCodeLookup.tsx). Devolve SÓ reservations.id — o token de /acompanhar/:token — e nunca dado do cliente: quem entrega payload público é get_public_tracking, e mantê-lo como produtor único é o que impede duas réguas de privacidade divergirem. Gateada por units.is_public, o MESMO gate da get_public_tracking (afrouxar um lado sem o outro faz o código resolver um token que a página depois recusa). p_unit_id é obrigatório e só estreita, impedindo que o portal de uma loja resolva código de outra — quem autoriza é o is_public, não o parâmetro. Não resolve código de waitlist (inteiro pequeno por unidade, enumerável). Substitui get_reservation_by_code, dropada pela 109.",
       "security_definer": true,
       "advisor_lints": ["0028", "0029"]
     },
@@ -208,14 +222,6 @@
       "why": "Busca do painel. SECURITY INVOKER — a RLS da tabela aplica.",
       "security_definer": false,
       "advisor_lints": []
-    },
-    {
-      "name": "get_reservation_by_code",
-      "args": "p_code text, p_unit_id uuid",
-      "roles": ["authenticated"],
-      "why": "Consulta por código do PORTAL PÚBLICO (src/pages/PublicPortal.tsx:514 -> ReservaCodeLookup -> src/hooks/useReservas.ts:97), NÃO do painel. A 085 anotou `Caller: ... (hook do painel)` e foi com base nessa leitura errada que ela revogou `anon`; a 107 repetiu, e a versão anterior desta linha também. ATENÇÃO — este aceite é do lint 0029 e NÃO é atestado de segurança: é a entrada `authenticated` que ficou SEM guard interno de tenant depois da 108. Medido em produção: `language sql`, SECURITY DEFINER, sem `auth.uid()` em lugar nenhum e sem nenhum helper de membership; `p_unit_id` tem `default null` e, como `reservation_code` carrega índice UNIQUE GLOBAL, só estreita 1 linha para 0 — filtra, nunca autoriza. Qualquer usuário logado que POSSUA um `reservation_code` lê `customer_name`, `customer_phone`, `customer_email` e `notes` da reserva de qualquer organização passando `p_unit_id => null`. Não é enumerável em massa (o código é 8 chars de um alfabeto de 32, ~1,1e12), então o vetor é dirigido — código vazado, colhido ou impresso, ou ex-funcionário com conta ainda ativa em alguma org. SEGUNDO DEFEITO, TRANÇADO COM O PRIMEIRO: medido com a anon key real, visitante anônimo recebe HTTP 401 / `42501 permission denied`, então o diálogo `Já tem reserva? Consulte pelo código` está quebrado desde a 085; `ReservaCodeLookup` só destrutura `data`/`isLoading` do hook, e o erro chega ao cliente como `Reserva não encontrada. Verifique o código.`. NÃO fecha com o padrão da 108: guard de membresia num RPC cujo único chamador é anônimo consolidaria a quebra, e devolver o payload atual a `anon` violaria a régua de superfície pública (1º nome, sem telefone/e-mail/`notes`, gateado por `units.is_public`). A forma do fechamento é decisão de design em aberto. Frente própria; enquanto não fechar, esta linha é o registro de que se sabe.",
-      "security_definer": true,
-      "advisor_lints": ["0029"]
     },
     {
       "name": "anonymize_customer",

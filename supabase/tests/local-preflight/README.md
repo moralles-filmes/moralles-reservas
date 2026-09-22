@@ -46,6 +46,8 @@ presentes agendaria jobs apontando para lá.
 | `11-overloads-107.sql` | Task 5 (migration 107, Fase 2 do front de advisor): ACL-6 (ord 14) confere que os overloads de 2 argumentos sobrevivem à 107; CONTROLE-8 (ord 15) dropa o de 2 argumentos por engano, vê o call site real estourar, e restaura corpo + ACL de dentro do próprio caso. Roda no mesmo banco `advisor106`, ao final da sequência do advisor — não em banco separado. Os dois vivem no mesmo arquivo, com `ON_ERROR_STOP=1`: diferente de CONTROLE-6, CONTROLE-8 nunca deixa sabotagem residual para um reapply externo resolver, então não precisa da rede de segurança que os arquivos `NN-controles-*.sql` têm. |
 | `12-customer-stats-108.sql` | STATS-1..8 (ordinais 17–24, migration 108): o guard de tenant da `get_customer_stats`. Permitir (membro lê o próprio cliente com os números certos, `platform_admin` **sem** linha em `unit_members` passa, `p_unit_id => null` segue agregando a org) e negar (cliente de outra org, sem sessão, e id inexistente caindo no MESMO ramo do proibido — senão a recusa vira oráculo de existência), mais ACL e idempotência através de duas execuções. **Traz as reservas**, que nenhum arquivo do harness tinha: sem elas todo agregado é zero e o controle positivo não distinguiria vazamento de "cliente sem reserva nenhuma". A segunda unidade da org A nasce **não pública** de propósito — os casos do `09` resolvem a unidade por `where is_public limit 1`, e uma segunda pública tornaria aquela escolha não-determinística. O corpo pré-108 **não** é recriado aqui: o `09a` já traz `get_customer_stats` desde a Task 5 da 107. |
 | `13-controles-108.sql` | Os **dois controles positivos** da 108. CONTROLE-25 neutraliza só o `raise` de `forbidden` (delta mínimo sobre `pg_get_functiondef`) e vê o agregado da org B chegar ao membro da org A; CONTROLE-26 repõe o corpo `language sql` pré-108 inteiro e vê as DUAS regressões de uma vez — o vazamento cross-org e a chamada sem sessão devolvendo linha de zeros em vez de `42501`. **A sabotagem é o `raise`, não o `if`, e isso foi medido:** trocar `if v_org is null` por `if false and v_org is null` não neutraliza nada, porque `and` liga mais forte que `or` e o segundo disjunto (`not (is_platform_admin or is_org_member)`) continua verdadeiro — o raise dispararia igual e o controle ficaria verde tendo sabotado coisa nenhuma. Reaplicar a 108 restaura, como no CONTROLE-6. |
+| `14-public-code-lookup-109.sql` | CODE-1..CODE-8 (ordinais 27–34, migration 109): a RPC pública `resolve_tracking_token_by_code`. O caminho de ACHAR (código certo, unidade certa e pública) devolve o token; os três casos de NÃO achar — unidade errada, unidade não pública, código inexistente — têm de devolver `null` indistinguivelmente entre si, senão a recusa vira oráculo cross-tenant. Mede também a AUSÊNCIA de `get_reservation_by_code` (dropada por esta migration), a ACL (`anon`/`authenticated` executam, `PUBLIC` não) e idempotência através de duas execuções. |
+| `15-controles-109.sql` | Os **dois controles positivos** (ordinais 35–36) da 109. Sabotam o corpo real a partir de `pg_get_functiondef` — CONTROLE-9 remove o gate `is_public` e vê CODE-3 resolver uma unidade privada; CONTROLE-10 remove o casamento `unit_id` e vê CODE-2 resolver o código de outra unidade. As duas asserções são sobre o UUID que voltou, nunca sobre "não estourou": guarda quebrada aqui devolve dado, não erro. |
 
 ## Rodar
 
@@ -207,6 +209,27 @@ P -f supabase/tests/local-preflight/12-customer-stats-108.sql   # 2a passada
 P -f supabase/migrations/20260921120000_108_customer_stats_tenant_guard.sql
 
 P -c "select ord, caso, veredito from t_res order by ord;"   # 26 linhas, todas OK
+
+# ── Migration 109: consulta publica por codigo ─────────────────────────────
+# ANTES da migration, o 14 tem de FALHAR pelo guard do topo do arquivo
+# (`public.resolve_tracking_token_by_code(text,uuid) ausente`). E o RED: rodado
+# antes, CODE-2/3/4 passariam por acidente, porque a funcao inexistente faz tudo
+# "falhar", e o CODE-8 gravaria snapshot de um mundo sem a funcao.
+P -f supabase/tests/local-preflight/14-public-code-lookup-109.sql   # esperado: ERROR
+
+P -f supabase/migrations/20260922150000_109_public_code_lookup.sql
+P -f supabase/tests/local-preflight/14-public-code-lookup-109.sql   # 1a passada
+# CODE-8 mede idempotencia ATRAVES DE DUAS EXECUCOES, igual ao STATS-8:
+P -f supabase/migrations/20260922150000_109_public_code_lookup.sql
+P -f supabase/tests/local-preflight/14-public-code-lookup-109.sql   # 2a passada
+
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d advisor106 \
+  -f supabase/tests/local-preflight/15-controles-109.sql   # SEM ON_ERROR_STOP
+# O 15 sabota o CORPO da resolve_tracking_token_by_code de proposito, e a 109
+# DEFINE o corpo — entao reaplicar restaura:
+P -f supabase/migrations/20260922150000_109_public_code_lookup.sql
+
+P -c "select ord, caso, veredito from t_res order by ord;"   # 36 linhas, todas OK
 ```
 
 **Ordinais casam com o número do NOME do caso, não com a ordem de execução** —
@@ -224,6 +247,8 @@ por isso o `order by ord` intercala casos do `09`/`11` com controles do `10`:
 | 16 | `CONTROLE-16` | `09` |
 | 17–24 | `STATS-1` .. `STATS-8` | `12` |
 | 25, 26 | `CONTROLE-25`, `CONTROLE-26` | `13` |
+| 27–34 | `CODE-1` .. `CODE-8` | `14` |
+| 35, 36 | `CONTROLE-9`, `CONTROLE-10` (da 109) | `15` |
 
 **Os ordinais 8 e 9 já estavam ocupados** por `ACL-1b` e `CONTROLE-9` quando a
 Task 5 chegou — uma nota anterior deste README reservava o 8 para o controle de
@@ -235,6 +260,15 @@ ordinais livres depois de `ACL-3d` (13). Ele também é o motivo de
 extraídas de produção via `supabase db dump --linked` (o MCP `execute_sql`
 estava com o token expirado quando a Task 5 rodou; ver
 `.superpowers/sdd/2026-08-17-advisor-warnings-hardening/task-5-report.md`).
+
+**`ACL-6` (ord 14, em `11-overloads-107.sql`) chama `get_reservation_by_code`,
+que a migration 109 dropa — reexecutar o `11` depois da 109 deixa esse caso
+vermelho, e isso não é regressão da 107.** Na sequência linear deste README o
+`11` roda antes da 108/109 e o veredito já está gravado em `t_res` quando a 109
+chega, então nada quebra; mas qualquer reaplicação isolada do `11` depois da
+109 encontra a função ausente. `CODE-6` mede a AUSÊNCIA da mesma função que o
+`ACL-6` mede a PRESENÇA — os dois estão certos, cada um no seu momento da
+sequência.
 
 ## O que os dois controles do `04` fazem
 

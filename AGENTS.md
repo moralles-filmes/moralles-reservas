@@ -51,6 +51,7 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 - Edge Function com service role sempre autentica o caller e valida `unit_id` contra o recurso; service role contorna RLS e triggers dependentes de `auth.uid()`.
 - `owner` cria units e tem acesso total; `gerente` configura/membros/dados sem automação; `operador` atua em reservas/fila/passantes e não cancela reservas. Não ressuscitar `admin_users`/`manage-admins`.
 - `/r/:slug` aceita `mode=embed` e `action=reservar|waitlist`; `/acompanhar/:token` é público via `get_public_tracking`; `/g/:unitSlug/cobranca` é a única rota liberada pelo `BillingGuard` para org bloqueada.
+- Consulta pública por código resolve só o TOKEN (`resolve_tracking_token_by_code`), nunca o dado; payload público é só de `get_public_tracking`. Mesmo gate `units.is_public` nas duas. Componente de painel não entra em página pública.
 
 ---
 
