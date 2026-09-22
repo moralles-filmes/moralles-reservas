@@ -249,4 +249,149 @@ describe("ReservaCodeLookup", () => {
       p_unit_id: UNIT,
     });
   });
+
+  // FIX ROUND 4 — o que sobrou da round 3: um `<input type="text">` REMOVE as
+  // quebras de linha do texto colado ANTES do onChange rodar, sem pôr espaço
+  // no lugar (HTML padrão, seguido pelo jsdom). O template DEFAULT do lembrete
+  // D-0 tem `Código: #{{codigo}}\n\n` (useReservationTemplates.ts:40), então a
+  // fusão acontece SEM customização nenhuma: o código chega ao onChange colado
+  // na palavra seguinte ("#8GY6EG9XAcompanhe"). Basta o lojista acrescentar UMA
+  // hashtag ao corpo pra que NENHUM dos dois candidatos tenha comprimento 8 —
+  // a camada 2 da round 3 fica sem em que se apoiar e a extração cai no
+  // fallback sem âncora, devolvendo os 8 primeiros alfanuméricos da mensagem
+  // inteira ("OLMARIAL"). Mesma tela de falha do defeito original.
+  //
+  // A informação não está perdida: ClipboardEvent.clipboardData.getData("text")
+  // entrega o texto com os "\n" intactos, e a função pura já acerta quando os
+  // recebe. Estes testes usam userEvent.paste de verdade (medido: esta versão
+  // popula clipboardData e dispara onPaste ANTES do onChange) — montar o
+  // ClipboardEvent à mão provaria só que o mock funciona.
+
+  // Corpo copiado literalmente de RESERVATION_TEMPLATES[0].defaultBody
+  // (src/hooks/useReservationTemplates.ts:40) — com os "\n\n" preservados, que
+  // é justamente o que o <input> destrói.
+  const LEMBRETE_D0_DEFAULT_BODY =
+    "Olá, {{cliente_nome}}! 👋\n\nLembrete da sua reserva hoje às {{horario}} para {{party_size}} pessoa(s) em {{unidade_nome}}.\n\nCódigo: #{{codigo}}\n\nAcompanhe sua reserva: {{link_acompanhamento}}\n\nPara alterar ou cancelar, é só responder esta mensagem. Te esperamos! 🍽️";
+
+  function lembreteD0(sufixo = "") {
+    const corpo = LEMBRETE_D0_DEFAULT_BODY.replace("{{cliente_nome}}", "Maria")
+      .replace("{{horario}}", "20:00")
+      .replace("{{party_size}}", "2")
+      .replace("{{unidade_nome}}", "Ren Sushi")
+      .replace("{{codigo}}", "8GY6EG9X")
+      .replace("{{link_acompanhamento}}", `https://reservas.moralles.com.br/acompanhar/${TOKEN}`);
+    return sufixo ? `${corpo}\n\n${sufixo}` : corpo;
+  }
+
+  it("cola o lembrete D-0 com o template DEFAULT mais uma hashtag de Instagram e busca só pelo código", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i);
+    await userEvent.click(input);
+    await userEvent.paste(lembreteD0("Segue a gente no insta #renSushiOficial"));
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "8GY6EG9X",
+      p_unit_id: UNIT,
+    });
+  });
+
+  it("cola o lembrete D-0 com o template DEFAULT sem hashtag e continua buscando só pelo código", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i);
+    await userEvent.click(input);
+    await userEvent.paste(lembreteD0());
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "8GY6EG9X",
+      p_unit_id: UNIT,
+    });
+  });
+
+  it("cola o código pelado, sem '#': segue pelo valor do campo, não pelo clipboard", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i) as HTMLInputElement;
+    await userEvent.click(input);
+    await userEvent.paste("8GY6EG9X");
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(input.value).toBe("8GY6EG9X");
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "8GY6EG9X",
+      p_unit_id: UNIT,
+    });
+  });
+
+  it("digitação tecla a tecla continua funcionando (o clipboard nunca entra)", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i) as HTMLInputElement;
+    await userEvent.type(input, "AB1C2DEF");
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(input.value).toBe("AB1C2DEF");
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "AB1C2DEF",
+      p_unit_id: UNIT,
+    });
+  });
+
+  // O item que não pode ser afrouxado: o caminho do clipboard existe SÓ pro
+  // caso em que o <input> destruiu uma quebra de linha que importava —
+  // mensagem decorada com "#". Colar um pedaço no meio do que já está no campo
+  // tem que continuar passando por e.target.value; usar o clipboard aqui
+  // devolveria só "2DEF" e apagaria o que o cliente já tinha digitado. É o
+  // controle positivo desta round: remover a condição do "#" faz ESTE teste
+  // reprovar.
+  it("campo já preenchido + colagem de um pedaço sem '#': concatena, não substitui", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i) as HTMLInputElement;
+    await userEvent.type(input, "AB1C");
+    await userEvent.paste("2DEF");
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(input.value).toBe("AB1C2DEF");
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "AB1C2DEF",
+      p_unit_id: UNIT,
+    });
+  });
+
+  // A janela em que o ref sobra por um tick: medido com evento real, o único
+  // paste que dispara onPaste SEM onChange é o de texto vazio (qualquer texto
+  // não-vazio muda o campo e dispara o onChange que limpa o ref). Vazio nunca
+  // contém "#", então a digitação seguinte passa pelo valor do campo. Medido,
+  // não deduzido.
+  it("paste vazio (dispara onPaste sem onChange) não contamina a digitação seguinte", async () => {
+    rpc.mockResolvedValue({ data: TOKEN, error: null });
+    render(wrap(<ReservaCodeLookup unitId={UNIT} />));
+
+    await userEvent.click(screen.getByRole("button", { name: /consulte pelo código/i }));
+    const input = screen.getByPlaceholderText(/AB1C2DEF/i) as HTMLInputElement;
+    await userEvent.click(input);
+    await userEvent.paste("");
+    await userEvent.type(input, "AB1C2DEF");
+    await userEvent.click(screen.getByRole("button", { name: /^buscar$/i }));
+
+    expect(input.value).toBe("AB1C2DEF");
+    expect(rpc).toHaveBeenCalledWith("resolve_tracking_token_by_code", {
+      p_code: "AB1C2DEF",
+      p_unit_id: UNIT,
+    });
+  });
 });
