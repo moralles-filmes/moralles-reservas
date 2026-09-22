@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -120,9 +121,9 @@ export function ReservaCodeLookup({ unitId }: { unitId: string }) {
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle className="font-display text-2xl">Consultar reserva</DialogTitle>
-          <p className="text-sm text-muted-foreground">
+          <DialogDescription>
             Informe o código de 8 caracteres recebido no WhatsApp.
-          </p>
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="flex gap-2">
