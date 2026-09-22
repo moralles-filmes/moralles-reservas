@@ -3,10 +3,9 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { ReservaWizard } from "@/components/reserva/ReservaWizard";
-import { ReservaCard } from "@/components/reserva/ReservaCard";
+import { ReservaCodeLookup } from "@/components/reserva/ReservaCodeLookup";
 import { WaitlistFormPublic } from "@/components/waitlist/WaitlistFormPublic";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -20,7 +19,6 @@ import {
   ResponsiveDialogContent,
   ResponsiveDialogTrigger,
 } from "@/components/ui/responsive-dialog";
-import { useReservaByCode } from "@/hooks/useReservas";
 import type { PublicBlockedDate, PublicHall, PublicSpecialDate } from "@/types/reserva";
 import {
   CalendarDays,
@@ -33,7 +31,6 @@ import {
   Link as LinkIcon,
   MapPin,
   Phone,
-  Search,
   Smartphone,
   Sparkles,
   Tag,
@@ -801,81 +798,6 @@ function WaitlistCTA({
           priorityEnabled={settings.waitlist_priority_enabled !== false}
           onClose={() => setOpen(false)}
         />
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function ReservaCodeLookup({ unitId }: { unitId: string }) {
-  const [open, setOpen] = useState(false);
-  const [code, setCode] = useState("");
-  const [searchCode, setSearchCode] = useState("");
-  const { data: reserva, isLoading } = useReservaByCode(searchCode, unitId);
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (!o) {
-          setCode("");
-          setSearchCode("");
-        }
-      }}
-    >
-      <DialogTrigger asChild>
-        <button
-          type="button"
-          className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 transition-colors"
-        >
-          <Clock className="h-3.5 w-3.5" />
-          Já tem reserva? Consulte pelo código
-          <ChevronRight className="h-3.5 w-3.5" />
-        </button>
-      </DialogTrigger>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle className="font-display text-2xl">Consultar reserva</DialogTitle>
-          <p className="text-sm text-muted-foreground">
-            Informe o código de 8 caracteres recebido no WhatsApp.
-          </p>
-        </DialogHeader>
-        <div className="space-y-4">
-          <div className="flex gap-2">
-            <Input
-              placeholder="Ex: AB1C2DEF"
-              value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
-              className="font-mono"
-              maxLength={8}
-            />
-            <Button
-              variant="secondary"
-              onClick={() => setSearchCode(code)}
-              disabled={code.length < 4}
-            >
-              <Search className="h-4 w-4" />
-            </Button>
-          </div>
-
-          {isLoading && <p className="text-sm text-muted-foreground">Buscando...</p>}
-          {searchCode && !isLoading && !reserva && (
-            <p className="text-sm text-destructive">
-              Reserva não encontrada. Verifique o código.
-            </p>
-          )}
-          {reserva && (
-            <div className="space-y-2">
-              <ReservaCard reserva={reserva} />
-              {(reserva.status === "confirmed" || reserva.status === "pending") && (
-                <p className="text-xs text-muted-foreground">
-                  Para alterar ou cancelar, envie uma mensagem no WhatsApp com o código #
-                  {reserva.reservation_code}.
-                </p>
-              )}
-            </div>
-          )}
-        </div>
       </DialogContent>
     </Dialog>
   );

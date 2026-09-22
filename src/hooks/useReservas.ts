@@ -4,47 +4,6 @@ import { supabase } from "@/lib/supabase";
 import { todayLocalISO } from "@/lib/utils";
 import type { Reserva, ReservaFormData, ReservaStatus } from "@/types/reserva";
 
-interface ReservationByCodeRow {
-  id: string;
-  reservation_code: string;
-  date: string;
-  time: string;
-  party_size: number;
-  status: ReservaStatus;
-  notes: string | null;
-  created_at: string;
-  updated_at: string;
-  customer_name: string;
-  customer_phone: string;
-  customer_email: string | null;
-}
-
-export function mapRpcRowToReserva(row: ReservationByCodeRow | null | undefined): Reserva | null {
-  if (!row) return null;
-  return {
-    id: row.id,
-    unit_id: "",
-    customer_id: "",
-    table_id: null,
-    date: row.date,
-    time: row.time,
-    party_size: row.party_size,
-    status: row.status,
-    notes: row.notes,
-    reservation_code: row.reservation_code,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-    customer: {
-      id: "",
-      organization_id: "",
-      name: row.customer_name,
-      phone: row.customer_phone,
-      email: row.customer_email,
-      created_at: row.created_at,
-    },
-  };
-}
-
 export function useReservas(
   unitId: string,
   filters?: {
@@ -91,22 +50,6 @@ export function useReservas(
       return (data ?? []) as Reserva[];
     },
     enabled: !!unitId,
-  });
-}
-
-export function useReservaByCode(code: string, unitId: string) {
-  return useQuery({
-    queryKey: ["reserva", code, unitId],
-    queryFn: async () => {
-      const { data, error } = await supabase.rpc("get_reservation_by_code", {
-        p_code: code.toUpperCase(),
-        p_unit_id: unitId,
-      });
-      if (error) throw error;
-      const row = Array.isArray(data) ? data[0] : data;
-      return mapRpcRowToReserva(row as ReservationByCodeRow | null);
-    },
-    enabled: !!code && !!unitId,
   });
 }
 
