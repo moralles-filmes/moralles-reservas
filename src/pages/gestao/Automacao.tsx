@@ -88,6 +88,15 @@ import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 import { formatPhone } from "@/lib/utils";
+/**
+ * Núcleo puro do backend (sem Deno-only deps — `whatsapp-provider-core.ts` só
+ * importa `phone.ts`, que também é puro). Import relativo fora de `src/` é o
+ * mesmo padrão já validado por `src/pages/platform/WhatsappImplementations.tsx`
+ * (documentado no CLAUDE.md). Decide QUAL segredo autentica o webhook de cada
+ * provider — nunca decidir isso por nome de provider no call site, é assim que
+ * o próximo provider Meta-shaped entra sem ninguém notar.
+ */
+import { WEBHOOK_SIGNATURE_SCHEME } from "../../../supabase/functions/_shared/whatsapp-provider-core";
 import {
   MODELS_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -249,9 +258,18 @@ export default function Automacao() {
 
 // ─── Tab: WhatsApp Channels ───────────────────────────────────────────────────
 
-function buildWebhookUrl(channelId: string, secret: string): string {
+// O `?secret=` só é emitido quando o esquema de assinatura do provider É o
+// próprio secret do canal (zapi/waha/uazapi hoje). Para `official` a Meta
+// valida por `app_secret` (o `&secret=` era inerte); para `datafy` o `whsec_`
+// que autentica a entrega NUNCA pode ir na URL — colada no painel do provedor,
+// vive nos logs de acesso do gateway para sempre. Pergunta feita pelo esquema
+// de assinatura (`WEBHOOK_SIGNATURE_SCHEME`), não por nome de provider — um
+// `provider !== "datafy"` resolveria hoje e erraria de novo no próximo
+// provider Meta-shaped.
+function buildWebhookUrl(channelId: string, secret: string, provider: WhatsAppProvider): string {
   const base = (import.meta.env.VITE_SUPABASE_URL ?? "").replace(/\/$/, "");
-  return `${base}/functions/v1/webhook-whatsapp?channel=${channelId}&secret=${secret}`;
+  const secretParam = WEBHOOK_SIGNATURE_SCHEME[provider] === "channel_secret" ? `&secret=${secret}` : "";
+  return `${base}/functions/v1/webhook-whatsapp?channel=${channelId}${secretParam}`;
 }
 
 function AdminQrCode({ value }: { value: string }) {
@@ -522,21 +540,23 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                     </p>
                   ) : <div className="space-y-1">
                     <p className="text-xs text-muted-foreground">
-                      Webhook (configure no painel do provedor):
+                      {WEBHOOK_SIGNATURE_SCHEME[ch.provider] === "datafy_whsec"
+                        ? "Webhook (URL estável — configure uma vez no painel da Datafy). O segredo que autentica a entrega rotaciona à parte, em \"Rotacionar secret\":"
+                        : "Webhook (configure no painel do provedor):"}
                     </p>
                     <div className="flex items-center gap-1.5">
                       <code
                         className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] truncate flex-1 min-w-0"
-                        title={buildWebhookUrl(ch.id, ch.webhook_secret)}
+                        title={buildWebhookUrl(ch.id, ch.webhook_secret, ch.provider)}
                       >
-                        {buildWebhookUrl(ch.id, ch.webhook_secret)}
+                        {buildWebhookUrl(ch.id, ch.webhook_secret, ch.provider)}
                       </code>
                       <Button
                         size="sm"
                         variant="ghost"
                         className="h-6 px-2 shrink-0"
                         onClick={() =>
-                          handleCopy(ch.id, buildWebhookUrl(ch.id, ch.webhook_secret))
+                          handleCopy(ch.id, buildWebhookUrl(ch.id, ch.webhook_secret, ch.provider))
                         }
                       >
                         {copiedId === ch.id ? (
