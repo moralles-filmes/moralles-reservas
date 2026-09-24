@@ -43,6 +43,7 @@ export const POST_LOOP_SEND_MS = 5_000;
 export const PURGE_DONE_AFTER_DAYS = 7;
 export const PURGE_DEAD_AFTER_DAYS = 30;
 
+/** Espelha o CHECK de `delivery_id` da migration 111 (`length(btrim(delivery_id)) between 1 and 512`) — mudar um dos dois sem o outro é o começo do drift. */
 const MAX_DELIVERY_ID_LEN = 512;
 
 /**
@@ -52,6 +53,30 @@ const MAX_DELIVERY_ID_LEN = 512;
  * fila de persistir o evento de novo — laço infinito, o defeito mais perigoso
  * disponível neste desenho. Ele vive aqui, e não como um `if` solto no
  * handler, justamente para ter teste com controle positivo.
+ *
+ * As duas pernas são deliberadamente ASSIMÉTRICAS quanto a sinal de falha de
+ * leitura, e isso não é descuido:
+ *
+ * - A perna da FLAG precisa de `flagReadFailed` porque `checkFlagEnabled`
+ *   devolve `{ enabled, readFailed }`, e no call site uma leitura falha da
+ *   flag é indistinguível de "a flag existe e está OFF" — sem o campo
+ *   separado, as duas colapsam no mesmo `false`.
+ * - A perna do CANAL não tem sinal equivalente porque uma leitura falha do
+ *   canal já é TERMINAL rio acima de onde este gate é chamado: em
+ *   `webhook-whatsapp/index.ts:1587`, `if (channelErr || !channel)` devolve
+ *   404 antes de qualquer código chegar perto da resolução do gate (~linha
+ *   1728). Fora isso, a coluna é `not null default false` — o banco
+ *   fisicamente não devolve `null`. Logo `channelEnabled: null | undefined`
+ *   só pode significar UMA coisa: o SELECT do caller não pediu a coluna, um
+ *   defeito diferente (já rastreado à parte), não uma falha de leitura em
+ *   trânsito.
+ *
+ * Consequência explícita: se algum dia este gate for movido para ANTES da
+ * resolução do canal, ou a coluna virar nullable, a perna do canal passa a
+ * ter um modo de falha genuíno e esta função precisa ganhar um parâmetro
+ * `channelReadFailed`, no mesmo molde de `flagReadFailed`. Até lá, adicionar
+ * esse parâmetro criaria um branch inalcançável e uma falsa sensação de
+ * cobertura.
  */
 export function decideIngestionMode(input: {
   source: IngestionSource;
