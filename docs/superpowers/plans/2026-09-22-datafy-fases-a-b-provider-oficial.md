@@ -1450,8 +1450,26 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 Fecha o caminho de configuração: o admin cola o `sk_live_…` e o `whsec_…`, e o sistema descobre `phone_number_id`, `waba_id` e `business_id` pelo `/me`, sem digitação manual.
 
+> **CORREÇÃO DE PLANO (pré-voo, antes do despacho).** O texto abaixo foi escrito antes das Tasks 1–5
+> existirem e nomeia UM ponto de `webhook_secret` em `manage-channels`. A varredura encontrou QUATRO
+> lugares que decidem por nome de provider, e um deles mata um canal Datafy em silêncio. As linhas
+> conferidas contra o código real em `7999495`:
+>
+> | Ponto | Linha real | O plano cobria? | Decisão |
+> |---|---|---|---|
+> | allowlist do `create` | `:1614` `["zapi","waha","official"]` | sim | acrescentar `datafy`. **`uazapi` está ausente DE PROPÓSITO** — ele tem caminho próprio em `:1564`; a lista final é `["zapi","waha","official","datafy"]` e isso NÃO é regressão |
+> | geração do secret no `create` | `:1648-1650` | sim | ramificar: Datafy traz o dela |
+> | **`rotate_secret`** | **`:1786`** | **NÃO** | **defeito — ver (f) abaixo** |
+> | whitelist de `credentials` do `update` | `:1718-1722` | sim, mas impreciso | ver (d) |
+> | allowlist do `begin_switch` | `:1432` `["zapi","uazapi","waha","official"]` | não | exclusão deliberada — ver (g) |
+>
+> Conferido também: `datafy` ainda NÃO está em `src/types/reserva.ts` (a Task 1 mexeu no núcleo das
+> Edge Functions, não no tipo do frontend), então a instrução de acrescentá-lo continua válida.
+> E `cloudApiRequest` existe mesmo: declarado em `whatsapp-provider-core.ts:245`, registrado para
+> `datafy` em `whatsapp-providers.ts:601`.
+
 **Files:**
-- Modify: `supabase/functions/manage-channels/index.ts` (whitelist de `credentials` ~l. 1718-1722; handler `create` ~l. 1563)
+- Modify: `supabase/functions/manage-channels/index.ts` (allowlist do `create` l. 1614; geração de secret do `create` l. 1648-1650; **`rotate_secret` l. 1769-1788**; whitelist de `credentials` do `update` l. 1718-1722)
 - Modify: `src/pages/gestao/Automacao.tsx` (`PROVIDER_LABELS` ~l. 116-121; `AddChannelDialog` ~l. 813-884)
 - Modify: `src/types/reserva.ts` (`WhatsAppProvider` ~l. 66; `WhatsAppProviderCapabilities` ~l. 100-110)
 - Create: `src/lib/datafy-channel-setup-core.test.ts`
@@ -1462,7 +1480,8 @@ Fecha o caminho de configuração: o admin cola o `sk_live_…` e o `whsec_…`,
 - Produces:
   - `type DatafyChannelSetupRefusal = "missing_token" | "missing_webhook_secret" | "discovery_failed"` — importado por `manage-channels` para tipar `DATAFY_SETUP_MESSAGE`
   - `decideDatafyChannelSetup(input: { token: string | null | undefined; webhookSecret: string | null | undefined; account: DatafyAccount | null }): { ok: true; credentials: { access_token: string; phone_number_id: string; business_account_id: string | null } } | { ok: false; reason: DatafyChannelSetupRefusal }`
-  - `manage-channels` passa a aceitar `body.webhook_secret` no `create` (usado só por `datafy`; ignorado nos demais providers, que geram o próprio)
+  - `type DatafySecretRotation = { mode: "provider_issued"; secret: string } | { mode: "generate" } | { mode: "refused"; reason: "missing_webhook_secret" }` e `decideDatafySecretRotation(input: { provider: string; webhookSecret: string | null | undefined }): DatafySecretRotation` — usado pelo `rotate_secret`. Discriminado por `mode` (três valores de string), **nunca** por um `ok` que misture booleano com string: sob o `strict: false` do projeto essa mistura não estreita e o `TS2339` nem aparece em `supabase/functions/`, que o `tsc -b` não alcança.
+  - `manage-channels` passa a aceitar `body.webhook_secret` no `create` **e no `rotate_secret`** (usado só por `datafy`; ignorado nos demais providers, que geram o próprio)
 
 - [ ] **Step 1: Escrever o teste que falha**
 
@@ -1518,6 +1537,39 @@ describe("decideDatafyChannelSetup", () => {
     expect(v.credentials.business_account_id).toBeNull();
   });
 });
+
+describe("decideDatafySecretRotation", () => {
+  // Gerar um hex nosso por cima do `whsec_` da Datafy faz toda entrega seguinte
+  // morrer em 401 — e a mesma ação zera is_active e manual_echo_verified_at,
+  // então o canal fica mudo sem erro visível. É o defeito que estes testes travam.
+  it("nunca gera segredo próprio para datafy", () => {
+    const r = decideDatafySecretRotation({ provider: "datafy", webhookSecret: "whsec_novo" });
+    expect(r.mode).toBe("provider_issued");
+    if (r.mode === "provider_issued") expect(r.secret).toBe("whsec_novo");
+  });
+
+  it("recusa rotação datafy sem o segredo novo, em vez de gerar um", () => {
+    for (const secret of [null, undefined, "", "   "]) {
+      const r = decideDatafySecretRotation({ provider: "datafy", webhookSecret: secret });
+      expect(r.mode).toBe("refused");
+    }
+  });
+
+  // Controle negativo: os três providers que EMITEM o próprio segredo continuam
+  // gerando. Se alguém "simplificar" exigindo o campo de todo mundo, isto falha.
+  it("mantém a geração local nos providers que emitem o próprio segredo", () => {
+    for (const provider of ["zapi", "waha", "official"]) {
+      expect(decideDatafySecretRotation({ provider, webhookSecret: null }).mode).toBe("generate");
+      expect(decideDatafySecretRotation({ provider, webhookSecret: "whsec_x" }).mode).toBe("generate");
+    }
+  });
+});
+```
+
+O import do Step 1 passa a ser:
+
+```ts
+import { decideDatafyChannelSetup, decideDatafySecretRotation } from "../../supabase/functions/_shared/datafy-channel-setup-core.ts";
 ```
 
 - [ ] **Step 2: Rodar e ver falhar**
@@ -1638,9 +1690,59 @@ const DATAFY_SETUP_MESSAGE: Record<DatafyChannelSetupRefusal, string> = {
 };
 ```
 
-**(d)** A whitelist de `credentials` (l. ~1718-1722) já contém `access_token`, `phone_number_id` e `business_account_id`. Confirme e **não** acrescente `app_secret` para `datafy` — ela não usa, e aceitar a chave daria a impressão de que o HMAC da Meta se aplica.
+**(d)** A whitelist de `credentials` do `update` (l. 1718-1722) é UMA lista plana, não uma por provider — ela já contém `access_token`, `phone_number_id`, `business_account_id` **e `app_secret`**, todos herdados do `official`. Então não há o que acrescentar: **não mexa nessa lista.** O `app_secret` continua lá para o `official`; o que não pode acontecer é a UI do Datafy oferecer esse campo, porque a Datafy não usa HMAC de app secret e o campo daria a impressão contrária.
 
 **(e)** `checkChannelConnectionAllowance(unitId, provider, credentials)` (l. 1623) roda para todo provider. Confirme em [`_shared/whatsapp-connection-allowance-core.ts`](../../../supabase/functions/_shared/whatsapp-connection-allowance-core.ts) que a decisão não ramifica por nome de provider; se ramificar, `datafy` entra na mesma classe de `official`.
+
+**(f) `rotate_secret` (l. 1769-1788) — o ponto que o plano tinha perdido.** Hoje a ação gera 32 bytes aleatórios em hex e grava por cima do `webhook_secret`, e no MESMO `update` zera `is_active` e `manual_echo_verified_at`. Para Z-API/WAHA/Meta isso está certo: nós emitimos o segredo e o admin vai recolá-lo no painel do provedor. Para a Datafy é destruição silenciosa — **ela** assina com o `whsec_` dela, então o nosso hex faz toda entrega seguinte morrer em 401 de assinatura, com o canal desativado e a prova de eco apagada, e sem nenhum campo na tela onde recolar o `whsec_` real. O `uazapi` já é recusado aqui com 409 (l. 1780) exatamente por ser gerenciado por fora; a Datafy precisa do tratamento oposto — **aceitar** o segredo novo em vez de gerar.
+
+Não copie o 409 do `uazapi`: o comentário da própria ação (l. 1757-1768) diz que ela existe para que uma organização consiga trocar um segredo VAZADO, e recusar tiraria isso do Datafy. O que a Datafy muda é só a origem do valor — ele é rotacionado no painel dela e colado aqui.
+
+Acrescente ao núcleo `datafy-channel-setup-core.ts`:
+
+```ts
+export type DatafySecretRotation =
+  | { mode: "provider_issued"; secret: string }
+  | { mode: "generate" }
+  | { mode: "refused"; reason: "missing_webhook_secret" };
+
+/**
+ * Z-API/WAHA/Meta: nós emitimos o segredo, então rotacionar é gerar um novo.
+ * Datafy: ELA emite e assina com o `whsec_` dela. Gerar um nosso faria toda
+ * entrega seguinte morrer em 401 — e como a mesma ação zera `is_active` e
+ * `manual_echo_verified_at`, o canal ficaria mudo sem nenhum erro visível.
+ * Aqui a rotação acontece no painel da Datafy e o valor novo é colado.
+ */
+export function decideDatafySecretRotation(input: {
+  provider: string;
+  webhookSecret: string | null | undefined;
+}): DatafySecretRotation {
+  if (input.provider !== "datafy") return { mode: "generate" };
+  const secret = input.webhookSecret?.trim();
+  if (!secret) return { mode: "refused", reason: "missing_webhook_secret" };
+  return { mode: "provider_issued", secret };
+}
+```
+
+E no handler, substitua o bloco da l. 1786-1788 por:
+
+```ts
+      const rotation = decideDatafySecretRotation({
+        provider: rotateTarget.provider,
+        webhookSecret: body.webhook_secret as string | null | undefined,
+      });
+      if (rotation.mode === "refused") {
+        return jsonResponse(req, { error: DATAFY_SETUP_MESSAGE[rotation.reason] }, 400);
+      }
+      const newSecret = rotation.mode === "provider_issued"
+        ? rotation.secret
+        : Array.from(crypto.getRandomValues(new Uint8Array(32)))
+            .map((b) => b.toString(16).padStart(2, "0")).join("");
+```
+
+`DATAFY_SETUP_MESSAGE.missing_webhook_secret` já diz onde achar o valor ("aba Webhooks do número, no painel da Datafy"), então serve nas duas ações sem texto novo.
+
+**(g) `begin_switch` (l. 1432) NÃO recebe `datafy` nesta task — exclusão deliberada.** A allowlist `["zapi","uazapi","waha","official"]` fica como está. `begin_switch` é o caminho de platform admin que MIGRA uma unidade existente de um provider para outro, e a decisão de escopo desta fase foi explícita: Datafy convive como padrão para unidades NOVAS, e nenhuma unidade existente migra agora. Acrescentar `datafy` aqui abriria justamente o caminho que a fase decidiu não abrir, e abriria antes de a pergunta MOD-datafy-whatsapp-003 (dois canais ativos no mesmo `phone_number_id` durante uma janela de migração) estar respondida. Deixe a linha intacta e **não** a mencione como pendência no relatório — ela está registrada aqui.
 
 Em `src/types/reserva.ts`, acrescente `"datafy"` a `WhatsAppProvider` (l. 66) e os seis campos novos a `WhatsAppProviderCapabilities` (l. 100-110), espelhando a Task 1.
 
