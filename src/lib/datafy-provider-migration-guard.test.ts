@@ -27,15 +27,44 @@ const FUNCOES = [
 // Uma expressão de lista por constraint, mais uma por corpo de função.
 const LISTAS_ESPERADAS = CONSTRAINTS.length + FUNCOES.length;
 
+// Assinaturas COMPLETAS — uma assinatura parcial num `revoke` é no-op silencioso.
+// Conferidas contra o arquivo real da migration (linhas 148 e 215).
+const ACL = [
+  "revoke all on function public.claim_processed_whatsapp_message(text, text, uuid, integer)",
+  "revoke all on function public.set_organization_default_whatsapp_provider(uuid, text, uuid, text)",
+];
+
+// As nove listas de provider no arquivo têm forma idêntica —
+// `in ('zapi', 'uazapi', 'waha', 'official', 'datafy')` — e são as únicas
+// ocorrências de `in (` no arquivo (conferido com grep: 9 matches, mesma forma).
+// Extração estrutural: imune a comentário em prosa contendo o nome do
+// provider entre aspas, e falha nomeando a lista culpada em vez de um total
+// agregado.
+function assertListasCompletas(sql: string) {
+  const listas = [...sql.matchAll(/in \(((?:\s*'[a-z_]+'\s*,?)+)\)/g)].map((m) => m[1]);
+  expect(listas).toHaveLength(LISTAS_ESPERADAS);
+  for (const [i, lista] of listas.entries()) {
+    for (const provider of WHATSAPP_PROVIDER_NAMES) {
+      expect(lista, `lista #${i + 1} não contém '${provider}': ${lista}`).toContain(`'${provider}'`);
+    }
+  }
+}
+
 describe("migration 110 — datafy nos CHECKs de provider", () => {
   it("o registry declara datafy", () => {
     expect(WHATSAPP_PROVIDER_NAMES).toContain("datafy");
   });
 
-  it("dropa e recria cada CHECK de forma idempotente", () => {
+  it("dropa e recria cada CHECK de forma idempotente, drop antes de add", () => {
     for (const constraint of CONSTRAINTS) {
       expect(SQL).toContain(`drop constraint if exists ${constraint}`);
       expect(SQL).toContain(`add constraint ${constraint}`);
+      // Cego a ordem não basta: numa reaplicação, `add` antes de `drop`
+      // apagaria a constraint recém-criada.
+      expect(
+        SQL.indexOf(`drop constraint if exists ${constraint}`),
+        `${constraint}: o drop precisa vir antes do add`,
+      ).toBeLessThan(SQL.indexOf(`add constraint ${constraint}`));
     }
   });
 
@@ -48,19 +77,26 @@ describe("migration 110 — datafy nos CHECKs de provider", () => {
   });
 
   it("cada lista recriada inclui TODOS os providers do registry", () => {
-    for (const provider of WHATSAPP_PROVIDER_NAMES) {
-      const ocorrencias = SQL.split(`'${provider}'`).length - 1;
-      expect(
-        ocorrencias,
-        `provider ${provider} aparece ${ocorrencias}x; esperado ao menos ${LISTAS_ESPERADAS} (um por CHECK e por corpo de função)`,
-      ).toBeGreaterThanOrEqual(LISTAS_ESPERADAS);
-    }
+    assertListasCompletas(SQL);
   });
 
-  // CONTROLE POSITIVO: o teste acima só vale se detectar a omissão.
-  it("detectaria um provider ausente do SQL", () => {
-    const sqlIncompleto = "check (provider in ('zapi','waha','official'))";
-    expect(sqlIncompleto.split("'uazapi'").length - 1).toBe(0);
+  // CONTROLE POSITIVO: muta o SQL REAL (não uma cópia inventada) e chama a
+  // MESMA função que a asserção real usa — é isso que faz o controle
+  // controlar o mecanismo real, e não uma tautologia sobre String.split.
+  it("detectaria a omissão na guarda da RPC de idempotência", () => {
+    const mutante = SQL.replace(
+      "if p_provider not in ('zapi', 'uazapi', 'waha', 'official', 'datafy')",
+      "if p_provider not in ('zapi', 'uazapi', 'waha', 'official')",
+    );
+    expect(mutante).not.toBe(SQL); // a mutação de fato aplicou
+    expect(() => assertListasCompletas(mutante)).toThrow();
+  });
+
+  it("reafirma a ACL das duas funções com assinatura completa e search_path vazio", () => {
+    for (const revoke of ACL) {
+      expect(SQL).toContain(revoke);
+    }
+    expect(SQL.split("set search_path = ''").length - 1).toBe(FUNCOES.length);
   });
 
   it("não embute segredo nem a URL do projeto Supabase", () => {
