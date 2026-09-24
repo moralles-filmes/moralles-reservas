@@ -15,6 +15,7 @@ import {
   readManualCredentialField,
   type DatafyChannelSetupRefusal,
 } from "../_shared/datafy-channel-setup-core.ts";
+import { shapeOf } from "../_shared/webhook-payload-shape-core.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
 import {
   resolveWhatsAppGateByUnit,
@@ -312,6 +313,8 @@ const DATAFY_SETUP_MESSAGE: Record<DatafyChannelSetupRefusal, string> = {
     "Informe o segredo do webhook da Datafy (começa com whsec_). Ele aparece na aba Webhooks do número, no painel da Datafy.",
   discovery_failed:
     "Não foi possível validar o token na Datafy. Confira se ele está correto e se a assinatura está ativa.",
+  discovery_unrecognized:
+    "O token foi aceito pela Datafy, mas a resposta não tem o formato esperado. Acione o suporte.",
 };
 
 /**
@@ -1685,14 +1688,26 @@ serve(async (req) => {
         const rawSecret = readManualCredentialField(body.webhook_secret);
 
         let account = null;
+        let discoveryResponseOk = false;
         try {
           const response = await getWhatsAppProvider("datafy").cloudApiRequest!(
             { access_token: rawToken },
             { method: "GET", path: "me" },
           );
-          account = response.status >= 200 && response.status < 300
-            ? parseDatafyAccount(response.body)
-            : null;
+          discoveryResponseOk = response.status >= 200 && response.status < 300;
+          account = discoveryResponseOk ? parseDatafyAccount(response.body) : null;
+          // Um 2xx que não vira `DatafyAccount` é diferente de token ruim: o
+          // `/me` respondeu, mas divergiu do que `parseDatafyAccount` espera.
+          // Sem este log a única pista seria a mesma mensagem de "token
+          // inválido" — este repo já tem incidente de suíte verde sobre
+          // envelope de provedor inventado (recibos da UazAPI). FORMA, nunca
+          // valor: `shapeOf` nunca devolve o corpo em si.
+          if (discoveryResponseOk && !account) {
+            console.error("manage-channels:create datafy discovery unrecognized", JSON.stringify({
+              status: response.status,
+              shape: shapeOf(response.body),
+            }));
+          }
         } catch (error) {
           console.error("manage-channels:create datafy discovery", error);
         }
@@ -1701,6 +1716,7 @@ serve(async (req) => {
           token: rawToken,
           webhookSecret: rawSecret,
           account,
+          discoveryResponseOk,
         });
         if (setup.ok === false) {
           return jsonResponse(req, { error: DATAFY_SETUP_MESSAGE[setup.reason] }, 400);

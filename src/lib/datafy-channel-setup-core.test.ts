@@ -68,6 +68,25 @@ describe("decideDatafyChannelSetup", () => {
     if (v.ok === false) expect(v.reason).toBe("discovery_failed");
   });
 
+  // Controle do Important 2: um 401 (token ruim) e um 2xx com envelope
+  // inesperado chegam aqui com o MESMO `account: null` — sem o discriminador
+  // os dois produziriam a mesma recusa e a mesma mensagem, e o operador
+  // rotacionaria um token correto pra sempre. `discoveryResponseOk: true`
+  // é o que distingue "recusado/indisponível" de "aceito, forma errada".
+  it("distingue token recusado de resposta 2xx com forma inesperada", () => {
+    const tokenRuim = decideDatafyChannelSetup({
+      token: "sk_live_x", webhookSecret: "whsec_y", account: null, discoveryResponseOk: false,
+    });
+    expect(tokenRuim.ok).toBe(false);
+    if (tokenRuim.ok === false) expect(tokenRuim.reason).toBe("discovery_failed");
+
+    const formaInesperada = decideDatafyChannelSetup({
+      token: "sk_live_x", webhookSecret: "whsec_y", account: null, discoveryResponseOk: true,
+    });
+    expect(formaInesperada.ok).toBe(false);
+    if (formaInesperada.ok === false) expect(formaInesperada.reason).toBe("discovery_unrecognized");
+  });
+
   it("aceita waba ausente: só o phone_number_id é âncora obrigatória", () => {
     const v = decideDatafyChannelSetup({
       token: "sk_live_x", webhookSecret: "whsec_y",

@@ -23,7 +23,8 @@ export function readManualCredentialField(value: unknown): string {
 export type DatafyChannelSetupRefusal =
   | "missing_token"
   | "missing_webhook_secret"
-  | "discovery_failed";
+  | "discovery_failed"
+  | "discovery_unrecognized";
 
 export type DatafyChannelSetup =
   | { ok: true; credentials: { access_token: string; phone_number_id: string; business_account_id: string | null } }
@@ -36,16 +37,26 @@ export type DatafyChannelSetup =
  *
  * `phone_number_id` é obrigatório porque é a âncora da guarda cross-tenant;
  * `waba_id` é opcional aqui e só vira obrigatório na Fase F (templates).
+ *
+ * `discoveryResponseOk` só importa quando `account` é `null` — ele distingue
+ * "o `/me` recusou/falhou" (`discovery_failed`, token ruim ou indisponibilidade)
+ * de "o `/me` respondeu 2xx mas o corpo não virou `DatafyAccount`"
+ * (`discovery_unrecognized`, envelope diferente do esperado). Um 401 e um 2xx
+ * de forma inesperada produziam a MESMA recusa e a MESMA mensagem — o operador
+ * rotacionaria um token correto pra sempre, olhando a mesma tela.
  */
 export function decideDatafyChannelSetup(input: {
   token: string | null | undefined;
   webhookSecret: string | null | undefined;
   account: DatafyAccount | null;
+  discoveryResponseOk?: boolean;
 }): DatafyChannelSetup {
   const token = input.token?.trim();
   if (!token) return { ok: false, reason: "missing_token" };
   if (!input.webhookSecret?.trim()) return { ok: false, reason: "missing_webhook_secret" };
-  if (!input.account?.phoneNumberId) return { ok: false, reason: "discovery_failed" };
+  if (!input.account?.phoneNumberId) {
+    return { ok: false, reason: input.discoveryResponseOk ? "discovery_unrecognized" : "discovery_failed" };
+  }
   return {
     ok: true,
     credentials: {
