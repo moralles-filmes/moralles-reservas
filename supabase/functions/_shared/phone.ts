@@ -23,3 +23,13 @@ export function canonicalBrPhone(raw: string): string {
   }
   return digits;
 }
+
+// Inverso do armazenamento canônico para envio: código de país, só dígitos.
+// Mesmo predicado de canonicalBrPhone: 55 com 10/11 dígitos é DDD, não país.
+// Não altera o assinante nem acrescenta o 9º dígito.
+export function toE164BrPhone(raw: string): string {
+  const digits = (raw ?? "").replace(/\D/g, "");
+  return (digits.length === 12 || digits.length === 13) && digits.startsWith("55")
+    ? digits
+    : `55${digits}`;
+}
