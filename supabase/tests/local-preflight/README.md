@@ -48,6 +48,8 @@ presentes agendaria jobs apontando para lá.
 | `13-controles-108.sql` | Os **dois controles positivos** da 108. CONTROLE-25 neutraliza só o `raise` de `forbidden` (delta mínimo sobre `pg_get_functiondef`) e vê o agregado da org B chegar ao membro da org A; CONTROLE-26 repõe o corpo `language sql` pré-108 inteiro e vê as DUAS regressões de uma vez — o vazamento cross-org e a chamada sem sessão devolvendo linha de zeros em vez de `42501`. **A sabotagem é o `raise`, não o `if`, e isso foi medido:** trocar `if v_org is null` por `if false and v_org is null` não neutraliza nada, porque `and` liga mais forte que `or` e o segundo disjunto (`not (is_platform_admin or is_org_member)`) continua verdadeiro — o raise dispararia igual e o controle ficaria verde tendo sabotado coisa nenhuma. Reaplicar a 108 restaura, como no CONTROLE-6. |
 | `14-public-code-lookup-109.sql` | CODE-1..CODE-8 (ordinais 27–34, migration 109): a RPC pública `resolve_tracking_token_by_code`. O caminho de ACHAR (código certo, unidade certa e pública) devolve o token; os três casos de NÃO achar — unidade errada, unidade não pública, código inexistente — têm de devolver `null` indistinguivelmente entre si, senão a recusa vira oráculo cross-tenant. Mede também a AUSÊNCIA de `get_reservation_by_code` (dropada por esta migration), a ACL (`anon`/`authenticated` executam, `PUBLIC` não) e idempotência através de duas execuções. |
 | `15-controles-109.sql` | Os **dois controles positivos** (ordinais 35–36) da 109. Sabotam o corpo real a partir de `pg_get_functiondef` — CONTROLE-9 remove o gate `is_public` e vê CODE-3 resolver uma unidade privada; CONTROLE-10 remove o casamento `unit_id` e vê CODE-2 resolver o código de outra unidade. As duas asserções são sobre o UUID que voltou, nunca sobre "não estourou": guarda quebrada aqui devolve dado, não erro. |
+| `16-inbound-events-111.sql` | INBOUND-1..7 (ordinais 37–43, migration 111, Fase C): a fila durável `whatsapp_inbound_events`. Corpo com octeto NUL voltando byte a byte (o motivo de `raw_body` ser `bytea`), dedupe de entrega escopado por canal, entregas legadas com `delivery_id` NULL coexistindo, CHECK de `delivery_id` e de `provider` com contra-caso em cada um, cascade do canal sem abortar o DELETE, e a postura do gate (RLS forçada, zero policies, flag `false`, zero canais optados). **Roda em banco PRÓPRIO** e com seed `00a` — ver a seção "Rodar" dele. Cada caso se desfaz por rollback de subtransação, então o arquivo é re-runnable e não deixa linha na tabela. |
+| `17-controles-111.sql` | Os **cinco controles positivos** (ordinais 44–48) da 111. C-111-1 troca `raw_body` para `text`; C-111-2 troca o unique parcial por `nulls not distinct`; C-111-3 dropa o CHECK de `delivery_id`; C-111-4 troca `on delete cascade` por `restrict`; C-111-5 dropa o CHECK de `provider`. **Aqui o restore mora dentro de cada controle e isso não é escolha** — ver a nota "Por que reaplicar a 111 não restaura" abaixo. |
 
 ## Rodar
 
@@ -269,6 +271,99 @@ chega, então nada quebra; mas qualquer reaplicação isolada do `11` depois da
 109 encontra a função ausente. `CODE-6` mede a AUSÊNCIA da mesma função que o
 `ACL-6` mede a PRESENÇA — os dois estão certos, cada um no seu momento da
 sequência.
+
+### Sequência da migration 111 (Fase C — fila de inbound)
+
+**Banco PRÓPRIO**, pela mesma razão do `advisor106`: o `16` declara `t_res` com
+`ord int primary key`, como o `09` e posteriores, e o `03`/`05` declaram sem
+chave primária — os dois conjuntos não convivem num banco só.
+
+É a sequência mais curta que produz veredito, e cada peça está aqui porque falta
+dela quebra algo concreto:
+
+- **`00-bootstrap.sql`** traz `organizations`, `units`, `whatsapp_channels` e
+  `update_updated_at()`, que a 111 referencia (duas FKs e a coluna nova).
+- **`00a-whatsapp-legacy-seed.sql`**, e não o `02-seed.sql`: os casos precisam de
+  linha em `whatsapp_channels`, e é o `00a` que cria canais. O `02` insere em
+  `whatsapp_instances`, que só existe depois da 087 — trazer a 087 seria
+  sequência mais longa sem veredito novo.
+- **A migration 061** (`platform_flags`): o bootstrap **não** cria essa tabela, e
+  sem ela o seed da flag no fim da 111 estoura e a migration inteira falha.
+- **Nada de 110.** O `provider` que os casos exercitam é o da própria tabela nova.
+  A linha de canal referenciada nasce `provider = 'zapi'`, que o CHECK do
+  bootstrap já aceita — evento `datafy` apontando para canal `zapi` é combinação
+  sem sentido em produção e perfeitamente válida no banco, e é só disso que os
+  casos dependem.
+
+```bash
+export PGCLIENTENCODING=UTF8          # obrigatório; ver a nota na seção "Rodar"
+PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists fasec111
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres fasec111
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fasec111 -v ON_ERROR_STOP=1 "$@"; }
+
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/00a-whatsapp-legacy-seed.sql
+P -f supabase/migrations/20260716130000_061_platform_flags.sql
+
+# ANTES da migration, o 16 e o 17 têm de FALHAR pelas guardas do topo
+# (`tabela public.whatsapp_inbound_events ausente`). É o RED que dá sentido ao
+# GREEN: rodado antes, INBOUND-2/4/5/6 passariam POR ACIDENTE, porque sem a
+# tabela todo insert "falha" e todo caso negativo fica verde medindo nada.
+P -f supabase/tests/local-preflight/16-inbound-events-111.sql   # esperado: ERROR
+P -f supabase/tests/local-preflight/17-controles-111.sql        # esperado: ERROR
+
+P -f supabase/migrations/20260924120000_111_whatsapp_inbound_events.sql
+P -f supabase/tests/local-preflight/16-inbound-events-111.sql
+
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fasec111 \
+  -f supabase/tests/local-preflight/17-controles-111.sql   # SEM ON_ERROR_STOP
+# NÃO reaplicar a 111 aqui: ela não restaura nada (ver a nota abaixo). Cada
+# controle já se desfez sozinho.
+
+P -c "select ord, caso, veredito from t_res order by ord;"   # 12 linhas, todas OK
+
+# Idempotência da 111: aplicar 3x e conferir que a flag continua com UMA linha.
+P -f supabase/migrations/20260924120000_111_whatsapp_inbound_events.sql   # x3
+P -c "select count(*) from platform_flags where key = 'whatsapp_async_ingestion';"  # 1
+P -f supabase/tests/local-preflight/16-inbound-events-111.sql   # segue 7/7 OK
+```
+
+Ao terminar: `dropdb fasec111`. Este banco é descartável e não tem relação
+nenhuma com produção nem com o Supabase do projeto.
+
+| ord | caso | arquivo |
+|---|---|---|
+| 37–43 | `INBOUND-1` .. `INBOUND-7` | `16` |
+| 44–48 | `C-111-1` .. `C-111-5` | `17` |
+
+**Por que reaplicar a 111 não restaura — e por que os controles do `17` se
+desfazem sozinhos.** Nos conjuntos anteriores o README manda reaplicar a
+migration depois do arquivo de controles, porque lá a sabotagem é no corpo de
+uma função e a migration a define com `create or replace`. A 111 é
+`create table if not exists` + `create index if not exists` + `add column if not
+exists`: com a tabela já existindo, reaplicá-la é **no-op** e não devolve o tipo
+da coluna, o predicado do índice, o CHECK nem o `on delete cascade`. Uma
+sabotagem esquecida ficaria de pé e faria todo caso posterior passar ou falhar em
+silêncio sobre um schema que não é o da migration. Por isso cada controle captura
+a definição real do catálogo antes de mexer, confere que a sabotagem mudou algo,
+desfaz por rollback de subtransação (`raise ... using errcode = 'ZZ111'`, a
+convenção do `CONTROLE-16`) e **verifica o restore contra o catálogo** — o
+veredito só é `OK` se as três metades casarem.
+
+**Dois resultados MEDIDOS que o rascunho desta fase supunha ao contrário.** Os
+dois estão escritos nos arquivos, no ponto em que importam:
+
+1. **Derrubar o predicado `where delivery_id is not null` do unique NÃO derruba o
+   INBOUND-3.** NULL é distinto de NULL em índice unique por default, então com
+   um unique cheio as entregas legadas continuam entrando. Quem derruba é
+   `nulls not distinct` — e é essa a sabotagem do `C-111-2`. A versão briefada
+   daquele controle teria ficado verde tendo sabotado coisa nenhuma.
+2. **`on delete restrict` estoura `23001` (`restrict_violation`), não `23503`
+   (`foreign_key_violation`).** Um handler escrito para `foreign_key_violation`
+   — a escolha óbvia — não o captura. O `INBOUND-6` e o `C-111-4` capturam as
+   duas condições; sem o controle, aquele handler morto seguiria no arquivo sem
+   nunca ser exercitado, porque com `cascade` o ramo nem é alcançado.
 
 ## O que os dois controles do `04` fazem
 
