@@ -103,15 +103,20 @@ export function useCreateChannel(unitId: string) {
     mutationFn: async ({
       provider,
       credentials,
+      webhookSecret,
     }: {
       provider: WhatsAppProvider;
       credentials: ChannelCredentials;
+      // Só a Datafy usa: ela emite o próprio `whsec_` e o admin cola aqui.
+      // Os demais providers ignoram — o backend gera o segredo.
+      webhookSecret?: string;
     }) => {
       return invokeManageChannels({
         action: "create",
         unit_id: unitId,
         provider,
         credentials,
+        ...(webhookSecret ? { webhook_secret: webhookSecret } : {}),
       });
     },
     onSuccess: (_data, variables) => {

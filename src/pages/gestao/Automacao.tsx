@@ -118,6 +118,7 @@ const PROVIDER_LABELS: Record<WhatsAppProvider, string> = {
   uazapi: "UazAPI",
   waha: "WAHA (self-hosted)",
   official: "API Oficial (Meta)",
+  datafy: "Datafy (API Oficial)",
 };
 
 const STATUS_CONFIG: Record<string, { label: string; icon: React.ReactNode; className: string }> = {
@@ -782,23 +783,34 @@ function AddChannelDialog({
   const [accessToken, setAccessToken] = useState("");
   const [appSecret, setAppSecret] = useState("");
 
+  // Datafy fields — phone_number_id/waba_id/business_id vêm da descoberta por
+  // /me no backend; aqui só entram o token e o webhook_secret que a Datafy emite.
+  const [datafyToken, setDatafyToken] = useState("");
+  const [datafyWebhookSecret, setDatafyWebhookSecret] = useState("");
+
   const reset = () => {
     setProvider("zapi");
     setInstanceId(""); setToken(""); setClientToken("");
     setBaseUrl(""); setApiKey(""); setSessionName("");
     setPhoneNumberId(""); setBusinessAccountId(""); setAccessToken(""); setAppSecret("");
+    setDatafyToken(""); setDatafyWebhookSecret("");
   };
 
   const getCredentials = () => {
     if (selectedProvider?.capabilities.manualCredentials === false) return {};
     if (provider === "zapi") return { instance_id: instanceId, token, client_token: clientToken };
     if (provider === "waha") return { base_url: baseUrl, api_key: apiKey, session_name: sessionName };
+    if (provider === "datafy") return { access_token: datafyToken };
     return { phone_number_id: phoneNumberId, business_account_id: businessAccountId, access_token: accessToken, app_secret: appSecret };
   };
 
   const handleCreate = () => {
     createChannel.mutate(
-      { provider, credentials: getCredentials() },
+      {
+        provider,
+        credentials: getCredentials(),
+        ...(provider === "datafy" ? { webhookSecret: datafyWebhookSecret } : {}),
+      },
       {
         onSuccess: () => { onClose(); reset(); },
       }
@@ -852,6 +864,38 @@ function AddChannelDialog({
               <div className="space-y-1">
                 <Label>Session name</Label>
                 <Input value={sessionName} onChange={(e) => setSessionName(e.target.value)} placeholder="default" />
+              </div>
+            </>
+          )}
+
+          {provider === "datafy" && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="datafy-token">Token da Datafy</Label>
+                <Input
+                  id="datafy-token"
+                  type="password"
+                  placeholder="sk_live_..."
+                  value={datafyToken}
+                  onChange={(e) => setDatafyToken(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  O número, o WABA e o Business ID são descobertos automaticamente por este token.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="datafy-whsec">Segredo do webhook</Label>
+                <Input
+                  id="datafy-whsec"
+                  type="password"
+                  placeholder="whsec_..."
+                  value={datafyWebhookSecret}
+                  onChange={(e) => setDatafyWebhookSecret(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  A Datafy não permite configurar o webhook pela API. Depois de criar o canal,
+                  copie a URL exibida e cole na aba Webhooks do número, no painel da Datafy.
+                </p>
               </div>
             </>
           )}

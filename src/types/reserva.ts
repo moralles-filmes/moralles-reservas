@@ -63,7 +63,7 @@ export interface UnitMember {
   unit?: Unit;
 }
 
-export type WhatsAppProvider = "zapi" | "uazapi" | "waha" | "official";
+export type WhatsAppProvider = "zapi" | "uazapi" | "waha" | "official" | "datafy";
 export type ChannelStatus =
   | "not_configured"
   | "provisioning"
@@ -106,6 +106,18 @@ export interface WhatsAppProviderCapabilities {
   disconnect: boolean;
   restart: boolean;
   deliveryReceipts: boolean;
+  /** Envio de templates aprovados pela Meta. */
+  templateMessages: boolean;
+  /** Envio de imagem, áudio, vídeo, documento ou sticker. */
+  mediaMessages: boolean;
+  /** Download da mídia recebida do cliente. */
+  inboundMediaDownload: boolean;
+  /** Botões, listas e demais formatos interativos. */
+  interactiveMessages: boolean;
+  /** Entrega o objeto referral de anúncio Click-to-WhatsApp no payload. */
+  adReferral: boolean;
+  /** Requisição de baixo nível a endpoints da Cloud API. */
+  rawCloudApiProxy: boolean;
   manualDeviceEcho: "supported" | "conditional" | "unsupported";
 }
 

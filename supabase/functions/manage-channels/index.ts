@@ -8,6 +8,12 @@ import {
   type ChannelCredentials,
   type ProviderConnectionSnapshot,
 } from "../_shared/whatsapp-providers.ts";
+import { parseDatafyAccount } from "../_shared/datafy-client.ts";
+import {
+  decideDatafyChannelSetup,
+  decideDatafySecretRotation,
+  type DatafyChannelSetupRefusal,
+} from "../_shared/datafy-channel-setup-core.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
 import {
   resolveWhatsAppGateByUnit,
@@ -295,6 +301,19 @@ const ALLOWANCE_DENIED_MESSAGE: Record<
 };
 
 /**
+ * Mensagens PT-BR curtas para o cliente — nunca `error.message` cru do
+ * Postgres/HTTP. Servem tanto a criação quanto a rotação de secret: as duas
+ * ações usam o mesmo vocabulário de recusa do núcleo `datafy-channel-setup-core`.
+ */
+const DATAFY_SETUP_MESSAGE: Record<DatafyChannelSetupRefusal, string> = {
+  missing_token: "Informe o token da Datafy (começa com sk_live_).",
+  missing_webhook_secret:
+    "Informe o segredo do webhook da Datafy (começa com whsec_). Ele aparece na aba Webhooks do número, no painel da Datafy.",
+  discovery_failed:
+    "Não foi possível validar o token na Datafy. Confira se ele está correto e se a assinatura está ativa.",
+};
+
+/**
  * Linha crua de `billing_subscriptions` com o plano embutido — relação aninhada
  * volta do PostgREST como objeto OU array, mesmo padrão de
  * `whatsapp-service-gate.ts` e `entitlements.ts`.
@@ -334,6 +353,12 @@ function providerConnectionRefKnown(
   if (provider === "zapi") return filled(creds.instance_id);
   if (provider === "uazapi") return filled(creds.instance_id);
   if (provider === "waha") return filled(creds.base_url);
+  // Datafy: a evidência de que a conta já existe no provedor é o token — o
+  // `phone_number_id` só existe depois da descoberta por `/me`, que roda DEPOIS
+  // desta guarda no fluxo de `create`. Cair no ramo `official` (que exige
+  // `phone_number_id` já preenchido) recusaria 100% das criações Datafy com
+  // BACKFILL_WITHOUT_PROVIDER_REF antes mesmo de tentar descobrir a conta.
+  if (provider === "datafy") return filled(creds.access_token);
   return filled(creds.phone_number_id); // official (Meta)
 }
 
@@ -1611,7 +1636,7 @@ serve(async (req) => {
       const provider: WhatsAppProvider = body.provider;
       const credentials: ChannelCredentials = body.credentials ?? {};
 
-      if (!provider || !["zapi", "waha", "official"].includes(provider)) {
+      if (!provider || !["zapi", "waha", "official", "datafy"].includes(provider)) {
         return jsonResponse(req, { error: "Provedor inválido." }, 400);
       }
 
@@ -1644,17 +1669,48 @@ serve(async (req) => {
         }, 403);
       }
 
-      // Generate a per-channel webhook secret
-      const webhookSecret = Array.from(
-        crypto.getRandomValues(new Uint8Array(32))
-      ).map((b) => b.toString(16).padStart(2, "0")).join("");
+      // Z-API/WAHA/Meta: nós emitimos o segredo e o provedor o repete de volta.
+      // Datafy: ELA emite o `whsec_` e assina com ele — gerar um nosso faria
+      // toda entrega ser recusada, com o canal parecendo configurado.
+      let webhookSecret: string;
+      let datafyCredentials: ChannelCredentials | null = null;
+
+      if (provider === "datafy") {
+        let account = null;
+        try {
+          const response = await getWhatsAppProvider("datafy").cloudApiRequest!(
+            { access_token: String(credentials.access_token ?? "") },
+            { method: "GET", path: "me" },
+          );
+          account = response.status >= 200 && response.status < 300
+            ? parseDatafyAccount(response.body)
+            : null;
+        } catch (error) {
+          console.error("manage-channels:create datafy discovery", error);
+        }
+
+        const setup = decideDatafyChannelSetup({
+          token: String(credentials.access_token ?? ""),
+          webhookSecret: String(body.webhook_secret ?? ""),
+          account,
+        });
+        if (setup.ok === false) {
+          return jsonResponse(req, { error: DATAFY_SETUP_MESSAGE[setup.reason] }, 400);
+        }
+        datafyCredentials = setup.credentials;
+        webhookSecret = String(body.webhook_secret).trim();
+      } else {
+        webhookSecret = Array.from(
+          crypto.getRandomValues(new Uint8Array(32))
+        ).map((b) => b.toString(16).padStart(2, "0")).join("");
+      }
 
       const { data: channel, error: insertErr } = await supabase
         .from("whatsapp_channels")
         .insert({
           unit_id: unitId,
           provider,
-          credentials,       // stored as JSONB — add pgcrypto encryption in production
+          credentials: datafyCredentials ?? credentials,       // stored as JSONB — add pgcrypto encryption in production
           webhook_secret: webhookSecret,
           status: "disconnected",
           // Canal novo nunca participa do fallback legado (NULL). Ele só pode
@@ -1783,9 +1839,17 @@ serve(async (req) => {
         }, 409);
       }
 
-      const newSecret = Array.from(
-        crypto.getRandomValues(new Uint8Array(32))
-      ).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const rotation = decideDatafySecretRotation({
+        provider: rotateTarget.provider,
+        webhookSecret: body.webhook_secret as string | null | undefined,
+      });
+      if (rotation.mode === "refused") {
+        return jsonResponse(req, { error: DATAFY_SETUP_MESSAGE[rotation.reason] }, 400);
+      }
+      const newSecret = rotation.mode === "provider_issued"
+        ? rotation.secret
+        : Array.from(crypto.getRandomValues(new Uint8Array(32)))
+            .map((b) => b.toString(16).padStart(2, "0")).join("");
 
       const { data: rotated, error: rotErr } = await supabase
         .from("whatsapp_channels")
