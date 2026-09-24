@@ -1,6 +1,7 @@
 // Fachada compatível e registry dos providers WhatsApp.
 
 import { fetchWithRetry } from "./retry.ts";
+import { toE164BrPhone } from "./phone.ts";
 import { jsonLog, sanitizePhone } from "./security.ts";
 import { createUazApiClientFromEnv } from "./uazapi-client.ts";
 import {
@@ -379,8 +380,7 @@ async function sendWaha(credentials: ChannelCredentials, message: OutboundMessag
     return { ok: false, missingCreds: ["base_url"], error: "missing_credentials" };
   }
 
-  const digits = message.toPhone.replace(/\D/g, "");
-  const chatId = (digits.startsWith("55") ? digits : `55${digits}`) + "@c.us";
+  const chatId = toE164BrPhone(message.toPhone) + "@c.us";
   const url = `${base_url.replace(/\/$/, "")}/api/sendText`;
   const response = await fetchProviderWithTimeout(
     url,
@@ -413,8 +413,7 @@ async function sendOfficial(credentials: ChannelCredentials, message: OutboundMe
     return { ok: false, missingCreds: missing, error: "missing_credentials" };
   }
 
-  const digits = message.toPhone.replace(/\D/g, "");
-  const to = digits.startsWith("55") ? digits : `55${digits}`;
+  const to = toE164BrPhone(message.toPhone);
   const url = `https://graph.facebook.com/v19.0/${phone_number_id}/messages`;
   const response = await fetchProviderWithTimeout(
     url,
@@ -456,8 +455,7 @@ async function sendDatafy(
     return { ok: false, missingCreds: missing, error: "missing_credentials", errorCode: "INVALID_REQUEST" };
   }
 
-  const digits = message.toPhone.replace(/\D/g, "");
-  const to = digits.startsWith("55") ? digits : `55${digits}`;
+  const to = toE164BrPhone(message.toPhone);
   const { url, init } = buildDatafyRequest({
     token: access_token,
     method: "POST",

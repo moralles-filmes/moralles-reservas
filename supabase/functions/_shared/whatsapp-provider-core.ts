@@ -1,4 +1,4 @@
-import { canonicalBrPhone } from "./phone.ts";
+import { canonicalBrPhone, toE164BrPhone } from "./phone.ts";
 
 export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi", "datafy"] as const;
 
@@ -1321,8 +1321,7 @@ export function buildZApiTextRequest(
   if (!token) missingCreds.push("token");
   if (missingCreds.length) return { ok: false, missingCreds };
 
-  const digits = message.toPhone.replace(/\D/g, "");
-  const phone = digits.startsWith("55") ? digits : `55${digits}`;
+  const phone = toE164BrPhone(message.toPhone);
   return {
     ok: true,
     url: `https://api.z-api.io/instances/${instance_id}/token/${token}/send-text`,
@@ -1354,8 +1353,7 @@ export async function sendUazApiText(
     return { ok: false, error: "uazapi_invalid_base_url", errorCode: "INVALID_REQUEST" };
   }
 
-  const digits = message.toPhone.replace(/\D/g, "");
-  const number = digits.startsWith("55") ? digits : `55${digits}`;
+  const number = toE164BrPhone(message.toPhone);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), dependencies.timeoutMs ?? 12_000);
   try {
