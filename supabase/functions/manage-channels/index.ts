@@ -12,6 +12,7 @@ import { parseDatafyAccount } from "../_shared/datafy-client.ts";
 import {
   decideDatafyChannelSetup,
   decideDatafySecretRotation,
+  readManualCredentialField,
   type DatafyChannelSetupRefusal,
 } from "../_shared/datafy-channel-setup-core.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
@@ -1676,10 +1677,17 @@ serve(async (req) => {
       let datafyCredentials: ChannelCredentials | null = null;
 
       if (provider === "datafy") {
+        // Lida UMA vez, com guarda de tipo, e reutilizado abaixo — nunca
+        // `String(valor ?? "")`. `String({})` é `"[object Object]"`, uma
+        // string NÃO-vazia que passaria por `.trim()`, pela checagem de
+        // "faltando" e seria GRAVADA como token/segredo do canal.
+        const rawToken = readManualCredentialField(credentials.access_token);
+        const rawSecret = readManualCredentialField(body.webhook_secret);
+
         let account = null;
         try {
           const response = await getWhatsAppProvider("datafy").cloudApiRequest!(
-            { access_token: String(credentials.access_token ?? "") },
+            { access_token: rawToken },
             { method: "GET", path: "me" },
           );
           account = response.status >= 200 && response.status < 300
@@ -1690,15 +1698,15 @@ serve(async (req) => {
         }
 
         const setup = decideDatafyChannelSetup({
-          token: String(credentials.access_token ?? ""),
-          webhookSecret: String(body.webhook_secret ?? ""),
+          token: rawToken,
+          webhookSecret: rawSecret,
           account,
         });
         if (setup.ok === false) {
           return jsonResponse(req, { error: DATAFY_SETUP_MESSAGE[setup.reason] }, 400);
         }
         datafyCredentials = setup.credentials;
-        webhookSecret = String(body.webhook_secret).trim();
+        webhookSecret = rawSecret.trim();
       } else {
         webhookSecret = Array.from(
           crypto.getRandomValues(new Uint8Array(32))
@@ -1841,7 +1849,7 @@ serve(async (req) => {
 
       const rotation = decideDatafySecretRotation({
         provider: rotateTarget.provider,
-        webhookSecret: body.webhook_secret as string | null | undefined,
+        webhookSecret: readManualCredentialField(body.webhook_secret),
       });
       if (rotation.mode === "refused") {
         return jsonResponse(req, { error: DATAFY_SETUP_MESSAGE[rotation.reason] }, 400);

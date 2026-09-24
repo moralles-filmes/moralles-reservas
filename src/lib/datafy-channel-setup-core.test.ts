@@ -1,9 +1,37 @@
 import { describe, it, expect } from "vitest";
-import { decideDatafyChannelSetup, decideDatafySecretRotation } from "../../supabase/functions/_shared/datafy-channel-setup-core.ts";
+import {
+  decideDatafyChannelSetup,
+  decideDatafySecretRotation,
+  readManualCredentialField,
+} from "../../supabase/functions/_shared/datafy-channel-setup-core.ts";
 
 const account = {
   clienteId: "cli_1", phoneNumberId: "123", wabaId: "456", businessId: "789",
 };
+
+describe("readManualCredentialField", () => {
+  // Controle positivo do Fix 1: `String({})` é `"[object Object]"` — uma
+  // string NÃO-vazia — e seria gravada como segredo/token do canal. O
+  // handler (manage-channels/index.ts) usa esta função para token e
+  // webhook_secret na criação E na rotação; este teste falha se alguém
+  // reintroduzir `String(valor ?? "")` no call site.
+  it("recusa (não coage) qualquer valor que não seja string", () => {
+    for (const value of [{}, 42, [], true, { access_token: "x" }]) {
+      expect(readManualCredentialField(value)).toBe("");
+    }
+  });
+
+  it("null/undefined viram string vazia, nunca 'null'/'undefined'", () => {
+    expect(readManualCredentialField(null)).toBe("");
+    expect(readManualCredentialField(undefined)).toBe("");
+  });
+
+  it("preserva string tal como veio — quem decide 'faltando' é o decide*", () => {
+    expect(readManualCredentialField("whsec_y")).toBe("whsec_y");
+    expect(readManualCredentialField("")).toBe("");
+    expect(readManualCredentialField("   ")).toBe("   ");
+  });
+});
 
 describe("decideDatafyChannelSetup", () => {
   it("monta credenciais a partir da descoberta, sem digitação manual de id", () => {
@@ -27,9 +55,11 @@ describe("decideDatafyChannelSetup", () => {
   // A Datafy responde 403 a webhook_configuration: o secret é colado à mão.
   // Sem ele o canal nasceria aceitando qualquer POST assinado por ninguém.
   it("exige o webhook_secret na criação, porque a Datafy não configura webhook por API", () => {
-    const v = decideDatafyChannelSetup({ token: "sk_live_x", webhookSecret: null, account });
-    expect(v.ok).toBe(false);
-    if (v.ok === false) expect(v.reason).toBe("missing_webhook_secret");
+    for (const webhookSecret of [null, undefined, "", "   "]) {
+      const v = decideDatafyChannelSetup({ token: "sk_live_x", webhookSecret, account });
+      expect(v.ok).toBe(false);
+      if (v.ok === false) expect(v.reason).toBe("missing_webhook_secret");
+    }
   });
 
   it("recusa quando a descoberta falhou, em vez de criar canal sem âncora de identidade", () => {

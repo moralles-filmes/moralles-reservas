@@ -206,11 +206,22 @@ export function useDeleteChannel(unitId: string) {
 export function useRotateChannelSecret(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (channelId: string) => {
+    mutationFn: async ({
+      channelId,
+      webhookSecret,
+    }: {
+      channelId: string;
+      // Só a Datafy usa: ela emite o `whsec_` novo (rotacionado no painel
+      // dela) e o admin cola aqui. Os demais providers ignoram — o backend
+      // gera o segredo. Mesmo padrão condicional de `useCreateChannel`,
+      // pra manter o corpo dos outros quatro providers byte-a-byte igual.
+      webhookSecret?: string;
+    }) => {
       return invokeManageChannels({
         action: "rotate_secret",
         unit_id: unitId,
         channel_id: channelId,
+        ...(webhookSecret ? { webhook_secret: webhookSecret } : {}),
       });
     },
     onSuccess: () => {

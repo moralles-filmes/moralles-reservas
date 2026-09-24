@@ -5,6 +5,21 @@
 
 import type { DatafyAccount } from "./datafy-client.ts";
 
+/**
+ * Lê um campo de credencial manual (token/webhook_secret) de um body HTTP já
+ * desserializado (`JSON.parse`), como string — RECUSA, nunca COAGE, qualquer
+ * outro tipo. `String({})` é a string não-vazia `"[object Object]"`: ela
+ * passaria por `.trim()`, pela checagem de "faltando" em
+ * `decideDatafyChannelSetup`/`decideDatafySecretRotation`, e seria GRAVADA
+ * como o segredo/token do canal — canal que parece configurado e devolve 401
+ * em toda entrega real. O handler chama isto para `access_token` e
+ * `webhook_secret`, na criação E na rotação, antes de montar as decisões
+ * acima; nunca `String(valor ?? "")` direto no call site.
+ */
+export function readManualCredentialField(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
 export type DatafyChannelSetupRefusal =
   | "missing_token"
   | "missing_webhook_secret"

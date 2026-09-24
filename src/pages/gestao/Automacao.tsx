@@ -468,34 +468,15 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                           )}
                         </>
                       )}
-                      {!automaticWebhook && <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button size="sm" variant="outline">
-                            <KeyRound className="h-3 w-3 mr-1" />
-                            Rotacionar secret
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>Rotacionar secret do canal {PROVIDER_LABELS[ch.provider]}?</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              A URL antiga do webhook para de funcionar imediatamente.
-                              Depois de rotacionar, copie a URL nova neste card e configure-a
-                              no painel do provedor. O canal ficará inativo: envie uma mensagem
-                              pelo celular para validar o novo eco e depois use "Ativar / trocar".
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                            <AlertDialogAction
-                              onClick={() => rotateSecret.mutate(ch.id)}
-                              disabled={rotateSecret.isPending}
-                            >
-                              {rotateSecret.isPending ? "Rotacionando..." : "Rotacionar"}
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>}
+                      {!automaticWebhook && (
+                        <RotateSecretAction
+                          channel={ch}
+                          isPending={rotateSecret.isPending}
+                          onRotate={(webhookSecret) =>
+                            rotateSecret.mutate({ channelId: ch.id, webhookSecret })
+                          }
+                        />
+                      )}
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -594,6 +575,75 @@ function ChannelsTab({ unitId }: { unitId: string }) {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// Datafy é o único provider cujo secret o admin PRECISA colar: ela emite o
+// `whsec_` (rotacionado no painel dela) e a nossa ação só o grava. Os outros
+// três providers (Z-API/WAHA/Official) seguem sem input — o backend gera.
+function RotateSecretAction({
+  channel,
+  isPending,
+  onRotate,
+}: {
+  channel: WhatsAppChannel;
+  isPending: boolean;
+  onRotate: (webhookSecret?: string) => void;
+}) {
+  const [secretDraft, setSecretDraft] = useState("");
+  const isDatafy = channel.provider === "datafy";
+
+  return (
+    <AlertDialog onOpenChange={(open) => { if (!open) setSecretDraft(""); }}>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="outline">
+          <KeyRound className="h-3 w-3 mr-1" />
+          Rotacionar secret
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Rotacionar secret do canal {PROVIDER_LABELS[channel.provider]}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {isDatafy ? (
+              "Cole o segredo novo gerado no painel da Datafy. O anterior deixa de ser aceito assim que você salvar."
+            ) : (
+              <>
+                A URL antiga do webhook para de funcionar imediatamente.
+                Depois de rotacionar, copie a URL nova neste card e configure-a
+                no painel do provedor. O canal ficará inativo: envie uma mensagem
+                pelo celular para validar o novo eco e depois use "Ativar / trocar".
+              </>
+            )}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {isDatafy && (
+          <div className="space-y-1">
+            <Label htmlFor={`rotate-secret-${channel.id}`}>Novo segredo do webhook</Label>
+            <Input
+              id={`rotate-secret-${channel.id}`}
+              type="password"
+              autoComplete="off"
+              placeholder="whsec_..."
+              value={secretDraft}
+              onChange={(e) => setSecretDraft(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              É o valor que está na aba Webhooks do número, no painel da Datafy.
+            </p>
+          </div>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => onRotate(isDatafy ? secretDraft.trim() : undefined)}
+            disabled={isPending || (isDatafy && !secretDraft.trim())}
+          >
+            {isPending ? "Rotacionando..." : "Rotacionar"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -875,6 +925,7 @@ function AddChannelDialog({
                 <Input
                   id="datafy-token"
                   type="password"
+                  autoComplete="off"
                   placeholder="sk_live_..."
                   value={datafyToken}
                   onChange={(e) => setDatafyToken(e.target.value)}
@@ -888,6 +939,7 @@ function AddChannelDialog({
                 <Input
                   id="datafy-whsec"
                   type="password"
+                  autoComplete="off"
                   placeholder="whsec_..."
                   value={datafyWebhookSecret}
                   onChange={(e) => setDatafyWebhookSecret(e.target.value)}
