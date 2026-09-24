@@ -13,7 +13,6 @@
 
 export const DATAFY_SIGNATURE_HEADER = "x-datafy-signature-256";
 export const DATAFY_TIMESTAMP_HEADER = "x-datafy-timestamp";
-export const DATAFY_DELIVERY_ID_HEADER = "x-datafy-delivery-id";
 
 /**
  * Cinco minutos, conforme a recomendação da documentação. Aplicada nos DOIS
