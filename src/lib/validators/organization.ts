@@ -2,7 +2,7 @@ import { z } from "zod";
 import { isValidTaxId, normalizeTaxId } from "@/lib/tax-id";
 
 const slugRegex = /^[a-z0-9-]+$/;
-export const defaultWhatsappProviderSchema = z.enum(["zapi", "uazapi"]);
+export const defaultWhatsappProviderSchema = z.enum(["zapi", "uazapi", "datafy"]);
 export type DefaultWhatsappProvider = z.infer<typeof defaultWhatsappProviderSchema>;
 
 export const createOrganizationSchema = z.object({

@@ -22,7 +22,7 @@ function slugValid(s: string) {
   return /^[a-z0-9-]+$/.test(s) && s.length >= 2 && s.length <= 60;
 }
 
-const DEFAULT_WHATSAPP_PROVIDERS = new Set(["zapi", "uazapi"]);
+const DEFAULT_WHATSAPP_PROVIDERS = new Set(["zapi", "uazapi", "datafy"]);
 
 function parseDefaultWhatsAppProvider(value: unknown): string | null {
   const provider = String(value ?? "").trim().toLowerCase();
