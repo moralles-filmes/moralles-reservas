@@ -164,7 +164,7 @@ describe("guardrails de wiring WhatsApp multi-provider", () => {
 
   it("diagnóstico frontend reconhece todos os providers do canal", () => {
     const health = read("src/hooks/useWhatsAppHealth.ts");
-    expect(health).toContain('"zapi" | "uazapi" | "waha" | "official"');
+    expect(health).toContain('"zapi" | "uazapi" | "waha" | "official" | "datafy"');
   });
 
   it("token UazAPI é resolvido pelo Vault e nunca pelo JSONB", () => {
