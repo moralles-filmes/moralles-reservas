@@ -90,6 +90,27 @@ describe("registry WhatsApp", () => {
     expect(registry.metadata()[0]).not.toBe(registry.list()[0]);
   });
 
+  it("serializa as seis capabilities de Cloud API sem habilitar novas operações nos quatro providers legados", () => {
+    // Os quatro legados de propósito: datafy liga rawCloudApiProxy e adReferral,
+    // então incluí-lo aqui faria o teste falhar. Cobertura do datafy vive em
+    // whatsapp-capability-guard.test.ts e datafy-adapter-coupling-guard.test.ts.
+    const LEGACY_NAMES = ["zapi", "waha", "official", "uazapi"] as const;
+    const registry = createWhatsAppProviderRegistry(LEGACY_NAMES.map(stubAdapter));
+
+    for (const metadata of registry.metadata()) {
+      expect(metadata.capabilities).toMatchObject({
+        templateMessages: false,
+        mediaMessages: false,
+        inboundMediaDownload: false,
+        interactiveMessages: false,
+        adReferral: metadata.name === "official",
+        rawCloudApiProxy: false,
+      });
+      expect(metadata.capabilities).not.toBe(registry.get(metadata.name).capabilities);
+      expect(registry.get(metadata.name).cloudApiRequest).toBeUndefined();
+    }
+  });
+
   it("falha fechado para provider desconhecido e duplicado", () => {
     const registry = createWhatsAppProviderRegistry([stubAdapter("zapi")]);
     expect(registry.tryGet("nao-existe")).toBeNull();
@@ -889,5 +910,46 @@ describe("UazAPI v2.1.1", () => {
     await vi.advanceTimersByTimeAsync(25);
     await expect(pending).resolves.toEqual({ ok: false, error: "uazapi_timeout", errorCode: "TIMEOUT" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("datafy: identidade e lote (Review Focus 3 e 4)", () => {
+  const evento = (phoneNumberId: string, field: string, value: Record<string, unknown>) => ({
+    object: "whatsapp_business_account",
+    entry: [{ id: "waba1", changes: [{ field, value: { messaging_product: "whatsapp", metadata: { display_phone_number: "5511988887777", phone_number_id: phoneNumberId }, ...value } }] }],
+  });
+
+  it("inbound de outro phone_number_id do mesmo cliente não casa o canal", () => {
+    const payload = evento("999", "messages", {
+      contacts: [{ wa_id: "5511999999999", profile: { name: "Ana" } }],
+      messages: [{ from: "5511999999999", id: "wamid.1", timestamp: "1790000000", type: "text", text: { body: "oi" } }],
+    });
+    // O payload é válido e parseável — é exatamente por isso que a guarda de
+    // identidade precisa existir: o HMAC prova QUEM enviou, não PARA QUAL canal.
+    expect(parseOfficialInbound(payload)?.providerMessageId).toBe("wamid.1");
+    expect(payload.entry[0].changes[0].value.metadata.phone_number_id).toBe("999");
+  });
+
+  // NÃO cobre o caminho do webhook: um evento WABA sem `metadata.phone_number_id`
+  // (message_template_status_update) faz metaPayloadMatchesChannel recusar por lista
+  // vazia → 401 no filho → 500 no lote. Dormente nas Fases A–D (o referral da CTWA
+  // chega dentro de messages[], que tem metadata) e bloqueante para a Fase F.
+  // Decisão registrada na spec, seção "Pendência bloqueante para a Fase F".
+  it("parseOfficialInbound devolve null para lote misto e a parte isolada de messages segue parseável", () => {
+    const lote = {
+      object: "whatsapp_business_account",
+      entry: [
+        { id: "w", changes: [{ field: "message_template_status_update", value: { event: "APPROVED" } }] },
+        { id: "w", changes: [{ field: "messages", value: { messaging_product: "whatsapp", metadata: { display_phone_number: "5511988887777", phone_number_id: "123" }, contacts: [{ wa_id: "5511999999999", profile: { name: "Ana" } }], messages: [{ from: "5511999999999", id: "wamid.2", timestamp: "1790000000", type: "text", text: { body: "oi" } }] } }] },
+      ],
+    };
+    const inbound = parseOfficialInbound(lote);
+    // O parser lê entry[0] e devolve null para o template — é o split do webhook
+    // que separa os itens. O que este teste fixa é que o evento desconhecido
+    // não lança: perder o lote inteiro seria a regressão.
+    expect(() => parseOfficialInbound(lote)).not.toThrow();
+    expect(inbound).toBeNull();
+    const soMensagem = { object: lote.object, entry: [lote.entry[1]] };
+    expect(parseOfficialInbound(soMensagem)?.providerMessageId).toBe("wamid.2");
   });
 });

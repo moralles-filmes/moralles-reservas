@@ -88,6 +88,15 @@ import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 import { formatPhone } from "@/lib/utils";
+/**
+ * Núcleo puro do backend (sem Deno-only deps — `whatsapp-provider-core.ts` só
+ * importa `phone.ts`, que também é puro). Import relativo fora de `src/` é o
+ * mesmo padrão já validado por `src/pages/platform/WhatsappImplementations.tsx`
+ * (documentado no CLAUDE.md). Decide QUAL segredo autentica o webhook de cada
+ * provider — nunca decidir isso por nome de provider no call site, é assim que
+ * o próximo provider Meta-shaped entra sem ninguém notar.
+ */
+import { WEBHOOK_SIGNATURE_SCHEME } from "../../../supabase/functions/_shared/whatsapp-provider-core";
 import {
   MODELS_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -118,6 +127,7 @@ const PROVIDER_LABELS: Record<WhatsAppProvider, string> = {
   uazapi: "UazAPI",
   waha: "WAHA (self-hosted)",
   official: "API Oficial (Meta)",
+  datafy: "Datafy (API Oficial)",
 };
 
 const STATUS_CONFIG: Record<string, { label: string; icon: React.ReactNode; className: string }> = {
@@ -248,9 +258,18 @@ export default function Automacao() {
 
 // ─── Tab: WhatsApp Channels ───────────────────────────────────────────────────
 
-function buildWebhookUrl(channelId: string, secret: string): string {
+// O `?secret=` só é emitido quando o esquema de assinatura do provider É o
+// próprio secret do canal (zapi/waha/uazapi hoje). Para `official` a Meta
+// valida por `app_secret` (o `&secret=` era inerte); para `datafy` o `whsec_`
+// que autentica a entrega NUNCA pode ir na URL — colada no painel do provedor,
+// vive nos logs de acesso do gateway para sempre. Pergunta feita pelo esquema
+// de assinatura (`WEBHOOK_SIGNATURE_SCHEME`), não por nome de provider — um
+// `provider !== "datafy"` resolveria hoje e erraria de novo no próximo
+// provider Meta-shaped.
+function buildWebhookUrl(channelId: string, secret: string, provider: WhatsAppProvider): string {
   const base = (import.meta.env.VITE_SUPABASE_URL ?? "").replace(/\/$/, "");
-  return `${base}/functions/v1/webhook-whatsapp?channel=${channelId}&secret=${secret}`;
+  const secretParam = WEBHOOK_SIGNATURE_SCHEME[provider] === "channel_secret" ? `&secret=${secret}` : "";
+  return `${base}/functions/v1/webhook-whatsapp?channel=${channelId}${secretParam}`;
 }
 
 function AdminQrCode({ value }: { value: string }) {
@@ -467,34 +486,15 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                           )}
                         </>
                       )}
-                      {!automaticWebhook && <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button size="sm" variant="outline">
-                            <KeyRound className="h-3 w-3 mr-1" />
-                            Rotacionar secret
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>Rotacionar secret do canal {PROVIDER_LABELS[ch.provider]}?</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              A URL antiga do webhook para de funcionar imediatamente.
-                              Depois de rotacionar, copie a URL nova neste card e configure-a
-                              no painel do provedor. O canal ficará inativo: envie uma mensagem
-                              pelo celular para validar o novo eco e depois use "Ativar / trocar".
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                            <AlertDialogAction
-                              onClick={() => rotateSecret.mutate(ch.id)}
-                              disabled={rotateSecret.isPending}
-                            >
-                              {rotateSecret.isPending ? "Rotacionando..." : "Rotacionar"}
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>}
+                      {!automaticWebhook && (
+                        <RotateSecretAction
+                          channel={ch}
+                          isPending={rotateSecret.isPending}
+                          onRotate={(webhookSecret) =>
+                            rotateSecret.mutate({ channelId: ch.id, webhookSecret })
+                          }
+                        />
+                      )}
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -540,21 +540,23 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                     </p>
                   ) : <div className="space-y-1">
                     <p className="text-xs text-muted-foreground">
-                      Webhook (configure no painel do provedor):
+                      {WEBHOOK_SIGNATURE_SCHEME[ch.provider] === "datafy_whsec"
+                        ? "Webhook (URL estável — configure uma vez no painel da Datafy). O segredo que autentica a entrega rotaciona à parte, em \"Rotacionar secret\":"
+                        : "Webhook (configure no painel do provedor):"}
                     </p>
                     <div className="flex items-center gap-1.5">
                       <code
                         className="font-mono bg-muted px-1.5 py-0.5 rounded text-[10px] truncate flex-1 min-w-0"
-                        title={buildWebhookUrl(ch.id, ch.webhook_secret)}
+                        title={buildWebhookUrl(ch.id, ch.webhook_secret, ch.provider)}
                       >
-                        {buildWebhookUrl(ch.id, ch.webhook_secret)}
+                        {buildWebhookUrl(ch.id, ch.webhook_secret, ch.provider)}
                       </code>
                       <Button
                         size="sm"
                         variant="ghost"
                         className="h-6 px-2 shrink-0"
                         onClick={() =>
-                          handleCopy(ch.id, buildWebhookUrl(ch.id, ch.webhook_secret))
+                          handleCopy(ch.id, buildWebhookUrl(ch.id, ch.webhook_secret, ch.provider))
                         }
                       >
                         {copiedId === ch.id ? (
@@ -593,6 +595,75 @@ function ChannelsTab({ unitId }: { unitId: string }) {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// Datafy é o único provider cujo secret o admin PRECISA colar: ela emite o
+// `whsec_` (rotacionado no painel dela) e a nossa ação só o grava. Os outros
+// três providers (Z-API/WAHA/Official) seguem sem input — o backend gera.
+function RotateSecretAction({
+  channel,
+  isPending,
+  onRotate,
+}: {
+  channel: WhatsAppChannel;
+  isPending: boolean;
+  onRotate: (webhookSecret?: string) => void;
+}) {
+  const [secretDraft, setSecretDraft] = useState("");
+  const isDatafy = channel.provider === "datafy";
+
+  return (
+    <AlertDialog onOpenChange={(open) => { if (!open) setSecretDraft(""); }}>
+      <AlertDialogTrigger asChild>
+        <Button size="sm" variant="outline">
+          <KeyRound className="h-3 w-3 mr-1" />
+          Rotacionar secret
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Rotacionar secret do canal {PROVIDER_LABELS[channel.provider]}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {isDatafy ? (
+              "Cole o segredo novo gerado no painel da Datafy. O anterior deixa de ser aceito assim que você salvar."
+            ) : (
+              <>
+                A URL antiga do webhook para de funcionar imediatamente.
+                Depois de rotacionar, copie a URL nova neste card e configure-a
+                no painel do provedor. O canal ficará inativo: envie uma mensagem
+                pelo celular para validar o novo eco e depois use "Ativar / trocar".
+              </>
+            )}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {isDatafy && (
+          <div className="space-y-1">
+            <Label htmlFor={`rotate-secret-${channel.id}`}>Novo segredo do webhook</Label>
+            <Input
+              id={`rotate-secret-${channel.id}`}
+              type="password"
+              autoComplete="off"
+              placeholder="whsec_..."
+              value={secretDraft}
+              onChange={(e) => setSecretDraft(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              É o valor que está na aba Webhooks do número, no painel da Datafy.
+            </p>
+          </div>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => onRotate(isDatafy ? secretDraft.trim() : undefined)}
+            disabled={isPending || (isDatafy && !secretDraft.trim())}
+          >
+            {isPending ? "Rotacionando..." : "Rotacionar"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -782,23 +853,34 @@ function AddChannelDialog({
   const [accessToken, setAccessToken] = useState("");
   const [appSecret, setAppSecret] = useState("");
 
+  // Datafy fields — phone_number_id/waba_id/business_id vêm da descoberta por
+  // /me no backend; aqui só entram o token e o webhook_secret que a Datafy emite.
+  const [datafyToken, setDatafyToken] = useState("");
+  const [datafyWebhookSecret, setDatafyWebhookSecret] = useState("");
+
   const reset = () => {
     setProvider("zapi");
     setInstanceId(""); setToken(""); setClientToken("");
     setBaseUrl(""); setApiKey(""); setSessionName("");
     setPhoneNumberId(""); setBusinessAccountId(""); setAccessToken(""); setAppSecret("");
+    setDatafyToken(""); setDatafyWebhookSecret("");
   };
 
   const getCredentials = () => {
     if (selectedProvider?.capabilities.manualCredentials === false) return {};
     if (provider === "zapi") return { instance_id: instanceId, token, client_token: clientToken };
     if (provider === "waha") return { base_url: baseUrl, api_key: apiKey, session_name: sessionName };
+    if (provider === "datafy") return { access_token: datafyToken };
     return { phone_number_id: phoneNumberId, business_account_id: businessAccountId, access_token: accessToken, app_secret: appSecret };
   };
 
   const handleCreate = () => {
     createChannel.mutate(
-      { provider, credentials: getCredentials() },
+      {
+        provider,
+        credentials: getCredentials(),
+        ...(provider === "datafy" ? { webhookSecret: datafyWebhookSecret } : {}),
+      },
       {
         onSuccess: () => { onClose(); reset(); },
       }
@@ -852,6 +934,40 @@ function AddChannelDialog({
               <div className="space-y-1">
                 <Label>Session name</Label>
                 <Input value={sessionName} onChange={(e) => setSessionName(e.target.value)} placeholder="default" />
+              </div>
+            </>
+          )}
+
+          {provider === "datafy" && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="datafy-token">Token da Datafy</Label>
+                <Input
+                  id="datafy-token"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="sk_live_..."
+                  value={datafyToken}
+                  onChange={(e) => setDatafyToken(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  O número, o WABA e o Business ID são descobertos automaticamente por este token.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="datafy-whsec">Segredo do webhook</Label>
+                <Input
+                  id="datafy-whsec"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="whsec_..."
+                  value={datafyWebhookSecret}
+                  onChange={(e) => setDatafyWebhookSecret(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  A Datafy não permite configurar o webhook pela API. Depois de criar o canal,
+                  copie a URL exibida e cole na aba Webhooks do número, no painel da Datafy.
+                </p>
               </div>
             </>
           )}

@@ -6,9 +6,9 @@ const root = resolve(__dirname, "../..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 
 describe("guardrails de wiring WhatsApp multi-provider", () => {
-  it("registry canônico inclui UazAPI sem remover os providers legados", () => {
+  it("registry canônico inclui UazAPI e Datafy sem remover os providers legados", () => {
     const core = read("supabase/functions/_shared/whatsapp-provider-core.ts");
-    expect(core).toContain('["zapi", "waha", "official", "uazapi"]');
+    expect(core).toContain('["zapi", "waha", "official", "uazapi", "datafy"]');
     expect(core).toContain("automaticProvisioning: true");
     expect(core).toContain("manualCredentials: false");
   });
@@ -164,7 +164,7 @@ describe("guardrails de wiring WhatsApp multi-provider", () => {
 
   it("diagnóstico frontend reconhece todos os providers do canal", () => {
     const health = read("src/hooks/useWhatsAppHealth.ts");
-    expect(health).toContain('"zapi" | "uazapi" | "waha" | "official"');
+    expect(health).toContain('"zapi" | "uazapi" | "waha" | "official" | "datafy"');
   });
 
   it("token UazAPI é resolvido pelo Vault e nunca pelo JSONB", () => {

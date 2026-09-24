@@ -1,6 +1,6 @@
 import { canonicalBrPhone } from "./phone.ts";
 
-export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi"] as const;
+export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi", "datafy"] as const;
 
 export type WhatsAppProviderName = typeof WHATSAPP_PROVIDER_NAMES[number];
 
@@ -13,12 +13,45 @@ export interface WhatsAppProviderCapabilities {
   disconnect: boolean;
   restart: boolean;
   deliveryReceipts: boolean;
+  /** Envio de templates aprovados pela Meta. */
+  templateMessages: boolean;
+  /** Envio de imagem, áudio, vídeo, documento ou sticker. */
+  mediaMessages: boolean;
+  /** Download da mídia recebida do cliente. */
+  inboundMediaDownload: boolean;
+  /** Botões, listas e demais formatos interativos. */
+  interactiveMessages: boolean;
+  /** Entrega o objeto referral de anúncio Click-to-WhatsApp no payload. */
+  adReferral: boolean;
+  /** Requisição de baixo nível a endpoints da Cloud API. */
+  rawCloudApiProxy: boolean;
   /**
    * Se o provider consegue ecoar mensagens digitadas no aparelho da loja.
    * `conditional` exige um modo específico, como Meta Cloud API Coexistence.
    */
   manualDeviceEcho: "supported" | "conditional" | "unsupported";
 }
+
+export interface CloudApiRequest {
+  method: "GET" | "POST" | "DELETE";
+  /** Caminho relativo à base do provider, sem barra inicial. */
+  path: string;
+  body?: unknown;
+}
+
+export interface CloudApiResponse {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * Capability → método exigido pelo guard de acoplamento.
+ * Capabilities de payload, como adReferral, não exigem chamada própria.
+ * Acrescentar o método ao contrato exige mapear sua capability aqui.
+ */
+export const CAPABILITY_REQUIRED_METHOD = {
+  rawCloudApiProxy: "cloudApiRequest",
+} as const satisfies Readonly<Partial<Record<keyof WhatsAppProviderCapabilities, keyof WhatsAppProviderAdapter>>>;
 
 export type WhatsAppOperationalStatus =
   | "not_configured"
@@ -208,6 +241,8 @@ export interface WhatsAppProviderAdapter {
   getConnectionStatus?(credentials: ChannelCredentials): Promise<ProviderConnectionSnapshot>;
   getQrCode?(credentials: ChannelCredentials): Promise<ProviderQrSnapshot>;
   canRequestQr?(credentials: ChannelCredentials): boolean;
+  /** Uso exclusivo de Edge Functions que já resolveram tenant e credenciais. */
+  cloudApiRequest?(credentials: ChannelCredentials, request: CloudApiRequest): Promise<CloudApiResponse>;
   lifecycle?: ManagedProviderLifecycleAdapter;
 }
 
@@ -268,6 +303,12 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: false,
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: false,
+    rawCloudApiProxy: false,
   },
   waha: {
     manualCredentials: true,
@@ -279,6 +320,12 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: false,
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: false,
+    rawCloudApiProxy: false,
   },
   official: {
     manualCredentials: true,
@@ -290,6 +337,12 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: false,
     deliveryReceipts: true,
     manualDeviceEcho: "conditional",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: true,
+    rawCloudApiProxy: false,
   },
   uazapi: {
     manualCredentials: false,
@@ -301,7 +354,70 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: true,
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: false,
+    rawCloudApiProxy: false,
   },
+  datafy: {
+    manualCredentials: true,
+    automaticProvisioning: false,
+    qrConnection: false,
+    pairCode: false,
+    // A Datafy responde 403 a webhook_configuration: a URL é colada à mão no painel.
+    automaticWebhook: false,
+    disconnect: false,
+    restart: false,
+    deliveryReceipts: true,
+    manualDeviceEcho: "conditional",
+    templateMessages: false,
+    mediaMessages: false,
+    inboundMediaDownload: false,
+    interactiveMessages: false,
+    adReferral: true,
+    rawCloudApiProxy: true,
+  },
+};
+
+/**
+ * Providers cujo payload de webhook é o envelope da Meta
+ * (`object`/`entry[]`/`changes[]`/`value`). A Datafy encaminha o payload da Meta
+ * sem modificar, então tudo que decide FORMA de payload pergunta a este conjunto.
+ *
+ * Existe como conjunto, e não como `provider === "official"` espalhado, porque a
+ * omissão de um único call site não produz erro: o evento simplesmente não casa
+ * nenhum parser e some como `ignored_non_text`.
+ */
+export const META_SHAPED_PROVIDERS: ReadonlySet<WhatsAppProviderName> = new Set([
+  "official",
+  "datafy",
+]);
+
+export function isMetaShapedProvider(provider: string): boolean {
+  return META_SHAPED_PROVIDERS.has(provider as WhatsAppProviderName);
+}
+
+/**
+ * Esquema de autenticação do webhook, por provider. É uma pergunta DIFERENTE de
+ * `META_SHAPED_PROVIDERS`: `official` e `datafy` têm o mesmo formato de payload
+ * e esquemas de assinatura distintos — a Meta assina o corpo com o app_secret,
+ * a Datafy assina `{timestamp}.{corpo}` com o whsec_ do canal.
+ *
+ * Existe como mapa para que o webhook não volte a discriminar por string: um
+ * `provider === "official"` no ramo de assinatura é indistinguível, à leitura,
+ * de um que decide forma de payload — e é assim que o próximo provider
+ * Meta-shaped entra sem ninguém notar.
+ */
+export type WebhookSignatureScheme = "meta_app_secret" | "datafy_whsec" | "channel_secret";
+
+export const WEBHOOK_SIGNATURE_SCHEME: Readonly<Record<WhatsAppProviderName, WebhookSignatureScheme>> = {
+  zapi: "channel_secret",
+  waha: "channel_secret",
+  uazapi: "channel_secret",
+  official: "meta_app_secret",
+  datafy: "datafy_whsec",
 };
 
 function sanitizeContactName(raw: unknown, phone: string): string | undefined {

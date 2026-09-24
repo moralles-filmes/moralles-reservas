@@ -45,6 +45,11 @@ async function isPlatformAdmin(userId: string): Promise<boolean> {
 
 function presentCredentialKeys(provider: WhatsAppProvider, creds: ChannelCredentials): string[] {
   // Não expomos os valores — apenas quais chaves estão preenchidas.
+  // O `else` final cobre `official` E `datafy` — acerta para a Datafy só
+  // porque as chaves dela (`phone_number_id`/`access_token`/`business_account_id`)
+  // coincidem com as da `official`, não por decisão deste código. O próximo
+  // provider Meta-shaped com uma chave de credencial própria não terá essa
+  // sorte; se acontecer, discrimine por `provider === "..."` aqui.
   const keys: Array<keyof ChannelCredentials> =
     provider === "zapi"
       ? ["instance_id", "token", "client_token"]

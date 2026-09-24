@@ -139,6 +139,7 @@ function CreateOrgDialog({
                     <SelectContent>
                       <SelectItem value="zapi">Z-API</SelectItem>
                       <SelectItem value="uazapi">UazAPI</SelectItem>
+                      <SelectItem value="datafy">Datafy (API Oficial)</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormDescription>
@@ -336,6 +337,7 @@ function EditOrgDialog({
                     <SelectContent>
                       <SelectItem value="zapi">Z-API</SelectItem>
                       <SelectItem value="uazapi">UazAPI</SelectItem>
+                      <SelectItem value="datafy">Datafy (API Oficial)</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormDescription>
