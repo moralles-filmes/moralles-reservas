@@ -4,7 +4,11 @@ import {
   canonicalBrPhone as backendCanonicalBrPhone,
   toE164BrPhone,
 } from "../../supabase/functions/_shared/phone.ts";
-import type { WhatsAppProviderAdapter } from "../../supabase/functions/_shared/whatsapp-provider-core.ts";
+import {
+  WHATSAPP_PROVIDER_NAMES,
+  type WhatsAppProviderAdapter,
+  type WhatsAppProviderName,
+} from "../../supabase/functions/_shared/whatsapp-provider-core.ts";
 
 // Executa os adapters reais sem incluir os globals Deno no typecheck do frontend.
 const providerModules = import.meta.glob<{
@@ -24,7 +28,12 @@ const outboundPhones = [
   ["(43) 99133-6361", "5543991336361"],
   ["+55 (11) 99999-8888", "5511999998888"],
   ["+55 (11) 3333-4444", "551133334444"],
-  ["4391336361", "554391336361"], // Envio não acrescenta 9º dígito.
+  // HERDADO, não desejado: celular de 10 dígitos sai sem o 9º e o WhatsApp não
+  // entrega. Idêntico ao comportamento antigo e inalcançável pelo caminho real
+  // (`customers.phone` é canônico por trigger, e `validateBrPhone` recusa no form),
+  // então corrigir aqui seria mudar escopo. O inverso de verdade, se um dia for
+  // preciso, é `toE164BrPhone(canonicalBrPhone(x))`.
+  ["4391336361", "554391336361"],
   ["554391336361", "554391336361"],
 ] as const;
 
@@ -52,7 +61,11 @@ describe("toE164BrPhone", () => {
   });
 });
 
-describe.each(["zapi", "uazapi", "waha", "official", "datafy"])("%s outbound destination", (provider) => {
+// A lista vem do registry, nunca redigitada: provider novo entra aqui sozinho e,
+// sem payload esperado abaixo, reprova no `tsc -b` em vez de passar por omissão.
+// É o que sustenta a afirmação do CLAUDE.md de que NENHUM adapter guarda regra
+// própria de prefixo — sem isso, a invariante valeria por confiança, não por medição.
+describe.each(WHATSAPP_PROVIDER_NAMES)("%s outbound destination", (provider) => {
   afterEach(() => vi.unstubAllGlobals());
 
   it.each(outboundPhones)("posts %s as %s", async (raw, expected) => {
@@ -74,7 +87,7 @@ describe.each(["zapi", "uazapi", "waha", "official", "datafy"])("%s outbound des
     const init = fetchMock.mock.calls[0][1];
     expect(init?.method).toBe("POST");
     const body = JSON.parse(String(init?.body));
-    const expectedPayloads = {
+    const expectedPayloads: Record<WhatsAppProviderName, unknown> = {
       zapi: { phone: expected, message: "Mensagem de teste" },
       uazapi: { number: expected, text: "Mensagem de teste" },
       waha: { session: "default", chatId: `${expected}@c.us`, text: "Mensagem de teste" },
