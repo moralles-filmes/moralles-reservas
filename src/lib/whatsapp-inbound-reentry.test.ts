@@ -78,10 +78,32 @@ describe("gêmeos declarados: o número vive em dois lugares e nenhum importa o 
   // export que NENHUM código de runtime consome — trocá-lo não quebraria nada, e
   // quatro lugares (migration, pré-voo 18, controles 19, README) afirmam que ele
   // está amarrado ao lease do banco. Afirmação sem mecanismo é comentário.
-  it("o lease da migration 113 é exatamente INBOUND_LEASE_TTL_MS", () => {
+  // ESCOPADO AO CORPO DO CLAIM, e não ao arquivo. A Task 6 vai fazer APPEND
+  // nesta mesma migration (seleção da varredura e purga), então um pino que só
+  // perguntasse "o arquivo contém `secs => 90`?" passaria a poder ficar verde por
+  // causa de outra função — inclusive com o lease do claim trocado. O pino tem de
+  // olhar para a função cujo número ele prende.
+  const CORPO_DO_CLAIM = (() => {
+    const inicio = MIGRATION_113.indexOf(
+      "create or replace function public.claim_whatsapp_inbound_event",
+    );
+    expect(inicio).toBeGreaterThan(-1);
+    const fim = MIGRATION_113.indexOf("$$;", inicio);
+    expect(fim).toBeGreaterThan(inicio);
+    return MIGRATION_113.slice(inicio, fim);
+  })();
+
+  it("o lease do claim é exatamente INBOUND_LEASE_TTL_MS", () => {
     const segundos = INBOUND_LEASE_TTL_MS / 1000;
     expect(Number.isInteger(segundos)).toBe(true);
-    expect(MIGRATION_113).toContain(`make_interval(secs => ${segundos})`);
+    expect(CORPO_DO_CLAIM).toContain(`make_interval(secs => ${segundos})`);
+  });
+
+  it("o corpo do claim monta UM intervalo só, para o pino não ter onde se esconder", () => {
+    // Dois intervalos no mesmo corpo deixariam o pino verde com o lease errado,
+    // bastando que o outro carregasse o número certo.
+    const todos = CORPO_DO_CLAIM.match(/make_interval\(secs => \d+\)/g) ?? [];
+    expect(todos).toHaveLength(1);
   });
 
   it("a migration nomeia o gêmeo, para quem lê o SQL primeiro", () => {
@@ -150,7 +172,21 @@ describe("a finalização não pode deixar a linha sem contabilidade de tentativ
   });
 
   it("o texto que vai para a coluna passa pelo sanitizador, não pelo de log", () => {
-    expect(EF).toMatch(/call\(sanitizeQueueErrorText\(input\.error\)\)/);
+    expect(EF).toMatch(/const errorText = sanitizeQueueErrorText\(input\.error\)/);
+    // Controle positivo: entregar o texto cru à RPC reprova aqui.
+    expect(EF).not.toMatch(/call\(input\.error\)/);
+  });
+
+  it("a decisão de retentar olha o texto SANITIZADO, não o cru", () => {
+    // Se o sanitizador já devolveu `null`, a primeira chamada foi sem texto e a
+    // segunda seria byte-idêntica — retentar o mesmo não é retentar.
+    expect(EF).toMatch(/if \(error && errorText !== null\)/);
+  });
+
+  it("o log da cerca diz se houve retentativa, porque isso muda o que ele significa", () => {
+    // Zero linhas depois de uma retentativa tem leitura OPOSTA à de zero linhas
+    // sem ela: provavelmente a primeira chamada gravou e só a resposta se perdeu.
+    expect(EF).toMatch(/evt: "queued_event_finalize_fenced"[\s\S]{0,200}retried:/);
   });
 
   it("a contagem de linhas afetadas é conferida antes de promover dead letter", () => {

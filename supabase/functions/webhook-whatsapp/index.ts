@@ -1558,25 +1558,35 @@ async function finalizeQueuedEvent(input: {
     // para sempre, retomada a cada 90 s, jamais virando dead letter, e primeira
     // na ordem da varredura, adiando o inbound dos outros tenants. Perder o
     // texto do erro é barato; perder a contabilidade da tentativa não é.
-    let { data, error } = await call(sanitizeQueueErrorText(input.error));
+    // Compara o texto JÁ SANITIZADO, não o cru: se o sanitizador devolveu
+    // `null`, a primeira chamada já foi sem texto e repeti-la emitiria uma
+    // segunda chamada byte-idêntica — retentar o mesmo não é retentar.
+    const errorText = sanitizeQueueErrorText(input.error);
+    let { data, error } = await call(errorText);
+    let retentou = false;
 
-    if (error && input.error !== null) {
+    if (error && errorText !== null) {
       jsonLog("warn", {
         evt: "queued_event_finalize_retry_without_error_text",
         eventId: input.eventId,
         err: error.message,
       });
+      retentou = true;
       ({ data, error } = await call(null));
     }
 
     if (error) {
-      // Aqui a falha não depende do payload — banco indisponível, ou a função
-      // ainda não aplicada (`PGRST202`, se a EF for deployada antes do
-      // `db push`). A linha fica `processing` com lease vivo e o takeover de
-      // 90 s a retoma quando o banco voltar, que é o comportamento certo para
-      // uma indisponibilidade. O que impede resposta dupla nesse caso não é esta
-      // função — é o claim de `processed_messages (provider, message_id)`, que
-      // recusa a parte já concluída como duplicata.
+      // Aqui a falha não depende do payload: banco indisponível, timeout de
+      // statement, conexão caindo no meio. A linha fica `processing` com lease
+      // vivo e o takeover de 90 s a retoma quando o banco voltar, que é o
+      // comportamento certo para uma indisponibilidade. O que impede resposta
+      // dupla nesse caso não é esta função — é o claim de
+      // `processed_messages (provider, message_id)`, que recusa a parte já
+      // concluída como duplicata.
+      //
+      // NÃO é `PGRST202` (função ausente por deploy antes do `db push`): o
+      // claim e a finalização nascem na MESMA migration, então sem uma não há a
+      // outra — nada teria sido reivindicado e nada chegaria aqui.
       jsonLog("error", {
         evt: "queued_event_finalize_failed",
         eventId: input.eventId,
@@ -1590,10 +1600,18 @@ async function finalizeQueuedEvent(input: {
     // indistinguível de "gravei" — e a promoção a dead letter sairia sobre uma
     // linha que pertence a outro processo.
     if (Number(data ?? 0) < 1) {
+      // `retried: true` muda o que esta linha SIGNIFICA, e por isso viaja junto.
+      // Sem retentativa, zero linhas é a cerca negando: outro processo tem a
+      // linha. DEPOIS de uma retentativa, zero linhas tem uma segunda leitura,
+      // oposta e mais provável — a PRIMEIRA chamada gravou e só a resposta se
+      // perdeu, e como a finalização zera `claim_id`, a segunda não acha mais o
+      // crachá. Ler as duas como "a cerca negou" mandaria investigar uma corrida
+      // que não houve.
       jsonLog("warn", {
         evt: "queued_event_finalize_fenced",
         eventId: input.eventId,
         status: verdict.status,
+        retried: retentou,
       });
       return;
     }
@@ -1651,6 +1669,10 @@ async function processQueuedEventById(eventId: string): Promise<void> {
     if (error) {
       // NÃO finaliza: sem claim não há cerca a apresentar, e escrever sem ela
       // sobrescreveria o veredito de quem tem a linha. A varredura tenta depois.
+      //
+      // `attempts` não avança aqui, e está certo: nada foi tentado. A linha
+      // continua `received`, com a escada intacta — gastar degrau por uma falha
+      // de leitura encurtaria as retentativas de um trabalho que nunca começou.
       jsonLog("error", { evt: "queued_event_claim_failed", eventId, err: error.message });
       return;
     }

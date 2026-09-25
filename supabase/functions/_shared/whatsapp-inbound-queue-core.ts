@@ -355,11 +355,24 @@ export function sanitizeQueueErrorText(input: string | null | undefined): string
  *
  * O preço é conhecido e aceito: numa rotação de credencial, a mensagem de
  * cliente que estava na janela da escada (no máximo ~7,5 min) é descartada em
- * silêncio, sem handoff. As duas alternativas são piores. Retentar não resolve
- * (a âncora antiga não volta a casar). E promover a handoff faria uma entrega
- * MAL-ROTEADA pelo provider — payload de outro tenant chegando nesta URL — criar
- * handoff no tenant errado, pedindo a uma pessoa daqui que responda a um cliente
- * que não é dela. Só o rastro fica: `queue_unauthorized_terminal` na linha e
+ * silêncio, sem handoff. As duas alternativas são piores.
+ *
+ * Retentar não resolve: a âncora antiga não volta a casar, então as três
+ * tentativas terminam no mesmo 401 e a linha vira dead letter — retendo o corpo
+ * cru por 30 dias para chegar ao mesmo lugar.
+ *
+ * E promover a handoff supõe que a linha pertence a este tenant, o que NÃO é
+ * garantido. Uma entrega simplesmente mal-roteada pelo provider não chega aqui —
+ * a guarda de identidade a recusa na porta, ANTES do insert, então ela nunca
+ * entra na fila (foi um erro afirmar o contrário numa versão anterior deste
+ * comentário). O caso real é outro e mais desconfortável: a âncora que ACEITOU
+ * o payload pode ter sido a errada, porque `manage-channels:update` aceita
+ * `phone_number_id` vindo do corpo, e porque a âncora pode migrar para um canal
+ * de outra organização. Aí a linha enfileirada é de um tenant e o handoff cairia
+ * no outro — pedindo a uma pessoa daqui que responda a um cliente que não é
+ * dela. Descartar em silêncio erra menos que acusar o tenant errado.
+ *
+ * Só o rastro fica: `queue_unauthorized_terminal` na linha e
  * `webhook_unauthorized` em `webhook_executions`.
  *
  * A consequência disso é VISIBILIDADE, e ela é trabalho da Task 8 (diagnóstico

@@ -112,7 +112,7 @@ end $ctrl$;
 -- A cerca é a peça que impede o PERDEDOR de um takeover de escrever por cima do
 -- veredito de quem de fato respondeu ao cliente. Sem ela, qualquer crachá serve.
 --
--- Duas metades, e a segunda é o que prova "exatamente um caso": com a cerca
+-- Duas metades, e a segunda é o que prova que o vermelho não respinga: com a cerca
 -- fora, o crachá ERRADO passa a afetar 1 linha (FIN-1 fica vermelho) e o crachá
 -- CERTO continua afetando 1 linha (FIN-2 e FIN-3 seguem verdes, porque os dois
 -- apresentam o crachá certo).
