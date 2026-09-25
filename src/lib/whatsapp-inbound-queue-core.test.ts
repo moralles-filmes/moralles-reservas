@@ -10,12 +10,19 @@ import {
   lockTtlSecondsRequired,
   encodeRawBodyHex,
   decodeRawBodyHex,
+  parseSelectedEventIds,
   providerDeclaresDeliveryId,
+  sweepShouldStartAnother,
   DATAFY_DELIVERY_ID_HEADER,
   SIGNATURE_HEADER_BY_SCHEME,
+  INBOUND_DEBOUNCE_WINDOW_MS,
   INBOUND_RETRY_DELAYS_MS,
   INBOUND_MAX_ATTEMPTS,
   AGENT_SOFT_DEADLINE_MS,
+  SWEEP_SELECT_LIMIT,
+  SWEEP_WALL_CLOCK_BUDGET_MS,
+  WORST_CASE_QUEUED_EVENT_MS,
+  WORST_SINGLE_TURN_MS,
 } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
 import {
   WEBHOOK_SIGNATURE_SCHEME,
@@ -378,5 +385,119 @@ describe("lockTtlSecondsRequired — o TTL do lock deixa de ser adivinhado", () 
 
   it("subir o orçamento sem subir o TTL é detectável", () => {
     expect(lockTtlSecondsRequired({ budgetMs: 300_000 })).toBeGreaterThan(90);
+  });
+});
+
+describe("sweepShouldStartAnother — a varredura para de COMEÇAR, nunca aborta o em curso", () => {
+  const t0 = 1_000_000;
+  /** O instante em que ainda sobra EXATAMENTE a reserva do pior caso. */
+  const ultimoInstanteQueCabe = t0 + SWEEP_WALL_CLOCK_BUDGET_MS - WORST_CASE_QUEUED_EVENT_MS;
+
+  // Uma varredura que não processa nada nunca esvazia a fila. O custo máximo de
+  // começar a primeira é o worker morrer no meio dela — e o lease de 90 s cobre.
+  it("a primeira linha começa SEMPRE, ainda que o orçamento já tivesse estourado", () => {
+    expect(sweepShouldStartAnother({
+      startedAt: t0,
+      now: t0 + 10 * SWEEP_WALL_CLOCK_BUDGET_MS,
+      processed: 0,
+    })).toBe(true);
+  });
+
+  it("no início, com orçamento inteiro, começa outra", () => {
+    expect(sweepShouldStartAnother({ startedAt: t0, now: t0 + 1_000, processed: 1 }))
+      .toBe(true);
+  });
+
+  it("no último instante em que a reserva cabe inteira, ainda começa", () => {
+    expect(sweepShouldStartAnother({ startedAt: t0, now: ultimoInstanteQueCabe, processed: 3 }))
+      .toBe(true);
+  });
+
+  // (a) do requisito: orçamento quase esgotado devolve `false` MESMO com linhas
+  // sobrando. As linhas não começadas não foram reivindicadas — ficam para o
+  // minuto seguinte, sem lease preso e sem tentativa gasta.
+  it("um milissegundo depois, recusa — ainda que haja linha devida sobrando", () => {
+    expect(sweepShouldStartAnother({ startedAt: t0, now: ultimoInstanteQueCabe + 1, processed: 3 }))
+      .toBe(false);
+  });
+
+  // ─── CONTROLE POSITIVO: a reserva é do PIOR CASO, não de uma média ────────
+  // A média é o que faz o worker morrer no meio: evento de fila é quase sempre
+  // rápido (duplicata, callback de status, canal inativo), e é justamente o
+  // lento que precisa caber inteiro no que resta. Este caso escolhe o instante
+  // em que sobra exatamente uma "média" — se alguém trocar
+  // `WORST_CASE_QUEUED_EVENT_MS` por um número dessa ordem, a função passa a
+  // devolver `true` aqui e este teste reprova.
+  it("reserva o PIOR caso: onde uma média caberia, a decisão ainda é não começar", () => {
+    const mediaOtimista = 10_000;
+    expect(mediaOtimista).toBeLessThan(WORST_CASE_QUEUED_EVENT_MS);
+    expect(sweepShouldStartAnother({
+      startedAt: t0,
+      now: t0 + SWEEP_WALL_CLOCK_BUDGET_MS - mediaOtimista,
+      processed: 1,
+    })).toBe(false);
+  });
+
+  it("relógio andando para trás não cala a varredura", () => {
+    expect(sweepShouldStartAnother({ startedAt: t0, now: t0 - 5_000, processed: 1 })).toBe(true);
+  });
+
+  // Se a reserva não coubesse no orçamento, a varredura NUNCA começaria um
+  // segundo evento e a fila andaria a uma linha por minuto.
+  it("o pior caso de um evento cabe no orçamento, com folga para mais de um", () => {
+    expect(WORST_CASE_QUEUED_EVENT_MS).toBeLessThan(SWEEP_WALL_CLOCK_BUDGET_MS);
+  });
+
+  // A reserva é DERIVADA: debounce + a mesma aritmética do TTL do lock de
+  // conversa (orçamento do laço + um turno de pior caso + a folga de envio).
+  // Quem subir o orçamento do agente sobe a reserva junto — este caso é o que
+  // reprova quem transformar a derivação num literal.
+  it("a reserva é derivada do debounce mais a aritmética do TTL do lock", () => {
+    expect(WORST_CASE_QUEUED_EVENT_MS)
+      .toBe(INBOUND_DEBOUNCE_WINDOW_MS + lockTtlSecondsRequired() * 1000);
+    // Um turno só não é o pior caso: o deadline é SUAVE, então uma rodada
+    // iniciada no último milissegundo do orçamento ainda roda inteira.
+    expect(WORST_CASE_QUEUED_EVENT_MS).toBeGreaterThan(
+      INBOUND_DEBOUNCE_WINDOW_MS + WORST_SINGLE_TURN_MS,
+    );
+  });
+
+  // O `least(coalesce(p_limit, 20), 100)` da migration 113 é o outro lado deste
+  // número; pedir mais que o teto do banco seria pedir o que ele não dá.
+  it("o limite pedido por varredura respeita o teto que o banco impõe", () => {
+    expect(SWEEP_SELECT_LIMIT).toBeGreaterThan(0);
+    expect(SWEEP_SELECT_LIMIT).toBeLessThanOrEqual(100);
+  });
+});
+
+describe("parseSelectedEventIds — a forma do retorno é do PostgREST, não nossa", () => {
+  const a = "11111111-1111-1111-1111-111111111111";
+  const b = "22222222-2222-2222-2222-222222222222";
+
+  it("array de escalares (a forma esperada de `returns setof uuid`)", () => {
+    expect(parseSelectedEventIds([a, b])).toEqual([a, b]);
+  });
+
+  it("array de objetos com `id` também é aceito", () => {
+    expect(parseSelectedEventIds([{ id: a }, { id: b }])).toEqual([a, b]);
+  });
+
+  // A alternativa plausível: PostgREST nomeando a coluna pela função.
+  it("array de objetos de uma chave só, com o nome da função, também é aceito", () => {
+    expect(parseSelectedEventIds([
+      { select_due_whatsapp_inbound_events: a },
+      { select_due_whatsapp_inbound_events: b },
+    ])).toEqual([a, b]);
+  });
+
+  it("nada devido devolve lista vazia, e `null` não estoura", () => {
+    expect(parseSelectedEventIds([])).toEqual([]);
+    expect(parseSelectedEventIds(null)).toEqual([]);
+    expect(parseSelectedEventIds(undefined)).toEqual([]);
+  });
+
+  // Chamar o claim com lixo só gastaria ida ao banco.
+  it("item que não carrega id nenhum é descartado, não inventado", () => {
+    expect(parseSelectedEventIds([a, "", "   ", 42, null, {}, { id: 7 }])).toEqual([a]);
   });
 });

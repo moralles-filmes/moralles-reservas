@@ -456,3 +456,118 @@ export function lockTtlSecondsRequired(input?: { budgetMs?: number }): number {
   const budget = input?.budgetMs ?? AGENT_SOFT_DEADLINE_MS;
   return Math.ceil((budget + WORST_SINGLE_TURN_MS + POST_LOOP_SEND_MS) / 1000);
 }
+
+/**
+ * Janela de rajada por conversa, em milissegundos.
+ *
+ * Mora aqui, e não como literal no `index.ts`, porque a varredura precisa dela
+ * para reservar o pior caso de um evento — e um número igual digitado em dois
+ * arquivos é como a divergência nasce. `DEBOUNCE_WINDOW_MS`, no
+ * `webhook-whatsapp/index.ts`, é ESTA constante: quem mudar a janela muda a
+ * reserva da varredura junto, sem precisar lembrar.
+ */
+export const INBOUND_DEBOUNCE_WINDOW_MS = 6_000;
+
+/**
+ * Pior caso de UM evento da fila, do claim ao fim do envio.
+ *
+ * Derivado, nunca digitado: é a janela de debounce mais a MESMA aritmética de
+ * `lockTtlSecondsRequired` — orçamento do laço + um turno de pior caso + a folga
+ * de envio. A soma é essa (e não "orçamento OU turno") porque o deadline é
+ * SUAVE: ele impede COMEÇAR rodada nova, então uma rodada iniciada a 29,999 s
+ * ainda roda um turno inteiro de pior caso. É exatamente por isso que o TTL do
+ * lock de conversa já vale 90 s e não 31 s.
+ *
+ * Hoje: 6 000 + 66 000 = 72 000 ms. Subir o orçamento do agente sobe esta
+ * reserva sozinho, que é o ponto de derivá-la.
+ */
+export const WORST_CASE_QUEUED_EVENT_MS =
+  INBOUND_DEBOUNCE_WINDOW_MS + lockTtlSecondsRequired() * 1000;
+
+/**
+ * Orçamento de PAREDE de uma varredura, em milissegundos.
+ *
+ * Dois números o cercam. Por baixo, ele precisa ser maior que
+ * `WORST_CASE_QUEUED_EVENT_MS`, senão a varredura nunca começaria um SEGUNDO
+ * evento e a fila andaria a uma linha por minuto. Por cima, o agendamento é de
+ * 1 em 1 minuto e **`pg_cron` NÃO pula execuções sobrepostas**: duas varreduras
+ * podem estar no ar ao mesmo tempo. O que torna a sobreposição segura é o claim
+ * por linha, não o agendamento — o orçamento existe para que ela seja exceção,
+ * não rotina.
+ *
+ * Com 120 s, a varredura para de COMEÇAR evento novo depois de 48 s de trabalho
+ * (120 − 72), então no caso comum (eventos rápidos: duplicata, callback de
+ * status, canal inativo) ela termina dentro do próprio minuto e não encosta na
+ * seguinte. Só um evento genuinamente lento a leva além — e aí a sobreposição é
+ * o comportamento certo, porque a outra varredura pega OUTRAS linhas.
+ *
+ * Estourar mesmo assim não perde nada: o worker morre, a linha em curso fica
+ * `processing` com lease vivo e o takeover de 90 s a retoma. O orçamento torna
+ * isso raro; a cerca é que o torna inofensivo.
+ */
+export const SWEEP_WALL_CLOCK_BUDGET_MS = 120_000;
+
+/** Teto de linhas pedidas por varredura. O banco também limita (`least(..., 100)`). */
+export const SWEEP_SELECT_LIMIT = 20;
+
+/**
+ * A varredura para de COMEÇAR; ela NUNCA aborta o evento em curso.
+ *
+ * Abortar no meio deixaria reserva criada e cliente sem resposta — a mesma razão
+ * pela qual `agentDeadlineVerdict` é suave. E não há nada a desfazer: linha que
+ * não foi começada não foi REIVINDICADA, então ela simplesmente fica para o
+ * minuto seguinte. Nada órfão, nada perdido.
+ *
+ * A primeira linha começa SEMPRE. Uma varredura que não processa nada nunca
+ * esvazia a fila, e o custo máximo de começar uma só é o worker ser derrubado no
+ * meio dela — que o lease de 90 s já cobre.
+ *
+ * A reserva é o PIOR CASO, não uma média. A média é o que faz o worker morrer no
+ * meio: eventos de fila são majoritariamente rápidos, e é justamente o lento que
+ * precisa caber inteiro no que resta.
+ */
+export function sweepShouldStartAnother(input: {
+  startedAt: number;
+  now: number;
+  processed: number;
+}): boolean {
+  if (!(input.processed > 0)) return true;
+  const elapsed = input.now - input.startedAt;
+  // Relógio não-monotônico: mesma postura de `agentDeadlineVerdict` — o dado é
+  // inútil, e recusar por causa dele calaria a varredura inteira.
+  if (!Number.isFinite(elapsed) || elapsed < 0) return true;
+  return elapsed + WORST_CASE_QUEUED_EVENT_MS <= SWEEP_WALL_CLOCK_BUDGET_MS;
+}
+
+/**
+ * Os ids devolvidos por `select_due_whatsapp_inbound_events`.
+ *
+ * Existe porque a FORMA do retorno de uma função `returns setof uuid` é do
+ * PostgREST, não nossa, e ela NÃO PÔDE SER MEDIDA nesta task (nada foi aplicado a
+ * banco nenhum, nenhuma função foi deployada). O esperado é um array de escalares
+ * (`["uuid", ...]`); a forma alternativa plausível é um array de objetos de uma
+ * chave só. Aceitar as duas custa três linhas; errar a aposta custaria uma
+ * varredura que devolve `{"processed":0}` para sempre, com a fila cheia e nenhum
+ * erro — o modo de falha mais caro disponível aqui, porque ele se parece com
+ * "não havia nada a fazer".
+ *
+ * Fora dessas duas formas, descarta o item em vez de inventar id: chamar o claim
+ * com lixo só gastaria ida ao banco.
+ */
+export function parseSelectedEventIds(data: unknown): string[] {
+  if (!Array.isArray(data)) return [];
+  const ids: string[] = [];
+  for (const item of data) {
+    if (typeof item === "string") {
+      if (item.trim()) ids.push(item);
+      continue;
+    }
+    if (item && typeof item === "object") {
+      const record = item as Record<string, unknown>;
+      const values = [record.id, ...Object.values(record)];
+      const found = values.find((value) => typeof value === "string" && value.trim());
+      if (typeof found === "string") ids.push(found);
+    }
+  }
+  return ids;
+}

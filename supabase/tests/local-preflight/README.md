@@ -52,6 +52,8 @@ presentes agendaria jobs apontando para lá.
 | `17-controles-111.sql` | Os **cinco controles positivos** (ordinais 44–48) da 111. C-111-1 troca `raw_body` para `text`; C-111-2 troca o unique parcial por `nulls not distinct`; C-111-3 dropa o CHECK de `delivery_id`; C-111-4 troca `on delete cascade` por `restrict`; C-111-5 dropa o CHECK de `provider`. **Aqui o restore mora dentro de cada controle e isso não é escolha** — ver a nota "Por que reaplicar a 111 não restaura" abaixo. |
 | `18-inbound-claim-113.sql` | CLAIM-1..4, FIN-1..3 e ACL-113 (ordinais 49–55 e 63, migration 113, Fase C): a cerca de UUID que impede DUAS execuções da mesma linha — que nesta fase significa duas IAs respondendo ao mesmo cliente. Claim exclusivo, takeover de lease vencido com crachá novo, finalização recusada com crachá errado, incremento de `attempts` e `next_attempt_at` montados pelo relógio do BANCO, recusa terminal de 401 morrendo em `done` (e não em `dead`, que reteria o corpo cru por 30 dias), e o ACL efetivo das duas RPCs. **Continua o banco da 111** — ver a seção "Sequência da migration 113". |
 | `19-controles-113.sql` | Os **sete controles positivos** (ordinais 56–62) da 113. C-113-1 tira a cerca `claim_id` da finalização; C-113-2 tira a perna do takeover; C-113-3 tira o filtro de status do claim; C-113-4 encurta o lease para 9 s; C-113-5 incrementa `attempts` em todo ramo; C-113-6 lê o atraso como milissegundos; C-113-7 dropa e recria a função sem repetir o `revoke`. Cada um mede também que os casos VIZINHOS continuam verdes. O critério **não é "um caso"**: o C-113-3 derruba dois (CLAIM-2 e CLAIM-4) e está certo, porque a sabotagem quebra genuinamente as duas propriedades e cada veredito nomeia o defeito real — o que se exige é vermelho localizado, com mensagem apontando para o lugar certo. |
+| `20-inbound-sweep-113.sql` | SWEEP-1..6, PURGE-1..2 e ACL-SWEEP (ordinais 64–72, migration 113, Fase C): a SELEÇÃO das linhas devidas e a PURGA. Linha devida selecionada, agendada para o futuro fora, lease vencido dentro, lease vivo fora, a seleção **não escrevendo nada** (as cinco colunas intactas), a linha antiga passando na frente da recém-tocada, as duas janelas de retenção (7 d para `done`, 30 d para `dead`) com contra-caso em cada uma, e o ACL efetivo das duas RPCs. **Continua o banco da 111/113** — ver a seção "Sequência da migration 113". |
+| `21-controles-113-sweep.sql` | Os **sete controles positivos** (ordinais 73–79) da seleção e da purga. C-SWEEP-1 tira o filtro `next_attempt_at <= now()`; C-SWEEP-2 tira a perna do lease vencido; **C-SWEEP-3 reintroduz o desenho recusado** (a seleção que reivindica EM LOTE, marcando 20 linhas `processing` de uma vez); C-SWEEP-4 volta a ordem para `next_attempt_at`; C-SWEEP-5 iguala a janela de `done` à de `dead`; C-SWEEP-6 tira a perna de `dead`; C-SWEEP-7 dropa e recria a purga sem repetir o `revoke`. Cada um mede também que os vizinhos continuam verdes. O C-SWEEP-2 derruba DOIS casos (SWEEP-3 e SWEEP-6) e está certo: a linha "envenenada" do SWEEP-6 é, por fidelidade ao cenário, um `processing` com lease vencido — e o veredito dele nomeia o takeover, não a ordem. |
 
 ## Rodar
 
@@ -396,12 +398,16 @@ dois estão escritos nos arquivos, no ponto em que importam:
    duas condições; sem o controle, aquele handler morto seguiria no arquivo sem
    nunca ser exercitado, porque com `cascade` o ramo nem é alcançado.
 
-### Sequência da migration 113 (Fase C — cerca do claim e finalização)
+### Sequência da migration 113 (Fase C — claim, finalização, seleção e purga)
 
 **O mesmo banco da 111, continuado** — não um banco novo. O `19` exige que o `18`
-tenha rodado (ele confere vereditos em `t_res`), e o `18` exige a 111 aplicada.
-Quem já rodou a seção da 111 acrescenta a 113 e segue; quem está começando roda a
-sequência inteira de uma vez, como abaixo.
+tenha rodado e o `21` exige o `20` (os dois conferem vereditos em `t_res`), e o
+`18`/`20` exigem a 111 aplicada. Quem já rodou a seção da 111 acrescenta a 113 e
+segue; quem está começando roda a sequência inteira de uma vez, como abaixo.
+
+A 113 tem QUATRO funções, e os arquivos se dividem pelo que cada par faz: o
+`18`/`19` medem a CERCA (claim e finalização), o `20`/`21` medem a SELEÇÃO das
+linhas devidas e a PURGA.
 
 A **112 entra na sequência** por ser a migration entre a 111 e a 113, não porque
 algum caso dependa dela: ela só cria o wrapper da varredura, que nenhum caso
@@ -418,12 +424,14 @@ P -f supabase/tests/local-preflight/00-bootstrap.sql
 P -f supabase/tests/local-preflight/00a-whatsapp-legacy-seed.sql
 P -f supabase/migrations/20260716130000_061_platform_flags.sql
 
-# ANTES da 113, o 18 e o 19 têm de FALHAR pelas guardas do topo. É o RED que dá
-# sentido ao GREEN: rodado antes, CLAIM-2 e FIN-1 passariam POR ACIDENTE, porque
-# sem as funções toda chamada "falha" e todo caso negativo fica verde medindo
-# nada.
+# ANTES da 113, o 18/19/20/21 têm de FALHAR pelas guardas do topo. É o RED que dá
+# sentido ao GREEN: rodado antes, CLAIM-2, FIN-1, SWEEP-2 e SWEEP-4 passariam POR
+# ACIDENTE, porque sem as funções toda chamada "falha" e todo caso negativo fica
+# verde medindo nada.
 P -f supabase/tests/local-preflight/18-inbound-claim-113.sql   # esperado: ERROR
 P -f supabase/tests/local-preflight/19-controles-113.sql       # esperado: ERROR
+P -f supabase/tests/local-preflight/20-inbound-sweep-113.sql   # esperado: ERROR
+P -f supabase/tests/local-preflight/21-controles-113-sweep.sql # esperado: ERROR
 
 P -f supabase/migrations/20260924120000_111_whatsapp_inbound_events.sql
 P -f supabase/migrations/20260924120100_112_inbound_sweep_trigger.sql
@@ -431,43 +439,49 @@ P -f supabase/migrations/20260924120200_113_inbound_claim_rpc.sql
 
 P -f supabase/tests/local-preflight/16-inbound-events-111.sql
 P -f supabase/tests/local-preflight/18-inbound-claim-113.sql
+P -f supabase/tests/local-preflight/20-inbound-sweep-113.sql
 
 "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fasec113 \
   -f supabase/tests/local-preflight/17-controles-111.sql   # SEM ON_ERROR_STOP
 "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fasec113 \
   -f supabase/tests/local-preflight/19-controles-113.sql   # SEM ON_ERROR_STOP
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fasec113 \
+  -f supabase/tests/local-preflight/21-controles-113-sweep.sql   # SEM ON_ERROR_STOP
 # NÃO reaplicar as migrations aqui: cada controle já se desfez sozinho.
 
-P -c "select ord, caso, veredito from t_res order by ord;"   # 27 linhas, todas OK
+P -c "select ord, caso, veredito from t_res order by ord;"   # 43 linhas, todas OK
 ```
 
 Ao terminar: `dropdb fasec113`.
 
-**Conte as 27 linhas, não confie em "nenhum FALHOU".** O `19` roda SEM
+**Conte as 43 linhas, não confie em "nenhum FALHOU".** O `19` e o `21` rodam SEM
 ON_ERROR_STOP de propósito, e plpgsql compila o bloco INTEIRO na primeira
 execução: um erro de compilação (um SQLSTATE com 6 caracteres em vez de 5, por
 exemplo) derruba o bloco antes de qualquer statement, então nem o `when others`
-grava veredito. O `psql` imprime ERROR, segue, e a tabela fica com **20 linhas
-todas OK** — a aparência exata de uma execução sadia da 111+113 sem controle
-nenhum. Medido ao escrever este conjunto. É a mesma razão pela qual cada guarda
-grava sentinela (`ord = 0` no `17`, `ord = -19` no `19`) em vez de só levantar
-erro. **Ao acrescentar caso, atualize os dois números deste parágrafo e o da
-linha `select` acima** — um contador velho aqui esconde exatamente o defeito que
-ele existe para pegar.
+grava veredito. O `psql` imprime ERROR, segue, e a tabela fica com **36 linhas
+todas OK** — sete a menos, a aparência exata de uma execução sadia sem aquele
+arquivo de controles. Medido ao escrever este conjunto. É a mesma razão pela qual
+cada guarda grava sentinela (`ord = 0` no `17`, `ord = -19` no `19`, `ord = -21`
+no `21`) em vez de só levantar erro. **Ao acrescentar caso, atualize os dois
+números deste parágrafo e o da linha `select` acima** — um contador velho aqui
+esconde exatamente o defeito que ele existe para pegar.
 
 | ord | caso | arquivo |
 |---|---|---|
-| −19 | `GUARDA-19` (sentinela; **só aparece quando os pré-requisitos falham**) | `19` |
+| −21 | `GUARDA-21` (sentinela; **só aparece quando os pré-requisitos falham**) | `21` |
+| −19 | `GUARDA-19` (sentinela; idem) | `19` |
 | 0 | `GUARDA-17` (sentinela; idem) | `17` |
 | 37–43 | `INBOUND-1` .. `INBOUND-7` | `16` |
 | 44–48 | `C-111-1` .. `C-111-5` | `17` |
 | 49–55 | `CLAIM-1` .. `CLAIM-3`, `FIN-1` .. `FIN-3`, `ACL-113` | `18` |
 | 56–62 | `C-113-1` .. `C-113-7` | `19` |
 | 63 | `CLAIM-4` (linha terminal não é reivindicável) | `18` |
+| 64–72 | `SWEEP-1` .. `SWEEP-6`, `PURGE-1`, `PURGE-2`, `ACL-SWEEP` | `20` |
+| 73–79 | `C-SWEEP-1` .. `C-SWEEP-7` | `21` |
 
-**As duas sentinelas têm ordinais DIFERENTES de propósito.** Compartilhando o 0,
-um `19` saudável apagaria a sentinela de um `17` que falhou — e a falha do `17`
-desapareceria atrás de sete controles verdes, que é o mesmo modo de mascaramento
+**As três sentinelas têm ordinais DIFERENTES de propósito.** Compartilhando o 0,
+um arquivo de controles saudável apagaria a sentinela de outro que falhou — e a
+falha desapareceria atrás de controles verdes, que é o mesmo modo de mascaramento
 descrito no parágrafo acima. O `CLAIM-4` está em 63, fora da faixa do `18`, porque
 foi acrescentado depois dos controles por um achado de revisão; os ordinais não
 são contíguos por arquivo e não precisam ser.
@@ -491,6 +505,46 @@ acontecer de novo: alguém precisa mudar o tipo de retorno, descobre que
 `create or replace` recusa, dropa, recria, e não repete o `revoke`. O controle
 mede as duas metades; sem a primeira ele diria que o `ACL-113` tem força sem
 dizer contra o quê.
+
+**Por que a seleção do `20` ordena por `updated_at` e não por `next_attempt_at`, e
+por que o `C-SWEEP-4` existe.** Quem escreve `next_attempt_at` é a FINALIZAÇÃO — e
+a linha que precisa ceder a vez é justamente aquela cuja finalização falha por
+motivo independente do payload (banco fora, `PGRST202` por Edge Function
+deployada antes do `db push`). Nesse caso `attempts` e `next_attempt_at` nunca
+avançam, a linha fica permanentemente devida com o `next_attempt_at` mais antigo
+da tabela, e ordenar por ele a põe em primeiro lugar a cada minuto, para sempre,
+comendo o orçamento de laço da varredura. `updated_at` é escrito pelo CLAIM, isto
+é, pelo próprio ato de SERVIR a linha, então ser servida sempre lhe custa o lugar
+na fila. O `SWEEP-6` monta as duas ordens em conflito (a envenenada com o
+`next_attempt_at` mais ANTIGO e o `updated_at` mais NOVO) e o `C-SWEEP-4` prova que
+a escrita do plano avermelharia exatamente esse caso.
+
+**Dois resultados MEDIDOS ao escrever o `20`/`21`, os dois com a sabotagem
+aplicada de forma PERSISTENTE (não só pelo controle):**
+
+1. **O `SWEEP-6` precisa chamar a seleção UMA vez, com `with ordinality`.** Na
+   versão de duas chamadas (uma para contar, outra para pegar a primeira), a
+   sabotagem do `C-SWEEP-3` — a seleção que reivindica EM LOTE — o avermelhava com
+   *"nao devolveu primeira linha nenhuma"*: a primeira chamada reivindicava tudo e
+   a segunda voltava vazia. O vermelho era real, mas a mensagem mandava
+   investigar a ORDEM quando o defeito era a ESCRITA. Com uma chamada só, a
+   sabotagem do claim em lote avermelha **apenas** o `SWEEP-5`.
+2. **`with ordinality` em vez de `array_agg` cru sobre o function scan.** É a
+   forma documentada de capturar a ordem em que a função devolveu as linhas;
+   depender da ordem em que um agregado consome o scan é apostar no plano.
+
+**Quadro de sabotagem do `21`, medido linha a linha** (sabotagem persistida, `20`
+reexecutado, 113 reaplicada para restaurar):
+
+| controle | avermelha | continua verde |
+|---|---|---|
+| `C-SWEEP-1` (sem o filtro de tempo) | 65 (`SWEEP-2`) | 64, 66–72 |
+| `C-SWEEP-2` (sem a perna do lease vencido) | 66 (`SWEEP-3`) **e** 69 (`SWEEP-6`, linha de base — o veredito nomeia o takeover) | 64, 65, 67, 68, 70–72 |
+| `C-SWEEP-3` (seleção que reivindica em lote) | 68 (`SWEEP-5`) | 64–67, 69–72 |
+| `C-SWEEP-4` (`order by next_attempt_at`) | 69 (`SWEEP-6`) | 64–68, 70–72 |
+| `C-SWEEP-5` (30 dias também para `done`) | 70 (`PURGE-1`) | 64–69, 71, 72 |
+| `C-SWEEP-6` (sem a perna de `dead`) | 71 (`PURGE-2`) | 64–70, 72 |
+| `C-SWEEP-7` (drop + create sem o `revoke`) | 72 (`ACL-SWEEP`) | 64–71 |
 
 ## O que os dois controles do `04` fazem
 

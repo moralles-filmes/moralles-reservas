@@ -1,9 +1,15 @@
--- Reivindicação cercada e finalização da fila de inbound (Fase C).
+-- Reivindicação cercada, finalização, seleção e purga da fila de inbound (Fase C).
 --
 -- ESTA MIGRATION SÓ CRIA FUNÇÃO. Não agenda nada (o `cron.schedule` é a 114) e
 -- não toca na tabela nem nos índices (é a 111 que os cria).
 --
--- AS DUAS FUNÇÕES EXISTEM PELO MESMO RISCO: duas execuções da MESMA linha
+-- QUATRO FUNÇÕES, e a divisão de trabalho é o desenho: `claim_...` e
+-- `finalize_...` são a CERCA (uma linha, um dono); `select_due_...` é só a
+-- ESCOLHA de quem tentar a seguir, sem escrever nada; `purge_...` é a retenção.
+-- Quem decide o que cada desfecho significa é o núcleo puro em TypeScript, não
+-- estas funções.
+--
+-- AS DUAS PRIMEIRAS EXISTEM PELO MESMO RISCO: duas execuções da MESMA linha
 -- significam duas IAs respondendo ao mesmo cliente. Dois caminhos podem alcançar
 -- uma linha — o rápido (`EdgeRuntime.waitUntil`, disparado pela própria request
 -- que a persistiu) e a varredura (`pg_cron`) —, e a cerca de UUID é o que decide
@@ -141,9 +147,117 @@ as $$
   select count(*)::integer from fenced;
 $$;
 
+-- ─── Seleção das linhas DEVIDAS: SOMENTE LEITURA ────────────────────────────
+--
+-- NÃO ESCREVE NADA, e essa é a decisão. Uma versão anterior desta fase previa
+-- um claim EM LOTE (reivindicar 20 linhas de uma vez, marcá-las `processing` e
+-- processá-las em sequência). Estava errado duas vezes:
+--
+--   1. O wall clock da Edge Function é do WORKER, não da request. Reivindicar 20
+--      e processar uma ou duas antes de o worker ser derrubado deixaria ~18
+--      leases órfãos por minuto, trabalháveis de novo só 90 s depois pelo
+--      takeover — e a varredura seguinte criaria outros 18. O estado estável
+--      desse desenho é uma fila que nunca esvazia.
+--   2. O claim POR LINHA então recusaria essas mesmas linhas: elas estariam
+--      `processing` com lease vivo, e `processQueuedEventById` sairia em silêncio
+--      (`queued_event_not_claimable`). O lote reivindicado seria exatamente o
+--      trabalho que o processador se recusa a fazer.
+--
+-- Escrever `status = 'processing'` aqui reabriria, ainda por cima, o buraco que o
+-- comentário do claim acima nomeia: um `processing` sem lease nunca é retomável.
+-- A CERCA É O CLAIM, por linha, no primeiro ato do processamento. Duas varreduras
+-- sobrepostas podem selecionar o mesmo id, e o custo é UMA chamada de claim
+-- desperdiçada — por isso também não há `for update skip locked` aqui: fingir
+-- exclusão nesta função daria duas cercas onde uma decide.
+--
+-- É RPC, e não filtro do supabase-js, por UMA razão: `next_attempt_at <= now()`
+-- precisa do relógio do BANCO. Um `.lte("next_attempt_at", new Date().toISOString())`
+-- reintroduziria o relógio do Deno que o cabeçalho desta migration proíbe.
+--
+-- DEVOLVE SÓ `id`, nunca a linha inteira: `raw_body` é PII (telefone e texto de
+-- cliente) e o claim já o entrega a quem de fato vai processar. Trazê-lo aqui o
+-- publicaria uma segunda vez, para linhas que talvez nem sejam processadas nesta
+-- invocação (a varredura tem orçamento de laço e pode parar antes da última).
+--
+-- ─── POR QUE `order by updated_at`, E NÃO `order by next_attempt_at` ─────────
+--
+-- Porque é a finalização quem escreve `next_attempt_at` — e a linha que precisa
+-- ceder a vez é justamente aquela cuja finalização FALHA. Se a falha for
+-- independente do payload (banco fora, `PGRST202` por EF deployada antes do
+-- `db push`), `attempts` e `next_attempt_at` nunca avançam: a linha fica
+-- permanentemente devida com o `next_attempt_at` MAIS ANTIGO da tabela, e
+-- ordenar por ele a coloca em primeiro lugar para sempre, consumindo o orçamento
+-- de laço e adiando o inbound de outros tenants. Desempate por `attempts asc`
+-- não resolve — `attempts` não avançar É o cenário.
+--
+-- `updated_at` é escrito pelo CLAIM (o UPDATE acima), isto é, pelo próprio ato de
+-- SERVIR a linha. Então ser servida sempre custa à linha o seu lugar na fila, e
+-- a envenenada volta para o fim enquanto as outras, tocadas há mais tempo, passam
+-- na frente. Linha nunca tocada tem `updated_at` = instante do insert, então para
+-- o tráfego normal isto é FIFO por chegada, que é o que o cliente espera.
+--
+-- `next_attempt_at` continua sendo o PORTÃO (o `where`), não a prioridade: a
+-- escada de retentativa segue valendo integralmente.
+--
+-- O conjunto ordenado é só o DEVIDO e não-terminal (o `where` exclui `done` e
+-- `dead`, que são a massa da tabela até a purga), então a ordenação não se apoia
+-- no índice `whatsapp_inbound_events_due_idx` e não precisa: ordenar algumas
+-- dezenas de linhas é ruído.
+create or replace function public.select_due_whatsapp_inbound_events(p_limit integer default 20)
+returns setof uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select e.id
+    from public.whatsapp_inbound_events e
+   where e.next_attempt_at <= now()
+     and (e.status = 'received'
+          or (e.status = 'processing' and e.claimed_until < now()))
+   order by e.updated_at
+   limit greatest(1, least(coalesce(p_limit, 20), 100));
+$$;
+
+-- ─── Purga: a retenção é parte do desenho, não faxina ───────────────────────
+--
+-- `raw_body` carrega telefone e texto de cliente — é PII, e não fica além do
+-- necessário. `done` sai em 7 dias; `dead` em 30, porque dead letter é o que uma
+-- pessoa ainda vai investigar. Os dois números são GÊMEOS DECLARADOS de
+-- `PURGE_DONE_AFTER_DAYS` e `PURGE_DEAD_AFTER_DAYS`, em
+-- `supabase/functions/_shared/whatsapp-inbound-queue-core.ts` (SQL não importa
+-- TypeScript, então o ponteiro é este comentário), e já estão escritos também no
+-- cabeçalho da 111.
+--
+-- ESTA DIFERENÇA É LOAD-BEARING PARA UMA DECISÃO DE OUTRO ARQUIVO, e as duas
+-- metades se perdem se ficarem separadas: a recusa TERMINAL de 401 morre em
+-- `done`, e não em `dead` (ver `queuedEventVerdict`, em
+-- `_shared/whatsapp-inbound-queue-core.ts`), exatamente para cair na purga de 7
+-- dias em vez da de 30. Marcá-la `dead` reteria o corpo cru por um mês, quando
+-- `webhook_executions` já guarda o rastro de segurança (`webhook_unauthorized`,
+-- TTL 30 d) SEM o corpo. Encurtar a janela de `dead` para igualar a de `done`, ou
+-- alongar a de `done`, desfaz essa escolha pelo outro lado.
+--
+-- Roda dentro da própria varredura — nenhum job novo de `pg_cron`.
+create or replace function public.purge_whatsapp_inbound_events()
+returns integer
+language sql
+security definer
+set search_path = ''
+as $$
+  with gone as (
+    delete from public.whatsapp_inbound_events
+     where (status = 'done' and received_at < now() - interval '7 days')
+        or (status = 'dead' and received_at < now() - interval '30 days')
+    returning 1
+  ) select count(*)::integer from gone;
+$$;
+
 -- CREATE FUNCTION concede EXECUTE a PUBLIC por padrão e o schema public é
--- exposto ao PostgREST com a anon key. Estas duas movem a fila de inbound —
--- ninguém além do service_role tem o que fazer com elas.
+-- exposto ao PostgREST com a anon key. Estas quatro movem (ou leem) a fila de
+-- inbound — ninguém além do service_role tem o que fazer com elas. A seleção não
+-- escreve, mas devolve id de entrega de qualquer tenant: com `anon`, seria um
+-- inventário de quem recebeu mensagem agora.
 revoke all on function public.claim_whatsapp_inbound_event(uuid)
   from public, anon, authenticated;
 grant execute on function public.claim_whatsapp_inbound_event(uuid) to service_role;
@@ -153,19 +267,34 @@ revoke all on function public.finalize_whatsapp_inbound_event(uuid, uuid, text, 
 grant execute on function public.finalize_whatsapp_inbound_event(uuid, uuid, text, text, text, integer)
   to service_role;
 
+revoke all on function public.select_due_whatsapp_inbound_events(integer)
+  from public, anon, authenticated;
+grant execute on function public.select_due_whatsapp_inbound_events(integer) to service_role;
+
+revoke all on function public.purge_whatsapp_inbound_events()
+  from public, anon, authenticated;
+grant execute on function public.purge_whatsapp_inbound_events() to service_role;
+
 -- =====================================================================
 -- Validação pós-migration
 -- =====================================================================
--- 1. ACL (esperado: sem anon= e sem authenticated=; service_role com X):
+-- 1. ACL (esperado: 4 linhas, sem anon= e sem authenticated=; service_role com X):
 --   select proname, proacl from pg_proc
---    where proname in ('claim_whatsapp_inbound_event', 'finalize_whatsapp_inbound_event');
+--    where proname in ('claim_whatsapp_inbound_event', 'finalize_whatsapp_inbound_event',
+--                      'select_due_whatsapp_inbound_events', 'purge_whatsapp_inbound_events');
 --
 -- 2. Nenhuma linha reivindicada ainda (esperado: 0 — o gate nasce OFF):
 --   select count(*) from whatsapp_inbound_events where status = 'processing';
 --
--- 3. Nenhum job agendado (esperado: 0 linhas — o agendamento é a 114):
+-- 3. Nada devido e nada a purgar (esperado: 0 e 0 — a tabela nasce vazia):
+--   select count(*) from select_due_whatsapp_inbound_events(100);
+--   select purge_whatsapp_inbound_events();
+--
+-- 4. Nenhum job agendado (esperado: 0 linhas — o agendamento é a 114):
 --   select jobname from cron.job where jobname = 'whatsapp-inbound-sweep';
 --
 -- Rollback:
 --   drop function if exists public.claim_whatsapp_inbound_event(uuid);
 --   drop function if exists public.finalize_whatsapp_inbound_event(uuid, uuid, text, text, text, integer);
+--   drop function if exists public.select_due_whatsapp_inbound_events(integer);
+--   drop function if exists public.purge_whatsapp_inbound_events();

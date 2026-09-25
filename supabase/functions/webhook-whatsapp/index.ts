@@ -46,11 +46,15 @@ import {
   decodeRawBodyHex,
   deliveryDedupeKey,
   encodeRawBodyHex,
+  parseSelectedEventIds,
   providerDeclaresDeliveryId,
   queuedEventVerdict,
   sanitizeQueueErrorText,
+  sweepShouldStartAnother,
   DATAFY_DELIVERY_ID_HEADER,
+  INBOUND_DEBOUNCE_WINDOW_MS,
   SIGNATURE_HEADER_BY_SCHEME,
+  SWEEP_SELECT_LIMIT,
   type IngestionSource,
   type InsertOutcome,
 } from "../_shared/whatsapp-inbound-queue-core.ts";
@@ -82,6 +86,7 @@ import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
   genRequestId,
   jsonLog,
+  requireInternalAuth,
   sanitizePhone,
 } from "../_shared/security.ts";
 import {
@@ -1064,7 +1069,12 @@ const AGENT_INSTABILITY_TEXT =
 // espera, esta invocação desiste — quem responde é a invocação da ÚLTIMA
 // mensagem, que relê o histórico fresco e responde uma vez só com a rajada
 // inteira. Tunável: maior = pega rajadas mais lentas mas atrasa toda resposta.
-const DEBOUNCE_WINDOW_MS = 6_000;
+//
+// O valor vem do núcleo (e não é literal aqui) porque a varredura da Fase C
+// reserva o pior caso de UM evento, e esta janela é a primeira parcela dele:
+// mudar o debounce sem mudar a reserva faria a varredura começar um evento que
+// não cabe no que resta do wall clock.
+const DEBOUNCE_WINDOW_MS = INBOUND_DEBOUNCE_WINDOW_MS;
 // Orçamento de tempo (desde o início da request) para um retry silencioso do
 // agente após erro transitório. Acima disso não retentamos (risco de estourar
 // o limite de 60s da Edge Function e o cliente não receber NADA).
@@ -1741,6 +1751,95 @@ async function processQueuedEventById(eventId: string): Promise<void> {
 }
 
 /**
+ * A varredura: o backstop do caminho rápido.
+ *
+ * O caminho rápido (`EdgeRuntime.waitUntil`, disparado pela própria request que
+ * persistiu a linha) é OTIMISTA — o wall clock é do WORKER e ele pode ser
+ * retirado a qualquer momento. Esta função é o que garante que a entrega seja
+ * processada de qualquer jeito, com ~1 min de atraso em vez de nunca.
+ *
+ * ELA NÃO REIVINDICA EM LOTE. `select_due_whatsapp_inbound_events` só ESCOLHE
+ * ids; quem reivindica é `claim_whatsapp_inbound_event`, por linha, dentro de
+ * `processQueuedEventById`. O porquê está no comentário da migration 113 — em
+ * resumo: reivindicar 20 e processar duas deixaria 18 leases órfãos por minuto,
+ * e o claim por linha recusaria exatamente as linhas que o lote reivindicou.
+ *
+ * ELA TAMBÉM NÃO FINALIZA. `processQueuedEventById` já chama
+ * `finalizeQueuedEvent` cercado pelo `claim_id`; finalizar por fora escreveria
+ * por cima do veredito de quem de fato respondeu ao cliente.
+ *
+ * O ORÇAMENTO DE LAÇO decide se vale COMEÇAR outro evento, nunca aborta o em
+ * curso — a decisão é de `sweepShouldStartAnother`, no núcleo puro, e nada aqui
+ * a reimplementa. Linha não começada não foi reivindicada: ela fica para o minuto
+ * seguinte, sem lease preso e sem tentativa gasta.
+ *
+ * `pg_cron` NÃO PULA EXECUÇÕES SOBREPOSTAS: duas varreduras podem estar no ar ao
+ * mesmo tempo, e as duas podem selecionar o mesmo id. O que torna isso seguro é
+ * o claim por linha — a perdedora recebe zero linhas e segue adiante.
+ */
+async function runInboundSweep(requestId: string): Promise<Response> {
+  const startedAt = Date.now();
+
+  const { data, error } = await supabase.rpc("select_due_whatsapp_inbound_events", {
+    p_limit: SWEEP_SELECT_LIMIT,
+  });
+
+  if (error) {
+    // 500 de propósito: quem chama é o `pg_cron`, que não reentrega — e o
+    // `net._http_response` guarda o status. Devolver 200 aqui faria uma fila
+    // parada parecer uma fila vazia.
+    jsonLog("error", { requestId, evt: "sweep_select_failed", err: error.message });
+    return new Response(JSON.stringify({ error: "sweep_select_failed" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const ids = parseSelectedEventIds(data);
+  let processed = 0;
+
+  for (const eventId of ids) {
+    if (!sweepShouldStartAnother({ startedAt, now: Date.now(), processed })) break;
+    // Nunca lança (contrato da própria função) — um evento que falha não pode
+    // interromper a varredura dos outros tenants.
+    await processQueuedEventById(eventId);
+    processed++;
+  }
+
+  // Purga na própria varredura: nenhum job novo. `raw_body` carrega telefone e
+  // texto de cliente — é PII, e não fica além do necessário. Roda DEPOIS do
+  // laço e fora dele: é manutenção, e falhar aqui não pode esconder o que a
+  // varredura de fato processou.
+  let purged: number | null = null;
+  const { data: purgedData, error: purgeError } = await supabase.rpc(
+    "purge_whatsapp_inbound_events",
+  );
+  if (purgeError) {
+    jsonLog("error", { requestId, evt: "sweep_purge_failed", err: purgeError.message });
+  } else {
+    purged = Number(purgedData ?? 0);
+  }
+
+  const skipped = ids.length - processed;
+  jsonLog("info", {
+    requestId,
+    evt: "sweep_processed",
+    selected: ids.length,
+    processed,
+    // `skipped > 0` é o orçamento tendo mordido: sobrou trabalho devido que esta
+    // invocação decidiu não começar. É sinal de fila acumulando, não de erro.
+    skipped,
+    purged,
+    duration_ms: Date.now() - startedAt,
+  });
+
+  return new Response(
+    JSON.stringify({ selected: ids.length, processed, skipped, purged }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+/**
  * `signatureAlreadyVerified` e `source` são DUAS perguntas, não uma.
  *
  * O antigo booleano `trustedMetaPayload` significava "sou parte filha de um lote
@@ -1928,6 +2027,28 @@ async function handleWebhookRequest(
   try {
     const url = new URL(req.url);
     channelId = url.searchParams.get("channel");
+
+    // A varredura não tem canal — ela resolve o canal de CADA linha. Por isso
+    // este branch precisa vir ANTES da exigência de `?channel=`.
+    //
+    // SEGURANÇA: ele NÃO ACEITA PAYLOAD NENHUM. Lê exclusivamente da tabela, e
+    // cada linha de lá já foi persistida depois de a assinatura do provider ter
+    // sido validada. Se a chave interna vazar, o poder conferido é "fazer uma
+    // varredura rodar mais cedo" sobre eventos já validados — não injetar
+    // inbound, não escolher canal, não escrever nada que venha de fora.
+    //
+    // Sem `finish()` nos dois caminhos, de propósito: cada evento processado já
+    // grava a PRÓPRIA linha em `webhook_executions` na re-entrada, e uma linha
+    // por minuto da varredura em si inflaria a tabela (TTL 30 d) com registros
+    // sem unidade nem canal. O rastro do 401 é o log estruturado mais o status
+    // em `net._http_response`, que é onde se confere `pg_net` de todo modo.
+    if (url.searchParams.get("sweep") === "1") {
+      if (!requireInternalAuth(req)) {
+        jsonLog("warn", { requestId, evt: "sweep_unauthorized" });
+        return new Response("unauthorized", { status: 401 });
+      }
+      return await runInboundSweep(requestId);
+    }
 
     if (!channelId) {
       jsonLog("warn", { requestId, evt: "missing_channel_param" });
