@@ -1759,6 +1759,22 @@ async function processQueuedEventById(eventId: string): Promise<void> {
 }
 
 /**
+ * Apaga o que já passou da retenção. Separada e chamada em TODOS os caminhos de
+ * saída da varredura, inclusive quando a seleção falha: `raw_body` é PII, e a
+ * retenção não pode depender de a seleção estar funcionando. Uma seleção quebrada
+ * de forma persistente reteria telefone e texto de cliente indefinidamente por
+ * um motivo que não tem relação nenhuma com retenção.
+ */
+async function purgeInboundEvents(requestId: string): Promise<number | null> {
+  const { data, error } = await supabase.rpc("purge_whatsapp_inbound_events");
+  if (error) {
+    jsonLog("error", { requestId, evt: "sweep_purge_failed", err: error.message });
+    return null;
+  }
+  return Number(data ?? 0);
+}
+
+/**
  * A varredura: o backstop do caminho rápido.
  *
  * O caminho rápido (`EdgeRuntime.waitUntil`, disparado pela própria request que
@@ -1785,22 +1801,6 @@ async function processQueuedEventById(eventId: string): Promise<void> {
  * mesmo tempo, e as duas podem selecionar o mesmo id. O que torna isso seguro é
  * o claim por linha — a perdedora recebe zero linhas e segue adiante.
  */
-/**
- * Apaga o que já passou da retenção. Separada e chamada em TODOS os caminhos de
- * saída da varredura, inclusive quando a seleção falha: `raw_body` é PII, e a
- * retenção não pode depender de a seleção estar funcionando. Uma seleção quebrada
- * de forma persistente reteria telefone e texto de cliente indefinidamente por
- * um motivo que não tem relação nenhuma com retenção.
- */
-async function purgeInboundEvents(requestId: string): Promise<number | null> {
-  const { data, error } = await supabase.rpc("purge_whatsapp_inbound_events");
-  if (error) {
-    jsonLog("error", { requestId, evt: "sweep_purge_failed", err: error.message });
-    return null;
-  }
-  return Number(data ?? 0);
-}
-
 async function runInboundSweep(requestId: string): Promise<Response> {
   const startedAt = Date.now();
 
@@ -1833,11 +1833,16 @@ async function runInboundSweep(requestId: string): Promise<Response> {
       evt: "sweep_select_shape_unexpected",
       descartados,
       reconhecidos: ids.length,
-      // FORMA, nunca valor: nome de campo e `typeof`, pela disciplina de
-      // `webhook-payload-shape-core.ts`. Publicar o item vazaria id de tenant.
-      forma: Array.isArray(data)
-        ? `array<${data.length > 0 ? typeof data[0] : "vazio"}>`
-        : typeof data,
+      // FORMA, nunca valor — e por `shapeOf`, não por descritor próprio.
+      // Reimplementar aqui poria a regra fora do alcance do vitest (esta EF não
+      // é importável: `serve()` no carregamento e imports de `deno.land`), e a
+      // garantia contra vazamento é justamente a FOLHA devolver `typeof value`.
+      // A "melhoria" de quem está depurando — trocar por `String(value)` —
+      // publicaria id de tenant sem erro de tipo nem aviso de lint; o controle
+      // positivo que reprova isso vive no teste do núcleo, e só alcança quem
+      // usa o núcleo.
+      forma: shapeOf(Array.isArray(data) ? data[0] : data),
+      itens: Array.isArray(data) ? data.length : null,
     });
   }
 

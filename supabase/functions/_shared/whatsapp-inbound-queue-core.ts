@@ -600,8 +600,17 @@ export interface SelectedEventIds {
 
 export function parseSelectedEventIds(data: unknown): SelectedEventIds {
   if (!Array.isArray(data)) {
-    // `null` é o corpo vazio legítimo de zero linhas; qualquer outra coisa é
-    // forma inesperada e precisa contar como descarte, não como fila vazia.
+    // `null`/`undefined` NÃO contam descarte, e isto é tolerância deliberada, não
+    // uma afirmação: para `returns setof uuid` o corpo de zero linhas é `[]`, não
+    // `null` — então um `null` aqui já seria forma inesperada. Ele é isentado
+    // porque o supabase-js também devolve `data: null` em situações de borda que
+    // nada têm a ver com a forma, e um canário que gritasse a cada varredura de
+    // fila vazia seria desligado pelo operador em uma semana — junto com o sinal
+    // que ele existe para dar.
+    //
+    // Consequência a saber ao exercitar à mão: o `curl` contra fila vazia NÃO
+    // distingue `[]` de `null`, então ele não responde qual forma o PostgREST
+    // usa. Quem responde isso é a primeira varredura com linha devida de verdade.
     return { ids: [], descartados: data === null || data === undefined ? 0 : 1 };
   }
   const ids: string[] = [];
