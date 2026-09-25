@@ -45,6 +45,7 @@ import {
   decideIngestionMode,
   deliveryDedupeKey,
   encodeRawBodyHex,
+  providerDeclaresDeliveryId,
   DATAFY_DELIVERY_ID_HEADER,
   SIGNATURE_HEADER_BY_SCHEME,
   type IngestionSource,
@@ -1855,6 +1856,27 @@ async function handleWebhookRequest(
       return new Response("unauthorized", { status: 401 });
     }
 
+    // Instrumentação de FORMA, nunca de valor — mesma disciplina de
+    // `webhook-payload-shape-core.ts`. Publicar o id de entrega ou o header de
+    // assinatura vazaria correlação e credencial no log.
+    //
+    // Fica FORA do gate, e ANTES dele, de propósito: ela responde metade da
+    // pendência de validação real nº 6 da spec ("o header
+    // `x-datafy-delivery-id` existe?"), e medir o envelope só depois de ligar as
+    // duas pernas seria ovo e galinha — instrumentar forma serve para medir
+    // ANTES de assumir o risco. A outra metade ("se repete na reentrega?") NÃO é
+    // respondida aqui: quem responde é o outcome `queue_duplicate_delivery`, que
+    // só existe com o gate ligado.
+    if (providerDeclaresDeliveryId(provider)) {
+      jsonLog("info", {
+        requestId,
+        evt: "inbound_delivery_shape",
+        provider,
+        has_delivery_id: deliveryDedupeKey(provider, (name) => req.headers.get(name)) !== null,
+        delivery_id_type: typeof req.headers.get(DATAFY_DELIVERY_ID_HEADER),
+      });
+    }
+
     // ─── Fronteira do ACK (Fase C) ───────────────────────────────────────────
     //
     // Fica AQUI, e é ÚNICA: depois de todas as guardas que produzem não-200
@@ -1880,27 +1902,12 @@ async function handleWebhookRequest(
 
       if (ingestionMode === "async") {
         const scheme = WEBHOOK_SIGNATURE_SCHEME[provider];
-        const deliveryId = deliveryDedupeKey(provider, (name) => req.headers.get(name));
-
-        // Instrumentação de FORMA, nunca de valor — mesma disciplina de
-        // `webhook-payload-shape-core.ts`. Publicar o id de entrega ou o header
-        // de assinatura no log vazaria correlação e credencial. É isto que
-        // responde à pendência de validação real nº 6 da spec: o header existe,
-        // e se repete na reentrega?
-        jsonLog("info", {
-          requestId,
-          evt: "inbound_delivery_shape",
-          provider,
-          has_delivery_id: deliveryId !== null,
-          delivery_id_type: typeof req.headers.get(DATAFY_DELIVERY_ID_HEADER),
-        });
-
         insert = await persistInboundEvent({
           provider,
-          channelId,
-          unitId,
+          channelId: channelId!,
+          unitId: unitId!,
           bodyText,
-          deliveryId,
+          deliveryId: deliveryDedupeKey(provider, (name) => req.headers.get(name)),
           signatureHeader: req.headers.get(SIGNATURE_HEADER_BY_SCHEME[scheme]),
           signatureScheme: scheme,
         });
@@ -1913,17 +1920,36 @@ async function handleWebhookRequest(
           // Caminho rápido OTIMISTA: o wall clock é do WORKER, não da request, e
           // ele pode ser retirado a qualquer momento. A varredura é o backstop, e
           // a degradação é benigna — o cliente espera ~70 s em vez de nunca.
+          //
+          // DOIS modos de falha DISTINTOS, e por isso dois tratamentos com
+          // eventos próprios:
+          //  - o `try/catch` pega `EdgeRuntime` ausente ou `waitUntil` lançando
+          //    de forma síncrona (`queue_dispatch_failed`);
+          //  - o `.catch()` pega exceção DENTRO do processamento, que num
+          //    `async` vira promise rejeitada e nunca passaria pelo `try`
+          //    (`queue_background_unhandled`). Inofensivo enquanto
+          //    `processQueuedEventById` é stub; depois da Task 5, rejeição não
+          //    tratada em Deno pode derrubar o isolate.
+          //
+          // Nenhum dos dois pode derrubar o ACK: a linha já está durável, e
+          // devolver 500 aqui faria o provider reentregar sobre um evento
+          // persistido — providers legados não têm `delivery_id` para deduplicar
+          // a segunda linha.
           try {
-            EdgeRuntime.waitUntil(processQueuedEventById(insert.id));
+            EdgeRuntime.waitUntil(
+              processQueuedEventById(insert.id).catch((bgErr) => {
+                jsonLog("error", {
+                  requestId,
+                  evt: "queue_background_unhandled",
+                  err: sanitizeProviderError(bgErr),
+                });
+              }),
+            );
           } catch (dispatchErr) {
-            // Despacho que falha NÃO pode derrubar o ACK. A linha já está
-            // durável; devolver 500 aqui faria o provider reentregar sobre um
-            // evento persistido, e providers legados não têm `delivery_id` para
-            // deduplicar a segunda linha.
             jsonLog("error", {
               requestId,
               evt: "queue_dispatch_failed",
-              err: String(dispatchErr),
+              err: sanitizeProviderError(dispatchErr),
             });
           }
         }

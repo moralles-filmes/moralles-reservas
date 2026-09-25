@@ -80,6 +80,25 @@ const MAX_DELIVERY_ID_LEN = 512;
  * `channelReadFailed`, no mesmo molde de `flagReadFailed`. Até lá, adicionar
  * esse parâmetro criaria um branch inalcançável e uma falsa sensação de
  * cobertura.
+ *
+ * A ORDEM DAS PERNAS É LOAD-BEARING: o CERTO decide antes do INCERTO, e
+ * inverter de volta reintroduz um defeito de produção.
+ *
+ * `channelEnabled` é entrada CERTA — a coluna é `not null default false` e uma
+ * leitura falha do canal já virou 404 rio acima —, enquanto a flag é a única
+ * entrada que admite "não sei". Perguntar a incerta primeiro fazia um soluço de
+ * leitura de `platform_flags` devolver `unknown` → 503 em TODO inbound de TODO
+ * canal, inclusive dos quatro providers legados com o gate desligado nas duas
+ * pernas: a loja em produção parava de responder por causa de uma tabela que
+ * não tem nada a ver com ela. Para canal NÃO optado, "processar síncrono" é
+ * exatamente o comportamento de hoje, então devolver `sync` ali não é risco
+ * novo — é a ausência de um.
+ *
+ * Isto NÃO afrouxa o fail-closed: para canal optado (`channelEnabled === true`)
+ * a flag ilegível continua produzindo `unknown` → 503, que é precisamente onde
+ * a razão da spec se aplica (aquele canal PODE estar rodando assíncrono e não
+ * há como saber). Quem "simplificar" esta ordem por simetria precisa ler este
+ * parágrafo primeiro.
  */
 export function decideIngestionMode(input: {
   source: IngestionSource;
@@ -88,9 +107,9 @@ export function decideIngestionMode(input: {
   channelEnabled: boolean | null | undefined;
 }): IngestionMode {
   if (input.source !== "provider") return "sync";
+  if (input.channelEnabled !== true) return "sync";
   if (input.flagReadFailed) return "unknown";
   if (!input.flagEnabled) return "sync";
-  if (input.channelEnabled !== true) return "sync";
   return "async";
 }
 
@@ -140,12 +159,21 @@ export const DATAFY_DELIVERY_ID_HEADER = "x-datafy-delivery-id";
  * Só a Datafy declara id de entrega hoje. Providers legados não têm, e para
  * eles `processed_messages (provider, message_id)` segue sendo a autoridade
  * de idempotência — exatamente como já é.
+ *
+ * Existe como predicado, e não como `provider !== "datafy"` repetido, porque o
+ * webhook precisa da MESMA pergunta para decidir se instrumenta a forma do
+ * header — e o repo já nomeia a cascata de `if (provider)` espalhada pelo
+ * webhook como o jeito de o próximo provider entrar sem ninguém notar.
  */
+export function providerDeclaresDeliveryId(provider: string): boolean {
+  return provider === "datafy";
+}
+
 export function deliveryDedupeKey(
   provider: string,
   headerGet: (name: string) => string | null,
 ): string | null {
-  if (provider !== "datafy") return null;
+  if (!providerDeclaresDeliveryId(provider)) return null;
   return normalizeDeliveryId(headerGet(DATAFY_DELIVERY_ID_HEADER));
 }
 
@@ -163,9 +191,17 @@ export function deliveryDedupeKey(
  * que é quem VALIDA esse header: uma fonte só. As outras duas são literais
  * porque não existe constante equivalente — `x-hub-signature-256` está inline
  * em `validateMetaSignature` e `x-webhook-secret` em `validateChannelSecret`
- * (`_shared/whatsapp-providers.ts`). Extrair as duas agora obrigaria redeploy
- * de nove Edge Functions por causa de um campo de auditoria; o teste deste
- * núcleo pina os três valores no lugar disso.
+ * (`_shared/whatsapp-providers.ts`). Extrair as duas obrigaria redeploy de nove
+ * Edge Functions.
+ *
+ * ESSAS DUAS PODEM DIVERGIR DOS VALIDADORES, e é decisão consciente não montar
+ * guarda estática contra isso. O teste deste núcleo PINA o mapa (detecta quem
+ * mexer AQUI), não confere o fonte de `whatsapp-providers.ts` — logo quem
+ * renomear o header lá deixa este mapa desatualizado sem nada ficar vermelho. A
+ * consequência é `signature_header` gravado `null` numa coluna de AUDITORIA:
+ * nada decide nada a partir dela, nenhum caminho quebra. Guarda que lê fonte
+ * custa manutenção permanente e aqui pagaria por um campo que ninguém lê em
+ * runtime. Não é esquecimento.
  *
  * `channel_secret` também aceita `?secret=` na querystring. Nesse caso o header
  * é ausente e a coluna fica `null`, de propósito: guardar o valor da
@@ -197,13 +233,27 @@ export function encodeRawBodyHex(bodyText: string): string {
  * Inverso de `encodeRawBodyHex`, para a re-entrada a partir da fila. Aceita com
  * e sem o prefixo `\x` porque quem devolve o valor é o PostgREST, não nós.
  *
- * Hex de comprimento ímpar faz `new Uint8Array` estourar `RangeError`, e isso é
- * DESEJADO: corpo truncado não pode virar payload silenciosamente diferente do
+ * ESTOURA em qualquer entrada que não seja hex par e completo, e isso é
+ * DESEJADO: corpo corrompido não pode virar payload silenciosamente diferente do
  * que o provider assinou. Quem chama está dentro de um `try/catch` que
- * transforma a exceção em retentativa da linha.
+ * transforma a exceção em retentativa da linha — um erro claro na linha da fila,
+ * em vez de um 401 inexplicável na revalidação do HMAC.
+ *
+ * A validação é explícita porque as duas formas "naturais" de escrever isto
+ * falham em silêncio: `parseInt` devolve `NaN` para caractere não-hex, e `NaN`
+ * atribuído a um `Uint8Array` grava `0` sem erro nenhum — exatamente o byte
+ * trocado que este comentário jura não tolerar. (Comprimento ímpar já estouraria
+ * por conta do `RangeError` de `new Uint8Array`, mas depender disso deixaria a
+ * garantia dependendo de um efeito colateral.)
  */
 export function decodeRawBodyHex(hex: string): string {
   const clean = hex.startsWith("\\x") ? hex.slice(2) : hex;
+  if (clean.length % 2 !== 0) {
+    throw new Error(`raw_body_hex_odd_length:${clean.length}`);
+  }
+  if (!/^[0-9a-fA-F]*$/.test(clean)) {
+    throw new Error("raw_body_hex_not_hex");
+  }
   const bytes = new Uint8Array(clean.length / 2);
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);

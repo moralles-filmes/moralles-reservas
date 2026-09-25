@@ -9,6 +9,7 @@ import {
   lockTtlSecondsRequired,
   encodeRawBodyHex,
   decodeRawBodyHex,
+  providerDeclaresDeliveryId,
   DATAFY_DELIVERY_ID_HEADER,
   SIGNATURE_HEADER_BY_SCHEME,
   INBOUND_RETRY_DELAYS_MS,
@@ -49,6 +50,28 @@ describe("decideIngestionMode — as duas pernas do gate, fail-closed", () => {
   });
 
   it("falha ao LER a flag não vira OFF: devolve unknown, que o caller transforma em 503", () => {
+    expect(decideIngestionMode({
+      source: "provider", flagEnabled: false, flagReadFailed: true, channelEnabled: true,
+    })).toBe("unknown");
+  });
+
+  // A ORDEM das pernas é load-bearing: o CERTO (`channelEnabled`, coluna
+  // `not null default false`) decide antes do INCERTO (a flag). Com a ordem
+  // invertida, um soluço de leitura de `platform_flags` devolvia `unknown` → 503
+  // em todo inbound de TODO canal, inclusive dos legados com o gate desligado —
+  // a loja em produção parava por causa de uma tabela sem relação com ela.
+  it("canal não optado + flag ILEGÍVEL continua sync: o certo decide antes do incerto", () => {
+    expect(decideIngestionMode({
+      source: "provider", flagEnabled: false, flagReadFailed: true, channelEnabled: false,
+    })).toBe("sync");
+    expect(decideIngestionMode({
+      source: "provider", flagEnabled: true, flagReadFailed: true, channelEnabled: null,
+    })).toBe("sync");
+  });
+
+  // Contraparte do caso acima, e é ela que mostra que a inversão NÃO afrouxou o
+  // fail-closed: com o canal optado, flag ilegível segue em 503.
+  it("canal optado + flag ilegível continua unknown — o fail-closed fica onde importa", () => {
     expect(decideIngestionMode({
       source: "provider", flagEnabled: false, flagReadFailed: true, channelEnabled: true,
     })).toBe("unknown");
@@ -140,6 +163,15 @@ describe("deliveryDedupeKey — só a Datafy declara id de entrega hoje", () => 
     expect(DATAFY_DELIVERY_ID_HEADER).toBe("x-datafy-delivery-id");
     expect(deliveryDedupeKey("datafy", get({ [DATAFY_DELIVERY_ID_HEADER]: "abc" }))).toBe("abc");
   });
+
+  // O webhook faz a MESMA pergunta para decidir se instrumenta a forma do
+  // header, e ela mora aqui em vez de virar um `if (provider)` novo lá.
+  it("quem declara id de entrega é decisão do núcleo, não do webhook", () => {
+    expect(providerDeclaresDeliveryId("datafy")).toBe(true);
+    for (const p of ["zapi", "waha", "uazapi", "official", "inexistente"]) {
+      expect(providerDeclaresDeliveryId(p), `não deveria declarar: ${p}`).toBe(false);
+    }
+  });
 });
 
 describe("encodeRawBodyHex — o corpo cru precisa sobreviver byte a byte", () => {
@@ -169,6 +201,24 @@ describe("encodeRawBodyHex — o corpo cru precisa sobreviver byte a byte", () =
     expect(encodeRawBodyHex("")).toBe("\\x");
     expect(decodeRawBodyHex("\\x")).toBe("");
   });
+
+  // O comentário da função jura que corpo corrompido não vira payload
+  // silenciosamente diferente do que o provider assinou. Sem estes casos a
+  // promessa era falsa: `parseInt("zz", 16)` é `NaN`, e `NaN` num `Uint8Array`
+  // grava `0` sem erro nenhum — o byte trocado apareceria como um 401
+  // inexplicável na revalidação do HMAC, não como erro na linha da fila.
+  it("hex de comprimento ímpar estoura em vez de truncar", () => {
+    expect(() => decodeRawBodyHex("\\x7b226")).toThrow(/odd_length/);
+  });
+
+  it("caractere não-hex estoura em vez de gravar zero", () => {
+    expect(() => decodeRawBodyHex("\\x7bzz")).toThrow(/not_hex/);
+    expect(() => decodeRawBodyHex("\\x7b 2")).toThrow(/not_hex/);
+  });
+
+  it("hex em maiúsculas é aceito: quem escolhe o caixa é o PostgREST, não nós", () => {
+    expect(decodeRawBodyHex("\\x7B2261223A317D")).toBe('{"a":1}');
+  });
 });
 
 describe("SIGNATURE_HEADER_BY_SCHEME — auditoria, nunca autoridade", () => {
@@ -179,7 +229,15 @@ describe("SIGNATURE_HEADER_BY_SCHEME — auditoria, nunca autoridade", () => {
     }
   });
 
-  it("os três headers são os que os validadores de fato leem", () => {
+  // O NOME deste caso diz o que ele faz, e não mais do que faz: ele PINA o mapa,
+  // comparando-o com literais escritos aqui. Ele NÃO lê `whatsapp-providers.ts`,
+  // então renomear o header dentro de `validateMetaSignature` ou
+  // `validateChannelSecret` não deixa nada vermelho. Isso é consciente: guarda
+  // que lê fonte custa manutenção permanente, e a consequência da divergência é
+  // `signature_header` gravado `null` numa coluna de AUDITORIA — nada decide
+  // nada a partir dela. A entrada da Datafy é a única que não pode divergir,
+  // porque vem da constante canônica de quem valida o header.
+  it("pina os três valores do mapa (detecta mudança AQUI, não nos validadores)", () => {
     expect(SIGNATURE_HEADER_BY_SCHEME.meta_app_secret).toBe("x-hub-signature-256");
     expect(SIGNATURE_HEADER_BY_SCHEME.datafy_whsec).toBe("x-datafy-signature-256");
     expect(SIGNATURE_HEADER_BY_SCHEME.channel_secret).toBe("x-webhook-secret");
