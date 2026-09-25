@@ -7,10 +7,18 @@ import {
   nextAttemptDelayMs,
   agentDeadlineVerdict,
   lockTtlSecondsRequired,
+  encodeRawBodyHex,
+  decodeRawBodyHex,
+  DATAFY_DELIVERY_ID_HEADER,
+  SIGNATURE_HEADER_BY_SCHEME,
   INBOUND_RETRY_DELAYS_MS,
   INBOUND_MAX_ATTEMPTS,
   AGENT_SOFT_DEADLINE_MS,
 } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
+import {
+  WEBHOOK_SIGNATURE_SCHEME,
+  WHATSAPP_PROVIDER_NAMES,
+} from "../../supabase/functions/_shared/whatsapp-provider-core.ts";
 
 describe("decideIngestionMode — as duas pernas do gate, fail-closed", () => {
   it("async só quando origem é provider E flag ON E canal ON", () => {
@@ -126,6 +134,55 @@ describe("deliveryDedupeKey — só a Datafy declara id de entrega hoje", () => 
 
   it("datafy sem o header devolve null em vez de inventar chave", () => {
     expect(deliveryDedupeKey("datafy", get({}))).toBeNull();
+  });
+
+  it("o nome do header é constante exportada, não literal repetido no webhook", () => {
+    expect(DATAFY_DELIVERY_ID_HEADER).toBe("x-datafy-delivery-id");
+    expect(deliveryDedupeKey("datafy", get({ [DATAFY_DELIVERY_ID_HEADER]: "abc" }))).toBe("abc");
+  });
+});
+
+describe("encodeRawBodyHex — o corpo cru precisa sobreviver byte a byte", () => {
+  it("corpo comum vira hex do UTF-8", () => {
+    expect(encodeRawBodyHex('{"a":1}')).toBe("\\x7b2261223a317d");
+  });
+
+  it("NUL no meio do corpo não quebra e não é descartado (Review Focus #1)", () => {
+    expect(encodeRawBodyHex("a\u0000b")).toBe("\\x610062");
+  });
+
+  it("acentuação PT-BR sobrevive", () => {
+    expect(encodeRawBodyHex("ã")).toBe("\\xc3a3");
+  });
+
+  it("round-trip devolve o texto idêntico, inclusive com NUL", () => {
+    for (const s of ['{"a":1}', "a\u0000b", "ã é ç", "🍣"]) {
+      expect(decodeRawBodyHex(encodeRawBodyHex(s))).toBe(s);
+    }
+  });
+
+  it("decodifica também sem o prefixo, porque o PostgREST pode entregar de qualquer forma", () => {
+    expect(decodeRawBodyHex("7b2261223a317d")).toBe('{"a":1}');
+  });
+
+  it("corpo vazio não vira literal inválido", () => {
+    expect(encodeRawBodyHex("")).toBe("\\x");
+    expect(decodeRawBodyHex("\\x")).toBe("");
+  });
+});
+
+describe("SIGNATURE_HEADER_BY_SCHEME — auditoria, nunca autoridade", () => {
+  it("todo esquema em uso tem header declarado", () => {
+    for (const name of WHATSAPP_PROVIDER_NAMES) {
+      const scheme = WEBHOOK_SIGNATURE_SCHEME[name];
+      expect(SIGNATURE_HEADER_BY_SCHEME[scheme], `sem header: ${scheme}`).toBeTruthy();
+    }
+  });
+
+  it("os três headers são os que os validadores de fato leem", () => {
+    expect(SIGNATURE_HEADER_BY_SCHEME.meta_app_secret).toBe("x-hub-signature-256");
+    expect(SIGNATURE_HEADER_BY_SCHEME.datafy_whsec).toBe("x-datafy-signature-256");
+    expect(SIGNATURE_HEADER_BY_SCHEME.channel_secret).toBe("x-webhook-secret");
   });
 });
 

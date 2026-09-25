@@ -34,7 +34,22 @@ import {
   type MutationOutcome,
 } from "../_shared/ai-budget-copy.ts";
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
-import { isFlagEnabled } from "../_shared/platform-flags.ts";
+import { checkFlagEnabled, isFlagEnabled } from "../_shared/platform-flags.ts";
+// ─── Ingestão assíncrona (Fase C) ────────────────────────────────────────────
+// Adapter de I/O; NENHUMA decisão desta fase é redigitada aqui. `vitest` não
+// importa este arquivo (`serve()` no carregamento + imports de `deno.land`),
+// então regra escrita aqui só se confere por leitura — e leitura já deixou
+// passar defeito duas vezes neste repo.
+import {
+  decideAckVerdict,
+  decideIngestionMode,
+  deliveryDedupeKey,
+  encodeRawBodyHex,
+  DATAFY_DELIVERY_ID_HEADER,
+  SIGNATURE_HEADER_BY_SCHEME,
+  type IngestionSource,
+  type InsertOutcome,
+} from "../_shared/whatsapp-inbound-queue-core.ts";
 import {
   WEBHOOK_SIGNATURE_SCHEME,
   isMetaShapedProvider,
@@ -82,6 +97,23 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
+
+/**
+ * `EdgeRuntime.waitUntil` — primeira utilização neste repo (o `asaas-webhook`
+ * documenta deliberadamente NÃO usá-lo, porque o Asaas corta em 10 s).
+ *
+ * Declarado porque o runtime expõe este global e o compilador não o conhece;
+ * declarado ESTREITO (só `waitUntil`, que recebe uma promise e devolve `void`)
+ * porque o resto do objeto não é usado. Como `tsc -b` não alcança
+ * `supabase/functions/`, esquecer esta declaração não reprovaria nada
+ * localmente — o `no-undef` do eslint já conhece o global, e é só isso que ele
+ * vê.
+ *
+ * NÃO é garantia de conclusão: o wall clock é do WORKER, não da request, e a
+ * própria doc do Supabase diz que `waitUntil` "does not extend the hard wall
+ * clock limit". O caminho rápido é OTIMISTA; a varredura é o backstop.
+ */
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
 function metaPhoneNumberIds(payload: unknown): string[] {
   if (!payload || typeof payload !== "object") return [];
@@ -1415,7 +1447,84 @@ const RATE_LIMIT_WINDOW_SECONDS = 60;
 const RATE_LIMIT_MAX = 10;
 const MAX_WEBHOOK_BODY_BYTES = 1_000_000;
 
-async function handleWebhookRequest(req: Request, trustedMetaPayload = false): Promise<Response> {
+/**
+ * Persiste a entrega crua. UMA linha por ENTREGA — o split do lote acontece no
+ * processamento, sobre este mesmo corpo intacto.
+ *
+ * Nunca lança: o veredito de HTTP é de `decideAckVerdict`, e uma exceção aqui
+ * viraria 500 no lugar do 503 que pede reentrega.
+ */
+async function persistInboundEvent(input: {
+  provider: WhatsAppProvider;
+  channelId: string;
+  unitId: string;
+  bodyText: string;
+  deliveryId: string | null;
+  signatureHeader: string | null;
+  signatureScheme: string | null;
+}): Promise<{ outcome: InsertOutcome; id: string | null }> {
+  const { data, error } = await supabase
+    .from("whatsapp_inbound_events")
+    .insert({
+      provider: input.provider,
+      channel_id: input.channelId,
+      unit_id: input.unitId,
+      raw_body: encodeRawBodyHex(input.bodyText),
+      delivery_id: input.deliveryId,
+      signature_header: input.signatureHeader,
+      signature_scheme: input.signatureScheme,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (!error && data) return { outcome: "inserted", id: data.id };
+  // Unique parcial `(channel_id, delivery_id)`: a entrega já está durável, e
+  // reprocessar seria responder duas vezes ao mesmo cliente.
+  if (error?.code === "23505") return { outcome: "duplicate", id: null };
+  return { outcome: "failed", id: null };
+}
+
+/**
+ * Processa uma linha da fila re-entrando no próprio pipeline.
+ *
+ * STUB — completado na Task 5 desta fase. Declarado agora porque a fronteira do
+ * ACK já o referencia, e uma referência para função inexistente não reprovaria
+ * nenhum gate local: o `tsc -b` não alcança este diretório e o `no-undef` do
+ * eslint só olha identificadores livres. Só apareceria no deploy.
+ *
+ * Enquanto é stub, o caminho rápido é no-op e a varredura da Task 6 é quem
+ * processa — degradação já prevista no desenho (~70 s em vez de ~0 s), e
+ * inalcançável em produção porque o gate nasce desligado nas duas pernas.
+ */
+async function processQueuedEventById(_eventId: string): Promise<void> {}
+
+/**
+ * `signatureAlreadyVerified` e `source` são DUAS perguntas, não uma.
+ *
+ * O antigo booleano `trustedMetaPayload` significava "sou parte filha de um lote
+ * cujo pai já validou a assinatura". Reusá-lo para "vim da fila durável"
+ * juntaria duas perguntas num sinal — o anti-padrão que este repo já nomeia em
+ * `isMetaShapedProvider` (forma de payload e esquema de assinatura são duas
+ * perguntas). `source` é o que decide persistir ou não; ele é o guardião contra
+ * reinserção infinita, e a decisão mora em `decideIngestionMode`, com controle
+ * positivo.
+ *
+ * O objeto é INTERNO: o `serve` público sempre entra com o default `{}`, então
+ * nenhum chamador externo consegue afirmar "já validei" nem "vim da fila".
+ */
+interface HandlerOptions {
+  signatureAlreadyVerified?: boolean;
+  source?: IngestionSource;
+  /** Preenchido quando `source !== "provider"`: a linha já existe na fila. */
+  queuedEventId?: string;
+}
+
+async function handleWebhookRequest(
+  req: Request,
+  opts: HandlerOptions = {},
+): Promise<Response> {
+  const trustedMetaPayload = opts.signatureAlreadyVerified === true;
+  const ingestionSource: IngestionSource = opts.source ?? "provider";
   const requestId = genRequestId();
   const t0 = Date.now();
 
@@ -1578,9 +1687,20 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
     }
 
     // Resolve channel → unit_id, provider, credentials, webhook_secret
+    //
+    // `async_ingestion_enabled` é a perna POR CANAL do gate da Fase C, e entra
+    // nesta lista porque a coluna é lida logo adiante: pedir a coluna e ler a
+    // coluna são o mesmo passo. Sem ela na projeção o valor chega `undefined`,
+    // `channelEnabled !== true` é sempre verdadeiro, o modo é sempre `sync` e a
+    // fase inteira embarca morta com a suíte verde.
+    //
+    // Consequência de ordem de deploy (já invariante no CLAUDE.md): a migration
+    // 111 precisa estar APLICADA antes do deploy desta função. Coluna ainda
+    // inexistente é 400 do PostgREST aqui, e este SELECT falhando devolve 404
+    // para TODO inbound de TODO canal.
     const { data: channel, error: channelErr } = await supabase
       .from("whatsapp_channels")
-      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, manual_echo_verified_at")
+      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled")
       .eq("id", channelId)
       .maybeSingle();
 
@@ -1632,8 +1752,22 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
           || await verifyDatafySignature(req, bodyText, channel.webhook_secret ?? "", Date.now());
         break;
       case "channel_secret": {
+        // `trustedMetaPayload` aqui pela MESMA razão dos dois ramos acima — o
+        // sinal significa "a assinatura desta entrega já foi validada", e o nome
+        // herdado do lote Meta não restringe o esquema a que ele se aplica.
+        //
+        // Sem esta linha, a re-entrada a partir da fila (Fase C) morre: o
+        // `Request` sintetizado carrega só `content-type`, sem
+        // `x-webhook-secret` e sem `?secret=`. Todo evento enfileirado de canal
+        // Z-API/WAHA/UazAPI daria 401, esgotaria as três tentativas e morreria
+        // no dead letter — calando a loja em produção.
+        //
+        // O bypass é seguro porque o sinal só é ligado DENTRO do processo:
+        // `HandlerOptions` é objeto interno, o `serve` público sempre entra com
+        // `{}`, e as duas origens que o ligam já validaram a assinatura (o pai
+        // do lote, sobre o corpo cru; a linha da fila, antes do insert).
         const secret = channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET") ?? "";
-        isValid = validateChannelSecret(req, secret);
+        isValid = trustedMetaPayload || validateChannelSecret(req, secret);
         break;
       }
     }
@@ -1721,6 +1855,84 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
       return new Response("unauthorized", { status: 401 });
     }
 
+    // ─── Fronteira do ACK (Fase C) ───────────────────────────────────────────
+    //
+    // Fica AQUI, e é ÚNICA: depois de todas as guardas que produzem não-200
+    // (assinatura, identidade declarada, token/instância UazAPI, identidade
+    // Meta) e antes de QUALQUER trabalho. Tudo a jusante é diferido em bloco
+    // quando o gate está ON: split de lote, callback de status, callback de
+    // conexão, descarte de canal inativo, eco de aparelho e inbound.
+    //
+    // Não se recorta "o que é caro" para diferir só isso: o split do lote
+    // produz partes RE-SERIALIZADAS (`JSON.stringify(part)`), e guardar isso
+    // destruiria a capacidade de revalidar a assinatura. O corpo é guardado uma
+    // vez, intacto, e quem divide é o processador, em memória.
+    const flagCheck = await checkFlagEnabled("whatsapp_async_ingestion");
+    const ingestionMode = decideIngestionMode({
+      source: ingestionSource,
+      flagEnabled: flagCheck.enabled,
+      flagReadFailed: flagCheck.readFailed,
+      channelEnabled: channel.async_ingestion_enabled,
+    });
+
+    if (ingestionMode !== "sync") {
+      let insert: { outcome: InsertOutcome; id: string | null } = { outcome: "skipped", id: null };
+
+      if (ingestionMode === "async") {
+        const scheme = WEBHOOK_SIGNATURE_SCHEME[provider];
+        const deliveryId = deliveryDedupeKey(provider, (name) => req.headers.get(name));
+
+        // Instrumentação de FORMA, nunca de valor — mesma disciplina de
+        // `webhook-payload-shape-core.ts`. Publicar o id de entrega ou o header
+        // de assinatura no log vazaria correlação e credencial. É isto que
+        // responde à pendência de validação real nº 6 da spec: o header existe,
+        // e se repete na reentrega?
+        jsonLog("info", {
+          requestId,
+          evt: "inbound_delivery_shape",
+          provider,
+          has_delivery_id: deliveryId !== null,
+          delivery_id_type: typeof req.headers.get(DATAFY_DELIVERY_ID_HEADER),
+        });
+
+        insert = await persistInboundEvent({
+          provider,
+          channelId,
+          unitId,
+          bodyText,
+          deliveryId,
+          signatureHeader: req.headers.get(SIGNATURE_HEADER_BY_SCHEME[scheme]),
+          signatureScheme: scheme,
+        });
+      }
+
+      const verdict = decideAckVerdict({ mode: ingestionMode, insert: insert.outcome });
+      if (verdict.kind !== "passthrough") {
+        await finish(verdict.outcome);
+        if (verdict.kind === "ack" && insert.id) {
+          // Caminho rápido OTIMISTA: o wall clock é do WORKER, não da request, e
+          // ele pode ser retirado a qualquer momento. A varredura é o backstop, e
+          // a degradação é benigna — o cliente espera ~70 s em vez de nunca.
+          try {
+            EdgeRuntime.waitUntil(processQueuedEventById(insert.id));
+          } catch (dispatchErr) {
+            // Despacho que falha NÃO pode derrubar o ACK. A linha já está
+            // durável; devolver 500 aqui faria o provider reentregar sobre um
+            // evento persistido, e providers legados não têm `delivery_id` para
+            // deduplicar a segunda linha.
+            jsonLog("error", {
+              requestId,
+              evt: "queue_dispatch_failed",
+              err: String(dispatchErr),
+            });
+          }
+        }
+        return new Response(verdict.kind === "ack" ? "ok" : "queue unavailable", {
+          status: verdict.status,
+        });
+      }
+    }
+
     // Meta (e a Datafy, que encaminha o mesmo envelope) pode agrupar
     // entries/changes e várias mensagens no mesmo POST. Cada inbound precisa
     // atravessar claim/debounce/lock separadamente; status e ecos também não
@@ -1733,11 +1945,14 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
           headers.delete("content-length");
           headers.delete("x-hub-signature-256");
           headers.delete("x-datafy-signature-256");
+          // `source: ingestionSource` PROPAGA a origem: um lote que chegou pela
+          // fila tem de manter `"queue"` nos filhos, senão cada parte reinsere
+          // o próprio corpo e o laço é infinito.
           return handleWebhookRequest(new Request(req.url, {
             method: "POST",
             headers,
             body: JSON.stringify(part),
-          }), true);
+          }), { signatureAlreadyVerified: true, source: ingestionSource });
         }));
         const failed = results.find((result) => !result.ok);
         if (failed) {
@@ -3712,4 +3927,6 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
   }
 }
 
-serve((req) => handleWebhookRequest(req, false));
+// A porta pública entra SEMPRE com o default `{}`: nenhum chamador externo
+// consegue afirmar "assinatura já validada" nem "vim da fila".
+serve((req) => handleWebhookRequest(req));

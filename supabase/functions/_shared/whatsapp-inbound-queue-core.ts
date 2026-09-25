@@ -9,6 +9,9 @@
  * Sem I/O, sem `Deno`, sem cliente Supabase. Só decisão.
  */
 
+import { DATAFY_SIGNATURE_HEADER } from "./datafy-signature-core.ts";
+import type { WebhookSignatureScheme } from "./whatsapp-provider-core.ts";
+
 /** De onde veio a invocação. NÃO é o provider — é a porta de entrada. */
 export type IngestionSource = "provider" | "queue" | "sweep";
 
@@ -127,6 +130,13 @@ export function normalizeDeliveryId(raw: string | null | undefined): string | nu
 }
 
 /**
+ * Header do id de entrega da Datafy. Constante exportada porque o webhook
+ * também o instrumenta (FORMA, nunca valor) — duas digitações do mesmo nome de
+ * header em arquivos diferentes é o começo do drift.
+ */
+export const DATAFY_DELIVERY_ID_HEADER = "x-datafy-delivery-id";
+
+/**
  * Só a Datafy declara id de entrega hoje. Providers legados não têm, e para
  * eles `processed_messages (provider, message_id)` segue sendo a autoridade
  * de idempotência — exatamente como já é.
@@ -136,7 +146,69 @@ export function deliveryDedupeKey(
   headerGet: (name: string) => string | null,
 ): string | null {
   if (provider !== "datafy") return null;
-  return normalizeDeliveryId(headerGet("x-datafy-delivery-id"));
+  return normalizeDeliveryId(headerGet(DATAFY_DELIVERY_ID_HEADER));
+}
+
+/**
+ * Header que carrega a assinatura, por ESQUEMA — não por provider.
+ *
+ * Existe para preencher `whatsapp_inbound_events.signature_header`, que é
+ * AUDITORIA e não autoridade: nada decide nada a partir dele. Fica chaveado
+ * pelo tipo `WebhookSignatureScheme` (e não por `Record<string, string>`)
+ * porque assim um esquema novo sem entrada aqui reprova no `tsc -b` que
+ * alcança este arquivo pelo teste em `src/lib/` — enquanto o `index.ts` do
+ * webhook, onde este mapa nasceria, não é alcançado por compilador nenhum.
+ *
+ * A entrada da Datafy vem da constante canônica de `datafy-signature-core.ts`,
+ * que é quem VALIDA esse header: uma fonte só. As outras duas são literais
+ * porque não existe constante equivalente — `x-hub-signature-256` está inline
+ * em `validateMetaSignature` e `x-webhook-secret` em `validateChannelSecret`
+ * (`_shared/whatsapp-providers.ts`). Extrair as duas agora obrigaria redeploy
+ * de nove Edge Functions por causa de um campo de auditoria; o teste deste
+ * núcleo pina os três valores no lugar disso.
+ *
+ * `channel_secret` também aceita `?secret=` na querystring. Nesse caso o header
+ * é ausente e a coluna fica `null`, de propósito: guardar o valor da
+ * querystring persistiria uma credencial VIVA numa linha de tabela.
+ */
+export const SIGNATURE_HEADER_BY_SCHEME: Readonly<Record<WebhookSignatureScheme, string>> = {
+  meta_app_secret: "x-hub-signature-256",
+  datafy_whsec: DATAFY_SIGNATURE_HEADER,
+  channel_secret: "x-webhook-secret",
+};
+
+/**
+ * Corpo cru → literal `bytea` do Postgres.
+ *
+ * `bytea` e não `text` porque Postgres recusa `\u0000` em `text` (22021), e um
+ * único inbound com NUL faria o INSERT falhar, virar 503, e o provider
+ * reentregar até desistir. A revalidação de assinatura exige o byte exato, e
+ * é por isso que o corpo nunca é re-serializado por `JSON.parse`/`stringify`
+ * em lugar nenhum deste caminho.
+ */
+export function encodeRawBodyHex(bodyText: string): string {
+  const bytes = new TextEncoder().encode(bodyText);
+  let hex = "\\x";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  return hex;
+}
+
+/**
+ * Inverso de `encodeRawBodyHex`, para a re-entrada a partir da fila. Aceita com
+ * e sem o prefixo `\x` porque quem devolve o valor é o PostgREST, não nós.
+ *
+ * Hex de comprimento ímpar faz `new Uint8Array` estourar `RangeError`, e isso é
+ * DESEJADO: corpo truncado não pode virar payload silenciosamente diferente do
+ * que o provider assinou. Quem chama está dentro de um `try/catch` que
+ * transforma a exceção em retentativa da linha.
+ */
+export function decodeRawBodyHex(hex: string): string {
+  const clean = hex.startsWith("\\x") ? hex.slice(2) : hex;
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /** `null` significa: esgotou, promove para `dead`. */
