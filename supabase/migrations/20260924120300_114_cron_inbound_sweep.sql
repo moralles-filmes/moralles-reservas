@@ -41,17 +41,29 @@
 
 create extension if not exists pg_cron;
 
--- Idempotência: reagendar sem remover antes duplicaria o job.
+-- Idempotência: reagendar sem remover antes duplicaria o job — e job duplicado
+-- aqui é varredura dobrada a cada minuto.
+--
+-- Desagenda por `jobid`, não por nome, e SEM `exception when others then null`.
+-- É o idioma que a migration do health de canais (2026-09-03) adotou depois de
+-- descrever o defeito do idioma antigo, e ele é melhor por duas razões: `perform
+-- ... from cron.job` age sobre 0..N linhas sem levantar exceção quando não há
+-- nenhuma (então não precisa de handler), e engolir `when others` esconderia um
+-- erro de permissão real — a migration seguiria, o `cron.schedule` criaria a
+-- linha, e ninguém saberia que a remoção não aconteceu.
+--
+-- Esta migration nasceu com o idioma antigo porque o brief a trouxe verbatim do
+-- plano, que é anterior àquela decisão.
 do $$
 begin
-  perform cron.unschedule('whatsapp-inbound-sweep');
-exception when others then null;
-end $$;
+  perform cron.unschedule(jobid) from cron.job where jobname = 'whatsapp-inbound-sweep';
+end;
+$$;
 
 select cron.schedule(
   'whatsapp-inbound-sweep',
   '*/1 * * * *',
-  'select trigger_whatsapp_inbound_sweep();'
+  $$select public.trigger_whatsapp_inbound_sweep();$$
 );
 
 -- =====================================================================

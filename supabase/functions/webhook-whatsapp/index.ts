@@ -1076,8 +1076,16 @@ const AGENT_INSTABILITY_TEXT =
 // não cabe no que resta do wall clock.
 const DEBOUNCE_WINDOW_MS = INBOUND_DEBOUNCE_WINDOW_MS;
 // Orçamento de tempo (desde o início da request) para um retry silencioso do
-// agente após erro transitório. Acima disso não retentamos (risco de estourar
-// o limite de 60s da Edge Function e o cliente não receber NADA).
+// agente após erro transitório. Acima disso não retentamos, porque uma segunda
+// tentativa longa arrisca o cliente não receber NADA.
+//
+// A versão anterior desta linha justificava o valor com "o limite de 60s da Edge
+// Function". Esse número é crença herdada, não medição, e este mesmo arquivo o
+// contradiz: `AI_LOCK_TTL_SECONDS` existe porque um turno de pior caso leva
+// ~51s, e somado ao debounce de 6s isso já passaria de 60s no caminho síncrono
+// que atende loja real hoje. O wall clock, além disso, é do WORKER e não da
+// request. Os 30s seguem valendo como política — uma resposta que demora demais
+// já é resposta errada —, e não como dedução de um teto que ninguém mediu.
 const AGENT_RETRY_BUDGET_MS = 30_000;
 // TTL do lock de exclusão do agente por conversa. Mirror do stuck timeout:
 // cobre o pior caso de runOnce (~51s Gemini c/ fallback) + folga, e auto-expira
@@ -1777,6 +1785,22 @@ async function processQueuedEventById(eventId: string): Promise<void> {
  * mesmo tempo, e as duas podem selecionar o mesmo id. O que torna isso seguro é
  * o claim por linha — a perdedora recebe zero linhas e segue adiante.
  */
+/**
+ * Apaga o que já passou da retenção. Separada e chamada em TODOS os caminhos de
+ * saída da varredura, inclusive quando a seleção falha: `raw_body` é PII, e a
+ * retenção não pode depender de a seleção estar funcionando. Uma seleção quebrada
+ * de forma persistente reteria telefone e texto de cliente indefinidamente por
+ * um motivo que não tem relação nenhuma com retenção.
+ */
+async function purgeInboundEvents(requestId: string): Promise<number | null> {
+  const { data, error } = await supabase.rpc("purge_whatsapp_inbound_events");
+  if (error) {
+    jsonLog("error", { requestId, evt: "sweep_purge_failed", err: error.message });
+    return null;
+  }
+  return Number(data ?? 0);
+}
+
 async function runInboundSweep(requestId: string): Promise<Response> {
   const startedAt = Date.now();
 
@@ -1785,6 +1809,7 @@ async function runInboundSweep(requestId: string): Promise<Response> {
   });
 
   if (error) {
+    await purgeInboundEvents(requestId);
     // 500 de propósito: quem chama é o `pg_cron`, que não reentrega — e o
     // `net._http_response` guarda o status. Devolver 200 aqui faria uma fila
     // parada parecer uma fila vazia.
@@ -1795,7 +1820,27 @@ async function runInboundSweep(requestId: string): Promise<Response> {
     });
   }
 
-  const ids = parseSelectedEventIds(data);
+  const { ids, descartados } = parseSelectedEventIds(data);
+
+  // CANÁRIO. Uma forma de retorno que ninguém previu não produz erro: o
+  // PostgREST devolve 200, isto devolveria `{"processed":0}` e o
+  // `net._http_response` ficaria verde enquanto a fila cresce — 1440 vezes por
+  // dia, parecendo "não havia nada a fazer". `descartados > 0` é o único sinal
+  // que existe, e ele só aparece se alguém o emitir.
+  if (descartados > 0) {
+    jsonLog("error", {
+      requestId,
+      evt: "sweep_select_shape_unexpected",
+      descartados,
+      reconhecidos: ids.length,
+      // FORMA, nunca valor: nome de campo e `typeof`, pela disciplina de
+      // `webhook-payload-shape-core.ts`. Publicar o item vazaria id de tenant.
+      forma: Array.isArray(data)
+        ? `array<${data.length > 0 ? typeof data[0] : "vazio"}>`
+        : typeof data,
+    });
+  }
+
   let processed = 0;
 
   for (const eventId of ids) {
@@ -1806,19 +1851,10 @@ async function runInboundSweep(requestId: string): Promise<Response> {
     processed++;
   }
 
-  // Purga na própria varredura: nenhum job novo. `raw_body` carrega telefone e
-  // texto de cliente — é PII, e não fica além do necessário. Roda DEPOIS do
-  // laço e fora dele: é manutenção, e falhar aqui não pode esconder o que a
-  // varredura de fato processou.
-  let purged: number | null = null;
-  const { data: purgedData, error: purgeError } = await supabase.rpc(
-    "purge_whatsapp_inbound_events",
-  );
-  if (purgeError) {
-    jsonLog("error", { requestId, evt: "sweep_purge_failed", err: purgeError.message });
-  } else {
-    purged = Number(purgedData ?? 0);
-  }
+  // Purga na própria varredura: nenhum job novo. Roda DEPOIS do laço e fora
+  // dele: é manutenção, e falhar aqui não pode esconder o que a varredura de
+  // fato processou.
+  const purged = await purgeInboundEvents(requestId);
 
   const skipped = ids.length - processed;
   jsonLog("info", {

@@ -63,10 +63,12 @@
 --
 -- `claimed_until < now()` com `claimed_until` NULL avalia NULL, logo não é
 -- verdadeiro, logo um `processing` sem lease nunca seria retomado. Não é caminho
--- alcançável: quem escreve `status = 'processing'` é este UPDATE (e o da
--- varredura), sempre gravando o lease no MESMO comando; a finalização nunca
--- escreve `processing` e sempre limpa o lease junto. Se algum dia outro escritor
--- gravar `processing`, ele carrega o lease ou reabre este buraco.
+-- alcançável: **este UPDATE é o ÚNICO escritor de `status = 'processing'`** em
+-- todo o desenho, e ele grava o lease no MESMO comando; a finalização nunca
+-- escreve `processing` e sempre limpa o lease junto. A varredura NÃO é um segundo
+-- escritor — `select_due_whatsapp_inbound_events`, mais abaixo neste arquivo, é
+-- somente leitura justamente por isto. Se algum dia outro escritor gravar
+-- `processing`, ele carrega o lease ou reabre este buraco.
 create or replace function public.claim_whatsapp_inbound_event(p_event_id uuid)
 returns table (
   id          uuid,

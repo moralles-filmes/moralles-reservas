@@ -504,6 +504,35 @@ export const WORST_CASE_QUEUED_EVENT_MS =
  * Estourar mesmo assim não perde nada: o worker morre, a linha em curso fica
  * `processing` com lease vivo e o takeover de 90 s a retoma. O orçamento torna
  * isso raro; a cerca é que o torna inofensivo.
+ *
+ * ─── O LIMITE REAL NÃO FOI MEDIDO, E ESTE NÚMERO NÃO É UMA AFIRMAÇÃO SOBRE ELE ─
+ *
+ * Este orçamento é HEURÍSTICO de propósito, e não deriva de nenhum teto que se
+ * conheça, por duas razões:
+ *
+ * 1. Nada foi deployado nesta fase (ruling R10), então o wall clock desta função
+ *    não foi observado uma vez sequer. Há, noutro ponto deste repo, um comentário
+ *    que fala em "limite de 60 s da Edge Function"
+ *    (`AGENT_RETRY_BUDGET_MS`, em `webhook-whatsapp/index.ts`): é crença
+ *    herdada, não medição, e o próprio repo a contradiz — o TTL do lock de
+ *    conversa existe porque um turno de pior caso leva ~51 s, e somado ao
+ *    debounce isso já passaria de 60 s no caminho SÍNCRONO que roda em produção
+ *    hoje. Não corrija um número pelo outro: meça.
+ * 2. Ainda que houvesse um teto publicado, **o wall clock é do WORKER e não da
+ *    request**. Um worker que já serviu outras requisições chega aqui com menos
+ *    tempo do que um recém-criado, e nenhuma constante pode saber quanto. Um
+ *    orçamento exato é impossível por construção.
+ *
+ * Por isso a correção NÃO depende deste valor. Ele só decide a FREQUÊNCIA de
+ * sobreposição entre varreduras; quem garante que a sobreposição não duplica
+ * resposta é o claim cercado por UUID, e quem garante que o worker morto não
+ * perde trabalho é o lease de 90 s. Errar este número para mais faz o worker
+ * morrer no meio às vezes (retomado em 90 s); errar para menos faz a varredura
+ * processar menos linhas por invocação. Nenhum dos dois perde inbound.
+ *
+ * Medir é passo do dono, está no procedimento de deploy, e a medição certa não é
+ * "qual o teto documentado" e sim quanto tempo uma varredura de verdade leva —
+ * `net._http_response` guarda isso por execução.
  */
 export const SWEEP_WALL_CLOCK_BUDGET_MS = 120_000;
 
@@ -554,20 +583,50 @@ export function sweepShouldStartAnother(input: {
  * Fora dessas duas formas, descarta o item em vez de inventar id: chamar o claim
  * com lixo só gastaria ida ao banco.
  */
-export function parseSelectedEventIds(data: unknown): string[] {
-  if (!Array.isArray(data)) return [];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface SelectedEventIds {
+  ids: string[];
+  /**
+   * Itens que vieram e não viraram id. `> 0` com `ids` vazio é o sinal de que a
+   * aposta sobre a forma errou — e é o ÚNICO sinal que existe, porque uma forma
+   * imprevista não produz erro nenhum: o PostgREST devolve 200, a varredura
+   * devolve `{"processed":0}` e `net._http_response` fica verde enquanto a fila
+   * cresce. Sem este contador, o modo de falha mais caro disponível aqui se
+   * parece com "não havia nada a fazer", 1440 vezes por dia.
+   */
+  descartados: number;
+}
+
+export function parseSelectedEventIds(data: unknown): SelectedEventIds {
+  if (!Array.isArray(data)) {
+    // `null` é o corpo vazio legítimo de zero linhas; qualquer outra coisa é
+    // forma inesperada e precisa contar como descarte, não como fila vazia.
+    return { ids: [], descartados: data === null || data === undefined ? 0 : 1 };
+  }
   const ids: string[] = [];
+  let descartados = 0;
   for (const item of data) {
+    // Exige FORMA DE UUID, não "primeira string": um objeto de várias chaves
+    // (uma forma que ninguém previu) entregaria a primeira string qualquer —
+    // um timestamp, um status — e o claim seria chamado com lixo, gastando ida
+    // ao banco e devolvendo zero linhas, que é indistinguível de "não era
+    // reivindicável".
     if (typeof item === "string") {
-      if (item.trim()) ids.push(item);
+      if (UUID_RE.test(item.trim())) ids.push(item.trim());
+      else descartados++;
       continue;
     }
     if (item && typeof item === "object") {
       const record = item as Record<string, unknown>;
-      const values = [record.id, ...Object.values(record)];
-      const found = values.find((value) => typeof value === "string" && value.trim());
-      if (typeof found === "string") ids.push(found);
+      const found = [record.id, ...Object.values(record)].find(
+        (value) => typeof value === "string" && UUID_RE.test(value.trim()),
+      );
+      if (typeof found === "string") ids.push(found.trim());
+      else descartados++;
+      continue;
     }
+    descartados++;
   }
-  return ids;
+  return { ids, descartados };
 }

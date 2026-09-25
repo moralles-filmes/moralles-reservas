@@ -475,11 +475,11 @@ describe("parseSelectedEventIds — a forma do retorno é do PostgREST, não nos
   const b = "22222222-2222-2222-2222-222222222222";
 
   it("array de escalares (a forma esperada de `returns setof uuid`)", () => {
-    expect(parseSelectedEventIds([a, b])).toEqual([a, b]);
+    expect(parseSelectedEventIds([a, b])).toEqual({ ids: [a, b], descartados: 0 });
   });
 
   it("array de objetos com `id` também é aceito", () => {
-    expect(parseSelectedEventIds([{ id: a }, { id: b }])).toEqual([a, b]);
+    expect(parseSelectedEventIds([{ id: a }, { id: b }])).toEqual({ ids: [a, b], descartados: 0 });
   });
 
   // A alternativa plausível: PostgREST nomeando a coluna pela função.
@@ -487,17 +487,45 @@ describe("parseSelectedEventIds — a forma do retorno é do PostgREST, não nos
     expect(parseSelectedEventIds([
       { select_due_whatsapp_inbound_events: a },
       { select_due_whatsapp_inbound_events: b },
-    ])).toEqual([a, b]);
+    ])).toEqual({ ids: [a, b], descartados: 0 });
   });
 
-  it("nada devido devolve lista vazia, e `null` não estoura", () => {
-    expect(parseSelectedEventIds([])).toEqual([]);
-    expect(parseSelectedEventIds(null)).toEqual([]);
-    expect(parseSelectedEventIds(undefined)).toEqual([]);
+  it("nada devido devolve lista vazia SEM descarte — fila vazia não é anomalia", () => {
+    expect(parseSelectedEventIds([])).toEqual({ ids: [], descartados: 0 });
+    expect(parseSelectedEventIds(null)).toEqual({ ids: [], descartados: 0 });
+    expect(parseSelectedEventIds(undefined)).toEqual({ ids: [], descartados: 0 });
   });
 
   // Chamar o claim com lixo só gastaria ida ao banco.
   it("item que não carrega id nenhum é descartado, não inventado", () => {
-    expect(parseSelectedEventIds([a, "", "   ", 42, null, {}, { id: 7 }])).toEqual([a]);
+    const r = parseSelectedEventIds([a, "", "   ", 42, null, {}, { id: 7 }]);
+    expect(r.ids).toEqual([a]);
+    expect(r.descartados).toBe(6);
+  });
+
+  // ─── O CANÁRIO ───────────────────────────────────────────────────────────
+  // Uma forma imprevista não produz erro: o PostgREST devolve 200 e a varredura
+  // devolveria `{"processed":0}` para sempre, com a fila cheia, 1440 vezes por
+  // dia, parecendo "não havia nada a fazer". `descartados` é o ÚNICO sinal.
+  it("forma imprevista conta descarte em vez de se passar por fila vazia", () => {
+    const r = parseSelectedEventIds([{ evento: { id: a } }, { evento: { id: b } }]);
+    expect(r.ids).toEqual([]);
+    expect(r.descartados).toBe(2);
+  });
+
+  it("corpo que não é array nem nulo também conta como descarte", () => {
+    expect(parseSelectedEventIds({ rows: [a] })).toEqual({ ids: [], descartados: 1 });
+    expect(parseSelectedEventIds("erro")).toEqual({ ids: [], descartados: 1 });
+  });
+
+  // Exige FORMA de uuid, não "primeira string": um objeto com várias chaves
+  // entregaria um timestamp ou um status como se fosse id, e o claim seria
+  // chamado com lixo — devolvendo zero linhas, indistinguível de "não era
+  // reivindicável".
+  it("não aceita a primeira string qualquer como id", () => {
+    const r = parseSelectedEventIds([{ status: "received", criado: "2026-09-25", id: a }]);
+    expect(r.ids).toEqual([a]);
+    expect(parseSelectedEventIds([{ status: "received", criado: "2026-09-25" }]))
+      .toEqual({ ids: [], descartados: 1 });
   });
 });
