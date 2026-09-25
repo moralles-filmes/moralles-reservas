@@ -43,9 +43,11 @@ import { checkFlagEnabled, isFlagEnabled } from "../_shared/platform-flags.ts";
 import {
   decideAckVerdict,
   decideIngestionMode,
+  decodeRawBodyHex,
   deliveryDedupeKey,
   encodeRawBodyHex,
   providerDeclaresDeliveryId,
+  queuedEventVerdict,
   DATAFY_DELIVERY_ID_HEADER,
   SIGNATURE_HEADER_BY_SCHEME,
   type IngestionSource,
@@ -1486,18 +1488,212 @@ async function persistInboundEvent(input: {
 }
 
 /**
- * Processa uma linha da fila re-entrando no próprio pipeline.
- *
- * STUB — completado na Task 5 desta fase. Declarado agora porque a fronteira do
- * ACK já o referencia, e uma referência para função inexistente não reprovaria
- * nenhum gate local: o `tsc -b` não alcança este diretório e o `no-undef` do
- * eslint só olha identificadores livres. Só apareceria no deploy.
- *
- * Enquanto é stub, o caminho rápido é no-op e a varredura da Task 6 é quem
- * processa — degradação já prevista no desenho (~70 s em vez de ~0 s), e
- * inalcançável em produção porque o gate nasce desligado nas duas pernas.
+ * Projeção que `claim_whatsapp_inbound_event` devolve. Tipa as SEIS colunas do
+ * `returning` da migration 113 — é a documentação do contrato da RPC, no arquivo
+ * que a consome.
  */
-async function processQueuedEventById(_eventId: string): Promise<void> {}
+interface ClaimedInboundEvent {
+  id: string;
+  provider: WhatsAppProvider;
+  channel_id: string;
+  /** `bytea`: o PostgREST entrega literal hex (`\x...`), com ou sem prefixo. */
+  raw_body: string;
+  /** Tentativas JÁ FEITAS. Quem incrementa é o SQL da finalização. */
+  attempts: number;
+  claim_id: string;
+}
+
+/**
+ * STUB — a Task 8 desta fase a completa (dead letter visível: handoff com motivo
+ * próprio + contagem por unidade no diagnóstico).
+ *
+ * Declarada agora porque `queuedEventVerdict` já decide QUANDO promover, e uma
+ * referência para função inexistente não reprovaria nenhum gate local: o
+ * `tsc -b` não alcança este diretório e o `no-undef` do eslint só olha
+ * identificadores livres. Só apareceria no deploy.
+ */
+async function promoteDeadLetterToHandoff(_eventId: string): Promise<void> {}
+
+/**
+ * Grava o veredito da linha da fila, CERCADO pelo `claim_id`.
+ *
+ * A decisão — status, outcome, atraso, dead letter — é de `queuedEventVerdict`,
+ * no núcleo puro. Nada aqui redigita a escada de retentativa, e nada aqui
+ * escreve coluna de tempo: o atraso viaja em SEGUNDOS e quem monta o instante é
+ * `now()` do banco. Escrever o futuro com o relógio do Deno para o banco
+ * compará-lo com o dele é a borda que este repo já pagou em `availability.ts`.
+ *
+ * Nunca lança, pelo mesmo motivo de `processQueuedEventById` — e também para que
+ * uma falha aqui não faça o caller finalizar duas vezes pelo caminho do catch.
+ */
+async function finalizeQueuedEvent(input: {
+  eventId: string;
+  claimId: string;
+  attempts: number;
+  /** `null` = exceção antes de haver resposta HTTP. */
+  httpStatus: number | null;
+  error: string | null;
+}): Promise<void> {
+  const verdict = queuedEventVerdict({
+    httpStatus: input.httpStatus,
+    attempts: input.attempts,
+  });
+
+  try {
+    const { data, error } = await supabase.rpc("finalize_whatsapp_inbound_event", {
+      p_event_id: input.eventId,
+      p_claim_id: input.claimId,
+      p_status: verdict.status,
+      p_outcome: verdict.outcome,
+      p_error: input.error,
+      p_retry_delay_seconds: verdict.retryDelaySeconds,
+    });
+
+    if (error) {
+      // A linha fica `processing` com lease vivo; o takeover de 90 s a retoma e
+      // o pipeline re-roda. O que impede resposta dupla NESSE caso não é esta
+      // função — é o claim de `processed_messages (provider, message_id)`, que
+      // recusa a parte já concluída como duplicata.
+      jsonLog("error", {
+        evt: "queued_event_finalize_failed",
+        eventId: input.eventId,
+        err: error.message,
+      });
+      return;
+    }
+
+    // `UPDATE` que casa zero linhas devolve `error: null` no supabase-js
+    // (invariante do CLAUDE.md). Sem conferir, "a cerca negou" ficaria
+    // indistinguível de "gravei" — e a promoção a dead letter sairia sobre uma
+    // linha que pertence a outro processo.
+    if (Number(data ?? 0) < 1) {
+      jsonLog("warn", {
+        evt: "queued_event_finalize_fenced",
+        eventId: input.eventId,
+        status: verdict.status,
+      });
+      return;
+    }
+
+    jsonLog("info", {
+      evt: "queued_event_finalized",
+      eventId: input.eventId,
+      status: verdict.status,
+      outcome: verdict.outcome,
+      attempts: input.attempts,
+      httpStatus: input.httpStatus,
+    });
+
+    // Só depois de a escrita ter pegado: promover sobre linha fencida anunciaria
+    // dead letter de trabalho alheio.
+    if (verdict.promoteToHandoff) await promoteDeadLetterToHandoff(input.eventId);
+  } catch (err) {
+    jsonLog("error", {
+      evt: "queued_event_finalize_failed",
+      eventId: input.eventId,
+      err: sanitizeProviderError(err),
+    });
+  }
+}
+
+/**
+ * Processa uma linha da fila re-entrando no PRÓPRIO pipeline.
+ *
+ * O mecanismo não é novo: o split de lote Meta já sintetiza `Request` e re-entra
+ * em produção em todo POST multiparte. O que é novo é `source`, e é ele que
+ * impede a re-entrada de persistir o evento de novo — laço infinito, o defeito
+ * mais perigoso disponível neste desenho. A decisão mora em
+ * `decideIngestionMode`, com controle positivo; nada aqui reimplementa a
+ * pergunta.
+ *
+ * O PRIMEIRO ATO É REIVINDICAR A LINHA, cercado por UUID. Dois caminhos podem
+ * alcançá-la — o rápido (`waitUntil`, disparado pela própria request que a
+ * persistiu) e a varredura (`pg_cron`) — e duas execuções da mesma linha são
+ * duas IAs respondendo ao mesmo cliente. A exposição que sobra é UMA ida ao
+ * banco, não uma janela: quem perde a corrida recebe zero linhas e sai.
+ *
+ * NUNCA LANÇA: é chamada por `EdgeRuntime.waitUntil` (ninguém está esperando, e
+ * rejeição não tratada em Deno pode derrubar o isolate) e pela varredura, que
+ * precisa seguir para a próxima linha.
+ */
+async function processQueuedEventById(eventId: string): Promise<void> {
+  let claimId: string | null = null;
+  let attempts = 0;
+
+  try {
+    const { data, error } = await supabase.rpc("claim_whatsapp_inbound_event", {
+      p_event_id: eventId,
+    });
+
+    if (error) {
+      // NÃO finaliza: sem claim não há cerca a apresentar, e escrever sem ela
+      // sobrescreveria o veredito de quem tem a linha. A varredura tenta depois.
+      jsonLog("error", { evt: "queued_event_claim_failed", eventId, err: error.message });
+      return;
+    }
+
+    const row = (Array.isArray(data) ? data[0] : data) as ClaimedInboundEvent | null | undefined;
+    if (!row?.claim_id) {
+      // Zero linhas, e nenhuma das causas é erro: outro processo tem o lease
+      // vivo, a linha já terminou (`done`/`dead`), ou ela deixou de existir
+      // porque o canal foi apagado e a FK é `on delete cascade` — trabalho que
+      // deixou de existir, não falha (Review Focus #4). Insistir criaria lease
+      // preso.
+      jsonLog("info", { evt: "queued_event_not_claimable", eventId });
+      return;
+    }
+
+    claimId = row.claim_id;
+    attempts = Number(row.attempts ?? 0);
+    jsonLog("info", {
+      evt: "queued_event_claimed",
+      eventId,
+      provider: row.provider,
+      attempts,
+    });
+
+    // Estoura em hex ímpar ou não-hex, de propósito: corpo corrompido não pode
+    // virar payload silenciosamente diferente do que o provider assinou. O
+    // `catch` abaixo transforma a exceção em retentativa da linha — erro claro
+    // na fila, em vez de um 401 inexplicável na revalidação do HMAC.
+    const bodyText = decodeRawBodyHex(String(row.raw_body));
+
+    // O canal vai na QUERYSTRING, nunca no corpo: é isso que faz a guarda
+    // anti-cross-tenant do handler valer alguma coisa. O host é irrelevante (o
+    // handler só lê `searchParams` de `req.url`), e o fallback existe para que
+    // env ausente vire erro de configuração e não uma linha em dead letter.
+    const origin = Deno.env.get("SUPABASE_URL") ?? "http://localhost";
+    const res = await handleWebhookRequest(
+      new Request(`${origin}/functions/v1/webhook-whatsapp?channel=${row.channel_id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: bodyText,
+      }),
+      { signatureAlreadyVerified: true, source: "queue", queuedEventId: eventId },
+    );
+
+    await finalizeQueuedEvent({
+      eventId,
+      claimId,
+      attempts,
+      httpStatus: res.status,
+      error: res.ok ? null : `http_${res.status}`,
+    });
+  } catch (err) {
+    // SANITIZADO: o que vai para `last_error` fica persistido, e uma URL de
+    // provider com credencial no path não pode acabar numa linha de tabela.
+    const detail = sanitizeProviderError(err);
+    jsonLog("error", { evt: "queued_event_failed", eventId, err: detail });
+    if (!claimId) return;
+    await finalizeQueuedEvent({
+      eventId,
+      claimId,
+      attempts,
+      httpStatus: null,
+      error: detail,
+    });
+  }
+}
 
 /**
  * `signatureAlreadyVerified` e `source` são DUAS perguntas, não uma.
@@ -1659,7 +1855,14 @@ async function handleWebhookRequest(
       outcome: recordedOutcome,
       error: error ?? null,
       duration_ms,
-      meta,
+      // `queued_event_id` é o ÚNICO vínculo entre a linha da fila e as execuções
+      // que ela produziu — sem ele, investigar um dead letter obriga a cruzar
+      // `webhook_executions` por janela de tempo. Só aparece na re-entrada: na
+      // porta do provider o campo é `undefined` e `meta` segue idêntico ao de
+      // hoje, inclusive quando é `undefined` (recordExecution grava `{}`).
+      meta: opts.queuedEventId
+        ? { ...(meta ?? {}), queued_event_id: opts.queuedEventId }
+        : meta,
     });
   };
 
@@ -1867,7 +2070,12 @@ async function handleWebhookRequest(
     // ANTES de assumir o risco. A outra metade ("se repete na reentrega?") NÃO é
     // respondida aqui: quem responde é o outcome `queue_duplicate_delivery`, que
     // só existe com o gate ligado.
-    if (providerDeclaresDeliveryId(provider)) {
+    //
+    // ESCOPADA NA PORTA DO PROVIDER. Sem `ingestionSource === "provider"`, a
+    // MESMA entrega emite esta linha duas vezes — uma na porta, outra na
+    // re-entrada a partir da fila —, e contar a mesma entrega duas vezes é
+    // exatamente a medida errada que uma instrumentação de forma deveria evitar.
+    if (ingestionSource === "provider" && providerDeclaresDeliveryId(provider)) {
       jsonLog("info", {
         requestId,
         evt: "inbound_delivery_shape",

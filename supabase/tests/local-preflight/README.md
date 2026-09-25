@@ -50,6 +50,8 @@ presentes agendaria jobs apontando para lá.
 | `15-controles-109.sql` | Os **dois controles positivos** (ordinais 35–36) da 109. Sabotam o corpo real a partir de `pg_get_functiondef` — CONTROLE-9 remove o gate `is_public` e vê CODE-3 resolver uma unidade privada; CONTROLE-10 remove o casamento `unit_id` e vê CODE-2 resolver o código de outra unidade. As duas asserções são sobre o UUID que voltou, nunca sobre "não estourou": guarda quebrada aqui devolve dado, não erro. |
 | `16-inbound-events-111.sql` | INBOUND-1..7 (ordinais 37–43, migration 111, Fase C): a fila durável `whatsapp_inbound_events`. Corpo com octeto NUL voltando byte a byte (o motivo de `raw_body` ser `bytea`), dedupe de entrega escopado por canal, entregas legadas com `delivery_id` NULL coexistindo, CHECK de `delivery_id` e de `provider` com contra-caso em cada um, cascade do canal sem abortar o DELETE, e a postura do gate (RLS forçada, zero policies, flag `false`, zero canais optados). **Roda em banco PRÓPRIO** e com seed `00a` — ver a seção "Rodar" dele. Cada caso se desfaz por rollback de subtransação, então o arquivo é re-runnable e não deixa linha na tabela. |
 | `17-controles-111.sql` | Os **cinco controles positivos** (ordinais 44–48) da 111. C-111-1 troca `raw_body` para `text`; C-111-2 troca o unique parcial por `nulls not distinct`; C-111-3 dropa o CHECK de `delivery_id`; C-111-4 troca `on delete cascade` por `restrict`; C-111-5 dropa o CHECK de `provider`. **Aqui o restore mora dentro de cada controle e isso não é escolha** — ver a nota "Por que reaplicar a 111 não restaura" abaixo. |
+| `18-inbound-claim-113.sql` | CLAIM-1..3, FIN-1..3 e ACL-113 (ordinais 49–55, migration 113, Fase C): a cerca de UUID que impede DUAS execuções da mesma linha — que nesta fase significa duas IAs respondendo ao mesmo cliente. Claim exclusivo, takeover de lease vencido com crachá novo, finalização recusada com crachá errado, incremento de `attempts` e `next_attempt_at` montados pelo relógio do BANCO, recusa terminal de 401 morrendo em `done` (e não em `dead`, que reteria o corpo cru por 30 dias), e o ACL efetivo das duas RPCs. **Continua o banco da 111** — ver a seção "Sequência da migration 113". |
+| `19-controles-113.sql` | Os **sete controles positivos** (ordinais 56–62) da 113. C-113-1 tira a cerca `claim_id` da finalização; C-113-2 tira a perna do takeover; C-113-3 tira o filtro de status do claim; C-113-4 encurta o lease para 9 s; C-113-5 incrementa `attempts` em todo ramo; C-113-6 lê o atraso como milissegundos; C-113-7 dropa e recria a função sem repetir o `revoke`. Cada um mede também que os casos VIZINHOS continuam verdes — é isso que sustenta "avermelha exatamente um". |
 
 ## Rodar
 
@@ -393,6 +395,90 @@ dois estão escritos nos arquivos, no ponto em que importam:
    — a escolha óbvia — não o captura. O `INBOUND-6` e o `C-111-4` capturam as
    duas condições; sem o controle, aquele handler morto seguiria no arquivo sem
    nunca ser exercitado, porque com `cascade` o ramo nem é alcançado.
+
+### Sequência da migration 113 (Fase C — cerca do claim e finalização)
+
+**O mesmo banco da 111, continuado** — não um banco novo. O `19` exige que o `18`
+tenha rodado (ele confere vereditos em `t_res`), e o `18` exige a 111 aplicada.
+Quem já rodou a seção da 111 acrescenta a 113 e segue; quem está começando roda a
+sequência inteira de uma vez, como abaixo.
+
+A **112 entra na sequência** por ser a migration entre a 111 e a 113, não porque
+algum caso dependa dela: ela só cria o wrapper da varredura, que nenhum caso
+chama (este harness não tem `pg_net`, de propósito).
+
+```bash
+export PGCLIENTENCODING=UTF8          # obrigatório; ver a nota na seção "Rodar"
+PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists fasec113
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres fasec113
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fasec113 -v ON_ERROR_STOP=1 "$@"; }
+
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/00a-whatsapp-legacy-seed.sql
+P -f supabase/migrations/20260716130000_061_platform_flags.sql
+
+# ANTES da 113, o 18 e o 19 têm de FALHAR pelas guardas do topo. É o RED que dá
+# sentido ao GREEN: rodado antes, CLAIM-2 e FIN-1 passariam POR ACIDENTE, porque
+# sem as funções toda chamada "falha" e todo caso negativo fica verde medindo
+# nada.
+P -f supabase/tests/local-preflight/18-inbound-claim-113.sql   # esperado: ERROR
+P -f supabase/tests/local-preflight/19-controles-113.sql       # esperado: ERROR
+
+P -f supabase/migrations/20260924120000_111_whatsapp_inbound_events.sql
+P -f supabase/migrations/20260924120100_112_inbound_sweep_trigger.sql
+P -f supabase/migrations/20260924120200_113_inbound_claim_rpc.sql
+
+P -f supabase/tests/local-preflight/16-inbound-events-111.sql
+P -f supabase/tests/local-preflight/18-inbound-claim-113.sql
+
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fasec113 \
+  -f supabase/tests/local-preflight/17-controles-111.sql   # SEM ON_ERROR_STOP
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fasec113 \
+  -f supabase/tests/local-preflight/19-controles-113.sql   # SEM ON_ERROR_STOP
+# NÃO reaplicar as migrations aqui: cada controle já se desfez sozinho.
+
+P -c "select ord, caso, veredito from t_res order by ord;"   # 26 linhas, todas OK
+```
+
+Ao terminar: `dropdb fasec113`.
+
+**Conte as 26 linhas, não confie em "nenhum FALHOU".** O `19` roda SEM
+ON_ERROR_STOP de propósito, e plpgsql compila o bloco INTEIRO na primeira
+execução: um erro de compilação (um SQLSTATE com 6 caracteres em vez de 5, por
+exemplo) derruba o bloco antes de qualquer statement, então nem o `when others`
+grava veredito. O `psql` imprime ERROR, segue, e a tabela fica com 19 linhas
+**todas OK** — a aparência exata de uma execução sadia da 111+113 sem controle
+nenhum. Medido ao escrever este conjunto. É a mesma razão pela qual a guarda
+grava a sentinela `ord = 0` em vez de só levantar erro.
+
+| ord | caso | arquivo |
+|---|---|---|
+| 0 | `GUARDA-17`/`GUARDA-19` (sentinela; **só aparece quando os pré-requisitos falham**) | `17`/`19` |
+| 37–43 | `INBOUND-1` .. `INBOUND-7` | `16` |
+| 44–48 | `C-111-1` .. `C-111-5` | `17` |
+| 49–55 | `CLAIM-1` .. `CLAIM-3`, `FIN-1` .. `FIN-3`, `ACL-113` | `18` |
+| 56–62 | `C-113-1` .. `C-113-7` | `19` |
+
+**Por que o `18` compara instantes por IGUALDADE, e por que dois controles
+existem só para provar isso.** `now()` é `transaction_timestamp()`, constante
+dentro de um `do $$`, então `claimed_until = now() + interval '90 seconds'` é uma
+asserção exata — e é ela que prende os 90 segundos do SQL ao gêmeo
+`INBOUND_LEASE_TTL_MS` do núcleo em TypeScript, que o SQL não pode importar. A
+escrita óbvia (`> now()`, "está no futuro") passaria com 9 segundos e com 9000. O
+`C-113-4` (lease de 9 s) e o `C-113-6` (atraso de 30 lido como milissegundos)
+medem as DUAS coisas: que a asserção real reprova a sabotagem, e que a frouxa
+teria passado. Sem eles, trocar a igualdade por `> now()` numa limpeza futura não
+derrubaria nada.
+
+**Um resultado MEDIDO no `C-113-7`: `create or replace function` NÃO reabre o
+`EXECUTE` a PUBLIC.** O ACL fica preso ao objeto e sobrevive à substituição do
+corpo, então migration que só troque implementação não precisa repetir o
+`revoke`. Quem reabre é **DROP + CREATE** — e esse é o caminho provável de
+acontecer de novo: alguém precisa mudar o tipo de retorno, descobre que
+`create or replace` recusa, dropa, recria, e não repete o `revoke`. O controle
+mede as duas metades; sem a primeira ele diria que o `ACL-113` tem força sem
+dizer contra o quê.
 
 ## O que os dois controles do `04` fazem
 

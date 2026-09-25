@@ -5,6 +5,7 @@ import {
   normalizeDeliveryId,
   deliveryDedupeKey,
   nextAttemptDelayMs,
+  queuedEventVerdict,
   agentDeadlineVerdict,
   lockTtlSecondsRequired,
   encodeRawBodyHex,
@@ -261,6 +262,92 @@ describe("nextAttemptDelayMs — curto e raso: resposta atrasada é resposta err
   it("a janela total fica abaixo de 10 minutos", () => {
     const total = INBOUND_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
     expect(total).toBeLessThan(10 * 60_000);
+  });
+});
+
+describe("queuedEventVerdict — o veredito da linha da fila", () => {
+  it("2xx encerra a linha em done, sem retentativa e sem handoff", () => {
+    expect(queuedEventVerdict({ httpStatus: 200, attempts: 0 })).toEqual({
+      status: "done",
+      outcome: "queue_processed",
+      retryDelaySeconds: null,
+      promoteToHandoff: false,
+    });
+  });
+
+  // Os desfechos que NÃO respondem nada ao cliente (canal inativo, handoff
+  // humano, duplicata em processed_messages, callback de status) devolvem 200 no
+  // pipeline porque são corretos. O 2xx é lido como faixa, não como `=== 200`.
+  it("qualquer 2xx conta como processado, não só o 200 exato", () => {
+    for (const status of [200, 201, 204, 299]) {
+      expect(queuedEventVerdict({ httpStatus: status, attempts: 0 }).status, `status ${status}`)
+        .toBe("done");
+    }
+  });
+
+  // ─── CONTROLE POSITIVO 1 do 401 terminal ─────────────────────────────────
+  // `attempts: 0` é onde a escada AINDA TEM degrau (30 s). Se alguém tirar o
+  // ramo do 401, este caso cai na classe 3 e vira `received` com atraso — logo
+  // ele é o que reprova "401 virou retentativa", e só ele.
+  it("401 com escada disponível NÃO vira retentativa: é terminal em done", () => {
+    expect(queuedEventVerdict({ httpStatus: 401, attempts: 0 })).toEqual({
+      status: "done",
+      outcome: "queue_unauthorized_terminal",
+      retryDelaySeconds: null,
+      promoteToHandoff: false,
+    });
+  });
+
+  // ─── CONTROLE POSITIVO 2 do 401 terminal ─────────────────────────────────
+  // `attempts: INBOUND_MAX_ATTEMPTS` é onde a escada ESGOTOU. Sem o ramo do
+  // 401, este caso cai em `dead` + handoff — e `dead` retém o corpo cru (PII)
+  // por 30 dias em vez de 7. É este caso, e só ele, que reprova "401 virou
+  // dead".
+  it("401 com escada esgotada também termina em done, nunca em dead (o corpo cru é PII)", () => {
+    const verdict = queuedEventVerdict({ httpStatus: 401, attempts: INBOUND_MAX_ATTEMPTS });
+    expect(verdict.status).toBe("done");
+    expect(verdict.status).not.toBe("dead");
+    expect(verdict.promoteToHandoff).toBe(false);
+    expect(verdict.outcome).toBe("queue_unauthorized_terminal");
+  });
+
+  it("não-2xx que não é 401 desce a escada, em SEGUNDOS (o banco escreve o instante)", () => {
+    expect(queuedEventVerdict({ httpStatus: 503, attempts: 0 })).toEqual({
+      status: "received",
+      outcome: "queue_retry_scheduled",
+      retryDelaySeconds: INBOUND_RETRY_DELAYS_MS[0] / 1000,
+      promoteToHandoff: false,
+    });
+    expect(queuedEventVerdict({ httpStatus: 500, attempts: 1 }).retryDelaySeconds)
+      .toBe(INBOUND_RETRY_DELAYS_MS[1] / 1000);
+    expect(queuedEventVerdict({ httpStatus: 500, attempts: 2 }).retryDelaySeconds)
+      .toBe(INBOUND_RETRY_DELAYS_MS[2] / 1000);
+  });
+
+  // Exceção antes de haver resposta — corpo cru corrompido (`decodeRawBodyHex`
+  // estoura), rede caindo no meio. Mesma classe do não-2xx transitório.
+  it("exceção sem resposta (httpStatus null) também desce a escada", () => {
+    expect(queuedEventVerdict({ httpStatus: null, attempts: 0 }).status).toBe("received");
+    expect(queuedEventVerdict({ httpStatus: null, attempts: 0 }).retryDelaySeconds)
+      .toBe(INBOUND_RETRY_DELAYS_MS[0] / 1000);
+  });
+
+  it("escada esgotada em falha transitória vira dead E pede handoff", () => {
+    expect(queuedEventVerdict({ httpStatus: 500, attempts: INBOUND_MAX_ATTEMPTS })).toEqual({
+      status: "dead",
+      outcome: "queue_dead_letter",
+      retryDelaySeconds: null,
+      promoteToHandoff: true,
+    });
+    expect(queuedEventVerdict({ httpStatus: null, attempts: 99 }).promoteToHandoff).toBe(true);
+  });
+
+  // 503 é o Vault da UazAPI indisponível; 500 é o catch externo. Os dois são
+  // transitórios de verdade. Alargar o terminal para `>= 400` os transformaria
+  // em descarte silencioso, e o inbound do cliente sumiria.
+  it("503 e 500 NÃO são terminais — alargar o 401 para a faixa 4xx/5xx seria descarte", () => {
+    expect(queuedEventVerdict({ httpStatus: 503, attempts: 0 }).status).not.toBe("done");
+    expect(queuedEventVerdict({ httpStatus: 500, attempts: 0 }).status).not.toBe("done");
   });
 });
 

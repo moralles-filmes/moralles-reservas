@@ -269,6 +269,90 @@ export function nextAttemptDelayMs(attempts: number): number | null {
 }
 
 /**
+ * O veredito da LINHA DA FILA, a partir do desfecho HTTP da re-entrada.
+ *
+ * `retryDelaySeconds` é SEGUNDOS, não timestamp, e isso é a metade visível de
+ * uma regra: quem escreve `next_attempt_at` é o banco, por `now() + interval`.
+ * Devolver um instante daqui obrigaria o Deno a escolher o relógio que o banco
+ * depois compara — o defeito de borda que este repo já pagou em
+ * `availability.ts`, na outra coluna.
+ *
+ * TRÊS classes, e a do meio existe por medição:
+ *
+ * 1. **2xx → `done`.** Inclui desfechos que não respondem nada ao cliente
+ *    (canal inativo, conversa em handoff humano, duplicata em
+ *    `processed_messages`, callback de status): o pipeline devolve 200 neles
+ *    porque são desfechos CORRETOS, não falhas.
+ * 2. **401 → TERMINAL, e termina em `done`, não em `dead`.** Existe uma guarda
+ *    de 401 que fica DEPOIS da fronteira do ACK e não pode subir
+ *    (`manual_echo_channel_identity_mismatch`: ela julga eco da parte única,
+ *    depois do split do lote). Com o gate ligado ela deixa de ser 401 síncrono e
+ *    vira linha na fila. Retentá-la queimaria três tentativas sobre payload que
+ *    NUNCA será aceito; e marcá-la `dead` reteria o CORPO CRU — telefone e texto
+ *    de cliente, PII — por 30 dias, quando o rastro de segurança já existe em
+ *    `webhook_executions` (`outcome: webhook_unauthorized`, TTL 30 d) SEM o
+ *    corpo. Então a linha morre no purge de 7 dias, não no de 30.
+ * 3. **Qualquer outro não-2xx, ou exceção antes de haver resposta
+ *    (`httpStatus: null`) → escada de `nextAttemptDelayMs`.** Esgotada, `dead`
+ *    com `promoteToHandoff`, porque quem assume aí é uma pessoa.
+ *
+ * Só 401 é terminal, e não uma faixa 4xx: os outros 4xx do handler são
+ * inalcançáveis na re-entrada (o corpo já parseou e já passou pela guarda de
+ * tamanho na porta do provider), e 404 significaria canal apagado — caso em que
+ * a linha já sumiu por cascade. Alargar para `>= 400` transformaria um 503 de
+ * Vault indisponível (UazAPI) em descarte silencioso.
+ */
+export interface QueuedEventVerdict {
+  status: "done" | "received" | "dead";
+  outcome: string;
+  retryDelaySeconds: number | null;
+  promoteToHandoff: boolean;
+}
+
+export function queuedEventVerdict(input: {
+  /** `null` = exceção antes de haver resposta (decode do corpo, rede, etc.). */
+  httpStatus: number | null;
+  /** O valor ATUAL da linha, antes deste desfecho — quem incrementa é o SQL. */
+  attempts: number;
+}): QueuedEventVerdict {
+  const { httpStatus } = input;
+
+  if (httpStatus !== null && httpStatus >= 200 && httpStatus < 300) {
+    return {
+      status: "done",
+      outcome: "queue_processed",
+      retryDelaySeconds: null,
+      promoteToHandoff: false,
+    };
+  }
+
+  if (httpStatus === 401) {
+    return {
+      status: "done",
+      outcome: "queue_unauthorized_terminal",
+      retryDelaySeconds: null,
+      promoteToHandoff: false,
+    };
+  }
+
+  const delayMs = nextAttemptDelayMs(input.attempts);
+  if (delayMs === null) {
+    return {
+      status: "dead",
+      outcome: "queue_dead_letter",
+      retryDelaySeconds: null,
+      promoteToHandoff: true,
+    };
+  }
+  return {
+    status: "received",
+    outcome: "queue_retry_scheduled",
+    retryDelaySeconds: Math.ceil(delayMs / 1000),
+    promoteToHandoff: false,
+  };
+}
+
+/**
  * Suave: impede COMEÇAR nova rodada de ferramenta, nunca aborta a em curso.
  * Abortar depois de `create_reservation` deixaria reserva criada e cliente sem
  * resposta — o risco que o `mutatingToolUsed` de hoje já tenta cobrir.
