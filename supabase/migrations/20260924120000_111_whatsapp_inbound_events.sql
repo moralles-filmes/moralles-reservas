@@ -54,7 +54,7 @@ comment on table whatsapp_inbound_events is
 comment on column whatsapp_inbound_events.raw_body is
   'Corpo CRU da entrega, byte a byte. bytea e nao text porque text recusa \u0000. Nunca re-serializar: a revalidacao de assinatura depende do byte exato.';
 comment on column whatsapp_inbound_events.delivery_id is
-  'x-datafy-delivery-id. Só a Datafy declara; legados usam processed_messages como autoridade. Vazio normaliza para NULL no caller (o unique e parcial e '''' nao e null).';
+  'x-datafy-delivery-id. Só a Datafy declara; legados usam processed_messages como autoridade. Vazio normaliza para NULL no caller (o unique e parcial e '''' nao e null). O 512 do CHECK e o mesmo numero de MAX_DELIVERY_ID_LEN em _shared/whatsapp-inbound-queue-core.ts (normalizeDeliveryId), que aponta de volta para este CHECK: mudar um lado sem o outro e o comeco do drift, e quem edita pelo lado do SQL nao tem outro ponteiro.';
 
 -- Dedupe de ENTREGA, escopado por canal: um id de entrega só tem significado
 -- dentro do canal que o emitiu.

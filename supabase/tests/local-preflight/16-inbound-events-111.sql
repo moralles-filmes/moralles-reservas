@@ -47,6 +47,23 @@
 -- da subtransação quando é o OUTER block que estoura, e na 2a passada o insert
 -- bateria em chave duplicada — abortando o arquivo sob ON_ERROR_STOP e sumindo
 -- com o veredito de todos os casos seguintes.
+--
+-- ═══ SÓ O INBOUND-3 DEPENDE DE NULL COEXISTIR — E ISSO É INVARIANTE ══════════
+-- Todo caso que insere MAIS DE UMA linha no MESMO canal passa `delivery_id`
+-- explícito e distinto, mesmo quando o id não tem nada a ver com o que o caso
+-- mede. A razão é o valor do controle positivo: a sabotagem do C-111-2
+-- (`nulls not distinct`) tem de produzir UM vermelho, no caso que fala de NULL.
+--
+-- MEDIDO na versão anterior deste arquivo: com o INBOUND-5 inserindo cinco
+-- linhas e o INBOUND-6 duas, todas sem `delivery_id`, aquela sabotagem produzia
+-- TRÊS vermelhos — e os dois extras diziam apenas `duplicate key value violates
+-- unique constraint`, sem nomear nada. No INBOUND-6 isso se lê como problema de
+-- FK/cascade e manda o mantenedor investigar o lugar errado. Nem o CHECK de
+-- `provider` (INBOUND-5) nem o cascade da FK (INBOUND-6) têm relação com NULLs
+-- coexistirem, e não devem depender dessa propriedade.
+--
+-- Caso novo aqui segue a regra: uma linha por canal pode omitir `delivery_id`
+-- (uma linha nunca colide); duas ou mais, nunca.
 
 -- ─── GUARDA: este arquivo só faz sentido DEPOIS da 111 e DEPOIS do `00a` ─────
 -- Rodado antes, INBOUND-2/4/5/6 passariam POR ACIDENTE: a tabela não existe,
@@ -313,6 +330,12 @@ end $$;
 -- liberar só parte deles estoura no meio do caminho do inbound. Esta é a nona
 -- restrição; um provider novo tem de entrar aqui também. Contra-caso: os cinco
 -- nomes válidos TÊM de passar, senão um CHECK que recusasse tudo ficaria verde.
+--
+-- O `delivery_id` (`p-<provider>`) não tem nada a ver com o que este caso mede:
+-- ele existe porque cinco linhas no MESMO canal sem id colidiriam sob a
+-- sabotagem do C-111-2, e esse vermelho não é deste caso. Ver a nota do
+-- cabeçalho. O insert de `telegram` fica sem id de propósito — o CHECK o recusa
+-- e ele nunca chega a ser linha.
 do $$
 declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
         v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
@@ -331,8 +354,8 @@ begin
     end;
 
     foreach v_p in array array['zapi','uazapi','waha','official','datafy'] loop
-      insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body)
-      values (v_p, v_chan, v_unit, v_corpo);
+      insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id)
+      values (v_p, v_chan, v_unit, v_corpo, 'p-' || v_p);
       v_aceitos := v_aceitos + 1;
     end loop;
 
@@ -367,6 +390,12 @@ end $$;
 -- `foreign_key_violation`, que é a escolha óbvia, NÃO o captura, e a regressão
 -- chegaria aqui como `when others` com mensagem genérica em vez do diagnóstico.
 -- É o que o C-111-4 dispara.
+--
+-- Os dois eventos levam `delivery_id` explícito (`ev-1`/`ev-2`) por uma razão
+-- alheia ao cascade: duas linhas no MESMO canal sem id colidem sob a sabotagem
+-- do C-111-2, e este caso ficaria vermelho dizendo `duplicate key value` — que
+-- se lê como defeito de FK e manda investigar o lugar errado. Ver a nota do
+-- cabeçalho.
 do $$
 declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000005';
         v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000003';
@@ -379,8 +408,9 @@ begin
   delete from t_res where ord = 42;
 
   begin
-    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body)
-    values ('zapi', v_chan, v_unit, v_corpo), ('zapi', v_chan, v_unit, v_corpo);
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id)
+    values ('zapi', v_chan, v_unit, v_corpo, 'ev-1'),
+           ('zapi', v_chan, v_unit, v_corpo, 'ev-2');
 
     select count(*) into v_antes from whatsapp_inbound_events where channel_id = v_chan;
 

@@ -47,20 +47,51 @@
 -- caminho deixa schema sabotado de pé.
 
 -- ─── GUARDA ─────────────────────────────────────────────────────────────────
+-- `t_res` é criada ANTES da guarda, e a ordem não é cosmética: a guarda LÊ
+-- `t_res` (é assim que ela sabe se o `16` rodou). Com o `create` depois, rodar
+-- este arquivo num banco onde o `16` nunca passou estourava `42P01` na própria
+-- guarda — e como este arquivo roda SEM ON_ERROR_STOP de propósito, o `psql`
+-- imprimia ERROR e SEGUIA: `t_res` era criada logo abaixo e os cinco controles
+-- rodavam e PASSAVAM sobre zero caso INBOUND. Detectar isso dependia de o
+-- operador notar cinco linhas onde o README promete doze.
+--
+-- A guarda é DOIS statements, e isso também é necessário: um `raise` desfaz a
+-- subtransação do próprio `do`, então um bloco que registrasse e levantasse
+-- perderia o registro no rollback. O primeiro bloco DIAGNOSTICA e grava o
+-- veredito (ord 0 — não é caso, e `order by ord` o põe no topo da tabela); o
+-- segundo só relê essa linha e aborta. Sob ON_ERROR_STOP o arquivo morre ali;
+-- sem ele o ERROR é impresso e a linha 0 garante que a falha não se perde entre
+-- cinco controles verdes.
+create table if not exists t_res (ord int primary key, caso text, veredito text);
+
 do $ctrl$
+declare v_falha text := null;
 begin
   if to_regclass('public.whatsapp_inbound_events') is null then
-    raise exception '17-controles-111.sql exige a migration 111 aplicada (tabela public.whatsapp_inbound_events ausente).';
+    v_falha := 'exige a migration 111 aplicada (tabela public.whatsapp_inbound_events ausente).';
+  elsif not exists (select 1 from t_res where ord between 37 and 43) then
+    v_falha := 'exige o 16-inbound-events-111.sql rodado antes (nenhum veredito INBOUND-* em t_res). Um controle positivo sem o caso que ele derruba nao mede nada.';
+  elsif not exists (select 1 from whatsapp_channels where id = 'dddddddd-0000-0000-0000-000000000005') then
+    v_falha := 'exige o canal dddddddd-0000-0000-0000-000000000005 do 00a-whatsapp-legacy-seed.sql (alvo do C-111-4).';
   end if;
-  if not exists (select 1 from t_res where ord between 37 and 43) then
-    raise exception '17-controles-111.sql exige o 16-inbound-events-111.sql rodado antes (nenhum veredito INBOUND-* em t_res). Um controle positivo sem o caso que ele derruba nao mede nada.';
-  end if;
-  if not exists (select 1 from whatsapp_channels where id = 'dddddddd-0000-0000-0000-000000000005') then
-    raise exception '17-controles-111.sql exige o canal dddddddd-0000-0000-0000-000000000005 do 00a-whatsapp-legacy-seed.sql (alvo do C-111-4).';
+
+  if v_falha is null then
+    delete from t_res where ord = 0;   -- sentinela de execução anterior quebrada
+  else
+    insert into t_res values (0, 'GUARDA-17 pre-requisitos do 17-controles-111.sql (nao e caso)',
+      'FALHOU: ' || v_falha)
+      on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
   end if;
 end $ctrl$;
 
-create table if not exists t_res (ord int primary key, caso text, veredito text);
+do $ctrl$
+declare v_falha text;
+begin
+  select veredito into v_falha from t_res where ord = 0;
+  if v_falha is not null then
+    raise exception '17-controles-111.sql %', v_falha;
+  end if;
+end $ctrl$;
 
 -- ═══ C-111-1 (44) — `raw_body` em `text` derruba o INBOUND-1 ════════════════
 -- Duas metades, e as duas são o defeito:
@@ -308,6 +339,14 @@ end $ctrl$;
 -- handlers até o `when others`. O INBOUND-6 tinha a mesma escrita e foi
 -- corrigido junto; sem este controle, aquele handler morto seguiria no arquivo
 -- sem nunca ser exercitado, porque com `cascade` o ramo nem é alcançado.
+--
+-- Os dois eventos levam `delivery_id` explícito (`c4-1`/`c4-2`) pela regra do
+-- cabeçalho do `16`: duas linhas no MESMO canal sem id colidem se alguém
+-- apertar o índice para `nulls not distinct`, e este caso ficaria vermelho
+-- dizendo `duplicate key value` — sobre um controle de FK. MEDIDO com a
+-- sabotagem aplicada de forma persistente: era o único caso do `17`, além do
+-- próprio C-111-2, que reagia; e o do C-111-2 é reação CERTA (a linha de base
+-- dele confere o indexdef e acusa o índice trocado).
 do $ctrl$
 declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000005';
         v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000003';
@@ -329,8 +368,9 @@ begin
       add constraint whatsapp_inbound_events_channel_id_fkey
       foreign key (channel_id) references whatsapp_channels(id) on delete restrict;
 
-    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body)
-    values ('zapi', v_chan, v_unit, v_corpo), ('zapi', v_chan, v_unit, v_corpo);
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id)
+    values ('zapi', v_chan, v_unit, v_corpo, 'c4-1'),
+           ('zapi', v_chan, v_unit, v_corpo, 'c4-2');
 
     begin
       delete from whatsapp_channels where id = v_chan;

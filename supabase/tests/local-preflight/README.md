@@ -53,6 +53,14 @@ presentes agendaria jobs apontando para lá.
 
 ## Rodar
 
+**Versão mínima: PostgreSQL 15.** Não é preferência — `17-controles-111.sql`
+usa `create unique index ... nulls not distinct` (C-111-2), sintaxe que só existe
+a partir do 15. Num servidor mais velho aquele controle cai no `when others` com
+erro de sintaxe e reporta `FALHOU` **sem que haja nada errado com a migration**:
+falso-vermelho que se lê como defeito da 111. O restante dos arquivos não usa
+sintaxe posterior ao 13. Medido no **PostgreSQL 18.4** (`scoop`), que é onde a
+suíte inteira roda verde.
+
 **`PGCLIENTENCODING=UTF8` não é opcional.** O `psql` do Windows, sem essa
 variável, converte errado a entrada de arquivo `-f` e grava todo texto acentuado
 **duplamente codificado** — mesmo reportando `client_encoding = UTF8` no `show`.
@@ -334,8 +342,29 @@ nenhuma com produção nem com o Supabase do projeto.
 
 | ord | caso | arquivo |
 |---|---|---|
+| 0 | `GUARDA-17` (sentinela; **só aparece quando os pré-requisitos do `17` falham**) | `17` |
 | 37–43 | `INBOUND-1` .. `INBOUND-7` | `16` |
 | 44–48 | `C-111-1` .. `C-111-5` | `17` |
+
+**Por que a guarda do `17` grava uma linha em vez de só levantar erro.** Este
+arquivo roda SEM ON_ERROR_STOP de propósito (um erro no meio não deve sumir com
+os vereditos seguintes) — então um `raise` na guarda imprime ERROR e o `psql`
+SEGUE, e os cinco controles rodam e passam sobre zero caso INBOUND. A linha
+`ord = 0` é o que faz essa falha aparecer em `select ord, caso, veredito from
+t_res order by ord`, no topo, em vez de depender de o operador contar cinco
+linhas onde esta tabela promete doze. Numa execução sadia ela não existe (a
+guarda apaga sentinela de execução anterior), e sob ON_ERROR_STOP o `raise` que
+vem depois aborta o arquivo como antes.
+
+**Só o `INBOUND-3` depende de NULL coexistir, e isso é invariante do `16`.**
+Todo caso que insere mais de uma linha no MESMO canal passa `delivery_id`
+explícito e distinto, mesmo quando o id não tem relação com o que o caso mede.
+Sem isso a sabotagem do C-111-2 (`nulls not distinct`) produz TRÊS vermelhos em
+vez de um — medido: o INBOUND-5 (cinco linhas) e o INBOUND-6 (duas) colidiam
+também, e os dois reportavam só `duplicate key value violates unique
+constraint`, que no INBOUND-6 se lê como defeito de FK/cascade e manda
+investigar o lugar errado. Controle positivo vale pelo vermelho ser
+**localizado**. Caso novo ali segue a regra.
 
 **Por que reaplicar a 111 não restaura — e por que os controles do `17` se
 desfazem sozinhos.** Nos conjuntos anteriores o README manda reaplicar a
