@@ -4,19 +4,31 @@
 -- casos sabotam de propósito e um erro no meio não deve sumir com os vereditos
 -- dos seguintes.
 --
--- Sem eles, "CLAIM-1..3 e FIN-1..3 passaram" não distingue a cerca funcionando
+-- Sem eles, "CLAIM-1..4 e FIN-1..3 passaram" não distingue a cerca funcionando
 -- de teste sem força. Cada controle reintroduz UM defeito e mede que o caso alvo
 -- fica VERMELHO — e, onde o defeito poderia respingar, mede também que os
--- vizinhos continuam VERDES. É essa segunda metade que sustenta "avermelha
--- exatamente um caso"; afirmá-lo em prosa não prova nada.
+-- vizinhos continuam VERDES.
 --
 --   C-113-1 (56)  `finalize` sem `and claim_id = p_claim_id`   -> derruba FIN-1
 --   C-113-2 (57)  `claim` sem a perna do takeover              -> derruba CLAIM-3
---   C-113-3 (58)  `claim` sem filtro de status                 -> derruba CLAIM-2
+--   C-113-3 (58)  `claim` sem filtro de status                 -> derruba CLAIM-2 e CLAIM-4
 --   C-113-4 (59)  lease de 9 s em vez de 90                    -> derruba CLAIM-1
 --   C-113-5 (60)  `attempts + 1` em TODO ramo                  -> derruba FIN-3
 --   C-113-6 (61)  atraso lido como MILISSEGUNDOS               -> derruba FIN-2
 --   C-113-7 (62)  drop + create sem o `revoke`                  -> derruba ACL-113
+--
+-- ═══ O CRITÉRIO NÃO É "UM CASO", É VERMELHO QUE NÃO DESORIENTA ══════════════
+--
+-- O C-113-3 derruba DOIS casos, e está certo: tirar o filtro de status quebra
+-- genuinamente as duas propriedades (lease vivo reivindicado duas vezes, e linha
+-- terminal voltando a ser trabalhável), e cada veredito nomeia o defeito real.
+-- Isso é diferente de um controle cujo segundo vermelho MENTE sobre a causa —
+-- defeito que este conjunto teve e que uma revisão pegou: o C-113-4 (lease de 9 s)
+-- também avermelhava o CLAIM-3, com a mensagem "o takeover nao renovou o lease",
+-- mandando investigar o takeover quando o defeito era o TTL. A correção não foi
+-- enfraquecer o controle: foi tirar do CLAIM-3 a asserção de VALOR exato do lease,
+-- que era duplicata da do CLAIM-1. Controle positivo vale pelo vermelho ser
+-- LOCALIZADO e pela mensagem apontar para o lugar certo — não por um-para-um.
 --
 -- ═══ DOIS CONTROLES MEDEM A ESCOLHA DA ASSERÇÃO, NÃO SÓ O CÓDIGO ════════════
 --
@@ -74,10 +86,14 @@ begin
     v_falha := 'exige o canal dddddddd-0000-0000-0000-000000000001 do 00a-whatsapp-legacy-seed.sql. Sem canal, todo insert morre na FK e os controles ficariam verdes medindo nada.';
   end if;
 
+  -- SENTINELA EM `-19`, NÃO EM 0, e a escolha é necessária: o `17` usa o 0, e um
+  -- `19` saudável apagaria a sentinela de um `17` que falhou — a falha do `17`
+  -- desapareceria atrás de sete controles verdes. Ordinal próprio, negativo para
+  -- que `order by ord` continue pondo qualquer sentinela no topo.
   if v_falha is null then
-    delete from t_res where ord = 0;   -- sentinela de execução anterior quebrada
+    delete from t_res where ord = -19;   -- sentinela de execução anterior quebrada
   else
-    insert into t_res values (0, 'GUARDA-19 pre-requisitos do 19-controles-113.sql (nao e caso)',
+    insert into t_res values (-19, 'GUARDA-19 pre-requisitos do 19-controles-113.sql (nao e caso)',
       'FALHOU: ' || v_falha)
       on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
   end if;
@@ -86,7 +102,7 @@ end $ctrl$;
 do $ctrl$
 declare v_falha text;
 begin
-  select veredito into v_falha from t_res where ord = 0;
+  select veredito into v_falha from t_res where ord = -19;
   if v_falha is not null then
     raise exception '19-controles-113.sql %', v_falha;
   end if;
@@ -317,6 +333,7 @@ declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
         v_id uuid;
         v_primeiro uuid; v_primeiro_ok boolean := false;
         v_segundo uuid; v_segundo_ok boolean := false;
+        v_id_done uuid; v_pegou_done boolean := false;
 begin
   delete from t_res where ord = 58;
 
@@ -359,6 +376,14 @@ begin
     select c.claim_id into v_segundo from public.claim_whatsapp_inbound_event(v_id) c;
     v_segundo_ok := found;
 
+    -- segundo vermelho LEGÍTIMO: sem o filtro de status, `done` também volta a
+    -- ser trabalhável. É o CLAIM-4, e a mensagem dele nomeia o defeito certo.
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id, status)
+    values ('datafy', v_chan, v_unit, v_corpo, 'c3-done', 'done')
+    returning id into v_id_done;
+    perform 1 from public.claim_whatsapp_inbound_event(v_id_done);
+    v_pegou_done := found;
+
     raise exception 'c-113-3: desfaz a sabotagem' using errcode = 'ZZ113';
   exception when sqlstate 'ZZ113' then
     null;
@@ -378,10 +403,13 @@ begin
         then 'FALHOU (sem o filtro de status, o segundo claim AINDA devolveu zero — o CLAIM-2 nao tem forca)'
       when v_segundo is not distinct from v_primeiro
         then 'FALHOU (o segundo claim devolveu o MESMO claim_id — nao e o cenario de dois processos)'
+      when not v_pegou_done
+        then 'FALHOU (sem o filtro de status, a linha `done` AINDA nao foi reivindicada — o CLAIM-4 nao tem forca)'
       when v_def_depois is distinct from v_def_antes
         then 'FALHOU (restore: a definicao divergiu do catalogo original)'
-      else 'OK (sem o filtro de status os dois claims levaram a linha, com crachas diferentes, '
-           || 'logo o CLAIM-2 fica vermelho; definicao restaurada)'
+      else 'OK (sem o filtro de status os dois claims levaram a linha, com crachas diferentes, logo o CLAIM-2 '
+           || 'fica vermelho; e a linha `done` voltou a ser reivindicavel, logo o CLAIM-4 tambem — os dois '
+           || 'vermelhos nomeiam o mesmo defeito real; definicao restaurada)'
     end);
 exception when others then
   insert into t_res values (58, 'C-113-3 claim sem filtro de status derruba o CLAIM-2 (lease vivo reivindicado duas vezes)',
@@ -407,6 +435,7 @@ declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
         v_id uuid; v_until timestamptz;
         v_igualdade_reprova boolean := false;
         v_frouxa_passaria boolean := false;
+        v_id_venc uuid; v_retomou boolean := false; v_until_venc timestamptz;
 begin
   delete from t_res where ord = 59;
 
@@ -451,6 +480,19 @@ begin
     v_igualdade_reprova := v_until is distinct from now() + interval '90 seconds';
     v_frouxa_passaria   := v_until > now();
 
+    -- O CLAIM-3 tem de ficar VERDE: ele afirma que o takeover retoma e RENOVA o
+    -- lease, não que o lease vale 90 s. Foi por afirmar as duas coisas que ele
+    -- avermelhava aqui, com mensagem que apontava para o takeover.
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id,
+                                         status, claim_id, claimed_until)
+    values ('datafy', v_chan, v_unit, v_corpo, 'c4-vencido',
+            'processing', gen_random_uuid(), now() - interval '1 second')
+    returning id into v_id_venc;
+
+    perform 1 from public.claim_whatsapp_inbound_event(v_id_venc);
+    v_retomou := found;
+    select e.claimed_until into v_until_venc from whatsapp_inbound_events e where e.id = v_id_venc;
+
     raise exception 'c-113-4: desfaz a sabotagem' using errcode = 'ZZ113';
   exception when sqlstate 'ZZ113' then
     null;
@@ -470,10 +512,14 @@ begin
         then 'FALHOU (com lease de 9s a assercao por igualdade do CLAIM-1 AINDA passaria — o caso nao tem forca)'
       when not v_frouxa_passaria
         then 'FALHOU (premissa: o lease de 9s nao ficou no futuro, entao este controle nao demonstra por que a igualdade e necessaria)'
+      when not v_retomou or v_until_venc is null or v_until_venc <= now()
+        then 'FALHOU (respingo: o takeover de lease vencido parou de funcionar ou nao renovou — o CLAIM-3 '
+             || 'avermelharia junto e este controle voltaria a desorientar)'
       when v_def_depois is distinct from v_def_antes
         then 'FALHOU (restore: a definicao divergiu do catalogo original)'
-      else 'OK (lease de 9s: a igualdade reprova, logo o CLAIM-1 fica vermelho; e "> now()" teria passado, '
-           || 'logo a igualdade e load-bearing e nao estilo; definicao restaurada)'
+      else 'OK (lease de 9s: a igualdade reprova, logo o CLAIM-1 fica vermelho; "> now()" teria passado, '
+           || 'logo a igualdade e load-bearing e nao estilo; e o takeover segue retomando e renovando, '
+           || 'logo o CLAIM-3 continua verde; definicao restaurada)'
     end);
 exception when others then
   insert into t_res values (59, 'C-113-4 lease de 9s derruba o CLAIM-1 pela IGUALDADE; "esta no futuro" passaria',

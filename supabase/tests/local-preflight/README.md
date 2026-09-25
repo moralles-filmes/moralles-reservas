@@ -50,7 +50,7 @@ presentes agendaria jobs apontando para lá.
 | `15-controles-109.sql` | Os **dois controles positivos** (ordinais 35–36) da 109. Sabotam o corpo real a partir de `pg_get_functiondef` — CONTROLE-9 remove o gate `is_public` e vê CODE-3 resolver uma unidade privada; CONTROLE-10 remove o casamento `unit_id` e vê CODE-2 resolver o código de outra unidade. As duas asserções são sobre o UUID que voltou, nunca sobre "não estourou": guarda quebrada aqui devolve dado, não erro. |
 | `16-inbound-events-111.sql` | INBOUND-1..7 (ordinais 37–43, migration 111, Fase C): a fila durável `whatsapp_inbound_events`. Corpo com octeto NUL voltando byte a byte (o motivo de `raw_body` ser `bytea`), dedupe de entrega escopado por canal, entregas legadas com `delivery_id` NULL coexistindo, CHECK de `delivery_id` e de `provider` com contra-caso em cada um, cascade do canal sem abortar o DELETE, e a postura do gate (RLS forçada, zero policies, flag `false`, zero canais optados). **Roda em banco PRÓPRIO** e com seed `00a` — ver a seção "Rodar" dele. Cada caso se desfaz por rollback de subtransação, então o arquivo é re-runnable e não deixa linha na tabela. |
 | `17-controles-111.sql` | Os **cinco controles positivos** (ordinais 44–48) da 111. C-111-1 troca `raw_body` para `text`; C-111-2 troca o unique parcial por `nulls not distinct`; C-111-3 dropa o CHECK de `delivery_id`; C-111-4 troca `on delete cascade` por `restrict`; C-111-5 dropa o CHECK de `provider`. **Aqui o restore mora dentro de cada controle e isso não é escolha** — ver a nota "Por que reaplicar a 111 não restaura" abaixo. |
-| `18-inbound-claim-113.sql` | CLAIM-1..3, FIN-1..3 e ACL-113 (ordinais 49–55, migration 113, Fase C): a cerca de UUID que impede DUAS execuções da mesma linha — que nesta fase significa duas IAs respondendo ao mesmo cliente. Claim exclusivo, takeover de lease vencido com crachá novo, finalização recusada com crachá errado, incremento de `attempts` e `next_attempt_at` montados pelo relógio do BANCO, recusa terminal de 401 morrendo em `done` (e não em `dead`, que reteria o corpo cru por 30 dias), e o ACL efetivo das duas RPCs. **Continua o banco da 111** — ver a seção "Sequência da migration 113". |
+| `18-inbound-claim-113.sql` | CLAIM-1..4, FIN-1..3 e ACL-113 (ordinais 49–55 e 63, migration 113, Fase C): a cerca de UUID que impede DUAS execuções da mesma linha — que nesta fase significa duas IAs respondendo ao mesmo cliente. Claim exclusivo, takeover de lease vencido com crachá novo, finalização recusada com crachá errado, incremento de `attempts` e `next_attempt_at` montados pelo relógio do BANCO, recusa terminal de 401 morrendo em `done` (e não em `dead`, que reteria o corpo cru por 30 dias), e o ACL efetivo das duas RPCs. **Continua o banco da 111** — ver a seção "Sequência da migration 113". |
 | `19-controles-113.sql` | Os **sete controles positivos** (ordinais 56–62) da 113. C-113-1 tira a cerca `claim_id` da finalização; C-113-2 tira a perna do takeover; C-113-3 tira o filtro de status do claim; C-113-4 encurta o lease para 9 s; C-113-5 incrementa `attempts` em todo ramo; C-113-6 lê o atraso como milissegundos; C-113-7 dropa e recria a função sem repetir o `revoke`. Cada um mede também que os casos VIZINHOS continuam verdes — é isso que sustenta "avermelha exatamente um". |
 
 ## Rodar
@@ -438,12 +438,12 @@ P -f supabase/tests/local-preflight/18-inbound-claim-113.sql
   -f supabase/tests/local-preflight/19-controles-113.sql   # SEM ON_ERROR_STOP
 # NÃO reaplicar as migrations aqui: cada controle já se desfez sozinho.
 
-P -c "select ord, caso, veredito from t_res order by ord;"   # 26 linhas, todas OK
+P -c "select ord, caso, veredito from t_res order by ord;"   # 27 linhas, todas OK
 ```
 
 Ao terminar: `dropdb fasec113`.
 
-**Conte as 26 linhas, não confie em "nenhum FALHOU".** O `19` roda SEM
+**Conte as 27 linhas, não confie em "nenhum FALHOU".** O `19` roda SEM
 ON_ERROR_STOP de propósito, e plpgsql compila o bloco INTEIRO na primeira
 execução: um erro de compilação (um SQLSTATE com 6 caracteres em vez de 5, por
 exemplo) derruba o bloco antes de qualquer statement, então nem o `when others`
@@ -454,11 +454,20 @@ grava a sentinela `ord = 0` em vez de só levantar erro.
 
 | ord | caso | arquivo |
 |---|---|---|
-| 0 | `GUARDA-17`/`GUARDA-19` (sentinela; **só aparece quando os pré-requisitos falham**) | `17`/`19` |
+| −19 | `GUARDA-19` (sentinela; **só aparece quando os pré-requisitos falham**) | `19` |
+| 0 | `GUARDA-17` (sentinela; idem) | `17` |
 | 37–43 | `INBOUND-1` .. `INBOUND-7` | `16` |
 | 44–48 | `C-111-1` .. `C-111-5` | `17` |
 | 49–55 | `CLAIM-1` .. `CLAIM-3`, `FIN-1` .. `FIN-3`, `ACL-113` | `18` |
 | 56–62 | `C-113-1` .. `C-113-7` | `19` |
+| 63 | `CLAIM-4` (linha terminal não é reivindicável) | `18` |
+
+**As duas sentinelas têm ordinais DIFERENTES de propósito.** Compartilhando o 0,
+um `19` saudável apagaria a sentinela de um `17` que falhou — e a falha do `17`
+desapareceria atrás de sete controles verdes, que é o mesmo modo de mascaramento
+descrito no parágrafo acima. O `CLAIM-4` está em 63, fora da faixa do `18`, porque
+foi acrescentado depois dos controles por um achado de revisão; os ordinais não
+são contíguos por arquivo e não precisam ser.
 
 **Por que o `18` compara instantes por IGUALDADE, e por que dois controles
 existem só para provar isso.** `now()` é `transaction_timestamp()`, constante

@@ -48,6 +48,7 @@ import {
   encodeRawBodyHex,
   providerDeclaresDeliveryId,
   queuedEventVerdict,
+  sanitizeQueueErrorText,
   DATAFY_DELIVERY_ID_HEADER,
   SIGNATURE_HEADER_BY_SCHEME,
   type IngestionSource,
@@ -1540,18 +1541,40 @@ async function finalizeQueuedEvent(input: {
   });
 
   try {
-    const { data, error } = await supabase.rpc("finalize_whatsapp_inbound_event", {
-      p_event_id: input.eventId,
-      p_claim_id: input.claimId,
-      p_status: verdict.status,
-      p_outcome: verdict.outcome,
-      p_error: input.error,
-      p_retry_delay_seconds: verdict.retryDelaySeconds,
-    });
+    const call = (errorText: string | null) =>
+      supabase.rpc("finalize_whatsapp_inbound_event", {
+        p_event_id: input.eventId,
+        p_claim_id: input.claimId,
+        p_status: verdict.status,
+        p_outcome: verdict.outcome,
+        p_error: errorText,
+        p_retry_delay_seconds: verdict.retryDelaySeconds,
+      });
+
+    // `sanitizeQueueErrorText` já tira o que o Postgres recusa em `text`. A
+    // segunda tentativa SEM o texto existe para o que ele não pode prever: é a
+    // finalização que escreve `attempts` e `next_attempt_at`, então uma falha
+    // dependente do PAYLOAD faria a linha nunca avançar — devida e reivindicável
+    // para sempre, retomada a cada 90 s, jamais virando dead letter, e primeira
+    // na ordem da varredura, adiando o inbound dos outros tenants. Perder o
+    // texto do erro é barato; perder a contabilidade da tentativa não é.
+    let { data, error } = await call(sanitizeQueueErrorText(input.error));
+
+    if (error && input.error !== null) {
+      jsonLog("warn", {
+        evt: "queued_event_finalize_retry_without_error_text",
+        eventId: input.eventId,
+        err: error.message,
+      });
+      ({ data, error } = await call(null));
+    }
 
     if (error) {
-      // A linha fica `processing` com lease vivo; o takeover de 90 s a retoma e
-      // o pipeline re-roda. O que impede resposta dupla NESSE caso não é esta
+      // Aqui a falha não depende do payload — banco indisponível, ou a função
+      // ainda não aplicada (`PGRST202`, se a EF for deployada antes do
+      // `db push`). A linha fica `processing` com lease vivo e o takeover de
+      // 90 s a retoma quando o banco voltar, que é o comportamento certo para
+      // uma indisponibilidade. O que impede resposta dupla nesse caso não é esta
       // função — é o claim de `processed_messages (provider, message_id)`, que
       // recusa a parte já concluída como duplicata.
       jsonLog("error", {

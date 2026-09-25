@@ -269,6 +269,46 @@ export function nextAttemptDelayMs(attempts: number): number | null {
 }
 
 /**
+ * Limite do texto de erro que atravessa para o SQL. A migration 113 tem
+ * `left(p_error, 500)` como BACKSTOP para quem não passe por aqui; este é o
+ * limite real, e os dois números são diferentes de propósito.
+ */
+export const INBOUND_ERROR_TEXT_MAX = 300;
+
+/**
+ * Deixa o texto de erro GRAVÁVEL numa coluna `text` do Postgres.
+ *
+ * Isto não é higiene: é o que impede uma linha da fila de ficar presa para
+ * sempre. Postgres **recusa** `\u0000` em `text` (SQLSTATE 22021) — é a mesma
+ * razão pela qual `raw_body` é `bytea` e não `text`, escrita no cabeçalho da
+ * migration 111. Se um octeto NUL chegasse a `p_error`, a finalização falharia
+ * SEMPRE, e como são a finalização quem escreve `attempts` e `next_attempt_at`,
+ * a linha nunca avançaria: continuaria devida e reivindicável, retomada a cada
+ * 90 s pelo takeover, para sempre, sem nunca virar dead letter. E como a
+ * varredura ordena por `next_attempt_at`, essa linha seria SEMPRE a primeira —
+ * consumindo o orçamento de laço e adiando o inbound de todos os outros tenants.
+ *
+ * `sanitizeProviderError` (em `ai-providers.ts`) redige credencial e corta em
+ * 300, mas não toca em caractere de controle: ele foi escrito para LOG, onde
+ * NUL é feio e não fatal. Quem escreve em coluna passa por aqui também.
+ *
+ * Remove todo C0/C1 (inclusive `\n` e `\t`: o valor vai para uma coluna de
+ * diagnóstico de uma linha, não para um bloco de texto) e normaliza para espaço
+ * em vez de apagar, para não fundir palavras — o defeito que este repo já pagou
+ * ao descartar `\n` de texto colado.
+ */
+export function sanitizeQueueErrorText(input: string | null | undefined): string | null {
+  if (input === null || input === undefined) return null;
+  const cleaned = input
+    // Escritos como `\uXXXX` e não como literais de controle: a regra
+    // `no-control-regex` não reclama desta forma, e ela é legível.
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length === 0 ? null : cleaned.slice(0, INBOUND_ERROR_TEXT_MAX);
+}
+
+/**
  * O veredito da LINHA DA FILA, a partir do desfecho HTTP da re-entrada.
  *
  * `retryDelaySeconds` é SEGUNDOS, não timestamp, e isso é a metade visível de
@@ -301,6 +341,30 @@ export function nextAttemptDelayMs(attempts: number): number | null {
  * tamanho na porta do provider), e 404 significaria canal apagado — caso em que
  * a linha já sumiu por cascade. Alargar para `>= 400` transformaria um 503 de
  * Vault indisponível (UazAPI) em descarte silencioso.
+ *
+ * ─── O QUE ESTA CLASSE ABSORVE, E O PREÇO ACEITO ──────────────────────────────
+ *
+ * A classe 401 não pega só a guarda de eco: ela pega TODAS as guardas de
+ * identidade do handler, inclusive as que ficam antes da fronteira do ACK
+ * (a âncora `phone_number_id` de `metaPayloadMatchesChannel` e as vizinhas).
+ * Na porta do provider isso é inalcançável pela fila — payload que falha ali
+ * nunca é persistido. Na RE-ENTRADA é alcançável por UM caminho: as credenciais
+ * do canal MUDARAM entre a persistência e o reprocessamento, então a linha
+ * enfileirada — cuja assinatura FOI validada — passa a falhar uma guarda que
+ * havia passado.
+ *
+ * O preço é conhecido e aceito: numa rotação de credencial, a mensagem de
+ * cliente que estava na janela da escada (no máximo ~7,5 min) é descartada em
+ * silêncio, sem handoff. As duas alternativas são piores. Retentar não resolve
+ * (a âncora antiga não volta a casar). E promover a handoff faria uma entrega
+ * MAL-ROTEADA pelo provider — payload de outro tenant chegando nesta URL — criar
+ * handoff no tenant errado, pedindo a uma pessoa daqui que responda a um cliente
+ * que não é dela. Só o rastro fica: `queue_unauthorized_terminal` na linha e
+ * `webhook_unauthorized` em `webhook_executions`.
+ *
+ * A consequência disso é VISIBILIDADE, e ela é trabalho da Task 8 (diagnóstico
+ * de dead letter): contar `queue_unauthorized_terminal` por unidade é o que
+ * transforma "sumiu" em "some quando alguém roda uma rotação".
  */
 export interface QueuedEventVerdict {
   status: "done" | "received" | "dead";

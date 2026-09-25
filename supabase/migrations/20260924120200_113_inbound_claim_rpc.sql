@@ -22,9 +22,13 @@
 -- como a divergência nasce):
 --   * os 90 segundos do lease abaixo são `INBOUND_LEASE_TTL_MS = 90_000` em
 --     `supabase/functions/_shared/whatsapp-inbound-queue-core.ts`;
---   * o truncamento de `last_error` em 500 é o mesmo limite que o adapter aplica
---     antes de chamar (os dois truncam: aqui é o backstop para quem não passar
---     pelo adapter).
+--   * o truncamento de `last_error` em 500 aqui é BACKSTOP, e o número é
+--     DIFERENTE do limite real de propósito: o adapter corta em 300
+--     (`INBOUND_ERROR_TEXT_MAX`, no mesmo núcleo) e é ele quem também remove o
+--     que o Postgres recusa em `text` — um `\u0000` estouraria 22021 e a
+--     finalização falharia SEMPRE, deixando a linha presa (ver
+--     `sanitizeQueueErrorText`). Dois números iguais convidariam a "unificar" e
+--     apagar a distinção entre o limite e a rede de segurança.
 --
 -- A escada de retentativa NÃO mora aqui. Quem decide `status`, `outcome` e o
 -- atraso é `queuedEventVerdict`, no núcleo puro, porque o vitest alcança aquele
@@ -41,6 +45,15 @@
 -- A SEGUNDA PERNA DO `where` É O TAKEOVER DE LEASE VENCIDO, e é ela que impede
 -- uma linha de ficar presa quando o worker morre no meio — o modo de falha que o
 -- `notification_outbox` documenta duas vezes não cobrir.
+--
+-- ESTE CLAIM IGNORA `next_attempt_at` DE PROPÓSITO, e a assimetria com a
+-- varredura é a decisão: aqui o chamador JÁ ESCOLHEU a linha (é o caminho rápido,
+-- disparado pela própria request que a persistiu, e `next_attempt_at` nasce
+-- `now()`), então exigir a data só adicionaria uma corrida de milissegundos com o
+-- próprio insert. Quem respeita a escada de retentativa é a SELEÇÃO da varredura,
+-- que filtra por `next_attempt_at <= now()`. Consequência a manter em mente: uma
+-- chamada por id alcança uma linha agendada para o futuro. Isso é o que se quer
+-- no caminho rápido e é o que nenhum outro chamador deve fazer.
 --
 -- `claimed_until < now()` com `claimed_until` NULL avalia NULL, logo não é
 -- verdadeiro, logo um `processing` sem lease nunca seria retomado. Não é caminho

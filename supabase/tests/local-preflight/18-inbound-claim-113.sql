@@ -1,5 +1,8 @@
--- CLAIM-1..3, FIN-1..3 e ACL-113 (ordinais 49..55): as duas RPCs da migration
--- 113, contra Postgres real.
+-- CLAIM-1..3, FIN-1..3, ACL-113 (ordinais 49..55) e CLAIM-4 (ordinal 63): as duas
+-- RPCs da migration 113, contra Postgres real.
+--
+-- O CLAIM-4 está em 63 e não em 56 porque os ordinais 56..62 já pertencem aos
+-- controles do `19` — ele foi acrescentado depois, por um achado de revisão.
 --
 -- O que este arquivo prova é a peça que impede DUAS EXECUÇÕES DA MESMA LINHA —
 -- que, nesta fase, significa duas IAs respondendo ao mesmo cliente. Duas
@@ -221,9 +224,16 @@ begin
       when v_novo is null or v_novo = v_velho
         then 'FALHOU (o takeover reusou o claim_id antigo ' || coalesce(v_novo::text, 'null')
              || ' — o worker zumbi ainda poderia finalizar por cima do vivo)'
-      when v_until is distinct from now() + interval '90 seconds'
+      -- RENOVAÇÃO, não valor exato. A linha entrou com `claimed_until` no
+      -- passado, então `> now()` prova que o takeover reabriu a janela — que é o
+      -- que ESTE caso afirma. O valor exato (o gêmeo `INBOUND_LEASE_TTL_MS`) é
+      -- asserção do CLAIM-1, e duplicá-la aqui fazia o controle do lease (C-113-4)
+      -- avermelhar DOIS casos, com a mensagem "o takeover nao renovou o lease" —
+      -- que manda investigar o takeover quando o defeito é o TTL. Controle
+      -- positivo vale pelo vermelho ser localizado.
+      when v_until is null or v_until <= now()
         then 'FALHOU (o takeover nao renovou o lease: claimed_until=' || coalesce(v_until::text, 'null') || ')'
-      else 'OK (retomou, claim_id novo, lease renovado para now()+90s)'
+      else 'OK (retomou, claim_id novo, lease renovado para o futuro)'
     end);
 exception when others then
   insert into t_res values (51, 'CLAIM-3 lease VENCIDO e retomado e o claim_id MUDA (takeover)',
@@ -422,6 +432,61 @@ begin
     end);
 exception when others then
   insert into t_res values (54, 'FIN-3 recusa terminal de 401 fica done (nao dead) e NAO gasta tentativa',
+    'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
+end $$;
+
+-- ─── CLAIM-4 (63): linha TERMINAL não é reivindicável ───────────────────────
+-- A terceira perna do `where` do claim, a que não aparece escrita: só `received`
+-- e `processing`-com-lease-vencido são reivindicáveis, então `done` e `dead`
+-- ficam de fora por AUSÊNCIA. O que se mede aqui é essa ausência.
+--
+-- Importa porque `done` é onde MORRE a recusa terminal de 401 (FIN-3) e onde
+-- termina todo sucesso: se `done` fosse reivindicável, cada linha já respondida
+-- seria reprocessada pela varredura a cada minuto até a purga de 7 dias levá-la —
+-- e cada reprocessamento é uma re-entrada no pipeline, com o cliente recebendo a
+-- mesma resposta de novo. O que hoje impede isso é só o filtro de status, e
+-- nenhum outro caso o exercita a partir de um estado terminal.
+do $$
+declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
+        v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+        v_corpo bytea := convert_to('{}', 'UTF8');
+        v_id_done uuid; v_id_dead uuid;
+        v_pegou_done boolean := true;
+        v_pegou_dead boolean := true;
+begin
+  delete from t_res where ord = 63;
+
+  begin
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id, status)
+    values ('datafy', v_chan, v_unit, v_corpo, 'claim-4-done', 'done')
+    returning id into v_id_done;
+
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id, status)
+    values ('datafy', v_chan, v_unit, v_corpo, 'claim-4-dead', 'dead')
+    returning id into v_id_dead;
+
+    perform 1 from public.claim_whatsapp_inbound_event(v_id_done);
+    v_pegou_done := found;
+
+    perform 1 from public.claim_whatsapp_inbound_event(v_id_dead);
+    v_pegou_dead := found;
+
+    raise exception 'claim-4: desfaz o insert' using errcode = 'ZZ113';
+  exception when sqlstate 'ZZ113' then
+    null;
+  end;
+
+  insert into t_res values (63, 'CLAIM-4 linha done/dead NAO e reivindicavel (o cliente nao recebe a mesma resposta de novo)',
+    case
+      when v_pegou_done
+        then 'FALHOU (uma linha `done` foi reivindicada — a varredura reprocessaria toda entrega ja respondida ate a purga)'
+      when v_pegou_dead
+        then 'FALHOU (uma linha `dead` foi reivindicada — dead letter voltaria a rodar sozinha, sem pessoa nenhuma)'
+      else 'OK (done e dead devolveram zero linhas)'
+    end);
+exception when others then
+  insert into t_res values (63, 'CLAIM-4 linha done/dead NAO e reivindicavel (o cliente nao recebe a mesma resposta de novo)',
     'FALHOU: ' || sqlerrm)
     on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
