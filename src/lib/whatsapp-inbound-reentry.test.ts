@@ -230,7 +230,26 @@ describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", ()
     expect(EF).toMatch(
       /agentDeadlineVerdict\(\{\s*startedAt:\s*processingStartedAt/,
     );
-    expect(EF).toMatch(/shouldContinue:\s*\(\)\s*=>/);
+    expect(EF).toMatch(/shouldContinue:\s*ingestionSource === "queue"/);
+  });
+
+  // O prazo NÃO vale no caminho síncrono, e isso é requisito da fase e não
+  // cautela: o síncrono atende os quatro providers legados — com loja real
+  // agora, e com o gate assíncrono desligado nas duas pernas —, e aplicá-lo ali
+  // mudaria o comportamento deles por efeito colateral. A aritmética confirma
+  // que não seria inócuo: `AGENT_SOFT_DEADLINE_MS` (30 s) é MENOR que
+  // `WORST_SINGLE_TURN_MS` (31 s), então uma rodada de pior caso consome o
+  // orçamento inteiro e a seguinte é sempre recusada.
+  it("o prazo é ESCOPADO à fila: o caminho síncrono não recebe predicado", () => {
+    expect(INBOUND_LEASE_TTL_MS).toBeGreaterThan(0); // âncora: núcleo importado
+    expect(
+      EF,
+      "o prazo voltou a valer no caminho síncrono dos providers legados",
+    ).not.toMatch(/shouldContinue:\s*\(\)\s*=>\s*\n?\s*agentDeadlineVerdict/);
+    // E a perna do `else` tem de ser AUSÊNCIA — `undefined` é o que faz
+    // `mayStartAnotherRound` devolver `true` sem sequer perguntar.
+    const bloco = EF.slice(EF.indexOf("shouldContinue: ingestionSource"));
+    expect(bloco.slice(0, 400)).toMatch(/:\s*undefined/);
   });
 
   it("NÃO é `t0`, e o relógio nasce depois da janela de rajada", () => {

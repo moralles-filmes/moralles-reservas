@@ -90,5 +90,16 @@ export function isAgentDeadlineError(err: unknown): boolean {
  */
 export function mayStartAnotherRound(shouldContinue?: () => boolean): boolean {
   if (typeof shouldContinue !== "function") return true;
-  return shouldContinue() !== false;
+  try {
+    return shouldContinue() !== false;
+  } catch {
+    // FALHA ABERTA também para EXCEÇÃO, e não só para retorno estranho. Um
+    // predicado que lança é defeito de quem o passou, e deixar a exceção subir
+    // faria algo pior que continuar: ela viraria erro do agente SEM a marca de
+    // prazo, ficando elegível ao retry silencioso e transformando um bug de
+    // relógio em turno de IA repetido — cobrado, com o cliente esperando o dobro.
+    // Inalcançável hoje (o único predicado é aritmética pura sobre `Date.now()`),
+    // e é justamente por ser inalcançável que ninguém notaria.
+    return true;
+  }
 }

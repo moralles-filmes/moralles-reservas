@@ -4036,8 +4036,28 @@ async function handleWebhookRequest(
         // Deadline SUAVE: só impede COMEÇAR nova rodada de ferramenta. A
         // política é do núcleo; aqui só se entrega o relógio do PROCESSAMENTO
         // (nunca `t0`, que inclui o que veio antes do claim da conversa).
-        shouldContinue: () =>
-          agentDeadlineVerdict({ startedAt: processingStartedAt, now: Date.now() }) === "continue",
+        //
+        // ─── ESCOPADO À FILA, e isso é requisito da fase, não cautela ────────
+        //
+        // O prazo existe por causa do ORÇAMENTO DE PAREDE da varredura: um evento
+        // que roda para sempre derruba o worker e adia o inbound de outros
+        // tenants. O caminho SÍNCRONO não tem esse orçamento — quem já o limita
+        // ali é o retry de 30 s e o TTL do lock de conversa — e é o caminho que
+        // atende loja real agora, com o gate assíncrono desligado nas duas pernas.
+        // Aplicá-lo aos quatro providers legados seria mudar o comportamento
+        // deles por efeito colateral, que esta fase proíbe explicitamente.
+        //
+        // E a aritmética mostra que não seria inócuo: `AGENT_SOFT_DEADLINE_MS`
+        // (30 000) é MENOR que `WORST_SINGLE_TURN_MS` (31 000) do próprio repo,
+        // então uma rodada de pior caso consome o orçamento inteiro e a SEGUINTE
+        // é sempre recusada. No síncrono isso cortaria conversas de duas rodadas
+        // que hoje concluem, e tiraria do ar justamente o empty-retry do Gemini —
+        // a causa nº 1 de "não consegui montar uma resposta", que existe para
+        // resgatar exatamente esses turnos.
+        shouldContinue: ingestionSource === "queue"
+          ? () =>
+            agentDeadlineVerdict({ startedAt: processingStartedAt, now: Date.now() }) === "continue"
+          : undefined,
         onUsage: (u) => {
           totalUsage.input_tokens += u.input_tokens;
           totalUsage.output_tokens += u.output_tokens;
@@ -4285,7 +4305,23 @@ async function handleWebhookRequest(
         })
         .eq("id", conv.id);
 
-      const handoffText = AGENT_INSTABILITY_TEXT;
+      // COPY: mesma disciplina do hard stop de franquia 70 linhas acima, e aqui
+      // ela é MODAL e não excepcional. A forma do defeito: a rodada 2 executa
+      // `create_reservation`, a rodada 3 — a que CONFIRMA ao cliente — é recusada
+      // pelo prazo, e a reserva fica `confirmed` no banco enquanto o cliente é
+      // informado de instabilidade técnica. Ele não aparece (mesa segurada vazia)
+      // ou aparece achando que não tem reserva. É literalmente o caso que
+      // `ai-budget-copy.ts` nomeia: "usar a mesma frase para as três é o erro que
+      // produz cliente aparecendo no restaurante sem mesa".
+      //
+      // Escopado a `agentDeadlineReached` de propósito. O ramo de `agent_error`
+      // após ferramenta mutante tem o MESMO problema e é PREEXISTENTE — mudá-lo
+      // aqui alteraria, de carona, a mensagem que a loja real já manda hoje.
+      // Registrado para a revisão de branch decidir, não resolvido por efeito
+      // colateral.
+      const handoffText = agentDeadlineReached && mutatingToolUsed
+        ? resolveMutationStopText(lastMutationOutcome)
+        : AGENT_INSTABILITY_TEXT;
       const errorNotice = await sendAutomatic(handoffText);
       if (errorNotice.ok) {
         await appendToConversation(
