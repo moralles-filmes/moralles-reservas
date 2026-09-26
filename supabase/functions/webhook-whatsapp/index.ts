@@ -4,6 +4,7 @@ import {
   runAgentLoop,
   resolveModel,
   estimateCostUsd,
+  isAgentDeadlineError,
   sanitizeProviderError,
   type AgentBudgetHooks,
   type AgentLoopResult,
@@ -41,6 +42,7 @@ import { checkFlagEnabled, isFlagEnabled } from "../_shared/platform-flags.ts";
 // então regra escrita aqui só se confere por leitura — e leitura já deixou
 // passar defeito duas vezes neste repo.
 import {
+  agentDeadlineVerdict,
   decideAckVerdict,
   decideIngestionMode,
   decodeRawBodyHex,
@@ -3242,6 +3244,18 @@ async function handleWebhookRequest(
       conv.messages = latestMsgs;
     }
 
+    // ─── Relógio do deadline suave (Fase C) ───────────────────────────────────
+    // Começa AQUI, e não em `t0`: o prazo é do PROCESSAMENTO, e o que vem antes
+    // desta linha — resolução de canal, CRM, janela de rajada — não é tempo que
+    // o agente gastou. Gastar o orçamento com os 6 s de debounce faria o
+    // deadline morder uma rodada que ele não deveria alcançar.
+    //
+    // E é a vizinhança certa do claim logo abaixo: `AI_LOCK_TTL_SECONDS` existe
+    // para cobrir `orçamento + pior turno + envio` a partir do instante em que a
+    // conversa é reivindicada (`lockTtlSecondsRequired`, no núcleo). Os dois
+    // relógios começam juntos porque medem a mesma janela.
+    const processingStartedAt = Date.now();
+
     // ─── Lock de exclusão por conversa ────────────────────────────────────────
     // O debounce acima é OTIMISTA (comparação de timestamp) e NÃO garante
     // exclusão: empate de milissegundo, ou janelas não-sobrepostas (irmão chega
@@ -3997,6 +4011,10 @@ async function handleWebhookRequest(
 
     const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 };
     let agentError: string | null = null;
+    // Quem interrompeu o loop: o prazo ou o provedor. Duas consequências
+    // diferentes (motivo do handoff, e o retry silencioso que NÃO pode pegar o
+    // prazo), e a pergunta é do OBJETO lançado — nunca do texto sanitizado.
+    let agentDeadlineReached = false;
     let finalText = "";
 
     let mutatingToolUsed = false;
@@ -4015,6 +4033,11 @@ async function handleWebhookRequest(
         // AUSENTE fora da franquia: nenhuma autorização, nenhuma apropriação,
         // nenhum custo persistido — o caminho legado inteiro depende disso.
         budget: budgetHooks,
+        // Deadline SUAVE: só impede COMEÇAR nova rodada de ferramenta. A
+        // política é do núcleo; aqui só se entrega o relógio do PROCESSAMENTO
+        // (nunca `t0`, que inclui o que veio antes do claim da conversa).
+        shouldContinue: () =>
+          agentDeadlineVerdict({ startedAt: processingStartedAt, now: Date.now() }) === "continue",
         onUsage: (u) => {
           totalUsage.input_tokens += u.input_tokens;
           totalUsage.output_tokens += u.output_tokens;
@@ -4092,16 +4115,41 @@ async function handleWebhookRequest(
       try {
         agentOutcome = await runOnce();
         agentError = null;
+        agentDeadlineReached = false;
         break;
       } catch (err) {
+        // A MARCA DO PRAZO É LIDA DO OBJETO, E ANTES DE SANITIZAR.
+        // `sanitizeProviderError` devolve `${err.name}: ${err.message}` e ainda
+        // passa por redação e `slice(0, 300)`: comparar a string resultante com
+        // "agent_deadline" nunca casaria, e casar por `includes` amarraria a
+        // decisão à forma de um texto que outra regra pode reescrever.
+        agentDeadlineReached = isAgentDeadlineError(err);
         // SANITIZADO, sempre. A chave de IA é per-unit (BYOK) e o erro do
         // provedor pode ecoar o request com o header de autorização — ou a URL
         // do Gemini, que carrega `?key=<chave>` na query string. Este valor é
         // persistido em `webhook_executions.error` e em `processed_messages`.
         agentError = sanitizeProviderError(err);
-        jsonLog("error", { requestId, evt: "agent_loop_error", attempt, err: agentError });
+        jsonLog("error", {
+          requestId,
+          evt: "agent_loop_error",
+          attempt,
+          deadline: agentDeadlineReached,
+          err: agentError,
+        });
         const elapsed = Date.now() - t0;
-        if (attempt === 0 && !mutatingToolUsed && elapsed < AGENT_RETRY_BUDGET_MS) {
+        // `!agentDeadlineReached` é EXCLUSÃO EXPLÍCITA, e a razão não é o valor
+        // das constantes. Sem ela, o `catch` genérico reiniciaria o agente
+        // inteiro logo depois de o prazo ter dito para não começar nem mais uma
+        // rodada — o deadline anulando a si mesmo no único caso em que importa.
+        // Hoje `AGENT_RETRY_BUDGET_MS` e `AGENT_SOFT_DEADLINE_MS` valem os
+        // mesmos 30 s, em arquivos diferentes e contados de relógios diferentes
+        // (`t0` aqui, `processingStartedAt` lá): coincidência aritmética entre
+        // dois números que ninguém declarou gêmeos. Subir o orçamento de retry
+        // desligaria o deadline em silêncio.
+        if (
+          attempt === 0 && !agentDeadlineReached && !mutatingToolUsed
+          && elapsed < AGENT_RETRY_BUDGET_MS
+        ) {
           jsonLog("warn", { requestId, evt: "agent_retry", elapsed_ms: elapsed });
           continue;
         }
@@ -4213,11 +4261,25 @@ async function handleWebhookRequest(
       // no handoff_reason e em webhook_executions.meta, e avisa o cliente.
       const usedModel = modelOverride;
 
+      // O motivo distingue PRAZO de erro do provedor, e isso não é cosmética: é
+      // o campo que se lê ao investigar "por que esta conversa foi para
+      // atendimento humano". Um turno interrompido pelo deadline não é
+      // instabilidade do provedor, e chamá-lo de `agent_error` mandaria quem
+      // investiga procurar defeito onde não há.
+      //
+      // O NOME é próprio (`agentHandoffReason`, não `handoffReason`): o
+      // guardrail que confere que cada porta de handoff manda a conversa para a
+      // fila do operador ancora cada porta pelo texto da razão, e duas portas
+      // com o mesmo identificador colapsam numa só aos olhos dele.
+      const agentHandoffReason = agentDeadlineReached
+        ? `agent_deadline:${provider_ai}:${usedModel}`
+        : `agent_error:${provider_ai}:${usedModel}`;
+
       await supabase
         .from("conversations")
         .update({
           status: "awaiting_human",
-          handoff_reason: `agent_error:${provider_ai}:${usedModel}`,
+          handoff_reason: agentHandoffReason,
           handoff_at: new Date().toISOString(),
           last_silenced_reply_at: null,
         })
@@ -4235,15 +4297,27 @@ async function handleWebhookRequest(
         );
       }
 
-      jsonLog("warn", { requestId, evt: "agent_error_handoff", provider: provider_ai, model: usedModel, err: agentError });
-      // Turno INTERROMPIDO pelo provedor: o consumido migra para o liquidado e
-      // a diferença volta ao disponível. Antes do `finish` — ver o desfecho de
-      // negação acima.
+      jsonLog("warn", {
+        requestId,
+        evt: "agent_error_handoff",
+        provider: provider_ai,
+        model: usedModel,
+        deadline: agentDeadlineReached,
+        err: agentError,
+      });
+      // Turno INTERROMPIDO (pelo provedor ou pelo prazo): o consumido migra
+      // para o liquidado e a diferença volta ao disponível. Antes do `finish` —
+      // ver o desfecho de negação acima.
       await settleTurnBudget("RELEASED");
       await finish("agent_error", agentError, {
         provider: provider_ai,
         model: usedModel,
         channel_id: channelId,
+        // O outcome continua `agent_error` de propósito: o vocabulário de
+        // `webhook_executions.outcome` é consumido por painel e diagnóstico, e
+        // trocá-lo é mudança de contrato que esta task não pede. A distinção
+        // viaja no `meta` e no `handoff_reason`.
+        deadline: agentDeadlineReached,
       });
       await releaseAiLock();
       return new Response("ok");

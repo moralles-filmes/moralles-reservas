@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
   INBOUND_LEASE_TTL_MS,
   INBOUND_ERROR_TEXT_MAX,
+  lockTtlSecondsRequired,
   sanitizeQueueErrorText,
 } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
 
@@ -197,5 +198,135 @@ describe("a finalização não pode deixar a linha sem contabilidade de tentativ
     const promove = corpo.indexOf("promoteDeadLetterToHandoff");
     expect(confere).toBeGreaterThan(-1);
     expect(promove).toBeGreaterThan(confere);
+  });
+});
+
+/**
+ * O deadline SUAVE, do lado do webhook.
+ *
+ * O que é EXERCITÁVEL (a pergunta do laço, a marca do erro) mora em
+ * `agent-deadline-core.test.ts`. Aqui ficam as três amarras que só existem no
+ * `index.ts`: de que relógio o prazo é contado, que o retry silencioso NÃO o
+ * engole, e que o motivo do handoff o distingue de um erro de provedor.
+ */
+const CONDICAO_DO_RETRY = (() => {
+  const marco = EF.indexOf('evt: "agent_retry"');
+  expect(marco, "o retry silencioso sumiu do webhook").toBeGreaterThan(-1);
+  const abre = EF.lastIndexOf("if (", marco);
+  expect(abre).toBeGreaterThan(-1);
+  let depth = 0;
+  for (let i = EF.indexOf("(", abre); i < EF.length; i++) {
+    if (EF[i] === "(") depth++;
+    else if (EF[i] === ")") {
+      depth--;
+      if (depth === 0) return EF.slice(abre, i + 1);
+    }
+  }
+  throw new Error("parênteses desbalanceados na condição do retry");
+})();
+
+describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", () => {
+  it("o deadline é perguntado ao núcleo, com processingStartedAt", () => {
+    expect(EF).toMatch(
+      /agentDeadlineVerdict\(\{\s*startedAt:\s*processingStartedAt/,
+    );
+    expect(EF).toMatch(/shouldContinue:\s*\(\)\s*=>/);
+  });
+
+  it("NÃO é `t0`, e o relógio nasce depois da janela de rajada", () => {
+    // `t0` é o começo da REQUISIÇÃO: nele cabem resolução de canal, CRM e os 6 s
+    // de debounce. Contar o prazo dali gastaria o orçamento antes de o agente
+    // existir — e faria o deadline morder rodada que ele não deveria alcançar.
+    expect(EF, "o prazo voltou a ser contado de t0").not.toMatch(
+      /agentDeadlineVerdict\(\{\s*startedAt:\s*t0\b/,
+    );
+    const debounce = EF.indexOf("await sleep(DEBOUNCE_WINDOW_MS)");
+    const relogio = EF.indexOf("const processingStartedAt = Date.now()");
+    expect(debounce, "o debounce sumiu").toBeGreaterThan(-1);
+    expect(relogio, "processingStartedAt não é declarado").toBeGreaterThan(-1);
+    expect(relogio, "o relógio do prazo subiu para antes do debounce").toBeGreaterThan(debounce);
+  });
+
+  it("AI_LOCK_TTL_SECONDS cobre a aritmética declarada, em vez de ser adivinhado", () => {
+    // O TTL foi dimensionado contra "~51 s de pior caso do runOnce" — que era o
+    // pior caso de UM turno, não do laço. Agora ele responde à soma real:
+    // orçamento + pior turno + envio.
+    const m = EF.match(/AI_LOCK_TTL_SECONDS\s*=\s*(\d+)/);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeGreaterThanOrEqual(lockTtlSecondsRequired());
+  });
+});
+
+describe("o retry silencioso NÃO pode engolir o prazo", () => {
+  // Sem a exclusão, o `catch` genérico reiniciaria o agente inteiro logo depois
+  // de o prazo ter dito para não começar nem mais uma rodada — o deadline
+  // anulando a si mesmo no único caso em que ele importa. Hoje isso não dispara
+  // por coincidência aritmética (os dois orçamentos valem 30 000, em arquivos
+  // diferentes e contados de relógios diferentes), e coincidência não é guarda.
+  it("a condição do retry exclui o prazo explicitamente", () => {
+    expect(CONDICAO_DO_RETRY, "a exclusão do prazo sumiu do retry").toContain(
+      "!agentDeadlineReached",
+    );
+  });
+
+  it("e continua excluindo o que já excluía — a exclusão é nova, não uma troca", () => {
+    expect(CONDICAO_DO_RETRY).toContain("attempt === 0");
+    expect(CONDICAO_DO_RETRY).toContain("!mutatingToolUsed");
+    expect(CONDICAO_DO_RETRY).toContain("AGENT_RETRY_BUDGET_MS");
+  });
+
+  it("controle positivo: sem a exclusão, o caso acima fica vermelho", () => {
+    const mutilada = CONDICAO_DO_RETRY.replace(/&&\s*!agentDeadlineReached/, "");
+    expect(mutilada, "a cirurgia do controle não achou a exclusão").not.toBe(CONDICAO_DO_RETRY);
+    expect(mutilada).not.toContain("!agentDeadlineReached");
+  });
+});
+
+describe("o motivo do handoff distingue prazo de erro do provedor", () => {
+  it("a decisão vem da MARCA do objeto, lida antes de sanitizar", () => {
+    const i = EF.indexOf("agentDeadlineReached = isAgentDeadlineError(err)");
+    const j = EF.indexOf("agentError = sanitizeProviderError(err)");
+    expect(i, "a marca do prazo não é lida no catch do agente").toBeGreaterThan(-1);
+    expect(j).toBeGreaterThan(-1);
+    expect(i, "a marca é lida depois de sanitizar").toBeLessThan(j);
+  });
+
+  it("nunca por comparação com o texto sanitizado", () => {
+    // `sanitizeProviderError` devolve `${err.name}: ${err.message}` e ainda passa
+    // por redação e `slice(0, 300)`: `=== "agent_deadline"` seria sempre falso, e
+    // `includes` amarraria a decisão à forma de um texto que outra regra
+    // reescreve.
+    expect(EF, "voltou a comparar o texto sanitizado").not.toMatch(
+      /agentError\s*===?\s*["'`]agent_deadline/,
+    );
+    expect(EF, "voltou a casar o prazo por substring").not.toMatch(
+      /agentError\s*\.\s*(?:includes|startsWith|indexOf)\(\s*["'`]agent_deadline/,
+    );
+  });
+
+  it("as duas razões existem, e a gravada é a escolhida", () => {
+    expect(EF).toMatch(/agent_deadline:\$\{provider_ai\}/);
+    expect(EF).toMatch(/agent_error:\$\{provider_ai\}/);
+    expect(EF).toMatch(/handoff_reason:\s*agentHandoffReason/);
+  });
+
+  it("CONTROLE POSITIVO: o ramo de erro do agente não grava mais a razão fixa", () => {
+    // É a regressão que a emenda nomeia: com `agentError === "agent_deadline"`,
+    // o motivo caía SEMPRE em `agent_error` e o prazo ficava invisível
+    // exatamente onde se investiga por que a conversa foi para atendimento
+    // humano. Se alguém reintroduzir o literal na escrita, isto reprova.
+    const ramo = EF.slice(EF.indexOf("    if (agentError) {"));
+    const fim = ramo.indexOf('return new Response("ok")');
+    expect(fim, "o ramo de erro do agente não foi encontrado").toBeGreaterThan(-1);
+    const corpo = ramo.slice(0, fim);
+    // A razão gravada é a ESCOLHIDA no próprio ramo, e o identificador é
+    // exclusivo dele — `handoffReason` pertence à porta de negação do
+    // orçamento, e reusá-lo aqui colapsaria as duas portas para o guardrail que
+    // as enumera por texto (`ai-budget-wiring-guard.test.ts`).
+    expect(corpo).toContain("const agentHandoffReason = agentDeadlineReached");
+    expect(corpo).toContain("handoff_reason: agentHandoffReason");
+    expect(corpo, "a razão voltou a ser literal na escrita").not.toMatch(
+      /handoff_reason:\s*`agent_error:/,
+    );
   });
 });

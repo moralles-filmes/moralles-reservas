@@ -2505,7 +2505,12 @@ describe("webhook-whatsapp — toda porta de handoff põe a conversa na fila", (
     ["fail-closed técnico da abertura", "handoff_reason: `ai_budget_error:"],
     ["ferramenta request_human_handoff", "handoff_reason: input.reason"],
     ["negação do laço", "handoff_reason: handoffReason"],
-    ["erro do agente (legado)", "handoff_reason: `agent_error:"],
+    // A razão desta porta deixou de ser literal na escrita: ela distingue prazo
+    // (`agent_deadline:`) de falha do provedor (`agent_error:`), e a âncora
+    // passa a ser o identificador. O nome é PRÓPRIO de propósito — se ela
+    // reusasse o `handoffReason` da porta acima, as duas colapsariam numa só
+    // aos olhos deste guardrail, que enumera por texto.
+    ["erro do agente ou prazo do turno", "handoff_reason: agentHandoffReason"],
   ] as const) {
     it(`${nome}: a escrita carrega o status da fila`, () => {
       expect(
