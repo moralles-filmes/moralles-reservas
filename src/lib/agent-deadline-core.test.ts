@@ -75,6 +75,20 @@ describe("mayStartAnotherRound — ausente tem de significar RODA", () => {
     const quebrado = (() => undefined) as unknown as () => boolean;
     expect(mayStartAnotherRound(quebrado)).toBe(true);
   });
+
+  it("predicado que LANÇA também falha aberto — e a exceção não escapa", () => {
+    // Perna separada do caso acima, e não redundância: retorno estranho e
+    // exceção saem por portas diferentes da função. Deixar a exceção subir seria
+    // PIOR que continuar — ela viraria erro do agente SEM a marca de prazo, logo
+    // elegível ao retry silencioso, transformando um bug de relógio em turno de
+    // IA repetido, cobrado, com o cliente esperando o dobro. Sem este caso,
+    // apagar o `try/catch` mantém a suíte verde.
+    const explode = () => {
+      throw new Error("relógio quebrado");
+    };
+    expect(() => mayStartAnotherRound(explode)).not.toThrow();
+    expect(mayStartAnotherRound(explode)).toBe(true);
+  });
 });
 
 describe("AgentDeadlineError — a marca é do objeto, nunca do texto", () => {

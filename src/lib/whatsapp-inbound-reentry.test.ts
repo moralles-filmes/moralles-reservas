@@ -241,15 +241,27 @@ describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", ()
   // `WORST_SINGLE_TURN_MS` (31 s), então uma rodada de pior caso consome o
   // orçamento inteiro e a seguinte é sempre recusada.
   it("o prazo é ESCOPADO à fila: o caminho síncrono não recebe predicado", () => {
-    expect(INBOUND_LEASE_TTL_MS).toBeGreaterThan(0); // âncora: núcleo importado
     expect(
       EF,
       "o prazo voltou a valer no caminho síncrono dos providers legados",
     ).not.toMatch(/shouldContinue:\s*\(\)\s*=>\s*\n?\s*agentDeadlineVerdict/);
     // E a perna do `else` tem de ser AUSÊNCIA — `undefined` é o que faz
     // `mayStartAnotherRound` devolver `true` sem sequer perguntar.
-    const bloco = EF.slice(EF.indexOf("shouldContinue: ingestionSource"));
-    expect(bloco.slice(0, 400)).toMatch(/:\s*undefined/);
+    //
+    // Delimitado pela PROPRIEDADE (até a seguinte, `onUsage:`) e ancorado no FIM
+    // dela, não por uma janela de N caracteres: a janela aceitaria qualquer
+    // `: undefined` que passasse perto — um `budgetMs: undefined` a satisfaria
+    // com o prazo reaplicado ao síncrono, que é justamente o que ela deveria
+    // reprovar.
+    const inicio = EF.indexOf("shouldContinue: ingestionSource");
+    const fim = EF.indexOf("onUsage:", inicio);
+    expect(inicio, "a propriedade `shouldContinue` mudou de forma").toBeGreaterThan(-1);
+    expect(fim, "a propriedade seguinte (`onUsage`) sumiu").toBeGreaterThan(inicio);
+    const propriedade = EF.slice(inicio, fim).trimEnd().replace(/,$/, "").trimEnd();
+    expect(
+      propriedade,
+      "a perna do síncrono deixou de ser ausência de predicado",
+    ).toMatch(/:\s*undefined$/);
   });
 
   it("NÃO é `t0`, e o relógio nasce depois da janela de rajada", () => {
@@ -270,6 +282,10 @@ describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", ()
     // O TTL foi dimensionado contra "~51 s de pior caso do runOnce" — que era o
     // pior caso de UM turno, não do laço. Agora ele responde à soma real:
     // orçamento + pior turno + envio.
+    //
+    // A soma vale para o caminho da FILA, que é onde o prazo existe. No síncrono
+    // o lock continua sendo piso contra lock órfão e nada prova que o turno cabe
+    // nele — o que este caso amarra é o valor, não uma garantia de tempo lá.
     const m = EF.match(/AI_LOCK_TTL_SECONDS\s*=\s*(\d+)/);
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBeGreaterThanOrEqual(lockTtlSecondsRequired());
@@ -347,5 +363,73 @@ describe("o motivo do handoff distingue prazo de erro do provedor", () => {
     expect(corpo, "a razão voltou a ser literal na escrita").not.toMatch(
       /handoff_reason:\s*`agent_error:/,
     );
+  });
+});
+
+/**
+ * O que o CLIENTE lê quando o prazo interrompe o turno.
+ *
+ * Esta é a única decisão da fase cujo erro chega ao cliente final como
+ * afirmação falsa — e o dano tem duas formas, não uma. Depois de uma ferramenta
+ * mutante: a rodada 2 executa `create_reservation`, a rodada 3 (a que confirma)
+ * é recusada pelo prazo, e o cliente é informado de "instabilidade" enquanto a
+ * reserva está `confirmed` no banco — ele não aparece (mesa segurada vazia) ou
+ * aparece achando que não tem reserva. SEM ferramenta mutante: nada quebrou e o
+ * texto afirma que sim, que é a regra escrita no cabeçalho de `ai-budget-copy.ts`
+ * ("não pode afirmar falha técnica: não houve falha nenhuma").
+ *
+ * Sem este bloco, reverter a correção para o `AGENT_INSTABILITY_TEXT` único
+ * mantém a suíte inteira verde — era o estado da branch antes desta rodada.
+ */
+const RAMO_DE_ERRO_DO_AGENTE = (() => {
+  const ramo = EF.slice(EF.indexOf("    if (agentError) {"));
+  const fim = ramo.indexOf('return new Response("ok")');
+  expect(fim, "o ramo de erro do agente não foi encontrado").toBeGreaterThan(-1);
+  return ramo.slice(0, fim);
+})();
+
+/** As três pernas, medidas sobre um corpo qualquer — real ou falsificado. */
+const pernasDaCopy = (corpo: string) => ({
+  instabilidade: /handoffText = AGENT_INSTABILITY_TEXT/.test(corpo),
+  aposMutacao: /handoffText = resolveMutationStopText\(lastMutationOutcome\)/.test(corpo),
+  paradaLimpa: /handoffText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT/.test(corpo),
+});
+
+describe("o texto do handoff por prazo não mente para o cliente", () => {
+  it("as três pernas existem, e cada uma responde à sua pergunta", () => {
+    const pernas = pernasDaCopy(RAMO_DE_ERRO_DO_AGENTE);
+    expect(pernas.instabilidade, "sumiu o texto do erro REAL de provedor").toBe(true);
+    expect(
+      pernas.aposMutacao,
+      "o prazo voltou a afirmar falha técnica depois de reserva criada",
+    ).toBe(true);
+    expect(
+      pernas.paradaLimpa,
+      "o prazo sem mutação voltou a afirmar falha técnica sobre parada planejada",
+    ).toBe(true);
+    // E as perguntas na ordem certa: instabilidade é o caso de NÃO ser prazo.
+    expect(RAMO_DE_ERRO_DO_AGENTE).toMatch(/if \(!agentDeadlineReached\) \{/);
+    expect(RAMO_DE_ERRO_DO_AGENTE).toMatch(/\} else if \(mutatingToolUsed\) \{/);
+  });
+
+  it("CONTROLE POSITIVO: a forma anterior — um texto só — ficaria vermelha", () => {
+    const falsificado = RAMO_DE_ERRO_DO_AGENTE.replace(
+      /let handoffText: string;[\s\S]*?\n {6}\}\n/,
+      "      const handoffText = AGENT_INSTABILITY_TEXT;\n",
+    );
+    expect(
+      falsificado,
+      "a cirurgia do controle não achou a escolha de texto",
+    ).not.toBe(RAMO_DE_ERRO_DO_AGENTE);
+    const pernas = pernasDaCopy(falsificado);
+    expect(pernas.aposMutacao).toBe(false);
+    expect(pernas.paradaLimpa).toBe(false);
+  });
+
+  it("o texto ESCOLHIDO é o enviado e o appendado — não um literal ao lado", () => {
+    // Enviar um e gravar outro deixaria a thread do operador discordando do que
+    // o cliente recebeu, que é o rastro usado para investigar exatamente isto.
+    expect(RAMO_DE_ERRO_DO_AGENTE).toContain("sendAutomatic(handoffText)");
+    expect(RAMO_DE_ERRO_DO_AGENTE).toContain('"assistant",\n          handoffText,');
   });
 });

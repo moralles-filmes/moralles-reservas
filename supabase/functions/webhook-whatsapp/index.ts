@@ -1089,9 +1089,17 @@ const DEBOUNCE_WINDOW_MS = INBOUND_DEBOUNCE_WINDOW_MS;
 // request. Os 30s seguem valendo como política — uma resposta que demora demais
 // já é resposta errada —, e não como dedução de um teto que ninguém mediu.
 const AGENT_RETRY_BUDGET_MS = 30_000;
-// TTL do lock de exclusão do agente por conversa. Mirror do stuck timeout:
-// cobre o pior caso de runOnce (~51s Gemini c/ fallback) + folga, e auto-expira
-// se a função crashar segurando o lock. Ver migration 056_conversation_ai_lock.
+// TTL do lock de exclusão do agente por conversa. Auto-expira se a função
+// crashar segurando o lock. Ver migration 056_conversation_ai_lock.
+//
+// O valor deixou de ser adivinhado: `lockTtlSecondsRequired()` o deriva da soma
+// declarada — orçamento do prazo + pior turno único + envio —, e um teste de
+// acoplamento reprova se ele cair abaixo disso. A justificativa antiga ("pior
+// caso de runOnce, ~51 s") media UM turno, não o laço.
+//
+// A aritmética VINCULA o caminho da FILA, que é onde o prazo vale. No síncrono
+// não há teto de parede nenhum (ver a nota em `shouldContinue`), então aqui os
+// 90 s são piso de segurança contra lock órfão, nunca prova de que o turno cabe.
 const AI_LOCK_TTL_SECONDS = 90;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -4041,11 +4049,16 @@ async function handleWebhookRequest(
         //
         // O prazo existe por causa do ORÇAMENTO DE PAREDE da varredura: um evento
         // que roda para sempre derruba o worker e adia o inbound de outros
-        // tenants. O caminho SÍNCRONO não tem esse orçamento — quem já o limita
-        // ali é o retry de 30 s e o TTL do lock de conversa — e é o caminho que
-        // atende loja real agora, com o gate assíncrono desligado nas duas pernas.
-        // Aplicá-lo aos quatro providers legados seria mudar o comportamento
-        // deles por efeito colateral, que esta fase proíbe explicitamente.
+        // tenants. O caminho SÍNCRONO não tem esse orçamento — e não tem teto
+        // nenhum, o que é afirmação medida e não conforto: `AGENT_RETRY_BUDGET_MS`
+        // só decide se CABE uma retentativa, nunca interrompe o laço em curso, e o
+        // TTL do lock de conversa EXPIRA em vez de parar quem o segura (um irmão
+        // assume e roda um segundo agente). O que o torna aceitável é outra coisa:
+        // ele é o caminho que atende loja real agora, com o gate assíncrono
+        // desligado nas duas pernas, e aplicar o prazo aos quatro providers
+        // legados seria mudar o comportamento deles por efeito colateral, que esta
+        // fase proíbe explicitamente. Teto de parede no síncrono é decisão própria,
+        // com sua própria medição — não carona desta.
         //
         // E a aritmética mostra que não seria inócuo: `AGENT_SOFT_DEADLINE_MS`
         // (30 000) é MENOR que `WORST_SINGLE_TURN_MS` (31 000) do próprio repo,
@@ -4319,9 +4332,24 @@ async function handleWebhookRequest(
       // aqui alteraria, de carona, a mensagem que a loja real já manda hoje.
       // Registrado para a revisão de branch decidir, não resolvido por efeito
       // colateral.
-      const handoffText = agentDeadlineReached && mutatingToolUsed
-        ? resolveMutationStopText(lastMutationOutcome)
-        : AGENT_INSTABILITY_TEXT;
+      //
+      // TRÊS pernas, e a terceira não é simetria: sem ela o prazo SEM ferramenta
+      // mutante — tão frequente quanto o caso acima — afirma "instabilidade"
+      // sobre uma parada PLANEJADA, que é a outra regra que `ai-budget-copy.ts`
+      // escreve no próprio cabeçalho ("não pode afirmar falha técnica: não houve
+      // falha nenhuma"). O texto reusado é o do hard stop sem mutação porque, do
+      // lado do CLIENTE, a situação é a mesma: nada foi alterado, a mensagem
+      // ficou registrada e uma pessoa assume. Reusar em vez de redigitar é o que
+      // mantém uma frase por situação — e o que garante que ela já está no
+      // `HARDCODED_AGENT_NOISE`, pela lista importada.
+      let handoffText: string;
+      if (!agentDeadlineReached) {
+        handoffText = AGENT_INSTABILITY_TEXT;
+      } else if (mutatingToolUsed) {
+        handoffText = resolveMutationStopText(lastMutationOutcome);
+      } else {
+        handoffText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT;
+      }
       const errorNotice = await sendAutomatic(handoffText);
       if (errorNotice.ok) {
         await appendToConversation(
