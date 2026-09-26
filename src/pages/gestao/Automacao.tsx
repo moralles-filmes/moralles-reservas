@@ -46,6 +46,7 @@ import {
   CreditCard,
   Copy,
   ExternalLink,
+  Inbox,
   Info,
   KeyRound,
   MessageSquare,
@@ -1714,7 +1715,7 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
     );
   }
 
-  const { channel, ai, stats_24h, last_executions, generated_at } = data;
+  const { channel, ai, stats_24h, inbound_queue, last_executions, generated_at } = data;
   const successRate = stats_24h.total > 0
     ? Math.round(((stats_24h.by_outcome.success ?? 0) / stats_24h.total) * 100)
     : null;
@@ -1867,6 +1868,49 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
           )}
         </CardContent>
       </Card>
+
+      {/* Fila de inbound — só aparece quando a EF informa os números.
+          A ausência é "esta EF ainda não sabe responder" (deploy manual, versão
+          antiga no ar), não "não há nada": renderizar 0 nesse caso afirmaria o
+          negativo sobre uma pergunta que ninguém fez. Mesma razão pela qual o
+          `count` nulo vira "—" e não "0". */}
+      {inbound_queue && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Inbox className="h-4 w-4 text-primary" />
+              <CardTitle className="text-base">Fila de inbound</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Dead letter (últimos {inbound_queue.dead_letter.window_days} dias)
+                </p>
+                <p className="font-medium">{inbound_queue.dead_letter.count ?? "—"}</p>
+                <p className="text-xs text-muted-foreground">
+                  Entregas que a fila desistiu de processar. Quando havia conversa,
+                  ela está em atendimento humano.
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Recusadas por identidade (últimos{" "}
+                  {inbound_queue.unauthorized_terminal.window_days} dias)
+                </p>
+                <p className="font-medium">
+                  {inbound_queue.unauthorized_terminal.count ?? "—"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Descartadas sem resposta. Acontece quando as credenciais do canal
+                  mudam com mensagem em trânsito.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Últimas execuções */}
       <Card>

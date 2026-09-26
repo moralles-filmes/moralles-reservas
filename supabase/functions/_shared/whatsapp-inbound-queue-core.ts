@@ -269,6 +269,27 @@ export function nextAttemptDelayMs(attempts: number): number | null {
 }
 
 /**
+ * "Esta linha ainda tem degrau?" — a MESMA pergunta, para os DOIS momentos em
+ * que ela é feita.
+ *
+ * O primeiro é o de sempre: depois de um desfecho não-2xx, dentro de
+ * `queuedEventVerdict`. O segundo nasceu com o incremento no CLAIM (ver o
+ * parágrafo sobre o que `attempts` conta, logo abaixo): ao receber a linha, o
+ * processador pergunta ANTES de trabalhar, porque uma linha que já gastou tudo
+ * não tem o que tentar — processá-la seria gastar um turno de IA para chegar ao
+ * mesmo `dead`.
+ *
+ * Existe como função, e não como `nextAttemptDelayMs(x) === null` repetido nos
+ * dois lugares, porque os dois TÊM de concordar: um que promovesse a `dead` um
+ * degrau antes do outro produziria uma linha que o processador recusa e o
+ * veredito manda retentar — devida para sempre, que é exatamente o defeito que
+ * esta peça existe para fechar.
+ */
+export function shouldPromoteToDead(attempts: number): boolean {
+  return nextAttemptDelayMs(attempts) === null;
+}
+
+/**
  * Limite do texto de erro que atravessa para o SQL. A migration 113 tem
  * `left(p_error, 500)` como BACKSTOP para quem não passe por aqui; este é o
  * limite real, e os dois números são diferentes de propósito.
@@ -375,9 +396,29 @@ export function sanitizeQueueErrorText(input: string | null | undefined): string
  * Só o rastro fica: `queue_unauthorized_terminal` na linha e
  * `webhook_unauthorized` em `webhook_executions`.
  *
- * A consequência disso é VISIBILIDADE, e ela é trabalho da Task 8 (diagnóstico
- * de dead letter): contar `queue_unauthorized_terminal` por unidade é o que
- * transforma "sumiu" em "some quando alguém roda uma rotação".
+ * A consequência disso é VISIBILIDADE, e é por isso que `whatsapp-health` conta
+ * `queue_unauthorized_terminal` por unidade: é o que transforma "sumiu" em
+ * "some quando alguém roda uma rotação".
+ *
+ * ─── A QUARTA CLASSE: ESGOTOU SEM NUNCA CHEGAR A UM VEREDITO ─────────────────
+ *
+ * As três acima pressupõem que houve desfecho. Existe um caso em que não há:
+ * o worker é retirado no meio do processamento (wall clock do WORKER esgotado,
+ * isolate derrubado, `EdgeRuntime.waitUntil` cortado). Nada finaliza, o lease
+ * vence, o takeover serve a linha de novo — e de novo. Antes do incremento no
+ * claim, essa linha nunca gastava tentativa, logo nunca chegava a `dead`, logo
+ * nunca virava dead letter; e como a purga só alcança `done`/`dead`, o
+ * `raw_body` (telefone e texto de cliente, PII) ficava retido
+ * INDEFINIDAMENTE. Nada travava e nada alertava: a ordenação da varredura por
+ * `updated_at` devolve essa linha ao fim da fila a cada serviço, então a tabela
+ * só engordava.
+ *
+ * Quem fecha isso é `exhaustedBeforeProcessing`, decidido pelo caller a partir
+ * de `shouldPromoteToDead(attempts)` logo após o claim. O outcome é PRÓPRIO
+ * (`queue_dead_letter_no_verdict`) porque o diagnóstico é outro: "consumiu as
+ * tentativas sem nunca chegar a um veredito" manda investigar duração e wall
+ * clock; `queue_dead_letter` manda investigar o que o pipeline respondeu N
+ * vezes. Um nome só para os dois apagaria a única pista que distingue os casos.
  */
 export interface QueuedEventVerdict {
   status: "done" | "received" | "dead";
@@ -389,10 +430,31 @@ export interface QueuedEventVerdict {
 export function queuedEventVerdict(input: {
   /** `null` = exceção antes de haver resposta (decode do corpo, rede, etc.). */
   httpStatus: number | null;
-  /** O valor ATUAL da linha, antes deste desfecho — quem incrementa é o SQL. */
+  /**
+   * TENTATIVAS GASTAS, como a linha as traz DEPOIS do claim — não "vereditos
+   * gravados". O claim gasta uma quando é TAKEOVER de lease vencido (a prova de
+   * que uma tentativa começou e morreu); a finalização gasta uma em `received`
+   * e em `dead`. Quem escreve o número é sempre o SQL.
+   */
   attempts: number;
+  /**
+   * `true` = a linha chegou ao processador já sem degrau, e nem foi processada.
+   * Decidido por `shouldPromoteToDead(attempts)` no call site, logo após o
+   * claim. Vem primeiro no veredito porque não existe `httpStatus` a consultar:
+   * não houve requisição nenhuma.
+   */
+  exhaustedBeforeProcessing?: boolean;
 }): QueuedEventVerdict {
   const { httpStatus } = input;
+
+  if (input.exhaustedBeforeProcessing) {
+    return {
+      status: "dead",
+      outcome: "queue_dead_letter_no_verdict",
+      retryDelaySeconds: null,
+      promoteToHandoff: true,
+    };
+  }
 
   if (httpStatus !== null && httpStatus >= 200 && httpStatus < 300) {
     return {
@@ -412,8 +474,7 @@ export function queuedEventVerdict(input: {
     };
   }
 
-  const delayMs = nextAttemptDelayMs(input.attempts);
-  if (delayMs === null) {
+  if (shouldPromoteToDead(input.attempts)) {
     return {
       status: "dead",
       outcome: "queue_dead_letter",
@@ -424,7 +485,9 @@ export function queuedEventVerdict(input: {
   return {
     status: "received",
     outcome: "queue_retry_scheduled",
-    retryDelaySeconds: Math.ceil(delayMs / 1000),
+    // `!` porque `shouldPromoteToDead` acima já excluiu o `null`: as duas
+    // perguntas são a MESMA função, e por isso não podem discordar.
+    retryDelaySeconds: Math.ceil(nextAttemptDelayMs(input.attempts)! / 1000),
     promoteToHandoff: false,
   };
 }

@@ -6,6 +6,7 @@ import {
   deliveryDedupeKey,
   nextAttemptDelayMs,
   queuedEventVerdict,
+  shouldPromoteToDead,
   agentDeadlineVerdict,
   lockTtlSecondsRequired,
   encodeRawBodyHex,
@@ -272,6 +273,40 @@ describe("nextAttemptDelayMs — curto e raso: resposta atrasada é resposta err
   });
 });
 
+describe("shouldPromoteToDead — a MESMA pergunta nos dois momentos em que é feita", () => {
+  it("com degrau disponível, não promove", () => {
+    expect(shouldPromoteToDead(0)).toBe(false);
+    expect(shouldPromoteToDead(INBOUND_MAX_ATTEMPTS - 1)).toBe(false);
+  });
+
+  it("esgotadas as tentativas, promove", () => {
+    expect(shouldPromoteToDead(INBOUND_MAX_ATTEMPTS)).toBe(true);
+    expect(shouldPromoteToDead(99)).toBe(true);
+  });
+
+  // Entrada impossível (o banco escreve `attempts`, que é `not null` e só
+  // cresce) cai no lado SEGURO: promove. A alternativa — "não sei, então
+  // processa" — devolveria a linha para o laço que esta peça existe para
+  // fechar.
+  it("entrada absurda promove, em vez de devolver a linha ao laço", () => {
+    expect(shouldPromoteToDead(-1)).toBe(true);
+    expect(shouldPromoteToDead(Number.NaN)).toBe(true);
+  });
+
+  // CONTROLE POSITIVO da concordância. O processador pergunta ANTES de
+  // trabalhar e `queuedEventVerdict` pergunta DEPOIS do desfecho: se os dois
+  // discordassem num degrau, existiria uma linha que o processador recusa e o
+  // veredito manda retentar — devida para sempre, que é o defeito original por
+  // outra porta. Quem trocar um dos dois por um limite próprio reprova aqui.
+  it("concorda degrau a degrau com o que queuedEventVerdict faz numa falha transitória", () => {
+    for (let attempts = 0; attempts <= INBOUND_MAX_ATTEMPTS + 2; attempts++) {
+      const verdict = queuedEventVerdict({ httpStatus: 500, attempts });
+      expect(verdict.status === "dead", `attempts=${attempts}`)
+        .toBe(shouldPromoteToDead(attempts));
+    }
+  });
+});
+
 describe("queuedEventVerdict — o veredito da linha da fila", () => {
   it("2xx encerra a linha em done, sem retentativa e sem handoff", () => {
     expect(queuedEventVerdict({ httpStatus: 200, attempts: 0 })).toEqual({
@@ -355,6 +390,56 @@ describe("queuedEventVerdict — o veredito da linha da fila", () => {
   it("503 e 500 NÃO são terminais — alargar o 401 para a faixa 4xx/5xx seria descarte", () => {
     expect(queuedEventVerdict({ httpStatus: 503, attempts: 0 }).status).not.toBe("done");
     expect(queuedEventVerdict({ httpStatus: 500, attempts: 0 }).status).not.toBe("done");
+  });
+
+  // ─── A QUARTA CLASSE: ESGOTOU SEM NUNCA CHEGAR A UM VEREDITO ──────────────
+  //
+  // É a linha envenenada por DURAÇÃO: o worker é retirado no meio, nada
+  // finaliza, o lease vence, o takeover serve a linha de novo. Antes de o claim
+  // gastar tentativa, ela NUNCA chegava a `dead` — e como a purga só alcança
+  // `done`/`dead`, o corpo cru (PII) ficava retido indefinidamente.
+  it("esgotada ANTES de processar termina em dead e pede handoff, sem retentativa", () => {
+    expect(queuedEventVerdict({
+      httpStatus: null,
+      attempts: INBOUND_MAX_ATTEMPTS,
+      exhaustedBeforeProcessing: true,
+    })).toEqual({
+      status: "dead",
+      outcome: "queue_dead_letter_no_verdict",
+      retryDelaySeconds: null,
+      promoteToHandoff: true,
+    });
+  });
+
+  // CONTROLE POSITIVO do outcome próprio. Reusar `queue_dead_letter` para os
+  // dois apagaria a única pista que os distingue: "consumiu as tentativas sem
+  // nunca chegar a um veredito" manda investigar duração e wall clock; "o
+  // pipeline respondeu não-2xx N vezes" manda investigar o pipeline. Quem
+  // unificar os nomes reprova aqui.
+  it("o outcome distingue 'morreu sem veredito' de 'respondeu não-2xx N vezes'", () => {
+    const semVeredito = queuedEventVerdict({
+      httpStatus: null,
+      attempts: INBOUND_MAX_ATTEMPTS,
+      exhaustedBeforeProcessing: true,
+    });
+    const comVeredito = queuedEventVerdict({
+      httpStatus: 500,
+      attempts: INBOUND_MAX_ATTEMPTS,
+    });
+    expect(semVeredito.status).toBe(comVeredito.status);
+    expect(semVeredito.promoteToHandoff).toBe(comVeredito.promoteToHandoff);
+    expect(semVeredito.outcome).not.toBe(comVeredito.outcome);
+  });
+
+  // A bandeira responde uma pergunta que só existe quando NÃO houve requisição,
+  // então `attempts` abaixo do teto não a desarma: quem a passa já sabe que a
+  // linha chegou sem degrau. Ausente ou `false`, nada muda — é o caminho dos
+  // quatro providers legados e de todo desfecho normal.
+  it("ausente ou false não muda veredito nenhum", () => {
+    expect(queuedEventVerdict({ httpStatus: 200, attempts: 0, exhaustedBeforeProcessing: false }))
+      .toEqual(queuedEventVerdict({ httpStatus: 200, attempts: 0 }));
+    expect(queuedEventVerdict({ httpStatus: 500, attempts: 0, exhaustedBeforeProcessing: false }))
+      .toEqual(queuedEventVerdict({ httpStatus: 500, attempts: 0 }));
   });
 });
 

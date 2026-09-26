@@ -2410,12 +2410,13 @@ describe("webhook-whatsapp — ligação da franquia", () => {
 // ─── N1: o campo que põe a conversa na FILA DO OPERADOR ────────────────────
 //
 // Os dois verificadores acima (`exigeHardStopCompleto`, `exigeFailClosedTecnico`)
-// prendem o status nas portas da franquia. Este bloco cobre as SETE — inclusive
-// as duas PRÉ-EXISTENTES ao Plano D (`agent_error`, `api_key_not_configured`) e a
-// da ferramenta `request_human_handoff`, que nunca tiveram guarda nenhuma:
-// trocar `"awaiting_human"` por `"ai_active"` nas sete deixava a suíte INTEIRA
-// verde. A consequência é a mesma nas sete — cliente avisado, conversa seguindo
-// com a IA, restaurante nunca vendo a conversa na fila.
+// prendem o status nas portas da franquia. Este bloco cobre as OITO — inclusive
+// as duas PRÉ-EXISTENTES ao Plano D (`agent_error`, `api_key_not_configured`), a
+// da ferramenta `request_human_handoff` e a do dead letter da fila de inbound
+// (`inbound_dead_letter`, Fase C), que nunca tiveram guarda nenhuma: trocar
+// `"awaiting_human"` por `"ai_active"` nelas deixava a suíte INTEIRA verde. A
+// consequência é a mesma nas oito — cliente avisado, conversa seguindo com a IA,
+// restaurante nunca vendo a conversa na fila.
 //
 // A enumeração é por PROPRIEDADE, não por lista redigitada de razões: toda
 // escrita em `conversations` que grava uma razão de handoff não-nula E rearma o
@@ -2478,11 +2479,11 @@ describe("webhook-whatsapp — toda porta de handoff põe a conversa na fila", (
     }
   });
 
-  it("são SETE portas, e cada uma escreve o valor que o operador vê", () => {
+  it("são OITO portas, e cada uma escreve o valor que o operador vê", () => {
     expect(
       portas.length,
       "o número de portas de handoff mudou — se foi acréscimo legítimo, ajuste o número junto",
-    ).toBe(7);
+    ).toBe(8);
     for (const p of portas) {
       expect(
         p.status,
@@ -2491,12 +2492,12 @@ describe("webhook-whatsapp — toda porta de handoff põe a conversa na fila", (
     }
   });
 
-  it("as sete não são a mesma porta repetida — as razões são próprias", () => {
-    // Se as sete colapsassem numa razão só, prender o status ainda ficaria verde
+  it("as oito não são a mesma porta repetida — as razões são próprias", () => {
+    // Se as oito colapsassem numa razão só, prender o status ainda ficaria verde
     // enquanto o operador perderia a distinção entre teto, chave ausente, preço
-    // desconhecido e falha do provedor.
+    // desconhecido, falha do provedor e entrega que a fila desistiu de processar.
     const razoes = new Set(portas.map((p) => p.razao));
-    expect(razoes.size, "as portas compartilham a mesma razão de handoff").toBeGreaterThanOrEqual(6);
+    expect(razoes.size, "as portas compartilham a mesma razão de handoff").toBeGreaterThanOrEqual(7);
   });
 
   for (const [nome, ancora] of [

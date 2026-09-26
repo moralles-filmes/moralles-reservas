@@ -36,6 +36,50 @@ const MIGRATION_113 = readFileSync(
   "utf8",
 );
 
+// `whatsapp-health` também chama `serve()` no carregamento e importa
+// `deno.land`: o vitest não a alcança, e as duas armadilhas das contagens
+// (tirá-las da amostra de 50 execuções; esquecer o escopo de unidade numa tabela
+// FORCE RLS sem policies) só têm guarda se alguém ler a fonte.
+const HEALTH_EF = readFileSync(
+  resolve(__dirname, "../../supabase/functions/whatsapp-health/index.ts"),
+  "utf8",
+);
+
+/** Recorta o corpo de uma função SQL da migration, da assinatura até o `$$;`. */
+const corpoSql = (sql: string, assinatura: string): string => {
+  const inicio = sql.indexOf(assinatura);
+  if (inicio < 0) return "";
+  const fim = sql.indexOf("$$;", inicio);
+  return fim > inicio ? sql.slice(inicio, fim) : "";
+};
+
+/**
+ * Recorta uma função TypeScript da EF, desta declaração até a seguinte, SEM as
+ * linhas de comentário.
+ *
+ * Tirar os comentários não é higiene: aqui as asserções são de PRESENÇA, e um
+ * comentário que cite o trecho procurado (esses comentários citam bastante)
+ * satisfaria a asserção sozinho — falso verde, e o controle positivo também
+ * mentiria, porque a cirurgia removeria a citação em vez do código. É o oposto
+ * do guard da Datafy, onde a asserção é de AUSÊNCIA e por isso o comentário
+ * conta como violação.
+ *
+ * Só sai a linha INTEIRA de comentário — a que começa com duas barras —, nunca
+ * duas barras no meio de uma linha: dentro de string (uma URL, por exemplo)
+ * elas não são comentário nenhum.
+ */
+const corpoTs = (fonte: string, declaracao: string, ateDeclaracao: string): string => {
+  const inicio = fonte.indexOf(declaracao);
+  if (inicio < 0) return "";
+  const fim = fonte.indexOf(ateDeclaracao, inicio);
+  if (fim <= inicio) return "";
+  return fonte
+    .slice(inicio, fim)
+    .split("\n")
+    .filter((linha) => !/^\s*(\/\/|\*|\/\*)/.test(linha))
+    .join("\n");
+};
+
 describe("anti-laço: a re-entrada não pode reinserir o evento", () => {
   // O dano não é simétrico entre providers, e é isso que faz este teste valer.
   // Numa entrega Datafy o `delivery_id` existe e o unique parcial da 111 pararia
@@ -117,6 +161,230 @@ describe("gêmeos declarados: o número vive em dois lugares e nenhum importa o 
     const m = MIGRATION_113.match(/left\(p_error,\s*(\d+)\)/);
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBeGreaterThan(INBOUND_ERROR_TEXT_MAX);
+  });
+});
+
+/**
+ * A LINHA ENVENENADA POR DURAÇÃO — as duas metades do conserto.
+ *
+ * O mecanismo é do SQL (o takeover gasta uma tentativa) e a política é do
+ * núcleo (`shouldPromoteToDead`), mas quem amarra os dois é o `index.ts`, que
+ * nenhum compilador alcança. Sem este bloco, apagar o `case` da migration ou a
+ * pergunta do processador devolve a fase ao estado em que uma classe de linha
+ * nunca vira dead letter e retém PII indefinidamente — com a suíte verde.
+ */
+const CORPO_DO_CLAIM_SQL = corpoSql(
+  MIGRATION_113,
+  "create or replace function public.claim_whatsapp_inbound_event",
+);
+
+/** O takeover gasta tentativa — medido sobre um corpo qualquer, real ou falsificado. */
+const takeoverGastaTentativa = (corpo: string) =>
+  /attempts\s*=\s*case when e\.status = 'processing'/.test(corpo)
+  && /then e\.attempts \+ 1/.test(corpo);
+
+describe("o takeover de lease vencido GASTA uma tentativa", () => {
+  it("o claim incrementa attempts, e só na perna do takeover", () => {
+    expect(CORPO_DO_CLAIM_SQL, "o corpo do claim não foi encontrado").not.toBe("");
+    expect(
+      takeoverGastaTentativa(CORPO_DO_CLAIM_SQL),
+      "o claim voltou a não gastar tentativa: a linha que o worker começa e não "
+        + "termina nunca mais chega a `dead`, e o corpo cru (PII) fica retido para sempre",
+    ).toBe(true);
+    // A perna do claim NORMAL não pode gastar nada: ali nada foi tentado ainda,
+    // e gastar encurtaria a escada de toda entrega nova.
+    expect(CORPO_DO_CLAIM_SQL).toMatch(/else e\.attempts/);
+  });
+
+  it("CONTROLE POSITIVO: sem o `case`, o caso acima fica vermelho", () => {
+    const mutilado = CORPO_DO_CLAIM_SQL.replace(
+      /attempts\s*=\s*case when e\.status = 'processing'[\s\S]*?end,/,
+      "",
+    );
+    expect(mutilado, "a cirurgia do controle não achou o incremento").not.toBe(
+      CORPO_DO_CLAIM_SQL,
+    );
+    expect(takeoverGastaTentativa(mutilado)).toBe(false);
+  });
+
+  it("o valor devolvido pelo claim é o que o processador consulta", () => {
+    // `returning e.attempts` devolve o valor JÁ INCREMENTADO — é dele que sai a
+    // decisão de nem processar. Um `returning` que devolvesse o valor antigo
+    // atrasaria a promoção em um ciclo inteiro de lease.
+    expect(CORPO_DO_CLAIM_SQL).toMatch(/returning[\s\S]*e\.attempts/);
+  });
+});
+
+describe("a linha sem degrau é finalizada, não processada", () => {
+  const PROCESSA = corpoTs(
+    EF,
+    "async function processQueuedEventById",
+    "async function purgeInboundEvents",
+  );
+
+  it("a pergunta é do núcleo e vem ANTES da re-entrada no pipeline", () => {
+    expect(PROCESSA, "processQueuedEventById não foi encontrada").not.toBe("");
+    const pergunta = PROCESSA.indexOf("shouldPromoteToDead(attempts)");
+    const reentrada = PROCESSA.indexOf("handleWebhookRequest");
+    expect(pergunta, "o processador voltou a não perguntar se ainda há degrau")
+      .toBeGreaterThan(-1);
+    expect(reentrada).toBeGreaterThan(-1);
+    // Perguntar DEPOIS seria não perguntar: o turno de IA já teria sido gasto
+    // para chegar ao mesmo `dead`.
+    expect(pergunta).toBeLessThan(reentrada);
+  });
+
+  it("finaliza pelo MESMO caminho cercado, com a bandeira que o núcleo lê", () => {
+    // Montar um veredito aqui criaria um segundo produtor de
+    // `QueuedEventVerdict` fora do alcance do vitest — a forma de os dois
+    // divergirem.
+    expect(PROCESSA).toMatch(/exhaustedBeforeProcessing:\s*true/);
+    expect(PROCESSA).not.toMatch(/status:\s*"dead"/);
+  });
+});
+
+describe("dead letter visível: promover sem atropelar quem está atendendo", () => {
+  const PROMOVE = corpoTs(
+    EF,
+    "async function promoteDeadLetterToHandoff",
+    "async function finalizeQueuedEvent",
+  );
+
+  /**
+   * As duas amarras da promoção, medidas sobre um corpo real ou falsificado.
+   *
+   * `confereRetorno` olha o `.select` que vem LOGO DEPOIS do predicado, e não
+   * um `.select("id")` qualquer: este corpo tem outros dois (o cliente e a
+   * conversa), e um predicado solto ficaria verde por causa deles.
+   */
+  const amarras = (corpo: string) => {
+    const marca = corpo.indexOf('.eq("status", "ai_active")');
+    const depoisDoPredicado = marca >= 0 ? corpo.slice(marca, marca + 200) : "";
+    return {
+      soIaAtiva: marca >= 0,
+      confereRetorno: /\.select\("id"\)/.test(depoisDoPredicado)
+        && /promovidas\.length === 0/.test(corpo),
+    };
+  };
+
+  it("promove SÓ o que a IA ainda detém", () => {
+    expect(PROMOVE, "promoteDeadLetterToHandoff não foi encontrada").not.toBe("");
+    const { soIaAtiva } = amarras(PROMOVE);
+    expect(
+      soIaAtiva,
+      "a promoção voltou a escrever sem predicado de estado: atendente em "
+        + "`human_active` volta para a fila, `handoff_at` (relógio do auto-resolve "
+        + "de 12 h) é zerado e o `handoff_reason` anterior é apagado",
+    ).toBe(true);
+  });
+
+  it("confere o retorno, porque UPDATE que casa zero linhas não é erro", () => {
+    const { confereRetorno } = amarras(PROMOVE);
+    expect(
+      confereRetorno,
+      "sem conferir as linhas afetadas, 'não promovi porque um humano já estava "
+        + "lá' fica indistinguível de 'promovi' — e o log afirmaria a segunda coisa",
+    ).toBe(true);
+    // Zero linhas aqui é o caso comum e DESEJADO, então tem evento próprio e
+    // não entra no caminho de erro.
+    expect(PROMOVE).toMatch(/evt: "inbound_dead_letter_human_already_active"/);
+  });
+
+  it("CONTROLE POSITIVO: sem o predicado de estado, o caso acima fica vermelho", () => {
+    const semPredicado = PROMOVE.replace(/\s*\.eq\("status", "ai_active"\)/, "");
+    expect(semPredicado, "a cirurgia do controle não achou o predicado").not.toBe(PROMOVE);
+    expect(amarras(semPredicado).soIaAtiva).toBe(false);
+  });
+
+  it("CONTROLE POSITIVO: sem a conferência do retorno, o caso acima fica vermelho", () => {
+    // Cirurgia MÍNIMA: tira só o `.select` do `update`, preservando o predicado
+    // e os outros dois `.select("id")` do corpo. É essa precisão que impede o
+    // controle de ficar verde derrubando a amarra errada.
+    const semConferencia = PROMOVE.replace(
+      /(\.eq\("status", "ai_active"\))\s*\.select\("id"\)/,
+      "$1",
+    );
+    expect(semConferencia, "a cirurgia do controle não achou a conferência").not.toBe(PROMOVE);
+    expect(amarras(semConferencia).soIaAtiva, "o predicado tinha de sobreviver").toBe(true);
+    expect(amarras(semConferencia).confereRetorno).toBe(false);
+  });
+
+  it("divide o lote ANTES de resolver o remetente, e promove cada um", () => {
+    // O corpo guardado é o do POST INTEIRO, e um payload de forma Meta agrupa
+    // mensagens de clientes DIFERENTES. `parseInbound` devolve no máximo uma:
+    // resolver o payload inteiro promoveria um cliente e deixaria os outros sem
+    // nada — pior que "não deu para resolver", onde ao menos o contador acusa.
+    const split = PROMOVE.indexOf("splitMetaWebhookPayload(payload)");
+    const parse = PROMOVE.indexOf("parseInbound(provider,");
+    expect(split, "a promoção voltou a resolver o payload inteiro").toBeGreaterThan(-1);
+    expect(parse).toBeGreaterThan(-1);
+    expect(split).toBeLessThan(parse);
+    // Remetentes distintos, não mensagens: três mensagens do mesmo cliente são
+    // uma conversa só, e promovê-la três vezes reescreveria `handoff_at`.
+    expect(PROMOVE).toMatch(/new Set<string>\(\)/);
+  });
+
+  it("NUNCA cria conversa — só promove a que existe", () => {
+    // Criar uma para marcá-la em handoff inventaria thread vazia no painel.
+    expect(PROMOVE).not.toMatch(/\.from\("conversations"\)\s*\n\s*\.insert/);
+    expect(PROMOVE).not.toMatch(/get_or_create_whatsapp_conversation/);
+  });
+
+  it("o corpo cru do cliente não chega ao log, nem pela mensagem de erro", () => {
+    // A mensagem do `JSON.parse` do V8 EMBUTE um trecho da entrada, e a entrada
+    // aqui é o corpo cru — telefone e texto. Redigido na FONTE: o parse tem
+    // `catch` próprio que loga um token fixo.
+    expect(PROMOVE).toMatch(/evt: "dead_letter_payload_unparseable"/);
+    expect(PROMOVE, "o texto cru do erro voltou para o log").not.toMatch(/String\(err\)/);
+    expect(PROMOVE).toMatch(/err: sanitizeProviderError\(err\)/);
+    // E nada de telefone ou texto de cliente no log de resumo: só contagens.
+    expect(PROMOVE).not.toMatch(/phone[,:]\s*phone/);
+  });
+});
+
+describe("as contagens do diagnóstico: exatas, escopadas e com janela", () => {
+  it("contagem EXATA, nunca tirada da amostra das últimas 50 execuções", () => {
+    // `by_outcome` é calculado sobre `last_executions` (limite 50) — por isso o
+    // `sample_size` ao lado. Uma contagem tirada dali sub-reporta em silêncio na
+    // unidade movimentada, que é justamente onde o problema aparece.
+    const bloco = HEALTH_EF.slice(HEALTH_EF.indexOf("whatsapp_inbound_events"));
+    expect(bloco, "as contagens da fila sumiram do diagnóstico").not.toBe("");
+    expect(bloco).toMatch(/count: "exact", head: true/);
+    expect(
+      HEALTH_EF,
+      "a contagem da fila passou a sair de `by_outcome`, que é amostra de 50",
+    ).not.toMatch(/byOutcome\[["']queue_/);
+  });
+
+  it("cada contagem é escopada pela unidade — é o único isolamento que existe", () => {
+    // `whatsapp_inbound_events` é FORCE RLS SEM policies e esta EF usa
+    // `service_role`: sem o `.eq("unit_id", unitId)`, a contagem seria a de
+    // todos os clientes.
+    const consultas = HEALTH_EF.split('.from("whatsapp_inbound_events")').slice(1);
+    expect(consultas.length, "esperadas as duas contagens da fila").toBe(2);
+    for (const consulta of consultas) {
+      const cabeca = consulta.slice(0, 400);
+      expect(cabeca).toMatch(/\.eq\("unit_id", unitId\)/);
+    }
+  });
+
+  it("a janela viaja junto com o número, e vem do núcleo", () => {
+    // Contagem sem janela é número que o operador interpreta errado uma vez e
+    // para de olhar. E as duas janelas são DIFERENTES: `dead` fica 30 dias; o
+    // 401 terminal morre em `done` e sai em 7.
+    expect(HEALTH_EF).toMatch(/window_days: PURGE_DEAD_AFTER_DAYS/);
+    expect(HEALTH_EF).toMatch(/window_days: PURGE_DONE_AFTER_DAYS/);
+    expect(
+      HEALTH_EF,
+      "as janelas voltaram a ser números digitados em vez de importados do núcleo",
+    ).not.toMatch(/window_days:\s*\d+/);
+  });
+
+  it("`count: null` é 'não consegui contar', nunca zero", () => {
+    // Leitura que falha devolveria `count: null` no supabase-js, e um `?? 0`
+    // afirmaria "nenhum dead letter" no exato momento em que ninguém sabe.
+    expect(HEALTH_EF).toMatch(/deadLetterError \? null :/);
+    expect(HEALTH_EF).toMatch(/unauthorizedError \? null :/);
   });
 });
 

@@ -35,6 +35,20 @@ export interface WhatsAppHealthExecution {
   meta: Record<string, unknown> | null;
 }
 
+/**
+ * Uma contagem da fila de inbound, com a JANELA que ela cobre.
+ *
+ * `count: null` é "a Edge Function não conseguiu contar" — nunca zero. E o
+ * bloco inteiro é OPCIONAL porque a EF que o produz é deployada à mão: enquanto
+ * a versão antiga estiver no ar, o campo simplesmente não vem, e afirmar "0
+ * dead letters" a partir da ausência seria um falso negativo exatamente na
+ * investigação em que o número importa.
+ */
+export interface WhatsAppHealthQueueCount {
+  count: number | null;
+  window_days: number;
+}
+
 export interface WhatsAppHealthResponse {
   success: boolean;
   generated_at: string;
@@ -44,6 +58,10 @@ export interface WhatsAppHealthResponse {
     total: number;
     by_outcome: Record<string, number>;
     sample_size: number;
+  };
+  inbound_queue?: {
+    dead_letter: WhatsAppHealthQueueCount;
+    unauthorized_terminal: WhatsAppHealthQueueCount;
   };
   last_executions: WhatsAppHealthExecution[];
 }

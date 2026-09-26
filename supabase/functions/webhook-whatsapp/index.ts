@@ -52,6 +52,7 @@ import {
   providerDeclaresDeliveryId,
   queuedEventVerdict,
   sanitizeQueueErrorText,
+  shouldPromoteToDead,
   sweepShouldStartAnother,
   DATAFY_DELIVERY_ID_HEADER,
   INBOUND_DEBOUNCE_WINDOW_MS,
@@ -1527,21 +1528,208 @@ interface ClaimedInboundEvent {
   channel_id: string;
   /** `bytea`: o PostgREST entrega literal hex (`\x...`), com ou sem prefixo. */
   raw_body: string;
-  /** Tentativas JÁ FEITAS. Quem incrementa é o SQL da finalização. */
+  /**
+   * TENTATIVAS GASTAS, já incluindo esta quando o claim foi TAKEOVER de lease
+   * vencido — o SQL incrementa no próprio `update` e devolve o valor novo. Quem
+   * escreve o número é sempre o banco (aqui e na finalização); incrementá-lo no
+   * Deno a partir do que se leu é lost update por construção.
+   */
   attempts: number;
   claim_id: string;
 }
 
 /**
- * STUB — a Task 8 desta fase a completa (dead letter visível: handoff com motivo
- * próprio + contagem por unidade no diagnóstico).
+ * Dead letter VISÍVEL: a entrega que a fila desistiu de processar vira
+ * `awaiting_human` na conversa do cliente — reusando o contador que
+ * `useAwaitingHumanCount` já mostra ao operador, sem inventar tela.
  *
- * Declarada agora porque `queuedEventVerdict` já decide QUANDO promover, e uma
- * referência para função inexistente não reprovaria nenhum gate local: o
- * `tsc -b` não alcança este diretório e o `no-undef` do eslint só olha
- * identificadores livres. Só apareceria no deploy.
+ * Best-effort e NUNCA LANÇA: é chamada do caminho de finalização da fila, depois
+ * de a escrita já ter pegado. Quando não dá para resolver a conversa (o evento
+ * morreu antes de ela existir, ou antes de existir cliente), sobra a contagem do
+ * diagnóstico — que é por isso que ela existe, e não como decoração.
+ *
+ * ─── NUNCA CRIA CONVERSA ────────────────────────────────────────────────────
+ * Se não existe, não existe. `appendOutboundToConversation` é quem auto-cria;
+ * criar uma só para marcá-la em handoff inventaria thread vazia no painel, e o
+ * operador abriria uma conversa sem nenhuma mensagem para ler.
+ *
+ * ─── A CADEIA NÃO É POR TELEFONE ────────────────────────────────────────────
+ * `conversations` não tem coluna de telefone: é chaveada por `(customer_id,
+ * unit_id)`. E `customers` pertencem à ORGANIZAÇÃO, não à unidade. Então o
+ * caminho é unit → `organization_id` → customer por `(organization_id, phone)`
+ * → conversa por `(customer_id, unit_id)`. Toda consulta aqui é escopada pelo
+ * tenant da PRÓPRIA linha; nada vem de fora.
+ *
+ * ─── UM LOTE PODE TER VÁRIOS CLIENTES ───────────────────────────────────────
+ * A linha da fila guarda o corpo INTEIRO do POST, e um payload de forma Meta
+ * agrupa mensagens de remetentes DIFERENTES — é por isso que o handler chama
+ * `splitMetaWebhookPayload` antes de processar. `parseInbound` devolve no
+ * máximo UMA mensagem, então resolver o payload inteiro promoveria a conversa
+ * de um cliente e deixaria os outros sem nada: pior que "não deu para
+ * resolver", onde ao menos o contador do painel acusa. Dividir primeiro é o
+ * mesmo caminho para todos os providers — `splitMetaWebhookPayloadCore`
+ * devolve `[payload]` quando não há `entry`, que é o caso dos quatro legados.
  */
-async function promoteDeadLetterToHandoff(_eventId: string): Promise<void> {}
+async function promoteDeadLetterToHandoff(eventId: string): Promise<void> {
+  try {
+    const { data: row } = await supabase
+      .from("whatsapp_inbound_events")
+      .select("provider, unit_id, raw_body")
+      .eq("id", eventId)
+      .maybeSingle();
+    if (!row) return;
+
+    const provider = row.provider as WhatsAppProvider;
+    const unitId = String(row.unit_id);
+
+    // REDIGIDO NA FONTE, e não no `catch` de baixo: a mensagem de erro do
+    // `JSON.parse` do V8 EMBUTE um trecho da entrada (`... "{corpo}" is not
+    // valid JSON`), e a entrada aqui é o corpo cru do cliente — telefone e
+    // texto. `sanitizeProviderError` redige credencial e trunca, mas não
+    // conhece essa forma; contar com ele publicaria PII no log sem erro de tipo
+    // nem aviso de lint. Mesma disciplina de `fetchConnectionStatus`, que redige
+    // a URL com credencial no lugar onde ela nasce.
+    let payload: unknown;
+    try {
+      payload = JSON.parse(decodeRawBodyHex(String(row.raw_body)));
+    } catch {
+      jsonLog("warn", { evt: "dead_letter_payload_unparseable", eventId });
+      return;
+    }
+
+    // `Set`: um lote com três mensagens do MESMO cliente é uma conversa só, e
+    // promovê-la três vezes reescreveria `handoff_at` a cada volta.
+    const senders = new Set<string>();
+    for (const part of splitMetaWebhookPayload(payload)) {
+      const inbound = parseInbound(provider, part);
+      if (!inbound?.fromPhone) continue;
+      const phone = canonicalBrPhone(inbound.fromPhone);
+      // Mesmo guarda do caminho normal: o eco traz LID do WhatsApp (14+
+      // dígitos), que `canonicalBrPhone` deixa passar intacto e que não é
+      // cliente nenhum.
+      if (!isPlausibleCustomerPhone(phone)) continue;
+      senders.add(phone);
+    }
+
+    const conta = {
+      senders: senders.size,
+      promoted: 0,
+      humanActive: 0,
+      noCustomer: 0,
+      noConversation: 0,
+      updateFailed: 0,
+      unitUnresolved: false,
+    };
+
+    // A unidade é o degrau para a ORGANIZAÇÃO, que é onde o cliente vive. Não
+    // achá-la só acontece se a leitura falhar: a FK de `unit_id` é
+    // `on delete cascade`, então unidade apagada leva a linha da fila junto e
+    // não haveria evento a promover.
+    const { data: unit } = await supabase
+      .from("units")
+      .select("organization_id")
+      .eq("id", unitId)
+      .maybeSingle();
+    if (!unit) conta.unitUnresolved = true;
+
+    if (unit && senders.size > 0) {
+      for (const phone of senders) {
+        const { data: customer } = await supabase
+          .from("customers")
+          .select("id")
+          .eq("organization_id", unit.organization_id)
+          .eq("phone", phone)
+          .maybeSingle();
+        if (!customer) {
+          conta.noCustomer++;
+          continue;
+        }
+
+        const { data: conv } = await supabase
+          .from("conversations")
+          .select("id")
+          .eq("unit_id", unitId)
+          .eq("customer_id", customer.id)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!conv) {
+          conta.noConversation++;
+          continue;
+        }
+
+        // O PREDICADO DE ESTADO ABAIXO PROMOVE SÓ O QUE A IA AINDA DETÉM.
+        // Sem ele, um atendente no meio da conversa (`human_active`)
+        // era jogado de volta para a fila de "aguardando"; `handoff_at` —
+        // relógio do auto-resolve de 12 h e do lembrete de 6 h — era zerado
+        // sob os pés dele; e um `handoff_reason` anterior (`agent_error`,
+        // `ai_budget_exhausted`) era APAGADO, levando junto o motivo real da
+        // investigação. Conversa em `resolved` (status legado) também fica de
+        // fora: ali um humano já encerrou.
+        const { data: promovidas, error: updateError } = await supabase
+          .from("conversations")
+          .update({
+            status: "awaiting_human",
+            // UM motivo só, de propósito: o que o operador precisa saber aqui
+            // é "esta mensagem não foi processada". POR QUE ela não foi está em
+            // `whatsapp_inbound_events.outcome` (`queue_dead_letter` =
+            // respondeu não-2xx N vezes; `queue_dead_letter_no_verdict` =
+            // consumiu as tentativas sem nunca chegar a um veredito), e é lá
+            // que se investiga.
+            handoff_reason: "inbound_dead_letter",
+            handoff_at: new Date().toISOString(),
+            last_silenced_reply_at: null,
+          })
+          .eq("id", conv.id)
+          .eq("status", "ai_active")
+          .select("id");
+
+        if (updateError) {
+          conta.updateFailed++;
+          jsonLog("error", {
+            evt: "inbound_dead_letter_promote_failed",
+            eventId,
+            convId: conv.id,
+            err: updateError.message,
+          });
+          continue;
+        }
+        // `UPDATE` que casa zero linhas devolve `error: null` no supabase-js
+        // (invariante do CLAUDE.md): sem conferir o retorno, "não promovi
+        // porque um humano já estava lá" fica indistinguível de "promovi", e o
+        // log afirmaria a segunda coisa. Zero linhas aqui NÃO é falha — é o
+        // caso comum e desejado.
+        if (!promovidas || promovidas.length === 0) {
+          conta.humanActive++;
+          jsonLog("info", {
+            evt: "inbound_dead_letter_human_already_active",
+            eventId,
+            convId: conv.id,
+          });
+          continue;
+        }
+
+        conta.promoted++;
+        jsonLog("warn", { evt: "inbound_dead_letter", eventId, convId: conv.id });
+      }
+    }
+
+    // Uma linha por evento, com as CONTAGENS de cada desfecho — nunca telefone
+    // nem texto de cliente. `senders: 0` é o caso "morreu antes de existir
+    // cliente", e é ele que justifica a contagem do diagnóstico existir.
+    jsonLog("warn", { evt: "inbound_dead_letter_summary", eventId, ...conta });
+  } catch (err) {
+    // SANITIZADO, nunca o texto cru do erro: neste caminho o `err` pode vir do
+    // `JSON.parse` sobre o CORPO CRU do cliente, e mensagem de parse já carregou
+    // fragmento de entrada em outros runtimes. A disciplina desta fase é
+    // instrumentar FORMA, nunca valor.
+    jsonLog("warn", {
+      evt: "dead_letter_handoff_failed",
+      eventId,
+      err: sanitizeProviderError(err),
+    });
+  }
+}
 
 /**
  * Grava o veredito da linha da fila, CERCADO pelo `claim_id`.
@@ -1562,10 +1750,18 @@ async function finalizeQueuedEvent(input: {
   /** `null` = exceção antes de haver resposta HTTP. */
   httpStatus: number | null;
   error: string | null;
+  /**
+   * `true` = a linha chegou ao processador já sem degrau e não foi processada.
+   * Atravessa até o núcleo em vez de virar um veredito montado aqui: o
+   * `index.ts` não é alcançado por compilador nem por vitest, e um segundo
+   * produtor de `QueuedEventVerdict` seria a forma de os dois divergirem.
+   */
+  exhaustedBeforeProcessing?: boolean;
 }): Promise<void> {
   const verdict = queuedEventVerdict({
     httpStatus: input.httpStatus,
     attempts: input.attempts,
+    exhaustedBeforeProcessing: input.exhaustedBeforeProcessing,
   });
 
   try {
@@ -1724,6 +1920,39 @@ async function processQueuedEventById(eventId: string): Promise<void> {
       provider: row.provider,
       attempts,
     });
+
+    // ─── A LINHA ENVENENADA POR DURAÇÃO MORRE AQUI ───────────────────────────
+    //
+    // `attempts` chega JÁ INCREMENTADO quando este claim foi um takeover de
+    // lease vencido — e um takeover é a prova de que uma tentativa começou e
+    // morreu sem chegar a veredito nenhum (worker retirado no meio: wall clock
+    // do WORKER, isolate derrubado, `waitUntil` cortado). Sem esta pergunta, a
+    // única promoção a `dead` era a do caminho de FINALIZAÇÃO — que, por
+    // construção, essa linha nunca alcança. Ela era servida para sempre, nunca
+    // virava dead letter, e o `raw_body` (telefone e texto de cliente, PII)
+    // ficava retido indefinidamente, porque a purga só alcança `done`/`dead`.
+    //
+    // Processar mesmo assim gastaria um turno de IA para chegar ao MESMO
+    // `dead`. A pergunta é do núcleo (`shouldPromoteToDead`), a mesma que
+    // `queuedEventVerdict` faz do outro lado — divergir as duas produziria uma
+    // linha que o processador recusa e o veredito manda retentar.
+    //
+    // A finalização incrementa `attempts` mais uma vez (o SQL soma em `dead`
+    // como soma em `received`), e isso é inofensivo: a linha é terminal e o
+    // número só é lido por quem estiver investigando. Isentá-la exigiria um
+    // ramo a mais no SQL para não mudar decisão nenhuma.
+    if (shouldPromoteToDead(attempts)) {
+      jsonLog("warn", { evt: "queued_event_exhausted_without_verdict", eventId, attempts });
+      await finalizeQueuedEvent({
+        eventId,
+        claimId,
+        attempts,
+        httpStatus: null,
+        error: null,
+        exhaustedBeforeProcessing: true,
+      });
+      return;
+    }
 
     // Estoura em hex ímpar ou não-hex, de propósito: corpo corrompido não pode
     // virar payload silenciosamente diferente do que o provider assinou. O

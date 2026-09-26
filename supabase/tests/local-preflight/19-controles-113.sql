@@ -16,12 +16,19 @@
 --   C-113-5 (60)  `attempts + 1` em TODO ramo                  -> derruba FIN-3
 --   C-113-6 (61)  atraso lido como MILISSEGUNDOS               -> derruba FIN-2
 --   C-113-7 (62)  drop + create sem o `revoke`                  -> derruba ACL-113
+--   C-113-8 (82)  `claim` sem o incremento do takeover          -> derruba CLAIM-5
+--
+-- O C-113-8 está em 82, fora da faixa 56..62, porque nasceu depois do `20`/`21`
+-- (ordinais 64..79) e dos casos CLAIM-5/CLAIM-6 do `18` (80..81).
 --
 -- ═══ O CRITÉRIO NÃO É "UM CASO", É VERMELHO QUE NÃO DESORIENTA ══════════════
 --
--- O C-113-3 derruba DOIS casos, e está certo: tirar o filtro de status quebra
--- genuinamente as duas propriedades (lease vivo reivindicado duas vezes, e linha
--- terminal voltando a ser trabalhável), e cada veredito nomeia o defeito real.
+-- O C-113-2 e o C-113-3 derrubam DOIS casos cada, e os dois estão certos. Sem a
+-- perna do takeover não existe takeover a gastar tentativa, então o CLAIM-3 e o
+-- CLAIM-5 caem juntos, cada um nomeando a mesma causa. Tirar o filtro de status
+-- quebra genuinamente duas propriedades (lease vivo reivindicado duas vezes, e
+-- linha terminal voltando a ser trabalhável), e cada veredito nomeia o defeito
+-- real.
 -- Isso é diferente de um controle cujo segundo vermelho MENTE sobre a causa —
 -- defeito que este conjunto teve e que uma revisão pegou: o C-113-4 (lease de 9 s)
 -- também avermelhava o CLAIM-3, com a mensagem "o takeover nao renovou o lease",
@@ -233,6 +240,13 @@ end $ctrl$;
 --
 -- Mede também que o CLAIM-1 fica verde: uma linha `received` continua
 -- reivindicável, então o vermelho é localizado.
+--
+-- SEGUNDO VERMELHO LEGÍTIMO, pela mesma régua do C-113-3: o CLAIM-5 (o takeover
+-- gasta uma tentativa) também cai, porque sem a perna não há takeover nenhum a
+-- gastar tentativa. A mensagem dele diz exatamente isso — "linha de base: o
+-- lease vencido nao foi retomado — ver CLAIM-3" — e manda investigar o lugar
+-- certo, que é o requisito. Já o CLAIM-6 fica verde: o claim normal não depende
+-- desta perna.
 do $ctrl$
 declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
         v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
@@ -806,6 +820,116 @@ begin
     end);
 exception when others then
   insert into t_res values (62, 'C-113-7 drop+create sem o revoke reabre EXECUTE a PUBLIC (derruba o ACL-113); create or replace NAO reabre',
+    'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)')
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
+end $ctrl$;
+
+-- ═══ C-113-8 (82) — `claim` sem o incremento do takeover derruba o CLAIM-5 ══
+-- A sabotagem é EXATAMENTE a forma anterior desta migration, e é por isso que
+-- ela é plausível: "incrementar é trabalho da finalização" foi o desenho até a
+-- Task 8, e está escrito em prosa em mais de um lugar do repositório.
+--
+-- O custo é a LINHA ENVENENADA POR DURAÇÃO: o worker que começa e não termina
+-- nunca alcança a finalização, logo `attempts` nunca avança, logo a linha nunca
+-- chega a `dead` — e como `purge_whatsapp_inbound_events` só alcança `done` e
+-- `dead`, o `raw_body` (telefone e texto de cliente, PII) fica retido
+-- indefinidamente. Nada trava e nada alerta: a ordenação da varredura por
+-- `updated_at` devolve essa linha ao fim da fila a cada serviço.
+--
+-- Mede também que o CLAIM-6 fica VERDE: sem o `case`, o claim normal continua
+-- não gastando tentativa, então o vermelho é localizado e a mensagem do CLAIM-5
+-- aponta para o takeover, que é onde o defeito está.
+do $ctrl$
+declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
+        v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+        v_corpo bytea := convert_to('{}', 'UTF8');
+        v_def_antes text; v_def_sab text; v_def_depois text;
+        v_id_venc uuid; v_retomou boolean := false;
+        v_att_venc int := -1; v_att_devolvido int := -1;
+        v_id_novo uuid; v_att_novo int := -1;
+begin
+  delete from t_res where ord = 82;
+
+  v_def_antes := pg_get_functiondef('public.claim_whatsapp_inbound_event(uuid)'::regprocedure);
+
+  begin
+    execute $sab$
+      create or replace function public.claim_whatsapp_inbound_event(p_event_id uuid)
+      returns table (
+        id          uuid,
+        provider    text,
+        channel_id  uuid,
+        raw_body    bytea,
+        attempts    integer,
+        claim_id    uuid
+      )
+      language sql
+      security definer
+      set search_path = ''
+      as $f$
+        update public.whatsapp_inbound_events e
+           set status        = 'processing',
+               claim_id      = gen_random_uuid(),
+               claimed_until = now() + make_interval(secs => 90),
+               updated_at    = now()
+         where e.id = p_event_id
+           and (e.status = 'received'
+                or (e.status = 'processing' and e.claimed_until < now()))
+        returning e.id, e.provider, e.channel_id, e.raw_body, e.attempts, e.claim_id;
+      $f$;
+    $sab$;
+
+    v_def_sab := pg_get_functiondef('public.claim_whatsapp_inbound_event(uuid)'::regprocedure);
+
+    -- metade 1: TAKEOVER de lease vencido. É o que o CLAIM-5 mede.
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id,
+                                         status, claim_id, claimed_until, attempts)
+    values ('datafy', v_chan, v_unit, v_corpo, 'c8-vencido',
+            'processing', gen_random_uuid(), now() - interval '1 second', 1)
+    returning id into v_id_venc;
+
+    select c.attempts into v_att_devolvido from public.claim_whatsapp_inbound_event(v_id_venc) c;
+    v_retomou := found;
+    select e.attempts into v_att_venc from whatsapp_inbound_events e where e.id = v_id_venc;
+
+    -- metade 2: claim NORMAL. É o que o CLAIM-6 mede.
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id, attempts)
+    values ('datafy', v_chan, v_unit, v_corpo, 'c8-received', 2)
+    returning id into v_id_novo;
+
+    perform 1 from public.claim_whatsapp_inbound_event(v_id_novo);
+    select e.attempts into v_att_novo from whatsapp_inbound_events e where e.id = v_id_novo;
+
+    raise exception 'c-113-8: desfaz a sabotagem' using errcode = 'ZZ113';
+  exception when sqlstate 'ZZ113' then
+    null;
+  end;
+
+  v_def_depois := pg_get_functiondef('public.claim_whatsapp_inbound_event(uuid)'::regprocedure);
+
+  insert into t_res values (82, 'C-113-8 claim sem o incremento do takeover derruba o CLAIM-5 (linha envenenada por duracao)',
+    case
+      when v_def_antes is null or v_def_antes not like '%case when e.status = ''processing''%'
+        then 'FALHOU (linha de base: o claim ja nao incrementava attempts no takeover — entao o CLAIM-5 esta passando por outro motivo)'
+      when v_def_sab like '%case when e.status = ''processing''%'
+        then 'FALHOU (a sabotagem nao pegou: o incremento continua no corpo)'
+      when not v_retomou
+        then 'FALHOU (linha de base: o lease vencido nao foi retomado nem com a sabotagem — nao ha incremento a derrubar)'
+      when v_att_venc <> 1
+        then 'FALHOU (sem o case, o takeover AINDA levou attempts para ' || v_att_venc
+             || ' — esperado continuar 1, logo o CLAIM-5 nao tem forca)'
+      when v_att_devolvido <> 1
+        then 'FALHOU (sem o case, o returning devolveu ' || v_att_devolvido || ' em vez do valor antigo 1)'
+      when v_att_novo <> 2
+        then 'FALHOU (respingo: o claim normal passou a gastar tentativa (attempts=' || v_att_novo
+             || ') — o CLAIM-6 avermelharia junto e o controle nao isola)'
+      when v_def_depois is distinct from v_def_antes
+        then 'FALHOU (restore: a definicao divergiu do catalogo original)'
+      else 'OK (sem o incremento o takeover deixa attempts em 1, logo o CLAIM-5 fica vermelho; '
+           || 'o claim normal segue em 2, logo o CLAIM-6 continua verde; definicao restaurada)'
+    end);
+exception when others then
+  insert into t_res values (82, 'C-113-8 claim sem o incremento do takeover derruba o CLAIM-5 (linha envenenada por duracao)',
     'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)')
     on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $ctrl$;

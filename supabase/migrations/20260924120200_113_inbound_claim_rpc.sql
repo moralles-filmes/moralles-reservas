@@ -52,6 +52,34 @@
 -- uma linha de ficar presa quando o worker morre no meio — o modo de falha que o
 -- `notification_outbox` documenta duas vezes não cobrir.
 --
+-- ─── O TAKEOVER GASTA UMA TENTATIVA, E `attempts` MUDA DE SIGNIFICADO ────────
+--
+-- O `case` abaixo incrementa `attempts` **só na perna do takeover** (`status =
+-- 'processing'`), e isso REGISTRA UM FATO: uma tentativa começou e morreu sem
+-- chegar a veredito nenhum. O claim normal (`received`) não gasta nada — ali
+-- nada foi tentado ainda.
+--
+-- Sem ele existia uma classe de linha que NUNCA virava dead letter. O worker que
+-- começa e não termina (wall clock do WORKER esgotado, isolate derrubado,
+-- `EdgeRuntime.waitUntil` cortado) nunca alcança a finalização, que era a única
+-- a incrementar; o lease vencia, o takeover servia a linha de novo, e de novo,
+-- e `attempts` ficava parado para sempre. A linha nunca chegava a `dead` — e
+-- como `purge_whatsapp_inbound_events` só alcança `done` e `dead`, o `raw_body`
+-- (telefone e texto de cliente, PII) ficava retido INDEFINIDAMENTE. Nada travava
+-- e nada alertava: a ordenação por `updated_at` (mais abaixo neste arquivo)
+-- devolve essa linha ao fim da fila a cada serviço, então a tabela só engordava.
+--
+-- CONSEQUÊNCIA A SABER AO LER A COLUNA: `attempts` conta TENTATIVAS GASTAS, não
+-- vereditos gravados. Uma linha legitimamente lenta — lease vence, mas o worker
+-- original ainda está vivo e finaliza depois — é contada DUAS vezes e morre um
+-- passo antes. É o lado seguro do erro (uma entrega a menos retentada, em vez de
+-- PII retida para sempre) e é aceito de propósito.
+--
+-- O `returning` devolve o valor JÁ INCREMENTADO, e é dele que o Deno decide, em
+-- `shouldPromoteToDead`, se vale processar: linha sem degrau é finalizada como
+-- `dead` na hora, com outcome próprio, sem gastar um turno de IA para chegar ao
+-- mesmo lugar.
+--
 -- ESTE CLAIM IGNORA `next_attempt_at` DE PROPÓSITO, e a assimetria com a
 -- varredura é a decisão: aqui o chamador JÁ ESCOLHEU a linha (é o caminho rápido,
 -- disparado pela própria request que a persistiu, e `next_attempt_at` nasce
@@ -86,6 +114,12 @@ as $$
      set status        = 'processing',
          claim_id      = gen_random_uuid(),
          claimed_until = now() + make_interval(secs => 90),
+         -- Só o TAKEOVER gasta tentativa: `processing` aqui é prova de que uma
+         -- tentativa começou e morreu sem veredito. Ver o bloco do cabeçalho.
+         attempts      = case when e.status = 'processing'
+                              then e.attempts + 1
+                              else e.attempts
+                         end,
          updated_at    = now()
    where e.id = p_event_id
      and (e.status = 'received'
@@ -105,10 +139,16 @@ $$;
 -- "gravei" — e o caller seguiria promovendo dead letter sobre linha que não
 -- tocou.
 --
--- `attempts = attempts + 1` acontece AQUI, em SQL, e só em retentativa
--- (`received`) ou `dead`: incrementar no Deno a partir do valor que o claim leu
--- é lost update por construção. Desfecho terminal de sucesso e recusa terminal
--- de 401 não gastam tentativa — não há nada a retentar.
+-- `attempts = attempts + 1` acontece aqui em retentativa (`received`) e em
+-- `dead`. Desfecho terminal de sucesso e recusa terminal de 401 não gastam
+-- tentativa — não há nada a retentar.
+--
+-- ESTE NÃO É O ÚNICO INCREMENTO, e uma versão anterior deste comentário dizia
+-- que era: o CLAIM também gasta uma quando é takeover de lease vencido (ver o
+-- bloco do cabeçalho do claim). O que continua verdadeiro, e é a razão de o
+-- número nunca ser escrito pelo Deno, é que **todo incremento é SQL**:
+-- incrementar no Deno a partir do valor que o claim leu é lost update por
+-- construção, e com dois escritores seria lost update duas vezes.
 --
 -- `next_attempt_at` é NOT NULL, então o ramo terminal escreve `now()` em vez de
 -- deixar a coluna intacta; a linha terminal nunca é selecionada pela varredura,
@@ -239,6 +279,13 @@ $$;
 -- `webhook_executions` já guarda o rastro de segurança (`webhook_unauthorized`,
 -- TTL 30 d) SEM o corpo. Encurtar a janela de `dead` para igualar a de `done`, ou
 -- alongar a de `done`, desfaz essa escolha pelo outro lado.
+--
+-- ESTA FUNÇÃO SÓ ALCANÇA `done` E `dead`, e é por isso que o incremento do
+-- takeover (no claim, acima) é requisito de RETENÇÃO e não só de contabilidade:
+-- linha que nunca chega a um estado terminal nunca é purgada, e o `raw_body`
+-- dela fica para sempre. Alargar esta função para `received`/`processing` seria
+-- apagar entrega que ainda vai ser respondida — o conserto é fazer a linha
+-- terminar, não apagá-la viva.
 --
 -- Roda dentro da própria varredura — nenhum job novo de `pg_cron`.
 create or replace function public.purge_whatsapp_inbound_events()

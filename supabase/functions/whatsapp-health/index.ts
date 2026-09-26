@@ -13,6 +13,13 @@ import {
   type WhatsAppProvider,
 } from "../_shared/whatsapp-providers.ts";
 import { resolveChannelCredentials } from "../_shared/whatsapp-channel-credentials.ts";
+// As janelas de retenção vêm do núcleo da fila, não redigitadas: elas já são
+// gêmeas declaradas do SQL da purga (migration 113), e um terceiro lugar com os
+// mesmos números é como a divergência nasce. Núcleo PURO — sem I/O, sem Deno.
+import {
+  PURGE_DEAD_AFTER_DAYS,
+  PURGE_DONE_AFTER_DAYS,
+} from "../_shared/whatsapp-inbound-queue-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -206,12 +213,70 @@ serve(async (req) => {
       sample_size: lastExecutions.length,
     };
 
+    // ── Fila de inbound: dead letter e recusa terminal de 401 ─────────────────
+    //
+    // DUAS CONTAGENS EXATAS, E NENHUMA SAI DE `by_outcome`. Aquele mapa é
+    // calculado sobre as ÚLTIMAS 50 execuções (por isso o `sample_size` ao
+    // lado): uma contagem tirada dali sub-reporta em silêncio justamente na
+    // unidade movimentada, que é onde o problema aparece. Aqui é
+    // `{ count: "exact", head: true }`, como o `total24h`.
+    //
+    // E é OUTRA TABELA. O que vai para `webhook_executions` é o outcome da
+    // REQUISIÇÃO (`webhook_unauthorized`); o que se conta aqui é o outcome da
+    // LINHA da fila, em `whatsapp_inbound_events`. Nomes parecidos, lugares
+    // diferentes — não trocar um pelo outro.
+    //
+    // ISOLAMENTO ENTRE CLIENTES É O `.eq("unit_id", unitId)`, E SÓ ELE:
+    // `whatsapp_inbound_events` é FORCE RLS sem policies e esta EF usa
+    // `service_role`, então não há segunda barreira. O `unitId` é o do corpo da
+    // requisição, já validado contra `platform_admin` no JWT lá em cima — nunca
+    // um id vindo de outro lugar.
+    const { count: deadLetterCount, error: deadLetterError } = await supabase
+      .from("whatsapp_inbound_events")
+      .select("id", { count: "exact", head: true })
+      .eq("unit_id", unitId)
+      .eq("status", "dead");
+
+    // Esta é a VISIBILIDADE que paga o preço aceito do 401 terminal: a recusa
+    // por identidade é descartada em silêncio (acusar o tenant errado é pior),
+    // e sem contá-la "a mensagem sumiu" nunca se liga a "alguém rodou uma
+    // rotação de credencial". Conta por OUTCOME e não por status: essas linhas
+    // terminam em `done`, misturadas com todo sucesso.
+    const { count: unauthorizedTerminalCount, error: unauthorizedError } = await supabase
+      .from("whatsapp_inbound_events")
+      .select("id", { count: "exact", head: true })
+      .eq("unit_id", unitId)
+      .eq("outcome", "queue_unauthorized_terminal");
+
+    // A JANELA VIAJA COM O NÚMERO. Contagem sem janela é número que o operador
+    // interpreta errado uma vez e para de olhar: as duas são ACUMULADAS até a
+    // purga, e as purgas são diferentes — `dead` fica 30 dias, o 401 terminal
+    // morre em `done` e sai em 7.
+    //
+    // `count: null` É "NÃO CONSEGUI CONTAR", NUNCA ZERO. Leitura que falha —
+    // tabela ainda inexistente porque a EF foi deployada antes do `db push`,
+    // banco fora — devolveria `count: null` no supabase-js, e um `?? 0`
+    // afirmaria "nenhum dead letter" no exato momento em que ninguém sabe. É a
+    // mesma régua de `hasOpenCycle: null` no painel de instâncias: quem não
+    // disse não afirma o negativo.
+    const inboundQueue = {
+      dead_letter: {
+        count: deadLetterError ? null : (deadLetterCount ?? 0),
+        window_days: PURGE_DEAD_AFTER_DAYS,
+      },
+      unauthorized_terminal: {
+        count: unauthorizedError ? null : (unauthorizedTerminalCount ?? 0),
+        window_days: PURGE_DONE_AFTER_DAYS,
+      },
+    };
+
     return jsonResponse(req, {
       success: true,
       generated_at: new Date().toISOString(),
       channel: channelInfo,
       ai: aiInfo,
       stats_24h: stats24h,
+      inbound_queue: inboundQueue,
       last_executions: lastExecutions,
     });
   } catch (err) {

@@ -1,8 +1,11 @@
--- CLAIM-1..3, FIN-1..3, ACL-113 (ordinais 49..55) e CLAIM-4 (ordinal 63): as duas
--- RPCs da migration 113, contra Postgres real.
+-- CLAIM-1..3, FIN-1..3, ACL-113 (ordinais 49..55), CLAIM-4 (ordinal 63) e
+-- CLAIM-5/CLAIM-6 (ordinais 80..81): as duas RPCs da migration 113, contra
+-- Postgres real.
 --
--- O CLAIM-4 está em 63 e não em 56 porque os ordinais 56..62 já pertencem aos
--- controles do `19` — ele foi acrescentado depois, por um achado de revisão.
+-- OS ORDINAIS NÃO SÃO CONTÍGUOS POR ARQUIVO, e não precisam ser. O CLAIM-4 está
+-- em 63 porque 56..62 já pertenciam aos controles do `19` quando ele nasceu (um
+-- achado de revisão); o CLAIM-5 e o CLAIM-6 estão em 80..81 porque 64..79 já
+-- pertenciam ao `20`/`21` quando a Task 8 acrescentou o incremento do takeover.
 --
 -- O que este arquivo prova é a peça que impede DUAS EXECUÇÕES DA MESMA LINHA —
 -- que, nesta fase, significa duas IAs respondendo ao mesmo cliente. Duas
@@ -487,6 +490,120 @@ begin
     end);
 exception when others then
   insert into t_res values (63, 'CLAIM-4 linha done/dead NAO e reivindicavel (o cliente nao recebe a mesma resposta de novo)',
+    'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
+end $$;
+
+-- ─── CLAIM-5 (80): o TAKEOVER gasta uma tentativa ──────────────────────────
+-- É o fechamento da linha ENVENENADA POR DURAÇÃO. Antes deste incremento,
+-- `attempts` só avançava na FINALIZAÇÃO — e o worker que começa e não termina
+-- (wall clock do WORKER esgotado, isolate derrubado, `waitUntil` cortado) nunca
+-- alcança a finalização. A linha era retomada pelo takeover a cada 90 s, para
+-- sempre, sem nunca chegar a `dead`: e como `purge_whatsapp_inbound_events` só
+-- alcança `done` e `dead`, o `raw_body` — telefone e texto de cliente, PII —
+-- ficava retido INDEFINIDAMENTE. Nada travava e nada alertava.
+--
+-- DUAS asserções, e a segunda é a que importa para o Deno: a coluna avança E o
+-- `returning` devolve o valor JÁ INCREMENTADO. É desse valor que
+-- `shouldPromoteToDead` decide não processar; um `returning` que entregasse o
+-- valor antigo atrasaria a promoção em um ciclo inteiro de lease.
+do $$
+declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
+        v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+        v_corpo bytea := convert_to('{}', 'UTF8');
+        v_id uuid;
+        v_retomou boolean := false;
+        v_att_devolvido int := -1;
+        v_att_linha int := -1;
+begin
+  delete from t_res where ord = 80;
+
+  begin
+    -- A linha nasce com uma tentativa gasta e o lease VENCIDO: é o retrato de
+    -- um worker que morreu no meio do segundo serviço.
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id,
+                                         status, claim_id, claimed_until, attempts)
+    values ('datafy', v_chan, v_unit, v_corpo, 'claim-5',
+            'processing', gen_random_uuid(), now() - interval '1 second', 1)
+    returning id into v_id;
+
+    select c.attempts into v_att_devolvido from public.claim_whatsapp_inbound_event(v_id) c;
+    v_retomou := found;
+
+    select e.attempts into v_att_linha from whatsapp_inbound_events e where e.id = v_id;
+
+    raise exception 'claim-5: desfaz o insert' using errcode = 'ZZ113';
+  exception when sqlstate 'ZZ113' then
+    null;
+  end;
+
+  insert into t_res values (80, 'CLAIM-5 takeover de lease vencido GASTA uma tentativa e devolve o valor ja incrementado',
+    case
+      when not v_retomou
+        then 'FALHOU (linha de base: o lease vencido nao foi retomado — ver CLAIM-3, o defeito esta no takeover e nao no incremento)'
+      when v_att_linha <> 2
+        then 'FALHOU (attempts na linha ficou ' || v_att_linha || ' em vez de 2 — a linha envenenada por DURACAO '
+             || 'nunca chega a dead, e o corpo cru (PII) fica retido indefinidamente)'
+      when v_att_devolvido <> 2
+        then 'FALHOU (o claim devolveu attempts=' || v_att_devolvido || ' em vez de 2 — o Deno decidiria '
+             || 'com o valor ANTIGO e a promocao a dead atrasaria um ciclo de lease inteiro)'
+      else 'OK (attempts 1 -> 2 na linha, e o returning devolveu 2)'
+    end);
+exception when others then
+  insert into t_res values (80, 'CLAIM-5 takeover de lease vencido GASTA uma tentativa e devolve o valor ja incrementado',
+    'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
+end $$;
+
+-- ─── CLAIM-6 (81): o claim NORMAL não gasta tentativa ──────────────────────
+-- A contraparte do CLAIM-5, e é ela que mantém o incremento sendo um FATO e não
+-- uma política: em `received` nada foi tentado ainda. Se o claim gastasse
+-- tentativa sempre, TODA entrega nova começaria um degrau adiante e a escada de
+-- retentativa encurtaria para todo mundo — inclusive para as que dão certo na
+-- primeira.
+--
+-- A linha entra com `attempts = 2` de propósito: o CLAIM-1 já cobre o caso zero,
+-- e com zero um incremento indevido seria fácil de confundir com o valor
+-- default.
+do $$
+declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
+        v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+        v_corpo bytea := convert_to('{}', 'UTF8');
+        v_id uuid;
+        v_claimou boolean := false;
+        v_att_devolvido int := -1;
+        v_att_linha int := -1;
+begin
+  delete from t_res where ord = 81;
+
+  begin
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id, attempts)
+    values ('datafy', v_chan, v_unit, v_corpo, 'claim-6', 2)
+    returning id into v_id;
+
+    select c.attempts into v_att_devolvido from public.claim_whatsapp_inbound_event(v_id) c;
+    v_claimou := found;
+
+    select e.attempts into v_att_linha from whatsapp_inbound_events e where e.id = v_id;
+
+    raise exception 'claim-6: desfaz o insert' using errcode = 'ZZ113';
+  exception when sqlstate 'ZZ113' then
+    null;
+  end;
+
+  insert into t_res values (81, 'CLAIM-6 claim de linha received NAO gasta tentativa (nada foi tentado ainda)',
+    case
+      when not v_claimou
+        then 'FALHOU (linha de base: o claim de uma linha received devolveu zero linhas — ver CLAIM-1)'
+      when v_att_linha <> 2
+        then 'FALHOU (attempts na linha virou ' || v_att_linha || ' em vez de continuar 2 — o claim normal '
+             || 'passou a gastar tentativa e a escada encurtou para TODA entrega nova)'
+      when v_att_devolvido <> 2
+        then 'FALHOU (o claim devolveu attempts=' || v_att_devolvido || ' em vez de 2)'
+      else 'OK (attempts continua 2 na linha e no returning)'
+    end);
+exception when others then
+  insert into t_res values (81, 'CLAIM-6 claim de linha received NAO gasta tentativa (nada foi tentado ainda)',
     'FALHOU: ' || sqlerrm)
     on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
