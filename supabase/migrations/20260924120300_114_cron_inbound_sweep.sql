@@ -52,8 +52,10 @@ create extension if not exists pg_cron;
 -- erro de permissão real — a migration seguiria, o `cron.schedule` criaria a
 -- linha, e ninguém saberia que a remoção não aconteceu.
 --
--- Esta migration nasceu com o idioma antigo porque o brief a trouxe verbatim do
--- plano, que é anterior àquela decisão.
+-- O `do $$ ... $$` não é decoração nem resquício: `perform` é plpgsql e não
+-- existe em SQL puro, então a forma por `jobid` OBRIGA o bloco. Quem o remover
+-- por simetria com um `select cron.unschedule(...)` de rollback quebra a
+-- migration com erro de sintaxe.
 do $$
 begin
   perform cron.unschedule(jobid) from cron.job where jobname = 'whatsapp-inbound-sweep';
