@@ -46,6 +46,7 @@ import {
   CreditCard,
   Copy,
   ExternalLink,
+  Inbox,
   Info,
   KeyRound,
   MessageSquare,
@@ -88,6 +89,7 @@ import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 import { formatPhone } from "@/lib/utils";
+import { describeInboundBacklog } from "@/lib/whatsapp-inbound-backlog";
 /**
  * Núcleo puro do backend (sem Deno-only deps — `whatsapp-provider-core.ts` só
  * importa `phone.ts`, que também é puro). Import relativo fora de `src/` é o
@@ -1714,7 +1716,7 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
     );
   }
 
-  const { channel, ai, stats_24h, last_executions, generated_at } = data;
+  const { channel, ai, stats_24h, inbound_queue, last_executions, generated_at } = data;
   const successRate = stats_24h.total > 0
     ? Math.round(((stats_24h.by_outcome.success ?? 0) / stats_24h.total) * 100)
     : null;
@@ -1867,6 +1869,99 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
           )}
         </CardContent>
       </Card>
+
+      {/* Fila de inbound — só aparece quando a EF informa os números.
+          A ausência é "esta EF ainda não sabe responder" (deploy manual, versão
+          antiga no ar), não "não há nada": renderizar 0 nesse caso afirmaria o
+          negativo sobre uma pergunta que ninguém fez. Mesma razão pela qual o
+          `count` nulo vira "—" e não "0". */}
+      {inbound_queue && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Inbox className="h-4 w-4 text-primary" />
+              <CardTitle className="text-base">Fila de inbound</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {/* O BACKLOG VEM PRIMEIRO, e em linha própria, porque é a única coisa
+                aqui que responde "o pipeline está andando?". As duas contagens
+                abaixo são de estados TERMINAIS, e a de dead letter responde com a
+                verdade mais enganosa disponível: quem promove a `dead` é a
+                varredura, então varredura parada devolve `0` honestamente enquanto
+                a fila enche. Hierarquia visual é parte da correção, não enfeite.
+
+                `pending` pode faltar mesmo com o bloco presente (a EF é deployada à
+                mão e as duas contagens acima foram ao ar antes deste campo): a
+                ausência esconde o tile em vez de renderizar 0. */}
+            {inbound_queue.pending && (() => {
+              // `generated_at` e não `Date.now()`: o `received_at` vem do relógio do
+              // BANCO, e medir contra o relógio do NAVEGADOR deixaria um viewer com
+              // hora errada inventando horas de backlog. Servidor contra servidor.
+              const backlog = describeInboundBacklog(inbound_queue.pending, generated_at);
+              return (
+                <div
+                  className={
+                    backlog.alarming
+                      ? "rounded border border-destructive/20 bg-destructive/10 px-3 py-2"
+                      : ""
+                  }
+                >
+                  <p className="text-xs text-muted-foreground">
+                    Na fila agora (aguardando ou em processamento)
+                  </p>
+                  <p
+                    className={`font-medium ${backlog.alarming ? "text-destructive" : ""}`}
+                  >
+                    {backlog.value}
+                  </p>
+                  <p
+                    className={`text-xs ${
+                      backlog.alarming ? "text-destructive" : "text-muted-foreground"
+                    }`}
+                  >
+                    {backlog.detail}
+                  </p>
+                </div>
+              );
+            })()}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Dead letter (últimos {inbound_queue.dead_letter.window_days} dias)
+                </p>
+                <p className="font-medium">{inbound_queue.dead_letter.count ?? "—"}</p>
+                <p className="text-xs text-muted-foreground">
+                  Entregas que a fila desistiu de processar. Quando havia conversa,
+                  ela está em atendimento humano.
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Recusadas por identidade (últimos{" "}
+                  {inbound_queue.unauthorized_terminal.window_days} dias)
+                </p>
+                <p className="font-medium">
+                  {inbound_queue.unauthorized_terminal.count ?? "—"}
+                </p>
+                {/* DUAS causas, não uma — o núcleo (`queuedEventVerdict`) nomeia
+                    as duas e a copy nomeava só a primeira. A segunda é a que faz
+                    desta contagem um sinal de SEGURANÇA: a âncora
+                    `phone_number_id` que aceitou o payload pode ter migrado para
+                    um canal de outra organização. Descrever só a rotação ensina o
+                    admin a ler contagem > 0 como rotina e parar de olhar,
+                    perdendo o único rastro que esse caso deixa. */}
+                <p className="text-xs text-muted-foreground">
+                  Descartadas sem resposta, de propósito. Esperado durante rotação de
+                  credencial do canal, com mensagem em trânsito. Fora disso,
+                  investigue: pode ser payload aceito pela âncora
+                  (`phone_number_id`) de outra organização.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Últimas execuções */}
       <Card>
