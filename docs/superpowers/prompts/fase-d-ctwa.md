@@ -188,6 +188,17 @@ Estes estão no `CLAUDE.md` e valem como critério de aceite. Leia cada um na fo
   por `pg_cron` (`?sweep=1`), dead letter com contagem no painel de diagnóstico, e prazo suave no laço do
   agente. Migrations **111 a 114**. A próxima livre é a **115**.
 
+- **As migrations 111–114 estão MERGEADAS em `main`, mas NÃO foram aplicadas a banco nenhum, e o
+  `webhook-whatsapp` NÃO foi deployado.** Isso tem consequência direta para você: `supabase db push`
+  aplica **tudo que está pendente**, então empurrar a sua 115 aplicaria as quatro juntas — inclusive a
+  114, que agenda um `pg_cron` a cada minuto contra um webhook que pode ainda estar na versão antiga.
+  Antes de qualquer `db push` seu, confirme com o dono se a Fase C já foi aplicada; se não foi, a ordem
+  dela vem primeiro (`db push` → `select cron.unschedule('whatsapp-inbound-sweep');` → deploy do
+  `webhook-whatsapp` → exercitar `?sweep=1` à mão → reagendar → conferir em `net._http_response`), e
+  **inverter o `db push` e o deploy quebra loja viva**: o gate leria coluna inexistente, o PostgREST
+  devolveria 400 no SELECT do canal e o webhook responderia 503 a todo inbound de TODO canal, Z-API e
+  UazAPI inclusive.
+
 **Três consequências da Fase C que você precisa saber antes de desenhar, e que contradizem premissas
 escritas em documento:**
 
