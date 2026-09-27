@@ -153,6 +153,30 @@ $$;
 -- `next_attempt_at` é NOT NULL, então o ramo terminal escreve `now()` em vez de
 -- deixar a coluna intacta; a linha terminal nunca é selecionada pela varredura,
 -- que filtra por `status`.
+--
+-- ─── `last_error` PRESERVA: `coalesce(novo, antigo)`, nunca sobrescrita cega ──
+--
+-- `p_error` nulo significa "não tenho erro NOVO a relatar", nunca "apague o que
+-- se sabia". A versão anterior gravava `left(p_error, 500)` direto, e havia DOIS
+-- caminhos que passam nulo — os dois apagavam evidência:
+--
+--  1. A promoção a `dead` SEM veredito (`queue_dead_letter_no_verdict`) passa
+--     nulo por construção: não houve requisição. No caminho MISTO — uma
+--     tentativa respondeu `http_500` de verdade e as seguintes morreram por wall
+--     clock — o `last_error` real era apagado justamente ao virar terminal. A
+--     linha dura 30 dias exatamente para não depender de log, e ficava muda.
+--  2. A retentativa da finalização SEM o texto do erro (o segundo `call(null)`
+--     do caller, defesa contra falha dependente do payload) apagava o erro
+--     ANTERIOR junto. É o que torna verdadeira a frase escrita lá — "perder o
+--     texto do erro é barato": barato é perder o texto NOVO, não o histórico.
+--
+-- DIVISÃO DE TRABALHO, que é o que justifica a escolha: `outcome` classifica o
+-- desfecho desta finalização (`queue_dead_letter` = respondeu não-2xx N vezes;
+-- `queue_dead_letter_no_verdict` = consumiu as tentativas sem chegar a veredito);
+-- `last_error` guarda a EVIDÊNCIA mais recente. Consequência assumida e correta:
+-- linha `done` que falhou antes e recuperou conserva o texto daquela falha — o
+-- campo se chama `last_error`, e "último erro visto" é o que ele passa a
+-- afirmar, com `outcome` dizendo que terminou bem.
 create or replace function public.finalize_whatsapp_inbound_event(
   p_event_id            uuid,
   p_claim_id            uuid,
@@ -170,7 +194,7 @@ as $$
     update public.whatsapp_inbound_events e
        set status          = p_status,
            outcome         = p_outcome,
-           last_error      = left(p_error, 500),
+           last_error      = coalesce(left(p_error, 500), e.last_error),
            attempts        = case
                                when p_status in ('received', 'dead') then e.attempts + 1
                                else e.attempts

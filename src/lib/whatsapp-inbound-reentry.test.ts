@@ -23,27 +23,50 @@ import {
 // de teste deste repo não entrega `import.meta.url` como URL `file:`, e a segunda
 // forma estoura "The URL must be of scheme file". É a convenção dos outros testes
 // de acoplamento daqui (ver `datafy-adapter-coupling-guard.test.ts`).
-const EF = readFileSync(
-  resolve(__dirname, "../../supabase/functions/webhook-whatsapp/index.ts"),
-  "utf8",
-);
+//
+// A NORMALIZAÇÃO DE FIM DE LINHA É LOAD-BEARING, e foi medida, não suposta: este
+// repo não tem `.gitattributes` e a máquina de desenvolvimento tem
+// `core.autocrlf=true`, então um checkout NOVO grava CRLF — 701 dos 722 arquivos
+// de texto rastreados estão em CRLF, e os 21 em LF são exatamente os que esta
+// frente escreveu. Qualquer assertiva que compare a fonte contra um literal com
+// `\n` cru (as deste arquivo que medem a forma do if/else) passa aqui e reprova
+// no checkout de quem clonar ou no primeiro `git checkout --` que tocar o
+// arquivo. Normalizar NA LEITURA cobre toda assertiva do arquivo, presente e
+// futura; consertar literal por literal deixa a próxima nascer frágil de novo.
+const lerFonte = (caminhoRelativo: string): string =>
+  readFileSync(resolve(__dirname, caminhoRelativo), "utf8").replace(/\r\n/g, "\n");
 
-const MIGRATION_113 = readFileSync(
-  resolve(
-    __dirname,
-    "../../supabase/migrations/20260924120200_113_inbound_claim_rpc.sql",
-  ),
-  "utf8",
+const EF = lerFonte("../../supabase/functions/webhook-whatsapp/index.ts");
+
+const MIGRATION_113 = lerFonte(
+  "../../supabase/migrations/20260924120200_113_inbound_claim_rpc.sql",
 );
 
 // `whatsapp-health` também chama `serve()` no carregamento e importa
 // `deno.land`: o vitest não a alcança, e as duas armadilhas das contagens
 // (tirá-las da amostra de 50 execuções; esquecer o escopo de unidade numa tabela
 // FORCE RLS sem policies) só têm guarda se alguém ler a fonte.
-const HEALTH_EF = readFileSync(
-  resolve(__dirname, "../../supabase/functions/whatsapp-health/index.ts"),
-  "utf8",
-);
+const HEALTH_EF = lerFonte("../../supabase/functions/whatsapp-health/index.ts");
+
+describe("as leituras de fonte são imunes a fim de linha", () => {
+  // Esta é a guarda de si mesma: sem a normalização de `lerFonte`, num checkout
+  // CRLF (o que `core.autocrlf=true` produz, e é o estado de 701 dos 722
+  // arquivos rastreados) as asserções que comparam a forma do if/else contra
+  // literal com `\n` cru ficam vermelhas. Aqui isso é verificado de frente, em
+  // vez de depender de alguém reparar no `.replace` vinte linhas acima.
+  //
+  // Num checkout já em LF este caso passa trivialmente — e é correto que passe:
+  // ele existe para o ambiente em que o defeito EXISTE. Removê-lo por "não testa
+  // nada aqui" devolve o defeito ao primeiro clone em máquina Windows.
+  it.each([
+    ["webhook-whatsapp/index.ts", EF],
+    ["migration 113", MIGRATION_113],
+    ["whatsapp-health/index.ts", HEALTH_EF],
+  ])("%s é lida sem CR", (_nome, fonte) => {
+    expect(fonte.length, "fonte vazia: o caminho do arquivo quebrou").toBeGreaterThan(0);
+    expect(fonte).not.toContain("\r");
+  });
+});
 
 /** Recorta o corpo de uma função SQL da migration, da assinatura até o `$$;`. */
 const corpoSql = (sql: string, assinatura: string): string => {
@@ -164,6 +187,50 @@ describe("gêmeos declarados: o número vive em dois lugares e nenhum importa o 
   });
 });
 
+describe("`last_error` preserva evidência: erro nulo não apaga o que se sabia", () => {
+  const CORPO_DA_FINALIZACAO = corpoSql(
+    MIGRATION_113,
+    "create or replace function public.finalize_whatsapp_inbound_event",
+  );
+
+  /** A finalização preserva o erro anterior quando não tem um novo a relatar. */
+  const preserva = (corpo: string) =>
+    /last_error\s*=\s*coalesce\(left\(p_error,\s*\d+\),\s*e\.last_error\)/.test(corpo);
+
+  it("a finalização usa coalesce, não sobrescrita cega", () => {
+    expect(CORPO_DA_FINALIZACAO, "finalize_whatsapp_inbound_event não foi encontrada")
+      .not.toBe("");
+    expect(
+      preserva(CORPO_DA_FINALIZACAO),
+      "`last_error = left(p_error, N)` cru: DOIS caminhos passam `p_error` nulo "
+        + "(a promoção a `dead` sem veredito, e a retentativa da finalização sem o "
+        + "texto do erro) e os dois APAGAM a evidência. No caminho misto — uma "
+        + "tentativa respondeu http_500 e as seguintes morreram por wall clock — a "
+        + "linha que dura 30 dias justamente para não depender de log fica muda",
+    ).toBe(true);
+  });
+
+  it("os dois chamadores que passam erro NULO continuam existindo", () => {
+    // A guarda acima só tem valor enquanto houver quem passe nulo. Se os dois
+    // caminhos desaparecerem, o `coalesce` vira decoração e alguém o remove com
+    // razão — então o teste tem de reprovar aqui, não ficar verde por vacuidade.
+    expect(EF, "a promoção a dead sem veredito deixou de passar erro nulo")
+      .toMatch(/error: null,\s*\n\s*exhaustedBeforeProcessing: true,/);
+    expect(EF, "a retentativa da finalização sem texto do erro desapareceu")
+      .toContain("await call(null)");
+  });
+
+  it("CONTROLE POSITIVO: sobrescrita cega fica vermelha", () => {
+    const cega = CORPO_DA_FINALIZACAO.replace(
+      /last_error\s*=\s*coalesce\(left\(p_error,\s*(\d+)\),\s*e\.last_error\)/,
+      "last_error      = left(p_error, $1)",
+    );
+    expect(cega, "a cirurgia do controle não achou o coalesce")
+      .not.toBe(CORPO_DA_FINALIZACAO);
+    expect(preserva(cega)).toBe(false);
+  });
+});
+
 /**
  * A LINHA ENVENENADA POR DURAÇÃO — as duas metades do conserto.
  *
@@ -250,31 +317,63 @@ describe("dead letter visível: promover sem atropelar quem está atendendo", ()
     "async function finalizeQueuedEvent",
   );
 
+  /** O predicado de estado da promoção, como ele aparece na fonte. */
+  const PREDICADO = '.in("status", ["ai_active", "resolved"])';
+
   /**
-   * As duas amarras da promoção, medidas sobre um corpo real ou falsificado.
+   * As três amarras da promoção, medidas sobre um corpo real ou falsificado.
    *
    * `confereRetorno` olha o `.select` que vem LOGO DEPOIS do predicado, e não
    * um `.select("id")` qualquer: este corpo tem outros dois (o cliente e a
    * conversa), e um predicado solto ficaria verde por causa deles.
+   *
+   * `incluiResolved` é amarra SEPARADA de `temPredicado` de propósito: o defeito
+   * que ela guarda não é "escrever sem predicado", é "escrever com o predicado
+   * estreito demais". Medi-los juntos deixaria o segundo passar às custas do
+   * primeiro.
+   *
+   * Por isso `temPredicado` aceita as DUAS formas (`.eq` e `.in`): estreitar para
+   * `.eq("status", "ai_active")` continua sendo um predicado de estado, e só
+   * `incluiResolved` deve cair. Se `temPredicado` só reconhecesse `.in`, a
+   * cirurgia do estreitamento derrubaria as três amarras de uma vez e o controle
+   * positivo ficaria verde por ter quebrado a coisa errada — o modo clássico de
+   * um controle não provar nada. Medido: este corpo não tem nenhum outro
+   * `.eq("status"`/`.in("status"`, então a busca não casa por acidente.
    */
   const amarras = (corpo: string) => {
-    const marca = corpo.indexOf('.eq("status", "ai_active")');
+    const marca = corpo.match(/\.(?:eq|in)\("status",/)?.index ?? -1;
     const depoisDoPredicado = marca >= 0 ? corpo.slice(marca, marca + 200) : "";
     return {
-      soIaAtiva: marca >= 0,
+      temPredicado: marca >= 0,
+      incluiResolved: corpo.includes(PREDICADO),
       confereRetorno: /\.select\("id"\)/.test(depoisDoPredicado)
         && /promovidas\.length === 0/.test(corpo),
     };
   };
 
-  it("promove SÓ o que a IA ainda detém", () => {
+  it("promove SÓ o que nenhuma pessoa detém", () => {
     expect(PROMOVE, "promoteDeadLetterToHandoff não foi encontrada").not.toBe("");
-    const { soIaAtiva } = amarras(PROMOVE);
+    const { temPredicado } = amarras(PROMOVE);
     expect(
-      soIaAtiva,
+      temPredicado,
       "a promoção voltou a escrever sem predicado de estado: atendente em "
         + "`human_active` volta para a fila, `handoff_at` (relógio do auto-resolve "
         + "de 12 h) é zerado e o `handoff_reason` anterior é apagado",
+    ).toBe(true);
+  });
+
+  it("`resolved` ENTRA na promoção — senão a dead letter fica invisível ao lojista", () => {
+    // `resolved` é estado FÓSSIL, não "humano atendendo": o botão Resolver não o
+    // grava mais e o próprio pipeline o promove a `ai_active` na inbound seguinte
+    // — promoção que a dead letter, por definição, nunca alcança. Omiti-lo fazia
+    // o UPDATE casar ZERO linhas, a conversa continuar com badge "Resolvida", e
+    // `useAwaitingHumanCount` (que conta só `awaiting_human`) não mostrar nada:
+    // sobrava a contagem do diagnóstico, que é platform-admin-only. Reprovava o
+    // critério de aceite §14.8 para conversa que É resolvível.
+    expect(
+      amarras(PROMOVE).incluiResolved,
+      "o predicado deixou de aceitar `resolved`: dead letter em conversa fóssil "
+        + "volta a ser invisível para o lojista",
     ).toBe(true);
   });
 
@@ -282,18 +381,41 @@ describe("dead letter visível: promover sem atropelar quem está atendendo", ()
     const { confereRetorno } = amarras(PROMOVE);
     expect(
       confereRetorno,
-      "sem conferir as linhas afetadas, 'não promovi porque um humano já estava "
-        + "lá' fica indistinguível de 'promovi' — e o log afirmaria a segunda coisa",
+      "sem conferir as linhas afetadas, 'não promovi porque a conversa já era de "
+        + "uma pessoa' fica indistinguível de 'promovi' — e o log afirmaria a segunda",
     ).toBe(true);
     // Zero linhas aqui é o caso comum e DESEJADO, então tem evento próprio e
-    // não entra no caminho de erro.
-    expect(PROMOVE).toMatch(/evt: "inbound_dead_letter_human_already_active"/);
+    // não entra no caminho de erro. O NOME é derivado do predicado: com
+    // `ai_active` e `resolved` promovidos, o complemento é `human_active` ou
+    // `awaiting_human` — "já está com uma pessoa", que é o que o nome afirma.
+    // `human_already_active` cobriria só o primeiro e mentiria sobre o segundo.
+    expect(PROMOVE).toMatch(/evt: "inbound_dead_letter_already_with_human"/);
+    expect(
+      PROMOVE,
+      "o nome antigo afirmava atendimento ativo sobre conversa que ninguém atende",
+    ).not.toMatch(/inbound_dead_letter_human_already_active/);
   });
 
   it("CONTROLE POSITIVO: sem o predicado de estado, o caso acima fica vermelho", () => {
-    const semPredicado = PROMOVE.replace(/\s*\.eq\("status", "ai_active"\)/, "");
+    const semPredicado = PROMOVE.replace(
+      /\s*\.in\("status", \["ai_active", "resolved"\]\)/,
+      "",
+    );
     expect(semPredicado, "a cirurgia do controle não achou o predicado").not.toBe(PROMOVE);
-    expect(amarras(semPredicado).soIaAtiva).toBe(false);
+    expect(amarras(semPredicado).temPredicado).toBe(false);
+  });
+
+  it("CONTROLE POSITIVO: estreitar o predicado para só `ai_active` fica vermelho", () => {
+    // A forma exata do defeito que o G1 corrigiu — e a que alguém reintroduz ao
+    // "simplificar" o `.in` de um item só de volta para `.eq`.
+    const soIaAtiva = PROMOVE.replace(PREDICADO, '.eq("status", "ai_active")');
+    expect(soIaAtiva, "a cirurgia do controle não achou o predicado").not.toBe(PROMOVE);
+    expect(amarras(soIaAtiva).incluiResolved).toBe(false);
+    // E o controle é PRECISO: derruba SÓ esta amarra. As vizinhas sobrevivem
+    // porque o estreitamento não remove o predicado nem a conferência — é isso
+    // que faz o vermelho apontar para o defeito certo.
+    expect(amarras(soIaAtiva).temPredicado, "não era este o alvo").toBe(true);
+    expect(amarras(soIaAtiva).confereRetorno, "não era este o alvo").toBe(true);
   });
 
   it("CONTROLE POSITIVO: sem a conferência do retorno, o caso acima fica vermelho", () => {
@@ -301,11 +423,11 @@ describe("dead letter visível: promover sem atropelar quem está atendendo", ()
     // e os outros dois `.select("id")` do corpo. É essa precisão que impede o
     // controle de ficar verde derrubando a amarra errada.
     const semConferencia = PROMOVE.replace(
-      /(\.eq\("status", "ai_active"\))\s*\.select\("id"\)/,
+      /(\.in\("status", \["ai_active", "resolved"\]\))\s*\.select\("id"\)/,
       "$1",
     );
     expect(semConferencia, "a cirurgia do controle não achou a conferência").not.toBe(PROMOVE);
-    expect(amarras(semConferencia).soIaAtiva, "o predicado tinha de sobreviver").toBe(true);
+    expect(amarras(semConferencia).temPredicado, "o predicado tinha de sobreviver").toBe(true);
     expect(amarras(semConferencia).confereRetorno).toBe(false);
   });
 

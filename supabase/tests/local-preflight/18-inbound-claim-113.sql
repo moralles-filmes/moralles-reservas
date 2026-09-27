@@ -659,3 +659,83 @@ exception when others then
     'FALHOU: ' || sqlerrm)
     on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
+
+-- ─── FIN-4 (83): finalizar com erro NULO preserva o `last_error` anterior ────
+-- A linha dura 30 dias em `dead` exatamente para que a investigação não dependa
+-- de log. DOIS caminhos finalizam com `p_error` nulo — a promoção a `dead` sem
+-- veredito (não houve requisição: nada a relatar) e a retentativa da própria
+-- finalização sem o texto do erro — e enquanto o SET era `left(p_error, 500)`
+-- cru, os dois APAGAVAM a evidência.
+--
+-- O caso reproduz o CAMINHO MISTO, que é o que dói: a primeira tentativa
+-- respondeu `http_500` de verdade, e a linha só virou terminal depois de morrer
+-- por duração. Sem o `coalesce`, o `last_error` do 500 é apagado no instante em
+-- que a linha vira dead letter, e quem abrir a fila 29 dias depois não tem nada.
+--
+-- `outcome` continua distinguindo os dois diagnósticos, e é por isso que perder
+-- o texto NOVO é aceitável e perder o ANTIGO não: `queue_dead_letter_no_verdict`
+-- já diz "consumiu as tentativas sem chegar a veredito"; só o `last_error` diz o
+-- que de fato aconteceu antes.
+do $$
+declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
+        v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+        v_corpo bytea := convert_to('{}', 'UTF8');
+        v_id uuid;
+        v_claim1 uuid; v_claim2 uuid;
+        v_erro_antes text; v_erro_depois text;
+        v_status text; v_outcome text; v_att int := -1;
+        v_afetadas int := -1;
+begin
+  delete from t_res where ord = 83;
+
+  begin
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id)
+    values ('datafy', v_chan, v_unit, v_corpo, 'fin-3')
+    returning id into v_id;
+
+    -- Tentativa 1: um erro REAL é registrado.
+    select c.claim_id into v_claim1 from public.claim_whatsapp_inbound_event(v_id) c;
+    perform public.finalize_whatsapp_inbound_event(
+              v_id, v_claim1, 'received', 'queue_retry_scheduled', 'http_500 no primeiro', 0);
+    select e.last_error into v_erro_antes from whatsapp_inbound_events e where e.id = v_id;
+
+    -- Tentativa 2 termina sem veredito: `p_error` NULO, como o ramo real passa.
+    select c.claim_id into v_claim2 from public.claim_whatsapp_inbound_event(v_id) c;
+    select public.finalize_whatsapp_inbound_event(
+             v_id, v_claim2, 'dead', 'queue_dead_letter_no_verdict', null, null)
+      into v_afetadas;
+
+    select e.last_error, e.status, e.outcome, e.attempts
+      into v_erro_depois, v_status, v_outcome, v_att
+      from whatsapp_inbound_events e where e.id = v_id;
+
+    raise exception 'fin-3: desfaz o insert' using errcode = 'ZZ113';
+  exception when sqlstate 'ZZ113' then
+    null;
+  end;
+
+  insert into t_res values (83, 'FIN-4 finalizar com erro NULO preserva o last_error anterior',
+    case
+      when v_erro_antes is distinct from 'http_500 no primeiro'
+        then 'FALHOU (o setup nao gravou o erro da 1a tentativa: last_error='
+             || coalesce(v_erro_antes, 'null') || ')'
+      when v_afetadas <> 1
+        then 'FALHOU (a finalize terminal afetou ' || v_afetadas || ' linha(s) em vez de 1)'
+      when v_erro_depois is null
+        then 'FALHOU (last_error foi APAGADO ao virar dead: a linha de 30 dias ficou muda '
+             || 'sobre o http_500 que de fato aconteceu)'
+      when v_erro_depois is distinct from 'http_500 no primeiro'
+        then 'FALHOU (last_error virou ' || v_erro_depois || ' em vez de preservar o anterior)'
+      when v_status is distinct from 'dead'
+        then 'FALHOU (status ficou ' || coalesce(v_status, 'null') || ' em vez de dead)'
+      when v_outcome is distinct from 'queue_dead_letter_no_verdict'
+        then 'FALHOU (outcome ficou ' || coalesce(v_outcome, 'null') || ')'
+      when v_att <> 2
+        then 'FALHOU (attempts ficou ' || v_att || ' em vez de 2)'
+      else 'OK (last_error do http_500 preservado em dead, outcome proprio, attempts=2)'
+    end);
+exception when others then
+  insert into t_res values (83, 'FIN-4 finalizar com erro NULO preserva o last_error anterior',
+    'FALHOU: ' || sqlerrm)
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
+end $$;

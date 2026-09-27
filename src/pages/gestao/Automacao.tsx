@@ -1902,9 +1902,18 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
                 <p className="font-medium">
                   {inbound_queue.unauthorized_terminal.count ?? "—"}
                 </p>
+                {/* DUAS causas, não uma — o núcleo (`queuedEventVerdict`) nomeia
+                    as duas e a copy nomeava só a primeira. A segunda é a que faz
+                    desta contagem um sinal de SEGURANÇA: a âncora
+                    `phone_number_id` que aceitou o payload pode ter migrado para
+                    um canal de outra organização. Descrever só a rotação ensina o
+                    admin a ler contagem > 0 como rotina e parar de olhar,
+                    perdendo o único rastro que esse caso deixa. */}
                 <p className="text-xs text-muted-foreground">
-                  Descartadas sem resposta. Acontece quando as credenciais do canal
-                  mudam com mensagem em trânsito.
+                  Descartadas sem resposta, de propósito. Esperado durante rotação de
+                  credencial do canal, com mensagem em trânsito. Fora disso,
+                  investigue: pode ser payload aceito pela âncora
+                  (`phone_number_id`) de outra organização.
                 </p>
               </div>
             </div>

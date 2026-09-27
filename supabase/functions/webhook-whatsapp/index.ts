@@ -1614,7 +1614,7 @@ async function promoteDeadLetterToHandoff(eventId: string): Promise<void> {
     const conta = {
       senders: senders.size,
       promoted: 0,
-      humanActive: 0,
+      alreadyWithHuman: 0,
       noCustomer: 0,
       noConversation: 0,
       updateFailed: 0,
@@ -1658,14 +1658,30 @@ async function promoteDeadLetterToHandoff(eventId: string): Promise<void> {
           continue;
         }
 
-        // O PREDICADO DE ESTADO ABAIXO PROMOVE SÓ O QUE A IA AINDA DETÉM.
+        // O PREDICADO DE ESTADO ABAIXO PROMOVE SÓ O QUE NENHUMA PESSOA DETÉM.
         // Sem ele, um atendente no meio da conversa (`human_active`)
         // era jogado de volta para a fila de "aguardando"; `handoff_at` —
         // relógio do auto-resolve de 12 h e do lembrete de 6 h — era zerado
         // sob os pés dele; e um `handoff_reason` anterior (`agent_error`,
         // `ai_budget_exhausted`) era APAGADO, levando junto o motivo real da
-        // investigação. Conversa em `resolved` (status legado) também fica de
-        // fora: ali um humano já encerrou.
+        // investigação.
+        //
+        // `resolved` ENTRA na lista, e a primeira versão disto o deixava de fora
+        // alegando que "ali um humano já encerrou". Isso lê o passado e erra o
+        // presente: `resolved` é estado FÓSSIL — o botão "Resolver" não o grava
+        // mais, e o próprio pipeline o promove para `ai_active` na inbound
+        // seguinte (linha ~3285), justamente para a UI parar de exibir badge
+        // "Resolvida" para sempre. Ninguém está atendendo uma conversa ali.
+        //
+        // A consequência de omiti-lo era a pior disponível: a promoção casava
+        // ZERO linhas, a conversa continuava fóssil, `useAwaitingHumanCount`
+        // conta só `awaiting_human` — então a dead letter ficava INVISÍVEL para o
+        // lojista, sobrando apenas a contagem do diagnóstico, que é
+        // platform-admin-only. E o log afirmava
+        // `..._human_already_active` sobre conversa que ninguém atende: rastro de
+        // investigação FALSO, que é pior que rastro ausente. Isso reprovava o
+        // critério de aceite §14.8 ("quando resolvível, com a conversa em
+        // `awaiting_human`") para uma conversa que É resolvível — nós a achamos.
         const { data: promovidas, error: updateError } = await supabase
           .from("conversations")
           .update({
@@ -1681,7 +1697,7 @@ async function promoteDeadLetterToHandoff(eventId: string): Promise<void> {
             last_silenced_reply_at: null,
           })
           .eq("id", conv.id)
-          .eq("status", "ai_active")
+          .in("status", ["ai_active", "resolved"])
           .select("id");
 
         if (updateError) {
@@ -1696,13 +1712,22 @@ async function promoteDeadLetterToHandoff(eventId: string): Promise<void> {
         }
         // `UPDATE` que casa zero linhas devolve `error: null` no supabase-js
         // (invariante do CLAUDE.md): sem conferir o retorno, "não promovi
-        // porque um humano já estava lá" fica indistinguível de "promovi", e o
-        // log afirmaria a segunda coisa. Zero linhas aqui NÃO é falha — é o
-        // caso comum e desejado.
+        // porque a conversa já era de uma pessoa" fica indistinguível de
+        // "promovi", e o log afirmaria a segunda coisa. Zero linhas aqui NÃO é
+        // falha — é o caso comum e desejado.
+        //
+        // O NOME DESTE EVENTO É DERIVADO DO PREDICADO, não escolhido: com
+        // `in ('ai_active','resolved')` acima, zero linhas só pode significar
+        // `human_active` (uma pessoa atendendo agora) ou `awaiting_human` (já na
+        // fila de espera, por este ou outro motivo). Nos dois casos a conversa já
+        // está com uma pessoa e aparece para o lojista, que é o que importa aqui.
+        // Dizer `human_already_active` cobriria só o primeiro e mentiria sobre o
+        // segundo — e quem aperta o predicado depois precisa reconferir este
+        // nome, porque ele é uma AFIRMAÇÃO sobre o complemento do predicado.
         if (!promovidas || promovidas.length === 0) {
-          conta.humanActive++;
+          conta.alreadyWithHuman++;
           jsonLog("info", {
-            evt: "inbound_dead_letter_human_already_active",
+            evt: "inbound_dead_letter_already_with_human",
             eventId,
             convId: conv.id,
           });
@@ -1776,12 +1801,25 @@ async function finalizeQueuedEvent(input: {
       });
 
     // `sanitizeQueueErrorText` já tira o que o Postgres recusa em `text`. A
-    // segunda tentativa SEM o texto existe para o que ele não pode prever: é a
-    // finalização que escreve `attempts` e `next_attempt_at`, então uma falha
-    // dependente do PAYLOAD faria a linha nunca avançar — devida e reivindicável
-    // para sempre, retomada a cada 90 s, jamais virando dead letter, e primeira
-    // na ordem da varredura, adiando o inbound dos outros tenants. Perder o
-    // texto do erro é barato; perder a contabilidade da tentativa não é.
+    // segunda tentativa SEM o texto existe para o que ele não pode prever: uma
+    // falha da finalização dependente do PAYLOAD do erro deixaria a linha sem
+    // `next_attempt_at` novo, devida e reivindicável a cada 90 s, e primeira na
+    // ordem da varredura — adiando o inbound dos outros tenants.
+    //
+    // UMA VERSÃO ANTERIOR DESTE COMENTÁRIO PROMETIA MAIS: dizia que "é a
+    // finalização que escreve `attempts`" e que sem esta retentativa a linha
+    // "jamais viraria dead letter". As duas afirmações são falsas desde que o
+    // CLAIM passou a gastar uma tentativa no takeover de lease vencido — com
+    // isso a linha avança sozinha, chega ao teto e é promovida a `dead` pelo
+    // `shouldPromoteToDead` logo após o claim, sem ser processada. Então esta
+    // retentativa NÃO é o que salva a linha do limbo; ela economiza tentativas e
+    // três esperas de lease, o que é bem menos, e é a razão honesta de mantê-la.
+    //
+    // Perder o texto NOVO do erro é barato; perder a contabilidade não é.
+    // "Novo" é exato e depende da 113: lá o `last_error` é
+    // `coalesce(left(p_error, 500), e.last_error)`, então esta segunda chamada
+    // com `null` não apaga o erro que uma tentativa anterior registrou. Antes
+    // desse `coalesce` ela apagava.
     // Compara o texto JÁ SANITIZADO, não o cru: se o sanitizador devolveu
     // `null`, a primeira chamada já foi sem texto e repeti-la emitiria uma
     // segunda chamada byte-idêntica — retentar o mesmo não é retentar.

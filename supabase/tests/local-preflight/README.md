@@ -50,8 +50,8 @@ presentes agendaria jobs apontando para lá.
 | `15-controles-109.sql` | Os **dois controles positivos** (ordinais 35–36) da 109. Sabotam o corpo real a partir de `pg_get_functiondef` — CONTROLE-9 remove o gate `is_public` e vê CODE-3 resolver uma unidade privada; CONTROLE-10 remove o casamento `unit_id` e vê CODE-2 resolver o código de outra unidade. As duas asserções são sobre o UUID que voltou, nunca sobre "não estourou": guarda quebrada aqui devolve dado, não erro. |
 | `16-inbound-events-111.sql` | INBOUND-1..7 (ordinais 37–43, migration 111, Fase C): a fila durável `whatsapp_inbound_events`. Corpo com octeto NUL voltando byte a byte (o motivo de `raw_body` ser `bytea`), dedupe de entrega escopado por canal, entregas legadas com `delivery_id` NULL coexistindo, CHECK de `delivery_id` e de `provider` com contra-caso em cada um, cascade do canal sem abortar o DELETE, e a postura do gate (RLS forçada, zero policies, flag `false`, zero canais optados). **Roda em banco PRÓPRIO** e com seed `00a` — ver a seção "Rodar" dele. Cada caso se desfaz por rollback de subtransação, então o arquivo é re-runnable e não deixa linha na tabela. |
 | `17-controles-111.sql` | Os **cinco controles positivos** (ordinais 44–48) da 111. C-111-1 troca `raw_body` para `text`; C-111-2 troca o unique parcial por `nulls not distinct`; C-111-3 dropa o CHECK de `delivery_id`; C-111-4 troca `on delete cascade` por `restrict`; C-111-5 dropa o CHECK de `provider`. **Aqui o restore mora dentro de cada controle e isso não é escolha** — ver a nota "Por que reaplicar a 111 não restaura" abaixo. |
-| `18-inbound-claim-113.sql` | CLAIM-1..6, FIN-1..3 e ACL-113 (ordinais 49–55, 63 e 80–81, migration 113, Fase C): a cerca de UUID que impede DUAS execuções da mesma linha — que nesta fase significa duas IAs respondendo ao mesmo cliente. Claim exclusivo, takeover de lease vencido com crachá novo, finalização recusada com crachá errado, incremento de `attempts` e `next_attempt_at` montados pelo relógio do BANCO, recusa terminal de 401 morrendo em `done` (e não em `dead`, que reteria o corpo cru por 30 dias), o takeover GASTANDO uma tentativa (CLAIM-5) enquanto o claim normal não gasta (CLAIM-6), e o ACL efetivo das duas RPCs. **Continua o banco da 111** — ver a seção "Sequência da migration 113". |
-| `19-controles-113.sql` | Os **oito controles positivos** (ordinais 56–62 e 82) da 113. C-113-1 tira a cerca `claim_id` da finalização; C-113-2 tira a perna do takeover; C-113-3 tira o filtro de status do claim; C-113-4 encurta o lease para 9 s; C-113-5 incrementa `attempts` em todo ramo; C-113-6 lê o atraso como milissegundos; C-113-7 dropa e recria a função sem repetir o `revoke`; C-113-8 devolve o claim à forma anterior à Task 8, sem o incremento do takeover. Cada um mede também que os casos VIZINHOS continuam verdes. O critério **não é "um caso"**: o C-113-3 derruba dois (CLAIM-2 e CLAIM-4) e está certo, porque a sabotagem quebra genuinamente as duas propriedades e cada veredito nomeia o defeito real — o que se exige é vermelho localizado, com mensagem apontando para o lugar certo. |
+| `18-inbound-claim-113.sql` | CLAIM-1..6, FIN-1..4 e ACL-113 (ordinais 49–55, 63, 80–81 e 83, migration 113, Fase C): a cerca de UUID que impede DUAS execuções da mesma linha — que nesta fase significa duas IAs respondendo ao mesmo cliente. Claim exclusivo, takeover de lease vencido com crachá novo, finalização recusada com crachá errado, incremento de `attempts` e `next_attempt_at` montados pelo relógio do BANCO, recusa terminal de 401 morrendo em `done` (e não em `dead`, que reteria o corpo cru por 30 dias), o takeover GASTANDO uma tentativa (CLAIM-5) enquanto o claim normal não gasta (CLAIM-6), a finalização com erro NULO preservando o `last_error` anterior em vez de apagá-lo (FIN-4), e o ACL efetivo das duas RPCs. **Continua o banco da 111** — ver a seção "Sequência da migration 113". |
+| `19-controles-113.sql` | Os **nove controles positivos** (ordinais 56–62, 82 e 84) da 113. C-113-1 tira a cerca `claim_id` da finalização; C-113-2 tira a perna do takeover; C-113-3 tira o filtro de status do claim; C-113-4 encurta o lease para 9 s; C-113-5 incrementa `attempts` em todo ramo; C-113-6 lê o atraso como milissegundos; C-113-7 dropa e recria a função sem repetir o `revoke`; C-113-8 devolve o claim à forma anterior à Task 8, sem o incremento do takeover; C-113-9 devolve o `last_error` à sobrescrita cega, provando que finalizar com erro NULO apagaria a evidência. Cada um mede também que os casos VIZINHOS continuam verdes. O critério **não é "um caso"**: o C-113-3 derruba dois (CLAIM-2 e CLAIM-4) e está certo, porque a sabotagem quebra genuinamente as duas propriedades e cada veredito nomeia o defeito real — o que se exige é vermelho localizado, com mensagem apontando para o lugar certo. |
 | `20-inbound-sweep-113.sql` | SWEEP-1..6, PURGE-1..2 e ACL-SWEEP (ordinais 64–72, migration 113, Fase C): a SELEÇÃO das linhas devidas e a PURGA. Linha devida selecionada, agendada para o futuro fora, lease vencido dentro, lease vivo fora, a seleção **não escrevendo nada** (as cinco colunas intactas), a linha antiga passando na frente da recém-tocada, as duas janelas de retenção (7 d para `done`, 30 d para `dead`) com contra-caso em cada uma, e o ACL efetivo das duas RPCs. **Continua o banco da 111/113** — ver a seção "Sequência da migration 113". |
 | `21-controles-113-sweep.sql` | Os **sete controles positivos** (ordinais 73–79) da seleção e da purga. C-SWEEP-1 tira o filtro `next_attempt_at <= now()`; C-SWEEP-2 tira a perna do lease vencido; **C-SWEEP-3 reintroduz o desenho recusado** (a seleção que reivindica EM LOTE, marcando 20 linhas `processing` de uma vez); C-SWEEP-4 volta a ordem para `next_attempt_at`; C-SWEEP-5 iguala a janela de `done` à de `dead`; C-SWEEP-6 tira a perna de `dead`; C-SWEEP-7 dropa e recria a purga sem repetir o `revoke`. Cada um mede também que os vizinhos continuam verdes. O C-SWEEP-2 derruba DOIS casos (SWEEP-3 e SWEEP-6) e está certo: a linha "envenenada" do SWEEP-6 é, por fidelidade ao cenário, um `processing` com lease vencido — e o veredito dele nomeia o takeover, não a ordem. |
 
@@ -449,17 +449,17 @@ P -f supabase/tests/local-preflight/20-inbound-sweep-113.sql
   -f supabase/tests/local-preflight/21-controles-113-sweep.sql   # SEM ON_ERROR_STOP
 # NÃO reaplicar as migrations aqui: cada controle já se desfez sozinho.
 
-P -c "select ord, caso, veredito from t_res order by ord;"   # 46 linhas, todas OK
+P -c "select ord, caso, veredito from t_res order by ord;"   # 48 linhas, todas OK
 ```
 
 Ao terminar: `dropdb fasec113`.
 
-**Conte as 46 linhas, não confie em "nenhum FALHOU".** O `19` e o `21` rodam SEM
+**Conte as 48 linhas, não confie em "nenhum FALHOU".** O `19` e o `21` rodam SEM
 ON_ERROR_STOP de propósito, e plpgsql compila o bloco INTEIRO na primeira
 execução: um erro de compilação (um SQLSTATE com 6 caracteres em vez de 5, por
 exemplo) derruba o bloco antes de qualquer statement, então nem o `when others`
-grava veredito. O `psql` imprime ERROR, segue, e a tabela fica com **38 linhas
-todas OK** — oito a menos, a aparência exata de uma execução sadia sem aquele
+grava veredito. O `psql` imprime ERROR, segue, e a tabela fica com **39 linhas
+todas OK** — nove a menos, a aparência exata de uma execução sadia sem aquele
 arquivo de controles. Medido ao escrever este conjunto. É a mesma razão pela qual
 cada guarda grava sentinela (`ord = 0` no `17`, `ord = -19` no `19`, `ord = -21`
 no `21`) em vez de só levantar erro. **Ao acrescentar caso, atualize os dois
@@ -480,6 +480,8 @@ esconde exatamente o defeito que ele existe para pegar.
 | 73–79 | `C-SWEEP-1` .. `C-SWEEP-7` | `21` |
 | 80, 81 | `CLAIM-5`, `CLAIM-6` (o takeover gasta tentativa; o claim normal não) | `18` |
 | 82 | `C-113-8` | `19` |
+| 83 | `FIN-4` (erro NULO preserva o `last_error` anterior) | `18` |
+| 84 | `C-113-9` | `19` |
 
 **As três sentinelas têm ordinais DIFERENTES de propósito.** Compartilhando o 0,
 um arquivo de controles saudável apagaria a sentinela de outro que falhou — e a

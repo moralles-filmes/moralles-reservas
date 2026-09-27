@@ -17,9 +17,11 @@
 --   C-113-6 (61)  atraso lido como MILISSEGUNDOS               -> derruba FIN-2
 --   C-113-7 (62)  drop + create sem o `revoke`                  -> derruba ACL-113
 --   C-113-8 (82)  `claim` sem o incremento do takeover          -> derruba CLAIM-5
+--   C-113-9 (84)  `last_error` sobrescrito as cegas             -> derruba FIN-4
 --
--- O C-113-8 está em 82, fora da faixa 56..62, porque nasceu depois do `20`/`21`
--- (ordinais 64..79) e dos casos CLAIM-5/CLAIM-6 do `18` (80..81).
+-- O C-113-8 está em 82 e o C-113-9 em 84, fora da faixa 56..62, porque nasceram
+-- depois do `20`/`21` (ordinais 64..79), dos casos CLAIM-5/CLAIM-6 do `18`
+-- (80..81) e, no caso do C-113-9, do FIN-4 (83).
 --
 -- ═══ O CRITÉRIO NÃO É "UM CASO", É VERMELHO QUE NÃO DESORIENTA ══════════════
 --
@@ -155,7 +157,7 @@ begin
           update public.whatsapp_inbound_events e
              set status          = p_status,
                  outcome         = p_outcome,
-                 last_error      = left(p_error, 500),
+                 last_error      = coalesce(left(p_error, 500), e.last_error),
                  attempts        = case
                                      when p_status in ('received', 'dead') then e.attempts + 1
                                      else e.attempts
@@ -580,7 +582,7 @@ begin
           update public.whatsapp_inbound_events e
              set status          = p_status,
                  outcome         = p_outcome,
-                 last_error      = left(p_error, 500),
+                 last_error      = coalesce(left(p_error, 500), e.last_error),
                  attempts        = e.attempts + 1,
                  next_attempt_at = case
                                      when p_retry_delay_seconds is null then now()
@@ -688,7 +690,7 @@ begin
           update public.whatsapp_inbound_events e
              set status          = p_status,
                  outcome         = p_outcome,
-                 last_error      = left(p_error, 500),
+                 last_error      = coalesce(left(p_error, 500), e.last_error),
                  attempts        = case
                                      when p_status in ('received', 'dead') then e.attempts + 1
                                      else e.attempts
@@ -930,6 +932,111 @@ begin
     end);
 exception when others then
   insert into t_res values (82, 'C-113-8 claim sem o incremento do takeover derruba o CLAIM-5 (linha envenenada por duracao)',
+    'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)')
+    on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
+end $ctrl$;
+
+-- ═══ C-113-9 (84) — sobrescrita cega de `last_error` derruba o FIN-4 ════════
+-- Prova que o `coalesce` do SET é load-bearing e não decoração: com a forma
+-- antiga (`left(p_error, 500)` cru), finalizar com `p_error` nulo APAGA o erro
+-- que uma tentativa anterior registrou — e o FIN-4 fica vermelho.
+--
+-- Por que o defeito era silencioso: nada falha, nada alerta. A linha vira `dead`
+-- normalmente, o contador do painel a conta, o `outcome` está certo. Só o CAMPO
+-- que diz o que aconteceu de verdade fica nulo, e ele é o único que sobrevive aos
+-- 30 dias — os logs da Edge Function não.
+do $ctrl$
+declare v_chan uuid := 'dddddddd-0000-0000-0000-000000000001';
+        v_unit uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+        v_corpo bytea := convert_to('{}', 'UTF8');
+        v_def_antes text; v_def_sab text; v_def_depois text;
+        v_id uuid; v_claim1 uuid; v_claim2 uuid;
+        v_erro_antes text; v_erro_depois text;
+begin
+  delete from t_res where ord = 84;
+
+  v_def_antes := pg_get_functiondef('public.finalize_whatsapp_inbound_event(uuid,uuid,text,text,text,integer)'::regprocedure);
+
+  begin
+    execute $sab$
+      create or replace function public.finalize_whatsapp_inbound_event(
+        p_event_id            uuid,
+        p_claim_id            uuid,
+        p_status              text,
+        p_outcome             text,
+        p_error               text,
+        p_retry_delay_seconds integer
+      )
+      returns integer
+      language sql
+      security definer
+      set search_path = ''
+      as $f$
+        with fenced as (
+          update public.whatsapp_inbound_events e
+             set status          = p_status,
+                 outcome         = p_outcome,
+                 last_error      = left(p_error, 500),
+                 attempts        = case
+                                     when p_status in ('received', 'dead') then e.attempts + 1
+                                     else e.attempts
+                                   end,
+                 next_attempt_at = case
+                                     when p_retry_delay_seconds is null then now()
+                                     else now() + make_interval(secs => p_retry_delay_seconds)
+                                   end,
+                 claim_id        = null,
+                 claimed_until   = null,
+                 updated_at      = now()
+           where e.id = p_event_id
+             and e.claim_id = p_claim_id
+          returning 1
+        )
+        select count(*)::integer from fenced;
+      $f$;
+    $sab$;
+
+    v_def_sab := pg_get_functiondef('public.finalize_whatsapp_inbound_event(uuid,uuid,text,text,text,integer)'::regprocedure);
+
+    insert into whatsapp_inbound_events (provider, channel_id, unit_id, raw_body, delivery_id)
+    values ('datafy', v_chan, v_unit, v_corpo, 'c9-last-error')
+    returning id into v_id;
+
+    select c.claim_id into v_claim1 from public.claim_whatsapp_inbound_event(v_id) c;
+    perform public.finalize_whatsapp_inbound_event(
+              v_id, v_claim1, 'received', 'queue_retry_scheduled', 'http_500 no primeiro', 0);
+    select e.last_error into v_erro_antes from whatsapp_inbound_events e where e.id = v_id;
+
+    select c.claim_id into v_claim2 from public.claim_whatsapp_inbound_event(v_id) c;
+    perform public.finalize_whatsapp_inbound_event(
+              v_id, v_claim2, 'dead', 'queue_dead_letter_no_verdict', null, null);
+    select e.last_error into v_erro_depois from whatsapp_inbound_events e where e.id = v_id;
+
+    raise exception 'c-113-9: desfaz a sabotagem' using errcode = 'ZZ113';
+  exception when sqlstate 'ZZ113' then
+    null;
+  end;
+
+  v_def_depois := pg_get_functiondef('public.finalize_whatsapp_inbound_event(uuid,uuid,text,text,text,integer)'::regprocedure);
+
+  insert into t_res values (84, 'C-113-9 sobrescrita cega de last_error derruba o FIN-4',
+    case
+      when v_def_antes is null or v_def_antes not like '%coalesce(left(p_error, 500), e.last_error)%'
+        then 'FALHOU (linha de base: a finalize ja nao preservava o last_error com coalesce)'
+      when v_def_sab like '%coalesce(left(p_error, 500)%'
+        then 'FALHOU (a sabotagem nao pegou: o coalesce continua no corpo)'
+      when v_erro_antes is distinct from 'http_500 no primeiro'
+        then 'FALHOU (linha de base: a 1a tentativa nao gravou o erro, entao nada havia a apagar)'
+      when v_erro_depois is not null
+        then 'FALHOU (com a sobrescrita cega o last_error SOBREVIVEU (' || v_erro_depois
+             || ') — o FIN-4 nao ficaria vermelho e o caso nao tem forca)'
+      when v_def_depois is distinct from v_def_antes
+        then 'FALHOU (restore: a definicao divergiu do catalogo original)'
+      else 'OK (sem o coalesce o last_error do http_500 e apagado ao virar dead, logo o FIN-4 fica '
+           || 'vermelho; definicao restaurada)'
+    end);
+exception when others then
+  insert into t_res values (84, 'C-113-9 sobrescrita cega de last_error derruba o FIN-4',
     'FALHOU: ' || sqlerrm || ' (sabotagem desfeita por rollback da subtransacao)')
     on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $ctrl$;
