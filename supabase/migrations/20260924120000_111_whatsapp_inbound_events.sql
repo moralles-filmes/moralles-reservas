@@ -23,8 +23,10 @@
 -- RETENÇÃO (constantes em `_shared/whatsapp-inbound-queue-core.ts`, documentadas
 -- aqui e NÃO importadas — SQL não importa TypeScript): `done` é purgado depois
 -- de PURGE_DONE_AFTER_DAYS = 7 dias, `dead` depois de
--- PURGE_DEAD_AFTER_DAYS = 30. O worker de purga é de fase posterior; esta
--- migration só cria a tabela.
+-- PURGE_DEAD_AFTER_DAYS = 30. Quem apaga é `purge_whatsapp_inbound_events()`,
+-- criada na 113 e chamada pela varredura — não há worker separado, e é por isso
+-- que varredura parada é retenção de PII parada: o `raw_body` fica até alguém
+-- vir buscá-lo. Esta migration só cria a tabela.
 
 create table if not exists whatsapp_inbound_events (
   id                uuid        primary key default gen_random_uuid(),

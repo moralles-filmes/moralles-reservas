@@ -65,10 +65,14 @@ const MAX_DELIVERY_ID_LEN = 512;
  *   flag é indistinguível de "a flag existe e está OFF" — sem o campo
  *   separado, as duas colapsam no mesmo `false`.
  * - A perna do CANAL não tem sinal equivalente porque uma leitura falha do
- *   canal já é TERMINAL rio acima de onde este gate é chamado: em
- *   `webhook-whatsapp/index.ts:1587`, `if (channelErr || !channel)` devolve
- *   404 antes de qualquer código chegar perto da resolução do gate (~linha
- *   1728). Fora isso, a coluna é `not null default false` — o banco
+ *   canal já é TERMINAL rio acima de onde este gate é chamado: o
+ *   `if (channelErr || !channel)` que segue o `SELECT` de `whatsapp_channels`
+ *   em `webhook-whatsapp` devolve 404, e esse SELECT é o mesmo que pede a
+ *   coluna `async_ingestion_enabled` — logo ele acontece, por construção,
+ *   antes de haver valor para este gate ler. (Sem número de linha de
+ *   propósito: a versão anterior deste comentário citava duas, e as duas
+ *   apodreceram ~800 linhas fora do lugar, apontando para dentro de outra
+ *   função.) Fora isso, a coluna é `not null default false` — o banco
  *   fisicamente não devolve `null`. Logo `channelEnabled: null | undefined`
  *   só pode significar UMA coisa: o SELECT do caller não pediu a coluna, um
  *   defeito diferente (já rastreado à parte), não uma falha de leitura em

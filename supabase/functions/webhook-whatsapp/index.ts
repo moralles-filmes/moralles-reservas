@@ -2559,6 +2559,17 @@ async function handleWebhookRequest(
     // MESMA entrega emite esta linha duas vezes — uma na porta, outra na
     // re-entrada a partir da fila —, e contar a mesma entrega duas vezes é
     // exatamente a medida errada que uma instrumentação de forma deveria evitar.
+    //
+    // O QUE O ESCOPO NÃO IMPEDE, e quem lê o log precisa saber: lote Meta-shaped
+    // MULTIPARTE emite 1 + N linhas. O split adiante re-entra em
+    // `handleWebhookRequest` por parte, PROPAGANDO `source`, e não remove o
+    // `x-datafy-delivery-id` dos filhos (remover faria o filho declarar "header
+    // ausente" — falso negativo na única pergunta que esta linha responde). Só
+    // acontece com o gate OFF: com ele ON o pai responde no ACK antes do split,
+    // e a re-entrada da fila propaga `"queue"`. Ou seja, distorce a contagem
+    // justo no modo em que esta instrumentação serve — ao responder a pendência
+    // nº 6 da spec, conte ENTREGAS DISTINTAS por `delivery_id_shape`, nunca
+    // linhas.
     if (ingestionSource === "provider" && providerDeclaresDeliveryId(provider)) {
       jsonLog("info", {
         requestId,
@@ -2619,9 +2630,9 @@ async function handleWebhookRequest(
           //    de forma síncrona (`queue_dispatch_failed`);
           //  - o `.catch()` pega exceção DENTRO do processamento, que num
           //    `async` vira promise rejeitada e nunca passaria pelo `try`
-          //    (`queue_background_unhandled`). Inofensivo enquanto
-          //    `processQueuedEventById` é stub; depois da Task 5, rejeição não
-          //    tratada em Deno pode derrubar o isolate.
+          //    (`queue_background_unhandled`). Ele NÃO é decoração: rejeição
+          //    não tratada em Deno pode derrubar o isolate, e o que roda ali é
+          //    o processamento inteiro — resolução de canal, agente, envio.
           //
           // Nenhum dos dois pode derrubar o ACK: a linha já está durável, e
           // devolver 500 aqui faria o provider reentregar sobre um evento
