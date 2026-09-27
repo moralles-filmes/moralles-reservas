@@ -4,6 +4,11 @@ import { resolve } from "node:path";
 import {
   INBOUND_LEASE_TTL_MS,
   INBOUND_ERROR_TEXT_MAX,
+  INBOUND_MAX_ATTEMPTS,
+  INBOUND_RETRY_DELAYS_MS,
+  INBOUND_SWEEP_INTERVAL_MS,
+  MAX_PENDING_BACKLOG_AGE_MS,
+  WORST_CASE_QUEUED_EVENT_MS,
   lockTtlSecondsRequired,
   sanitizeQueueErrorText,
 } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
@@ -42,6 +47,20 @@ const MIGRATION_113 = lerFonte(
   "../../supabase/migrations/20260924120200_113_inbound_claim_rpc.sql",
 );
 
+// A 114 entra aqui só por causa de UM número: a expressão do `cron.schedule` é a
+// gêmea de `INBOUND_SWEEP_INTERVAL_MS`, e o limite de idade do backlog é derivado
+// dela. Trocar o agendamento sem trocar a constante deixaria o painel chamando de
+// parada uma fila que só está entre dois ciclos.
+const MIGRATION_114 = lerFonte(
+  "../../supabase/migrations/20260924120300_114_cron_inbound_sweep.sql",
+);
+
+// O painel é lido pelo mesmo motivo que a EF: `Automacao.tsx` é uma página inteira
+// com hooks de rede, e `DiagnosticsTab` não é exportada — o vitest não a monta. As
+// duas amarras que só existem lá (de que RELÓGIO a idade é medida, e que a copy vem
+// do núcleo em vez de literal no call site) só têm guarda se alguém ler a fonte.
+const PANEL = lerFonte("../pages/gestao/Automacao.tsx");
+
 // `whatsapp-health` também chama `serve()` no carregamento e importa
 // `deno.land`: o vitest não a alcança, e as duas armadilhas das contagens
 // (tirá-las da amostra de 50 execuções; esquecer o escopo de unidade numa tabela
@@ -61,7 +80,9 @@ describe("as leituras de fonte são imunes a fim de linha", () => {
   it.each([
     ["webhook-whatsapp/index.ts", EF],
     ["migration 113", MIGRATION_113],
+    ["migration 114", MIGRATION_114],
     ["whatsapp-health/index.ts", HEALTH_EF],
+    ["gestao/Automacao.tsx", PANEL],
   ])("%s é lida sem CR", (_nome, fonte) => {
     expect(fonte.length, "fonte vazia: o caminho do arquivo quebrou").toBeGreaterThan(0);
     expect(fonte).not.toContain("\r");
@@ -176,6 +197,51 @@ describe("gêmeos declarados: o número vive em dois lugares e nenhum importa o 
 
   it("a migration nomeia o gêmeo, para quem lê o SQL primeiro", () => {
     expect(MIGRATION_113).toContain("INBOUND_LEASE_TTL_MS");
+  });
+
+  it("o intervalo do cron é exatamente INBOUND_SWEEP_INTERVAL_MS", () => {
+    // O SEGUNDO gêmeo desta fase, e ele é load-bearing por um caminho indireto:
+    // `MAX_PENDING_BACKLOG_AGE_MS` soma um intervalo de cron por claim, então
+    // trocar o agendamento para de cinco em cinco minutos sem trocar a constante
+    // faria o painel chamar de PARADA uma fila que está só entre dois ciclos — o
+    // alarme falso que ensina o operador a ignorar o número.
+    //
+    // Montado por interpolação, e não escrito como literal, porque a expressão
+    // cron contém a sequência que fecharia um comentário de bloco — é a mesma
+    // razão pela qual ela não aparece escrita no núcleo.
+    //
+    // ESCOPADO À CHAMADA DE `cron.schedule`, não ao arquivo. Medido, não suposto: o
+    // bloco "Validação pós-migration" no fim da 114 REPETE a expressão dentro de um
+    // comentário, e uma asserção sobre o arquivo inteiro ficava VERDE com o
+    // agendamento trocado para cinco minutos. O controle positivo passou verde e
+    // foi assim que se soube.
+    const AGENDAMENTO = (() => {
+      const inicio = MIGRATION_114.indexOf("select cron.schedule(");
+      expect(inicio, "a chamada de cron.schedule não foi encontrada").toBeGreaterThan(-1);
+      const fim = MIGRATION_114.indexOf(");", inicio);
+      expect(fim).toBeGreaterThan(inicio);
+      return MIGRATION_114.slice(inicio, fim);
+    })();
+    const minutos = INBOUND_SWEEP_INTERVAL_MS / 60_000;
+    expect(Number.isInteger(minutos)).toBe(true);
+    expect(
+      AGENDAMENTO,
+      "o agendamento da varredura divergiu de INBOUND_SWEEP_INTERVAL_MS: o limite de "
+        + "idade do backlog soma um intervalo de cron por claim, então o painel passa "
+        + "a chamar de PARADA uma fila que está só entre dois ciclos",
+    ).toContain(`'*${"/"}${minutos} * * * *'`);
+  });
+
+  it("o intervalo é usado pelo limite de idade, não é constante decorativa", () => {
+    // Sem este caso, `INBOUND_SWEEP_INTERVAL_MS` poderia ser um export que
+    // ninguém consome — e o pino acima ficaria prendendo um número sem efeito.
+    // Mede a DERIVAÇÃO: trocar o intervalo tem de mover o limite.
+    const semCron =
+      INBOUND_RETRY_DELAYS_MS.reduce((soma, ms) => soma + ms, 0)
+      + (INBOUND_MAX_ATTEMPTS + 1) * WORST_CASE_QUEUED_EVENT_MS;
+    expect(MAX_PENDING_BACKLOG_AGE_MS - semCron).toBe(
+      (INBOUND_MAX_ATTEMPTS + 1) * INBOUND_SWEEP_INTERVAL_MS,
+    );
   });
 
   it("o backstop de last_error é MAIOR que o limite do adapter, não igual", () => {
@@ -483,7 +549,10 @@ describe("as contagens do diagnóstico: exatas, escopadas e com janela", () => {
     // `service_role`: sem o `.eq("unit_id", unitId)`, a contagem seria a de
     // todos os clientes.
     const consultas = HEALTH_EF.split('.from("whatsapp_inbound_events")').slice(1);
-    expect(consultas.length, "esperadas as duas contagens da fila").toBe(2);
+    // TRÊS: as duas contagens de estado terminal mais o backlog não-terminal. O
+    // número é asserido de propósito — consulta nova nesta tabela que escape ao
+    // laço abaixo escaparia também à única barreira de tenant que existe aqui.
+    expect(consultas.length, "esperadas as três consultas da fila").toBe(3);
     for (const consulta of consultas) {
       const cabeca = consulta.slice(0, 400);
       expect(cabeca).toMatch(/\.eq\("unit_id", unitId\)/);
@@ -507,6 +576,210 @@ describe("as contagens do diagnóstico: exatas, escopadas e com janela", () => {
     // afirmaria "nenhum dead letter" no exato momento em que ninguém sabe.
     expect(HEALTH_EF).toMatch(/deadLetterError \? null :/);
     expect(HEALTH_EF).toMatch(/unauthorizedError \? null :/);
+    // A do backlog é medida no bloco dele, sobre o recorte do payload. Aqui, um
+    // `/pendingError\s*\?\s*null/` solto ficava VERDE com o `?? 0` reintroduzido
+    // na contagem: a linha de `oldest_received_at` satisfazia o padrão sozinha.
+    // Medido, não suposto — o controle positivo passou verde e foi assim que se
+    // soube.
+  });
+});
+
+/**
+ * O BACKLOG — o número que responde "o pipeline está andando?".
+ *
+ * As duas contagens acima são de estados TERMINAIS, e a de `dead` responde com a
+ * verdade mais enganosa disponível: quem promove uma linha a `dead` é a VARREDURA,
+ * incrementando `attempts` (takeover do claim e finalização, migration 113 — não há
+ * terceiro escritor). Varredura parada nunca alcança `dead`, então `dead_letter: 0`
+ * é verdade e é inútil, com a fila enchendo e cada cliente daquele canal sem
+ * resposta.
+ *
+ * Sem este bloco, apagar a consulta do backlog — ou, pior, fazê-la de um jeito que
+ * SEMPRE devolve idade desconhecida — devolve a fase ao estado em que o painel não
+ * consegue responder a pergunta, com a suíte verde.
+ */
+describe("o backlog: idade crua do banco, sem relógio do Deno no predicado", () => {
+  /** Só a consulta do backlog, sem comentário nenhum ao redor. */
+  const CONSULTA_DO_BACKLOG = (() => {
+    const inicio = HEALTH_EF.indexOf("const { data: pendingRows");
+    expect(inicio, "a consulta do backlog não foi encontrada").toBeGreaterThan(-1);
+    const fim = HEALTH_EF.indexOf(".limit(1);", inicio);
+    expect(fim, "a consulta do backlog mudou de forma").toBeGreaterThan(inicio);
+    return HEALTH_EF.slice(inicio, fim + ".limit(1);".length);
+  })();
+
+  /** O bloco do payload, recortado da chave `pending:` até fechar. */
+  const PAYLOAD_DO_BACKLOG = (() => {
+    const inicio = HEALTH_EF.indexOf("      pending: {");
+    expect(inicio, "o bloco `pending` do payload não foi encontrado").toBeGreaterThan(-1);
+    const fim = HEALTH_EF.indexOf("\n      },", inicio);
+    expect(fim).toBeGreaterThan(inicio);
+    return HEALTH_EF.slice(inicio, fim);
+  })();
+
+  /** As amarras, medidas sobre um corpo qualquer — real ou falsificado. */
+  const amarras = (consulta: string, payload: string) => ({
+    // `count: "exact"` SEM `head: true`. Com `head`, o PostgREST não devolve corpo:
+    // `pendingRows` viria vazio, `oldest_received_at` seria SEMPRE null, o veredito
+    // cairia sempre em "idade desconhecida" e o sinal morreria em silêncio — com a
+    // contagem ainda certa, que é o que faria ninguém notar.
+    trazALinha: /count: "exact" \}/.test(consulta) && !/head: true/.test(consulta),
+    // Estado, e só estado: nenhum instante do Deno atravessa para o predicado.
+    filtraPorEstado: /\.in\("status", \["received", "processing"\]\)/.test(consulta),
+    semRelogioDoDeno: !/Date\.now\(\)|new Date\(/.test(consulta),
+    // A mais antiga, não uma qualquer.
+    pegaAMaisAntiga: /\.order\("received_at", \{ ascending: true \}\)/.test(consulta),
+    // Sem janela: linha não-terminal não é purgada, então qualquer `window_days`
+    // anexado a este número seria afirmação falsa.
+    semJanela: !/window_days/.test(payload),
+    entregaAIdadeCrua: /oldest_received_at:/.test(payload),
+    // `count: null` é "não consegui contar", nunca zero — e a âncora é a CHAVE
+    // `count:`, não `pendingError` solto. Medido: um padrão sem a chave ficava
+    // verde com o `?? 0` reintroduzido, porque a linha de `oldest_received_at`
+    // logo abaixo também menciona `pendingError ? null`.
+    contagemNulaPreservada: /count: pendingError \? null :/.test(payload),
+    // E a data acompanha: devolvê-la com `?? null` cru sobre leitura falha daria
+    // "fila vazia" por outra porta. As duas são a MESMA leitura.
+    dataNulaPreservada: /oldest_received_at: pendingError/.test(payload),
+  });
+
+  const REAIS = amarras(CONSULTA_DO_BACKLOG, PAYLOAD_DO_BACKLOG);
+
+  it("traz a linha mais antiga junto da contagem, no MESMO instantâneo", () => {
+    // Uma consulta só: contagem e mais-antiga não podem se contradizer (contar 5 e
+    // não achar data, ou contar 0 com data na mão).
+    expect(
+      REAIS.trazALinha,
+      "`head: true` na consulta do backlog: a contagem continua certa e a idade "
+        + "fica SEMPRE desconhecida — o sinal morre sem nada ficar vermelho",
+    ).toBe(true);
+    expect(REAIS.pegaAMaisAntiga).toBe(true);
+  });
+
+  it("o predicado é de ESTADO — nenhum instante do Deno entra nele", () => {
+    // O relógio desta fase é UM, o do banco (cabeçalho da 113). Um
+    // `.lt("claimed_until", new Date(...).toISOString())` compararia um valor
+    // escrito por `now()` do Postgres contra o relógio do Deno, com margem de 90 s
+    // — e a resposta decide QUEM É O DONO de uma linha.
+    expect(REAIS.filtraPorEstado).toBe(true);
+    expect(
+      REAIS.semRelogioDoDeno,
+      "voltou a montar instante no Deno para filtrar a fila: idade é para EXIBIR, "
+        + "calculada a partir do `received_at` cru, nunca predicado aqui",
+    ).toBe(true);
+  });
+
+  it("o número do backlog NÃO carrega janela, porque não existe janela", () => {
+    expect(
+      REAIS.semJanela,
+      "`window_days` no backlog: linha não-terminal não é purgada "
+        + "(`purge_whatsapp_inbound_events` só alcança `done` e `dead`), então o "
+        + "número é o estado AGORA e qualquer janela anexada a ele mente",
+    ).toBe(true);
+    expect(REAIS.entregaAIdadeCrua).toBe(true);
+  });
+
+  it("`count: null` é 'não consegui contar', nunca zero — nas DUAS saídas", () => {
+    expect(
+      REAIS.contagemNulaPreservada,
+      "o backlog voltou a afirmar zero quando a leitura falhou: `dead_letter: 0` já "
+        + "é a resposta enganosa desta tela, e um segundo zero falso ao lado dela "
+        + "fecharia a última porta que sobrou",
+    ).toBe(true);
+    expect(REAIS.dataNulaPreservada).toBe(true);
+  });
+
+  it("CONTROLE POSITIVO: `?? 0` na contagem do backlog fica vermelho", () => {
+    // É a forma exata do defeito, e é o controle que já pegou uma asserção vácua
+    // deste mesmo arquivo: um padrão ancorado em `pendingError` sem a chave
+    // `count:` ficava verde porque a linha de `oldest_received_at` o satisfazia.
+    const cego = PAYLOAD_DO_BACKLOG.replace(
+      "count: pendingError ? null : (pendingCount ?? 0),",
+      "count: pendingCount ?? 0,",
+    );
+    expect(cego, "a cirurgia do controle não achou a contagem").not.toBe(PAYLOAD_DO_BACKLOG);
+    expect(amarras(CONSULTA_DO_BACKLOG, cego).contagemNulaPreservada).toBe(false);
+    // Precisão: derruba SÓ esta amarra.
+    expect(amarras(CONSULTA_DO_BACKLOG, cego).dataNulaPreservada, "não era o alvo").toBe(true);
+    expect(amarras(CONSULTA_DO_BACKLOG, cego).semJanela, "não era o alvo").toBe(true);
+  });
+
+  it("CONTROLE POSITIVO: `head: true` fica vermelho", () => {
+    const comHead = CONSULTA_DO_BACKLOG.replace('count: "exact" }', 'count: "exact", head: true }');
+    expect(comHead, "a cirurgia do controle não achou o count").not.toBe(CONSULTA_DO_BACKLOG);
+    expect(amarras(comHead, PAYLOAD_DO_BACKLOG).trazALinha).toBe(false);
+    // E derruba SÓ esta amarra — é isso que faz o vermelho apontar para o defeito
+    // certo em vez de quebrar a coisa errada.
+    expect(amarras(comHead, PAYLOAD_DO_BACKLOG).filtraPorEstado, "não era o alvo").toBe(true);
+    expect(amarras(comHead, PAYLOAD_DO_BACKLOG).semJanela, "não era o alvo").toBe(true);
+  });
+
+  it("CONTROLE POSITIVO: filtrar por instante do Deno fica vermelho", () => {
+    const comRelogio = CONSULTA_DO_BACKLOG.replace(
+      ".limit(1);",
+      '.lt("claimed_until", new Date(Date.now() - 90_000).toISOString())\n      .limit(1);',
+    );
+    expect(comRelogio, "a cirurgia do controle não achou o limit").not.toBe(CONSULTA_DO_BACKLOG);
+    expect(amarras(comRelogio, PAYLOAD_DO_BACKLOG).semRelogioDoDeno).toBe(false);
+    expect(amarras(comRelogio, PAYLOAD_DO_BACKLOG).filtraPorEstado, "não era o alvo").toBe(true);
+  });
+
+  it("CONTROLE POSITIVO: anexar `window_days` ao backlog fica vermelho", () => {
+    const comJanela = PAYLOAD_DO_BACKLOG.replace(
+      "        count:",
+      "        window_days: PURGE_DONE_AFTER_DAYS,\n        count:",
+    );
+    expect(comJanela, "a cirurgia do controle não achou o count do payload")
+      .not.toBe(PAYLOAD_DO_BACKLOG);
+    expect(amarras(CONSULTA_DO_BACKLOG, comJanela).semJanela).toBe(false);
+    expect(
+      amarras(CONSULTA_DO_BACKLOG, comJanela).entregaAIdadeCrua,
+      "não era o alvo",
+    ).toBe(true);
+  });
+});
+
+describe("o painel mede a idade contra o relógio do SERVIDOR, e a copy vem do núcleo", () => {
+  it("a idade é medida contra `generated_at`, nunca contra o relógio do navegador", () => {
+    // `received_at` vem do relógio do BANCO. Medir contra o do NAVEGADOR deixaria
+    // um viewer com hora errada inventando horas de backlog — ou escondendo as que
+    // existem. `generated_at` põe a comparação servidor-contra-servidor, e a
+    // defasagem que resta desloca uma idade de horas em milissegundos.
+    expect(
+      PANEL,
+      "o painel voltou a medir a idade do backlog pelo relógio do navegador",
+    ).toContain("describeInboundBacklog(inbound_queue.pending, generated_at)");
+  });
+
+  it("a copy NÃO é literal no call site — ela mora no núcleo testado", () => {
+    // Invariante deste repo: copy que afirma consequência diz QUAL, e mora em
+    // função pura em `src/`. Literal aqui poria a frase fora do alcance do teste
+    // que confere se ela nomeia as DUAS causas.
+    expect(PANEL, "a frase de parada foi inlinada no painel").not.toContain(
+      "não está drenando",
+    );
+    expect(PANEL, "o ponteiro de investigação foi inlinado no painel").not.toContain(
+      "net._http_response",
+    );
+    expect(PANEL).toMatch(/\{backlog\.detail\}/);
+  });
+
+  it("`pending` ausente ESCONDE o tile, nunca renderiza zero", () => {
+    // A EF é deployada à mão e as duas contagens de estado terminal foram ao ar
+    // antes deste campo: uma resposta pode ter o bloco e não ter `pending`.
+    // Renderizar 0 ali afirmaria fila vazia sobre uma EF que nem sabe responder.
+    expect(PANEL).toContain("{inbound_queue.pending && (");
+  });
+
+  it("o backlog é renderizado ANTES das duas contagens acumuladas", () => {
+    // Hierarquia é parte da correção: é o único número aqui que responde "o
+    // pipeline está andando?", e `dead_letter: 0` é a resposta enganosa que o
+    // operador leria primeiro se a ordem se invertesse.
+    const backlog = PANEL.indexOf("{inbound_queue.pending && (");
+    const dead = PANEL.indexOf("Dead letter (últimos");
+    expect(backlog).toBeGreaterThan(-1);
+    expect(dead).toBeGreaterThan(-1);
+    expect(backlog).toBeLessThan(dead);
   });
 });
 

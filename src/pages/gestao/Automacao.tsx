@@ -89,6 +89,7 @@ import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 import { formatPhone } from "@/lib/utils";
+import { describeInboundBacklog } from "@/lib/whatsapp-inbound-backlog";
 /**
  * Núcleo puro do backend (sem Deno-only deps — `whatsapp-provider-core.ts` só
  * importa `phone.ts`, que também é puro). Import relativo fora de `src/` é o
@@ -1882,7 +1883,48 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
               <CardTitle className="text-base">Fila de inbound</CardTitle>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
+            {/* O BACKLOG VEM PRIMEIRO, e em linha própria, porque é a única coisa
+                aqui que responde "o pipeline está andando?". As duas contagens
+                abaixo são de estados TERMINAIS, e a de dead letter responde com a
+                verdade mais enganosa disponível: quem promove a `dead` é a
+                varredura, então varredura parada devolve `0` honestamente enquanto
+                a fila enche. Hierarquia visual é parte da correção, não enfeite.
+
+                `pending` pode faltar mesmo com o bloco presente (a EF é deployada à
+                mão e as duas contagens acima foram ao ar antes deste campo): a
+                ausência esconde o tile em vez de renderizar 0. */}
+            {inbound_queue.pending && (() => {
+              // `generated_at` e não `Date.now()`: o `received_at` vem do relógio do
+              // BANCO, e medir contra o relógio do NAVEGADOR deixaria um viewer com
+              // hora errada inventando horas de backlog. Servidor contra servidor.
+              const backlog = describeInboundBacklog(inbound_queue.pending, generated_at);
+              return (
+                <div
+                  className={
+                    backlog.alarming
+                      ? "rounded border border-destructive/20 bg-destructive/10 px-3 py-2"
+                      : ""
+                  }
+                >
+                  <p className="text-xs text-muted-foreground">
+                    Na fila agora (aguardando ou em processamento)
+                  </p>
+                  <p
+                    className={`font-medium ${backlog.alarming ? "text-destructive" : ""}`}
+                  >
+                    {backlog.value}
+                  </p>
+                  <p
+                    className={`text-xs ${
+                      backlog.alarming ? "text-destructive" : "text-muted-foreground"
+                    }`}
+                  >
+                    {backlog.detail}
+                  </p>
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
               <div>
                 <p className="text-xs text-muted-foreground">

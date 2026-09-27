@@ -603,6 +603,61 @@ export const SWEEP_WALL_CLOCK_BUDGET_MS = 120_000;
 export const SWEEP_SELECT_LIMIT = 20;
 
 /**
+ * Intervalo do agendamento da varredura, em milissegundos.
+ *
+ * GÊMEO DECLARADO da expressão de um-em-um-minuto do `cron.schedule` na migration
+ * 114 (SQL não importa TypeScript, então o ponteiro é este comentário — e o pino do
+ * teste de acoplamento fica vermelho se a expressão cron mudar sem este número).
+ * A expressão não aparece escrita aqui porque ela contém a sequência que fecharia
+ * este comentário; quem procura o literal procura na 114.
+ *
+ * Existe por UMA razão: a granularidade do cron é o que separa "a linha está
+ * esperando o próximo passo da escada" de "ninguém vem buscá-la". Sem ela, o
+ * limite de idade abaixo mediria só a escada e chamaria de parada uma fila que
+ * está simplesmente entre dois minutos.
+ */
+export const INBOUND_SWEEP_INTERVAL_MS = 60_000;
+
+/**
+ * Idade máxima que uma linha NÃO-TERMINAL pode ter sem que algo esteja errado.
+ *
+ * É o número que transforma uma CONTAGEM em SINAL. "500 linhas em `received`" não
+ * distingue rajada legítima de varredura morta; "a mais antiga está aqui há três
+ * horas" não pode ser nada além da segunda — a escada tem três degraus e acaba.
+ *
+ * DERIVADO, nunca digitado: a soma da escada (o tempo que a linha passa
+ * legitimamente ESPERANDO) mais, para cada claim, um intervalo de cron (o tempo
+ * até alguém vir buscá-la) e um pior caso de processamento. São
+ * `INBOUND_MAX_ATTEMPTS + 1` claims, não `INBOUND_MAX_ATTEMPTS`: o caminho rápido
+ * (`EdgeRuntime.waitUntil`) gasta o primeiro, e o último é o que promove a `dead`
+ * sem processar. Subir o orçamento do agente, a escada ou o intervalo do cron sobe
+ * este limite sozinho, que é o ponto de derivá-lo.
+ *
+ * ─── É UM TETO FOLGADO, E ISSO É A ESCOLHA, NÃO IMPRECISÃO ────────────────────
+ *
+ * Hoje dá ~16 min, contra os ~7,5 min da escada pura. A folga não é medição de
+ * nada: nada desta fase foi deployado (ruling R10), `WORST_CASE_QUEUED_EVENT_MS`
+ * é ele próprio heurístico, e duas varreduras podem estar no ar ao mesmo tempo.
+ *
+ * Errar para MAIS custa latência de detecção — minutos, sobre uma condição que
+ * dura horas ou dias (uma varredura desagendada, ou um `pg_net` levando 401 desde
+ * uma rotação de `internal_api_key`, que é fire-and-forget e não reporta a
+ * ninguém). Errar para MENOS custa a credibilidade do número: um alarme falso
+ * numa fila que estava só entre dois minutos ensina o operador a ignorar o painel,
+ * e aí o sinal deixa de existir mesmo quando é verdadeiro. Neste repo isso não é
+ * teoria — a projeção de `whatsapp_channels.status` afirmou `connected` por 4,5
+ * dias e quem descobriu o descobriu por acaso.
+ *
+ * O QUE ELE NÃO AFIRMA: que a causa é a varredura. Um backlog mais profundo que
+ * `SWEEP_SELECT_LIMIT` linhas por intervalo demora mais que isto para drenar
+ * mesmo com a varredura perfeita. Quem fala com o operador é a copy em
+ * `src/lib/whatsapp-inbound-backlog.ts`, e ela nomeia as DUAS causas.
+ */
+export const MAX_PENDING_BACKLOG_AGE_MS =
+  INBOUND_RETRY_DELAYS_MS.reduce((soma, ms) => soma + ms, 0)
+  + (INBOUND_MAX_ATTEMPTS + 1) * (INBOUND_SWEEP_INTERVAL_MS + WORST_CASE_QUEUED_EVENT_MS);
+
+/**
  * A varredura para de COMEÇAR; ela NUNCA aborta o evento em curso.
  *
  * Abortar no meio deixaria reserva criada e cliente sem resposta — a mesma razão

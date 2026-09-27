@@ -49,6 +49,26 @@ export interface WhatsAppHealthQueueCount {
   window_days: number;
 }
 
+/**
+ * O BACKLOG NÃO É UMA `WhatsAppHealthQueueCount`, e a diferença é a ausência de
+ * `window_days`.
+ *
+ * Linha não-terminal nunca é purgada (`purge_whatsapp_inbound_events` só alcança
+ * `done` e `dead`), então este número é o estado AGORA, não um acumulado de N dias.
+ * Anexar uma janela por simetria com as outras duas seria afirmação falsa — o tipo
+ * separado é o que impede alguém de "unificar" os dois e reintroduzi-la.
+ *
+ * `oldest_received_at` é o `received_at` CRU da mais antiga, escrito pelo relógio do
+ * BANCO: a idade é calculada na exibição, contra o `generated_at` da resposta. Ele é
+ * AMBÍGUO sozinho (fila vazia e leitura falha dão o mesmo `null`) — quem desempata é
+ * o `count`, e `describeInboundBacklog` em `@/lib/whatsapp-inbound-backlog` é quem
+ * garante essa ordem.
+ */
+export interface WhatsAppHealthQueueBacklog {
+  count: number | null;
+  oldest_received_at: string | null;
+}
+
 export interface WhatsAppHealthResponse {
   success: boolean;
   generated_at: string;
@@ -62,6 +82,14 @@ export interface WhatsAppHealthResponse {
   inbound_queue?: {
     dead_letter: WhatsAppHealthQueueCount;
     unauthorized_terminal: WhatsAppHealthQueueCount;
+    /**
+     * OPCIONAL por si, e não só porque o bloco pai é: `dead_letter` e
+     * `unauthorized_terminal` foram ao ar numa versão anterior desta EF, então uma
+     * resposta pode ter o bloco e NÃO ter este campo. Tratar a ausência como
+     * `count: 0` afirmaria "fila vazia" sobre uma EF que nem sabe responder — a
+     * mesma armadilha do `?? 0`, um nível acima.
+     */
+    pending?: WhatsAppHealthQueueBacklog;
   };
   last_executions: WhatsAppHealthExecution[];
 }
