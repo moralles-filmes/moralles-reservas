@@ -87,6 +87,8 @@ describe("webhook-whatsapp captura o referral nos DOIS caminhos, no ponto certo"
       "describeCapturedReferral(",
     ]) expect(def).toContain(chamada);
     expect(def).not.toContain("23505");
+    // Quem conhece o SQLSTATE da perna cliente-vivo é o núcleo.
+    expect(def).not.toContain("P0A15");
     expect(def).not.toContain("shapeOf(");
   });
 

@@ -19,6 +19,8 @@
 //   - tamanho, medido em BYTES UTF-8 para a subárvore.
 // Provider fora de AD_TOUCHPOINT_PROVIDERS é RECUSADO aqui pelo mesmo motivo: o
 // CHECK de `provider` da 115 o recusaria.
+// A única recusa que não depende da entrada — cliente com `deleted_at` — chega
+// com SQLSTATE próprio (CUSTOMER_NOT_ALIVE_SQLSTATE) e NÃO é reentregável.
 //
 // Spec: docs/superpowers/specs/2026-09-27-datafy-fase-d-ctwa-referral-design.md
 
@@ -96,6 +98,31 @@ function isStorableJsonTree(value: unknown, depth: number): boolean {
   return false; // undefined, function, bigint, symbol: não vêm de JSON.parse
 }
 
+/**
+ * Chaves pessoais de PRIMEIRO nível descartadas da subárvore crua antes de
+ * gravar. A spec (D2) promete "telefone, nome, texto nunca nesta tabela", e o
+ * envelope da Datafy não foi medido: o núcleo cumpre a promessa em vez de
+ * confiar no envelope. Comparação exata pelo nome em minúsculas.
+ *
+ * LIMITAÇÃO consciente: chaves aninhadas NÃO são inspecionadas —
+ * `referral.welcome_message.text` é campo documentado do ANÚNCIO, não da pessoa.
+ */
+export const REFERRAL_RAW_DENIED_KEYS: ReadonlySet<string> = new Set([
+  "from", "wa_id", "phone", "phone_number", "name", "profile", "email", "contacts", "text",
+]);
+
+/** Só objeto não-array; `Object.fromEntries` preserva uma chave própria `__proto__`. */
+function dropDeniedKeys(raw: unknown): { raw: unknown; dropped: string[] } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { raw, dropped: [] };
+  const entries = Object.entries(raw as Record<string, unknown>);
+  const dropped = entries.map(([key]) => key).filter((key) => REFERRAL_RAW_DENIED_KEYS.has(key.toLowerCase()));
+  if (dropped.length === 0) return { raw, dropped };
+  return {
+    raw: Object.fromEntries(entries.filter(([key]) => !REFERRAL_RAW_DENIED_KEYS.has(key.toLowerCase()))),
+    dropped: dropped.sort(),
+  };
+}
+
 export type RawOmittedReason = "too_large" | "not_storable";
 
 function storableRaw(raw: unknown): { raw: unknown; omitted: RawOmittedReason | null } {
@@ -146,7 +173,13 @@ export type AdTouchpointRejectReason =
   | "invalid_message_at";
 
 export type BuildAdTouchpointResult =
-  | { ok: true; row: AdTouchpointRow; rawOmittedReason: RawOmittedReason | null }
+  | {
+    ok: true;
+    row: AdTouchpointRow;
+    rawOmittedReason: RawOmittedReason | null;
+    /** Nomes ORIGINAIS descartados pela denylist, ordenados. Vêm da denylist: logá-los não vaza valor. */
+    rawDroppedKeys: string[];
+  }
   | { ok: false; reason: AdTouchpointRejectReason };
 
 /**
@@ -166,10 +199,14 @@ export function buildAdTouchpointRow(input: AdTouchpointInput): BuildAdTouchpoin
   const ms = input.messageAtMs;
   if (!Number.isFinite(ms) || ms < 0 || ms > MESSAGE_AT_MAX_MS) return { ok: false, reason: "invalid_message_at" };
 
-  const { raw, omitted } = storableRaw(input.referral.raw);
+  // A denylist roda ANTES da medição de tamanho e do isStorableJsonTree: o que
+  // sai por ser pessoal não pode derrubar a subárvore inteira.
+  const semPessoais = dropDeniedKeys(input.referral.raw);
+  const { raw, omitted } = storableRaw(semPessoais.raw);
   return {
     ok: true,
     rawOmittedReason: omitted,
+    rawDroppedKeys: semPessoais.dropped,
     row: {
       unit_id: input.unitId,
       channel_id: input.channelId,
@@ -186,14 +223,28 @@ export function buildAdTouchpointRow(input: AdTouchpointInput): BuildAdTouchpoin
   };
 }
 
-export type TouchpointInsertOutcome = "inserted" | "duplicate" | "failed";
+/**
+ * Gêmeo declarado do `errcode` da perna `cliente-vivo` do guard da migration
+ * 115 (SQL não importa TypeScript); o teste gêmeo reprova divergência.
+ */
+export const CUSTOMER_NOT_ALIVE_SQLSTATE = "P0A15";
 
-/** `23505` é dedupe silencioso (reentrega); qualquer outro erro é falha reentregável. */
+export type TouchpointInsertOutcome = "inserted" | "duplicate" | "customer_not_alive" | "failed";
+
+/**
+ * `23505` é dedupe silencioso (reentrega). `CUSTOMER_NOT_ALIVE_SQLSTATE` é o
+ * cliente com `deleted_at`: o handler loga e segue, SEM reentrega — a recusa é
+ * persistente (um soft delete direto que não troca o telefone faz
+ * `resolveOrCreateCustomer` devolver sempre o mesmo cliente), e reentregá-la
+ * calaria o cliente para sempre. Qualquer outro erro é falha reentregável.
+ */
 export function classifyTouchpointInsert(
   error: { code?: string | null } | null | undefined,
 ): TouchpointInsertOutcome {
   if (!error) return "inserted";
-  return error.code === "23505" ? "duplicate" : "failed";
+  if (error.code === "23505") return "duplicate";
+  if (error.code === CUSTOMER_NOT_ALIVE_SQLSTATE) return "customer_not_alive";
+  return "failed";
 }
 
 function firstMetaMessage(payload: unknown): Record<string, unknown> | null {
@@ -224,6 +275,7 @@ export function describeCapturedReferral(args: {
   outcome: TouchpointCaptureOutcome;
   referral: AdReferral;
   rawOmittedReason?: RawOmittedReason | null;
+  rawDroppedKeys?: string[];
   rejectReason?: AdTouchpointRejectReason;
 }): Record<string, unknown> {
   return {
@@ -232,6 +284,7 @@ export function describeCapturedReferral(args: {
     message_type: normalizeTouchpointText(args.referral.messageType, MESSAGE_TYPE_MAX_LEN),
     referral_shape: shapeOf(args.referral.raw),
     raw_omitted: args.rawOmittedReason ?? null,
+    raw_dropped_keys: args.rawDroppedKeys ?? [],
     ...(args.rejectReason ? { reason: args.rejectReason } : {}),
   };
 }

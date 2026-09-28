@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
   AD_TOUCHPOINT_PROVIDERS,
   CTWA_CLID_MAX_LEN,
+  CUSTOMER_NOT_ALIVE_SQLSTATE,
   MESSAGE_TYPE_MAX_LEN,
   PROVIDER_MESSAGE_ID_MAX_LEN,
   REFERRAL_RAW_DB_MAX_BYTES,
@@ -120,6 +121,33 @@ describe("migration 115 ⇔ núcleo do touchpoint", () => {
     expect(sql).not.toMatch(/grant\s+[^;]*\bon\s+function\b/);
   });
 
+  it("a tabela é revogada de anon e authenticated — segunda tranca além da RLS forçada", () => {
+    expect(semComentarios(SQL).toLowerCase()).toContain("revoke all on table whatsapp_ad_touchpoints from anon, authenticated");
+  });
+});
+
+/**
+ * A perna `cliente-vivo` recusa com o SQLSTATE que o núcleo classifica como
+ * `customer_not_alive` (loga e segue). Comentários fora: um `P0A15` citado em
+ * comentário não prova nada sobre o `raise`.
+ */
+function pernaClienteVivoUsaSqlstateDoNucleo(sql: string): boolean {
+  const body = guardBody(sql);
+  const { open, close } = acharMarcador(body, "cliente-vivo");
+  if (open === -1 || close === -1 || close < open) throw new Error("marcadores <cliente-vivo> ausentes no guard");
+  return semComentarios(body.slice(open, close)).includes(`errcode = '${CUSTOMER_NOT_ALIVE_SQLSTATE}'`);
+}
+
+describe("perna cliente-vivo ⇔ CUSTOMER_NOT_ALIVE_SQLSTATE do núcleo", () => {
+  it("o raise da perna usa o SQLSTATE dedicado do núcleo", () => {
+    expect(pernaClienteVivoUsaSqlstateDoNucleo(SQL)).toBe(true);
+  });
+
+  it("CONTROLE POSITIVO: a perna de volta a check_violation reprova", () => {
+    const sabotado = SQL.replace(`errcode = '${CUSTOMER_NOT_ALIVE_SQLSTATE}'`, "errcode = 'check_violation'");
+    expect(sabotado).not.toBe(SQL);
+    expect(pernaClienteVivoUsaSqlstateDoNucleo(sabotado)).toBe(false);
+  });
 });
 
 describe("marcadores do guard (fix F4): aninhamento, não só presença no arquivo", () => {

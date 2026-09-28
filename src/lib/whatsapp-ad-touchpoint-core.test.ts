@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   AD_TOUCHPOINT_PROVIDERS,
   CTWA_CLID_MAX_LEN,
+  CUSTOMER_NOT_ALIVE_SQLSTATE,
   MESSAGE_AT_MAX_MS,
+  REFERRAL_RAW_DENIED_KEYS,
   REFERRAL_RAW_MAX_BYTES,
   REFERRAL_RAW_MAX_DEPTH,
   buildAdTouchpointRow,
@@ -209,6 +211,85 @@ describe("classifyTouchpointInsert", () => {
     expect(classifyTouchpointInsert({ code: "23514" })).toBe("failed");
     expect(classifyTouchpointInsert({ code: "PGRST204" })).toBe("failed");
     expect(classifyTouchpointInsert({})).toBe("failed");
+  });
+
+  // Recusa persistente não pode virar reentrega eterna: um soft delete direto
+  // que não troca o telefone faria o mesmo cliente ser recusado para sempre.
+  it("P0A15 (perna cliente-vivo da 115) → customer_not_alive; o check_violation das outras pernas continua failed", () => {
+    expect(CUSTOMER_NOT_ALIVE_SQLSTATE).toBe("P0A15");
+    expect(classifyTouchpointInsert({ code: "P0A15" })).toBe("customer_not_alive");
+    expect(classifyTouchpointInsert({ code: "23514" })).toBe("failed");
+  });
+});
+
+describe("subárvore crua — chaves pessoais de PRIMEIRO nível descartadas", () => {
+  const PESSOAIS = ["5511911110001", "5511911110002", "Maria"];
+  const vazaPessoal = (saida: unknown) => PESSOAIS.filter((s) => JSON.stringify(saida).includes(s));
+
+  it("a denylist é a decidida, em minúsculas", () => {
+    expect([...REFERRAL_RAW_DENIED_KEYS].sort()).toEqual(
+      ["contacts", "email", "from", "name", "phone", "phone_number", "profile", "text", "wa_id"],
+    );
+  });
+
+  it("wa_id, Phone (caixa ignorada) e profile saem; o resto fica; nomes descartados ordenados; o log não vaza valor", () => {
+    const raw = { ctwa_clid: "c", source_id: "s", wa_id: "5511911110001", Phone: "5511911110002", profile: { name: "Maria" } };
+    const ref = referral({ raw, ctwaClid: "c", sourceId: "s" });
+    const r = aceito(buildAdTouchpointRow(input({ referral: ref })));
+    expect(r.row.referral).toEqual({ ctwa_clid: "c", source_id: "s" });
+    expect(r.rawDroppedKeys).toEqual(["Phone", "profile", "wa_id"]);
+    expect(r.rawOmittedReason).toBeNull();
+    expect(vazaPessoal(r.row)).toEqual([]);
+
+    const log = describeCapturedReferral({
+      provider: "datafy",
+      outcome: "inserted",
+      referral: ref,
+      rawOmittedReason: r.rawOmittedReason,
+      rawDroppedKeys: r.rawDroppedKeys,
+    });
+    expect(log.raw_dropped_keys).toEqual(["Phone", "profile", "wa_id"]);
+    expect(vazaPessoal(log)).toEqual([]);
+  });
+
+  it("CONTROLE POSITIVO: a mesma asserção, sobre a subárvore gravada SEM a denylist, acusa o telefone", () => {
+    const semDenylist = { referral: { ctwa_clid: "c", source_id: "s", wa_id: "5511911110001", Phone: "5511911110002", profile: { name: "Maria" } } };
+    expect(vazaPessoal(semDenylist)).toContain("5511911110001");
+  });
+
+  it("CONTROLE: chave aninhada e `body` não são negados — welcome_message.text é campo do anúncio, não da pessoa", () => {
+    const raw = { welcome_message: { text: "Olá!" }, body: "Clique" };
+    const r = aceito(buildAdTouchpointRow(input({ referral: referral({ raw }) })));
+    expect(r.row.referral).toEqual(raw);
+    expect(r.rawDroppedKeys).toEqual([]);
+  });
+
+  it("as chaves negadas saem ANTES da medição de tamanho e da checagem de gravabilidade", () => {
+    const grande = aceito(buildAdTouchpointRow(input({ referral: referral({ raw: { ctwa_clid: "c", text: { body: "ç".repeat(9000) } } }) })));
+    expect(grande.row.referral).toEqual({ ctwa_clid: "c" });
+    expect(grande.rawOmittedReason).toBeNull();
+    expect(grande.rawDroppedKeys).toEqual(["text"]);
+
+    const comNul = aceito(buildAdTouchpointRow(input({ referral: referral({ raw: { ctwa_clid: "c", name: "a\u0000b" } }) })));
+    expect(comNul.row.referral).toEqual({ ctwa_clid: "c" });
+    expect(comNul.rawOmittedReason).toBeNull();
+    expect(comNul.rawDroppedKeys).toEqual(["name"]);
+  });
+
+  it.each([
+    ["array", [{ wa_id: "5511911110001" }]],
+    ["string", "texto"],
+    ["número", 42],
+    ["null", null],
+  ])("raw %s: a denylist não se aplica e não lança", (_rotulo, raw) => {
+    const r = aceito(buildAdTouchpointRow(input({ referral: referral({ raw }) })));
+    expect(r.row.referral).toEqual(raw);
+    expect(r.rawDroppedKeys).toEqual([]);
+  });
+
+  it("describeCapturedReferral sem rawDroppedKeys emite raw_dropped_keys = []", () => {
+    expect(describeCapturedReferral({ provider: "official", outcome: "rejected", referral: referral(), rejectReason: "message_id_mismatch" }).raw_dropped_keys)
+      .toEqual([]);
   });
 });
 

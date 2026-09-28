@@ -774,6 +774,10 @@ async function persistInboundOnly(args: {
  *   de qualquer log — comportamento de hoje, byte a byte.
  * - Falha de banco LANÇA `ad_touchpoint_persist_failed`: o `catch` externo libera
  *   o claim e o provider reentrega (D8 da spec). `23505` é dedupe silencioso.
+ * - Cliente com `deleted_at` (`customer_not_alive`, SQLSTATE dedicado da 115)
+ *   NÃO lança: loga em `warn` e segue. A recusa é persistente — um soft delete
+ *   direto que não troca o telefone devolve sempre o mesmo cliente — e
+ *   reentregá-la calaria o cliente para sempre.
  * - Recusa do núcleo NÃO lança: bug nosso de split não pode calar o cliente.
  *
  * `unitId`/`channelId` vêm do canal lido pela querystring — nunca do payload: o
@@ -844,10 +848,16 @@ async function captureAdTouchpoint(args: {
 
   const { error: insertError } = await supabase.from("whatsapp_ad_touchpoints").insert(built.row);
   const outcome = classifyTouchpointInsert(insertError);
-  jsonLog(outcome === "failed" ? "error" : "info", {
+  jsonLog(outcome === "failed" ? "error" : outcome === "customer_not_alive" ? "warn" : "info", {
     requestId: args.requestId,
     evt: "ad_referral_captured",
-    ...describeCapturedReferral({ provider: args.provider, outcome, referral, rawOmittedReason: built.rawOmittedReason }),
+    ...describeCapturedReferral({
+      provider: args.provider,
+      outcome,
+      referral,
+      rawOmittedReason: built.rawOmittedReason,
+      rawDroppedKeys: built.rawDroppedKeys,
+    }),
     // Só o SQLSTATE: a mensagem do Postgres pode repetir valores da linha.
     ...(outcome === "failed" ? { code: insertError?.code ?? null } : {}),
   });

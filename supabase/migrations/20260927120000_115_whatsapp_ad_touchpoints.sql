@@ -70,6 +70,8 @@ create index if not exists whatsapp_ad_touchpoints_channel_idx
 
 alter table whatsapp_ad_touchpoints enable row level security;
 alter table whatsapp_ad_touchpoints force row level security;
+-- Segunda tranca além da RLS forçada, como em 20260817170753_whatsapp_multiprovider_uazapi.sql: a tabela guarda identificador pessoal pseudonimizado.
+revoke all on table whatsapp_ad_touchpoints from anon, authenticated;
 -- Sem policies: só service_role, via Edge Function. Mesma disciplina de
 -- whatsapp_channels, processed_messages e whatsapp_inbound_events: a separação
 -- entre clientes depende do `.eq(...)` no código e, aqui, do guard abaixo.
@@ -143,13 +145,16 @@ begin
 
   -- <cliente-vivo>
   -- Sem isto, uma anonimização que rodasse ENTRE o resolveOrCreateCustomer e
-  -- o INSERT deixaria um ctwa_clid preso a um cliente já anonimizado. O `for
-  -- share` acima fecha a corrida (F1): a recusa é reentregável e se cura
-  -- sozinha — a anonimização troca o telefone, e a reentrega cria um cliente
-  -- novo.
+  -- o INSERT deixaria um ctwa_clid preso a um cliente já anonimizado; o `for
+  -- share` acima continua fechando essa corrida. O SQLSTATE é DEDICADO porque
+  -- o núcleo o classifica como `customer_not_alive` (loga e segue, sem
+  -- reentrega): recusa persistente não pode virar reentrega eterna, e um soft
+  -- delete direto que não troca o telefone faria o resolveOrCreateCustomer
+  -- devolver sempre o mesmo cliente. Gêmeo de CUSTOMER_NOT_ALIVE_SQLSTATE no
+  -- núcleo (_shared/whatsapp-ad-touchpoint-core.ts).
   if v_cust_deleted is not null then
     raise exception 'whatsapp_ad_touchpoints: cliente % anonimizado', new.customer_id
-      using errcode = 'check_violation';
+      using errcode = 'P0A15';
   end if;
   -- </cliente-vivo>
 
@@ -171,8 +176,10 @@ create trigger whatsapp_ad_touchpoints_guard_trg
 -- TEM de ser SECURITY DEFINER: a tabela é FORCE RLS sem policies, e um DELETE
 -- rodado como `authenticated` (um membro fazendo soft delete pelo PostgREST)
 -- apagaria ZERO linhas em silêncio — o ctwa_clid do cliente anonimizado
--- sobreviveria. Como dono (`postgres`, rolbypassrls = true, medido em produção)
--- o DELETE alcança as linhas. Controle positivo C-115-4 no pré-voo.
+-- sobreviveria —, ou, com o `revoke` de tabela acima, estouraria 42501 e
+-- derrubaria o próprio soft delete. As duas são o defeito. Como dono
+-- (`postgres`, rolbypassrls = true, medido em produção) o DELETE alcança as
+-- linhas. Controle positivo C-115-4 no pré-voo.
 create or replace function public.purge_ad_touchpoints_on_customer_anonymize()
 returns trigger
 language plpgsql
@@ -213,6 +220,10 @@ revoke all on function public.purge_ad_touchpoints_on_customer_anonymize() from 
 -- 3. Triggers presentes (esperado: 2 linhas):
 --   select tgname from pg_trigger where not tgisinternal
 --    and tgname in ('whatsapp_ad_touchpoints_guard_trg', 'customers_purge_ad_touchpoints_trg');
+-- 4. Tabela sem privilégio para anon/authenticated (esperado: 8 linhas, todas f):
+--   select r, p, has_table_privilege(r, 'public.whatsapp_ad_touchpoints', p)
+--     from unnest(array['anon', 'authenticated']) r,
+--          unnest(array['select', 'insert', 'update', 'delete']) p;
 --
 -- Rollback:
 --   drop trigger if exists customers_purge_ad_touchpoints_trg on public.customers;
