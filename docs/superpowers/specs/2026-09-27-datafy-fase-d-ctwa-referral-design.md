@@ -182,7 +182,7 @@ create table if not exists whatsapp_ad_touchpoints (
 - `enable` + `force row level security`, **sem policies**. Mesma disciplina de `whatsapp_channels`, `processed_messages` e `whatsapp_inbound_events`: a separação entre clientes depende inteiramente do `.eq("unit_id", …)` no código, e aqui do guard da §4.3 também.
 - As duas funções de trigger: `revoke all ... from public, anon, authenticated` com a assinatura completa (`CREATE FUNCTION` concede a PUBLIC; regra do `CLAUDE.md` para toda trigger function). Nenhuma é concedida a `anon`/`authenticated`, então nenhuma entra em `scripts/function-acl-allowlist.json`.
 - **Sem RPC nova.** O `INSERT` é feito pelo supabase-js com `service_role`, e nenhuma função exposta ao PostgREST é criada.
-- O lint INFO 0008 (`rls_enabled_no_policy`) passa de 17 para 18 tabelas; o `_doc` da allowlist cita o número e é atualizado.
+- O lint INFO 0008 (`rls_enabled_no_policy`) passa de 17 para **19** tabelas depois da 111 e da 115 (o 17 foi medido em 2026-09-18, antes da `whatsapp_inbound_events` da Fase C); o `_doc` da allowlist cita o número e é atualizado. *Corrigido na execução: a redação original dizia 18 e esquecia a tabela da Fase C.*
 
 ---
 
