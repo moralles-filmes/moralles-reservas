@@ -8,8 +8,17 @@ import {
   type PriceLookup,
 } from "./ai-call-authorizer-core.ts";
 import type { BeforeCallContext, BeforeCallDecision } from "./ai-budget-core.ts";
+import {
+  AgentDeadlineError,
+  isAgentDeadlineError,
+  mayStartAnotherRound,
+} from "./agent-deadline-core.ts";
 
 export type { AgentCallMeta, AgentCallOutcome, BeforeCallDecision };
+// Reexportados para que o chamador do loop (hoje `webhook-whatsapp`) importe a
+// marca do deadline do MESMO lugar de onde importa `runAgentLoop` — e não
+// precise saber que a decisão mora num núcleo puro à parte.
+export { AgentDeadlineError, isAgentDeadlineError };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -120,6 +129,18 @@ export interface AgentLoopOptions {
   onUsage?: (usage: AgentUsage) => void;
   /** Plano D. Ausente = nenhuma autorização financeira (comportamento legado). */
   budget?: AgentBudgetHooks;
+  /**
+   * Deadline SUAVE (Fase C). Checado no topo de cada rodada: `false` impede
+   * COMEÇAR outra, e a rodada em curso termina normalmente.
+   *
+   * Abortar no meio deixaria reserva criada e cliente sem resposta — o risco
+   * que `mutatingToolUsed` já tenta cobrir. AUSENTE = comportamento de hoje,
+   * exato: quem não passa a opção não tem rodada recusada por prazo nenhum.
+   *
+   * O loop NÃO conhece relógio: quem sabe quando o prazo venceu é quem passa a
+   * função. Aqui só se pergunta.
+   */
+  shouldContinue?: () => boolean;
 }
 
 export const DEFAULT_MODELS: Record<AIProvider, string> = {
@@ -516,6 +537,20 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<AgentLo
 
   let iterations = MAX_ITERATIONS;
   while (iterations-- > 0) {
+    // Deadline SUAVE: impede COMEÇAR outra rodada; a em curso terminou inteira.
+    // A pergunta é do núcleo, e não uma condição escrita aqui: AUSENTE tem de
+    // significar "roda", e a forma curta que um lint de estilo sugere diz o
+    // oposto. O porquê inteiro está em `agent-deadline-core.ts`.
+    if (!mayStartAnotherRound(opts.shouldContinue)) {
+      console.warn(JSON.stringify({
+        level: "warn",
+        evt: "agent_deadline_reached",
+        provider: opts.provider,
+        iterations_left: iterations,
+      }));
+      throw new AgentDeadlineError(opts.provider, iterations);
+    }
+
     // Cache breakpoint #3: último bloco da conversa. Reposiciona a cada turno
     // para que tool_results acumulados também entrem em cache nas iterações
     // seguintes do mesmo loop. Limpamos antes para nunca exceder 4 breakpoints.
@@ -615,6 +650,20 @@ async function runOpenAICompatible(
 
   let iterations = MAX_ITERATIONS;
   while (iterations-- > 0) {
+    // Deadline SUAVE: impede COMEÇAR outra rodada; a em curso terminou inteira.
+    // A pergunta é do núcleo, e não uma condição escrita aqui: AUSENTE tem de
+    // significar "roda", e a forma curta que um lint de estilo sugere diz o
+    // oposto. O porquê inteiro está em `agent-deadline-core.ts`.
+    if (!mayStartAnotherRound(opts.shouldContinue)) {
+      console.warn(JSON.stringify({
+        level: "warn",
+        evt: "agent_deadline_reached",
+        provider: opts.provider,
+        iterations_left: iterations,
+      }));
+      throw new AgentDeadlineError(opts.provider, iterations);
+    }
+
     const call = await callWithBudget<any>(opts, {
       provider: opts.provider,
       model,
@@ -812,6 +861,20 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLo
   let emptyRetried = false;
   let iterations = MAX_ITERATIONS;
   while (iterations-- > 0) {
+    // Deadline SUAVE: impede COMEÇAR outra rodada; a em curso terminou inteira.
+    // A pergunta é do núcleo, e não uma condição escrita aqui: AUSENTE tem de
+    // significar "roda", e a forma curta que um lint de estilo sugere diz o
+    // oposto. O porquê inteiro está em `agent-deadline-core.ts`.
+    if (!mayStartAnotherRound(opts.shouldContinue)) {
+      console.warn(JSON.stringify({
+        level: "warn",
+        evt: "agent_deadline_reached",
+        provider: opts.provider,
+        iterations_left: iterations,
+      }));
+      throw new AgentDeadlineError(opts.provider, iterations);
+    }
+
     const body = JSON.stringify({
       system_instruction: { parts: [{ text: opts.systemPrompt }] },
       contents,

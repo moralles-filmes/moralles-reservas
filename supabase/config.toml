@@ -1,3 +1,11 @@
+# SÓ DEV LOCAL. Sem esta política o CLI encerra a instância assim que a resposta
+# sai, e a tarefa despachada por `EdgeRuntime.waitUntil` no `webhook-whatsapp`
+# (Fase C) nunca completa em `supabase functions serve` — o exercício manual da
+# ingestão assíncrona mediria um caminho que nunca roda. Não tem efeito em
+# produção, onde o runtime é gerenciado.
+[edge_runtime]
+policy = "per_worker"
+
 [functions.webhook-whatsapp]
 verify_jwt = false
 

@@ -49,12 +49,15 @@ describe("datafy é Meta-shaped e reusa os parsers official", () => {
     expect(datafy.parseStatusCallback).toBe(official.parseStatusCallback);
     expect(datafy.parseOwnMessageEchoes).toBe(official.parseOwnMessageEchoes);
     expect(datafy.peekInboundMedia).toBe(official.peekInboundMedia);
+    expect(typeof official.parseAdReferral).toBe("function");
+    expect(datafy.parseAdReferral).toBe(official.parseAdReferral);
   });
 
   it("datafy declara as capabilities que a Fase A+B realmente entrega", () => {
     const caps = PROVIDER_CAPABILITIES.datafy;
     expect(caps.manualCredentials).toBe(true);
     expect(caps.deliveryReceipts).toBe(true);
+    // Capturado desde a Fase D (parseAdReferral).
     expect(caps.adReferral).toBe(true);
     expect(caps.rawCloudApiProxy).toBe(true);
     expect(caps.qrConnection).toBe(false);

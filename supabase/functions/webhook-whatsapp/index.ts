@@ -4,6 +4,7 @@ import {
   runAgentLoop,
   resolveModel,
   estimateCostUsd,
+  isAgentDeadlineError,
   sanitizeProviderError,
   type AgentBudgetHooks,
   type AgentLoopResult,
@@ -34,10 +35,37 @@ import {
   type MutationOutcome,
 } from "../_shared/ai-budget-copy.ts";
 import { resolveOrgEntitlements } from "../_shared/entitlements.ts";
-import { isFlagEnabled } from "../_shared/platform-flags.ts";
+import { checkFlagEnabled, isFlagEnabled } from "../_shared/platform-flags.ts";
+// ─── Ingestão assíncrona (Fase C) ────────────────────────────────────────────
+// Adapter de I/O; NENHUMA decisão desta fase é redigitada aqui. `vitest` não
+// importa este arquivo (`serve()` no carregamento + imports de `deno.land`),
+// então regra escrita aqui só se confere por leitura — e leitura já deixou
+// passar defeito duas vezes neste repo.
+import {
+  agentDeadlineVerdict,
+  decideAckVerdict,
+  decideIngestionMode,
+  decodeRawBodyHex,
+  deliveryDedupeKey,
+  encodeRawBodyHex,
+  parseSelectedEventIds,
+  providerDeclaresDeliveryId,
+  queuedEventVerdict,
+  sanitizeQueueErrorText,
+  shouldPromoteToDead,
+  sweepShouldStartAnother,
+  DATAFY_DELIVERY_ID_HEADER,
+  INBOUND_DEBOUNCE_WINDOW_MS,
+  SIGNATURE_HEADER_BY_SCHEME,
+  SWEEP_SELECT_LIMIT,
+  type IngestionSource,
+  type InsertOutcome,
+} from "../_shared/whatsapp-inbound-queue-core.ts";
 import {
   WEBHOOK_SIGNATURE_SCHEME,
+  hasAdReferralCapture,
   isMetaShapedProvider,
+  parseAdReferral,
   parseInbound,
   parseOwnMessageEchoes,
   peekInboundMedia,
@@ -59,10 +87,20 @@ import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.t
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { splitMetaWebhookPayloadCore } from "../_shared/whatsapp-meta-batch-core.ts";
 import { shapeOf } from "../_shared/webhook-payload-shape-core.ts";
+// ─── Referral CTWA (Fase D) ──────────────────────────────────────────────────
+// Adapter de I/O; a decisão é do núcleo. Nada aqui reimplementa limite, dedupe
+// ou forma de log.
+import {
+  buildAdTouchpointRow,
+  classifyTouchpointInsert,
+  describeCapturedReferral,
+  describeReferralProbe,
+} from "../_shared/whatsapp-ad-touchpoint-core.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
   genRequestId,
   jsonLog,
+  requireInternalAuth,
   sanitizePhone,
 } from "../_shared/security.ts";
 import {
@@ -82,6 +120,23 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
+
+/**
+ * `EdgeRuntime.waitUntil` — primeira utilização neste repo (o `asaas-webhook`
+ * documenta deliberadamente NÃO usá-lo, porque o Asaas corta em 10 s).
+ *
+ * Declarado porque o runtime expõe este global e o compilador não o conhece;
+ * declarado ESTREITO (só `waitUntil`, que recebe uma promise e devolve `void`)
+ * porque o resto do objeto não é usado. Como `tsc -b` não alcança
+ * `supabase/functions/`, esquecer esta declaração não reprovaria nada
+ * localmente — o `no-undef` do eslint já conhece o global, e é só isso que ele
+ * vê.
+ *
+ * NÃO é garantia de conclusão: o wall clock é do WORKER, não da request, e a
+ * própria doc do Supabase diz que `waitUntil` "does not extend the hard wall
+ * clock limit". O caminho rápido é OTIMISTA; a varredura é o backstop.
+ */
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
 function metaPhoneNumberIds(payload: unknown): string[] {
   if (!payload || typeof payload !== "object") return [];
@@ -705,6 +760,110 @@ async function persistInboundOnly(args: {
   }
 }
 
+/**
+ * Fase D — captura do `referral` de anúncio Click-to-WhatsApp.
+ *
+ * Adapter de I/O: toda decisão está em `_shared/whatsapp-ad-touchpoint-core.ts`.
+ * Chamado nos DOIS caminhos de inbound (texto e mídia), sempre DEPOIS do claim de
+ * `processed_messages` (reentrega barrada não chega aqui; o UNIQUE é a segunda
+ * barreira) e ANTES de rate limit, billing, suspensão e de qualquer efeito
+ * externo — "esta pessoa chegou por este anúncio" não depende de a loja estar
+ * adimplente, e é o "antes de efeito externo" que torna a falha reentregável.
+ *
+ * - Provider sem `adReferral` (Z-API, WAHA, UazAPI): sai antes de qualquer I/O e
+ *   de qualquer log — comportamento de hoje, byte a byte.
+ * - Falha de banco LANÇA `ad_touchpoint_persist_failed`: o `catch` externo libera
+ *   o claim e o provider reentrega (D8 da spec). `23505` é dedupe silencioso.
+ * - Cliente com `deleted_at` (`customer_not_alive`, SQLSTATE dedicado da 115)
+ *   NÃO lança: loga em `warn` e segue. A recusa é persistente — um soft delete
+ *   direto que não troca o telefone devolve sempre o mesmo cliente — e
+ *   reentregá-la calaria o cliente para sempre.
+ * - Recusa do núcleo NÃO lança: bug nosso de split não pode calar o cliente.
+ *
+ * `unitId`/`channelId` vêm do canal lido pela querystring — nunca do payload: o
+ * referral é dado do cliente, não identidade de tenant.
+ */
+async function captureAdTouchpoint(args: {
+  requestId: string;
+  provider: WhatsAppProvider;
+  payload: unknown;
+  unitId: string;
+  channelId: string;
+  inboundProviderMessageId: string;
+  phone: string;
+  contactName: string | null;
+  messageAtMs: number;
+}): Promise<void> {
+  if (!hasAdReferralCapture(args.provider)) return;
+
+  jsonLog("info", {
+    requestId: args.requestId,
+    evt: "meta_inbound_referral_probe",
+    provider: args.provider,
+    ...describeReferralProbe(args.payload),
+  });
+
+  const referral = parseAdReferral(args.provider, args.payload);
+  if (!referral) return;
+
+  const { data: unitRow, error: unitError } = await supabase
+    .from("units")
+    .select("organization_id")
+    .eq("id", args.unitId)
+    .maybeSingle();
+  if (unitError || !unitRow?.organization_id) throw new Error("ad_touchpoint_persist_failed");
+
+  let customerId: string;
+  try {
+    // Idempotente. No caminho de texto o cliente ainda não foi resolvido neste
+    // ponto; no de mídia será resolvido de novo logo adiante — uma consulta a
+    // mais, só quando há referral.
+    const customer = await resolveOrCreateCustomer(supabase, {
+      organizationId: String(unitRow.organization_id),
+      phone: args.phone,
+      name: args.contactName ?? args.phone,
+    });
+    customerId = customer.id;
+  } catch {
+    throw new Error("ad_touchpoint_persist_failed");
+  }
+
+  const built = buildAdTouchpointRow({
+    provider: args.provider,
+    unitId: args.unitId,
+    channelId: args.channelId,
+    customerId,
+    inboundProviderMessageId: args.inboundProviderMessageId,
+    messageAtMs: args.messageAtMs,
+    referral,
+  });
+  if (built.ok === false) {
+    jsonLog("warn", {
+      requestId: args.requestId,
+      evt: "ad_referral_rejected",
+      ...describeCapturedReferral({ provider: args.provider, outcome: "rejected", referral, rejectReason: built.reason }),
+    });
+    return;
+  }
+
+  const { error: insertError } = await supabase.from("whatsapp_ad_touchpoints").insert(built.row);
+  const outcome = classifyTouchpointInsert(insertError);
+  jsonLog(outcome === "failed" ? "error" : outcome === "customer_not_alive" ? "warn" : "info", {
+    requestId: args.requestId,
+    evt: "ad_referral_captured",
+    ...describeCapturedReferral({
+      provider: args.provider,
+      outcome,
+      referral,
+      rawOmittedReason: built.rawOmittedReason,
+      rawDroppedKeys: built.rawDroppedKeys,
+    }),
+    // Só o SQLSTATE: a mensagem do Postgres pode repetir valores da linha.
+    ...(outcome === "failed" ? { code: insertError?.code ?? null } : {}),
+  });
+  if (outcome === "failed") throw new Error("ad_touchpoint_persist_failed");
+}
+
 function mediaPlaceholder(kind: InboundMediaKind): string {
   switch (kind) {
     case "audio": return "[áudio]";
@@ -1028,14 +1187,35 @@ const AGENT_INSTABILITY_TEXT =
 // espera, esta invocação desiste — quem responde é a invocação da ÚLTIMA
 // mensagem, que relê o histórico fresco e responde uma vez só com a rajada
 // inteira. Tunável: maior = pega rajadas mais lentas mas atrasa toda resposta.
-const DEBOUNCE_WINDOW_MS = 6_000;
+//
+// O valor vem do núcleo (e não é literal aqui) porque a varredura da Fase C
+// reserva o pior caso de UM evento, e esta janela é a primeira parcela dele:
+// mudar o debounce sem mudar a reserva faria a varredura começar um evento que
+// não cabe no que resta do wall clock.
+const DEBOUNCE_WINDOW_MS = INBOUND_DEBOUNCE_WINDOW_MS;
 // Orçamento de tempo (desde o início da request) para um retry silencioso do
-// agente após erro transitório. Acima disso não retentamos (risco de estourar
-// o limite de 60s da Edge Function e o cliente não receber NADA).
+// agente após erro transitório. Acima disso não retentamos, porque uma segunda
+// tentativa longa arrisca o cliente não receber NADA.
+//
+// A versão anterior desta linha justificava o valor com "o limite de 60s da Edge
+// Function". Esse número é crença herdada, não medição, e este mesmo arquivo o
+// contradiz: `AI_LOCK_TTL_SECONDS` existe porque um turno de pior caso leva
+// ~51s, e somado ao debounce de 6s isso já passaria de 60s no caminho síncrono
+// que atende loja real hoje. O wall clock, além disso, é do WORKER e não da
+// request. Os 30s seguem valendo como política — uma resposta que demora demais
+// já é resposta errada —, e não como dedução de um teto que ninguém mediu.
 const AGENT_RETRY_BUDGET_MS = 30_000;
-// TTL do lock de exclusão do agente por conversa. Mirror do stuck timeout:
-// cobre o pior caso de runOnce (~51s Gemini c/ fallback) + folga, e auto-expira
-// se a função crashar segurando o lock. Ver migration 056_conversation_ai_lock.
+// TTL do lock de exclusão do agente por conversa. Auto-expira se a função
+// crashar segurando o lock. Ver migration 056_conversation_ai_lock.
+//
+// O valor deixou de ser adivinhado: `lockTtlSecondsRequired()` o deriva da soma
+// declarada — orçamento do prazo + pior turno único + envio —, e um teste de
+// acoplamento reprova se ele cair abaixo disso. A justificativa antiga ("pior
+// caso de runOnce, ~51 s") media UM turno, não o laço.
+//
+// A aritmética VINCULA o caminho da FILA, que é onde o prazo vale. No síncrono
+// não há teto de parede nenhum (ver a nota em `shouldContinue`), então aqui os
+// 90 s são piso de segurança contra lock órfão, nunca prova de que o turno cabe.
 const AI_LOCK_TTL_SECONDS = 90;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -1415,7 +1595,710 @@ const RATE_LIMIT_WINDOW_SECONDS = 60;
 const RATE_LIMIT_MAX = 10;
 const MAX_WEBHOOK_BODY_BYTES = 1_000_000;
 
-async function handleWebhookRequest(req: Request, trustedMetaPayload = false): Promise<Response> {
+/**
+ * Persiste a entrega crua. UMA linha por ENTREGA — o split do lote acontece no
+ * processamento, sobre este mesmo corpo intacto.
+ *
+ * Nunca lança: o veredito de HTTP é de `decideAckVerdict`, e uma exceção aqui
+ * viraria 500 no lugar do 503 que pede reentrega.
+ */
+async function persistInboundEvent(input: {
+  provider: WhatsAppProvider;
+  channelId: string;
+  unitId: string;
+  bodyText: string;
+  deliveryId: string | null;
+  signatureHeader: string | null;
+  signatureScheme: string | null;
+}): Promise<{ outcome: InsertOutcome; id: string | null }> {
+  const { data, error } = await supabase
+    .from("whatsapp_inbound_events")
+    .insert({
+      provider: input.provider,
+      channel_id: input.channelId,
+      unit_id: input.unitId,
+      raw_body: encodeRawBodyHex(input.bodyText),
+      delivery_id: input.deliveryId,
+      signature_header: input.signatureHeader,
+      signature_scheme: input.signatureScheme,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (!error && data) return { outcome: "inserted", id: data.id };
+  // Unique parcial `(channel_id, delivery_id)`: a entrega já está durável, e
+  // reprocessar seria responder duas vezes ao mesmo cliente.
+  if (error?.code === "23505") return { outcome: "duplicate", id: null };
+  return { outcome: "failed", id: null };
+}
+
+/**
+ * Projeção que `claim_whatsapp_inbound_event` devolve. Tipa as SEIS colunas do
+ * `returning` da migration 113 — é a documentação do contrato da RPC, no arquivo
+ * que a consome.
+ */
+interface ClaimedInboundEvent {
+  id: string;
+  provider: WhatsAppProvider;
+  channel_id: string;
+  /** `bytea`: o PostgREST entrega literal hex (`\x...`), com ou sem prefixo. */
+  raw_body: string;
+  /**
+   * TENTATIVAS GASTAS, já incluindo esta quando o claim foi TAKEOVER de lease
+   * vencido — o SQL incrementa no próprio `update` e devolve o valor novo. Quem
+   * escreve o número é sempre o banco (aqui e na finalização); incrementá-lo no
+   * Deno a partir do que se leu é lost update por construção.
+   */
+  attempts: number;
+  claim_id: string;
+}
+
+/**
+ * Dead letter VISÍVEL: a entrega que a fila desistiu de processar vira
+ * `awaiting_human` na conversa do cliente — reusando o contador que
+ * `useAwaitingHumanCount` já mostra ao operador, sem inventar tela.
+ *
+ * Best-effort e NUNCA LANÇA: é chamada do caminho de finalização da fila, depois
+ * de a escrita já ter pegado. Quando não dá para resolver a conversa (o evento
+ * morreu antes de ela existir, ou antes de existir cliente), sobra a contagem do
+ * diagnóstico — que é por isso que ela existe, e não como decoração.
+ *
+ * ─── NUNCA CRIA CONVERSA ────────────────────────────────────────────────────
+ * Se não existe, não existe. `appendOutboundToConversation` é quem auto-cria;
+ * criar uma só para marcá-la em handoff inventaria thread vazia no painel, e o
+ * operador abriria uma conversa sem nenhuma mensagem para ler.
+ *
+ * ─── A CADEIA NÃO É POR TELEFONE ────────────────────────────────────────────
+ * `conversations` não tem coluna de telefone: é chaveada por `(customer_id,
+ * unit_id)`. E `customers` pertencem à ORGANIZAÇÃO, não à unidade. Então o
+ * caminho é unit → `organization_id` → customer por `(organization_id, phone)`
+ * → conversa por `(customer_id, unit_id)`. Toda consulta aqui é escopada pelo
+ * tenant da PRÓPRIA linha; nada vem de fora.
+ *
+ * ─── UM LOTE PODE TER VÁRIOS CLIENTES ───────────────────────────────────────
+ * A linha da fila guarda o corpo INTEIRO do POST, e um payload de forma Meta
+ * agrupa mensagens de remetentes DIFERENTES — é por isso que o handler chama
+ * `splitMetaWebhookPayload` antes de processar. `parseInbound` devolve no
+ * máximo UMA mensagem, então resolver o payload inteiro promoveria a conversa
+ * de um cliente e deixaria os outros sem nada: pior que "não deu para
+ * resolver", onde ao menos o contador do painel acusa. Dividir primeiro é o
+ * mesmo caminho para todos os providers — `splitMetaWebhookPayloadCore`
+ * devolve `[payload]` quando não há `entry`, que é o caso dos quatro legados.
+ */
+async function promoteDeadLetterToHandoff(eventId: string): Promise<void> {
+  try {
+    const { data: row } = await supabase
+      .from("whatsapp_inbound_events")
+      .select("provider, unit_id, raw_body")
+      .eq("id", eventId)
+      .maybeSingle();
+    if (!row) return;
+
+    const provider = row.provider as WhatsAppProvider;
+    const unitId = String(row.unit_id);
+
+    // REDIGIDO NA FONTE, e não no `catch` de baixo: a mensagem de erro do
+    // `JSON.parse` do V8 EMBUTE um trecho da entrada (`... "{corpo}" is not
+    // valid JSON`), e a entrada aqui é o corpo cru do cliente — telefone e
+    // texto. `sanitizeProviderError` redige credencial e trunca, mas não
+    // conhece essa forma; contar com ele publicaria PII no log sem erro de tipo
+    // nem aviso de lint. Mesma disciplina de `fetchConnectionStatus`, que redige
+    // a URL com credencial no lugar onde ela nasce.
+    let payload: unknown;
+    try {
+      payload = JSON.parse(decodeRawBodyHex(String(row.raw_body)));
+    } catch {
+      jsonLog("warn", { evt: "dead_letter_payload_unparseable", eventId });
+      return;
+    }
+
+    // `Set`: um lote com três mensagens do MESMO cliente é uma conversa só, e
+    // promovê-la três vezes reescreveria `handoff_at` a cada volta.
+    const senders = new Set<string>();
+    for (const part of splitMetaWebhookPayload(payload)) {
+      const inbound = parseInbound(provider, part);
+      if (!inbound?.fromPhone) continue;
+      const phone = canonicalBrPhone(inbound.fromPhone);
+      // Mesmo guarda do caminho normal: o eco traz LID do WhatsApp (14+
+      // dígitos), que `canonicalBrPhone` deixa passar intacto e que não é
+      // cliente nenhum.
+      if (!isPlausibleCustomerPhone(phone)) continue;
+      senders.add(phone);
+    }
+
+    const conta = {
+      senders: senders.size,
+      promoted: 0,
+      alreadyWithHuman: 0,
+      noCustomer: 0,
+      noConversation: 0,
+      updateFailed: 0,
+      unitUnresolved: false,
+    };
+
+    // A unidade é o degrau para a ORGANIZAÇÃO, que é onde o cliente vive. Não
+    // achá-la só acontece se a leitura falhar: a FK de `unit_id` é
+    // `on delete cascade`, então unidade apagada leva a linha da fila junto e
+    // não haveria evento a promover.
+    const { data: unit } = await supabase
+      .from("units")
+      .select("organization_id")
+      .eq("id", unitId)
+      .maybeSingle();
+    if (!unit) conta.unitUnresolved = true;
+
+    if (unit && senders.size > 0) {
+      for (const phone of senders) {
+        const { data: customer } = await supabase
+          .from("customers")
+          .select("id")
+          .eq("organization_id", unit.organization_id)
+          .eq("phone", phone)
+          .maybeSingle();
+        if (!customer) {
+          conta.noCustomer++;
+          continue;
+        }
+
+        const { data: conv } = await supabase
+          .from("conversations")
+          .select("id")
+          .eq("unit_id", unitId)
+          .eq("customer_id", customer.id)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!conv) {
+          conta.noConversation++;
+          continue;
+        }
+
+        // O PREDICADO DE ESTADO ABAIXO PROMOVE SÓ O QUE NENHUMA PESSOA DETÉM.
+        // Sem ele, um atendente no meio da conversa (`human_active`)
+        // era jogado de volta para a fila de "aguardando"; `handoff_at` —
+        // relógio do auto-resolve de 12 h e do lembrete de 6 h — era zerado
+        // sob os pés dele; e um `handoff_reason` anterior (`agent_error`,
+        // `ai_budget_exhausted`) era APAGADO, levando junto o motivo real da
+        // investigação.
+        //
+        // `resolved` ENTRA na lista, e a primeira versão disto o deixava de fora
+        // alegando que "ali um humano já encerrou". Isso lê o passado e erra o
+        // presente: `resolved` é estado FÓSSIL — o botão "Resolver" não o grava
+        // mais, e o próprio pipeline o promove para `ai_active` na inbound
+        // seguinte (linha ~3285), justamente para a UI parar de exibir badge
+        // "Resolvida" para sempre. Ninguém está atendendo uma conversa ali.
+        //
+        // A consequência de omiti-lo era a pior disponível: a promoção casava
+        // ZERO linhas, a conversa continuava fóssil, `useAwaitingHumanCount`
+        // conta só `awaiting_human` — então a dead letter ficava INVISÍVEL para o
+        // lojista, sobrando apenas a contagem do diagnóstico, que é
+        // platform-admin-only. E o log afirmava
+        // `..._human_already_active` sobre conversa que ninguém atende: rastro de
+        // investigação FALSO, que é pior que rastro ausente. Isso reprovava o
+        // critério de aceite §14.8 ("quando resolvível, com a conversa em
+        // `awaiting_human`") para uma conversa que É resolvível — nós a achamos.
+        const { data: promovidas, error: updateError } = await supabase
+          .from("conversations")
+          .update({
+            status: "awaiting_human",
+            // UM motivo só, de propósito: o que o operador precisa saber aqui
+            // é "esta mensagem não foi processada". POR QUE ela não foi está em
+            // `whatsapp_inbound_events.outcome` (`queue_dead_letter` =
+            // respondeu não-2xx N vezes; `queue_dead_letter_no_verdict` =
+            // consumiu as tentativas sem nunca chegar a um veredito), e é lá
+            // que se investiga.
+            handoff_reason: "inbound_dead_letter",
+            handoff_at: new Date().toISOString(),
+            last_silenced_reply_at: null,
+          })
+          .eq("id", conv.id)
+          .in("status", ["ai_active", "resolved"])
+          .select("id");
+
+        if (updateError) {
+          conta.updateFailed++;
+          jsonLog("error", {
+            evt: "inbound_dead_letter_promote_failed",
+            eventId,
+            convId: conv.id,
+            err: updateError.message,
+          });
+          continue;
+        }
+        // `UPDATE` que casa zero linhas devolve `error: null` no supabase-js
+        // (invariante do CLAUDE.md): sem conferir o retorno, "não promovi
+        // porque a conversa já era de uma pessoa" fica indistinguível de
+        // "promovi", e o log afirmaria a segunda coisa. Zero linhas aqui NÃO é
+        // falha — é o caso comum e desejado.
+        //
+        // O NOME DESTE EVENTO É DERIVADO DO PREDICADO, não escolhido: com
+        // `in ('ai_active','resolved')` acima, zero linhas só pode significar
+        // `human_active` (uma pessoa atendendo agora) ou `awaiting_human` (já na
+        // fila de espera, por este ou outro motivo). Nos dois casos a conversa já
+        // está com uma pessoa e aparece para o lojista, que é o que importa aqui.
+        // Dizer `human_already_active` cobriria só o primeiro e mentiria sobre o
+        // segundo — e quem aperta o predicado depois precisa reconferir este
+        // nome, porque ele é uma AFIRMAÇÃO sobre o complemento do predicado.
+        if (!promovidas || promovidas.length === 0) {
+          conta.alreadyWithHuman++;
+          jsonLog("info", {
+            evt: "inbound_dead_letter_already_with_human",
+            eventId,
+            convId: conv.id,
+          });
+          continue;
+        }
+
+        conta.promoted++;
+        jsonLog("warn", { evt: "inbound_dead_letter", eventId, convId: conv.id });
+      }
+    }
+
+    // Uma linha por evento, com as CONTAGENS de cada desfecho — nunca telefone
+    // nem texto de cliente. `senders: 0` é o caso "morreu antes de existir
+    // cliente", e é ele que justifica a contagem do diagnóstico existir.
+    jsonLog("warn", { evt: "inbound_dead_letter_summary", eventId, ...conta });
+  } catch (err) {
+    // SANITIZADO, nunca o texto cru do erro: neste caminho o `err` pode vir do
+    // `JSON.parse` sobre o CORPO CRU do cliente, e mensagem de parse já carregou
+    // fragmento de entrada em outros runtimes. A disciplina desta fase é
+    // instrumentar FORMA, nunca valor.
+    jsonLog("warn", {
+      evt: "dead_letter_handoff_failed",
+      eventId,
+      err: sanitizeProviderError(err),
+    });
+  }
+}
+
+/**
+ * Grava o veredito da linha da fila, CERCADO pelo `claim_id`.
+ *
+ * A decisão — status, outcome, atraso, dead letter — é de `queuedEventVerdict`,
+ * no núcleo puro. Nada aqui redigita a escada de retentativa, e nada aqui
+ * escreve coluna de tempo: o atraso viaja em SEGUNDOS e quem monta o instante é
+ * `now()` do banco. Escrever o futuro com o relógio do Deno para o banco
+ * compará-lo com o dele é a borda que este repo já pagou em `availability.ts`.
+ *
+ * Nunca lança, pelo mesmo motivo de `processQueuedEventById` — e também para que
+ * uma falha aqui não faça o caller finalizar duas vezes pelo caminho do catch.
+ */
+async function finalizeQueuedEvent(input: {
+  eventId: string;
+  claimId: string;
+  attempts: number;
+  /** `null` = exceção antes de haver resposta HTTP. */
+  httpStatus: number | null;
+  error: string | null;
+  /**
+   * `true` = a linha chegou ao processador já sem degrau e não foi processada.
+   * Atravessa até o núcleo em vez de virar um veredito montado aqui: o
+   * `index.ts` não é alcançado por compilador nem por vitest, e um segundo
+   * produtor de `QueuedEventVerdict` seria a forma de os dois divergirem.
+   */
+  exhaustedBeforeProcessing?: boolean;
+}): Promise<void> {
+  const verdict = queuedEventVerdict({
+    httpStatus: input.httpStatus,
+    attempts: input.attempts,
+    exhaustedBeforeProcessing: input.exhaustedBeforeProcessing,
+  });
+
+  try {
+    const call = (errorText: string | null) =>
+      supabase.rpc("finalize_whatsapp_inbound_event", {
+        p_event_id: input.eventId,
+        p_claim_id: input.claimId,
+        p_status: verdict.status,
+        p_outcome: verdict.outcome,
+        p_error: errorText,
+        p_retry_delay_seconds: verdict.retryDelaySeconds,
+      });
+
+    // `sanitizeQueueErrorText` já tira o que o Postgres recusa em `text`. A
+    // segunda tentativa SEM o texto existe para o que ele não pode prever: uma
+    // falha da finalização dependente do PAYLOAD do erro deixaria a linha sem
+    // `next_attempt_at` novo, devida e reivindicável a cada 90 s, e primeira na
+    // ordem da varredura — adiando o inbound dos outros tenants.
+    //
+    // UMA VERSÃO ANTERIOR DESTE COMENTÁRIO PROMETIA MAIS: dizia que "é a
+    // finalização que escreve `attempts`" e que sem esta retentativa a linha
+    // "jamais viraria dead letter". As duas afirmações são falsas desde que o
+    // CLAIM passou a gastar uma tentativa no takeover de lease vencido — com
+    // isso a linha avança sozinha, chega ao teto e é promovida a `dead` pelo
+    // `shouldPromoteToDead` logo após o claim, sem ser processada. Então esta
+    // retentativa NÃO é o que salva a linha do limbo; ela economiza tentativas e
+    // três esperas de lease, o que é bem menos, e é a razão honesta de mantê-la.
+    //
+    // Perder o texto NOVO do erro é barato; perder a contabilidade não é.
+    // "Novo" é exato e depende da 113: lá o `last_error` é
+    // `coalesce(left(p_error, 500), e.last_error)`, então esta segunda chamada
+    // com `null` não apaga o erro que uma tentativa anterior registrou. Antes
+    // desse `coalesce` ela apagava.
+    // Compara o texto JÁ SANITIZADO, não o cru: se o sanitizador devolveu
+    // `null`, a primeira chamada já foi sem texto e repeti-la emitiria uma
+    // segunda chamada byte-idêntica — retentar o mesmo não é retentar.
+    const errorText = sanitizeQueueErrorText(input.error);
+    let { data, error } = await call(errorText);
+    let retentou = false;
+
+    if (error && errorText !== null) {
+      jsonLog("warn", {
+        evt: "queued_event_finalize_retry_without_error_text",
+        eventId: input.eventId,
+        err: error.message,
+      });
+      retentou = true;
+      ({ data, error } = await call(null));
+    }
+
+    if (error) {
+      // Aqui a falha não depende do payload: banco indisponível, timeout de
+      // statement, conexão caindo no meio. A linha fica `processing` com lease
+      // vivo e o takeover de 90 s a retoma quando o banco voltar, que é o
+      // comportamento certo para uma indisponibilidade. O que impede resposta
+      // dupla nesse caso não é esta função — é o claim de
+      // `processed_messages (provider, message_id)`, que recusa a parte já
+      // concluída como duplicata.
+      //
+      // NÃO é `PGRST202` (função ausente por deploy antes do `db push`): o
+      // claim e a finalização nascem na MESMA migration, então sem uma não há a
+      // outra — nada teria sido reivindicado e nada chegaria aqui.
+      jsonLog("error", {
+        evt: "queued_event_finalize_failed",
+        eventId: input.eventId,
+        err: error.message,
+      });
+      return;
+    }
+
+    // `UPDATE` que casa zero linhas devolve `error: null` no supabase-js
+    // (invariante do CLAUDE.md). Sem conferir, "a cerca negou" ficaria
+    // indistinguível de "gravei" — e a promoção a dead letter sairia sobre uma
+    // linha que pertence a outro processo.
+    if (Number(data ?? 0) < 1) {
+      // `retried: true` muda o que esta linha SIGNIFICA, e por isso viaja junto.
+      // Sem retentativa, zero linhas é a cerca negando: outro processo tem a
+      // linha. DEPOIS de uma retentativa, zero linhas tem uma segunda leitura,
+      // oposta e mais provável — a PRIMEIRA chamada gravou e só a resposta se
+      // perdeu, e como a finalização zera `claim_id`, a segunda não acha mais o
+      // crachá. Ler as duas como "a cerca negou" mandaria investigar uma corrida
+      // que não houve.
+      jsonLog("warn", {
+        evt: "queued_event_finalize_fenced",
+        eventId: input.eventId,
+        status: verdict.status,
+        retried: retentou,
+      });
+      return;
+    }
+
+    jsonLog("info", {
+      evt: "queued_event_finalized",
+      eventId: input.eventId,
+      status: verdict.status,
+      outcome: verdict.outcome,
+      attempts: input.attempts,
+      httpStatus: input.httpStatus,
+    });
+
+    // Só depois de a escrita ter pegado: promover sobre linha fencida anunciaria
+    // dead letter de trabalho alheio.
+    if (verdict.promoteToHandoff) await promoteDeadLetterToHandoff(input.eventId);
+  } catch (err) {
+    jsonLog("error", {
+      evt: "queued_event_finalize_failed",
+      eventId: input.eventId,
+      err: sanitizeProviderError(err),
+    });
+  }
+}
+
+/**
+ * Processa uma linha da fila re-entrando no PRÓPRIO pipeline.
+ *
+ * O mecanismo não é novo: o split de lote Meta já sintetiza `Request` e re-entra
+ * em produção em todo POST multiparte. O que é novo é `source`, e é ele que
+ * impede a re-entrada de persistir o evento de novo — laço infinito, o defeito
+ * mais perigoso disponível neste desenho. A decisão mora em
+ * `decideIngestionMode`, com controle positivo; nada aqui reimplementa a
+ * pergunta.
+ *
+ * O PRIMEIRO ATO É REIVINDICAR A LINHA, cercado por UUID. Dois caminhos podem
+ * alcançá-la — o rápido (`waitUntil`, disparado pela própria request que a
+ * persistiu) e a varredura (`pg_cron`) — e duas execuções da mesma linha são
+ * duas IAs respondendo ao mesmo cliente. A exposição que sobra é UMA ida ao
+ * banco, não uma janela: quem perde a corrida recebe zero linhas e sai.
+ *
+ * NUNCA LANÇA: é chamada por `EdgeRuntime.waitUntil` (ninguém está esperando, e
+ * rejeição não tratada em Deno pode derrubar o isolate) e pela varredura, que
+ * precisa seguir para a próxima linha.
+ */
+async function processQueuedEventById(eventId: string): Promise<void> {
+  let claimId: string | null = null;
+  let attempts = 0;
+
+  try {
+    const { data, error } = await supabase.rpc("claim_whatsapp_inbound_event", {
+      p_event_id: eventId,
+    });
+
+    if (error) {
+      // NÃO finaliza: sem claim não há cerca a apresentar, e escrever sem ela
+      // sobrescreveria o veredito de quem tem a linha. A varredura tenta depois.
+      //
+      // `attempts` não avança aqui, e está certo: nada foi tentado. A linha
+      // continua `received`, com a escada intacta — gastar degrau por uma falha
+      // de leitura encurtaria as retentativas de um trabalho que nunca começou.
+      jsonLog("error", { evt: "queued_event_claim_failed", eventId, err: error.message });
+      return;
+    }
+
+    const row = (Array.isArray(data) ? data[0] : data) as ClaimedInboundEvent | null | undefined;
+    if (!row?.claim_id) {
+      // Zero linhas, e nenhuma das causas é erro: outro processo tem o lease
+      // vivo, a linha já terminou (`done`/`dead`), ou ela deixou de existir
+      // porque o canal foi apagado e a FK é `on delete cascade` — trabalho que
+      // deixou de existir, não falha (Review Focus #4). Insistir criaria lease
+      // preso.
+      jsonLog("info", { evt: "queued_event_not_claimable", eventId });
+      return;
+    }
+
+    claimId = row.claim_id;
+    attempts = Number(row.attempts ?? 0);
+    jsonLog("info", {
+      evt: "queued_event_claimed",
+      eventId,
+      provider: row.provider,
+      attempts,
+    });
+
+    // ─── A LINHA ENVENENADA POR DURAÇÃO MORRE AQUI ───────────────────────────
+    //
+    // `attempts` chega JÁ INCREMENTADO quando este claim foi um takeover de
+    // lease vencido — e um takeover é a prova de que uma tentativa começou e
+    // morreu sem chegar a veredito nenhum (worker retirado no meio: wall clock
+    // do WORKER, isolate derrubado, `waitUntil` cortado). Sem esta pergunta, a
+    // única promoção a `dead` era a do caminho de FINALIZAÇÃO — que, por
+    // construção, essa linha nunca alcança. Ela era servida para sempre, nunca
+    // virava dead letter, e o `raw_body` (telefone e texto de cliente, PII)
+    // ficava retido indefinidamente, porque a purga só alcança `done`/`dead`.
+    //
+    // Processar mesmo assim gastaria um turno de IA para chegar ao MESMO
+    // `dead`. A pergunta é do núcleo (`shouldPromoteToDead`), a mesma que
+    // `queuedEventVerdict` faz do outro lado — divergir as duas produziria uma
+    // linha que o processador recusa e o veredito manda retentar.
+    //
+    // A finalização incrementa `attempts` mais uma vez (o SQL soma em `dead`
+    // como soma em `received`), e isso é inofensivo: a linha é terminal e o
+    // número só é lido por quem estiver investigando. Isentá-la exigiria um
+    // ramo a mais no SQL para não mudar decisão nenhuma.
+    if (shouldPromoteToDead(attempts)) {
+      jsonLog("warn", { evt: "queued_event_exhausted_without_verdict", eventId, attempts });
+      await finalizeQueuedEvent({
+        eventId,
+        claimId,
+        attempts,
+        httpStatus: null,
+        error: null,
+        exhaustedBeforeProcessing: true,
+      });
+      return;
+    }
+
+    // Estoura em hex ímpar ou não-hex, de propósito: corpo corrompido não pode
+    // virar payload silenciosamente diferente do que o provider assinou. O
+    // `catch` abaixo transforma a exceção em retentativa da linha — erro claro
+    // na fila, em vez de um 401 inexplicável na revalidação do HMAC.
+    const bodyText = decodeRawBodyHex(String(row.raw_body));
+
+    // O canal vai na QUERYSTRING, nunca no corpo: é isso que faz a guarda
+    // anti-cross-tenant do handler valer alguma coisa. O host é irrelevante (o
+    // handler só lê `searchParams` de `req.url`), e o fallback existe para que
+    // env ausente vire erro de configuração e não uma linha em dead letter.
+    const origin = Deno.env.get("SUPABASE_URL") ?? "http://localhost";
+    const res = await handleWebhookRequest(
+      new Request(`${origin}/functions/v1/webhook-whatsapp?channel=${row.channel_id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: bodyText,
+      }),
+      { signatureAlreadyVerified: true, source: "queue", queuedEventId: eventId },
+    );
+
+    await finalizeQueuedEvent({
+      eventId,
+      claimId,
+      attempts,
+      httpStatus: res.status,
+      error: res.ok ? null : `http_${res.status}`,
+    });
+  } catch (err) {
+    // SANITIZADO: o que vai para `last_error` fica persistido, e uma URL de
+    // provider com credencial no path não pode acabar numa linha de tabela.
+    const detail = sanitizeProviderError(err);
+    jsonLog("error", { evt: "queued_event_failed", eventId, err: detail });
+    if (!claimId) return;
+    await finalizeQueuedEvent({
+      eventId,
+      claimId,
+      attempts,
+      httpStatus: null,
+      error: detail,
+    });
+  }
+}
+
+/**
+ * Apaga o que já passou da retenção. Separada e chamada em TODOS os caminhos de
+ * saída da varredura, inclusive quando a seleção falha: `raw_body` é PII, e a
+ * retenção não pode depender de a seleção estar funcionando. Uma seleção quebrada
+ * de forma persistente reteria telefone e texto de cliente indefinidamente por
+ * um motivo que não tem relação nenhuma com retenção.
+ */
+async function purgeInboundEvents(requestId: string): Promise<number | null> {
+  const { data, error } = await supabase.rpc("purge_whatsapp_inbound_events");
+  if (error) {
+    jsonLog("error", { requestId, evt: "sweep_purge_failed", err: error.message });
+    return null;
+  }
+  return Number(data ?? 0);
+}
+
+/**
+ * A varredura: o backstop do caminho rápido.
+ *
+ * O caminho rápido (`EdgeRuntime.waitUntil`, disparado pela própria request que
+ * persistiu a linha) é OTIMISTA — o wall clock é do WORKER e ele pode ser
+ * retirado a qualquer momento. Esta função é o que garante que a entrega seja
+ * processada de qualquer jeito, com ~1 min de atraso em vez de nunca.
+ *
+ * ELA NÃO REIVINDICA EM LOTE. `select_due_whatsapp_inbound_events` só ESCOLHE
+ * ids; quem reivindica é `claim_whatsapp_inbound_event`, por linha, dentro de
+ * `processQueuedEventById`. O porquê está no comentário da migration 113 — em
+ * resumo: reivindicar 20 e processar duas deixaria 18 leases órfãos por minuto,
+ * e o claim por linha recusaria exatamente as linhas que o lote reivindicou.
+ *
+ * ELA TAMBÉM NÃO FINALIZA. `processQueuedEventById` já chama
+ * `finalizeQueuedEvent` cercado pelo `claim_id`; finalizar por fora escreveria
+ * por cima do veredito de quem de fato respondeu ao cliente.
+ *
+ * O ORÇAMENTO DE LAÇO decide se vale COMEÇAR outro evento, nunca aborta o em
+ * curso — a decisão é de `sweepShouldStartAnother`, no núcleo puro, e nada aqui
+ * a reimplementa. Linha não começada não foi reivindicada: ela fica para o minuto
+ * seguinte, sem lease preso e sem tentativa gasta.
+ *
+ * `pg_cron` NÃO PULA EXECUÇÕES SOBREPOSTAS: duas varreduras podem estar no ar ao
+ * mesmo tempo, e as duas podem selecionar o mesmo id. O que torna isso seguro é
+ * o claim por linha — a perdedora recebe zero linhas e segue adiante.
+ */
+async function runInboundSweep(requestId: string): Promise<Response> {
+  const startedAt = Date.now();
+
+  const { data, error } = await supabase.rpc("select_due_whatsapp_inbound_events", {
+    p_limit: SWEEP_SELECT_LIMIT,
+  });
+
+  if (error) {
+    await purgeInboundEvents(requestId);
+    // 500 de propósito: quem chama é o `pg_cron`, que não reentrega — e o
+    // `net._http_response` guarda o status. Devolver 200 aqui faria uma fila
+    // parada parecer uma fila vazia.
+    jsonLog("error", { requestId, evt: "sweep_select_failed", err: error.message });
+    return new Response(JSON.stringify({ error: "sweep_select_failed" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const { ids, descartados } = parseSelectedEventIds(data);
+
+  // CANÁRIO. Uma forma de retorno que ninguém previu não produz erro: o
+  // PostgREST devolve 200, isto devolveria `{"processed":0}` e o
+  // `net._http_response` ficaria verde enquanto a fila cresce — 1440 vezes por
+  // dia, parecendo "não havia nada a fazer". `descartados > 0` é o único sinal
+  // que existe, e ele só aparece se alguém o emitir.
+  if (descartados > 0) {
+    jsonLog("error", {
+      requestId,
+      evt: "sweep_select_shape_unexpected",
+      descartados,
+      reconhecidos: ids.length,
+      // FORMA, nunca valor — e por `shapeOf`, não por descritor próprio.
+      // Reimplementar aqui poria a regra fora do alcance do vitest (esta EF não
+      // é importável: `serve()` no carregamento e imports de `deno.land`), e a
+      // garantia contra vazamento é justamente a FOLHA devolver `typeof value`.
+      // A "melhoria" de quem está depurando — trocar por `String(value)` —
+      // publicaria id de tenant sem erro de tipo nem aviso de lint; o controle
+      // positivo que reprova isso vive no teste do núcleo, e só alcança quem
+      // usa o núcleo.
+      forma: shapeOf(Array.isArray(data) ? data[0] : data),
+      itens: Array.isArray(data) ? data.length : null,
+    });
+  }
+
+  let processed = 0;
+
+  for (const eventId of ids) {
+    if (!sweepShouldStartAnother({ startedAt, now: Date.now(), processed })) break;
+    // Nunca lança (contrato da própria função) — um evento que falha não pode
+    // interromper a varredura dos outros tenants.
+    await processQueuedEventById(eventId);
+    processed++;
+  }
+
+  // Purga na própria varredura: nenhum job novo. Roda DEPOIS do laço e fora
+  // dele: é manutenção, e falhar aqui não pode esconder o que a varredura de
+  // fato processou.
+  const purged = await purgeInboundEvents(requestId);
+
+  const skipped = ids.length - processed;
+  jsonLog("info", {
+    requestId,
+    evt: "sweep_processed",
+    selected: ids.length,
+    processed,
+    // `skipped > 0` é o orçamento tendo mordido: sobrou trabalho devido que esta
+    // invocação decidiu não começar. É sinal de fila acumulando, não de erro.
+    skipped,
+    purged,
+    duration_ms: Date.now() - startedAt,
+  });
+
+  return new Response(
+    JSON.stringify({ selected: ids.length, processed, skipped, purged }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+/**
+ * `signatureAlreadyVerified` e `source` são DUAS perguntas, não uma.
+ *
+ * O antigo booleano `trustedMetaPayload` significava "sou parte filha de um lote
+ * cujo pai já validou a assinatura". Reusá-lo para "vim da fila durável"
+ * juntaria duas perguntas num sinal — o anti-padrão que este repo já nomeia em
+ * `isMetaShapedProvider` (forma de payload e esquema de assinatura são duas
+ * perguntas). `source` é o que decide persistir ou não; ele é o guardião contra
+ * reinserção infinita, e a decisão mora em `decideIngestionMode`, com controle
+ * positivo.
+ *
+ * O objeto é INTERNO: o `serve` público sempre entra com o default `{}`, então
+ * nenhum chamador externo consegue afirmar "já validei" nem "vim da fila".
+ */
+interface HandlerOptions {
+  signatureAlreadyVerified?: boolean;
+  source?: IngestionSource;
+  /** Preenchido quando `source !== "provider"`: a linha já existe na fila. */
+  queuedEventId?: string;
+}
+
+async function handleWebhookRequest(
+  req: Request,
+  opts: HandlerOptions = {},
+): Promise<Response> {
+  const trustedMetaPayload = opts.signatureAlreadyVerified === true;
+  const ingestionSource: IngestionSource = opts.source ?? "provider";
   const requestId = genRequestId();
   const t0 = Date.now();
 
@@ -1549,7 +2432,14 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
       outcome: recordedOutcome,
       error: error ?? null,
       duration_ms,
-      meta,
+      // `queued_event_id` é o ÚNICO vínculo entre a linha da fila e as execuções
+      // que ela produziu — sem ele, investigar um dead letter obriga a cruzar
+      // `webhook_executions` por janela de tempo. Só aparece na re-entrada: na
+      // porta do provider o campo é `undefined` e `meta` segue idêntico ao de
+      // hoje, inclusive quando é `undefined` (recordExecution grava `{}`).
+      meta: opts.queuedEventId
+        ? { ...(meta ?? {}), queued_event_id: opts.queuedEventId }
+        : meta,
     });
   };
 
@@ -1571,6 +2461,28 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
     const url = new URL(req.url);
     channelId = url.searchParams.get("channel");
 
+    // A varredura não tem canal — ela resolve o canal de CADA linha. Por isso
+    // este branch precisa vir ANTES da exigência de `?channel=`.
+    //
+    // SEGURANÇA: ele NÃO ACEITA PAYLOAD NENHUM. Lê exclusivamente da tabela, e
+    // cada linha de lá já foi persistida depois de a assinatura do provider ter
+    // sido validada. Se a chave interna vazar, o poder conferido é "fazer uma
+    // varredura rodar mais cedo" sobre eventos já validados — não injetar
+    // inbound, não escolher canal, não escrever nada que venha de fora.
+    //
+    // Sem `finish()` nos dois caminhos, de propósito: cada evento processado já
+    // grava a PRÓPRIA linha em `webhook_executions` na re-entrada, e uma linha
+    // por minuto da varredura em si inflaria a tabela (TTL 30 d) com registros
+    // sem unidade nem canal. O rastro do 401 é o log estruturado mais o status
+    // em `net._http_response`, que é onde se confere `pg_net` de todo modo.
+    if (url.searchParams.get("sweep") === "1") {
+      if (!requireInternalAuth(req)) {
+        jsonLog("warn", { requestId, evt: "sweep_unauthorized" });
+        return new Response("unauthorized", { status: 401 });
+      }
+      return await runInboundSweep(requestId);
+    }
+
     if (!channelId) {
       jsonLog("warn", { requestId, evt: "missing_channel_param" });
       await finish("missing_channel_param");
@@ -1578,9 +2490,20 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
     }
 
     // Resolve channel → unit_id, provider, credentials, webhook_secret
+    //
+    // `async_ingestion_enabled` é a perna POR CANAL do gate da Fase C, e entra
+    // nesta lista porque a coluna é lida logo adiante: pedir a coluna e ler a
+    // coluna são o mesmo passo. Sem ela na projeção o valor chega `undefined`,
+    // `channelEnabled !== true` é sempre verdadeiro, o modo é sempre `sync` e a
+    // fase inteira embarca morta com a suíte verde.
+    //
+    // Consequência de ordem de deploy (já invariante no CLAUDE.md): a migration
+    // 111 precisa estar APLICADA antes do deploy desta função. Coluna ainda
+    // inexistente é 400 do PostgREST aqui, e este SELECT falhando devolve 404
+    // para TODO inbound de TODO canal.
     const { data: channel, error: channelErr } = await supabase
       .from("whatsapp_channels")
-      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, manual_echo_verified_at")
+      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled")
       .eq("id", channelId)
       .maybeSingle();
 
@@ -1632,8 +2555,22 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
           || await verifyDatafySignature(req, bodyText, channel.webhook_secret ?? "", Date.now());
         break;
       case "channel_secret": {
+        // `trustedMetaPayload` aqui pela MESMA razão dos dois ramos acima — o
+        // sinal significa "a assinatura desta entrega já foi validada", e o nome
+        // herdado do lote Meta não restringe o esquema a que ele se aplica.
+        //
+        // Sem esta linha, a re-entrada a partir da fila (Fase C) morre: o
+        // `Request` sintetizado carrega só `content-type`, sem
+        // `x-webhook-secret` e sem `?secret=`. Todo evento enfileirado de canal
+        // Z-API/WAHA/UazAPI daria 401, esgotaria as três tentativas e morreria
+        // no dead letter — calando a loja em produção.
+        //
+        // O bypass é seguro porque o sinal só é ligado DENTRO do processo:
+        // `HandlerOptions` é objeto interno, o `serve` público sempre entra com
+        // `{}`, e as duas origens que o ligam já validaram a assinatura (o pai
+        // do lote, sobre o corpo cru; a linha da fila, antes do insert).
         const secret = channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET") ?? "";
-        isValid = validateChannelSecret(req, secret);
+        isValid = trustedMetaPayload || validateChannelSecret(req, secret);
         break;
       }
     }
@@ -1721,6 +2658,125 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
       return new Response("unauthorized", { status: 401 });
     }
 
+    // Instrumentação de FORMA, nunca de valor — mesma disciplina de
+    // `webhook-payload-shape-core.ts`. Publicar o id de entrega ou o header de
+    // assinatura vazaria correlação e credencial no log.
+    //
+    // Fica FORA do gate, e ANTES dele, de propósito: ela responde metade da
+    // pendência de validação real nº 6 da spec ("o header
+    // `x-datafy-delivery-id` existe?"), e medir o envelope só depois de ligar as
+    // duas pernas seria ovo e galinha — instrumentar forma serve para medir
+    // ANTES de assumir o risco. A outra metade ("se repete na reentrega?") NÃO é
+    // respondida aqui: quem responde é o outcome `queue_duplicate_delivery`, que
+    // só existe com o gate ligado.
+    //
+    // ESCOPADA NA PORTA DO PROVIDER. Sem `ingestionSource === "provider"`, a
+    // MESMA entrega emite esta linha duas vezes — uma na porta, outra na
+    // re-entrada a partir da fila —, e contar a mesma entrega duas vezes é
+    // exatamente a medida errada que uma instrumentação de forma deveria evitar.
+    //
+    // O QUE O ESCOPO NÃO IMPEDE, e quem lê o log precisa saber: lote Meta-shaped
+    // MULTIPARTE emite 1 + N linhas. O split adiante re-entra em
+    // `handleWebhookRequest` por parte, PROPAGANDO `source`, e não remove o
+    // `x-datafy-delivery-id` dos filhos (remover faria o filho declarar "header
+    // ausente" — falso negativo na única pergunta que esta linha responde). Só
+    // acontece com o gate OFF: com ele ON o pai responde no ACK antes do split,
+    // e a re-entrada da fila propaga `"queue"`. Ou seja, distorce a contagem
+    // justo no modo em que esta instrumentação serve — ao responder a pendência
+    // nº 6 da spec, conte ENTREGAS DISTINTAS por `delivery_id_shape`, nunca
+    // linhas.
+    if (ingestionSource === "provider" && providerDeclaresDeliveryId(provider)) {
+      jsonLog("info", {
+        requestId,
+        evt: "inbound_delivery_shape",
+        provider,
+        has_delivery_id: deliveryDedupeKey(provider, (name) => req.headers.get(name)) !== null,
+        delivery_id_type: typeof req.headers.get(DATAFY_DELIVERY_ID_HEADER),
+      });
+    }
+
+    // ─── Fronteira do ACK (Fase C) ───────────────────────────────────────────
+    //
+    // Fica AQUI, e é ÚNICA: depois de todas as guardas que produzem não-200
+    // (assinatura, identidade declarada, token/instância UazAPI, identidade
+    // Meta) e antes de QUALQUER trabalho. Tudo a jusante é diferido em bloco
+    // quando o gate está ON: split de lote, callback de status, callback de
+    // conexão, descarte de canal inativo, eco de aparelho e inbound.
+    //
+    // Não se recorta "o que é caro" para diferir só isso: o split do lote
+    // produz partes RE-SERIALIZADAS (`JSON.stringify(part)`), e guardar isso
+    // destruiria a capacidade de revalidar a assinatura. O corpo é guardado uma
+    // vez, intacto, e quem divide é o processador, em memória.
+    const flagCheck = await checkFlagEnabled("whatsapp_async_ingestion");
+    const ingestionMode = decideIngestionMode({
+      source: ingestionSource,
+      flagEnabled: flagCheck.enabled,
+      flagReadFailed: flagCheck.readFailed,
+      channelEnabled: channel.async_ingestion_enabled,
+    });
+
+    if (ingestionMode !== "sync") {
+      let insert: { outcome: InsertOutcome; id: string | null } = { outcome: "skipped", id: null };
+
+      if (ingestionMode === "async") {
+        const scheme = WEBHOOK_SIGNATURE_SCHEME[provider];
+        insert = await persistInboundEvent({
+          provider,
+          channelId: channelId!,
+          unitId: unitId!,
+          bodyText,
+          deliveryId: deliveryDedupeKey(provider, (name) => req.headers.get(name)),
+          signatureHeader: req.headers.get(SIGNATURE_HEADER_BY_SCHEME[scheme]),
+          signatureScheme: scheme,
+        });
+      }
+
+      const verdict = decideAckVerdict({ mode: ingestionMode, insert: insert.outcome });
+      if (verdict.kind !== "passthrough") {
+        await finish(verdict.outcome);
+        if (verdict.kind === "ack" && insert.id) {
+          // Caminho rápido OTIMISTA: o wall clock é do WORKER, não da request, e
+          // ele pode ser retirado a qualquer momento. A varredura é o backstop, e
+          // a degradação é benigna — o cliente espera ~70 s em vez de nunca.
+          //
+          // DOIS modos de falha DISTINTOS, e por isso dois tratamentos com
+          // eventos próprios:
+          //  - o `try/catch` pega `EdgeRuntime` ausente ou `waitUntil` lançando
+          //    de forma síncrona (`queue_dispatch_failed`);
+          //  - o `.catch()` pega exceção DENTRO do processamento, que num
+          //    `async` vira promise rejeitada e nunca passaria pelo `try`
+          //    (`queue_background_unhandled`). Ele NÃO é decoração: rejeição
+          //    não tratada em Deno pode derrubar o isolate, e o que roda ali é
+          //    o processamento inteiro — resolução de canal, agente, envio.
+          //
+          // Nenhum dos dois pode derrubar o ACK: a linha já está durável, e
+          // devolver 500 aqui faria o provider reentregar sobre um evento
+          // persistido — providers legados não têm `delivery_id` para deduplicar
+          // a segunda linha.
+          try {
+            EdgeRuntime.waitUntil(
+              processQueuedEventById(insert.id).catch((bgErr) => {
+                jsonLog("error", {
+                  requestId,
+                  evt: "queue_background_unhandled",
+                  err: sanitizeProviderError(bgErr),
+                });
+              }),
+            );
+          } catch (dispatchErr) {
+            jsonLog("error", {
+              requestId,
+              evt: "queue_dispatch_failed",
+              err: sanitizeProviderError(dispatchErr),
+            });
+          }
+        }
+        return new Response(verdict.kind === "ack" ? "ok" : "queue unavailable", {
+          status: verdict.status,
+        });
+      }
+    }
+
     // Meta (e a Datafy, que encaminha o mesmo envelope) pode agrupar
     // entries/changes e várias mensagens no mesmo POST. Cada inbound precisa
     // atravessar claim/debounce/lock separadamente; status e ecos também não
@@ -1733,11 +2789,14 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
           headers.delete("content-length");
           headers.delete("x-hub-signature-256");
           headers.delete("x-datafy-signature-256");
+          // `source: ingestionSource` PROPAGA a origem: um lote que chegou pela
+          // fila tem de manter `"queue"` nos filhos, senão cada parte reinsere
+          // o próprio corpo e o laço é infinito.
           return handleWebhookRequest(new Request(req.url, {
             method: "POST",
             headers,
             body: JSON.stringify(part),
-          }), true);
+          }), { signatureAlreadyVerified: true, source: ingestionSource });
         }));
         const failed = results.find((result) => !result.ok);
         if (failed) {
@@ -1914,6 +2973,20 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
         return new Response("ok");
       }
       messageProcessingClaimId = String(mediaClaim.claim_id);
+
+      // Fase D: depois do claim e antes de qualquer efeito externo (falha aqui é
+      // reentregável). Zero I/O para provider sem `adReferral`.
+      await captureAdTouchpoint({
+        requestId,
+        provider,
+        payload,
+        unitId: channel.unit_id,
+        channelId: channel.id,
+        inboundProviderMessageId: media.providerMessageId,
+        phone: mediaPhone,
+        contactName: media.contactName ?? null,
+        messageAtMs: media.timestamp,
+      });
 
       // Resolve org → customer → conversation (mesmo padrão do path de texto).
       const { data: unitRow2, error: unitRow2Error } = await supabase
@@ -2092,6 +3165,22 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
         prev_outcome: processingClaim.previous_outcome,
       });
     }
+
+    // Fase D: depois do claim e ANTES de rate limit, billing e suspensão — os três
+    // desviam antes de o cliente ser resolvido, e "esta pessoa chegou por este
+    // anúncio" não depende de a loja estar adimplente (mesmo raciocínio do
+    // persistInboundOnly). Antes de qualquer efeito externo: falha é reentregável.
+    await captureAdTouchpoint({
+      requestId,
+      provider,
+      payload,
+      unitId: channel.unit_id,
+      channelId: channel.id,
+      inboundProviderMessageId: inbound.providerMessageId,
+      phone,
+      contactName: inbound.contactName ?? null,
+      messageAtMs: inbound.timestamp,
+    });
 
     // Rate limit por telefone (sliding window, por unidade)
     const { data: allowed } = await supabase.rpc("check_rate_limit", {
@@ -2585,6 +3674,18 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
       // Vencedora da rajada: assume o histórico fresco (inclui toda a rajada).
       conv.messages = latestMsgs;
     }
+
+    // ─── Relógio do deadline suave (Fase C) ───────────────────────────────────
+    // Começa AQUI, e não em `t0`: o prazo é do PROCESSAMENTO, e o que vem antes
+    // desta linha — resolução de canal, CRM, janela de rajada — não é tempo que
+    // o agente gastou. Gastar o orçamento com os 6 s de debounce faria o
+    // deadline morder uma rodada que ele não deveria alcançar.
+    //
+    // E é a vizinhança certa do claim logo abaixo: `AI_LOCK_TTL_SECONDS` existe
+    // para cobrir `orçamento + pior turno + envio` a partir do instante em que a
+    // conversa é reivindicada (`lockTtlSecondsRequired`, no núcleo). Os dois
+    // relógios começam juntos porque medem a mesma janela.
+    const processingStartedAt = Date.now();
 
     // ─── Lock de exclusão por conversa ────────────────────────────────────────
     // O debounce acima é OTIMISTA (comparação de timestamp) e NÃO garante
@@ -3341,6 +4442,10 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
 
     const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 };
     let agentError: string | null = null;
+    // Quem interrompeu o loop: o prazo ou o provedor. Duas consequências
+    // diferentes (motivo do handoff, e o retry silencioso que NÃO pode pegar o
+    // prazo), e a pergunta é do OBJETO lançado — nunca do texto sanitizado.
+    let agentDeadlineReached = false;
     let finalText = "";
 
     let mutatingToolUsed = false;
@@ -3359,6 +4464,36 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
         // AUSENTE fora da franquia: nenhuma autorização, nenhuma apropriação,
         // nenhum custo persistido — o caminho legado inteiro depende disso.
         budget: budgetHooks,
+        // Deadline SUAVE: só impede COMEÇAR nova rodada de ferramenta. A
+        // política é do núcleo; aqui só se entrega o relógio do PROCESSAMENTO
+        // (nunca `t0`, que inclui o que veio antes do claim da conversa).
+        //
+        // ─── ESCOPADO À FILA, e isso é requisito da fase, não cautela ────────
+        //
+        // O prazo existe por causa do ORÇAMENTO DE PAREDE da varredura: um evento
+        // que roda para sempre derruba o worker e adia o inbound de outros
+        // tenants. O caminho SÍNCRONO não tem esse orçamento — e não tem teto
+        // nenhum, o que é afirmação medida e não conforto: `AGENT_RETRY_BUDGET_MS`
+        // só decide se CABE uma retentativa, nunca interrompe o laço em curso, e o
+        // TTL do lock de conversa EXPIRA em vez de parar quem o segura (um irmão
+        // assume e roda um segundo agente). O que o torna aceitável é outra coisa:
+        // ele é o caminho que atende loja real agora, com o gate assíncrono
+        // desligado nas duas pernas, e aplicar o prazo aos quatro providers
+        // legados seria mudar o comportamento deles por efeito colateral, que esta
+        // fase proíbe explicitamente. Teto de parede no síncrono é decisão própria,
+        // com sua própria medição — não carona desta.
+        //
+        // E a aritmética mostra que não seria inócuo: `AGENT_SOFT_DEADLINE_MS`
+        // (30 000) é MENOR que `WORST_SINGLE_TURN_MS` (31 000) do próprio repo,
+        // então uma rodada de pior caso consome o orçamento inteiro e a SEGUINTE
+        // é sempre recusada. No síncrono isso cortaria conversas de duas rodadas
+        // que hoje concluem, e tiraria do ar justamente o empty-retry do Gemini —
+        // a causa nº 1 de "não consegui montar uma resposta", que existe para
+        // resgatar exatamente esses turnos.
+        shouldContinue: ingestionSource === "queue"
+          ? () =>
+            agentDeadlineVerdict({ startedAt: processingStartedAt, now: Date.now() }) === "continue"
+          : undefined,
         onUsage: (u) => {
           totalUsage.input_tokens += u.input_tokens;
           totalUsage.output_tokens += u.output_tokens;
@@ -3436,16 +4571,41 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
       try {
         agentOutcome = await runOnce();
         agentError = null;
+        agentDeadlineReached = false;
         break;
       } catch (err) {
+        // A MARCA DO PRAZO É LIDA DO OBJETO, E ANTES DE SANITIZAR.
+        // `sanitizeProviderError` devolve `${err.name}: ${err.message}` e ainda
+        // passa por redação e `slice(0, 300)`: comparar a string resultante com
+        // "agent_deadline" nunca casaria, e casar por `includes` amarraria a
+        // decisão à forma de um texto que outra regra pode reescrever.
+        agentDeadlineReached = isAgentDeadlineError(err);
         // SANITIZADO, sempre. A chave de IA é per-unit (BYOK) e o erro do
         // provedor pode ecoar o request com o header de autorização — ou a URL
         // do Gemini, que carrega `?key=<chave>` na query string. Este valor é
         // persistido em `webhook_executions.error` e em `processed_messages`.
         agentError = sanitizeProviderError(err);
-        jsonLog("error", { requestId, evt: "agent_loop_error", attempt, err: agentError });
+        jsonLog("error", {
+          requestId,
+          evt: "agent_loop_error",
+          attempt,
+          deadline: agentDeadlineReached,
+          err: agentError,
+        });
         const elapsed = Date.now() - t0;
-        if (attempt === 0 && !mutatingToolUsed && elapsed < AGENT_RETRY_BUDGET_MS) {
+        // `!agentDeadlineReached` é EXCLUSÃO EXPLÍCITA, e a razão não é o valor
+        // das constantes. Sem ela, o `catch` genérico reiniciaria o agente
+        // inteiro logo depois de o prazo ter dito para não começar nem mais uma
+        // rodada — o deadline anulando a si mesmo no único caso em que importa.
+        // Hoje `AGENT_RETRY_BUDGET_MS` e `AGENT_SOFT_DEADLINE_MS` valem os
+        // mesmos 30 s, em arquivos diferentes e contados de relógios diferentes
+        // (`t0` aqui, `processingStartedAt` lá): coincidência aritmética entre
+        // dois números que ninguém declarou gêmeos. Subir o orçamento de retry
+        // desligaria o deadline em silêncio.
+        if (
+          attempt === 0 && !agentDeadlineReached && !mutatingToolUsed
+          && elapsed < AGENT_RETRY_BUDGET_MS
+        ) {
           jsonLog("warn", { requestId, evt: "agent_retry", elapsed_ms: elapsed });
           continue;
         }
@@ -3557,17 +4717,62 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
       // no handoff_reason e em webhook_executions.meta, e avisa o cliente.
       const usedModel = modelOverride;
 
+      // O motivo distingue PRAZO de erro do provedor, e isso não é cosmética: é
+      // o campo que se lê ao investigar "por que esta conversa foi para
+      // atendimento humano". Um turno interrompido pelo deadline não é
+      // instabilidade do provedor, e chamá-lo de `agent_error` mandaria quem
+      // investiga procurar defeito onde não há.
+      //
+      // O NOME é próprio (`agentHandoffReason`, não `handoffReason`): o
+      // guardrail que confere que cada porta de handoff manda a conversa para a
+      // fila do operador ancora cada porta pelo texto da razão, e duas portas
+      // com o mesmo identificador colapsam numa só aos olhos dele.
+      const agentHandoffReason = agentDeadlineReached
+        ? `agent_deadline:${provider_ai}:${usedModel}`
+        : `agent_error:${provider_ai}:${usedModel}`;
+
       await supabase
         .from("conversations")
         .update({
           status: "awaiting_human",
-          handoff_reason: `agent_error:${provider_ai}:${usedModel}`,
+          handoff_reason: agentHandoffReason,
           handoff_at: new Date().toISOString(),
           last_silenced_reply_at: null,
         })
         .eq("id", conv.id);
 
-      const handoffText = AGENT_INSTABILITY_TEXT;
+      // COPY: mesma disciplina do hard stop de franquia 70 linhas acima, e aqui
+      // ela é MODAL e não excepcional. A forma do defeito: a rodada 2 executa
+      // `create_reservation`, a rodada 3 — a que CONFIRMA ao cliente — é recusada
+      // pelo prazo, e a reserva fica `confirmed` no banco enquanto o cliente é
+      // informado de instabilidade técnica. Ele não aparece (mesa segurada vazia)
+      // ou aparece achando que não tem reserva. É literalmente o caso que
+      // `ai-budget-copy.ts` nomeia: "usar a mesma frase para as três é o erro que
+      // produz cliente aparecendo no restaurante sem mesa".
+      //
+      // Escopado a `agentDeadlineReached` de propósito. O ramo de `agent_error`
+      // após ferramenta mutante tem o MESMO problema e é PREEXISTENTE — mudá-lo
+      // aqui alteraria, de carona, a mensagem que a loja real já manda hoje.
+      // Registrado para a revisão de branch decidir, não resolvido por efeito
+      // colateral.
+      //
+      // TRÊS pernas, e a terceira não é simetria: sem ela o prazo SEM ferramenta
+      // mutante — tão frequente quanto o caso acima — afirma "instabilidade"
+      // sobre uma parada PLANEJADA, que é a outra regra que `ai-budget-copy.ts`
+      // escreve no próprio cabeçalho ("não pode afirmar falha técnica: não houve
+      // falha nenhuma"). O texto reusado é o do hard stop sem mutação porque, do
+      // lado do CLIENTE, a situação é a mesma: nada foi alterado, a mensagem
+      // ficou registrada e uma pessoa assume. Reusar em vez de redigitar é o que
+      // mantém uma frase por situação — e o que garante que ela já está no
+      // `HARDCODED_AGENT_NOISE`, pela lista importada.
+      let handoffText: string;
+      if (!agentDeadlineReached) {
+        handoffText = AGENT_INSTABILITY_TEXT;
+      } else if (mutatingToolUsed) {
+        handoffText = resolveMutationStopText(lastMutationOutcome);
+      } else {
+        handoffText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT;
+      }
       const errorNotice = await sendAutomatic(handoffText);
       if (errorNotice.ok) {
         await appendToConversation(
@@ -3579,15 +4784,27 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
         );
       }
 
-      jsonLog("warn", { requestId, evt: "agent_error_handoff", provider: provider_ai, model: usedModel, err: agentError });
-      // Turno INTERROMPIDO pelo provedor: o consumido migra para o liquidado e
-      // a diferença volta ao disponível. Antes do `finish` — ver o desfecho de
-      // negação acima.
+      jsonLog("warn", {
+        requestId,
+        evt: "agent_error_handoff",
+        provider: provider_ai,
+        model: usedModel,
+        deadline: agentDeadlineReached,
+        err: agentError,
+      });
+      // Turno INTERROMPIDO (pelo provedor ou pelo prazo): o consumido migra
+      // para o liquidado e a diferença volta ao disponível. Antes do `finish` —
+      // ver o desfecho de negação acima.
       await settleTurnBudget("RELEASED");
       await finish("agent_error", agentError, {
         provider: provider_ai,
         model: usedModel,
         channel_id: channelId,
+        // O outcome continua `agent_error` de propósito: o vocabulário de
+        // `webhook_executions.outcome` é consumido por painel e diagnóstico, e
+        // trocá-lo é mudança de contrato que esta task não pede. A distinção
+        // viaja no `meta` e no `handoff_reason`.
+        deadline: agentDeadlineReached,
       });
       await releaseAiLock();
       return new Response("ok");
@@ -3712,4 +4929,6 @@ async function handleWebhookRequest(req: Request, trustedMetaPayload = false): P
   }
 }
 
-serve((req) => handleWebhookRequest(req, false));
+// A porta pública entra SEMPRE com o default `{}`: nenhum chamador externo
+// consegue afirmar "assinatura já validada" nem "vim da fila".
+serve((req) => handleWebhookRequest(req));

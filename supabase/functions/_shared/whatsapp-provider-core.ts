@@ -45,12 +45,17 @@ export interface CloudApiResponse {
 }
 
 /**
- * Capability → método exigido pelo guard de acoplamento.
- * Capabilities de payload, como adReferral, não exigem chamada própria.
+ * Capability → método exigido pelo guard de acoplamento, nas DUAS direções:
+ * capability `true` exige o método, e método presente exige capability `true`.
+ * Capability de payload também exige método: `adReferral` declarada sem
+ * `parseAdReferral` foi a Fase A afirmando uma captura que ninguém fazia, e a
+ * frase antiga deste comentário ("capabilities de payload não exigem chamada
+ * própria") era o que deixava essa mentira passar.
  * Acrescentar o método ao contrato exige mapear sua capability aqui.
  */
 export const CAPABILITY_REQUIRED_METHOD = {
   rawCloudApiProxy: "cloudApiRequest",
+  adReferral: "parseAdReferral",
 } as const satisfies Readonly<Partial<Record<keyof WhatsAppProviderCapabilities, keyof WhatsAppProviderAdapter>>>;
 
 export type WhatsAppOperationalStatus =
@@ -126,6 +131,24 @@ export interface InboundMediaPeek {
   /** Epoch Unix em milissegundos, normalizado do timestamp do provider. */
   timestamp: number;
   contactName?: string;
+}
+
+/**
+ * `referral` de anúncio Click-to-WhatsApp (Fase D). Existe só em provider que
+ * declara `adReferral`. Campos tipados só quando o valor é `string`; `raw` é a
+ * subárvore EXATAMENTE como chegou — o envelope não foi medido, e se o
+ * identificador vier sob outro nome é na `raw` que ele sobrevive.
+ */
+export interface AdReferral {
+  /** Id da mensagem que carregou o referral — conferido contra o do inbound. */
+  providerMessageId: string;
+  /** `messages[0].type` como veio, sem normalizar. */
+  messageType: string | null;
+  ctwaClid: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  /** Subárvore `referral` CRUA. Nunca redigitada. */
+  raw: unknown;
 }
 
 export type DeliveryStatus = "sent" | "delivered" | "read" | "failed";
@@ -233,6 +256,14 @@ export interface WhatsAppProviderAdapter {
   parseOwnMessageEchoes(payload: any): OwnMessageEcho[];
   // deno-lint-ignore no-explicit-any
   peekInboundMedia(payload: any): InboundMediaPeek | null;
+  /**
+   * Referral CTWA da mensagem do payload (Fase D). Só em adapter que declara
+   * `adReferral` — o guard de capability confere as duas direções. Lê QUALQUER
+   * `type` (texto e mídia) sobre o payload de UMA mensagem: o lote Meta já foi
+   * dividido a montante.
+   */
+  // deno-lint-ignore no-explicit-any
+  parseAdReferral?(payload: any): AdReferral | null;
   // deno-lint-ignore no-explicit-any
   parseStatusCallback(payload: any): StatusUpdate[] | null;
   // deno-lint-ignore no-explicit-any
@@ -833,6 +864,31 @@ export function peekOfficialMedia(p: any): InboundMediaPeek | null {
     mediaKind: map[String(msgObj.type ?? "")] ?? "other",
     timestamp,
     contactName: sanitizeContactName(value?.contacts?.[0]?.profile?.name, digits),
+  };
+}
+
+// Fase D. Lê `messages[0].referral` para QUALQUER `type`: o clique de anúncio
+// pode chegar como texto ou como mídia, e `parseOfficialInbound` só vê texto.
+// Campo tipado só entra se for `string` — `String({})` viraria
+// "[object Object]" e passaria como identificador. `raw` é a subárvore como
+// chegou, nunca redigitada.
+// deno-lint-ignore no-explicit-any
+export function parseOfficialAdReferral(p: any): AdReferral | null {
+  const msgObj = p?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  if (!msgObj || typeof msgObj !== "object") return null;
+  const referral = msgObj.referral;
+  if (referral === undefined || referral === null) return null;
+  const id = nonEmptyString(msgObj.id);
+  if (!id) return null;
+  const fields: Record<string, unknown> =
+    typeof referral === "object" && !Array.isArray(referral) ? referral : {};
+  return {
+    providerMessageId: id,
+    messageType: typeof msgObj.type === "string" ? msgObj.type : null,
+    ctwaClid: typeof fields.ctwa_clid === "string" ? fields.ctwa_clid : null,
+    sourceType: typeof fields.source_type === "string" ? fields.source_type : null,
+    sourceId: typeof fields.source_id === "string" ? fields.source_id : null,
+    raw: referral,
   };
 }
 

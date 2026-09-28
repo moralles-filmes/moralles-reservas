@@ -17,6 +17,7 @@ import {
   decideWahaQrFlow,
   isMetaShapedProvider,
   isSafeWahaBaseUrl,
+  parseOfficialAdReferral,
   parseOfficialInbound,
   parseOfficialOwnMessageEchoes,
   parseOfficialStatus,
@@ -42,6 +43,7 @@ import {
   pickProviderMessageId,
   sendUazApiText,
   wahaSessionPreparationAction,
+  type AdReferral,
   type ChannelCredentials,
   type CloudApiRequest,
   type CloudApiResponse,
@@ -326,6 +328,7 @@ async function getUazApiConnectionStatus(
 
 export type WhatsAppProvider = WhatsAppProviderName;
 export type {
+  AdReferral,
   ChannelCredentials,
   CloudApiRequest,
   CloudApiResponse,
@@ -554,6 +557,7 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     parseInbound: parseOfficialInbound,
     parseOwnMessageEchoes: parseOfficialOwnMessageEchoes,
     peekInboundMedia: peekOfficialMedia,
+    parseAdReferral: parseOfficialAdReferral,
     parseStatusCallback: parseOfficialStatus,
     sendText: sendOfficial,
     getConnectionStatus: getOfficialConnectionStatus,
@@ -593,6 +597,7 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     parseInbound: parseOfficialInbound,
     parseOwnMessageEchoes: parseOfficialOwnMessageEchoes,
     peekInboundMedia: peekOfficialMedia,
+    parseAdReferral: parseOfficialAdReferral,
     parseStatusCallback: parseOfficialStatus,
     sendText: sendDatafy,
     getConnectionStatus: getDatafyConnectionStatus,
@@ -648,6 +653,25 @@ export function peekInboundMedia(provider: WhatsAppProvider, payload: any): Inbo
   } catch {
     return null;
   }
+}
+
+/**
+ * Fase D. `null` para todo provider sem o método — Z-API, WAHA e UazAPI não
+ * declaram `adReferral` e não fazem nada aqui. Nunca lança: referral ilegível
+ * não pode derrubar o inbound.
+ */
+// deno-lint-ignore no-explicit-any
+export function parseAdReferral(provider: WhatsAppProvider, payload: any): AdReferral | null {
+  try {
+    return providerRegistry.tryGet(provider)?.parseAdReferral?.(payload) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Se o provider captura referral CTWA. Método ⇔ capability, pelo guard. */
+export function hasAdReferralCapture(provider: WhatsAppProvider): boolean {
+  return typeof providerRegistry.tryGet(provider)?.parseAdReferral === "function";
 }
 
 export async function sendOutbound(
