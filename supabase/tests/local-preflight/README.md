@@ -54,6 +54,9 @@ presentes agendaria jobs apontando para lá.
 | `19-controles-113.sql` | Os **nove controles positivos** (ordinais 56–62, 82 e 84) da 113. C-113-1 tira a cerca `claim_id` da finalização; C-113-2 tira a perna do takeover; C-113-3 tira o filtro de status do claim; C-113-4 encurta o lease para 9 s; C-113-5 incrementa `attempts` em todo ramo; C-113-6 lê o atraso como milissegundos; C-113-7 dropa e recria a função sem repetir o `revoke`; C-113-8 devolve o claim à forma anterior à Task 8, sem o incremento do takeover; C-113-9 devolve o `last_error` à sobrescrita cega, provando que finalizar com erro NULO apagaria a evidência. Cada um mede também que os casos VIZINHOS continuam verdes. O critério **não é "um caso"**: o C-113-3 derruba dois (CLAIM-2 e CLAIM-4) e está certo, porque a sabotagem quebra genuinamente as duas propriedades e cada veredito nomeia o defeito real — o que se exige é vermelho localizado, com mensagem apontando para o lugar certo. |
 | `20-inbound-sweep-113.sql` | SWEEP-1..6, PURGE-1..2 e ACL-SWEEP (ordinais 64–72, migration 113, Fase C): a SELEÇÃO das linhas devidas e a PURGA. Linha devida selecionada, agendada para o futuro fora, lease vencido dentro, lease vivo fora, a seleção **não escrevendo nada** (as cinco colunas intactas), a linha antiga passando na frente da recém-tocada, as duas janelas de retenção (7 d para `done`, 30 d para `dead`) com contra-caso em cada uma, e o ACL efetivo das duas RPCs. **Continua o banco da 111/113** — ver a seção "Sequência da migration 113". |
 | `21-controles-113-sweep.sql` | Os **sete controles positivos** (ordinais 73–79) da seleção e da purga. C-SWEEP-1 tira o filtro `next_attempt_at <= now()`; C-SWEEP-2 tira a perna do lease vencido; **C-SWEEP-3 reintroduz o desenho recusado** (a seleção que reivindica EM LOTE, marcando 20 linhas `processing` de uma vez); C-SWEEP-4 volta a ordem para `next_attempt_at`; C-SWEEP-5 iguala a janela de `done` à de `dead`; C-SWEEP-6 tira a perna de `dead`; C-SWEEP-7 dropa e recria a purga sem repetir o `revoke`. Cada um mede também que os vizinhos continuam verdes. O C-SWEEP-2 derruba DOIS casos (SWEEP-3 e SWEEP-6) e está certo: a linha "envenenada" do SWEEP-6 é, por fidelidade ao cenário, um `processing` com lease vencido — e o veredito dele nomeia o takeover, não a ordem. |
+| `22a-ad-touchpoints-bootstrap.sql` | O que a 115 (Fase D) referencia e o `00` não tem: **default privileges** que emulam o Supabase (ALL nas tabelas novas de `public` para `anon`/`authenticated`/`service_role` — é o que dá a `authenticated` o DELETE que torna o C-115-4 honesto), `customers` fiel MÍNIMO com RLS e uma policy PERMISSIVA de fixture para `authenticated` (não é a de produção), três clientes (dois da org A, um da org B) e o grant de tabela em tudo que já existia em `public`, sem o qual o `service_role` do TP-1b não leria `units`/`whatsapp_channels`. **Recusa rodar depois da 115**: a tabela nasceria sem os default privileges e o TP-9/C-115-4 mediriam outra coisa. |
+| `22-ad-touchpoints-115.sql` | TP-1..TP-11, TP-1b, TP-4b e TP-6b (ordinais 85–96, 102 e 103, migration 115): a tabela `whatsapp_ad_touchpoints`. Imutabilidade (nenhum UPDATE, nem o que não muda nada) com a única exceção da coerção do `set null` de `channel_id`, coerência de tenant entre as três FKs, cliente anonimizado recusado, CHECKs de `provider` e da rede de 64 KiB, dedupe `(provider, provider_message_id)`, a purga LGPD disparada por soft delete feito com o papel REAL `authenticated` (TP-9), a gravação com o papel REAL `service_role` (TP-1b), RLS/ACL/forma das funções e idempotência através de duas execuções (TP-11). **Banco PRÓPRIO** `fased115` — ver a seção "Sequência da migration 115". |
+| `23-controles-115.sql` | Os **seis controles positivos** (ordinais 97–101 e 104) da 115. C-115-1/2/3/6 sabotam o guard por **delta mínimo** sobre `pg_get_functiondef`, recortando o trecho entre os marcadores `-- <x>`/`-- </x>` do corpo (`excecao-set-null`, `coerencia-tenant`, `guarda-update`, `cliente-vivo`); C-115-4 torna a purga `security invoker`; C-115-5 dropa e recria o guard sem o `revoke`. Restore dentro de cada controle, conferido contra o catálogo. |
 
 ## Rodar
 
@@ -568,6 +571,154 @@ reexecutado, 113 reaplicada para restaurar):
 | `C-SWEEP-5` (30 dias também para `done`) | 70 (`PURGE-1`) | 64–69, 71, 72 |
 | `C-SWEEP-6` (sem a perna de `dead`) | 71 (`PURGE-2`) | 64–70, 72 |
 | `C-SWEEP-7` (drop + create sem o `revoke`) | 72 (`ACL-SWEEP`) | 64–71 |
+
+### Sequência da migration 115 (Fase D — touchpoints CTWA)
+
+**Banco PRÓPRIO `fased115`**, por duas razões. A primeira é a de sempre: o `22`
+declara `t_res` com `ord int primary key`, como o `09` e posteriores, e não
+convive com o `03`/`05`. A segunda é desta sequência: o `22a` tem de rodar
+**ANTES** da 115 — são os default privileges dele que fazem a tabela nascer com
+os grants do Supabase —, e ele recusa rodar num banco onde a tabela já existe.
+Não dá para acrescentá-la a um banco que já tem a 115.
+
+Nada de 061/110/111/113: a 115 referencia só `units`, `whatsapp_channels` (do
+`00`) e `customers` (do `22a`), e os canais do `00a` servem de fixture. O canal
+`dddd…02` é da unidade B1 e o cliente `cccc…03` da org B — são eles que os casos
+de tenant cruzado usam.
+
+**O servidor pode já estar no ar** na 55432 (outra sessão pode tê-lo subido): nesse
+caso não rode `pg_ctl start`, e **não o pare** ao terminar — só crie e apague o
+banco `fased115`. Se ele não estiver no ar, a seção "Rodar" diz como conferir a
+porta antes de subir qualquer coisa — e vale também o caso inverso do que ela
+descreve: em 2026-09-28 o `postmaster.pid` do data dir default dizia porta 55432
+com um PID que **não existia mais** (resíduo), e o único Postgres no ar era de
+OUTRO data dir, na 55433 e com senha. Conferir PID e porta antes de concluir
+qualquer coisa vale nos dois sentidos.
+
+```bash
+export PGCLIENTENCODING=UTF8          # obrigatório; ver a nota na seção "Rodar"
+PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists fased115
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres fased115
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fased115 -v ON_ERROR_STOP=1 "$@"; }
+
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/00a-whatsapp-legacy-seed.sql
+P -f supabase/tests/local-preflight/22a-ad-touchpoints-bootstrap.sql
+
+# ANTES da 115, o 22 e o 23 têm de FALHAR pelas guardas do topo. É o RED que dá
+# sentido ao GREEN: rodado antes, TP-5/6/6b/7 passariam POR ACIDENTE, porque sem
+# a tabela todo insert "falha" e todo caso negativo fica verde medindo nada. O 23
+# deixa a sentinela -23 gravada; a execução sadia dele a apaga.
+P -f supabase/tests/local-preflight/22-ad-touchpoints-115.sql   # esperado: ERROR (guarda: tabela ausente)
+P -f supabase/tests/local-preflight/23-controles-115.sql        # esperado: ERROR (guarda)
+
+P -f supabase/migrations/20260927120000_115_whatsapp_ad_touchpoints.sql
+P -f supabase/tests/local-preflight/22-ad-touchpoints-115.sql   # TP-11 = PENDENTE
+# TP-11 mede idempotência ATRAVÉS DE EXECUÇÕES: a 1a passada grava a assinatura
+# do catálogo, a 2a compara. Reaplicar a 115 no meio é o que está sendo medido.
+P -f supabase/migrations/20260927120000_115_whatsapp_ad_touchpoints.sql
+P -f supabase/migrations/20260927120000_115_whatsapp_ad_touchpoints.sql
+P -f supabase/tests/local-preflight/22-ad-touchpoints-115.sql   # TP-11 = OK
+
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fased115 \
+  -f supabase/tests/local-preflight/23-controles-115.sql        # SEM ON_ERROR_STOP
+# NÃO reaplicar a 115 aqui: cada controle já se desfez sozinho e conferiu o
+# restore contra o catálogo.
+
+P -c "select ord, caso, veredito from t_res order by ord;"      # 20 linhas, todas OK
+```
+
+Ao terminar: `"$PG/dropdb.exe" -h 127.0.0.1 -p 55432 -U postgres fased115`. **Não
+pare o servidor.**
+
+**Conte as 20 linhas, não confie em "nenhum FALHOU".** O `23` roda SEM
+ON_ERROR_STOP, e um erro de compilação de plpgsql derruba o bloco inteiro antes
+de qualquer statement — nem o `when others` grava veredito. A tabela ficaria com
+menos linhas, todas OK, que é a aparência exata de uma execução sadia. É a mesma
+razão da sentinela `-23`: ordinal próprio, para que um `23` saudável nunca apague
+a de outro arquivo de controles que falhou. **Ao acrescentar caso, atualize este
+número e o do comentário do `select` acima.**
+
+| ord | caso | arquivo |
+|---|---|---|
+| −23 | `GUARDA-23` (sentinela; **só aparece quando os pré-requisitos do `23` falham**) | `23` |
+| 85–90 | `TP-1` .. `TP-6` | `22` |
+| 91 | `TP-6b` (cliente anonimizado recusado) | `22` |
+| 92–96 | `TP-7` .. `TP-11` | `22` |
+| 97–101 | `C-115-1` .. `C-115-5` | `23` |
+| 102 | `TP-1b` (o `service_role` grava) | `22` |
+| 103 | `TP-4b` (DELETE da unidade com dupla cascata) | `22` |
+| 104 | `C-115-6` | `23` |
+
+**Quadro de sabotagem, medido com a sabotagem PERSISTIDA** (fora de
+subtransação, `22` reexecutado, 115 reaplicada para restaurar — e o `22` volta a
+14/14 OK depois de cada uma). O `TP-11` fica vermelho em TODAS as linhas, e isso
+é o certo: ele compara a assinatura do catálogo, que é exatamente o que a
+sabotagem mudou. Fora ele, o vermelho é localizado e a mensagem nomeia o defeito:
+
+| sabotagem (controle) | avermelha | continua verde |
+|---|---|---|
+| guard sem `<excecao-set-null>` (`C-115-1`) | 88 (`TP-4`: "DELETE do canal abortou … e imutavel") | todos os outros, **inclusive 103** |
+| guard sem `<coerencia-tenant>` (`C-115-2`) | 89 (`TP-5`), 90 (`TP-6`) | todos os outros |
+| guard sem `<guarda-update>` (`C-115-3`) | 87 (`TP-3`: os sete UPDATEs aceitos) | todos os outros |
+| purga `security invoker` (`C-115-4`) | 94 (`TP-9`: `depois=2`), 95 (`TP-10`: "purga deveria ser DEFINER") | todos os outros |
+| guard dropado e recriado sem `revoke`, trigger recriado (`C-115-5`) | 95 (`TP-10`: anon, authenticated, PUBLIC) | todos os outros |
+| guard sem `<cliente-vivo>` (`C-115-6`) | 91 (`TP-6b`) | todos os outros |
+
+**Três resultados MEDIDOS ao escrever este conjunto**, cada um registrado no
+arquivo, no ponto em que importa:
+
+1. **O `TP-4b` NÃO passa pela exceção do `set null`** — o rascunho supunha que
+   sim. No DELETE da unidade, as ações de FK disparadas pelo DELETE do canal
+   entram na fila DEPOIS das ações irmãs do DELETE da unidade: o cascade direto
+   apaga o touchpoint primeiro, e o `set null` chega a zero linhas (um trigger
+   espião `before update or delete` registrou só o DELETE). Por isso ele segue
+   verde sem `<excecao-set-null>`. O caso continua valendo — prova que o DELETE
+   da unidade conclui —, mas quem prova a exceção é o `TP-4`, com o `C-115-1`.
+2. **`text[] || 'literal'` sem cast estoura `22P02`.** O `TP-10` apendava
+   literais crus a `v_falhas`; o Postgres resolve o literal como array
+   (`malformed array literal`), e sob a sabotagem do `C-115-4` o caso ficava
+   vermelho pelo `when others`, com uma mensagem que não nomeava o defeito. Os
+   literais levam `::text`.
+3. **`set search_path = ''` grava `{"search_path=\"\""}` em `proconfig`** no
+   18.4 — o elemento `search_path=""`, que é o que o `TP-10` exige.
+
+O recorte do `pg_temp.sem_trecho` (`-- <x>.*?-- </x>`, sem flag) também foi
+medido: no ARE do Postgres `.` casa quebra de linha por default e a gula do RE
+é a do primeiro quantificador, então cada recorte remove só o próprio trecho —
+os outros três marcadores de abertura continuam no corpo (dois, no caso de
+`guarda-update`, que contém `excecao-set-null`), e o `select … for share`, que
+fica fora de todos os marcadores, sobrevive a todo recorte.
+
+**Por que o restore mora dentro de cada controle.** Reaplicar a 115 restauraria
+as FUNÇÕES (`create or replace function`, `drop trigger if exists` + `create
+trigger`, os `revoke`) — o quadro acima foi restaurado assim. Mas ela NÃO
+restaura a tabela, pela razão da nota "Por que reaplicar a 111 não restaura":
+`create table if not exists`/`create index if not exists` são no-op sobre uma
+tabela que já existe. Um arquivo de controles que dependa do reapply deixaria
+de pé qualquer sabotagem futura de CHECK, FK ou índice; por isso cada controle
+captura, sabota, confere que o catálogo mudou, mede o defeito, desfaz por
+rollback de subtransação (`ZZ115`) e confere o restore. O veredito só é `OK` se
+as três metades casarem.
+
+**O que o pré-voo NÃO prova aqui:**
+
+- **Exposição PostgREST** da tabela (nenhuma rota REST útil, dada a RLS forçada
+  sem policies) — depende de Supabase de verdade.
+- **O `rolbypassrls` do `postgres` de produção.** A purga é SECURITY DEFINER
+  justamente para rodar como o dono e alcançar as linhas de uma tabela FORCE
+  RLS; em produção o `postgres` tem `rolbypassrls = true` (medido lá em
+  2026-09-27, spec §1.2 de
+  [../../../docs/superpowers/specs/2026-09-27-datafy-fase-d-ctwa-referral-design.md](../../../docs/superpowers/specs/2026-09-27-datafy-fase-d-ctwa-referral-design.md)).
+  Localmente o `postgres` é superusuário e ignora RLS de qualquer jeito, então o
+  `TP-9` verde aqui não distingue as duas coisas.
+- **A serialização do `for share` contra uma anonimização CONCORRENTE.** O
+  harness é de sessão única (sem `dblink`), então a propriedade de o guard reler
+  `deleted_at` já committed depois de esperar o `NO KEY UPDATE` da anonimização é
+  raciocínio revisado, não medida. O que se mede aqui é a perna sequencial
+  (`TP-6b`) e que o `service_role` tem o privilégio que o `for share` exige
+  (`TP-1b`).
 
 ## O que os dois controles do `04` fazem
 
