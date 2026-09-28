@@ -249,6 +249,9 @@ O `referral` é o único campo desta entrega que **não se pode ver chegar**. Do
 | Reentrega da mesma mensagem | Barrada pelo claim de `processed_messages`; se passar (takeover depois de falha), `23505` → dedupe silencioso. |
 | `buildAdTouchpointRow` recusa (id divergente) | Log `ad_referral_rejected` com o motivo, **sem gravar e sem `throw`** — a mensagem segue. Um bug nosso de split não pode calar o cliente. |
 | Falha de banco no `INSERT`, no cliente ou na unidade | `throw ad_touchpoint_persist_failed` → o `catch` externo libera o claim (nenhum efeito externo começou) → 500 → o provider reentrega. Com o gate da Fase C ON, a linha da fila é re-tentada pela escada dela. |
+| Cliente com `deleted_at` (soft delete, inclusive direto pelo PostgREST sem trocar o telefone) | Guard recusa com `P0A15`; núcleo classifica `customer_not_alive`; loga e segue, sem reentrega. |
+
+Em modo fila (Fase C com o gate ligado), "o provider reentrega" é a escada da fila: falha persistente termina em `dead`, sem alerta até `ASYNC_INGESTION_DEADLETTER_ALERT` existir — mais um motivo para o gate seguir desligado.
 
 **O risco da D8, e por que ele é aceitável aqui:** uma falha **persistente** travaria todo inbound com referral desse cliente. É o que os limites no núcleo (§6), a ausência de CHECK de enum (§4.1) e o CHECK de tamanho folgado (§2.2) existem para impedir: nenhuma entrada de provider consegue produzir uma linha que o banco recuse. O que sobra é o banco fora do ar, que já derruba o claim antes daqui.
 
@@ -339,3 +342,16 @@ Toca banco, webhook e multi-tenant. Obrigatórios: `saas-shield-br:migration-val
 10. **Janela de atribuição da Meta para o `ctwa_clid`**, que define o prazo de retenção (D3). Pré-requisito da Fase I.
 
 Até lá, a Fase D **não é declarada validada**.
+
+---
+
+## 14. Emendas de execução
+
+O que a execução mudou em relação ao desenho acima, e por quê:
+
+1. **A perna `cliente-vivo` do guard recusa com SQLSTATE dedicado `P0A15`, não fatal.** O núcleo o classifica como `customer_not_alive` (`CUSTOMER_NOT_ALIVE_SQLSTATE`, gêmeo declarado) e o webhook loga e segue, sem `throw`. A policy de `customers` deixa um membro fazer soft delete direto pelo PostgREST sem trocar o telefone; aí `resolveOrCreateCustomer` devolve sempre o mesmo cliente, e com `check_violation` a recusa viraria reentrega eterna — exatamente o que a D8 não pode ter.
+2. **O guard lê o cliente com `for share`.** Sem o lock, uma anonimização concorrente apaga os touchpoints antes de o INSERT em voo commitar e o `ctwa_clid` sobrevive a ela. Medido com duas sessões reais em `supabase/tests/local-preflight/24-concorrencia-115.sh`, nas duas ordens e com controle positivo (sem o `for share`, a linha sobrevive).
+3. **Índice parcial em `channel_id`** (`where channel_id is not null`), além dos três de §4.2: FK com `on delete set null` sem índice faz o DELETE do canal varrer a tabela, e o advisor (lint 0001) acusa.
+4. **`revoke all on table whatsapp_ad_touchpoints from anon, authenticated`** na própria 115: segunda tranca além da RLS forçada, como em `whatsapp_channels`/`processed_messages`; a tabela guarda identificador pessoal pseudonimizado.
+5. **Denylist de chaves pessoais de primeiro nível na subárvore crua** (`REFERRAL_RAW_DENIED_KEYS`: `from`, `wa_id`, `phone`, `phone_number`, `name`, `profile`, `email`, `contacts`, `text`), descartadas antes da medição e contadas no log (`raw_dropped_keys`). A D2 promete telefone, nome e texto fora desta tabela e o envelope não foi medido; chaves aninhadas não são inspecionadas (`welcome_message.text` é campo do anúncio).
+6. **O TP-4b mede a dupla cascata do DELETE da unidade, mas não a exceção do `set null`**: as ações de FK do canal chegam depois do cascade direto, que já apagou o touchpoint. Quem mede a exceção é o TP-4, com o C-115-1 como controle.

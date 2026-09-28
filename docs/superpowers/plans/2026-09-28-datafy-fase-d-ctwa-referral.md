@@ -2474,6 +2474,6 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 1. Review whole-branch (`superpowers:requesting-code-review`).
 2. Gates `saas-shield-br:*`: `migration-validator` (115), `rls-auditor` (tabela + duas funções), `tenant-isolation-auditor` (guard, escopo pelo canal, D1), `integration-reliability-auditor` (dedupe, falha reentregável, parser).
-3. `npm run test`, `npm run typecheck`, `npm run lint`, pré-voo (17/17), conferência estática do `acl-estatico` (`npx vitest run scripts/function-acl-allowlist.test.ts`).
+3. `npm run test`, `npm run typecheck`, `npm run lint`, pré-voo (20/20) + `24-concorrencia-115.sh`, conferência estática do `acl-estatico` (`npx vitest run scripts/function-acl-allowlist.test.ts`).
 4. Merge em `main` local; **sem push** (decisão do dono).
 5. Relatório de fechamento A–D.
