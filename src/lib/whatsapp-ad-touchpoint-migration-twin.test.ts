@@ -34,6 +34,48 @@ function limiteDaColuna(sql: string, coluna: string): number {
   return Number(m[1]);
 }
 
+const GUARD_FN_START = "create or replace function public.whatsapp_ad_touchpoints_guard()";
+const GUARD_FN_END = "$$;";
+
+/**
+ * Corpo da função do guard, do `create or replace function ...guard()` até o
+ * PRIMEIRO `$$;` depois dele — o fechamento de `as $$ ... $$;`. Os testes de
+ * aninhamento de marcador (fix F4) operam só sobre esta fatia: um marcador
+ * que "existe em algum lugar do arquivo" não prova nada sobre a ordem DENTRO
+ * do guard, e foi exatamente essa fraqueza que o review apontou.
+ */
+function guardBody(sql: string): string {
+  const start = sql.indexOf(GUARD_FN_START);
+  if (start === -1) throw new Error("função whatsapp_ad_touchpoints_guard não encontrada");
+  const end = sql.indexOf(GUARD_FN_END, start);
+  if (end === -1) throw new Error("fim do corpo do guard ($$;) não encontrado");
+  return sql.slice(start, end + GUARD_FN_END.length);
+}
+
+interface MarcadorPos {
+  open: number;
+  close: number;
+}
+
+function acharMarcador(body: string, marcador: string): MarcadorPos {
+  return {
+    open: body.indexOf(`-- <${marcador}>`),
+    close: body.indexOf(`-- </${marcador}>`),
+  };
+}
+
+/** `inner` está inteiramente dentro do intervalo [abertura, fechamento] de `outer`. */
+function estaAninhado(inner: MarcadorPos, outer: MarcadorPos): boolean {
+  return (
+    outer.open !== -1 &&
+    outer.close !== -1 &&
+    inner.open !== -1 &&
+    inner.close !== -1 &&
+    outer.open < inner.open &&
+    inner.close < outer.close
+  );
+}
+
 describe("migration 115 ⇔ núcleo do touchpoint", () => {
   it("o arquivo existe e vem depois da 114 (20260924120300)", () => {
     expect(ARQUIVO).toBeDefined();
@@ -78,10 +120,54 @@ describe("migration 115 ⇔ núcleo do touchpoint", () => {
     expect(sql).not.toMatch(/grant\s+[^;]*\bon\s+function\b/);
   });
 
-  it("os marcadores de que os controles do pré-voo dependem estão no corpo do guard", () => {
-    for (const marcador of ["excecao-set-null", "coerencia-tenant", "guarda-update"]) {
-      expect(SQL).toContain(`-- <${marcador}>`);
-      expect(SQL).toContain(`-- </${marcador}>`);
+});
+
+describe("marcadores do guard (fix F4): aninhamento, não só presença no arquivo", () => {
+  const MARCADORES = ["excecao-set-null", "coerencia-tenant", "cliente-vivo", "guarda-update"] as const;
+
+  it("os quatro marcadores estão dentro do CORPO do guard, com abertura antes do fechamento", () => {
+    const body = guardBody(SQL);
+    for (const marcador of MARCADORES) {
+      const { open, close } = acharMarcador(body, marcador);
+      expect(open, `abertura de <${marcador}> não está no corpo do guard`).toBeGreaterThanOrEqual(0);
+      expect(close, `fechamento de </${marcador}> não está no corpo do guard`).toBeGreaterThanOrEqual(0);
+      expect(open, `<${marcador}>: abertura deveria vir antes do fechamento`).toBeLessThan(close);
     }
+  });
+
+  it("excecao-set-null está aninhado DENTRO de guarda-update", () => {
+    const body = guardBody(SQL);
+    const inner = acharMarcador(body, "excecao-set-null");
+    const outer = acharMarcador(body, "guarda-update");
+    expect(estaAninhado(inner, outer)).toBe(true);
+  });
+
+  it("cliente-vivo NÃO está aninhado dentro de coerencia-tenant — o acoplamento do fix F2", () => {
+    const body = guardBody(SQL);
+    const inner = acharMarcador(body, "cliente-vivo");
+    const outer = acharMarcador(body, "coerencia-tenant");
+    expect(estaAninhado(inner, outer)).toBe(false);
+  });
+
+  it(
+    "CONTROLE POSITIVO: corpo sintético com cliente-vivo dentro de coerencia-tenant reprova " +
+      "o teste de não-aninhamento acima",
+    () => {
+      const corpoSabotado = [
+        "-- <coerencia-tenant>",
+        "-- <cliente-vivo>",
+        "if v_cust_deleted is not null then raise exception 'x'; end if;",
+        "-- </cliente-vivo>",
+        "-- </coerencia-tenant>",
+      ].join("\n");
+      const inner = acharMarcador(corpoSabotado, "cliente-vivo");
+      const outer = acharMarcador(corpoSabotado, "coerencia-tenant");
+      expect(estaAninhado(inner, outer)).toBe(true);
+    },
+  );
+
+  it("a leitura do cliente no guard usa `for share` — fecha a corrida com anonymize_customer (fix F1)", () => {
+    const body = guardBody(SQL);
+    expect(body).toMatch(/from public\.customers c where c\.id = new\.customer_id for share/);
   });
 });

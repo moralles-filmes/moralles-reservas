@@ -64,6 +64,10 @@ create index if not exists whatsapp_ad_touchpoints_unit_customer_idx
 create index if not exists whatsapp_ad_touchpoints_customer_idx
   on whatsapp_ad_touchpoints (customer_id);
 
+-- FK channel_id sem índice dispara o advisor (lint 0001, unindexed foreign keys).
+create index if not exists whatsapp_ad_touchpoints_channel_idx
+  on whatsapp_ad_touchpoints (channel_id) where channel_id is not null;
+
 alter table whatsapp_ad_touchpoints enable row level security;
 alter table whatsapp_ad_touchpoints force row level security;
 -- Sem policies: só service_role, via Edge Function. Mesma disciplina de
@@ -106,6 +110,15 @@ begin
   end if;
   -- </guarda-update>
 
+  -- `for share` serializa esta leitura contra o `NO KEY UPDATE` implícito do
+  -- `UPDATE customers set deleted_at = ...` de anonymize_customer: quem
+  -- espera relê o valor committed mais recente em READ COMMITTED. Sem o lock,
+  -- um INSERT concorrente com a anonimização podia ler deleted_at nulo antes
+  -- de a purga rodar, e o ctwa_clid sobrevivia pra sempre (sem purga por
+  -- tempo, D3).
+  select c.organization_id, c.deleted_at into v_cust_org, v_cust_deleted
+    from public.customers c where c.id = new.customer_id for share;
+
   -- <coerencia-tenant>
   if new.channel_id is not null and not exists (
     select 1 from public.whatsapp_channels ch
@@ -116,23 +129,29 @@ begin
   end if;
 
   select u.organization_id into v_unit_org from public.units u where u.id = new.unit_id;
-  select c.organization_id, c.deleted_at into v_cust_org, v_cust_deleted
-    from public.customers c where c.id = new.customer_id;
 
-  if v_unit_org is null or v_cust_org is distinct from v_unit_org then
+  if v_unit_org is null then
+    raise exception 'whatsapp_ad_touchpoints: unidade % sem organizacao', new.unit_id
+      using errcode = 'check_violation';
+  end if;
+
+  if v_cust_org is distinct from v_unit_org then
     raise exception 'whatsapp_ad_touchpoints: cliente % nao pertence a organizacao da unidade %', new.customer_id, new.unit_id
       using errcode = 'check_violation';
   end if;
   -- </coerencia-tenant>
 
-  -- Cliente vivo: sem isto, uma anonimização entre o resolveOrCreateCustomer e
-  -- o INSERT deixaria um ctwa_clid preso a cliente já anonimizado, depois de o
-  -- trigger de purga ter rodado. A recusa é reentregável e se cura sozinha: a
-  -- anonimização troca o telefone, e a reentrega cria um cliente novo.
+  -- <cliente-vivo>
+  -- Sem isto, uma anonimização que rodasse ENTRE o resolveOrCreateCustomer e
+  -- o INSERT deixaria um ctwa_clid preso a um cliente já anonimizado. O `for
+  -- share` acima fecha a corrida (F1): a recusa é reentregável e se cura
+  -- sozinha — a anonimização troca o telefone, e a reentrega cria um cliente
+  -- novo.
   if v_cust_deleted is not null then
     raise exception 'whatsapp_ad_touchpoints: cliente % anonimizado', new.customer_id
       using errcode = 'check_violation';
   end if;
+  -- </cliente-vivo>
 
   return new;
 end;
