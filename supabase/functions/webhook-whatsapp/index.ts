@@ -63,7 +63,9 @@ import {
 } from "../_shared/whatsapp-inbound-queue-core.ts";
 import {
   WEBHOOK_SIGNATURE_SCHEME,
+  hasAdReferralCapture,
   isMetaShapedProvider,
+  parseAdReferral,
   parseInbound,
   parseOwnMessageEchoes,
   peekInboundMedia,
@@ -85,6 +87,15 @@ import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.t
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { splitMetaWebhookPayloadCore } from "../_shared/whatsapp-meta-batch-core.ts";
 import { shapeOf } from "../_shared/webhook-payload-shape-core.ts";
+// ─── Referral CTWA (Fase D) ──────────────────────────────────────────────────
+// Adapter de I/O; a decisão é do núcleo. Nada aqui reimplementa limite, dedupe
+// ou forma de log.
+import {
+  buildAdTouchpointRow,
+  classifyTouchpointInsert,
+  describeCapturedReferral,
+  describeReferralProbe,
+} from "../_shared/whatsapp-ad-touchpoint-core.ts";
 import { sanitizeForWhatsApp } from "../_shared/whatsapp-format.ts";
 import {
   genRequestId,
@@ -747,6 +758,100 @@ async function persistInboundOnly(args: {
     jsonLog("warn", { requestId: args.requestId, evt: "persist_inbound_only_failed", err: String(e) });
     return false;
   }
+}
+
+/**
+ * Fase D — captura do `referral` de anúncio Click-to-WhatsApp.
+ *
+ * Adapter de I/O: toda decisão está em `_shared/whatsapp-ad-touchpoint-core.ts`.
+ * Chamado nos DOIS caminhos de inbound (texto e mídia), sempre DEPOIS do claim de
+ * `processed_messages` (reentrega barrada não chega aqui; o UNIQUE é a segunda
+ * barreira) e ANTES de rate limit, billing, suspensão e de qualquer efeito
+ * externo — "esta pessoa chegou por este anúncio" não depende de a loja estar
+ * adimplente, e é o "antes de efeito externo" que torna a falha reentregável.
+ *
+ * - Provider sem `adReferral` (Z-API, WAHA, UazAPI): sai antes de qualquer I/O e
+ *   de qualquer log — comportamento de hoje, byte a byte.
+ * - Falha de banco LANÇA `ad_touchpoint_persist_failed`: o `catch` externo libera
+ *   o claim e o provider reentrega (D8 da spec). `23505` é dedupe silencioso.
+ * - Recusa do núcleo NÃO lança: bug nosso de split não pode calar o cliente.
+ *
+ * `unitId`/`channelId` vêm do canal lido pela querystring — nunca do payload: o
+ * referral é dado do cliente, não identidade de tenant.
+ */
+async function captureAdTouchpoint(args: {
+  requestId: string;
+  provider: WhatsAppProvider;
+  payload: unknown;
+  unitId: string;
+  channelId: string;
+  inboundProviderMessageId: string;
+  phone: string;
+  contactName: string | null;
+  messageAtMs: number;
+}): Promise<void> {
+  if (!hasAdReferralCapture(args.provider)) return;
+
+  jsonLog("info", {
+    requestId: args.requestId,
+    evt: "meta_inbound_referral_probe",
+    provider: args.provider,
+    ...describeReferralProbe(args.payload),
+  });
+
+  const referral = parseAdReferral(args.provider, args.payload);
+  if (!referral) return;
+
+  const { data: unitRow, error: unitError } = await supabase
+    .from("units")
+    .select("organization_id")
+    .eq("id", args.unitId)
+    .maybeSingle();
+  if (unitError || !unitRow?.organization_id) throw new Error("ad_touchpoint_persist_failed");
+
+  let customerId: string;
+  try {
+    // Idempotente. No caminho de texto o cliente ainda não foi resolvido neste
+    // ponto; no de mídia será resolvido de novo logo adiante — uma consulta a
+    // mais, só quando há referral.
+    const customer = await resolveOrCreateCustomer(supabase, {
+      organizationId: String(unitRow.organization_id),
+      phone: args.phone,
+      name: args.contactName ?? args.phone,
+    });
+    customerId = customer.id;
+  } catch {
+    throw new Error("ad_touchpoint_persist_failed");
+  }
+
+  const built = buildAdTouchpointRow({
+    provider: args.provider,
+    unitId: args.unitId,
+    channelId: args.channelId,
+    customerId,
+    inboundProviderMessageId: args.inboundProviderMessageId,
+    messageAtMs: args.messageAtMs,
+    referral,
+  });
+  if (built.ok === false) {
+    jsonLog("warn", {
+      requestId: args.requestId,
+      evt: "ad_referral_rejected",
+      ...describeCapturedReferral({ provider: args.provider, outcome: "rejected", referral, rejectReason: built.reason }),
+    });
+    return;
+  }
+
+  const { error: insertError } = await supabase.from("whatsapp_ad_touchpoints").insert(built.row);
+  const outcome = classifyTouchpointInsert(insertError);
+  jsonLog(outcome === "failed" ? "error" : "info", {
+    requestId: args.requestId,
+    evt: "ad_referral_captured",
+    ...describeCapturedReferral({ provider: args.provider, outcome, referral, rawOmittedReason: built.rawOmittedReason }),
+    // Só o SQLSTATE: a mensagem do Postgres pode repetir valores da linha.
+    ...(outcome === "failed" ? { code: insertError?.code ?? null } : {}),
+  });
+  if (outcome === "failed") throw new Error("ad_touchpoint_persist_failed");
 }
 
 function mediaPlaceholder(kind: InboundMediaKind): string {
@@ -2859,6 +2964,20 @@ async function handleWebhookRequest(
       }
       messageProcessingClaimId = String(mediaClaim.claim_id);
 
+      // Fase D: depois do claim e antes de qualquer efeito externo (falha aqui é
+      // reentregável). Zero I/O para provider sem `adReferral`.
+      await captureAdTouchpoint({
+        requestId,
+        provider,
+        payload,
+        unitId: channel.unit_id,
+        channelId: channel.id,
+        inboundProviderMessageId: media.providerMessageId,
+        phone: mediaPhone,
+        contactName: media.contactName ?? null,
+        messageAtMs: media.timestamp,
+      });
+
       // Resolve org → customer → conversation (mesmo padrão do path de texto).
       const { data: unitRow2, error: unitRow2Error } = await supabase
         .from("units")
@@ -3036,6 +3155,22 @@ async function handleWebhookRequest(
         prev_outcome: processingClaim.previous_outcome,
       });
     }
+
+    // Fase D: depois do claim e ANTES de rate limit, billing e suspensão — os três
+    // desviam antes de o cliente ser resolvido, e "esta pessoa chegou por este
+    // anúncio" não depende de a loja estar adimplente (mesmo raciocínio do
+    // persistInboundOnly). Antes de qualquer efeito externo: falha é reentregável.
+    await captureAdTouchpoint({
+      requestId,
+      provider,
+      payload,
+      unitId: channel.unit_id,
+      channelId: channel.id,
+      inboundProviderMessageId: inbound.providerMessageId,
+      phone,
+      contactName: inbound.contactName ?? null,
+      messageAtMs: inbound.timestamp,
+    });
 
     // Rate limit por telefone (sliding window, por unidade)
     const { data: allowed } = await supabase.rpc("check_rate_limit", {
