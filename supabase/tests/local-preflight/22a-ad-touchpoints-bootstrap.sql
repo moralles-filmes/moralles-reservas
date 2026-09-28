@@ -5,9 +5,13 @@
 --
 -- 1. DEFAULT PRIVILEGES — emula o Supabase, que concede ALL nas tabelas novas de
 --    `public` a anon/authenticated/service_role. Tem de vir ANTES da 115: é o
---    que dá a `authenticated` o DELETE que torna o C-115-4 honesto. Sem o grant,
---    o trigger INVOKER estouraria 42501 em vez de apagar ZERO linhas em silêncio
---    — e o defeito real é o silêncio.
+--    que faz a tabela nascer com os grants de produção. MEDIDO sem ele: o
+--    TP-1b fica vermelho (o `service_role` não tem INSERT na tabela nova) e o
+--    TP-10 fica CEGO — verde mesmo com a 115 sem o `revoke` de tabela, porque
+--    não haveria grant para revogar. Com o `revoke`, `authenticated` não tem
+--    mais o DELETE na tabela: o C-115-4 aceita as duas formas do defeito
+--    (zero linhas em silêncio OU 42501). O UPDATE em `customers` do TP-9 vem
+--    também do grant do item 4.
 -- 2. `customers` fiel MÍNIMO (id, organization_id, name, phone, deleted_at), com
 --    RLS e uma policy PERMISSIVA de fixture para `authenticated`: representa "um
 --    membro fazendo soft delete pelo PostgREST". Não é a policy de produção.
@@ -18,7 +22,7 @@
 do $$
 begin
   if to_regclass('public.whatsapp_ad_touchpoints') is not null then
-    raise exception '22a exige rodar ANTES da migration 115: a tabela ja existe e nasceu sem os default privileges, o que muda o que o TP-9 e o C-115-4 medem. Recrie o banco.';
+    raise exception '22a exige rodar ANTES da migration 115: a tabela ja existe e nasceu sem os default privileges, o que muda o que o TP-1b e o TP-10 medem. Recrie o banco.';
   end if;
   if not exists (select 1 from units where id = 'bbbbbbbb-0000-0000-0000-000000000001')
      or not exists (select 1 from whatsapp_channels where id = 'dddddddd-0000-0000-0000-000000000002') then

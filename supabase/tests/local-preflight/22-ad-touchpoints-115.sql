@@ -7,7 +7,7 @@
 --     nem o que não muda nada), a ÚNICA exceção da coerção do `on delete set
 --     null` de `channel_id`, a coerência de tenant entre as três FKs (canal da
 --     unidade, cliente da organização da unidade) e a recusa de cliente
---     anonimizado;
+--     anonimizado com o SQLSTATE dedicado `P0A15`, não fatal no núcleo (TP-6b);
 --   * os CHECKs (allowlist de `provider`, rede de 64 KiB da subárvore
 --     `referral`) e o unique `(provider, provider_message_id)`;
 --   * FK e cascade: apagar o canal não aborta o DELETE (TP-4), e apagar a
@@ -16,9 +16,9 @@
 --     feito com o PAPEL REAL `authenticated` (TP-9), e a gravação com o papel
 --     real `service_role` (TP-1b) — os outros casos gravam como `postgres`,
 --     superusuário, e não medem privilégio nenhum;
---   * RLS forçada sem policies, ACL e forma (INVOKER/DEFINER, `search_path`
---     vazio) das duas funções (TP-10), e idempotência da migration ATRAVÉS de
---     execuções (TP-11).
+--   * RLS forçada sem policies, a tabela sem privilégio para anon/authenticated,
+--     ACL e forma (INVOKER/DEFINER, `search_path` vazio) das duas funções
+--     (TP-10), e idempotência da migration ATRAVÉS de execuções (TP-11).
 --
 -- O QUE ELE NÃO PROVA: exposição PostgREST da tabela (depende de Supabase de
 -- verdade) e o `rolbypassrls` do `postgres` de produção — aqui o `postgres` é
@@ -296,7 +296,11 @@ exception when others then
   perform pg_temp.tp_res(90, 'TP-6', 'FALHOU: ' || sqlstate || ' ' || sqlerrm);
 end $$;
 
--- ─── TP-6b (91): cliente anonimizado recusado ───────────────────────────────
+-- ─── TP-6b (91): cliente anonimizado recusado com o SQLSTATE DEDICADO ───────
+-- `P0A15`, e não `check_violation`: é o código que o núcleo classifica como
+-- `customer_not_alive` (loga e segue, sem reentrega). Recusado pelo código
+-- errado, o webhook lançaria e a reentrega seria eterna para quem sofreu soft
+-- delete sem troca de telefone — por isso o caso só aceita `P0A15`.
 do $$
 declare v_state text; v_msg text;
 begin
@@ -305,12 +309,12 @@ begin
     begin
       perform pg_temp.tp_ins('wamid.TP6b', p_customer => 'cccccccc-0000-0000-0000-000000000002');
       v_state := 'aceitou';
-    exception when check_violation then v_state := '23514'; v_msg := sqlerrm;
+    exception when sqlstate 'P0A15' then v_state := 'P0A15'; v_msg := sqlerrm;
     end;
     raise exception using errcode = 'ZZ115';
   exception when sqlstate 'ZZ115' then null;
   end;
-  perform pg_temp.tp_res(91, 'TP-6b', case when v_state = '23514' and v_msg ilike '%anonimizado%' then 'OK'
+  perform pg_temp.tp_res(91, 'TP-6b', case when v_state = 'P0A15' and v_msg ilike '%anonimizado%' then 'OK'
     else 'FALHOU: cliente com deleted_at aceito: ' || coalesce(v_state, 'null') || ' ' || coalesce(v_msg, '') end);
 exception when others then
   perform pg_temp.tp_res(91, 'TP-6b', 'FALHOU: ' || sqlstate || ' ' || sqlerrm);
@@ -379,7 +383,11 @@ exception when others then
   perform pg_temp.tp_res(94, 'TP-9', 'FALHOU: ' || sqlstate || ' ' || sqlerrm);
 end $$;
 
--- ─── TP-10 (95): RLS forçada, zero policies, triggers, ACL e forma das funções
+-- ─── TP-10 (95): RLS forçada, zero policies, triggers, ACL da tabela e das funções, forma das funções
+-- A ACL de TABELA importa porque o `22a` emula os default privileges do
+-- Supabase: a tabela nasce com ALL para anon/authenticated, e só o `revoke` da
+-- 115 tira. As oito combinações têm de dar falso.
+--
 -- Os literais apendados a `v_falhas` levam `::text` e isso foi MEDIDO: sem o
 -- cast, `text[] || 'purga deveria ser DEFINER'` resolve o literal como ARRAY e
 -- estoura 22P02 (`malformed array literal`). O caso ficava vermelho, mas pelo
@@ -389,6 +397,7 @@ end $$;
 do $$
 declare
   v_rls boolean; v_force boolean; v_pol int; v_trg int; v_fn regprocedure; v_def boolean;
+  v_papel text; v_priv text;
   v_falhas text[] := '{}';
 begin
   select relrowsecurity, relforcerowsecurity into v_rls, v_force
@@ -396,6 +405,14 @@ begin
   select count(*) into v_pol from pg_policy where polrelid = 'public.whatsapp_ad_touchpoints'::regclass;
   if not (v_rls and v_force) then v_falhas := v_falhas || 'rls nao forcada'::text; end if;
   if v_pol <> 0 then v_falhas := v_falhas || ('policies=' || v_pol); end if;
+
+  foreach v_papel in array array['anon', 'authenticated'] loop
+    foreach v_priv in array array['SELECT', 'INSERT', 'UPDATE', 'DELETE'] loop
+      if has_table_privilege(v_papel, 'public.whatsapp_ad_touchpoints', v_priv) then
+        v_falhas := v_falhas || ('tabela: ' || v_papel || ' tem ' || v_priv);
+      end if;
+    end loop;
+  end loop;
 
   select count(*) into v_trg from pg_trigger
    where not tgisinternal

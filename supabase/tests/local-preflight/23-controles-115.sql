@@ -11,7 +11,7 @@
 --   C-115-1 (97)   guard sem `<excecao-set-null>`   -> apagar o canal ABORTA (TP-4)
 --   C-115-2 (98)   guard sem `<coerencia-tenant>`   -> canal e cliente alheios entram (TP-5, TP-6)
 --   C-115-3 (99)   guard sem `<guarda-update>`      -> o touchpoint é reescrito (TP-3)
---   C-115-4 (100)  purga como SECURITY INVOKER      -> soft delete apaga ZERO linhas, em silêncio (TP-9)
+--   C-115-4 (100)  purga como SECURITY INVOKER      -> soft delete apaga ZERO linhas em silêncio, ou estoura 42501 (TP-9)
 --   C-115-5 (101)  drop + create sem o `revoke`     -> `anon` volta a ter EXECUTE (TP-10)
 --   C-115-6 (104)  guard sem `<cliente-vivo>`       -> cliente anonimizado aceito (TP-6b)
 --
@@ -180,11 +180,17 @@ exception when others then
   perform pg_temp.tp_res(99, 'C-115-3', 'FALHOU: ' || sqlstate || ' ' || sqlerrm);
 end $$;
 
--- ─── C-115-4 (100): purga como INVOKER apaga ZERO linhas em silêncio ────────
+-- ─── C-115-4 (100): purga como INVOKER não apaga as linhas do anonimizado ───
+-- Rodada por `authenticated`, a purga INVOKER tem DUAS formas de falhar, e as
+-- duas são o defeito: sem o `revoke` de tabela da 115, a RLS forçada sem
+-- policy faz o DELETE apagar ZERO linhas em silêncio (`sobraram = 2`); com o
+-- `revoke`, o DELETE estoura 42501 e derruba o próprio soft delete. O
+-- `update` roda num bloco próprio que captura `insufficient_privilege`, senão
+-- o 42501 cairia no `when others` e o controle mediria o erro, não o defeito.
 do $$
 declare
   v_fn regprocedure := 'public.purge_ad_touchpoints_on_customer_anonymize()'::regprocedure;
-  v_mudou boolean := false; v_sobraram int; v_restaurou boolean;
+  v_mudou boolean := false; v_sobraram int; v_falhou_42501 boolean := false; v_restaurou boolean;
 begin
   begin
     alter function public.purge_ad_touchpoints_on_customer_anonymize() security invoker;
@@ -192,15 +198,19 @@ begin
     perform pg_temp.tp_ins('wamid.C1154a');
     perform pg_temp.tp_ins('wamid.C1154b');
     set local role authenticated;
-    update public.customers set deleted_at = now() where id = 'cccccccc-0000-0000-0000-000000000001';
+    begin
+      update public.customers set deleted_at = now() where id = 'cccccccc-0000-0000-0000-000000000001';
+    exception when insufficient_privilege then v_falhou_42501 := true;
+    end;
     reset role;
     select count(*) into v_sobraram from public.whatsapp_ad_touchpoints where customer_id = 'cccccccc-0000-0000-0000-000000000001';
     raise exception using errcode = 'ZZ115';
   exception when sqlstate 'ZZ115' then null;
   end;
   select prosecdef into v_restaurou from pg_proc where oid = v_fn;
-  perform pg_temp.tp_res(100, 'C-115-4', case when v_mudou and v_sobraram = 2 and v_restaurou then 'OK'
-    else format('FALHOU: mudou=%s sobraram=%s (esperado 2: o defeito e o silencio) restaurou=%s', v_mudou, v_sobraram, v_restaurou) end);
+  perform pg_temp.tp_res(100, 'C-115-4', case when v_mudou and (v_sobraram = 2 or v_falhou_42501) and v_restaurou then 'OK'
+    else format('FALHOU: mudou=%s sobraram=%s falhou_42501=%s (esperado sobraram=2 ou 42501: as duas sao o defeito) restaurou=%s',
+      v_mudou, v_sobraram, v_falhou_42501, v_restaurou) end);
 exception when others then
   perform pg_temp.tp_res(100, 'C-115-4', 'FALHOU: ' || sqlstate || ' ' || sqlerrm);
 end $$;
