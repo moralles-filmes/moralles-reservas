@@ -61,8 +61,14 @@ describe("manualEchoMatchesConfiguredChannel — UazAPI", () => {
 
   // Review Focus 2: sem trim, sem prefixo.
   it("não casa com token de outra instância, nem com prefixo, extensão ou espaço do token certo", () => {
+    // Mesmo tamanho do token certo: só o CONTEÚDO distingue, então comparar tamanho não basta.
+    const outra = "tok-instancia-OUTRA-0123456789abcdefgh";
+    expect(outra.length).toBe(INSTANCE_TOKEN.length);
+    const ultimoTrocado = INSTANCE_TOKEN.slice(0, -1) + (INSTANCE_TOKEN.endsWith("0") ? "1" : "0");
+    expect(ultimoTrocado.length).toBe(INSTANCE_TOKEN.length);
     for (const token of [
-      "tok-instancia-OUTRA-0123456789abcdefg",
+      outra,
+      ultimoTrocado,
       INSTANCE_TOKEN.slice(0, -1),
       `${INSTANCE_TOKEN}x`,
       ` ${INSTANCE_TOKEN}`,

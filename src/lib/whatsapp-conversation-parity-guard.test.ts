@@ -85,6 +85,11 @@ describe("paridade de conversas entre providers WhatsApp", () => {
       /function (manualEchoMatchesConfiguredChannel|declaredProviderIdentityMatchesChannel|metaPayloadMatchesChannel|metaPhoneNumberIds)\b/,
     );
     expect(webhook).toContain("manualEchoMatchesConfiguredChannel(");
+    // Vault antes da guarda do eco: se a leitura mover pra depois, instance_token fica undefined e todo eco volta a ser 401.
+    expect(webhook.indexOf("resolveChannelCredentials(")).toBeGreaterThan(-1);
+    expect(webhook.indexOf("resolveChannelCredentials(")).toBeLessThan(
+      webhook.indexOf("manualEchoMatchesConfiguredChannel("),
+    );
     expect(webhook).toContain("hasManualEcho && !manualEchoMatchesChannel");
     expect(webhook).toContain("splitMetaWebhookPayload(payload)");
     expect(webhook).toContain("handleWebhookRequest(new Request");
@@ -94,8 +99,8 @@ describe("paridade de conversas entre providers WhatsApp", () => {
 
   it("toda recusa 401 do webhook grava o nome da guarda em meta.reason", () => {
     const webhook = read("supabase/functions/webhook-whatsapp/index.ts");
-    const calls = webhook.match(/finish\("webhook_unauthorized"[^)]*\)/g) ?? [];
-    const reasons = calls.map((call) => call.match(/\{ reason: "([a-z_]+)" \}/)?.[1] ?? "SEM_REASON");
+    const calls = webhook.match(/finish\(\s*"webhook_unauthorized"[\s\S]*?\)/g) ?? [];
+    const reasons = calls.map((call) => call.match(/\{\s*reason:\s*"([a-z_]+)"\s*\}/)?.[1] ?? "SEM_REASON");
     expect(reasons.sort()).toEqual([
       "declared_identity_mismatch",
       "instance_mismatch",

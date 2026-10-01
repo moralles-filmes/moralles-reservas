@@ -644,24 +644,26 @@ Expected: deploy concluído. `supabase functions list` mostra `updated_at` novo.
 
 - [ ] **Step 7: Sondas pós-deploy (sem segredo, sem tráfego real)**
 
+(`<channel-id>` = canal UazAPI ativo da Ren Sushi, `a633d938…`; UUID completo via `select id from whatsapp_channels where is_active`)
+
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://gbabxcrntkwgblgqsiit.supabase.co/functions/v1/webhook-whatsapp?channel=a633d938-68c6-4658-9d24-6e6d8f1a3c6f" -H "content-type: application/json" -d "{}"
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://gbabxcrntkwgblgqsiit.supabase.co/functions/v1/webhook-whatsapp?channel=<channel-id>" -H "content-type: application/json" -d "{}"
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://gbabxcrntkwgblgqsiit.supabase.co/functions/v1/webhook-whatsapp?channel=00000000-0000-0000-0000-000000000000" -H "content-type: application/json" -d "{}"
 ```
 
 Expected: `401` e `404`. Depois:
 
-Run: `supabase db query --linked "select created_at, outcome, meta from webhook_executions where channel_id='a633d938-68c6-4658-9d24-6e6d8f1a3c6f' order by created_at desc limit 3;"`
+Run: `supabase db query --linked "select created_at, outcome, meta from webhook_executions where channel_id='<channel-id>' order by created_at desc limit 3;"`
 Expected: a linha da sonda com `outcome = webhook_unauthorized` e `meta = {"reason": "signature_invalid"}`. Avisar o usuário que essa linha é da sonda.
 
 - [ ] **Step 8: Teste real com a loja**
 
 Pedir ao usuário que alguém da loja mande uma mensagem pelo celular para um cliente de teste já cadastrado. Depois:
 
-Run: `supabase db query --linked "select created_at, outcome, meta->>'reason' reason, meta->>'convId' conv from webhook_executions where channel_id='a633d938-68c6-4658-9d24-6e6d8f1a3c6f' and created_at > now() - interval '30 minutes' and outcome like 'own_message_echo%' order by created_at desc;"`
+Run: `supabase db query --linked "select created_at, outcome, meta->>'reason' reason, meta->>'convId' conv from webhook_executions where channel_id='<channel-id>' and created_at > now() - interval '30 minutes' and outcome like 'own_message_echo%' order by created_at desc;"`
 Expected: `own_message_echo_recorded`. A conversa aparece no painel com a mensagem como humano e status "aguardando/atendente". Se vier `own_message_echo_unresolved`, registrar o `reason` (`customer_unknown`/`lid_unknown`/`no_identity`) e reportar sem improvisar conserto.
 
 - [ ] **Step 9: Acompanhamento de 24 h**
 
-Run: `supabase db query --linked "select outcome, meta->>'reason' reason, count(*) from webhook_executions where channel_id='a633d938-68c6-4658-9d24-6e6d8f1a3c6f' and created_at > now() - interval '24 hours' and (outcome like 'own_message_echo%' or outcome = 'webhook_unauthorized') group by 1,2 order by 3 desc;"`
+Run: `supabase db query --linked "select outcome, meta->>'reason' reason, count(*) from webhook_executions where channel_id='<channel-id>' and created_at > now() - interval '24 hours' and (outcome like 'own_message_echo%' or outcome = 'webhook_unauthorized') group by 1,2 order by 3 desc;"`
 Expected: zero `webhook_unauthorized` com `reason = manual_echo_identity_mismatch`. A contagem `recorded` × `unresolved` por `reason` alimenta a decisão sobre eco só com LID.
