@@ -77,13 +77,33 @@ describe("paridade de conversas entre providers WhatsApp", () => {
     expect(manager).toContain("is_active: false");
     expect(webhook).toContain("metaPayloadMatchesChannel(payload, credentials)");
     expect(webhook).toContain("declaredProviderIdentityMatchesChannel(provider, payload, credentials)");
-    expect(webhook.match(/credentials\.session_name\?\.trim\(\) \|\| "default"/g)).toHaveLength(2);
+    const identityCore = read("supabase/functions/_shared/whatsapp-echo-identity-core.ts");
+    expect(identityCore.match(/credentials\.session_name\?\.trim\(\) \|\| "default"/g)).toHaveLength(2);
+    expect(webhook).toContain('from "../_shared/whatsapp-echo-identity-core.ts"');
+    // A decisão de identidade não volta a ser escrita onde o vitest não alcança.
+    expect(webhook).not.toMatch(
+      /function (manualEchoMatchesConfiguredChannel|declaredProviderIdentityMatchesChannel|metaPayloadMatchesChannel|metaPhoneNumberIds)\b/,
+    );
     expect(webhook).toContain("manualEchoMatchesConfiguredChannel(");
     expect(webhook).toContain("hasManualEcho && !manualEchoMatchesChannel");
     expect(webhook).toContain("splitMetaWebhookPayload(payload)");
     expect(webhook).toContain("handleWebhookRequest(new Request");
     expect(webhook).toContain('"get_or_create_whatsapp_conversation"');
     expect(migration).toContain("pg_advisory_xact_lock");
+  });
+
+  it("toda recusa 401 do webhook grava o nome da guarda em meta.reason", () => {
+    const webhook = read("supabase/functions/webhook-whatsapp/index.ts");
+    const calls = webhook.match(/finish\("webhook_unauthorized"[^)]*\)/g) ?? [];
+    const reasons = calls.map((call) => call.match(/\{ reason: "([a-z_]+)" \}/)?.[1] ?? "SEM_REASON");
+    expect(reasons.sort()).toEqual([
+      "declared_identity_mismatch",
+      "instance_mismatch",
+      "manual_echo_identity_mismatch",
+      "meta_identity_mismatch",
+      "provider_token_mismatch",
+      "signature_invalid",
+    ]);
   });
 
   it("falha transitória libera somente o claim cercado para reentrega", () => {

@@ -86,6 +86,11 @@ import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/wha
 import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { splitMetaWebhookPayloadCore } from "../_shared/whatsapp-meta-batch-core.ts";
+import {
+  declaredProviderIdentityMatchesChannel,
+  manualEchoMatchesConfiguredChannel,
+  metaPayloadMatchesChannel,
+} from "../_shared/whatsapp-echo-identity-core.ts";
 import { shapeOf } from "../_shared/webhook-payload-shape-core.ts";
 // ─── Referral CTWA (Fase D) ──────────────────────────────────────────────────
 // Adapter de I/O; a decisão é do núcleo. Nada aqui reimplementa limite, dedupe
@@ -137,95 +142,6 @@ const supabase = createClient(
  * clock limit". O caminho rápido é OTIMISTA; a varredura é o backstop.
  */
 declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
-
-function metaPhoneNumberIds(payload: unknown): string[] {
-  if (!payload || typeof payload !== "object") return [];
-  const record = payload as Record<string, unknown>;
-  const entries = Array.isArray(record.entry) ? record.entry : [];
-  const ids: string[] = [];
-  for (const entry of entries) {
-    if (!entry || typeof entry !== "object") continue;
-    const changes = Array.isArray((entry as Record<string, unknown>).changes)
-      ? (entry as Record<string, unknown>).changes as unknown[]
-      : [];
-    for (const change of changes) {
-      if (!change || typeof change !== "object") continue;
-      const value = (change as Record<string, unknown>).value;
-      if (!value || typeof value !== "object") continue;
-      const metadata = (value as Record<string, unknown>).metadata;
-      if (!metadata || typeof metadata !== "object") continue;
-      const id = (metadata as Record<string, unknown>).phone_number_id;
-      if (typeof id === "string" && id.trim()) ids.push(id.trim());
-    }
-  }
-  return ids;
-}
-
-/**
- * A assinatura Meta autentica o app, não o tenant/canal escolhido pela URL.
- * Todo change do lote precisa declarar exatamente o phone_number_id do binding.
- */
-function metaPayloadMatchesChannel(payload: unknown, credentials: ChannelCredentials): boolean {
-  const expected = credentials.phone_number_id?.trim();
-  if (!expected) return false;
-  const ids = metaPhoneNumberIds(payload);
-  return ids.length > 0 && ids.every((id) => id === expected);
-}
-
-function manualEchoMatchesConfiguredChannel(
-  provider: WhatsAppProvider,
-  payload: unknown,
-  credentials: ChannelCredentials,
-  externalInstanceId: string | null,
-): boolean {
-  if (!payload || typeof payload !== "object") return false;
-  const root = payload as Record<string, unknown>;
-  const nested = root.payload && typeof root.payload === "object"
-    ? root.payload as Record<string, unknown>
-    : root;
-
-  if (isMetaShapedProvider(provider)) return metaPayloadMatchesChannel(payload, credentials);
-  if (provider === "zapi") {
-    const actual = [nested.instanceId, nested.instance_id, root.instanceId, root.instance_id]
-      .find((value) => typeof value === "string" && value.trim()) as string | undefined;
-    return !!actual && actual.trim() === credentials.instance_id?.trim();
-  }
-  if (provider === "waha") {
-    const actual = [root.session, nested.session]
-      .find((value) => typeof value === "string" && value.trim()) as string | undefined;
-    return !!actual && actual.trim() === (credentials.session_name?.trim() || "default");
-  }
-
-  const instance = root.instance && typeof root.instance === "object"
-    ? root.instance as Record<string, unknown>
-    : {};
-  const actual = [root.instanceId, root.instance_id, instance.id]
-    .find((value) => typeof value === "string" && value.trim()) as string | undefined;
-  return !!actual && !!externalInstanceId && actual.trim() === externalInstanceId;
-}
-
-function declaredProviderIdentityMatchesChannel(
-  provider: WhatsAppProvider,
-  payload: unknown,
-  credentials: ChannelCredentials,
-): boolean {
-  if (!payload || typeof payload !== "object") return true;
-  const root = payload as Record<string, unknown>;
-  const nested = root.payload && typeof root.payload === "object"
-    ? root.payload as Record<string, unknown>
-    : root;
-  if (provider === "zapi") {
-    const actual = [nested.instanceId, nested.instance_id, root.instanceId, root.instance_id]
-      .find((value) => typeof value === "string" && value.trim()) as string | undefined;
-    return !actual || actual.trim() === credentials.instance_id?.trim();
-  }
-  if (provider === "waha") {
-    const actual = [root.session, nested.session]
-      .find((value) => typeof value === "string" && value.trim()) as string | undefined;
-    return !actual || actual.trim() === (credentials.session_name?.trim() || "default");
-  }
-  return true;
-}
 
 function splitMetaWebhookPayload(payload: unknown): unknown[] {
   return splitMetaWebhookPayloadCore(payload);
@@ -2577,7 +2493,7 @@ async function handleWebhookRequest(
 
     if (!isValid) {
       jsonLog("warn", { requestId, evt: "webhook_unauthorized", channelId, provider });
-      await finish("webhook_unauthorized");
+      await finish("webhook_unauthorized", undefined, { reason: "signature_invalid" });
       return new Response("unauthorized", { status: 401 });
     }
 
@@ -2592,7 +2508,7 @@ async function handleWebhookRequest(
 
     if (!declaredProviderIdentityMatchesChannel(provider, payload, credentials)) {
       jsonLog("warn", { requestId, evt: "webhook_channel_identity_mismatch", channelId, provider });
-      await finish("webhook_unauthorized");
+      await finish("webhook_unauthorized", undefined, { reason: "declared_identity_mismatch" });
       return new Response("unauthorized", { status: 401 });
     }
 
@@ -2622,7 +2538,7 @@ async function handleWebhookRequest(
         && !validateProviderToken(payloadToken, credentials.instance_token ?? "")
       ) {
         jsonLog("warn", { requestId, evt: "webhook_provider_token_mismatch", channelId, provider });
-        await finish("webhook_unauthorized");
+        await finish("webhook_unauthorized", undefined, { reason: "provider_token_mismatch" });
         return new Response("unauthorized", { status: 401 });
       }
 
@@ -2643,7 +2559,7 @@ async function handleWebhookRequest(
         && payloadInstanceId !== channel.external_instance_id
       ) {
         jsonLog("warn", { requestId, evt: "webhook_instance_mismatch", channelId, provider });
-        await finish("webhook_unauthorized");
+        await finish("webhook_unauthorized", undefined, { reason: "instance_mismatch" });
         return new Response("unauthorized", { status: 401 });
       }
     }
@@ -2654,7 +2570,7 @@ async function handleWebhookRequest(
     // tenants. Vale para todo provider Meta-shaped, não só "official".
     if (isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(payload, credentials)) {
       jsonLog("warn", { requestId, evt: "webhook_channel_identity_mismatch", channelId, provider });
-      await finish("webhook_unauthorized");
+      await finish("webhook_unauthorized", undefined, { reason: "meta_identity_mismatch" });
       return new Response("unauthorized", { status: 401 });
     }
 
@@ -2860,11 +2776,10 @@ async function handleWebhookRequest(
       provider,
       payload,
       credentials,
-      channel.external_instance_id,
     );
     if (hasManualEcho && !manualEchoMatchesChannel) {
       jsonLog("warn", { requestId, evt: "manual_echo_channel_identity_mismatch", channelId, provider });
-      await finish("webhook_unauthorized");
+      await finish("webhook_unauthorized", undefined, { reason: "manual_echo_identity_mismatch" });
       return new Response("unauthorized", { status: 401 });
     }
     if (manualEchoMatchesChannel && !channel.manual_echo_verified_at) {
