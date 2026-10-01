@@ -68,6 +68,7 @@ Rollback reutiliza a linha anterior: teste/conecte o canal preservado, solicite 
 
 - Endpoint único: `webhook-whatsapp?channel=<uuid>&secret=<secret-aleatorio>`.
 - O OpenAPI UazAPI não especifica HMAC. Não inventar assinatura: validar secret por canal em tempo constante, token/instance do payload quando presentes e vínculo `channel_id → unit_id`.
+- No eco do aparelho (`fromMe:true && wasSentByApi:false`) o `token` do payload é obrigatório e é comparado em tempo constante com o token da instância vindo do Vault; o envelope da UazAPI não traz `instanceId`/`instance_id`/`instance.id`. Decisão em `supabase/functions/_shared/whatsapp-echo-identity-core.ts`.
 - Canal inativo pode receber callback de conexão/entrega e eco humano apenas para comprovar a configuração; não entra em CRM/conversa/IA nem envia resposta.
 - Payload acima de 1 MB é recusado.
 - Dedupe usa `(provider, message_id)`.
