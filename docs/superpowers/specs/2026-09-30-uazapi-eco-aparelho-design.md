@@ -36,7 +36,7 @@ Recebe as três funções de identidade de canal no payload, que hoje vivem no `
 
 - `metaPayloadMatchesChannel(payload, credentials)`: sem mudança.
 - `declaredProviderIdentityMatchesChannel(provider, payload, credentials)`: sem mudança.
-- `manualEchoMatchesConfiguredChannel(provider, payload, credentials, externalInstanceId)`: ramo UazAPI reescrito conforme o contrato. Os demais ficam sem mudança.
+- `manualEchoMatchesConfiguredChannel(provider, payload, credentials)`: ramo UazAPI reescrito conforme o contrato. Os demais ficam sem mudança. O parâmetro `externalInstanceId` sai, porque só o ramo UazAPI o usava.
 
 As três mudam juntas porque formam uma única pergunta ("este payload é deste canal?"), e o par `credentials.session_name?.trim() || "default"` precisa continuar num mesmo arquivo.
 
