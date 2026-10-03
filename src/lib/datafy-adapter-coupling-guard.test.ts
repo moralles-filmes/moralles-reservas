@@ -63,8 +63,9 @@ describe("datafy é Meta-shaped e reusa os parsers official", () => {
     expect(caps.qrConnection).toBe(false);
     expect(caps.automaticWebhook).toBe(false); // Datafy bloqueia webhook_configuration (403)
     expect(caps.manualDeviceEcho).toBe("conditional"); // só em coexistência
-    // Ainda não implementados — Fases E e F.
-    expect(caps.templateMessages).toBe(false);
+    expect(caps.templateMessages).toBe(true);
+    expect(caps.templateManagement).toBe(true);
+    // Mídia e interativos continuam indisponíveis.
     expect(caps.mediaMessages).toBe(false);
     expect(caps.interactiveMessages).toBe(false);
     expect(caps.inboundMediaDownload).toBe(false);

@@ -8,7 +8,12 @@
  * `path` é relativo à raiz, não ao `/v1`.
  */
 
-import type { WhatsAppProviderErrorCode } from "./whatsapp-provider-core.ts";
+import type { ChannelCredentials, WhatsAppProviderAdapter, WhatsAppProviderErrorCode } from "./whatsapp-provider-core.ts";
+import {
+  buildTemplateMessage, buildTemplateSubmission, classifyTemplateMutationResponse,
+  nextTemplateCursor, parseTemplatePage,
+  type TemplateMutationFailure,
+} from "./whatsapp-template-provider-core.ts";
 
 export const DATAFY_BASE_URL = "https://cloud.datafyapi.com.br";
 
@@ -91,4 +96,108 @@ export function pickDatafyMessageId(body: unknown): string | undefined {
   const first = messages[0];
   if (!first || typeof first !== "object") return undefined;
   return str((first as Record<string, unknown>).id) ?? undefined;
+}
+
+export const DATAFY_TEMPLATE_FIELDS = 'id,name,language,status,category,parameter_format,components,rejected_reason';
+
+export class DatafyTemplateError extends Error {
+  constructor(readonly code: WhatsAppProviderErrorCode, message: string, readonly status?: number) {
+    super(message);
+    this.name = 'DatafyTemplateError';
+  }
+}
+
+type TemplateTransport = Required<Pick<WhatsAppProviderAdapter, 'listTemplates' | 'createTemplate' | 'sendTemplate'>>;
+
+/**
+ * Same factory for production and fake HTTP tests. No hidden POST retry: callers
+ * must reconcile uncertainty or schedule a proven refusal in the durable ledger.
+ */
+export function createDatafyTemplateTransport(options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}): TemplateTransport {
+  const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs! > 0
+    ? Math.min(options.timeoutMs!, 15_000) : 15_000;
+
+  function requireTarget(credentials: ChannelCredentials, id: string): string {
+    if (!credentials.access_token?.trim()) throw new DatafyTemplateError('INVALID_REQUEST', 'missing_credentials');
+    // Graph resource IDs are decimal strings. Refuse dot segments or separators before building a URL.
+    if (typeof id !== 'string' || !/^\d{1,64}$/.test(id)) throw new DatafyTemplateError('INVALID_REQUEST', 'template_target_invalid');
+    return credentials.access_token;
+  }
+
+  async function request(token: string, method: 'GET' | 'POST', path: string, body?: unknown) {
+    const { url, init } = buildDatafyRequest({ token, method, path, body });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      // Refuse redirects, including responses that could forward authentication to a remote origin.
+      const response = await fetchImpl(url, { ...init, redirect: 'error', signal: controller.signal });
+      return { status: response.status, body: await response.json().catch(() => null) as unknown };
+    } catch {
+      // No original exception/cause: fetch errors can contain URLs, tokens and request bodies.
+      throw new DatafyTemplateError(controller.signal.aborted ? 'TIMEOUT' : 'PROVIDER_UNAVAILABLE',
+        controller.signal.aborted ? 'datafy_template_timeout' : 'datafy_template_fetch_failed');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const invalid = (error: unknown): TemplateMutationFailure => ({
+    state: 'rejected', retryable: false, errorCode: 'INVALID_REQUEST',
+    error: error instanceof DatafyTemplateError ? error.message : 'template_input_invalid',
+  });
+  const uncertain = (error: unknown): TemplateMutationFailure => ({
+    state: 'uncertain', error: error instanceof DatafyTemplateError ? error.message : 'datafy_template_fetch_failed',
+    errorCode: error instanceof DatafyTemplateError ? error.code : 'PROVIDER_UNAVAILABLE',
+  });
+
+  return {
+    async listTemplates(credentials, input) {
+      const token = requireTarget(credentials, input.wabaId);
+      const query = new URLSearchParams({ fields: DATAFY_TEMPLATE_FIELDS });
+      if (input.after !== undefined) query.set('after', nextTemplateCursor(input.after, new Set()));
+      const response = await request(token, 'GET', `v1/${encodeURIComponent(input.wabaId)}/message_templates?${query}`);
+      const code = classifyDatafyStatus(response.status);
+      if (code) throw new DatafyTemplateError(code, `datafy_template_http_${response.status}`, response.status);
+      // Include the request cursor to reject immediate cycles; the sync service supplies its full seen set.
+      return parseTemplatePage(response.body, new Set(input.after === undefined ? [] : [input.after]));
+    },
+    async createTemplate(credentials, input) {
+      let token: string;
+      let body: ReturnType<typeof buildTemplateSubmission>;
+      try {
+        token = requireTarget(credentials, input.wabaId);
+        body = buildTemplateSubmission(input.definition);
+      } catch (error) { return invalid(error); }
+      try {
+        const response = await request(token, 'POST', `v1/${encodeURIComponent(input.wabaId)}/message_templates`, body);
+        const failure = classifyTemplateMutationResponse(response.status, response.body);
+        if (failure) return failure;
+        const entry = response.body && typeof response.body === 'object' && !Array.isArray(response.body)
+          ? response.body as Record<string, unknown> : null;
+        const id = str(entry?.id);
+        if (!id || entry?.error !== undefined) return { state: 'uncertain', status: response.status,
+          error: 'datafy_template_response_invalid', errorCode: 'UNKNOWN_PROVIDER_ERROR' };
+        return { state: 'accepted', status: response.status, remoteId: id,
+          remoteStatus: str(entry?.status), category: str(entry?.category) };
+      } catch (error) { return uncertain(error); }
+    },
+    async sendTemplate(credentials, input) {
+      let token: string;
+      let body: ReturnType<typeof buildTemplateMessage>;
+      try {
+        token = requireTarget(credentials, input.phoneNumberId);
+        body = buildTemplateMessage(input);
+      } catch (error) { return invalid(error); }
+      try {
+        const response = await request(token, 'POST', `v1/${encodeURIComponent(input.phoneNumberId)}/messages`, body);
+        const failure = classifyTemplateMutationResponse(response.status, response.body);
+        if (failure) return failure;
+        const id = pickDatafyMessageId(response.body);
+        if (!id || (response.body as Record<string, unknown>)?.error !== undefined) return { state: 'uncertain', status: response.status,
+          error: 'datafy_template_response_invalid', errorCode: 'UNKNOWN_PROVIDER_ERROR' };
+        return { state: 'accepted', status: response.status, providerMessageId: id };
+      } catch (error) { return uncertain(error); }
+    },
+  };
 }

@@ -15,29 +15,51 @@ const { getWhatsAppProvider } = modules["../../supabase/functions/_shared/whatsa
 
 function missingCapabilityMethods(adapter: WhatsAppProviderAdapter): string[] {
   return Object.entries(CAPABILITY_REQUIRED_METHOD)
-    .filter(([capability, method]) =>
-      adapter.capabilities[capability] === true && typeof adapter[method] !== "function"
-    )
-    .map(([capability, method]) => `${adapter.name}.${capability} → ${method}`);
+    .flatMap(([capability, methods]) => (Array.isArray(methods) ? methods : [methods])
+      .filter(method => adapter.capabilities[capability] === true && typeof adapter[method] !== "function")
+      .map(method => `${adapter.name}.${capability} → ${method}`));
 }
 
 // Direção 2: método presente exige capability `true`. É o que impede um adapter
 // legado de ganhar a leitura do referral sem declarar a capability.
 function undeclaredCapabilityMethods(adapter: WhatsAppProviderAdapter): string[] {
   return Object.entries(CAPABILITY_REQUIRED_METHOD)
-    .filter(([capability, method]) =>
-      typeof adapter[method] === "function" && adapter.capabilities[capability] !== true
-    )
-    .map(([capability, method]) => `${adapter.name}.${method} sem ${capability}`);
+    .flatMap(([capability, methods]) => (Array.isArray(methods) ? methods : [methods])
+      .filter(method => typeof adapter[method] === "function" && adapter.capabilities[capability] !== true)
+      .map(method => `${adapter.name}.${method} sem ${capability}`));
 }
 
 describe("capability ⇔ método no adapter, nas duas direções", () => {
   it("mapeia rawCloudApiProxy ao método opcional cloudApiRequest", () => {
-    expect(CAPABILITY_REQUIRED_METHOD.rawCloudApiProxy).toBe("cloudApiRequest");
+    expect(CAPABILITY_REQUIRED_METHOD.rawCloudApiProxy).toEqual(["cloudApiRequest"]);
   });
 
   it("mapeia adReferral ao método opcional parseAdReferral", () => {
-    expect(CAPABILITY_REQUIRED_METHOD.adReferral).toBe("parseAdReferral");
+    expect(CAPABILITY_REQUIRED_METHOD.adReferral).toEqual(["parseAdReferral"]);
+  });
+
+  it("templateManagement exige list/create e templateMessages exige send", () => {
+    expect(CAPABILITY_REQUIRED_METHOD.templateManagement).toEqual(["listTemplates", "createTemplate"]);
+    expect(CAPABILITY_REQUIRED_METHOD.templateMessages).toEqual(["sendTemplate"]);
+  });
+
+  it.each(["listTemplates", "createTemplate", "sendTemplate"] as const)("CONTROLE POSITIVO: %s exige capability nas duas direções", method => {
+    const capability = method === "sendTemplate" ? "templateMessages" : "templateManagement";
+    const adapter = { ...getWhatsAppProvider("datafy"), [method]: undefined };
+    expect(missingCapabilityMethods(adapter)).toContain(`datafy.${capability} → ${method}`);
+    const undeclared = { ...getWhatsAppProvider("datafy"), capabilities: { ...PROVIDER_CAPABILITIES.datafy, [capability]: false } };
+    expect(undeclaredCapabilityMethods(undeclared)).toContain(`datafy.${method} sem ${capability}`);
+  });
+
+  it("Meta direta e providers legados continuam sem transporte de templates", () => {
+    for (const name of ["official", "zapi", "waha", "uazapi"]) {
+      const adapter = getWhatsAppProvider(name);
+      expect(adapter.capabilities.templateManagement).toBe(false);
+      expect(adapter.capabilities.templateMessages).toBe(false);
+      expect(adapter.listTemplates).toBeUndefined();
+      expect(adapter.createTemplate).toBeUndefined();
+      expect(adapter.sendTemplate).toBeUndefined();
+    }
   });
 
   it.each(WHATSAPP_PROVIDER_NAMES)("valida o adapter real de %s", (name) => {

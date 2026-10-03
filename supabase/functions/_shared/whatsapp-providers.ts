@@ -68,6 +68,7 @@ import {
 import {
   buildDatafyRequest,
   classifyDatafyStatus,
+  createDatafyTemplateTransport,
   parseDatafyAccount,
   pickDatafyMessageId,
 } from "./datafy-client.ts";
@@ -460,7 +461,7 @@ async function sendDatafy(
 
   const to = toE164BrPhone(message.toPhone);
   const { url, init } = buildDatafyRequest({
-    token: access_token,
+    token: access_token!,
     method: "POST",
     path: `v1/${phone_number_id}/messages`,
     body: { messaging_product: "whatsapp", recipient_type: "individual", to, type: "text", text: { body: message.text } },
@@ -602,6 +603,7 @@ const adapters: readonly WhatsAppProviderAdapter[] = [
     sendText: sendDatafy,
     getConnectionStatus: getDatafyConnectionStatus,
     cloudApiRequest: datafyCloudApiRequest,
+    ...createDatafyTemplateTransport(),
   },
 ];
 
