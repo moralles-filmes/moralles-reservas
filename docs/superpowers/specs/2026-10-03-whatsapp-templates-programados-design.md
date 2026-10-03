@@ -1,6 +1,6 @@
 # Templates das automações WhatsApp existentes — especificação
 
-Data: 2026-10-03. Desenho aprovado pelo usuário; esta spec escrita aguarda revisão antes do plano. Referência: [auditoria](2026-10-03-whatsapp-templates-programados-auditoria.md).
+Data: 2026-10-03. Desenho e spec aprovados pelo usuário para preparar o plano e o prompt de implementação em outro chat. Referência: [auditoria](2026-10-03-whatsapp-templates-programados-auditoria.md).
 
 ## 1. Resultado esperado e limites
 
@@ -263,4 +263,4 @@ Contratos Datafy e fontes primárias já consultadas constam na auditoria, em 20
 
 Dependências externas: conta/WABA/número autorizados; token e grants com capacidade de template; eventos de gestão configurados; autorização para submissão; resposta de análise efetiva por WABA; evidência de consentimento promocional; revisão da regra de cobrança aplicável; autorização separada de migration/deploy e envios controlados.
 
-Esta spec define o alvo implementável e os bloqueios de liberação. Não é evidência de produto implementado, template enviado/aprovado ou produção liberada. O passo seguinte é revisão desta spec escrita pelo usuário, depois writing-plans e execução pelo método obrigatório do projeto.
+Esta spec define o alvo implementável e os bloqueios de liberação. Não é evidência de produto implementado, template enviado/aprovado ou produção liberada. O [plano de implementação](../plans/2026-10-03-whatsapp-templates-programados.md) e seu prompt encaminham a execução ao outro chat, pelo método obrigatório do projeto.

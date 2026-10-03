@@ -1,6 +1,6 @@
 # Auditoria e proposta — templates das automações WhatsApp existentes
 
-Data: 2026-10-03. Estado: auditoria concluída; proposta para revisão, sem implementação de produto.
+Data: 2026-10-03. Estado: auditoria concluída; desenho/spec aprovados para preparação do plano, sem implementação de produto.
 
 ## Pedido e limites
 
@@ -102,4 +102,4 @@ Esta auditoria não é uma spec de implementação aprovada. A skill `superpower
 
 Dependências externas: acesso autorizado a conta/número de homologação, autorização para submissão, configuração de eventos de templates na Datafy, aprovação efetiva por WABA, confirmação de regras de cobrança da conta, prova de consentimento dos contatos e autorização específica para migration/deploy de produção.
 
-Checkpoint: auditoria e baseline concluídos; usuário aprovou o desenho; [spec escrita](2026-10-03-whatsapp-templates-programados-design.md) aguardando revisão antes do plano; código de produto intacto. A próxima execução deve partir desta matriz e da resposta do usuário, sem repetir a exploração completa.
+Checkpoint: auditoria e baseline concluídos; usuário aprovou desenho/spec e pediu [plano](../plans/2026-10-03-whatsapp-templates-programados.md) e prompt para outro chat implementar; código de produto intacto. A próxima execução deve partir desses documentos e da autorização do usuário, sem repetir a exploração completa.
