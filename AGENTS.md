@@ -146,7 +146,7 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 - Webhook Asaas respeita orçamento de I/O inferior ao timeout do provider; cron/reconcile faz retry completo. Checkout Asaas correlaciona pelo identificador próprio descrito no `CLAUDE.md`, nunca por aproximação de customer/externalReference.
 - Não derive categoria de cobrança por negação (`!isSystemInvoice` não significa WhatsApp). Resolvers de assinatura, correlação, cancelamento e estado financeiro em `_shared/*-core.ts` são autoridades; não replique decisão no adapter.
 - Workers autenticam com `INTERNAL_API_KEY`, que existe em Edge secrets e Vault. Rotacione Edge primeiro e Vault depois; valide pelo runbook.
-- Outbox/workers preservam idempotência. Templates default do frontend ficam sincronizados com workers; voucher só persiste após envio OK; telefone inválido/vazio é skip.
+- Outbox/workers preservam idempotência. Templates default do frontend ficam sincronizados com workers; no webhook, voucher só persiste após envio OK; `process-voucher-triggers` persiste antes do envio e mantém o benefício em falha/supressão, então não inverter a ordem por analogia; telefone inválido/vazio é skip.
 - Ação externa + UPDATE local retorna estados separados; sucesso externo com falha local exige warning e reconciliação, não repetição cega.
 
 ---

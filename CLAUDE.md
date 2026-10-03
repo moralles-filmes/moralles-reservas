@@ -400,7 +400,7 @@ Padrão: `pg_cron` → wrapper `SECURITY DEFINER` lê `internal_api_key` do Vaul
 ## Giftback — invariantes
 
 - **Validade sempre fim-do-dia BRT.** Use `expiresAtEndOfDayBrt(validity_days)` de [supabase/functions/_shared/giftback.ts](supabase/functions/_shared/giftback.ts) — Deno é UTC, `setHours` daria 21:00 BRT do dia anterior. Frontend usa `endOfDayLocalISO` em [src/lib/utils.ts](src/lib/utils.ts).
-- **Voucher só persiste se WhatsApp send OK.** Ciclo no webhook: `prepareGiftbackVoucher` (monta sem escrever) → `sendOutbound` → `commitGiftbackVoucher` (escreve voucher + `notifications_sent` com status real). Inverter cria voucher fantasma.
+- **No webhook, voucher só persiste se WhatsApp send OK; o worker de aniversário/frequência persiste antes do envio.** Ciclo no webhook: `prepareGiftbackVoucher` (monta sem escrever) → `sendOutbound` → `commitGiftbackVoucher` (escreve voucher + `notifications_sent` com status real); inverter cria voucher fantasma nesse caminho. No worker, `issueAndSend` insere antes de enviar e mantém o benefício em falha/supressão: não aplicar a ordem do webhook ao worker. [process-voucher-triggers/index.ts](supabase/functions/process-voucher-triggers/index.ts).
 - **`notifications_sent.status` reflete envio real** — `sent` se 2xx, `failed` com `error` caso contrário.
 - **Dedupe `(rule, customer)` é DB-enforced** via `vouchers_unit_rule_customer_active_idx`. Sempre tente INSERT; erro `23505` é dedupe silencioso (log `voucher_dedup_race`). `SELECT existing` antes não basta (reprocessing_stuck_message permite 2 execuções paralelas).
 - **`processFrequency` conta reservas até ontem BRT** (`.lte('date', yesterdayIso)`) — sem isso, reservas confirmadas no futuro disparam voucher antes da visita.
