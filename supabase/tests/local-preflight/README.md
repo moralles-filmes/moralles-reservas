@@ -1151,6 +1151,12 @@ completa de epochs. `publish` recebe esse envelope íntegro; array antigo é
 recusado. GET pode usar um binding autorizado da conta e CREATE outro binding
 explicitamente fixado no job. Nenhuma credencial é persistida na captura.
 
+O GET escolhe deterministicamente um binding verificado/corrente; o enqueue
+inicial resolve separadamente um binding corrente com submissão explicitamente
+autorizada. A ordem dos UUIDs não pode exigir autorizar também o binding de GET.
+Enqueue SQL revalida autorização/flag; prepare, finalCheck e confirm preservam
+a autoridade própria do binding fixado no job de CREATE.
+
 `prepare_whatsapp_template_provision` é claimed-only e consome uma tentativa.
 Após releitura de `enforced.sending`, credencial/revisão e flags, o último await
 antes do adapter é `confirm_whatsapp_template_post`: fence/lease/capture atuais,
@@ -1175,6 +1181,12 @@ account→bindings ordenados→channels ordenados→templates→job. Finish de e
 mantém job-only; trigger de revisão do canal nunca trava pais. Substituição Vault
 same-pointer avança revisão antes do segredo por permit transacional/fence exato.
 
+Somente após publicação corrente válida, complete coalesce syncs antigos sem
+POST que estejam queued ou claimed com lease expirado. Trava os jobs em ordem
+de UUID sob o lock da conta e confere clock_timestamp após cada lock; preserva
+claims vivos, fences históricos e toda evidência de provision uncertain. Um
+evento durante GET recusa a publicação/conclusão e impede esse coalesce.
+
 ```bash
 # Harness mínimo já aplicado via CLI --local --workdir isolado, nunca produção.
 psql "$TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/local-preflight/31-template-workers.sql
@@ -1186,7 +1198,8 @@ bash supabase/tests/local-preflight/32-template-workers-concurrency.sh
 SQL27/29 passam envelope integral; SQL27 também usa GET completo antes de
 finalizar sync ou preparar CREATE, com alvosv1 ausentes em conta própria para
 preservar suas assertions de retry/fence. SQL31 cobre ACL SQL, capturas, rotações,
-zeroPOST, lease, retenção e futuro replay vedado; SQL32 executa quatro corridas
+zeroPOST, lease, retenção, recuperação de sync abandonado com provision posterior
+e evento durante GET, além de futuro replay vedado; SQL32 executa quatro corridas
 reais, incluindo Vault same-pointer. GoTrue JWT/PostgREST complementa SQL com
 usuários locais reais (owner/gerente/operador/platform_admin/outsider e anon),
 recusas e positivos service-only. O fixture mínimo não prova ACL, Advisor,

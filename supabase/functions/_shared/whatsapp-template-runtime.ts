@@ -2,7 +2,7 @@ import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getWhatsAppProvider } from './whatsapp-providers.ts';
 import { clearWhatsAppGateCache, resolveWhatsAppGateByUnit } from './whatsapp-service-gate.ts';
 import { createTemplateAccountService, type TemplateChannel } from './whatsapp-template-account.ts';
-import { createTemplateSyncService, type TemplateSyncContext, type TemplateSyncEpoch, type TemplateProvisionJob, type StoredTemplate } from './whatsapp-template-sync.ts';
+import { createTemplateSyncService, selectTemplateBindings, type TemplateBindingCandidate, type TemplateSyncContext, type TemplateSyncEpoch, type TemplateProvisionJob, type StoredTemplate } from './whatsapp-template-sync.ts';
 import { createTemplateWorker, createTemplateAlertSender, type TemplateWorkerJob, type TemplatePipelineHealth } from './whatsapp-template-worker.ts';
 import { catalogHash } from './whatsapp-template-catalog-core.ts';
 import { jsonLog, requireInternalAuth } from './security.ts';
@@ -37,14 +37,14 @@ export function createTemplateRuntime(db: SupabaseClient) {
       .select('id,unit_id,channel_id,provider,generation,channel_credential_revision,submission_authorized_at,verified_at')
       .eq('account_id', accountId).eq('provider', 'datafy').not('verified_at', 'is', null).order('id');
     if (ae || be || !account) throw new Error('template_binding_unavailable');
-    let chosen: (typeof bindings extends (infer B)[] | null ? B : never) | undefined;
-    let channel: TemplateChannel | null = null;
+    const candidates: TemplateBindingCandidate[] = [];
     for (const binding of bindings ?? []) {
       if (bindingId && binding.id !== bindingId) continue;
-      const candidate = await loadChannel(binding.channel_id);
-      if (candidate && candidate.template_credential_revision === binding.channel_credential_revision
-        && (candidate as TemplateChannel & { status: string }).status === 'connected') { chosen = binding; channel = candidate; break; }
+      const channel = await loadChannel(binding.channel_id) as TemplateBindingCandidate['channel'];
+      candidates.push({ ...binding, channel });
     }
+    const { chosen, provisionBindingId } = selectTemplateBindings(candidates, bindingId);
+    const channel = chosen?.channel;
     if (!chosen || !channel) throw new Error('template_binding_unavailable');
     const templates: StoredTemplate[] = [];
     const jobs: TemplateProvisionJob[] = [];
@@ -61,7 +61,7 @@ export function createTemplateRuntime(db: SupabaseClient) {
     }
     return { accountId, wabaId: account.waba_id, bindingId: chosen.id, generation: chosen.generation,
       unitId: chosen.unit_id, channelId: chosen.channel_id, credentialRevision: chosen.channel_credential_revision,
-      credentials: channel.credentials, catalogEnabled: await flag(), submissionAuthorized: !!chosen.submission_authorized_at, templates, jobs };
+      credentials: channel.credentials, catalogEnabled: await flag(), submissionAuthorized: !!chosen.submission_authorized_at, provisionBindingId, templates, jobs };
   }
   const sync = createTemplateSyncService({ load,
     getTransport: () => {

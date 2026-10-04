@@ -2,7 +2,7 @@ import { webcrypto } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createDatafyTemplateTransport } from '../../supabase/functions/_shared/datafy-client.ts';
 import { TEMPLATE_CATALOG, catalogHash } from '../../supabase/functions/_shared/whatsapp-template-catalog-core.ts';
-import { createTemplateSyncService, type TemplateSyncDependencies, type TemplateSyncContext } from '../../supabase/functions/_shared/whatsapp-template-sync.ts';
+import { createTemplateSyncService, selectTemplateBindings, type TemplateBindingCandidate, type TemplateSyncDependencies, type TemplateSyncContext } from '../../supabase/functions/_shared/whatsapp-template-sync.ts';
 
 beforeAll(() => vi.stubGlobal('crypto', webcrypto));
 const definition = TEMPLATE_CATALOG.res_confirmacao_v1;
@@ -13,7 +13,7 @@ async function fixture(pages: unknown[] = [{ data: [remote()] }]) {
   const fetchImpl = vi.fn(async (_url: Parameters<typeof fetch>[0], _init?: RequestInit) => new Response(JSON.stringify(pages[Math.min(calls++, pages.length - 1)])));
   const context: TemplateSyncContext = { accountId: 'a', wabaId: '456', bindingId: 'b', generation: 1,
     unitId: 'unit', channelId: 'channel', credentialRevision: 0,
-    credentials: { access_token: 'fake' }, catalogEnabled: true, submissionAuthorized: true,
+    credentials: { access_token: 'fake' }, catalogEnabled: true, submissionAuthorized: true, provisionBindingId: 'b',
     templates: [{ id: 't', logical_id: definition.id, version: 1, name: definition.name, language: 'pt_BR',
       desired_hash: await catalogHash(definition), requested_category: 'UTILITY', remote_id: null,
       remote_status: 'UNKNOWN', quality: 'UNKNOWN', submission_attempted_at: null }], jobs: [] };
@@ -29,6 +29,50 @@ async function fixture(pages: unknown[] = [{ data: [remote()] }]) {
   return { ...createTemplateSyncService(deps), deps, context, fetchImpl };
 }
 describe('production sync with fake HTTP transport', () => {
+  it.each([['0001', '0002'], ['0002', '0001']])('selects authorized initial CREATE independently of GET UUID order (%s, %s)', async (a, b) => {
+    const candidate = (id: string, authorized: boolean): TemplateBindingCandidate => ({
+      id, unit_id: 'unit', channel_id: id, provider: 'datafy', generation: 1,
+      channel_credential_revision: 2, verified_at: '2026-10-04', submission_authorized_at: authorized ? '2026-10-04' : null,
+      channel: { id, unit_id: 'unit', provider: 'datafy', template_credential_revision: 2, status: 'connected', credentials: { access_token: 'fake' } },
+    });
+    const candidates = [candidate(b, true), candidate(a, false)];
+    const selected = selectTemplateBindings(candidates);
+    const f = await fixture([{ data: [] }]);
+    f.context.bindingId = selected.chosen!.id;
+    f.context.submissionAuthorized = !!selected.chosen!.submission_authorized_at;
+    f.context.provisionBindingId = selected.provisionBindingId;
+    vi.mocked(f.deps.begin).mockResolvedValue({ account_generation: 1, capture_id: 'capture', binding_id: selected.chosen!.id,
+      binding_generation: 1, credential_revision: 0, templates: [{ id: 't', epoch: 2 }] });
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ state: 'synced' });
+    expect(f.deps.publish).toHaveBeenCalledWith('a', expect.objectContaining({ binding_id: '0001' }), expect.anything());
+    expect(f.deps.enqueueProvision).toHaveBeenCalledOnce();
+    expect(f.deps.enqueueProvision).toHaveBeenCalledWith(b, definition);
+    expect(candidates.find(c => c.id === a)!.submission_authorized_at).toBeNull();
+    expect(selectTemplateBindings(candidates, a).chosen!.submission_authorized_at).toBeNull();
+    for (const invalid of [
+      { ...candidate(b, true), verified_at: null },
+      { ...candidate(b, true), channel_credential_revision: 1 },
+      { ...candidate(b, true), channel: { ...candidate(b, true).channel!, status: 'disconnected' } },
+      { ...candidate(b, true), unit_id: 'other' },
+      { ...candidate(b, true), provider: 'official' },
+    ]) expect(selectTemplateBindings([candidate(a, false), invalid]).provisionBindingId).toBeNull();
+  });
+  it('enqueues initial missing content on the separately authorized binding, preserving the GET capture', async () => {
+    const f = await fixture([{ data: [] }]);
+    f.context.submissionAuthorized = false;
+    f.context.provisionBindingId = 'authorized-other';
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ state: 'synced' });
+    expect(f.deps.publish).toHaveBeenCalledWith('a', expect.objectContaining({ binding_id: 'b' }), expect.anything());
+    expect(f.deps.enqueueProvision).toHaveBeenCalledOnce();
+    expect(f.deps.enqueueProvision).toHaveBeenCalledWith('authorized-other', definition);
+    expect(f.context.submissionAuthorized).toBe(false);
+  });
+  it('never borrows GET authorization when there is no current provisioning binding', async () => {
+    const f = await fixture([{ data: [] }]);
+    f.context.provisionBindingId = null;
+    await f.syncTemplateAccount('a');
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+  });
   it('derives pending from accepted publication without an observed hash', async () => {
     const f = await fixture([{ data: [] }]);
     expect(await f.syncTemplateAccount('a')).toMatchObject({ templateStates: { t: 'pending' } });

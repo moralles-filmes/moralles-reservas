@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createTemplateWorker, createTemplateAlertSender } from '../../supabase/functions/_shared/whatsapp-template-worker.ts';
+import { createTemplateWorker, createTemplateAlertSender, type TemplateWorkerJob } from '../../supabase/functions/_shared/whatsapp-template-worker.ts';
 
 function fixture(count = 30) {
   const deps = {
@@ -7,7 +7,7 @@ function fixture(count = 30) {
     selectAccounts: vi.fn(async () => [{ id: 'a' }, { id: 'b' }]),
     requestSync: vi.fn(async (): Promise<string | null> => null),
     listJobs: vi.fn(async () => Array.from({ length: count }, (_, i) => ({ id: String(i) }))),
-    claim: vi.fn(async (id: string) => ({ id, account_id: 'a', operation: 'sync', claim_token: 'f',
+    claim: vi.fn(async (id: string): Promise<TemplateWorkerJob | null> => ({ id, account_id: 'a', operation: 'sync', claim_token: 'f',
       target_key: 'account', state: 'claimed', binding_id: 'b', binding_generation: 1, posting_started_at: null })),
     sync: vi.fn(async () => ({ state: 'synced', processed: 7 })),
     provision: vi.fn(async () => ({ state: 'accepted', processed: 1 })),
@@ -18,6 +18,26 @@ function fixture(count = 30) {
   return { deps, ...createTemplateWorker(deps) };
 }
 describe('internal catalog worker', () => {
+  it('continues to provision when the current sync retires an abandoned sync already in the pending page', async () => {
+    const f = fixture();
+    f.deps.selectAccounts.mockResolvedValue([{ id: 'a' }]);
+    f.deps.requestSync.mockResolvedValue('current');
+    f.deps.listJobs.mockResolvedValue([{ id: 'old' }, { id: 'provision' }]);
+    let currentCompleted = false;
+    f.deps.complete.mockImplementation(async () => { currentCompleted = true; return true; });
+    f.deps.claim.mockImplementation(async id => {
+      if (id === 'old') { expect(currentCompleted).toBe(true); return null; }
+      if (id === 'provision') expect(currentCompleted).toBe(true);
+      return { id, account_id: 'a', operation: id === 'provision' ? 'provision' : 'sync', claim_token: 'f',
+        target_key: 'account', state: 'claimed', binding_id: 'b', binding_generation: 1, posting_started_at: null };
+    });
+    const response = await f.handle(new Request('https://local.test', { method: 'POST' }));
+    expect(response.status).toBe(200);
+    expect(f.deps.claim.mock.calls.map(([id]) => id)).toEqual(['current', 'old', 'provision']);
+    expect(f.deps.sync).toHaveBeenCalledOnce();
+    expect(f.deps.provision).toHaveBeenCalledOnce();
+    expect(f.deps.complete).toHaveBeenCalledWith(expect.objectContaining({ id: 'current' }), true, 'template_synced');
+  });
   it('runs the current sync first even when older revisions fill the pending page', async () => {
     const f = fixture(); f.deps.requestSync.mockResolvedValue('current');
     await f.handle(new Request('https://local.test', { method: 'POST' }));

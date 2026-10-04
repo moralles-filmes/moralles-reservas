@@ -171,5 +171,52 @@ begin
   j:=public.enqueue_whatsapp_template_job(b,'provision','fila_entrada_v1',2); x:=public.claim_whatsapp_template_job(j); f:=(x->>'claim_token')::uuid;
   perform pg_temp.ok(not public.prepare_whatsapp_template_provision(j,f,1),'missing GET after purged acceptance cannot recreate');
 end $$;
+-- Abandoned sync recovery must converge, including an event during the newer GET.
+do $$ declare
+  n integer; c uuid; a uuid; b uuid; t uuid; s1 uuid; s2 uuid; live_old uuid; provision uuid; uncertain_job uuid;
+  f1 uuid; f2 uuid; lf uuid; x jsonb; snap jsonb; original_uncertain jsonb;
+begin
+  for n in 1..2 loop
+    c:=gen_random_uuid(); t:=gen_random_uuid();
+    insert into public.whatsapp_channels(id,unit_id,provider,status,is_active,credentials,last_health_check_at)
+      values(c,'bbbbbbbb-0000-0000-0000-000000000001','datafy','connected',false,'{"phone_number_id":"316"}',clock_timestamp());
+    x:=public.bind_whatsapp_template_account(c,'bbbbbbbb-0000-0000-0000-000000000001','datafy',0,'316','31600'||n); a:=(x->>'accountId')::uuid;
+    select id into b from public.whatsapp_template_bindings where channel_id=c;
+    insert into public.whatsapp_remote_templates(id,account_id,logical_id,version,language,name,desired_hash,requested_category,binding_generation)
+      values(t,a,'res_confirmacao_v1',1,'pt_BR','res_confirmacao_v1',repeat('a',64),'UTILITY',1);
+    snap:=jsonb_build_array(jsonb_build_object('id',t,'remote_id',null,'name','res_confirmacao_v1','language','pt_BR','observed_hash',null,'effective_category',null,'remote_status','UNKNOWN'));
+    s1:=public.request_whatsapp_template_sync(a); x:=public.claim_whatsapp_template_job(s1); f1:=(x->>'claim_token')::uuid;
+    update public.whatsapp_template_jobs set claimed_until=clock_timestamp()-interval '1 second' where id=s1;
+    -- Initial queued provision and protected network evidence, with no external call.
+    insert into public.whatsapp_template_jobs(account_id,binding_id,binding_generation,operation,target_key,revision)
+      values(a,b,1,'provision','res_confirmacao_v1',1) returning id into provision;
+    insert into public.whatsapp_template_jobs(account_id,binding_id,binding_generation,operation,target_key,revision,state,posting_started_at,claim_token,claimed_until,attempts,provider_outcome)
+      values(a,b,1,'provision','fila_entrada_v1',1,'uncertain',clock_timestamp(),gen_random_uuid(),clock_timestamp()-interval '1 second',1,'uncertain') returning id into uncertain_job;
+    select to_jsonb(j) into original_uncertain from public.whatsapp_template_jobs j where id=uncertain_job;
+    s2:=public.request_whatsapp_template_sync(a); x:=public.claim_whatsapp_template_job(s2); f2:=(x->>'claim_token')::uuid;
+    x:=public.begin_whatsapp_template_sync(a);
+    if n=2 then
+      perform public.record_whatsapp_template_events(a,jsonb_build_array(jsonb_build_object('field','message_template_status_update','remote_id','316099','event_time',clock_timestamp(),'digest',repeat('9',64),'remote_status','APPROVED')));
+      perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,1,x,snap),'event revision during GET refuses publication');
+      perform pg_temp.ok(not public.complete_whatsapp_template_sync_job(s2,f2,true,'template_synced'),'event revision cannot coalesce under stale proof');
+      perform pg_temp.ok((select state='claimed' and claim_token=f1 from public.whatsapp_template_jobs where id=s1),'stale proof preserves abandoned sync');
+      perform public.complete_whatsapp_template_sync_job(s2,f2,false,'template_snapshot_stale');
+      s2:=public.request_whatsapp_template_sync(a); x:=public.claim_whatsapp_template_job(s2); f2:=(x->>'claim_token')::uuid;
+      x:=public.begin_whatsapp_template_sync(a);
+    end if;
+    perform pg_temp.ok(public.publish_whatsapp_template_sync(a,1,x,snap),'recovery GET publishes current capture');
+    -- A live historical claim is never coalesced by the new successful sync.
+    live_old:=public.enqueue_whatsapp_template_job(b,'sync','live-historical',1); lf:=gen_random_uuid();
+    update public.whatsapp_template_jobs set state='claimed',claim_token=lf,claimed_until=clock_timestamp()+interval '90 seconds' where id=live_old;
+    perform pg_temp.ok(public.complete_whatsapp_template_sync_job(s2,f2,true,'template_synced'),'current recovery sync completes');
+    perform pg_temp.ok((select state='done' and claim_token=f1 and posting_started_at is null from public.whatsapp_template_jobs where id=s1),'expired old sync coalesces after current proof');
+    perform pg_temp.ok((select state='claimed' and claim_token=lf from public.whatsapp_template_jobs where id=live_old),'live old sync remains owned');
+    perform pg_temp.ok((select to_jsonb(j)=original_uncertain from public.whatsapp_template_jobs j where id=uncertain_job),'uncertain provision evidence unchanged by coalescing');
+    perform pg_temp.ok(public.claim_whatsapp_template_job(s1) is null,'coalesced old sync cannot restart');
+    perform pg_temp.ok(not public.complete_whatsapp_template_sync_job(s1,f1,false,'template_get_failed'),'lost old claimant cannot invalidate current proof');
+    perform public.complete_whatsapp_template_sync_job(live_old,lf,false,'template_get_failed');
+    perform pg_temp.ok(public.claim_whatsapp_template_job(provision) is not null,'provision becomes reclaimable after abandoned sync recovery');
+  end loop;
+end $$;
 select count(*)||' worker SQL assertions GREEN' from worker_checks;
 rollback;

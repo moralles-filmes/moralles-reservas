@@ -46,7 +46,7 @@ export function createTemplateWorker(deps: TemplateWorkerDependencies) {
           if (claims >= 20 || deps.now() >= deadline) break;
           const currentSync = await deps.requestSync(account.id);
           const pending = await deps.listJobs(account.id);
-          // A current GET can settle older queued revisions; old claims cannot
+          // A current GET can settle older queued/expired syncs; old claims cannot
           // impersonate the newest revision and must not starve it.
           const jobs = currentSync ? [{ id: currentSync }, ...pending.filter(j => j.id !== currentSync)] : pending;
           for (const item of jobs) {

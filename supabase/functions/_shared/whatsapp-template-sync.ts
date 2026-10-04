@@ -2,6 +2,23 @@ import { TEMPLATE_CATALOG, catalogHash, type TemplateDefinition, type TemplateId
 import { nextTemplateCursor, type RemoteTemplateSnapshot, type TemplateCreateOutcome } from './whatsapp-template-provider-core.ts';
 import type { ChannelCredentials, WhatsAppProviderAdapter } from './whatsapp-provider-core.ts';
 import { deriveTemplateState } from './whatsapp-template-state-core.ts';
+import type { TemplateChannel } from './whatsapp-template-account.ts';
+
+export interface TemplateBindingCandidate {
+  id: string; unit_id: string; channel_id: string; provider: string; generation: number;
+  channel_credential_revision: number; verified_at: string | null; submission_authorized_at: string | null;
+  channel: (TemplateChannel & { status: string }) | null;
+}
+
+/** GET identity and CREATE authority are independent, even within one account. */
+export function selectTemplateBindings(candidates: TemplateBindingCandidate[], bindingId?: string) {
+  const current = candidates.filter(b => b.verified_at && b.provider === 'datafy' && b.channel
+    && b.channel.id === b.channel_id && b.channel.unit_id === b.unit_id && b.channel.provider === b.provider
+    && b.channel.status === 'connected' && b.channel.template_credential_revision === b.channel_credential_revision)
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  return { chosen: current.find(b => !bindingId || b.id === bindingId),
+    provisionBindingId: current.find(b => b.submission_authorized_at)?.id ?? null };
+}
 
 export interface StoredTemplate {
   id: string; logical_id: string; version: number; name: string; language: string;
@@ -16,6 +33,7 @@ export interface TemplateSyncContext {
   accountId: string; wabaId: string; bindingId: string; generation: number;
   unitId: string; channelId: string; credentialRevision: number;
   credentials: ChannelCredentials; catalogEnabled: boolean; submissionAuthorized: boolean;
+  provisionBindingId: string | null;
   templates: StoredTemplate[]; jobs: TemplateProvisionJob[];
 }
 export interface TemplateSyncEpoch {
@@ -131,9 +149,9 @@ export function createTemplateSyncService(deps: TemplateSyncDependencies) {
         }
       }
       const definition = activeDefinition(t);
-      if (definition && context.catalogEnabled && context.submissionAuthorized && missing.has(t.id)
+      if (definition && context.catalogEnabled && context.provisionBindingId && missing.has(t.id)
         && !t.remote_id && !t.submission_attempted_at && !RESTRICTED.has(t.remote_status) && jobs.length === 0) {
-        await deps.enqueueProvision(context.bindingId, definition);
+        await deps.enqueueProvision(context.provisionBindingId, definition);
       }
     }
     return { state: 'synced', processed: context.templates.length, templateStates: observed.templateStates };

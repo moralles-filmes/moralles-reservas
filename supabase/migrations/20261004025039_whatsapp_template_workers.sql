@@ -324,7 +324,7 @@ grant execute on function public.select_due_whatsapp_template_accounts(integer) 
 
 create or replace function public.complete_whatsapp_template_sync_job(p_job_id uuid,p_fence uuid,p_success boolean,p_reason text)
 returns boolean language plpgsql security definer set search_path='' as $$
-declare j public.whatsapp_template_jobs%rowtype; a public.whatsapp_template_accounts%rowtype; b public.whatsapp_template_bindings%rowtype; gb public.whatsapp_template_bindings%rowtype; c public.whatsapp_channels%rowtype; gc public.whatsapp_channels%rowtype;
+declare j public.whatsapp_template_jobs%rowtype; a public.whatsapp_template_accounts%rowtype; b public.whatsapp_template_bindings%rowtype; gb public.whatsapp_template_bindings%rowtype; c public.whatsapp_channels%rowtype; gc public.whatsapp_channels%rowtype; v_old_id uuid;
 begin
   if p_success is null or p_reason not in('template_synced','template_get_failed','template_snapshot_stale','template_binding_unavailable') then raise exception 'template_sync_result_invalid' using errcode='22023'; end if;
   select * into j from public.whatsapp_template_jobs where id=p_job_id;
@@ -352,9 +352,15 @@ begin
   update public.whatsapp_template_jobs set state=case when p_success then 'done' else 'failed' end,
     error_code=case when p_success then null else p_reason end,finished_at=clock_timestamp() where id=j.id and claim_token=p_fence;
   if p_success then
-    -- Only older unclaimed safety work is coalesced, after this complete current GET.
-    update public.whatsapp_template_jobs set state='done',finished_at=clock_timestamp(),error_code=null
-      where account_id=a.id and operation='sync' and state='queued' and revision<j.revision and posting_started_at is null;
+    -- Current publication retires abandoned older syncs, never live claims or POST evidence.
+    for v_old_id in select id from public.whatsapp_template_jobs
+      where account_id=a.id and operation='sync' and state in('queued','claimed')
+        and revision<j.revision and posting_started_at is null order by id for update
+    loop
+      -- Refresh SQL time after each row lock; the historical fence remains unchanged.
+      update public.whatsapp_template_jobs set state='done',finished_at=clock_timestamp(),error_code=null
+        where id=v_old_id and (state='queued' or (state='claimed' and claimed_until<=clock_timestamp()));
+    end loop;
   end if;
   return true;
 end $$;
