@@ -5,7 +5,7 @@ create function pg_temp.ok(v boolean,label text) returns void language plpgsql a
 create function pg_temp.denied(q text,code text,label text) returns void language plpgsql as $$begin begin execute q; exception when others then if sqlstate=code then perform pg_temp.ok(true,label); return; end if; raise; end; raise exception 'FAIL: % allowed',label; end$$;
 do $$ declare
   u uuid:='bbbbbbbb-0000-0000-0000-000000000001'; a uuid:=gen_random_uuid(); b uuid:=gen_random_uuid(); t uuid:=gen_random_uuid(); m uuid:=gen_random_uuid(); admin uuid:=gen_random_uuid();
-  j uuid; j2 uuid; f uuid; f2 uuid; cat uuid; cf uuid; x jsonb; y jsonb; snapshot jsonb; events jsonb; e bigint; n integer; v_old timestamptz; v_def text;
+  j uuid; j2 uuid; f uuid; f2 uuid; cat uuid; cf uuid; v2 uuid:=gen_random_uuid(); x jsonb; y jsonb; snapshot jsonb; events jsonb; e bigint; n integer; v_revision bigint; v_epochs jsonb; v_tasks jsonb; v_old timestamptz; v_def text;
 begin
   perform pg_temp.ok(to_regprocedure('public.claim_whatsapp_automation(uuid)') is not null,'ledger RPC installed');
   insert into auth.users(id) values(admin); insert into public.platform_admins values(admin);
@@ -27,6 +27,20 @@ begin
   j:=public.enqueue_whatsapp_automation(y);
   perform pg_temp.ok(j is not null,'enqueue derives real org/customer/current binding');
   perform pg_temp.ok((select binding_generation=3 and account_id=a and customer_id='cccccccc-0000-0000-0000-000000000001' from public.whatsapp_automation_jobs where id=j),'pins derived customer and binding generation');
+  -- Stored future versions do not authorize catalog rollout or replace v1.
+  insert into public.whatsapp_remote_templates(id,account_id,logical_id,version,language,name,desired_hash,requested_category,binding_generation,remote_status,local_status)
+    values(v2,a,'res_confirmacao_v1',2,'pt_BR','res_confirmacao_v2',repeat('f',64),'UTILITY',7,'PENDING','pending');
+  insert into public.reservations(id,unit_id,customer_id) values('eeeeeeee-0000-0000-0000-000000000040',u,'cccccccc-0000-0000-0000-000000000001'),('eeeeeeee-0000-0000-0000-000000000041',u,'cccccccc-0000-0000-0000-000000000001');
+  perform pg_temp.ok((select local_status='usable' from public.whatsapp_remote_templates where id=t),'v1 remains usable while v2 is pending');
+  j2:=public.enqueue_whatsapp_automation(y||'{"reservation_id":"eeeeeeee-0000-0000-0000-000000000040"}');
+  perform pg_temp.ok((select remote_template_id=t and template_version=1 from public.whatsapp_automation_jobs where id=j2),'pending v2 never replaces explicit v1 pt_BR');
+  update public.whatsapp_remote_templates set remote_id='future27',remote_status='APPROVED',local_status='usable',observed_hash=desired_hash,effective_category=requested_category,sync_required=false,last_synced_at=clock_timestamp(),quality='GREEN' where id=v2;
+  j2:=public.enqueue_whatsapp_automation(y||'{"reservation_id":"eeeeeeee-0000-0000-0000-000000000041"}');
+  perform pg_temp.ok((select remote_template_id=t and template_version=1 from public.whatsapp_automation_jobs where id=j2),'approved usable v2 without rollout still pins v1');
+  perform pg_temp.ok(public.enqueue_whatsapp_automation(y||'{"source_event_key":"future_version"}')=j,'future version leaves existing natural intent unchanged');
+  perform pg_temp.ok((select remote_template_id=t and template_version=1 from public.whatsapp_automation_jobs where id=j),'existing pinned v1 unchanged');
+  perform pg_temp.denied(format('update public.whatsapp_automation_jobs set remote_template_id=%L,template_version=2 where id=%L',v2,j),'23514','existing pin cannot migrate to unrolled v2');
+  delete from public.whatsapp_remote_templates where id=v2;
   update public.platform_flags set value='false' where key='whatsapp_automation_dispatch';
   perform pg_temp.ok(public.enqueue_whatsapp_automation(y||'{"source_event_key":"second"}')=j,'existing ledger wins flagsOFF/source change');
   update public.platform_flags set value='true' where key='whatsapp_automation_dispatch';
@@ -84,7 +98,15 @@ begin
   perform pg_temp.denied(format('update public.whatsapp_template_accounts set reconciliation_revision=0 where id=%L',a),'23514','account task revision cannot regress');
   y:=jsonb_build_object('unit_id',u,'kind','confirmation','reservation_id','eeeeeeee-0000-0000-0000-000000000001','source_event_key','first','fact_at',clock_timestamp()+interval '1 hour','expires_at',clock_timestamp()+interval '1 hour');
   select sync_epoch into e from public.whatsapp_remote_templates where id=t;
-  perform pg_temp.denied(format('select public.record_whatsapp_template_events(%L,%L::jsonb)',a,events||jsonb_build_array(jsonb_build_object('field','unknown','remote_id','bad','event_time',clock_timestamp(),'digest',repeat('c',64)))),'23514','mixed invalid batch rolls back whole transaction');
+  select reconciliation_revision into v_revision from public.whatsapp_template_accounts where id=a;
+  select jsonb_agg(jsonb_build_object('id',id,'epoch',sync_epoch,'sync_required',sync_required) order by id) into v_epochs from public.whatsapp_remote_templates where account_id=a;
+  select coalesce(jsonb_agg(to_jsonb(tj) order by tj.id),'[]'::jsonb) into v_tasks from public.whatsapp_template_jobs tj where account_id=a;
+  perform pg_temp.ok(not exists(select from public.whatsapp_template_events where account_id=a and digest=repeat('9',64)),'invalid batch first digest is new');
+  perform pg_temp.denied(format('select public.record_whatsapp_template_events(%L,%L::jsonb)',a,jsonb_build_array((events->0)||jsonb_build_object('digest',repeat('9',64)),jsonb_build_object('field','unknown','remote_id','bad','event_time',clock_timestamp(),'digest',repeat('c',64)))),'23514','mixed invalid batch rolls back new first event');
+  perform pg_temp.ok(not exists(select from public.whatsapp_template_events where account_id=a and digest=repeat('9',64)),'failed batch cannot persist first event');
+  perform pg_temp.ok((select reconciliation_revision=v_revision from public.whatsapp_template_accounts where id=a),'failed batch cannot advance reconciliation revision');
+  perform pg_temp.ok((select jsonb_agg(jsonb_build_object('id',id,'epoch',sync_epoch,'sync_required',sync_required) order by id)=v_epochs from public.whatsapp_remote_templates where account_id=a),'failed batch restores every epoch and sync requirement');
+  perform pg_temp.ok((select coalesce(jsonb_agg(to_jsonb(tj) order by tj.id),'[]'::jsonb)=v_tasks from public.whatsapp_template_jobs tj where account_id=a),'failed batch cannot change task queue');
   perform pg_temp.ok((select sync_epoch=e from public.whatsapp_remote_templates where id=t),'failed batch cannot partially invalidate');
   events:=jsonb_build_array(jsonb_build_object('field','message_template_quality_update','remote_id','remote27','event_time',clock_timestamp(),'digest',repeat('d',64),'quality','RED'));
   perform public.record_whatsapp_template_events(a,events);

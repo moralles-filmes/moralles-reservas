@@ -71,7 +71,7 @@ begin
   v_logical:=case v_kind when 'confirmation' then coalesce(p_intent->>'logical_id','res_confirmacao_v1') when 'reminder_d1' then 'res_lembrete_dia_v1' when 'survey_d1' then 'res_pesquisa_reserva_v1' when 'waitlist_entered' then 'fila_entrada_v1' when 'waitlist_feedback' then 'fila_feedback_v1' when 'voucher_issued' then 'mkt_voucher_programado_v1' end;
   if v_kind='confirmation' and v_logical not in('res_confirmacao_v1','res_confirmacao_desconto_v1') then raise exception 'automation_intent_invalid' using errcode='22023'; end if;
   if v_binding.account_id is not null then
-    select * into v_template from public.whatsapp_remote_templates where account_id=v_binding.account_id and logical_id=v_logical order by version desc limit 1 for share;
+    select * into v_template from public.whatsapp_remote_templates where account_id=v_binding.account_id and logical_id=v_logical and version=1 and language='pt_BR' for share;
     if not found then raise exception 'automation_template_unavailable' using errcode='P0A02'; end if;
   end if;
   v_fact:=(p_intent->>'fact_at')::timestamptz; v_expiry:=(p_intent->>'expires_at')::timestamptz;
