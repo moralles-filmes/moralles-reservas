@@ -97,11 +97,14 @@
       "`authenticated`, logo declarava só 0029) e `resolve_tracking_token_by_code`",
       "entra em `public_anon` (DEFINER com `anon`, logo declara os dois, como a",
       "`get_public_tracking`). Então 0028 sobe de 9 para 10, 0029 fica em 14 (−1",
-      "da saída, +1 da entrada) e o total vai a 24."
+      "da saída, +1 da entrada) e o total vai a 24.",
+      "DELTA do catálogo WhatsApp: maintain_whatsapp_legacy_template é DEFINER",
+      "com authenticated e guarda platform_admin, adicionando um 0029: projeção",
+      "0028=10, 0029=15, total=25. Não é leitura do Advisor de produção."
     ],
     "0028": 10,
-    "0029": 14,
-    "total": 24
+    "0029": 15,
+    "total": 25
   },
 
   "public_anon": [
@@ -209,6 +212,14 @@
   "rls_helpers": [],
 
   "authenticated_tenant": [
+    {
+      "name": "maintain_whatsapp_legacy_template",
+      "args": "p_table_name text, p_action text, p_row_id uuid, p_unit_id uuid, p_event text, p_body text, p_customized boolean, p_reason text",
+      "roles": ["authenticated"],
+      "why": "Manutenção explícita de textos legados. SECURITY DEFINER exige auth.role authenticated e platform_admin real derivado de auth.uid, cria permit interno de uso único vinculado à transação/ator/ação/tabela/linha e audita a mudança; anon e service_role não executam. Nenhum actor_id vem do corpo.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
     {
       "name": "get_undelivered_notifications",
       "args": "p_unit_id uuid, p_since timestamp with time zone",

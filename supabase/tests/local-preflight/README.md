@@ -893,3 +893,87 @@ predicado não pode sumir sem teste vermelho* — e é o que existe.
 
 O mesmo par (caso de banco aqui + guardrail estático lá) cobre `CYCLE-1`/`CYCLE-2`
 e a guarda de unidade duplicada do `update_instance`.
+
+## Catálogo e ledger de templates WhatsApp — 25/26
+
+Use um **projeto Supabase local descartável e próprio**, com Auth/GoTrue e
+PostgREST, sem link remoto. Não copie o histórico do produto: migrations antigas
+contêm cron/URLs de produção e não são replayáveis. O arquivo de produto desta
+fase é `20261003225857_whatsapp_template_catalog.sql`, gerado pelo Supabase CLI.
+
+`25-template-bootstrap.sql` fornece somente organizations, três units em duas
+orgs, membros/admins, canais, customers, reserva/fila/voucher, textos legados,
+settings e audit. As policies iniciais de reservation/waitlist templates são
+somente de membro, como no histórico; a migration de produto acrescenta a
+contraparte platform admin. Settings já inclui ambos. Não é um replay do RLS
+completo de produção. Auth instalado é preservado:
+`auth.users`, `auth.uid()` e `auth.role()` só são criados se ausentes. Em um
+Postgres standalone isso permite testar SQL, **sem comprovar JWT/PostgREST**.
+
+Ordem para a stack local já inicializada (nomes scratch gerados pelo CLI):
+
+1. Gere `template_test_bootstrap` **no workdir scratch**, copie o `25` para o
+   arquivo recém-gerado e aplique com `supabase db push --local --workdir <scratch>`.
+2. Execute `26-template-catalog.sql` com `ON_ERROR_STOP=1` antes do schema de
+   produto. O RED esperado é `42P01`, relation `whatsapp_template_accounts` absent.
+3. Gere `template_catalog_fixture` no mesmo workdir scratch, copie **somente** a
+   migration de produto para esse arquivo e aplique por `db push --local`.
+   O timestamp scratch posterior ao bootstrap mantém a ordem das dependências;
+   o arquivo de produto conserva seu timestamp original no Git.
+4. Execute o `26` de novo. Todos os asserts precisam passar e o `ROLLBACK` final
+   deve deixar as fixtures intactas. Os claims nesse SQL são contexto de teste,
+   nunca evidência de assinatura de JWT.
+5. Gere outra migration scratch com o **mesmo DDL de produto** e reaplique por
+   `db push --local`. Compare colunas, constraints, índices, funções, triggers,
+   RLS e ACL antes/depois. Teste rollback de DDL em subtransação com uma exceção
+   deliberada e confira a assinatura do catálogo restaurada.
+
+Exemplo de execução do SQL no contêiner próprio, em PowerShell:
+
+```powershell
+$env:PGCLIENTENCODING = 'UTF8'
+Get-Content -Raw supabase/tests/local-preflight/26-template-catalog.sql |
+  & $taskDocker exec -i supabase_db_moralles-templates-20261003 `
+    psql -U postgres -d postgres -X -v ON_ERROR_STOP=1
+```
+
+Os casos verificam FORCE RLS/ausência de policies/grants privados, WABA única
+independente de provider, coerência org/unit/canal/recurso, exactly-one/kind,
+transport e UUID de notificação fixos, hash-only de token, revisão SQL de
+consentimento, evidência append-only, custo por binding/generation/admin,
+adoção sticky por unidade, exclusão de canal sem perder fence/ledger/recibo,
+aceite tardio, correlação única de recibo, anonimização verificada e a exceção
+estreita de cascade quando a unidade já foi removida. Também cobrem TTL zero,
+refresh pre-POST de epoch/render seguro, freeze pós-POST e gerações distintas de
+conta versus vínculo. Fila preserva customer_id compatível ou resolve telefone
+canônico dentro da organização quando NULL, sem criar cliente; DDD 55 é mantido.
+O fallback de canal segue created_at ASC, como o envio atual. Textos antigos permanecem.
+O revoke também limpa defaults de service_role: somente CRUD nas tabelas de
+serviço, SELECT nas adoções, nenhum acesso aos permits; TRUNCATE/TRIGGER/REFERENCES são negados.
+
+A fixture contém somente colunas consumidas por estes guards. Slug de org/unit,
+data/hora/pessoas/código de reserva e código/desconto/validade de voucher precisam
+ser acrescentados pelas próximas tasks antes de testar elegibilidade e payloads
+completos; esta suíte não comprova esses fluxos futuros.
+
+Além do `26`, a validação de integração precisa criar usuários fake **no GoTrue
+local**, obter JWT reais e chamar PostgREST com anon, service role e cada papel
+(owner/gerente/operador/platform_admin/outro tenant). Assert HTTP/code **e efeito
+no banco**: UPDATE/DELETE anon nas tabelas legadas pode retornar `200 []` pelo RLS;
+isso não é autorização nem prova de mudança. Tabelas internas devem negar grants
+a todos esses usuários, incluindo platform admin; manutenção só passa pela RPC
+`maintain_whatsapp_legacy_template` com JWT authenticated de admin real, audit
+derivado de `auth.uid()` e permit consumido. Service role não executa essa RPC.
+Teste owner/gerente editando texto não oficial e configuração `table_ready`,
+operador negado para configuração e chaves settings não relacionadas preservadas.
+O envio manual de mesa/atendimento e `after_rating` não passam por esse catálogo.
+
+Teste também duas sessões reais inserindo decisões para o mesmo
+unit/customer/purpose: a segunda deve esperar o lock do cliente e receber revisão
+SQL seguinte, mesmo com `observed_at` anterior. A liberação de adoção via RPC
+administrativa e a purga automática de anonimização pertencem às próximas tasks;
+este schema já fornece os guards necessários.
+
+Chaves/JWT locais são lidos privadamente de arquivo scratch e nunca impressos,
+gravados no router ou commitados. Os resultados locais não comprovam o ACL/RLS
+do banco de produção, Security Advisor, homologação Datafy/Meta ou rollout.

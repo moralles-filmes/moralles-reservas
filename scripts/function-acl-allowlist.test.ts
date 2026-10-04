@@ -95,6 +95,19 @@ function entriesOf(group: string): AllowEntry[] {
 
 const allEntries: AllowEntry[] = allEntriesIn(allowlist);
 
+describe("manutenção de textos WhatsApp", () => {
+  it("classifica a manutenção administrativa como somente authenticated, sem anon", () => {
+    const entry = allEntries.find((item) => item.name === "maintain_whatsapp_legacy_template") as AdvisorEntry | undefined;
+    expect(entry).toBeDefined();
+    expect(entry!.roles).toEqual(["authenticated"]);
+    expect(entry!.security_definer).toBe(true);
+    expect(entry!.advisor_lints).toEqual(["0029"]);
+    expect(entry!.args).toBe("p_table_name text, p_action text, p_row_id uuid, p_unit_id uuid, p_event text, p_body text, p_customized boolean, p_reason text");
+    expect(entry!.why).toContain("platform_admin");
+    expect(entry!.why).toContain("uso único");
+  });
+});
+
 /**
  * Divide a lista de argumentos por vírgulas de nível zero. `timestamp with time
  * zone` não tem vírgula, mas tipos futuros com precisão (`numeric(10,2)`) têm.
