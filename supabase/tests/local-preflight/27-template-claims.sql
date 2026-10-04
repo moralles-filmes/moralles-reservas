@@ -173,8 +173,8 @@ begin
   y:=jsonb_build_object('unit_id','bbbbbbbb-0000-0000-0000-000000000003','kind','waitlist_feedback','waitlist_id','27272727-0000-0000-0000-000000000002','source_event_key','promotion','fact_at',clock_timestamp(),'expires_at',clock_timestamp()+interval '1 hour');
   j2:=public.enqueue_whatsapp_automation(y); x:=public.claim_whatsapp_automation(j2); f:=(x->>'claim_token')::uuid;
   update public.whatsapp_automation_jobs set safe_log_body='Promotional redacted render' where id=j2;
-  perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,f,1,null,null),'text promotion fail-closed until Task5 slot integration');
-  perform pg_temp.ok((select state='blocked' and error_code='promotional_protections_unavailable' and attempts=0 from public.whatsapp_automation_jobs where id=j2),'promotional blocker no network attempt');
+  perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,f,1,null,null),'text promotion fails closed without individual opt-in');
+  perform pg_temp.ok((select state='blocked' and error_code='consent_changed' and attempts=0 from public.whatsapp_automation_jobs where id=j2),'unknown promotional consent no network attempt');
   perform pg_temp.ok((select customer_id='cccccccc-0000-0000-0000-000000000002' and account_id is null from public.whatsapp_automation_jobs where id=j2),'nullable waitlist ID resolves phone in actual org, no fake account');
   insert into public.customers(id,organization_id,name,phone) values('27272727-0000-0000-0000-000000000003','aaaaaaaa-0000-0000-0000-000000000002','Changed recipient','11911110029');
   update public.waitlist set customer_phone='11911110029' where id='27272727-0000-0000-0000-000000000002';

@@ -1000,7 +1000,7 @@ legada aceita, recusa uniforme de recurso ausente/alheio, claim sem tentativa,
 fence errado, retry Datafy apenas por não-aceite preproxy documentado, máximo
 cinco POSTs, lease vencida sem takeover de POST e aceite tardio no fence original.
 Verifica DNC, consent revision operacional, identidade alterada, promoção text
-bloqueada até integração real da Task 5, expiry original, requeue restrito a
+bloqueada sem autorização individual atual, expiry original, requeue restrito a
 blocked/paused sem POST, seleção máxima de 20 sem claim coletivo, batch de gestão
 atômico, snapshot completo por geração da conta + epochs e preservação de RED
 quando o GET omite quality. RED impede MARKETING; UTILITY aprovado fica utilizável
@@ -1038,3 +1038,62 @@ outsider. Adoção no setup SQL claims-context prova o trigger; não substitui a
 futura RPC de release autenticada. Permit de reset em app_private não recebe
 grant de caller algum, inclusive service_role; nunca existe bypass por GUC,
 actor_id do body ou estado novo isoladamente.
+
+### Preferências promocionais e slots — Task 5
+
+`29-template-preferences.sql` roda após a fixture25, migrations de Tasks3/4 e
+`20261004014032_whatsapp_message_preferences.sql`. Termina em rollback e cobre
+o prepare/finish reais, opt-in desconhecido, DNC, revisão SQL, token somente hash
+com TTL90 dias, GET sem alteração do domínio, POST idempotente unit-scoped,
+revogação/expiração, slot concorrente, janela capturada e anonimização.
+`27-template-claims.sql` agora testa a proteção real de consentimento desconhecido.
+
+`30-template-preferences-concurrency.sh` usa duas sessões PostgreSQL para prepare
+versus prepare, lease expirada com marcador, finish versus prepare, opt-out
+versus prepare, opt-outs simultâneos, anonimização versus prepare e rate gate
+atômico. O mesmo modo Docker/loopback da Task4 é obrigatório; o script limpa
+seu tenant fictício e restaura a flag que encontrou, sem provider ou banco remoto.
+
+```bash
+TASK_DOCKER='/caminho/docker' \
+TASK_DB_CONTAINER='supabase_db_moralles-templates-20261003' \
+bash supabase/tests/local-preflight/30-template-preferences-concurrency.sh
+```
+
+A EF pública `whatsapp-message-preferences` usa a mesma factory pura testada com
+Requests reais; `verify_jwt=false` autoriza exclusivamente a capability de saída.
+GET recebe `x-preference-token`, sem query e sem mudança de token/consentimento/
+cliente/slot. POST exige origem exata configurada em `WHATSAPP_PREFERENCE_ORIGINS`,
+JSON limitado a2048 bytes lidos do stream e apenas `{token,action:'opt_out'}`.
+OPTIONS não exige token; respostas usam no-store e no-referrer. O token tem
+32 bytes aleatórios/base64url canônico43 caracteres, SHA256 e90 dias via SQL.
+Revogação administrativa é interna; opt-out não consome nem revoga o link.
+
+Todas as seis novas RPCs são service-only, sem leitura SQL direta pelo frontend.
+Rate gate guarda apenas bucket hash técnico privado, usa UPSERT atômico e
+limpa buckets vencidos há5 minutos. Default30/60s; limites internos SQL1..100
+requisições e10..300s, nunca derivados do body público. Erro de banco fecha503.
+Contador técnico pode avançar no GET, separado do domínio read-only. Contexto
+forwarded é pacing suplementar; não prova identidade. Nenhum check_rate_limit
+legado foi alterado.
+
+Política global privada default7 dias/bounds1..30 não recebe grants diretos,
+inclusive service_role. A duração é capturada no slot e não muda retroativamente;
+writer autenticado platform_admin e auditoria pertencem à Task13. Prepare segue
+customer→account→binding→channel→template→preferência/slot→job; finish promocional
+segue customer→slot→job e permite aceite tardio com pins históricos. Claim/requeue
+não escrevem slots. Marcador de POST/uncertain protege reserva mesmo com lease
+expirada. Rejeição documentada ou local_preflight_refused libera atomicamente;
+timeout/500 mantém uncertain. Recusa local só aceita os cinco motivos fechados,
+fence/lease originais vivos e nenhum provider ID, e consome permit privado único
+para desfazer apenas a tentativa preparatória. Task9 fornece o switch confiável
+postAttempted imediatamente antes de chamar adapter/rede.
+
+Trigger de deleted_at remove tokens/evidências/slots e apaga safe_log_body mesmo
+em accepted/uncertain, preservando fence/marcador/provider ID e timestamps
+técnicos. Exceção de freeze é SQL-verificada e não permite restaurar texto.
+notifications_sent não tem body/customer_id/voucher_id; nenhum campo foi inventado
+nem cleanup legado ampliado. Teste JWT/PostgREST separado deve obter JWT reais
+own/foreign owner, gerente, operador e platform_admin: todos negados nas RPCs e
+stores internos; service-only positivos, handler/SQL real e domínio GET estável.
+Isto não prova configuração de origem, homologação ou ACL de produção.

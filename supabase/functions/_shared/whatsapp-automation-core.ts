@@ -37,7 +37,14 @@ export function automationDeadline(kind: AutomationKind, factAt: string): string
 
 export type AutomationOutcome = { outcome: 'accepted'; reason: 'provider_accepted'; provider_message_id: string }
   | { outcome: 'rejected'; reason: 'documented_preproxy_429' }
-  | { outcome: 'uncertain'; reason: 'response_invalid' | 'post_ambiguous' };
+  | { outcome: 'uncertain'; reason: 'response_invalid' | 'post_ambiguous' }
+  | { outcome: 'local_preflight_refused'; reason: LocalPreflightReason };
+
+export type LocalPreflightReason = 'final_service_suspended' | 'final_channel_changed' | 'final_consent_changed' | 'final_resource_changed' | 'final_gate_paused';
+/** postAttempted is the dispatcher's own switch, never provider/body evidence. */
+export function localPreflightRefusal(input: {postAttempted: boolean; reason: LocalPreflightReason}): AutomationOutcome | null {
+  return input.postAttempted === false ? {outcome:'local_preflight_refused', reason:input.reason} : null;
+}
 
 /** Adapter must prove the documented Datafy preproxy envelope, not merely HTTP 429. */
 export function classifyAutomationOutcome(input: { provider: string; status?: number; preproxyStatusCode?: number; messageId?: unknown }): AutomationOutcome {

@@ -175,3 +175,7 @@ verify_jwt = false
 # callback do provider nem de aba aberta — ver o cabeçalho da função.
 [functions.process-whatsapp-channel-health]
 verify_jwt = false
+
+# Capability pública restrita a opt-out; SQL continua service-only.
+[functions.whatsapp-message-preferences]
+verify_jwt = false

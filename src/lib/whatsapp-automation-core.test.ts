@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { logicalAutomationKey, selectAutomationPath, automationDeadline, classifyAutomationOutcome, automationRetryDelayMs } from '../../supabase/functions/_shared/whatsapp-automation-core.ts';
+import { logicalAutomationKey, selectAutomationPath, automationDeadline, classifyAutomationOutcome, automationRetryDelayMs, localPreflightRefusal } from '../../supabase/functions/_shared/whatsapp-automation-core.ts';
 import type { ScheduledIntent, ScheduledKind, DispatchResult, DispatchSelection } from '../../supabase/functions/_shared/whatsapp-automation-core.ts';
 
 describe('automation identity and cutover', () => {
+  it('local preflight refusal only exists before the dispatcher invokes POST', () => {
+    expect(localPreflightRefusal({postAttempted:false,reason:'final_consent_changed'})).toEqual({outcome:'local_preflight_refused',reason:'final_consent_changed'});
+    expect(localPreflightRefusal({postAttempted:true,reason:'final_consent_changed'})).toBeNull();
+  });
   it('exports the producer/dispatcher shared union contracts', () => {
     const kind: ScheduledKind = 'voucher_issued';
     const intent: ScheduledIntent = { unitId: 'u', kind, voucherId: 'v', sourceEventKey: 's', factAt: '2026-10-03T12:00:00Z' };

@@ -25,6 +25,15 @@
     "Origem da classificação: docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md"
   ],
 
+  "_service_only_whatsapp_preferences": [
+    "issue_whatsapp_preference_token(uuid,text)",
+    "get_whatsapp_promotion_preference(uuid)",
+    "lookup_whatsapp_preference_token(text)",
+    "revoke_whatsapp_promotion(text)",
+    "invalidate_whatsapp_preference_token(text)",
+    "check_whatsapp_preference_rate(text,integer,integer)"
+  ],
+
   "_service_only_whatsapp_automation": [
     "enqueue_whatsapp_automation(jsonb)",
     "claim_whatsapp_automation(uuid)",

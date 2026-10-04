@@ -125,6 +125,25 @@ describe("RPCs internas de automação WhatsApp", () => {
   });
 });
 
+describe('preferências públicas mediadas pela Edge Function', () => {
+  it('mantém SQL interno service-only e helpers/trigger sem execução direta', () => {
+    const signatures = allowlist._service_only_whatsapp_preferences as string[];
+    expect(signatures).toHaveLength(6);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004014032_whatsapp_message_preferences.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    for (const signature of ['public.erase_whatsapp_customer_preferences()', 'public.guard_whatsapp_template_scope()', 'public.guard_whatsapp_template_evidence()', 'app_private.consume_whatsapp_slot_release(uuid)']) {
+      expect(migration).toContain(`revoke all on function ${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).not.toContain(`grant execute on function ${signature}`);
+    }
+    const config = readFileSync(join(MIGRATIONS_DIR, '..', 'config.toml'), 'utf8');
+    expect(config).toMatch(/\[functions\.whatsapp-message-preferences\]\s*verify_jwt = false/);
+  });
+});
+
 /**
  * Divide a lista de argumentos por vírgulas de nível zero. `timestamp with time
  * zone` não tem vírgula, mas tipos futuros com precisão (`numeric(10,2)`) têm.
