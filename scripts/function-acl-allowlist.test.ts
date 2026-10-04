@@ -108,6 +108,23 @@ describe("manutenção de textos WhatsApp", () => {
   });
 });
 
+describe("RPCs internas de automação WhatsApp", () => {
+  it("classifica todas as assinaturas como service-only sem ampliar a allowlist pública", () => {
+    const signatures = allowlist._service_only_whatsapp_automation as string[];
+    expect(signatures).toHaveLength(13);
+    expect(new Set(signatures).size).toBe(signatures.length);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004002728_whatsapp_automation_claims.sql'), 'utf8');
+    for (const signature of signatures) {
+      const name = signature.split('(')[0];
+      expect(allEntries.some(entry => entry.name === name), signature).toBe(false);
+      expect(migration, signature).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration, signature).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    expect(migration).toContain('revoke all on function app_private.consume_whatsapp_post_reset(text,uuid,uuid,integer,timestamptz) from public,anon,authenticated,service_role;');
+    expect(migration).toContain('revoke all on function public.guard_whatsapp_template_scope() from public,anon,authenticated,service_role;');
+  });
+});
+
 /**
  * Divide a lista de argumentos por vírgulas de nível zero. `timestamp with time
  * zone` não tem vírgula, mas tipos futuros com precisão (`numeric(10,2)`) têm.

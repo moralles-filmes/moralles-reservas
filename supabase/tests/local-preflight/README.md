@@ -984,3 +984,57 @@ usuário exige revogar explicitamente timestamp e ator juntos, sem reassinar a d
 Chaves/JWT locais são lidos privadamente de arquivo scratch e nunca impressos,
 gravados no router ou commitados. Os resultados locais não comprovam o ACL/RLS
 do banco de produção, Security Advisor, homologação Datafy/Meta ou rollout.
+
+### Claims/transições de automação e catálogo — Task 4
+
+`27-template-claims.sql` roda depois de `25-template-bootstrap.sql`, migration
+`20261003225857_whatsapp_template_catalog.sql` e migration
+`20261004002728_whatsapp_automation_claims.sql`, em banco descartável. Seus dados,
+funções temporárias e controles mutantes terminam em rollback. Fixture 25 contém
+somente as colunas legadas usadas pelo contrato, incluindo platform_flags,
+notifications_sent com as FKs reais e last_health_check_at; não é replay do schema
+de produção. Nenhuma coluna voucher_id é inventada em notifications_sent.
+
+O teste verifica chave unit/kind/recurso, ledger com flag OFF, FK de notificação
+legada aceita, recusa uniforme de recurso ausente/alheio, claim sem tentativa,
+fence errado, retry Datafy apenas por não-aceite preproxy documentado, máximo
+cinco POSTs, lease vencida sem takeover de POST e aceite tardio no fence original.
+Verifica DNC, consent revision operacional, identidade alterada, promoção text
+bloqueada até integração real da Task 5, expiry original, requeue restrito a
+blocked/paused sem POST, seleção máxima de 20 sem claim coletivo, batch de gestão
+atômico, snapshot completo por geração da conta + epochs e preservação de RED
+quando o GET omite quality. RED impede MARKETING; UTILITY aprovado fica utilizável
+após GET válido, e sync_required bloqueia ambos. Controles positivos removem UNIQUE/fence e trocam o
+relógio por now(); a assertion correspondente precisa detectar cada mutação, que
+é revertida dentro de uma subtransação antes de continuar.
+
+`whatsapp_template_accounts.reconciliation_revision` só identifica/coalesce
+tarefas de catálogo e nunca é fence do snapshot. O batch incrementa sob lock da
+conta somente por eventos novos. O teste remove eventos antigos depois de uma
+tarefa sync done e prova revisão inédita na tarefa seguinte; dedupe e tentativa
+de reduzir a coluna não reutilizam identidade. A retenção futura de 90 dias não
+pode converter esse contador em count(eventos ainda retidos).
+
+`28-template-concurrency.sh` executa duas sessões reais e exige exatamente um
+owner. Depois segura o lock do customer além de uma lease curta de teste e
+confere que prepare retorna false sem marker/attempt. Outra corrida troca a conta
+do binding enquanto enqueue aguarda o lock da conta original, exigindo recusa
+sem criar tarefa com pins misturados. A lease de produção
+continua 90 segundos e usa clock_timestamp() após adquirir os locks. Para o
+runtime Docker isolado deste desenvolvimento:
+
+```bash
+TASK_DOCKER='/caminho/docker' \
+TASK_DB_CONTAINER='supabase_db_moralles-templates-20261003' \
+bash supabase/tests/local-preflight/28-template-concurrency.sh
+```
+
+Alternativamente use psql com PGHOST=127.0.0.1/PGPORT=55452 apontando ao mesmo
+banco descartável. O script cria um tenant fake próprio, preserva/restaura a flag
+local e limpa somente seus dados; nunca usa provider, cron ou banco remoto.
+Teste JWT/PostgREST separado deve obter JWT reais GoTrue de cada papel e conferir
+que as 13 RPCs service-only negam anon/owner/gerente/operador/platform_admin/
+outsider. Adoção no setup SQL claims-context prova o trigger; não substitui a
+futura RPC de release autenticada. Permit de reset em app_private não recebe
+grant de caller algum, inclusive service_role; nunca existe bypass por GUC,
+actor_id do body ou estado novo isoladamente.

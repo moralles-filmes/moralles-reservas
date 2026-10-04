@@ -43,6 +43,17 @@ create table if not exists public.customers(id uuid primary key, organization_id
 create table if not exists public.reservations(id uuid primary key, unit_id uuid not null references public.units(id) on delete cascade, customer_id uuid not null references public.customers(id) on delete cascade, status text not null default 'confirmed');
 create table if not exists public.waitlist(id uuid primary key, unit_id uuid not null references public.units(id) on delete cascade, customer_id uuid references public.customers(id) on delete set null,customer_phone text,customer_name text, status text not null default 'waiting');
 create table if not exists public.vouchers(id uuid primary key, unit_id uuid not null references public.units(id) on delete cascade, customer_id uuid not null references public.customers(id) on delete cascade, status text not null default 'active');
+-- Task4 columns mirror the legacy final schema actually consumed by the RPCs.
+alter table public.whatsapp_channels add column if not exists last_health_check_at timestamptz;
+create table if not exists public.platform_flags(key text primary key,value jsonb not null);
+create table if not exists public.notifications_sent(
+  id uuid primary key default gen_random_uuid(),unit_id uuid not null references public.units(id) on delete cascade,
+  reservation_id uuid references public.reservations(id) on delete cascade,waitlist_id uuid references public.waitlist(id) on delete cascade,
+  kind text not null check(kind in('confirmation','confirmation_email','reminder_d1','survey_d1','cancellation','waitlist_entered','waitlist_table_ready','waitlist_feedback','voucher_issued')),
+  status text not null default 'sent' check(status in('sent','failed','skipped')),sent_at timestamptz not null default now(),error text,
+  provider_message_id text,delivered_at timestamptz,read_at timestamptz,failed_at timestamptz,whatsapp_provider text,whatsapp_channel_id uuid,
+  unique(reservation_id,kind),unique(waitlist_id,kind)
+);
 create table if not exists public.reservation_message_templates(id uuid primary key default gen_random_uuid(), unit_id uuid not null references public.units(id) on delete cascade, event text not null check(event in('reminder_d1','survey_d1')), body text not null default '', customized boolean not null default false, created_at timestamptz not null default now(),updated_at timestamptz not null default now(),unique(unit_id,event));
 create table if not exists public.waitlist_message_templates(id uuid primary key default gen_random_uuid(), unit_id uuid not null references public.units(id) on delete cascade, event text not null check(event in('entered','table_ready','feedback')), body text not null default '', customized boolean not null default false, created_at timestamptz not null default now(),updated_at timestamptz not null default now(),unique(unit_id,event));
 create table if not exists public.settings(id uuid primary key default gen_random_uuid(),unit_id uuid not null references public.units(id) on delete cascade,key text not null,value jsonb not null,unique(unit_id,key));
