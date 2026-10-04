@@ -122,6 +122,19 @@ insert into auth.users(id) values('99999999-0000-0000-0000-000000000001') on con
 insert into public.platform_admins(user_id) values('99999999-0000-0000-0000-000000000001') on conflict do nothing;
 select set_config('request.jwt.claims','{"sub":"99999999-0000-0000-0000-000000000001","role":"authenticated"}',true);
 update public.whatsapp_template_bindings set adopted_at='2000-01-01',dispatch_enabled=true where id='22222222-0000-0000-0000-000000000001';
+insert into auth.users(id) values('99999999-0000-0000-0000-000000000002'),('99999999-0000-0000-0000-000000000003');
+insert into public.platform_admins(user_id) values('99999999-0000-0000-0000-000000000002'),('99999999-0000-0000-0000-000000000003');
+select set_config('request.jwt.claims','{"sub":"99999999-0000-0000-0000-000000000002","role":"authenticated"}',true);
+update public.whatsapp_template_bindings set submission_authorized_at=now(),submission_authorized_by='99999999-0000-0000-0000-000000000002' where id='22222222-0000-0000-0000-000000000001';
+select set_config('request.jwt.claims','{"role":"service_role"}',true);
+select pg_temp.expect_template_error($q$delete from auth.users where id='99999999-0000-0000-0000-000000000002'$q$,'23503','authorization_author_service_delete_FK_denied');
+select set_config('request.jwt.claims','{"sub":"99999999-0000-0000-0000-000000000003","role":"authenticated"}',true);
+select pg_temp.expect_template_error($q$delete from auth.users where id='99999999-0000-0000-0000-000000000002'$q$,'23503','authorization_author_other_admin_delete_FK_denied');
+select pg_temp.assert_template((select submission_authorized_by='99999999-0000-0000-0000-000000000002' and submission_authorized_at=now() from public.whatsapp_template_bindings where id='22222222-0000-0000-0000-000000000001'),'authorization_actor_time_unchanged_after_denied_erasure');
+update public.whatsapp_template_bindings set submission_authorized_at=null,submission_authorized_by=null where id='22222222-0000-0000-0000-000000000001';
+delete from auth.users where id='99999999-0000-0000-0000-000000000002';
+select pg_temp.assert_template(not exists(select from auth.users where id='99999999-0000-0000-0000-000000000002'),'authorization_explicit_revocation_allows_author_erasure');
+select set_config('request.jwt.claims','{"sub":"99999999-0000-0000-0000-000000000001","role":"authenticated"}',true);
 select pg_temp.assert_template((select adopted_at=now() from public.whatsapp_template_bindings where id='22222222-0000-0000-0000-000000000001'),'adoption_uses_sql_clock');
 select pg_temp.expect_template_error($q$update public.whatsapp_template_bindings set adopted_at=null,dispatch_enabled=false where id='22222222-0000-0000-0000-000000000001'$q$,'23514','binding_adoption_cannot_reset');
 select pg_temp.expect_template_error($q$delete from public.whatsapp_automation_adoptions where unit_id='bbbbbbbb-0000-0000-0000-000000000001'$q$,'23514','unit_adoption_immutable');
@@ -133,6 +146,18 @@ select set_config('request.jwt.claims','{"role":"service_role"}',true);
 select pg_temp.expect_template_error($q$insert into public.whatsapp_template_cost_authorizations(account_id,binding_id,binding_generation,category,valid_from,valid_until,actor_id) values('11111111-0000-0000-0000-000000000001','22222222-0000-0000-0000-000000000001',1,'MARKETING',now(),now()+interval '1 day','99999999-0000-0000-0000-000000000001')$q$,'42501','cost_service_cannot_forge_actor');
 insert into public.whatsapp_template_jobs(id,account_id,binding_id,binding_generation,operation,target_key) values('66666666-0000-0000-0000-000000000001','11111111-0000-0000-0000-000000000001','22222222-0000-0000-0000-000000000001',1,'provision','fixture_template');
 update public.whatsapp_automation_jobs set state='uncertain',claim_token='77777777-0000-0000-0000-000000000001',claimed_until=now()+interval '90 seconds',posting_started_at=now() where id='44444444-0000-0000-0000-000000000001';
+select pg_temp.assert_template((select posting_started_at=now() from public.whatsapp_automation_jobs where id='44444444-0000-0000-0000-000000000001'),'first_SQL_post_marker_transition_valid');
+do $$ declare s text; begin
+  foreach s in array array['posting','uncertain','accepted'] loop
+    update public.whatsapp_automation_jobs set state=s where id='44444444-0000-0000-0000-000000000001';
+    perform pg_temp.expect_template_error($q$update public.whatsapp_automation_jobs set posting_started_at=null where id='44444444-0000-0000-0000-000000000001'$q$,'23514',s||'_post_marker_reset_denied');
+    perform pg_temp.expect_template_error($q$update public.whatsapp_automation_jobs set posting_started_at=now()+interval '1 second' where id='44444444-0000-0000-0000-000000000001'$q$,'23514',s||'_post_marker_change_denied');
+    perform pg_temp.expect_template_error($q$update public.whatsapp_automation_jobs set safe_log_body='Second-update escape' where id='44444444-0000-0000-0000-000000000001'$q$,'23514',s||'_second_update_render_escape_denied');
+    update public.whatsapp_automation_jobs set posting_started_at=now() where id='44444444-0000-0000-0000-000000000001';
+    perform pg_temp.assert_template((select posting_started_at=now() and safe_log_body='Refreshed safe render' from public.whatsapp_automation_jobs where id='44444444-0000-0000-0000-000000000001'),s||'_same_post_marker_preserves_render');
+  end loop;
+end $$;
+update public.whatsapp_automation_jobs set state='uncertain' where id='44444444-0000-0000-0000-000000000001';
 select pg_temp.expect_template_error($q$update public.whatsapp_automation_jobs set safe_log_body='Changed after POST' where id='44444444-0000-0000-0000-000000000001'$q$,'23514','posted_safe_render_immutable');
 update public.whatsapp_remote_templates set sync_epoch=2 where id='33333333-0000-0000-0000-000000000001';
 select pg_temp.expect_template_error($q$update public.whatsapp_automation_jobs set sync_epoch=2 where id='44444444-0000-0000-0000-000000000001'$q$,'23514','posted_epoch_cannot_change');
@@ -180,6 +205,24 @@ select pg_temp.expect_template_error($q$update public.reservation_message_templa
 update public.whatsapp_channels set is_active=true,status='disconnected' where id='dddddddd-0000-0000-0000-000000000005';
 update public.reservation_message_templates set body='Selected explicit nonofficial' where unit_id='bbbbbbbb-0000-0000-0000-000000000001';
 select pg_temp.assert_template((select body='Selected explicit nonofficial' from public.reservation_message_templates where unit_id='bbbbbbbb-0000-0000-0000-000000000001'),'explicit_active_selection_independent_of_connected_status');
+-- Catalog-only tenant proves its account FK protects evidence independently of automation.
+insert into public.organizations values('aaaaaaaa-0000-0000-0000-000000000003','Catalog-only tenant');
+insert into public.units values('bbbbbbbb-0000-0000-0000-000000000004','aaaaaaaa-0000-0000-0000-000000000003','Catalog-only unit');
+insert into public.whatsapp_channels(id,unit_id,provider,status,is_active) values('dddddddd-0000-0000-0000-000000000006','bbbbbbbb-0000-0000-0000-000000000004','official','connected',true);
+insert into public.whatsapp_template_accounts(id,organization_id,waba_id,verified_at) values('11111111-0000-0000-0000-000000000003','aaaaaaaa-0000-0000-0000-000000000003','987654323',now());
+insert into public.whatsapp_template_bindings(id,unit_id,channel_id,account_id,provider) values('22222222-0000-0000-0000-000000000004','bbbbbbbb-0000-0000-0000-000000000004','dddddddd-0000-0000-0000-000000000006','11111111-0000-0000-0000-000000000003','official');
+insert into public.whatsapp_template_jobs(id,account_id,binding_id,binding_generation,operation,target_key) values('66666666-0000-0000-0000-000000000002','11111111-0000-0000-0000-000000000003','22222222-0000-0000-0000-000000000004',1,'provision','catalog_only');
+select pg_temp.assert_template((select organization_id='aaaaaaaa-0000-0000-0000-000000000003' from public.whatsapp_template_jobs where id='66666666-0000-0000-0000-000000000002'),'catalog_job_org_derived_from_account');
+select pg_temp.expect_template_error($q$insert into public.whatsapp_template_jobs(organization_id,account_id,binding_id,binding_generation,operation,target_key) values('aaaaaaaa-0000-0000-0000-000000000001','11111111-0000-0000-0000-000000000003','22222222-0000-0000-0000-000000000004',1,'provision','catalog_mismatch')$q$,'23514','catalog_job_supplied_foreign_org_denied');
+select pg_temp.expect_template_error($q$update public.whatsapp_template_jobs set organization_id='aaaaaaaa-0000-0000-0000-000000000001' where id='66666666-0000-0000-0000-000000000002'$q$,'23514','catalog_job_org_immutable');
+update public.whatsapp_template_jobs set state='uncertain',claim_token='77777777-0000-0000-0000-000000000002',claimed_until=now()+interval '90 seconds',posting_started_at=now() where id='66666666-0000-0000-0000-000000000002';
+select pg_temp.expect_template_error($q$update public.whatsapp_template_jobs set posting_started_at=null where id='66666666-0000-0000-0000-000000000002'$q$,'23514','catalog_post_marker_reset_denied');
+delete from public.whatsapp_channels where id='dddddddd-0000-0000-0000-000000000006';
+set constraints whatsapp_template_jobs_account_id_fkey immediate;
+select pg_temp.expect_template_error($q$delete from public.whatsapp_template_accounts where id='11111111-0000-0000-0000-000000000003'$q$,'23503','catalog_uncertain_account_delete_denied');
+select pg_temp.assert_template((select state='uncertain' and claim_token='77777777-0000-0000-0000-000000000002' and target_key='catalog_only' from public.whatsapp_template_jobs where id='66666666-0000-0000-0000-000000000002'),'catalog_uncertain_fence_natural_key_preserved');
+delete from public.organizations where id='aaaaaaaa-0000-0000-0000-000000000003';
+select pg_temp.assert_template(not exists(select from public.whatsapp_template_jobs where id='66666666-0000-0000-0000-000000000002') and not exists(select from public.whatsapp_template_accounts where id='11111111-0000-0000-0000-000000000003'),'catalog_whole_tenant_privacy_delete_allowed');
 select count(*) as assertions_passed from template_test_results;
 rollback;
 do $$ begin

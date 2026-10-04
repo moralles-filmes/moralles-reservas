@@ -20,7 +20,7 @@ create table if not exists public.whatsapp_template_bindings (
   adopted_at timestamptz,
   dispatch_enabled boolean not null default false,
   submission_authorized_at timestamptz,
-  submission_authorized_by uuid references auth.users(id) on delete set null,
+  submission_authorized_by uuid references auth.users(id) on delete restrict,
   created_at timestamptz not null default now(),
   check((provider in('official','datafy'))=(account_id is not null)),
   check(not dispatch_enabled or adopted_at is not null),
@@ -58,7 +58,8 @@ create table if not exists public.whatsapp_remote_templates (
 );
 create table if not exists public.whatsapp_template_jobs (
   id uuid primary key default gen_random_uuid(),
-  account_id uuid not null references public.whatsapp_template_accounts(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  account_id uuid not null references public.whatsapp_template_accounts(id) on delete no action deferrable initially deferred,
   binding_id uuid not null,
   binding_generation bigint not null check(binding_generation>0),
   operation text not null check(operation in('provision','sync','reconcile')),
@@ -253,6 +254,7 @@ begin
   -- State/fence reconciliation must survive a deleted/changed binding or customer.
   if tg_op='UPDATE' and tg_table_name='whatsapp_automation_jobs' then
     if (new.id,new.unit_id,new.organization_id,new.kind,new.reservation_id,new.waitlist_id,new.voucher_id,new.source_event_key,new.fact_at,new.expires_at,new.channel_id,new.provider,new.binding_id,new.binding_generation,new.transport,new.account_id,new.remote_template_id,new.template_version,new.notification_id) is distinct from (old.id,old.unit_id,old.organization_id,old.kind,old.reservation_id,old.waitlist_id,old.voucher_id,old.source_event_key,old.fact_at,old.expires_at,old.channel_id,old.provider,old.binding_id,old.binding_generation,old.transport,old.account_id,old.remote_template_id,old.template_version,old.notification_id) then raise exception 'automation_intent_immutable' using errcode='23514'; end if;
+    if old.posting_started_at is not null and new.posting_started_at is distinct from old.posting_started_at then raise exception 'automation_post_marker_immutable' using errcode='23514'; end if;
     if new.sync_epoch is distinct from old.sync_epoch then
       if old.posting_started_at is not null or new.sync_epoch<old.sync_epoch then raise exception 'automation_posted_epoch_immutable' using errcode='23514'; end if;
       -- The preparation RPC owns ordered locks; this trigger never locks an
@@ -274,7 +276,8 @@ begin
     return new;
   end if;
   if tg_op='UPDATE' and tg_table_name='whatsapp_template_jobs' then
-    if (new.id,new.account_id,new.binding_id,new.binding_generation,new.operation,new.target_key,new.revision) is distinct from (old.id,old.account_id,old.binding_id,old.binding_generation,old.operation,old.target_key,old.revision) then raise exception 'template_job_identity_immutable' using errcode='23514'; end if;
+    if (new.id,new.organization_id,new.account_id,new.binding_id,new.binding_generation,new.operation,new.target_key,new.revision) is distinct from (old.id,old.organization_id,old.account_id,old.binding_id,old.binding_generation,old.operation,old.target_key,old.revision) then raise exception 'template_job_identity_immutable' using errcode='23514'; end if;
+    if old.posting_started_at is not null and new.posting_started_at is distinct from old.posting_started_at then raise exception 'template_post_marker_immutable' using errcode='23514'; end if;
     return new;
   end if;
   if tg_op='UPDATE' and tg_table_name='whatsapp_automation_receipt_events' then return new; end if;
@@ -322,7 +325,12 @@ begin
     if tg_op='UPDATE' and (new.id,new.account_id,new.logical_id,new.version,new.language,new.name,new.desired_hash,new.requested_category) is distinct from (old.id,old.account_id,old.logical_id,old.version,old.language,old.name,old.desired_hash,old.requested_category) then raise exception 'template_identity_immutable' using errcode='23514'; end if;
     if tg_op='UPDATE' and new.sync_epoch<old.sync_epoch then raise exception 'template_epoch_regression' using errcode='23514'; end if;
   elsif tg_table_name in('whatsapp_template_jobs','whatsapp_template_cost_authorizations') then
-    perform 1 from public.whatsapp_template_accounts where id=new.account_id for share;
+    select organization_id into v_org from public.whatsapp_template_accounts where id=new.account_id for share;
+    if not found then raise exception 'template_tenant_mismatch' using errcode='23514'; end if;
+    if tg_table_name='whatsapp_template_jobs' then
+      if new.organization_id is not null and new.organization_id is distinct from v_org then raise exception 'template_tenant_mismatch' using errcode='23514'; end if;
+      new.organization_id:=v_org;
+    end if;
     select * into v_binding from public.whatsapp_template_bindings where id=new.binding_id for share;
     if not found or v_binding.account_id is distinct from new.account_id or (tg_op='INSERT' and v_binding.generation is distinct from new.binding_generation) then raise exception 'template_binding_mismatch' using errcode='23514'; end if;
     if tg_table_name='whatsapp_template_cost_authorizations' and tg_op='INSERT' then

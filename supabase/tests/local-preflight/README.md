@@ -973,6 +973,13 @@ unit/customer/purpose: a segunda deve esperar o lock do cliente e receber revis�
 SQL seguinte, mesmo com `observed_at` anterior. A liberação de adoção via RPC
 administrativa e a purga automática de anonimização pertencem às próximas tasks;
 este schema já fornece os guards necessários.
+O marcador posting_started_at não pode mudar após ser preenchido: ele sustenta o
+freeze de epoch/render em todas as atualizações posteriores. Retry com rejeição
+comprovada exigirá autorização SQL estreita nas próximas tasks, sem reset genérico.
+Jobs de catálogo derivam organization_id da conta, preservam a conta por FK
+NO ACTION DEFERRABLE e têm cascade independente pela organização para privacidade.
+Autor de submission_authorized_at fica protegido por FK RESTRICT: a remoção do
+usuário exige revogar explicitamente timestamp e ator juntos, sem reassinar a decisão.
 
 Chaves/JWT locais são lidos privadamente de arquivo scratch e nunca impressos,
 gravados no router ou commitados. Os resultados locais não comprovam o ACL/RLS
