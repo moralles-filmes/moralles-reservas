@@ -125,6 +125,26 @@ describe("RPCs internas de automação WhatsApp", () => {
   });
 });
 
+describe('Task9b service-only dispatch prerequisites', () => {
+  it('revokes both private helpers and the composite type without exposing an initializer', () => {
+    const signatures = allowlist._service_only_whatsapp_dispatch_prerequisites as string[];
+    expect(signatures).toEqual(['confirm_whatsapp_automation_post(uuid,uuid,bigint,bigint,bigint)', 'block_whatsapp_automation_preflight(uuid,uuid,text)']);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004184738_whatsapp_automation_dispatch_prerequisites.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    for (const signature of ['whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)', 'consume_whatsapp_automation_pin_initialization(uuid,app_private.whatsapp_automation_pin_tuple,app_private.whatsapp_automation_pin_tuple)']) {
+      expect(migration).toContain(`revoke all on function app_private.${signature} from public,anon,authenticated,service_role;`);
+    }
+    expect(migration).toContain('revoke all on type app_private.whatsapp_automation_pin_tuple from public,anon,authenticated,service_role;');
+    expect(migration).not.toMatch(/grant\s+.*\s+to\s+(?:public|anon|authenticated)\s*;/i);
+    expect(migration).not.toMatch(/create or replace function public\.finish_whatsapp_automation/);
+    expect(migration).not.toContain("errcode='40001'");
+  });
+});
+
 describe('autoridade transacional de eventos de templates', () => {
   it('cerca o runtime e mantém wrappers service-only com writer privado compartilhado', () => {
     const signatures = allowlist._service_only_whatsapp_template_events as string[];

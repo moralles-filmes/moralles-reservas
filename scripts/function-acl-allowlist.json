@@ -47,6 +47,10 @@
   "_service_only_whatsapp_template_events": [
     "record_whatsapp_template_events_fenced(jsonb,jsonb)"
   ],
+  "_service_only_whatsapp_dispatch_prerequisites": [
+    "confirm_whatsapp_automation_post(uuid,uuid,bigint,bigint,bigint)",
+    "block_whatsapp_automation_preflight(uuid,uuid,text)"
+  ],
   "_service_only_whatsapp_automation": [
     "enqueue_whatsapp_automation(jsonb)",
     "claim_whatsapp_automation(uuid)",

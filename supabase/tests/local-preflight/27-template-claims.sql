@@ -133,9 +133,11 @@ begin
   perform pg_temp.ok(public.enqueue_whatsapp_automation(y) is null,'accepted exact legacy resource prevents duplicate');
   update public.notifications_sent set status='failed' where reservation_id='eeeeeeee-0000-0000-0000-000000000027';
   update public.platform_flags set value='false' where key='whatsapp_automation_dispatch';
-  perform pg_temp.denied(format('select public.enqueue_whatsapp_automation(%L::jsonb)',y),'P0A01','paused new intent is operational refusal, never NULL/fallback');
+  j2:=public.enqueue_whatsapp_automation(y);
+  perform pg_temp.ok((select state='paused' and pin_phase='bound' and error_code='dispatch_paused' from public.whatsapp_automation_jobs where id=j2),'adopted OFF records actual paused same-ledger intent');
   update public.platform_flags set value='true' where key='whatsapp_automation_dispatch';
   j2:=public.enqueue_whatsapp_automation(y); perform pg_temp.ok(j2 is not null,'failed legacy notification is not accepted');
+  perform pg_temp.ok(public.requeue_whatsapp_automation(j2),'explicitly requeue same paused intent after enabling');
   x:=public.claim_whatsapp_automation(j2); f:=(x->>'claim_token')::uuid;
   update public.whatsapp_automation_jobs set safe_log_body='Safe27' where id=j2;
   update public.whatsapp_template_bindings set generation=4 where id=b;
@@ -219,7 +221,7 @@ begin
   x:=public.claim_whatsapp_automation(j2); f:=(x->>'claim_token')::uuid;
   update public.whatsapp_automation_jobs set safe_log_body='Fence control safe render' where id=j2;
   begin
-    select pg_get_functiondef('public.prepare_whatsapp_automation_post(uuid,uuid,bigint,bigint,bigint)'::regprocedure) into v_def;
+    select pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)'::regprocedure) into v_def;
     execute replace(replace(v_def,'j.claim_token is distinct from p_fence or ','false or '),' and claim_token=p_fence','');
     perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,gen_random_uuid(),1,null,null),'CONTROL wrong fence');
     raise exception 'CONTROL fence mutation survived';
@@ -231,7 +233,7 @@ begin
   perform pg_sleep(0.1);
   perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,f,1,null,null),'actual SQL wallclock rejects expired lease');
   begin
-    select pg_get_functiondef('public.prepare_whatsapp_automation_post(uuid,uuid,bigint,bigint,bigint)'::regprocedure) into v_def;
+    select pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)'::regprocedure) into v_def;
     execute replace(v_def,'clock_timestamp()','now()');
     perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,f,1,null,null),'CONTROL frozen transaction clock');
     raise exception 'CONTROL clock mutation survived';

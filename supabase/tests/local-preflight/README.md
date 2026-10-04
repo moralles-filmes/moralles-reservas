@@ -1204,3 +1204,57 @@ reais, incluindo Vault same-pointer. GoTrue JWT/PostgREST complementa SQL com
 usuários locais reais (owner/gerente/operador/platform_admin/outsider e anon),
 recusas e positivos service-only. O fixture mínimo não prova ACL, Advisor,
 cron, billing, providers ou atendimento em produção.
+
+### Task9b — pré-configuração e autoridade final de automação
+
+O delta `20261004184738_whatsapp_automation_dispatch_prerequisites.sql` usa a
+coluna real nullable `reservations.applied_discount_percent` (bootstrap25).
+Copie o arquivo completo para a migration de mesmo nome no runtime próprio
+antes de `supabase db push --local --workdir`; nunca aplique o arquivo vazio de
+setup, o projeto linked ou o histórico completo de produção. Para reaplicar,
+gere outra migration pelo CLI no runtime e copie o mesmo conteúdo, conferindo
+o hash. O dry-run deve conter exclusivamente esses deltas locais revisados.
+
+```powershell
+$taskRuntime = '.superpowers/sdd/2026-10-03-whatsapp-templates-programados/local-runtime'
+$taskDocker = 'C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe'
+# Confira project_id=moralles-templates-20261003 e portas API55451/DB55452
+# no config.toml e no label/port mapping do container antes da execução.
+Get-Content -Raw supabase/tests/local-preflight/35-automation-dispatch-prerequisites.sql |
+  & $taskDocker exec -i supabase_db_moralles-templates-20261003 psql -U postgres -d postgres -X -v ON_ERROR_STOP=1
+$env:TASK_DOCKER=$taskDocker
+$env:TASK_DB_CONTAINER='supabase_db_moralles-templates-20261003'
+& 'C:/Program Files/Git/bin/bash.exe' supabase/tests/local-preflight/36-automation-dispatch-prerequisites-concurrency.sh
+# Exige autorização para a leitura apenas em memória das chaves LOCAIS geradas.
+node supabase/tests/local-preflight/37-automation-dispatch-prerequisites-jwt.mjs
+```
+
+SQL35 executa em transação com rollback: 1.024 combinações de nulos contra os
+CHECKs reais (exatamente três formas incompletas), identidade com flag OFF,
+permit privado com ator/transação/tupla exatos, recusa inicial cercada e TTL real.
+Confirmação operacional e promocional inclui slot próprio, custo capturado
+expirado apesar de alternativa válida, ator removido, consentimento, publicação,
+template e snapshots de job/slot sem mutação. O controle de mutação altera só
+o vínculo ao custo capturado no núcleo privado real e desfaz na subtransação.
+Rollback estrutural remove função/CHECK/default transacionalmente e compara
+corpo/ACL/CHECK/default restaurados; não é sinônimo de reaplicação idempotente.
+
+SQL36 observa sessões realmente bloqueadas e exige conclusão de ambas: enqueue,
+prepare concorrente/rotação, confirm após lease/rotação/opt-out/anonimização/sync
+e recusa inicial após espera pelo job. Timeout nunca conta como teste aprovado.
+As sessões28/30/32/34 preservam as provas anteriores e não substituem SQL36.
+
+SQL37 usa GoTrue real para owner/gerente/operador/platform_admin/outsider, anon e
+JWT service nos endpoints PostgREST. Antes de ler chaves locais em memória,
+valida projeto, label Docker, porta DB55452 e API127.0.0.1:55451; não imprime
+tokens, chaves ou corpos HTTP. Testa RPCs service-only, schema/permit privados,
+forja REST de pins, positivos e recebimento de status503/códigoPT503 em até5s.
+Abort/timeout falha o teste. Execute só com autorização para essa leitura local.
+A fixture SQL `request.jwt.claims` é preparação de dados, **não prova JWT ou
+initializer público**. Task13 deve provar seu próprio initializer autenticado.
+
+`initial_credential_revision` é fato histórico: permanece NULL em linhas
+anteriores e imutável nas novas. Após vinculação, prepare/confirm comparam a
+revisão verificada atual do binding com a do canal; Task13 deverá revalidar
+explicitamente a identidade existente sem reescrever esse fato histórico.
+Task9b não inclui dispatcher, produtor ou inicializador administrativo.
