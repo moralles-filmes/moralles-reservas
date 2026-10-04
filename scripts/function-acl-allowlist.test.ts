@@ -125,6 +125,28 @@ describe("RPCs internas de automação WhatsApp", () => {
   });
 });
 
+describe('autoridade transacional de eventos de templates', () => {
+  it('cerca o runtime e mantém wrappers service-only com writer privado compartilhado', () => {
+    const signatures = allowlist._service_only_whatsapp_template_events as string[];
+    expect(signatures).toEqual(['record_whatsapp_template_events_fenced(jsonb,jsonb)']);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004165825_whatsapp_template_event_authority.sql'), 'utf8');
+    for (const signature of [...signatures, 'record_whatsapp_template_events(uuid,jsonb)']) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    expect(migration).toContain('revoke all on function app_private.record_whatsapp_template_events_core(uuid,uuid,jsonb) from public,anon,authenticated,service_role;');
+    expect(migration).not.toMatch(/grant\s+execute\s+on\s+function\s+app_private\.record_whatsapp_template_events_core/i);
+    expect(migration.match(/insert into public\.whatsapp_template_events/g)).toHaveLength(1);
+    expect(migration.match(/return app_private\.record_whatsapp_template_events_core/g)).toHaveLength(2);
+    expect(migration).toContain("raise exception 'template_authority_changed' using errcode='PT503';");
+    expect(migration).not.toContain("errcode='40001'");
+    const runtime = readFileSync(join(__dirname, '../supabase/functions/_shared/whatsapp-template-events.ts'), 'utf8');
+    expect(runtime).toContain("db.rpc('record_whatsapp_template_events_fenced', { p_capture: capture, p_events: events })");
+    expect(runtime).not.toMatch(/\.rpc\(['"]record_whatsapp_template_events['"]/);
+  });
+});
+
 describe('worker interno de templates', () => {
   it('mantém RPCs service-only e triggers sem execução direta', () => {
     const signatures = allowlist._service_only_whatsapp_template_workers as string[];

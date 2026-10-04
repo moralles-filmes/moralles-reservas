@@ -17,12 +17,12 @@ export function createTemplateEventRuntime(db: SupabaseClient) {
   return createTemplateEventService({
     async loadAuthority(channel) {
       const { data: binding, error: be } = await db.from('whatsapp_template_bindings')
-        .select('account_id,channel_id,unit_id,provider,verified_at,channel_credential_revision')
+        .select('id,generation,account_id,channel_id,unit_id,provider,verified_at,channel_credential_revision')
         .eq('channel_id', channel.id).eq('unit_id', channel.unit_id).maybeSingle();
       if (be) throw new Error('template_binding_unavailable');
       if (!isRow(binding) || !binding.account_id) return null;
       const [{ data: account, error: ae }, { data: unit, error: ue }, { data: current, error: ce }] = await Promise.all([
-        db.from('whatsapp_template_accounts').select('id,waba_id,organization_id').eq('id', stringColumn(binding, 'account_id')).maybeSingle(),
+        db.from('whatsapp_template_accounts').select('id,waba_id,organization_id,binding_generation').eq('id', stringColumn(binding, 'account_id')).maybeSingle(),
         db.from('units').select('organization_id').eq('id', channel.unit_id).maybeSingle(),
         db.from('whatsapp_channels').select('id,unit_id,provider,credentials,template_credential_revision')
           .eq('id', channel.id).eq('unit_id', channel.unit_id).eq('provider', channel.provider).maybeSingle(),
@@ -32,7 +32,8 @@ export function createTemplateEventRuntime(db: SupabaseClient) {
       const credentials = current.credentials;
       if (!credentials || typeof credentials !== 'object' || !('phone_number_id' in credentials)
         || typeof credentials.phone_number_id !== 'string') return null;
-      return { accountId: stringColumn(account, 'id'), wabaId: stringColumn(account, 'waba_id'),
+      return { bindingId: stringColumn(binding, 'id'), bindingGeneration: revisionColumn(binding, 'generation'),
+        accountGeneration: revisionColumn(account, 'binding_generation'), accountId: stringColumn(account, 'id'), wabaId: stringColumn(account, 'waba_id'),
         organizationId: stringColumn(account, 'organization_id'), unitOrganizationId: stringColumn(unit, 'organization_id'),
         channelId: stringColumn(binding, 'channel_id'), unitId: stringColumn(binding, 'unit_id'),
         provider: stringColumn(binding, 'provider'), phoneNumberId: credentials.phone_number_id,
@@ -53,8 +54,8 @@ export function createTemplateEventRuntime(db: SupabaseClient) {
         if (data.length < 500) return catalog;
       }
     },
-    async persistTemplateEvents({ accountId, events }) {
-      const { data, error } = await db.rpc('record_whatsapp_template_events', { p_account_id: accountId, p_events: events });
+    async persistTemplateEvents({ capture, events }) {
+      const { data, error } = await db.rpc('record_whatsapp_template_events_fenced', { p_capture: capture, p_events: events });
       if (error || typeof data !== 'number' || !Number.isInteger(data) || data < 0 || data > events.length) throw new Error('template_events_unavailable');
     },
   });

@@ -44,6 +44,9 @@
     "check_whatsapp_preference_rate(text,integer,integer)"
   ],
 
+  "_service_only_whatsapp_template_events": [
+    "record_whatsapp_template_events_fenced(jsonb,jsonb)"
+  ],
   "_service_only_whatsapp_automation": [
     "enqueue_whatsapp_automation(jsonb)",
     "claim_whatsapp_automation(uuid)",

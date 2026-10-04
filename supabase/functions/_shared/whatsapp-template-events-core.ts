@@ -139,6 +139,7 @@ export async function sanitizeTemplateEvents(events: ValidatedTemplateEvent[], c
 
 export interface TemplateEventChannel { id: string; unit_id: string; provider: string; phoneNumberId: string }
 export interface TemplateEventAuthority {
+  bindingId: string; bindingGeneration: number; accountGeneration: number;
   accountId: string; wabaId: string; organizationId: string; unitOrganizationId: string;
   channelId: string; unitId: string; provider: string; phoneNumberId: string;
   verifiedAt: string | null; credentialRevision: number; bindingCredentialRevision: number;
@@ -146,7 +147,7 @@ export interface TemplateEventAuthority {
 export interface TemplateEventDependencies {
   loadAuthority(channel: TemplateEventChannel): Promise<TemplateEventAuthority | null>;
   loadCatalog(accountId: string): Promise<EventCatalogIdentity[]>;
-  persistTemplateEvents(input: { channelId: string; unitId: string; accountId: string; events: SanitizedTemplateEvent[] }): Promise<void>;
+  persistTemplateEvents(input: { capture: TemplateEventAuthority; events: SanitizedTemplateEvent[] }): Promise<void>;
 }
 export type TemplateEventResult = { kind: 'chat' } | { kind: 'persisted'; hasChat: boolean; count: number }
   | { kind: 'refused'; status: 401; reason: 'template_batch_invalid' }
@@ -160,7 +161,9 @@ export function createTemplateEventService(deps: TemplateEventDependencies) {
       if (family === 'unsupported') return { kind: 'refused', status: 401, reason: 'template_batch_invalid' };
       try {
         const authority = await deps.loadAuthority(channel);
-        if (!authority?.verifiedAt || !authority.accountId || !authority.wabaId
+        if (!authority?.verifiedAt || !authority.accountId || !authority.wabaId || !authority.bindingId
+          || !Number.isSafeInteger(authority.bindingGeneration) || authority.bindingGeneration < 1
+          || !Number.isSafeInteger(authority.accountGeneration) || authority.accountGeneration < 1
           || authority.channelId !== channel.id || authority.unitId !== channel.unit_id || authority.provider !== channel.provider
           || authority.organizationId !== authority.unitOrganizationId || !authority.organizationId
           || authority.phoneNumberId !== channel.phoneNumberId || !authority.phoneNumberId
@@ -173,7 +176,7 @@ export function createTemplateEventService(deps: TemplateEventDependencies) {
         const catalog = await deps.loadCatalog(authority.accountId);
         const events = await sanitizeTemplateEvents(validated.management, catalog, observedAt);
         // One transaction: sanitized records, dedupe, epochs/revision and reconciliation job.
-        await deps.persistTemplateEvents({ channelId: channel.id, unitId: channel.unit_id, accountId: authority.accountId, events });
+        await deps.persistTemplateEvents({ capture: authority, events });
         return { kind: 'persisted', hasChat: validated.hasChat, count: events.length };
       } catch {
         // Do not leak provider JSON, SQL messages, component text or rejection reasons.

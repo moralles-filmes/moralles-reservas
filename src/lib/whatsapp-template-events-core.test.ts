@@ -136,7 +136,8 @@ const channel = { id: 'channel-a', unit_id: 'unit-a', provider: 'datafy', phoneN
 function fixture() {
   const authority: TemplateEventAuthority = { accountId: 'account-a', wabaId: 'waba-a', organizationId: 'org-a', unitOrganizationId: 'org-a',
     channelId: channel.id, unitId: channel.unit_id, provider: channel.provider, phoneNumberId: channel.phoneNumberId,
-    verifiedAt: observedAt, credentialRevision: 0, bindingCredentialRevision: 0 };
+    verifiedAt: observedAt, credentialRevision: 0, bindingCredentialRevision: 0,
+    bindingId: 'binding-a', bindingGeneration: 1, accountGeneration: 1 };
   const deps: TemplateEventDependencies = { loadAuthority: vi.fn(async () => authority), loadCatalog: vi.fn(async () => catalog), persistTemplateEvents: vi.fn(async () => {}) };
   return { authority, deps, service: createTemplateEventService(deps) };
 }
@@ -157,7 +158,7 @@ describe('factory usada pelo webhook: barreira durável antes de ACK', () => {
     expect(await service.process(payload, channel, observedAt)).toEqual({ kind: 'refused', status: 401, reason: 'template_batch_invalid' });
     expect(deps.loadCatalog).not.toHaveBeenCalled(); expect(deps.persistTemplateEvents).not.toHaveBeenCalled();
   });
-  it.each([{ verifiedAt: null }, { credentialRevision: 1 }, { unitId: 'other' }, { channelId: 'other' }, { provider: 'other' }, { unitOrganizationId: 'other' }, { phoneNumberId: 'other' }])('binding indisponível/corrente inválido é503 sem efeitos %j', async patch => {
+  it.each([{ verifiedAt: null }, { credentialRevision: 1 }, { unitId: 'other' }, { channelId: 'other' }, { provider: 'other' }, { unitOrganizationId: 'other' }, { phoneNumberId: 'other' }, { bindingId: '' }, { bindingGeneration: 0 }, { accountGeneration: Number.MAX_SAFE_INTEGER + 1 }])('binding indisponível/corrente inválido é503 sem efeitos %j', async patch => {
     const { authority, deps, service } = fixture(); Object.assign(authority, patch);
     expect(await service.process(batch([management]), channel, observedAt)).toMatchObject({ status: 503, reason: 'template_dependency_unavailable' });
     expect(deps.loadCatalog).not.toHaveBeenCalled(); expect(deps.persistTemplateEvents).not.toHaveBeenCalled();
@@ -179,7 +180,7 @@ describe('factory usada pelo webhook: barreira durável antes de ACK', () => {
     let settled = false;
     const processing = service.process(batch([management, chat()]), channel, observedAt).then(result => { settled = true; return result; });
     await vi.waitFor(() => expect(deps.persistTemplateEvents).toHaveBeenCalledOnce()); expect(settled).toBe(false);
-    expect(deps.persistTemplateEvents).toHaveBeenCalledWith({ channelId: channel.id, unitId: channel.unit_id, accountId: 'account-a', events: [expect.objectContaining({ name: null, remote_status: null })] });
+    expect(deps.persistTemplateEvents).toHaveBeenCalledWith({ capture: expect.objectContaining({ channelId: channel.id, unitId: channel.unit_id, accountId: 'account-a', verifiedAt: observedAt, credentialRevision: 0 }), events: [expect.objectContaining({ name: null, remote_status: null })] });
     release(); expect(await processing).toEqual({ kind: 'persisted', hasChat: true, count: 1 });
   });
   it('reentrada mantém o digest sem relógio de recebimento e só encaminha chat', async () => {
@@ -191,5 +192,13 @@ describe('factory usada pelo webhook: barreira durável antes de ACK', () => {
     expect(JSON.stringify(payload)).toBe(raw);
     expect(splitMetaWebhookPayloadCore(payload)).toEqual([batch([chat()])]);
     expect(splitMetaWebhookPayloadCore(batch([management]))).toEqual([]);
+  });
+  it('carrega a captura integral e precisão SQL até a RPC; rejeição stale não libera dispatch misto', async () => {
+    const { authority, deps, service } = fixture();
+    authority.verifiedAt = '2026-10-04T12:00:00.123456+00:00';
+    vi.mocked(deps.persistTemplateEvents).mockRejectedValueOnce({ code: 'PT503', message: 'template_authority_changed' });
+    expect(await service.process(batch([management, chat()]), channel, observedAt)).toEqual({ kind: 'refused', status: 503, reason: 'template_dependency_unavailable' });
+    expect(vi.mocked(deps.persistTemplateEvents).mock.calls[0][0].capture).toEqual(authority);
+    expect(vi.mocked(deps.persistTemplateEvents).mock.calls[0][0].capture.verifiedAt).toBe('2026-10-04T12:00:00.123456+00:00');
   });
 });
