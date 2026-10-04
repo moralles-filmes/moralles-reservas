@@ -86,6 +86,7 @@ import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/wha
 import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { splitMetaWebhookPayloadCore } from "../_shared/whatsapp-meta-batch-core.ts";
+import { createTemplateEventRuntime } from "../_shared/whatsapp-template-events.ts";
 import {
   declaredProviderIdentityMatchesChannel,
   manualEchoMatchesConfiguredChannel,
@@ -2568,10 +2569,32 @@ async function handleWebhookRequest(
     // conferir o phone_number_id, um callback válido de outro número do mesmo
     // app/cliente poderia ser encaminhado ao channel_id errado e atravessar
     // tenants. Vale para todo provider Meta-shaped, não só "official".
-    if (isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(payload, credentials)) {
+    // Only management-bearing envelopes load the backend WABA binding/catalog.
+    // Message/status/echo-only deliveries preserve their existing identity path.
+    const templateEvents = isMetaShapedProvider(provider)
+      ? await createTemplateEventRuntime(supabase).process(payload, {
+        id: channel.id, unit_id: channel.unit_id, provider,
+        phoneNumberId: credentials.phone_number_id ?? "",
+      }, new Date().toISOString())
+      : { kind: "chat" as const };
+    if (templateEvents.kind === "refused") {
+      if (templateEvents.status === 401) {
+        await finish("webhook_unauthorized", undefined, { reason: "template_batch_invalid" });
+        return new Response("unauthorized", { status: 401 });
+      }
+      await finish("template_dependency_unavailable");
+      return new Response("template unavailable", { status: 503 });
+    }
+    const managementPersisted = templateEvents.kind === "persisted";
+    if (!managementPersisted && isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(payload, credentials)) {
       jsonLog("warn", { requestId, evt: "webhook_channel_identity_mismatch", channelId, provider });
       await finish("webhook_unauthorized", undefined, { reason: "meta_identity_mismatch" });
       return new Response("unauthorized", { status: 401 });
+    }
+
+    if (templateEvents.kind === "persisted" && !templateEvents.hasChat) {
+      await finish("template_events_persisted", undefined, { count: templateEvents.count });
+      return new Response("ok");
     }
 
     // Instrumentação de FORMA, nunca de valor — mesma disciplina de
@@ -2699,7 +2722,7 @@ async function handleWebhookRequest(
     // podem fazer o handler retornar antes dos demais itens.
     if (isMetaShapedProvider(provider)) {
       const parts = splitMetaWebhookPayload(payload);
-      if (parts.length > 1) {
+      if (parts.length > 1 || managementPersisted) {
         const results = await Promise.all(parts.map((part) => {
           const headers = new Headers(req.headers);
           headers.delete("content-length");

@@ -89,6 +89,14 @@ describe("decideDatafySignaturePreconditions", () => {
 });
 
 describe("buildDatafySignedPayload", () => {
+  it("gestão WABA e lote misto assinam o envelope cru, antes de qualquer split", () => {
+    const body = '{ "entry": [{"id":"123", "changes": [{"field":"message_template_status_update","value":{"message_template_id":456,"event":"PAUSED"}},{"field":"messages","value":{"metadata":{"phone_number_id":"789"},"messages":[]}}]}] }';
+    const signed = buildDatafySignedPayload(TS, body);
+    expect(signed).toBe(`${TS}.${body}`);
+    expect(signed).not.toBe(buildDatafySignedPayload(TS, JSON.stringify(JSON.parse(body))));
+    expect(decideDatafySignaturePreconditions({ ...base, signatureHeader: null }).ok).toBe(false);
+    expect(decideDatafySignaturePreconditions({ ...base, timestampHeader: String(Number(TS) - DATAFY_REPLAY_WINDOW_MS / 1000 - 1) }).ok).toBe(false);
+  });
   it("concatena timestamp e corpo com ponto, preservando o corpo cru", () => {
     const body = '{"a":1,\n  "b":"ç"}';
     expect(buildDatafySignedPayload("123", body)).toBe(`123.${body}`);

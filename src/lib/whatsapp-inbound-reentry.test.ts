@@ -43,6 +43,34 @@ const lerFonte = (caminhoRelativo: string): string =>
 
 const EF = lerFonte("../../supabase/functions/webhook-whatsapp/index.ts");
 
+describe("gestão WABA na fronteira da fila (acoplamento; handler real é gate separado)", () => {
+  it("persiste gestão depois da assinatura inteira e antes de enfileirar o corpo original", () => {
+    const signature = EF.indexOf('if (!isValid) {');
+    const management = EF.indexOf('await createTemplateEventRuntime(supabase).process(payload');
+    const queue = EF.indexOf('insert = await persistInboundEvent({');
+    expect(signature).toBeGreaterThan(-1);
+    expect(management).toBeGreaterThan(signature);
+    expect(queue).toBeGreaterThan(management);
+    expect(EF.slice(queue, EF.indexOf('const verdict = decideAckVerdict', queue))).toContain('bodyText,');
+  });
+  it("lote misto com uma única parte de chat também reentra com source original", () => {
+    const start = EF.indexOf('const parts = splitMetaWebhookPayload(payload);');
+    const end = EF.indexOf('const statusUpdates = parseStatusCallback', start);
+    const dispatch = EF.slice(start, end);
+    expect(dispatch).toContain('parts.length > 1 || managementPersisted');
+    expect(dispatch).toContain('signatureAlreadyVerified: true, source: ingestionSource');
+    // Control: old one-part dispatch would leave management in the chat payload.
+    expect(dispatch.replace(' || managementPersisted', '')).not.toContain('parts.length > 1 || managementPersisted');
+  });
+  it("gestão exclusiva termina depois da persistência e antes do gate de ingestão", () => {
+    const persisted = EF.indexOf('await createTemplateEventRuntime(supabase).process(payload');
+    const finish = EF.indexOf('await finish("template_events_persisted"');
+    const gate = EF.indexOf('const flagCheck = await checkFlagEnabled("whatsapp_async_ingestion")');
+    expect(finish).toBeGreaterThan(persisted);
+    expect(finish).toBeLessThan(gate);
+  });
+});
+
 const MIGRATION_113 = lerFonte(
   "../../supabase/migrations/20260924120200_113_inbound_claim_rpc.sql",
 );
