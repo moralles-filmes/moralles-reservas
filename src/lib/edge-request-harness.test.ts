@@ -47,6 +47,29 @@ function database(seed: Record<string, Row[]>, scripts: Record<string, (args: Ro
     webhook_executions: ["request_id", "unit_id", "channel_id", "phone_hash", "outcome", "error", "duration_ms", "meta"],
     whatsapp_inbound_events: ["provider", "channel_id", "unit_id", "raw_body", "delivery_id", "signature_header", "signature_scheme"],
   };
+  const pick = (row: Row, columns: string[]) => Object.fromEntries(columns
+    .filter((column) => Object.prototype.hasOwnProperty.call(row, column))
+    .map((column) => [column, structuredClone(row[column])]));
+  const relation = (value: unknown, columns: string[]): unknown => {
+    if (value == null) return value;
+    if (Array.isArray(value)) return value.map((row) => relation(row, columns));
+    if (typeof value !== "object") return fail("relation_shape");
+    return pick(value as Row, columns);
+  };
+  const project = (table: string, row: Row, projection: string): Row => {
+    // Only the two existing, explicitly seeded relation shapes are supported.
+    // No join lookup/filtering or SQL authority is implemented here.
+    if (table === "reservations" && projection === projections.reservations[0]) {
+      return { ...pick(row, Object.keys(row).filter((key) => key !== "customer" && key !== "unit")),
+        customer: structuredClone(row.customer),
+        unit: relation(row.unit, ["name", "phone", "instagram", "website", "address"]) };
+    }
+    if (table === "billing_subscriptions" && projection === projections.billing_subscriptions[0]) {
+      return { ...pick(row, ["id", "status", "canceled_at", "suspended_at"]),
+        billing_plans: relation(row.billing_plans, ["category", "included_features"]) };
+    }
+    return pick(row, projection.split(",").map((column) => column.trim()));
+  };
   const compare = (actual: unknown, op: string, expected: unknown) => {
     if (op === "eq" || op === "is") return actual === expected;
     if (op === "neq") return actual !== expected;
@@ -83,18 +106,20 @@ function database(seed: Record<string, Row[]>, scripts: Record<string, (args: Ro
         }
         if (trace.op === "update") matches.forEach((row) => Object.assign(row, trace.values));
         const count = matches.length;
-        let data: unknown = trace.head || (trace.op !== "read" && !returning) ? null : structuredClone(matches);
+        const canReturn = !trace.head && (trace.op === "read" || returning);
+        if (canReturn && !trace.select) return fail(`missing_projection:${table}`);
+        let data: unknown = canReturn ? matches.map((row) => project(table, row, trace.select!)) : null;
         if (cardinality !== "many") {
           if (matches.length > 1 || (cardinality === "single" && matches.length !== 1)) {
             return result = { data: null, error: { code: "PGRST116", message: "fixture cardinality" } };
           }
-          data = matches.length ? structuredClone(matches[0]) : null;
+          data = canReturn && matches.length ? project(table, matches[0], trace.select!) : null;
         }
         return result = { data, error: null, ...(trace.count ? { count } : {}) };
       };
       const query = new Proxy({
-        select(columns?: string, options?: { count?: string; head?: boolean }) {
-          if (columns && !projections[table]?.includes(columns)) return fail(`projection:${table}`);
+        select(columns = "*", options?: { count?: string; head?: boolean }) {
+          if (!projections[table]?.includes(columns)) return fail(`projection:${table}`);
           trace.select = columns; trace.count = options?.count; trace.head = options?.head;
           returning = true; return query;
         },
@@ -408,5 +433,40 @@ describe("actual Edge Request harness foundation", () => {
     expect(() => db.client.from("notifications_sent").select("unknown")).toThrow("projection");
     expect(() => db.client.from("notifications_sent").update({ unknown: "value" })).toThrow("mutation_columns");
     expect(() => Reflect.get(db.client.from("notifications_sent"), "unknownOperator")).toThrow("operator");
+  });
+
+  it("structural SELECT id excludes unselected authority fields for list/single/mutation results", async () => {
+    const db = database({
+      whatsapp_channels: [{ id: "channel-a", unit_id: "unit-a", provider: "datafy", credentials: { phone_number_id: "123" }, webhook_secret: SECRET }],
+      notifications_sent: [{ id: "notification-a", unit_id: "unit-a", whatsapp_provider: "datafy", provider_message_id: "wamid.3", read_at: null }],
+      whatsapp_inbound_events: [],
+    });
+    expect(await db.client.from("whatsapp_channels").select("id")).toEqual({ data: [{ id: "channel-a" }], error: null });
+    expect(await db.client.from("whatsapp_channels").select("id").single()).toEqual({ data: { id: "channel-a" }, error: null });
+    expect(await db.client.from("whatsapp_channels").select("id").maybeSingle()).toEqual({ data: { id: "channel-a" }, error: null });
+    expect(await db.client.from("notifications_sent").update({ read_at: "synthetic-time" }).eq("id", "notification-a").select("id"))
+      .toEqual({ data: [{ id: "notification-a" }], error: null });
+    expect(await db.client.from("whatsapp_inbound_events").insert({ provider: "datafy", channel_id: "channel-a", unit_id: "unit-a", raw_body: "synthetic-raw" }).select("id").maybeSingle())
+      .toEqual({ data: { id: "queue-event" }, error: null });
+    expect(db.tables.whatsapp_channels[0]).toMatchObject({ unit_id: "unit-a", credentials: { phone_number_id: "123" }, webhook_secret: SECRET });
+    expect(db.tables.notifications_sent[0]).toMatchObject({ unit_id: "unit-a", read_at: "synthetic-time" });
+    expect(db.tables.whatsapp_inbound_events[0]).toMatchObject({ unit_id: "unit-a", raw_body: "synthetic-raw" });
+    db.assertNoUnexpectedIo();
+  });
+
+  it("bounds explicit relation projections without exposing unselected nested fields", async () => {
+    const db = database({
+      reservations: [{ id: "reservation-a", unit_id: "unit-a", customer: { name: "Synthetic", phone: "11988887777" },
+        unit: { name: "Synthetic restaurant", phone: "11988887777", organization_id: "org-a", credentials: "synthetic-related-secret" } }],
+      billing_subscriptions: [{ id: "subscription-a", organization_id: "org-a", status: "active", canceled_at: null, suspended_at: null,
+        billing_plans: [{ category: "SYSTEM_SUBSCRIPTION", included_features: ["whatsapp"], private_field: "synthetic-private" }] }],
+    });
+    expect(await db.client.from("reservations").select("*, customer:customers(*), unit:units(name, phone, instagram, website, address)").single())
+      .toEqual({ data: { id: "reservation-a", unit_id: "unit-a", customer: { name: "Synthetic", phone: "11988887777" },
+        unit: { name: "Synthetic restaurant", phone: "11988887777" } }, error: null });
+    expect(await db.client.from("billing_subscriptions").select("id, status, canceled_at, suspended_at, billing_plans!inner(category, included_features)"))
+      .toEqual({ data: [{ id: "subscription-a", status: "active", canceled_at: null, suspended_at: null,
+        billing_plans: [{ category: "SYSTEM_SUBSCRIPTION", included_features: ["whatsapp"] }] }], error: null });
+    db.assertNoUnexpectedIo();
   });
 });
