@@ -1,0 +1,150 @@
+import { webcrypto } from 'node:crypto';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { createDatafyTemplateTransport } from '../../supabase/functions/_shared/datafy-client.ts';
+import { TEMPLATE_CATALOG, catalogHash } from '../../supabase/functions/_shared/whatsapp-template-catalog-core.ts';
+import { createTemplateSyncService, type TemplateSyncDependencies, type TemplateSyncContext } from '../../supabase/functions/_shared/whatsapp-template-sync.ts';
+
+beforeAll(() => vi.stubGlobal('crypto', webcrypto));
+const definition = TEMPLATE_CATALOG.res_confirmacao_v1;
+const remote = () => ({ id: '789', name: definition.name, language: 'pt_BR', status: 'APPROVED',
+  category: 'UTILITY', parameter_format: 'POSITIONAL', components: definition.components });
+async function fixture(pages: unknown[] = [{ data: [remote()] }]) {
+  let calls = 0;
+  const fetchImpl = vi.fn(async (_url: Parameters<typeof fetch>[0], _init?: RequestInit) => new Response(JSON.stringify(pages[Math.min(calls++, pages.length - 1)])));
+  const context: TemplateSyncContext = { accountId: 'a', wabaId: '456', bindingId: 'b', generation: 1,
+    unitId: 'unit', channelId: 'channel', credentialRevision: 0,
+    credentials: { access_token: 'fake' }, catalogEnabled: true, submissionAuthorized: true,
+    templates: [{ id: 't', logical_id: definition.id, version: 1, name: definition.name, language: 'pt_BR',
+      desired_hash: await catalogHash(definition), requested_category: 'UTILITY', remote_id: null,
+      remote_status: 'UNKNOWN', quality: 'UNKNOWN', submission_attempted_at: null }], jobs: [] };
+  const deps: TemplateSyncDependencies = {
+    load: vi.fn(async () => context), seed: vi.fn(async () => undefined),
+    getTransport: () => createDatafyTemplateTransport({ fetchImpl }),
+    begin: vi.fn(async () => ({ account_generation: 1, capture_id: 'capture', binding_id: 'b', binding_generation: 1,
+      credential_revision: 0, templates: [{ id: 't', epoch: 2 }] })),
+    publish: vi.fn(async () => true), enqueueProvision: vi.fn(async () => undefined),
+    finish: vi.fn(async () => true), prepare: vi.fn(async () => true), confirm: vi.fn(async () => true),
+    finalCheck: vi.fn(async () => null),
+  };
+  return { ...createTemplateSyncService(deps), deps, context, fetchImpl };
+}
+describe('production sync with fake HTTP transport', () => {
+  it('derives pending from accepted publication without an observed hash', async () => {
+    const f = await fixture([{ data: [] }]);
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ templateStates: { t: 'pending' } });
+  });
+  it('marks incompatible provider content as review work before any POST', async () => {
+    const f = await fixture([{ data: [{ ...remote(), components: [{ type: 'BODY', text: 'External content' }] }] }]);
+    vi.mocked(f.deps.prepare).mockResolvedValue(false);
+    const result = await f.provisionTemplate('a', { id: 'j', target_key: definition.id, state: 'claimed', claim_token: 'f', binding_id: 'b', binding_generation: 1, posting_started_at: null });
+    expect(result.state).toBe('conflict'); expect(f.deps.prepare).toHaveBeenCalledOnce();
+    expect(f.fetchImpl).toHaveBeenCalledOnce(); expect(f.deps.confirm).not.toHaveBeenCalled();
+  });
+  it('does not POST if asynchronous final checks outlive the SQL lease', async () => {
+    const f = await fixture([{ data: [] }]);
+    vi.mocked(f.deps.finalCheck).mockImplementation(async () => { vi.mocked(f.deps.confirm).mockResolvedValue(false); return null; });
+    await f.provisionTemplate('a', { id: 'j', target_key: definition.id, state: 'claimed', claim_token: 'f', binding_id: 'b', binding_generation: 1, posting_started_at: null });
+    expect(f.fetchImpl).toHaveBeenCalledOnce();
+    expect(f.deps.confirm).toHaveBeenCalledOnce();
+    expect(f.deps.finish).toHaveBeenCalledWith('j', 'f', { outcome: 'local_preflight_refused', reason: 'final_channel_changed' });
+  });
+  it('uses the job binding for CREATE and the captured account binding for GET', async () => {
+    const f = await fixture([{ data: [] }]);
+    const postContext = { ...f.context, bindingId: 'other', generation: 3, credentials: { access_token: 'fake-other' } };
+    vi.mocked(f.deps.load).mockImplementation(async (_a, binding) => binding ? postContext : f.context);
+    f.fetchImpl.mockImplementation(async (_url, init) => new Response(JSON.stringify(init?.method === 'POST' ? { id: '789', status: 'PENDING' } : { data: [] })));
+    await f.provisionTemplate('a', { id: 'j', target_key: definition.id, state: 'claimed', claim_token: 'f', binding_id: 'other', binding_generation: 3, posting_started_at: null });
+    expect(f.deps.finalCheck).toHaveBeenCalledWith(postContext);
+    expect(f.fetchImpl).toHaveBeenCalledTimes(2);
+    expect(f.fetchImpl.mock.calls[1][1]?.headers).toMatchObject({ Authorization: 'Bearer fake-other' });
+  });
+  it.each(['final_service_suspended', 'final_channel_changed', 'final_gate_paused'] as const)('records known zero POST after prepare: %s', async reason => {
+    const f = await fixture([{ data: [] }]);
+    vi.mocked(f.deps.finalCheck).mockResolvedValue(reason);
+    await f.provisionTemplate('a', { id: 'j', target_key: definition.id, state: 'claimed', claim_token: 'f', binding_id: 'b', binding_generation: 1, posting_started_at: null });
+    expect(f.fetchImpl).toHaveBeenCalledOnce();
+    expect(f.deps.finish).toHaveBeenCalledWith('j', 'f', { outcome: 'local_preflight_refused', reason });
+  });
+  it('refuses a capture from a different binding before remote GET', async () => {
+    const f = await fixture();
+    vi.mocked(f.deps.begin).mockResolvedValueOnce({ account_generation: 1, capture_id: 'new', binding_id: 'other', binding_generation: 1, credential_revision: 0, templates: [] });
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ state: 'failed' });
+    expect(f.fetchImpl).not.toHaveBeenCalled();
+  });
+  it('reads both pages on the fixed origin and excludes examples from full structural hash', async () => {
+    const f = await fixture([{ data: [], paging: { next: 'https://evil.test', cursors: { after: 'cursor+' } } },
+      { data: [{ ...remote(), components: definition.components.map(c => ({ ...c, example: { body_text: [['different']] } })) }] }]);
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ state: 'synced', processed: 1 });
+    expect(f.fetchImpl).toHaveBeenCalledTimes(2);
+    expect(f.fetchImpl.mock.calls[1][0]).toContain('https://cloud.datafyapi.com.br/v1/456/message_templates?');
+    expect(f.deps.publish).toHaveBeenCalledWith('a', expect.anything(), [expect.objectContaining({ observed_hash: f.context.templates[0].desired_hash })]);
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+  });
+  it('refuses a cursor cycle without publishing old approval', async () => {
+    const f = await fixture([{ data: [], paging: { next: 'ignored', cursors: { after: 'same' } } }]);
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ state: 'failed' });
+    expect(f.deps.publish).not.toHaveBeenCalled();
+  });
+  it('keeps unknown remote component fields in conflict hash', async () => {
+    const f = await fixture([{ data: [{ ...remote(), components: [...definition.components, { type: 'BUTTONS', buttons: [] }] }] }]);
+    await f.syncTemplateAccount('a');
+    const snapshots = vi.mocked(f.deps.publish).mock.calls[0][2];
+    expect(snapshots[0].observed_hash).not.toBe(f.context.templates[0].desired_hash);
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+  });
+  it('event during GET makes publication stale and cannot schedule creation', async () => {
+    const f = await fixture([{ data: [] }]);
+    vi.mocked(f.deps.publish).mockResolvedValue(false);
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ state: 'stale' });
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+  });
+  it('failed GET never publishes prior usability', async () => {
+    const f = await fixture();
+    f.fetchImpl.mockRejectedValueOnce(new Error('private transport detail'));
+    expect(await f.syncTemplateAccount('a')).toEqual({ state: 'failed', processed: 0, reason: 'template_get_failed' });
+    expect(f.deps.publish).not.toHaveBeenCalled();
+  });
+  it('catalog OFF permits safety GET but no seed/create; v2 never provisions', async () => {
+    const f = await fixture([{ data: [] }]);
+    f.context.catalogEnabled = false;
+    await f.syncTemplateAccount('a');
+    expect(f.fetchImpl).toHaveBeenCalledOnce();
+    expect(f.deps.seed).not.toHaveBeenCalled();
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+    f.context.catalogEnabled = true;
+    f.context.templates[0].version = 2;
+    await f.syncTemplateAccount('a');
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+  });
+  it.each(['REJECTED', 'DISABLED', 'DELETED'])('missing GET preserves %s without recreation', async remote_status => {
+    const f = await fixture([{ data: [] }]);
+    f.context.templates[0].remote_status = remote_status;
+    await f.syncTemplateAccount('a');
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+    expect(f.deps.publish).toHaveBeenCalledWith('a', expect.anything(), [expect.objectContaining({ remote_status })]);
+  });
+  it('create timeout then exact GET repairs with only one POST', async () => {
+    const f = await fixture([{ data: [] }]);
+    const job = { id: 'j', target_key: definition.id, state: 'claimed', claim_token: 'f', binding_id: 'b', binding_generation: 1, posting_started_at: null };
+    let posted = 0;
+    f.fetchImpl.mockImplementation(async (_url, init) => {
+      if (init?.method === 'POST') { posted++; throw new Error('timeout'); }
+      return new Response(JSON.stringify({ data: posted ? [remote()] : [] }));
+    });
+    await f.provisionTemplate('a', job);
+    expect(f.deps.finish).toHaveBeenLastCalledWith('j', 'f', { outcome: 'uncertain', reason: 'post_ambiguous' });
+    f.context.jobs = [{ ...job, state: 'uncertain', posting_started_at: '2026-10-03T12:00:00Z' }];
+    await f.syncTemplateAccount('a');
+    expect(f.deps.finish).toHaveBeenLastCalledWith('j', 'f', { outcome: 'accepted', reason: 'provider_accepted' });
+    expect(posted).toBe(1);
+  });
+  it('missing GET never authorizes repost of uncertain or accepted evidence', async () => {
+    const f = await fixture([{ data: [] }]);
+    f.context.templates[0].submission_attempted_at = '2026-10-03T12:00:00Z';
+    f.context.jobs = [{ id: 'j', target_key: definition.id, state: 'uncertain', claim_token: 'f',
+      binding_id: 'b', binding_generation: 1, posting_started_at: '2026-10-03T12:00:00Z' }];
+    await f.syncTemplateAccount('a');
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+    expect(f.deps.finish).not.toHaveBeenCalled();
+  });
+});

@@ -25,6 +25,16 @@
     "Origem da classificação: docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md"
   ],
 
+  "_service_only_whatsapp_template_workers": [
+    "bind_whatsapp_template_account(uuid,uuid,text,bigint,text,text)",
+    "reconcile_whatsapp_template_credentials(uuid)",
+    "request_whatsapp_template_sync(uuid)",
+    "select_due_whatsapp_template_accounts(integer)",
+    "complete_whatsapp_template_sync_job(uuid,uuid,boolean,text)",
+    "confirm_whatsapp_template_post(uuid,uuid,bigint)",
+    "whatsapp_template_pipeline_health()",
+    "purge_whatsapp_template_workers()"
+  ],
   "_service_only_whatsapp_preferences": [
     "issue_whatsapp_preference_token(uuid,text)",
     "get_whatsapp_promotion_preference(uuid)",

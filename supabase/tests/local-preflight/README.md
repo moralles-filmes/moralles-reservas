@@ -1111,3 +1111,83 @@ nem cleanup legado ampliado. Teste JWT/PostgREST separado deve obter JWT reais
 own/foreign owner, gerente, operador e platform_admin: todos negados nas RPCs e
 stores internos; service-only positivos, handler/SQL real e domínio GET estável.
 Isto não prova configuração de origem, homologação ou ACL de produção.
+
+### Task6 — catálogo WABA e worker interno
+
+Aplicar `20261004025039_whatsapp_template_workers.sql` antes de publicar
+`manage-channels`/`process-whatsapp-templates`. A migration insere catálogo e
+flag de despacho OFF com `ON CONFLICT DO NOTHING`, sem alterar flags já
+existentes. O cron exclusivo `whatsapp-template-workers` roda a cada cinco
+minutos, lê `project_url`/`internal_api_key` do Vault e não altera cron promocional.
+A EF exige `requireInternalAuth`; no máximo20 claims por invocação, sequenciais
+por conta, com prazo conferido somente antes do próximo job.
+
+**Pré-requisito de qualquer piloto/flag ON:** configurar secret de ambiente
+`WHATSAPP_TEMPLATE_ALERT_URL` com endpoint HTTPS de monitoramento autorizado e
+provar entrega de alerta real no ambiente de homologação. URL com userinfo,
+HTTP, fragmento ou redirecionamento é recusada. Ausência retorna `unconfigured`;
+erro retorna `delivery_failed`; persistência dos jobs, log técnico e503 mantêm
+o impedimento observável, mas nenhum deles significa alerta entregue. Não
+colar a URL real em Git, logs ou relatório. Testes locais usam somente HTTP fake.
+
+Alerta contém contagens failed/uncertain, ID técnico e idade da não-terminal
+mais antiga, sem dados pessoais. A idade não tem janela de90 dias; paused e
+needs_review permanecem observáveis. Limiar7050s deriva da escada de retry,
+intervalos de cron e leases; não atribui automaticamente falha ao scheduler.
+Purga limita500 eventos sanitizados processed/ignored e500 jobs terminais por
+execução, somente após90 dias; queued/claimed/posting/uncertain/paused/needs_review
+permanecem. `submission_attempted_at` no target sobrevive à purga de jobs e
+impede um CREATE repetido quando um GET posterior retorna ausente.
+
+Descoberta Datafy usa GET `/me` pelo registry com origem fixa, phone anchor e
+revisão corrente. Canal connected inativo pode preparar; nenhuma descoberta,
+GET, aprovação ou reutilização ativa canal, submissão ou despacho. Meta direta
+continua sem suporte a templates. Catálogo OFF permite GET de conta já conhecida;
+conta nova sem catálogo não entra no cron. Somente definições ativasv1 são seeded.
+
+`begin_whatsapp_template_sync` retorna envelope completo com capture_id único,
+account_generation, binding_id, binding_generation, credential_revision e lista
+completa de epochs. `publish` recebe esse envelope íntegro; array antigo é
+recusado. GET pode usar um binding autorizado da conta e CREATE outro binding
+explicitamente fixado no job. Nenhuma credencial é persistida na captura.
+
+`prepare_whatsapp_template_provision` é claimed-only e consome uma tentativa.
+Após releitura de `enforced.sending`, credencial/revisão e flags, o último await
+antes do adapter é `confirm_whatsapp_template_post`: fence/lease/capture atuais,
+sem renovar lease ou consumir tentativa. `post_capture_id` é imutável com o
+marcador; somente os resets estreitos existentes podem limpá-lo. Expiração
+conserva a evidência para revisão. Timeout/erro após invocar adapter é uncertain,
+sem outro POST; GET exato pode reconciliar a evidência com o fence original.
+
+Recusa local comprovada antes do adapter aceita somente
+`final_service_suspended|final_channel_changed|final_gate_paused`, usando fence e
+lease vivos. Reduz apenas a tentativa preparatória, limpa marcador/capture e
+mantém `submission_attempted_at`. O job fica paused/needs_review; ação explícita
+same-job de gestão pertence à Task13, não há retry automático novo. A única
+escada automática de CREATE é a rejeição pré-proxy429 documentada, mesmo job
+com novo fence. rejected/accepted/uncertain não autorizam recriação por nova revisão.
+
+`complete_whatsapp_template_sync_job` exige publicação atual e revalida revisão
+após os locks. Falha de load antesbegin também invalida epochs/sync_required.
+Uma falha ainda com posse pode invalidar conservadoramente uma publicação mais
+nova e exigir GET extra; fence perdido/expirado não pode escrever. Ordem:
+account→bindings ordenados→channels ordenados→templates→job. Finish de evidência
+mantém job-only; trigger de revisão do canal nunca trava pais. Substituição Vault
+same-pointer avança revisão antes do segredo por permit transacional/fence exato.
+
+```bash
+# Harness mínimo já aplicado via CLI --local --workdir isolado, nunca produção.
+psql "$TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f supabase/tests/local-preflight/31-template-workers.sql
+TASK_DOCKER='/caminho/docker' \
+TASK_DB_CONTAINER='supabase_db_moralles-templates-20261003' \
+bash supabase/tests/local-preflight/32-template-workers-concurrency.sh
+```
+
+SQL27/29 passam envelope integral; SQL27 também usa GET completo antes de
+finalizar sync ou preparar CREATE, com alvosv1 ausentes em conta própria para
+preservar suas assertions de retry/fence. SQL31 cobre ACL SQL, capturas, rotações,
+zeroPOST, lease, retenção e futuro replay vedado; SQL32 executa quatro corridas
+reais, incluindo Vault same-pointer. GoTrue JWT/PostgREST complementa SQL com
+usuários locais reais (owner/gerente/operador/platform_admin/outsider e anon),
+recusas e positivos service-only. O fixture mínimo não prova ACL, Advisor,
+cron, billing, providers ou atendimento em produção.

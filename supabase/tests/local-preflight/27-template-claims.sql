@@ -19,10 +19,10 @@ begin
   insert into public.whatsapp_remote_templates(id,account_id,logical_id,version,language,name,desired_hash,requested_category,binding_generation) values(t,a,'res_confirmacao_v1',1,'pt_BR','res_confirmacao_v1',repeat('a',64),'UTILITY',7);
   x:=public.begin_whatsapp_template_sync(a);
   snapshot:=jsonb_build_array(jsonb_build_object('id',t,'remote_id','remote27','name','res_confirmacao_v1','language','pt_BR','observed_hash',repeat('a',64),'effective_category','UTILITY','remote_status','APPROVED','quality','GREEN'));
-  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x->'templates',snapshot),'GET publishes current account generation7, distinct binding3');
-  perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,3,x->'templates',snapshot),'binding generation is not account generation');
-  perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,7,'[]',snapshot),'missing epoch refuses complete snapshot');
-  perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,7,(x->'templates')||(x->'templates'),snapshot),'duplicate epoch refuses snapshot');
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x,snapshot),'GET publishes current account generation7, distinct binding3');
+  perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,3,x,snapshot),'binding generation is not account generation');
+  perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,7,x||jsonb_build_object('templates','[]'::jsonb),snapshot),'missing epoch refuses complete snapshot');
+  perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,7,x||jsonb_build_object('templates',(x->'templates')||(x->'templates')),snapshot),'duplicate epoch refuses snapshot');
   y:=jsonb_build_object('unit_id',u,'kind','confirmation','reservation_id','eeeeeeee-0000-0000-0000-000000000001','source_event_key','first','fact_at',clock_timestamp()+interval '1 hour','expires_at',clock_timestamp()+interval '1 hour');
   j:=public.enqueue_whatsapp_automation(y);
   perform pg_temp.ok(j is not null,'enqueue derives real org/customer/current binding');
@@ -85,11 +85,15 @@ begin
   perform pg_temp.ok((select reconciliation_revision=1 from public.whatsapp_template_accounts where id=a),'new event increments task revision');
   perform pg_temp.ok(public.record_whatsapp_template_events(a,events)=0,'duplicate event coalesces');
   perform pg_temp.ok((select reconciliation_revision=1 from public.whatsapp_template_accounts where id=a),'dedupe does not increment task revision');
-  perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,7,x->'templates',snapshot),'callback invalidates in-flight GET epoch');
+  perform pg_temp.ok(not public.publish_whatsapp_template_sync(a,7,x,snapshot),'callback invalidates in-flight GET epoch');
   perform pg_temp.ok((select sync_required from public.whatsapp_remote_templates where id=t),'positive callback never releases');
   select id into cat from public.whatsapp_template_jobs where account_id=a and operation='sync' and revision=1;
   y:=public.claim_whatsapp_template_job(cat); cf:=(y->>'claim_token')::uuid;
-  perform pg_temp.ok(public.finish_whatsapp_template_job(cat,cf,'{"outcome":"accepted","reason":"provider_accepted"}'),'sync task completed without POST');
+  perform pg_temp.ok(not public.finish_whatsapp_template_job(cat,cf,'{"outcome":"accepted","reason":"provider_accepted"}'),'generic acceptance cannot complete an unverified sync');
+  perform pg_temp.ok(not public.complete_whatsapp_template_sync_job(cat,cf,true,'template_synced'),'sync_required prevents completion without current GET');
+  x:=public.begin_whatsapp_template_sync(a);
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x,snapshot),'sync task publishes current complete GET');
+  perform pg_temp.ok(public.complete_whatsapp_template_sync_job(cat,cf,true,'template_synced'),'sync task completed without POST');
   delete from public.whatsapp_template_events where account_id=a and digest=repeat('b',64);
   events:=jsonb_build_array((events->0)||jsonb_build_object('digest',repeat('e',64)));
   perform pg_temp.ok(public.record_whatsapp_template_events(a,events)=1,'new event after purge persists');
@@ -111,7 +115,7 @@ begin
   events:=jsonb_build_array(jsonb_build_object('field','message_template_quality_update','remote_id','remote27','event_time',clock_timestamp(),'digest',repeat('d',64),'quality','RED'));
   perform public.record_whatsapp_template_events(a,events);
   x:=public.begin_whatsapp_template_sync(a);
-  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x->'templates',jsonb_build_array((snapshot->0)-'quality')),'GET without quality publishes but preserves known RED');
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x,jsonb_build_array((snapshot->0)-'quality')),'GET without quality publishes but preserves known RED');
   perform pg_temp.ok((select quality='RED' and local_status='usable' from public.whatsapp_remote_templates where id=t),'GET preserves RED metadata but UTILITY remains usable');
   insert into public.reservations(id,unit_id,customer_id) values('eeeeeeee-0000-0000-0000-000000000030',u,'cccccccc-0000-0000-0000-000000000001');
   j2:=public.enqueue_whatsapp_automation(y||'{"reservation_id":"eeeeeeee-0000-0000-0000-000000000030"}');
@@ -121,7 +125,7 @@ begin
   perform pg_temp.ok(public.prepare_whatsapp_automation_post(j2,f,3,null,e),'approved hash/category current GET UTILITY RED can POST');
   perform public.finish_whatsapp_automation(j2,f,'{"outcome":"uncertain","reason":"post_ambiguous"}');
   x:=public.begin_whatsapp_template_sync(a);
-  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x->'templates',snapshot),'current explicit quality GET recovers');
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x,snapshot),'current explicit quality GET recovers');
   -- Prior notifications: exact FK, never failed/skipped/email/customer/day guessing.
   insert into public.reservations(id,unit_id,customer_id) values('eeeeeeee-0000-0000-0000-000000000027',u,'cccccccc-0000-0000-0000-000000000001');
   insert into public.notifications_sent(unit_id,reservation_id,kind,status) values(u,'eeeeeeee-0000-0000-0000-000000000027','confirmation','sent');
@@ -154,7 +158,7 @@ begin
   x:=public.claim_whatsapp_automation(j2); f:=(x->>'claim_token')::uuid;
   x:=public.begin_whatsapp_template_sync(a);
   perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,f,4,null,e),'sync-required blocks same logical job');
-  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x->'templates',snapshot),'same template GET restores snapshot');
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x,snapshot),'same template GET restores snapshot');
   select sync_epoch into e from public.whatsapp_remote_templates where id=t;
   perform pg_temp.ok(public.requeue_whatsapp_automation(j2),'blocked same identity requeue');
   x:=public.claim_whatsapp_automation(j2); f:=(x->>'claim_token')::uuid;
@@ -250,8 +254,26 @@ begin
   perform public.requeue_whatsapp_automation(j2); x:=public.claim_whatsapp_automation(j2); f2:=(x->>'claim_token')::uuid;
   perform pg_temp.ok(public.prepare_whatsapp_automation_post(j2,f2,1,2,null),'current operational revision allows live text POST');
   -- Catalog POST claim/fence and rejection reset are equally strict.
-  cat:=public.enqueue_whatsapp_template_job(b,'provision','res_confirmacao_v1',1);
-  perform pg_temp.ok(public.enqueue_whatsapp_template_job(b,'provision','res_confirmacao_v1',1)=cat,'catalog natural key coalesces');
+  declare ca uuid:=gen_random_uuid(); cb uuid:=gen_random_uuid(); cc uuid:=gen_random_uuid(); ct uuid:=gen_random_uuid(); ct2 uuid:=gen_random_uuid(); cs jsonb;
+  begin
+  insert into public.whatsapp_channels(id,unit_id,provider,status,is_active,credentials,last_health_check_at)
+    values(cc,u,'datafy','connected',false,'{"phone_number_id":"2701"}',clock_timestamp());
+  insert into public.whatsapp_template_accounts(id,organization_id,waba_id,verified_at,binding_generation)
+    values(ca,'aaaaaaaa-0000-0000-0000-000000000001','279999',clock_timestamp(),1);
+  insert into public.whatsapp_template_bindings(id,unit_id,channel_id,account_id,provider,generation,verified_at)
+    values(cb,u,cc,ca,'datafy',4,clock_timestamp());
+  perform set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',admin)::text,true);
+  update public.whatsapp_template_bindings set submission_authorized_at=clock_timestamp(),submission_authorized_by=admin where id=cb;
+  perform set_config('request.jwt.claims','{"role":"service_role"}',true);
+  insert into public.whatsapp_remote_templates(id,account_id,logical_id,version,language,name,desired_hash,requested_category,binding_generation)
+    values(ct,ca,'res_confirmacao_v1',1,'pt_BR','res_confirmacao_v1',repeat('a',64),'UTILITY',1),
+    (ct2,ca,'fila_entrada_v1',1,'pt_BR','fila_entrada_v1',repeat('b',64),'UTILITY',1);
+  cs:=jsonb_build_array(jsonb_build_object('id',ct,'remote_id',null,'name','res_confirmacao_v1','language','pt_BR','observed_hash',null,'effective_category',null,'remote_status','UNKNOWN'),
+    jsonb_build_object('id',ct2,'remote_id',null,'name','fila_entrada_v1','language','pt_BR','observed_hash',null,'effective_category',null,'remote_status','UNKNOWN'));
+  x:=public.begin_whatsapp_template_sync(ca);
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(ca,1,x,cs),'catalog provisioning requires current complete GET');
+  cat:=public.enqueue_whatsapp_template_job(cb,'provision','res_confirmacao_v1',1);
+  perform pg_temp.ok(public.enqueue_whatsapp_template_job(cb,'provision','res_confirmacao_v1',1)=cat,'catalog natural key coalesces');
   x:=public.claim_whatsapp_template_job(cat); cf:=(x->>'claim_token')::uuid;
   perform pg_temp.ok(not public.prepare_whatsapp_template_provision(cat,gen_random_uuid(),4),'catalog wrong fence refuses');
   perform pg_temp.ok(public.prepare_whatsapp_template_provision(cat,cf,4),'catalog prepares authorized provision');
@@ -265,18 +287,19 @@ begin
   perform pg_temp.ok(public.claim_whatsapp_template_job(cat) is null,'catalog posting cannot be reclaimed');
   perform pg_temp.ok((select state='uncertain' and claim_token=cf from public.whatsapp_template_jobs where id=cat),'catalog uncertain retains fence');
   perform pg_temp.ok(public.finish_whatsapp_template_job(cat,cf,'{"outcome":"accepted","reason":"provider_accepted"}'),'catalog late accepted same fence');
-  cat:=public.enqueue_whatsapp_template_job(b,'provision','res_confirmacao_v1',2);
+  cat:=public.enqueue_whatsapp_template_job(cb,'provision','fila_entrada_v1',1);
   update public.whatsapp_template_jobs set attempts=4 where id=cat;
   x:=public.claim_whatsapp_template_job(cat); cf:=(x->>'claim_token')::uuid;
   perform pg_temp.ok(public.prepare_whatsapp_template_provision(cat,cf,4),'fifth documented POST may prepare');
   perform pg_temp.ok(public.finish_whatsapp_template_job(cat,cf,'{"outcome":"rejected","reason":"documented_preproxy_429"}'),'fifth rejected attempt terminal');
   perform pg_temp.ok((select state='rejected' and attempts=5 and posting_started_at is not null from public.whatsapp_template_jobs where id=cat),'maxfive never resets marker for sixth POST');
   perform pg_temp.ok((select count(*)=0 from app_private.whatsapp_post_reset_permits),'all permits consumed');
+  end;
   -- RED prevents MARKETING usability; fresh approved UTILITY is independent.
   insert into public.whatsapp_remote_templates(id,account_id,logical_id,version,language,name,desired_hash,requested_category,binding_generation) values(m,a,'mkt_voucher_programado_v1',1,'pt_BR','mkt_voucher_programado_v1',repeat('c',64),'MARKETING',7);
   snapshot:=jsonb_build_array((snapshot->0)||'{"quality":"RED"}',jsonb_build_object('id',m,'remote_id','marketing27','name','mkt_voucher_programado_v1','language','pt_BR','observed_hash',repeat('c',64),'effective_category','MARKETING','remote_status','APPROVED','quality','RED'));
   x:=public.begin_whatsapp_template_sync(a);
-  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x->'templates',snapshot),'complete GET publishes both RED categories');
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x,snapshot),'complete GET publishes both RED categories');
   perform pg_temp.ok((select quality='RED' and local_status='paused' from public.whatsapp_remote_templates where id=m),'MARKETING RED cannot be usable');
   perform pg_temp.ok((select quality='RED' and local_status='usable' from public.whatsapp_remote_templates where id=t),'UTILITY RED usable after valid GET');
   insert into public.reservations(id,unit_id,customer_id) values('eeeeeeee-0000-0000-0000-000000000031',u,'cccccccc-0000-0000-0000-000000000001');
@@ -287,7 +310,7 @@ begin
   select sync_epoch into e from public.whatsapp_remote_templates where id=t;
   perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,f,4,null,e),'UTILITY RED plus sync-required refuses POST');
   perform pg_temp.ok((select count(*)=2 from public.whatsapp_remote_templates where account_id=a and quality='RED' and sync_required),'RED both categories require current GET');
-  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x->'templates',jsonb_build_array((snapshot->0)-'quality',(snapshot->1)-'quality')),'GET omission preserves both RED metadata');
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,7,x,jsonb_build_array((snapshot->0)-'quality',(snapshot->1)-'quality')),'GET omission preserves both RED metadata');
   perform pg_temp.ok((select quality='RED' and local_status<>'usable' from public.whatsapp_remote_templates where id=m),'MARKETING omission never clears RED blocker');
   -- Live role ACL assertions are complemented by real JWT/PostgREST integration.
   for x in select to_jsonb(p) from pg_proc p join pg_namespace ns on ns.oid=p.pronamespace where ns.nspname='public' and p.proname in('enqueue_whatsapp_automation','claim_whatsapp_automation','requeue_whatsapp_automation','prepare_whatsapp_automation_post','finish_whatsapp_automation','select_due_whatsapp_automations','enqueue_whatsapp_template_job','claim_whatsapp_template_job','prepare_whatsapp_template_provision','finish_whatsapp_template_job','begin_whatsapp_template_sync','publish_whatsapp_template_sync','record_whatsapp_template_events') loop

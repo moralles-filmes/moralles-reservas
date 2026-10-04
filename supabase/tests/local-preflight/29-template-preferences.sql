@@ -23,7 +23,7 @@ begin
   update public.whatsapp_template_bindings set adopted_at=clock_timestamp(),dispatch_enabled=true where id in(b,bb);
   insert into public.whatsapp_remote_templates(id,account_id,logical_id,version,language,name,desired_hash,requested_category,binding_generation) values(t,a,'mkt_voucher_programado_v1',1,'pt_BR','mkt_voucher_programado_v1',repeat('a',64),'MARKETING',1);
   x:=public.begin_whatsapp_template_sync(a);
-  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,1,x->'templates',jsonb_build_array(jsonb_build_object('id',t,'remote_id','remote29','name','mkt_voucher_programado_v1','language','pt_BR','observed_hash',repeat('a',64),'effective_category','MARKETING','remote_status','APPROVED','quality','GREEN'))),'current marketing GET approved');
+  perform pg_temp.ok(public.publish_whatsapp_template_sync(a,1,x,jsonb_build_array(jsonb_build_object('id',t,'remote_id','remote29','name','mkt_voucher_programado_v1','language','pt_BR','observed_hash',repeat('a',64),'effective_category','MARKETING','remote_status','APPROVED','quality','GREEN'))),'current marketing GET approved');
   select sync_epoch into e from public.whatsapp_remote_templates where id=t;
   insert into public.vouchers(id,unit_id,customer_id) values(voucher,u,c),(v2,u,c),(vb,ub,cb);
   j:=public.enqueue_whatsapp_automation(jsonb_build_object('unit_id',u,'kind','voucher_issued','voucher_id',voucher,'source_event_key','preferences29','fact_at',clock_timestamp(),'expires_at',clock_timestamp()+interval '1 day'));

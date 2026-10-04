@@ -125,6 +125,23 @@ describe("RPCs internas de automação WhatsApp", () => {
   });
 });
 
+describe('worker interno de templates', () => {
+  it('mantém RPCs service-only e triggers sem execução direta', () => {
+    const signatures = allowlist._service_only_whatsapp_template_workers as string[];
+    expect(signatures).toHaveLength(8);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004025039_whatsapp_template_workers.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    for (const name of ['guard_whatsapp_template_credential_revision', 'guard_whatsapp_template_submission_history', 'trigger_whatsapp_template_workers']) {
+      expect(migration).toContain(`revoke all on function public.${name}() from public,anon,authenticated,service_role;`);
+      expect(migration).not.toContain(`grant execute on function public.${name}()`);
+    }
+  });
+});
+
 describe('preferências públicas mediadas pela Edge Function', () => {
   it('mantém SQL interno service-only e helpers/trigger sem execução direta', () => {
     const signatures = allowlist._service_only_whatsapp_preferences as string[];

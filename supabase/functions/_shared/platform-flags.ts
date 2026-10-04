@@ -39,12 +39,13 @@ function getSupabase(): SupabaseClient {
 interface FlagReadResult {
   /** false = a leitura falhou (erro do PostgREST ou exceção) — NÃO é o mesmo que flag ausente. */
   ok: boolean;
+  found: boolean;
   value: unknown;
 }
 
-async function readFlagFromDb(key: string): Promise<FlagReadResult> {
+async function readFlagFromDb(key: string, db?: SupabaseClient): Promise<FlagReadResult> {
   try {
-    const supabase = getSupabase();
+    const supabase = db ?? getSupabase();
     // Destructure `error` também: supabase-js RESOLVE `{data:null, error}` em
     // query com erro — não rejeita. Olhar só `data` (como antes) confunde
     // "erro de leitura" com "linha ausente", os dois viram null.
@@ -55,12 +56,12 @@ async function readFlagFromDb(key: string): Promise<FlagReadResult> {
       .maybeSingle();
 
     if (error) {
-      return { ok: false, value: null };
+      return { ok: false, found: false, value: null };
     }
-    return { ok: true, value: data?.value ?? null };
+    return { ok: true, found: data != null, value: data?.value ?? null };
   } catch {
     // DB indisponível (exceção antes/durante o fetch) — mesma classe de falha.
-    return { ok: false, value: null };
+    return { ok: false, found: false, value: null };
   }
 }
 
@@ -93,6 +94,15 @@ export interface FlagCheckResult {
   enabled: boolean;
   /** `true` quando o valor acima NÃO é confiável — a leitura falhou, não é uma flag OFF genuína. */
   readFailed: boolean;
+}
+
+/** Leitura booleana corrente para guardas finais; não consulta nem altera o cache legado. */
+export async function readCurrentBooleanFlag(db: SupabaseClient, key: string): Promise<FlagCheckResult> {
+  const result = await readFlagFromDb(key, db);
+  if (!result.ok || (result.found && typeof result.value !== "boolean")) {
+    return { enabled: false, readFailed: true };
+  }
+  return { enabled: result.value === true, readFailed: false };
 }
 
 /**

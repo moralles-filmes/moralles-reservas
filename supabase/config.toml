@@ -179,3 +179,6 @@ verify_jwt = false
 # Capability pública restrita a opt-out; SQL continua service-only.
 [functions.whatsapp-message-preferences]
 verify_jwt = false
+# Worker interno: requireInternalAuth valida a chave atual.
+[functions.process-whatsapp-templates]
+verify_jwt = false

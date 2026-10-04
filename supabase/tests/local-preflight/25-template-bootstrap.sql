@@ -43,6 +43,39 @@ create table if not exists public.customers(id uuid primary key, organization_id
 create table if not exists public.reservations(id uuid primary key, unit_id uuid not null references public.units(id) on delete cascade, customer_id uuid not null references public.customers(id) on delete cascade, status text not null default 'confirmed');
 create table if not exists public.waitlist(id uuid primary key, unit_id uuid not null references public.units(id) on delete cascade, customer_id uuid references public.customers(id) on delete set null,customer_phone text,customer_name text, status text not null default 'waiting');
 create table if not exists public.vouchers(id uuid primary key, unit_id uuid not null references public.units(id) on delete cascade, customer_id uuid not null references public.customers(id) on delete cascade, status text not null default 'active');
+-- Task6 only: actual legacy Vault reference/claim columns and lifecycle table.
+create extension if not exists supabase_vault with schema vault;
+create extension if not exists pg_cron with schema pg_catalog;
+create extension if not exists pg_net with schema extensions;
+alter table public.whatsapp_channels add column if not exists instance_token_secret_id uuid references vault.secrets(id) on delete set null;
+alter table public.whatsapp_channels add column if not exists provisioning_claim_id uuid;
+create table if not exists public.whatsapp_channel_lifecycle_events (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null,
+  unit_id uuid,
+  channel_ref uuid,
+  related_channel_ref uuid,
+  event_type text not null check (event_type in (
+    'provider_selected', 'provider_changed', 'provisioning_claimed',
+    'provisioning_released', 'token_stored', 'qr_requested', 'connect',
+    'disconnect', 'restart', 'activation_requested', 'activated',
+    'status_changed', 'error'
+  )),
+  provider text not null check (provider in ('zapi', 'uazapi', 'waha', 'official')),
+  previous_provider text check (
+    previous_provider is null or previous_provider in ('zapi', 'uazapi', 'waha', 'official')
+  ),
+  from_status text,
+  to_status text,
+  error_code text check (
+    error_code is null or error_code ~ '^[A-Z0-9_]{1,64}$'
+  ),
+  request_id text check (
+    request_id is null or (length(request_id) between 1 and 128 and request_id ~ '^[A-Za-z0-9._:-]+$')
+  ),
+  actor_id uuid,
+  created_at timestamptz not null default now()
+);
 -- Task4 columns mirror the legacy final schema actually consumed by the RPCs.
 alter table public.whatsapp_channels add column if not exists last_health_check_at timestamptz;
 create table if not exists public.platform_flags(key text primary key,value jsonb not null);
