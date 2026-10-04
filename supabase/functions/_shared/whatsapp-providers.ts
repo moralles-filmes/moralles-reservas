@@ -54,6 +54,7 @@ import {
   type ProviderConnectionSnapshot,
   type ProviderQrSnapshot,
   type SendResult,
+  type SendTextOptions,
   type WhatsAppProviderAdapter,
   type WhatsAppProviderMetadata,
   type WhatsAppProviderName,
@@ -342,6 +343,7 @@ export type {
   ProviderConnectionSnapshot,
   ProviderQrSnapshot,
   SendResult,
+  SendTextOptions,
   StatusUpdate,
   WebhookSignatureScheme,
   WhatsAppOperationalStatus,
@@ -353,7 +355,7 @@ export type {
 } from "./whatsapp-provider-core.ts";
 export { META_SHAPED_PROVIDERS, WEBHOOK_SIGNATURE_SCHEME, isMetaShapedProvider };
 
-async function sendZApi(credentials: ChannelCredentials, message: OutboundMessage): Promise<SendResult> {
+async function sendZApi(credentials: ChannelCredentials, message: OutboundMessage, options?: SendTextOptions): Promise<SendResult> {
   const request = buildZApiTextRequest(credentials, message);
   if (!request.ok) {
     jsonLog("error", { evt: "send_zapi_missing_creds", missing: request.missingCreds, phone: sanitizePhone(message.toPhone) });
@@ -363,7 +365,7 @@ async function sendZApi(credentials: ChannelCredentials, message: OutboundMessag
   const response = await fetchProviderWithTimeout(
     request.url,
     request.init,
-    3,
+    options?.retryPolicy === "none" ? 0 : 3,
   );
   if (response.ok) {
     const body = await response.json().catch(() => null);
@@ -377,7 +379,7 @@ async function sendZApi(credentials: ChannelCredentials, message: OutboundMessag
   return { ok: false, status: response.status, error: `zapi_http_${response.status}` };
 }
 
-async function sendWaha(credentials: ChannelCredentials, message: OutboundMessage): Promise<SendResult> {
+async function sendWaha(credentials: ChannelCredentials, message: OutboundMessage, options?: SendTextOptions): Promise<SendResult> {
   const { base_url, api_key, session_name = "default" } = credentials;
   if (!base_url) {
     jsonLog("error", { evt: "send_waha_missing_creds", missing: ["base_url"], phone: sanitizePhone(message.toPhone) });
@@ -393,7 +395,7 @@ async function sendWaha(credentials: ChannelCredentials, message: OutboundMessag
       headers: { "Content-Type": "application/json", ...(api_key ? { "X-Api-Key": api_key } : {}) },
       body: JSON.stringify({ session: session_name, chatId, text: message.text }),
     },
-    3,
+    options?.retryPolicy === "none" ? 0 : 3,
   );
   if (response.ok) {
     const body = await response.json().catch(() => null);
@@ -407,7 +409,7 @@ async function sendWaha(credentials: ChannelCredentials, message: OutboundMessag
   return { ok: false, status: response.status, error: `waha_http_${response.status}` };
 }
 
-async function sendOfficial(credentials: ChannelCredentials, message: OutboundMessage): Promise<SendResult> {
+async function sendOfficial(credentials: ChannelCredentials, message: OutboundMessage, options?: SendTextOptions): Promise<SendResult> {
   const { phone_number_id, access_token } = credentials;
   const missing: string[] = [];
   if (!phone_number_id) missing.push("phone_number_id");
@@ -426,7 +428,7 @@ async function sendOfficial(credentials: ChannelCredentials, message: OutboundMe
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${access_token}` },
       body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body: message.text } }),
     },
-    3,
+    options?.retryPolicy === "none" ? 0 : 3,
   );
   if (response.ok) {
     const body = await response.json().catch(() => null);
@@ -449,6 +451,7 @@ async function sendUazApi(credentials: ChannelCredentials, message: OutboundMess
 async function sendDatafy(
   credentials: ChannelCredentials,
   message: OutboundMessage,
+  options?: SendTextOptions,
 ): Promise<SendResult> {
   const { phone_number_id, access_token } = credentials;
   const missing: string[] = [];
@@ -467,7 +470,7 @@ async function sendDatafy(
     body: { messaging_product: "whatsapp", recipient_type: "individual", to, type: "text", text: { body: message.text } },
   });
 
-  const response = await fetchProviderWithTimeout(url, init, 3);
+  const response = await fetchProviderWithTimeout(url, init, options?.retryPolicy === "none" ? 0 : 3);
   const errorCode = classifyDatafyStatus(response.status);
   if (errorCode === null) {
     const body = await response.json().catch(() => null);
@@ -680,11 +683,14 @@ export async function sendOutbound(
   provider: WhatsAppProvider,
   credentials: ChannelCredentials,
   message: OutboundMessage,
+  options?: SendTextOptions,
 ): Promise<SendResult> {
   const adapter = providerRegistry.tryGet(provider);
   if (!adapter) return { ok: false, error: `unknown_provider:${provider}` };
   try {
-    return await adapter.sendText(credentials, message);
+    return options
+      ? await adapter.sendText(credentials, message, options)
+      : await adapter.sendText(credentials, message);
   } catch (error) {
     jsonLog("error", {
       evt: "send_outbound_error",

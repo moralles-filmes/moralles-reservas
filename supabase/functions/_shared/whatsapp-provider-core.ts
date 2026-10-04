@@ -189,6 +189,9 @@ export interface ChannelCredentials {
   instance_token?: string;
 }
 
+/** Internal transport policy; never accepted from a message payload. */
+export interface SendTextOptions { retryPolicy: "none"; }
+
 export interface SendResult {
   ok: boolean;
   status?: number;
@@ -276,7 +279,7 @@ export interface WhatsAppProviderAdapter {
   parseStatusCallback(payload: any): StatusUpdate[] | null;
   // deno-lint-ignore no-explicit-any
   parseConnectionCallback?(payload: any): ProviderConnectionSnapshot | null;
-  sendText(credentials: ChannelCredentials, message: OutboundMessage): Promise<SendResult>;
+  sendText(credentials: ChannelCredentials, message: OutboundMessage, options?: SendTextOptions): Promise<SendResult>;
   /** Chamadas server-side após resolver conta, tenant e credenciais. */
   listTemplates?(credentials: ChannelCredentials, input: TemplateListInput): Promise<TemplatePage>;
   createTemplate?(credentials: ChannelCredentials, input: TemplateCreateInput): Promise<TemplateCreateOutcome>;
