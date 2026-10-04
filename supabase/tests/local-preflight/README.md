@@ -1089,6 +1089,20 @@ fence/lease originais vivos e nenhum provider ID, e consome permit privado únic
 para desfazer apenas a tentativa preparatória. Task9 fornece o switch confiável
 postAttempted imediatamente antes de chamar adapter/rede.
 
+Exclusão de voucher/fila/job preserva o slot e seu job_id técnico obrigatório e
+único, sem FK para o job: INSERT continua validando job real e escopo. Slot órfão
+accepted/uncertain mantém a janela capturada; reserved órfão protege até window_until
+mesmo com lease vencida. Só prepare ordenado pode recuperar a reserva órfã vencida
+via permit estreito. DELETE direto continua negado; privacidade customer/unit limpa
+também órfãos. SQL29 cobre ambas as cascatas nos três estados, bloqueio da promoção
+seguinte, recuperação após janela e cleanup hard/soft de cliente e de unidade.
+
+Após erasure, zero POST comprovado pode finalizar sob as mesmas guardas/permit:
+blocked/customer_not_alive, reduz só a tentativa preparada e limpa marcador/fence,
+preservando timestamp de erasure, NULL customer/render, identidade e TTL. Requeue e
+prepare permanecem negados; fence alheio, lease vencida, uncertain e provider ID
+não permitem reset. SQL29 executa esses caminhos reais sem restaurar dados pessoais.
+
 Trigger de deleted_at remove tokens/evidências/slots e apaga safe_log_body mesmo
 em accepted/uncertain, preservando fence/marcador/provider ID e timestamps
 técnicos. Exceção de freeze é SQL-verificada e não permite restaurar texto.

@@ -2,7 +2,7 @@ export type PromotionDecision = 'unknown' | 'opt_in' | 'opt_out';
 export function canSendPromotion(input: {decision: string | null; doNotContact: boolean; deletedAt: string | null}): boolean {
   return input.decision === 'opt_in' && input.doNotContact === false && input.deletedAt === null;
 }
-/** 32 bytes have four unused low bits in their final base64url character. */
+/** 32 bytes leave two unused low bits and four significant bits in the final base64url character. */
 export function isPreferenceToken(token: unknown): token is string {
   return typeof token === 'string' && /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(token);
 }

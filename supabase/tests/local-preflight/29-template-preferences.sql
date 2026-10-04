@@ -143,6 +143,99 @@ begin
   perform pg_temp.denied(format('select public.check_whatsapp_preference_rate(%L,101,60)',repeat('7',64)),'22023','rate configuration bounded');
   perform pg_temp.denied('update app_private.whatsapp_promotion_policy set window_days=0','23514','frequency policy bounded');
 end$$;
+-- Fix-round fixtures use the real enqueue/claim/prepare path on the adopted text unit.
+create function pg_temp.prepared_promotion(c uuid,kind text,phone text) returns jsonb language plpgsql as $$
+declare u uuid:='bbbbbbbb-0000-0000-0000-000000000003'; resource uuid:=gen_random_uuid(); j uuid; x jsonb; f uuid;
+begin
+  insert into public.customers(id,organization_id,name,phone) select c,organization_id,'Fix fixture',phone from public.units where id=u;
+  insert into public.whatsapp_message_consent_events(unit_id,customer_id,purpose,decision,source_code,evidence_reference,observed_at) values(u,c,'promotional','opt_in','individual_proof','fix-individual-proof',clock_timestamp());
+  if kind='voucher_issued' then insert into public.vouchers(id,unit_id,customer_id) values(resource,u,c);
+  else insert into public.waitlist(id,unit_id,customer_id,customer_phone,status) values(resource,u,c,phone,'seated'); end if;
+  j:=public.enqueue_whatsapp_automation(jsonb_build_object('unit_id',u,'kind',kind,case when kind='voucher_issued' then 'voucher_id' else 'waitlist_id' end,resource,'source_event_key','fix29','fact_at',clock_timestamp(),'expires_at',clock_timestamp()+interval '1 day'));
+  x:=public.claim_whatsapp_automation(j); f:=(x->>'claim_token')::uuid;
+  update public.whatsapp_automation_jobs set safe_log_body='Fix safe render' where id=j;
+  perform pg_temp.ok(public.prepare_whatsapp_automation_post(j,f,1,1,null),'fix actual prepare '||kind);
+  return jsonb_build_object('job',j,'fence',f,'resource',resource);
+end$$;
+-- I1: resource removal preserves frequency evidence for live customers.
+do $$declare
+  u uuid:='bbbbbbbb-0000-0000-0000-000000000003'; c uuid; x jsonb; y jsonb; j uuid; f uuid; resource uuid; slot_before jsonb; n integer; kind text; state text;
+begin
+  for n in 1..6 loop
+    c:=gen_random_uuid(); kind:=case when n%2=1 then 'voucher_issued' else 'waitlist_feedback' end;
+    state:=case when n<=2 then 'reserved' when n<=4 then 'accepted' else 'uncertain' end;
+    x:=pg_temp.prepared_promotion(c,kind,'11929'||lpad(n::text,6,'0')); j:=(x->>'job')::uuid; f:=(x->>'fence')::uuid; resource:=(x->>'resource')::uuid;
+    if state='accepted' then perform pg_temp.ok(public.finish_whatsapp_automation(j,f,'{"outcome":"accepted","reason":"provider_accepted","provider_message_id":"fix29-accepted"}'),'fix accepted before cascade');
+    elsif state='uncertain' then perform pg_temp.ok(public.finish_whatsapp_automation(j,f,'{"outcome":"uncertain","reason":"post_ambiguous"}'),'fix uncertain before cascade'); end if;
+    if state='reserved' then
+      update public.whatsapp_automation_jobs set claimed_until=clock_timestamp()-interval '1 second' where id=j;
+      update public.whatsapp_promotion_slots set claimed_until=clock_timestamp()-interval '1 second' where job_id=j;
+    end if;
+    select to_jsonb(s) into slot_before from public.whatsapp_promotion_slots s where job_id=j;
+    if kind='voucher_issued' then delete from public.vouchers where id=resource; else delete from public.waitlist where id=resource; end if;
+    perform pg_temp.ok(not exists(select from public.whatsapp_automation_jobs where id=j),'resource cascades job '||kind||'/'||state);
+    perform pg_temp.ok((select to_jsonb(s)=slot_before from public.whatsapp_promotion_slots s where job_id=j),'orphan captured slot unchanged '||state);
+    perform pg_temp.denied(format('delete from public.whatsapp_promotion_slots where job_id=%L',j),'23514','orphan direct DELETE denied '||state);
+    perform pg_temp.denied(format('insert into public.whatsapp_promotion_slots(unit_id,customer_id,job_id,claim_token,claimed_until,window_until) values(%L,%L,%L,%L,clock_timestamp()+interval ''1 minute'',clock_timestamp()+interval ''7 days'')',u,c,gen_random_uuid(),gen_random_uuid()),'23514','new slot requires real job');
+    -- The next real promotion has a different resource and is blocked by the orphan.
+    resource:=gen_random_uuid(); insert into public.vouchers(id,unit_id,customer_id) values(resource,u,c);
+    j:=public.enqueue_whatsapp_automation(jsonb_build_object('unit_id',u,'kind','voucher_issued','voucher_id',resource,'source_event_key','fix29-next','fact_at',clock_timestamp(),'expires_at',clock_timestamp()+interval '1 day'));
+    y:=public.claim_whatsapp_automation(j); f:=(y->>'claim_token')::uuid; update public.whatsapp_automation_jobs set safe_log_body='Next safe render' where id=j;
+    perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j,f,1,1,null),'orphan frequency blocks next '||state);
+    perform pg_temp.ok((select error_code='promotion_frequency' and attempts=0 and posting_started_at is null from public.whatsapp_automation_jobs where id=j),'orphan block consumes no POST');
+    if n%2=1 then delete from public.customers where id=c; else update public.customers set deleted_at=clock_timestamp() where id=c; end if;
+    perform pg_temp.ok(not exists(select from public.whatsapp_promotion_slots where customer_id=c),'hard/soft customer privacy removes orphan');
+  end loop;
+  -- Historic reserved row has already completed its captured window. Its INSERT
+  -- validates a real job; only subsequent resource removal makes it an orphan.
+  c:=gen_random_uuid(); insert into public.customers(id,organization_id,name,phone) select c,organization_id,'Expired slot fixture','11929000007' from public.units where id=u;
+  insert into public.whatsapp_message_consent_events(unit_id,customer_id,purpose,decision,source_code,evidence_reference,observed_at) values(u,c,'promotional','opt_in','individual_proof','expired-individual-proof',clock_timestamp());
+  resource:=gen_random_uuid(); insert into public.vouchers(id,unit_id,customer_id) values(resource,u,c);
+  j:=public.enqueue_whatsapp_automation(jsonb_build_object('unit_id',u,'kind','voucher_issued','voucher_id',resource,'source_event_key','fix29-old','fact_at',clock_timestamp(),'expires_at',clock_timestamp()+interval '1 day'));
+  insert into public.whatsapp_promotion_slots(unit_id,customer_id,job_id,state,claim_token,claimed_until,created_at,window_until,window_days) values(u,c,j,'reserved',gen_random_uuid(),clock_timestamp()+interval '1 minute',clock_timestamp()-interval '8 days',clock_timestamp()-interval '1 day',7);
+  delete from public.vouchers where id=resource;
+  resource:=gen_random_uuid(); insert into public.vouchers(id,unit_id,customer_id) values(resource,u,c);
+  j:=public.enqueue_whatsapp_automation(jsonb_build_object('unit_id',u,'kind','voucher_issued','voucher_id',resource,'source_event_key','fix29-reclaim','fact_at',clock_timestamp(),'expires_at',clock_timestamp()+interval '1 day'));
+  y:=public.claim_whatsapp_automation(j); f:=(y->>'claim_token')::uuid; update public.whatsapp_automation_jobs set safe_log_body='Reclaim safe render' where id=j;
+  perform pg_temp.ok(public.prepare_whatsapp_automation_post(j,f,1,1,null),'expired reserved orphan reclaimed by ordered prepare');
+  perform pg_temp.ok((select count(*)=1 and bool_and(job_id=j) from public.whatsapp_promotion_slots where unit_id=u and customer_id=c),'expired orphan replaced with current real job');
+  perform pg_temp.ok(not exists(select from app_private.whatsapp_promotion_slot_release_permits),'orphan reclaim consumed one-use permit');
+  delete from public.whatsapp_automation_jobs where id=j;
+  perform pg_temp.ok(exists(select from public.whatsapp_promotion_slots where job_id=j),'direct job removal preserves potentially posted slot');
+  delete from public.units where id=u;
+  perform pg_temp.ok(not exists(select from public.whatsapp_promotion_slots where unit_id=u),'unit privacy cascade removes orphans');
+end$$;
+-- I2 setup uses a separate adopted text unit, since I1 proves unit deletion.
+do $$declare
+  u uuid:='bbbbbbbb-0000-0000-0000-000000000003'; b uuid:=gen_random_uuid(); actor uuid; c uuid; x jsonb; j uuid; f uuid; old_job jsonb; erased timestamptz; n integer;
+begin
+  insert into public.units(id,organization_id,name) values(u,'aaaaaaaa-0000-0000-0000-000000000001','Fix text unit');
+  insert into public.whatsapp_channels(id,unit_id,provider,status,is_active,last_health_check_at) values(gen_random_uuid(),u,'zapi','connected',true,clock_timestamp());
+  insert into public.whatsapp_template_bindings(id,unit_id,channel_id,provider) select b,u,id,'zapi' from public.whatsapp_channels where unit_id=u;
+  select user_id into actor from public.platform_admins limit 1;
+  perform set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',actor)::text,true);
+  update public.whatsapp_template_bindings set adopted_at=clock_timestamp(),dispatch_enabled=true where id=b;
+  for n in 1..5 loop
+    c:=gen_random_uuid(); x:=pg_temp.prepared_promotion(c,'voucher_issued','11928'||lpad(n::text,6,'0')); j:=(x->>'job')::uuid; f:=(x->>'fence')::uuid;
+    select to_jsonb(z) into old_job from public.whatsapp_automation_jobs z where id=j;
+    if n=3 then update public.whatsapp_automation_jobs set claimed_until=clock_timestamp()-interval '1 second' where id=j;
+    elsif n=4 then perform pg_temp.ok(public.finish_whatsapp_automation(j,f,'{"outcome":"uncertain","reason":"post_ambiguous"}'),'adapter-invoked ambiguous before erasure');
+    elsif n=5 then perform pg_temp.ok(public.finish_whatsapp_automation(j,f,'{"outcome":"accepted","reason":"provider_accepted","provider_message_id":"erased-known-ID"}'),'provider ID before erasure'); end if;
+    update public.customers set deleted_at=clock_timestamp() where id=c;
+    select customer_erased_at into erased from public.whatsapp_automation_jobs where id=j;
+    if n=1 then
+      perform pg_temp.denied(format('update public.whatsapp_automation_jobs set state=''blocked'',error_code=''customer_not_alive'',posting_started_at=null,claim_token=null,claimed_until=null,attempts=0 where id=%L',j),'23514','erased direct reset lacks narrow permit');
+      perform pg_temp.ok(public.finish_whatsapp_automation(j,f,'{"outcome":"local_preflight_refused","reason":"final_resource_changed"}'),'erased known zero POST finishes');
+      perform pg_temp.ok((select state='blocked' and error_code='customer_not_alive' and attempts=0 and posting_started_at is null and claim_token is null and claimed_until is null and customer_id is null and safe_log_body is null and customer_erased_at=erased and expires_at=(old_job->>'expires_at')::timestamptz and voucher_id=(old_job->>'voucher_id')::uuid from public.whatsapp_automation_jobs where id=j),'erased zero POST clears attempt preserving erasure/identity/TTL');
+      perform pg_temp.ok(not public.requeue_whatsapp_automation(j) and not public.prepare_whatsapp_automation_post(j,f,1,1,null),'erased zero POST cannot requeue/prepare');
+      perform pg_temp.ok(not exists(select from public.whatsapp_promotion_slots where customer_id=c) and not exists(select from public.whatsapp_message_consent_events where customer_id=c) and not exists(select from public.whatsapp_message_preference_tokens where customer_id=c),'zero POST restores no personal stores');
+      perform pg_temp.ok(not exists(select from app_private.whatsapp_post_reset_permits),'erased reset permit consumed');
+    else
+      perform pg_temp.ok(not public.finish_whatsapp_automation(j,case when n=2 then gen_random_uuid() else f end,'{"outcome":"local_preflight_refused","reason":"final_resource_changed"}'),'erased reset denied wrong fence/expired/uncertain/ID '||n);
+      perform pg_temp.ok((select attempts=1 and posting_started_at is not null and claim_token=f and customer_erased_at=erased and customer_id is null and safe_log_body is null from public.whatsapp_automation_jobs where id=j),'denied erased reset preserves technical proof '||n);
+    end if;
+  end loop;
+end$$;
 set local role anon;
 select pg_temp.denied('select public.revoke_whatsapp_promotion(repeat(''1'',64))','42501','anon SQL capability RPC denied');
 select pg_temp.denied('select * from public.whatsapp_message_preference_tokens','42501','anon direct token reads denied');

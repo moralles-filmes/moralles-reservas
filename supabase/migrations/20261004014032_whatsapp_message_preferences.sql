@@ -139,6 +139,10 @@ revoke all on app_private.whatsapp_promotion_policy from public,anon,authenticat
 insert into app_private.whatsapp_promotion_policy(singleton,window_days) values(true,7) on conflict do nothing;
 alter table public.whatsapp_promotion_slots add column if not exists window_days integer not null default 7 check(window_days between 1 and 30);
 create unique index if not exists whatsapp_promotion_slots_unit_customer_idx on public.whatsapp_promotion_slots(unit_id,customer_id);
+-- Resource deletion may remove its job, but captured frequency evidence survives.
+-- Keep job_id mandatory/unique as historical technical identity; INSERT still
+-- verifies the actual job. Customer/unit privacy cascades remain authoritative.
+alter table public.whatsapp_promotion_slots drop constraint if exists whatsapp_promotion_slots_job_id_fkey;
 
 create or replace function public.prepare_whatsapp_automation_post(p_job_id uuid,p_fence uuid,p_generation bigint,p_consent_revision bigint,p_sync_epoch bigint)
 returns boolean language plpgsql security definer set search_path='' as $$
@@ -186,7 +190,8 @@ begin
   elsif j.kind in('waitlist_feedback','voucher_issued') and s.id is not null and
     ((s.state in('accepted','uncertain') and s.window_until>v_now) or
      (s.state='reserved' and exists(select from public.whatsapp_automation_jobs old_job where old_job.id=s.job_id and (old_job.posting_started_at is not null or old_job.state='uncertain'))) or
-     (s.state='reserved' and s.job_id<>j.id and s.claimed_until>v_now)) then v_error:='promotion_frequency';
+     (s.state='reserved' and s.window_until>v_now and not exists(select from public.whatsapp_automation_jobs old_job where old_job.id=s.job_id)) or
+     (s.state='reserved' and s.job_id<>j.id and s.claimed_until>v_now and exists(select from public.whatsapp_automation_jobs old_job where old_job.id=s.job_id))) then v_error:='promotion_frequency';
   elsif v_decision='opt_out' or p_consent_revision is distinct from v_revision then v_error:='consent_changed';
   elsif j.safe_log_body is null then v_error:='render_missing';
   elsif j.transport='template' and (a.id is null or a.organization_id<>j.organization_id or a.verified_at is null or b.verified_at is null or t.id is null or t.account_id<>j.account_id or t.version<>j.template_version or t.binding_generation<>a.binding_generation or t.sync_required or t.local_status<>'usable' or t.remote_status<>'APPROVED' or t.language<>'pt_BR' or t.remote_id is null or t.observed_hash is distinct from t.desired_hash or t.effective_category is distinct from t.requested_category or (t.requested_category='MARKETING' and t.quality='RED') or t.last_synced_at is null or t.last_synced_at<v_now-interval '60 seconds' or p_sync_epoch is distinct from t.sync_epoch) then v_error:='template_unavailable';
@@ -235,10 +240,10 @@ begin
   if j.state in('accepted','reconciled') then return v_outcome='accepted' and j.provider_message_id=v_id; end if;
   if j.state not in('posting','uncertain') then return false; end if;
   if v_outcome='local_preflight_refused' then
-    if j.state<>'posting' or j.claimed_until<=v_now or j.provider_message_id is not null or j.attempts<1 or j.customer_erased_at is not null then return false; end if;
+    if j.state<>'posting' or j.claimed_until<=v_now or j.provider_message_id is not null or j.attempts<1 then return false; end if;
     insert into app_private.whatsapp_post_reset_permits values(txid_current(),'whatsapp_automation_jobs',j.id,p_fence,j.attempts,j.posting_started_at);
-    update public.whatsapp_automation_jobs set state=case when v_reason='final_gate_paused' then 'paused' when v_reason in('final_channel_changed','final_resource_changed') then 'needs_review' else 'blocked' end,
-      posting_started_at=null,safe_log_body=null,claim_token=null,claimed_until=null,attempts=attempts-1,reconcile_required=false,error_code=v_reason where id=j.id and claim_token=p_fence;
+    update public.whatsapp_automation_jobs set state=case when j.customer_erased_at is not null then 'blocked' when v_reason='final_gate_paused' then 'paused' when v_reason in('final_channel_changed','final_resource_changed') then 'needs_review' else 'blocked' end,
+      posting_started_at=null,safe_log_body=null,claim_token=null,claimed_until=null,attempts=attempts-1,reconcile_required=false,error_code=case when j.customer_erased_at is not null then 'customer_not_alive' else v_reason end where id=j.id and claim_token=p_fence;
   elsif v_outcome='accepted' then
     update public.whatsapp_automation_jobs set state='accepted',provider_message_id=v_id,reconcile_required=true,error_code=null,finished_at=v_now where id=j.id and claim_token=p_fence;
   elsif v_outcome='uncertain' then
@@ -294,7 +299,7 @@ begin
     if old.posting_started_at is not null and new.posting_started_at is distinct from old.posting_started_at then
       v_reset:=new.posting_started_at is null and old.state='posting' and old.provider_message_id is null and new.provider_message_id is null and (
         (new.state='retry_wait' and old.provider='datafy' and new.claim_token=old.claim_token and new.attempts=old.attempts) or
-        (old.claimed_until>clock_timestamp() and new.state in('blocked','paused','needs_review') and new.error_code in('final_service_suspended','final_channel_changed','final_consent_changed','final_resource_changed','final_gate_paused') and new.claim_token is null and new.claimed_until is null and new.attempts=old.attempts-1)
+        (old.claimed_until>clock_timestamp() and ((new.state in('blocked','paused','needs_review') and new.error_code in('final_service_suspended','final_channel_changed','final_consent_changed','final_resource_changed','final_gate_paused')) or (old.customer_erased_at is not null and new.state='blocked' and new.error_code='customer_not_alive')) and new.claim_token is null and new.claimed_until is null and new.attempts=old.attempts-1)
       ) and app_private.consume_whatsapp_post_reset(tg_table_name,old.id,old.claim_token,old.attempts,old.posting_started_at);
       if not coalesce(v_reset,false) then raise exception 'automation_post_marker_immutable' using errcode='23514'; end if;
     end if;
