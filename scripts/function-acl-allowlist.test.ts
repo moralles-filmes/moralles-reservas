@@ -125,6 +125,39 @@ describe("RPCs internas de automação WhatsApp", () => {
   });
 });
 
+describe('Task9c service-only acceptance repair', () => {
+  it('keeps the atomic repair outside public caller metadata', () => {
+    const signature = 'reconcile_whatsapp_automation_acceptance(uuid)';
+    expect(allowlist._service_only_whatsapp_acceptance).toEqual([signature]);
+    expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261005145913_whatsapp_automation_acceptance_repair.sql'), 'utf8');
+    expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+    expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    expect(migration).toMatch(/security definer\s+set search_path\s*=\s*''/i);
+    expect(migration).not.toMatch(/grant\s+.*\s+to\s+(?:public|anon|authenticated)\s*;/i);
+  });
+});
+
+describe('Task9c final typed resource authority', () => {
+  it('keeps one private authority algorithm and closes all three signatures', () => {
+    const signature = 'confirm_whatsapp_automation_resource_post(uuid,uuid,bigint,bigint,bigint,jsonb)';
+    expect(allowlist._service_only_whatsapp_resource_confirm).toEqual([signature]);
+    expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+    const sql = readFileSync(join(MIGRATIONS_DIR, '20261005170415_whatsapp_automation_resource_post_confirm.sql'), 'utf8');
+    expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+    expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    for (const args of ['uuid,uuid,bigint,bigint,bigint,boolean', 'uuid,uuid,bigint,bigint,bigint,boolean,jsonb'])
+      expect(sql).toContain(`revoke all on function app_private.whatsapp_automation_post_core(${args}) from public,anon,authenticated,service_role;`);
+    expect(sql).not.toMatch(/drop\s+function|grant\s+.*\s+to\s+(?:public|anon|authenticated)\s*;/i);
+    expect(sql).not.toMatch(/create or replace function public\.(?:prepare|confirm)_whatsapp_automation_post\(/i);
+    expect(sql.match(/language plpgsql volatile security definer set search_path=''/g)).toHaveLength(2);
+    expect(sql).toContain('p_confirm_only,null)');
+    const decisions = sql.slice(sql.indexOf('v_now:=clock_timestamp()'), sql.indexOf('if v_error is not null then\n    update'));
+    expect(decisions).not.toMatch(/\b(?:from|join)\s+(?:public|app_private|pg_catalog)\./i);
+    expect(sql).not.toMatch(/\b(?:stable|immutable)\b/i);
+  });
+});
+
 describe('Task9b service-only dispatch prerequisites', () => {
   it('revokes both private helpers and the composite type without exposing an initializer', () => {
     const signatures = allowlist._service_only_whatsapp_dispatch_prerequisites as string[];

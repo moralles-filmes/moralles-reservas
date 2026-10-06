@@ -243,14 +243,18 @@ begin
     -- Positive mutation control: regress the actual shared core to accepting
     -- an alternate cost (lookup + identity), keeping all other eligibility and
     -- the real SQL clock. The unchanged expiry assertion above must catch it.
-    core_body:=pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)'::regprocedure);
+    -- MAIN110 keeps private6 as a SQL wrapper; the algorithm is private7.
+    core_body:=pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean,jsonb)'::regprocedure);
     mutated_body:=replace(core_body,'where id=j.cost_authorization_id for share;',format('where id=%L::uuid for share;',alternate));
+    perform pg_temp.ok(mutated_body<>core_body,'captured-cost mutation targets actual private lookup');
+    perform pg_temp.ok(position('(p_confirm_only and ca.id is distinct from j.cost_authorization_id)' in mutated_body)>0,'captured-cost mutation targets actual private identity');
     mutated_body:=replace(mutated_body,'(p_confirm_only and ca.id is distinct from j.cost_authorization_id)','false');
     perform pg_temp.ok(mutated_body<>core_body,'captured-cost mutation targets actual private core');
     execute mutated_body;
     perform pg_temp.ok(public.confirm_whatsapp_automation_post(j,f,1,1,e),'control: alternate lookup would wrongly authorize expired captured cost');
     raise sqlstate 'P0099';
   exception when sqlstate 'P0099' then null; end;
+  perform pg_temp.ok(pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean,jsonb)'::regprocedure)=core_body,'captured-cost mutation restores actual private algorithm');
   perform pg_temp.ok(true,'actual captured cost expiry control completed and rolled back');
   insert into public.whatsapp_template_cost_authorizations(account_id,binding_id,binding_generation,category,valid_from,valid_until,actor_id) values(a,b,1,'MARKETING',clock_timestamp()-interval '1 minute',clock_timestamp()+interval '2 hours',actor) returning id into cost;
   perform set_config('request.jwt.claims','{"role":"service_role"}',true);

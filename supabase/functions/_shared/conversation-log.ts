@@ -36,6 +36,41 @@ export interface AppendOutboundResult {
   reason?: string;
 }
 
+export type AutomationAcceptanceRepair =
+  | { state: "reconciled"; history: "recorded" | "skipped_no_customer" | "skipped_erased" }
+  | { state: "not_accepted"; reason: "job_not_found" | "acceptance_not_recorded" }
+  | { state: "deferred"; reason: "acceptance_evidence_missing" | "acceptance_identity_changed" |
+      "customer_scope_invalid" | "notification_channel_missing" | "notification_conflict" | "dependency_unavailable" };
+
+/** One atomic SQL transaction; never follow this with the legacy append helper. */
+export async function repairAcceptedAutomation(params: {
+  supabase: { rpc(name: "reconcile_whatsapp_automation_acceptance", args: { p_job_id: string }): PromiseLike<{ data: unknown; error: unknown }> };
+  jobId: string;
+}): Promise<AutomationAcceptanceRepair> {
+  try {
+    const { data, error } = await params.supabase.rpc("reconcile_whatsapp_automation_acceptance", { p_job_id: params.jobId });
+    if (error || typeof data !== "object" || data === null || Array.isArray(data)) {
+      return { state: "deferred", reason: "dependency_unavailable" };
+    }
+    if ("state" in data && data.state === "reconciled" && "history" in data &&
+      (data.history === "recorded" || data.history === "skipped_no_customer" || data.history === "skipped_erased")) {
+      return { state: "reconciled", history: data.history };
+    }
+    if ("state" in data && data.state === "not_accepted" && "reason" in data &&
+      (data.reason === "job_not_found" || data.reason === "acceptance_not_recorded")) {
+      return { state: "not_accepted", reason: data.reason };
+    }
+    if ("state" in data && data.state === "deferred" && "reason" in data) {
+      switch (data.reason) {
+        case "acceptance_evidence_missing": case "acceptance_identity_changed": case "customer_scope_invalid":
+        case "notification_channel_missing": case "notification_conflict":
+          return { state: "deferred", reason: data.reason };
+      }
+    }
+  } catch { /* SQL/transport errors carry no safe client diagnostics. */ }
+  return { state: "deferred", reason: "dependency_unavailable" };
+}
+
 export async function appendOutboundToConversation(
   params: AppendOutboundParams,
 ): Promise<AppendOutboundResult> {

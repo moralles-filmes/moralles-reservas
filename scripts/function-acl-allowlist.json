@@ -51,6 +51,12 @@
     "confirm_whatsapp_automation_post(uuid,uuid,bigint,bigint,bigint)",
     "block_whatsapp_automation_preflight(uuid,uuid,text)"
   ],
+  "_service_only_whatsapp_acceptance": [
+    "reconcile_whatsapp_automation_acceptance(uuid)"
+  ],
+  "_service_only_whatsapp_resource_confirm": [
+    "confirm_whatsapp_automation_resource_post(uuid,uuid,bigint,bigint,bigint,jsonb)"
+  ],
   "_service_only_whatsapp_automation": [
     "enqueue_whatsapp_automation(jsonb)",
     "claim_whatsapp_automation(uuid)",

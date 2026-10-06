@@ -1258,3 +1258,204 @@ anteriores e imutável nas novas. Após vinculação, prepare/confirm comparam a
 revisão verificada atual do binding com a do canal; Task13 deverá revalidar
 explicitamente a identidade existente sem reescrever esse fato histórico.
 Task9b não inclui dispatcher, produtor ou inicializador administrativo.
+
+### Task9c — projeções atômicas locais do aceite (38–40)
+
+Os resultados das execuções locais ficam no relatório de evidências do scratch
+`.superpowers/sdd/2026-10-03-whatsapp-templates-programados/task-9c-resume-final-evidence.md`.
+
+O setup `38-automation-acceptance-testsetup.mjs` é um delta exclusivo do projeto
+descartável `moralles-templates-20261003`, depois do bootstrap25 e deltas anteriores.
+Recusa overrides/context Docker remoto; exige named-pipe local, container próprio
+Running, label exata e porta DB55452 antes de enviar SQL. Não lê chaves, arquivos
+de ambiente ou Auth; não usa HTTP nem reaplica migrations históricas completas.
+
+```powershell
+node supabase/tests/local-preflight/38-automation-acceptance-testsetup.mjs --source-check
+node supabase/tests/local-preflight/38-automation-acceptance-testsetup.mjs
+```
+
+O primeiro comando verifica apenas a extração de oito statements originais da
+migration de paridade: CREATE/REVOKE/GRANT/COMMENT de `append_conversation_message`
+e `get_or_create_whatsapp_conversation`. Não é prova SQL/ACL. O segundo aplica
+duas vezes o mesmo setup em transações e confere corpos, ACLs e catálogo. Cria o
+schema mínimo de conversations, sem unique unit/customer inventada, e corrige
+somente os deltas documentados de notifications: unit RESTRICT, canal SET NULL,
+provider com Datafy e unique parcial waitlist/kind. Schema inesperado ou órfãos
+causam falha; o script não limpa dados para forçar aprovação.
+
+Depois do setup, copiar **somente** a migration nova gerada pela CLI
+`20261005145913_whatsapp_automation_acceptance_repair.sql` para o workspace local
+já preparado e usar `supabase db push --local --workdir <workspace-local>`.
+Conferir o dry-run e o hash antes da aplicação; nunca aplicar todo o histórico
+de produto. Executar `38-automation-acceptance-repair.sql` por stdin do psql no
+mesmo container validado, com `-X -v ON_ERROR_STOP=1`, e preservar a saída/exit code.
+
+SQL38 usa os helpers reais importados para verificar notificação/histórico no
+mesmo commit, pins/unique/FK, conservação de delivered/read/failure, dedupe,
+rollback de append e reparo técnico após o trigger real de apagamento. O arquivo
+inteiro termina em ROLLBACK, portanto conserva inclusive a ausência e o valor
+original de flags (não as altera). `reconciled` aqui significa projeção local;
+recibos reais e callback antecipado continuam Task12. As provas de duas sessões
+39 e JWT/REST40 verificam concorrência e identidade por caminhos distintos.
+Nenhum destes comandos ou scripts isolados atesta a tarefa completa,
+RLS integral de produção, fornecedor real ou atendimento.
+# Task9c acceptance continuation gates (38–40)
+
+Do not execute until MAIN confirms the existing `moralles-templates-20261003`
+stack READY. The only API is `http://127.0.0.1:55451`, database port `55452`.
+No reset/full history replay or linked/root project command is permitted.
+
+1. Run the reviewed `38-automation-acceptance-testsetup.mjs` (source-check alone
+   is not SQL/ACL/body proof).
+2. Copy only the exact root `20261005145913_whatsapp_automation_acceptance_repair.sql`
+   to this task's `local-runtime/supabase/migrations`, compare SHA256, and use
+   `supabase db push --dry-run --local --workdir` with that exact runtime. Require
+   the exact reviewed pending list before the corresponding local push. MAIN110
+   below extends this package to the acceptance and resource migrations only.
+3. Run SQL38 with ON_ERROR_STOP and retain its ROLLBACK/assertion output.
+4. Run `39-automation-acceptance-repair-concurrency.sh` with the fixed
+   `TASK_DOCKER` Desktop executable and
+   `TASK_DB_CONTAINER=supabase_db_moralles-templates-20261003`. It observes actual
+   blocked sessions, both native exits, erasure acquisition orders, two repairs,
+   customer/slot-before-job NOWAIT controls, two specifically observed advisory
+   waits, cross-conversation repeats after a real deferral, and transaction rollback. Outputs
+   remain under this plan's safe scratch directory. It never writes a flag.
+5. Review the exact `40-automation-acceptance-repair-jwt.mjs` before execution.
+   The script verifies local named pipe, running project/container and port
+   before reading generated local keys into memory. Genuine GoTrue users cover
+   owner/gerente/operador/platform admin without membership/foreign/outsider;
+   anon and all JWT roles must be denied service-only repair and direct writes.
+   Service POSTgREST calls exercise finish/repair/idempotence after a second
+   legitimate conversation becomes newer, with one event across the exact pair.
+   No token, password,
+   key, response body or raw process error is printed. Flags remain untouched,
+   preserving original absence and exact JSON. Request-loader endpoint controls
+   are separate from this direct RPC gate.
+
+Node/Bash syntax and lint establish only script validity; they do not replace
+SQL38/39/40 execution or identical migration reapplication evidence.
+
+MAIN109 adds no conversation uniqueness or persistent pin. The repair uses the
+historical unit/customer advisory key before searching the pair for its stable
+event; only an absent event reaches the real get/create and append helpers.
+SQL38 covers foreign-unit/customer decoys, A already containing the event, newer
+B, and repetition after real notification-conflict deferral, preserving complete
+notification/conversation snapshots. The setup's shared catalog guard rejects a
+unique unit/customer pair in either key order, including partial/INCLUDE variants,
+using pg_index key attributes; temporary SQL controls exercise the same guard.
+It never drops an unknown real index. The expected unit/wa_chat_lid partial unique
+remains unchanged. Source-check prints guard/control hashes but executes no SQL.
+
+For a guarded RED/GREEN run, first verify MAIN readiness, owned stack,
+reviewed exact sources and hashes. Save the installed new function body, then use
+one isolated psql transaction to install only the reviewed old CREATE FUNCTION
+body from the scratch snapshot (no migration replay/COMMIT), run SQL38 with its
+outer BEGIN/ROLLBACK removed, and require the new cross-conversation assertion
+to fail. ON_ERROR_STOP plus session exit rolls back both old body and fixtures.
+Abort if it passes or fails for another reason; verify the installed new body is
+unchanged. Then execute unmodified SQL38 against the new body and require all
+assertions plus ROLLBACK, followed by reviewed39/40 and exact reapplication proof.
+The old snapshot, hashes and detailed controlled procedure live in
+`.superpowers/sdd/2026-10-03-whatsapp-templates-programados/task-9c-history-dedupe-fix-report.md`.
+No SQL RED/GREEN, index refusal, race or JWT result is claimed before execution.
+
+# Task9c final resource continuation (41–43)
+
+The offline runtime suite uses scripted RPC outcomes and actual imported factories/
+Request handlers. It does not execute or emulate the shared SQL authority core.
+
+After MAIN READY, review exact hashes and the existing own-stack guards, then run:
+
+```powershell
+node supabase/tests/local-preflight/41-automation-resource-confirm-testsetup.mjs --source-check
+node supabase/tests/local-preflight/41-automation-resource-confirm-testsetup.mjs
+node supabase/tests/local-preflight/43-automation-resource-confirm-jwt.mjs
+```
+
+The source-check reads only two historical DDL fragments and hashes the generated
+bridge; it never starts Docker or executes SQL. The actual setup requires the
+fixed Desktop executable, local named pipe, running exact project/container and
+DB55452, refuses daemon/argument overrides, uses SQL stdin/ON_ERROR_STOP and
+timeouts, and applies the same bridge twice in transactions. It never reads keys,
+uses HTTP, changes old seeds, replays whole historical migrations or supplies RPC
+standins. New voucher_rules uses the actual full historical small DDL and actual
+after_rating min_rating CHECK, without producer/cron/policy/backfill replay.
+
+Before the SQL gates, copy only the reviewed root migrations
+`20261005145913_whatsapp_automation_acceptance_repair.sql` and
+`20261005170415_whatsapp_automation_resource_post_confirm.sql` into the prepared
+local runtime. Compare exact SHA256. The own-runtime CLI dry-run must match the
+reviewed pending list (these two, or the resource migration alone if acceptance
+was already applied); no unrelated delta may proceed. Use the existing guarded
+`supabase db push --local --workdir <workspace-local>` only after that verification.
+Do not reset, include full history, use root/linked project or run production.
+
+Run SQL41 by stdin with `-X -v ON_ERROR_STOP=1` in the same validated container;
+it ends in ROLLBACK and restores original flag absence/value transactionally.
+Run `42-automation-resource-confirm-concurrency.sh` through Bash with no arguments.
+Its own fixed guards reject alternate daemons/containers, observe actual blocking
+PIDs and collect both native session exits before cleanup. It crosses customer
+lease, resource-relation TTL, cost-parent validity and template freshness waits,
+and verifies a current source committed after the parent wait is freshly read.
+Job NOWAIT controls establish customer/cost waits before job acquisition. Confirm
+must remain readonly, with no fence/claim renewal, resource row lock or provider
+POST. It restores the exact original dispatch flag row, including absence/JSON,
+using psql's literal quoting; local fixture cleanup first uses actual privacy
+erasure to remove its reserved slot. Raw session outputs stay in SDD scratch.
+
+Script43 must be reviewed before execution. Only after the own-stack guards does
+it read generated local keys into memory. Real GoTrue sessions cover anon, owner,
+gerente, operador, platform admin without membership, foreign member and outsider;
+all are denied the service-only public six-argument RPC. The installed SDK and
+actual PostgREST projections cover strict closed results, time/timestamptz/null
+equality, unknown operational customer, invalid schema, wrong fence, current
+source drift and readonly job, plus private7 ACL/nonexposure. No key/password/
+token/raw response/error is printed, redirects and remote origins are refused,
+users/resources and exact original flag row are cleaned even after a failure.
+
+Bridge exceptions are deliberate: new units.slug/timezone, reservation date/time/
+source/party_size/reservation_code, waitlist.party_size/created_at, voucher code/
+discount_percent/issued_at/created_at/expires_at stay nullable while production
+DDL marks them NOT NULL. New nullable fields already nullable in production are
+payment_status, satisfaction_rating, waitlist.code/seated_at and vouchers.rule_id.
+ADD happens without defaults first; appropriate timezone/source/created/issued
+defaults affect future inserts only. No business fact or timestamp is backfilled.
+All41–43 seeds supply their real fields explicitly; NULL/missing mandatory current
+facts refuse, and an expected NULL in required domain returns snapshot_invalid.
+
+Inherited25 deviations remain: confirmed reservation default without status CHECK,
+customer.org/reservation.unit CASCADE where historical production uses RESTRICT,
+nullable waitlist.customer_name and missing defaults on several old UUID keys.
+Existing customer.name is NOT NULL in this fixture; current-real-NULL name parity
+is not claimed (runtime capture/equality tests and SQL expected NULL difference are
+separate). Customer normalization and waitlist seated_at timestamp triggers are
+not imported by41: seeds explicitly supply phone and seated_at. RLS, full NN/FK/
+trigger/history/Advisor parity are outside this bridge. Existing data, old status/
+defaults/FKs, unknown indexes and35–40 fixtures are not rewritten to force parity.
+Added checks/unique keys/new rule FK reject bad existing rows/duplicates/orphans;
+their catalog checks and two-pass idempotence require actual SQL execution.
+
+SQL41 covers six real kinds, every captured field drift, closed expected schema,
+DDD55, typed dates/time/timestamps, setting absence versus JSONnull, raw-null
+unit/customer assertions, lowercase IANA positives/invalid negative, and current
+start/day/benefit expiry with matching facts. It compares old public5/private6
+positive/negative/invalid-flag ordering and new private7/public6 ACLs; superuser
+catalog checks do not replace real JWT43. Its positive reminder fixture explicitly
+refuses a BRT run at or after23:50 to avoid silently crossing the fixture's day.
+
+Required local verification:35/36/JWT37, setup38/SQL38/race39/JWT40 regressions, setup41
+two passes, SQL41/race42/JWT43, exact migration reapplication/body/ACL, and the
+reviewed MAIN109 old-body RED rollback followed by current-body GREEN. Known
+36/37 flag-cleanup debt belongs to Task15; scratch wrapper protection does not
+permanently repair those scripts. Retain all
+native exits. Source/syntax/lint/Vitest/Deno results are not these DB gates.
+
+The new VOLATILE private seven-argument core is the single authority implementation;
+the old six-argument boolean wrapper delegates with SQL NULL, leaving old public5
+interfaces unchanged. Final time is sampled after all relation reads/waits, then
+ownership/lease negatives precede legacy malformed-flag errors. Authority expiring
+during reads is conservatively refused without renewal. Snapshot assertions are
+transient and equality-only; no PII/pin/snapshot store was added. The last awaited
+RPC closes the observed async resource window, but ordinary resource writers have
+no shared row lock: SQL read/commit to external POST remains a concurrency window.
