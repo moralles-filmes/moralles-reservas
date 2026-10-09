@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, useLocation, matchPath } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
@@ -20,6 +20,7 @@ const MenuPortal = lazy(() => import("./pages/MenuPortal"));
 const AcompanharReserva = lazy(() => import("./pages/AcompanharReserva"));
 const Auth = lazy(() => import("./pages/Auth"));
 const ResetPassword = lazy(() => import("./pages/ResetPassword"));
+const PreferenciasMensagens = lazy(() => import("./pages/public/PreferenciasMensagens"));
 
 // ── Gestão ────────────────────────────────────────────────────────────────────
 const GDashboard = lazy(() => import("./pages/gestao/Dashboard"));
@@ -190,6 +191,12 @@ function AdminRedirect({ to }: { to: string }) {
   return <div className="p-6"><Skeleton className="h-8 w-48" /></div>;
 }
 
+function PreferenceAuthBoundary({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation();
+  const isPreferenceRoute = !!matchPath({ path: "/preferencias/mensagens/:token", end: true, caseSensitive: true }, pathname);
+  return isPreferenceRoute ? <>{children}</> : <AuthProvider>{children}</AuthProvider>;
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
@@ -202,7 +209,7 @@ export default function App() {
       >
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-        <AuthProvider>
+        <PreferenceAuthBoundary>
           <Suspense fallback={<PageLoader />}>
             <Routes>
               {/* ── Public ─────────────────────────────────────────────── */}
@@ -211,6 +218,7 @@ export default function App() {
               <Route path="/w/:slug" element={<WidgetPortal />} />
               <Route path="/m/:slug" element={<MenuPortal />} />
               <Route path="/acompanhar/:token" element={<AcompanharReserva />} />
+              <Route path="/preferencias/mensagens/:token" caseSensitive element={<PreferenciasMensagens />} />
               <Route path="/admin/login" element={<Auth />} />
               <Route path="/reset-password" element={<ResetPassword />} />
 
@@ -294,7 +302,7 @@ export default function App() {
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
-        </AuthProvider>
+        </PreferenceAuthBoundary>
         </BrowserRouter>
         <Toaster richColors position="top-right" />
       </QueryClientProvider>

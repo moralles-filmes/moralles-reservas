@@ -65,7 +65,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [memberships, setMemberships] = useState<UserMembership[]>([]);
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const orphanLogoutInFlight = useRef(false);
+  const mounted = useRef(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   useEffect(() => {
     const loadMemberships = async (u: User) => {
@@ -133,7 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       orphanLogoutInFlight.current = true;
       toast.info("Sua conta não tem mais acesso a nenhuma unidade. Faça login novamente.");
       supabase.auth.signOut().finally(() => {
-        navigate("/admin/login", { replace: true });
+        if (mounted.current) navigate("/admin/login", { replace: true });
       });
     }
   }, [loading, user, memberships, isPlatformAdmin, navigate]);
