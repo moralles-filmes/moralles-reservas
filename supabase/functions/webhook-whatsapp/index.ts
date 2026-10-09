@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { admitAutomationReceipts } from "../_shared/whatsapp-automation-receipts.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   runAgentLoop,
@@ -2420,7 +2421,7 @@ async function handleWebhookRequest(
     // para TODO inbound de TODO canal.
     const { data: channel, error: channelErr } = await supabase
       .from("whatsapp_channels")
-      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled")
+      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, template_credential_revision, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled")
       .eq("id", channelId)
       .maybeSingle();
 
@@ -2571,26 +2572,46 @@ async function handleWebhookRequest(
     // tenants. Vale para todo provider Meta-shaped, não só "official".
     // Only management-bearing envelopes load the backend WABA binding/catalog.
     // Message/status/echo-only deliveries preserve their existing identity path.
-    const templateEvents = isMetaShapedProvider(provider)
-      ? await createTemplateEventRuntime(supabase).process(payload, {
+    const preparedTemplates = isMetaShapedProvider(provider)
+      ? await createTemplateEventRuntime(supabase).prepare(payload, {
         id: channel.id, unit_id: channel.unit_id, provider,
         phoneNumberId: credentials.phone_number_id ?? "",
       }, new Date().toISOString())
       : { kind: "chat" as const };
-    if (templateEvents.kind === "refused") {
-      if (templateEvents.status === 401) {
+    if (preparedTemplates.kind === "refused") {
+      if (preparedTemplates.status === 401) {
         await finish("webhook_unauthorized", undefined, { reason: "template_batch_invalid" });
         return new Response("unauthorized", { status: 401 });
       }
       await finish("template_dependency_unavailable");
       return new Response("template unavailable", { status: 503 });
     }
-    const managementPersisted = templateEvents.kind === "persisted";
-    if (!managementPersisted && isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(payload, credentials)) {
+    if (preparedTemplates.kind !== "prepared" && isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(payload, credentials)) {
       jsonLog("warn", { requestId, evt: "webhook_channel_identity_mismatch", channelId, provider });
       await finish("webhook_unauthorized", undefined, { reason: "meta_identity_mismatch" });
       return new Response("unauthorized", { status: 401 });
     }
+
+    // Whole original envelope admission precedes ACK/split and any WABA write.
+    // Trusted queue/split children consume evidence already admitted by their parent.
+    if (ingestionSource === "provider" && !trustedMetaPayload) {
+      const originalStatuses = parseStatusCallback(provider, payload);
+      if (originalStatuses?.length) {
+        const receiptAdmission = await admitAutomationReceipts(supabase, channel, payload, originalStatuses, channel.webhook_secret);
+        if (receiptAdmission.kind === "refused") {
+          await finish(receiptAdmission.reason);
+          return new Response(receiptAdmission.reason, { status: receiptAdmission.status });
+        }
+      }
+    }
+    // Receipt admission and WABA are separate transactions: an error here keeps
+    // admitted receipt evidence pending, and provider redelivery dedupes it.
+    const templateEvents = preparedTemplates.kind === "prepared" ? await preparedTemplates.commit() : preparedTemplates;
+    if (templateEvents.kind === "refused") {
+      await finish("template_dependency_unavailable");
+      return new Response("template unavailable", { status: 503 });
+    }
+    const managementPersisted = templateEvents.kind === "persisted";
 
     if (templateEvents.kind === "persisted" && !templateEvents.hasChat) {
       await finish("template_events_persisted", undefined, { count: templateEvents.count });

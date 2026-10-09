@@ -184,3 +184,6 @@ export function classifyAutomationOutcome(input: { provider: string; status?: nu
 export function automationRetryDelayMs(postAttempts: number): number | null {
   return Number.isInteger(postAttempts) && postAttempts >= 1 && postAttempts < 5 ? 60_000 * 4 ** (postAttempts - 1) : null;
 }
+
+/** Worker-facing name; retry authority remains the existing single ladder. */
+export const nextRetryDelay = automationRetryDelayMs;

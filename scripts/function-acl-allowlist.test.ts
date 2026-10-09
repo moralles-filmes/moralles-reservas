@@ -178,6 +178,45 @@ describe('Task9c service-only acceptance repair', () => {
   });
 });
 
+describe('Task12 receipt authority and surgical expiry additions', () => {
+  const sql = readFileSync(join(MIGRATIONS_DIR, '20261009135808_whatsapp_automation_worker_cron.sql'), 'utf8');
+  it('revokes all four roles before the minimum caller grants and closes direct retention writes', () => {
+    const signatures = allowlist._service_only_whatsapp_automation_receipts_worker as string[];
+    expect(signatures).toHaveLength(4);
+    for (const signature of signatures) {
+      expect(allEntries.some(e => e.name === signature.split('(')[0])).toBe(false);
+      expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    expect(sql).toContain('revoke insert,delete on public.whatsapp_automation_receipt_events from public,anon,authenticated,service_role;');
+    expect(sql).toContain('revoke delete on public.whatsapp_automation_jobs from public,anon,authenticated,service_role;');
+    expect(sql).toContain('grant execute on function public.get_whatsapp_automation_delivery_state(uuid,integer,integer) to authenticated;');
+    expect(sql).toContain('revoke all on function public.trigger_whatsapp_automation_worker() from public,anon,authenticated,service_role;');
+  });
+  const definition = (source: string, name: string) => {
+    const start = source.indexOf(`create or replace function ${name}(`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = source.indexOf('end $$;', start);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end + 7).replace(/\s+/g, ' ').trim();
+  };
+  const withoutFinish = (source: string) => source.replace(/,\s*finished_at=case when (?:v_reason|v_error)='expired' then coalesce\(finished_at,v_now\) else finished_at end/g, '');
+  it('preserves every other token of the current block and seven-argument authoritative post body', () => {
+    for (const [file, name] of [
+      ['20261004184738_whatsapp_automation_dispatch_prerequisites.sql', 'public.block_whatsapp_automation_preflight'],
+      ['20261005170415_whatsapp_automation_resource_post_confirm.sql', 'app_private.whatsapp_automation_post_core'],
+    ]) {
+      const original = definition(readFileSync(join(MIGRATIONS_DIR, file), 'utf8'), name);
+      const changed = definition(sql, name);
+      expect(changed).not.toBe(original);
+      expect(withoutFinish(changed)).toBe(original);
+      expect(withoutFinish(changed.replace('v_now:=clock_timestamp()', 'v_now:=now()'))).not.toBe(original);
+    }
+    expect(sql).toContain('revoke all on function app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean,jsonb) from public,anon,authenticated,service_role;');
+    expect(sql).not.toMatch(/grant[^;]+app_private\.whatsapp_automation_post_core/i);
+  });
+});
+
 describe('Task9c final typed resource authority', () => {
   it('keeps one private authority algorithm and closes all three signatures', () => {
     const signature = 'confirm_whatsapp_automation_resource_post(uuid,uuid,bigint,bigint,bigint,jsonb)';

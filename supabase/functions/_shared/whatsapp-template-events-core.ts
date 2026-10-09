@@ -152,10 +152,12 @@ export interface TemplateEventDependencies {
 export type TemplateEventResult = { kind: 'chat' } | { kind: 'persisted'; hasChat: boolean; count: number }
   | { kind: 'refused'; status: 401; reason: 'template_batch_invalid' }
   | { kind: 'refused'; status: 503; reason: 'template_dependency_unavailable' };
+type PreparedTemplateEvents = Exclude<TemplateEventResult, { kind: 'persisted' }>
+  | { kind: 'prepared'; hasChat: boolean; commit(): Promise<TemplateEventResult> };
 /** Called only after raw signature verification. No management event enters atendimento. */
 export function createTemplateEventService(deps: TemplateEventDependencies) {
-  return {
-    async process(payload: unknown, channel: TemplateEventChannel, observedAt: string): Promise<TemplateEventResult> {
+  const service = {
+    async prepare(payload: unknown, channel: TemplateEventChannel, observedAt: string): Promise<PreparedTemplateEvents> {
       const family = inspectTemplateEventFamilies(payload);
       if (family === 'chat') return { kind: 'chat' };
       if (family === 'unsupported') return { kind: 'refused', status: 401, reason: 'template_batch_invalid' };
@@ -175,13 +177,27 @@ export function createTemplateEventService(deps: TemplateEventDependencies) {
         if (!validated.ok) return { kind: 'refused', status: 401, reason: 'template_batch_invalid' };
         const catalog = await deps.loadCatalog(authority.accountId);
         const events = await sanitizeTemplateEvents(validated.management, catalog, observedAt);
-        // One transaction: sanitized records, dedupe, epochs/revision and reconciliation job.
-        await deps.persistTemplateEvents({ capture: authority, events });
-        return { kind: 'persisted', hasChat: validated.hasChat, count: events.length };
+        // Captured values never leave this closure. Callers cannot forge a prepared DTO.
+        const capture = Object.freeze({ ...authority });
+        const capturedEvents = events.map(event => Object.freeze({ ...event }));
+        Object.freeze(capturedEvents);
+        return Object.freeze({ kind: 'prepared' as const, hasChat: validated.hasChat,
+          async commit(): Promise<TemplateEventResult> {
+            try {
+              await deps.persistTemplateEvents({ capture, events: capturedEvents });
+              return { kind: 'persisted', hasChat: validated.hasChat, count: capturedEvents.length };
+            } catch { return { kind: 'refused', status: 503, reason: 'template_dependency_unavailable' }; }
+          },
+        });
       } catch {
         // Do not leak provider JSON, SQL messages, component text or rejection reasons.
         return { kind: 'refused', status: 503, reason: 'template_dependency_unavailable' };
       }
     },
+    async process(payload: unknown, channel: TemplateEventChannel, observedAt: string): Promise<TemplateEventResult> {
+      const prepared = await service.prepare(payload, channel, observedAt);
+      return prepared.kind === 'prepared' ? prepared.commit() : prepared;
+    },
   };
+  return service;
 }

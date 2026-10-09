@@ -1580,3 +1580,30 @@ Business eligibility remains the existing producer's read-time selection. Suppre
 birthday/giftback benefits remain voucher-only, suspended frequency remains skipped,
 and never-adopted/after_rating/manual behavior is preserved. No backlog or replay
 authority is introduced.
+
+### Task12 — durable receipts and bounded worker (52–55)
+
+ROOT runs 52 only after the established 25/41/48 schema bridge; it verifies
+dependencies and persisted quarantine, then persistently adds only the historical
+nullable-text `whatsapp_channels.external_instance_id` column (MAIN133; source
+20260817170753:46). It asserts type, nullability, no default and retained RLS/FORCE
+RLS; reapplication is harmless. All other prerequisites, including the real Vault
+writer/revision trigger, are assertions. This disposable bridge does not establish
+full production schema parity or replay historical migrations.
+Apply the CLI-created 20261009135808 migration using the existing local CLI flow,
+quarantine both exact worker schedules again, then run 53, 54 and 55 sequentially.
+No Edge worker may be running; flag OFF alone is insufficient for maintenance.
+
+53 rolls back SQL fixtures and checks admission, allocation, repair, retention and
+authorized projection. 54 uses independent PostgreSQL sessions, observed blockers
+and native outcomes; raw logs survive cleanup. SKIP LOCKED controls prove fast
+retention/selection, not a mandatory wait. Unsupported isolation controls include
+eligible old rows and require exact 0A000 before effects. Same-day waits prove
+post-lock clocks, not physical midnight. 55 uses real loopback GoTrue/PostgREST/SDK
+with all membership roles, platform admin, foreign/outsider, anon and service JWTs;
+only ROOT may read the generated local keys in memory. No provider is contacted.
+
+Focused Request tests use actual entrypoints and internal dispatcher hops with
+synthetic I/O. They do not replace 52–55, actual ACL inspection, migration reapply,
+cron restoration or the independent review. Preserve each native log and report
+unexecuted gates explicitly; full repository suites remain Task15.

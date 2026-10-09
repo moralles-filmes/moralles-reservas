@@ -193,6 +193,24 @@ describe('factory usada pelo webhook: barreira durável antes de ACK', () => {
     expect(splitMetaWebhookPayloadCore(payload)).toEqual([batch([chat()])]);
     expect(splitMetaWebhookPayloadCore(batch([management]))).toEqual([]);
   });
+  it('prepare freezes the private sanitized capture without effects until commit', async () => {
+    const { authority, deps, service } = fixture();
+    const payload = batch([event({ event: 'PAUSED' }), chat()]);
+    const prepared = await service.prepare(payload, channel, observedAt);
+    expect(prepared.kind).toBe('prepared');
+    expect(deps.persistTemplateEvents).not.toHaveBeenCalled();
+    if (prepared.kind !== 'prepared') throw new Error('expected preparation');
+    expect(Object.isFrozen(prepared)).toBe(true);
+    authority.unitId = 'later-mutated-unit';
+    payload.entry[0].changes.splice(0);
+    expect(await prepared.commit()).toEqual({ kind: 'persisted', hasChat: true, count: 1 });
+    const captured = vi.mocked(deps.persistTemplateEvents).mock.calls[0][0];
+    expect(captured.capture.unitId).toBe(channel.unit_id);
+    expect(captured.events[0].remote_status).toBe('PAUSED');
+    expect(Object.isFrozen(captured.capture)).toBe(true);
+    expect(Object.isFrozen(captured.events)).toBe(true);
+    expect(Object.isFrozen(captured.events[0])).toBe(true);
+  });
   it('carrega a captura integral e precisão SQL até a RPC; rejeição stale não libera dispatch misto', async () => {
     const { authority, deps, service } = fixture();
     authority.verifiedAt = '2026-10-04T12:00:00.123456+00:00';

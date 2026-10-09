@@ -182,5 +182,8 @@ verify_jwt = false
 # Worker interno: requireInternalAuth valida a chave atual.
 [functions.process-whatsapp-templates]
 verify_jwt = false
+
+[functions.process-whatsapp-automations]
+verify_jwt = false
 [functions.send-scheduled-whatsapp]
 verify_jwt = false

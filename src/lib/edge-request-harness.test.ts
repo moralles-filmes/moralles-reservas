@@ -27,10 +27,10 @@ function database(seed: Record<string, Row[]>, scripts: Record<string, (args: Ro
     reservations: ["*, customer:customers(*), unit:units(name, phone, instagram, website, address)", "id, date, time, status", "id"],
     notification_outbox: ["id, reservation_id, unit_id, kind, attempts, automation_job_id, automation_initial_token"],
     whatsapp_automation_jobs: ["*"],
-    whatsapp_automation_adoptions: ["adopted_at"],
+    whatsapp_automation_adoptions: ["adopted_at", "unit_id"],
     whatsapp_template_bindings: ["dispatch_enabled,adopted_at"],
     notifications_sent: ["id"],
-    whatsapp_channels: ["id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled", "id"],
+    whatsapp_channels: ["id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, template_credential_revision, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled", "id"],
     platform_flags: ["value"],
     whatsapp_inbound_events: ["id"],
     units: ["organization_id", "name"],
@@ -41,7 +41,7 @@ function database(seed: Record<string, Row[]>, scripts: Record<string, (args: Ro
     settings: ["value", "key, value"],
     waitlist_message_templates: ["customized, body"],
   };
-  const fields = new Set(["id", "unit_id", "organization_id", "key", "kind", "reservation_id", "status",
+  const fields = new Set(["id", "unit_id", "organization_id", "key", "kind", "reservation_id", "waitlist_id", "status",
     "next_attempt_at", "whatsapp_provider", "whatsapp_channel_id", "provider_message_id", "delivered_at",
     "read_at", "failed_at", "is_active", "feature", "revoked_at", "starts_at", "ends_at", "event"]);
   const mutationColumns: Record<string, string[]> = {
@@ -190,7 +190,8 @@ function receiptDb(asyncEnabled = false, flag = false, scripts: Parameters<typeo
   const notification = { unit_id: "unit-a", whatsapp_provider: "datafy", whatsapp_channel_id: "channel-a", provider_message_id: "wamid.3", delivered_at: null, read_at: null };
   return database({
     whatsapp_channels: [{ id: "channel-a", unit_id: "unit-a", provider: "datafy", credentials: { phone_number_id: "123" }, webhook_secret: SECRET,
-      status: "connected", is_active: true, async_ingestion_enabled: asyncEnabled }],
+      status: "connected", is_active: true, async_ingestion_enabled: asyncEnabled, template_credential_revision: 2, external_instance_id: null }],
+    whatsapp_automation_adoptions: [],
     platform_flags: [{ key: "whatsapp_async_ingestion", value: flag }],
     notifications_sent: [notification, { ...notification, unit_id: "unit-b" }, { ...notification, whatsapp_channel_id: "channel-b" }, { ...notification, whatsapp_provider: "official" }, { ...notification, provider_message_id: "different-id" }],
     webhook_executions: [], whatsapp_inbound_events: [],
@@ -234,7 +235,9 @@ describe("actual Edge Request harness foundation", () => {
     expect(db.tables.webhook_executions).toHaveLength(1);
     expect(db.tables.webhook_executions[0]).toMatchObject({ outcome: "status_callback", unit_id: "unit-a", channel_id: "channel-a", meta: { statuses: ["read"], ids: ["wamid.3"] } });
     expect(db.rpcs).toEqual([]); expect(fixture.pendingBackground).toBe(0);
-    expect(new Set(db.queries.map((query) => query.table))).toEqual(new Set(["whatsapp_channels", "platform_flags", "notifications_sent", "webhook_executions"]));
+    expect(new Set(db.queries.map((query) => query.table))).toEqual(new Set(["whatsapp_channels", "whatsapp_automation_adoptions", "platform_flags", "notifications_sent", "webhook_executions"]));
+    expect(db.queries.filter(query => query.table === "whatsapp_automation_adoptions")).toHaveLength(1);
+    expect(db.rpcs).toEqual([]);
     expect([...fixture.manifest].filter((name) => name.startsWith("https:"))).toEqual(expect.arrayContaining([
       "https://deno.land/std@0.168.0/http/server.ts", "https://esm.sh/@supabase/supabase-js@2", "https://esm.sh/@anthropic-ai/sdk@0.27.3",
     ]));
@@ -363,23 +366,24 @@ describe("actual Edge Request harness foundation", () => {
       organizations: [{ id: "org-a", billing_status: "blocked", whatsapp_legacy_grandfathered: false, whatsapp_grandfather_revoked_at: null }],
       organization_entitlement_overrides: [], billing_subscriptions: [],
       platform_flags: [{ key: "whatsapp_service_enforcement", value: false }, { key: "whatsapp_automation_dispatch", value: false }],
-      waitlist: [{ id: "waitlist-a", unit_id: outboxIds.unitA, status: "waiting", customer_phone: "11988887777", customer_name: "Synthetic", party_size: 2, code: 1 }],
+      waitlist: [{ id: outboxIds.reservation, unit_id: outboxIds.unitA, status: "waiting", customer_phone: "11988887777", customer_name: "Synthetic", party_size: 2, code: 1, created_at: new Date(NOW).toISOString() }],
       settings: [{ unit_id: outboxIds.unitA, key: "waitlist_entered_enabled", value: false }], waitlist_message_templates: [],
       notification_outbox: [{ id: outboxIds.outbox, unit_id: outboxIds.unitA, reservation_id: outboxIds.reservation, attempts: 0,
         status: "pending", kind: "confirmation", next_attempt_at: new Date(NOW - 1).toISOString(), automation_job_id: null, automation_initial_token: null }],
       whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
     }, { recover_delegated_notification_outbox: () => ({ data: [], error: null }) });
     const fixture = harness(db, { now: NOW });
-    const runWaitlist = () => fixture.request("process-waitlist-entered", producerRequest("process-waitlist-entered", { waitlist_id: "waitlist-a" }));
+    const runWaitlist = () => fixture.request("process-waitlist-entered", producerRequest("process-waitlist-entered", { waitlist_id: outboxIds.reservation }));
     expect(await (await runWaitlist()).json()).toEqual({ skipped: "disabled" });
     db.tables.platform_flags[0].value = true;
     expect(await (await runWaitlist()).json()).toEqual({ skipped: "disabled" });
-    expect(db.queries.filter((query) => query.table === "platform_flags")).toHaveLength(1);
+    expect(db.queries.filter((query) => query.table === "platform_flags" && query.filters.some(([, key, value]) => key === "key" && value === "whatsapp_service_enforcement"))).toHaveLength(1);
+    expect(db.queries.filter((query) => query.table === "platform_flags" && query.filters.some(([, key, value]) => key === "key" && value === "whatsapp_automation_dispatch"))).toHaveLength(2);
     const response = await fixture.request("process-notification-outbox", producerRequest("process-notification-outbox", {}));
     expect(await response.json()).toMatchObject({ parked: 1, succeeded: 0, failed: 0 });
     expect(db.tables.notification_outbox[0]).toMatchObject({ status: "pending", last_error: "whatsapp_service_suspended" });
     expect(db.queries.filter((query) => query.table === "platform_flags" && query.filters.some(([, key, value]) => key === "key" && value === "whatsapp_service_enforcement"))).toHaveLength(2);
-    expect(db.queries.filter((query) => query.table === "platform_flags")).toHaveLength(3);
+    expect(db.queries.filter((query) => query.table === "platform_flags")).toHaveLength(5);
     expect(db.rpcs).toEqual([{ name: "recover_delegated_notification_outbox", args: { p_limit: 20 } }]);
     fixture.assertNoUnexpectedIo(); db.assertNoUnexpectedIo();
   });

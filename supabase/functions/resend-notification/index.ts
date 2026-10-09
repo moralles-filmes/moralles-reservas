@@ -108,6 +108,35 @@ serve(async (req) => {
   }
 
   try {
+    // Resolve the resource before consulting its pinned ledger. No caller job ID
+    // or new producer fact is accepted by this existing resend entrypoint.
+    if (kind === "confirmation" || kind === "waitlist_entered") {
+      const resourceId = kind === "confirmation" ? reservation_id : waitlist_id;
+      const resourceColumn = kind === "confirmation" ? "reservation_id" : "waitlist_id";
+      if (!resourceId) return json({ error: "resource_required" }, 400);
+      const resource = await supabase.from(kind === "confirmation" ? "reservations" : "waitlist")
+        .select("id,unit_id").eq("id", resourceId).maybeSingle();
+      if (resource.error) return json({ error: "dependency_unavailable" }, 503);
+      if (!resource.data || resource.data.unit_id !== unit_id) return json({ error: "not_found_or_cross_tenant" }, 403);
+      const job = await supabase.from("whatsapp_automation_jobs").select("id,state,provider_message_id,posting_started_at")
+        .eq("unit_id", unit_id).eq("kind", kind).eq(resourceColumn, resourceId).maybeSingle();
+      if (job.error) return json({ error: "dependency_unavailable" }, 503);
+      if (job.data) {
+        if (job.data.provider_message_id || job.data.posting_started_at || !["queued", "retry_wait", "blocked", "paused"].includes(job.data.state))
+          return json({ success: false, error: "automation_resend_refused" }, 409);
+        const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
+          method: "POST", headers: { "Content-Type": "application/json", "x-internal-key": INTERNAL_API_KEY },
+          body: JSON.stringify({ action: "dispatch_existing", job_id: job.data.id }),
+        });
+        const result = await response.json().catch(() => null);
+        if (!response.ok) return json({ success: false, error: "dependency_unavailable" }, 503);
+        return result?.state === "accepted" || result?.state === "reconciled"
+          ? json({ success: true }) : json({ success: false, error: "automation_resend_refused" }, 409);
+      }
+      const adoption = await supabase.from("whatsapp_automation_adoptions").select("unit_id").eq("unit_id", unit_id).maybeSingle();
+      if (adoption.error) return json({ error: "dependency_unavailable" }, 503);
+      if (adoption.data) return json({ success: false, error: "automation_resend_refused" }, 409);
+    }
     // ── Confirmação de reserva ────────────────────────────────────────────────
     if (kind === "confirmation") {
       if (!reservation_id) return json({ error: "reservation_id obrigatório" }, 400);

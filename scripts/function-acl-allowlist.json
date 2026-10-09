@@ -25,6 +25,12 @@
     "Origem da classificação: docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md"
   ],
 
+  "_service_only_whatsapp_automation_receipts_worker": [
+    "record_whatsapp_automation_receipts(uuid,uuid,text,bigint,text,jsonb)",
+    "reconcile_whatsapp_automation_receipts(uuid,integer)",
+    "maintain_and_select_whatsapp_automation_work(integer)",
+    "purge_whatsapp_automation_workers(integer,integer)"
+  ],
   "_service_only_whatsapp_scheduled_voucher_issuer": [
     "issue_scheduled_whatsapp_voucher(uuid,uuid,text,jsonb)"
   ],
@@ -159,11 +165,14 @@
       "da saída, +1 da entrada) e o total vai a 24.",
       "DELTA do catálogo WhatsApp: maintain_whatsapp_legacy_template é DEFINER",
       "com authenticated e guarda platform_admin, adicionando um 0029: projeção",
-      "0028=10, 0029=15, total=25. Não é leitura do Advisor de produção."
+      "0028=10, 0029=15, total=25. Não é leitura do Advisor de produção.",
+      "DELTA Task12: get_whatsapp_automation_delivery_state é DEFINER somente",
+      "authenticated, com guarda de membro/admin, somando um 0029: 10/16/26.",
+      "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 10,
-    "0029": 15,
-    "total": 25
+    "0029": 16,
+    "total": 26
   },
 
   "public_anon": [
@@ -271,6 +280,14 @@
   "rls_helpers": [],
 
   "authenticated_tenant": [
+    {
+      "name": "get_whatsapp_automation_delivery_state",
+      "args": "p_unit_id uuid, p_limit integer, p_offset integer",
+      "roles": ["authenticated"],
+      "why": "Projeção técnica somente leitura; auth.uid real, membro da unidade ou platform_admin, sem payload, destinatário ou credenciais.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
     {
       "name": "maintain_whatsapp_legacy_template",
       "args": "p_table_name text, p_action text, p_row_id uuid, p_unit_id uuid, p_event text, p_body text, p_customized boolean, p_reason text",
