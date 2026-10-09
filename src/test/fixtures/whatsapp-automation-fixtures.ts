@@ -6,12 +6,13 @@ import type { TemplateSendInput, TemplateSendOutcome } from '../../../supabase/f
 import { createEdgeRequestHarness, type EdgeName } from './edge-request-harness';
 
 /** Mutable database I/O only. No SQL, auth, eligibility or dispatch decision is emulated. */
-export function createAutomationFixture(options: { templateStatus?: string } = {}) {
+export function createAutomationFixture(options: { templateStatus?: string; nowISO?: string } = {}) {
   const ids = { unit: 'bbbbbbbb-0000-0000-0000-000000000001', organization: 'aaaaaaaa-0000-0000-0000-000000000001',
     customer: 'cccccccc-0000-0000-0000-000000000001', reservation: 'eeeeeeee-0000-0000-0000-000000000001',
     foreignUnit: 'bbbbbbbb-0000-0000-0000-000000000003' };
-  const nowISO = '2026-10-05T15:00:00Z';
+  const nowISO = options.nowISO ?? '2026-10-05T15:00:00Z';
   let now = Date.parse(nowISO);
+  if (!Number.isFinite(now)) throw new Error('fixture_invalid_clock');
   const rows: Record<AutomationResourceTable, Record<string, unknown>[]> = {
     reservations: [{ id: ids.reservation, unit_id: ids.unit, customer_id: ids.customer, date: '2026-10-05', time: '20:30:00',
       status: 'confirmed', payment_status: null, source: 'web', party_size: 4, reservation_code: 'RES123',
@@ -54,6 +55,8 @@ export function createAutomationFixture(options: { templateStatus?: string } = {
   let producer: ReturnType<typeof createReservationProducerIO> | undefined;
   const getProducer = () => producer ??= createReservationProducerIO(base, options);
   return { ...base, producer: getProducer,
+    runWaitlistProducer: (kind: 'waitlist_entered' | 'waitlist_feedback') => getProducer().runRelated(kind),
+    runVoucherProducer: () => getProducer().runRelated('voucher_issued'),
     runReservationProducer: (kind: 'confirmation' | 'reminder_d1' | 'survey_d1' | 'outbox', overrides: Record<string, unknown> = {}) =>
       getProducer().run(kind, overrides) };
 }
@@ -305,7 +308,9 @@ function createReservationProducerIO(base: {
     promotion: 'row' as 'row' | 'zero' | 'error', queryError: '' as string, pollResult: polls as unknown,
     emptyOutbox: false, pollError: false, recoveryResult: [] as unknown, selectorsEmpty: false,
     resendReceipt: false, plain: false, resend: false, requestUnit: base.ids.unit, outboxOverride: undefined as string | undefined,
-    outbox: true, templateStatus: options.templateStatus, templateCategory: 'UTILITY' };
+    outbox: true, templateStatus: options.templateStatus, templateCategory: 'UTILITY',
+    serviceSuspended: false, enforcement: false, consent: 'opt_in', issuer: 'row' as 'row' | 'zero' | 'error' | 'malformed',
+    onQuery: (_table: string, _columns: string) => {}, afterIssuer: () => {} };
   const rpcReplies: Record<string, { data: unknown; error: unknown }[]> = {};
   const queryReplies: Record<string, { data: unknown; error: unknown }[]> = {};
   const responseScripts: { from: EdgeName; to: EdgeName; reply: (response: Response) => Response | Promise<Response> }[] = [];
@@ -316,6 +321,12 @@ function createReservationProducerIO(base: {
   const queries: { table: string; columns: string; filters: Record<string, unknown>; patch: Record<string, unknown> | null }[] = [];
   const fail = (label: string): never => { unexpected.push(label); throw new Error(`producer_io:${label}`); };
   const tables: Record<string, Record<string, unknown>[]> = base.rows;
+  const voucherId = 'dddddddd-0000-4000-8000-000000000011';
+  const ruleId = 'dddddddd-0000-4000-8000-000000000012';
+  const voucher = { id: voucherId, unit_id: base.ids.unit, customer_id: base.ids.customer, rule_id: ruleId,
+    code: 'FIXTURE11', discount_percent: 15, status: 'active', issued_at: base.nowISO, created_at: base.nowISO,
+    expires_at: '2026-11-05T02:59:59.999Z' };
+  const writes = { voucherInsertCount: 0, deletedVoucherIds: [] as string[] };
   const channel = { id: f.row.channel_id, unit_id: base.ids.unit, provider: 'zapi', status: 'connected', is_active: true,
     credentials: { instance_id: 'synthetic-instance', token: 'synthetic-token', client_token: 'synthetic-client' },
     instance_token_secret_id: null, last_health_check_at: base.nowISO, template_credential_revision: 1 };
@@ -331,10 +342,12 @@ function createReservationProducerIO(base: {
       }));
       async function execute(single = false): Promise<{ data: unknown; error: unknown; count?: number }> {
         queries.push({ table, columns, filters: { ...filters }, patch });
+        controls.onQuery(table, columns);
         const scripted = queryReplies[table]?.shift();
         if (scripted) return scripted;
         if (controls.queryError === table) return { data: null, error: { code: 'synthetic_dependency' } };
         if (insert) {
+          if (table === 'vouchers') { writes.voucherInsertCount++; tables.vouchers.push({ ...voucher, ...insert }); return { data: null, error: null }; }
           if (table !== 'notifications_sent') return fail(`insert:${table}`);
           if (insert.kind !== 'confirmation_email') base.calls.recordSent++;
           requests.push({ ...insert }); return { data: null, error: null };
@@ -347,14 +360,15 @@ function createReservationProducerIO(base: {
         if (table === 'whatsapp_automation_jobs') rows = controls.ledger ? [f.row] : [];
         else if (table === 'notification_outbox') rows = controls.emptyOutbox ? [] : [outbox];
         else if (table === 'whatsapp_automation_adoptions') rows = controls.adopted ? [{ unit_id: base.ids.unit, adopted_at: '2026-10-01T00:00:00Z' }] : [];
-        else if (table === 'platform_flags') rows = [{ key: 'whatsapp_automation_dispatch', value: controls.flag }, { key: 'whatsapp_service_enforcement', value: false }];
+        else if (table === 'platform_flags') rows = [{ key: 'whatsapp_automation_dispatch', value: controls.flag }, { key: 'whatsapp_service_enforcement', value: controls.enforcement }];
         else if (table === 'whatsapp_template_bindings') rows = [{ id: f.row.binding_id, unit_id: base.ids.unit, channel_id: f.row.channel_id,
           provider: 'zapi', account_id: null, generation: 1, channel_credential_revision: 1,
           dispatch_enabled: controls.bindingEnabled, adopted_at: controls.adopted ? '2026-10-01T00:00:00Z' : null }];
         else if (table === 'whatsapp_channels') rows = [channel];
         else if (table === 'whatsapp_remote_templates') rows = tables.whatsapp_remote_templates ?? [];
-        else if (table === 'organizations') rows = [{ ...tables.organizations[0], billing_status: 'active', whatsapp_legacy_grandfathered: true, whatsapp_grandfather_revoked_at: null }];
-        else if (['organization_entitlement_overrides','billing_subscriptions','reservation_message_templates','whatsapp_message_consent_events'].includes(table)) rows = [];
+        else if (table === 'organizations') rows = [{ ...tables.organizations[0], billing_status: controls.serviceSuspended ? 'suspended' : 'active', whatsapp_legacy_grandfathered: true, whatsapp_grandfather_revoked_at: null }];
+        else if (table === 'whatsapp_message_consent_events') rows = [{ unit_id: base.ids.unit, customer_id: base.ids.customer, purpose: 'promotional', decision: controls.consent, revision: 1 }];
+        else if (['organization_entitlement_overrides','billing_subscriptions','reservation_message_templates','waitlist_message_templates'].includes(table)) rows = tables[table] ?? [];
         else if (table === 'notifications_sent') rows = controls.resendReceipt ? [{ id: f.row.notification_id, unit_id: base.ids.unit, reservation_id: base.ids.reservation, kind: 'confirmation', status: 'failed' }] : [];
         else if (table in tables) rows = tables[table];
         else return fail(`table:${table}`);
@@ -374,8 +388,11 @@ function createReservationProducerIO(base: {
         select(value: string, opt?: { head?: boolean }) { columns = value; head = opt?.head === true; return q; },
         eq(key: string, value: unknown) { filters[key] = value; return q; },
         is(key: string, value: null) { filters[key] = value; return q; },
-        in(key: string, value: unknown[]) { if (!['key','id'].includes(key) || !Array.isArray(value)) fail('in'); extra.push(row => value.includes(row[key])); return q; },
-        lte(key: string, value: unknown) { if (!['next_attempt_at','starts_at'].includes(key) || typeof value !== 'string' || !Number.isFinite(Date.parse(value))) fail('lte');
+        in(key: string, value: unknown[]) { if (!['key','id','customer_id','status'].includes(key) || !Array.isArray(value)) fail('in'); extra.push(row => value.includes(row[key])); return q; },
+        not(key: string, op: string, value: unknown) { if (op !== 'is' || value !== null) fail('not'); extra.push(row => row[key] !== null); return q; },
+        gt(key: string, value: string) { extra.push(row => typeof row[key] === 'string' && Date.parse(row[key]) > Date.parse(value)); return q; },
+        gte(key: string, value: string) { extra.push(row => typeof row[key] === 'string' && Date.parse(row[key]) >= Date.parse(value)); return q; },
+        lte(key: string, value: unknown) { if (!['next_attempt_at','starts_at','date'].includes(key) || typeof value !== 'string' || !Number.isFinite(Date.parse(value))) fail('lte');
           extra.push(row => typeof row[key] === 'string' && Date.parse(row[key]) <= Date.parse(String(value))); return q; },
         neq(key: string, value: unknown) { if (table !== 'billing_subscriptions' || key !== 'status' || value !== 'canceled') fail('neq'); extra.push(row => row[key] !== null && row[key] !== value); return q; },
         or(value: string) { const prefix = 'ends_at.is.null,ends_at.gt.';
@@ -393,6 +410,23 @@ function createReservationProducerIO(base: {
       trace.push({ name, args });
       const scripted = rpcReplies[name]?.shift();
       if (scripted) return scripted;
+      if (name === 'try_giftback_lock' || name === 'release_giftback_lock') return { data: true, error: null };
+      if (name === 'expire_vouchers') return { data: 0, error: null };
+      if (name === 'get_waitlist_for_feedback') return { data: tables.waitlist.map(row => ({ waitlist_id: row.id,
+        unit_id: row.unit_id, customer_phone: row.customer_phone, customer_name: row.customer_name,
+        party_size: row.party_size, code: row.code })), error: null };
+      if (name === 'issue_scheduled_whatsapp_voucher') {
+        if (controls.issuer === 'zero') return { data: [], error: null };
+        if (controls.issuer === 'error') return { data: null, error: { code: '23505', message: 'synthetic_enqueue_error' } };
+        // Supplied SQL outcome only. Genuine issuance/locking assertions live in gates49–51.
+        Object.assign(voucher, { code: args.p_code }); tables.vouchers.push({ ...voucher }); writes.voucherInsertCount++;
+        Object.assign(f.row, { kind: 'voucher_issued', reservation_id: null, waitlist_id: null, voucher_id: voucherId,
+          source_event_key: voucherId, fact_at: voucher.created_at, expires_at: '2026-10-12T15:00:00Z' });
+        controls.ledger = true; controls.afterIssuer();
+        const { id, ...fields } = voucher;
+        return { data: controls.issuer === 'malformed' ? [{ voucher_id: id }] : [{ voucher_id: id, ...fields, job_id: f.jobId }], error: null };
+      }
+      if (name === 'issue_whatsapp_preference_token') return { data: true, error: null };
       if (name.startsWith('get_reservations_for_')) {
         const r = tables.reservations[0];
         return { data: controls.selectorsEmpty ? [] : [{ reservation_id: r.id, unit_id: r.unit_id,
@@ -416,7 +450,9 @@ function createReservationProducerIO(base: {
       if (name === 'defer_notification_outbox_automation_dependency') { outbox.status = 'pending'; return { data: true, error: null }; }
       if (name === 'enqueue_whatsapp_automation') {
         controls.ledger = true; const intent = args.p_intent as Record<string, unknown>;
-        Object.assign(f.row, intent); return { data: f.jobId, error: null };
+        // SQL INSERT leaves the two omitted resource FKs NULL, not a previous fixture's identity.
+        Object.assign(f.row, { reservation_id: null, waitlist_id: null, voucher_id: null }, intent);
+        return { data: f.jobId, error: null };
       }
       if (name === 'reconcile_whatsapp_automation_acceptance') {
         f.row.state = 'reconciled'; base.calls.recordSent++; return { data: { state: 'reconciled', history: 'recorded' }, error: null };
@@ -441,6 +477,8 @@ function createReservationProducerIO(base: {
       { from: 'process-notification-outbox', to: 'send-scheduled-whatsapp' },
       { from: 'process-reservation-reminders', to: 'send-scheduled-whatsapp' }, { from: 'process-satisfaction-surveys', to: 'send-scheduled-whatsapp' },
       { from: 'process-reservation-reminders', to: 'send-whatsapp' }, { from: 'process-satisfaction-surveys', to: 'send-whatsapp' },
+      ...(['process-waitlist-entered','process-waitlist-feedback','process-voucher-triggers'] as const).flatMap(from =>
+        (['send-whatsapp','send-scheduled-whatsapp'] as const).map(to => ({ from, to }))),
     ],
     transport: [
       { from: 'send-confirmation', method: 'POST', url: 'https://api.resend.com/emails', respond: async request => {
@@ -474,5 +512,12 @@ function createReservationProducerIO(base: {
     return h.request(endpoints[kind],new Request(`${url}/functions/v1/${endpoints[kind]}`, { method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-internal-key': 'synthetic-internal' }, body: JSON.stringify(body) }));
   }
-  return { controls, outbox, row: f.row, db, harness: h, run, trace, unexpected, requests, queries, outboxId, rpcReplies, queryReplies, responseScripts };
+  async function runRelated(kind: 'waitlist_entered' | 'waitlist_feedback' | 'voucher_issued') {
+    const endpoint = kind === 'voucher_issued' ? 'process-voucher-triggers' : kind === 'waitlist_entered' ? 'process-waitlist-entered' : 'process-waitlist-feedback';
+    return h.request(endpoint, new Request(`${url}/functions/v1/${endpoint}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-internal-key': 'synthetic-internal' },
+      body: JSON.stringify(kind === 'waitlist_entered' ? { waitlist_id: tables.waitlist[0]?.id } : {}) }));
+  }
+  return { controls, outbox, row: f.row, db, harness: h, run, runRelated, trace, unexpected, requests, queries,
+    outboxId, rpcReplies, queryReplies, responseScripts, writes, voucher, ruleId, tables };
 }

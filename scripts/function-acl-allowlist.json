@@ -25,6 +25,9 @@
     "Origem da classificação: docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md"
   ],
 
+  "_service_only_whatsapp_scheduled_voucher_issuer": [
+    "issue_scheduled_whatsapp_voucher(uuid,uuid,text,jsonb)"
+  ],
   "_service_only_whatsapp_outbox_delegation": [
     "claim_notification_outbox_initial(uuid)",
     "delegate_notification_outbox_automation(uuid,uuid)",

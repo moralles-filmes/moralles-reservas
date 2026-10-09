@@ -24,10 +24,16 @@ export async function selectReservationAutomationRoute(read: AutomationRouteRead
       const parsed = parseAutomationLedger(row);
       return { path: 'managed', existingJobId: parsed.jobId, selection: 'scheduled' };
     }
+    return await selectUnownedAutomationRoute(read, input.unitId);
+  } catch { return { path: 'dependency' }; }
+}
+
+/** The approved adoption/activation read is shared without granting dispatch authority. */
+async function selectUnownedAutomationRoute(read: AutomationRouteReader, unitId: string): Promise<ReservationAutomationRoute> {
     const [adoption, flag, bindings] = await Promise.all([
-      read('whatsapp_automation_adoptions', 'adopted_at', [['unit_id', input.unitId]], 'single'),
+      read('whatsapp_automation_adoptions', 'adopted_at', [['unit_id', unitId]], 'single'),
       read('platform_flags', 'value', [['key', 'whatsapp_automation_dispatch']], 'single'),
-      read('whatsapp_template_bindings', 'dispatch_enabled,adopted_at', [['unit_id', input.unitId]], 'many'),
+      read('whatsapp_template_bindings', 'dispatch_enabled,adopted_at', [['unit_id', unitId]], 'many'),
     ]);
     if (!Array.isArray(bindings)
       || (adoption !== null && (!object(adoption) || !instant(adoption.adopted_at)))
@@ -39,6 +45,22 @@ export async function selectReservationAutomationRoute(read: AutomationRouteRead
     const selection = selectAutomationPath({ ledgerExists: false, enabled,
       adoptedAt: object(adoption) ? adoption.adopted_at as string : null });
     return selection === 'legacy' ? { path: 'legacy' } : { path: 'managed', existingJobId: null, selection };
+}
+
+/** Exact waitlist ledger first; absence alone permits activation reads. */
+export async function selectWaitlistAutomationRoute(read: AutomationRouteReader,
+  input: { kind: 'waitlist_entered' | 'waitlist_feedback'; unitId: string; waitlistId: string }): Promise<ReservationAutomationRoute> {
+  try {
+    if (!automationUuid(input.unitId) || !automationUuid(input.waitlistId)) return { path: 'dependency' };
+    const row = await read('whatsapp_automation_jobs', '*', [['unit_id', input.unitId],
+      ['waitlist_id', input.waitlistId], ['kind', input.kind]], 'single');
+    if (row !== null) {
+      if (!object(row) || row.unit_id !== input.unitId || row.waitlist_id !== input.waitlistId
+        || row.reservation_id !== null || row.voucher_id !== null || row.kind !== input.kind) return { path: 'dependency' };
+      const parsed = parseAutomationLedger(row);
+      return { path: 'managed', existingJobId: parsed.jobId, selection: 'scheduled' };
+    }
+    return await selectUnownedAutomationRoute(read, input.unitId);
   } catch { return { path: 'dependency' }; }
 }
 

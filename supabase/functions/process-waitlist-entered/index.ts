@@ -18,6 +18,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { selectWaitlistAutomationRoute, decodeAutomationDispatch } from "../_shared/whatsapp-automation-producer-routing.ts";
 import { jsonLog, requireInternalAuth, sanitizePhone } from "../_shared/security.ts";
 import {
   DEFAULT_ENTERED_BODY,
@@ -91,6 +92,35 @@ serve(async (req) => {
     });
   }
 
+  const unitId = entry.unit_id as string;
+  const route = await selectWaitlistAutomationRoute(async (table, columns, predicates, cardinality) => {
+    let query = supabase.from(table).select(columns);
+    for (const [column, value] of predicates) query = query.eq(column, value);
+    const result = await (cardinality === 'single' ? query.maybeSingle() : query);
+    if (result.error) throw result.error;
+    return result.data;
+  }, { kind: 'waitlist_entered', unitId, waitlistId });
+  const dependency = () => new Response(JSON.stringify({ dispatched: false, error: 'dependency_unavailable' }), {
+    status: 503, headers: { 'Content-Type': 'application/json' },
+  });
+  if (route.path === 'dependency') return dependency();
+  async function dispatchManaged(jobId: string | null) {
+    try {
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': INTERNAL_API_KEY },
+        body: JSON.stringify(jobId ? { action: 'dispatch_existing', job_id: jobId }
+          : { action: 'dispatch', kind: 'waitlist_entered', resource_id: waitlistId, unit_id: unitId }),
+        signal: AbortSignal.timeout(25_000),
+      });
+      const outcome = response.ok ? decodeAutomationDispatch(await response.json()) : null;
+      if (!outcome || (jobId && outcome.jobId !== jobId)) return dependency();
+      return new Response(JSON.stringify({ dispatched: outcome.state === 'accepted' || outcome.state === 'reconciled', automation: outcome }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    } catch { return dependency(); }
+  }
+  if (route.path === 'managed' && route.existingJobId) return dispatchManaged(route.existingJobId);
+
   // Só dispara se acabou de entrar (waiting). Updates posteriores (notified,
   // seated, cancelled) não devem refazer envio.
   if (entry.status !== "waiting") {
@@ -107,12 +137,11 @@ serve(async (req) => {
     });
   }
 
-  const unitId = entry.unit_id as string;
-
   // Gate resolvido pra esta unidade antes de qualquer envio — pula sem nunca
   // gravar `notifications_sent`. Uma linha `failed` ali bloquearia o reenvio
   // depois da restauração pelo UNIQUE parcial (waitlist_id, kind).
   const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
+  if (route.path === 'managed' && (!gate || gate.readFailed)) return dependency();
   if (gate?.enforced.sending) {
     jsonLog("info", { evt: "worker_skipped_whatsapp_suspended", unit_id: unitId, state: gate.state });
     return new Response(JSON.stringify({ skipped: "whatsapp_suspended" }), {
@@ -138,6 +167,8 @@ serve(async (req) => {
       .maybeSingle(),
   ]);
 
+  if (route.path === 'managed' && settingsRes.error) return dependency();
+
   const rawEnabled = settingsRes.data?.value as unknown;
   const enabled = rawEnabled === false || rawEnabled === "false" ? false : true;
   if (!enabled) {
@@ -146,6 +177,8 @@ serve(async (req) => {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  if (route.path === 'managed') return dispatchManaged(null);
 
   const tpl = templateRes.data as { customized?: boolean; body?: string } | null;
   const templateBody =

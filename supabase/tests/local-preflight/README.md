@@ -1523,3 +1523,60 @@ Both clean only their fixtures and restore the exact original flag absence,
 JSON null or SQL NULL through explicit typed fields, never populate_recordset.
 No provider is contacted. Node/Bash syntax, Vitest, lint and cached Deno checks
 are offline source validation and do not establish any SQL/JWT/race result.
+
+### Task11 — existing waitlist producers and atomic scheduled voucher issuer (48–51)
+
+Only MAIN executes this package after the literal14 source freeze and review.
+`48-waitlist-voucher-testsetup.mjs --source-check` is offline extraction only.
+Without that argument, 48 pins the exact Docker executable, Linux npipe,
+`moralles-templates-20261003` running container and DB55452. It requires bridge41,
+adds only nullable `customers.birthday date` if absent, and installs the exact
+`get_waitlist_for_feedback(date,uuid)` body/config/ACL from real048 if absent.
+Existing shape/body/ACL drift refuses. It applies twice and compares the entire
+inherited column/index/constraint/function/ACL snapshots and legacy NULL counts.
+No UUID default repair, old25/35–40 retrofit, historical migration replay,
+expire_vouchers stand-in, auth stub, cron, pg_net or production NN/RLS claim.
+
+Apply the reviewed `20261009003452_whatsapp_scheduled_voucher_issuer.sql` only via
+`supabase db push --local` in the controller-owned project. Repeat the authorized
+idempotence gate and compare installed body/config/ACL before executing 49–51.
+
+49 is transactional SQL with complete owned seeds and final ROLLBACK. It checks
+the eleven stored fields, actual fresh UUID/fact/BRT expiry, same ledger and exact
+168-hour deadline, both unknown23505 conflicts, typed seven-key assertions,
+actual rule/customer/unit/org/adoption/day negatives, malformed configuration,
+AFTER-job errors including23505 rolling back both artifacts, bound/paused and
+preconfiguration outcomes, and real048 feedback selection. Arithmetic vectors
+execute expressions extracted from the installed issuer in three session zones;
+the Request tests exercise the unchanged TypeScript helper separately. Neither
+vector test substitutes the SQL clock nor claims historical eligibility is
+serializable. The actual current issuer execution is checked separately.
+
+50 is Bash with independent native psql sessions. It requires observed blocking
+PIDs for competing issue, global code, customer clock wait, erasure before/after
+issuance, rule update/delete and enqueue configuration. It checks the early locks
+with independent NOWAIT probes and preserves both native exits and raw sessions.
+The initial issue instant must follow an observed customer wait; the configuration
+wait occurs after that instant and before the final day comparison. Unknown
+conflicts return zero rows, never reread/reissue an old winner. Response omission
+preserves the committed pair but grants no producer recovery by code/day.
+
+51 uses real GoTrue sessions, PostgREST and installed SDK against API55451 only.
+Anon, owner/gerente/operador, platform admin without membership, foreign member
+and outsider all receive the same EXECUTE42501 before matching/foreign/missing
+resource variants. Service has positive and negative issuer controls, exact DTO
+and persisted fields, and zero-row conflict behavior. Private schema stays
+unexposed. Generated local keys are read in memory only after runtime guards;
+redirects/nonlocal URLs are refused. 50/51 remove only owned fixtures and restore
+exact flag absence/SQL NULL/JSON null. No provider endpoint is contacted.
+
+The physical BRT midnight method remains optional corroboration: only if reviewed
+scripts and seeds are ready near the actual boundary, MAIN may use the adjudicated
+two observed waits bounded to35s lock/45s statement; never wait until tomorrow or
+replace a clock. Same-day waits and source-order controls do not claim a physical
+crossing. Final check→physical commit and commit→POST remain separate boundaries.
+The existing dispatcher owns final resource/consent/expiry/cost checks and retries.
+Business eligibility remains the existing producer's read-time selection. Suppressed
+birthday/giftback benefits remain voucher-only, suspended frequency remains skipped,
+and never-adopted/after_rating/manual behavior is preserved. No backlog or replay
+authority is introduced.

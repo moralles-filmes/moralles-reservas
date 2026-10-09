@@ -16,6 +16,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { automationUuid, decodeAutomationDispatch } from "../_shared/whatsapp-automation-producer-routing.ts";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
 import {
   DEFAULT_GIFTBACK_TEMPLATE,
@@ -42,6 +43,7 @@ interface UnitContext {
   unit_name: string;
   whatsapp_enabled: boolean;
   template: string;
+  settingsReadFailed: boolean;
 }
 
 // Cache invalidado no início de cada invocação (B10).
@@ -77,6 +79,7 @@ async function loadUnitContext(unitId: string): Promise<UnitContext> {
     unit_name: (unitRes.data?.name as string) ?? "nosso restaurante",
     whatsapp_enabled: whatsappEnabled,
     template,
+    settingsReadFailed: !!settingsRes.error,
   };
   unitCache.set(unitId, ctx);
   return ctx;
@@ -96,6 +99,12 @@ interface IssueArgs {
    * `!ctx.whatsapp_enabled` (canal desligado por escolha do lojista).
    */
   suppressSend?: boolean;
+  serviceReadFailed: boolean;
+  triggerType: 'birthday' | 'frequency';
+  visitsRequired: number | null;
+  daysWindow: number | null;
+  selectedBrtDay: string;
+  lowerBrtDay?: string;
 }
 
 async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: string }> {
@@ -109,6 +118,50 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
   }
 
   const ctx = await loadUnitContext(unitId);
+
+  // Suppressed benefits deliberately stay voucher-only. Only the current intended
+  // announcement can originate the atomic pair; no scan recovers unknown winners.
+  if (!suppressSend && ctx.whatsapp_enabled) {
+    const adoption = await supabase.from('whatsapp_automation_adoptions').select('adopted_at').eq('unit_id', unitId).maybeSingle();
+    if (adoption.error || (adoption.data !== null && (!adoption.data
+      || typeof adoption.data.adopted_at !== 'string' || !/(Z|[+-]\d{2}:\d{2})$/.test(adoption.data.adopted_at)
+      || !Number.isFinite(Date.parse(adoption.data.adopted_at))))) return { ok: false, reason: 'dependency_unavailable' };
+    if (adoption.data) {
+      if (args.serviceReadFailed || ctx.settingsReadFailed) return { ok: false, reason: 'dependency_unavailable' };
+      if (args.triggerType === 'frequency' && args.lowerBrtDay !== args.selectedBrtDay)
+        return { ok: false, reason: 'selection_day_changed' };
+      const code = await ensureUniqueVoucherCode(supabase);
+      const result = await supabase.rpc('issue_scheduled_whatsapp_voucher', {
+        p_rule_id: ruleId, p_customer_id: customerId, p_code: code,
+        p_expected_rule: { unit_id: unitId, trigger_type: args.triggerType, discount_percent: discountPercent,
+          validity_days: validityDays, visits_required: args.visitsRequired, days_window: args.daysWindow, selected_brt_day: args.selectedBrtDay },
+      });
+      // This error may be AFTER the INSERT (including 23505 in enqueue); never dedupe it locally.
+      if (result.error) return { ok: false, reason: 'atomic_issuance_failed' };
+      if (Array.isArray(result.data) && result.data.length === 0) return { ok: false, reason: 'duplicate' };
+      const row = Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+      const instant = (value: unknown): value is string => typeof value === 'string'
+        && /(Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
+      if (!row || Object.keys(row).sort().join(',') !== 'code,created_at,customer_id,discount_percent,expires_at,issued_at,job_id,rule_id,status,unit_id,voucher_id'
+        || !automationUuid(row.voucher_id) || !automationUuid(row.job_id) || row.unit_id !== unitId
+        || row.rule_id !== ruleId || row.customer_id !== customerId || row.code !== code
+        || row.discount_percent !== discountPercent || row.status !== 'active'
+        || !instant(row.created_at) || !instant(row.issued_at) || !instant(row.expires_at)
+        || Date.parse(row.created_at) !== Date.parse(row.issued_at)) return { ok: false, reason: 'atomic_provenance_unavailable' };
+      // RPC response means the transaction committed. Dispatch owns every later
+      // retry and renders the persisted benefit/fact; the producer never reissues.
+      try {
+        const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': INTERNAL_API_KEY },
+          body: JSON.stringify({ action: 'dispatch_existing', job_id: row.job_id }), signal: AbortSignal.timeout(25_000),
+        });
+        const outcome = response.ok ? decodeAutomationDispatch(await response.json()) : null;
+        const accepted = outcome !== null && outcome.jobId === row.job_id && (outcome.state === 'accepted' || outcome.state === 'reconciled');
+        jsonLog('info', { evt: 'voucher_scheduled_issued', unit_id: unitId, voucher_id: row.voucher_id, accepted });
+        return { ok: true, reason: accepted ? undefined : 'announcement_pending' };
+      } catch { return { ok: true, reason: 'announcement_dependency' }; }
+    }
+  }
 
   const code = await ensureUniqueVoucherCode(supabase);
   // B6: fim do dia BRT — alinhado ao webhook-whatsapp.
@@ -228,7 +281,7 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
 
   const { data: rules } = await supabase
     .from("voucher_rules")
-    .select("id, unit_id, discount_percent, validity_days")
+    .select("id, unit_id, discount_percent, validity_days, visits_required, days_window")
     .eq("trigger_type", "birthday")
     .eq("active", true);
 
@@ -315,6 +368,9 @@ async function processBirthday(): Promise<{ issued: number; errors: string[]; se
         discountPercent: rule.discount_percent,
         validityDays: rule.validity_days,
         suppressSend,
+        serviceReadFailed: !gate || gate.readFailed,
+        triggerType: 'birthday', visitsRequired: rule.visits_required, daysWindow: rule.days_window,
+        selectedBrtDay: today.isoDate,
       });
 
       if (result.ok) {
@@ -349,6 +405,7 @@ async function processFrequency(): Promise<{ issued: number; errors: string[]; s
 
   // B7: limite superior — exclui reservas futuras. Conta só visitas até ontem (BRT).
   const yesterdayBrt = new Date(Date.now() - BRT_OFFSET_MS);
+  const upperBrtDay = yesterdayBrt.toISOString().slice(0, 10);
   yesterdayBrt.setUTCDate(yesterdayBrt.getUTCDate() - 1);
   const yesterdayIso = yesterdayBrt.toISOString().slice(0, 10);
 
@@ -370,6 +427,7 @@ async function processFrequency(): Promise<{ issued: number; errors: string[]; s
     }
 
     const windowStart = new Date(Date.now() - BRT_OFFSET_MS);
+    const lowerBrtDay = windowStart.toISOString().slice(0, 10);
     windowStart.setUTCDate(windowStart.getUTCDate() - (rule.days_window as number));
     const windowStartIso = windowStart.toISOString().slice(0, 10);
 
@@ -442,6 +500,9 @@ async function processFrequency(): Promise<{ issued: number; errors: string[]; s
         customerPhone: phoneDigits,
         discountPercent: rule.discount_percent,
         validityDays: rule.validity_days,
+        serviceReadFailed: !gate || gate.readFailed,
+        triggerType: 'frequency', visitsRequired: rule.visits_required, daysWindow: rule.days_window,
+        selectedBrtDay: upperBrtDay, lowerBrtDay,
       });
 
       if (result.ok) issued++;

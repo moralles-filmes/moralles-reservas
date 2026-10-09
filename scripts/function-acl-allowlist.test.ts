@@ -108,6 +108,20 @@ describe("manutenção de textos WhatsApp", () => {
   });
 });
 
+describe('Task11 current scheduled voucher issuance', () => {
+  it('one service-only four-argument writer, empty search path and explicit complete ACL', () => {
+    const signature='issue_scheduled_whatsapp_voucher(uuid,uuid,text,jsonb)';
+    expect(allowlist._service_only_whatsapp_scheduled_voucher_issuer).toEqual([signature]);
+    const sql=readFileSync(join(MIGRATIONS_DIR,'20261009003452_whatsapp_scheduled_voucher_issuer.sql'),'utf8');
+    expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+    expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    expect(sql).toContain("language plpgsql security definer set search_path=''");
+    expect(sql.match(/create or replace function/g)).toHaveLength(1);
+    expect(sql).not.toMatch(/grant[^;]+to (?:public|anon|authenticated)/i);
+    expect(sql).not.toMatch(/create (?:table|trigger)|pg_net|cron\./i);
+  });
+});
+
 describe('Task10 existing outbox delegation', () => {
   it('closes all six signatures, both guards, private types/permits and the operational table', () => {
     const signatures = allowlist._service_only_whatsapp_outbox_delegation as string[];
