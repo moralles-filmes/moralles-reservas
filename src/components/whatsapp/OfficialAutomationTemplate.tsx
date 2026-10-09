@@ -8,6 +8,7 @@ const statusLabels: Record<OfficialTemplateView['localStatus'], string> = {
 const remoteLabels: Record<OfficialTemplateView['remoteStatus'], string> = { UNKNOWN: 'Desconhecido', PENDING: 'Pendente', APPROVED: 'Aprovado', REJECTED: 'Recusado', PAUSED: 'Pausado', DISABLED: 'Desativado', IN_APPEAL: 'Em recurso', PENDING_DELETION: 'Remoção pendente', DELETED: 'Removido', LIMIT_EXCEEDED: 'Limite atingido' };
 const categories = { UTILITY: 'Utilidade', MARKETING: 'Marketing', AUTHENTICATION: 'Autenticação', UNKNOWN: 'Desconhecida' };
 const quality = { UNKNOWN: 'Qualidade desconhecida', GREEN: 'Qualidade alta', YELLOW: 'Qualidade média', RED: 'Qualidade baixa' };
+const diagnosticJobStates = new Set(['blocked', 'needs_review', 'uncertain', 'paused', 'rejected', 'failed']);
 export function OfficialAutomationTemplate({ template, onSync, canSync = true, syncing = false }: { template: OfficialTemplateView; onSync: () => void; canSync?: boolean; syncing?: boolean }) {
   return <Card className="p-4 space-y-4">
     <div><h3 className="font-semibold">{statusLabels[template.localStatus]}</h3><p className="text-sm text-muted-foreground">Conteúdo oficial somente para leitura.</p></div>
@@ -32,7 +33,7 @@ export function TemplateStatus({ controls, logicalIds }: { controls: TemplateCon
   if (query.isError) return <div role="alert" className="space-y-2"><p>{templateErrorMessage(query.error)}</p><Button className="min-h-11" onClick={() => void query.refetch()}>Tentar novamente</Button></div>;
   const snapshot = query.data;
   if (!snapshot || snapshot.mode === 'unavailable') return <div className="space-y-2"><p role="status">Nenhum canal disponível. Confira a configuração do WhatsApp da unidade.</p><Button className="min-h-11" variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>Atualizar dados</Button></div>;
-  const jobs = snapshot.blockedJobs.filter(j => j.logicalId && logicalIds.includes(j.logicalId));
+  const jobs = snapshot.blockedJobs.filter(j => j.logicalId && logicalIds.includes(j.logicalId) && diagnosticJobStates.has(j.state));
   return <div className="space-y-4">
     <p className="text-sm text-muted-foreground">Canal: {snapshot.providerLabel}. {snapshot.mode === 'unofficial' ? 'Conexão não oficial: pode apresentar instabilidade ou restrições.' : 'Mensagens automáticas usam modelos oficiais.'}</p>
     {snapshot.mode === 'official' && snapshot.templates.filter(t => logicalIds.includes(t.logicalId)).map(template => <OfficialAutomationTemplate key={template.logicalId} template={template} onSync={() => sync.mutate()} canSync={canManage && !!snapshot.configuration.bindingGeneration && snapshot.capabilities.templateManagement} syncing={sync.isPending || query.isFetching} />)}

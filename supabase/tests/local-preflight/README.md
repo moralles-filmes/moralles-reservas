@@ -1658,3 +1658,41 @@ original cron after the entire package passes.
 Focused Request/core/ACL tests, tsc -b, changed-file lint, cached real Deno check,
 node --check and bash -n are author-native checks. They do not claim SQL/JWT/race
 execution, migration reapplication or independent review; those remain ROOT gates.
+
+### Task16 — pending correlated receipt retention (60)
+
+ROOT runs 60 only on the established disposable local 25/41/48/52 bridge and
+Task12/Task13 migrations, after verifying exact worker cron quarantine, no Edge
+runtime and no queued/in-flight HTTP work. Preserve unrelated data and the exact
+prior schedules; flags OFF alone do not stop maintenance. No provider is called.
+
+First run `60-automation-pending-receipt-retention.sql` against the predecessor
+purge function from 20261009135808: the expected RED is
+`FAIL60 old pending correlated conflict receipt survives unchanged`. The file
+uses ON_ERROR_STOP and a transaction, so a failed session must be closed/rolled
+back before proceeding. Do not disable triggers/policies or alter timestamps in
+unrelated rows. Apply the CLI-created additive migration
+`20261009220823_whatsapp_automation_pending_receipt_retention.sql` through the
+reviewed local `supabase db push` flow, then run 60 again for GREEN. Capture native
+logs, inspect catalog/ACL before and after reapplication, and rerun 53 plus the
+existing ACL gate31. Restore only the exact original schedules after all gates
+and fixture cleanup succeed. This gate does not authorize a production migration.
+
+60 rolls back every fixture. It creates a real notification natural-key conflict,
+records acceptance through real RPCs and uses the recorder for a fresh control.
+Historical receipts are explicitly synthetic INSERT preconditions, with scope
+triggers enabled: received_at is immutable, and the recorder always observes the
+current clock. It proves retained receipts remain repairable with observation/native
+timestamps and one posting attempt. Reconciled jobs retain later pending evidence;
+processed/unmatched evidence expires, fresh observations survive, and eligibility
+filtering precedes the bounded receipt limit. Other unit/provider fixtures use
+valid corresponding channels because the real scope trigger requires those pairs.
+Native service execution, public/client denial and private authority ACL assertions
+remain part of the SQL gate. ROOT separately checks unchanged catalog ACLs.
+
+No new concurrency harness is added: this correction introduces only nonlocking
+job existence reads in the receipt candidate/final-delete predicates and preserves
+the existing parent → job → receipt lock order, READ COMMITTED guard and SKIP LOCKED
+budgets. Gate54 documents the preexisting admission/purge ordering tests. Gate60
+does not claim to exercise concurrent sessions; any further race gate must use
+observed barriers/lock waits and owned IDs rather than arbitrary sleeps.
