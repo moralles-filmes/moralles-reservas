@@ -26,7 +26,7 @@ const ENDPOINTS: readonly EdgeName[] = ["send-confirmation", "process-notificati
   "process-waitlist-feedback", "process-voucher-triggers", "webhook-whatsapp",
   "send-scheduled-whatsapp", "send-whatsapp"];
 type Handler = (request: Request) => Response | Promise<Response>;
-type Transport = { method: string; url: string; respond: (request: Request) => Response | Promise<Response> };
+type Transport = { from?: EdgeName; method: string; url: string; respond: (request: Request) => Response | Promise<Response> };
 export interface EdgeRequestHarnessOptions {
   /** Explicit synthetic values only; never inherits process.env. */
   env: Readonly<Record<string, string>>;
@@ -34,6 +34,8 @@ export interface EdgeRequestHarnessOptions {
   anthropicMessagesCreate?: (input: unknown) => Promise<unknown>;
   transport?: readonly Transport[];
   internalHops?: readonly { from: EdgeName; to: EdgeName }[];
+  /** Optional leaf transport fault after the declared real handler has executed. */
+  afterInternalResponse?: (from: EdgeName, to: EdgeName, response: Response) => Response | Promise<Response>;
   now?: number;
 }
 
@@ -138,14 +140,15 @@ export function createEdgeRequestHarness(options: EdgeRequestHarnessOptions) {
         && request.url === `${env.SUPABASE_URL}/functions/v1/${hop.to}`);
       if (hop) {
         internalRequests.push({ from, to: hop.to, request: request.clone() });
-        return invoke(hop.to, request);
+        const response = await invoke(hop.to, request);
+        return options.afterInternalResponse ? options.afterInternalResponse(from, hop.to, response) : response;
       }
       const url = new URL(request.url);
       const internalBase = new URL(`${env.SUPABASE_URL}/functions/v1/`);
       // External scripts cannot impersonate an undeclared internal endpoint,
       // nor accept its wrong method/query/path through a canned good result.
       if (url.origin === internalBase.origin && url.pathname.startsWith(internalBase.pathname)) return deny("internal_hop");
-      const route = routes.find((route) => route.method === request.method && route.url === request.url);
+      const route = routes.find((route) => (route.from === undefined || route.from === from) && route.method === request.method && route.url === request.url);
       if (!route) return deny("external_fetch");
       return route.respond(request);
     });

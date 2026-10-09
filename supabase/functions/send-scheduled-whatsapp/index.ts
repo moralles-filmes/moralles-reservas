@@ -54,8 +54,15 @@ serve(async req => {
   if (!record(value)) return json({ error: 'intent_invalid' }, 400);
   const body = value;
   try {
-    if (body.action === 'dispatch_existing' || body.action === 'dispatch') {
+    if (body.action === 'dispatch_existing' || body.action === 'dispatch' || body.action === 'enqueue') {
       if (!requireInternalAuth(req)) return json({ error: 'unauthorized' }, 401);
+      if (body.action === 'enqueue') {
+        if (Object.keys(body).sort().join(',') !== 'action,kind,outbox_id,resource_id,unit_id'
+          || body.kind !== 'confirmation' || !uuid(body.resource_id) || !uuid(body.unit_id) || !uuid(body.outbox_id))
+          return json({ error: 'intent_invalid' }, 400);
+        return json(await dispatcher.enqueueScheduledIntent({ kind: 'confirmation', resourceId: body.resource_id,
+          unitId: body.unit_id, outboxId: body.outbox_id }));
+      }
       if (body.action === 'dispatch_existing') {
         if (Object.keys(body).some(key => !['action','job_id'].includes(key)) || !uuid(body.job_id)) return json({ error: 'intent_invalid' }, 400);
         return json(await dispatcher.dispatchExistingJob(body.job_id));

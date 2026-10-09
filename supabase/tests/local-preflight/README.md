@@ -1459,3 +1459,67 @@ during reads is conservatively refused without renewal. Snapshot assertions are
 transient and equality-only; no PII/pin/snapshot store was added. The last awaited
 RPC closes the observed async resource window, but ordinary resource writers have
 no shared row lock: SQL read/commit to external POST remains a concurrency window.
+
+## Task10 — original reservation producers and delegated outbox (44–47)
+
+Run only after Task9c 35–43 is verified on the existing owned local runtime.
+Task10 adds no cron and no backfill. Confirmation, reminder and survey keep their
+original facts/selectors; existing automation ledgers win before activation reads.
+Sticky adoption with activation OFF stays managed and cannot call legacy send.
+The enqueue-only internal endpoint accepts exactly action/kind/resource_id/unit_id/
+outbox_id for confirmation. It records/observes the intent without claiming,
+preparing, sending, repairing acceptance or sending email.
+
+The actual worker forwards its outbox id. An initial SQL token winner may enqueue,
+pin the job before dispatch, and perform the existing independent email work.
+An existing ledger with an unclaimed initial opportunity permits email only.
+Later polls consume the SQL five-key DTO without dispatch/email or attempt growth.
+The original token survives polling/recovery; it is invocation authority, not a
+lease or delivery proof. A token-only crash before enqueue can omit the initial
+email, and repeating plain internal calls can repeat email as in the baseline.
+This is not an exactly-once email guarantee. Plain managed/dependency calls are
+email-only; supported scheduled resend handles an existing job only.
+
+The migration is `20261006003631_whatsapp_outbox_automation_delegation.sql`.
+Stage it into the owned runtime only after source review and exact hash comparison;
+inspect the local CLI dry-run and apply only the reviewed pending migration with
+the existing guarded `supabase db push --local --workdir <workspace-local>`.
+No root/linked/production/reset/full-history command belongs to these gates.
+Bootstrap44 must precede it: literal legacy028 outbox DDL, real confirmation trigger
+and helpers, exact085/106 ACL, catalog drift checks, no Auth stub or old fact repair.
+Inherited41 reservations.source remains nullable with its existing default/check.
+Reapply44 and the new migration and compare catalogs/ACL; a second run is not
+permission to overwrite drift. The two markers are nullable UUIDs, without FK.
+
+45 executes SQL controls inside ROLLBACK: thirteen stored states and exact DTO,
+SQL60 pending schedule without attempt growth, current terminal proof, original
+owner/wrong-token controls, no-job acceptance proof, private typed twelve-field
+one-use permits, rollback/forgery/transaction mismatch, managed SDK CAS time,
+never-adopted dependency defer, legacy helpers and operational table/RPC ACL.
+Direct role changes here are SQL ACL controls, not JWT proof.
+
+46 uses genuinely independent PostgreSQL sessions and observed blocking PIDs:
+initial winner/loser, job SHARE before outbox lock, recovery while job is locked,
+original finish waiting for recovery, SKIP LOCKED progress and clamp0..20.
+Its owner-only fixture ages rows through exact typed permits; this seeds age,
+not service authority or a second recovery implementation. It drains both own
+sessions before cleanup and preserves any native failure. Recovery reads only
+outbox, uses SQL two-minute age, and never grants a new initial token.
+
+47 uses real local GoTrue sessions, PostgREST and the installed SDK. It compares
+identical table42501 responses for matching/foreign/missing/forged resources for
+anon, owner, gerente, operador, platform admin without membership, foreign member
+and outsider, plus genuine service guard positives/negatives and closed DTOs.
+The outbox table explicitly revokes all four roles, granting service only SELECT,
+INSERT, UPDATE and DELETE; FORCE RLS/no policies alone does not prevent a definer
+BEFORE INSERT trigger from becoming a scope oracle.
+
+Review46/47 before execution. Both reject arguments and daemon overrides and pin
+the Docker executable, exact `npipe:////./pipe/dockerDesktopLinuxEngine`, project
+`moralles-templates-20261003`, running exact container and database port55452.
+47 additionally pins `http://127.0.0.1:55451`, rejects redirects/remote origins and
+reads local generated keys only after guards; keys/tokens are never printed.
+Both clean only their fixtures and restore the exact original flag absence,
+JSON null or SQL NULL through explicit typed fields, never populate_recordset.
+No provider is contacted. Node/Bash syntax, Vitest, lint and cached Deno checks
+are offline source validation and do not establish any SQL/JWT/race result.

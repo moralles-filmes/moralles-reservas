@@ -25,7 +25,10 @@ function database(seed: Record<string, Row[]>, scripts: Record<string, (args: Ro
   // Exact projections exercised by these controls; unknown projections fail.
   const projections: Record<string, string[]> = {
     reservations: ["*, customer:customers(*), unit:units(name, phone, instagram, website, address)", "id, date, time, status", "id"],
-    notification_outbox: ["id, reservation_id, unit_id, kind, attempts"],
+    notification_outbox: ["id, reservation_id, unit_id, kind, attempts, automation_job_id, automation_initial_token"],
+    whatsapp_automation_jobs: ["*"],
+    whatsapp_automation_adoptions: ["adopted_at"],
+    whatsapp_template_bindings: ["dispatch_enabled,adopted_at"],
     notifications_sent: ["id"],
     whatsapp_channels: ["id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled", "id"],
     platform_flags: ["value"],
@@ -163,6 +166,8 @@ function producerRequest(name: string, body: unknown, key = env.INTERNAL_API_KEY
   });
 }
 const NOW = Date.UTC(2026, 9, 4, 12);
+const outboxIds = { outbox: "00000000-0000-4000-8000-000000000001", reservation: "eeeeeeee-0000-4000-8000-000000000001",
+  unitA: "bbbbbbbb-0000-4000-8000-000000000001", unitB: "bbbbbbbb-0000-4000-8000-000000000002" };
 const SECRET = "synthetic-datafy-webhook-secret";
 // Extracted 2026-10-04 from src/test/whatsapp-provider-core.test.ts:
 // "normaliza todos os status ... Meta" (statuses) and "datafy: identidade e
@@ -324,9 +329,12 @@ describe("actual Edge Request harness foundation", () => {
   });
 
   it("routes outbox internal hop to an actual authenticated confirmation Request", async () => {
-    const db = database({ notification_outbox: [{ id: "outbox-a", reservation_id: "reservation-a", unit_id: "unit-b", kind: "confirmation", attempts: 0, status: "pending", next_attempt_at: new Date(NOW - 1).toISOString() }],
-      reservations: [{ id: "reservation-a", unit_id: "unit-a", date: "2026-10-05", time: "18:00:00", status: "pending" }], notifications_sent: [], units: [],
-    }, { mark_outbox_failed: () => ({ data: null, error: null }) });
+    const db = database({ notification_outbox: [{ id: outboxIds.outbox, reservation_id: outboxIds.reservation, unit_id: outboxIds.unitB,
+      kind: "confirmation", attempts: 0, status: "pending", next_attempt_at: new Date(NOW - 1).toISOString(), automation_job_id: null, automation_initial_token: null }],
+      reservations: [{ id: outboxIds.reservation, unit_id: outboxIds.unitA, date: "2026-10-05", time: "18:00:00", status: "pending" }], notifications_sent: [], units: [],
+      whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
+      platform_flags: [{ key: "whatsapp_automation_dispatch", value: false }],
+    }, { recover_delegated_notification_outbox: () => ({ data: [], error: null }), mark_outbox_failed: () => ({ data: null, error: null }) });
     const fixture = harness(db, { now: NOW, internalHops: [{ from: "process-notification-outbox", to: "send-confirmation" }] });
     const response = await fixture.request("process-notification-outbox", producerRequest("process-notification-outbox", {}));
     expect(await response.json()).toMatchObject({ processed: 1, failed: 1, succeeded: 0 });
@@ -334,23 +342,33 @@ describe("actual Edge Request harness foundation", () => {
     const hop = fixture.internalRequests[0];
     expect(hop.request).toBeInstanceOf(Request);
     expect(hop.request.headers.get("x-internal-key")).toBe(env.INTERNAL_API_KEY);
-    expect(await hop.request.clone().json()).toEqual({ record: { id: "reservation-a", unit_id: "unit-b" } });
-    expect(db.rpcs).toEqual([{ name: "mark_outbox_failed", args: { p_id: "outbox-a", p_error: "http_404: {\"error\":\"Reserva não encontrada\"}" } }]);
-    expect(db.queries.at(-1)).toMatchObject({ table: "reservations", filters: [["eq", "id", "reservation-a"], ["eq", "unit_id", "unit-b"]] });
-    expect((await fixture.request("send-confirmation", producerRequest("send-confirmation", { record: { id: "reservation-a" } }, "wrong"))).status).toBe(401);
+    expect(await hop.request.clone().json()).toEqual({ record: { id: outboxIds.reservation, unit_id: outboxIds.unitB }, outbox_id: outboxIds.outbox });
+    expect(db.rpcs).toEqual([{ name: "recover_delegated_notification_outbox", args: { p_limit: 20 } },
+      { name: "mark_outbox_failed", args: { p_id: outboxIds.outbox, p_error: "http_404: {\"error\":\"Reserva não encontrada\"}" } }]);
+    expect(db.queries.filter(query => ["whatsapp_automation_jobs", "whatsapp_automation_adoptions", "whatsapp_template_bindings", "platform_flags"].includes(query.table))
+      .map(({ table, select, filters }) => ({ table, select, filters }))).toEqual([
+      { table: "whatsapp_automation_jobs", select: "*", filters: [["eq", "unit_id", outboxIds.unitB], ["eq", "reservation_id", outboxIds.reservation], ["eq", "kind", "confirmation"]] },
+      { table: "whatsapp_automation_adoptions", select: "adopted_at", filters: [["eq", "unit_id", outboxIds.unitB]] },
+      { table: "platform_flags", select: "value", filters: [["eq", "key", "whatsapp_automation_dispatch"]] },
+      { table: "whatsapp_template_bindings", select: "dispatch_enabled,adopted_at", filters: [["eq", "unit_id", outboxIds.unitB]] },
+    ]);
+    expect(db.queries.at(-1)).toMatchObject({ table: "reservations", filters: [["eq", "id", outboxIds.reservation], ["eq", "unit_id", outboxIds.unitB]] });
+    expect((await fixture.request("send-confirmation", producerRequest("send-confirmation", { record: { id: outboxIds.reservation } }, "wrong"))).status).toBe(401);
     expect(fixture.pendingTimers).toBe(0); fixture.assertNoUnexpectedIo(); db.assertNoUnexpectedIo();
   });
 
   it("gives separate endpoints separate module caches while sharing only explicit DB I/O", async () => {
     const db = database({
-      units: [{ id: "unit-a", organization_id: "org-a", name: "Synthetic" }],
+      units: [{ id: outboxIds.unitA, organization_id: "org-a", name: "Synthetic" }],
       organizations: [{ id: "org-a", billing_status: "blocked", whatsapp_legacy_grandfathered: false, whatsapp_grandfather_revoked_at: null }],
       organization_entitlement_overrides: [], billing_subscriptions: [],
-      platform_flags: [{ key: "whatsapp_service_enforcement", value: false }],
-      waitlist: [{ id: "waitlist-a", unit_id: "unit-a", status: "waiting", customer_phone: "11988887777", customer_name: "Synthetic", party_size: 2, code: 1 }],
-      settings: [{ unit_id: "unit-a", key: "waitlist_entered_enabled", value: false }], waitlist_message_templates: [],
-      notification_outbox: [{ id: "outbox-a", unit_id: "unit-a", status: "pending", kind: "confirmation", next_attempt_at: new Date(NOW - 1).toISOString() }],
-    });
+      platform_flags: [{ key: "whatsapp_service_enforcement", value: false }, { key: "whatsapp_automation_dispatch", value: false }],
+      waitlist: [{ id: "waitlist-a", unit_id: outboxIds.unitA, status: "waiting", customer_phone: "11988887777", customer_name: "Synthetic", party_size: 2, code: 1 }],
+      settings: [{ unit_id: outboxIds.unitA, key: "waitlist_entered_enabled", value: false }], waitlist_message_templates: [],
+      notification_outbox: [{ id: outboxIds.outbox, unit_id: outboxIds.unitA, reservation_id: outboxIds.reservation, attempts: 0,
+        status: "pending", kind: "confirmation", next_attempt_at: new Date(NOW - 1).toISOString(), automation_job_id: null, automation_initial_token: null }],
+      whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
+    }, { recover_delegated_notification_outbox: () => ({ data: [], error: null }) });
     const fixture = harness(db, { now: NOW });
     const runWaitlist = () => fixture.request("process-waitlist-entered", producerRequest("process-waitlist-entered", { waitlist_id: "waitlist-a" }));
     expect(await (await runWaitlist()).json()).toEqual({ skipped: "disabled" });
@@ -360,22 +378,28 @@ describe("actual Edge Request harness foundation", () => {
     const response = await fixture.request("process-notification-outbox", producerRequest("process-notification-outbox", {}));
     expect(await response.json()).toMatchObject({ parked: 1, succeeded: 0, failed: 0 });
     expect(db.tables.notification_outbox[0]).toMatchObject({ status: "pending", last_error: "whatsapp_service_suspended" });
-    expect(db.queries.filter((query) => query.table === "platform_flags")).toHaveLength(2);
+    expect(db.queries.filter((query) => query.table === "platform_flags" && query.filters.some(([, key, value]) => key === "key" && value === "whatsapp_service_enforcement"))).toHaveLength(2);
+    expect(db.queries.filter((query) => query.table === "platform_flags")).toHaveLength(3);
+    expect(db.rpcs).toEqual([{ name: "recover_delegated_notification_outbox", args: { p_limit: 20 } }]);
     fixture.assertNoUnexpectedIo(); db.assertNoUnexpectedIo();
   });
 
   it("denies an undeclared internal hop even when its destination is an allowed Edge name", async () => {
-    const db = database({ notification_outbox: [{ id: "outbox-a", reservation_id: "reservation-a", unit_id: "unit-a", kind: "confirmation", attempts: 0,
-      status: "pending", next_attempt_at: new Date(NOW - 1).toISOString() }], reservations: [{ id: "reservation-a", date: "2026-10-05", time: "18:00:00", status: "pending" }],
+    const db = database({ notification_outbox: [{ id: outboxIds.outbox, reservation_id: outboxIds.reservation, unit_id: outboxIds.unitA, kind: "confirmation", attempts: 0,
+      status: "pending", next_attempt_at: new Date(NOW - 1).toISOString(), automation_job_id: null, automation_initial_token: null }],
+      reservations: [{ id: outboxIds.reservation, unit_id: outboxIds.unitA, date: "2026-10-05", time: "18:00:00", status: "pending" }],
       notifications_sent: [], units: [],
-    }, { mark_outbox_failed: () => ({ data: null, error: null }) });
+      whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
+      platform_flags: [{ key: "whatsapp_automation_dispatch", value: false }],
+    }, { recover_delegated_notification_outbox: () => ({ data: [], error: null }), mark_outbox_failed: () => ({ data: null, error: null }) });
     let cannedCalls = 0;
     const fixture = harness(db, { now: NOW, internalHops: [{ from: "process-waitlist-entered", to: "send-confirmation" }],
       transport: [{ method: "POST", url: `${env.SUPABASE_URL}/functions/v1/send-confirmation`, respond: () => { cannedCalls++; return Response.json({ ok: true }); } }] });
     const response = await fixture.request("process-notification-outbox", producerRequest("process-notification-outbox", {}));
     expect(await response.json()).toMatchObject({ failed: 1, succeeded: 0 });
     expect(fixture.internalRequests).toEqual([]);
-    expect(db.rpcs).toEqual([{ name: "mark_outbox_failed", args: { p_id: "outbox-a", p_error: "Unexpected fixture I/O: internal_hop" } }]);
+    expect(db.rpcs).toEqual([{ name: "recover_delegated_notification_outbox", args: { p_limit: 20 } },
+      { name: "mark_outbox_failed", args: { p_id: outboxIds.outbox, p_error: "Unexpected fixture I/O: internal_hop" } }]);
     expect(cannedCalls).toBe(0);
     expect(() => fixture.assertNoUnexpectedIo()).toThrow("internal_hop"); db.assertNoUnexpectedIo();
   });

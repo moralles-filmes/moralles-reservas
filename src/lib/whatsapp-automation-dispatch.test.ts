@@ -587,6 +587,42 @@ describe('trusted producer provenance and bounded adapter', () => {
   });
 });
 
+describe('enqueue-only persisted observation', () => {
+  it.each(['queued','accepted'] as const)('new enqueue returns the persisted %s snapshot with no dispatch effects', async state => {
+    const f = createDispatchFixture(), mutations: string[] = [];
+    const outboxId = '00000000-0000-4000-8000-000000000001';
+    const dispatcher = createAutomationDispatcher({ ...f.io,
+      readOne: async (table,columns,predicates,latest) => {
+        if (table === 'whatsapp_automation_jobs' && predicates.kind) return null;
+        if (table === 'reservations' && columns === '*') return { ...f.rows.reservations[0] };
+        if (table === 'whatsapp_automation_adoptions') return { adopted_at: '2026-10-05T00:00:00Z' };
+        if (table === 'notification_outbox') return { id: outboxId, unit_id: f.ids.unit, reservation_id: f.ids.reservation, kind: 'confirmation', created_at: f.nowISO };
+        return f.io.readOne(table,columns,predicates,latest);
+      },
+      rpc: async (name,args) => { mutations.push(name); if (name === 'enqueue_whatsapp_automation') {
+        f.row.state = state; f.row.provider_message_id = state === 'accepted' ? 'concurrent-native' : null; return f.jobId;
+      } return f.io.rpc(name,args); },
+    });
+    expect(await dispatcher.enqueueScheduledIntent({ kind: 'confirmation', resourceId: f.ids.reservation, unitId: f.ids.unit, outboxId }))
+      .toMatchObject({ state, jobId: f.jobId });
+    expect(mutations).toEqual(['enqueue_whatsapp_automation']);
+    expect(f.calls.operations).toEqual(['read:whatsapp_automation_jobs']);
+    expect(f.calls.post + f.calls.reconcile).toBe(0); expect(f.calls.prepares).toEqual([]); expect(f.calls.confirms).toEqual([]);
+  });
+  it.each(['queued', 'accepted', 'reconciled'] as const)('observes existing %s without any dispatch effect', async state => {
+    const f = createDispatchFixture();
+    f.row.state = state;
+    if (state !== 'queued') f.row.provider_message_id = 'existing-native';
+    const dispatcher = createAutomationDispatcher({ ...f.io, readOne: async (table, columns, predicates, latest) =>
+      table === 'whatsapp_automation_jobs' && predicates.reservation_id === f.ids.reservation
+        ? { ...f.row } : f.io.readOne(table, columns, predicates, latest) });
+    expect(await dispatcher.enqueueScheduledIntent({ kind: 'confirmation', resourceId: f.ids.reservation, unitId: f.ids.unit }))
+      .toMatchObject({ state, jobId: f.jobId });
+    expect(f.calls.post).toBe(0); expect(f.calls.reconcile).toBe(0);
+    expect(f.calls.operations).toEqual([]);
+  });
+});
+
 describe('consent purpose authority through the real dispatcher', () => {
   type ConsentFixture = Pick<ReturnType<typeof createDispatchFixture>, 'ids' | 'consentEvents' | 'calls' | 'row' | 'jobId'>;
   function addEvent(f: ConsentFixture, purpose: 'operational' | 'promotional', decision: string, revision: number) {

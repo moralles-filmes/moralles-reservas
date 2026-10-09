@@ -226,14 +226,14 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
     }
   }
 
-  async function dispatchScheduledIntent(input: ScheduledProducerRequest): Promise<DispatchResult> {
+  async function enqueueScheduledIntent(input: ScheduledProducerRequest): Promise<DispatchResult> {
     if (!uuid(input.resourceId) || (input.unitId !== undefined && !uuid(input.unitId))) return notEnqueued('intent_invalid');
     try {
       const table = ['confirmation','reminder_d1','survey_d1'].includes(input.kind) ? 'reservations' : input.kind === 'voucher_issued' ? 'vouchers' : 'waitlist';
       const key = table === 'reservations' ? 'reservation_id' : table === 'waitlist' ? 'waitlist_id' : 'voucher_id';
       // Existing ledger first, with no join/current resource filter that could hide erased acceptance.
       const existing = await read('whatsapp_automation_jobs', '*', { kind: input.kind, [key]: input.resourceId, ...(input.unitId ? { unit_id: input.unitId } : {}) });
-      if (existing && uuid(existing.id)) return dispatchExistingJob(existing.id);
+      if (existing) return recordedDispatchResult(parseAutomationLedger(existing));
       if (input.kind === 'voucher_issued') return notEnqueued('provenance_refused');
       const row = await read(table, '*', { id: input.resourceId });
       if (!row || !uuid(row.unit_id) || (input.unitId && input.unitId !== row.unit_id)) return notEnqueued('resource_refused');
@@ -265,8 +265,12 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
       const jobId = await io.rpc('enqueue_whatsapp_automation', { p_intent: { unit_id: row.unit_id, kind: input.kind,
         [key]: input.resourceId, source_event_key: sourceEventKey, fact_at: factAt, expires_at: automationDeadline(input.kind, factAt) } });
       if (jobId === null) return notEnqueued('legacy_already_accepted');
-      return uuid(jobId) ? dispatchExistingJob(jobId) : notEnqueued('dependency_unavailable');
+      return uuid(jobId) ? recordedDispatchResult((await loadJob(jobId)).job) : notEnqueued('dependency_unavailable');
     } catch { return notEnqueued('dependency_unavailable'); }
   }
-  return { dispatchExistingJob, dispatchScheduledIntent };
+  async function dispatchScheduledIntent(input: ScheduledProducerRequest): Promise<DispatchResult> {
+    const enqueued = await enqueueScheduledIntent(input);
+    return enqueued.jobId === null ? enqueued : dispatchExistingJob(enqueued.jobId);
+  }
+  return { dispatchExistingJob, dispatchScheduledIntent, enqueueScheduledIntent };
 }

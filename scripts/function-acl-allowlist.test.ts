@@ -108,6 +108,32 @@ describe("manutenção de textos WhatsApp", () => {
   });
 });
 
+describe('Task10 existing outbox delegation', () => {
+  it('closes all six signatures, both guards, private types/permits and the operational table', () => {
+    const signatures = allowlist._service_only_whatsapp_outbox_delegation as string[];
+    expect(signatures).toEqual(['claim_notification_outbox_initial(uuid)', 'delegate_notification_outbox_automation(uuid,uuid)',
+      'poll_notification_outbox_automation(uuid)', 'defer_notification_outbox_automation_dependency(uuid)',
+      'finish_notification_outbox_initial(uuid,uuid)', 'recover_delegated_notification_outbox(integer)']);
+    const sql = readFileSync(join(MIGRATIONS_DIR, '20261006003631_whatsapp_outbox_automation_delegation.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    for (const signature of ['guard_notification_outbox_automation()', 'guard_notification_outbox_insert_scope()']) {
+      expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(sql).not.toContain(`grant execute on function public.${signature}`);
+    }
+    for (const type of ['notification_outbox_mutation_action','notification_outbox_transition_tuple','notification_outbox_automation_projection'])
+      expect(sql).toContain(`revoke all on type app_private.${type} from public,anon,authenticated,service_role;`);
+    expect(sql).toContain('revoke all on table app_private.notification_outbox_mutation_permits from public,anon,authenticated,service_role;');
+    expect(sql).toContain('revoke all on table public.notification_outbox from public,anon,authenticated,service_role;');
+    expect(sql).toContain('grant select,insert,update,delete on table public.notification_outbox to service_role;');
+    expect(sql).not.toMatch(/grant\s+.*\s+to\s+(?:public|anon|authenticated)\s*;/i);
+    expect(sql).not.toMatch(/grant\s+.*\s+on\s+(?:schema|type)\s+app_private/i);
+  });
+});
+
 describe("RPCs internas de automação WhatsApp", () => {
   it("classifica todas as assinaturas como service-only sem ampliar a allowlist pública", () => {
     const signatures = allowlist._service_only_whatsapp_automation as string[];

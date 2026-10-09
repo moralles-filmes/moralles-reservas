@@ -6,6 +6,9 @@ import { clearChannelConnectivityCache } from "../_shared/whatsapp-send.ts";
 import { sendEmail } from "../_shared/email.ts";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
 import { appendOutboundToConversation } from "../_shared/conversation-log.ts";
+import { selectReservationAutomationRoute, automationUuid, decodeAutomationDispatch,
+  decodeOutboxAutomationObservation, type OutboxAutomationObservation } from "../_shared/whatsapp-automation-producer-routing.ts";
+import type { DispatchResult } from "../_shared/whatsapp-automation-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -361,10 +364,79 @@ serve(async (req) => {
       discountPercent,
     };
 
+    const route = await selectReservationAutomationRoute(async (table, columns, predicates, cardinality) => {
+      let query = supabase.from(table).select(columns);
+      for (const [column, value] of predicates) query = query.eq(column, value);
+      const result = await (cardinality === 'single' ? query.maybeSingle() : query);
+      if (result.error) throw result.error;
+      return result.data;
+    }, { kind: 'confirmation', unitId: unit_id, reservationId: reserva.id });
+    const managed = route.path !== 'legacy';
+    const outboxId = body.outbox_id;
+    let initialToken: string | null = null;
+    let scheduled: DispatchResult | null = null;
+    let automation: OutboxAutomationObservation | null = null;
+    const noEffects = (reason: string) => new Response(JSON.stringify({ success: false,
+      whatsapp: { sent: false, skipped: true, local_success: false }, email: { sent: false, skipped: true }, reason }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    async function scheduledRequest(payload: Record<string, unknown>): Promise<DispatchResult | null> {
+      try {
+        const response = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/send-scheduled-whatsapp`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': Deno.env.get('INTERNAL_API_KEY') ?? '' },
+          body: JSON.stringify(payload), signal: AbortSignal.timeout(25_000),
+        });
+        return response.ok ? decodeAutomationDispatch(await response.json()) : null;
+      } catch { return null; }
+    }
+    if (resendWhatsappOnly) {
+      if (managed) {
+        if (route.path === 'managed' && route.existingJobId)
+          scheduled = await scheduledRequest({ action: 'dispatch_existing', job_id: route.existingJobId });
+      } else {
+        // Retry provenance differs from acceptance: failed confirmation can be retried.
+        const receipt = await supabase.from('notifications_sent').select('id,unit_id,reservation_id,kind,status')
+          .eq('unit_id', unit_id).eq('reservation_id', reserva.id).eq('kind', 'confirmation').maybeSingle();
+        if (receipt.error || !receipt.data || !automationUuid(receipt.data.id) || receipt.data.unit_id !== unit_id
+          || receipt.data.reservation_id !== reserva.id || receipt.data.kind !== 'confirmation'
+          || !['sent','failed','skipped','delivered','read'].includes(receipt.data.status)) return noEffects('provenance_refused');
+      }
+    } else if (managed && outboxId !== undefined) {
+      if (!automationUuid(outboxId)) return noEffects('provenance_refused');
+      const actual = await supabase.from('notification_outbox')
+        .select('id,reservation_id,unit_id,kind,status,automation_job_id,automation_initial_token').eq('id', outboxId).maybeSingle();
+      if (actual.error || !actual.data || actual.data.id !== outboxId || actual.data.reservation_id !== reserva.id
+        || actual.data.unit_id !== unit_id || actual.data.kind !== 'confirmation' || actual.data.status !== 'processing')
+        return noEffects('provenance_refused');
+      if (actual.data.automation_initial_token !== null) return noEffects('automation_initial_unfinished');
+      if (route.path === 'dependency') {
+        const deferred = await supabase.rpc('defer_notification_outbox_automation_dependency', { p_id: outboxId });
+        return noEffects(!deferred.error && deferred.data === true ? 'automation_dependency_unavailable' : 'automation_defer_failed');
+      }
+      const claimed = await supabase.rpc('claim_notification_outbox_initial', { p_id: outboxId });
+      if (claimed.error || !automationUuid(claimed.data)) return noEffects('automation_initial_unclaimed');
+      initialToken = claimed.data;
+      // Existing ledger allows one email-only opportunity, without dispatch or repair.
+      const jobId = route.existingJobId;
+      if (jobId) {
+        const pinned = await supabase.rpc('delegate_notification_outbox_automation', { p_id: outboxId, p_job_id: jobId });
+        if (pinned.error || pinned.data !== true) jsonLog('warn', { evt: 'confirmation_automation_dependency' });
+      } else {
+        scheduled = await scheduledRequest({ action: 'enqueue', kind: 'confirmation', resource_id: reserva.id, unit_id, outbox_id: outboxId });
+        if (scheduled?.jobId) {
+          const pinned = await supabase.rpc('delegate_notification_outbox_automation', { p_id: outboxId, p_job_id: scheduled.jobId });
+          scheduled = !pinned.error && pinned.data === true
+            ? await scheduledRequest({ action: 'dispatch_existing', job_id: scheduled.jobId }) : null;
+        }
+      }
+    }
+    const scheduledWhatsapp = () => ({ kind: 'whatsapp' as const,
+      ok: scheduled?.state === 'accepted' || scheduled?.state === 'reconciled', skipped: true,
+      reason: 'automation_managed' });
+
     // A seleção do canal é centralizada em sendWhatsApp: quando há `is_active`,
     // ela vence; sem projeção explícita, o fallback aceita só legado NULL.
     // Pré-selecionar aqui poderia passar um canal preservado/inativo no cutover.
-    const whatsappPromise = unit_id
+    const whatsappPromise = managed ? Promise.resolve(scheduledWhatsapp()) : unit_id
       ? sendWhatsApp(customer.phone, message, {
           unit_id,
         }).then(
@@ -390,8 +462,9 @@ serve(async (req) => {
         }).then((res) => ({ kind: "email" as const, ...res }))
       : Promise.resolve({ kind: "email" as const, ok: false, skipped: true as const, reason: "no_email" });
 
-    const [whatsappResult, emailResult] = await Promise.all([whatsappPromise, emailPromise]);
-    let whatsappHistoryPersisted = true;
+    const [initialWhatsappResult, emailResult] = await Promise.all([whatsappPromise, emailPromise]);
+    let whatsappResult = initialWhatsappResult;
+    let whatsappHistoryPersisted = managed ? scheduled?.state === 'reconciled' : true;
 
     if (whatsappResult.skipped) {
       jsonLog("info", {
@@ -462,13 +535,42 @@ serve(async (req) => {
     }
 
     const anySent = whatsappResult.ok || emailResult.ok;
-    if (anySent) {
+    if (!managed && anySent) {
       await supabase.from("reservations").update({ status: "confirmed" }).eq("id", record.id);
+    } else if (managed && emailResult.ok && !resendWhatsappOnly) {
+      const promoted = await supabase.from('reservations').update({ status: 'confirmed' })
+        .eq('id', reserva.id).eq('unit_id', unit_id).eq('status', 'pending').select('id,unit_id,status');
+      const actualPromotion = !promoted.error && promoted.data?.length === 1 && promoted.data[0].id === reserva.id
+        && promoted.data[0].unit_id === unit_id && promoted.data[0].status === 'confirmed';
+      if (initialToken && actualPromotion && scheduled?.state === 'blocked' && scheduled.pinPhase === 'bound'
+        && scheduled.reason === 'reservation_pending') {
+        const proof = await supabase.from('whatsapp_automation_jobs').select('id,unit_id,reservation_id,kind,attempts,posting_started_at,provider_message_id')
+          .eq('id', scheduled.jobId).eq('unit_id', unit_id).eq('reservation_id', reserva.id).eq('kind', 'confirmation').maybeSingle();
+        if (!proof.error && proof.data?.id === scheduled.jobId && proof.data.unit_id === unit_id
+          && proof.data.reservation_id === reserva.id && proof.data.kind === 'confirmation' && proof.data.attempts === 0
+          && proof.data.posting_started_at === null && proof.data.provider_message_id === null) {
+          scheduled = await scheduledRequest({ action: 'dispatch_existing', job_id: scheduled.jobId });
+          whatsappResult = scheduledWhatsapp();
+          whatsappHistoryPersisted = scheduled?.state === 'reconciled';
+        }
+      }
+    }
+    if (initialToken) {
+      const finished = await supabase.rpc('finish_notification_outbox_initial', { p_id: outboxId, p_token: initialToken });
+      if (finished.error || finished.data !== true) jsonLog('warn', { evt: 'confirmation_automation_finish_deferred' });
+      const observed = await supabase.rpc('poll_notification_outbox_automation', { p_id: outboxId });
+      automation = observed.error ? null : decodeOutboxAutomationObservation(observed.data);
+      if (!automation) jsonLog('warn', { evt: 'confirmation_automation_observation_failed' });
+      if (automation?.disposition === 'accepted') {
+        whatsappResult = { ...scheduledWhatsapp(), ok: true };
+        whatsappHistoryPersisted = automation.ledger_state === 'reconciled';
+      }
     }
 
     return new Response(
       JSON.stringify({
-        success: anySent,
+        success: whatsappResult.ok || emailResult.ok,
+        ...(automation ? { automation } : {}),
         whatsapp: {
           sent: whatsappResult.ok,
           skipped: whatsappResult.skipped,
