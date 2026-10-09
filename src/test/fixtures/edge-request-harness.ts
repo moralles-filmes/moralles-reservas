@@ -20,18 +20,19 @@ export type EdgeName = "send-confirmation" | "process-notification-outbox"
   | "process-reservation-reminders" | "process-satisfaction-surveys"
   | "process-waitlist-entered" | "process-waitlist-feedback"
   | "process-voucher-triggers" | "webhook-whatsapp"
-  | "send-scheduled-whatsapp" | "send-whatsapp" | "process-whatsapp-automations" | "resend-notification";
+  | "send-scheduled-whatsapp" | "send-whatsapp" | "process-whatsapp-automations" | "resend-notification" | "manage-whatsapp-templates";
 const ENDPOINTS: readonly EdgeName[] = ["send-confirmation", "process-notification-outbox",
   "process-reservation-reminders", "process-satisfaction-surveys", "process-waitlist-entered",
   "process-waitlist-feedback", "process-voucher-triggers", "webhook-whatsapp",
-  "send-scheduled-whatsapp", "send-whatsapp", "process-whatsapp-automations", "resend-notification"];
+  "send-scheduled-whatsapp", "send-whatsapp", "process-whatsapp-automations", "resend-notification", "manage-whatsapp-templates"];
 type Handler = (request: Request) => Response | Promise<Response>;
 type Transport = { from?: EdgeName; method: string; url: string; respond: (request: Request) => Response | Promise<Response> };
 export interface EdgeRequestHarnessOptions {
   /** Explicit synthetic values only; never inherits process.env. */
   env: Readonly<Record<string, string>>;
   createClient: (url: string, key: string, options?: unknown) => unknown;
-  anthropicMessagesCreate?: (input: unknown) => Promise<unknown>;
+  anthropicConstructor?: (options: unknown) => void;
+  anthropicMessagesCreate?: (input: unknown, options?: unknown) => Promise<unknown>;
   transport?: readonly Transport[];
   internalHops?: readonly { from: EdgeName; to: EdgeName }[];
   /** Optional leaf transport fault after the declared real handler has executed. */
@@ -158,13 +159,17 @@ export function createEdgeRequestHarness(options: EdgeRequestHarnessOptions) {
     if (!ENDPOINTS.includes(name)) throw new Error("Unknown Edge endpoint");
     if (endpoints.has(name)) return;
     let handler: Handler | undefined;
+    const register = (callback: Handler) => {
+      if (handler || typeof callback !== "function") throw new Error("Expected exactly one serve registration");
+      handler = callback;
+    };
     const modules = new Map<string, { exports: unknown }>();
     const context = createContext({
       Request, Response, Headers, URL, URLSearchParams, TextEncoder, TextDecoder,
       AbortController, AbortSignal, DOMException, Error, TypeError, RangeError,
       ArrayBuffer, Uint8Array, crypto: webcrypto, Date: ClockDate,
       structuredClone, atob, btoa,
-      Deno: Object.freeze({ env: Object.freeze({ get: (key: string) => {
+      Deno: Object.freeze({ ...(name === "manage-whatsapp-templates" ? { serve: register } : {}), env: Object.freeze({ get: (key: string) => {
         envNames.add(key); return Object.prototype.hasOwnProperty.call(env, key) ? env[key] : undefined;
       } }) }),
       EdgeRuntime: Object.freeze({ waitUntil: captureBackground }),
@@ -179,14 +184,12 @@ export function createEdgeRequestHarness(options: EdgeRequestHarnessOptions) {
     });
     const remote = (specifier: string): unknown => {
       manifest.add(specifier);
-      if (specifier === REMOTE.serve) return { serve: (callback: Handler) => {
-        if (handler || typeof callback !== "function") throw new Error("Expected exactly one std serve registration");
-        handler = callback;
-      } };
+      if (specifier === REMOTE.serve) return { serve: register };
       if (specifier === REMOTE.supabase) return { createClient: options.createClient };
       if (specifier === REMOTE.anthropic) return { __esModule: true, default: class Anthropic {
-        messages = { create: (input: unknown) => options.anthropicMessagesCreate
-          ? options.anthropicMessagesCreate(input) : deny("anthropic_messages_create") };
+        constructor(config: unknown) { options.anthropicConstructor?.(config); }
+        messages = { create: (input: unknown, requestOptions?: unknown) => options.anthropicMessagesCreate
+          ? options.anthropicMessagesCreate(input, requestOptions) : deny("anthropic_messages_create") };
       } };
       return deny("runtime_import");
     };

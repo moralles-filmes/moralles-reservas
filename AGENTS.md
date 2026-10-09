@@ -39,6 +39,7 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 - Frontend: Vite + React + TypeScript + Tailwind/shadcn, TanStack Query, React Hook Form + Zod, Supabase e Vitest.
 - `npm run dev` usa `localhost:8080`; gates: `npm run lint`, `npm run test`, `npm run typecheck`, `npm run build` conforme o risco.
 - **Typecheck é `tsc -b --noEmit`; nunca `tsc --noEmit` sem `-b`**, pois o root com references vira no-op. Baseline é zero erro.
+- `authz.ts` usa `import type` do SDK Deno exato; `src/types/supabase-edge-type-bridge.d.ts` exporta somente esse tipo do SDK npm para os testes frontend. A ponte não muda runtime nem substitui `deno check` com o SDK real; não amplie para valores, wildcard ou casts de caller.
 - Instalação usa `npm install --legacy-peer-deps`; `.npmrc` mantém isso por `react-day-picker` × `date-fns v4`.
 - Worktrees paralelas ficam em `.claude/worktrees/` e precisam continuar excluídas de Vitest, ESLint e qualquer nova ferramenta que varra o repositório.
 

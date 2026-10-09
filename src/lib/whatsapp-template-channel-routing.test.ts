@@ -45,6 +45,7 @@ function setup(channels = [row()]) {
       columns: string;
       filters: Array<[string, unknown]>;
       order?: string;
+      ascending?: boolean;
       limit?: number;
       head?: boolean;
     }
@@ -61,6 +62,7 @@ function setup(channels = [row()]) {
             filters: [] as Array<[string, unknown]>,
             head: options?.head,
             order: undefined as string | undefined,
+            ascending: true,
             limit: undefined as number | undefined,
           };
           queries.push(query);
@@ -73,8 +75,9 @@ function setup(channels = [row()]) {
               query.filters.push([key, value]);
               return builder;
             },
-            order(key: string, _options: { ascending: boolean }) {
+            order(key: string, options: { ascending: boolean }) {
               query.order = key;
+              query.ascending = options?.ascending ?? true;
               return builder;
             },
             limit(value: number) {
@@ -98,7 +101,7 @@ function setup(channels = [row()]) {
               matches = [...matches].sort((a, b) =>
                 String(a[query.order as keyof typeof a]).localeCompare(
                   String(b[query.order as keyof typeof b]),
-                )
+                ) * (query.ascending ? 1 : -1)
               );
             }
             const count = matches.length;
@@ -319,6 +322,15 @@ describe("legacy actual channel routing characterization", () => {
     ]);
     expect(await f.service.sendWhatsApp("raw", "raw", { unit_id: "unit-a" }))
       .toMatchObject({ ok: true, channelId: "old" });
+  });
+  it("ordering fixture exposes an unsafe descending fallback and defaults to ascending", async () => {
+    const channels = [row({ id: "new", is_active: null, created_at: "2026-02-01" }), row({ id: "old", is_active: null })];
+    const f = setup(channels);
+    f.beforeRead(query => { if (query.order === "created_at") query.ascending = false; });
+    expect(await f.service.sendWhatsApp("raw", "raw", { unit_id: "unit-a" })).toMatchObject({ channelId: "new" });
+    const sorted = f.db.from("whatsapp_channels").select("id").order("created_at", undefined).limit(1);
+    f.beforeRead(undefined);
+    expect((await sorted.maybeSingle()).data).toMatchObject({ id: "old" });
   });
   it("count race blocks NULL fallback", async () => {
     const f = setup([row({ is_active: null })]);

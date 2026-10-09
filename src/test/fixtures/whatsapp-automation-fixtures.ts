@@ -4,6 +4,7 @@ import { createAutomationDispatcher } from '../../../supabase/functions/_shared/
 import { catalogHash, TEMPLATE_CATALOG } from '../../../supabase/functions/_shared/whatsapp-template-catalog-core';
 import type { TemplateSendInput, TemplateSendOutcome } from '../../../supabase/functions/_shared/whatsapp-template-provider-core';
 import { createEdgeRequestHarness, type EdgeName } from './edge-request-harness';
+import { webcrypto } from 'node:crypto';
 
 /** Mutable database I/O only. No SQL, auth, eligibility or dispatch decision is emulated. */
 export function createAutomationFixture(options: { templateStatus?: string; nowISO?: string } = {}) {
@@ -54,11 +55,294 @@ export function createAutomationFixture(options: { templateStatus?: string; nowI
   const base = { ids, rows, calls, resources, readOne, intent, nowISO, setNow: (value: string) => { now = Date.parse(value); } };
   let producer: ReturnType<typeof createReservationProducerIO> | undefined;
   const getProducer = () => producer ??= createReservationProducerIO(base, options);
+  let chat: ReturnType<typeof createChatRequestIO> | undefined;
+  const getChat = () => chat ??= createChatRequestIO(base);
   return { ...base, producer: getProducer,
+    chat: getChat, get chatCalls() { return getChat().calls; },
+    runChatControl: (input: ChatControlInput) => getChat().run(input),
     runWaitlistProducer: (kind: 'waitlist_entered' | 'waitlist_feedback') => getProducer().runRelated(kind),
     runVoucherProducer: () => getProducer().runRelated('voucher_issued'),
     runReservationProducer: (kind: 'confirmation' | 'reminder_d1' | 'survey_d1' | 'outbox', overrides: Record<string, unknown> = {}) =>
       getProducer().run(kind, overrides) };
+}
+
+export type ChatControlInput = { kind: 'customer_text' | 'media' | 'human_echo' | 'receipt' | 'management';
+  text?: string; messageId?: string; unnamed?: boolean; signedBody?: string };
+type ChatRow = Record<string, unknown>;
+type ChatQuery = { table: string; operation: string; columns: string; filters: [string, string, unknown][];
+  patch: ChatRow | null; matched: string[] };
+
+/** Pinned Anthropic Message shape consumed by the real agent, not an AgentLoopResult. */
+export function chatSdkMessage(content: unknown[] = [{ type: 'text', text: 'Posso ajudar com sua reserva.' }], stopReason = 'end_turn') {
+  return { id: 'msg_synthetic_chat', type: 'message', role: 'assistant', model: 'claude-sonnet-4-6',
+    content, stop_reason: stopReason, stop_sequence: null,
+    usage: { input_tokens: 23, output_tokens: 9, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } };
+}
+
+/**
+ * Closed relational I/O for the complete webhook Request graph. These scripts
+ * observe SQL RPC calls; they do not prove SQL locks, JWT, RLS or atomicity.
+ * Envelope provenance: provider-core Meta/Datafy and Coexistence tests plus
+ * edge-request-harness.test.ts signature fixture, extracted 2026-10-09. All
+ * identities, names and credentials below are synthetic, never captures.
+ */
+function createChatRequestIO(base: { ids: { unit: string; organization: string; customer: string; reservation: string; foreignUnit: string };
+  nowISO: string; rows: Record<AutomationResourceTable, ChatRow[]> }) {
+  const ids = { ...base.ids, channel: 'dddddddd-0000-4000-8000-000000000001', conversation: '88888888-0000-4000-8000-000000000001' };
+  const secret = 'synthetic-chat-datafy-secret';
+  const env = { SUPABASE_URL: 'https://supabase.fixture.invalid', SUPABASE_SERVICE_ROLE_KEY: 'synthetic-service',
+    SUPABASE_ANON_KEY: 'synthetic-anon', INTERNAL_API_KEY: 'synthetic-internal', APP_BASE_URL: 'https://app.fixture.invalid' };
+  const schemas: Record<string, string> = {
+    whatsapp_channels: 'id,unit_id,provider,credentials,webhook_secret,status,is_active,instance_token_secret_id,external_instance_id,template_credential_revision,activation_requested_at,manual_echo_verified_at,async_ingestion_enabled,last_event_at,last_error',
+    units: 'id,organization_id,name,slug,timezone,address,price_range_max',
+    organizations: 'id,billing_status,trial_ends_at,whatsapp_legacy_grandfathered,whatsapp_grandfather_revoked_at',
+    customers: 'id,organization_id,name,phone,email,emails,birthday,do_not_contact,deleted_at',
+    reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating,satisfaction_at,satisfaction_comment,notes,updated_at,created_at',
+    notifications_sent: 'id,unit_id,kind,status,sent_at,reservation_id,error,whatsapp_provider,whatsapp_channel_id,provider_message_id,delivered_at,read_at',
+    conversations: 'id,unit_id,customer_id,messages,status,ai_lock_token,contact_name,wa_chat_lid,handoff_reason,handoff_at,last_silenced_reply_at,last_message_at',
+    settings: 'unit_id,key,value', platform_flags: 'key,value',
+    organization_entitlement_overrides: 'organization_id,feature,enabled,grant_type,starts_at,ends_at,revoked_at',
+    billing_subscriptions: 'id,organization_id,status,current_period_end,canceled_at,suspended_at,billing_plans',
+    billing_plans: 'category,included_features',
+    ai_cycle_budgets: 'id,organization_id,limit_cents,settled_cents,state,cycle_start,cycle_end',
+    ai_provider_credentials: 'unit_id,provider,api_key,active',
+    halls: 'id,unit_id,name,description,allow_empty_seat,active,sort_order', hall_schedules: 'hall_id,day_of_week,open_time,close_time,is_closed',
+    business_hours: 'unit_id,day_of_week,open_time,close_time,is_closed',
+    special_dates: 'unit_id,date,name,is_closed,open_time,close_time',
+    table_blocks: 'unit_id,table_id,title,reason,hall_id,blocked_from,blocked_to',
+    menus: 'unit_id,slug,active,created_at',
+    voucher_rules: 'id,unit_id,trigger_type,discount_percent,validity_days,min_rating,visits_required,days_window,active,created_at',
+    vouchers: 'id,unit_id,customer_id,rule_id,code,discount_percent,status,issued_at,created_at,expires_at',
+    webhook_executions: 'request_id,unit_id,channel_id,phone_hash,outcome,error,duration_ms,meta',
+    ai_usage_logs: 'unit_id,provider,model,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,conversation_id',
+    whatsapp_automation_adoptions: 'unit_id,kind,adopted_at',
+    whatsapp_template_bindings: 'id,generation,account_id,channel_id,unit_id,provider,verified_at,channel_credential_revision',
+    whatsapp_template_accounts: 'id,waba_id,organization_id,binding_generation',
+    whatsapp_remote_templates: 'id,account_id,remote_id,name,language',
+    whatsapp_inbound_events: 'id,provider,channel_id,unit_id,raw_body,delivery_id,signature_header,signature_scheme,status,claim_id,attempts',
+  };
+  const tables: Record<string, ChatRow[]> = Object.fromEntries(Object.keys(schemas).map(table => [table, []]));
+  Object.assign(tables, {
+    whatsapp_channels: [{ id: ids.channel, unit_id: ids.unit, provider: 'datafy', credentials: { phone_number_id: '123', access_token: 'synthetic-datafy-access' },
+      webhook_secret: secret, status: 'connected', is_active: true, instance_token_secret_id: null, external_instance_id: null,
+      template_credential_revision: 1, activation_requested_at: null, manual_echo_verified_at: base.nowISO, async_ingestion_enabled: false }],
+    units: [{ ...base.rows.units[0], address: null, price_range_max: null }],
+    organizations: [{ id: ids.organization, billing_status: 'active', trial_ends_at: null, whatsapp_legacy_grandfathered: true, whatsapp_grandfather_revoked_at: null }],
+    customers: [{ ...base.rows.customers[0], email: null, emails: [], birthday: null }],
+    reservations: [{ ...base.rows.reservations[0], satisfaction_at: null, satisfaction_comment: null, notes: null, updated_at: base.nowISO, created_at: base.nowISO }],
+    conversations: [{ id: ids.conversation, unit_id: ids.unit, customer_id: ids.customer, messages: [], status: 'ai_active', ai_lock_token: null,
+      contact_name: 'Marina', wa_chat_lid: null, handoff_reason: null, handoff_at: null, last_silenced_reply_at: null, last_message_at: base.nowISO }],
+    settings: [{ unit_id: ids.unit, key: 'ai_config', value: { provider: 'claude' } }],
+    platform_flags: [{ key: 'whatsapp_service_enforcement', value: false }, { key: 'whatsapp_async_ingestion', value: false }],
+    ai_provider_credentials: [{ unit_id: ids.unit, provider: 'claude', api_key: 'synthetic-byok', active: true }],
+    whatsapp_template_bindings: [{ id: 'synthetic-binding',generation: 1,account_id: 'synthetic-account',channel_id: ids.channel,
+      unit_id: ids.unit,provider: 'datafy',verified_at: base.nowISO,channel_credential_revision: 1 }],
+    whatsapp_template_accounts: [{ id: 'synthetic-account',waba_id: 'waba1',organization_id: ids.organization,binding_generation: 1 }],
+    whatsapp_remote_templates: [{ id: 'synthetic-template',account_id: 'synthetic-account',remote_id: '1713142233297685',name: 'aviso_agendamento',language: 'pt_BR' }],
+  });
+  const trace: { operation: string; value?: unknown }[] = [], queries: ChatQuery[] = [], unexpected: string[] = [];
+  const calls = { sendText: 0, sendTemplate: 0, enqueueAutomation: 0, llm: 0 };
+  const sdk: { constructors: unknown[]; requests: { input: unknown; options: unknown }[] } = { constructors: [], requests: [] };
+  const controls = { sendStatus: 200, sdkResponses: [chatSdkMessage()] as unknown[], voucherInsertError: null as string | null,
+    beforeQuery: async (_query: ChatQuery) => {}, beforeSdk: async (_input: unknown, _options: unknown) => {} };
+  const processed = new Map<string, string>();
+  const fail = (reason: string): never => { unexpected.push(reason); throw new Error(`unexpected_chat_io:${reason}`); };
+  const assertColumn = (table: string, column: string) => {
+    if (!schemas[table]?.split(',').includes(column)) fail(`column:${table}.${column}`);
+  };
+  const splitColumns = (columns: string) => columns.split(/,(?![^()]*\))/).map(column => column.trim());
+  const relation = (table: string, row: ChatRow, name: string): ChatRow | null => {
+    if (table === 'notifications_sent' && name === 'reservations') return tables.reservations.find(item => item.id === row.reservation_id) ?? null;
+    if (table === 'billing_subscriptions' && name === 'billing_plans') return row.billing_plans as ChatRow ?? null;
+    return fail(`relation:${table}.${name}`);
+  };
+  const field = (table: string, row: ChatRow, column: string): unknown => {
+    if (column.includes('.')) { const [joined, key] = column.split('.'); assertColumn(joined, key); return relation(table, row, joined)?.[key] ?? null; }
+    assertColumn(table, column); return row[column] ?? null;
+  };
+  const project = (table: string, row: ChatRow, columns: string): ChatRow => {
+    if (columns === '*') return structuredClone(row);
+    return Object.fromEntries(splitColumns(columns).map(part => {
+      const joined = /^(\w+)(!inner)?\((.*)\)$/.exec(part);
+      if (joined) {
+        const related = relation(table, row, joined[1]);
+        if (joined[1] === 'billing_plans') return [joined[1], related ? Object.fromEntries(splitColumns(joined[3]).map(key => [key, related[key]])) : null];
+        for (const key of splitColumns(joined[3])) assertColumn(joined[1], key);
+        return [joined[1], related ? project(joined[1], related, joined[3]) : null];
+      }
+      return [part, structuredClone(field(table, row, part))];
+    }));
+  };
+  const db = {
+    from(table: string) {
+      if (!(table in schemas)) return fail(`table:${table}`);
+      const query: ChatQuery = { table, operation: 'select', columns: '', filters: [], patch: null, matched: [] };
+      let head = false, max = Infinity, start = 0;
+      const orders: [string, boolean][] = [];
+      const filter = (op: string, column: string, value: unknown) => { query.filters.push([op,column,value]); return builder; };
+      async function execute(single: boolean, required = false): Promise<{ data: unknown; error: { code: string } | null; count?: number }> {
+        await controls.beforeQuery(query);
+        trace.push({ operation: `${query.operation}:${table}`, value: structuredClone(query) }); queries.push(query);
+        if (query.operation === 'insert') {
+          if (!['vouchers','notifications_sent','webhook_executions','ai_usage_logs','whatsapp_inbound_events'].includes(table)) return fail(`insert:${table}`);
+          for (const key of Object.keys(query.patch!)) assertColumn(table, key);
+          if (table === 'vouchers' && controls.voucherInsertError) return { data: null, error: { code: controls.voucherInsertError } };
+          const row = { ...query.patch };
+          if (table === 'whatsapp_inbound_events') Object.assign(row,{ id: '99999999-0000-4000-8000-000000000001',status: 'received',claim_id: null,attempts: 0 });
+          tables[table].push(row);
+          return { data: query.columns ? project(table,row,query.columns) : null, error: null };
+        }
+        let rows = tables[table].filter(row => query.filters.every(([op,column,value]) => {
+          const current = field(table,row,column);
+          switch (op) {
+            case 'eq': return current === value;
+            case 'is': return current === value;
+            case 'not.is': return current !== value;
+            case 'null.or.gt': return current === null || current > value;
+            case 'neq': return current !== null && value !== null && current !== value;
+            case 'in': return Array.isArray(value) && value.includes(current);
+            case 'gt': return current !== null && current > value;
+            case 'gte': return current !== null && current >= value;
+            case 'lt': return current !== null && current < value;
+            case 'lte': return current !== null && current <= value;
+            default: return fail(`filter:${op}`);
+          }
+        }));
+        if (query.columns.includes('reservations!inner(')) rows = rows.filter(row => relation(table,row,'reservations') !== null);
+        rows = [...rows].sort((a,b) => { for (const [column,ascending] of orders) {
+          const x = field(table,a,column), y = field(table,b,column); if (x !== y) return (x < y ? -1 : 1) * (ascending ? 1 : -1);
+        } return 0; }).slice(start,start+max);
+        query.matched = rows.map(row => String(row.id ?? row.reservation_id ?? row.key));
+        if (query.operation === 'update') {
+          if (!['reservations','conversations','whatsapp_channels','notifications_sent'].includes(table)) return fail(`update:${table}`);
+          for (const key of Object.keys(query.patch!)) assertColumn(table,key);
+          for (const row of rows) Object.assign(row,query.patch);
+        }
+        if (head) return { data: null, error: null, count: rows.length };
+        if (!query.columns) return { data: null, error: null };
+        // Validate a projection even for an empty relation, as PostgREST does.
+        project(table,rows[0] ?? {},query.columns);
+        if (single && (rows.length > 1 || (required && rows.length !== 1))) return { data: null, error: { code: 'PGRST116' } };
+        return { data: single ? (rows[0] ? project(table,rows[0],query.columns) : null) : rows.map(row => project(table,row,query.columns)), error: null };
+      }
+      const builder = {
+        select(columns: string, options?: { head?: boolean }) { query.columns = columns; head = options?.head === true; return builder; },
+        update(patch: ChatRow) { query.operation = 'update'; query.patch = patch; return builder; },
+        insert(patch: ChatRow) { query.operation = 'insert'; query.patch = patch; return builder; },
+        eq: (column: string,value: unknown) => filter('eq',column,value), is: (column: string,value: unknown) => filter('is',column,value),
+        neq: (column: string,value: unknown) => filter('neq',column,value), in: (column: string,value: unknown) => filter('in',column,value),
+        gt: (column: string,value: unknown) => filter('gt',column,value), gte: (column: string,value: unknown) => filter('gte',column,value),
+        lt: (column: string,value: unknown) => filter('lt',column,value), lte: (column: string,value: unknown) => filter('lte',column,value),
+        not(column: string,op: string,value: unknown) { if (op !== 'is') return fail('not'); return filter('not.is',column,value); },
+        or(expression: string) {
+          const match = /^ends_at\.is\.null,ends_at\.gt\.(.+)$/.exec(expression);
+          if (!match || table !== 'organization_entitlement_overrides') return fail('or');
+          return filter('null.or.gt','ends_at',match[1]);
+        },
+        order(column: string,options?: { ascending?: boolean }) { orders.push([column,options?.ascending ?? true]); return builder; },
+        limit(value: number) { max = value; return builder; },
+        range(from: number,to: number) { start = from; max = to-from+1; return builder; },
+        single: () => execute(true,true), maybeSingle: () => execute(true),
+        then(resolve: (value: unknown) => unknown, reject?: (error: unknown) => unknown) { return execute(false).then(resolve,reject); },
+      };
+      return builder;
+    },
+    async rpc(name: string,args: ChatRow = {}) {
+      trace.push({ operation: `rpc:${name}`, value: structuredClone(args) });
+      if (name.includes('enqueue') && name.includes('automation')) calls.enqueueAutomation++;
+      const conversation = tables.conversations[0];
+      switch (name) {
+        case 'claim_processed_whatsapp_message': return { data: [{ claimed: !processed.has(String(args.p_message_id)), claim_id: 'synthetic-claim', previous_outcome: processed.get(String(args.p_message_id)) ?? null }], error: null };
+        case 'complete_processed_whatsapp_message': processed.set(String(args.p_message_id),String(args.p_outcome)); return { data: true, error: null };
+        case 'release_processed_whatsapp_message_claim': return { data: true, error: null };
+        case 'check_rate_limit': return { data: true, error: null };
+        case 'get_or_create_whatsapp_conversation':
+          if (args.p_customer_id !== ids.customer || args.p_unit_id !== ids.unit) return fail('conversation_arguments');
+          return { data: ids.conversation, error: null };
+        case 'append_conversation_message': {
+          if (args.p_conversation_id !== ids.conversation) return fail('append_arguments');
+          const message = structuredClone(args.p_message) as ChatRow, messages = conversation.messages as ChatRow[];
+          if (!messages.some(row => row.event_id === message.event_id)) messages.push(message);
+          return { data: true, error: null };
+        }
+        case 'record_whatsapp_human_message': {
+          if (args.p_conversation_id !== ids.conversation || args.p_unit_id !== ids.unit) return fail('human_arguments');
+          const message = structuredClone(args.p_message) as ChatRow;
+          (conversation.messages as ChatRow[]).push(message);
+          Object.assign(conversation,{ status:'human_active',ai_lock_token:null });
+          return { data:true,error:null };
+        }
+        case 'record_whatsapp_template_events_fenced': return { data:(args.p_events as unknown[]).length,error:null };
+        case 'claim_whatsapp_inbound_event': {
+          const row = tables.whatsapp_inbound_events.find(row => row.id === args.p_event_id);
+          if (!row) return fail('queue_claim');
+          Object.assign(row,{ claim_id:'synthetic-queue-claim',status:'processing' });
+          return { data:[structuredClone(row)],error:null };
+        }
+        case 'finalize_whatsapp_inbound_event': {
+          const row = tables.whatsapp_inbound_events.find(row => row.id === args.p_event_id);
+          if (!row || args.p_claim_id !== row.claim_id) return fail('queue_finalize');
+          row.status = args.p_status; return { data:true,error:null };
+        }
+        case 'try_claim_conversation_for_ai': conversation.ai_lock_token = args.p_token; return { data: true, error: null };
+        case 'release_conversation_ai_claim': conversation.ai_lock_token = null; return { data: true, error: null };
+        default: return fail(`rpc:${name}`);
+      }
+    },
+  };
+  const h = createEdgeRequestHarness({ env, now: Date.parse(base.nowISO), createClient: (url,key) => {
+    if (url !== env.SUPABASE_URL || key !== env.SUPABASE_SERVICE_ROLE_KEY) return fail('client'); return db;
+  }, anthropicConstructor: options => { sdk.constructors.push(options); },
+  anthropicMessagesCreate: async (input,options) => {
+    calls.llm++; sdk.requests.push({ input: structuredClone(input), options }); trace.push({ operation: 'sdk:messages.create' });
+    await controls.beforeSdk(input,options);
+    if (!controls.sdkResponses.length) return fail('sdk_script_exhausted');
+    const response = controls.sdkResponses.shift(); if (response instanceof Error) throw response; return response;
+  }, transport: [{ from: 'webhook-whatsapp', method: 'POST', url: 'https://cloud.datafyapi.com.br/v1/123/messages', respond: async request => {
+    const body = await request.json();
+    if (body.type === 'text') calls.sendText++; else if (body.type === 'template') calls.sendTemplate++; else return fail('provider_payload');
+    trace.push({ operation: 'provider:post', value: body });
+    return Response.json(controls.sendStatus === 200 ? { messages: [{ id: 'wamid.synthetic-reply' }] } : { error: { code: 131000 } }, { status: controls.sendStatus });
+  } }] });
+  async function request(input: ChatControlInput): Promise<Request> {
+    const id = input.messageId ?? 'wamid.synthetic-incoming';
+    const value: ChatRow = { messaging_product: 'whatsapp', metadata: { display_phone_number: '5511988887777', phone_number_id: '123' } };
+    if (!input.unnamed) value.contacts = [{ wa_id: '5555912345678', profile: { name: 'Marina' } }];
+    value.messages = [{ from: '5555912345678', id, timestamp: String(Math.floor(h.now/1000)),
+      type: input.kind === 'media' ? 'audio' : 'text', ...(input.kind === 'media' ? { audio: { id: 'synthetic-audio', mime_type: 'audio/ogg' } } : { text: { body: input.text ?? 'Quero reservar' } }) }];
+    let change: ChatRow = { field:'messages',value };
+    if (input.kind === 'receipt') { delete value.messages; delete value.contacts; value.statuses = [{ id:input.messageId ?? 'wamid.synthetic-reply',status:'read' }]; }
+    if (input.kind === 'human_echo') {
+      delete value.messages; value.message_echoes = [{ from:'5511988887777',to:'5555912345678',id,
+        timestamp:String(Math.floor(h.now/1000)),type:'text',text:{ body:input.text ?? 'A equipe está atendendo.' } }];
+      change = { field:'smb_message_echoes',value };
+    }
+    if (input.kind === 'management') change = { field:'message_template_status_update',value:{ message_template_id:1713142233297685,
+      message_template_name:'aviso_agendamento',message_template_language:'pt_BR',event:'APPROVED' } };
+    const body = input.signedBody ?? JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'waba1', changes: [change] }] });
+    const timestamp = String(Math.floor(h.now/1000));
+    const key = await webcrypto.subtle.importKey('raw',new TextEncoder().encode(secret),{ name: 'HMAC',hash: 'SHA-256' },false,['sign']);
+    const signature = await webcrypto.subtle.sign('HMAC',key,new TextEncoder().encode(`${timestamp}.${body}`));
+    return new Request(`${env.SUPABASE_URL}/functions/v1/webhook-whatsapp?channel=${ids.channel}`, { method: 'POST',body,
+      headers: { 'content-type': 'application/json', 'x-datafy-timestamp': timestamp,
+        'x-datafy-signature-256': `sha256=${Buffer.from(signature).toString('hex')}` } });
+  }
+  async function run(input: ChatControlInput) {
+    let done = false;
+    const pending = h.request('webhook-whatsapp',await request(input)).finally(() => { done = true; });
+    // Advance only the known debounce/retry timers while allowing all ordinary
+    // I/O microtasks to settle. Do not let a fake timeout win a ready SDK reply.
+    for (let step=0;(!done || h.pendingBackground) && step<300;step++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if ((!done || h.pendingBackground) && h.pendingTimers) await h.advanceTime(1000);
+    }
+    if (!done) fail('request_did_not_finish');
+    const response = await pending;
+    await h.drainBackground(); h.assertNoUnexpectedIo();
+    if (unexpected.length) throw new Error(`unexpected_chat_io:${unexpected.join(',')}; ${JSON.stringify(trace.slice(-8))}; ${h.logs.slice(-5).join('; ')}`);
+    return response;
+  }
+  return { ids,tables,controls,calls,sdk,trace,queries,unexpected,harness:h,run,request };
 }
 
 export async function createTemplateDispatchFixture(promotional = false) {

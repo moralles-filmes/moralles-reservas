@@ -64,7 +64,16 @@ const o = randomUUID(), u = randomUUID(), c = randomUUID(), r = randomUUID();
 const missingUnit = randomUUID(), missingReservation = randomUUID();
 const ch = randomUUID(), a = randomUUID(), b = randomUUID(), t = randomUUID();
 const run = Date.now();
-const oldFlag = sql("select coalesce((select value::text from public.platform_flags where key='whatsapp_automation_dispatch'),'null')");
+if (sql("select attnotnull from pg_attribute where attrelid='public.platform_flags'::regclass and attname='value' and not attisdropped") !== 't') throw new Error('platform_flags_value_not_null_required');
+// Keep the database's JSONB spelling inside an SQL-quoted string. Decoding the
+// value itself in JavaScript would round PostgreSQL numbers above 2^53.
+const oldFlag = JSON.parse(sql("select jsonb_build_object('exists',exists(select from public.platform_flags where key='whatsapp_automation_dispatch'),'literal',(select quote_literal(value::text) from public.platform_flags where key='whatsapp_automation_dispatch'))"));
+if (typeof oldFlag.exists !== 'boolean' || (oldFlag.exists
+  ? typeof oldFlag.literal !== 'string' || !/^(?:E)?'/.test(oldFlag.literal) || !oldFlag.literal.endsWith("'")
+  : oldFlag.literal !== null)) throw new Error('task37_flag_snapshot_invalid');
+const restoreFlag = oldFlag.exists
+  ? `insert into public.platform_flags(key,value) values('whatsapp_automation_dispatch',${oldFlag.literal}::jsonb) on conflict(key) do update set value=excluded.value;`
+  : "delete from public.platform_flags where key='whatsapp_automation_dispatch';";
 let fixtureCreated = false;
 try {
   for (const role of ['owner', 'gerente', 'operador', 'platform_admin', 'outsider']) {
@@ -150,9 +159,15 @@ try {
   ok(JSON.stringify(before.data) === JSON.stringify(afterFailure.data), 'PT503 transaction leaves original row unchanged');
   console.log(`${checks} genuine GoTrue/PostgREST checks GREEN; provider requests 0; public initializer not implemented or claimed`);
 } finally {
-  if (fixtureCreated) sql(`delete from public.whatsapp_automation_jobs where unit_id in('${u}','${missingUnit}'); delete from public.whatsapp_template_jobs where account_id='${a}'; delete from public.whatsapp_template_bindings where id='${b}'; delete from public.whatsapp_template_accounts where id='${a}'; delete from public.organizations where id='${o}'; update public.platform_flags set value='${oldFlag}'::jsonb where key='whatsapp_automation_dispatch';`);
+  let cleanupFailed = false;
+  try {
+    if (fixtureCreated) sql(`begin; delete from public.whatsapp_automation_jobs where unit_id in('${u}','${missingUnit}'); delete from public.whatsapp_template_jobs where account_id='${a}'; delete from public.whatsapp_template_bindings where id='${b}'; delete from public.whatsapp_template_accounts where id='${a}'; delete from public.organizations where id='${o}'; ${restoreFlag} commit;`);
+  } catch { cleanupFailed = true; }
   for (const user of Object.values(users)) if (user.id) {
-    const response = await fetch(`${base}/auth/v1/admin/users/${user.id}`, { method: 'DELETE', redirect: 'error', signal: AbortSignal.timeout(5000), headers: { apikey: keys.SERVICE_ROLE_KEY, Authorization: `Bearer ${keys.SERVICE_ROLE_KEY}` } });
-    if (!response.ok) throw new Error('local_synthetic_user_cleanup_failed');
+    try {
+      const response = await fetch(`${base}/auth/v1/admin/users/${user.id}`, { method: 'DELETE', redirect: 'error', signal: AbortSignal.timeout(5000), headers: { apikey: keys.SERVICE_ROLE_KEY, Authorization: `Bearer ${keys.SERVICE_ROLE_KEY}` } });
+      if (!response.ok) cleanupFailed = true;
+    } catch { cleanupFailed = true; }
   }
+  if (cleanupFailed) throw new Error('local_synthetic_cleanup_failed');
 }

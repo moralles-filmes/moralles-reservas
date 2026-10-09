@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Cobertura COMPORTAMENTAL de `hasUnitAccess()` — complementa
  * `authz-ef-guard.test.ts`, que só prova que o padrão RPC não volta e que as
@@ -15,6 +16,7 @@
  * o vitest importa `hasUnitAccess` direto daqui.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createClient } from "@supabase/supabase-js";
 import { hasUnitAccess } from "../../supabase/functions/_shared/authz.ts";
 
 interface ReadResult {
@@ -29,39 +31,38 @@ interface RecordedCall {
 }
 
 /**
- * Stub mínimo do client Supabase: só o suficiente pra sustentar a cadeia
- * `.from(table).select(cols).eq(col, val)[.eq(col, val)].maybeSingle()` que
- * `hasUnitAccess` usa, gravando cada chamada pra inspeção posterior.
+ * SDK real com transporte fechado: avalia o Request PostgREST produzido pelo
+ * helper e devolve apenas linhas/erros sintéticos. Nenhuma rede é acessada.
  */
 function stubSupabase(responses: { unit_members: ReadResult; platform_admins: ReadResult }) {
   const calls: RecordedCall[] = [];
 
-  function builderFor(table: "unit_members" | "platform_admins") {
-    const record: RecordedCall = { table, select: "", eqCalls: [] };
-    calls.push(record);
-    const builder = {
-      select(cols: string) {
-        record.select = cols;
-        return builder;
-      },
-      eq(col: string, val: unknown) {
-        record.eqCalls.push([col, val]);
-        return builder;
-      },
-      maybeSingle() {
-        return Promise.resolve(responses[table]);
-      },
-    };
-    return builder;
-  }
+  const supabase = createClient("https://authz.fixture.invalid", "synthetic-anon", {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    global: { fetch: async (input, init) => {
+      const request = new Request(input, init), url = new URL(request.url);
+      const table = url.pathname.slice("/rest/v1/".length);
+      if (url.origin !== "https://authz.fixture.invalid" || request.method !== "GET"
+        || !url.pathname.startsWith("/rest/v1/") || (table !== "unit_members" && table !== "platform_admins")) {
+        throw new Error("unexpected_authz_transport");
+      }
+      const record: RecordedCall = { table, select: url.searchParams.get("select") ?? "", eqCalls: [] };
+      for (const [column, value] of url.searchParams) {
+        if (column === "select") continue;
+        if (!["user_id", "unit_id"].includes(column) || !value.startsWith("eq.")) throw new Error("unexpected_authz_filter");
+        record.eqCalls.push([column, value.slice(3)]);
+      }
+      calls.push(record);
+      const result = responses[table];
+      return new Response(JSON.stringify(result.error
+        ? { code: "XX000", message: result.error.message, details: null, hint: null }
+        : result.data ? [result.data] : []), {
+        status: result.error ? 500 : 200, headers: { "content-type": "application/json" },
+      });
+    } },
+  });
 
-  const supabase = {
-    from(table: string) {
-      return builderFor(table as "unit_members" | "platform_admins");
-    },
-  };
-
-  return { supabase: supabase as unknown as Parameters<typeof hasUnitAccess>[0], calls };
+  return { supabase, calls };
 }
 
 const okRow: ReadResult = { data: { user_id: "user-1" }, error: null };
@@ -136,6 +137,8 @@ describe("hasUnitAccess", () => {
 
     const membroCall = calls.find((c) => c.table === "unit_members");
     const adminCall = calls.find((c) => c.table === "platform_admins");
+    expect(calls).toHaveLength(2);
+    expect(calls.every(call => call.select === "user_id")).toBe(true);
 
     expect(membroCall?.eqCalls).toEqual([
       ["user_id", "user-42"],

@@ -644,7 +644,7 @@ async function persistInboundOnly(args: {
   organizationId: string;
   unitId: string;
   phone: string;
-  contactName: string | null;
+  contactName: string | null | undefined;
   text: string;
   chatLid: string | null;
   timestamp: number;
@@ -1143,7 +1143,7 @@ async function markProcessed(
   messageId: string,
   claimId: string,
   outcome: string,
-  error?: string,
+  error?: string | null,
 ): Promise<void> {
   try {
     const { data, error: completeError } = await supabase.rpc(
@@ -2328,7 +2328,7 @@ async function handleWebhookRequest(
 
   // Helper local que finaliza a execução (grava processed_messages.outcome
   // se já houver message_id, e registra webhook_executions). Nunca lança.
-  const finish = async (outcome: string, error?: string, meta?: Record<string, unknown>) => {
+  const finish = async (outcome: string, error?: string | null, meta?: Record<string, unknown>) => {
     const recordedOutcome = conversationHistoryDegraded && !outcome.includes("history_degraded")
       ? `${outcome}_history_degraded`
       : outcome;
@@ -2431,7 +2431,7 @@ async function handleWebhookRequest(
       return new Response("channel not found", { status: 404 });
     }
 
-    unitId = channel.unit_id;
+    unitId = channel.unit_id as string;
     const provider: WhatsAppProvider = channel.provider;
     messageProvider = provider;
     let credentials: ChannelCredentials = channel.credentials ?? {};
@@ -3302,6 +3302,8 @@ async function handleWebhookRequest(
         .from("reservations")
         .update({ satisfaction_comment: incomingText })
         .eq("id", pendingComment.id)
+        .eq("unit_id", unitId)
+        .eq("customer_id", customer.id)
         .is("satisfaction_comment", null)
         .select("id")
         .maybeSingle();
@@ -3337,11 +3339,13 @@ async function handleWebhookRequest(
 
       const { data: pending } = await supabase
         .from("notifications_sent")
-        .select("reservation_id, reservations!inner(customer_id, satisfaction_rating)")
+        .select("reservation_id, reservations!inner(unit_id, customer_id, satisfaction_rating)")
+        .eq("unit_id", unitId)
         .eq("kind", "survey_d1")
         .eq("status", "sent")
         .gt("sent_at", cutoff)
         .eq("reservations.customer_id", customer.id)
+        .eq("reservations.unit_id", unitId)
         .is("reservations.satisfaction_rating", null)
         .order("sent_at", { ascending: false })
         .limit(1)
@@ -3383,6 +3387,8 @@ async function handleWebhookRequest(
           .from("reservations")
           .update({ satisfaction_rating: rating, satisfaction_at: new Date().toISOString() })
           .eq("id", pending.reservation_id)
+          .eq("unit_id", unitId)
+          .eq("customer_id", customer.id)
           .is("satisfaction_rating", null)
           .select("id")
           .maybeSingle();
@@ -3695,7 +3701,7 @@ async function handleWebhookRequest(
     // Toda saída automática depois do claim passa por uma única cerca. O eco
     // humano limpa o token atomicamente; logo mesmo um status sobrescrito pelo
     // próprio ramo de handoff não autoriza envio com token perdido.
-    const sendAutomatic = async (text: string) => {
+    const sendAutomatic = async (text: string): Promise<Awaited<ReturnType<typeof sendOutbound>>> => {
       const { data: fence, error: fenceError } = await supabase
         .from("conversations")
         .select("status, ai_lock_token")

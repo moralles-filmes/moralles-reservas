@@ -149,9 +149,7 @@ const ORG_BILLING_PUBLIC_COLUMNS = "id, name, billing_status, trial_ends_at";
 // `provider` fica — a tela precisa dele pra não prometer fim de período onde
 // ele não existe.
 const SUBSCRIPTION_PUBLIC_COLUMNS =
-  "id, organization_id, billing_plan_id, status, payment_method, provider, " +
-  "current_period_start, current_period_end, trial_end, cancel_at_period_end, " +
-  "canceled_at, created_at, updated_at";
+  "id, organization_id, billing_plan_id, status, payment_method, provider, current_period_start, current_period_end, trial_end, cancel_at_period_end, canceled_at, created_at, updated_at";
 
 // Aviso INTERNO: o provedor CANCELOU a assinatura e a escrita local falhou.
 // Sem transação distribuída alguém fica na frente, e cancelar no provedor

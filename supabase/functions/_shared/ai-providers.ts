@@ -527,7 +527,7 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<AgentLo
   ];
 
   // Cache breakpoint #1: system prompt. Reutilizado entre requests (TTL ~5min).
-  const systemBlocks: Anthropic.TextBlockParam[] = [
+  const systemBlocks: (Anthropic.TextBlockParam & { cache_control: { type: "ephemeral" } })[] = [
     {
       type: "text",
       text: opts.systemPrompt,

@@ -64,6 +64,8 @@ Se um secret foi commitado: pare imediatamente, **rotacione no provider antes de
 
 **`npm run typecheck` = `tsc -b --noEmit`. NUNCA `tsc --noEmit` sem `-b`** — root tem `files:[]` + references, sem `-b` vira no-op silencioso (exit 0 sem checar). Rodar antes de commitar (dev server SWC não tipa). Baseline: zero erros, qualquer novo é regressão.
 
+**`authz.ts` importa somente o tipo `SupabaseClient` da URL exata do SDK Deno.** O `tsc -b` resolve esse tipo através de [src/types/supabase-edge-type-bridge.d.ts](src/types/supabase-edge-type-bridge.d.ts), que o exporta do SDK npm instalado para os testes frontend; a declaração não exporta valores nem muda runtime. Essa ponte não comprova compatibilidade Deno: o gate usa `deno check` com o SDK remoto real, independentemente dela. Não amplie a declaração para wildcard, valores ou casts de caller.
+
 ---
 
 ## Variáveis de ambiente

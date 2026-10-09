@@ -11,6 +11,15 @@ const env = {
 };
 afterEach(() => fixtures.splice(0).forEach((fixture) => fixture.dispose()));
 
+it('executes the actual management Deno.serve registration without exposing another endpoint',async()=>{
+  const fixture=createEdgeRequestHarness({env,createClient:()=>({})});fixtures.push(fixture);
+  const response=await fixture.request('manage-whatsapp-templates',new Request('https://synthetic-project.invalid/functions/v1/manage-whatsapp-templates',{method:'DELETE'}));
+  expect(response.status).toBe(405);
+  expect(fixture.manifest.has('manage-whatsapp-templates:manage-whatsapp-templates/index.ts')).toBe(true);
+  expect(()=>Reflect.apply(fixture.load,fixture,['not-an-approved-endpoint'])).toThrow('Unknown Edge endpoint');
+  fixture.assertNoUnexpectedIo();
+});
+
 type Row = Record<string, unknown>;
 type Result = { data: unknown; error: { code?: string; message: string } | null; count?: number };
 type QueryTrace = { table: string; op: string; select?: string; filters: [string, string, unknown][]; values?: Row; count?: string; head?: boolean };

@@ -29,6 +29,6 @@ export default defineConfig({
     // roda contra os arquivos DESTE checkout e falha por ausencia de mudanca
     // que so existe la. Espalhar `exclude` cru apagaria os defaults do vitest
     // (node_modules, dist) — por isso o spread de configDefaults.
-    exclude: [...configDefaults.exclude, "**/.claude/worktrees/**"],
+    exclude: [...configDefaults.exclude, "**/.claude/worktrees/**", "**/.superpowers/**"],
   },
 });

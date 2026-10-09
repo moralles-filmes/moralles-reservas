@@ -16,14 +16,29 @@ b=36363636-0000-0000-0000-000000000006
 t=36363636-0000-0000-0000-000000000007
 r=36363636-0000-0000-0000-000000000008
 actor=36363636-0000-0000-0000-000000000009
-old_flag=$(psql_task -c "select coalesce((select value::text from public.platform_flags where key='whatsapp_automation_dispatch'),'null')")
+[[ $(psql_task -c "select attnotnull from pg_attribute where attrelid='public.platform_flags'::regclass and attname='value' and not attisdropped") == t ]] || { echo 'platform_flags.value NOT NULL invariant missing'; exit 1; }
+old_flag_exists=$(psql_task -c "select exists(select from public.platform_flags where key='whatsapp_automation_dispatch')")
+old_flag_literal=$(psql_task -c "select quote_literal(value::text) from public.platform_flags where key='whatsapp_automation_dispatch'")
+task_pids=()
 clean_fixture() {
   psql_task -c "delete from public.whatsapp_automation_jobs where unit_id='$u'; delete from public.whatsapp_template_jobs where account_id='$a'; delete from public.whatsapp_template_bindings where id='$b'; delete from public.whatsapp_template_accounts where id='$a'; delete from public.organizations where id='$o'; delete from auth.users where id='$actor';" >/dev/null
 }
 cleanup() {
-  clean_fixture
-  psql_task -c "update public.platform_flags set value='$old_flag'::jsonb where key='whatsapp_automation_dispatch'" >/dev/null
-  rm -f "$task_tmp/a" "$task_tmp/b"; rmdir "$task_tmp"
+  local original_status=$? cleanup_status=0
+  trap - EXIT
+  # Drain only processes started here BEFORE deleting their FK parents, including
+  # assertion/observation failures. Native timeouts remain failures, never proof.
+  for pid in "${task_pids[@]}"; do wait "$pid" || cleanup_status=1; done
+  clean_fixture || cleanup_status=1
+  if [[ "$old_flag_exists" == t ]]; then
+    psql_task -c "insert into public.platform_flags(key,value) values('whatsapp_automation_dispatch',$old_flag_literal::jsonb) on conflict(key) do update set value=excluded.value" >/dev/null || cleanup_status=1
+  else
+    psql_task -c "delete from public.platform_flags where key='whatsapp_automation_dispatch'" >/dev/null || cleanup_status=1
+  fi
+  rm -f "$task_tmp/a" "$task_tmp/b" || cleanup_status=1
+  rmdir "$task_tmp" || cleanup_status=1
+  if [[ "$original_status" != 0 ]]; then exit "$original_status"; fi
+  exit "$cleanup_status"
 }
 trap cleanup EXIT
 setup() {
@@ -70,6 +85,7 @@ select pg_sleep(4);
 commit;
 SQL
   local pid_a=$!
+  task_pids+=("$pid_a")
   observe task36_holder "query like 'select pg_sleep%'"
   psql_task <<SQL >"$task_tmp/b" &
 set application_name='task36_waiter';
@@ -77,9 +93,11 @@ set statement_timeout='10s';
 do \$\$ begin $waiter; end \$\$;
 SQL
   local pid_b=$!
+  task_pids+=("$pid_b")
   observe task36_waiter "wait_event_type='Lock'"
   wait "$pid_a" || { cat "$task_tmp/a"; exit 1; }
   wait "$pid_b" || { cat "$task_tmp/b"; exit 1; }
+  task_pids=()
   echo "GREEN: $label (holder and actual lock waiter observed; both sessions exit0)"
 }
 setup
