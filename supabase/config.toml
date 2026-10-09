@@ -187,3 +187,7 @@ verify_jwt = false
 verify_jwt = false
 [functions.send-scheduled-whatsapp]
 verify_jwt = false
+
+# Current getUser authentication and genuine caller JWT SQL authorization.
+[functions.manage-whatsapp-templates]
+verify_jwt = false

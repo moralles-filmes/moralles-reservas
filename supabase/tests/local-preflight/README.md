@@ -1607,3 +1607,54 @@ Focused Request tests use actual entrypoints and internal dispatcher hops with
 synthetic I/O. They do not replace 52–55, actual ACL inspection, migration reapply,
 cron restoration or the independent review. Preserve each native log and report
 unexecuted gates explicitly; full repository suites remain Task15.
+
+
+### Task13 — authenticated template management (56–59)
+
+ROOT runs 56 only on its previously approved local 25/41/48/52 bridge and Task12
+migrations. It is assertions only: no history replay, Auth replacement, policies
+or schema repair. The actual CLI-created migration is
+20261009153435_whatsapp_template_management.sql. Apply with the established local
+CLI flow, inspect actual ACL/catalog drift, reapply, then run 57–59 sequentially.
+Before any fixture, quarantine both worker schedule names, verify no Edge runtime,
+HTTP queue or in-flight worker, and preserve the exact prior flags/frequency/Auth
+baseline. Flags OFF alone do not quarantine maintenance.
+
+57 is a transaction with rollback: nine exact authenticated ACLs, real SQL actors,
+selected consent origins/revisions/absence/denial, independent grants, original
+intent preservation, exact typed permits, durable zero-POST evidence, one prepare
+and exclusive stop under provider drift. It preserves the actual post/receipt
+predecessors; no trigger or policy is disabled to obtain a positive result.
+
+58 uses independent local PostgreSQL sessions and records actual lock waits plus
+native outcomes under application_name management58_<case>_holder|waiter. It
+covers initialization/revalidation versus prepare, consent serialization, secret
+rotation, unhealthy stop, TEXT bootstrap, original TTL, resource reassignment,
+soft erasure, cost expiry and catalog correction/claim/one-use prepare. The sync
+case requests the later of two eligible bindings in the same account and proves
+that the original RPC chooses the earlier one, then refuses a selected-channel
+revision change observed while waiting. Temporary catalog flags are changed and
+restored in the same transaction. Raw observed-session logs survive cleanup.
+
+59 is an executable ROOT-only genuine GoTrue/PostgREST/SDK gate; invoke Node with
+no stdin or arguments. Before reading the fixed local-status file once into
+memory, it verifies the local Docker pipe, exact project/container, API55451,
+DB55452, local config, quarantine and unauthenticated local GoTrue health. Its
+fetch allowlist permits only local Auth/REST and rejects redirects. No provider
+transport, worker, server or activation is involved. It tests all roles including
+admin without membership, direct-table/private-schema denial, actual individual
+consent, correction using real zero-POST proof, stop through provider drift and
+the import-safe production Request factory using the original genuine JWT.
+
+Fixtures use Task57/Task58/Task59 names, random owned IDs and only
+ task59-<role>-<uuid>@example.invalid Auth emails. Cleanup removes audits only for
+owned actors before removing parents (audit org/unit FKs SET NULL), conversations
+for owned units before organization cascade, own notifications, and only created
+Auth users. 59 captures/restores the exact prior global frequency, including on
+failure. Never delete preexisting Auth users, audits, Vault names or unrelated
+organizations. ROOT independently confirms preservation and restores only its
+original cron after the entire package passes.
+
+Focused Request/core/ACL tests, tsc -b, changed-file lint, cached real Deno check,
+node --check and bash -n are author-native checks. They do not claim SQL/JWT/race
+execution, migration reapplication or independent review; those remain ROOT gates.

@@ -27,6 +27,23 @@ const MIGRATIONS_DIR = join(__dirname, "..", "supabase", "migrations");
 const ALLOWLIST_PATH = join(__dirname, "function-acl-allowlist.json");
 const AUDIT_SCRIPT_PATH = join(__dirname, "audit-function-acl.ts");
 
+describe('Task13 authenticated management boundary', () => {
+  const names = ['get_whatsapp_message_consent_state', 'record_whatsapp_message_consent', 'release_whatsapp_template_channel',
+    'request_whatsapp_template_sync_for_channel', 'initialize_whatsapp_automation_job', 'revalidate_whatsapp_automation_job',
+    'revalidate_whatsapp_template_job', 'authorize_whatsapp_marketing_cost', 'configure_whatsapp_promotion_frequency'];
+  it('classifies exactly the nine genuine-caller interfaces without worker or table access', () => {
+    const entries = JSON.parse(readFileSync(ALLOWLIST_PATH, 'utf8')).authenticated_tenant as AdvisorEntry[];
+    for (const name of names) {
+      const matching = entries.filter(entry => entry.name === name);
+      expect(matching).toHaveLength(1);
+      expect(matching[0].roles).toEqual(['authenticated']);
+      expect(matching[0].security_definer).toBe(true);
+      expect(matching[0].advisor_lints).toEqual(['0029']);
+      expect(matching[0].args).not.toMatch(/actor|provider|account|waba/);
+    }
+  });
+});
+
 /** Versão da 085 — o marco a partir do qual a superfície está classificada. */
 const HOTFIX_VERSION = "20260730160000";
 

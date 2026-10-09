@@ -168,11 +168,13 @@
       "0028=10, 0029=15, total=25. Não é leitura do Advisor de produção.",
       "DELTA Task12: get_whatsapp_automation_delivery_state é DEFINER somente",
       "authenticated, com guarda de membro/admin, somando um 0029: 10/16/26.",
+      "Task13 acrescenta nove interfaces DEFINER authenticated, com JWT real e",
+      "guardas individuais de papel/tenant: projeção 10/25/35.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 10,
-    "0029": 16,
-    "total": 26
+    "0029": 25,
+    "total": 35
   },
 
   "public_anon": [
@@ -280,6 +282,114 @@
   "rls_helpers": [],
 
   "authenticated_tenant": [
+    {
+      "name": "get_whatsapp_message_consent_state",
+      "args": "p_unit_id uuid, p_customer_id uuid, p_purpose text",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Estado individual sem evidência pessoal; JWT real owner/gerente ou platform_admin, cliente vivo na organização real da unidade.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "record_whatsapp_message_consent",
+      "args": "p_unit_id uuid, p_customer_id uuid, p_purpose text, p_decision text, p_source_code text, p_observed_at timestamp with time zone, p_evidence_reference text",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Consentimento individual com evidência e origem fechadas; ator do JWT, cliente vivo e revision serial sob lock.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "release_whatsapp_template_channel",
+      "args": "p_channel_id uuid, p_scope text, p_enabled boolean, p_expected_credential_revision bigint, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; scopes catálogo/despacho independentes e revogação exclusiva preserva história e tenant.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "request_whatsapp_template_sync_for_channel",
+      "args": "p_channel_id uuid, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "JWT real owner/gerente ou platform_admin; conta derivada do binding atual, apenas solicita sincronização idempotente.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "initialize_whatsapp_automation_job",
+      "args": "p_job_id uuid, p_expected_channel_id uuid, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; inicialização única com permit typed exato, preserva âncoras conhecidas e prazo original.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "revalidate_whatsapp_automation_job",
+      "args": "p_job_id uuid, p_expected_channel_id uuid, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "JWT owner/gerente ou platform_admin real; intenção viva sem POST, permit exato preserva identidade, histórico, tentativas e TTL.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "revalidate_whatsapp_template_job",
+      "args": "p_job_id uuid, p_expected_channel_id uuid, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; prova durável primeira zero-POST, mesmo job/conta/target e apenas uma preparação posterior.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "authorize_whatsapp_marketing_cost",
+      "args": "p_channel_id uuid, p_expected_binding_generation bigint, p_category text, p_valid_from timestamp with time zone, p_valid_until timestamp with time zone",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; MARKETING explicitamente autorizado no binding atual e intervalo finito, sem cobrança inferida.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "configure_whatsapp_promotion_frequency",
+      "args": "p_window_days integer",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; singleton privado entre 1 e 30 dias, sem recalcular slots existentes.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
     {
       "name": "get_whatsapp_automation_delivery_state",
       "args": "p_unit_id uuid, p_limit integer, p_offset integer",

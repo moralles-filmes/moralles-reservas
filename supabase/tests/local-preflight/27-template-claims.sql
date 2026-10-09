@@ -6,6 +6,8 @@ create function pg_temp.denied(q text,code text,label text) returns void languag
 do $$ declare
   u uuid:='bbbbbbbb-0000-0000-0000-000000000001'; a uuid:=gen_random_uuid(); b uuid:=gen_random_uuid(); t uuid:=gen_random_uuid(); m uuid:=gen_random_uuid(); admin uuid:=gen_random_uuid();
   j uuid; j2 uuid; f uuid; f2 uuid; cat uuid; cf uuid; v2 uuid:=gen_random_uuid(); x jsonb; y jsonb; snapshot jsonb; events jsonb; e bigint; n integer; v_revision bigint; v_epochs jsonb; v_tasks jsonb; v_old timestamptz; v_def text;
+  v_mutated text; v_wrapper_def text; v_core_contract jsonb;
+  v_core oid:='app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean,jsonb)'::regprocedure;
 begin
   perform pg_temp.ok(to_regprocedure('public.claim_whatsapp_automation(uuid)') is not null,'ledger RPC installed');
   insert into auth.users(id) values(admin); insert into public.platform_admins values(admin);
@@ -220,26 +222,42 @@ begin
   select id into j2 from public.whatsapp_automation_jobs where waitlist_id=j2;
   x:=public.claim_whatsapp_automation(j2); f:=(x->>'claim_token')::uuid;
   update public.whatsapp_automation_jobs set safe_log_body='Fence control safe render' where id=j2;
+  -- The six-argument interface is a wrapper. Mutate only the current decision body.
+  select pg_get_functiondef(v_core) into v_def;
+  select pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)'::regprocedure) into v_wrapper_def;
+  select jsonb_build_object('acl',proacl,'args',proargtypes::text,'return',prorettype,'definer',prosecdef,'config',proconfig,'volatile',provolatile,'defaults',pronargdefaults)
+    into v_core_contract from pg_proc where oid=v_core;
+  perform pg_temp.ok(strpos(v_def,'j.claim_token is distinct from p_fence')>0 and strpos(v_def,' and claim_token=p_fence')>0,'counterfactual reaches actual fence decision and UPDATE');
   begin
-    select pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)'::regprocedure) into v_def;
-    execute replace(replace(v_def,'j.claim_token is distinct from p_fence or ','false or '),' and claim_token=p_fence','');
+    v_mutated:=replace(replace(v_def,'j.claim_token is distinct from p_fence','false'),' and claim_token=p_fence','');
+    perform pg_temp.ok(v_mutated is distinct from v_def and strpos(v_mutated,'j.claim_token is distinct from p_fence')=0 and strpos(v_mutated,' and claim_token=p_fence')=0,'fence mutation changes every actual fence site');
+    execute v_mutated;
+    perform pg_temp.ok(pg_get_functiondef(v_core) is distinct from v_def,'installed fence mutation is not a no-op');
+    perform pg_temp.ok((select jsonb_build_object('acl',proacl,'args',proargtypes::text,'return',prorettype,'definer',prosecdef,'config',proconfig,'volatile',provolatile,'defaults',pronargdefaults)=v_core_contract from pg_proc where oid=v_core),'fence mutation preserves actual signature ACL and execution contract');
     perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,gen_random_uuid(),1,null,null),'CONTROL wrong fence');
     raise exception 'CONTROL fence mutation survived';
   exception when raise_exception then
     if sqlerrm not like 'FAIL: CONTROL wrong fence%' then raise; end if;
   end;
+  perform pg_temp.ok(pg_get_functiondef(v_core)=v_def and pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)'::regprocedure)=v_wrapper_def,'fence counterfactual restores full core including expiry SETs and wrapper');
   perform pg_temp.ok((select state='claimed' and claim_token=f and posting_started_at is null from public.whatsapp_automation_jobs where id=j2),'positive fence control caught and rolled back');
   update public.whatsapp_automation_jobs set claimed_until=clock_timestamp()+interval '50 milliseconds' where id=j2;
   perform pg_sleep(0.1);
   perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,f,1,null,null),'actual SQL wallclock rejects expired lease');
+  perform pg_temp.ok(strpos(v_def,'v_now:=clock_timestamp();')>0,'counterfactual reaches actual final authority clock');
   begin
-    select pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)'::regprocedure) into v_def;
-    execute replace(v_def,'clock_timestamp()','now()');
+    v_mutated:=replace(v_def,'v_now:=clock_timestamp();','v_now:=now();');
+    perform pg_temp.ok(v_mutated is distinct from v_def and strpos(v_mutated,'v_now:=clock_timestamp();')=0 and strpos(v_mutated,'v_now:=now();')>0,'clock mutation changes the final decision site');
+    execute v_mutated;
+    perform pg_temp.ok(pg_get_functiondef(v_core) is distinct from v_def,'installed clock mutation is not a no-op');
+    perform pg_temp.ok((select jsonb_build_object('acl',proacl,'args',proargtypes::text,'return',prorettype,'definer',prosecdef,'config',proconfig,'volatile',provolatile,'defaults',pronargdefaults)=v_core_contract from pg_proc where oid=v_core),'clock mutation preserves actual signature ACL and execution contract');
     perform pg_temp.ok(not public.prepare_whatsapp_automation_post(j2,f,1,null,null),'CONTROL frozen transaction clock');
     raise exception 'CONTROL clock mutation survived';
   exception when raise_exception then
     if sqlerrm not like 'FAIL: CONTROL frozen transaction clock%' then raise; end if;
   end;
+  perform pg_temp.ok(pg_get_functiondef(v_core)=v_def and pg_get_functiondef('app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)'::regprocedure)=v_wrapper_def,'clock counterfactual restores full core including expiry SETs and wrapper');
+  perform pg_temp.ok((select jsonb_build_object('acl',proacl,'args',proargtypes::text,'return',prorettype,'definer',prosecdef,'config',proconfig,'volatile',provolatile,'defaults',pronargdefaults)=v_core_contract from pg_proc where oid=v_core),'both counterfactual rollbacks retain original ACL and execution contract');
   perform pg_temp.ok((select posting_started_at is null and attempts=0 from public.whatsapp_automation_jobs where id=j2),'positive frozen-clock control caught and rolled back');
   x:=public.claim_whatsapp_automation(j2); f2:=(x->>'claim_token')::uuid;
   perform pg_temp.ok(f2 is not null and f2<>f,'expired unposted claim safely gets new fence');
