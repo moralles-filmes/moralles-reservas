@@ -108,6 +108,7 @@ describe("paridade de conversas entre providers WhatsApp", () => {
       "meta_identity_mismatch",
       "provider_token_mismatch",
       "signature_invalid",
+      "template_batch_invalid",
     ]);
   });
 

@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { admitAutomationReceipts } from "../_shared/whatsapp-automation-receipts.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   runAgentLoop,
@@ -86,6 +87,7 @@ import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/wha
 import { decideInboundAutoReply } from "../_shared/whatsapp-service-state-core.ts";
 import { canonicalBrPhone } from "../_shared/phone.ts";
 import { splitMetaWebhookPayloadCore } from "../_shared/whatsapp-meta-batch-core.ts";
+import { createTemplateEventRuntime } from "../_shared/whatsapp-template-events.ts";
 import {
   declaredProviderIdentityMatchesChannel,
   manualEchoMatchesConfiguredChannel,
@@ -642,7 +644,7 @@ async function persistInboundOnly(args: {
   organizationId: string;
   unitId: string;
   phone: string;
-  contactName: string | null;
+  contactName: string | null | undefined;
   text: string;
   chatLid: string | null;
   timestamp: number;
@@ -1141,7 +1143,7 @@ async function markProcessed(
   messageId: string,
   claimId: string,
   outcome: string,
-  error?: string,
+  error?: string | null,
 ): Promise<void> {
   try {
     const { data, error: completeError } = await supabase.rpc(
@@ -2326,7 +2328,7 @@ async function handleWebhookRequest(
 
   // Helper local que finaliza a execução (grava processed_messages.outcome
   // se já houver message_id, e registra webhook_executions). Nunca lança.
-  const finish = async (outcome: string, error?: string, meta?: Record<string, unknown>) => {
+  const finish = async (outcome: string, error?: string | null, meta?: Record<string, unknown>) => {
     const recordedOutcome = conversationHistoryDegraded && !outcome.includes("history_degraded")
       ? `${outcome}_history_degraded`
       : outcome;
@@ -2419,7 +2421,7 @@ async function handleWebhookRequest(
     // para TODO inbound de TODO canal.
     const { data: channel, error: channelErr } = await supabase
       .from("whatsapp_channels")
-      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled")
+      .select("id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, template_credential_revision, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled")
       .eq("id", channelId)
       .maybeSingle();
 
@@ -2429,7 +2431,7 @@ async function handleWebhookRequest(
       return new Response("channel not found", { status: 404 });
     }
 
-    unitId = channel.unit_id;
+    unitId = channel.unit_id as string;
     const provider: WhatsAppProvider = channel.provider;
     messageProvider = provider;
     let credentials: ChannelCredentials = channel.credentials ?? {};
@@ -2568,10 +2570,52 @@ async function handleWebhookRequest(
     // conferir o phone_number_id, um callback válido de outro número do mesmo
     // app/cliente poderia ser encaminhado ao channel_id errado e atravessar
     // tenants. Vale para todo provider Meta-shaped, não só "official".
-    if (isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(payload, credentials)) {
+    // Only management-bearing envelopes load the backend WABA binding/catalog.
+    // Message/status/echo-only deliveries preserve their existing identity path.
+    const preparedTemplates = isMetaShapedProvider(provider)
+      ? await createTemplateEventRuntime(supabase).prepare(payload, {
+        id: channel.id, unit_id: channel.unit_id, provider,
+        phoneNumberId: credentials.phone_number_id ?? "",
+      }, new Date().toISOString())
+      : { kind: "chat" as const };
+    if (preparedTemplates.kind === "refused") {
+      if (preparedTemplates.status === 401) {
+        await finish("webhook_unauthorized", undefined, { reason: "template_batch_invalid" });
+        return new Response("unauthorized", { status: 401 });
+      }
+      await finish("template_dependency_unavailable");
+      return new Response("template unavailable", { status: 503 });
+    }
+    if (preparedTemplates.kind !== "prepared" && isMetaShapedProvider(provider) && !metaPayloadMatchesChannel(payload, credentials)) {
       jsonLog("warn", { requestId, evt: "webhook_channel_identity_mismatch", channelId, provider });
       await finish("webhook_unauthorized", undefined, { reason: "meta_identity_mismatch" });
       return new Response("unauthorized", { status: 401 });
+    }
+
+    // Whole original envelope admission precedes ACK/split and any WABA write.
+    // Trusted queue/split children consume evidence already admitted by their parent.
+    if (ingestionSource === "provider" && !trustedMetaPayload) {
+      const originalStatuses = parseStatusCallback(provider, payload);
+      if (originalStatuses?.length) {
+        const receiptAdmission = await admitAutomationReceipts(supabase, channel, payload, originalStatuses, channel.webhook_secret);
+        if (receiptAdmission.kind === "refused") {
+          await finish(receiptAdmission.reason);
+          return new Response(receiptAdmission.reason, { status: receiptAdmission.status });
+        }
+      }
+    }
+    // Receipt admission and WABA are separate transactions: an error here keeps
+    // admitted receipt evidence pending, and provider redelivery dedupes it.
+    const templateEvents = preparedTemplates.kind === "prepared" ? await preparedTemplates.commit() : preparedTemplates;
+    if (templateEvents.kind === "refused") {
+      await finish("template_dependency_unavailable");
+      return new Response("template unavailable", { status: 503 });
+    }
+    const managementPersisted = templateEvents.kind === "persisted";
+
+    if (templateEvents.kind === "persisted" && !templateEvents.hasChat) {
+      await finish("template_events_persisted", undefined, { count: templateEvents.count });
+      return new Response("ok");
     }
 
     // Instrumentação de FORMA, nunca de valor — mesma disciplina de
@@ -2699,7 +2743,7 @@ async function handleWebhookRequest(
     // podem fazer o handler retornar antes dos demais itens.
     if (isMetaShapedProvider(provider)) {
       const parts = splitMetaWebhookPayload(payload);
-      if (parts.length > 1) {
+      if (parts.length > 1 || managementPersisted) {
         const results = await Promise.all(parts.map((part) => {
           const headers = new Headers(req.headers);
           headers.delete("content-length");
@@ -3258,6 +3302,8 @@ async function handleWebhookRequest(
         .from("reservations")
         .update({ satisfaction_comment: incomingText })
         .eq("id", pendingComment.id)
+        .eq("unit_id", unitId)
+        .eq("customer_id", customer.id)
         .is("satisfaction_comment", null)
         .select("id")
         .maybeSingle();
@@ -3293,11 +3339,13 @@ async function handleWebhookRequest(
 
       const { data: pending } = await supabase
         .from("notifications_sent")
-        .select("reservation_id, reservations!inner(customer_id, satisfaction_rating)")
+        .select("reservation_id, reservations!inner(unit_id, customer_id, satisfaction_rating)")
+        .eq("unit_id", unitId)
         .eq("kind", "survey_d1")
         .eq("status", "sent")
         .gt("sent_at", cutoff)
         .eq("reservations.customer_id", customer.id)
+        .eq("reservations.unit_id", unitId)
         .is("reservations.satisfaction_rating", null)
         .order("sent_at", { ascending: false })
         .limit(1)
@@ -3339,6 +3387,8 @@ async function handleWebhookRequest(
           .from("reservations")
           .update({ satisfaction_rating: rating, satisfaction_at: new Date().toISOString() })
           .eq("id", pending.reservation_id)
+          .eq("unit_id", unitId)
+          .eq("customer_id", customer.id)
           .is("satisfaction_rating", null)
           .select("id")
           .maybeSingle();
@@ -3651,7 +3701,7 @@ async function handleWebhookRequest(
     // Toda saída automática depois do claim passa por uma única cerca. O eco
     // humano limpa o token atomicamente; logo mesmo um status sobrescrito pelo
     // próprio ramo de handoff não autoriza envio com token perdido.
-    const sendAutomatic = async (text: string) => {
+    const sendAutomatic = async (text: string): Promise<Awaited<ReturnType<typeof sendOutbound>>> => {
       const { data: fence, error: fenceError } = await supabase
         .from("conversations")
         .select("status, ai_lock_token")

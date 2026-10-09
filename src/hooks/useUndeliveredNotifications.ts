@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
+import { parseAutomationDeliveryState } from "@/lib/whatsapp-automation-delivery-state";
 
 /**
  * Linha do painel "Entregas" (Operacional) — mensagem WhatsApp NÃO entregue.
@@ -41,6 +42,22 @@ export function useUndeliveredNotifications(unitId: string) {
       });
       if (error) throw error;
       return (data ?? []) as UndeliveredNotification[];
+    },
+    enabled: !!unitId,
+    refetchInterval: pollWhenVisible,
+  });
+}
+
+export function useAutomationDeliveryState(unitId: string, page: number) {
+  const limit = 50;
+  return useQuery({
+    queryKey: [unitId, "automation-delivery-state", page, limit],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc("get_whatsapp_automation_delivery_state", {
+        p_unit_id: unitId, p_limit: limit, p_offset: page * limit,
+      });
+      if (error) throw new Error("Não foi possível carregar as automações.");
+      return parseAutomationDeliveryState(data, limit);
     },
     enabled: !!unitId,
     refetchInterval: pollWhenVisible,
@@ -120,6 +137,7 @@ export function useResendNotification(unitId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["undelivered-notifications"] });
       queryClient.invalidateQueries({ queryKey: ["notification-deliveries"] });
+      queryClient.invalidateQueries({ queryKey: [unitId, "automation-delivery-state"] });
       toast.success("Mensagem reenviada.");
     },
     onError: (err: Error) => {

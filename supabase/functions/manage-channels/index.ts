@@ -9,6 +9,7 @@ import {
   type ProviderConnectionSnapshot,
 } from "../_shared/whatsapp-providers.ts";
 import { parseDatafyAccount } from "../_shared/datafy-client.ts";
+import { createTemplateRuntime } from "../_shared/whatsapp-template-runtime.ts";
 import {
   decideDatafyChannelSetup,
   decideDatafySecretRotation,
@@ -49,6 +50,7 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
+const { refreshTemplateChannel } = createTemplateRuntime(supabase);
 
 function jsonResponse(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -551,7 +553,7 @@ function mergeChannelProjection(base: ChannelRow, row: Record<string, unknown>):
     if (value !== undefined) merged[key] = value;
   }
   if (typeof channelId === "string") merged.id = channelId;
-  return merged as ChannelRow;
+  return merged as unknown as ChannelRow;
 }
 
 function supportsClientQr(
@@ -1113,6 +1115,7 @@ async function connectUazChannel(
         p_request_id: requestId,
       });
       if (storeError) throw new Error("channel_token_store_failed");
+      await refreshTemplateChannel(claimedChannel.id);
 
     }
 
@@ -1296,6 +1299,7 @@ serve(async (req) => {
         const refreshed = await refreshManualProviderStatus(selected, callerId, requestId);
         selected = refreshed.channel;
         qrCode = refreshed.qrCode;
+        await refreshTemplateChannel(selected.id);
       }
       const defaultProvider = selected ? null : (await getUnitContext(unitId)).defaultProvider;
       const capabilityProvider = selected
@@ -1353,6 +1357,7 @@ serve(async (req) => {
         }
         if (!getWhatsAppProvider(channel.provider).capabilities.automaticProvisioning) {
           const refreshed = await refreshManualProviderStatus(channel, callerId, requestId);
+          await refreshTemplateChannel(channel.id);
           return jsonResponse(req, {
             success: true,
             connection: clientConnection(
@@ -1677,7 +1682,7 @@ serve(async (req) => {
       // Datafy: ELA emite o `whsec_` e assina com ele — gerar um nosso faria
       // toda entrega ser recusada, com o canal parecendo configurado.
       let webhookSecret: string;
-      let datafyCredentials: ChannelCredentials | null = null;
+      let datafyCredentials: { access_token: string; phone_number_id: string; business_account_id: string | null } | null = null;
 
       if (provider === "datafy") {
         // Lida UMA vez, com guarda de tipo, e reutilizado abaixo — nunca
@@ -1831,6 +1836,7 @@ serve(async (req) => {
         console.error("manage-channels:update", updateErr);
         return jsonResponse(req, { error: "Falha ao atualizar credenciais." }, 500);
       }
+      await refreshTemplateChannel(channelId);
       return jsonResponse(req, { success: true });
     }
 
@@ -1894,6 +1900,7 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Falha ao rotacionar o secret do webhook." }, 500);
       }
       if (!rotated) return jsonResponse(req, { error: "Canal não encontrado." }, 404);
+      await refreshTemplateChannel(channelId);
 
       const supabaseUrl = Deno.env.get("SUPABASE_URL");
       const projectRef = supabaseUrl?.match(/https:\/\/([^.]+)\./)?.[1];
@@ -1983,6 +1990,7 @@ serve(async (req) => {
         console.error("manage-channels:test status persist", statusWriteError);
         return jsonResponse(req, { error: "Falha ao registrar o status do canal." }, 500);
       }
+      if (connected) await refreshTemplateChannel(channelId);
 
       if (connected && channel.activation_requested_at && channel.manual_echo_verified_at) {
         const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {

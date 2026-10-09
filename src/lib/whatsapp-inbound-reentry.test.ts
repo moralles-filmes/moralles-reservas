@@ -43,6 +43,54 @@ const lerFonte = (caminhoRelativo: string): string =>
 
 const EF = lerFonte("../../supabase/functions/webhook-whatsapp/index.ts");
 
+const managementAdmissionAnchors = [
+  'if (!isValid) {',
+  'await createTemplateEventRuntime(supabase).prepare(payload',
+  'const receiptAdmission = await admitAutomationReceipts(',
+  'await preparedTemplates.commit()',
+  'await finish("template_events_persisted"',
+  'const flagCheck = await checkFlagEnabled("whatsapp_async_ingestion")',
+  'insert = await persistInboundEvent({',
+];
+function hasOrderedManagementAdmission(source: string): boolean {
+  const positions = managementAdmissionAnchors.map(anchor => source.indexOf(anchor));
+  return positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1]));
+}
+
+describe("gestão WABA na fronteira da fila (acoplamento; handler real é gate separado)", () => {
+  it("persiste gestão depois da assinatura inteira e antes de enfileirar o corpo original", () => {
+    expect(hasOrderedManagementAdmission(EF)).toBe(true);
+    const queue = EF.indexOf('insert = await persistInboundEvent({');
+    expect(EF.slice(queue, EF.indexOf('const verdict = decideAckVerdict', queue))).toContain('bodyText,');
+  });
+  it.each(managementAdmissionAnchors)("recusa fronteira sem a etapa %s", anchor => {
+    expect(hasOrderedManagementAdmission(EF.replace(anchor, 'removed_admission_step'))).toBe(false);
+  });
+  it("recusa commit da gestão antes da admissão dos recibos", () => {
+    const admission = managementAdmissionAnchors[2];
+    const commit = managementAdmissionAnchors[3];
+    const inverted = EF.replace(admission, 'swap_admission_marker').replace(commit, admission).replace('swap_admission_marker', commit);
+    expect(hasOrderedManagementAdmission(inverted)).toBe(false);
+  });
+  it("lote misto com uma única parte de chat também reentra com source original", () => {
+    const start = EF.indexOf('const parts = splitMetaWebhookPayload(payload);');
+    const end = EF.indexOf('const statusUpdates = parseStatusCallback', start);
+    const dispatch = EF.slice(start, end);
+    expect(dispatch).toContain('parts.length > 1 || managementPersisted');
+    expect(dispatch).toContain('signatureAlreadyVerified: true, source: ingestionSource');
+    // Control: old one-part dispatch would leave management in the chat payload.
+    expect(dispatch.replace(' || managementPersisted', '')).not.toContain('parts.length > 1 || managementPersisted');
+  });
+  it("gestão exclusiva termina depois da persistência e antes do gate de ingestão", () => {
+    const persisted = EF.indexOf('await preparedTemplates.commit()');
+    const finish = EF.indexOf('await finish("template_events_persisted"');
+    const gate = EF.indexOf('const flagCheck = await checkFlagEnabled("whatsapp_async_ingestion")');
+    expect(persisted).toBeGreaterThan(-1);
+    expect(finish).toBeGreaterThan(persisted);
+    expect(finish).toBeLessThan(gate);
+  });
+});
+
 const MIGRATION_113 = lerFonte(
   "../../supabase/migrations/20260924120200_113_inbound_claim_rpc.sql",
 );

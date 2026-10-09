@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import {
   useUndeliveredNotifications,
+  useAutomationDeliveryState,
   useResendNotification,
   isResendableKind,
   type UndeliveredNotification,
@@ -25,11 +26,46 @@ const KIND_LABEL: Record<string, string> = {
   reminder_d1: "Lembrete de reserva",
   survey_d1: "Pesquisa de satisfação",
   voucher_issued: "Voucher / giftback",
+  waitlist_feedback: "Pesquisa da fila",
 };
 
 const FILA_KINDS = new Set(["waitlist_entered", "waitlist_table_ready"]);
 
 type Category = "todas" | "fila" | "reservas";
+
+const AUTOMATION_LABEL: Record<string, string> = {
+  queued: "Aguardando envio", claimed: "Em preparação", posting: "Enviando", accepted: "Envio aceito; atualizando registros",
+  blocked: "Aguardando configuração ou condição", expired: "Prazo encerrado", uncertain: "Aguardando confirmação do envio",
+  retry_wait: "Aguardando nova tentativa segura", needs_review: "Precisa de revisão da configuração", failed: "Precisa de verificação",
+  reconciled: "Registros atualizados", paused: "Envio pausado", rejected: "Envio recusado",
+};
+function AutomationDeliveryPanel({ unitId }: { unitId: string }) {
+  const [page, setPage] = useState(0);
+  const query = useAutomationDeliveryState(unitId, page);
+  const data = query.data;
+  const minutes = data?.oldest_nonterminal_at
+    ? Math.max(0, Math.floor((Date.parse(data.generated_at) - Date.parse(data.oldest_nonterminal_at)) / 60_000)) : null;
+  return <section aria-label="Automações de WhatsApp" className="space-y-3">
+    <h2 className="text-lg font-semibold">Automações de WhatsApp</h2>
+    <p className="text-xs text-muted-foreground">Acompanhamento dos envios programados e da atualização dos registros.</p>
+    {query.isLoading ? <Skeleton className="h-20 w-full" /> : query.isError ? <Card className="border-destructive"><CardContent className="py-5 space-y-3">
+      <p>Não foi possível carregar as automações.</p><Button variant="outline" onClick={() => query.refetch()}>Tentar novamente</Button>
+    </CardContent></Card> : data && <>
+      <p className="text-sm">{data.counts.outstanding} pendentes de processamento de {data.counts.total} registros.
+        {minutes !== null && <span className="text-muted-foreground"> Mais antiga: {minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h`} (observação local).</span>}</p>
+      {!data.rows.length ? <p className="text-sm text-muted-foreground">Nenhuma automação nesta página.</p> : data.rows.map(row => <Card key={row.job_id}><CardContent className="py-3 space-y-1">
+        <div className="flex flex-wrap gap-2 items-center"><span className="font-medium text-sm">{KIND_LABEL[row.kind]}</span>
+          <Badge variant="outline">{AUTOMATION_LABEL[row.state]}</Badge></div>
+        {row.pin_phase === "preconfiguration" && <p className="text-xs text-muted-foreground">Configuração inicial pendente.</p>}
+        {row.has_pending_receipt && <p className="text-xs text-muted-foreground">Confirmação recebida; atualizando o registro de entrega.</p>}
+        {row.reason === "unknown_reason" && <p className="text-xs text-muted-foreground">Este registro precisa de verificação.</p>}
+        <p className="text-xs text-muted-foreground">Criada em {new Date(row.created_at).toLocaleString("pt-BR")} · Prazo {new Date(row.expires_at).toLocaleString("pt-BR")}</p>
+      </CardContent></Card>)}
+      <div className="flex items-center gap-3"><Button variant="outline" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Anterior</Button>
+        <span className="text-sm">Página {page + 1}</span><Button variant="outline" disabled={!data.has_more} onClick={() => setPage(p => p + 1)}>Próxima</Button></div>
+    </>}
+  </section>;
+}
 
 function rowCategory(kind: string): Exclude<Category, "todas"> {
   return FILA_KINDS.has(kind) ? "fila" : "reservas";
@@ -105,7 +141,7 @@ export default function Entregas() {
       </div>
 
       <p className="text-xs text-muted-foreground -mt-2">
-        Mensagens que o WhatsApp não confirmou entrega (ou falharam) nos últimos 7 dias. Reenvie com 1 clique.
+        Mensagens que o WhatsApp não confirmou entrega (ou falharam) nos últimos 7 dias.
       </p>
 
       {isLoading ? (
@@ -134,7 +170,8 @@ export default function Entregas() {
         <div className="space-y-3">
           {filtered.map((row) => {
             const state = deriveDeliveryState(row, !!row.customer_phone);
-            const resendable = isResendableKind(row.kind);
+            const resendable = isResendableKind(row.kind) && (row.kind === "waitlist_table_ready" || !row.provider_message_id)
+              && !row.delivered_at && !row.read_at;
             return (
               <Card key={row.id}>
                 <CardContent className="py-3 flex items-start gap-4 flex-wrap">
@@ -193,6 +230,7 @@ export default function Entregas() {
           })}
         </div>
       )}
+      <AutomationDeliveryPanel key={unitId} unitId={unitId} />
     </div>
   );
 }

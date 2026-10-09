@@ -11,6 +11,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
+import { selectReservationAutomationRoute, automationUuid, decodeAutomationDispatch, decodeOutboxAutomationObservation } from "../_shared/whatsapp-automation-producer-routing.ts";
+import { parseAutomationLedger } from "../_shared/whatsapp-automation-core.ts";
 import {
   resolveWhatsAppGateByUnit,
   clearWhatsAppGateCache,
@@ -35,6 +37,36 @@ interface OutboxRow {
   unit_id: string;
   kind: "confirmation" | "cancellation";
   attempts: number;
+  automation_job_id: string | null;
+  automation_initial_token: string | null;
+}
+
+/** Resolve only the original unpinned intent. Email ownership and delivery stay elsewhere. */
+async function recoverOriginalIntent(row: OutboxRow): Promise<boolean> {
+  try {
+    const ledger = await supabase.from('whatsapp_automation_jobs').select('*')
+      .eq('unit_id', row.unit_id).eq('reservation_id', row.reservation_id).eq('kind', 'confirmation').maybeSingle();
+    if (ledger.error) return false;
+    let jobId: string;
+    if (ledger.data !== null) {
+      if (!ledger.data || ledger.data.unit_id !== row.unit_id || ledger.data.reservation_id !== row.reservation_id
+        || ledger.data.kind !== 'confirmation') return false;
+      jobId = parseAutomationLedger(ledger.data).jobId;
+    } else {
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': INTERNAL_API_KEY },
+        body: JSON.stringify({ action: 'enqueue', kind: 'confirmation', resource_id: row.reservation_id,
+          unit_id: row.unit_id, outbox_id: row.id }), signal: AbortSignal.timeout(FUNCTION_TIMEOUT_MS),
+      });
+      const result = response.ok ? decodeAutomationDispatch(await response.json()) : null;
+      if (!result) return false;
+      // SQL rederives positive suppression; transport never settles the outbox.
+      if (result.jobId === null) return result.reason === 'producer_before_adoption' || result.reason === 'legacy_already_accepted';
+      jobId = result.jobId;
+    }
+    const pinned = await supabase.rpc('delegate_notification_outbox_automation', { p_id: row.id, p_job_id: jobId });
+    return !pinned.error && pinned.data === true;
+  } catch { return false; }
 }
 
 async function dispatchOne(row: OutboxRow): Promise<{ ok: boolean; error?: string }> {
@@ -48,7 +80,7 @@ async function dispatchOne(row: OutboxRow): Promise<{ ok: boolean; error?: strin
   let headers: Record<string, string> = { "Content-Type": "application/json" };
 
   if (row.kind === "confirmation") {
-    body = { record: { id: row.reservation_id, unit_id: row.unit_id } };
+    body = { record: { id: row.reservation_id, unit_id: row.unit_id }, outbox_id: row.id };
     headers["x-internal-key"] = INTERNAL_API_KEY;
   } else {
     // send-cancellation requer auth de user — não dá pra rodar via cron.
@@ -140,8 +172,18 @@ serve(async (req) => {
   let parkedCount = 0;
   let parkWriteFailed = 0;
   let expireWriteFailed = 0;
+  let automationPending = 0;
+  let automationDependency = 0;
+  let automationWriteFailed = 0;
+  let recovered = 0;
 
   try {
+    const recovery = await supabase.rpc('recover_delegated_notification_outbox', { p_limit: MAX_BATCH });
+    if (recovery.error || !Array.isArray(recovery.data) || recovery.data.length > MAX_BATCH
+      || recovery.data.some(id => !automationUuid(id)) || new Set(recovery.data).size !== recovery.data.length) {
+      automationWriteFailed++;
+      jsonLog('warn', { evt: 'outbox_automation_recovery_failed' });
+    } else recovered = recovery.data.length;
     // Pega lote de pendentes due — atomicamente marca como 'processing' pra
     // evitar duplo processamento se duas execuções concorrentes pegam o mesmo
     // job. UPDATE ... RETURNING garante que só um wins por linha.
@@ -150,7 +192,7 @@ serve(async (req) => {
       .update({ status: "processing", updated_at: new Date().toISOString() })
       .eq("status", "pending")
       .lte("next_attempt_at", new Date().toISOString())
-      .select("id, reservation_id, unit_id, kind, attempts")
+      .select("id, reservation_id, unit_id, kind, attempts, automation_job_id, automation_initial_token")
       .limit(MAX_BATCH);
 
     if (claimErr) {
@@ -173,6 +215,42 @@ serve(async (req) => {
     const parked: OutboxRow[] = [];
 
     for (const row of rows) {
+      if (row.kind === 'confirmation') {
+        const hasMarker = row.automation_job_id !== null || row.automation_initial_token !== null;
+        const route = hasMarker ? { path: 'managed' as const }
+          : await selectReservationAutomationRoute(async (table, columns, predicates, cardinality) => {
+            let query = supabase.from(table).select(columns);
+            for (const [column, value] of predicates) query = query.eq(column, value);
+            const result = await (cardinality === 'single' ? query.maybeSingle() : query);
+            if (result.error) throw result.error;
+            return result.data;
+          }, { kind: 'confirmation', unitId: row.unit_id, reservationId: row.reservation_id });
+        if (route.path !== 'legacy') {
+          // Initial ownership is never renewed. Recover only an unpinned original intent;
+          // all outcomes, including enqueue suppression, are still projected by SQL.
+          const recoveryFailed = row.automation_initial_token !== null && row.automation_job_id === null
+            && !await recoverOriginalIntent(row);
+          if (route.path === 'dependency' || recoveryFailed) {
+            const deferred = await supabase.rpc('defer_notification_outbox_automation_dependency', { p_id: row.id });
+            if (!deferred.error && deferred.data === true) automationDependency++;
+            else automationWriteFailed++;
+            continue;
+          }
+          if (row.automation_initial_token === null) await dispatchOne(row);
+          const polled = await supabase.rpc('poll_notification_outbox_automation', { p_id: row.id });
+          const observation = polled.error ? null : decodeOutboxAutomationObservation(polled.data);
+          if (!observation || observation.outbox_status === 'processing') {
+            const deferred = await supabase.rpc('defer_notification_outbox_automation_dependency', { p_id: row.id });
+            if (!deferred.error && deferred.data === true) automationDependency++;
+            else automationWriteFailed++;
+          } else if (observation.disposition === 'accepted') succeeded++;
+          else if (observation.disposition === 'discarded' || observation.disposition === 'suppressed') expired++;
+          else if (observation.outbox_status === 'dead') failed++;
+          else if (observation.disposition === 'dependency') automationDependency++;
+          else automationPending++;
+          continue;
+        }
+      }
       const gate = await resolveWhatsAppGateByUnit(supabase, row.unit_id);
       if (gate?.enforced.sending) parked.push(row);
       else toDispatch.push(row);
@@ -292,6 +370,7 @@ serve(async (req) => {
         parkWriteFailed,
         expired,
         expireWriteFailed,
+        automationPending, automationDependency, automationWriteFailed, recovered,
         duration_ms: Date.now() - t0,
       }),
       { headers: { "Content-Type": "application/json" } },

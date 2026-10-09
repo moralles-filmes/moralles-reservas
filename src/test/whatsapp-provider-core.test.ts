@@ -100,6 +100,7 @@ describe("registry WhatsApp", () => {
     for (const metadata of registry.metadata()) {
       expect(metadata.capabilities).toMatchObject({
         templateMessages: false,
+        templateManagement: false,
         mediaMessages: false,
         inboundMediaDownload: false,
         interactiveMessages: false,

@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { useAuth } from "@/hooks/useAuth";
+import { useWhatsappTemplates } from "@/hooks/useWhatsappTemplates";
+import { TemplateStatus } from "@/components/whatsapp/OfficialAutomationTemplate";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import {
   WAITLIST_TEMPLATES,
@@ -32,8 +35,10 @@ type Tab = "customizacao" | "configuracoes";
 
 export default function FilaComunicacao() {
   const unit = useCurrentUnit();
-  const unitId = unit?.unit_id ?? "";
+  const { unitSlug } = useParams();
   const [tab, setTab] = useState<Tab>("customizacao");
+  if (!unit || unit.unit_slug !== unitSlug) return <p role="status">Carregando unidade…</p>;
+  const unitId = unit.unit_id;
 
   return (
     <div className="space-y-5">
@@ -53,8 +58,8 @@ export default function FilaComunicacao() {
         </div>
 
         <div className="p-6">
-          {tab === "customizacao" && <CustomizacaoTab unitId={unitId} />}
-          {tab === "configuracoes" && <ConfiguracoesTab unitId={unitId} />}
+          <div hidden={tab !== "customizacao"}><CustomizacaoTab key={unitId} unitId={unitId} /></div>
+          {tab === "configuracoes" && <ConfiguracoesTab key={unitId} unitId={unitId} />}
         </div>
       </Card>
     </div>
@@ -65,39 +70,34 @@ export default function FilaComunicacao() {
 
 function CustomizacaoTab({ unitId }: { unitId: string }) {
   const unit = useCurrentUnit();
-  const { data: templates, isLoading } = useWaitlistTemplates(unitId);
+  const { isPlatformAdmin } = useAuth();
+  const controls = useWhatsappTemplates(unitId, unit?.role, isPlatformAdmin);
+  const templatesQuery = useWaitlistTemplates(unitId);
+  const { data: templates, isLoading } = templatesQuery;
   const upsert = useUpsertWaitlistTemplate(unitId);
 
   const [event, setEvent] = useState<WaitlistTemplateEvent>("entered");
-  const [customized, setCustomized] = useState(false);
-  const [body, setBody] = useState("");
+  const [drafts, setDrafts] = useState<Partial<Record<WaitlistTemplateEvent, { customized: boolean; body: string }>>>({});
 
   const meta = getWaitlistTemplateMeta(event);
-  const currentTemplate = useMemo(
-    () => templates?.find((t) => t.event === event),
-    [templates, event],
-  );
-
-  useEffect(() => {
-    if (!templates) return;
-    if (currentTemplate) {
-      setCustomized(currentTemplate.customized);
-      setBody(currentTemplate.body || meta.defaultBody);
-    } else {
-      setCustomized(false);
-      setBody(meta.defaultBody);
-    }
-  }, [event, templates, currentTemplate, meta.defaultBody]);
+  const currentTemplate = templates?.find(t => t.event === event);
+  const draft = drafts[event] ?? { customized: currentTemplate?.customized ?? false, body: currentTemplate?.body || meta.defaultBody };
+  const { customized, body } = draft;
+  const setCustomized = (value: boolean) => setDrafts(prev => ({ ...prev, [event]: { ...draft, customized: value } }));
+  const setBody = (value: string | ((previous: string) => string)) => setDrafts(prev => ({ ...prev, [event]: { ...draft, body: typeof value === 'function' ? value(draft.body) : value, customized: true } }));
+  const manual = event === 'table_ready';
+  const textMode = manual || controls.query.data?.mode === 'unofficial';
+  const textAllowed = textMode && controls.canManage && (manual || (!controls.query.isError && !controls.query.isFetching));
 
   const charCount = body.length;
   const overLimit = charCount > meta.maxLength;
 
   const handleInsertVar = (key: string) => {
     setBody((prev) => prev + (prev.endsWith(" ") || prev === "" ? "" : " ") + `{{${key}}}`);
-    setCustomized(true);
   };
 
   const handleSave = () => {
+    if (!textAllowed || templatesQuery.isError || upsert.isPending) return;
     if (overLimit) {
       toast.error(`Mensagem ultrapassa ${meta.maxLength} caracteres.`);
       return;
@@ -117,7 +117,7 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
     link_status: `${window.location.origin}/r/${unit?.unit_slug ?? "exemplo"}`,
   });
 
-  if (isLoading) {
+  if (isLoading && textMode) {
     return (
       <div className="space-y-3">
         <Skeleton className="h-10 w-60" />
@@ -140,7 +140,7 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
         <Label className="text-sm font-semibold">Mensagem da fila</Label>
         <Label className="text-xs text-muted-foreground">Modelo de mensagem</Label>
         <Select value={event} onValueChange={(v) => setEvent(v as WaitlistTemplateEvent)}>
-          <SelectTrigger className="max-w-md">
+          <SelectTrigger className="min-h-11 max-w-md">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -154,72 +154,81 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
         <p className="text-xs text-muted-foreground">{meta.description}</p>
       </div>
 
-      <div className="flex items-center gap-2">
-        <Switch
-          id="customized"
-          checked={customized}
-          onCheckedChange={setCustomized}
-        />
-        <Label htmlFor="customized" className="text-sm">
-          Personalizar mensagem
-        </Label>
-      </div>
-
-      <Card className="p-4 bg-muted/30">
-        <Label className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
-          Mensagem
-        </Label>
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          disabled={!customized}
-          rows={5}
-          className="w-full bg-background border border-input rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 disabled:cursor-not-allowed font-mono"
-          placeholder={meta.defaultBody}
-        />
-        <div className="flex items-center justify-between mt-2">
-          <p
-            className={`text-xs ${overLimit ? "text-destructive" : "text-muted-foreground"}`}
-          >
-            {charCount}/{meta.maxLength}
-          </p>
-          {!customized && (
-            <p className="text-xs text-muted-foreground italic">
-              Editando o texto, "Personalizar mensagem" será ativado automaticamente.
-            </p>
-          )}
-        </div>
-
-        <div className="mt-4 space-y-2">
-          <Label className="text-xs font-semibold">Adicionar variável</Label>
-          <div className="flex flex-wrap gap-2">
-            {WAITLIST_VARIABLES.map((v) => (
-              <button
-                key={v.key}
-                type="button"
-                onClick={() => handleInsertVar(v.key)}
-                disabled={!customized}
-                className="text-xs px-3 py-1.5 rounded-md bg-background border border-input hover:bg-accent transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {v.label}
-              </button>
-            ))}
+      {!manual && <TemplateStatus controls={controls} logicalIds={[event === 'entered' ? 'fila_entrada_v1' : 'fila_feedback_v1']} />}
+      {manual && <p className="text-sm text-muted-foreground">Mesa pronta: mensagem enviada manualmente pelo painel operacional.</p>}
+      {textMode && (manual || !controls.query.isError) && <>
+        {templatesQuery.isError ? <div role="alert"><p>Não foi possível carregar as mensagens salvas.</p><Button className="min-h-11" onClick={() => void templatesQuery.refetch()}>Recarregar mensagens</Button></div> : <>
+          <div className="flex items-center gap-2 min-h-11">
+            <Switch
+              id="customized"
+              checked={customized}
+              onCheckedChange={setCustomized}
+              disabled={!textAllowed}
+            />
+            <Label htmlFor="customized" className="flex min-h-11 items-center text-sm">
+              Personalizar mensagem
+            </Label>
           </div>
-        </div>
-      </Card>
 
-      <div className="space-y-2">
-        <Label className="text-sm font-semibold">Pré-visualização</Label>
-        <Card className="p-4 bg-success/10 border-success/20">
-          <p className="text-sm whitespace-pre-wrap font-sans">{preview}</p>
-        </Card>
-      </div>
+          <Card className="p-4 bg-muted/30">
+            <Label className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
+              Mensagem
+            </Label>
+            <textarea
+              aria-label="Mensagem"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              disabled={!customized || !textAllowed}
+              rows={5}
+              className="w-full bg-background border border-input rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 disabled:cursor-not-allowed font-mono"
+              placeholder={meta.defaultBody}
+            />
+            <div className="flex items-center justify-between mt-2">
+              <p
+                className={`text-xs ${overLimit ? "text-destructive" : "text-muted-foreground"}`}
+              >
+                {charCount}/{meta.maxLength}
+              </p>
+              {!customized && (
+                <p className="text-xs text-muted-foreground italic">
+                  Editando o texto, "Personalizar mensagem" será ativado automaticamente.
+                </p>
+              )}
+            </div>
 
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={upsert.isPending || overLimit}>
-          {upsert.isPending ? "Salvando…" : "Salvar mensagem"}
-        </Button>
-      </div>
+            <div className="mt-4 space-y-2">
+              <Label className="text-xs font-semibold">Adicionar variável</Label>
+              <div className="flex flex-wrap gap-2">
+                {WAITLIST_VARIABLES.map((v) => (
+                  <button
+                    key={v.key}
+                    type="button"
+                    onClick={() => handleInsertVar(v.key)}
+                    disabled={!customized || !textAllowed}
+                    className="min-h-11 text-xs px-3 py-1.5 rounded-md bg-background border border-input hover:bg-accent transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </Card>
+
+          <div className="space-y-2">
+            <Label className="text-sm font-semibold">Pré-visualização</Label>
+            <Card className="p-4 bg-success/10 border-success/20">
+              <p className="text-sm whitespace-pre-wrap font-sans">{preview}</p>
+            </Card>
+          </div>
+
+          <div className="flex justify-end gap-2 flex-wrap">
+            <Button className="min-h-11" variant="outline" disabled={!textAllowed} onClick={() => setDrafts(prev => ({ ...prev, [event]: { body: meta.defaultBody, customized: false } }))}>Restaurar padrão</Button>
+            <Button className="min-h-11" onClick={handleSave} disabled={!textAllowed || upsert.isPending || overLimit}>
+              {upsert.isPending ? "Salvando…" : "Salvar mensagem"}
+            </Button>
+          </div>
+        </>}
+      </>}
     </div>
   );
 }
@@ -227,9 +236,14 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
 // ─── Tab: Configurações ───────────────────────────────────────────────────────
 
 function ConfiguracoesTab({ unitId }: { unitId: string }) {
-  const { data: settings, isLoading } = useWaitlistSettings(unitId);
+  const unit = useCurrentUnit();
+  const { isPlatformAdmin } = useAuth();
+  const canEdit = isPlatformAdmin || unit?.role === 'owner' || unit?.role === 'gerente';
+  const query = useWaitlistSettings(unitId);
+  const { data: settings, isLoading } = query;
   const update = useUpdateWaitlistSettings(unitId);
 
+  if (query.isError) return <div role="alert"><p>Não foi possível carregar as configurações.</p><Button className="min-h-11" onClick={() => void query.refetch()}>Tentar novamente</Button></div>;
   if (isLoading || !settings) {
     return (
       <div className="space-y-3 max-w-2xl">
@@ -253,16 +267,16 @@ function ConfiguracoesTab({ unitId }: { unitId: string }) {
         title="Avisar quando o cliente entrar na fila"
         description="Mensagem disparada em segundos após o cliente entrar na fila (formulário público ou painel). Inclui a senha e o link de acompanhamento."
         checked={settings.waitlist_entered_enabled}
-        disabled={update.isPending}
-        onChange={(v) => update.mutate({ waitlist_entered_enabled: v })}
+        disabled={!canEdit || update.isPending}
+        onChange={(v) => { if (canEdit) update.mutate({ waitlist_entered_enabled: v }); }}
       />
 
       <ToggleRow
         title="Pesquisa de satisfação D+1"
         description="Enviada no dia seguinte às 14h00 (BRT) para todos os clientes que foram sentados pela fila no dia anterior. Edite o texto na aba 'Customização de mensagens'."
         checked={settings.waitlist_feedback_enabled}
-        disabled={update.isPending}
-        onChange={(v) => update.mutate({ waitlist_feedback_enabled: v })}
+        disabled={!canEdit || update.isPending}
+        onChange={(v) => { if (canEdit) update.mutate({ waitlist_feedback_enabled: v }); }}
       />
 
       <p className="text-xs text-muted-foreground border-t pt-4">
@@ -312,11 +326,10 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
-        active
+      className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${active
           ? "border-primary text-primary"
           : "border-transparent text-muted-foreground hover:text-foreground"
-      }`}
+        }`}
     >
       {children}
     </button>

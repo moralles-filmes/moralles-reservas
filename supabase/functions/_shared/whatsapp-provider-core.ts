@@ -1,4 +1,8 @@
 import { canonicalBrPhone, toE164BrPhone } from "./phone.ts";
+import type {
+  TemplatePage, TemplateCreateOutcome, TemplateSendOutcome,
+  TemplateListInput, TemplateCreateInput, TemplateSendInput,
+} from "./whatsapp-template-provider-core.ts";
 
 export const WHATSAPP_PROVIDER_NAMES = ["zapi", "waha", "official", "uazapi", "datafy"] as const;
 
@@ -15,6 +19,8 @@ export interface WhatsAppProviderCapabilities {
   deliveryReceipts: boolean;
   /** Envio de templates aprovados pela Meta. */
   templateMessages: boolean;
+  /** Listagem e submissão de templates para análise, sem presumir aprovação. */
+  templateManagement: boolean;
   /** Envio de imagem, áudio, vídeo, documento ou sticker. */
   mediaMessages: boolean;
   /** Download da mídia recebida do cliente. */
@@ -54,9 +60,11 @@ export interface CloudApiResponse {
  * Acrescentar o método ao contrato exige mapear sua capability aqui.
  */
 export const CAPABILITY_REQUIRED_METHOD = {
-  rawCloudApiProxy: "cloudApiRequest",
-  adReferral: "parseAdReferral",
-} as const satisfies Readonly<Partial<Record<keyof WhatsAppProviderCapabilities, keyof WhatsAppProviderAdapter>>>;
+  rawCloudApiProxy: ["cloudApiRequest"],
+  adReferral: ["parseAdReferral"],
+  templateManagement: ["listTemplates", "createTemplate"],
+  templateMessages: ["sendTemplate"],
+} as const satisfies Readonly<Partial<Record<keyof WhatsAppProviderCapabilities, readonly (keyof WhatsAppProviderAdapter)[]>>>;
 
 export type WhatsAppOperationalStatus =
   | "not_configured"
@@ -181,6 +189,9 @@ export interface ChannelCredentials {
   instance_token?: string;
 }
 
+/** Internal transport policy; never accepted from a message payload. */
+export interface SendTextOptions { retryPolicy: "none"; }
+
 export interface SendResult {
   ok: boolean;
   status?: number;
@@ -268,7 +279,11 @@ export interface WhatsAppProviderAdapter {
   parseStatusCallback(payload: any): StatusUpdate[] | null;
   // deno-lint-ignore no-explicit-any
   parseConnectionCallback?(payload: any): ProviderConnectionSnapshot | null;
-  sendText(credentials: ChannelCredentials, message: OutboundMessage): Promise<SendResult>;
+  sendText(credentials: ChannelCredentials, message: OutboundMessage, options?: SendTextOptions): Promise<SendResult>;
+  /** Chamadas server-side após resolver conta, tenant e credenciais. */
+  listTemplates?(credentials: ChannelCredentials, input: TemplateListInput): Promise<TemplatePage>;
+  createTemplate?(credentials: ChannelCredentials, input: TemplateCreateInput): Promise<TemplateCreateOutcome>;
+  sendTemplate?(credentials: ChannelCredentials, input: TemplateSendInput): Promise<TemplateSendOutcome>;
   getConnectionStatus?(credentials: ChannelCredentials): Promise<ProviderConnectionSnapshot>;
   getQrCode?(credentials: ChannelCredentials): Promise<ProviderQrSnapshot>;
   canRequestQr?(credentials: ChannelCredentials): boolean;
@@ -335,6 +350,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
     templateMessages: false,
+    templateManagement: false,
     mediaMessages: false,
     inboundMediaDownload: false,
     interactiveMessages: false,
@@ -352,6 +368,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
     templateMessages: false,
+    templateManagement: false,
     mediaMessages: false,
     inboundMediaDownload: false,
     interactiveMessages: false,
@@ -369,6 +386,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     deliveryReceipts: true,
     manualDeviceEcho: "conditional",
     templateMessages: false,
+    templateManagement: false,
     mediaMessages: false,
     inboundMediaDownload: false,
     interactiveMessages: false,
@@ -386,6 +404,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     deliveryReceipts: true,
     manualDeviceEcho: "supported",
     templateMessages: false,
+    templateManagement: false,
     mediaMessages: false,
     inboundMediaDownload: false,
     interactiveMessages: false,
@@ -403,7 +422,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     restart: false,
     deliveryReceipts: true,
     manualDeviceEcho: "conditional",
-    templateMessages: false,
+    templateMessages: true,
+    templateManagement: true,
     mediaMessages: false,
     inboundMediaDownload: false,
     interactiveMessages: false,

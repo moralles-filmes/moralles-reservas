@@ -135,9 +135,23 @@ describe("guardrails de wiring WhatsApp multi-provider", () => {
 
   it("envio prefere ativo e fallback legado aceita somente NULL", () => {
     const send = read("supabase/functions/_shared/whatsapp-send.ts");
-    expect(send).toContain('.eq("is_active", true)');
-    expect(send).toContain('.is("is_active", null)');
-    expect(send).toContain("whatsapp_channel_inactive");
+    const factory = read("supabase/functions/_shared/whatsapp-channel-service.ts");
+    const assertSelectionWiring = (facade: string, implementation: string) => {
+      expect(facade).toMatch(/const service = createWhatsAppChannelService\(\{/);
+      expect(facade).toMatch(/export const \{\s*sendWhatsApp,[\s\S]*?\} = service;/);
+      expect(facade).toContain('from "./whatsapp-channel-service.ts"');
+      expect(implementation).toContain('.eq("is_active", true)');
+      expect(implementation).toContain('.is("is_active", null)');
+      expect(implementation).toContain('channel.is_active === false');
+      expect(implementation).toContain('"whatsapp_channel_inactive"');
+      expect(implementation.indexOf('.eq("is_active", true)')).toBeLessThan(implementation.indexOf('.is("is_active", null)'));
+    };
+    assertSelectionWiring(send, factory);
+    // Static guard sensitivity: a facade bypass or an over-broad fallback must
+    // actually make this assertion fail, not merely satisfy a renamed token.
+    expect(() => assertSelectionWiring(send.replace('} = service;', '} = unsafeService;'), factory)).toThrow();
+    expect(() => assertSelectionWiring(send, factory.replaceAll('.eq("is_active", true)', '.eq("status", "connected")'))).toThrow();
+    expect(() => assertSelectionWiring(send, factory.replace('.is("is_active", null)', '.neq("is_active", true)'))).toThrow();
   });
 
   it("confirmação delega a seleção do canal ao resolvedor central", () => {

@@ -25,6 +25,71 @@
     "Origem da classificação: docs/hotfix-acl/01-INVENTARIO-E-CLASSIFICACAO.md"
   ],
 
+  "_service_only_whatsapp_automation_receipts_worker": [
+    "record_whatsapp_automation_receipts(uuid,uuid,text,bigint,text,jsonb)",
+    "reconcile_whatsapp_automation_receipts(uuid,integer)",
+    "maintain_and_select_whatsapp_automation_work(integer)",
+    "purge_whatsapp_automation_workers(integer,integer)"
+  ],
+  "_service_only_whatsapp_scheduled_voucher_issuer": [
+    "issue_scheduled_whatsapp_voucher(uuid,uuid,text,jsonb)"
+  ],
+  "_service_only_whatsapp_outbox_delegation": [
+    "claim_notification_outbox_initial(uuid)",
+    "delegate_notification_outbox_automation(uuid,uuid)",
+    "poll_notification_outbox_automation(uuid)",
+    "defer_notification_outbox_automation_dependency(uuid)",
+    "finish_notification_outbox_initial(uuid,uuid)",
+    "recover_delegated_notification_outbox(integer)"
+  ],
+  "_service_only_whatsapp_template_workers": [
+    "bind_whatsapp_template_account(uuid,uuid,text,bigint,text,text)",
+    "reconcile_whatsapp_template_credentials(uuid)",
+    "request_whatsapp_template_sync(uuid)",
+    "select_due_whatsapp_template_accounts(integer)",
+    "complete_whatsapp_template_sync_job(uuid,uuid,boolean,text)",
+    "confirm_whatsapp_template_post(uuid,uuid,bigint)",
+    "whatsapp_template_pipeline_health()",
+    "purge_whatsapp_template_workers()"
+  ],
+  "_service_only_whatsapp_preferences": [
+    "issue_whatsapp_preference_token(uuid,text)",
+    "get_whatsapp_promotion_preference(uuid)",
+    "lookup_whatsapp_preference_token(text)",
+    "revoke_whatsapp_promotion(text)",
+    "invalidate_whatsapp_preference_token(text)",
+    "check_whatsapp_preference_rate(text,integer,integer)"
+  ],
+
+  "_service_only_whatsapp_template_events": [
+    "record_whatsapp_template_events_fenced(jsonb,jsonb)"
+  ],
+  "_service_only_whatsapp_dispatch_prerequisites": [
+    "confirm_whatsapp_automation_post(uuid,uuid,bigint,bigint,bigint)",
+    "block_whatsapp_automation_preflight(uuid,uuid,text)"
+  ],
+  "_service_only_whatsapp_acceptance": [
+    "reconcile_whatsapp_automation_acceptance(uuid)"
+  ],
+  "_service_only_whatsapp_resource_confirm": [
+    "confirm_whatsapp_automation_resource_post(uuid,uuid,bigint,bigint,bigint,jsonb)"
+  ],
+  "_service_only_whatsapp_automation": [
+    "enqueue_whatsapp_automation(jsonb)",
+    "claim_whatsapp_automation(uuid)",
+    "requeue_whatsapp_automation(uuid)",
+    "prepare_whatsapp_automation_post(uuid,uuid,bigint,bigint,bigint)",
+    "finish_whatsapp_automation(uuid,uuid,jsonb)",
+    "select_due_whatsapp_automations(integer)",
+    "enqueue_whatsapp_template_job(uuid,text,text,bigint)",
+    "claim_whatsapp_template_job(uuid)",
+    "prepare_whatsapp_template_provision(uuid,uuid,bigint)",
+    "finish_whatsapp_template_job(uuid,uuid,jsonb)",
+    "begin_whatsapp_template_sync(uuid)",
+    "publish_whatsapp_template_sync(uuid,bigint,jsonb,jsonb)",
+    "record_whatsapp_template_events(uuid,jsonb)"
+  ],
+
   "_expected_advisor": {
     "_doc": [
       "Total de WARN que o Security Advisor deve reportar para os lints 0028 e",
@@ -97,11 +162,19 @@
       "`authenticated`, logo declarava só 0029) e `resolve_tracking_token_by_code`",
       "entra em `public_anon` (DEFINER com `anon`, logo declara os dois, como a",
       "`get_public_tracking`). Então 0028 sobe de 9 para 10, 0029 fica em 14 (−1",
-      "da saída, +1 da entrada) e o total vai a 24."
+      "da saída, +1 da entrada) e o total vai a 24.",
+      "DELTA do catálogo WhatsApp: maintain_whatsapp_legacy_template é DEFINER",
+      "com authenticated e guarda platform_admin, adicionando um 0029: projeção",
+      "0028=10, 0029=15, total=25. Não é leitura do Advisor de produção.",
+      "DELTA Task12: get_whatsapp_automation_delivery_state é DEFINER somente",
+      "authenticated, com guarda de membro/admin, somando um 0029: 10/16/26.",
+      "Task13 acrescenta nove interfaces DEFINER authenticated, com JWT real e",
+      "guardas individuais de papel/tenant: projeção 10/25/35.",
+      "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 10,
-    "0029": 14,
-    "total": 24
+    "0029": 25,
+    "total": 35
   },
 
   "public_anon": [
@@ -209,6 +282,130 @@
   "rls_helpers": [],
 
   "authenticated_tenant": [
+    {
+      "name": "get_whatsapp_message_consent_state",
+      "args": "p_unit_id uuid, p_customer_id uuid, p_purpose text",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Estado individual sem evidência pessoal; JWT real owner/gerente ou platform_admin, cliente vivo na organização real da unidade.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "record_whatsapp_message_consent",
+      "args": "p_unit_id uuid, p_customer_id uuid, p_purpose text, p_decision text, p_source_code text, p_observed_at timestamp with time zone, p_evidence_reference text",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Consentimento individual com evidência e origem fechadas; ator do JWT, cliente vivo e revision serial sob lock.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "release_whatsapp_template_channel",
+      "args": "p_channel_id uuid, p_scope text, p_enabled boolean, p_expected_credential_revision bigint, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; scopes catálogo/despacho independentes e revogação exclusiva preserva história e tenant.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "request_whatsapp_template_sync_for_channel",
+      "args": "p_channel_id uuid, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "JWT real owner/gerente ou platform_admin; conta derivada do binding atual, apenas solicita sincronização idempotente.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "initialize_whatsapp_automation_job",
+      "args": "p_job_id uuid, p_expected_channel_id uuid, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; inicialização única com permit typed exato, preserva âncoras conhecidas e prazo original.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "revalidate_whatsapp_automation_job",
+      "args": "p_job_id uuid, p_expected_channel_id uuid, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "JWT owner/gerente ou platform_admin real; intenção viva sem POST, permit exato preserva identidade, histórico, tentativas e TTL.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "revalidate_whatsapp_template_job",
+      "args": "p_job_id uuid, p_expected_channel_id uuid, p_expected_binding_generation bigint",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; prova durável primeira zero-POST, mesmo job/conta/target e apenas uma preparação posterior.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "authorize_whatsapp_marketing_cost",
+      "args": "p_channel_id uuid, p_expected_binding_generation bigint, p_category text, p_valid_from timestamp with time zone, p_valid_until timestamp with time zone",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; MARKETING explicitamente autorizado no binding atual e intervalo finito, sem cobrança inferida.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "configure_whatsapp_promotion_frequency",
+      "args": "p_window_days integer",
+      "roles": [
+        "authenticated"
+      ],
+      "why": "Platform_admin real; singleton privado entre 1 e 30 dias, sem recalcular slots existentes.",
+      "security_definer": true,
+      "advisor_lints": [
+        "0029"
+      ]
+    },
+    {
+      "name": "get_whatsapp_automation_delivery_state",
+      "args": "p_unit_id uuid, p_limit integer, p_offset integer",
+      "roles": ["authenticated"],
+      "why": "Projeção técnica somente leitura; auth.uid real, membro da unidade ou platform_admin, sem payload, destinatário ou credenciais.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "maintain_whatsapp_legacy_template",
+      "args": "p_table_name text, p_action text, p_row_id uuid, p_unit_id uuid, p_event text, p_body text, p_customized boolean, p_reason text",
+      "roles": ["authenticated"],
+      "why": "Manutenção explícita de textos legados. SECURITY DEFINER exige auth.role authenticated e platform_admin real derivado de auth.uid, cria permit interno de uso único vinculado à transação/ator/ação/tabela/linha e audita a mudança; anon e service_role não executam. Nenhum actor_id vem do corpo.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
     {
       "name": "get_undelivered_notifications",
       "args": "p_unit_id uuid, p_since timestamp with time zone",

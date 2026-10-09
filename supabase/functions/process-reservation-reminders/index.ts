@@ -20,6 +20,7 @@ import {
   resolveWhatsAppGateByUnit,
   clearWhatsAppGateCache,
 } from "../_shared/whatsapp-service-gate.ts";
+import { selectReservationAutomationRoute, decodeAutomationDispatch } from "../_shared/whatsapp-automation-producer-routing.ts";
 import { brtFactAt } from "../_shared/whatsapp-message-ttl-core.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -165,18 +166,6 @@ serve(async (req) => {
   for (const u of (units ?? []) as Array<{ id: string }>) {
     const unitId = u.id;
 
-    // Gate resolvido UMA vez por unidade, antes de qualquer query de reserva
-    // — pula sem nunca gravar `notifications_sent`. Uma linha `failed` ali
-    // bloquearia o reenvio depois da restauração pelo UNIQUE
-    // (reservation_id, kind), e como este worker não tem fila/retry (só olha
-    // "hoje"), o job simplesmente nunca mais seria tentado de novo.
-    const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
-    if (gate?.enforced.sending) {
-      skippedSuspended++;
-      jsonLog("info", { evt: "worker_skipped_whatsapp_suspended", unit_id: unitId, state: gate.state });
-      continue;
-    }
-
     let ctx: UnitContext;
     try {
       ctx = await loadUnitContext(unitId);
@@ -201,6 +190,34 @@ serve(async (req) => {
     }
 
     for (const row of (rows ?? []) as ReminderRow[]) {
+      const route = await selectReservationAutomationRoute(async (table, columns, predicates, cardinality) => {
+        let query = supabase.from(table).select(columns);
+        for (const [column, value] of predicates) query = query.eq(column, value);
+        const result = await (cardinality === 'single' ? query.maybeSingle() : query);
+        if (result.error) throw result.error;
+        return result.data;
+      }, { kind: 'reminder_d1', unitId, reservationId: row.reservation_id });
+      if (route.path !== 'legacy') {
+        if (route.path === 'dependency') { failed++; continue; }
+        try {
+          const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': INTERNAL_API_KEY },
+            body: JSON.stringify(route.existingJobId ? { action: 'dispatch_existing', job_id: route.existingJobId }
+              : { action: 'dispatch', kind: 'reminder_d1', resource_id: row.reservation_id, unit_id: unitId, target_date: targetDate }),
+            signal: AbortSignal.timeout(25_000),
+          });
+          const outcome = response.ok ? decodeAutomationDispatch(await response.json()) : null;
+          if (outcome?.state === 'accepted' || outcome?.state === 'reconciled') dispatched++;
+          else failed++;
+        } catch { failed++; }
+        continue;
+      }
+      const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
+      if (gate?.enforced.sending) {
+        skippedSuspended++;
+        jsonLog('info', { evt: 'worker_skipped_whatsapp_suspended', unit_id: unitId, state: gate.state });
+        continue;
+      }
       const message = renderTemplate(ctx.body, {
         cliente_nome: row.customer_name,
         horario: formatTime(row.reservation_time),

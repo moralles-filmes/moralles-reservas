@@ -12,7 +12,7 @@ export default tseslint.config(
     // Mesmo buraco que o `vite.config.ts` ja fechou pro vitest; sem os dois, o
     // gate de uma frente reprova por causa de outra e "eslint 0 erros" deixa de
     // significar a mesma coisa dependendo de onde foi rodado.
-    ignores: ["dist", "build", "coverage", ".claude/worktrees/**"],
+    ignores: ["dist", "build", "coverage", ".claude/worktrees/**", ".superpowers/**"],
   },
   // Edge Functions Deno — SÓ `no-undef`, e existe por um motivo específico.
   //

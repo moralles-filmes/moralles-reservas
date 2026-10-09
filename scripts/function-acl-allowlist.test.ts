@@ -27,6 +27,23 @@ const MIGRATIONS_DIR = join(__dirname, "..", "supabase", "migrations");
 const ALLOWLIST_PATH = join(__dirname, "function-acl-allowlist.json");
 const AUDIT_SCRIPT_PATH = join(__dirname, "audit-function-acl.ts");
 
+describe('Task13 authenticated management boundary', () => {
+  const names = ['get_whatsapp_message_consent_state', 'record_whatsapp_message_consent', 'release_whatsapp_template_channel',
+    'request_whatsapp_template_sync_for_channel', 'initialize_whatsapp_automation_job', 'revalidate_whatsapp_automation_job',
+    'revalidate_whatsapp_template_job', 'authorize_whatsapp_marketing_cost', 'configure_whatsapp_promotion_frequency'];
+  it('classifies exactly the nine genuine-caller interfaces without worker or table access', () => {
+    const entries = JSON.parse(readFileSync(ALLOWLIST_PATH, 'utf8')).authenticated_tenant as AdvisorEntry[];
+    for (const name of names) {
+      const matching = entries.filter(entry => entry.name === name);
+      expect(matching).toHaveLength(1);
+      expect(matching[0].roles).toEqual(['authenticated']);
+      expect(matching[0].security_definer).toBe(true);
+      expect(matching[0].advisor_lints).toEqual(['0029']);
+      expect(matching[0].args).not.toMatch(/actor|provider|account|waba/);
+    }
+  });
+});
+
 /** Versão da 085 — o marco a partir do qual a superfície está classificada. */
 const HOTFIX_VERSION = "20260730160000";
 
@@ -94,6 +111,226 @@ function entriesOf(group: string): AllowEntry[] {
 }
 
 const allEntries: AllowEntry[] = allEntriesIn(allowlist);
+
+describe("manutenção de textos WhatsApp", () => {
+  it("classifica a manutenção administrativa como somente authenticated, sem anon", () => {
+    const entry = allEntries.find((item) => item.name === "maintain_whatsapp_legacy_template") as AdvisorEntry | undefined;
+    expect(entry).toBeDefined();
+    expect(entry!.roles).toEqual(["authenticated"]);
+    expect(entry!.security_definer).toBe(true);
+    expect(entry!.advisor_lints).toEqual(["0029"]);
+    expect(entry!.args).toBe("p_table_name text, p_action text, p_row_id uuid, p_unit_id uuid, p_event text, p_body text, p_customized boolean, p_reason text");
+    expect(entry!.why).toContain("platform_admin");
+    expect(entry!.why).toContain("uso único");
+  });
+});
+
+describe('Task11 current scheduled voucher issuance', () => {
+  it('one service-only four-argument writer, empty search path and explicit complete ACL', () => {
+    const signature='issue_scheduled_whatsapp_voucher(uuid,uuid,text,jsonb)';
+    expect(allowlist._service_only_whatsapp_scheduled_voucher_issuer).toEqual([signature]);
+    const sql=readFileSync(join(MIGRATIONS_DIR,'20261009003452_whatsapp_scheduled_voucher_issuer.sql'),'utf8');
+    expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+    expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    expect(sql).toContain("language plpgsql security definer set search_path=''");
+    expect(sql.match(/create or replace function/g)).toHaveLength(1);
+    expect(sql).not.toMatch(/grant[^;]+to (?:public|anon|authenticated)/i);
+    expect(sql).not.toMatch(/create (?:table|trigger)|pg_net|cron\./i);
+  });
+});
+
+describe('Task10 existing outbox delegation', () => {
+  it('closes all six signatures, both guards, private types/permits and the operational table', () => {
+    const signatures = allowlist._service_only_whatsapp_outbox_delegation as string[];
+    expect(signatures).toEqual(['claim_notification_outbox_initial(uuid)', 'delegate_notification_outbox_automation(uuid,uuid)',
+      'poll_notification_outbox_automation(uuid)', 'defer_notification_outbox_automation_dependency(uuid)',
+      'finish_notification_outbox_initial(uuid,uuid)', 'recover_delegated_notification_outbox(integer)']);
+    const sql = readFileSync(join(MIGRATIONS_DIR, '20261006003631_whatsapp_outbox_automation_delegation.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    for (const signature of ['guard_notification_outbox_automation()', 'guard_notification_outbox_insert_scope()']) {
+      expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(sql).not.toContain(`grant execute on function public.${signature}`);
+    }
+    for (const type of ['notification_outbox_mutation_action','notification_outbox_transition_tuple','notification_outbox_automation_projection'])
+      expect(sql).toContain(`revoke all on type app_private.${type} from public,anon,authenticated,service_role;`);
+    expect(sql).toContain('revoke all on table app_private.notification_outbox_mutation_permits from public,anon,authenticated,service_role;');
+    expect(sql).toContain('revoke all on table public.notification_outbox from public,anon,authenticated,service_role;');
+    expect(sql).toContain('grant select,insert,update,delete on table public.notification_outbox to service_role;');
+    expect(sql).not.toMatch(/grant\s+.*\s+to\s+(?:public|anon|authenticated)\s*;/i);
+    expect(sql).not.toMatch(/grant\s+.*\s+on\s+(?:schema|type)\s+app_private/i);
+  });
+});
+
+describe("RPCs internas de automação WhatsApp", () => {
+  it("classifica todas as assinaturas como service-only sem ampliar a allowlist pública", () => {
+    const signatures = allowlist._service_only_whatsapp_automation as string[];
+    expect(signatures).toHaveLength(13);
+    expect(new Set(signatures).size).toBe(signatures.length);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004002728_whatsapp_automation_claims.sql'), 'utf8');
+    for (const signature of signatures) {
+      const name = signature.split('(')[0];
+      expect(allEntries.some(entry => entry.name === name), signature).toBe(false);
+      expect(migration, signature).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration, signature).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    expect(migration).toContain('revoke all on function app_private.consume_whatsapp_post_reset(text,uuid,uuid,integer,timestamptz) from public,anon,authenticated,service_role;');
+    expect(migration).toContain('revoke all on function public.guard_whatsapp_template_scope() from public,anon,authenticated,service_role;');
+  });
+});
+
+describe('Task9c service-only acceptance repair', () => {
+  it('keeps the atomic repair outside public caller metadata', () => {
+    const signature = 'reconcile_whatsapp_automation_acceptance(uuid)';
+    expect(allowlist._service_only_whatsapp_acceptance).toEqual([signature]);
+    expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261005145913_whatsapp_automation_acceptance_repair.sql'), 'utf8');
+    expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+    expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    expect(migration).toMatch(/security definer\s+set search_path\s*=\s*''/i);
+    expect(migration).not.toMatch(/grant\s+.*\s+to\s+(?:public|anon|authenticated)\s*;/i);
+  });
+});
+
+describe('Task12 receipt authority and surgical expiry additions', () => {
+  const sql = readFileSync(join(MIGRATIONS_DIR, '20261009135808_whatsapp_automation_worker_cron.sql'), 'utf8');
+  it('revokes all four roles before the minimum caller grants and closes direct retention writes', () => {
+    const signatures = allowlist._service_only_whatsapp_automation_receipts_worker as string[];
+    expect(signatures).toHaveLength(4);
+    for (const signature of signatures) {
+      expect(allEntries.some(e => e.name === signature.split('(')[0])).toBe(false);
+      expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    expect(sql).toContain('revoke insert,delete on public.whatsapp_automation_receipt_events from public,anon,authenticated,service_role;');
+    expect(sql).toContain('revoke delete on public.whatsapp_automation_jobs from public,anon,authenticated,service_role;');
+    expect(sql).toContain('grant execute on function public.get_whatsapp_automation_delivery_state(uuid,integer,integer) to authenticated;');
+    expect(sql).toContain('revoke all on function public.trigger_whatsapp_automation_worker() from public,anon,authenticated,service_role;');
+  });
+  const definition = (source: string, name: string) => {
+    const start = source.indexOf(`create or replace function ${name}(`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = source.indexOf('end $$;', start);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end + 7).replace(/\s+/g, ' ').trim();
+  };
+  const withoutFinish = (source: string) => source.replace(/,\s*finished_at=case when (?:v_reason|v_error)='expired' then coalesce\(finished_at,v_now\) else finished_at end/g, '');
+  it('preserves every other token of the current block and seven-argument authoritative post body', () => {
+    for (const [file, name] of [
+      ['20261004184738_whatsapp_automation_dispatch_prerequisites.sql', 'public.block_whatsapp_automation_preflight'],
+      ['20261005170415_whatsapp_automation_resource_post_confirm.sql', 'app_private.whatsapp_automation_post_core'],
+    ]) {
+      const original = definition(readFileSync(join(MIGRATIONS_DIR, file), 'utf8'), name);
+      const changed = definition(sql, name);
+      expect(changed).not.toBe(original);
+      expect(withoutFinish(changed)).toBe(original);
+      expect(withoutFinish(changed.replace('v_now:=clock_timestamp()', 'v_now:=now()'))).not.toBe(original);
+    }
+    expect(sql).toContain('revoke all on function app_private.whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean,jsonb) from public,anon,authenticated,service_role;');
+    expect(sql).not.toMatch(/grant[^;]+app_private\.whatsapp_automation_post_core/i);
+  });
+});
+
+describe('Task9c final typed resource authority', () => {
+  it('keeps one private authority algorithm and closes all three signatures', () => {
+    const signature = 'confirm_whatsapp_automation_resource_post(uuid,uuid,bigint,bigint,bigint,jsonb)';
+    expect(allowlist._service_only_whatsapp_resource_confirm).toEqual([signature]);
+    expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+    const sql = readFileSync(join(MIGRATIONS_DIR, '20261005170415_whatsapp_automation_resource_post_confirm.sql'), 'utf8');
+    expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+    expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    for (const args of ['uuid,uuid,bigint,bigint,bigint,boolean', 'uuid,uuid,bigint,bigint,bigint,boolean,jsonb'])
+      expect(sql).toContain(`revoke all on function app_private.whatsapp_automation_post_core(${args}) from public,anon,authenticated,service_role;`);
+    expect(sql).not.toMatch(/drop\s+function|grant\s+.*\s+to\s+(?:public|anon|authenticated)\s*;/i);
+    expect(sql).not.toMatch(/create or replace function public\.(?:prepare|confirm)_whatsapp_automation_post\(/i);
+    expect(sql.match(/language plpgsql volatile security definer set search_path=''/g)).toHaveLength(2);
+    expect(sql).toContain('p_confirm_only,null)');
+    const decisions = sql.slice(sql.indexOf('v_now:=clock_timestamp()'), sql.indexOf('if v_error is not null then\n    update'));
+    expect(decisions).not.toMatch(/\b(?:from|join)\s+(?:public|app_private|pg_catalog)\./i);
+    expect(sql).not.toMatch(/\b(?:stable|immutable)\b/i);
+  });
+});
+
+describe('Task9b service-only dispatch prerequisites', () => {
+  it('revokes both private helpers and the composite type without exposing an initializer', () => {
+    const signatures = allowlist._service_only_whatsapp_dispatch_prerequisites as string[];
+    expect(signatures).toEqual(['confirm_whatsapp_automation_post(uuid,uuid,bigint,bigint,bigint)', 'block_whatsapp_automation_preflight(uuid,uuid,text)']);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004184738_whatsapp_automation_dispatch_prerequisites.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    for (const signature of ['whatsapp_automation_post_core(uuid,uuid,bigint,bigint,bigint,boolean)', 'consume_whatsapp_automation_pin_initialization(uuid,app_private.whatsapp_automation_pin_tuple,app_private.whatsapp_automation_pin_tuple)']) {
+      expect(migration).toContain(`revoke all on function app_private.${signature} from public,anon,authenticated,service_role;`);
+    }
+    expect(migration).toContain('revoke all on type app_private.whatsapp_automation_pin_tuple from public,anon,authenticated,service_role;');
+    expect(migration).not.toMatch(/grant\s+.*\s+to\s+(?:public|anon|authenticated)\s*;/i);
+    expect(migration).not.toMatch(/create or replace function public\.finish_whatsapp_automation/);
+    expect(migration).not.toContain("errcode='40001'");
+  });
+});
+
+describe('autoridade transacional de eventos de templates', () => {
+  it('cerca o runtime e mantém wrappers service-only com writer privado compartilhado', () => {
+    const signatures = allowlist._service_only_whatsapp_template_events as string[];
+    expect(signatures).toEqual(['record_whatsapp_template_events_fenced(jsonb,jsonb)']);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004165825_whatsapp_template_event_authority.sql'), 'utf8');
+    for (const signature of [...signatures, 'record_whatsapp_template_events(uuid,jsonb)']) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    expect(migration).toContain('revoke all on function app_private.record_whatsapp_template_events_core(uuid,uuid,jsonb) from public,anon,authenticated,service_role;');
+    expect(migration).not.toMatch(/grant\s+execute\s+on\s+function\s+app_private\.record_whatsapp_template_events_core/i);
+    expect(migration.match(/insert into public\.whatsapp_template_events/g)).toHaveLength(1);
+    expect(migration.match(/return app_private\.record_whatsapp_template_events_core/g)).toHaveLength(2);
+    expect(migration).toContain("raise exception 'template_authority_changed' using errcode='PT503';");
+    expect(migration).not.toContain("errcode='40001'");
+    const runtime = readFileSync(join(__dirname, '../supabase/functions/_shared/whatsapp-template-events.ts'), 'utf8');
+    expect(runtime).toContain("db.rpc('record_whatsapp_template_events_fenced', { p_capture: capture, p_events: events })");
+    expect(runtime).not.toMatch(/\.rpc\(['"]record_whatsapp_template_events['"]/);
+  });
+});
+
+describe('worker interno de templates', () => {
+  it('mantém RPCs service-only e triggers sem execução direta', () => {
+    const signatures = allowlist._service_only_whatsapp_template_workers as string[];
+    expect(signatures).toHaveLength(8);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004025039_whatsapp_template_workers.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    for (const name of ['guard_whatsapp_template_credential_revision', 'guard_whatsapp_template_submission_history', 'trigger_whatsapp_template_workers']) {
+      expect(migration).toContain(`revoke all on function public.${name}() from public,anon,authenticated,service_role;`);
+      expect(migration).not.toContain(`grant execute on function public.${name}()`);
+    }
+  });
+});
+
+describe('preferências públicas mediadas pela Edge Function', () => {
+  it('mantém SQL interno service-only e helpers/trigger sem execução direta', () => {
+    const signatures = allowlist._service_only_whatsapp_preferences as string[];
+    expect(signatures).toHaveLength(6);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261004014032_whatsapp_message_preferences.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(migration).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    for (const signature of ['public.erase_whatsapp_customer_preferences()', 'public.guard_whatsapp_template_scope()', 'public.guard_whatsapp_template_evidence()', 'app_private.consume_whatsapp_slot_release(uuid)']) {
+      expect(migration).toContain(`revoke all on function ${signature} from public,anon,authenticated,service_role;`);
+      expect(migration).not.toContain(`grant execute on function ${signature}`);
+    }
+    const config = readFileSync(join(MIGRATIONS_DIR, '..', 'config.toml'), 'utf8');
+    expect(config).toMatch(/\[functions\.whatsapp-message-preferences\]\s*verify_jwt = false/);
+  });
+});
 
 /**
  * Divide a lista de argumentos por vírgulas de nível zero. `timestamp with time

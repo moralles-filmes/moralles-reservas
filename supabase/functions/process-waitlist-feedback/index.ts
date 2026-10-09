@@ -25,6 +25,7 @@ import {
   clearWhatsAppGateCache,
 } from "../_shared/whatsapp-service-gate.ts";
 import { brtFactAt } from "../_shared/whatsapp-message-ttl-core.ts";
+import { selectWaitlistAutomationRoute, decodeAutomationDispatch } from "../_shared/whatsapp-automation-producer-routing.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -39,6 +40,7 @@ interface UnitContext {
   unit_slug: string;
   enabled: boolean;
   body: string;
+  settingsReadFailed: boolean;
 }
 
 async function loadUnitContext(unitId: string): Promise<UnitContext> {
@@ -73,6 +75,7 @@ async function loadUnitContext(unitId: string): Promise<UnitContext> {
     unit_slug: (unitRes.data?.slug as string) ?? "",
     enabled,
     body,
+    settingsReadFailed: !!settingsRes.error,
   };
 }
 
@@ -161,6 +164,31 @@ serve(async (req) => {
     const linkStatus = ctx.unit_slug ? `${APP_BASE_URL}/r/${ctx.unit_slug}` : APP_BASE_URL;
 
     for (const row of (rows ?? []) as FeedbackRow[]) {
+      const route = await selectWaitlistAutomationRoute(async (table, columns, predicates, cardinality) => {
+        let query = supabase.from(table).select(columns);
+        for (const [column, value] of predicates) query = query.eq(column, value);
+        const result = await (cardinality === 'single' ? query.maybeSingle() : query);
+        if (result.error) throw result.error;
+        return result.data;
+      }, { kind: 'waitlist_feedback', unitId, waitlistId: row.waitlist_id });
+      if (route.path !== 'legacy') {
+        if (route.path === 'dependency' || (!route.existingJobId && (!gate || gate.readFailed || ctx.settingsReadFailed))) {
+          failed++; continue;
+        }
+        try {
+          const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': INTERNAL_API_KEY },
+            body: JSON.stringify(route.existingJobId ? { action: 'dispatch_existing', job_id: route.existingJobId }
+              : { action: 'dispatch', kind: 'waitlist_feedback', resource_id: row.waitlist_id, unit_id: unitId, target_date: targetDate }),
+            signal: AbortSignal.timeout(25_000),
+          });
+          const outcome = response.ok ? decodeAutomationDispatch(await response.json()) : null;
+          if ((!route.existingJobId || outcome?.jobId === route.existingJobId)
+            && (outcome?.state === 'accepted' || outcome?.state === 'reconciled')) dispatched++;
+          else failed++;
+        } catch { failed++; }
+        continue;
+      }
       const message = renderWaitlistTemplate(ctx.body, {
         cliente_nome: row.customer_name,
         unidade_nome: ctx.unit_name,
