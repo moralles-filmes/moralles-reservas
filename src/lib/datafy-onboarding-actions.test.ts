@@ -110,16 +110,19 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
         const history = tables[ONBOARDINGS].find((row) => row.reserved_channel_id === args.p_channel_id);
         const live = history && !["completed", "abandoned"].includes(String(history.state)) ? history : null;
         const terminalPending = history && !live && (history.claim_id || (history.uncertain_steps as string[]).length > 0);
-        if (options.busy || (history?.claim_id && !history.expired) || c!.datafy_subscription_claim_id) return { data: [{ claimed: false, source: "onboarding", claim_id: null }], error: null };
+        if (options.busy || (history?.claim_id && !history.expired) || (c!.datafy_subscription_claim_id && !c!.expired)) return { data: [{ claimed: false, source: "onboarding", claim_id: null }], error: null };
         if ((live && args.p_operation === "relink") || (terminalPending && args.p_operation !== "subscribe")) return { data: null, error: { code: "23514" } };
         const useOnboarding = args.p_operation === "subscribe" && (live || terminalPending);
+        const channelPending = !!c!.datafy_subscription_claim_id || !!c!.datafy_subscription_uncertain;
+        const priorOperation = channelPending ? c!.datafy_subscription_uncertain_operation ?? c!.datafy_subscription_operation : null;
         const claimId = `claim-${++sequence}`;
         if (useOnboarding) { history!.claim_id = claimId; history!.claim_actor_id = args.p_actor_id; }
-        else { c!.datafy_subscription_claim_id = claimId; c!.datafy_subscription_claim_actor_id = args.p_actor_id; c!.datafy_subscription_operation = args.p_operation; }
-        return { data: [{ claimed: true, claim_id: claimId, must_reconcile: !!terminalPending || !!c!.datafy_subscription_uncertain || options.uncertain === true,
+        else { c!.datafy_subscription_claim_id = claimId; c!.datafy_subscription_claim_actor_id = args.p_actor_id; c!.datafy_subscription_operation = args.p_operation;
+          c!.datafy_subscription_uncertain = channelPending; c!.datafy_subscription_uncertain_operation = priorOperation; }
+        return { data: [{ claimed: true, claim_id: claimId, must_reconcile: !!terminalPending || channelPending || options.uncertain === true,
           source: useOnboarding ? "onboarding" : "channel", onboarding_id: useOnboarding ? history!.id : null,
           external_instance_id: c!.external_instance_id, template_credential_revision: c!.template_credential_revision,
-          reconcile_operation: terminalPending ? "subscribe" : c!.datafy_subscription_uncertain_operation ?? (options.uncertain ? "subscribe" : null) }], error: null };
+          reconcile_operation: terminalPending ? "subscribe" : priorOperation ?? (options.uncertain ? "subscribe" : null) }], error: null };
       }
       if (name.startsWith("release_datafy_")) {
         const owned = o ?? c;
@@ -577,5 +580,34 @@ describe("Datafy onboarding: I/O com decisões reais", () => {
     expect(response.status).toBe(409); expect(response.body).toMatchObject({ code: "DATAFY_RECONCILIATION_REQUIRED" });
     expect(h.client.createWebhook).not.toHaveBeenCalled();
     expect(h.tables.whatsapp_channels[0]).toMatchObject({ datafy_subscription_uncertain: true, datafy_subscription_uncertain_operation: "subscribe" });
+  });
+  it("preview → primeiro link de legado com pin NULL persiste o ID descoberto", async () => {
+    const h = harness({ noOnboarding: true, withChannel: true });
+    h.tables.whatsapp_channels[0].external_instance_id = null;
+    const preview = await h.run("datafy_link_existing");
+    expect(preview.status).toBe(200); expect(preview.body).toMatchObject({ candidates: [{ expectedDatafyChannelId: "remote-a" }] });
+    expect(h.tables.whatsapp_channels[0].external_instance_id).toBeNull();
+    const linked = await h.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "remote-a" });
+    expect(linked.status).toBe(200);
+    expect(h.tables.whatsapp_channels[0]).toMatchObject({ external_instance_id: "remote-a", template_credential_revision: 1 });
+    expect(h.client.createWebhook).toHaveBeenCalledWith("remote-a", expect.anything());
+  });
+  it.each([null, "remote-a"])("crash de relink antes do writer recupera pin antigo %s sem GET cego nem fence órfã", async (oldId) => {
+    const h = harness({ noOnboarding: true, withChannel: true }); h.remote.id = "remote-b";
+    Object.assign(h.tables.whatsapp_channels[0], { external_instance_id: oldId, expired: true,
+      datafy_subscription_claim_id: "crashed-relink", datafy_subscription_operation: "relink" });
+    const linked = await h.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "remote-b" });
+    expect(linked.status).toBe(200);
+    expect(h.calls.indexOf("rpc:release_datafy_existing_subscription:reconciled_absent")).toBeLessThan(h.calls.indexOf("rpc:apply_datafy_channel_relink:"));
+    expect(h.client.getChannel).not.toHaveBeenCalledWith(oldId);
+    expect(h.tables.whatsapp_channels[0]).toMatchObject({ external_instance_id: "remote-b", template_credential_revision: 1,
+      datafy_subscription_claim_id: null, datafy_subscription_uncertain: false });
+  });
+  it.each(["datafy_subscribe", "datafy_cancel", "datafy_pause", "datafy_resume"])("%s continua recusando ID remoto ausente antes de HTTP", async (action) => {
+    const h = harness({ noOnboarding: true, withChannel: true }); h.tables.whatsapp_channels[0].external_instance_id = null;
+    const response = await h.run(action);
+    expect(response.status).toBe(409); expect(response.body).toMatchObject({ code: "DATAFY_CHANNEL_NOT_LINKED" });
+    expect(h.client.getChannel).not.toHaveBeenCalled(); expect(h.client.subscribe).not.toHaveBeenCalled();
+    expect(h.client.cancel).not.toHaveBeenCalled(); expect(h.client.pause).not.toHaveBeenCalled(); expect(h.client.resume).not.toHaveBeenCalled();
   });
 });

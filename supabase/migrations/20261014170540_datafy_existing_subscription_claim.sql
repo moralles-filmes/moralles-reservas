@@ -98,7 +98,8 @@ begin
     raise exception 'datafy_subscription_forbidden' using errcode = '42501';
   end if;
   select * into c from public.whatsapp_channels where id = p_channel_id for update;
-  if not found or c.unit_id is distinct from p_unit_id or c.provider <> 'datafy' or c.external_instance_id is null then
+  if not found or c.unit_id is distinct from p_unit_id or c.provider <> 'datafy'
+    or (c.external_instance_id is null and p_operation<>'relink') then
     raise exception 'datafy_subscription_forbidden' using errcode = '42501';
   end if;
   -- Terminal não prova ausência de POST: inclui claim e incerteza históricos.

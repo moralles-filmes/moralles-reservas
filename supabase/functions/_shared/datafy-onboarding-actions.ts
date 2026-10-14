@@ -34,7 +34,7 @@ type Channel = {
 };
 type Operation = "subscribe" | "cancel" | "pause" | "resume" | "relink" | "configure_webhook";
 type Claim = { claimed: boolean; claim_id: string; must_reconcile: boolean; source?: "onboarding" | "channel"; onboarding_id?: string; actor_id?: string;
-  reconcile_operation?: Operation; external_instance_id?: string; template_credential_revision?: number };
+  operation?: Operation; reconcile_operation?: Operation; external_instance_id?: string | null; template_credential_revision?: number };
 type Outcome = "succeeded" | "failed" | "uncertain" | "reconciled_absent" | "reconciled_present";
 export type DatafyActionResult = { body: unknown; status: number; headers?: Record<string, string> };
 export type DatafyOperationalEvent = {
@@ -135,13 +135,15 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     const claim = first<Claim>(data);
     if (claim?.claimed === false) throw new ActionFailure("ONBOARDING_BUSY", 409);
     if (claim?.claimed !== true || !claim.claim_id || typeof claim.must_reconcile !== "boolean"
-      || !["channel", "onboarding"].includes(claim.source) || !claim.external_instance_id
+      || !["channel", "onboarding"].includes(claim.source)
+      || (!claim.external_instance_id && !(operation === "relink" && claim.external_instance_id === null))
       || !Number.isSafeInteger(claim.template_credential_revision)) throw new ActionFailure("ONBOARDING_CLAIM_FAILED");
-    return { ...claim, actor_id: actorId };
+    return { ...claim, actor_id: actorId, operation };
   }
   async function claimedChannel(unitId: string, channelId: string, claim: Claim, o: Onboarding | null): Promise<Channel> {
     const channel = await loadChannel(unitId, channelId);
-    if (!channel?.external_instance_id || !Number.isSafeInteger(channel.template_credential_revision)
+    const unlinkedRelink = claim.operation === "relink" && claim.external_instance_id === null && channel?.external_instance_id === null;
+    if (!channel || (!channel.external_instance_id && !unlinkedRelink) || !Number.isSafeInteger(channel.template_credential_revision)
       || (claim.external_instance_id !== undefined && claim.external_instance_id !== channel.external_instance_id)
       || (claim.template_credential_revision !== undefined && claim.template_credential_revision !== channel.template_credential_revision)
       || (claim.source === "onboarding" && o?.datafy_channel_id !== channel.external_instance_id)) {
@@ -150,6 +152,13 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     return channel;
   }
   async function reconcileOperation(client: DatafyAdminClient, unitId: string, channel: Channel, claim: Claim, o: Onboarding | null) {
+    if (claim.reconcile_operation === "relink") {
+      // O writer SQL troca identidade E encerra lease no mesmo commit. Lease
+      // remanescente no takeover prova ausência; nova escrita exige novo claim.
+      if (claim.source !== "channel") throw new ActionFailure("DATAFY_RECONCILIATION_REQUIRED", 409);
+      await release(o, unitId, channel.id, claim, "subscribe", "reconciled_absent");
+      return;
+    }
     const snapshot = await remote(client, channel.external_instance_id!);
     if (snapshot) await recordSubscription(unitId, channel, snapshot, claim);
     const operation = claim.reconcile_operation;
@@ -159,11 +168,10 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       : operation === "resume" ? !snapshot.paused : operation === "configure_webhook"
         ? snapshot.webhooks.some((hook) => hook.url === webhookUrl(channel.id) && hook.enabled
           && ["messages", "smb_message_echoes"].every((event) => hook.events.includes(event))) : false;
-    // relink é SQL transacional, nunca um POST remoto incerto.
-    if (operation === "relink") throw new ActionFailure("DATAFY_RECONCILIATION_REQUIRED", 409);
     await release(o, unitId, channel.id, claim, "subscribe", applied ? "reconciled_present" : "reconciled_absent");
   }
   async function remote(client: DatafyAdminClient, id: string): Promise<DatafyChannelSnapshot | null> {
+    if (!id) throw new ActionFailure("DATAFY_CHANNEL_NOT_LINKED", 409);
     const response = await client.getChannel(id);
     if (response.ok === false) {
       if (response.kind === "not_found") return null;

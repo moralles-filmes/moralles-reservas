@@ -224,6 +224,49 @@ begin
   if has_function_privilege('service_role','public.guard_datafy_channel_identity()','execute') then raise exception 'trigger exposed to service'; end if;
   raise notice '62: 12 grupos OK (+ terminal em voo, recorder stale, operation/relink, geração/echo, finisher rollback/zero, ativação real positiva)';
 end $$;
+-- Round2: primeiro vínculo legado e crash antes do writer SQL transacional.
+do $$ declare
+  a uuid:='eeeeeeee-0000-0000-0000-000000000001';
+  u uuid:='bbbbbbbb-0000-0000-0000-000000000003';
+  c uuid:='dddddddd-0062-0000-0000-000000000003';
+  own record; takeover record; committed record; changed bigint; op text;
+begin
+  insert into public.whatsapp_channels(id,unit_id,provider,status,external_instance_id,credentials)
+    values(c,u,'datafy','connected',null,'{"phone_number_id":"synthetic-legacy-phone"}');
+  -- 13: pin NULL é bootstrap EXCLUSIVO do relink, não autoriza I/O remoto.
+  foreach op in array array['subscribe','cancel','pause','resume','configure_webhook'] loop
+    begin perform public.claim_datafy_channel_operation(c,u,a,op);
+      raise exception 'remote operation accepted NULL identity: %',op;
+    exception when insufficient_privilege then null; end;
+  end loop;
+  select * into own from public.claim_datafy_channel_operation(c,u,a,'relink');
+  if not own.claimed or own.external_instance_id is not null or own.template_credential_revision<>0 then raise exception 'legacy NULL pin refused'; end if;
+  begin perform public.apply_datafy_channel_relink(c,u,a,own.claim_id,'forged-old-pin',0,'synthetic-linked-62','synthetic-channel-token','synthetic-secret');
+    raise exception 'NULL old pin not fenced'; exception when serialization_failure then null; end;
+  -- 14: lease remanescente prova que relink não commitou. Takeover cercado
+  -- libera reconciled_absent e toma NOVA fence antes de aplicar credenciais.
+  update public.whatsapp_channels set datafy_subscription_claim_expires_at=now()-interval '1 second' where id=c;
+  select * into takeover from public.claim_datafy_channel_operation(c,u,a,'relink');
+  if not takeover.claimed or not takeover.must_reconcile or takeover.reconcile_operation<>'relink'
+    or takeover.external_instance_id is not null or takeover.claim_id=own.claim_id then raise exception 'expired relink not recoverable'; end if;
+  begin perform public.apply_datafy_channel_relink(c,u,a,own.claim_id,null,0,'synthetic-linked-62','synthetic-channel-token','synthetic-secret');
+    raise exception 'old relink owner accepted'; exception when serialization_failure then null; end;
+  begin perform public.apply_datafy_channel_relink(c,u,a,takeover.claim_id,null,0,'synthetic-linked-62','synthetic-channel-token','synthetic-secret');
+    raise exception 'takeover applied without reconciliation'; exception when serialization_failure then null; end;
+  perform public.release_datafy_existing_subscription(c,u,takeover.claim_id,'reconciled_absent');
+  select * into own from public.claim_datafy_channel_operation(c,u,a,'relink');
+  if own.must_reconcile or own.external_instance_id is not null then raise exception 'reconciled relink still blocked'; end if;
+  select template_credential_revision into changed from public.apply_datafy_channel_relink(c,u,a,own.claim_id,null,0,'synthetic-linked-62','synthetic-channel-token','synthetic-secret');
+  if changed<>1 or exists(select from public.whatsapp_channels where id=c and (datafy_subscription_claim_id is not null
+    or datafy_subscription_uncertain or external_instance_id<>'synthetic-linked-62')) then raise exception 'legacy relink commit not atomic'; end if;
+  -- Contraste: writer commitado encerrou lease; próximo claim observa pin novo,
+  -- sem uncertainty=relink nem reconciliação do remoto anterior.
+  select * into committed from public.claim_datafy_channel_operation(c,u,a,'configure_webhook');
+  if committed.must_reconcile or committed.external_instance_id<>'synthetic-linked-62'
+    or committed.template_credential_revision<>1 then raise exception 'committed relink falsely uncertain'; end if;
+  perform public.release_datafy_existing_subscription(c,u,committed.claim_id,'succeeded');
+  raise notice '62: 14 grupos OK (+ legacy NULL bootstrap exclusivo relink, crash/expiry e contraste commitado)';
+end $$;
 set local role service_role;
 select claimed, source, must_reconcile from public.claim_datafy_existing_subscription(
   'dddddddd-0062-0000-0000-000000000002','bbbbbbbb-0000-0000-0000-000000000002','eeeeeeee-0000-0000-0000-000000000001');
