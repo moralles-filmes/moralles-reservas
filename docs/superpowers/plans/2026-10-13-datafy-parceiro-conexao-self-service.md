@@ -244,7 +244,7 @@ git commit -m "test(datafy): probe da Fase 0 do parceiro e relatorio de forma"
 
 **Gate de saída:** relatório revisado pelo dono. Divergência que mude interface atualiza as Tasks 3–10 **antes** de começar.
 
-**Estado em 2026-10-14:** rodada feita, relatório em [2026-10-13-datafy-parceiro-validacao-fase0.md](../specs/2026-10-13-datafy-parceiro-validacao-fase0.md). Pendente: revisão do dono, a decisão do item 5 da §4 (`coexistence` ausente do GET × §11.1) e a aplicação das decisões da §4 nas Tasks 4, 5 e 7 antes de a Task 4 começar.
+**Estado em 2026-10-14:** rodada feita, relatório em [2026-10-13-datafy-parceiro-validacao-fase0.md](../specs/2026-10-13-datafy-parceiro-validacao-fase0.md), revisado pelo dono. Item 5 da §4 decidido: o `confirm` não barra por `coexistence`; a prova de Coexistence é o eco do aparelho, que já é exigido para ativar. As decisões da §4 estão aplicadas nas Tasks 2, 4, 5, 7, 10 e 11 (blocos "Fase 0").
 
 ---
 
@@ -287,11 +287,11 @@ Independe da Datafy ao vivo; pode correr junto da Task 0.
    - Índice único parcial `(unit_id) where revoked_at is null and consumed_at is null`.
    - Trigger de coerência: `organization_id` = organização da `unit_id` (mesma disciplina do touchpoint da 115).
 2. `public.whatsapp_datafy_onboardings`
-   - `id`, `organization_id`, `unit_id`, `grant_id references whatsapp_official_connection_grants`, `reserved_channel_id uuid not null unique default gen_random_uuid()`, `datafy_channel_id text unique`, `channel_token text`, `webhook_secret text`, `datafy_webhook_id text`, `state text not null default 'open'` CHECK em `('open','channel_created','webhook_ready','connected','completed','abandoned')`, `coexistence boolean`, `claim_id uuid`, `claim_step text` CHECK em `('create_channel','create_webhook','subscribe')`, `claim_started_at timestamptz`, `uncertain_steps text[] not null default '{}'`, `last_error text` CHECK `~ '^[A-Z0-9_]{1,64}$'`, `last_link_at timestamptz`, `completed_at`, `abandoned_at`, `created_at`, `updated_at`.
+   - `id`, `organization_id`, `unit_id`, `grant_id references whatsapp_official_connection_grants`, `reserved_channel_id uuid not null unique default gen_random_uuid()`, `datafy_channel_id text unique`, `channel_token text`, `webhook_secret text`, `datafy_webhook_id text`, `state text not null default 'open'` CHECK em `('open','channel_created','webhook_ready','connected','completed','abandoned')`, `claim_id uuid`, `claim_step text` CHECK em `('create_channel','create_webhook','subscribe')`, `claim_started_at timestamptz`, `uncertain_steps text[] not null default '{}'`, `last_error text` CHECK `~ '^[A-Z0-9_]{1,64}$'`, `last_link_at timestamptz`, `completed_at`, `abandoned_at`, `created_at`, `updated_at`.
    - CHECK `((claim_id is null) = (claim_started_at is null)) and ((claim_id is null) = (claim_step is null))`.
    - Índice único parcial `(unit_id) where state not in ('completed','abandoned')`.
    - Trigger de coerência org × unit.
-3. `whatsapp_channels`: `add column if not exists provider_subscribed_at timestamptz, provider_subscription_canceled_at timestamptz, provider_paused_at timestamptz, provider_coexistence boolean`. Índice único parcial `whatsapp_channels_meta_phone_number_idx on ((credentials->>'phone_number_id')) where provider in ('official','datafy') and credentials ? 'phone_number_id'`. **Antes de criar, o pré-voo e a conferência de produção provam que não há duplicata** (Moralles e eventuais `official` legados).
+3. `whatsapp_channels`: `add column if not exists provider_subscribed_at timestamptz, provider_subscription_canceled_at timestamptz, provider_paused_at timestamptz`. **Fase 0 (§4 item 5): nenhuma coluna de Coexistence, nem aqui nem no onboarding.** O GET da Datafy não traz o campo, e a prova é o eco (`manual_echo_verified_at`); coluna sem produtor confiável não nasce. Índice único parcial `whatsapp_channels_meta_phone_number_idx on ((credentials->>'phone_number_id')) where provider in ('official','datafy') and credentials ? 'phone_number_id'`. **Antes de criar, o pré-voo e a conferência de produção provam que não há duplicata** (Moralles e eventuais `official` legados).
 4. `public.whatsapp_ops_alerts`: `unit_id`, `alert_type` CHECK em `('inbound_dead_letter','inbound_backlog_stalled','datafy_subscription_failed')`, `last_sent_at`, `last_watermark timestamptz`, unique `(unit_id, alert_type)`.
 5. Para as quatro tabelas: `enable` + `force row level security`, sem policies, `revoke all on table … from public, anon, authenticated`.
 6. RPC `public.claim_datafy_onboarding_step(p_onboarding_id uuid, p_step text, p_actor_id uuid, p_ttl_seconds integer default 120)` → `table(claimed boolean, claim_id uuid, must_reconcile boolean, state text)`:
@@ -318,7 +318,7 @@ Independe da Datafy ao vivo; pode correr junto da Task 0.
   - **Controle positivo:** para C5 e C8, reintroduzir o defeito (remover a cláusula de TTL; remover o índice) e ver o caso falhar; registrar no arquivo como os controles existentes fazem.
 - [ ] **Step 2: Rodar o pré-voo e ver falhar** (migration ainda inexistente), conforme o README do harness.
 - [ ] **Step 3: Escrever a migration** até o pré-voo passar. Reaplicar duas vezes (idempotência).
-- [ ] **Step 4: Conferir duplicata em produção (leitura).** `select credentials->>'phone_number_id', count(*) from whatsapp_channels where provider in ('official','datafy') group by 1 having count(*) > 1;` precisa voltar vazio. Se não voltar, parar e reportar.
+- [ ] **Step 4: Conferir duplicata em produção (leitura, o dono roda: o modo automático bloqueia SQL em produção).** `select credentials->>'phone_number_id', count(*) from whatsapp_channels where provider in ('official','datafy') group by 1 having count(*) > 1;` precisa voltar vazio **antes do `db push` da Task 14**. Se não voltar, parar e reportar. Duplicata faz o `create unique index` falhar no push (falha visível, não silenciosa).
 - [ ] **Step 5: Allowlist de ACL** com as duas assinaturas completas; `acl-estatico` local (`npx vitest run scripts/` ou o comando do workflow) verde.
 - [ ] **Step 6: Commit** `feat(db): liberacao, onboarding Datafy com claim cercado e ledger de alertas`.
 
@@ -351,42 +351,70 @@ Independe da Datafy ao vivo; pode correr junto da Task 0.
 - Create: `supabase/functions/_shared/datafy-admin-client.ts`
 - Create: `src/lib/datafy-admin-client.test.ts`
 
-**Interfaces (ajustar nomes de campo ao relatório da Fase 0):**
+**Formas medidas na Fase 0** (relatório §2; os testes usam exatamente estas formas):
+
+| Operação | Status | Corpo |
+|---|---|---|
+| `GET /channels/whatsapp` | 200 | `{ subscription: "active" \| …, channels: [{ id, name, description, subscribed, on_trial, trial_ends_at, paused, waba_id, phone_number_id, business_id, display_name }] }`. **Sem `created_at`, sem `token`/`webhook_secret`.** |
+| `POST /channels/whatsapp` | **200** | `{ id, name, description, token: "sk_live_…", webhook_secret: "whsec_…", subscribed: false }` |
+| `GET /channels/whatsapp/{id}` | 200 | os campos do item + `phone`, `webhooks[]` (`{ id, url, events, enabled }`), `token`, `webhook_secret`. Sem número: `phone_number_id`, `waba_id`, `business_id`, `phone`, `display_name` vêm **`null` (presentes)**. **Sem `coexistence`.** |
+| `POST …/{id}/webhooks` | 200 | `{ id, url, events, enabled }` |
+| `POST …/{id}/connect-link` | 200 | `{ url: "https://app.datafyapi.com.br/…", token: "ct_…", expires_in: 86400 }`. **Também 200 em canal já conectado** (reabre o Embedded Signup e permite trocar o número). |
+| `POST …/{id}/subscribe` | 200 | `{ id, subscribed: true }` |
+| `DELETE /channels/whatsapp/{id}` | 200 | `{ ok: true }` (medido em canal nunca assinado e sem número) |
+| erro | 4xx | `{ message, statusCode }`, **sem `code`**: variantes do mesmo status só diferem pelo texto (409 = "sem assinatura/trial vencido" no link; 409 = "único canal ativo" no cancel). |
+| `pause`, `resume`, `cancel`, `subscribe` repetido, `delete` com número | — | **não medidos** |
+
+**Interfaces:**
 
 ```ts
+export type DatafyAdminErrorKind =
+  | "unauthorized" | "account_inactive" | "not_found" | "conflict" | "payment_declined"
+  | "invalid" | "rate_limited" | "server_error" | "transport" | "unrecognized";
 export type DatafyAdminResult<T> =
   | { ok: true; value: T }
-  | { ok: false; kind: "unauthorized" | "account_inactive" | "not_found" | "conflict" | "payment_declined" | "invalid" | "transport" | "unrecognized"; httpStatus: number | null; code: string };
+  | { ok: false; kind: DatafyAdminErrorKind; httpStatus: number | null; code: string };
 
+export interface DatafyWebhook { id: string; url: string; events: string[]; enabled: boolean }
 export interface DatafyChannelCreated { id: string; token: string; webhookSecret: string; subscribed: boolean }
-export interface DatafyChannelSnapshot {
+export interface DatafyChannelListItem {
   id: string; name: string; subscribed: boolean; onTrial: boolean; trialEndsAt: string | null; paused: boolean;
-  phoneNumberId: string | null; wabaId: string | null; businessId: string | null; displayPhone: string | null;
-  token: string | null; webhookSecret: string | null; webhooks: { id: string; url: string; events: string[]; enabled: boolean }[];
+  phoneNumberId: string | null; wabaId: string | null; businessId: string | null;
 }
-export interface DatafyChannelListItem { id: string; name: string; phoneNumberId: string | null; subscribed: boolean }
+export interface DatafyChannelSnapshot extends DatafyChannelListItem {
+  displayPhone: string | null;
+  token: string | null; webhookSecret: string | null;   // nullable: a Fase 0 não registrou os dois no GET de forma explícita
+  webhooks: DatafyWebhook[];                             // ausente no corpo → []; presente e não-array → unrecognized
+}
 
-export function createDatafyAdminClient(deps: { token: string; fetchImpl?: typeof fetch; baseUrl?: string; timeoutMs?: number }): {
+export function createDatafyAdminClient(deps: {
+  token: string; fetchImpl?: typeof fetch; baseUrl?: string; timeoutMs?: number;
+  onUnrecognized?: (info: { operation: string; httpStatus: number; shape: unknown }) => void; // o adapter passa jsonLog
+}): {
   listChannels(): Promise<DatafyAdminResult<{ accountSubscription: string | null; channels: DatafyChannelListItem[] }>>;
   createChannel(input: { name: string; description: string }): Promise<DatafyAdminResult<DatafyChannelCreated>>;
   getChannel(id: string): Promise<DatafyAdminResult<DatafyChannelSnapshot>>;
   createWebhook(id: string, input: { url: string; events: string[] }): Promise<DatafyAdminResult<{ webhookId: string }>>;
-  createConnectLink(id: string): Promise<DatafyAdminResult<{ url: string; expiresInSeconds: number }>>;
+  createConnectLink(id: string): Promise<DatafyAdminResult<{ url: string; expiresInSeconds: number }>>; // o `ct_` da resposta é descartado
   subscribe(id: string): Promise<DatafyAdminResult<{ subscribed: boolean }>>;
-  cancel(id: string): Promise<DatafyAdminResult<{ subscribed: boolean }>>;
-  pause(id: string): Promise<DatafyAdminResult<{ paused: boolean }>>;
-  resume(id: string): Promise<DatafyAdminResult<{ paused: boolean }>>;
+  cancel(id: string): Promise<DatafyAdminResult<{ acknowledged: true }>>;
+  pause(id: string): Promise<DatafyAdminResult<{ acknowledged: true }>>;
+  resume(id: string): Promise<DatafyAdminResult<{ acknowledged: true }>>;
+  deleteChannel(id: string): Promise<DatafyAdminResult<{ deleted: true }>>;
 };
 ```
 
 Regras:
-- Token em `Authorization: Bearer`, `redirect: "error"`, timeout padrão 10 s. `id` passa por `encodeURIComponent` e por validação de formato (rejeita `/`, `..`, vazio) **antes** do fetch.
-- Classificação: 401 → `unauthorized`; 403 → `account_inactive`; 404 → `not_found`; 409 → `conflict`; 402 → `payment_declined`; 400 → `invalid`; exceção de rede ou timeout → `transport`; 2xx com corpo fora do esperado → `unrecognized` + log `shapeOf` (de `webhook-payload-shape-core.ts`).
-- `code` é token fixo (`DATAFY_CONFLICT`, …), nunca a mensagem da Datafy (pode conter dado) e nunca `String(error)` (pode conter URL).
-- `createConnectLink` devolve a URL só dentro do `value`; o tipo do erro não a carrega.
-- Leitura de campo de credencial passa por `typeof === "string"`, nunca `String(...)`.
+- Token em `Authorization: Bearer`, `redirect: "error"`, timeout padrão 10 s. `id` passa por validação de formato (`^[A-Za-z0-9_-]{1,128}$`) e por `encodeURIComponent` **antes** do fetch; inválido → `{ ok: false, kind: "invalid", httpStatus: null, code: "DATAFY_INVALID_ID" }` sem chamar `fetch`.
+- **Sucesso é qualquer 2xx** (criar devolve 200, não 201).
+- **Classificação só por status HTTP; nada decide pelo texto de `message`** (Fase 0, §4 item 4): 401 → `unauthorized`; 402 → `payment_declined`; 403 → `account_inactive`; 404 → `not_found`; 409 → `conflict`; 400/422 → `invalid`; 429 → `rate_limited`; 5xx → `server_error`; outro status → `unrecognized`; exceção de rede ou timeout → `transport`. **O 409 é ambíguo por natureza**: quem chama decide pelo GET, nunca pelo 409.
+- 2xx com corpo fora da forma medida → `unrecognized` + `onUnrecognized({ operation, httpStatus, shape: shapeOf(body) })` (de `webhook-payload-shape-core.ts`). Para mutação (`createChannel`, `createWebhook`, `subscribe`), `transport`/`server_error`/`unrecognized` significam "pode ter acontecido": o chamador trata como `uncertain` e resolve por GET.
+- **Operações não medidas** (`pause`, `resume`, `cancel`): qualquer 2xx → `{ acknowledged: true }`, sem exigir forma de corpo. Exigir uma forma que ninguém mediu transformaria todo sucesso em `unrecognized`; o estado efetivo vem do GET que o chamador faz em seguida (Fase 0, §4 item 7). `deleteChannel`: qualquer 2xx → `{ deleted: true }`; 404 → `not_found` (o chamador trata como "já não existe").
+- `createConnectLink` só aceita `url` com `protocol === "https:"` e `hostname === "app.datafyapi.com.br"`; outro host → `unrecognized` (o link é aberto no navegador do lojista). A URL só existe dentro do `value`; o `ct_` da resposta é descartado.
+- `code` é token fixo no formato `^[A-Z0-9_]{1,64}$` (`DATAFY_UNAUTHORIZED`, `DATAFY_PAYMENT_DECLINED`, `DATAFY_ACCOUNT_INACTIVE`, `DATAFY_NOT_FOUND`, `DATAFY_CONFLICT`, `DATAFY_INVALID_REQUEST`, `DATAFY_RATE_LIMITED`, `DATAFY_SERVER_ERROR`, `DATAFY_TRANSPORT`, `DATAFY_UNRECOGNIZED`, `DATAFY_INVALID_ID`), porque vai para `last_error` do onboarding. Nunca a mensagem da Datafy (pode conter dado) e nunca `String(error)` (pode conter URL).
+- Campo de credencial e de id passa por `typeof === "string"`, nunca `String(...)`. `null` vira `null`; string vazia em campo de identidade vira `null`.
 
-- [ ] **Step 1:** testes com `fetchImpl` falso, por operação: sucesso com a forma medida; cada status mapeado; `transport`; `unrecognized`. **Teste de redação:** serializar todo resultado de erro e afirmar que não contém o token injetado, `sk_live_`, `whsec_`, `ct_` nem a URL do link (controle positivo: trocar `code` por `String(error)` e ver falhar).
+- [ ] **Step 1:** testes com `fetchImpl` falso, por operação: sucesso com a forma medida da tabela acima (inclusive campos `null` presentes no GET sem número); cada status mapeado; `transport` (fetch lança) e timeout; `unrecognized` com `onUnrecognized` chamado com `shapeOf` (e nunca com o corpo cru); `id` inválido não chama `fetch`; link com host diferente de `app.datafyapi.com.br` → `unrecognized`. **Teste de redação:** serializar todo resultado de erro e toda chamada de `onUnrecognized` e afirmar que não contém o token injetado, `sk_live_`, `whsec_`, `ct_` nem a URL do link (controle positivo: trocar `code` por `String(error)` e ver falhar).
 - [ ] **Step 2:** implementar. **Step 3:** typecheck + vitest. Commit `feat(datafy): cliente da API de administracao do parceiro`.
 
 ---
@@ -402,32 +430,86 @@ Regras:
 ```ts
 export type OnboardingState = "open" | "channel_created" | "webhook_ready" | "connected" | "completed" | "abandoned";
 
-/** O que o `start` deve fazer a seguir, dado o estado persistido. */
+/** Estado do canal na Datafy, lido pelo adapter num GET. Nunca vem do navegador. */
+export interface RemoteChannelState {
+  found: boolean;                // false = o GET devolveu 404 (canal apagado na Datafy)
+  phoneNumberId: string | null;
+  subscribed: boolean;
+  onTrial: boolean;
+}
+
+/**
+ * O que o `start` deve fazer a seguir. Decide pelo GET (Fase 0, §4 itens 2 e 3), nunca pelo 409 do link:
+ * - canal com número → `go_confirm` (link de canal conectado reabre o Embedded Signup e troca o número; nunca é emitido);
+ * - canal sem número, sem assinatura e sem trial → `recreate_channel` (o link seria recusado; apagar e recriar não custa nada);
+ * - canal sumido (404) → `recreate_channel`.
+ * Ordem: liberação → gates → unidade ativa → estado. Nenhum passo avança sem liberação e gates.
+ */
 export function decideStartStep(input: {
   grantActive: boolean;
   gatesAllowed: boolean;           // resolveWhatsAppGateByUnit + checkChannelConnectionAllowance
   unitHasActiveChannel: boolean;
   onboarding: { state: OnboardingState; datafyChannelId: string | null; datafyWebhookId: string | null } | null;
+  remote: RemoteChannelState | null; // obrigatório em channel_created/webhook_ready; o adapter faz o GET antes
 }):
-  | { kind: "refuse"; code: "GRANT_REQUIRED" | "PROVISIONING_BLOCKED" | "UNIT_ALREADY_ACTIVE" | "ONBOARDING_CLOSED" }
+  | { kind: "refuse"; code: "GRANT_REQUIRED" | "PROVISIONING_BLOCKED" | "UNIT_ALREADY_ACTIVE" | "ONBOARDING_CLOSED" | "REMOTE_STATE_REQUIRED" }
   | { kind: "open_onboarding" }
   | { kind: "create_channel" }
+  | { kind: "recreate_channel"; reason: "trial_expired" | "channel_missing" }
   | { kind: "create_webhook" }
-  | { kind: "issue_link" };
+  | { kind: "issue_link" }
+  | { kind: "go_confirm" };
 
-/** Valida o GET da Datafy contra o que o `confirm` exige. Nada vem do navegador. */
+/** Canal remoto que pode ser apagado sem perder nada: nunca assinado e sem número. Único predicado que autoriza `deleteChannel`. */
+export function isDisposableRemoteChannel(channel: { subscribed: boolean; phoneNumberId: string | null }): boolean;
+
+/**
+ * Reconciliação do `create_channel` incerto (Fase 0, §4 item 1). `name` não é único e a listagem não tem `created_at`.
+ * Candidatos = `name === reservedChannelId` (exato). 0 → absent. Comprometido = assinado ou com número.
+ * Mais de um comprometido → ambiguous (nunca apaga comprometido). Um comprometido → adota-o.
+ * Nenhum comprometido → adota o de maior `trialEndsAt` (mais trial; data inválida ou nula conta como a menor),
+ * empate pelo menor `id`. `discard` = os demais candidatos, todos descartáveis por construção.
+ */
+export function decideChannelReconciliation(input: {
+  reservedChannelId: string;
+  channels: { id: string; name: string; subscribed: boolean; phoneNumberId: string | null; trialEndsAt: string | null }[];
+}): { kind: "absent" } | { kind: "adopt"; channelId: string; discard: string[] } | { kind: "ambiguous" };
+
+/** Credenciais do canal adotado, lidas do GET. Sem token ou secret: descartável → apagar e recriar; comprometido → recusa para o admin. */
+export function decideAdoptedCredentials(snapshot: { subscribed: boolean; phoneNumberId: string | null; token: string | null; webhookSecret: string | null }):
+  | { kind: "use"; token: string; webhookSecret: string }
+  | { kind: "discard_and_recreate" }
+  | { kind: "refuse"; code: "DATAFY_CREDENTIALS_UNAVAILABLE" };
+
+/**
+ * Valida o GET da Datafy contra o que o `confirm` exige. Nada vem do navegador.
+ * **Sem checagem de Coexistence (Fase 0, §4 item 5):** o GET não traz o campo. A prova de Coexistence é o eco do aparelho,
+ * exigido para ativar (`manual_echo_verified_at`). Número sem app é assinado (custo que a liberação já autorizava),
+ * nunca produz eco e nunca ativa.
+ * `wabaId` é obrigatório: sem ele a unicidade de WABA entre organizações não se verifica.
+ */
 export function decideConfirm(input: {
-  snapshot: { phoneNumberId: string | null; wabaId: string | null; businessId: string | null; coexistence: boolean | null };
+  remote: { found: boolean; phoneNumberId: string | null; wabaId: string | null; businessId: string | null };
   phoneNumberIdTakenByOtherChannel: boolean;
   wabaOwnedByOtherOrganization: boolean;
 }):
   | { kind: "not_connected_yet" }
-  | { kind: "refuse"; code: "COEXISTENCE_REQUIRED" | "PHONE_NUMBER_ALREADY_BOUND" | "WABA_OWNED_BY_OTHER_ORG" }
-  | { kind: "create_channel_row"; phoneNumberId: string; wabaId: string | null; businessId: string | null };
+  | { kind: "refuse"; code: "REMOTE_CHANNEL_MISSING" | "REMOTE_IDENTITY_INCOMPLETE" | "PHONE_NUMBER_ALREADY_BOUND" | "WABA_OWNED_BY_OTHER_ORG" }
+  | { kind: "create_channel_row"; phoneNumberId: string; wabaId: string; businessId: string | null };
 
-/** Valida o MessageEvent do navegador. Só diz "houve conclusão"; não devolve dado. */
+/** Assinatura, decidida pelo GET feito DEPOIS do claim de `subscribe` (nunca por um GET anterior ao claim). */
+export function decideSubscribeStep(input: { grantActive: boolean; gatesAllowed: boolean; remote: { found: boolean; subscribed: boolean } }):
+  | { kind: "already_subscribed" }
+  | { kind: "subscribe" }
+  | { kind: "refuse"; code: "GRANT_REQUIRED" | "PROVISIONING_BLOCKED" | "REMOTE_CHANNEL_MISSING" };
+
+/**
+ * Valida o MessageEvent do navegador. Não devolve dado ao backend.
+ * `connected_without_app` ⇔ `data.data.coexistence === false` (boolean estrito): serve só à UI, que avisa e não chama o
+ * `confirm` sozinha. Ausência do campo, ou valor não-boolean, conta como `connected`; o GET decide o resto.
+ */
 export const DATAFY_CONNECT_ORIGIN = "https://app.datafyapi.com.br";
-export function classifyConnectMessage(event: { origin: string; data: unknown }): "connected" | "error" | "ignore";
+export function classifyConnectMessage(event: { origin: string; data: unknown }): "connected" | "connected_without_app" | "error" | "ignore";
 
 /** Checklist mostrado ao lojista e ao admin, derivado só de estado persistido. */
 export function deriveOfficialChecklist(input: {
@@ -439,10 +521,19 @@ export function deriveOfficialChecklist(input: {
 ```
 
 Observações:
-- `coexistence` vem do GET se a Fase 0 mostrar que ele existe lá; senão vem do `postMessage` **apenas** para escolher a copy, e o `confirm` lê do GET o que houver. Ajustar à Fase 0 e registrar a escolha no núcleo.
+- **Fase 0, §4 item 5 (decidido):** Coexistence não é checado no `confirm`. O núcleo registra a decisão no comentário de `decideConfirm`; `classifyConnectMessage` lê `coexistence` só para a UI.
 - `classifyConnectMessage` é importado pelo frontend direto de `supabase/functions/_shared/` (cross-boundary deliberado, mesmo motivo de `whatsapp-implementation-core.ts`).
+- O núcleo não importa o cliente da Task 4: os tipos de entrada são estruturais e mínimos, e o adapter (Task 7) converte o snapshot.
 
-- [ ] **Step 1:** testes. Casos-chave: liberação revogada → `GRANT_REQUIRED`; unidade já com canal ativo → `UNIT_ALREADY_ACTIVE`; onboarding em `webhook_ready` → `issue_link` sem recriar nada; `coexistence = false` → `COEXISTENCE_REQUIRED`; número já ancorado → recusa; origem `https://app.datafyapi.com.br.evil.com` → `ignore`; `data.source !== "datafy"` → `ignore`; `data` não-objeto → `ignore`. Controle positivo: trocar a comparação de origem por `startsWith` e ver o caso `.evil.com` falhar.
+- [ ] **Step 1:** testes. Casos-chave:
+  - `decideStartStep`: liberação revogada → `GRANT_REQUIRED` (mesmo com canal conectado); gates negados → `PROVISIONING_BLOCKED`; unidade já com canal ativo → `UNIT_ALREADY_ACTIVE`; sem onboarding → `open_onboarding`; `completed`/`abandoned` → `ONBOARDING_CLOSED`; `open` → `create_channel`; `channel_created`/`webhook_ready` sem `remote` → `REMOTE_STATE_REQUIRED`; `remote.found = false` → `recreate_channel/channel_missing`; `remote.phoneNumberId` presente (em `channel_created` ou `webhook_ready`) → `go_confirm`, **nunca `issue_link`**; sem número, `subscribed = false`, `onTrial = false` → `recreate_channel/trial_expired`; sem número e assinado (trial vencido) → segue (`create_webhook`/`issue_link`); `webhook_ready` em trial → `issue_link` sem recriar nada; `connected` → `go_confirm`.
+  - `isDisposableRemoteChannel`: só `subscribed = false` **e** sem número.
+  - `decideChannelReconciliation`: 0/1/N candidatos; nome parecido mas diferente não conta; N descartáveis → adota o de maior `trialEndsAt` e descarta o resto; `trialEndsAt` nulo ou inválido perde; empate → menor `id`; um comprometido entre descartáveis → adota o comprometido; dois comprometidos → `ambiguous`; `discard` nunca contém comprometido (propriedade verificada sobre todos os casos).
+  - `decideAdoptedCredentials`: os três desfechos.
+  - `decideConfirm`: canal sumido → `REMOTE_CHANNEL_MISSING`; sem número → `not_connected_yet`; número sem WABA → `REMOTE_IDENTITY_INCOMPLETE`; número já ancorado → `PHONE_NUMBER_ALREADY_BOUND`; WABA de outra organização → `WABA_OWNED_BY_OTHER_ORG`; feliz → `create_channel_row`. O tipo da entrada não tem campo de Coexistence.
+  - `decideSubscribeStep`: assinado → `already_subscribed`; não assinado → `subscribe`; liberação ou gates negados → recusa (nunca `subscribe`).
+  - `classifyConnectMessage`: origem `https://app.datafyapi.com.br.evil.com` → `ignore`; `http://app.datafyapi.com.br` → `ignore`; `data.source !== "datafy"` → `ignore`; `data` não-objeto → `ignore`; `event: "connected"` → `connected`; `coexistence: false` → `connected_without_app`; `coexistence: "false"` (string) → `connected`; `event: "error"` → `error`; outro `event` → `ignore`.
+  - Controles positivos: trocar a comparação de origem por `startsWith` e ver o caso `.evil.com` falhar; tirar a perna `phoneNumberId` de `decideStartStep` e ver o caso "canal conectado nunca recebe link" falhar; deixar `discard` incluir comprometido e ver a propriedade falhar.
 - [ ] **Step 2:** implementar. **Step 3:** vitest. Commit `feat(datafy): nucleo puro do onboarding self-service`.
 
 ---
@@ -473,20 +564,28 @@ Observações:
 - `official_connection_state`: devolve `deriveOfficialChecklist` + `{ granted, onboardingState }`. Nunca token, secret, WABA bruta ou URL.
 - `official_connect_start`:
   1. `getDatafyAccountToken()`; falha → 503 `DATAFY_ACCOUNT_UNAVAILABLE`.
-  2. Gates: liberação ativa, `resolveWhatsAppGateByUnit`, `checkChannelConnectionAllowance(unitId, "datafy", {})`, unidade sem canal ativo. `decideStartStep`.
+  2. Gates: liberação ativa, `resolveWhatsAppGateByUnit`, `checkChannelConnectionAllowance(unitId, "datafy", {})`, unidade sem canal ativo. Se o onboarding aberto tem `datafy_channel_id`, `getChannel` → `RemoteChannelState` (`not_found` → `found: false`; outro erro → 503 `DATAFY_UNAVAILABLE`). `decideStartStep`. O handler repete decidir → executar até chegar a `issue_link`, `go_confirm` ou recusa, com teto de iterações (6) e relendo o onboarding a cada volta.
   3. `open_onboarding` → insert (o índice único resolve corrida: `23505` → reler).
-  4. `create_channel` → `claim_datafy_onboarding_step(…, 'create_channel')`. `claimed = false` → 409 `ONBOARDING_BUSY`. `must_reconcile = true` → `listChannels()` procurando `name === reserved_channel_id`: achou → `getChannel` para token e secret, grava e libera com `reconciled_present`; não achou → libera `reconciled_absent` e repete o claim. Sem reconciliação pendente: `createChannel({ name: reserved_channel_id, description: "unit:<unit_id>" })`. `transport`/`unrecognized` → release `uncertain` e 503. Sucesso → `UPDATE … where id = X and claim_id = claimId` com `.select()` gravando `datafy_channel_id`, `channel_token`, `webhook_secret`, `state = 'channel_created'` → release `succeeded`.
-  5. `create_webhook` → `createWebhook(datafyId, { url: <projeto>/functions/v1/webhook-whatsapp?channel=<reserved_channel_id>, events: ["messages","smb_message_echoes"] })`. Antes, `getChannel` para ver se já existe webhook com essa URL (idempotência por leitura). Grava `datafy_webhook_id`, `state = 'webhook_ready'`.
-  6. `issue_link` → `createConnectLink`; grava só `last_link_at`; responde `{ url }` com `Cache-Control: no-store`. `conflict` (já conectado) → responde `{ alreadyConnected: true }` para o front chamar o `confirm`.
+  4. `create_channel` → `claim_datafy_onboarding_step(…, 'create_channel')`. `claimed = false` → 409 `ONBOARDING_BUSY`. `must_reconcile = true` → `listChannels()` e `decideChannelReconciliation` (Fase 0, §4 item 1: `name` não é único e a listagem não tem `created_at`):
+     - `absent` → release `reconciled_absent` e novo claim (agora sem reconciliação pendente);
+     - `adopt` → `getChannel(adotado)` → `decideAdoptedCredentials`: `use` grava como no sucesso abaixo e libera `reconciled_present`; `discard_and_recreate` apaga o adotado (só se `isDisposableRemoteChannel` pelo GET) e trata como `absent`; `refuse` → release `failed` com `last_error` e 409. Os ids de `discard` são apagados com `deleteChannel` **depois** de gravar o adotado, cada um rechecado por `getChannel` + `isDisposableRemoteChannel` imediatamente antes; falha ao apagar só loga (forma, nunca valor) e não bloqueia;
+     - `ambiguous` → release `failed` com `last_error = 'DATAFY_RECONCILE_AMBIGUOUS'` e 409; resolve o admin.
+     Sem reconciliação pendente: `createChannel({ name: reserved_channel_id, description: "unit:<unit_id>" })`. `transport`/`server_error`/`unrecognized` → release `uncertain` e 503. Sucesso → `UPDATE … where id = X and claim_id = claimId` com `.select()` gravando `datafy_channel_id`, `channel_token`, `webhook_secret`, `state = 'channel_created'` → release `succeeded`.
+  5. `recreate_channel` (Fase 0, §4 item 3: trial vencido recusa o link; apagar canal nunca assinado não custa nada): se `remote.found`, `deleteChannel` **só** se `isDisposableRemoteChannel` (404 conta como apagado; outro erro → 503). Depois `UPDATE … set state = 'open', datafy_channel_id = null, channel_token = null, webhook_secret = null, datafy_webhook_id = null where id = X and datafy_channel_id = <antigo>` com `.select()`. O `reserved_channel_id` (e portanto a URL do webhook) não muda. Segue para `create_channel`.
+  6. `create_webhook` → `createWebhook(datafyId, { url: <projeto>/functions/v1/webhook-whatsapp?channel=<reserved_channel_id>, events: ["messages","smb_message_echoes"] })`. Antes, o `getChannel` já feito diz se existe webhook com essa URL (idempotência por leitura). Grava `datafy_webhook_id`, `state = 'webhook_ready'`.
+  7. `issue_link` → `createConnectLink`; grava só `last_link_at`; responde `{ url }` com `Cache-Control: no-store`. `conflict` (409) aqui significa "sem assinatura e sem trial" que surgiu entre o GET e o POST: responde 409 `DATAFY_LINK_REFUSED`, e o próximo `start` decide pelo GET (recria).
+  8. `go_confirm` → responde `{ next: "confirm" }`; o front chama o `confirm`. **Não existe `alreadyConnected`** (Fase 0, §4 item 2: o link de canal conectado devolve 200 e reabre o Embedded Signup com troca de número, por isso nunca é emitido para canal com número).
 - `official_connect_confirm`:
-  1. Carrega o onboarding aberto da unidade (estado ≥ `webhook_ready`). Nenhum dado do corpo além de `unit_id`.
-  2. `getChannel(datafy_channel_id)`. Consulta se o `phone_number_id` ancora outro canal e se o WABA aparece em `whatsapp_template_accounts`/canal de outra organização. `decideConfirm`.
-  3. `create_channel_row` → insert em `whatsapp_channels` com `id = reserved_channel_id`, `provider = 'datafy'`, `credentials = { access_token: channel_token, phone_number_id, business_account_id: wabaId }`, `webhook_secret`, `external_instance_id = datafy_channel_id`, `status = 'connected'`, `is_active = false`, `async_ingestion_enabled = true`, `provider_coexistence = true`. `23505` no índice de número → 409. Depois `request_whatsapp_channel_activation`. Onboarding → `connected`.
-  4. Assinatura: claim `subscribe` (com reconciliação por `getChannel().subscribed` quando `must_reconcile`). `subscribe` → sucesso: `provider_subscribed_at`, liberação `consumed_*`, onboarding `completed`, release `succeeded`. `payment_declined`/`conflict` → release `failed`, `last_error`, alerta `datafy_subscription_failed` (Task 9) e resposta 200 com `step: "subscription_pending"`: a conexão vale, o custo não foi criado.
-  5. Idempotente: onboarding já `completed` → só devolve o estado.
-- Admin: `datafy_subscribe`, `datafy_cancel`, `datafy_pause`, `datafy_resume` agem sobre `whatsapp_channels.external_instance_id` do canal da unidade; atualizam `provider_*_at` a partir do `getChannel` pós-operação (o efetivo, não o pedido). `datafy_link_existing` (Moralles): `listChannels` → canal com `phoneNumberId === credentials.phone_number_id` → grava `external_instance_id` e `provider_subscribed_at` conforme `subscribed`.
+  1. Carrega o onboarding aberto da unidade (estado `webhook_ready` ou `connected`). Nenhum dado do corpo além de `unit_id`. Onboarding já `completed` → só devolve o estado (idempotente).
+  2. Em `webhook_ready`: `getChannel(datafy_channel_id)`. Consulta se o `phone_number_id` ancora outro canal e se o WABA aparece em `whatsapp_template_accounts`/canal de outra organização. `decideConfirm`. `not_connected_yet` → 200 `{ step: "connecting" }`.
+  3. `create_channel_row` → insert em `whatsapp_channels` com `id = reserved_channel_id`, `provider = 'datafy'`, `credentials = { access_token: channel_token, phone_number_id, business_account_id: wabaId }`, `webhook_secret`, `external_instance_id = datafy_channel_id`, `status = 'connected'`, `is_active = false`, `async_ingestion_enabled = true`. **Sem checagem e sem coluna de Coexistence** (Fase 0, §4 item 5): a prova é o eco, exigido para ativar. `23505` no índice de número → 409. Depois `request_whatsapp_channel_activation`. Onboarding → `connected`.
+  4. Assinatura: claim `subscribe`; **sempre um `getChannel` novo depois do claim**; `decideSubscribeStep` (rechecando liberação e gates). `already_subscribed` → finaliza e libera `reconciled_present` (ou `succeeded` sem reconciliação pendente). `subscribe` → `subscribe()`: sucesso → finaliza, release `succeeded`; `payment_declined`/`conflict`/`account_inactive` → release `failed`, `last_error`, alerta `datafy_subscription_failed` (Task 9) e 200 com `step: "subscription_pending"` (a conexão vale, o custo não foi criado); `transport`/`server_error`/`unrecognized` → release `uncertain` e 503 (o próximo `confirm` reconcilia pelo GET). Finalizar = `provider_subscribed_at` no canal (filtrado por `unit_id`), liberação `consumed_*`, onboarding `completed`, cada `UPDATE` com `.select()`.
+- Admin: `datafy_subscribe`, `datafy_cancel`, `datafy_pause`, `datafy_resume` agem sobre `whatsapp_channels.external_instance_id` do canal da unidade; atualizam `provider_*_at` a partir do `getChannel` pós-operação (o efetivo, não o pedido; Fase 0, §4 item 7: essas operações não foram medidas).
+- `datafy_link_existing` (Moralles), **em duas fases, porque fingerprint de número não prova dono de canal** (Fase 0, §1: o mesmo número estava num canal de outro sistema de teste na mesma conta):
+  - `preview` (padrão): `listChannels` → candidatos com `phoneNumberId === credentials.phone_number_id` do canal da unidade. Devolve, só para platform_admin, `name`, prefixo de 8 do id, `subscribed`, `paused` e o host de cada webhook (do `getChannel`). Não grava nada.
+  - `link`: exige `expected_datafy_channel_id` no corpo, aceito **só** se estiver entre os candidatos de uma listagem nova feita na mesma chamada. `getChannel` → grava `external_instance_id`, `credentials.access_token` e `webhook_secret` do GET (o `phone_number_id` tem de ser igual ao gravado), `provider_subscribed_at` conforme `subscribed`; cria o webhook com a URL do canal se não houver. Trocar credencial invalida a prova de eco: conferir o trigger de paridade (se ele exigir `is_active = false`, a mesma escrita desativa e grava `activation_requested_at`, e o eco reativa pela Task 6). O painel (Task 11) mostra o nome e pede confirmação explícita daquele canal antes do `link`.
 
-- [ ] **Step 1:** estender o teste estático: (a) toda chamada `createChannel(`/`subscribe(` é precedida de `claim_datafy_onboarding_step` no mesmo bloco; (b) nenhuma ação Datafy lê `body.datafy_channel_id`, `body.phone_number_id`, `body.waba_id` ou `body.channel_id` para escolher canal Datafy; (c) nenhum `console.*`/`jsonLog` recebe `url`, `channel_token`, `webhook_secret` ou o token de conta; (d) a resposta do `start` define `Cache-Control: no-store`.
+- [ ] **Step 1:** estender o teste estático: (a) toda chamada `createChannel(`/`subscribe(` é precedida de `claim_datafy_onboarding_step` no mesmo bloco; (b) nenhuma ação Datafy lê `body.datafy_channel_id`, `body.phone_number_id`, `body.waba_id` ou `body.channel_id` para escolher canal Datafy; (c) nenhum `console.*`/`jsonLog` recebe `url`, `channel_token`, `webhook_secret` ou o token de conta; (d) a resposta do `start` define `Cache-Control: no-store`; (e) toda chamada `deleteChannel(` é precedida de `isDisposableRemoteChannel(` no mesmo bloco; (f) nenhum ramo lê `coexistence` do corpo nem grava coluna de Coexistence; (g) não existe `alreadyConnected` no arquivo.
 - [ ] **Step 2:** implementar as ações, mantendo a decisão nos núcleos. Mensagens de erro em PT-BR, curtas, sem `error.message` do Postgres.
 - [ ] **Step 3:** eslint (`npm run lint`), vitest, typecheck. Commit `feat(whatsapp): conexao oficial self-service no manage-channels`.
 
@@ -535,12 +634,13 @@ Observações:
 Comportamento:
 - Query `["official-connection", unitId]` com `refetchInterval` visibility-aware (5 s enquanto `step` for `connecting` ou `awaiting_echo`; 30 s no resto; `false` com aba oculta). Quatro ramos: loading, erro com `refetch`, vazio, conteúdo.
 - "Conectar WhatsApp oficial": no `onClick`, **antes de qualquer `await`**, `const popup = window.open("about:blank", "datafy-conexao", "width=600,height=760")`; depois chama `start`; com `url` → `popup.location.href = url`; erro → `popup.close()` e toast. A URL não entra em estado React persistido, query key nem log.
-- Listener `message` registrado enquanto o card está montado; `classifyConnectMessage(event)`: `connected` → chama `confirm`; `error` → toast "A conexão não foi concluída. Tente de novo na janela da Datafy."; `ignore` → nada.
+- Listener `message` registrado enquanto o card está montado; `classifyConnectMessage(event)`: `connected` → chama `confirm`; `connected_without_app` → **não** chama o `confirm` sozinho e mostra o aviso "Este número foi conectado sem o app WhatsApp Business. O sistema só funciona com o número no app (Coexistence): sem ele, o canal não entra no ar. Fale com o suporte antes de continuar."; `error` → toast "A conexão não foi concluída. Tente de novo na janela da Datafy."; `ignore` → nada. O aviso é de UX, não barreira (Fase 0, §4 item 5): o `postMessage` não é fonte confiável, e quem impede canal sem app de operar é a exigência do eco.
+- Resposta `{ next: "confirm" }` do `start` → chama `confirm` sem abrir link (fecha a janela vazia).
 - Botão secundário "Já concluí a conexão" → `confirm`.
 - Checklist e copy: pré-requisitos antes de conectar; depois, "Envie uma mensagem pelo app WhatsApp Business no celular para qualquer contato"; "Cadastre o cartão na sua conta Meta" com os passos de Configurações de pagamento; aviso de templates quando `templatesPending`; "Abra o app WhatsApp Business ao menos a cada 14 dias".
 - `Whatsapp.tsx`: com liberação ativa, o card oficial substitui o estado "Nenhum número conectado / … QR Code" e nenhum botão de QR é exibido.
 
-- [ ] **Step 1:** testes de componente (Testing Library + jsdom): `window.open` chamado **sincronamente** no clique (espiar e afirmar que foi chamado antes da resolução da promise do `start`); evento com origem errada não chama `confirm`; evento válido chama `confirm` uma vez; dois eventos válidos seguidos não chamam `confirm` duas vezes enquanto o primeiro está pendente (guarda reentrante); a URL não aparece no DOM.
+- [ ] **Step 1:** testes de componente (Testing Library + jsdom): `window.open` chamado **sincronamente** no clique (espiar e afirmar que foi chamado antes da resolução da promise do `start`); evento com origem errada não chama `confirm`; evento válido chama `confirm` uma vez; evento com `coexistence: false` mostra o aviso e não chama `confirm`; dois eventos válidos seguidos não chamam `confirm` duas vezes enquanto o primeiro está pendente (guarda reentrante); a URL não aparece no DOM.
 - [ ] **Step 2:** implementar. **Step 3:** typecheck, vitest, lint. Commit `feat(portal): conexao do WhatsApp oficial pelo lojista`.
 
 ---
@@ -555,7 +655,8 @@ Comportamento:
 
 Itens:
 - Liberar/revogar conexão oficial da unidade, com confirmação.
-- Card Datafy: checklist de `deriveOfficialChecklist` + modo de ingestão efetivo (coluna + flag + capability, calculado no backend) + ações `datafy_subscribe`/`cancel`/`pause`/`resume`/`link_existing`. Cancelar e pausar pedem confirmação com o efeito escrito ("o número para de enviar e receber").
+- Card Datafy: checklist de `deriveOfficialChecklist` + modo de ingestão efetivo (coluna + flag + capability, calculado no backend) + ações `datafy_subscribe`/`cancel`/`pause`/`resume`/`link_existing`. Cancelar e pausar pedem confirmação com o efeito escrito ("o número para de enviar e receber"). `link_existing` mostra o resultado do `preview` (nome, prefixo do id, assinatura, hosts dos webhooks) e só chama o `link` depois de o admin confirmar aquele canal pelo nome.
+- **Assinado sem eco (Fase 0, §4 item 5):** no passo `awaiting_echo`, mostrar há quanto tempo o canal está assinado (`provider_subscribed_at`). Passadas 24 h, a copy diz: "Assinado há X sem mensagem do app. Confirme com o lojista se o número está no app WhatsApp Business; se for um número só de API, ele nunca vai ativar: cancele a assinatura." É o caminho de saída do único custo que a decisão do item 5 aceita.
 - Correções do levantamento: ramo Datafy no `EditChannelDialog` (campo de token); toast de rotação específico por provider (Datafy: "Segredo atualizado. Envie uma mensagem pelo celular e use Ativar."); `activation_requested_at` visível; `AddChannelDialog` parte de `default_whatsapp_provider` da organização.
 - `whatsapp-health`: escolher também o canal em onboarding (inativo, mais recente) quando não houver ativo, marcando `is_active` no payload; expor `ingestion_mode_effective` e `ops_alert_configured` (booleano, nunca a URL).
 - [ ] **Step 1:** testes de componente para liberar/revogar e para a confirmação de cancelar. **Step 2:** implementar. **Step 3:** gates. Commit `feat(platform): onboarding Datafy no painel e diagnostico`.
@@ -575,6 +676,8 @@ Itens:
   - ~~`decideIngestionMode` exige `inboundRedelivery = "documented"`; substitui a frase "nada no código verifica isso".~~ Feito na Task 1: as duas regras do gate ("TRÊS pernas" e "só provider que reentrega entra na fila") já estão no par CLAUDE.md/AGENTS.md.
   - Atualizar a frase de `automaticWebhook`/"a Datafy responde 403 a `webhook_configuration`": vale para o token de canal; o de conta cria webhook.
   - `begin_switch` aceita `datafy` só sem canal ativo.
+  - Coexistence de canal Datafy é provado pelo eco do aparelho, nunca pelo `confirm` (o GET não traz o campo); o `confirm` assina assim que o número aparece no GET, e número sem app fica assinado e inativo até o admin cancelar.
+  - Link de conexão só para canal sem número: em canal conectado ele devolve 200 e permite trocar o número.
 - [ ] **Checklist de redeploy:** linhas para `datafy-admin-client.ts`, `datafy-account-config*.ts`, `datafy-onboarding-core.ts` (frontend importa direto), `ops-alert-sender.ts`/`ops-alert-core.ts` e a mudança de `whatsapp-inbound-queue-core.ts` (agora também lido pelo health worker).
 - [ ] **Runbook:** pré-requisitos da conta Datafy (assinatura ativa, marca na aba Parceiros), cadastro do token no painel, `WHATSAPP_OPS_ALERT_URL` via `supabase secrets set`, passo a passo de liberar uma loja, o que o lojista faz, como reconciliar `uncertain`, como pausar/cancelar, e a ordem de deploy.
 - [ ] Commit `docs: invariantes e runbook do parceiro Datafy no par CLAUDE.md/AGENTS.md`.
