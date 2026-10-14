@@ -47,7 +47,8 @@ describe("Datafy parceiro: fronteira das ações", () => {
     expect(create.indexOf('await claimStep(o, "create_channel"')).toBeGreaterThan(-1);
     expect(create.indexOf("client.createChannel(")).toBeGreaterThan(create.indexOf('await claimStep(o, "create_channel"'));
     const subscribe = actions.slice(actions.indexOf("async function subscribeChannel"), actions.indexOf("async function confirmConnection"));
-    expect(subscribe).toContain('"claim_datafy_existing_subscription"');
+    expect(subscribe).toContain('claimOperation(unitId, channel.id, actorId, "subscribe")');
+    expect(actions).toContain('"claim_datafy_channel_operation"');
     expect(subscribe.indexOf("client.subscribe(")).toBeGreaterThan(subscribe.indexOf('await claimStep(o!, "subscribe"'));
     const remove = actions.slice(actions.indexOf("async function deleteDisposable"), actions.indexOf("async function state"));
     expect(remove.indexOf("client.deleteChannel(")).toBeGreaterThan(remove.indexOf("isDisposableRemoteChannel(snapshot)"));
@@ -62,12 +63,16 @@ type Channel = {
   activation_requested_at: string | null;
   manual_echo_verified_at: string | null;
   is_active: boolean;
+  template_credential_revision: number;
+  external_instance_id: string | null;
 };
 const eligible = (): Channel => ({
   status: "connected",
   activation_requested_at: "2026-10-14T12:00:00Z",
   manual_echo_verified_at: null,
   is_active: false,
+  template_credential_revision: 0,
+  external_instance_id: "remote-id",
 });
 
 // Executa só o bloco real de wiring, sem importar a EF (Deno/env/provedores).
@@ -97,11 +102,15 @@ function harness(options: {
       let counting = false;
       let projection = "";
       let patch: Partial<Channel> = {};
+      let expectedRevision: unknown;
+      let expectedExternal: unknown;
       const queryFilters: string[] = [];
       filters.push(queryFilters);
       const result = () => {
         if (updating) {
           calls.push("persist");
+          if ((expectedRevision !== undefined && expectedRevision !== stored.template_credential_revision)
+            || (expectedExternal !== undefined && expectedExternal !== stored.external_instance_id)) return { data: null, error: null };
           if (options.writeError) return { data: null, error: { code: "write_failed" } };
           if (options.writeMissing) return { data: null, error: null };
           Object.assign(stored, patch);
@@ -109,6 +118,8 @@ function harness(options: {
         }
         if (counting) return { count: 1, error: null };
         calls.push("reload");
+        if ((expectedRevision !== undefined && expectedRevision !== stored.template_credential_revision)
+          || (expectedExternal !== undefined && expectedExternal !== stored.external_instance_id)) return { data: null, error: null };
         if (options.readError) return { data: null, error: { code: "read_failed" } };
         return { data: options.readMissing ? null : { ...stored }, error: null };
       };
@@ -119,7 +130,8 @@ function harness(options: {
           counting = opts?.head === true;
           return builder;
         },
-        eq(key: string, value: unknown) { queryFilters.push(`${key}:${value}`); return builder; },
+        eq(key: string, value: unknown) { queryFilters.push(`${key}:${value}`); if (key === "template_credential_revision") expectedRevision = value; if (key === "external_instance_id") expectedExternal = value; return builder; },
+        is(key: string, value: unknown) { queryFilters.push(`${key}:${value}`); if (key === "external_instance_id") expectedExternal = value; return builder; },
         maybeSingle() { return Promise.resolve(result()); },
         single() { return Promise.resolve(result()); },
         then(fulfilled: (value: ReturnType<typeof result>) => unknown) {
@@ -171,9 +183,9 @@ describe("Datafy parceiro: wiring de ativação pelo eco", () => {
     const activation = echoBlock.indexOf('rpc("activate_whatsapp_channel"');
     expect(persist).toBeGreaterThan(-1);
     expect(activation).toBeGreaterThan(persist);
-    expect(echoBlock).toMatch(/\.select\("id"\)\s*\.maybeSingle\(\)/);
+    expect(echoBlock).toContain('verificationQuery.select("id").maybeSingle()');
     expect(echoBlock).toMatch(/if \(verificationError \|\| !verifiedChannel\) throw new Error/);
-    expect(echoBlock).toContain('.select("status, activation_requested_at, manual_echo_verified_at")');
+    expect(echoBlock).toContain('.select("status, activation_requested_at, manual_echo_verified_at, template_credential_revision")');
     expect(echoBlock).toMatch(/activationChannel\.activation_requested_at\s*&&\s*activationChannel\.status === "connected"/);
     expect(echoBlock).toMatch(/if \(activateError\) throw new Error\("manual_echo_activation_failed"\)/);
     expect(echoBlock).toContain('"conversation_parity_verified_activated"');
@@ -183,8 +195,8 @@ describe("Datafy parceiro: wiring de ativação pelo eco", () => {
     const h = harness();
     await h.run();
     expect(h.calls).toEqual(["persist", "reload", "activate"]);
-    expect(h.filters[0]).toEqual(["id:channel-id", "unit_id:unit-id"]);
-    expect(h.filters[1]).toEqual(["id:channel-id", "unit_id:unit-id"]);
+    expect(h.filters[0]).toEqual(["id:channel-id", "unit_id:unit-id", "template_credential_revision:0", "external_instance_id:remote-id"]);
+    expect(h.filters[1]).toEqual(["id:channel-id", "unit_id:unit-id", "template_credential_revision:0", "external_instance_id:remote-id"]);
     expect(h.rpcArgs).toEqual([{
       p_unit_id: "unit-id", p_channel_id: "channel-id", p_actor_id: null, p_request_id: "request-id",
     }]);
@@ -246,5 +258,22 @@ describe("Datafy parceiro: wiring de ativação pelo eco", () => {
     await h.run();
     expect(h.calls).toEqual([]);
     expect(h.rpcArgs).toEqual([]);
+  });
+  it("rotação/relink após admissão recusa prova de eco de geração antiga", async () => {
+    const h = harness({ fresh: { template_credential_revision: 1 } });
+    await expect(h.run()).rejects.toThrow("channel_parity_verification_persist_failed");
+    expect(h.stored.manual_echo_verified_at).toBeNull();
+    expect(h.calls).toEqual(["persist"]);
+  });
+  it("replay que já tinha prova também não ativa geração trocada", async () => {
+    const h = harness({ channel: { ...eligible(), manual_echo_verified_at: "proof" },
+      fresh: { template_credential_revision: 1, manual_echo_verified_at: null } });
+    await expect(h.run()).rejects.toThrow("channel_parity_activation_read_failed");
+    expect(h.calls).toEqual(["reload"]);
+  });
+  it("troca do remoto também recusa eco antigo mesmo sem mudança de token/segredo", async () => {
+    const h = harness({ fresh: { external_instance_id: "new-remote" } });
+    await expect(h.run()).rejects.toThrow("channel_parity_verification_persist_failed");
+    expect(h.calls).toEqual(["persist"]);
   });
 });

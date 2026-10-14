@@ -3,7 +3,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { DatafyAccountTokenRead } from "./datafy-account-config-core.ts";
 import {
   createDatafyAdminClient, datafyMutationMayHaveApplied,
-  type DatafyAdminClient, type DatafyAdminResult, type DatafyChannelSnapshot,
+  type DatafyAdminClient, type DatafyChannelSnapshot,
 } from "./datafy-admin-client.ts";
 import {
   decideStartStep, decideConfirm, decideSubscribeStep, deriveOfficialChecklist,
@@ -30,8 +30,11 @@ type Channel = {
   webhook_secret: string | null; status: string; is_active: boolean | null;
   provider_subscribed_at: string | null; provider_subscription_canceled_at: string | null;
   provider_paused_at: string | null; manual_echo_verified_at: string | null; activation_requested_at: string | null;
+  template_credential_revision: number;
 };
-type Claim = { claimed: boolean; claim_id: string; must_reconcile: boolean; source?: "onboarding" | "channel"; onboarding_id?: string };
+type Operation = "subscribe" | "cancel" | "pause" | "resume" | "relink" | "configure_webhook";
+type Claim = { claimed: boolean; claim_id: string; must_reconcile: boolean; source?: "onboarding" | "channel"; onboarding_id?: string; actor_id?: string;
+  reconcile_operation?: Operation; external_instance_id?: string; template_credential_revision?: number };
 type Outcome = "succeeded" | "failed" | "uncertain" | "reconciled_absent" | "reconciled_present";
 export type DatafyActionResult = { body: unknown; status: number; headers?: Record<string, string> };
 export type DatafyOperationalEvent = {
@@ -78,6 +81,11 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     if (error) throw new ActionFailure("GRANT_READ_FAILED");
     return data as Grant | null;
   }
+  async function onboardingById(unitId: string, id: string): Promise<Onboarding | null> {
+    const { data, error } = await db.from(ONBOARDINGS).select("*").eq("id", id).eq("unit_id", unitId).maybeSingle();
+    if (error) throw new ActionFailure("ONBOARDING_READ_FAILED");
+    return data as Onboarding | null;
+  }
   async function grantById(unitId: string, id: string | null): Promise<Grant | null> {
     if (!id) return null;
     const { data, error } = await db.from(GRANTS).select("id, revoked_at, consumed_at, consumed_channel_id")
@@ -89,7 +97,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     ? "none" : grant.consumed_channel_id === channelId ? "consumed_by_this_channel" : !grant.consumed_at ? "active" : "none";
   async function loadChannel(unitId: string, id?: string): Promise<Channel | null> {
     // Campos de lease NÃO entram na projeção nem no DTO.
-    let query = db.from("whatsapp_channels").select("id, unit_id, external_instance_id, credentials, webhook_secret, status, is_active, provider_subscribed_at, provider_subscription_canceled_at, provider_paused_at, manual_echo_verified_at, activation_requested_at")
+    let query = db.from("whatsapp_channels").select("id, unit_id, external_instance_id, credentials, webhook_secret, status, is_active, provider_subscribed_at, provider_subscription_canceled_at, provider_paused_at, manual_echo_verified_at, activation_requested_at, template_credential_revision")
       .eq("unit_id", unitId).eq("provider", "datafy");
     if (id) query = query.eq("id", id);
     const { data, error } = await query.order("created_at", { ascending: false }).limit(1).maybeSingle();
@@ -109,7 +117,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     const claim = first<Claim>(data);
     if (claim?.claimed === false) throw new ActionFailure("ONBOARDING_BUSY", 409);
     if (claim?.claimed !== true || !claim.claim_id || typeof claim.must_reconcile !== "boolean") throw new ActionFailure("ONBOARDING_CLAIM_FAILED");
-    return { ...claim, source: "onboarding", onboarding_id: o.id };
+    return { ...claim, source: "onboarding", onboarding_id: o.id, actor_id: actorId };
   }
   async function release(o: Onboarding | null, unitId: string, channelId: string, claim: Claim, step: string, outcome: Outcome, code: string | null = null) {
     const rpc = claim.source === "channel" ? "release_datafy_existing_subscription" : "release_datafy_onboarding_step";
@@ -118,6 +126,42 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       : { p_onboarding_id: o?.id ?? claim.onboarding_id, p_unit_id: unitId, p_claim_id: claim.claim_id, p_step: step, p_outcome: outcome, p_error_code: code };
     const { data, error } = await db.rpc(rpc, args);
     if (error || data !== true) throw new ActionFailure("ONBOARDING_RELEASE_FAILED");
+  }
+  async function claimOperation(unitId: string, channelId: string, actorId: string, operation: Operation): Promise<Claim> {
+    const { data, error } = await db.rpc("claim_datafy_channel_operation", {
+      p_channel_id: channelId, p_unit_id: unitId, p_actor_id: actorId, p_operation: operation,
+    });
+    if (error) throw new ActionFailure("DATAFY_OPERATION_CLAIM_FAILED", 409);
+    const claim = first<Claim>(data);
+    if (claim?.claimed === false) throw new ActionFailure("ONBOARDING_BUSY", 409);
+    if (claim?.claimed !== true || !claim.claim_id || typeof claim.must_reconcile !== "boolean"
+      || !["channel", "onboarding"].includes(claim.source) || !claim.external_instance_id
+      || !Number.isSafeInteger(claim.template_credential_revision)) throw new ActionFailure("ONBOARDING_CLAIM_FAILED");
+    return { ...claim, actor_id: actorId };
+  }
+  async function claimedChannel(unitId: string, channelId: string, claim: Claim, o: Onboarding | null): Promise<Channel> {
+    const channel = await loadChannel(unitId, channelId);
+    if (!channel?.external_instance_id || !Number.isSafeInteger(channel.template_credential_revision)
+      || (claim.external_instance_id !== undefined && claim.external_instance_id !== channel.external_instance_id)
+      || (claim.template_credential_revision !== undefined && claim.template_credential_revision !== channel.template_credential_revision)
+      || (claim.source === "onboarding" && o?.datafy_channel_id !== channel.external_instance_id)) {
+      throw new ActionFailure("DATAFY_IDENTITY_CHANGED", 409);
+    }
+    return channel;
+  }
+  async function reconcileOperation(client: DatafyAdminClient, unitId: string, channel: Channel, claim: Claim, o: Onboarding | null) {
+    const snapshot = await remote(client, channel.external_instance_id!);
+    if (snapshot) await recordSubscription(unitId, channel, snapshot, claim);
+    const operation = claim.reconcile_operation;
+    if (!operation) throw new ActionFailure("DATAFY_RECONCILIATION_REQUIRED", 409);
+    const applied = !snapshot ? operation === "cancel" : operation === "subscribe" ? snapshot.subscribed
+      : operation === "cancel" ? !snapshot.subscribed : operation === "pause" ? snapshot.paused
+      : operation === "resume" ? !snapshot.paused : operation === "configure_webhook"
+        ? snapshot.webhooks.some((hook) => hook.url === webhookUrl(channel.id) && hook.enabled
+          && ["messages", "smb_message_echoes"].every((event) => hook.events.includes(event))) : false;
+    // relink é SQL transacional, nunca um POST remoto incerto.
+    if (operation === "relink") throw new ActionFailure("DATAFY_RECONCILIATION_REQUIRED", 409);
+    await release(o, unitId, channel.id, claim, "subscribe", applied ? "reconciled_present" : "reconciled_absent");
   }
   async function remote(client: DatafyAdminClient, id: string): Promise<DatafyChannelSnapshot | null> {
     const response = await client.getChannel(id);
@@ -189,6 +233,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       }
       if (decision.kind === "create_channel") {
         let claim = await claimStep(o, "create_channel", actorId);
+        let ownsClaim = true;
         try {
           if (claim.must_reconcile) {
             const listed = await client.listChannels();
@@ -204,6 +249,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
                   await patchOnboarding(o, { datafy_channel_id: adopted.id, channel_token: credentials.token,
                     webhook_secret: credentials.webhookSecret, state: "channel_created" }, claim);
                   await release(o, unitId, o.reserved_channel_id, claim, "create_channel", "reconciled_present");
+                  ownsClaim = false;
                   for (const id of reconciliation.discard) {
                     try { await deleteDisposable(client, id); } catch { deps.logCleanupFailure?.(); }
                   }
@@ -213,22 +259,26 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
               }
             }
             await release(o, unitId, o.reserved_channel_id, claim, "create_channel", "reconciled_absent");
+            ownsClaim = false;
             claim = await claimStep(o, "create_channel", actorId);
+            ownsClaim = true;
             if (claim.must_reconcile) throw new ActionFailure("ONBOARDING_BUSY", 409);
           }
           const created = await client.createChannel({ name: o.reserved_channel_id, description: `unit:${unitId}` });
           if (created.ok === false) {
             await release(o, unitId, o.reserved_channel_id, claim, "create_channel",
               datafyMutationMayHaveApplied(created.kind) ? "uncertain" : "failed", created.code);
+            ownsClaim = false;
             return result({ error: "Não foi possível criar a conexão agora.", code: created.code }, 503);
           }
           await patchOnboarding(o, { datafy_channel_id: created.value.id, channel_token: created.value.token,
             webhook_secret: created.value.webhookSecret, state: "channel_created" }, claim);
           await release(o, unitId, o.reserved_channel_id, claim, "create_channel", "succeeded");
+          ownsClaim = false;
         } catch (error) {
           // failed conserva a reconciliação pendente; um POST aceito com falha
           // local também exige GET antes da próxima tentativa.
-          await release(o, unitId, o.reserved_channel_id, claim, "create_channel",
+          if (ownsClaim) await release(o, unitId, o.reserved_channel_id, claim, "create_channel",
             claim.must_reconcile ? "failed" : "uncertain", error instanceof ActionFailure ? error.code : "DATAFY_PERSIST_FAILED");
           throw error;
         }
@@ -297,66 +347,44 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       }),
     };
   }
-  async function recordSubscription(unitId: string, channel: Channel, snapshot: DatafyChannelSnapshot, claim?: Claim) {
-    let query = db.from("whatsapp_channels").update({
-      provider_subscribed_at: snapshot.subscribed ? channel.provider_subscribed_at ?? now() : null,
-      provider_subscription_canceled_at: snapshot.subscribed ? null : channel.provider_subscription_canceled_at ?? now(),
-      provider_paused_at: snapshot.paused ? channel.provider_paused_at ?? now() : null,
-      ...(!snapshot.subscribed || snapshot.paused ? {
-        is_active: false, activation_requested_at: null, activation_requested_by: null,
-      } : {}),
-    }).eq("id", channel.id).eq("unit_id", unitId);
-    if (claim?.source === "channel") query = query.eq("datafy_subscription_claim_id", claim.claim_id);
-    await checked(query.select("id"));
+  async function recordSubscription(unitId: string, channel: Channel, snapshot: DatafyChannelSnapshot, claim: Claim) {
+    const { data, error } = await db.rpc("record_datafy_channel_state", {
+      p_channel_id: channel.id, p_unit_id: unitId, p_claim_id: claim.claim_id,
+      p_actor_id: claim.actor_id,
+      p_onboarding_id: claim.source === "onboarding" ? claim.onboarding_id : null,
+      p_external_id: channel.external_instance_id, p_revision: channel.template_credential_revision,
+      p_subscribed: snapshot.subscribed, p_paused: snapshot.paused,
+    });
+    if (error || data !== true) throw new ActionFailure("DATAFY_PROJECTION_FAILED");
   }
   async function finalize(unitId: string, channel: Channel, o: Onboarding | null, grant: Grant, claim: Claim, actorId: string, requestId: string) {
-    if (grantState(grant, channel.id) === "active") {
-      await checked(db.from(GRANTS).update({ consumed_channel_id: channel.id, consumed_at: now() })
-        .eq("id", grant.id).eq("unit_id", unitId).is("revoked_at", null).is("consumed_at", null).select("id"), "GRANT_CONSUME_FAILED");
-    }
-    // Intenção só depois da assinatura confirmada. RPC continua autoridade.
-    const fresh = await loadChannel(unitId, channel.id);
-    if (!fresh) throw new ActionFailure("CHANNEL_READ_FAILED");
-    const operable = !!fresh.provider_subscribed_at && !fresh.provider_subscription_canceled_at && !fresh.provider_paused_at;
-    if (operable && !fresh.is_active && !fresh.activation_requested_at) {
-      const { data, error } = await db.rpc("request_whatsapp_channel_activation", {
-        p_unit_id: unitId, p_channel_id: channel.id, p_actor_id: actorId, p_request_id: requestId,
-      });
-      if (error || !first(data)) throw new ActionFailure("ACTIVATION_REQUEST_FAILED");
-    }
-    // Ativa antes de fechar: falha na RPC mantém confirm reexecutável.
-    const activating = await loadChannel(unitId, channel.id);
-    if (!activating) throw new ActionFailure("CHANNEL_READ_FAILED");
-    if (!activating.is_active && activating.provider_subscribed_at && !activating.provider_subscription_canceled_at
-      && !activating.provider_paused_at && activating.manual_echo_verified_at && activating.activation_requested_at && activating.status === "connected") {
-      const { error } = await db.rpc("activate_whatsapp_channel", {
-        p_unit_id: unitId, p_channel_id: channel.id, p_actor_id: actorId, p_request_id: requestId,
-      });
-      if (error) throw new ActionFailure("ACTIVATION_RECONCILIATION_REQUIRED");
-    }
-    if (o) await patchOnboarding(o, { state: "completed", completed_at: now(), channel_token: null, webhook_secret: null }, claim);
+    const { data, error } = await db.rpc("finalize_datafy_channel_subscription", {
+      p_channel_id: channel.id, p_unit_id: unitId, p_actor_id: actorId, p_claim_id: claim.claim_id,
+      p_onboarding_id: o?.id ?? null, p_grant_id: grant.id, p_external_id: channel.external_instance_id,
+      p_revision: channel.template_credential_revision, p_request_id: requestId,
+    });
+    if (error || (data !== "finalized" && data !== "grant_revoked")) throw new ActionFailure("DATAFY_FINALIZE_FAILED");
+    if (data === "grant_revoked") await deps.emitEvent({ evt: "datafy_subscription_failed", unitId, channelId: channel.id, reason: "GRANT_REQUIRED" });
   }
   async function subscribeChannel(client: DatafyAdminClient, unitId: string, channel: Channel, o: Onboarding | null,
     actorId: string, requestId: string, admin = false, reconciliationAttempts = 0): Promise<DatafyActionResult> {
     let claim: Claim;
     if (admin) {
-      const { data, error } = await db.rpc("claim_datafy_existing_subscription", {
-        p_channel_id: channel.id, p_unit_id: unitId, p_actor_id: actorId,
-      });
-      if (error) throw new ActionFailure("ONBOARDING_CLAIM_FAILED");
-      const claimed = first<Claim>(data);
-      if (claimed?.claimed === false) throw new ActionFailure("ONBOARDING_BUSY", 409);
-      if (claimed?.claimed !== true || !claimed.claim_id || typeof claimed.must_reconcile !== "boolean"
-        || !["onboarding", "channel"].includes(claimed.source)) throw new ActionFailure("ONBOARDING_CLAIM_FAILED");
-      claim = claimed;
+      claim = await claimOperation(unitId, channel.id, actorId, "subscribe");
       if (claim.source === "channel") o = null;
-      if (claim.source === "onboarding" && (!o || o.id !== claim.onboarding_id)) {
-        o = await loadOnboarding(unitId);
-        if (!o || o.id !== claim.onboarding_id || o.reserved_channel_id !== channel.id) throw new ActionFailure("ONBOARDING_READ_FAILED");
-      }
     } else claim = await claimStep(o!, "subscribe", actorId);
     let released = false;
     try {
+      if (claim.source === "onboarding" && (!o || o.id !== claim.onboarding_id)) {
+        o = await onboardingById(unitId, claim.onboarding_id!);
+        if (!o || o.id !== claim.onboarding_id || o.reserved_channel_id !== channel.id) throw new ActionFailure("ONBOARDING_READ_FAILED");
+      }
+      channel = await claimedChannel(unitId, channel.id, claim, o);
+      if (claim.must_reconcile && claim.reconcile_operation && claim.reconcile_operation !== "subscribe") {
+        await reconcileOperation(client, unitId, channel, claim, o); released = true;
+        if (reconciliationAttempts >= 2) throw new ActionFailure("ONBOARDING_BUSY", 409);
+        return subscribeChannel(client, unitId, channel, o, actorId, requestId, admin, reconciliationAttempts + 1);
+      }
       // Sempre NOVO GET depois do claim, inclusive quando o confirm já leu.
       let snapshot = await remote(client, channel.external_instance_id!);
       let grant = admin ? await activeGrant(unitId) : await grantById(unitId, o!.grant_id);
@@ -467,7 +495,18 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     if (!channel || channel.external_instance_id !== o.datafy_channel_id) throw new ActionFailure("CHANNEL_READ_FAILED");
     return subscribeChannel(client, unitId, channel, o, actorId, requestId);
   }
-  async function linkExisting(client: DatafyAdminClient, unitId: string, body: Record<string, unknown>, channel: Channel, actorId: string, requestId: string) {
+  async function linkExisting(client: DatafyAdminClient, unitId: string, body: Record<string, unknown>, channel: Channel, actorId: string, requestId: string, attempt = 0): Promise<DatafyActionResult> {
+    let claim: Claim | null = null, released = false, postedWebhook = false;
+    try {
+    if (body.phase === "link") {
+      claim = await claimOperation(unitId, channel.id, actorId, "relink");
+      channel = await claimedChannel(unitId, channel.id, claim, null);
+      if (claim.must_reconcile) {
+        await reconcileOperation(client, unitId, channel, claim, null); released = true;
+        if (attempt >= 2) throw new ActionFailure("ONBOARDING_BUSY", 409);
+        return linkExisting(client, unitId, body, channel, actorId, requestId, attempt + 1);
+      }
+    }
     const phoneNumberId = trimAnchor(channel.credentials?.phone_number_id);
     if (!phoneNumberId) throw new ActionFailure("REMOTE_IDENTITY_INCOMPLETE", 409);
     const listed = await client.listChannels();
@@ -489,25 +528,78 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     if (typeof expected !== "string" || !candidates.some((candidate) => candidate.id === expected)) throw new ActionFailure("DATAFY_LINK_CANDIDATE_REQUIRED", 409);
     const snapshot = await remote(client, expected);
     if (!snapshot || snapshot.phoneNumberId !== phoneNumberId || !snapshot.token || !snapshot.webhookSecret) throw new ActionFailure("DATAFY_CREDENTIALS_UNAVAILABLE", 409);
-    // Troca das credenciais desativa na mesma escrita (trigger de paridade).
-    await checked(db.from("whatsapp_channels").update({ external_instance_id: snapshot.id,
-      credentials: { ...channel.credentials, access_token: snapshot.token }, webhook_secret: snapshot.webhookSecret,
-      is_active: false, manual_echo_verified_at: null, manual_echo_verification_source: null,
-      activation_requested_at: null }).eq("id", channel.id).eq("unit_id", unitId).select("id"));
-    if (!snapshot.webhooks.some((hook) => hook.url === webhookUrl(channel.id) && hook.enabled
+    const { data: linked, error: linkError } = await db.rpc("apply_datafy_channel_relink", {
+      p_channel_id: channel.id, p_unit_id: unitId, p_actor_id: actorId, p_claim_id: claim!.claim_id,
+      p_expected_external_id: channel.external_instance_id, p_expected_revision: channel.template_credential_revision,
+      p_external_id: snapshot.id, p_channel_token: snapshot.token, p_webhook_secret: snapshot.webhookSecret,
+    });
+    if (linkError || !first(linked)) throw new ActionFailure("DATAFY_RELINK_FAILED");
+    released = true;
+    // O writer SQL encerrou o lease atomicamente com as credenciais. Antes do
+    // próximo I/O, cercar de novo a identidade efetivamente vinculada.
+    const linkedPin = first<{ external_instance_id: string; template_credential_revision: number }>(linked)!;
+    claim = await claimOperation(unitId, channel.id, actorId, "configure_webhook"); released = false;
+    channel = await claimedChannel(unitId, channel.id, claim, null);
+    // Outra operação pode ter ganho a janela entre os dois leases. Não emitir
+    // webhook enquanto sua operação incerta ainda aguarda reconciliação.
+    if (claim.must_reconcile) throw new ActionFailure("DATAFY_RECONCILIATION_REQUIRED", 409);
+    if (channel.external_instance_id !== linkedPin.external_instance_id || channel.template_credential_revision !== linkedPin.template_credential_revision) {
+      throw new ActionFailure("DATAFY_IDENTITY_CHANGED", 409);
+    }
+    const current = await remote(client, channel.external_instance_id!);
+    if (!current) throw new ActionFailure("REMOTE_CHANNEL_MISSING", 409);
+    if (!current.webhooks.some((hook) => hook.url === webhookUrl(channel.id) && hook.enabled
       && ["messages", "smb_message_echoes"].every((event) => hook.events.includes(event)))) {
-      const created = await client.createWebhook(snapshot.id, { url: webhookUrl(channel.id), events: ["messages", "smb_message_echoes"] });
-      if (created.ok === false) throw new ActionFailure("DATAFY_WEBHOOK_FAILED");
+      postedWebhook = true;
+      const created = await client.createWebhook(channel.external_instance_id!, { url: webhookUrl(channel.id), events: ["messages", "smb_message_echoes"] });
+      if (created.ok === false) {
+        await release(null, unitId, channel.id, claim, "subscribe", datafyMutationMayHaveApplied(created.kind) ? "uncertain" : "failed", created.code); released = true;
+        throw new ActionFailure("DATAFY_WEBHOOK_FAILED");
+      }
     }
-    await recordSubscription(unitId, channel, snapshot);
+    await recordSubscription(unitId, channel, current, claim);
     // Canal em trial não pode ganhar intenção de ativação só por vinculação.
-    if (snapshot.subscribed && !snapshot.paused) {
-      const { data, error } = await db.rpc("request_whatsapp_channel_activation", {
+    if (current.subscribed && !current.paused) {
+      const { data, error } = await db.rpc("finalize_datafy_channel_subscription", {
         p_unit_id: unitId, p_channel_id: channel.id, p_actor_id: actorId, p_request_id: requestId,
+        p_claim_id: claim.claim_id, p_onboarding_id: null, p_grant_id: null,
+        p_external_id: channel.external_instance_id, p_revision: channel.template_credential_revision,
       });
-      if (error || !first(data)) throw new ActionFailure("ACTIVATION_REQUEST_FAILED");
+      if (error || data !== "finalized") throw new ActionFailure("ACTIVATION_REQUEST_FAILED");
     }
+    await release(null, unitId, channel.id, claim, "subscribe", "succeeded"); released = true;
     return result({ success: true });
+    } catch (error) {
+      if (claim && !released) await release(null, unitId, channel.id, claim, "subscribe", postedWebhook ? "uncertain" : "failed", "DATAFY_RELINK_FAILED");
+      throw error;
+    }
+  }
+  async function lifecycleOperation(client: DatafyAdminClient, unitId: string, initial: Channel, actorId: string,
+    operation: "cancel" | "pause" | "resume", attempt = 0): Promise<DatafyActionResult> {
+    const claim = await claimOperation(unitId, initial.id, actorId, operation);
+    let released = false, posted = false;
+    try {
+      const channel = await claimedChannel(unitId, initial.id, claim, null);
+      if (claim.must_reconcile) {
+        await reconcileOperation(client, unitId, channel, claim, null); released = true;
+        if (attempt >= 2) throw new ActionFailure("ONBOARDING_BUSY", 409);
+        return lifecycleOperation(client, unitId, channel, actorId, operation, attempt + 1);
+      }
+      posted = true;
+      const response = await client[operation](channel.external_instance_id!);
+      if (response.ok === false) {
+        await release(null, unitId, channel.id, claim, "subscribe", datafyMutationMayHaveApplied(response.kind) ? "uncertain" : "failed", response.code); released = true;
+        throw new ActionFailure(response.code);
+      }
+      const snapshot = await remote(client, channel.external_instance_id!);
+      if (!snapshot) throw new ActionFailure("REMOTE_CHANNEL_MISSING", 409);
+      await recordSubscription(unitId, channel, snapshot, claim);
+      await release(null, unitId, channel.id, claim, "subscribe", "succeeded"); released = true;
+      return result(await state(unitId));
+    } catch (error) {
+      if (!released) await release(null, unitId, initial.id, claim, "subscribe", posted ? "uncertain" : "failed", "DATAFY_OPERATION_FAILED");
+      throw error;
+    }
   }
   async function handle(action: string, unitId: string, actorId: string, requestId: string, body: Record<string, unknown>): Promise<DatafyActionResult> {
     try {
@@ -543,16 +635,10 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       if (action === "datafy_link_existing") return await linkExisting(client, unitId, body, channel, actorId, requestId);
       if (!channel.external_instance_id) throw new ActionFailure("DATAFY_CHANNEL_NOT_LINKED", 409);
       if (action === "datafy_subscribe") return await subscribeChannel(client, unitId, channel, await loadOnboarding(unitId), actorId, requestId, true);
-      let operation: DatafyAdminResult<{ acknowledged: true }>;
-      if (action === "datafy_cancel") operation = await client.cancel(channel.external_instance_id);
-      else if (action === "datafy_pause") operation = await client.pause(channel.external_instance_id);
-      else if (action === "datafy_resume") operation = await client.resume(channel.external_instance_id);
-      else throw new ActionFailure("INVALID_ACTION", 400);
-      if (operation.ok === false) throw new ActionFailure(operation.code);
-      const snapshot = await remote(client, channel.external_instance_id);
-      if (!snapshot) throw new ActionFailure("REMOTE_CHANNEL_MISSING", 409);
-      await recordSubscription(unitId, channel, snapshot);
-      return result(await state(unitId));
+      if (action === "datafy_cancel" || action === "datafy_pause" || action === "datafy_resume") {
+        return await lifecycleOperation(client, unitId, channel, actorId, action.slice(7) as "cancel" | "pause" | "resume");
+      }
+      throw new ActionFailure("INVALID_ACTION", 400);
     } catch (error) {
       return result({ error: "Não foi possível atualizar a conexão oficial. Tente novamente ou fale com o suporte.",
         code: error instanceof ActionFailure ? error.code : "DATAFY_ACTION_FAILED" }, error instanceof ActionFailure ? error.status : 503);

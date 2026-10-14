@@ -135,7 +135,11 @@ describe('Datafy parceiro: claim cercado do onboarding (Task 2)', () => {
     const onboardingSignatures = ['claim_datafy_onboarding_step(uuid,uuid,text,uuid,integer)',
       'release_datafy_onboarding_step(uuid,uuid,uuid,text,text,text)'];
     expect(signatures).toEqual([...onboardingSignatures, 'claim_datafy_existing_subscription(uuid,uuid,uuid,integer)',
-      'release_datafy_existing_subscription(uuid,uuid,uuid,text,text)']);
+      'release_datafy_existing_subscription(uuid,uuid,uuid,text,text)',
+      'claim_datafy_channel_operation(uuid,uuid,uuid,text,integer)',
+      'apply_datafy_channel_relink(uuid,uuid,uuid,uuid,text,bigint,text,text,text)',
+      'record_datafy_channel_state(uuid,uuid,uuid,uuid,uuid,text,bigint,boolean,boolean)',
+      'finalize_datafy_channel_subscription(uuid,uuid,uuid,uuid,uuid,uuid,text,bigint,text)']);
     for (const signature of onboardingSignatures) {
       expect(allEntries.some(entry => entry.name === signature.split('(')[0]), signature).toBe(false);
       expect(sql, signature).toContain(`revoke all on function public.${signature} from public,anon,authenticated;`);
@@ -159,9 +163,8 @@ describe('Datafy parceiro: claim cercado do onboarding (Task 2)', () => {
 
 describe('Datafy parceiro: assinatura administrativa de canal existente (Task 7)', () => {
   const sql = readFileSync(join(MIGRATIONS_DIR, '20261014170540_datafy_existing_subscription_claim.sql'), 'utf8').replace(/,\s+/g, ',');
-  it('fecha ambas RPCs e mantém um só claim para onboarding vivo', () => {
-    for (const signature of ['claim_datafy_existing_subscription(uuid,uuid,uuid,integer)',
-      'release_datafy_existing_subscription(uuid,uuid,uuid,text,text)']) {
+  it('fecha todas RPCs e a trigger, com uma cerca para onboarding vivo ou terminal pendente', () => {
+    for (const signature of (allowlist._service_only_datafy_partner_onboarding as string[]).filter(s => !s.startsWith('release_datafy_onboarding'))) {
       expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
       expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated;`);
       expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
@@ -169,9 +172,28 @@ describe('Datafy parceiro: assinatura administrativa de canal existente (Task 7)
     expect(sql).toContain("public.platform_admins where user_id = p_actor_id");
     expect(sql).toContain("c.unit_id is distinct from p_unit_id");
     expect(sql).toContain("public.claim_datafy_onboarding_step(o.id,p_unit_id,'subscribe',p_actor_id,v_ttl)");
-    expect(sql).toContain("state not in ('completed','abandoned') for update");
-    expect(sql).not.toMatch(/update public\.whatsapp_datafy_onboardings/);
-    expect(sql.match(/security definer set search_path = ''/g)).toHaveLength(2);
+    expect(sql).toContain("o.state in ('completed','abandoned')");
+    expect(sql).toContain("o.claim_id is not null or cardinality(o.uncertain_steps)>0");
+    expect(sql).toContain("revoke all on function public.guard_datafy_channel_identity() from public,anon,authenticated,service_role;");
+    expect(sql).not.toContain("grant execute on function public.guard_datafy_channel_identity()");
+    expect(sql.match(/security definer set search_path = ''/g)).toHaveLength(8);
+    expect(sql).not.toMatch(/grant[^;]+to (?:public|anon|authenticated)/i);
+  });
+  it('recorder e finisher validam fonte/ator/pin sob locks antes de projeção, consumo ou ativação', () => {
+    for (const fn of ['record_datafy_channel_state', 'finalize_datafy_channel_subscription']) {
+      const begin = sql.indexOf(`create or replace function public.${fn}(`);
+      const end = sql.indexOf('end $$;', begin);
+      expect(begin).toBeGreaterThanOrEqual(0); expect(end).toBeGreaterThan(begin);
+      const body = sql.slice(begin, end);
+      expect(body).toContain('o.claim_id is distinct from p_claim_id');
+      expect(body).toContain('o.claim_actor_id is distinct from p_actor_id');
+      expect(body).toContain('c.external_instance_id is distinct from p_external_id');
+      expect(body).toContain('c.template_credential_revision is distinct from p_revision');
+      expect(body.indexOf('public.units where id=p_unit_id for update')).toBeLessThan(body.indexOf('order by id for update'));
+      expect(body.indexOf('order by id for update')).toBeLessThan(body.indexOf('where id=p_onboarding_id for update'));
+    }
+    expect(sql).toContain("if p_onboarding_id is not null and o.state not in ('completed','abandoned') then");
+    expect(sql).not.toMatch(/set\s+[^;]*grant_id\s*=/i);
   });
 });
 

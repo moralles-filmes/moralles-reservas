@@ -2842,7 +2842,7 @@ async function handleWebhookRequest(
     let manualEchoActivated = false;
     if (manualEchoMatchesChannel) {
       if (!channel.manual_echo_verified_at) {
-        const { data: verifiedChannel, error: verificationError } = await supabase
+        let verificationQuery = supabase
           .from("whatsapp_channels")
           .update({
             manual_echo_verified_at: new Date().toISOString(),
@@ -2850,19 +2850,26 @@ async function handleWebhookRequest(
           })
           .eq("id", channelId)
           .eq("unit_id", unitId)
-          .select("id")
-          .maybeSingle();
+          .eq("template_credential_revision", channel.template_credential_revision);
+        verificationQuery = channel.external_instance_id == null
+          ? verificationQuery.is("external_instance_id", null)
+          : verificationQuery.eq("external_instance_id", channel.external_instance_id);
+        const { data: verifiedChannel, error: verificationError } = await verificationQuery.select("id").maybeSingle();
         if (verificationError || !verifiedChannel) throw new Error("channel_parity_verification_persist_failed");
       }
 
       // Releitura também no replay: a prova pode ter sido gravada antes de
       // uma falha transitória na ativação. Status e intenção precisam ser atuais.
-      const { data: activationChannel, error: activationReadError } = await supabase
+      let activationQuery = supabase
         .from("whatsapp_channels")
-        .select("status, activation_requested_at, manual_echo_verified_at")
+        .select("status, activation_requested_at, manual_echo_verified_at, template_credential_revision")
         .eq("id", channelId)
         .eq("unit_id", unitId)
-        .maybeSingle();
+        .eq("template_credential_revision", channel.template_credential_revision);
+      activationQuery = channel.external_instance_id == null
+        ? activationQuery.is("external_instance_id", null)
+        : activationQuery.eq("external_instance_id", channel.external_instance_id);
+      const { data: activationChannel, error: activationReadError } = await activationQuery.maybeSingle();
       if (activationReadError || !activationChannel) throw new Error("channel_parity_activation_read_failed");
       if (activationChannel.manual_echo_verified_at
         && activationChannel.activation_requested_at
