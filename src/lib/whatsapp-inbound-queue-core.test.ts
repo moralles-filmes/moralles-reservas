@@ -24,44 +24,135 @@ import {
   SWEEP_WALL_CLOCK_BUDGET_MS,
   WORST_CASE_QUEUED_EVENT_MS,
   WORST_SINGLE_TURN_MS,
+  type IngestionSource,
 } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
 import {
+  PROVIDER_CAPABILITIES,
   WEBHOOK_SIGNATURE_SCHEME,
   WHATSAPP_PROVIDER_NAMES,
+  type WhatsAppProviderCapabilities,
+  type WhatsAppProviderName,
 } from "../../supabase/functions/_shared/whatsapp-provider-core.ts";
 
-describe("decideIngestionMode — as duas pernas do gate, fail-closed", () => {
-  it("async só quando origem é provider E flag ON E canal ON", () => {
+// Os casos das pernas de canal e flag rodam com reentrega DOCUMENTADA, para
+// continuarem medindo o que mediam: com `unmeasured`, todos cairiam em `sync`
+// pela perna da reentrega e ficariam verdes por motivo errado.
+describe("decideIngestionMode — as pernas do gate, fail-closed", () => {
+  it("async só quando origem é provider E reentrega documentada E flag ON E canal ON", () => {
     expect(decideIngestionMode({
       source: "provider", flagEnabled: true, flagReadFailed: false, channelEnabled: true,
+      providerRedelivery: "documented",
     })).toBe("async");
   });
 
   it("flag OFF mantém o caminho síncrono de hoje", () => {
     expect(decideIngestionMode({
       source: "provider", flagEnabled: false, flagReadFailed: false, channelEnabled: true,
+      providerRedelivery: "documented",
     })).toBe("sync");
   });
 
   it("canal não optado mantém o caminho síncrono, mesmo com a flag global ON", () => {
     expect(decideIngestionMode({
       source: "provider", flagEnabled: true, flagReadFailed: false, channelEnabled: false,
+      providerRedelivery: "documented",
     })).toBe("sync");
   });
 
   it("coluna ausente (null/undefined) é tratada como não optada", () => {
     expect(decideIngestionMode({
       source: "provider", flagEnabled: true, flagReadFailed: false, channelEnabled: null,
+      providerRedelivery: "documented",
     })).toBe("sync");
     expect(decideIngestionMode({
       source: "provider", flagEnabled: true, flagReadFailed: false, channelEnabled: undefined,
+      providerRedelivery: "documented",
     })).toBe("sync");
   });
 
   it("falha ao LER a flag não vira OFF: devolve unknown, que o caller transforma em 503", () => {
     expect(decideIngestionMode({
       source: "provider", flagEnabled: false, flagReadFailed: true, channelEnabled: true,
+      providerRedelivery: "documented",
     })).toBe("unknown");
+  });
+
+  // A perna da REENTREGA. Com a fila ligada, falha transitória ao gravar o
+  // evento devolve 503 ao provider — e só a reentrega dele traz a mensagem de
+  // volta. Provider sem reentrega aceita como premissa, se não reentregar, perde
+  // a mensagem sem linha na fila, sem dead letter e sem contagem no painel.
+  it("reentrega sem premissa aceita (`unmeasured`) processa síncrono, ainda que canal e flag estejam ON", () => {
+    expect(decideIngestionMode({
+      source: "provider", flagEnabled: true, flagReadFailed: false, channelEnabled: true,
+      providerRedelivery: "unmeasured",
+    })).toBe("sync");
+  });
+
+  // Tabela-verdade COMPLETA das entradas: é ela que prova "única porta". Um caso
+  // isolado mostra que a porta abre, não que nenhuma outra combinação abre. As
+  // listas saem de `Record<união, true>`, então valor novo em `IngestionSource`
+  // ou em `inboundRedelivery` reprova no typecheck até entrar aqui.
+  it("tabela-verdade: reentrega documentada, com canal e flag ON, é a única porta para async", () => {
+    type Reentrega = WhatsAppProviderCapabilities["inboundRedelivery"];
+    const ORIGENS = Object.keys(
+      { provider: true, queue: true, sweep: true } satisfies Record<IngestionSource, true>,
+    ) as IngestionSource[];
+    const REENTREGAS: (Reentrega | undefined)[] = [
+      ...(Object.keys(
+        { documented: true, unmeasured: true } satisfies Record<Reentrega, true>,
+      ) as Reentrega[]),
+      undefined,
+    ];
+    const BOOLEANOS = [true, false];
+    const CANAIS = [true, false, null, undefined];
+
+    const divergencias: string[] = [];
+    let asyncs = 0;
+    let unknowns = 0;
+    for (const source of ORIGENS)
+      for (const flagEnabled of BOOLEANOS)
+        for (const flagReadFailed of BOOLEANOS)
+          for (const channelEnabled of CANAIS)
+            for (const providerRedelivery of REENTREGAS) {
+              const porta = source === "provider"
+                && channelEnabled === true
+                && providerRedelivery === "documented";
+              const esperado = !porta
+                ? "sync"
+                : flagReadFailed ? "unknown" : flagEnabled ? "async" : "sync";
+              const obtido = decideIngestionMode({
+                source, flagEnabled, flagReadFailed, channelEnabled, providerRedelivery,
+              });
+              if (obtido === "async") asyncs++;
+              if (obtido === "unknown") unknowns++;
+              if (obtido !== esperado) {
+                const entrada = [source, flagEnabled, flagReadFailed, channelEnabled, providerRedelivery]
+                  .map(String).join(" / ");
+                divergencias.push(`${entrada} → ${obtido}, esperado ${esperado}`);
+              }
+            }
+
+    expect(divergencias).toEqual([]);
+    expect(asyncs, "async em mais de uma combinação").toBe(1);
+    // As duas: flag ilegível com `flagEnabled` true e false.
+    expect(unknowns, "unknown fora de provider + canal ON + documented + flag ilegível").toBe(2);
+  });
+
+  it("reentrega NÃO declarada (undefined) é sync: sem declaração, não há premissa de reentrega", () => {
+    expect(decideIngestionMode({
+      source: "provider", flagEnabled: true, flagReadFailed: false, channelEnabled: true,
+      providerRedelivery: undefined,
+    })).toBe("sync");
+  });
+
+  // A reentrega é entrada CERTA (vem do registry, em código), então decide
+  // antes da flag, que é a única incerta. Um canal legado optado por engano não
+  // pode receber 503 por causa de um soluço de leitura de `platform_flags`.
+  it("reentrega `unmeasured` + flag ILEGÍVEL continua sync, não unknown", () => {
+    expect(decideIngestionMode({
+      source: "provider", flagEnabled: false, flagReadFailed: true, channelEnabled: true,
+      providerRedelivery: "unmeasured",
+    })).toBe("sync");
   });
 
   // A ORDEM das pernas é load-bearing: o CERTO (`channelEnabled`, coluna
@@ -72,9 +163,11 @@ describe("decideIngestionMode — as duas pernas do gate, fail-closed", () => {
   it("canal não optado + flag ILEGÍVEL continua sync: o certo decide antes do incerto", () => {
     expect(decideIngestionMode({
       source: "provider", flagEnabled: false, flagReadFailed: true, channelEnabled: false,
+      providerRedelivery: "documented",
     })).toBe("sync");
     expect(decideIngestionMode({
       source: "provider", flagEnabled: true, flagReadFailed: true, channelEnabled: null,
+      providerRedelivery: "documented",
     })).toBe("sync");
   });
 
@@ -83,22 +176,52 @@ describe("decideIngestionMode — as duas pernas do gate, fail-closed", () => {
   it("canal optado + flag ilegível continua unknown — o fail-closed fica onde importa", () => {
     expect(decideIngestionMode({
       source: "provider", flagEnabled: false, flagReadFailed: true, channelEnabled: true,
+      providerRedelivery: "documented",
     })).toBe("unknown");
   });
 
   // CONTROLE POSITIVO do anti-laço (Review Focus #3). Se alguém remover a
   // checagem de `source`, este teste falha — é o único guardião contra
   // reinserção infinita de eventos.
-  it("origem 'queue' NUNCA é async, ainda que as duas pernas do gate estejam ON", () => {
+  it("origem 'queue' NUNCA é async, ainda que todas as pernas do gate estejam ON", () => {
     expect(decideIngestionMode({
       source: "queue", flagEnabled: true, flagReadFailed: false, channelEnabled: true,
+      providerRedelivery: "documented",
     })).toBe("sync");
   });
 
   it("origem 'sweep' NUNCA é async", () => {
     expect(decideIngestionMode({
       source: "sweep", flagEnabled: true, flagReadFailed: false, channelEnabled: true,
+      providerRedelivery: "documented",
     })).toBe("sync");
+  });
+});
+
+// O valor por provider é o que de fato chega ao gate. Os casos acima usam
+// literais e não reprovam se alguém declarar `documented` para um legado sem
+// validar a premissa — é ESTE bloco que reprova.
+describe("inboundRedelivery no registry — só reentrega documentada entra na fila", () => {
+  // A da Datafy é publicada por ela (3×) e aceita como premissa, ainda não
+  // medida contra o provider real. Os quatro legados não têm premissa aceita —
+  // inclusive a Meta, que publica política de retry: ali é escolha, não lacuna.
+  const REENTREGA_ESPERADA = {
+    datafy: "documented",
+    zapi: "unmeasured",
+    waha: "unmeasured",
+    uazapi: "unmeasured",
+    official: "unmeasured",
+  } as const satisfies Record<WhatsAppProviderName, WhatsAppProviderCapabilities["inboundRedelivery"]>;
+
+  it.each(WHATSAPP_PROVIDER_NAMES)("%s declara a reentrega que de fato foi documentada", (name) => {
+    expect(PROVIDER_CAPABILITIES[name].inboundRedelivery).toBe(REENTREGA_ESPERADA[name]);
+  });
+
+  it.each(WHATSAPP_PROVIDER_NAMES)("canal %s optado com flag ON: só reentrega documentada vira async", (name) => {
+    expect(decideIngestionMode({
+      source: "provider", flagEnabled: true, flagReadFailed: false, channelEnabled: true,
+      providerRedelivery: PROVIDER_CAPABILITIES[name].inboundRedelivery,
+    })).toBe(name === "datafy" ? "async" : "sync");
   });
 });
 

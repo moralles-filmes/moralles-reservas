@@ -210,6 +210,103 @@ describe("anti-laço: a re-entrada não pode reinserir o evento", () => {
   });
 });
 
+/**
+ * A perna da REENTREGA só protege se chegar ao gate. O núcleo devolve `sync`
+ * para `providerRedelivery: undefined`, então um call site que esquecesse o
+ * campo desligaria a fila até para a Datafy — e o mesmo núcleo, com a suíte
+ * dele verde, não acusaria nada. A amarra mora no `index.ts`, que nenhum
+ * compilador alcança.
+ */
+describe("a reentrega declarada do provider chega ao gate de ingestão", () => {
+  /** Tira só linhas INTEIRAS de comentário — mesma régua de `corpoTs`. */
+  const semLinhasDeComentario = (fonte: string): string =>
+    fonte
+      .split("\n")
+      .filter((linha) => !/^\s*(\/\/|\*|\/\*)/.test(linha))
+      .join("\n");
+
+  /** O objeto de argumentos da chamada do gate, sem linhas de comentário. */
+  const argumentosDoGate = (fonte: string): string => {
+    const inicio = fonte.indexOf("decideIngestionMode({");
+    if (inicio < 0) return "";
+    const fim = fonte.indexOf("});", inicio);
+    if (fim <= inicio) return "";
+    return semLinhasDeComentario(fonte.slice(inicio, fim));
+  };
+
+  /**
+   * Toda chamada, inclusive `decideIngestionMode(entrada)` sem objeto literal —
+   * a forma que escaparia de `argumentosDoGate`. O import não tem parêntese e as
+   * menções da documentação vêm entre crases, sem parêntese.
+   */
+  const chamadasDoGate = (fonte: string): number =>
+    (semLinhasDeComentario(fonte).match(/\bdecideIngestionMode\s*\(/g) ?? []).length;
+
+  /** Lida do registry pelo provider do PRÓPRIO canal, não digitada no call site. */
+  const passaReentrega = (argumentos: string) =>
+    /providerRedelivery:\s*PROVIDER_CAPABILITIES\[provider\]\??\.inboundRedelivery\b/.test(argumentos);
+
+  /** Import na COLUNA ZERO: um import comentado não satisfaz a guarda. */
+  const IMPORT_DO_REGISTRY =
+    /^import\s*\{[^}]*\bPROVIDER_CAPABILITIES\b[^}]*\}\s*from\s*"\.\.\/_shared\/whatsapp-provider-core\.ts"/m;
+
+  const ARGUMENTOS = argumentosDoGate(EF);
+
+  it("há UM call site do gate, para nenhum escapar a esta guarda", () => {
+    expect(chamadasDoGate(EF)).toBe(1);
+  });
+
+  it("CONTROLE POSITIVO: uma segunda chamada, mesmo sem objeto literal, reprova a contagem", () => {
+    expect(chamadasDoGate(`${EF}\ndecideIngestionMode(x);\n`)).not.toBe(1);
+  });
+
+  it("o call site passa providerRedelivery lido do registry", () => {
+    expect(ARGUMENTOS, "a chamada de decideIngestionMode não foi encontrada").not.toBe("");
+    expect(
+      passaReentrega(ARGUMENTOS),
+      "o gate voltou a ser chamado sem a reentrega do provider: o núcleo trata a "
+        + "ausência como `sync` e a fila morre para todo provider, Datafy inclusive",
+    ).toBe(true);
+  });
+
+  it("PROVIDER_CAPABILITIES é importado do núcleo", () => {
+    // Sem tsc nem `deno check` sobre esta EF no CI: o identificador sem import só
+    // apareceria como ReferenceError em produção, no primeiro inbound.
+    expect(EF).toMatch(IMPORT_DO_REGISTRY);
+  });
+
+  it("CONTROLE POSITIVO: import comentado não satisfaz a guarda", () => {
+    const comentado = EF.replace(/^import \{ PROVIDER_CAPABILITIES \}/m, "// import { PROVIDER_CAPABILITIES }");
+    expect(comentado, "a cirurgia do controle não achou o import").not.toBe(EF);
+    expect(comentado).not.toMatch(IMPORT_DO_REGISTRY);
+  });
+
+  it("CONTROLE POSITIVO: linha da reentrega comentada na EF reprova o pipeline inteiro", () => {
+    // Cirurgia sobre a FONTE, não sobre o recorte: exercita `argumentosDoGate`
+    // (que tira comentários) e `passaReentrega` juntos, como o caso real.
+    const comentada = EF.replace(/^(\s*)(providerRedelivery:)/m, "$1// $2");
+    expect(comentada, "a cirurgia do controle não achou a perna").not.toBe(EF);
+    const argumentos = argumentosDoGate(comentada);
+    expect(argumentos, "a chamada tinha de continuar sendo encontrada").not.toBe("");
+    expect(passaReentrega(argumentos)).toBe(false);
+  });
+
+  it("CONTROLE POSITIVO: recorte sem providerRedelivery fica vermelho", () => {
+    const semReentrega = ARGUMENTOS.replace(/\n\s*providerRedelivery:[^\n]*/, "");
+    expect(semReentrega, "a cirurgia do controle não achou a perna").not.toBe(ARGUMENTOS);
+    expect(passaReentrega(semReentrega)).toBe(false);
+  });
+
+  it("CONTROLE POSITIVO: reentrega digitada no call site também fica vermelha", () => {
+    const digitada = ARGUMENTOS.replace(
+      /providerRedelivery:[^\n]*/,
+      'providerRedelivery: "documented",',
+    );
+    expect(digitada, "a cirurgia do controle não achou a perna").not.toBe(ARGUMENTOS);
+    expect(passaReentrega(digitada)).toBe(false);
+  });
+});
+
 describe("gêmeos declarados: o número vive em dois lugares e nenhum importa o outro", () => {
   // O SQL não importa TypeScript. Sem este pino, `INBOUND_LEASE_TTL_MS` é um
   // export que NENHUM código de runtime consome — trocá-lo não quebraria nada, e
@@ -946,8 +1043,9 @@ describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", ()
 
   // O prazo NÃO vale no caminho síncrono, e isso é requisito da fase e não
   // cautela: o síncrono atende os quatro providers legados — com loja real
-  // agora, e com o gate assíncrono desligado nas duas pernas —, e aplicá-lo ali
-  // mudaria o comportamento deles por efeito colateral. A aritmética confirma
+  // agora, e fora da fila pela capability de reentrega (`unmeasured`), não só
+  // por chave desligada —, e aplicá-lo ali mudaria o comportamento deles por
+  // efeito colateral. A aritmética confirma
   // que não seria inócuo: `AGENT_SOFT_DEADLINE_MS` (30 s) é MENOR que
   // `WORST_SINGLE_TURN_MS` (31 s), então uma rodada de pior caso consome o
   // orçamento inteiro e a seguinte é sempre recusada.

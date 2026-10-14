@@ -36,6 +36,16 @@ export interface WhatsAppProviderCapabilities {
    * `conditional` exige um modo específico, como Meta Cloud API Coexistence.
    */
   manualDeviceEcho: "supported" | "conditional" | "unsupported";
+  /**
+   * Premissa de que o provider REENTREGA um inbound respondido com não-2xx. A
+   * ingestão assíncrona depende dela: falha ao gravar na fila vira 503, e só a
+   * reentrega traz a mensagem de volta. `documented` = reentrega publicada pelo
+   * provider e aceita como premissa da fila (não é medição). `unmeasured` =
+   * nenhuma premissa aceita ainda, mesmo que o provider publique política de
+   * retry, até alguém validá-la — e não entra na fila, ainda que o canal esteja
+   * optado.
+   */
+  inboundRedelivery: "documented" | "unmeasured";
 }
 
 export interface CloudApiRequest {
@@ -356,6 +366,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     interactiveMessages: false,
     adReferral: false,
     rawCloudApiProxy: false,
+    inboundRedelivery: "unmeasured",
   },
   waha: {
     manualCredentials: true,
@@ -374,6 +385,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     interactiveMessages: false,
     adReferral: false,
     rawCloudApiProxy: false,
+    inboundRedelivery: "unmeasured",
   },
   official: {
     manualCredentials: true,
@@ -392,6 +404,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     interactiveMessages: false,
     adReferral: true,
     rawCloudApiProxy: false,
+    inboundRedelivery: "unmeasured",
   },
   uazapi: {
     manualCredentials: false,
@@ -410,6 +423,7 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     interactiveMessages: false,
     adReferral: false,
     rawCloudApiProxy: false,
+    inboundRedelivery: "unmeasured",
   },
   datafy: {
     manualCredentials: true,
@@ -429,6 +443,9 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<WhatsAppProviderName, WhatsA
     interactiveMessages: false,
     adReferral: true,
     rawCloudApiProxy: true,
+    // Reentrega de não-2xx documentada pela Datafy (3×), ainda não medida
+    // contra o provider real — a única aceita como premissa da fila.
+    inboundRedelivery: "documented",
   },
 };
 

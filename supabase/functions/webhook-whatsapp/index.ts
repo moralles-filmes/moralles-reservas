@@ -81,6 +81,10 @@ import {
   type InboundMediaKind,
   type OwnMessageEcho,
 } from "../_shared/whatsapp-providers.ts";
+// O gate de ingestão lê daqui a reentrega declarada do provider. Indexa o
+// registry por nome, sem resolver o adapter; pela fachada,
+// `getWhatsAppProvider(provider).capabilities` expõe o mesmo objeto.
+import { PROVIDER_CAPABILITIES } from "../_shared/whatsapp-provider-core.ts";
 import { parseStatusCallback, type StatusUpdate } from "../_shared/whatsapp-status.ts";
 import { resolveChannelCredentials } from "../_shared/whatsapp-channel-credentials.ts";
 import { resolveWhatsAppGateByOrg, clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
@@ -2624,11 +2628,11 @@ async function handleWebhookRequest(
     //
     // Fica FORA do gate, e ANTES dele, de propósito: ela responde metade da
     // pendência de validação real nº 6 da spec ("o header
-    // `x-datafy-delivery-id` existe?"), e medir o envelope só depois de ligar as
-    // duas pernas seria ovo e galinha — instrumentar forma serve para medir
-    // ANTES de assumir o risco. A outra metade ("se repete na reentrega?") NÃO é
-    // respondida aqui: quem responde é o outcome `queue_duplicate_delivery`, que
-    // só existe com o gate ligado.
+    // `x-datafy-delivery-id` existe?"), e medir o envelope só depois de ligar o
+    // gate (flag e coluna do canal) seria ovo e galinha — instrumentar forma
+    // serve para medir ANTES de assumir o risco. A outra metade ("se repete
+    // na reentrega?") NÃO é respondida aqui: quem responde é o outcome
+    // `queue_duplicate_delivery`, que só existe com o gate ligado.
     //
     // ESCOPADA NA PORTA DO PROVIDER. Sem `ingestionSource === "provider"`, a
     // MESMA entrega emite esta linha duas vezes — uma na porta, outra na
@@ -2667,12 +2671,21 @@ async function handleWebhookRequest(
     // produz partes RE-SERIALIZADAS (`JSON.stringify(part)`), e guardar isso
     // destruiria a capacidade de revalidar a assinatura. O corpo é guardado uma
     // vez, intacto, e quem divide é o processador, em memória.
+    //
+    // `providerRedelivery` vem do registry pelo provider do PRÓPRIO canal: só
+    // provider com reentrega documentada entra na fila, porque o 503 de uma
+    // gravação falha só é seguro para quem reentrega. O `?.` é inalcançável
+    // hoje — o CHECK `whatsapp_channels_provider_check` (migration 110) só
+    // admite providers do registry, e o `switch` da assinatura, sem `default`,
+    // já devolveu 401 a qualquer outro — e fica só como defesa: `undefined`
+    // vira `sync` no núcleo.
     const flagCheck = await checkFlagEnabled("whatsapp_async_ingestion");
     const ingestionMode = decideIngestionMode({
       source: ingestionSource,
       flagEnabled: flagCheck.enabled,
       flagReadFailed: flagCheck.readFailed,
       channelEnabled: channel.async_ingestion_enabled,
+      providerRedelivery: PROVIDER_CAPABILITIES[provider]?.inboundRedelivery,
     });
 
     if (ingestionMode !== "sync") {
@@ -4442,9 +4455,10 @@ async function handleWebhookRequest(
         // só decide se CABE uma retentativa, nunca interrompe o laço em curso, e o
         // TTL do lock de conversa EXPIRA em vez de parar quem o segura (um irmão
         // assume e roda um segundo agente). O que o torna aceitável é outra coisa:
-        // ele é o caminho que atende loja real agora, com o gate assíncrono
-        // desligado nas duas pernas, e aplicar o prazo aos quatro providers
-        // legados seria mudar o comportamento deles por efeito colateral, que esta
+        // ele é o caminho que atende loja real agora, com os quatro providers
+        // legados fora da fila pela capability de reentrega (`unmeasured`), não
+        // só por chave desligada, e aplicar o prazo a eles seria mudar o
+        // comportamento deles por efeito colateral, que esta
         // fase proíbe explicitamente. Teto de parede no síncrono é decisão própria,
         // com sua própria medição — não carona desta.
         //
