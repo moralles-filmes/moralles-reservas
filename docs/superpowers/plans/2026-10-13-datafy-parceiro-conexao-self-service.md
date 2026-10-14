@@ -44,16 +44,20 @@
 
 **Bloqueia todas as outras tasks que tocam a Datafy (2 em diante).** A Task 1 pode correr em paralelo.
 
-**Precisa do dono:** o token de conta `sk_acct_` (Datafy → Minha conta → Parceiros → Criar token) no **ambiente do terminal dele**, nunca no chat; e um **número de teste** com app WhatsApp Business num portfólio Meta. Não pode ser o número da Moralles, que já está conectado.
+**Precisa do dono:** o token de conta `sk_acct_` (Datafy → Minha conta → Parceiros → Criar token) na máquina dele, nunca no chat (está em `.env.local` como `TOKEN_CONTA_DATAFY`, lido com `node --env-file=.env.local`); e um número com app WhatsApp Business num portfólio Meta.
+
+**Decidido em 2026-10-14:** o número é o da Moralles (empresa de teste, sem cliente real). Ele sai do canal assinado (ORIGINAL), conecta num canal de teste em trial (PROBE, nunca assinado, apagado no fim) e volta ao ORIGINAL. Nesta rodada não há `subscribe`: assinatura fica "não medida".
+
+**Lido no OpenAPI de canais em 2026-10-14, antes de rodar:** não existe endpoint para desconectar número (o 409 do `connect-link` manda "desconecte ou delete o canal"; desconectar é no painel da Datafy). `DELETE` exige assinatura do canal cancelada. Existe webhook global da conta (`/channels/whatsapp/global-webhook`), que recebe eventos de todos os canais.
 
 **Files:**
 - Create: `scripts/datafy-probe/probe.mjs`
 - Create: `scripts/datafy-probe/README.md`
 - Create: `docs/superpowers/specs/2026-10-13-datafy-parceiro-validacao-fase0.md` (relatório)
 
-- [ ] **Step 1: Escrever o probe**
+- [x] **Step 1: Escrever o probe**
 
-`scripts/datafy-probe/probe.mjs`. Node ≥ 18, sem dependência. Imprime só forma. Booleans e números aparecem com valor (não são sensíveis e `subscribed`/`on_trial`/`expires_in` são o que se quer medir). Strings aparecem como `string`, `string<sk_live_>` (só o prefixo conhecido) ou `url<host>`.
+`scripts/datafy-probe/probe.mjs`. O código abaixo é a referência; o arquivo real acrescenta: leitura de `TOKEN_CONTA_DATAFY`, os comandos `global` e `list-ids`, `dup <id>` no lugar de `create-again-same-name`, fingerprints SHA-256 truncadas de `phone_number_id`/`waba_id`/`business_id` (para comparar o número antes e depois da troca de canal sem imprimir o id), e trava que recusa comando mutante em canal com `subscribed === true` (protege o ORIGINAL). Node ≥ 18, sem dependência. Imprime só forma. Booleans e números aparecem com valor (não são sensíveis e `subscribed`/`on_trial`/`expires_in` são o que se quer medir). Strings aparecem como `string`, `string<sk_live_>` (só o prefixo conhecido) ou `url<host>`.
 
 ```js
 // Probe da Fase 0 do parceiro Datafy. Imprime FORMA, nunca valor sensível.
@@ -207,11 +211,13 @@ document.getElementById("b").onclick = async () => {
 }
 ```
 
-- [ ] **Step 2: README do probe**
+- [x] **Step 2: README do probe**
 
 `scripts/datafy-probe/README.md` com: (a) como definir a variável no PowerShell (`$env:DATAFY_ACCOUNT_TOKEN = Read-Host -AsSecureString`, convertido, para não ficar no histórico) e no bash (`read -s DATAFY_ACCOUNT_TOKEN; export DATAFY_ACCOUNT_TOKEN`); (b) a sequência do Step 3; (c) o aviso de que `subscribe` cobra e exige `--autorizo-cobranca`.
 
 - [ ] **Step 3: Rodar a sequência com o dono (na máquina dele)**
+
+A sequência executada em 2026-10-14 é a do README (número da Moralles: ORIGINAL → desconecta no painel → PROBE → desconecta → ORIGINAL, conferindo as fingerprints contra a linha de base). A lista abaixo é a original, para número dedicado:
 
 1. `list`: forma da listagem e valor de `subscription` da conta.
 2. `create`: forma da resposta; anotar `CHANNEL_ID`.
@@ -255,12 +261,12 @@ Independe da Datafy ao vivo; pode correr junto da Task 0.
 - Produces: `PROVIDER_CAPABILITIES[provider].inboundRedelivery: "documented" | "unmeasured"`. `datafy` → `"documented"`; `zapi`, `waha`, `uazapi`, `official` → `"unmeasured"`.
 - `decideIngestionMode(input: { source; flagEnabled; flagReadFailed; channelEnabled; providerRedelivery: "documented" | "unmeasured" | undefined }): IngestionMode`.
 
-- [ ] **Step 1: Teste que falha.** Em `whatsapp-inbound-queue-core.test.ts`: `providerRedelivery: "unmeasured"` com canal e flag ligados → `"sync"`; `"documented"` → `"async"`; `undefined` → `"sync"` (fail-safe: sem declaração, não confia na reentrega). Manter os casos existentes passando `"documented"`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/whatsapp-inbound-queue-core.test.ts`.
-- [ ] **Step 3: Implementar.** A nova perna entra **depois** de `source !== "provider"` e **antes** da leitura da flag, junto da perna do canal (é entrada certa, vem do registry em código). Atualizar o comentário de ordem das pernas. Não alterar a ordem canal → flag.
-- [ ] **Step 4: Ligar no webhook.** No call site de `decideIngestionMode` em `webhook-whatsapp/index.ts`, passar `providerRedelivery: PROVIDER_CAPABILITIES[provider]?.inboundRedelivery`. Teste estático (em `whatsapp-multiprovider-wiring-guard.test.ts` ou novo `datafy-partner-wiring-guard.test.ts`) que reprova se o call site não passar `providerRedelivery`.
-- [ ] **Step 5: Controle positivo.** Trocar temporariamente o valor do `zapi` para `"documented"` e ver o teste do Step 1 falhar; reverter.
-- [ ] **Step 6:** `npm run typecheck && npx vitest run` verdes. Commit `feat(whatsapp): ingestao assincrona so para provider com reentrega documentada`.
+- [x] **Step 1: Teste que falha.** Em `whatsapp-inbound-queue-core.test.ts`: `providerRedelivery: "unmeasured"` com canal e flag ligados → `"sync"`; `"documented"` → `"async"`; `undefined` → `"sync"` (fail-safe: sem declaração, não confia na reentrega). Manter os casos existentes passando `"documented"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/whatsapp-inbound-queue-core.test.ts`.
+- [x] **Step 3: Implementar.** A nova perna entra **depois** de `source !== "provider"` e **antes** da leitura da flag, junto da perna do canal (é entrada certa, vem do registry em código). Atualizar o comentário de ordem das pernas. Não alterar a ordem canal → flag.
+- [x] **Step 4: Ligar no webhook.** No call site de `decideIngestionMode` em `webhook-whatsapp/index.ts`, passar `providerRedelivery: PROVIDER_CAPABILITIES[provider]?.inboundRedelivery`. Teste estático (em `whatsapp-multiprovider-wiring-guard.test.ts` ou novo `datafy-partner-wiring-guard.test.ts`) que reprova se o call site não passar `providerRedelivery`.
+- [x] **Step 5: Controle positivo.** Trocar temporariamente o valor do `zapi` para `"documented"` e ver o teste do Step 1 falhar; reverter.
+- [x] **Step 6:** `npm run typecheck && npx vitest run` verdes. Commit `feat(whatsapp): ingestao assincrona so para provider com reentrega documentada`.
 
 ---
 
@@ -564,7 +570,7 @@ Itens:
   - Onboarding Datafy vive em `whatsapp_datafy_onboardings`; a linha de `whatsapp_channels` só nasce com `phone_number_id` do GET da Datafy.
   - Passo que gera custo na Datafy só depois de `claim_datafy_onboarding_step`; `must_reconcile` proíbe POST antes de reconciliar.
   - `sk_acct_` só em `platform_secrets`, sem fallback de env.
-  - `decideIngestionMode` exige `inboundRedelivery = "documented"`; substitui a frase "nada no código verifica isso".
+  - ~~`decideIngestionMode` exige `inboundRedelivery = "documented"`; substitui a frase "nada no código verifica isso".~~ Feito na Task 1: as duas regras do gate ("TRÊS pernas" e "só provider que reentrega entra na fila") já estão no par CLAUDE.md/AGENTS.md.
   - Atualizar a frase de `automaticWebhook`/"a Datafy responde 403 a `webhook_configuration`": vale para o token de canal; o de conta cria webhook.
   - `begin_switch` aceita `datafy` só sem canal ativo.
 - [ ] **Checklist de redeploy:** linhas para `datafy-admin-client.ts`, `datafy-account-config*.ts`, `datafy-onboarding-core.ts` (frontend importa direto), `ops-alert-sender.ts`/`ops-alert-core.ts` e a mudança de `whatsapp-inbound-queue-core.ts` (agora também lido pelo health worker).
