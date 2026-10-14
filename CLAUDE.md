@@ -196,6 +196,10 @@ Convenções em [src/hooks/useDashboardMetrics.ts](src/hooks/useDashboardMetrics
 
 ## Agente IA — WhatsApp
 
+- **Parceiro Datafy usa token de CONTA somente em onboarding/admin (`datafy-admin-client.ts`); mensagens, status e templates usam token de CANAL (`datafy-client.ts`).** O token de conta vem de `getDatafyAccountToken`, sem fallback de ambiente, e nunca integra credentials/DTO/log; o token de canal e secret da cópia de onboarding são apagados no mesmo UPDATE que fecha ou abandona a linha. [datafy-onboarding-actions.ts](supabase/functions/_shared/datafy-onboarding-actions.ts).
+- **Novo custo Datafy exige liberação persistida da unidade, serviço liberado e allowance `NEW_PROVISIONING` com `adminDecisionRecorded` dessa liberação; admin não ignora esses gates.** `create_channel`/`subscribe` só postam após claim SQL e resposta incerta exige GET/listagem antes de outro POST; `failed` conserva incerteza. Com onboarding vivo admin compartilha seu claim; terminado, somente admin real pode tomar o lease separado do canal sem reabrir o histórico nem mudar `grant_id`. [migration](supabase/migrations/20261014170540_datafy_existing_subscription_claim.sql).
+- **Assinatura confirmada e eco persistido são condições cumulativas para ativar canal self-service Datafy, em qualquer ordem.** Revogação durante assinatura registra o fato remoto e alerta, sem consumir liberação ou pedir ativação; link de canal já conectado nunca é emitido, e `channel_created` prepara webhook antes de confirmar. Vinculação administrativa exige candidato de listagem nova + GET e zera eco antigo na mesma troca de credenciais. [datafy-onboarding-actions.ts](supabase/functions/_shared/datafy-onboarding-actions.ts).
+
 ### Fluxo
 
 ```
@@ -518,6 +522,8 @@ Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admi
 
 ## Observabilidade WhatsApp
 
+- **GET administrativo Datafy sem assinatura ou pausado desativa o canal e limpa a intenção de ativação na mesma escrita.** O CHECK `whatsapp_channels_datafy_operational_subscription_chk` recusa `is_active=true` com cancelamento/pausa registrados, impedindo um eco com snapshot anterior de reativar o canal; metadados NULL do legado manual não são assinatura comprovada nem motivo de desligamento por essa guarda. Retomar não restaura intenção automaticamente: o canal precisa ser selecionado novamente. [migration](supabase/migrations/20261014170540_datafy_existing_subscription_claim.sql).
+
 - **`webhook_executions`** FORCE RLS, TTL 30d. Outcomes: `success`, `agent_error`, `send_error`, `duplicate`, `media_response`, `debounced_superseded`, `conversation_locked`, `status_changed_locked`, `org_billing_blocked`, `status_callback`, etc.
 - **Todo `finish("webhook_unauthorized")` grava `meta.reason` com o nome da guarda que recusou** (`signature_invalid`, `declared_identity_mismatch`, `provider_token_mismatch`, `instance_mismatch`, `meta_identity_mismatch`, `manual_echo_identity_mismatch`). Seis guardas produzem o mesmo outcome, e sem o `reason` só o log da função, que expira, diz qual recusou. Guarda nova entra no vocabulário e no teste estático. [whatsapp-conversation-parity-guard.test.ts](src/lib/whatsapp-conversation-parity-guard.test.ts).
 - **`SendResult` estruturado:** `{ ok, status, error, bodySnippet, missingCreds, providerMessageId }`.
@@ -571,6 +577,8 @@ Deploy individual: `supabase functions deploy <nome>`. **Edge Functions não com
 **A mesma ordem vale para migration que LIBERA um valor numa allowlist de CHECK, não só quem adiciona coluna: o banco primeiro, a EF depois.** A metadata de provider (rótulo, capabilities) vem do registry em código — deployar a EF antes do `db push` faz a opção nova aparecer normalmente na UI, sem nenhum sinal de que o banco ainda recusa. O caminho só falha depois, no INSERT, com erro genérico — e se houver chamada externa real antes da escrita (ex.: descoberta `/me` da Datafy em `manage-channels:create`), ela já foi gasta quando o CHECK antigo rejeita. Exemplo: liberar `"datafy"` em `manage-channels`/`manage-organizations` antes da [migration 110](supabase/migrations/20260922170000_110_datafy_provider.sql) ser aplicada.
 
 Checklist de redeploy quando `_shared/X.ts` muda:
+
+- **`datafy-onboarding-actions.ts`, `datafy-onboarding-core.ts` e `datafy-admin-client.ts`** → `manage-channels` (única EF por valor; core sem runtime também é importável pelo frontend). **`datafy-account-config.ts` / `datafy-account-config-core.ts`** → `manage-platform-secrets` e `manage-channels`. Novas colunas/RPCs da migration `20261014170540_datafy_existing_subscription_claim.sql` chegam ao banco antes do bundle de `manage-channels`.
 
 - **`availability.ts`** → `create-reservation`, `create-manual-reservation`, `update-reservation`, `webhook-whatsapp`
 - **`conversation-log.ts`** → `send-whatsapp`, `send-confirmation`, `send-cancellation`, `send-scheduled-whatsapp`. Append automatizado com author/event_id e reparo de aceite não devem divergir entre esses bundles; [matriz completa](docs/whatsapp-templates-programados-runbook.md#matriz-transitiva-de-bundles).

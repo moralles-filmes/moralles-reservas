@@ -146,7 +146,7 @@ describe("decideStartStep — ordem: liberação → gates → unidade ativa →
     }
   });
 
-  it("canal conectado nunca recebe link: com número → go_confirm em qualquer assinatura/trial", () => {
+  it("canal conectado prepara webhook e depois confirma, sem link em qualquer assinatura/trial", () => {
     // Fase 0, §4 item 2: link de canal com número devolve 200 e reabre o
     // Embedded Signup com troca de número. Também nunca é recriado (teria
     // número), nem com trial vencido e sem assinatura.
@@ -157,7 +157,7 @@ describe("decideStartStep — ordem: liberação → gates → unidade ativa →
             onboarding: onboarding(state),
             remote: { found: true, phoneNumberId: "pn_1", subscribed, onTrial },
           }));
-          expect(verdict).toEqual({ kind: "go_confirm" });
+          expect(verdict).toEqual({ kind: state === "channel_created" ? "create_webhook" : "go_confirm" });
           expect(verdict.kind).not.toBe("issue_link");
         }
       }
@@ -210,13 +210,13 @@ describe("decideStartStep — ordem: liberação → gates → unidade ativa →
   });
 
   describe("campo malformado do GET falha fechado (o adapter não tem type-check)", () => {
-    it("`phoneNumberId` ausente em canal de trial → go_confirm, nunca issue_link", () => {
+    it("`phoneNumberId` ausente prepara webhook ou confirma, nunca issue_link", () => {
       for (const state of ["channel_created", "webhook_ready"] as const) {
         const verdict = decideStartStep(startInput({
           onboarding: onboarding(state),
           remote: malformed<RemoteChannelState>({ found: true, subscribed: false, onTrial: true }),
         }));
-        expect(verdict).toEqual({ kind: "go_confirm" });
+        expect(verdict).toEqual({ kind: state === "channel_created" ? "create_webhook" : "go_confirm" });
       }
     });
 

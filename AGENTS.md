@@ -100,6 +100,11 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 
 ## WhatsApp, IA e conversas
 
+- Datafy parceiro usa token de conta só em onboarding/admin (`datafy-admin-client.ts`), resolvido por `getDatafyAccountToken` sem fallback; mensagens/status/templates usam token de canal (`datafy-client.ts`). Conta nunca entra em credentials/DTO/log, e onboarding apaga token/secret no mesmo UPDATE que o fecha ou abandona. `_shared/datafy-onboarding-actions.ts`.
+- Novo custo Datafy exige liberação persistida, serviço e allowance `NEW_PROVISIONING` com `adminDecisionRecorded` da liberação; admin respeita os mesmos gates. Create/subscribe exigem claim SQL; incerto só sai por reconciliação e `failed` conserva. Admin compartilha claim do onboarding vivo; terminal usa lease administrativo do canal, sem reabrir histórico nem mudar grant_id. Migration `20261014170540_datafy_existing_subscription_claim.sql`.
+- Datafy self-service só ativa com assinatura confirmada + eco persistido, em qualquer ordem. Revogação durante POST registra custo remoto/alerta sem consumir grant nem ativar; número conectado nunca recebe link e prepara webhook antes de confirm. Link admin exige listagem nova + GET e limpa prova antiga na troca de credenciais. `_shared/datafy-onboarding-actions.ts`.
+- GET Datafy sem assinatura ou pausado desativa+limpa intenção atomicamente; CHECK recusa ativação com canceled_at/paused_at registrados, inclusive por eco stale. Metadata NULL preserva legado manual; resume não recria intenção automaticamente e exige nova seleção do canal. Migration `20261014170540_datafy_existing_subscription_claim.sql`.
+
 - IA é BYOK per-unit, sem fallback global de chave. Defaults/listas de modelos ficam sincronizados em `src/lib/aiModels.ts` e `_shared/ai-providers.ts`; alteração requer redeploy de `webhook-whatsapp`, o único consumidor. `manage-ai-providers` NÃO entra: é CRUD sobre `ai_provider_credentials` (`list`/`upsert`/`delete`, platform admin) e não resolve modelo, não classifica preço, não autoriza chamada — não importa nenhum núcleo de IA.
 - Erro do agente vira handoff humano. Retry silencioso só uma vez, antes de tool mutante; tool mutante nova marca `mutatingToolUsed`.
 - Toda saída do LLM passa por `sanitizeForWhatsApp`; hardcodes/templates/mensagem manual não. JSONB nunca é interpolado diretamente em prompt/template.
@@ -177,6 +182,8 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 ---
 
 ## Deploy e acoplamentos
+
+- Datafy onboarding actions/core/admin-client → `manage-channels`; account-config/core → `manage-platform-secrets` e `manage-channels`. Migração de claim administrativo chega antes do novo bundle de `manage-channels`; core também é importável pelo frontend. Matriz detalhada em `CLAUDE.md`.
 
 - Edge Functions têm bundles independentes. Alterar `_shared/X.ts` exige redeploy de **todas** as importadoras diretas e transitivas listadas no checklist completo de [CLAUDE.md](CLAUDE.md); consumidor novo atualiza o checklist nos dois arquivos no mesmo change.
 - Mantenha pares sincronizados: disponibilidade e suas EFs; modelos UI/backend; normalização de telefone; `tax-id.ts` front/backend; templates front/workers; cores/tokens; produtores e consumidores de `billing_notifications.event_type`.

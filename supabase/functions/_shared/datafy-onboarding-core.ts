@@ -77,7 +77,7 @@ export type StartStepDecision =
 /**
  * O que o `start` deve fazer a seguir. Decide pelo GET (Fase 0, §4 itens 2 e 3),
  * nunca pelo 409 do link:
- * - canal com número → `go_confirm` (link de canal conectado reabre o Embedded
+ * - canal com número → prepara webhook se ainda faltar, depois `go_confirm` (link de canal conectado reabre o Embedded
  *   Signup e troca o número; nunca é emitido). Vem ANTES do teste de trial: canal
  *   com número também nunca é recriado;
  * - canal sem número, `subscribed === false` e `onTrial === false` →
@@ -128,7 +128,9 @@ export function decideStartStep(input: {
       }
       if (remote.found === false) return { kind: "recreate_channel", reason: "channel_missing" };
       if (remote.found !== true) return { kind: "refuse", code: "REMOTE_STATE_REQUIRED" };
-      if (mayHavePhoneNumber(remote.phoneNumberId)) return { kind: "go_confirm" };
+      if (mayHavePhoneNumber(remote.phoneNumberId)) {
+        return onboarding.state === "channel_created" ? { kind: "create_webhook" } : { kind: "go_confirm" };
+      }
       if (typeof remote.subscribed !== "boolean" || typeof remote.onTrial !== "boolean") {
         return { kind: "refuse", code: "REMOTE_STATE_REQUIRED" };
       }

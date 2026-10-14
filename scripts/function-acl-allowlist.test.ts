@@ -132,9 +132,11 @@ describe('Datafy parceiro: claim cercado do onboarding (Task 2)', () => {
   it('as duas RPCs são service-only, fora da allowlist pública, revogadas de PUBLIC/anon/authenticated', () => {
     const signatures = allowlist._service_only_datafy_partner_onboarding as string[];
     // `p_unit_id` logo depois de `p_onboarding_id`: segunda tranca de tenant.
-    expect(signatures).toEqual(['claim_datafy_onboarding_step(uuid,uuid,text,uuid,integer)',
-      'release_datafy_onboarding_step(uuid,uuid,uuid,text,text,text)']);
-    for (const signature of signatures) {
+    const onboardingSignatures = ['claim_datafy_onboarding_step(uuid,uuid,text,uuid,integer)',
+      'release_datafy_onboarding_step(uuid,uuid,uuid,text,text,text)'];
+    expect(signatures).toEqual([...onboardingSignatures, 'claim_datafy_existing_subscription(uuid,uuid,uuid,integer)',
+      'release_datafy_existing_subscription(uuid,uuid,uuid,text,text)']);
+    for (const signature of onboardingSignatures) {
       expect(allEntries.some(entry => entry.name === signature.split('(')[0]), signature).toBe(false);
       expect(sql, signature).toContain(`revoke all on function public.${signature} from public,anon,authenticated;`);
       expect(sql, signature).toContain(`grant execute on function public.${signature} to service_role;`);
@@ -152,6 +154,24 @@ describe('Datafy parceiro: claim cercado do onboarding (Task 2)', () => {
       expect(sql).not.toMatch(new RegExp(`create policy[^;]+on public\\.${table}\\b`, 'i'));
     }
     expect(sql).not.toMatch(/grant\s[^;]+\sto\s+(?:public|anon|authenticated)\s*;/i);
+  });
+});
+
+describe('Datafy parceiro: assinatura administrativa de canal existente (Task 7)', () => {
+  const sql = readFileSync(join(MIGRATIONS_DIR, '20261014170540_datafy_existing_subscription_claim.sql'), 'utf8').replace(/,\s+/g, ',');
+  it('fecha ambas RPCs e mantém um só claim para onboarding vivo', () => {
+    for (const signature of ['claim_datafy_existing_subscription(uuid,uuid,uuid,integer)',
+      'release_datafy_existing_subscription(uuid,uuid,uuid,text,text)']) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
+      expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated;`);
+      expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    expect(sql).toContain("public.platform_admins where user_id = p_actor_id");
+    expect(sql).toContain("c.unit_id is distinct from p_unit_id");
+    expect(sql).toContain("public.claim_datafy_onboarding_step(o.id,p_unit_id,'subscribe',p_actor_id,v_ttl)");
+    expect(sql).toContain("state not in ('completed','abandoned') for update");
+    expect(sql).not.toMatch(/update public\.whatsapp_datafy_onboardings/);
+    expect(sql.match(/security definer set search_path = ''/g)).toHaveLength(2);
   });
 });
 
@@ -265,6 +285,15 @@ describe('Task12 receipt authority and surgical expiry additions', () => {
 });
 
 describe('Task9c final typed resource authority', () => {
+  const selectDependency = /\b(?:from|join)\s+(?:public|app_private|pg_catalog)\./i;
+  function authorityDecisions(source: string) {
+    const normalized = source.replace(/\r\n/g, '\n');
+    const begin = normalized.indexOf('v_now:=clock_timestamp()');
+    const end = normalized.indexOf('if v_error is not null then\n    update', begin);
+    expect(begin).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(begin);
+    return normalized.slice(begin, end);
+  }
   it('keeps one private authority algorithm and closes all three signatures', () => {
     const signature = 'confirm_whatsapp_automation_resource_post(uuid,uuid,bigint,bigint,bigint,jsonb)';
     expect(allowlist._service_only_whatsapp_resource_confirm).toEqual([signature]);
@@ -278,9 +307,16 @@ describe('Task9c final typed resource authority', () => {
     expect(sql).not.toMatch(/create or replace function public\.(?:prepare|confirm)_whatsapp_automation_post\(/i);
     expect(sql.match(/language plpgsql volatile security definer set search_path=''/g)).toHaveLength(2);
     expect(sql).toContain('p_confirm_only,null)');
-    const decisions = sql.slice(sql.indexOf('v_now:=clock_timestamp()'), sql.indexOf('if v_error is not null then\n    update'));
-    expect(decisions).not.toMatch(/\b(?:from|join)\s+(?:public|app_private|pg_catalog)\./i);
+    expect(authorityDecisions(sql)).not.toMatch(selectDependency);
     expect(sql).not.toMatch(/\b(?:stable|immutable)\b/i);
+  });
+  it('controle positivo: leitura real dentro da autoridade é detectada em LF e CRLF', () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, '20261005170415_whatsapp_automation_resource_post_confirm.sql'), 'utf8');
+    for (const ending of ['\n', '\r\n']) {
+      const changed = sql.replace(/\r\n/g, '\n').replace('v_now:=clock_timestamp();',
+        'v_now:=clock_timestamp();\n  perform 1 from public.whatsapp_channels;').replace(/\n/g, ending);
+      expect(authorityDecisions(changed)).toMatch(selectDependency);
+    }
   });
 });
 

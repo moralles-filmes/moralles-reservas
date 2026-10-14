@@ -10,7 +10,8 @@
  *
  * Nenhum log carrega o token: só o `reason` do desfecho.
  *
- * Chamado por: manage-platform-secrets (só `clearDatafyAccountConfigCache`).
+ * Chamado por: manage-platform-secrets (só `clearDatafyAccountConfigCache`) e
+ * manage-channels (onboarding/admin com token de conta; envio usa token de canal).
  * Ao importar numa EF nova, lembrar do checklist de redeploy no CLAUDE.md.
  */
 

@@ -1,0 +1,397 @@
+import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import ts from "typescript";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { createDatafyOnboardingActions, type DatafyOperationalEvent } from "../../supabase/functions/_shared/datafy-onboarding-actions";
+import type { DatafyChannelSnapshot, DatafyAdminClient } from "../../supabase/functions/_shared/datafy-admin-client";
+
+type Row = Record<string, unknown>;
+const unitId = "unit-a", actor = "actor", channelId = "reserved-a";
+const GRANTS = "whatsapp_official_connection_grants", ONBOARDINGS = "whatsapp_datafy_onboardings";
+const grant = () => ({ id: "grant-a", unit_id: unitId, revoked_at: null, consumed_at: null, consumed_channel_id: null });
+const onboarding = (state = "webhook_ready") => ({ id: "onboarding-a", unit_id: unitId, organization_id: "org-a",
+  grant_id: "grant-a", reserved_channel_id: channelId, datafy_channel_id: "remote-a", datafy_webhook_id: "hook-a",
+  channel_token: "synthetic-channel-token", webhook_secret: "synthetic-webhook-secret", state, uncertain_steps: [], claim_id: null });
+const channel = () => ({ id: channelId, unit_id: unitId, provider: "datafy", external_instance_id: "remote-a",
+  credentials: { phone_number_id: "number-a", business_account_id: "waba-a", access_token: "synthetic-channel-token" },
+  webhook_secret: "synthetic-webhook-secret", is_active: false, status: "connected", provider_subscribed_at: null,
+  manual_echo_verified_at: null, activation_requested_at: null, units: { organization_id: "org-a" } });
+const snapshot = (): DatafyChannelSnapshot => ({ id: "remote-a", name: channelId, subscribed: false, onTrial: true,
+  trialEndsAt: null, paused: false, phoneNumberId: "number-a", wabaId: "waba-a", businessId: "business-a",
+  token: "synthetic-channel-token", webhookSecret: "synthetic-webhook-secret", displayPhone: null, webhooks: [] });
+const echoSource = readFileSync(resolve(__dirname, "../../supabase/functions/webhook-whatsapp/index.ts"), "utf8");
+const echoBegin = echoSource.indexOf("    const ownMessageEchoes = parseOwnMessageEchoes(provider, payload);");
+const echoEnd = echoSource.indexOf("    // Eco das mensagens da loja", echoBegin);
+const executeEcho = new Function("supabase", "channel", `return (async () => {
+  const provider = "datafy", payload = {}, credentials = {}, unitId = "${unitId}", channelId = "${channelId}", requestId = "request";
+  const parseOwnMessageEchoes = () => [{source:"manual_device"}], manualEchoMatchesConfiguredChannel = () => true;
+  const jsonLog = () => {}, finish = async () => {};
+  ${ts.transpile(echoSource.slice(echoBegin, echoEnd), { target: ts.ScriptTarget.ES2022 })}
+})();`);
+
+function harness(options: { state?: string; withChannel?: boolean; noOnboarding?: boolean; noGrant?: boolean; gates?: boolean; busy?: boolean; uncertain?: boolean; subscribed?: boolean; echo?: boolean } = {}) {
+  const tables: Record<string, Row[]> = {
+    [GRANTS]: options.noGrant ? [] : [grant()],
+    [ONBOARDINGS]: options.noOnboarding ? [] : [onboarding(options.state)],
+    whatsapp_channels: options.withChannel ? [{ ...channel(), manual_echo_verified_at: options.echo ? "proof" : null }] : [],
+    whatsapp_template_accounts: [], whatsapp_automation_adoptions: [],
+  };
+  const calls: string[] = [], filters: { table: string; keys: string[] }[] = [];
+  const events: DatafyOperationalEvent[] = [];
+  let sequence = 0;
+  const remote = snapshot(); remote.subscribed = options.subscribed ?? false;
+  let createFailure: null | "transport" = null, subscribeFailure: null | "transport" | "payment_declined" = null;
+  let revokeDuringSubscribe = false, missingWrite: string | null = null, accountUnavailable = false, malformedClaim = false;
+  const db = {
+    from(table: string) {
+      const predicates: ((row: Row) => boolean)[] = [];
+      const seen = { table, keys: [] as string[] }; filters.push(seen);
+      let patch: Row | null = null, inserted: Row | null = null, single = false, slice = [0, Infinity];
+      const getResult = () => {
+        const data = tables[table] ?? [];
+        if (inserted) {
+          const row = { ...inserted };
+          if (table === ONBOARDINGS) Object.assign(row, { id: "onboarding-a", reserved_channel_id: channelId,
+            state: "open", datafy_channel_id: null, datafy_webhook_id: null, channel_token: null, webhook_secret: null, uncertain_steps: [], claim_id: null });
+          if (table === "whatsapp_channels") Object.assign(row, { provider_subscribed_at: null, manual_echo_verified_at: null,
+            activation_requested_at: null, units: { organization_id: "org-a" } });
+          data.push(row); calls.push(`insert:${table}`);
+        }
+        const selected = data.filter((row) => predicates.every((test) => test(row))).slice(slice[0], slice[1]);
+        if (patch) {
+          calls.push(`update:${table}:${Object.keys(patch).join(",")}`);
+          if (missingWrite === table) { missingWrite = null; return { data: single ? null : [], error: null }; }
+          selected.forEach((row) => Object.assign(row, patch));
+        }
+        return { data: single ? selected[0] ?? null : selected.map((row) => ({ ...row })), count: selected.length, error: null };
+      };
+      const query = {
+        select(_projection: string) { return query; },
+        eq(key: string, value: unknown) { seen.keys.push(`${key}:${value}`); predicates.push((row) => row[key] === value); return query; },
+        neq(key: string, value: unknown) { seen.keys.push(`${key}!=${value}`); predicates.push((row) => row[key] !== value); return query; },
+        is(key: string, value: unknown) { seen.keys.push(`${key}:${value}`); predicates.push((row) => (row[key] ?? null) === value); return query; },
+        in(key: string, values: unknown[]) { predicates.push((row) => values.includes(row[key])); return query; },
+        order(_key: string, _opts: unknown) { return query; },
+        limit(value: number) { slice[1] = value; return query; },
+        range(from: number, to: number) { slice = [from, to + 1]; return query; },
+        update(value: Row) { patch = value; return query; },
+        insert(value: Row) { inserted = value; return query; },
+        maybeSingle() { single = true; return Promise.resolve(getResult()); },
+        then(fulfilled: (value: ReturnType<typeof getResult>) => unknown) { return Promise.resolve(getResult()).then(fulfilled); },
+      };
+      return query;
+    },
+    async rpc(name: string, args: Row) {
+      calls.push(`rpc:${name}:${args.p_outcome ?? args.p_step ?? ""}`);
+      expect(args.p_unit_id).toBe(unitId);
+      const o = tables[ONBOARDINGS].find((row) => row.id === args.p_onboarding_id);
+      const c = tables.whatsapp_channels.find((row) => row.id === args.p_channel_id);
+      if (name === "claim_datafy_onboarding_step") {
+        if (malformedClaim) return { data: [{ claimed: true, claim_id: "claim-malformed" }], error: null };
+        if (options.busy || o!.claim_id) return { data: [{ claimed: false, claim_id: null }], error: null };
+        const claimId = `claim-${++sequence}`; o!.claim_id = claimId;
+        return { data: [{ claimed: true, claim_id: claimId, must_reconcile: (o!.uncertain_steps as string[]).includes(String(args.p_step)) || options.uncertain === true }], error: null };
+      }
+      if (name === "claim_datafy_existing_subscription") {
+        const live = tables[ONBOARDINGS].find((row) => row.reserved_channel_id === args.p_channel_id && !["completed", "abandoned"].includes(String(row.state)));
+        if (options.busy || live?.claim_id) return { data: [{ claimed: false, source: "onboarding", claim_id: null }], error: null };
+        const claimId = `claim-${++sequence}`;
+        if (live) live.claim_id = claimId; else c!.datafy_subscription_claim_id = claimId;
+        return { data: [{ claimed: true, claim_id: claimId, must_reconcile: options.uncertain ?? false,
+          source: live ? "onboarding" : "channel", onboarding_id: live?.id ?? null }], error: null };
+      }
+      if (name.startsWith("release_datafy_")) {
+        const owned = o ?? c;
+        const claimKey = o ? "claim_id" : "datafy_subscription_claim_id";
+        expect(owned?.[claimKey]).toBe(args.p_claim_id);
+        owned![claimKey] = null;
+        if (o) {
+          if (args.p_outcome === "uncertain") o.uncertain_steps = [args.p_step];
+          if (["succeeded", "reconciled_present", "reconciled_absent"].includes(String(args.p_outcome))) o.uncertain_steps = [];
+        }
+        return { data: true, error: null };
+      }
+      if (name === "request_whatsapp_channel_activation") { c!.activation_requested_at = "intent"; return { data: [{ channel_id: c!.id }], error: null }; }
+      if (name === "activate_whatsapp_channel") {
+        expect(c!.manual_echo_verified_at).toBeTruthy(); expect(c!.provider_subscribed_at).toBeTruthy();
+        c!.is_active = true; c!.activation_requested_at = null; return { data: [], error: null };
+      }
+      throw new Error(`unexpected ${name}`);
+    },
+  };
+  const client: DatafyAdminClient = {
+    getChannel: vi.fn(async (id) => { calls.push(`get:${id}`); return { ok: true as const, value: { ...remote, id, webhooks: [...remote.webhooks] } }; }),
+    listChannels: vi.fn(async () => { calls.push("list"); return { ok: true as const, value: { accountSubscription: null, channels: [{ ...remote }] } }; }),
+    createChannel: vi.fn(async () => {
+      calls.push("create");
+      if (createFailure) return { ok: false as const, kind: createFailure, httpStatus: null, code: "DATAFY_TRANSPORT" };
+      remote.phoneNumberId = null;
+      return { ok: true as const, value: { id: remote.id, token: remote.token!, webhookSecret: remote.webhookSecret!, subscribed: false } };
+    }),
+    createWebhook: vi.fn(async (_id, input) => { calls.push("webhook"); remote.webhooks.push({ id: "hook-a", ...input, enabled: true }); return { ok: true as const, value: { webhookId: "hook-a" } }; }),
+    createConnectLink: vi.fn(async () => { calls.push("link"); return { ok: true as const, value: { url: "https://app.datafyapi.com.br/synthetic", expiresInSeconds: 60 } }; }),
+    subscribe: vi.fn(async () => {
+      calls.push("subscribe");
+      if (revokeDuringSubscribe) { tables[GRANTS][0].revoked_at = "revoked"; tables[ONBOARDINGS][0].state = "abandoned"; }
+      if (subscribeFailure) return { ok: false as const, kind: subscribeFailure, httpStatus: null, code: subscribeFailure === "transport" ? "DATAFY_TRANSPORT" : "DATAFY_PAYMENT_DECLINED" };
+      remote.subscribed = true; return { ok: true as const, value: { subscribed: true } };
+    }),
+    cancel: vi.fn(async () => ({ ok: true as const, value: { acknowledged: true as const } })),
+    pause: vi.fn(async () => ({ ok: true as const, value: { acknowledged: true as const } })),
+    resume: vi.fn(async () => ({ ok: true as const, value: { acknowledged: true as const } })),
+    deleteChannel: vi.fn(async () => { calls.push("delete"); return { ok: true as const, value: { deleted: true as const } }; }),
+  };
+  const tokenReader = vi.fn(async () => accountUnavailable ? { ok: false as const, reason: "unavailable" as const }
+    : { ok: true as const, token: "synthetic-account-token" });
+  const gates = vi.fn(async () => options.gates !== false);
+  const actions = createDatafyOnboardingActions({ supabase: db as unknown as SupabaseClient, getAccountToken: tokenReader,
+    getOrganizationId: async () => "org-a", gatesAllowed: gates, projectUrl: "https://project.test", createClient: () => client,
+    emitEvent: (event) => { events.push(event); } });
+  return { tables, calls, filters, events, client, remote, tokenReader, gates,
+    failCreate() { createFailure = "transport"; }, failSubscribe(kind: "transport" | "payment_declined") { subscribeFailure = kind; },
+    unavailableAccount() { accountUnavailable = true; },
+    malformedClaim() { malformedClaim = true; },
+    runEcho() { return executeEcho(db, { ...tables.whatsapp_channels[0] }); },
+    revokeDuringSubscribe() { revokeDuringSubscribe = true; }, missWrite(table: string) { missingWrite = table; },
+    run(action: string, body: Row = {}) { return actions.handle(action, unitId, actor, "request", body); } };
+}
+
+describe("Datafy onboarding: I/O com decisões reais", () => {
+  it("start percorre open → canal → webhook → link efêmero sem expor credenciais", async () => {
+    const h = harness({ noOnboarding: true });
+    const response = await h.run("official_connect_start", { phone_number_id: "forged", channel_id: "forged" });
+    expect(response.status).toBe(200); expect(response.headers).toEqual({ "Cache-Control": "no-store" });
+    expect(h.calls.indexOf("create")).toBeGreaterThan(h.calls.indexOf("rpc:claim_datafy_onboarding_step:create_channel"));
+    expect(h.client.createChannel).toHaveBeenCalledWith({ name: channelId, description: `unit:${unitId}` });
+    expect(h.tables[ONBOARDINGS][0].state).toBe("webhook_ready");
+    expect(JSON.stringify(response)).not.toContain("synthetic-channel-token");
+  });
+  it("canal remoto com número nunca recebe link; webhook atrasado é preparado antes de confirm", async () => {
+    const h = harness({ state: "channel_created" });
+    const response = await h.run("official_connect_start");
+    expect(response.body).toEqual({ next: "confirm" });
+    expect(h.client.createConnectLink).not.toHaveBeenCalled();
+    expect(h.tables[ONBOARDINGS][0].state).toBe("webhook_ready");
+  });
+  it("confirm verifica gates antes de GET, mesmo com corpo forjado", async () => {
+    const h = harness({ gates: false });
+    const response = await h.run("official_connect_confirm", { datafy_channel_id: "forged", waba_id: "forged" });
+    expect(response.status).toBe(409); expect(h.client.getChannel).not.toHaveBeenCalled(); expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("confirm grava identidade do GET, assina, consome liberação e aguarda eco", async () => {
+    const h = harness();
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    const stored = h.tables.whatsapp_channels[0];
+    expect(stored.credentials).toMatchObject({ phone_number_id: "number-a", business_account_id: "waba-a" });
+    expect(stored.is_active).toBe(false); expect(stored.activation_requested_at).toBe("intent");
+    expect(h.tables[ONBOARDINGS][0]).toMatchObject({ state: "completed", channel_token: null, webhook_secret: null });
+    expect(h.tables[GRANTS][0].consumed_channel_id).toBe(channelId);
+    const claim = h.calls.indexOf("rpc:claim_datafy_onboarding_step:subscribe");
+    expect(h.calls.slice(claim, claim + 4)).toEqual(["rpc:claim_datafy_onboarding_step:subscribe", "get:remote-a", "subscribe", "get:remote-a"]);
+  });
+  it("assinatura que chega depois do eco também ativa e confirm concluído é idempotente", async () => {
+    const h = harness({ state: "connected", withChannel: true, echo: true });
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    expect(h.tables.whatsapp_channels[0].is_active).toBe(true);
+    const count = vi.mocked(h.client.subscribe).mock.calls.length;
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    expect(h.client.subscribe).toHaveBeenCalledTimes(count);
+  });
+  it("pagamento recusado preserva conexão sem intenção de ativação e emite evento seguro", async () => {
+    const h = harness(); h.failSubscribe("payment_declined");
+    expect((await h.run("official_connect_confirm")).body).toMatchObject({ step: "subscription_pending" });
+    expect(h.tables.whatsapp_channels[0].activation_requested_at).toBeNull();
+    expect(h.tables[ONBOARDINGS][0].state).toBe("connected");
+    expect(h.events).toEqual([{ evt: "datafy_subscription_failed", unitId, channelId, reason: "DATAFY_PAYMENT_DECLINED" }]);
+  });
+  it("POST incerto nunca é repetido quando GET seguinte confirma assinatura", async () => {
+    const h = harness({ state: "connected", withChannel: true }); h.failSubscribe("transport");
+    expect((await h.run("official_connect_confirm")).status).toBe(503);
+    h.remote.subscribed = true;
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    expect(h.client.subscribe).toHaveBeenCalledTimes(1);
+  });
+  it("GET de reconciliação sem assinatura libera absent e reivindica outra cerca antes do POST", async () => {
+    const h = harness({ state: "connected", withChannel: true });
+    h.tables[ONBOARDINGS][0].uncertain_steps = ["subscribe"];
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    const posting = h.calls.indexOf("subscribe");
+    expect(h.calls.slice(0, posting)).toContain("rpc:release_datafy_onboarding_step:reconciled_absent");
+    expect(h.calls.slice(0, posting).filter((call) => call === "rpc:claim_datafy_onboarding_step:subscribe")).toHaveLength(2);
+  });
+  it("busy impede create e subscribe", async () => {
+    const h = harness({ state: "open", busy: true });
+    expect((await h.run("official_connect_start")).status).toBe(409);
+    expect(h.client.createChannel).not.toHaveBeenCalled();
+    const admin = harness({ state: "connected", withChannel: true, busy: true });
+    expect((await admin.run("datafy_subscribe")).status).toBe(409); expect(admin.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("RPC de claim com shape incompleta falha fechado antes de criar ou assinar", async () => {
+    const h = harness({ state: "open" }); h.malformedClaim();
+    expect((await h.run("official_connect_start")).body).toMatchObject({ code: "ONBOARDING_CLAIM_FAILED" });
+    expect(h.client.createChannel).not.toHaveBeenCalled();
+    const confirm = harness({ state: "connected", withChannel: true }); confirm.malformedClaim();
+    expect((await confirm.run("official_connect_confirm")).body).toMatchObject({ code: "ONBOARDING_CLAIM_FAILED" });
+    expect(confirm.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("revogação durante subscribe registra custo remoto, sem consumir grant nem ativar", async () => {
+    const h = harness({ state: "connected", withChannel: true }); h.revokeDuringSubscribe();
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    expect(h.tables.whatsapp_channels[0].provider_subscribed_at).toBeTruthy();
+    expect(h.tables.whatsapp_channels[0].activation_requested_at).toBeNull();
+    expect(h.tables[GRANTS][0].consumed_at).toBeNull();
+    expect(h.tables[ONBOARDINGS][0].state).toBe("abandoned");
+    expect(h.events[0].reason).toBe("GRANT_REQUIRED");
+  });
+  it("colisão de número normaliza com a mesma régua do índice e exclui a própria linha", async () => {
+    const h = harness(); h.tables.whatsapp_channels.push({ ...channel(), id: "other", unit_id: "unit-b",
+      credentials: { phone_number_id: " \tnumber-a\r\n" }, units: { organization_id: "org-b" } });
+    expect((await h.run("official_connect_confirm")).body).toMatchObject({ code: "PHONE_NUMBER_ALREADY_BOUND" });
+    expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("UPDATE zero-row falha antes de consumir liberação ou ativar", async () => {
+    const h = harness({ state: "connected", withChannel: true }); h.missWrite("whatsapp_channels");
+    expect((await h.run("official_connect_confirm")).status).toBe(503);
+    expect(h.tables[GRANTS][0].consumed_at).toBeNull();
+    expect(h.calls).not.toContain("rpc:request_whatsapp_channel_activation:");
+  });
+  it.each(["completed", "abandoned"])("admin assina canal com onboarding %s sem reabrir histórico", async (state) => {
+    const h = harness({ state, withChannel: true });
+    expect((await h.run("datafy_subscribe")).status).toBe(200);
+    expect(h.tables[ONBOARDINGS][0].state).toBe(state);
+    expect(h.calls).toContain("rpc:release_datafy_existing_subscription:succeeded");
+  });
+  it("admin sem liberação não cria custo em canal legado", async () => {
+    const h = harness({ noOnboarding: true, withChannel: true, noGrant: true });
+    expect((await h.run("datafy_subscribe")).status).toBe(409); expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("lease do canal não fecha onboarding de outro canal na mesma unidade", async () => {
+    const h = harness({ state: "open", withChannel: true });
+    h.tables[ONBOARDINGS][0].reserved_channel_id = "different-channel";
+    expect((await h.run("datafy_subscribe")).status).toBe(200);
+    expect(h.tables[ONBOARDINGS][0]).toMatchObject({ state: "open", reserved_channel_id: "different-channel" });
+    expect(h.calls).toContain("rpc:release_datafy_existing_subscription:succeeded");
+  });
+  it("preview é read-only, link exige candidato da listagem nova e invalida eco", async () => {
+    const h = harness({ withChannel: true, echo: true, subscribed: true });
+    const preview = await h.run("datafy_link_existing");
+    expect(preview.body).toMatchObject({ candidates: [{ name: channelId, idPrefix: "remote-a", expectedDatafyChannelId: "remote-a" }] });
+    expect(h.calls.some((call) => call.startsWith("update:"))).toBe(false);
+    expect((await h.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "forged" })).status).toBe(409);
+    expect((await h.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "remote-a" })).status).toBe(200);
+    expect(h.tables.whatsapp_channels[0].manual_echo_verified_at).toBeNull();
+    expect(h.tables.whatsapp_channels[0].is_active).toBe(false);
+  });
+  it("revoke não cancela no provider e distingue liberação revogada de assinatura pendente", async () => {
+    const h = harness({ state: "connected", withChannel: true });
+    expect((await h.run("revoke_official_connection")).body).toMatchObject({ step: "not_granted", connectionRevoked: true, remoteCancellationRequested: false });
+    expect(h.tables[ONBOARDINGS][0]).toMatchObject({ state: "abandoned", channel_token: null, webhook_secret: null });
+    expect(h.tokenReader).not.toHaveBeenCalled(); expect(h.client.cancel).not.toHaveBeenCalled();
+  });
+  it("confirm concluído é idempotente mesmo com credencial de conta indisponível", async () => {
+    const h = harness({ state: "completed", withChannel: true }); h.unavailableAccount();
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    expect(h.tokenReader).not.toHaveBeenCalled();
+  });
+  it("token indisponível falha fechado antes de qualquer chamada ao provider", async () => {
+    const h = harness({ noOnboarding: true }); h.unavailableAccount();
+    expect((await h.run("official_connect_start")).body).toMatchObject({ code: "DATAFY_ACCOUNT_UNAVAILABLE" });
+    expect(h.client.createChannel).not.toHaveBeenCalled(); expect(h.client.listChannels).not.toHaveBeenCalled();
+  });
+  it("create incerto adota canal pelo GET e não posta de novo", async () => {
+    const h = harness({ state: "open" }); h.tables[ONBOARDINGS][0].datafy_channel_id = null;
+    h.failCreate();
+    expect((await h.run("official_connect_start")).status).toBe(503);
+    h.remote.phoneNumberId = null;
+    expect((await h.run("official_connect_start")).status).toBe(200);
+    expect(h.client.createChannel).toHaveBeenCalledTimes(1);
+    expect(h.calls).toContain("rpc:release_datafy_onboarding_step:reconciled_present");
+  });
+  it("reconciliação ambígua mantém incerteza e recusa qualquer POST ou DELETE", async () => {
+    const h = harness({ state: "open" }); h.tables[ONBOARDINGS][0].uncertain_steps = ["create_channel"];
+    vi.mocked(h.client.listChannels).mockResolvedValue({ ok: true, value: { accountSubscription: null,
+      channels: [{ ...h.remote }, { ...h.remote, id: "remote-b" }] } });
+    expect((await h.run("official_connect_start")).body).toMatchObject({ code: "DATAFY_RECONCILE_AMBIGUOUS" });
+    expect(h.tables[ONBOARDINGS][0].uncertain_steps).toEqual(["create_channel"]);
+    expect(h.client.createChannel).not.toHaveBeenCalled(); expect(h.client.deleteChannel).not.toHaveBeenCalled();
+  });
+  it("GET 404 do adotado trata listagem defasada como ausência, reivindica de novo e cria", async () => {
+    const h = harness({ state: "open" }); h.tables[ONBOARDINGS][0].datafy_channel_id = null;
+    h.tables[ONBOARDINGS][0].uncertain_steps = ["create_channel"];
+    vi.mocked(h.client.getChannel).mockResolvedValueOnce({ ok: false, kind: "not_found", code: "DATAFY_NOT_FOUND", httpStatus: 404 });
+    expect((await h.run("official_connect_start")).status).toBe(200);
+    expect(h.calls).toContain("rpc:release_datafy_onboarding_step:reconciled_absent");
+    expect(h.client.createChannel).toHaveBeenCalledTimes(1);
+  });
+  it("trial vencido apaga só após GET descartável, recria e conserva reserved id/URL", async () => {
+    const h = harness(); h.remote.phoneNumberId = null; h.remote.onTrial = false;
+    vi.mocked(h.client.createChannel).mockImplementationOnce(async () => {
+      h.remote.onTrial = true; return { ok: true, value: { id: "remote-new", token: "synthetic-new-token", webhookSecret: "synthetic-new-secret", subscribed: false } };
+    });
+    expect((await h.run("official_connect_start")).status).toBe(200);
+    expect(h.calls.slice(0, 3)).toEqual(["get:remote-a", "get:remote-a", "delete"]);
+    expect(h.tables[ONBOARDINGS][0]).toMatchObject({ reserved_channel_id: channelId, datafy_channel_id: "remote-new" });
+    expect(h.client.createWebhook).toHaveBeenCalledWith("remote-new", { url: `https://project.test/functions/v1/webhook-whatsapp?channel=${channelId}`,
+      events: ["messages", "smb_message_echoes"] });
+  });
+  it("webhook de resposta incerta é reconciliado por URL/eventos sem novo POST", async () => {
+    const h = harness({ state: "channel_created" }); h.remote.phoneNumberId = null;
+    h.tables[ONBOARDINGS][0].uncertain_steps = ["create_webhook"];
+    h.remote.webhooks = [{ id: "existing-hook", url: `https://project.test/functions/v1/webhook-whatsapp?channel=${channelId}`,
+      events: ["messages", "smb_message_echoes"], enabled: true }];
+    expect((await h.run("official_connect_start")).status).toBe(200);
+    expect(h.client.createWebhook).not.toHaveBeenCalled();
+    expect(h.tables[ONBOARDINGS][0].datafy_webhook_id).toBe("existing-hook");
+  });
+  it("409 do link é recusa curta sem já reconectar/trocar o número", async () => {
+    const h = harness(); h.remote.phoneNumberId = null;
+    vi.mocked(h.client.createConnectLink).mockResolvedValueOnce({ ok: false, kind: "conflict", httpStatus: 409, code: "DATAFY_CONFLICT" });
+    expect((await h.run("official_connect_start")).body).toMatchObject({ code: "DATAFY_LINK_REFUSED" });
+    expect(h.client.deleteChannel).not.toHaveBeenCalled(); expect(h.client.createChannel).not.toHaveBeenCalled();
+  });
+  it("WABA de outra organização recusa antes da assinatura", async () => {
+    const h = harness(); h.tables.whatsapp_template_accounts.push({ id: "account-b", waba_id: "waba-a", organization_id: "org-b" });
+    expect((await h.run("official_connect_confirm")).body).toMatchObject({ code: "WABA_OWNED_BY_OTHER_ORG" });
+    expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("2xx subscribed:false segue GET efetivo e não fecha onboarding", async () => {
+    const h = harness({ state: "connected", withChannel: true });
+    vi.mocked(h.client.subscribe).mockResolvedValueOnce({ ok: true, value: { subscribed: false } });
+    expect((await h.run("official_connect_confirm")).body).toMatchObject({ step: "subscription_pending" });
+    expect(h.tables[GRANTS][0].consumed_at).toBeNull(); expect(h.tables[ONBOARDINGS][0].state).toBe("connected");
+  });
+  it("falha após consumo de grant é reconciliável e nunca cobra de novo", async () => {
+    const h = harness({ state: "connected", withChannel: true }); h.missWrite(ONBOARDINGS);
+    expect((await h.run("official_connect_confirm")).status).toBe(503);
+    expect(h.tables[GRANTS][0].consumed_channel_id).toBe(channelId);
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    expect(h.client.subscribe).toHaveBeenCalledTimes(1);
+  });
+  it("cancel/pause/resume persistem GET pós-operação, não o estado solicitado", async () => {
+    const h = harness({ withChannel: true }); h.remote.subscribed = true; h.remote.paused = false;
+    expect((await h.run("datafy_pause")).status).toBe(200);
+    expect(h.tables.whatsapp_channels[0].provider_paused_at).toBeNull();
+    expect(h.tables.whatsapp_channels[0].provider_subscribed_at).toBeTruthy();
+    h.remote.paused = true;
+    expect((await h.run("datafy_resume")).status).toBe(200);
+    expect(h.tables.whatsapp_channels[0].provider_paused_at).toBeTruthy();
+    h.remote.subscribed = false;
+    expect((await h.run("datafy_cancel")).status).toBe(200);
+    expect(h.tables.whatsapp_channels[0].provider_subscribed_at).toBeNull();
+    expect(h.tables.whatsapp_channels[0].provider_subscription_canceled_at).toBeTruthy();
+    expect(h.client.getChannel).toHaveBeenCalledTimes(3);
+  });
+  it.each(["datafy_cancel", "datafy_pause"])("%s limpa intenção e o próximo eco real não ativa", async (action) => {
+    const h = harness({ state: "completed", withChannel: true });
+    Object.assign(h.tables.whatsapp_channels[0], { provider_subscribed_at: "subscribed", activation_requested_at: "intent", is_active: true });
+    h.remote.subscribed = action === "datafy_pause";
+    h.remote.paused = action === "datafy_pause";
+    expect((await h.run(action)).status).toBe(200);
+    expect(h.tables.whatsapp_channels[0].is_active).toBe(false);
+    expect(h.tables.whatsapp_channels[0].activation_requested_at).toBeNull();
+    await h.runEcho();
+    expect(h.tables.whatsapp_channels[0].is_active).toBe(false);
+    expect(h.calls).not.toContain("rpc:activate_whatsapp_channel:");
+  });
+});

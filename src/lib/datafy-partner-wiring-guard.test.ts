@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,55 @@ const webhook = readFileSync(resolve(__dirname, "../../supabase/functions/webhoo
 const start = webhook.indexOf("    const ownMessageEchoes = parseOwnMessageEchoes(provider, payload);");
 const end = webhook.indexOf("    // Eco das mensagens da loja", start);
 const echoBlock = webhook.slice(start, end);
+const manage = readFileSync(resolve(__dirname, "../../supabase/functions/manage-channels/index.ts"), "utf8");
+const actionsPath = resolve(__dirname, "../../supabase/functions/_shared/datafy-onboarding-actions.ts");
+const actions = existsSync(actionsPath) ? readFileSync(actionsPath, "utf8") : "";
+
+describe("Datafy parceiro: fronteira das ações", () => {
+  it("delega depois de autenticar e autorizar owner/gerente ou admin", () => {
+    const delegated = manage.indexOf("datafyActions.handle(");
+    expect(delegated).toBeGreaterThan(manage.indexOf("await memberLifecycleRole(callerId, unitId)"));
+    for (const action of ["official_connection_state", "official_connect_start", "official_connect_confirm"]) {
+      expect(manage.slice(manage.indexOf("const CLIENT_LIFECYCLE_ACTIONS"), manage.indexOf("const MANUAL_STATUS"))).toContain(`"${action}"`);
+    }
+  });
+
+  it("provisiona com decisão administrativa persistida e allowance NEW_PROVISIONING", () => {
+    expect(manage).toMatch(/checkChannelConnectionAllowance\(\s*unitId,\s*"datafy",\s*\{\},\s*"NEW_PROVISIONING",\s*adminDecisionRecorded/);
+    expect(actions).toContain("decideStartStep(");
+    expect(actions).toContain("decideConfirm(");
+    expect(actions).toContain("decideSubscribeStep(");
+    expect(actions).toContain("claim_datafy_onboarding_step");
+    expect(actions).toContain("datafyMutationMayHaveApplied(");
+  });
+
+  it("canal remoto vem do banco e nenhum corpo fornece identidade ou Coexistence", () => {
+    expect(actions).not.toMatch(/body\.(?:datafy_channel_id|phone_number_id|waba_id|channel_id|coexistence)/);
+    expect(actions).not.toMatch(/coexistence\s*:/i);
+    expect(manage).not.toContain("alreadyConnected");
+    expect(actions).not.toContain("alreadyConnected");
+    expect(actions).toContain('.eq("unit_id", unitId)');
+  });
+
+  it("logs e DTO não expõem credenciais; o link tem no-store", () => {
+    expect(actions).toContain('"Cache-Control": "no-store"');
+    expect(actions).not.toMatch(/(?:console\.\w+|jsonLog)\([^;]*(?:channel_token|webhook_secret|accountToken|\.url)/);
+    expect(actions).toContain("isDisposableRemoteChannel(");
+  });
+  it("cada POST de custo possui claim e cada DELETE exige descartabilidade no bloco executor", () => {
+    const create = actions.slice(actions.indexOf("async function startConnection"), actions.indexOf("async function identities"));
+    expect(create.indexOf('await claimStep(o, "create_channel"')).toBeGreaterThan(-1);
+    expect(create.indexOf("client.createChannel(")).toBeGreaterThan(create.indexOf('await claimStep(o, "create_channel"'));
+    const subscribe = actions.slice(actions.indexOf("async function subscribeChannel"), actions.indexOf("async function confirmConnection"));
+    expect(subscribe).toContain('"claim_datafy_existing_subscription"');
+    expect(subscribe.indexOf("client.subscribe(")).toBeGreaterThan(subscribe.indexOf('await claimStep(o!, "subscribe"'));
+    const remove = actions.slice(actions.indexOf("async function deleteDisposable"), actions.indexOf("async function state"));
+    expect(remove.indexOf("client.deleteChannel(")).toBeGreaterThan(remove.indexOf("isDisposableRemoteChannel(snapshot)"));
+    expect(actions.match(/\.deleteChannel\(/g)).toHaveLength(1);
+    expect(actions.match(/\.createChannel\(/g)).toHaveLength(1);
+    expect(actions.match(/\.subscribe\(/g)).toHaveLength(1);
+  });
+});
 
 type Channel = {
   status: string;
