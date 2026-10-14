@@ -2839,16 +2839,43 @@ async function handleWebhookRequest(
       await finish("webhook_unauthorized", undefined, { reason: "manual_echo_identity_mismatch" });
       return new Response("unauthorized", { status: 401 });
     }
-    if (manualEchoMatchesChannel && !channel.manual_echo_verified_at) {
-      const { error: verificationError } = await supabase
+    let manualEchoActivated = false;
+    if (manualEchoMatchesChannel) {
+      if (!channel.manual_echo_verified_at) {
+        const { data: verifiedChannel, error: verificationError } = await supabase
+          .from("whatsapp_channels")
+          .update({
+            manual_echo_verified_at: new Date().toISOString(),
+            manual_echo_verification_source: "provider_callback",
+          })
+          .eq("id", channelId)
+          .eq("unit_id", unitId)
+          .select("id")
+          .maybeSingle();
+        if (verificationError || !verifiedChannel) throw new Error("channel_parity_verification_persist_failed");
+      }
+
+      // Releitura também no replay: a prova pode ter sido gravada antes de
+      // uma falha transitória na ativação. Status e intenção precisam ser atuais.
+      const { data: activationChannel, error: activationReadError } = await supabase
         .from("whatsapp_channels")
-        .update({
-          manual_echo_verified_at: new Date().toISOString(),
-          manual_echo_verification_source: "provider_callback",
-        })
+        .select("status, activation_requested_at, manual_echo_verified_at")
         .eq("id", channelId)
-        .eq("unit_id", unitId);
-      if (verificationError) throw new Error("channel_parity_verification_persist_failed");
+        .eq("unit_id", unitId)
+        .maybeSingle();
+      if (activationReadError || !activationChannel) throw new Error("channel_parity_activation_read_failed");
+      if (activationChannel.manual_echo_verified_at
+        && activationChannel.activation_requested_at
+        && activationChannel.status === "connected") {
+        const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {
+          p_unit_id: unitId,
+          p_channel_id: channelId,
+          p_actor_id: null,
+          p_request_id: requestId,
+        });
+        if (activateError) throw new Error("manual_echo_activation_failed");
+        manualEchoActivated = true;
+      }
     }
 
     // Canal preparado/inativo pode receber callbacks de conexão, mas nunca
@@ -2864,7 +2891,9 @@ async function handleWebhookRequest(
       || ((explicitActiveCount ?? 0) > 0 && channel.is_active !== true);
     if (channelInactive) {
       jsonLog("info", { requestId, evt: "inactive_channel_event_ignored", channelId, provider });
-      await finish(manualEchoMatchesChannel ? "conversation_parity_verified" : "inactive_channel");
+      await finish(manualEchoActivated
+        ? "conversation_parity_verified_activated"
+        : manualEchoMatchesChannel ? "conversation_parity_verified" : "inactive_channel");
       return new Response("ok");
     }
 
