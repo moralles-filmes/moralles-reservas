@@ -11,6 +11,7 @@ import {
 import { parseDatafyAccount } from "../_shared/datafy-client.ts";
 import { getDatafyAccountToken } from "../_shared/datafy-account-config.ts";
 import { createDatafyOnboardingActions, DATAFY_ACTIONS } from "../_shared/datafy-onboarding-actions.ts";
+import { resolveUnitChannelBinding } from "../_shared/whatsapp-org-provider-core.ts";
 import { createTemplateRuntime } from "../_shared/whatsapp-template-runtime.ts";
 import {
   decideDatafyChannelSetup,
@@ -218,12 +219,15 @@ async function memberLifecycleRole(userId: string, unitId: string): Promise<"own
 }
 
 async function loadChannel(unitId: string, channelId: string): Promise<ChannelRow | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("whatsapp_channels")
     .select(CLIENT_CHANNEL_COLUMNS)
     .eq("id", channelId)
     .eq("unit_id", unitId)
     .maybeSingle();
+  if (error) {
+    throw new ChannelActionError(500, "CHANNEL_READ_FAILED", "Falha ao consultar a conexão.");
+  }
   return data as ChannelRow | null;
 }
 
@@ -1490,11 +1494,21 @@ serve(async (req) => {
     // ── switch seguro (platform admin) ──────────────────────────────────────
     if (action === "begin_switch") {
       const targetProvider = String(body.target_provider ?? "") as WhatsAppProvider;
-      if (!["zapi", "uazapi", "waha", "official"].includes(targetProvider)) {
+      if (!["zapi", "uazapi", "waha", "official", "datafy"].includes(targetProvider)) {
         return jsonResponse(req, { error: "Provedor alvo inválido." }, 400);
       }
 
       try {
+        if (targetProvider === "datafy") {
+          const binding = resolveUnitChannelBinding(await loadClientChannels(unitId));
+          if (binding && binding.provider !== "datafy") {
+            throw new ChannelActionError(
+              409,
+              "DATAFY_MIGRATION_NOT_SUPPORTED",
+              "A conexão oficial está disponível apenas na primeira configuração desta unidade.",
+            );
+          }
+        }
         let target: ChannelRow | null = null;
         const requestedTargetId = String(body.channel_id ?? "").trim();
         if (requestedTargetId) {
@@ -1505,7 +1519,7 @@ serve(async (req) => {
         } else if (targetProvider === "uazapi") {
           target = await findUazChannel(unitId) ?? await createUazPlaceholder(unitId);
         } else {
-          const { data } = await supabase
+          const { data, error } = await supabase
             .from("whatsapp_channels")
             .select("id")
             .eq("unit_id", unitId)
@@ -1513,6 +1527,7 @@ serve(async (req) => {
             .order("created_at", { ascending: true })
             .limit(1)
             .maybeSingle();
+          if (error) throw new ChannelActionError(500, "CHANNEL_READ_FAILED", "Falha ao consultar a conexão.");
           if (data?.id) target = await loadChannel(unitId, data.id);
         }
         if (!target) {
@@ -1563,7 +1578,7 @@ serve(async (req) => {
             "O canal alvo não está conectado. O canal atual foi preservado.",
           );
         }
-        const { error: healthWriteError } = await supabase
+        const { data: healthWritten, error: healthWriteError } = await supabase
           .from("whatsapp_channels")
           .update({
             status: "connected",
@@ -1572,8 +1587,10 @@ serve(async (req) => {
             ...(health.displayPhone ? { display_phone: health.displayPhone.replace(/\D/g, "") } : {}),
           })
           .eq("id", target.id)
-          .eq("unit_id", unitId);
-        if (healthWriteError) throw new Error("target_health_persist_failed");
+          .eq("unit_id", unitId)
+          .select("id")
+          .maybeSingle();
+        if (healthWriteError || !healthWritten) throw new Error("target_health_persist_failed");
         const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {
           p_unit_id: unitId,
           p_channel_id: target.id,
@@ -1582,7 +1599,7 @@ serve(async (req) => {
         });
         if (activateError) throw new Error("channel_activation_failed");
         target = await loadChannel(unitId, target.id) ?? target;
-        return jsonResponse(req, { success: true, channel: target });
+        return jsonResponse(req, { success: true, channel: clientConnection(target) });
       } catch (error) {
         const safe = publicErrorForLifecycle(error);
         return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);

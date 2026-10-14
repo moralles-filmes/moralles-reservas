@@ -1,6 +1,7 @@
 /** I/O do parceiro Datafy. O entrypoint autentica; os núcleos decidem. */
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { DatafyAccountTokenRead } from "./datafy-account-config-core.ts";
+import { resolveUnitChannelBinding, type OrgChannelInput } from "./whatsapp-org-provider-core.ts";
 import {
   createDatafyAdminClient, datafyMutationMayHaveApplied,
   type DatafyAdminClient, type DatafyChannelSnapshot,
@@ -206,19 +207,20 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   }
   async function startConnection(client: DatafyAdminClient, unitId: string, actorId: string) {
     for (let iteration = 0; iteration < 6; iteration++) {
-      const [grant, o, active] = await Promise.all([
+      const [grant, o, channels] = await Promise.all([
         activeGrant(unitId), loadOnboarding(unitId),
-        db.from("whatsapp_channels").select("id").eq("unit_id", unitId).eq("is_active", true).maybeSingle(),
+        db.from("whatsapp_channels").select("provider, status, is_active, created_at").eq("unit_id", unitId),
       ]);
-      if (active.error) throw new ActionFailure("CHANNEL_READ_FAILED");
+      if (channels.error) throw new ActionFailure("CHANNEL_READ_FAILED");
+      const binding = resolveUnitChannelBinding(rows<OrgChannelInput>(channels.data));
       const gatesAllowed = await deps.gatesAllowed(unitId, !!grant);
       const grantActive = !!grant && (!o || grant.id === o.grant_id);
-      if (!grantActive || !gatesAllowed || active.data) {
-        const refused = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!active.data, onboarding: null, remote: null });
+      if (!grantActive || !gatesAllowed || binding) {
+        const refused = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!binding, onboarding: null, remote: null });
         if (refused.kind === "refuse") throw new ActionFailure(refused.code, 409);
       }
       const snapshot = o?.datafy_channel_id ? await remote(client, o.datafy_channel_id) : null;
-      const decision = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!active.data,
+      const decision = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!binding,
         onboarding: o ? { state: o.state, datafyChannelId: o.datafy_channel_id, datafyWebhookId: o.datafy_webhook_id } : null,
         remote: o?.datafy_channel_id ? { found: !!snapshot, phoneNumberId: snapshot?.phoneNumberId ?? null,
           subscribed: snapshot?.subscribed ?? false, onTrial: snapshot?.onTrial ?? false } : null });

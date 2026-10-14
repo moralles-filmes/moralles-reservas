@@ -32,7 +32,7 @@ const executeEcho = new Function("supabase", "channel", `return (async () => {
   ${ts.transpile(echoSource.slice(echoBegin, echoEnd), { target: ts.ScriptTarget.ES2022 })}
 })();`);
 
-function harness(options: { state?: string; withChannel?: boolean; noOnboarding?: boolean; noGrant?: boolean; gates?: boolean; busy?: boolean; uncertain?: boolean; subscribed?: boolean; echo?: boolean } = {}) {
+function harness(options: { state?: string; withChannel?: boolean; noOnboarding?: boolean; noGrant?: boolean; gates?: boolean; busy?: boolean; uncertain?: boolean; subscribed?: boolean; echo?: boolean; channelReadError?: boolean } = {}) {
   const tables: Record<string, Row[]> = {
     [GRANTS]: options.noGrant ? [] : [grant()],
     [ONBOARDINGS]: options.noOnboarding ? [] : [onboarding(options.state)],
@@ -53,6 +53,7 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
       const seen = { table, keys: [] as string[] }; filters.push(seen);
       let patch: Row | null = null, inserted: Row | null = null, single = false, slice = [0, Infinity];
       const getResult = () => {
+        if (table === "whatsapp_channels" && options.channelReadError && !patch && !inserted) return { data: null, count: 0, error: { code: "synthetic_read_error" } };
         const data = tables[table] ?? [];
         if (inserted) {
           const row = { ...inserted };
@@ -225,6 +226,28 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
 }
 
 describe("Datafy onboarding: I/O com decisões reais", () => {
+  it.each([
+    { is_active: true, status: "disconnected" },
+    { is_active: null, status: "connected" },
+  ])("start recusa binding operacional existente, inclusive legado: %j", async (binding) => {
+    const h = harness(); h.tables.whatsapp_channels.push({ ...channel(), ...binding, provider: "zapi" });
+    expect(await h.run("official_connect_start")).toMatchObject({ status: 409, body: { code: "UNIT_ALREADY_ACTIVE" } });
+    expect(h.client.getChannel).not.toHaveBeenCalled(); expect(h.client.createChannel).not.toHaveBeenCalled();
+  });
+  it.each([
+    { is_active: false, status: "connected" },
+    { is_active: null, status: "disconnected" },
+  ])("start permite canal sem binding operacional: %j", async (binding) => {
+    const h = harness(); h.tables.whatsapp_channels.push({ ...channel(), ...binding, provider: "zapi" });
+    expect((await h.run("official_connect_start")).status).toBe(200);
+    expect(h.client.getChannel).toHaveBeenCalled();
+    expect(h.filters.filter((filter) => filter.table === "whatsapp_channels").every((filter) => filter.keys.includes(`unit_id:${unitId}`))).toBe(true);
+  });
+  it("start recusa erro de leitura do binding antes de chamar Datafy", async () => {
+    const h = harness({ channelReadError: true });
+    expect(await h.run("official_connect_start")).toMatchObject({ status: 503, body: { code: "CHANNEL_READ_FAILED" } });
+    expect(h.client.getChannel).not.toHaveBeenCalled(); expect(h.client.createChannel).not.toHaveBeenCalled();
+  });
   it("start percorre open → canal → webhook → link efêmero sem expor credenciais", async () => {
     const h = harness({ noOnboarding: true });
     const response = await h.run("official_connect_start", { phone_number_id: "forged", channel_id: "forged" });

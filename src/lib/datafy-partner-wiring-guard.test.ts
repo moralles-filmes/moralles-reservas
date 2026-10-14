@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { resolveUnitChannelBinding } from "../../supabase/functions/_shared/whatsapp-org-provider-core";
 
 const webhook = readFileSync(resolve(__dirname, "../../supabase/functions/webhook-whatsapp/index.ts"), "utf8");
 const start = webhook.indexOf("    const ownMessageEchoes = parseOwnMessageEchoes(provider, payload);");
@@ -10,6 +11,141 @@ const echoBlock = webhook.slice(start, end);
 const manage = readFileSync(resolve(__dirname, "../../supabase/functions/manage-channels/index.ts"), "utf8");
 const actionsPath = resolve(__dirname, "../../supabase/functions/_shared/datafy-onboarding-actions.ts");
 const actions = existsSync(actionsPath) ? readFileSync(actionsPath, "utf8") : "";
+
+const switchBegin = manage.indexOf('    if (action === "begin_switch")');
+const switchEnd = manage.indexOf("    // ── list", switchBegin);
+const switchBlock = manage.slice(switchBegin, switchEnd);
+const connectionBlock = manage.slice(manage.indexOf("function clientConnection("), manage.indexOf("function supportsClientLifecycle("));
+const loadBlock = manage.slice(manage.indexOf("async function loadChannel("), manage.indexOf("async function findUazChannel("));
+
+function switchHarness(options: {
+  provider?: string; binding?: { provider: string; is_active: boolean | null; status: string; created_at?: string }[];
+  listError?: boolean; readError?: boolean; readMissing?: boolean; missingProof?: boolean;
+  withoutTargetId?: boolean;
+  connected?: boolean; writeMissing?: boolean; writeError?: boolean; activationError?: boolean;
+} = {}) {
+  const stored = { id: "target", unit_id: "unit", provider: options.provider ?? "datafy", status: "connected",
+    credentials: { access_token: "synthetic-channel-token" }, webhook_secret: "synthetic-secret",
+    manual_echo_verified_at: options.missingProof ? null : "proof", is_active: false };
+  const calls: string[] = [], filters: string[][] = [];
+  const db = {
+    from() {
+      let updating = false, projection = "";
+      const predicates: string[] = []; filters.push(predicates);
+      const result = () => {
+        calls.push(updating ? "persist" : "reload");
+        if (updating) return { data: options.writeMissing ? null : projection ? { id: stored.id } : null,
+          error: options.writeError ? { code: "synthetic_write_error" } : null };
+        return { data: options.readMissing ? null : { ...stored }, error: options.readError ? { message: "sensitive database error" } : null };
+      };
+      const query = {
+        select(value: string) { projection = value; return query; },
+        update() { updating = true; return query; },
+        eq(key: string, value: unknown) { predicates.push(`${key}:${value}`); return query; },
+        order() { return query; },
+        limit() { return query; },
+        maybeSingle() { return Promise.resolve(result()); },
+        then(fulfilled: (value: ReturnType<typeof result>) => unknown) { return Promise.resolve(result()).then(fulfilled); },
+      };
+      return query;
+    },
+    async rpc(name: string) {
+      calls.push(name === "request_whatsapp_channel_activation" ? "intent" : "activate");
+      if (name === "activate_whatsapp_channel") {
+        if (options.activationError) return { error: { code: "synthetic_activation_error" } };
+        stored.is_active = true;
+      }
+      return { error: null };
+    },
+  };
+  class ChannelActionError extends Error {
+    constructor(readonly httpStatus: number, readonly code: string, message: string) { super(message); }
+  }
+  const adapter = { capabilities: { automaticProvisioning: false }, getConnectionStatus: async () => {
+    calls.push("health"); return { connected: options.connected !== false };
+  } };
+  const execute = new Function("supabase", "ChannelActionError", "loadClientChannels", "resolveUnitChannelBinding",
+    "getWhatsAppProvider", "tryGetWhatsAppProvider", "supportsClientQr", "resolveChannelCredentials", "jsonResponse", "publicErrorForLifecycle",
+    `return (async () => {
+      const action = "begin_switch", body = {target_provider: "${options.provider ?? "datafy"}", channel_id:"${options.withoutTargetId ? "" : "target"}"};
+      const unitId = "unit", callerId = "actor", requestId = "request", req = {};
+      const CLIENT_CHANNEL_COLUMNS = "internal columns";
+      ${ts.transpile(connectionBlock + loadBlock + switchBlock, { target: ts.ScriptTarget.ES2022 })}
+    })();`);
+  return { calls, filters, run: () => execute(db, ChannelActionError,
+    async () => { calls.push("binding"); if (options.listError) throw new ChannelActionError(500, "CHANNEL_LIST_FAILED", "Falha ao consultar a conexão."); return options.binding ?? []; },
+    resolveUnitChannelBinding, () => adapter, () => adapter, () => false,
+    async () => stored.credentials,
+    (_req: unknown, body: unknown, status = 200) => ({ body, status }),
+    (error: Error) => error instanceof ChannelActionError
+      ? error : { message: "Falha ao atualizar a conexão.", code: "CHANNEL_ACTION_FAILED", httpStatus: 500 }) };
+}
+
+describe("Datafy parceiro: primeira configuração em begin_switch", () => {
+  it("inclui Datafy na allowlist e recusa migração com 409", () => {
+    expect(switchBlock).toMatch(/\["zapi", "uazapi", "waha", "official", "datafy"\]\.includes\(targetProvider\)/);
+    expect(switchBlock).toMatch(/409,\s*"DATAFY_MIGRATION_NOT_SUPPORTED"/);
+  });
+  it("primeira configuração mantém intenção → prova → saúde → persistência → ativação e DTO seguro", async () => {
+    const h = switchHarness(); const response = await h.run();
+    expect(response.status).toBe(200);
+    expect(h.calls).toEqual(["binding", "reload", "intent", "reload", "health", "persist", "activate", "reload"]);
+    expect(response.body).toMatchObject({ success: true, channel: { channel_id: "target", status: "connected" } });
+    const serialized = JSON.stringify(response.body);
+    for (const secret of ["credentials", "webhook_secret", "synthetic-channel-token", "synthetic-secret"]) expect(serialized).not.toContain(secret);
+    expect(h.filters.every((predicates) => predicates.includes("id:target") && predicates.includes("unit_id:unit"))).toBe(true);
+  });
+  it.each([
+    { provider: "zapi", is_active: true, status: "connected" },
+    { provider: "zapi", is_active: true, status: "disconnected" },
+    { provider: "waha", is_active: null, status: "connected" },
+  ])("recusa binding de outro provider antes de qualquer mutação: %j", async (binding) => {
+    const h = switchHarness({ binding: [binding] });
+    expect(await h.run()).toMatchObject({ status: 409, body: { code: "DATAFY_MIGRATION_NOT_SUPPORTED" } });
+    expect(h.calls).toEqual(["binding"]);
+  });
+  it.each([
+    { provider: "datafy", is_active: true, status: "connected" },
+    { provider: "datafy", is_active: null, status: "connected" },
+    { provider: "zapi", is_active: false, status: "connected" },
+    { provider: "zapi", is_active: null, status: "disconnected" },
+  ])("permite binding Datafy ou canal sem binding: %j", async (binding) => {
+    expect((await switchHarness({ binding: [binding] }).run()).status).toBe(200);
+  });
+  it("usa primeiro legado connected e prioriza ativo explícito", async () => {
+    const legacy = { provider: "waha", is_active: null, status: "connected", created_at: "2026-01-01" };
+    const datafy = { provider: "datafy", is_active: null, status: "connected", created_at: "2026-02-01" };
+    expect((await switchHarness({ binding: [datafy, legacy] }).run()).status).toBe(409);
+    expect((await switchHarness({ binding: [legacy, { ...datafy, is_active: true }] }).run()).status).toBe(200);
+  });
+  it.each([{ writeMissing: true }, { writeError: true }])("não ativa sem escrita de saúde confirmada: %j", async (failure) => {
+    const h = switchHarness(failure); expect((await h.run()).status).toBe(500); expect(h.calls).not.toContain("activate");
+  });
+  it.each([{ missingProof: true }, { connected: false }])("conserva gates manuais: %j", async (failure) => {
+    const h = switchHarness(failure); expect((await h.run()).status).toBe(409); expect(h.calls).not.toContain("activate");
+  });
+  it("erro de leitura difere de ausência e é sanitizado", async () => {
+    const failed = switchHarness({ readError: true });
+    const response = await failed.run();
+    expect(response).toMatchObject({ status: 500, body: { code: "CHANNEL_READ_FAILED" } });
+    expect(JSON.stringify(response)).not.toContain("sensitive database error");
+    expect(failed.calls).not.toContain("intent");
+    expect(await switchHarness({ readMissing: true }).run()).toMatchObject({ status: 404, body: { code: "TARGET_CHANNEL_NOT_FOUND" } });
+  });
+  it("recusa falha na leitura de binding e propaga falha de ativação", async () => {
+    const h = switchHarness({ listError: true }); expect((await h.run()).status).toBe(500); expect(h.calls).toEqual(["binding"]);
+    expect((await switchHarness({ activationError: true }).run()).status).toBe(500);
+  });
+  it("descoberta de alvo sem id também falha fechado em erro de leitura", async () => {
+    const h = switchHarness({ withoutTargetId: true, readError: true });
+    expect(await h.run()).toMatchObject({ status: 500, body: { code: "CHANNEL_READ_FAILED" } });
+    expect(h.calls).not.toContain("intent");
+  });
+  it("preserva troca manual entre providers anteriores", async () => {
+    const h = switchHarness({ provider: "waha", binding: [{ provider: "zapi", is_active: true, status: "connected" }] });
+    expect((await h.run()).status).toBe(200); expect(h.calls).not.toContain("binding");
+  });
+});
 
 describe("Datafy parceiro: fronteira das ações", () => {
   it("delega depois de autenticar e autorizar owner/gerente ou admin", () => {
