@@ -125,6 +125,36 @@ describe("manutenção de textos WhatsApp", () => {
   });
 });
 
+describe('Datafy parceiro: claim cercado do onboarding (Task 2)', () => {
+  // Espaços normalizados: a migration escreve `(uuid, uuid, text, uuid, integer)`.
+  const sql = readFileSync(join(MIGRATIONS_DIR, '20261014120000_datafy_partner_onboarding.sql'), 'utf8')
+    .replace(/,\s+/g, ',');
+  it('as duas RPCs são service-only, fora da allowlist pública, revogadas de PUBLIC/anon/authenticated', () => {
+    const signatures = allowlist._service_only_datafy_partner_onboarding as string[];
+    // `p_unit_id` logo depois de `p_onboarding_id`: segunda tranca de tenant.
+    expect(signatures).toEqual(['claim_datafy_onboarding_step(uuid,uuid,text,uuid,integer)',
+      'release_datafy_onboarding_step(uuid,uuid,uuid,text,text,text)']);
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0]), signature).toBe(false);
+      expect(sql, signature).toContain(`revoke all on function public.${signature} from public,anon,authenticated;`);
+      expect(sql, signature).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+    expect(sql.match(/security definer\s+set search_path = ''/g)).toHaveLength(2);
+  });
+  it('as trigger functions não recebem grant e as tabelas ficam fechadas para anon/authenticated', () => {
+    for (const fn of ['whatsapp_official_connection_grants_guard()', 'whatsapp_datafy_onboardings_guard()']) {
+      expect(sql).toContain(`revoke all on function public.${fn} from public,anon,authenticated;`);
+      expect(sql).not.toContain(`grant execute on function public.${fn}`);
+    }
+    for (const table of ['whatsapp_official_connection_grants', 'whatsapp_datafy_onboardings', 'whatsapp_ops_alerts']) {
+      expect(sql).toContain(`alter table public.${table} force row level security;`);
+      expect(sql).toContain(`revoke all on table public.${table} from public,anon,authenticated,service_role;`);
+      expect(sql).not.toMatch(new RegExp(`create policy[^;]+on public\\.${table}\\b`, 'i'));
+    }
+    expect(sql).not.toMatch(/grant\s[^;]+\sto\s+(?:public|anon|authenticated)\s*;/i);
+  });
+});
+
 describe('Task11 current scheduled voucher issuance', () => {
   it('one service-only four-argument writer, empty search path and explicit complete ACL', () => {
     const signature='issue_scheduled_whatsapp_voucher(uuid,uuid,text,jsonb)';

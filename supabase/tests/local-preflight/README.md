@@ -58,6 +58,9 @@ presentes agendaria jobs apontando para lá.
 | `22-ad-touchpoints-115.sql` | TP-1..TP-11, TP-1b, TP-4b e TP-6b (ordinais 85–96, 102 e 103, migration 115): a tabela `whatsapp_ad_touchpoints`. Imutabilidade (nenhum UPDATE, nem o que não muda nada) com a única exceção da coerção do `set null` de `channel_id`, coerência de tenant entre as três FKs, cliente anonimizado recusado com o SQLSTATE dedicado `P0A15` (TP-6b), CHECKs de `provider` e da rede de 64 KiB, dedupe `(provider, provider_message_id)`, a purga LGPD disparada por soft delete feito com o papel REAL `authenticated` (TP-9), a gravação com o papel REAL `service_role` (TP-1b), RLS, a tabela sem privilégio para `anon`/`authenticated`, ACL/forma das funções (TP-10) e idempotência através de duas execuções (TP-11). **Banco PRÓPRIO** `fased115` — ver a seção "Sequência da migration 115". |
 | `23-controles-115.sql` | Os **seis controles positivos** (ordinais 97–101 e 104) da 115. C-115-1/2/3/6 sabotam o guard por **delta mínimo** sobre `pg_get_functiondef`, recortando o trecho entre os marcadores `-- <x>`/`-- </x>` do corpo (`excecao-set-null`, `coerencia-tenant`, `guarda-update`, `cliente-vivo`); C-115-4 torna a purga `security invoker`; C-115-5 dropa e recria o guard sem o `revoke`. Restore dentro de cada controle, conferido contra o catálogo. |
 | `24-concorrencia-115.sh` | A serialização do `for share` do guard da 115 contra uma anonimização **concorrente**, com DUAS sessões reais de `psql` (Git Bash; `PGBIN`, `PGPORT`, `PGDB`). CONC-1: a anonimização segura o lock e o INSERT espera e é recusado com `P0A15`; CONC-2: o INSERT segura o lock e a anonimização espera e apaga a linha; CONC-3: controle de tempo (sem concorrência, < 1 s); CONC-4: **controle positivo** — guard sem `for share`, a linha sobrevive; restaura reaplicando a 115 e confere o `md5` do guard. Roda no banco da 115, depois do `23`. |
+| `61a-datafy-partner-bootstrap.sql` | O que o `61` precisa e o `00` não tem: **default privileges** de tabela E de função emulando o Supabase (sem eles o C9 fica cego, medindo só o grant implícito a PUBLIC), grant de tabela em tudo que já existe em `public` (o `service_role` do C11 lê `units` pelo guard INVOKER) e o CHECK de `whatsapp_channels.provider` na forma da 110, que libera `datafy`. **Recusa rodar depois da migration.** |
+| `61-datafy-partner-onboarding.sql` | 25 casos e **seis controles positivos** (ordinais 105–135, C14 por último) da migration `20261014120000_datafy_partner_onboarding.sql` (Datafy parceiro): liberação (uma ativa por unidade, coerência, canal consumido da mesma unidade), onboarding (um aberto por unidade, uma liberação por onboarding vivo, credenciais que não sobrevivem ao fechamento, canal exigido depois de `open`, vínculos de tenant imutáveis), o CLAIM cercado (clique duplo, retomada do vencido com `must_reconcile` e registro do passo do dono morto, lease pelo TTL do dono, `failed` que não resolve a incerteza, cerca velha → 40001, unidade alheia → 42501, TTL 30..900 por igualdade), o índice único de `phone_number_id` lendo o número como o núcleo lê (aparado, vazio fora), ACL/RLS, `service_role` real, cascade e idempotência através de execuções. Os controles se desfazem sozinhos e por isso rodam sob ON_ERROR_STOP. **Banco PRÓPRIO** `datafy61`. |
+| `61b-concorrencia-datafy-onboarding.sh` | O CLIQUE DUPLO com DUAS sessões reais (Git Bash; `PGBIN`, `PGPORT`, `PGDB`). CONC-61-1: A segura o claim, B espera e recebe `claimed = f` sem cerca; CONC-61-2: controle de tempo; CONC-61-3: **controle positivo** — claim sem `for update`, os DOIS levam; restaura reaplicando a migration e confere o `md5`. Roda no banco do `61`, depois dele. |
 
 ## Rodar
 
@@ -731,6 +734,170 @@ o privilégio que o `for share` exige (`TP-1b`), mas o `24-concorrencia-115.sh`
 mede a corrida com duas sessões reais, nas duas ordens (CONC-1 e CONC-2), com
 controle de tempo (CONC-3) e controle positivo (CONC-4: sem o `for share`, a
 linha sobrevive à anonimização).
+
+### Sequência da migration Datafy parceiro (`20261014120000`)
+
+**Banco PRÓPRIO `datafy61`**, pelas duas razões da 115: o `61` declara `t_res`
+com `ord int primary key` e o `61a` tem de rodar **ANTES** da migration (são
+os default privileges dele que fazem tabelas e RPCs nascerem com os grants do
+Supabase; ele recusa rodar depois). Nada de 087/110/111: a migration
+referencia só `organizations`, `units`, `whatsapp_channels` e
+`update_updated_at()` (todos do `00`), e o `61a` traz da 110 apenas o CHECK de
+provider que o C8 precisa.
+
+`PG` e `PORT` são os da sua instalação. Esta sequência foi medida no
+**PostgreSQL 18.6** do instalador oficial (`PG="/c/Program Files/PostgreSQL/18/bin"`),
+num cluster descartável próprio (`initdb -A trust`, `PORT=55462`), para não
+tocar o serviço Windows da 5432; com o `scoop` da seção "Rodar", use
+`PG="$USERPROFILE/scoop/apps/postgresql/current/bin"` e `PORT=55432`.
+
+```bash
+export PGCLIENTENCODING=UTF8          # obrigatório; ver a nota na seção "Rodar"
+PG="/c/Program Files/PostgreSQL/18/bin"   # ou o do scoop
+PORT=55462                                # ou 55432
+"$PG/dropdb.exe"   -h 127.0.0.1 -p "$PORT" -U postgres --if-exists datafy61
+"$PG/createdb.exe" -h 127.0.0.1 -p "$PORT" -U postgres datafy61
+P() { "$PG/psql.exe" -h 127.0.0.1 -p "$PORT" -U postgres -d datafy61 -v ON_ERROR_STOP=1 "$@"; }
+
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/00a-whatsapp-legacy-seed.sql
+P -f supabase/tests/local-preflight/61a-datafy-partner-bootstrap.sql
+
+# ANTES da migration, o 61 tem de FALHAR pela guarda do topo (tabelas
+# ausentes). É o RED que dá sentido ao GREEN: rodado antes, C1/C2/C3/C7/C8
+# passariam POR ACIDENTE, porque sem tabelas e RPCs tudo "falha".
+P -f supabase/tests/local-preflight/61-datafy-partner-onboarding.sql   # esperado: ERROR
+
+P -f supabase/migrations/20261014120000_datafy_partner_onboarding.sql
+P -f supabase/tests/local-preflight/61-datafy-partner-onboarding.sql   # C14 = PENDENTE
+# C14 mede idempotência ATRAVÉS DE EXECUÇÕES: a 1a passada grava a assinatura
+# do catálogo, a 2a compara. Reaplicar a migration no meio é o que se mede.
+P -f supabase/migrations/20261014120000_datafy_partner_onboarding.sql
+P -f supabase/migrations/20261014120000_datafy_partner_onboarding.sql
+P -f supabase/tests/local-preflight/61-datafy-partner-onboarding.sql   # C14 = OK
+
+# Clique duplo com DUAS sessões — mesmo banco, depois do 61. Leva ~10 s.
+PGBIN="$PG" PGPORT="$PORT" PGDB=datafy61 bash supabase/tests/local-preflight/61b-concorrencia-datafy-onboarding.sh
+# esperado (tempos variam):
+#   CONC-61-1  OK      B esperou 2.08 s (>= 1.5); A=t B='f|' (esperado 'f|'); cerca da linha e de A=t; rc A=0 B=0
+#   CONC-61-2  OK      claim sem concorrencia levou 0.16 s (< 1); claimed=t rc=0
+#   CONC-61-3  OK      sem for update: A=t B=t (esperado os dois t; B esperou 2.11 s); sabotou=t restaurou=t
+#   3/3 OK
+
+P -c "select ord, caso, veredito from t_res order by ord;"   # 31 linhas, todas OK
+```
+
+Ao terminar: `"$PG/dropdb.exe" -h 127.0.0.1 -p "$PORT" -U postgres datafy61`.
+
+**Conte as 31 linhas.** O `61` roda sob ON_ERROR_STOP e cada caso grava por
+upsert, mas um erro de compilação de plpgsql derruba o bloco antes do `when
+others`, e o arquivo abortaria com menos linhas. **Ao acrescentar caso,
+atualize este número e o do comentário do `select` acima.**
+
+| ord | caso | o que mede |
+|---|---|---|
+| 105 | `C1` | duas liberações ativas → 23505; revogada + consumida + nova ativa coexistem |
+| 106 | `C2` | liberação com organização alheia → trigger (23514) |
+| 107 | `C2b` | onboarding: organização alheia, liberação de outra unidade, UPDATE para unidade alheia |
+| 108 | `C3` | dois onboardings abertos → 23505; `completed`/`abandoned` não contam |
+| 109 | `C4` | claim livre leva com lease de 120 s exatos; o segundo imediato (mesmo passo ou outro) não leva e não recebe a cerca |
+| 110 | `C5` | claim vencido retomado com `must_reconcile = t`; o dono antigo bate na cerca |
+| 111 | `C5b` | a retomada registra o passo do DONO MORTO em `uncertain_steps` (mesmo pedindo outro passo), sem duplicar; o `failed` de quem retoma não o tira |
+| 112 | `C5c` | lease pelo TTL do DONO: dono com 900 s, desafiante com 120 s, 200 s depois → `claimed = f` |
+| 113 | `C6` | `uncertain` → reconciliação obrigatória, sem duplicar; por passo; sai com `reconciled_absent` |
+| 114 | `C6b` | `failed` MANTÉM a incerteza (e atualiza `last_error`); `succeeded` e `reconciled_present` a resolvem |
+| 115 | `C7` | cerca velha, passo errado, release repetido e cerca nula → 40001 |
+| 116 | `C8` | `phone_number_id` repetido: datafy × datafy e official × datafy → 23505; zapi e sem chave entram |
+| 117 | `C8b` | `"777"` × `" 777\n"` e `"888"` × `888` → 23505; `""`, `"  "` e JSON null repetidos entram |
+| 118 | `C9` | RPCs só service_role, DEFINER, `search_path` vazio; trigger functions fechadas para PUBLIC/anon/authenticated; tabelas FORCE RLS sem policy, sem privilégio para anon/authenticated e sem TRUNCATE/REFERENCES/TRIGGER para o service_role |
+| 119 | `C10` | linha fechada, passo/desfecho/código inválidos, inexistente (claim e release) → P0002; lease = 30 s / 900 s / 120 s para TTL 1 / 5000 / nulo |
+| 120 | `C11` | o `service_role` real grava, reivindica, libera, consome a liberação e registra alerta |
+| 121 | `C12` | CHECKs das três tabelas (cada perna da coerência do claim) e unique `(unit_id, alert_type)` |
+| 122 | `C13` | DELETE da unidade cascateia liberação, onboarding e alerta sem abortar |
+| 123 | `C15` | `completed`/`abandoned` com `channel_token` ou `webhook_secret` → 23514, no INSERT e na transição |
+| 124 | `C16` | fora de `open`/`abandoned` sem `datafy_channel_id` → 23514; recriação (`channel_created` → `open`) passa |
+| 125 | `C17` | organização, unidade (inclusive da MESMA organização) e liberação gravada imutáveis; anexar liberação depois passa |
+| 126 | `C18` | segunda liberação viva para o mesmo onboarding → 23505 do índice `one_per_grant`; `abandoned` libera |
+| 127 | `C19` | canal consumido de outra unidade ou inexistente → 23514 (UPDATE e INSERT) |
+| 128 | `C20` | onboarding de outra unidade (ou unidade nula) → 42501 no claim e no release; o claim não é tocado |
+| 129 | `C5-CTRL` | claim sem `<ttl>` → o C5 avermelha |
+| 130 | `C5b-CTRL` | claim sem `<takeover-incerto>` → o C5b avermelha |
+| 131 | `C5c-CTRL` | vivacidade pelo TTL do desafiante → o C5c avermelha |
+| 132 | `C6b-CTRL` | release sem `<failed-mantem>` → o C6b avermelha |
+| 133 | `C8-CTRL` | sem o índice → o C8 avermelha |
+| 134 | `C8b-CTRL` | índice na forma crua, sem `btrim` → o C8b avermelha |
+| 135 | `C14` | idempotência através de execuções (por último: pega controle que não restaurou) |
+
+**Os controles de corpo de função rodam o MESMO caso** (`pg_temp.c5()`,
+`c5b()`, `c5c()`, `c6b()`), e o veredito só é `OK` se o caso devolver FALHOU
+**com o trecho que nomeia o defeito** — vermelho por outra razão (erro de
+compilação, por exemplo) não conta.
+
+**Quadro de sabotagem, medido com a sabotagem PERSISTIDA** (fora de
+subtransação, `61` reexecutado, migration reaplicada — mais o `add constraint`
+dos CHECKs e o índice real, que a reaplicação não restaura — e o `61` volta a
+31/31 depois de cada uma). O `C14` fica vermelho em todas as linhas, pela
+razão do `TP-11`; os controles cuja sabotagem já está aplicada ficam vermelhos
+com `mudou=f` (não há o que sabotar duas vezes). Fora isso, o vermelho é
+localizado e nomeia o defeito:
+
+| sabotagem | avermelha |
+|---|---|
+| claim sem `<ttl>` | `C5`; `C5b` ("a retomada nem levou (ver C5)") |
+| sem `whatsapp_channels_meta_phone_number_idx` | `C8`, `C8b` |
+| release aceitando `p_claim_id` nulo | `C7` (`cerca nula=aceitou`) |
+| claim sem a perna `p_step = any(uncertain)` | `C6`, `C6b`, `C5b` (os três dependem dela) |
+| release que duplica a entrada incerta | `C6` |
+| claim que devolve a cerca de quem segura | `C4`; `C5c` ("perdeu mas recebeu a cerca (ver C4)") |
+| TTL sem `greatest`/`least` | `C10` (lease 1 s e 5000 s) |
+| `grant execute` da claim a anon | `C9` |
+| sem a trigger da liberação | `C2`, `C17` (pernas da liberação), `C19` |
+| sem a trigger do onboarding | `C2b`, `C17` (pernas do onboarding) |
+| sem o índice de uma liberação ativa | `C1` |
+| sem o índice de um onboarding aberto | `C3` |
+| `grant select` do onboarding a authenticated | `C9` |
+| claim que não recusa linha fechada | `C10` |
+| release sem a perna `claim_step` da cerca | `C7` (`passo errado=aceitou`) |
+| release sem `<failed-mantem>` | `C6b`, `C5b` (a perna "failed de quem retoma") |
+| claim sem `<takeover-incerto>` | `C5b` |
+| vivacidade pelo TTL do desafiante | `C5c` |
+| índice cru, sem `btrim` | `C8b` (espaço/quebra entra, vazios colidem) — o `C8` segue verde |
+| sem o CHECK de credenciais no fechamento | `C15` |
+| sem o CHECK de canal depois de `open` | `C16` |
+| sem o índice `one_per_grant` | `C18` |
+| guard da liberação sem a unidade do canal consumido | `C19` (o inexistente segue recusado) |
+| guard da liberação sem imutabilidade | `C17` (`liberacao mudou de unidade passou`) |
+| guard do onboarding sem imutabilidade | `C17` (as três pernas do onboarding) |
+| claim sem conferir a unidade | `C20` |
+| release sem conferir a unidade | `C20` |
+| `truncate` do onboarding para service_role | `C9` |
+| sem o CHECK de coerência do claim | `C12` (as quatro pernas) |
+
+**Resultados MEDIDOS ao escrever este conjunto:**
+
+1. **O C7 não pode depender do TTL.** Na primeira versão a cerca velha vinha de
+   um claim retomado, e a sabotagem do `<ttl>` avermelhava o C7 com uma
+   mensagem sobre a cerca. A perna do claim RETOMADO foi para o C5; o C7 tira a
+   cerca velha de um claim liberado e tomado de novo.
+2. **Tentativa negativa sem rollback próprio contamina a seguinte.** Com a
+   trigger do onboarding removida, o C2b avermelhava com `23505` do índice de
+   "um aberto por unidade"; com a da liberação removida, o C17 avermelhava na
+   coerência do passo legítimo seguinte. Cada tentativa negativa roda na
+   própria subtransação (`ZZ061`, `pg_temp.tenta`).
+3. **`return` dentro do bloco COMMITA a subtransação.** Sair cedo de um caso
+   por `return` deixaria as linhas dele de pé; sai-se pelo `ZZ061` e decide
+   depois.
+4. **plpgsql avalia de antemão todo campo de record citado numa expressão.**
+   Um `case` que cita `r3.claimed` estoura `55000` quando `r3` não foi
+   atribuído, mesmo num ramo que não seria escolhido — o C5b decide a saída
+   cedo antes do `case`.
+
+**O que NÃO se prova aqui:** exposição PostgREST, e o `rolbypassrls` do
+`postgres` de produção — as RPCs são SECURITY DEFINER sobre tabelas FORCE RLS
+e dependem dele (mesma ressalva da 115; aqui o `postgres` é superusuário). A
+conferência de duplicata de `phone_number_id` em produção, que o índice exige
+antes do `db push`, é leitura que o dono roda (Task 2 Step 4 do plano), com a
+query normalizada do cabeçalho da migration.
 
 ## O que os dois controles do `04` fazem
 
