@@ -116,7 +116,7 @@ const PROBE_NAME = /^probe-fase0-1[6-9]\d{11}$/;
 const KEY_FORMAT = /^[A-Za-z_$][A-Za-z0-9_$.-]{0,63}$/;
 const ERROR_CODE = /^[A-Z0-9_]{2,40}$/;
 const OVERRIDE_FLAG = "--canal-fora-do-probe-ok";
-const ALLOWED_FLAGS = new Set(["--autorizo-cobranca", "--autorizo-cancelamento", OVERRIDE_FLAG]);
+const ALLOWED_FLAGS = new Set(["--autorizo-cobranca", "--autorizo-cancelamento", "--medir-repeticao", OVERRIDE_FLAG]);
 const COMMANDS = new Set([
   "global", "list", "list-ids", "get", "link", "serve", "create", "dup",
   "webhook", "pause", "resume", "subscribe", "cancel", "delete",
@@ -825,7 +825,7 @@ Alteração (só seguem, sem ${OVERRIDE_FLAG}, em canal probe-fase0-<número> n�
   webhook <id> <https-url>   cadastra webhook (messages, smb_message_echoes) e lista os webhooks
   pause <id>
   resume <id>
-  subscribe <id> --autorizo-cobranca       COBRA NA HORA; repete o subscribe só se o primeiro der 2xx
+  subscribe <id> --autorizo-cobranca       COBRA NA HORA; com --medir-repeticao repete uma vez (pode cobrar de novo)
   cancel <id> --autorizo-cancelamento
   delete <id>                além da regra acima, só apaga canal sem número e sem waba_id
 
@@ -961,8 +961,11 @@ async function main(argv) {
       await guardaCanal(token, id, flags);
       const first = await api("subscribe", "POST", `${channelPath(id)}/subscribe`);
       report("subscribe", first);
-      // Segundo subscribe mede idempotência; só faz sentido se o primeiro passou.
-      if (is2xx(first.status)) report("subscribe-again", await api("subscribe-again", "POST", `${channelPath(id)}/subscribe`));
+      // Segundo subscribe mede idempotência, mas pode cobrar de novo se a Datafy
+      // não for idempotente: só com flag própria, e só se o primeiro passou.
+      if (is2xx(first.status) && flags.has("--medir-repeticao")) {
+        report("subscribe-again", await api("subscribe-again", "POST", `${channelPath(id)}/subscribe`));
+      }
       return;
     }
     case "cancel": {

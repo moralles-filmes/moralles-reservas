@@ -55,7 +55,7 @@ No bash: `read -s DATAFY_ACCOUNT_TOKEN; export DATAFY_ACCOUNT_TOKEN`, e `unset D
 
 - `webhook`, `pause`, `resume`, `subscribe`, `cancel` e `delete` consultam o canal antes e **só seguem se ele foi criado por este probe (name `probe-fase0-<número>`) e não está assinado**. Qualquer outro caso é recusado (saída 4): canal de outro nome (como o ORIGINAL), canal assinado, consulta que falhou ou campo ilegível. Para forçar: `--canal-fora-do-probe-ok`. **Nesta rodada essa flag não é usada.**
 - `delete` exige ainda que o canal esteja **sem número e sem WABA** (`has_number: false` e `has_waba: false` na linha `trava`). Não se mediu se apagar um canal com número descadastra o número ou tira o app da WABA, o que cortaria o ORIGINAL logo depois de religado na mesma WABA.
-- `subscribe` **cobra na hora** e exige `--autorizo-cobranca`; repete o `subscribe` uma vez, só se o primeiro der 2xx, para medir a idempotência.
+- `subscribe` **cobra na hora** e exige `--autorizo-cobranca`. Só com `--medir-repeticao` ele repete uma vez (se o primeiro der 2xx) para medir idempotência, o que pode cobrar de novo.
 - `cancel` exige `--autorizo-cancelamento` (e, como só canal assinado tem o que cancelar, também `--canal-fora-do-probe-ok`).
 - **Nesta rodada nem `subscribe` nem `cancel` são usados** (decisão do dono).
 - `link` e `serve` não têm trava: gerar link não é destrutivo e é preciso para religar o ORIGINAL.

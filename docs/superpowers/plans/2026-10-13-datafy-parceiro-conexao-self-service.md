@@ -215,7 +215,7 @@ document.getElementById("b").onclick = async () => {
 
 `scripts/datafy-probe/README.md` com: (a) como definir a variável no PowerShell (`$env:DATAFY_ACCOUNT_TOKEN = Read-Host -AsSecureString`, convertido, para não ficar no histórico) e no bash (`read -s DATAFY_ACCOUNT_TOKEN; export DATAFY_ACCOUNT_TOKEN`); (b) a sequência do Step 3; (c) o aviso de que `subscribe` cobra e exige `--autorizo-cobranca`.
 
-- [ ] **Step 3: Rodar a sequência com o dono (na máquina dele)**
+- [x] **Step 3: Rodar a sequência com o dono (na máquina dele)**
 
 A sequência executada em 2026-10-14 é a do README (número da Moralles: ORIGINAL → desconecta no painel → PROBE → desconecta → ORIGINAL, conferindo as fingerprints contra a linha de base). A lista abaixo é a original, para número dedicado:
 
@@ -231,11 +231,11 @@ A sequência executada em 2026-10-14 é a do README (número da Moralles: ORIGIN
 10. **Somente com autorização explícita do dono:** `subscribe <id> --autorizo-cobranca` (mede a resposta e o que um segundo `subscribe` devolve), depois `cancel <id>`. Sem autorização, pular e registrar "não medido".
 11. `delete <id>`: medir se um canal **nunca assinado** pode ser apagado direto.
 
-- [ ] **Step 4: Relatório**
+- [x] **Step 4: Relatório**
 
 Escrever `docs/superpowers/specs/2026-10-13-datafy-parceiro-validacao-fase0.md` com, por operação: status HTTP, forma, e a divergência em relação à §3 da spec. Fechar com "decisões que mudam o plano", por exemplo: nome não é único → reconciliação por `description`; `coexistence` é string → parser aceita os dois; `postMessage` não chega em localhost → o portal precisa de domínio registrado.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/datafy-probe/probe.mjs scripts/datafy-probe/README.md docs/superpowers/specs/2026-10-13-datafy-parceiro-validacao-fase0.md
@@ -243,6 +243,8 @@ git commit -m "test(datafy): probe da Fase 0 do parceiro e relatorio de forma"
 ```
 
 **Gate de saída:** relatório revisado pelo dono. Divergência que mude interface atualiza as Tasks 3–10 **antes** de começar.
+
+**Estado em 2026-10-14:** rodada feita, relatório em [2026-10-13-datafy-parceiro-validacao-fase0.md](../specs/2026-10-13-datafy-parceiro-validacao-fase0.md). Pendente: revisão do dono, a decisão do item 5 da §4 (`coexistence` ausente do GET × §11.1) e a aplicação das decisões da §4 nas Tasks 4, 5 e 7 antes de a Task 4 começar.
 
 ---
 
