@@ -152,3 +152,50 @@ do $$ declare sig regprocedure; begin
  raise notice '63: WBR005/ACL OK (same org, both collisions, positive control, no direct access)';
 end $$;
 rollback;
+
+-- FWR001: state avançado não apaga a autoridade da etapa anterior.
+begin;
+do $$ declare
+ a uuid:=gen_random_uuid(); u uuid; o uuid; c uuid; g uuid; r record; old_fence uuid;
+ prior_step text; next_step text; advanced_state text; crash boolean; revision bigint; remote_id text;
+begin
+ insert into auth.users(id) values(a); insert into public.platform_admins(user_id) values(a);
+ foreach prior_step in array array['create_channel','create_webhook'] loop
+  foreach crash in array array[false,true] loop
+   u:=gen_random_uuid(); o:=gen_random_uuid(); c:=gen_random_uuid(); g:=gen_random_uuid(); remote_id:='remote-'||o::text;
+   advanced_state:=case when prior_step='create_channel' then 'channel_created' else 'webhook_ready' end;
+   next_step:=case when prior_step='create_channel' then 'create_webhook' else 'subscribe' end;
+   insert into public.units(id,organization_id,name) values(u,'aaaaaaaa-0000-0000-0000-000000000001','local63-recovery');
+   insert into public.whatsapp_official_connection_grants(id,unit_id,organization_id,granted_by)
+    values(g,u,'aaaaaaaa-0000-0000-0000-000000000001',a);
+   insert into public.whatsapp_datafy_onboardings(id,unit_id,organization_id,reserved_channel_id,datafy_channel_id,state,grant_id)
+    values(o,u,'aaaaaaaa-0000-0000-0000-000000000001',c,remote_id,advanced_state,g);
+   revision:=null;
+   if prior_step='create_webhook' then
+    insert into public.whatsapp_channels(id,unit_id,provider,status,external_instance_id,is_active)
+     values(c,u,'datafy','connected',remote_id,false) returning template_credential_revision into revision;
+   end if;
+   select * into r from public.claim_datafy_onboarding_step(o,u,prior_step,a); old_fence:=r.claim_id;
+   if crash then update public.whatsapp_datafy_onboardings set claim_expires_at=now()-interval '1 second' where id=o;
+   else perform public.release_datafy_onboarding_step(o,u,r.claim_id,prior_step,'uncertain'); end if;
+   -- Reproduz a seleção antiga: a próxima etapa não pode apagar a anterior.
+   select * into r from public.claim_datafy_onboarding_step(o,u,next_step,a);
+   perform public.release_datafy_onboarding_step(o,u,r.claim_id,next_step,'reconciled_absent');
+   if (select uncertain_steps from public.whatsapp_datafy_onboardings where id=o)<>array[prior_step] then raise exception 'release removed another step'; end if;
+   select * into r from public.claim_datafy_onboarding_step(o,u,next_step,a);
+   if public.authorize_datafy_mutation(u,c,a,r.claim_id,o,next_step,remote_id,revision,g) then raise exception 'earlier uncertainty authorized POST'; end if;
+   perform public.release_datafy_onboarding_step(o,u,r.claim_id,next_step,'failed');
+   -- A recuperação só conclui sob claim do passo original; fence velha falha.
+   select * into r from public.claim_datafy_onboarding_step(o,u,prior_step,a);
+   begin perform public.release_datafy_onboarding_step(o,u,old_fence,prior_step,'reconciled_present');
+    raise exception 'stale recovery accepted'; exception when serialization_failure then null; end;
+   perform public.release_datafy_onboarding_step(o,u,r.claim_id,prior_step,'reconciled_present');
+   if (select state<>advanced_state or datafy_channel_id<>remote_id or cardinality(uncertain_steps)<>0 from public.whatsapp_datafy_onboardings where id=o) then raise exception 'recovery changed state or identity'; end if;
+   select * into r from public.claim_datafy_onboarding_step(o,u,next_step,a);
+   if not public.authorize_datafy_mutation(u,c,a,r.claim_id,o,next_step,remote_id,revision,g) then raise exception 'reconciled next step refused'; end if;
+   perform public.release_datafy_onboarding_step(o,u,r.claim_id,next_step,'succeeded');
+  end loop;
+ end loop;
+ raise notice '63 FWR001: 4 advanced-state recovery cases OK (crash/uncertain, step-specific release, stale fence, global authorization)';
+end $$;
+rollback;

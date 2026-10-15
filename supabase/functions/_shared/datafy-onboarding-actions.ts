@@ -24,6 +24,7 @@ type Onboarding = {
   id: string; unit_id: string; organization_id: string; grant_id: string | null;
   reserved_channel_id: string; datafy_channel_id: string | null; datafy_webhook_id: string | null;
   channel_token: string | null; webhook_secret: string | null; state: OnboardingState;
+  claim_id: string | null; claim_step: string | null; uncertain_steps: string[];
 };
 type Grant = { id: string; revoked_at: string | null; consumed_at: string | null; consumed_channel_id: string | null };
 type Channel = {
@@ -178,6 +179,55 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     }
     return fresh;
   }
+  async function reconcileAdvancedSteps(client: DatafyAdminClient, initial: Onboarding, actorId: string): Promise<Onboarding> {
+    let o = initial;
+    let missingPublishedResource: string | null = null;
+    for (const step of ["create_channel", "create_webhook"] as const) {
+      const advanced = step === "create_channel" ? ["channel_created", "webhook_ready", "connected"].includes(o.state)
+        : ["webhook_ready", "connected"].includes(o.state);
+      const resetWebhook = step === "create_webhook" && o.state === "open" && !o.datafy_channel_id;
+      if ((!advanced && !resetWebhook) || !(o.uncertain_steps.includes(step) || (o.claim_id && o.claim_step === step))) continue;
+      // A escrita de sucesso pode ter commitado antes do release. Reivindicar
+      // o passo ORIGINAL conserva a pendência e a autoridade do mesmo histórico.
+      const claim = await claimStep(o, step, actorId);
+      let released = false;
+      try {
+        const current = await onboardingById(o.unit_id, o.id);
+        if (!current || current.claim_id !== claim.claim_id || current.claim_step !== step
+          || (!current.datafy_channel_id && !(step === "create_webhook" && current.state === "open"))) throw new ActionFailure("DATAFY_RECONCILIATION_REQUIRED", 409);
+        // Reset cercado já persistido também prova ausência se o processo caiu
+        // antes do release; não existe ID remoto a consultar nesse caso.
+        const snapshot = current.datafy_channel_id ? await remote(client, current.datafy_channel_id) : null;
+        if (snapshot && snapshot.id !== current.datafy_channel_id) throw new ActionFailure("DATAFY_IDENTITY_CHANGED", 409);
+        const present = !!snapshot && (step === "create_channel" || snapshot.webhooks.some((hook) =>
+          hook.id === current.datafy_webhook_id && hook.url === webhookUrl(current.reserved_channel_id)
+          && hook.enabled && ["messages", "smb_message_echoes"].every((event) => hook.events.includes(event))));
+        if (!present) {
+          // Só ausência definitiva permite voltar ao estado reparável. GET com
+          // timeout lança antes daqui, preservando identidade e incerteza.
+          const published = await loadChannel(current.unit_id, current.reserved_channel_id);
+          if (published) {
+            // Identidade publicada pertence à autoridade de relink. Resolver
+            // a pendência não autoriza recriar seu remoto por este fluxo.
+            missingPublishedResource = snapshot ? "DATAFY_WEBHOOK_MISSING" : "REMOTE_CHANNEL_MISSING";
+          } else if (snapshot || !current.uncertain_steps.some((pending) => pending !== step && ["create_channel", "create_webhook"].includes(pending))) {
+            await patchOnboarding(current, snapshot ? { state: "channel_created", datafy_webhook_id: null }
+              : { state: "open", datafy_channel_id: null, datafy_webhook_id: null, channel_token: null, webhook_secret: null }, claim);
+          }
+        }
+        await release(current, current.unit_id, current.reserved_channel_id, claim, step, present ? "reconciled_present" : "reconciled_absent");
+        released = true;
+      } catch (error) {
+        if (!released) await release(o, o.unit_id, o.reserved_channel_id, claim, step, "failed", "DATAFY_RECONCILIATION_FAILED");
+        throw error;
+      }
+      const fresh = await onboardingById(o.unit_id, o.id);
+      if (!fresh) throw new ActionFailure("ONBOARDING_READ_FAILED");
+      o = fresh;
+    }
+    if (missingPublishedResource) throw new ActionFailure(missingPublishedResource, 409);
+    return o;
+  }
   async function claimedChannel(unitId: string, channelId: string, claim: Claim, o: Onboarding | null): Promise<Channel> {
     const channel = await loadChannel(unitId, channelId);
     const unlinkedRelink = claim.operation === "relink" && claim.external_instance_id === null && channel?.external_instance_id === null;
@@ -256,6 +306,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
         const refused = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!binding, onboarding: null, remote: null });
         if (refused.kind === "refuse") throw new ActionFailure(refused.code, 409);
       }
+      if (o) Object.assign(o, await reconcileAdvancedSteps(client, o, actorId));
       const snapshot = o?.datafy_channel_id ? await remote(client, o.datafy_channel_id) : null;
       const decision = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!binding,
         onboarding: o ? { state: o.state, datafyChannelId: o.datafy_channel_id, datafyWebhookId: o.datafy_webhook_id } : null,
@@ -426,6 +477,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   }
   async function subscribeChannel(client: DatafyAdminClient, unitId: string, channel: Channel, o: Onboarding | null,
     actorId: string, requestId: string, admin = false, reconciliationAttempts = 0): Promise<DatafyActionResult> {
+    if (o) o = await reconcileAdvancedSteps(client, o, actorId);
     let claim: Claim;
     if (admin) {
       claim = await claimOperation(unitId, channel.id, actorId, "subscribe");
@@ -523,6 +575,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       if (latest?.state === "completed") return result(await state(unitId));
       throw new ActionFailure("ONBOARDING_NOT_FOUND", 409);
     }
+    Object.assign(o, await reconcileAdvancedSteps(client, o, actorId));
     if (!["webhook_ready", "connected"].includes(o.state)) throw new ActionFailure("ONBOARDING_NOT_READY", 409);
     if (o.state === "webhook_ready") {
       const grant = await activeGrant(unitId);
