@@ -660,6 +660,8 @@ Primeira configuração considera o vínculo operacional de `resolveUnitChannelB
 - Modify: `supabase/functions/_shared/whatsapp-template-worker.ts` (reexporta ou importa o sender extraído, sem mudar comportamento)
 - Create: `supabase/functions/_shared/ops-alert-core.ts`
 - Create: `src/lib/ops-alert-core.test.ts`
+- Create: `supabase/functions/_shared/ops-alert-runtime.ts`, migration `20261015171115_whatsapp_ops_alert_observation.sql` e pré-voo local `64`/`64a`
+- Modify: `supabase/functions/manage-channels/index.ts` (falha de assinatura ligada ao alerta externo)
 - Modify: `supabase/functions/process-whatsapp-channel-health/index.ts`
 
 **Interfaces:**
@@ -667,9 +669,9 @@ Primeira configuração considera o vínculo operacional de `resolveUnitChannelB
 - `OpsAlertPayload = { event: AlertType; unit_id: string; channel_id: string | null; count?: number; oldest_age_seconds?: number; generated_at: string }`. Nada além disso.
 - `maxBacklogAgeMs` importa `MAX_PENDING_BACKLOG_AGE_MS` de `src/lib/whatsapp-inbound-backlog.ts`? **Não:** o backend não importa de `src/`. Mover a constante (ou a função que a deriva) para `whatsapp-inbound-queue-core.ts` e fazer o arquivo de `src/` reexportar. Teste que garante o mesmo valor nos dois lados.
 
-- [ ] **Step 1:** testes do núcleo: dead novo → alerta com `count`; nenhum novo → nada; backlog acima do limite → `inbound_backlog_stalled`; reenvio dentro de `minIntervalMs` (padrão 30 min) suprimido; payload sem chave fora da lista (teste serializa e confere o conjunto de chaves).
-- [ ] **Step 2:** no health worker, depois da observação de conexão: consultar contagem de `dead` com `updated_at > watermark` e a linha não terminal mais antiga por unidade (comparações de tempo no SQL ou contra `now()` do banco, seguindo o critério de relógio do CLAUDE.md); decidir; enviar com `WHATSAPP_OPS_ALERT_URL`; gravar `whatsapp_ops_alerts` **depois** de `delivered: true`. `unconfigured` vai para a resposta do worker e para o log.
-- [ ] **Step 3:** vitest + eslint. Commit `feat(whatsapp): alerta externo de dead-letter e fila parada`.
+- [x] **Step 1:** testes do núcleo: dead novo → alerta com `count`; nenhum novo → nada; backlog acima do limite → `inbound_backlog_stalled`; reenvio dentro de `minIntervalMs` (padrão 30 min) suprimido; payload sem chave fora da lista (teste serializa e confere o conjunto de chaves).
+- [x] **Step 2:** no health worker, depois da observação de conexão: consultar contagem de `dead` com `updated_at > watermark` e a linha não terminal mais antiga por unidade (comparações de tempo no SQL ou contra `now()` do banco, seguindo o critério de relógio do CLAUDE.md); decidir; enviar com `WHATSAPP_OPS_ALERT_URL`; gravar `whatsapp_ops_alerts` **depois** de `delivered: true`. `unconfigured` vai para a resposta do worker e para o log.
+- [x] **Step 3:** vitest + eslint. Commit `feat(whatsapp): alerta externo de dead-letter e fila parada` (`a335569`; revisão de spec/qualidade aprovada; 112 arquivos/3.238 testes, typecheck, lint dirigido e pré-voo 64 verdes).
 
 ---
 
@@ -690,8 +692,8 @@ Comportamento:
 - Checklist e copy: pré-requisitos antes de conectar; depois, "Envie uma mensagem pelo app WhatsApp Business no celular para qualquer contato"; "Cadastre o cartão na sua conta Meta" com os passos de Configurações de pagamento; aviso de templates quando `templatesPending`; "Abra o app WhatsApp Business ao menos a cada 14 dias".
 - `Whatsapp.tsx`: com liberação ativa, o card oficial substitui o estado "Nenhum número conectado / … QR Code" e nenhum botão de QR é exibido.
 
-- [ ] **Step 1:** testes de componente (Testing Library + jsdom): `window.open` chamado **sincronamente** no clique (espiar e afirmar que foi chamado antes da resolução da promise do `start`); evento com origem errada não chama `confirm`; evento válido chama `confirm` uma vez; evento com `coexistence: false` mostra o aviso e não chama `confirm`; dois eventos válidos seguidos não chamam `confirm` duas vezes enquanto o primeiro está pendente (guarda reentrante); a URL não aparece no DOM.
-- [ ] **Step 2:** implementar. **Step 3:** typecheck, vitest, lint. Commit `feat(portal): conexao do WhatsApp oficial pelo lojista`.
+- [x] **Step 1:** testes de componente (Testing Library + jsdom): `window.open` chamado **sincronamente** no clique (espiar e afirmar que foi chamado antes da resolução da promise do `start`); evento com origem errada não chama `confirm`; evento válido chama `confirm` uma vez; evento com `coexistence: false` mostra o aviso e não chama `confirm`; dois eventos válidos seguidos não chamam `confirm` duas vezes enquanto o primeiro está pendente (guarda reentrante); a URL não aparece no DOM.
+- [x] **Step 2:** implementar. **Step 3:** typecheck, vitest, lint. Commit `feat(portal): conexao do WhatsApp oficial pelo lojista` (`25c1abc`; revisão de spec/qualidade aprovada; 125 testes focados, typecheck e lint verdes).
 
 ---
 
@@ -711,7 +713,11 @@ Itens:
 - Correções do levantamento: ramo Datafy no `EditChannelDialog` (campo de token); toast de rotação específico por provider (Datafy: "Segredo atualizado. Envie uma mensagem pelo celular e use Ativar."); `activation_requested_at` visível; `AddChannelDialog` parte de `default_whatsapp_provider` da organização.
 - Tela de segredos da plataforma (`src/pages/platform/Automacao.tsx`, não a de gestão): `SECRET_LABELS`/`SECRET_PLACEHOLDERS` para `datafy_account_token` (placeholder `sk_acct_...`), grupo "WhatsApp oficial (Datafy)" fora do card "Pagamentos", e copy própria no diálogo de remoção ("a conexão oficial de novas lojas fica indisponível"). Sem isso a chave aparece com o nome cru, e o diálogo diz "funcionalidades de pagamento". (Achado da revisão da Task 3.)
 - `whatsapp-health`: escolher também o canal em onboarding (inativo, mais recente) quando não houver ativo, marcando `is_active` no payload; expor `ingestion_mode_effective` e `ops_alert_configured` (booleano, nunca a URL).
-- [ ] **Step 1:** testes de componente para liberar/revogar e para a confirmação de cancelar. **Step 2:** implementar. **Step 3:** gates. Commit `feat(platform): onboarding Datafy no painel e diagnostico`.
+- [x] **Step 1:** testes de componente para liberar/revogar e para a confirmação de cancelar. **Step 2:** implementar. **Step 3:** gates. Commit `feat(platform): onboarding Datafy no painel e diagnostico` (`c2d5ea4`; revisão de spec/qualidade aprovada; 196 testes focados, typecheck e lint dirigido verdes).
+
+**Validação integrada do bloco 9–11 (2026-10-15):** revisões individuais de spec/qualidade aprovadas; revisão integrada e seis gates estáticos de segurança aprovados com ressalvas não bloqueantes. A única onda final `f75b61a` incluiu `whatsapp-health` na matriz de consumidores do sender, esclareceu a reutilização do checklist canônico e traduziu os modos de ingestão no diagnóstico; re-review scoped aprovado, sem novas falhas. Gates dessa correção: 4 arquivos/19 testes, typecheck e lint dirigido verdes. Suíte completa iniciada em `c2d5ea4`: `npm test -- --maxWorkers=1 --minWorkers=1`, 121 arquivos/3.291 testes PASS (608,30s); a correção final de copy/documentação também passou nos 19 testes focados citados acima. Typecheck, build e lint global do bloco passaram (zero erros, 21 warnings preexistentes; avisos de browserslist/chunk size no build). Pré-voo 64/64a passou com reaplicação da migration, ACL efetiva, filtro de tenant, agregados e relógio SQL; servidor descartável encerrado.
+
+**Limites aceitos na revisão:** o envio sequencial de alertas não tem orçamento global/continuação justa; muitos incidentes ou endpoint lento podem atrasar alertas no fim da lista por timeout. O watermark estrito por `updated_at` segue o contrato planejado, mas não garante capturar transação longa que só comita um timestamp anterior depois do snapshot; envio HTTP e ledger também podem repetir alertas. Não há promessa de exactly-once. Deno, Supabase/PostgREST remoto, entrega externa, popup/signup real e CI remoto não foram validados. Tasks 12–14 continuam pendentes; este bloco não substitui os gates whole-branch da Task 13 nem o piloto da Task 14. Nenhum push, merge em main, deploy ou alteração de produção.
 
 ---
 
@@ -746,7 +752,7 @@ Itens:
 
 ### Task 14: Deploy e piloto (cada passo com autorização do dono)
 
-1. Antes do push, repetir a query de duplicata de `phone_number_id` da Task 2 e a query de conflito WABA→organização no cabeçalho da migration da Task 7; ambas precisam voltar vazias. `supabase db push` (migrations das Tasks 2 e 7, nessa ordem) e conferência de ACL e índices em produção. Backfill de propriedade WABA falha fechado em conflito; não escolher um vencedor arbitrário.
+1. Antes do push, repetir a query de duplicata de `phone_number_id` da Task 2 e a query de conflito WABA→organização no cabeçalho da migration da Task 7; ambas precisam voltar vazias. `supabase db push` (migrations das Tasks 2, 7 e 9, nessa ordem; a observação de alertas é `20261015171115_whatsapp_ops_alert_observation.sql`) e conferência de ACL e índices em produção. Backfill de propriedade WABA falha fechado em conflito; não escolher um vencedor arbitrário.
 2. Deploy das EFs: `manage-channels`, `webhook-whatsapp`, `process-whatsapp-channel-health`, `whatsapp-health`, `manage-platform-secrets`, `process-whatsapp-templates` (sender extraído), mais as consumidoras de `whatsapp-provider-core.ts`/`whatsapp-inbound-queue-core.ts` conforme o checklist atualizado.
 3. Frontend (merge na `main` dispara a Vercel).
 4. Dono cadastra `datafy_account_token` no painel e `WHATSAPP_OPS_ALERT_URL` via `supabase secrets set`; confirmar recebimento de um alerta de teste.
