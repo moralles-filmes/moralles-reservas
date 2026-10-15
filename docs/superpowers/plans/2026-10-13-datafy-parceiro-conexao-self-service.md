@@ -768,6 +768,8 @@ ACL do HEAD validado antes desta reavaliação `29fac37`: [PASS, 36 s](https://g
 
 ### Task 14: Deploy e piloto (cada passo com autorização do dono)
 
+**Rollout autorizado em 2026-10-15; piloto adiado pelo dono.** Etapas de banco e EFs concluídas; frontend segue pelo PR #28 após o check do HEAD final. Pré-voos sem conflitos, backup confirmado, três migrations aplicadas via CLI e ACL real aprovada. A tentativa inicial da segunda migration revelou ausência de transação explícita (`25P01`); correção `3116856` revisada e ensaiada antes de retomar. As 13 EFs estão ACTIVE com `verify_jwt` preservado. Evidências em [rollout](../specs/2026-10-15-datafy-parceiro-rollout.md). Etapas 4–6 permanecem pendentes para o piloto.
+
 1. Antes do push, repetir a query de duplicata de `phone_number_id` da Task 2 e a query de conflito WABA→organização no cabeçalho da migration da Task 7; ambas precisam voltar vazias. `supabase db push` (migrations das Tasks 2, 7 e 9, nessa ordem; a observação de alertas é `20261015171115_whatsapp_ops_alert_observation.sql`) e conferência de ACL e índices em produção. Backfill de propriedade WABA falha fechado em conflito; não escolher um vencedor arbitrário.
 2. Deploy das EFs: `manage-channels`, `webhook-whatsapp`, `process-whatsapp-channel-health`, `whatsapp-health`, `manage-platform-secrets`, `process-whatsapp-templates` (sender extraído), mais as consumidoras de `whatsapp-provider-core.ts`/`whatsapp-inbound-queue-core.ts` conforme o checklist atualizado.
 3. Frontend (merge na `main` dispara a Vercel).
