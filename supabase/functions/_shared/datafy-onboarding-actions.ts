@@ -69,6 +69,8 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   const monotonicNow = deps.monotonicNow ?? (() => performance.now());
   const mutationBudgetMs = DATAFY_ADMIN_MAX_TIMEOUT_MS + 5_000;
   const webhookUrl = (id: string) => `${deps.projectUrl.replace(/\/$/, "")}/functions/v1/webhook-whatsapp?channel=${id}`;
+  const hasRequiredWebhook = (snapshot: DatafyChannelSnapshot, id: string) => snapshot.webhooks.some((hook) =>
+    hook.url === webhookUrl(id) && hook.enabled && hook.events.includes("messages") && hook.events.includes("smb_message_echoes"));
   async function checked(query: PromiseLike<{ data: unknown; error: unknown }>, code = "DATAFY_PERSIST_FAILED") {
     const { data, error } = await query;
     if (error || rows(data).length !== 1) throw new ActionFailure(code);
@@ -529,6 +531,10 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
           if (reconciliationAttempts >= 2) throw new ActionFailure("ONBOARDING_BUSY", 409);
           return subscribeChannel(client, unitId, channel, o, actorId, requestId, admin, reconciliationAttempts + 1);
         }
+        if (!hasRequiredWebhook(snapshot!, channel.id)) {
+          await release(o, unitId, channel.id, claim, "subscribe", "failed", "DATAFY_WEBHOOK_MISSING"); released = true;
+          return result({ step: "webhook_pending", code: "DATAFY_WEBHOOK_MISSING" }, 409);
+        }
         await assertDatafyBinding(unitId);
         await authorizeMutation(unitId, channel.id, claim, "subscribe", channel.external_instance_id, channel.template_credential_revision, grant!.id);
         const subscribed = await client.subscribe(channel.external_instance_id!);
@@ -555,6 +561,12 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
         gatesAllowed: await deps.gatesAllowed(unitId, grantState(finalGrant, channel.id) !== "none"),
         remote: { found: true, subscribed: true } });
       if (finalDecision.kind === "already_subscribed") {
+        // Registrar custo aceito antes de recusar ativação; cada retry valida o
+        // webhook no GET sob claim, mesmo após encerrar a incerteza original.
+        if (!hasRequiredWebhook(snapshot!, channel.id)) {
+          await release(o, unitId, channel.id, claim, "subscribe", "reconciled_present", "DATAFY_WEBHOOK_MISSING"); released = true;
+          return result({ step: "webhook_pending", code: "DATAFY_WEBHOOK_MISSING" }, 409);
+        }
         await finalize(unitId, channel, o, finalGrant!, claim, actorId, requestId);
       } else {
         await deps.emitEvent({ evt: "datafy_subscription_failed", unitId, channelId: channel.id,
