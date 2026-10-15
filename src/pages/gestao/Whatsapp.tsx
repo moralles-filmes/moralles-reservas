@@ -36,6 +36,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import { useOfficialConnection } from "@/hooks/useOfficialConnection";
+import { OfficialConnectionCard } from "@/components/whatsapp/OfficialConnectionCard";
 import {
   useConnectWhatsapp,
   useDisconnectWhatsapp,
@@ -190,7 +192,10 @@ function WaitingQrState({
 export default function Whatsapp() {
   const unit = useCurrentUnit();
   const unitId = unit?.unit_id ?? "";
-  const lifecycleUnitId = unit?.isGerente ? unitId : "";
+  const official = useOfficialConnection(unit?.isGerente ? unitId : "");
+  const useOfficial = official.isLoading || official.isError || !official.data
+    || official.data.step !== "not_granted" || official.data.connectionRevoked === true;
+  const lifecycleUnitId = unit?.isGerente && !useOfficial ? unitId : "";
   const connection = useWhatsappConnection(lifecycleUnitId);
   const connect = useConnectWhatsapp(lifecycleUnitId);
   const refreshQr = useRefreshWhatsappQr(lifecycleUnitId);
@@ -206,7 +211,7 @@ export default function Whatsapp() {
     restart.isPending ||
     refreshStatus.isPending;
 
-  if (!unit || connection.isLoading) {
+  if (!unit || (!useOfficial && connection.isLoading)) {
     return (
       <div className="mx-auto max-w-3xl space-y-5">
         <Skeleton className="h-8 w-52" />
@@ -237,7 +242,7 @@ export default function Whatsapp() {
         unitSlug={unit.unit_slug}
       />
 
-      {connection.isError || !snapshot ? (
+      {useOfficial ? <OfficialConnectionCard unitId={unitId} /> : connection.isError || !snapshot ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
             <AlertCircle className="h-10 w-10 text-destructive" />
