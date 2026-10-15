@@ -745,14 +745,20 @@ Itens:
 ### Task 13: Gates whole-branch
 
 - [x] `npm run typecheck`, `npm test`, `npm run lint` verdes.
-- [ ] Pré-voo local completo verde, incluindo o 61.
+- [ ] Pré-voo local completo verde, incluindo o 61. Scripts atuais 00–64 e auditoria/cleanup aprovados; aberto somente pelo RED histórico original MAIN109 não recuperado/executado.
 - [x] Auditores `saas-shield-br`: `rls-auditor` e `migration-validator` (migration da Task 2), `tenant-isolation-auditor` e `identity-access-auditor` (ações do `manage-channels`), `integration-reliability-auditor` (cliente, claim, reconciliação, webhook, alerta), `secret-hunter` (diff inteiro). Achado P0/P1 bloqueia merge.
 - [x] Review whole-branch (spec + qualidade).
-- [ ] `acl-estatico` conferido no PR.
+- [x] `acl-estatico` conferido no PR #28 draft: PASS, 36 s no run 38789676653/job 116610676595, publicação inicial em `3acd7f4`.
 
 **Checkpoint 2026-10-15 — Task 12 concluída; Task 13 parcial.** Documentação `7bf12e7` + correção `71596fb`, revisão de spec/qualidade aprovada. Suíte ampla: 121 arquivos/3.291 testes PASS; typecheck, lint (21 warnings preexistentes), lint de EFs e build PASS. Pré-voos Datafy 61–64, concorrência 61b/63b e replay do schema final passaram; não substituem o pré-voo histórico completo. Seis auditores sem P0/P1 confirmado. Review whole-branch encontrou WB-001/P2 (portal ocultava saúde atual após ativação), corrigido em `0f56e6c`: 36 testes focados, typecheck/lint/build e re-review aprovados. Detalhes, fingerprint histórico C14 e limites em [evidências dos gates](../specs/2026-10-15-datafy-parceiro-gates.md).
 
-**Pendências para fechar Task 13:** restaurar/provisionar o ambiente descartável exigido pelo pré-voo histórico (stack `moralles-templates-20261003`, scratch e caminhos locais ausentes), sem enfraquecer seus guards; publicar branch/PR quando autorizado e conferir `acl-estatico` em Checks (consulta confirmou que não existe PR). Não houve push, merge em main, deploy, custo de provider ou alteração de produção. A Task 14 continua separada.
+**Checkpoint final dos scripts atuais.** Histórico PostgreSQL nativo 18.6: 00–24 PASS, incluindo concorrência 24; cluster encerrado. Docker PostgreSQL 17.11 próprio em loopback: 25–60 PASS, 15 etapas concluídas e lista de gates diferidos vazia. A falha inicial 27 por overload privado de sete argumentos ausente foi preservada; após bridge41/migration resource `20261005170415`, 27–30 e 35–37 passaram antes de 41–43, sem dispensar gates ou fabricar predecessores. Gate 60 teve RED esperado antes da migration e GREEN após aplicação e reaplicação; regressões 53/31 PASS.
+
+O primeiro final-audit identificou exatamente duas linhas lifecycle `token_stored` próprias da fixture 32 (org`32323232-0000-0000-0000-000000000011`/unit`...012`/channel`...024`), correspondentes às duas chamadas store do script 32. ROOT removeu somente essas duas linhas (`owned32-cleanup`); auditoria repetida exit 0, baselines preservados, zero resíduos próprios de domínio/Auth/audit/private e zero cron/net/Vault de transporte. Falha inicial preservada. Stop CLI do workdir próprio exit 0 e inventário Docker final próprio vazio.
+
+[PR #28 draft](https://github.com/moralles-filmes/moralles-reservas/pull/28) aberto, publicação inicial em `3acd7f4`; [acl-estatico PASS, 36 s](https://github.com/moralles-filmes/moralles-reservas/actions/runs/38789676653/job/116610676595). Vercel sem deploy novo observado, somente o antigo `5d25c91`; guard de deploy Git restrito à branch. Nenhum merge, deploy, custo de provider ou alteração de produção.
+
+**Única lacuna do pré-voo para fechar Task 13:** RED histórico MAIN109, cujo corpo original não foi recuperado (migration já corrigida no primeiro commit, snapshot original ausente). Atuais 38–40 PASS não reproduzem esse RED, e nenhum corpo foi fabricado. O checkbox completo permanece aberto exclusivamente por essa lacuna. Resultados 61–64 e detalhe do fingerprint C14 permanecem nas [evidências dos gates](../specs/2026-10-15-datafy-parceiro-gates.md). A Task 14 continua separada, sem autorização de merge/deploy.
 
 ### Task 14: Deploy e piloto (cada passo com autorização do dono)
 

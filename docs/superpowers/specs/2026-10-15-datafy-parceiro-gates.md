@@ -6,7 +6,7 @@ Data: 2026-10-15. Branch: `feat/datafy-parceiro-self-service`. Base whole-branch
 
 Task 12 aprovada: `7bf12e7` atualiza o par `CLAUDE.md`/`AGENTS.md` e cria o [runbook](../../datafy-parceiro-runbook.md); `71596fb` corrige a união de 13 Edge Functions no rollout e distingue ACL/RLS SQL local de produção/PostgREST. Revisão incremental aprovou as duas correções.
 
-Task 13 permanece **parcial**: os gates executáveis disponíveis passaram, mas o pré-voo histórico completo e o Check remoto `acl-estatico` não foram comprovados. Isto não é aprovação de merge/deploy. A Task 14 continua separada; este bloco não fez push, merge em main, deploy, chamada ao provider, contratação ou alteração de produção.
+Task 13 permanece **parcial somente pela lacuna histórica MAIN109**: o pré-voo histórico 00–24, todos os scripts atuais Docker 25–60, a auditoria final e o encerramento dos runtimes próprios passaram. O RED original MAIN109 não foi recuperado nem executado; por isso o checkbox de pré-voo completo permanece aberto. A publicação inicial da branch foi em `3acd7f4` e o PR #28 foi aberto como draft, com `acl-estatico` aprovado. Isto não é aprovação de merge/deploy. A Task 14 continua separada; não houve merge, novo deploy, chamada ao provider, contratação ou alteração de produção.
 
 ## Gates executados
 
@@ -43,16 +43,26 @@ Dois clusters próprios PostgreSQL 18, somente loopback (`55463` e `55464`), sem
 
 O fingerprint C14 do 61 ficou **FALHOU** ao comparar a baseline da primeira migration com o schema intencionalmente ampliado pela migration `20261014170540`; os outros 30 controles continuaram verdes. Esse resultado foi preservado. Em prova separada, guardou-se o fingerprint antigo e estabeleceu-se baseline do schema final apenas no harness descartável: dupla reaplicação de `170540` seguida de 61 voltou a 31/31, e 62/63 passaram. Não houve alteração do teste para ocultar o resultado anterior.
 
+## Histórico local e publicação — resultado final dos scripts atuais
+
+- **00–24 PASS:** PostgreSQL 18.6 próprio em loopback 55465, sem pg_cron/pg_net; 85 invocações SQL com status nativo e contagens finais conferidas. Grupos finais: 33, 36, 48 e 20 vereditos aprovados, mais concorrência 24 com 4/4. REDs previstos e restaurações preservados; cluster encerrado. Evidência: scratch `legacy-preflight-report.md`.
+- **Docker 25–60 PASS:** PostgreSQL 17.11 em runtime próprio `.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime`, projeto exato `moralles-templates-20261003`, API loopback 55451 e DB 55452. Portabilidade revisada e commitada em `3acd7f4`, mantendo guards, quarentena e chaves locais exclusivas de ROOT. Runner concluiu as 15 etapas e registrou lista de gates diferidos vazia. Todos os scripts atuais foram executados e passaram, incluindo os SQL/JWT/concorrência pertinentes.
+- **Ordem e falha inicial 27 preservadas:** a primeira execução de 27 falhou porque o overload privado de sete argumentos ainda não existia; o erro/log foi preservado, sem atribuí-lo à migration de claims nem ocultá-lo. Após bridge41 e migration/reaplicação de recursos `20261005170415`, os atuais 27–30 e 35–37 passaram antes de 41–43. A ordem correta está no README; nenhum gate foi dispensado ou predecessor fabricado.
+- **Retenção 60:** RED esperado contra o predecessor antes da migration; GREEN após aplicação e reaplicação. Regressões 53 e 31 também PASS. Logs e resultados nativos foram preservados.
+- **Auditoria/cleanup:** o primeiro final-audit falhou por exatamente duas linhas lifecycle `token_stored` da fixture 32: organização `32323232-0000-0000-0000-000000000011`, unidade `32323232-0000-0000-0000-000000000012`, canal `32323232-0000-0000-0000-000000000024`, coerentes com as duas chamadas store do script 32. ROOT removeu somente essas duas linhas próprias (log `owned32-cleanup`). Auditoria repetida: exit 0, baselines preservados, zero resíduos próprios de domínio/Auth/audit/private, zero cron/net e zero material Vault de transporte. A falha inicial foi preservada.
+- **Encerramento:** CLI stop com o workdir próprio exato, exit 0; inventário Docker final do projeto próprio vazio. Nenhum recurso de outro projeto foi reutilizado ou removido.
+- **Publicação:** [PR #28 draft](https://github.com/moralles-filmes/moralles-reservas/pull/28), publicação inicial em `3acd7f4`. [acl-estatico](https://github.com/moralles-filmes/moralles-reservas/actions/runs/38789676653/job/116610676595): PASS, 36 s.
+- **Vercel:** nenhum deploy novo observado; somente o deployment antigo de `5d25c91`. O guard `git.deploymentEnabled` desabilita deploy Git apenas para esta branch. Nenhum merge/deploy foi realizado.
+
 ## Pendências obrigatórias
 
-1. **Pré-voo histórico completo:** os gates GoTrue/PostgREST/JWT dependem do projeto/container `moralles-templates-20261003`, do scratch histórico `2026-10-03-whatsapp-templates-programados/local-runtime` e de executáveis fixados no perfil de outra máquina. Esses pré-requisitos estão ausentes. Restaurar/provisionar um ambiente descartável equivalente e revisar a portabilidade do harness antes de executá-los; nunca apontar para um banco alheio nem remover guardas para obter verde. O conjunto 61–64 não substitui todo o histórico.
-2. **`acl-estatico` no PR:** consulta somente leitura por `gh pr view feat/datafy-parceiro-self-service` confirmou ausência de PR. Publicação da branch/PR e conferência dos Checks exigem o escopo de publicação correspondente; não foram realizadas neste bloco.
-3. **Rollout/piloto:** seguir a Task 14 e o runbook, banco antes de EFs/frontend, com os pré-voos de duplicata de telefone e conflito WABA imediatamente antes do `db push`. Operações com custo/destruição exigem identificação do canal pelo nome exato.
+1. **Única lacuna do pré-voo — MAIN109:** o corpo original anterior ao fix não foi recuperado do Git local, não shallow, nem dos objetos inacessíveis examinados; a migration já nasce corrigida em seu único commit de criação, e o snapshot scratch original está indisponível. O RED histórico específico permanece **NÃO EXECUTADO**. Os atuais 38–40 passaram e comprovam seus contratos atuais; nenhum corpo antigo foi fabricado e nenhum controle mutante substitui a procedência histórica ausente. Investigação detalhada: scratch `extra-historical-controls.md`.
+2. **Rollout/piloto:** seguir a Task 14 e o runbook somente com autorização própria, banco antes de EFs/frontend, com pré-voos de duplicata de telefone e conflito WABA imediatamente antes do `db push`. Operações com custo/destruição exigem identificação do canal pelo nome exato. Nenhuma aprovação de merge/deploy decorre deste checkpoint.
 
 ## Decisões e limites preservados
 
 - A redação antiga da Task 12 sobre `begin_switch` foi alinhada às Tasks 7/8: recusa outro provider e permite binding do mesmo provider. Não houve regressão do comportamento para satisfazer o resumo antigo; eventual mudança de escopo exige revisão própria.
-- A entrega permanece commitada na branch solicitada. Merge/push/deploy pertencem à etapa operacional separada; isso pode adiar a publicação, mas evita publicar sem seus gates.
+- A entrega permanece na branch solicitada, publicada em PR draft. Merge e deploy continuam fora do escopo autorizado; o PR não equivale ao piloto da Task 14.
 - Alertas sequenciais podem atrasar o fim do lote sob timeout; watermark estrito pode perder transação longa com timestamp anterior ao snapshot; HTTP e ledger podem duplicar alertas. Não há promessa de exactly-once.
 
 Relatórios detalhados e logs nativos desta execução permanecem no scratch ignorado `.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/`; este documento é o resumo versionado das evidências e pendências.

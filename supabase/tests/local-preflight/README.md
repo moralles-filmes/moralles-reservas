@@ -1154,9 +1154,41 @@ do banco de produção, Security Advisor, homologação Datafy/Meta ou rollout.
 
 ### Claims/transições de automação e catálogo — Task 4
 
-`27-template-claims.sql` roda depois de `25-template-bootstrap.sql`, migration
-`20261003225857_whatsapp_template_catalog.sql` e migration
-`20261004002728_whatsapp_automation_claims.sql`, em banco descartável. Seus dados,
+**Ordem para os arquivos atuais de 27–60:** os números e as seções Task4/5/9b
+abaixo identificam a origem histórica dos gates, não uma ordem executável apenas
+com as migrations daquela época. SQL27 e SQL35 resolvem o overload privado
+`app_private.whatsapp_automation_post_core` de sete argumentos, introduzido por
+`20261005170415_whatsapp_automation_resource_post_confirm.sql`. SQL29 também usa
+o envelope completo de sync ampliado por workers. Não fabrique corpos antigos,
+altere seeds ou dispense assertions para executar esses gates antes da dependência.
+
+Depois de bootstrap25/catalog26, aplique as migrations na ordem da tabela.
+Cada aplicação/reaplicação continua pelo fluxo CLI local revisado: scratch novo,
+conteúdo/hash exatos, dry-run restrito ao delta e comparação de catálogo/ACL.
+Reaplique cada migration antes da próxima; reaplicar um predecessor depois de
+instalar um sucessor pode regredir os corpos das funções.
+
+| Etapa | Migration fonte, após seus pré-requisitos | Gates atuais antes de avançar |
+|---|---|---|
+| Claims | `20261004002728_whatsapp_automation_claims.sql` | Aplicar/reaplicar e comparar catálogo; 27/28 ficam pendentes |
+| Preferências | `20261004014032_whatsapp_message_preferences.sql` | Aplicar/reaplicar e comparar catálogo; 29/30 ficam pendentes |
+| Workers | `20261004025039_whatsapp_template_workers.sql` | Quarentena imediata dos schedules; 31/32 |
+| Eventos | `20261004165825_whatsapp_template_event_authority.sql` | 33/34 |
+| Pré-requisitos de dispatch | `20261004184738_whatsapp_automation_dispatch_prerequisites.sql` | Aplicar/reaplicar e comparar catálogo; 35/36/37 ficam pendentes |
+| Aceite | Setup38 antes de `20261005145913_whatsapp_automation_acceptance_repair.sql` | 38/39/40 |
+| Recursos | Bridge41 duas vezes antes de `20261005170415_whatsapp_automation_resource_post_confirm.sql` | Após aplicação/reaplicação: 27/28, 29/30, 35/36/37, então 41/42/43 |
+| Outbox em diante | Bootstraps/deltas das seções 44–60, na ordem documentada | 45–60 conforme cada seção; nenhum gate anterior é dispensado |
+
+Aplicação de DDL e igualdade de catálogo não significam aprovação dos gates
+pendentes. Registre-os separadamente e só os marque aprovados após execução
+completa com resultado nativo aprovado; uma revisão de fonte, syntax check ou
+teste Request não substitui SQL, JWT genuíno ou espera observada. Falha interrompe
+a sequência e preserva os logs. Execute 36/37 com preservação/restauração do
+baseline exato de flags, inclusive ausência, SQL NULL e JSON null. Mantenha
+quarentena, ownership do runtime, guards e leitura de chaves exclusiva de ROOT.
+
+`27-template-claims.sql` roda no estágio de recursos acima, com bootstrap25,
+catálogo, claims e todos os deltas intermediários já instalados. Seus dados,
 funções temporárias e controles mutantes terminam em rollback. Fixture 25 contém
 somente as colunas legadas usadas pelo contrato, incluindo platform_flags,
 notifications_sent com as FKs reais e last_health_check_at; não é replay do schema
@@ -1208,8 +1240,9 @@ actor_id do body ou estado novo isoladamente.
 
 ### Preferências promocionais e slots — Task 5
 
-`29-template-preferences.sql` roda após a fixture25, migrations de Tasks3/4 e
-`20261004014032_whatsapp_message_preferences.sql`. Termina em rollback e cobre
+`29-template-preferences.sql` roda no estágio de recursos da tabela acima,
+após fixture25, migrations de Tasks3/4, preferências, workers e demais deltas até
+`20261005170415_whatsapp_automation_resource_post_confirm.sql`. Termina em rollback e cobre
 o prepare/finish reais, opt-in desconhecido, DNC, revisão SQL, token somente hash
 com TTL90 dias, GET sem alteração do domínio, POST idempotente unit-scoped,
 revogação/expiração, slot concorrente, janela capturada e anonimização.
@@ -1373,6 +1406,11 @@ recusas e positivos service-only. O fixture mínimo não prova ACL, Advisor,
 cron, billing, providers ou atendimento em produção.
 
 ### Task9b — pré-configuração e autoridade final de automação
+
+Os comandos 35–37 abaixo executam somente no estágio de recursos da tabela
+atual de 27–60, após bridge41 e migration/reaplicação `20261005170415`.
+A aplicação do delta de dispatch nesta seção deixa esses três gates pendentes;
+ela não comprova sua execução nem autoriza marcá-los aprovados.
 
 O delta `20261004184738_whatsapp_automation_dispatch_prerequisites.sql` usa a
 coluna real nullable `reservations.applied_discount_percent` (bootstrap25).
