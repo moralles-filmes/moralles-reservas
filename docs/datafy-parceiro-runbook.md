@@ -11,7 +11,7 @@ Este procedimento descreve o fluxo implementado. O contrato externo medido está
 
 ## Banco antes de funções e frontend
 
-Antes do rollout, executar os gates de RLS, isolamento, identidade/acesso, migrations, secrets e integrações; exigir CI e Checks `acl-estatico` verdes e auditar ACL no banco pelo procedimento autorizado (`scripts/audit-function-acl.ts` / `acl-com-banco`). Harness local não prova ACL/RLS/PostgREST. Não aplicar SQL de migration pelo Studio.
+Antes do rollout, executar os gates de RLS, isolamento, identidade/acesso, migrations, secrets e integrações; exigir CI e Checks `acl-estatico` verdes e auditar ACL no banco pelo procedimento autorizado (`scripts/audit-function-acl.ts` / `acl-com-banco`). O harness local exercita ACL/RLS SQL com papéis reais e claims JWT; não comprova a configuração de produção, `verify_jwt` ou exposição efetiva pelo PostgREST (ver README do pré-voo). Não aplicar SQL de migration pelo Studio.
 
 Rodar os dois pré-voos somente leitura com acesso administrativo aprovado, antes de `supabase db push`. Ambos devem retornar zero linhas; investigar e reconciliar conflitos com os responsáveis, sem escolher um vencedor ou apagar canais automaticamente.
 
@@ -37,7 +37,7 @@ group by waba_id having count(distinct organization_id) > 1;
 
 1. Conferir ambiente alvo, backup e migrations pendentes com `supabase db push --dry-run`.
 2. Aplicar por `supabase db push`, em ordem: `20261014120000_datafy_partner_onboarding.sql` (grants, onboarding, claims, índice de telefone, ledger), `20261014170540_datafy_existing_subscription_claim.sql` (cerca administrativa, proveniência de assinatura e reserva WABA), `20261015171115_whatsapp_ops_alert_observation.sql` (observação SQL da fila inteira). Não usar `--include-all` para contornar ordem. Conflito de backfill aborta o rollout.
-3. Só após banco/ACL conferidos, deployar `manage-platform-secrets`, `manage-channels`, `webhook-whatsapp`, `process-whatsapp-channel-health`, `whatsapp-health`, `process-whatsapp-templates` e `send-scheduled-whatsapp` para este conjunto de mudanças. Usar `supabase functions deploy <nome>` pelo fluxo aprovado; bibliotecas compartilhadas ficam embutidas em cada bundle.
+3. Só após banco/ACL conferidos, deployar a união de 13 EFs deste rollout: `manage-platform-secrets`, `manage-channels`, `manage-organizations`, `manage-whatsapp-templates`, `process-whatsapp-channel-health`, `process-whatsapp-templates`, `send-cancellation`, `send-confirmation`, `send-manual-message`, `send-scheduled-whatsapp`, `send-whatsapp`, `webhook-whatsapp` e `whatsapp-health`. O registry `whatsapp-provider-core.ts` mudou nesta entrega: suas 12 consumidoras precisam do bundle novo, além de `manage-platform-secrets` para o token de conta. Usar `supabase functions deploy <nome>` pelo fluxo aprovado; bibliotecas compartilhadas ficam embutidas em cada bundle.
 4. Publicar frontend após funções. Conferir leitura do card, diagnóstico e status sem provocar contratação como teste.
 
 Rollback do app/bundle não remove migrations nem pendências. Bloquear novas liberações, preservar claims/ledger e corrigir banco por migration forward-only; reconciliar operações remotas antes de retomar. Não dropar tabelas/RPCs necessárias à reconciliação.
@@ -77,6 +77,7 @@ Consumidoras por valor verificadas no grafo de imports locais em `supabase/funct
 | `datafy-account-config.ts`, `datafy-account-config-core.ts` | `manage-channels`, `manage-platform-secrets` |
 | `datafy-client.ts` | `manage-channels`, `manage-organizations`, `process-whatsapp-channel-health`, `process-whatsapp-templates`, `send-cancellation`, `send-confirmation`, `send-manual-message`, `send-scheduled-whatsapp`, `send-whatsapp`, `webhook-whatsapp`, `whatsapp-health` |
 | `whatsapp-template-provider-core.ts` | As 11 anteriores + `manage-whatsapp-templates` |
+| `whatsapp-provider-core.ts` (registry) | As mesmas 12 da linha anterior |
 | `phone.ts` | As 12 anteriores + `create-manual-reservation`, `create-reservation` |
 | `ops-alert-sender.ts` | `manage-channels`, `process-whatsapp-channel-health`, `process-whatsapp-templates`, `send-scheduled-whatsapp`, `whatsapp-health` |
 | `ops-alert-runtime.ts`, `ops-alert-core.ts` | `manage-channels`, `process-whatsapp-channel-health` |
