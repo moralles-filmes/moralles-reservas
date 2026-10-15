@@ -1,5 +1,7 @@
 import { createOpsAlerts } from "../_shared/ops-alert-runtime.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { checkFlagEnabled } from "../_shared/platform-flags.ts";
+import { decideIngestionMode } from "../_shared/whatsapp-inbound-queue-core.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   getWhatsAppProvider,
@@ -1614,7 +1616,7 @@ serve(async (req) => {
     if (action === "list") {
       const { data, error } = await supabase
         .from("whatsapp_channels")
-        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, is_active, connected_at, last_health_check_at, activation_requested_at, manual_echo_verified_at, manual_echo_verification_source, created_at, updated_at")
+        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, is_active, connected_at, last_health_check_at, activation_requested_at, manual_echo_verified_at, manual_echo_verification_source, provider_subscribed_at, provider_paused_at, provider_subscription_canceled_at, external_instance_id, async_ingestion_enabled, created_at, updated_at")
         .eq("unit_id", unitId)
         .order("created_at", { ascending: true });
 
@@ -1622,10 +1624,14 @@ serve(async (req) => {
         console.error("manage-channels:list", error);
         return jsonResponse(req, { error: "Falha ao listar canais." }, 500);
       }
+      const needsFlag = (data ?? []).some((channel) => channel.async_ingestion_enabled === true && getWhatsAppProvider(channel.provider).capabilities.inboundRedelivery === "documented");
+      const flag = needsFlag ? await checkFlagEnabled("whatsapp_async_ingestion") : { enabled: false, readFailed: false };
       return jsonResponse(req, {
         success: true,
         channels: (data ?? []).map((channel) => ({
           ...channel,
+          ingestion_mode_effective: decideIngestionMode({ source: "provider", channelEnabled: channel.async_ingestion_enabled,
+            providerRedelivery: getWhatsAppProvider(channel.provider).capabilities.inboundRedelivery, flagEnabled: flag.enabled, flagReadFailed: flag.readFailed }),
           capabilities: getWhatsAppProvider(channel.provider).capabilities,
         })),
       });

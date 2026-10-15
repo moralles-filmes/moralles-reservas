@@ -36,6 +36,7 @@ import {
 const WEBHOOK_URL = `${import.meta.env.VITE_SUPABASE_URL ?? ""}/functions/v1/stripe-webhook`.replace(/\/+$/, "");
 
 const SECRET_LABELS: Record<string, string> = {
+  datafy_account_token: "Token da conta Datafy",
   stripe_secret_key: "Chave secreta (Secret Key)",
   stripe_webhook_secret: "Webhook Signing Secret",
   asaas_api_key: "Chave da API (Access Token)",
@@ -43,6 +44,7 @@ const SECRET_LABELS: Record<string, string> = {
 };
 
 const SECRET_PLACEHOLDERS: Record<string, string> = {
+  datafy_account_token: "sk_acct_...",
   stripe_secret_key: "sk_test_... ou sk_live_...",
   stripe_webhook_secret: "whsec_...",
   asaas_api_key: "$aact_hmlg_... ou $aact_prod_...",
@@ -168,14 +170,15 @@ function PlatformSecretsCard() {
   // Chave que a EF conhece (VALID_KEYS) mas que esta tela ainda não mapeou em
   // KEY_PROVIDER cai aqui — visível numa seção própria em vez de sumir sem
   // aviso (era o comportamento antes desta guarda).
-  const otherSecrets = (secrets ?? []).filter((secret) => !KEY_PROVIDER[secret.key]);
+  const datafySecrets = (secrets ?? []).filter((secret) => secret.key === "datafy_account_token");
+  const otherSecrets = (secrets ?? []).filter((secret) => !KEY_PROVIDER[secret.key] && secret.key !== "datafy_account_token");
 
   const renderSecretRow = (secret: (typeof stripeSecrets)[number]) => (
     <div key={secret.key} className="rounded-lg border p-4 space-y-3 bg-muted/30">
-      <div className="flex items-center gap-2 text-sm font-medium">
+      <Label htmlFor={`platform-secret-${secret.key}`} className="flex items-center gap-2 text-sm font-medium">
         <KeyRound className="h-4 w-4 text-primary shrink-0" />
         {SECRET_LABELS[secret.key] ?? secret.key}
-      </div>
+      </Label>
 
       {secret.configured ? (
         <div className="flex items-center justify-between rounded bg-background border px-3 py-2">
@@ -199,6 +202,7 @@ function PlatformSecretsCard() {
 
       <div className="flex gap-2">
         <Input
+          id={`platform-secret-${secret.key}`}
           type="password"
           autoComplete="off"
           placeholder={SECRET_PLACEHOLDERS[secret.key] ?? "Valor do secret"}
@@ -230,8 +234,7 @@ function PlatformSecretsCard() {
                   Remover {SECRET_LABELS[secret.key] ?? secret.key}?
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  As funcionalidades de pagamento {PROVIDER_LABELS[KEY_PROVIDER[secret.key]] ?? secret.key} ficarão
-                  inativas até um novo valor ser cadastrado. Esta ação não pode ser desfeita.
+                  {secret.key === "datafy_account_token" ? "Ao remover, a conexão oficial de novas lojas fica indisponível até um novo token ser cadastrado." : `As funcionalidades de pagamento ${PROVIDER_LABELS[KEY_PROVIDER[secret.key]] ?? secret.key} ficarão inativas até um novo valor ser cadastrado. Esta ação não pode ser desfeita.`}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -248,6 +251,11 @@ function PlatformSecretsCard() {
   );
 
   return (
+    <>
+    <Card>
+      <CardHeader><CardTitle className="text-base">WhatsApp oficial (Datafy)</CardTitle></CardHeader>
+      <CardContent className="space-y-3"><p className="text-sm text-muted-foreground">Token da conta parceira usado para preparar a conexão oficial de novas lojas.</p>{datafySecrets.map(renderSecretRow)}</CardContent>
+    </Card>
     <Card>
       <CardHeader>
         <div className="flex items-center gap-2">
@@ -339,5 +347,6 @@ function PlatformSecretsCard() {
         </div>
       </CardContent>
     </Card>
+    </>
   );
 }

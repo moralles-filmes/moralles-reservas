@@ -78,6 +78,11 @@ export type ChannelStatus =
   | "error";
 
 export interface WhatsAppChannel {
+  ingestion_mode_effective?: "sync" | "async" | "unknown";
+  provider_subscribed_at?: string | null;
+  provider_paused_at?: string | null;
+  provider_subscription_canceled_at?: string | null;
+  external_instance_id?: string | null;
   id: string;
   unit_id: string;
   provider: WhatsAppProvider;

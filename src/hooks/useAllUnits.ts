@@ -8,6 +8,7 @@ export interface UnitWithOrg {
   organization_id: string;
   organization_name: string;
   organization_slug: string;
+  default_whatsapp_provider?: import('@/types/reserva').WhatsAppProvider;
 }
 
 export function useAllUnits() {
@@ -16,7 +17,7 @@ export function useAllUnits() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("units")
-        .select("id, slug, name, organization_id, organization:organizations(name, slug)")
+        .select("id, slug, name, organization_id, organization:organizations(name, slug, default_whatsapp_provider)")
         .order("name", { ascending: true });
 
       if (error) throw error;
@@ -28,6 +29,7 @@ export function useAllUnits() {
         organization_id: u.organization_id,
         organization_name: u.organization?.name ?? "",
         organization_slug: u.organization?.slug ?? "",
+        default_whatsapp_provider: u.organization?.default_whatsapp_provider,
       }));
     },
   });
@@ -40,7 +42,7 @@ export function useUnitBySlug(slug: string | undefined) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("units")
-        .select("id, slug, name, organization_id, organization:organizations(name, slug)")
+        .select("id, slug, name, organization_id, organization:organizations(name, slug, default_whatsapp_provider)")
         .eq("slug", slug!)
         .maybeSingle();
 
@@ -55,6 +57,7 @@ export function useUnitBySlug(slug: string | undefined) {
         organization_id: u.organization_id,
         organization_name: u.organization?.name ?? "",
         organization_slug: u.organization?.slug ?? "",
+        default_whatsapp_provider: u.organization?.default_whatsapp_provider,
       };
     },
   });

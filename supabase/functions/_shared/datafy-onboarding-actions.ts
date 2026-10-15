@@ -479,6 +479,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   }
   async function subscribeChannel(client: DatafyAdminClient, unitId: string, channel: Channel, o: Onboarding | null,
     actorId: string, requestId: string, admin = false, reconciliationAttempts = 0): Promise<DatafyActionResult> {
+    if (admin && o?.reserved_channel_id !== channel.id) o = null;
     if (o) o = await reconcileAdvancedSteps(client, o, actorId);
     let claim: Claim;
     if (admin) {
@@ -764,7 +765,8 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       const client = deps.createClient ? deps.createClient(token.token) : createDatafyAdminClient({ token: token.token, onUnrecognized: deps.logUnrecognized });
       if (action === "official_connect_start") return await startConnection(client, unitId, actorId);
       if (action === "official_connect_confirm") return await confirmConnection(client, unitId, actorId, requestId);
-      const channel = await loadChannel(unitId);
+      if (body.channel_id !== undefined && (typeof body.channel_id !== "string" || !body.channel_id)) throw new ActionFailure("CHANNEL_NOT_FOUND", 404);
+      const channel = await loadChannel(unitId, body.channel_id as string | undefined);
       if (!channel) throw new ActionFailure("CHANNEL_NOT_FOUND", 404);
       if (action === "datafy_link_existing") return await linkExisting(client, unitId, body, channel, actorId, requestId);
       if (!channel.external_instance_id) throw new ActionFailure("DATAFY_CHANNEL_NOT_LINKED", 409);

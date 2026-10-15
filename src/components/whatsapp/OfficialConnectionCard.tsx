@@ -5,17 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOfficialConnection } from "@/hooks/useOfficialConnection";
 import { officialConnectionErrorMessage } from "@/features/whatsapp/official-connection-api";
-import { classifyConnectMessage, type OfficialChecklistItemId } from "../../../supabase/functions/_shared/datafy-onboarding-core";
-
-const ITEM_COPY: Record<OfficialChecklistItemId, string> = {
-  granted: "Conexão liberada",
-  channel_created: "Canal preparado",
-  webhook_ready: "Recebimento de mensagens configurado",
-  number_connected: "Número conectado",
-  subscribed: "Assinatura confirmada",
-  echo_verified: "Mensagem do app verificada",
-  active: "Canal ativado",
-};
+import { classifyConnectMessage } from "../../../supabase/functions/_shared/datafy-onboarding-core";
+import { OFFICIAL_ITEM_COPY } from "@/features/whatsapp/official-checklist-copy";
 
 // Keyed session isolates warnings, locks and late responses when the unit changes.
 export function OfficialConnectionCard({ unitId }: { unitId: string }) {
@@ -94,7 +85,7 @@ function OfficialConnectionSession({ unitId }: { unitId: string }) {
       {state.step === "not_granted" ? <p>Esta conexão precisa de liberação. Fale com o suporte.</p> : <>
         <p className="text-sm text-muted-foreground">Antes de conectar, mantenha o número no app WhatsApp Business no celular e tenha acesso de administrador à sua conta empresarial Meta.</p>
         <ul className="space-y-2 text-sm" aria-label="Progresso da conexão">
-          {state.items.map((item) => <li key={item.id}><span className={item.done ? "text-success" : "text-muted-foreground"}>{item.done ? "Concluído" : "Pendente"}: {ITEM_COPY[item.id]}</span></li>)}
+          {state.items.map((item) => <li key={item.id}><span className={item.done ? "text-success" : "text-muted-foreground"}>{item.done ? "Concluído" : "Pendente"}: {OFFICIAL_ITEM_COPY[item.id]}</span></li>)}
         </ul>
         {state.step === "active" ? <p className="font-medium text-success">Conexão oficial ativada.</p> : <>
           {(state.step === "awaiting_echo" || state.step === "subscription_pending") && <p>Envie uma mensagem pelo app WhatsApp Business no celular para qualquer contato</p>}

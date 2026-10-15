@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 
 type WhatsAppHealthProvider = "zapi" | "uazapi" | "waha" | "official" | "datafy";
 
@@ -7,6 +8,8 @@ export interface WhatsAppHealthChannel {
   id: string;
   provider: WhatsAppHealthProvider;
   status: "connected" | "disconnected" | "error";
+  is_active?: boolean | null;
+  ingestion_mode_effective?: "sync" | "async" | "unknown";
   display_phone: string | null;
   last_event_at: string | null;
   last_error: string | null;
@@ -70,6 +73,7 @@ export interface WhatsAppHealthQueueBacklog {
 }
 
 export interface WhatsAppHealthResponse {
+  ops_alert_configured?: boolean;
   success: boolean;
   generated_at: string;
   channel: WhatsAppHealthChannel | null;
@@ -102,6 +106,10 @@ export function useWhatsAppHealth(unitId: string | undefined) {
         body: { unit_id: unitId },
       });
       if (error) {
+        if (error instanceof FunctionsHttpError) {
+          const body = await error.context.json().catch(() => null);
+          throw new Error(body?.error ?? "Falha ao consultar saúde do WhatsApp.");
+        }
         const msg = (data as { error?: string } | null)?.error ?? error.message ?? "Falha ao consultar saúde do WhatsApp.";
         throw new Error(msg);
       }

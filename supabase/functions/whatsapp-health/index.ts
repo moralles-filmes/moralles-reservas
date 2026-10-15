@@ -13,6 +13,10 @@ import {
   type WhatsAppProvider,
 } from "../_shared/whatsapp-providers.ts";
 import { resolveChannelCredentials } from "../_shared/whatsapp-channel-credentials.ts";
+import { selectHealthChannel } from "../_shared/whatsapp-health-core.ts";
+import { isOpsAlertConfigured } from "../_shared/ops-alert-sender.ts";
+import { checkFlagEnabled } from "../_shared/platform-flags.ts";
+import { readHealthIngestionMode } from "../_shared/whatsapp-health-runtime.ts";
 // As janelas de retenção vêm do núcleo da fila, não redigitadas: elas já são
 // gêmeas declaradas do SQL da purga (migration 113), e um terceiro lugar com os
 // mesmos números é como a divergência nasce. Núcleo PURO — sem I/O, sem Deno.
@@ -93,17 +97,17 @@ serve(async (req) => {
     if (!unitId) return jsonResponse(req, { error: "unit_id é obrigatório." }, 400);
 
     // ── Channel ────────────────────────────────────────────────────────────────
-    const { data: channelRows } = await supabase
+    const { data: channelRows, error: channelReadError } = await supabase
       .from("whatsapp_channels")
-      .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, credentials, is_active, instance_token_secret_id, external_instance_id, connected_at, last_health_check_at, created_at, updated_at")
+      .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, credentials, is_active, instance_token_secret_id, external_instance_id, connected_at, last_health_check_at, async_ingestion_enabled, created_at, updated_at")
       .eq("unit_id", unitId)
       .order("created_at", { ascending: true });
 
+    if (channelReadError) return jsonResponse(req, { error: "Não foi possível consultar o canal." }, 503);
     const rows = channelRows ?? [];
-    const channelRow = rows.find((row) => row.is_active === true)
-      ?? rows.find((row) => row.is_active === null && row.status === "connected")
-      ?? rows.find((row) => row.is_active === null)
-      ?? null;
+    const channelRow = selectHealthChannel(rows);
+    const providerRedelivery = channelRow ? getWhatsAppProvider(channelRow.provider).capabilities.inboundRedelivery : undefined;
+    const ingestionMode = await readHealthIngestionMode(channelRow, providerRedelivery, () => checkFlagEnabled("whatsapp_async_ingestion"));
 
     let providerObserved: unknown = null;
     if (channelRow) {
@@ -131,6 +135,7 @@ serve(async (req) => {
           provider: channelRow.provider,
           status: channelRow.status,
           is_active: channelRow.is_active,
+          ingestion_mode_effective: ingestionMode,
           display_phone: channelRow.display_phone,
           last_event_at: channelRow.last_event_at,
           last_error: channelRow.last_error,
@@ -358,6 +363,7 @@ serve(async (req) => {
     return jsonResponse(req, {
       success: true,
       generated_at: new Date().toISOString(),
+      ops_alert_configured: isOpsAlertConfigured(Deno.env.get("WHATSAPP_OPS_ALERT_URL")),
       channel: channelInfo,
       ai: aiInfo,
       stats_24h: stats24h,

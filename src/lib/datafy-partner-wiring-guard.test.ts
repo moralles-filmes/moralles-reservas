@@ -166,7 +166,12 @@ describe("Datafy parceiro: fronteira das ações", () => {
   });
 
   it("canal remoto vem do banco e nenhum corpo fornece identidade ou Coexistence", () => {
-    expect(actions).not.toMatch(/body\.(?:datafy_channel_id|phone_number_id|waba_id|channel_id|coexistence)/);
+    expect(actions).not.toMatch(/body\.(?:datafy_channel_id|phone_number_id|waba_id|external_instance_id|coexistence)/);
+    // Admin may select a LOCAL row, always loaded by unit + provider + id.
+    expect(actions).toContain('loadChannel(unitId, body.channel_id as string | undefined)');
+    expect(actions).toContain('.eq("unit_id", unitId).eq("provider", "datafy")');
+    expect(actions).toContain('if (id) query = query.eq("id", id)');
+    expect(actions.indexOf('if (action === "official_connect_confirm") return await confirmConnection')).toBeLessThan(actions.indexOf('body.channel_id'));
     expect(actions).not.toMatch(/coexistence\s*:/i);
     expect(manage).not.toContain("alreadyConnected");
     expect(actions).not.toContain("alreadyConnected");

@@ -255,6 +255,30 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
 }
 
 describe("Datafy onboarding: I/O com decisões reais", () => {
+  it("admin subscribe on a historical channel never reconciles another channel's onboarding", async () => {
+    const h = harness({ withChannel: true, state: "connected", busy: true });
+    h.tables[ONBOARDINGS][0].uncertain_steps = ["create_channel"];
+    h.tables.whatsapp_channels.push({ ...channel(), id: "historical", external_instance_id: "remote-historical" });
+    await h.run("datafy_subscribe", { channel_id: "historical" });
+    expect(h.client.getChannel).not.toHaveBeenCalled();
+    expect(h.client.createChannel).not.toHaveBeenCalled();
+    expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("admin selects the exact local channel while keeping remote identity server-owned", async () => {
+    const h = harness({ withChannel: true, noOnboarding: true });
+    h.tables.whatsapp_channels.push({ ...channel(), id: "second-local", external_instance_id: "remote-second" });
+    const response = await h.run("datafy_link_existing", { phase: "preview", channel_id: "second-local", external_instance_id: "forged" });
+    expect(response.status).toBe(200);
+    expect(h.filters.some((filter) => filter.table === "whatsapp_channels" && ["unit_id:unit-a", "provider:datafy", "id:second-local"].every((key) => filter.keys.includes(key)))).toBe(true);
+  });
+  it.each(["missing-local", "foreign-local", "", null, 12])("explicit unknown/foreign/invalid channel %s never falls back", async (selected) => {
+    const h = harness({ withChannel: true, noOnboarding: true });
+    h.tables.whatsapp_channels.push({ ...channel(), id: "foreign-local", unit_id: "unit-b" });
+    const response = await h.run("datafy_cancel", { channel_id: selected });
+    expect(response.status).toBe(404);
+    expect(response.body).toMatchObject({ code: "CHANNEL_NOT_FOUND" });
+    expect(h.calls.some((call) => call.startsWith("rpc:claim_datafy"))).toBe(false);
+  });
   it.each([
     ["official_connect_confirm", false], ["official_connect_confirm", true], ["datafy_subscribe", false], ["datafy_subscribe", true],
   ] as const)("FWR002 %s recusa retries sem webhook e retoma após reparo administrativo (subscribed=%s)", async (action, subscribed) => {
