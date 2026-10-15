@@ -3,7 +3,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { DatafyAccountTokenRead } from "./datafy-account-config-core.ts";
 import { resolveUnitChannelBinding, type OrgChannelInput } from "./whatsapp-org-provider-core.ts";
 import {
-  createDatafyAdminClient, datafyMutationMayHaveApplied,
+  createDatafyAdminClient, datafyMutationMayHaveApplied, DATAFY_ADMIN_MAX_TIMEOUT_MS,
   type DatafyAdminClient, type DatafyChannelSnapshot,
 } from "./datafy-admin-client.ts";
 import {
@@ -34,7 +34,7 @@ type Channel = {
   template_credential_revision: number;
 };
 type Operation = "subscribe" | "cancel" | "pause" | "resume" | "relink" | "configure_webhook";
-type Claim = { claimed: boolean; claim_id: string; must_reconcile: boolean; source?: "onboarding" | "channel"; onboarding_id?: string; actor_id?: string;
+type Claim = { claimed: boolean; claim_id: string; must_reconcile: boolean; deadline: number; source?: "onboarding" | "channel"; onboarding_id?: string; actor_id?: string;
   operation?: Operation; reconcile_operation?: Operation; external_instance_id?: string | null; template_credential_revision?: number };
 type Outcome = "succeeded" | "failed" | "uncertain" | "reconciled_absent" | "reconciled_present";
 export type DatafyActionResult = { body: unknown; status: number; headers?: Record<string, string> };
@@ -50,6 +50,8 @@ export interface DatafyActionDeps {
   createClient?: (token: string) => DatafyAdminClient;
   emitEvent(event: DatafyOperationalEvent): void | Promise<void>;
   logCleanupFailure?: () => void;
+  logUnrecognized?: (info: { operation: string; httpStatus: number; shape: unknown }) => void;
+  monotonicNow?: () => number;
 }
 class ActionFailure extends Error {
   constructor(readonly code: string, readonly status = 503) { super(code); }
@@ -63,6 +65,8 @@ const trimAnchor = (value: unknown): string | null => typeof value === "string"
 export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   const db = deps.supabase;
   const now = () => new Date().toISOString();
+  const monotonicNow = deps.monotonicNow ?? (() => performance.now());
+  const mutationBudgetMs = DATAFY_ADMIN_MAX_TIMEOUT_MS + 5_000;
   const webhookUrl = (id: string) => `${deps.projectUrl.replace(/\/$/, "")}/functions/v1/webhook-whatsapp?channel=${id}`;
   async function checked(query: PromiseLike<{ data: unknown; error: unknown }>, code = "DATAFY_PERSIST_FAILED") {
     const { data, error } = await query;
@@ -111,6 +115,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     await checked(query.select("id"), "ONBOARDING_PERSIST_FAILED");
   }
   async function claimStep(o: Onboarding, step: string, actorId: string): Promise<Claim> {
+    const deadline = monotonicNow() + 120_000;
     const { data, error } = await db.rpc("claim_datafy_onboarding_step", {
       p_onboarding_id: o.id, p_unit_id: o.unit_id, p_step: step, p_actor_id: actorId,
     });
@@ -118,7 +123,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     const claim = first<Claim>(data);
     if (claim?.claimed === false) throw new ActionFailure("ONBOARDING_BUSY", 409);
     if (claim?.claimed !== true || !claim.claim_id || typeof claim.must_reconcile !== "boolean") throw new ActionFailure("ONBOARDING_CLAIM_FAILED");
-    return { ...claim, source: "onboarding", onboarding_id: o.id, actor_id: actorId };
+    return { ...claim, deadline, source: "onboarding", onboarding_id: o.id, actor_id: actorId };
   }
   async function release(o: Onboarding | null, unitId: string, channelId: string, claim: Claim, step: string, outcome: Outcome, code: string | null = null) {
     const rpc = claim.source === "channel" ? "release_datafy_existing_subscription" : "release_datafy_onboarding_step";
@@ -129,6 +134,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     if (error || data !== true) throw new ActionFailure("ONBOARDING_RELEASE_FAILED");
   }
   async function claimOperation(unitId: string, channelId: string, actorId: string, operation: Operation): Promise<Claim> {
+    const deadline = monotonicNow() + 120_000;
     const { data, error } = await db.rpc("claim_datafy_channel_operation", {
       p_channel_id: channelId, p_unit_id: unitId, p_actor_id: actorId, p_operation: operation,
     });
@@ -139,7 +145,38 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       || !["channel", "onboarding"].includes(claim.source)
       || (!claim.external_instance_id && !(operation === "relink" && claim.external_instance_id === null))
       || !Number.isSafeInteger(claim.template_credential_revision)) throw new ActionFailure("ONBOARDING_CLAIM_FAILED");
-    return { ...claim, actor_id: actorId, operation };
+    return { ...claim, deadline, actor_id: actorId, operation };
+  }
+  // SQL owns TTL/fence/grant authority. Monotonic elapsed time only narrows
+  // permission, including time spent awaiting this last database round-trip.
+  // This cannot make a provider POST and a database transaction atomic.
+  async function authorizeMutation(unitId: string, channelId: string, claim: Claim, operation: string,
+    externalId: string | null, revision: number | null, grantId: string | null = null) {
+    if (claim.deadline - monotonicNow() < mutationBudgetMs) throw new ActionFailure("DATAFY_CLAIM_EXPIRED", 409);
+    const { data, error } = await db.rpc("authorize_datafy_mutation", {
+      p_unit_id: unitId, p_channel_id: channelId, p_actor_id: claim.actor_id, p_claim_id: claim.claim_id,
+      p_onboarding_id: claim.source === "onboarding" ? claim.onboarding_id : null,
+      p_operation: operation, p_external_id: externalId, p_revision: revision, p_grant_id: grantId,
+    });
+    if (error || data !== true) throw new ActionFailure("DATAFY_MUTATION_NOT_AUTHORIZED", 409);
+    if (claim.deadline - monotonicNow() < mutationBudgetMs) throw new ActionFailure("DATAFY_CLAIM_EXPIRED", 409);
+  }
+  async function assertDatafyBinding(unitId: string) {
+    const { data, error } = await db.from("whatsapp_channels").select("provider, status, is_active, created_at").eq("unit_id", unitId);
+    if (error) throw new ActionFailure("CHANNEL_READ_FAILED");
+    const binding = resolveUnitChannelBinding(rows<OrgChannelInput>(data));
+    if (binding && binding.provider !== "datafy") throw new ActionFailure("DATAFY_MIGRATION_NOT_SUPPORTED", 409);
+  }
+  async function freshStep(o: Onboarding, claim: Claim, step: "create_channel" | "create_webhook") {
+    const fresh = await onboardingById(o.unit_id, o.id);
+    if (!fresh) throw new ActionFailure("ONBOARDING_READ_FAILED");
+    const expected = step === "create_channel" ? fresh.state === "open" && !fresh.datafy_channel_id
+      : fresh.state === "channel_created" && fresh.datafy_channel_id === o.datafy_channel_id;
+    if (!expected) {
+      await release(o, o.unit_id, o.reserved_channel_id, claim, step, "failed");
+      return null;
+    }
+    return fresh;
   }
   async function claimedChannel(unitId: string, channelId: string, claim: Claim, o: Onboarding | null): Promise<Channel> {
     const channel = await loadChannel(unitId, channelId);
@@ -245,6 +282,9 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
         let claim = await claimStep(o, "create_channel", actorId);
         let ownsClaim = true;
         try {
+          const fresh = await freshStep(o, claim, "create_channel");
+          if (!fresh) { ownsClaim = false; continue; }
+          Object.assign(o, fresh);
           if (claim.must_reconcile) {
             const listed = await client.listChannels();
             if (listed.ok === false) throw new ActionFailure("DATAFY_UNAVAILABLE");
@@ -273,7 +313,11 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
             claim = await claimStep(o, "create_channel", actorId);
             ownsClaim = true;
             if (claim.must_reconcile) throw new ActionFailure("ONBOARDING_BUSY", 409);
+            const retryFresh = await freshStep(o, claim, "create_channel");
+            if (!retryFresh) { ownsClaim = false; continue; }
+            Object.assign(o, retryFresh);
           }
+          await authorizeMutation(unitId, o.reserved_channel_id, claim, "create_channel", o.datafy_channel_id, null, o.grant_id);
           const created = await client.createChannel({ name: o.reserved_channel_id, description: `unit:${unitId}` });
           if (created.ok === false) {
             await release(o, unitId, o.reserved_channel_id, claim, "create_channel",
@@ -297,6 +341,9 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       if (decision.kind === "create_webhook") {
         const claim = await claimStep(o, "create_webhook", actorId);
         try {
+          const current = await freshStep(o, claim, "create_webhook");
+          if (!current) continue;
+          Object.assign(o, current);
           const fresh = await remote(client, o.datafy_channel_id!);
           if (!fresh) throw new ActionFailure("REMOTE_CHANNEL_MISSING", 409);
           const existing = fresh.webhooks.find((hook) => hook.url === webhookUrl(o.reserved_channel_id)
@@ -308,6 +355,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
               // Uma nova requisição reivindica a cerca antes de postar.
               continue;
             }
+            await authorizeMutation(unitId, o.reserved_channel_id, claim, "create_webhook", o.datafy_channel_id, null);
             const created = await client.createWebhook(o.datafy_channel_id!, {
               url: webhookUrl(o.reserved_channel_id), events: ["messages", "smb_message_echoes"],
             });
@@ -397,6 +445,11 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       }
       // Sempre NOVO GET depois do claim, inclusive quando o confirm já leu.
       let snapshot = await remote(client, channel.external_instance_id!);
+      if (!snapshot && claim.must_reconcile) {
+        // Definitive 404 resolves this attempt, not any historical cost fact.
+        await release(o, unitId, channel.id, claim, "subscribe", "reconciled_absent", "REMOTE_CHANNEL_MISSING"); released = true;
+        return result({ step: "channel_missing", code: "REMOTE_CHANNEL_MISSING" }, 409);
+      }
       let grant = admin ? await activeGrant(unitId) : await grantById(unitId, o!.grant_id);
       if (admin && !grant) {
         const { data, error } = await db.from(GRANTS).select("id, revoked_at, consumed_at, consumed_channel_id")
@@ -424,6 +477,8 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
           if (reconciliationAttempts >= 2) throw new ActionFailure("ONBOARDING_BUSY", 409);
           return subscribeChannel(client, unitId, channel, o, actorId, requestId, admin, reconciliationAttempts + 1);
         }
+        await assertDatafyBinding(unitId);
+        await authorizeMutation(unitId, channel.id, claim, "subscribe", channel.external_instance_id, channel.template_credential_revision, grant!.id);
         const subscribed = await client.subscribe(channel.external_instance_id!);
         if (subscribed.ok === false) {
           const uncertain = datafyMutationMayHaveApplied(subscribed.kind);
@@ -461,6 +516,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     }
   }
   async function confirmConnection(client: DatafyAdminClient, unitId: string, actorId: string, requestId: string) {
+    await assertDatafyBinding(unitId);
     const o = await loadOnboarding(unitId);
     if (!o) {
       const latest = await loadOnboarding(unitId, false);
@@ -489,9 +545,10 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
         id: o.reserved_channel_id, unit_id: unitId, provider: "datafy",
         credentials: { access_token: o.channel_token, phone_number_id: decision.phoneNumberId, business_account_id: decision.wabaId },
         webhook_secret: o.webhook_secret, external_instance_id: o.datafy_channel_id,
-        status: "connected", is_active: false, async_ingestion_enabled: true, display_phone: snapshot?.displayPhone,
+        status: "connected", is_active: false, datafy_subscription_required: true, async_ingestion_enabled: true, display_phone: snapshot?.displayPhone,
       });
       if (error) {
+        if (error.code === "PT409") throw new ActionFailure("WABA_OWNED_BY_OTHER_ORG", 409);
         if (error.code !== "23505") throw new ActionFailure("CHANNEL_CREATE_FAILED");
         const existing = await loadChannel(unitId, o.reserved_channel_id);
         if (!existing || existing.external_instance_id !== o.datafy_channel_id
@@ -560,6 +617,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     if (!current) throw new ActionFailure("REMOTE_CHANNEL_MISSING", 409);
     if (!current.webhooks.some((hook) => hook.url === webhookUrl(channel.id) && hook.enabled
       && ["messages", "smb_message_echoes"].every((event) => hook.events.includes(event)))) {
+      await authorizeMutation(unitId, channel.id, claim, "configure_webhook", channel.external_instance_id, channel.template_credential_revision);
       postedWebhook = true;
       const created = await client.createWebhook(channel.external_instance_id!, { url: webhookUrl(channel.id), events: ["messages", "smb_message_echoes"] });
       if (created.ok === false) {
@@ -595,6 +653,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
         if (attempt >= 2) throw new ActionFailure("ONBOARDING_BUSY", 409);
         return lifecycleOperation(client, unitId, channel, actorId, operation, attempt + 1);
       }
+      await authorizeMutation(unitId, channel.id, claim, operation, channel.external_instance_id, channel.template_credential_revision);
       posted = true;
       const response = await client[operation](channel.external_instance_id!);
       if (response.ok === false) {
@@ -637,7 +696,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       }
       const token = await deps.getAccountToken();
       if (token.ok === false) throw new ActionFailure("DATAFY_ACCOUNT_UNAVAILABLE");
-      const client = deps.createClient ? deps.createClient(token.token) : createDatafyAdminClient({ token: token.token });
+      const client = deps.createClient ? deps.createClient(token.token) : createDatafyAdminClient({ token: token.token, onUnrecognized: deps.logUnrecognized });
       if (action === "official_connect_start") return await startConnection(client, unitId, actorId);
       if (action === "official_connect_confirm") return await confirmConnection(client, unitId, actorId, requestId);
       const channel = await loadChannel(unitId);

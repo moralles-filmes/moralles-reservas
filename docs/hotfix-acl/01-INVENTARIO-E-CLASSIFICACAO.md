@@ -216,3 +216,7 @@ por `supabase_admin`, o buraco reabre em silêncio. É por isso que o guardrail 
    autorizado da operação** (a conversa pertence à unidade/organização em nome de quem a
    chamada está sendo feita), não a mera presença de um usuário autenticado.
 3. **`unit_role` possivelmente morta.** Confirmar e remover, ou documentar o consumidor.
+
+## Datafy — autorização final de mutação
+
+`authorize_datafy_mutation(uuid,uuid,uuid,uuid,uuid,text,text,bigint,uuid)` é service-role-only: revalida lease/fence, ator, operação, tenant, pin remoto/revisão, liberação para novo custo e TTL restante antes de HTTP. `assert_datafy_first_configuration(uuid)`, `reserve_whatsapp_waba_owner(text,uuid)`, `guard_whatsapp_waba_owner()` e `guard_datafy_subscription_origin()` são internas, sem EXECUTE para PUBLIC/anon/authenticated/service_role; chamadas por RPC/trigger SECURITY DEFINER. `whatsapp_waba_owners` tem FORCE RLS, zero policies/grants diretos. Não amplia a allowlist pública. Migration `20261014170540_datafy_existing_subscription_claim.sql`; evidência local no preflight 63.

@@ -42,7 +42,8 @@
     "claim_datafy_channel_operation(uuid,uuid,uuid,text,integer)",
     "apply_datafy_channel_relink(uuid,uuid,uuid,uuid,text,bigint,text,text,text)",
     "record_datafy_channel_state(uuid,uuid,uuid,uuid,uuid,text,bigint,boolean,boolean)",
-    "finalize_datafy_channel_subscription(uuid,uuid,uuid,uuid,uuid,uuid,text,bigint,text)"
+    "finalize_datafy_channel_subscription(uuid,uuid,uuid,uuid,uuid,uuid,text,bigint,text)",
+    "authorize_datafy_mutation(uuid,uuid,uuid,uuid,uuid,text,text,bigint,uuid)"
   ],
   "_service_only_whatsapp_outbox_delegation": [
     "claim_notification_outbox_initial(uuid)",

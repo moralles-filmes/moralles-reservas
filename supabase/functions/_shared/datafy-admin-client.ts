@@ -32,9 +32,9 @@ export const DATAFY_ADMIN_TIMEOUT_MS = 10_000;
 
 /**
  * Teto de `timeoutMs`, cobrindo a resposta INTEIRA (cabeçalho e corpo). O piso do
- * TTL do claim do onboarding é 30 s (migration
- * 20261014120000_datafy_partner_onboarding.sql): um POST em voo nunca pode
- * sobreviver ao claim que o autorizou, senão outro chamador assume e posta de novo.
+ * TTL do claim do onboarding é 30 s. O adapter revalida fence e orçamento
+ * imediatamente antes de mutar. Timeout não desfaz POST já aceito, nem cria
+ * exactly-once distribuído: resposta ambígua continua exigindo reconciliação.
  */
 export const DATAFY_ADMIN_MAX_TIMEOUT_MS = 20_000;
 

@@ -1863,3 +1863,26 @@ the existing parent → job → receipt lock order, READ COMMITTED guard and SKI
 budgets. Gate54 documents the preexisting admission/purge ordering tests. Gate60
 does not claim to exercise concurrent sessions; any further race gate must use
 observed barriers/lock waits and owned IDs rather than arbitrary sleeps.
+
+### Datafy parceiro — autoridade final e concorrência (62/63)
+
+Após o bootstrap 00/00a/61a e a migration 20261014120000, aplicar 62a e 63a
+antes da migration 20261014170540. Este é um harness PostgreSQL descartável,
+não um ambiente Supabase/PostgREST. A migration usa `LOCK TABLE`: sua execução
+direta no harness exige `psql -X -1 -v ON_ERROR_STOP=1`, inclusive na reaplicação.
+Aplicação real continua exclusivamente pelo fluxo revisado de `supabase db push`.
+
+`62-datafy-subscription-claim.sql` cobre 14 grupos de lease, identidade,
+finisher e recuperação. `63-datafy-final-authority.sql` cobre primeira
+configuração, assinatura obrigatória do self-service, autorização final com
+TTL/fence/grant, ausência definitiva, WABA compartilhada e ACL efetiva; inclui
+controles positivos que retiram guardas dentro de subtransações revertidas.
+Ambos terminam em rollback. Reexecutar também os 31 casos do 61.
+
+`node supabase/tests/local-preflight/63b-datafy-concurrency.mjs` usa somente
+`127.0.0.1:55463/task7_datafy`, usuário postgres, e aceita o caminho do psql
+como primeiro argumento. Duas sessões reais observam B esperando em Lock antes
+de liberar o commit de A: canal/canal entre organizações, duas units da mesma
+organização e template/canal nas duas direções. Também verifica rollback do
+backfill contraditório; remove apenas seus IDs sintéticos ao terminar. Não
+faz chamadas à Datafy e não demonstra atomicidade distribuída com o provider.

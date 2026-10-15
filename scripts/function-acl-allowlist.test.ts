@@ -139,7 +139,8 @@ describe('Datafy parceiro: claim cercado do onboarding (Task 2)', () => {
       'claim_datafy_channel_operation(uuid,uuid,uuid,text,integer)',
       'apply_datafy_channel_relink(uuid,uuid,uuid,uuid,text,bigint,text,text,text)',
       'record_datafy_channel_state(uuid,uuid,uuid,uuid,uuid,text,bigint,boolean,boolean)',
-      'finalize_datafy_channel_subscription(uuid,uuid,uuid,uuid,uuid,uuid,text,bigint,text)']);
+      'finalize_datafy_channel_subscription(uuid,uuid,uuid,uuid,uuid,uuid,text,bigint,text)',
+      'authorize_datafy_mutation(uuid,uuid,uuid,uuid,uuid,text,text,bigint,uuid)']);
     for (const signature of onboardingSignatures) {
       expect(allEntries.some(entry => entry.name === signature.split('(')[0]), signature).toBe(false);
       expect(sql, signature).toContain(`revoke all on function public.${signature} from public,anon,authenticated;`);
@@ -176,7 +177,7 @@ describe('Datafy parceiro: assinatura administrativa de canal existente (Task 7)
     expect(sql).toContain("o.claim_id is not null or cardinality(o.uncertain_steps)>0");
     expect(sql).toContain("revoke all on function public.guard_datafy_channel_identity() from public,anon,authenticated,service_role;");
     expect(sql).not.toContain("grant execute on function public.guard_datafy_channel_identity()");
-    expect(sql.match(/security definer set search_path = ''/g)).toHaveLength(8);
+    expect(sql.match(/security definer set search_path = ''/g)).toHaveLength(13);
     expect(sql).not.toMatch(/grant[^;]+to (?:public|anon|authenticated)/i);
   });
   it('recorder e finisher validam fonte/ator/pin sob locks antes de projeção, consumo ou ativação', () => {

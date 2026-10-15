@@ -1209,6 +1209,7 @@ const datafyActions = createDatafyOnboardingActions({
   // Task 9 conecta o remetente; este evento não afirma entrega nem grava ledger.
   emitEvent: (event) => jsonLog("warn", event),
   logCleanupFailure: () => jsonLog("warn", { evt: "datafy_discard_cleanup_failed" }),
+  logUnrecognized: (info) => jsonLog("warn", { evt: "datafy_admin_unrecognized", ...info }),
 });
 
 serve(async (req) => {

@@ -11,7 +11,7 @@ const unitId = "unit-a", actor = "actor", channelId = "reserved-a";
 const GRANTS = "whatsapp_official_connection_grants", ONBOARDINGS = "whatsapp_datafy_onboardings";
 const grant = () => ({ id: "grant-a", unit_id: unitId, revoked_at: null, consumed_at: null, consumed_channel_id: null });
 const onboarding = (state = "webhook_ready") => ({ id: "onboarding-a", unit_id: unitId, organization_id: "org-a",
-  grant_id: "grant-a", reserved_channel_id: channelId, datafy_channel_id: "remote-a", datafy_webhook_id: "hook-a",
+  grant_id: "grant-a", reserved_channel_id: channelId, datafy_channel_id: state === "open" ? null : "remote-a", datafy_webhook_id: "hook-a",
   channel_token: "synthetic-channel-token", webhook_secret: "synthetic-webhook-secret", state, uncertain_steps: [], claim_id: null });
 const channel = () => ({ id: channelId, unit_id: unitId, provider: "datafy", external_instance_id: "remote-a",
   credentials: { phone_number_id: "number-a", business_account_id: "waba-a", access_token: "synthetic-channel-token" },
@@ -32,7 +32,7 @@ const executeEcho = new Function("supabase", "channel", `return (async () => {
   ${ts.transpile(echoSource.slice(echoBegin, echoEnd), { target: ts.ScriptTarget.ES2022 })}
 })();`);
 
-function harness(options: { state?: string; withChannel?: boolean; noOnboarding?: boolean; noGrant?: boolean; gates?: boolean; busy?: boolean; uncertain?: boolean; subscribed?: boolean; echo?: boolean; channelReadError?: boolean } = {}) {
+function harness(options: { state?: string; withChannel?: boolean; noOnboarding?: boolean; noGrant?: boolean; gates?: boolean; busy?: boolean; uncertain?: boolean; subscribed?: boolean; echo?: boolean; channelReadError?: boolean; productionClient?: boolean } = {}) {
   const tables: Record<string, Row[]> = {
     [GRANTS]: options.noGrant ? [] : [grant()],
     [ONBOARDINGS]: options.noOnboarding ? [] : [onboarding(options.state)],
@@ -41,12 +41,14 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
   };
   const calls: string[] = [], filters: { table: string; keys: string[] }[] = [];
   const events: DatafyOperationalEvent[] = [];
+  const unknownResponses: unknown[] = [];
   let sequence = 0;
   const remote = snapshot(); remote.subscribed = options.subscribed ?? false;
   let createFailure: null | "transport" = null, subscribeFailure: null | "transport" | "payment_declined" = null;
   let revokeDuringSubscribe = false, missingWrite: string | null = null, accountUnavailable = false, malformedClaim = false;
   let beforeClaim: (() => Promise<void>) | null = null, duringPost: (() => Promise<void>) | null = null;
   let beforeProjection: (() => Promise<void>) | null = null, secondClaimBusy = false;
+  let monotonic = 0, beforeAuthorization: (() => Promise<void>) | null = null;
   const db = {
     from(table: string) {
       const predicates: ((row: Row) => boolean)[] = [];
@@ -98,6 +100,13 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
       expect(args.p_unit_id).toBe(unitId);
       const o = tables[ONBOARDINGS].find((row) => row.id === args.p_onboarding_id);
       const c = tables.whatsapp_channels.find((row) => row.id === args.p_channel_id);
+      if (name === "authorize_datafy_mutation") {
+        if (beforeAuthorization) { const hook = beforeAuthorization; beforeAuthorization = null; await hook(); }
+        const owned = o ?? c;
+        const g = tables[GRANTS].find((row) => row.id === args.p_grant_id);
+        return { data: !!owned && (o ? o.claim_id : c!.datafy_subscription_claim_id) === args.p_claim_id
+          && !owned.expired && (!["create_channel", "subscribe"].includes(String(args.p_operation)) || (!!g && !g.revoked_at && !g.consumed_at)), error: null };
+      }
       if (name === "claim_datafy_onboarding_step") {
         if (beforeClaim) { const hook = beforeClaim; beforeClaim = null; await hook(); }
         if (malformedClaim) return { data: [{ claimed: true, claim_id: "claim-malformed" }], error: null };
@@ -117,7 +126,8 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
         const channelPending = !!c!.datafy_subscription_claim_id || !!c!.datafy_subscription_uncertain;
         const priorOperation = channelPending ? c!.datafy_subscription_uncertain_operation ?? c!.datafy_subscription_operation : null;
         const claimId = `claim-${++sequence}`;
-        if (useOnboarding) { history!.claim_id = claimId; history!.claim_actor_id = args.p_actor_id; }
+        c!.expired = false;
+        if (useOnboarding) { history!.claim_id = claimId; history!.claim_actor_id = args.p_actor_id; history!.expired = false; }
         else { c!.datafy_subscription_claim_id = claimId; c!.datafy_subscription_claim_actor_id = args.p_actor_id; c!.datafy_subscription_operation = args.p_operation;
           c!.datafy_subscription_uncertain = channelPending; c!.datafy_subscription_uncertain_operation = priorOperation; }
         return { data: [{ claimed: true, claim_id: claimId, must_reconcile: !!terminalPending || channelPending || options.uncertain === true,
@@ -210,15 +220,18 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
     : { ok: true as const, token: "synthetic-account-token" });
   const gates = vi.fn(async () => options.gates !== false);
   const actions = createDatafyOnboardingActions({ supabase: db as unknown as SupabaseClient, getAccountToken: tokenReader,
-    getOrganizationId: async () => "org-a", gatesAllowed: gates, projectUrl: "https://project.test", createClient: () => client,
-    emitEvent: (event) => { events.push(event); } });
-  return { tables, calls, filters, events, client, remote, tokenReader, gates,
+    getOrganizationId: async () => "org-a", gatesAllowed: gates, projectUrl: "https://project.test", createClient: options.productionClient ? undefined : () => client,
+    emitEvent: (event) => { events.push(event); }, monotonicNow: () => monotonic,
+    logUnrecognized: (info) => { unknownResponses.push(info); } });
+  return { tables, calls, filters, events, unknownResponses, client, remote, tokenReader, gates,
     failCreate() { createFailure = "transport"; }, failSubscribe(kind: "transport" | "payment_declined") { subscribeFailure = kind; },
     unavailableAccount() { accountUnavailable = true; },
     malformedClaim() { malformedClaim = true; },
     beforeClaim(hook: () => Promise<void>) { beforeClaim = hook; },
     duringPost(hook: () => Promise<void>) { duringPost = hook; },
     beforeProjection(hook: () => Promise<void>) { beforeProjection = hook; },
+    beforeAuthorization(hook: () => Promise<void>) { beforeAuthorization = hook; },
+    advance(ms: number) { monotonic += ms; },
     secondClaimBusy() { secondClaimBusy = true; },
     runEcho() { return executeEcho(db, { ...tables.whatsapp_channels[0] }); },
     revokeDuringSubscribe() { revokeDuringSubscribe = true; }, missWrite(table: string) { missingWrite = table; },
@@ -226,6 +239,107 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
 }
 
 describe("Datafy onboarding: I/O com decisões reais", () => {
+  it.each([false, true])("WBR002 takeover após GET/grant permite só o POST do sucessor (channel=%s)", async (channelSource) => {
+    const h = harness({ state: "connected", withChannel: true, noOnboarding: channelSource });
+    h.gates.mockImplementationOnce(async () => {
+      if (channelSource) h.tables.whatsapp_channels[0].expired = true;
+      else h.tables[ONBOARDINGS][0].expired = true;
+      expect((await h.run("datafy_subscribe")).status).toBe(200);
+      return true;
+    });
+    expect((await h.run("datafy_subscribe")).status).toBeGreaterThanOrEqual(400);
+    expect(h.client.subscribe).toHaveBeenCalledTimes(1);
+    expect(h.tables[GRANTS][0].consumed_channel_id).toBe(channelId);
+  });
+  it("WBR002 deadline vencido durante a última autorização também impede POST", async () => {
+    const h = harness({ state: "connected", withChannel: true });
+    h.beforeAuthorization(async () => { h.advance(96_000); });
+    expect((await h.run("official_connect_confirm")).status).toBe(409);
+    expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("WBR002 configure_webhook após relink também revalida a cerca", async () => {
+    const h = harness({ state: "completed", withChannel: true }); h.remote.id = "remote-b";
+    h.beforeAuthorization(async () => { h.tables.whatsapp_channels[0].datafy_subscription_claim_id = "successor"; });
+    expect((await h.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "remote-b" })).status).toBeGreaterThanOrEqual(400);
+    expect(h.client.createWebhook).not.toHaveBeenCalled();
+  });
+  it.each(["create", "webhook", "cancel", "pause", "resume"])("WBR002 %s revalida a cerca depois dos awaits", async (operation) => {
+    const start = ["create", "webhook"].includes(operation);
+    const h = harness({ state: operation === "create" ? "open" : start ? "channel_created" : "completed", withChannel: !start });
+    h.beforeAuthorization(async () => {
+      if (start) h.tables[ONBOARDINGS][0].claim_id = "successor";
+      else h.tables.whatsapp_channels[0].datafy_subscription_claim_id = "successor";
+    });
+    expect((await h.run(start ? "official_connect_start" : `datafy_${operation}`)).status).toBeGreaterThanOrEqual(400);
+    const method = operation === "create" ? "createChannel" : operation === "webhook" ? "createWebhook" : operation;
+    expect(h.client[method as keyof DatafyAdminClient]).not.toHaveBeenCalled();
+  });
+  it("WBR006 timeout mantém subscribe incerto terminal e bloqueia relink", async () => {
+    const h = harness({ state: "abandoned", withChannel: true });
+    h.tables[ONBOARDINGS][0].uncertain_steps = ["subscribe"];
+    vi.mocked(h.client.getChannel).mockResolvedValue({ ok: false, kind: "transport", httpStatus: null, code: "DATAFY_TRANSPORT" });
+    expect((await h.run("datafy_subscribe")).status).toBe(503);
+    expect(h.tables[ONBOARDINGS][0].uncertain_steps).toEqual(["subscribe"]);
+    expect((await h.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "remote-b" })).status).toBe(409);
+    expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("WBR007 factory real emite somente operation/status/shape para 2xx malformado", async () => {
+    const h = harness({ state: "open", productionClient: true });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ token: "private-canary", "secret-key-canary": "private-value" }), { status: 200 })));
+    try {
+      expect((await h.run("official_connect_start")).status).toBe(503);
+      expect(h.unknownResponses).toHaveLength(1);
+      expect(h.unknownResponses[0]).toMatchObject({ operation: "createChannel", httpStatus: 200 });
+      expect(JSON.stringify(h.unknownResponses)).not.toMatch(/private-canary|secret-key-canary|private-value/);
+      expect(readFileSync(resolve(__dirname, "../../supabase/functions/manage-channels/index.ts"), "utf8"))
+        .toContain('logUnrecognized: (info) => jsonLog("warn", { evt: "datafy_admin_unrecognized", ...info })');
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it.each([true, null])("WBR001 confirm recusa outro provider que apareceu depois de start (%s)", async (isActive) => {
+    const h = harness();
+    h.tables.whatsapp_channels.push({ ...channel(), id: "other", provider: "zapi", is_active: isActive });
+    expect(await h.run("official_connect_confirm")).toMatchObject({ status: 409, body: { code: "DATAFY_MIGRATION_NOT_SUPPORTED" } });
+    expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+  it("WBR004 revalida create após claim quando concorrente já terminou webhook", async () => {
+    const h = harness({ state: "open" });
+    Object.assign(h.tables[ONBOARDINGS][0], { datafy_channel_id: null, datafy_webhook_id: null });
+    h.beforeClaim(async () => { Object.assign(h.tables[ONBOARDINGS][0], onboarding()); });
+    expect(await h.run("official_connect_start")).toMatchObject({ body: { next: "confirm" } });
+    expect(h.client.createChannel).not.toHaveBeenCalled();
+    expect(h.tables[ONBOARDINGS][0]).toMatchObject({ datafy_channel_id: "remote-a", state: "webhook_ready" });
+  });
+  it("WBR004 dois starts reais intercalados preservam canal e link do primeiro", async () => {
+    const h = harness({ state: "open" });
+    let firstResponse: unknown;
+    h.beforeClaim(async () => { firstResponse = await h.run("official_connect_start"); });
+    const secondResponse = await h.run("official_connect_start");
+    expect(secondResponse).toEqual(firstResponse);
+    expect(secondResponse.status).toBe(200);
+    expect(h.client.createChannel).toHaveBeenCalledTimes(1);
+    expect(h.client.createWebhook).toHaveBeenCalledTimes(1);
+    expect(h.tables[ONBOARDINGS][0]).toMatchObject({ datafy_channel_id: "remote-a", state: "webhook_ready" });
+  });
+  it("WBR004 webhook não regride snapshot que avançou durante claim", async () => {
+    const h = harness({ state: "channel_created" });
+    h.beforeClaim(async () => { h.tables[ONBOARDINGS][0].state = "connected"; });
+    expect((await h.run("official_connect_start")).status).toBe(200);
+    expect(h.client.createWebhook).not.toHaveBeenCalled();
+    expect(h.tables[ONBOARDINGS][0].state).toBe("connected");
+  });
+  it("WBR006 404 encerra subscribe incerto terminal sem POST ou reabertura", async () => {
+    const h = harness({ state: "abandoned", withChannel: true });
+    h.tables[ONBOARDINGS][0].uncertain_steps = ["subscribe"];
+    vi.mocked(h.client.getChannel).mockResolvedValue({ ok: false, kind: "not_found", httpStatus: 404, code: "DATAFY_NOT_FOUND" });
+    expect(await h.run("datafy_subscribe")).toMatchObject({ body: { code: "REMOTE_CHANNEL_MISSING" } });
+    expect(h.client.subscribe).not.toHaveBeenCalled();
+    expect(h.tables[ONBOARDINGS][0]).toMatchObject({ state: "abandoned", uncertain_steps: [], claim_id: null });
+    h.remote.id = "remote-b";
+    vi.mocked(h.client.getChannel).mockResolvedValue({ ok: true, value: h.remote });
+    expect((await h.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "remote-b" })).status).toBe(200);
+    expect(h.tables.whatsapp_channels[0].external_instance_id).toBe("remote-b");
+    expect(h.tables[ONBOARDINGS][0].state).toBe("abandoned");
+  });
   it.each([
     { is_active: true, status: "disconnected" },
     { is_active: null, status: "connected" },
@@ -278,7 +392,7 @@ describe("Datafy onboarding: I/O com decisões reais", () => {
     expect(h.tables[ONBOARDINGS][0]).toMatchObject({ state: "completed", channel_token: null, webhook_secret: null });
     expect(h.tables[GRANTS][0].consumed_channel_id).toBe(channelId);
     const claim = h.calls.indexOf("rpc:claim_datafy_onboarding_step:subscribe");
-    expect(h.calls.slice(claim, claim + 4)).toEqual(["rpc:claim_datafy_onboarding_step:subscribe", "get:remote-a", "subscribe", "get:remote-a"]);
+    expect(h.calls.slice(claim, claim + 5)).toEqual(["rpc:claim_datafy_onboarding_step:subscribe", "get:remote-a", "rpc:authorize_datafy_mutation:", "subscribe", "get:remote-a"]);
   });
   it("assinatura que chega depois do eco também ativa e confirm concluído é idempotente", async () => {
     const h = harness({ state: "connected", withChannel: true, echo: true });
