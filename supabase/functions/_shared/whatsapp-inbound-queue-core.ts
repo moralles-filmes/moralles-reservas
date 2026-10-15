@@ -10,7 +10,10 @@
  */
 
 import { DATAFY_SIGNATURE_HEADER } from "./datafy-signature-core.ts";
-import type { WebhookSignatureScheme } from "./whatsapp-provider-core.ts";
+import type {
+  WebhookSignatureScheme,
+  WhatsAppProviderCapabilities,
+} from "./whatsapp-provider-core.ts";
 
 /** De onde veio a invocação. NÃO é o provider — é a porta de entrada. */
 export type IngestionSource = "provider" | "queue" | "sweep";
@@ -50,15 +53,30 @@ export const PURGE_DEAD_AFTER_DAYS = 30;
 const MAX_DELIVERY_ID_LEN = 512;
 
 /**
- * As DUAS pernas do gate, mais a guarda anti-laço.
+ * As TRÊS pernas do gate (canal, reentrega do provider, flag), mais a guarda
+ * anti-laço.
  *
  * `source !== "provider"` é a única coisa que impede a re-entrada a partir da
  * fila de persistir o evento de novo — laço infinito, o defeito mais perigoso
  * disponível neste desenho. Ele vive aqui, e não como um `if` solto no
  * handler, justamente para ter teste com controle positivo.
  *
- * As duas pernas são deliberadamente ASSIMÉTRICAS quanto a sinal de falha de
- * leitura, e isso não é descuido:
+ * A perna da REENTREGA existe porque a fila só é segura para provider que
+ * reentrega um não-2xx: com ela ligada, falha transitória ao gravar o evento
+ * devolve 503, e se o provider não reentregar a mensagem do cliente some sem
+ * linha na fila, sem dead letter e sem contagem no painel. A coluna do canal é
+ * booleana em qualquer provider, sem CHECK — optar um canal Z-API ou UazAPI
+ * por engano bastava para abrir essa perda. A resposta vem do registry
+ * (`inboundRedelivery`), e só `documented` passa — reentrega PUBLICADA pelo
+ * provider e aceita como premissa da fila, o que não é medição contra o
+ * provider real. `unmeasured` (nenhuma premissa aceita, ainda que o provider
+ * publique política de retry) E `undefined` (provider sem declaração, ou fora
+ * do registry) são `sync`, porque sem premissa aceita não há reentrega em que
+ * apoiar a fila — e `sync` é o comportamento de hoje, não risco novo.
+ *
+ * As pernas do canal e da flag são deliberadamente ASSIMÉTRICAS quanto a sinal
+ * de falha de leitura, e isso não é descuido (a da reentrega não lê nada: é
+ * constante em código):
  *
  * - A perna da FLAG precisa de `flagReadFailed` porque `checkFlagEnabled`
  *   devolve `{ enabled, readFailed }`, e no call site uma leitura falha da
@@ -85,33 +103,38 @@ const MAX_DELIVERY_ID_LEN = 512;
  * esse parâmetro criaria um branch inalcançável e uma falsa sensação de
  * cobertura.
  *
- * A ORDEM DAS PERNAS É LOAD-BEARING: o CERTO decide antes do INCERTO, e
+ * A ORDEM DAS PERNAS É LOAD-BEARING: as CERTAS decidem antes da INCERTA, e
  * inverter de volta reintroduz um defeito de produção.
  *
  * `channelEnabled` é entrada CERTA — a coluna é `not null default false` e uma
- * leitura falha do canal já virou 404 rio acima —, enquanto a flag é a única
- * entrada que admite "não sei". Perguntar a incerta primeiro fazia um soluço de
- * leitura de `platform_flags` devolver `unknown` → 503 em TODO inbound de TODO
- * canal, inclusive dos quatro providers legados com o gate desligado nas duas
- * pernas: a loja em produção parava de responder por causa de uma tabela que
- * não tem nada a ver com ela. Para canal NÃO optado, "processar síncrono" é
- * exatamente o comportamento de hoje, então devolver `sync` ali não é risco
- * novo — é a ausência de um.
+ * leitura falha do canal já virou 404 rio acima —, `providerRedelivery` também
+ * (constante do registry, em código), enquanto a flag é a única entrada que
+ * admite "não sei". Perguntar a incerta primeiro fazia um soluço de leitura de
+ * `platform_flags` devolver `unknown` → 503 em TODO inbound de TODO canal,
+ * inclusive dos quatro providers legados com o gate desligado: a loja em
+ * produção parava de responder por causa de uma tabela que não tem nada a ver
+ * com ela. Para canal NÃO optado, ou de provider sem reentrega `documented`,
+ * "processar síncrono" é exatamente o comportamento de hoje, então devolver
+ * `sync` ali não é risco novo — é a ausência de um. É também por isso que a
+ * reentrega vem antes da flag: um canal legado optado por engano não pode
+ * receber 503 por causa de uma flag ilegível.
  *
- * Isto NÃO afrouxa o fail-closed: para canal optado (`channelEnabled === true`)
- * a flag ilegível continua produzindo `unknown` → 503, que é precisamente onde
- * a razão da spec se aplica (aquele canal PODE estar rodando assíncrono e não
- * há como saber). Quem "simplificar" esta ordem por simetria precisa ler este
- * parágrafo primeiro.
+ * Isto NÃO afrouxa o fail-closed: para canal optado de provider com reentrega
+ * `documented`, a flag ilegível continua produzindo `unknown` → 503, que é
+ * precisamente onde a razão da spec se aplica (aquele canal PODE estar rodando
+ * assíncrono e não há como saber). Quem "simplificar" esta ordem por simetria
+ * precisa ler este parágrafo primeiro.
  */
 export function decideIngestionMode(input: {
   source: IngestionSource;
   flagEnabled: boolean;
   flagReadFailed: boolean;
   channelEnabled: boolean | null | undefined;
+  providerRedelivery: WhatsAppProviderCapabilities["inboundRedelivery"] | undefined;
 }): IngestionMode {
   if (input.source !== "provider") return "sync";
   if (input.channelEnabled !== true) return "sync";
+  if (input.providerRedelivery !== "documented") return "sync";
   if (input.flagReadFailed) return "unknown";
   if (!input.flagEnabled) return "sync";
   return "async";

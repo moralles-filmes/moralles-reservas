@@ -1,3 +1,4 @@
+import { resolveLocalDocker } from './local-runtime-paths.mjs';
 // Reproducible genuine GoTrue + PostgREST proof, ONLY the named disposable stack.
 // Keys/passwords/JWTs stay in memory; never log response bodies or child errors.
 import { readFileSync } from 'node:fs';
@@ -7,8 +8,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const runtime = resolve(root, '.superpowers/sdd/2026-10-03-whatsapp-templates-programados/local-runtime');
-const docker = 'C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe';
+const runtime = resolve(root, '.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime');
+const docker = resolveLocalDocker();
 const container = 'supabase_db_moralles-templates-20261003';
 const base = 'http://127.0.0.1:55451';
 function localProcess(args, input) {

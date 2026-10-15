@@ -1,4 +1,7 @@
+import { createOpsAlerts } from "../_shared/ops-alert-runtime.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { checkFlagEnabled } from "../_shared/platform-flags.ts";
+import { decideIngestionMode } from "../_shared/whatsapp-inbound-queue-core.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   getWhatsAppProvider,
@@ -9,6 +12,9 @@ import {
   type ProviderConnectionSnapshot,
 } from "../_shared/whatsapp-providers.ts";
 import { parseDatafyAccount } from "../_shared/datafy-client.ts";
+import { getDatafyAccountToken } from "../_shared/datafy-account-config.ts";
+import { createDatafyOnboardingActions, DATAFY_ACTIONS } from "../_shared/datafy-onboarding-actions.ts";
+import { resolveUnitChannelBinding } from "../_shared/whatsapp-org-provider-core.ts";
 import { createTemplateRuntime } from "../_shared/whatsapp-template-runtime.ts";
 import {
   decideDatafyChannelSetup,
@@ -44,7 +50,7 @@ import {
   type WhatsAppChannelStatus,
 } from "../_shared/whatsapp-channel-lifecycle-core.ts";
 import { assertProvisioningAllowed } from "../_shared/whatsapp-instance-core.ts";
-import { genRequestId } from "../_shared/security.ts";
+import { genRequestId, jsonLog } from "../_shared/security.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -52,10 +58,10 @@ const supabase = createClient(
 );
 const { refreshTemplateChannel } = createTemplateRuntime(supabase);
 
-function jsonResponse(req: Request, body: unknown, status = 200) {
+function jsonResponse(req: Request, body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeadersFor(req), "Content-Type": "application/json" },
+    headers: { ...corsHeadersFor(req), "Content-Type": "application/json", ...headers },
   });
 }
 
@@ -75,6 +81,9 @@ const CLIENT_LIFECYCLE_ACTIONS = new Set([
   "status",
   "disconnect",
   "restart",
+  "official_connection_state",
+  "official_connect_start",
+  "official_connect_confirm",
 ]);
 
 const MANUAL_STATUS_REFRESH_INTERVAL_MS = 30_000;
@@ -213,12 +222,15 @@ async function memberLifecycleRole(userId: string, unitId: string): Promise<"own
 }
 
 async function loadChannel(unitId: string, channelId: string): Promise<ChannelRow | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("whatsapp_channels")
     .select(CLIENT_CHANNEL_COLUMNS)
     .eq("id", channelId)
     .eq("unit_id", unitId)
     .maybeSingle();
+  if (error) {
+    throw new ChannelActionError(500, "CHANNEL_READ_FAILED", "Falha ao consultar a conexão.");
+  }
   return data as ChannelRow | null;
 }
 
@@ -1185,6 +1197,23 @@ async function connectUazChannel(
   }
 }
 
+const datafyActions = createDatafyOnboardingActions({
+  supabase,
+  getAccountToken: getDatafyAccountToken,
+  getOrganizationId: async (unitId) => (await getUnitContext(unitId)).organizationId,
+  gatesAllowed: async (unitId, adminDecisionRecorded) => {
+    const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
+    const allowance = await checkChannelConnectionAllowance(
+      unitId, "datafy", {}, "NEW_PROVISIONING", adminDecisionRecorded,
+    );
+    return gate?.provisioning.allowed === true && allowance.ok === true && allowance.allowance.allowed === true;
+  },
+  projectUrl: Deno.env.get("SUPABASE_URL")!,
+  emitEvent: async (event) => { await createOpsAlerts(supabase, Deno.env.get("WHATSAPP_OPS_ALERT_URL"), (entry) => jsonLog("warn", entry)).subscriptionFailure(event); },
+  logCleanupFailure: () => jsonLog("warn", { evt: "datafy_discard_cleanup_failed" }),
+  logUnrecognized: (info) => jsonLog("warn", { evt: "datafy_admin_unrecognized", ...info }),
+});
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeadersFor(req) });
@@ -1218,6 +1247,11 @@ serve(async (req) => {
       }
     }
     const requestId = genRequestId();
+
+    if (DATAFY_ACTIONS.has(String(action))) {
+      const response = await datafyActions.handle(String(action), unitId, callerId, requestId, body);
+      return jsonResponse(req, response.body, response.status, response.headers);
+    }
 
     const resolveLifecycleChannel = async (createWhenMissing: boolean): Promise<ChannelRow | null> => {
       const requestedId = String(body.channel_id ?? "").trim();
@@ -1463,11 +1497,21 @@ serve(async (req) => {
     // ── switch seguro (platform admin) ──────────────────────────────────────
     if (action === "begin_switch") {
       const targetProvider = String(body.target_provider ?? "") as WhatsAppProvider;
-      if (!["zapi", "uazapi", "waha", "official"].includes(targetProvider)) {
+      if (!["zapi", "uazapi", "waha", "official", "datafy"].includes(targetProvider)) {
         return jsonResponse(req, { error: "Provedor alvo inválido." }, 400);
       }
 
       try {
+        if (targetProvider === "datafy") {
+          const binding = resolveUnitChannelBinding(await loadClientChannels(unitId));
+          if (binding && binding.provider !== "datafy") {
+            throw new ChannelActionError(
+              409,
+              "DATAFY_MIGRATION_NOT_SUPPORTED",
+              "A conexão oficial está disponível apenas na primeira configuração desta unidade.",
+            );
+          }
+        }
         let target: ChannelRow | null = null;
         const requestedTargetId = String(body.channel_id ?? "").trim();
         if (requestedTargetId) {
@@ -1478,7 +1522,7 @@ serve(async (req) => {
         } else if (targetProvider === "uazapi") {
           target = await findUazChannel(unitId) ?? await createUazPlaceholder(unitId);
         } else {
-          const { data } = await supabase
+          const { data, error } = await supabase
             .from("whatsapp_channels")
             .select("id")
             .eq("unit_id", unitId)
@@ -1486,6 +1530,7 @@ serve(async (req) => {
             .order("created_at", { ascending: true })
             .limit(1)
             .maybeSingle();
+          if (error) throw new ChannelActionError(500, "CHANNEL_READ_FAILED", "Falha ao consultar a conexão.");
           if (data?.id) target = await loadChannel(unitId, data.id);
         }
         if (!target) {
@@ -1536,7 +1581,7 @@ serve(async (req) => {
             "O canal alvo não está conectado. O canal atual foi preservado.",
           );
         }
-        const { error: healthWriteError } = await supabase
+        const { data: healthWritten, error: healthWriteError } = await supabase
           .from("whatsapp_channels")
           .update({
             status: "connected",
@@ -1545,8 +1590,10 @@ serve(async (req) => {
             ...(health.displayPhone ? { display_phone: health.displayPhone.replace(/\D/g, "") } : {}),
           })
           .eq("id", target.id)
-          .eq("unit_id", unitId);
-        if (healthWriteError) throw new Error("target_health_persist_failed");
+          .eq("unit_id", unitId)
+          .select("id")
+          .maybeSingle();
+        if (healthWriteError || !healthWritten) throw new Error("target_health_persist_failed");
         const { error: activateError } = await supabase.rpc("activate_whatsapp_channel", {
           p_unit_id: unitId,
           p_channel_id: target.id,
@@ -1555,7 +1602,7 @@ serve(async (req) => {
         });
         if (activateError) throw new Error("channel_activation_failed");
         target = await loadChannel(unitId, target.id) ?? target;
-        return jsonResponse(req, { success: true, channel: target });
+        return jsonResponse(req, { success: true, channel: clientConnection(target) });
       } catch (error) {
         const safe = publicErrorForLifecycle(error);
         return jsonResponse(req, { error: safe.message, code: safe.code }, safe.httpStatus);
@@ -1569,7 +1616,7 @@ serve(async (req) => {
     if (action === "list") {
       const { data, error } = await supabase
         .from("whatsapp_channels")
-        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, is_active, connected_at, last_health_check_at, activation_requested_at, manual_echo_verified_at, manual_echo_verification_source, created_at, updated_at")
+        .select("id, unit_id, provider, status, display_phone, last_event_at, last_error, webhook_secret, is_active, connected_at, last_health_check_at, activation_requested_at, manual_echo_verified_at, manual_echo_verification_source, provider_subscribed_at, provider_paused_at, provider_subscription_canceled_at, external_instance_id, async_ingestion_enabled, created_at, updated_at")
         .eq("unit_id", unitId)
         .order("created_at", { ascending: true });
 
@@ -1577,10 +1624,14 @@ serve(async (req) => {
         console.error("manage-channels:list", error);
         return jsonResponse(req, { error: "Falha ao listar canais." }, 500);
       }
+      const needsFlag = (data ?? []).some((channel) => channel.async_ingestion_enabled === true && getWhatsAppProvider(channel.provider).capabilities.inboundRedelivery === "documented");
+      const flag = needsFlag ? await checkFlagEnabled("whatsapp_async_ingestion") : { enabled: false, readFailed: false };
       return jsonResponse(req, {
         success: true,
         channels: (data ?? []).map((channel) => ({
           ...channel,
+          ingestion_mode_effective: decideIngestionMode({ source: "provider", channelEnabled: channel.async_ingestion_enabled,
+            providerRedelivery: getWhatsAppProvider(channel.provider).capabilities.inboundRedelivery, flagEnabled: flag.enabled, flagReadFailed: flag.readFailed }),
           capabilities: getWhatsAppProvider(channel.provider).capabilities,
         })),
       });

@@ -4,7 +4,7 @@
 set -euo pipefail
 export PGCLIENTENCODING=UTF8
 [[ $# == 0 && -z ${DOCKER_HOST:-}${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}${DOCKER_CERT_PATH:-} ]] || exit 1
-task_docker='C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe'
+task_docker=$(node "$(dirname "$0")/local-runtime-paths.mjs" --docker)
 task_container=supabase_db_moralles-templates-20261003
 [[ -z ${TASK_DOCKER:-} || $TASK_DOCKER == "$task_docker" ]] || exit 1
 [[ -z ${TASK_DB_CONTAINER:-} || $TASK_DB_CONTAINER == "$task_container" ]] || exit 1
@@ -15,7 +15,7 @@ task_container=supabase_db_moralles-templates-20261003
 [[ $("$task_docker" inspect --format '{{ (index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort }}' "$task_container") == 55452 ]] || exit 1
 psql_task() { "$task_docker" exec -i "$task_container" psql -U postgres -d postgres -X -q -t -A -v ON_ERROR_STOP=1 "$@"; }
 task_root=$(cd "$(dirname "$0")/../../.." && pwd)
-task_tmp=$(mktemp -d "$task_root/.superpowers/sdd/2026-10-03-whatsapp-templates-programados/issuer50.XXXXXX")
+task_tmp=$(mktemp -d "$task_root/.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime/issuer50.XXXXXX")
 for key in org unit customer other_customer actor channel binding rule; do
  value=$(psql_task -c 'select gen_random_uuid()'); [[ $value =~ ^[0-9a-f-]{36}$ ]] || exit 1; printf -v "$key" '%s' "$value"
 done

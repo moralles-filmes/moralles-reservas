@@ -1,3 +1,4 @@
+import { resolveLocalDocker } from './local-runtime-paths.mjs';
 // Authored offline. Genuine GoTrue/PostgREST/SDK gate only after MAIN READY.
 // No provider call; generated local keys and real sessions stay in memory.
 import { readFileSync } from 'node:fs';
@@ -8,7 +9,7 @@ import { resolve } from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const docker = 'C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe';
+const docker = resolveLocalDocker();
 const project = 'moralles-templates-20261003', container = `supabase_db_${project}`;
 const base = 'http://127.0.0.1:55451';
 function run(args, input) {
@@ -25,7 +26,7 @@ if (run(['context','inspect','--format','{{ .Endpoints.docker.Host }}']) !== 'np
   || run(['inspect','--format','{{ (index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort }}',container]) !== '55452')
   throw new Error('task47_own_stack_required');
 let keys;
-try { keys = JSON.parse(readFileSync(resolve(root,'.superpowers/sdd/2026-10-03-whatsapp-templates-programados/local-runtime/secrets/local-status.json'),'utf8')); }
+try { keys = JSON.parse(readFileSync(resolve(root,'.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime/secrets/local-status.json'),'utf8')); }
 catch { throw new Error('task47_local_key_read_failed'); }
 if (keys.API_URL !== base || typeof keys.ANON_KEY !== 'string' || typeof keys.SERVICE_ROLE_KEY !== 'string')
   throw new Error('task47_loopback_keys_required');

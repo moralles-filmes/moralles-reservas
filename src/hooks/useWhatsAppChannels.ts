@@ -73,7 +73,7 @@ export interface ChannelConnectionResponse {
   warnings?: string[];
 }
 
-async function invokeManageChannels(body: Record<string, unknown>) {
+export async function invokeManageChannels(body: Record<string, unknown>) {
   const { data, error } = await supabase.functions.invoke("manage-channels", { body });
   if (error) {
     // supabase-js v2 envolve qualquer non-2xx num FunctionsHttpError cuja .message é
@@ -211,6 +211,7 @@ export function useRotateChannelSecret(unitId: string) {
       webhookSecret,
     }: {
       channelId: string;
+      provider?: WhatsAppProvider;
       // Só a Datafy usa: ela emite o `whsec_` novo (rotacionado no painel
       // dela) e o admin cola aqui. Os demais providers ignoram — o backend
       // gera o segredo. Mesmo padrão condicional de `useCreateChannel`,
@@ -224,10 +225,10 @@ export function useRotateChannelSecret(unitId: string) {
         ...(webhookSecret ? { webhook_secret: webhookSecret } : {}),
       });
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["whatsapp-channels", unitId] });
       toast.success(
-        "Secret rotacionado. Atualize a URL, envie uma mensagem pelo celular e use Ativar / trocar.",
+        variables.provider === "datafy" ? "Segredo atualizado. Envie uma mensagem pelo celular e use Ativar." : "Secret rotacionado. Atualize a URL, envie uma mensagem pelo celular e use Ativar / trocar.",
       );
     },
     onError: (err: Error) => toast.error(err.message),

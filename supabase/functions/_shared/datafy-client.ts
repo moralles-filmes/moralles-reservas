@@ -1,7 +1,13 @@
 /**
- * Cliente HTTP único da Datafy. Nenhum `fetch()` da Datafy pode nascer fora
- * daqui — é o que mantém base URL, autenticação, timeout e classificação de
- * erro num lugar só quando a API evoluir.
+ * Cliente HTTP da API de MENSAGENS da Datafy, autenticado pelo token de CANAL
+ * (`sk_live_`): `/v1/...` e os endpoints próprios do canal (`/me`, `/media/{id}`).
+ *
+ * `fetch()` para a Datafy existe em DOIS arquivos e só neles: este e
+ * `datafy-admin-client.ts`, a API de ADMINISTRAÇÃO da conta de parceiro
+ * (token de CONTA `sk_acct_`, `/channels/whatsapp/...`). A divisão é pelo
+ * token, não pelo host: a base URL é uma só (`DATAFY_BASE_URL`, definida aqui
+ * e importada por lá), e cada arquivo mantém num lugar só a autenticação, o
+ * timeout e a classificação de erro do seu token.
  *
  * A Datafy é proxy da Cloud API: `/v1/...` espelha a Graph API da Meta, e os
  * endpoints próprios (`/me`, `/media/{id}`) ficam fora do `/v1`. Por isso o

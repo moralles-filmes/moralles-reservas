@@ -3,7 +3,7 @@
 set -euo pipefail
 export PGCLIENTENCODING=UTF8
 [[ $# == 0 && -z ${DOCKER_HOST:-}${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}${DOCKER_CERT_PATH:-} ]] || exit 1
-task_docker='C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe'
+task_docker=$(node "$(dirname "$0")/local-runtime-paths.mjs" --docker)
 task_container=supabase_db_moralles-templates-20261003
 [[ $("$task_docker" context inspect --format '{{ .Endpoints.docker.Host }}') == npipe:////./pipe/dockerDesktopLinuxEngine ]] || exit 1
 [[ $("$task_docker" inspect --format '{{ .State.Running }}' "$task_container") == true ]] || exit 1
@@ -13,7 +13,7 @@ task_container=supabase_db_moralles-templates-20261003
 psql_task() { "$task_docker" exec -i "$task_container" psql -U postgres -d postgres -X -q -t -A -v ON_ERROR_STOP=1 "$@"; }
 [[ $(psql_task -c "select not exists(select from cron.job where jobname in('whatsapp-automation-worker','whatsapp-template-workers')) and not exists(select from net.http_request_queue)") == t ]] || exit 1
 task_root=$(cd "$(dirname "$0")/../../.." && pwd)
-task_tmp=$(mktemp -d "$task_root/.superpowers/sdd/2026-10-03-whatsapp-templates-programados/management58.XXXXXX")
+task_tmp=$(mktemp -d "$task_root/.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime/management58.XXXXXX")
 for key in org unit unit2 customer replacement_customer actor owner channel channel2 reservation job account dch1 dch2 db1 db2 template catalog_job initial_job initial_res; do
  value=$(psql_task -c 'select gen_random_uuid()'); [[ $value =~ ^[0-9a-f-]{36}$ ]] || exit 1; printf -v "$key" '%s' "$value"
 done

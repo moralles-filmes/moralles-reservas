@@ -86,6 +86,8 @@ import {
   useDisconnectStripe,
 } from "@/hooks/useStripeAccount";
 import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
+import { ResponsiveDialog, ResponsiveDialogContent, ResponsiveDialogHeader, ResponsiveDialogTitle, ResponsiveDialogBody } from "@/components/ui/responsive-dialog";
+import { DatafyAdminCard } from "@/components/whatsapp/DatafyAdminCard";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 import { formatPhone } from "@/lib/utils";
@@ -235,7 +237,7 @@ export default function Automacao() {
         </TabsList>
 
         <TabsContent value="channels">
-          <ChannelsTab unitId={unitId} />
+          <ChannelsTab key={unitId} unitId={unitId} defaultProvider={unit.default_whatsapp_provider} />
         </TabsContent>
 
         <TabsContent value="ai">
@@ -292,7 +294,7 @@ function AdminQrCode({ value }: { value: string }) {
     : <canvas ref={canvasRef} aria-label="QR Code da conexão UazAPI" className="mx-auto h-64 w-64 max-w-full" />;
 }
 
-function ChannelsTab({ unitId }: { unitId: string }) {
+function ChannelsTab({ unitId, defaultProvider }: { unitId: string; defaultProvider?: WhatsAppProvider }) {
   const { data: channels, isLoading, isError, error, refetch } = useWhatsAppChannels(unitId);
   const { data: providerMetadata = [] } = useWhatsAppProviderMetadata(unitId);
   const deleteChannel = useDeleteChannel(unitId);
@@ -339,6 +341,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
         </Button>
       </div>
 
+      <DatafyAdminCard unitId={unitId} channels={channels ?? []} />
       {isLoading ? (
         <div className="space-y-3">{[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
       ) : isError ? (
@@ -493,7 +496,7 @@ function ChannelsTab({ unitId }: { unitId: string }) {
                           channel={ch}
                           isPending={rotateSecret.isPending}
                           onRotate={(webhookSecret) =>
-                            rotateSecret.mutate({ channelId: ch.id, webhookSecret })
+                            rotateSecret.mutate({ channelId: ch.id, webhookSecret, provider: ch.provider })
                           }
                         />
                       )}
@@ -578,6 +581,8 @@ function ChannelsTab({ unitId }: { unitId: string }) {
 
       <AddChannelDialog
         unitId={unitId}
+        key={`${unitId}-${addOpen}`}
+        defaultProvider={defaultProvider}
         providers={providerMetadata}
         open={addOpen}
         onClose={() => setAddOpen(false)}
@@ -714,6 +719,8 @@ function EditChannelDialog({
       if (baseUrl.trim()) c.base_url = baseUrl.trim();
       if (apiKey.trim()) c.api_key = apiKey.trim();
       if (sessionName.trim()) c.session_name = sessionName.trim();
+    } else if (provider === "datafy") {
+      if (accessToken.trim()) c.access_token = accessToken.trim();
     } else if (provider === "official") {
       if (phoneNumberId.trim()) c.phone_number_id = phoneNumberId.trim();
       if (businessAccountId.trim()) c.business_account_id = businessAccountId.trim();
@@ -740,14 +747,14 @@ function EditChannelDialog({
   };
 
   return (
-    <Dialog open={!!channel} onOpenChange={(o) => { if (!o) { onClose(); reset(); } }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>
+    <ResponsiveDialog open={!!channel} onOpenChange={(o) => { if (!o) { onClose(); reset(); } }}>
+      <ResponsiveDialogContent aria-describedby={undefined}>
+        <ResponsiveDialogHeader>
+          <ResponsiveDialogTitle>
             Editar credenciais{provider ? ` — ${PROVIDER_LABELS[provider]}` : ""}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 mt-2">
+          </ResponsiveDialogTitle>
+        </ResponsiveDialogHeader>
+        <ResponsiveDialogBody className="space-y-4">
           <div className="rounded-lg border border-dashed p-3 bg-muted/30 text-xs text-muted-foreground space-y-1">
             <p>
               Deixe em branco o que quer manter — só os campos preenchidos são
@@ -794,6 +801,7 @@ function EditChannelDialog({
             </>
           )}
 
+          {provider === "datafy" && <div className="space-y-1"><Label htmlFor="edit-datafy-token">Token da Datafy</Label><Input id="edit-datafy-token" type="password" autoComplete="off" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} placeholder="Manter atual" /></div>}
           {provider === "official" && (
             <>
               <div className="space-y-1">
@@ -818,25 +826,27 @@ function EditChannelDialog({
           <Button onClick={handleSave} disabled={updateChannel.isPending} className="w-full">
             {updateChannel.isPending ? "Salvando…" : "Salvar alterações"}
           </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveDialogBody>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }
 
 function AddChannelDialog({
   unitId,
   providers,
+  defaultProvider,
   open,
   onClose,
 }: {
   unitId: string;
   providers: WhatsAppProviderMetadata[];
+  defaultProvider?: WhatsAppProvider;
   open: boolean;
   onClose: () => void;
 }) {
   const createChannel = useCreateChannel(unitId);
-  const [provider, setProvider] = useState<WhatsAppProvider>("zapi");
+  const [provider, setProvider] = useState<WhatsAppProvider>(defaultProvider ?? "zapi");
   const selectedProvider = providers.find((item) => item.name === provider);
 
   // Z-API fields
@@ -861,7 +871,7 @@ function AddChannelDialog({
   const [datafyWebhookSecret, setDatafyWebhookSecret] = useState("");
 
   const reset = () => {
-    setProvider("zapi");
+    setProvider(defaultProvider ?? "zapi");
     setInstanceId(""); setToken(""); setClientToken("");
     setBaseUrl(""); setApiKey(""); setSessionName("");
     setPhoneNumberId(""); setBusinessAccountId(""); setAccessToken(""); setAppSecret("");
@@ -890,10 +900,10 @@ function AddChannelDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) { onClose(); reset(); } }}>
-      <DialogContent>
-        <DialogHeader><DialogTitle>Adicionar canal WhatsApp</DialogTitle></DialogHeader>
-        <div className="space-y-4 mt-2">
+    <ResponsiveDialog open={open} onOpenChange={(o) => { if (!o) { onClose(); reset(); } }}>
+      <ResponsiveDialogContent aria-describedby={undefined}>
+        <ResponsiveDialogHeader><ResponsiveDialogTitle>Adicionar canal WhatsApp</ResponsiveDialogTitle></ResponsiveDialogHeader>
+        <ResponsiveDialogBody className="space-y-4">
           <div className="space-y-1">
             <Label>Plataforma</Label>
             <Select value={provider} onValueChange={(v) => setProvider(v as WhatsAppProvider)}>
@@ -1016,9 +1026,9 @@ function AddChannelDialog({
           <Button onClick={handleCreate} disabled={createChannel.isPending} className="w-full">
             Adicionar canal
           </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveDialogBody>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }
 
@@ -1723,6 +1733,7 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
 
   return (
     <div className="space-y-4">
+      <p className="text-sm">Alerta operacional: {data.ops_alert_configured === true ? "Configurado" : data.ops_alert_configured === false ? "Não configurado" : "Não disponível"}. Ingestão efetiva: {channel?.ingestion_mode_effective === "sync" ? "Síncrona" : channel?.ingestion_mode_effective === "async" ? "Assíncrona" : channel?.ingestion_mode_effective === "unknown" ? "Desconhecida (processamento bloqueado)" : "Não disponível"}. Canal ativo: {channel?.is_active === true ? "Sim" : "Não"}.</p>
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
           Atualizado {relativeTime(generated_at)}

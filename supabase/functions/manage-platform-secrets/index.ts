@@ -9,6 +9,11 @@ import { genRequestId, jsonLog } from "../_shared/security.ts";
 import { corsHeadersFor } from "../_shared/cors.ts";
 import { clearStripeConfigCache } from "../_shared/stripe-config.ts";
 import { clearAsaasConfigCache } from "../_shared/asaas-config.ts";
+import { clearDatafyAccountConfigCache } from "../_shared/datafy-account-config.ts";
+import {
+  DATAFY_ACCOUNT_TOKEN_KEY,
+  decideAccountTokenRead,
+} from "../_shared/datafy-account-config-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -20,6 +25,7 @@ const VALID_KEYS = new Set([
   "stripe_webhook_secret",
   "asaas_api_key",
   "asaas_webhook_token",
+  DATAFY_ACCOUNT_TOKEN_KEY,
 ]);
 
 const KEY_DESCRIPTIONS: Record<string, string> = {
@@ -27,6 +33,7 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
   stripe_webhook_secret: "Webhook signing secret (whsec_...)",
   asaas_api_key: "Chave da API Asaas (sandbox $aact_hmlg_... ou produção $aact_prod_...)",
   asaas_webhook_token: "Token do header asaas-access-token nos webhooks (32-255 caracteres)",
+  [DATAFY_ACCOUNT_TOKEN_KEY]: "Token de conta da Datafy (sk_acct_...), acesso a todos os canais da conta",
 };
 
 // Centraliza a limpeza de cache de config de TODOS os providers — upsert/delete
@@ -34,16 +41,17 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
 //
 // Escopo real: cada Edge Function é seu próprio isolate com sua própria cópia
 // do módulo (CLAUDE.md: "Edge Functions não compartilham bundle em runtime").
-// As duas chamadas abaixo só limpam o cache DESTE isolate — que aqui nem chega
+// As chamadas abaixo só limpam o cache DESTE isolate — que aqui nem chega
 // a ser populado, pois manage-platform-secrets nunca lê getStripeSecretKey()/
-// getAsaasApiKey(). Isolates que de fato leem a chave (stripe-webhook,
-// create-checkout-session, o futuro asaas-webhook, etc.) mantêm o valor antigo
-// em cache até o próprio TTL de 5min expirar — uma chave rotacionada pode levar
-// até 5min pra valer em todo lugar. Não existe invalidação cross-isolate; esse
-// TTL bounded é o comportamento aceito.
+// getAsaasApiKey()/getDatafyAccountToken(). Isolates que de fato leem a chave
+// (stripe-webhook, create-checkout-session, o futuro asaas-webhook, etc.) mantêm
+// o valor antigo em cache até o próprio TTL de 5min expirar — uma chave
+// rotacionada pode levar até 5min pra valer em todo lugar. Não existe
+// invalidação cross-isolate; esse TTL bounded é o comportamento aceito.
 function clearAllProviderConfigCaches(): void {
   clearStripeConfigCache();
   clearAsaasConfigCache();
+  clearDatafyAccountConfigCache();
 }
 
 function jsonResponse(req: Request, body: unknown, status = 200) {
@@ -118,10 +126,25 @@ serve(async (req) => {
     // ── upsert ───────────────────────────────────────────────────────────────
     if (action === "upsert") {
       const key = String(body.key ?? "");
-      const value = String(body.value ?? "");
+      let value = String(body.value ?? "");
 
       if (!VALID_KEYS.has(key)) {
         return jsonResponse(req, { error: "Chave inválida." }, 400);
+      }
+      // Token de conta Datafy: a mesma régua da leitura, aplicada ao valor CRU
+      // do corpo (`typeof` decide, não o `String(...)` acima). Grava o token
+      // aparado, para o `last4` sair do valor que a leitura aceita. Nunca ecoa
+      // nem loga o valor.
+      if (key === DATAFY_ACCOUNT_TOKEN_KEY) {
+        const decision = decideAccountTokenRead({ row: { value: body.value }, error: null });
+        if (decision.ok === false) {
+          return jsonResponse(
+            req,
+            { error: "Token de conta da Datafy inválido: precisa começar com sk_acct_ e não ter espaços." },
+            400,
+          );
+        }
+        value = decision.token;
       }
       if (value.length < 10) {
         return jsonResponse(req, { error: "Valor muito curto." }, 400);

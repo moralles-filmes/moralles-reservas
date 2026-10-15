@@ -1,10 +1,11 @@
+import { resolveLocalDocker } from './local-runtime-paths.mjs';
 // Bounded local bridge: actual nullable birthday + exact historical feedback RPC.
 // No production schema repair, cron, pg_net, Auth stand-in or expiration stub.
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-const docker='C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe';
+const docker=resolveLocalDocker();
 const project='moralles-templates-20261003', container=`supabase_db_${project}`;
 const source=readFileSync(fileURLToPath(new URL('../../migrations/20260514181701_048_waitlist_automation.sql',import.meta.url)),'utf8');
 const matches=[...source.matchAll(/create or replace function public\.get_waitlist_for_feedback\([\s\S]*?grant execute on function public\.get_waitlist_for_feedback\(date, uuid\) to service_role;/g)];
