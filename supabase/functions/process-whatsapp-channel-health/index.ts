@@ -35,6 +35,7 @@ import {
   type ChannelCredentials,
 } from "../_shared/whatsapp-providers.ts";
 import { resolveChannelCredentials } from "../_shared/whatsapp-channel-credentials.ts";
+import { createOpsAlerts } from "../_shared/ops-alert-runtime.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -222,8 +223,12 @@ serve(async (req) => {
       }
     }
 
+    const opsAlerts = await createOpsAlerts(supabase, Deno.env.get("WHATSAPP_OPS_ALERT_URL"),
+      (event) => jsonLog("warn", event)).inbound();
+
     jsonLog("info", {
       evt: "channel_health_done",
+      opsAlerts,
       checked,
       connected,
       disconnected,
@@ -236,6 +241,7 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({
+        opsAlerts,
         checked,
         connected,
         disconnected,

@@ -3,6 +3,7 @@ import {
   MAX_PENDING_BACKLOG_AGE_MS,
   SWEEP_SELECT_LIMIT,
 } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
+export { MAX_PENDING_BACKLOG_AGE_MS } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
 
 /**
  * O que o painel de diagnóstico DIZ sobre o backlog da fila de inbound.

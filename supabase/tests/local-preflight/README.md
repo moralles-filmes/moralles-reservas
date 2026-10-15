@@ -1886,3 +1886,18 @@ de liberar o commit de A: canal/canal entre organizações, duas units da mesma
 organização e template/canal nas duas direções. Também verifica rollback do
 backfill contraditório; remove apenas seus IDs sintéticos ao terminar. Não
 faz chamadas à Datafy e não demonstra atomicidade distribuída com o provider.
+
+### Alertas operacionais externos (64)
+
+Em cluster PostgreSQL descartável vazio, sem pg_net/pg_cron, rode:
+
+```powershell
+& 'C:/Program Files/PostgreSQL/18/bin/psql.exe' -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 55464 -U postgres -d postgres -f supabase/tests/local-preflight/64a-whatsapp-ops-bootstrap.sql -f supabase/migrations/20261015171115_whatsapp_ops_alert_observation.sql -f supabase/migrations/20261015171115_whatsapp_ops_alert_observation.sql -f supabase/tests/local-preflight/64-whatsapp-ops-alerts.sql
+```
+
+O bootstrap contém somente tabelas/roles mínimas; não aplique em banco do projeto.
+A repetição verifica idempotência da migration. O teste reverte fixtures e prova
+cobertura de todas unidades, filtro de tenant, snapshot de contagem/max timestamp,
+watermark estrito, relógio SQL e ACL service-only. Não prova RLS/PostgREST ou
+entrega ao endpoint externo; esses transportes usam fakes nos testes runtime.
+Encerre o cluster ao terminar. Em produção a migration segue somente `supabase db push`.

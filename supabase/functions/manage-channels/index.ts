@@ -1,3 +1,4 @@
+import { createOpsAlerts } from "../_shared/ops-alert-runtime.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
@@ -1206,8 +1207,7 @@ const datafyActions = createDatafyOnboardingActions({
     return gate?.provisioning.allowed === true && allowance.ok === true && allowance.allowance.allowed === true;
   },
   projectUrl: Deno.env.get("SUPABASE_URL")!,
-  // Task 9 conecta o remetente; este evento não afirma entrega nem grava ledger.
-  emitEvent: (event) => jsonLog("warn", event),
+  emitEvent: async (event) => { await createOpsAlerts(supabase, Deno.env.get("WHATSAPP_OPS_ALERT_URL"), (entry) => jsonLog("warn", entry)).subscriptionFailure(event); },
   logCleanupFailure: () => jsonLog("warn", { evt: "datafy_discard_cleanup_failed" }),
   logUnrecognized: (info) => jsonLog("warn", { evt: "datafy_admin_unrecognized", ...info }),
 });
