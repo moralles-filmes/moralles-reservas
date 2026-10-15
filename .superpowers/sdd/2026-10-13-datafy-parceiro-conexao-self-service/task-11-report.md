@@ -34,3 +34,12 @@ npm run typecheck
 - Não há Deno local: EFs verificadas por ESLint e wiring/runtime importáveis no Vitest, sem alegar deno check. Sem teste contra provider real ou banco remoto.
 - Deploy futuro exige frontend e `manage-channels` + `whatsapp-health`; para uniformizar o refactor compartilhado do sender, considerar também `process-whatsapp-channel-health` e `process-whatsapp-templates` (a política de URL é equivalente à anterior).
 - Suíte completa, build e reviews finais pertencem ao controlador. Não foram alterados billing, migrations, RLS ou a autoridade de claims SQL.
+
+## Correções finais da revisão integrada
+
+- Matriz de deploy em AGENTS.md e CLAUDE.md inclui `whatsapp-health` como consumidor por valor de `isOpsAlertConfigured` em `ops-alert-sender.ts`. Consumidores de runtime/core continuam explicitamente `process-whatsapp-channel-health` e `manage-channels`, sem referência posicional ambígua.
+- Os dois documentos esclarecem que o frontend não reimplementa a derivação do checklist; o card admin reutiliza o núcleo canônico.
+- Diagnóstico traduz sync/async/unknown para Síncrona/Assíncrona/Desconhecida (processamento bloqueado), com Não disponível para ausência. Falha de leitura não afirma modo síncrono. Nenhum runtime de alertas foi reestruturado.
+- Gate focado: `npx vitest run src/lib/whatsapp-health-core.test.ts src/lib/whatsapp-health-runtime.test.ts src/components/whatsapp/DatafyAdminCard.test.tsx src/pages/gestao/Automacao.datafy.test.tsx` — **4 arquivos / 19 testes verdes**, exit 0.
+- `npm run typecheck` (`tsc -b --noEmit`) — exit 0. `npx eslint src/pages/gestao/Automacao.tsx` — exit 0, sem warnings. `git diff --check` — exit 0.
+- Revisão limitada aos quatro paths da correção e scan de staged antes do commit; plano do controlador preservado. Suíte completa continua sob responsabilidade do controlador.

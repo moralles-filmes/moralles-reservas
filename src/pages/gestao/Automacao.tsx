@@ -1733,7 +1733,7 @@ function DiagnosticsTab({ unitId }: { unitId: string }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm">Alerta operacional: {data.ops_alert_configured === true ? "Configurado" : data.ops_alert_configured === false ? "Não configurado" : "Não disponível"}. Ingestão efetiva: {channel?.ingestion_mode_effective ?? "Não disponível"}. Canal ativo: {channel?.is_active === true ? "Sim" : "Não"}.</p>
+      <p className="text-sm">Alerta operacional: {data.ops_alert_configured === true ? "Configurado" : data.ops_alert_configured === false ? "Não configurado" : "Não disponível"}. Ingestão efetiva: {channel?.ingestion_mode_effective === "sync" ? "Síncrona" : channel?.ingestion_mode_effective === "async" ? "Assíncrona" : channel?.ingestion_mode_effective === "unknown" ? "Desconhecida (processamento bloqueado)" : "Não disponível"}. Canal ativo: {channel?.is_active === true ? "Sim" : "Não"}.</p>
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
           Atualizado {relativeTime(generated_at)}
