@@ -1383,8 +1383,8 @@ gere outra migration pelo CLI no runtime e copie o mesmo conteúdo, conferindo
 o hash. O dry-run deve conter exclusivamente esses deltas locais revisados.
 
 ```powershell
-$taskRuntime = '.superpowers/sdd/2026-10-03-whatsapp-templates-programados/local-runtime'
-$taskDocker = 'C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe'
+$taskRuntime = '.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime'
+$taskDocker = node supabase/tests/local-preflight/local-runtime-paths.mjs --docker
 # Confira project_id=moralles-templates-20261003 e portas API55451/DB55452
 # no config.toml e no label/port mapping do container antes da execução.
 Get-Content -Raw supabase/tests/local-preflight/35-automation-dispatch-prerequisites.sql |
@@ -1901,3 +1901,24 @@ cobertura de todas unidades, filtro de tenant, snapshot de contagem/max timestam
 watermark estrito, relógio SQL e ACL service-only. Não prova RLS/PostgREST ou
 entrega ao endpoint externo; esses transportes usam fakes nos testes runtime.
 Encerre o cluster ao terminar. Em produção a migration segue somente `supabase db push`.
+
+### Portabilidade do runtime histórico 25–60
+
+Os executáveis 37–59 resolvem somente Docker Desktop instalado em
+`LOCALAPPDATA/Programs/DockerDesktop/resources/bin/docker.exe`, depois
+`USERPROFILE/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe`
+(fallback para LOCALAPPDATA virtualizado pelo sandbox) e, por fim,
+`ProgramFiles/Docker/Docker/resources/bin/docker.exe`, através de
+`local-runtime-paths.mjs`. Não há busca em PATH nem override de executável.
+Os wrappers Bash continuam citando o caminho completo, inclusive com espaços;
+o 39 exige que TASK_DOCKER coincida com essa resolução. Node deve ser o runtime
+Windows nativo, inclusive quando chamado pelo Git Bash.
+
+O controller prepara previamente o runtime dedicado
+`.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime`;
+os logs de sessões também ficam ali. Nenhum harness cria stack ou copia chaves.
+O projeto permanece exatamente `moralles-templates-20261003`, API loopback55451
+e banco55452. Resolver instalação não substitui os guards de pipe/labels/config,
+quarentena ou allowlist HTTP de cada gate. Somente ROOT lê
+`secrets/local-status.json` gerado pelo próprio stack, em memória e após os guards.
+Nunca reutilize chaves ou runtime de outro plano para preencher esse diretório.

@@ -36,6 +36,8 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 
 ## Comandos e stack
 
+- Harnesses históricos Docker resolvem apenas instalações Docker Desktop em LOCALAPPDATA, USERPROFILE/AppData/Local ou ProgramFiles, sem PATH nem override de executável; identidade do projeto, portas loopback e guards continuam obrigatórios antes de ROOT ler chaves locais. Isso evita que portabilidade selecione outro daemon ou reutilize credenciais; ver `supabase/tests/local-preflight/README.md` e `local-runtime-paths.mjs`.
+
 - Frontend: Vite + React + TypeScript + Tailwind/shadcn, TanStack Query, React Hook Form + Zod, Supabase e Vitest.
 - `npm run dev` usa `localhost:8080`; gates: `npm run lint`, `npm run test`, `npm run typecheck`, `npm run build` conforme o risco.
 - **Typecheck é `tsc -b --noEmit`; nunca `tsc --noEmit` sem `-b`**, pois o root com references vira no-op. Baseline é zero erro.

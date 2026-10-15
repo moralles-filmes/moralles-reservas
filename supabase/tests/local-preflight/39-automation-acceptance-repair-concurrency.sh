@@ -4,14 +4,15 @@ set -euo pipefail
 export PGCLIENTENCODING=UTF8
 [[ -z ${DOCKER_HOST:-}${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}${DOCKER_CERT_PATH:-} ]] || exit 1
 [[ ${TASK_DB_CONTAINER:-} == supabase_db_moralles-templates-20261003 ]] || exit 1
-[[ ${TASK_DOCKER:-} == 'C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe' ]] || exit 1
+task_docker=$(node "$(dirname "$0")/local-runtime-paths.mjs" --docker)
+[[ ${TASK_DOCKER:-} == "$task_docker" ]] || exit 1
 [[ $("$TASK_DOCKER" context inspect --format '{{ .Endpoints.docker.Host }}') == npipe:////./pipe/* ]] || exit 1
 [[ $("$TASK_DOCKER" inspect --format '{{ .State.Running }}' "$TASK_DB_CONTAINER") == true ]] || exit 1
 [[ $("$TASK_DOCKER" inspect --format '{{ index .Config.Labels "com.supabase.cli.project" }}' "$TASK_DB_CONTAINER") == moralles-templates-20261003 ]] || exit 1
 [[ $("$TASK_DOCKER" inspect --format '{{ (index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort }}' "$TASK_DB_CONTAINER") == 55452 ]] || exit 1
 psql_task() { "$TASK_DOCKER" exec -i "$TASK_DB_CONTAINER" psql -U postgres -d postgres -X -q -t -A -v ON_ERROR_STOP=1 "$@"; }
 task_root=$(cd "$(dirname "$0")/../../.." && pwd)
-task_tmp=$(mktemp -d "$task_root/.superpowers/sdd/2026-10-03-whatsapp-templates-programados/acceptance39.XXXXXX")
+task_tmp=$(mktemp -d "$task_root/.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime/acceptance39.XXXXXX")
 o=$(psql_task -c 'select gen_random_uuid()')
 u=$(psql_task -c 'select gen_random_uuid()')
 c=$(psql_task -c 'select gen_random_uuid()')

@@ -1,3 +1,4 @@
+import { resolveLocalDocker } from './local-runtime-paths.mjs';
 // ROOT-only genuine GoTrue/PostgREST/SDK proof. Keys stay in this process.
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -7,7 +8,7 @@ import { resolve } from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import { build } from 'esbuild';
 const root=fileURLToPath(new URL('../../../',import.meta.url));
-const docker='C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe';
+const docker=resolveLocalDocker();
 const project='moralles-templates-20261003',container=`supabase_db_${project}`,base='http://127.0.0.1:55451';
 function run(args,input){const r=spawnSync(docker,args,{input,encoding:'utf8',timeout:20000,windowsHide:true});if(r.status!==0)throw new Error(`task59_native_${r.status}`);return r.stdout.trim();}
 if(process.argv.length!==2||process.env.DOCKER_HOST||process.env.DOCKER_CONTEXT||process.env.DOCKER_TLS_VERIFY||process.env.DOCKER_CERT_PATH)throw new Error('task59_override_refused');
@@ -16,7 +17,7 @@ if(run(['context','inspect','--format','{{ .Endpoints.docker.Host }}'])!=='npipe
  ||run(['inspect','--format','{{ .Name }}',container])!==`/${container}`
  ||run(['inspect','--format','{{ index .Config.Labels "com.supabase.cli.project" }}',container])!==project
  ||run(['inspect','--format','{{ (index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort }}',container])!=='55452')throw new Error('task59_own_stack_required');
-const config=readFileSync(resolve(root,'.superpowers/sdd/2026-10-03-whatsapp-templates-programados/local-runtime/supabase/config.toml'),'utf8');
+const config=readFileSync(resolve(root,'.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime/supabase/config.toml'),'utf8');
 if(!/^project_id\s*=\s*"moralles-templates-20261003"\s*$/m.test(config)||!/\[api\][\s\S]*?\bport\s*=\s*55451\b/.test(config)||!/\[db\][\s\S]*?\bport\s*=\s*55452\b/.test(config)
  ||run(['inspect','--format','{{ .State.Running }}',`supabase_kong_${project}`])!=='true'
  ||run(['inspect','--format','{{ index .Config.Labels "com.supabase.cli.project" }}',`supabase_kong_${project}`])!==project
@@ -26,7 +27,7 @@ if(sql("select not exists(select from cron.job where jobname in('whatsapp-automa
 const health=await fetch(`${base}/auth/v1/health`,{redirect:'error',signal:AbortSignal.timeout(5000)});
 if(!health.ok)throw new Error('task59_gotrue_not_ready');
 let keys;
-try{keys=JSON.parse(readFileSync(resolve(root,'.superpowers/sdd/2026-10-03-whatsapp-templates-programados/local-runtime/secrets/local-status.json'),'utf8'));}
+try{keys=JSON.parse(readFileSync(resolve(root,'.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime/secrets/local-status.json'),'utf8'));}
 catch{throw new Error('task59_local_keys_unavailable');}
 if(keys.API_URL!==base||typeof keys.ANON_KEY!=='string'||typeof keys.SERVICE_ROLE_KEY!=='string')throw new Error('task59_loopback_keys_required');
 function target(path){const url=new URL(path,base);if(url.origin!==base||!['/auth/v1/','/rest/v1/'].some(p=>url.pathname.startsWith(p)))throw new Error('task59_remote_refused');return url;}

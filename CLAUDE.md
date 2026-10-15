@@ -32,6 +32,8 @@ Sistema de reservas de mesa para restaurante com agente de IA via WhatsApp. Mult
 
 ## ⚠️ Segurança antes de commitar (LEITURA OBRIGATÓRIA)
 
+- Harnesses históricos Docker resolvem apenas instalações Docker Desktop em LOCALAPPDATA, USERPROFILE/AppData/Local ou ProgramFiles, sem PATH nem override de executável; identidade do projeto, portas loopback e guards continuam obrigatórios antes de ROOT ler chaves locais. Isso evita que portabilidade selecione outro daemon ou reutilize credenciais; ver `supabase/tests/local-preflight/README.md` e `local-runtime-paths.mjs`.
+
 Repo **privado** no GitHub + deploy automático Vercel. Privado reduz a janela, **não elimina o risco**: colaborador, integração, fork futuro ou abertura do repo expõem tudo retroativamente, e `push --force` NÃO apaga o que já foi clonado ou indexado. Secret vazado exige rotação no provider — as regras abaixo valem integralmente.
 
 1. **Rode `git status` + `git diff --cached`** — revise 100% das linhas adicionadas.

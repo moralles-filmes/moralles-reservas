@@ -1,9 +1,10 @@
+import { resolveLocalDocker } from './local-runtime-paths.mjs';
 // Additive local fixture bridge only. No historical replay, RPC standins or retrofits.
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-const docker = 'C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe';
+const docker = resolveLocalDocker();
 const project = 'moralles-templates-20261003', container = `supabase_db_${project}`;
 const historical = readFileSync(fileURLToPath(new URL('../../migrations/20260508151746_042_giftback_module.sql', import.meta.url)), 'utf8');
 const hardening = readFileSync(fileURLToPath(new URL('../../migrations/20260517110000_giftback_hardening.sql', import.meta.url)), 'utf8');

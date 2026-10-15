@@ -1,10 +1,11 @@
+import { resolveLocalDocker } from './local-runtime-paths.mjs';
 // Closed, local-only fixture delta. Never replay the historical migration.
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const docker = 'C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe';
+const docker = resolveLocalDocker();
 const project = 'moralles-templates-20261003';
 const container = `supabase_db_${project}`;
 const source = readFileSync(fileURLToPath(new URL('../../migrations/20260905143453_whatsapp_conversation_provider_parity.sql', import.meta.url)), 'utf8');

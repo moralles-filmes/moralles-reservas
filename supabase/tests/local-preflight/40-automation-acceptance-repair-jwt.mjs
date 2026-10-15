@@ -1,3 +1,4 @@
+import { resolveLocalDocker } from './local-runtime-paths.mjs';
 // Genuine GoTrue/PostgREST, only after MAIN READY and review of this exact script.
 // Keys and genuine sessions remain in memory; no response/error bodies are printed.
 import { readFileSync } from 'node:fs';
@@ -7,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const runtime = resolve(root, '.superpowers/sdd/2026-10-03-whatsapp-templates-programados/local-runtime');
-const docker = 'C:/Users/Yuri/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe';
+const runtime = resolve(root, '.superpowers/sdd/2026-10-13-datafy-parceiro-conexao-self-service/local-runtime');
+const docker = resolveLocalDocker();
 const project = 'moralles-templates-20261003', container = `supabase_db_${project}`;
 const base = 'http://127.0.0.1:55451';
 function run(args, input) {
