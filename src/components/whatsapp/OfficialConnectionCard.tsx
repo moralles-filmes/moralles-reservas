@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOfficialConnection } from "@/hooks/useOfficialConnection";
+import { useWhatsappConnection } from "@/hooks/useWhatsappConnection";
 import { officialConnectionErrorMessage } from "@/features/whatsapp/official-connection-api";
 import { classifyConnectMessage } from "../../../supabase/functions/_shared/datafy-onboarding-core";
 import { OFFICIAL_ITEM_COPY } from "@/features/whatsapp/official-checklist-copy";
@@ -11,6 +12,20 @@ import { OFFICIAL_ITEM_COPY } from "@/features/whatsapp/official-checklist-copy"
 // Keyed session isolates warnings, locks and late responses when the unit changes.
 export function OfficialConnectionCard({ unitId }: { unitId: string }) {
   return <OfficialConnectionSession key={unitId} unitId={unitId} />;
+}
+
+function OfficialConnectionHealth({ unitId }: { unitId: string }) {
+  const health = useWhatsappConnection(unitId);
+  if (health.isLoading || health.isFetching) return <p role="status">Consultando saúde atual do WhatsApp…</p>;
+  if (health.isError || !health.data?.channel_id || health.data.status === "not_configured") return <div className="space-y-2">
+    <p role="alert">Saúde atual do WhatsApp indisponível.</p>
+    <Button className="min-h-11" variant="outline" onClick={() => void health.refetch()}>Consultar saúde novamente</Button>
+  </div>;
+  if (health.data.status === "connected") return <p role="status" className="font-medium text-success">WhatsApp conectado.</p>;
+  if (health.data.status === "disconnected") return <p role="alert">WhatsApp desconectado.</p>;
+  if (health.data.status === "provider_error" || health.data.status === "error") return <p role="alert">Não foi possível verificar a conexão com o provedor.</p>;
+  if (health.data.status === "suspended") return <p role="alert">Conexão do WhatsApp suspensa.</p>;
+  return <p role="status">Conexão do WhatsApp em andamento.</p>;
 }
 
 function OfficialConnectionSession({ unitId }: { unitId: string }) {
@@ -87,7 +102,10 @@ function OfficialConnectionSession({ unitId }: { unitId: string }) {
         <ul className="space-y-2 text-sm" aria-label="Progresso da conexão">
           {state.items.map((item) => <li key={item.id}><span className={item.done ? "text-success" : "text-muted-foreground"}>{item.done ? "Concluído" : "Pendente"}: {OFFICIAL_ITEM_COPY[item.id]}</span></li>)}
         </ul>
-        {state.step === "active" ? <p className="font-medium text-success">Conexão oficial ativada.</p> : <>
+        {state.step === "active" ? <>
+          <p className="font-medium">Ativação concluída.</p>
+          <OfficialConnectionHealth unitId={unitId} />
+        </> : <>
           {(state.step === "awaiting_echo" || state.step === "subscription_pending") && <p>Envie uma mensagem pelo app WhatsApp Business no celular para qualquer contato</p>}
           <div className="flex flex-col gap-2 sm:flex-row">
             {(state.step === "ready_to_connect" || state.step === "connecting") && <Button className="min-h-11" disabled={pending} onClick={() => void start()}>Conectar WhatsApp oficial</Button>}

@@ -18,6 +18,42 @@ const show = () => {
 beforeEach(() => { vi.clearAllMocks(); mocks.unit.isGerente = true; });
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks(); });
 describe("portal WhatsApp oficial", () => {
+  it.each(["disconnected", "provider_error"])("expõe saúde %s e recuperação do canal ativado", async (status) => {
+    mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state" ? { ...base, step: "active" } : { channel_id: "c1", status } }));
+    show();
+    expect(await screen.findByText(status === "disconnected" ? "WhatsApp desconectado." : "Não foi possível verificar a conexão com o provedor.")).toBeTruthy();
+    expect(screen.getByText("Ativação concluída.")).toBeTruthy();
+    mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state" ? { ...base, step: "active" } : { channel_id: "c1", status: "connected" } }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["whatsapp-connection", "u1"] }); });
+    expect(await screen.findByText("WhatsApp conectado.")).toBeTruthy();
+    expect(screen.queryByText(/QR Code/)).toBeNull();
+    mocks.invoke.mockResolvedValue({ error: new Error("offline") });
+    await act(async () => { await client.invalidateQueries({ queryKey: ["whatsapp-connection", "u1"] }); });
+    expect(await screen.findByText("Saúde atual do WhatsApp indisponível.")).toBeTruthy();
+    expect(screen.queryByText("WhatsApp conectado.")).toBeNull();
+  });
+  it.each(["missing", "error", "loading"])("saúde %s não aparece como conexão saudável", async (mode) => {
+    mocks.invoke.mockImplementation((_name, { body }) => body.action === "official_connection_state"
+      ? Promise.resolve({ data: { ...base, step: "active" } })
+      : mode === "loading" ? new Promise(() => undefined)
+      : Promise.resolve(mode === "error" ? { error: new Error("offline") } : { data: null }));
+    show();
+    expect(await screen.findByText(mode === "loading" ? "Consultando saúde atual do WhatsApp…" : "Saúde atual do WhatsApp indisponível.")).toBeTruthy();
+    expect(screen.queryByText("WhatsApp conectado.")).toBeNull();
+    expect(screen.queryByText("Conexão oficial ativada.")).toBeNull();
+  });
+  it("troca de unidade não conserva saúde anterior", async () => {
+    mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state" ? { ...base, step: "active" } : { channel_id: "c1", status: "connected" } }));
+    const view = show();
+    expect(await screen.findByText("WhatsApp conectado.")).toBeTruthy();
+    mocks.unit.unit_id = "u2";
+    try {
+      mocks.invoke.mockImplementation((_name, { body }) => body.action === "official_connection_state" ? Promise.resolve({ data: { ...base, step: "active" } }) : new Promise(() => undefined));
+      view.rerender(<QueryClientProvider client={client}><Whatsapp /></QueryClientProvider>);
+      expect(await screen.findByText("Consultando saúde atual do WhatsApp…")).toBeTruthy();
+      expect(screen.queryByText("WhatsApp conectado.")).toBeNull();
+    } finally { mocks.unit.unit_id = "u1"; }
+  });
   it("liberação substitui legado e não exibe QR nem consulta lifecycle legado", async () => {
     mocks.invoke.mockResolvedValue({ data: base });
     show();
