@@ -727,28 +727,32 @@ Itens:
 - Modify: `CLAUDE.md` e `AGENTS.md` (juntos)
 - Create: `docs/datafy-parceiro-runbook.md`
 
-- [ ] **Invariantes** (formato do CLAUDE.md: regra em 1 frase + por quê + ponteiro):
+- [x] **Invariantes** (formato do CLAUDE.md: regra em 1 frase + por quê + ponteiro):
   - Onboarding Datafy vive em `whatsapp_datafy_onboardings`; a linha de `whatsapp_channels` só nasce com `phone_number_id` do GET da Datafy.
   - Passo que gera custo na Datafy só depois de `claim_datafy_onboarding_step`; `must_reconcile` proíbe POST antes de reconciliar.
   - `sk_acct_` só em `platform_secrets`, sem fallback de env.
   - ~~`decideIngestionMode` exige `inboundRedelivery = "documented"`; substitui a frase "nada no código verifica isso".~~ Feito na Task 1: as duas regras do gate ("TRÊS pernas" e "só provider que reentrega entra na fila") já estão no par CLAUDE.md/AGENTS.md.
   - Atualizar a frase de `automaticWebhook`/"a Datafy responde 403 a `webhook_configuration`": vale para o token de canal; o de conta cria webhook.
-  - `begin_switch` aceita `datafy` só sem canal ativo.
+  - `begin_switch` recusa binding de outro provider; binding do mesmo provider permanece permitido (contrato final das Tasks 7/8).
   - Coexistence de canal Datafy é provado pelo eco do aparelho, nunca pelo `confirm` (o GET não traz o campo); o `confirm` assina assim que o número aparece no GET, e número sem app fica assinado e inativo até o admin cancelar.
   - Link de conexão só para canal sem número: em canal conectado ele devolve 200 e permite trocar o número.
-- [ ] **Checklist de redeploy:** linhas para `datafy-admin-client.ts` (importa `DATAFY_BASE_URL` de `datafy-client.ts`, então quem o importa herda o alcance de `datafy-client.ts`, `whatsapp-template-provider-core.ts` e `phone.ts`), `datafy-account-config*.ts`, `datafy-onboarding-core.ts` (frontend importa direto), `ops-alert-sender.ts`/`ops-alert-core.ts` e a mudança de `whatsapp-inbound-queue-core.ts` (agora também lido pelo health worker).
-- [ ] **Runbook:** pré-requisitos da conta Datafy (assinatura ativa, marca na aba Parceiros), cadastro do token no painel, `WHATSAPP_OPS_ALERT_URL` via `supabase secrets set`, passo a passo de liberar uma loja, o que o lojista faz, como reconciliar `uncertain`, como pausar/cancelar, e a ordem de deploy.
-- [ ] Commit `docs: invariantes e runbook do parceiro Datafy no par CLAUDE.md/AGENTS.md`.
+- [x] **Checklist de redeploy:** linhas para `datafy-admin-client.ts` (importa `DATAFY_BASE_URL` de `datafy-client.ts`, então quem o importa herda o alcance de `datafy-client.ts`, `whatsapp-template-provider-core.ts` e `phone.ts`), `datafy-account-config*.ts`, `datafy-onboarding-core.ts` (frontend importa direto), `ops-alert-sender.ts`/`ops-alert-core.ts` e a mudança de `whatsapp-inbound-queue-core.ts` (agora também lido pelo health worker).
+- [x] **Runbook:** pré-requisitos da conta Datafy (assinatura ativa, marca na aba Parceiros), cadastro do token no painel, `WHATSAPP_OPS_ALERT_URL` via `supabase secrets set`, passo a passo de liberar uma loja, o que o lojista faz, como reconciliar `uncertain`, como pausar/cancelar, e a ordem de deploy.
+- [x] Commit `docs: invariantes e runbook do parceiro Datafy no par CLAUDE.md/AGENTS.md`.
 
 ---
 
 ### Task 13: Gates whole-branch
 
-- [ ] `npm run typecheck`, `npm test`, `npm run lint` verdes.
+- [x] `npm run typecheck`, `npm test`, `npm run lint` verdes.
 - [ ] Pré-voo local completo verde, incluindo o 61.
-- [ ] Auditores `saas-shield-br`: `rls-auditor` e `migration-validator` (migration da Task 2), `tenant-isolation-auditor` e `identity-access-auditor` (ações do `manage-channels`), `integration-reliability-auditor` (cliente, claim, reconciliação, webhook, alerta), `secret-hunter` (diff inteiro). Achado P0/P1 bloqueia merge.
-- [ ] Review whole-branch (spec + qualidade).
+- [x] Auditores `saas-shield-br`: `rls-auditor` e `migration-validator` (migration da Task 2), `tenant-isolation-auditor` e `identity-access-auditor` (ações do `manage-channels`), `integration-reliability-auditor` (cliente, claim, reconciliação, webhook, alerta), `secret-hunter` (diff inteiro). Achado P0/P1 bloqueia merge.
+- [x] Review whole-branch (spec + qualidade).
 - [ ] `acl-estatico` conferido no PR.
+
+**Checkpoint 2026-10-15 — Task 12 concluída; Task 13 parcial.** Documentação `7bf12e7` + correção `71596fb`, revisão de spec/qualidade aprovada. Suíte ampla: 121 arquivos/3.291 testes PASS; typecheck, lint (21 warnings preexistentes), lint de EFs e build PASS. Pré-voos Datafy 61–64, concorrência 61b/63b e replay do schema final passaram; não substituem o pré-voo histórico completo. Seis auditores sem P0/P1 confirmado. Review whole-branch encontrou WB-001/P2 (portal ocultava saúde atual após ativação), corrigido em `0f56e6c`: 36 testes focados, typecheck/lint/build e re-review aprovados. Detalhes, fingerprint histórico C14 e limites em [evidências dos gates](../specs/2026-10-15-datafy-parceiro-gates.md).
+
+**Pendências para fechar Task 13:** restaurar/provisionar o ambiente descartável exigido pelo pré-voo histórico (stack `moralles-templates-20261003`, scratch e caminhos locais ausentes), sem enfraquecer seus guards; publicar branch/PR quando autorizado e conferir `acl-estatico` em Checks (consulta confirmou que não existe PR). Não houve push, merge em main, deploy, custo de provider ou alteração de produção. A Task 14 continua separada.
 
 ### Task 14: Deploy e piloto (cada passo com autorização do dono)
 
