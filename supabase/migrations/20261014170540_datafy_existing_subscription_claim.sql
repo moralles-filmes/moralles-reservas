@@ -3,6 +3,10 @@
 -- Rollback: desabilitar novo provisionamento e voltar somente o app/bundle;
 -- preservar e reconciliar claims vivos/incertos antes de retomar operações.
 -- Manter colunas/RPCs para a reconciliação; não fazer DROP destrutivo.
+-- O runner pode executar cada statement separadamente: manter DDL, backfill
+-- e instalação dos triggers na mesma transação preserva os locks até o fim.
+begin;
+
 alter table public.whatsapp_channels add column if not exists datafy_subscription_required boolean not null default false;
 -- Proveniência persistente: nem apagar o histórico nem um UPDATE administrativo
 -- transforma um canal self-service em legado manual com assinatura desconhecida.
@@ -758,3 +762,5 @@ end;
 $$;
 revoke all on function public.activate_whatsapp_channel(uuid,uuid,uuid,text) from public,anon,authenticated;
 grant execute on function public.activate_whatsapp_channel(uuid,uuid,uuid,text) to service_role;
+
+commit;

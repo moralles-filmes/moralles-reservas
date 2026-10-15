@@ -105,6 +105,8 @@ organizations (cliente SaaS)
 
 ### Migrations
 
+- **Migration com `LOCK TABLE` ou atomicidade entre statements declara `BEGIN`/`COMMIT` no próprio arquivo; não presuma transação do CLI.** O harness aplica o arquivo cru sem `psql -1` para detectar esse contrato, pois wrapper externo mascara falha `25P01` e locks devem durar até instalar os guards; ver migration `20261014170540` e pré-voo `63b`.
+
 - Formato `YYYYMMDDHHMMSS_nome.sql` (Supabase CLI). **Idempotentes por design.**
 - **Aplicar SEMPRE via `supabase db push`** — nunca colar SQL no Studio/SQL Editor. Studio grava em `schema_migrations` com timestamp ≠ filename, e o próximo `db push` fica bloqueado por drift; recovery exige `supabase migration repair --status reverted <ver>`.
 

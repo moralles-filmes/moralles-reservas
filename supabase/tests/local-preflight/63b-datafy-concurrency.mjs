@@ -60,6 +60,12 @@ async function race(label, sqlA, sqlB, expectedCode) {
   } finally { clearTimeout(timeout); a.child.kill(); b?.child.kill(); }
 }
 try {
+  // No outer BEGIN or psql -1: the migration must own its transaction even
+  // when a runner sends statements separately. Reapply also proves replay.
+  const migration = readFileSync(new URL('../../migrations/20261014170540_datafy_existing_subscription_claim.sql', import.meta.url), 'utf8');
+  await query(migration);
+  await query(migration);
+  console.log('raw migration applied twice without an outer transaction');
   await query(`insert into public.units(id,organization_id,name) values('${u1}','${org1}','local63-race-a'),('${u2}','${org2}','local63-race-b'),('${u3}','${org1}','local63-race-a2');`);
   await race('cross-org channel/channel', channel(u1, wabas[0], '6391101'), channel(u2, wabas[0], '6391102'), 3);
   await race('same-org two units', channel(u1, wabas[1], '6391201'), channel(u3, wabas[1], '6391202'), 0);
@@ -69,11 +75,12 @@ try {
   assert.equal(await query(`select count(*) from public.whatsapp_channels where unit_id='${u2}';`), '0');
   // Backfill rejects a contradiction that predates the guard, and rolls back
   // every DDL/data change in that failed migration transaction.
-  const migration = readFileSync(new URL('../../migrations/20261014170540_datafy_existing_subscription_claim.sql', import.meta.url), 'utf8');
   const badBackfill = await session(`begin; alter table public.whatsapp_channels disable trigger guard_whatsapp_channel_waba_owner;
     ${channel(u1, wabas[4], '6391501')} ${channel(u2, wabas[4], '6391502')} ${migration} commit;`).done;
   assert.equal(badBackfill.code, 3); assert.match(badBackfill.error, /waba_organization_conflict/);
   assert.equal(await query(`select count(*) from public.whatsapp_waba_owners where waba_id='${wabas[4]}';`), '0');
+  assert.equal(await query(`select count(*) from public.whatsapp_channels where unit_id in ('${u1}','${u2}') and credentials->>'business_account_id'='${wabas[4]}';`), '0');
+  assert.equal(await query("select tgenabled from pg_trigger where tgrelid='public.whatsapp_channels'::regclass and tgname='guard_whatsapp_channel_waba_owner';"), 'O');
   console.log('backfill conflict: fail-closed, transaction rolled back');
 } finally {
   await query(`delete from public.whatsapp_template_accounts where waba_id in (${wabas.map((w) => `'${w}'`).join(',')});
