@@ -10,7 +10,7 @@
 // NÃO ESCREVE em organizations.billing_status, billing_subscriptions,
 // organization_entitlement_overrides nem whatsapp_channels. NÃO chama a Z-API.
 //
-// ORDEM DE APLICAÇÃO — TRÊS migrations precedem esta versão:
+// ORDEM DE APLICAÇÃO — QUATRO migrations precedem esta versão:
 //
 // 1. `register_instance` lê `billing_plans.included_features` e
 //    `billing_plans.included_whatsapp_connections` (migration 094). A guarda de
@@ -28,6 +28,10 @@
 //    104). Consequência TOTAL, não degradada: sem ela, `set_cost` e
 //    `confirm_end` respondem 500 em toda invocação, e as notas de correção são
 //    recusadas pelo CHECK e somem em silêncio.
+//
+// 4. A RPC `delete_whatsapp_instance_without_cost` e a ação `DELETE` no CHECK de
+//    `whatsapp_instance_notes` (migration 20261015223000). Sem ela,
+//    `delete_instance` responde 500; nenhuma outra ação depende dela.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -59,6 +63,10 @@ import {
   UNIT_ALREADY_HAS_INSTANCE_MESSAGE,
 } from "../_shared/whatsapp-instance-registration-core.ts";
 import type { InstanceNoteAction } from "../_shared/whatsapp-instance-notes-core.ts";
+import {
+  deleteInstanceOutcomeResponse,
+  hasCostHistory,
+} from "../_shared/whatsapp-instance-delete-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -474,7 +482,38 @@ serve(async (req) => {
         jsonLog("error", { reqId, evt: "wa_instances_list_failed", err: error.message });
         return jsonResponse(req, { error: "Não foi possível carregar as instâncias." }, 500);
       }
-      return jsonResponse(req, { instances: data ?? [] });
+
+      // `has_cost_history` decide se a tela OFERECE "Apagar"; quem decide se
+      // PODE é a RPC. Falha desta leitura é 500 como a principal: devolver
+      // "sem custo" por default mostraria o botão onde o banco vai recusar.
+      // PAGINADA: a tabela ganha uma linha por instância por mês e o PostgREST
+      // trunca em 1000 sem avisar — um Set incompleto seria "sem custo" em
+      // silêncio. `.order("id")` dá páginas determinísticas.
+      const PAGE = 1000;
+      const idsWithCycleCost = new Set<string>();
+      for (let from = 0; ; from += PAGE) {
+        const { data: chunk, error: costedErr } = await supabase
+          .from("whatsapp_instance_cycles")
+          .select("instance_id")
+          .not("provider_cost_cents", "is", null)
+          .order("id", { ascending: true })
+          .range(from, from + PAGE - 1);
+        if (costedErr) {
+          jsonLog("error", { reqId, evt: "wa_instances_cost_history_failed", err: costedErr.message });
+          return jsonResponse(req, { error: "Não foi possível carregar as instâncias." }, 500);
+        }
+        for (const r of chunk ?? []) idsWithCycleCost.add((r as { instance_id: string }).instance_id);
+        if ((chunk ?? []).length < PAGE) break;
+      }
+
+      const instances = (data ?? []).map((row) => {
+        const r = row as Record<string, unknown>;
+        return {
+          ...r,
+          has_cost_history: hasCostHistory(r.current_monthly_cost_cents, r.id as string, idsWithCycleCost),
+        };
+      });
+      return jsonResponse(req, { instances });
     }
 
     if (action === "get_instance") {
@@ -1354,6 +1393,41 @@ serve(async (req) => {
       });
 
       return jsonResponse(req, { instance: data });
+    }
+
+    // ── Exclusão: só encerrada e sem custo, decidido pelo banco ──────────
+    if (action === "delete_instance") {
+      const reason = requireReason(body);
+      if (!reason) {
+        return jsonResponse(req, { error: "Descreva por que esta instância pode ser apagada." }, 400);
+      }
+
+      const id = requireInstanceId(body);
+      if (!id) return jsonResponse(req, { error: "instance_id é obrigatório." }, 400);
+
+      // VIA RPC e SEM pré-checagem aqui: trava instância e ciclos, confere
+      // estado e custo, grava a nota DELETE e apaga numa transação. Conferir
+      // antes na EF reabriria a janela entre conferir e apagar.
+      const { data: rpc, error: rpcErr } = await supabase.rpc("delete_whatsapp_instance_without_cost", {
+        p_instance_id: id,
+        p_note: reason,
+        p_actor: callerId,
+      });
+      if (rpcErr) {
+        jsonLog("error", {
+          reqId, evt: "wa_instance_delete_failed", instanceId: id,
+          err: rpcErr.message, needsAdminAction: true,
+        });
+        const failed = deleteInstanceOutcomeResponse(null);
+        return jsonResponse(req, failed.body, failed.status);
+      }
+
+      const row = (Array.isArray(rpc) ? rpc[0] : rpc) as { outcome?: unknown } | undefined;
+      const res = deleteInstanceOutcomeResponse(row?.outcome);
+      jsonLog(res.status === 200 ? "info" : "warn", {
+        reqId, evt: "wa_instance_delete", instanceId: id, outcome: row?.outcome ?? null,
+      });
+      return jsonResponse(req, res.body, res.status);
     }
 
     // ── Vínculo e metadados ──────────────────────────────────────────────

@@ -146,3 +146,51 @@ describe("a EF importa o núcleo compartilhado, não uma cópia", () => {
     expect(nucleo).not.toMatch(/UNIT_ALREADY_HAS_INSTANCE/);
   });
 });
+
+describe("delete_instance — a única porta que apaga instância", () => {
+  const bloco = blocoDaAcao("delete_instance");
+
+  it("apaga só pela RPC que trava e confere estado e custo", () => {
+    expect(bloco).toMatch(/\.rpc\(\s*["'`]delete_whatsapp_instance_without_cost["'`]/);
+  });
+
+  it("exige motivo antes de chamar a RPC", () => {
+    const motivo = bloco.indexOf("requireReason(");
+    expect(motivo).toBeGreaterThan(-1);
+    expect(motivo).toBeLessThan(bloco.indexOf(".rpc("));
+  });
+
+  it("traduz o desfecho pelo núcleo compartilhado", () => {
+    expect(bloco).toMatch(/deleteInstanceOutcomeResponse\(/);
+  });
+
+  it("nenhum ponto da EF apaga instância direto pela tabela", () => {
+    expect(src).not.toMatch(/from\(\s*["'`]whatsapp_instances["'`]\s*\)\s*\.delete\(/);
+  });
+});
+
+describe("list_instances — has_cost_history", () => {
+  const bloco = blocoDaAcao("list_instances");
+
+  it("lê os ciclos com custo e calcula pelo núcleo", () => {
+    expect(bloco).toMatch(/whatsapp_instance_cycles/);
+    expect(bloco).toMatch(/provider_cost_cents/);
+    expect(bloco).toMatch(/hasCostHistory\(/);
+  });
+
+  it("falha na leitura dos ciclos é erro, não 'sem custo'", () => {
+    // Pelo menos duas respostas 500 no bloco: a leitura principal e a dos
+    // ciclos (esta última dentro do laço de páginas).
+    expect(bloco.match(/,\s*500\)/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
+  it("pagina a leitura dos ciclos: PostgREST trunca em 1000 linhas sem avisar", () => {
+    // A tabela cresce uma linha por instância por mês. Sem `.range()` em laço,
+    // o Set de ids com custo ficaria incompleto em silêncio e a tela
+    // ofereceria "Apagar" para instância que o banco vai recusar.
+    const ciclos = bloco.slice(bloco.indexOf("whatsapp_instance_cycles"));
+    expect(ciclos).toMatch(/\.order\(\s*["'`]id["'`]/);
+    expect(ciclos).toMatch(/\.range\(/);
+    expect(ciclos).toMatch(/\.length\s*<\s*PAGE/);
+  });
+});
