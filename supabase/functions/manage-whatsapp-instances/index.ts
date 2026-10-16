@@ -507,7 +507,9 @@ serve(async (req) => {
       }
 
       const instances = (data ?? []).map((row) => {
-        const r = row as Record<string, unknown>;
+        // `select(INSTANCE_COLUMNS)` com string não literal tipa a linha como
+        // GenericStringError no SDK Deno; o cast passa por `unknown` de propósito.
+        const r = row as unknown as Record<string, unknown>;
         return {
           ...r,
           has_cost_history: hasCostHistory(r.current_monthly_cost_cents, r.id as string, idsWithCycleCost),
