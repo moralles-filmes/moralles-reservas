@@ -40,13 +40,23 @@ select 'de000000-0000-4000-8000-000000000001', 'de000000-0000-4000-8000-00000000
        'aaaaaaaa-0000-0000-0000-000000000001', 'REGISTER', 'instancia de teste', '11111111-1111-1111-1111-111111111111'
 where not exists (select 1 from whatsapp_instance_notes where instance_ref = 'de000000-0000-4000-8000-000000000001' and action = 'REGISTER');
 
--- ── DEL-1: encerrada sem custo e apagada; ciclo sai, notas ficam orfas ──
+-- Alerta de INSTANCIA apontando a DEL-1: o ledger precisa sobreviver a exclusao
+-- (instance_id vira NULL pela FK, subject_id segue sendo a identidade). A guarda
+-- whatsapp_alert_subject_guard exige instance_id vivo e subject_id igual no INSERT.
+insert into whatsapp_instance_alerts (subject_type, subject_id, organization_id, instance_id, alert_type, dedupe_key)
+select 'INSTANCE', 'de000000-0000-4000-8000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+       'de000000-0000-4000-8000-000000000001', 'DIVERGENCE', 'del-1-fixture'
+where exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-8000-000000000001')
+  and not exists (select 1 from whatsapp_instance_alerts
+                   where subject_id = 'de000000-0000-4000-8000-000000000001' and dedupe_key = 'del-1-fixture');
+
+-- ── DEL-1: encerrada sem custo e apagada; ciclo sai, notas e alerta ficam orfaos ──
 do $$
 declare v_out text;
 begin
   select outcome into v_out from delete_whatsapp_instance_without_cost(
     'de000000-0000-4000-8000-000000000001', 'era instancia de teste', '11111111-1111-1111-1111-111111111111');
-  insert into t_res (ord, caso, veredito) values (301, 'DEL-1 apaga encerrada sem custo; ciclo sai, notas ficam',
+  insert into t_res (ord, caso, veredito) values (301, 'DEL-1 apaga encerrada sem custo; ciclo sai, notas e alerta ficam',
     case when v_out = 'deleted'
       and not exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-8000-000000000001')
       and not exists (select 1 from whatsapp_instance_cycles where instance_id = 'de000000-0000-4000-8000-000000000001')
@@ -56,6 +66,10 @@ begin
                      and created_by = '11111111-1111-1111-1111-111111111111')
       and exists (select 1 from whatsapp_instance_notes
                    where instance_ref = 'de000000-0000-4000-8000-000000000001' and action = 'REGISTER'
+                     and instance_id is null)
+      and exists (select 1 from whatsapp_instance_alerts
+                   where subject_type = 'INSTANCE'
+                     and subject_id = 'de000000-0000-4000-8000-000000000001'
                      and instance_id is null)
       and exists (select 1 from audit_log
                    where table_name = 'whatsapp_instances' and action = 'DELETE'

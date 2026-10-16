@@ -108,3 +108,12 @@ commit;
 --    where conname = 'whatsapp_instance_notes_action_check';   -- contem 'DELETE'
 --   select proacl from pg_proc where proname = 'delete_whatsapp_instance_without_cost';
 --     -- esperado: so postgres e service_role, sem anon=, authenticated= ou =X/
+--
+-- Rollback (so comentario; nada aqui e executavel):
+--   O rollback real e UM comando:
+--     drop function if exists public.delete_whatsapp_instance_without_cost(uuid, text, uuid);
+--   O CHECK de nove acoes FICA. Depois que existir nota com action = 'DELETE',
+--   recriar o CHECK de oito acoes falha na validacao das linhas existentes, e
+--   as notas DELETE sao auditoria: nao se apagam para destravar um rollback.
+--   O DELETE de instancia ja feito e irreversivel por desenho (ciclos saem em
+--   cascata; so notas e alertas sobrevivem, com instance_id nulo).

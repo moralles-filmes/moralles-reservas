@@ -1949,12 +1949,16 @@ Encerre o cluster ao terminar. Em produção a migration segue somente `supabase
 Continua o banco `fase6c` da sequência base, depois de reaplicar 104 e 105:
 
 ```bash
+P -f supabase/migrations/20260801200200_089_whatsapp_instance_alerts.sql   # o DEL-1 cria um alerta de instância
 P -f supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql
 P -f supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql   # idempotência (DEL-7)
 P -f supabase/tests/local-preflight/65-instance-delete.sql
 "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -f supabase/tests/local-preflight/66-controles-instance-delete.sql
 P -c "select ord, caso, veredito from t_res where ord between 301 and 312 order by ord;"
+P -c "select count(*) from t_res where ord between 301 and 312;"   # esperado: 10
 ```
+
+Linha ausente também é falha: um `DO` que aborta no meio não grava linha, e olhar só `veredito <> 'PASSOU'` não mostra ausência. A contagem tem de dar 10 (301–308 do 65 e 311–312 do 66).
 
 O que NÃO prova: o caminho PostgREST/Edge Function (`delete_instance`) — esse é coberto pelo guardrail textual de `src/lib/whatsapp-instance-ef-write-guard.test.ts` e pelo teste da tela.
 
