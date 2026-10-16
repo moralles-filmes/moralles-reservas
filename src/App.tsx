@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { GestaoLayout } from "@/components/layouts/GestaoLayout";
 import { OperacionalLayout } from "@/components/layouts/OperacionalLayout";
 import { PlatformLayout } from "@/components/layouts/PlatformLayout";
+import { LegacyPlatformUnitRedirect } from "@/pages/platform/legacy-redirects";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -80,7 +81,8 @@ const OEntregas    = lazy(() => import("./pages/operacional/Entregas"));
 
 // ── Platform ──────────────────────────────────────────────────────────────────
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
-const PAutomacao = lazy(() => import("./pages/platform/Automacao"));
+const PUnidades = lazy(() => import("./pages/platform/Unidades"));
+const PIntegracoes = lazy(() => import("./pages/platform/Integracoes"));
 const PBilling = lazy(() => import("./pages/platform/Billing"));
 const PBillingPlans = lazy(() => import("./pages/platform/BillingPlans"));
 const PBillingDetail = lazy(() => import("./pages/platform/BillingDetail"));
@@ -280,10 +282,15 @@ export default function App() {
               <Route path="/o/:unitSlug/entregas" element={<OperacionalGuard><OEntregas /></OperacionalGuard>} />
 
               {/* ── Platform /platform/* ───────────────────────────────── */}
-              <Route path="/platform" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
+              <Route path="/platform" element={<Navigate to="/platform/empresas" replace />} />
               <Route path="/platform/empresas" element={<PlatformGuard><PEmpresas /></PlatformGuard>} />
-              <Route path="/platform/automacao" element={<PlatformGuard><PAutomacao /></PlatformGuard>} />
-              <Route path="/platform/automacao/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
+              <Route path="/platform/unidades" element={<PlatformGuard><PUnidades /></PlatformGuard>} />
+              <Route path="/platform/unidades/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
+              <Route path="/platform/integracoes" element={<PlatformGuard><PIntegracoes /></PlatformGuard>} />
+              {/* Endereços antigos: o retorno do Stripe Connect (manage-stripe-accounts)
+                  ainda aponta para /platform/automacao/:slug?stripe=complete. */}
+              <Route path="/platform/automacao" element={<Navigate to="/platform/unidades" replace />} />
+              <Route path="/platform/automacao/:unitSlug" element={<LegacyPlatformUnitRedirect />} />
               <Route path="/platform/billing" element={<PlatformGuard><PBilling /></PlatformGuard>} />
               <Route path="/platform/billing/planos" element={<PlatformGuard><PBillingPlans /></PlatformGuard>} />
               {/* M-9 (Rodada de correção 1): a ordem de declaração aqui NÃO é o que

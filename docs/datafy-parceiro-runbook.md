@@ -5,7 +5,7 @@ Este procedimento descreve o fluxo implementado. O contrato externo medido está
 ## Preparação
 
 - Conta Datafy com assinatura ativa e marca configurada na aba Parceiros. Conta inadimplente pode responder 403 à API administrativa.
-- Platform admin cadastra **Token da conta Datafy** no card **WhatsApp oficial (Datafy)** em Plataforma → Automação. A chave `datafy_account_token` fica em `platform_secrets`, sem fallback de ambiente; mensagens/status/templates continuam com token de canal. Não colocar token de conta em credenciais de canal, Vercel, código ou logs.
+- Platform admin cadastra **Token da conta Datafy** no card **WhatsApp oficial (Datafy)** em Plataforma → Integrações e chaves (`/platform/integracoes`). A chave `datafy_account_token` fica em `platform_secrets`, sem fallback de ambiente; mensagens/status/templates continuam com token de canal. Não colocar token de conta em credenciais de canal, Vercel, código ou logs.
 - Configurar endpoint HTTPS de operações por `supabase secrets set WHATSAPP_OPS_ALERT_URL=<endpoint-HTTPS-aprovado>`, pelo canal seguro de secrets, sem colar valor em ticket ou histórico compartilhado. Esse endpoint é Edge secret, diferente do token de conta.
 - Conferir serviço/allowance de novo provisionamento e liberação da unidade; platform admin também passa pelos gates de custo. Binding real de outro provider impede primeira configuração Datafy (409 `DATAFY_MIGRATION_NOT_SUPPORTED`); binding Datafy do mesmo provider é permitido. O padrão administrativo da organização não prova qual canal está em uso.
 
@@ -44,7 +44,7 @@ Rollback do app/bundle não remove migrations nem pendências. Bloquear novas li
 
 ## Liberar e conectar uma loja
 
-1. No painel da unidade, Automação → **WhatsApp oficial (Datafy)**, admin seleciona **Liberar conexão oficial** e confirma a unidade correta. A liberação é persistida; não é simples preferência de provider.
+1. Em Plataforma → Unidades → Configurar (`/platform/unidades/:slug`), aba Canais WhatsApp → **WhatsApp oficial (Datafy)**, admin seleciona **Liberar conexão oficial** e confirma a unidade correta. A liberação é persistida; não é simples preferência de provider.
 2. Owner/gerente abre o card **WhatsApp oficial**, mantém o número no app WhatsApp Business e acesso administrativo à empresa Meta. Seleciona **Conectar WhatsApp oficial**, conclui na janela Datafy e usa **Já concluí a conexão**. Operador não executa o fluxo.
 3. O backend cria/reconcilia canal e webhook sob claim. Enquanto não há número, tudo fica em `whatsapp_datafy_onboardings`; o canal local só nasce com identidade do GET. Link só é emitido sem número: pedir link após conectar permitiria trocar o número. Não copiar URL para logs, cache ou tickets; se a janela for bloqueada, permitir popup e tentar pelo botão.
 4. **Já concluí a conexão** pode gerar assinatura/custo assim que o GET confirma o número. Uma liberação paga um canal; reconectar o mesmo não autoriza criar outro. A loja cadastra seu cartão nas configurações de pagamento da conta WhatsApp na Meta; a plataforma paga a assinatura Datafy.

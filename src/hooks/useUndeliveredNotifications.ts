@@ -72,7 +72,7 @@ export function isResendableKind(kind: string): boolean {
 function friendlyResendError(code?: string | null): string {
   if (code === "no_phone") return "Este cliente não tem WhatsApp cadastrado.";
   if (code === "whatsapp_not_configured")
-    return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Automação.";
+    return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Unidades.";
   if (code === "whatsapp_service_suspended")
     return "Envio de WhatsApp suspenso por falta de pagamento da mensalidade da automação. Regularize em Cobrança para voltar a enviar.";
   if (code === "not_found_or_cross_tenant") return "Registro não encontrado nesta unidade.";
@@ -81,7 +81,7 @@ function friendlyResendError(code?: string | null): string {
   if (code === "whatsapp_not_connected")
     return "O WhatsApp desta unidade está desconectado. Reconecte o canal e tente o reenvio depois.";
   if (code === "whatsapp_channel_inactive")
-    return "O canal de WhatsApp desta unidade está inativo. Ative-o em Plataforma → Automação.";
+    return "O canal de WhatsApp desta unidade está inativo. Ative-o em Plataforma → Unidades.";
   if (code === "message_expired")
     return "Esta mensagem é antiga demais para ser reenviada.";
   return "Falha ao reenviar a mensagem.";

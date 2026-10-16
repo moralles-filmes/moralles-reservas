@@ -305,8 +305,8 @@ function FailuresCard({
         </div>
         <p className="text-xs text-muted-foreground">
           Pra diagnosticar canal WhatsApp / chave de IA, abra
-          <code className="mx-1 px-1 rounded bg-muted">/platform/automacao</code>
-          → Diagnóstico (super-admin).
+          <code className="mx-1 px-1 rounded bg-muted">/platform/unidades</code>
+          → Configurar → Diagnóstico (super-admin).
         </p>
       </CardContent>
     </Card>

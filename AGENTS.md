@@ -51,6 +51,7 @@ Sistema multi-tenant de reservas para restaurantes com IA via WhatsApp: `organiz
 
 - `organizations` é o cliente SaaS; `units` são restaurantes físicos; `unit_members` liga usuário/unidade com `owner|gerente|operador`. `customers` pertencem à organização; negócio operacional carrega `unit_id`, enquanto contas WABA/catálogo remoto são account/org-scoped e bindings fazem a ponte para canal/unidade, validada por guards/RPCs.
 - `platform_admin` opera `/platform/*`; toda policy/guard unit-scoped precisa do paralelo `is_platform_admin`. O pseudo-membership da UI não substitui RLS/guard server-side.
+- `/platform/automacao/:unitSlug` redireciona para `/platform/unidades/:unitSlug` preservando query/hash: o retorno do Stripe Connect (`manage-stripe-accounts`) usa o endereço antigo com `?stripe=complete`. Ver `src/pages/platform/legacy-redirects.tsx`.
 - Edge Function com service role sempre autentica o caller e valida `unit_id` contra o recurso; service role contorna RLS e triggers dependentes de `auth.uid()`.
 - `owner` cria units e tem acesso total; `gerente` configura/membros/dados sem automação; `operador` atua em reservas/fila/passantes e não cancela reservas. Não ressuscitar `admin_users`/`manage-admins`.
 - `/r/:slug` aceita `mode=embed` e `action=reservar|waitlist`; `/acompanhar/:token` é público via `get_public_tracking`; `/g/:unitSlug/cobranca` é a única rota liberada pelo `BillingGuard` para org bloqueada.

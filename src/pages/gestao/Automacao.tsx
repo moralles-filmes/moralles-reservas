@@ -169,7 +169,7 @@ export default function Automacao() {
     return (
       <div className="space-y-4 max-w-3xl">
         <Button asChild variant="ghost" size="sm" className="gap-1 -ml-2">
-          <Link to="/platform/automacao">
+          <Link to="/platform/unidades">
             <ArrowLeft className="h-4 w-4" />
             Voltar para unidades
           </Link>
@@ -186,7 +186,7 @@ export default function Automacao() {
   return (
     <div className="space-y-5 max-w-3xl">
       <Button asChild variant="ghost" size="sm" className="gap-1 -ml-2">
-        <Link to="/platform/automacao">
+        <Link to="/platform/unidades">
           <ArrowLeft className="h-4 w-4" />
           Voltar para unidades
         </Link>
@@ -195,15 +195,13 @@ export default function Automacao() {
       <div>
         <div className="flex items-center gap-2">
           <Zap className="h-5 w-5 text-primary" />
-          <h1 className="text-2xl font-bold">Automação</h1>
+          <h1 className="text-2xl font-bold">{unit.name}</h1>
         </div>
         <p className="text-sm text-muted-foreground mt-1">
-          <span className="font-medium text-foreground">{unit.organization_name}</span>
-          {" — "}
-          {unit.name}
+          WhatsApp e IA · <span className="font-medium text-foreground">{unit.organization_name}</span>
         </p>
         <p className="text-sm text-muted-foreground">
-          Configure os canais de WhatsApp, o provedor de IA e as instruções do agente.
+          Configure os canais de WhatsApp, o provedor de IA, as instruções do agente e os pagamentos.
         </p>
       </div>
 

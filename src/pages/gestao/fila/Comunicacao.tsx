@@ -281,7 +281,7 @@ function ConfiguracoesTab({ unitId }: { unitId: string }) {
 
       <p className="text-xs text-muted-foreground border-t pt-4">
         Lembrete: para qualquer mensagem ser enviada, é preciso que um canal WhatsApp esteja
-        configurado em <span className="font-medium">Plataforma → Automação</span>.
+        configurado em <span className="font-medium">Plataforma → Unidades</span>.
       </p>
     </div>
   );

@@ -10,14 +10,14 @@ Onde cada credencial vive, como cadastrar a nova e como confirmar que pegou. Nen
 
 **Onde vivem:** tabela `platform_secrets` (FORCE RLS, o `value` nunca volta para o frontend — a UI só mostra `last4`), chaves `asaas_api_key` e `asaas_webhook_token`. Lidas por [_shared/asaas-config.ts](../supabase/functions/_shared/asaas-config.ts), com fallback para `Deno.env` (`ASAAS_API_KEY` / `ASAAS_WEBHOOK_TOKEN`) quando não há linha no banco.
 
-**Como cadastrar a nova:** painel **Plataforma → Automação** (`/platform/automacao`), campos "Chave da API (Access Token)" e "Token de autenticação do webhook". A tela chama a Edge Function `manage-platform-secrets`, que só aceita `platform_admin`. **Não** dá para cadastrar por SQL sem perder a limpeza de cache que a EF dispara.
+**Como cadastrar a nova:** painel **Plataforma → Integrações e chaves** (`/platform/integracoes`), campos "Chave da API (Access Token)" e "Token de autenticação do webhook". A tela chama a Edge Function `manage-platform-secrets`, que só aceita `platform_admin`. **Não** dá para cadastrar por SQL sem perder a limpeza de cache que a EF dispara.
 
 **Ordem — chave de API:**
 1. Gerar a nova no painel do Asaas (isso invalida a antiga na hora).
-2. Cadastrar imediatamente em `/platform/automacao`.
+2. Cadastrar imediatamente em `/platform/integracoes`.
 
 **Ordem — token de webhook:**
-1. Cadastrar o novo token em `/platform/automacao` **primeiro**.
+1. Cadastrar o novo token em `/platform/integracoes` **primeiro**.
 2. Atualizar em seguida no painel do Asaas (campo do header `asaas-access-token`).
 
 Entre os dois passos, todo evento que chegar é recusado com 401. O Asaas reentrega, mas **15 falhas consecutivas interrompem a fila de eventos de todos os clientes** — por isso a janela tem que ser curta, e por isso rotacionar com as flags OFF é o momento certo.
@@ -34,14 +34,14 @@ Entre os dois passos, todo evento que chegar é recusado com 401. O Asaas reentr
 
 **Onde vive:** coluna `whatsapp_channels.webhook_secret` (tabela FORCE RLS, sem policies — a UI acessa via Edge Function). Validada em [_shared/whatsapp-providers.ts](../supabase/functions/_shared/whatsapp-providers.ts) (`validateChannelSecret`), que aceita o header `x-webhook-secret` **ou** a query string `?secret=`. A Z-API não permite header customizado no webhook, então na prática o valor viaja na URL — e é por isso que ele aparece em log de gateway e merece rotação periódica.
 
-**Caminho recomendado — ação `rotate_secret`:** a tela **Gestão → Automação** (`/g/:slug/automacao`), no card do canal, tem o botão "Rotacionar secret". Ele chama a Edge Function `manage-channels` com a ação `rotate_secret`, que gera um `webhook_secret` novo **preservando o `channel_id`** — só o parâmetro `secret=` da URL muda, o resto continua válido no painel da Z-API. Deliberadamente fora do gate de novo provisionamento (o canal já existe, nenhum custo externo novo nasce), então funciona mesmo em `GRACE_PERIOD` e `LEGACY_GRANDFATHERED`. A URL nova aparece no mesmo card assim que a rotação termina.
+**Caminho recomendado — ação `rotate_secret`:** a tela **Plataforma → Unidades → Configurar** (`/platform/unidades/:slug`), aba Canais WhatsApp, no card do canal, tem o botão "Rotacionar secret". Ele chama a Edge Function `manage-channels` com a ação `rotate_secret`, que gera um `webhook_secret` novo **preservando o `channel_id`** — só o parâmetro `secret=` da URL muda, o resto continua válido no painel da Z-API. Deliberadamente fora do gate de novo provisionamento (o canal já existe, nenhum custo externo novo nasce), então funciona mesmo em `GRACE_PERIOD` e `LEGACY_GRANDFATHERED`. A URL nova aparece no mesmo card assim que a rotação termina.
 
 Dois caminhos de exceção, em ordem de preferência decrescente:
 
 - **(a) UPDATE direto** em `whatsapp_channels.webhook_secret` (precisa de `service_role`, a tabela é FORCE RLS). Preserva o `channel_id`; só o parâmetro `secret=` da URL muda. É DML pontual, não migration — a regra de nunca colar SQL no Studio vale para **migrations** (que gravam `schema_migrations` com timestamp divergente e travam o próximo `db push`); um UPDATE de dado não tem esse efeito. Único caminho se a Edge Function estiver fora do ar.
-- **(b) Recriar o canal** — **último recurso**, só se o `channel_id` precisar mudar por outro motivo. Pela tela **Gestão → Automação**: gera secret novo, mas **muda o `channel_id`**, ou seja, muda a URL inteira do webhook — é preciso reconfigurar no painel da Z-API do zero. E tem uma armadilha de ordem: se a unidade estiver num estado que não autoriza novo provisionamento (`NOT_ENTITLED`, `SUSPENDED_UNPAID`, `ADMIN_BLOCKED`), **remover o canal antigo antes de adicionar o novo deixa a unidade sem canal nenhum, e o gate recusa a recriação** — sem caminho de volta pela tela. Se recriar for mesmo necessário, **adicione o canal novo antes de remover o antigo**; o índice único `(unit_id, provider, display_phone)` tolera duas linhas com `display_phone` nulo ao mesmo tempo.
+- **(b) Recriar o canal** — **último recurso**, só se o `channel_id` precisar mudar por outro motivo. Pela tela **Plataforma → Unidades → Configurar**: gera secret novo, mas **muda o `channel_id`**, ou seja, muda a URL inteira do webhook — é preciso reconfigurar no painel da Z-API do zero. E tem uma armadilha de ordem: se a unidade estiver num estado que não autoriza novo provisionamento (`NOT_ENTITLED`, `SUSPENDED_UNPAID`, `ADMIN_BLOCKED`), **remover o canal antigo antes de adicionar o novo deixa a unidade sem canal nenhum, e o gate recusa a recriação** — sem caminho de volta pela tela. Se recriar for mesmo necessário, **adicione o canal novo antes de remover o antigo**; o índice único `(unit_id, provider, display_phone)` tolera duas linhas com `display_phone` nulo ao mesmo tempo.
 
-Depois de qualquer um dos três, a URL completa e já pronta para colar na Z-API aparece na tela **Gestão → Automação**, no card do canal.
+Depois de qualquer um dos três, a URL completa e já pronta para colar na Z-API aparece na tela **Plataforma → Unidades → Configurar**, no card do canal.
 
 **Verifique também o fallback global:** o webhook resolve `channel.webhook_secret ?? Deno.env.get("ZAPI_WEBHOOK_SECRET")`. Se algum canal tiver a coluna nula **e** o secret global antigo ainda estiver cadastrado como secret de Edge Function, o valor antigo continua aceito. Confira `supabase secrets list` e remova `ZAPI_WEBHOOK_SECRET` se não houver canal dependendo dele. (Com secret vazio nos dois lados, `validateChannelSecret` recusa — falha fechada, não aberta.)
 

@@ -17,7 +17,7 @@ import type {
 function friendlyWhatsAppError(code?: string | null): string {
   if (!code) return "Falha ao enviar WhatsApp.";
   if (code === "whatsapp_not_configured")
-    return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Automação para enviar avisos.";
+    return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Unidades para enviar avisos.";
   if (code === "whatsapp_service_suspended")
     return "Envio de WhatsApp suspenso por falta de pagamento da mensalidade da automação. Regularize em Cobrança para voltar a enviar.";
   // Passou a ser o retorno COMUM desde que o envio exige conexão confirmada:
@@ -25,9 +25,9 @@ function friendlyWhatsAppError(code?: string | null): string {
   // no caso da Z-API). A frase precisa dizer o que resolve — reconectar — em
   // vez de mandar o operador configurar um canal que já existe.
   if (code === "whatsapp_not_connected")
-    return "O WhatsApp desta unidade está desconectado. Reconecte o canal em Plataforma → Automação e tente de novo.";
+    return "O WhatsApp desta unidade está desconectado. Reconecte o canal em Plataforma → Unidades e tente de novo.";
   if (code === "whatsapp_channel_inactive")
-    return "O canal de WhatsApp desta unidade está inativo. Ative-o em Plataforma → Automação.";
+    return "O canal de WhatsApp desta unidade está inativo. Ative-o em Plataforma → Unidades.";
   if (code === "channel_mismatch")
     return "Canal de WhatsApp inválido para esta unidade.";
   if (code === "missing_credentials")

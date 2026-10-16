@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { AdminShell } from "@/components/layouts/AdminShell";
 import {
@@ -9,12 +9,14 @@ import {
   SidebarLink,
   SidebarSectionTitle,
 } from "@/components/layouts/SidebarNav";
-import { Bot, Building2, CreditCard, LogOut, Smartphone, Users } from "lucide-react";
+import { PLATFORM_NAV, isPlatformNavItemActive } from "@/components/layouts/platform-nav";
+import { Building2, LogOut } from "lucide-react";
 import { toast } from "sonner";
 
 export function PlatformLayout({ children }: { children: React.ReactNode }) {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
 
   const handleSignOut = async () => {
     await signOut();
@@ -22,33 +24,34 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
     navigate("/admin/login");
   };
 
-  const navItems = [
-    { to: "/platform/empresas", label: "Empresas", icon: Building2 },
-    { to: "/platform/automacao", label: "Automação", icon: Bot },
-    { to: "/platform/billing", label: "Cobranças", icon: CreditCard },
-    // A rota existia desde a 6b e não era alcançável por navegação — só por URL
-    // digitada. Painel sem link é painel que ninguém abre, e este é hoje o
-    // ÚNICO canal dos alertas de instância (o dispatch de e-mail está OFF).
-    { to: "/platform/instancias-whatsapp", label: "Instâncias WhatsApp", icon: Smartphone },
-  ];
-
   return (
     <AdminShell
-      sidebarWidthClass="lg:w-60"
+      sidebarWidthClass="lg:w-64"
       mainPaddingClass="p-6"
       sidebar={
         <>
           <SidebarBrand icon={Building2} label="Moralles Plataforma" />
 
-          <div className="px-3 py-2">
-            <SidebarSectionTitle>Administração</SidebarSectionTitle>
-          </div>
-
-          <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto scrollbar-premium">
-            {navItems.map((item) => (
-              <SidebarLink key={item.to} to={item.to} label={item.label} icon={item.icon} />
+          <nav className="flex-1 px-3 pb-2 overflow-y-auto scrollbar-premium">
+            {PLATFORM_NAV.map((section) => (
+              <div key={section.title} className="pt-3 space-y-0.5">
+                <div className="pb-1">
+                  <SidebarSectionTitle>{section.title}</SidebarSectionTitle>
+                </div>
+                {section.items.map((item) => (
+                  <SidebarLink
+                    key={item.to}
+                    to={item.to}
+                    label={item.label}
+                    icon={item.icon}
+                    isActive={isPlatformNavItemActive(pathname, item)}
+                  />
+                ))}
+                {section.disabledItems?.map((disabled) => (
+                  <SidebarDisabledItem key={disabled.label} icon={disabled.icon} label={disabled.label} />
+                ))}
+              </div>
             ))}
-            <SidebarDisabledItem icon={Users} label="Admins da Plataforma" />
           </nav>
 
           <div className="mx-3 my-1.5 h-px bg-sidebar-border/50" />

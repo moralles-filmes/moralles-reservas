@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import { ChevronDown, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -62,35 +62,48 @@ export type SidebarLinkProps = {
    * "gold"  = link de destaque sempre dourado (ex.: atalho Plataforma).
    */
   tone?: "default" | "muted" | "gold";
+  /** Sobrepõe o casamento por prefixo do NavLink quando o layout decide o item ativo (`end` deixa de valer). */
+  isActive?: boolean;
 };
 
-export function SidebarLink({ to, label, icon: Icon, end, badge, tone = "default" }: SidebarLinkProps) {
+export function SidebarLink({ to, label, icon: Icon, end, badge, tone = "default", isActive: isActiveOverride }: SidebarLinkProps) {
   const { collapsed } = useSidebarCollapse();
 
-  const link = (
-    <NavLink
-      to={to}
-      end={end}
-      className={({ isActive }) =>
-        cn(
-          navItemBase,
-          "relative",
-          collapsed && "justify-center",
-          tone === "muted"
-            ? "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground"
-            : tone === "gold"
-              ? "text-sidebar-accent-foreground font-medium hover:bg-sidebar-accent/50"
-              : isActive
-                ? navItemActive
-                : navItemIdle,
-        )
-      }
-    >
+  const linkClass = (isActive: boolean) =>
+    cn(
+      navItemBase,
+      "relative",
+      collapsed && "justify-center",
+      tone === "muted"
+        ? "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground"
+        : tone === "gold"
+          ? "text-sidebar-accent-foreground font-medium hover:bg-sidebar-accent/50"
+          : isActive
+            ? navItemActive
+            : navItemIdle,
+    );
+
+  const content = (
+    <>
       <Icon className="h-4 w-4 shrink-0" />
       {!collapsed && <span className="flex-1 truncate">{label}</span>}
       <NavBadge value={badge ?? 0} collapsed={collapsed} />
-    </NavLink>
+    </>
   );
+
+  // Com o ativo decidido pelo layout, `Link` em vez de `NavLink`: o NavLink
+  // marcaria `aria-current="page"` pelo próprio prefixo, e dois itens seriam
+  // anunciados como a página atual (ex.: Cobranças dentro de Planos).
+  const link =
+    isActiveOverride === undefined ? (
+      <NavLink to={to} end={end} className={({ isActive }) => linkClass(isActive)}>
+        {content}
+      </NavLink>
+    ) : (
+      <Link to={to} aria-current={isActiveOverride ? "page" : undefined} className={linkClass(isActiveOverride)}>
+        {content}
+      </Link>
+    );
 
   return withTooltip(link, label, collapsed);
 }

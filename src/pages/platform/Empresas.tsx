@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Building2, ExternalLink, MoreHorizontal, Pencil, Plus } from "lucide-react";
+import { Building2, CreditCard, ExternalLink, MoreHorizontal, Pencil, Plus, Store } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -450,6 +450,18 @@ export default function Empresas() {
                       <DropdownMenuItem onClick={() => setEditOrg(org)}>
                         <Pencil className="h-4 w-4 mr-2" />
                         Editar
+                      </DropdownMenuItem>
+                      <DropdownMenuItem asChild>
+                        <Link to={`/platform/billing/${org.id}`}>
+                          <CreditCard className="h-4 w-4 mr-2" />
+                          Ver cobrança
+                        </Link>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem asChild>
+                        <Link to={`/platform/unidades?empresa=${org.id}`}>
+                          <Store className="h-4 w-4 mr-2" />
+                          Unidades (WhatsApp e IA)
+                        </Link>
                       </DropdownMenuItem>
                       {org.first_unit_slug && (
                         <DropdownMenuItem asChild>

@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import {
   useBillingPlans,
   useCreatePlan,
@@ -29,7 +28,7 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { ArrowLeft, Plus, MoreHorizontal, Pencil, PowerOff } from "lucide-react";
+import { Plus, MoreHorizontal, Pencil, PowerOff } from "lucide-react";
 import {
   formatCentsBRL,
   parsePlanFeatures,
@@ -335,11 +334,6 @@ export default function BillingPlans() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <Link to="/platform/billing">
-          <Button variant="ghost" size="icon">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </Link>
         <div className="flex-1">
           <h1 className="text-2xl font-bold">Planos</h1>
           <p className="text-muted-foreground text-sm">
