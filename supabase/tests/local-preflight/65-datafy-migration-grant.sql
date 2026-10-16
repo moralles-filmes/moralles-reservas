@@ -1,13 +1,13 @@
 -- Migração de loja em produção para o oficial: migration
--- 20261016120000_datafy_migration_grant.sql (liberação de migração presa ao
+-- 20261016140200_datafy_migration_grant.sql (liberação de migração presa ao
 -- binding, autoridade SQL única e ativação retida). Somente banco descartável.
 --
 -- SEQUÊNCIA (mesmo banco do 62/63; seção "Datafy — migração de loja em
 -- produção (65)" no README):
 --   00 -> 00a -> 61a -> 20261014120000 -> 62a -> 63a -> 20261014170540
 --   -> 65a -> 65 (esperado: ERROR pela guarda, o RED)
---   -> 20261016120000 -> 65 (M10 PENDENTE)
---   -> 20261016120000 x2 -> 65 (M10 OK)
+--   -> 20261016140200 -> 65 (M10 PENDENTE)
+--   -> 20261016140200 x2 -> 65 (M10 OK)
 --
 -- O QUE ESTE ARQUIVO PROVA:
 --   M1  liberação inserida com `replaces_channel_id` forjado (aleatório, NULL,
@@ -76,7 +76,7 @@ begin
                   where attrelid = to_regclass('public.whatsapp_official_connection_grants')
                     and attname = 'replaces_channel_id' and not attisdropped)
      or to_regprocedure('public.whatsapp_official_connection_grants_migration_pin()') is null then
-    raise exception '65 exige a migration 20261016120000 aplicada (coluna replaces_channel_id ou trigger de pin ausente).';
+    raise exception '65 exige a migration 20261016140200 aplicada (coluna replaces_channel_id ou trigger de pin ausente).';
   end if;
   if to_regclass('public.t_snap065') is null then
     raise exception '65 exige o 65a-datafy-migration-bootstrap.sql aplicado ANTES da migration (t_snap065 ausente).';

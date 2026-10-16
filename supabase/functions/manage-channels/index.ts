@@ -54,6 +54,7 @@ import {
 } from "../_shared/whatsapp-channel-lifecycle-core.ts";
 import { assertProvisioningAllowed } from "../_shared/whatsapp-instance-core.ts";
 import { genRequestId, jsonLog } from "../_shared/security.ts";
+import { detachChannelReferences, isUuid } from "../_shared/whatsapp-channel-delete-core.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -2041,6 +2042,42 @@ serve(async (req) => {
     if (action === "delete") {
       const channelId = String(body.channel_id ?? "");
       if (!channelId) return jsonResponse(req, { error: "channel_id é obrigatório." }, 400);
+      if (!isUuid(channelId) || !isUuid(unitId)) {
+        return jsonResponse(req, { error: "channel_id ou unit_id inválido." }, 400);
+      }
+
+      // Desvincula o histórico em lotes ANTES do DELETE: o `set null` da FK num
+      // comando só estoura os 8 s do PostgREST em canal com muito histórico.
+      const detach = await detachChannelReferences(async (limit) => {
+        const { data, error } = await supabase.rpc("detach_whatsapp_channel_references", {
+          p_channel_id: channelId,
+          p_unit_id: unitId,
+          p_limit: limit,
+        });
+        if (error) throw error;
+        return data;
+      });
+      if (detach.ok === false) {
+        jsonLog("error", {
+          evt: "channel_delete_detach_failed",
+          requestId,
+          unitId,
+          channelId,
+          reason: detach.reason,
+          detached: detach.detached,
+          batches: detach.batches,
+          code: (detach.error as { code?: unknown } | undefined)?.code ?? null,
+          message: (detach.error as { message?: unknown } | undefined)?.message ?? null,
+        });
+        if (detach.reason === "budget_exhausted") {
+          return jsonResponse(
+            req,
+            { error: "O histórico do canal ainda está sendo desvinculado. Tente remover de novo em instantes." },
+            503,
+          );
+        }
+        return jsonResponse(req, { error: "Falha ao remover canal." }, 500);
+      }
 
       const { error: delErr } = await supabase
         .from("whatsapp_channels")
@@ -2052,6 +2089,7 @@ serve(async (req) => {
         console.error("manage-channels:delete", delErr);
         return jsonResponse(req, { error: "Falha ao remover canal." }, 500);
       }
+      jsonLog("info", { evt: "channel_deleted", requestId, unitId, channelId, detached: detach.detached, batches: detach.batches });
       return jsonResponse(req, { success: true });
     }
 

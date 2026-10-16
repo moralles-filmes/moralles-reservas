@@ -1944,7 +1944,7 @@ Encerre o cluster ao terminar. Em produção a migration segue somente `supabase
 
 ### Datafy — migração de loja em produção (65)
 
-Migration `20261016120000_datafy_migration_grant.sql` (spec
+Migration `20261016140200_datafy_migration_grant.sql` (spec
 `2026-10-16-datafy-migracao-loja-em-producao-design.md` §5.1–§5.3): liberação
 de migração presa pelo servidor ao binding de outro provider, autoridade
 `assert_datafy_first_configuration` que a aceita e finalizador que só pede
@@ -1985,10 +1985,10 @@ P -f $H/65a-datafy-migration-bootstrap.sql
 # ausentes). É o RED: rodado antes, as recusas de M4/M8 passariam POR ACIDENTE.
 P -f $H/65-datafy-migration-grant.sql            # esperado: ERROR
 
-P -f $M/20261016120000_datafy_migration_grant.sql
+P -f $M/20261016140200_datafy_migration_grant.sql
 P -f $H/65-datafy-migration-grant.sql            # M10 PENDENTE + M1..M9, M11..M16 + CTRL-a..e OK
-P -f $M/20261016120000_datafy_migration_grant.sql
-P -f $M/20261016120000_datafy_migration_grant.sql
+P -f $M/20261016140200_datafy_migration_grant.sql
+P -f $M/20261016140200_datafy_migration_grant.sql
 P -f $H/65-datafy-migration-grant.sql            # M10 OK + M1..M9, M11..M16 + CTRL-a..e OK
 
 # Regressão: 62 e 63 continuam verdes com a migration nova (o 63 cobre a
@@ -2015,8 +2015,8 @@ assinatura no schema final e reaplique a nova duas vezes:
 ```bash
 P -c "delete from t_snap061 where k='assinatura';"
 P -f $H/61-datafy-partner-onboarding.sql            # C14 PENDENTE, 30 OK
-P -f $M/20261016120000_datafy_migration_grant.sql
-P -f $M/20261016120000_datafy_migration_grant.sql
+P -f $M/20261016140200_datafy_migration_grant.sql
+P -f $M/20261016140200_datafy_migration_grant.sql
 P -f $H/61-datafy-partner-onboarding.sql            # 31 OK
 ```
 
@@ -2210,6 +2210,16 @@ e banco55452. Resolver instalação não substitui os guards de pipe/labels/conf
 quarentena ou allowlist HTTP de cada gate. Somente ROOT lê
 `secrets/local-status.json` gerado pelo próprio stack, em memória e após os guards.
 Nunca reutilize chaves ou runtime de outro plano para preencher esse diretório.
+
+### Remoção de canal em lotes (65)
+
+A migration `20261016140000_whatsapp_channel_delete_detach.sql` cria a RPC `detach_whatsapp_channel_references`, que faz em lotes o `set null` que o `DELETE` do canal faria num comando só (e que estourava os 8 s do PostgREST). Em cluster PostgreSQL descartável vazio, sem pg_net/pg_cron, rode a migration duas vezes (idempotência) e os casos:
+
+```powershell
+& 'C:/Program Files/PostgreSQL/18/bin/psql.exe' -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 55465 -U postgres -d postgres -f supabase/tests/local-preflight/65a-channel-delete-detach-bootstrap.sql -f supabase/migrations/20261016140000_whatsapp_channel_delete_detach.sql -f supabase/migrations/20261016140000_whatsapp_channel_delete_detach.sql -f supabase/tests/local-preflight/65-channel-delete-detach.sql
+```
+
+DETACH-1 (lotes até zerar, só `set null`, nada apagado), DETACH-2 (canal de outra unidade ou inexistente devolve 0 sem tocar nada), DETACH-3 (canal vizinho intacto), DETACH-4 (DELETE posterior preserva o histórico), DETACH-5 (nulos → `22023`), DETACH-6 (limite grampeado), DETACH-7 (notificação das últimas 24 h sem recibo continua vinculada até o DELETE, e só a FK a solta), ACL-65 (só `service_role`, `SECURITY DEFINER`, `search_path` vazio) e IDX-65. CONTROLE-65 tira a guarda `unit_id = p_unit_id` do corpo real e exige que o canal alheio passe a ser desvinculado, depois reverte por savepoint; CONTROLE-65b neutraliza o filtro de pendente recente e exige que DETACH-7 perceba. O agendamento da purga (`20261016140100`) depende de `pg_cron` e não roda aqui.
 
 ### 67 — Fato de cancelamento (Fase 3, Task 3.2)
 
