@@ -1424,9 +1424,18 @@ serve(async (req) => {
 
       const row = (Array.isArray(rpc) ? rpc[0] : rpc) as { outcome?: unknown } | undefined;
       const res = deleteInstanceOutcomeResponse(row?.outcome);
-      jsonLog(res.status === 200 ? "info" : "warn", {
-        reqId, evt: "wa_instance_delete", instanceId: id, outcome: row?.outcome ?? null,
-      });
+      // 500 aqui = desfecho fora do contrato da RPC (resposta vazia, RPC
+      // alterada): é defeito que exige ação do admin, não recusa de negócio.
+      if (res.status === 500) {
+        jsonLog("error", {
+          reqId, evt: "wa_instance_delete_unexpected_outcome", instanceId: id,
+          outcome: row?.outcome ?? null, needsAdminAction: true,
+        });
+      } else {
+        jsonLog(res.status === 200 ? "info" : "warn", {
+          reqId, evt: "wa_instance_delete", instanceId: id, outcome: row?.outcome ?? null,
+        });
+      }
       return jsonResponse(req, res.body, res.status);
     }
 

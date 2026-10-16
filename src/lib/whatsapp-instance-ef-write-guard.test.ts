@@ -164,6 +164,13 @@ describe("delete_instance — a única porta que apaga instância", () => {
     expect(bloco).toMatch(/deleteInstanceOutcomeResponse\(/);
   });
 
+  it("desfecho fora do contrato (500) é log de erro com needsAdminAction, não warn", () => {
+    // Um ponto é o erro da RPC; o outro, o desfecho inesperado. Sem o segundo,
+    // `outcome` ausente/desconhecido saía como `warn` e escondia o defeito.
+    expect(bloco.match(/needsAdminAction:\s*true/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(bloco).toMatch(/wa_instance_delete_unexpected_outcome/);
+  });
+
   it("nenhum ponto da EF apaga instância direto pela tabela", () => {
     expect(src).not.toMatch(/from\(\s*["'`]whatsapp_instances["'`]\s*\)\s*\.delete\(/);
   });
