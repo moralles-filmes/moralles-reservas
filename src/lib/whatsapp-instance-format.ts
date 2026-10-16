@@ -107,6 +107,7 @@ const NOTE_ACTION_LABEL: Record<(typeof INSTANCE_NOTE_ACTIONS)[number], string> 
   REQUEST_CANCELLATION: "cancelamento solicitado",
   CONFIRM_END: "encerramento confirmado",
   CORRECT_CYCLE_COST: "custo de ciclo corrigido",
+  DELETE: "instância apagada",
 };
 
 export function instanceNoteActionLabel(action: string): string {

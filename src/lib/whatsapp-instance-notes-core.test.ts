@@ -8,7 +8,7 @@
  * silêncio. Mesmo padrão do teste bidirecional dos `event_type` da Fase 6b.
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   INSTANCE_NOTE_ACTIONS,
@@ -24,28 +24,24 @@ const MIGRATION = join(
   "20260803120000_096_whatsapp_instance_notes.sql",
 );
 
-const MIGRATION_104 = join(
-  __dirname,
-  "..",
-  "..",
-  "supabase",
-  "migrations",
-  "20260807100000_104_whatsapp_cycle_cost_and_end.sql",
-);
+const MIGRATIONS_DIR = join(__dirname, "..", "..", "supabase", "migrations");
 
 /**
- * Os valores do CHECK **EFETIVO** de `action`, e nao os da 096 isolada.
- *
- * A 104 faz `drop constraint if exists` + `add constraint` com a lista
- * estendida: depois de aplicada, o CHECK que o banco tem e o DELA. Ler so a
- * 096 fixaria o teste numa foto anterior a migration seguinte — e o proximo
- * valor novo passaria a exigir editar a 096, que e migration aplicada e nao se
- * reescreve.
+ * Os valores do CHECK **EFETIVO** de `action`: o do ÚLTIMO arquivo de migration
+ * (ordem de nome = ordem de aplicação) que faz `add constraint
+ * whatsapp_instance_notes_action_check`. A 104 e a 20261015223000 fazem
+ * `drop constraint if exists` + `add constraint`; fixar o teste numa delas
+ * deixaria a próxima ação nova sem cobertura.
  */
 function actionsInMigrationCheck(): string[] {
-  const sql104 = readFileSync(MIGRATION_104, "utf8");
-  const m104 = sql104.match(/add\s+constraint\s+whatsapp_instance_notes_action_check\s+check\s*\(\s*action\s+in\s*\(([^)]*)\)/i);
-  if (m104) return Array.from(m104[1].matchAll(/'([A-Z_]+)'/g)).map((x) => x[1]);
+  const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
+  let last: string[] | null = null;
+  for (const file of files) {
+    const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
+    const m = sql.match(/add\s+constraint\s+whatsapp_instance_notes_action_check\s+check\s*\(\s*action\s+in\s*\(([^)]*)\)/i);
+    if (m) last = Array.from(m[1].matchAll(/'([A-Z_]+)'/g)).map((x) => x[1]);
+  }
+  if (last) return last;
 
   const sql = readFileSync(MIGRATION, "utf8");
   const m = sql.match(/action\s+text\s+not\s+null\s+check\s*\(\s*action\s+in\s*\(([^)]*)\)/i);
@@ -98,7 +94,7 @@ function raisesForInstanceIdTransition(oldId: string | null, newId: string | nul
 }
 
 describe("INSTANCE_NOTE_ACTIONS", () => {
-  it("tem as sete ações que mudam a instância mais a correção de ciclo passado", () => {
+  it("tem as sete ações que mudam a instância, a correção de ciclo passado e a exclusão", () => {
     expect([...INSTANCE_NOTE_ACTIONS]).toEqual([
       "REGISTER",
       "UPDATE",
@@ -108,6 +104,7 @@ describe("INSTANCE_NOTE_ACTIONS", () => {
       "REQUEST_CANCELLATION",
       "CONFIRM_END",
       "CORRECT_CYCLE_COST",
+      "DELETE",
     ]);
   });
 

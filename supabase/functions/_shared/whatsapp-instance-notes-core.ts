@@ -12,6 +12,11 @@
 // alterar custo ja gravado, e o lugar onde alguem procura por isso e a linha do
 // tempo da instancia.
 //
+// A NONA, `DELETE`, e gravada so pela RPC `delete_whatsapp_instance_without_cost`
+// (migration 20261015223000), na mesma transacao que apaga a instancia. Ela fica
+// com `instance_id` nulo e `instance_ref` intacto: e o registro de quem apagou o
+// que, e por que.
+//
 // `acknowledge_alert` e `resolve_alert` ficam de FORA de propósito — elas
 // também pedem motivo, mas escrevem no ledger de ALERTAS, que já guarda uma
 // linha por alerta. Duplicar aqui misturaria dois assuntos na mesma linha do
@@ -26,6 +31,7 @@ export const INSTANCE_NOTE_ACTIONS = [
   "REQUEST_CANCELLATION",
   "CONFIRM_END",
   "CORRECT_CYCLE_COST",
+  "DELETE",
 ] as const;
 
 export type InstanceNoteAction = (typeof INSTANCE_NOTE_ACTIONS)[number];
