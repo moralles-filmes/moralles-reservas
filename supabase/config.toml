@@ -198,3 +198,7 @@ verify_jwt = false
 # Current getUser authentication and genuine caller JWT SQL authorization.
 [functions.manage-whatsapp-templates]
 verify_jwt = false
+
+# Temporary Phase 5 gateway probe. Access is restricted by x-internal-key in the function.
+[functions.cf-connecting-ip-gateway-probe]
+verify_jwt = false
