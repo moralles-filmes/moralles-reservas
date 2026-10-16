@@ -2339,3 +2339,44 @@ de cinco; o runner restaura a migration em `finally`. O bootstrap projeta o
 schema/ACL herdado, inclusive `ENABLE RLS` sem `FORCE` em
 `rate_limit_events`; não substitui auditoria de ACL/RLS, gateway e cabeçalho
 `CF-Connecting-IP` no ambiente hospedado.
+
+### 70 — FORCE RLS nas cinco tabelas operacionais (Fase 5, Task 5.1)
+
+Em PostgreSQL Supabase **descartável e exclusivo**, aplique `69a` (base de
+`waitlist`/`rate_limit_events`), `70a-force-rls-bootstrap.sql` (projeção das
+outras três tabelas, policies de forma equivalente e dono sem `BYPASSRLS`), a
+migration real `20261017173000_public_waitlist_serial_rate_limit.sql` e
+`70b-force-rls-before.sql`, nesta ordem. Depois aplique a migration real
+`20261017180000_force_rls_operational_baseline.sql` três vezes, executando
+`70-force-rls.sql` após cada aplicação. Cada migration roda **crua, sem
+`psql -1`**; `ON_ERROR_STOP=1` é obrigatório. O 70 termina em `ROLLBACK`.
+Use somente contêiner cuja imagem seja
+`public.ecr.aws/supabase/postgres:17.11.0.004`, com `--network none` e sem
+portas publicadas; confirme imagem/isolamento antes do SQL. Não usar stack
+vinculado nem banco de produção; remova o contêiner próprio ao fim.
+
+O `70b` comprova `ENABLE` sem `FORCE`, papel dono com `rolbypassrls=false`,
+`service_role` com `rolbypassrls=true` e owner vendo linhas nas cinco tabelas
+antes da migration e atualizando `rate_limit_events` sem policy. O 70 confirma
+`FORCE` nas cinco, owner vendo zero e atualizando zero linhas,
+`service_role` lendo todas, ACL de tabela/coluna e policies idênticas ao
+snapshot, entrada anônima de reserva ainda aceita, `INSERT`/`EXECUTE` anônimos
+da fila fechados, membro/admin/outsider por unidade e handoff de conversa na
+projeção. Executa as RPCs **reais da 173000** `enter_public_waitlist` e
+`check_public_waitlist_rate_limit` (cinco aceites e sexta recusa). Um controle
+positivo desliga `FORCE` nas cinco dentro da transação, observa o dono voltar
+a ver linhas e atualizar uma, depois restaura `FORCE` antes do `ROLLBACK`.
+
+Medição local descartável com `psql \timing` na primeira aplicação da 180000,
+sem concorrência: `BEGIN` 0,229 ms; `SET LOCAL` 0,328 ms; `ALTER TABLE` em
+`reservations` 3,862 ms, `waitlist` 1,615 ms, `conversations` 1,513 ms,
+`notifications_sent` 0,670 ms, `rate_limit_events` 0,357 ms; `COMMIT`
+2,539 ms (11,113 ms somados). O tempo de cada `ALTER` inclui a aquisição
+local do lock, mas não estima espera sob tráfego real.
+
+**Limites:** a projeção do 70 não reproduz as policies históricas completas,
+JWT/PostgREST, todos os triggers, RPCs de reserva/consentimento/conversa,
+`check_rate_limit` antigo, concorrência ou estado do alvo. O `enter_waitlist`
+da base 69a é um stub, portanto o teste do wrapper não prova membership real
+do painel. Reexecutar os pré-voos próprios 61–69 e auditar owner/ACL/policies/
+`BYPASSRLS` efetivos antes de qualquer rollout; gate vermelho continua NO-GO.
