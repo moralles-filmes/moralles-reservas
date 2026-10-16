@@ -42,3 +42,15 @@ Apagar instância com custo, apagar não encerrada, tela de histórico de instâ
 `supabase db push` da migration **antes** do deploy de `manage-whatsapp-instances` (sem a RPC e sem `DELETE` no CHECK, `delete_instance` responde 500; `list_instances` não depende da migration). Frontend sobe com o merge em `main`; botão só aparece quando a EF já devolve `has_cost_history`.
 
 Redeploy: só `manage-whatsapp-instances` (consome o núcleo novo por valor; `whatsapp-instance-notes-core.ts` entra nela só como `import type`). Medir por fecho de imports antes do deploy, não pelo checklist.
+
+## Adendo — `audit_log` deixa de mostrar dado da plataforma ao cliente
+
+Decidido pelo dono em conversa, na mesma entrega ("corrigir junto").
+
+**Achado (gates saas-shield, conferido em produção só com leitura):** a policy `unit_member_read_audit` de `audit_log` libera SELECT a qualquer membro da organização (`is_org_member`) ou da unidade. O trigger `audit_trigger_func` grava a linha inteira (`to_jsonb`) de `whatsapp_instances` (087), `whatsapp_implementations` (071) e `organization_entitlement_overrides`, com `organization_id`. Em produção: 116 linhas de instâncias (44 da organização do Ren Sushi), 5 de implantações e 11 de overrides, com `current_monthly_cost_cents`, `cost_note`, `notes`, `cancellation_reason`, `end_confirmation_note`, `amount_cents` e `reason`; nenhuma credencial. A tela Gestão → Auditoria (`useAuditLog`) lista sem filtro de tabela, então o dono e o gerente veem essas linhas. A 096 já registrava o risco e por isso não usou `audit_log`; a 087 pendurou o trigger mesmo assim.
+
+**Decisão:** a policy de membro passa a ler só uma lista explícita de tabelas — `customers`, `reservations`, `unit_members`, exatamente as que a tela de Auditoria do cliente rotula (`TABLE_LABEL`). Tabela auditada nova nasce invisível para o cliente. `platform_admin_read_audit` não muda. O trigger e as linhas existentes não mudam: a trilha continua, só deixa de chegar a quem não deve.
+
+**Testes:** harness com membro da organização vendo as três tabelas e não vendo as três da plataforma, membro de outra organização sem nada, platform admin vendo tudo, e controle positivo com a policy antiga (o vazamento reaparece). Vitest: a policy efetiva (último arquivo de migration que a define) tem a lista, e a lista é igual às chaves de `TABLE_LABEL`. Pós-deploy, sonda em transação somente leitura com o papel `authenticated` e o JWT de um membro real.
+
+**Ordem:** migration por `supabase db push`, junto com a da exclusão; não depende de Edge Function.
