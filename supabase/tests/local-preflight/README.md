@@ -63,6 +63,7 @@ presentes agendaria jobs apontando para lá.
 | `61b-concorrencia-datafy-onboarding.sh` | O CLIQUE DUPLO com DUAS sessões reais (Git Bash; `PGBIN`, `PGPORT`, `PGDB`). CONC-61-1: A segura o claim, B espera e recebe `claimed = f` sem cerca; CONC-61-2: controle de tempo; CONC-61-3: **controle positivo** — claim sem `for update`, os DOIS levam; restaura reaplicando a migration e confere o `md5`. Roda no banco do `61`, depois dele. |
 | `65-instance-delete.sql` | DEL-1..8 (ordinais 301–308, migration `20261015223000`): a RPC `delete_whatsapp_instance_without_cost`. Encerrada sem custo é apagada com o ciclo em cascata, as notas (inclusive a `DELETE` nova) ficam com `instance_id` nulo e `instance_ref` intacto, e o `audit_log` grava o DELETE; custo atual, custo só em ciclo, estado não encerrado, id inexistente e motivo vazio são recusados sem apagar; ACL só `service_role`; migration aplicada duas vezes sem duplicar. Roda no banco `fase6c` da sequência base. |
 | `66-controles-instance-delete.sql` | CONTROLE-DEL-1/2 (ordinais 311–312): tira do corpo real a checagem de custo em ciclo e depois a de estado, vê a instância de DEL-3/DEL-4 ser apagada, e desfaz a sabotagem por rollback de subbloco — sem reapply. Rodar sem `ON_ERROR_STOP`. |
+| `67-audit-log-member-allowlist.sql` | AUD-1..5 e CONTROLE-AUD-1 (ordinais 321–325 e 331, migration `20261015233000`): a policy `unit_member_read_audit` de `audit_log` com lista de tabelas. Membro da org lê `customers`/`reservations`/`unit_members` (pelas duas pernas, unidade e organização) e não lê `whatsapp_instances`/`whatsapp_implementations`/`organization_entitlement_overrides`; membro de outra org não lê nada da org A; platform admin lê as seis; migration aplicada duas vezes deixa uma policy. O controle recria a policy antiga num subbloco desfeito e vê o vazamento reaparecer. RLS de verdade (`set local role authenticated` + `request.jwt.claims`), banco **`aud67`** da sequência do advisor (00 → 01 → 09a → 106). O arquivo monta o estado de produção anterior à migration e a aplica (`\i`, duas vezes): rodar da raiz do repo. |
 
 ## Rodar
 
@@ -1961,6 +1962,41 @@ P -c "select count(*) from t_res where ord between 301 and 312;"   # esperado: 1
 Linha ausente também é falha: um `DO` que aborta no meio não grava linha, e olhar só `veredito <> 'PASSOU'` não mostra ausência. A contagem tem de dar 10 (301–308 do 65 e 311–312 do 66).
 
 O que NÃO prova: o caminho PostgREST/Edge Function (`delete_instance`) — esse é coberto pelo guardrail textual de `src/lib/whatsapp-instance-ef-write-guard.test.ts` e pelo teste da tela.
+
+### audit_log: leitura de membro por lista (67)
+
+Banco próprio, sequência do advisor até a 106 — é a única base com
+`app_private.is_unit_member/is_org_member/is_platform_admin`, `unit_members`,
+`platform_admins` e o `audit_log` de produção; o `fase6c` não tem `app_private`.
+O `67` liga a RLS do `audit_log` e recria as duas policies no estado de produção
+anterior à migration (a base não tem nenhuma), prova que a policy antiga VAZA
+(guarda de RED: aborta se o membro não enxergar as 3 linhas de plataforma),
+aplica a migration duas vezes por `\i` e mede os casos. Por isso roda **da raiz
+do repo** e pode ser repetido no mesmo banco.
+
+```bash
+export PGCLIENTENCODING=UTF8
+PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists aud67
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres aud67
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d aud67 -v ON_ERROR_STOP=1 "$@"; }
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/01-audit.sql
+P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
+P -f supabase/tests/local-preflight/67-audit-log-member-allowlist.sql
+P -c "select ord, caso, veredito from t_res where ord between 321 and 331 order by ord;"
+P -c "select count(*) from t_res where ord between 321 and 331;"   # esperado: 6
+```
+
+Linha ausente também é falha: confira a contagem (321–325 e 331 = 6), não só
+`veredito <> 'PASSOU'`. Os ordinais 326–330 ficam livres.
+
+O que NÃO prova: o caminho PostgREST (JWT real do GoTrue, `select` do
+`useAuditLog` pela API) — o papel e o JWT são simulados no SQL. A sonda pós-deploy
+(transação somente leitura, papel `authenticated`, JWT de um membro real) cobre
+essa metade. O acoplamento lista da policy ⇄ `TABLE_LABEL` de
+`src/pages/gestao/Auditoria.tsx` é de `scripts/audit-log-member-policy.test.ts`.
 
 ### Portabilidade do runtime histórico 25–60
 

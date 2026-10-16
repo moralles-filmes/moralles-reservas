@@ -11,7 +11,9 @@ export interface AuditLogFilters {
 
 // audit_log popula unit_id apenas para reservations e organization_id apenas para customers.
 // Filtrar pelos dois cobre os dois tipos; RLS (is_unit_member + is_org_member) é a
-// camada de segurança real e impede vazamento cross-tenant.
+// camada de segurança real e impede vazamento cross-tenant. A policy de membro
+// também restringe às tabelas do TABLE_LABEL de Auditoria.tsx (customers,
+// reservations, unit_members); tabela nova só aparece aqui se a policy e o rótulo mudarem juntos.
 export function useAuditLog(
   unitId: string,
   organizationId: string,
