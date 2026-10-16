@@ -170,15 +170,14 @@ describe("paridade de conversas entre providers WhatsApp", () => {
     expect(webhookRetryWriter()).toContain("attempt < 2");
   });
 
-  it("documenta o gate permanente nos dois manuais do repositório", () => {
-    const claude = read("CLAUDE.md");
-    const agents = read("AGENTS.md");
-    for (const doc of [claude, agents]) {
-      expect(doc).toContain("Meta");
-      expect(doc).toContain("Coexistence");
-      expect(doc).toContain("message.any");
-      expect(doc).toContain("wasSentByApi");
-    }
+  it("documenta o gate permanente na regra de WhatsApp, indexada pelo AGENTS.md", () => {
+    const rule = read(".claude/rules/whatsapp.md");
+    expect(rule).toContain("Meta");
+    expect(rule).toContain("Coexistence");
+    expect(rule).toContain("message.any");
+    expect(rule).toContain("wasSentByApi");
+    expect(read("AGENTS.md")).toContain(".claude/rules/whatsapp.md");
+    expect(read("CLAUDE.md")).toContain("@AGENTS.md");
   });
 });
 
