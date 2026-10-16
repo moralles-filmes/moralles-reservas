@@ -795,6 +795,7 @@ function WaitlistCTA({
         </DialogHeader>
         <WaitlistFormPublic
           unitId={unit.id}
+          unitName={unit.name}
           priorityEnabled={settings.waitlist_priority_enabled !== false}
           onClose={() => setOpen(false)}
         />

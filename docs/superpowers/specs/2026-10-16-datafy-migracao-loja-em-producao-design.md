@@ -202,6 +202,7 @@ Sem intenção, o eco nunca ativa: o webhook já exige intenção para chamar `a
   - A entrada passa a ir por uma Edge Function pública nova, que chama `enter_waitlist`, resolve o cliente por `resolveOrCreateCustomer` e grava o opt-in pela mesma RPC.
   - **Mudança de produto:** quem entra na fila pública passa a ganhar cadastro de cliente, como já acontece na reserva. É isso que permite o feedback da fila.
   - A Edge Function herda as guardas do `enter_waitlist` anônimo (unidade e org públicas) e tem rate limit por IP.
+  - **Nota de implementação de segurança:** a RPC e a policy de `INSERT` anônimas diretas permitiriam contornar a Edge Function e seu rate limit. A migration fecha esses caminhos para `anon`; uma RPC exclusiva de `service_role`, chamada pela Edge Function, mantém a verificação pública sob locks até a inserção atômica. O painel autenticado conserva sua RPC. O rate limit da Edge Function é serializado por unidade/IP para impedir corrida de requisições paralelas.
 - **Cadastro do cliente (Clientes):** mostra o status de ofertas por unidade (`consent_snapshot`) para owner e gerente.
   - O registro manual continua na tela de Giftback, com as três origens atuais.
 - **Precedência:** `do_not_contact=true` continua acima de tudo, e o link de preferência continua sendo o descadastro.

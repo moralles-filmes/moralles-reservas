@@ -454,24 +454,69 @@ Arquivos: núcleo puro novo em `_shared/`, `send-manual-message/index.ts`, `src/
 
 ## Fase 4 — Opt-in de marketing
 
-Escopo da spec §8. Detalhar no início do chat.
+Escopo da spec §8. Cada task usa implementer, review de spec e review de qualidade, com correção dos achados antes da próxima task. O fluxo público nunca cria consentimento por omissão: só `marketing_opt_in === true` registra `opt_in`. Falha do registro é observável e não desfaz uma reserva ou entrada de fila já persistida.
 
-- [ ] Migration: RPC `record_public_promotional_opt_in(p_unit_id, p_customer_id, p_reference)`:
-  - `service_role` apenas;
-  - `opt_in` promocional, origem `public_form`;
-  - unidade pública; cliente vivo da mesma organização;
-  - referência validada.
-  - Revoke a public, anon e authenticated.
-- [ ] `create-reservation`: campo `marketing_opt_in` (boolean estrito, `=== true`); grava o evento após criar a reserva; falha de gravação não derruba a reserva (log + métrica).
-- [ ] EF pública nova da fila:
-  - `enter_waitlist` + `resolveOrCreateCustomer` + opt-in;
-  - origem e CORS como `create-reservation`;
-  - rate limit por IP;
-  - entrada `verify_jwt=false` no `config.toml`.
-  - O frontend da fila pública passa a usá-la.
-- [ ] Wizard (`StepGuestInfo`), widget e `WaitlistFormPublic`: checkbox desmarcado com a copy da spec. Zod: `boolean().default(false)`.
-- [ ] Clientes: status de ofertas por unidade (owner/gerente) via `consent_snapshot`.
-- [ ] Pré-voo 68 (RPC + ACL + controles; o 67 cobre o fato de cancelamento da Fase 3); testes de EF/núcleo; gates; checkpoint e handoff.
+### Task 4.1 — Autoridade SQL do consentimento público
+
+Arquivo: migration nova criada com `supabase migration new`, depois de `20261017160000`. Basear guardas, lock do cliente, revisão e auditoria em `record_whatsapp_message_consent` da `20261009153435`, sem ampliar a ACL dessa RPC de gestão.
+
+- [x] Criar `public.record_public_promotional_opt_in(p_unit_id uuid, p_customer_id uuid, p_reference text)` com `security definer` e `set search_path=''`, retornando a revisão inserida.
+- [x] Guardar na função: unidade `is_public=true`, organização pública, cliente vivo (`deleted_at is null`) na mesma organização, referência não vazia e limitada, sem caracteres de controle nem token/link de preferências. Recurso ausente e alheio recebem a mesma recusa sem oráculo.
+- [x] Aceitar somente referências geradas pelo servidor para reserva/fila (`reservation:<uuid>;form:v1` ou `waitlist:<uuid>;form:v1`) e conferir que o recurso citado pertence à unidade e ao cliente; nunca confiar só no prefixo recebido.
+- [x] Inserir somente `purpose='promotional'`, `decision='opt_in'`, `source_code='public_form'`, `actor_id=null`, `observed_at` do servidor; manter revisão append-only e audit_log sem telefone ou segredo.
+- [x] Sob o lock do cliente, repetir a mesma referência `public_form` devolve a revisão original sem novo insert/audit: um retry depois de opt-out não pode reativar ofertas. Uma nova reserva/entrada pode registrar nova escolha.
+- [x] `revoke all` da assinatura completa para `public, anon, authenticated, service_role`; `grant execute` somente a `service_role`. Aplicar duas vezes no pré-voo para provar idempotência/ACL.
+
+### Task 4.2 — Pré-voo SQL 68
+
+Arquivos: `supabase/tests/local-preflight/68-*` e README. Usar cluster PostgreSQL Supabase descartável e isolado, na cadeia de bootstrap documentada; não consultar nem modificar o banco de produção.
+
+- [x] Casos verdes: reserva e fila válidas geram revisão/linha promocional com `public_form`, ator nulo e audit_log; opt-out anterior permanece no histórico; vínculo de unidade/cliente/recurso correto.
+- [x] Casos de recusa: unidade/org privadas, cliente apagado ou de outra organização, recurso ausente/alheio, tipo/referência forjados, referência vazia/controle/longa, papéis `anon`/`authenticated` sem EXECUTE.
+- [x] Controle positivo: enfraquecer uma guarda em transação revertida deve tornar ao menos um caso vermelho; conferir ACL antes/depois e reaplicar migration duas vezes.
+
+### Task 4.3 — Reserva pública
+
+Arquivos: `supabase/functions/create-reservation/index.ts` e testes de núcleo/contrato.
+
+- [x] Aceitar `marketing_opt_in` apenas quando o JSON contém boolean literal `true`; ausência, `false`, string e número não registram consentimento.
+- [x] Após sucesso de `reserveSlot`, chamar a RPC com `reservation:<reservationId>;form:v1` e o cliente resolvido. A falha de escrita produz log estruturado e métrica/evento sem PII; a resposta de reserva continua bem-sucedida.
+- [x] Cobrir sucesso, ausência de checkbox, falha da RPC e não criação de evento quando a reserva falha. Preservar validações atuais de unidade/organização e caução.
+
+### Task 4.4 — Entrada pública na fila por Edge Function
+
+Arquivos: EF pública nova, núcleo puro testável, `supabase/config.toml`, `src/hooks/useWaitlist.ts` e testes. A entrada autenticada do painel continua na RPC atual.
+
+- [x] Definir contrato POST/OPTIONS com CORS de `create-reservation`, `verify_jwt=false`, campos da fila estritamente validados e resposta compatível com o código/senha atual; não ecoar dados pessoais.
+- [x] Antes de escrever, resolver unidade e organização públicas do banco, conferir billing/estado aplicável e usar rate limit por IP serializado por chave na migration `20261017173000` (falha de leitura fecha). A EF usa `service_role`, mas o tenant vem da unidade resolvida, nunca de `organization_id` do body.
+- [x] Fechar caminhos diretos de `anon` (`EXECUTE` de `enter_waitlist`, `INSERT`/policy da tabela) e chamar a nova RPC de entrada pública executável só por `service_role`. Ela retém locks de unidade e organização públicas até o insert atômico de senha, reaproveitando a lógica de `enter_waitlist`; a entrada autenticada do painel permanece. Essa correção é necessária porque o cliente poderia chamar a RPC/tabela diretamente e contornar rate limit e cadastro da EF.
+- [x] Após sucesso, resolver/criar cliente por telefone canônico na organização com `service_role`, e ligar `waitlist.customer_id` por escrita com predicado de unidade e verificação da linha afetada.
+- [x] Só com `marketing_opt_in === true`, chamar a RPC da Task 4.1 com `waitlist:<id>;form:v1`. Falha pós-entrada (cadastro/vínculo/consentimento) fica observável, sem duplicar entrada nem afirmar consentimento; documentar resposta e retry operacional.
+- [x] Cobrir unidade/org privadas, rate limit, telefone inválido, entrada recusada, cadastro existente/novo, race de vínculo, opt-in literal e falhas parciais. O caminho público do hook passa pela EF; a operação interna mantém `enter_waitlist` direto.
+
+### Task 4.5 — Checkbox nos formulários
+
+Arquivos: `StepGuestInfo`, estado e envio de `useReservaWizard`, `WaitlistFormPublic` e testes de componentes/contrato. `/r/:slug` e `/w/:slug` compartilham o wizard.
+
+- [x] Checkbox individual desmarcado por padrão com a copy da spec §8 e nome da unidade escapado como texto; não confundir aceite de termos ou notificação operacional com marketing.
+- [x] Estado/Zod `boolean().default(false)` para fila; transportar boolean literal no payload da fila e da reserva; limpar/resetar ao reiniciar o formulário ou trocar de unidade.
+- [x] Testar os dois portais de reserva e a fila: padrão OFF, ON explícito, envio e ausência de opt-in após reset. Verificar acessibilidade do label e estado do checkbox.
+
+### Task 4.6 — Status em Clientes
+
+Arquivos: `src/pages/gestao/Clientes.tsx`, hook `consent_snapshot` existente e testes.
+
+- [x] No detalhe do cliente, para owner/gerente da unidade corrente, ler `promotional` via `consent_snapshot` e mostrar `opt_in`, `opt_out` ou desconhecido em linguagem clara; estados de loading/erro não parecem consentimento.
+- [x] Não criar ação de gravação nessa tela. O registro manual permanece em Giftback, com as três origens atuais.
+- [x] Testar troca de unidade/cliente sem estado antigo, autorização/visibilidade e falha da consulta.
+
+### Task 4.7 — Gates, documentação e checkpoint
+
+- [x] Reviews de spec/qualidade por task e review da branch inteira; corrigir todos os bloqueantes.
+- [x] Pré-voos 68 e 69 com controles positivos, incluindo concorrência e ACL efetiva da entrada/limite público; testes focados; `npm run typecheck`, suíte completa (excluindo só o `node:test` conhecido), `npm run lint`, `npm run build`, `git diff --check`; `deno check` se disponível.
+- [ ] Seis gates `saas-shield-br` (migration, RLS, tenant, identidade, integrações, segredos), guardas locais de `acl-estatico` e grafo de imports. Registrar separadamente o FAIL de baseline FORCE RLS herdado da Fase 3 e não fazer merge/deploy com gate vermelho.
+- [x] Atualizar regras de assunto e par `CLAUDE.md`/`AGENTS.md` apenas para invariantes futuros; matriz de deploy/runbook se necessário. Conferir `git status`, diff integral, staged integral e segredos; `git add` por caminho explícito; commit local.
+- [x] Marcar checkboxes concluídos, registrar comandos/resultados/desvios/limites em Evidências → Fase 4, atualizar memória e entregar prompt exato da Fase 5. Sem push, merge, `db push`, deploy ou chamada paga a provider.
 
 ## Fase 5 — Gates integrados e rollout
 
@@ -704,3 +749,25 @@ Implementada localmente em 2026-10-16, sem push, merge, `db push`, deploy ou cha
 **Limites:**
 - O legado de mesa pronta envia antes de persistir `notified`: concorrência ou falha após aceite pode repetir POST. `statusUpdated:false` expõe falha parcial; operador deve conferir recibo e provider antes de novo envio. O caminho gerenciado usa CAS antes do despacho.
 - O PostgreSQL local não prova a rede/provider nem concorrência real; `deno check`, `gitleaks`, `acl-estatico` remoto e auditoria do banco vivo não foram executados (ferramentas ausentes ou dependência de autorização/PR). `local-runtime-paths.test.mjs` é `node:test` e deve ser excluído do Vitest, como nas fases anteriores.
+
+### Fase 4
+
+Implementada localmente em 2026-10-16 na branch `feat/datafy-migracao-uazapi`, sem push, merge, `db push`, deploy ou chamada paga a provider. Migrations e EFs ficam para o rollout coordenado da Fase 5.
+
+**Entregue:**
+- Migration `20261017170000`: `record_public_promotional_opt_in` executável só por `service_role`, com cliente vivo, unidade/organização públicas, recurso de reserva/fila vinculado, revisão append-only e replay da mesma referência sem reativar opt-out posterior.
+- Migration `20261017173000`: entrada direta `anon` por RPC/tabela fechada; wrapper `enter_public_waitlist` exclusivo de serviço guarda unidade/organização públicas na transação da senha; limite de IP serializado por unidade/chave. A entrada autenticada do painel permanece. O adendo de segurança da spec explica a mudança de autoridade necessária para impedir o bypass da EF.
+- `create-reservation` aceita apenas `marketing_opt_in === true` após reserva persistida, limita a tentativa de consentimento a 2 s e registra falha sem PII, com ids de unidade/reserva. Como guard de serviço público, passa a recusar unidade/organização privadas e falhar fechado em leituras de escopo e limite.
+- `public-waitlist` valida entrada/telefone, deriva a organização da unidade, usa IP de `CF-Connecting-IP` com parse estrito e fail-closed, cria/vincula cliente após a senha atômica e registra opt-in literal. Falha posterior devolve a senha com aviso e log correlacionável, sem pedir novo envio. O hook público chama a EF; o painel continua na RPC autenticada.
+- Wizard `/r` e widget `/w`, fila pública e detalhe de Clientes ganharam checkbox individual OFF por padrão ou status promocional somente leitura, conforme a superfície. O runbook descreve a ordem de rollout e a reconciliação de falhas parciais.
+
+**Reviews e pré-voos:**
+- Implementer, review de spec e review de qualidade por Task 4.1–4.6; achados de replay após opt-out, fixtures privadas falsas, cabeçalho IP forjável, corrida do limitador, bypass anônimo e rastreio de falha parcial foram corrigidos. Rechecks das Tasks 4.3 e 4.4 e review independente da branch passaram, com ressalvas operacionais abaixo.
+- Pré-voo 68: migration aplicada três vezes em PostgreSQL Supabase 17.11 descartável, teste verde 3/3, controles positivos de vínculo/visibilidade e ACL efetiva. Pré-voo 69: migration aplicada três vezes, ACL efetiva de anon/authenticated/service_role, `INSERT` por tabela/coluna, guardas de unidade/org e controles positivos verdes 3/3. Sete sessões reais observaram espera por lock: **5/7** aceitas; o corpo inseguro count-then-insert do controle aceitou **7/7**. Contêineres próprios removidos; nenhuma conexão de produção.
+
+**Gates e limites:**
+- Guardas locais de `acl-estatico`/migration/advisor: 93/93; `node --test supabase/tests/local-preflight/local-runtime-paths.test.mjs`: 3/3. Grafo de import: `public-br-phone.ts` alcança só `public-waitlist`. `npm run typecheck`: 0 erros; `npm run lint`: 0 erros e 18 avisos de baseline; `npm run build`: ok; `git diff --check`: ok. Suíte integral com um worker, excluindo apenas o `node:test` conhecido: **3.581/3.581 testes, 145/145 arquivos**. A primeira tentativa em paralelo sofreu dois timeouts de testes antigos sob carga; a repetição serial fechou verde.
+- Gates `saas-shield-br` executados por revisão independente com contratos locais, pois o plugin nativo não está instalado neste Codex: migration-validator **PASS local**, tenant-isolation **PASS no diff**, identity-access **PASS local** (prova do gateway pendente), integration-reliability **PASS_WITH_WARNINGS**, secret-hunter **PASS no diff**, RLS **FAIL herdado**. O gate estrito exige `FORCE RLS`: além de `reservations`, `waitlist`, `conversations` e `notifications_sent` já documentadas na Fase 3, `rate_limit_events` também tem apenas `ENABLE RLS` nas migrations. O estado vivo ainda precisa de auditoria. **Não fazer merge ou deploy com esse gate vermelho.**
+- `supabase` CLI, `deno check` e `gitleaks` não estavam disponíveis; migrations foram criadas como arquivos locais, e `acl-estatico` remoto/ACL do banco vivo ficaram para a Fase 5. O 69 usa stub de `enter_waitlist`: prova ACL e wrapper isolados, mas não membership real do painel/PostgREST. Antes do corte, validar que o gateway hospedado fornece e sobrescreve `CF-Connecting-IP`; sua ausência fecharia a fila com 503. Revogar anon no banco antes do frontend novo causa uma janela de indisponibilidade do formulário antigo, que exige rollout coordenado. Nenhum destes pontos foi testado em produção nesta fase.
+
+**Checkpoint do commit:** `git status` confirmou só os 37 caminhos da Fase 4 staged, nenhum unstaged; `git diff --cached`/`--stat` revisados (2.233 linhas adicionadas, 68 removidas) e `git diff --cached --check` limpo. A varredura de todas as 2.233 linhas adicionadas staged pelos prefixos/atribuições/URLs de credenciais, headers e hex longo retornou zero candidatos; os 13 matches genéricos de `password`/`senha`/`secret`/`token` são texto de plano/runbook/UI, token negativo de fixture ou senha da fila. `service_role` aparece apenas como papel/identificador. Commit local sem push.

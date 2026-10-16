@@ -84,45 +84,53 @@ export interface AnonWaitlistInput {
   party_size: number;
   notes?: string | null;
   priority_category?: WaitlistPriorityCategory;
+  marketing_opt_in?: boolean;
 }
 
 /** Resposta do hook de inserção anônima — inclui o código gerado pra exibir
  *  na confirmação. */
 export interface AnonWaitlistResult {
   code: number | null;
-}
-
-/**
- * Resultado da RPC atômica `enter_waitlist`. Postgres retorna como array
- * (RETURNS TABLE) — pegamos o primeiro row.
- */
-interface EnterWaitlistRow {
-  waitlist_id: string;
-  code: number | null;
+  warning?: "registration_incomplete" | "consent_not_recorded";
 }
 
 export function useAnonAddToWaitlist(unitId: string) {
   return useMutation<AnonWaitlistResult, Error, AnonWaitlistInput>({
     mutationFn: async (payload) => {
-      // RPC atômica (mig 053) — advisory lock por unit + next_code + INSERT
-      // numa única transação. Elimina race do code entre clientes simultâneos.
-      const { data, error } = await supabase.rpc("enter_waitlist", {
-        p_unit_id: unitId,
-        p_customer_name: payload.customer_name,
-        p_customer_phone: payload.customer_phone,
-        p_party_size: payload.party_size,
-        p_notes: payload.notes ?? null,
-        p_priority_category: payload.priority_category ?? "normal",
+      const { data, error } = await supabase.functions.invoke("public-waitlist", {
+        body: { unit_id: unitId, ...payload, marketing_opt_in: payload.marketing_opt_in === true },
       });
       if (error) throw error;
-      const row = Array.isArray(data) ? (data[0] as EnterWaitlistRow | undefined) : null;
-      return { code: row?.code ?? null };
+      const result = data as { success?: boolean; code?: number; warning?: AnonWaitlistResult["warning"] } | null;
+      if (!result || result.success !== true || !Number.isInteger(result.code))
+        throw new Error("Não foi possível confirmar a entrada na fila.");
+      return { code: result.code!, warning: result.warning };
     },
-    onError: (err) => {
-      // Mensagem genérica — não vaza err.message do Supabase (RLS/schema/etc).
-      // Mas logamos o erro real no console pra debug em produção (DevTools).
-      console.error("[anon waitlist] failed:", err);
-      toast.error("Não foi possível entrar na fila. Tente novamente.");
+    onSuccess: (result) => {
+      if (result.warning === "registration_incomplete")
+        toast.warning("Sua entrada na fila foi confirmada, mas o cadastro precisa de conferência. Informe a senha ao restaurante; não envie o formulário novamente.");
+      else if (result.warning === "consent_not_recorded")
+        toast.warning("Sua entrada na fila foi confirmada, mas a autorização para ofertas não foi registrada. Informe a senha ao restaurante; não envie o formulário novamente.");
+    },
+    onError: async (err) => {
+      // A RPC pode ter feito commit antes de a resposta se perder. Nunca
+      // sugerir reenvio automático do formulário após falha incerta.
+      if (err instanceof FunctionsHttpError) {
+        const body = (await err.context.json().catch(() => null)) as { reason?: string } | null;
+        if (body?.reason === "rate_limited") {
+          toast.error("Muitas tentativas. Aguarde um instante antes de tentar novamente.");
+          return;
+        }
+        if (body?.reason === "invalid_input") {
+          toast.error("Confira os dados da fila e tente novamente.");
+          return;
+        }
+        if (body?.reason === "unit_unavailable") {
+          toast.error("Esta unidade não está aceitando entradas na fila.");
+          return;
+        }
+      }
+      toast.error("Não foi possível confirmar a entrada. Confira com o restaurante antes de enviar o formulário novamente.");
     },
   });
 }

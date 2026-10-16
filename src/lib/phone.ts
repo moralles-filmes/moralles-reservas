@@ -1,8 +1,8 @@
 // Validação de telefone brasileiro na ORIGEM (formato), pra barrar número
 // malformado antes de virar não-entrega de WhatsApp. Separado de formatPhone
-// (@/lib/utils), que é só exibição. Validação é frontend-only (ver Fase 3 do
-// plano / precedente do e-mail no CLAUDE.md): o backend continua lenient porque
-// o agente WhatsApp usa o telefone do próprio remetente.
+// (@/lib/utils), que é só exibição. O formulário público de fila valida o
+// telefone também na EF (public-br-phone.ts); os demais caminhos de backend
+// continuam lenient porque o agente WhatsApp usa o telefone do remetente.
 
 // DDDs válidos no Brasil (Plano Nacional de Numeração). Fora dessa lista é typo
 // (ex.: "01", "00", "20"). Set pra lookup O(1).

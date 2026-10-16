@@ -5,6 +5,8 @@ paths:
   - "**/*whatsapp_template*"
   - "**/*whatsapp_automation*"
   - "supabase/functions/manage-whatsapp-templates/**"
+  - "supabase/functions/public-waitlist/**"
+  - "supabase/functions/create-reservation/**"
   - "supabase/functions/send-scheduled-whatsapp/**"
   - "supabase/functions/process-whatsapp-templates/**"
   - "supabase/functions/process-whatsapp-automations/**"
@@ -16,6 +18,9 @@ paths:
   - "src/hooks/useWhatsappTemplates*"
   - "src/pages/public/PreferenciasMensagens*"
   - "src/pages/gestao/giftback/**"
+  - "src/components/reserva/**"
+  - "src/components/waitlist/**"
+  - "src/pages/gestao/Clientes.tsx"
 ---
 
 # Templates, automações e consentimento WhatsApp
@@ -31,6 +36,8 @@ paths:
 - **Dispatch fixa recurso/canal/provider/geração e usa claim SQL cercado antes de revalidar imediatamente antes do POST.** Posse, serviço, conexão, recurso/telefone, consentimento, template/hash/categoria, parâmetros e TTL atuais autorizam o envio; timeout após início vira uncertain, conserva slot promocional e impede takeover/retry de envio, enquanto aceite com falha local só repara notification/histórico/recibos por correlação completa. [whatsapp-automation-dispatch.ts](supabase/functions/_shared/whatsapp-automation-dispatch.ts), [conversation-log.ts](supabase/functions/_shared/conversation-log.ts).
 - **Retry do despacho reutiliza a mesma intenção somente após recusa transitória comprovadamente não aceita, até cinco tentativas totais nos intervalos 1/4/16/64 minutos e dentro do TTL.** Outbox delegado não tem segunda escada; worker seleciona orçamento total de 20 incluindo reparos/rechecks sem refill, e deadline limita próximo trabalho sem abandonar POST em voo. [whatsapp-automation-worker-core.ts](supabase/functions/_shared/whatsapp-automation-worker-core.ts), [whatsapp-automation-core.ts](supabase/functions/_shared/whatsapp-automation-core.ts).
 - **Promoção exige opt-in individual comprovado por unidade/cliente vivo, e oficial MARKETING exige autorização de custo vigente por conta/categoria/geração.** Telefone/reserva/do_not_contact=false não são opt-in; unknown/erro bloqueiam e do_not_contact global prevalece; slot SQL de aceito/uncertain tem padrão sete dias, frequência admin 1..30 afeta apenas futuras capturas e bloqueio não apaga/recria voucher emitido. [whatsapp-automation-core.ts](supabase/functions/_shared/whatsapp-automation-core.ts), [management.sql](supabase/migrations/20261009153435_whatsapp_template_management.sql).
+- **Opt-in de formulário público só nasce de boolean literal true e evidência de reserva/fila pertencente ao cliente; repetir a mesma referência nunca cria revisão nova.** Uma tentativa tardia do mesmo envio não pode reativar ofertas depois de um opt-out pelo link, e a RPC fica executável apenas por service_role. [migration](supabase/migrations/20261017170000_public_promotional_opt_in.sql).
+- **A fila pública entra somente pela EF e por RPC própria executável por service_role, com unidade e organização públicas travadas até o insert; anon não executa `enter_waitlist` nem insere direto na tabela.** Sem isso o cliente contorna rate limit e cadastro, e a chave de serviço contornaria o guard antigo de `enter_waitlist`. [public-waitlist](supabase/functions/public-waitlist/index.ts), [migration](supabase/migrations/20261017173000_public_waitlist_serial_rate_limit.sql).
 - **Pesquisa no atendimento resolve reserva por unidade E customer_id, repetidos nos SELECTs e UPDATEs.** Telefone na organização não identifica a unidade e UPDATE zero-row deve falhar antes de enviar/conceder benefício, inclusive após alteração concorrente do cliente. [webhook-whatsapp/index.ts](supabase/functions/webhook-whatsapp/index.ts), [whatsapp-survey-tenant-routing.test.ts](src/lib/whatsapp-survey-tenant-routing.test.ts).
 - **Os crons whatsapp-template-workers (*/5) e whatsapp-automation-worker (minuto) são consumidores, sem produtor promocional novo.** Wrappers usam Vault e verify_jwt=false com auth interna; send-scheduled-whatsapp usa auth interna em enqueue/dispatch/dispatch_existing e getUser+recurso por JWT em resend, enquanto manage-whatsapp-templates é exceção manage-* com verify_jwt=false, getUser e JWT original nas RPCs autenticadas. [supabase/config.toml](supabase/config.toml).
 - **Entregas lê get_whatsapp_automation_delivery_state autenticada, incluindo oldest_nonterminal_at e obrigações de reparo/recibo.** accepted/reconciled não comprovam entrega ou conclusão. A purga preserva recibo `pending` cuja tupla `(unit_id,provider,channel_id,provider_message_id)` corresponda a qualquer job existente, independentemente do estado/idade do job; recibos processados ou sem job correspondente tornam-se elegíveis após 90 dias, com received_at finito. O predicado é repetido na seleção e no DELETE final, e a consulta de correlação não adquire lock de pai/job depois dos locks de recibos. Jobs só são removidos pelos critérios terminais próprios, sem pendência/reparo; a preservação pode superar 90 dias e exige tratar o bloqueio de reconciliação, sem apagar ledger para reenviar. [Migration de retenção](supabase/migrations/20261009220823_whatsapp_automation_pending_receipt_retention.sql) e [runbook](docs/whatsapp-templates-programados-runbook.md).

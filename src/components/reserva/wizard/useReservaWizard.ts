@@ -5,7 +5,7 @@
  * Cada step consome com `useReservaWizardContext()`.
  */
 
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { toast } from "sonner";
 import { canonicalBrPhone, normalizeBrPhone, validateBrPhone } from "@/lib/phone";
@@ -45,6 +45,7 @@ export interface WizardState {
   phone: string;
   birthday: string;
   notes: string;
+  marketing_opt_in: boolean;
   extras: Partial<Record<WidgetFieldKey, string>>;
   custom_values: Record<string, string>;
   // Success
@@ -62,6 +63,7 @@ const INITIAL_STATE: WizardState = {
   phone: "",
   birthday: "",
   notes: "",
+  marketing_opt_in: false,
   extras: {},
   custom_values: {},
   confirmed: null,
@@ -87,6 +89,7 @@ export const step3Schema = z.object({
     }),
   birthday: z.string().optional(),
   notes: z.string().optional(),
+  marketing_opt_in: z.boolean().default(false),
 });
 
 // ─── Context ───────────────────────────────────────────────────────────────
@@ -194,6 +197,12 @@ const EXTRA_ORDER: WidgetFieldKey[] = [
 export function useReservaWizard(input: WizardInput): WizardContextValue {
   const createReserva = useCreateReserva();
   const [state, setState] = useState<WizardState>(INITIAL_STATE);
+  const currentUnitId = useRef(input.unit?.id);
+  currentUnitId.current = input.unit?.id;
+
+  useEffect(() => {
+    setState(INITIAL_STATE);
+  }, [input.unit?.id]);
 
   const set = useCallback(<K extends keyof WizardState>(key: K, value: WizardState[K]) => {
     setState((prev) => ({ ...prev, [key]: value }));
@@ -333,6 +342,7 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
       phone: state.phone,
       birthday: state.birthday,
       notes: state.notes,
+      marketing_opt_in: state.marketing_opt_in,
     });
     if (!result.success) {
       const first = result.error.issues[0];
@@ -355,7 +365,7 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
     }
     return true;
   }, [
-    state.name, state.email, state.phone, state.birthday, state.notes,
+    state.name, state.email, state.phone, state.birthday, state.notes, state.marketing_opt_in,
     state.extras, state.custom_values,
     computed.enabledExtras, computed.customFieldsSorted,
   ]);
@@ -439,7 +449,10 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
         widget_id: input.widgetId,
         custom_field_values: Object.keys(customPayload).length ? customPayload : undefined,
         birthday,
+        marketing_opt_in: state.marketing_opt_in === true,
       });
+
+      if (currentUnitId.current !== input.unit.id) return;
 
       const withCheckout = reserva as typeof reserva & { checkoutUrl?: string };
       if (withCheckout.checkoutUrl) {
@@ -452,6 +465,7 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
       input.onSuccess?.(reserva);
       toast.success("Reserva criada! Você receberá a confirmação no WhatsApp.");
     } catch (err) {
+      if (currentUnitId.current !== input.unit.id) return;
       const msg = err instanceof Error ? err.message : "Erro ao criar reserva. Tente novamente.";
       toast.error(msg);
     }

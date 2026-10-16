@@ -9,6 +9,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { genRequestId, jsonLog, sanitizePhone } from "../_shared/security.ts";
 import { reserveSlot } from "../_shared/availability.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
+import { recordPublicReservationConsent } from "./public-marketing-consent.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -48,6 +49,7 @@ interface CreateReservationBody {
   time?: string;
   party_size?: number;
   notes?: string | null;
+  marketing_opt_in?: unknown;
 }
 
 function validateBody(b: CreateReservationBody): string | null {
@@ -93,23 +95,36 @@ serve(async (req) => {
 
     // Validar que unit_id existe e pertence à organization_id (defesa contra
     // payload adulterado pelo cliente).
-    const { data: unitRow } = await supabase
+    const { data: unitRow, error: unitError } = await supabase
       .from("units")
       .select("id, organization_id, is_public")
       .eq("id", unitId)
       .maybeSingle();
 
-    if (!unitRow || unitRow.organization_id !== organizationId) {
+    if (unitError) {
+      jsonLog("error", { requestId, evt: "create_reservation_unit_lookup_failed", unitId });
+      return jsonResponse({ success: false, reason: "dependency_unavailable", message: "Não foi possível conferir a unidade agora." }, 503);
+    }
+    if (!unitRow || unitRow.organization_id !== organizationId || unitRow.is_public !== true) {
       jsonLog("warn", { requestId, evt: "create_reservation_unit_mismatch", unitId });
       return jsonResponse({ success: false, reason: "unit_invalid", message: "Unidade inválida." }, 400);
     }
 
     // Billing check — bloquear novas reservas se org estiver blocked/suspended
-    const { data: orgBilling } = await supabase
+    const { data: orgBilling, error: orgError } = await supabase
       .from("organizations")
-      .select("billing_status")
+      .select("is_public, billing_status")
       .eq("id", organizationId)
-      .single();
+      .maybeSingle();
+
+    if (orgError) {
+      jsonLog("error", { requestId, evt: "create_reservation_org_lookup_failed", unitId });
+      return jsonResponse({ success: false, reason: "dependency_unavailable", message: "Não foi possível conferir o restaurante agora." }, 503);
+    }
+    if (!orgBilling || orgBilling.is_public !== true) {
+      jsonLog("warn", { requestId, evt: "create_reservation_unit_mismatch", unitId });
+      return jsonResponse({ success: false, reason: "unit_invalid", message: "Unidade inválida." }, 400);
+    }
 
     if (orgBilling && (orgBilling.billing_status === "blocked" || orgBilling.billing_status === "suspended")) {
       jsonLog("warn", { requestId, evt: "create_reservation_org_blocked", organizationId, status: orgBilling.billing_status });
@@ -117,13 +132,17 @@ serve(async (req) => {
     }
 
     // Rate limit por (phone, unit) — mesma RPC já usada no webhook
-    const { data: allowed } = await supabase.rpc("check_rate_limit", {
+    const { data: allowed, error: rateError } = await supabase.rpc("check_rate_limit", {
       p_phone: phone,
       p_window_seconds: RATE_LIMIT_WINDOW_SECONDS,
       p_max: RATE_LIMIT_MAX,
       p_unit_id: unitId,
     });
 
+    if (rateError || (allowed !== true && allowed !== false)) {
+      jsonLog("error", { requestId, evt: "create_reservation_rate_limit_failed", unitId });
+      return jsonResponse({ success: false, reason: "dependency_unavailable", message: "Não foi possível conferir o limite de tentativas agora." }, 503);
+    }
     if (allowed === false) {
       jsonLog("warn", { requestId, evt: "create_reservation_rate_limited", unitId, phone: sanitizePhone(phone) });
       return jsonResponse(
@@ -161,6 +180,22 @@ serve(async (req) => {
       notes: body.notes ?? null,
       status: "pending",
     });
+
+    // Consentimento é independente da reserva: falha da RPC não desfaz o insert.
+    await recordPublicReservationConsent(
+      body.marketing_opt_in,
+      result,
+      unitId,
+      customer.id,
+      (name, args, signal) => supabase.rpc(name, args).abortSignal(signal),
+      (reason) => jsonLog("error", {
+        requestId,
+        evt: "public_reservation_promotional_opt_in_failed",
+        unitId,
+        reservationId: result.success === true ? result.reservationId : null,
+        reason,
+      }),
+    );
 
     // Persiste extras (custom_field_values) na reserva criada
     if (result.success && body.custom_field_values && Object.keys(body.custom_field_values).length) {

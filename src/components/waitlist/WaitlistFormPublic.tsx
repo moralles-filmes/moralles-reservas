@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useEffect, useRef, useState } from "react";
+import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -47,6 +48,7 @@ const schema = z.object({
   priority_category: z
     .enum(["normal", "senior", "pregnant", "disabled", "other"])
     .default("normal"),
+  marketing_opt_in: z.boolean().default(false),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -55,16 +57,20 @@ const PARTY_SIZES = Array.from({ length: 20 }, (_, i) => i + 1);
 
 interface WaitlistFormPublicProps {
   unitId: string;
+  unitName: string;
   priorityEnabled?: boolean;
   onClose?: () => void;
 }
 
 export function WaitlistFormPublic({
   unitId,
+  unitName,
   priorityEnabled = true,
   onClose,
 }: WaitlistFormPublicProps) {
   const addToWaitlist = useAnonAddToWaitlist(unitId);
+  const currentUnitId = useRef(unitId);
+  currentUnitId.current = unitId;
   const [confirmedCode, setConfirmedCode] = useState<number | null | undefined>(
     undefined,
   );
@@ -74,11 +80,18 @@ export function WaitlistFormPublic({
     handleSubmit,
     setValue,
     watch,
+    control,
+    reset,
     formState: { errors, isSubmitting },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
-    defaultValues: { party_size: 2, priority_category: "normal" },
+    defaultValues: { party_size: 2, priority_category: "normal", marketing_opt_in: false },
   });
+
+  useEffect(() => {
+    reset({ party_size: 2, priority_category: "normal", marketing_opt_in: false });
+    setConfirmedCode(undefined);
+  }, [unitId, reset]);
 
   const onSubmit = async (data: FormData) => {
     const result = await addToWaitlist.mutateAsync({
@@ -87,8 +100,9 @@ export function WaitlistFormPublic({
       party_size: data.party_size,
       notes: data.notes?.trim() || null,
       priority_category: priorityEnabled ? data.priority_category : "normal",
+      marketing_opt_in: data.marketing_opt_in === true,
     });
-    setConfirmedCode(result.code);
+    if (currentUnitId.current === unitId) setConfirmedCode(result.code);
   };
 
   if (confirmedCode !== undefined) {
@@ -147,12 +161,12 @@ export function WaitlistFormPublic({
       </div>
 
       <div className="space-y-1">
-        <Label>Quantas pessoas? *</Label>
+        <Label htmlFor="wl-party-size">Quantas pessoas? *</Label>
         <Select
-          defaultValue="2"
+          value={String(watch("party_size") ?? 2)}
           onValueChange={(v) => setValue("party_size", Number(v))}
         >
-          <SelectTrigger>
+          <SelectTrigger id="wl-party-size">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -167,17 +181,17 @@ export function WaitlistFormPublic({
 
       {priorityEnabled && (
         <div className="space-y-1">
-          <Label className="flex items-center gap-1.5">
+          <Label htmlFor="wl-priority" className="flex items-center gap-1.5">
             <Accessibility className="h-3.5 w-3.5 text-secondary" />
             Prioridade no atendimento
           </Label>
           <Select
-            defaultValue="normal"
+            value={watch("priority_category") ?? "normal"}
             onValueChange={(v) =>
               setValue("priority_category", v as WaitlistPriorityCategory)
             }
           >
-            <SelectTrigger>
+            <SelectTrigger id="wl-priority">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -209,6 +223,24 @@ export function WaitlistFormPublic({
           rows={2}
           {...register("notes")}
         />
+      </div>
+
+      <div className="flex items-start gap-3 rounded-lg border p-3">
+        <Controller
+          name="marketing_opt_in"
+          control={control}
+          render={({ field }) => (
+            <Checkbox
+              id="wl-marketing-opt-in"
+              checked={field.value}
+              onCheckedChange={(checked) => field.onChange(checked === true)}
+              className="mt-0.5 h-5 w-5"
+            />
+          )}
+        />
+        <Label htmlFor="wl-marketing-opt-in" className="text-sm leading-relaxed font-normal cursor-pointer">
+          Quero receber ofertas e benefícios do {unitName} pelo WhatsApp. Posso cancelar quando quiser pelo link enviado em cada oferta.
+        </Label>
       </div>
 
       <Button type="submit" className="w-full" disabled={isSubmitting}>

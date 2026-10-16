@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useIndividualConsent } from "@/hooks/useWhatsappTemplates";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -95,8 +96,10 @@ export default function Clientes() {
 
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search.trim(), 300);
-  const [selected, setSelected] = useState<CustomerWithCount | null>(null);
+  const [selected, setSelected] = useState<{ customer: CustomerWithCount; unitId: string } | null>(null);
   const [exporting, setExporting] = useState(false);
+
+  useEffect(() => { setSelected(null); }, [unitId]);
 
   const customersQuery = useInfiniteQuery({
     queryKey: ["customers", orgId, unitId, debouncedSearch],
@@ -310,11 +313,11 @@ export default function Clientes() {
                   key={c.id}
                   role="button"
                   tabIndex={0}
-                  onClick={() => setSelected(c)}
+                  onClick={() => setSelected({ customer: c, unitId })}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      setSelected(c);
+                      setSelected({ customer: c, unitId });
                     }
                   }}
                   className="hover:shadow-sm transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/50"
@@ -384,8 +387,10 @@ export default function Clientes() {
       )}
 
       <CustomerDetailsDialog
-        customer={selected}
+        key={`${unitId}:${selected?.customer.id ?? "none"}`}
+        customer={selected?.unitId === unitId ? selected.customer : null}
         unitId={unitId}
+        canReadConsent={!!unit?.isGerente}
         onClose={() => setSelected(null)}
       />
     </div>
@@ -395,10 +400,12 @@ export default function Clientes() {
 function CustomerDetailsDialog({
   customer,
   unitId,
+  canReadConsent,
   onClose,
 }: {
   customer: Customer | null;
   unitId: string;
+  canReadConsent: boolean;
   onClose: () => void;
 }) {
   const update = useUpdateCustomer(unitId);
@@ -430,6 +437,15 @@ function CustomerDetailsDialog({
             isError={statsError}
             onRetry={() => void refetchStats()}
           />
+
+          {canReadConsent && (
+            <CustomerPromotionalConsentStatus
+              unitId={unitId}
+              customerId={customer.id}
+              canRead={canReadConsent}
+              doNotContact={!!customer.do_not_contact}
+            />
+          )}
 
           <CustomerEditForm
             customer={customer}
@@ -508,6 +524,50 @@ function CustomerDetailsDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+export function CustomerPromotionalConsentStatus({
+  unitId,
+  customerId,
+  canRead,
+  doNotContact,
+}: {
+  unitId: string;
+  customerId: string;
+  canRead: boolean;
+  doNotContact: boolean;
+}) {
+  const { query } = useIndividualConsent(unitId, customerId, "promotional", canRead);
+  if (!canRead) return null;
+
+  return (
+    <section aria-label="Consentimento para ofertas" className="rounded-lg border p-4 space-y-2">
+      <p className="text-sm font-medium">Ofertas por WhatsApp nesta unidade</p>
+      {query.isPending ? (
+        <p role="status" className="text-sm text-muted-foreground">Consultando escolha do cliente…</p>
+      ) : query.isError ? (
+        <div role="alert" className="space-y-2">
+          <p className="text-sm text-destructive">Não foi possível consultar a escolha do cliente.</p>
+          <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
+            {query.isFetching ? "Consultando..." : "Tentar novamente"}
+          </Button>
+        </div>
+      ) : (
+        <p role="status" className="text-sm">
+          {query.data.status === "opt_in"
+            ? "Autorizou ofertas por WhatsApp nesta unidade."
+            : query.data.status === "opt_out"
+              ? "Não autorizou ofertas por WhatsApp nesta unidade."
+              : "Nenhuma escolha sobre ofertas registrada nesta unidade."}
+        </p>
+      )}
+      {doNotContact && (
+        <p className="text-xs text-muted-foreground">
+          Cliente marcado como “Não contatar”; nenhum envio é permitido, mesmo com autorização de ofertas.
+        </p>
+      )}
+    </section>
   );
 }
 

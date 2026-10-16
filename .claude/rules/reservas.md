@@ -4,6 +4,7 @@ paths:
   - "supabase/functions/_shared/giftback.ts"
   - "supabase/functions/_shared/resolve-customer.ts"
   - "supabase/functions/_shared/phone.ts"
+  - "supabase/functions/_shared/public-br-phone.ts"
   - "supabase/functions/create-reservation/**"
   - "supabase/functions/create-manual-reservation/**"
   - "supabase/functions/update-reservation/**"
@@ -46,6 +47,7 @@ paths:
 - **`customers.email` é array (`emails[]`)** — append-only via `resolveOrCreateCustomer`.
 - **`customers.phone` é SEMPRE canônico (9º dígito): celular 11 díg., fixo 10, sem `55`.** Sem isso o mesmo cliente em dois formatos (com/sem 9) vira duplicata, pois a dedupe é `(organization_id, phone)`. Regra única em 3 lugares sincronizados: `canonicalBrPhone` em [_shared/phone.ts](supabase/functions/_shared/phone.ts) (backend) ⇄ [src/lib/phone.ts](src/lib/phone.ts) (front) ⇄ função SQL `normalize_br_phone`. Backstop: trigger `customers_canonical_phone_trg` (BEFORE INSERT/UPDATE) força o canônico em qualquer write (cobre o handler de mídia, que não passa pelo resolver). Writer novo de telefone canoniza na origem; não usar `replace(/^55/)` cru (DDD 55/RS existe).
 - **Todo destinatário montado pelos ADAPTERS de provider passa por `toE164BrPhone`, inverso do armazenamento canônico: só considera `55` código de país se houver 12 ou 13 dígitos, sem alterar o assinante.** `startsWith("55")` isolado confunde DDD 55 com país e causa falha silenciosa nos cinco providers; nenhum adapter deve manter regra própria de prefixo. [_shared/phone.ts](supabase/functions/_shared/phone.ts), [testes dos cinco envios](src/lib/phone.test.ts).
+- **A fila pública valida o telefone como o formulário antes de criar cadastro; o módulo `public-br-phone.ts` deve permanecer em paridade com `src/lib/phone.ts`.** O restante do backend continua tolerante a número vindo do provider, mas um formulário adulterado não deve criar cliente com DDD ou assinante inválido. [teste de paridade](supabase/functions/public-waitlist/core.test.ts).
 - **`business_hours`** é DEPRECATED — fonte de horário é `halls + hall_schedules`. Não construa nada novo em cima.
 - **Coluna Postgres `time` (`reservations.time`, `hall_schedules.open_time/close_time`, etc.) sempre volta como `HH:MM:SS`.** Interpolar direto num literal de timestamp (`` `${time}:00-03:00` ``) gera dois blocos de segundos → `Invalid Date` → `NaN` silencia qualquer comparação sem erro visível. Sempre `.slice(0, 5)` antes de montar o literal; não há helper compartilhado — `availability.ts`, `process-notification-outbox` e `process-reservation-reminders` resolvem cada um por conta própria. [process-notification-outbox/index.ts:96](supabase/functions/process-notification-outbox/index.ts).
 - **`vouchers_unit_rule_customer_active_idx`** (UNIQUE PARTIAL em `vouchers` WHERE status='active' AND rule_id NOT NULL) garante no máximo 1 voucher ativo por (unit, rule, customer). Sempre tentar INSERT e tratar `23505` como dedupe silencioso.

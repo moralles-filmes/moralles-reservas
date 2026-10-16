@@ -2270,3 +2270,72 @@ handoff e escrita por service_role passam. Os controles positivos concedem
 temporariamente UPDATE e INSERT por coluna e demonstram que as fraudes então funcionam.
 O bootstrap reproduz o shape e os grants da tabela em um banco isolado; ele
 não é prova de RLS/JWT/PostgREST do projeto vivo.
+
+### 68 — Opt-in promocional público (Fase 4, Tasks 4.1–4.2)
+
+Em PostgreSQL Supabase **descartável**, sem projeto vinculado e com
+`ON_ERROR_STOP=1`, aplique `68a-public-promotional-opt-in-bootstrap.sql`,
+depois `20261017170000_public_promotional_opt_in.sql`, e execute
+`68-public-promotional-opt-in.sql`. Reaplique a migration duas vezes e repita
+o 68 depois de cada aplicação. O teste termina em `ROLLBACK` e o contêiner
+deve ser removido ao fim. Exemplo com a imagem local
+`public.ecr.aws/supabase/postgres:17.11.0.004`:
+
+```sh
+docker run -d --name margin-phase4-consent-pg -e POSTGRES_PASSWORD=postgres \
+  -p 127.0.0.1:55468:5432 public.ecr.aws/supabase/postgres:17.11.0.004
+# Aguarde State.Health.Status=healthy. Os caminhos abaixo são do checkout.
+docker exec -i margin-phase4-consent-pg psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  < supabase/tests/local-preflight/68a-public-promotional-opt-in-bootstrap.sql
+for i in 1 2 3; do
+  docker exec -i margin-phase4-consent-pg psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+    < supabase/migrations/20261017170000_public_promotional_opt_in.sql
+  docker exec -i margin-phase4-consent-pg psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+    < supabase/tests/local-preflight/68-public-promotional-opt-in.sql
+done
+docker rm -f margin-phase4-consent-pg
+```
+
+O bootstrap é uma projeção mínima de tabelas/ACL/trigger de revisão existentes;
+a **migration real** é aplicada integralmente. O 68 verifica reserva e fila,
+campos e auditoria sem PII, revisão append-only, `opt_in → opt_out → replay`
+sem reativação, referência nova com novo opt-in, recusa uniforme de recurso
+ausente/alheio, unidade/organização privada, cliente apagado/alheio,
+referências inválidas e ACL efetiva por `anon`, `authenticated` e
+`service_role` (a RPC de fila continua sem grant para `service_role`). Três
+controles positivos enfraquecem separadamente o vínculo cliente–reserva e a
+visibilidade da unidade e da organização, comprovando que cada asserção
+protegida falharia; os savepoints restauram função e ACL integral.
+Não testa JWT/PostgREST nem RLS/trigger completos da instalação viva.
+
+### 69 — Autoridade e limite serializado da fila pública (Fase 4, Task 4.4)
+
+Em PostgreSQL Supabase **descartável**, rode o script após conferir que o
+contêiner próprio usa a imagem e o bind `127.0.0.1:55469` abaixo. O runner
+confere esses dados antes de executar SQL, aplica `69a` uma vez e a migration
+`20261017173000_public_waitlist_serial_rate_limit.sql` três vezes, rodando o
+pré-voo 69 após cada aplicação. Ele termina os casos SQL em `ROLLBACK`, cria
+sete sessões independentes para a corrida e restaura o corpo da migration
+depois do controle positivo vulnerável.
+
+```sh
+docker run -d --name margin-phase4-rate-pg -e POSTGRES_PASSWORD=postgres \
+  -p 127.0.0.1:55469:5432 public.ecr.aws/supabase/postgres:17.11.0.004
+# Aguarde State.Health.Status=healthy e confira imagem/bind do contêiner.
+node supabase/tests/local-preflight/69-public-waitlist-rate-concurrency.mjs
+docker rm -f margin-phase4-rate-pg
+```
+
+O 69 mede ACL efetiva por `anon`, `authenticated` e `service_role`: `anon`
+não executa `enter_waitlist`, não insere na tabela nem chama o wrapper; o
+painel autenticado conserva a RPC legada; só serviço usa
+`enter_public_waitlist`. Verifica grants de `INSERT` de tabela e colunas,
+unidade/organização privadas, limites de tamanho e controles positivos que
+abrem somente a flag protegida. O limitador aceita cinco tentativas por
+unidade/IP em 60 segundos e rejeita a sexta; a corrida real aceita cinco de
+sete sessões e observa uma espera por lock. O controle positivo substitui
+temporariamente a função por count-then-insert sem lock e deve aceitar mais
+de cinco; o runner restaura a migration em `finally`. O bootstrap projeta o
+schema/ACL herdado, inclusive `ENABLE RLS` sem `FORCE` em
+`rate_limit_events`; não substitui auditoria de ACL/RLS, gateway e cabeçalho
+`CF-Connecting-IP` no ambiente hospedado.
