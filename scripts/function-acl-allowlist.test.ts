@@ -1853,6 +1853,6 @@ describe('Instâncias WhatsApp: exclusão sem custo', () => {
     expect(allEntries.some(entry => entry.name === signature.split('(')[0])).toBe(false);
     expect(sql).toContain(`revoke all on function public.${signature} from public,anon,authenticated;`);
     expect(sql).toContain(`grant execute on function public.${signature} to service_role;`);
-    expect(sql).not.toMatch(/grant\s+execute[^;]*delete_whatsapp_instance_without_cost[^;]*(anon|authenticated|public)/i);
+    expect(sql).not.toMatch(/grant\s+execute[^;]*delete_whatsapp_instance_without_cost[^;]*\b(anon|authenticated|public)\b/i);
   });
 });
