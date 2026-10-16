@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createAutomationDispatcher } from '../../supabase/functions/_shared/whatsapp-automation-dispatch';
 import { createAutomationFixture, createAutomationEndpointIO, createTemplateDispatchFixture } from '../test/fixtures/whatsapp-automation-fixtures';
 import { createEdgeRequestHarness } from '../test/fixtures/edge-request-harness';
-import { renderScheduledTemplate } from '../../supabase/functions/_shared/whatsapp-automation-resources';
+import { renderScheduledTemplate, renderScheduledText } from '../../supabase/functions/_shared/whatsapp-automation-resources';
 import type { ScheduledIntent } from '../../supabase/functions/_shared/whatsapp-automation-core';
 
 describe('scheduled authoritative resources', () => {
@@ -226,6 +226,94 @@ describe('official render from real resources', () => {
   });
 });
 import { createDispatchFixture } from '../test/fixtures/whatsapp-automation-fixtures';
+
+function cancellationFixture() {
+  const f = createAutomationFixture(); f.rows.reservations[0].status = 'cancelled';
+  const intent: ScheduledIntent = { kind: 'cancellation', unitId: f.ids.unit, reservationId: f.ids.reservation, sourceEventKey: 'synthetic-cancellation', factAt: f.nowISO };
+  return { ...f, intent };
+}
+function tableReadyFixture() {
+  const f = waitlistFixture();
+  const intent: ScheduledIntent = { kind: 'waitlist_table_ready', unitId: f.ids.unit, waitlistId: f.rows.waitlist[0].id as string, sourceEventKey: 'synthetic-table-ready', factAt: f.nowISO };
+  return { ...f, intent };
+}
+const legacyTextIO = (f: { ids: { unit: string } }, saved: unknown = null) => ({
+  appBaseUrl: 'https://example.com', allowedOrigins: ['https://example.com'],
+  readOne: async (table: string, columns: string, predicates: Readonly<Record<string, string>>) => {
+    if (table === 'waitlist_message_templates' && columns === 'customized,body' && predicates.unit_id === f.ids.unit && predicates.event === 'table_ready') return saved;
+    throw new Error(`unexpected_text_read:${table}`);
+  } });
+
+describe('cancellation and table-ready resources', () => {
+  it('accepts a cancelled reservation regardless of payment, without a setting read', async () => {
+    const f = cancellationFixture(); f.rows.reservations[0].payment_status = 'pending_payment';
+    const result = await f.resources.loadScheduledResource(f.intent);
+    if (result.ok === false) throw new Error(`unexpected refusal ${result.reason}`);
+    expect(result.resource).toMatchObject({ templateId: 'res_cancelada_v1', expiresAt: '2026-10-06T15:00:00.000Z' });
+    expect(result.resource.expected).toMatchObject({ kind: 'cancellation', setting: { key: null, present: false, value: null }, resource: { status: 'cancelled' } });
+    expect(f.calls.some(call => call.table === 'settings')).toBe(false);
+  });
+  it.each(['confirmed', 'pending', 'no_show'])('refuses cancellation of a %s reservation', async status => {
+    const f = cancellationFixture(); f.rows.reservations[0].status = status;
+    expect(await f.resources.loadScheduledResource(f.intent)).toMatchObject({ ok: false, reason: 'reservation_not_cancelled' });
+  });
+  it('refuses cancellation after the reservation start and without a customer', async () => {
+    const f = cancellationFixture(); f.setNow('2026-10-05T23:30:01Z');
+    expect(await f.resources.loadScheduledResource(f.intent)).toMatchObject({ ok: false, reason: 'reservation_past' });
+    const g = cancellationFixture(); g.rows.reservations[0].customer_id = null;
+    expect(await g.resources.loadScheduledResource(g.intent)).toMatchObject({ ok: false, reason: 'customer_not_alive' });
+  });
+  it('renders the cancellation template and the legacy TEXT body', async () => {
+    const f = cancellationFixture();
+    const result = await f.resources.loadScheduledResource(f.intent);
+    if (result.ok === false) throw new Error('unexpected refusal');
+    expect(renderScheduledTemplate(result.resource, 'https://example.com', ['https://example.com']).parameters).toEqual(['Marina', 'Restaurante Exemplo', '05/10/2026', '20:30', '4', 'RES123']);
+    expect((await renderScheduledText(result.resource, legacyTextIO(f))).body).toBe('❌ *Reserva Cancelada*\n\nOlá Marina, sua reserva foi cancelada.\n\n📅 Data: 05/10/2026\n⏰ Horário: 20:30\n👥 Pessoas: 4\n🔑 Código: #RES123\n\nSe foi engano ou quiser remarcar, é só responder aqui que ajudamos. 🙏');
+  });
+  it.each(['waiting', 'notified'])('accepts table-ready for a %s entry without a customer and without a setting read', async status => {
+    const f = tableReadyFixture(); f.rows.waitlist[0].status = status; f.rows.customers = [];
+    const result = await f.resources.loadScheduledResource(f.intent);
+    if (result.ok === false) throw new Error(`unexpected refusal ${result.reason}`);
+    expect(result.resource).toMatchObject({ templateId: 'fila_mesa_pronta_v1', customerId: null, code: 12, expiresAt: '2026-10-05T15:30:00.000Z' });
+    expect(result.resource.expected).toMatchObject({ kind: 'waitlist_table_ready', customer: null, setting: { key: null, present: false }, resource: { status } });
+    expect(f.calls.some(call => call.table === 'settings')).toBe(false);
+  });
+  it.each([['seated', null], ['cancelled', null], ['no_show', null], ['waiting', '2026-10-05T14:30:00Z'], ['notified', '2026-10-05T14:30:00Z']])('refuses table-ready for status %s seated_at %s', async (status, seatedAt) => {
+    const f = tableReadyFixture(); Object.assign(f.rows.waitlist[0], { status, seated_at: seatedAt });
+    expect(await f.resources.loadScheduledResource(f.intent)).toMatchObject({ ok: false, reason: 'waitlist_not_waiting' });
+  });
+  it('renders table-ready template, default TEXT and customized TEXT', async () => {
+    const f = tableReadyFixture();
+    const result = await f.resources.loadScheduledResource(f.intent);
+    if (result.ok === false) throw new Error('unexpected refusal');
+    expect(renderScheduledTemplate(result.resource, 'https://example.com', ['https://example.com']).parameters).toEqual(['Nome da fila', 'Restaurante Exemplo', '12']);
+    expect((await renderScheduledText(result.resource, legacyTextIO(f))).body).toBe('🔔 Nome da fila, sua mesa em Restaurante Exemplo está pronta! Senha #12. Por favor, dirija-se à recepção.');
+    expect((await renderScheduledText(result.resource, legacyTextIO(f, { customized: true, body: 'Mesa {{cliente_nome}} #{{codigo_fila}} {{unidade_nome}}' }))).body).toBe('Mesa Nome da fila #12 Restaurante Exemplo');
+    expect((await renderScheduledText(result.resource, legacyTextIO(f, { customized: false, body: 'ignorado' }))).body).toContain('sua mesa em Restaurante Exemplo está pronta!');
+    // Same tracking link the legacy table_ready send uses (Fila.tsx / resend-notification), never the portal.
+    expect((await renderScheduledText(result.resource, legacyTextIO(f, { customized: true, body: 'Mesa {{codigo_fila}}: {{link_status}}' }))).body).toBe(`Mesa 12: https://example.com/acompanhar/${f.intent.waitlistId}`);
+  });
+  it('dispatches an existing cancellation job through the ledger intent with the legacy TEXT', async () => {
+    const f = createDispatchFixture(); f.rows.reservations[0].status = 'cancelled';
+    Object.assign(f.row, { kind: 'cancellation', initial_catalog_key: 'res_cancelada_v1', expires_at: '2026-10-06T23:30:00Z' });
+    expect(await f.dispatch()).toMatchObject({ state: 'reconciled', jobId: f.jobId });
+    expect(f.calls.post).toBe(1); expect(f.calls.bodies[0]).toContain('sua reserva foi cancelada');
+  });
+  it('rejects a ledger row whose resource does not match the kind', async () => {
+    const f = createDispatchFixture(); f.rows.reservations[0].status = 'cancelled';
+    Object.assign(f.row, { kind: 'waitlist_table_ready', initial_catalog_key: 'fila_mesa_pronta_v1', expires_at: '2026-10-05T23:30:00Z' });
+    await f.dispatch(); expect(f.calls.post).toBe(0);
+  });
+  it.each(['cancellation', 'waitlist_table_ready'] as const)('generic producer refuses %s until its Phase 3 producer exists', async kind => {
+    const f = createDispatchFixture(); const reads: string[] = []; let enqueues = 0;
+    const dispatcher = createAutomationDispatcher({ ...f.io,
+      readOne: async (table, columns, filters, latest) => { reads.push(table); return f.io.readOne(table, columns, filters, latest); },
+      rpc: async (name, args) => { if (name === 'enqueue_whatsapp_automation') enqueues++; return f.io.rpc(name, args); } });
+    const resourceId = kind === 'cancellation' ? f.ids.reservation : 'eeeeeeee-0000-0000-0000-000000000002';
+    expect(await dispatcher.enqueueScheduledIntent({ kind, resourceId, unitId: f.ids.unit })).toEqual({ state: 'not_enqueued', jobId: null, reason: 'provenance_refused' });
+    expect(reads).toEqual([]); expect(enqueues).toBe(0); expect(f.calls.post).toBe(0);
+  });
+});
 
 describe('actual dispatcher acceptance and final lease', () => {
   it('accepted local response loss repairs on second dispatch with exactly one adapter invocation', async () => {

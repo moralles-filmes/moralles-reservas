@@ -28,9 +28,9 @@ function intentFromRow(row: Row): ScheduledIntent {
   if (!uuid(row.unit_id) || typeof row.source_event_key !== 'string' || !row.source_event_key || !instant(row.fact_at)) throw new Error('invalid_job');
   const origin = { unitId: row.unit_id, sourceEventKey: row.source_event_key, factAt: row.fact_at };
   switch (row.kind) {
-    case 'confirmation': case 'reminder_d1': case 'survey_d1':
+    case 'confirmation': case 'reminder_d1': case 'survey_d1': case 'cancellation':
       if (uuid(row.reservation_id) && row.waitlist_id === null && row.voucher_id === null) return { ...origin, kind: row.kind, reservationId: row.reservation_id }; break;
-    case 'waitlist_entered': case 'waitlist_feedback':
+    case 'waitlist_entered': case 'waitlist_feedback': case 'waitlist_table_ready':
       if (uuid(row.waitlist_id) && row.reservation_id === null && row.voucher_id === null) return { ...origin, kind: row.kind, waitlistId: row.waitlist_id }; break;
     case 'voucher_issued':
       if (uuid(row.voucher_id) && row.reservation_id === null && row.waitlist_id === null) return { ...origin, kind: row.kind, voucherId: row.voucher_id }; break;
@@ -228,6 +228,8 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
 
   async function enqueueScheduledIntent(input: ScheduledProducerRequest): Promise<DispatchResult> {
     if (!uuid(input.resourceId) || (input.unitId !== undefined && !uuid(input.unitId))) return notEnqueued('intent_invalid');
+    // No trusted provenance exists for these operator actions in this generic path yet (dedicated producers come later).
+    if (input.kind === 'cancellation' || input.kind === 'waitlist_table_ready') return notEnqueued('provenance_refused');
     try {
       const table = ['confirmation','reminder_d1','survey_d1'].includes(input.kind) ? 'reservations' : input.kind === 'voucher_issued' ? 'vouchers' : 'waitlist';
       const key = table === 'reservations' ? 'reservation_id' : table === 'waitlist' ? 'waitlist_id' : 'voucher_id';

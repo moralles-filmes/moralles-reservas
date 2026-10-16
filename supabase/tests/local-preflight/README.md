@@ -2051,6 +2051,145 @@ unidade → canais são os mesmos das autoridades medidas no 63b), o caminho
 TypeScript de `manage-channels`/`datafy-onboarding-actions.ts` e qualquer
 chamada à Datafy, Meta ou UazAPI.
 
+### Templates mesa pronta e cancelamento (66)
+
+Migration `20261017120000_whatsapp_templates_table_ready_cancellation.sql`
+(plano `2026-10-16-datafy-migracao-loja-em-producao.md`, Fase 2): catálogo
+oficial de 9 modelos (`fila_mesa_pronta_v1`, `res_cancelada_v1`) e kinds
+`cancellation`/`waitlist_table_ready` no ledger de automação — CHECKs, `CASE`
+kind→template, elegibilidade da autoridade final, reparação do aceite, motivo
+`reservation_not_cancelled` e listas de ids do provisionamento.
+
+**Runtime:** o PostgreSQL standalone não serve (o `25` exige `supabase_vault`).
+Use um contêiner **descartável e próprio**
+`public.ecr.aws/supabase/postgres:17.11.0.004`, nome `margin-phase2-tpl-pg`,
+somente `127.0.0.1:55467`, usuário `supabase_admin`. Nunca toque contêineres de
+outros projetos e remova o próprio ao fim. O `psql` é o cliente 18 do
+instalador oficial, sempre `-X -v ON_ERROR_STOP=1` e **nunca `-1`** (a migration
+tem `BEGIN`/`COMMIT` próprios).
+
+**Pontes 41/48/38 sem o caminho Docker dos setups.** Os testsetups `41`, `48` e
+`38` exigem o stack CLI `moralles-templates-20261003` (pipe, label e porta
+55452) antes de enviar SQL, e essas guardas **não** são contornadas nem
+falsificadas aqui. Do script só se usa o SQL que ele monta: o helper
+`66-extract-bridge.mjs`, versionado aqui, lê o arquivo do setup até um marcador de corte (o
+ramo `--source-check`, que precede todo uso do Docker), remove a linha
+`import { resolveLocalDocker } …` e a chamada `const docker = resolveLocalDocker();`,
+troca `import.meta.url` pela URL absoluta do arquivo (as migrations históricas
+continuam lidas pelos caminhos relativos do próprio setup), avalia o resto como
+módulo e grava a variável pedida. No `38`, o trecho entre o `--source-check` e
+`const literal` (as checagens de daemon/contêiner) é cortado antes, e o corte
+fica antes do laço de aplicação. Nenhum `run(...)` é chamado. O SQL extraído é
+aplicado DUAS vezes, em transação, como o setup faria:
+
+| ponte | arquivo | corte | variável | transação |
+|---|---|---|---|---|
+| 41 | `41-automation-resource-confirm-testsetup.mjs` | `if (process.argv.length === 3 && process.argv[2] === '--source-check')` | `schema` | `begin; set local lock_timeout='5s'; set local statement_timeout='20s'; … commit;` |
+| 48 | `48-waitlist-voucher-testsetup.mjs` | `if(process.argv.length===3&&process.argv[2]==='--source-check')` | `schema` | idem |
+| 38 | `38-automation-acceptance-testsetup.mjs` | `for (let pass = 1; pass <= 2; pass++)`, pulando do `--source-check` até `const literal` | `transaction` | já traz `begin`/`commit` |
+
+Medido nesta fase: a extração repetida produz arquivos byte a byte iguais
+(`cmp`) aos usados na cadeia. O `56` é só asserção (pede `current_database()=
+'postgres'`, server ≥ 17 e a quarentena dos dois crons).
+
+O `66a` **roda ANTES da migration nova** e recusa rodar depois: ele grava em
+`t_snap066` oid, `proacl`, `prosecdef`, `proconfig`, `provolatile` e dono das
+DEZ funções que a migration substitui por `create or replace`, mais a contagem
+de overloads de cada nome; o T8 compara com o de depois. Gravado depois, o
+snapshot compararia a função consigo mesma.
+
+```bash
+export PGCLIENTENCODING=UTF8
+D="$LOCALAPPDATA/Programs/DockerDesktop/resources/bin/docker.exe"
+PSQL="/c/Program Files/PostgreSQL/18/bin/psql.exe"
+P() { PGPASSWORD=postgres "$PSQL" -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 55467 -U supabase_admin -d postgres "$@"; }
+H=supabase/tests/local-preflight; M=supabase/migrations
+B=<diretório scratch fora do repo>   # recebe bridge41.sql, bridge48.sql, setup38.sql
+
+# Pontes (helper `66-extract-bridge.mjs` descrito acima: <arquivo> <corte> <variável> <saída> [pular-de pular-até])
+node $H/66-extract-bridge.mjs $H/41-automation-resource-confirm-testsetup.mjs \
+  "if (process.argv.length === 3 && process.argv[2] === '--source-check')" schema $B/bridge41.sql
+node $H/66-extract-bridge.mjs $H/48-waitlist-voucher-testsetup.mjs \
+  "if(process.argv.length===3&&process.argv[2]==='--source-check')" schema $B/bridge48.sql
+node $H/66-extract-bridge.mjs $H/38-automation-acceptance-testsetup.mjs \
+  "for (let pass = 1; pass <= 2; pass++)" transaction $B/setup38.sql \
+  "if (process.argv.length === 3 && process.argv[2] === '--source-check')" "const literal"
+
+"$D" rm -f margin-phase2-tpl-pg     # só o próprio
+"$D" run -d --name margin-phase2-tpl-pg -e POSTGRES_PASSWORD=postgres \
+  -p 127.0.0.1:55467:5432 public.ecr.aws/supabase/postgres:17.11.0.004
+# esperar State.Health.Status=healthy e `P -c 'select 1'`
+
+P -f $H/25-template-bootstrap.sql
+for m in 20261003225857 20261004002728 20261004014032 20261004025039 20261004165825 20261004184738 20261005145913; do P -f $M/${m}_*.sql; done
+for i in 1 2; do { echo "begin; set local lock_timeout='5s'; set local statement_timeout='20s';"; cat $B/bridge41.sql; echo "commit;"; } | P; done
+P -f $M/20261005170415_whatsapp_automation_resource_post_confirm.sql
+P -f $H/44-outbox-automation-bootstrap.sql
+P -f $M/20261006003631_whatsapp_outbox_automation_delegation.sql
+for i in 1 2; do { echo "begin; set local lock_timeout='5s'; set local statement_timeout='20s';"; cat $B/bridge48.sql; echo "commit;"; } | P; done
+P -f $M/20261009003452_whatsapp_scheduled_voucher_issuer.sql
+P -f $M/20261009135808_whatsapp_automation_worker_cron.sql
+for i in 1 2; do P -f $B/setup38.sql; done
+P -c "select cron.unschedule(jobid) from cron.job where jobname in('whatsapp-automation-worker','whatsapp-template-workers')"
+P -f $H/52-automation-receipts-bootstrap.sql          # GREEN52
+P -f $H/56-template-management-bootstrap.sql          # GREEN56
+P -f $M/20261009153435_whatsapp_template_management.sql
+P -f $M/20261009180617_whatsapp_template_binding_business_refusal.sql
+P -f $M/20261009220823_whatsapp_automation_pending_receipt_retention.sql
+
+P -f $H/66a-templates-table-ready-bootstrap.sql       # 10 fn_antes + 10 overloads
+
+# ANTES da migration, o 66 tem de FALHAR pela guarda do topo. É o RED: rodado
+# antes, as recusas de T1/T3/T4 passariam POR ACIDENTE.
+P -f $H/66-templates-table-ready-cancellation.sql     # esperado: ERROR "66 exige a migration 20261017120000 aplicada ..."
+
+P -f $M/20261017120000_whatsapp_templates_table_ready_cancellation.sql
+P -f $H/66a-templates-table-ready-bootstrap.sql       # esperado: ERROR "66a exige rodar ANTES ..."
+P -f $H/66-templates-table-ready-cancellation.sql     # GREEN66, 171 checagens
+P -f $M/20261017120000_whatsapp_templates_table_ready_cancellation.sql
+P -f $M/20261017120000_whatsapp_templates_table_ready_cancellation.sql
+P -f $H/66-templates-table-ready-cancellation.sql     # GREEN66 de novo (idempotência + T8)
+
+"$D" rm -f margin-phase2-tpl-pg
+```
+
+Saída sadia: tabela por caso (`CTRL-a` 4, `CTRL-b` 4, `CTRL-c` 4, `T0` 6,
+`T1` 20, `T1/T5` 1, `T2` 10, `T3` 13, `T4` 30, `T5` 18, `T6` 7, `T7` 8, `T8` 26,
+`T9` 20), `checks66 = 171` e `GREEN66`. Tudo roda numa transação que termina em
+`ROLLBACK` (inclusive as flags `whatsapp_automation_dispatch` e
+`whatsapp_template_catalog`, ligadas só dentro dela); falha em qualquer caso
+aborta sob `ON_ERROR_STOP` com `FAIL66 <rótulo>`. O arquivo recusa rodar entre
+23:50 e 00:10 BRT (datas de amanhã/ontem).
+
+| caso | o que mede |
+|---|---|
+| `T0` | quarentena de cron; bootstrap TEXT e grants datafy de catálogo/dispatch pelas RPCs reais; unidade sem canal com adoção sticky |
+| `T1` | inserção direta (guarda real ligada) aceita os 8 kinds e o `initial_catalog_key` derivado passa no pin tuple, inclusive `res_cancelada_v1`/`fila_mesa_pronta_v1`; kind desconhecido → `23514:whatsapp_automation_jobs_kind_check`; `cancellation`+fila e mesa pronta+reserva → `…_kind_resource_check`; logical_id desconhecido → `…logical_id_check`; os 9 ids semeiam |
+| `T2` | `enqueue_whatsapp_automation`: bound TEXT, preconfiguração sem canal (`channel_unconfigured`) e sem template (`template_unconfigured`) e datafy apontando o `whatsapp_remote_templates` do id novo; logical_id divergente ou recurso trocado → 22023; dedupe |
+| `T3` | autoridade final de `cancellation`: cancelada futura passa mesmo com `pending_payment`; reserva `confirmed`, snapshot `confirmed` sobre cancelada → `snapshot_invalid`; cancelada passada → `resource_changed` |
+| `T4` | mesa pronta: `waiting`, `notified` e cliente nulo passam; `seated`, `cancelled` e `seated_at` preenchido → `snapshot_invalid` |
+| `T5` | conta datafy com os 9 templates; para cada id novo: prepare → `confirm_whatsapp_template_post` → recusa local real → prova zero-POST → `revalidate_whatsapp_template_job` (admin) → prepare corrigido |
+| `T6` | reparação do aceite: mesa pronta sem cliente → `skipped_no_customer` + `notifications_sent` correlacionada; cancelamento com cliente → `recorded` + histórico com `kind` |
+| `T7` | `block_whatsapp_automation_preflight` aceita `reservation_not_cancelled` (grafia errada segue 22023); o painel mostra o motivo, sem `unknown_reason`; a revalidação de pinos não o corrige, e corrige o comparador `reservation_past` |
+| `T8` | as 10 funções com oid/ACL/`prosecdef`/`proconfig`/`provolatile`/dono iguais ao `66a`; contagem de overloads igual; trigger function fechada a PUBLIC/anon/authenticated/service_role; exatamente uma CHECK por localizador |
+| `T9` | regressão: `confirmation` (passa, recusa cancelada, mantém checagem de pagamento), `waitlist_entered` (passa `waiting`, recusa `notified`) e o promocional `waitlist_feedback` (slot reservado, passa com consentimento, recusa sem revisão) |
+| `CTRL-a` | baseline aceita semear `fila_mesa_pronta_v1`; CHECK de 7 ids (`NOT VALID`) recusa; restore da CHECK conferido |
+| `CTRL-b` | `post_core` aceitando `confirmed` para `cancellation`: a recusa do T3 vira `{"allowed":true}`; restore de corpo, ACL e recusa |
+| `CTRL-c` | mesa pronta aceitando `seated`: a recusa do T4 vira `{"allowed":true}`; restore de corpo, ACL e recusa |
+
+**Regressão 53/57/60 neste contêiner:** não roda, e não por causa da migration.
+O `auth.uid()`/`auth.role()` desta imagem lê só `request.jwt.claim.sub`/
+`request.jwt.claim.role`; os três harnesses montam o ator apenas por
+`request.jwt.claims` (formato do stack CLI em que foram medidos), então o 57
+recusa `template_management_forbidden` no primeiro ator e o 53/60 recusam a
+adoção (`automation_adoption_immutable`, guarda da `20261004014032`). O `66`
+seta as três chaves. Os 53/57/60 continuam sendo gates do stack CLI.
+
+**O que ele NÃO prova:** JWT genuíno/PostgREST e RLS de produção (atores são
+claims numa sessão superusuária), corrida com duas sessões (a migration não
+muda ordem de lock), os produtores TypeScript da Fase 3 e qualquer chamada à
+Datafy ou à Meta.
+
 ### Portabilidade do runtime histórico 25–60
 
 Os executáveis 37–59 resolvem somente Docker Desktop instalado em

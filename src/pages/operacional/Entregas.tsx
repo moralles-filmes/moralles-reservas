@@ -23,6 +23,7 @@ const KIND_LABEL: Record<string, string> = {
   waitlist_entered: "Entrada na fila",
   waitlist_table_ready: "Aviso de mesa pronta",
   confirmation: "Confirmação de reserva",
+  cancellation: "Cancelamento de reserva",
   reminder_d1: "Lembrete de reserva",
   survey_d1: "Pesquisa de satisfação",
   voucher_issued: "Voucher / giftback",

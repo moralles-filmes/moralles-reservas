@@ -23,6 +23,10 @@ const fixtures = [
     'Olá, {{1}}. A {{2}} gostaria de saber sua opinião sobre o atendimento referente à sua passagem pela fila em {{3}}.\nAcesse: {{4}}.\nPreferências de mensagens: {{5}}.\nObrigado por compartilhar sua experiência.'],
   ['mkt_voucher_programado_v1', 'MARKETING', ['Marina', 'Restaurante Exemplo', '15', 'VCH12345', '30/10/2026', preferences],
     'Olá, {{1}}. A {{2}} disponibilizou {{3}}% de desconto para sua próxima visita.\nCódigo do voucher: {{4}}. Válido até {{5}}.\nApresente o código ao pagar e consulte as condições do benefício com a unidade.\nPreferências de mensagens: {{6}}.\nVocê pode atualizar sua escolha pelo link.'],
+  ['fila_mesa_pronta_v1', 'UTILITY', ['Marina', 'Restaurante Exemplo', '12'],
+    'Olá, {{1}}. Sua mesa em {{2}} está pronta.\nSenha da fila: {{3}}.\nPor favor, dirija-se à recepção.'],
+  ['res_cancelada_v1', 'UTILITY', ['Marina', 'Restaurante Exemplo', '20/10/2026', '20:30', '4', 'RES123'],
+    'Olá, {{1}}. Sua reserva em {{2}} foi cancelada.\nData: {{3}}. Horário: {{4}}. Pessoas: {{5}}.\nCódigo da reserva: {{6}}.\nSe foi engano ou quiser remarcar, responda a esta mensagem.'],
 ] as const;
 const reminder = [...fixtures[2][2]];
 const renderReminder = (position: number, value: unknown) => {
@@ -32,9 +36,24 @@ const renderReminder = (position: number, value: unknown) => {
 };
 
 describe('catálogo fixo', () => {
-  it('possui os sete IDs e contagens da spec', () => {
+  it('possui os nove IDs e contagens da spec', () => {
     expect(Object.keys(TEMPLATE_CATALOG)).toEqual(fixtures.map(([id]) => id));
-    expect(Object.values(TEMPLATE_CATALOG).map(d => d.variables.length)).toEqual([7, 8, 6, 4, 5, 5, 6]);
+    expect(Object.values(TEMPLATE_CATALOG).map(d => d.variables.length)).toEqual([7, 8, 6, 4, 5, 5, 6, 3, 6]);
+  });
+  it('mesa pronta e cancelamento são UTILITY com gatilho próprio e parâmetros validados', () => {
+    expect(TEMPLATE_CATALOG.fila_mesa_pronta_v1).toMatchObject({ requestedCategory: 'UTILITY', allowedTriggers: ['waitlist_table_ready'] });
+    expect(TEMPLATE_CATALOG.fila_mesa_pronta_v1.variables.map(v => v.kind)).toEqual(['customer', 'unit', 'queue_code']);
+    expect(TEMPLATE_CATALOG.fila_mesa_pronta_v1.variables[2]).toEqual({ name: 'senha_fila', kind: 'queue_code', maxLength: 10 });
+    expect(TEMPLATE_CATALOG.res_cancelada_v1).toMatchObject({ requestedCategory: 'UTILITY', allowedTriggers: ['reservation_cancelled'] });
+    expect(TEMPLATE_CATALOG.res_cancelada_v1.variables.map(v => v.kind)).toEqual(['customer', 'unit', 'date', 'time', 'people', 'reservation_code']);
+    expect(renderTemplate('fila_mesa_pronta_v1', [' Marina ', 'Unidade', 7]).body).toBe('Olá, Marina. Sua mesa em Unidade está pronta.\nSenha da fila: 7.\nPor favor, dirija-se à recepção.');
+    for (const value of [null, '', 'A1', 0, 1.5, '12345678901']) expect(() => renderTemplate('fila_mesa_pronta_v1', ['Marina', 'Unidade', value])).toThrow('template_parameter_invalid');
+    const cancelled: unknown[] = [...fixtures[8][2]];
+    for (const [position, value] of [[2, '31/04/2026'], [3, '24:00'], [4, '0'], [5, '']] as const) {
+      const parameters = [...cancelled]; parameters[position] = value;
+      expect(() => renderTemplate('res_cancelada_v1', parameters)).toThrow('template_parameter_invalid');
+    }
+    expect(() => renderTemplate('res_cancelada_v1', cancelled.slice(1))).toThrow('template_parameter_count');
   });
   it.each(fixtures)('preserva texto, categoria e parâmetros de %s', (id, category, parameters, body) => {
     const definition = TEMPLATE_CATALOG[id];
@@ -171,6 +190,13 @@ describe('links fail-closed', () => {
 });
 
 describe('hash canônico', () => {
+  it.each(['fila_mesa_pronta_v1', 'res_cancelada_v1'] as const)('hash estável e distinto para %s', async id => {
+    const hash = await catalogHash(TEMPLATE_CATALOG[id]);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(await catalogHash(TEMPLATE_CATALOG[id])).toBe(hash);
+    const others = await Promise.all(Object.values(TEMPLATE_CATALOG).filter(d => d.id !== id).map(d => catalogHash(d)));
+    expect(others).not.toContain(hash);
+  });
   it('é SHA256 e exclui exemplos e metadados de análise', async () => {
     const definition = TEMPLATE_CATALOG.res_lembrete_dia_v1;
     const hash = await catalogHash(definition);

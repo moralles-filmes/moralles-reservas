@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { supabase } from '@/lib/supabase';
 import { canonicalBrPhone, isValidBrPhone } from '@/lib/phone';
 import { TEMPLATE_CATALOG } from '../../supabase/functions/_shared/whatsapp-template-catalog-core';
-import { AUTOMATION_PREFLIGHT_REASONS } from '../../supabase/functions/_shared/whatsapp-automation-core';
+import { AUTOMATION_PREFLIGHT_REASONS, SCHEDULED_KINDS } from '../../supabase/functions/_shared/whatsapp-automation-core';
 import {
   canManageTemplateRequest, decodeConsentState, parseTemplateManagementRequest,
   type ConsentPurpose, type TemplateManagementRequest, type TemplateRole
@@ -28,7 +28,7 @@ const templateSchema = z.object({
 const safeReasons = new Set<string>([...AUTOMATION_PREFLIGHT_REASONS, 'channel_unconfigured', 'binding_unconfigured', 'template_unconfigured', 'render_missing', 'promotion_frequency', 'final_service_suspended', 'final_channel_changed', 'final_consent_changed', 'final_resource_changed', 'final_gate_paused', 'submission_history_protected', 'submission_paused', 'existing_template', 'post_lease_expired', 'post_ambiguous', 'response_invalid', 'documented_preproxy_429', 'provider_rejected', 'auth_rejected', 'template_rejected', 'unknown_reason']);
 const commonJob = { jobId: uuid, logicalId: logicalId.nullable(), reason: z.string().refine(s => safeReasons.has(s)).nullable(), attempts: z.number().int().min(0).max(5), channelId: uuid.nullable() };
 const jobSchema = z.discriminatedUnion('target', [
-  z.object({ ...commonJob, target: z.literal('automation'), state: z.enum(['queued', 'claimed', 'posting', 'accepted', 'blocked', 'expired', 'uncertain', 'retry_wait', 'needs_review', 'failed', 'reconciled', 'paused', 'rejected']), pinPhase: z.enum(['bound', 'preconfiguration']), kind: z.enum(['confirmation', 'reminder_d1', 'survey_d1', 'waitlist_entered', 'waitlist_feedback', 'voucher_issued']), factAt: date, deadline: date }).strict(),
+  z.object({ ...commonJob, target: z.literal('automation'), state: z.enum(['queued', 'claimed', 'posting', 'accepted', 'blocked', 'expired', 'uncertain', 'retry_wait', 'needs_review', 'failed', 'reconciled', 'paused', 'rejected']), pinPhase: z.enum(['bound', 'preconfiguration']), kind: z.enum(SCHEDULED_KINDS), factAt: date, deadline: date }).strict(),
   z.object({ ...commonJob, target: z.literal('catalog'), state: z.enum(['queued', 'claimed', 'posting', 'accepted', 'rejected', 'uncertain', 'failed', 'done', 'paused', 'needs_review']), pinPhase: z.null(), createdAt: date, dueAt: date }).strict(),
 ]);
 const snapshotSchema = z.object({
@@ -43,7 +43,8 @@ const snapshotSchema = z.object({
   if (absent && s.configuration.bindingGeneration !== null) return false;
   if (s.mode === 'official' && !['Datafy', 'Meta'].includes(s.providerLabel)) return false;
   if (s.mode === 'unofficial' && !['Z-API', 'WAHA', 'UazAPI'].includes(s.providerLabel)) return false;
-  return s.templates.length === Object.keys(TEMPLATE_CATALOG).length && new Set(s.templates.map(t => t.logicalId)).size === s.templates.length;
+  // Subset, not equality: an older Edge Function projects a smaller catalog during deploy windows. Ids are known (enum) and unique.
+  return s.templates.length <= Object.keys(TEMPLATE_CATALOG).length && new Set(s.templates.map(t => t.logicalId)).size === s.templates.length;
 });
 export type TemplateSnapshot = z.infer<typeof snapshotSchema>;
 export type OfficialTemplateView = z.infer<typeof templateSchema>;

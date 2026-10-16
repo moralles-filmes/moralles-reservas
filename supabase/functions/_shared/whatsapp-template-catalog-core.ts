@@ -2,7 +2,7 @@
 export type TemplateId =
   | 'res_confirmacao_v1' | 'res_confirmacao_desconto_v1' | 'res_lembrete_dia_v1'
   | 'res_pesquisa_reserva_v1' | 'fila_entrada_v1' | 'fila_feedback_v1'
-  | 'mkt_voucher_programado_v1';
+  | 'mkt_voucher_programado_v1' | 'fila_mesa_pronta_v1' | 'res_cancelada_v1';
 
 type VariableKind = 'customer' | 'unit' | 'date' | 'time' | 'people'
   | 'reservation_code' | 'queue_code' | 'voucher_code' | 'percent'
@@ -115,6 +115,16 @@ export const TEMPLATE_CATALOG: Readonly<Record<TemplateId, TemplateDefinition>> 
     'Olá, {{1}}. A {{2}} disponibilizou {{3}}% de desconto para sua próxima visita.\nCódigo do voucher: {{4}}. Válido até {{5}}.\nApresente o código ao pagar e consulte as condições do benefício com a unidade.\nPreferências de mensagens: {{6}}.\nVocê pode atualizar sua escolha pelo link.',
     [customer, unit, percent, variable('codigo_voucher', 'voucher_code', 64), variable('validade', 'date', 10), preferences],
     ['Marina', 'Restaurante Exemplo', '15', 'VCH12345', '30/10/2026', EXAMPLE_PREFERENCES],
+  ),
+  fila_mesa_pronta_v1: definition(
+    'fila_mesa_pronta_v1', 'UTILITY', 'Aviso de mesa pronta da fila', ['waitlist_table_ready'],
+    'Olá, {{1}}. Sua mesa em {{2}} está pronta.\nSenha da fila: {{3}}.\nPor favor, dirija-se à recepção.',
+    [customer, unit, variable('senha_fila', 'queue_code', 10)], ['Marina', 'Restaurante Exemplo', '12'],
+  ),
+  res_cancelada_v1: definition(
+    'res_cancelada_v1', 'UTILITY', 'Aviso de reserva cancelada', ['reservation_cancelled'],
+    'Olá, {{1}}. Sua reserva em {{2}} foi cancelada.\nData: {{3}}. Horário: {{4}}. Pessoas: {{5}}.\nCódigo da reserva: {{6}}.\nSe foi engano ou quiser remarcar, responda a esta mensagem.',
+    [customer, unit, date, time, people, reservationCode], ['Marina', 'Restaurante Exemplo', '20/10/2026', '20:30', '4', 'RES123'],
   ),
 });
 
