@@ -8,7 +8,9 @@ import {
   decideConfirm,
   decideStartStep,
   decideSubscribeStep,
+  decideReplacementConnectionRecorded,
   deriveOfficialChecklist,
+  isDatafyMigrationGrant,
   isDisposableRemoteChannel,
 } from "../../supabase/functions/_shared/datafy-onboarding-core.ts";
 import type {
@@ -50,6 +52,7 @@ function startInput(overrides: Partial<StartInput> = {}): StartInput {
     grantActive: true,
     gatesAllowed: true,
     unitHasActiveChannel: false,
+    migrationAllowed: false,
     onboarding: null,
     remote: null,
     ...overrides,
@@ -93,6 +96,46 @@ describe("decideStartStep — ordem: liberação → gates → unidade ativa →
 
   it("sem onboarding → open_onboarding", () => {
     expect(decideStartStep(startInput())).toEqual({ kind: "open_onboarding" });
+  });
+
+  describe("migração: liberação presa ao binding atual", () => {
+    it("migrationAllowed === true deixa a unidade com canal ativo seguir para o estado", () => {
+      expect(decideStartStep(startInput({ unitHasActiveChannel: true, migrationAllowed: true })))
+        .toEqual({ kind: "open_onboarding" });
+      expect(decideStartStep(startInput({
+        unitHasActiveChannel: true, migrationAllowed: true,
+        onboarding: onboarding("webhook_ready"), remote: NO_NUMBER_ON_TRIAL,
+      }))).toEqual({ kind: "issue_link" });
+    });
+
+    it("migrationAllowed false ou não-boolean falha fechado com canal ativo", () => {
+      for (const migrationAllowed of [false, ...ODD_VALUES]) {
+        expect(decideStartStep(startInput({
+          unitHasActiveChannel: true, migrationAllowed: migrationAllowed as boolean,
+        }))).toEqual({ kind: "refuse", code: "UNIT_ALREADY_ACTIVE" });
+      }
+      // `unitHasActiveChannel` malformado continua contando como canal ativo.
+      for (const unitHasActiveChannel of ODD_VALUES) {
+        expect(decideStartStep(startInput({
+          unitHasActiveChannel: unitHasActiveChannel as boolean, migrationAllowed: "true" as unknown as boolean,
+        }))).toEqual({ kind: "refuse", code: "UNIT_ALREADY_ACTIVE" });
+      }
+    });
+
+    it("migração não dispensa liberação nem gates (ordem preservada)", () => {
+      expect(decideStartStep(startInput({
+        grantActive: false, unitHasActiveChannel: true, migrationAllowed: true,
+      }))).toEqual({ kind: "refuse", code: "GRANT_REQUIRED" });
+      expect(decideStartStep(startInput({
+        gatesAllowed: false, unitHasActiveChannel: true, migrationAllowed: true,
+      }))).toEqual({ kind: "refuse", code: "PROVISIONING_BLOCKED" });
+    });
+
+    it("sem canal ativo, migrationAllowed não muda a decisão", () => {
+      for (const migrationAllowed of [true, false]) {
+        expect(decideStartStep(startInput({ migrationAllowed }))).toEqual({ kind: "open_onboarding" });
+      }
+    });
   });
 
   it("onboarding completed/abandoned → ONBOARDING_CLOSED", () => {
@@ -1095,6 +1138,44 @@ describe("deriveOfficialChecklist — só estado persistido", () => {
     }
   });
 
+  describe("migrationHold: corte manual pelo suporte", () => {
+    const subscribedAt = "2026-10-14T12:01:00+00:00";
+    const echoVerifiedAt = "2026-10-14T12:05:00+00:00";
+
+    it("assinado, eco presente e inativo → awaiting_cutover, com os mesmos itens", () => {
+      for (const isActive of [false, null]) {
+        const channel = channelRow({ subscribedAt, echoVerifiedAt, isActive, activationRequestedAt: null });
+        const held = checklist({ channel, migrationHold: true });
+        expect(held.step).toBe("awaiting_cutover");
+        expect(held.items).toEqual(checklist({ channel }).items);
+        expect(doneIds(held)).toEqual([...UP_TO_NUMBER, "subscribed", "echo_verified"]);
+      }
+    });
+
+    it("sem eco, sem assinatura ou já ativo: migrationHold não muda a etapa", () => {
+      for (const channel of [
+        channelRow({ subscribedAt }),
+        channelRow({ subscribedAt, isActive: true }),
+        channelRow(),
+        channelRow({ echoVerifiedAt, isActive: false }),
+        channelRow({ subscribedAt, echoVerifiedAt, isActive: true }),
+      ]) {
+        expect(checklist({ channel, migrationHold: true })).toEqual(checklist({ channel }));
+      }
+      for (const input of [{}, { grantActive: true }, { grantActive: true, onboardingState: "connected" as const }]) {
+        expect(checklist({ ...input, migrationHold: true })).toEqual(checklist(input));
+      }
+    });
+
+    it("só `true` estrito retém: false, ausente ou não-boolean continua awaiting_echo", () => {
+      const channel = channelRow({ subscribedAt, echoVerifiedAt, isActive: false });
+      for (const migrationHold of [false, ...ODD_VALUES]) {
+        expect(checklist({ channel, migrationHold: migrationHold as boolean }).step).toBe("awaiting_echo");
+      }
+      expect(checklist({ channel }).step).toBe("awaiting_echo");
+    });
+  });
+
   it("templatesPending = !automationDispatchAdopted, em qualquer passo", () => {
     for (const input of [
       {},
@@ -1104,6 +1185,149 @@ describe("deriveOfficialChecklist — só estado persistido", () => {
     ]) {
       expect(checklist({ ...input, automationDispatchAdopted: false }).templatesPending).toBe(true);
       expect(checklist({ ...input, automationDispatchAdopted: true }).templatesPending).toBe(false);
+    }
+  });
+});
+
+// ─── isDatafyMigrationGrant ─────────────────────────────────────────────────
+
+type MigrationInput = Parameters<typeof isDatafyMigrationGrant>[0];
+
+function migrationInput(overrides: Partial<MigrationInput> = {}): MigrationInput {
+  return {
+    grant: { revoked_at: null, consumed_channel_id: null, replaces_channel_id: "uaz-1" },
+    binding: { id: "uaz-1", provider: "uazapi" },
+    datafyChannelIds: ["dfy-1"],
+    ...overrides,
+  };
+}
+
+describe("isDatafyMigrationGrant — espelho de assert_datafy_first_configuration", () => {
+  it("liberação ativa presa ao binding de outro provider vale", () => {
+    expect(isDatafyMigrationGrant(migrationInput())).toBe(true);
+    for (const provider of ["zapi", "waha", "official"]) {
+      expect(isDatafyMigrationGrant(migrationInput({ binding: { id: "uaz-1", provider } }))).toBe(true);
+    }
+  });
+
+  it("liberação consumida vale só se o consumidor é canal datafy da unidade", () => {
+    const consumed = (consumed_channel_id: string) =>
+      migrationInput({ grant: { revoked_at: null, consumed_channel_id, replaces_channel_id: "uaz-1" } });
+    expect(isDatafyMigrationGrant(consumed("dfy-1"))).toBe(true);
+    expect(isDatafyMigrationGrant(consumed("uaz-1"))).toBe(false);
+    expect(isDatafyMigrationGrant(consumed("dfy-other-unit"))).toBe(false);
+  });
+
+  it("liberação comum, revogada, de outro binding ou ausente não vale", () => {
+    expect(isDatafyMigrationGrant(migrationInput({
+      grant: { revoked_at: null, consumed_channel_id: null, replaces_channel_id: null },
+    }))).toBe(false);
+    expect(isDatafyMigrationGrant(migrationInput({
+      grant: { revoked_at: "2026-10-16T12:00:00Z", consumed_channel_id: null, replaces_channel_id: "uaz-1" },
+    }))).toBe(false);
+    expect(isDatafyMigrationGrant(migrationInput({ binding: { id: "uaz-2", provider: "uazapi" } }))).toBe(false);
+    expect(isDatafyMigrationGrant(migrationInput({ grant: null }))).toBe(false);
+  });
+
+  it("sem binding ou binding datafy não é migração", () => {
+    expect(isDatafyMigrationGrant(migrationInput({ binding: null }))).toBe(false);
+    expect(isDatafyMigrationGrant(migrationInput({ binding: { id: "uaz-1", provider: "datafy" } }))).toBe(false);
+  });
+
+  it("campo malformado falha fechado", () => {
+    // "true"/"false" são strings preenchidas: valem como id; malformado é o resto.
+    for (const value of ODD_VALUES.filter((odd) => typeof odd !== "string" || odd === "")) {
+      expect(isDatafyMigrationGrant(migrationInput({
+        grant: malformed({ revoked_at: null, consumed_channel_id: null, replaces_channel_id: value }),
+      }))).toBe(false);
+      expect(isDatafyMigrationGrant(migrationInput({
+        binding: malformed({ id: value, provider: "uazapi" }),
+        grant: malformed({ revoked_at: null, consumed_channel_id: null, replaces_channel_id: value }),
+      }))).toBe(false);
+      expect(isDatafyMigrationGrant(migrationInput({ binding: malformed({ id: "uaz-1", provider: value }) }))).toBe(false);
+    }
+    // Projeção sem a coluna (`undefined`) não prova "não revogada" nem "não consumida".
+    expect(isDatafyMigrationGrant(migrationInput({
+      grant: malformed({ consumed_channel_id: null, replaces_channel_id: "uaz-1" }),
+    }))).toBe(false);
+    expect(isDatafyMigrationGrant(migrationInput({
+      grant: malformed({ revoked_at: null, replaces_channel_id: "uaz-1" }),
+    }))).toBe(false);
+    expect(isDatafyMigrationGrant(migrationInput({ datafyChannelIds: malformed({}) }))).toBe(true);
+    expect(isDatafyMigrationGrant(migrationInput({
+      grant: { revoked_at: null, consumed_channel_id: "dfy-1", replaces_channel_id: "uaz-1" },
+      datafyChannelIds: malformed({}),
+    }))).toBe(false);
+  });
+});
+
+// ─── decideReplacementConnectionRecorded ────────────────────────────────────
+
+describe("decideReplacementConnectionRecorded — teto de conexões na migração", () => {
+  const uaz = { id: "uaz-1", provider: "uazapi" };
+  function run(options: {
+    replacementConnection?: unknown;
+    binding?: { id: unknown; provider: unknown } | null;
+    bindingError?: boolean;
+    count?: unknown;
+    countError?: boolean;
+  }) {
+    const reads: string[] = [];
+    const promise = decideReplacementConnectionRecorded({
+      replacementConnection: ("replacementConnection" in options ? options.replacementConnection : true) as boolean,
+      loadBinding: async () => {
+        reads.push("binding");
+        if (options.bindingError) throw new Error("channel_read_failed");
+        return (options.binding === undefined ? uaz : options.binding) as { id: string; provider: string | null } | null;
+      },
+      countLiveInstances: async (channelId) => {
+        reads.push(`count:${channelId}`);
+        if (options.countError) throw new Error("instance_count_failed");
+        return options.count as number;
+      },
+    });
+    return { promise, reads };
+  }
+
+  it("uma instância viva no binding estrangeiro desconta a vaga", async () => {
+    const { promise, reads } = run({ count: 1 });
+    expect(await promise).toEqual({ ok: true, recorded: true });
+    expect(reads).toEqual(["binding", "count:uaz-1"]);
+  });
+
+  it("zero ou duas instâncias não descontam (mesma regra do switch UazAPI)", async () => {
+    for (const count of [0, 2]) expect(await run({ count }).promise).toEqual({ ok: true, recorded: false });
+  });
+
+  it("binding ausente ou datafy não desconta e não conta instâncias", async () => {
+    for (const binding of [null, { id: "dfy-1", provider: "datafy" }]) {
+      const { promise, reads } = run({ binding, count: 1 });
+      expect(await promise).toEqual({ ok: true, recorded: false });
+      expect(reads).toEqual(["binding"]);
+    }
+  });
+
+  it("sem liberação de migração (ou valor não-boolean) não lê nada", async () => {
+    for (const replacementConnection of [false, ...ODD_VALUES]) {
+      const { promise, reads } = run({ replacementConnection, count: 1 });
+      expect(await promise).toEqual({ ok: true, recorded: false });
+      expect(reads).toEqual([]);
+    }
+  });
+
+  it("erro de leitura é inverificável: o chamador fecha os gates", async () => {
+    expect(await run({ bindingError: true }).promise).toEqual({ ok: false });
+    expect(await run({ countError: true }).promise).toEqual({ ok: false });
+    for (const count of [null, undefined, -1, 1.5, "1", Number.NaN]) {
+      expect(await run({ count }).promise).toEqual({ ok: false });
+    }
+  });
+
+  it("binding com id malformado não desconta", async () => {
+    for (const id of [null, undefined, "", 1]) {
+      const { promise, reads } = run({ binding: { id, provider: "uazapi" }, count: 1 });
+      expect(await promise).toEqual({ ok: true, recorded: false });
+      expect(reads).toEqual(["binding"]);
     }
   });
 });

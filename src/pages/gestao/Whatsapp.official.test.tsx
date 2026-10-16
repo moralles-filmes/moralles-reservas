@@ -62,6 +62,64 @@ describe("portal WhatsApp oficial", () => {
     expect(screen.queryByText("Nenhum número conectado")).toBeNull();
     expect(mocks.invoke.mock.calls.every(([, { body }]) => body.action === "official_connection_state")).toBe(true);
   });
+  it("migração mostra a conexão atual com lifecycle e o cartão oficial com aviso", async () => {
+    mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state"
+      ? { ...base, migration: { fromProvider: "uazapi" } }
+      : { connection: { channel_id: "uaz-1", status: "connected", display_phone: "11999990000", lifecycle_available: true, restart_available: true, disconnect_available: true } } }));
+    show();
+    expect(await screen.findByText("Conexão atual")).toBeTruthy();
+    expect(await screen.findByText("WhatsApp conectado")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reiniciar conexão" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Conectar WhatsApp oficial" })).toBeTruthy();
+    expect(screen.getByRole("note").textContent).toContain("gere um novo QR Code em Conexão atual");
+    expect(mocks.invoke.mock.calls.some(([, { body }]) => body.action === "list_client" && body.unit_id === "u1")).toBe(true);
+  });
+  it("migração com conexão atual caída oferece novo QR ao lado do cartão oficial", async () => {
+    mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state"
+      ? { ...base, step: "awaiting_echo", granted: false, migration: { fromProvider: "uazapi" } }
+      : { connection: { channel_id: "uaz-1", status: "disconnected", qr_available: true } } }));
+    show();
+    expect(await screen.findByRole("button", { name: "Conectar WhatsApp" })).toBeTruthy();
+    expect(screen.getByText("Conexão atual")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Já concluí a conexão" })).toBeTruthy();
+  });
+  it("migração pronta para corte deixa a troca com o suporte", async () => {
+    mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state"
+      ? { ...base, step: "awaiting_cutover", granted: false, migration: { fromProvider: "uazapi" } }
+      : { connection: { channel_id: "uaz-1", status: "connected" } } }));
+    show();
+    expect(await screen.findByText("Canal oficial pronto. A troca será feita pelo suporte.")).toBeTruthy();
+    expect(await screen.findByText("WhatsApp conectado")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Conectar WhatsApp oficial" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Já concluí a conexão" })).toBeNull();
+  });
+  it("cartão oficial mantém a sessão quando a migração some", async () => {
+    const popup = { location: { href: "about:blank" }, close: vi.fn() } as unknown as Window;
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    let migration: unknown = { fromProvider: "uazapi" };
+    mocks.invoke.mockImplementation((_name, { body }) => body.action === "official_connect_start"
+      ? new Promise(() => undefined)
+      : Promise.resolve({ data: body.action === "official_connection_state" ? { ...base, migration } : { connection: { channel_id: "uaz-1", status: "connected" } } }));
+    show();
+    expect(await screen.findByText("Conexão atual")).toBeTruthy();
+    const button = screen.getByRole("button", { name: "Conectar WhatsApp oficial" });
+    await act(async () => fireEvent.click(button));
+    expect(button.hasAttribute("disabled")).toBe(true);
+    migration = null;
+    await act(async () => { await client.invalidateQueries({ queryKey: ["official-connection", "u1"] }); });
+    await waitFor(() => expect(screen.queryByText("Conexão atual")).toBeNull());
+    // Mesmo nó e ainda pendente: a sessão não remontou (remontar fecharia a janela e zeraria o pending).
+    expect(screen.getByRole("button", { name: "Conectar WhatsApp oficial" })).toBe(button);
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(popup.close).not.toHaveBeenCalled();
+  });
+  it("sem migração o título da conexão legada não muda", async () => {
+    mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state" ? { ...base, granted: false, step: "not_granted" } : { channel_id: "c1", status: "connected" } }));
+    show();
+    expect(await screen.findByText("Conexão do número")).toBeTruthy();
+    expect(screen.queryByText("Conexão atual")).toBeNull();
+    expect(screen.queryByText("WhatsApp oficial")).toBeNull();
+  });
   it("sem liberação preserva conexão legada e botão QR", async () => {
     mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state" ? { ...base, granted: false, step: "not_granted" } : { channel_id: "c1", status: "disconnected", qr_available: true } }));
     show();

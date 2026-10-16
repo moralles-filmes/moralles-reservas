@@ -1,10 +1,13 @@
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { DATAFY_CONNECT_ORIGIN, type OfficialChecklist, type OnboardingState } from "../../../supabase/functions/_shared/datafy-onboarding-core";
+import { projectMigration, type OfficialMigration } from "./official-migration";
+export type { OfficialMigration } from "./official-migration";
 
 export interface OfficialConnectionState extends OfficialChecklist {
   granted: boolean;
   onboardingState: OnboardingState | null;
+  migration: OfficialMigration | null;
   connectionRevoked?: boolean;
 }
 
@@ -13,8 +16,8 @@ const ERROR_COPY: Record<string, string> = {
   PROVISIONING_BLOCKED: "A conexão não está liberada para esta unidade. Fale com o suporte.",
   ONBOARDING_BUSY: "A conexão já está sendo preparada. Aguarde e tente novamente.",
   DATAFY_RECONCILIATION_REQUIRED: "Estamos verificando uma tentativa anterior. Aguarde antes de tentar novamente.",
-  DATAFY_MIGRATION_NOT_SUPPORTED: "Esta unidade já usa outra conexão. Fale com o suporte para fazer a troca.",
-  UNIT_ALREADY_ACTIVE: "Esta unidade já tem um canal ativo. Atualize o estado da conexão.",
+  DATAFY_MIGRATION_NOT_SUPPORTED: "Esta unidade usa outro provedor. Fale com o suporte para liberar a migração para a API oficial.",
+  UNIT_ALREADY_ACTIVE: "Esta unidade já usa outra conexão de WhatsApp. Fale com o suporte para migrar para a API oficial.",
   DATAFY_ACCOUNT_UNAVAILABLE: "A conexão oficial está indisponível. Tente novamente mais tarde ou fale com o suporte.",
 };
 class OfficialConnectionError extends Error {}
@@ -44,13 +47,14 @@ async function invokeOfficial(action: string, unitId: string) {
 }
 
 export async function readOfficialConnection(unitId: string): Promise<OfficialConnectionState | null> {
-  const data: OfficialConnectionState | null = await invokeOfficial("official_connection_state", unitId);
+  const data: (Omit<OfficialConnectionState, "migration"> & { migration?: unknown }) | null = await invokeOfficial("official_connection_state", unitId);
   if (!data) return null;
   // Project the client-safe contract: accidental extra DTO fields never reach the query cache.
   return {
     step: data.step, granted: data.granted === true, onboardingState: data.onboardingState,
     items: data.items.map(({ id, done }) => ({ id, done })),
     templatesPending: data.templatesPending === true,
+    migration: projectMigration(data.migration),
     ...(data.connectionRevoked === true ? { connectionRevoked: true } : {}),
   };
 }

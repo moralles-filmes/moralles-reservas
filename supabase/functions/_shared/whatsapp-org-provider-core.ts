@@ -48,10 +48,15 @@ function byCreatedAtAsc(a: OrgChannelInput, b: OrgChannelInput): number {
  *
  * Canal ativo porem desconectado continua sendo o binding: e ele que voltara a
  * enviar quando reconectar, e nenhum outro pode assumir enquanto ele existir.
+ *
+ * Devolve a PROPRIA linha recebida (generico so no tipo): quem passa `id`
+ * recebe o `id` do binding. Empate de `created_at` mantem a ordem de entrada;
+ * para casar com o SQL (`created_at asc nulls last, id`), quem consulta ordena
+ * a leitura por `created_at` e depois `id`.
  */
-export function resolveUnitChannelBinding(
-  channels: readonly OrgChannelInput[] | null | undefined,
-): OrgChannelInput | null {
+export function resolveUnitChannelBinding<T extends OrgChannelInput>(
+  channels: readonly T[] | null | undefined,
+): T | null {
   const rows = (channels ?? []).filter((c) => !!c?.provider);
   if (rows.length === 0) return null;
 

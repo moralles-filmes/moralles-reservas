@@ -87,6 +87,13 @@ export type StartStepDecision =
  * Ordem: liberação → gates → unidade ativa → estado. Nenhum passo avança sem
  * liberação e gates.
  *
+ * `unitHasActiveChannel` recusa com `UNIT_ALREADY_ACTIVE`, exceto quando
+ * `migrationAllowed === true`: a liberação ativa está presa ao binding atual
+ * (`replaces_channel_id`, gravado pelo servidor) e o canal oficial nasce para
+ * substituí-lo depois, por corte manual. Qualquer outro valor de
+ * `migrationAllowed` falha fechado. A autoridade é o SQL
+ * (`assert_datafy_first_configuration`); aqui é só a recusa antecipada.
+ *
  * `onboarding` é o onboarding ABERTO da unidade (não `completed`/`abandoned`),
  * ou `null` quando não há nenhum aberto. Passar um fechado devolve
  * `ONBOARDING_CLOSED`, nunca `open_onboarding`.
@@ -102,12 +109,15 @@ export function decideStartStep(input: {
   grantActive: boolean;
   gatesAllowed: boolean; // resolveWhatsAppGateByUnit + checkChannelConnectionAllowance
   unitHasActiveChannel: boolean;
+  migrationAllowed: boolean; // liberação ativa presa ao binding atual (isDatafyMigrationGrant)
   onboarding: { state: OnboardingState; datafyChannelId: string | null; datafyWebhookId: string | null } | null;
   remote: RemoteChannelState | null; // obrigatório em channel_created/webhook_ready; o adapter faz o GET antes
 }): StartStepDecision {
   if (input.grantActive !== true) return { kind: "refuse", code: "GRANT_REQUIRED" };
   if (input.gatesAllowed !== true) return { kind: "refuse", code: "PROVISIONING_BLOCKED" };
-  if (input.unitHasActiveChannel !== false) return { kind: "refuse", code: "UNIT_ALREADY_ACTIVE" };
+  if (input.unitHasActiveChannel !== false && input.migrationAllowed !== true) {
+    return { kind: "refuse", code: "UNIT_ALREADY_ACTIVE" };
+  }
 
   const onboarding = input.onboarding;
   if (!onboarding) return { kind: "open_onboarding" };
@@ -154,6 +164,80 @@ export function decideStartStep(input: {
  */
 export function isDisposableRemoteChannel(channel: { subscribed: boolean; phoneNumberId: string | null }): boolean {
   return channel.subscribed === false && channel.phoneNumberId === null;
+}
+
+// ─── migração de loja em produção ───────────────────────────────────────────
+
+/**
+ * A liberação autoriza o canal oficial a nascer AO LADO do binding atual de
+ * outro provider? Espelho TS do terceiro caso de
+ * `assert_datafy_first_configuration`, que é a autoridade; aqui só antecipa a
+ * recusa e escolhe a mensagem. Uma única regra para `start`, `confirm`,
+ * `subscribe`, para o teto de conexões e para o `begin_switch`.
+ *
+ * Exige, todos estritos:
+ * - `binding` de provider preenchido e diferente de `datafy` (sem binding ou
+ *   binding datafy é a primeira configuração, não migração);
+ * - liberação com `revoked_at === null` (`undefined` = projeção sem a coluna,
+ *   não prova nada);
+ * - `replaces_channel_id === binding.id`: o pin é gravado pelo servidor no
+ *   INSERT e é imutável; binding trocado depois da liberação a invalida;
+ * - `consumed_channel_id === null`, ou um id em `datafyChannelIds` (canais
+ *   `datafy` da MESMA unidade, lidos pelo adapter).
+ */
+export function isDatafyMigrationGrant(input: {
+  grant: { revoked_at: string | null; consumed_channel_id: string | null; replaces_channel_id: string | null } | null;
+  binding: { id: string; provider: string | null } | null;
+  datafyChannelIds: readonly string[];
+}): boolean {
+  const { grant, binding } = input;
+  if (!grant || !binding) return false;
+  if (!isFilled(binding.provider) || binding.provider === "datafy" || !isFilled(binding.id)) return false;
+  if (grant.revoked_at !== null) return false;
+  if (!isFilled(grant.replaces_channel_id) || grant.replaces_channel_id !== binding.id) return false;
+  if (grant.consumed_channel_id === null) return true;
+  return isFilled(grant.consumed_channel_id) && Array.isArray(input.datafyChannelIds)
+    && input.datafyChannelIds.includes(grant.consumed_channel_id);
+}
+
+export type ReplacementConnectionDecision = { ok: true; recorded: boolean } | { ok: false };
+
+/**
+ * Teto de conexões na migração (`replacementConnectionRecorded` de
+ * `checkConnectionAllowance`). Só desconta a vaga quando a liberação é de
+ * migração (`replacementConnection === true`) E o binding atual, de outro
+ * provider, tem exatamente UMA instância inventariada viva — mesma regra do
+ * switch UazAPI em `manage-channels`. Descontar sem instância inventariada
+ * liberaria conexão além do plano.
+ *
+ * I/O injetado (o núcleo segue sem imports): `loadBinding` devolve o binding
+ * resolvido por `resolveUnitChannelBinding`; ambos os leitores LANÇAM em erro
+ * de leitura. Erro, ou contagem que não seja inteiro ≥ 0, vira `{ ok: false }`
+ * — inverificável, e o chamador fecha os gates em vez de degradar.
+ */
+export async function decideReplacementConnectionRecorded(deps: {
+  replacementConnection: boolean;
+  loadBinding(): Promise<{ id: string; provider: string | null } | null>;
+  countLiveInstances(channelId: string): Promise<number>;
+}): Promise<ReplacementConnectionDecision> {
+  if (deps.replacementConnection !== true) return { ok: true, recorded: false };
+  let binding: { id: string; provider: string | null } | null;
+  try {
+    binding = await deps.loadBinding();
+  } catch {
+    return { ok: false };
+  }
+  if (!binding || !isFilled(binding.provider) || binding.provider === "datafy" || !isFilled(binding.id)) {
+    return { ok: true, recorded: false };
+  }
+  let count: number;
+  try {
+    count = await deps.countLiveInstances(binding.id);
+  } catch {
+    return { ok: false };
+  }
+  if (!Number.isSafeInteger(count) || count < 0) return { ok: false };
+  return { ok: true, recorded: count === 1 };
 }
 
 // ─── reconciliação do create_channel ────────────────────────────────────────
@@ -430,6 +514,7 @@ export type OfficialChecklistStep =
   | "connecting"
   | "subscription_pending"
   | "awaiting_echo"
+  | "awaiting_cutover"
   | "active";
 
 /**
@@ -486,15 +571,20 @@ const WEBHOOK_READY_STATES: ReadonlySet<OnboardingState> = new Set(["webhook_rea
  * Checklist mostrado ao lojista e ao admin, derivado só de estado persistido.
  * `step` é a PRIMEIRA etapa não cumprida:
  * - com linha do canal: sem `subscribedAt` → `subscription_pending` (vence até
- *   canal ativo: sem assinatura, o fim do trial para a entrega); sem eco ou
- *   inativo → `awaiting_echo`; senão `active`. A linha do canal vence a
- *   liberação, que é consumida justamente quando a assinatura confirma;
+ *   canal ativo: sem assinatura, o fim do trial para a entrega); sem eco →
+ *   `awaiting_echo`; com eco e inativo → `awaiting_cutover` se
+ *   `migrationHold === true` (migração: o finalizador não pede ativação e o
+ *   corte é manual, por `begin_switch`), senão `awaiting_echo`; senão
+ *   `active`. A linha do canal vence a liberação, que é consumida justamente
+ *   quando a assinatura confirma;
  * - sem linha: sem liberação → `not_granted`, mesmo com onboarding vivo
  *   (nada avança sem ela, e o `start` recusaria); onboarding vivo →
  *   `connecting`; senão → `ready_to_connect`.
  * `status` é ignorado DE PROPÓSITO: o checklist é de progresso, `provider_error`
  * não é queda do número, e a UI mostra o status de conexão à parte.
  * `activationRequestedAt` também não muda o progresso (detalhe do painel).
+ * `migrationHold` só muda a etapa, nunca os itens; é opcional para os
+ * chamadores sem migração, e qualquer valor que não seja `true` não retém.
  * `templatesPending = !automationDispatchAdopted`.
  */
 export function deriveOfficialChecklist(input: {
@@ -508,6 +598,7 @@ export function deriveOfficialChecklist(input: {
     activationRequestedAt: string | null;
   } | null;
   automationDispatchAdopted: boolean;
+  migrationHold?: boolean;
 }): OfficialChecklist {
   const channel = input.channel ?? null;
   const hasChannel = channel !== null;
@@ -521,7 +612,8 @@ export function deriveOfficialChecklist(input: {
   let step: OfficialChecklistStep;
   if (hasChannel) {
     if (!subscribed) step = "subscription_pending";
-    else if (!echoVerified || !active) step = "awaiting_echo";
+    else if (!echoVerified) step = "awaiting_echo";
+    else if (!active) step = input.migrationHold === true ? "awaiting_cutover" : "awaiting_echo";
     else step = "active";
   } else if (!grantActive) {
     step = "not_granted";

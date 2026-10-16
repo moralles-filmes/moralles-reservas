@@ -7,7 +7,7 @@ Este procedimento descreve o fluxo implementado. O contrato externo medido está
 - Conta Datafy com assinatura ativa e marca configurada na aba Parceiros. Conta inadimplente pode responder 403 à API administrativa.
 - Platform admin cadastra **Token da conta Datafy** no card **WhatsApp oficial (Datafy)** em Plataforma → Integrações e chaves (`/platform/integracoes`). A chave `datafy_account_token` fica em `platform_secrets`, sem fallback de ambiente; mensagens/status/templates continuam com token de canal. Não colocar token de conta em credenciais de canal, Vercel, código ou logs.
 - Configurar endpoint HTTPS de operações por `supabase secrets set WHATSAPP_OPS_ALERT_URL=<endpoint-HTTPS-aprovado>`, pelo canal seguro de secrets, sem colar valor em ticket ou histórico compartilhado. Esse endpoint é Edge secret, diferente do token de conta.
-- Conferir serviço/allowance de novo provisionamento e liberação da unidade; platform admin também passa pelos gates de custo. Binding real de outro provider impede primeira configuração Datafy (409 `DATAFY_MIGRATION_NOT_SUPPORTED`); binding Datafy do mesmo provider é permitido. O padrão administrativo da organização não prova qual canal está em uso.
+- Conferir serviço/allowance de novo provisionamento e liberação da unidade; platform admin também passa pelos gates de custo. Binding real de outro provider impede primeira configuração Datafy (409 `DATAFY_MIGRATION_NOT_SUPPORTED`), salvo liberação de migração (seção "Migrar loja em produção"); binding Datafy do mesmo provider é permitido. O padrão administrativo da organização não prova qual canal está em uso.
 
 ## Banco antes de funções e frontend
 
@@ -50,6 +50,48 @@ Rollback do app/bundle não remove migrations nem pendências. Bloquear novas li
 4. **Já concluí a conexão** pode gerar assinatura/custo assim que o GET confirma o número. Uma liberação paga um canal; reconectar o mesmo não autoriza criar outro. A loja cadastra seu cartão nas configurações de pagamento da conta WhatsApp na Meta; a plataforma paga a assinatura Datafy.
 5. Enviar pelo app WhatsApp Business uma mensagem para qualquer contato. O eco persistido comprova Coexistence; assinatura e eco podem chegar em qualquer ordem. Sem eco, nunca ativar manualmente por SQL. GET e postMessage não provam Coexistence. Número só Cloud API fica assinado/inativo até decisão de cancelamento do admin; o card mostra aviso após 24h sem eco.
 6. Conferir checklist, intenção de ativação, canal ativo e ingestão efetiva no card. A fila exige coluna do canal + capability `inboundRedelivery=documented` + flag global `whatsapp_async_ingestion`; gate ilegível bloqueia com 503. Templates pendentes não significam automações homologadas: não liberar automações proativas fora da janela de 24h antes do piloto próprio. Lojista deve abrir o app ao menos a cada 14 dias.
+
+## Migrar loja em produção (outro provider → Datafy)
+
+Spec: [migração de loja em produção](superpowers/specs/2026-10-16-datafy-migracao-loja-em-producao-design.md). Vale para unidade cujo canal operacional é de outro provider (ex.: UazAPI).
+
+1. **Pré-requisitos:**
+   - o número está no app WhatsApp Business, versão 2.24.17 ou superior;
+   - o lojista tem acesso de administrador à empresa Meta;
+   - horário de pouco movimento combinado.
+   - Liberação comum criada antes deste fluxo não vale como migração: revogar e liberar de novo.
+2. **Liberar a migração.** Em Automação → **WhatsApp oficial (Datafy)**, o botão aparece como **Liberar migração para oficial**. O servidor prende a liberação ao canal operacional do momento (`replaces_channel_id`).
+   - Se esse canal deixar de ser o operacional antes da conexão, a liberação continua aparecendo como ativa, mas as ações recusam:
+     - **Conectar** recusa com `UNIT_ALREADY_ACTIVE`;
+     - confirmação, assinatura e **Ativar / trocar** recusam com `DATAFY_MIGRATION_NOT_SUPPORTED`.
+   - Nesse caso, revogar e liberar de novo.
+3. **Conectar e religar a UazAPI.** Owner ou gerente abre `/g/:slug/whatsapp`, que mostra **Conexão atual** e o cartão oficial, e conclui a conexão na janela Datafy.
+   - A Meta desvincula todos os aparelhos vinculados, e a UazAPI cai nesse instante.
+   - **Logo em seguida**, gerar novo QR em **Conexão atual** e escanear.
+   - Mensagens recebidas entre a queda e o novo QR não entram no sistema; continuam visíveis no celular.
+4. **Confirmar.** **Já concluí a conexão** assina o canal. Com liberação de migração, o canal oficial nasce inativo e **sem intenção**.
+   - Uma mensagem do app, ou da UazAPI revinculada, prova a coexistência.
+   - O checklist vai a `awaiting_cutover` e a UazAPI segue operando.
+5. **Preparar os templates com a loja ainda na UazAPI.** Catálogo, sync, aprovação e custo de marketing seguem o [runbook de templates](whatsapp-templates-programados-runbook.md). O catálogo exige o canal conectado, não ativo.
+6. **Corte.** **Ativar / trocar** no canal oficial (`begin_switch`). A UazAPI é desligada na mesma transação. Em seguida, liberar o despacho de templates no canal.
+   - No corte de migração, eco e conexão são conferidos **antes** de gravar a intenção. Uma recusa (409) não deixa corte armado para o próximo eco.
+   - O canal de migração nasce com `async_ingestion_enabled=false`, e o corte não o religa. Com ingestão assíncrona, uma mensagem recebida pelo canal oficial ainda inativo ficaria na fila e seria processada depois do corte, duplicando a resposta já dada pela UazAPI.
+   - Religar a ingestão assíncrona é decisão posterior e deliberada do admin.
+7. **Reversão.** **Ativar / trocar** no canal UazAPI preservado. A assinatura Datafy continua até o cancelamento administrativo.
+   - Se a UazAPI estiver desvinculada, o fluxo gera QR **no painel da plataforma** (Automação), não na tela da loja: com o oficial ainda ativo, a loja vê só o cartão oficial.
+   - Combine com a loja para escanear esse QR.
+   - Liberação consumida não pode ser revogada (CHECK). Ela continua autorizando novo corte enquanto o canal substituído for o operacional, o que permite cortar de novo depois de uma reversão.
+   - Para encerrar a migração de vez, **cancelar a assinatura** do canal Datafy: o CHECK de assinatura operacional recusa a ativação. Também dá para remover o canal Datafy.
+8. **Encerramento.** Após 7 dias estáveis, desconectar a instância UazAPI. A linha fica inativa como histórico.
+
+**Deploy da Fase 1:**
+1. `supabase db push` da migration `20261016120000_datafy_migration_grant.sql`;
+2. deploy de `manage-channels` **logo em seguida**;
+3. publicação do frontend.
+
+Não criar liberação entre o `db push` e o deploy. Nesse intervalo o bundle antigo veria uma liberação presa sem entender a migração. O finalizador novo já retém a ativação, mas uma assinatura poderia ser criada fora do fluxo previsto.
+
+`manage-organizations` não precisa de redeploy: a mudança em `whatsapp-org-provider-core.ts` é só de tipo.
 
 ## Administração e operações incertas
 

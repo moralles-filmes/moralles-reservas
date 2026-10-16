@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createDatafyOnboardingActions, type DatafyOperationalEvent } from "../../supabase/functions/_shared/datafy-onboarding-actions";
+import { createDatafyOnboardingActions, type DatafyOperationalEvent, type UnitChannelRow } from "../../supabase/functions/_shared/datafy-onboarding-actions";
+import { resolveUnitChannelBinding } from "../../supabase/functions/_shared/whatsapp-org-provider-core";
 import type { DatafyChannelSnapshot, DatafyAdminClient } from "../../supabase/functions/_shared/datafy-admin-client";
 
 type Row = Record<string, unknown>;
@@ -178,10 +179,28 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
         if (missingWrite === ONBOARDINGS) { missingWrite = null; return { data: null, error: { code: "finalize_failed" } }; }
         const g = tables[GRANTS].find((row) => row.id === args.p_grant_id);
         if (g?.revoked_at) return { data: "grant_revoked", error: null };
+        // Espelho do bloco <ativacao-retida> da 20261016120000: liberação de
+        // migração usada não roda autoridade nem ativa; os demais caminhos
+        // (inclusive p_grant_id nulo) rodam a autoridade e só ativam com
+        // binding ausente ou datafy. Recusa da autoridade desfaz tudo (rollback).
+        const migrationGrantUsed = !!args.p_grant_id && !!g?.replaces_channel_id;
+        const eligible = !!c!.provider_subscribed_at && !c!.provider_subscription_canceled_at && !c!.provider_paused_at && c!.is_active !== true;
+        let bindingProvider: string | null = null;
+        if (eligible && !migrationGrantUsed) {
+          const binding = resolveUnitChannelBinding(tables.whatsapp_channels.filter((row) => row.unit_id === unitId) as unknown as UnitChannelRow[]);
+          const pinned = !!binding && tables[GRANTS].some((row) => row.unit_id === unitId && !row.revoked_at
+            && row.replaces_channel_id === binding.id && (!row.consumed_channel_id || row.id === g?.id
+              || tables.whatsapp_channels.some((ch) => ch.id === row.consumed_channel_id && ch.unit_id === unitId && ch.provider === "datafy")));
+          if (binding?.provider && binding.provider !== "datafy" && !pinned) return { data: null, error: { code: "23514" } };
+          bindingProvider = binding?.provider ?? null;
+        }
         if (g) Object.assign(g, { consumed_channel_id: c!.id, consumed_at: "consumed" });
-        if (c!.provider_subscribed_at && !c!.provider_subscription_canceled_at && !c!.provider_paused_at) {
-          c!.activation_requested_at = "intent"; calls.push("rpc:request_whatsapp_channel_activation:");
-          if (c!.manual_echo_verified_at) { c!.is_active = true; c!.activation_requested_at = null; calls.push("rpc:activate_whatsapp_channel:"); }
+        if (eligible && !migrationGrantUsed && (bindingProvider === null || bindingProvider === "datafy")) {
+          if (!c!.activation_requested_at) { c!.activation_requested_at = "intent"; calls.push("rpc:request_whatsapp_channel_activation:"); }
+          if (c!.manual_echo_verified_at && c!.status === "connected") {
+            tables.whatsapp_channels.forEach((row) => { if (row.unit_id === unitId) row.is_active = row.id === c!.id; });
+            c!.activation_requested_at = null; calls.push("rpc:activate_whatsapp_channel:");
+          }
         }
         if (o && !["completed", "abandoned"].includes(String(o.state))) Object.assign(o, { state: "completed", channel_token: null, webhook_secret: null });
         return { data: "finalized", error: null };
@@ -231,7 +250,7 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
   };
   const tokenReader = vi.fn(async () => accountUnavailable ? { ok: false as const, reason: "unavailable" as const }
     : { ok: true as const, token: "synthetic-account-token" });
-  const gates = vi.fn(async () => options.gates !== false);
+  const gates = vi.fn(async (_unitId: string, _adminDecisionRecorded: boolean, _replacementConnection?: boolean) => options.gates !== false);
   const createActions = () => createDatafyOnboardingActions({ supabase: db as unknown as SupabaseClient, getAccountToken: tokenReader,
     getOrganizationId: async () => "org-a", gatesAllowed: gates, projectUrl: "https://project.test", createClient: options.productionClient ? undefined : () => client,
     emitEvent: (event) => { events.push(event); }, monotonicNow: () => monotonic,
@@ -544,6 +563,8 @@ describe("Datafy onboarding: I/O com decisões reais", () => {
     expect((await h.run("official_connect_confirm")).status).toBe(200);
     const stored = h.tables.whatsapp_channels[0];
     expect(stored.credentials).toMatchObject({ phone_number_id: "number-a", business_account_id: "waba-a" });
+    // Primeira configuração (sem binding) mantém a ingestão assíncrona.
+    expect(stored.async_ingestion_enabled).toBe(true);
     expect(stored.is_active).toBe(false); expect(stored.activation_requested_at).toBe("intent");
     expect(h.tables[ONBOARDINGS][0]).toMatchObject({ state: "completed", channel_token: null, webhook_secret: null });
     expect(h.tables[GRANTS][0].consumed_channel_id).toBe(channelId);
@@ -902,5 +923,178 @@ describe("Datafy onboarding: I/O com decisões reais", () => {
     expect(response.status).toBe(409); expect(response.body).toMatchObject({ code: "DATAFY_CHANNEL_NOT_LINKED" });
     expect(h.client.getChannel).not.toHaveBeenCalled(); expect(h.client.subscribe).not.toHaveBeenCalled();
     expect(h.client.cancel).not.toHaveBeenCalled(); expect(h.client.pause).not.toHaveBeenCalled(); expect(h.client.resume).not.toHaveBeenCalled();
+  });
+});
+
+// Migração de loja em produção: o binding UazAPI segue operando e a liberação
+// fica presa ao id dele (`replaces_channel_id`, gravado pelo trigger SQL).
+const UAZ = "uaz-a";
+const uazBinding = (): Row => ({ id: UAZ, unit_id: unitId, provider: "uazapi", status: "connected", is_active: true,
+  credentials: { instance_id: "synthetic-uaz-instance" }, webhook_secret: "synthetic-uaz-secret", created_at: "2026-01-01T00:00:00Z" });
+function withMigration(h: ReturnType<typeof harness>, pin: string | null = UAZ) {
+  h.tables.whatsapp_channels.push(uazBinding());
+  h.tables[GRANTS][0].replaces_channel_id = pin;
+  return h;
+}
+const datafyRow = (h: ReturnType<typeof harness>) => h.tables.whatsapp_channels.find((row) => row.id === channelId)!;
+const uazRow = (h: ReturnType<typeof harness>) => h.tables.whatsapp_channels.find((row) => row.id === UAZ)!;
+
+describe("Datafy onboarding: migração de loja com binding de outro provider", () => {
+  it("start segue com binding UazAPI quando a liberação ativa está presa a ele", async () => {
+    const h = withMigration(harness({ noOnboarding: true }));
+    const response = await h.run("official_connect_start");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ url: expect.any(String) });
+    expect(h.client.createChannel).toHaveBeenCalledTimes(1);
+    expect(h.gates.mock.calls.length).toBeGreaterThan(0);
+    expect(h.gates.mock.calls.every((call) => call[0] === unitId && call[1] === true && call[2] === true)).toBe(true);
+    expect(uazRow(h).is_active).toBe(true);
+  });
+
+  it("confirm assina, consome a liberação, chama o finalizador e retém a ativação", async () => {
+    const h = withMigration(harness());
+    const response = await h.run("official_connect_confirm");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ step: "awaiting_echo", migration: { fromProvider: "uazapi" } });
+    expect(h.client.subscribe).toHaveBeenCalledTimes(1);
+    expect(h.calls).toContain("rpc:finalize_datafy_channel_subscription:");
+    expect(h.calls).not.toContain("rpc:request_whatsapp_channel_activation:");
+    expect(datafyRow(h)).toMatchObject({ provider: "datafy", is_active: false, activation_requested_at: null });
+    expect(h.tables[GRANTS][0]).toMatchObject({ consumed_channel_id: channelId, replaces_channel_id: UAZ });
+    expect(uazRow(h).is_active).toBe(true);
+    expect(h.gates.mock.calls.every((call) => call[2] === true)).toBe(true);
+    // Canal inativo até o corte: ingestão síncrona descarta o inbound; a fila o reprocessaria depois do corte.
+    expect(datafyRow(h).async_ingestion_enabled).toBe(false);
+  });
+
+  it("eco presente e canal inativo → awaiting_cutover; após o corte, migration some", async () => {
+    const h = withMigration(harness({ state: "connected", withChannel: true, echo: true }));
+    const response = await h.run("official_connect_confirm");
+    expect(response.status).toBe(200);
+    expect(h.calls).toContain("rpc:finalize_datafy_channel_subscription:");
+    expect(h.calls).not.toContain("rpc:activate_whatsapp_channel:");
+    expect(response.body).toMatchObject({ step: "awaiting_cutover", migration: { fromProvider: "uazapi" } });
+    expect(datafyRow(h)).toMatchObject({ is_active: false, activation_requested_at: null });
+    // Corte manual (begin_switch → activate_whatsapp_channel) troca as linhas.
+    uazRow(h).is_active = false; datafyRow(h).is_active = true;
+    expect((await h.run("official_connection_state")).body).toMatchObject({ step: "active", migration: null });
+    // Reversão (begin_switch para a UazAPI) devolve o corte pendente.
+    uazRow(h).is_active = true; datafyRow(h).is_active = false;
+    expect((await h.run("official_connection_state")).body).toMatchObject({ step: "awaiting_cutover", migration: { fromProvider: "uazapi" } });
+  });
+
+  it("admin datafy_subscribe aceita o binding preso e passa replacementConnection", async () => {
+    const h = withMigration(harness({ noOnboarding: true, withChannel: true }));
+    const response = await h.run("datafy_subscribe");
+    expect(response.status).toBe(200);
+    expect(h.client.subscribe).toHaveBeenCalledTimes(1);
+    expect(h.gates).toHaveBeenCalledWith(unitId, true, true);
+    expect(h.calls).not.toContain("rpc:request_whatsapp_channel_activation:");
+    expect(datafyRow(h).is_active).toBe(false);
+  });
+
+  it.each([
+    ["liberação comum (sem pin)", null],
+    ["binding trocado depois da liberação", "uaz-old"],
+  ])("%s com binding UazAPI é recusada em start, confirm e subscribe", async (_label, pin) => {
+    const start = withMigration(harness({ noOnboarding: true }), pin);
+    expect(await start.run("official_connect_start")).toMatchObject({ status: 409, body: { code: "UNIT_ALREADY_ACTIVE" } });
+    expect(start.client.createChannel).not.toHaveBeenCalled(); expect(start.client.getChannel).not.toHaveBeenCalled();
+
+    const confirm = withMigration(harness(), pin);
+    expect(await confirm.run("official_connect_confirm")).toMatchObject({ status: 409, body: { code: "DATAFY_MIGRATION_NOT_SUPPORTED" } });
+    expect(confirm.client.subscribe).not.toHaveBeenCalled();
+    expect(confirm.tables.whatsapp_channels.some((row) => row.provider === "datafy")).toBe(false);
+
+    const subscribe = withMigration(harness({ noOnboarding: true, withChannel: true }), pin);
+    expect(await subscribe.run("datafy_subscribe")).toMatchObject({ status: 409, body: { code: "DATAFY_MIGRATION_NOT_SUPPORTED" } });
+    expect(subscribe.client.subscribe).not.toHaveBeenCalled();
+    expect(subscribe.tables[GRANTS][0].consumed_at).toBeNull();
+    expect(subscribe.gates.mock.calls.every((call) => call[2] === false)).toBe(true);
+  });
+
+  it("liberação revogada não sustenta a migração", async () => {
+    const h = withMigration(harness());
+    h.tables[GRANTS][0].revoked_at = "revoked";
+    expect(await h.run("official_connect_confirm")).toMatchObject({ status: 409, body: { code: "DATAFY_MIGRATION_NOT_SUPPORTED" } });
+    expect(h.client.subscribe).not.toHaveBeenCalled();
+  });
+
+  it("DTO expõe só o provider substituído, sem ids nem credenciais", async () => {
+    const h = withMigration(harness({ noOnboarding: true }));
+    const response = await h.run("official_connection_state");
+    expect(response.status).toBe(200);
+    expect((response.body as { migration: unknown }).migration).toEqual({ fromProvider: "uazapi" });
+    const serialized = JSON.stringify(response.body);
+    for (const leak of [UAZ, "grant-a", "synthetic-uaz", "replaces_channel_id", "consumed_channel_id", "credentials", "webhook_secret"]) {
+      expect(serialized).not.toContain(leak);
+    }
+    const plain = harness({ noOnboarding: true });
+    expect((await plain.run("official_connection_state")).body).toMatchObject({ migration: null, step: "ready_to_connect" });
+  });
+
+  it("vínculo administrativo (p_grant_id nulo) com binding UazAPI retém intenção e ativação", async () => {
+    const h = withMigration(harness({ noOnboarding: true, withChannel: true, echo: true, subscribed: true }));
+    h.tables[GRANTS][0] = { ...h.tables[GRANTS][0], consumed_channel_id: channelId, consumed_at: "consumed" };
+    datafyRow(h).provider_subscribed_at = "subscribed";
+    const response = await h.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "remote-a" });
+    expect(response.status).toBe(200);
+    expect(h.calls).toContain("rpc:finalize_datafy_channel_subscription:");
+    expect(h.calls).not.toContain("rpc:request_whatsapp_channel_activation:");
+    expect(h.calls).not.toContain("rpc:activate_whatsapp_channel:");
+    expect(datafyRow(h)).toMatchObject({ is_active: false, activation_requested_at: null });
+    expect(uazRow(h).is_active).toBe(true);
+
+    // Sem liberação presa ao binding, a autoridade do finalizador recusa (e nada ativa).
+    const plain = withMigration(harness({ noOnboarding: true, withChannel: true, echo: true, subscribed: true }), null);
+    expect((await plain.run("datafy_link_existing", { phase: "link", expected_datafy_channel_id: "remote-a" })).status).toBeGreaterThanOrEqual(400);
+    expect(plain.calls).not.toContain("rpc:request_whatsapp_channel_activation:");
+    expect(plain.calls).not.toContain("rpc:activate_whatsapp_channel:");
+    expect(uazRow(plain).is_active).toBe(true);
+  });
+
+  it("binding trocado para outra linha estrangeira: migration null e sem retenção de corte", async () => {
+    const h = withMigration(harness({ state: "completed", withChannel: true, echo: true }), "uaz-old");
+    h.tables.whatsapp_channels.push({ ...uazBinding(), id: "uaz-old", is_active: false });
+    Object.assign(h.tables[GRANTS][0], { consumed_channel_id: channelId, consumed_at: "consumed" });
+    datafyRow(h).provider_subscribed_at = "subscribed";
+    const response = await h.run("official_connection_state");
+    expect(response.body).toMatchObject({ migration: null, step: "awaiting_echo" });
+  });
+
+  it("legado NULL desconectado (sem binding) com liberação presa: confirm grava ingestão síncrona", async () => {
+    const h = withMigration(harness());
+    Object.assign(uazRow(h), { is_active: null, status: "disconnected" });
+    expect((await h.run("official_connect_confirm")).status).toBe(200);
+    expect(datafyRow(h).async_ingestion_enabled).toBe(false);
+    // Controle: primeira configuração com o mesmo legado e liberação sem pin segue assíncrona.
+    const plain = withMigration(harness(), null);
+    Object.assign(uazRow(plain), { is_active: null, status: "disconnected" });
+    expect((await plain.run("official_connect_confirm")).status).toBe(200);
+    expect(datafyRow(plain).async_ingestion_enabled).toBe(true);
+  });
+
+  it("binding ausente (legado caiu enquanto reconecta) mantém a migração visível", async () => {
+    const h = withMigration(harness({ state: "completed", withChannel: true, echo: true }));
+    Object.assign(uazRow(h), { is_active: null, status: "disconnected" });
+    Object.assign(h.tables[GRANTS][0], { consumed_channel_id: channelId, consumed_at: "consumed" });
+    datafyRow(h).provider_subscribed_at = "subscribed";
+    const response = await h.run("official_connection_state");
+    expect(response.body).toMatchObject({ migration: { fromProvider: "uazapi" }, step: "awaiting_cutover" });
+  });
+
+  it("sem migração o terceiro argumento de gatesAllowed é false", async () => {
+    const h = harness({ noOnboarding: true });
+    expect((await h.run("official_connect_start")).status).toBe(200);
+    expect(h.gates.mock.calls.length).toBeGreaterThan(0);
+    expect(h.gates.mock.calls.every((call) => call[2] === false)).toBe(true);
+  });
+
+  it("toda projeção da tabela de liberações inclui replaces_channel_id", () => {
+    const source = readFileSync(resolve(__dirname, "../../supabase/functions/_shared/datafy-onboarding-actions.ts"), "utf8");
+    const grantReads = [...source.matchAll(/from\(GRANTS\)\.select\(([^)]*)\)/g)].map((match) => match[1]);
+    expect(grantReads.length).toBeGreaterThan(0);
+    for (const projection of grantReads) expect(projection).toMatch(/replaces_channel_id|GRANT_COLUMNS/);
+    expect(source).toMatch(/const GRANT_COLUMNS = "[^"]*\breplaces_channel_id\b[^"]*"/);
   });
 });

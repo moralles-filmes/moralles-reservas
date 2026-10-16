@@ -4,12 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OfficialConnectionCard } from "./OfficialConnectionCard";
 import { DATAFY_CONNECT_ORIGIN } from "../../../supabase/functions/_shared/datafy-onboarding-core";
 
-const mocks = vi.hoisted(() => ({ start: vi.fn(), confirm: vi.fn(), error: vi.fn() }));
+const READY = { step: "ready_to_connect", granted: true, items: [], templatesPending: true, migration: null as { fromProvider: string } | null };
+const mocks = vi.hoisted(() => ({ start: vi.fn(), confirm: vi.fn(), error: vi.fn(), data: null as unknown }));
 vi.mock("sonner", () => ({ toast: { error: mocks.error } }));
 vi.mock("@/hooks/useOfficialConnection", () => ({ useOfficialConnection: () => ({
-  data: { step: "ready_to_connect", granted: true, items: [], templatesPending: true },
+  data: mocks.data,
   start: mocks.start, confirm: mocks.confirm,
 }) }));
+const MIGRATION_WARNING = "Ao conectar, o WhatsApp desconecta os aparelhos vinculados, inclusive a automação atual. Logo depois, gere um novo QR Code em Conexão atual e escaneie para a automação voltar. Faça num horário de pouco movimento.";
 const message = (origin = DATAFY_CONNECT_ORIGIN, coexistence = true) => window.dispatchEvent(new MessageEvent("message", {
   origin, data: { source: "datafy", event: "connected", data: { coexistence } },
 }));
@@ -22,6 +24,32 @@ describe("OfficialConnectionCard", () => {
     vi.spyOn(window, "open").mockReturnValue(popup);
     mocks.start.mockResolvedValue(undefined);
     mocks.confirm.mockResolvedValue(undefined);
+    mocks.data = READY;
+  });
+  it.each(["ready_to_connect", "connecting"])("migração avisa a queda antes de conectar (%s)", (step) => {
+    mocks.data = { ...READY, step, migration: { fromProvider: "uazapi" } };
+    render(<OfficialConnectionCard unitId="u1" />);
+    expect(screen.getByRole("note").textContent).toBe(MIGRATION_WARNING);
+    expect(screen.getByRole("button", { name: "Conectar WhatsApp oficial" })).toBeTruthy();
+  });
+  it("sem migração não mostra o aviso de queda", () => {
+    render(<OfficialConnectionCard unitId="u1" />);
+    expect(screen.queryByText(MIGRATION_WARNING)).toBeNull();
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+  it.each(["subscription_pending", "awaiting_echo"])("migração depois de conectar não repete o aviso (%s)", (step) => {
+    mocks.data = { ...READY, step, granted: false, migration: { fromProvider: "uazapi" } };
+    render(<OfficialConnectionCard unitId="u1" />);
+    expect(screen.queryByText(MIGRATION_WARNING)).toBeNull();
+    expect(screen.getByRole("button", { name: "Já concluí a conexão" })).toBeTruthy();
+  });
+  it("awaiting_cutover informa que a troca é do suporte e não oferece ação", () => {
+    mocks.data = { ...READY, step: "awaiting_cutover", granted: false, migration: { fromProvider: "uazapi" } };
+    render(<OfficialConnectionCard unitId="u1" />);
+    expect(screen.getByText("Canal oficial pronto. A troca será feita pelo suporte.")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByText(MIGRATION_WARNING)).toBeNull();
+    expect(screen.queryByText("Envie uma mensagem pelo app WhatsApp Business no celular para qualquer contato")).toBeNull();
   });
   afterEach(() => { cleanup(); vi.restoreAllMocks(); });
   it("abre a janela antes de start resolver e não renderiza link", async () => {

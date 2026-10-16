@@ -8,12 +8,13 @@ import {
 } from "./datafy-admin-client.ts";
 import {
   decideStartStep, decideConfirm, decideSubscribeStep, deriveOfficialChecklist,
-  decideChannelReconciliation, decideAdoptedCredentials, isDisposableRemoteChannel,
+  decideChannelReconciliation, decideAdoptedCredentials, isDisposableRemoteChannel, isDatafyMigrationGrant,
   type OnboardingState, type SubscribeGrantState,
 } from "./datafy-onboarding-core.ts";
 
 const ONBOARDINGS = "whatsapp_datafy_onboardings";
 const GRANTS = "whatsapp_official_connection_grants";
+const GRANT_COLUMNS = "id, revoked_at, consumed_at, consumed_channel_id, replaces_channel_id";
 const LIVE = ["open", "channel_created", "webhook_ready", "connected"];
 export const DATAFY_ACTIONS = new Set([
   "grant_official_connection", "revoke_official_connection", "official_connection_state",
@@ -26,7 +27,12 @@ type Onboarding = {
   channel_token: string | null; webhook_secret: string | null; state: OnboardingState;
   claim_id: string | null; claim_step: string | null; uncertain_steps: string[];
 };
-type Grant = { id: string; revoked_at: string | null; consumed_at: string | null; consumed_channel_id: string | null };
+type Grant = {
+  id: string; revoked_at: string | null; consumed_at: string | null; consumed_channel_id: string | null;
+  replaces_channel_id: string | null; // pin do binding substituído, gravado pelo trigger SQL
+};
+/** Linha mínima para o binding: `id` prende a liberação de migração ao canal certo. */
+export type UnitChannelRow = OrgChannelInput & { id: string };
 type Channel = {
   id: string; unit_id: string; external_instance_id: string | null; credentials: Record<string, string>;
   webhook_secret: string | null; status: string; is_active: boolean | null;
@@ -46,7 +52,8 @@ export interface DatafyActionDeps {
   supabase: SupabaseClient;
   getAccountToken(): Promise<DatafyAccountTokenRead>;
   getOrganizationId(unitId: string): Promise<string>;
-  gatesAllowed(unitId: string, adminDecisionRecorded: boolean): Promise<boolean>;
+  /** `replacementConnection`: liberação de migração; o canal novo substitui o binding atual no teto de conexões. */
+  gatesAllowed(unitId: string, adminDecisionRecorded: boolean, replacementConnection?: boolean): Promise<boolean>;
   projectUrl: string;
   createClient?: (token: string) => DatafyAdminClient;
   emitEvent(event: DatafyOperationalEvent): void | Promise<void>;
@@ -62,6 +69,33 @@ const rows = <T>(data: unknown): T[] => Array.isArray(data) ? data as T[] : data
 const first = <T>(data: unknown): T | null => rows<T>(data)[0] ?? null;
 const trimAnchor = (value: unknown): string | null => typeof value === "string"
   ? value.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") || null : typeof value === "number" ? String(value) : null;
+
+/** A liberação está presa ao binding atual de outro provider? Regra única no núcleo. */
+function migrationPinned(grant: Grant | null, channels: readonly UnitChannelRow[]): boolean {
+  return isDatafyMigrationGrant({
+    grant, binding: resolveUnitChannelBinding(channels),
+    datafyChannelIds: channels.filter((channel) => channel.provider === "datafy").map((channel) => channel.id),
+  });
+}
+
+/**
+ * Liberação de migração vigente para o binding atual, ou `null` (sem binding,
+ * binding datafy, ou nenhuma liberação presa a ele). `channels` são TODOS os
+ * canais da unidade, com `id` e provider. Espelho de
+ * `assert_datafy_first_configuration`, que continua sendo a autoridade:
+ * compartilhado pelas ações e pelo `begin_switch` de `manage-channels`. Erro de
+ * leitura lança (falha fechado), nunca vira "sem liberação".
+ */
+export async function findDatafyMigrationGrant(db: SupabaseClient, unitId: string,
+  channels: readonly UnitChannelRow[]): Promise<Grant | null> {
+  const binding = resolveUnitChannelBinding(channels);
+  if (!binding || binding.provider === "datafy" || typeof binding.id !== "string" || !binding.id) return null;
+  const { data, error } = await db.from(GRANTS).select(GRANT_COLUMNS)
+    .eq("unit_id", unitId).is("revoked_at", null).eq("replaces_channel_id", binding.id)
+    .order("granted_at", { ascending: false });
+  if (error) throw new ActionFailure("GRANT_READ_FAILED");
+  return rows<Grant>(data).find((grant) => migrationPinned(grant, channels)) ?? null;
+}
 
 export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   const db = deps.supabase;
@@ -84,7 +118,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     return data as Onboarding | null;
   }
   async function activeGrant(unitId: string): Promise<Grant | null> {
-    const { data, error } = await db.from(GRANTS).select("id, revoked_at, consumed_at, consumed_channel_id")
+    const { data, error } = await db.from(GRANTS).select(GRANT_COLUMNS)
       .eq("unit_id", unitId).is("revoked_at", null).is("consumed_at", null).maybeSingle();
     if (error) throw new ActionFailure("GRANT_READ_FAILED");
     return data as Grant | null;
@@ -96,7 +130,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   }
   async function grantById(unitId: string, id: string | null): Promise<Grant | null> {
     if (!id) return null;
-    const { data, error } = await db.from(GRANTS).select("id, revoked_at, consumed_at, consumed_channel_id")
+    const { data, error } = await db.from(GRANTS).select(GRANT_COLUMNS)
       .eq("unit_id", unitId).eq("id", id).maybeSingle();
     if (error) throw new ActionFailure("GRANT_READ_FAILED");
     return data as Grant | null;
@@ -164,11 +198,22 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     if (error || data !== true) throw new ActionFailure("DATAFY_MUTATION_NOT_AUTHORIZED", 409);
     if (claim.deadline - monotonicNow() < mutationBudgetMs) throw new ActionFailure("DATAFY_CLAIM_EXPIRED", 409);
   }
-  async function assertDatafyBinding(unitId: string) {
-    const { data, error } = await db.from("whatsapp_channels").select("provider, status, is_active, created_at").eq("unit_id", unitId);
+  async function loadUnitChannels(unitId: string): Promise<UnitChannelRow[]> {
+    // Ordem do SQL (`created_at asc nulls last, id`): o sort estável do núcleo
+    // conserva o desempate por id e o binding casa com o da autoridade.
+    const { data, error } = await db.from("whatsapp_channels").select("id, provider, status, is_active, created_at")
+      .eq("unit_id", unitId).order("created_at", { ascending: true, nullsFirst: false }).order("id", { ascending: true });
     if (error) throw new ActionFailure("CHANNEL_READ_FAILED");
-    const binding = resolveUnitChannelBinding(rows<OrgChannelInput>(data));
-    if (binding && binding.provider !== "datafy") throw new ActionFailure("DATAFY_MIGRATION_NOT_SUPPORTED", 409);
+    return rows<UnitChannelRow>(data);
+  }
+  /** Binding de outro provider só passa com liberação de migração presa a ele. Devolve os canais lidos. */
+  async function assertDatafyBinding(unitId: string): Promise<UnitChannelRow[]> {
+    const channels = await loadUnitChannels(unitId);
+    const binding = resolveUnitChannelBinding(channels);
+    if (binding && binding.provider !== "datafy" && !await findDatafyMigrationGrant(db, unitId, channels)) {
+      throw new ActionFailure("DATAFY_MIGRATION_NOT_SUPPORTED", 409);
+    }
+    return channels;
   }
   async function freshStep(o: Onboarding, claim: Claim, step: "create_channel" | "create_webhook") {
     const fresh = await onboardingById(o.unit_id, o.id);
@@ -277,12 +322,43 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     const deleted = await client.deleteChannel(id);
     if (deleted.ok === false && deleted.kind !== "not_found") throw new ActionFailure("DATAFY_UNAVAILABLE");
   }
+  /**
+   * Migração em curso para o DTO: só o provider substituído, nunca ids nem
+   * credenciais. Liberação relevante = a ativa, ou a consumida pelo canal
+   * datafy da unidade enquanto ele segue inativo; depois do corte, `null`.
+   * Binding de OUTRO provider que não é o pin (binding trocado) também dá
+   * `null`: a liberação deixou de valer e o corte seria recusado. Binding
+   * ausente (legado caiu enquanto reconecta) mantém a migração visível.
+   */
+  async function migrationState(unitId: string, grant: Grant | null, channel: Channel | null,
+    channels: readonly UnitChannelRow[]): Promise<{ fromProvider: string } | null> {
+    if (channel?.is_active === true) return null;
+    let relevant = grant;
+    if (!relevant && channel) {
+      const { data, error } = await db.from(GRANTS).select(GRANT_COLUMNS)
+        .eq("unit_id", unitId).eq("consumed_channel_id", channel.id).is("revoked_at", null)
+        .order("consumed_at", { ascending: false }).limit(1).maybeSingle();
+      if (error) throw new ActionFailure("GRANT_READ_FAILED");
+      relevant = data as Grant | null;
+    }
+    const replaced = relevant?.replaces_channel_id;
+    if (typeof replaced !== "string" || !replaced) return null;
+    const binding = resolveUnitChannelBinding(channels);
+    if (binding && binding.provider !== "datafy" && !migrationPinned(relevant, channels)) return null;
+    const { data, error } = await db.from("whatsapp_channels").select("provider")
+      .eq("unit_id", unitId).eq("id", replaced).maybeSingle();
+    if (error) throw new ActionFailure("CHANNEL_READ_FAILED");
+    const provider = (data as { provider?: unknown } | null)?.provider;
+    return typeof provider === "string" && provider ? { fromProvider: provider } : null;
+  }
   async function state(unitId: string) {
-    const [grant, o, channel, adopted] = await Promise.all([
+    const [grant, o, channel, adopted, unitChannels] = await Promise.all([
       activeGrant(unitId), loadOnboarding(unitId, false), loadChannel(unitId),
       db.from("whatsapp_automation_adoptions").select("unit_id").eq("unit_id", unitId).maybeSingle(),
+      loadUnitChannels(unitId),
     ]);
     if (adopted.error) throw new ActionFailure("DATAFY_STATE_UNAVAILABLE");
+    const migration = await migrationState(unitId, grant, channel, unitChannels);
     const revoked = !grant && o?.state === "abandoned" && channel && !channel.provider_subscribed_at;
     const checklist = deriveOfficialChecklist({
       grantActive: !!grant, onboardingState: o?.state ?? null,
@@ -290,27 +366,26 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
         subscribedAt: channel.provider_subscribed_at, echoVerifiedAt: channel.manual_echo_verified_at,
         activationRequestedAt: channel.activation_requested_at } : null,
       automationDispatchAdopted: !!adopted.data,
+      migrationHold: migration !== null,
     });
     return { ...checklist, ...(revoked ? { step: "not_granted" } : {}), granted: !!grant,
-      onboardingState: o?.state ?? null, ...(revoked ? { connectionRevoked: true } : {}) };
+      onboardingState: o?.state ?? null, migration, ...(revoked ? { connectionRevoked: true } : {}) };
   }
   async function startConnection(client: DatafyAdminClient, unitId: string, actorId: string) {
     for (let iteration = 0; iteration < 6; iteration++) {
-      const [grant, o, channels] = await Promise.all([
-        activeGrant(unitId), loadOnboarding(unitId),
-        db.from("whatsapp_channels").select("provider, status, is_active, created_at").eq("unit_id", unitId),
-      ]);
-      if (channels.error) throw new ActionFailure("CHANNEL_READ_FAILED");
-      const binding = resolveUnitChannelBinding(rows<OrgChannelInput>(channels.data));
-      const gatesAllowed = await deps.gatesAllowed(unitId, !!grant);
+      const [grant, o, channels] = await Promise.all([activeGrant(unitId), loadOnboarding(unitId), loadUnitChannels(unitId)]);
+      const binding = resolveUnitChannelBinding(channels);
+      // Só a liberação ATIVA conta aqui: uma consumida presa ao binding não abre onboarding novo.
+      const migrationAllowed = migrationPinned(grant, channels);
+      const gatesAllowed = await deps.gatesAllowed(unitId, !!grant, migrationAllowed);
       const grantActive = !!grant && (!o || grant.id === o.grant_id);
       if (!grantActive || !gatesAllowed || binding) {
-        const refused = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!binding, onboarding: null, remote: null });
+        const refused = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!binding, migrationAllowed, onboarding: null, remote: null });
         if (refused.kind === "refuse") throw new ActionFailure(refused.code, 409);
       }
       if (o) Object.assign(o, await reconcileAdvancedSteps(client, o, actorId));
       const snapshot = o?.datafy_channel_id ? await remote(client, o.datafy_channel_id) : null;
-      const decision = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!binding,
+      const decision = decideStartStep({ grantActive, gatesAllowed, unitHasActiveChannel: !!binding, migrationAllowed,
         onboarding: o ? { state: o.state, datafyChannelId: o.datafy_channel_id, datafyWebhookId: o.datafy_webhook_id } : null,
         remote: o?.datafy_channel_id ? { found: !!snapshot, phoneNumberId: snapshot?.phoneNumberId ?? null,
           subscribed: snapshot?.subscribed ?? false, onTrial: snapshot?.onTrial ?? false } : null });
@@ -507,14 +582,16 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       }
       let grant = admin ? await activeGrant(unitId) : await grantById(unitId, o!.grant_id);
       if (admin && !grant) {
-        const { data, error } = await db.from(GRANTS).select("id, revoked_at, consumed_at, consumed_channel_id")
+        const { data, error } = await db.from(GRANTS).select(GRANT_COLUMNS)
           .eq("unit_id", unitId).eq("consumed_channel_id", channel.id).is("revoked_at", null).order("consumed_at", { ascending: false }).limit(1).maybeSingle();
         if (error) throw new ActionFailure("GRANT_READ_FAILED");
         grant = data as Grant | null;
       }
       const currentGrantState = grantState(grant, channel.id);
+      // Teto de conexões: com liberação de migração o canal novo substitui o binding atual.
+      const unitChannels = await loadUnitChannels(unitId);
       const decision = decideSubscribeStep({ grant: currentGrantState,
-        gatesAllowed: await deps.gatesAllowed(unitId, currentGrantState !== "none"),
+        gatesAllowed: await deps.gatesAllowed(unitId, currentGrantState !== "none", migrationPinned(grant, unitChannels)),
         remote: { found: !!snapshot, subscribed: snapshot?.subscribed ?? false } });
       if (decision.kind === "refuse") {
         await release(o, unitId, channel.id, claim, "subscribe", "failed", decision.code); released = true;
@@ -559,7 +636,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       // chamada não apaga o fato remoto e nunca habilita o canal.
       const finalGrant = await grantById(unitId, grant!.id);
       const finalDecision = decideSubscribeStep({ grant: grantState(finalGrant, channel.id),
-        gatesAllowed: await deps.gatesAllowed(unitId, grantState(finalGrant, channel.id) !== "none"),
+        gatesAllowed: await deps.gatesAllowed(unitId, grantState(finalGrant, channel.id) !== "none", migrationPinned(finalGrant, unitChannels)),
         remote: { found: true, subscribed: true } });
       if (finalDecision.kind === "already_subscribed") {
         // Registrar custo aceito antes de recusar ativação; cada retry valida o
@@ -581,7 +658,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     }
   }
   async function confirmConnection(client: DatafyAdminClient, unitId: string, actorId: string, requestId: string) {
-    await assertDatafyBinding(unitId);
+    const unitChannels = await assertDatafyBinding(unitId);
     const o = await loadOnboarding(unitId);
     if (!o) {
       const latest = await loadOnboarding(unitId, false);
@@ -592,7 +669,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     if (!["webhook_ready", "connected"].includes(o.state)) throw new ActionFailure("ONBOARDING_NOT_READY", 409);
     if (o.state === "webhook_ready") {
       const grant = await activeGrant(unitId);
-      const gatesAllowed = await deps.gatesAllowed(unitId, !!grant);
+      const gatesAllowed = await deps.gatesAllowed(unitId, !!grant, migrationPinned(grant, unitChannels));
       // Núcleo recusa gates antes de qualquer leitura remota.
       const preflight = decideConfirm({ grantActive: !!grant && grant.id === o.grant_id, gatesAllowed,
         remote: { found: false, phoneNumberId: null, wabaId: null, businessId: null },
@@ -607,11 +684,20 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       if (decision.kind === "refuse") throw new ActionFailure(decision.code, 409);
       if (decision.kind === "not_connected_yet") return result({ step: "connecting" });
       if (!o.channel_token || !o.webhook_secret) throw new ActionFailure("DATAFY_CREDENTIALS_UNAVAILABLE", 409);
+      // Migração (binding de outro provider, que `assertDatafyBinding` só deixa
+      // passar com liberação presa): ingestão SÍNCRONA. O canal fica inativo até
+      // o corte e o caminho síncrono descarta inbound de canal inativo logo após
+      // registrar a prova de eco; a fila guardaria mensagens já respondidas pelo
+      // provider antigo para processar depois do corte (resposta duplicada).
+      // Liberação com pin também conta: legado NULL recém-desconectado pela Meta
+      // some do binding, mas segue sendo o canal a substituir (<fallback-legado>).
+      const unitBinding = resolveUnitChannelBinding(unitChannels);
+      const migrating = !!grant?.replaces_channel_id || (!!unitBinding && unitBinding.provider !== "datafy");
       const { error } = await db.from("whatsapp_channels").insert({
         id: o.reserved_channel_id, unit_id: unitId, provider: "datafy",
         credentials: { access_token: o.channel_token, phone_number_id: decision.phoneNumberId, business_account_id: decision.wabaId },
         webhook_secret: o.webhook_secret, external_instance_id: o.datafy_channel_id,
-        status: "connected", is_active: false, datafy_subscription_required: true, async_ingestion_enabled: true, display_phone: snapshot?.displayPhone,
+        status: "connected", is_active: false, datafy_subscription_required: true, async_ingestion_enabled: !migrating, display_phone: snapshot?.displayPhone,
       });
       if (error) {
         if (error.code === "PT409") throw new ActionFailure("WABA_OWNED_BY_OTHER_ORG", 409);

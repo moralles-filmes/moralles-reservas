@@ -8,6 +8,7 @@ import { ResponsiveDialog, ResponsiveDialogContent, ResponsiveDialogHeader, Resp
 import { useOfficialConnection } from "@/hooks/useOfficialConnection";
 import { invokeManageChannels } from "@/hooks/useWhatsAppChannels";
 import { OFFICIAL_ITEM_COPY } from "@/features/whatsapp/official-checklist-copy";
+import { migrationProviderLabel, resolveReplacedChannel } from "@/features/whatsapp/official-migration";
 import { deriveOfficialChecklist } from "../../../supabase/functions/_shared/datafy-onboarding-core";
 import type { WhatsAppChannel } from "@/types/reserva";
 import { toast } from "sonner";
@@ -15,21 +16,31 @@ import { toast } from "sonner";
 type Action = "grant_official_connection" | "revoke_official_connection" | "datafy_subscribe" | "datafy_cancel" | "datafy_pause" | "datafy_resume";
 interface Candidate { name: string; expectedDatafyChannelId: string; idPrefix: string; subscribed: boolean; paused: boolean; webhookHosts: string[] }
 const LABELS: Record<Action, string> = { grant_official_connection: "Liberar conexão oficial", revoke_official_connection: "Revogar liberação", datafy_subscribe: "Assinar canal", datafy_cancel: "Cancelar assinatura", datafy_pause: "Pausar canal", datafy_resume: "Retomar canal" };
+const MIGRATION_GRANT_LABEL = "Liberar migração para oficial";
 function displayTimestamp(value: string | null | undefined) {
   return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString("pt-BR") : "Não disponível";
 }
 
-export function DatafyAdminCard({ unitId, channels }: { unitId: string; channels: WhatsAppChannel[] }) {
-  return <DatafyAdminSession key={unitId} unitId={unitId} channels={channels} />;
+interface DatafyAdminCardProps {
+  unitId: string;
+  channels: WhatsAppChannel[];
+  /** `true` só com a lista de canais carregada: sem ela, o rótulo de migração não é confiável. */
+  channelsReady: boolean;
+  channelsError?: boolean;
+  onRetryChannels?: () => void;
 }
 
-function DatafyAdminSession({ unitId, channels }: { unitId: string; channels: WhatsAppChannel[] }) {
+export function DatafyAdminCard(props: DatafyAdminCardProps) {
+  return <DatafyAdminSession key={props.unitId} {...props} />;
+}
+
+function DatafyAdminSession({ unitId, channels, channelsReady, channelsError, onRetryChannels }: DatafyAdminCardProps) {
   const connection = useOfficialConnection(unitId);
   const client = useQueryClient();
   const alive = useRef(false);
   const locked = useRef(false);
   useLayoutEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  const [confirmation, setConfirmation] = useState<{ action: Action; channelId?: string } | null>(null);
+  const [confirmation, setConfirmation] = useState<{ action: Action; channelId?: string; migration?: boolean } | null>(null);
   const [preview, setPreview] = useState<{ channelId: string; candidates: Candidate[] } | null>(null);
   const [candidate, setCandidate] = useState<Candidate | null>(null);
   const [name, setName] = useState("");
@@ -61,12 +72,27 @@ function DatafyAdminSession({ unitId, channels }: { unitId: string; channels: Wh
     finally { locked.current = false; }
   }
   const disabled = mutation.isPending || connection.isLoading || connection.isError;
+  // Espelho do pin do servidor (quem decide é o trigger); aqui só o rótulo e o aviso para o admin.
+  const replacedBinding = resolveReplacedChannel(channels);
+  const migration = connection.data?.migration ?? null;
+  const granted = connection.data?.granted === true;
+  // Liberação consumida pela migração (`granted` falso, `migration` presente):
+  // nada de segunda liberação até a troca; o servidor a prenderia ao mesmo binding.
+  const migrationInProgress = !granted && migration !== null;
+  const migrationGrant = !granted && !migration && !!replacedBinding;
   return <Card><CardHeader><CardTitle>WhatsApp oficial (Datafy)</CardTitle></CardHeader><CardContent className="space-y-4">
-    {connection.isError ? <Button variant="outline" onClick={() => connection.refetch()}>Tentar carregar liberação novamente</Button> : <Button disabled={disabled || !connection.data} onClick={() => setConfirmation({ action: connection.data?.granted ? "revoke_official_connection" : "grant_official_connection" })}>{connection.data?.granted ? LABELS.revoke_official_connection : LABELS.grant_official_connection}</Button>}
+    {connection.isError ? <Button variant="outline" onClick={() => connection.refetch()}>Tentar carregar liberação novamente</Button> : <Button disabled={disabled || !connection.data || !channelsReady || migrationInProgress} onClick={() => setConfirmation(granted ? { action: "revoke_official_connection" } : { action: "grant_official_connection", migration: migrationGrant })}>{granted ? LABELS.revoke_official_connection : migrationGrant ? MIGRATION_GRANT_LABEL : LABELS.grant_official_connection}</Button>}
+    {!channelsReady && (channelsError
+      ? <div className="flex flex-wrap items-center gap-2 text-sm"><p role="alert">Não foi possível carregar os canais da unidade.</p>{onRetryChannels && <Button variant="outline" size="sm" onClick={onRetryChannels}>Recarregar canais</Button>}</div>
+      : <p role="status" className="text-sm text-muted-foreground">Carregando canais…</p>)}
+    {migrationInProgress && <p className="text-sm text-muted-foreground">Migração em andamento: nova liberação indisponível até a troca.</p>}
+    {migration && <p className="text-sm">Migração: substitui o canal {migrationProviderLabel(migration.fromProvider)}{replacedBinding ? ` ${replacedBinding.id.slice(0, 8)}` : ""}</p>}
     {channels.filter((channel) => channel.provider === "datafy").map((channel) => {
-      const checklist = deriveOfficialChecklist({ grantActive: connection.data?.granted === true, onboardingState: connection.data?.onboardingState ?? null,
+      const checklist = deriveOfficialChecklist({ grantActive: granted, onboardingState: connection.data?.onboardingState ?? null,
         channel: { status: channel.status, isActive: channel.is_active, subscribedAt: channel.provider_subscribed_at ?? null,
-          echoVerifiedAt: channel.manual_echo_verified_at, activationRequestedAt: channel.activation_requested_at }, automationDispatchAdopted: connection.data?.templatesPending === false });
+          echoVerifiedAt: channel.manual_echo_verified_at, activationRequestedAt: channel.activation_requested_at }, automationDispatchAdopted: connection.data?.templatesPending === false,
+        // Por unidade de propósito: a migração vale para a(s) linha(s) datafy da unidade, como no `state` do servidor.
+        migrationHold: migration !== null });
       const subscribedEpoch = Date.parse(channel.provider_subscribed_at ?? "");
       const hours = Number.isFinite(subscribedEpoch) ? Math.max(0, Math.floor((Date.now() - subscribedEpoch) / 3_600_000)) : null;
       const mode = channel.ingestion_mode_effective;
@@ -79,13 +105,15 @@ function DatafyAdminSession({ unitId, channels }: { unitId: string; channels: Wh
         {channel.provider_paused_at && <p className="text-sm">Pausado em {displayTimestamp(channel.provider_paused_at)}</p>}
         {channel.provider_subscription_canceled_at && <p className="text-sm">Assinatura cancelada em {displayTimestamp(channel.provider_subscription_canceled_at)}</p>}
         {checklist.step === "awaiting_echo" && !channel.manual_echo_verified_at && hours !== null && <p className="text-sm">{hours >= 24 ? `Assinado há ${hours} h sem mensagem do app. Confirme com o lojista se o número está no app WhatsApp Business; se for um número só de API, ele nunca vai ativar: cancele a assinatura.` : `Assinado há ${hours} h. Aguardando mensagem do app WhatsApp Business.`}</p>}
+        {checklist.step === "awaiting_cutover" && <p className="text-sm font-medium">Pronto para a troca: use Ativar / trocar neste canal e libere o despacho de templates logo depois. O canal atual segue atendendo até lá.</p>}
         <div className="flex flex-wrap gap-2">{(["datafy_subscribe", "datafy_cancel", "datafy_pause", "datafy_resume"] as Action[]).map((action) => <Button key={action} variant="outline" disabled={disabled} onClick={() => setConfirmation({ action, channelId: channel.id })}>{LABELS[action]}</Button>)}
           <Button variant="outline" disabled={disabled} onClick={() => run({ action: "datafy_link_existing", channel_id: channel.id, phase: "preview" })}>Buscar canal existente</Button>
         </div>
       </section>;
     })}
-    <ResponsiveDialog open={!!confirmation} onOpenChange={(open) => { if (!open && !mutation.isPending) setConfirmation(null); }}><ResponsiveDialogContent aria-describedby={undefined}><ResponsiveDialogHeader><ResponsiveDialogTitle>{confirmation && LABELS[confirmation.action]}?</ResponsiveDialogTitle></ResponsiveDialogHeader><ResponsiveDialogBody>
-      {confirmation?.action === "datafy_cancel" || confirmation?.action === "datafy_pause" ? "Ao confirmar, o número para de enviar e receber." : confirmation?.action === "revoke_official_connection" ? "A loja perde a liberação para concluir uma nova conexão. Esta ação não cancela uma assinatura remota existente." : confirmation?.action === "datafy_subscribe" ? "A assinatura gera custo no provedor. Confirme a contratação para este canal." : "Confirme a alteração para esta unidade."}
+    <ResponsiveDialog open={!!confirmation} onOpenChange={(open) => { if (!open && !mutation.isPending) setConfirmation(null); }}><ResponsiveDialogContent aria-describedby={undefined}><ResponsiveDialogHeader><ResponsiveDialogTitle>{confirmation && (confirmation.migration ? MIGRATION_GRANT_LABEL : LABELS[confirmation.action])}?</ResponsiveDialogTitle></ResponsiveDialogHeader><ResponsiveDialogBody>
+      {confirmation?.migration ? `A loja usa hoje ${replacedBinding ? migrationProviderLabel(replacedBinding.provider) : "outra conexão"}. Quando ela conectar o WhatsApp oficial, a conexão atual cai por alguns minutos e a loja precisa gerar e escanear um novo QR Code para a automação voltar. O canal oficial fica pronto sem entrar no ar: a troca é manual, em Ativar / trocar.`
+        : confirmation?.action === "datafy_cancel" || confirmation?.action === "datafy_pause" ? "Ao confirmar, o número para de enviar e receber." : confirmation?.action === "revoke_official_connection" ? "A loja perde a liberação para concluir uma nova conexão. Esta ação não cancela uma assinatura remota existente." : confirmation?.action === "datafy_subscribe" ? "A assinatura gera custo no provedor. Confirme a contratação para este canal." : "Confirme a alteração para esta unidade."}
     </ResponsiveDialogBody><ResponsiveDialogFooter><Button variant="outline" disabled={mutation.isPending} onClick={() => setConfirmation(null)}>Voltar</Button><Button disabled={mutation.isPending} onClick={() => confirmation && run({ action: confirmation.action, ...(confirmation.channelId ? { channel_id: confirmation.channelId } : {}) })}>Confirmar</Button></ResponsiveDialogFooter></ResponsiveDialogContent></ResponsiveDialog>
     <ResponsiveDialog open={!!preview} onOpenChange={(open) => { if (!open && !mutation.isPending) setPreview(null); }}><ResponsiveDialogContent aria-describedby={undefined}><ResponsiveDialogHeader><ResponsiveDialogTitle>Vincular canal existente</ResponsiveDialogTitle></ResponsiveDialogHeader><ResponsiveDialogBody className="space-y-4">
       {preview?.candidates.length === 0 && <p>Nenhum canal compatível encontrado.</p>}

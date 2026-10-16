@@ -11,6 +11,7 @@ const pageVisible = () => !document.hidden;
 
 export function officialPollingInterval(state: OfficialConnectionState | null | undefined, visible: boolean) {
   if (!visible) return false;
+  // `awaiting_cutover` depende de ação do suporte, não da loja: cadência lenta basta.
   return state?.step === "connecting" || state?.step === "awaiting_echo" ? 5_000 : 30_000;
 }
 

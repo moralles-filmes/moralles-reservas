@@ -19,9 +19,9 @@ const connectionBlock = manage.slice(manage.indexOf("function clientConnection("
 const loadBlock = manage.slice(manage.indexOf("async function loadChannel("), manage.indexOf("async function findUazChannel("));
 
 function switchHarness(options: {
-  provider?: string; binding?: { provider: string; is_active: boolean | null; status: string; created_at?: string }[];
+  provider?: string; binding?: { id?: string; provider: string; is_active: boolean | null; status: string; created_at?: string }[];
   listError?: boolean; readError?: boolean; readMissing?: boolean; missingProof?: boolean;
-  withoutTargetId?: boolean;
+  withoutTargetId?: boolean; migrationGrant?: boolean; grantReadError?: boolean;
   connected?: boolean; writeMissing?: boolean; writeError?: boolean; activationError?: boolean;
 } = {}) {
   const stored = { id: "target", unit_id: "unit", provider: options.provider ?? "datafy", status: "connected",
@@ -64,7 +64,7 @@ function switchHarness(options: {
   const adapter = { capabilities: { automaticProvisioning: false }, getConnectionStatus: async () => {
     calls.push("health"); return { connected: options.connected !== false };
   } };
-  const execute = new Function("supabase", "ChannelActionError", "loadClientChannels", "resolveUnitChannelBinding",
+  const execute = new Function("supabase", "ChannelActionError", "loadClientChannels", "resolveUnitChannelBinding", "findDatafyMigrationGrant",
     "getWhatsAppProvider", "tryGetWhatsAppProvider", "supportsClientQr", "resolveChannelCredentials", "jsonResponse", "publicErrorForLifecycle",
     `return (async () => {
       const action = "begin_switch", body = {target_provider: "${options.provider ?? "datafy"}", channel_id:"${options.withoutTargetId ? "" : "target"}"};
@@ -72,9 +72,17 @@ function switchHarness(options: {
       const CLIENT_CHANNEL_COLUMNS = "internal columns";
       ${ts.transpile(connectionBlock + loadBlock + switchBlock, { target: ts.ScriptTarget.ES2022 })}
     })();`);
-  return { calls, filters, run: () => execute(db, ChannelActionError,
+  const grantLookups: unknown[][] = [];
+  return { calls, filters, grantLookups, run: () => execute(db, ChannelActionError,
     async () => { calls.push("binding"); if (options.listError) throw new ChannelActionError(500, "CHANNEL_LIST_FAILED", "Falha ao consultar a conexão."); return options.binding ?? []; },
-    resolveUnitChannelBinding, () => adapter, () => adapter, () => false,
+    resolveUnitChannelBinding,
+    // O helper real é o mesmo das ações (datafy-onboarding-actions.test.ts cobre o predicado).
+    async (...args: unknown[]) => {
+      calls.push("grant"); grantLookups.push(args);
+      if (options.grantReadError) throw new Error("GRANT_READ_FAILED");
+      return options.migrationGrant ? { id: "grant", revoked_at: null, consumed_channel_id: "target", replaces_channel_id: "uaz" } : null;
+    },
+    () => adapter, () => adapter, () => false,
     async () => stored.credentials,
     (_req: unknown, body: unknown, status = 200) => ({ body, status }),
     (error: Error) => error instanceof ChannelActionError
@@ -82,9 +90,13 @@ function switchHarness(options: {
 }
 
 describe("Datafy parceiro: primeira configuração em begin_switch", () => {
-  it("inclui Datafy na allowlist e recusa migração com 409", () => {
+  it("inclui Datafy na allowlist e recusa migração sem liberação com 409", () => {
     expect(switchBlock).toMatch(/\["zapi", "uazapi", "waha", "official", "datafy"\]\.includes\(targetProvider\)/);
-    expect(switchBlock).toMatch(/409,\s*"DATAFY_MIGRATION_NOT_SUPPORTED"/);
+    expect(switchBlock).toMatch(/409,\s*"DATAFY_MIGRATION_NOT_SUPPORTED",\s*"Esta unidade usa outro provedor\. Libere a migração para a API oficial antes de trocar\."/);
+    // Predicado único: o mesmo helper das ações, nunca reimplementado no handler.
+    expect(switchBlock).toContain("findDatafyMigrationGrant(supabase, unitId, channels)");
+    expect(switchBlock).not.toContain("replaces_channel_id");
+    expect(switchBlock).not.toContain("primeira configuração desta unidade");
   });
   it("primeira configuração mantém intenção → prova → saúde → persistência → ativação e DTO seguro", async () => {
     const h = switchHarness(); const response = await h.run();
@@ -99,10 +111,54 @@ describe("Datafy parceiro: primeira configuração em begin_switch", () => {
     { provider: "zapi", is_active: true, status: "connected" },
     { provider: "zapi", is_active: true, status: "disconnected" },
     { provider: "waha", is_active: null, status: "connected" },
-  ])("recusa binding de outro provider antes de qualquer mutação: %j", async (binding) => {
+  ])("recusa binding de outro provider sem liberação de migração antes de qualquer mutação: %j", async (binding) => {
     const h = switchHarness({ binding: [binding] });
-    expect(await h.run()).toMatchObject({ status: 409, body: { code: "DATAFY_MIGRATION_NOT_SUPPORTED" } });
-    expect(h.calls).toEqual(["binding"]);
+    expect(await h.run()).toMatchObject({ status: 409, body: {
+      code: "DATAFY_MIGRATION_NOT_SUPPORTED",
+      error: "Esta unidade usa outro provedor. Libere a migração para a API oficial antes de trocar.",
+    } });
+    expect(h.calls).toEqual(["binding", "grant"]);
+  });
+  it("corte da migração: liberação presa ao binding UazAPI segue o fluxo existente até a ativação", async () => {
+    const binding = [{ id: "uaz", provider: "uazapi", is_active: true, status: "connected" }];
+    const h = switchHarness({ binding, migrationGrant: true });
+    const response = await h.run();
+    expect(response.status).toBe(200);
+    // Migração confere eco e conexão viva ANTES de gravar a intenção.
+    expect(h.calls).toEqual(["binding", "grant", "reload", "health", "intent", "reload", "persist", "activate", "reload"]);
+    // O helper recebe a MESMA leitura de canais que decidiu o binding, com a unidade do caller.
+    expect(h.grantLookups).toHaveLength(1);
+    expect(h.grantLookups[0][1]).toBe("unit");
+    expect(h.grantLookups[0][2]).toEqual(binding);
+  });
+  it.each([
+    [{ missingProof: true }, "TARGET_CONVERSATION_PARITY_UNVERIFIED", ["binding", "grant", "reload"]],
+    [{ connected: false }, "TARGET_NOT_CONNECTED", ["binding", "grant", "reload", "health"]],
+  ] as const)("corte de migração sem prontidão (%j) recusa sem armar intenção", async (failure, code, calls) => {
+    const h = switchHarness({ binding: [{ id: "uaz", provider: "uazapi", is_active: true, status: "connected" }], migrationGrant: true, ...failure });
+    expect(await h.run()).toMatchObject({ status: 409, body: { code } });
+    expect(h.calls).toEqual(calls);
+    expect(h.calls).not.toContain("intent");
+    expect(h.calls).not.toContain("activate");
+  });
+  it("troca comum mantém a intenção durável antes da prontidão (comportamento documentado)", async () => {
+    const h = switchHarness({ missingProof: true });
+    expect(await h.run()).toMatchObject({ status: 409, body: { code: "TARGET_CONVERSATION_PARITY_UNVERIFIED" } });
+    expect(h.calls).toEqual(["binding", "reload", "intent", "reload"]);
+  });
+  it("falha ao ler a liberação de migração é inverificável (503) e recusa antes da intenção", async () => {
+    const h = switchHarness({ binding: [{ id: "uaz", provider: "uazapi", is_active: true, status: "connected" }], grantReadError: true });
+    const response = await h.run();
+    expect(response).toMatchObject({ status: 503, body: { code: "MIGRATION_GRANT_UNAVAILABLE" } });
+    expect(JSON.stringify(response)).not.toContain("GRANT_READ_FAILED");
+    expect(h.calls).toEqual(["binding", "grant"]);
+  });
+  it("binding Datafy ou sem binding não consulta liberação de migração", async () => {
+    for (const binding of [[], [{ provider: "datafy", is_active: true, status: "connected" }]]) {
+      const h = switchHarness({ binding });
+      expect((await h.run()).status).toBe(200);
+      expect(h.calls).not.toContain("grant");
+    }
   });
   it.each([
     { provider: "datafy", is_active: true, status: "connected" },
@@ -154,6 +210,20 @@ describe("Datafy parceiro: fronteira das ações", () => {
     for (const action of ["official_connection_state", "official_connect_start", "official_connect_confirm"]) {
       expect(manage.slice(manage.indexOf("const CLIENT_LIFECYCLE_ACTIONS"), manage.indexOf("const MANUAL_STATUS"))).toContain(`"${action}"`);
     }
+  });
+
+  it("migração: a decisão do teto mora no núcleo; o wiring só faz I/O e fecha os gates se inverificável", () => {
+    const wiring = manage.slice(manage.indexOf("const datafyActions = createDatafyOnboardingActions("), manage.indexOf("serve(async (req)"));
+    expect(wiring).toContain("gatesAllowed: async (unitId, adminDecisionRecorded, replacementConnection = false)");
+    expect(wiring).toContain("await decideReplacementConnectionRecorded({");
+    // Só desconta o que o teto conta: instâncias vivas do canal NA organização da unidade.
+    expect(wiring).toMatch(/\.from\("whatsapp_instances"\)[\s\S]*\.eq\("channel_id", channelId\)[\s\S]*\.eq\("organization_id", organizationId\)[\s\S]*\.neq\("lifecycle_state", "ENDED"\)/);
+    expect(wiring).toContain("const { organizationId } = await getUnitContext(unitId);");
+    expect(wiring.match(/if \(error\) throw new Error\(/g)).toHaveLength(2);
+    expect(wiring).toContain("if (replacement.ok === false) return false;");
+    expect(wiring).toMatch(/"NEW_PROVISIONING",\s*adminDecisionRecorded,\s*replacement\.recorded,?\s*\)/);
+    // Nada de regra reimplementada no handler.
+    expect(wiring).not.toMatch(/=== 1/);
   });
 
   it("provisiona com decisão administrativa persistida e allowance NEW_PROVISIONING", () => {

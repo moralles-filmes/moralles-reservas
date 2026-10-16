@@ -1942,6 +1942,115 @@ watermark estrito, relógio SQL e ACL service-only. Não prova RLS/PostgREST ou
 entrega ao endpoint externo; esses transportes usam fakes nos testes runtime.
 Encerre o cluster ao terminar. Em produção a migration segue somente `supabase db push`.
 
+### Datafy — migração de loja em produção (65)
+
+Migration `20261016120000_datafy_migration_grant.sql` (spec
+`2026-10-16-datafy-migracao-loja-em-producao-design.md` §5.1–§5.3): liberação
+de migração presa pelo servidor ao binding de outro provider, autoridade
+`assert_datafy_first_configuration` que a aceita e finalizador que só pede
+intenção e ativa na primeira configuração — com liberação de migração ou com
+binding de outro provider (inclusive no vínculo administrativo sem liberação),
+a ativação fica retida para o `begin_switch`. **Mesmo banco do 62/63**, em cluster PostgreSQL
+descartável próprio, somente loopback, sem `pg_cron`/`pg_net`. Medido no
+PostgreSQL 18.6 do instalador oficial, `initdb -A trust`, porta `55465`.
+
+O `65a` **roda ANTES da migration nova** e recusa rodar depois: ele grava em
+`t_snap065` o `proacl` das duas funções que a migration substitui por
+`create or replace`, e o M9 compara com o de depois. Gravado depois, o snapshot
+compararia a ACL consigo mesma. A migration tem `BEGIN`/`COMMIT` próprios:
+aplicar crua, com `-X -v ON_ERROR_STOP=1`, **sem `-1`**, inclusive na
+reaplicação. **Nunca reaplique a `20261014170540` depois da nova**: ela repõe
+por `create or replace` os corpos antigos da autoridade e do finalizador.
+
+```bash
+export PGCLIENTENCODING=UTF8          # obrigatório; ver a nota na seção "Rodar"
+PG="/c/Program Files/PostgreSQL/18/bin"
+PORT=55465
+"$PG/initdb.exe" -A trust -U postgres -E UTF8 --no-locale -D /tmp/pg65
+"$PG/pg_ctl.exe" -D /tmp/pg65 -l /tmp/pg65.log -o "-p $PORT -c listen_addresses=127.0.0.1" -w start
+"$PG/createdb.exe" -h 127.0.0.1 -p "$PORT" -U postgres datafy65
+P() { "$PG/psql.exe" -X -h 127.0.0.1 -p "$PORT" -U postgres -d datafy65 -v ON_ERROR_STOP=1 "$@"; }
+H=supabase/tests/local-preflight; M=supabase/migrations
+
+P -f $H/00-bootstrap.sql
+P -f $H/00a-whatsapp-legacy-seed.sql
+P -f $H/61a-datafy-partner-bootstrap.sql
+P -f $M/20261014120000_datafy_partner_onboarding.sql
+P -f $H/62a-datafy-subscription-bootstrap.sql
+P -f $H/63a-datafy-final-bootstrap.sql
+P -f $M/20261014170540_datafy_existing_subscription_claim.sql
+P -f $H/65a-datafy-migration-bootstrap.sql
+
+# ANTES da migration, o 65 tem de FALHAR pela guarda do topo (coluna e trigger
+# ausentes). É o RED: rodado antes, as recusas de M4/M8 passariam POR ACIDENTE.
+P -f $H/65-datafy-migration-grant.sql            # esperado: ERROR
+
+P -f $M/20261016120000_datafy_migration_grant.sql
+P -f $H/65-datafy-migration-grant.sql            # M10 PENDENTE + M1..M9, M11..M16 + CTRL-a..e OK
+P -f $M/20261016120000_datafy_migration_grant.sql
+P -f $M/20261016120000_datafy_migration_grant.sql
+P -f $H/65-datafy-migration-grant.sql            # M10 OK + M1..M9, M11..M16 + CTRL-a..e OK
+
+# Regressão: 62 e 63 continuam verdes com a migration nova (o 63 cobre a
+# primeira configuração e a recusa de outro provider com liberação comum).
+P -f $H/62-datafy-subscription-claim.sql
+P -f $H/63-datafy-final-authority.sql
+
+"$PG/pg_ctl.exe" -D /tmp/pg65 -m fast stop && rm -rf /tmp/pg65
+```
+
+A 1a passada sadia do `65` imprime `M10 PENDENTE` e 20 `NOTICE` com `OK`
+(M1..M9, M11..M16, CTRL-a..e); a 2a, depois da reaplicação dupla, imprime
+21 (com `M10 OK`). Tudo termina em rollback, sem linha residual. Erro em qualquer caso
+aborta o arquivo sob `ON_ERROR_STOP`.
+
+**O 61 também roda neste banco, mas o C14 dele compara catálogo.** O C14 grava a
+assinatura na primeira passada e compara nas seguintes; a migration nova
+acrescenta coluna e trigger à tabela de liberações, então o 61 rodado contra
+uma assinatura gravada ANTES dela reporta `C14 FALHOU` com os outros 30 casos
+verdes — a mudança intencional de schema, como já acontece com a
+`20261014170540`. Para medir a idempotência da migration nova pelo 61, grave a
+assinatura no schema final e reaplique a nova duas vezes:
+
+```bash
+P -c "delete from t_snap061 where k='assinatura';"
+P -f $H/61-datafy-partner-onboarding.sql            # C14 PENDENTE, 30 OK
+P -f $M/20261016120000_datafy_migration_grant.sql
+P -f $M/20261016120000_datafy_migration_grant.sql
+P -f $H/61-datafy-partner-onboarding.sql            # 31 OK
+```
+
+| caso | o que mede |
+|---|---|
+| `M1` | pin forjado (aleatório, NULL, id de canal de outra unidade e pelo papel real `service_role`) sobrescrito pelo id do binding; legado NULL+connected é binding (sem binding, ver M14) |
+| `M2` | sem canal, binding datafy, só canal `is_active=false` e datafy ativo à frente de legado UazAPI → `replaces_channel_id` NULL (mesma ordem de binding da autoridade) |
+| `M3` | UPDATE que troca ou apaga o pin → 23514; UPDATE que não muda e revogação passam e preservam o pin |
+| `M4` | autoridade passa com liberação presa ao binding, ativa ou consumida pelo canal datafy; recusa sem liberação, revogada, com binding trocado e consumida por canal não-datafy |
+| `M5` | `authorize_datafy_mutation` autoriza o subscribe; o finalizador devolve `finalized`, consome, conclui o onboarding e não grava intenção, evento nem ativação, mesmo com eco e `connected`; a UazAPI segue ativa |
+| `M6` | corte por intenção + ativação: UazAPI `false`, datafy `true`, um único ativo, evento `activated` com o anterior |
+| `M7` | reversão para a UazAPI com um único ativo; a liberação segue autorizando novo corte; com a autoridade Datafy sabotada para recusar tudo, a reversão passa igual |
+| `M8` | liberação comum (criada sem binding, pin NULL) com binding UazAPI posterior: autoridade, autorização e finalizador recusam, sem consumir nem ativar |
+| `M9` | coluna `uuid` nula sem FK, trigger ordenado depois do guard com `BEFORE INSERT OR UPDATE OF replaces_channel_id`, três funções `SECURITY DEFINER` com `search_path` vazio, trigger function sem EXECUTE para PUBLIC/anon/authenticated/service_role, autoridade fechada, finalizador só `service_role`, e ACL das duas substituídas idêntica à do snapshot do `65a` |
+| `M10` | idempotência através de execuções: assinatura de catálogo (colunas, comentário, constraints, triggers, corpo e ACL das três funções) gravada na 1a passada e comparada depois da reaplicação dupla |
+| `M11` | vínculo administrativo (`configure_webhook`, `p_grant_id` nulo) em canal datafy que já consumiu a liberação de migração, com UazAPI ativa: `finalized`, datafy inativa sem intenção nem evento, UazAPI segue ativa |
+| `M12` | o mesmo vínculo administrativo sem liberação de migração: recusa com `datafy_migration_not_supported`, sem intenção, sem ativação, UazAPI intacta |
+| `M13` | liberação de migração com o binding UazAPI removido entre a autorização e o finalizador: consome sem intenção nem ativação (a liberação de migração nunca ativa sozinha) |
+| `M14` | legado UazAPI `is_active` NULL desconectado (QR vencido, sem binding no instante): a liberação o prende; o finalizador com ela devolve `finalized` sem intenção, datafy inativa mesmo com eco |
+| `M15` | o mesmo legado reconecta: volta a ser o binding, a autoridade passa pelo pin e o `begin_switch` troca para a datafy |
+| `M16` | unidade só com canal de outro provider `is_active=false` (desconectado ou conectado) → pin NULL; `false` nunca conta |
+| `CTRL-a` | trigger sem o trecho `-- <pin>`: o pin forjado sobrevive (M1 vermelho); restore de corpo e ACL conferido |
+| `CTRL-b` | trecho `-- <ativacao-retida>` trocado pelo bloco da `20261014170540` (ativação incondicional): com eco, a datafy ativa sozinha e a UazAPI cai pelo onboarding (M5 vermelho) e pelo vínculo administrativo (M11 vermelho); restore conferido |
+| `CTRL-c` | autoridade ignorando `revoked_at`: a liberação revogada passa (M4 vermelho); restore conferido e M4 verde de novo |
+| `CTRL-d` | só a checagem de binding, sem a condição da liberação de migração: o M5 segue retido, mas o M13 ativa — por isso as duas condições ficam; restore conferido |
+| `CTRL-e` | trigger sem o trecho `-- <fallback-legado>`: com o legado fora do ar a liberação nasce comum (pin NULL) e o finalizador ativa a datafy no eco (M14 vermelho); restore conferido |
+
+**O que ele NÃO prova:** RLS e exposição PostgREST (o `postgres` local é
+superusuário; a metade com banco real é do `scripts/audit-function-acl.ts`),
+o `rolbypassrls` do `postgres` de produção, corrida com duas sessões (os locks
+unidade → canais são os mesmos das autoridades medidas no 63b), o caminho
+TypeScript de `manage-channels`/`datafy-onboarding-actions.ts` e qualquer
+chamada à Datafy, Meta ou UazAPI.
+
 ### Portabilidade do runtime histórico 25–60
 
 Os executáveis 37–59 resolvem somente Docker Desktop instalado em

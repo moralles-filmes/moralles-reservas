@@ -34,11 +34,11 @@ O pré-voo SQL roda em PostgreSQL descartável. Siga o README de `supabase/tests
 
 Arquivo: `supabase/migrations/20261016120000_datafy_migration_grant.sql`. O `BEGIN`/`COMMIT` vai explícito no arquivo, por causa da atomicidade entre statements.
 
-- [ ] **Coluna:**
+- [x] **Coluna:**
   - `alter table public.whatsapp_official_connection_grants add column if not exists replaces_channel_id uuid;`
   - sem FK, mesma razão de `consumed_channel_id`: registro histórico, e evita o conflito FK × CHECK;
   - `comment on column` explicando que é preenchida pelo servidor.
-- [ ] **Trigger `whatsapp_official_connection_grants_migration_pin()`:**
+- [x] **Trigger `whatsapp_official_connection_grants_migration_pin()`:**
   - `security definer`, `set search_path = ''`;
   - `revoke all ... from public, anon, authenticated` com a assinatura completa;
   - `BEFORE INSERT`:
@@ -48,7 +48,7 @@ Arquivo: `supabase/migrations/20261016120000_datafy_migration_grant.sql`. O `BEG
     - **sempre sobrescreve** o valor recebido.
   - `BEFORE UPDATE OF replaces_channel_id`: `raise` se `new.replaces_channel_id is distinct from old.replaces_channel_id`.
   - Trigger: `whatsapp_official_connection_grants_migration_pin_trg before insert or update of replaces_channel_id`. O nome ordena depois de `..._guard_trg`, então o guard de unidade e organização roda antes.
-- [ ] **`create or replace function public.assert_datafy_first_configuration(p_unit_id uuid)`**, mesma assinatura:
+- [x] **`create or replace function public.assert_datafy_first_configuration(p_unit_id uuid)`**, mesma assinatura:
   - mantém os locks;
   - seleciona `id, provider` do binding;
   - se o provider for nulo ou `datafy`, retorna;
@@ -59,15 +59,15 @@ Arquivo: `supabase/migrations/20261016120000_datafy_migration_grant.sql`. O `BEG
     - `g.consumed_channel_id` nulo, ou um canal `provider='datafy'` da mesma unidade;
   - senão, `raise 'datafy_migration_not_supported' using errcode='23514'`;
   - repete `revoke all ... from public, anon, authenticated, service_role`.
-- [ ] **`create or replace function public.finalize_datafy_channel_subscription(...)`:** copia o corpo da `20261014170540` e muda só o bloco final de ativação:
+- [x] **`create or replace function public.finalize_datafy_channel_subscription(...)`:** copia o corpo da `20261014170540` e muda só o bloco final de ativação:
   - executa `assert` + `request_whatsapp_channel_activation` + `activate_whatsapp_channel` somente quando `p_grant_id is null or g.replaces_channel_id is null`;
   - com liberação de migração, consome a liberação, conclui o onboarding e devolve `'finalized'` sem intenção;
   - repete os `revoke`/`grant` da assinatura completa.
-- [ ] Header da migration:
+- [x] Header da migration:
   - o que muda;
   - por que `create or replace` preserva a ACL;
   - nota de rollback forward-only.
-- [ ] Conferir que o `acl-estatico` local passa: `node scripts/...`, ou o teste estático em `scripts/migration-static-guard.test.ts`, via `npm test -- scripts/migration-static-guard.test.ts`. Allowlist em `scripts/function-acl-allowlist.json` se a regra exigir.
+- [x] Conferir que o `acl-estatico` local passa: `node scripts/...`, ou o teste estático em `scripts/migration-static-guard.test.ts`, via `npm test -- scripts/migration-static-guard.test.ts`. Allowlist em `scripts/function-acl-allowlist.json` se a regra exigir.
 
 ### Task 1.2 — Pré-voo `65`
 
@@ -78,47 +78,47 @@ Arquivos:
 
 Fixture: unidade com canal `uazapi` ativo, mais uma unidade de controle.
 
-- [ ] **M1:** liberação inserida com `replaces_channel_id` forjado ganha o id do binding UazAPI.
-- [ ] **M2:** liberação em unidade sem canal ou com binding datafy fica `NULL`.
-- [ ] **M3:** `UPDATE` de `replaces_channel_id` é recusado.
-- [ ] **M4:** `assert_datafy_first_configuration` passa com a liberação presa ao binding e recusa:
+- [x] **M1:** liberação inserida com `replaces_channel_id` forjado ganha o id do binding UazAPI.
+- [x] **M2:** liberação em unidade sem canal ou com binding datafy fica `NULL`.
+- [x] **M3:** `UPDATE` de `replaces_channel_id` é recusado.
+- [x] **M4:** `assert_datafy_first_configuration` passa com a liberação presa ao binding e recusa:
   - sem liberação;
   - com a liberação revogada;
   - com binding trocado (outra linha ativa);
   - com liberação consumida por canal não-datafy.
-- [ ] **M5:** `finalize_datafy_channel_subscription` com liberação de migração devolve `finalized`, consome a liberação, completa o onboarding e deixa `activation_requested_at` nulo e `is_active=false`, mesmo com eco presente.
-- [ ] **M6:** com eco e conectado, `request_whatsapp_channel_activation` + `activate_whatsapp_channel` trocam atomicamente: a UazAPI vai a `false` e a datafy a `true`, com um único ativo.
-- [ ] **M7:** reversão: intenção + ativação na linha UazAPI voltam a UazAPI. O guard Datafy não interfere.
-- [ ] **M8:** liberação comum (sem pin) com binding UazAPI continua recusando. Regressão da decisão de primeira configuração.
-- [ ] **Controles positivos**, em subtransação revertida:
+- [x] **M5:** `finalize_datafy_channel_subscription` com liberação de migração devolve `finalized`, consome a liberação, completa o onboarding e deixa `activation_requested_at` nulo e `is_active=false`, mesmo com eco presente.
+- [x] **M6:** com eco e conectado, `request_whatsapp_channel_activation` + `activate_whatsapp_channel` trocam atomicamente: a UazAPI vai a `false` e a datafy a `true`, com um único ativo.
+- [x] **M7:** reversão: intenção + ativação na linha UazAPI voltam a UazAPI. O guard Datafy não interfere.
+- [x] **M8:** liberação comum (sem pin) com binding UazAPI continua recusando. Regressão da decisão de primeira configuração.
+- [x] **Controles positivos**, em subtransação revertida:
   - (a) remover o pin do trigger faz o M1 falhar;
   - (b) recolocar a ativação incondicional no finalizador faz o M5 ativar;
   - (c) relaxar o `assert` para ignorar `revoked_at` faz o M4 passar indevidamente.
-- [ ] **Reaplicar a migration duas vezes** (idempotência) e reexecutar `61`, `62` e `63` contra o banco com a migration nova: o 63 cobre a primeira configuração e precisa continuar verde.
+- [x] **Reaplicar a migration duas vezes** (idempotência) e reexecutar `61`, `62` e `63` contra o banco com a migration nova: o 63 cobre a primeira configuração e precisa continuar verde.
 
 ### Task 1.3 — Núcleo `datafy-onboarding-core.ts`
 
 Arquivos: `supabase/functions/_shared/datafy-onboarding-core.ts`, `src/lib/datafy-onboarding-core.test.ts`.
 
-- [ ] `decideStartStep` ganha a entrada `migrationAllowed: boolean`. `UNIT_ALREADY_ACTIVE` só quando `unitHasActiveChannel && !migrationAllowed`. Valores não-boolean falham fechado.
-- [ ] `OfficialChecklistStep` ganha `"awaiting_cutover"`. `deriveOfficialChecklist` ganha `migrationHold: boolean`: com o canal assinado, eco presente e inativo, devolve `awaiting_cutover` em vez de `awaiting_echo`. Os itens do checklist não mudam.
-- [ ] Testes RED→GREEN para os dois ramos e para os não-boolean.
+- [x] `decideStartStep` ganha a entrada `migrationAllowed: boolean`. `UNIT_ALREADY_ACTIVE` só quando `unitHasActiveChannel && !migrationAllowed`. Valores não-boolean falham fechado.
+- [x] `OfficialChecklistStep` ganha `"awaiting_cutover"`. `deriveOfficialChecklist` ganha `migrationHold: boolean`: com o canal assinado, eco presente e inativo, devolve `awaiting_cutover` em vez de `awaiting_echo`. Os itens do checklist não mudam.
+- [x] Testes RED→GREEN para os dois ramos e para os não-boolean.
 
 ### Task 1.4 — Ações `datafy-onboarding-actions.ts`
 
 Arquivos: `supabase/functions/_shared/datafy-onboarding-actions.ts`, `src/lib/datafy-onboarding-actions.test.ts`.
 
-- [ ] `Grant` e as projeções de `GRANTS` incluem `replaces_channel_id`. Helper `loadBinding(unitId)` devolve `{ id, provider } | null`; a consulta de canais inclui `id`.
-- [ ] Helper `migrationGrantFor(unitId, binding)`: liberação não revogada com `replaces_channel_id === binding.id`, ativa ou consumida por canal datafy da unidade.
-- [ ] Ajustes nas três funções:
+- [x] `Grant` e as projeções de `GRANTS` incluem `replaces_channel_id`. Helper `loadBinding(unitId)` devolve `{ id, provider } | null`; a consulta de canais inclui `id`.
+- [x] Helper `migrationGrantFor(unitId, binding)`: liberação não revogada com `replaces_channel_id === binding.id`, ativa ou consumida por canal datafy da unidade.
+- [x] Ajustes nas três funções:
   - `startConnection` passa `migrationAllowed`;
   - `assertDatafyBinding` aceita o binding de outro provider somente com `migrationGrantFor`;
   - `confirmConnection`/`subscribeChannel` usam o mesmo helper.
-- [ ] `gatesAllowed(unitId, adminDecisionRecorded, replacementConnection)`: o terceiro argumento é `true` com liberação de migração. O wiring fica em `manage-channels/index.ts` (`checkChannelConnectionAllowance(..., { replacementConnectionRecorded })`, conferir a assinatura em `:407`).
-- [ ] `state(unitId)`:
+- [x] `gatesAllowed(unitId, adminDecisionRecorded, replacementConnection)`: o terceiro argumento é `true` com liberação de migração. O wiring fica em `manage-channels/index.ts` (`checkChannelConnectionAllowance(..., { replacementConnectionRecorded })`, conferir a assinatura em `:407`).
+- [x] `state(unitId)`:
   - devolve `migration: { fromProvider } | null`, em que `fromProvider` é o provider do canal `replaces_channel_id`;
   - passa `migrationHold` a `deriveOfficialChecklist` quando a liberação ativa ou consumida pelo canal datafy é de migração e o canal ainda está inativo.
-- [ ] Testes:
+- [x] Testes:
   - migração aceita em start, confirm e subscribe;
   - liberação comum recusada com binding UazAPI;
   - binding trocado recusado;
@@ -129,12 +129,12 @@ Arquivos: `supabase/functions/_shared/datafy-onboarding-actions.ts`, `src/lib/da
 
 Arquivo: `supabase/functions/manage-channels/index.ts`, com os testes estáticos e de roteamento existentes que fixam a recusa.
 
-- [ ] Substituir a recusa TS de `begin_switch` para alvo `datafy` por:
+- [x] Substituir a recusa TS de `begin_switch` para alvo `datafy` por:
   - recusar com 409 `DATAFY_MIGRATION_NOT_SUPPORTED` **somente** sem a liberação de migração presa ao binding atual;
   - reusar o helper exportado pelo módulo de ações, ou uma função pura do núcleo, sem reimplementar o predicado.
   - A autoridade continua no SQL (`request_whatsapp_channel_activation` → `assert`).
-- [ ] Atualizar a mensagem da recusa: "Esta unidade usa outro provedor. Libere a migração para a API oficial antes de trocar."
-- [ ] Teste do caminho de migração, mais regressão da recusa sem liberação.
+- [x] Atualizar a mensagem da recusa: "Esta unidade usa outro provedor. Libere a migração para a API oficial antes de trocar."
+- [x] Teste do caminho de migração, mais regressão da recusa sem liberação.
 
 ### Task 1.6 — Frontend
 
@@ -148,19 +148,19 @@ Arquivos:
 - `src/pages/gestao/Automacao.tsx` (diálogo **Ativar / trocar**);
 - os testes de cada um.
 
-- [ ] DTO: `readOfficialConnection` projeta `migration` (`{ fromProvider: string } | null`, com string validada contra a lista de providers).
-- [ ] `ERROR_COPY.UNIT_ALREADY_ACTIVE` passa a: "Esta unidade já usa outra conexão de WhatsApp. Fale com o suporte para migrar para a API oficial."
-- [ ] `Whatsapp.tsx`: com `migration`, renderiza o cartão **Conexão atual** (o bloco de lifecycle existente, extraído em componente e alimentado por `useWhatsappConnection`) **e** o `OfficialConnectionCard`. Sem `migration`, a regra atual (`useOfficial`) não muda.
-- [ ] `OfficialConnectionCard` em migração:
+- [x] DTO: `readOfficialConnection` projeta `migration` (`{ fromProvider: string } | null`, com string validada contra a lista de providers).
+- [x] `ERROR_COPY.UNIT_ALREADY_ACTIVE` passa a: "Esta unidade já usa outra conexão de WhatsApp. Fale com o suporte para migrar para a API oficial."
+- [x] `Whatsapp.tsx`: com `migration`, renderiza o cartão **Conexão atual** (o bloco de lifecycle existente, extraído em componente e alimentado por `useWhatsappConnection`) **e** o `OfficialConnectionCard`. Sem `migration`, a regra atual (`useOfficial`) não muda.
+- [x] `OfficialConnectionCard` em migração:
   - aviso antes do botão Conectar (texto da spec §5.7);
   - em `awaiting_cutover`: "Canal oficial pronto. A troca será feita pelo suporte.";
   - polling de 30 s.
-- [ ] `DatafyAdminCard`:
+- [x] `DatafyAdminCard`:
   - quando o binding da unidade é de outro provider (dos `channels` recebidos, mesma regra de `resolveUnitChannelBinding`), o botão vira **Liberar migração para oficial** e o diálogo explica a queda, o QR e o corte manual;
   - mostra "Migração: substitui o canal ‹provider› ‹id8›";
   - item `awaiting_cutover` no checklist.
-- [ ] `Automacao.tsx`, diálogo de **Ativar / trocar** em canal `datafy` com migração: mostra o canal substituído, o estado dos templates (`templatesPending`) e o aviso "Libere o despacho de templates logo após a troca".
-- [ ] Testes de componente:
+- [x] `Automacao.tsx`, diálogo de **Ativar / trocar** em canal `datafy` com migração: mostra o canal substituído, o estado dos templates (`templatesPending`) e o aviso "Libere o despacho de templates logo após a troca".
+- [x] Testes de componente:
   - migração renderiza os dois cartões;
   - a copy nova de erro;
   - `awaiting_cutover`;
@@ -168,29 +168,29 @@ Arquivos:
 
 ### Task 1.7 — Documentação e invariantes
 
-- [ ] Par `CLAUDE.md`/`AGENTS.md`, no mesmo commit: as três regras da spec §12 que valem para a Fase 1 (pin pelo servidor, ativação retida e corte só por `begin_switch`, teto de conexões com reposição). Formato obrigatório, uma frase de regra e uma de porquê, com ponteiro.
-- [ ] `docs/datafy-parceiro-runbook.md`, seção nova "Migrar loja em produção": passos do §4/§10 da spec até o corte, reversão e janela de queda.
-- [ ] Runbook: a Fase 1 exige `db push` da migration antes do deploy de `manage-channels`, depois o frontend.
+- [x] Par `CLAUDE.md`/`AGENTS.md`, no mesmo commit: as três regras da spec §12 que valem para a Fase 1 (pin pelo servidor, ativação retida e corte só por `begin_switch`, teto de conexões com reposição). Formato obrigatório, uma frase de regra e uma de porquê, com ponteiro.
+- [x] `docs/datafy-parceiro-runbook.md`, seção nova "Migrar loja em produção": passos do §4/§10 da spec até o corte, reversão e janela de queda.
+- [x] Runbook: a Fase 1 exige `db push` da migration antes do deploy de `manage-channels`, depois o frontend.
 
 ### Task 1.8 — Gates da Fase 1
 
-- [ ] `npm run typecheck`, `npm test` (suíte completa; usar `--maxWorkers=1 --minWorkers=1` se o fixture de polling estourar tempo), `npm run lint` e `npm run build`.
-- [ ] Pré-voo 61, 62, 63 e 65 verdes, com os controles positivos; cluster encerrado.
-- [ ] Review de spec e qualidade por task; review da branch da fase.
-- [ ] Gates `saas-shield-br`:
+- [x] `npm run typecheck`, `npm test` (suíte completa; usar `--maxWorkers=1 --minWorkers=1` se o fixture de polling estourar tempo), `npm run lint` e `npm run build`.
+- [x] Pré-voo 61, 62, 63 e 65 verdes, com os controles positivos; cluster encerrado.
+- [x] Review de spec e qualidade por task; review da branch da fase.
+- [x] Gates `saas-shield-br`:
   - `migration-validator` (migration nova);
   - `rls-auditor`;
   - `tenant-isolation-auditor`;
   - `identity-access-auditor`;
   - `integration-reliability-auditor`;
   - `secret-hunter`.
-- [ ] Revisar `git diff`, `git diff --cached` e `git diff -- CLAUDE.md AGENTS.md`; `git add` com caminhos explícitos; commit.
+- [x] Revisar `git diff`, `git diff --cached` e `git diff -- CLAUDE.md AGENTS.md`; `git add` com caminhos explícitos; commit.
 
 ### Task 1.9 — Checkpoint e handoff
 
-- [ ] Marcar os checkboxes; registrar evidências (comandos e resultados) neste arquivo, na seção "Evidências da Fase 1".
-- [ ] Atualizar a memória do projeto (estado da branch e próxima fase).
-- [ ] Entregar o prompt da Fase 2 (§ Handoff) e pedir autorização para push/PR, e opcionalmente para o deploy da Fase 1.
+- [x] Marcar os checkboxes; registrar evidências (comandos e resultados) neste arquivo, na seção "Evidências da Fase 1".
+- [x] Atualizar a memória do projeto (estado da branch e próxima fase).
+- [x] Entregar o prompt da Fase 2 (§ Handoff) e pedir autorização para push/PR, e opcionalmente para o deploy da Fase 1.
 
 ---
 
@@ -311,4 +311,80 @@ Sem push, merge, db push, deploy ou chamada paga a provider sem minha autorizaç
 
 ### Fase 1
 
-_(preencher ao fechar a fase)_
+Fechada em 2026-10-16. Sem push, merge, `db push`, deploy ou chamada a provider.
+
+**Entregue:**
+- Migration `20261016120000_datafy_migration_grant.sql`:
+  - trigger de pin, com fallback para o canal legado `is_active` NULL mesmo desconectado;
+  - `assert_datafy_first_configuration` aceita liberação presa ao binding;
+  - o finalizador retém a ativação com liberação de migração **e** sempre que o binding for de outro provider (fecha o vínculo administrativo sem liberação).
+- Núcleo e ações:
+  - `migrationAllowed`, `awaiting_cutover` e `migrationHold`;
+  - `isDatafyMigrationGrant`/`findDatafyMigrationGrant`;
+  - DTO `migration: { fromProvider }`;
+  - `decideReplacementConnectionRecorded`, que conta só instância da mesma organização;
+  - canal de migração nasce com `async_ingestion_enabled=false`.
+- `begin_switch`:
+  - migração permitida só com liberação presa;
+  - no corte de migração, eco e conexão são conferidos **antes** da intenção;
+  - erro de leitura da liberação devolve 503 `MIGRATION_GRANT_UNAVAILABLE`.
+- Frontend:
+  - `/g/:slug/whatsapp` mostra **Conexão atual** e o cartão oficial durante a migração;
+  - aviso de queda e QR;
+  - `awaiting_cutover`;
+  - no admin: rótulo "Liberar migração para oficial", nenhuma segunda liberação durante a retenção, botão desabilitado até os canais carregarem, aviso no **Ativar / trocar**;
+  - `resolveReplacedChannel` espelha o pin.
+- Par `CLAUDE.md`/`AGENTS.md` (duas regras corrigidas e uma nova) e runbook Datafy "Migrar loja em produção".
+
+**Evidências:**
+- **Pré-voo** em PostgreSQL 18.6 descartável (127.0.0.1:55465):
+  - 65: 21/21 (M1–M16 mais M9/M10), com os controles positivos (a)–(e) observados falhando;
+  - migration aplicada três vezes;
+  - 61: 31/31, depois de refazer o snapshot C14 sobre o schema final;
+  - 62 e 63: verdes;
+  - cluster removido ao fim.
+- **Guardas estáticas do `acl-estatico`** (`function-acl-allowlist`, `advisor-divergence-core`, `migration-static-guard`): 93/93.
+- **Suíte completa** (`npx vitest run --maxWorkers=1 --minWorkers=1`): 3406/3406 testes, 125/126 arquivos.
+  - O arquivo restante é `supabase/tests/local-preflight/local-runtime-paths.test.mjs`, pré-existente (`3acd7f4`, em `main`). É `node:test` que o vitest não reconhece. Passa com `node --test` e fica como pendência fora desta fase.
+- `npm run typecheck`: 0 erros. `npm run lint`: 0 erros e 21 avisos (baseline). `npm run build`: ok.
+- **Reviews:**
+  - spec e qualidade do backend aprovadas, com P2/P3 corrigidos;
+  - frontend com P2 corrigido (botão de liberação habilitado antes dos canais carregarem) e P3 corrigidos;
+  - revisão da branch: ver abaixo.
+- **Gates `saas-shield-br`**, todos PASS ou PASS_WITH_WARNINGS, sem bloqueante:
+  - `migration-validator`;
+  - `rls-auditor`;
+  - `tenant-isolation-auditor`: filtro de organização na contagem aplicado;
+  - `identity-access-auditor`: pin do legado desconectado aplicado;
+  - `integration-reliability-auditor`: ingestão síncrona na migração e intenção não armada aplicadas;
+  - `secret-hunter`.
+
+**Desvios em relação à spec e ao plano (deliberados, vindos de review e gates):**
+- **§5.1:** sem binding, o pin cai no canal legado não-datafy `is_active` NULL mais antigo (`<fallback-legado>`), em vez de NULL. Sem isso, um legado desconectado no instante da liberação geraria liberação comum e o eco ativaria sozinho.
+- **§5.3:** o finalizador também retém a ativação quando o binding é de outro provider, inclusive no vínculo administrativo (`p_grant_id` nulo), que a spec dizia não mudar. Casos M11/M12.
+- **§5.4:** no corte de migração, `begin_switch` confere eco e conexão **antes** da intenção. Novo 503 `MIGRATION_GRANT_UNAVAILABLE`.
+- **§5.5:** a reposição só conta com exatamente uma instância viva do canal substituído na mesma organização, e não "sempre com liberação de migração". Na janela do legado desconectado, `recorded=false`; inofensivo sob o vitalício do Ren Sushi.
+- **Novo:** o canal de migração nasce com `async_ingestion_enabled=false`, decidido pelo pin da liberação ou pelo binding estrangeiro.
+- **§5.4:** o diálogo de corte mostra templates adotados ou pendentes; não há estado "bloqueados", que depende da Fase 2/3.
+- **Plano:**
+  - nomes de helpers diferentes: `loadUnitChannels`, `findDatafyMigrationGrant`, `decideReplacementConnectionRecorded`, `resolveReplacedChannel`;
+  - arquivos extras: `whatsapp-org-provider-core.ts` (só tipo), `src/features/whatsapp/official-migration.ts` e o teste dele;
+  - casos de pré-voo M9–M16 e controles (d)/(e).
+
+**Limites registrados:**
+- A liberação consumida continua valendo enquanto o canal substituído for o operacional. Para encerrar, cancelar a assinatura (runbook).
+- O predicado de binding está duplicado em SQL, TS e frontend, com testes em cada camada.
+- Não executados:
+  - `deno check`: deno não instalado;
+  - `gitleaks`: não instalado;
+  - concorrência `61b`/`63b`;
+  - `acl-estatico` remoto e auditoria de ACL no banco: dependem de PR/autorização.
+
+**Deploy da Fase 1** (só com autorização):
+1. `supabase db push` da `20261016120000`;
+2. logo em seguida, `supabase functions deploy manage-channels`;
+3. merge e frontend.
+- Nenhuma liberação nesse intervalo.
+- `manage-organizations` não precisa de redeploy (mudança só de tipo).
+
+**Pré-voo da Fase 6:** conferir no Ren Sushi `select id, provider, is_active, status from whatsapp_channels where unit_id=<ren>`, esperado UazAPI com `is_active=true`. Revogar e liberar de novo a liberação comum criada antes deste deploy.
