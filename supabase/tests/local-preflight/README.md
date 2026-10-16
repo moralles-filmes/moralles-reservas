@@ -61,6 +61,8 @@ presentes agendaria jobs apontando para lá.
 | `61a-datafy-partner-bootstrap.sql` | O que o `61` precisa e o `00` não tem: **default privileges** de tabela E de função emulando o Supabase (sem eles o C9 fica cego, medindo só o grant implícito a PUBLIC), grant de tabela em tudo que já existe em `public` (o `service_role` do C11 lê `units` pelo guard INVOKER) e o CHECK de `whatsapp_channels.provider` na forma da 110, que libera `datafy`. **Recusa rodar depois da migration.** |
 | `61-datafy-partner-onboarding.sql` | 25 casos e **seis controles positivos** (ordinais 105–135, C14 por último) da migration `20261014120000_datafy_partner_onboarding.sql` (Datafy parceiro): liberação (uma ativa por unidade, coerência, canal consumido da mesma unidade), onboarding (um aberto por unidade, uma liberação por onboarding vivo, credenciais que não sobrevivem ao fechamento, canal exigido depois de `open`, vínculos de tenant imutáveis), o CLAIM cercado (clique duplo, retomada do vencido com `must_reconcile` e registro do passo do dono morto, lease pelo TTL do dono, `failed` que não resolve a incerteza, cerca velha → 40001, unidade alheia → 42501, TTL 30..900 por igualdade), o índice único de `phone_number_id` lendo o número como o núcleo lê (aparado, vazio fora), ACL/RLS, `service_role` real, cascade e idempotência através de execuções. Os controles se desfazem sozinhos e por isso rodam sob ON_ERROR_STOP. **Banco PRÓPRIO** `datafy61`. |
 | `61b-concorrencia-datafy-onboarding.sh` | O CLIQUE DUPLO com DUAS sessões reais (Git Bash; `PGBIN`, `PGPORT`, `PGDB`). CONC-61-1: A segura o claim, B espera e recebe `claimed = f` sem cerca; CONC-61-2: controle de tempo; CONC-61-3: **controle positivo** — claim sem `for update`, os DOIS levam; restaura reaplicando a migration e confere o `md5`. Roda no banco do `61`, depois dele. |
+| `65-instance-delete.sql` | DEL-1..8 (ordinais 301–308, migration `20261015223000`): a RPC `delete_whatsapp_instance_without_cost`. Encerrada sem custo é apagada com o ciclo em cascata, as notas (inclusive a `DELETE` nova) ficam com `instance_id` nulo e `instance_ref` intacto, e o `audit_log` grava o DELETE; custo atual, custo só em ciclo, estado não encerrado, id inexistente e motivo vazio são recusados sem apagar; ACL só `service_role`; migration aplicada duas vezes sem duplicar. Roda no banco `fase6c` da sequência base. |
+| `66-controles-instance-delete.sql` | CONTROLE-DEL-1/2 (ordinais 311–312): tira do corpo real a checagem de custo em ciclo e depois a de estado, vê a instância de DEL-3/DEL-4 ser apagada, e desfaz a sabotagem por rollback de subbloco — sem reapply. Rodar sem `ON_ERROR_STOP`. |
 
 ## Rodar
 
@@ -1941,6 +1943,20 @@ cobertura de todas unidades, filtro de tenant, snapshot de contagem/max timestam
 watermark estrito, relógio SQL e ACL service-only. Não prova RLS/PostgREST ou
 entrega ao endpoint externo; esses transportes usam fakes nos testes runtime.
 Encerre o cluster ao terminar. Em produção a migration segue somente `supabase db push`.
+
+### Exclusão de instância sem custo (65/66)
+
+Continua o banco `fase6c` da sequência base, depois de reaplicar 104 e 105:
+
+```bash
+P -f supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql
+P -f supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql   # idempotência (DEL-7)
+P -f supabase/tests/local-preflight/65-instance-delete.sql
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -f supabase/tests/local-preflight/66-controles-instance-delete.sql
+P -c "select ord, caso, veredito from t_res where ord between 301 and 312 order by ord;"
+```
+
+O que NÃO prova: o caminho PostgREST/Edge Function (`delete_instance`) — esse é coberto pelo guardrail textual de `src/lib/whatsapp-instance-ef-write-guard.test.ts` e pelo teste da tela.
 
 ### Portabilidade do runtime histórico 25–60
 
