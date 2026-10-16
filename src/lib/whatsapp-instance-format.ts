@@ -179,3 +179,41 @@ export function conflictLifecycleLabel(state: string): string {
   if (state === "ACTIVE") return "ativa";
   return state;
 }
+
+/** Aba do Inventário de instâncias. */
+export type InstanceTab = "ativas" | "encerradas";
+
+/** Aba a partir de `?aba=`. Só o valor exato "encerradas" abre as encerradas. */
+export function instanceTab(param: string | null): InstanceTab {
+  return param === "encerradas" ? "encerradas" : "ativas";
+}
+
+/**
+ * Encerrada = `ENDED`. Todo o resto — inclusive estado que a tela ainda não
+ * conhece — fica em Ativas: esconder uma instância viva custa mais que mostrar
+ * uma encerrada a mais.
+ */
+export function partitionInstancesByTab<T extends { lifecycle_state: string }>(
+  instances: readonly T[],
+): { ativas: T[]; encerradas: T[] } {
+  const ativas: T[] = [];
+  const encerradas: T[] = [];
+  for (const inst of instances) {
+    if (inst.lifecycle_state === "ENDED") encerradas.push(inst);
+    else ativas.push(inst);
+  }
+  return { ativas, encerradas };
+}
+
+/**
+ * Se a tela OFERECE "Apagar". Quem decide se PODE é a RPC
+ * `delete_whatsapp_instance_without_cost`; aqui só se evita mostrar botão que o
+ * banco vai recusar. `has_cost_history` ausente (EF anterior a esta versão) não
+ * oferece.
+ */
+export function canOfferInstanceDelete(inst: {
+  lifecycle_state: string;
+  has_cost_history?: boolean;
+}): boolean {
+  return inst.lifecycle_state === "ENDED" && inst.has_cost_history === false;
+}
