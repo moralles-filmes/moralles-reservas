@@ -228,12 +228,13 @@ describe('official render from real resources', () => {
 import { createDispatchFixture } from '../test/fixtures/whatsapp-automation-fixtures';
 
 function cancellationFixture() {
-  const f = createAutomationFixture(); f.rows.reservations[0].status = 'cancelled';
+  const f = createAutomationFixture(); Object.assign(f.rows.reservations[0], { status: 'cancelled', cancelled_at: f.nowISO });
   const intent: ScheduledIntent = { kind: 'cancellation', unitId: f.ids.unit, reservationId: f.ids.reservation, sourceEventKey: 'synthetic-cancellation', factAt: f.nowISO };
   return { ...f, intent };
 }
 function tableReadyFixture() {
   const f = waitlistFixture();
+  Object.assign(f.rows.waitlist[0], { status: 'notified', notified_at: f.nowISO, notified_server_at: f.nowISO });
   const intent: ScheduledIntent = { kind: 'waitlist_table_ready', unitId: f.ids.unit, waitlistId: f.rows.waitlist[0].id as string, sourceEventKey: 'synthetic-table-ready', factAt: f.nowISO };
   return { ...f, intent };
 }
@@ -263,6 +264,10 @@ describe('cancellation and table-ready resources', () => {
     const g = cancellationFixture(); g.rows.reservations[0].customer_id = null;
     expect(await g.resources.loadScheduledResource(g.intent)).toMatchObject({ ok: false, reason: 'customer_not_alive' });
   });
+  it('refuses a recancelled reservation whose server fact differs from the job fact', async () => {
+    const f = cancellationFixture(); f.rows.reservations[0].cancelled_at = '2026-10-05T15:00:01Z';
+    expect(await f.resources.loadScheduledResource(f.intent)).toMatchObject({ ok: false, reason: 'reservation_changed' });
+  });
   it('renders the cancellation template and the legacy TEXT body', async () => {
     const f = cancellationFixture();
     const result = await f.resources.loadScheduledResource(f.intent);
@@ -270,17 +275,24 @@ describe('cancellation and table-ready resources', () => {
     expect(renderScheduledTemplate(result.resource, 'https://example.com', ['https://example.com']).parameters).toEqual(['Marina', 'Restaurante Exemplo', '05/10/2026', '20:30', '4', 'RES123']);
     expect((await renderScheduledText(result.resource, legacyTextIO(f))).body).toBe('❌ *Reserva Cancelada*\n\nOlá Marina, sua reserva foi cancelada.\n\n📅 Data: 05/10/2026\n⏰ Horário: 20:30\n👥 Pessoas: 4\n🔑 Código: #RES123\n\nSe foi engano ou quiser remarcar, é só responder aqui que ajudamos. 🙏');
   });
-  it.each(['waiting', 'notified'])('accepts table-ready for a %s entry without a customer and without a setting read', async status => {
-    const f = tableReadyFixture(); f.rows.waitlist[0].status = status; f.rows.customers = [];
+  it('accepts table-ready only for a server-stamped notified entry without a customer or setting read', async () => {
+    const f = tableReadyFixture(); f.rows.customers = [];
     const result = await f.resources.loadScheduledResource(f.intent);
     if (result.ok === false) throw new Error(`unexpected refusal ${result.reason}`);
     expect(result.resource).toMatchObject({ templateId: 'fila_mesa_pronta_v1', customerId: null, code: 12, expiresAt: '2026-10-05T15:30:00.000Z' });
-    expect(result.resource.expected).toMatchObject({ kind: 'waitlist_table_ready', customer: null, setting: { key: null, present: false }, resource: { status } });
+    expect(result.resource.expected).toMatchObject({ kind: 'waitlist_table_ready', customer: null, setting: { key: null, present: false }, resource: { status: 'notified' } });
     expect(f.calls.some(call => call.table === 'settings')).toBe(false);
   });
-  it.each([['seated', null], ['cancelled', null], ['no_show', null], ['waiting', '2026-10-05T14:30:00Z'], ['notified', '2026-10-05T14:30:00Z']])('refuses table-ready for status %s seated_at %s', async (status, seatedAt) => {
+  it.each([['seated', null], ['cancelled', null], ['no_show', null], ['waiting', null], ['waiting', '2026-10-05T14:30:00Z'], ['notified', '2026-10-05T14:30:00Z']])('refuses table-ready for status %s seated_at %s', async (status, seatedAt) => {
     const f = tableReadyFixture(); Object.assign(f.rows.waitlist[0], { status, seated_at: seatedAt });
     expect(await f.resources.loadScheduledResource(f.intent)).toMatchObject({ ok: false, reason: 'waitlist_not_waiting' });
+  });
+  it('refuses pre-migration and changed facts even when status is notified', async () => {
+    const old = tableReadyFixture(); old.rows.waitlist[0].notified_server_at = null;
+    expect(await old.resources.loadScheduledResource(old.intent)).toMatchObject({ ok: false, reason: 'waitlist_not_waiting' });
+    const changed = tableReadyFixture(); changed.rows.waitlist[0].notified_at = '2026-10-05T15:01:00Z';
+    changed.rows.waitlist[0].notified_server_at = '2026-10-05T15:01:00Z';
+    expect(await changed.resources.loadScheduledResource(changed.intent)).toMatchObject({ ok: false, reason: 'waitlist_not_waiting' });
   });
   it('renders table-ready template, default TEXT and customized TEXT', async () => {
     const f = tableReadyFixture();
@@ -294,10 +306,27 @@ describe('cancellation and table-ready resources', () => {
     expect((await renderScheduledText(result.resource, legacyTextIO(f, { customized: true, body: 'Mesa {{codigo_fila}}: {{link_status}}' }))).body).toBe(`Mesa 12: https://example.com/acompanhar/${f.intent.waitlistId}`);
   });
   it('dispatches an existing cancellation job through the ledger intent with the legacy TEXT', async () => {
-    const f = createDispatchFixture(); f.rows.reservations[0].status = 'cancelled';
-    Object.assign(f.row, { kind: 'cancellation', initial_catalog_key: 'res_cancelada_v1', expires_at: '2026-10-06T23:30:00Z' });
+    const f = createDispatchFixture(); Object.assign(f.rows.reservations[0], { status: 'cancelled', cancelled_at: f.nowISO });
+    Object.assign(f.row, { kind: 'cancellation', initial_catalog_key: 'res_cancelada_v1', fact_at: f.nowISO, expires_at: '2026-10-06T15:00:00Z' });
     expect(await f.dispatch()).toMatchObject({ state: 'reconciled', jobId: f.jobId });
     expect(f.calls.post).toBe(1); expect(f.calls.bodies[0]).toContain('sua reserva foi cancelada');
+  });
+  it('keeps one job after recancellation and does not POST with its old fact', async () => {
+    const f = createDispatchFixture();
+    Object.assign(f.row, { kind: 'cancellation', fact_at: f.nowISO, expires_at: '2026-10-06T15:00:00Z', initial_catalog_key: 'res_cancelada_v1' });
+    Object.assign(f.rows.reservations[0], { status: 'cancelled', cancelled_at: '2026-10-05T15:00:01Z' });
+    let enqueues = 0;
+    const dispatcher = createAutomationDispatcher({ ...f.io,
+      readOne: async (table, columns, filters, latest) => {
+        if (table === 'whatsapp_automation_jobs' && filters.kind === 'cancellation')
+          return Object.entries(filters).every(([key, value]) => f.row[key] === value) ? f.row : null;
+        return f.io.readOne(table, columns, filters, latest);
+      },
+      rpc: async (name, args) => { if (name === 'enqueue_whatsapp_automation') enqueues++; return f.io.rpc(name, args); },
+    });
+    const result = await dispatcher.dispatchOperatorIntent({ kind: 'cancellation', resourceId: f.ids.reservation, unitId: f.ids.unit });
+    expect(result).toMatchObject({ state: 'blocked', jobId: f.jobId, reason: 'reservation_changed' });
+    expect(enqueues).toBe(0); expect(f.calls.post).toBe(0);
   });
   it('rejects a ledger row whose resource does not match the kind', async () => {
     const f = createDispatchFixture(); f.rows.reservations[0].status = 'cancelled';
@@ -307,11 +336,80 @@ describe('cancellation and table-ready resources', () => {
   it.each(['cancellation', 'waitlist_table_ready'] as const)('generic producer refuses %s until its Phase 3 producer exists', async kind => {
     const f = createDispatchFixture(); const reads: string[] = []; let enqueues = 0;
     const dispatcher = createAutomationDispatcher({ ...f.io,
-      readOne: async (table, columns, filters, latest) => { reads.push(table); return f.io.readOne(table, columns, filters, latest); },
+      readOne: async (table, columns, filters, latest) => { reads.push(table); return table === 'whatsapp_automation_jobs' ? null : f.io.readOne(table, columns, filters, latest); },
       rpc: async (name, args) => { if (name === 'enqueue_whatsapp_automation') enqueues++; return f.io.rpc(name, args); } });
     const resourceId = kind === 'cancellation' ? f.ids.reservation : 'eeeeeeee-0000-0000-0000-000000000002';
     expect(await dispatcher.enqueueScheduledIntent({ kind, resourceId, unitId: f.ids.unit })).toEqual({ state: 'not_enqueued', jobId: null, reason: 'provenance_refused' });
-    expect(reads).toEqual([]); expect(enqueues).toBe(0); expect(f.calls.post).toBe(0);
+    expect(reads).toEqual(['whatsapp_automation_jobs']); expect(enqueues).toBe(0); expect(f.calls.post).toBe(0);
+  });
+  it.each(['cancellation', 'waitlist_table_ready'] as const)('dedicated producer derives the %s fact from the server resource', async kind => {
+    const f = createDispatchFixture(); const captured: Record<string, unknown>[] = [];
+    const resourceId = kind === 'cancellation' ? f.ids.reservation : 'eeeeeeee-0000-0000-0000-000000000002';
+    if (kind === 'cancellation') Object.assign(f.rows.reservations[0], { status: 'cancelled', cancelled_at: f.nowISO });
+    else f.rows.waitlist.push({ id: resourceId, unit_id: f.ids.unit, status: 'notified', notified_at: f.nowISO, notified_server_at: f.nowISO });
+    const dispatcher = createAutomationDispatcher({ ...f.io,
+      rpc: async (name, args) => { if (name === 'enqueue_whatsapp_automation') { captured.push(args.p_intent as Record<string, unknown>); return f.jobId; } return f.io.rpc(name, args); },
+      readOne: async (table, columns, filters, latest) => {
+        if (table === 'whatsapp_automation_jobs' && filters.kind === kind) return null;
+        if (table === 'whatsapp_automation_adoptions') return { adopted_at: '2026-10-01T00:00:00Z' };
+        if (table === 'reservations' || table === 'waitlist') return f.rows[table].find(row => row.id === filters.id) ?? null;
+        return f.io.readOne(table, columns, filters, latest);
+      },
+    });
+    await dispatcher.enqueueOperatorIntent({ kind, resourceId, unitId: f.ids.unit });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ kind, unit_id: f.ids.unit,
+      fact_at: f.nowISO,
+      [kind === 'cancellation' ? 'reservation_id' : 'waitlist_id']: resourceId });
+  });
+  it('returns durable operator job before checking present status or adoption', async () => {
+    const f = createDispatchFixture(); Object.assign(f.row, { kind: 'cancellation', state: 'accepted', provider_message_id: 'native' });
+    f.rows.reservations[0].status = 'confirmed';
+    const dispatcher = createAutomationDispatcher({ ...f.io, readOne: async (table, columns, filters, latest) =>
+      table === 'whatsapp_automation_jobs' && columns === '*' && Object.entries(filters).every(([key, value]) => f.row[key] === value)
+        ? f.row : f.io.readOne(table, columns, filters, latest) });
+    expect(await dispatcher.enqueueOperatorIntent({ kind: 'cancellation', resourceId: f.ids.reservation, unitId: f.ids.unit }))
+      .toMatchObject({ state: 'accepted', jobId: f.jobId });
+  });
+  it('generic entry returns an existing cancellation ledger while still refusing fresh provenance', async () => {
+    const f = createDispatchFixture(); Object.assign(f.row, { kind: 'cancellation', state: 'accepted', provider_message_id: 'native' });
+    const reads: { table: string; filters: Readonly<Record<string, string>> }[] = [];
+    const dispatcher = createAutomationDispatcher({ ...f.io, readOne: async (table, columns, filters, latest) => {
+      reads.push({ table, filters });
+      if (table === 'whatsapp_automation_jobs') return columns === '*' && Object.entries(filters).every(([key, value]) => f.row[key] === value) ? f.row : null;
+      return f.io.readOne(table, columns, filters, latest);
+    } });
+    expect(await dispatcher.enqueueScheduledIntent({ kind: 'cancellation', resourceId: f.ids.reservation, unitId: f.ids.unit }))
+      .toMatchObject({ state: 'accepted', jobId: f.jobId });
+    expect(reads).toEqual([{ table: 'whatsapp_automation_jobs', filters: { kind: 'cancellation', reservation_id: f.ids.reservation, unit_id: f.ids.unit } }]);
+  });
+  it('refuses a changed operator fact and fails closed on a resource dependency', async () => {
+    const f = createDispatchFixture(); let enqueues = 0;
+    const dispatcher = createAutomationDispatcher({ ...f.io,
+      readOne: async (table, _columns, _filters) => {
+        if (table === 'whatsapp_automation_jobs') return null;
+        if (table === 'reservations') return { id: f.ids.reservation, unit_id: f.ids.unit, status: 'confirmed' };
+        throw new Error('dependency_unavailable');
+      },
+      rpc: async () => { enqueues++; return f.jobId; },
+    });
+    expect(await dispatcher.enqueueOperatorIntent({ kind: 'cancellation', resourceId: f.ids.reservation, unitId: f.ids.unit }))
+      .toMatchObject({ state: 'not_enqueued', reason: 'resource_refused' });
+    expect(await dispatcher.enqueueOperatorIntent({ kind: 'waitlist_table_ready', resourceId: f.ids.reservation, unitId: f.ids.unit }))
+      .toMatchObject({ state: 'not_enqueued', reason: 'dependency_unavailable' });
+    expect(enqueues).toBe(0);
+  });
+  it.each([null, 'broken', '2026-10-05T16:00:00Z', '2026-09-30T23:59:59Z'])('refuses cancellation without a valid adopted cancelled_at: %s', async cancelledAt => {
+    const f = createDispatchFixture(); let enqueues = 0;
+    const dispatcher = createAutomationDispatcher({ ...f.io,
+      readOne: async table => table === 'whatsapp_automation_jobs' ? null
+        : table === 'reservations' ? { id: f.ids.reservation, unit_id: f.ids.unit, status: 'cancelled', cancelled_at: cancelledAt }
+        : table === 'whatsapp_automation_adoptions' ? { adopted_at: '2026-10-01T00:00:00Z' } : null,
+      rpc: async () => { enqueues++; return f.jobId; },
+    });
+    expect(await dispatcher.enqueueOperatorIntent({ kind: 'cancellation', resourceId: f.ids.reservation, unitId: f.ids.unit }))
+      .toMatchObject({ state: 'not_enqueued' });
+    expect(enqueues).toBe(0);
   });
 });
 
@@ -518,8 +616,35 @@ describe('actual send-scheduled-whatsapp Request/authentication', () => {
       expect(f.calls.resourceConfirms[0].p_expected).toMatchObject({ version: 1, kind: 'confirmation' });
     } finally { harness.dispose(); }
   });
-  async function request(role: Parameters<typeof createAutomationEndpointIO>[0], body: unknown, headers: Record<string, string> = {}) {
+  it('creates a cancellation job from persisted cancelled_at and posts once through the authenticated request', async () => {
+    const f = createAutomationEndpointIO('owner', true);
+    f.operatorControls.ledgerVisible = false;
+    Object.assign(f.rows.reservations[0], { status: 'cancelled', cancelled_at: f.nowISO });
+    f.row.initial_catalog_key = 'res_cancelada_v1';
+    let posts = 0;
+    const harness = createEdgeRequestHarness({ now: Date.parse(f.nowISO),
+      env: { SUPABASE_URL: 'https://synthetic.invalid', SUPABASE_SERVICE_ROLE_KEY: 'synthetic-service', SUPABASE_ANON_KEY: 'synthetic-anon',
+        INTERNAL_API_KEY: 'synthetic-internal', APP_BASE_URL: 'https://example.com' }, createClient: () => f.db,
+      transport: [{ method: 'POST', url: 'https://api.z-api.io/instances/synthetic-instance/token/synthetic-token/send-text', respond: async () => {
+        posts++; return Response.json({ messageId: 'created-cancellation' });
+      } }],
+    });
+    try {
+      const invoke = () => harness.request('send-scheduled-whatsapp', new Request('https://synthetic.invalid/functions/v1/send-scheduled-whatsapp', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': 'synthetic-internal', Authorization: 'Bearer synthetic-jwt' },
+        body: JSON.stringify({ action: 'dispatch_operator', kind: 'cancellation', resource_id: f.ids.reservation }) }));
+      const first = await invoke();
+      expect(first.status).toBe(200); expect(await first.json()).toMatchObject({ state: 'reconciled', jobId: f.jobId });
+      expect(f.row).toMatchObject({ kind: 'cancellation', reservation_id: f.ids.reservation, fact_at: f.nowISO,
+        source_event_key: `cancellation:${f.ids.reservation}` });
+      expect(posts).toBe(1); expect(f.unexpected).toEqual([]);
+      await invoke(); expect(posts).toBe(1);
+    } finally { harness.dispose(); }
+  });
+  async function request(role: Parameters<typeof createAutomationEndpointIO>[0], body: unknown, headers: Record<string, string> = {},
+    prepare?: (f: ReturnType<typeof createAutomationEndpointIO>) => void) {
     const f = createAutomationEndpointIO(role);
+    prepare?.(f);
     const harness = createEdgeRequestHarness({ now: Date.parse(f.nowISO),
       env: { SUPABASE_URL: 'https://synthetic.invalid', SUPABASE_SERVICE_ROLE_KEY: 'synthetic-service', SUPABASE_ANON_KEY: 'synthetic-anon',
         INTERNAL_API_KEY: 'synthetic-internal', APP_BASE_URL: 'https://example.com' }, createClient: () => f.db });
@@ -532,6 +657,65 @@ describe('actual send-scheduled-whatsapp Request/authentication', () => {
   it('rejects internal intent with a JWT and no internal key before any database I/O', async () => {
     const result = await request('owner', { action: 'dispatch', kind: 'confirmation', resource_id: 'eeeeeeee-0000-0000-0000-000000000001' }, { Authorization: 'Bearer synthetic-jwt' });
     expect(result.status).toBe(401); expect(result.f.queries).toEqual([]); expect(result.f.calls.post).toBe(0);
+  });
+  it.each(['owner','platform_admin'] as const)('dedicated cancellation request accepts authorized %s only with both credentials', async role => {
+    const seed = createAutomationEndpointIO(role);
+    const body = { action: 'dispatch_operator', kind: 'cancellation', resource_id: seed.ids.reservation, unit_id: seed.ids.unit };
+    const prepare = (f: ReturnType<typeof createAutomationEndpointIO>) => { Object.assign(f.row, { kind: 'cancellation', initial_catalog_key: 'res_cancelada_v1' }); };
+    const absentKey = await request(role, body, { Authorization: 'Bearer synthetic-jwt' }, prepare);
+    expect(absentKey.status).toBe(401); expect(absentKey.f.queries).toEqual([]);
+    const absentJwt = await request(role, body, { 'x-internal-key': 'synthetic-internal' }, prepare);
+    expect(absentJwt.status).toBe(401); expect(absentJwt.f.queries).toEqual([]);
+    const allowed = await request(role, body, { 'x-internal-key': 'synthetic-internal', Authorization: 'Bearer synthetic-jwt' }, prepare);
+    expect(allowed.status).toBe(200); expect(allowed.body).toMatchObject({ state: 'reconciled', jobId: seed.jobId });
+    expect(allowed.f.calls.post).toBe(0);
+  });
+  it('dedicated cancellation refuses caller unit and fact_at before ledger access', async () => {
+    const seed = createAutomationEndpointIO('owner');
+    const headers = { 'x-internal-key': 'synthetic-internal', Authorization: 'Bearer synthetic-jwt' };
+    const forged = await request('owner', { action: 'dispatch_operator', kind: 'cancellation', resource_id: seed.ids.reservation,
+      unit_id: seed.ids.unit, fact_at: seed.nowISO }, headers);
+    expect(forged.status).toBe(400); expect(forged.f.queries).toEqual([]);
+    const foreign = await request('owner', { action: 'dispatch_operator', kind: 'cancellation', resource_id: seed.ids.reservation,
+      unit_id: seed.ids.foreignUnit }, headers);
+    expect(foreign.status).toBe(403); expect(foreign.f.queries.some(q => q.table === 'whatsapp_automation_jobs')).toBe(false);
+    const outsider = await request('outsider', { action: 'dispatch_operator', kind: 'cancellation', resource_id: seed.ids.reservation }, headers);
+    expect(outsider.status).toBe(403); expect(outsider.f.queries.some(q => q.table === 'whatsapp_automation_jobs')).toBe(false);
+  });
+  it('dedicated request fails closed for invalid JWT, changed status and unavailable resource', async () => {
+    const seed = createAutomationEndpointIO('owner');
+    const body = { action: 'dispatch_operator', kind: 'cancellation', resource_id: seed.ids.reservation };
+    const headers = { 'x-internal-key': 'synthetic-internal', Authorization: 'Bearer synthetic-jwt' };
+    const invalid = await request('invalid', body, headers);
+    expect(invalid.status).toBe(401); expect(invalid.f.queries).toEqual([]);
+    const changed = await request('owner', body, headers, f => {
+      f.operatorControls.ledgerVisible = false; f.rows.reservations[0].cancelled_at = f.nowISO;
+    });
+    expect(changed.status).toBe(200); expect(changed.body).toEqual({ state: 'not_enqueued', jobId: null, reason: 'resource_refused' });
+    const unavailable = await request('owner', body, headers, f => { f.operatorControls.ledgerVisible = false; f.operatorControls.resourceFailure = true; });
+    expect(unavailable.status).toBe(200); expect(unavailable.body).toEqual({ state: 'not_enqueued', jobId: null, reason: 'dependency_unavailable' });
+    expect(unavailable.f.calls.post).toBe(0);
+  });
+  it('table-ready request and user resend use only the matching durable waitlist job', async () => {
+    const seed = createAutomationEndpointIO('owner');
+    const waitlistId = 'eeeeeeee-0000-0000-0000-000000000002';
+    const prepare = (f: ReturnType<typeof createAutomationEndpointIO>) => {
+      f.rows.waitlist.push({ id: waitlistId, unit_id: f.ids.unit, status: 'seated', notified_at: f.nowISO, notified_server_at: f.nowISO });
+      Object.assign(f.row, { kind: 'waitlist_table_ready', reservation_id: null, waitlist_id: waitlistId,
+        initial_catalog_key: 'fila_mesa_pronta_v1' });
+    };
+    const internal = await request('owner', { action: 'dispatch_operator', kind: 'waitlist_table_ready', resource_id: waitlistId },
+      { 'x-internal-key': 'synthetic-internal', Authorization: 'Bearer synthetic-jwt' }, prepare);
+    expect(internal.status).toBe(200); expect(internal.body).toMatchObject({ state: 'reconciled', jobId: seed.jobId });
+    const resend = await request('owner', { action: 'resend', kind: 'waitlist_table_ready', resource_id: waitlistId,
+      unit_id: seed.ids.unit }, { Authorization: 'Bearer synthetic-jwt' }, prepare);
+    expect(resend.status).toBe(200); expect(resend.body).toMatchObject({ state: 'reconciled', jobId: seed.jobId });
+    const absent = await request('owner', { action: 'resend', kind: 'waitlist_table_ready', resource_id: waitlistId,
+      unit_id: seed.ids.unit }, { Authorization: 'Bearer synthetic-jwt' }, f => {
+      f.rows.waitlist.push({ id: waitlistId, unit_id: f.ids.unit, status: 'notified', notified_at: f.nowISO, notified_server_at: f.nowISO });
+    });
+    expect(absent.body).toEqual({ state: 'not_enqueued', jobId: null, reason: 'provenance_refused' });
+    expect(absent.f.calls.post).toBe(0);
   });
   it.each(['owner','gerente','operador','platform_admin'] as const)('authorized %s repairs the existing ledger via actual facade and handler', async role => {
     const seed = createAutomationEndpointIO(role);

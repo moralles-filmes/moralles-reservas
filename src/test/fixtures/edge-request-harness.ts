@@ -16,12 +16,12 @@ const REMOTE = {
   supabase: "https://esm.sh/@supabase/supabase-js@2",
   anthropic: "https://esm.sh/@anthropic-ai/sdk@0.27.3",
 } as const;
-export type EdgeName = "send-confirmation" | "process-notification-outbox"
+export type EdgeName = "send-confirmation" | "send-cancellation" | "send-manual-message" | "notify-waitlist-ready" | "process-notification-outbox"
   | "process-reservation-reminders" | "process-satisfaction-surveys"
   | "process-waitlist-entered" | "process-waitlist-feedback"
   | "process-voucher-triggers" | "webhook-whatsapp"
   | "send-scheduled-whatsapp" | "send-whatsapp" | "process-whatsapp-automations" | "resend-notification" | "manage-whatsapp-templates";
-const ENDPOINTS: readonly EdgeName[] = ["send-confirmation", "process-notification-outbox",
+const ENDPOINTS: readonly EdgeName[] = ["send-confirmation", "send-cancellation", "send-manual-message", "notify-waitlist-ready", "process-notification-outbox",
   "process-reservation-reminders", "process-satisfaction-surveys", "process-waitlist-entered",
   "process-waitlist-feedback", "process-voucher-triggers", "webhook-whatsapp",
   "send-scheduled-whatsapp", "send-whatsapp", "process-whatsapp-automations", "resend-notification", "manage-whatsapp-templates"];

@@ -84,12 +84,52 @@ it('rejects a malformed complete snapshot instead of accepting its unofficial mo
   io.invoke.mockResolvedValue({ data: { ...snapshot('unofficial'), configuration: { ...snapshot().configuration, bindingGeneration: 0 } }, error: null });
   mount(Reservas); await screen.findByText(/Não foi possível consultar o serviço/); expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
 });
-it.each(['official', 'unofficial'])('table_ready remains manual and editable in %s mode', async mode => {
-  io.mode = mode; mount(Fila); await screen.findByText(/Canal:/);
+it('table_ready shows its official model and blocked job without exposing a TEXT editor', async () => {
+  io.jobs = [blockedJob({ initial_catalog_key: 'fila_mesa_pronta_v1', kind: 'waitlist_table_ready' })];
+  mount(Fila); await screen.findByText(/Canal:/);
+  const user = userEvent.setup(); await user.click(screen.getByRole('combobox')); await user.click(screen.getByRole('option', { name: 'Sua mesa está pronta' }));
+  expect(screen.getByText(/Sua mesa em/)).toBeInTheDocument();
+  expect(screen.getByText('Uma mensagem está impedida de continuar.')).toBeInTheDocument();
+  expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Salvar mensagem' })).not.toBeInTheDocument();
+  expect(io.saves).toHaveLength(0);
+});
+it('table_ready retains the manual TEXT draft on an unofficial channel', async () => {
+  io.mode = 'unofficial'; mount(Fila); await screen.findByText(/Canal:/);
   const user = userEvent.setup(); await user.click(screen.getByRole('combobox')); await user.click(screen.getByRole('option', { name: 'Sua mesa está pronta' }));
   const editor = await screen.findByRole('textbox', { name: 'Mensagem' }); expect(editor).toHaveValue('Mesa pronta salva');
   fireEvent.change(editor, { target: { value: 'Mesa pronta editada' } }); fireEvent.click(screen.getByRole('button', { name: 'Salvar mensagem' }));
   await waitFor(() => expect(io.saves).toHaveLength(1)); expect(io.saves[0]).toMatchObject({ unit_id: unitId, event: 'table_ready', body: 'Mesa pronta editada' });
+});
+it.each(['official', 'unofficial'])('cancellation in %s mode is automatic and has no legacy editor', async mode => {
+  io.mode = mode; mount(Reservas); await screen.findByText(/Canal:/);
+  const user = userEvent.setup(); await user.click(screen.getByRole('combobox')); await user.click(screen.getByRole('option', { name: 'Reserva cancelada' }));
+  expect(screen.getByText('Mensagem automática enviada quando uma reserva é cancelada.')).toBeInTheDocument();
+  expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Salvar mensagem' })).not.toBeInTheDocument();
+  if (mode === 'official') expect(screen.getByText(/Sua reserva em/)).toBeInTheDocument();
+  expect(io.saves).toHaveLength(0);
+});
+it('a unit switch resets a cancellation selection before the next snapshot', async () => {
+  mount(Reservas); await screen.findByText(/Canal:/);
+  const user = userEvent.setup(); await user.click(screen.getByRole('combobox')); await user.click(screen.getByRole('option', { name: 'Reserva cancelada' }));
+  expect(screen.getByText(/Sua reserva em/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Trocar para unidade B' }));
+  await screen.findByText(/Canal:/);
+  expect(screen.queryByText(/Sua reserva em/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
+});
+it.each(['loading', 'error'])('table_ready exposes no TEXT editor on a %s channel snapshot', async state => {
+  io.mode = 'unofficial';
+  io.invoke.mockImplementation(() => state === 'loading'
+    ? new Promise(() => { })
+    : Promise.resolve({ data: null, error: new FunctionsHttpError(new Response('{}', { status: 503 })) }));
+  mount(Fila);
+  const user = userEvent.setup(); await user.click(screen.getByRole('combobox')); await user.click(screen.getByRole('option', { name: 'Sua mesa está pronta' }));
+  if (state === 'loading') await screen.findByText('Consultando o canal de WhatsApp…');
+  else await screen.findByText(/Não foi possível consultar o serviço/);
+  expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Salvar mensagem' })).not.toBeInTheDocument();
 });
 it('TEXT restores defaults, inserts chips, previews and saves the actual draft', async () => {
   io.mode = 'unofficial'; mount(Reservas); await screen.findByRole('textbox', { name: 'Mensagem' });

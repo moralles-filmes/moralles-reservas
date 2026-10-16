@@ -17,7 +17,7 @@ export function createAutomationFixture(options: { templateStatus?: string; nowI
   const rows: Record<AutomationResourceTable, Record<string, unknown>[]> = {
     reservations: [{ id: ids.reservation, unit_id: ids.unit, customer_id: ids.customer, date: '2026-10-05', time: '20:30:00',
       status: 'confirmed', payment_status: null, source: 'web', party_size: 4, reservation_code: 'RES123',
-      applied_discount_percent: null, satisfaction_rating: null }],
+      applied_discount_percent: null, satisfaction_rating: null, cancelled_at: null }],
     units: [{ id: ids.unit, organization_id: ids.organization, name: 'Restaurante Exemplo', slug: 'exemplo', timezone: 'America/Sao_Paulo' }],
     organizations: [{ id: ids.organization }],
     customers: [{ id: ids.customer, organization_id: ids.organization, name: 'Marina', phone: '55912345678', do_not_contact: false, deleted_at: null }],
@@ -26,8 +26,8 @@ export function createAutomationFixture(options: { templateStatus?: string; nowI
   const calls = Object.assign([] as { table: string; columns: string; predicates: Readonly<Record<string, string>> }[],
     { email: 0, legacyText: 0, post: 0, recordSent: 0 });
   const projections: Record<AutomationResourceTable, string> = {
-    reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating',
-    waitlist: 'id,unit_id,customer_id,customer_name,customer_phone,party_size,code,status,created_at,seated_at',
+    reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating,cancelled_at',
+    waitlist: 'id,unit_id,customer_id,customer_name,customer_phone,party_size,code,status,created_at,seated_at,notified_at,notified_server_at',
     vouchers: 'id,unit_id,customer_id,rule_id,code,discount_percent,status,issued_at,created_at,expires_at',
     customers: 'id,organization_id,name,phone,do_not_contact,deleted_at',
     units: 'id,organization_id,name,slug,timezone', organizations: 'id', settings: 'value', voucher_rules: 'id,unit_id,trigger_type',
@@ -44,8 +44,8 @@ export function createAutomationFixture(options: { templateStatus?: string; nowI
       if (!matches[0]) return null;
       const result: Record<string, unknown> = {};
       for (const field of columns.split(',')) {
-        if (!(field in matches[0])) throw new Error(`fixture_missing_column:${table}.${field}`);
-        result[field] = matches[0][field];
+        if (!(field in matches[0]) && field !== 'notified_at' && field !== 'notified_server_at') throw new Error(`fixture_missing_column:${table}.${field}`);
+        result[field] = field in matches[0] ? matches[0][field] : null;
       }
       return result;
     };
@@ -395,6 +395,7 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
   if (!queued) { f.row.state = 'accepted'; f.row.provider_message_id = 'native-request'; }
   const queries: { table: string; columns: string; predicates: Record<string, unknown> }[] = [];
   const unexpected: string[] = [];
+  const operatorControls = { ledgerVisible: true, resourceFailure: false, adoptionFailure: false };
   const userId = '77777777-0000-4000-8000-000000000001';
   const fail = (reason: string): never => { unexpected.push(reason); throw new Error('unexpected_endpoint_io'); };
   const db = {
@@ -407,7 +408,7 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
       const project = (row: Record<string, unknown>) => Object.fromEntries(columns.split(',').map(part => {
         const key = part.trim(); if (!(key in row)) return fail(`missing_projection:${table}.${key}`); return [key, row[key]];
       }));
-      async function execute(single: boolean): Promise<{ data: unknown; error: null; count?: number }> {
+      async function execute(single: boolean): Promise<{ data: unknown; error: unknown; count?: number }> {
         queries.push({ table, columns, predicates: { ...predicates } });
         if (patch) {
           if (table !== 'whatsapp_automation_jobs' || columns !== 'id' || Object.keys(patch).join(',') !== 'safe_log_body'
@@ -424,6 +425,8 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
           return { data: project(channel), error: null };
         }
         if (table === 'whatsapp_template_bindings') {
+          if (columns === 'dispatch_enabled,adopted_at' && predicates.unit_id === f.ids.unit)
+            return { data: [{ dispatch_enabled: true, adopted_at: '2026-10-01T00:00:00Z' }], error: null };
           if (predicates.unit_id !== f.ids.unit || predicates.channel_id !== f.row.channel_id || predicates.provider !== 'zapi') return fail('binding_scope');
           return { data: project({ id: f.row.binding_id, channel_id: f.row.channel_id, unit_id: f.ids.unit, provider: 'zapi', account_id: null, generation: 1, channel_credential_revision: 1 }), error: null };
         }
@@ -432,6 +435,20 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
         if (table === 'organization_entitlement_overrides' && columns === 'enabled, starts_at, ends_at' && predicates.organization_id === f.ids.organization && predicates.feature === 'whatsapp' && predicates.revoked_at === null) return { data: [], error: null };
         if (table === 'billing_subscriptions' && columns === 'id, status, canceled_at, suspended_at, billing_plans!inner(category, included_features)' && predicates.organization_id === f.ids.organization) return { data: [], error: null };
         if (table === 'platform_flags' && predicates.key === 'whatsapp_service_enforcement') return { data: { value: false }, error: null };
+        if (table === 'platform_flags' && predicates.key === 'whatsapp_automation_dispatch' && columns === 'value') return { data: { value: f.controls.gate }, error: null };
+        if (table === 'reservations' && columns === 'id,unit_id,status,cancelled_at') {
+          if (operatorControls.resourceFailure) return { data: null, error: { code: 'synthetic_dependency' } };
+          const row = f.rows.reservations.find(row => row.id === predicates.id);
+          return { data: row ? project(row) : null, error: null };
+        }
+        if (table === 'waitlist' && columns === 'id,unit_id,status,notified_at,notified_server_at') {
+          if (operatorControls.resourceFailure) return { data: null, error: { code: 'synthetic_dependency' } };
+          const row = f.rows.waitlist.find(row => row.id === predicates.id);
+          return { data: row ? project(row) : null, error: null };
+        }
+        if (table === 'whatsapp_automation_adoptions' && columns === 'adopted_at')
+          return operatorControls.adoptionFailure ? { data: null, error: { code: 'synthetic_dependency' } }
+            : { data: { adopted_at: '2026-10-01T00:00:00Z' }, error: null };
         if (queued && !(table === 'reservations' && columns === 'id,unit_id') && !['unit_members','platform_admins','whatsapp_automation_jobs'].includes(table)) {
           const filter: Record<string, string> = {};
           for (const [key,value] of Object.entries(predicates)) { if (typeof value !== 'string') return fail('resource_filter'); filter[key] = value; }
@@ -439,11 +456,16 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
         }
         if (table === 'reservations' && columns === 'id,unit_id' && predicates.id === f.ids.reservation)
           return { data: role === 'foreign' || role === 'outsider' ? null : { id: f.ids.reservation, unit_id: f.ids.unit }, error: null };
+        if (table === 'waitlist' && columns === 'id,unit_id') {
+          const row = f.rows.waitlist.find(row => row.id === predicates.id);
+          return { data: row ? { id: row.id, unit_id: row.unit_id } : null, error: null };
+        }
         if (table === 'platform_admins' && columns === 'user_id' && predicates.user_id === userId)
           return { data: role === 'platform_admin' ? { user_id: userId } : null, error: null };
-        if (table === 'unit_members' && columns === 'role' && predicates.user_id === userId && predicates.unit_id === f.ids.unit)
-          return { data: ['owner','gerente','operador'].includes(role) ? { role } : null, error: null };
+        if (table === 'unit_members' && (columns === 'role' || columns === 'user_id') && predicates.user_id === userId && predicates.unit_id === f.ids.unit)
+          return { data: ['owner','gerente','operador'].includes(role) ? columns === 'role' ? { role } : { user_id: userId } : null, error: null };
         if (table === 'whatsapp_automation_jobs' && columns === '*') {
+          if (!operatorControls.ledgerVisible) return { data: null, error: null };
           if (Object.entries(predicates).some(([key,value]) => !(key in f.row) || f.row[key] !== value)) return { data: null, error: null };
           return { data: { ...f.row }, error: null };
         }
@@ -465,13 +487,19 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
       return query;
     },
     async rpc(name: string, args: Record<string, unknown>) {
+      if (name === 'enqueue_whatsapp_automation') {
+        const intent = args.p_intent as Record<string, unknown>;
+        Object.assign(f.row, { reservation_id: null, waitlist_id: null, voucher_id: null, state: 'queued' }, intent);
+        operatorControls.ledgerVisible = true;
+        return { data: f.jobId, error: null };
+      }
       if (queued && name !== 'reconcile_whatsapp_automation_acceptance') return { data: await f.io.rpc(name, args), error: null };
       if (name !== 'reconcile_whatsapp_automation_acceptance' || args.p_job_id !== f.jobId) return fail(`rpc:${name}`);
       f.calls.reconcile++;
       return { data: { state: 'reconciled', history: 'recorded' }, error: null };
     },
   };
-  return { ...f, db, queries, unexpected };
+  return { ...f, db, queries, unexpected, operatorControls };
 }
 
 /** Scripted database responses are I/O evidence, not an implementation of SQL guards. */

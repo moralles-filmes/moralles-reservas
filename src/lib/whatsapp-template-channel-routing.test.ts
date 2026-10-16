@@ -205,6 +205,32 @@ function setup(channels = [row()]) {
 }
 
 describe("legacy actual channel routing characterization", () => {
+  it("runs an optional final outbound guard after awaited preparation and before adapter POST", async () => {
+    const f = setup([row({ provider: "datafy" })]);
+    let now = NOW;
+    f.resolveCredentials.mockImplementation(async (_db, channel) => {
+      now += 2_000; // The service window expires during this await.
+      return { ...channel.credentials };
+    });
+    const result = await f.service.sendWhatsApp("11999990000", "Olá", {
+      channel_id: "channel-a",
+      unit_id: "unit-a",
+      beforeOutbound: () => now >= NOW + 1_000 ? "OUTSIDE_SERVICE_WINDOW" : null,
+    });
+    expect(result).toMatchObject({ ok: false, error: "OUTSIDE_SERVICE_WINDOW", channelId: "channel-a" });
+    expect(f.sendOutbound).not.toHaveBeenCalled();
+  });
+
+  it("passes a manual Meta no-retry policy to the outbound adapter without changing other sends", async () => {
+    const f = setup([row({ provider: "datafy" })]);
+    expect((await f.service.sendWhatsApp("11999990000", "Olá", {
+      channel_id: "channel-a", unit_id: "unit-a", beforeOutbound: () => null,
+      outboundOptions: { retryPolicy: "none" },
+    })).ok).toBe(true);
+    expect(f.sendOutbound).toHaveBeenCalledWith("datafy", expect.anything(),
+      { toPhone: "11999990000", text: "Olá" }, { retryPolicy: "none" });
+  });
+
   it.each(["explicit", "active", "legacy"])(
     "%s route preserves raw payload and the complete result",
     async (route) => {

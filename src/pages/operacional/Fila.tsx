@@ -200,7 +200,7 @@ export default function Fila() {
       return next;
     });
     notifyEntry.mutate(
-      { id: entry.id, phone: entry.customer_phone, message },
+      { id: entry.id, message },
       {
         onSettled: () => {
           setNotifyingIds((prev) => {

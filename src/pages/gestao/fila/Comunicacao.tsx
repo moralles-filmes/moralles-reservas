@@ -86,8 +86,8 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
   const setCustomized = (value: boolean) => setDrafts(prev => ({ ...prev, [event]: { ...draft, customized: value } }));
   const setBody = (value: string | ((previous: string) => string)) => setDrafts(prev => ({ ...prev, [event]: { ...draft, body: typeof value === 'function' ? value(draft.body) : value, customized: true } }));
   const manual = event === 'table_ready';
-  const textMode = manual || controls.query.data?.mode === 'unofficial';
-  const textAllowed = textMode && controls.canManage && (manual || (!controls.query.isError && !controls.query.isFetching));
+  const textMode = controls.query.data?.mode === 'unofficial';
+  const textAllowed = textMode && controls.canManage && !controls.query.isError && !controls.query.isFetching;
 
   const charCount = body.length;
   const overLimit = charCount > meta.maxLength;
@@ -154,9 +154,9 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
         <p className="text-xs text-muted-foreground">{meta.description}</p>
       </div>
 
-      {!manual && <TemplateStatus controls={controls} logicalIds={[event === 'entered' ? 'fila_entrada_v1' : 'fila_feedback_v1']} />}
-      {manual && <p className="text-sm text-muted-foreground">Mesa pronta: mensagem enviada manualmente pelo painel operacional.</p>}
-      {textMode && (manual || !controls.query.isError) && <>
+      <TemplateStatus controls={controls} logicalIds={[event === 'entered' ? 'fila_entrada_v1' : event === 'table_ready' ? 'fila_mesa_pronta_v1' : 'fila_feedback_v1']} />
+      {manual && <p className="text-sm text-muted-foreground">Mesa pronta: mensagem disparada pelo painel operacional ao chamar o cliente da fila.</p>}
+      {textMode && !controls.query.isError && !controls.query.isFetching && <>
         {templatesQuery.isError ? <div role="alert"><p>Não foi possível carregar as mensagens salvas.</p><Button className="min-h-11" onClick={() => void templatesQuery.refetch()}>Recarregar mensagens</Button></div> : <>
           <div className="flex items-center gap-2 min-h-11">
             <Switch

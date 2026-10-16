@@ -47,6 +47,7 @@ type AuthorityResult = { ok: true; authority: Authority } | { ok: false; reason:
 
 /** Runtime authentication precedes this internal-only producer entry. No caller fact/pins are accepted. */
 export interface ScheduledProducerRequest { kind: ScheduledKind; resourceId: string; unitId?: string; outboxId?: string; targetDate?: string }
+export interface OperatorProducerRequest { kind: 'cancellation' | 'waitlist_table_ready'; resourceId: string; unitId: string }
 
 export function createAutomationDispatcher(io: AutomationDispatchIO) {
   const resources = createAutomationResourceService({ readOne: io.readOne, now: io.now });
@@ -228,15 +229,14 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
 
   async function enqueueScheduledIntent(input: ScheduledProducerRequest): Promise<DispatchResult> {
     if (!uuid(input.resourceId) || (input.unitId !== undefined && !uuid(input.unitId))) return notEnqueued('intent_invalid');
-    // No trusted provenance exists for these operator actions in this generic path yet (dedicated producers come later).
-    if (input.kind === 'cancellation' || input.kind === 'waitlist_table_ready') return notEnqueued('provenance_refused');
     try {
-      const table = ['confirmation','reminder_d1','survey_d1'].includes(input.kind) ? 'reservations' : input.kind === 'voucher_issued' ? 'vouchers' : 'waitlist';
+      const table = ['confirmation','reminder_d1','survey_d1','cancellation'].includes(input.kind) ? 'reservations' : input.kind === 'voucher_issued' ? 'vouchers' : 'waitlist';
       const key = table === 'reservations' ? 'reservation_id' : table === 'waitlist' ? 'waitlist_id' : 'voucher_id';
       // Existing ledger first, with no join/current resource filter that could hide erased acceptance.
       const existing = await read('whatsapp_automation_jobs', '*', { kind: input.kind, [key]: input.resourceId, ...(input.unitId ? { unit_id: input.unitId } : {}) });
       if (existing) return recordedDispatchResult(parseAutomationLedger(existing));
-      if (input.kind === 'voucher_issued') return notEnqueued('provenance_refused');
+      // Operator facts require the dedicated authenticated entry, but prior durable jobs remain visible.
+      if (input.kind === 'voucher_issued' || input.kind === 'cancellation' || input.kind === 'waitlist_table_ready') return notEnqueued('provenance_refused');
       const row = await read(table, '*', { id: input.resourceId });
       if (!row || !uuid(row.unit_id) || (input.unitId && input.unitId !== row.unit_id)) return notEnqueued('resource_refused');
       const adoption = await read('whatsapp_automation_adoptions', 'adopted_at', { unit_id: row.unit_id });
@@ -270,9 +270,43 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
       return uuid(jobId) ? recordedDispatchResult((await loadJob(jobId)).job) : notEnqueued('dependency_unavailable');
     } catch { return notEnqueued('dependency_unavailable'); }
   }
+  async function enqueueOperatorIntent(input: OperatorProducerRequest): Promise<DispatchResult> {
+    if (!uuid(input.resourceId) || !uuid(input.unitId)) return notEnqueued('intent_invalid');
+    const table = input.kind === 'cancellation' ? 'reservations' : 'waitlist';
+    const key = input.kind === 'cancellation' ? 'reservation_id' : 'waitlist_id';
+    try {
+      // Durable ownership precedes mutable resource status, adoption and dispatch gates.
+      const existing = await read('whatsapp_automation_jobs', '*', { unit_id: input.unitId, kind: input.kind, [key]: input.resourceId });
+      if (existing) return recordedDispatchResult(parseAutomationLedger(existing));
+      const row = await read(table, input.kind === 'cancellation' ? 'id,unit_id,status,cancelled_at' : 'id,unit_id,status,notified_at,notified_server_at', { id: input.resourceId });
+      if (!row || row.id !== input.resourceId || row.unit_id !== input.unitId) return notEnqueued('resource_refused');
+      let factAt: string;
+      if (input.kind === 'cancellation') {
+        if (row.status !== 'cancelled' || !instant(row.cancelled_at) || Date.parse(row.cancelled_at) > io.now()) return notEnqueued('resource_refused');
+        factAt = row.cancelled_at;
+      } else {
+        if (row.status !== 'notified' || !instant(row.notified_at) || row.notified_server_at !== row.notified_at
+          || Date.parse(row.notified_at) > io.now()) return notEnqueued('resource_refused');
+        factAt = row.notified_at;
+      }
+      const adoption = await read('whatsapp_automation_adoptions', 'adopted_at', { unit_id: input.unitId });
+      if (!adoption) return notEnqueued('adoption_required');
+      if (!instant(adoption.adopted_at)) return notEnqueued('dependency_unavailable');
+      if (Date.parse(factAt) < Date.parse(adoption.adopted_at)) return notEnqueued('producer_before_adoption');
+      const jobId = await io.rpc('enqueue_whatsapp_automation', { p_intent: { unit_id: input.unitId, kind: input.kind,
+        [key]: input.resourceId, source_event_key: `${input.kind}:${input.resourceId}`, fact_at: factAt,
+        expires_at: automationDeadline(input.kind, factAt) } });
+      if (jobId === null) return notEnqueued('legacy_already_accepted');
+      return uuid(jobId) ? recordedDispatchResult((await loadJob(jobId)).job) : notEnqueued('dependency_unavailable');
+    } catch { return notEnqueued('dependency_unavailable'); }
+  }
+  async function dispatchOperatorIntent(input: OperatorProducerRequest): Promise<DispatchResult> {
+    const enqueued = await enqueueOperatorIntent(input);
+    return enqueued.jobId === null ? enqueued : dispatchExistingJob(enqueued.jobId);
+  }
   async function dispatchScheduledIntent(input: ScheduledProducerRequest): Promise<DispatchResult> {
     const enqueued = await enqueueScheduledIntent(input);
     return enqueued.jobId === null ? enqueued : dispatchExistingJob(enqueued.jobId);
   }
-  return { dispatchExistingJob, dispatchScheduledIntent, enqueueScheduledIntent };
+  return { dispatchExistingJob, dispatchScheduledIntent, enqueueScheduledIntent, enqueueOperatorIntent, dispatchOperatorIntent };
 }

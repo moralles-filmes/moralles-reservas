@@ -2210,3 +2210,63 @@ e banco55452. Resolver instalação não substitui os guards de pipe/labels/conf
 quarentena ou allowlist HTTP de cada gate. Somente ROOT lê
 `secrets/local-status.json` gerado pelo próprio stack, em memória e após os guards.
 Nunca reutilize chaves ou runtime de outro plano para preencher esse diretório.
+
+### 67 — Fato de cancelamento (Fase 3, Task 3.2)
+
+Em PostgreSQL local **descartável** com `anon` e `authenticated` disponíveis, aplique
+`67a-cancellation-fact-bootstrap.sql` antes da migration
+`20261017130000_reservation_cancellation_fact.sql`. Execute depois
+`67-cancellation-fact.sql`; reaplique a migration duas vezes e repita o 67.
+`ON_ERROR_STOP=1` é obrigatório. O 67 termina em `ROLLBACK` e verifica o
+timestamp do servidor, spoof ignorado, reativação/recancelamento, ausência de
+backfill, ACL e controle positivo que desabilita o trigger dentro da transação.
+A mesma asserção de recusa de timestamp forjado é forçada a falhar nesse
+controle e sua falha esperada é verificada antes do `ROLLBACK`.
+Este harness isolado não demonstra RLS ou autorização de API Supabase.
+
+### 67b — Fato server-owned de mesa pronta (Fase 3, Task 3.3)
+
+Depois da migration `20261017140000_waitlist_table_ready_server_fact.sql`, execute
+`67b-waitlist-table-ready-fact.sql` no PostgreSQL local descartável com a cadeia
+do 66, workers em quarentena e `ON_ERROR_STOP=1`. O 67b acrescenta
+`notified_at` apenas na transação do teste, pois a fixture compacta do 41
+omite essa coluna histórica do schema real. Reaplique a migration duas
+vezes e repita o 67b para conferir idempotência e ACL. O script usa o mesmo
+bootstrap de canal TEXT/adoption do 66 dentro de uma transação com `ROLLBACK`.
+Ele mede spoof em INSERT/UPDATE, reversão antes e depois da captura, novo fato
+na renotificação, recusa de linha antiga sem prova server-owned e controles
+positivos para trigger e `post_core` (incluindo restauração do corpo/ACL).
+
+O 66 é o baseline da **Fase 2 antes desta migration**: seu T4 aceitava
+`waiting` por contrato da época. A restrição a `notified` na Fase 3 é
+intencional; o 66 não é gate de regressão após a 67b.
+
+### 67c — Conflito de notificação legada failed (Fase 3, Task 3.4)
+
+Depois de `20261017150000_whatsapp_automation_failed_notification_adoption.sql`,
+execute `67c-whatsapp-automation-failed-notification.sql` na mesma cadeia local
+descartável do 66, com o snapshot 66a anterior à migration da Fase 2 e workers
+em quarentena. A fixture compacta precisa de `waitlist.notified_at` antes da
+migration da Task 3.3, pois omite essa coluna histórica do schema real. O 67c
+usa a preparação/aceite SQL real, termina em `ROLLBACK` e confere 36 asserções:
+linha `failed` de reserva e fila adotada na UUID congelada, idempotência,
+recusa de linha com provider id prévio, voucher com chaves naturais nulas
+preservando outra linha `failed` da unidade, ACL e controle positivo que
+desliga a adoção para reproduzir `notification_conflict`. Reaplique a migration
+duas vezes e repita o 67c. Ele não chama provider nem comprova JWT/PostgREST.
+
+### 67d — Histórico de conversa e janela manual (Fase 3, Task 3.6)
+
+Em PostgreSQL local **descartável**, aplique
+`67d-conversation-message-acl-bootstrap.sql`, depois
+`20261017160000_conversation_message_write_acl.sql`, e execute
+`67d-conversation-message-write-acl.sql` com `ON_ERROR_STOP=1` como
+`supabase_admin`. Reaplique a migration duas vezes, repetindo o 67d após
+cada aplicação. O preflight termina em `ROLLBACK` e comprova ACL efetiva:
+authenticated/anon sem INSERT, UPDATE de tabela, DELETE ou TRUNCATE;
+authenticated sem UPDATE em `messages`, mas com UPDATE nas cinco colunas de
+handoff. Tentativas autenticadas de forjar o JSONB/inserir/apagar falham;
+handoff e escrita por service_role passam. Os controles positivos concedem
+temporariamente UPDATE e INSERT por coluna e demonstram que as fraudes então funcionam.
+O bootstrap reproduz o shape e os grants da tabela em um banco isolado; ele
+não é prova de RLS/JWT/PostgREST do projeto vivo.

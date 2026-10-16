@@ -4,13 +4,14 @@ import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useConversations, useConversationActions } from "@/hooks/useConversations";
 import { useSendManualMessage } from "@/hooks/useSendManualMessage";
+import { useWhatsappTemplates } from "@/hooks/useWhatsappTemplates";
 import { useDebounce } from "@/hooks/useDebounce";
 import {
   getConversationMessageAuthorLabel,
   sortConversationMessages,
 } from "@/lib/conversation-message";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,7 @@ import {
 import { toast } from "sonner";
 import { ArrowLeft, MessageCircle, UserCheck, Bot, CheckCircle, Send, Loader2, Search } from "lucide-react";
 import type { Conversation, ConversationMessage, ConversationStatus } from "@/types/reserva";
+import { evaluateManualServiceWindow } from "../../../supabase/functions/_shared/whatsapp-manual-service-window-core";
 
 // ── Status display helpers ─────────────────────────────────────────────────────
 
@@ -106,12 +108,10 @@ function DateDivider({ label }: { label: string }) {
 function ConversationDetail({
   conv,
   unitId,
-  onUpdate,
   onBack,
 }: {
   conv: Conversation;
   unitId: string;
-  onUpdate: (updated: Conversation) => void;
   onBack: () => void;
 }) {
   const [replyText, setReplyText] = useState("");
@@ -120,13 +120,28 @@ function ConversationDetail({
 
   const { assumeConversation, releaseToAI, markResolved } = useConversationActions(unitId);
   const sendMessage = useSendManualMessage(unitId);
+  const { query: channelQuery } = useWhatsappTemplates(unitId);
+  const [clockRevision, setClockRevision] = useState(0);
+  const refetchChannel = channelQuery.refetch;
+
+  useEffect(() => {
+    const refresh = () => { if (!document.hidden) void refetchChannel(); };
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [refetchChannel]);
 
   // Live conversation data (realtime via query invalidation from useConversations hook).
   // `placeholderData` (não `initialData`): o `conv` vem da LISTA, que omite a coluna
   // `messages` (payload). placeholderData mostra nome/status na hora mas NÃO conta como
   // dado fresco — a queryFn sempre roda no mount e traz `messages`. Com `initialData` +
   // staleTime global de 30s o detalhe nunca buscava e o thread ficava em branco.
-  const { data: liveConv, isError, refetch, isPlaceholderData } = useQuery({
+  const { data: liveConv, isError, isFetching, refetch, isPlaceholderData } = useQuery({
     queryKey: ["conversation-detail", conv.id],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -176,7 +191,28 @@ function ConversationDetail({
     () => sortConversationMessages(current.messages ?? []),
     [current.messages],
   );
-  const isHumanMode = current.status === "human_active" || current.status === "awaiting_human";
+  const detailReady = !isPlaceholderData && !isError && !isFetching && Array.isArray(liveConv?.messages);
+  const channelReady = channelQuery.isSuccess && !channelQuery.isFetching && !!channelQuery.data?.channelId;
+  const officialWindow = evaluateManualServiceWindow(liveConv?.messages, Date.now());
+  const outsideOfficialWindow = channelReady && channelQuery.data?.mode === "official" && !officialWindow.open;
+  const canSend = detailReady && channelReady && !outsideOfficialWindow;
+
+  // One timer at the exact Meta deadline. A new inbound or focus re-arms it;
+  // unofficial channels do not spend a render every second on all bubbles.
+  useEffect(() => {
+    if (!detailReady || !channelReady || channelQuery.data?.mode !== "official") return;
+    const tick = () => setClockRevision(value => value + 1);
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", tick);
+    const deadline = Date.parse(officialWindow.closesAt ?? "");
+    const timer = officialWindow.open && Number.isFinite(deadline)
+      ? window.setTimeout(tick, Math.max(0, deadline - Date.now())) : null;
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener("focus", tick);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [detailReady, channelReady, channelQuery.data?.mode, officialWindow.closesAt, officialWindow.open, clockRevision]);
 
   function handleAssume() {
     assumeConversation.mutate(current.id, {
@@ -200,7 +236,7 @@ function ConversationDetail({
   }
 
   function handleSend() {
-    if (sendMessage.isPending) return;
+    if (sendMessage.isPending || !canSend) return;
     const msg = replyText.trim();
     if (!msg) return;
     if (msg.length > 4096) {
@@ -329,6 +365,13 @@ function ConversationDetail({
       {/* Reply box (only when human_active) */}
       {current.status === "human_active" && (
         <div className="border-t p-3 space-y-2">
+          {!canSend && (
+            <p role="status" className="text-xs text-warning">
+              {outsideOfficialWindow
+                ? "A janela de 24 horas da Meta terminou. Aguarde uma nova mensagem do cliente para responder."
+                : "Aguarde a validação da conversa e do canal WhatsApp para responder."}
+            </p>
+          )}
           <Textarea
             rows={3}
             value={replyText}
@@ -336,7 +379,7 @@ function ConversationDetail({
             onKeyDown={handleKeyDown}
             placeholder="Digite a mensagem e pressione Ctrl+Enter para enviar..."
             className="text-sm resize-none"
-            disabled={sendMessage.isPending}
+            disabled={sendMessage.isPending || !canSend}
             maxLength={4096}
           />
           <div className="flex items-center justify-between gap-2">
@@ -350,7 +393,7 @@ function ConversationDetail({
             <Button
               size="sm"
               onClick={handleSend}
-              disabled={!replyText.trim() || sendMessage.isPending}
+              disabled={!replyText.trim() || sendMessage.isPending || !canSend}
             >
               {sendMessage.isPending ? (
                 <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
@@ -560,7 +603,6 @@ export default function Conversas() {
               key={selected.id}
               conv={selected}
               unitId={unitId}
-              onUpdate={() => {}}
               onBack={() => setSelectedId(null)}
             />
           )}

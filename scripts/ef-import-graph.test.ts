@@ -60,11 +60,14 @@ describe("buildConsumerMap (fixture)", () => {
 
 describe("repositório real (fatos que a checklist antiga afirmava)", () => {
   const map = buildConsumerMap();
-  it("authz.ts alcança exatamente as quatro EFs de guard de unidade", () => {
+  it("authz.ts alcança as sete EFs de guard de unidade após os produtores", () => {
     expect(consumersOf("supabase/functions/_shared/authz.ts", map)).toEqual([
       "create-manual-reservation",
+      "notify-waitlist-ready",
+      "resend-notification",
       "send-cancellation",
       "send-manual-message",
+      "send-scheduled-whatsapp",
       "update-reservation",
     ]);
   });

@@ -6,6 +6,7 @@ import { clearChannelConnectivityCache } from "../_shared/whatsapp-send.ts";
 import { jsonLog, sanitizePhone } from "../_shared/security.ts";
 import { appendOutboundToConversation } from "../_shared/conversation-log.ts";
 import { hasUnitAccess } from "../_shared/authz.ts";
+import { selectReservationAutomationRoute, decodeAutomationDispatch, automationUuid } from "../_shared/whatsapp-automation-producer-routing.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -43,7 +44,7 @@ serve(async (req) => {
   const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
   });
-  const { data: { user }, error: authErr } = await userClient.auth.getUser();
+  const { data: { user }, error: authErr } = await userClient.auth.getUser(authHeader.slice(7));
   if (authErr || !user) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
@@ -54,8 +55,15 @@ serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
   try {
-    const { reservation_id } = await req.json();
-    if (!reservation_id) {
+    const body: unknown = await req.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).some(key => key !== "reservation_id")) {
+      return new Response(JSON.stringify({ error: "invalid_request" }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    const { reservation_id } = body as { reservation_id?: unknown };
+    if (!automationUuid(reservation_id)) {
       return new Response(JSON.stringify({ error: "reservation_id é obrigatório" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -64,13 +72,14 @@ serve(async (req) => {
 
     const { data: reserva, error: rErr } = await supabase
       .from("reservations")
-      .select("id, status, date, time, party_size, reservation_code, unit_id, customer:customers(id, name, phone)")
+      .select("id, status, unit_id, cancelled_at")
       .eq("id", reservation_id)
       .maybeSingle();
 
-    if (rErr || !reserva) {
-      return new Response(JSON.stringify({ error: "reserva não encontrada" }), {
-        status: 404,
+    if (rErr) throw new Error("reservation_read_failed");
+    if (!reserva) {
+      return new Response(JSON.stringify({ error: "forbidden" }), {
+        status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -85,19 +94,69 @@ serve(async (req) => {
       });
     }
 
-    if (reserva.status !== "cancelled") {
-      return new Response(JSON.stringify({ error: "reserva não está cancelada" }), {
-        status: 409,
+    const route = await selectReservationAutomationRoute(async (table, columns, predicates, cardinality) => {
+      let query = supabase.from(table).select(columns);
+      for (const [column, value] of predicates) query = query.eq(column, value);
+      const result = await (cardinality === "single" ? query.maybeSingle() : query);
+      if (result.error) throw new Error("route_read_failed");
+      return result.data;
+    }, { kind: "cancellation", unitId: reserva.unit_id, reservationId: reserva.id });
+
+    if (route.path === "dependency") {
+      return new Response(JSON.stringify({ success: false, reason: "automation_dependency_unavailable" }), {
+        status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (route.path === "managed") {
+      if (route.existingJobId === null && reserva.status !== "cancelled") {
+        return new Response(JSON.stringify({ error: "reserva não está cancelada" }), {
+          status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (route.existingJobId === null && (typeof reserva.cancelled_at !== "string" || !Number.isFinite(Date.parse(reserva.cancelled_at))
+        || Date.parse(reserva.cancelled_at) > Date.now())) {
+        return new Response(JSON.stringify({ success: false, reason: "cancellation_fact_unavailable" }), {
+          status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const internalKey = Deno.env.get("INTERNAL_API_KEY");
+      if (!internalKey) throw new Error("internal_auth_unavailable");
+      let outcome = null;
+      try {
+        const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-internal-key": internalKey, Authorization: authHeader },
+          body: JSON.stringify({ action: "dispatch_operator", kind: "cancellation", resource_id: reserva.id, unit_id: reserva.unit_id }),
+          signal: AbortSignal.timeout(25_000),
+        });
+        outcome = response.ok ? decodeAutomationDispatch(await response.json()) : null;
+      } catch { /* Closed dependency failure; no legacy fallback after adoption. */ }
+      if (!outcome) throw new Error("automation_dispatch_unavailable");
+      const accepted = outcome.state === "accepted" || outcome.state === "reconciled";
+      return new Response(JSON.stringify({ success: accepted, automation: outcome }), {
+        status: accepted ? 200 : outcome.state === "not_enqueued" ? 409 : 202,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const { data: existing } = await supabase
+    if (reserva.status !== "cancelled") {
+      return new Response(JSON.stringify({ error: "reserva não está cancelada" }), {
+        status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const { data: details, error: detailsError } = await supabase.from("reservations")
+      .select("id, status, date, time, party_size, reservation_code, unit_id, customer:customers(id, name, phone)")
+      .eq("id", reservation_id).eq("unit_id", reserva.unit_id).maybeSingle();
+    if (detailsError || !details || details.status !== "cancelled") throw new Error("reservation_changed");
+
+    const { data: existing, error: receiptError } = await supabase
       .from("notifications_sent")
       .select("status")
       .eq("reservation_id", reservation_id)
       .eq("kind", "cancellation")
       .maybeSingle();
+    if (receiptError) throw new Error("notification_read_failed");
 
     if (existing?.status === "sent") {
       jsonLog("info", { evt: "cancellation_already_sent", reservation_id });
@@ -107,7 +166,7 @@ serve(async (req) => {
     }
 
     // deno-lint-ignore no-explicit-any
-    const customer = reserva.customer as any;
+    const customer = details.customer as any;
     const customerPhone: string = customer?.phone ?? "";
     const customerName: string = customer?.name ?? "";
     if (!customerPhone) {
@@ -132,10 +191,10 @@ serve(async (req) => {
     const message =
       `❌ *Reserva Cancelada*\n\n` +
       `Olá ${customerName}, sua reserva foi cancelada.\n\n` +
-      `📅 Data: ${formatDate(reserva.date)}\n` +
-      `⏰ Horário: ${reserva.time}\n` +
-      `👥 Pessoas: ${reserva.party_size}\n` +
-      `🔑 Código: #${reserva.reservation_code}\n\n` +
+      `📅 Data: ${formatDate(details.date)}\n` +
+      `⏰ Horário: ${details.time}\n` +
+      `👥 Pessoas: ${details.party_size}\n` +
+      `🔑 Código: #${details.reservation_code}\n\n` +
       `Se foi engano ou quiser remarcar, é só responder aqui que ajudamos. 🙏`;
 
     const result = await sendWhatsApp(customerPhone, message, { unit_id: reserva.unit_id });

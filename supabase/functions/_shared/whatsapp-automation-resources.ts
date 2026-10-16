@@ -92,8 +92,8 @@ export type ScheduledResourceExpected = {
 export type ScheduledResourceResult = { ok: true; resource: ScheduledResource } |
   { ok: false; reason: AutomationPreflightReason };
 const columns = {
-  reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating',
-  waitlist: 'id,unit_id,customer_id,customer_name,customer_phone,party_size,code,status,created_at,seated_at',
+  reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating,cancelled_at',
+  waitlist: 'id,unit_id,customer_id,customer_name,customer_phone,party_size,code,status,created_at,seated_at,notified_at,notified_server_at',
   vouchers: 'id,unit_id,customer_id,rule_id,code,discount_percent,status,issued_at,created_at,expires_at',
   customers: 'id,organization_id,name,phone,do_not_contact,deleted_at',
 } as const;
@@ -219,7 +219,11 @@ export function createAutomationResourceService(io: AutomationResourceIO) {
       let rule: Record<string, unknown> | null = null;
       if (table === 'reservations') {
         // Cancellation is the only kind whose eligible state is cancelled; payment is irrelevant there.
-        if (intent.kind === 'cancellation') { if (row.status !== 'cancelled') return refuse('reservation_not_cancelled'); }
+        if (intent.kind === 'cancellation') {
+          if (row.status !== 'cancelled') return refuse('reservation_not_cancelled');
+          if (typeof row.cancelled_at !== 'string' || !instant(row.cancelled_at)
+            || Date.parse(row.cancelled_at) !== Date.parse(intent.factAt)) return refuse('reservation_changed');
+        }
         else if (row.status === 'pending') return refuse('reservation_pending');
         else if (row.status !== 'confirmed') return refuse('reservation_not_confirmed');
         if (intent.kind === 'confirmation' && row.payment_status !== null && row.payment_status !== 'not_required' && row.payment_status !== 'paid') return refuse('payment_incompatible');
@@ -240,7 +244,8 @@ export function createAutomationResourceService(io: AutomationResourceIO) {
         code = text(row.reservation_code) ?? ''; people = number(row.party_size);
       } else if (table === 'waitlist') {
         if (intent.kind === 'waitlist_entered' && row.status !== 'waiting') return refuse('waitlist_not_waiting');
-        if (intent.kind === 'waitlist_table_ready' && ((row.status !== 'waiting' && row.status !== 'notified') || row.seated_at !== null)) return refuse('waitlist_not_waiting');
+        if (intent.kind === 'waitlist_table_ready' && (row.status !== 'notified' || row.seated_at !== null
+          || row.notified_at !== intent.factAt || row.notified_server_at !== intent.factAt)) return refuse('waitlist_not_waiting');
         if (intent.kind === 'waitlist_feedback') {
           const seated = instant(row.seated_at);
           if (row.status !== 'seated' || !seated) return refuse('waitlist_not_seated');

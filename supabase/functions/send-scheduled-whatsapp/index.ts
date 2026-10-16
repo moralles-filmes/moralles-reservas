@@ -6,6 +6,7 @@ import { prepareScheduledChannel } from '../_shared/whatsapp-send.ts';
 import { repairAcceptedAutomation } from '../_shared/conversation-log.ts';
 import { createTemplateRuntime } from '../_shared/whatsapp-template-runtime.ts';
 import { createAutomationDispatcher, type AutomationDispatchIO } from '../_shared/whatsapp-automation-dispatch.ts';
+import { hasUnitAccess } from '../_shared/authz.ts';
 
 const url = Deno.env.get('SUPABASE_URL')!;
 declare const EdgeRuntime: { waitUntil(work: Promise<unknown>): void };
@@ -54,6 +55,30 @@ serve(async req => {
   if (!record(value)) return json({ error: 'intent_invalid' }, 400);
   const body = value;
   try {
+    if (body.action === 'dispatch_operator' || body.action === 'resend') {
+      const operator = body.action === 'dispatch_operator';
+      if (Object.keys(body).some(key => !['action','kind','resource_id','unit_id'].includes(key))
+        || (operator ? body.kind !== 'cancellation' && body.kind !== 'waitlist_table_ready'
+          : !['confirmation','waitlist_entered','cancellation','waitlist_table_ready'].includes(String(body.kind)))
+        || !uuid(body.resource_id) || (body.unit_id !== undefined && !uuid(body.unit_id))
+        || (!operator && !uuid(body.unit_id))) return json({ error: 'intent_invalid' }, 400);
+      if (operator && !requireInternalAuth(req)) return json({ error: 'unauthorized' }, 401);
+      const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+      if (!jwt) return json({ error: 'unauthorized' }, 401);
+      const { data: auth, error: authError } = await db.auth.getUser(jwt);
+      if (authError || !auth.user) return json({ error: 'unauthorized' }, 401);
+      const table = body.kind === 'confirmation' || body.kind === 'cancellation' ? 'reservations' : 'waitlist';
+      const resource = await readOne(table, 'id,unit_id', { id: body.resource_id });
+      if (!record(resource) || resource.id !== body.resource_id || !uuid(resource.unit_id)
+        || (body.unit_id !== undefined && body.unit_id !== resource.unit_id)) return json({ error: 'authorization_refused' }, 403);
+      if (!(await hasUnitAccess(db, auth.user.id, resource.unit_id))) return json({ error: 'authorization_refused' }, 403);
+      if (operator) return json(await dispatcher.dispatchOperatorIntent({ kind: body.kind as 'cancellation' | 'waitlist_table_ready',
+        resourceId: body.resource_id, unitId: resource.unit_id }));
+      const key = table === 'reservations' ? 'reservation_id' : 'waitlist_id';
+      const existing = await readOne('whatsapp_automation_jobs', '*', { unit_id: resource.unit_id, kind: body.kind, [key]: resource.id });
+      if (!record(existing) || !uuid(existing.id)) return json({ state: 'not_enqueued', jobId: null, reason: 'provenance_refused' });
+      return json(await dispatcher.dispatchExistingJob(existing.id));
+    }
     if (body.action === 'dispatch_existing' || body.action === 'dispatch' || body.action === 'enqueue') {
       if (!requireInternalAuth(req)) return json({ error: 'unauthorized' }, 401);
       if (body.action === 'enqueue') {
@@ -78,25 +103,6 @@ serve(async req => {
         outboxId: typeof body.outbox_id === 'string' ? body.outbox_id : undefined,
         targetDate: typeof body.target_date === 'string' ? body.target_date : undefined }));
     }
-    if (body.action !== 'resend' || Object.keys(body).some(key => !['action','kind','resource_id','unit_id'].includes(key))
-      || (body.kind !== 'confirmation' && body.kind !== 'waitlist_entered') || !uuid(body.resource_id) || !uuid(body.unit_id)) return json({ error: 'intent_invalid' }, 400);
-    const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
-    if (!jwt) return json({ error: 'unauthorized' }, 401);
-    const { data: auth, error: authError } = await db.auth.getUser(jwt);
-    if (authError || !auth.user) return json({ error: 'unauthorized' }, 401);
-    // Resolve through the caller's RLS before service-role resource/ledger reads.
-    const caller = createClient(url, Deno.env.get('SUPABASE_ANON_KEY')!, { global: { headers: { Authorization: `Bearer ${jwt}` } } });
-    const table = body.kind === 'confirmation' ? 'reservations' : 'waitlist';
-    const { data: resource, error: resourceError } = await caller.from(table).select('id,unit_id').eq('id', body.resource_id).maybeSingle();
-    if (resourceError || !resource || resource.unit_id !== body.unit_id) return json({ error: 'authorization_refused' }, 403);
-    const [admin, member] = await Promise.all([
-      caller.from('platform_admins').select('user_id').eq('user_id', auth.user.id).maybeSingle(),
-      caller.from('unit_members').select('role').eq('user_id', auth.user.id).eq('unit_id', resource.unit_id).maybeSingle(),
-    ]);
-    if (!admin.data && (!member.data || !['owner','gerente','operador'].includes(member.data.role))) return json({ error: 'authorization_refused' }, 403);
-    const key = body.kind === 'confirmation' ? 'reservation_id' : 'waitlist_id';
-    const existing = await readOne('whatsapp_automation_jobs', '*', { unit_id: resource.unit_id, kind: body.kind, [key]: resource.id });
-    if (!record(existing) || !uuid(existing.id)) return json({ state: 'not_enqueued', jobId: null, reason: 'provenance_refused' });
-    return json(await dispatcher.dispatchExistingJob(existing.id));
+    return json({ error: 'intent_invalid' }, 400);
   } catch { return json({ error: 'dependency_unavailable' }, 503); }
 });

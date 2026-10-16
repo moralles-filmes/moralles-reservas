@@ -361,7 +361,13 @@ Medido: o `25` e as sete migrations de template até a `20261005145913` aplicam 
 
 ## Fase 3 — Produtores, telas e janela de 24h
 
-Escopo da spec §7. Detalhar no início do chat.
+Escopo da spec §7. A Fase 2 já instalou o catálogo, os kinds e o ledger; esta fase liga somente produtores autenticados, as superfícies de operação e a guarda de conversa. Nenhum teste invoca provider real.
+
+**Decisões de execução:**
+- O ledger mantém uma mensagem por `(unit_id, kind, resource_id)`. Novo clique em mesa pronta ou novo ciclo cancelar→reativar→cancelar consulta o job existente e não cria outro envio; a UI deve mostrar o resultado existente. Uma segunda notificação exige uma decisão de produto e mudança de chave em outra spec.
+- `fact_at` da mesa pronta é `notified_at` gravado pelo servidor na ação autenticada; o status vira `notified` antes da captura e o POST só prossegue se o snapshot final ainda corresponder. `fact_at` de cancelamento vem de `cancelled_at` gravado por trigger na transição de status, nunca do cliente. Reserva cancelada antes da migration fica com `cancelled_at=NULL` e não ganha envio gerenciado retroativo.
+- Uma linha legada `notifications_sent.status='failed'` para o mesmo recurso e kind não pode tornar um POST aceito irrecuperável. Reconciliar/adotar a linha sob a autoridade SQL e provar o caso no pré-voo.
+- A seleção de caminho falha fechada: erro de flag, adoção, binding ou ledger não cai em texto livre. O canal Meta sem janela aberta recusa na EF mesmo que a UI esteja desatualizada.
 
 **Requisitos herdados da Fase 2** (reviews e gates):
 - **Produtor de mesa pronta e cancelamento:**
@@ -375,18 +381,76 @@ Escopo da spec §7. Detalhar no início do chat.
 - O produtor genérico (`enqueueScheduledIntent`) recusa os dois kinds **antes** de consultar o ledger. Ao liberar, mova a recusa para depois da busca do job existente, como em `voucher_issued`.
 - `send-scheduled-whatsapp` ainda recusa os dois kinds no allowlist HTTP (`index.ts:75`).
 
-- [ ] `send-cancellation`: roteamento `selectAutomationPath`, gerenciado via `send-scheduled-whatsapp` (kind no allowlist; auth interna para o caminho gerenciado; JWT e `hasUnitAccess` preservados na borda). Atualizar `whatsapp-template-channel-routing.test.ts`.
-- [ ] Mesa pronta:
-  - ação servidor para unidade adotada (parâmetros e `fact_at` no servidor);
-  - `useNotifyWaitlist` usa o caminho novo quando adotado;
-  - `resend-notification` `table_ready` via `dispatch_existing`;
-  - `useResendWaitlistEntered` respeita a adoção.
-- [ ] Comunicação: status do template oficial de mesa pronta (`fila/Comunicacao.tsx`) e linha de cancelamento (`reservas/Comunicacao.tsx`); atualizar `whatsapp-template-surfaces.test.tsx`.
-- [ ] Janela de 24h:
-  - `send-manual-message` recusa 409 `OUTSIDE_SERVICE_WINDOW` para canal ativo de payload Meta com última mensagem `user` há mais de 24h (decisão em núcleo puro testado);
-  - Conversas mostra o aviso e desabilita o envio;
-  - providers não oficiais não mudam.
-- [ ] Gates; checkpoint e handoff.
+### Task 3.1 — Núcleo e contrato do produtor gerenciado
+
+Arquivos: `_shared/whatsapp-automation-dispatch.ts`, `_shared/whatsapp-automation-producer-routing.ts`, `send-scheduled-whatsapp/index.ts` e testes em `src/lib/whatsapp-automation-*.test.ts`/request harness.
+
+- [x] Ampliar os tipos e o roteamento de `cancellation`/`waitlist_table_ready`, preservando a recusa do produtor genérico até o contrato autenticado específico estar ligado.
+- [x] No produtor dedicado, derivar `unit_id` de `reservations`/`waitlist`; recusar divergência com qualquer id enviado; conferir status, recurso e origem do fato no servidor. `hasUnitAccess` admite membro ou `platform_admin`.
+- [x] Mover `provenance_refused` para depois da leitura do ledger existente; um job prévio volta como resultado durável mesmo se a adoção, o status ou a flag mudaram.
+- [x] `send-scheduled-whatsapp` aceita os dois kinds somente por caminho interno autenticado; `resend` de usuário só despacha job existente, com recurso e membership conferidos antes de ler o ledger.
+- [x] Testes RED→GREEN de JWT ausente/inválido, recurso alheio, caller sem membership, `fact_at` forjado, status alterado, job existente e dependência indisponível.
+
+### Task 3.2 — Cancelamento
+
+Arquivos: `send-cancellation/index.ts`, migration nova para `reservations.cancelled_at` e trigger de transição, núcleo de roteamento, pré-voo local, testes de request e `src/lib/whatsapp-template-channel-routing.test.ts`.
+
+- [x] Criar migration versionada com `cancelled_at timestamptz` preenchido exclusivamente pelo trigger `BEFORE INSERT OR UPDATE` quando status entra em `cancelled`; alteração direta do campo é sobrescrita. `confirmed` posterior não reutiliza o fato, e recancelamento carimba novo instante. `revoke EXECUTE` da trigger function com assinatura completa. Sem backfill especulativo.
+- [x] Pré-voo: timestamp nasce no servidor, spoof é ignorado, status revertido bloqueia, recancelamento troca o instante, cancelamento anterior à migration não vira novo envio após adoção; controle positivo removendo o trigger deve falhar. Conferir ACL e reaplicação idempotente.
+- [x] Depois de autenticar o JWT e resolver a reserva, `hasUnitAccess` continua obrigatório antes de qualquer envio ou leitura de dado sensível.
+- [x] Selecionar `legacy`/`managed`/`dependency` usando ledger antes de flag/adoção. `legacy` preserva texto e histórico; `managed` enfileira e despacha `cancellation` com auth interna; `dependency` recusa sem envio.
+- [x] Reserva que voltou a `confirmed` antes do despacho termina bloqueada, sem POST. Sem `cancelled_at` válido, gerenciado recusa; duplicação e linha legada `failed` não causam segundo POST.
+- [x] Testar adotada habilitada, adotada pausada, não adotada, ledger já existente, mudança de status e falhas de leitura.
+
+### Task 3.3 — Mesa pronta no painel Fila
+
+Arquivos: ação Edge autenticada de mesa pronta, migration de `waitlist.notified_at` e autoridade final, `_shared/whatsapp-automation-resources.ts`, `src/hooks/useWaitlist.ts`, `src/pages/operacional/Fila.tsx`, config da EF, pré-voo e testes de request/componente.
+
+- [x] Migration transacional: trigger carimba `notified_at` com relógio SQL na transição `waiting→notified`, preserva em UPDATE lateral, limpa ao voltar a `waiting` e ignora valor enviado pelo caller; ACL mínima da trigger function. Não preencher fatos antigos por inferência.
+- [x] Para job gerenciado de `waitlist_table_ready`, o preflight TS e `whatsapp_automation_post_core` final exigem `status='notified'`, `seated_at IS NULL`, `notified_at = job.fact_at` e `notified_server_at = job.fact_at`. O marcador anti-spoof prova que a transição ocorreu no servidor; isso endurece a elegibilidade `waiting/notified` da Fase 2 porque agora o produtor sempre muda o status antes de capturar. Reversão da operação cancela o POST.
+- [x] A ação lê a entrada com service role, deriva a unidade dela, autentica JWT e usa `hasUnitAccess`; recusa telefone e `fact_at` vindos do corpo como autoridade.
+- [x] Para unidade adotada, mudar `waiting`→`notified` com predicado de status e `.select()` de uma linha, gravar `notified_at` e o marcador anti-spoof `notified_server_at` no servidor, capturar `fact_at` depois da mudança e enfileirar/dispachar `waitlist_table_ready`.
+- [x] Para unidade não adotada, manter o texto editável e o caminho legado; erro no gate ou no UPDATE não aciona fallback. Resultado de envio versus persistência do status permanece distinguível para a UI.
+- [x] Dois cliques, recurso sentado/cancelado, reversão `notified→waiting` antes/depois da captura, spoof de `notified_at`, corrida de status entre captura e POST, e job já existente têm testes. Pré-voo SQL com controle positivo e reaplicação idempotente.
+
+### Task 3.4 — Reenvios e conflito legado
+
+Arquivos: `resend-notification/index.ts`, `send-scheduled-whatsapp/index.ts`, `src/hooks/useWaitlist.ts`, migration SQL somente se necessária para reconciliar `failed`, pré-voo local correspondente e testes.
+
+- [x] `resend-notification` de mesa pronta usa `dispatch_existing` quando há job, sem reconstruir texto ou criar um novo fato; sem job, só o caminho legado comprovadamente não adotado.
+- [x] `useResendWaitlistEntered` usa o endpoint único de reenvio para unidade adotada, em vez de chamar `send-whatsapp` diretamente; legado preserva o comportamento atual.
+- [x] Resolver `notifications_sent.failed` pré-existente no aceite do ledger sem duplicar POST; teste SQL positivo e controle que falha se a reparação for removida.
+- [x] Confirmar TTL da mesa pronta e autenticação/recurso em cada reenvio.
+
+### Task 3.5 — Telas de Comunicação
+
+Arquivos: `src/pages/gestao/fila/Comunicacao.tsx`, `src/pages/gestao/reservas/Comunicacao.tsx`, hooks de templates se necessários e `whatsapp-template-surfaces.test.tsx`.
+
+- [x] Mesa pronta em modo oficial exibe `TemplateStatus` de `fila_mesa_pronta_v1`; em modo não oficial mantém editor manual.
+- [x] Reservas ganha linha de cancelamento: `TemplateStatus` de `res_cancelada_v1` em modo oficial; texto legado editável só se já houver contrato de editor para esse evento, caso contrário indicação clara de mensagem automática.
+- [x] Loading/erro de snapshot não revela editor TEXT; testes de unidade oficial/não oficial, troca de unidade e status bloqueado.
+
+### Task 3.6 — Janela de atendimento de 24h
+
+Arquivos: núcleo puro novo em `_shared/`, `send-manual-message/index.ts`, `src/pages/gestao/Conversas.tsx`, `src/hooks/useSendManualMessage.ts`, migration de ACL da conversa, pré-voo local e testes do núcleo/request/semântica da tela.
+
+- [x] Núcleo decide a janela a partir do timestamp máximo entre as mensagens **recebidas do cliente** (`role='user'`) na conversa, mesmo se o JSONB vier fora de ordem; timestamp válido e relógio do servidor. Janela fecha em `>=24h`; sem mensagem recebida válida, fecha. `last_message_at` mistura papéis e não serve.
+- [x] `send-manual-message` resolve o binding operacional real da unidade com `resolveUnitChannelBinding` e usa `isMetaShapedProvider`; para ele, 409 `OUTSIDE_SERVICE_WINDOW` antes do POST. UazAPI/Z-API preservam envio, inclusive com Datafy inativo. Nenhum erro de leitura vira janela aberta. A mensagem JSONB só é carregada depois da autorização do recurso.
+- [x] A fonte `conversations.messages` é escrita só por serviço: migration revoga INSERT/DELETE e UPDATE de tabela de `public, anon, authenticated`, reabre UPDATE apenas das colunas de handoff usadas pelo painel e preserva service role. Pré-voo prova que membro não injeta inbound por INSERT/UPDATE, mas ainda altera o handoff autorizado.
+- [x] Uma guarda síncrona revalida o prazo imediatamente antes do outbound, após I/O de credencial/conexão; Meta manual não faz retry automático que possa atravessar o prazo. O canal continua pinado ao binding validado.
+- [x] Conversas usa a mesma semântica para mostrar aviso e desabilitar composer quando o canal oficial está fora da janela; aguarda detalhe canônico, bloqueia em erro/placeholder, reavalia o relógio mesmo sem Realtime e atualiza o snapshot do canal em foco/periodicamente. O backend permanece autoridade. Tratar 409 no hook com copy em PT-BR e refetch.
+- [x] Testes de borda temporal, mensagens desordenadas, mensagem `human`/`assistant` posterior, timestamp inválido/futuro, canal não oficial, Datafy inativo, cruzamento do prazo antes do outbound e UI stale.
+
+### Task 3.7 — Gates e review da fase
+
+- [x] Implementer + review de spec + review de qualidade para **cada** task 3.1–3.6; corrigir achados antes da próxima task. Review da branch inteira ao fim.
+- [x] `npm run typecheck`, testes focados e suíte completa, `npm run lint`, `npm run build`; `deno check` se disponível. Pré-voos SQL das Tasks 3.2, 3.3 e 3.4 com controles positivos.
+- [ ] Gates `saas-shield-br`: migration-validator se houver SQL; rls-auditor, tenant-isolation-auditor, identity-access-auditor, integration-reliability-auditor e secret-hunter. Conferir o `acl-estatico` local se houver função SQL. Executados; permanece o FAIL estrito de RLS herdado, detalhado nas evidências.
+- [x] Revisar `git status`, `git diff`, `git diff --cached` integral, varrer segredos staged; `git add <caminhos>` explícitos e commit somente dos caminhos da Fase 3, preservando o staged alheio.
+
+### Task 3.8 — Checkpoint e handoff
+
+- [x] Marcar os checkboxes concluídos, registrar comandos/resultados/desvios/limites em "Evidências → Fase 3", atualizar memória do projeto e entregar o prompt da Fase 4.
 
 ## Fase 4 — Opt-in de marketing
 
@@ -407,7 +471,7 @@ Escopo da spec §8. Detalhar no início do chat.
   - O frontend da fila pública passa a usá-la.
 - [ ] Wizard (`StepGuestInfo`), widget e `WaitlistFormPublic`: checkbox desmarcado com a copy da spec. Zod: `boolean().default(false)`.
 - [ ] Clientes: status de ofertas por unidade (owner/gerente) via `consent_snapshot`.
-- [ ] Pré-voo 67 (RPC + ACL + controles); testes de EF/núcleo; gates; checkpoint e handoff.
+- [ ] Pré-voo 68 (RPC + ACL + controles; o 67 cobre o fato de cancelamento da Fase 3); testes de EF/núcleo; gates; checkpoint e handoff.
 
 ## Fase 5 — Gates integrados e rollout
 
@@ -618,3 +682,25 @@ Fechada em 2026-10-16. Sem push, merge, `db push`, deploy ou chamada a provider.
 3. EFs pela matriz do runbook.
 
 O redeploy de `process-whatsapp-templates` **submete os 2 modelos novos** em toda conta com catálogo liberado (inclusive o piloto Moralles). Precisa de autorização própria, ou de pausar antes o escopo `catalog` dessa conta.
+
+### Fase 3
+
+Implementada localmente em 2026-10-16, sem push, merge, `db push`, deploy ou chamada a provider. A ordem continua SQL → EFs dependentes → frontend, coordenada na Fase 5; o redeploy de `process-whatsapp-templates` ainda exige autorização nominal por poder submeter os dois modelos à Meta nas contas com catálogo habilitado.
+
+**Entregue:**
+- Produtor gerenciado dedicado para `cancellation` e `waitlist_table_ready`, com JWT + chave interna, unidade derivada do recurso, `hasUnitAccess` e ledger lido antes de status/flag mutáveis. O produtor genérico ainda recusa novos fatos desses kinds.
+- Migrations `20261017130000`–`1600`: fato `cancelled_at` sem backfill, fato `notified_at`/`notified_server_at` da transição de mesa pronta, adoção de notificação legada `failed` sem segundo POST e ACL de `conversations.messages` escrita só por serviço.
+- `send-cancellation` e ação autenticada `notify-waitlist-ready` escolhem legado ou job/template pela adoção e recusam dependência indisponível sem fallback. Reenvio usa job existente; Comunicação mostra os modelos oficiais; envio manual Meta fecha aos 24h do último inbound e revalida imediatamente antes do POST, sem retry automático.
+- O segundo ciclo cancelar→reativar→cancelar conserva o job anterior pela chave única; preflight TS e guard SQL exigem `cancelled_at=job.fact_at` antes de qualquer POST pendente. Não cria uma segunda mensagem.
+
+**Evidências e gates:**
+- Implementer, review de spec e review de qualidade por task 3.1–3.6; os achados foram corrigidos antes do fechamento. Review independente da branch: nenhum achado novo acionável.
+- Pré-voos SQL `67`, `67b`, `67c` e `67d` em PostgreSQL Supabase descartável e exclusivo, verdes na aplicação inicial e após duas reaplicações; controles positivos incluem trigger removida, recancelamento sem comparação do fato, conflito legado e grants indevidos de `UPDATE`/`INSERT` por coluna. `67b` fez 37 checagens; os contêineres próprios foram removidos.
+- Guardas estáticas `acl-estatico` e grafo de imports: 99/99; `node --test supabase/tests/local-preflight/local-runtime-paths.test.mjs`: 3/3. `npm run typecheck`: 0 erros; `npm run lint`: 0 erros, 18 avisos de baseline; `npm run build`: ok; `git diff --check`: ok.
+- Suíte completa (`npx vitest run --maxWorkers=1 --minWorkers=1 --exclude supabase/tests/local-preflight/local-runtime-paths.test.mjs`): **3.540/3.540**, 136/136 arquivos. A primeira passagem teve um teste vermelho porque a fixture ignorava `gate=false`; a fixture/expectativa foi corrigida, 244 testes focados passaram e a suíte integral repetida fechou verde.
+- Os seis gates de `saas-shield-br` foram executados por subagents com os contratos locais do plugin (o runtime nativo não está instalado neste Codex). `migration-validator`: PASS_WITH_WARNINGS (P3 documental de reversão); `tenant-isolation-auditor`: PASS após corrigir o oráculo ausente/alheio; `identity-access-auditor`: PASS; `integration-reliability-auditor`: PASS_WITH_WARNINGS, com recancelamento corrigido e limitação do legado documentada; `secret-hunter`: PASS, 48 arquivos e 3.425 linhas staged (última linha de evidência conferida separadamente), sem segredo.
+- `rls-auditor`: diff da Fase 3 PASS após revogar também grants por coluna. O contrato estrito segue **FAIL por baseline herdado do HEAD**: `reservations`, `waitlist`, `conversations` e `notifications_sent` têm `ENABLE RLS`, mas não `FORCE RLS`. Nenhuma regressão nova foi identificada. Não aplicar migrations nem fazer merge com esse gate vermelho; avaliar `FORCE` em spec própria e conferir ACL efetivo no alvo antes do rollout.
+
+**Limites:**
+- O legado de mesa pronta envia antes de persistir `notified`: concorrência ou falha após aceite pode repetir POST. `statusUpdated:false` expõe falha parcial; operador deve conferir recibo e provider antes de novo envio. O caminho gerenciado usa CAS antes do despacho.
+- O PostgreSQL local não prova a rede/provider nem concorrência real; `deno check`, `gitleaks`, `acl-estatico` remoto e auditoria do banco vivo não foram executados (ferramentas ausentes ou dependência de autorização/PR). `local-runtime-paths.test.mjs` é `node:test` e deve ser excluído do Vitest, como nas fases anteriores.

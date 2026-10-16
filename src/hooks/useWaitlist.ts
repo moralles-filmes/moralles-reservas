@@ -16,6 +16,16 @@ import type {
  */
 function friendlyWhatsAppError(code?: string | null): string {
   if (!code) return "Falha ao enviar WhatsApp.";
+  if (code === "automation_dependency_unavailable" || code === "internal_error")
+    return "Não foi possível confirmar o aviso. Atualize a fila e confira Entregas antes de tentar novamente.";
+  if (code === "dependency_unavailable")
+    return "Não foi possível conferir o reenvio. Atualize a fila e tente novamente.";
+  if (code === "automation_resend_refused")
+    return "Este aviso já tem um resultado registrado. Confira Entregas antes de tentar novamente.";
+  if (code === "message_expired")
+    return "Este aviso é antigo demais para ser reenviado.";
+  if (code === "waitlist_status_changed" || code === "waitlist_fact_unavailable")
+    return "O estado da fila mudou. Atualize a fila antes de tentar novamente.";
   if (code === "whatsapp_not_configured")
     return "Esta unidade não tem WhatsApp configurado. Configure o canal em Plataforma → Unidades para enviar avisos.";
   if (code === "whatsapp_service_suspended")
@@ -37,32 +47,6 @@ function friendlyWhatsAppError(code?: string | null): string {
   if (/http_5\d\d/.test(code))
     return "O provedor de WhatsApp está instável no momento. Tente novamente em instantes.";
   return "Falha ao enviar WhatsApp.";
-}
-
-/**
- * Invoca a Edge Function send-whatsapp e converte erro non-2xx (mascarado pelo
- * supabase-js num FunctionsHttpError) numa mensagem acionável. Compartilhado
- * pelos hooks de notificação/reenvio. Lança em falha; resolve em sucesso.
- */
-async function invokeSendWhatsApp(body: {
-  phone: string;
-  message: string;
-  unit_id: string;
-  kind: string;
-  waitlist_id?: string;
-}): Promise<void> {
-  const { data, error: funcErr } = await supabase.functions.invoke("send-whatsapp", { body });
-  if (funcErr) {
-    if (funcErr instanceof FunctionsHttpError) {
-      const b = (await funcErr.context.json().catch(() => null)) as { error?: string } | null;
-      throw new Error(friendlyWhatsAppError(b?.error));
-    }
-    throw funcErr;
-  }
-  const result = data as { success?: boolean; error?: string } | null;
-  if (result && result.success === false) {
-    throw new Error(friendlyWhatsAppError(result.error));
-  }
 }
 
 // Pausa polling quando a aba está em background — tablets de salão deixam o
@@ -205,7 +189,6 @@ export function useUpdateWaitlistStatus(unitId: string) {
   return useMutation({
     mutationFn: async ({ id, status }: { id: string; status: WaitlistStatus }) => {
       const updates: Record<string, unknown> = { status };
-      if (status === "notified") updates.notified_at = new Date().toISOString();
 
       const { error } = await supabase.from("waitlist").update(updates).eq("id", id);
       if (error) throw error;
@@ -222,29 +205,19 @@ interface NotifyResult {
    *  o UPDATE subsequente falhou — operador precisa ser avisado e a tela vai
    *  reconciliar via refetch (pg_cron retry / refresh manual). */
   statusUpdated: boolean;
+  existing: boolean;
+  automationState: string | null;
+  conversationWarning: boolean;
 }
 
 export function useNotifyWaitlist(unitId: string) {
   const queryClient = useQueryClient();
-  return useMutation<NotifyResult, Error, { id: string; phone: string; message: string }>({
-    mutationFn: async ({ id, phone, message }) => {
-      // Envia WhatsApp via send-whatsapp Edge Function. `kind` + `waitlist_id`
-      // permitem que o backend grave notifications_sent com waitlist_id NÃO-null
-      // → UNIQUE parcial (waitlist_id, kind) WHERE waitlist_id IS NOT NULL
-      // (mig 048) protege contra duplicação em double-click.
-      const { data, error: funcErr } = await supabase.functions.invoke("send-whatsapp", {
-        body: {
-          phone,
-          message,
-          unit_id: unitId,
-          kind: "waitlist_table_ready",
-          waitlist_id: id,
-          // Fato = o clique do operador. O aviso de mesa pronta tem o prazo
-          // mais curto de todos (30 min) porque é o mais nocivo atrasado: a
-          // mesa já foi para outra pessoa. Enviado agora, isto nunca barra o
-          // clique — serve para o reenvio posterior pelo painel Entregas.
-          fact_at: new Date().toISOString(),
-        },
+  return useMutation<NotifyResult, Error, { id: string; message: string }>({
+    mutationFn: async ({ id, message }) => {
+      // O servidor decide adoção e deriva unidade, telefone e fact_at do recurso.
+      // O texto só é usado no caminho legado comprovado.
+      const { data, error: funcErr } = await supabase.functions.invoke("notify-waitlist-ready", {
+        body: { waitlist_id: id, message },
       });
       if (funcErr) {
         // send-whatsapp devolve 502 quando o envio falha; supabase-js empacota
@@ -252,41 +225,49 @@ export function useNotifyWaitlist(unitId: string) {
         // O motivo real (ex.: "whatsapp_not_configured") está em context.json().
         if (funcErr instanceof FunctionsHttpError) {
           const body = (await funcErr.context.json().catch(() => null)) as
-            | { error?: string }
+            | { error?: string; statusUpdated?: boolean; automation?: { state?: string } }
             | null;
+          if (body?.statusUpdated === true && body.automation?.state === "not_enqueued")
+            return { sent: false, statusUpdated: true, existing: false,
+              automationState: "not_enqueued", conversationWarning: false };
           throw new Error(friendlyWhatsAppError(body?.error));
         }
         throw funcErr;
       }
-      const result = data as { success?: boolean; error?: string } | null;
-      if (result && result.success === false) {
+      const result = data as { success?: boolean; sent?: boolean; statusUpdated?: boolean; existing?: boolean; error?: string; warning?: string; automation?: { state?: string } } | null;
+      if (result?.success === false && (!result.automation || result.automation.state === "not_enqueued"))
         throw new Error(friendlyWhatsAppError(result.error));
-      }
-
-      // Marca como notificado. Se o UPDATE falhar AGORA, o WhatsApp JÁ foi
-      // enviado — não relançamos como erro pra não confundir o operador
-      // ("Erro ao notificar" daria a impressão de que pode tentar de novo,
-      // mas o UNIQUE PARTIAL no banco bloqueia o 2º envio).
-      const { error } = await supabase
-        .from("waitlist")
-        .update({ status: "notified", notified_at: new Date().toISOString() })
-        .eq("id", id);
-      if (error) {
-        console.error("[waitlist notify] send ok, update failed:", error);
-        return { sent: true, statusUpdated: false };
-      }
-      return { sent: true, statusUpdated: true };
+      if (!result || typeof result.sent !== "boolean" || typeof result.statusUpdated !== "boolean")
+        throw new Error("Não foi possível confirmar o resultado do aviso.");
+      return { sent: result.sent, statusUpdated: result.statusUpdated,
+        existing: result.existing === true, automationState: result.automation?.state ?? null,
+        conversationWarning: result.warning === "CONVERSATION_RECONCILIATION_REQUIRED" };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] });
       queryClient.invalidateQueries({ queryKey: ["notification-deliveries"] });
-      if (result.statusUpdated) {
+      if (!result.sent) {
+        if (result.automationState === "not_enqueued")
+          toast.warning("O estado da fila foi atualizado, mas o aviso não foi aceito. Confira Entregas antes de tentar novamente.");
+        else if (result.automationState === "failed" || result.automationState === "rejected" || result.automationState === "expired")
+          toast.warning("O aviso não foi entregue. Confira o motivo no painel de Entregas.");
+        else toast.info("Aviso de mesa pronta registrado. Confira o estado no painel de Entregas.");
+      } else if (result.existing) {
+        toast.info("Este aviso já foi registrado. Confira o resultado no painel de Entregas.");
+      } else if (result.conversationWarning) {
+        toast.warning("Aviso enviado, mas o histórico da conversa precisa de reconciliação. Confira Entregas.");
+      } else if (result.statusUpdated) {
         toast.success("Notificação enviada via WhatsApp.");
       } else {
         toast.warning("Mensagem enviada, mas o estado da fila não atualizou. Recarregue a página.");
       }
     },
-    onError: (err: Error) => toast.error(err.message ?? "Erro ao notificar."),
+    onError: (err: Error) => {
+      // O fato pode ter sido persistido antes de uma falha de despacho.
+      queryClient.invalidateQueries({ queryKey: ["waitlist", unitId] });
+      queryClient.invalidateQueries({ queryKey: ["notification-deliveries"] });
+      toast.error(err.message ?? "Erro ao notificar.");
+    },
   });
 }
 
@@ -294,19 +275,26 @@ export function useNotifyWaitlist(unitId: string) {
  * Reenvia a mensagem de ENTRADA na fila (kind `waitlist_entered`) — usado quando
  * o operador corrige o telefone ou a entrega não foi confirmada. NÃO muda o
  * status da entry (≠ useNotifyWaitlist, que é o aviso "mesa pronta" e marca
- * `notified`). O UPSERT em send-whatsapp re-rastreia a entrega do novo envio.
+ * `notified`). O endpoint decide pelo job persistido ou pelo legado não adotado.
  */
 export function useResendWaitlistEntered(unitId: string) {
   const queryClient = useQueryClient();
   return useMutation<void, Error, { id: string; phone: string; message: string }>({
-    mutationFn: ({ id, phone, message }) =>
-      invokeSendWhatsApp({
-        phone,
-        message,
-        unit_id: unitId,
-        kind: "waitlist_entered",
-        waitlist_id: id,
-      }),
+    mutationFn: async ({ id }) => {
+      const { data, error: funcErr } = await supabase.functions.invoke("resend-notification", {
+        body: { kind: "waitlist_entered", waitlist_id: id, unit_id: unitId },
+      });
+      if (funcErr) {
+        if (funcErr instanceof FunctionsHttpError) {
+          const body = (await funcErr.context.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(friendlyWhatsAppError(body?.error));
+        }
+        throw funcErr;
+      }
+      const result = data as { success?: boolean; error?: string; message?: string } | null;
+      if (!result || result.success !== true)
+        throw new Error(result?.message ?? friendlyWhatsAppError(result?.error));
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["notification-deliveries"] });
       toast.success("Aviso de entrada reenviado.");

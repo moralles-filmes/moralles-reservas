@@ -37,6 +37,10 @@ verify_jwt = false
 [functions.send-cancellation]
 verify_jwt = false
 
+# Mesa pronta pelo painel: JWT conferido novamente na EF com a unidade do recurso.
+[functions.notify-waitlist-ready]
+verify_jwt = false
+
 [functions.whatsapp-health]
 verify_jwt = true
 
