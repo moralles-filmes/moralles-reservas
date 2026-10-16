@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -176,6 +177,7 @@ export default function WhatsappInstances() {
   const instancesQuery = useWhatsappInstances();
   const alertsQuery = useWhatsappInstanceAlerts();
   const action = useWhatsappInstanceAction();
+  const queryClient = useQueryClient();
   const simulation = usePartnerSimulation();
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -267,15 +269,22 @@ export default function WhatsappInstances() {
     // único retorno no instante da ação, e afirmar sucesso genérico esconde
     // justamente os casos que exigem uma segunda providência.
     successMsg: string | ((data: unknown) => string),
+    // Efeitos específicos da ação, SOMADOS ao toast e ao closeDialog padrão —
+    // nunca no lugar deles.
+    handlers?: { onSuccess?: () => void; onError?: (e: Error & { httpStatus?: number }) => void },
   ) {
     action.mutate(body, {
       onSuccess: (data: unknown) => {
         toast.success(typeof successMsg === "function" ? successMsg(data) : successMsg);
         closeDialog();
+        handlers?.onSuccess?.();
       },
       // A EF devolve mensagem curta em PT-BR; o hook já a extraiu do corpo
       // non-2xx que o invoke mascara.
-      onError: (e: Error) => toast.error(e.message),
+      onError: (e: Error & { httpStatus?: number }) => {
+        toast.error(e.message);
+        handlers?.onError?.(e);
+      },
     });
   }
 
@@ -845,7 +854,8 @@ export default function WhatsappInstances() {
               <p className="text-sm text-muted-foreground">
                 A instância e os ciclos dela somem para sempre. O histórico de ações e os alertas
                 continuam guardados, marcados como instância removida. Só instância encerrada e sem
-                custo registrado pode ser apagada.
+                custo registrado pode ser apagada. Ciclos com custo ainda não informado também
+                somem.
               </p>
             )}
 
@@ -864,6 +874,7 @@ export default function WhatsappInstances() {
                 Cancelar
               </Button>
               <Button
+                variant={dialog?.kind === "delete" ? "destructive" : "default"}
                 disabled={action.isPending || reasonTooShort}
                 onClick={() => {
                   if (!dialog) return;
@@ -946,9 +957,29 @@ export default function WhatsappInstances() {
                       "Cancelamento revertido.",
                     );
                   } else if (dialog.kind === "delete") {
+                    const deletedId = dialog.instance.id;
                     run(
-                      { action: "delete_instance", instance_id: dialog.instance.id, reason },
+                      { action: "delete_instance", instance_id: deletedId, reason },
                       "Instância apagada.",
+                      {
+                        onSuccess: () => {
+                          // Sem isto o `onSettled` do hook refaz o detalhe da
+                          // instância que acabou de sumir, volta 404 e o cartão
+                          // mostra "Não foi possível carregar os ciclos." até a
+                          // lista tirá-lo da tela.
+                          setExpandedId((cur) => (cur === deletedId ? null : cur));
+                          queryClient.removeQueries({ queryKey: ["whatsapp-instance", deletedId] });
+                        },
+                        // 404/409: a instância deixou de ser apagável (outra
+                        // aba apagou, ganhou custo, saiu de ENDED). Depois do
+                        // refetch o botão não existe mais, então o diálogo
+                        // aberto apontaria para algo que não pode ser apagado.
+                        // Qualquer outro erro (500, rede) mantém o diálogo para
+                        // nova tentativa.
+                        onError: (e) => {
+                          if (e.httpStatus === 404 || e.httpStatus === 409) closeDialog();
+                        },
+                      },
                     );
                   } else if (dialog.kind === "resolve_alert") {
                     run(
