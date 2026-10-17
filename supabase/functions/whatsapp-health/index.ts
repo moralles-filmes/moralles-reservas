@@ -14,7 +14,7 @@ import {
 } from "../_shared/whatsapp-providers.ts";
 import { resolveChannelCredentials } from "../_shared/whatsapp-channel-credentials.ts";
 import { selectHealthChannel } from "../_shared/whatsapp-health-core.ts";
-import { isOpsAlertConfigured } from "../_shared/ops-alert-sender.ts";
+import { readSecureOpsAlertReadiness } from "../_shared/secure-ops-alert-sender.ts";
 import { checkFlagEnabled } from "../_shared/platform-flags.ts";
 import { readHealthIngestionMode } from "../_shared/whatsapp-health-runtime.ts";
 // As janelas de retenção vêm do núcleo da fila, não redigitadas: elas já são
@@ -360,10 +360,17 @@ serve(async (req) => {
       },
     };
 
+    const opsAlertReadiness = await readSecureOpsAlertReadiness({
+      endpoint: Deno.env.get("WHATSAPP_OPS_ALERT_URL"),
+      projectUrl: Deno.env.get("SUPABASE_URL"),
+      token: Deno.env.get("WHATSAPP_OPS_ALERT_TOKEN"),
+    });
+
     return jsonResponse(req, {
       success: true,
       generated_at: new Date().toISOString(),
-      ops_alert_configured: isOpsAlertConfigured(Deno.env.get("WHATSAPP_OPS_ALERT_URL")),
+      ops_alert_sender_configured: opsAlertReadiness.senderConfigured,
+      ops_alert_configured: opsAlertReadiness.receiverReady,
       channel: channelInfo,
       ai: aiInfo,
       stats_24h: stats24h,

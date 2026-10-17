@@ -35,7 +35,10 @@
     "issue_scheduled_whatsapp_voucher(uuid,uuid,text,jsonb)"
   ],
   "_service_only_whatsapp_ops_alerts": [
-    "observe_whatsapp_ops_alerts(uuid)"
+    "observe_whatsapp_ops_alerts(uuid)",
+    "reserve_whatsapp_ops_email_attempt(uuid,text,uuid,integer,integer,timestamp with time zone,text,text,text)",
+    "complete_whatsapp_ops_email_attempt(uuid,text,text)",
+    "check_whatsapp_ops_email_reservation_ready()"
   ],
   "_service_only_whatsapp_instance_delete": [
     "delete_whatsapp_instance_without_cost(uuid,text,uuid)"

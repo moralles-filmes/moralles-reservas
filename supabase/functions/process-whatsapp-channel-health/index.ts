@@ -223,7 +223,11 @@ serve(async (req) => {
       }
     }
 
-    const opsAlerts = await createOpsAlerts(supabase, Deno.env.get("WHATSAPP_OPS_ALERT_URL"),
+    const opsAlerts = await createOpsAlerts(supabase, {
+      endpoint: Deno.env.get("WHATSAPP_OPS_ALERT_URL"),
+      projectUrl: Deno.env.get("SUPABASE_URL"),
+      token: Deno.env.get("WHATSAPP_OPS_ALERT_TOKEN"),
+    },
       (event) => jsonLog("warn", event)).inbound();
 
     jsonLog("info", {
