@@ -284,23 +284,22 @@ describe("partitionInstancesByTab", () => {
 
 describe("canOfferInstanceDelete", () => {
   it("encerrada sem histórico de custo: oferece", () => {
-    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false })).toBe(true);
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, false)).toBe(true);
   });
   it("encerrada com custo: não oferece", () => {
-    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: true })).toBe(false);
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: true }, false)).toBe(false);
   });
   it("não encerrada: não oferece, mesmo sem custo", () => {
-    expect(canOfferInstanceDelete({ lifecycle_state: "ACTIVE", has_cost_history: false })).toBe(false);
-    expect(canOfferInstanceDelete({ lifecycle_state: "CANCELLATION_REQUESTED", has_cost_history: false })).toBe(false);
+    expect(canOfferInstanceDelete({ lifecycle_state: "ACTIVE", has_cost_history: false }, false)).toBe(false);
+    expect(canOfferInstanceDelete({ lifecycle_state: "CANCELLATION_REQUESTED", has_cost_history: false }, false)).toBe(false);
   });
   it("campo ausente (EF anterior a esta versão): não oferece", () => {
-    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED" })).toBe(false);
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED" }, false)).toBe(false);
   });
   it("alerta aberto bloqueia, mesmo encerrada e sem custo", () => {
     expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, true)).toBe(false);
   });
-  it("blockedByAlerts ausente ou false mantém o comportamento", () => {
+  it("blockedByAlerts false mantém o comportamento", () => {
     expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, false)).toBe(true);
-    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false })).toBe(true);
   });
 });

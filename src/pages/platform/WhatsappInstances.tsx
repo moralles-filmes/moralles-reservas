@@ -363,7 +363,10 @@ export default function WhatsappInstances() {
           </Card>
         )}
 
-        {!instancesQuery.isLoading && !instancesQuery.isError && !!instancesQuery.data?.length && (
+        {/* Sem olhar isError: a lista abaixo segue renderizando o dado velho filtrado
+            pela aba, e um refetch que falha não pode prender o admin nela. O
+            banner de erro acima continua. */}
+        {!instancesQuery.isLoading && !!instancesQuery.data?.length && (
           <Tabs value={tab} onValueChange={(v) => setTab(instanceTab(v))}>
             <TabsList>
               <TabsTrigger value="ativas">Ativas ({ativas.length})</TabsTrigger>
@@ -372,7 +375,7 @@ export default function WhatsappInstances() {
           </Tabs>
         )}
 
-        {!instancesQuery.isLoading && !instancesQuery.isError && !!instancesQuery.data?.length &&
+        {!instancesQuery.isLoading && !!instancesQuery.data?.length &&
           !visibleInstances.length && (
           <Card>
             <CardContent className="py-6 text-sm text-muted-foreground">
@@ -988,11 +991,14 @@ export default function WhatsappInstances() {
                           queryClient.removeQueries({ queryKey: ["whatsapp-instance", deletedId] });
                         },
                         // 404/409: a instância deixou de ser apagável (outra
-                        // aba apagou, ganhou custo, saiu de ENDED). Depois do
-                        // refetch o botão não existe mais, então o diálogo
-                        // aberto apontaria para algo que não pode ser apagado.
-                        // Qualquer outro erro (500, rede) mantém o diálogo para
-                        // nova tentativa.
+                        // aba apagou, ganhou custo, saiu de ENDED), então o
+                        // diálogo aberto apontaria para algo que não pode ser
+                        // apagado. Em geral o botão some depois do refetch; a
+                        // exceção aceita (Adendo 2 da spec) é custo que só
+                        // existe no histórico do audit_log: `has_cost_history`
+                        // segue false, o botão volta e o banco recusa com 409
+                        // de novo. Qualquer outro erro (500, rede) mantém o
+                        // diálogo para nova tentativa.
                         onError: (e) => {
                           if (e.httpStatus === 404 || e.httpStatus === 409) closeDialog();
                         },

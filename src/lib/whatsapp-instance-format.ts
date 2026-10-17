@@ -211,14 +211,15 @@ export function partitionInstancesByTab<T extends { lifecycle_state: string }>(
  * banco vai recusar. `has_cost_history` ausente (EF anterior a esta versão) não
  * oferece. `blockedByAlerts` é true quando há alerta aberto da instância (o
  * banco recusa com `open_alerts`) ou quando os alertas ainda não são
- * conhecidos (carregando/erro): sem saber, não se oferece.
+ * conhecidos (carregando/erro): sem saber, não se oferece. É obrigatório de
+ * propósito: quem esquecer o argumento não pode oferecer o botão (fail-closed).
  */
 export function canOfferInstanceDelete(
   inst: {
     lifecycle_state: string;
     has_cost_history?: boolean;
   },
-  blockedByAlerts: boolean = false,
+  blockedByAlerts: boolean,
 ): boolean {
   if (blockedByAlerts) return false;
   return inst.lifecycle_state === "ENDED" && inst.has_cost_history === false;

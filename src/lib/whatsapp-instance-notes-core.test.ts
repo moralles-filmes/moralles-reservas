@@ -27,6 +27,27 @@ const MIGRATION = join(
 const MIGRATIONS_DIR = join(__dirname, "..", "..", "supabase", "migrations");
 
 /**
+ * Remove comentários `-- ...` linha a linha, como `stripSqlComments` de
+ * scripts/audit-log-member-policy.test.ts (mesmo padrão, replicado aqui para
+ * não acoplar este teste a outro). Sem isso, um `add constraint ...` citado em
+ * comentário (rollback, exemplo) viraria o CHECK "efetivo".
+ */
+function stripSqlComments(sql: string): string {
+  return sql
+    .split("\n")
+    .map((line) => line.replace(/--.*$/, ""))
+    .join("\n");
+}
+
+/** Valores do `add constraint whatsapp_instance_notes_action_check` do SQL, fora de comentário; null se não houver. */
+function checkActionsInSql(sql: string): string[] | null {
+  const m = stripSqlComments(sql).match(
+    /add\s+constraint\s+whatsapp_instance_notes_action_check\s+check\s*\(\s*action\s+in\s*\(([^)]*)\)/i,
+  );
+  return m ? Array.from(m[1].matchAll(/'([A-Z_]+)'/g)).map((x) => x[1]) : null;
+}
+
+/**
  * Os valores do CHECK **EFETIVO** de `action`: o do ÚLTIMO arquivo de migration
  * (ordem de nome = ordem de aplicação) que faz `add constraint
  * whatsapp_instance_notes_action_check`. A 104 e a 20261015223000 fazem
@@ -37,9 +58,8 @@ function actionsInMigrationCheck(): string[] {
   const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
   let last: string[] | null = null;
   for (const file of files) {
-    const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
-    const m = sql.match(/add\s+constraint\s+whatsapp_instance_notes_action_check\s+check\s*\(\s*action\s+in\s*\(([^)]*)\)/i);
-    if (m) last = Array.from(m[1].matchAll(/'([A-Z_]+)'/g)).map((x) => x[1]);
+    const found = checkActionsInSql(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
+    if (found) last = found;
   }
   if (last) return last;
 
@@ -48,6 +68,21 @@ function actionsInMigrationCheck(): string[] {
   if (!m) throw new Error("CHECK de `action` não encontrado na migration 096");
   return Array.from(m[1].matchAll(/'([A-Z_]+)'/g)).map((x) => x[1]);
 }
+
+describe("extrator do CHECK efetivo ignora comentário SQL", () => {
+  const checkSql = (valores: string) =>
+    "alter table t add constraint whatsapp_instance_notes_action_check check (action in (" + valores + "));";
+
+  it("lê o add constraint executável", () => {
+    expect(checkActionsInSql(checkSql("'A', 'B'"))).toEqual(["A", "B"]);
+  });
+
+  it("add constraint dentro de comentário `--` NÃO vira o CHECK efetivo", () => {
+    const sql = "-- rollback:\n-- " + checkSql("'FANTASMA'") + "\n" + checkSql("'REAL'");
+    expect(checkActionsInSql(sql)).toEqual(["REAL"]);
+    expect(checkActionsInSql("-- " + checkSql("'FANTASMA'"))).toBeNull();
+  });
+});
 
 /**
  * Corpo executável de `whatsapp_instance_note_guard()`, com todo comentário

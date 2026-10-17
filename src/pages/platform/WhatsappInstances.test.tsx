@@ -19,13 +19,14 @@ const base = {
 const mocks = vi.hoisted(() => ({
   mutate: vi.fn(),
   instances: [] as unknown[],
+  instancesError: false,
   alerts: { isLoading: false, isError: false, data: [] as unknown } as {
     isLoading: boolean; isError: boolean; data: unknown;
   },
 }));
 
 vi.mock("@/hooks/useWhatsappInstances", () => ({
-  useWhatsappInstances: () => ({ isLoading: false, isError: false, data: mocks.instances, refetch: vi.fn() }),
+  useWhatsappInstances: () => ({ isLoading: false, isError: mocks.instancesError, data: mocks.instances, refetch: vi.fn() }),
   useWhatsappInstance: () => ({ isLoading: false, isError: false, data: { cycles: [] }, refetch: vi.fn() }),
   useWhatsappInstanceAlerts: () => ({ ...mocks.alerts, refetch: vi.fn() }),
   useWhatsappInstanceAction: () => ({ mutate: mocks.mutate, isPending: false, variables: undefined }),
@@ -74,6 +75,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   mocks.alerts = { isLoading: false, isError: false, data: [] };
+  mocks.instancesError = false;
 });
 
 const setInstances = () => {
@@ -191,6 +193,21 @@ describe("Instâncias de WhatsApp — abas e exclusão", () => {
     const afterActive = new URLSearchParams(searchNow() ?? "");
     expect(afterActive.has("aba")).toBe(false);
     expect(afterActive.get("x")).toBe("1");
+  });
+
+  it("refetch com erro mantém as abas e troca de aba mostra a outra lista (dado velho + banner)", async () => {
+    setInstances();
+    mocks.instancesError = true;
+    const user = userEvent.setup();
+    renderAt("/platform/instancias-whatsapp");
+    expect(screen.getByText("Não foi possível carregar as instâncias.")).toBeTruthy();
+    expect(screen.getByText("REF-ATIVA")).toBeTruthy();
+    expect(screen.queryByText("REF-TESTE")).toBeNull();
+
+    await user.click(screen.getByRole("tab", { name: "Encerradas (2)" }));
+    expect(screen.getByText("REF-TESTE")).toBeTruthy();
+    expect(screen.queryByText("REF-ATIVA")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Ativas (1)" })).toBeTruthy();
   });
 
   it("Confirmar do diálogo de exclusão só habilita com motivo de 5+ caracteres após trim", () => {
