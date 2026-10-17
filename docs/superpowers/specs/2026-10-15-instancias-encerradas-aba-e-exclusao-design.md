@@ -54,3 +54,17 @@ Decidido pelo dono em conversa, na mesma entrega ("corrigir junto").
 **Testes:** harness com membro da organização vendo as três tabelas e não vendo as três da plataforma, membro de outra organização sem nada, platform admin vendo tudo, e controle positivo com a policy antiga (o vazamento reaparece). Vitest: a policy efetiva (último arquivo de migration que a define) tem a lista, e a lista é igual às chaves de `TABLE_LABEL`. Pós-deploy, sonda em transação somente leitura com o papel `authenticated` e o JWT de um membro real.
 
 **Ordem:** migration por `supabase db push`, junto com a da exclusão; não depende de Edge Function.
+
+## Adendo 2 — endurecimento da exclusão pela auditoria do módulo
+
+Decidido pelo agente principal sob a escolha do dono ("só sem custo" = nunca teve custo), depois da auditoria `saas-audit-br:module` (business-process, data-resilience e tenant-isolation). Nenhuma decisão afrouxa a regra; todas a estreitam ou aumentam o rastro. Conferido em produção (só leitura) que o alvo real, `71a7f5b8`, continua apagável: 4 alertas, todos `RESOLVED`; 63 linhas de `audit_log`, nenhuma com custo.
+
+1. **Ator obrigatório na RPC** (`p_actor` nulo → `check_violation`). A EF já passa o usuário do JWT; a guarda vale para qualquer outro chamador service-role.
+2. **Custo no histórico conta como custo.** `set_cost` aceita "desconhecido" em qualquer estado, então anular o custo e apagar escondia custo real. A RPC também recusa `has_cost` se o `audit_log` da instância tiver `current_monthly_cost_cents` não nulo em algum momento. A tela não lê `audit_log`: nesse caso raro ela oferece o botão e o banco recusa com mensagem clara.
+3. **Alerta aberto bloqueia** (novo desfecho `open_alerts` → 409 `INSTANCE_HAS_OPEN_ALERTS`). Um alerta de divergência aberto é o único sinal de que o fornecedor ainda cobra, e alerta aberto de instância apagada ficaria órfão. A tela troca o botão por "Resolva os alertas abertos para poder apagar." e não oferece o botão enquanto os alertas carregam ou falham.
+4. **Retrato dos ciclos no `audit_log`** antes do `DELETE` (`table_name = 'whatsapp_instance_cycles'`, uma linha por ciclo, com o ator). Ciclos não têm trigger de auditoria e saíam em cascata sem rastro; a policy por lista já os esconde do cliente.
+5. **Auditoria do cliente filtra as tabelas também no hook** (`.in("table_name", AUDIT_LOG_MEMBER_TABLES)`), para que um platform admin em pseudo-dono não veja dado da plataforma na tela do cliente.
+
+Mantido como está, por decisão anterior: ciclo `PENDING_REVIEW` com custo nulo conta como "sem custo" (o alvo real é exatamente isso), agora com o retrato do item 4.
+
+Fora do escopo, levado ao dono: o histórico de PII de `customers` em `audit_log` sobrevive à anonimização (pré-existente; exige decisão jurídica); `audit_log` sem revoke de tabela/FORCE RLS e `audit_trigger_func` com `search_path = public` (hardening); runbook de recuperação de instância apagada; cache TanStack não limpo no logout.
