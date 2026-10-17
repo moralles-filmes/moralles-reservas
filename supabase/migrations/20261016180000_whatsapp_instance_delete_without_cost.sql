@@ -26,7 +26,7 @@
 -- nao tem trigger de auditoria: a RPC grava um retrato de cada um em
 -- `audit_log` (table_name = 'whatsapp_instance_cycles') antes do delete. Esses
 -- registros ficam invisiveis ao cliente (a policy de membro e por lista).
--- Essa invisibilidade SO vale com a `20261015233000_audit_log_member_read_allowlist.sql`
+-- Essa invisibilidade SO vale com a `20261016181000_audit_log_member_read_allowlist.sql`
 -- aplicada: o retrato carrega custo, receita, margem e notas, e com a policy
 -- antiga o membro leria tudo isso. Por isso nunca aplique esta sem aquela; um
 -- `supabase db push` aplica as duas, em ordem.

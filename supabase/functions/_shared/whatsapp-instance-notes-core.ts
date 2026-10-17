@@ -13,7 +13,7 @@
 // tempo da instancia.
 //
 // A NONA, `DELETE`, e gravada so pela RPC `delete_whatsapp_instance_without_cost`
-// (migration 20261015223000), na mesma transacao que apaga a instancia. Ela fica
+// (migration 20261016180000), na mesma transacao que apaga a instancia. Ela fica
 // com `instance_id` nulo e `instance_ref` intacto: e o registro de quem apagou o
 // que, e por que.
 //

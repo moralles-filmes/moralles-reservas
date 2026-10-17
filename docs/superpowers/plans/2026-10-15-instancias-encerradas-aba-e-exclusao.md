@@ -16,7 +16,7 @@
 - Git: `git add <caminho>` explícito; rodar `git diff --cached --stat` antes de cada commit; NUNCA `git add .`/`-A`, `reset`, `stash`, `checkout --`, `restore` sem `--staged`. Um implementer por vez.
 - Commits terminam com a linha `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - `npm run typecheck` é `tsc -b --noEmit` (nunca `tsc --noEmit` sem `-b`). `tsconfig.app.json` tem `strict:false`: estreitar união com `x.ok === false`, não `!x.ok`.
-- Migration: arquivo `supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql`, idempotente, com `begin;`/`commit;` no próprio arquivo; nunca embutir URL do projeto nem segredo.
+- Migration: arquivo `supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql`, idempotente, com `begin;`/`commit;` no próprio arquivo; nunca embutir URL do projeto nem segredo.
 - Função nova: `revoke all ... from public, anon, authenticated;` e `grant execute ... to service_role;`, cada um em UMA linha com a assinatura completa `(uuid, text, uuid)`.
 - Copy de UI em PT-BR. Edge Function nunca devolve `error.message` do Postgres ao cliente.
 - `MIN_REASON_LENGTH = 5` (igual ao que já existe na EF e na tela).
@@ -35,7 +35,7 @@
 ### Task 1: Migration, vocabulário `DELETE` e guardas estáticas
 
 **Files:**
-- Create: `supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql`
+- Create: `supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql`
 - Modify: `supabase/functions/_shared/whatsapp-instance-notes-core.ts` (lista + cabeçalho)
 - Modify: `src/lib/whatsapp-instance-format.ts` (rótulo `DELETE` em `NOTE_ACTION_LABEL`, perto da linha 101)
 - Modify: `src/lib/whatsapp-instance-notes-core.test.ts` (ler o CHECK efetivo = último na ordem dos arquivos)
@@ -57,7 +57,7 @@ const MIGRATIONS_DIR = join(__dirname, "..", "..", "supabase", "migrations");
 /**
  * Os valores do CHECK **EFETIVO** de `action`: o do ÚLTIMO arquivo de migration
  * (ordem de nome = ordem de aplicação) que faz `add constraint
- * whatsapp_instance_notes_action_check`. A 104 e a 20261015223000 fazem
+ * whatsapp_instance_notes_action_check`. A 104 e a 20261016180000 fazem
  * `drop constraint if exists` + `add constraint`; fixar o teste numa delas
  * deixaria a próxima ação nova sem cobertura.
  */
@@ -101,7 +101,7 @@ Em `scripts/function-acl-allowlist.test.ts`, acrescentar no fim do arquivo:
 ```ts
 describe('Instâncias WhatsApp: exclusão sem custo', () => {
   // Espaços normalizados: a migration escreve `(uuid, text, uuid)`.
-  const sql = readFileSync(join(MIGRATIONS_DIR, '20261015223000_whatsapp_instance_delete_without_cost.sql'), 'utf8')
+  const sql = readFileSync(join(MIGRATIONS_DIR, '20261016180000_whatsapp_instance_delete_without_cost.sql'), 'utf8')
     .replace(/,\s+/g, ',');
   it('a RPC é service-only, fora da allowlist pública, revogada de PUBLIC/anon/authenticated', () => {
     const signature = 'delete_whatsapp_instance_without_cost(uuid,text,uuid)';
@@ -123,7 +123,7 @@ Expected: FAIL — lista de ações sem `DELETE` e migration inexistente (`ENOEN
 
 - [ ] **Step 3: Criar a migration**
 
-`supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql`:
+`supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql`:
 
 ```sql
 -- Instancias de WhatsApp: exclusao de instancia ENCERRADA e SEM CUSTO.
@@ -244,7 +244,7 @@ Em `supabase/functions/_shared/whatsapp-instance-notes-core.ts`, acrescentar `"D
 
 ```ts
 // A NONA, `DELETE`, e gravada so pela RPC `delete_whatsapp_instance_without_cost`
-// (migration 20261015223000), na mesma transacao que apaga a instancia. Ela fica
+// (migration 20261016180000), na mesma transacao que apaga a instancia. Ela fica
 // com `instance_id` nulo e `instance_ref` intacto: e o registro de quem apagou o
 // que, e por que.
 ```
@@ -276,7 +276,7 @@ Expected: zero erros (o `Record` de rótulos exige a entrada `DELETE`).
 - [ ] **Step 6: Commit**
 
 ```bash
-git add supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql supabase/functions/_shared/whatsapp-instance-notes-core.ts src/lib/whatsapp-instance-format.ts src/lib/whatsapp-instance-notes-core.test.ts scripts/function-acl-allowlist.json scripts/function-acl-allowlist.test.ts
+git add supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql supabase/functions/_shared/whatsapp-instance-notes-core.ts src/lib/whatsapp-instance-format.ts src/lib/whatsapp-instance-notes-core.test.ts scripts/function-acl-allowlist.json scripts/function-acl-allowlist.test.ts
 git diff --cached --stat
 git commit -m "feat(db): add cost-free deletion RPC for ended WhatsApp instances
 
@@ -288,18 +288,18 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 2: Harness local — casos DEL e controles positivos
 
 **Files:**
-- Create: `supabase/tests/local-preflight/65-instance-delete.sql`
-- Create: `supabase/tests/local-preflight/66-controles-instance-delete.sql`
+- Create: `supabase/tests/local-preflight/66-instance-delete.sql`
+- Create: `supabase/tests/local-preflight/67-controles-instance-delete.sql`
 - Modify: `supabase/tests/local-preflight/README.md` (linhas na tabela "Os arquivos" e seção nova "### Exclusão de instância sem custo (65/66)" depois de "### Alertas operacionais externos (64)")
 
 **Interfaces:**
 - Consumes: migration da Task 1; sequência base do README ("## Rodar", banco `fase6c`), que aplica 087, 088, 090, 096, 104 e 105 e cria `t_res` e `audit_log`.
 - Produces: ordinais 301–308 (casos) e 311–312 (controles) em `t_res`.
 
-- [ ] **Step 1: Escrever `65-instance-delete.sql`**
+- [ ] **Step 1: Escrever `66-instance-delete.sql`**
 
 ```sql
--- DEL-1..8 — RPC delete_whatsapp_instance_without_cost (migration 20261015223000).
+-- DEL-1..8 — RPC delete_whatsapp_instance_without_cost (migration 20261016180000).
 -- Roda no banco da sequencia base do README (fase6c), DEPOIS da migration nova
 -- aplicada duas vezes. Ids fixos; cada caso grava veredito em t_res.
 
@@ -450,7 +450,7 @@ begin
 end $$;
 ```
 
-- [ ] **Step 2: Escrever `66-controles-instance-delete.sql`**
+- [ ] **Step 2: Escrever `67-controles-instance-delete.sql`**
 
 Cada controle sabota o corpo real via `pg_get_functiondef`, chama a RPC dentro de um bloco `begin … exception` que é desfeito por `raise`, e grava o desfecho capturado. O rollback do bloco desfaz a sabotagem E a exclusão; o caso confere ao fim que a função real voltou a recusar.
 
@@ -515,10 +515,10 @@ Nota para o implementer: sem flag, o regex do Postgres deixa `.` casar quebra de
 Seguir "## Rodar" do README (Git Bash; `PGCLIENTENCODING=UTF8`; porta 55432 ou a que já estiver no ar). Depois da última linha da sequência base (reaplicar 104 e 105), rodar:
 
 ```bash
-P -f supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql
-P -f supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql
-P -f supabase/tests/local-preflight/65-instance-delete.sql
-"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -f supabase/tests/local-preflight/66-controles-instance-delete.sql
+P -f supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql
+P -f supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql
+P -f supabase/tests/local-preflight/66-instance-delete.sql
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -f supabase/tests/local-preflight/67-controles-instance-delete.sql
 P -c "select ord, caso, veredito from t_res where ord between 301 and 312 order by ord;"
 P -c "select ord, caso, veredito from t_res where veredito <> 'PASSOU' order by ord;"
 ```
@@ -530,8 +530,8 @@ Expected: 301–308 e 311–312 todos `PASSOU`; a segunda consulta não traz lin
 Acrescentar à tabela "## Os arquivos":
 
 ```markdown
-| `65-instance-delete.sql` | DEL-1..8 (ordinais 301–308, migration `20261015223000`): a RPC `delete_whatsapp_instance_without_cost`. Encerrada sem custo é apagada com o ciclo em cascata, as notas (inclusive a `DELETE` nova) ficam com `instance_id` nulo e `instance_ref` intacto, e o `audit_log` grava o DELETE; custo atual, custo só em ciclo, estado não encerrado, id inexistente e motivo vazio são recusados sem apagar; ACL só `service_role`; migration aplicada duas vezes sem duplicar. Roda no banco `fase6c` da sequência base. |
-| `66-controles-instance-delete.sql` | CONTROLE-DEL-1/2 (ordinais 311–312): tira do corpo real a checagem de custo em ciclo e depois a de estado, vê a instância de DEL-3/DEL-4 ser apagada, e desfaz a sabotagem por rollback de subbloco — sem reapply. Rodar sem `ON_ERROR_STOP`. |
+| `66-instance-delete.sql` | DEL-1..8 (ordinais 301–308, migration `20261016180000`): a RPC `delete_whatsapp_instance_without_cost`. Encerrada sem custo é apagada com o ciclo em cascata, as notas (inclusive a `DELETE` nova) ficam com `instance_id` nulo e `instance_ref` intacto, e o `audit_log` grava o DELETE; custo atual, custo só em ciclo, estado não encerrado, id inexistente e motivo vazio são recusados sem apagar; ACL só `service_role`; migration aplicada duas vezes sem duplicar. Roda no banco `fase6c` da sequência base. |
+| `67-controles-instance-delete.sql` | CONTROLE-DEL-1/2 (ordinais 311–312): tira do corpo real a checagem de custo em ciclo e depois a de estado, vê a instância de DEL-3/DEL-4 ser apagada, e desfaz a sabotagem por rollback de subbloco — sem reapply. Rodar sem `ON_ERROR_STOP`. |
 ```
 
 E a seção, depois de "### Alertas operacionais externos (64)":
@@ -542,10 +542,10 @@ E a seção, depois de "### Alertas operacionais externos (64)":
 Continua o banco `fase6c` da sequência base, depois de reaplicar 104 e 105:
 
 ```bash
-P -f supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql
-P -f supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql   # idempotência (DEL-7)
-P -f supabase/tests/local-preflight/65-instance-delete.sql
-"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -f supabase/tests/local-preflight/66-controles-instance-delete.sql
+P -f supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql
+P -f supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql   # idempotência (DEL-7)
+P -f supabase/tests/local-preflight/66-instance-delete.sql
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -f supabase/tests/local-preflight/67-controles-instance-delete.sql
 P -c "select ord, caso, veredito from t_res where ord between 301 and 312 order by ord;"
 ```
 
@@ -555,7 +555,7 @@ O que NÃO prova: o caminho PostgREST/Edge Function (`delete_instance`) — esse
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/tests/local-preflight/65-instance-delete.sql supabase/tests/local-preflight/66-controles-instance-delete.sql supabase/tests/local-preflight/README.md
+git add supabase/tests/local-preflight/66-instance-delete.sql supabase/tests/local-preflight/67-controles-instance-delete.sql supabase/tests/local-preflight/README.md
 git diff --cached --stat
 git commit -m "test(db): preflight cases and positive controls for instance deletion
 
@@ -642,7 +642,7 @@ Expected: FAIL (módulo inexistente).
 // testar sem Deno.
 //
 // QUEM DECIDE SE PODE APAGAR É O BANCO (RPC `delete_whatsapp_instance_without_cost`,
-// migration 20261015223000), sob lock. Este arquivo não reimplementa a regra:
+// migration 20261016180000), sob lock. Este arquivo não reimplementa a regra:
 // traduz o desfecho da RPC em resposta HTTP e calcula o `has_cost_history` que
 // a tela usa para decidir se OFERECE o botão. Vive em `_shared/` porque o
 // `index.ts` de `manage-whatsapp-instances` chama `serve()` no carregamento e
@@ -760,7 +760,7 @@ import {
 
 ```ts
 // 4. A RPC `delete_whatsapp_instance_without_cost` e a ação `DELETE` no CHECK de
-//    `whatsapp_instance_notes` (migration 20261015223000). Sem ela,
+//    `whatsapp_instance_notes` (migration 20261016180000). Sem ela,
 //    `delete_instance` responde 500; nenhuma outra ação depende dela.
 ```
 
@@ -1237,10 +1237,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 1. Na seção "Billing — mensalidades", logo depois do bullet que começa com `**No encerramento de instância, a PRIMEIRA confirmação vence nos TRÊS campos`, acrescentar:
 
 ```markdown
-- **Instância só é apagada pela RPC `delete_whatsapp_instance_without_cost`, e só se estiver `ENDED` e sem custo (nem o atual nem em ciclo).** Os ciclos saem em cascata, então apagar com custo destruiria a margem histórica; a regra mora no banco, sob lock de instância e ciclos, e a tela só oferece o botão onde ele vai passar. Notas (inclusive a `DELETE`) e alertas ficam com `instance_id` nulo e identidade preservada. [migration](supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql).
+- **Instância só é apagada pela RPC `delete_whatsapp_instance_without_cost`, e só se estiver `ENDED` e sem custo (nem o atual nem em ciclo).** Os ciclos saem em cascata, então apagar com custo destruiria a margem histórica; a regra mora no banco, sob lock de instância e ciclos, e a tela só oferece o botão onde ele vai passar. Notas (inclusive a `DELETE`) e alertas ficam com `instance_id` nulo e identidade preservada. [migration](supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql).
 ```
 
-2. No checklist de redeploy, no bullet de `whatsapp-instance-notes-core.ts`, trocar "Carrega o vocabulário das AGORA OITO ações do ledger (`CORRECT_CYCLE_COST` somou-se às sete originais na Fase 6c) — o CHECK efetivo que precisa concordar com esta lista vive na [migration 104](supabase/migrations/20260807100000_104_whatsapp_cycle_cost_and_end.sql), não mais só na 096." por "Carrega o vocabulário das NOVE ações do ledger (`CORRECT_CYCLE_COST` na Fase 6c, `DELETE` na exclusão sem custo) — o CHECK efetivo é o do último arquivo de migration que o redefine (hoje [20261015223000](supabase/migrations/20261015223000_whatsapp_instance_delete_without_cost.sql)), e o teste de acoplamento lê esse." (conferir o texto exato no arquivo antes de editar).
+2. No checklist de redeploy, no bullet de `whatsapp-instance-notes-core.ts`, trocar "Carrega o vocabulário das AGORA OITO ações do ledger (`CORRECT_CYCLE_COST` somou-se às sete originais na Fase 6c) — o CHECK efetivo que precisa concordar com esta lista vive na [migration 104](supabase/migrations/20260807100000_104_whatsapp_cycle_cost_and_end.sql), não mais só na 096." por "Carrega o vocabulário das NOVE ações do ledger (`CORRECT_CYCLE_COST` na Fase 6c, `DELETE` na exclusão sem custo) — o CHECK efetivo é o do último arquivo de migration que o redefine (hoje [20261016180000](supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql)), e o teste de acoplamento lê esse." (conferir o texto exato no arquivo antes de editar).
 
 3. No mesmo checklist, depois do bullet de `whatsapp-instance-registration-core.ts`, acrescentar:
 

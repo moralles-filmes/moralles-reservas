@@ -50,7 +50,7 @@ function checkActionsInSql(sql: string): string[] | null {
 /**
  * Os valores do CHECK **EFETIVO** de `action`: o do ÚLTIMO arquivo de migration
  * (ordem de nome = ordem de aplicação) que faz `add constraint
- * whatsapp_instance_notes_action_check`. A 104 e a 20261015223000 fazem
+ * whatsapp_instance_notes_action_check`. A 104 e a 20261016180000 fazem
  * `drop constraint if exists` + `add constraint`; fixar o teste numa delas
  * deixaria a próxima ação nova sem cobertura.
  */

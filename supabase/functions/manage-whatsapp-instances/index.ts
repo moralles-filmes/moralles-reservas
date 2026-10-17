@@ -30,7 +30,7 @@
 //    recusadas pelo CHECK e somem em silêncio.
 //
 // 4. A RPC `delete_whatsapp_instance_without_cost` e a ação `DELETE` no CHECK de
-//    `whatsapp_instance_notes` (migration 20261015223000). Sem ela,
+//    `whatsapp_instance_notes` (migration 20261016180000). Sem ela,
 //    `delete_instance` responde 500; nenhuma outra ação depende dela.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";

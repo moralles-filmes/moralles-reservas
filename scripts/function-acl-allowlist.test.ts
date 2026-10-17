@@ -1845,7 +1845,7 @@ describe("app_private nunca concede privilégio de schema a papel público (106)
 
 describe('Instâncias WhatsApp: exclusão sem custo', () => {
   // Espaços normalizados: a migration escreve `(uuid, text, uuid)`.
-  const sql = readFileSync(join(MIGRATIONS_DIR, '20261015223000_whatsapp_instance_delete_without_cost.sql'), 'utf8')
+  const sql = readFileSync(join(MIGRATIONS_DIR, '20261016180000_whatsapp_instance_delete_without_cost.sql'), 'utf8')
     .replace(/,\s+/g, ',');
   it('a RPC é service-only, fora da allowlist pública, revogada de PUBLIC/anon/authenticated', () => {
     const signature = 'delete_whatsapp_instance_without_cost(uuid,text,uuid)';

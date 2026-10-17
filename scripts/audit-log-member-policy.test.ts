@@ -28,7 +28,7 @@ import { AUDIT_LOG_MEMBER_TABLES } from "../src/lib/audit-log-tables";
 
 const MIGRATIONS_DIR = join(__dirname, "..", "supabase", "migrations");
 const AUDITORIA_PATH = join(__dirname, "..", "src", "pages", "gestao", "Auditoria.tsx");
-const EXPECTED_MIGRATION = "20261015233000_audit_log_member_read_allowlist.sql";
+const EXPECTED_MIGRATION = "20261016181000_audit_log_member_read_allowlist.sql";
 const PLATFORM_TABLES = [
   "whatsapp_instances",
   "whatsapp_implementations",

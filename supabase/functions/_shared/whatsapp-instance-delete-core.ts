@@ -2,7 +2,7 @@
 // testar sem Deno.
 //
 // QUEM DECIDE SE PODE APAGAR É O BANCO (RPC `delete_whatsapp_instance_without_cost`,
-// migration 20261015223000), sob lock. Este arquivo não reimplementa a regra:
+// migration 20261016180000), sob lock. Este arquivo não reimplementa a regra:
 // traduz o desfecho da RPC em resposta HTTP e calcula o `has_cost_history` que
 // a tela usa para decidir se OFERECE o botão. Vive em `_shared/` porque o
 // `index.ts` de `manage-whatsapp-instances` chama `serve()` no carregamento e

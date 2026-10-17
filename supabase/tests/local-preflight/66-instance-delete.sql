@@ -1,4 +1,4 @@
--- DEL-1..14 — RPC delete_whatsapp_instance_without_cost (migration 20261015223000).
+-- DEL-1..14 — RPC delete_whatsapp_instance_without_cost (migration 20261016180000).
 -- Roda no banco da sequencia base do README (fase6c), DEPOIS da migration nova
 -- aplicada duas vezes. Ids fixos; cada caso grava veredito em t_res.
 

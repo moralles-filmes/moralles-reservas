@@ -1,5 +1,5 @@
 -- AUD-1..5 e CONTROLE-AUD-1 (ordinais 321-325 e 331): migration
--- 20261015233000_audit_log_member_read_allowlist.sql contra Postgres real.
+-- 20261016181000_audit_log_member_read_allowlist.sql contra Postgres real.
 --
 -- BASE: a sequência do advisor (00 -> 01 -> 09a -> 106), banco próprio, e NÃO o
 -- `fase6c`. Motivo: é a única que já tem `app_private.is_unit_member`,
@@ -30,7 +30,7 @@ begin
   if to_regprocedure('app_private.is_unit_member(uuid,uuid)') is null
      or to_regprocedure('app_private.is_org_member(uuid,uuid)') is null
      or to_regprocedure('app_private.is_platform_admin(uuid)') is null then
-    raise exception '67 exige a base advisor (00 -> 01 -> 09a -> 106): helpers app_private ausentes.';
+    raise exception '68 exige a base advisor (00 -> 01 -> 09a -> 106): helpers app_private ausentes.';
   end if;
 end $$;
 
@@ -124,13 +124,13 @@ begin
     array['whatsapp_instances', 'whatsapp_implementations', 'organization_entitlement_overrides',
           'whatsapp_instance_cycles'], null);
   if v_leak <> 4 then
-    raise exception '67: antes da migration o membro A deveria ver as 4 linhas de plataforma (policy antiga) e viu %. Fixture/grant/JWT nao exercita a policy.', v_leak;
+    raise exception '68: antes da migration o membro A deveria ver as 4 linhas de plataforma (policy antiga) e viu %. Fixture/grant/JWT nao exercita a policy.', v_leak;
   end if;
 end $$;
 
 -- ─── Migration: aplicada DUAS vezes (AUD-5 mede o resultado) ─────────────────
-\i supabase/migrations/20261015233000_audit_log_member_read_allowlist.sql
-\i supabase/migrations/20261015233000_audit_log_member_read_allowlist.sql
+\i supabase/migrations/20261016181000_audit_log_member_read_allowlist.sql
+\i supabase/migrations/20261016181000_audit_log_member_read_allowlist.sql
 
 -- ─── AUD-1: membro vê customers, reservations e unit_members da própria org ──
 do $$
