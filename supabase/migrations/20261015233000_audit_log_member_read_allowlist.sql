@@ -35,7 +35,10 @@ commit;
 --   select policyname, qual from pg_policies
 --    where schemaname = 'public' and tablename = 'audit_log' order by 1;
 --
--- ROLLBACK (recria a policy anterior — reabre o vazamento; só em emergência):
+-- ROLLBACK (recria a policy anterior — reabre o vazamento; só em emergência).
+-- Voltar à policy antiga agora também expõe ao membro o retrato dos ciclos que
+-- a `20261015223000_whatsapp_instance_delete_without_cost.sql` grava em
+-- `audit_log` (custo, receita, margem e notas), além das linhas que já vazavam:
 --   drop policy if exists "unit_member_read_audit" on public.audit_log;
 --   create policy "unit_member_read_audit" on public.audit_log for select to authenticated
 --     using (((unit_id is not null) and app_private.is_unit_member(auth.uid(), unit_id))

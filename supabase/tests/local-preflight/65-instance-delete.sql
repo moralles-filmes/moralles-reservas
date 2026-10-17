@@ -1,4 +1,4 @@
--- DEL-1..13 — RPC delete_whatsapp_instance_without_cost (migration 20261015223000).
+-- DEL-1..14 — RPC delete_whatsapp_instance_without_cost (migration 20261015223000).
 -- Roda no banco da sequencia base do README (fase6c), DEPOIS da migration nova
 -- aplicada duas vezes. Ids fixos; cada caso grava veredito em t_res.
 
@@ -92,6 +92,20 @@ select 'INSTANCE', 'de000000-0000-4000-8000-000000000007', 'aaaaaaaa-0000-0000-0
 where exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-8000-000000000007')
   and not exists (select 1 from whatsapp_instance_alerts
                    where subject_id = 'de000000-0000-4000-8000-000000000007' and dedupe_key = 'del-10-fixture');
+
+-- DEL-14: ENDED sem custo com alerta ACKNOWLEDGED (reconhecido, nao resolvido): tambem bloqueia.
+-- A 089 exige acknowledged_at junto de ACKNOWLEDGED (whatsapp_alerts_ack_chk).
+insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source, ended_at)
+values ('de000000-0000-4000-8000-00000000000b', 'aaaaaaaa-0000-0000-0000-000000000001', 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now())
+on conflict (id) do nothing;
+insert into whatsapp_instance_alerts (subject_type, subject_id, organization_id, instance_id, alert_type, dedupe_key,
+                                      status, acknowledged_at, acknowledged_by)
+select 'INSTANCE', 'de000000-0000-4000-8000-00000000000b', 'aaaaaaaa-0000-0000-0000-000000000001',
+       'de000000-0000-4000-8000-00000000000b', 'DIVERGENCE', 'del-14-fixture',
+       'ACKNOWLEDGED', now(), '11111111-1111-1111-1111-111111111111'
+where exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-8000-00000000000b')
+  and not exists (select 1 from whatsapp_instance_alerts
+                   where subject_id = 'de000000-0000-4000-8000-00000000000b' and dedupe_key = 'del-14-fixture');
 
 -- Alertas ABERTOS das DEL-12 e DEL-13: a precedencia das recusas e not_ended > has_cost > open_alerts.
 insert into whatsapp_instance_alerts (subject_type, subject_id, organization_id, instance_id, alert_type, dedupe_key)
@@ -298,5 +312,21 @@ begin
       and exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-8000-00000000000a')
       and not exists (select 1 from whatsapp_instance_notes
                        where instance_ref = 'de000000-0000-4000-8000-00000000000a' and action = 'DELETE')
+    then 'PASSOU' else 'FALHOU ' || coalesce(v_out, '<null>') end);
+end $$;
+
+-- ── DEL-14: alerta ACKNOWLEDGED tambem bloqueia (open_alerts) ─────────
+do $$
+declare v_out text;
+begin
+  select outcome into v_out from delete_whatsapp_instance_without_cost(
+    'de000000-0000-4000-8000-00000000000b', 'tentativa', '11111111-1111-1111-1111-111111111111');
+  insert into t_res (ord, caso, veredito) values (318, 'DEL-14 alerta ACKNOWLEDGED bloqueia a exclusao',
+    case when v_out = 'open_alerts'
+      and exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-8000-00000000000b')
+      and exists (select 1 from whatsapp_instance_alerts
+                   where instance_id = 'de000000-0000-4000-8000-00000000000b' and status = 'ACKNOWLEDGED')
+      and not exists (select 1 from whatsapp_instance_notes
+                       where instance_ref = 'de000000-0000-4000-8000-00000000000b' and action = 'DELETE')
     then 'PASSOU' else 'FALHOU ' || coalesce(v_out, '<null>') end);
 end $$;
