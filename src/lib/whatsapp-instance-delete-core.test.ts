@@ -16,11 +16,11 @@ describe("deleteInstanceOutcomeResponse", () => {
     expect(r.status).toBe(409);
     expect(r.body.code).toBe("INSTANCE_NOT_ENDED");
   });
-  it("has_cost vira 409 com código próprio e diz que o histórico fica", () => {
+  it("has_cost vira 409 com código próprio e mensagem que serve a custo atual, de ciclo ou do histórico", () => {
     const r = deleteInstanceOutcomeResponse("has_cost");
     expect(r.status).toBe(409);
     expect(r.body.code).toBe("INSTANCE_HAS_COST_HISTORY");
-    expect(String(r.body.error)).toMatch(/custo/);
+    expect(String(r.body.error)).toMatch(/já teve custo registrado/);
   });
   it("open_alerts vira 409 com código próprio e manda resolver os alertas", () => {
     const r = deleteInstanceOutcomeResponse("open_alerts");

@@ -299,7 +299,7 @@ describe("canOfferInstanceDelete", () => {
   it("alerta aberto bloqueia, mesmo encerrada e sem custo", () => {
     expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, true)).toBe(false);
   });
-  it("hasOpenAlerts ausente ou false mantém o comportamento", () => {
+  it("blockedByAlerts ausente ou false mantém o comportamento", () => {
     expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, false)).toBe(true);
     expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false })).toBe(true);
   });

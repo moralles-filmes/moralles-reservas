@@ -162,9 +162,12 @@ describe("Instâncias de WhatsApp — abas e exclusão", () => {
     expect(screen.queryByRole("button", { name: "Apagar" })).toBeNull();
     expect(screen.queryByText("Resolva os alertas abertos para poder apagar.")).toBeNull();
     cleanup();
-    mocks.alerts = { isLoading: false, isError: true, data: undefined };
+    // Erro de refetch mantém o dado velho no react-query: o alerta aberto ainda
+    // está em `data`, e mesmo assim a tela não pode afirmar nada (fail-closed).
+    mocks.alerts = { isLoading: false, isError: true, data: [alertaDe("i-teste", "OPEN")] };
     renderAt("/platform/instancias-whatsapp?aba=encerradas");
     expect(screen.queryByRole("button", { name: "Apagar" })).toBeNull();
+    expect(screen.queryByText("Resolva os alertas abertos para poder apagar.")).toBeNull();
   });
 
   it("aba sem instância diz isso, em vez de área em branco", () => {

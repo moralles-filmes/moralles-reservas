@@ -1408,8 +1408,10 @@ serve(async (req) => {
       if (!id) return jsonResponse(req, { error: "instance_id é obrigatório." }, 400);
 
       // VIA RPC e SEM pré-checagem aqui: trava instância e ciclos, confere
-      // estado, custo (inclusive o do histórico) e alertas abertos, grava a nota DELETE e apaga numa transação. Conferir
-      // antes na EF reabriria a janela entre conferir e apagar.
+      // estado, custo (atual, de ciclo e o do histórico em audit_log) e
+      // alertas abertos, grava o retrato dos ciclos em audit_log e a nota
+      // DELETE, e apaga, numa transação. Conferir antes na EF reabriria a
+      // janela entre conferir e apagar.
       const { data: rpc, error: rpcErr } = await supabase.rpc("delete_whatsapp_instance_without_cost", {
         p_instance_id: id,
         p_note: reason,
