@@ -555,17 +555,17 @@ Arquivos: spec própria em `docs/superpowers/specs/`, migrations e policies exis
 ### Task 5.5 — Pré-voos do alvo, somente com autorização explícita
 
 - [x] Confirmar ambiente, SHA, migrations aplicadas, backup, dono da janela e permissões. Executar consultas somente leitura para conflitos de `phone_number_id`, ownership WABA, RLS/`relforcerowsecurity`, owners/`BYPASSRLS`, grants, policies e ACL; reconciliar discrepância antes de qualquer escrita.
-  - Projeto `Moralles Reservas` (`gbabxcrntkwgblgqsiit`), SHA integrado `f9b68d6` e HEAD documental `4f8045e`; 165 migrations aplicadas até `20261016140100`, nove pendentes em dry-run. Backup físico `COMPLETED` de 02h53 BRT, PITR OFF; o responsável aceitou expressamente esse ponto de recuperação em 2026-10-16. O mesmo responsável confirma tecnicamente e pela Ren Sushi, informou a loja fechada e ofereceu a janela imediata. As consultas de conflitos, owners/`BYPASSRLS`, RLS/FORCE, policies, grants e ACL estão em Evidências abaixo, sem discrepância bloqueante observada antes do novo SQL; a autorização de escrita é gate separado da Task 5.6.
-- [x] Conferir `acl-estatico` na aba Checks do PR após o push do código integrado: no SHA `876e8a9`, o run `39043059352` passou; a prévia Vercel ficou `SUCCESS` e o PR #30 `CLEAN/MERGEABLE`. `acl-com-banco` foi `SKIPPED` conforme escopo manual não produtivo, sem substituir a auditoria efetiva abaixo. Revalidar CI se este registro documental gerar novo SHA.
-- [x] Executar auditoria efetiva via `scripts/audit-function-acl.ts` no alvo autorizado. Deno terminou com código 0: 155 funções, 27 entradas na allowlist, lints 0028=10/0029=25, zero violações. O job `acl-com-banco` permanece SKIPPED por ser manual para alvo não produtivo.
+  - Primeira leitura histórica do alvo: projeto `Moralles Reservas` (`gbabxcrntkwgblgqsiit`), SHA integrado `f9b68d6` e HEAD documental `4f8045e`; 165 migrations até `20261016140100`, nove pendentes naquele dry-run. Backup físico `COMPLETED` de 02h53 BRT, PITR OFF; o responsável aceitou expressamente esse ponto de recuperação em 2026-10-16. O mesmo responsável confirma tecnicamente e pela Ren Sushi. As consultas de conflitos, owners/`BYPASSRLS`, RLS/FORCE, policies, grants e ACL estão em Evidências abaixo. Esta fotografia não é o estado final: imediatamente antes da escrita havia 167 migrations aplicadas; após o `db push`, 176 e nenhum pending, conforme evidência de 2026-10-17 ao fim da seção.
+- [x] Conferir `acl-estatico` na aba Checks do PR após o push do código integrado: historicamente, no SHA `876e8a9`, o run `39043059352` passou; após o ajuste pós-SQL da allowlist, o run final `39044052797` passou em `ec8cead`. Prévia Vercel `SUCCESS`, PR #30 `CLEAN/MERGEABLE` antes do merge. `acl-com-banco` foi `SKIPPED` conforme escopo manual não produtivo, sem substituir a auditoria efetiva abaixo.
+- [x] Executar auditoria efetiva via `scripts/audit-function-acl.ts` no alvo autorizado. Primeira leitura pré-SQL: Deno código 0, 155 funções, 27 entradas na allowlist, lints 0028=10/0029=25, zero violações. Auditoria final pós-SQL e ajuste revisado da allowlist: Deno código 0, 159 funções, 27 entradas, 0028=9/0029=25, zero violações; detalhes em Evidências. O job `acl-com-banco` permanece SKIPPED por ser manual para alvo não produtivo.
 - [x] Validar o contrato do gateway `CF-Connecting-IP` sem criar senha de fila nem outro dado; anexar resultado ao go/no-go. O responsável aceitou expressamente em 2026-10-16 o critério alternativo de rejeição 403 anterior à sonda, limitado à rota/origem testadas; evidência e limites na emenda e abaixo. A extensão à fila pelo ingresso compartilhado é inferência, sujeita a smoke após o deploy autorizado. Commit `2d7678c` retirou código/configuração da branch; `git ls-tree` e `git show HEAD:supabase/config.toml` confirmaram ausência da sonda no HEAD.
-- [ ] Reconfirmar com o responsável a janela da fila imediatamente antes da escrita, o aviso aos operadores, o monitoramento e a resposta a sessões antigas até Vercel `READY`. A informação anterior de que a Ren Sushi estava fechada não fixa uma janela futura.
+- [x] Reconfirmar com o responsável a janela da fila imediatamente antes da escrita, o aviso aos operadores, o monitoramento e a resposta a sessões antigas até Vercel `READY`. O responsável respondeu expressamente `janela confirmada agora` em 2026-10-17, assumindo aviso e acompanhamento da Ren Sushi; evidência temporal abaixo.
 
 ### Task 5.6 — Rollout, somente com autorizações explícitas e gates verdes
 
-- [ ] Com aprovação de produção para cada classe de ação: `supabase db push` na ordem conferida, auditar ACL/RLS efetivos, deploy das EFs da matriz na ordem da Task 5.4 e smoke sem custo; `manage-whatsapp-templates` só após frontend `READY`. Não criar liberação Datafy na janela SQL→bundle.
-- [ ] Obter autorização **própria** para redeploy de `process-whatsapp-templates`, que pode submeter `fila_mesa_pronta_v1` e `res_cancelada_v1` em toda conta com catálogo liberado, inclusive Moralles; sem ela, segurar esse bundle e o escopo `catalog`, mantendo o rollout incompleto.
-- [ ] Com autorização de merge, integrar o PR; conferir Vercel `READY`, frontend novo, fila pública, reservas e fluxos de templates sem provocar envio pago. Abortar/reconciliar se o gateway ou um gate pós-deploy falhar.
+- [x] Com aprovação de produção para cada classe de ação: `supabase db push` na ordem conferida, auditar ACL/RLS efetivos, deploy das EFs da matriz na ordem da Task 5.4 e smoke sem custo; `manage-whatsapp-templates` só após frontend `READY`. Não foi criada liberação Datafy na janela SQL→bundle. O ACL pós-SQL exigiu ajuste de expectativa da allowlist, revisado e aprovado em CI antes dos bundles.
+- [x] Obter autorização **própria** para redeploy de `process-whatsapp-templates`, que pode submeter `fila_mesa_pronta_v1` e `res_cancelada_v1` em toda conta com catálogo liberado, inclusive Moralles. O responsável a concedeu expressamente em 2026-10-17; o deploy ocorreu só depois, com catálogo e despacho OFF e zero contas de templates no snapshot.
+- [x] Com autorização de merge, integrar o PR; conferir Vercel `READY`, frontend novo, fila pública, reservas e fluxos de templates sem provocar envio pago. Os smokes foram deliberadamente sem mutação: GET `/r` 200, `public-waitlist` e `create-reservation` com `{}` 400 `invalid_input`, gestão de templates sem autenticação 401; flags OFF e zero contas/jobs/registros em `whatsapp_remote_templates`. Isso prova rotas, parser e guarda de acesso, mas não uma inscrição, reserva, GET no provider ou envio real.
 
 ### Task 5.7 — Evidências, commit e handoff
 
@@ -575,31 +575,80 @@ Arquivos: spec própria em `docs/superpowers/specs/`, migrations e policies exis
 
 ## Fase 6 — Operação do Ren Sushi (com o responsável e a loja)
 
-Spec §10. Cada passo pago ou destrutivo exige confirmação nominal do canal (memória `confirm-channel-before-cost`).
+Spec §10. Executar task por task com o responsável técnico e a loja (a mesma pessoa se declarou responsável por ambos). Nenhuma autorização da Fase 5 libera conexão, assinatura, submissão à Meta, envio pago, troca de canal ou desconexão. Antes de **cada** operação paga ou destrutiva, mostrar unidade, id/nome exato do canal remoto quando já existir, canal UazAPI substituído, efeito e custo vigente, e colher confirmação específica. A spec §11 registra R$ 49,90/mês proporcional para Datafy e cobrança Meta por template, mas valores e categoria devem ser reconfirmados no momento; não inferir preço atual da spec. Se identidade, custo, titularidade, eco ou resultado remoto estiverem incertos, parar e reconciliar pelo runbook, sem repetir POST às cegas. Evidência sempre redigida, sem telefone, token, QR, conteúdo de conversa ou dados pessoais.
 
-- [ ] Pré-corte:
-  - versão do app;
-  - liberar a migração;
-  - conexão Datafy;
-  - QR da UazAPI novamente;
-  - assinatura e prova de eco (`awaiting_cutover`).
-- [ ] Templates:
-  - `whatsapp_template_catalog` ON;
-  - liberação de catálogo no canal oficial;
-  - sync dos 9;
-  - aprovação e categoria efetiva;
-  - eventos de template chegando;
-  - autorização de custo de marketing.
-- [ ] Corte:
-  - **Ativar / trocar** no canal oficial;
-  - `whatsapp_automation_dispatch` ON e liberação de despacho no canal;
-  - testes ao vivo (confirmação, mesa pronta, manual, IA);
-  - painel de Entregas.
-- [ ] Pós-corte:
-  - monitorar por 7 dias;
-  - reversão documentada;
-  - desconectar a UazAPI;
-  - registrar evidências e encerrar.
+### Task 6.1 — Pré-corte: versão, alvo e janela
+
+Responsáveis: agente faz leitura e registra gates; responsável/loja confirma aparelho, acesso Meta, operadores e janela.
+
+- [x] Conferir a versão publicada antes de qualquer ação: Vercel produção `READY` no SHA `ac2c3b4`, GET `/r` 200, 19 EFs da matriz `ACTIVE`, 176 migrations aplicadas. Evidência da Fase 5 abaixo.
+- [x] Ler sem mutação o estado inicial da Ren Sushi: unidade `9dc55e51-99b2-4536-b596-d25b88946b44`, UazAPI `a633d938-68c6-4658-9d24-6e6d8f1a3c6f` `connected`/ativa; zero liberação ativa, onboarding ou canal Datafy; catálogo/dispatch OFF. Confirmado em 2026-10-17, antes de operar a loja.
+- [x] Responsável/loja confirma versão 2.24.17+ do WhatsApp Business no aparelho, acesso de administrador à empresa Meta e disponibilidade para acompanhar agora o intervalo sem inbound na plataforma entre conexão Datafy e novo QR UazAPI. Confirmado expressamente em 2026-10-17; reconfirmar a janela imediatamente antes da conexão.
+- [ ] Responsável/loja confirma número e empresa Meta exatos no painel antes da conexão, sem expô-los na evidência. Identidade divergente é NO-GO.
+- [ ] Conferir titularidade e custo atual da conta Datafy e condições Meta no painel oficial com o responsável; registrar moeda, periodicidade, proporcionalidade e pagador. Definir janela e ponto de abortar se a UazAPI não revincular. Esta leitura não é autorização de contratação.
+- [ ] Conferir conta Datafy ativa/adimplente, token de conta configurado sem ler seu valor, allowance de provisionamento e endpoint HTTPS de alertas operacionais configurado/testado pelo fluxo aprovado. Falha ou ausência bloqueia a conexão até resolver; não registrar segredos ou endpoint.
+
+### Task 6.2 — Pré-corte: liberação de migração presa ao canal
+
+Responsáveis: agente confere precondições; responsável como `platform_admin` executa/autoriza na unidade certa; loja acompanha.
+
+- [ ] Revalidar canal UazAPI operacional e liberação anterior. Se houver liberação comum não consumida, revogá-la apenas com autorização específica e conferir efeito; nunca reaproveitá-la como liberação de migração.
+- [ ] Após confirmação nominal da unidade e do canal substituído, **Liberar migração para oficial** no admin. Conferir por leitura que o grant novo tem `replaces_channel_id` igual ao UazAPI confirmado, está não consumido e não revogado; divergência é NO-GO.
+- [ ] Registrar ator, horário, id da liberação e snapshot dos guards sem credencial. Não criar uma segunda liberação se a resposta da primeira for incerta.
+
+### Task 6.3 — Pré-corte: conectar Datafy e religar UazAPI
+
+Responsáveis: responsável aprova cada efeito/custo e orienta; loja conecta o número pelo WhatsApp Business e escaneia o QR; agente observa estado sem guardar QR.
+
+- [ ] Antes de **Conectar WhatsApp oficial**, confirmar nominalmente Ren Sushi, canal UazAPI substituído, número/empresa e custo/efeito: a conexão Meta desvincula os aparelhos e derruba temporariamente a UazAPI. Obter autorização própria para essa interrupção e eventual criação remota; verificar que o grant da Task 6.2 ainda corresponde ao binding atual.
+- [ ] Loja conclui a janela Datafy; se houver timeout/409/resposta incerta, usar a reconciliação do runbook por GET/listagem, sem novo POST cego ou troca de grant. Conferir nome e id do canal remoto quando descobertos, WABA/organização e canal local, sem registrar telefone ou token.
+- [ ] Logo após a queda, gerar novo QR no cartão **Conexão atual** e pedir à loja que escaneie; confirmar UazAPI `connected`/ativa e inbound operacional. Até isso, não prosseguir para assinatura/corte; mensagens no intervalo precisam de conferência pelo responsável no aparelho.
+
+### Task 6.4 — Pré-corte: assinatura, eco e retenção do corte
+
+Responsáveis: responsável autoriza assinatura com custo vigente e canal Datafy identificado; loja produz eco pelo app; agente confere fatos e guards.
+
+- [ ] Antes de **Já concluí a conexão**, conferir nome/id exato do canal remoto, unidade, WABA, estado de assinatura e preço vigente da Datafy; obter autorização específica para a assinatura potencialmente cobrada. A spec cita R$ 49,90/mês proporcional, sujeito a reconfirmação. Timeout/incerteza exige GET/listagem e reconciliação antes de repetir.
+- [ ] Confirmar assinatura remota e persistida no mesmo canal; loja envia uma mensagem pelo app ou UazAPI revinculada para produzir eco de coexistência, com destinatário controlado e autorização explícita se o envio puder gerar cobrança. Não usar GET ou `postMessage` como prova de eco.
+- [ ] Conferir `awaiting_cutover`, Datafy conectado porém inativo/sem intenção, UazAPI ativa e eco registrado; sem esses quatro fatos, NO-GO para catálogo/corte. Registrar horário e identificadores redigidos, nunca conteúdo da mensagem.
+
+### Task 6.5 — Templates com a UazAPI ainda operacional
+
+Responsáveis: responsável autoriza flags, escopo e eventuais submissões/custos; loja confirma conta Meta e categorias; agente confere jobs e eventos.
+
+- [ ] Confirmar conta WABA, binding Datafy, `awaiting_cutover`, nove IDs/hash/idioma `pt_BR` e ausência de conflito homônimo. Antes de habilitar `whatsapp_template_catalog`, obter autorização específica para o efeito global: o worker pode atuar em toda conta com catálogo liberado, não só na Ren Sushi.
+- [ ] Habilitar a flag global somente após conferir o alcance em todas as contas; liberar `catalog` apenas no canal Datafy nominalmente confirmado, com geração/revisão atuais e autorização específica para possível submissão de nove modelos à Meta. Se escopo não puder ser limitado, NO-GO. Registrar snapshot anterior/posterior.
+- [ ] Solicitar sync dos nove uma vez pelo painel; registrar id do request/job e conciliar eventual resultado incerto antes de novo POST. Conferir por nome, idioma, hash, categoria pedida e **categoria efetiva** os eventos/estado remoto de cada modelo. Validar que os eventos de status, qualidade, categoria e componentes chegaram pelo webhook autenticado, sem replay, para a WABA correta; um evento antigo sozinho não comprova aprovação atual. Homônimo divergente, rejeição ou reclassificação UTILITY→MARKETING bloqueia o uso desse modelo.
+- [ ] Conceder autorização de custo MARKETING somente após custo vigente, pagador, conta, categoria e período serem confirmados nominalmente; registrar consentimento individual de cliente apenas com fonte válida. Não consentir a base em massa nem considerar esse ato autorização de envio.
+
+### Task 6.6 — Corte explícito para o canal oficial
+
+Responsáveis: responsável decide e confirma canal/custo/instante; loja acompanha mensagens; agente executa/observa guards e reconciliação.
+
+- [ ] Preparar ponto de reversão: UazAPI revinculada e ativa, Datafy assinado/conectado/inativo com eco e `awaiting_cutover`, catálogo necessário aprovado, alertas e operadores disponíveis. Congelar ações se qualquer fato envelhecer ou divergir.
+- [ ] Imediatamente antes de **Ativar / trocar**, reler nome/id exato do canal Datafy e id UazAPI a substituir; confirmar ao responsável que a troca desativa a UazAPI na transação e que assinatura Datafy continuará gerando custo até cancelamento. Obter autorização específica de corte.
+- [ ] Acionar `begin_switch` uma vez pelo fluxo admin; conferir canal Datafy ativo, UazAPI inativa, intenção consumida/estado coerente e inbound no canal certo. Se 409, timeout ou estado incerto, reler e reconciliar; não repetir corte ou forçar SQL. Manter `async_ingestion_enabled=false` até decisão posterior própria.
+
+### Task 6.7 — Despacho e testes vivos controlados
+
+Responsáveis: responsável autoriza o alcance global e cada envio pago, destinatário e teto; loja observa recebimento/resposta; agente confere ledger e painel.
+
+- [ ] Antes de `whatsapp_automation_dispatch` ON, conferir alcance global, custo Meta por categoria vigente e ausência de outra unidade pronta para despacho; obter autorização específica da flag. Liberar `dispatch` só no canal Datafy confirmado, com revisão/geração atuais e autorização específica.
+- [ ] Planejar quatro provas com contato consentido/controlado, número do canal, categoria, janela de 24h, valor/teto e pessoa que confirma recebimento: confirmação de reserva, mesa pronta, mensagem manual e resposta da IA. Obter autorização nominal **antes de cada envio**; não usar cliente real sem base legal e decisão da loja.
+- [ ] Executar cada prova uma vez, conferir recibo/provider, status no painel **Entregas**, conversa e ausência de duplicata; se houver timeout ou falha após aceite, reconciliar recibo antes de retry. Recusa de template, consentimento ou janela é NO-GO para aquele fluxo; não contornar guard.
+
+### Task 6.8 — Pós-corte, reversão e encerramento
+
+Responsáveis: agente acompanha métricas/evidências; responsável decide reversão/desconexão/cancelamento; loja confirma experiência.
+
+- [ ] Monitorar por sete dias completos: canal/inbound, QR, falhas de envio e jobs, categorias/aprovação, alertas, custo e painel Entregas. Registrar checkpoints datados e decisões com a loja; interrupção, cobrança inesperada ou divergência de tenant aciona pausa e investigação.
+- [ ] Se necessário reverter, confirmar nominalmente UazAPI/Datafy e custo persistente. Se UazAPI perdeu vínculo, gerar QR no painel da plataforma, pedir leitura à loja e comprovar `connected`/eco **antes** da troca. Obter autorização específica para **Ativar / trocar** de volta; então conferir UazAPI ativa e Datafy inativa. Assinatura Datafy não é cancelada pelo rollback; cancelar/pausar exige autorização separada e GET remoto.
+- [ ] Só após sete dias estáveis, conferir canal UazAPI/instância exatos, impacto e custo; obter autorização destrutiva específica para desconectar a instância. Conferir histórico local inativo, Datafy operacional e ausência de pendências/claims; registrar evidências, custos reais e aceite da loja.
+
+### Task 6.9 — Gates e checkpoint da operação
+
+- [ ] Para qualquer correção de implementação descoberta na Fase 6: spec aprovada antes do código, implementer + reviews independentes de spec e qualidade por task, testes proporcionais, seis gates de segurança se tocar área sensível e review da branch. Nenhuma correção de produção por SQL avulso; migration forward-only pelo fluxo autorizado.
+- [ ] Atualizar Evidências → Fase 6 após cada task, marcar apenas o que foi comprovado, registrar estado GO/NO-GO e próximo responsável; atualizar memória. Antes de cada commit: `git status`, diff, staged integral, `git diff --cached --check`, varredura de segredos, `git add` de caminhos explícitos e commit local; push/merge só dentro da autorização vigente e com CI verde.
 
 ---
 
@@ -870,3 +919,19 @@ Implementada localmente em 2026-10-16 na branch `feat/datafy-migracao-uazapi`, s
 **Validação integrada antes do commit de merge:** suíte completa serial **3.680/3.680 testes, 150/150 arquivos**; `node --test supabase/tests/local-preflight/local-runtime-paths.test.mjs` **3/3**; `npm run typecheck` **PASS**; `npm run lint` **PASS** (0 erros, 18 avisos de baseline); `npm run build` **PASS**. A revisão final da branch não encontrou P0/P1/P2 novo nem conflitos restantes. Essas verificações não provam deploy, banco vivo nem operação da loja.
 
 **CI do código integrado (2026-10-17):** commit de merge local `876e8a92410ef7ff70e9c6173a1102e482f79fab`, com pais `5b3515f` e `df9588a`, enviado à branch do PR #30. O check `acl-estatico` do run `39043059352` passou, incluindo auditoria estática de ACL, divergência do advisor, guardrail de migrations e lint das EFs; a prévia Vercel ficou `SUCCESS`, e o PR apareceu `CLEAN/MERGEABLE`. O job `acl-com-banco` foi `SKIPPED` por ser manual para alvo não produtivo; a auditoria efetiva autorizada do alvo permanece registrada separadamente. Este CI não autoriza nem executa `db push`, deploy da matriz, redeploy de `process-whatsapp-templates`, merge em `main` ou operação do Ren Sushi. O rollout segue **NO-GO**.
+
+**Janela e SQL de produção (2026-10-17):** o responsável, que assumiu os papéis técnico e da Ren Sushi, respondeu `janela confirmada agora` imediatamente antes da escrita e assumiu aviso/monitoramento da fila e sessões antigas. O alvo foi reconfirmado como `Moralles Reservas` (`gbabxcrntkwgblgqsiit`), `ACTIVE_HEALTHY`, com 167 migrations até `20261016181000`; o backup físico `COMPLETED` de 02h49 BRT era mais recente que o ponto de 02h53 BRT do dia anterior aceito pelo responsável; PITR OFF. Conflitos de `phone_number_id` e ownership WABA: zero. Donos, `BYPASSRLS`, grants, policies e as cinco tabelas sem FORCE foram lidos antes; 45 corpos `SECURITY DEFINER` que as referenciam têm owner com bypass. `npx --yes supabase@2.120.0 db push --dry-run --skip-vault --project-ref gbabxcrntkwgblgqsiit` retornou código 0 com exatamente as nove migrations da Task 5.4. Após autorização explícita de `db push`, o mesmo comando sem `--dry-run`, com `--yes`, retornou código 0 e aplicou as nove, sem Vault/seed/roles. A lista remota passou a 176 e novo dry-run ficou sem pendências. As cinco tabelas passaram a `relforcerowsecurity=true`; `anon` perdeu EXECUTE de `enter_waitlist`, mantendo o painel autenticado. Não foi feita chamada Datafy/Meta.
+
+**ACL pós-SQL e CI:** a primeira auditoria efetiva pós-SQL falhou somente porque a allowlist estática ainda esperava o grant `anon` de `enter_waitlist`: o alvo já mostrava 0028=9, 0029=25, 34 grants esperados, sem função nova inesperadamente exposta. O Advisor real mostrou as mesmas contagens (9/25); `rls_enabled_no_policy=47` é desenho das tabelas privadas. Implementer moveu a assinatura para `authenticated_tenant` em `scripts/function-acl-allowlist.json` e ajustou o teste para respeitar a revogação explícita posterior de `anon`; reviews independentes de spec e qualidade deram PASS, testes focados 95/95 e typecheck PASS. Nova auditoria **real** do alvo terminou com código 0: 159 funções públicas, 27 entradas na allowlist, 0028=9, 0029=25, zero violações. Commit `ec8cead6f263ab4ff869696d87b280418de499bb` foi staged por dois caminhos explícitos após diff integral, `diff --cached --check` e varredura das 47 linhas adicionadas sem segredo real. Push autorizado; run `39044052797` `acl-estatico` PASS no SHA, Vercel preview SUCCESS, PR #30 CLEAN/MERGEABLE. O job `acl-com-banco` manual não substitui a auditoria acima.
+
+**Bundles, merge e frontend:** com SQL, ACL e CI verdes, `supabase@2.120.0 functions deploy --project-ref gbabxcrntkwgblgqsiit --use-api` publicou primeiro `manage-channels` 48→49 e `manage-organizations` 43→44 (`verify_jwt=true`); depois, em ordem serial, `create-reservation` 42→43, `notify-waitlist-ready` novo v1, `process-notification-outbox` 23→24, `process-reservation-reminders` 27→28, `process-satisfaction-surveys` 23→24, `process-voucher-triggers` 24→25, `process-waitlist-entered` 24→25, `process-waitlist-feedback` 23→24, `public-waitlist` novo v1, `resend-notification` 20→21, `send-cancellation` 44→45, `send-confirmation` 69→70, `send-manual-message` 48→49, `send-scheduled-whatsapp` 2→3 e `send-whatsapp` 68→69 (esses 15 com `verify_jwt=false`). Sem liberação Datafy durante o intervalo SQL→bundle. O PR #30 foi retirado de draft e integrado com `gh pr merge --merge --match-head-commit ec8cead…`; `MERGED` em 2026-10-17 15:15:46 UTC, merge `ac2c3b499e5e974ef077930477cbdf65098ea08f`. Vercel produção `dpl_7ho7aWUAiUQ5Z71rYcEUhHugs7Pe`, source `main`/`ac2c3b4`, ficou `READY`, alias `reservas.moralles.com.br`; GET `/r` 200. Só então `manage-whatsapp-templates` 2→3 foi publicado. Com autorização **separada** e expressa do responsável, `process-whatsapp-templates` 2→3 foi publicado por último. Listagem remota confirmou as 19 EFs `ACTIVE`, com `verify_jwt` conforme matriz. O deploy pode habilitar submissão futura quando houver conta e escopo; não foi autorizado ligar catálogo ou enviar mensagens.
+
+**Smokes e limite do GO da Fase 5:** `public-waitlist` hospedada respondeu 400 `invalid_input` a `POST {}`; `create-reservation` também respondeu 400 `invalid_input`; `manage-whatsapp-templates` sem autenticação respondeu 401 `unauthorized`; GET do frontend `/r` respondeu 200. São recusas antes de criar fila, reserva, job ou mensagem. A leitura pós-deploy mostrou `whatsapp_template_catalog=false`, `whatsapp_automation_dispatch=false`, zero contas de templates, zero jobs, zero registros locais em `whatsapp_remote_templates`, zero grant ativo/onboarding/canal Datafy da Ren Sushi e UazAPI `a633d938-68c6-4658-9d24-6e6d8f1a3c6f` ainda `connected`/ativa. Não houve GET na Meta/Datafy para provar inventário remoto. A prova do gateway aceita na emenda e o 400 hospedado apoiam a fila nova na rota testada; não medem todo browser, cliente ou mensagem real. **Fase 5 concluída no escopo autorizado; Fase 6 ainda NO-GO para ações pagas/destrutivas e troca de canal sem confirmações próprias.**
+
+### Fase 6
+
+**Pré-corte somente leitura (2026-10-17):** Vercel produção `READY` no merge `ac2c3b4`, 19 EFs `ACTIVE` e 176 migrations; Ren Sushi com UazAPI `a633d938-68c6-4658-9d24-6e6d8f1a3c6f` `connected`/ativa, zero grants ativos, zero onboardings, zero canais Datafy. Flags `whatsapp_template_catalog=false` e `whatsapp_automation_dispatch=false`. Essa leitura fechou os dois primeiros checks da Task 6.1; as confirmações posteriores do responsável estão abaixo. Nenhuma liberação ou conexão havia sido criada, nenhum QR havia sido gerado, e não houve operação remota paga ou corte.
+
+**Confirmação do responsável e pré-requisito ausente:** o responsável confirmou versão WhatsApp Business 2.24.17+, acesso admin Meta e disponibilidade da loja, e informou preço Datafy exibido de **R$ 49,90 por número/mês**. Isso não comprova ainda empresa/número, conta adimplente, allowance, pagador ou tarifa Meta. O banco mostrou `datafy_account_token` configurado por existência booleana, sem ler valor; a lista de **nomes** dos Edge secrets mostrou `INTERNAL_API_KEY` presente e `WHATSAPP_OPS_ALERT_URL` ausente. O alvo continua com zero grant ativo e UazAPI ativa. O responsável autorizou **somente a liberação de migração** presa ao canal UazAPI identificado, sem conexão, assinatura ou corte; a execução da liberação e sua verificação ainda estão pendentes. Não conectar enquanto alertas/conta/identidade/janela não forem reconciliados.
+
+**Grant ainda não comprovado:** o responsável informou que fez a liberação no painel, mas a consulta de leitura ao alvo `gbabxcrntkwgblgqsiit` retornou zero grants ativos da unidade e apenas a liberação comum histórica de 2026-10-16, já revogada, com `replaces_channel_id=NULL`. Não repetir a ação às cegas. Confirmar URL/ambiente e estado do cartão no painel, resolver eventual erro e só marcar a Task 6.2 após encontrar um grant novo, não revogado/não consumido e preso ao UazAPI correto. O navegador acessível ao agente abriu `/admin/login`, sem sessão autenticada; não se usou SQL direto para criar grant nem credencial do usuário.

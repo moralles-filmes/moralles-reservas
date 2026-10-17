@@ -6,7 +6,7 @@ Referências: [spec aprovada](superpowers/specs/2026-10-03-whatsapp-templates-pr
 
 As automações existentes podem usar nove templates fixos por conta WhatsApp: confirmação, confirmação com desconto, lembrete do dia, pesquisa da reserva, entrada na fila, pesquisa pós-fila, voucher já emitido de aniversário/frequência, mesa pronta (`fila_mesa_pronta_v1`, kind `waitlist_table_ready`, TTL 30 min) e reserva cancelada (`res_cancelada_v1`, kind `cancellation`, TTL 24 h, descartada depois do horário da reserva). Nas conexões não oficiais, as personalizações existentes continuam disponíveis. Mensagem avulsa, IA, handoff e voucher após avaliação continuam nos caminhos conversacionais existentes.
 
-O ledger, o catálogo e o SQL aceitam os dois kinds novos. A [Fase 3 da migração de loja em produção](superpowers/plans/2026-10-16-datafy-migracao-loja-em-producao.md) acrescenta os produtores autenticados de cancelamento e mesa pronta, o reenvio pelo job existente e a janela de atendimento de 24 horas para mensagem manual no canal Meta. Unidade não adotada conserva os caminhos legados. Nenhuma dessas mudanças foi implantada; o produtor genérico continua recusando novos fatos desses dois kinds.
+O ledger, o catálogo e o SQL aceitam os dois kinds novos. A [Fase 3 da migração de loja em produção](superpowers/plans/2026-10-16-datafy-migracao-loja-em-producao.md) acrescenta os produtores autenticados de cancelamento e mesa pronta, o reenvio pelo job existente e a janela de atendimento de 24 horas para mensagem manual no canal Meta. Banco, bundles e frontend foram publicados na Fase 5; a liberação operacional de catálogo, despacho e unidade continua separada. Unidade não adotada conserva os caminhos legados, e o produtor genérico continua recusando novos fatos desses dois kinds.
 
 O catálogo em `_shared/whatsapp-template-catalog-core.ts` é a autoridade de corpo, rodapé, ordem dos parâmetros e hash. Idioma `pt_BR`, `POSITIONAL`, versão 1, links no BODY, sem botões nem interceptação nova de SAIR. Categoria solicitada e categoria efetiva são distintas:
 
@@ -19,10 +19,12 @@ O catálogo em `_shared/whatsapp-template-catalog-core.ts` é a autoridade de co
 | `fila_entrada_v1` | UTILITY | `waitlist_entered` |
 | `fila_feedback_v1` | MARKETING | `waitlist_feedback` |
 | `mkt_voucher_programado_v1` | MARKETING | `voucher_birthday` ou `voucher_frequency` |
+| `fila_mesa_pronta_v1` | UTILITY | `waitlist_table_ready` |
+| `res_cancelada_v1` | UTILITY | `cancellation` |
 
 Datafy declara `templateManagement` e `templateMessages` no registry. Isso descreve o adapter implementado, não uma homologação de conta. Meta direta continua sem essas capabilities até comprovar contrato, grants e comportamento da conta; não ligar por analogia nem transformar conexão oficial em TEXT como fallback.
 
-Esta entrega é local, com flags OFF. Submissão de modelos, WABA/número de homologação, migrations/deploy externos, piloto com mensagem real e expansão requerem autorizações específicas e separadas. Não usar a base de clientes como teste. Não criar campanha, novo produtor promocional, replay retroativo ou backfill de mensagens.
+Banco, bundles e frontend desta entrega foram publicados com as flags de catálogo e despacho OFF. Submissão de modelos, WABA/número de homologação, piloto com mensagem real e expansão requerem autorizações específicas e separadas. Qualquer migration/deploy adicional também exige seus gates e autorização próprios. Não usar a base de clientes como teste. Não criar campanha, novo produtor promocional, replay retroativo ou backfill de mensagens.
 
 ### Banco antes dos bundles e do frontend
 
