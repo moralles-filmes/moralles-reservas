@@ -187,11 +187,14 @@
       "authenticated, com guarda de membro/admin, somando um 0029: 10/16/26.",
       "Task13 acrescenta nove interfaces DEFINER authenticated, com JWT real e",
       "guardas individuais de papel/tenant: projeção 10/25/35.",
+      "A migration 20261017173000 revoga anon de enter_waitlist; a entrada",
+      "pública passa pela EF public-waitlist e enter_public_waitlist service-only.",
+      "O painel authenticated conserva EXECUTE: projeção 9/25/34 depois do SQL.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
-    "0028": 10,
+    "0028": 9,
     "0029": 25,
-    "total": 35
+    "total": 34
   },
 
   "public_anon": [
@@ -268,14 +271,6 @@
       "advisor_lints": ["0028", "0029"]
     },
     {
-      "name": "enter_waitlist",
-      "args": "p_unit_id uuid, p_customer_name text, p_customer_phone text, p_party_size integer, p_notes text, p_priority_category text, p_requested_for_time time without time zone",
-      "roles": ["anon", "authenticated"],
-      "why": "Entrada pública na fila de espera.",
-      "security_definer": true,
-      "advisor_lints": ["0028", "0029"]
-    },
-    {
       "name": "normalize_br_phone",
       "args": "raw text",
       "roles": ["anon", "authenticated"],
@@ -299,6 +294,14 @@
   "rls_helpers": [],
 
   "authenticated_tenant": [
+    {
+      "name": "enter_waitlist",
+      "args": "p_unit_id uuid, p_customer_name text, p_customer_phone text, p_party_size integer, p_notes text, p_priority_category text, p_requested_for_time time without time zone",
+      "roles": ["authenticated"],
+      "why": "Fila do painel para membro da unidade ou platform_admin; a migration 20261017173000 revogou anon e a entrada pública usa a EF public-waitlist com RPC service-only enter_public_waitlist.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
     {
       "name": "get_whatsapp_message_consent_state",
       "args": "p_unit_id uuid, p_customer_id uuid, p_purpose text",
