@@ -648,15 +648,30 @@ function droppedKeysIn(files: string[]): Set<string> {
   return out;
 }
 
+/** Revogações explícitas posteriores à 085 por assinatura e papel. Uma
+ * revogação de PUBLIC não equivale a revogar anon/authenticated. */
+function revokedRolesIn(files: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const f of files) {
+    for (const m of readMigration(f).matchAll(REVOKE_PUBLIC_RE)) {
+      const signature = key(m[1], splitArgs(m[2]).length);
+      for (const role of m[3].split(",").map((r) => r.trim().toLowerCase())) {
+        out.add(`${signature}:${role}`);
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * O predicado central do describe "migration 085 vs allowlist": todo grant a
  * anon/authenticated/PUBLIC feito pela 085 precisa de entrada na allowlist —
  * EXCETO se uma migration posterior à 085 dropou aquela mesma assinatura
- * (mesmo nome, MESMA aridade — dropar `f(uuid)` não isenta `f(uuid, uuid)`).
+ * (mesmo nome, MESMA aridade), ou revogou explicitamente o papel histórico.
  *
- * POR QUÊ A EXCEÇÃO NÃO ABRE BRECHA PARA RECRIAÇÃO: se uma migration futura
- * recriasse a função dropada e concedesse EXECUTE de novo, isso seria, por
- * definição, um grant NOVO numa migration posterior à 085 — e o describe
+ * POR QUÊ AS EXCEÇÕES NÃO ABREM BRECHA: recriar a função dropada ou conceder
+ * novamente o papel revogado exige grant NOVO numa migration posterior à 085;
+ * o describe
  * "migrations posteriores ao hotfix não reabrem a superfície" (mais abaixo
  * neste arquivo) já exige entrada na allowlist para todo grant novo dessas,
  * sem exceção. A propriedade continua garantida pelo checador irmão; por isso
@@ -674,6 +689,7 @@ function unclassifiedHotfixGrants(
   grants: GrantStmt[],
   allow: Map<string, AllowEntry>,
   droppedLater: Set<string>,
+  revokedLater: Set<string> = new Set(),
 ): string[] {
   const missing: string[] = [];
   for (const g of grants) {
@@ -687,7 +703,7 @@ function unclassifiedHotfixGrants(
       continue;
     }
     for (const r of external) {
-      if (!entry.roles.includes(r)) {
+      if (!entry.roles.includes(r) && !revokedLater.has(`${k}:${r}`)) {
         missing.push(`${g.name}/${g.argCount} -> "${r}" que a allowlist não aprova`);
       }
     }
@@ -897,12 +913,13 @@ describe("migration 085 vs allowlist", () => {
     expect(file, `nenhuma migration com versão ${HOTFIX_VERSION}`).toBeTruthy();
   });
 
-  it("todo grant a anon/authenticated tem entrada na allowlist, exceto assinatura dropada depois", () => {
+  it("todo grant a anon/authenticated tem entrada na allowlist, exceto assinatura dropada ou papel revogado depois", () => {
     const droppedLater = droppedKeysIn(posterioresFiles);
-    const missing = unclassifiedHotfixGrants(grantsIn(file!), allowByKey, droppedLater);
+    const revokedLater = revokedRolesIn(posterioresFiles);
+    const missing = unclassifiedHotfixGrants(grantsIn(file!), allowByKey, droppedLater, revokedLater);
     expect(
       missing,
-      "085 concede assinatura sem entrada na allowlist (e nenhuma migration posterior dropou):\n" +
+      "085 concede assinatura sem entrada atual, drop ou revogação posterior do papel:\n" +
         missing.join("\n"),
     ).toEqual([]);
   });
@@ -911,7 +928,15 @@ describe("migration 085 vs allowlist", () => {
   // não dependem de nenhuma migration real continuar (ou deixar de) dropar
   // algo. Sem eles, "o teste acima passou" não distingue a exceção
   // funcionando da exceção tendo engolido o checador inteiro.
-  describe("a exceção de assinatura dropada depois da 085 (unclassifiedHotfixGrants)", () => {
+  describe("as exceções de assinatura dropada e papel revogado depois da 085 (unclassifiedHotfixGrants)", () => {
+    it("revogação posterior de anon dispensa só anon, preservando a exigência authenticated", () => {
+      const grants: GrantStmt[] = [{ file: "085", name: "fila", argCount: 1, roles: ["anon", "authenticated"] }];
+      const allow = new Map([["fila/1", { name: "fila", args: "p_id uuid", roles: ["authenticated"], why: "painel" }]]);
+      expect(unclassifiedHotfixGrants(grants, allow, new Set(), new Set(["fila/1:anon"]))).toEqual([]);
+      expect(unclassifiedHotfixGrants(grants, allow, new Set(), new Set(["fila/1:public"]))).toEqual([
+        'fila/1 -> "anon" que a allowlist não aprova',
+      ]);
+    });
     it("assinatura concedida e NUNCA dropada depois continua exigindo entrada — a propriedade original", () => {
       const grants: GrantStmt[] = [
         { file: "fake", name: "nunca_dropada", argCount: 1, roles: ["authenticated"] },

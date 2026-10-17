@@ -65,6 +65,7 @@ export interface CreateReservaParams extends ReservaFormData {
   widget_id?: string;
   custom_field_values?: Record<string, string>;
   birthday?: string | null;
+  marketing_opt_in?: boolean;
 }
 
 interface CreateReservationFnResponse {
@@ -117,6 +118,7 @@ export function useCreateReserva() {
             time: data.time,
             party_size: data.party_size,
             notes: data.notes || null,
+            marketing_opt_in: data.marketing_opt_in === true,
           },
         }
       );

@@ -1,12 +1,14 @@
 import { MESSAGE_TTL_MS } from './whatsapp-message-ttl-core.ts';
 import { TEMPLATE_CATALOG, type TemplateId } from './whatsapp-template-catalog-core.ts';
 
-export type ScheduledKind = 'confirmation' | 'reminder_d1' | 'survey_d1' | 'waitlist_entered' | 'waitlist_feedback' | 'voucher_issued';
+/** Closed ledger kind list; the SQL CHECK and twin test compare against this source. */
+export const SCHEDULED_KINDS = ['confirmation', 'reminder_d1', 'survey_d1', 'waitlist_entered', 'waitlist_feedback', 'voucher_issued', 'cancellation', 'waitlist_table_ready'] as const;
+export type ScheduledKind = typeof SCHEDULED_KINDS[number];
 export type AutomationKind = ScheduledKind;
 type IntentOrigin = { unitId: string; sourceEventKey: string; factAt: string };
 export type ScheduledIntent = IntentOrigin & (
-  | { kind: 'confirmation' | 'reminder_d1' | 'survey_d1'; reservationId: string; waitlistId?: never; voucherId?: never }
-  | { kind: 'waitlist_entered' | 'waitlist_feedback'; waitlistId: string; reservationId?: never; voucherId?: never }
+  | { kind: 'confirmation' | 'reminder_d1' | 'survey_d1' | 'cancellation'; reservationId: string; waitlistId?: never; voucherId?: never }
+  | { kind: 'waitlist_entered' | 'waitlist_feedback' | 'waitlist_table_ready'; waitlistId: string; reservationId?: never; voucherId?: never }
   | { kind: 'voucher_issued'; voucherId: string; reservationId?: never; waitlistId?: never }
 );
 export type DispatchSelection = 'scheduled' | 'paused' | 'legacy';
@@ -18,7 +20,7 @@ export type DispatchResult =
 export const AUTOMATION_POST_TIMEOUT_MS = 15_000;
 
 export const AUTOMATION_PREFLIGHT_REASONS = [
-  'reservation_pending', 'payment_incompatible', 'reservation_not_confirmed', 'reservation_changed', 'reservation_past', 'reservation_wrong_day',
+  'reservation_pending', 'payment_incompatible', 'reservation_not_confirmed', 'reservation_not_cancelled', 'reservation_changed', 'reservation_past', 'reservation_wrong_day',
   'survey_already_answered', 'waitlist_not_waiting', 'waitlist_not_seated', 'waitlist_wrong_day', 'waitlist_changed',
   'voucher_not_active', 'voucher_expired', 'voucher_changed', 'customer_not_alive', 'recipient_changed', 'do_not_contact',
   'invalid_timezone', 'service_suspended', 'channel_unavailable', 'channel_changed', 'binding_changed', 'dispatch_paused',
@@ -139,7 +141,7 @@ export function recordedDispatchResult(row: AutomationLedger): DispatchResult {
 
 export function logicalAutomationKey(input: { unitId: string; kind: AutomationKind; reservationId?: string; waitlistId?: string; voucherId?: string; sourceEventKey?: string }): string {
   const resources = [input.reservationId, input.waitlistId, input.voucherId].filter(Boolean);
-  const resource = ['confirmation', 'reminder_d1', 'survey_d1'].includes(input.kind)
+  const resource = ['confirmation', 'reminder_d1', 'survey_d1', 'cancellation'].includes(input.kind)
     ? input.reservationId : input.kind === 'voucher_issued' ? input.voucherId : input.waitlistId;
   if (!input.unitId || resources.length !== 1 || !resource) throw new Error('automation_resource_invalid');
   return JSON.stringify([input.unitId, input.kind, resource]);

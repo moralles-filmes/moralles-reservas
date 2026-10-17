@@ -19,7 +19,8 @@ function fixture(kind: 'birthday' | 'frequency' | 'entered' | 'feedback' = 'birt
     f.rows.waitlist.push({ id: f.ids.reservation, unit_id: f.ids.unit, customer_id: f.ids.customer,
       customer_phone: '55912345678', customer_name: 'Marina', party_size: 4, code: 12,
       status: kind === 'entered' ? 'waiting' : 'seated', created_at: '2026-10-05T14:30:00Z',
-      seated_at: kind === 'feedback' ? '2026-10-04T15:00:00Z' : null });
+      seated_at: kind === 'feedback' ? '2026-10-04T15:00:00Z' : null,
+      notified_at: null, notified_server_at: null });
   }
   return f;
 }

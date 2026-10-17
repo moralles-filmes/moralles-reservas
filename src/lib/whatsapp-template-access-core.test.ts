@@ -42,6 +42,14 @@ describe('template management closed authority', () => {
     expect(result.blockedJobs[0]).toMatchObject({ pinPhase: 'preconfiguration', channelId: null, factAt: '2026-10-09T10:00:00Z', deadline: '2026-10-09T11:00:00Z' });
     expect(JSON.stringify(result)).not.toContain('private');
   });
+  it('projects cancellation and table-ready jobs with their catalog ids and the nine templates', () => {
+    const job = (kind: string, key: string) => ({ id, target: 'automation', kind, state: 'blocked', pin_phase: 'preconfiguration', channel_id: null, initial_catalog_key: key, error_code: kind === 'cancellation' ? 'reservation_not_cancelled' : 'waitlist_not_waiting', attempts: 0, fact_at: '2026-10-09T10:00:00Z', expires_at: '2026-10-09T11:00:00Z' });
+    const result = projectTemplateSnapshot({ channel: null, binding: null, unitAdopted: true, templates: [], jobs: [job('cancellation', 'res_cancelada_v1'), job('waitlist_table_ready', 'fila_mesa_pronta_v1')], generatedAt: '2026-10-09T10:01:00Z' });
+    expect(result.blockedJobs.map(j => ['kind' in j ? j.kind : null, j.logicalId, j.reason])).toEqual([['cancellation', 'res_cancelada_v1', 'reservation_not_cancelled'], ['waitlist_table_ready', 'fila_mesa_pronta_v1', 'waitlist_not_waiting']]);
+    expect(result.templates.map(t => t.logicalId)).toContain('res_cancelada_v1');
+    expect(result.templates).toHaveLength(9);
+    expect(() => projectTemplateSnapshot({ channel: null, binding: null, unitAdopted: true, templates: [], jobs: [job('waitlist_called', 'fila_mesa_pronta_v1')], generatedAt: '2026-10-09T10:01:00Z' })).toThrow('dependency_unavailable');
+  });
   it('does not invent snapshot assertions from malformed dependencies', () => {
     const base = { channel: { id, provider: 'zapi', template_credential_revision: 0 }, binding: { generation: 1, submission_authorized_at: null, submission_authorized_by: null, dispatch_enabled: false }, unitAdopted: false, templates: [], jobs: [], generatedAt: '2026-10-09T10:01:00Z' };
     expect(projectTemplateSnapshot(base).configuration.credentialRevision).toBe(0);

@@ -12,6 +12,9 @@ verify_jwt = false
 [functions.create-reservation]
 verify_jwt = false
 
+[functions.public-waitlist]
+verify_jwt = false
+
 # Reserva manual pelo painel: invocada pelo frontend autenticado. JWT validado
 # no gateway + re-checado no código (is_unit_member/is_platform_admin).
 [functions.create-manual-reservation]
@@ -35,6 +38,10 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.send-cancellation]
+verify_jwt = false
+
+# Mesa pronta pelo painel: JWT conferido novamente na EF com a unidade do recurso.
+[functions.notify-waitlist-ready]
 verify_jwt = false
 
 [functions.whatsapp-health]

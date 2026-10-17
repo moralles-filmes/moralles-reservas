@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/lib/supabase", () => ({ supabase: { functions: { invoke } } }));
-const state: OfficialConnectionState = { step: "ready_to_connect", items: [], templatesPending: true, granted: true, onboardingState: null };
+const state: OfficialConnectionState = { step: "ready_to_connect", items: [], templatesPending: true, granted: true, onboardingState: null, migration: null };
 function setup(unitId = "u1") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
@@ -19,7 +19,42 @@ describe("useOfficialConnection", () => {
     expect(officialPollingInterval({ ...state, step: "connecting" }, true)).toBe(5000);
     expect(officialPollingInterval({ ...state, step: "awaiting_echo" }, true)).toBe(5000);
     expect(officialPollingInterval(state, true)).toBe(30000);
+    expect(officialPollingInterval({ ...state, step: "awaiting_cutover", migration: { fromProvider: "uazapi" } }, true)).toBe(30000);
     expect(officialPollingInterval({ ...state, step: "connecting" }, false)).toBe(false);
+  });
+  it("projeta migração somente com provider conhecido e sem campos extras", async () => {
+    invoke.mockResolvedValue({ data: { ...state, step: "awaiting_cutover", migration: { fromProvider: "uazapi", channelId: "private-channel-id", token: "private" } } });
+    const hook = setup();
+    await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
+    expect(hook.result.current.data).toEqual({ ...state, step: "awaiting_cutover", migration: { fromProvider: "uazapi" } });
+    expect(JSON.stringify(hook.client.getQueryCache().getAll().map((q) => q.state.data))).not.toContain("private");
+    hook.client.clear();
+  });
+  it.each([
+    ["provider desconhecido", { fromProvider: "evil" }],
+    ["datafy não é origem de migração", { fromProvider: "datafy" }],
+    ["caixa diferente", { fromProvider: "UAZAPI" }],
+    ["string vazia", { fromProvider: "" }],
+    ["número", { fromProvider: 42 }],
+    ["herdado do protótipo", { fromProvider: "constructor" }],
+    ["lista", { fromProvider: ["uazapi"] }],
+    ["string solta", "uazapi"],
+    ["ausente", undefined],
+  ])("descarta migração inválida (%s)", async (_label, migration) => {
+    invoke.mockResolvedValue({ data: { ...state, migration } });
+    const hook = setup();
+    await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
+    expect(hook.result.current.data?.migration).toBeNull();
+    hook.client.clear();
+  });
+  it.each([
+    ["UNIT_ALREADY_ACTIVE", "Esta unidade já usa outra conexão de WhatsApp. Fale com o suporte para migrar para a API oficial."],
+    ["DATAFY_MIGRATION_NOT_SUPPORTED", "Esta unidade usa outro provedor. Fale com o suporte para liberar a migração para a API oficial."],
+  ])("copy de %s orienta a migração pelo suporte", async (code, copy) => {
+    invoke.mockResolvedValue({ error: new FunctionsHttpError({ json: vi.fn().mockResolvedValue({ code, error: "detalhe-interno" }) }) });
+    const hook = setup("");
+    await expect(hook.result.current.start({ close: vi.fn() } as unknown as Window, () => true)).rejects.toThrow(copy);
+    hook.client.clear();
   });
   it("navega diretamente e nunca retém capability no cache de query ou mutation", async () => {
     const url = "https://app.datafyapi.com.br/connect?token=ct_test_only";

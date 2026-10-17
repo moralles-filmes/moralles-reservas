@@ -11,6 +11,13 @@ export interface ManualMessageSendResult {
   warning?: string;
 }
 
+export const OUTSIDE_SERVICE_WINDOW_MESSAGE =
+  "A janela de 24 horas da Meta terminou. Aguarde uma nova mensagem do cliente para responder.";
+
+export function manualMessageErrorMessage(reason: string): string {
+  return reason === "OUTSIDE_SERVICE_WINDOW" ? OUTSIDE_SERVICE_WINDOW_MESSAGE : reason;
+}
+
 export function useSendManualMessage(unitId: string) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -31,7 +38,7 @@ export function useSendManualMessage(unitId: string) {
             | { error?: string; reason?: string }
             | null;
           const reason = body?.error ?? body?.reason ?? `HTTP ${error.context.status}`;
-          throw Object.assign(new Error(reason), { httpStatus: error.context.status });
+          throw Object.assign(new Error(manualMessageErrorMessage(reason)), { httpStatus: error.context.status });
         }
         throw error;
       }
@@ -72,6 +79,7 @@ export function useSendManualMessage(unitId: string) {
       if (httpStatus === 409) {
         queryClient.invalidateQueries({ queryKey: ["conversation-detail", conversationId] });
         queryClient.invalidateQueries({ queryKey: ["conversations", unitId] });
+        queryClient.invalidateQueries({ queryKey: ["whatsapp-templates", unitId] });
       }
     },
     onSettled: (_data, _err, { conversationId }) => {

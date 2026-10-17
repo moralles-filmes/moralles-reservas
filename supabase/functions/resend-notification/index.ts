@@ -5,17 +5,16 @@
 // o authorize de send-whatsapp). Defense-in-depth: confere que o recurso
 // (waitlist/reservation) pertence à unit antes de reenviar.
 //
-// Roteamento por kind:
-//   * waitlist_entered / waitlist_table_ready → renderiza template (customizado
-//     ou default) e chama send-whatsapp (x-internal-key). O UPSERT do
-//     recordNotification (send-whatsapp) re-rastreia a entrega do novo envio.
-//   * confirmation → re-invoca send-confirmation com resend_whatsapp_only=true
-//     (não reenvia e-mail).
+// Roteamento: um job existente de confirmação, entrada ou mesa pronta usa
+// dispatch_existing sem criar novo fato. Sem job, somente unidade nunca
+// adotada usa os envios legados: fila renderiza texto e chama send-whatsapp;
+// confirmação chama send-confirmation com resend_whatsapp_only=true.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeadersFor } from "../_shared/cors.ts";
 import { jsonLog } from "../_shared/security.ts";
+import { hasUnitAccess } from "../_shared/authz.ts";
 import {
   DEFAULT_ENTERED_BODY,
   DEFAULT_TABLE_READY_BODY,
@@ -67,18 +66,12 @@ function expiredResponse(kind: string, reason: MessageTtlReason, expiresAt: stri
   };
 }
 
-// JWT de unit member OU platform_admin da unit. Espelha send-whatsapp.authorize.
-async function authorizeMember(req: Request, unitId: string): Promise<boolean> {
+// Resolve identidade primeiro; a unidade confiável vem da linha do recurso.
+async function authenticatedUser(req: Request): Promise<string | null> {
   const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  if (!jwt || !unitId) return false;
+  if (!jwt) return null;
   const { data: userRes, error } = await supabase.auth.getUser(jwt);
-  if (error || !userRes.user) return false;
-  const userId = userRes.user.id;
-  const [pa, member] = await Promise.all([
-    supabase.from("platform_admins").select("user_id").eq("user_id", userId).maybeSingle(),
-    supabase.from("unit_members").select("role").eq("user_id", userId).eq("unit_id", unitId).maybeSingle(),
-  ]);
-  return !!pa.data || !!member.data;
+  return error || !userRes.user ? null : userRes.user.id;
 }
 
 serve(async (req) => {
@@ -103,27 +96,32 @@ serve(async (req) => {
   if (!kind || !unit_id) return json({ error: "kind e unit_id são obrigatórios" }, 400);
   if (!RESENDABLE.has(kind)) return json({ error: "kind_not_resendable" }, 400);
 
-  if (!(await authorizeMember(req, unit_id))) {
+  const userId = await authenticatedUser(req);
+  if (!userId) {
     return json({ error: "unauthorized" }, 401);
   }
 
   try {
     // Resolve the resource before consulting its pinned ledger. No caller job ID
     // or new producer fact is accepted by this existing resend entrypoint.
-    if (kind === "confirmation" || kind === "waitlist_entered") {
+    {
       const resourceId = kind === "confirmation" ? reservation_id : waitlist_id;
       const resourceColumn = kind === "confirmation" ? "reservation_id" : "waitlist_id";
       if (!resourceId) return json({ error: "resource_required" }, 400);
       const resource = await supabase.from(kind === "confirmation" ? "reservations" : "waitlist")
         .select("id,unit_id").eq("id", resourceId).maybeSingle();
       if (resource.error) return json({ error: "dependency_unavailable" }, 503);
-      if (!resource.data || resource.data.unit_id !== unit_id) return json({ error: "not_found_or_cross_tenant" }, 403);
-      const job = await supabase.from("whatsapp_automation_jobs").select("id,state,provider_message_id,posting_started_at")
-        .eq("unit_id", unit_id).eq("kind", kind).eq(resourceColumn, resourceId).maybeSingle();
+      if (!resource.data || resource.data.unit_id !== unit_id || !(await hasUnitAccess(supabase, userId, resource.data.unit_id)))
+        return json({ error: "not_found_or_cross_tenant" }, 403);
+      const job = await supabase.from("whatsapp_automation_jobs").select("id,state,provider_message_id,posting_started_at,expires_at")
+        .eq("unit_id", resource.data.unit_id).eq("kind", kind).eq(resourceColumn, resourceId).maybeSingle();
       if (job.error) return json({ error: "dependency_unavailable" }, 503);
       if (job.data) {
         if (job.data.provider_message_id || job.data.posting_started_at || !["queued", "retry_wait", "blocked", "paused"].includes(job.data.state))
           return json({ success: false, error: "automation_resend_refused" }, 409);
+        const expiresAt = Date.parse(job.data.expires_at ?? "");
+        if (!Number.isFinite(expiresAt)) return json({ error: "dependency_unavailable" }, 503);
+        if (Date.now() > expiresAt) return json(expiredResponse(kind, "expired", job.data.expires_at));
         const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
           method: "POST", headers: { "Content-Type": "application/json", "x-internal-key": INTERNAL_API_KEY },
           body: JSON.stringify({ action: "dispatch_existing", job_id: job.data.id }),
@@ -133,7 +131,7 @@ serve(async (req) => {
         return result?.state === "accepted" || result?.state === "reconciled"
           ? json({ success: true }) : json({ success: false, error: "automation_resend_refused" }, 409);
       }
-      const adoption = await supabase.from("whatsapp_automation_adoptions").select("unit_id").eq("unit_id", unit_id).maybeSingle();
+      const adoption = await supabase.from("whatsapp_automation_adoptions").select("unit_id").eq("unit_id", resource.data.unit_id).maybeSingle();
       if (adoption.error) return json({ error: "dependency_unavailable" }, 503);
       if (adoption.data) return json({ success: false, error: "automation_resend_refused" }, 409);
     }
@@ -186,11 +184,11 @@ serve(async (req) => {
     if (!entry.customer_phone) return json({ success: false, error: "no_phone" }, 400);
 
     // O fato de `waitlist_entered` é a entrada na fila. O de `waitlist_table_ready`
-    // é o instante em que o operador chamou a mesa — não existe coluna para isso,
-    // e o melhor registro é o `sent_at` do envio original, que é justamente a
-    // linha que o painel Entregas está oferecendo para reenvio. Sem essa linha
-    // (reenvio de algo que nunca chegou a ser gravado), cai em `created_at`:
-    // conservador, porque a chamada de mesa nunca antecede a entrada na fila.
+    // é o instante em que o operador chamou a mesa. O legado usa `sent_at` da
+    // linha que Entregas oferece; seu UPSERT em novo envio pode avançar esse
+    // timestamp e renovar o TTL histórico. A unidade adotada usa o deadline
+    // congelado do job acima. Sem linha legada, cai em `created_at`, que é
+    // conservador porque a chamada de mesa nunca antecede a entrada na fila.
     let factAt: string | null = entry.created_at as string;
     if (kind === "waitlist_table_ready") {
       const { data: original } = await supabase
@@ -250,7 +248,7 @@ serve(async (req) => {
     if (data?.discarded === true) {
       return json(expiredResponse(kind, "expired", null), 200);
     }
-    if (!res.ok || data?.success === false) {
+    if (!res.ok || data?.success !== true) {
       return json({ success: false, error: data?.error ?? "send_failed" }, 502);
     }
     return json({ success: true });

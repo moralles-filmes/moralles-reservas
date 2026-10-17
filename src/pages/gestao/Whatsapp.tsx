@@ -189,19 +189,28 @@ function WaitingQrState({
   );
 }
 
-export default function Whatsapp() {
-  const unit = useCurrentUnit();
-  const unitId = unit?.unit_id ?? "";
-  const official = useOfficialConnection(unit?.isGerente ? unitId : "");
-  const useOfficial = official.isLoading || official.isError || !official.data
-    || official.data.step !== "not_granted" || official.data.connectionRevoked === true;
-  const lifecycleUnitId = unit?.isGerente && !useOfficial ? unitId : "";
-  const connection = useWhatsappConnection(lifecycleUnitId);
-  const connect = useConnectWhatsapp(lifecycleUnitId);
-  const refreshQr = useRefreshWhatsappQr(lifecycleUnitId);
-  const disconnect = useDisconnectWhatsapp(lifecycleUnitId);
-  const restart = useRestartWhatsapp(lifecycleUnitId);
-  const refreshStatus = useRefreshWhatsappStatus(lifecycleUnitId);
+function useCurrentConnectionControls(unitId: string) {
+  return {
+    connection: useWhatsappConnection(unitId),
+    connect: useConnectWhatsapp(unitId),
+    refreshQr: useRefreshWhatsappQr(unitId),
+    disconnect: useDisconnectWhatsapp(unitId),
+    restart: useRestartWhatsapp(unitId),
+    refreshStatus: useRefreshWhatsappStatus(unitId),
+  };
+}
+
+type CurrentConnectionControls = ReturnType<typeof useCurrentConnectionControls>;
+
+/** Lifecycle do binding atual da unidade: status, QR, reconectar, reiniciar e desconectar. */
+function CurrentConnectionCard({
+  title,
+  controls,
+}: {
+  title: string;
+  controls: CurrentConnectionControls;
+}) {
+  const { connection, connect, refreshQr, disconnect, restart, refreshStatus } = controls;
   const snapshot = connection.data;
 
   const actionPending =
@@ -211,7 +220,247 @@ export default function Whatsapp() {
     restart.isPending ||
     refreshStatus.isPending;
 
-  if (!unit || (!useOfficial && connection.isLoading)) {
+  if (connection.isLoading) {
+    return <Skeleton aria-label="Carregando conexão atual" className="h-80 w-full" />;
+  }
+
+  return connection.isError || !snapshot ? (
+    <Card>
+      <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
+        <AlertCircle className="h-10 w-10 text-destructive" />
+        <div>
+          <p className="font-semibold">Não foi possível consultar a conexão</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Tente novamente. Se o problema continuar, fale com o suporte.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-11 gap-2"
+          onClick={() => connection.refetch()}
+          disabled={connection.isFetching}
+        >
+          <RefreshCw className={connection.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+          Tentar novamente
+        </Button>
+      </CardContent>
+    </Card>
+  ) : (
+    <Card>
+      <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
+        <div>
+          <CardTitle>{title}</CardTitle>
+          <CardDescription className="mt-1">
+            Apenas proprietários e gerentes podem alterar esta conexão.
+          </CardDescription>
+        </div>
+        <StatusBadge status={snapshot.status} />
+      </CardHeader>
+
+      {snapshot.status === "waiting_qr" && snapshot.qr_available ? (
+        <WaitingQrState
+          snapshot={snapshot}
+          refreshing={refreshQr.isPending}
+          onRefresh={() => refreshQr.mutate(snapshot.channel_id)}
+        />
+      ) : snapshot.status === "connected" ? (
+        <CardContent className="space-y-5">
+          <div className="flex items-start gap-4 rounded-xl border border-success/20 bg-success/10 p-4">
+            <CheckCircle2 className="mt-0.5 h-7 w-7 shrink-0 text-success" />
+            <div>
+              <p className="font-semibold text-success">WhatsApp conectado</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                A automação está pronta para receber e enviar mensagens.
+              </p>
+            </div>
+          </div>
+
+          <dl className="grid gap-4 rounded-xl border p-4 sm:grid-cols-2">
+            <div>
+              <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Número conectado
+              </dt>
+              <dd className="mt-1 flex items-center gap-2 font-medium">
+                <Smartphone className="h-4 w-4 text-muted-foreground" />
+                {snapshot.display_phone ? formatPhone(snapshot.display_phone) : "Conectado"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Última conexão
+              </dt>
+              <dd className="mt-1 font-medium">{formatTimestamp(snapshot.connected_at)}</dd>
+            </div>
+          </dl>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-11 gap-2"
+              onClick={() => refreshStatus.mutate(snapshot.channel_id)}
+              disabled={actionPending}
+            >
+              <RefreshCw className={refreshStatus.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              Atualizar estado
+            </Button>
+            {snapshot.restart_available && (
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11 gap-2"
+                onClick={() => restart.mutate(snapshot.channel_id)}
+                disabled={actionPending}
+              >
+                <RotateCw className={restart.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                Reiniciar conexão
+              </Button>
+            )}
+            {snapshot.disconnect_available && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="min-h-11 gap-2"
+                    disabled={actionPending}
+                  >
+                    <Power className="h-4 w-4" />
+                    Desconectar
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Desconectar o WhatsApp?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      A automação deixará de receber e enviar mensagens até uma nova conexão.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => disconnect.mutate(snapshot.channel_id)}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Desconectar
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+          </div>
+        </CardContent>
+      ) : ["not_configured", "disconnected"].includes(snapshot.status) ? (
+        <CardContent className="space-y-5">
+          <div className="flex items-start gap-4 rounded-xl border bg-muted/30 p-4">
+            <WifiOff className="mt-0.5 h-7 w-7 shrink-0 text-muted-foreground" />
+            <div>
+              <p className="font-semibold">Nenhum número conectado</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Inicie a conexão para gerar um QR Code e vincular o aparelho.
+              </p>
+            </div>
+          </div>
+          {snapshot.qr_available ? (
+            <Button
+              type="button"
+              className="min-h-11 gap-2"
+              onClick={() => connect.mutate(snapshot.channel_id)}
+              disabled={actionPending}
+            >
+              <Smartphone className="h-4 w-4" />
+              {connect.isPending ? "Preparando…" : "Conectar WhatsApp"}
+            </Button>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Este tipo de conexão é administrado sem pareamento por QR Code.
+            </p>
+          )}
+        </CardContent>
+      ) : ["provider_error", "error", "suspended"].includes(snapshot.status) ? (
+        <CardContent className="space-y-5">
+          <div className="flex items-start gap-4 rounded-xl border border-destructive/20 bg-destructive/10 p-4">
+            <AlertCircle className="mt-0.5 h-7 w-7 shrink-0 text-destructive" />
+            <div>
+              <p className="font-semibold">A conexão precisa de atenção</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Tente reconectar. Se o problema continuar, fale com o suporte.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {snapshot.restart_available ? (
+              <Button
+                type="button"
+                className="min-h-11 gap-2"
+                onClick={() => restart.mutate(snapshot.channel_id)}
+                disabled={actionPending}
+              >
+                <RotateCw className={restart.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                Tentar reconectar
+              </Button>
+            ) : snapshot.qr_available ? (
+              <Button
+                type="button"
+                className="min-h-11 gap-2"
+                onClick={() => connect.mutate(snapshot.channel_id)}
+                disabled={actionPending}
+              >
+                <QrCode className="h-4 w-4" />
+                {connect.isPending ? "Preparando…" : "Gerar novo QR Code"}
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-11 gap-2"
+              onClick={() => refreshStatus.mutate(snapshot.channel_id)}
+              disabled={actionPending}
+            >
+              <RefreshCw className={refreshStatus.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              Atualizar estado
+            </Button>
+          </div>
+          {!snapshot.restart_available && !snapshot.qr_available && (
+            <p className="text-sm text-muted-foreground">
+              Esta conexão exige uma etapa adicional no provedor. Fale com o suporte.
+            </p>
+          )}
+        </CardContent>
+      ) : (
+        <CardContent>
+          <div className="flex items-start gap-4 rounded-xl border border-info/20 bg-info/10 p-4">
+            <LoaderCircle className="mt-0.5 h-7 w-7 shrink-0 animate-spin text-info" />
+            <div>
+              <p className="font-semibold">
+                {TRANSIENT_COPY[snapshot.status]?.title ?? "Conexão em andamento"}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {TRANSIENT_COPY[snapshot.status]?.text ??
+                  "Aguarde enquanto atualizamos o estado da conexão."}
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+export default function Whatsapp() {
+  const unit = useCurrentUnit();
+  const unitId = unit?.unit_id ?? "";
+  const official = useOfficialConnection(unit?.isGerente ? unitId : "");
+  const useOfficial = official.isLoading || official.isError || !official.data
+    || official.data.step !== "not_granted" || official.data.connectionRevoked === true;
+  // Migração: a loja precisa do lifecycle do canal atual para reescanear o QR
+  // depois de conectar a oficial, então os dois cartões convivem.
+  const migrating = useOfficial && !!official.data?.migration;
+  const lifecycleUnitId = unit?.isGerente && (!useOfficial || migrating) ? unitId : "";
+  const controls = useCurrentConnectionControls(lifecycleUnitId);
+
+  if (!unit || (!useOfficial && controls.connection.isLoading)) {
     return (
       <div className="mx-auto max-w-3xl space-y-5">
         <Skeleton className="h-8 w-52" />
@@ -242,227 +491,12 @@ export default function Whatsapp() {
         unitSlug={unit.unit_slug}
       />
 
-      {useOfficial ? <OfficialConnectionCard unitId={unitId} /> : connection.isError || !snapshot ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
-            <AlertCircle className="h-10 w-10 text-destructive" />
-            <div>
-              <p className="font-semibold">Não foi possível consultar a conexão</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Tente novamente. Se o problema continuar, fale com o suporte.
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              className="min-h-11 gap-2"
-              onClick={() => connection.refetch()}
-              disabled={connection.isFetching}
-            >
-              <RefreshCw className={connection.isFetching ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              Tentar novamente
-            </Button>
-          </CardContent>
-        </Card>
+      {migrating && <CurrentConnectionCard title="Conexão atual" controls={controls} />}
+      {/* Posição fixa: o cartão oficial não remonta quando a migração aparece ou some. */}
+      {useOfficial ? (
+        <OfficialConnectionCard unitId={unitId} />
       ) : (
-        <Card>
-          <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
-            <div>
-              <CardTitle>Conexão do número</CardTitle>
-              <CardDescription className="mt-1">
-                Apenas proprietários e gerentes podem alterar esta conexão.
-              </CardDescription>
-            </div>
-            <StatusBadge status={snapshot.status} />
-          </CardHeader>
-
-          {snapshot.status === "waiting_qr" && snapshot.qr_available ? (
-            <WaitingQrState
-              snapshot={snapshot}
-              refreshing={refreshQr.isPending}
-              onRefresh={() => refreshQr.mutate(snapshot.channel_id)}
-            />
-          ) : snapshot.status === "connected" ? (
-            <CardContent className="space-y-5">
-              <div className="flex items-start gap-4 rounded-xl border border-success/20 bg-success/10 p-4">
-                <CheckCircle2 className="mt-0.5 h-7 w-7 shrink-0 text-success" />
-                <div>
-                  <p className="font-semibold text-success">WhatsApp conectado</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    A automação está pronta para receber e enviar mensagens.
-                  </p>
-                </div>
-              </div>
-
-              <dl className="grid gap-4 rounded-xl border p-4 sm:grid-cols-2">
-                <div>
-                  <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Número conectado
-                  </dt>
-                  <dd className="mt-1 flex items-center gap-2 font-medium">
-                    <Smartphone className="h-4 w-4 text-muted-foreground" />
-                    {snapshot.display_phone ? formatPhone(snapshot.display_phone) : "Conectado"}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Última conexão
-                  </dt>
-                  <dd className="mt-1 font-medium">{formatTimestamp(snapshot.connected_at)}</dd>
-                </div>
-              </dl>
-
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="min-h-11 gap-2"
-                  onClick={() => refreshStatus.mutate(snapshot.channel_id)}
-                  disabled={actionPending}
-                >
-                  <RefreshCw className={refreshStatus.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                  Atualizar estado
-                </Button>
-                {snapshot.restart_available && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="min-h-11 gap-2"
-                    onClick={() => restart.mutate(snapshot.channel_id)}
-                    disabled={actionPending}
-                  >
-                    <RotateCw className={restart.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                    Reiniciar conexão
-                  </Button>
-                )}
-                {snapshot.disconnect_available && (
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        className="min-h-11 gap-2"
-                        disabled={actionPending}
-                      >
-                        <Power className="h-4 w-4" />
-                        Desconectar
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Desconectar o WhatsApp?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          A automação deixará de receber e enviar mensagens até uma nova conexão.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                        <AlertDialogAction
-                          onClick={() => disconnect.mutate(snapshot.channel_id)}
-                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        >
-                          Desconectar
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
-                )}
-              </div>
-            </CardContent>
-          ) : ["not_configured", "disconnected"].includes(snapshot.status) ? (
-            <CardContent className="space-y-5">
-              <div className="flex items-start gap-4 rounded-xl border bg-muted/30 p-4">
-                <WifiOff className="mt-0.5 h-7 w-7 shrink-0 text-muted-foreground" />
-                <div>
-                  <p className="font-semibold">Nenhum número conectado</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Inicie a conexão para gerar um QR Code e vincular o aparelho.
-                  </p>
-                </div>
-              </div>
-              {snapshot.qr_available ? (
-                <Button
-                  type="button"
-                  className="min-h-11 gap-2"
-                  onClick={() => connect.mutate(snapshot.channel_id)}
-                  disabled={actionPending}
-                >
-                  <Smartphone className="h-4 w-4" />
-                  {connect.isPending ? "Preparando…" : "Conectar WhatsApp"}
-                </Button>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  Este tipo de conexão é administrado sem pareamento por QR Code.
-                </p>
-              )}
-            </CardContent>
-          ) : ["provider_error", "error", "suspended"].includes(snapshot.status) ? (
-            <CardContent className="space-y-5">
-              <div className="flex items-start gap-4 rounded-xl border border-destructive/20 bg-destructive/10 p-4">
-                <AlertCircle className="mt-0.5 h-7 w-7 shrink-0 text-destructive" />
-                <div>
-                  <p className="font-semibold">A conexão precisa de atenção</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Tente reconectar. Se o problema continuar, fale com o suporte.
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                {snapshot.restart_available ? (
-                  <Button
-                    type="button"
-                    className="min-h-11 gap-2"
-                    onClick={() => restart.mutate(snapshot.channel_id)}
-                    disabled={actionPending}
-                  >
-                    <RotateCw className={restart.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                    Tentar reconectar
-                  </Button>
-                ) : snapshot.qr_available ? (
-                  <Button
-                    type="button"
-                    className="min-h-11 gap-2"
-                    onClick={() => connect.mutate(snapshot.channel_id)}
-                    disabled={actionPending}
-                  >
-                    <QrCode className="h-4 w-4" />
-                    {connect.isPending ? "Preparando…" : "Gerar novo QR Code"}
-                  </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="min-h-11 gap-2"
-                  onClick={() => refreshStatus.mutate(snapshot.channel_id)}
-                  disabled={actionPending}
-                >
-                  <RefreshCw className={refreshStatus.isPending ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                  Atualizar estado
-                </Button>
-              </div>
-              {!snapshot.restart_available && !snapshot.qr_available && (
-                <p className="text-sm text-muted-foreground">
-                  Esta conexão exige uma etapa adicional no provedor. Fale com o suporte.
-                </p>
-              )}
-            </CardContent>
-          ) : (
-            <CardContent>
-              <div className="flex items-start gap-4 rounded-xl border border-info/20 bg-info/10 p-4">
-                <LoaderCircle className="mt-0.5 h-7 w-7 shrink-0 animate-spin text-info" />
-                <div>
-                  <p className="font-semibold">
-                    {TRANSIENT_COPY[snapshot.status]?.title ?? "Conexão em andamento"}
-                  </p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {TRANSIENT_COPY[snapshot.status]?.text ??
-                      "Aguarde enquanto atualizamos o estado da conexão."}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          )}
-        </Card>
+        <CurrentConnectionCard title="Conexão do número" controls={controls} />
       )}
     </div>
   );

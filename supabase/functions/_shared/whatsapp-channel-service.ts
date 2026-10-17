@@ -342,6 +342,8 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
     channel: RoutableChannel,
     phone: string,
     message: string,
+    beforeOutbound?: (channel: RoutableChannel) => string | null,
+    outboundOptions?: SendTextOptions,
   ): Promise<SendResult> {
     let credentials: ChannelCredentials;
     try {
@@ -364,6 +366,14 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
       );
     }
 
+    // Synchronous final guard: no await may separate this check from the
+    // outbound adapter call. Manual Meta replies use it to enforce the 24h
+    // deadline after credential and connectivity reads have completed.
+    const outboundRefusal = beforeOutbound?.(channel);
+    if (outboundRefusal) {
+      return withChannelRoute({ ok: false, error: outboundRefusal }, channel);
+    }
+
     return withChannelRoute(
       await deps.sendOutbound(
         channel.provider as WhatsAppProviderName,
@@ -372,6 +382,7 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
           toPhone: phone,
           text: message,
         },
+        outboundOptions,
       ),
       channel,
     );
@@ -549,11 +560,16 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
   async function sendWhatsApp(
     phone: string,
     message: string,
-    selector?: { channel_id?: string; unit_id?: string },
+    selector?: {
+      channel_id?: string;
+      unit_id?: string;
+      beforeOutbound?: (channel: RoutableChannel) => string | null;
+      outboundOptions?: SendTextOptions;
+    },
   ): Promise<SendResult> {
     const selected = await selectChannel(selector);
     if (selected.ok === false) return selected;
-    return dispatchToChannel(selected.channel, phone, message);
+    return dispatchToChannel(selected.channel, phone, message, selector?.beforeOutbound, selector?.outboundOptions);
   }
 
   /** Transport preparation only. SQL and the dispatcher retain POST authority. */

@@ -67,6 +67,25 @@ describe("resolveUnitChannelBinding", () => {
       resolveUnitChannelBinding([{ provider: null, status: "connected", is_active: true }]),
     ).toBeNull();
   });
+
+  it("devolve a propria linha, com o id, para quem precisa prender liberacao ao binding", () => {
+    const active = { id: "uaz-1", provider: "uazapi", status: "connected", is_active: true };
+    const binding = resolveUnitChannelBinding([
+      { id: "dfy-1", provider: "datafy", status: "connected", is_active: false },
+      active,
+    ]);
+    expect(binding).toBe(active);
+    expect(binding?.id).toBe("uaz-1");
+  });
+
+  it("empate de created_at conserva a ordem de entrada (o adapter ordena por id)", () => {
+    const createdAt = "2026-05-01T00:00:00Z";
+    const binding = resolveUnitChannelBinding([
+      { id: "a", provider: "zapi", status: "connected", is_active: null, created_at: createdAt },
+      { id: "b", provider: "waha", status: "connected", is_active: null, created_at: createdAt },
+    ]);
+    expect(binding?.id).toBe("a");
+  });
 });
 
 describe("resolveOrganizationWhatsAppProviders", () => {

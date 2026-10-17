@@ -2,7 +2,7 @@ import { automationDeadline, type AutomationPreflightReason, type ScheduledInten
 import { canonicalBrPhone, toE164BrPhone } from './phone.ts';
 import { brtFactAt } from './whatsapp-message-ttl-core.ts';
 import { renderTemplate, type TemplateId } from './whatsapp-template-catalog-core.ts';
-import { DEFAULT_ENTERED_BODY, DEFAULT_FEEDBACK_BODY, renderWaitlistTemplate } from './waitlist-defaults.ts';
+import { DEFAULT_ENTERED_BODY, DEFAULT_FEEDBACK_BODY, DEFAULT_TABLE_READY_BODY, renderWaitlistTemplate } from './waitlist-defaults.ts';
 
 export type AutomationResourceTable = 'reservations' | 'waitlist' | 'vouchers' | 'voucher_rules' |
   'customers' | 'units' | 'organizations' | 'settings';
@@ -28,14 +28,19 @@ export async function renderScheduledText(resource: ScheduledResource, io: {
       `📅 Data: ${day}\n⏰ Horário: ${r.time}\n👥 Pessoas: ${r.people}\n` +
       (r.discount !== null && r.discount > 0 ? `💸 Desconto: ${r.discount}% off\n` : '') +
       `🔑 Código: #${r.code}\n\nPara alterar ou cancelar, é só responder aqui. Até logo! 😊`;
-  } else if (kind === 'waitlist_entered' || kind === 'waitlist_feedback') {
-    const event = kind === 'waitlist_entered' ? 'entered' : 'feedback';
+  } else if (kind === 'cancellation') {
+    // Same TEXT that send-cancellation sends today; time comes normalized to HH:MM.
+    body = `❌ *Reserva Cancelada*\n\nOlá ${r.customerName}, sua reserva foi cancelada.\n\n` +
+      `📅 Data: ${day}\n⏰ Horário: ${r.time}\n👥 Pessoas: ${r.people}\n🔑 Código: #${r.code}\n\n` +
+      `Se foi engano ou quiser remarcar, é só responder aqui que ajudamos. 🙏`;
+  } else if (kind === 'waitlist_entered' || kind === 'waitlist_feedback' || kind === 'waitlist_table_ready') {
+    const event = kind === 'waitlist_entered' ? 'entered' : kind === 'waitlist_table_ready' ? 'table_ready' : 'feedback';
     const saved = record(await io.readOne('waitlist_message_templates', 'customized,body', { unit_id: r.unitId, event }));
     const template = saved?.customized === true && typeof saved.body === 'string' && saved.body.trim() ? saved.body
-      : kind === 'waitlist_entered' ? DEFAULT_ENTERED_BODY : DEFAULT_FEEDBACK_BODY;
+      : kind === 'waitlist_entered' ? DEFAULT_ENTERED_BODY : kind === 'waitlist_table_ready' ? DEFAULT_TABLE_READY_BODY : DEFAULT_FEEDBACK_BODY;
     body = renderWaitlistTemplate(template, { cliente_nome: r.customerName || 'cliente', unidade_nome: r.unitName,
       party_size: r.people, codigo_fila: typeof r.code === 'number' ? r.code : Number(r.code),
-      link_status: kind === 'waitlist_entered' ? tracking : `${base}/r/${r.unitSlug}` });
+      link_status: kind === 'waitlist_feedback' ? `${base}/r/${r.unitSlug}` : tracking });
   } else if (kind === 'voucher_issued') {
     const saved = record(await io.readOne('settings', 'value', { unit_id: r.unitId, key: 'giftback_message_template' }));
     // Same saved TEXT contract as giftback.ts without its remote SDK import in the frontend graph.
@@ -81,14 +86,14 @@ export type ScheduledResourceExpected = {
   unit: { id: string; organization_id: string; name: string; slug: string | null; timezone: string | null };
   rule: { id: string; unit_id: string; trigger_type: 'birthday' | 'frequency' } | null;
   setting: { key: string | null; present: boolean; value: Json };
-} & ({ kind: 'confirmation' | 'reminder_d1' | 'survey_d1'; resource: ReservationExpected } |
-  { kind: 'waitlist_entered' | 'waitlist_feedback'; resource: WaitlistExpected } |
+} & ({ kind: 'confirmation' | 'reminder_d1' | 'survey_d1' | 'cancellation'; resource: ReservationExpected } |
+  { kind: 'waitlist_entered' | 'waitlist_feedback' | 'waitlist_table_ready'; resource: WaitlistExpected } |
   { kind: 'voucher_issued'; resource: VoucherExpected });
 export type ScheduledResourceResult = { ok: true; resource: ScheduledResource } |
   { ok: false; reason: AutomationPreflightReason };
 const columns = {
-  reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating',
-  waitlist: 'id,unit_id,customer_id,customer_name,customer_phone,party_size,code,status,created_at,seated_at',
+  reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating,cancelled_at',
+  waitlist: 'id,unit_id,customer_id,customer_name,customer_phone,party_size,code,status,created_at,seated_at,notified_at,notified_server_at',
   vouchers: 'id,unit_id,customer_id,rule_id,code,discount_percent,status,issued_at,created_at,expires_at',
   customers: 'id,organization_id,name,phone,do_not_contact,deleted_at',
 } as const;
@@ -147,7 +152,7 @@ function captureExpected(intent: ScheduledIntent, row: Record<string, unknown>, 
       trigger_type: rule.trigger_type === 'birthday' || rule.trigger_type === 'frequency' ? rule.trigger_type : captureInvalid() } : null,
     setting: { key, present: setting !== null, value: setting ? capturedJson(setting.value) : null } };
   const identity = { id: capturedUuid(row.id), unit_id: capturedUuid(row.unit_id) };
-  if (intent.kind === 'confirmation' || intent.kind === 'reminder_d1' || intent.kind === 'survey_d1') {
+  if (intent.kind === 'confirmation' || intent.kind === 'reminder_d1' || intent.kind === 'survey_d1' || intent.kind === 'cancellation') {
     const source = capturedText(row.source), payment = capturedNullableText(row.payment_status), rawTime = capturedText(row.time);
     if (!['web','whatsapp'].includes(source) || (payment !== null && !['not_required','pending_payment','paid','failed','refunded','expired'].includes(payment))
       || !/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?$/.test(rawTime)) return captureInvalid();
@@ -156,7 +161,7 @@ function captureExpected(intent: ScheduledIntent, row: Record<string, unknown>, 
       reservation_code: capturedCode(row.reservation_code), applied_discount_percent: capturedNullableInteger(row.applied_discount_percent, 0, 100),
       satisfaction_rating: capturedNullableInteger(row.satisfaction_rating, 1, 5) } };
   }
-  if (intent.kind === 'waitlist_entered' || intent.kind === 'waitlist_feedback') return { ...common, kind: intent.kind, resource: { ...identity,
+  if (intent.kind === 'waitlist_entered' || intent.kind === 'waitlist_feedback' || intent.kind === 'waitlist_table_ready') return { ...common, kind: intent.kind, resource: { ...identity,
     customer_id: row.customer_id === null ? null : capturedUuid(row.customer_id), customer_name: capturedNullableText(row.customer_name),
     customer_phone: capturedText(row.customer_phone), party_size: capturedInteger(row.party_size, 1, 999999), code: capturedInteger(row.code, 1),
     status: capturedText(row.status), created_at: capturedInstant(row.created_at), seated_at: row.seated_at === null ? null : capturedInstant(row.seated_at) } };
@@ -205,7 +210,7 @@ export function createAutomationResourceService(io: AutomationResourceIO) {
       const phone = table === 'waitlist' ? waitlistPhone : typeof customer?.phone === 'string' ? canonicalBrPhone(customer.phone) : null;
       if (!phone || !/^[1-9]\d{9,10}$/.test(phone)) return refuse('recipient_changed');
       if (table === 'waitlist' && customer && (typeof customer.phone !== 'string' || canonicalBrPhone(customer.phone) !== phone)) return refuse('recipient_changed');
-      if (!customer && intent.kind !== 'waitlist_entered') return refuse('customer_not_alive');
+      if (!customer && intent.kind !== 'waitlist_entered' && intent.kind !== 'waitlist_table_ready') return refuse('customer_not_alive');
       const expiresAt = automationDeadline(intent.kind, intent.factAt);
       if (io.now() > Date.parse(expiresAt)) return refuse('expired');
       let templateId: TemplateId;
@@ -213,8 +218,14 @@ export function createAutomationResourceService(io: AutomationResourceIO) {
       let code: string | number, people: number | null = null, discount: number | null = null;
       let rule: Record<string, unknown> | null = null;
       if (table === 'reservations') {
-        if (row.status === 'pending') return refuse('reservation_pending');
-        if (row.status !== 'confirmed') return refuse('reservation_not_confirmed');
+        // Cancellation is the only kind whose eligible state is cancelled; payment is irrelevant there.
+        if (intent.kind === 'cancellation') {
+          if (row.status !== 'cancelled') return refuse('reservation_not_cancelled');
+          if (typeof row.cancelled_at !== 'string' || !instant(row.cancelled_at)
+            || Date.parse(row.cancelled_at) !== Date.parse(intent.factAt)) return refuse('reservation_changed');
+        }
+        else if (row.status === 'pending') return refuse('reservation_pending');
+        else if (row.status !== 'confirmed') return refuse('reservation_not_confirmed');
         if (intent.kind === 'confirmation' && row.payment_status !== null && row.payment_status !== 'not_required' && row.payment_status !== 'paid') return refuse('payment_incompatible');
         resourceDate = date(row.date);
         time = typeof row.time === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?$/.test(row.time) ? row.time.slice(0, 5) : null;
@@ -229,17 +240,19 @@ export function createAutomationResourceService(io: AutomationResourceIO) {
         }
         discount = number(row.applied_discount_percent);
         templateId = intent.kind === 'confirmation' ? discount !== null && discount > 0 ? 'res_confirmacao_desconto_v1' : 'res_confirmacao_v1'
-          : intent.kind === 'reminder_d1' ? 'res_lembrete_dia_v1' : 'res_pesquisa_reserva_v1';
+          : intent.kind === 'reminder_d1' ? 'res_lembrete_dia_v1' : intent.kind === 'cancellation' ? 'res_cancelada_v1' : 'res_pesquisa_reserva_v1';
         code = text(row.reservation_code) ?? ''; people = number(row.party_size);
       } else if (table === 'waitlist') {
         if (intent.kind === 'waitlist_entered' && row.status !== 'waiting') return refuse('waitlist_not_waiting');
+        if (intent.kind === 'waitlist_table_ready' && (row.status !== 'notified' || row.seated_at !== null
+          || row.notified_at !== intent.factAt || row.notified_server_at !== intent.factAt)) return refuse('waitlist_not_waiting');
         if (intent.kind === 'waitlist_feedback') {
           const seated = instant(row.seated_at);
           if (row.status !== 'seated' || !seated) return refuse('waitlist_not_seated');
           if (localParts(Date.parse(seated), 'America/Sao_Paulo').day !== localParts(Date.parse(intent.factAt), 'America/Sao_Paulo').day) return refuse('waitlist_wrong_day');
           resourceDate = localParts(Date.parse(seated), timezone).day;
         }
-        templateId = intent.kind === 'waitlist_entered' ? 'fila_entrada_v1' : 'fila_feedback_v1';
+        templateId = intent.kind === 'waitlist_entered' ? 'fila_entrada_v1' : intent.kind === 'waitlist_table_ready' ? 'fila_mesa_pronta_v1' : 'fila_feedback_v1';
         code = number(row.code) ?? text(row.code) ?? ''; people = number(row.party_size);
       } else {
         if (row.status !== 'active') return refuse('voucher_not_active');
@@ -252,7 +265,8 @@ export function createAutomationResourceService(io: AutomationResourceIO) {
         discount = number(row.discount_percent); code = text(row.code) ?? '';
         resourceDate = localParts(Date.parse(benefitExpiry), timezone).day;
       }
-      const key = intent.kind === 'confirmation' ? null : intent.kind === 'voucher_issued' ? 'giftback_whatsapp_enabled' : `${intent.kind}_enabled`;
+      // Operator-explicit actions (confirmation, cancellation, table ready) have no per-unit enablement setting.
+      const key = intent.kind === 'confirmation' || intent.kind === 'cancellation' || intent.kind === 'waitlist_table_ready' ? null : intent.kind === 'voucher_issued' ? 'giftback_whatsapp_enabled' : `${intent.kind}_enabled`;
       const setting = key ? record(await io.readOne('settings', 'value', { unit_id: row.unit_id, key })) : null;
       if (setting?.value === false || setting?.value === 'false') return refuse('dispatch_paused');
       let expected: ScheduledResourceExpected;
@@ -288,6 +302,8 @@ export function renderScheduledTemplate(resource: ScheduledResource, appBaseUrl:
       if (!r.unitSlug || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(r.unitSlug)) throw new Error('render_invalid');
       parameters = [r.customerName,r.unitName,day,`${base.origin}/r/${r.unitSlug}`,preference]; break;
     case 'mkt_voucher_programado_v1': parameters = [r.customerName,r.unitName,r.discount,r.code,day,preference]; break;
+    case 'fila_mesa_pronta_v1': parameters = [r.customerName,r.unitName,r.code]; break;
+    case 'res_cancelada_v1': parameters = [r.customerName,r.unitName,day,r.time,r.people,r.code]; break;
   }
   const rendered = renderTemplate(r.templateId, parameters, { allowedOrigins });
   const body = rendered.body + (rendered.footer ? `\n${rendered.footer}` : '');

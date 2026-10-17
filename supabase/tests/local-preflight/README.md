@@ -1945,11 +1945,270 @@ watermark estrito, relógio SQL e ACL service-only. Não prova RLS/PostgREST ou
 entrega ao endpoint externo; esses transportes usam fakes nos testes runtime.
 Encerre o cluster ao terminar. Em produção a migration segue somente `supabase db push`.
 
+### Datafy — migração de loja em produção (65)
+
+Migration `20261016182000_datafy_migration_grant.sql` (spec
+`2026-10-16-datafy-migracao-loja-em-producao-design.md` §5.1–§5.3): liberação
+de migração presa pelo servidor ao binding de outro provider, autoridade
+`assert_datafy_first_configuration` que a aceita e finalizador que só pede
+intenção e ativa na primeira configuração — com liberação de migração ou com
+binding de outro provider (inclusive no vínculo administrativo sem liberação),
+a ativação fica retida para o `begin_switch`. A emenda de corte offline também
+trata o legado `is_active NULL` desconectado como candidato preso, exige grant
+vigente sob lock antes de intenção/callback e retém o finalizador administrativo.
+O 65 mede ausência, grant pendente/consumido/revogado, intenção antiga e dois
+controles positivos novos; a corrida entre sessões deriva do `FOR SHARE` com
+rechecagem do predicado, sem teste concorrente próprio neste pré-voo.
+O segundo estado não conectado medido no 65 é `error`: o `00-bootstrap` mínimo
+não inclui `provider_error` no CHECK, embora o schema de produção inclua. O
+fallback da autoridade não filtra status em nenhum dos dois schemas.
+**Mesmo banco do 62/63**, em cluster PostgreSQL
+descartável próprio, somente loopback, sem `pg_cron`/`pg_net`. Medido no
+PostgreSQL 18.6 do instalador oficial, `initdb -A trust`, porta `55465`.
+
+O `65a` **roda ANTES da migration nova** e recusa rodar depois: ele grava em
+`t_snap065` o `proacl` das duas funções que a migration substitui por
+`create or replace`, e o M9 compara com o de depois. Gravado depois, o snapshot
+compararia a ACL consigo mesma. A migration tem `BEGIN`/`COMMIT` próprios:
+aplicar crua, com `-X -v ON_ERROR_STOP=1`, **sem `-1`**, inclusive na
+reaplicação. **Nunca reaplique a `20261014170540` depois da nova**: ela repõe
+por `create or replace` os corpos antigos da autoridade e do finalizador.
+
+```bash
+export PGCLIENTENCODING=UTF8          # obrigatório; ver a nota na seção "Rodar"
+PG="/c/Program Files/PostgreSQL/18/bin"
+PORT=55465
+"$PG/initdb.exe" -A trust -U postgres -E UTF8 --no-locale -D /tmp/pg65
+"$PG/pg_ctl.exe" -D /tmp/pg65 -l /tmp/pg65.log -o "-p $PORT -c listen_addresses=127.0.0.1" -w start
+"$PG/createdb.exe" -h 127.0.0.1 -p "$PORT" -U postgres datafy65
+P() { "$PG/psql.exe" -X -h 127.0.0.1 -p "$PORT" -U postgres -d datafy65 -v ON_ERROR_STOP=1 "$@"; }
+H=supabase/tests/local-preflight; M=supabase/migrations
+
+P -f $H/00-bootstrap.sql
+P -f $H/00a-whatsapp-legacy-seed.sql
+P -f $H/61a-datafy-partner-bootstrap.sql
+P -f $M/20261014120000_datafy_partner_onboarding.sql
+P -f $H/62a-datafy-subscription-bootstrap.sql
+P -f $H/63a-datafy-final-bootstrap.sql
+P -f $M/20261014170540_datafy_existing_subscription_claim.sql
+P -f $H/65a-datafy-migration-bootstrap.sql
+
+# ANTES da migration, o 65 tem de FALHAR pela guarda do topo (coluna e trigger
+# ausentes). É o RED: rodado antes, as recusas de M4/M8 passariam POR ACIDENTE.
+P -f $H/65-datafy-migration-grant.sql            # esperado: ERROR
+
+P -f $M/20261016182000_datafy_migration_grant.sql
+P -f $H/65-datafy-migration-grant.sql            # M10 PENDENTE + M1..M9, M11..M18 + CTRL-a..g OK
+P -f $M/20261016182000_datafy_migration_grant.sql
+P -f $M/20261016182000_datafy_migration_grant.sql
+P -f $H/65-datafy-migration-grant.sql            # M10 OK + M1..M9, M11..M18 + CTRL-a..g OK
+
+# Regressão: 62 e 63 continuam verdes com a migration nova (o 63 cobre a
+# primeira configuração e a recusa de outro provider com liberação comum).
+P -f $H/62-datafy-subscription-claim.sql
+P -f $H/63-datafy-final-authority.sql
+
+"$PG/pg_ctl.exe" -D /tmp/pg65 -m fast stop && rm -rf /tmp/pg65
+```
+
+A 1a passada sadia do `65` imprime `M10 PENDENTE` e 24 `NOTICE` com `OK`
+(M1..M9, M11..M18, CTRL-a..g); a 2a, depois da reaplicação dupla, imprime
+25 (com `M10 OK`). Tudo termina em rollback, sem linha residual. Erro em qualquer caso
+aborta o arquivo sob `ON_ERROR_STOP`.
+
+**O 61 também roda neste banco, mas o C14 dele compara catálogo.** O C14 grava a
+assinatura na primeira passada e compara nas seguintes; a migration nova
+acrescenta coluna e trigger à tabela de liberações, então o 61 rodado contra
+uma assinatura gravada ANTES dela reporta `C14 FALHOU` com os outros 30 casos
+verdes — a mudança intencional de schema, como já acontece com a
+`20261014170540`. Para medir a idempotência da migration nova pelo 61, grave a
+assinatura no schema final e reaplique a nova duas vezes:
+
+```bash
+P -c "delete from t_snap061 where k='assinatura';"
+P -f $H/61-datafy-partner-onboarding.sql            # C14 PENDENTE, 30 OK
+P -f $M/20261016182000_datafy_migration_grant.sql
+P -f $M/20261016182000_datafy_migration_grant.sql
+P -f $H/61-datafy-partner-onboarding.sql            # 31 OK
+```
+
+| caso | o que mede |
+|---|---|
+| `M1` | pin forjado (aleatório, NULL, id de canal de outra unidade e pelo papel real `service_role`) sobrescrito pelo id do binding; legado NULL+connected é binding (sem binding, ver M14) |
+| `M2` | sem canal, binding datafy, só canal `is_active=false` e datafy ativo à frente de legado UazAPI → `replaces_channel_id` NULL (mesma ordem de binding da autoridade) |
+| `M3` | UPDATE que troca ou apaga o pin → 23514; UPDATE que não muda e revogação passam e preservam o pin |
+| `M4` | autoridade passa com liberação presa ao binding, ativa ou consumida pelo canal datafy; recusa sem liberação, revogada, com binding trocado e consumida por canal não-datafy |
+| `M5` | `authorize_datafy_mutation` autoriza o subscribe; o finalizador devolve `finalized`, consome, conclui o onboarding e não grava intenção, evento nem ativação, mesmo com eco e `connected`; a UazAPI segue ativa |
+| `M6` | corte por intenção + ativação: UazAPI `false`, datafy `true`, um único ativo, evento `activated` com o anterior |
+| `M7` | reversão para a UazAPI com um único ativo; a liberação segue autorizando novo corte; com a autoridade Datafy sabotada para recusar tudo, a reversão passa igual |
+| `M8` | liberação comum (criada sem binding, pin NULL) com binding UazAPI posterior: autoridade, autorização e finalizador recusam, sem consumir nem ativar |
+| `M9` | coluna `uuid` nula sem FK, trigger ordenado depois do guard com `BEFORE INSERT OR UPDATE OF replaces_channel_id`, três funções `SECURITY DEFINER` com `search_path` vazio, trigger function sem EXECUTE para PUBLIC/anon/authenticated/service_role, autoridade fechada, finalizador só `service_role`, e ACL das duas substituídas idêntica à do snapshot do `65a` |
+| `M10` | idempotência através de execuções: assinatura de catálogo (colunas, comentário, constraints, triggers, corpo e ACL das três funções) gravada na 1a passada e comparada depois da reaplicação dupla |
+| `M11` | vínculo administrativo (`configure_webhook`, `p_grant_id` nulo) em canal datafy que já consumiu a liberação de migração, com UazAPI ativa: `finalized`, datafy inativa sem intenção nem evento, UazAPI segue ativa |
+| `M12` | o mesmo vínculo administrativo sem liberação de migração: recusa com `datafy_migration_not_supported`, sem intenção, sem ativação, UazAPI intacta |
+| `M13` | liberação de migração com o binding UazAPI removido entre a autorização e o finalizador: consome sem intenção nem ativação (a liberação de migração nunca ativa sozinha) |
+| `M14` | legado UazAPI `is_active` NULL desconectado (QR vencido, sem binding no instante): a liberação o prende; o finalizador com ela devolve `finalized` sem intenção, datafy inativa mesmo com eco |
+| `M15` | o mesmo legado reconecta: volta a ser o binding, a autoridade passa pelo pin e o `begin_switch` troca para a datafy |
+| `M16` | unidade só com canal de outro provider `is_active=false` (desconectado ou conectado) → pin NULL; `false` nunca conta |
+| `CTRL-a` | trigger sem o trecho `-- <pin>`: o pin forjado sobrevive (M1 vermelho); restore de corpo e ACL conferido |
+| `CTRL-b` | trecho `-- <ativacao-retida>` trocado pelo bloco da `20261014170540` (ativação incondicional): com eco, a datafy ativa sozinha e a UazAPI cai pelo onboarding (M5 vermelho) e pelo vínculo administrativo (M11 vermelho); restore conferido |
+| `CTRL-c` | autoridade ignorando `revoked_at`: a liberação revogada passa (M4 vermelho); restore conferido e M4 verde de novo |
+| `CTRL-d` | só a checagem de binding, sem a condição da liberação de migração: o M5 segue retido, mas o M13 ativa — por isso as duas condições ficam; restore conferido |
+| `CTRL-e` | trigger sem o trecho `-- <fallback-legado>`: com o legado fora do ar a liberação nasce comum (pin NULL) e o finalizador ativa a datafy no eco (M14 vermelho); restore conferido |
+
+**O que ele NÃO prova:** RLS e exposição PostgREST (o `postgres` local é
+superusuário; a metade com banco real é do `scripts/audit-function-acl.ts`),
+o `rolbypassrls` do `postgres` de produção, corrida com duas sessões (os locks
+unidade → canais são os mesmos das autoridades medidas no 63b), o caminho
+TypeScript de `manage-channels`/`datafy-onboarding-actions.ts` e qualquer
+chamada à Datafy, Meta ou UazAPI.
+
+### Templates mesa pronta e cancelamento (66)
+
+Migration `20261017120000_whatsapp_templates_table_ready_cancellation.sql`
+(plano `2026-10-16-datafy-migracao-loja-em-producao.md`, Fase 2): catálogo
+oficial de 9 modelos (`fila_mesa_pronta_v1`, `res_cancelada_v1`) e kinds
+`cancellation`/`waitlist_table_ready` no ledger de automação — CHECKs, `CASE`
+kind→template, elegibilidade da autoridade final, reparação do aceite, motivo
+`reservation_not_cancelled` e listas de ids do provisionamento.
+
+**Runtime:** o PostgreSQL standalone não serve (o `25` exige `supabase_vault`).
+Use um contêiner **descartável e próprio**
+`public.ecr.aws/supabase/postgres:17.11.0.004`, nome `margin-phase2-tpl-pg`,
+somente `127.0.0.1:55467`, usuário `supabase_admin`. Nunca toque contêineres de
+outros projetos e remova o próprio ao fim. O `psql` é o cliente 18 do
+instalador oficial, sempre `-X -v ON_ERROR_STOP=1` e **nunca `-1`** (a migration
+tem `BEGIN`/`COMMIT` próprios).
+
+**Pontes 41/48/38 sem o caminho Docker dos setups.** Os testsetups `41`, `48` e
+`38` exigem o stack CLI `moralles-templates-20261003` (pipe, label e porta
+55452) antes de enviar SQL, e essas guardas **não** são contornadas nem
+falsificadas aqui. Do script só se usa o SQL que ele monta: o helper
+`66-extract-bridge.mjs`, versionado aqui, lê o arquivo do setup até um marcador de corte (o
+ramo `--source-check`, que precede todo uso do Docker), remove a linha
+`import { resolveLocalDocker } …` e a chamada `const docker = resolveLocalDocker();`,
+troca `import.meta.url` pela URL absoluta do arquivo (as migrations históricas
+continuam lidas pelos caminhos relativos do próprio setup), avalia o resto como
+módulo e grava a variável pedida. No `38`, o trecho entre o `--source-check` e
+`const literal` (as checagens de daemon/contêiner) é cortado antes, e o corte
+fica antes do laço de aplicação. Nenhum `run(...)` é chamado. O SQL extraído é
+aplicado DUAS vezes, em transação, como o setup faria:
+
+| ponte | arquivo | corte | variável | transação |
+|---|---|---|---|---|
+| 41 | `41-automation-resource-confirm-testsetup.mjs` | `if (process.argv.length === 3 && process.argv[2] === '--source-check')` | `schema` | `begin; set local lock_timeout='5s'; set local statement_timeout='20s'; … commit;` |
+| 48 | `48-waitlist-voucher-testsetup.mjs` | `if(process.argv.length===3&&process.argv[2]==='--source-check')` | `schema` | idem |
+| 38 | `38-automation-acceptance-testsetup.mjs` | `for (let pass = 1; pass <= 2; pass++)`, pulando do `--source-check` até `const literal` | `transaction` | já traz `begin`/`commit` |
+
+Medido nesta fase: a extração repetida produz arquivos byte a byte iguais
+(`cmp`) aos usados na cadeia. O `56` é só asserção (pede `current_database()=
+'postgres'`, server ≥ 17 e a quarentena dos dois crons).
+
+O `66a` **roda ANTES da migration nova** e recusa rodar depois: ele grava em
+`t_snap066` oid, `proacl`, `prosecdef`, `proconfig`, `provolatile` e dono das
+DEZ funções que a migration substitui por `create or replace`, mais a contagem
+de overloads de cada nome; o T8 compara com o de depois. Gravado depois, o
+snapshot compararia a função consigo mesma.
+
+```bash
+export PGCLIENTENCODING=UTF8
+D="$LOCALAPPDATA/Programs/DockerDesktop/resources/bin/docker.exe"
+PSQL="/c/Program Files/PostgreSQL/18/bin/psql.exe"
+P() { PGPASSWORD=postgres "$PSQL" -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 55467 -U supabase_admin -d postgres "$@"; }
+H=supabase/tests/local-preflight; M=supabase/migrations
+B=<diretório scratch fora do repo>   # recebe bridge41.sql, bridge48.sql, setup38.sql
+
+# Pontes (helper `66-extract-bridge.mjs` descrito acima: <arquivo> <corte> <variável> <saída> [pular-de pular-até])
+node $H/66-extract-bridge.mjs $H/41-automation-resource-confirm-testsetup.mjs \
+  "if (process.argv.length === 3 && process.argv[2] === '--source-check')" schema $B/bridge41.sql
+node $H/66-extract-bridge.mjs $H/48-waitlist-voucher-testsetup.mjs \
+  "if(process.argv.length===3&&process.argv[2]==='--source-check')" schema $B/bridge48.sql
+node $H/66-extract-bridge.mjs $H/38-automation-acceptance-testsetup.mjs \
+  "for (let pass = 1; pass <= 2; pass++)" transaction $B/setup38.sql \
+  "if (process.argv.length === 3 && process.argv[2] === '--source-check')" "const literal"
+
+"$D" rm -f margin-phase2-tpl-pg     # só o próprio
+"$D" run -d --name margin-phase2-tpl-pg -e POSTGRES_PASSWORD=postgres \
+  -p 127.0.0.1:55467:5432 public.ecr.aws/supabase/postgres:17.11.0.004
+# esperar State.Health.Status=healthy e `P -c 'select 1'`
+
+P -f $H/25-template-bootstrap.sql
+for m in 20261003225857 20261004002728 20261004014032 20261004025039 20261004165825 20261004184738 20261005145913; do P -f $M/${m}_*.sql; done
+for i in 1 2; do { echo "begin; set local lock_timeout='5s'; set local statement_timeout='20s';"; cat $B/bridge41.sql; echo "commit;"; } | P; done
+P -f $M/20261005170415_whatsapp_automation_resource_post_confirm.sql
+P -f $H/44-outbox-automation-bootstrap.sql
+P -f $M/20261006003631_whatsapp_outbox_automation_delegation.sql
+for i in 1 2; do { echo "begin; set local lock_timeout='5s'; set local statement_timeout='20s';"; cat $B/bridge48.sql; echo "commit;"; } | P; done
+P -f $M/20261009003452_whatsapp_scheduled_voucher_issuer.sql
+P -f $M/20261009135808_whatsapp_automation_worker_cron.sql
+for i in 1 2; do P -f $B/setup38.sql; done
+P -c "select cron.unschedule(jobid) from cron.job where jobname in('whatsapp-automation-worker','whatsapp-template-workers')"
+P -f $H/52-automation-receipts-bootstrap.sql          # GREEN52
+P -f $H/56-template-management-bootstrap.sql          # GREEN56
+P -f $M/20261009153435_whatsapp_template_management.sql
+P -f $M/20261009180617_whatsapp_template_binding_business_refusal.sql
+P -f $M/20261009220823_whatsapp_automation_pending_receipt_retention.sql
+
+P -f $H/66a-templates-table-ready-bootstrap.sql       # 10 fn_antes + 10 overloads
+
+# ANTES da migration, o 66 tem de FALHAR pela guarda do topo. É o RED: rodado
+# antes, as recusas de T1/T3/T4 passariam POR ACIDENTE.
+P -f $H/66-templates-table-ready-cancellation.sql     # esperado: ERROR "66 exige a migration 20261017120000 aplicada ..."
+
+P -f $M/20261017120000_whatsapp_templates_table_ready_cancellation.sql
+P -f $H/66a-templates-table-ready-bootstrap.sql       # esperado: ERROR "66a exige rodar ANTES ..."
+P -f $H/66-templates-table-ready-cancellation.sql     # GREEN66, 171 checagens
+P -f $M/20261017120000_whatsapp_templates_table_ready_cancellation.sql
+P -f $M/20261017120000_whatsapp_templates_table_ready_cancellation.sql
+P -f $H/66-templates-table-ready-cancellation.sql     # GREEN66 de novo (idempotência + T8)
+
+"$D" rm -f margin-phase2-tpl-pg
+```
+
+Saída sadia: tabela por caso (`CTRL-a` 4, `CTRL-b` 4, `CTRL-c` 4, `T0` 6,
+`T1` 20, `T1/T5` 1, `T2` 10, `T3` 13, `T4` 30, `T5` 18, `T6` 7, `T7` 8, `T8` 26,
+`T9` 20), `checks66 = 171` e `GREEN66`. Tudo roda numa transação que termina em
+`ROLLBACK` (inclusive as flags `whatsapp_automation_dispatch` e
+`whatsapp_template_catalog`, ligadas só dentro dela); falha em qualquer caso
+aborta sob `ON_ERROR_STOP` com `FAIL66 <rótulo>`. O arquivo recusa rodar entre
+23:50 e 00:10 BRT (datas de amanhã/ontem).
+
+| caso | o que mede |
+|---|---|
+| `T0` | quarentena de cron; bootstrap TEXT e grants datafy de catálogo/dispatch pelas RPCs reais; unidade sem canal com adoção sticky |
+| `T1` | inserção direta (guarda real ligada) aceita os 8 kinds e o `initial_catalog_key` derivado passa no pin tuple, inclusive `res_cancelada_v1`/`fila_mesa_pronta_v1`; kind desconhecido → `23514:whatsapp_automation_jobs_kind_check`; `cancellation`+fila e mesa pronta+reserva → `…_kind_resource_check`; logical_id desconhecido → `…logical_id_check`; os 9 ids semeiam |
+| `T2` | `enqueue_whatsapp_automation`: bound TEXT, preconfiguração sem canal (`channel_unconfigured`) e sem template (`template_unconfigured`) e datafy apontando o `whatsapp_remote_templates` do id novo; logical_id divergente ou recurso trocado → 22023; dedupe |
+| `T3` | autoridade final de `cancellation`: cancelada futura passa mesmo com `pending_payment`; reserva `confirmed`, snapshot `confirmed` sobre cancelada → `snapshot_invalid`; cancelada passada → `resource_changed` |
+| `T4` | mesa pronta: `waiting`, `notified` e cliente nulo passam; `seated`, `cancelled` e `seated_at` preenchido → `snapshot_invalid` |
+| `T5` | conta datafy com os 9 templates; para cada id novo: prepare → `confirm_whatsapp_template_post` → recusa local real → prova zero-POST → `revalidate_whatsapp_template_job` (admin) → prepare corrigido |
+| `T6` | reparação do aceite: mesa pronta sem cliente → `skipped_no_customer` + `notifications_sent` correlacionada; cancelamento com cliente → `recorded` + histórico com `kind` |
+| `T7` | `block_whatsapp_automation_preflight` aceita `reservation_not_cancelled` (grafia errada segue 22023); o painel mostra o motivo, sem `unknown_reason`; a revalidação de pinos não o corrige, e corrige o comparador `reservation_past` |
+| `T8` | as 10 funções com oid/ACL/`prosecdef`/`proconfig`/`provolatile`/dono iguais ao `66a`; contagem de overloads igual; trigger function fechada a PUBLIC/anon/authenticated/service_role; exatamente uma CHECK por localizador |
+| `T9` | regressão: `confirmation` (passa, recusa cancelada, mantém checagem de pagamento), `waitlist_entered` (passa `waiting`, recusa `notified`) e o promocional `waitlist_feedback` (slot reservado, passa com consentimento, recusa sem revisão) |
+| `CTRL-a` | baseline aceita semear `fila_mesa_pronta_v1`; CHECK de 7 ids (`NOT VALID`) recusa; restore da CHECK conferido |
+| `CTRL-b` | `post_core` aceitando `confirmed` para `cancellation`: a recusa do T3 vira `{"allowed":true}`; restore de corpo, ACL e recusa |
+| `CTRL-c` | mesa pronta aceitando `seated`: a recusa do T4 vira `{"allowed":true}`; restore de corpo, ACL e recusa |
+
+**Regressão 53/57/60 neste contêiner:** não roda, e não por causa da migration.
+O `auth.uid()`/`auth.role()` desta imagem lê só `request.jwt.claim.sub`/
+`request.jwt.claim.role`; os três harnesses montam o ator apenas por
+`request.jwt.claims` (formato do stack CLI em que foram medidos), então o 57
+recusa `template_management_forbidden` no primeiro ator e o 53/60 recusam a
+adoção (`automation_adoption_immutable`, guarda da `20261004014032`). O `66-templates-table-ready-cancellation.sql`
+seta as três chaves. Os 53/57/60 continuam sendo gates do stack CLI.
+
+**O que ele NÃO prova:** JWT genuíno/PostgREST e RLS de produção (atores são
+claims numa sessão superusuária), corrida com duas sessões (a migration não
+muda ordem de lock), os produtores TypeScript da Fase 3 e qualquer chamada à
+Datafy ou à Meta.
+
 ### Exclusão de instância sem custo (66/67)
 
 Continua o banco `fase6c` da sequência base, depois de reaplicar 104 e 105:
 
 ```bash
+PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -v ON_ERROR_STOP=1 "$@"; }
 P -f supabase/migrations/20260801200200_089_whatsapp_instance_alerts.sql   # o DEL-1 cria um alerta de instância
 P -f supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql
 P -f supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql   # idempotência (DEL-7)
@@ -2028,3 +2287,173 @@ A migration `20261016140000_whatsapp_channel_delete_detach.sql` cria a RPC `deta
 ```
 
 DETACH-1 (lotes até zerar, só `set null`, nada apagado), DETACH-2 (canal de outra unidade ou inexistente devolve 0 sem tocar nada), DETACH-3 (canal vizinho intacto), DETACH-4 (DELETE posterior preserva o histórico), DETACH-5 (nulos → `22023`), DETACH-6 (limite grampeado), DETACH-7 (notificação das últimas 24 h sem recibo continua vinculada até o DELETE, e só a FK a solta), ACL-65 (só `service_role`, `SECURITY DEFINER`, `search_path` vazio) e IDX-65. CONTROLE-65 tira a guarda `unit_id = p_unit_id` do corpo real e exige que o canal alheio passe a ser desvinculado, depois reverte por savepoint; CONTROLE-65b neutraliza o filtro de pendente recente e exige que DETACH-7 perceba. O agendamento da purga (`20261016140100`) depende de `pg_cron` e não roda aqui.
+
+### 67 — Fato de cancelamento (Fase 3, Task 3.2)
+
+Em PostgreSQL local **descartável** com `anon` e `authenticated` disponíveis, aplique
+`67a-cancellation-fact-bootstrap.sql` antes da migration
+`20261017130000_reservation_cancellation_fact.sql`. Execute depois
+`67-cancellation-fact.sql`; reaplique a migration duas vezes e repita o 67.
+`ON_ERROR_STOP=1` é obrigatório. O 67 termina em `ROLLBACK` e verifica o
+timestamp do servidor, spoof ignorado, reativação/recancelamento, ausência de
+backfill, ACL e controle positivo que desabilita o trigger dentro da transação.
+A mesma asserção de recusa de timestamp forjado é forçada a falhar nesse
+controle e sua falha esperada é verificada antes do `ROLLBACK`.
+Este harness isolado não demonstra RLS ou autorização de API Supabase.
+
+### 67b — Fato server-owned de mesa pronta (Fase 3, Task 3.3)
+
+Depois da migration `20261017140000_waitlist_table_ready_server_fact.sql`, execute
+`67b-waitlist-table-ready-fact.sql` no PostgreSQL local descartável com a cadeia
+do 66, workers em quarentena e `ON_ERROR_STOP=1`. O 67b acrescenta
+`notified_at` apenas na transação do teste, pois a fixture compacta do 41
+omite essa coluna histórica do schema real. Reaplique a migration duas
+vezes e repita o 67b para conferir idempotência e ACL. O script usa o mesmo
+bootstrap de canal TEXT/adoption do 66 dentro de uma transação com `ROLLBACK`.
+Ele mede spoof em INSERT/UPDATE, reversão antes e depois da captura, novo fato
+na renotificação, recusa de linha antiga sem prova server-owned e controles
+positivos para trigger e `post_core` (incluindo restauração do corpo/ACL).
+
+O 66 é o baseline da **Fase 2 antes desta migration**: seu T4 aceitava
+`waiting` por contrato da época. A restrição a `notified` na Fase 3 é
+intencional; o 66 não é gate de regressão após a 67b.
+
+### 67c — Conflito de notificação legada failed (Fase 3, Task 3.4)
+
+Depois de `20261017150000_whatsapp_automation_failed_notification_adoption.sql`,
+execute `67c-whatsapp-automation-failed-notification.sql` na mesma cadeia local
+descartável do 66, com o snapshot 66a anterior à migration da Fase 2 e workers
+em quarentena. A fixture compacta precisa de `waitlist.notified_at` antes da
+migration da Task 3.3, pois omite essa coluna histórica do schema real. O 67c
+usa a preparação/aceite SQL real, termina em `ROLLBACK` e confere 36 asserções:
+linha `failed` de reserva e fila adotada na UUID congelada, idempotência,
+recusa de linha com provider id prévio, voucher com chaves naturais nulas
+preservando outra linha `failed` da unidade, ACL e controle positivo que
+desliga a adoção para reproduzir `notification_conflict`. Reaplique a migration
+duas vezes e repita o 67c. Ele não chama provider nem comprova JWT/PostgREST.
+
+### 67d — Histórico de conversa e janela manual (Fase 3, Task 3.6)
+
+Em PostgreSQL local **descartável**, aplique
+`67d-conversation-message-acl-bootstrap.sql`, depois
+`20261017160000_conversation_message_write_acl.sql`, e execute
+`67d-conversation-message-write-acl.sql` com `ON_ERROR_STOP=1` como
+`supabase_admin`. Reaplique a migration duas vezes, repetindo o 67d após
+cada aplicação. O preflight termina em `ROLLBACK` e comprova ACL efetiva:
+authenticated/anon sem INSERT, UPDATE de tabela, DELETE ou TRUNCATE;
+authenticated sem UPDATE em `messages`, mas com UPDATE nas cinco colunas de
+handoff. Tentativas autenticadas de forjar o JSONB/inserir/apagar falham;
+handoff e escrita por service_role passam. Os controles positivos concedem
+temporariamente UPDATE e INSERT por coluna e demonstram que as fraudes então funcionam.
+O bootstrap reproduz o shape e os grants da tabela em um banco isolado; ele
+não é prova de RLS/JWT/PostgREST do projeto vivo.
+
+### 68 — Opt-in promocional público (Fase 4, Tasks 4.1–4.2)
+
+Em PostgreSQL Supabase **descartável**, sem projeto vinculado e com
+`ON_ERROR_STOP=1`, aplique `68a-public-promotional-opt-in-bootstrap.sql`,
+depois `20261017170000_public_promotional_opt_in.sql`, e execute
+`68-public-promotional-opt-in.sql`. Reaplique a migration duas vezes e repita
+o 68 depois de cada aplicação. O teste termina em `ROLLBACK` e o contêiner
+deve ser removido ao fim. Exemplo com a imagem local
+`public.ecr.aws/supabase/postgres:17.11.0.004`:
+
+```sh
+docker run -d --name margin-phase4-consent-pg -e POSTGRES_PASSWORD=postgres \
+  -p 127.0.0.1:55468:5432 public.ecr.aws/supabase/postgres:17.11.0.004
+# Aguarde State.Health.Status=healthy. Os caminhos abaixo são do checkout.
+docker exec -i margin-phase4-consent-pg psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  < supabase/tests/local-preflight/68a-public-promotional-opt-in-bootstrap.sql
+for i in 1 2 3; do
+  docker exec -i margin-phase4-consent-pg psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+    < supabase/migrations/20261017170000_public_promotional_opt_in.sql
+  docker exec -i margin-phase4-consent-pg psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+    < supabase/tests/local-preflight/68-public-promotional-opt-in.sql
+done
+docker rm -f margin-phase4-consent-pg
+```
+
+O bootstrap é uma projeção mínima de tabelas/ACL/trigger de revisão existentes;
+a **migration real** é aplicada integralmente. O 68 verifica reserva e fila,
+campos e auditoria sem PII, revisão append-only, `opt_in → opt_out → replay`
+sem reativação, referência nova com novo opt-in, recusa uniforme de recurso
+ausente/alheio, unidade/organização privada, cliente apagado/alheio,
+referências inválidas e ACL efetiva por `anon`, `authenticated` e
+`service_role` (a RPC de fila continua sem grant para `service_role`). Três
+controles positivos enfraquecem separadamente o vínculo cliente–reserva e a
+visibilidade da unidade e da organização, comprovando que cada asserção
+protegida falharia; os savepoints restauram função e ACL integral.
+Não testa JWT/PostgREST nem RLS/trigger completos da instalação viva.
+
+### 69 — Autoridade e limite serializado da fila pública (Fase 4, Task 4.4)
+
+Em PostgreSQL Supabase **descartável**, rode o script após conferir que o
+contêiner próprio usa a imagem e o bind `127.0.0.1:55469` abaixo. O runner
+confere esses dados antes de executar SQL, aplica `69a` uma vez e a migration
+`20261017173000_public_waitlist_serial_rate_limit.sql` três vezes, rodando o
+pré-voo 69 após cada aplicação. Ele termina os casos SQL em `ROLLBACK`, cria
+sete sessões independentes para a corrida e restaura o corpo da migration
+depois do controle positivo vulnerável.
+
+```sh
+docker run -d --name margin-phase4-rate-pg -e POSTGRES_PASSWORD=postgres \
+  -p 127.0.0.1:55469:5432 public.ecr.aws/supabase/postgres:17.11.0.004
+# Aguarde State.Health.Status=healthy e confira imagem/bind do contêiner.
+node supabase/tests/local-preflight/69-public-waitlist-rate-concurrency.mjs
+docker rm -f margin-phase4-rate-pg
+```
+
+O 69 mede ACL efetiva por `anon`, `authenticated` e `service_role`: `anon`
+não executa `enter_waitlist`, não insere na tabela nem chama o wrapper; o
+painel autenticado conserva a RPC legada; só serviço usa
+`enter_public_waitlist`. Verifica grants de `INSERT` de tabela e colunas,
+unidade/organização privadas, limites de tamanho e controles positivos que
+abrem somente a flag protegida. O limitador aceita cinco tentativas por
+unidade/IP em 60 segundos e rejeita a sexta; a corrida real aceita cinco de
+sete sessões e observa uma espera por lock. O controle positivo substitui
+temporariamente a função por count-then-insert sem lock e deve aceitar mais
+de cinco; o runner restaura a migration em `finally`. O bootstrap projeta o
+schema/ACL herdado, inclusive `ENABLE RLS` sem `FORCE` em
+`rate_limit_events`; não substitui auditoria de ACL/RLS, gateway e cabeçalho
+`CF-Connecting-IP` no ambiente hospedado.
+
+### 70 — FORCE RLS nas cinco tabelas operacionais (Fase 5, Task 5.1)
+
+Em PostgreSQL Supabase **descartável e exclusivo**, aplique `69a` (base de
+`waitlist`/`rate_limit_events`), `70a-force-rls-bootstrap.sql` (projeção das
+outras três tabelas, policies de forma equivalente e dono sem `BYPASSRLS`), a
+migration real `20261017173000_public_waitlist_serial_rate_limit.sql` e
+`70b-force-rls-before.sql`, nesta ordem. Depois aplique a migration real
+`20261017180000_force_rls_operational_baseline.sql` três vezes, executando
+`70-force-rls.sql` após cada aplicação. Cada migration roda **crua, sem
+`psql -1`**; `ON_ERROR_STOP=1` é obrigatório. O 70 termina em `ROLLBACK`.
+Use somente contêiner cuja imagem seja
+`public.ecr.aws/supabase/postgres:17.11.0.004`, com `--network none` e sem
+portas publicadas; confirme imagem/isolamento antes do SQL. Não usar stack
+vinculado nem banco de produção; remova o contêiner próprio ao fim.
+
+O `70b` comprova `ENABLE` sem `FORCE`, papel dono com `rolbypassrls=false`,
+`service_role` com `rolbypassrls=true` e owner vendo linhas nas cinco tabelas
+antes da migration e atualizando `rate_limit_events` sem policy. O 70 confirma
+`FORCE` nas cinco, owner vendo zero e atualizando zero linhas,
+`service_role` lendo todas, ACL de tabela/coluna e policies idênticas ao
+snapshot, entrada anônima de reserva ainda aceita, `INSERT`/`EXECUTE` anônimos
+da fila fechados, membro/admin/outsider por unidade e handoff de conversa na
+projeção. Executa as RPCs **reais da 173000** `enter_public_waitlist` e
+`check_public_waitlist_rate_limit` (cinco aceites e sexta recusa). Um controle
+positivo desliga `FORCE` nas cinco dentro da transação, observa o dono voltar
+a ver linhas e atualizar uma, depois restaura `FORCE` antes do `ROLLBACK`.
+
+Medição local descartável com `psql \timing` na primeira aplicação da 180000,
+sem concorrência: `BEGIN` 0,229 ms; `SET LOCAL` 0,328 ms; `ALTER TABLE` em
+`reservations` 3,862 ms, `waitlist` 1,615 ms, `conversations` 1,513 ms,
+`notifications_sent` 0,670 ms, `rate_limit_events` 0,357 ms; `COMMIT`
+2,539 ms (11,113 ms somados). O tempo de cada `ALTER` inclui a aquisição
+local do lock, mas não estima espera sob tráfego real.
+
+**Limites:** a projeção do 70 não reproduz as policies históricas completas,
+JWT/PostgREST, todos os triggers, RPCs de reserva/consentimento/conversa,
+`check_rate_limit` antigo, concorrência ou estado do alvo. O `enter_waitlist`
+da base 69a é um stub, portanto o teste do wrapper não prova membership real
+do painel. Reexecutar os pré-voos próprios 61–69 e auditar owner/ACL/policies/
+`BYPASSRLS` efetivos antes de qualquer rollout; gate vermelho continua NO-GO.

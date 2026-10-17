@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { logicalAutomationKey, selectAutomationPath, automationDeadline, classifyAutomationOutcome, automationRetryDelayMs, localPreflightRefusal, parseAutomationLedger, recordedDispatchResult, automationPreflightState, AUTOMATION_PREFLIGHT_REASONS } from '../../supabase/functions/_shared/whatsapp-automation-core.ts';
+import { logicalAutomationKey, selectAutomationPath, automationDeadline, classifyAutomationOutcome, automationRetryDelayMs, localPreflightRefusal, parseAutomationLedger, recordedDispatchResult, automationPreflightState, AUTOMATION_PREFLIGHT_REASONS, SCHEDULED_KINDS } from '../../supabase/functions/_shared/whatsapp-automation-core.ts';
 import type { ScheduledIntent, ScheduledKind, DispatchResult, DispatchSelection } from '../../supabase/functions/_shared/whatsapp-automation-core.ts';
 
 describe('automation identity and cutover', () => {
@@ -25,6 +25,18 @@ describe('automation identity and cutover', () => {
     const x = { unitId: 'u', kind: 'reminder_d1' as const, reservationId: 'r' };
     expect(logicalAutomationKey({ ...x, sourceEventKey: 'a' })).toBe(logicalAutomationKey({ ...x, sourceEventKey: 'b' }));
     expect(logicalAutomationKey(x)).not.toBe(logicalAutomationKey({ ...x, unitId: 'other' }));
+  });
+  it('SCHEDULED_KINDS is the closed kind source with cancellation and table-ready resources', () => {
+    expect([...SCHEDULED_KINDS]).toEqual(['confirmation', 'reminder_d1', 'survey_d1', 'waitlist_entered', 'waitlist_feedback', 'voucher_issued', 'cancellation', 'waitlist_table_ready']);
+    const cancellation: ScheduledIntent = { unitId: 'u', kind: 'cancellation', reservationId: 'r', sourceEventKey: 's', factAt: '2026-10-03T12:00:00Z' };
+    const ready: ScheduledIntent = { unitId: 'u', kind: 'waitlist_table_ready', waitlistId: 'w', sourceEventKey: 's', factAt: '2026-10-03T12:00:00Z' };
+    expect(logicalAutomationKey(cancellation)).toBe('["u","cancellation","r"]');
+    expect(logicalAutomationKey(ready)).toBe('["u","waitlist_table_ready","w"]');
+    expect(() => logicalAutomationKey({ unitId: 'u', kind: 'cancellation', waitlistId: 'w' })).toThrow();
+    expect(() => logicalAutomationKey({ unitId: 'u', kind: 'waitlist_table_ready', reservationId: 'r' })).toThrow();
+    expect(automationDeadline('cancellation', '2026-10-03T20:00:00-03:00')).toBe('2026-10-04T23:00:00.000Z');
+    expect(automationDeadline('waitlist_table_ready', '2026-10-03T20:00:00-03:00')).toBe('2026-10-03T23:30:00.000Z');
+    expect(automationPreflightState('reservation_not_cancelled', false)).toBe('blocked');
   });
   it('refuses ambiguous or mismatched resources', () => {
     expect(() => logicalAutomationKey({ unitId: 'u', kind: 'voucher_issued', reservationId: 'r' })).toThrow();

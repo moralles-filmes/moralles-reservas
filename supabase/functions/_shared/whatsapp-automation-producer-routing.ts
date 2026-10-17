@@ -1,7 +1,7 @@
 import { AUTOMATION_PREFLIGHT_REASONS, parseAutomationLedger, selectAutomationPath,
   type AutomationStoredState, type DispatchResult } from './whatsapp-automation-core.ts';
 
-type ReservationKind = 'confirmation' | 'reminder_d1' | 'survey_d1';
+type ReservationKind = 'confirmation' | 'reminder_d1' | 'survey_d1' | 'cancellation';
 export type AutomationRouteReader = (table: string, columns: string,
   predicates: readonly (readonly [column: string, value: string])[], cardinality: 'single' | 'many') => Promise<unknown>;
 export type ReservationAutomationRoute = { path: 'legacy' } | { path: 'dependency' }
@@ -49,7 +49,7 @@ async function selectUnownedAutomationRoute(read: AutomationRouteReader, unitId:
 
 /** Exact waitlist ledger first; absence alone permits activation reads. */
 export async function selectWaitlistAutomationRoute(read: AutomationRouteReader,
-  input: { kind: 'waitlist_entered' | 'waitlist_feedback'; unitId: string; waitlistId: string }): Promise<ReservationAutomationRoute> {
+  input: { kind: 'waitlist_entered' | 'waitlist_feedback' | 'waitlist_table_ready'; unitId: string; waitlistId: string }): Promise<ReservationAutomationRoute> {
   try {
     if (!automationUuid(input.unitId) || !automationUuid(input.waitlistId)) return { path: 'dependency' };
     const row = await read('whatsapp_automation_jobs', '*', [['unit_id', input.unitId],

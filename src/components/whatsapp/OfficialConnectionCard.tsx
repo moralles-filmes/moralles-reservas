@@ -94,6 +94,7 @@ function OfficialConnectionSession({ unitId }: { unitId: string }) {
   </CardContent></Card>;
   if (!connection.data) return <Card><CardContent className="py-6">Nenhuma conexão oficial disponível.</CardContent></Card>;
   const state = connection.data;
+  const beforeConnect = state.step === "ready_to_connect" || state.step === "connecting";
   return <Card>
     <CardHeader><CardTitle>WhatsApp oficial</CardTitle></CardHeader>
     <CardContent className="space-y-5">
@@ -105,10 +106,14 @@ function OfficialConnectionSession({ unitId }: { unitId: string }) {
         {state.step === "active" ? <>
           <p className="font-medium">Ativação concluída.</p>
           <OfficialConnectionHealth unitId={unitId} />
-        </> : <>
+        </> : state.step === "awaiting_cutover" ? (
+          // Corte é do suporte (`begin_switch`): a loja não tem ação aqui.
+          <p role="status" className="font-medium">Canal oficial pronto. A troca será feita pelo suporte.</p>
+        ) : <>
+          {state.migration && beforeConnect && <p role="note" className="rounded-lg border border-warning/30 bg-warning/10 p-4 text-sm">Ao conectar, o WhatsApp desconecta os aparelhos vinculados, inclusive a automação atual. Logo depois, gere um novo QR Code em Conexão atual e escaneie para a automação voltar. Faça num horário de pouco movimento.</p>}
           {(state.step === "awaiting_echo" || state.step === "subscription_pending") && <p>Envie uma mensagem pelo app WhatsApp Business no celular para qualquer contato</p>}
           <div className="flex flex-col gap-2 sm:flex-row">
-            {(state.step === "ready_to_connect" || state.step === "connecting") && <Button className="min-h-11" disabled={pending} onClick={() => void start()}>Conectar WhatsApp oficial</Button>}
+            {beforeConnect && <Button className="min-h-11" disabled={pending} onClick={() => void start()}>Conectar WhatsApp oficial</Button>}
             <Button className="min-h-11" variant="outline" disabled={pending} onClick={() => void confirm()}>Já concluí a conexão</Button>
           </div>
         </>}

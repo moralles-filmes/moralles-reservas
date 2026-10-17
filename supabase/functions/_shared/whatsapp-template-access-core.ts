@@ -1,6 +1,6 @@
 import { TEMPLATE_CATALOG, type TemplateId } from './whatsapp-template-catalog-core.ts';
 import { PROVIDER_CAPABILITIES, isMetaShapedProvider, type WhatsAppProviderName } from './whatsapp-provider-core.ts';
-import { AUTOMATION_PREFLIGHT_REASONS } from './whatsapp-automation-core.ts';
+import { AUTOMATION_PREFLIGHT_REASONS, SCHEDULED_KINDS } from './whatsapp-automation-core.ts';
 
 export type TemplateRole = 'owner' | 'gerente' | 'operador' | null;
 export type ConsentPurpose = 'operational' | 'promotional';
@@ -133,7 +133,7 @@ export function projectTemplateSnapshot(input: TemplateSnapshotInput) {
         state: pick(row.state, target === 'automation' ? ['queued', 'claimed', 'posting', 'accepted', 'blocked', 'expired', 'uncertain', 'retry_wait', 'needs_review', 'failed', 'reconciled', 'paused', 'rejected'] : ['queued', 'claimed', 'posting', 'accepted', 'rejected', 'uncertain', 'failed', 'done', 'paused', 'needs_review']),
         reason: safeReason(row.error_code), attempts: integer(row.attempts, 0) && row.attempts <= 5 ? row.attempts : unavailable() };
       if (target === 'catalog') return { ...common, pinPhase: null, channelId: row.channel_id === null ? null : checkedUuid(row.channel_id), createdAt: checkedDate(row.created_at), dueAt: checkedDate(row.due_at) };
-      return { ...common, kind: pick(row.kind, ['confirmation', 'reminder_d1', 'survey_d1', 'waitlist_entered', 'waitlist_feedback', 'voucher_issued']), pinPhase: pick(row.pin_phase, ['bound', 'preconfiguration']), channelId: row.channel_id === null ? null : checkedUuid(row.channel_id), factAt: checkedDate(row.fact_at), deadline: checkedDate(row.expires_at) };
+      return { ...common, kind: pick(row.kind, SCHEDULED_KINDS), pinPhase: pick(row.pin_phase, ['bound', 'preconfiguration']), channelId: row.channel_id === null ? null : checkedUuid(row.channel_id), factAt: checkedDate(row.fact_at), deadline: checkedDate(row.expires_at) };
     }), generatedAt: checkedDate(input.generatedAt),
   };
 }

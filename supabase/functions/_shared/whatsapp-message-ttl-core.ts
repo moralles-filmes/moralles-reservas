@@ -29,9 +29,11 @@
 
 /**
  * Kinds com prazo definido. Deliberadamente NÃO é `notifications_sent.kind`
- * inteiro: `cancellation` e `confirmation_email` ficam de fora porque um aviso
- * de cancelamento atrasado continua sendo informação que o cliente quer, e
- * e-mail não participa do risco de bloqueio que motivou esta peça.
+ * inteiro: `confirmation_email` fica de fora porque e-mail não participa do
+ * risco de bloqueio que motivou esta peça. `cancellation` tem prazo porque o
+ * ledger de automação exige `expires_at` em todo job; o pós-horário da reserva
+ * é recusado à parte pela elegibilidade (`reservation_past`), então as 24h são
+ * só o teto de represamento do nosso lado.
  */
 export type ExpirableMessageKind =
   | "waitlist_table_ready"
@@ -40,6 +42,7 @@ export type ExpirableMessageKind =
   | "reminder_d1"
   | "survey_d1"
   | "confirmation"
+  | "cancellation"
   | "voucher_issued";
 
 const MINUTE = 60_000;
@@ -62,6 +65,7 @@ export const MESSAGE_TTL_MS: Readonly<Record<ExpirableMessageKind, number>> = Ob
   reminder_d1: 0,
   survey_d1: 48 * HOUR,
   confirmation: 0,
+  cancellation: 24 * HOUR,
   voucher_issued: 7 * DAY,
 });
 

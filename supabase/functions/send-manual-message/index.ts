@@ -5,6 +5,9 @@ import { clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { clearChannelConnectivityCache } from "../_shared/whatsapp-send.ts";
 import { jsonLog, sanitizePhone } from "../_shared/security.ts";
 import { hasUnitAccess } from "../_shared/authz.ts";
+import { resolveUnitChannelBinding } from "../_shared/whatsapp-org-provider-core.ts";
+import { isMetaShapedProvider } from "../_shared/whatsapp-provider-core.ts";
+import { evaluateManualServiceWindow } from "../_shared/whatsapp-manual-service-window-core.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -73,8 +76,8 @@ serve(async (req) => {
       .maybeSingle();
 
     if (convErr || !conv) {
-      return new Response(JSON.stringify({ error: "conversa não encontrada" }), {
-        status: 404,
+      return new Response(JSON.stringify({ error: "forbidden" }), {
+        status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -89,12 +92,58 @@ serve(async (req) => {
       });
     }
 
+    // Service role bypasses RLS. Resolve the operational binding after the
+    // conversation authorization, and pin it for the eventual send so a
+    // concurrent provider switch cannot bypass the window decision.
+    const { data: channels, error: channelErr } = await supabase
+      .from("whatsapp_channels")
+      .select("id, provider, status, is_active, created_at")
+      .eq("unit_id", conv.unit_id)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true });
+    if (channelErr) {
+      return new Response(JSON.stringify({ error: "Não foi possível validar o canal WhatsApp." }), {
+        status: 503,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    const binding = resolveUnitChannelBinding(channels);
+    if (!binding) {
+      return new Response(JSON.stringify({ error: "Canal WhatsApp não configurado." }), {
+        status: 409,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // Only allow sending when conversation is in human hands
     if (conv.status !== "human_active" && conv.status !== "awaiting_human") {
       return new Response(JSON.stringify({ error: "conversa não está em atendimento humano" }), {
         status: 409,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    let serviceWindow: ReturnType<typeof evaluateManualServiceWindow> | null = null;
+    if (isMetaShapedProvider(binding.provider)) {
+      const { data: history, error: historyErr } = await supabase
+        .from("conversations")
+        .select("messages")
+        .eq("id", conv.id)
+        .eq("unit_id", conv.unit_id)
+        .maybeSingle();
+      if (historyErr || !history) {
+        return new Response(JSON.stringify({ error: "Não foi possível validar a janela de atendimento." }), {
+          status: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      serviceWindow = evaluateManualServiceWindow(history.messages, Date.now());
+      if (!serviceWindow.open) {
+        return new Response(JSON.stringify({ error: "OUTSIDE_SERVICE_WINDOW" }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
 
     // deno-lint-ignore no-explicit-any
@@ -108,8 +157,28 @@ serve(async (req) => {
 
     // Send WhatsApp message via shared helper (canal `connected` da unit; sem
     // canal devolve { ok:false, error:"whatsapp_not_configured" } — sem fallback global).
-    const result = await sendWhatsApp(customerPhone, trimmedMessage, { unit_id: conv.unit_id });
+    const result = await sendWhatsApp(customerPhone, trimmedMessage, {
+      unit_id: conv.unit_id,
+      channel_id: binding.id,
+      ...(serviceWindow ? { outboundOptions: { retryPolicy: "none" as const } } : {}),
+      beforeOutbound: (outboundChannel) => {
+        if (outboundChannel.provider !== binding.provider) return "whatsapp_channel_changed";
+        if (!isMetaShapedProvider(outboundChannel.provider)) return null;
+        const currentTime = Date.now();
+        const start = Date.parse(serviceWindow?.lastInboundAt ?? "");
+        const deadline = Date.parse(serviceWindow?.closesAt ?? "");
+        return Number.isFinite(start) && Number.isFinite(deadline)
+            && currentTime >= start && currentTime < deadline
+          ? null : "OUTSIDE_SERVICE_WINDOW";
+      },
+    });
     if (!result.ok) {
+      if (result.error === "OUTSIDE_SERVICE_WINDOW") {
+        return new Response(JSON.stringify({ error: "OUTSIDE_SERVICE_WINDOW" }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       jsonLog("error", {
         evt: "manual_send_failed",
         convId: conversation_id,

@@ -8,6 +8,7 @@ dist/
 *.log
 .claude/*
 !.claude/tenancy-profile.yml
+!.claude/rules/
 .hermes/
 .superpowers/
 supabase/.temp/

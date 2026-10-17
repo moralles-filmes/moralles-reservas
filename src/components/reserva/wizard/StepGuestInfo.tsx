@@ -1,5 +1,6 @@
 import { CreditCard } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -192,6 +193,18 @@ export function StepGuestInfo() {
             )}
           </Field>
         ))}
+
+        <div className="flex items-start gap-3 rounded-lg border p-3">
+          <Checkbox
+            id="wizard-marketing-opt-in"
+            checked={state.marketing_opt_in}
+            onCheckedChange={(checked) => actions.set("marketing_opt_in", checked === true)}
+            className="mt-0.5 h-5 w-5"
+          />
+          <Label htmlFor="wizard-marketing-opt-in" className="text-sm leading-relaxed font-normal cursor-pointer">
+            Quero receber ofertas e benefícios do {input.unit?.name ?? "restaurante"} pelo WhatsApp. Posso cancelar quando quiser pelo link enviado em cada oferta.
+          </Label>
+        </div>
       </div>
 
       {/* Card "Sobre a Reserva" — regras + instruções do widget */}

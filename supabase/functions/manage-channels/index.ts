@@ -13,7 +13,11 @@ import {
 } from "../_shared/whatsapp-providers.ts";
 import { parseDatafyAccount } from "../_shared/datafy-client.ts";
 import { getDatafyAccountToken } from "../_shared/datafy-account-config.ts";
-import { createDatafyOnboardingActions, DATAFY_ACTIONS } from "../_shared/datafy-onboarding-actions.ts";
+import {
+  createDatafyOnboardingActions, DATAFY_ACTIONS, findDatafyMigrationGrant,
+  resolveDatafyMigrationCandidate, type UnitChannelRow,
+} from "../_shared/datafy-onboarding-actions.ts";
+import { decideReplacementConnectionRecorded } from "../_shared/datafy-onboarding-core.ts";
 import { resolveUnitChannelBinding } from "../_shared/whatsapp-org-provider-core.ts";
 import { createTemplateRuntime } from "../_shared/whatsapp-template-runtime.ts";
 import {
@@ -132,7 +136,10 @@ async function loadClientChannels(unitId: string): Promise<ClientChannelRow[]> {
     .from("whatsapp_channels")
     .select(CLIENT_CHANNEL_COLUMNS)
     .eq("unit_id", unitId)
-    .order("created_at", { ascending: true });
+    // Desempate por id: o binding resolvido aqui casa com o do SQL
+    // (`created_at asc nulls last, id`), inclusive o pin da migração.
+    .order("created_at", { ascending: true, nullsFirst: false })
+    .order("id", { ascending: true });
   if (error) {
     throw new ChannelActionError(500, "CHANNEL_LIST_FAILED", "Falha ao consultar a conexão.");
   }
@@ -1202,10 +1209,38 @@ const datafyActions = createDatafyOnboardingActions({
   supabase,
   getAccountToken: getDatafyAccountToken,
   getOrganizationId: async (unitId) => (await getUnitContext(unitId)).organizationId,
-  gatesAllowed: async (unitId, adminDecisionRecorded) => {
+  gatesAllowed: async (unitId, adminDecisionRecorded, replacementConnection = false) => {
     const gate = await resolveWhatsAppGateByUnit(supabase, unitId);
+    // Migração: decisão no núcleo (decideReplacementConnectionRecorded); aqui só I/O.
+    const replacement = await decideReplacementConnectionRecorded({
+      replacementConnection,
+      loadBinding: async () => {
+        const { data, error } = await supabase
+          .from("whatsapp_channels")
+          .select("id, provider, status, is_active, created_at")
+          .eq("unit_id", unitId)
+          .order("created_at", { ascending: true, nullsFirst: false })
+          .order("id", { ascending: true });
+        if (error) throw new Error("channel_read_failed");
+        return resolveUnitChannelBinding((data ?? []) as UnitChannelRow[]);
+      },
+      countLiveInstances: async (channelId) => {
+        // A reposição só desconta o que o teto conta: mesma organização.
+        const { organizationId } = await getUnitContext(unitId);
+        const { count, error } = await supabase
+          .from("whatsapp_instances")
+          .select("id", { count: "exact", head: true })
+          .eq("channel_id", channelId)
+          .eq("organization_id", organizationId)
+          .neq("lifecycle_state", "ENDED");
+        if (error) throw new Error("instance_count_failed");
+        return count as number;
+      },
+    });
+    // Inverificável fecha os gates: nunca degrada para "sem instância".
+    if (replacement.ok === false) return false;
     const allowance = await checkChannelConnectionAllowance(
-      unitId, "datafy", {}, "NEW_PROVISIONING", adminDecisionRecorded,
+      unitId, "datafy", {}, "NEW_PROVISIONING", adminDecisionRecorded, replacement.recorded,
     );
     return gate?.provisioning.allowed === true && allowance.ok === true && allowance.allowance.allowed === true;
   },
@@ -1502,15 +1537,62 @@ serve(async (req) => {
         return jsonResponse(req, { error: "Provedor alvo inválido." }, 400);
       }
 
+      // Prontidão do alvo: leitor de saúde, prova de eco e conexão viva, nesta ordem.
+      const assertSwitchTargetReady = async (channel: ChannelRow) => {
+        const adapter = getWhatsAppProvider(channel.provider);
+        if (!adapter.getConnectionStatus) {
+          throw new ChannelActionError(
+            409,
+            "TARGET_HEALTH_UNAVAILABLE",
+            "Teste o canal alvo antes de concluir a troca.",
+          );
+        }
+        if (!channel.manual_echo_verified_at) {
+          throw new ChannelActionError(
+            409,
+            "TARGET_CONVERSATION_PARITY_UNVERIFIED",
+            "Envie uma mensagem de teste pelo celular da loja e aguarde o callback antes de concluir a troca.",
+          );
+        }
+        const channelCredentials = await resolveChannelCredentials(supabase, channel);
+        const status = await adapter.getConnectionStatus(channelCredentials);
+        if (!status.connected) {
+          throw new ChannelActionError(
+            409,
+            "TARGET_NOT_CONNECTED",
+            "O canal alvo não está conectado. O canal atual foi preservado.",
+          );
+        }
+        return status;
+      };
+      let migrationCutover = false;
       try {
         if (targetProvider === "datafy") {
-          const binding = resolveUnitChannelBinding(await loadClientChannels(unitId));
-          if (binding && binding.provider !== "datafy") {
-            throw new ChannelActionError(
-              409,
-              "DATAFY_MIGRATION_NOT_SUPPORTED",
-              "A conexão oficial está disponível apenas na primeira configuração desta unidade.",
-            );
+          // Corte da migração: binding de outro provider só passa com liberação
+          // presa a ele. Recusa antecipada; a autoridade é o SQL
+          // (request_whatsapp_channel_activation → assert_datafy_first_configuration).
+          const channels = await loadClientChannels(unitId);
+          const replacement = resolveDatafyMigrationCandidate(channels);
+          if (replacement && replacement.provider !== "datafy") {
+            let migrationGrant: unknown = null;
+            try {
+              migrationGrant = await findDatafyMigrationGrant(supabase, unitId, channels);
+            } catch {
+              // Leitura que falha não é "sem liberação": inverificável, antes de qualquer intenção.
+              throw new ChannelActionError(
+                503,
+                "MIGRATION_GRANT_UNAVAILABLE",
+                "Não foi possível verificar a liberação de migração agora. Tente novamente em alguns minutos.",
+              );
+            }
+            if (!migrationGrant) {
+              throw new ChannelActionError(
+                409,
+                "DATAFY_MIGRATION_NOT_SUPPORTED",
+                "Esta unidade usa outro provedor. Libere a migração para a API oficial antes de trocar.",
+              );
+            }
+            migrationCutover = true;
           }
         }
         let target: ChannelRow | null = null;
@@ -1542,6 +1624,13 @@ serve(async (req) => {
           );
         }
 
+        // Corte de migração: prontidão ANTES da intenção, inclusive se o
+        // legado NULL estiver desconectado e não formar binding. Intenção
+        // armada sem eco/conexão seria ativada pelo próximo callback do
+        // webhook-whatsapp, sem o admin. Demais trocas mantêm a intenção durável
+        // primeiro (comportamento documentado).
+        let health = migrationCutover ? await assertSwitchTargetReady(target) : null;
+
         const { error: intentError } = await supabase.rpc(
           "request_whatsapp_channel_activation",
           {
@@ -1559,29 +1648,9 @@ serve(async (req) => {
           const result = await connectUazChannel(target, callerId, requestId, true);
           return jsonResponse(req, { success: true, ...result });
         }
-        if (!targetAdapter.getConnectionStatus) {
-          throw new ChannelActionError(
-            409,
-            "TARGET_HEALTH_UNAVAILABLE",
-            "Teste o canal alvo antes de concluir a troca.",
-          );
-        }
-        if (!target.manual_echo_verified_at) {
-          throw new ChannelActionError(
-            409,
-            "TARGET_CONVERSATION_PARITY_UNVERIFIED",
-            "Envie uma mensagem de teste pelo celular da loja e aguarde o callback antes de concluir a troca.",
-          );
-        }
-        const targetCredentials = await resolveChannelCredentials(supabase, target);
-        const health = await targetAdapter.getConnectionStatus(targetCredentials);
-        if (!health.connected) {
-          throw new ChannelActionError(
-            409,
-            "TARGET_NOT_CONNECTED",
-            "O canal alvo não está conectado. O canal atual foi preservado.",
-          );
-        }
+        // Migração já conferiu antes da intenção; a prova de eco é reexigida no
+        // banco (trigger enforce_whatsapp_conversation_parity_on_activation).
+        health ??= await assertSwitchTargetReady(target);
         const { data: healthWritten, error: healthWriteError } = await supabase
           .from("whatsapp_channels")
           .update({

@@ -184,7 +184,9 @@ describe('actual worker Request and existing dispatcher hop', () => {
     expect(f.internalRequests).toHaveLength(1);
     expect(await f.internalRequests[0].request.json()).toEqual({ action: 'dispatch_existing', job_id: io.jobId });
     expect(rpcs).toEqual(['maintain_and_select_whatsapp_automation_work', 'purge_whatsapp_automation_workers']);
-    expect(io.calls.operations).toEqual(lookupFailure ? [] : ['read:reservations', 'read:units', 'read:organizations', 'read:customers', 'read:platform_flags']);
+    expect(io.calls.operations).toEqual(lookupFailure ? [] : ['read:reservations', 'read:units', 'read:organizations', 'read:customers']);
+    expect(io.queries.filter(q => q.table === 'platform_flags' && q.predicates.key === 'whatsapp_automation_dispatch'))
+      .toHaveLength(lookupFailure ? 0 : 1);
     expect(io.calls.post).toBe(0); expect(io.unexpected).toEqual([]);
     if (lookupFailure) expect(ledgerReads).toEqual([{ id: io.jobId }]);
     expect((await response.json()).work).toEqual({ expired_count: 0, actions: 1, claim_budget_used: 1, errors: lookupFailure ? 1 : 0, deadline_reached: false });
@@ -192,35 +194,59 @@ describe('actual worker Request and existing dispatcher hop', () => {
 });
 
 describe('actual existing resend Request preserves acceptance authority', () => {
-  function setup(state: string | null, role: Parameters<typeof createAutomationEndpointIO>[0] = 'owner') {
+  function setup(state: string | null, role: Parameters<typeof createAutomationEndpointIO>[0] = 'owner',
+    kind: 'confirmation' | 'waitlist_entered' | 'waitlist_table_ready' = 'confirmation', legacyResponse?: unknown) {
     const io = createAutomationEndpointIO(role, true);
+    const waitlistId = id(77);
     Object.assign(io.row, { state: state ?? 'queued', provider_message_id: null, posting_started_at: null });
+    if (kind === 'waitlist_table_ready') Object.assign(io.row, { kind, reservation_id: null, waitlist_id: waitlistId });
     io.controls.gate = false;
-    const reads: string[] = [], controls = { adopted: true, foreignResource: false };
+    const reads: string[] = [], controls = { adopted: legacyResponse === undefined, foreignResource: false };
     const client = { ...io.db, from(table: string) {
-      if (!['whatsapp_automation_jobs', 'whatsapp_automation_adoptions', 'reservations'].includes(table)) return io.db.from(table);
+      if (!['whatsapp_automation_jobs', 'whatsapp_automation_adoptions', 'reservations', 'waitlist'].includes(table)) return io.db.from(table);
       return { select(columns: string) {
-        const isLedger = table === 'whatsapp_automation_jobs' && columns === 'id,state,provider_message_id,posting_started_at';
+        const isLedger = table === 'whatsapp_automation_jobs' && columns === 'id,state,provider_message_id,posting_started_at,expires_at';
         const isAdoption = table === 'whatsapp_automation_adoptions' && columns === 'unit_id';
-        const isResource = table === 'reservations' && columns === 'id,unit_id';
+        const isResource = (table === 'reservations' || table === 'waitlist') && columns === 'id,unit_id';
+        if (legacyResponse !== undefined && table === 'waitlist' && columns === 'unit_id, customer_id') {
+          return { eq() { return this; }, async maybeSingle() { return { data: null, error: { code: 'synthetic_no_provider' } }; } };
+        }
+        if (legacyResponse !== undefined && table === 'waitlist' && columns === 'id, unit_id, customer_name, customer_phone, party_size, code, created_at') {
+          return { eq() { return this; }, async maybeSingle() { return { data: { id: waitlistId, unit_id: io.ids.unit,
+            customer_name: 'Synthetic', customer_phone: '11999996601', party_size: 2, code: 77, created_at: io.nowISO }, error: null }; } };
+        }
         if (!isLedger && !isAdoption && !isResource) return io.db.from(table).select(columns);
         const predicates: Row = {};
         const q = { eq(key: string, value: unknown) { predicates[key] = value; return q; }, async maybeSingle() {
           reads.push(table);
           if (isResource) {
-            expect(predicates).toEqual({ id: io.ids.reservation });
-            return { data: { id: io.ids.reservation, unit_id: controls.foreignResource ? id(99) : io.ids.unit }, error: null };
+            const resourceId = kind === 'confirmation' ? io.ids.reservation : waitlistId;
+            expect(predicates).toEqual({ id: resourceId });
+            return { data: { id: resourceId, unit_id: controls.foreignResource ? id(99) : io.ids.unit }, error: null };
           }
-          expect(predicates).toEqual(isLedger ? { unit_id: io.ids.unit, kind: 'confirmation', reservation_id: io.ids.reservation } : { unit_id: io.ids.unit });
-          return { data: isLedger ? state === null ? null : { id: io.jobId, state, provider_message_id: io.row.provider_message_id, posting_started_at: io.row.posting_started_at }
+          expect(predicates).toEqual(isLedger ? { unit_id: io.ids.unit, kind,
+            [kind === 'confirmation' ? 'reservation_id' : 'waitlist_id']: kind === 'confirmation' ? io.ids.reservation : waitlistId } : { unit_id: io.ids.unit });
+          return { data: isLedger ? state === null ? null : { id: io.jobId, state, provider_message_id: io.row.provider_message_id,
+            posting_started_at: io.row.posting_started_at, expires_at: io.row.expires_at }
             : controls.adopted ? { unit_id: io.ids.unit } : null, error: null };
         } }; return q;
       } };
     } };
-    const harness = createEdgeRequestHarness({ env, now: Date.parse(io.nowISO), createClient: () => client,
-      internalHops: [{ from: 'resend-notification', to: 'send-scheduled-whatsapp' }] }); fixtures.push(harness);
-    const request = (kind = 'confirmation') => harness.request('resend-notification', new Request(env.SUPABASE_URL, { method: 'POST',
-      headers: { Authorization: 'Bearer synthetic-jwt' }, body: JSON.stringify({ kind, unit_id: io.ids.unit, reservation_id: io.ids.reservation }) }));
+    const legacyClient = legacyResponse === undefined ? client : { ...client, from(table: string) {
+      if (table === 'units') return { select(columns: string) { expect(columns).toBe('name'); return {
+        eq() { return this; }, async maybeSingle() { return { data: { name: 'Synthetic Unit' }, error: null }; } }; } };
+      if (table === 'waitlist_message_templates') return { select(columns: string) { expect(columns).toBe('customized, body'); return {
+        eq() { return this; }, async maybeSingle() { return { data: null, error: null }; } }; } };
+      return client.from(table);
+    } };
+    const harness = createEdgeRequestHarness({ env, now: Date.parse(io.nowISO), createClient: () => legacyClient,
+      internalHops: [{ from: 'resend-notification', to: 'send-scheduled-whatsapp' },
+        ...(legacyResponse === undefined ? [] : [{ from: 'resend-notification' as const, to: 'send-whatsapp' as const }])],
+      afterInternalResponse: (_from, to, response) => to === 'send-whatsapp'
+        ? new Response(JSON.stringify(legacyResponse), { status: 200, headers: { 'Content-Type': 'application/json' } }) : response }); fixtures.push(harness);
+    const request = (requestedKind: string = kind) => harness.request('resend-notification', new Request(env.SUPABASE_URL, { method: 'POST',
+      headers: { Authorization: 'Bearer synthetic-jwt' }, body: JSON.stringify({ kind: requestedKind, unit_id: io.ids.unit,
+        [kind === 'confirmation' ? 'reservation_id' : 'waitlist_id']: kind === 'confirmation' ? io.ids.reservation : waitlistId }) }));
     return { io, controls, reads, harness, request };
   }
   it.each(['accepted', 'reconciled', 'uncertain', 'posting', 'needs_review', 'expired', 'failed', 'rejected'])('refuses %s without new dispatcher hop or provider POST', async state => {
@@ -238,6 +264,43 @@ describe('actual existing resend Request preserves acceptance authority', () => 
     expect(await f.harness.internalRequests[0].request.json()).toEqual({ action: 'dispatch_existing', job_id: f.io.jobId });
     expect(f.io.calls.post).toBe(0); expect(f.io.unexpected).toEqual([]);
   });
+  it('table-ready resend uses its pinned job and no legacy text', async () => {
+    const f = setup('blocked', 'owner', 'waitlist_table_ready');
+    expect((await f.request()).status).toBe(409);
+    expect(f.reads.slice(0, 2)).toEqual(['waitlist', 'whatsapp_automation_jobs']);
+    expect(f.harness.internalRequests).toHaveLength(1);
+    expect(await f.harness.internalRequests[0].request.json()).toEqual({ action: 'dispatch_existing', job_id: f.io.jobId });
+    expect(f.io.calls.post).toBe(0); expect(f.io.unexpected).toEqual([]);
+  });
+  it('table-ready resend expires at its pinned ledger deadline without a hop', async () => {
+    const f = setup('queued', 'owner', 'waitlist_table_ready');
+    f.io.row.expires_at = '2026-10-05T14:59:59Z';
+    const response = await f.request();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: false, discarded: true, error: 'message_expired' });
+    expect(f.harness.internalRequests).toEqual([]); expect(f.io.calls.post).toBe(0);
+  });
+  it('adopted table-ready without a job refuses to reconstruct a message', async () => {
+    const f = setup(null, 'owner', 'waitlist_table_ready');
+    expect((await f.request()).status).toBe(409);
+    expect(f.reads).toEqual(['waitlist', 'whatsapp_automation_jobs', 'whatsapp_automation_adoptions']);
+    expect(f.harness.internalRequests).toEqual([]);
+  });
+  it.each([null, {}])('legacy waitlist resend rejects malformed 2xx payload %j', async payload => {
+    const f = setup(null, 'owner', 'waitlist_entered', payload);
+    const response = await f.request();
+    expect(response.status, JSON.stringify({ body: await response.clone().json(), logs: f.harness.logs,
+      unexpected: f.io.unexpected, reads: f.reads, hops: f.harness.internalRequests.map(request => request.to) })).toBe(502);
+    expect(await response.json()).toMatchObject({ success: false, error: 'send_failed' });
+    expect(f.harness.internalRequests.map(request => request.to)).toEqual(['send-whatsapp']);
+  });
+  it('never-adopted waitlist resend preserves the legacy success contract', async () => {
+    const f = setup(null, 'owner', 'waitlist_entered', { success: true });
+    const response = await f.request();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true });
+    expect(f.harness.internalRequests.map(request => request.to)).toEqual(['send-whatsapp']);
+  });
   it('adopted missing job cannot invent a new producer fact', async () => {
     const f = setup(null); expect((await f.request()).status).toBe(409);
     expect(f.reads).toEqual(['reservations', 'whatsapp_automation_jobs', 'whatsapp_automation_adoptions']);
@@ -248,7 +311,7 @@ describe('actual existing resend Request preserves acceptance authority', () => 
     expect((await f.request()).status).toBe(403); expect(f.reads).toEqual(['reservations']); expect(f.harness.internalRequests).toEqual([]);
   });
   it('unauthorized caller and unsupported kind have no automation I/O', async () => {
-    const f = setup('blocked', 'outsider'); expect((await f.request()).status).toBe(401);
-    expect((await f.request('voucher_issued')).status).toBe(400); expect(f.reads).toEqual([]); expect(f.harness.internalRequests).toEqual([]);
+    const f = setup('blocked', 'outsider'); expect((await f.request()).status).toBe(403);
+    expect((await f.request('voucher_issued')).status).toBe(400); expect(f.reads).toEqual(['reservations']); expect(f.harness.internalRequests).toEqual([]);
   });
 });

@@ -25,4 +25,15 @@ describe('authorized technical delivery DTO', () => {
     if (fault === 'preconfiguration') dto.rows[0].reconcile_required = true;
     expect(() => parseAutomationDeliveryState(dto, 50)).toThrow('automation_delivery_state_invalid');
   });
+  it('accepts cancellation on a reservation and table-ready on a waitlist entry', () => {
+    const cancelled = fixture();
+    Object.assign(cancelled.rows[0], { kind: 'cancellation', reason: 'reservation_not_cancelled' });
+    expect(parseAutomationDeliveryState(cancelled, 50).rows[0]).toMatchObject({ kind: 'cancellation', reason: 'reservation_not_cancelled', reservation_id: id });
+    const ready = fixture();
+    Object.assign(ready.rows[0], { kind: 'waitlist_table_ready', reservation_id: null, waitlist_id: id });
+    expect(parseAutomationDeliveryState(ready, 50).rows[0]).toMatchObject({ kind: 'waitlist_table_ready', waitlist_id: id });
+    const wrong = fixture();
+    Object.assign(wrong.rows[0], { kind: 'cancellation', reservation_id: null, waitlist_id: id });
+    expect(() => parseAutomationDeliveryState(wrong, 50)).toThrow('automation_delivery_state_invalid');
+  });
 });

@@ -1,7 +1,7 @@
 export const DELIVERY_STATES = ['queued', 'claimed', 'posting', 'accepted', 'blocked', 'expired', 'uncertain', 'retry_wait', 'needs_review', 'failed', 'reconciled', 'paused', 'rejected'] as const;
-export const DELIVERY_KINDS = ['confirmation', 'reminder_d1', 'survey_d1', 'waitlist_entered', 'waitlist_feedback', 'voucher_issued'] as const;
+export const DELIVERY_KINDS = ['confirmation', 'reminder_d1', 'survey_d1', 'waitlist_entered', 'waitlist_feedback', 'voucher_issued', 'cancellation', 'waitlist_table_ready'] as const;
 export const DELIVERY_REASONS = [
-  'channel_unconfigured', 'binding_unconfigured', 'template_unconfigured', 'reservation_pending', 'payment_incompatible', 'reservation_not_confirmed',
+  'channel_unconfigured', 'binding_unconfigured', 'template_unconfigured', 'reservation_pending', 'payment_incompatible', 'reservation_not_confirmed', 'reservation_not_cancelled',
   'reservation_changed', 'reservation_past', 'reservation_wrong_day', 'survey_already_answered', 'waitlist_not_waiting', 'waitlist_not_seated',
   'waitlist_wrong_day', 'waitlist_changed', 'voucher_not_active', 'voucher_expired', 'voucher_changed', 'customer_not_alive', 'recipient_changed',
   'do_not_contact', 'invalid_timezone', 'service_suspended', 'channel_unavailable', 'channel_changed', 'binding_changed', 'dispatch_paused',

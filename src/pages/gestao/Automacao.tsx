@@ -88,6 +88,8 @@ import {
 import { useWhatsAppHealth } from "@/hooks/useWhatsAppHealth";
 import { ResponsiveDialog, ResponsiveDialogContent, ResponsiveDialogHeader, ResponsiveDialogTitle, ResponsiveDialogBody } from "@/components/ui/responsive-dialog";
 import { DatafyAdminCard } from "@/components/whatsapp/DatafyAdminCard";
+import { useOfficialConnection } from "@/hooks/useOfficialConnection";
+import { migrationProviderLabel, resolveReplacedChannel } from "@/features/whatsapp/official-migration";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
 import type { WhatsAppChannel, WhatsAppProvider } from "@/types/reserva";
 import { formatPhone } from "@/lib/utils";
@@ -292,8 +294,35 @@ function AdminQrCode({ value }: { value: string }) {
     : <canvas ref={canvasRef} aria-label="QR Code da conexão UazAPI" className="mx-auto h-64 w-64 max-w-full" />;
 }
 
+/**
+ * Corte de migração no canal oficial: o que é substituído e o que fazer logo
+ * depois. Só monta com o diálogo aberto; a autoridade do corte segue no SQL.
+ */
+function DatafyCutoverNotice({ unitId, channels }: { unitId: string; channels: WhatsAppChannel[] }) {
+  const official = useOfficialConnection(unitId);
+  const migration = official.data?.migration ?? null;
+  if (!migration) {
+    return official.isError
+      ? <p className="text-sm text-destructive">Não foi possível consultar o estado da migração.</p>
+      : null;
+  }
+  const replaced = resolveReplacedChannel(channels);
+  const replacedId = replaced ? ` ${replaced.id.slice(0, 8)}` : "";
+  return (
+    <div className="space-y-1 text-sm text-muted-foreground">
+      <p>Migração: substitui o canal {migrationProviderLabel(migration.fromProvider)}{replacedId}.</p>
+      <p>
+        {official.data?.templatesPending
+          ? "Templates de automação ainda não liberados para esta unidade."
+          : "Despacho de templates já adotado nesta unidade."}
+      </p>
+      <p className="font-medium text-foreground">Libere o despacho de templates logo após a troca.</p>
+    </div>
+  );
+}
+
 function ChannelsTab({ unitId, defaultProvider }: { unitId: string; defaultProvider?: WhatsAppProvider }) {
-  const { data: channels, isLoading, isError, error, refetch } = useWhatsAppChannels(unitId);
+  const { data: channels, isLoading, isError, isSuccess, error, refetch } = useWhatsAppChannels(unitId);
   const { data: providerMetadata = [] } = useWhatsAppProviderMetadata(unitId);
   const deleteChannel = useDeleteChannel(unitId);
   const testChannel = useTestChannel(unitId);
@@ -339,7 +368,13 @@ function ChannelsTab({ unitId, defaultProvider }: { unitId: string; defaultProvi
         </Button>
       </div>
 
-      <DatafyAdminCard unitId={unitId} channels={channels ?? []} />
+      <DatafyAdminCard
+        unitId={unitId}
+        channels={channels ?? []}
+        channelsReady={isSuccess}
+        channelsError={isError}
+        onRetryChannels={() => refetch()}
+      />
       {isLoading ? (
         <div className="space-y-3">{[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
       ) : isError ? (
@@ -474,6 +509,7 @@ function ChannelsTab({ unitId, defaultProvider }: { unitId: string; defaultProvi
                                       ? "O canal atual só será substituído depois que conexão e eco manual forem confirmados ao vivo."
                                       : "O canal só será ativado depois que conexão e eco manual forem confirmados ao vivo."}
                                   </AlertDialogDescription>
+                                  {ch.provider === "datafy" && <DatafyCutoverNotice unitId={unitId} channels={channels} />}
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
                                   <AlertDialogCancel>Cancelar</AlertDialogCancel>

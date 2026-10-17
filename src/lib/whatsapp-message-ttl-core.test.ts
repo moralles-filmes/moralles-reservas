@@ -99,9 +99,15 @@ describe("decideMessageTtl — reserva vence em BRT, não em UTC", () => {
 
 describe("decideMessageTtl — fail-open em toda incerteza", () => {
   it("kind sem prazo definido segue, com motivo próprio", () => {
-    const r = decideMessageTtl({ kind: "cancellation", factAt: null, now: Date.now() });
+    const r = decideMessageTtl({ kind: "confirmation_email", factAt: null, now: Date.now() });
     expect(r.decision).toBe("send");
     expect(r.reason).toBe("unmapped_kind");
+  });
+
+  it("cancellation tem prazo de 24h porque o ledger exige expires_at", () => {
+    expect(MESSAGE_TTL_MS.cancellation).toBe(24 * 60 * 60 * 1000);
+    expect(decideMessageTtl({ kind: "cancellation", factAt: FACT, now: FACT_MS + 24 * 60 * 60 * 1000 + 1 }).decision).toBe("discard");
+    expect(decideMessageTtl({ kind: "cancellation", factAt: null, now: Date.now() }).reason).toBe("missing_fact_at");
   });
 
   it("produtor que não passa fact_at não é barrado", () => {
