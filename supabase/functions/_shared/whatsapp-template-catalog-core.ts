@@ -207,9 +207,10 @@ function validateParameter(schema: TemplateVariable, input: unknown, context?: T
 }
 
 /** Returns the same values for provider parameters and preview/history; never expands variables recursively. */
-export function renderTemplate(id: TemplateId, input: readonly unknown[], context?: TemplateRenderContext): TemplateRender {
-  if (!Object.prototype.hasOwnProperty.call(TEMPLATE_CATALOG, id)) throw new Error('template_unknown');
-  const template = TEMPLATE_CATALOG[id];
+export function renderTemplateDefinition(
+  template: Pick<TemplateDefinition, 'variables' | 'body' | 'footer'>,
+  input: readonly unknown[], context?: TemplateRenderContext,
+): TemplateRender {
   if (!Array.isArray(input) || input.length !== template.variables.length) throw new Error('template_parameter_count');
   const parameters = template.variables.map((schema, position) => validateParameter(schema, input[position], context));
   const body = template.body.replace(/\{\{(\d+)\}\}/g, (_match, position: string) => {
@@ -218,6 +219,11 @@ export function renderTemplate(id: TemplateId, input: readonly unknown[], contex
     return parameters[index];
   });
   return { body, footer: template.footer, parameters };
+}
+
+export function renderTemplate(id: TemplateId, input: readonly unknown[], context?: TemplateRenderContext): TemplateRender {
+  if (!Object.prototype.hasOwnProperty.call(TEMPLATE_CATALOG, id)) throw new Error('template_unknown');
+  return renderTemplateDefinition(TEMPLATE_CATALOG[id], input, context);
 }
 
 interface HashDefinition {
