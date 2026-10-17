@@ -1,10 +1,10 @@
--- Migração de loja para o oficial (migration 20261016140200): o que o `65`
+-- Migração de loja para o oficial (migration 20261016182000): o que o `65`
 -- precisa além da cadeia do 63. Somente banco descartável.
 --
 -- SEQUÊNCIA (mesmo banco do 62/63, ver a seção "Datafy — migração de loja em
 -- produção (65)" no README):
 --   00 -> 00a -> 61a -> 20261014120000 -> 62a -> 63a -> 20261014170540
---   -> 65a (este) -> 65 (esperado: ERROR, RED) -> 20261016140200 -> 65 ...
+--   -> 65a (este) -> 65 (esperado: ERROR, RED) -> 20261016182000 -> 65 ...
 --
 -- O `65` não precisa de schema novo: `uazapi` já está no CHECK de provider do
 -- 61a, `is_active`/`manual_echo_verified_at`/`activation_requested_at` vêm do
@@ -25,7 +25,7 @@ begin
   if exists (select 1 from pg_catalog.pg_attribute
               where attrelid = to_regclass('public.whatsapp_official_connection_grants')
                 and attname = 'replaces_channel_id' and not attisdropped) then
-    raise exception '65a exige rodar ANTES da migration 20261016140200: o snapshot da ACL de antes seria a ACL de depois e o M9 nao mediria nada. Recrie o banco.';
+    raise exception '65a exige rodar ANTES da migration 20261016182000: o snapshot da ACL de antes seria a ACL de depois e o M9 nao mediria nada. Recrie o banco.';
   end if;
   if to_regprocedure('public.assert_datafy_first_configuration(uuid)') is null
      or to_regprocedure('public.finalize_datafy_channel_subscription(uuid,uuid,uuid,uuid,uuid,uuid,text,bigint,text)') is null

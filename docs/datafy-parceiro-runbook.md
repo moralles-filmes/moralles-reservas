@@ -85,7 +85,7 @@ Spec: [migração de loja em produção](superpowers/specs/2026-10-16-datafy-mig
 8. **Encerramento.** Após 7 dias estáveis, desconectar a instância UazAPI. A linha fica inativa como histórico.
 
 **Deploy da Fase 1:**
-1. `supabase db push` da migration `20261016140200_datafy_migration_grant.sql`;
+1. `supabase db push` da migration `20261016182000_datafy_migration_grant.sql`;
 2. deploy de `manage-channels` **logo em seguida**;
 3. publicação do frontend.
 
@@ -95,13 +95,13 @@ Não criar liberação entre o `db push` e o deploy. Nesse intervalo o bundle an
 
 ## Preparação da Fase 5 — matriz integrada (rollout ainda não executado)
 
-Esta matriz foi derivada de `git diff --name-only origin/main...HEAD` na branch `feat/datafy-migracao-uazapi`, incluindo as Fases 1–4, e complementada pela migration local da Fase 5. O pré-voo autorizado identificou `20261016140000_whatsapp_channel_delete_detach.sql` e `20261016140100_cron_cleanup_webhook_executions.sql` já aplicadas no alvo; a migration Datafy foi renomeada para `20261016140200_datafy_migration_grant.sql` sem alterar o SQL. `supabase db push --dry-run --skip-vault --project-ref gbabxcrntkwgblgqsiit` com CLI 2.120.0 confirmou, na ordem, as **nove migrations desta branch** da tabela abaixo como pendentes. Nenhuma foi aplicada; não houve deploy ou chamada a provider. **NO-GO** enquanto os demais gates do alvo, CI, cabeçalho `CF-Connecting-IP`, janela da fila e autorizações de produção não estiverem concluídos.
+Esta matriz foi derivada de `git diff --name-only origin/main...HEAD` na branch `feat/datafy-migracao-uazapi`, incluindo as Fases 1–4, e complementada pela migration local da Fase 5. Um dry-run anterior com CLI 2.120.0 confirmou **nove migrations pendentes** quando a migration Datafy se chamava `20261016140200_datafy_migration_grant.sql`. Depois, o alvo aplicou `20261016180000_whatsapp_instance_delete_without_cost.sql` e `20261016181000_audit_log_member_read_allowlist.sql` de `main`. O dry-run seguinte recusou `20261016140200` com `DbPushMissingRemoteError`; o arquivo Datafy foi renomeado para `20261016182000_datafy_migration_grant.sql`, com SQL idêntico. O novo `supabase db push --dry-run --skip-vault --project-ref gbabxcrntkwgblgqsiit` terminou com código 0 e confirmou exatamente as **nove migrations pendentes** da tabela abaixo, na ordem indicada. Nenhuma migration Datafy foi aplicada; não houve deploy ou chamada a provider. **NO-GO** pelos demais gates e autorizações de produção. Repetir o dry-run se `main` avançar antes da escrita.
 
 **Banco primeiro.** As migrations novas no diff local, em ordem de filename, são:
 
 | Ordem | Migration | Dependência relevante |
 |---|---|---|
-| 1 | `20261016140200_datafy_migration_grant.sql` | Grant preso ao canal substituído e retenção da ativação até corte manual; não criar liberação entre SQL e `manage-channels` novo. |
+| 1 | `20261016182000_datafy_migration_grant.sql` | Grant preso ao canal substituído e retenção da ativação até corte manual; não criar liberação entre SQL e `manage-channels` novo. |
 | 2 | `20261017120000_whatsapp_templates_table_ready_cancellation.sql` | CHECKs, catálogo e RPCs aceitam os dois modelos/kinds antes dos bundles com catálogo de nove. |
 | 3 | `20261017130000_reservation_cancellation_fact.sql` | Fato `cancelled_at` antes de `send-cancellation` novo. |
 | 4 | `20261017140000_waitlist_table_ready_server_fact.sql` | Fato de mesa pronta no servidor antes de `notify-waitlist-ready` novo. |

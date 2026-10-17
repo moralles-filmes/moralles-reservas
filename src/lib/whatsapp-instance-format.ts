@@ -107,6 +107,7 @@ const NOTE_ACTION_LABEL: Record<(typeof INSTANCE_NOTE_ACTIONS)[number], string> 
   REQUEST_CANCELLATION: "cancelamento solicitado",
   CONFIRM_END: "encerramento confirmado",
   CORRECT_CYCLE_COST: "custo de ciclo corrigido",
+  DELETE: "instância apagada",
 };
 
 export function instanceNoteActionLabel(action: string): string {
@@ -177,4 +178,49 @@ export function conflictLifecycleLabel(state: string): string {
   if (state === "AWAITING_PROVISION") return "aguardando provisionamento";
   if (state === "ACTIVE") return "ativa";
   return state;
+}
+
+/** Aba do Inventário de instâncias. */
+export type InstanceTab = "ativas" | "encerradas";
+
+/** Aba a partir de `?aba=`. Só o valor exato "encerradas" abre as encerradas. */
+export function instanceTab(param: string | null): InstanceTab {
+  return param === "encerradas" ? "encerradas" : "ativas";
+}
+
+/**
+ * Encerrada = `ENDED`. Todo o resto — inclusive estado que a tela ainda não
+ * conhece — fica em Ativas: esconder uma instância viva custa mais que mostrar
+ * uma encerrada a mais.
+ */
+export function partitionInstancesByTab<T extends { lifecycle_state: string }>(
+  instances: readonly T[],
+): { ativas: T[]; encerradas: T[] } {
+  const ativas: T[] = [];
+  const encerradas: T[] = [];
+  for (const inst of instances) {
+    if (inst.lifecycle_state === "ENDED") encerradas.push(inst);
+    else ativas.push(inst);
+  }
+  return { ativas, encerradas };
+}
+
+/**
+ * Se a tela OFERECE "Apagar". Quem decide se PODE é a RPC
+ * `delete_whatsapp_instance_without_cost`; aqui só se evita mostrar botão que o
+ * banco vai recusar. `has_cost_history` ausente (EF anterior a esta versão) não
+ * oferece. `blockedByAlerts` é true quando há alerta aberto da instância (o
+ * banco recusa com `open_alerts`) ou quando os alertas ainda não são
+ * conhecidos (carregando/erro): sem saber, não se oferece. É obrigatório de
+ * propósito: quem esquecer o argumento não pode oferecer o botão (fail-closed).
+ */
+export function canOfferInstanceDelete(
+  inst: {
+    lifecycle_state: string;
+    has_cost_history?: boolean;
+  },
+  blockedByAlerts: boolean,
+): boolean {
+  if (blockedByAlerts) return false;
+  return inst.lifecycle_state === "ENDED" && inst.has_cost_history === false;
 }

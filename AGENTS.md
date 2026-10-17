@@ -81,6 +81,10 @@ Runbooks: `docs/RUNBOOK-ROTACAO-CREDENCIAIS.md`, `docs/whatsapp-multiprovider-ua
 - **Lote que lê tabela inteira pagina com `.range()` até o fim** — PostgREST trunca em 1000 sem aviso.
 - **Erro de leitura de gate/flag nunca vira "OFF" ou "permitido"** sem decisão explícita de polaridade; cada gate documenta se falha aberto ou fechado.
 
+- **Membro lê em `audit_log` só `customers`, `reservations` e `unit_members`; a policy, a lista da UI e seus rótulos mudam juntos.** O trigger também grava dados internos da plataforma; alinhe `unit_member_read_audit`, `src/lib/audit-log-tables.ts`, `Auditoria.tsx` e `scripts/audit-log-member-policy.test.ts` antes de expor outra tabela. [migration](supabase/migrations/20261016181000_audit_log_member_read_allowlist.sql).
+- **Instância WhatsApp só é excluída pela RPC `delete_whatsapp_instance_without_cost`, com ator, se estiver `ENDED`, nunca tiver custo atual, de ciclo ou histórico, nem alerta `OPEN`/`ACKNOWLEDGED`.** A RPC preserva o retrato dos ciclos no `audit_log`; sua retenção deve manter o histórico de `whatsapp_instances` para a checagem não falhar aberto. [migration](supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql).
+- **O núcleo `whatsapp-instance-delete-core.ts` só traduz a decisão da RPC, e as nove ações de `whatsapp_instance_notes` seguem o CHECK da última migration que o redefine.** Duplicar a regra de exclusão em TypeScript ou esquecer uma ação no CHECK faz painel e banco divergirem. [núcleo](supabase/functions/_shared/whatsapp-instance-delete-core.ts), [migration](supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql).
+
 ## 9. Deploy
 
 - Frontend: push em `main` → Vercel. Edge Function: `supabase functions deploy <nome>`, depois das migrations, flags e segredos de que ela depende.

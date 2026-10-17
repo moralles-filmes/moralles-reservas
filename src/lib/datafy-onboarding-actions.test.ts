@@ -179,7 +179,7 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
         if (missingWrite === ONBOARDINGS) { missingWrite = null; return { data: null, error: { code: "finalize_failed" } }; }
         const g = tables[GRANTS].find((row) => row.id === args.p_grant_id);
         if (g?.revoked_at) return { data: "grant_revoked", error: null };
-        // Espelho do bloco <ativacao-retida> da 20261016140200: liberação de
+        // Espelho do bloco <ativacao-retida> da 20261016182000: liberação de
         // migração usada não roda autoridade nem ativa; os demais caminhos
         // (inclusive p_grant_id nulo) rodam a autoridade e só ativam com
         // binding ausente ou datafy. Recusa da autoridade desfaz tudo (rollback).
