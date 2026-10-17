@@ -15,6 +15,9 @@ import {
   confirmEndToast,
   confirmEndToastFromResponse,
   conflictLifecycleLabel,
+  instanceTab,
+  partitionInstancesByTab,
+  canOfferInstanceDelete,
 } from "./whatsapp-instance-format";
 
 describe("formatCents — desconhecido nunca vira R$ 0,00", () => {
@@ -245,5 +248,58 @@ describe("conflictLifecycleLabel — AWAITING_PROVISION nunca é 'ativa'", () =>
 
   it("estado desconhecido volta como ele mesmo, sem inventar rótulo", () => {
     expect(conflictLifecycleLabel("QUALQUER_COISA")).toBe("QUALQUER_COISA");
+  });
+});
+
+describe("instanceTab", () => {
+  it("só 'encerradas' abre a aba de encerradas", () => {
+    expect(instanceTab("encerradas")).toBe("encerradas");
+    expect(instanceTab(null)).toBe("ativas");
+    expect(instanceTab("ativas")).toBe("ativas");
+    expect(instanceTab("ENCERRADAS")).toBe("ativas");
+    expect(instanceTab("")).toBe("ativas");
+  });
+});
+
+describe("partitionInstancesByTab", () => {
+  it("ENDED vai para encerradas; todo o resto, inclusive estado desconhecido, para ativas", () => {
+    const r = partitionInstancesByTab([
+      { id: "a", lifecycle_state: "ACTIVE" },
+      { id: "b", lifecycle_state: "ENDED" },
+      { id: "c", lifecycle_state: "CANCELLATION_REQUESTED" },
+      { id: "d", lifecycle_state: "AWAITING_PROVISION" },
+      { id: "e", lifecycle_state: "ALGO_NOVO" },
+    ]);
+    expect(r.ativas.map((i) => i.id)).toEqual(["a", "c", "d", "e"]);
+    expect(r.encerradas.map((i) => i.id)).toEqual(["b"]);
+  });
+  it("preserva a ordem recebida", () => {
+    const r = partitionInstancesByTab([
+      { id: "x", lifecycle_state: "ENDED" },
+      { id: "y", lifecycle_state: "ENDED" },
+    ]);
+    expect(r.encerradas.map((i) => i.id)).toEqual(["x", "y"]);
+  });
+});
+
+describe("canOfferInstanceDelete", () => {
+  it("encerrada sem histórico de custo: oferece", () => {
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, false)).toBe(true);
+  });
+  it("encerrada com custo: não oferece", () => {
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: true }, false)).toBe(false);
+  });
+  it("não encerrada: não oferece, mesmo sem custo", () => {
+    expect(canOfferInstanceDelete({ lifecycle_state: "ACTIVE", has_cost_history: false }, false)).toBe(false);
+    expect(canOfferInstanceDelete({ lifecycle_state: "CANCELLATION_REQUESTED", has_cost_history: false }, false)).toBe(false);
+  });
+  it("campo ausente (EF anterior a esta versão): não oferece", () => {
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED" }, false)).toBe(false);
+  });
+  it("alerta aberto bloqueia, mesmo encerrada e sem custo", () => {
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, true)).toBe(false);
+  });
+  it("blockedByAlerts false mantém o comportamento", () => {
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, false)).toBe(true);
   });
 });

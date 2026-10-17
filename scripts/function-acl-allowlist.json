@@ -37,6 +37,9 @@
   "_service_only_whatsapp_ops_alerts": [
     "observe_whatsapp_ops_alerts(uuid)"
   ],
+  "_service_only_whatsapp_instance_delete": [
+    "delete_whatsapp_instance_without_cost(uuid,text,uuid)"
+  ],
   "_service_only_datafy_partner_onboarding": [
     "claim_datafy_onboarding_step(uuid,uuid,text,uuid,integer)",
     "release_datafy_onboarding_step(uuid,uuid,uuid,text,text,text)",

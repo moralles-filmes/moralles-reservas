@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -6,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -34,6 +37,10 @@ import {
   COST_SOURCE_OPTIONS,
   setCostToastFromResponse,
   confirmEndToastFromResponse,
+  instanceTab,
+  partitionInstancesByTab,
+  canOfferInstanceDelete,
+  type InstanceTab,
 } from "@/lib/whatsapp-instance-format";
 import {
   useWhatsappInstances,
@@ -163,13 +170,35 @@ type ReasonDialogKind =
   | { kind: "confirm_end"; instance: WhatsappInstance }
   | { kind: "reactivate"; instance: WhatsappInstance }
   | { kind: "resolve_alert"; alert: WhatsappInstanceAlert }
+  | { kind: "delete"; instance: WhatsappInstance }
   | null;
 
 export default function WhatsappInstances() {
   const instancesQuery = useWhatsappInstances();
   const alertsQuery = useWhatsappInstanceAlerts();
   const action = useWhatsappInstanceAction();
+  const queryClient = useQueryClient();
   const simulation = usePartnerSimulation();
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = instanceTab(searchParams.get("aba"));
+  const { ativas, encerradas } = useMemo(
+    () => partitionInstancesByTab(instancesQuery.data ?? []),
+    [instancesQuery.data],
+  );
+  const visibleInstances = tab === "encerradas" ? encerradas : ativas;
+
+  function setTab(next: InstanceTab) {
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        if (next === "encerradas") params.set("aba", "encerradas");
+        else params.delete("aba");
+        return params;
+      },
+      { replace: true },
+    );
+  }
 
   const unitsQuery = useAllUnits();
 
@@ -219,6 +248,15 @@ export default function WhatsappInstances() {
     [alertsQuery.data],
   );
 
+  // Alerta aberto bloqueia a exclusão no banco (`open_alerts`). Sem saber se há
+  // alerta (carregando, erro, sem dado), NÃO se oferece o botão: fail-closed.
+  const alertsKnown = !alertsQuery.isLoading && !alertsQuery.isError && alertsQuery.data !== undefined;
+  const instanceIdsWithOpenAlert = useMemo(() => {
+    const ids = new Set<string>();
+    for (const a of openAlerts) if (a.instance_id) ids.add(a.instance_id);
+    return ids;
+  }, [openAlerts]);
+
   const dispatcherOff = useMemo(
     () => openAlerts.some((a) => a.dispatch_enabled_at_enqueue === false),
     [openAlerts],
@@ -240,15 +278,22 @@ export default function WhatsappInstances() {
     // único retorno no instante da ação, e afirmar sucesso genérico esconde
     // justamente os casos que exigem uma segunda providência.
     successMsg: string | ((data: unknown) => string),
+    // Efeitos específicos da ação, SOMADOS ao toast e ao closeDialog padrão —
+    // nunca no lugar deles.
+    handlers?: { onSuccess?: () => void; onError?: (e: Error & { httpStatus?: number }) => void },
   ) {
     action.mutate(body, {
       onSuccess: (data: unknown) => {
         toast.success(typeof successMsg === "function" ? successMsg(data) : successMsg);
         closeDialog();
+        handlers?.onSuccess?.();
       },
       // A EF devolve mensagem curta em PT-BR; o hook já a extraiu do corpo
       // non-2xx que o invoke mascara.
-      onError: (e: Error) => toast.error(e.message),
+      onError: (e: Error & { httpStatus?: number }) => {
+        toast.error(e.message);
+        handlers?.onError?.(e);
+      },
     });
   }
 
@@ -318,7 +363,28 @@ export default function WhatsappInstances() {
           </Card>
         )}
 
-        {(instancesQuery.data ?? []).map((inst) => {
+        {/* Sem olhar isError: a lista abaixo segue renderizando o dado velho filtrado
+            pela aba, e um refetch que falha não pode prender o admin nela. O
+            banner de erro acima continua. */}
+        {!instancesQuery.isLoading && !!instancesQuery.data?.length && (
+          <Tabs value={tab} onValueChange={(v) => setTab(instanceTab(v))}>
+            <TabsList>
+              <TabsTrigger value="ativas">Ativas ({ativas.length})</TabsTrigger>
+              <TabsTrigger value="encerradas">Encerradas ({encerradas.length})</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        )}
+
+        {!instancesQuery.isLoading && !!instancesQuery.data?.length &&
+          !visibleInstances.length && (
+          <Card>
+            <CardContent className="py-6 text-sm text-muted-foreground">
+              {tab === "encerradas" ? "Nenhuma instância encerrada." : "Nenhuma instância ativa."}
+            </CardContent>
+          </Card>
+        )}
+
+        {visibleInstances.map((inst) => {
           const unknownDate = inst.cycle_source === "UNKNOWN";
           const busy = action.isPending &&
             (action.variables as { instance_id?: string } | undefined)?.instance_id === inst.id;
@@ -425,6 +491,24 @@ export default function WhatsappInstances() {
                   >
                     Corrigir vínculo
                   </Button>
+                  {canOfferInstanceDelete(inst, !alertsKnown || instanceIdsWithOpenAlert.has(inst.id)) && (
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={busy}
+                      onClick={() => setDialog({ kind: "delete", instance: inst })}
+                    >
+                      Apagar
+                    </Button>
+                  )}
+                  {alertsKnown
+                    && inst.lifecycle_state === "ENDED"
+                    && inst.has_cost_history === false
+                    && instanceIdsWithOpenAlert.has(inst.id) && (
+                    <span className="self-center text-xs text-muted-foreground">
+                      Resolva os alertas abertos para poder apagar.
+                    </span>
+                  )}
                   <Button
                     size="sm"
                     variant="ghost"
@@ -633,6 +717,7 @@ export default function WhatsappInstances() {
               {dialog?.kind === "confirm_end" && "Confirmar encerramento"}
               {dialog?.kind === "reactivate" && "Reativar instância"}
               {dialog?.kind === "resolve_alert" && "Resolver alerta"}
+              {dialog?.kind === "delete" && "Apagar instância"}
             </ResponsiveDialogTitle>
             <ResponsiveDialogDescription>
               O motivo é obrigatório e será registrado permanentemente com autoria e data.
@@ -785,6 +870,15 @@ export default function WhatsappInstances() {
               </p>
             )}
 
+            {dialog?.kind === "delete" && (
+              <p className="text-sm text-muted-foreground">
+                A instância e os ciclos dela somem para sempre. O histórico de ações e os alertas
+                continuam guardados, marcados como instância removida. Só instância encerrada e sem
+                custo registrado pode ser apagada. Ciclos com custo ainda não informado também
+                somem.
+              </p>
+            )}
+
             <div className="space-y-1">
               <Label htmlFor="reason">Motivo (fica registrado no histórico)</Label>
               <Textarea
@@ -800,6 +894,7 @@ export default function WhatsappInstances() {
                 Cancelar
               </Button>
               <Button
+                variant={dialog?.kind === "delete" ? "destructive" : "default"}
                 disabled={action.isPending || reasonTooShort}
                 onClick={() => {
                   if (!dialog) return;
@@ -880,6 +975,34 @@ export default function WhatsappInstances() {
                     run(
                       { action: "reactivate", instance_id: dialog.instance.id, reason },
                       "Cancelamento revertido.",
+                    );
+                  } else if (dialog.kind === "delete") {
+                    const deletedId = dialog.instance.id;
+                    run(
+                      { action: "delete_instance", instance_id: deletedId, reason },
+                      "Instância apagada.",
+                      {
+                        onSuccess: () => {
+                          // Sem isto o `onSettled` do hook refaz o detalhe da
+                          // instância que acabou de sumir, volta 404 e o cartão
+                          // mostra "Não foi possível carregar os ciclos." até a
+                          // lista tirá-lo da tela.
+                          setExpandedId((cur) => (cur === deletedId ? null : cur));
+                          queryClient.removeQueries({ queryKey: ["whatsapp-instance", deletedId] });
+                        },
+                        // 404/409: a instância deixou de ser apagável (outra
+                        // aba apagou, ganhou custo, saiu de ENDED), então o
+                        // diálogo aberto apontaria para algo que não pode ser
+                        // apagado. Em geral o botão some depois do refetch; a
+                        // exceção aceita (Adendo 2 da spec) é custo que só
+                        // existe no histórico do audit_log: `has_cost_history`
+                        // segue false, o botão volta e o banco recusa com 409
+                        // de novo. Qualquer outro erro (500, rede) mantém o
+                        // diálogo para nova tentativa.
+                        onError: (e) => {
+                          if (e.httpStatus === 404 || e.httpStatus === 409) closeDialog();
+                        },
+                      },
                     );
                   } else if (dialog.kind === "resolve_alert") {
                     run(

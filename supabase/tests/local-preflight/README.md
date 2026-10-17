@@ -61,6 +61,9 @@ presentes agendaria jobs apontando para lá.
 | `61a-datafy-partner-bootstrap.sql` | O que o `61` precisa e o `00` não tem: **default privileges** de tabela E de função emulando o Supabase (sem eles o C9 fica cego, medindo só o grant implícito a PUBLIC), grant de tabela em tudo que já existe em `public` (o `service_role` do C11 lê `units` pelo guard INVOKER) e o CHECK de `whatsapp_channels.provider` na forma da 110, que libera `datafy`. **Recusa rodar depois da migration.** |
 | `61-datafy-partner-onboarding.sql` | 25 casos e **seis controles positivos** (ordinais 105–135, C14 por último) da migration `20261014120000_datafy_partner_onboarding.sql` (Datafy parceiro): liberação (uma ativa por unidade, coerência, canal consumido da mesma unidade), onboarding (um aberto por unidade, uma liberação por onboarding vivo, credenciais que não sobrevivem ao fechamento, canal exigido depois de `open`, vínculos de tenant imutáveis), o CLAIM cercado (clique duplo, retomada do vencido com `must_reconcile` e registro do passo do dono morto, lease pelo TTL do dono, `failed` que não resolve a incerteza, cerca velha → 40001, unidade alheia → 42501, TTL 30..900 por igualdade), o índice único de `phone_number_id` lendo o número como o núcleo lê (aparado, vazio fora), ACL/RLS, `service_role` real, cascade e idempotência através de execuções. Os controles se desfazem sozinhos e por isso rodam sob ON_ERROR_STOP. **Banco PRÓPRIO** `datafy61`. |
 | `61b-concorrencia-datafy-onboarding.sh` | O CLIQUE DUPLO com DUAS sessões reais (Git Bash; `PGBIN`, `PGPORT`, `PGDB`). CONC-61-1: A segura o claim, B espera e recebe `claimed = f` sem cerca; CONC-61-2: controle de tempo; CONC-61-3: **controle positivo** — claim sem `for update`, os DOIS levam; restaura reaplicando a migration e confere o `md5`. Roda no banco do `61`, depois dele. |
+| `66-instance-delete.sql` | DEL-1..14 (ordinais 301–310, 313 e 316–318, migration `20261016180000`): a RPC `delete_whatsapp_instance_without_cost`. Encerrada sem custo e sem alerta aberto é apagada com o ciclo em cascata (e um retrato dele no `audit_log`), as notas (inclusive a `DELETE` nova) ficam com `instance_id` nulo e `instance_ref` intacto, e o `audit_log` grava o DELETE; custo atual, custo só em ciclo, custo anulado depois (histórico no `audit_log`), alerta `OPEN` ou `ACKNOWLEDGED`, estado não encerrado, id inexistente, motivo vazio e ator nulo são recusados sem apagar, e a precedência `not_ended` > `has_cost` > `open_alerts` é medida (DEL-12, DEL-13); o retrato do ciclo no `audit_log` é conferido com `organization_id` e `unit_id` da instância; ACL só `service_role`; migration aplicada duas vezes sem duplicar. Roda no banco `fase6c` da sequência base. |
+| `67-controles-instance-delete.sql` | CONTROLE-DEL-1..4 (ordinais 311, 312, 314, 315): tira do corpo real a checagem de custo em ciclo, a de estado, a de alerta aberto e a de custo no histórico, vê a instância de DEL-3/DEL-4/DEL-10/DEL-11 ser apagada, e desfaz a sabotagem por rollback de subbloco — sem reapply. Rodar sem `ON_ERROR_STOP`. |
+| `68-audit-log-member-allowlist.sql` | AUD-1..5 e CONTROLE-AUD-1 (ordinais 321–325 e 331, migration `20261016181000`): a policy `unit_member_read_audit` de `audit_log` com lista de tabelas. Membro da org lê `customers`/`reservations`/`unit_members` (pelas duas pernas, unidade e organização) e não lê `whatsapp_instances`/`whatsapp_implementations`/`organization_entitlement_overrides`/`whatsapp_instance_cycles` (o retrato dos ciclos que a RPC de exclusão grava); membro de outra org não lê nada da org A; platform admin lê as sete; migration aplicada duas vezes deixa uma policy. O controle recria a policy antiga num subbloco desfeito e vê o vazamento reaparecer. RLS de verdade (`set local role authenticated` + `request.jwt.claims`), banco **`aud67`** da sequência do advisor (00 → 01 → 09a → 106). O arquivo monta o estado de produção anterior à migration e a aplica (`\i`, duas vezes): rodar da raiz do repo. |
 
 ## Rodar
 
@@ -1941,6 +1944,59 @@ cobertura de todas unidades, filtro de tenant, snapshot de contagem/max timestam
 watermark estrito, relógio SQL e ACL service-only. Não prova RLS/PostgREST ou
 entrega ao endpoint externo; esses transportes usam fakes nos testes runtime.
 Encerre o cluster ao terminar. Em produção a migration segue somente `supabase db push`.
+
+### Exclusão de instância sem custo (66/67)
+
+Continua o banco `fase6c` da sequência base, depois de reaplicar 104 e 105:
+
+```bash
+P -f supabase/migrations/20260801200200_089_whatsapp_instance_alerts.sql   # o DEL-1 cria um alerta de instância
+P -f supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql
+P -f supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql   # idempotência (DEL-7)
+P -f supabase/tests/local-preflight/66-instance-delete.sql
+"$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d fase6c -f supabase/tests/local-preflight/67-controles-instance-delete.sql
+P -c "select ord, caso, veredito from t_res where ord between 301 and 318 order by ord;"
+P -c "select count(*) from t_res where ord between 301 and 318;"   # esperado: 18
+```
+
+Linha ausente também é falha: um `DO` que aborta no meio não grava linha, e olhar só `veredito <> 'PASSOU'` não mostra ausência. A contagem tem de dar 18 (301–310, 313 e 316–318 do 66; 311, 312, 314 e 315 do 67 — os ordinais dos dois arquivos se intercalam).
+
+O que NÃO prova: o caminho PostgREST/Edge Function (`delete_instance`) — esse é coberto pelo guardrail textual de `src/lib/whatsapp-instance-ef-write-guard.test.ts` e pelo teste da tela.
+
+### audit_log: leitura de membro por lista (68)
+
+Banco próprio, sequência do advisor até a 106 — é a única base com
+`app_private.is_unit_member/is_org_member/is_platform_admin`, `unit_members`,
+`platform_admins` e o `audit_log` de produção; o `fase6c` não tem `app_private`.
+O `68` liga a RLS do `audit_log` e recria as duas policies no estado de produção
+anterior à migration (a base não tem nenhuma), prova que a policy antiga VAZA
+(guarda de RED: aborta se o membro não enxergar as 4 linhas de plataforma),
+aplica a migration duas vezes por `\i` e mede os casos. Por isso roda **da raiz
+do repo** e pode ser repetido no mesmo banco.
+
+```bash
+export PGCLIENTENCODING=UTF8
+PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists aud67
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres aud67
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d aud67 -v ON_ERROR_STOP=1 "$@"; }
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/01-audit.sql
+P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
+P -f supabase/tests/local-preflight/68-audit-log-member-allowlist.sql
+P -c "select ord, caso, veredito from t_res where ord between 321 and 331 order by ord;"
+P -c "select count(*) from t_res where ord between 321 and 331;"   # esperado: 6
+```
+
+Linha ausente também é falha: confira a contagem (321–325 e 331 = 6), não só
+`veredito <> 'PASSOU'`. Os ordinais 326–330 ficam livres.
+
+O que NÃO prova: o caminho PostgREST (JWT real do GoTrue, `select` do
+`useAuditLog` pela API) — o papel e o JWT são simulados no SQL. A sonda pós-deploy
+(transação somente leitura, papel `authenticated`, JWT de um membro real) cobre
+essa metade. O acoplamento lista da policy ⇄ `TABLE_LABEL` de
+`src/pages/gestao/Auditoria.tsx` é de `scripts/audit-log-member-policy.test.ts`.
 
 ### Portabilidade do runtime histórico 25–60
 

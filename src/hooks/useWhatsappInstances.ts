@@ -28,6 +28,8 @@ export type WhatsappInstance = {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  /** Calculado pela EF: custo atual ou algum ciclo com custo. Ausente em EF antiga. */
+  has_cost_history?: boolean;
 };
 
 export type WhatsappInstanceCycle = {
