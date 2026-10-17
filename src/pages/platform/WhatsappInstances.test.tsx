@@ -19,12 +19,15 @@ const base = {
 const mocks = vi.hoisted(() => ({
   mutate: vi.fn(),
   instances: [] as unknown[],
+  alerts: { isLoading: false, isError: false, data: [] as unknown } as {
+    isLoading: boolean; isError: boolean; data: unknown;
+  },
 }));
 
 vi.mock("@/hooks/useWhatsappInstances", () => ({
   useWhatsappInstances: () => ({ isLoading: false, isError: false, data: mocks.instances, refetch: vi.fn() }),
   useWhatsappInstance: () => ({ isLoading: false, isError: false, data: { cycles: [] }, refetch: vi.fn() }),
-  useWhatsappInstanceAlerts: () => ({ isLoading: false, isError: false, data: [], refetch: vi.fn() }),
+  useWhatsappInstanceAlerts: () => ({ ...mocks.alerts, refetch: vi.fn() }),
   useWhatsappInstanceAction: () => ({ mutate: mocks.mutate, isPending: false, variables: undefined }),
   usePartnerSimulation: () => ({ mutate: vi.fn(), isPending: false, data: undefined, reset: vi.fn() }),
 }));
@@ -70,6 +73,7 @@ function openDeleteDialog() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mocks.alerts = { isLoading: false, isError: false, data: [] };
 });
 
 const setInstances = () => {
@@ -114,6 +118,53 @@ describe("Instâncias de WhatsApp — abas e exclusão", () => {
       instance_id: "i-teste",
       reason: "era instância de teste",
     });
+  });
+
+  const alertaDe = (instanceId: string, status: string) => ({
+    id: `al-${instanceId}-${status}`, subject_type: "INSTANCE", subject_id: instanceId,
+    instance_id: instanceId, alert_type: "DIVERGENCE", status, dispatch_enabled_at_enqueue: true,
+    organization_id: "org-1", channel_id: null, dedupe_key: "k", first_detected_at: "2026-10-10T00:00:00Z",
+    last_seen_at: "2026-10-10T00:00:00Z", occurrences: 1, resolution_note: null, payload: {},
+  });
+
+  it("encerrada sem custo com alerta aberto: sem botão Apagar e com o texto que manda resolver", () => {
+    setInstances();
+    mocks.alerts = { isLoading: false, isError: false, data: [alertaDe("i-teste", "OPEN")] };
+    renderAt("/platform/instancias-whatsapp?aba=encerradas");
+    expect(screen.queryByRole("button", { name: "Apagar" })).toBeNull();
+    expect(screen.getByText("Resolva os alertas abertos para poder apagar.")).toBeTruthy();
+  });
+
+  it("alerta ACKNOWLEDGED também bloqueia; alerta RESOLVED não", () => {
+    setInstances();
+    mocks.alerts = { isLoading: false, isError: false, data: [alertaDe("i-teste", "ACKNOWLEDGED")] };
+    renderAt("/platform/instancias-whatsapp?aba=encerradas");
+    expect(screen.queryByRole("button", { name: "Apagar" })).toBeNull();
+    cleanup();
+    mocks.alerts = { isLoading: false, isError: false, data: [alertaDe("i-teste", "RESOLVED")] };
+    renderAt("/platform/instancias-whatsapp?aba=encerradas");
+    expect(screen.getByRole("button", { name: "Apagar" })).toBeTruthy();
+    expect(screen.queryByText("Resolva os alertas abertos para poder apagar.")).toBeNull();
+  });
+
+  it("alerta aberto de OUTRA instância não esconde o Apagar desta", () => {
+    setInstances();
+    mocks.alerts = { isLoading: false, isError: false, data: [alertaDe("i-custo", "OPEN")] };
+    renderAt("/platform/instancias-whatsapp?aba=encerradas");
+    expect(screen.getAllByRole("button", { name: "Apagar" })).toHaveLength(1);
+    expect(screen.queryByText("Resolva os alertas abertos para poder apagar.")).toBeNull();
+  });
+
+  it("alertas carregando ou com erro: fail-closed, sem botão Apagar e sem o texto", () => {
+    setInstances();
+    mocks.alerts = { isLoading: true, isError: false, data: undefined };
+    renderAt("/platform/instancias-whatsapp?aba=encerradas");
+    expect(screen.queryByRole("button", { name: "Apagar" })).toBeNull();
+    expect(screen.queryByText("Resolva os alertas abertos para poder apagar.")).toBeNull();
+    cleanup();
+    mocks.alerts = { isLoading: false, isError: true, data: undefined };
+    renderAt("/platform/instancias-whatsapp?aba=encerradas");
+    expect(screen.queryByRole("button", { name: "Apagar" })).toBeNull();
   });
 
   it("aba sem instância diz isso, em vez de área em branco", () => {

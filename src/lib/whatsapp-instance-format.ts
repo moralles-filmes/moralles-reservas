@@ -209,11 +209,17 @@ export function partitionInstancesByTab<T extends { lifecycle_state: string }>(
  * Se a tela OFERECE "Apagar". Quem decide se PODE é a RPC
  * `delete_whatsapp_instance_without_cost`; aqui só se evita mostrar botão que o
  * banco vai recusar. `has_cost_history` ausente (EF anterior a esta versão) não
- * oferece.
+ * oferece. `hasOpenAlerts` true também não oferece: alerta aberto bloqueia a
+ * exclusão no banco (`open_alerts`). Quem chama decide o fail-closed enquanto
+ * os alertas carregam ou falham, passando true.
  */
-export function canOfferInstanceDelete(inst: {
-  lifecycle_state: string;
-  has_cost_history?: boolean;
-}): boolean {
+export function canOfferInstanceDelete(
+  inst: {
+    lifecycle_state: string;
+    has_cost_history?: boolean;
+  },
+  hasOpenAlerts: boolean = false,
+): boolean {
+  if (hasOpenAlerts) return false;
   return inst.lifecycle_state === "ENDED" && inst.has_cost_history === false;
 }

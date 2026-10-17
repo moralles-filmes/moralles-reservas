@@ -31,8 +31,16 @@ export function deleteInstanceOutcomeResponse(outcome: unknown): DeleteInstanceR
       return {
         status: 409,
         body: {
-          error: "Esta instância tem custo registrado e não pode ser apagada: o histórico financeiro dela fica guardado.",
+          error: "Esta instância já teve custo registrado e não pode ser apagada.",
           code: "INSTANCE_HAS_COST_HISTORY",
+        },
+      };
+    case "open_alerts":
+      return {
+        status: 409,
+        body: {
+          error: "Resolva os alertas abertos desta instância antes de apagar.",
+          code: "INSTANCE_HAS_OPEN_ALERTS",
         },
       };
     default:

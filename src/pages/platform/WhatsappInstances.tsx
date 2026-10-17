@@ -248,6 +248,15 @@ export default function WhatsappInstances() {
     [alertsQuery.data],
   );
 
+  // Alerta aberto bloqueia a exclusão no banco (`open_alerts`). Sem saber se há
+  // alerta (carregando, erro, sem dado), NÃO se oferece o botão: fail-closed.
+  const alertsKnown = !alertsQuery.isLoading && !alertsQuery.isError && alertsQuery.data !== undefined;
+  const instanceIdsWithOpenAlert = useMemo(() => {
+    const ids = new Set<string>();
+    for (const a of openAlerts) if (a.instance_id) ids.add(a.instance_id);
+    return ids;
+  }, [openAlerts]);
+
   const dispatcherOff = useMemo(
     () => openAlerts.some((a) => a.dispatch_enabled_at_enqueue === false),
     [openAlerts],
@@ -479,7 +488,7 @@ export default function WhatsappInstances() {
                   >
                     Corrigir vínculo
                   </Button>
-                  {canOfferInstanceDelete(inst) && (
+                  {canOfferInstanceDelete(inst, !alertsKnown || instanceIdsWithOpenAlert.has(inst.id)) && (
                     <Button
                       size="sm"
                       variant="destructive"
@@ -488,6 +497,14 @@ export default function WhatsappInstances() {
                     >
                       Apagar
                     </Button>
+                  )}
+                  {alertsKnown
+                    && inst.lifecycle_state === "ENDED"
+                    && inst.has_cost_history === false
+                    && instanceIdsWithOpenAlert.has(inst.id) && (
+                    <span className="self-center text-xs text-muted-foreground">
+                      Resolva os alertas abertos para poder apagar.
+                    </span>
                   )}
                   <Button
                     size="sm"

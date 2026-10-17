@@ -296,4 +296,11 @@ describe("canOfferInstanceDelete", () => {
   it("campo ausente (EF anterior a esta versão): não oferece", () => {
     expect(canOfferInstanceDelete({ lifecycle_state: "ENDED" })).toBe(false);
   });
+  it("alerta aberto bloqueia, mesmo encerrada e sem custo", () => {
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, true)).toBe(false);
+  });
+  it("hasOpenAlerts ausente ou false mantém o comportamento", () => {
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false }, false)).toBe(true);
+    expect(canOfferInstanceDelete({ lifecycle_state: "ENDED", has_cost_history: false })).toBe(true);
+  });
 });

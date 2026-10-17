@@ -22,6 +22,12 @@ describe("deleteInstanceOutcomeResponse", () => {
     expect(r.body.code).toBe("INSTANCE_HAS_COST_HISTORY");
     expect(String(r.body.error)).toMatch(/custo/);
   });
+  it("open_alerts vira 409 com código próprio e manda resolver os alertas", () => {
+    const r = deleteInstanceOutcomeResponse("open_alerts");
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe("INSTANCE_HAS_OPEN_ALERTS");
+    expect(String(r.body.error)).toMatch(/alertas abertos/);
+  });
   it("desfecho desconhecido ou ausente nunca vira sucesso", () => {
     for (const v of [undefined, null, "", "DELETED", 1]) {
       const r = deleteInstanceOutcomeResponse(v);
