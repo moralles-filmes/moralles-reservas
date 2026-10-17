@@ -25,7 +25,10 @@
 --      "binding datafy", aceita binding de outro provider quando existe
 --      liberação da unidade, não revogada, presa a ESSE binding, ainda ativa ou
 --      consumida por canal datafy da mesma unidade. Binding trocado depois da
---      liberação a invalida. Mesma assinatura e retorno: as quatro chamadoras
+--      liberação a invalida. Sem binding, o legado não-datafy `is_active NULL`
+--      mais antigo em qualquer status é candidato, como no trigger de pin;
+--      a liberação é travada e revalidada depois da espera de lock. Mesma
+--      assinatura e retorno: as quatro chamadoras
 --      (authorize_datafy_mutation, finalize_datafy_channel_subscription,
 --      request_whatsapp_channel_activation, activate_whatsapp_channel)
 --      continuam valendo sem reescrita.
@@ -35,7 +38,8 @@
 --      Nos demais caminhos (liberação comum e vínculo administrativo com
 --      `p_grant_id` nulo) a autoridade roda primeiro — binding de outro
 --      provider sem liberação presa continua recusando — e, se ela passar com
---      binding de outro provider, a ativação também fica retida. Sem intenção,
+--      binding de outro provider ou legado NULL offline, a ativação também fica
+--      retida. Sem intenção,
 --      o eco nunca ativa; o corte é o `begin_switch` explícito do admin. O
 --      resto do corpo é o da 20261014170540.
 --
@@ -177,22 +181,35 @@ create trigger whatsapp_official_connection_grants_migration_pin_trg
 -- assinatura confirmada e prova de eco.
 create or replace function public.assert_datafy_first_configuration(p_unit_id uuid)
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_binding_id uuid; v_provider text;
+declare v_binding_id uuid; v_provider text; v_grant_id uuid;
 begin
   perform 1 from public.units where id=p_unit_id for update;
   perform 1 from public.whatsapp_channels where unit_id=p_unit_id order by id for update;
   select id,provider into v_binding_id,v_provider from public.whatsapp_channels where unit_id=p_unit_id
     and (is_active is true or (is_active is null and status='connected'))
     order by (is_active is true) desc,created_at asc nulls last,id limit 1;
+  -- <authority-offline-fallback>
+  -- Mesmo fallback do trigger de pin: um legado NULL fora do ar ainda é o
+  -- canal substituído. `false` nunca bloqueia a primeira configuração.
+  if v_provider is null then
+    select id,provider into v_binding_id,v_provider from public.whatsapp_channels
+      where unit_id=p_unit_id and provider<>'datafy' and is_active is null
+      order by created_at asc nulls last,id limit 1;
+  end if;
+  -- </authority-offline-fallback>
   if v_provider is null or v_provider='datafy' then
     return;
   end if;
-  if exists(select 1 from public.whatsapp_official_connection_grants g
+  -- Lock após unidade e canais. Revogação concorrente que venceu o lock é
+  -- reavaliada pelo SELECT FOR SHARE; a que chegar depois espera o commit.
+  select g.id into v_grant_id from public.whatsapp_official_connection_grants g
     where g.unit_id=p_unit_id
       and g.revoked_at is null
       and g.replaces_channel_id=v_binding_id
       and (g.consumed_channel_id is null or exists(select 1 from public.whatsapp_channels c
-        where c.id=g.consumed_channel_id and c.unit_id=p_unit_id and c.provider='datafy'))) then
+        where c.id=g.consumed_channel_id and c.unit_id=p_unit_id and c.provider='datafy'))
+    order by g.id limit 1 for share of g;
+  if v_grant_id is not null then
     return;
   end if;
   raise exception 'datafy_migration_not_supported' using errcode='23514';
@@ -284,6 +301,13 @@ begin
     select ch.provider into v_binding_provider from public.whatsapp_channels ch where ch.unit_id=p_unit_id
       and (ch.is_active is true or (ch.is_active is null and ch.status='connected'))
       order by (ch.is_active is true) desc,ch.created_at asc nulls last,ch.id limit 1;
+    -- <finalizer-offline-fallback>
+    if v_binding_provider is null then
+      select ch.provider into v_binding_provider from public.whatsapp_channels ch
+        where ch.unit_id=p_unit_id and ch.provider<>'datafy' and ch.is_active is null
+        order by ch.created_at asc nulls last,ch.id limit 1;
+    end if;
+    -- </finalizer-offline-fallback>
     if v_binding_provider is null or v_binding_provider='datafy' then
       if c.activation_requested_at is null then
         perform public.request_whatsapp_channel_activation(p_unit_id,p_channel_id,p_actor_id,p_request_id);

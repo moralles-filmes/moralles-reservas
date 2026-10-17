@@ -3,9 +3,10 @@
 \set ON_ERROR_STOP on
 begin;
 -- Estes casos testam a primeira configuração Datafy. O seed global possui
--- Z-API legado conectado; a guarda nova recusa corretamente migrá-lo.
+-- Z-API nas unidades A1/B1 e Waha offline em B1 com is_active NULL.
+-- Desativar os três impede que o fallback trate o Waha como migração.
 update public.whatsapp_channels set is_active=false where id in
-  ('dddddddd-0000-0000-0000-000000000001','dddddddd-0000-0000-0000-000000000002');
+  ('dddddddd-0000-0000-0000-000000000001','dddddddd-0000-0000-0000-000000000002','dddddddd-0000-0000-0000-000000000003');
 do $$ begin
   if to_regprocedure('public.claim_datafy_existing_subscription(uuid,uuid,uuid,integer)') is null then
     raise exception '62 exige migration datafy_existing_subscription_claim';

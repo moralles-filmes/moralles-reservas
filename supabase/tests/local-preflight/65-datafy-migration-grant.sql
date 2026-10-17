@@ -6,8 +6,8 @@
 -- produção (65)" no README):
 --   00 -> 00a -> 61a -> 20261014120000 -> 62a -> 63a -> 20261014170540
 --   -> 65a -> 65 (esperado: ERROR pela guarda, o RED)
---   -> 20261016140200 -> 65 (M10 PENDENTE)
---   -> 20261016140200 x2 -> 65 (M10 OK)
+--   -> 20261016140200 -> 65 (M10 PENDENTE, M1..M9/M11..M18, CTRL-a..g)
+--   -> 20261016140200 x2 -> 65 (M10 OK, M1..M9/M11..M18, CTRL-a..g)
 --
 -- O QUE ESTE ARQUIVO PROVA:
 --   M1  liberação inserida com `replaces_channel_id` forjado (aleatório, NULL,
@@ -48,6 +48,9 @@
 --       liberação; o finalizador com ela retém a ativação mesmo com eco;
 --   M15 o legado reconecta: a autoridade casa com o pin e o corte troca;
 --   M16 unidade só com canal `false` de outro provider → pin NULL.
+--   M17 vínculo administrativo com legado NULL offline não pede intenção/ativa;
+--   M18 autoridade, pedido e callback protegem legado NULL offline com grant
+--       ausente, pendente, consumido, revogado após intenção e status error.
 --
 -- CONTROLES POSITIVOS (subtransação revertida; cada um confere que a sabotagem
 -- mudou o corpo, mede o defeito com o MESMO cenário do caso e confere o
@@ -58,7 +61,9 @@
 --   (c) autoridade ignorando `revoked_at`               -> M4 revogada passa
 --   (d) só a checagem de binding, sem a condição da
 --       liberação de migração                           -> M5 retido, M13 ativa
---   (e) trigger sem `-- <fallback-legado>`              -> M14 pin NULL e ativa
+--   (e) trigger sem `-- <fallback-legado>`              -> M14 pin NULL e recusa
+--   (f) autoridade sem `-- <authority-offline-fallback>` -> M18 sem grant passa
+--   (g) finalizador sem `-- <finalizer-offline-fallback>` -> M17 ativa sozinho
 --
 -- O QUE ELE NÃO PROVA: RLS e exposição PostgREST (aqui o `postgres` é
 -- superusuário; Supabase real fica com o `audit-function-acl.ts`), o
@@ -192,6 +197,19 @@ exception when others then
   return sqlstate || ':' || sqlerrm;
 end $$;
 
+create function pg_temp.cutover_outcome(p_unit uuid, p_channel uuid, p_action text) returns text language plpgsql as $$
+begin
+  if p_action='intent' then
+    perform public.request_whatsapp_channel_activation(p_unit,p_channel,'eeeeeeee-0065-0000-0000-000000000001','local65');
+  elsif p_action='activate' then
+    perform public.activate_whatsapp_channel(p_unit,p_channel,'eeeeeeee-0065-0000-0000-000000000001','local65');
+  else
+    raise exception '65: cutover_outcome acao invalida';
+  end if;
+  return 'passed';
+exception when others then return sqlstate || ':' || sqlerrm;
+end $$;
+
 -- Canal oficial alvo da unidade U, como o fluxo real cria: onboarding
 -- (com a liberação) antes do canal, que nasce com `id = reserved_channel_id`,
 -- inativo, já assinado e conectado.
@@ -303,6 +321,42 @@ begin
 end $$;
 
 -- Corte e reversão pelas RPCs existentes (o `begin_switch` é request + activate).
+create function pg_temp.offline_target() returns void language plpgsql as $$
+begin
+  insert into public.whatsapp_channels(id,unit_id,provider,status,external_instance_id,is_active,
+      provider_subscribed_at,manual_echo_verified_at,datafy_subscription_required,credentials)
+    values ('dddddddd-0065-0000-0000-000000000014','bbbbbbbb-0065-0000-0000-000000000008',
+      'datafy','connected','remote65-legado',false,now(),now(),true,'{"phone_number_id":"6500014"}');
+end $$;
+
+create function pg_temp.m17_admin_offline(
+  out o_outcome text, out o_requested timestamptz, out o_cd_active boolean, out o_events bigint
+) language plpgsql as $$
+declare r record; v_subscribe_claim uuid;
+begin
+  perform pg_temp.m14();
+  -- O adapter libera o lease do subscribe depois do finalizador. Sem essa
+  -- etapa, o claim administrativo deve responder busy e o cenário M17 nunca
+  -- alcança o finalizador que pretende medir.
+  select claim_id into v_subscribe_claim from public.whatsapp_datafy_onboardings
+    where id='cccccccc-0065-0000-0000-000000000003';
+  if v_subscribe_claim is null or not public.release_datafy_onboarding_step(
+    'cccccccc-0065-0000-0000-000000000003','bbbbbbbb-0065-0000-0000-000000000008',
+    v_subscribe_claim,'subscribe','succeeded',null) then
+    raise exception 'M17: release do subscribe ausente';
+  end if;
+  select * into r from public.claim_datafy_channel_operation('dddddddd-0065-0000-0000-000000000014',
+    'bbbbbbbb-0065-0000-0000-000000000008', 'eeeeeeee-0065-0000-0000-000000000001', 'configure_webhook');
+  if not r.claimed or r.source <> 'channel' then raise exception 'M17: claim administrativo ausente'; end if;
+  o_outcome := public.finalize_datafy_channel_subscription('dddddddd-0065-0000-0000-000000000014',
+    'bbbbbbbb-0065-0000-0000-000000000008', 'eeeeeeee-0065-0000-0000-000000000001',
+    r.claim_id, null, null, 'remote65-legado', 0, 'local65');
+  select activation_requested_at,is_active into o_requested,o_cd_active from public.whatsapp_channels
+    where id='dddddddd-0065-0000-0000-000000000014';
+  select count(*) into o_events from public.whatsapp_channel_lifecycle_events
+    where channel_ref='dddddddd-0065-0000-0000-000000000014';
+end $$;
+
 create function pg_temp.switch_to(p_channel uuid) returns void language plpgsql as $$
 begin
   perform public.request_whatsapp_channel_activation('bbbbbbbb-0065-0000-0000-000000000001', p_channel,
@@ -321,7 +375,8 @@ declare
   cuc uuid := 'dddddddd-0065-0000-0000-000000000002';
   cd  uuid := 'dddddddd-0065-0000-0000-000000000003';
   v_forged uuid := gen_random_uuid();
-  v_gid uuid; v_pin uuid; v_txt text; r record; v_n bigint; v_ok boolean;
+  v_gid uuid; v_pin uuid; v_txt text; v_assert text; v_intent text; v_activate text;
+  r record; v_n bigint; v_ok boolean;
 begin
   -- ─── M1: o servidor sobrescreve o pin forjado ──────────────────────────────
   if pg_temp.pin_of(uc, v_forged) is distinct from cuc then raise exception 'M1: pin aleatorio forjado sobreviveu'; end if;
@@ -604,6 +659,108 @@ begin
     raise exception 'M16: canal is_active=false virou pin';
   end if;
   raise notice '65 M16 OK: unidade so com canal false (desconectado ou conectado) -> pin NULL';
+
+  -- ─── M17: vínculo administrativo não ativa com legado NULL offline ───────
+  begin
+    select * into r from pg_temp.m17_admin_offline();
+    raise exception 'rollback' using errcode = 'ZZ065';
+  exception when sqlstate 'ZZ065' then null;
+  end;
+  if r.o_outcome is distinct from 'finalized' or r.o_requested is not null
+     or r.o_cd_active is distinct from false or r.o_events <> 0 then
+    raise exception 'M17: finalizador administrativo cortou legado offline (outcome=% intent=% active=% events=%)',
+      r.o_outcome,r.o_requested,r.o_cd_active,r.o_events;
+  end if;
+  raise notice '65 M17 OK: configure_webhook sem grant no argumento preserva legado NULL offline';
+
+  -- ─── M18: a autoridade protege intenção e eco mesmo sem binding ─────────
+  -- Sem grant, as três entradas recusam; cada tentativa mantém alvo intacto.
+  begin
+    perform pg_temp.offline_target();
+    v_assert := pg_temp.assert_outcome('bbbbbbbb-0065-0000-0000-000000000008');
+    v_intent := pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','intent');
+    v_activate := pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','activate');
+    if v_assert not like '23514:datafy_migration_not_supported%'
+      or v_intent not like '23514:datafy_migration_not_supported%'
+      or v_activate not like '23514:datafy_migration_not_supported%' then
+      raise exception 'M18: sem grant aceitou autoridade, intent ou activate';
+    end if;
+    select activation_requested_at is null and is_active is false into v_ok from public.whatsapp_channels
+      where id='dddddddd-0065-0000-0000-000000000014';
+    raise exception 'rollback' using errcode = 'ZZ065';
+  exception when sqlstate 'ZZ065' then null;
+  end;
+  if not v_ok then raise exception 'M18: tentativa sem grant deixou efeito'; end if;
+  -- Grant pendente protege o intervalo entre subscribe e finalizer.
+  begin
+    perform pg_temp.offline_target();
+    v_gid := pg_temp.f_grant('bbbbbbbb-0065-0000-0000-000000000008');
+    v_txt := pg_temp.assert_outcome('bbbbbbbb-0065-0000-0000-000000000008');
+    v_intent := pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','intent');
+    select activation_requested_at is not null and is_active is false into v_ok
+      from public.whatsapp_channels where id='dddddddd-0065-0000-0000-000000000014';
+    v_activate := pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','activate');
+    v_ok := v_ok is true and v_intent='passed' and v_activate='passed';
+    select v_ok and target.is_active is true and target.activation_requested_at is null
+      and legacy.is_active is false into v_ok
+      from public.whatsapp_channels target, public.whatsapp_channels legacy
+      where target.id='dddddddd-0065-0000-0000-000000000014'
+        and legacy.id='dddddddd-0065-0000-0000-000000000013';
+    raise exception 'rollback' using errcode = 'ZZ065';
+  exception when sqlstate 'ZZ065' then null;
+  end;
+  if v_txt<>'passed' or v_ok is not true then raise exception 'M18: grant pendente recusou corte atomico (authority=% ok=%)',v_txt,v_ok; end if;
+  -- Grant consumido pelo alvo Datafy da mesma unidade também autoriza.
+  begin
+    perform pg_temp.offline_target();
+    v_gid := pg_temp.f_grant('bbbbbbbb-0065-0000-0000-000000000008');
+    update public.whatsapp_official_connection_grants set consumed_channel_id='dddddddd-0065-0000-0000-000000000014',consumed_at=now()
+      where id=v_gid;
+    v_txt := pg_temp.assert_outcome('bbbbbbbb-0065-0000-0000-000000000008');
+    v_intent := pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','intent');
+    select activation_requested_at is not null and is_active is false into v_ok
+      from public.whatsapp_channels where id='dddddddd-0065-0000-0000-000000000014';
+    v_activate := pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','activate');
+    v_ok := v_ok is true and v_intent='passed' and v_activate='passed';
+    select v_ok and target.is_active is true and target.activation_requested_at is null
+      and legacy.is_active is false into v_ok
+      from public.whatsapp_channels target, public.whatsapp_channels legacy
+      where target.id='dddddddd-0065-0000-0000-000000000014'
+        and legacy.id='dddddddd-0065-0000-0000-000000000013';
+    raise exception 'rollback' using errcode = 'ZZ065';
+  exception when sqlstate 'ZZ065' then null;
+  end;
+  if v_txt<>'passed' or v_ok is not true then raise exception 'M18: grant consumido recusou corte atomico (authority=% ok=%)',v_txt,v_ok; end if;
+  -- Intenção antiga sobrevive à revogação, mas o callback não pode ativar.
+  begin
+    perform pg_temp.offline_target();
+    v_gid := pg_temp.f_grant('bbbbbbbb-0065-0000-0000-000000000008');
+    if pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','intent')<>'passed' then
+      raise exception 'M18: nao conseguiu preparar intent antiga';
+    end if;
+    update public.whatsapp_official_connection_grants set revoked_at=now(),revoked_by=a where id=v_gid;
+    v_assert := pg_temp.assert_outcome('bbbbbbbb-0065-0000-0000-000000000008');
+    v_intent := pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','intent');
+    v_activate := pg_temp.cutover_outcome('bbbbbbbb-0065-0000-0000-000000000008','dddddddd-0065-0000-0000-000000000014','activate');
+    v_ok := v_assert like '23514:datafy_migration_not_supported%'
+      and v_intent like '23514:datafy_migration_not_supported%'
+      and v_activate like '23514:datafy_migration_not_supported%';
+    select v_ok and activation_requested_at is not null and is_active is false into v_ok
+      from public.whatsapp_channels where id='dddddddd-0065-0000-0000-000000000014';
+    raise exception 'rollback' using errcode = 'ZZ065';
+  exception when sqlstate 'ZZ065' then null;
+  end;
+  if not v_ok then raise exception 'M18: revogacao permitiu intent ou eco antigo ativar'; end if;
+  -- Estado não conectado alternativo usa o mesmo fallback determinístico.
+  begin
+    update public.whatsapp_channels set status='error' where id='dddddddd-0065-0000-0000-000000000013';
+    v_gid := pg_temp.f_grant('bbbbbbbb-0065-0000-0000-000000000008');
+    v_ok := pg_temp.assert_outcome('bbbbbbbb-0065-0000-0000-000000000008')='passed';
+    raise exception 'rollback' using errcode = 'ZZ065';
+  exception when sqlstate 'ZZ065' then null;
+  end;
+  if not v_ok then raise exception 'M18: legado error com grant foi recusado'; end if;
+  raise notice '65 M18 OK: offline sem/pending/consumed/revoked, request/activate, intent antiga, status error';
 end $$;
 
 -- ─── M9: forma e ACL ─────────────────────────────────────────────────────────
@@ -779,19 +936,60 @@ begin
   if v_sab = v_def then raise exception 'CTRL-e: sabotagem nao mudou o corpo (marcadores ausentes?)'; end if;
   begin
     execute v_sab;
-    select * into r from pg_temp.m14();
+    v_pin := pg_temp.pin_of('bbbbbbbb-0065-0000-0000-000000000008',v_forged);
+    v_txt := 'passed';
+    begin perform pg_temp.m14(); exception when others then v_txt := sqlstate || ':' || sqlerrm; end;
     raise exception 'rollback' using errcode = 'ZZ065';
   exception when sqlstate 'ZZ065' then null;
   end;
-  if r.o_pin is not null or r.o_cd_active is distinct from true then
-    raise exception 'CTRL-e inerte: sem o fallback a liberacao deveria nascer comum e a datafy ativar (pin=% ativo=%)', r.o_pin, r.o_cd_active;
+  if v_pin is not null or v_txt not like '23514:datafy_migration_not_supported%' then
+    raise exception 'CTRL-e inerte: sem fallback o pin nasce NULL e autoridade deve recusar (pin=% outcome=%)',v_pin,v_txt;
   end if;
   if (select pg_catalog.pg_get_functiondef(oid) <> v_def or coalesce(proacl::text, 'null') <> v_acl from pg_catalog.pg_proc where oid = v_sig) then
     raise exception 'CTRL-e: restore falhou';
   end if;
-  raise notice '65 CTRL-e OK: sem -- <fallback-legado> a liberacao nasce comum e a datafy ativa sozinha; restore conferido';
+  raise notice '65 CTRL-e OK: sem -- <fallback-legado> pin nasce comum e nova autoridade recusa finalizacao; restore conferido';
 
-  raise notice '65: M1..M9 e M11..M16 OK + 5 controles positivos OK (M10 reportado no topo)';
+  -- (f) sem fallback na autoridade, pedido e callback tratam o legado offline
+  -- como primeira configuração e aceitam o corte sem grant (M18 vermelho).
+  v_sig := 'public.assert_datafy_first_configuration(uuid)';
+  select pg_catalog.pg_get_functiondef(oid), coalesce(proacl::text,'null') into v_def,v_acl from pg_catalog.pg_proc where oid=v_sig;
+  v_sab := regexp_replace(v_def, '-- <authority-offline-fallback>.*?-- </authority-offline-fallback>', '');
+  if v_sab=v_def then raise exception 'CTRL-f: sabotagem nao mudou o corpo'; end if;
+  begin
+    execute v_sab;
+    perform pg_temp.offline_target();
+    v_txt := pg_temp.assert_outcome('bbbbbbbb-0065-0000-0000-000000000008');
+    raise exception 'rollback' using errcode='ZZ065';
+  exception when sqlstate 'ZZ065' then null;
+  end;
+  if v_txt<>'passed' then raise exception 'CTRL-f inerte: sem fallback a autoridade deveria aceitar primeira configuracao (%)',v_txt; end if;
+  if (select pg_catalog.pg_get_functiondef(oid)<>v_def or coalesce(proacl::text,'null')<>v_acl from pg_catalog.pg_proc where oid=v_sig) then
+    raise exception 'CTRL-f: restore falhou';
+  end if;
+  raise notice '65 CTRL-f OK: remover fallback libera autoridade sem grant; restore conferido';
+
+  -- (g) sem fallback no finalizador administrativo, a assinatura/eco ativam
+  -- sozinhos mesmo quando a autoridade reconhece grant valido (M17 vermelho).
+  v_sig := 'public.finalize_datafy_channel_subscription(uuid,uuid,uuid,uuid,uuid,uuid,text,bigint,text)';
+  select pg_catalog.pg_get_functiondef(oid), coalesce(proacl::text,'null') into v_def,v_acl from pg_catalog.pg_proc where oid=v_sig;
+  v_sab := regexp_replace(v_def, '-- <finalizer-offline-fallback>.*?-- </finalizer-offline-fallback>', '');
+  if v_sab=v_def then raise exception 'CTRL-g: sabotagem nao mudou o corpo'; end if;
+  begin
+    execute v_sab;
+    select * into r from pg_temp.m17_admin_offline();
+    raise exception 'rollback' using errcode='ZZ065';
+  exception when sqlstate 'ZZ065' then null;
+  end;
+  if r.o_outcome is distinct from 'finalized' or r.o_cd_active is distinct from true then
+    raise exception 'CTRL-g inerte: sem fallback finalizador deveria ativar offline (outcome=% active=%)',r.o_outcome,r.o_cd_active;
+  end if;
+  if (select pg_catalog.pg_get_functiondef(oid)<>v_def or coalesce(proacl::text,'null')<>v_acl from pg_catalog.pg_proc where oid=v_sig) then
+    raise exception 'CTRL-g: restore falhou';
+  end if;
+  raise notice '65 CTRL-g OK: remover fallback ativa pelo finalizador administrativo; restore conferido';
+
+  raise notice '65: M1..M9 e M11..M18 OK + 7 controles positivos OK (M10 reportado no topo)';
 end $$;
 
 rollback;

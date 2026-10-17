@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createDatafyOnboardingActions, type DatafyOperationalEvent, type UnitChannelRow } from "../../supabase/functions/_shared/datafy-onboarding-actions";
+import { createDatafyOnboardingActions, findDatafyMigrationGrant, type DatafyOperationalEvent, type UnitChannelRow } from "../../supabase/functions/_shared/datafy-onboarding-actions";
 import { resolveUnitChannelBinding } from "../../supabase/functions/_shared/whatsapp-org-provider-core";
 import type { DatafyChannelSnapshot, DatafyAdminClient } from "../../supabase/functions/_shared/datafy-admin-client";
 
@@ -256,7 +256,7 @@ function harness(options: { state?: string; withChannel?: boolean; noOnboarding?
     emitEvent: (event) => { events.push(event); }, monotonicNow: () => monotonic,
     logUnrecognized: (info) => { unknownResponses.push(info); } });
   let actions = createActions();
-  return { tables, calls, filters, events, unknownResponses, client, remote, tokenReader, gates,
+  return { db, tables, calls, filters, events, unknownResponses, client, remote, tokenReader, gates,
     failCreate() { createFailure = "transport"; }, failSubscribe(kind: "transport" | "payment_declined") { subscribeFailure = kind; },
     unavailableAccount() { accountUnavailable = true; },
     malformedClaim() { malformedClaim = true; },
@@ -518,15 +518,15 @@ describe("Datafy onboarding: I/O com decisões reais", () => {
   it.each([
     { is_active: true, status: "disconnected" },
     { is_active: null, status: "connected" },
-  ])("start recusa binding operacional existente, inclusive legado: %j", async (binding) => {
+    { is_active: null, status: "disconnected" },
+  ])("start recusa candidato legado existente sem liberação presa: %j", async (binding) => {
     const h = harness(); h.tables.whatsapp_channels.push({ ...channel(), ...binding, provider: "zapi" });
     expect(await h.run("official_connect_start")).toMatchObject({ status: 409, body: { code: "UNIT_ALREADY_ACTIVE" } });
     expect(h.client.getChannel).not.toHaveBeenCalled(); expect(h.client.createChannel).not.toHaveBeenCalled();
   });
   it.each([
     { is_active: false, status: "connected" },
-    { is_active: null, status: "disconnected" },
-  ])("start permite canal sem binding operacional: %j", async (binding) => {
+  ])("start permite canal explicitamente inativo: %j", async (binding) => {
     const h = harness(); h.tables.whatsapp_channels.push({ ...channel(), ...binding, provider: "zapi" });
     expect((await h.run("official_connect_start")).status).toBe(200);
     expect(h.client.getChannel).toHaveBeenCalled();
@@ -940,6 +940,23 @@ const datafyRow = (h: ReturnType<typeof harness>) => h.tables.whatsapp_channels.
 const uazRow = (h: ReturnType<typeof harness>) => h.tables.whatsapp_channels.find((row) => row.id === UAZ)!;
 
 describe("Datafy onboarding: migração de loja com binding de outro provider", () => {
+  it("resolver do adapter exige pin vigente também com UazAPI NULL desconectada", async () => {
+    const h = withMigration(harness({ withChannel: true }));
+    uazRow(h).is_active = null;
+    uazRow(h).status = "disconnected";
+    const channels = h.tables.whatsapp_channels as unknown as UnitChannelRow[];
+    const find = () => findDatafyMigrationGrant(h.db as unknown as SupabaseClient, unitId, channels);
+    expect((await find())?.id).toBe("grant-a"); // antes do consumo
+    h.tables[GRANTS][0].consumed_channel_id = channelId;
+    h.tables[GRANTS][0].consumed_at = "2026-10-17T00:00:00Z";
+    expect((await find())?.id).toBe("grant-a"); // consumida pelo alvo da unidade
+    h.tables[GRANTS][0].revoked_at = "2026-10-17T00:01:00Z";
+    expect(await find()).toBeNull();
+    h.tables[GRANTS][0].revoked_at = null;
+    h.tables[GRANTS][0].replaces_channel_id = "outro-legado";
+    expect(await find()).toBeNull();
+  });
+
   it("start segue com binding UazAPI quando a liberação ativa está presa a ele", async () => {
     const h = withMigration(harness({ noOnboarding: true }));
     const response = await h.run("official_connect_start");
@@ -1067,11 +1084,21 @@ describe("Datafy onboarding: migração de loja com binding de outro provider", 
     Object.assign(uazRow(h), { is_active: null, status: "disconnected" });
     expect((await h.run("official_connect_confirm")).status).toBe(200);
     expect(datafyRow(h).async_ingestion_enabled).toBe(false);
-    // Controle: primeira configuração com o mesmo legado e liberação sem pin segue assíncrona.
+    // Liberação comum não converte legado offline em primeira configuração.
     const plain = withMigration(harness(), null);
     Object.assign(uazRow(plain), { is_active: null, status: "disconnected" });
-    expect((await plain.run("official_connect_confirm")).status).toBe(200);
-    expect(datafyRow(plain).async_ingestion_enabled).toBe(true);
+    expect(await plain.run("official_connect_confirm")).toMatchObject({ status: 409, body: { code: "DATAFY_MIGRATION_NOT_SUPPORTED" } });
+    expect(plain.client.subscribe).not.toHaveBeenCalled();
+    expect(plain.tables.whatsapp_channels.some((row) => row.provider === "datafy")).toBe(false);
+  });
+
+  it("legado NULL offline com liberação comum recusa start antes de abrir onboarding", async () => {
+    const h = withMigration(harness({ noOnboarding: true }), null);
+    Object.assign(uazRow(h), { is_active: null, status: "disconnected" });
+    expect(await h.run("official_connect_start")).toMatchObject({ status: 409, body: { code: "UNIT_ALREADY_ACTIVE" } });
+    expect(h.tables[ONBOARDINGS]).toEqual([]);
+    expect(h.client.createChannel).not.toHaveBeenCalled();
+    expect(h.client.getChannel).not.toHaveBeenCalled();
   });
 
   it("binding ausente (legado caiu enquanto reconecta) mantém a migração visível", async () => {
@@ -1081,6 +1108,18 @@ describe("Datafy onboarding: migração de loja com binding de outro provider", 
     datafyRow(h).provider_subscribed_at = "subscribed";
     const response = await h.run("official_connection_state");
     expect(response.body).toMatchObject({ migration: { fromProvider: "uazapi" }, step: "awaiting_cutover" });
+  });
+
+  it("grant consumido por outro legado offline não anuncia migração", async () => {
+    const h = withMigration(harness({ state: "completed", withChannel: true, echo: true }));
+    const old = uazRow(h), target = datafyRow(h);
+    Object.assign(old, { is_active: null, status: "disconnected" });
+    h.tables.whatsapp_channels.splice(0, h.tables.whatsapp_channels.length,
+      { ...uazBinding(), id: "waha-older", provider: "waha", is_active: null, status: "disconnected", created_at: "2025-01-01T00:00:00Z" },
+      old, target);
+    Object.assign(h.tables[GRANTS][0], { consumed_channel_id: channelId, consumed_at: "consumed" });
+    target.provider_subscribed_at = "subscribed";
+    expect((await h.run("official_connection_state")).body).toMatchObject({ migration: null });
   });
 
   it("sem migração o terceiro argumento de gatesAllowed é false", async () => {

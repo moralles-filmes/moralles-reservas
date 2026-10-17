@@ -9,6 +9,7 @@ import {
 import {
   decideStartStep, decideConfirm, decideSubscribeStep, deriveOfficialChecklist,
   decideChannelReconciliation, decideAdoptedCredentials, isDisposableRemoteChannel, isDatafyMigrationGrant,
+  selectDatafyOfflineLegacy,
   type OnboardingState, type SubscribeGrantState,
 } from "./datafy-onboarding-core.ts";
 
@@ -70,17 +71,22 @@ const first = <T>(data: unknown): T | null => rows<T>(data)[0] ?? null;
 const trimAnchor = (value: unknown): string | null => typeof value === "string"
   ? value.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") || null : typeof value === "number" ? String(value) : null;
 
-/** A liberação está presa ao binding atual de outro provider? Regra única no núcleo. */
+/** Espelha o fallback do pin SQL quando um legado NULL perdeu a conexão. */
+export function resolveDatafyMigrationCandidate(channels: readonly UnitChannelRow[]): UnitChannelRow | null {
+  return resolveUnitChannelBinding(channels) ?? selectDatafyOfflineLegacy(channels);
+}
+
+/** A liberação está presa ao canal atual ou ao legado NULL fora do ar? */
 function migrationPinned(grant: Grant | null, channels: readonly UnitChannelRow[]): boolean {
   return isDatafyMigrationGrant({
-    grant, binding: resolveUnitChannelBinding(channels),
+    grant, binding: resolveDatafyMigrationCandidate(channels),
     datafyChannelIds: channels.filter((channel) => channel.provider === "datafy").map((channel) => channel.id),
   });
 }
 
 /**
- * Liberação de migração vigente para o binding atual, ou `null` (sem binding,
- * binding datafy, ou nenhuma liberação presa a ele). `channels` são TODOS os
+ * Liberação vigente para o binding atual ou o legado NULL offline, ou `null`
+ * (sem candidato, binding datafy, ou nenhuma liberação presa a ele). `channels` são TODOS os
  * canais da unidade, com `id` e provider. Espelho de
  * `assert_datafy_first_configuration`, que continua sendo a autoridade:
  * compartilhado pelas ações e pelo `begin_switch` de `manage-channels`. Erro de
@@ -88,7 +94,7 @@ function migrationPinned(grant: Grant | null, channels: readonly UnitChannelRow[
  */
 export async function findDatafyMigrationGrant(db: SupabaseClient, unitId: string,
   channels: readonly UnitChannelRow[]): Promise<Grant | null> {
-  const binding = resolveUnitChannelBinding(channels);
+  const binding = resolveDatafyMigrationCandidate(channels);
   if (!binding || binding.provider === "datafy" || typeof binding.id !== "string" || !binding.id) return null;
   const { data, error } = await db.from(GRANTS).select(GRANT_COLUMNS)
     .eq("unit_id", unitId).is("revoked_at", null).eq("replaces_channel_id", binding.id)
@@ -179,7 +185,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     const claim = first<Claim>(data);
     if (claim?.claimed === false) throw new ActionFailure("ONBOARDING_BUSY", 409);
     if (claim?.claimed !== true || !claim.claim_id || typeof claim.must_reconcile !== "boolean"
-      || !["channel", "onboarding"].includes(claim.source)
+      || (claim.source !== "channel" && claim.source !== "onboarding")
       || (!claim.external_instance_id && !(operation === "relink" && claim.external_instance_id === null))
       || !Number.isSafeInteger(claim.template_credential_revision)) throw new ActionFailure("ONBOARDING_CLAIM_FAILED");
     return { ...claim, deadline, actor_id: actorId, operation };
@@ -199,8 +205,8 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     if (claim.deadline - monotonicNow() < mutationBudgetMs) throw new ActionFailure("DATAFY_CLAIM_EXPIRED", 409);
   }
   async function loadUnitChannels(unitId: string): Promise<UnitChannelRow[]> {
-    // Ordem do SQL (`created_at asc nulls last, id`): o sort estável do núcleo
-    // conserva o desempate por id e o binding casa com o da autoridade.
+    // O fallback preserva a ordem do SQL (`created_at asc nulls last, id`),
+    // inclusive microssegundos que Date.parse arredondaria.
     const { data, error } = await db.from("whatsapp_channels").select("id, provider, status, is_active, created_at")
       .eq("unit_id", unitId).order("created_at", { ascending: true, nullsFirst: false }).order("id", { ascending: true });
     if (error) throw new ActionFailure("CHANNEL_READ_FAILED");
@@ -209,8 +215,8 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   /** Binding de outro provider só passa com liberação de migração presa a ele. Devolve os canais lidos. */
   async function assertDatafyBinding(unitId: string): Promise<UnitChannelRow[]> {
     const channels = await loadUnitChannels(unitId);
-    const binding = resolveUnitChannelBinding(channels);
-    if (binding && binding.provider !== "datafy" && !await findDatafyMigrationGrant(db, unitId, channels)) {
+    const candidate = resolveDatafyMigrationCandidate(channels);
+    if (candidate && candidate.provider !== "datafy" && !await findDatafyMigrationGrant(db, unitId, channels)) {
       throw new ActionFailure("DATAFY_MIGRATION_NOT_SUPPORTED", 409);
     }
     return channels;
@@ -343,8 +349,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
     }
     const replaced = relevant?.replaces_channel_id;
     if (typeof replaced !== "string" || !replaced) return null;
-    const binding = resolveUnitChannelBinding(channels);
-    if (binding && binding.provider !== "datafy" && !migrationPinned(relevant, channels)) return null;
+    if (!migrationPinned(relevant, channels)) return null;
     const { data, error } = await db.from("whatsapp_channels").select("provider")
       .eq("unit_id", unitId).eq("id", replaced).maybeSingle();
     if (error) throw new ActionFailure("CHANNEL_READ_FAILED");
@@ -374,7 +379,7 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
   async function startConnection(client: DatafyAdminClient, unitId: string, actorId: string) {
     for (let iteration = 0; iteration < 6; iteration++) {
       const [grant, o, channels] = await Promise.all([activeGrant(unitId), loadOnboarding(unitId), loadUnitChannels(unitId)]);
-      const binding = resolveUnitChannelBinding(channels);
+      const binding = resolveDatafyMigrationCandidate(channels);
       // Só a liberação ATIVA conta aqui: uma consumida presa ao binding não abre onboarding novo.
       const migrationAllowed = migrationPinned(grant, channels);
       const gatesAllowed = await deps.gatesAllowed(unitId, !!grant, migrationAllowed);

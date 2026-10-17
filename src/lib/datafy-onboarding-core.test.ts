@@ -11,6 +11,7 @@ import {
   decideReplacementConnectionRecorded,
   deriveOfficialChecklist,
   isDatafyMigrationGrant,
+  selectDatafyOfflineLegacy,
   isDisposableRemoteChannel,
 } from "../../supabase/functions/_shared/datafy-onboarding-core.ts";
 import type {
@@ -1258,6 +1259,37 @@ describe("isDatafyMigrationGrant — espelho de assert_datafy_first_configuratio
       grant: { revoked_at: null, consumed_channel_id: "dfy-1", replaces_channel_id: "uaz-1" },
       datafyChannelIds: malformed({}),
     }))).toBe(false);
+  });
+});
+
+describe("selectDatafyOfflineLegacy — fallback do pin SQL", () => {
+  it("preserva a ordem SQL e escolhe o primeiro legado NULL sem filtrar status", () => {
+    const rows = [
+      { id: "datafy", provider: "datafy", is_active: null, status: "disconnected", created_at: "2020-01-01" },
+      { id: "false", provider: "uazapi", is_active: false, status: "connected", created_at: "2020-01-01" },
+      { id: "a", provider: "zapi", is_active: null, status: "connecting", created_at: "2025-01-01" },
+      { id: "b", provider: "waha", is_active: null, status: "disconnected", created_at: "2025-01-01" },
+      { id: "z", provider: "uazapi", is_active: null, status: "provider_error", created_at: "2026-01-01" },
+    ];
+    expect(selectDatafyOfflineLegacy(rows)?.id).toBe("a");
+  });
+  it("não reordena dois timestamps no mesmo milissegundo com micros distintos", () => {
+    const sqlOrdered = [
+      { id: "z", provider: "uazapi", is_active: null, created_at: "2025-01-01T00:00:00.000100+00:00" },
+      { id: "a", provider: "waha", is_active: null, created_at: "2025-01-01T00:00:00.000200+00:00" },
+    ];
+    expect(selectDatafyOfflineLegacy(sqlOrdered)?.id).toBe("z");
+  });
+  it("grant pendente ou consumido pelo Datafy da unidade autoriza o candidato; revogado não", () => {
+    const binding = selectDatafyOfflineLegacy([{ id: "uaz-1", provider: "uazapi", is_active: null, status: "disconnected" }]);
+    expect(isDatafyMigrationGrant(migrationInput({ binding }))).toBe(true);
+    expect(isDatafyMigrationGrant(migrationInput({ binding, grant: {
+      revoked_at: null, consumed_channel_id: "dfy-1", replaces_channel_id: "uaz-1",
+    } }))).toBe(true);
+    expect(isDatafyMigrationGrant(migrationInput({ binding, grant: {
+      revoked_at: "2026-10-17T00:00:00Z", consumed_channel_id: null, replaces_channel_id: "uaz-1",
+    } }))).toBe(false);
+    expect(selectDatafyOfflineLegacy([{ id: "inactive", provider: "uazapi", is_active: false, status: "disconnected" }])).toBeNull();
   });
 });
 

@@ -200,6 +200,14 @@ export function isDatafyMigrationGrant(input: {
     && input.datafyChannelIds.includes(grant.consumed_channel_id);
 }
 
+/** Fallback do pin SQL quando nenhum binding existe: entrada ordenada pelo banco
+ * (`created_at ASC NULLS LAST, id ASC`), inclusive frações de microssegundo. */
+export function selectDatafyOfflineLegacy<T extends {
+  id: string; provider: string | null; is_active: boolean | null; created_at?: string | null;
+}>(channels: readonly T[]): T | null {
+  return channels.find((channel) => channel.provider && channel.provider !== "datafy" && channel.is_active === null) ?? null;
+}
+
 export type ReplacementConnectionDecision = { ok: true; recorded: boolean } | { ok: false };
 
 /**

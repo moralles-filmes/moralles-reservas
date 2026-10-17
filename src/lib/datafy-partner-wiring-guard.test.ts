@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { resolveUnitChannelBinding } from "../../supabase/functions/_shared/whatsapp-org-provider-core";
+import { selectDatafyOfflineLegacy } from "../../supabase/functions/_shared/datafy-onboarding-core";
 
 const webhook = readFileSync(resolve(__dirname, "../../supabase/functions/webhook-whatsapp/index.ts"), "utf8");
 const start = webhook.indexOf("    const ownMessageEchoes = parseOwnMessageEchoes(provider, payload);");
@@ -64,7 +65,7 @@ function switchHarness(options: {
   const adapter = { capabilities: { automaticProvisioning: false }, getConnectionStatus: async () => {
     calls.push("health"); return { connected: options.connected !== false };
   } };
-  const execute = new Function("supabase", "ChannelActionError", "loadClientChannels", "resolveUnitChannelBinding", "findDatafyMigrationGrant",
+  const execute = new Function("supabase", "ChannelActionError", "loadClientChannels", "resolveDatafyMigrationCandidate", "findDatafyMigrationGrant",
     "getWhatsAppProvider", "tryGetWhatsAppProvider", "supportsClientQr", "resolveChannelCredentials", "jsonResponse", "publicErrorForLifecycle",
     `return (async () => {
       const action = "begin_switch", body = {target_provider: "${options.provider ?? "datafy"}", channel_id:"${options.withoutTargetId ? "" : "target"}"};
@@ -74,8 +75,8 @@ function switchHarness(options: {
     })();`);
   const grantLookups: unknown[][] = [];
   return { calls, filters, grantLookups, run: () => execute(db, ChannelActionError,
-    async () => { calls.push("binding"); if (options.listError) throw new ChannelActionError(500, "CHANNEL_LIST_FAILED", "Falha ao consultar a conexão."); return options.binding ?? []; },
-    resolveUnitChannelBinding,
+    async () => { calls.push("binding"); if (options.listError) throw new ChannelActionError(500, "CHANNEL_LIST_FAILED", "Falha ao consultar a conexão."); return (options.binding ?? []).map((channel, index) => ({ id: `channel-${index}`, ...channel })); },
+    (channels: { id: string; provider: string; is_active: boolean | null; status: string; created_at?: string }[]) => resolveUnitChannelBinding(channels) ?? selectDatafyOfflineLegacy(channels),
     // O helper real é o mesmo das ações (datafy-onboarding-actions.test.ts cobre o predicado).
     async (...args: unknown[]) => {
       calls.push("grant"); grantLookups.push(args);
@@ -141,6 +142,44 @@ describe("Datafy parceiro: primeira configuração em begin_switch", () => {
     expect(h.calls).not.toContain("intent");
     expect(h.calls).not.toContain("activate");
   });
+  it.each([
+    [{ missingProof: true }, "TARGET_CONVERSATION_PARITY_UNVERIFIED", ["binding", "grant", "reload"]],
+    [{ connected: false }, "TARGET_NOT_CONNECTED", ["binding", "grant", "reload", "health"]],
+  ] as const)("legado NULL/desconectado com liberação consumida protege a intenção (%j)", async (failure, code, calls) => {
+    const h = switchHarness({
+      binding: [{ id: "uaz", provider: "uazapi", is_active: null, status: "disconnected" }],
+      migrationGrant: true,
+      ...failure,
+    });
+    expect(await h.run()).toMatchObject({ status: 409, body: { code } });
+    expect(h.calls).toEqual(calls);
+    expect(h.calls).not.toContain("intent");
+    expect(h.calls).not.toContain("activate");
+  });
+  it("legado NULL/desconectado preparado e pronto confere saúde antes da intenção", async () => {
+    const h = switchHarness({
+      binding: [{ id: "uaz", provider: "uazapi", is_active: null, status: "disconnected" }],
+      migrationGrant: true,
+    });
+    expect((await h.run()).status).toBe(200);
+    expect(h.calls).toEqual(["binding", "grant", "reload", "health", "intent", "reload", "persist", "activate", "reload"]);
+  });
+  it("legado NULL/desconectado sem liberação recusa antes de intenção", async () => {
+    const h = switchHarness({
+      binding: [{ id: "uaz", provider: "uazapi", is_active: null, status: "disconnected" }],
+    });
+    expect(await h.run()).toMatchObject({ status: 409, body: { code: "DATAFY_MIGRATION_NOT_SUPPORTED" } });
+    expect(h.calls).toEqual(["binding", "grant"]);
+  });
+  it("erro na proveniência do alvo sem binding falha fechado antes da intenção", async () => {
+    const h = switchHarness({
+      binding: [{ id: "uaz", provider: "uazapi", is_active: null, status: "disconnected" }],
+      grantReadError: true,
+    });
+    expect(await h.run()).toMatchObject({ status: 503, body: { code: "MIGRATION_GRANT_UNAVAILABLE" } });
+    expect(h.calls).toEqual(["binding", "grant"]);
+    expect(h.calls).not.toContain("intent");
+  });
   it("troca comum mantém a intenção durável antes da prontidão (comportamento documentado)", async () => {
     const h = switchHarness({ missingProof: true });
     expect(await h.run()).toMatchObject({ status: 409, body: { code: "TARGET_CONVERSATION_PARITY_UNVERIFIED" } });
@@ -153,7 +192,7 @@ describe("Datafy parceiro: primeira configuração em begin_switch", () => {
     expect(JSON.stringify(response)).not.toContain("GRANT_READ_FAILED");
     expect(h.calls).toEqual(["binding", "grant"]);
   });
-  it("binding Datafy ou sem binding não consulta liberação de migração", async () => {
+  it("binding Datafy e primeira configuração não consultam liberação de migração", async () => {
     for (const binding of [[], [{ provider: "datafy", is_active: true, status: "connected" }]]) {
       const h = switchHarness({ binding });
       expect((await h.run()).status).toBe(200);
@@ -164,7 +203,6 @@ describe("Datafy parceiro: primeira configuração em begin_switch", () => {
     { provider: "datafy", is_active: true, status: "connected" },
     { provider: "datafy", is_active: null, status: "connected" },
     { provider: "zapi", is_active: false, status: "connected" },
-    { provider: "zapi", is_active: null, status: "disconnected" },
   ])("permite binding Datafy ou canal sem binding: %j", async (binding) => {
     expect((await switchHarness({ binding: [binding] }).run()).status).toBe(200);
   });

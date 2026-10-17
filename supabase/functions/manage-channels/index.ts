@@ -14,7 +14,8 @@ import {
 import { parseDatafyAccount } from "../_shared/datafy-client.ts";
 import { getDatafyAccountToken } from "../_shared/datafy-account-config.ts";
 import {
-  createDatafyOnboardingActions, DATAFY_ACTIONS, findDatafyMigrationGrant, type UnitChannelRow,
+  createDatafyOnboardingActions, DATAFY_ACTIONS, findDatafyMigrationGrant,
+  resolveDatafyMigrationCandidate, type UnitChannelRow,
 } from "../_shared/datafy-onboarding-actions.ts";
 import { decideReplacementConnectionRecorded } from "../_shared/datafy-onboarding-core.ts";
 import { resolveUnitChannelBinding } from "../_shared/whatsapp-org-provider-core.ts";
@@ -137,7 +138,7 @@ async function loadClientChannels(unitId: string): Promise<ClientChannelRow[]> {
     .eq("unit_id", unitId)
     // Desempate por id: o binding resolvido aqui casa com o do SQL
     // (`created_at asc nulls last, id`), inclusive o pin da migração.
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: true, nullsFirst: false })
     .order("id", { ascending: true });
   if (error) {
     throw new ChannelActionError(500, "CHANNEL_LIST_FAILED", "Falha ao consultar a conexão.");
@@ -1571,8 +1572,8 @@ serve(async (req) => {
           // presa a ele. Recusa antecipada; a autoridade é o SQL
           // (request_whatsapp_channel_activation → assert_datafy_first_configuration).
           const channels = await loadClientChannels(unitId);
-          const binding = resolveUnitChannelBinding(channels);
-          if (binding && binding.provider !== "datafy") {
+          const replacement = resolveDatafyMigrationCandidate(channels);
+          if (replacement && replacement.provider !== "datafy") {
             let migrationGrant: unknown = null;
             try {
               migrationGrant = await findDatafyMigrationGrant(supabase, unitId, channels);
@@ -1623,7 +1624,8 @@ serve(async (req) => {
           );
         }
 
-        // Corte de migração com loja no ar: prontidão ANTES da intenção. Intenção
+        // Corte de migração: prontidão ANTES da intenção, inclusive se o
+        // legado NULL estiver desconectado e não formar binding. Intenção
         // armada sem eco/conexão seria ativada pelo próximo callback do
         // webhook-whatsapp, sem o admin. Demais trocas mantêm a intenção durável
         // primeiro (comportamento documentado).

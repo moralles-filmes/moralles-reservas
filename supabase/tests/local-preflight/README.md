@@ -1950,7 +1950,16 @@ de migração presa pelo servidor ao binding de outro provider, autoridade
 `assert_datafy_first_configuration` que a aceita e finalizador que só pede
 intenção e ativa na primeira configuração — com liberação de migração ou com
 binding de outro provider (inclusive no vínculo administrativo sem liberação),
-a ativação fica retida para o `begin_switch`. **Mesmo banco do 62/63**, em cluster PostgreSQL
+a ativação fica retida para o `begin_switch`. A emenda de corte offline também
+trata o legado `is_active NULL` desconectado como candidato preso, exige grant
+vigente sob lock antes de intenção/callback e retém o finalizador administrativo.
+O 65 mede ausência, grant pendente/consumido/revogado, intenção antiga e dois
+controles positivos novos; a corrida entre sessões deriva do `FOR SHARE` com
+rechecagem do predicado, sem teste concorrente próprio neste pré-voo.
+O segundo estado não conectado medido no 65 é `error`: o `00-bootstrap` mínimo
+não inclui `provider_error` no CHECK, embora o schema de produção inclua. O
+fallback da autoridade não filtra status em nenhum dos dois schemas.
+**Mesmo banco do 62/63**, em cluster PostgreSQL
 descartável próprio, somente loopback, sem `pg_cron`/`pg_net`. Medido no
 PostgreSQL 18.6 do instalador oficial, `initdb -A trust`, porta `55465`.
 
@@ -1986,10 +1995,10 @@ P -f $H/65a-datafy-migration-bootstrap.sql
 P -f $H/65-datafy-migration-grant.sql            # esperado: ERROR
 
 P -f $M/20261016140200_datafy_migration_grant.sql
-P -f $H/65-datafy-migration-grant.sql            # M10 PENDENTE + M1..M9, M11..M16 + CTRL-a..e OK
+P -f $H/65-datafy-migration-grant.sql            # M10 PENDENTE + M1..M9, M11..M18 + CTRL-a..g OK
 P -f $M/20261016140200_datafy_migration_grant.sql
 P -f $M/20261016140200_datafy_migration_grant.sql
-P -f $H/65-datafy-migration-grant.sql            # M10 OK + M1..M9, M11..M16 + CTRL-a..e OK
+P -f $H/65-datafy-migration-grant.sql            # M10 OK + M1..M9, M11..M18 + CTRL-a..g OK
 
 # Regressão: 62 e 63 continuam verdes com a migration nova (o 63 cobre a
 # primeira configuração e a recusa de outro provider com liberação comum).
@@ -1999,9 +2008,9 @@ P -f $H/63-datafy-final-authority.sql
 "$PG/pg_ctl.exe" -D /tmp/pg65 -m fast stop && rm -rf /tmp/pg65
 ```
 
-A 1a passada sadia do `65` imprime `M10 PENDENTE` e 20 `NOTICE` com `OK`
-(M1..M9, M11..M16, CTRL-a..e); a 2a, depois da reaplicação dupla, imprime
-21 (com `M10 OK`). Tudo termina em rollback, sem linha residual. Erro em qualquer caso
+A 1a passada sadia do `65` imprime `M10 PENDENTE` e 24 `NOTICE` com `OK`
+(M1..M9, M11..M18, CTRL-a..g); a 2a, depois da reaplicação dupla, imprime
+25 (com `M10 OK`). Tudo termina em rollback, sem linha residual. Erro em qualquer caso
 aborta o arquivo sob `ON_ERROR_STOP`.
 
 **O 61 também roda neste banco, mas o C14 dele compara catálogo.** O C14 grava a
