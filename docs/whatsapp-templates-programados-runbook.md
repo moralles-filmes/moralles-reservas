@@ -26,6 +26,12 @@ Datafy declara `templateManagement` e `templateMessages` no registry. Isso descr
 
 Banco, bundles e frontend desta entrega foram publicados com as flags de catálogo e despacho OFF. Submissão de modelos, WABA/número de homologação, piloto com mensagem real e expansão requerem autorizações específicas e separadas. Qualquer migration/deploy adicional também exige seus gates e autorização próprios. Não usar a base de clientes como teste. Não criar campanha, novo produtor promocional, replay retroativo ou backfill de mensagens.
 
+### Piloto dos nove modelos da Ren Sushi
+
+Após autorização específica, a flag global `whatsapp_template_catalog` foi ligada em Moralles Reservas; `whatsapp_automation_dispatch` permaneceu OFF. A Ren Sushi tem conta e binding WABA verificados, mas a liberação de submissão por canal e os nove POSTs ainda dependem do rollout da [migration de autoridade do piloto](../supabase/migrations/20261017200000_whatsapp_template_approved_submission_pilot.sql), dos três bundles consumidores e de novo pré-voo de escopo. Não inferir submissão, aprovação ou envio a cliente da flag ou do binding.
+
+A migration do piloto prende os nove IDs `pt_BR` a hashes de conteúdo e do JSON completo de `buildTemplateSubmission`, inclusive `examples`. O admin da plataforma libera apenas `scope=catalog` para o canal e geração/revisão correntes. O worker precisa de `prepare`/`confirm`/`check` de quatro argumentos com o hash completo imediatamente antes do POST; bundles antigos de três argumentos falham fechados. Se o resultado remoto for incerto, usar GET/listagem e ledger antes de qualquer nova tentativa. O grafo de imports exige redeploy conjunto de `manage-channels`, `process-whatsapp-templates` e `send-scheduled-whatsapp`, com autorização própria para o segundo. Esta migration ainda não implementa a política automática de futuras lojas; ela requer etapa separada e ativação global explícita.
+
 ### Banco antes dos bundles e do frontend
 
 O histórico completo não reconstrói um Supabase vazio com segurança: há predecessores com wrappers antigos e alterações de retorno incompatíveis. Não usar `db reset` ou reaplicar todo o histórico como receita de implantação. Conferir o estado e as migrations pendentes do alvo autorizado; os predecessores de tenancy, canal, Vault, flags, outbox, notificações, conversas, vouchers e helpers privados precisam existir.

@@ -122,7 +122,7 @@ function OfficialConnectionSession({ unitId }: { unitId: string }) {
       <div className="space-y-2 rounded-lg border p-4 text-sm">
         <p className="font-medium">Cadastre o cartão na sua conta Meta</p>
         <ol className="list-decimal space-y-1 pl-5"><li>Abra as Configurações do negócio na Meta.</li><li>Acesse Contas → Contas do WhatsApp e selecione sua conta.</li><li>Em Configurações de pagamento, adicione uma forma de pagamento.</li></ol>
-        {state.templatesPending && <p>Os templates de mensagens ainda estão em preparação. Aguarde a liberação antes de usar as automações com templates.</p>}
+        {state.templatesPending && <p>Os modelos de mensagens ainda não estão disponíveis para automações. A conexão, por si só, não habilita o envio; acompanhe o estado dos modelos nas configurações de automação.</p>}
         <p>Abra o app WhatsApp Business ao menos a cada 14 dias</p>
       </div>
     </CardContent>

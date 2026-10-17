@@ -29,6 +29,9 @@ export default defineConfig({
     // roda contra os arquivos DESTE checkout e falha por ausencia de mudanca
     // que so existe la. Espalhar `exclude` cru apagaria os defaults do vitest
     // (node_modules, dist) — por isso o spread de configDefaults.
-    exclude: [...configDefaults.exclude, "**/.claude/worktrees/**", "**/.superpowers/**"],
+    // Este arquivo usa node:test e roda com `node --test`; Vitest não consegue
+    // coletá-lo mesmo quando suas três asserções passam no runner do Node.
+    exclude: [...configDefaults.exclude, "**/.claude/worktrees/**", "**/.superpowers/**",
+      "**/supabase/tests/local-preflight/local-runtime-paths.test.mjs"],
   },
 });

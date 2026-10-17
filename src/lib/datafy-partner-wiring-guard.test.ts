@@ -242,6 +242,38 @@ describe("Datafy parceiro: primeira configuração em begin_switch", () => {
 });
 
 describe("Datafy parceiro: fronteira das ações", () => {
+  it("a preparação de templates só observa conexão confirmada e nunca o preview", async () => {
+    const begin = manage.indexOf("    if (DATAFY_ACTIONS.has(String(action))) {");
+    const end = manage.indexOf("    const resolveLifecycleChannel", begin);
+    expect(begin).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(begin);
+    const block = ts.transpile(manage.slice(begin, end), { target: ts.ScriptTarget.ES2022 });
+    const execute = new Function("action", "body", "response", "refreshed", `
+      const DATAFY_ACTIONS = new Set(["datafy_link_existing", "official_connect_confirm", "datafy_subscribe"]);
+      const unitId = "unit", callerId = "caller", requestId = "request", req = {};
+      const datafyActions = { handle: async () => response };
+      const refreshTemplateConnection = async (...args) => refreshed.push(args);
+      const jsonResponse = (_req, payload, status) => ({ payload, status });
+      return (async () => { ${block} })();
+    `);
+    const cases = [
+      { action: "datafy_link_existing", body: { phase: "preview" }, response: { status: 200, body: {} }, refresh: false },
+      { action: "datafy_link_existing", body: { phase: "link", channel_id: "channel" }, response: { status: 200, body: {} }, refresh: true },
+      { action: "official_connect_confirm", body: {}, response: { status: 200, body: { onboardingState: "subscription_pending" } }, refresh: false },
+      { action: "official_connect_confirm", body: {}, response: { status: 200, body: { onboardingState: "connected" } }, refresh: true },
+      { action: "official_connect_confirm", body: {}, response: { status: 503, body: { onboardingState: "connected" } }, refresh: false },
+    ] as const;
+    for (const scenario of cases) {
+      const refreshed: unknown[][] = [];
+      const result = await execute(scenario.action, scenario.body, scenario.response, refreshed);
+      expect(result.status).toBe(scenario.response.status);
+      expect(refreshed.length).toBe(scenario.refresh ? 1 : 0);
+      if (scenario.refresh && scenario.action === "datafy_link_existing") {
+        expect(refreshed[0]).toEqual(["unit", "channel"]);
+      }
+    }
+  });
+
   it("delega depois de autenticar e autorizar owner/gerente ou admin", () => {
     const delegated = manage.indexOf("datafyActions.handle(");
     expect(delegated).toBeGreaterThan(manage.indexOf("await memberLifecycleRole(callerId, unitId)"));
