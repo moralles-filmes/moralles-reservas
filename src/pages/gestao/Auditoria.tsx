@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AUDIT_LOG_MEMBER_TABLES, type AuditLogMemberTable } from "@/lib/audit-log-tables";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,10 +35,17 @@ const ACTION_VARIANT: Record<AuditAction, "default" | "secondary" | "destructive
   DELETE: "destructive",
 };
 
-const TABLE_LABEL: Record<string, string> = {
+const TABLE_LABEL: Record<AuditLogMemberTable, string> = {
   customers: "Cliente",
   reservations: "Reserva",
   unit_members: "Membro da unidade",
+};
+
+// Rótulo do filtro (plural), derivado da mesma lista que a policy e o hook usam.
+const TABLE_FILTER_LABEL: Record<AuditLogMemberTable, string> = {
+  customers: "Clientes",
+  reservations: "Reservas",
+  unit_members: "Membros da unidade",
 };
 
 const PAGE_SIZE = 50;
@@ -97,9 +105,9 @@ export default function Auditoria() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todas</SelectItem>
-              <SelectItem value="customers">Clientes</SelectItem>
-              <SelectItem value="reservations">Reservas</SelectItem>
-              <SelectItem value="unit_members">Membros da unidade</SelectItem>
+              {AUDIT_LOG_MEMBER_TABLES.map((t) => (
+                <SelectItem key={t} value={t}>{TABLE_FILTER_LABEL[t]}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>

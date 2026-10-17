@@ -13,12 +13,18 @@
  * cria `unit_member_read_audit` (comentários não contam — a 096 cita a policy e
  * esta migration traz o rollback em comentário).
  *
- * Os dois controles positivos mexem em TEXTO, nunca em arquivo: provam que o
+ * A terceira ponta é a constante `AUDIT_LOG_MEMBER_TABLES` (src/lib/audit-log-tables.ts),
+ * que `useAuditLog` aplica como `.in("table_name", ...)` e tipa o `TABLE_LABEL`: sem
+ * ela o platform_admin, que passa pela policy de admin, veria tabelas da plataforma
+ * na tela do cliente.
+ *
+ * Os controles positivos mexem em TEXTO, nunca em arquivo: provam que o
  * extrator e a comparação reprovam o defeito, não só que o repo atual passa.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { AUDIT_LOG_MEMBER_TABLES } from "../src/lib/audit-log-tables";
 
 const MIGRATIONS_DIR = join(__dirname, "..", "supabase", "migrations");
 const AUDITORIA_PATH = join(__dirname, "..", "src", "pages", "gestao", "Auditoria.tsx");
@@ -109,6 +115,11 @@ describe("audit_log: leitura de membro por lista de tabelas", () => {
     expect(divergencias, divergencias.join("\n")).toEqual([]);
   });
 
+  it("a lista da policy e igual a AUDIT_LOG_MEMBER_TABLES (que o useAuditLog aplica)", () => {
+    const divergencias = diffLists(allowlistOf(policy), [...AUDIT_LOG_MEMBER_TABLES].sort());
+    expect(divergencias, divergencias.join("\n")).toEqual([]);
+  });
+
   it("nenhuma tabela da plataforma aparece na lista", () => {
     const lista = allowlistOf(policy);
     for (const t of PLATFORM_TABLES) {
@@ -136,6 +147,11 @@ describe("audit_log: leitura de membro por lista de tabelas", () => {
       );
       expect(sabotado).not.toBe(tsx);
       expect(diffLists(BASELINE, tableLabelKeys(sabotado)).length).toBeGreaterThan(0);
+    });
+
+    it("constante com tabela a mais diverge da lista da policy", () => {
+      const sabotada = [...AUDIT_LOG_MEMBER_TABLES, "whatsapp_instances"].sort();
+      expect(diffLists(allowlistOf(policy), sabotada).length).toBeGreaterThan(0);
     });
 
     it("policy sem a restricao por tabela nao tem lista (o extrator falha alto)", () => {
