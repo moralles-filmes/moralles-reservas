@@ -1,6 +1,6 @@
-# Receptor de alertas operacionais WhatsApp por e-mail — proposta de spec
+# Receptor de alertas operacionais WhatsApp por e-mail — design aprovado para implementação local
 
-**Estado:** proposta para revisão e aprovação do responsável. Não autoriza implementação, migration, secrets, deploy nem envio. **Motivo:** a Fase 6 da migração Ren Sushi está retida porque `WHATSAPP_OPS_ALERT_URL` não está configurado em Moralles Reservas (`gbabxcrntkwgblgqsiit`), e o responsável não possui receptor HTTPS. Os nomes `RESEND_API_KEY` e `RESEND_FROM_EMAIL` constam entre os Edge secrets; valores e capacidade de envio não foram conferidos.
+**Estado:** aprovada pelo responsável em 2026-10-17 para plano, implementação e testes **locais**. O aceite não autoriza `db push`, secrets, deploy, envio Resend nem conexão Datafy. **Motivo:** a Fase 6 da migração Ren Sushi está retida porque `WHATSAPP_OPS_ALERT_URL` não está configurado em Moralles Reservas (`gbabxcrntkwgblgqsiit`), e o responsável não possui receptor HTTPS. Os nomes `RESEND_API_KEY` e `RESEND_FROM_EMAIL` constam entre os Edge secrets; valores e capacidade de envio não foram conferidos.
 
 ## Objetivo e escopo
 

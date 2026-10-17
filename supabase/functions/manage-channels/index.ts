@@ -1245,7 +1245,11 @@ const datafyActions = createDatafyOnboardingActions({
     return gate?.provisioning.allowed === true && allowance.ok === true && allowance.allowance.allowed === true;
   },
   projectUrl: Deno.env.get("SUPABASE_URL")!,
-  emitEvent: async (event) => { await createOpsAlerts(supabase, Deno.env.get("WHATSAPP_OPS_ALERT_URL"), (entry) => jsonLog("warn", entry)).subscriptionFailure(event); },
+  emitEvent: async (event) => { await createOpsAlerts(supabase, {
+    endpoint: Deno.env.get("WHATSAPP_OPS_ALERT_URL"),
+    projectUrl: Deno.env.get("SUPABASE_URL"),
+    token: Deno.env.get("WHATSAPP_OPS_ALERT_TOKEN"),
+  }, (entry) => jsonLog("warn", entry)).subscriptionFailure(event); },
   logCleanupFailure: () => jsonLog("warn", { evt: "datafy_discard_cleanup_failed" }),
   logUnrecognized: (info) => jsonLog("warn", { evt: "datafy_admin_unrecognized", ...info }),
 });

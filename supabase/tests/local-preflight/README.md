@@ -2457,3 +2457,56 @@ JWT/PostgREST, todos os triggers, RPCs de reserva/consentimento/conversa,
 da base 69a é um stub, portanto o teste do wrapper não prova membership real
 do painel. Reexecutar os pré-voos próprios 61–69 e auditar owner/ACL/policies/
 `BYPASSRLS` efetivos antes de qualquer rollout; gate vermelho continua NO-GO.
+
+### 71 — Reserva de alertas operacionais por e-mail
+
+Em contêiner Supabase PostgreSQL **descartável e exclusivo**, com imagem exata
+`public.ecr.aws/supabase/postgres:17.11.0.004`, `--network none` e nenhuma
+porta publicada, confirme imagem, rede e ausência de port bindings antes de
+executar SQL. Crie um banco novo. Aplique `00-bootstrap.sql`,
+`71a-whatsapp-ops-email-bootstrap.sql` e a migration real
+`20261017190000_whatsapp_ops_email_attempts.sql` nessa ordem, com
+`ON_ERROR_STOP=1`. Rode `71-whatsapp-ops-email.sql`; reaplique a migration
+crua mais duas vezes e repita o 71 após cada aplicação. O 71 encerra as
+asserções em `ROLLBACK`. Em PowerShell, a alimentação do `psql` é
+`Get-Content -Raw <arquivo> | docker exec -i <contêiner> psql -U postgres -d
+<banco> -v ON_ERROR_STOP=1`. Não use o banco do projeto.
+
+Depois rode `node supabase/tests/local-preflight/71b-whatsapp-ops-email-concurrency.mjs`
+com o contêiner **`margin-ops-alert-pg`** ainda ativo. O runner usa apenas o
+Docker Desktop local resolvido por `local-runtime-paths.mjs`, confirma imagem,
+`--network none`, estado ativo e nenhuma porta publicada, cria e apaga um banco
+próprio e mede duas sessões concorrentes no mesmo par e em pares distintos na
+última vaga do teto global. Identifica o segundo backend por `application_name`
+e observa `wait_event_type=Lock` e `wait_event=advisory` antes do primeiro
+`COMMIT`. O controle positivo enfraquece temporariamente o teto, demonstra a
+51ª reserva e restaura a função pela migration real em `finally`; falha de
+teste, restauração ou limpeza mantém o erro visível. Remova o contêiner próprio
+ao terminar.
+
+O 71 prova replay de reserva aceita sem novo `INSERT`, digest diferente
+bloqueado, separação entre unidades/canais, unidade inexistente, imutabilidade,
+aceite com id remoto, tentativa incerta ainda bloqueada após 31 min,
+reconciliação manual, teto de 50 em 24 h incluindo uma linha `uncertain`,
+readiness, `FORCE RLS` e ACL efetiva
+de `anon`, `authenticated` e `service_role`, inclusive `DELETE`, `TRUNCATE` e
+`UPDATE` de colunas imutáveis. Os casos adicionais medem as bordas móveis de
+30 min para alertas aceitos e 24 h para teste sintético aceito e teto global,
+também com uma linha `uncertain`. O OPS-23 desfaz a conclusão num `SAVEPOINT`
+para simular falha de persistência depois de uma chamada de provedor: a tentativa
+continua `reserved` e a nova reserva é recusada como `unresolved`. Esse caso
+não faz chamada ao provedor.
+
+**Resultados observados em 2026-10-17:** migration crua aplicada três vezes;
+OPS-1..17 passaram após cada aplicação. Após ampliar o pré-voo, a migration
+foi reaplicada e OPS-1..22 passaram, inclusive fronteiras temporais, ACL
+efetiva e dois controles negativos de readiness. O `71b` observou novamente
+as duas corridas e o controle positivo da 51ª reserva, com restauração.
+**Depois dessa medição**, OPS-15/20 ganharam a linha `uncertain` e OPS-23 foi
+adicionado. O `71` foi executado novamente no banco descartável, com
+OPS-1..23 e os dois controles de drift da readiness aprovados (`psql` exit 0).
+É um schema projetado: não reproduz gateway, JWT, Resend, carga real ou locks
+sob tráfego de produção. A prova de que replay HTTP não faz um segundo fetch ao
+Resend está em `src/lib/whatsapp-ops-alert-email-handler.test.ts`, Task 4; o SQL
+sozinho só demonstra a decisão `replay`. A corrida isolada não substitui o
+teste sintético recebido no ambiente hospedado.

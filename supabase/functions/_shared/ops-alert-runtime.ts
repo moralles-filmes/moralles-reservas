@@ -1,11 +1,27 @@
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { alertIntervalElapsed, decideInboundAlerts, type InboundAlertUnit, type OpsAlertPayload } from './ops-alert-core.ts';
-import { createOpsAlertSender } from './ops-alert-sender.ts';
+import { createSecureOpsAlertSender, type SecureOpsAlertConfig } from './secure-ops-alert-sender.ts';
 import { MAX_PENDING_BACKLOG_AGE_MS } from './whatsapp-inbound-queue-core.ts';
 
-export function createOpsAlerts(db: SupabaseClient, endpoint: string | undefined,
+const INBOUND_ALERT_BATCH_SIZE = 4;
+const INBOUND_ALERT_ROTATION_MS = 5 * 60_000;
+
+type InboundAlert = ReturnType<typeof decideInboundAlerts>[number];
+
+/** One cron sweep has a bounded tail; successive five-minute sweeps visit other candidates. */
+export function selectInboundAlertBatch(alerts: InboundAlert[], now: string, limit = INBOUND_ALERT_BATCH_SIZE): InboundAlert[] {
+  if (!Number.isInteger(limit) || limit < 1 || !Number.isFinite(Date.parse(now))) return [];
+  const ordered = [...alerts].sort((a, b) =>
+    a.unitId < b.unitId ? -1 : a.unitId > b.unitId ? 1 : a.type < b.type ? -1 : a.type > b.type ? 1 : 0);
+  if (ordered.length <= limit) return ordered;
+  const sweep = Math.floor(Date.parse(now) / INBOUND_ALERT_ROTATION_MS);
+  const start = (sweep * limit) % ordered.length;
+  return Array.from({ length: limit }, (_, i) => ordered[(start + i) % ordered.length]);
+}
+
+export function createOpsAlerts(db: SupabaseClient, config: SecureOpsAlertConfig,
   log: (event: Record<string, unknown>) => void, fetchImpl: typeof fetch = fetch) {
-  const send = createOpsAlertSender(endpoint, fetchImpl);
+  const send = createSecureOpsAlertSender(config, fetchImpl);
   async function observe(unitId?: string): Promise<{ now: string; units: InboundAlertUnit[] }> {
     const { data, error } = await db.rpc('observe_whatsapp_ops_alerts', { p_unit_id: unitId ?? null });
     if (error || !data || !Number.isFinite(Date.parse(data.now)) || !Array.isArray(data.units)) throw new Error('ops_observation_failed');
@@ -33,9 +49,16 @@ export function createOpsAlerts(db: SupabaseClient, endpoint: string | undefined
       try {
         const observation = await observe();
         const alerts = decideInboundAlerts({ ...observation, maxBacklogAgeMs: MAX_PENDING_BACKLOG_AGE_MS });
-        const results = [];
-        for (const alert of alerts) results.push(await deliver(alert.payload, alert.newWatermark));
-        return { attempted: alerts.length, results };
+        const batch = selectInboundAlertBatch(alerts, observation.now);
+        // The batch is at most four, so even four 20-second receiver calls have
+        // a ~20-second alert tail rather than 80 seconds (or more) in series.
+        const settled = await Promise.allSettled(batch.map(alert => deliver(alert.payload, alert.newWatermark)));
+        const results = settled.map((result, i) => {
+          if (result.status === 'fulfilled') return result.value;
+          log({ evt: 'whatsapp_ops_alert', event: batch[i].type, unit_id: batch[i].unitId, reason: 'delivery_failed' });
+          return { delivered: false, reason: 'delivery_failed' };
+        });
+        return { attempted: batch.length, observed: alerts.length, deferred: alerts.length - batch.length, results };
       } catch {
         log({ evt: 'whatsapp_ops_alert', reason: 'observation_failed' });
         return { attempted: 0, reason: 'observation_failed' };
