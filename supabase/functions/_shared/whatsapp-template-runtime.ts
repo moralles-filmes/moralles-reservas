@@ -83,8 +83,12 @@ export function createTemplateRuntime(db: SupabaseClient) {
       p_account_generation: epoch.account_generation, p_epochs: epoch, p_snapshot: snapshot }),
     enqueueProvision: async (bindingId, d) => { await rpc('enqueue_whatsapp_template_job', {
       p_binding_id: bindingId, p_operation: 'provision', p_target_key: d.id, p_revision: d.version }); },
-    prepare: job => rpc('prepare_whatsapp_template_provision', { p_job_id: job.id, p_fence: job.claim_token, p_generation: job.binding_generation }),
-    confirm: job => rpc('confirm_whatsapp_template_post', { p_job_id: job.id, p_fence: job.claim_token, p_generation: job.binding_generation }),
+    prepare: (job, payloadHash) => rpc('prepare_whatsapp_template_provision', { p_job_id: job.id, p_fence: job.claim_token,
+      p_generation: job.binding_generation, p_payload_hash: payloadHash }),
+    confirm: (job, payloadHash) => rpc('confirm_whatsapp_template_post', { p_job_id: job.id, p_fence: job.claim_token,
+      p_generation: job.binding_generation, p_payload_hash: payloadHash }),
+    prePostCheck: (job, payloadHash) => rpc('check_whatsapp_template_submission', { p_job_id: job.id, p_fence: job.claim_token,
+      p_generation: job.binding_generation, p_payload_hash: payloadHash }),
     finish: (id, fence, result) => rpc('finish_whatsapp_template_job', { p_job_id: id, p_fence: fence, p_result: result }),
     finalCheck: async context => {
       try {
@@ -133,5 +137,23 @@ export function createTemplateRuntime(db: SupabaseClient) {
       await accounts.ensureTemplateAccount(channelId);
     } catch { jsonLog('warn', { evt: 'template_channel_preparation_failed', channel_id: channelId }); }
   }
-  return { ...accounts, ...sync, ...worker, refreshTemplateChannel };
+  /** Resolve a Datafy channel from a unit-scoped write, never from caller-supplied WABA data. */
+  async function refreshTemplateConnection(unitId: string, explicitChannelId?: string): Promise<void> {
+    try {
+      let channelId = explicitChannelId;
+      if (!channelId) {
+        const { data, error } = await db.from('whatsapp_datafy_onboardings')
+          .select('reserved_channel_id').eq('unit_id', unitId).in('state', ['connected', 'completed'])
+          .order('created_at', { ascending: false }).limit(1).maybeSingle();
+        if (error) throw new Error('template_onboarding_failed');
+        channelId = data?.reserved_channel_id;
+      }
+      if (!channelId) return;
+      const { data: owned, error } = await db.from('whatsapp_channels').select('id')
+        .eq('id', channelId).eq('unit_id', unitId).eq('provider', 'datafy').eq('status', 'connected').maybeSingle();
+      if (error) throw new Error('template_channel_failed');
+      if (owned) await refreshTemplateChannel(owned.id);
+    } catch { jsonLog('warn', { evt: 'template_connection_refresh_failed', unit_id: unitId }); }
+  }
+  return { ...accounts, ...sync, ...worker, refreshTemplateChannel, refreshTemplateConnection };
 }

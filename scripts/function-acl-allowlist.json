@@ -110,6 +110,12 @@
     "record_whatsapp_template_events(uuid,jsonb)"
   ],
 
+  "_service_only_whatsapp_template_approved_submission_pilot": [
+    "prepare_whatsapp_template_provision(uuid,uuid,bigint,text)",
+    "confirm_whatsapp_template_post(uuid,uuid,bigint,text)",
+    "check_whatsapp_template_submission(uuid,uuid,bigint,text)"
+  ],
+
   "_expected_advisor": {
     "_doc": [
       "Total de WARN que o Security Advisor deve reportar para os lints 0028 e",

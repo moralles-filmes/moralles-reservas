@@ -61,7 +61,7 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
-const { refreshTemplateChannel } = createTemplateRuntime(supabase);
+const { refreshTemplateChannel, refreshTemplateConnection } = createTemplateRuntime(supabase);
 
 function jsonResponse(req: Request, body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
@@ -1290,6 +1290,16 @@ serve(async (req) => {
 
     if (DATAFY_ACTIONS.has(String(action))) {
       const response = await datafyActions.handle(String(action), unitId, callerId, requestId, body);
+      const confirmedOnboarding = response.body !== null && typeof response.body === "object"
+        && "onboardingState" in response.body
+        && (response.body.onboardingState === "connected" || response.body.onboardingState === "completed");
+      if (response.status >= 200 && response.status < 300
+        && ((action === "official_connect_confirm" && confirmedOnboarding) || action === "datafy_subscribe"
+          || (action === "datafy_link_existing" && body.phase === "link"))) {
+        const explicitChannelId = action === "official_connect_confirm" ? undefined
+          : typeof body.channel_id === "string" ? body.channel_id : undefined;
+        await refreshTemplateConnection(unitId, explicitChannelId);
+      }
       return jsonResponse(req, response.body, response.status, response.headers);
     }
 

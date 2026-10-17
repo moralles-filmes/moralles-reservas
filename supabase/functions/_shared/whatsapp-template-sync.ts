@@ -1,5 +1,6 @@
 import { TEMPLATE_CATALOG, catalogHash, type TemplateDefinition, type TemplateId } from './whatsapp-template-catalog-core.ts';
 import { nextTemplateCursor, type RemoteTemplateSnapshot, type TemplateCreateOutcome } from './whatsapp-template-provider-core.ts';
+import { submissionPayloadHash } from './whatsapp-template-submission-hash.ts';
 import type { ChannelCredentials, WhatsAppProviderAdapter } from './whatsapp-provider-core.ts';
 import { deriveTemplateState } from './whatsapp-template-state-core.ts';
 import type { TemplateChannel } from './whatsapp-template-account.ts';
@@ -54,8 +55,10 @@ export interface TemplateSyncDependencies {
   begin(accountId: string): Promise<TemplateSyncEpoch>;
   publish(accountId: string, epoch: TemplateSyncEpoch, snapshot: TemplateObservation[]): Promise<boolean>;
   enqueueProvision(bindingId: string, definition: TemplateDefinition): Promise<void>;
-  prepare(job: TemplateProvisionJob): Promise<boolean>;
-  confirm(job: TemplateProvisionJob): Promise<boolean>;
+  prepare(job: TemplateProvisionJob, payloadHash: string): Promise<boolean>;
+  confirm(job: TemplateProvisionJob, payloadHash: string): Promise<boolean>;
+  /** Fail-closed SQL fence and allowlist recheck after confirm, just before HTTP. */
+  prePostCheck(job: TemplateProvisionJob, payloadHash: string): Promise<boolean>;
   finalCheck(context: TemplateSyncContext): Promise<'final_service_suspended' | 'final_channel_changed' | 'final_gate_paused' | null>;
   finish(jobId: string, fence: string, result: TemplateOutcome): Promise<boolean>;
 }
@@ -149,7 +152,9 @@ export function createTemplateSyncService(deps: TemplateSyncDependencies) {
         }
       }
       const definition = activeDefinition(t);
-      if (definition && context.catalogEnabled && context.provisionBindingId && missing.has(t.id)
+      if (definition && t.desired_hash === await catalogHash(definition)
+        && t.requested_category === definition.requestedCategory
+        && context.catalogEnabled && context.provisionBindingId && missing.has(t.id)
         && !t.remote_id && !t.submission_attempted_at && !RESTRICTED.has(t.remote_status) && jobs.length === 0) {
         await deps.enqueueProvision(context.provisionBindingId, definition);
       }
@@ -171,11 +176,15 @@ export function createTemplateSyncService(deps: TemplateSyncDependencies) {
     if (!published) return { state: 'stale', processed: 0 };
     const target = context.templates.find(t => t.logical_id === job.target_key && t.version === 1);
     const definition = target && activeDefinition(target);
-    if (!target || !definition) return { state: 'conflict', processed: 0 };
+    if (!target || !definition || target.desired_hash !== await catalogHash(definition)
+      || target.requested_category !== definition.requestedCategory
+      || !postContext.templates.some(row => row.id === target.id && row.desired_hash === target.desired_hash
+        && row.requested_category === target.requested_category)) return { state: 'conflict', processed: 0 };
+    const payloadHash = await submissionPayloadHash(definition);
     // SQL handles exact reuse without recording a POST or consuming an attempt.
     // It also persists external mismatch/history as needs_review. A false return
     // alone never proves reuse: a lost fence also returns false.
-    if (!await deps.prepare(job)) return { state: !missing.has(target.id) && !compatible.has(target.id) ? 'conflict' : 'paused', processed: 0 };
+    if (!await deps.prepare(job, payloadHash)) return { state: !missing.has(target.id) && !compatible.has(target.id) ? 'conflict' : 'paused', processed: 0 };
     let refusal: Awaited<ReturnType<TemplateSyncDependencies['finalCheck']>>;
     try { refusal = await deps.finalCheck(postContext); }
     catch { refusal = 'final_channel_changed'; }
@@ -184,9 +193,15 @@ export function createTemplateSyncService(deps: TemplateSyncDependencies) {
       return { state: 'paused', processed: 0 };
     }
     let confirmed = false;
-    try { confirmed = await deps.confirm(job); } catch { /* Adapter was never invoked. */ }
+    try { confirmed = await deps.confirm(job, payloadHash); } catch { /* Adapter was never invoked. */ }
     if (!confirmed) {
       await deps.finish(job.id, job.claim_token, { outcome: 'local_preflight_refused', reason: 'final_channel_changed' });
+      return { state: 'paused', processed: 0 };
+    }
+    let prePostAllowed = false;
+    try { prePostAllowed = await deps.prePostCheck(job, payloadHash); } catch { /* No HTTP if SQL is unavailable. */ }
+    if (!prePostAllowed) {
+      await deps.finish(job.id, job.claim_token, { outcome: 'local_preflight_refused', reason: 'final_gate_paused' });
       return { state: 'paused', processed: 0 };
     }
     let result: TemplateCreateOutcome;

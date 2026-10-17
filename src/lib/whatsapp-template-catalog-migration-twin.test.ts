@@ -23,6 +23,7 @@ import { SCHEDULED_KINDS } from "../../supabase/functions/_shared/whatsapp-autom
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../supabase/migrations");
 const NEW_MIGRATION = "20261017120000_whatsapp_templates_table_ready_cancellation.sql";
+const APPROVED_SUBMISSION_MIGRATION = "20261017200000_whatsapp_template_approved_submission_pilot.sql";
 const TEMPLATE_ID = /^(res|fila|mkt)_[a-z_]+_v\d+$/;
 const TEMPLATE_LITERAL = /'((?:res|fila|mkt)_[a-z_]+_v\d+)'/g;
 
@@ -192,7 +193,7 @@ interface FunctionDef {
   file: string;
 }
 
-type CheckClass = "logical_id" | "jobs_kind" | "jobs_kind_resource" | "pin_tuple";
+type CheckClass = "logical_id" | "approved_catalog_logical_id" | "jobs_kind" | "jobs_kind_resource" | "pin_tuple";
 
 interface CheckDef {
   cls: CheckClass;
@@ -222,6 +223,7 @@ function topLevelArity(args: string): number {
 function classifyCheck(table: string, expr: string): CheckClass | null {
   const e = expr.replace(/\s+/g, " ").trim();
   if (table === "public.whatsapp_remote_templates" && /\blogical_id in ?\(/i.test(e)) return "logical_id";
+  if (table === "app_private.whatsapp_template_approved_submissions" && /\blogical_id in ?\(/i.test(e)) return "approved_catalog_logical_id";
   if (table !== "public.whatsapp_automation_jobs") return null;
   if (/\binitial_catalog_key in ?\(/i.test(e)) return "pin_tuple";
   if (/^\(? ?kind in ?\([^)]*\) ?\)?$/i.test(e)) return "jobs_kind";
@@ -485,19 +487,21 @@ describe("catálogo de modelos TS ⇔ listas fixas vigentes nas migrations", () 
     expect(fnLists.length).toBeGreaterThanOrEqual(3);
     expect(checkLists.length).toBeGreaterThanOrEqual(2);
     expect(report.cases.length).toBeGreaterThanOrEqual(4);
-    expect([...report.checks.keys()].sort()).toEqual(["jobs_kind", "jobs_kind_resource", "logical_id", "pin_tuple"]);
+    expect([...report.checks.keys()].sort()).toEqual(["approved_catalog_logical_id", "jobs_kind", "jobs_kind_resource", "logical_id", "pin_tuple"]);
   });
 
-  it("os CHECKs vigentes são os da migration nova", () => {
-    for (const check of report.checks.values()) expect(check.file, check.cls).toBe(NEW_MIGRATION);
+  it("os CHECKs vigentes são os das migrations do catálogo e da aprovação", () => {
+    for (const check of report.checks.values()) expect(check.file, check.cls).toBe(
+      check.cls === "approved_catalog_logical_id" ? APPROVED_SUBMISSION_MIGRATION : NEW_MIGRATION,
+    );
   });
 
   it("toda lista de ids, todo CASE kind→modelo e os CHECKs de kind concordam com o TS", () => {
     expect(report.mismatches).toEqual([]);
   });
 
-  it("CONTROLE (RED): sem a migration nova, o histórico diverge do TS em todas as classes", () => {
-    const red = compareTwins(ALL_FILES.filter((f) => f.name !== NEW_MIGRATION));
+  it("CONTROLE (RED): sem as migrations novas, o histórico diverge do TS em todas as classes", () => {
+    const red = compareTwins(ALL_FILES.filter((f) => f.name !== NEW_MIGRATION && f.name !== APPROVED_SUBMISSION_MIGRATION));
     const joined = red.mismatches.join("\n");
     expect(red.mismatches.length).toBeGreaterThan(0);
     expect(joined).toMatch(/CHECK logical_id: lista de ids diverge/);

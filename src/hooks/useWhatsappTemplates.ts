@@ -6,7 +6,7 @@ import { canonicalBrPhone, isValidBrPhone } from '@/lib/phone';
 import { TEMPLATE_CATALOG } from '../../supabase/functions/_shared/whatsapp-template-catalog-core';
 import { AUTOMATION_PREFLIGHT_REASONS, SCHEDULED_KINDS } from '../../supabase/functions/_shared/whatsapp-automation-core';
 import {
-  canManageTemplateRequest, decodeConsentState, parseTemplateManagementRequest,
+  canManageTemplateAction, canManageTemplateRequest, decodeConsentState, parseTemplateManagementRequest,
   type ConsentPurpose, type TemplateManagementRequest, type TemplateRole
 } from '../../supabase/functions/_shared/whatsapp-template-access-core';
 
@@ -54,7 +54,7 @@ export type { ConsentPurpose };
 const errors = {
   unauthorized: 'Sua sessão expirou. Entre novamente.', forbidden: 'Você não tem acesso a esta ação.',
   configuration_changed: 'A configuração mudou. Atualize os dados e tente novamente.',
-  not_eligible: 'Esta mensagem não permite correção neste momento. Atualize os dados.',
+  not_eligible: 'Esta ação não está disponível para a configuração atual. Atualize os dados.',
   invalid_request: 'Confira os dados informados e tente novamente.',
   dependency_unavailable: 'Não foi possível consultar o serviço. Tente novamente.',
 } as const;
@@ -92,11 +92,41 @@ export function canRequestJobCorrection(job: BlockedTemplateJob, snapshot: Templ
     && correctionReasons.has(job.reason) && !!snapshot.channelId && !!snapshot.configuration.bindingGeneration
     && Date.parse(job.deadline) > Date.now();
 }
+export type CatalogReleasePin = {
+  channelId: string; bindingGeneration: number; credentialRevision: number;
+  catalogAuthorized: boolean; enabled: boolean;
+};
+export function catalogReleaseMatches(snapshot: TemplateSnapshot | undefined, pin: CatalogReleasePin): boolean {
+  return snapshot?.providerLabel === 'Datafy' && snapshot.channelId === pin.channelId
+    && snapshot.configuration.bindingGeneration === pin.bindingGeneration
+    && snapshot.configuration.credentialRevision === pin.credentialRevision
+    && snapshot.configuration.catalogAuthorized === pin.catalogAuthorized
+    && pin.enabled !== pin.catalogAuthorized;
+}
 export function useWhatsappTemplates(unitId: string, role: TemplateRole = null, isPlatformAdmin = false) {
   const client = useQueryClient();
   const key = ['whatsapp-templates', unitId] as const;
-  const query = useQuery({ queryKey: key, queryFn: () => fetchAuthorizedTemplateSnapshot(unitId), enabled: !!unitId, retry: false, refetchOnWindowFocus: false });
+  const query = useQuery({
+    queryKey: key, queryFn: () => fetchAuthorizedTemplateSnapshot(unitId), enabled: !!unitId,
+    retry: false, refetchOnWindowFocus: false,
+    refetchInterval: () => document.hidden ? false : 30_000,
+  });
   const permitted = canManageTemplateRequest(role, { action: 'snapshot', unit_id: unitId }, isPlatformAdmin) && (isPlatformAdmin || role === 'owner' || role === 'gerente');
+  const canAdministerCatalog = isPlatformAdmin && canManageTemplateAction(role, 'release_channel', isPlatformAdmin);
+  const releaseCatalog = useMutation({
+    mutationFn: async (pin: CatalogReleasePin) => {
+      const snapshot = query.data;
+      if (!canAdministerCatalog || query.isError || query.isFetching || snapshot?.providerLabel !== 'Datafy'
+        || !catalogReleaseMatches(snapshot, pin)) throw closedError('configuration_changed');
+      const data = await requestManagement({
+        action: 'release_channel', channel_id: pin.channelId, scope: 'catalog', enabled: pin.enabled,
+        expected_credential_revision: pin.credentialRevision,
+        expected_binding_generation: pin.bindingGeneration,
+      });
+      if (!z.object({ status: z.literal('updated') }).strict().safeParse(data).success) throw closedError();
+    },
+    onSettled: () => client.invalidateQueries({ queryKey: key, exact: true }),
+  });
   const sync = useMutation({
     mutationFn: async () => {
       const snapshot = query.data;
@@ -115,7 +145,7 @@ export function useWhatsappTemplates(unitId: string, role: TemplateRole = null, 
       if (!z.object({ status: z.literal('updated') }).strict().safeParse(data).success) throw closedError();
     }, onSettled: () => client.invalidateQueries({ queryKey: key, exact: true }),
   });
-  return { query, sync, correction, canManage: permitted };
+  return { query, sync, correction, releaseCatalog, canManage: permitted, canAdministerCatalog };
 }
 export type TemplateControls = ReturnType<typeof useWhatsappTemplates>;
 

@@ -58,6 +58,7 @@ serve(async req => {
     if (body.action === 'dispatch_operator' || body.action === 'resend') {
       const operator = body.action === 'dispatch_operator';
       if (Object.keys(body).some(key => !['action','kind','resource_id','unit_id'].includes(key))
+        || typeof body.kind !== 'string'
         || (operator ? body.kind !== 'cancellation' && body.kind !== 'waitlist_table_ready'
           : !['confirmation','waitlist_entered','cancellation','waitlist_table_ready'].includes(String(body.kind)))
         || !uuid(body.resource_id) || (body.unit_id !== undefined && !uuid(body.unit_id))

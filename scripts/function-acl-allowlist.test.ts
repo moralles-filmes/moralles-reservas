@@ -402,6 +402,23 @@ describe('worker interno de templates', () => {
   });
 });
 
+describe('pilot-approved template submissions', () => {
+  it('keeps each complete-payload RPC service-only', () => {
+    const signatures = allowlist._service_only_whatsapp_template_approved_submission_pilot as string[];
+    expect(signatures).toEqual([
+      'prepare_whatsapp_template_provision(uuid,uuid,bigint,text)',
+      'confirm_whatsapp_template_post(uuid,uuid,bigint,text)',
+      'check_whatsapp_template_submission(uuid,uuid,bigint,text)',
+    ]);
+    const migration = readFileSync(join(MIGRATIONS_DIR, '20261017200000_whatsapp_template_approved_submission_pilot.sql'), 'utf8');
+    for (const signature of signatures) {
+      expect(allEntries.some(entry => entry.name === signature.split('(')[0]), signature).toBe(false);
+      expect(migration, signature).toContain(`revoke all on function public.${signature} from public,anon,authenticated,service_role;`);
+      expect(migration, signature).toContain(`grant execute on function public.${signature} to service_role;`);
+    }
+  });
+});
+
 describe('preferências públicas mediadas pela Edge Function', () => {
   it('mantém SQL interno service-only e helpers/trigger sem execução direta', () => {
     const signatures = allowlist._service_only_whatsapp_preferences as string[];

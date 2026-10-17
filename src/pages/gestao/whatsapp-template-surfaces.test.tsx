@@ -139,13 +139,16 @@ it('TEXT restores defaults, inserts chips, previews and saves the actual draft',
   fireEvent.click(screen.getByRole('switch')); fireEvent.change(screen.getByRole('textbox', { name: 'Mensagem' }), { target: { value: 'Novo texto' } }); fireEvent.click(screen.getByRole('button', { name: 'Salvar mensagem' }));
   await waitFor(() => expect(io.saves).toHaveLength(1)); expect(io.saves[0]).toMatchObject({ body: 'Novo texto', customized: true });
 });
-it('sync requests use actual assertions and preserve a hidden dirty Giftback TEXT draft', async () => {
+it('store refreshes official model status without a sync request and preserves a hidden dirty Giftback TEXT draft', async () => {
   io.mode = 'unofficial'; io.bound = true; const client = mount(Giftback); const editor = await screen.findByRole('textbox', { name: 'Mensagem' }); fireEvent.change(editor, { target: { value: 'Meu rascunho' } });
   io.mode = 'official'; await act(async () => { await client.invalidateQueries({ queryKey: ['whatsapp-templates'] }); });
   await screen.findAllByText('Qualidade desconhecida');
   expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Solicitar sincronização' })); await screen.findByText(/Sincronização solicitada/);
-  expect(io.rpc).toHaveBeenCalledWith('synthetic-test-jwt', 'request_whatsapp_template_sync_for_channel', { p_channel_id: '30000000-0000-4000-8000-000000000001', p_expected_binding_generation: 1 });
+  expect(screen.queryByRole('button', { name: 'Solicitar sincronização' })).not.toBeInTheDocument();
+  const snapshotReads = io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot').length;
+  fireEvent.click(screen.getByRole('button', { name: 'Atualizar dados' }));
+  await waitFor(() => expect(io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot').length).toBeGreaterThan(snapshotReads));
+  expect(io.rpc.mock.calls.some(([, name]) => name === 'request_whatsapp_template_sync_for_channel')).toBe(false);
   io.mode = 'unofficial'; await act(async () => { await client.invalidateQueries({ queryKey: ['whatsapp-templates'] }); });
   expect(await screen.findByRole('textbox', { name: 'Mensagem' })).toHaveValue('Meu rascunho');
 });
@@ -230,7 +233,7 @@ function blockedJob(overrides: Record<string, unknown> = {}) {
 it('eligible explicit correction uses current assertions; a SQL false is refusal followed by refresh', async () => {
   io.bound = true; io.jobs = [blockedJob()]; io.rpc.mockResolvedValue({ data: false, error: null }); mount(Reservas);
   fireEvent.click(await screen.findByRole('button', { name: 'Verificar correção' }));
-  await screen.findByText(/Esta mensagem não permite correção/);
+  await screen.findByText(/Esta ação não está disponível para a configuração atual/);
   expect(screen.queryByText(/Correção registrada/)).not.toBeInTheDocument();
   expect(io.rpc).toHaveBeenCalledWith('synthetic-test-jwt', 'revalidate_whatsapp_automation_job', { p_job_id: '70000000-0000-4000-8000-000000000001', p_expected_channel_id: '30000000-0000-4000-8000-000000000001', p_expected_binding_generation: 1 });
   expect(io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot').length).toBeGreaterThan(1);

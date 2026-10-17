@@ -2,6 +2,7 @@ import { webcrypto } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createDatafyTemplateTransport } from '../../supabase/functions/_shared/datafy-client.ts';
 import { TEMPLATE_CATALOG, catalogHash } from '../../supabase/functions/_shared/whatsapp-template-catalog-core.ts';
+import { submissionPayloadHash } from '../../supabase/functions/_shared/whatsapp-template-submission-hash.ts';
 import { createTemplateSyncService, selectTemplateBindings, type TemplateBindingCandidate, type TemplateSyncDependencies, type TemplateSyncContext } from '../../supabase/functions/_shared/whatsapp-template-sync.ts';
 
 beforeAll(() => vi.stubGlobal('crypto', webcrypto));
@@ -24,6 +25,7 @@ async function fixture(pages: unknown[] = [{ data: [remote()] }]) {
       credential_revision: 0, templates: [{ id: 't', epoch: 2 }] })),
     publish: vi.fn(async () => true), enqueueProvision: vi.fn(async () => undefined),
     finish: vi.fn(async () => true), prepare: vi.fn(async () => true), confirm: vi.fn(async () => true),
+    prePostCheck: vi.fn(async () => true),
     finalCheck: vi.fn(async () => null),
   };
   return { ...createTemplateSyncService(deps), deps, context, fetchImpl };
@@ -91,6 +93,31 @@ describe('production sync with fake HTTP transport', () => {
     expect(f.fetchImpl).toHaveBeenCalledOnce();
     expect(f.deps.confirm).toHaveBeenCalledOnce();
     expect(f.deps.finish).toHaveBeenCalledWith('j', 'f', { outcome: 'local_preflight_refused', reason: 'final_channel_changed' });
+  });
+  it('binds prepare, confirm and the final SQL check to the full body including examples', async () => {
+    const f = await fixture([{ data: [] }]);
+    const job = { id: 'j', target_key: definition.id, state: 'claimed', claim_token: 'f', binding_id: 'b',
+      binding_generation: 1, posting_started_at: null };
+    vi.mocked(f.deps.prePostCheck).mockResolvedValue(false);
+    expect(await f.provisionTemplate('a', job)).toMatchObject({ state: 'paused', processed: 0 });
+    const hash = await submissionPayloadHash(definition);
+    expect(f.deps.prepare).toHaveBeenCalledWith(job, hash);
+    expect(f.deps.confirm).toHaveBeenCalledWith(job, hash);
+    expect(f.deps.prePostCheck).toHaveBeenCalledWith(job, hash);
+    expect(f.fetchImpl).toHaveBeenCalledOnce(); // GET only; the SQL refusal is before POST.
+    expect(await submissionPayloadHash({ ...definition, examples: [['different']] })).not.toBe(hash);
+  });
+  it('refuses a modified stored hash or category before preparing a POST', async () => {
+    const f = await fixture([{ data: [] }]);
+    f.context.templates[0].desired_hash = '0'.repeat(64);
+    const job = { id: 'j', target_key: definition.id, state: 'claimed', claim_token: 'f', binding_id: 'b',
+      binding_generation: 1, posting_started_at: null };
+    expect(await f.provisionTemplate('a', job)).toMatchObject({ state: 'conflict', processed: 0 });
+    expect(f.deps.prepare).not.toHaveBeenCalled();
+    f.context.templates[0].desired_hash = await catalogHash(definition);
+    f.context.templates[0].requested_category = 'MARKETING';
+    expect(await f.provisionTemplate('a', job)).toMatchObject({ state: 'conflict', processed: 0 });
+    expect(f.deps.prepare).not.toHaveBeenCalled();
   });
   it('uses the job binding for CREATE and the captured account binding for GET', async () => {
     const f = await fixture([{ data: [] }]);

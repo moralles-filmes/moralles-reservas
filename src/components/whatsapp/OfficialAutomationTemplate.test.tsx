@@ -17,7 +17,7 @@ const template = projectTemplateSnapshot({
 it('shows fixed body/footer, unknown quality and pending status without an editor', () => {
   const sync = vi.fn();
   render(<OfficialAutomationTemplate template={{ ...template, version: 1, effectiveCategory: null, quality: 'UNKNOWN', localStatus: 'pending', remoteStatus: 'PENDING' }} onSync={sync} />);
-  expect(screen.getByText('Pendente de análise')).toBeInTheDocument();
+  expect(screen.getByText('Em análise na Meta')).toBeInTheDocument();
   expect(screen.getByText('Qualidade desconhecida')).toBeInTheDocument();
   expect(screen.getByText((_, element) => element?.textContent === template.body)).toBeInTheDocument();
   expect(screen.getByText(template.footer)).toBeInTheDocument();
@@ -26,11 +26,26 @@ it('shows fixed body/footer, unknown quality and pending status without an edito
   expect(sync).toHaveBeenCalledOnce();
 });
 
+it('does not infer a provider POST from local pending with unknown remote status', () => {
+  render(<OfficialAutomationTemplate template={{ ...template, version: 1, effectiveCategory: null,
+    quality: 'UNKNOWN', localStatus: 'pending', remoteStatus: 'UNKNOWN' }} onSync={vi.fn()} canSync={false} />);
+  expect(screen.getByText('Estado remoto ainda não confirmado')).toBeInTheDocument();
+  expect(screen.queryByText('Em análise na Meta')).not.toBeInTheDocument();
+});
+
 it('does not equate approved remote status with current integrity or synchronization', () => {
   render(<OfficialAutomationTemplate template={{ ...template, version: 1, effectiveCategory: null, quality: 'UNKNOWN', remoteStatus: 'APPROVED', localStatus: 'usable', hashMatches: false, syncRequired: true }} onSync={vi.fn()} canSync={false} />);
   expect(screen.getByText(/Conteúdo ainda não conferido/)).toBeInTheDocument();
   expect(screen.getByText(/Sincronização necessária/)).toBeInTheDocument();
   expect(screen.queryByRole('button')).not.toBeInTheDocument();
+});
+
+it('does not present a marketing model with RED quality as usable even if the snapshot is inconsistent', () => {
+  render(<OfficialAutomationTemplate template={{ ...template, version: 1, requestedCategory: 'MARKETING',
+    effectiveCategory: 'MARKETING', quality: 'RED', remoteStatus: 'APPROVED', localStatus: 'usable',
+    hashMatches: true, syncRequired: false }} onSync={vi.fn()} canSync={false} />);
+  expect(screen.getByText('Aprovação ou integridade pendente')).toBeInTheDocument();
+  expect(screen.queryByText('Modelo disponível')).not.toBeInTheDocument();
 });
 
 const unitId = '10000000-0000-4000-8000-000000000001';
@@ -79,13 +94,21 @@ it.each(['gerente', 'operador'] as const)('keeps mixed diagnostics visible to %s
   ].map((item, index) => ({ ...item, id: `50000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}` }));
   mountStatus(diagnostics, role);
   await screen.findByText(/Canal: Datafy/);
-  expect(screen.getAllByText(/impedida de continuar/)).toHaveLength(9);
+  expect(screen.getAllByText(/impedida de continuar/)).toHaveLength(5);
+  expect(screen.getAllByText(/preparação deste modelo precisa de revisão/)).toHaveLength(4);
   const uncertain = screen.getAllByText(/precisa de conferência/);
   expect(uncertain).toHaveLength(2);
   for (const message of uncertain) {
     expect(within(message.parentElement!).queryByRole('button')).not.toBeInTheDocument();
   }
   expect(screen.queryAllByRole('button', { name: 'Verificar correção' })).toHaveLength(role === 'gerente' ? 2 : 0);
+});
+
+it('does not ask the store to synchronize models when the channel has a verified binding', async () => {
+  mountStatus([]);
+  await screen.findByText(/Canal: Datafy/);
+  expect(screen.getByText(/catálogo deste canal ainda não foi liberado/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Solicitar sincronização' })).not.toBeInTheDocument();
 });
 
 it('lets a manager request correction for an eligible bound blocked automation with its current assertions', async () => {
