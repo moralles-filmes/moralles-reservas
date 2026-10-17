@@ -78,8 +78,9 @@ on conflict (user_id) do nothing;
 
 delete from audit_log where record_id like 'aud67-%';
 
--- Org A: as seis tabelas auditadas em produção, cada uma com organization_id E
--- unit_id da A (o caso que a policy antiga liberava). Mais duas linhas das
+-- Org A: as seis tabelas auditadas em produção MAIS `whatsapp_instance_cycles`
+-- (o retrato que a RPC de exclusão grava, com custo e margem), cada uma com
+-- organization_id E unit_id da A (o caso que a policy antiga liberava). Mais duas linhas das
 -- tabelas permitidas, só com um dos dois ids, para provar que as DUAS pernas
 -- (unidade e organização) continuam funcionando com a lista.
 insert into audit_log (table_name, record_id, action, organization_id, unit_id)
@@ -87,7 +88,7 @@ select t, 'aud67-' || t, 'UPDATE',
        'a0d70000-0000-4000-8000-00000000000a'::uuid, 'a0d70000-0000-4000-8000-0000000000aa'::uuid
   from unnest(array['customers', 'reservations', 'unit_members',
                     'whatsapp_instances', 'whatsapp_implementations',
-                    'organization_entitlement_overrides']) as t;
+                    'organization_entitlement_overrides', 'whatsapp_instance_cycles']) as t;
 insert into audit_log (table_name, record_id, action, organization_id, unit_id) values
   ('customers',    'aud67-customers-org-only',    'INSERT', 'a0d70000-0000-4000-8000-00000000000a', null),
   ('reservations', 'aud67-reservations-unit-only', 'INSERT', null, 'a0d70000-0000-4000-8000-0000000000aa'),
@@ -120,9 +121,10 @@ do $$
 declare v_leak int;
 begin
   v_leak := pg_temp.aud67_visible('a0d70000-0000-4000-8000-0000000000a1',
-    array['whatsapp_instances', 'whatsapp_implementations', 'organization_entitlement_overrides'], null);
-  if v_leak <> 3 then
-    raise exception '67: antes da migration o membro A deveria ver as 3 linhas de plataforma (policy antiga) e viu %. Fixture/grant/JWT nao exercita a policy.', v_leak;
+    array['whatsapp_instances', 'whatsapp_implementations', 'organization_entitlement_overrides',
+          'whatsapp_instance_cycles'], null);
+  if v_leak <> 4 then
+    raise exception '67: antes da migration o membro A deveria ver as 4 linhas de plataforma (policy antiga) e viu %. Fixture/grant/JWT nao exercita a policy.', v_leak;
   end if;
 end $$;
 
@@ -146,16 +148,17 @@ begin
   on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
--- ─── AUD-2: o mesmo membro NÃO vê as três tabelas da plataforma ──────────────
+-- ─── AUD-2: o mesmo membro NÃO vê as quatro tabelas da plataforma ────────────
 do $$
 declare v_p int; v_all int;
   a constant uuid := 'a0d70000-0000-4000-8000-0000000000a1';
 begin
   v_p := pg_temp.aud67_visible(a,
-    array['whatsapp_instances', 'whatsapp_implementations', 'organization_entitlement_overrides'], null);
+    array['whatsapp_instances', 'whatsapp_implementations', 'organization_entitlement_overrides',
+          'whatsapp_instance_cycles'], null);
   v_all := pg_temp.aud67_visible(a, null, null);
   insert into t_res (ord, caso, veredito) values (322,
-    'AUD-2 membro da org A nao ve whatsapp_instances/whatsapp_implementations/organization_entitlement_overrides (0 linhas) mesmo com organization_id e unit_id dele',
+    'AUD-2 membro da org A nao ve whatsapp_instances/whatsapp_implementations/organization_entitlement_overrides/whatsapp_instance_cycles (0 linhas) mesmo com organization_id e unit_id dele',
     case when v_p = 0 and v_all = 5 then 'PASSOU'
          else 'FALHOU plataforma=' || v_p || ' total_visivel=' || v_all || ' (esperado 0 e 5)' end)
   on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
@@ -176,7 +179,7 @@ begin
   on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
--- ─── AUD-4: platform admin vê as seis tabelas da org A ───────────────────────
+-- ─── AUD-4: platform admin vê as sete tabelas da org A ───────────────────────
 do $$
 declare v_tabelas int; v_linhas int;
   pa constant uuid := 'a0d70000-0000-4000-8000-0000000000c1';
@@ -188,9 +191,9 @@ begin
    where record_id like 'aud67-%' and organization_id = org;
   reset role;
   insert into t_res (ord, caso, veredito) values (324,
-    'AUD-4 platform admin le as seis tabelas da org A',
-    case when v_tabelas = 6 and v_linhas = 7 then 'PASSOU'
-         else 'FALHOU tabelas=' || v_tabelas || ' linhas=' || v_linhas || ' (esperado 6 e 7)' end)
+    'AUD-4 platform admin le as sete tabelas da org A',
+    case when v_tabelas = 7 and v_linhas = 8 then 'PASSOU'
+         else 'FALHOU tabelas=' || v_tabelas || ' linhas=' || v_linhas || ' (esperado 7 e 8)' end)
   on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;
 
@@ -207,6 +210,7 @@ begin
     case when v_n = 1 and v_pa = 1
           and v_qual like '%customers%' and v_qual like '%reservations%' and v_qual like '%unit_members%'
           and v_qual not like '%whatsapp_%' and v_qual not like '%organization_entitlement_overrides%'
+          and v_qual not like '%whatsapp_instance_cycles%'
           and v_qual like '%app_private.is_unit_member%' and v_qual like '%app_private.is_org_member%'
          then 'PASSOU'
          else 'FALHOU n=' || v_n || ' pa=' || v_pa || ' qual=' || coalesce(v_qual, '<null>') end)
@@ -216,11 +220,13 @@ end $$;
 -- ─── CONTROLE-AUD-1: com a policy ANTIGA o vazamento reaparece ───────────────
 -- Controle positivo de AUD-2. Recria a policy do rollback num subbloco desfeito
 -- por raise (o DDL de policy é transacional), mede o membro A vendo as 3 linhas
--- de plataforma, e depois do subbloco confere que a policy nova voltou e esconde.
+-- de plataforma (as quatro, inclusive o retrato dos ciclos), e depois do subbloco
+-- confere que a policy nova voltou e as esconde.
 do $$
 declare v_leak int := -1; v_after int := -1; v_qual text;
   a constant uuid := 'a0d70000-0000-4000-8000-0000000000a1';
-  plat constant text[] := array['whatsapp_instances', 'whatsapp_implementations', 'organization_entitlement_overrides'];
+  plat constant text[] := array['whatsapp_instances', 'whatsapp_implementations', 'organization_entitlement_overrides',
+                                'whatsapp_instance_cycles'];
 begin
   begin
     drop policy "unit_member_read_audit" on public.audit_log;
@@ -235,8 +241,8 @@ begin
   select qual into v_qual from pg_policies
    where schemaname = 'public' and tablename = 'audit_log' and policyname = 'unit_member_read_audit';
   insert into t_res (ord, caso, veredito) values (331,
-    'CONTROLE-AUD-1 com a policy antiga o membro ve as 3 linhas de plataforma; desfeito, a policy nova volta a esconde-las',
-    case when v_leak = 3 and v_after = 0 and v_qual like '%unit_members%' then 'PASSOU'
-         else 'FALHOU com_antiga=' || v_leak || ' depois=' || v_after || ' (esperado 3 e 0)' end)
+    'CONTROLE-AUD-1 com a policy antiga o membro ve as 4 linhas de plataforma; desfeito, a policy nova volta a esconde-las',
+    case when v_leak = 4 and v_after = 0 and v_qual like '%unit_members%' then 'PASSOU'
+         else 'FALHOU com_antiga=' || v_leak || ' depois=' || v_after || ' (esperado 4 e 0)' end)
   on conflict (ord) do update set caso = excluded.caso, veredito = excluded.veredito;
 end $$;

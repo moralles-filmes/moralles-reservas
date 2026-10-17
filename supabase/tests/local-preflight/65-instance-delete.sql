@@ -1,4 +1,4 @@
--- DEL-1..11 — RPC delete_whatsapp_instance_without_cost (migration 20261015223000).
+-- DEL-1..13 — RPC delete_whatsapp_instance_without_cost (migration 20261015223000).
 -- Roda no banco da sequencia base do README (fase6c), DEPOIS da migration nova
 -- aplicada duas vezes. Ids fixos; cada caso grava veredito em t_res.
 
@@ -7,11 +7,13 @@ create table if not exists t_res (ord int, caso text, veredito text);
 -- Fixtures: org A do 02-seed. ENDED exige ended_at (087); custo atual exige
 -- cost_source + cost_updated_at (087); ciclo PENDING_REVIEW/CLOSED exige
 -- closed_at, e CLOSED exige custo (088).
-insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source, ended_at)
+-- A DEL-1 leva unit_id (Unidade A1 do seed, mesma org): o retrato dos ciclos no
+-- audit_log herda o tenant da instancia e o caso confere organization_id e unit_id.
+insert into whatsapp_instances (id, organization_id, unit_id, provider, lifecycle_state, cycle_source, ended_at)
 values
-  ('de000000-0000-4000-8000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now()),
-  ('de000000-0000-4000-8000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001', 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now()),
-  ('de000000-0000-4000-8000-000000000005', 'aaaaaaaa-0000-0000-0000-000000000001', 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now())
+  ('de000000-0000-4000-8000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001', 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now()),
+  ('de000000-0000-4000-8000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001', null, 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now()),
+  ('de000000-0000-4000-8000-000000000005', 'aaaaaaaa-0000-0000-0000-000000000001', null, 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now())
 on conflict (id) do nothing;
 
 insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source, ended_at,
@@ -25,6 +27,17 @@ insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, 
 values
   ('de000000-0000-4000-8000-000000000006', 'aaaaaaaa-0000-0000-0000-000000000001', 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now()),
   ('de000000-0000-4000-8000-000000000007', 'aaaaaaaa-0000-0000-0000-000000000001', 'zapi', 'ENDED', 'ADMIN_CONFIRMED', now())
+on conflict (id) do nothing;
+
+-- DEL-12 (ENDED com custo atual + alerta OPEN: has_cost vence open_alerts) e
+-- DEL-13 (ACTIVE sem custo + alerta OPEN: not_ended vence open_alerts).
+insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source, ended_at,
+                                current_monthly_cost_cents, cost_source, cost_updated_at)
+values ('de000000-0000-4000-8000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001', 'zapi', 'ENDED',
+        'ADMIN_CONFIRMED', now(), 5990, 'PROVIDER_PANEL', now())
+on conflict (id) do nothing;
+insert into whatsapp_instances (id, organization_id, provider, lifecycle_state, cycle_source)
+values ('de000000-0000-4000-8000-00000000000a', 'aaaaaaaa-0000-0000-0000-000000000001', 'zapi', 'ACTIVE', 'ADMIN_CONFIRMED')
 on conflict (id) do nothing;
 
 -- DEL-11: nasce COM custo e o custo e anulado depois (set_cost aceita "desconhecido"
@@ -80,6 +93,14 @@ where exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-80
   and not exists (select 1 from whatsapp_instance_alerts
                    where subject_id = 'de000000-0000-4000-8000-000000000007' and dedupe_key = 'del-10-fixture');
 
+-- Alertas ABERTOS das DEL-12 e DEL-13: a precedencia das recusas e not_ended > has_cost > open_alerts.
+insert into whatsapp_instance_alerts (subject_type, subject_id, organization_id, instance_id, alert_type, dedupe_key)
+select 'INSTANCE', i, 'aaaaaaaa-0000-0000-0000-000000000001', i, 'DIVERGENCE', 'del-prec-' || right(i::text, 2)
+  from unnest(array['de000000-0000-4000-8000-000000000009'::uuid, 'de000000-0000-4000-8000-00000000000a'::uuid]) as i
+ where exists (select 1 from whatsapp_instances where id = i)
+   and not exists (select 1 from whatsapp_instance_alerts
+                    where subject_id = i and dedupe_key = 'del-prec-' || right(i::text, 2));
+
 -- ── DEL-1: encerrada sem custo e apagada; ciclo sai, notas e alerta ficam orfaos ──
 -- Retrato do ciclo em audit_log (os ciclos nao tem trigger de auditoria).
 do $$
@@ -111,7 +132,9 @@ begin
                    where table_name = 'whatsapp_instance_cycles' and action = 'DELETE'
                      and record_id = v_cycle_id::text
                      and old_values->>'status' = 'PENDING_REVIEW'
-                     and actor_id = '11111111-1111-1111-1111-111111111111')
+                     and actor_id = '11111111-1111-1111-1111-111111111111'
+                     and organization_id = 'aaaaaaaa-0000-0000-0000-000000000001'
+                     and unit_id = 'bbbbbbbb-0000-0000-0000-000000000001')
     then 'PASSOU' else 'FALHOU' end);
 end $$;
 
@@ -245,5 +268,35 @@ begin
       and exists (select 1 from whatsapp_instances
                    where id = 'de000000-0000-4000-8000-000000000008'
                      and current_monthly_cost_cents is null)
+      and not exists (select 1 from whatsapp_instance_notes
+                       where instance_ref = 'de000000-0000-4000-8000-000000000008' and action = 'DELETE')
     then 'PASSOU' else 'FALHOU' end);
+end $$;
+
+-- ── DEL-12: com custo E alerta aberto, o desfecho e has_cost (nao open_alerts) ──
+do $$
+declare v_out text;
+begin
+  select outcome into v_out from delete_whatsapp_instance_without_cost(
+    'de000000-0000-4000-8000-000000000009', 'tentativa', '11111111-1111-1111-1111-111111111111');
+  insert into t_res (ord, caso, veredito) values (316, 'DEL-12 custo atual e alerta OPEN: has_cost vence open_alerts',
+    case when v_out = 'has_cost'
+      and exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-8000-000000000009')
+      and not exists (select 1 from whatsapp_instance_notes
+                       where instance_ref = 'de000000-0000-4000-8000-000000000009' and action = 'DELETE')
+    then 'PASSOU' else 'FALHOU ' || coalesce(v_out, '<null>') end);
+end $$;
+
+-- ── DEL-13: ACTIVE com alerta aberto, o desfecho e not_ended (nao open_alerts) ──
+do $$
+declare v_out text;
+begin
+  select outcome into v_out from delete_whatsapp_instance_without_cost(
+    'de000000-0000-4000-8000-00000000000a', 'tentativa', '11111111-1111-1111-1111-111111111111');
+  insert into t_res (ord, caso, veredito) values (317, 'DEL-13 ACTIVE e alerta OPEN: not_ended vence open_alerts',
+    case when v_out = 'not_ended'
+      and exists (select 1 from whatsapp_instances where id = 'de000000-0000-4000-8000-00000000000a')
+      and not exists (select 1 from whatsapp_instance_notes
+                       where instance_ref = 'de000000-0000-4000-8000-00000000000a' and action = 'DELETE')
+    then 'PASSOU' else 'FALHOU ' || coalesce(v_out, '<null>') end);
 end $$;

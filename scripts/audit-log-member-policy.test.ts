@@ -33,6 +33,7 @@ const PLATFORM_TABLES = [
   "whatsapp_instances",
   "whatsapp_implementations",
   "organization_entitlement_overrides",
+  "whatsapp_instance_cycles",
 ];
 
 function stripSqlComments(sql: string): string {
