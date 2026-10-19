@@ -65,6 +65,35 @@ it('allows a manual existing-account v2 grant while future policy is OFF, once a
   expect(screen.queryByRole('button', { name: 'Liberar os nove modelos v1' })).not.toBeInTheDocument();
 });
 
+it('keeps the successful result after a deferred v1-to-v2 refetch settles', async () => {
+  let releaseRefetch!: () => void;
+  const refetch = new Promise<void>(resolve => { releaseRefetch = resolve; });
+  const original = io.invoke.getMockImplementation()!;
+  let refetchStarted = false;
+  io.invoke.mockImplementation(async (name: string, options: { body: { action: string } }) => {
+    if (options.body.action === 'snapshot_v2' && io.selected) {
+      refetchStarted = true;
+      await refetch;
+    }
+    return original(name, options);
+  });
+  const view = mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Liberar os nove modelos v2 nesta conta' }));
+  const confirm = screen.getByRole('button', { name: 'Confirmar liberação v2' });
+  fireEvent.click(confirm); fireEvent.click(confirm);
+  await waitFor(() => expect(refetchStarted).toBe(true));
+  expect(io.invoke.mock.calls.filter(([, options]) => options.body.action === 'select_v2_channel')).toHaveLength(1);
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  await act(async () => { releaseRefetch(); await refetch; });
+  await waitFor(() => expect(view.client.isMutating()).toBe(0));
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.getByText('Catálogo v2 liberado para esta conta.')).toBeInTheDocument();
+  expect(screen.getByText('Solicitação v2 registrada. Confira os estados atualizados de cada modelo.')).toBeInTheDocument();
+  expect(screen.queryByText('A configuração v2 mudou. Atualize os dados antes de confirmar.')).not.toBeInTheDocument();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(io.invoke.mock.calls.filter(([, options]) => options.body.action === 'select_v2_channel')).toHaveLength(1);
+});
+
 it('offers a separately confirmed channel v2 stop even when the policy read fails', async () => {
   io.selected = true; io.policyError = true;
   mount();

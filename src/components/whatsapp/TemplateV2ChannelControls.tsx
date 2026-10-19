@@ -40,9 +40,12 @@ export function TemplateV2ChannelControls({ unitId, controls }: { unitId: string
       || !v2ChannelMatches(snapshot, confirmation, policy.data) || wasAttempted(confirmation)) {
       setConfirmation(null); setNotice('A configuração v2 mudou. Atualize os dados antes de confirmar.'); return;
     }
+    const confirmedPin = confirmation;
     locked.current = true;
-    try { await change.mutateAsync(confirmation); setConfirmation(null); setNotice('Solicitação v2 registrada. Confira os estados atualizados de cada modelo.'); }
-    catch { setConfirmation(null); setNotice('O resultado da solicitação v2 precisa de conferência. Atualize os dados e não repita esta liberação.'); }
+    // The expected refetch changes selection; it must not invalidate a consumed confirmation.
+    setConfirmation(null);
+    try { await change.mutateAsync(confirmedPin); setNotice('Solicitação v2 registrada. Confira os estados atualizados de cada modelo.'); }
+    catch { setNotice('O resultado da solicitação v2 precisa de conferência. Atualize os dados e não repita esta liberação.'); }
     finally { locked.current = false; }
   }
 
