@@ -2,7 +2,9 @@
 // Run only in an isolated networkless Postgres 17 container after 73a setup and safe pg_dump
 // restore into the six auto73_* databases used below.
 import { execFileSync, spawn } from 'node:child_process';
+import { resolveLocalDocker } from './local-runtime-paths.mjs';
 
+const docker = resolveLocalDocker();
 const container = process.env.AUTO73_CONTAINER || 'margin-template-auto-sql-pg';
 const fixture = {
   job: '73000000-0000-4000-8000-000000000061',
@@ -10,16 +12,16 @@ const fixture = {
   admin: '73000000-0000-4000-8000-000000000021',
   hash: '4ab2cdd4711c9b95b122a23a773088bfa8b6d3d15a6eac04cb234d4f8d0ac114',
 };
-const identity = execFileSync('docker', ['inspect', '--format', '{{.Config.Image}} {{.HostConfig.NetworkMode}} {{json .HostConfig.PortBindings}}', container], { encoding: 'utf8' }).trim();
+const identity = execFileSync(docker, ['inspect', '--format', '{{.Config.Image}} {{.HostConfig.NetworkMode}} {{json .HostConfig.PortBindings}}', container], { encoding: 'utf8' }).trim();
 if (identity !== 'public.ecr.aws/supabase/postgres:17.11.0.004 none {}') throw new Error('nonquarantined_postgres');
 
 function args(db) { return ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', db, '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1']; }
 function query(db, sql) {
-  const output = execFileSync('docker', args(db), { input: sql, encoding: 'utf8', timeout: 10_000 });
+  const output = execFileSync(docker, args(db), { input: sql, encoding: 'utf8', timeout: 10_000 });
   return output.trim();
 }
 function start(db, sql, marker) {
-  const child = spawn('docker', args(db), { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(docker, args(db), { stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   const reached = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`marker_timeout ${db} ${stdout} ${stderr}`)), 10_000);
