@@ -108,7 +108,7 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
 
 ## Bloco 3 — PR 2, hook de conversas (Task 5; independente)
 
-### [ ] Task 5 — `releaseToAI`/`markResolved` com escopo e confirmação
+### [x] Task 5 — `releaseToAI`/`markResolved` com escopo e confirmação
 
 **Modelo:** Sonnet (implementação e review de spec); Opus no review de qualidade (escrita em `conversations`).
 
@@ -131,3 +131,10 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
 - **Chat 1:** Bloco 1 (Tasks 1–3).
 - **Chat 2:** Bloco 2 (Task 4), quando as autorizações vierem.
 - **Bloco 3** pode rodar em qualquer chat, antes ou depois, porque não toca nos mesmos arquivos.
+
+## Execução do Bloco 3 (2026-10-19)
+
+- **Task 5** (branch `fix/conversations-release-unit-scope`, a partir de `origin/main` `bc91673`): `releaseConversation` local com `.eq("unit_id", unitId)` + `.select("id")` e recusa com zero linhas, usada por `releaseToAI` e `markResolved`. A UI já trata a recusa (`onError` com toast em `Conversas.tsx`).
+- Teste `src/hooks/useConversations.release.test.tsx`, no mock do `assume`: RED 6/6 contra o hook antigo (sem filtro de unidade; zero linhas e erro resolviam), GREEN 6/6. Typecheck limpo; lint sem erro (só warnings antigos em outros arquivos); suíte cheia com as falhas conhecidas (CRLF do catálogo v2, `OfficialConnectionCard` sem `VITE_*`) e dois timeouts sob carga (`whatsapp-scheduled-templates-integration`, `whatsapp-waitlist-voucher-routing`) que passam isolados.
+- Review de spec e de qualidade feitos pelo agente principal (Opus): diff pequeno, `assumeConversation` intocado, nomes públicos mantidos.
+- Achado do `assigned_to` registrado em `.claude/rules/whatsapp.md` (Conversas); conferido que nenhum código de `src/` ou `supabase/functions/` o usa para decidir.
