@@ -40,7 +40,10 @@ export const AI_RESERVATION_TTL_SECONDS = 300;
  */
 export const AI_ESTIMATE_BASE_INPUT_TOKENS = 6000;
 export const AI_ESTIMATE_INPUT_GROWTH_PER_ITERATION = 1200;
-export const AI_ESTIMATE_OUTPUT_TOKENS = 1024;
+// >= o maior `MAX_OUTPUT_TOKENS_BY_PROVIDER` (agent-output-core.ts, hoje Gemini
+// 3072, que inclui o raciocínio). Subestimar a saída subestima a reserva. O teste
+// gêmeo em `src/lib/agent-output-core.test.ts` amarra os dois valores.
+export const AI_ESTIMATE_OUTPUT_TOKENS = 3072;
 
 export interface BudgetSnapshot {
   limitCents: number;

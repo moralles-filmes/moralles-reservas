@@ -13,12 +13,21 @@ import {
   isAgentDeadlineError,
   mayStartAnotherRound,
 } from "./agent-deadline-core.ts";
+import {
+  AgentTruncatedError,
+  geminiThinkingConfig,
+  isAgentTruncatedError,
+  isTruncatedStop,
+  MAX_OUTPUT_TOKENS_BY_PROVIDER,
+} from "./agent-output-core.ts";
 
 export type { AgentCallMeta, AgentCallOutcome, BeforeCallDecision };
 // Reexportados para que o chamador do loop (hoje `webhook-whatsapp`) importe a
 // marca do deadline do MESMO lugar de onde importa `runAgentLoop` — e não
 // precise saber que a decisão mora num núcleo puro à parte.
 export { AgentDeadlineError, isAgentDeadlineError };
+// Idem para a marca de "resposta cortada pelo limite de saída".
+export { AgentTruncatedError, isAgentTruncatedError };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -248,7 +257,6 @@ const DEFAULT_HISTORY_TOKEN_CAP = 1500;
 // no Gemini: primary 1 tentativa + fallback 3 tentativas + esperas ≈ 51s,
 // cabendo nos 60s da Edge Function. Modelos LLM tipicamente respondem em 2-5s.
 const DEFAULT_TIMEOUT_MS = 12_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = 1024;
 // Retentar 2x em 5xx/429/network: Gemini retorna 503 transitório com frequência;
 // outros providers ocasionalmente também. Backoff 1s/2s + jitter.
 const DEFAULT_HTTP_RETRIES = 2;
@@ -565,7 +573,7 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<AgentLo
         const r = await anthropic.messages.create(
           {
             model,
-            max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+            max_tokens: MAX_OUTPUT_TOKENS_BY_PROVIDER.claude,
             system: systemBlocks,
             tools: claudeTools,
             messages,
@@ -621,8 +629,14 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<AgentLo
       provider: "claude",
       model,
       stop_reason: response.stop_reason,
+      output_tokens: response.usage?.output_tokens ?? null,
       iterations_left: iterations,
     }));
+    // Corte por limite de saída NUNCA vira resposta: o genérico abaixo mentiria
+    // que foi um erro qualquer. Lança DEPOIS do callWithBudget (uso já reportado).
+    if (isTruncatedStop("claude", response.stop_reason)) {
+      throw new AgentTruncatedError("claude", model, String(response.stop_reason));
+    }
     break;
   }
 
@@ -680,7 +694,7 @@ async function runOpenAICompatible(
             messages,
             tools: openaiTools,
             tool_choice: "auto",
-            max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+            max_tokens: MAX_OUTPUT_TOKENS_BY_PROVIDER[opts.provider],
           }),
           signal: timeoutSignal(timeoutMs),
         }, {
@@ -731,8 +745,9 @@ async function runOpenAICompatible(
     messages.push(msg);
 
     if (choice.finish_reason === "stop" || !msg.tool_calls?.length) {
-      // finish_reason="length" (cortado por max_tokens) também chega aqui;
-      // a resposta volta truncada. Logamos pra rastreio sem mudar comportamento.
+      // finish_reason="length" (cortado por max_tokens) também chega aqui.
+      // Corte vira AgentTruncatedError (nunca texto parcial ao cliente); os
+      // demais motivos só logam, como sempre.
       if (choice.finish_reason && choice.finish_reason !== "stop" && choice.finish_reason !== "tool_calls") {
         console.warn(JSON.stringify({
           level: "warn",
@@ -740,8 +755,12 @@ async function runOpenAICompatible(
           provider: opts.provider,
           model,
           finish_reason: choice.finish_reason,
+          output_tokens: data.usage?.completion_tokens ?? null,
           iterations_left: iterations,
         }));
+        if (isTruncatedStop(opts.provider, choice.finish_reason)) {
+          throw new AgentTruncatedError(opts.provider, model, String(choice.finish_reason));
+        }
       }
       return { kind: "TEXT", text: msg.content ?? "" };
     }
@@ -880,7 +899,12 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLo
       contents,
       tools: [{ functionDeclarations }],
       tool_config: { function_calling_config: { mode: "AUTO" } },
-      generationConfig: { maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
+      // O raciocínio do 2.5 consome o MESMO maxOutputTokens; o orçamento único
+      // serve a Flash e Pro porque o corpo é reaproveitado no fallback.
+      generationConfig: {
+        maxOutputTokens: MAX_OUTPUT_TOKENS_BY_PROVIDER.gemini,
+        thinkingConfig: geminiThinkingConfig(activeModel),
+      },
     });
 
     // Uma tentativa por modelo, cada uma com autorização financeira PRÓPRIA.
@@ -983,8 +1007,9 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLo
     if (funcCalls.length === 0) {
       const text = textParts.map((p: any) => p.text).join("");
       if (text.trim()) {
-        // finishReason != "STOP" (ex: MAX_TOKENS) → resposta truncada, mas o
-        // Gemini ainda devolve texto parcial. Log pra rastreio.
+        // finishReason != "STOP": o Gemini ainda devolve texto parcial. Log pra
+        // rastreio; MAX_TOKENS lança (nunca enviar meia frase ao cliente), os
+        // demais motivos (ex: SAFETY com texto) mantêm o comportamento.
         if (candidate?.finishReason && candidate.finishReason !== "STOP") {
           console.warn(JSON.stringify({
             level: "warn",
@@ -992,8 +1017,12 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLo
             provider: "gemini",
             model: activeModel,
             finish_reason: candidate.finishReason,
+            output_tokens: data.usageMetadata?.candidatesTokenCount ?? null,
             iterations_left: iterations,
           }));
+          if (isTruncatedStop("gemini", candidate.finishReason)) {
+            throw new AgentTruncatedError("gemini", activeModel, String(candidate.finishReason));
+          }
         }
         return { kind: "TEXT", text };
       }

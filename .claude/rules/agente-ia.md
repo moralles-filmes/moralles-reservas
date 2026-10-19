@@ -58,6 +58,6 @@ paths:
 
 - **Truncamento:** últimas 20 mensagens E ≤1500 tokens estimados (`truncateHistory`). Janela 72h descarta mensagens antigas. Filtro `HARDCODED_AGENT_NOISE` remove strings hardcoded de erro/handoff/empty-response — string nova de resposta hardcoded DEVE ser adicionada ao set no mesmo PR.
 - **Prompt caching Claude** (`cache_control: ephemeral`) — bloco novo deve ser ANEXADO (preserva prefix) e gated por "if data exists".
-- **`max_tokens: 1024` por turno**, timeout 12s por tentativa, 2 retries (5xx/429/network, backoff exponencial) via [_shared/retry.ts](supabase/functions/_shared/retry.ts).
+- **Saída máxima por provider em [agent-output-core.ts](supabase/functions/_shared/agent-output-core.ts)** (Gemini 3072 com `thinkingBudget` 1024 — o raciocínio do 2.5 consome o mesmo limite; demais 1024). Corte (`MAX_TOKENS`/`length`/`max_tokens`) lança `AgentTruncatedError` e nunca é enviado ao cliente; `AI_ESTIMATE_OUTPUT_TOKENS` acompanha o maior limite (teste gêmeo). Timeout 12s por tentativa, 2 retries (5xx/429/network, backoff exponencial) via [_shared/retry.ts](supabase/functions/_shared/retry.ts).
 - **Fallback same-provider:** `FALLBACK_MODELS.gemini` = Flash→Pro. `callGeminiWithFallback` cobre 5xx, timeout E resposta vazia (candidate vazio). Sticky na invocação. Outros providers `null`. Fallback novo replica os 3 caminhos.
 - **Telemetria:** `evt: agent_usage | agent_http_retry | agent_model_fallback | agent_empty_retry | agent_unexpected_stop`.

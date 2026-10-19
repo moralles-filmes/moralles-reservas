@@ -4478,7 +4478,7 @@ async function handleWebhookRequest(
       }
     }
 
-    const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 };
+    const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, reasoning_tokens: 0 };
     let agentError: string | null = null;
     // Quem interrompeu o loop: o prazo ou o provedor. Duas consequências
     // diferentes (motivo do handoff, e o retry silencioso que NÃO pode pegar o
@@ -4538,6 +4538,7 @@ async function handleWebhookRequest(
           totalUsage.output_tokens += u.output_tokens;
           totalUsage.cache_creation_tokens += u.cache_creation_tokens;
           totalUsage.cache_read_tokens += u.cache_read_tokens;
+          totalUsage.reasoning_tokens += u.reasoning_tokens ?? 0;
         },
         // deno-lint-ignore no-explicit-any
         onToolCall: async (name, input: any) => {
