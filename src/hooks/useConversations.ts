@@ -93,42 +93,35 @@ export function useConversationActions(unitId: string) {
     onSuccess: invalidate,
   });
 
+  async function releaseConversation(conversationId: string) {
+    const { data, error } = await supabase
+      .from("conversations")
+      .update({
+        status: "ai_active",
+        assigned_to: null,
+        handoff_reason: null,
+        handoff_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", conversationId)
+      .eq("unit_id", unitId)
+      .select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) throw new Error("Conversa não encontrada ou sem permissão.");
+  }
+
   const releaseToAI = useMutation({
-    mutationFn: async (conversationId: string) => {
-      const { error } = await supabase
-        .from("conversations")
-        .update({
-          status: "ai_active",
-          assigned_to: null,
-          handoff_reason: null,
-          handoff_at: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", conversationId);
-      if (error) throw error;
-    },
+    mutationFn: releaseConversation,
     onSuccess: invalidate,
   });
 
   // "Resolver" é alias semântico de releaseToAI: ambos encerram o handoff e
   // devolvem pra IA. Mantemos o nome do método e o botão na UI pelo vocabulário
-  // que o operador já usa, mas mecanicamente é o mesmo update — sem isso
+  // que o operador já usa, mas mecanicamente é a mesma função — sem isso
   // sobravam `handoff_reason`/`handoff_at` no banco e a próxima mensagem do
   // cliente saía com a IA achando que ainda estava em handoff.
   const markResolved = useMutation({
-    mutationFn: async (conversationId: string) => {
-      const { error } = await supabase
-        .from("conversations")
-        .update({
-          status: "ai_active",
-          assigned_to: null,
-          handoff_reason: null,
-          handoff_at: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", conversationId);
-      if (error) throw error;
-    },
+    mutationFn: releaseConversation,
     onSuccess: invalidate,
   });
 
