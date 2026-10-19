@@ -82,6 +82,8 @@ Arquivos previstos: cartão Datafy, snapshot/gestão de templates, painel Platfo
 
 **Commit e CI (19/10/2026):** commit local `5bec38d` enviado ao [PR draft #37](https://github.com/moralles-filmes/moralles-reservas/pull/37). O check remoto `acl-estatico` e a prévia Vercel passaram; `acl-com-banco` manual foi pulado conforme configuração. O PR permanece sem merge; o CI e a prévia não autorizam `db push`, Edge Functions, política ON ou POST à Meta.
 
+**Estado Meta relido (19/10/2026, 10h35 BRT):** no projeto Moralles Reservas, as nove linhas `pt_BR` v1 da conta Ren Sushi estão `APPROVED`/`usable`, com ID remoto, hash observado igual ao desejado, categoria efetiva igual à solicitada (sete UTILITY e dois MARKETING), sem sync pendente e `rejection_code=NONE`. `whatsapp_template_catalog=true` e `whatsapp_automation_dispatch=false`. A leitura substitui os estados PENDING/IN_APPEAL de 17/10, mas não concede autorização de envio nem ativa a política para conexões futuras.
+
 ## Task 5 — Rollout e piloto com a Ren Sushi
 
 - [ ] Antes de qualquer escrita, conferir projeto `gbabxcrntkwgblgqsiit`, backup/janela, migrations pendentes exatas, contas/bindings/grants/jobs, canal Datafy local/remoto e UazAPI desligada. Confirmar nominalmente canal e custo; obter autorizações próprias para `db push`, matriz EF (incluindo `process-whatsapp-templates`) e efeito do merge em Vercel. SQL → ACL/RLS efetiva → EFs → frontend READY.
