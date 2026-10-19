@@ -109,12 +109,15 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   type AIProvider,
 } from "@/lib/aiModels";
+import { fallbackProviderOptions } from "@/lib/ai-fallback-options";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
 
 interface AIConfig {
   provider: AIProvider;
   models: Partial<Record<AIProvider, string>>;
+  /** Provedor reserva (opcional); `model` ausente/vazio = padrão do provedor. */
+  fallback?: { provider: AIProvider; model?: string } | null;
 }
 
 const PROVIDERS: Array<{
@@ -1097,6 +1100,12 @@ function AITab({ unitId }: { unitId: string }) {
 
   const savedKey = aiKeys?.find((k) => k.provider === aiConfig.provider);
 
+  // O backend só resolve chave com active=true: só ela habilita um reserva.
+  const fallbackOptions = fallbackProviderOptions(
+    (aiKeys ?? []).filter((k) => k.active).map((k) => k.provider),
+    aiConfig.provider,
+  );
+
   const handleSaveKey = () => {
     const trimmed = apiKeyInput.trim();
     if (trimmed.length < 10) {
@@ -1144,6 +1153,44 @@ function AITab({ unitId }: { unitId: string }) {
     updateAiConfig({ models: { ...aiConfig.models, [aiConfig.provider]: model || undefined } });
   };
 
+  const changePrimaryProvider = (provider: AIProvider) => {
+    // Reserva igual ao principal não faz sentido (o backend ignora): limpa no mesmo save.
+    updateAiConfig(
+      aiConfig.fallback?.provider === provider ? { provider, fallback: null } : { provider },
+    );
+  };
+
+  const savedFallback = aiConfig.fallback ?? null;
+  const fallbackLabel = (id: AIProvider) => PROVIDERS.find((p) => p.id === id)?.label ?? id;
+  // Só julga "indisponível" depois que a lista de chaves carregou.
+  const fallbackStale =
+    savedFallback !== null &&
+    aiKeys !== undefined &&
+    !fallbackOptions.includes(savedFallback.provider);
+  const fallbackModels = savedFallback ? MODELS_BY_PROVIDER[savedFallback.provider] ?? [] : [];
+  const fallbackSavedModel = savedFallback?.model ?? "";
+  const fallbackShowLegacyModel =
+    fallbackSavedModel !== "" && !fallbackModels.some((m) => m.value === fallbackSavedModel);
+
+  const setFallbackProvider = (value: string) => {
+    if (value === "__none__") {
+      updateAiConfig({ fallback: null });
+      return;
+    }
+    if (savedFallback?.provider === value) return;
+    updateAiConfig({ fallback: { provider: value as AIProvider } });
+  };
+
+  const setFallbackModel = (value: string) => {
+    if (!savedFallback) return;
+    updateAiConfig({
+      fallback:
+        value === "__default__"
+          ? { provider: savedFallback.provider }
+          : { provider: savedFallback.provider, model: value },
+    });
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -1156,8 +1203,8 @@ function AITab({ unitId }: { unitId: string }) {
       <CardContent className="space-y-5">
         <div className="space-y-1">
           <Label>Provedor ativo</Label>
-          <Select value={aiConfig.provider} onValueChange={(v) => updateAiConfig({ provider: v as AIProvider })}>
-            <SelectTrigger className="w-64"><SelectValue /></SelectTrigger>
+          <Select value={aiConfig.provider} onValueChange={(v) => changePrimaryProvider(v as AIProvider)}>
+            <SelectTrigger className="w-full sm:w-64"><SelectValue /></SelectTrigger>
             <SelectContent>
               {PROVIDERS.map((p) => (
                 <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>
@@ -1172,7 +1219,7 @@ function AITab({ unitId }: { unitId: string }) {
             value={savedModel === "" ? "__default__" : savedModel}
             onValueChange={(v) => setModelOverride(v === "__default__" ? "" : v)}
           >
-            <SelectTrigger className="w-72">
+            <SelectTrigger className="w-full sm:w-72">
               <SelectValue placeholder="Selecione um modelo…" />
             </SelectTrigger>
             <SelectContent>
@@ -1287,6 +1334,94 @@ function AITab({ unitId }: { unitId: string }) {
               Apenas as Edge Functions do servidor a leem para chamar o provedor de IA.
             </p>
           </div>
+        </div>
+
+        <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Bot className="h-4 w-4 text-primary shrink-0" />
+            Provedor reserva (opcional)
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Usado só quando o provedor principal estiver sobrecarregado ou fora do ar, apenas
+            naquela mensagem. Precisa de chave salva do provedor reserva nesta unidade.
+          </p>
+
+          {fallbackStale && savedFallback && (
+            <div className="rounded border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <p>
+                O reserva salvo ({fallbackLabel(savedFallback.provider)}) está sendo ignorado: falta
+                uma chave ativa desse provedor nesta unidade
+                {savedFallback.provider === aiConfig.provider ? " ou ele é igual ao principal" : ""}.
+                Cadastre a chave ou escolha &quot;Nenhum&quot;.
+              </p>
+            </div>
+          )}
+
+          {fallbackOptions.length === 0 && !savedFallback ? (
+            <p className="text-xs text-muted-foreground">
+              Nenhum outro provedor com chave salva. Para usar um reserva, cadastre antes a chave de
+              outro provedor nesta unidade: troque o provedor ativo, salve a chave e volte ao
+              provedor desejado.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label>Provedor reserva</Label>
+                <Select
+                  value={savedFallback ? savedFallback.provider : "__none__"}
+                  onValueChange={setFallbackProvider}
+                >
+                  <SelectTrigger className="w-full sm:w-64"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Nenhum</SelectItem>
+                    {fallbackOptions.map((id) => (
+                      <SelectItem key={id} value={id}>{fallbackLabel(id)}</SelectItem>
+                    ))}
+                    {savedFallback && !fallbackOptions.includes(savedFallback.provider) && (
+                      <SelectItem
+                        value={savedFallback.provider}
+                        className={fallbackStale ? "text-warning" : undefined}
+                      >
+                        {fallbackLabel(savedFallback.provider)}
+                        {fallbackStale ? " (indisponível)" : ""}
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {savedFallback && (
+                <div className="space-y-1">
+                  <Label>Modelo do reserva</Label>
+                  <Select
+                    value={fallbackSavedModel === "" ? "__default__" : fallbackSavedModel}
+                    onValueChange={setFallbackModel}
+                  >
+                    <SelectTrigger className="w-full sm:w-72">
+                      <SelectValue placeholder="Selecione um modelo…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__default__">
+                        Padrão ({DEFAULT_MODEL_BY_PROVIDER[savedFallback.provider]})
+                      </SelectItem>
+                      {fallbackModels.map((m) => (
+                        <SelectItem key={m.value} value={m.value}>
+                          {m.label}
+                          {m.hint ? <span className="text-muted-foreground"> · {m.hint}</span> : null}
+                        </SelectItem>
+                      ))}
+                      {fallbackShowLegacyModel && (
+                        <SelectItem value={fallbackSavedModel} className="text-warning">
+                          {fallbackSavedModel} (descontinuado — trocar)
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
