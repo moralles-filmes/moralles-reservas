@@ -14,7 +14,7 @@ Branch/worktree: `feat/agente-ia-cortes-fallback` em `.claude/worktrees/agente-i
 
 ## Bloco 1 — correções (Tasks 1–3)
 
-### [ ] Task 1 — "Assumir" inicia o relógio do handoff
+### [x] Task 1 — "Assumir" inicia o relógio do handoff
 
 1. Núcleo `supabase/functions/_shared/handoff-clock-core.ts`: `resolveHandoffClock({ handoffAt: string|null, lastHumanTs: number, nowMs: number }) → { silenceStartMs: number; persistHandoffAt: string|null }`. Se `handoffAt` válido ou `lastHumanTs > 0`: `silenceStartMs = max(...)`, `persistHandoffAt = null`. Se ambos ausentes: `silenceStartMs = nowMs`, `persistHandoffAt = new Date(nowMs).toISOString()`. `handoffAt` inválido (NaN) conta como ausente. Testes em `src/lib/handoff-clock-core.test.ts`: os três casos, NaN e o máximo entre os dois.
 2. `webhook-whatsapp/index.ts` (bloco `if (conv.status === "human_active" || conv.status === "awaiting_human")`, ~linha 3518): trocar o cálculo inline de `handoffStart`/`silenceStart` pelo núcleo. Quando `persistHandoffAt` vier preenchido, `await supabase.from("conversations").update({ handoff_at }).eq("id", conv.id).eq("unit_id", unitId).is("handoff_at", null)` e logar erro como `jsonLog("warn", { evt: "handoff_clock_persist_failed" ... })` sem interromper. Manter `silenceStart > 0` no `shouldAutoResolve` (agora sempre > 0). Preservar o resto do bloco byte a byte.
@@ -24,7 +24,7 @@ Branch/worktree: `feat/agente-ia-cortes-fallback` em `.claude/worktrees/agente-i
 
 Modelo: Sonnet (implementação e review de spec); Opus no review de qualidade (escrita em `conversations`).
 
-### [ ] Task 2 — Calendário dos próximos dias no prompt
+### [x] Task 2 — Calendário dos próximos dias no prompt
 
 1. Núcleo `supabase/functions/_shared/agent-calendar-core.ts`: `WEEKDAY_NAMES_PT` (mover do webhook) e `buildUpcomingDaysLines(nowBrt: Date, days = 8): string[]`, lendo só `getUTC*` do `nowBrt` (já deslocado para BRT pelo chamador). Saída: `- hoje: quarta-feira, 14/10`, `- amanhã: quinta-feira, 15/10`, depois `- sexta-feira, 16/10` … (8 linhas no total). Testes `src/lib/agent-calendar-core.test.ts`: virada de mês (31/10→01/11), de ano (31/12→01/01), fevereiro bissexto e o caso 22h BRT (o `nowBrt` construído de um `Date.now()` em UTC do dia seguinte continua no dia BRT certo).
 2. `webhook-whatsapp/index.ts`: importar o núcleo; usar `WEEKDAY_NAMES_PT` dele; logo após `Hoje é ${todayBR}. ` acrescentar `\n\nPróximos dias (use esta lista para saber o dia da semana de "amanhã", "sábado", "dia 18" etc. — nunca calcule de cabeça):\n${upcomingDaysLines.join("\n")}\n\n` de forma que o texto seguinte continue legível. Na Regra 11, depois de "Se o cliente perguntar o preço de OUTRO dia, use a faixa daquele dia.", acrescentar: `Para descobrir o dia da semana de uma data relativa ou futura, consulte a lista "Próximos dias"; para data fora da lista, use o dia da semana da data completa informada pelo cliente ou pergunte a data.`
@@ -32,7 +32,7 @@ Modelo: Sonnet (implementação e review de spec); Opus no review de qualidade (
 
 Modelo: Sonnet (todos os papéis; núcleo puro com teste).
 
-### [ ] Task 3 — Nunca enviar resposta cortada
+### [x] Task 3 — Nunca enviar resposta cortada
 
 1. Núcleo `supabase/functions/_shared/agent-output-core.ts`:
    - `MAX_OUTPUT_TOKENS_BY_PROVIDER: Record<AIProvider, number>` = gemini 3072; claude/openai/grok/deepseek 1024 (tipo `AIProvider` redeclarado localmente como união literal ou importado com `import type` de `ai-providers.ts`, que é apagado no bundle e não puxa esm.sh para o vitest).
