@@ -20,8 +20,9 @@ Alvo: Moralles Reservas `gbabxcrntkwgblgqsiit`; unidade `9dc55e51-99b2-4536-b596
 
 ## Task 2 — gates e publicação do frontend
 
-- [ ] Executar testes pertinentes, typecheck `tsc -b`, lint dos arquivos, build, revisão da branch e gates proporcionais de identidade/tenant/secrets/confiabilidade. Não ampliar backend ou autoridade para facilitar operação.
-- [ ] Conferir git status/diff/100% staged e segredos; git add somente caminhos explícitos; commit/push/PR autorizado. Confirmar `acl-estatico`, preview verde, ausência de conflito e HEAD exato antes de merge. Comprovar Production READY; nenhum redeploy EF ou db push por alteração somente React.
+- [x] Testes pertinentes, typecheck `tsc -b`, lint, build e revisão de branch/gates proporcionais PASS. Evidências no plano de antiduplicidade; não se ampliou backend ou autoridade para facilitar o CTA.
+- [x] Status/diff/100% staged e segredos conferidos; 32 caminhos explícitos, commit `816def7`, main integrada sem conflito como `336b8615`, push e [PR #44](https://github.com/moralles-filmes/moralles-reservas/pull/44) autorizado. ACL e preview verdes no HEAD de produto `336b8615`; documentos posteriores requerem novo check no HEAD final.
+- [ ] Merge e Production READY após SQL/EFs guardadas e gates do pacote de antiduplicidade. A alteração React não exige SQL/EF por si; a publicação conjunta exige autorização própria da migration e das seis EFs do guard.
 
 ## Task 3 — operação autorizada, uma vez e observada
 
