@@ -84,6 +84,8 @@ Arquivos previstos: cartão Datafy, snapshot/gestão de templates, painel Platfo
 
 **Estado Meta relido (19/10/2026, 10h35 BRT):** no projeto Moralles Reservas, as nove linhas `pt_BR` v1 da conta Ren Sushi estão `APPROVED`/`usable`, com ID remoto, hash observado igual ao desejado, categoria efetiva igual à solicitada (sete UTILITY e dois MARKETING), sem sync pendente e `rejection_code=NONE`. `whatsapp_template_catalog=true` e `whatsapp_automation_dispatch=false`. A leitura substitui os estados PENDING/IN_APPEAL de 17/10, mas não concede autorização de envio nem ativa a política para conexões futuras.
 
+**Pré-voo somente leitura (19/10/2026):** `supabase db push --dry-run --skip-vault --linked --project-ref gbabxcrntkwgblgqsiit` listou exclusivamente `20261017203000_whatsapp_template_auto_provision_policy.sql`, sem seeds/roles. O alvo tinha uma conta de templates e um binding; a consulta de jobs trouxe 336 linhas totais, sem classificá-las. Isso não satisfaz por si só o gate de backup/janela nem autoriza a aplicação, os quatro redeploys ou a política ON.
+
 ## Task 5 — Rollout e piloto com a Ren Sushi
 
 - [ ] Antes de qualquer escrita, conferir projeto `gbabxcrntkwgblgqsiit`, backup/janela, migrations pendentes exatas, contas/bindings/grants/jobs, canal Datafy local/remoto e UazAPI desligada. Confirmar nominalmente canal e custo; obter autorizações próprias para `db push`, matriz EF (incluindo `process-whatsapp-templates`) e efeito do merge em Vercel. SQL → ACL/RLS efetiva → EFs → frontend READY.
