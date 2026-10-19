@@ -34,3 +34,12 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<AIProvider, string> = {
   grok: "grok-3",
   deepseek: "deepseek-chat",
 };
+
+/** Ordem canônica dos provedores na UI (seletores e listas). */
+export const AI_PROVIDER_ORDER: readonly AIProvider[] = [
+  "claude",
+  "openai",
+  "gemini",
+  "grok",
+  "deepseek",
+];

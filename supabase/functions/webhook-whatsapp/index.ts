@@ -119,6 +119,15 @@ import {
   reserveSlot,
 } from "../_shared/availability.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
+import { resolveHandoffClock } from "../_shared/handoff-clock-core.ts";
+import {
+  buildUpcomingDaysLines,
+  WEEKDAY_NAMES_PT,
+} from "../_shared/agent-calendar-core.ts";
+import {
+  parseFallbackConfig,
+  shouldUseFallbackProvider,
+} from "../_shared/agent-provider-fallback-core.ts";
 import {
   DEFAULT_GIFTBACK_TEMPLATE,
   ensureUniqueVoucherCode,
@@ -3531,8 +3540,6 @@ async function handleWebhookRequest(
         },
       );
 
-      const handoffStart = conv.handoff_at ? new Date(conv.handoff_at).getTime() : 0;
-
       // Relógio do auto-resolve = ÚLTIMA atividade humana (início do handoff ou
       // a mensagem mais recente do atendente, venha do painel ou do celular da
       // loja). Antes bastava UMA resposta humana pra travar o auto-resolve pra
@@ -3545,8 +3552,28 @@ async function handleWebhookRequest(
         return ts > acc ? ts : acc;
       }, 0);
 
-      const silenceStart = Math.max(handoffStart, lastHumanTs);
+      // Sem handoff_at e sem mensagem humana (ex.: "Assumir" legado, que não
+      // gravava handoff_at) o relógio nunca partia e a IA ficava silenciada
+      // para sempre: inicia agora e persiste, só se ainda estiver NULL.
+      const handoffClock = resolveHandoffClock({
+        handoffAt: conv.handoff_at ?? null,
+        lastHumanTs,
+        nowMs: Date.now(),
+      });
+      const silenceStart = handoffClock.silenceStartMs;
       const handoffAge = silenceStart ? Date.now() - silenceStart : 0;
+
+      if (handoffClock.persistHandoffAt) {
+        const { error: clockError } = await supabase
+          .from("conversations")
+          .update({ handoff_at: handoffClock.persistHandoffAt })
+          .eq("id", conv.id)
+          .eq("unit_id", unitId)
+          .is("handoff_at", null);
+        if (clockError) {
+          jsonLog("warn", { requestId, evt: "handoff_clock_persist_failed", convId: conv.id, err: clockError.message });
+        }
+      }
 
       // Handoff por franquia esgotada NÃO volta para a IA pelo decurso do
       // prazo: devolveria a conversa a uma IA que não pode responder. Só a
@@ -3951,6 +3978,23 @@ async function handleWebhookRequest(
         unitId,
       });
     }
+    // Provedor RESERVA (opcional, por unidade). Config ilegível = sem reserva =
+    // comportamento de hoje. A chave dele só é resolvida se ele for usado.
+    const fallbackConfig = parseFallbackConfig(aiConfig, provider_ai);
+    const fallbackModelResolved = fallbackConfig
+      ? resolveModel(fallbackConfig.provider, fallbackConfig.model)
+      : null;
+    if (fallbackConfig && fallbackModelResolved?.fellBack) {
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_model_fallback",
+        provider: fallbackConfig.provider,
+        rejected: fallbackModelResolved.rejected,
+        used: fallbackModelResolved.model,
+        role: "fallback",
+        unitId,
+      });
+    }
 
     let apiKey: string;
     try {
@@ -4026,7 +4070,6 @@ async function handleWebhookRequest(
     // meia-noite BRT o dia vira pro seguinte e o bot cita preço do dia errado (cardápio por dia).
     const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
     const nowBrt = new Date(Date.now() - BRT_OFFSET_MS);
-    const WEEKDAY_NAMES_PT = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
     const brtWeekdayIdx = nowBrt.getUTCDay();
     const weekdayName = WEEKDAY_NAMES_PT[brtWeekdayIdx];
     const today = nowBrt.toISOString().slice(0, 10);
@@ -4233,6 +4276,7 @@ async function handleWebhookRequest(
 
     const [todayY, todayM, todayD] = today.split("-");
     const todayBR = `${weekdayName}, ${todayD}/${todayM}/${todayY}`;
+    const upcomingDaysLines = buildUpcomingDaysLines(nowBrt);
 
     const agentMode = (settingsMap["agent_mode"] as string) ?? "reservations";
     const includeFaq = agentMode === "reservations_faq";
@@ -4256,6 +4300,7 @@ async function handleWebhookRequest(
       `IDENTIDADE: Você se chama ${agentName} e atende como parte da equipe do ${restaurantName} — fale sempre na primeira pessoa, de forma natural e humana, tratando o cliente por "você". NÃO diga espontaneamente que é um assistente virtual, robô, IA, bot ou sistema automático, e não use linguagem robótica. Só revele que é um atendimento virtual se o cliente perguntar DIRETAMENTE se está falando com um robô/IA/atendente automático — nesse caso seja honesta e responda com naturalidade (ex: "Sou a ${agentName}, faço o atendimento virtual do ${restaurantName} e quando precisar chamo alguém da equipe"). Ao transferir para um colega (handoff), dizer que vai chamar alguém da equipe NÃO exige revelar que você é virtual. ` +
       `Seja cordial, eficiente e responda sempre em português brasileiro. Respostas curtas e diretas — em geral 3 a 4 linhas; use mais espaço só quando precisar listar horários, opções ou preços. Evite excesso de emojis. ` +
       `O número de WhatsApp do cliente é ${phone}. Hoje é ${todayBR}. ` +
+      `\n\nPróximos dias (use esta lista para saber o dia da semana de "amanhã", "sábado", "dia 18" etc. — nunca calcule de cabeça):\n${upcomingDaysLines.join("\n")}\n\n` +
       (customerFirstName
         ? `O cliente com quem você está falando se chama ${customerFirstName} — esse é o nome do CLIENTE, NÃO o seu. Você continua sendo ${agentName}. Pode tratá-lo por ${customerFirstName} quando soar natural, sem forçar o nome em toda mensagem. `
         : "") +
@@ -4287,7 +4332,7 @@ async function handleWebhookRequest(
       `   (b) Se available: true, chame create_reservation imediatamente com todos os dados coletados (nome, data, hora, party_size, hall_name se definido).\n` +
       `   (c) Se available: false, informe que a mesa não está mais disponível e ofereça alternativas.\n` +
       `   (d) Após criar com sucesso, SEMPRE informe o código da reserva ao cliente.\n` +
-      `11. Preços que variam por dia da semana: o cardápio e/ou "Preços e condições" podem listar valores diferentes por dia (ex: "segunda a quarta", "quinta a domingo", "todos os dias"). HOJE é ${weekdayName}. Ao informar um preço, identifique PRIMEIRO qual faixa de dias inclui ${weekdayName} e use SOMENTE essa faixa. NUNCA cite um valor de um intervalo que NÃO inclua ${weekdayName} (ex: não dê preço de quinta num dia que é quarta). Se o cliente perguntar o preço de OUTRO dia, use a faixa daquele dia. Se alguma faixa mencionar "feriado(s)": você NÃO tem como saber se hoje é feriado — informe o preço NORMAL do dia da semana e acrescente o aviso "Exceto feriados." (em feriados o valor pode ser diferente). NUNCA assuma que hoje é ou não é feriado, nem invente preço de feriado.\n` +
+      `11. Preços que variam por dia da semana: o cardápio e/ou "Preços e condições" podem listar valores diferentes por dia (ex: "segunda a quarta", "quinta a domingo", "todos os dias"). HOJE é ${weekdayName}. Ao informar um preço, identifique PRIMEIRO qual faixa de dias inclui ${weekdayName} e use SOMENTE essa faixa. NUNCA cite um valor de um intervalo que NÃO inclua ${weekdayName} (ex: não dê preço de quinta num dia que é quarta). Se o cliente perguntar o preço de OUTRO dia, use a faixa daquele dia. Para descobrir o dia da semana de uma data relativa ou futura, consulte a lista "Próximos dias"; para data fora da lista, use o dia da semana da data completa informada pelo cliente ou pergunte a data. Se alguma faixa mencionar "feriado(s)": você NÃO tem como saber se hoje é feriado — informe o preço NORMAL do dia da semana e acrescente o aviso "Exceto feriados." (em feriados o valor pode ser diferente). NUNCA assuma que hoje é ou não é feriado, nem invente preço de feriado.\n` +
       // Regra 12: o agente NÃO tem tool de fila de espera — prometer isso é
       // promessa vazia (o cliente espera um aviso que nunca sai). Enquanto a
       // fila não for exposta como ferramenta, a regra é não oferecer.
@@ -4454,7 +4499,7 @@ async function handleWebhookRequest(
       }
     }
 
-    const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 };
+    const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, reasoning_tokens: 0 };
     let agentError: string | null = null;
     // Quem interrompeu o loop: o prazo ou o provedor. Duas consequências
     // diferentes (motivo do handoff, e o retry silencioso que NÃO pode pegar o
@@ -4467,10 +4512,42 @@ async function handleWebhookRequest(
     // conclusão de uma ação que ainda exige validação é o erro que produz
     // cliente aparecendo no restaurante sem mesa (§17.7.4).
     let lastMutationOutcome: MutationOutcome = "UNKNOWN";
+    // Alvo da PRÓXIMA tentativa. Nasce no principal e só muda por
+    // `switchToFallback`, entre a tentativa 0 e a 1 do retry silencioso. O
+    // turno recomeça limpo no reserva (histórico em texto é neutro entre
+    // provedores; trocar no meio do laço de ferramentas exigiria converter
+    // formatos de tool call).
+    type AgentTarget = { provider: AIProvider; apiKey: string; model: string };
+    const primaryTarget: AgentTarget = { provider: provider_ai, apiKey, model: modelOverride };
+    let agentTarget: AgentTarget = primaryTarget;
+    const switchToFallback = async (reason: string): Promise<boolean> => {
+      // `unitId` é `let`: o estreitamento de fora não atravessa a closure.
+      if (!fallbackConfig || !fallbackModelResolved || !unitId) return false;
+      let fallbackKey: string;
+      try {
+        // BYOK da PRÓPRIA unidade, como o principal — nunca chave global.
+        fallbackKey = await resolveApiKey(fallbackConfig.provider, unitId);
+      } catch {
+        // Sem chave ativa do reserva: segue o retry de hoje, no principal.
+        jsonLog("warn", { requestId, evt: "fallback_unavailable", provider: fallbackConfig.provider, unitId });
+        return false;
+      }
+      jsonLog("warn", {
+        requestId,
+        evt: "agent_provider_fallback",
+        from_provider: agentTarget.provider,
+        from_model: agentTarget.model,
+        to_provider: fallbackConfig.provider,
+        to_model: fallbackModelResolved.model,
+        reason,
+      });
+      agentTarget = { provider: fallbackConfig.provider, apiKey: fallbackKey, model: fallbackModelResolved.model };
+      return true;
+    };
     const runOnce = () => runAgentLoop({
-        provider: provider_ai,
-        apiKey,
-        model: modelOverride,
+        provider: agentTarget.provider,
+        apiKey: agentTarget.apiKey,
+        model: agentTarget.model,
         systemPrompt,
         history,
         userMessage: combinedUserMessage,
@@ -4514,6 +4591,7 @@ async function handleWebhookRequest(
           totalUsage.output_tokens += u.output_tokens;
           totalUsage.cache_creation_tokens += u.cache_creation_tokens;
           totalUsage.cache_read_tokens += u.cache_read_tokens;
+          totalUsage.reasoning_tokens += u.reasoning_tokens ?? 0;
         },
         // deno-lint-ignore no-explicit-any
         onToolCall: async (name, input: any) => {
@@ -4587,6 +4665,17 @@ async function handleWebhookRequest(
         agentOutcome = await runOnce();
         agentError = null;
         agentDeadlineReached = false;
+        // Resposta VAZIA do principal também é indisponibilidade quando há
+        // reserva: mesmas travas do retry abaixo. Sem reserva (ou sem chave
+        // dele), nada muda — o vazio segue para o ramo `empty_response`.
+        if (
+          attempt === 0 && fallbackConfig && !mutatingToolUsed
+          && agentOutcome.kind === "TEXT" && !agentOutcome.text.trim()
+          && Date.now() - t0 < AGENT_RETRY_BUDGET_MS
+          && await switchToFallback("empty_response")
+        ) {
+          continue;
+        }
         break;
       } catch (err) {
         // A MARCA DO PRAZO É LIDA DO OBJETO, E ANTES DE SANITIZAR.
@@ -4622,6 +4711,11 @@ async function handleWebhookRequest(
           && elapsed < AGENT_RETRY_BUDGET_MS
         ) {
           jsonLog("warn", { requestId, evt: "agent_retry", elapsed_ms: elapsed });
+          // Com reserva configurada e erro de indisponibilidade, a tentativa 1
+          // roda no outro provedor; sem isso (ou sem chave dele), no principal.
+          if (fallbackConfig && shouldUseFallbackProvider(err)) {
+            await switchToFallback(agentError);
+          }
           continue;
         }
         break;
@@ -4629,12 +4723,18 @@ async function handleWebhookRequest(
     }
     finalText = agentOutcome && agentOutcome.kind === "TEXT" ? agentOutcome.text : "";
 
-    const usedModel = modelOverride;
+    // Quem fez a ÚLTIMA tentativa — o reserva, se a troca aconteceu.
+    const usedProvider = agentTarget.provider;
+    const usedModel = agentTarget.model;
+    const fallbackMeta = agentTarget === primaryTarget
+      ? {}
+      : { fallback_provider: usedProvider, fallback_model: usedModel };
     jsonLog("info", {
       requestId,
       evt: "agent_usage",
-      provider: provider_ai,
+      provider: usedProvider,
       model: usedModel,
+      ...fallbackMeta,
       channelId,
       unitId,
       ...totalUsage,
@@ -4700,8 +4800,9 @@ async function handleWebhookRequest(
         unitId,
         organizationId,
         convId: conv.id,
-        provider: provider_ai,
+        provider: usedProvider,
         model: agentOutcome.meta.model,
+        ...fallbackMeta,
         iteration: agentOutcome.meta.iteration,
         mutating_tool_used: mutatingToolUsed,
       });
@@ -4717,8 +4818,9 @@ async function handleWebhookRequest(
       await settleTurnBudget("SETTLED");
       await finish(hardStop ? "ai_budget_exhausted" : "ai_budget_denied", undefined, {
         decision: decision.kind,
-        provider: provider_ai,
+        provider: usedProvider,
         model: agentOutcome.meta.model,
+        ...fallbackMeta,
       });
       await releaseAiLock();
       return new Response("ok");
@@ -4730,7 +4832,7 @@ async function handleWebhookRequest(
       // resolve quando o erro é estrutural —, fazemos auto-handoff: marca a
       // conversa awaiting_human pra atendente assumir, registra provider/model
       // no handoff_reason e em webhook_executions.meta, e avisa o cliente.
-      const usedModel = modelOverride;
+      // Provider/modelo são os da ÚLTIMA tentativa (o reserva, se houve troca).
 
       // O motivo distingue PRAZO de erro do provedor, e isso não é cosmética: é
       // o campo que se lê ao investigar "por que esta conversa foi para
@@ -4743,8 +4845,8 @@ async function handleWebhookRequest(
       // fila do operador ancora cada porta pelo texto da razão, e duas portas
       // com o mesmo identificador colapsam numa só aos olhos dele.
       const agentHandoffReason = agentDeadlineReached
-        ? `agent_deadline:${provider_ai}:${usedModel}`
-        : `agent_error:${provider_ai}:${usedModel}`;
+        ? `agent_deadline:${usedProvider}:${usedModel}`
+        : `agent_error:${usedProvider}:${usedModel}`;
 
       await supabase
         .from("conversations")
@@ -4765,11 +4867,11 @@ async function handleWebhookRequest(
       // `ai-budget-copy.ts` nomeia: "usar a mesma frase para as três é o erro que
       // produz cliente aparecendo no restaurante sem mesa".
       //
-      // Escopado a `agentDeadlineReached` de propósito. O ramo de `agent_error`
-      // após ferramenta mutante tem o MESMO problema e é PREEXISTENTE — mudá-lo
-      // aqui alteraria, de carona, a mensagem que a loja real já manda hoje.
-      // Registrado para a revisão de branch decidir, não resolvido por efeito
-      // colateral.
+      // A ferramenta mutante é a PRIMEIRA pergunta, com prazo ou com erro de
+      // provedor: o desfecho para o cliente é o mesmo (a reserva mudou e a
+      // confirmação não saiu). O erro pós-mutação ficou frequente quando a
+      // resposta cortada passou a ser `AgentTruncatedError` em vez de meia frase
+      // — a rodada final, a que confirma, é a mais longa e a que mais corta.
       //
       // TRÊS pernas, e a terceira não é simetria: sem ela o prazo SEM ferramenta
       // mutante — tão frequente quanto o caso acima — afirma "instabilidade"
@@ -4781,10 +4883,10 @@ async function handleWebhookRequest(
       // mantém uma frase por situação — e o que garante que ela já está no
       // `HARDCODED_AGENT_NOISE`, pela lista importada.
       let handoffText: string;
-      if (!agentDeadlineReached) {
-        handoffText = AGENT_INSTABILITY_TEXT;
-      } else if (mutatingToolUsed) {
+      if (mutatingToolUsed) {
         handoffText = resolveMutationStopText(lastMutationOutcome);
+      } else if (!agentDeadlineReached) {
+        handoffText = AGENT_INSTABILITY_TEXT;
       } else {
         handoffText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT;
       }
@@ -4802,8 +4904,9 @@ async function handleWebhookRequest(
       jsonLog("warn", {
         requestId,
         evt: "agent_error_handoff",
-        provider: provider_ai,
+        provider: usedProvider,
         model: usedModel,
+        ...fallbackMeta,
         deadline: agentDeadlineReached,
         err: agentError,
       });
@@ -4812,8 +4915,9 @@ async function handleWebhookRequest(
       // ver o desfecho de negação acima.
       await settleTurnBudget("RELEASED");
       await finish("agent_error", agentError, {
-        provider: provider_ai,
+        provider: usedProvider,
         model: usedModel,
+        ...fallbackMeta,
         channel_id: channelId,
         // O outcome continua `agent_error` de propósito: o vocabulário de
         // `webhook_executions.outcome` é consumido por painel e diagnóstico, e
@@ -4887,7 +4991,7 @@ async function handleWebhookRequest(
     await finish(
       finalHistoryAppend.persisted ? "success" : "success_history_degraded",
       finalHistoryAppend.persisted ? undefined : "conversation_message_persist_failed_after_send",
-      { tokens: totalUsage.input_tokens + totalUsage.output_tokens },
+      { tokens: totalUsage.input_tokens + totalUsage.output_tokens, ...fallbackMeta },
     );
     await releaseAiLock();
     return new Response("ok");
