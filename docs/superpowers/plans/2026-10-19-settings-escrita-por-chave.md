@@ -126,6 +126,21 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
 - **Task 3**: `migration-validator`, `rls-auditor` e `identity-access-auditor` em `PASS_WITH_WARNINGS`, zero bloqueantes. Do RLS entrou a correção da premissa de §4.1 (no INSERT o trigger roda antes do `WITH CHECK`) e a prova de recusa idêntica para unidade alheia e inexistente (EXTRA-2). Review da branch contra a spec: §4.2 e S1–S16 conferidos. Nada em `src/` nem em `supabase/functions/`. Guards estáticos (`function-acl-allowlist`, `advisor-divergence-core`, `migration-static-guard`) verdes. Push e PR autorizados: PR #42, com `acl-estatico` e Vercel verdes (`acl-com-banco` é manual e foi pulado). Não mergeado.
 - **Follow-ups registrados, fora deste PR:** `FORCE RLS` em `settings` (medir `BYPASSRLS` do dono das RPCs públicas antes, como na 180000); revogar `SELECT` de anon e `REFERENCES`/`TRIGGER` de anon/authenticated; policies de `settings` com `(select …)`; `Conta.tsx:202` sem `isPlatformAdmin` em `canEdit` e DELETE de `restaurant_name` sem checar `error`; `.claude/rules/frontend.md` diz que a UI não escreve `restaurant_name`, mas ela o apaga; `manage-members` devolve `error.message` cru; o comentário da `20261017160000` diz que `REVOKE` de tabela não remove grant de coluna (medido: remove).
 
+## Execução do Bloco 2 (2026-10-19)
+
+- **Pré-voo (somente leitura, MCP):** `auth.role()` lê `request.jwt.claims`. O `schema_migrations` de produção é idêntico ao `origin/main` (180 versões). Retrato de antes: só o trigger `whatsapp_legacy_template_write`; policies `platform_admin_all_settings` e `unit_member_all_settings`; `anon` com `arwdDxtm`; RLS ligado, FORCE desligado.
+- **Merge** autorizado: PR #42 → `main` `bc91673`. Vercel `success` no commit.
+- **`db push`** autorizado, a partir de `bc91673`: o `migration list` mostrou só a `20261019180000` pendente; aplicada sem `55P03`.
+- **Verificação (MCP `select`):**
+  - a migration está registrada;
+  - os triggers `settings_write_role_guard` e `whatsapp_legacy_template_write` estão habilitados;
+  - `EXECUTE` é `false` para `anon`/`authenticated`/`service_role` nas duas funções, e o guard é `SECURITY DEFINER` com `search_path=""`;
+  - `anon` não tem INSERT/UPDATE/DELETE/TRUNCATE nem grant de coluna; `authenticated` não tem TRUNCATE e mantém SELECT/INSERT/UPDATE/DELETE; `service_role` mantém INSERT;
+  - as policies são idênticas às de antes, e RLS/FORCE seguem `true/false`;
+  - o classificador devolve `ai_config`/`ai_system_prompt` → `platform` e `booking_window_days`/`restaurant_name` → `manager`.
+- **Pendente:** o teste manual do item 4.
+- **Rollback:** migration nova com `drop trigger if exists settings_write_role_guard on public.settings;`.
+
 ## Sequência de chats
 
 - **Chat 1:** Bloco 1 (Tasks 1–3).
