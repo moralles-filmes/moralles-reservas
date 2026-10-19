@@ -1149,8 +1149,9 @@ describe("o motivo do handoff distingue prazo de erro do provedor", () => {
   });
 
   it("as duas razões existem, e a gravada é a escolhida", () => {
-    expect(EF).toMatch(/agent_deadline:\$\{provider_ai\}/);
-    expect(EF).toMatch(/agent_error:\$\{provider_ai\}/);
+    // `usedProvider`: o da ÚLTIMA tentativa — o provedor reserva, se houve troca.
+    expect(EF).toMatch(/agent_deadline:\$\{usedProvider\}/);
+    expect(EF).toMatch(/agent_error:\$\{usedProvider\}/);
     expect(EF).toMatch(/handoff_reason:\s*agentHandoffReason/);
   });
 

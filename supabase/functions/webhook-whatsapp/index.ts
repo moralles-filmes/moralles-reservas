@@ -125,6 +125,10 @@ import {
   WEEKDAY_NAMES_PT,
 } from "../_shared/agent-calendar-core.ts";
 import {
+  parseFallbackConfig,
+  shouldUseFallbackProvider,
+} from "../_shared/agent-provider-fallback-core.ts";
+import {
   DEFAULT_GIFTBACK_TEMPLATE,
   ensureUniqueVoucherCode,
   expiresAtEndOfDayBrt,
@@ -3974,6 +3978,23 @@ async function handleWebhookRequest(
         unitId,
       });
     }
+    // Provedor RESERVA (opcional, por unidade). Config ilegível = sem reserva =
+    // comportamento de hoje. A chave dele só é resolvida se ele for usado.
+    const fallbackConfig = parseFallbackConfig(aiConfig, provider_ai);
+    const fallbackModelResolved = fallbackConfig
+      ? resolveModel(fallbackConfig.provider, fallbackConfig.model)
+      : null;
+    if (fallbackConfig && fallbackModelResolved?.fellBack) {
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_model_fallback",
+        provider: fallbackConfig.provider,
+        rejected: fallbackModelResolved.rejected,
+        used: fallbackModelResolved.model,
+        role: "fallback",
+        unitId,
+      });
+    }
 
     let apiKey: string;
     try {
@@ -4491,10 +4512,42 @@ async function handleWebhookRequest(
     // conclusão de uma ação que ainda exige validação é o erro que produz
     // cliente aparecendo no restaurante sem mesa (§17.7.4).
     let lastMutationOutcome: MutationOutcome = "UNKNOWN";
+    // Alvo da PRÓXIMA tentativa. Nasce no principal e só muda por
+    // `switchToFallback`, entre a tentativa 0 e a 1 do retry silencioso. O
+    // turno recomeça limpo no reserva (histórico em texto é neutro entre
+    // provedores; trocar no meio do laço de ferramentas exigiria converter
+    // formatos de tool call).
+    type AgentTarget = { provider: AIProvider; apiKey: string; model: string };
+    const primaryTarget: AgentTarget = { provider: provider_ai, apiKey, model: modelOverride };
+    let agentTarget: AgentTarget = primaryTarget;
+    const switchToFallback = async (reason: string): Promise<boolean> => {
+      // `unitId` é `let`: o estreitamento de fora não atravessa a closure.
+      if (!fallbackConfig || !fallbackModelResolved || !unitId) return false;
+      let fallbackKey: string;
+      try {
+        // BYOK da PRÓPRIA unidade, como o principal — nunca chave global.
+        fallbackKey = await resolveApiKey(fallbackConfig.provider, unitId);
+      } catch {
+        // Sem chave ativa do reserva: segue o retry de hoje, no principal.
+        jsonLog("warn", { requestId, evt: "fallback_unavailable", provider: fallbackConfig.provider, unitId });
+        return false;
+      }
+      jsonLog("warn", {
+        requestId,
+        evt: "agent_provider_fallback",
+        from_provider: agentTarget.provider,
+        from_model: agentTarget.model,
+        to_provider: fallbackConfig.provider,
+        to_model: fallbackModelResolved.model,
+        reason,
+      });
+      agentTarget = { provider: fallbackConfig.provider, apiKey: fallbackKey, model: fallbackModelResolved.model };
+      return true;
+    };
     const runOnce = () => runAgentLoop({
-        provider: provider_ai,
-        apiKey,
-        model: modelOverride,
+        provider: agentTarget.provider,
+        apiKey: agentTarget.apiKey,
+        model: agentTarget.model,
         systemPrompt,
         history,
         userMessage: combinedUserMessage,
@@ -4612,6 +4665,17 @@ async function handleWebhookRequest(
         agentOutcome = await runOnce();
         agentError = null;
         agentDeadlineReached = false;
+        // Resposta VAZIA do principal também é indisponibilidade quando há
+        // reserva: mesmas travas do retry abaixo. Sem reserva (ou sem chave
+        // dele), nada muda — o vazio segue para o ramo `empty_response`.
+        if (
+          attempt === 0 && fallbackConfig && !mutatingToolUsed
+          && agentOutcome.kind === "TEXT" && !agentOutcome.text.trim()
+          && Date.now() - t0 < AGENT_RETRY_BUDGET_MS
+          && await switchToFallback("empty_response")
+        ) {
+          continue;
+        }
         break;
       } catch (err) {
         // A MARCA DO PRAZO É LIDA DO OBJETO, E ANTES DE SANITIZAR.
@@ -4647,6 +4711,11 @@ async function handleWebhookRequest(
           && elapsed < AGENT_RETRY_BUDGET_MS
         ) {
           jsonLog("warn", { requestId, evt: "agent_retry", elapsed_ms: elapsed });
+          // Com reserva configurada e erro de indisponibilidade, a tentativa 1
+          // roda no outro provedor; sem isso (ou sem chave dele), no principal.
+          if (fallbackConfig && shouldUseFallbackProvider(err)) {
+            await switchToFallback(agentError);
+          }
           continue;
         }
         break;
@@ -4654,12 +4723,18 @@ async function handleWebhookRequest(
     }
     finalText = agentOutcome && agentOutcome.kind === "TEXT" ? agentOutcome.text : "";
 
-    const usedModel = modelOverride;
+    // Quem fez a ÚLTIMA tentativa — o reserva, se a troca aconteceu.
+    const usedProvider = agentTarget.provider;
+    const usedModel = agentTarget.model;
+    const fallbackMeta = agentTarget === primaryTarget
+      ? {}
+      : { fallback_provider: usedProvider, fallback_model: usedModel };
     jsonLog("info", {
       requestId,
       evt: "agent_usage",
-      provider: provider_ai,
+      provider: usedProvider,
       model: usedModel,
+      ...fallbackMeta,
       channelId,
       unitId,
       ...totalUsage,
@@ -4725,8 +4800,9 @@ async function handleWebhookRequest(
         unitId,
         organizationId,
         convId: conv.id,
-        provider: provider_ai,
+        provider: usedProvider,
         model: agentOutcome.meta.model,
+        ...fallbackMeta,
         iteration: agentOutcome.meta.iteration,
         mutating_tool_used: mutatingToolUsed,
       });
@@ -4742,8 +4818,9 @@ async function handleWebhookRequest(
       await settleTurnBudget("SETTLED");
       await finish(hardStop ? "ai_budget_exhausted" : "ai_budget_denied", undefined, {
         decision: decision.kind,
-        provider: provider_ai,
+        provider: usedProvider,
         model: agentOutcome.meta.model,
+        ...fallbackMeta,
       });
       await releaseAiLock();
       return new Response("ok");
@@ -4755,7 +4832,7 @@ async function handleWebhookRequest(
       // resolve quando o erro é estrutural —, fazemos auto-handoff: marca a
       // conversa awaiting_human pra atendente assumir, registra provider/model
       // no handoff_reason e em webhook_executions.meta, e avisa o cliente.
-      const usedModel = modelOverride;
+      // Provider/modelo são os da ÚLTIMA tentativa (o reserva, se houve troca).
 
       // O motivo distingue PRAZO de erro do provedor, e isso não é cosmética: é
       // o campo que se lê ao investigar "por que esta conversa foi para
@@ -4768,8 +4845,8 @@ async function handleWebhookRequest(
       // fila do operador ancora cada porta pelo texto da razão, e duas portas
       // com o mesmo identificador colapsam numa só aos olhos dele.
       const agentHandoffReason = agentDeadlineReached
-        ? `agent_deadline:${provider_ai}:${usedModel}`
-        : `agent_error:${provider_ai}:${usedModel}`;
+        ? `agent_deadline:${usedProvider}:${usedModel}`
+        : `agent_error:${usedProvider}:${usedModel}`;
 
       await supabase
         .from("conversations")
@@ -4827,8 +4904,9 @@ async function handleWebhookRequest(
       jsonLog("warn", {
         requestId,
         evt: "agent_error_handoff",
-        provider: provider_ai,
+        provider: usedProvider,
         model: usedModel,
+        ...fallbackMeta,
         deadline: agentDeadlineReached,
         err: agentError,
       });
@@ -4837,8 +4915,9 @@ async function handleWebhookRequest(
       // ver o desfecho de negação acima.
       await settleTurnBudget("RELEASED");
       await finish("agent_error", agentError, {
-        provider: provider_ai,
+        provider: usedProvider,
         model: usedModel,
+        ...fallbackMeta,
         channel_id: channelId,
         // O outcome continua `agent_error` de propósito: o vocabulário de
         // `webhook_executions.outcome` é consumido por painel e diagnóstico, e
@@ -4912,7 +4991,7 @@ async function handleWebhookRequest(
     await finish(
       finalHistoryAppend.persisted ? "success" : "success_history_degraded",
       finalHistoryAppend.persisted ? undefined : "conversation_message_persist_failed_after_send",
-      { tokens: totalUsage.input_tokens + totalUsage.output_tokens },
+      { tokens: totalUsage.input_tokens + totalUsage.output_tokens, ...fallbackMeta },
     );
     await releaseAiLock();
     return new Response("ok");
