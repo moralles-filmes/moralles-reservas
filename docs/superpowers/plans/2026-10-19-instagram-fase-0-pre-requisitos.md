@@ -1,8 +1,8 @@
 # Plano — Instagram Fase 0: pré-requisitos no agente
 
 - **Spec:** [2026-10-19-instagram-modulo-design.md](../specs/2026-10-19-instagram-modulo-design.md). A abordagem foi aprovada em 2026-10-19; o aceite cobre implementação **local**. Deploy de `webhook-whatsapp` e push para `main` exigem autorização própria.
-- **Branch:** `feat/instagram-module` (worktree `.claude/worktrees/instagram-module`), baseada em `origin/main` `f87d854`.
-- **Dependência:** a branch `feat/agente-ia-cortes-fallback` (não mergeada em 2026-10-19) altera `webhook-whatsapp/index.ts`, `_shared/ai-providers.ts` e `useConversations.ts`. **A Task 3 só começa depois que ela entrar em `main`**, com rebase desta branch. As Tasks 1 e 2 tocam outra região do arquivo.
+- **Branch:** `feat/instagram-module` (worktree `.claude/worktrees/instagram-module`), rebaseada sobre `origin/main` `d18f975`.
+- **Dependência resolvida:** `feat/agente-ia-cortes-fallback` entrou em `main` (PR #39, `d18f975`) em 2026-10-19 e esta branch foi rebaseada sobre ela sem conflito. A Task 3 está liberada.
 - **Fluxo:** para cada task, um implementador, review de spec e review de qualidade. Ao fim, review da branch inteira e gates `saas-shield-br`.
 - **Modelo por papel:** Sonnet implementa as Tasks 1 e 2 (plano mapeado, núcleo puro com testes). Opus revisa segurança e faz a Task 3 (refactor amplo com risco de regressão).
 
@@ -85,3 +85,4 @@ Arquivos:
 - `node scripts/ef-import-graph.mjs supabase/functions/_shared/availability.ts`: 4 EFs (as quatro acima). Matriz de redeploy da Fase 0 até aqui: essas 4.
 - Observação: `useUpdateReserva` (único caller de `update-reservation` no front) não é usado por nenhum componente hoje; a correção do painel é preventiva.
 - Fora do escopo, registrado: a alteração não recalcula `applied_discount_percent` quando o novo horário tem outro desconto (decisão comercial pendente).
+- Após o rebase sobre `d18f975`: `npm run typecheck` zero erros; 10 suítes relacionadas (inclui `agent-output-core` e `agent-calendar-core` da PR #39) 287/287; `deno check` das 4 EFs ok.
