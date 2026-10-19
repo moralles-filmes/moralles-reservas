@@ -80,11 +80,15 @@ export function useConversationActions(unitId: string) {
 
   const assumeConversation = useMutation({
     mutationFn: async (conversationId: string) => {
-      const { error } = await supabase
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
         .from("conversations")
-        .update({ status: "human_active", assigned_to: user?.id ?? null, updated_at: new Date().toISOString() })
-        .eq("id", conversationId);
+        .update({ status: "human_active", assigned_to: user?.id ?? null, handoff_at: now, updated_at: now })
+        .eq("id", conversationId)
+        .eq("unit_id", unitId)
+        .select("id");
       if (error) throw error;
+      if (!data || data.length === 0) throw new Error("Conversa não encontrada ou sem permissão.");
     },
     onSuccess: invalidate,
   });

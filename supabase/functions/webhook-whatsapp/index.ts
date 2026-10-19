@@ -119,6 +119,7 @@ import {
   reserveSlot,
 } from "../_shared/availability.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
+import { resolveHandoffClock } from "../_shared/handoff-clock-core.ts";
 import {
   DEFAULT_GIFTBACK_TEMPLATE,
   ensureUniqueVoucherCode,
@@ -3531,8 +3532,6 @@ async function handleWebhookRequest(
         },
       );
 
-      const handoffStart = conv.handoff_at ? new Date(conv.handoff_at).getTime() : 0;
-
       // Relógio do auto-resolve = ÚLTIMA atividade humana (início do handoff ou
       // a mensagem mais recente do atendente, venha do painel ou do celular da
       // loja). Antes bastava UMA resposta humana pra travar o auto-resolve pra
@@ -3545,8 +3544,28 @@ async function handleWebhookRequest(
         return ts > acc ? ts : acc;
       }, 0);
 
-      const silenceStart = Math.max(handoffStart, lastHumanTs);
+      // Sem handoff_at e sem mensagem humana (ex.: "Assumir" legado, que não
+      // gravava handoff_at) o relógio nunca partia e a IA ficava silenciada
+      // para sempre: inicia agora e persiste, só se ainda estiver NULL.
+      const handoffClock = resolveHandoffClock({
+        handoffAt: conv.handoff_at ?? null,
+        lastHumanTs,
+        nowMs: Date.now(),
+      });
+      const silenceStart = handoffClock.silenceStartMs;
       const handoffAge = silenceStart ? Date.now() - silenceStart : 0;
+
+      if (handoffClock.persistHandoffAt) {
+        const { error: clockError } = await supabase
+          .from("conversations")
+          .update({ handoff_at: handoffClock.persistHandoffAt })
+          .eq("id", conv.id)
+          .eq("unit_id", unitId)
+          .is("handoff_at", null);
+        if (clockError) {
+          jsonLog("warn", { requestId, evt: "handoff_clock_persist_failed", convId: conv.id, err: clockError.message });
+        }
+      }
 
       // Handoff por franquia esgotada NÃO volta para a IA pelo decurso do
       // prazo: devolveria a conversa a uma IA que não pode responder. Só a
