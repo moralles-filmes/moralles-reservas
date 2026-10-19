@@ -90,7 +90,7 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
 
 ## Bloco 2 — PR 1, rollout (Task 4; só com autorizações)
 
-### [ ] Task 4 — Merge, `db push` e verificação
+### [x] Task 4 — Merge, `db push` e verificação
 
 **Modelo:** Opus.
 
@@ -138,7 +138,7 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
   - `anon` não tem INSERT/UPDATE/DELETE/TRUNCATE nem grant de coluna; `authenticated` não tem TRUNCATE e mantém SELECT/INSERT/UPDATE/DELETE; `service_role` mantém INSERT;
   - as policies são idênticas às de antes, e RLS/FORCE seguem `true/false`;
   - o classificador devolve `ai_config`/`ai_system_prompt` → `platform` e `booking_window_days`/`restaurant_name` → `manager`.
-- **Pendente:** o teste manual do item 4.
+- **Teste manual (item 4):** confirmado pelo usuário. Nos `edge_logs` aparecem três `POST /rest/v1/settings?on_conflict=unit_id,key` com 200 às 18:28 UTC, e não há `setting_write_forbidden` nos `postgres_logs` depois do push.
 - **Rollback:** migration nova com `drop trigger if exists settings_write_role_guard on public.settings;`.
 
 ## Sequência de chats
