@@ -27,13 +27,16 @@ Arquivos:
   - erro de banco → mensagem genérica sem o texto do erro;
   - código vazio → mensagem existente.
 
-## Task 2 — `update_reservation` revalida disponibilidade
+## Task 2 — Alterar reserva revalida disponibilidade (IA e painel)
 
-Arquivos: `_shared/agent-reservation-tools.ts`, `webhook-whatsapp/index.ts` e testes.
+Decisão do responsável em 2026-10-19: ajustar `availability.ts` com parâmetros opcionais, corrigindo a IA e a Edge Function do painel.
 
-- [ ] Antes de alterar data, hora ou pessoas, rodar `checkAvailability` do `_shared/availability.ts` para o novo par (desconsiderando a própria reserva) e só gravar com mesa compatível, atualizando `table_id`.
-  - Sem vaga → `{ success:false, available:false }` com sugestão de usar `check_availability`.
-- [ ] Decidir na própria task, com teste, como desconsiderar a reserva atual na checagem. Se `availability.ts` não suportar exclusão por id, a task para e volta ao responsável antes de alterar o núcleo de disponibilidade, porque ele é compartilhado com `create-reservation`.
+Arquivos: `_shared/availability.ts`, `_shared/agent-reservation-tools.ts`, `webhook-whatsapp/index.ts`, `update-reservation/index.ts`, testes e fixture de integração.
+
+- [x] `AvailabilityParams` ganha `excludeReservationId` e `preferTableId`, opcionais. Sem eles o resultado é idêntico ao de antes (reserva nova).
+- [x] A reserva alterada não conta contra si mesma (fixa ou flutuante). A mesa atual é mantida se continuar livre e compatível; senão vale o first-fit.
+- [x] `update_reservation` da IA lê a reserva no escopo, revalida no salão da mesa atual quando data, hora ou pessoas mudam, e grava `table_id = suggestedTableId ?? null`. Sem vaga, não grava; 23505 vira "horário acabou de ser ocupado". Só observação não revalida.
+- [x] `update-reservation` (painel) usa os mesmos parâmetros, mantém o salão da mesa atual quando o gerente não escolhe outro, move a mesa quando ele não escolhe uma e deixa de devolver `error.message` do Postgres.
 
 ## Task 3 — Extrair o núcleo do agente (depois do merge de `feat/agente-ia-cortes-fallback`)
 
@@ -72,3 +75,13 @@ Arquivos:
 - `node scripts/ef-import-graph.mjs supabase/functions/_shared/agent-reservation-tools.ts`: 1 EF (`webhook-whatsapp`).
 - Suíte completa: as falhas vistas são de ambiente. As 5 suítes que carregam o webhook real passam isoladas (237/237); `OfficialConnectionCard` e `App.preference-route` exigem `.env.local`, ausente no worktree, e passam no checkout principal (30/30); as demais foram timeout de 5s com duas execuções concorrentes.
 - Mudança de comportamento aceita: reserva feita sob outro cadastro (acompanhante) não é mais encontrada pela IA, que recebe "Reserva não encontrada ou já cancelada." (a equipe resolve pelo painel).
+
+### Task 2 (2026-10-19)
+- `src/lib/availability-reservation-edit.test.ts` (banco em memória, 7 casos): 7/7. Controle positivo: sem o filtro de exclusão e sem a mesa preferida, 3 falham; restaurado, 7/7.
+- `src/lib/agent-reservation-tools.test.ts`: 20/20 (12 casos de update).
+- A fixture de integração ganhou a coluna real `reservations.table_id` (o harness recusa coluna fora do schema declarado). As 6 suítes que carregam o webhook real e o guard de authz: 242/242.
+- `npm run typecheck`: zero erros. O teste passou a incluir `availability.ts` no programa do tsc, o que expôs o estreitamento `!override.closed` (regra do AGENTS §6); corrigido para `override.closed === false`, sem mudança de comportamento.
+- ESLint dos arquivos tocados: limpo. `deno check` em `webhook-whatsapp`, `update-reservation`, `create-reservation` e `create-manual-reservation`: ok.
+- `node scripts/ef-import-graph.mjs supabase/functions/_shared/availability.ts`: 4 EFs (as quatro acima). Matriz de redeploy da Fase 0 até aqui: essas 4.
+- Observação: `useUpdateReserva` (único caller de `update-reservation` no front) não é usado por nenhum componente hoje; a correção do painel é preventiva.
+- Fora do escopo, registrado: a alteração não recalcula `applied_discount_percent` quando o novo horário tem outro desconto (decisão comercial pendente).

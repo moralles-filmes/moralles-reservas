@@ -137,18 +137,39 @@ serve(async (req) => {
         updates!.party_size != null ||
         updates!.hall_id != null);
 
+    // Mesa decidida pela checagem quando o gerente não escolheu uma.
+    let checkedTableId: string | null | undefined;
+
     if (wantsAvailabilityCheck) {
       const nextDate = updates!.date ?? reserva.date;
       const nextTime = updates!.time ?? reserva.time;
       const nextParty = updates!.party_size ?? reserva.party_size;
-      const nextHall = updates!.hall_id ?? undefined;
+      // Sem salão pedido, mantém o salão da mesa atual (senão o first-fit
+      // poderia mudar a reserva de ambiente em silêncio).
+      let nextHall = updates!.hall_id ?? undefined;
+      if (!nextHall && reserva.table_id) {
+        const { data: currentTable, error: tErr } = await supabase
+          .from("tables")
+          .select("hall_id")
+          .eq("id", reserva.table_id)
+          .maybeSingle();
+        if (tErr) {
+          jsonLog("error", { evt: "update_reservation_table_lookup_failed", code: tErr.code });
+          return jsonResponse({ error: "internal_error" }, 500);
+        }
+        nextHall = currentTable?.hall_id ?? undefined;
+      }
 
       const result = await checkAvailability(supabase, {
         unitId: reserva.unit_id,
-        hallId: nextHall ?? undefined,
+        hallId: nextHall,
         date: nextDate,
         time: nextTime,
         partySize: nextParty,
+        // A própria reserva não ocupa mesa contra si mesma; a mesa atual é
+        // mantida se continuar livre no novo horário.
+        excludeReservationId: reserva.id,
+        preferTableId: reserva.table_id,
       });
 
       if (!result.available) {
@@ -165,6 +186,8 @@ serve(async (req) => {
           409,
         );
       }
+      // Overbooking sem mesa sugerida = reserva flutuante (null).
+      checkedTableId = result.suggestedTableId ?? null;
     }
 
     // Aplica o UPDATE com apenas as colunas presentes em updates.
@@ -175,6 +198,7 @@ serve(async (req) => {
     if (updates!.time != null) patch.time = updates!.time;
     if (updates!.party_size != null) patch.party_size = updates!.party_size;
     if (updates!.table_id !== undefined) patch.table_id = updates!.table_id;
+    else if (checkedTableId !== undefined) patch.table_id = checkedTableId;
     if (updates!.notes !== undefined) patch.notes = updates!.notes;
 
     const { data: updated, error: upErr } = await supabase
@@ -185,8 +209,12 @@ serve(async (req) => {
       .single();
 
     if (upErr) {
-      jsonLog("error", { evt: "update_reservation_failed", err: upErr.message });
-      return jsonResponse({ error: upErr.message }, 500);
+      jsonLog("error", { evt: "update_reservation_failed", code: upErr.code, err: upErr.message });
+      // UNIQUE (table_id, date, time) ativo: outra reserva pegou a mesa entre a checagem e o UPDATE.
+      if (upErr.code === "23505") {
+        return jsonResponse({ error: "Esse horário acabou de ser ocupado nesta mesa. Escolha outro horário ou mesa.", reason: "no_capacity" }, 409);
+      }
+      return jsonResponse({ error: "Não foi possível salvar a reserva. Tente novamente." }, 500);
     }
 
     jsonLog("info", {

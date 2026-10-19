@@ -28,6 +28,12 @@ export interface AvailabilityParams {
   date: string; // YYYY-MM-DD
   time: string; // HH:MM (ou HH:MM:SS — só HH:MM importa)
   partySize: number;
+  /** Alteração de reserva: a própria reserva não conta como ocupando mesa.
+   *  Sem isso, mudar só o número de pessoas no mesmo horário colide consigo mesma. */
+  excludeReservationId?: string;
+  /** Alteração de reserva: mesa atual, mantida se continuar livre e compatível;
+   *  senão vale o first-fit. Ausente = comportamento de reserva nova. */
+  preferTableId?: string | null;
 }
 
 export interface AvailabilityResult {
@@ -330,8 +336,11 @@ export async function checkAvailability(
       partySize,
       duration,
       allowOverbooking,
+      excludeReservationId: params.excludeReservationId,
+      preferTableId: params.preferTableId ?? undefined,
+      // `=== false` (não `!closed`): com strict:false o tsc só estreita a união assim.
       specialOverride:
-        override && !override.closed
+        override && override.closed === false
           ? {
               openMin: override.openMin,
               closeMin: override.closeMin,
@@ -355,6 +364,20 @@ export async function checkAvailability(
   };
 }
 
+/** Mesa atual da reserva alterada, se ainda utilizável (lista já filtrada por
+ *  hall, capacidade e bloqueios), livre de conflito fixo e com lugar. */
+function pickPreferredTable<T extends { id: string; max_capacity: number }>(
+  usableTables: T[],
+  occupied: Set<string>,
+  preferTableId: string | undefined,
+  partySize: number,
+): T | undefined {
+  if (!preferTableId) return undefined;
+  return usableTables.find(
+    (t) => t.id === preferTableId && !occupied.has(t.id) && t.max_capacity >= partySize,
+  );
+}
+
 async function tryHall(args: {
   supabase: SupabaseClient;
   hall: HallRow;
@@ -366,6 +389,8 @@ async function tryHall(args: {
   partySize: number;
   duration: number;
   allowOverbooking: boolean;
+  excludeReservationId?: string;
+  preferTableId?: string;
   specialOverride: {
     openMin: number;
     closeMin: number;
@@ -374,7 +399,7 @@ async function tryHall(args: {
     discountPercent?: number | null;
   } | null;
 }): Promise<AvailabilityResult> {
-  const { supabase, hall, unitId, date, dow, time, requestedMin, partySize, duration, allowOverbooking, specialOverride } = args;
+  const { supabase, hall, unitId, date, dow, time, requestedMin, partySize, duration, allowOverbooking, excludeReservationId, preferTableId, specialOverride } = args;
 
   // 3.1 — Determinar janela: special_date override > hall_schedule
   let openMin: number;
@@ -533,6 +558,7 @@ async function tryHall(args: {
     .in("table_id", tableIds);
 
   const conflicting = (pinnedRaw ?? []).filter((r: any) => {
+    if (r.id === excludeReservationId) return false;
     const otherMin = parseTimeToMinutes(r.time);
     return Math.abs(otherMin - requestedMin) < duration;
   });
@@ -546,13 +572,18 @@ async function tryHall(args: {
     .in("status", ["pending", "confirmed"]);
 
   const floatingConflict = (floatingRaw ?? []).filter((r: any) => {
+    if (r.id === excludeReservationId) return false;
     const otherMin = parseTimeToMinutes(r.time);
     return Math.abs(otherMin - requestedMin) < duration;
   });
 
-  // 3.6 — Alocação first-fit
+  // 3.6 — Alocação first-fit (a mesa preferida da reserva alterada entra antes
+  // das flutuantes, que são alocação best-effort e nunca recusam o pedido)
   const occupied = new Set<string>();
   for (const r of conflicting) if (r.table_id) occupied.add(r.table_id);
+
+  const preferred = pickPreferredTable(usableTables, occupied, preferTableId, partySize);
+  if (preferred) occupied.add(preferred.id);
 
   const sortedFloating = [...floatingConflict].sort(
     (a: any, b: any) => b.party_size - a.party_size,
@@ -564,7 +595,7 @@ async function tryHall(args: {
     if (fit) occupied.add(fit.id);
   }
 
-  const suggested = usableTables.find(
+  const suggested = preferred ?? usableTables.find(
     (t) => !occupied.has(t.id) && t.max_capacity >= partySize,
   );
 
@@ -718,12 +749,16 @@ async function checkAvailabilityLegacy(
     .in("status", ["pending", "confirmed"]);
 
   const conflicting = (existingRaw ?? []).filter((r: any) => {
+    if (r.id === params.excludeReservationId) return false;
     const otherMin = parseTimeToMinutes(r.time);
     return Math.abs(otherMin - requestedMin) < duration;
   });
 
   const occupied = new Set<string>();
   for (const r of conflicting) if (r.table_id) occupied.add(r.table_id);
+
+  const preferred = pickPreferredTable(usableTables, occupied, params.preferTableId ?? undefined, partySize);
+  if (preferred) occupied.add(preferred.id);
 
   const floating = conflicting
     .filter((r: any) => !r.table_id)
@@ -735,7 +770,7 @@ async function checkAvailabilityLegacy(
     if (fit) occupied.add(fit.id);
   }
 
-  const suggested = usableTables.find(
+  const suggested = preferred ?? usableTables.find(
     (t) => !occupied.has(t.id) && t.max_capacity >= partySize,
   );
   if (!suggested) {

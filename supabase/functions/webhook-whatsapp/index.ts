@@ -4560,7 +4560,12 @@ async function handleWebhookRequest(
                 break;
               case "update_reservation":
                 mutatingToolUsed = true; // desliga o retry silencioso (evita alteração duplicada)
-                result = await updateReservationScoped(supabase, input, { unitId: unitId!, customerId: customer.id });
+                result = await updateReservationScoped(
+                  supabase,
+                  input,
+                  { unitId: unitId!, customerId: customer.id },
+                  { checkAvailability: (p) => checkAvailabilityCore(supabase, p) },
+                );
                 lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
                 break;
               case "cancel_reservation":
