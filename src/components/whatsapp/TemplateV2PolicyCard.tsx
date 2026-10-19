@@ -26,9 +26,12 @@ export function TemplateV2PolicyCard() {
       setNotice('A política v2 mudou. Atualize os dados antes de confirmar.');
       return;
     }
+    const confirmedPin = confirmation;
     locked.current = true;
-    try { await change.mutateAsync(confirmation); setConfirmation(null); }
-    catch { /* Typed failure remains visible for review. */ }
+    // A successful policy change advances the revision read by the refetch.
+    setConfirmation(null);
+    try { await change.mutateAsync(confirmedPin); }
+    catch (error) { setNotice(templateErrorMessage(error)); }
     finally { locked.current = false; }
   }
 

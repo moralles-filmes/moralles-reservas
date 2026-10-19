@@ -2,6 +2,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { FunctionsHttpError } from '@supabase/supabase-js';
 import { TemplateV2PolicyCard } from './TemplateV2PolicyCard';
 
 const io = vi.hoisted(() => ({ invoke: vi.fn(), revision: 0, enabled: false }));
@@ -31,6 +32,49 @@ it('pins the v2 policy revision and requires a future-only global confirmation o
   await waitFor(() => expect(io.invoke).toHaveBeenCalledWith('manage-whatsapp-templates', { body: { action: 'set_v2_policy', enabled: true, expected_revision: 0 } }));
   expect(io.invoke.mock.calls.filter(([, options]) => options.body.action === 'set_v2_policy')).toHaveLength(1);
   expect(io.invoke.mock.calls.some(([, options]) => ['release_channel', 'select_v2_channel'].includes(options.body.action))).toBe(false);
+});
+
+it('keeps the activated policy visible without a false warning after a deferred refetch', async () => {
+  let releaseRefetch!: () => void;
+  const refetch = new Promise<void>(resolve => { releaseRefetch = resolve; });
+  const original = io.invoke.getMockImplementation()!;
+  let refetchStarted = false;
+  io.invoke.mockImplementation(async (name: string, options: { body: { action: string; enabled?: boolean } }) => {
+    if (options.body.action === 'v2_policy_snapshot' && io.revision > 0) {
+      refetchStarted = true;
+      await refetch;
+    }
+    return original(name, options);
+  });
+  const view = mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Ativar v2 para futuras conexões' }));
+  const confirm = screen.getByRole('button', { name: 'Confirmar política v2' });
+  fireEvent.click(confirm); fireEvent.click(confirm);
+  await waitFor(() => expect(refetchStarted).toBe(true));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  await act(async () => { releaseRefetch(); await refetch; });
+  await waitFor(() => expect(view.client.isMutating()).toBe(0));
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.getByText('Política v2 ativada · revisão 1')).toBeInTheDocument();
+  expect(screen.queryByText('A política v2 mudou. Atualize os dados antes de confirmar.')).not.toBeInTheDocument();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(io.invoke.mock.calls.filter(([, options]) => options.body.action === 'set_v2_policy')).toHaveLength(1);
+  expect(io.invoke).toHaveBeenCalledWith('manage-whatsapp-templates', { body: { action: 'set_v2_policy', enabled: true, expected_revision: 0 } });
+});
+
+it('shows a typed policy failure outside the consumed dialog without exposing provider detail', async () => {
+  const original = io.invoke.getMockImplementation()!;
+  io.invoke.mockImplementation(async (name: string, options: { body: { action: string; enabled?: boolean } }) => options.body.action === 'set_v2_policy'
+    ? { data: null, error: new FunctionsHttpError(new Response(JSON.stringify({ error: 'configuration_changed', private: 'private-provider-detail' }), { status: 409 })) }
+    : original(name, options));
+  mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Ativar v2 para futuras conexões' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirmar política v2' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('A configuração mudou. Atualize os dados e tente novamente.');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByText('Política v2 desativada · revisão 0')).toBeInTheDocument();
+  expect(screen.queryByText('private-provider-detail')).not.toBeInTheDocument();
+  expect(io.invoke.mock.calls.filter(([, options]) => options.body.action === 'set_v2_policy')).toHaveLength(1);
 });
 
 it('revokes future policy without claiming that manual grants stop', async () => {
