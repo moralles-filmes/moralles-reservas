@@ -2558,3 +2558,76 @@ migration 74 preservou policy/coortes/grants e terminou sem erro. O teste
 estático da allowlist ACL passou 79/79. A projeção não reproduz gateway,
 provider, Meta, tráfego de produção nem o deploy de Edge Functions; a
 publicação continua sujeita a gates e autorizações próprios.
+
+### 75 — Escrita em settings por chave e papel
+
+Banco próprio, base do 68 (00 → 01 → 09a → 106), mais o
+`75a-settings-write-acl-bootstrap.sql`: `auth.role()` do Supabase, RLS ligada
+com as duas policies de produção, a ACL de tabela de produção (mais um grant de
+coluna sintético a `anon`; o `REVOKE` de tabela já o remove, medido no PG 18, e
+o bloco `DO` da migration é reforço que o S16 não distingue), o trigger
+`whatsapp_legacy_template_write` com o corpo extraído de produção e as
+fixtures (U1 com owner/gerente/operador, U2 com gerente, um ator operador em U1
+e gerente em U2, platform_admin sem membership). O 75a **não** instala o trigger novo. A migration roda **crua**,
+sem `psql -1`. O 75 reaplica a migration por `\i`, recoloca as linhas iniciais
+e mede, por isso roda **da raiz do repo** e pode ser repetido no mesmo banco.
+
+```bash
+export PGCLIENTENCODING=UTF8
+PG="$USERPROFILE/scoop/apps/postgresql/current/bin"
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists set75
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres set75
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d set75 -X -q -v ON_ERROR_STOP=1 "$@"; }
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/01-audit.sql
+P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
+P -f supabase/tests/local-preflight/75a-settings-write-acl-bootstrap.sql
+P -f supabase/tests/local-preflight/75-settings-write-acl.sql   # RED: aborta na guarda (trigger ausente)
+P -f supabase/migrations/20261019180000_settings_write_role_guard.sql
+P -f supabase/tests/local-preflight/75-settings-write-acl.sql   # GREEN
+P -f supabase/migrations/20261019180000_settings_write_role_guard.sql
+P -f supabase/tests/local-preflight/75-settings-write-acl.sql   # GREEN de novo (idempotência)
+```
+
+O 75 imprime os ordinais 751–770 e a contagem: **esperado 20 e 20**. Linha
+ausente também é falha. Não há ordinal livre na faixa. Cada caso confere o
+SQLSTATE, a mensagem (`setting_write_forbidden` é do trigger; ACL e RLS devolvem
+`42501` com outra mensagem) e o efeito na tabela. S1–S16 são os casos da spec
+§6.1 (S8 em dois ordinais, owner e gerente, sobre as 22 chaves `manager`).
+O S6 e o S7 também isolam o escopo OLD: renomear `ai_config` para uma chave
+manager, e o ator operador em U1/gerente em U2 movendo uma linha de U1 para U2
+(o NEW e a RLS passam). EXTRA-1 é `authenticated` sem `sub` e o papel de banco
+`authenticated` sem claims nenhuma. EXTRA-2 mostra que o gerente de outra
+unidade continua casando zero linhas sem erro em UPDATE/DELETE e que, no
+upsert (onde o BEFORE roda antes do `WITH CHECK`), recebe a mesma recusa para
+uma unidade alheia e para uma inexistente, ou seja, não há oráculo novo.
+O CONTROLE-SET-1 tem três partes, cada uma num subbloco desfeito: sem o
+trigger o operador grava `ai_config`; com o guard mutado para conferir OLD só
+no DELETE, os dois casos de escopo OLD passam; com o guard mutado sem o ramo do
+`role` GUC, o papel sem claims chega à RLS e a mensagem muda. As mutações saem
+do corpo instalado (`pg_get_functiondef` + `replace`) e falham se o trecho
+sumir. Com o guard real de volta, os três são recusados.
+
+**Resultados observados em 19/10/2026** (PostgreSQL 18.6 local descartável,
+loopback, banco recriado do zero): RED com `ERROR: 75: trigger
+settings_write_role_guard ausente` (exit 3); migration crua aplicada duas vezes
+e o 75 com 20/20 após cada uma (quatro aplicações contando os `\i`).
+
+O `26-template-catalog.sql` não foi reexecutado: ele exige a stack CLI local
+própria (GoTrue/PostgREST, `moralles-templates-20261003`) e a cadeia 27–60, e
+num contêiner avulso `supabase/postgres:17.11.0.004` a linha de base falha
+**antes** da migration nova (`template_admin_required`, porque o `auth.uid()`
+da imagem só lê `request.jwt.claim.sub`). No lugar, nesse mesmo contêiner
+(`--network none`, sem portas) com `25` e a migration de catálogo, a migration
+nova foi aplicada duas vezes e uma transação desfeita confirmou: a RPC real
+`maintain_whatsapp_legacy_template` grava `giftback_message_template` como
+platform_admin, o operador recebe `setting_write_forbidden` em `ai_config`, o
+papel `authenticated` sem claims (por `set_config('role', …)`, como o PostgREST)
+é recusado, o `postgres` sem claims grava, e o `delete` de unidade por
+`service_role` apaga os `settings` em cascata.
+
+O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no
+SQL; a prova HTTP é manual e opcional), nem o isolamento entre unidades, que
+continua nas policies e não mudou. A paridade entre as chaves gravadas pela
+Gestão e o classificador é do `scripts/settings-write-acl.test.ts`.
