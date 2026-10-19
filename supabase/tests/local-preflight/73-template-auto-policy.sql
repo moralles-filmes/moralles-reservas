@@ -31,7 +31,7 @@ begin
   end if;
   if app_private.whatsapp_template_approved_catalog_digest() is distinct from
       'a0fb939e3b2023c8f7c49a7f6fe77049fb312f6d274cf67f23e15f3906298965'
-    or (select count(*) from app_private.whatsapp_template_approved_submissions)<>9 then
+    or (select count(*) from app_private.whatsapp_template_approved_submissions where version=1)<>9 then
     raise exception 'template_auto_catalog_not_nine';
   end if;
   if has_table_privilege('service_role','app_private.whatsapp_template_auto_policy','UPDATE')

@@ -18,6 +18,15 @@ function fixture(count = 30) {
   return { deps, ...createTemplateWorker(deps) };
 }
 describe('internal catalog worker', () => {
+  it('counts recovery and catalog work within the same total budget of twenty', async () => {
+    const f = fixture(30);
+    const claim = { onboarding_id: 'o', channel_id: 'c', unit_id: 'u', credential_revision: 1, version: 2 as const };
+    const prepareChannel = vi.fn(async () => ({ state: 'ready' as const }));
+    const run = createTemplateWorker({ ...f.deps, selectPreparations: async () => [claim], prepareChannel });
+    const body = await (await run.handle(new Request('https://local.test', { method: 'POST' }))).json();
+    expect(body).toMatchObject({ preparations: 1, claims: 19 });
+    expect(f.deps.claim).toHaveBeenCalledTimes(19);
+  });
   it('recovers one enrolled connection after existing account work and keeps failures visible', async () => {
     const f = fixture(0);
     f.deps.now.mockReturnValue(300_000); // account-priority cron slot

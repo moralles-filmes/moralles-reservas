@@ -122,6 +122,18 @@
     "record_whatsapp_template_heartbeat(uuid,uuid,bigint,text)",
     "authorize_whatsapp_template_auto_channel(uuid,uuid,bigint,bigint)"
   ],
+  "_service_only_whatsapp_template_v2": [
+    "get_whatsapp_template_catalog_selection(uuid)",
+    "get_whatsapp_template_v2_enrollment(uuid,uuid)",
+    "get_whatsapp_template_v2_preparation(uuid,uuid)",
+    "claim_due_whatsapp_template_v2_preparations(integer)",
+    "mark_whatsapp_template_v2_preparation(uuid,uuid,text,text)",
+    "authorize_whatsapp_template_v2_channel(uuid,uuid,bigint,bigint)",
+    "enqueue_whatsapp_template_job(uuid,text,text,bigint,integer)",
+    "prepare_whatsapp_template_provision(uuid,uuid,bigint,text,integer)",
+    "confirm_whatsapp_template_post(uuid,uuid,bigint,text,integer)",
+    "check_whatsapp_template_submission(uuid,uuid,bigint,text,integer)"
+  ],
 
   "_expected_advisor": {
     "_doc": [
@@ -208,11 +220,13 @@
       "O painel authenticated conserva EXECUTE: projeção 9/25/34 depois do SQL.",
       "A política global de auto preparação acrescenta duas RPCs DEFINER",
       "authenticated com guarda platform_admin: projeção 9/27/36.",
+      "A coorte v2 acrescenta quatro RPCs DEFINER autenticadas com guarda",
+      "platform_admin; projeção 9/31/40. Não é leitura do Advisor de produção.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 27,
-    "total": 36
+    "0029": 31,
+    "total": 40
   },
 
   "public_anon": [
@@ -441,6 +455,38 @@
       "args": "p_enabled boolean, p_expected_revision bigint",
       "roles": ["authenticated"],
       "why": "Mudança global somente por platform_admin real do JWT, com CAS de revisão, digest fixo e auditoria; não concede submissão a conexões antigas e não executa POST.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_whatsapp_template_v2_policy",
+      "args": "",
+      "roles": ["authenticated"],
+      "why": "Leitura da política de submissão v2 separada, só por platform_admin real; retorna versão, estado, revisão, digest e horário sem WABA nem credencial.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "configure_whatsapp_template_v2_policy",
+      "args": "p_enabled boolean, p_expected_revision bigint",
+      "roles": ["authenticated"],
+      "why": "CAS da política v2 pelo platform_admin real; digest fixo, audit e OFF inicial, sem autorizar conta antiga ou POST por si.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "select_whatsapp_template_v2_existing_account",
+      "args": "p_binding_id uuid, p_expected_generation bigint, p_expected_credential_revision bigint, p_expected_digest text",
+      "roles": ["authenticated"],
+      "why": "Seleção manual e auditada da coorte v2 para conta existente, com pins de binding/digest e sem política automática ou POST implícito.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "release_whatsapp_template_v2_channel",
+      "args": "p_binding_id uuid, p_expected_generation bigint, p_expected_credential_revision bigint",
+      "roles": ["authenticated"],
+      "why": "Stop de grant v2 somente por platform_admin real, com pins do binding e exclusão do enrollment sem apagar histórico.",
       "security_definer": true,
       "advisor_lints": ["0029"]
     },

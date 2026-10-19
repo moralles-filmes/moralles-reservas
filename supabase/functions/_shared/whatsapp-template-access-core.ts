@@ -1,4 +1,5 @@
-import { TEMPLATE_CATALOG, type TemplateId } from './whatsapp-template-catalog-core.ts';
+import { TEMPLATE_CATALOG } from './whatsapp-template-catalog-core.ts';
+import { catalogDefinition, catalogDefinitions, decodeCatalogSelection } from './whatsapp-template-cohort.ts';
 import { PROVIDER_CAPABILITIES, isMetaShapedProvider, type WhatsAppProviderName } from './whatsapp-provider-core.ts';
 import { AUTOMATION_PREFLIGHT_REASONS, SCHEDULED_KINDS } from './whatsapp-automation-core.ts';
 
@@ -7,7 +8,13 @@ export type ConsentPurpose = 'operational' | 'promotional';
 type JobAssertion = { job_id: string; expected_channel_id: string; expected_binding_generation: number };
 export type TemplateManagementRequest =
   | { action: 'auto_policy_snapshot' }
+  | { action: 'v2_policy_snapshot' }
   | { action: 'set_auto_policy'; enabled: boolean; expected_revision: number }
+  | { action: 'set_v2_policy'; enabled: boolean; expected_revision: number }
+  | { action: 'select_v2_channel'; channel_id: string; expected_binding_generation: number; expected_credential_revision: number; expected_digest: string }
+  | { action: 'stop_v2_channel'; channel_id: string; expected_binding_generation: number; expected_credential_revision: number }
+  | { action: 'onboarding_catalog_snapshot_v2'; unit_id: string }
+  | { action: 'snapshot_v2'; unit_id: string }
   | { action: 'onboarding_catalog_snapshot'; unit_id: string }
   | { action: 'snapshot'; unit_id: string }
   | { action: 'sync'; unit_id: string; channel_id: string; expected_binding_generation: number }
@@ -19,12 +26,12 @@ export type TemplateManagementRequest =
   | { action: 'authorize_marketing_cost'; channel_id: string; expected_binding_generation: number; category: 'MARKETING'; valid_from: string; valid_until: string }
   | { action: 'configure_promotion_frequency'; window_days: number };
 export type TemplateAction = TemplateManagementRequest['action'];
-const ADMIN_ACTIONS: readonly TemplateAction[] = ['auto_policy_snapshot', 'set_auto_policy', 'initialize_job', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'];
+const ADMIN_ACTIONS: readonly TemplateAction[] = ['v2_policy_snapshot', 'set_v2_policy', 'select_v2_channel', 'stop_v2_channel', 'auto_policy_snapshot', 'set_auto_policy', 'initialize_job', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'];
 export function canManageTemplateAction(role: TemplateRole, action: TemplateAction, admin: boolean): boolean {
-  if (!['auto_policy_snapshot', 'set_auto_policy', 'onboarding_catalog_snapshot', 'snapshot', 'sync', 'initialize_job', 'revalidate_job', 'record_consent', 'consent_snapshot', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'].includes(action)) return false;
+  if (!['v2_policy_snapshot', 'set_v2_policy', 'select_v2_channel', 'stop_v2_channel', 'snapshot_v2', 'onboarding_catalog_snapshot_v2', 'auto_policy_snapshot', 'set_auto_policy', 'onboarding_catalog_snapshot', 'snapshot', 'sync', 'initialize_job', 'revalidate_job', 'record_consent', 'consent_snapshot', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'].includes(action)) return false;
   if (admin) return true;
   if (ADMIN_ACTIONS.includes(action)) return false;
-  return role === 'owner' || role === 'gerente' || (role === 'operador' && action === 'snapshot');
+  return role === 'owner' || role === 'gerente' || (role === 'operador' && (action === 'snapshot' || action === 'snapshot_v2'));
 }
 export function canManageTemplateRequest(role: TemplateRole, request: TemplateManagementRequest, admin: boolean): boolean {
   return canManageTemplateAction(role, request.action, admin) && (request.action !== 'revalidate_job' || request.target !== 'catalog' || admin);
@@ -45,10 +52,15 @@ export function parseTemplateManagementRequest(input: unknown): TemplateManageme
   if (!record(input)) return null;
   let keys: string[] = []; let valid = false;
   switch (input.action) {
-    case 'auto_policy_snapshot': keys = ['action']; valid = true; break;
-    case 'set_auto_policy': keys = ['action', 'enabled', 'expected_revision']; valid = typeof input.enabled === 'boolean' && integer(input.expected_revision, 0); break;
-    case 'onboarding_catalog_snapshot': keys = ['action', 'unit_id']; valid = isManagementUuid(input.unit_id); break;
-    case 'snapshot': keys = ['action', 'unit_id']; valid = isManagementUuid(input.unit_id); break;
+    case 'auto_policy_snapshot': case 'v2_policy_snapshot': keys = ['action']; valid = true; break;
+    case 'set_auto_policy': case 'set_v2_policy': keys = ['action', 'enabled', 'expected_revision']; valid = typeof input.enabled === 'boolean' && integer(input.expected_revision, 0); break;
+    case 'onboarding_catalog_snapshot': case 'onboarding_catalog_snapshot_v2': case 'snapshot': case 'snapshot_v2':
+      keys = ['action', 'unit_id']; valid = isManagementUuid(input.unit_id); break;
+    case 'select_v2_channel': case 'stop_v2_channel':
+      keys = ['action', 'channel_id', 'expected_binding_generation', 'expected_credential_revision'];
+      valid = isManagementUuid(input.channel_id) && integer(input.expected_binding_generation) && integer(input.expected_credential_revision, 0);
+      if (input.action === 'select_v2_channel') { keys.push('expected_digest'); valid &&= typeof input.expected_digest === 'string' && /^[a-f0-9]{64}$/.test(input.expected_digest); }
+      break;
     case 'sync': keys = ['action', 'unit_id', 'channel_id', 'expected_binding_generation']; valid = isManagementUuid(input.unit_id) && isManagementUuid(input.channel_id) && integer(input.expected_binding_generation); break;
     case 'initialize_job': case 'revalidate_job':
       keys = ['action', 'job_id', 'expected_channel_id', 'expected_binding_generation'];
@@ -97,43 +109,53 @@ export function decodeTemplateAutoPolicy(value: unknown): TemplateAutoPolicySnap
   return { enabled: value.enabled, revision: value.revision, catalogDigest: value.catalog_digest,
     updatedAt: updatedAt === null ? null : date(updatedAt) ? updatedAt : unavailable() };
 }
+export function decodeTemplateV2Policy(value: unknown): TemplateAutoPolicySnapshot & { version: 2 } {
+  if (!record(value) || value.version !== 2) return unavailable();
+  return { version: 2, ...decodeTemplateAutoPolicy(value) };
+}
 
 const SAFE_REASONS: readonly string[] = [...AUTOMATION_PREFLIGHT_REASONS, 'channel_unconfigured', 'binding_unconfigured', 'template_unconfigured', 'render_missing', 'promotion_frequency', 'final_service_suspended', 'final_channel_changed', 'final_consent_changed', 'final_resource_changed', 'final_gate_paused', 'submission_history_protected', 'submission_paused', 'existing_template', 'post_lease_expired', 'post_ambiguous', 'response_invalid', 'documented_preproxy_429', 'provider_rejected', 'auth_rejected', 'template_rejected'];
 const safeReason = (value: unknown) => value === null ? null : typeof value === 'string' && SAFE_REASONS.includes(value) ? value : 'unknown_reason';
-const logical = (value: unknown): TemplateId | null => typeof value === 'string' && Object.prototype.hasOwnProperty.call(TEMPLATE_CATALOG, value) ? value as TemplateId : null;
+const logical = (value: unknown, v2 = false): string | null => typeof value === 'string' && (Object.prototype.hasOwnProperty.call(TEMPLATE_CATALOG, value)
+  || (v2 && catalogDefinition(value, 2))) ? value : null;
 const checkedDate = (value: unknown): string => date(value) ? value : unavailable();
 const checkedUuid = (value: unknown): string => isManagementUuid(value) ? value : unavailable();
 const pick = (value: unknown, values: readonly string[]) => typeof value === 'string' && values.includes(value) ? value : unavailable();
 const PREPARATION_REASONS = ['connection_pending', 'health_stale', 'binding_pending', 'provider_unavailable', 'policy_changed', 'manual_review'] as const;
 /** SQL may add internal fields; only a closed, privacy-safe projection reaches browsers. */
-export function projectTemplatePreparation(value: unknown) {
+export function projectTemplatePreparation(value: unknown, includeV2 = false) {
   if (value === null || value === undefined) return null;
   if (!record(value)) return unavailable();
-  const enrollment = pick(value.enrollment, ['eligible', 'disabled', 'legacy', 'excluded']) as 'eligible' | 'disabled' | 'legacy' | 'excluded';
+  const enrollment = pick(value.enrollment, includeV2 ? ['eligible', 'disabled', 'legacy', 'excluded', 'stale'] : ['eligible', 'disabled', 'legacy', 'excluded']) as 'eligible' | 'disabled' | 'legacy' | 'excluded' | 'stale';
   const state = value.state === null ? null : pick(value.state, ['pending', 'discovering', 'ready', 'needs_review']) as 'pending' | 'discovering' | 'ready' | 'needs_review';
   const reason = value.reason_code === null ? null : pick(value.reason_code, PREPARATION_REASONS) as typeof PREPARATION_REASONS[number];
   const updatedAt = value.updated_at === null ? null : checkedDate(value.updated_at);
-  return { enrollment, state, reason, updatedAt };
+  const version = includeV2 && value.version !== undefined ? value.version === 1 || value.version === 2 ? value.version : unavailable() : undefined;
+  const origin = includeV2 && value.origin !== undefined ? pick(value.origin, ['auto', 'manual']) as 'auto' | 'manual' : undefined;
+  return { enrollment, state, reason, updatedAt, ...(version === undefined ? {} : { version }), ...(origin === undefined ? {} : { origin }) };
 }
 export interface TemplateSnapshotInput {
   channel: Record<string, unknown> | null;
   binding: Record<string, unknown> | null;
   preparation?: unknown;
+  catalogSelection?: unknown;
   unitAdopted: boolean;
   templates: Record<string, unknown>[];
   jobs: Record<string, unknown>[];
   generatedAt: string;
 }
-export function projectOnboardingCatalogSnapshot(input: TemplateSnapshotInput) {
+export function projectOnboardingCatalogSnapshot(input: TemplateSnapshotInput, includeV2 = false) {
   const generatedAt = checkedDate(input.generatedAt);
-  const templatePreparation = projectTemplatePreparation(input.preparation);
-  if (!input.channel) return { channelId: null, templatePreparation, templates: [], generatedAt };
-  const snapshot = projectTemplateSnapshot(input);
+  const templatePreparation = projectTemplatePreparation(input.preparation, includeV2);
+  if (!input.channel) return { channelId: null, templatePreparation, templates: [], generatedAt,
+    ...(includeV2 ? { catalogSelection: null } : {}) };
+  const snapshot = projectTemplateSnapshot(input, includeV2);
   if (snapshot.providerLabel !== 'Datafy') return unavailable();
-  return { channelId: snapshot.channelId, templatePreparation, templates: snapshot.templates, generatedAt };
+  return { channelId: snapshot.channelId, templatePreparation, templates: snapshot.templates, generatedAt,
+    ...(includeV2 ? { catalogSelection: snapshot.catalogSelection } : {}) };
 }
 /** Build DTOs field by field. Raw rows/remote text never cross this boundary. */
-export function projectTemplateSnapshot(input: TemplateSnapshotInput) {
+export function projectTemplateSnapshot(input: TemplateSnapshotInput, includeV2 = false) {
   const provider = input.channel ? pick(input.channel.provider, Object.keys(PROVIDER_CAPABILITIES)) as WhatsAppProviderName : null;
   const capabilities = provider ? PROVIDER_CAPABILITIES[provider] : null;
   const labels: Record<WhatsAppProviderName, string> = { datafy: 'Datafy', official: 'Meta', zapi: 'Z-API', waha: 'WAHA', uazapi: 'UazAPI' };
@@ -144,16 +166,25 @@ export function projectTemplateSnapshot(input: TemplateSnapshotInput) {
     || typeof input.binding.dispatch_enabled !== 'boolean')) return unavailable();
   const catalogAuthorized = input.binding ? input.binding.submission_authorized_at !== null : false;
   if (catalogAuthorized && (!date(input.binding!.submission_authorized_at) || !isManagementUuid(input.binding!.submission_authorized_by))) return unavailable();
+  const selection = includeV2 && input.catalogSelection !== null && input.catalogSelection !== undefined
+    ? decodeCatalogSelection(input.catalogSelection) : null;
+  const definitions = includeV2
+    ? [...catalogDefinitions(1), ...catalogDefinitions(2)].filter(d => selection?.version === d.version
+      || input.templates.some(t => t.logical_id === d.id && t.version === d.version))
+    : Object.values(TEMPLATE_CATALOG);
+  const catalogSelection = selection ? { state: selection.state, version: selection.version,
+    digest: 'digest' in selection ? selection.digest : null } : null;
   return {
     mode: provider === null ? 'unavailable' as const : isMetaShapedProvider(provider) ? 'official' as const : 'unofficial' as const,
     channelId: input.channel ? checkedUuid(input.channel.id) : null,
     providerLabel: provider ? labels[provider] : null,
     capabilities: { templateMessages: capabilities?.templateMessages === true, templateManagement: capabilities?.templateManagement === true },
     configuration: { bindingGeneration, credentialRevision, catalogAuthorized, dispatchEnabled: input.binding?.dispatch_enabled === true, adopted: input.unitAdopted },
-    templatePreparation: projectTemplatePreparation(input.preparation),
-    templates: Object.values(TEMPLATE_CATALOG).map(definition => {
-      const row = input.templates.find(t => t.logical_id === definition.id && t.version === 1);
-      return { logicalId: definition.id, version: 1, name: definition.name, body: definition.body, footer: definition.footer,
+    templatePreparation: projectTemplatePreparation(input.preparation, includeV2),
+    ...(includeV2 ? { catalogSelection } : {}),
+    templates: definitions.map(definition => {
+      const row = input.templates.find(t => t.logical_id === definition.id && t.version === definition.version);
+      return { logicalId: definition.id, version: definition.version, name: definition.name, body: definition.body, footer: definition.footer,
         requestedCategory: definition.requestedCategory,
         effectiveCategory: row?.effective_category == null ? null : pick(row.effective_category, ['UTILITY', 'MARKETING', 'AUTHENTICATION', 'UNKNOWN']),
         remoteStatus: row ? pick(row.remote_status, ['UNKNOWN', 'PENDING', 'APPROVED', 'REJECTED', 'PAUSED', 'DISABLED', 'IN_APPEAL', 'PENDING_DELETION', 'DELETED', 'LIMIT_EXCEEDED']) : 'UNKNOWN',
@@ -166,7 +197,7 @@ export function projectTemplateSnapshot(input: TemplateSnapshotInput) {
     blockedJobs: input.jobs.map(row => {
       const target = pick(row.target, ['automation', 'catalog']);
       const common = { jobId: checkedUuid(row.id), target,
-        logicalId: logical(target === 'catalog' ? row.target_key : row.initial_catalog_key),
+        logicalId: logical(target === 'catalog' ? row.target_key : row.initial_catalog_key, includeV2),
         state: pick(row.state, target === 'automation' ? ['queued', 'claimed', 'posting', 'accepted', 'blocked', 'expired', 'uncertain', 'retry_wait', 'needs_review', 'failed', 'reconciled', 'paused', 'rejected'] : ['queued', 'claimed', 'posting', 'accepted', 'rejected', 'uncertain', 'failed', 'done', 'paused', 'needs_review']),
         reason: safeReason(row.error_code), attempts: integer(row.attempts, 0) && row.attempts <= 5 ? row.attempts : unavailable() };
       if (target === 'catalog') return { ...common, pinPhase: null, channelId: row.channel_id === null ? null : checkedUuid(row.channel_id), createdAt: checkedDate(row.created_at), dueAt: checkedDate(row.due_at) };

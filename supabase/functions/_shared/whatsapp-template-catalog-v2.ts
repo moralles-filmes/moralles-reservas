@@ -1,12 +1,12 @@
 import {
-  renderTemplateDefinition, TEMPLATE_CATALOG,
+  renderTemplate, TEMPLATE_CATALOG,
   type TemplateDefinition, type TemplateId, type TemplateRender, type TemplateRenderContext,
 } from './whatsapp-template-catalog-core.ts';
 
 type V2Name<T extends string> = T extends `${infer Stem}_v1` ? `${Stem}_v2` : never;
 export type TemplateV2Id = V2Name<TemplateId>;
 
-/** Local copy candidate. Its draft state and separate map cannot enter the v1 operational selector. */
+/** Immutable v2 copy; its draft label never grants submission or selects dispatch. */
 export type TemplateV2Definition = Omit<TemplateDefinition, 'id' | 'name' | 'version' | 'state'> & Readonly<{
   id: TemplateV2Id;
   name: TemplateV2Id;
@@ -30,7 +30,7 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-/** Nine proposed texts, unavailable to v1 seeding, snapshots, automation and dispatch. */
+/** Separate cohort: seeding and snapshots require explicit SQL v2 selection. */
 export const TEMPLATE_V2_CATALOG: Readonly<Record<TemplateV2Id, TemplateV2Definition>> = deepFreeze({
   res_confirmacao_v2: draft(TEMPLATE_CATALOG.res_confirmacao_v1, 'res_confirmacao_v2',
     'Olá, {{1}}! Sua reserva na unidade {{2}} está confirmada. 🍽️\n\nDia {{3}}, às {{4}}. Pessoas na reserva: {{5}}.\nCódigo da reserva: {{6}}.\n\nConfira os detalhes: {{7}}\n\nSe precisar alterar algo, responda por aqui.'),
@@ -55,5 +55,14 @@ export const TEMPLATE_V2_CATALOG: Readonly<Record<TemplateV2Id, TemplateV2Defini
 /** Preview only. This does not select a version for a production intent or authorize submission. */
 export function renderTemplateV2(id: TemplateV2Id, input: readonly unknown[], context?: TemplateRenderContext): TemplateRender {
   if (!Object.prototype.hasOwnProperty.call(TEMPLATE_V2_CATALOG, id)) throw new Error('template_unknown');
-  return renderTemplateDefinition(TEMPLATE_V2_CATALOG[id], input, context);
+  const template = TEMPLATE_V2_CATALOG[id];
+  const v1Id = `${id.slice(0, -3)}_v1` as TemplateId;
+  // V1 remains the sole authority for parameter validation and normalization.
+  const { parameters } = renderTemplate(v1Id, input, context);
+  const body = template.body.replace(/\{\{(\d+)\}\}/g, (_match, position: string) => {
+    const index = Number(position) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= parameters.length) throw new Error('template_placeholder_invalid');
+    return parameters[index];
+  });
+  return { body, footer: template.footer, parameters };
 }

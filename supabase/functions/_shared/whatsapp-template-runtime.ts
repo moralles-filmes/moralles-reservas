@@ -10,6 +10,8 @@ import { readCurrentBooleanFlag } from './platform-flags.ts';
 import { createTemplatePreparationService, type TemplatePreparationClaim, type TemplatePreparationChannel,
   type TemplatePreparationSnapshot, type TemplatePreparationBinding } from './whatsapp-template-preparation.ts';
 import { refreshVerifiedDatafyTemplateHealth } from './whatsapp-template-health.ts';
+import { decodeCatalogSelection, type TemplateCatalogSelection } from './whatsapp-template-cohort.ts';
+import { selectVersionedPreparationClaims } from './whatsapp-template-preparation.ts';
 
 /** Thin I/O wiring. All orchestration/decisions are the same factories imported by tests. */
 export function createTemplateRuntime(db: SupabaseClient) {
@@ -46,9 +48,26 @@ export function createTemplateRuntime(db: SupabaseClient) {
       const channel = await loadChannel(binding.channel_id) as TemplateBindingCandidate['channel'];
       candidates.push({ ...binding, channel });
     }
-    const { chosen, provisionBindingId } = selectTemplateBindings(candidates, bindingId);
+    const { chosen } = selectTemplateBindings(candidates, bindingId);
     const channel = chosen?.channel;
     if (!chosen || !channel) throw new Error('template_binding_unavailable');
+    // SQL resolves account history and the current private grant before seeding.
+    // GET may use a different channel than the separately authorized POST binding.
+    const selections = new Map<string, TemplateCatalogSelection>();
+    for (const candidate of candidates) {
+      if (!selectTemplateBindings([candidate]).chosen) continue;
+      const selected = decodeCatalogSelection(await rpc('get_whatsapp_template_catalog_selection', { p_binding_id: candidate.id }));
+      if (selected.version !== null && (selected.generation !== candidate.generation
+        || selected.credential_revision !== candidate.channel_credential_revision
+        || (selected.grant_binding_id !== null && selected.grant_binding_id !== candidate.id)))
+        throw new Error('template_selection_changed');
+      selections.set(candidate.id, selected);
+    }
+    const selection = (bindingId ? selections.get(chosen.id)
+      : [...selections.values()].find(s => s.state === 'ready') ?? selections.get(chosen.id));
+    if (!selection) throw new Error('template_selection_unavailable');
+    const provisionBindingId = [...selections.entries()].find(([, s]) => s.version === selection.version && s.version !== null && s.grant_binding_id !== null)?.[0] ?? null;
+    const chosenSelection = selections.get(chosen.id)!;
     const templates: StoredTemplate[] = [];
     const jobs: TemplateProvisionJob[] = [];
     for (let start = 0; ; start += 500) {
@@ -57,14 +76,15 @@ export function createTemplateRuntime(db: SupabaseClient) {
       templates.push(...(data ?? [])); if ((data ?? []).length < 500) break;
     }
     for (let start = 0; ; start += 500) {
-      const { data, error } = await db.from('whatsapp_template_jobs').select('id,target_key,state,claim_token,binding_id,binding_generation,posting_started_at')
+      const { data, error } = await db.from('whatsapp_template_jobs').select('id,target_key,revision,state,claim_token,binding_id,binding_generation,posting_started_at')
         .eq('account_id', accountId).eq('operation', 'provision').order('id').range(start, start + 499);
       if (error) throw new Error('template_load_failed');
       jobs.push(...(data ?? [])); if ((data ?? []).length < 500) break;
     }
     return { accountId, wabaId: account.waba_id, bindingId: chosen.id, generation: chosen.generation,
       unitId: chosen.unit_id, channelId: chosen.channel_id, credentialRevision: chosen.channel_credential_revision,
-      credentials: channel.credentials, catalogEnabled: await flag(), submissionAuthorized: !!chosen.submission_authorized_at, provisionBindingId, templates, jobs };
+      credentials: channel.credentials, catalogEnabled: await flag(), submissionAuthorized: chosenSelection.version !== null && chosenSelection.grant_binding_id === chosen.id,
+      selection, provisionBindingId, templates, jobs };
   }
   const sync = createTemplateSyncService({ load,
     getTransport: () => {
@@ -85,13 +105,14 @@ export function createTemplateRuntime(db: SupabaseClient) {
     publish: (accountId, epoch, snapshot) => rpc('publish_whatsapp_template_sync', { p_account_id: accountId,
       p_account_generation: epoch.account_generation, p_epochs: epoch, p_snapshot: snapshot }),
     enqueueProvision: async (bindingId, d) => { await rpc('enqueue_whatsapp_template_job', {
-      p_binding_id: bindingId, p_operation: 'provision', p_target_key: d.id, p_revision: d.version }); },
+      p_binding_id: bindingId, p_operation: 'provision', p_target_key: d.id, p_revision: d.version,
+      ...(d.version === 2 ? { p_version: 2 } : {}) }); },
     prepare: (job, payloadHash) => rpc('prepare_whatsapp_template_provision', { p_job_id: job.id, p_fence: job.claim_token,
-      p_generation: job.binding_generation, p_payload_hash: payloadHash }),
+      p_generation: job.binding_generation, p_payload_hash: payloadHash, ...(job.revision === 2 ? { p_version: 2 } : {}) }),
     confirm: (job, payloadHash) => rpc('confirm_whatsapp_template_post', { p_job_id: job.id, p_fence: job.claim_token,
-      p_generation: job.binding_generation, p_payload_hash: payloadHash }),
+      p_generation: job.binding_generation, p_payload_hash: payloadHash, ...(job.revision === 2 ? { p_version: 2 } : {}) }),
     prePostCheck: (job, payloadHash) => rpc('check_whatsapp_template_submission', { p_job_id: job.id, p_fence: job.claim_token,
-      p_generation: job.binding_generation, p_payload_hash: payloadHash }),
+      p_generation: job.binding_generation, p_payload_hash: payloadHash, ...(job.revision === 2 ? { p_version: 2 } : {}) }),
     finish: (id, fence, result) => rpc('finish_whatsapp_template_job', { p_job_id: id, p_fence: fence, p_result: result }),
     finalCheck: async context => {
       try {
@@ -101,17 +122,29 @@ export function createTemplateRuntime(db: SupabaseClient) {
         const current = await load(context.accountId, context.bindingId);
         if (current.bindingId !== context.bindingId || current.channelId !== context.channelId || current.generation !== context.generation
           || current.credentialRevision !== context.credentialRevision) return 'final_channel_changed';
-        if (!current.catalogEnabled || !current.submissionAuthorized) return 'final_gate_paused';
+        if (!current.catalogEnabled || !current.submissionAuthorized || current.selection.version !== context.selection.version
+          || current.selection.version === null || context.selection.version === null
+          || current.selection.digest !== context.selection.digest) return 'final_gate_paused';
         return null;
       } catch { return 'final_channel_changed'; }
     },
   });
   const sendAlert = createTemplateAlertSender(Deno.env.get('WHATSAPP_TEMPLATE_ALERT_URL'));
-  async function preparationSnapshot(unitId: string, channelId: string): Promise<TemplatePreparationSnapshot> {
-    const value = await rpc<unknown>('get_whatsapp_template_preparation', { p_unit_id: unitId, p_channel_id: channelId });
+  async function preparationSnapshot(unitId: string, channelId: string, version: 1 | 2 = 1): Promise<TemplatePreparationSnapshot> {
+    const value = await rpc<unknown>(version === 2 ? 'get_whatsapp_template_v2_preparation' : 'get_whatsapp_template_preparation', { p_unit_id: unitId, p_channel_id: channelId });
+    if (version === 2 && value === null) {
+      const held = await rpc<unknown>('get_whatsapp_template_v2_enrollment', { p_unit_id: unitId, p_channel_id: channelId });
+      if (held !== null) {
+        if (!held || typeof held !== 'object' || Array.isArray(held) || (held as Record<string, unknown>).version !== 2)
+          throw new Error('template_preparation_unavailable');
+        return { version: 2, enrollment: 'stale', state: null };
+      }
+      return { version: 2, enrollment: 'legacy', state: null };
+    }
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('template_preparation_unavailable');
     const row = value as Record<string, unknown>;
-    if (!['eligible', 'disabled', 'legacy', 'excluded'].includes(String(row.enrollment))
+    if (!['eligible', 'disabled', 'legacy', 'excluded', 'stale'].includes(String(row.enrollment))
+      || (version === 2 && row.version !== 2)
       || ![null, 'pending', 'discovering', 'ready', 'needs_review'].includes(row.state as string | null)
       || (row.onboarding_id !== null && row.onboarding_id !== undefined && typeof row.onboarding_id !== 'string')
       || (row.onboarding_state !== null && row.onboarding_state !== undefined && typeof row.onboarding_state !== 'string')
@@ -150,23 +183,20 @@ export function createTemplateRuntime(db: SupabaseClient) {
       if (error) throw new Error('template_binding_failed');
       return data as TemplatePreparationBinding | null;
     },
-    authorize: (claim, binding) => rpc<boolean>('authorize_whatsapp_template_auto_channel', {
+    authorize: (claim, binding) => rpc<boolean>(claim.version === 2 ? 'authorize_whatsapp_template_v2_channel' : 'authorize_whatsapp_template_auto_channel', {
       p_onboarding_id: claim.onboarding_id, p_binding_id: binding.id, p_generation: binding.generation,
       p_credential_revision: claim.credential_revision }),
     requestSync: async accountId => {
       const id = await rpc<string | null>('request_whatsapp_template_sync', { p_account_id: accountId });
       if (!id) throw new Error('template_sync_unavailable');
     },
-    mark: (claim, state, reason) => rpc<boolean>('mark_whatsapp_template_preparation', {
+    mark: (claim, state, reason) => rpc<boolean>(claim.version === 2 ? 'mark_whatsapp_template_v2_preparation' : 'mark_whatsapp_template_preparation', {
       p_onboarding_id: claim.onboarding_id, p_channel_id: claim.channel_id,
       p_state: state, p_reason_code: reason }),
   });
   const worker = createTemplateWorker({ authenticate: requireInternalAuth, now: Date.now,
-    selectPreparations: async () => {
-      const claims = await rpc<TemplatePreparationClaim[]>('claim_due_whatsapp_template_preparations', { p_limit: 1 });
-      if (!Array.isArray(claims)) throw new Error('template_preparation_selector_failed');
-      return claims;
-    },
+    selectPreparations: () => selectVersionedPreparationClaims(version => rpc<TemplatePreparationClaim[]>(version === 2
+      ? 'claim_due_whatsapp_template_v2_preparations' : 'claim_due_whatsapp_template_preparations', { p_limit: 1 }), Date.now()),
     prepareChannel: claim => preparation.prepare(claim, true),
     selectAccounts: () => rpc('select_due_whatsapp_template_accounts', { p_limit: 20 }),
     requestSync: id => rpc('request_whatsapp_template_sync', { p_account_id: id }),
@@ -195,6 +225,13 @@ export function createTemplateRuntime(db: SupabaseClient) {
       if (!channel || (channel as TemplateChannel & { status: string }).status !== 'connected'
         || !getWhatsAppProvider(channel.provider).capabilities.templateManagement || !await flag()) return;
       if (channel.provider === 'datafy') {
+        const v2 = await preparationSnapshot(channel.unit_id, channelId, 2);
+        if (v2.enrollment !== 'legacy') {
+          if (allowAutoPreparation && v2.enrollment === 'eligible' && v2.onboarding_id)
+            await preparation.prepare({ onboarding_id: v2.onboarding_id, channel_id: channelId,
+              unit_id: channel.unit_id, credential_revision: channel.template_credential_revision, version: 2 });
+          return;
+        }
         const snapshot = await preparationSnapshot(channel.unit_id, channelId);
         if (snapshot.enrollment === 'eligible' && snapshot.onboarding_id) {
           if (allowAutoPreparation) await preparation.prepare({ onboarding_id: snapshot.onboarding_id,

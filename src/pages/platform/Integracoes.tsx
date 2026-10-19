@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TemplateAutoPolicyCard } from "@/components/whatsapp/TemplateAutoPolicyCard";
+import { TemplateV2PolicyCard } from "@/components/whatsapp/TemplateV2PolicyCard";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -182,6 +183,7 @@ export default function PlatformIntegracoes() {
       </div>
 
       <TemplateAutoPolicyCard />
+      <TemplateV2PolicyCard />
 
       {isLoading && (
         <div className="space-y-4">

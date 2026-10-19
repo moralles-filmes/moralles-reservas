@@ -2510,3 +2510,51 @@ sob tráfego de produção. A prova de que replay HTTP não faz um segundo fetch
 Resend está em `src/lib/whatsapp-ops-alert-email-handler.test.ts`, Task 4; o SQL
 sozinho só demonstra a decisão `replay`. A corrida isolada não substitui o
 teste sintético recebido no ambiente hospedado.
+
+### 74 — Coortes v1/v2 e seleção manual de catálogo Datafy
+
+Use um contêiner PostgreSQL **descartável e exclusivo**, imagem
+`public.ecr.aws/supabase/postgres:17.11.0.004`, `--network none`, sem portas
+publicadas. Confirme a identidade com `docker inspect` antes de aplicar SQL.
+Rode `73-template-auto-bootstrap.ps1 -Container <nome>` para instalar a
+projeção histórica até a migration 203000 e desarmar os cron jobs. Depois
+aplique a migration real `20261019133502_whatsapp_template_copy_v2_cohorts.sql`
+crua por `Get-Content -Raw <arquivo> | docker exec -i <nome> psql -U postgres
+-d postgres -X -q -v ON_ERROR_STOP=1`. Reaplique a migration uma vez.
+
+No mesmo banco descartável ainda sem fixtures persistidos, rode
+`73-template-auto-policy.sql`, `74-template-v2-cohorts.sql` e
+`74c-template-v2-manual.sql`. Os três fazem `ROLLBACK`. O 73 prova que o v1
+preserva digest, política, grants e caminho de POST. O 74 confere nove linhas
+por versão, falha fechada com catálogo incompleto, política v2 OFF, inscrição
+exclusiva, tenant/WABA, retry sem binding, heartbeat, seleção, RPC real de
+enqueue, revision 2, hash completo, one-use e ACL. O 74c prova seleção manual
+de uma conta v1 com a política automática OFF, ator/pins/digest/auditoria,
+histórico v1 preservado, recusa de `posting`/`uncertain`, POST v2 cercado e
+stop sem regrant implícito. Nenhum teste chama Datafy ou Meta.
+
+O 74c final também prova heartbeat manual com a política futura OFF para dois
+bindings de unidades na mesma WABA liberados por administradores diferentes.
+O ator do segundo grant não precisa ser o ator inicial da coorte; origem
+automática continua exigindo ator da coorte e da política. Revogar o primeiro
+binding não revoga o segundo, e claim/mark não criam grant, job ou sync.
+
+Em **outro banco recém-preparado com a mesma migration**, rode uma vez
+`74a-template-v2-concurrency-setup.sql` e depois
+`TEMPLATE74_CONTAINER=<nome> node supabase/tests/local-preflight/74b-template-v2-concurrency.mjs`
+(no PowerShell, use `$env:TEMPLATE74_CONTAINER='<nome>'` antes do `node`). O
+runner inspeciona imagem/rede/portas, abre duas sessões `psql` por corrida e
+observa `pg_stat_activity.wait_event_type='Lock'` antes de conferir: seed v1
+contra grant v2 nas duas ordens, dois bindings da mesma WABA, Datafy
+`channel→onboarding` nas duas ordens, `posting` v1 contra seleção manual,
+stop manual contra replay, e stop automático contra regrant. Os fixtures do
+74a são sintéticos e persistem **só** nesse banco descartável; não rode o
+setup duas vezes. Remova o contêiner próprio ao fim.
+
+**Resultados locais observados em 19/10/2026:** após a correção de locks v1
+da migration 203000, a migration 74 aplicou, 73/74/74c passaram e as oito
+corridas do 74b ficaram verdes em duas sessões reais. A reaplicação da
+migration 74 preservou policy/coortes/grants e terminou sem erro. O teste
+estático da allowlist ACL passou 79/79. A projeção não reproduz gateway,
+provider, Meta, tráfego de produção nem o deploy de Edge Functions; a
+publicação continua sujeita a gates e autorizações próprios.

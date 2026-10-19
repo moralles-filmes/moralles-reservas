@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { TEMPLATE_CATALOG } from "../../supabase/functions/_shared/whatsapp-template-catalog-core";
+import { TEMPLATE_V2_CATALOG } from "../../supabase/functions/_shared/whatsapp-template-catalog-v2";
 import { SCHEDULED_KINDS } from "../../supabase/functions/_shared/whatsapp-automation-core";
 
 /*
@@ -24,6 +25,7 @@ import { SCHEDULED_KINDS } from "../../supabase/functions/_shared/whatsapp-autom
 const MIGRATIONS_DIR = resolve(__dirname, "../../supabase/migrations");
 const NEW_MIGRATION = "20261017120000_whatsapp_templates_table_ready_cancellation.sql";
 const APPROVED_SUBMISSION_MIGRATION = "20261017200000_whatsapp_template_approved_submission_pilot.sql";
+const V2_MIGRATION = "20261019133502_whatsapp_template_copy_v2_cohorts.sql";
 const TEMPLATE_ID = /^(res|fila|mkt)_[a-z_]+_v\d+$/;
 const TEMPLATE_LITERAL = /'((?:res|fila|mkt)_[a-z_]+_v\d+)'/g;
 
@@ -38,6 +40,8 @@ const ALL_FILES: SqlFile[] = readdirSync(MIGRATIONS_DIR)
   .map((name) => ({ name, sql: readFileSync(resolve(MIGRATIONS_DIR, name), "utf8") }));
 
 const CATALOG_IDS = Object.keys(TEMPLATE_CATALOG).sort();
+const V2_CATALOG_IDS = Object.keys(TEMPLATE_V2_CATALOG).sort();
+const STORAGE_IDS = [...CATALOG_IDS, ...V2_CATALOG_IDS].sort();
 
 /** Mapeamento kind → modelos que o TS escolhe (whatsapp-automation-resources.ts). */
 const TS_KIND_TO_TEMPLATES: Record<string, string[]> = {
@@ -284,6 +288,8 @@ interface IdList {
   ids: string[];
   start: number;
   end: number;
+  domain?: "dispatch" | "storage" | "approved";
+  cohort?: number;
 }
 
 /** Listas `in(...)` de literais em que algum membro é id de modelo. */
@@ -398,7 +404,7 @@ const sameSet = (a: Iterable<string>, b: Iterable<string>) => JSON.stringify(sor
 
 function compareTwins(
   files: SqlFile[],
-  expected = { ids: CATALOG_IDS, kinds: [...SCHEDULED_KINDS] as string[], kindTemplates: TS_KIND_TO_TEMPLATES, kindResource: TS_KIND_RESOURCE },
+  expected = { ids: CATALOG_IDS, storageIds: STORAGE_IDS, approvedCohorts: { 1: CATALOG_IDS, 2: V2_CATALOG_IDS } as Record<number, string[]>, kinds: [...SCHEDULED_KINDS] as string[], kindTemplates: TS_KIND_TO_TEMPLATES, kindResource: TS_KIND_RESOURCE },
 ): TwinReport {
   const inForce = resolveInForce(files);
   const mismatches: string[] = inForce.unclassifiedChecks.map((w) => `CHECK não classificado com id de modelo: ${w}`);
@@ -409,7 +415,7 @@ function compareTwins(
     const where = `${fn.file}:${fn.key}`;
     const lists = templateIdLists(fn.body, where);
     const fnCases = kindTemplateCases(fn.body, where);
-    idLists.push(...lists);
+    idLists.push(...lists.map(list => ({ ...list, domain: "dispatch" as const })));
     cases.push(...fnCases);
     // Literal de modelo fora de lista/CASE reconhecido é um gêmeo que este teste não enxerga.
     const covered = [...lists, ...fnCases];
@@ -420,16 +426,30 @@ function compareTwins(
   }
 
   for (const check of inForce.checks.values()) {
-    idLists.push(...templateIdLists(check.expr, `${check.file}:CHECK ${check.cls}`));
+    const lists = templateIdLists(check.expr, `${check.file}:CHECK ${check.cls}`);
+    if (check.cls === "approved_catalog_logical_id") {
+      const cohorts = lists.map(list => {
+        const version = /\bversion\s*=\s*(\d+)\s+and\s+logical_id\s*$/i.exec(check.expr.slice(0, list.start));
+        return { ...list, domain: "approved" as const, cohort: version ? Number(version[1]) : undefined };
+      });
+      if (cohorts.length !== 2 || !sameSet(cohorts.map(list => String(list.cohort)), ["1", "2"])) {
+        mismatches.push(`${check.file}: CHECK approved_catalog_logical_id exige duas coortes explícitas 1 e 2`);
+      }
+      idLists.push(...cohorts);
+    } else {
+      idLists.push(...lists.map(list => ({ ...list, domain: "storage" as const })));
+    }
   }
-  for (const cls of ["logical_id", "jobs_kind", "jobs_kind_resource", "pin_tuple"] as const) {
+  for (const cls of ["logical_id", "approved_catalog_logical_id", "jobs_kind", "jobs_kind_resource", "pin_tuple"] as const) {
     if (!inForce.checks.has(cls)) mismatches.push(`CHECK ${cls} vigente não encontrado`);
   }
 
   for (const list of idLists) {
-    if (!sameSet(list.ids, expected.ids)) {
-      const missing = expected.ids.filter((id) => !list.ids.includes(id));
-      const extra = list.ids.filter((id) => !expected.ids.includes(id));
+    const wanted = list.domain === "storage" ? expected.storageIds
+      : list.domain === "approved" ? expected.approvedCohorts[list.cohort] ?? [] : expected.ids;
+    if (list.ids.length !== wanted.length || !sameSet(list.ids, wanted)) {
+      const missing = wanted.filter((id) => !list.ids.includes(id));
+      const extra = list.ids.filter((id) => !wanted.includes(id));
       mismatches.push(`${list.where}: lista de ids diverge (faltam [${missing}], sobram [${extra}])`);
     }
   }
@@ -490,10 +510,17 @@ describe("catálogo de modelos TS ⇔ listas fixas vigentes nas migrations", () 
     expect([...report.checks.keys()].sort()).toEqual(["approved_catalog_logical_id", "jobs_kind", "jobs_kind_resource", "logical_id", "pin_tuple"]);
   });
 
-  it("os CHECKs vigentes são os das migrations do catálogo e da aprovação", () => {
+  it("CHECKs de armazenamento e aprovação são v2; kinds e dispatch continuam v1", () => {
     for (const check of report.checks.values()) expect(check.file, check.cls).toBe(
-      check.cls === "approved_catalog_logical_id" ? APPROVED_SUBMISSION_MIGRATION : NEW_MIGRATION,
+      ["approved_catalog_logical_id", "logical_id", "pin_tuple"].includes(check.cls) ? V2_MIGRATION : NEW_MIGRATION,
     );
+    const storage = report.idLists.filter(list => list.domain === "storage");
+    expect(storage).toHaveLength(2);
+    for (const list of storage) expect(sorted(list.ids)).toEqual(STORAGE_IDS);
+    const approved = report.idLists.filter(list => list.domain === "approved");
+    expect(approved.map(list => list.cohort).sort()).toEqual([1, 2]);
+    expect(approved.every(list => list.ids.length === 9)).toBe(true);
+    for (const list of report.idLists.filter(list => list.domain === "dispatch")) expect(sorted(list.ids)).toEqual(CATALOG_IDS);
   });
 
   it("toda lista de ids, todo CASE kind→modelo e os CHECKs de kind concordam com o TS", () => {
@@ -501,7 +528,7 @@ describe("catálogo de modelos TS ⇔ listas fixas vigentes nas migrations", () 
   });
 
   it("CONTROLE (RED): sem as migrations novas, o histórico diverge do TS em todas as classes", () => {
-    const red = compareTwins(ALL_FILES.filter((f) => f.name !== NEW_MIGRATION && f.name !== APPROVED_SUBMISSION_MIGRATION));
+    const red = compareTwins(ALL_FILES.filter((f) => ![NEW_MIGRATION, APPROVED_SUBMISSION_MIGRATION, V2_MIGRATION].includes(f.name)));
     const joined = red.mismatches.join("\n");
     expect(red.mismatches.length).toBeGreaterThan(0);
     expect(joined).toMatch(/CHECK logical_id: lista de ids diverge/);
@@ -515,6 +542,8 @@ describe("catálogo de modelos TS ⇔ listas fixas vigentes nas migrations", () 
 
 describe("CONTROLES POSITIVOS do comparador", () => {
   const ids = CATALOG_IDS.map((id) => `'${id}'`);
+  const v2Ids = V2_CATALOG_IDS.map((id) => `'${id}'`);
+  const storageIds = STORAGE_IDS.map((id) => `'${id}'`);
   const kinds = SCHEDULED_KINDS.map((k) => `'${k}'`);
   const resourceCheck =
     "check((kind in('confirmation','reminder_d1','survey_d1','cancellation') and reservation_id is not null) or " +
@@ -524,13 +553,14 @@ describe("CONTROLES POSITIVOS do comparador", () => {
     `when 'reminder_d1' then 'res_lembrete_dia_v1' when 'survey_d1' then 'res_pesquisa_reserva_v1' when 'waitlist_entered' then 'fila_entrada_v1' ` +
     `when 'waitlist_feedback' then 'fila_feedback_v1' when 'voucher_issued' then 'mkt_voucher_programado_v1' when 'cancellation' then ${cancellation} ` +
     `when 'waitlist_table_ready' then 'fila_mesa_pronta_v1' end;`;
-  const synthetic = (o: { idList?: string[]; kindList?: string[]; caseBody?: string; fnIds?: string[] } = {}): SqlFile[] => [
+  const synthetic = (o: { idList?: string[]; kindList?: string[]; caseBody?: string; fnIds?: string[]; v2ApprovedIds?: string[] } = {}): SqlFile[] => [
     {
       name: "00000000000001_synthetic.sql",
       sql: [
-        `create table public.whatsapp_remote_templates (logical_id text not null check(logical_id in(${(o.idList ?? ids).join(",")})));`,
+        `create table public.whatsapp_remote_templates (logical_id text not null check(logical_id in(${(o.idList ?? storageIds).join(",")})));`,
+        `create table app_private.whatsapp_template_approved_submissions (version integer, logical_id text check((version=1 and logical_id in(${ids.join(",")})) or (version=2 and logical_id in(${(o.v2ApprovedIds ?? v2Ids).join(",")}))));`,
         `create table public.whatsapp_automation_jobs (kind text not null check(kind in(${(o.kindList ?? kinds).join(",")})), ${resourceCheck});`,
-        `alter table public.whatsapp_automation_jobs add constraint whatsapp_automation_pin_tuple_check check(initial_catalog_key is null or initial_catalog_key in(${ids.join(",")}));`,
+        `alter table public.whatsapp_automation_jobs add constraint whatsapp_automation_pin_tuple_check check(initial_catalog_key is null or initial_catalog_key in(${storageIds.join(",")}));`,
         `create or replace function public.f(p uuid) returns void language plpgsql as $$ begin -- comentário com ; e 'aspas`,
         `  if x not in(${(o.fnIds ?? ids).join(",")}) then return; end if; ${o.caseBody ?? caseSql()} end $$;`,
       ].join("\n"),
@@ -541,17 +571,37 @@ describe("CONTROLES POSITIVOS do comparador", () => {
     const r = compareTwins(synthetic());
     expect(r.mismatches).toEqual([]);
     expect(r.cases).toHaveLength(1);
-    expect(r.idLists).toHaveLength(3);
+    expect(r.idLists).toHaveLength(5);
   });
 
   it("CHECK de logical_id sem um id reprova", () => {
-    const r = compareTwins(synthetic({ idList: ids.filter((id) => id !== "'res_cancelada_v1'") }));
+    const r = compareTwins(synthetic({ idList: storageIds.filter((id) => id !== "'res_cancelada_v1'") }));
     expect(r.mismatches.join("\n")).toMatch(/CHECK logical_id: lista de ids diverge \(faltam \[res_cancelada_v1\]/);
+  });
+
+  it("CHECK de armazenamento sem um id v2 reprova", () => {
+    const r = compareTwins(synthetic({ idList: storageIds.filter((id) => id !== "'res_cancelada_v2'") }));
+    expect(r.mismatches.join("\n")).toMatch(/CHECK logical_id: lista de ids diverge \(faltam \[res_cancelada_v2\]/);
+  });
+
+  it("CHECK de aprovação não pode misturar as duas coortes", () => {
+    const r = compareTwins(synthetic({ v2ApprovedIds: [...v2Ids.slice(0, 8), ids[0]] }));
+    expect(r.mismatches.join("\n")).toMatch(/CHECK approved_catalog_logical_id: lista de ids diverge/);
   });
 
   it("lista de função sem um id reprova", () => {
     const r = compareTwins(synthetic({ fnIds: ids.filter((id) => id !== "'fila_mesa_pronta_v1'") }));
     expect(r.mismatches.join("\n")).toMatch(/public\.f\(puuid\): lista de ids diverge \(faltam \[fila_mesa_pronta_v1\]/);
+  });
+
+  it("lista operacional de função não pode ganhar ids v2 por ampliar armazenamento", () => {
+    const r = compareTwins(synthetic({ fnIds: [...ids, ...v2Ids] }));
+    expect(r.mismatches.join("\n")).toMatch(/public\.f\(puuid\): lista de ids diverge.*sobram \[.*_v2/);
+  });
+
+  it("coorte de aprovação não pode duplicar um id conhecido", () => {
+    const r = compareTwins(synthetic({ v2ApprovedIds: [...v2Ids, v2Ids[0]] }));
+    expect(r.mismatches.join("\n")).toMatch(/CHECK approved_catalog_logical_id: lista de ids diverge/);
   });
 
   it("CHECK de kind com um kind a mais reprova", () => {

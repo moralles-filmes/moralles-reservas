@@ -39,7 +39,7 @@ export function createTemplateWorker(deps: TemplateWorkerDependencies) {
       const prepareOne = async () => {
         // One preparation can perform two independently bounded Datafy GETs.
         // Start it only with room for both; never cancel an in-flight call.
-        if (!deps.selectPreparations || !deps.prepareChannel || deps.now() >= deadline - 30_000) return;
+        if (!deps.selectPreparations || !deps.prepareChannel || claims + preparations >= 20 || deps.now() >= deadline - 30_000) return;
         try {
           const due = await deps.selectPreparations();
           const item = due[0];
@@ -55,14 +55,14 @@ export function createTemplateWorker(deps: TemplateWorkerDependencies) {
         if (preparationFirst) await prepareOne();
         const accounts = await deps.selectAccounts();
         for (const account of accounts) {
-          if (claims >= 20 || deps.now() >= deadline) break;
+          if (claims + preparations >= 20 || deps.now() >= deadline) break;
           const currentSync = await deps.requestSync(account.id);
           const pending = await deps.listJobs(account.id);
           // A current GET can settle older queued/expired syncs; old claims cannot
           // impersonate the newest revision and must not starve it.
           const jobs = currentSync ? [{ id: currentSync }, ...pending.filter(j => j.id !== currentSync)] : pending;
           for (const item of jobs) {
-            if (claims >= 20 || deps.now() >= deadline) break;
+            if (claims + preparations >= 20 || deps.now() >= deadline) break;
             claims++;
             const job = await deps.claim(item.id);
             if (!job) continue;

@@ -48,7 +48,7 @@ export type TemplateSendOutcome = TemplateMutationFailure | {
 };
 
 export interface TemplateListInput { wabaId: string; after?: string; }
-export interface TemplateCreateInput { wabaId: string; definition: TemplateDefinition; }
+export interface TemplateCreateInput { wabaId: string; definition: TemplateSubmissionDefinition; }
 export interface TemplateSendInput extends TemplateMessageInput { phoneNumberId: string; }
 
 function record(value: unknown): Record<string, unknown> | null {

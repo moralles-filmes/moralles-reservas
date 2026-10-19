@@ -75,7 +75,7 @@ function mountStatus(jobs: Record<string, unknown>[], role: 'gerente' | 'operado
     unitAdopted: false, templates: [], jobs, generatedAt: '2026-10-09T12:00:00Z',
   }), ...(preparation ? { templatePreparation: preparation } : {}) };
   io.invoke.mockImplementation(async (_name: string, { body }: { body: { action: string } }) => ({
-    data: body.action === 'snapshot' ? snapshot : { status: 'updated' }, error: null,
+    data: body.action === 'snapshot_v2' ? snapshot : { status: 'updated' }, error: null,
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><StatusHarness role={role} /></QueryClientProvider>);

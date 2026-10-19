@@ -2,24 +2,24 @@ import { useQuery } from '@tanstack/react-query';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { supabase } from '@/lib/supabase';
-import { templatePreparationSchema } from '@/features/whatsapp/template-preparation';
-import { templateSchema } from '@/hooks/useWhatsappTemplates';
+import { templateCatalogSelectionSchema, templatePreparationSchema } from '@/features/whatsapp/template-preparation';
+import { templateCatalogSchema } from '@/hooks/useWhatsappTemplates';
 
 const uuid = z.uuid();
 const catalogSchema = z.object({
   channelId: uuid.nullable(),
   templatePreparation: templatePreparationSchema.nullable(),
-  templates: z.array(templateSchema).max(9),
+  catalogSelection: templateCatalogSelectionSchema.nullable().optional(),
+  templates: templateCatalogSchema,
   generatedAt: z.iso.datetime({ offset: true }),
-}).strict().refine(value => new Set(value.templates.map(t => t.logicalId)).size === value.templates.length
-  && (value.channelId !== null || value.templates.length === 0));
+}).strict().refine(value => value.channelId !== null || (value.templates.length === 0 && value.catalogSelection == null));
 
 export type OnboardingTemplateCatalog = z.infer<typeof catalogSchema>;
 
 export async function readOnboardingTemplateCatalog(unitId: string): Promise<OnboardingTemplateCatalog> {
   if (!uuid.safeParse(unitId).success) throw new Error('invalid_request');
   try {
-    const { data, error } = await supabase.functions.invoke('manage-whatsapp-templates', { body: { action: 'onboarding_catalog_snapshot', unit_id: unitId } });
+    const { data, error } = await supabase.functions.invoke('manage-whatsapp-templates', { body: { action: 'onboarding_catalog_snapshot_v2', unit_id: unitId } });
     if (error) {
       if (error instanceof FunctionsHttpError) {
         const body = await error.context.json().catch(() => null);

@@ -2,11 +2,21 @@ import { z } from 'zod';
 
 // The server projects this from a durable channel enrollment. Never infer eligibility from a global flag.
 export const templatePreparationSchema = z.object({
-  enrollment: z.enum(['eligible', 'disabled', 'legacy', 'excluded']),
+  enrollment: z.enum(['eligible', 'disabled', 'legacy', 'excluded', 'stale']),
   state: z.enum(['pending', 'discovering', 'ready', 'needs_review']).nullable(),
   reason: z.enum(['connection_pending', 'health_stale', 'binding_pending', 'provider_unavailable', 'policy_changed', 'manual_review']).nullable(),
   updatedAt: z.iso.datetime({ offset: true }).nullable(),
+  version: z.union([z.literal(1), z.literal(2)]).optional(),
+  origin: z.enum(['auto', 'manual']).optional(),
 }).strict();
+
+export const templateCatalogSelectionSchema = z.object({
+  state: z.enum(['v1', 'pending', 'ready', 'paused']),
+  version: z.union([z.literal(1), z.literal(2)]).nullable(),
+  digest: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+}).strict().refine(selection => selection.state === 'v1' ? selection.version === 1 && selection.digest !== null
+  : selection.state === 'ready' ? selection.version === 2 && selection.digest !== null
+    : selection.version === null && selection.digest === null);
 
 export type TemplatePreparation = z.infer<typeof templatePreparationSchema>;
 
@@ -17,6 +27,7 @@ export function readTemplatePreparation(value: unknown): TemplatePreparation | n
 
 export function templatePreparationMessage(preparation: TemplatePreparation | null): string {
   if (!preparation) return 'Não foi possível confirmar a preparação automática dos modelos para esta conexão.';
+  if (preparation.enrollment === 'stale') return 'A política de preparação dos modelos mudou. Esta conexão precisa de revisão antes de novas submissões.';
   if (preparation.enrollment !== 'eligible') return 'A preparação automática dos modelos não está habilitada para esta conexão.';
   switch (preparation.state) {
     case 'pending': return 'A preparação dos nove modelos está na fila. Nenhuma automação passa a enviar mensagens por isso.';
@@ -28,6 +39,7 @@ export function templatePreparationMessage(preparation: TemplatePreparation | nu
 }
 
 export function templatePreparationReasonMessage(preparation: TemplatePreparation | null): string | null {
+  if (preparation?.enrollment === 'stale') return 'A preparação está desatualizada; confira a liberação atual. O histórico dos modelos permanece disponível.';
   if (!preparation || preparation.enrollment !== 'eligible' || preparation.reason === null) return null;
   if (preparation.state === 'ready') {
     if (preparation.reason === 'health_stale') return 'A saúde do canal está vencida; o sistema tentará verificar novamente. O vínculo dos modelos continua registrado.';

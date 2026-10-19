@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createTemplatePreparationService, type TemplatePreparationClaim, type TemplatePreparationDependencies } from '../../supabase/functions/_shared/whatsapp-template-preparation.ts';
+import { createTemplatePreparationService, selectVersionedPreparationClaims, type TemplatePreparationClaim, type TemplatePreparationDependencies } from '../../supabase/functions/_shared/whatsapp-template-preparation.ts';
 import { refreshVerifiedDatafyTemplateHealth } from '../../supabase/functions/_shared/whatsapp-template-health.ts';
 
 const claim: TemplatePreparationClaim = {
@@ -28,6 +28,30 @@ function fixture() {
 }
 
 describe('Datafy template preparation', () => {
+  it('routes v2 recovery without accepting legacy preparation evidence or stale policy', async () => {
+    const f = fixture();
+    const v2 = { ...claim, version: 2 as const };
+    expect(await f.prepare(v2)).toEqual({ state: 'skipped' });
+    vi.mocked(f.deps.read).mockResolvedValue({ enrollment: 'stale', version: 2, state: 'pending', onboarding_id: claim.onboarding_id });
+    expect(await f.prepare(v2)).toEqual({ state: 'skipped' });
+    vi.mocked(f.deps.read).mockResolvedValue({ enrollment: 'eligible', version: 2, origin: 'auto', state: 'pending', onboarding_id: claim.onboarding_id, onboarding_state: 'completed' });
+    expect(await f.prepare(v2)).toEqual({ state: 'ready' });
+    expect(f.deps.read).toHaveBeenCalledWith(claim.unit_id, claim.channel_id, 2);
+    expect(f.deps.authorize).toHaveBeenCalledWith(v2, f.binding);
+  });
+  it('gives both preparation versions a first-priority tick without claiming extra work', async () => {
+    const order: number[] = [];
+    const select = vi.fn(async (version: 1 | 2) => { order.push(version); return [{ ...claim, version }]; });
+    for (const tick of [0, 1, 2, 3]) await selectVersionedPreparationClaims(select, tick * 300_000);
+    expect(order).toEqual([2, 2, 1, 1]);
+    expect(order.filter((_v, tick) => tick % 2 === 0)).toEqual([2, 1]);
+    const fallback = vi.fn(async (version: 1 | 2) => version === 2 ? [] : [{ ...claim, version }]);
+    expect(await selectVersionedPreparationClaims(fallback, 0)).toEqual([{ ...claim, version: 1 }]);
+    expect(fallback.mock.calls).toEqual([[2], [1]]);
+    const failed = vi.fn(async () => { throw new Error('dependency_unavailable'); });
+    await expect(selectVersionedPreparationClaims(failed, 0)).rejects.toThrow('dependency_unavailable');
+    expect(failed).toHaveBeenCalledOnce();
+  });
   it('does not discover, grant or sync an old, disabled or excluded connection', async () => {
     for (const enrollment of ['legacy', 'disabled', 'excluded'] as const) {
       const f = fixture();

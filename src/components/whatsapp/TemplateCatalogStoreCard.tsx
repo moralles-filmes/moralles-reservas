@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { templateErrorMessage } from '@/hooks/useWhatsappTemplates';
 import { useWhatsappOnboardingCatalog } from '@/hooks/useWhatsappOnboardingCatalog';
 import { templatePreparationMessage, templatePreparationReasonMessage } from '@/features/whatsapp/template-preparation';
-import { storeTemplateStatus } from '@/features/whatsapp/template-status';
+import { TemplateCatalogEntry } from './TemplateCatalogEntry';
 
 export function TemplateCatalogStoreCard({ unitId }: { unitId: string }) {
   const query = useWhatsappOnboardingCatalog(unitId);
@@ -19,11 +19,9 @@ export function TemplateCatalogStoreCard({ unitId }: { unitId: string }) {
           <p role="status">{templatePreparationMessage(preparation)}</p>
           {templatePreparationReasonMessage(preparation) && <p role="alert">{templatePreparationReasonMessage(preparation)}</p>}
           {catalog.channelId === null && <p role="status">O canal Datafy ainda não está disponível para consultar os modelos.</p>}
-          <p>{catalog.templates.length} de 9 estados de modelos disponíveis. A lista local não comprova submissão ou aprovação pela Meta.</p>
-          <ul className="space-y-2" aria-label="Estado dos nove modelos oficiais">{catalog.templates.map(template =>
-            <li key={template.logicalId} className="flex flex-col gap-1 rounded border p-3 sm:flex-row sm:justify-between sm:gap-3">
-              <span className="font-medium">{template.name}</span><span>{storeTemplateStatus(template)}</span>
-            </li>)}</ul>
+          <p>{catalog.templates.length} estado{catalog.templates.length === 1 ? '' : 's'} de modelos disponíveis, com a versão de cada texto. A lista local não comprova submissão ou aprovação pela Meta.</p>
+          <ul className="space-y-2" aria-label="Estado dos modelos oficiais por versão">{catalog.templates.map(template =>
+            <TemplateCatalogEntry key={`${template.logicalId}:${template.version}`} template={template} />)}</ul>
           <Button className="min-h-11" variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>Atualizar dados</Button>
         </>}
     </CardContent>

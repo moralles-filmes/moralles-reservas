@@ -38,6 +38,16 @@ A [spec](superpowers/specs/2026-10-17-datafy-template-auto-provision-on-connect-
 
 Esta política e a migration `20261017203000` estão **somente no checkout local**. Para publicar: autorização própria de `db push` após dry-run/backup/janela e gate ACL; depois autorização dos quatro bundles `manage-channels`, `manage-whatsapp-templates`, `process-whatsapp-templates`, `send-scheduled-whatsapp`; depois frontend `READY` e conferência de alcance antes de ligar a política. O redeploy de `process-whatsapp-templates` exige confirmação separada por poder chegar à Meta. `whatsapp_automation_dispatch` continua OFF: conectar e submeter modelos não autoriza mensagens a clientes. `PENDING` e `IN_APPEAL` não tornam um modelo utilizável.
 
+### Textos v2 com parágrafos e emojis — implementação local
+
+A [spec v2](superpowers/specs/2026-10-17-whatsapp-template-copy-v2-design.md) e o [plano v2](superpowers/plans/2026-10-17-whatsapp-template-copy-v2.md) preservam os nove nomes/textos/hashes v1 e acrescentam nove nomes `*_v2`. A leitura de produção de 19/10/2026 às 10h35 BRT encontrou os nove **v1** aprovados/utilizáveis, com categoria e hash conferidos; isso não comprova submissão ou aprovação v2. O despacho continuava OFF.
+
+O código local seleciona uma coorte de submissão por conta WhatsApp. A política v2 nasce OFF, inscreve somente novos onboardings e não promove contas antigas. Para uma conta existente como a Ren Sushi há ação exclusiva do admin **Liberar os nove modelos v2 nesta conta**, com confirmação de conta compartilhada, canal, geração, revisão e digest. Ela usa grant próprio mesmo com política futura OFF, preserva histórico v1 e recusa POST v1 em voo/incerto. Revogação interrompe novas submissões do binding; um POST já confirmado pode alcançar a Meta e não se apaga o histórico. Nunca repetir uma liberação com resultado ambíguo sem reconciliar o estado.
+
+Leitores versionados mostram até 18 estados e os corpos fixos, incluindo quebras de parágrafo e emoji. A loja não precisa editar ou solicitar sync para disparar a preparação. Alteração de política deixa inscrições antigas `stale` e exige revisão, preservando o histórico visível. Heartbeat de canal inativo não regranta nem submete; grants manuais de admins distintos na mesma WABA conservam autoridade própria por binding.
+
+Publicação v2 permanece **NO-GO** até novos gates e autorizações. O rollout combinado depende da migration `20261017203000` e da nova `20261019133502`, com lista exata conferida por dry-run; depois exige a matriz de **12 EFs** calculada no plano v2 e frontend `READY`, com autorização separada de `process-whatsapp-templates`. A matriz de quatro EFs acima pertence somente à política v1 isolada. Grant manual/submissões Ren Sushi e política global v2 exigem confirmações próprias de alcance/canal/custo. O código desta entrega continua enviando automações com v1: escolher catálogo v2 não altera jobs existentes nem habilita envio com v2. Adoção da versão de envio, liberação de despacho por loja, consentimento/custo e teste vivo são etapas separadas. Nenhuma operação externa é autorizada por este runbook.
+
 
 ### Banco antes dos bundles e do frontend
 

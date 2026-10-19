@@ -26,6 +26,7 @@ vi.mock("@/hooks/usePlatformSecrets", () => ({
   useDeletePlatformSecret: () => ({ mutate: mocks.remove, isPending: false }),
 }));
 vi.mock("@/components/whatsapp/TemplateAutoPolicyCard", () => ({ TemplateAutoPolicyCard: () => <div>Política dos modelos</div> }));
+vi.mock("@/components/whatsapp/TemplateV2PolicyCard", () => ({ TemplateV2PolicyCard: () => <div>Política dos modelos v2</div> }));
 
 const renderPage = () =>
   render(

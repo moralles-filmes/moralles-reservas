@@ -23,12 +23,12 @@ describe("portal WhatsApp oficial", () => {
     try {
       mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === 'official_connection_state'
         ? { ...base, step: 'awaiting_echo', items: [{ id: 'number_connected', done: true }] }
-        : body.action === 'onboarding_catalog_snapshot'
+        : body.action === 'onboarding_catalog_snapshot_v2'
           ? { channelId: null, templatePreparation: null, templates: [], generatedAt: '2026-10-17T19:00:00Z' }
           : { channel_id: null, status: 'not_configured' }, error: null }));
       show();
       expect(await screen.findByText('Análise dos modelos oficiais')).toBeInTheDocument();
-      await waitFor(() => expect(mocks.invoke.mock.calls.some(([, { body }]) => body.action === 'onboarding_catalog_snapshot')).toBe(true));
+      await waitFor(() => expect(mocks.invoke.mock.calls.some(([, { body }]) => body.action === 'onboarding_catalog_snapshot_v2')).toBe(true));
       expect(screen.queryByRole('button', { name: 'Solicitar sincronização' })).not.toBeInTheDocument();
     } finally { mocks.unit.unit_id = 'u1'; }
   });
