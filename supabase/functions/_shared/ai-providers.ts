@@ -716,7 +716,11 @@ async function runOpenAICompatible(
 
         if (!resp.ok) {
           const errBody = await resp.text();
-          throw new Error(`${opts.provider} API error ${resp.status}: ${errBody}`);
+          // `status` anexado: é o que decide se vale tentar o provedor reserva
+          // (5xx/429 sim, 4xx não) sem reler o texto da mensagem.
+          const e: any = new Error(`${opts.provider} API error ${resp.status}: ${errBody}`);
+          e.status = resp.status;
+          throw e;
         }
 
         const d = await resp.json();
