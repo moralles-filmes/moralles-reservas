@@ -5,11 +5,11 @@ import { OfficialConnectionCard } from "./OfficialConnectionCard";
 import { DATAFY_CONNECT_ORIGIN } from "../../../supabase/functions/_shared/datafy-onboarding-core";
 
 const READY = { step: "ready_to_connect", granted: true, items: [], templatesPending: true, migration: null as { fromProvider: string } | null };
-const mocks = vi.hoisted(() => ({ start: vi.fn(), confirm: vi.fn(), error: vi.fn(), data: null as unknown }));
+const mocks = vi.hoisted(() => ({ start: vi.fn(), confirm: vi.fn(), refetch: vi.fn(), error: vi.fn(), data: null as unknown }));
 vi.mock("sonner", () => ({ toast: { error: mocks.error } }));
 vi.mock("@/hooks/useOfficialConnection", () => ({ useOfficialConnection: () => ({
   data: mocks.data,
-  start: mocks.start, confirm: mocks.confirm,
+  start: mocks.start, confirm: mocks.confirm, refetch: mocks.refetch,
 }) }));
 const MIGRATION_WARNING = "Ao conectar, o WhatsApp desconecta os aparelhos vinculados, inclusive a automação atual. Logo depois, gere um novo QR Code em Conexão atual e escaneie para a automação voltar. Faça num horário de pouco movimento.";
 const message = (origin = DATAFY_CONNECT_ORIGIN, coexistence = true) => window.dispatchEvent(new MessageEvent("message", {
@@ -36,6 +36,20 @@ describe("OfficialConnectionCard", () => {
     render(<OfficialConnectionCard unitId="u1" />);
     expect(screen.queryByText(MIGRATION_WARNING)).toBeNull();
     expect(screen.queryByRole("note")).toBeNull();
+  });
+  it('promete análise automática apenas quando a inscrição elegível vem do servidor', () => {
+    mocks.data = { ...READY, templatePreparation: { enrollment: 'eligible', state: 'discovering', reason: null, updatedAt: '2026-10-17T19:00:00Z' } };
+    render(<OfficialConnectionCard unitId="u1" />);
+    expect(screen.getByText(/A conexão envia nove modelos para análise da Meta/)).toBeInTheDocument();
+    expect(screen.getByText(/A conta de modelos está sendo verificada/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar preparação' }));
+    expect(mocks.refetch).toHaveBeenCalledOnce();
+  });
+  it.each(['disabled', 'legacy', 'excluded'] as const)('não promete submissão para conexão %s', enrollment => {
+    mocks.data = { ...READY, templatePreparation: { enrollment, state: null, reason: null, updatedAt: null } };
+    render(<OfficialConnectionCard unitId="u1" />);
+    expect(screen.getByText(/preparação automática dos modelos não está habilitada/)).toBeInTheDocument();
+    expect(screen.queryByText(/A conexão envia nove modelos/)).not.toBeInTheDocument();
   });
   it.each(["subscription_pending", "awaiting_echo"])("migração depois de conectar não repete o aviso (%s)", (step) => {
     mocks.data = { ...READY, step, granted: false, migration: { fromProvider: "uazapi" } };

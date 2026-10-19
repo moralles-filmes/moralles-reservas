@@ -38,6 +38,7 @@ import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanne
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useOfficialConnection } from "@/hooks/useOfficialConnection";
 import { OfficialConnectionCard } from "@/components/whatsapp/OfficialConnectionCard";
+import { TemplateCatalogStoreCard } from "@/components/whatsapp/TemplateCatalogStoreCard";
 import {
   useConnectWhatsapp,
   useDisconnectWhatsapp,
@@ -457,6 +458,8 @@ export default function Whatsapp() {
   // Migração: a loja precisa do lifecycle do canal atual para reescanear o QR
   // depois de conectar a oficial, então os dois cartões convivem.
   const migrating = useOfficial && !!official.data?.migration;
+  const officialNumberConnected = official.data?.step === "active"
+    || official.data?.items.some(item => item.id === "number_connected" && item.done === true) === true;
   const lifecycleUnitId = unit?.isGerente && (!useOfficial || migrating) ? unitId : "";
   const controls = useCurrentConnectionControls(lifecycleUnitId);
 
@@ -498,6 +501,7 @@ export default function Whatsapp() {
       ) : (
         <CurrentConnectionCard title="Conexão do número" controls={controls} />
       )}
+      {useOfficial && officialNumberConnected && <TemplateCatalogStoreCard unitId={unitId} />}
     </div>
   );
 }

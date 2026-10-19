@@ -2,23 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ResponsiveDialog, ResponsiveDialogBody, ResponsiveDialogContent, ResponsiveDialogDescription, ResponsiveDialogFooter, ResponsiveDialogHeader, ResponsiveDialogTitle } from '@/components/ui/responsive-dialog';
-import { catalogReleaseMatches, templateErrorMessage, useWhatsappTemplates, type CatalogReleasePin, type OfficialTemplateView } from '@/hooks/useWhatsappTemplates';
-
-const modelStatus: Record<OfficialTemplateView['localStatus'], string> = {
-  awaiting_connection: 'Aguardando preparação', queued: 'Na fila de submissão', submitting: 'Submissão em andamento',
-  pending: 'Estado remoto ainda não confirmado', usable: 'Aprovado e disponível', rejected: 'Recusado pela Meta',
-  paused: 'Pausado para revisão', disabled: 'Desativado', conflict: 'Conteúdo ou categoria divergente',
-  sync_error: 'Sincronização pendente', unsupported: 'Indisponível neste canal',
-};
-
-function safeModelStatus(template: OfficialTemplateView) {
-  if (template.localStatus === 'pending' && template.remoteStatus === 'PENDING') return 'Em análise na Meta';
-  if (template.localStatus !== 'usable') return modelStatus[template.localStatus];
-  return template.remoteStatus === 'APPROVED' && template.hashMatches && !template.syncRequired
-    && template.effectiveCategory === template.requestedCategory
-    && !(template.requestedCategory === 'MARKETING' && template.quality === 'RED')
-    ? modelStatus.usable : 'Aprovação ou integridade pendente';
-}
+import { catalogReleaseMatches, templateErrorMessage, useWhatsappTemplates, type CatalogReleasePin } from '@/hooks/useWhatsappTemplates';
+import { storeTemplateStatus } from '@/features/whatsapp/template-status';
 
 /** Administration only. The server still authenticates the platform admin and pins the binding. */
 export function TemplateCatalogAdminCard({ unitId }: { unitId: string }) {
@@ -95,8 +80,8 @@ function TemplateCatalogAdminSession({ unitId }: { unitId: string }) {
           {snapshot.templates.length > 0 && <div className="space-y-2" aria-label="Estado dos modelos oficiais">
             <p className="font-medium">Catálogo previsto: {snapshot.templates.length} modelo{snapshot.templates.length === 1 ? '' : 's'} exibido{snapshot.templates.length === 1 ? '' : 's'}. A lista não comprova submissão à Meta.</p>
             <ul className="space-y-1">{snapshot.templates.map(template => <li key={template.logicalId} className="rounded border p-2">
-              <span className="font-medium">{template.name}</span> · {safeModelStatus(template)}
-              {template.localStatus === 'usable' && safeModelStatus(template) !== modelStatus.usable && <span className="block text-muted-foreground">A aprovação da Meta só é utilizável após conferir conteúdo, categoria, qualidade e sincronização atual.</span>}
+              <span className="font-medium">{template.name}</span> · {storeTemplateStatus(template)}
+              {template.localStatus === 'usable' && storeTemplateStatus(template) !== 'Aprovado e disponível' && <span className="block text-muted-foreground">A aprovação da Meta só é utilizável após conferir conteúdo, categoria, qualidade e sincronização atual.</span>}
             </li>)}</ul>
           </div>}
           {sync.isSuccess && <p role="status">{sync.data.status === 'requested' ? 'Atualização solicitada; acompanhe os estados da Meta.' : 'Atualização indisponível neste canal.'}</p>}

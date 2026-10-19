@@ -3,6 +3,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { supabase } from '@/lib/supabase';
 import { canonicalBrPhone, isValidBrPhone } from '@/lib/phone';
+import { templatePreparationSchema } from '@/features/whatsapp/template-preparation';
 import { TEMPLATE_CATALOG } from '../../supabase/functions/_shared/whatsapp-template-catalog-core';
 import { AUTOMATION_PREFLIGHT_REASONS, SCHEDULED_KINDS } from '../../supabase/functions/_shared/whatsapp-automation-core';
 import {
@@ -14,7 +15,7 @@ const uuid = z.uuid();
 const positive = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const date = z.iso.datetime({ offset: true });
 const logicalId = z.enum(Object.keys(TEMPLATE_CATALOG) as [keyof typeof TEMPLATE_CATALOG, ...(keyof typeof TEMPLATE_CATALOG)[]]);
-const templateSchema = z.object({
+export const templateSchema = z.object({
   logicalId, version: z.literal(1), name: z.string(), body: z.string(), footer: z.string().nullable(),
   requestedCategory: z.enum(['UTILITY', 'MARKETING']),
   effectiveCategory: z.enum(['UTILITY', 'MARKETING', 'AUTHENTICATION', 'UNKNOWN']).nullable(),
@@ -35,6 +36,7 @@ const snapshotSchema = z.object({
   mode: z.enum(['official', 'unofficial', 'unavailable']), channelId: uuid.nullable(), providerLabel: z.enum(['Datafy', 'Meta', 'Z-API', 'WAHA', 'UazAPI']).nullable(),
   capabilities: z.object({ templateMessages: z.boolean(), templateManagement: z.boolean() }).strict(),
   configuration: z.object({ bindingGeneration: positive.nullable(), credentialRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(), catalogAuthorized: z.boolean(), dispatchEnabled: z.boolean(), adopted: z.boolean() }).strict(),
+  templatePreparation: templatePreparationSchema.nullable().optional(),
   templates: z.array(templateSchema), blockedJobs: z.array(jobSchema), generatedAt: date,
 }).strict().refine(s => {
   const absent = s.mode === 'unavailable';

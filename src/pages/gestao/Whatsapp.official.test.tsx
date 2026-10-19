@@ -18,6 +18,20 @@ const show = () => {
 beforeEach(() => { vi.clearAllMocks(); mocks.unit.isGerente = true; });
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks(); });
 describe("portal WhatsApp oficial", () => {
+  it('mostra os nove estados pelo onboarding Datafy conectado antes do corte', async () => {
+    mocks.unit.unit_id = '10000000-0000-4000-8000-000000000001';
+    try {
+      mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === 'official_connection_state'
+        ? { ...base, step: 'awaiting_echo', items: [{ id: 'number_connected', done: true }] }
+        : body.action === 'onboarding_catalog_snapshot'
+          ? { channelId: null, templatePreparation: null, templates: [], generatedAt: '2026-10-17T19:00:00Z' }
+          : { channel_id: null, status: 'not_configured' }, error: null }));
+      show();
+      expect(await screen.findByText('Análise dos modelos oficiais')).toBeInTheDocument();
+      await waitFor(() => expect(mocks.invoke.mock.calls.some(([, { body }]) => body.action === 'onboarding_catalog_snapshot')).toBe(true));
+      expect(screen.queryByRole('button', { name: 'Solicitar sincronização' })).not.toBeInTheDocument();
+    } finally { mocks.unit.unit_id = 'u1'; }
+  });
   it.each(["disconnected", "provider_error"])("expõe saúde %s e recuperação do canal ativado", async (status) => {
     mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ data: body.action === "official_connection_state" ? { ...base, step: "active" } : { channel_id: "c1", status } }));
     show();

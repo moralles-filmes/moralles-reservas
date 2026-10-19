@@ -9,11 +9,34 @@ function fixture() {
     authenticate: vi.fn(async () => ({ id })),
     access: vi.fn(async () => ({ role: 'owner' as const, isPlatformAdmin: false, exists: true })),
     snapshot: vi.fn(async () => ({ channel: null, binding: null, unitAdopted: false, templates: [], jobs: [], generatedAt: '2026-10-09T10:00:00Z' })),
+    onboardingSnapshot: vi.fn(async () => ({ channel: null, binding: null, preparation: null, unitAdopted: false,
+      templates: [], jobs: [], generatedAt: '2026-10-09T10:00:00Z' })),
     callerRpc: vi.fn(async () => ({ data: id, error: null })),
   };
   return { deps, run: createTemplateManagementHandler(deps) };
 }
 describe('actual management Request factory', () => {
+  it('reads onboarding catalog only by authenticated unit and refuses operator or caller channel', async () => {
+    const { deps, run } = fixture();
+    expect(await (await run(request({ action: 'onboarding_catalog_snapshot', unit_id: id }))).json())
+      .toEqual({ channelId: null, templatePreparation: null, templates: [], generatedAt: '2026-10-09T10:00:00Z' });
+    expect(deps.onboardingSnapshot).toHaveBeenCalledWith(id);
+    expect(deps.callerRpc).not.toHaveBeenCalled();
+    expect((await run(request({ action: 'onboarding_catalog_snapshot', unit_id: id, channel_id: id }))).status).toBe(400);
+    vi.mocked(deps.access).mockResolvedValue({ role: 'operador', isPlatformAdmin: false, exists: true });
+    expect((await run(request({ action: 'onboarding_catalog_snapshot', unit_id: id }))).status).toBe(403);
+  });
+  it('requires real platform admin and original JWT for a global auto policy change', async () => {
+    const { deps, run } = fixture();
+    const body = { action: 'set_auto_policy', enabled: true, expected_revision: 0 };
+    expect((await run(request(body))).status).toBe(403);
+    expect(deps.callerRpc).not.toHaveBeenCalled();
+    vi.mocked(deps.access).mockResolvedValue({ role: null, isPlatformAdmin: true, exists: true });
+    vi.mocked(deps.callerRpc).mockResolvedValue({ data: { enabled: true, revision: 1, catalog_digest: 'a'.repeat(64), updated_at: '2026-10-17T19:00:00Z' }, error: null });
+    expect(await (await run(request(body))).json()).toEqual({ enabled: true, revision: 1, catalogDigest: 'a'.repeat(64), updatedAt: '2026-10-17T19:00:00Z' });
+    expect(deps.callerRpc).toHaveBeenCalledWith(jwt, 'configure_whatsapp_template_auto_policy', { p_enabled: true, p_expected_revision: 0 });
+    expect((await run(request({ ...body, actor_id: id }))).status).toBe(400);
+  });
   it('forwards the exact authenticated token and no caller actor to SQL', async () => {
     const { deps, run } = fixture();
     const response = await run(request({ action: 'sync', unit_id: id, channel_id: id, expected_binding_generation: 2 }));

@@ -6,6 +6,9 @@ export type TemplateRole = 'owner' | 'gerente' | 'operador' | null;
 export type ConsentPurpose = 'operational' | 'promotional';
 type JobAssertion = { job_id: string; expected_channel_id: string; expected_binding_generation: number };
 export type TemplateManagementRequest =
+  | { action: 'auto_policy_snapshot' }
+  | { action: 'set_auto_policy'; enabled: boolean; expected_revision: number }
+  | { action: 'onboarding_catalog_snapshot'; unit_id: string }
   | { action: 'snapshot'; unit_id: string }
   | { action: 'sync'; unit_id: string; channel_id: string; expected_binding_generation: number }
   | ({ action: 'initialize_job' } & JobAssertion)
@@ -16,9 +19,9 @@ export type TemplateManagementRequest =
   | { action: 'authorize_marketing_cost'; channel_id: string; expected_binding_generation: number; category: 'MARKETING'; valid_from: string; valid_until: string }
   | { action: 'configure_promotion_frequency'; window_days: number };
 export type TemplateAction = TemplateManagementRequest['action'];
-const ADMIN_ACTIONS: readonly TemplateAction[] = ['initialize_job', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'];
+const ADMIN_ACTIONS: readonly TemplateAction[] = ['auto_policy_snapshot', 'set_auto_policy', 'initialize_job', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'];
 export function canManageTemplateAction(role: TemplateRole, action: TemplateAction, admin: boolean): boolean {
-  if (!['snapshot', 'sync', 'initialize_job', 'revalidate_job', 'record_consent', 'consent_snapshot', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'].includes(action)) return false;
+  if (!['auto_policy_snapshot', 'set_auto_policy', 'onboarding_catalog_snapshot', 'snapshot', 'sync', 'initialize_job', 'revalidate_job', 'record_consent', 'consent_snapshot', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'].includes(action)) return false;
   if (admin) return true;
   if (ADMIN_ACTIONS.includes(action)) return false;
   return role === 'owner' || role === 'gerente' || (role === 'operador' && action === 'snapshot');
@@ -42,6 +45,9 @@ export function parseTemplateManagementRequest(input: unknown): TemplateManageme
   if (!record(input)) return null;
   let keys: string[] = []; let valid = false;
   switch (input.action) {
+    case 'auto_policy_snapshot': keys = ['action']; valid = true; break;
+    case 'set_auto_policy': keys = ['action', 'enabled', 'expected_revision']; valid = typeof input.enabled === 'boolean' && integer(input.expected_revision, 0); break;
+    case 'onboarding_catalog_snapshot': keys = ['action', 'unit_id']; valid = isManagementUuid(input.unit_id); break;
     case 'snapshot': keys = ['action', 'unit_id']; valid = isManagementUuid(input.unit_id); break;
     case 'sync': keys = ['action', 'unit_id', 'channel_id', 'expected_binding_generation']; valid = isManagementUuid(input.unit_id) && isManagementUuid(input.channel_id) && integer(input.expected_binding_generation); break;
     case 'initialize_job': case 'revalidate_job':
@@ -82,19 +88,49 @@ export function decodeSyncResult(value: unknown): { status: 'requested'; request
 }
 export function managementPositiveInteger(value: unknown): number { return integer(value) ? value : unavailable(); }
 
+export interface TemplateAutoPolicySnapshot { enabled: boolean; revision: number; catalogDigest: string; updatedAt: string | null }
+export function decodeTemplateAutoPolicy(value: unknown): TemplateAutoPolicySnapshot {
+  const updatedAt = record(value) ? value.updated_at : undefined;
+  if (!record(value) || typeof value.enabled !== 'boolean' || !integer(value.revision, 0)
+    || typeof value.catalog_digest !== 'string' || !/^[a-f0-9]{64}$/.test(value.catalog_digest)
+    || (updatedAt !== null && !date(updatedAt))) return unavailable();
+  return { enabled: value.enabled, revision: value.revision, catalogDigest: value.catalog_digest,
+    updatedAt: updatedAt === null ? null : date(updatedAt) ? updatedAt : unavailable() };
+}
+
 const SAFE_REASONS: readonly string[] = [...AUTOMATION_PREFLIGHT_REASONS, 'channel_unconfigured', 'binding_unconfigured', 'template_unconfigured', 'render_missing', 'promotion_frequency', 'final_service_suspended', 'final_channel_changed', 'final_consent_changed', 'final_resource_changed', 'final_gate_paused', 'submission_history_protected', 'submission_paused', 'existing_template', 'post_lease_expired', 'post_ambiguous', 'response_invalid', 'documented_preproxy_429', 'provider_rejected', 'auth_rejected', 'template_rejected'];
 const safeReason = (value: unknown) => value === null ? null : typeof value === 'string' && SAFE_REASONS.includes(value) ? value : 'unknown_reason';
 const logical = (value: unknown): TemplateId | null => typeof value === 'string' && Object.prototype.hasOwnProperty.call(TEMPLATE_CATALOG, value) ? value as TemplateId : null;
 const checkedDate = (value: unknown): string => date(value) ? value : unavailable();
 const checkedUuid = (value: unknown): string => isManagementUuid(value) ? value : unavailable();
 const pick = (value: unknown, values: readonly string[]) => typeof value === 'string' && values.includes(value) ? value : unavailable();
+const PREPARATION_REASONS = ['connection_pending', 'health_stale', 'binding_pending', 'provider_unavailable', 'policy_changed', 'manual_review'] as const;
+/** SQL may add internal fields; only a closed, privacy-safe projection reaches browsers. */
+export function projectTemplatePreparation(value: unknown) {
+  if (value === null || value === undefined) return null;
+  if (!record(value)) return unavailable();
+  const enrollment = pick(value.enrollment, ['eligible', 'disabled', 'legacy', 'excluded']) as 'eligible' | 'disabled' | 'legacy' | 'excluded';
+  const state = value.state === null ? null : pick(value.state, ['pending', 'discovering', 'ready', 'needs_review']) as 'pending' | 'discovering' | 'ready' | 'needs_review';
+  const reason = value.reason_code === null ? null : pick(value.reason_code, PREPARATION_REASONS) as typeof PREPARATION_REASONS[number];
+  const updatedAt = value.updated_at === null ? null : checkedDate(value.updated_at);
+  return { enrollment, state, reason, updatedAt };
+}
 export interface TemplateSnapshotInput {
   channel: Record<string, unknown> | null;
   binding: Record<string, unknown> | null;
+  preparation?: unknown;
   unitAdopted: boolean;
   templates: Record<string, unknown>[];
   jobs: Record<string, unknown>[];
   generatedAt: string;
+}
+export function projectOnboardingCatalogSnapshot(input: TemplateSnapshotInput) {
+  const generatedAt = checkedDate(input.generatedAt);
+  const templatePreparation = projectTemplatePreparation(input.preparation);
+  if (!input.channel) return { channelId: null, templatePreparation, templates: [], generatedAt };
+  const snapshot = projectTemplateSnapshot(input);
+  if (snapshot.providerLabel !== 'Datafy') return unavailable();
+  return { channelId: snapshot.channelId, templatePreparation, templates: snapshot.templates, generatedAt };
 }
 /** Build DTOs field by field. Raw rows/remote text never cross this boundary. */
 export function projectTemplateSnapshot(input: TemplateSnapshotInput) {
@@ -114,6 +150,7 @@ export function projectTemplateSnapshot(input: TemplateSnapshotInput) {
     providerLabel: provider ? labels[provider] : null,
     capabilities: { templateMessages: capabilities?.templateMessages === true, templateManagement: capabilities?.templateManagement === true },
     configuration: { bindingGeneration, credentialRevision, catalogAuthorized, dispatchEnabled: input.binding?.dispatch_enabled === true, adopted: input.unitAdopted },
+    templatePreparation: projectTemplatePreparation(input.preparation),
     templates: Object.values(TEMPLATE_CATALOG).map(definition => {
       const row = input.templates.find(t => t.logical_id === definition.id && t.version === 1);
       return { logicalId: definition.id, version: 1, name: definition.name, body: definition.body, footer: definition.footer,
