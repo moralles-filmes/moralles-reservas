@@ -80,6 +80,8 @@ Arquivos previstos: cartão Datafy, snapshot/gestão de templates, painel Platfo
 
 **Documentação e memória:** o plano da Fase 6 e o runbook separam o rollout global da submissão v1 já aceita. A memória do projeto recebeu checkpoint que distingue o último GET Meta comprovado (17/10), a política automática apenas local e os drafts v2 isolados. Nenhum estado Meta de 19/10 foi inferido.
 
+**Commit e CI (19/10/2026):** commit local `5bec38d` enviado ao [PR draft #37](https://github.com/moralles-filmes/moralles-reservas/pull/37). O check remoto `acl-estatico` e a prévia Vercel passaram; `acl-com-banco` manual foi pulado conforme configuração. O PR permanece sem merge; o CI e a prévia não autorizam `db push`, Edge Functions, política ON ou POST à Meta.
+
 ## Task 5 — Rollout e piloto com a Ren Sushi
 
 - [ ] Antes de qualquer escrita, conferir projeto `gbabxcrntkwgblgqsiit`, backup/janela, migrations pendentes exatas, contas/bindings/grants/jobs, canal Datafy local/remoto e UazAPI desligada. Confirmar nominalmente canal e custo; obter autorizações próprias para `db push`, matriz EF (incluindo `process-whatsapp-templates`) e efeito do merge em Vercel. SQL → ACL/RLS efetiva → EFs → frontend READY.
