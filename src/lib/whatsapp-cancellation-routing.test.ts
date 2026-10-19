@@ -203,6 +203,10 @@ describe('send-cancellation legacy and paused Request paths', () => {
     expect(x.providerPosts[0]).toContain('Reserva Cancelada');
     expect(x.p.requests).toContainEqual(expect.objectContaining({ kind: 'cancellation', status: 'sent' }));
     expect(x.p.trace.some(call => call.name === 'append_conversation_message')).toBe(true);
+    expect(x.p.trace.find(call => call.name === 'claim_whatsapp_legacy_automation_post')).toMatchObject({ args: {
+      p_kind: 'cancellation', p_resource_id: x.f.ids.reservation, p_origin: 'send-cancellation' } });
+    expect(x.p.trace.findIndex(call => call.name === 'finish_whatsapp_legacy_automation_post'))
+      .toBeLessThan(x.p.trace.findIndex(call => call.name === 'append_conversation_message'));
     expect(x.harness.internalRequests).toHaveLength(0);
   });
   it('adopted paused unit invokes the managed endpoint without any provider POST', async () => {

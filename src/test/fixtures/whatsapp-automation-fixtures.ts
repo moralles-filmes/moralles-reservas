@@ -659,7 +659,10 @@ function createReservationProducerIO(base: {
         if (scripted) return scripted;
         if (controls.queryError === table) return { data: null, error: { code: 'synthetic_dependency' } };
         if (insert) {
-          if (table === 'vouchers') { writes.voucherInsertCount++; tables.vouchers.push({ ...voucher, ...insert }); return { data: null, error: null }; }
+          if (table === 'vouchers') {
+            writes.voucherInsertCount++; const inserted = { ...voucher, ...insert }; tables.vouchers.push(inserted);
+            return { data: columns === '*' ? null : project(inserted), error: null };
+          }
           if (table !== 'notifications_sent') return fail(`insert:${table}`);
           if (insert.kind !== 'confirmation_email') base.calls.recordSent++;
           requests.push({ ...insert }); return { data: null, error: null };
@@ -722,6 +725,14 @@ function createReservationProducerIO(base: {
       trace.push({ name, args });
       const scripted = rpcReplies[name]?.shift();
       if (scripted) return scripted;
+      // Positive RPC port replies, not a SQL ownership/locking simulation.
+      // Cutover tests supply ordered refusal/error replies independently.
+      if (name === 'claim_whatsapp_legacy_automation_post') return { data: { allowed: true,
+        intent_id: '11111111-0000-4000-8000-000000000002', fence: '22222222-0000-4000-8000-000000000002' }, error: null };
+      if (name === 'confirm_whatsapp_legacy_automation_post') return { data: { allowed: true }, error: null };
+      if (name === 'finish_whatsapp_legacy_automation_post') return { data: { recorded: true,
+        state: args.p_outcome === 'accepted' ? 'accepted' : 'uncertain' }, error: null };
+      if (name === 'release_whatsapp_legacy_automation_claim') return { data: { released: true }, error: null };
       if (name === 'try_giftback_lock' || name === 'release_giftback_lock') return { data: true, error: null };
       if (name === 'expire_vouchers') return { data: 0, error: null };
       if (name === 'get_waitlist_for_feedback') return { data: tables.waitlist.map(row => ({ waitlist_id: row.id,

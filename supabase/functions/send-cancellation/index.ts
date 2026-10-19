@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
+import { isLegacyAutomationSuppressed } from "../_shared/whatsapp-legacy-automation-post.ts";
 import { clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { clearChannelConnectivityCache } from "../_shared/whatsapp-send.ts";
 import { jsonLog, sanitizePhone } from "../_shared/security.ts";
@@ -197,9 +198,10 @@ serve(async (req) => {
       `🔑 Código: #${details.reservation_code}\n\n` +
       `Se foi engano ou quiser remarcar, é só responder aqui que ajudamos. 🙏`;
 
-    const result = await sendWhatsApp(customerPhone, message, { unit_id: reserva.unit_id });
+    const result = await sendWhatsApp(customerPhone, message, { unit_id: reserva.unit_id,
+      legacyAutomation: { kind: 'cancellation', resourceId: reserva.id, origin: 'send-cancellation' } });
 
-    await supabase
+    if (!isLegacyAutomationSuppressed(result)) await supabase
       .from("notifications_sent")
       .upsert(
         {
@@ -208,6 +210,9 @@ serve(async (req) => {
           kind: "cancellation",
           status: result.ok ? "sent" : "failed",
           error: result.ok ? null : (result.error ?? `status_${result.status ?? "unknown"}`),
+          provider_message_id: result.providerMessageId ?? null,
+          whatsapp_provider: result.provider ?? null,
+          whatsapp_channel_id: result.channelId ?? null,
         },
         { onConflict: "reservation_id,kind" }
       );

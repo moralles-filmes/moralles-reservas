@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp } from "../_shared/whatsapp-send.ts";
+import { isLegacyAutomationSuppressed } from "../_shared/whatsapp-legacy-automation-post.ts";
 import { clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { clearChannelConnectivityCache } from "../_shared/whatsapp-send.ts";
 import { sendEmail } from "../_shared/email.ts";
@@ -439,6 +440,7 @@ serve(async (req) => {
     const whatsappPromise = managed ? Promise.resolve(scheduledWhatsapp()) : unit_id
       ? sendWhatsApp(customer.phone, message, {
           unit_id,
+          legacyAutomation: { kind: 'confirmation', resourceId: reserva.id, origin: 'send-confirmation' },
         }).then(
           (res) => ({
             kind: "whatsapp" as const,
@@ -506,7 +508,8 @@ serve(async (req) => {
         reservation_id: record.id,
         err: (whatsappResult as { error?: string }).error,
       });
-      await recordNotification(record.id, unit_id, "confirmation", "failed", (whatsappResult as { error?: string }).error);
+      if (!isLegacyAutomationSuppressed({ error: (whatsappResult as { error?: string }).error }))
+        await recordNotification(record.id, unit_id, "confirmation", "failed", (whatsappResult as { error?: string }).error);
     }
 
     if (emailResult.skipped) {

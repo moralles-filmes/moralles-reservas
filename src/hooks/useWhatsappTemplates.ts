@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { z } from 'zod';
@@ -114,6 +115,29 @@ export function catalogReleaseMatches(snapshot: TemplateSnapshot | undefined, pi
     && (!pin.enabled || !snapshot.catalogSelection || snapshot.catalogSelection.state === 'v1')
     && pin.enabled !== pin.catalogAuthorized;
 }
+export type DispatchReleasePin = {
+  channelId: string; bindingGeneration: number; credentialRevision: number;
+  dispatchEnabled: boolean; adopted: boolean; enabled: boolean;
+};
+export function dispatchReleaseMatches(snapshot: TemplateSnapshot | undefined, pin: DispatchReleasePin): boolean {
+  return !!snapshot && snapshot.channelId === pin.channelId
+    && snapshot.configuration.bindingGeneration === pin.bindingGeneration
+    && snapshot.configuration.credentialRevision === pin.credentialRevision
+    && snapshot.configuration.dispatchEnabled === pin.dispatchEnabled
+    && snapshot.configuration.adopted === pin.adopted && pin.enabled !== pin.dispatchEnabled
+    // Pausing an existing grant must remain available if provider capabilities change.
+    && (!pin.enabled || (snapshot.mode === 'official' && snapshot.providerLabel === 'Datafy'
+      && snapshot.capabilities.templateMessages));
+}
+type DispatchAttempt = { pin: DispatchReleasePin; readCount: number; readQuery: object; settled: boolean };
+// An unknown mutation result stays fenced across card remounts in this query-client session.
+const dispatchAttemptsByClient = new WeakMap<object, Map<string, DispatchAttempt>>();
+function dispatchAttempts(client: object) {
+  let attempts = dispatchAttemptsByClient.get(client);
+  if (!attempts) { attempts = new Map(); dispatchAttemptsByClient.set(client, attempts); }
+  return attempts;
+}
+const dispatchIdentity = (unitId: string, pin: Pick<DispatchReleasePin, 'channelId' | 'bindingGeneration' | 'credentialRevision'>) => `${unitId}:${pin.channelId}:${pin.bindingGeneration}:${pin.credentialRevision}`;
 export function useWhatsappTemplates(unitId: string, role: TemplateRole = null, isPlatformAdmin = false) {
   const client = useQueryClient();
   const key = ['whatsapp-templates', unitId] as const;
@@ -124,6 +148,49 @@ export function useWhatsappTemplates(unitId: string, role: TemplateRole = null, 
   });
   const permitted = canManageTemplateRequest(role, { action: 'snapshot_v2', unit_id: unitId }, isPlatformAdmin) && (isPlatformAdmin || role === 'owner' || role === 'gerente');
   const canAdministerCatalog = isPlatformAdmin && canManageTemplateAction(role, 'release_channel', isPlatformAdmin);
+  const canAdministerDispatch = isPlatformAdmin && canManageTemplateAction(role, 'release_channel', isPlatformAdmin);
+  const [dispatchAttemptMap] = useState(() => dispatchAttempts(client));
+  const [, setDispatchAttemptRevision] = useState(0);
+  const currentDispatchAttemptKey = query.data?.channelId && query.data.configuration.bindingGeneration !== null
+    && query.data.configuration.credentialRevision !== null
+    ? dispatchIdentity(unitId, { channelId: query.data.channelId, bindingGeneration: query.data.configuration.bindingGeneration,
+      credentialRevision: query.data.configuration.credentialRevision }) : null;
+  useEffect(() => {
+    const attempt = currentDispatchAttemptKey && dispatchAttemptMap.get(currentDispatchAttemptKey);
+    const state = client.getQueryState<TemplateSnapshot>(['whatsapp-templates', unitId]);
+    const sameReadQuery = client.getQueryCache().find({ queryKey: ['whatsapp-templates', unitId], exact: true }) === attempt?.readQuery;
+    if (!attempt || !attempt.settled || query.isError || query.isFetching || !state
+      || (sameReadQuery ? state.dataUpdateCount <= attempt.readCount : state.dataUpdateCount < 1) || !query.data) return;
+    if (query.data.configuration.dispatchEnabled === attempt.pin.enabled
+      && query.data.configuration.adopted === (attempt.pin.adopted || attempt.pin.enabled)) {
+      dispatchAttemptMap.delete(currentDispatchAttemptKey);
+      setDispatchAttemptRevision(revision => revision + 1);
+    }
+  }, [client, currentDispatchAttemptKey, dispatchAttemptMap, query.data, query.dataUpdatedAt, query.isError, query.isFetching, unitId]);
+  const releaseDispatch = useMutation({
+    retry: false,
+    mutationFn: async (pin: DispatchReleasePin) => {
+      const identity = dispatchIdentity(unitId, pin);
+      if (!canAdministerDispatch || query.isError || query.isFetching || !dispatchReleaseMatches(query.data, pin)
+        || !uuid.safeParse(pin.channelId).success || !positive.safeParse(pin.bindingGeneration).success
+        || !z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).safeParse(pin.credentialRevision).success
+        || dispatchAttemptMap.has(identity)) throw closedError('configuration_changed');
+      dispatchAttemptMap.set(identity, { pin: { ...pin }, readCount: client.getQueryState(key)?.dataUpdateCount ?? 0,
+        readQuery: client.getQueryCache().find({ queryKey: key, exact: true }), settled: false });
+      setDispatchAttemptRevision(revision => revision + 1);
+      const data = await requestManagement({
+        action: 'release_channel', channel_id: pin.channelId, scope: 'dispatch', enabled: pin.enabled,
+        expected_credential_revision: pin.credentialRevision,
+        expected_binding_generation: pin.bindingGeneration,
+      });
+      if (!z.object({ status: z.literal('updated') }).strict().safeParse(data).success) throw closedError();
+    },
+    onSettled: (_data, _error, pin) => {
+      const attempt = dispatchAttemptMap.get(dispatchIdentity(unitId, pin));
+      if (attempt) attempt.settled = true;
+      return client.invalidateQueries({ queryKey: key, exact: true });
+    },
+  });
   const releaseCatalog = useMutation({
     mutationFn: async (pin: CatalogReleasePin) => {
       const snapshot = query.data;
@@ -156,7 +223,8 @@ export function useWhatsappTemplates(unitId: string, role: TemplateRole = null, 
       if (!z.object({ status: z.literal('updated') }).strict().safeParse(data).success) throw closedError();
     }, onSettled: () => client.invalidateQueries({ queryKey: key, exact: true }),
   });
-  return { query, sync, correction, releaseCatalog, canManage: permitted, canAdministerCatalog };
+  return { query, sync, correction, releaseCatalog, releaseDispatch, canManage: permitted, canAdministerCatalog,
+    canAdministerDispatch, wasDispatchAttempted: (pin: DispatchReleasePin) => dispatchAttemptMap.has(dispatchIdentity(unitId, pin)) };
 }
 export type TemplateControls = ReturnType<typeof useWhatsappTemplates>;
 

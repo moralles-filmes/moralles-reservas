@@ -129,6 +129,10 @@ describe('real producer refusal and preserved branches', () => {
     const f=fixture(kind), p=f.producer(); p.controls.adopted=false; p.controls.bindingEnabled=false;
     await f.runVoucherProducer(); expect(p.trace.some(x=>x.name==='issue_scheduled_whatsapp_voucher')).toBe(false);
     expect(p.writes.voucherInsertCount).toBe(1); expect(f.calls.legacyText).toBe(1); expect(f.calls.post).toBe(0);
+    const forwarded = p.harness.internalRequests.find(hop => hop.to === 'send-whatsapp');
+    expect(await forwarded!.request.json()).toMatchObject({ kind: 'voucher_issued', voucher_id: f.rows.vouchers[0].id });
+    expect(p.trace.find(call => call.name === 'claim_whatsapp_legacy_automation_post')).toMatchObject({ args: {
+      p_kind: 'voucher_issued', p_resource_id: f.rows.vouchers[0].id, p_origin: 'send-whatsapp' } });
   });
   it.each(['settings','organizations','whatsapp_automation_adoptions'])('adopted required %s error remains dependency', async table => {
     const f=fixture(),p=f.producer(); p.controls.queryError=table;

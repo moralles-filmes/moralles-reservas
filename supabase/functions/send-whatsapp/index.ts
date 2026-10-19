@@ -3,6 +3,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhatsApp, type SendMessagePayload } from "../_shared/whatsapp-send.ts";
 import { clearWhatsAppGateCache } from "../_shared/whatsapp-service-gate.ts";
 import { clearChannelConnectivityCache } from "../_shared/whatsapp-send.ts";
+import { isLegacyAutomationSuppressed, type LegacyAutomationIntent } from "../_shared/whatsapp-legacy-automation-post.ts";
+import { automationUuid } from "../_shared/whatsapp-automation-producer-routing.ts";
 import {
   decideMessageTtl,
   isProducerDefect,
@@ -59,6 +61,8 @@ interface ExtendedPayload extends SendMessagePayload {
   // `notifications_sent.waitlist_id`. Idempotência por UNIQUE parcial
   // (waitlist_id, kind) (migration 048).
   waitlist_id?: string | null;
+  /** Only the persisted birthday/frequency INSERT winner can identify this fact. */
+  voucher_id?: string | null;
 }
 
 /**
@@ -210,7 +214,7 @@ serve(async (req) => {
     });
   }
 
-  const { phone, message, channel_id, unit_id, kind, reservation_id, waitlist_id, fact_at } = body;
+  const { phone, message, channel_id, unit_id, kind, reservation_id, waitlist_id, voucher_id, fact_at } = body;
 
   const authResult = await authorize(req, unit_id);
   if (!authResult.ok) {
@@ -233,6 +237,11 @@ serve(async (req) => {
     );
   }
 
+  // These scoped facts have authenticated/dedicated resource workflows. Do not
+  // turn an explicitly declared automation into an unguarded free-form send.
+  if (kind === 'confirmation' || kind === 'cancellation') return new Response(
+    JSON.stringify({ success: false, error: 'Use a operação específica de confirmação ou cancelamento.' }),
+    { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   const normalizedKind = kind && VALID_KINDS.has(kind) ? kind : null;
 
   // O recurso referenciado tem que ser DESTA unidade.
@@ -251,19 +260,28 @@ serve(async (req) => {
   // `customerId` sai daqui reaproveitado pelo log de conversa mais abaixo — a
   // consulta que valida é a mesma que já era feita depois do envio.
   let resourceCustomerId: string | null = null;
-  if (normalizedKind && unit_id && (waitlist_id || reservation_id)) {
-    const table = waitlist_id ? "waitlist" : "reservations";
-    const id = (waitlist_id ?? reservation_id) as string;
-    const { data: owner, error: ownerErr } = await supabaseAdmin
-      .from(table)
-      .select("unit_id, customer_id")
-      .eq("id", id)
-      .maybeSingle();
+  let legacyAutomation: LegacyAutomationIntent | undefined;
+  if (normalizedKind) {
+    const reservationKind = normalizedKind === 'reminder_d1' || normalizedKind === 'survey_d1';
+    const voucherKind = normalizedKind === 'voucher_issued';
+    const id = voucherKind ? voucher_id : reservationKind ? reservation_id : waitlist_id;
+    const wrongDimension = voucherKind ? !!reservation_id || !!waitlist_id
+      : reservationKind ? !!waitlist_id || !!voucher_id : !!reservation_id || !!voucher_id;
+    if (!automationUuid(unit_id) || !automationUuid(id) || wrongDimension) return new Response(
+      JSON.stringify({ success: false, error: 'Recurso da notificação inválido.' }),
+      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    const table = voucherKind ? 'vouchers' : reservationKind ? 'reservations' : 'waitlist';
+    const ownership = voucherKind
+      ? await supabaseAdmin.from('vouchers').select('id,unit_id,customer_id,rule_id').eq('id', id).maybeSingle()
+      : await supabaseAdmin.from(table).select('id,unit_id,customer_id').eq('id', id).maybeSingle();
+    const ownerErr = ownership.error;
+    const owner = ownership.data !== null && typeof ownership.data === 'object' && !Array.isArray(ownership.data)
+      ? ownership.data as Record<string, unknown> : null;
 
     // Fail-closed: não conseguir confirmar a titularidade não autoriza escrever
     // sobre o recurso. Diferente do gate de conexão, aqui uma leitura que falha
     // não tem lado seguro "permitir" — o dano é sobre dado de outro tenant.
-    if (ownerErr || !owner || owner.unit_id !== unit_id) {
+    if (ownerErr || !owner || owner.id !== id || owner.unit_id !== unit_id) {
       jsonLog("warn", {
         evt: "send_whatsapp_cross_tenant_ref",
         unit_id,
@@ -278,6 +296,16 @@ serve(async (req) => {
       );
     }
     resourceCustomerId = (owner.customer_id as string | undefined) ?? null;
+    if (voucherKind) {
+      const rule = await supabaseAdmin.from('voucher_rules').select('id,unit_id,trigger_type')
+        .eq('id', owner.rule_id).eq('unit_id', owner.unit_id).maybeSingle();
+      if (rule.error || !rule.data || rule.data.id !== owner.rule_id || rule.data.unit_id !== owner.unit_id
+        || !['birthday','frequency'].includes(rule.data.trigger_type)) return new Response(
+        JSON.stringify({ success: false, error: 'Recurso da notificação inválido.' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+    // Server-owned scope from the verified resource; caller origin/fences are ignored.
+    legacyAutomation = { kind: normalizedKind as LegacyAutomationIntent['kind'], resourceId: owner.id, origin: 'send-whatsapp' };
   }
 
   // Prazo de validade ANTES de qualquer contato com o provedor. Descarte
@@ -314,7 +342,7 @@ serve(async (req) => {
   }
 
   try {
-    const result = await sendWhatsApp(phone, message, { channel_id, unit_id });
+    const result = await sendWhatsApp(phone, message, { channel_id, unit_id, legacyAutomation });
 
     if (!result.ok) {
       jsonLog("warn", {
@@ -329,7 +357,7 @@ serve(async (req) => {
       });
     }
 
-    if (normalizedKind && unit_id) {
+    if (normalizedKind && unit_id && !isLegacyAutomationSuppressed(result)) {
       await recordNotification(
         unit_id,
         normalizedKind,
@@ -382,7 +410,9 @@ serve(async (req) => {
     );
   } catch (err) {
     jsonLog("error", { evt: "send_whatsapp_error", err: String(err) });
-    if (normalizedKind && unit_id) {
+    // A scoped POST may already be durably accepted when projection I/O throws.
+    // Never replace that evidence with a fabricated failed/no-ID notification.
+    if (normalizedKind && unit_id && !legacyAutomation) {
       await recordNotification(
         unit_id,
         normalizedKind,
