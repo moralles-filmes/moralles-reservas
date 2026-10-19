@@ -1205,6 +1205,11 @@ const pernasDaCopy = (corpo: string) => ({
   paradaLimpa: /handoffText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT/.test(corpo),
 });
 
+/** A primeira pergunta da escolha é a ferramenta mutante (não um `else if`). */
+const mutacaoPerguntadaPrimeiro = (corpo: string) =>
+  /let handoffText: string;\n {6}if \(mutatingToolUsed\) \{\n {8}handoffText = resolveMutationStopText\(lastMutationOutcome\);/
+    .test(corpo);
+
 describe("o texto do handoff por prazo não mente para o cliente", () => {
   it("as três pernas existem, e cada uma responde à sua pergunta", () => {
     const pernas = pernasDaCopy(RAMO_DE_ERRO_DO_AGENTE);
@@ -1217,9 +1222,28 @@ describe("o texto do handoff por prazo não mente para o cliente", () => {
       pernas.paradaLimpa,
       "o prazo sem mutação voltou a afirmar falha técnica sobre parada planejada",
     ).toBe(true);
-    // E as perguntas na ordem certa: instabilidade é o caso de NÃO ser prazo.
-    expect(RAMO_DE_ERRO_DO_AGENTE).toMatch(/if \(!agentDeadlineReached\) \{/);
-    expect(RAMO_DE_ERRO_DO_AGENTE).toMatch(/\} else if \(mutatingToolUsed\) \{/);
+    // E as perguntas na ordem certa: a ferramenta mutante vem PRIMEIRO, com
+    // prazo ou com erro de provedor; instabilidade é o caso de NÃO ser prazo.
+    expect(mutacaoPerguntadaPrimeiro(RAMO_DE_ERRO_DO_AGENTE)).toBe(true);
+    expect(RAMO_DE_ERRO_DO_AGENTE).toMatch(/\} else if \(!agentDeadlineReached\) \{/);
+  });
+
+  it("CONTROLE POSITIVO: a ordem anterior — prazo primeiro — ficaria vermelha", () => {
+    // Na ordem anterior, erro de provedor depois de `create_reservation` caía em
+    // "instabilidade" com a reserva `confirmed`. Com o corte virando
+    // `AgentTruncatedError`, esse virou o caminho comum: a rodada que confirma é
+    // a mais longa e a que mais corta.
+    const anterior =
+      "      let handoffText: string;\n" +
+      "      if (!agentDeadlineReached) {\n" +
+      "        handoffText = AGENT_INSTABILITY_TEXT;\n" +
+      "      } else if (mutatingToolUsed) {\n" +
+      "        handoffText = resolveMutationStopText(lastMutationOutcome);\n" +
+      "      } else {\n" +
+      "        handoffText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT;\n" +
+      "      }\n";
+    expect(pernasDaCopy(anterior).aposMutacao, "o controle não tem a perna pós-mutação").toBe(true);
+    expect(mutacaoPerguntadaPrimeiro(anterior)).toBe(false);
   });
 
   it("CONTROLE POSITIVO: a forma anterior — um texto só — ficaria vermelha", () => {

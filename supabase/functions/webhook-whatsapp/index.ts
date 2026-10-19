@@ -4867,11 +4867,11 @@ async function handleWebhookRequest(
       // `ai-budget-copy.ts` nomeia: "usar a mesma frase para as três é o erro que
       // produz cliente aparecendo no restaurante sem mesa".
       //
-      // Escopado a `agentDeadlineReached` de propósito. O ramo de `agent_error`
-      // após ferramenta mutante tem o MESMO problema e é PREEXISTENTE — mudá-lo
-      // aqui alteraria, de carona, a mensagem que a loja real já manda hoje.
-      // Registrado para a revisão de branch decidir, não resolvido por efeito
-      // colateral.
+      // A ferramenta mutante é a PRIMEIRA pergunta, com prazo ou com erro de
+      // provedor: o desfecho para o cliente é o mesmo (a reserva mudou e a
+      // confirmação não saiu). O erro pós-mutação ficou frequente quando a
+      // resposta cortada passou a ser `AgentTruncatedError` em vez de meia frase
+      // — a rodada final, a que confirma, é a mais longa e a que mais corta.
       //
       // TRÊS pernas, e a terceira não é simetria: sem ela o prazo SEM ferramenta
       // mutante — tão frequente quanto o caso acima — afirma "instabilidade"
@@ -4883,10 +4883,10 @@ async function handleWebhookRequest(
       // mantém uma frase por situação — e o que garante que ela já está no
       // `HARDCODED_AGENT_NOISE`, pela lista importada.
       let handoffText: string;
-      if (!agentDeadlineReached) {
-        handoffText = AGENT_INSTABILITY_TEXT;
-      } else if (mutatingToolUsed) {
+      if (mutatingToolUsed) {
         handoffText = resolveMutationStopText(lastMutationOutcome);
+      } else if (!agentDeadlineReached) {
+        handoffText = AGENT_INSTABILITY_TEXT;
       } else {
         handoffText = AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT;
       }
