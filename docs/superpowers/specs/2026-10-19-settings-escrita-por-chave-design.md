@@ -1,6 +1,6 @@
 # Escrita em `settings` restrita por chave e papel — design
 
-**Status:** proposta, aguardando aprovação.
+**Status:** aprovada em 2026-10-19 (classificação de §3 aceita; correção do hook de §5 vai em PR próprio).
 **Branch/worktree:** `fix/settings-write-acl` em `.claude/worktrees/settings-write-acl` (a partir de `origin/main` `d18f975`).
 **Assunto:** banco/RLS (`.claude/rules/banco-de-dados.md`), agente de IA (`.claude/rules/agente-ia.md`).
 
@@ -93,8 +93,8 @@ As policies **não mudam**: o isolamento de tenant continua no RLS e o trigger s
 
 1. **`app_private.unit_setting_write_class(p_key text) returns text`**: `IMMUTABLE`, `language sql`, `search_path=''`. Devolve `'manager'` para a lista fechada de §3 e `'platform'` para qualquer outra entrada, inclusive `NULL`.
 2. **`app_private.guard_unit_setting_write() returns trigger`**: `plpgsql`, `SECURITY DEFINER`, `search_path=''`:
-   - `auth.role()` diferente de `authenticated` e de `anon` (service_role, `postgres` em `db push`, cron) → passa. Os escritores confiáveis seguem como hoje e nenhum deles grava settings atualmente.
-   - `anon` → `42501`. Hoje é inalcançável (sem policy), mas fica de cinto de segurança.
+   - `auth.role()` nulo (sem contexto de request: `postgres` em `db push`, cron) ou `service_role` → passa. Os escritores confiáveis seguem como hoje e nenhum deles grava settings atualmente.
+   - Qualquer outro papel que não seja `authenticated` (inclusive `anon`) → `42501`. Hoje o anon é inalcançável (sem policy), mas fica de cinto de segurança, e um papel desconhecido nasce negado.
    - `auth.uid()` nulo → `42501`.
    - `app_private.is_platform_admin(uid)` → passa. É o paralelo obrigatório do guard por `unit_id`.
    - Para **cada escopo não nulo entre `OLD` e `NEW`**, a classe de `key` em `unit_id`: `platform` → `42501`; `manager` → exige `unit_members(user_id=uid, unit_id=escopo, role in ('owner','gerente'))`, senão `42501`. Conferir os dois escopos impede contornar a regra mudando `key` ou `unit_id` num UPDATE, como faz o precedente.
@@ -103,7 +103,7 @@ As policies **não mudam**: o isolamento de tenant continua no RLS e o trigger s
    - O upsert do PostgREST (`INSERT … ON CONFLICT DO UPDATE`) dispara primeiro o BEFORE INSERT e depois o BEFORE UPDATE. As duas passagens chegam ao mesmo veredito.
 3. **`create trigger settings_write_role_guard before insert or update or delete on public.settings for each row`** (antecedido de `drop trigger if exists`). Por ordem alfabética roda antes de `whatsapp_legacy_template_write`, que continua intacto.
 4. **ACL das funções:** `revoke all on function … from public, anon, authenticated, service_role` com a assinatura completa nas duas. Ninguém chama direto: o trigger dispara sem `EXECUTE` do invocador (mesmo modelo do guard existente) e o classificador é chamado pelo trigger SECURITY DEFINER. Nada entra em `scripts/function-acl-allowlist.json`.
-5. **Higiene de grants da tabela:** `revoke insert, update, delete, truncate on public.settings from anon` e `revoke truncate on public.settings from public, authenticated`. Anon não grava nem lê settings direto (o portal lê pelas RPCs SECURITY DEFINER). O `SELECT` de anon fica como está: negado pelo RLS e fora do escopo.
+5. **Higiene de grants da tabela:** `revoke insert, update, delete, truncate on public.settings from anon`, mais o revoke de `insert`/`update` por coluna de todas as colunas para anon (o mesmo bloco `DO` da migration `20261017160000`, porque `REVOKE` de tabela não remove grant de coluna), e `revoke truncate on public.settings from public, authenticated`. Anon não grava nem lê settings direto (o portal lê pelas RPCs SECURITY DEFINER). O `SELECT` de anon fica como está: negado pelo RLS e fora do escopo.
 
 ### 4.3 Paridade UI ↔ banco
 
@@ -127,15 +127,13 @@ Verificado em produção: `unit_member_all_conversations` (ALL, `is_unit_member`
 | Achado | Impacto real | Proposta |
 |---|---|---|
 | `assigned_to` aceita o id de outro usuário (qualquer `auth.users`, inclusive de outro tenant) | Atribuição falsa na própria unidade. **Nenhum código lê `assigned_to`** além do tipo em `src/types/reserva.ts`: webhook, auto-resolve e UI não o usam para decidir nada. Não dá acesso. | **Registrar para depois.** A regra certa ("só `NULL` ou `auth.uid()`; platform_admin pode atribuir a membro da unidade?") depende de uma feature de "transferir para colega" que não existe. Vira um item no rule file de WhatsApp e na memória. |
-| `releaseToAI`/`markResolved` sem `.eq("unit_id")` e sem `.select()` | O RLS já barra outra unidade, então não vaza. O defeito é silencioso: uma conversa apagada ou fora do escopo devolve `error: null` e a UI mostra sucesso (AGENTS §8). | **Entra nesta entrega** como tarefa separada e pequena de frontend: copiar o padrão do `assumeConversation` (`.eq("unit_id", unitId).select("id")` + erro em zero linhas) e criar um teste do hook. Não depende do banco. |
-
-Se você preferir a branch só com banco, a correção do hook sai num PR próprio. O conteúdo é o mesmo.
+| `releaseToAI`/`markResolved` sem `.eq("unit_id")` e sem `.select()` | O RLS já barra outra unidade, então não vaza. O defeito é silencioso: uma conversa apagada ou fora do escopo devolve `error: null` e a UI mostra sucesso (AGENTS §8). | **PR próprio** (decisão de 2026-10-19), branch separada a partir de `origin/main`: copiar o padrão do `assumeConversation` (`.eq("unit_id", unitId).select("id")` + erro em zero linhas) e criar um teste do hook. Não depende do banco. |
 
 ## 6. Testes
 
-### 6.1 `supabase/tests/local-preflight/71a-settings-write-acl-bootstrap.sql` + `71-settings-write-acl.sql`
+### 6.1 `supabase/tests/local-preflight/75a-settings-write-acl-bootstrap.sql` + `75-settings-write-acl.sql`
 
-O bootstrap cria o mínimo: `units` ×2, `unit_members`, `platform_admins`, `settings` com o UNIQUE e os helpers `app_private.is_platform_admin`/`is_unit_member` na forma de produção. Também cria o trigger `whatsapp_legacy_template_write` real, para provar que os dois convivem. Depois aplica a migration nova **crua** (sem `psql -1`). As identidades vêm de `request.jwt.claims` (`sub`, `role`), como no CONTROLE-6.
+Base igual à do 68: `00-bootstrap` + `01-audit` + `09a-advisor-bootstrap` + migration 106, que já trazem `units`, `unit_members`, `platform_admins`, `settings` com o UNIQUE e os helpers `app_private.*` na forma de produção. O `75a` acrescenta o que falta: `auth.role()` lendo `request.jwt.claims`, unidades e atores de teste, e o trigger `whatsapp_legacy_template_write` com a função copiada verbatim de produção, para provar que os dois convivem. Depois aplica a migration nova **crua** (sem `psql -1`). As identidades vêm de `request.jwt.claims` (`sub`, `role`), como no CONTROLE-6.
 
 Casos (cada um confere o código `42501` **e** o efeito na tabela):
 
@@ -165,13 +163,13 @@ O harness não prova RLS nem PostgREST: o isolamento entre unidades segue nas po
 ### 6.2 Vitest
 
 - `scripts/settings-write-acl.test.ts` (§4.3), com controle negativo: uma fixture com uma chave a mais na Gestão tem de falhar.
-- `src/hooks/useConversations.test.ts`: `releaseToAI`/`markResolved` filtram por `unit_id`, pedem `.select` e lançam erro em zero linhas.
+- (PR próprio) teste do hook: `releaseToAI`/`markResolved` filtram por `unit_id`, pedem `.select` e lançam erro em zero linhas.
 - `npm run typecheck`, `lint`, `test`, `build` verdes. Os dois testes que já falham localmente (CRLF e flake) são registrados como pré-existentes, não como regressão.
 
 ## 7. Gates, deploy e rollback
 
 - **Antes do merge:** `saas-shield-br:migration-validator`, `saas-shield-br:rls-auditor` e `saas-shield-br:identity-access-auditor` sobre a migration (Opus). Também o check `acl-estatico` verde na aba Checks e o `git diff --cached` revisado com a varredura de segredos do AGENTS §5.
-- **Deploy (cada passo com autorização sua, pedida à parte):** `supabase db push` com a migration. **Nenhuma Edge Function muda e não há redeploy de EF**, porque todas as leitoras usam service role e o trigger deixa service_role passar. Frontend: o merge em `main` publica só a correção do hook na Vercel.
+- **Deploy (cada passo com autorização sua, pedida à parte):** `supabase db push` com a migration. **Nenhuma Edge Function muda e não há redeploy de EF**, porque todas as leitoras usam service role e o trigger deixa service_role passar. Frontend: esta branch não muda `src/`; o merge em `main` dispara a Vercel sem mudança de bundle. A correção do hook vai pelo PR próprio.
 - **Verificação pós-push (leitura):** o trigger existe, as ACLs das funções estão como em S14 e S16, e um owner real consegue salvar Ajustes de reservas e de fila na Gestão.
 - **Rollback:** uma migration que faz `drop trigger settings_write_role_guard` volta ao comportamento atual sem perder dado, porque o trigger não grava nada. Os revokes de anon não precisam voltar.
 
@@ -194,6 +192,6 @@ O harness não prova RLS nem PostgREST: o isolamento entre unidades segue nas po
 ## 10. Modelo por tarefa (memória model-choice-by-risk)
 
 - Migration e harness `71/71a`: Opus.
-- Teste de paridade e correção do hook: Sonnet.
+- Teste de paridade e correção do hook (PR próprio): Sonnet.
 - Gates `saas-shield-br:*`: Opus.
 - Buscas pontuais: Haiku.
