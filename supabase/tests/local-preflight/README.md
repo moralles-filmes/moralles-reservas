@@ -2599,7 +2599,9 @@ O S6 e o S7 também isolam o escopo OLD: renomear `ai_config` para uma chave
 manager, e o ator operador em U1/gerente em U2 movendo uma linha de U1 para U2
 (o NEW e a RLS passam). EXTRA-1 é `authenticated` sem `sub` e o papel de banco
 `authenticated` sem claims nenhuma. EXTRA-2 mostra que o gerente de outra
-unidade continua casando zero linhas sem erro, ou seja, não há oráculo novo.
+unidade continua casando zero linhas sem erro em UPDATE/DELETE e que, no
+upsert (onde o BEFORE roda antes do `WITH CHECK`), recebe a mesma recusa para
+uma unidade alheia e para uma inexistente, ou seja, não há oráculo novo.
 O CONTROLE-SET-1 tem três partes, cada uma num subbloco desfeito: sem o
 trigger o operador grava `ai_config`; com o guard mutado para conferir OLD só
 no DELETE, os dois casos de escopo OLD passam; com o guard mutado sem o ramo do

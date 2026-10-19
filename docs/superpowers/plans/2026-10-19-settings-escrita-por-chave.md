@@ -16,7 +16,7 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
 
 ## Bloco 1 — PR 1, banco (Tasks 1–3)
 
-### [ ] Task 1 — Migration do guard + pré-voo 75/75a (RED antes, GREEN depois)
+### [x] Task 1 — Migration do guard + pré-voo 75/75a (RED antes, GREEN depois)
 
 **Modelo:** Opus (implementação e review). SQL, trigger e ACL.
 
@@ -60,7 +60,7 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
 5. Seção nova no README do pré-voo, "### 75 — Escrita em settings por chave e papel", no formato da seção 68: comandos exatos, contagem esperada, ordinais livres e "O que NÃO prova" (PostgREST/JWT real; o isolamento entre unidades continua nas policies, que não mudaram).
 6. Commit: `feat(db): guard settings writes by key and role` com a migration, `75a`, `75` e o README.
 
-### [ ] Task 2 — Paridade UI ↔ classificador + regra
+### [x] Task 2 — Paridade UI ↔ classificador + regra
 
 **Modelo:** Sonnet (implementação e review). Teste estático puro.
 
@@ -95,8 +95,9 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
 **Modelo:** Opus.
 
 1. Com autorização de **merge**: mergear o PR 1 em `main` (dispara a Vercel sem mudança de bundle). Conferir o deploy READY.
-2. Com autorização de **`db push`**: `supabase db push` a partir do `main` atualizado, depois de `supabase migration list` mostrar só a migration nova pendente. Se aparecer drift, parar.
+2. Com autorização de **`db push`**: `supabase db push` a partir do `main` atualizado, depois de `supabase migration list` mostrar só a migration nova pendente. Se aparecer drift, parar. A migration tem `lock_timeout = '5s'`: se falhar com `55P03`, nada foi aplicado (BEGIN/COMMIT); repetir fora de pico.
 3. Verificação somente leitura em produção (MCP `select`):
+   - **antes do push**, `auth.role()` ainda lê `request.jwt.claims` (conferido em 2026-10-19); com a forma antiga, a Gestão inteira receberia `42501`;
    - o trigger `settings_write_role_guard` existe;
    - `has_function_privilege` é `false` para `anon`/`authenticated`/`service_role` nas duas funções;
    - `has_table_privilege('anon','public.settings','INSERT'|'UPDATE'|'DELETE'|'TRUNCATE')` e `('authenticated', …, 'TRUNCATE')` são `false`;
@@ -117,6 +118,13 @@ PR 2 (hook de conversas): branch própria `fix/conversations-release-unit-scope`
 4. Gates: o teste, `npm run typecheck`, `npm run lint`, `npm run test`.
 5. Commit `fix(conversations): scope release/resolve to the unit and confirm the write`. Pedir autorização para push e PR. O merge em `main` publica na Vercel e também precisa de autorização.
 6. Registrar em `.claude/rules/whatsapp.md` (Conversas), na mesma tarefa: "`conversations.assigned_to` aceita qualquer `auth.users.id` pelo grant de coluna; nenhum código o lê. Antes de usá-lo para decidir algo, fechar com trigger (`NULL` ou `auth.uid()`)." É o achado registrado para depois.
+
+## Execução do Bloco 1 (2026-10-19)
+
+- **Task 1** (`c8534c7`): pré-voo RED (exit 3 na guarda), depois 20/20 com a migration crua aplicada duas vezes, em PG 18.6 descartável. Reviews de spec (Sonnet) e de qualidade (Opus) sem bloqueante. Acréscimos do review: ramo do `role` GUC para papel de API sem claims, `lock_timeout = '5s'`, casos do escopo OLD (S2/S6/S7) e controle positivo em três partes por mutação do corpo instalado. Medido: `REVOKE` de tabela já limpa grant de coluna (o bloco `DO` é reforço). O `26` não foi reexecutado (exige a stack CLI e a cadeia 27–60; a linha de base já falha num contêiner avulso); no lugar, checagem focada em `supabase/postgres:17.11` com o guard legado e a RPC de manutenção reais (README §75).
+- **Task 2** (`79c7a04`): paridade 22 = 22, 5/5; typecheck limpo; lint sem erro novo; suíte cheia com só a falha conhecida de CRLF e `OfficialConnectionCard.test.tsx`, que exige `VITE_*` ausentes no worktree (passa 16/16 com valores fictícios).
+- **Task 3**: `migration-validator`, `rls-auditor` e `identity-access-auditor` em `PASS_WITH_WARNINGS`, zero bloqueantes. Do RLS entrou a correção da premissa de §4.1 (no INSERT o trigger roda antes do `WITH CHECK`) e a prova de recusa idêntica para unidade alheia e inexistente (EXTRA-2). Review da branch contra a spec: §4.2 e S1–S16 conferidos. Nada em `src/` nem em `supabase/functions/`. Guards estáticos (`function-acl-allowlist`, `advisor-divergence-core`, `migration-static-guard`) verdes. **Pendente: push e PR, com autorização.**
+- **Follow-ups registrados, fora deste PR:** `FORCE RLS` em `settings` (medir `BYPASSRLS` do dono das RPCs públicas antes, como na 180000); revogar `SELECT` de anon e `REFERENCES`/`TRIGGER` de anon/authenticated; policies de `settings` com `(select …)`; `Conta.tsx:202` sem `isPlatformAdmin` em `canEdit` e DELETE de `restaurant_name` sem checar `error`; `.claude/rules/frontend.md` diz que a UI não escreve `restaurant_name`, mas ela o apaga; `manage-members` devolve `error.message` cru; o comentário da `20261017160000` diz que `REVOKE` de tabela não remove grant de coluna (medido: remove).
 
 ## Sequência de chats
 

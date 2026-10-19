@@ -473,20 +473,28 @@ begin
 end $$;
 
 -- ─── EXTRA-2: membro de outra unidade continua vendo zero linhas ─────────────
--- O guard só dispara em linha que passou pela RLS: UPDATE/DELETE de U1 por um
--- gerente de U2 casam zero linhas sem erro, como antes (sem oráculo novo).
+-- Em UPDATE/DELETE o guard só dispara em linha que passou pelo USING da RLS:
+-- UPDATE/DELETE de U1 por um gerente de U2 casam zero linhas sem erro, como
+-- antes. Em INSERT o BEFORE roda antes do WITH CHECK, então o upsert recebe a
+-- recusa do guard; ela tem de ser a MESMA para U1 (existe, alheia) e para uma
+-- unidade inexistente, ou a resposta viraria oráculo de existência.
 do $$
-declare a text; b text; v0 text; v text;
+declare a text; b text; c text; d text; v0 text; v text;
   u1 constant uuid := 'a0d75000-0000-4000-8000-0000000000aa';
+  ghost constant uuid := 'a0d75000-0000-4000-8000-0000000000ff';
   ger2 constant uuid := 'a0d75000-0000-4000-8000-0000000000b2';
 begin
   v0 := pg_temp.s75_val(u1, 'booking_window_days');
   a := pg_temp.s75_try('authenticated', ger2, pg_temp.s75_upd(u1, 'booking_window_days', 's75-ger2'));
   b := pg_temp.s75_try('authenticated', ger2, pg_temp.s75_del(u1, 'booking_window_days'));
+  c := pg_temp.s75_try('authenticated', ger2, pg_temp.s75_ups(u1, 'booking_window_days', 's75-ger2'));
+  d := pg_temp.s75_try('authenticated', ger2, pg_temp.s75_ups(ghost, 'booking_window_days', 's75-ger2'));
   v := pg_temp.s75_val(u1, 'booking_window_days');
-  insert into t_res values (769, 'EXTRA-2 gerente U2: UPDATE/DELETE em U1 casam zero linhas sem erro (RLS), valor intacto',
-    case when a = 'ok' and b = 'ok' and v0 <> '<ausente>' and v = v0 then 'PASSOU'
-         else 'FALHOU upd=' || a || ' del=' || b || ' antes=' || v0 || ' depois=' || v end);
+  insert into t_res values (769, 'EXTRA-2 gerente U2: UPDATE/DELETE em U1 casam zero linhas sem erro (RLS); upsert em U1 e em unidade inexistente recebem a mesma recusa; valor intacto',
+    case when a = 'ok' and b = 'ok' and c = '42501:setting_write_forbidden' and d = c
+          and v0 <> '<ausente>' and v = v0 then 'PASSOU'
+         else 'FALHOU upd=' || a || ' del=' || b || ' ups_u1=' || c || ' ups_inexistente=' || d
+              || ' antes=' || v0 || ' depois=' || v end);
 end $$;
 
 -- ─── CONTROLE-SET-1: os testes enxergam o defeito ────────────────────────────
