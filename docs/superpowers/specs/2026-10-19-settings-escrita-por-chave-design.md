@@ -94,6 +94,7 @@ As policies **não mudam**: o isolamento de tenant continua no RLS e o trigger s
 1. **`app_private.unit_setting_write_class(p_key text) returns text`**: `IMMUTABLE`, `language sql`, `search_path=''`. Devolve `'manager'` para a lista fechada de §3 e `'platform'` para qualquer outra entrada, inclusive `NULL`.
 2. **`app_private.guard_unit_setting_write() returns trigger`**: `plpgsql`, `SECURITY DEFINER`, `search_path=''`:
    - `auth.role()` nulo (sem contexto de request: `postgres` em `db push`, cron) ou `service_role` → passa. Os escritores confiáveis seguem como hoje e nenhum deles grava settings atualmente.
+   - *(Acréscimo do review da Task 1, 2026-10-19.)* `auth.role()` nulo só passa se o GUC `role` da sessão não for `anon` nem `authenticated`: um papel de API sem claims é recusado. O GUC sobrevive ao `SECURITY DEFINER` (medido no PG 17 e 18). A migration também faz `set local lock_timeout = '5s'`, porque o `drop trigger` pede `ACCESS EXCLUSIVE` numa tabela que os workers leem o tempo todo.
    - Qualquer outro papel que não seja `authenticated` (inclusive `anon`) → `42501`. Hoje o anon é inalcançável (sem policy), mas fica de cinto de segurança, e um papel desconhecido nasce negado.
    - `auth.uid()` nulo → `42501`.
    - `app_private.is_platform_admin(uid)` → passa. É o paralelo obrigatório do guard por `unit_id`.
@@ -170,7 +171,7 @@ O harness não prova RLS nem PostgREST: o isolamento entre unidades segue nas po
 
 - **Antes do merge:** `saas-shield-br:migration-validator`, `saas-shield-br:rls-auditor` e `saas-shield-br:identity-access-auditor` sobre a migration (Opus). Também o check `acl-estatico` verde na aba Checks e o `git diff --cached` revisado com a varredura de segredos do AGENTS §5.
 - **Deploy (cada passo com autorização sua, pedida à parte):** `supabase db push` com a migration. **Nenhuma Edge Function muda e não há redeploy de EF**, porque todas as leitoras usam service role e o trigger deixa service_role passar. Frontend: esta branch não muda `src/`; o merge em `main` dispara a Vercel sem mudança de bundle. A correção do hook vai pelo PR próprio.
-- **Verificação pós-push (leitura):** o trigger existe, as ACLs das funções estão como em S14 e S16, e um owner real consegue salvar Ajustes de reservas e de fila na Gestão.
+- **Verificação pós-push (leitura):** antes do push, `auth.role()` de produção ainda lê `request.jwt.claims` (forma moderna, conferida em 2026-10-19); o trigger existe, as ACLs das funções estão como em S14 e S16, e um owner real consegue salvar Ajustes de reservas e de fila na Gestão.
 - **Rollback:** uma migration que faz `drop trigger settings_write_role_guard` volta ao comportamento atual sem perder dado, porque o trigger não grava nada. Os revokes de anon não precisam voltar.
 
 ## 8. Fora de escopo
