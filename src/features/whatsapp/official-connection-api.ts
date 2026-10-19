@@ -2,6 +2,7 @@ import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { DATAFY_CONNECT_ORIGIN, type OfficialChecklist, type OnboardingState } from "../../../supabase/functions/_shared/datafy-onboarding-core";
 import { projectMigration, type OfficialMigration } from "./official-migration";
+import { readTemplatePreparation, type TemplatePreparation } from "./template-preparation";
 export type { OfficialMigration } from "./official-migration";
 
 export interface OfficialConnectionState extends OfficialChecklist {
@@ -9,6 +10,7 @@ export interface OfficialConnectionState extends OfficialChecklist {
   onboardingState: OnboardingState | null;
   migration: OfficialMigration | null;
   connectionRevoked?: boolean;
+  templatePreparation?: TemplatePreparation | null;
 }
 
 const ERROR_COPY: Record<string, string> = {
@@ -47,13 +49,14 @@ async function invokeOfficial(action: string, unitId: string) {
 }
 
 export async function readOfficialConnection(unitId: string): Promise<OfficialConnectionState | null> {
-  const data: (Omit<OfficialConnectionState, "migration"> & { migration?: unknown }) | null = await invokeOfficial("official_connection_state", unitId);
+  const data: (Omit<OfficialConnectionState, "migration" | "templatePreparation"> & { migration?: unknown; templatePreparation?: unknown }) | null = await invokeOfficial("official_connection_state", unitId);
   if (!data) return null;
   // Project the client-safe contract: accidental extra DTO fields never reach the query cache.
   return {
     step: data.step, granted: data.granted === true, onboardingState: data.onboardingState,
     items: data.items.map(({ id, done }) => ({ id, done })),
     templatesPending: data.templatesPending === true,
+    templatePreparation: readTemplatePreparation(data.templatePreparation),
     migration: projectMigration(data.migration),
     ...(data.connectionRevoked === true ? { connectionRevoked: true } : {}),
   };

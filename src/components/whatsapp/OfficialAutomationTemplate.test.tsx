@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { projectTemplateSnapshot } from '../../../supabase/functions/_shared/whatsapp-template-access-core';
 import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates';
 import { OfficialAutomationTemplate, TemplateStatus } from './OfficialAutomationTemplate';
+import type { TemplatePreparation } from '@/features/whatsapp/template-preparation';
 
 const io = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@/lib/supabase', () => ({ supabase: { functions: { invoke: io.invoke } } }));
@@ -33,6 +34,13 @@ it('does not infer a provider POST from local pending with unknown remote status
   expect(screen.queryByText('Em análise na Meta')).not.toBeInTheDocument();
 });
 
+it('shows Meta appeal as read-only review rather than approval', () => {
+  render(<OfficialAutomationTemplate template={{ ...template, version: 1, effectiveCategory: null,
+    quality: 'UNKNOWN', localStatus: 'pending', remoteStatus: 'IN_APPEAL' }} onSync={vi.fn()} canSync={false} />);
+  expect(screen.getByText('Recurso em análise na Meta')).toBeInTheDocument();
+  expect(screen.queryByText('Modelo disponível')).not.toBeInTheDocument();
+});
+
 it('does not equate approved remote status with current integrity or synchronization', () => {
   render(<OfficialAutomationTemplate template={{ ...template, version: 1, effectiveCategory: null, quality: 'UNKNOWN', remoteStatus: 'APPROVED', localStatus: 'usable', hashMatches: false, syncRequired: true }} onSync={vi.fn()} canSync={false} />);
   expect(screen.getByText(/Conteúdo ainda não conferido/)).toBeInTheDocument();
@@ -60,18 +68,32 @@ function job(target: 'automation' | 'catalog', state: string, index = 1) {
 function StatusHarness({ role }: { role: 'gerente' | 'operador' }) {
   return <TemplateStatus controls={useWhatsappTemplates(unitId, role)} logicalIds={[logicalId]} />;
 }
-function mountStatus(jobs: Record<string, unknown>[], role: 'gerente' | 'operador' = 'gerente') {
-  const snapshot = projectTemplateSnapshot({
+function mountStatus(jobs: Record<string, unknown>[], role: 'gerente' | 'operador' = 'gerente', preparation?: TemplatePreparation) {
+  const snapshot = { ...projectTemplateSnapshot({
     channel: { id: channelId, provider: 'datafy', template_credential_revision: 0 },
     binding: { generation: 1, submission_authorized_at: null, submission_authorized_by: null, dispatch_enabled: false },
     unitAdopted: false, templates: [], jobs, generatedAt: '2026-10-09T12:00:00Z',
-  });
+  }), ...(preparation ? { templatePreparation: preparation } : {}) };
   io.invoke.mockImplementation(async (_name: string, { body }: { body: { action: string } }) => ({
-    data: body.action === 'snapshot' ? snapshot : { status: 'updated' }, error: null,
+    data: body.action === 'snapshot_v2' ? snapshot : { status: 'updated' }, error: null,
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><StatusHarness role={role} /></QueryClientProvider>);
 }
+
+it('shows automatic preparation only for an eligible enrolled channel', async () => {
+  mountStatus([], 'gerente', { enrollment: 'eligible', state: 'pending', reason: null, updatedAt: '2026-10-17T19:00:00Z' });
+  expect(await screen.findByText(/A conexão envia nove modelos para análise da Meta/)).toBeInTheDocument();
+  expect(screen.getByText(/preparação dos nove modelos está na fila/)).toBeInTheDocument();
+  expect(screen.queryByText(/catálogo deste canal ainda não foi liberado/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Solicitar sincronização' })).not.toBeInTheDocument();
+});
+
+it('shows a sanitized review state without claiming provider acceptance', async () => {
+  mountStatus([], 'gerente', { enrollment: 'eligible', state: 'needs_review', reason: 'health_stale', updatedAt: '2026-10-17T19:00:00Z' });
+  expect(await screen.findByText(/saúde do canal precisa ser verificada/)).toBeInTheDocument();
+  expect(screen.queryByText('Em análise na Meta')).not.toBeInTheDocument();
+});
 
 it.each([
   ['automation', 'queued'], ['automation', 'claimed'], ['automation', 'posting'], ['automation', 'retry_wait'],

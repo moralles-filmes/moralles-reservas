@@ -1,17 +1,31 @@
 import { corsHeadersFor } from './cors.ts';
-import { canManageTemplateRequest, decodeConsentState, decodeSyncResult, isManagementUuid,
+import { canManageTemplateRequest, decodeConsentState, decodeSyncResult, decodeTemplateAutoPolicy, decodeTemplateV2Policy, isManagementUuid,
   managementPositiveInteger, parseTemplateManagementRequest, projectTemplateSnapshot,
+  projectOnboardingCatalogSnapshot,
   type TemplateManagementRequest, type TemplateRole, type TemplateSnapshotInput } from './whatsapp-template-access-core.ts';
 
 export interface TemplateManagementDependencies {
   authenticate(jwt: string): Promise<{ id: string } | null>;
   access(userId: string, request: TemplateManagementRequest): Promise<{ role: TemplateRole; isPlatformAdmin: boolean; exists: boolean }>;
-  snapshot(unitId: string): Promise<TemplateSnapshotInput>;
+  snapshot(unitId: string, includeV2?: boolean): Promise<TemplateSnapshotInput>;
+  onboardingSnapshot(unitId: string, includeV2?: boolean): Promise<TemplateSnapshotInput>;
+  resolveBinding?(channelId: string): Promise<string | null>;
   /** The original user's JWT, never a service client or actor parameter. */
   callerRpc(jwt: string, name: string, args: Record<string, unknown>): Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
 }
-function rpcCall(request: Exclude<TemplateManagementRequest, { action: 'snapshot' }>): [string, Record<string, unknown>] {
+function rpcCall(request: Exclude<TemplateManagementRequest, { action: 'snapshot' | 'onboarding_catalog_snapshot' | 'snapshot_v2' | 'onboarding_catalog_snapshot_v2' }>, bindingId?: string): [string, Record<string, unknown>] {
   switch (request.action) {
+    case 'auto_policy_snapshot': return ['get_whatsapp_template_auto_policy', {}];
+    case 'v2_policy_snapshot': return ['get_whatsapp_template_v2_policy', {}];
+    case 'set_v2_policy': return ['configure_whatsapp_template_v2_policy', { p_enabled: request.enabled, p_expected_revision: request.expected_revision }];
+    case 'select_v2_channel': case 'stop_v2_channel':
+      if (!isManagementUuid(bindingId)) throw new Error('dependency_unavailable');
+      return [request.action === 'select_v2_channel' ? 'select_whatsapp_template_v2_existing_account' : 'release_whatsapp_template_v2_channel', {
+        p_binding_id: bindingId, p_expected_generation: request.expected_binding_generation,
+        p_expected_credential_revision: request.expected_credential_revision,
+        ...(request.action === 'select_v2_channel' ? { p_expected_digest: request.expected_digest } : {}),
+      }];
+    case 'set_auto_policy': return ['configure_whatsapp_template_auto_policy', { p_enabled: request.enabled, p_expected_revision: request.expected_revision }];
     case 'sync': return ['request_whatsapp_template_sync_for_channel', { p_channel_id: request.channel_id, p_expected_binding_generation: request.expected_binding_generation }];
     case 'initialize_job': case 'revalidate_job': return [request.action === 'initialize_job' ? 'initialize_whatsapp_automation_job' : request.target === 'catalog' ? 'revalidate_whatsapp_template_job' : 'revalidate_whatsapp_automation_job', { p_job_id: request.job_id, p_expected_channel_id: request.expected_channel_id, p_expected_binding_generation: request.expected_binding_generation }];
     case 'consent_snapshot': return ['get_whatsapp_message_consent_state', { p_unit_id: request.unit_id, p_customer_id: request.customer_id, p_purpose: request.purpose }];
@@ -41,7 +55,14 @@ export function createTemplateManagementHandler(deps: TemplateManagementDependen
       const access = await deps.access(user.id, input);
       if (!access.exists || !canManageTemplateRequest(access.role, input, access.isPlatformAdmin)) return reply({ error: 'forbidden' }, 403);
       if (input.action === 'snapshot') return reply(projectTemplateSnapshot(await deps.snapshot(input.unit_id)));
-      const [name, args] = rpcCall(input);
+      if (input.action === 'onboarding_catalog_snapshot') return reply(projectOnboardingCatalogSnapshot(await deps.onboardingSnapshot(input.unit_id)));
+      if (input.action === 'snapshot_v2') return reply(projectTemplateSnapshot(await deps.snapshot(input.unit_id, true), true));
+      if (input.action === 'onboarding_catalog_snapshot_v2') return reply(projectOnboardingCatalogSnapshot(await deps.onboardingSnapshot(input.unit_id, true), true));
+      const bindingId = (input.action === 'select_v2_channel' || input.action === 'stop_v2_channel')
+        ? await deps.resolveBinding?.(input.channel_id) : undefined;
+      if ((input.action === 'select_v2_channel' || input.action === 'stop_v2_channel') && !bindingId)
+        return reply({ error: 'not_eligible' }, 409);
+      const [name, args] = rpcCall(input, bindingId ?? undefined);
       const { data, error } = await deps.callerRpc(jwt, name, args);
       if (error) {
         if (error.code === '42501' || error.code === 'P0A15') return reply({ error: 'forbidden' }, 403);
@@ -49,6 +70,8 @@ export function createTemplateManagementHandler(deps: TemplateManagementDependen
         if (error.code === 'PT409') return reply({ error: 'configuration_changed' }, 409);
         return reply({ error: 'dependency_unavailable' }, 503);
       }
+      if (input.action === 'auto_policy_snapshot' || input.action === 'set_auto_policy') return reply(decodeTemplateAutoPolicy(data));
+      if (input.action === 'v2_policy_snapshot' || input.action === 'set_v2_policy') return reply(decodeTemplateV2Policy(data));
       if (input.action === 'sync') return reply(decodeSyncResult(data));
       if (input.action === 'consent_snapshot') return reply(decodeConsentState(data, input.purpose));
       if (input.action === 'record_consent') return reply({ revision: managementPositiveInteger(data), purpose: input.purpose, decision: input.decision });

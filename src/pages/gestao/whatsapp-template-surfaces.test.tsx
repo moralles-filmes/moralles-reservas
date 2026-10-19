@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { projectTemplateSnapshot } from '../../../supabase/functions/_shared/whatsapp-template-access-core';
+import { APPROVED_CATALOG_DIGESTS } from '../../../supabase/functions/_shared/whatsapp-template-cohort';
 import { createTemplateManagementHandler } from '../../../supabase/functions/_shared/whatsapp-template-management';
 import Reservas from './reservas/Comunicacao';
 import Fila from './fila/Comunicacao';
@@ -21,18 +22,20 @@ function snapshot(mode = io.mode) {
   return projectTemplateSnapshot(snapshotInput(mode));
 }
 function snapshotInput(mode = io.mode) {
-  return { channel: mode === 'unavailable' ? null : { id: '30000000-0000-4000-8000-000000000001', provider: mode === 'official' ? 'datafy' : 'zapi', template_credential_revision: 0 }, binding: io.bound ? { generation: 1, submission_authorized_at: null, submission_authorized_by: null, dispatch_enabled: false } : null, unitAdopted: false, templates: [], jobs: io.jobs, generatedAt: '2026-10-09T12:00:00Z' };
+  return { channel: mode === 'unavailable' ? null : { id: '30000000-0000-4000-8000-000000000001', provider: mode === 'official' ? 'datafy' : 'zapi', template_credential_revision: 0 }, binding: mode !== 'unavailable' && io.bound ? { generation: 1, submission_authorized_at: null, submission_authorized_by: null, dispatch_enabled: false } : null,
+    catalogSelection: mode === 'official' && io.bound ? { state: 'v1', version: 1, digest: APPROVED_CATALOG_DIGESTS[1], grant_binding_id: null, generation: 1, credential_revision: 0 } : null,
+    unitAdopted: false, templates: [], jobs: io.jobs, generatedAt: '2026-10-09T12:00:00Z' };
 }
 beforeEach(() => {
   Element.prototype.hasPointerCapture = () => false; Element.prototype.scrollIntoView = () => { };
-  io.mode = 'official'; io.role = 'owner'; io.admin = false; io.slug = 'unidade-a'; io.unitId = unitId; io.saves = []; io.filters = []; io.bound = false; io.jobs = []; io.choice = 'unknown'; io.concurrentOptOut = false; io.holdWrite = null;
+  io.mode = 'official'; io.role = 'owner'; io.admin = false; io.slug = 'unidade-a'; io.unitId = unitId; io.saves = []; io.filters = []; io.bound = true; io.jobs = []; io.choice = 'unknown'; io.concurrentOptOut = false; io.holdWrite = null;
   io.rpc.mockReset().mockImplementation(async (_jwt: string, name: string, args: Record<string, unknown>) => {
     if (name === 'get_whatsapp_message_consent_state') return { data: { purpose: args.p_purpose, status: io.choice, revision: io.choice === 'unknown' ? null : 2 }, error: null };
     if (name === 'record_whatsapp_message_consent') { io.choice = io.concurrentOptOut ? 'opt_out' : String(args.p_decision); return { data: 2, error: null }; }
     if (name === 'request_whatsapp_template_sync_for_channel') return { data: '50000000-0000-4000-8000-000000000001', error: null };
     return { data: true, error: null };
   });
-  const handler = createTemplateManagementHandler({ authenticate: async () => ({ id: '40000000-0000-4000-8000-000000000001' }), access: async () => ({ role: io.role as 'owner' | 'gerente' | 'operador', isPlatformAdmin: io.admin, exists: true }), snapshot: async () => snapshotInput(), callerRpc: io.rpc });
+  const handler = createTemplateManagementHandler({ authenticate: async () => ({ id: '40000000-0000-4000-8000-000000000001' }), access: async () => ({ role: io.role as 'owner' | 'gerente' | 'operador', isPlatformAdmin: io.admin, exists: true }), snapshot: async () => snapshotInput(), onboardingSnapshot: async () => snapshotInput(), callerRpc: io.rpc });
   io.invoke.mockReset().mockImplementation(async (_name: string, { body }: { body: unknown }) => {
     const response = await handler(new Request('http://localhost:3000/functions/v1/manage-whatsapp-templates', { method: 'POST', headers: { authorization: 'Bearer synthetic-test-jwt', 'content-type': 'application/json' }, body: JSON.stringify(body) }));
     return response.ok ? { data: await response.json(), error: null } : { data: null, error: new FunctionsHttpError(response) };
@@ -62,6 +65,13 @@ it.each([['reservas', Reservas], ['fila', Fila], ['giftback', Giftback]] as cons
   mount(Page); await screen.findAllByText('Qualidade desconhecida');
   expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
   expect(screen.queryByText('Personalizar mensagem')).not.toBeInTheDocument();
+});
+it('does not fabricate a catalog selection when the official binding is absent', async () => {
+  io.bound = false;
+  mount(Reservas);
+  expect(await screen.findByText(/vínculo da conta de modelos deste canal ainda não foi informado/)).toBeInTheDocument();
+  expect(screen.queryByText('Qualidade desconhecida')).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
 });
 it.each([['reservas', Reservas], ['fila', Fila], ['giftback', Giftback]] as const)('%s preserves a dirty TEXT draft across remote refresh', async (_, Page) => {
   io.mode = 'unofficial'; const client = mount(Page);
@@ -145,9 +155,9 @@ it('store refreshes official model status without a sync request and preserves a
   await screen.findAllByText('Qualidade desconhecida');
   expect(screen.queryByRole('textbox', { name: 'Mensagem' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Solicitar sincronização' })).not.toBeInTheDocument();
-  const snapshotReads = io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot').length;
+  const snapshotReads = io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot_v2').length;
   fireEvent.click(screen.getByRole('button', { name: 'Atualizar dados' }));
-  await waitFor(() => expect(io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot').length).toBeGreaterThan(snapshotReads));
+  await waitFor(() => expect(io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot_v2').length).toBeGreaterThan(snapshotReads));
   expect(io.rpc.mock.calls.some(([, name]) => name === 'request_whatsapp_template_sync_for_channel')).toBe(false);
   io.mode = 'unofficial'; await act(async () => { await client.invalidateQueries({ queryKey: ['whatsapp-templates'] }); });
   expect(await screen.findByRole('textbox', { name: 'Mensagem' })).toHaveValue('Meu rascunho');
@@ -236,7 +246,7 @@ it('eligible explicit correction uses current assertions; a SQL false is refusal
   await screen.findByText(/Esta ação não está disponível para a configuração atual/);
   expect(screen.queryByText(/Correção registrada/)).not.toBeInTheDocument();
   expect(io.rpc).toHaveBeenCalledWith('synthetic-test-jwt', 'revalidate_whatsapp_automation_job', { p_job_id: '70000000-0000-4000-8000-000000000001', p_expected_channel_id: '30000000-0000-4000-8000-000000000001', p_expected_binding_generation: 1 });
-  expect(io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot').length).toBeGreaterThan(1);
+  expect(io.invoke.mock.calls.filter(([, args]) => args.body.action === 'snapshot_v2').length).toBeGreaterThan(1);
 });
 it.each([
   ['accepted', { state: 'accepted' }], ['uncertain', { state: 'uncertain' }], ['rejected', { state: 'rejected' }],

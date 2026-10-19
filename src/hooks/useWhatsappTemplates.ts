@@ -3,7 +3,9 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { supabase } from '@/lib/supabase';
 import { canonicalBrPhone, isValidBrPhone } from '@/lib/phone';
+import { templateCatalogSelectionSchema, templatePreparationSchema } from '@/features/whatsapp/template-preparation';
 import { TEMPLATE_CATALOG } from '../../supabase/functions/_shared/whatsapp-template-catalog-core';
+import { TEMPLATE_V2_CATALOG } from '../../supabase/functions/_shared/whatsapp-template-catalog-v2';
 import { AUTOMATION_PREFLIGHT_REASONS, SCHEDULED_KINDS } from '../../supabase/functions/_shared/whatsapp-automation-core';
 import {
   canManageTemplateAction, canManageTemplateRequest, decodeConsentState, parseTemplateManagementRequest,
@@ -13,18 +15,24 @@ import {
 const uuid = z.uuid();
 const positive = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const date = z.iso.datetime({ offset: true });
-const logicalId = z.enum(Object.keys(TEMPLATE_CATALOG) as [keyof typeof TEMPLATE_CATALOG, ...(keyof typeof TEMPLATE_CATALOG)[]]);
-const templateSchema = z.object({
-  logicalId, version: z.literal(1), name: z.string(), body: z.string(), footer: z.string().nullable(),
+const knownCatalog = { ...TEMPLATE_CATALOG, ...TEMPLATE_V2_CATALOG };
+type KnownTemplateId = keyof typeof knownCatalog;
+const logicalId = z.enum(Object.keys(knownCatalog) as [KnownTemplateId, ...KnownTemplateId[]]);
+export const templateSchema = z.object({
+  logicalId, version: z.union([z.literal(1), z.literal(2)]), name: z.string(), body: z.string(), footer: z.string().nullable(),
   requestedCategory: z.enum(['UTILITY', 'MARKETING']),
   effectiveCategory: z.enum(['UTILITY', 'MARKETING', 'AUTHENTICATION', 'UNKNOWN']).nullable(),
   remoteStatus: z.enum(['UNKNOWN', 'PENDING', 'APPROVED', 'REJECTED', 'PAUSED', 'DISABLED', 'IN_APPEAL', 'PENDING_DELETION', 'DELETED', 'LIMIT_EXCEEDED']),
   localStatus: z.enum(['awaiting_connection', 'queued', 'submitting', 'pending', 'usable', 'rejected', 'paused', 'disabled', 'conflict', 'sync_error', 'unsupported']),
   quality: z.enum(['UNKNOWN', 'GREEN', 'YELLOW', 'RED']), hashMatches: z.boolean(), syncRequired: z.boolean(), lastSyncedAt: date.nullable(),
 }).strict().refine(t => {
-  const original = TEMPLATE_CATALOG[t.logicalId];
-  return t.name === original.name && t.body === original.body && t.footer === original.footer && t.requestedCategory === original.requestedCategory;
+  const original = knownCatalog[t.logicalId];
+  return t.version === original.version && t.name === original.name && t.body === original.body
+    && t.footer === original.footer && t.requestedCategory === original.requestedCategory;
 });
+// Older bundles may return any known subset. Each historical version has its own remote status.
+export const templateCatalogSchema = z.array(templateSchema).max(18)
+  .refine(templates => new Set(templates.map(template => `${template.logicalId}:${template.version}`)).size === templates.length);
 const safeReasons = new Set<string>([...AUTOMATION_PREFLIGHT_REASONS, 'channel_unconfigured', 'binding_unconfigured', 'template_unconfigured', 'render_missing', 'promotion_frequency', 'final_service_suspended', 'final_channel_changed', 'final_consent_changed', 'final_resource_changed', 'final_gate_paused', 'submission_history_protected', 'submission_paused', 'existing_template', 'post_lease_expired', 'post_ambiguous', 'response_invalid', 'documented_preproxy_429', 'provider_rejected', 'auth_rejected', 'template_rejected', 'unknown_reason']);
 const commonJob = { jobId: uuid, logicalId: logicalId.nullable(), reason: z.string().refine(s => safeReasons.has(s)).nullable(), attempts: z.number().int().min(0).max(5), channelId: uuid.nullable() };
 const jobSchema = z.discriminatedUnion('target', [
@@ -35,16 +43,18 @@ const snapshotSchema = z.object({
   mode: z.enum(['official', 'unofficial', 'unavailable']), channelId: uuid.nullable(), providerLabel: z.enum(['Datafy', 'Meta', 'Z-API', 'WAHA', 'UazAPI']).nullable(),
   capabilities: z.object({ templateMessages: z.boolean(), templateManagement: z.boolean() }).strict(),
   configuration: z.object({ bindingGeneration: positive.nullable(), credentialRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(), catalogAuthorized: z.boolean(), dispatchEnabled: z.boolean(), adopted: z.boolean() }).strict(),
-  templates: z.array(templateSchema), blockedJobs: z.array(jobSchema), generatedAt: date,
+  templatePreparation: templatePreparationSchema.nullable().optional(),
+  catalogSelection: templateCatalogSelectionSchema.nullable().optional(),
+  templates: templateCatalogSchema, blockedJobs: z.array(jobSchema), generatedAt: date,
 }).strict().refine(s => {
   const absent = s.mode === 'unavailable';
   if (absent !== (s.channelId === null) || absent !== (s.providerLabel === null) || absent !== (s.configuration.credentialRevision === null)) return false;
   if (s.configuration.bindingGeneration === null && (s.configuration.catalogAuthorized || s.configuration.dispatchEnabled)) return false;
   if (absent && s.configuration.bindingGeneration !== null) return false;
+  if (absent && s.catalogSelection != null) return false;
   if (s.mode === 'official' && !['Datafy', 'Meta'].includes(s.providerLabel)) return false;
   if (s.mode === 'unofficial' && !['Z-API', 'WAHA', 'UazAPI'].includes(s.providerLabel)) return false;
-  // Subset, not equality: an older Edge Function projects a smaller catalog during deploy windows. Ids are known (enum) and unique.
-  return s.templates.length <= Object.keys(TEMPLATE_CATALOG).length && new Set(s.templates.map(t => t.logicalId)).size === s.templates.length;
+  return true;
 });
 export type TemplateSnapshot = z.infer<typeof snapshotSchema>;
 export type OfficialTemplateView = z.infer<typeof templateSchema>;
@@ -80,7 +90,7 @@ async function requestManagement(request: TemplateManagementRequest): Promise<un
   } catch (error) { throw closedError(error instanceof Error ? error.message : undefined); }
 }
 export async function fetchAuthorizedTemplateSnapshot(unitId: string): Promise<TemplateSnapshot> {
-  const parsed = snapshotSchema.safeParse(await requestManagement({ action: 'snapshot', unit_id: unitId }));
+  const parsed = snapshotSchema.safeParse(await requestManagement({ action: 'snapshot_v2', unit_id: unitId }));
   if (!parsed.success) throw closedError();
   return parsed.data;
 }
@@ -101,6 +111,7 @@ export function catalogReleaseMatches(snapshot: TemplateSnapshot | undefined, pi
     && snapshot.configuration.bindingGeneration === pin.bindingGeneration
     && snapshot.configuration.credentialRevision === pin.credentialRevision
     && snapshot.configuration.catalogAuthorized === pin.catalogAuthorized
+    && (!pin.enabled || !snapshot.catalogSelection || snapshot.catalogSelection.state === 'v1')
     && pin.enabled !== pin.catalogAuthorized;
 }
 export function useWhatsappTemplates(unitId: string, role: TemplateRole = null, isPlatformAdmin = false) {
@@ -111,7 +122,7 @@ export function useWhatsappTemplates(unitId: string, role: TemplateRole = null, 
     retry: false, refetchOnWindowFocus: false,
     refetchInterval: () => document.hidden ? false : 30_000,
   });
-  const permitted = canManageTemplateRequest(role, { action: 'snapshot', unit_id: unitId }, isPlatformAdmin) && (isPlatformAdmin || role === 'owner' || role === 'gerente');
+  const permitted = canManageTemplateRequest(role, { action: 'snapshot_v2', unit_id: unitId }, isPlatformAdmin) && (isPlatformAdmin || role === 'owner' || role === 'gerente');
   const canAdministerCatalog = isPlatformAdmin && canManageTemplateAction(role, 'release_channel', isPlatformAdmin);
   const releaseCatalog = useMutation({
     mutationFn: async (pin: CatalogReleasePin) => {

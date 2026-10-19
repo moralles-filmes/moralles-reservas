@@ -3,6 +3,8 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createDatafyTemplateTransport } from '../../supabase/functions/_shared/datafy-client.ts';
 import { TEMPLATE_CATALOG, catalogHash } from '../../supabase/functions/_shared/whatsapp-template-catalog-core.ts';
 import { submissionPayloadHash } from '../../supabase/functions/_shared/whatsapp-template-submission-hash.ts';
+import { TEMPLATE_V2_CATALOG } from '../../supabase/functions/_shared/whatsapp-template-catalog-v2.ts';
+import { APPROVED_CATALOG_DIGESTS } from '../../supabase/functions/_shared/whatsapp-template-cohort.ts';
 import { createTemplateSyncService, selectTemplateBindings, type TemplateBindingCandidate, type TemplateSyncDependencies, type TemplateSyncContext } from '../../supabase/functions/_shared/whatsapp-template-sync.ts';
 
 beforeAll(() => vi.stubGlobal('crypto', webcrypto));
@@ -15,6 +17,7 @@ async function fixture(pages: unknown[] = [{ data: [remote()] }]) {
   const context: TemplateSyncContext = { accountId: 'a', wabaId: '456', bindingId: 'b', generation: 1,
     unitId: 'unit', channelId: 'channel', credentialRevision: 0,
     credentials: { access_token: 'fake' }, catalogEnabled: true, submissionAuthorized: true, provisionBindingId: 'b',
+    selection: { state: 'v1', version: 1, digest: APPROVED_CATALOG_DIGESTS[1], grant_binding_id: 'b', generation: 1, credential_revision: 0 },
     templates: [{ id: 't', logical_id: definition.id, version: 1, name: definition.name, language: 'pt_BR',
       desired_hash: await catalogHash(definition), requested_category: 'UTILITY', remote_id: null,
       remote_status: 'UNKNOWN', quality: 'UNKNOWN', submission_attempted_at: null }], jobs: [] };
@@ -31,6 +34,52 @@ async function fixture(pages: unknown[] = [{ data: [remote()] }]) {
   return { ...createTemplateSyncService(deps), deps, context, fetchImpl };
 }
 describe('production sync with fake HTTP transport', () => {
+  it('seeds and enqueues only the selected v2 while reconciling protected v1 history', async () => {
+    const f = await fixture([{ data: [] }]);
+    const v2 = TEMPLATE_V2_CATALOG.res_confirmacao_v2;
+    f.context.selection = { state: 'ready', version: 2, digest: APPROVED_CATALOG_DIGESTS[2], grant_binding_id: 'b', generation: 1, credential_revision: 0 };
+    f.context.templates.push({ ...f.context.templates[0], id: 't2', logical_id: v2.id, version: 2, name: v2.name,
+      desired_hash: await catalogHash(v2) });
+    await f.syncTemplateAccount('a');
+    expect(f.deps.seed).toHaveBeenCalledWith('a', Object.values(TEMPLATE_V2_CATALOG));
+    expect(f.deps.enqueueProvision).toHaveBeenCalledOnce();
+    expect(f.deps.enqueueProvision).toHaveBeenCalledWith('b', v2);
+    expect(f.deps.publish).toHaveBeenCalledWith('a', expect.anything(), expect.arrayContaining([
+      expect.objectContaining({ id: 't' }), expect.objectContaining({ id: 't2' }),
+    ]));
+  });
+  it.each(['pending', 'paused'] as const)('keeps GET reconciliation but blocks seeding, enqueue and POST when selection is %s', async state => {
+    const f = await fixture([{ data: [] }]);
+    f.context.selection = { state, version: null };
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ state: 'synced' });
+    expect(f.deps.seed).not.toHaveBeenCalled();
+    expect(f.deps.enqueueProvision).not.toHaveBeenCalled();
+    expect(await f.provisionTemplate('a', { id: 'j', target_key: definition.id, revision: 1,
+      state: 'claimed', claim_token: 'f', binding_id: 'b', binding_generation: 1, posting_started_at: null })).toMatchObject({ state: 'paused' });
+    expect(f.fetchImpl).toHaveBeenCalledOnce();
+    expect(f.deps.prepare).not.toHaveBeenCalled();
+  });
+  it('uses the exact v2 payload with revision 2 and refuses stale v1 work in a v2 cohort', async () => {
+    const f = await fixture([{ data: [] }]);
+    const v2 = TEMPLATE_V2_CATALOG.res_confirmacao_v2;
+    f.context.selection = { state: 'ready', version: 2, digest: APPROVED_CATALOG_DIGESTS[2], grant_binding_id: 'b', generation: 1, credential_revision: 0 };
+    f.context.templates.push({ ...f.context.templates[0], id: 't2', logical_id: v2.id, version: 2, name: v2.name,
+      desired_hash: await catalogHash(v2) });
+    const job = { id: 'j', target_key: v2.id, revision: 2, state: 'claimed', claim_token: 'f', binding_id: 'b', binding_generation: 1, posting_started_at: null };
+    f.fetchImpl.mockImplementation(async (_url, init) => new Response(JSON.stringify(init?.method === 'POST' ? { id: '789', status: 'PENDING' } : { data: [] })));
+    expect(await f.provisionTemplate('a', job)).toMatchObject({ state: 'accepted', processed: 1 });
+    expect(f.deps.prepare).toHaveBeenCalledWith(job, await submissionPayloadHash(v2));
+    expect(JSON.parse(String(f.fetchImpl.mock.calls[1][1]?.body))).toMatchObject({ name: v2.name });
+    expect(await f.provisionTemplate('a', { ...job, target_key: definition.id, revision: 1 })).toMatchObject({ state: 'paused', processed: 0 });
+    expect(f.fetchImpl).toHaveBeenCalledTimes(2);
+  });
+  it('does not seed or perform HTTP if authoritative selection loading fails', async () => {
+    const f = await fixture();
+    vi.mocked(f.deps.load).mockRejectedValue(new Error('template_selection_unavailable'));
+    expect(await f.syncTemplateAccount('a')).toMatchObject({ state: 'failed' });
+    expect(f.deps.seed).not.toHaveBeenCalled();
+    expect(f.fetchImpl).not.toHaveBeenCalled();
+  });
   it.each([['0001', '0002'], ['0002', '0001']])('selects authorized initial CREATE independently of GET UUID order (%s, %s)', async (a, b) => {
     const candidate = (id: string, authorized: boolean): TemplateBindingCandidate => ({
       id, unit_id: 'unit', channel_id: id, provider: 'datafy', generation: 1,

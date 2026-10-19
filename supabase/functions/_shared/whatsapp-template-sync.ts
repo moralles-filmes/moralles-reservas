@@ -1,4 +1,5 @@
-import { TEMPLATE_CATALOG, catalogHash, type TemplateDefinition, type TemplateId } from './whatsapp-template-catalog-core.ts';
+import { catalogHash } from './whatsapp-template-catalog-core.ts';
+import { catalogDefinition, catalogDefinitions, type CatalogDefinition, type TemplateCatalogSelection } from './whatsapp-template-cohort.ts';
 import { nextTemplateCursor, type RemoteTemplateSnapshot, type TemplateCreateOutcome } from './whatsapp-template-provider-core.ts';
 import { submissionPayloadHash } from './whatsapp-template-submission-hash.ts';
 import type { ChannelCredentials, WhatsAppProviderAdapter } from './whatsapp-provider-core.ts';
@@ -29,12 +30,14 @@ export interface StoredTemplate {
 export interface TemplateProvisionJob {
   id: string; target_key: string; state: string; claim_token: string;
   binding_id: string; binding_generation: number; posting_started_at: string | null;
+  revision?: number;
 }
 export interface TemplateSyncContext {
   accountId: string; wabaId: string; bindingId: string; generation: number;
   unitId: string; channelId: string; credentialRevision: number;
   credentials: ChannelCredentials; catalogEnabled: boolean; submissionAuthorized: boolean;
   provisionBindingId: string | null;
+  selection: TemplateCatalogSelection;
   templates: StoredTemplate[]; jobs: TemplateProvisionJob[];
 }
 export interface TemplateSyncEpoch {
@@ -50,11 +53,11 @@ type Transport = Required<Pick<WhatsAppProviderAdapter, 'listTemplates' | 'creat
 export type TemplateOutcome = { outcome: 'accepted' | 'uncertain' | 'rejected' | 'local_preflight_refused'; reason: string; retry_after_seconds?: number };
 export interface TemplateSyncDependencies {
   load(accountId: string, bindingId?: string): Promise<TemplateSyncContext>;
-  seed(accountId: string, definitions: readonly TemplateDefinition[]): Promise<void>;
+  seed(accountId: string, definitions: readonly CatalogDefinition[]): Promise<void>;
   getTransport(context: TemplateSyncContext): Transport;
   begin(accountId: string): Promise<TemplateSyncEpoch>;
   publish(accountId: string, epoch: TemplateSyncEpoch, snapshot: TemplateObservation[]): Promise<boolean>;
-  enqueueProvision(bindingId: string, definition: TemplateDefinition): Promise<void>;
+  enqueueProvision(bindingId: string, definition: CatalogDefinition): Promise<void>;
   prepare(job: TemplateProvisionJob, payloadHash: string): Promise<boolean>;
   confirm(job: TemplateProvisionJob, payloadHash: string): Promise<boolean>;
   /** Fail-closed SQL fence and allowlist recheck after confirm, just before HTTP. */
@@ -64,12 +67,9 @@ export interface TemplateSyncDependencies {
 }
 const STATUSES = new Set(['UNKNOWN', 'PENDING', 'APPROVED', 'REJECTED', 'PAUSED', 'DISABLED', 'IN_APPEAL', 'PENDING_DELETION', 'DELETED', 'LIMIT_EXCEEDED']);
 const RESTRICTED = new Set(['REJECTED', 'DISABLED', 'DELETED', 'PENDING_DELETION', 'PAUSED']);
-const activeDefinitions = Object.values(TEMPLATE_CATALOG).filter(d => d.state === 'active' && d.version === 1);
-
-function activeDefinition(t: StoredTemplate): TemplateDefinition | null {
-  const definition = TEMPLATE_CATALOG[t.logical_id as TemplateId];
-  return definition && definition.state === 'active' && t.version === 1
-    && t.name === definition.name && t.language === definition.language ? definition : null;
+function activeDefinition(t: StoredTemplate): CatalogDefinition | null {
+  const definition = catalogDefinition(t.logical_id, t.version);
+  return definition && t.name === definition.name && t.language === definition.language ? definition : null;
 }
 
 export function templateCreateEvidence(result: TemplateCreateOutcome): TemplateOutcome {
@@ -83,8 +83,8 @@ export function templateCreateEvidence(result: TemplateCreateOutcome): TemplateO
 export function createTemplateSyncService(deps: TemplateSyncDependencies) {
   async function observe(accountId: string) {
     let context = await deps.load(accountId);
-    if (context.catalogEnabled) {
-      await deps.seed(accountId, activeDefinitions);
+    if (context.catalogEnabled && context.selection.version !== null) {
+      await deps.seed(accountId, catalogDefinitions(context.selection.version));
       context = await deps.load(accountId);
     }
     const epoch = await deps.begin(accountId);
@@ -145,14 +145,14 @@ export function createTemplateSyncService(deps: TemplateSyncDependencies) {
     const { context, missing, compatible, published } = observed;
     if (!published) return { state: 'stale', processed: 0, reason: 'template_snapshot_stale' };
     for (const t of context.templates) {
-      const jobs = context.jobs.filter(j => j.target_key === t.logical_id);
+      const jobs = context.jobs.filter(j => j.target_key === t.logical_id && (j.revision ?? 1) === t.version);
       if (compatible.has(t.id)) {
         for (const job of jobs.filter(j => j.posting_started_at && ['posting', 'uncertain'].includes(j.state))) {
           await deps.finish(job.id, job.claim_token, { outcome: 'accepted', reason: 'provider_accepted' });
         }
       }
       const definition = activeDefinition(t);
-      if (definition && t.desired_hash === await catalogHash(definition)
+      if (definition && context.selection.version === t.version && t.desired_hash === await catalogHash(definition)
         && t.requested_category === definition.requestedCategory
         && context.catalogEnabled && context.provisionBindingId && missing.has(t.id)
         && !t.remote_id && !t.submission_attempted_at && !RESTRICTED.has(t.remote_status) && jobs.length === 0) {
@@ -169,12 +169,15 @@ export function createTemplateSyncService(deps: TemplateSyncDependencies) {
     try { postContext = await deps.load(accountId, job.binding_id); }
     catch { return { state: 'stale', processed: 0 }; }
     if (postContext.accountId !== accountId || postContext.bindingId !== job.binding_id || postContext.generation !== job.binding_generation) return { state: 'stale', processed: 0 };
+    const version = job.revision ?? 1;
+    if (postContext.selection.version !== version) return { state: 'paused', processed: 0 };
     const postTransport = deps.getTransport(postContext);
     let observed: Awaited<ReturnType<typeof observe>>;
     try { observed = await observe(accountId); } catch { return { state: 'failed', processed: 0 }; }
     const { context, missing, compatible, published } = observed;
     if (!published) return { state: 'stale', processed: 0 };
-    const target = context.templates.find(t => t.logical_id === job.target_key && t.version === 1);
+    if (context.selection.version !== version) return { state: 'paused', processed: 0 };
+    const target = context.templates.find(t => t.logical_id === job.target_key && t.version === version);
     const definition = target && activeDefinition(target);
     if (!target || !definition || target.desired_hash !== await catalogHash(definition)
       || target.requested_category !== definition.requestedCategory

@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { canRequestJobCorrection, templateErrorMessage, type OfficialTemplateView, type TemplateControls } from '@/hooks/useWhatsappTemplates';
+import { AUTOMATIC_SUBMISSION_COPY, templatePreparationMessage, templatePreparationReasonMessage } from '@/features/whatsapp/template-preparation';
 
 const statusLabels: Record<OfficialTemplateView['localStatus'], string> = {
   awaiting_connection: 'Aguardando configuração', queued: 'Aguardando processamento', submitting: 'Em processamento', pending: 'Estado remoto ainda não confirmado', usable: 'Modelo disponível', rejected: 'Modelo recusado', paused: 'Modelo pausado', disabled: 'Modelo desativado', conflict: 'Conteúdo divergente', sync_error: 'Falha na sincronização', unsupported: 'Modelo indisponível',
@@ -14,7 +15,7 @@ export function OfficialAutomationTemplate({ template, onSync, canSync = true, s
     && template.hashMatches && !template.syncRequired && template.effectiveCategory === template.requestedCategory
     && !(template.requestedCategory === 'MARKETING' && template.quality === 'RED');
   return <Card className="p-4 space-y-4">
-    <div><h3 className="font-semibold">{template.localStatus === 'usable' && !verifiedUsable ? 'Aprovação ou integridade pendente' : template.localStatus === 'pending' && template.remoteStatus === 'PENDING' ? 'Em análise na Meta' : statusLabels[template.localStatus]}</h3><p className="text-sm text-muted-foreground">Conteúdo oficial somente para leitura.</p></div>
+    <div><h3 className="font-semibold">{template.remoteStatus === 'IN_APPEAL' ? 'Recurso em análise na Meta' : template.localStatus === 'usable' && !verifiedUsable ? 'Aprovação ou integridade pendente' : template.localStatus === 'pending' && template.remoteStatus === 'PENDING' ? 'Em análise na Meta' : statusLabels[template.localStatus]}</h3><p className="text-sm text-muted-foreground">Conteúdo oficial somente para leitura.</p></div>
     <div className="whitespace-pre-wrap break-words rounded-md bg-muted p-4 text-sm">{template.body}</div>
     <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words">{template.footer}</p>
     <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
@@ -37,10 +38,17 @@ export function TemplateStatus({ controls, logicalIds }: { controls: TemplateCon
   const snapshot = query.data;
   if (!snapshot || snapshot.mode === 'unavailable') return <div className="space-y-2"><p role="status">Nenhum canal disponível. Confira a configuração do WhatsApp da unidade.</p><Button className="min-h-11" variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>Atualizar dados</Button></div>;
   const jobs = snapshot.blockedJobs.filter(j => j.logicalId && logicalIds.includes(j.logicalId) && diagnosticJobStates.has(j.state));
+  const preparation = snapshot.providerLabel === 'Datafy' ? snapshot.templatePreparation ?? null : null;
+  const autoEligible = preparation?.enrollment === 'eligible';
   return <div className="space-y-4">
     <p className="text-sm text-muted-foreground">Canal: {snapshot.providerLabel}. {snapshot.mode === 'unofficial' ? 'Conexão não oficial: pode apresentar instabilidade ou restrições.' : 'Mensagens automáticas usam modelos oficiais.'}</p>
     {snapshot.mode === 'official' && snapshot.configuration.bindingGeneration === null && <p role="status">O vínculo da conta de modelos deste canal ainda não foi informado. Acompanhe a preparação ou fale com o suporte se continuar pendente.</p>}
-    {snapshot.mode === 'official' && snapshot.configuration.bindingGeneration !== null && !snapshot.configuration.catalogAuthorized && <p role="status">O catálogo deste canal ainda não foi liberado para novas submissões à Meta. A conexão do WhatsApp não ativa esse envio por si só.</p>}
+    {snapshot.providerLabel === 'Datafy' && <div className="space-y-2 rounded-lg border p-4 text-sm" aria-label="Preparação automática dos modelos">
+      {autoEligible && <p>{AUTOMATIC_SUBMISSION_COPY}</p>}
+      <p role="status">{templatePreparationMessage(preparation)}</p>
+      {templatePreparationReasonMessage(preparation) && <p role="alert">{templatePreparationReasonMessage(preparation)}</p>}
+    </div>}
+    {snapshot.mode === 'official' && snapshot.configuration.bindingGeneration !== null && !snapshot.configuration.catalogAuthorized && !autoEligible && <p role="status">O catálogo deste canal ainda não foi liberado para novas submissões à Meta. A conexão do WhatsApp não ativa esse envio por si só.</p>}
     {snapshot.mode === 'official' && snapshot.configuration.catalogAuthorized && <p role="status">Os modelos são preparados para análise da Meta. A submissão não significa aprovação e não ativa o envio de mensagens a clientes.</p>}
     {snapshot.mode === 'official' && snapshot.templates.filter(t => logicalIds.includes(t.logicalId)).map(template => <OfficialAutomationTemplate key={template.logicalId} template={template} onSync={() => sync.mutate()} canSync={canAdministerCatalog && !!snapshot.configuration.bindingGeneration && snapshot.capabilities.templateManagement} syncing={sync.isPending || query.isFetching} />)}
     {sync.isSuccess && <p role="status">{sync.data.status === 'requested' ? 'Sincronização solicitada. Atualize os dados para acompanhar a análise.' : 'Sincronização indisponível para este canal.'}</p>}

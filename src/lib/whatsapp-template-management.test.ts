@@ -9,11 +9,84 @@ function fixture() {
     authenticate: vi.fn(async () => ({ id })),
     access: vi.fn(async () => ({ role: 'owner' as const, isPlatformAdmin: false, exists: true })),
     snapshot: vi.fn(async () => ({ channel: null, binding: null, unitAdopted: false, templates: [], jobs: [], generatedAt: '2026-10-09T10:00:00Z' })),
+    onboardingSnapshot: vi.fn(async () => ({ channel: null, binding: null, preparation: null, unitAdopted: false,
+      templates: [], jobs: [], generatedAt: '2026-10-09T10:00:00Z' })),
+    resolveBinding: vi.fn(async () => id),
     callerRpc: vi.fn(async () => ({ data: id, error: null })),
   };
   return { deps, run: createTemplateManagementHandler(deps) };
 }
 describe('actual management Request factory', () => {
+  it('keeps versioned reads separate so the prior strict clients still receive their original DTO', async () => {
+    const { deps, run } = fixture();
+    const legacy = await (await run(request({ action: 'snapshot', unit_id: id }))).json();
+    expect(legacy).not.toHaveProperty('catalogSelection');
+    expect(legacy.templates).toHaveLength(9);
+    const v2 = await (await run(request({ action: 'snapshot_v2', unit_id: id }))).json();
+    expect(v2.catalogSelection).toBeNull();
+    expect(deps.snapshot).toHaveBeenLastCalledWith(id, true);
+    const onboarding = await (await run(request({ action: 'onboarding_catalog_snapshot_v2', unit_id: id }))).json();
+    expect(onboarding).toEqual({ channelId: null, templatePreparation: null, catalogSelection: null, templates: [], generatedAt: '2026-10-09T10:00:00Z' });
+    expect(deps.onboardingSnapshot).toHaveBeenLastCalledWith(id, true);
+    expect(deps.callerRpc).not.toHaveBeenCalled();
+  });
+  it('selects and stops v2 only as platform admin with server binding and original JWT assertions', async () => {
+    const { deps, run } = fixture();
+    const pins = { channel_id: id, expected_binding_generation: 2, expected_credential_revision: 0 };
+    const body = { action: 'select_v2_channel', ...pins, expected_digest: 'b'.repeat(64) };
+    expect((await run(request(body))).status).toBe(403);
+    expect(deps.resolveBinding).not.toHaveBeenCalled();
+    expect(deps.callerRpc).not.toHaveBeenCalled();
+    vi.mocked(deps.access).mockResolvedValue({ role: null, isPlatformAdmin: true, exists: true });
+    vi.mocked(deps.callerRpc).mockResolvedValue({ data: true, error: null });
+    expect(await (await run(request(body))).json()).toEqual({ status: 'updated' });
+    expect(deps.resolveBinding).toHaveBeenCalledWith(id);
+    expect(deps.callerRpc).toHaveBeenLastCalledWith(jwt, 'select_whatsapp_template_v2_existing_account', {
+      p_binding_id: id, p_expected_generation: 2, p_expected_credential_revision: 0, p_expected_digest: 'b'.repeat(64),
+    });
+    expect(await (await run(request({ action: 'stop_v2_channel', ...pins }))).json()).toEqual({ status: 'updated' });
+    expect(deps.callerRpc).toHaveBeenLastCalledWith(jwt, 'release_whatsapp_template_v2_channel', {
+      p_binding_id: id, p_expected_generation: 2, p_expected_credential_revision: 0,
+    });
+    expect(deps.snapshot).not.toHaveBeenCalled();
+    vi.mocked(deps.resolveBinding!).mockResolvedValue(null);
+    expect((await run(request(body))).status).toBe(409);
+    expect(deps.callerRpc).toHaveBeenCalledTimes(2);
+    expect((await run(request({ ...body, binding_id: id }))).status).toBe(400);
+  });
+  it('keeps v2 policy CAS independent from v1 and rejects malformed versioned dependencies', async () => {
+    const { deps, run } = fixture();
+    vi.mocked(deps.access).mockResolvedValue({ role: null, isPlatformAdmin: true, exists: true });
+    const row = { version: 2, enabled: false, revision: 0, catalog_digest: 'b'.repeat(64), updated_at: null };
+    vi.mocked(deps.callerRpc).mockResolvedValue({ data: row, error: null });
+    expect(await (await run(request({ action: 'v2_policy_snapshot' }))).json()).toEqual({ version: 2, enabled: false, revision: 0, catalogDigest: 'b'.repeat(64), updatedAt: null });
+    expect(deps.callerRpc).toHaveBeenLastCalledWith(jwt, 'get_whatsapp_template_v2_policy', {});
+    expect((await run(request({ action: 'set_v2_policy', enabled: false, expected_revision: 0 }))).status).toBe(200);
+    expect(deps.callerRpc).toHaveBeenLastCalledWith(jwt, 'configure_whatsapp_template_v2_policy', { p_enabled: false, p_expected_revision: 0 });
+    vi.mocked(deps.callerRpc).mockResolvedValue({ data: { ...row, version: 1 }, error: null });
+    expect((await run(request({ action: 'v2_policy_snapshot' }))).status).toBe(503);
+  });
+  it('reads onboarding catalog only by authenticated unit and refuses operator or caller channel', async () => {
+    const { deps, run } = fixture();
+    expect(await (await run(request({ action: 'onboarding_catalog_snapshot', unit_id: id }))).json())
+      .toEqual({ channelId: null, templatePreparation: null, templates: [], generatedAt: '2026-10-09T10:00:00Z' });
+    expect(deps.onboardingSnapshot).toHaveBeenCalledWith(id);
+    expect(deps.callerRpc).not.toHaveBeenCalled();
+    expect((await run(request({ action: 'onboarding_catalog_snapshot', unit_id: id, channel_id: id }))).status).toBe(400);
+    vi.mocked(deps.access).mockResolvedValue({ role: 'operador', isPlatformAdmin: false, exists: true });
+    expect((await run(request({ action: 'onboarding_catalog_snapshot', unit_id: id }))).status).toBe(403);
+  });
+  it('requires real platform admin and original JWT for a global auto policy change', async () => {
+    const { deps, run } = fixture();
+    const body = { action: 'set_auto_policy', enabled: true, expected_revision: 0 };
+    expect((await run(request(body))).status).toBe(403);
+    expect(deps.callerRpc).not.toHaveBeenCalled();
+    vi.mocked(deps.access).mockResolvedValue({ role: null, isPlatformAdmin: true, exists: true });
+    vi.mocked(deps.callerRpc).mockResolvedValue({ data: { enabled: true, revision: 1, catalog_digest: 'a'.repeat(64), updated_at: '2026-10-17T19:00:00Z' }, error: null });
+    expect(await (await run(request(body))).json()).toEqual({ enabled: true, revision: 1, catalogDigest: 'a'.repeat(64), updatedAt: '2026-10-17T19:00:00Z' });
+    expect(deps.callerRpc).toHaveBeenCalledWith(jwt, 'configure_whatsapp_template_auto_policy', { p_enabled: true, p_expected_revision: 0 });
+    expect((await run(request({ ...body, actor_id: id }))).status).toBe(400);
+  });
   it('forwards the exact authenticated token and no caller actor to SQL', async () => {
     const { deps, run } = fixture();
     const response = await run(request({ action: 'sync', unit_id: id, channel_id: id, expected_binding_generation: 2 }));

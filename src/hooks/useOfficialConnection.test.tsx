@@ -26,7 +26,7 @@ describe("useOfficialConnection", () => {
     invoke.mockResolvedValue({ data: { ...state, step: "awaiting_cutover", migration: { fromProvider: "uazapi", channelId: "private-channel-id", token: "private" } } });
     const hook = setup();
     await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
-    expect(hook.result.current.data).toEqual({ ...state, step: "awaiting_cutover", migration: { fromProvider: "uazapi" } });
+    expect(hook.result.current.data).toEqual({ ...state, step: "awaiting_cutover", migration: { fromProvider: "uazapi" }, templatePreparation: null });
     expect(JSON.stringify(hook.client.getQueryCache().getAll().map((q) => q.state.data))).not.toContain("private");
     hook.client.clear();
   });
@@ -83,7 +83,7 @@ describe("useOfficialConnection", () => {
     invoke.mockResolvedValue({ data: { ...state, url: "sensitive-extra-field", token: "private-extra-field" } });
     const hook = setup();
     await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
-    expect(hook.result.current.data).toEqual(state);
+    expect(hook.result.current.data).toEqual({ ...state, templatePreparation: null });
     hook.client.clear();
   });
   it("extrai non-2xx e mostra só copy de código conhecido", async () => {

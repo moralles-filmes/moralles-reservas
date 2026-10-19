@@ -2,6 +2,10 @@ import { toE164BrPhone } from './phone.ts';
 import type { TemplateDefinition } from './whatsapp-template-catalog-core.ts';
 import type { WhatsAppProviderErrorCode } from './whatsapp-provider-core.ts';
 
+export type TemplateSubmissionDefinition = Omit<Pick<TemplateDefinition,
+  'name' | 'language' | 'requestedCategory' | 'parameterFormat' | 'components' | 'examples'>, 'name'>
+  & Readonly<{ name: string }>;
+
 export interface TemplateMessageInput {
   toPhone: string;
   name: string;
@@ -44,7 +48,7 @@ export type TemplateSendOutcome = TemplateMutationFailure | {
 };
 
 export interface TemplateListInput { wabaId: string; after?: string; }
-export interface TemplateCreateInput { wabaId: string; definition: TemplateDefinition; }
+export interface TemplateCreateInput { wabaId: string; definition: TemplateSubmissionDefinition; }
 export interface TemplateSendInput extends TemplateMessageInput { phoneNumberId: string; }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -78,7 +82,7 @@ export function buildTemplateMessage(input: TemplateMessageInput) {
   };
 }
 
-export function buildTemplateSubmission(definition: TemplateDefinition) {
+export function buildTemplateSubmission(definition: TemplateSubmissionDefinition) {
   return {
     name: definition.name, language: definition.language, category: definition.requestedCategory,
     parameter_format: definition.parameterFormat,

@@ -8,6 +8,7 @@ import { useWhatsappConnection } from "@/hooks/useWhatsappConnection";
 import { officialConnectionErrorMessage } from "@/features/whatsapp/official-connection-api";
 import { classifyConnectMessage } from "../../../supabase/functions/_shared/datafy-onboarding-core";
 import { OFFICIAL_ITEM_COPY } from "@/features/whatsapp/official-checklist-copy";
+import { AUTOMATIC_SUBMISSION_COPY, templatePreparationMessage, templatePreparationReasonMessage } from "@/features/whatsapp/template-preparation";
 
 // Keyed session isolates warnings, locks and late responses when the unit changes.
 export function OfficialConnectionCard({ unitId }: { unitId: string }) {
@@ -119,6 +120,13 @@ function OfficialConnectionSession({ unitId }: { unitId: string }) {
         </>}
       </>}
       {withoutApp && <p role="alert" className="rounded-lg border border-destructive/30 p-4 text-sm">Este número foi conectado sem o app WhatsApp Business. O sistema só funciona com o número no app (Coexistence): sem ele, o canal não entra no ar. Fale com o suporte antes de continuar.</p>}
+      {state.step !== "not_granted" && <div className="space-y-2 rounded-lg border p-4 text-sm" aria-label="Preparação dos modelos oficiais">
+        <p className="font-medium">Modelos oficiais</p>
+        {state.templatePreparation?.enrollment === 'eligible' && <p>{AUTOMATIC_SUBMISSION_COPY}</p>}
+        <p role="status">{templatePreparationMessage(state.templatePreparation ?? null)}</p>
+        {templatePreparationReasonMessage(state.templatePreparation ?? null) && <p role="alert">{templatePreparationReasonMessage(state.templatePreparation ?? null)}</p>}
+        {state.templatePreparation?.enrollment === 'eligible' && <Button className="min-h-11" variant="outline" disabled={connection.isFetching} onClick={() => void connection.refetch()}>Atualizar preparação</Button>}
+      </div>}
       <div className="space-y-2 rounded-lg border p-4 text-sm">
         <p className="font-medium">Cadastre o cartão na sua conta Meta</p>
         <ol className="list-decimal space-y-1 pl-5"><li>Abra as Configurações do negócio na Meta.</li><li>Acesse Contas → Contas do WhatsApp e selecione sua conta.</li><li>Em Configurações de pagamento, adicione uma forma de pagamento.</li></ol>
