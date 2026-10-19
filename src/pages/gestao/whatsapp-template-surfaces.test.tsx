@@ -32,7 +32,7 @@ beforeEach(() => {
     if (name === 'request_whatsapp_template_sync_for_channel') return { data: '50000000-0000-4000-8000-000000000001', error: null };
     return { data: true, error: null };
   });
-  const handler = createTemplateManagementHandler({ authenticate: async () => ({ id: '40000000-0000-4000-8000-000000000001' }), access: async () => ({ role: io.role as 'owner' | 'gerente' | 'operador', isPlatformAdmin: io.admin, exists: true }), snapshot: async () => snapshotInput(), callerRpc: io.rpc });
+  const handler = createTemplateManagementHandler({ authenticate: async () => ({ id: '40000000-0000-4000-8000-000000000001' }), access: async () => ({ role: io.role as 'owner' | 'gerente' | 'operador', isPlatformAdmin: io.admin, exists: true }), snapshot: async () => snapshotInput(), onboardingSnapshot: async () => snapshotInput(), callerRpc: io.rpc });
   io.invoke.mockReset().mockImplementation(async (_name: string, { body }: { body: unknown }) => {
     const response = await handler(new Request('http://localhost:3000/functions/v1/manage-whatsapp-templates', { method: 'POST', headers: { authorization: 'Bearer synthetic-test-jwt', 'content-type': 'application/json' }, body: JSON.stringify(body) }));
     return response.ok ? { data: await response.json(), error: null } : { data: null, error: new FunctionsHttpError(response) };

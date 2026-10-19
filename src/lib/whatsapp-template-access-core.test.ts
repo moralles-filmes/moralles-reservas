@@ -1,9 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { canManageTemplateAction, canManageTemplateRequest, decodeConsentState, decodeSyncResult,
-  parseTemplateManagementRequest, projectTemplateSnapshot } from '../../supabase/functions/_shared/whatsapp-template-access-core.ts';
+  parseTemplateManagementRequest, projectTemplateSnapshot, projectTemplatePreparation, projectOnboardingCatalogSnapshot } from '../../supabase/functions/_shared/whatsapp-template-access-core.ts';
 
 const id = '00000000-0000-4000-8000-000000000001';
 describe('template management closed authority', () => {
+  it('projects a connected onboarding with nine safe model states, and no channel as empty', () => {
+    const base = { channel: { id, provider: 'datafy', template_credential_revision: 0 }, binding: null,
+      preparation: { enrollment: 'eligible', state: 'pending', reason_code: null, updated_at: '2026-10-17T19:00:00Z', private: 'do not return' },
+      unitAdopted: false, templates: [], jobs: [], generatedAt: '2026-10-17T19:00:01Z' };
+    const projected = projectOnboardingCatalogSnapshot(base);
+    expect(projected.channelId).toBe(id);
+    expect(projected.templates).toHaveLength(9);
+    expect(JSON.stringify(projected)).not.toContain('do not return');
+    expect(projectOnboardingCatalogSnapshot({ ...base, channel: null })).toEqual({ channelId: null,
+      templatePreparation: { enrollment: 'eligible', state: 'pending', reason: null, updatedAt: '2026-10-17T19:00:00Z' },
+      templates: [], generatedAt: '2026-10-17T19:00:01Z' });
+  });
+  it('projects only safe preparation state and never leaks internal enrollment metadata', () => {
+    const raw = { enrollment: 'eligible', state: 'pending', reason_code: 'health_stale', updated_at: '2026-10-17T19:00:00Z',
+      onboarding_id: id, organization_id: id, remote_payload: 'private' };
+    expect(projectTemplatePreparation(raw)).toEqual({ enrollment: 'eligible', state: 'pending', reason: 'health_stale', updatedAt: '2026-10-17T19:00:00Z' });
+    expect(JSON.stringify(projectTemplatePreparation(raw))).not.toContain('private');
+    expect(() => projectTemplatePreparation({ ...raw, reason_code: 'private provider error' })).toThrow('dependency_unavailable');
+  });
   it('distinguishes member read, manager mutation and administrative authority', () => {
     expect(canManageTemplateAction('operador', 'snapshot', false)).toBe(true);
     for (const action of ['record_consent', 'consent_snapshot', 'release_channel', 'initialize_job', 'configure_promotion_frequency'] as const)

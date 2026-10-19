@@ -20,6 +20,7 @@ import {
 import { decideReplacementConnectionRecorded } from "../_shared/datafy-onboarding-core.ts";
 import { resolveUnitChannelBinding } from "../_shared/whatsapp-org-provider-core.ts";
 import { createTemplateRuntime } from "../_shared/whatsapp-template-runtime.ts";
+import { projectTemplatePreparation } from "../_shared/whatsapp-template-access-core.ts";
 import {
   decideDatafyChannelSetup,
   decideDatafySecretRotation,
@@ -1252,6 +1253,14 @@ const datafyActions = createDatafyOnboardingActions({
   }, (entry) => jsonLog("warn", entry)).subscriptionFailure(event); },
   logCleanupFailure: () => jsonLog("warn", { evt: "datafy_discard_cleanup_failed" }),
   logUnrecognized: (info) => jsonLog("warn", { evt: "datafy_admin_unrecognized", ...info }),
+  getTemplatePreparation: async (unitId, channelId) => {
+    if (!channelId) return null;
+    const { data, error } = await supabase.rpc('get_whatsapp_template_preparation', {
+      p_unit_id: unitId, p_channel_id: channelId,
+    });
+    if (error) throw new Error('template_preparation_unavailable');
+    return projectTemplatePreparation(data);
+  },
 });
 
 serve(async (req) => {
@@ -1383,7 +1392,7 @@ serve(async (req) => {
         const refreshed = await refreshManualProviderStatus(selected, callerId, requestId);
         selected = refreshed.channel;
         qrCode = refreshed.qrCode;
-        await refreshTemplateChannel(selected.id);
+        await refreshTemplateChannel(selected.id, false);
       }
       const defaultProvider = selected ? null : (await getUnitContext(unitId)).defaultProvider;
       const capabilityProvider = selected

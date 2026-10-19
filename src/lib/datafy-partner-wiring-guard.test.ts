@@ -289,7 +289,9 @@ describe("Datafy parceiro: fronteira das ações", () => {
     // Só desconta o que o teto conta: instâncias vivas do canal NA organização da unidade.
     expect(wiring).toMatch(/\.from\("whatsapp_instances"\)[\s\S]*\.eq\("channel_id", channelId\)[\s\S]*\.eq\("organization_id", organizationId\)[\s\S]*\.neq\("lifecycle_state", "ENDED"\)/);
     expect(wiring).toContain("const { organizationId } = await getUnitContext(unitId);");
-    expect(wiring.match(/if \(error\) throw new Error\(/g)).toHaveLength(2);
+    const gateWiring = wiring.slice(0, wiring.indexOf('projectUrl:'));
+    expect(gateWiring.match(/if \(error\) throw new Error\(/g)).toHaveLength(2);
+    expect(wiring).toContain("if (error) throw new Error('template_preparation_unavailable')");
     expect(wiring).toContain("if (replacement.ok === false) return false;");
     expect(wiring).toMatch(/"NEW_PROVISIONING",\s*adminDecisionRecorded,\s*replacement\.recorded,?\s*\)/);
     // Nada de regra reimplementada no handler.

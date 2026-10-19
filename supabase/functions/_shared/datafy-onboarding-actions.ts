@@ -60,6 +60,7 @@ export interface DatafyActionDeps {
   emitEvent(event: DatafyOperationalEvent): void | Promise<void>;
   logCleanupFailure?: () => void;
   logUnrecognized?: (info: { operation: string; httpStatus: number; shape: unknown }) => void;
+  getTemplatePreparation?: (unitId: string, channelId: string | null) => Promise<unknown>;
   monotonicNow?: () => number;
 }
 class ActionFailure extends Error {
@@ -373,8 +374,13 @@ export function createDatafyOnboardingActions(deps: DatafyActionDeps) {
       automationDispatchAdopted: !!adopted.data,
       migrationHold: migration !== null,
     });
+    let templatePreparation: unknown = null;
+    if (deps.getTemplatePreparation) {
+      try { templatePreparation = await deps.getTemplatePreparation(unitId, channel?.id ?? o?.reserved_channel_id ?? null); }
+      catch { /* Connection state remains factual; missing preparation fails closed in the UI. */ }
+    }
     return { ...checklist, ...(revoked ? { step: "not_granted" } : {}), granted: !!grant,
-      onboardingState: o?.state ?? null, migration, ...(revoked ? { connectionRevoked: true } : {}) };
+      onboardingState: o?.state ?? null, migration, templatePreparation, ...(revoked ? { connectionRevoked: true } : {}) };
   }
   async function startConnection(client: DatafyAdminClient, unitId: string, actorId: string) {
     for (let iteration = 0; iteration < 6; iteration++) {

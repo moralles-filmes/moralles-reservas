@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TemplateAutoPolicyCard } from "@/components/whatsapp/TemplateAutoPolicyCard";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -179,6 +180,8 @@ export default function PlatformIntegracoes() {
           leem; o painel mostra apenas os últimos 4 caracteres.
         </p>
       </div>
+
+      <TemplateAutoPolicyCard />
 
       {isLoading && (
         <div className="space-y-4">
