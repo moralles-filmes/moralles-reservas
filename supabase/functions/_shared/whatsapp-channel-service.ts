@@ -13,6 +13,8 @@ import type {
   TemplateSendInput,
   TemplateSendOutcome,
 } from "./whatsapp-template-provider-core.ts";
+import { createLegacyAutomationPostGuard, LEGACY_AUTOMATION_REFUSED, LEGACY_AUTOMATION_UNCERTAIN,
+  type LegacyAutomationIntent } from "./whatsapp-legacy-automation-post.ts";
 
 /** Linha de canal no shape que o despacho precisa, resolvida por qualquer caminho. */
 export interface RoutableChannel {
@@ -341,10 +343,17 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
   async function dispatchToChannel(
     channel: RoutableChannel,
     phone: string,
-    message: string,
+    messageText: string,
     beforeOutbound?: (channel: RoutableChannel) => string | null,
     outboundOptions?: SendTextOptions,
+    legacyAutomation?: LegacyAutomationIntent,
   ): Promise<SendResult> {
+    // Credentials and revision come from ONE selected snapshot. Never replace
+    // this revision with a fresher claim result while retaining old credentials.
+    const credentialRevision = channel.template_credential_revision;
+    if (legacyAutomation && (!Number.isSafeInteger(credentialRevision) || credentialRevision! < 0))
+      return withChannelRoute({ ok: false, error: LEGACY_AUTOMATION_REFUSED }, channel);
+    if (legacyAutomation) channel = { ...channel, credentials: { ...channel.credentials } };
     let credentials: ChannelCredentials;
     try {
       credentials = await deps.resolveCredentials(deps.db, channel);
@@ -353,17 +362,50 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
         evt: "send_whatsapp_credentials_unavailable",
         channel_id: channel.id,
         provider: channel.provider,
-        err: String(error),
+        err: legacyAutomation ? 'legacy_credentials_unavailable' : String(error),
       });
-      return { ok: false, error: "whatsapp_credentials_unavailable" };
+      return { ok: false, error: legacyAutomation ? LEGACY_AUTOMATION_REFUSED : "whatsapp_credentials_unavailable" };
     }
 
-    const connectivity = await ensureChannelConnected(channel, credentials);
+    let connectivity: Awaited<ReturnType<typeof ensureChannelConnected>>;
+    try { connectivity = await ensureChannelConnected(channel, credentials); }
+    catch (error) {
+      if (!legacyAutomation) throw error;
+      return withChannelRoute({ ok: false, error: LEGACY_AUTOMATION_REFUSED }, channel);
+    }
     if (connectivity.ok === false) {
       return withChannelRoute(
-        { ok: false, error: connectivity.error },
+        { ok: false, error: legacyAutomation ? LEGACY_AUTOMATION_REFUSED : connectivity.error },
         channel,
       );
+    }
+
+    if (legacyAutomation) {
+      const guard = createLegacyAutomationPostGuard(deps.db);
+      const claim = await guard.claim(legacyAutomation, channel.id, credentialRevision!);
+      if (claim.allowed === false) return withChannelRoute({ ok: false, error: LEGACY_AUTOMATION_REFUSED }, channel);
+      const message = { toPhone: phone, text: messageText };
+      const provider = channel.provider as WhatsAppProviderName;
+      // SQL posting is one-use. This is the FINAL await before the synchronous
+      // existing guard and adapter. No cache/read/logging await enters this gap.
+      const confirmed = await guard.confirm(claim, channel.id, credentialRevision!);
+      if (confirmed.allowed === false) return withChannelRoute({ ok: false, error: LEGACY_AUTOMATION_REFUSED }, channel);
+      let result: SendResult;
+      try {
+        const refusal = beforeOutbound?.(channel);
+        if (refusal) {
+          await guard.finish(claim, 'uncertain');
+          return withChannelRoute({ ok: false, error: LEGACY_AUTOMATION_UNCERTAIN }, channel);
+        }
+        result = await deps.sendOutbound(provider, credentials, message, { retryPolicy: 'none' });
+      } catch {
+        await guard.finish(claim, 'uncertain');
+        return withChannelRoute({ ok: false, error: LEGACY_AUTOMATION_UNCERTAIN }, channel);
+      }
+      // Preserve acceptance independently BEFORE notification/conversation I/O.
+      const finished = await guard.finish(claim, result.ok ? 'accepted' : 'uncertain', result.providerMessageId);
+      return withChannelRoute(finished === 'accepted' ? result
+        : { ok: false, error: LEGACY_AUTOMATION_UNCERTAIN, providerMessageId: result.providerMessageId }, channel);
     }
 
     // Synchronous final guard: no await may separate this check from the
@@ -380,7 +422,7 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
         credentials,
         {
           toPhone: phone,
-          text: message,
+          text: messageText,
         },
         outboundOptions,
       ),
@@ -395,10 +437,11 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
   async function selectChannel(
     channelIdOrUnitId?: { channel_id?: string; unit_id?: string },
     scheduled = false,
+    legacyAutomation = false,
   ): Promise<ChannelSelection> {
     const selectColumns = scheduled
       ? CHANNEL_COLUMNS + ", is_active, template_credential_revision"
-      : CHANNEL_COLUMNS;
+      : legacyAutomation ? CHANNEL_COLUMNS + ", template_credential_revision" : CHANNEL_COLUMNS;
     // Gate de serviço. Precisa de unit_id; quando só veio channel_id, resolve a
     // unit pelo canal primeiro (a consulta do canal já acontece logo abaixo, mas
     // o gate tem que vir ANTES de tocar no provedor — depois já custou dinheiro).
@@ -565,11 +608,17 @@ export function createWhatsAppChannelService(deps: ChannelServiceDependencies) {
       unit_id?: string;
       beforeOutbound?: (channel: RoutableChannel) => string | null;
       outboundOptions?: SendTextOptions;
+      legacyAutomation?: LegacyAutomationIntent;
     },
   ): Promise<SendResult> {
-    const selected = await selectChannel(selector);
-    if (selected.ok === false) return selected;
-    return dispatchToChannel(selected.channel, phone, message, selector?.beforeOutbound, selector?.outboundOptions);
+    let selected: ChannelSelection;
+    try { selected = await selectChannel(selector, false, !!selector?.legacyAutomation); }
+    catch (error) {
+      if (!selector?.legacyAutomation) throw error;
+      return { ok: false, error: LEGACY_AUTOMATION_REFUSED };
+    }
+    if (selected.ok === false) return selector?.legacyAutomation ? { ok: false, error: LEGACY_AUTOMATION_REFUSED } : selected;
+    return dispatchToChannel(selected.channel, phone, message, selector?.beforeOutbound, selector?.outboundOptions, selector?.legacyAutomation);
   }
 
   /** Transport preparation only. SQL and the dispatcher retain POST authority. */

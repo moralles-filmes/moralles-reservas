@@ -167,7 +167,7 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
   // B6: fim do dia BRT — alinhado ao webhook-whatsapp.
   const expiresAtIso = expiresAtEndOfDayBrt(validityDays);
 
-  const { error: insertErr } = await supabase
+  const { data: insertedVoucher, error: insertErr } = await supabase
     .from("vouchers")
     .insert({
       unit_id: unitId,
@@ -176,7 +176,7 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
       code,
       discount_percent: discountPercent,
       expires_at: expiresAtIso,
-    });
+    }).select('id').single();
 
   if (insertErr) {
     // 23505 = UNIQUE violation (vouchers_unit_rule_customer_active_idx).
@@ -188,6 +188,7 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
     });
     return { ok: false, reason: isDuplicate ? "duplicate" : insertErr.message };
   }
+  if (!insertedVoucher || !automationUuid(insertedVoucher.id)) return { ok: false, reason: 'voucher_identity_unavailable' };
 
   // Ordem entre os dois motivos de não-envio: suspensão primeiro, porque é a
   // causa mais informativa no log quando as duas coincidem (o lojista
@@ -224,6 +225,7 @@ async function issueAndSend(args: IssueArgs): Promise<{ ok: boolean; reason?: st
         message,
         unit_id: unitId,
         kind: "voucher_issued",
+        voucher_id: insertedVoucher.id,
         // Fato = emissão, que é agora: o voucher nasce neste disparo.
         fact_at: new Date().toISOString(),
       }),
