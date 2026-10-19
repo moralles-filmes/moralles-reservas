@@ -50,7 +50,7 @@ Modelo: Sonnet implementação; Opus review de qualidade (orçamento + resiliên
 
 ## Bloco 2 — provedor reserva (Tasks 4–6)
 
-### [ ] Task 4 — Núcleo de decisão do fallback entre provedores
+### [x] Task 4 — Núcleo de decisão do fallback entre provedores
 
 1. Núcleo `supabase/functions/_shared/agent-provider-fallback-core.ts`:
    - `parseFallbackConfig(aiConfig: unknown, primary: AIProvider): { provider: AIProvider; model: string } | null` — aceita só `aiConfig.fallback.provider` string pertencente aos 5 providers, ≠ `primary`, e `model` string (pode ser vazio → o chamador resolve com `resolveModel`). Qualquer outro formato → `null` (polaridade: config ilegível = sem fallback = comportamento atual).
@@ -60,7 +60,7 @@ Modelo: Sonnet implementação; Opus review de qualidade (orçamento + resiliên
 
 Modelo: Sonnet; review de qualidade Opus.
 
-### [ ] Task 5 — Fallback no turno do webhook
+### [x] Task 5 — Fallback no turno do webhook
 
 1. `webhook-whatsapp/index.ts`: `runOnce` passa a receber `{ provider, apiKey, model }` (default = principal). Ler `fallback = parseFallbackConfig(aiConfig, provider_ai)`; se houver, resolver `fallbackModel = resolveModel(fallback.provider, fallback.model).model`.
 2. No laço `for (attempt ...)`: quando `attempt === 0` falhar e as travas atuais permitirem retry (`!agentDeadlineReached && !mutatingToolUsed && elapsed < AGENT_RETRY_BUDGET_MS`), se `fallback && shouldUseFallbackProvider(err)`: tentar `resolveApiKey(fallback.provider, unitId)` (falha → `jsonLog("warn", { evt: "fallback_unavailable", provider, unitId })` e segue o retry atual no principal); com chave → `jsonLog("warn", { evt: "agent_provider_fallback", from_provider, from_model, to_provider, to_model, reason: agentError })` e a tentativa 1 roda no reserva. Resposta vazia na tentativa 0 com fallback configurado também dispara (só se `!mutatingToolUsed` e dentro do tempo): tratar `agentOutcome.kind === "TEXT" && !agentOutcome.text.trim()` como gatilho, com motivo `empty_response`.
@@ -71,7 +71,7 @@ Modelo: Sonnet; review de qualidade Opus.
 
 Modelo: Opus (implementação, por tocar o turno do agente e retry com efeito externo) — ou Sonnet com review Opus obrigatório.
 
-### [ ] Task 6 — UI do provedor reserva
+### [x] Task 6 — UI do provedor reserva
 
 1. `src/lib/ai-fallback-options.ts` (+ teste): `fallbackProviderOptions(savedKeyProviders: string[], primary: AIProvider)` → providers ≠ primary com chave salva, na ordem de `PROVIDERS`.
 2. `src/pages/gestao/Automacao.tsx` `AITab`: tipo `AIConfig` ganha `fallback?: { provider: AIProvider; model?: string } | null`. Abaixo do bloco da chave, card "Provedor reserva (opcional)": Select "Nenhum" + opções; ao escolher, Select de modelo com `MODELS_BY_PROVIDER` (opção "Padrão (…)" = `model` vazio). Texto curto: "Usado só quando o provedor principal estiver sobrecarregado ou fora do ar, apenas naquela mensagem. Precisa de chave salva do provedor reserva nesta unidade." Trocar o provedor principal para o mesmo do reserva limpa `fallback` no mesmo `updateAiConfig`. Sem opções disponíveis: texto explicando que é preciso cadastrar a chave de outro provedor (trocar o provedor ativo temporariamente para cadastrá-la é o fluxo atual — não criar fluxo novo de chave).
@@ -80,6 +80,11 @@ Modelo: Opus (implementação, por tocar o turno do agente e retry com efeito ex
 Modelo: Sonnet (todos os papéis).
 
 ## Fechamento (depois do Bloco 2)
+
+Notas da execução do Bloco 2:
+- Task 5: em vez de parâmetro, `runOnce` lê o alvo mutável `agentTarget` (trocado só por `switchToFallback`), porque guardas existentes ancoram `const runOnce = () => runAgentLoop(` e `await runOnce()`. `whatsapp-inbound-reentry.test.ts` passou a exigir `${usedProvider}` no `handoff_reason`.
+- Matriz de redeploy (grafo de `agent-provider-fallback-core.ts` e `ai-providers.ts`): só `webhook-whatsapp` + frontend. Sem migration.
+- A worktree não tem `.env.local`: testes que importam o client real (ex.: `OfficialConnectionCard.test.tsx`) e o build precisam de `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` placeholders inline. `whatsapp-scheduled-templates-integration.test.ts` oscila por tempo sob a suíte inteira e passa isolado.
 
 - Review da branch inteira (Opus), gates `saas-shield-br:identity-access-auditor` (Task 1) e `saas-shield-br:integration-reliability-auditor` (Tasks 3–5), `npm run typecheck && npm run lint && npm test && npm run build`, `deno check` da EF, secret scan do staged.
 - Merge em `main` só com autorização; deploy de `webhook-whatsapp` (e das EFs que o grafo apontar) com autorização separada. Sem migration.
