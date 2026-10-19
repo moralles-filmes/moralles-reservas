@@ -380,14 +380,17 @@ begin
   select * into e from app_private.whatsapp_template_auto_enrollments where onboarding_id=p_onboarding_id for update;
   if not found or e.excluded_at is not null or e.state not in('pending','discovering','ready')
     or (e.policy_revision,e.catalog_digest) is distinct from (p.revision,p.catalog_digest) then return false; end if;
-  select * into o from public.whatsapp_datafy_onboardings where id=e.onboarding_id for share;
-  if not found or o.state<>'completed' or (o.organization_id,o.unit_id,o.reserved_channel_id)
-    is distinct from (e.organization_id,e.unit_id,e.channel_id) then return false; end if;
   select * into b from public.whatsapp_template_bindings where id=p_binding_id;
   if not found or b.account_id is null then return false; end if;
   select * into a from public.whatsapp_template_accounts where id=b.account_id for share;
   select * into b from public.whatsapp_template_bindings where id=p_binding_id for update;
   select * into c from public.whatsapp_channels where id=b.channel_id for share;
+  -- Datafy identity writers/finalizers lock channel before onboarding. Keep the
+  -- same order and read onboarding only after both locks, so a writer that wins
+  -- the channel lock cannot deadlock or leave a stale completion/identity proof.
+  select * into o from public.whatsapp_datafy_onboardings where id=e.onboarding_id for share;
+  if not found or o.state<>'completed' or (o.organization_id,o.unit_id,o.reserved_channel_id)
+    is distinct from (e.organization_id,e.unit_id,e.channel_id) then return false; end if;
   if a.id is null or a.id is distinct from b.account_id or c.id is null
     or a.organization_id is distinct from e.organization_id
     or a.waba_id !~ '^[0-9]{1,64}$' or a.verified_at is null
