@@ -121,6 +121,10 @@ import {
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
 import { resolveHandoffClock } from "../_shared/handoff-clock-core.ts";
 import {
+  buildUpcomingDaysLines,
+  WEEKDAY_NAMES_PT,
+} from "../_shared/agent-calendar-core.ts";
+import {
   DEFAULT_GIFTBACK_TEMPLATE,
   ensureUniqueVoucherCode,
   expiresAtEndOfDayBrt,
@@ -4045,7 +4049,6 @@ async function handleWebhookRequest(
     // meia-noite BRT o dia vira pro seguinte e o bot cita preço do dia errado (cardápio por dia).
     const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
     const nowBrt = new Date(Date.now() - BRT_OFFSET_MS);
-    const WEEKDAY_NAMES_PT = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
     const brtWeekdayIdx = nowBrt.getUTCDay();
     const weekdayName = WEEKDAY_NAMES_PT[brtWeekdayIdx];
     const today = nowBrt.toISOString().slice(0, 10);
@@ -4252,6 +4255,7 @@ async function handleWebhookRequest(
 
     const [todayY, todayM, todayD] = today.split("-");
     const todayBR = `${weekdayName}, ${todayD}/${todayM}/${todayY}`;
+    const upcomingDaysLines = buildUpcomingDaysLines(nowBrt);
 
     const agentMode = (settingsMap["agent_mode"] as string) ?? "reservations";
     const includeFaq = agentMode === "reservations_faq";
@@ -4275,6 +4279,7 @@ async function handleWebhookRequest(
       `IDENTIDADE: Você se chama ${agentName} e atende como parte da equipe do ${restaurantName} — fale sempre na primeira pessoa, de forma natural e humana, tratando o cliente por "você". NÃO diga espontaneamente que é um assistente virtual, robô, IA, bot ou sistema automático, e não use linguagem robótica. Só revele que é um atendimento virtual se o cliente perguntar DIRETAMENTE se está falando com um robô/IA/atendente automático — nesse caso seja honesta e responda com naturalidade (ex: "Sou a ${agentName}, faço o atendimento virtual do ${restaurantName} e quando precisar chamo alguém da equipe"). Ao transferir para um colega (handoff), dizer que vai chamar alguém da equipe NÃO exige revelar que você é virtual. ` +
       `Seja cordial, eficiente e responda sempre em português brasileiro. Respostas curtas e diretas — em geral 3 a 4 linhas; use mais espaço só quando precisar listar horários, opções ou preços. Evite excesso de emojis. ` +
       `O número de WhatsApp do cliente é ${phone}. Hoje é ${todayBR}. ` +
+      `\n\nPróximos dias (use esta lista para saber o dia da semana de "amanhã", "sábado", "dia 18" etc. — nunca calcule de cabeça):\n${upcomingDaysLines.join("\n")}\n\n` +
       (customerFirstName
         ? `O cliente com quem você está falando se chama ${customerFirstName} — esse é o nome do CLIENTE, NÃO o seu. Você continua sendo ${agentName}. Pode tratá-lo por ${customerFirstName} quando soar natural, sem forçar o nome em toda mensagem. `
         : "") +
@@ -4306,7 +4311,7 @@ async function handleWebhookRequest(
       `   (b) Se available: true, chame create_reservation imediatamente com todos os dados coletados (nome, data, hora, party_size, hall_name se definido).\n` +
       `   (c) Se available: false, informe que a mesa não está mais disponível e ofereça alternativas.\n` +
       `   (d) Após criar com sucesso, SEMPRE informe o código da reserva ao cliente.\n` +
-      `11. Preços que variam por dia da semana: o cardápio e/ou "Preços e condições" podem listar valores diferentes por dia (ex: "segunda a quarta", "quinta a domingo", "todos os dias"). HOJE é ${weekdayName}. Ao informar um preço, identifique PRIMEIRO qual faixa de dias inclui ${weekdayName} e use SOMENTE essa faixa. NUNCA cite um valor de um intervalo que NÃO inclua ${weekdayName} (ex: não dê preço de quinta num dia que é quarta). Se o cliente perguntar o preço de OUTRO dia, use a faixa daquele dia. Se alguma faixa mencionar "feriado(s)": você NÃO tem como saber se hoje é feriado — informe o preço NORMAL do dia da semana e acrescente o aviso "Exceto feriados." (em feriados o valor pode ser diferente). NUNCA assuma que hoje é ou não é feriado, nem invente preço de feriado.\n` +
+      `11. Preços que variam por dia da semana: o cardápio e/ou "Preços e condições" podem listar valores diferentes por dia (ex: "segunda a quarta", "quinta a domingo", "todos os dias"). HOJE é ${weekdayName}. Ao informar um preço, identifique PRIMEIRO qual faixa de dias inclui ${weekdayName} e use SOMENTE essa faixa. NUNCA cite um valor de um intervalo que NÃO inclua ${weekdayName} (ex: não dê preço de quinta num dia que é quarta). Se o cliente perguntar o preço de OUTRO dia, use a faixa daquele dia. Para descobrir o dia da semana de uma data relativa ou futura, consulte a lista "Próximos dias"; para data fora da lista, use o dia da semana da data completa informada pelo cliente ou pergunte a data. Se alguma faixa mencionar "feriado(s)": você NÃO tem como saber se hoje é feriado — informe o preço NORMAL do dia da semana e acrescente o aviso "Exceto feriados." (em feriados o valor pode ser diferente). NUNCA assuma que hoje é ou não é feriado, nem invente preço de feriado.\n` +
       // Regra 12: o agente NÃO tem tool de fila de espera — prometer isso é
       // promessa vazia (o cliente espera um aviso que nunca sai). Enquanto a
       // fila não for exposta como ferramenta, a regra é não oferecer.
