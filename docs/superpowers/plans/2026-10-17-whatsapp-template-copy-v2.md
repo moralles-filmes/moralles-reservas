@@ -1,6 +1,6 @@
 # Plano — textos v2 dos nove modelos oficiais
 
-**Spec aprovada:** [textos v2](../specs/2026-10-17-whatsapp-template-copy-v2-design.md), aceite do responsável em 2026-10-17 e emenda manual para conta existente em 2026-10-19, ambos somente para implementação local. **Estado:** Tasks 1–3 implementadas e aceitas em reviews independentes; gates locais da Task 4 passaram, commit em fechamento; nenhuma v2 publicada. A política automática v1 e o piloto Ren Sushi seguem no [plano próprio](2026-10-17-datafy-template-auto-provision-on-connect.md).
+**Spec aprovada:** [textos v2](../specs/2026-10-17-whatsapp-template-copy-v2-design.md), aceite do responsável em 2026-10-17 e emenda manual para conta existente em 2026-10-19, ambos somente para implementação local. **Estado:** preparação local das Tasks 1–4 concluída em `870c8a8`, com reviews e gates aprovados; nenhuma v2 publicada. Publicação, Meta e versão de envio continuam pendentes. A política automática v1 e o piloto Ren Sushi seguem no [plano próprio](2026-10-17-datafy-template-auto-provision-on-connect.md).
 
 ## Contratos antes das tasks
 
@@ -51,13 +51,16 @@ Arquivos previstos: serviços `_shared`, bundles consumidores pelo import graph,
 ## Task 4 — Integração e preparação de rollout
 
 - [x] Executar pré-voo SQL isolado, testes focados e completos pertinentes, `npm run typecheck`, `npm run lint`, `npm run build`, `deno check`, ACL estático, seis gates `saas-shield-br` e review integrado da branch. Atualizar docs/runbook/memória só com evidência comprovada.
-- [ ] Revisar `git status`, diff total e 100% do staged; varrer segredos e arquivos proibidos, usar apenas `git add <caminhos explícitos>`, fazer commit local. Push/PR/CI e merge conforme autorização vigente; merge em `main` dispara Vercel e exige reconfirmação de seu efeito.
+- [x] Revisar `git status`, diff total e 100% do staged; varrer segredos e arquivos proibidos, usar apenas `git add <caminhos explícitos>`, fazer commit local.
+- [ ] Publicar a branch/PR v2, conferir CI `acl-estatico` no HEAD final e integrar na branch de destino dentro da autorização aplicável. Merge em `main` dispara Vercel e exige reconfirmação de seu efeito; nenhuma aprovação de implementação local autoriza essa publicação em produção.
 - [ ] Para produção, obter autorizações separadas de `db push`, matriz exata de EF incluindo `process-whatsapp-templates`, merge/Vercel, política v2 e submissão Meta por alcance. Revalidar backup/janela, contas no alcance, canal/custo e resultado dos recursos dos dois rejeitados. SQL → ACL → EF → frontend READY → grant/política → GET de reconciliação; despacho segue OFF.
 - [ ] Só declarar modelos utilizáveis quando a Meta aprovar cada nome/idioma/hash/categoria vigente; mensagens pagas e ativação por loja são um rollout distinto.
 
 **Gates de integração já concluídos:** ROOT executou typecheck (`tsc -b --noEmit`), lint (zero erros/18 avisos preexistentes), build e grafo de imports; implementer executou Deno cached-only dos 12 entrypoints sem alteração posterior dessas fontes. A revisão integrada final aceitou o delta sem P0/P1/P2, depois das correções SQL/DTO. Os seis gates estáticos foram aplicados com as skills `saas-shield-br` de migration, RLS, tenant, identidade, integração e segredos; o review integrado também aplicou `edge-function-guard`. São revisões do delta, não auditoria global do banco vivo. O contêiner descartável próprio `margin-template-v2-sql-pg-r6` foi removido após conferir ID, imagem Supabase PG17, rede `none` e zero portas; nenhum outro contêiner foi alterado.
 
 **Tentativas de suíte e limite de evidência:** a primeira execução concorrente com alterações em curso terminou com 162/168 arquivos e 3.850/3.857 testes aprovados; não valida o freeze final. A repetição congelada, sem configuração frontend sintética, passou 3.856/3.857 testes e 166/168 arquivos: a suite `OfficialConnectionCard` não coletou por ausência das variáveis públicas do Supabase, e a fixture antiga de atendimento terminou uma iteração sem concluir o Request. Os dois arquivos passaram isoladamente, 39/39, com URL `.invalid`, chave sintética e um worker, sem mudar código de produção. A execução integral final nesse mesmo ambiente fechado e um worker, com timeout de 15s por teste, passou **168/168 arquivos e 3.873/3.873 testes**, exit 0, em 633,09s. Nenhuma exclusão ou alteração de fixture foi usada para obter esse resultado. Testes focados e tentativas anteriores não são somados à contagem da suíte.
+
+**Commit local:** `870c8a8be9a56a4ce226aef9ac30e90aec14560a` reúne 55 caminhos explícitos, com 100% do staged revisado e varrido: 3.733 linhas adicionadas, zero segredo/caminho proibido e hash da migration igual ao congelado pelos reviews. `git diff --cached --check` passou e o worktree ficou limpo após o commit. Memória do projeto e índice foram atualizados. Não houve push/merge v2, escrita SQL de produção, deploy, grant, política ON ou POST à Meta nesta entrega. O PR draft #37 da política automática v1 é anterior e não representa CI/publicação da v2.
 
 ### Matriz congelada para um futuro rollout combinado
 
