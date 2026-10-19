@@ -13,14 +13,14 @@ Arquivos:
 - `supabase/functions/webhook-whatsapp/index.ts` (só as funções `getReservation`, `updateReservation`, `cancelReservation` e o despacho em `onToolCall`);
 - novo teste `src/lib/agent-reservation-tools.test.ts`.
 
-- [ ] Mover `getReservation`, `updateReservation` e `cancelReservation` para o núcleo novo, recebendo o client como parâmetro e um escopo obrigatório `{ unitId, customerId }`.
+- [x] Mover `getReservation`, `updateReservation` e `cancelReservation` para o núcleo novo, recebendo o client como parâmetro e um escopo obrigatório `{ unitId, customerId }`.
   - Toda query leva `.eq("unit_id", unitId)` e `.eq("customer_id", customerId)`.
   - Leitura e escrita só sobre `status in ('confirmed','pending')`.
-- [ ] `get_reservation` sem código busca a mais recente do `customerId` resolvido (cliente já canônico do turno). Assim some o lookup de `customers` por telefone sem organização.
-- [ ] `update_reservation` e `cancel_reservation` usam `.select("reservation_code")` e conferem a linha. Zero linhas vira `{ success:false }` com mensagem PT-BR neutra, que não distingue "não existe" de "é de outra pessoa".
-- [ ] Nenhum `error.message` do Postgres volta ao LLM: mensagem curta PT-BR e detalhe só no log.
-- [ ] O despacho em `onToolCall` passa `{ unitId, customerId: customer.id }`. Assinaturas das ferramentas (nomes, parâmetros, descriptions) e a flag `mutatingToolUsed` continuam iguais.
-- [ ] Testes com client falso que registra os filtros:
+- [x] `get_reservation` sem código busca a mais recente do `customerId` resolvido (cliente já canônico do turno). Assim some o lookup de `customers` por telefone sem organização.
+- [x] `update_reservation` e `cancel_reservation` usam `.select("reservation_code")` e conferem a linha. Zero linhas vira `{ success:false }` com mensagem PT-BR neutra, que não distingue "não existe" de "é de outra pessoa".
+- [x] Nenhum `error.message` do Postgres volta ao LLM: mensagem curta PT-BR e detalhe só no log.
+- [x] O despacho em `onToolCall` passa `{ unitId, customerId: customer.id }`. Assinaturas das ferramentas (nomes, parâmetros, descriptions) e a flag `mutatingToolUsed` continuam iguais.
+- [x] Testes com client falso que registra os filtros:
   - os três caminhos aplicam unidade, cliente e status;
   - código de outro cliente ou de outra unidade → não encontrado, sem escrita;
   - zero linhas → `success:false`;
@@ -65,4 +65,10 @@ Arquivos:
 
 ## Evidências
 
-(preencher por task)
+### Task 1 (2026-10-19)
+- Núcleo `supabase/functions/_shared/agent-reservation-tools.ts`; `webhook-whatsapp` passa `{ unitId, customerId: customer.id }` aos três casos de `onToolCall`. Contrato das ferramentas e flags de retry inalterados.
+- `npx vitest run src/lib/agent-reservation-tools.test.ts`: 13/13. Controle positivo: remover `.eq("customer_id")` do cancel reprova 1 teste; restaurado, 13/13.
+- `npm run typecheck` e ESLint dos dois arquivos: limpos. `npx deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts`: ok (deno não está no PATH nem no CI).
+- `node scripts/ef-import-graph.mjs supabase/functions/_shared/agent-reservation-tools.ts`: 1 EF (`webhook-whatsapp`).
+- Suíte completa: as falhas vistas são de ambiente. As 5 suítes que carregam o webhook real passam isoladas (237/237); `OfficialConnectionCard` e `App.preference-route` exigem `.env.local`, ausente no worktree, e passam no checkout principal (30/30); as demais foram timeout de 5s com duas execuções concorrentes.
+- Mudança de comportamento aceita: reserva feita sob outro cadastro (acompanhante) não é mais encontrada pela IA, que recebe "Reserva não encontrada ou já cancelada." (a equipe resolve pelo painel).

@@ -129,6 +129,11 @@ import {
   shouldUseFallbackProvider,
 } from "../_shared/agent-provider-fallback-core.ts";
 import {
+  cancelReservationScoped,
+  getReservationScoped,
+  updateReservationScoped,
+} from "../_shared/agent-reservation-tools.ts";
+import {
   DEFAULT_GIFTBACK_TEMPLATE,
   ensureUniqueVoucherCode,
   expiresAtEndOfDayBrt,
@@ -439,69 +444,6 @@ async function createReservation(params: {
     reservation_code: result.reservationCode,
     message: `Reserva criada! Código: #${result.reservationCode}. Data: ${d}/${m}/${y} às ${params.time} para ${params.party_size} pessoas.`,
   };
-}
-
-// deno-lint-ignore no-explicit-any
-async function getReservation(params: { reservation_code?: string; phone?: string }, unitId: string): Promise<any> {
-  let query = supabase
-    .from("reservations")
-    .select("*, customer:customers(*)")
-    .eq("unit_id", unitId)
-    .in("status", ["confirmed", "pending"]);
-
-  if (params.reservation_code) {
-    query = query.eq("reservation_code", params.reservation_code.toUpperCase());
-  } else if (params.phone) {
-    const { data: customer } = await supabase
-      .from("customers")
-      .select("id")
-      .eq("phone", params.phone.replace(/\D/g, ""))
-      .maybeSingle();
-    if (!customer) return { found: false, message: "Nenhuma reserva encontrada." };
-    query = query.eq("customer_id", customer.id).order("created_at", { ascending: false }).limit(1);
-  } else {
-    return { found: false, message: "Informe o código ou o telefone." };
-  }
-
-  const { data } = await query.maybeSingle();
-  if (!data) return { found: false, message: "Reserva não encontrada ou já cancelada." };
-  const [y, m, d] = data.date.split("-");
-  return { found: true, reservation_code: data.reservation_code, date: `${d}/${m}/${y}`, time: data.time, party_size: data.party_size, status: data.status, notes: data.notes };
-}
-
-// deno-lint-ignore no-explicit-any
-async function updateReservation(params: { reservation_code: string; date?: string; time?: string; party_size?: number; notes?: string }): Promise<any> {
-  const updates: Record<string, unknown> = {};
-  if (params.date) updates.date = params.date;
-  if (params.time) updates.time = params.time;
-  if (params.party_size) updates.party_size = params.party_size;
-  if (params.notes !== undefined) updates.notes = params.notes;
-  if (!Object.keys(updates).length) return { success: false, message: "Nenhuma alteração informada." };
-
-  const { error } = await supabase
-    .from("reservations")
-    .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq("reservation_code", params.reservation_code.toUpperCase());
-
-  if (error) return { success: false, error: error.message };
-  return { success: true, message: "Reserva atualizada com sucesso!" };
-}
-
-// deno-lint-ignore no-explicit-any
-async function cancelReservation(code: string): Promise<any> {
-  if (!code?.trim()) return { success: false, error: "Código da reserva não informado. Use get_reservation ou list_customer_reservations para obter o código." };
-  const upperCode = code.toUpperCase();
-  const { data, error } = await supabase
-    .from("reservations")
-    .update({ status: "cancelled", updated_at: new Date().toISOString() })
-    .eq("reservation_code", upperCode)
-    .in("status", ["confirmed", "pending"])
-    .select("reservation_code")
-    .maybeSingle();
-
-  if (error) return { success: false, error: error.message };
-  if (!data) return { success: false, error: "Reserva não encontrada ou já cancelada." };
-  return { success: true, message: `Reserva #${upperCode} cancelada.` };
 }
 
 // deno-lint-ignore no-explicit-any
@@ -4614,16 +4556,16 @@ async function handleWebhookRequest(
                 lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
                 break;
               case "get_reservation":
-                result = await getReservation(input.reservation_code ? input : { ...input, phone }, unitId!);
+                result = await getReservationScoped(supabase, input, { unitId: unitId!, customerId: customer.id });
                 break;
               case "update_reservation":
                 mutatingToolUsed = true; // desliga o retry silencioso (evita alteração duplicada)
-                result = await updateReservation(input);
+                result = await updateReservationScoped(supabase, input, { unitId: unitId!, customerId: customer.id });
                 lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
                 break;
               case "cancel_reservation":
                 mutatingToolUsed = true; // desliga o retry silencioso (evita cancelamento duplicado)
-                result = await cancelReservation(input.reservation_code);
+                result = await cancelReservationScoped(supabase, input.reservation_code, { unitId: unitId!, customerId: customer.id });
                 lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
                 break;
               case "list_customer_reservations":
