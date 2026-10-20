@@ -2907,6 +2907,18 @@ async function handleWebhookRequest(
     // onde uma URL do Gemini com `?key=<chave>` ficaria persistida.
     jsonLog("error", { requestId, evt: "webhook_error", err: sanitizeProviderError(err) });
     try {
+      // PRIMEIRO de todos, aqui: antes do `finish` pela mesma razão dos outros
+      // cinco desfechos, e antes do `releaseAiLock` porque soltar o lock com a
+      // reserva ainda `HELD` deixa uma inbound irmã abrir orçamento novo contra
+      // capacidade que ainda está comprometida. É também a SEGUNDA tentativa de
+      // liquidação quando a primeira não aplicou — o estado local só é zerado
+      // no sucesso.
+      // Os dois vêm antes de devolver o claim da mensagem: o `throw` daquela
+      // RPC (o mesmo soluço de banco que costuma causar o erro) não pode pular
+      // a liquidação nem deixar o lock órfão até o TTL — a reentrega cairia em
+      // `conversation_locked` e o cliente ficaria sem resposta.
+      await settleTurnBudget("RELEASED");
+      await releaseAiLock();
       // Antes de qualquer side effect externo (WhatsApp/LLM/tool), toda falha
       // é reentregável. O claim cercado volta à fila; event_ids do provider
       // tornam customer/conversa/append idempotentes.
@@ -2927,14 +2939,6 @@ async function handleWebhookRequest(
         if (releaseError || released !== true) throw new Error("processed_message_claim_release_failed");
         messageProcessingClaimId = null;
       }
-      // PRIMEIRO de todos, aqui: antes do `finish` pela mesma razão dos outros
-      // cinco desfechos, e antes do `releaseAiLock` porque soltar o lock com a
-      // reserva ainda `HELD` deixa uma inbound irmã abrir orçamento novo contra
-      // capacidade que ainda está comprometida. É também a SEGUNDA tentativa de
-      // liquidação quando a primeira não aplicou — o estado local só é zerado
-      // no sucesso.
-      await settleTurnBudget("RELEASED");
-      await releaseAiLock();
       await finish("webhook_error", sanitizeProviderError(err));
     } catch {
       // ignore — TTL de 90s libera o lock

@@ -271,10 +271,15 @@ export function createAgentTurn(io: AgentTurnIO) {
   const releaseAiLock = async () => {
     if (!lockAcquired || !convIdForLock || !aiLockToken) return;
     try {
-      await supabase.rpc("release_conversation_ai_claim", {
+      // supabase-js devolve `{ error }` em vez de lançar: sem ler, a falha
+      // não deixava rastro nenhum.
+      const { error } = await supabase.rpc("release_conversation_ai_claim", {
         p_conv: convIdForLock,
         p_token: aiLockToken,
       });
+      if (error) {
+        jsonLog("warn", { requestId, evt: "ai_lock_release_failed", convId: convIdForLock, code: error.code ?? null });
+      }
     } catch (e) {
       jsonLog("warn", { requestId, evt: "ai_lock_release_failed", convId: convIdForLock, err: String(e) });
     }

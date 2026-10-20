@@ -2174,6 +2174,15 @@ describe("turno do agente — ligação da franquia", () => {
       excecao.indexOf("settleTurnBudget("),
       "o lock é solto com a reserva ainda pendurada",
     ).toBeLessThan(excecao.indexOf("releaseAiLock()"));
+    // E os dois vêm antes de devolver o claim da mensagem: aquela RPC lança
+    // quando falha, e o `throw` pularia a liquidação e deixaria o lock órfão
+    // até o TTL (a reentrega cairia em `conversation_locked`).
+    const iClaim = excecao.indexOf("release_processed_whatsapp_message_claim");
+    expect(iClaim, "o catch externo deixou de devolver o claim da mensagem").toBeGreaterThan(-1);
+    expect(
+      excecao.indexOf("releaseAiLock()"),
+      "o claim da mensagem é devolvido antes de liquidar e soltar o lock",
+    ).toBeLessThan(iClaim);
 
     // A liquidação passa por UMA porta, e é ela quem fala com o adapter — para
     // que "todo desfecho liquida" seja uma regra, não seis cópias.
