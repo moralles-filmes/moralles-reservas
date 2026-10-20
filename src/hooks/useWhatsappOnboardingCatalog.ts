@@ -8,11 +8,16 @@ import { templateCatalogSchema } from '@/hooks/useWhatsappTemplates';
 const uuid = z.uuid();
 const catalogSchema = z.object({
   channelId: uuid.nullable(),
+  bindingGeneration: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).nullable(),
+  credentialRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),
   templatePreparation: templatePreparationSchema.nullable(),
   catalogSelection: templateCatalogSelectionSchema.nullable().optional(),
   templates: templateCatalogSchema,
   generatedAt: z.iso.datetime({ offset: true }),
-}).strict().refine(value => value.channelId !== null || (value.templates.length === 0 && value.catalogSelection == null));
+}).strict().refine(value => value.channelId !== null
+  ? value.credentialRevision !== null
+  : value.bindingGeneration === null && value.credentialRevision === null
+    && value.templates.length === 0 && value.catalogSelection == null);
 
 export type OnboardingTemplateCatalog = z.infer<typeof catalogSchema>;
 

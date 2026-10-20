@@ -1,5 +1,7 @@
 import { MESSAGE_TTL_MS } from './whatsapp-message-ttl-core.ts';
 import { TEMPLATE_CATALOG, type TemplateId } from './whatsapp-template-catalog-core.ts';
+import { TEMPLATE_V2_CATALOG, type TemplateV2Id } from './whatsapp-template-catalog-v2.ts';
+import { APPROVED_CATALOG_DIGESTS } from './whatsapp-template-cohort.ts';
 
 /** Closed ledger kind list; the SQL CHECK and twin test compare against this source. */
 export const SCHEDULED_KINDS = ['confirmation', 'reminder_d1', 'survey_d1', 'waitlist_entered', 'waitlist_feedback', 'voucher_issued', 'cancellation', 'waitlist_table_ready'] as const;
@@ -42,14 +44,19 @@ type ChannelPins = { channelId: string; initialCredentialRevision: number } & (
   | {provider: 'zapi' | 'waha' | 'uazapi'; transport: 'text'});
 type NoTemplate = {remoteTemplateId: null; templateVersion: null; syncEpoch: null};
 type NoBinding = {bindingId: null; bindingGeneration: null; accountId: null};
-type IncompletePins = {initialCatalogKey: TemplateId} & (
+export type AutomationTemplateId = TemplateId | TemplateV2Id;
+export type AutomationVersionSelection = {
+  version: 1 | 2; source: 'legacy' | 'admin' | 'auto'; revision: number;
+  enrollmentId: string | null; catalogDigest: string | null;
+};
+type IncompletePins = {initialCatalogKey: AutomationTemplateId} & (
   | ({shape: 'unselected'; channelId: null; provider: null; transport: null; initialCredentialRevision: null} & NoBinding & NoTemplate)
   | ({shape: 'unbound'} & ChannelPins & NoBinding & NoTemplate)
   | ({shape: 'missing_template'; channelId: string; provider: 'official' | 'datafy'; transport: 'template'; initialCredentialRevision: number; bindingId: string; bindingGeneration: number; accountId: string} & NoTemplate));
-type BoundPins = {shape: 'complete'; channelId: string; bindingId: string; bindingGeneration: number; initialCredentialRevision: number | null; initialCatalogKey: TemplateId | null} & (
+type BoundPins = {shape: 'complete'; channelId: string; bindingId: string; bindingGeneration: number; initialCredentialRevision: number | null; initialCatalogKey: AutomationTemplateId | null} & (
   | {transport: 'text'; provider: 'zapi' | 'waha' | 'uazapi'; accountId: null; remoteTemplateId: null; templateVersion: null; syncEpoch: null}
   | {transport: 'template'; provider: 'official' | 'datafy'; accountId: string; remoteTemplateId: string; templateVersion: number; syncEpoch: number});
-export type AutomationLedger = {jobId: string; reason: string | null; providerMessageId: string | null} & (
+export type AutomationLedger = {jobId: string; reason: string | null; providerMessageId: string | null; selection: AutomationVersionSelection} & (
   | {pinPhase: 'preconfiguration'; state: NonpostState; attempts: 0; pins: IncompletePins}
   | {pinPhase: 'bound'; state: AutomationStoredState; attempts: number; pins: BoundPins});
 
@@ -73,9 +80,22 @@ function ledgerState(value: unknown): AutomationStoredState {
     default: return invalidLedger();
   }
 }
-function catalogKey(value: unknown): TemplateId {
-  for (const definition of Object.values(TEMPLATE_CATALOG)) if (definition.id === value) return definition.id;
+function catalogKey(value: unknown): AutomationTemplateId {
+  for (const definition of [...Object.values(TEMPLATE_CATALOG), ...Object.values(TEMPLATE_V2_CATALOG)]) if (definition.id === value) return definition.id;
   return invalidLedger();
+}
+function versionSelection(row: Record<string, unknown>): AutomationVersionSelection {
+  const version = row.initial_template_version;
+  const source = row.initial_selection_source;
+  if ((version !== 1 && version !== 2) || typeof source !== 'string' || !['legacy', 'admin', 'auto'].includes(source)) return invalidLedger();
+  const revision = ledgerInteger(row.initial_selection_revision, 0);
+  const enrollmentId = row.initial_enrollment_id === null ? null : ledgerUuid(row.initial_enrollment_id);
+  const catalogDigest = nullableLedgerText(row.initial_catalog_digest);
+  if (source === 'legacy') {
+    if (version !== 1 || revision !== 0 || enrollmentId !== null || catalogDigest !== null) return invalidLedger();
+  } else if (revision < 1 || catalogDigest !== APPROVED_CATALOG_DIGESTS[version]
+    || (source === 'auto' ? version !== 2 || enrollmentId === null : enrollmentId !== null)) return invalidLedger();
+  return { version, source: source as AutomationVersionSelection['source'], revision, enrollmentId, catalogDigest };
 }
 /** Unknown DB/RPC data must pass here; SQL NULL is explicit, never undefined/coerced. */
 export function parseAutomationLedger(value: unknown): AutomationLedger {
@@ -88,7 +108,11 @@ export function parseAutomationLedger(value: unknown): AutomationLedger {
   if (providerMessageId !== null && (typeof providerMessageId !== 'string' || !providerMessageId || providerMessageId.length > 512 || /[\x00-\x1f\x7f-\x9f]/.test(providerMessageId))) return invalidLedger();
   const initialCredentialRevision = r.initial_credential_revision === null ? null : ledgerInteger(r.initial_credential_revision, 0);
   const initialCatalogKey = r.initial_catalog_key === null ? null : catalogKey(r.initial_catalog_key);
-  const common = {jobId, reason, providerMessageId};
+  const selection = versionSelection(r);
+  if ((initialCatalogKey !== null && !initialCatalogKey.endsWith(`_v${selection.version}`))
+    || (selection.source !== 'legacy' && initialCatalogKey === null)
+    || (selection.version === 2 && r.channel_id !== null && r.provider !== 'datafy')) return invalidLedger();
+  const common = {jobId, reason, providerMessageId, selection};
   const noTemplate: NoTemplate = {remoteTemplateId:null, templateVersion:null, syncEpoch:null};
   const noBinding: NoBinding = {bindingId:null, bindingGeneration:null, accountId:null};
   if (r.pin_phase === 'preconfiguration') {
@@ -118,10 +142,14 @@ export function parseAutomationLedger(value: unknown): AutomationLedger {
   const pins={shape:'complete' as const,channelId:ledgerUuid(r.channel_id),bindingId:ledgerUuid(r.binding_id),bindingGeneration:ledgerInteger(r.binding_generation,1),initialCredentialRevision,initialCatalogKey};
   const provider=r.provider, transport=r.transport;
   if ((provider === 'zapi' || provider === 'waha' || provider === 'uazapi') && transport === 'text') {
+    if (selection.version !== 1) return invalidLedger();
     if (['account_id','remote_template_id','template_version','sync_epoch'].some(key=>r[key]!==null)) return invalidLedger();
     return {...base,pins:{...pins,provider,transport,accountId:null,...noTemplate}};
   }
-  if ((provider === 'official' || provider === 'datafy') && transport === 'template') return {...base,pins:{...pins,provider,transport,accountId:ledgerUuid(r.account_id),remoteTemplateId:ledgerUuid(r.remote_template_id),templateVersion:ledgerInteger(r.template_version,1),syncEpoch:ledgerInteger(r.sync_epoch,0)}};
+  if ((provider === 'official' || provider === 'datafy') && transport === 'template') {
+    if (r.template_version !== selection.version || (selection.version === 2 && provider !== 'datafy')) return invalidLedger();
+    return {...base,pins:{...pins,provider,transport,accountId:ledgerUuid(r.account_id),remoteTemplateId:ledgerUuid(r.remote_template_id),templateVersion:selection.version,syncEpoch:ledgerInteger(r.sync_epoch,0)}};
+  }
   return invalidLedger();
 }
 

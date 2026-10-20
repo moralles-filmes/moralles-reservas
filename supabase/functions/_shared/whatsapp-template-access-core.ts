@@ -7,6 +7,10 @@ export type TemplateRole = 'owner' | 'gerente' | 'operador' | null;
 export type ConsentPurpose = 'operational' | 'promotional';
 type JobAssertion = { job_id: string; expected_channel_id: string; expected_binding_generation: number };
 export type TemplateManagementRequest =
+  | { action: 'dispatch_status'; unit_id: string }
+  | { action: 'dispatch_version_snapshot'; channel_id: string }
+  | { action: 'select_dispatch_version'; binding_id: string; kind: typeof SCHEDULED_KINDS[number]; version: 1 | 2; expected_revision: number; expected_generation: number; expected_credential_revision: number }
+  | { action: 'authorize_marketing_cost_v2'; channel_id: string; expected_binding_generation: number; category: 'MARKETING'; valid_from: string; valid_until: string; version: 2 }
   | { action: 'auto_policy_snapshot' }
   | { action: 'v2_policy_snapshot' }
   | { action: 'set_auto_policy'; enabled: boolean; expected_revision: number }
@@ -26,12 +30,12 @@ export type TemplateManagementRequest =
   | { action: 'authorize_marketing_cost'; channel_id: string; expected_binding_generation: number; category: 'MARKETING'; valid_from: string; valid_until: string }
   | { action: 'configure_promotion_frequency'; window_days: number };
 export type TemplateAction = TemplateManagementRequest['action'];
-const ADMIN_ACTIONS: readonly TemplateAction[] = ['v2_policy_snapshot', 'set_v2_policy', 'select_v2_channel', 'stop_v2_channel', 'auto_policy_snapshot', 'set_auto_policy', 'initialize_job', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'];
+const ADMIN_ACTIONS: readonly TemplateAction[] = ['dispatch_version_snapshot', 'select_dispatch_version', 'authorize_marketing_cost_v2', 'v2_policy_snapshot', 'set_v2_policy', 'select_v2_channel', 'stop_v2_channel', 'auto_policy_snapshot', 'set_auto_policy', 'initialize_job', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'];
 export function canManageTemplateAction(role: TemplateRole, action: TemplateAction, admin: boolean): boolean {
-  if (!['v2_policy_snapshot', 'set_v2_policy', 'select_v2_channel', 'stop_v2_channel', 'snapshot_v2', 'onboarding_catalog_snapshot_v2', 'auto_policy_snapshot', 'set_auto_policy', 'onboarding_catalog_snapshot', 'snapshot', 'sync', 'initialize_job', 'revalidate_job', 'record_consent', 'consent_snapshot', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'].includes(action)) return false;
+  if (![...ADMIN_ACTIONS, 'dispatch_status', 'snapshot_v2', 'onboarding_catalog_snapshot_v2', 'onboarding_catalog_snapshot', 'snapshot', 'sync', 'revalidate_job', 'record_consent', 'consent_snapshot'].includes(action)) return false;
   if (admin) return true;
   if (ADMIN_ACTIONS.includes(action)) return false;
-  return role === 'owner' || role === 'gerente' || (role === 'operador' && (action === 'snapshot' || action === 'snapshot_v2'));
+  return role === 'owner' || role === 'gerente' || (role === 'operador' && (action === 'snapshot' || action === 'snapshot_v2' || action === 'dispatch_status'));
 }
 export function canManageTemplateRequest(role: TemplateRole, request: TemplateManagementRequest, admin: boolean): boolean {
   return canManageTemplateAction(role, request.action, admin) && (request.action !== 'revalidate_job' || request.target !== 'catalog' || admin);
@@ -52,6 +56,13 @@ export function parseTemplateManagementRequest(input: unknown): TemplateManageme
   if (!record(input)) return null;
   let keys: string[] = []; let valid = false;
   switch (input.action) {
+    case 'dispatch_status': keys = ['action', 'unit_id']; valid = isManagementUuid(input.unit_id); break;
+    case 'dispatch_version_snapshot': keys = ['action', 'channel_id']; valid = isManagementUuid(input.channel_id); break;
+    case 'select_dispatch_version':
+      keys = ['action', 'binding_id', 'kind', 'version', 'expected_revision', 'expected_generation', 'expected_credential_revision'];
+      valid = isManagementUuid(input.binding_id) && SCHEDULED_KINDS.includes(input.kind as typeof SCHEDULED_KINDS[number])
+        && (input.version === 1 || input.version === 2) && integer(input.expected_revision, 0)
+        && integer(input.expected_generation) && integer(input.expected_credential_revision, 0); break;
     case 'auto_policy_snapshot': case 'v2_policy_snapshot': keys = ['action']; valid = true; break;
     case 'set_auto_policy': case 'set_v2_policy': keys = ['action', 'enabled', 'expected_revision']; valid = typeof input.enabled === 'boolean' && integer(input.expected_revision, 0); break;
     case 'onboarding_catalog_snapshot': case 'onboarding_catalog_snapshot_v2': case 'snapshot': case 'snapshot_v2':
@@ -78,9 +89,10 @@ export function parseTemplateManagementRequest(input: unknown): TemplateManageme
       keys = ['action', 'channel_id', 'scope', 'enabled', 'expected_credential_revision', 'expected_binding_generation'];
       valid = isManagementUuid(input.channel_id) && typeof input.scope === 'string' && ['catalog', 'dispatch'].includes(input.scope) && typeof input.enabled === 'boolean' && integer(input.expected_credential_revision, 0)
         && (input.expected_binding_generation === null || integer(input.expected_binding_generation)); break;
-    case 'authorize_marketing_cost':
+    case 'authorize_marketing_cost': case 'authorize_marketing_cost_v2':
       keys = ['action', 'channel_id', 'expected_binding_generation', 'category', 'valid_from', 'valid_until'];
-      valid = isManagementUuid(input.channel_id) && integer(input.expected_binding_generation) && input.category === 'MARKETING' && date(input.valid_from) && date(input.valid_until) && Date.parse(input.valid_until) > Date.parse(input.valid_from); break;
+      valid = isManagementUuid(input.channel_id) && integer(input.expected_binding_generation) && input.category === 'MARKETING' && date(input.valid_from) && date(input.valid_until) && Date.parse(input.valid_until) > Date.parse(input.valid_from);
+      if (input.action === 'authorize_marketing_cost_v2') { keys.push('version'); valid &&= input.version === 2; } break;
     case 'configure_promotion_frequency': keys = ['action', 'window_days']; valid = integer(input.window_days) && input.window_days <= 30; break;
   }
   return valid && exact(input, keys) ? input as TemplateManagementRequest : null;
@@ -148,11 +160,12 @@ export function projectOnboardingCatalogSnapshot(input: TemplateSnapshotInput, i
   const generatedAt = checkedDate(input.generatedAt);
   const templatePreparation = projectTemplatePreparation(input.preparation, includeV2);
   if (!input.channel) return { channelId: null, templatePreparation, templates: [], generatedAt,
-    ...(includeV2 ? { catalogSelection: null } : {}) };
+    ...(includeV2 ? { catalogSelection: null, bindingGeneration: null, credentialRevision: null } : {}) };
   const snapshot = projectTemplateSnapshot(input, includeV2);
   if (snapshot.providerLabel !== 'Datafy') return unavailable();
   return { channelId: snapshot.channelId, templatePreparation, templates: snapshot.templates, generatedAt,
-    ...(includeV2 ? { catalogSelection: snapshot.catalogSelection } : {}) };
+    ...(includeV2 ? { catalogSelection: snapshot.catalogSelection, bindingGeneration: snapshot.configuration.bindingGeneration,
+      credentialRevision: snapshot.configuration.credentialRevision } : {}) };
 }
 /** Build DTOs field by field. Raw rows/remote text never cross this boundary. */
 export function projectTemplateSnapshot(input: TemplateSnapshotInput, includeV2 = false) {

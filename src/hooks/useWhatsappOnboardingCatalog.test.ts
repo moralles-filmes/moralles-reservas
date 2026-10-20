@@ -15,13 +15,16 @@ const templates = definitions.map(template => ({
 }));
 const snapshot = () => ({
   channelId: '30000000-0000-4000-8000-000000000001', templatePreparation: null,
+  bindingGeneration: 1, credentialRevision: 0,
   templates, generatedAt: '2026-10-19T13:00:00Z',
 });
 beforeEach(() => { io.invoke.mockReset(); });
 
-it('accepts historical v1/v2 states and the canonical body without needing new DTO fields', async () => {
+it('accepts historical v1/v2 states, canonical bodies, and only the two channel pins', async () => {
   io.invoke.mockResolvedValue({ data: snapshot(), error: null });
-  expect((await readOnboardingTemplateCatalog(unitId)).templates).toHaveLength(18);
+  const result = await readOnboardingTemplateCatalog(unitId);
+  expect(result.templates).toHaveLength(18);
+  expect([result.bindingGeneration, result.credentialRevision]).toEqual([1, 0]);
 });
 
 it('keeps the canonical history and stale-policy diagnostic through onboarding_catalog_snapshot_v2', async () => {
@@ -44,5 +47,13 @@ it.each(['duplicate', 'incorrect_version', 'no_channel', 'unknown_body'])('close
   if (fault === 'no_channel') current.channelId = null;
   if (fault === 'unknown_body') current.templates = [{ ...templates[9], body: 'texto editado' }];
   io.invoke.mockResolvedValue({ data: current, error: null });
+  await expect(readOnboardingTemplateCatalog(unitId)).rejects.toThrow('dependency_unavailable');
+});
+
+it('accepts preparation before a binding and rejects an invented channel pin', async () => {
+  const unbound = { ...snapshot(), bindingGeneration: null };
+  io.invoke.mockResolvedValue({ data: unbound, error: null });
+  expect((await readOnboardingTemplateCatalog(unitId)).bindingGeneration).toBeNull();
+  io.invoke.mockResolvedValue({ data: { ...unbound, bindingGeneration: 1, credentialRevision: null }, error: null });
   await expect(readOnboardingTemplateCatalog(unitId)).rejects.toThrow('dependency_unavailable');
 });

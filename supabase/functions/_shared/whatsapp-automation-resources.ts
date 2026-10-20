@@ -1,7 +1,9 @@
-import { automationDeadline, type AutomationPreflightReason, type ScheduledIntent } from './whatsapp-automation-core.ts';
+import { automationDeadline, type AutomationPreflightReason, type AutomationTemplateId, type AutomationVersionSelection, type ScheduledIntent } from './whatsapp-automation-core.ts';
 import { canonicalBrPhone, toE164BrPhone } from './phone.ts';
 import { brtFactAt } from './whatsapp-message-ttl-core.ts';
 import { renderTemplate, type TemplateId } from './whatsapp-template-catalog-core.ts';
+import { renderTemplateV2, type TemplateV2Id } from './whatsapp-template-catalog-v2.ts';
+import { catalogDefinition } from './whatsapp-template-cohort.ts';
 import { DEFAULT_ENTERED_BODY, DEFAULT_FEEDBACK_BODY, DEFAULT_TABLE_READY_BODY, renderWaitlistTemplate } from './waitlist-defaults.ts';
 
 export type AutomationResourceTable = 'reservations' | 'waitlist' | 'vouchers' | 'voucher_rules' |
@@ -16,6 +18,7 @@ export async function renderScheduledText(resource: ScheduledResource, io: {
   readOne(table: string, columns: string, predicates: Readonly<Record<string, string>>): Promise<unknown>;
   appBaseUrl: string; allowedOrigins: readonly string[];
 }, preferenceToken?: string) {
+  if (!resource.templateId.endsWith('_v1')) throw new Error('render_invalid');
   // Validate configured links/required values with the same renderer before legacy substitution.
   const official = renderScheduledTemplate(resource, io.appBaseUrl, io.allowedOrigins, preferenceToken);
   const r = resource, kind = r.intent.kind;
@@ -66,10 +69,19 @@ export interface ScheduledResource {
   intent: ScheduledIntent;
   unitId: string; organizationId: string; customerId: string | null;
   phone: string; e164: string; customerName: string; unitName: string; unitSlug: string | null;
-  timezone: string; templateId: TemplateId; date: string | null; time: string | null;
+  timezone: string; templateId: AutomationTemplateId; date: string | null; time: string | null;
   code: string | number; people: number | null; discount: number | null; benefitExpiry: string | null;
   createdAt: string | null; issuedAt: string | null; source: string | null;
   expiresAt: string; snapshot: string; expected: ScheduledResourceExpected;
+}
+
+/** The caller supplies only a decoded ledger pin, never a browser/provider version hint. */
+export function pinScheduledTemplate(resource: ScheduledResource, selection: AutomationVersionSelection, initialCatalogKey: AutomationTemplateId | null): ScheduledResource {
+  const key = selection.version === 1 ? resource.templateId : `${resource.templateId.slice(0, -3)}_v2`;
+  const definition = catalogDefinition(key, selection.version);
+  if (!definition || (initialCatalogKey !== null && initialCatalogKey !== definition.id)
+    || (selection.version === 2 && initialCatalogKey === null)) throw new Error('template_pin_changed');
+  return { ...resource, templateId: definition.id };
 }
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ReservationExpected = { id: string; unit_id: string; customer_id: string; date: string; time: string;
@@ -291,8 +303,12 @@ export function renderScheduledTemplate(resource: ScheduledResource, appBaseUrl:
   const preference = `${base.origin}/preferencias/mensagens/${preferenceToken ?? ''}`;
   const day = resource.date ? resource.date.split('-').reverse().join('/') : '';
   const r = resource;
+  const version = r.templateId.endsWith('_v2') ? 2 : 1;
+  const definition = catalogDefinition(r.templateId, version);
+  if (!definition) throw new Error('render_invalid');
+  const parameterId = version === 1 ? r.templateId : `${r.templateId.slice(0, -3)}_v1`;
   let parameters: unknown[];
-  switch (r.templateId) {
+  switch (parameterId) {
     case 'res_confirmacao_v1': parameters = [r.customerName,r.unitName,day,r.time,r.people,r.code,tracking]; break;
     case 'res_confirmacao_desconto_v1': parameters = [r.customerName,r.unitName,day,r.time,r.people,r.code,r.discount,tracking]; break;
     case 'res_lembrete_dia_v1': parameters = [r.customerName,r.unitName,r.time,r.people,r.code,tracking]; break;
@@ -304,8 +320,10 @@ export function renderScheduledTemplate(resource: ScheduledResource, appBaseUrl:
     case 'mkt_voucher_programado_v1': parameters = [r.customerName,r.unitName,r.discount,r.code,day,preference]; break;
     case 'fila_mesa_pronta_v1': parameters = [r.customerName,r.unitName,r.code]; break;
     case 'res_cancelada_v1': parameters = [r.customerName,r.unitName,day,r.time,r.people,r.code]; break;
+    default: throw new Error('render_invalid');
   }
-  const rendered = renderTemplate(r.templateId, parameters, { allowedOrigins });
+  const rendered = definition.version === 2 ? renderTemplateV2(definition.id as TemplateV2Id, parameters, { allowedOrigins })
+    : renderTemplate(definition.id, parameters, { allowedOrigins });
   const body = rendered.body + (rendered.footer ? `\n${rendered.footer}` : '');
   if (body.length > 4096) throw new Error('render_invalid');
   return { ...rendered, body, safeLogBody: body.replace(/\/preferencias\/mensagens\/[A-Za-z0-9_-]{43}/g, '/preferencias/mensagens/[redacted]') };

@@ -1,4 +1,5 @@
 import { corsHeadersFor } from './cors.ts';
+import { awaitingDispatchChannel, decodeAutomationDispatchStatus, decodeAutomationVersionSelection, decodeAutomationVersionSnapshot } from './whatsapp-automation-version-access.ts';
 import { canManageTemplateRequest, decodeConsentState, decodeSyncResult, decodeTemplateAutoPolicy, decodeTemplateV2Policy, isManagementUuid,
   managementPositiveInteger, parseTemplateManagementRequest, projectTemplateSnapshot,
   projectOnboardingCatalogSnapshot,
@@ -10,11 +11,20 @@ export interface TemplateManagementDependencies {
   snapshot(unitId: string, includeV2?: boolean): Promise<TemplateSnapshotInput>;
   onboardingSnapshot(unitId: string, includeV2?: boolean): Promise<TemplateSnapshotInput>;
   resolveBinding?(channelId: string): Promise<string | null>;
+  resolveActiveBinding?(unitId: string): Promise<string | null>;
   /** The original user's JWT, never a service client or actor parameter. */
   callerRpc(jwt: string, name: string, args: Record<string, unknown>): Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
 }
 function rpcCall(request: Exclude<TemplateManagementRequest, { action: 'snapshot' | 'onboarding_catalog_snapshot' | 'snapshot_v2' | 'onboarding_catalog_snapshot_v2' }>, bindingId?: string): [string, Record<string, unknown>] {
   switch (request.action) {
+    case 'dispatch_version_snapshot': case 'dispatch_status':
+      if (!isManagementUuid(bindingId)) throw new Error('dependency_unavailable');
+      return [request.action === 'dispatch_status' ? 'get_whatsapp_automation_dispatch_status' : 'get_whatsapp_automation_version_selections', { p_binding_id: bindingId }];
+    case 'select_dispatch_version': return ['set_whatsapp_automation_version_selection', {
+      p_binding_id: request.binding_id, p_kind: request.kind, p_version: request.version,
+      p_expected_revision: request.expected_revision, p_expected_generation: request.expected_generation,
+      p_expected_credential_revision: request.expected_credential_revision,
+    }];
     case 'auto_policy_snapshot': return ['get_whatsapp_template_auto_policy', {}];
     case 'v2_policy_snapshot': return ['get_whatsapp_template_v2_policy', {}];
     case 'set_v2_policy': return ['configure_whatsapp_template_v2_policy', { p_enabled: request.enabled, p_expected_revision: request.expected_revision }];
@@ -32,6 +42,7 @@ function rpcCall(request: Exclude<TemplateManagementRequest, { action: 'snapshot
     case 'record_consent': return ['record_whatsapp_message_consent', { p_unit_id: request.unit_id, p_customer_id: request.customer_id, p_purpose: request.purpose, p_decision: request.decision, p_source_code: request.source_code, p_observed_at: request.observed_at, p_evidence_reference: request.evidence_reference }];
     case 'release_channel': return ['release_whatsapp_template_channel', { p_channel_id: request.channel_id, p_scope: request.scope, p_enabled: request.enabled, p_expected_credential_revision: request.expected_credential_revision, p_expected_binding_generation: request.expected_binding_generation }];
     case 'authorize_marketing_cost': return ['authorize_whatsapp_marketing_cost', { p_channel_id: request.channel_id, p_expected_binding_generation: request.expected_binding_generation, p_category: request.category, p_valid_from: request.valid_from, p_valid_until: request.valid_until }];
+    case 'authorize_marketing_cost_v2': return ['authorize_whatsapp_marketing_cost', { p_channel_id: request.channel_id, p_expected_binding_generation: request.expected_binding_generation, p_category: request.category, p_valid_from: request.valid_from, p_valid_until: request.valid_until, p_version: request.version }];
     case 'configure_promotion_frequency': return ['configure_whatsapp_promotion_frequency', { p_window_days: request.window_days }];
   }
 }
@@ -58,10 +69,16 @@ export function createTemplateManagementHandler(deps: TemplateManagementDependen
       if (input.action === 'onboarding_catalog_snapshot') return reply(projectOnboardingCatalogSnapshot(await deps.onboardingSnapshot(input.unit_id)));
       if (input.action === 'snapshot_v2') return reply(projectTemplateSnapshot(await deps.snapshot(input.unit_id, true), true));
       if (input.action === 'onboarding_catalog_snapshot_v2') return reply(projectOnboardingCatalogSnapshot(await deps.onboardingSnapshot(input.unit_id, true), true));
-      const bindingId = (input.action === 'select_v2_channel' || input.action === 'stop_v2_channel')
+      let bindingId = (input.action === 'select_v2_channel' || input.action === 'stop_v2_channel' || input.action === 'dispatch_version_snapshot')
         ? await deps.resolveBinding?.(input.channel_id) : undefined;
-      if ((input.action === 'select_v2_channel' || input.action === 'stop_v2_channel') && !bindingId)
+      if ((input.action === 'select_v2_channel' || input.action === 'stop_v2_channel' || input.action === 'dispatch_version_snapshot') && !bindingId)
         return reply({ error: 'not_eligible' }, 409);
+      if (input.action === 'dispatch_status') {
+        if (!deps.resolveActiveBinding) throw new Error('dependency_unavailable');
+        bindingId = await deps.resolveActiveBinding(input.unit_id);
+        if (bindingId === null) return reply(awaitingDispatchChannel());
+        if (!isManagementUuid(bindingId)) throw new Error('dependency_unavailable');
+      }
       const [name, args] = rpcCall(input, bindingId ?? undefined);
       const { data, error } = await deps.callerRpc(jwt, name, args);
       if (error) {
@@ -71,6 +88,9 @@ export function createTemplateManagementHandler(deps: TemplateManagementDependen
         return reply({ error: 'dependency_unavailable' }, 503);
       }
       if (input.action === 'auto_policy_snapshot' || input.action === 'set_auto_policy') return reply(decodeTemplateAutoPolicy(data));
+      if (input.action === 'dispatch_status') return reply(decodeAutomationDispatchStatus(data));
+      if (input.action === 'dispatch_version_snapshot') return reply(decodeAutomationVersionSnapshot(data, bindingId!, input.channel_id));
+      if (input.action === 'select_dispatch_version') return reply(decodeAutomationVersionSelection(data, input.version, input.expected_revision));
       if (input.action === 'v2_policy_snapshot' || input.action === 'set_v2_policy') return reply(decodeTemplateV2Policy(data));
       if (input.action === 'sync') return reply(decodeSyncResult(data));
       if (input.action === 'consent_snapshot') return reply(decodeConsentState(data, input.purpose));
@@ -79,7 +99,7 @@ export function createTemplateManagementHandler(deps: TemplateManagementDependen
         if (data !== input.window_days) throw new Error('dependency_unavailable');
         return reply({ windowDays: managementPositiveInteger(data) });
       }
-      if (input.action === 'authorize_marketing_cost') {
+      if (input.action === 'authorize_marketing_cost' || input.action === 'authorize_marketing_cost_v2') {
         if (!isManagementUuid(data)) throw new Error('dependency_unavailable');
         return reply({ authorizationId: data });
       }

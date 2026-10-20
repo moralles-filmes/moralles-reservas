@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createTemplateManagementHandler } from '../_shared/whatsapp-template-management.ts';
+import { resolveActiveDispatchBinding } from '../_shared/whatsapp-automation-version-access.ts';
 import { type TemplateManagementRequest, type TemplateRole, type TemplateSnapshotInput } from '../_shared/whatsapp-template-access-core.ts';
 
 const url = Deno.env.get('SUPABASE_URL')!;
@@ -39,6 +40,10 @@ async function scope(request: TemplateManagementRequest): Promise<string | null>
   if ('channel_id' in request) {
     const channel = await one('whatsapp_channels', 'unit_id', 'id', request.channel_id);
     return typeof channel?.unit_id === 'string' ? channel.unit_id : null;
+  }
+  if ('binding_id' in request) {
+    const binding = await one('whatsapp_template_bindings', 'unit_id', 'id', request.binding_id);
+    return typeof binding?.unit_id === 'string' ? binding.unit_id : null;
   }
   if (request.action === 'revalidate_job' && request.target === 'catalog') {
     const job = await one('whatsapp_template_jobs', 'account_id,organization_id', 'id', request.job_id);
@@ -146,6 +151,10 @@ Deno.serve(createTemplateManagementHandler({
     const binding = await one('whatsapp_template_bindings', 'id,channel_id', 'channel_id', channelId);
     return binding?.channel_id === channelId && typeof binding.id === 'string' ? binding.id : null;
   },
+  resolveActiveBinding: unitId => resolveActiveDispatchBinding(unitId, {
+    channels: unit => all('whatsapp_channels', 'id,unit_id,is_active,status,created_at', 'unit_id', unit),
+    binding: channel => one('whatsapp_template_bindings', 'id,channel_id,unit_id', 'channel_id', channel),
+  }),
   callerRpc: async (jwt, name, args) => {
     const caller = createClient(url, anon, { global: { headers: { Authorization: `Bearer ${jwt}` } }, auth: { persistSession: false, autoRefreshToken: false } });
     return await caller.rpc(name, args);

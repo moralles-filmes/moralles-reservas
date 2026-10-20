@@ -14,12 +14,16 @@ const remoteLabels: Record<Exclude<OfficialTemplateView['remoteStatus'], 'APPROV
   LIMIT_EXCEEDED: 'Limite de modelos atingido na Meta',
 };
 
+export function qualityBlocksTemplate(template: OfficialTemplateView): boolean {
+  return template.quality === 'RED' && (template.version === 2 || template.requestedCategory === 'MARKETING');
+}
+
 export function storeTemplateStatus(template: OfficialTemplateView): string {
   // Remote observation wins over lagging local classification, without granting send authority.
   if (template.remoteStatus !== 'APPROVED') return remoteLabels[template.remoteStatus];
   if (template.localStatus !== 'usable') return labels[template.localStatus];
+  if (qualityBlocksTemplate(template)) return 'Qualidade do modelo impede o envio';
   return template.remoteStatus === 'APPROVED' && template.hashMatches && !template.syncRequired
     && template.effectiveCategory === template.requestedCategory
-    && !(template.requestedCategory === 'MARKETING' && template.quality === 'RED')
     ? 'Aprovado pela Meta' : labels.usable;
 }

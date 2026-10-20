@@ -1,10 +1,11 @@
 import { AUTOMATION_POST_TIMEOUT_MS, automationDeadline, classifyAutomationOutcome, parseAutomationLedger,
   recordedDispatchResult, type AutomationLedger, type AutomationOutcome, type AutomationPreflightReason,
   type DispatchResult, type LocalPreflightReason, type ScheduledIntent, type ScheduledKind } from './whatsapp-automation-core.ts';
-import { createAutomationResourceService, renderScheduledTemplate, renderScheduledText, type ScheduledResource } from './whatsapp-automation-resources.ts';
+import { createAutomationResourceService, pinScheduledTemplate, renderScheduledTemplate, renderScheduledText, type ScheduledResource } from './whatsapp-automation-resources.ts';
 import type { ScheduledChannel, ScheduledChannelResult } from './whatsapp-channel-service.ts';
 import { createPreferenceToken } from './whatsapp-message-preferences-core.ts';
-import { TEMPLATE_CATALOG, catalogHash } from './whatsapp-template-catalog-core.ts';
+import { catalogHash } from './whatsapp-template-catalog-core.ts';
+import { catalogDefinition } from './whatsapp-template-cohort.ts';
 import { brtFactAt } from './whatsapp-message-ttl-core.ts';
 
 export interface AutomationDispatchIO {
@@ -85,13 +86,17 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
       catch { return { ok: false, reason: 'template_sync_failed' }; }
       template = await read('whatsapp_remote_templates', '*', { id: pins.remoteTemplateId, account_id: pins.accountId });
     }
-    const definition = TEMPLATE_CATALOG[resource.templateId];
+    const definition = catalogDefinition(resource.templateId, job.selection.version);
+    if (!definition) return { ok: false, reason: 'template_unavailable' };
     const hash = await catalogHash(definition);
-    if (!template || definition.state !== 'active' || template.logical_id !== definition.id || template.name !== definition.name
-      || template.version !== 1 || pins.templateVersion !== 1 || template.language !== 'pt_BR'
+    if (!template || (definition.version === 1 && definition.state !== 'active') || template.logical_id !== definition.id || template.name !== definition.name
+      || template.version !== job.selection.version || pins.templateVersion !== job.selection.version || template.language !== 'pt_BR'
       || (pins.initialCatalogKey !== null && pins.initialCatalogKey !== definition.id)
       || template.desired_hash !== hash || template.observed_hash !== hash || template.requested_category !== definition.requestedCategory
-      || template.effective_category !== definition.requestedCategory || (definition.requestedCategory === 'MARKETING' && template.quality === 'RED')
+      || template.effective_category !== definition.requestedCategory
+      || (job.selection.version === 2 && (typeof template.quality !== 'string'
+        || !['UNKNOWN', 'GREEN', 'YELLOW'].includes(template.quality)))
+      || (definition.requestedCategory === 'MARKETING' && template.quality === 'RED')
       || template.local_status !== 'usable' || template.remote_status !== 'APPROVED' || template.sync_required !== false
       || !instant(template.last_synced_at) || io.now() - Date.parse(template.last_synced_at) > 60_000
       || typeof template.remote_id !== 'string' || !template.remote_id || !Number.isSafeInteger(template.sync_epoch)) return { ok: false, reason: 'template_unavailable' };
@@ -116,14 +121,15 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
       if (!instant(row.expires_at) || Date.parse(row.expires_at) !== Date.parse(automationDeadline(intent.kind, intent.factAt))) throw new Error('deadline_invalid');
       if (job.state === 'blocked' || job.state === 'paused') {
         const loaded = await resources.loadScheduledResource(intent);
-        if (!loaded.ok || !(await authority(job, loaded.resource, true)).ok) return recordedDispatchResult(job);
+        if (loaded.ok === false || !(await authority(job, pinScheduledTemplate(loaded.resource, job.selection, job.pins.initialCatalogKey), true)).ok) return recordedDispatchResult(job);
         if (await io.rpc('requeue_whatsapp_automation', { p_job_id: jobId }) !== true) return currentResult(jobId, job);
       }
       const claimed = record(await io.rpc('claim_whatsapp_automation', { p_job_id: jobId }));
       if (!claimed) return currentResult(jobId, job);
       const parsed = parseAutomationLedger(claimed);
       if (parsed.pinPhase !== 'bound' || parsed.state !== 'claimed' || parsed.jobId !== jobId || !uuid(claimed.claim_token)) return currentResult(jobId, job);
-      if (JSON.stringify(parsed.pins) !== JSON.stringify(job.pins) || JSON.stringify(intentFromRow(claimed)) !== JSON.stringify(intent)) return currentResult(jobId, job);
+      if (JSON.stringify(parsed.pins) !== JSON.stringify(job.pins) || JSON.stringify(parsed.selection) !== JSON.stringify(job.selection)
+        || JSON.stringify(intentFromRow(claimed)) !== JSON.stringify(intent)) return currentResult(jobId, job);
       row = claimed; job = parsed;
     } catch { return currentResult(jobId, job); }
     const fence = row.claim_token as string; // Narrowed UUID from actual claim above, never a body field.
@@ -150,7 +156,7 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
     try {
       const loaded = await resources.loadScheduledResource(intent);
       if (loaded.ok === false) return block(loaded.reason);
-      const resource = loaded.resource;
+      const resource = pinScheduledTemplate(loaded.resource, claimedJob.selection, claimedJob.pins.initialCatalogKey);
       if (resource.customerId !== row.customer_id || resource.organizationId !== row.organization_id) return block('recipient_changed');
       const initialAuthority = await authority(claimedJob, resource, true);
       if (initialAuthority.ok === false) return block(initialAuthority.reason);
@@ -176,7 +182,10 @@ export function createAutomationDispatcher(io: AutomationDispatchIO) {
       prepared = true;
       const finalResource = await resources.loadScheduledResource(intent);
       if (!finalResource.ok || finalResource.resource.snapshot !== resource.snapshot) return zero('final_resource_changed');
-      const finalAuthority = await authority(claimedJob, finalResource.resource, false);
+      let finalPinnedResource: ScheduledResource;
+      try { finalPinnedResource = pinScheduledTemplate(finalResource.resource, claimedJob.selection, claimedJob.pins.initialCatalogKey); }
+      catch { return zero('final_resource_changed'); }
+      const finalAuthority = await authority(claimedJob, finalPinnedResource, false);
       if (finalAuthority.ok === false) {
         if (finalAuthority.reason === 'dispatch_paused') return zero('final_gate_paused');
         if (finalAuthority.reason === 'consent_changed') return zero('final_consent_changed');

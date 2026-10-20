@@ -90,6 +90,7 @@ import { ResponsiveDialog, ResponsiveDialogContent, ResponsiveDialogHeader, Resp
 import { DatafyAdminCard } from "@/components/whatsapp/DatafyAdminCard";
 import { TemplateCatalogAdminCard } from "@/components/whatsapp/TemplateCatalogAdminCard";
 import { TemplateDispatchAdminCard } from "@/components/whatsapp/TemplateDispatchAdminCard";
+import { TemplateDispatchVersionAdminCard } from "@/components/whatsapp/TemplateDispatchVersionAdminCard";
 import { useOfficialConnection } from "@/hooks/useOfficialConnection";
 import { migrationProviderLabel, resolveReplacedChannel } from "@/features/whatsapp/official-migration";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
@@ -382,6 +383,7 @@ function ChannelsTab({ unitId, defaultProvider }: { unitId: string; defaultProvi
       />
       <TemplateCatalogAdminCard unitId={unitId} />
       <TemplateDispatchAdminCard unitId={unitId} />
+      <TemplateDispatchVersionAdminCard unitId={unitId} />
       {isLoading ? (
         <div className="space-y-3">{[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
       ) : isError ? (

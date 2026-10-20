@@ -34,7 +34,10 @@ describe('Task13 authenticated management boundary', () => {
   it('classifies exactly the nine genuine-caller interfaces without worker or table access', () => {
     const entries = JSON.parse(readFileSync(ALLOWLIST_PATH, 'utf8')).authenticated_tenant as AdvisorEntry[];
     for (const name of names) {
-      const matching = entries.filter(entry => entry.name === name);
+      // Task 13 inventories the original five-argument cost RPC; the later
+      // version-2 overload has its own allowlist entry and authorization.
+      const matching = entries.filter(entry => entry.name === name &&
+        !(name === 'authorize_whatsapp_marketing_cost' && entry.args.includes('p_version integer')));
       expect(matching).toHaveLength(1);
       expect(matching[0].roles).toEqual(['authenticated']);
       expect(matching[0].security_definer).toBe(true);

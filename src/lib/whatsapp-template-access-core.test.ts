@@ -37,6 +37,19 @@ describe('template management closed authority', () => {
     const projected = projectOnboardingCatalogSnapshot(base);
     expect(projected.channelId).toBe(id);
     expect(projected.templates).toHaveLength(9);
+    expect(projected).not.toHaveProperty('bindingGeneration');
+    expect(projected).not.toHaveProperty('credentialRevision');
+    const versioned = projectOnboardingCatalogSnapshot(base, true);
+    expect(versioned).toMatchObject({ channelId: id, bindingGeneration: null, credentialRevision: 0 });
+    const bound = projectOnboardingCatalogSnapshot({ ...base,
+      binding: { generation: 7, dispatch_enabled: false, submission_authorized_at: null, submission_authorized_by: null,
+        private_actor: id, private_grant: 'internal' } }, true);
+    expect(bound).toMatchObject({ channelId: id, bindingGeneration: 7, credentialRevision: 0 });
+    expect(Object.keys(bound).sort()).toEqual(['bindingGeneration', 'catalogSelection', 'channelId', 'credentialRevision',
+      'generatedAt', 'templatePreparation', 'templates'].sort());
+    expect(JSON.stringify(bound)).not.toContain('private_');
+    expect(projectOnboardingCatalogSnapshot({ ...base, channel: null }, true)).toMatchObject({
+      channelId: null, bindingGeneration: null, credentialRevision: null });
     expect(JSON.stringify(projected)).not.toContain('do not return');
     expect(projectOnboardingCatalogSnapshot({ ...base, channel: null })).toEqual({ channelId: null,
       templatePreparation: { enrollment: 'eligible', state: 'pending', reason: null, updatedAt: '2026-10-17T19:00:00Z' },
