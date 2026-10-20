@@ -2682,9 +2682,9 @@ dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 
 **Ordinais.** Faixa 7901–7999 (a 78 é da Entrega B). Task 1.1: casos
 7901–7906, controles 7908–7913; 7907, 7914 e 7915 livres. Task 1.2: casos
-7920–7925, controles 7930–7935. As tasks seguintes usam 7940+, 7960+ e 7980+.
+7920–7929, controles 7930–7939. As tasks seguintes usam 7940+, 7960+ e 7980+.
 O 79 imprime os ordinais, a contagem e **aborta** se ela divergir do esperado
-(hoje **24 e 24**); quem acrescenta casos atualiza o número na última
+(hoje **32 e 32**); quem acrescenta casos atualiza o número na última
 instrução do arquivo.
 
 **Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
@@ -2720,16 +2720,31 @@ unidade/organização fora da conta, mover de conta) e da conta, gravando como
 de outro cliente, contato sem cliente e reserva inexistente com o mesmo
 `42501`; IG-2.6 `anonymize_customer` chamada como platform_admin (papel real +
 claims) anonimiza o contato do cliente, e o de outro cliente sobrevive também a
-um UPDATE de `deleted_at` de nulo para nulo. Os C-IG-2.x seguem o desenho da
+um UPDATE de `deleted_at` de nulo para nulo. Endurecimento (7926–7929):
+IG-2.7 conectar, reconectar e desconectar deixam linha no `audit_log`, e
+`disconnected_by` guarda o ator (o `actor_id` do audit é nulo sob
+`service_role`); IG-2.8 com `token_secret_id` apontado para um segredo alheio
+(`internal_api_key`), getter, renovação, reconexão e desconexão recusam com
+`42501 instagram_account_secret_mismatch` e o segredo alheio fica intacto;
+IG-2.9 o owner, como `authenticated` real, faz o soft delete direto em
+`customers` e o contato é anonimizado, o que só funciona porque o trigger é
+SECURITY DEFINER (o controle o recria como INVOKER e o soft delete estoura
+`42501` em `instagram_contacts`); IG-2.10 `ig_user_id`/token normalizados
+(`' 79300001'` e `'79300001'` são a mesma conta), não numérico recusado pela
+RPC e pelo CHECK, `connected` limpa `last_error_code` e contato em conta
+desconectada dá `55000`. `service_role` só LÊ contas e ledger (IG-2.1/IG-2.5
+medem o UPDATE/INSERT direto recusado). Os C-IG-2.x seguem o desenho da
 Task 1.1 (o C-IG-2.6 recria o trigger sem o `when` e confere o
-`pg_get_triggerdef` restaurado).
+`pg_get_triggerdef` restaurado; o C-IG-2.8 tira a amarração por nome de cada
+uma das quatro funções, uma por vez).
 
 **Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
 loopback, banco recriado do zero): RED com `ERROR: 79: objetos do modulo
 Instagram ausentes` (exit 3) antes da 1.1 e `objetos da conta/contato do
 Instagram ausentes` (exit 3) com só a 1.1; as duas migrations cruas aplicadas
-duas vezes e o 79 com 24/24 após cada aplicação, sem linha residual nas
-tabelas novas nem segredo `instagram-account-*` no Vault.
+duas vezes e o 79 com 32/32 após cada aplicação, sem linha residual nas
+tabelas novas, no `audit_log` da conta nem segredo `instagram-account-*` no
+Vault.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
 nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A

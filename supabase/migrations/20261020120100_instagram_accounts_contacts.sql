@@ -36,12 +36,17 @@ begin;
 -- ============================================================================
 -- 1. instagram_accounts
 -- ============================================================================
--- `connected_by` sem FK: registro histórico, como `granted_by` na 20261020120000.
+-- `connected_by`/`disconnected_by` sem FK: registro histórico, como
+-- `granted_by` na 20261020120000. As RPCs rodam como `service_role` (sem
+-- `sub`), então o `actor_id` do audit_log sai nulo: quem conectou e quem
+-- desconectou ficam nessas duas colunas, que o audit_log copia em new_values.
+-- `ig_user_id` é o id numérico da conta no Instagram, gravado sem espaços.
 create table if not exists public.instagram_accounts (
   id                 uuid        primary key default gen_random_uuid(),
   organization_id    uuid        not null references public.organizations(id) on delete cascade,
   unit_id            uuid        not null references public.units(id) on delete cascade,
-  ig_user_id         text        not null,
+  ig_user_id         text        not null
+    constraint instagram_accounts_ig_user_id_chk check (ig_user_id ~ '^[0-9]+$'),
   username           text,
   account_type       text,
   status             text        not null default 'connected'
@@ -55,6 +60,7 @@ create table if not exists public.instagram_accounts (
   connected_by       uuid        not null,
   connected_at       timestamptz not null default now(),
   disconnected_at    timestamptz,
+  disconnected_by    uuid,
   updated_at         timestamptz not null default now()
 );
 
@@ -84,6 +90,15 @@ drop trigger if exists instagram_accounts_tenant_guard_trg on public.instagram_a
 create trigger instagram_accounts_tenant_guard_trg
   before insert or update of organization_id, unit_id on public.instagram_accounts
   for each row execute function public.unit_module_tenant_guard();
+
+-- Trilha de conexão/reconexão/desconexão: o mesmo trigger genérico de
+-- `unit_module_grants`. A tabela NÃO entra na allowlist de membro do
+-- audit_log (20261016181000): só o platform_admin lê essas linhas. O que vai
+-- para old/new_values é o ponteiro do Vault (uuid), nunca o token.
+drop trigger if exists instagram_accounts_audit on public.instagram_accounts;
+create trigger instagram_accounts_audit
+  after insert or update or delete on public.instagram_accounts
+  for each row execute function public.audit_trigger_func();
 
 -- ============================================================================
 -- 2. instagram_contacts
@@ -193,8 +208,10 @@ create index if not exists instagram_contact_reservations_unit_idx
 -- ============================================================================
 -- 4. RLS e ACL de tabela
 -- ============================================================================
--- O `revoke` inclui `service_role` para tirar TRUNCATE/REFERENCES/TRIGGER que
--- os default privileges do Supabase dão; o CRUD é reconcedido explicitamente.
+-- O `revoke` inclui `service_role` para tirar o que os default privileges do
+-- Supabase dão. Contas e ledger: `service_role` só LÊ (o webhook e o worker de
+-- renovação listam contas; a escrita é só pelas RPCs DEFINER, que conferem
+-- tenant, Vault e transições). Contatos: CRUD para `service_role`.
 alter table public.instagram_accounts enable row level security;
 alter table public.instagram_accounts force row level security;
 alter table public.instagram_contacts enable row level security;
@@ -203,14 +220,14 @@ alter table public.instagram_contact_reservations enable row level security;
 alter table public.instagram_contact_reservations force row level security;
 
 revoke all on table public.instagram_accounts from public, anon, authenticated, service_role;
-grant select, insert, update, delete on table public.instagram_accounts to service_role;
+grant select on table public.instagram_accounts to service_role;
 
 revoke all on table public.instagram_contacts from public, anon, authenticated, service_role;
 grant select on table public.instagram_contacts to authenticated;
 grant select, insert, update, delete on table public.instagram_contacts to service_role;
 
 revoke all on table public.instagram_contact_reservations from public, anon, authenticated, service_role;
-grant select, insert, update, delete on table public.instagram_contact_reservations to service_role;
+grant select on table public.instagram_contact_reservations to service_role;
 
 drop policy if exists instagram_contacts_select on public.instagram_contacts;
 create policy instagram_contacts_select on public.instagram_contacts
@@ -223,12 +240,17 @@ create policy instagram_contacts_select on public.instagram_contacts
 -- ============================================================================
 -- 5. RPCs da conta (service_role)
 -- ============================================================================
+-- Ponteiro do Vault preso ao nome. Toda RPC que lê ou grava o segredo exige
+-- que `token_secret_id` aponte para o segredo `instagram-account-<id>-token`
+-- desta conta; ponteiro para outro segredo (p.ex. `internal_api_key`) é
+-- recusado com 42501 `instagram_account_secret_mismatch`, sem decifrar nem
+-- gravar nada. Sem ponteiro, o segredo é procurado pelo nome.
+
 -- Desconexão: o segredo no Vault é SOBRESCRITO com valor aleatório (não
 -- apagado: a FK `on delete set null` e o nome estável deixam a reconexão
--- reaproveitar a mesma entrada), o ponteiro é zerado e a linha vira
--- `disconnected`. Repetir é no-op que reafirma a sobrescrita.
--- `p_actor` é exigido pela interface da EF; o schema da conta não tem coluna
--- de quem desconectou, então ele só é validado.
+-- reaproveitar a mesma entrada), o ponteiro é zerado, a linha vira
+-- `disconnected` e `disconnected_by` guarda o ator. Repetir é no-op que
+-- reafirma a sobrescrita e preserva quem e quando desconectou primeiro.
 create or replace function public.disconnect_instagram_account(p_account_id uuid, p_actor uuid)
 returns void
 language plpgsql
@@ -253,8 +275,13 @@ begin
   end if;
 
   v_name := 'instagram-account-' || p_account_id::text || '-token';
-  v_secret_id := v_acc.token_secret_id;
-  if v_secret_id is null then
+  if v_acc.token_secret_id is not null then
+    select s.id into v_secret_id from vault.secrets s
+     where s.id = v_acc.token_secret_id and s.name = v_name;
+    if v_secret_id is null then
+      raise exception 'instagram_account_secret_mismatch' using errcode = '42501';
+    end if;
+  else
     select s.id into v_secret_id from vault.secrets s where s.name = v_name limit 1;
   end if;
   if v_secret_id is not null then
@@ -265,16 +292,18 @@ begin
      set token_secret_id = null,
          status = 'disconnected',
          disconnected_at = coalesce(a.disconnected_at, now()),
+         disconnected_by = case when a.disconnected_at is null then p_actor else a.disconnected_by end,
          updated_at = now()
    where a.id = p_account_id;
 end;
 $$;
 
--- Conexão. Serializa por `ig_user_id` e depois por unidade (ordem fixa, sem
--- ciclo). A conta ativa noutra unidade é recusada; outra conta ativa na mesma
--- unidade é desconectada antes; a mesma conta na mesma unidade (ativa ou
--- desconectada) reaproveita a linha, o que mantém os contatos e o segredo.
--- A organização sai de `units`.
+-- Conexão. `ig_user_id` e token entram sem espaços nas pontas, e o
+-- `ig_user_id` é só dígitos. Serializa por `ig_user_id` e depois por unidade
+-- (ordem fixa, sem ciclo). A conta ativa noutra unidade é recusada; outra
+-- conta ativa na mesma unidade é desconectada antes; a mesma conta na mesma
+-- unidade (ativa ou desconectada) reaproveita a linha, o que mantém os
+-- contatos e o segredo. A organização sai de `units`.
 create or replace function public.store_instagram_account_connection(
   p_unit_id      uuid,
   p_ig_user_id   text,
@@ -298,11 +327,14 @@ declare
   v_secret_id uuid;
   v_name      text;
 begin
+  p_ig_user_id := btrim(p_ig_user_id);
+  p_token := btrim(p_token);
+
   if p_unit_id is null or p_actor is null
-     or p_ig_user_id is null or length(btrim(p_ig_user_id)) = 0 or length(p_ig_user_id) > 128 then
+     or p_ig_user_id is null or p_ig_user_id !~ '^[0-9]{1,64}$' then
     raise exception 'invalid_instagram_account_argument' using errcode = '22023';
   end if;
-  if p_token is null or length(btrim(p_token)) < 8 or length(p_token) > 4096 then
+  if p_token is null or length(p_token) < 8 or length(p_token) > 4096 then
     raise exception 'invalid_instagram_token' using errcode = '22023';
   end if;
 
@@ -353,6 +385,7 @@ begin
            connected_by = p_actor,
            connected_at = now(),
            disconnected_at = null,
+           disconnected_by = null,
            updated_at = now()
      where a.id = v_id;
   else
@@ -367,12 +400,17 @@ begin
   end if;
 
   v_name := 'instagram-account-' || v_id::text || '-token';
-  v_secret_id := v_row.token_secret_id;
-  if v_secret_id is null then
+  if v_row.token_secret_id is not null then
+    select s.id into v_secret_id from vault.secrets s
+     where s.id = v_row.token_secret_id and s.name = v_name;
+    if v_secret_id is null then
+      raise exception 'instagram_account_secret_mismatch' using errcode = '42501';
+    end if;
+  else
     select s.id into v_secret_id from vault.secrets s where s.name = v_name limit 1;
   end if;
 
-  if v_secret_id is not null and exists (select 1 from vault.secrets s where s.id = v_secret_id) then
+  if v_secret_id is not null then
     perform vault.update_secret(
       v_secret_id,
       p_token,
@@ -396,6 +434,7 @@ end;
 $$;
 
 -- Token para a EF. Sem ponteiro (desconectada) ou sem segredo: P0002.
+-- Ponteiro para segredo de outro nome: 42501, sem decifrar.
 create or replace function public.get_instagram_account_token(p_account_id uuid)
 returns text
 language plpgsql
@@ -403,13 +442,26 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_token text;
+  v_ptr       uuid;
+  v_name      text;
+  v_secret_id uuid;
+  v_token     text;
 begin
-  select ds.decrypted_secret into v_token
-    from public.instagram_accounts a
-    join vault.decrypted_secrets ds on ds.id = a.token_secret_id
-   where a.id = p_account_id;
+  select a.token_secret_id into v_ptr from public.instagram_accounts a where a.id = p_account_id;
+  if v_ptr is null then
+    raise exception 'instagram_account_token_not_found' using errcode = 'P0002';
+  end if;
 
+  v_name := 'instagram-account-' || p_account_id::text || '-token';
+  if v_ptr is not null then
+    select s.id into v_secret_id from vault.secrets s
+     where s.id = v_ptr and s.name = v_name;
+    if v_secret_id is null then
+      raise exception 'instagram_account_secret_mismatch' using errcode = '42501';
+    end if;
+  end if;
+
+  select ds.decrypted_secret into v_token from vault.decrypted_secrets ds where ds.id = v_secret_id;
   if v_token is null then
     raise exception 'instagram_account_token_not_found' using errcode = 'P0002';
   end if;
@@ -446,8 +498,8 @@ begin
 end;
 $$;
 
--- Renovação do token longo: troca o valor no MESMO segredo e carimba
--- `token_refreshed_at`. Não muda o status.
+-- Renovação do token longo: troca o valor no MESMO segredo (preso ao nome) e
+-- carimba `token_refreshed_at`. Não muda o status.
 create or replace function public.record_instagram_token_refresh(p_account_id uuid, p_token text, p_expires_at timestamptz)
 returns void
 language plpgsql
@@ -456,9 +508,12 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_acc record;
+  v_acc       record;
+  v_name      text;
+  v_secret_id uuid;
 begin
-  if p_token is null or length(btrim(p_token)) < 8 or length(p_token) > 4096 then
+  p_token := btrim(p_token);
+  if p_token is null or length(p_token) < 8 or length(p_token) > 4096 then
     raise exception 'invalid_instagram_token' using errcode = '22023';
   end if;
 
@@ -472,10 +527,19 @@ begin
     raise exception 'instagram_account_not_active' using errcode = '55000';
   end if;
 
+  v_name := 'instagram-account-' || p_account_id::text || '-token';
+  if v_acc.token_secret_id is not null then
+    select s.id into v_secret_id from vault.secrets s
+     where s.id = v_acc.token_secret_id and s.name = v_name;
+    if v_secret_id is null then
+      raise exception 'instagram_account_secret_mismatch' using errcode = '42501';
+    end if;
+  end if;
+
   perform vault.update_secret(
-    v_acc.token_secret_id,
+    v_secret_id,
     p_token,
-    'instagram-account-' || p_account_id::text || '-token',
+    v_name,
     'Instagram account token for internal account UUID'
   );
 
@@ -488,7 +552,8 @@ end;
 $$;
 
 -- Só `connected` <-> `reauth_required`. Desconectar é `disconnect_…`, e
--- reconectar é `store_…` (que traz token novo).
+-- reconectar é `store_…` (que traz token novo). Voltar a `connected` limpa
+-- `last_error_code`.
 create or replace function public.set_instagram_account_status(p_account_id uuid, p_status text, p_error_code text)
 returns void
 language plpgsql
@@ -513,7 +578,7 @@ begin
 
   update public.instagram_accounts a
      set status = p_status,
-         last_error_code = p_error_code,
+         last_error_code = case when p_status = 'connected' then null else p_error_code end,
          updated_at = now()
    where a.id = p_account_id;
 end;
@@ -567,6 +632,8 @@ $$;
 -- Unidade e organização vêm da conta. `username`/`name` só são sobrescritos
 -- por valor não nulo (o perfil é best-effort). Contato anonimizado tem
 -- `igsid` nulo, então o mesmo IGSID voltando abre um contato novo.
+-- Conta desconectada recusa (55000); `reauth_required` aceita, porque
+-- mensagens ainda chegam enquanto a loja reautentica.
 create or replace function public.upsert_instagram_contact(
   p_account_id uuid,
   p_igsid      text,
@@ -580,18 +647,23 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_unit uuid;
-  v_org  uuid;
-  v_id   uuid;
+  v_unit   uuid;
+  v_org    uuid;
+  v_status text;
+  v_id     uuid;
 begin
   if p_account_id is null or p_igsid is null or length(btrim(p_igsid)) = 0 or length(p_igsid) > 128 then
     raise exception 'invalid_instagram_contact_argument' using errcode = '22023';
   end if;
 
-  select a.unit_id, a.organization_id into v_unit, v_org
-    from public.instagram_accounts a where a.id = p_account_id;
+  select a.unit_id, a.organization_id, a.status into v_unit, v_org, v_status
+    from public.instagram_accounts a where a.id = p_account_id
+    for share;
   if v_unit is null then
     raise exception 'instagram_account_not_found' using errcode = 'P0002';
+  end if;
+  if v_status = 'disconnected' then
+    raise exception 'instagram_account_not_active' using errcode = '55000';
   end if;
 
   insert into public.instagram_contacts as c (organization_id, unit_id, instagram_account_id, igsid, username, name)
