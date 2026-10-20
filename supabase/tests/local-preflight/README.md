@@ -2684,10 +2684,10 @@ dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 
 **Ordinais.** Faixa 7901–7999 (a 78 é da Entrega B). Task 1.1: casos
 7901–7906, controles 7908–7913; 7907, 7914 e 7915 livres. Task 1.2: casos
-7920–7929, controles 7930–7939. Task 1.3: casos 7940–7946, controles
-7950–7956; 7947–7949 e 7957–7959 livres. As tasks seguintes usam 7960+ e
+7920–7929, controles 7930–7939. Task 1.3: casos 7940–7947, controles
+7950–7957; 7948–7949 e 7958–7959 livres. As tasks seguintes usam 7960+ e
 7980+. O 79 imprime os ordinais, a contagem e **aborta** se ela divergir do
-esperado (hoje **46 e 46**); quem acrescenta casos atualiza o número na última
+esperado (hoje **48 e 48**); quem acrescenta casos atualiza o número na última
 instrução do arquivo.
 
 **Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
@@ -2756,8 +2756,9 @@ real da fila, e como `postgres`), conta e unidade imutáveis, CHECK de
 sem `sub` com o MESMO `42501`), com contagens e desfechos de 24h esperados, as
 chaves exatas, escopo por unidade e nenhum marcador de corpo, erro, `mid` ou
 meta no texto; IG-3.5 purga (fila: `done` 7d e `dead` 30d, linha viva nunca;
-ledger: 30d, qualquer status); IG-3.6 ACL de função e tabela (`service_role`
-só SELECT+INSERT na fila, porque o webhook da Task 2.3 insere direto, e só
+ledger: 30d, exceto `processing` de lease vivo); IG-3.6 ACL de função e tabela
+(`service_role` só SELECT e INSERT por coluna na fila, porque o webhook da
+Task 2.3 insere direto, e só
 SELECT no ledger); IG-3.7 wrappers de cron. Como o harness não tem `pg_net`, o
 IG-3.7 instala na própria subtransação um `net.http_post` falso que recusa com
 a URL e o header recebidos: sem `internal_api_key`, sem `project_url` ou com a
@@ -2766,12 +2767,25 @@ chave vazia os wrappers voltam sem POST; com os dois, o POST vai para
 `x-internal-key` do Vault. O C-IG-3.1 é o do plano (finalize sem o filtro de
 `claim_id` reprova o IG-3.1), mais o claim sem lease.
 
+Endurecimento da Task 1.3 (fix round 1): o finalize só aceita status de saída
+(`received`/`done`/`dead`; `processing` e desconhecido devolvem 0 e não tocam a
+linha — mais estrito que a 113 de propósito), medido no IG-3.1; o CHECK
+`instagram_inbound_events_body_sha256_raw_chk` amarra o hash ao próprio corpo
+(IG-3.3, hash bem formado de outro corpo dá `23514`); o `service_role` insere na
+fila só as cinco colunas que o webhook declara (IG-3.6 confere o conjunto exato
+de colunas e o `42501` ao trazer `status`, `claim_id`, `attempts`, `outcome` ou
+`received_at`); a purga do ledger poupa o `processing` de lease vivo (IG-3.5); e
+o desfecho é código `^[a-z0-9_]{1,64}$` nas duas tabelas (IG-3.8: texto livre
+recusado em finalize, complete, record e INSERT direto, e os códigos do harness,
+do plano e do núcleo da fila casam o formato). Cada um tem a sua sabotagem nos
+C-IG-3.1/3.3/3.5/3.6 e no C-IG-3.8.
+
 **Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
 loopback, banco recriado do zero): RED com `ERROR: 79: objetos do modulo
 Instagram ausentes` (exit 3) antes da 1.1, `objetos da conta/contato do
 Instagram ausentes` (exit 3) com só a 1.1 e `objetos da fila de inbound do
 Instagram ausentes` (exit 3) com 1.1 e 1.2; as três migrations cruas aplicadas
-duas vezes e o 79 com 46/46 após cada aplicação, sem linha residual nas
+duas vezes e o 79 com 48/48 após cada aplicação, sem linha residual nas
 tabelas novas, no `audit_log` da conta, segredo no Vault nem schema `net`.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
@@ -2782,7 +2796,11 @@ funções SECURITY DEFINER sobre tabelas FORCE RLS sem policy (contas, ledger,
 e o trigger de anonimização sobre contatos) dependem de o dono efetivo ter
 BYPASSRLS, e no harness o dono é superusuário. Nem a cifra do Vault: o stub
 guarda o valor em claro. Nem o `pg_net` real (assinatura, fila assíncrona e
-`net._http_response`) e nem o agendamento no `pg_cron`.
+`net._http_response`) e nem o agendamento no `pg_cron`. Nem concorrência de
+verdade nas cercas da fila e do ledger: o 79 prova os claims e o finalize em
+sequência, numa sessão; duas sessões simultâneas dependem do lock de linha do
+Postgres no UPDATE/`on conflict` e do precedente da 113 (os scripts de duas
+sessões no estilo do 24/61b não foram escritos para o 79).
 
 ### 80 — Camada global do prompt e guard de valor em settings
 

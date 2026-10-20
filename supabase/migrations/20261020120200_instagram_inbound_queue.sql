@@ -31,7 +31,8 @@
 -- `unit_id`: a unidade sai da conta. O diagnóstico é só platform_admin.
 --
 -- Escrita: o webhook (Task 2.3) INSERE na fila como `service_role` (23505 é a
--- duplicata), por isso a fila concede SELECT e INSERT a `service_role`. Todo o
+-- duplicata), por isso a fila concede SELECT e INSERT (só das cinco colunas
+-- que o webhook declara) a `service_role`. Todo o
 -- resto (claim, finalize, ledger, purga) é RPC SECURITY DEFINER; o ledger
 -- concede só SELECT.
 --
@@ -65,9 +66,15 @@ create table if not exists public.instagram_inbound_events (
   next_attempt_at      timestamptz not null default now(),
   claim_id             uuid,
   claimed_until        timestamptz,
-  outcome              text,
+  outcome              text
+    constraint instagram_inbound_events_outcome_chk check (outcome is null or outcome ~ '^[a-z0-9_]{1,64}$'),
   last_error           text,
   updated_at           timestamptz not null default now(),
+  -- O hash é o do PRÓPRIO corpo: o dedupe não pode confiar no que o escritor
+  -- declarou (um hash de outro corpo descartaria uma entrega legítima como
+  -- duplicata). O CHECK de formato acima fica pela mensagem de erro clara.
+  constraint instagram_inbound_events_body_sha256_raw_chk
+    check (body_sha256 = pg_catalog.encode(pg_catalog.sha256(raw_body), 'hex')),
   constraint instagram_inbound_events_account_body_key unique (instagram_account_id, body_sha256)
 );
 
@@ -87,7 +94,8 @@ create index if not exists instagram_inbound_events_unit_status_idx
 -- 2. instagram_processed_messages (ledger por mensagem)
 -- ============================================================================
 -- Sem conteúdo: `mid`, desfecho e `meta` operacional (o worker não grava texto
--- de mensagem aqui). Retenção de 30 dias por `created_at`, qualquer status.
+-- de mensagem aqui). Retenção de 30 dias por `created_at`, exceto linha em voo
+-- (lease vivo).
 create table if not exists public.instagram_processed_messages (
   id                   uuid        primary key default gen_random_uuid(),
   instagram_account_id uuid        not null references public.instagram_accounts(id) on delete cascade,
@@ -98,7 +106,11 @@ create table if not exists public.instagram_processed_messages (
     constraint instagram_processed_messages_status_chk check (status in ('processing', 'done')),
   claim_id             uuid,
   claimed_until        timestamptz,
-  outcome              text,
+  -- Desfecho é CÓDIGO (`echo_own`, `discarded_<motivo>`), nunca texto livre:
+  -- o formato estrutural impede que conteúdo de mensagem chegue ao
+  -- diagnóstico por aqui. Mesmo CHECK na fila.
+  outcome              text
+    constraint instagram_processed_messages_outcome_chk check (outcome is null or outcome ~ '^[a-z0-9_]{1,64}$'),
   error                text,
   meta                 jsonb       not null default '{}'::jsonb,
   created_at           timestamptz not null default now(),
@@ -172,7 +184,13 @@ alter table public.instagram_processed_messages enable row level security;
 alter table public.instagram_processed_messages force row level security;
 
 revoke all on table public.instagram_inbound_events from public, anon, authenticated, service_role;
-grant select, insert on table public.instagram_inbound_events to service_role;
+-- INSERT por COLUNA: o webhook só declara conta, unidade, corpo, hash e
+-- segredo. Estado, tentativas, claim, desfecho e instantes nascem do default e
+-- só mudam pelas RPCs; um INSERT que traga `status`/`claim_id`/`attempts`/
+-- `outcome`/`received_at` é recusado com 42501.
+grant select on table public.instagram_inbound_events to service_role;
+grant insert (instagram_account_id, unit_id, raw_body, body_sha256, signature_secret)
+  on table public.instagram_inbound_events to service_role;
 
 revoke all on table public.instagram_processed_messages from public, anon, authenticated, service_role;
 grant select on table public.instagram_processed_messages to service_role;
@@ -215,6 +233,10 @@ $$;
 -- Finalização cercada pelo claim: sem `claim_id = p_claim_id` o perdedor de
 -- um takeover escreve por cima do vencedor. Devolve as linhas afetadas, e o
 -- caller confere. `last_error` preserva o anterior quando não há erro novo.
+-- MAIS ESTRITA QUE A 113 DE PROPÓSITO: só aceita status de saída (`received`
+-- para retentar, `done`, `dead`). `processing` aqui zeraria o lease junto e
+-- deixaria a linha `processing` sem `claimed_until`, que nem o takeover nem a
+-- seleção alcançam; status desconhecido também devolve 0, sem tocar a linha.
 create or replace function public.finalize_instagram_inbound_event(
   p_event_id            uuid,
   p_claim_id            uuid,
@@ -246,6 +268,7 @@ as $$
            updated_at      = now()
      where e.id = p_event_id
        and e.claim_id = p_claim_id
+       and p_status in ('received', 'done', 'dead')
     returning 1
   )
   select count(*)::integer from fenced;
@@ -394,8 +417,10 @@ begin
 end;
 $$;
 
--- Retenção do ledger: 30 dias por `created_at`, qualquer status (um
--- `processing` dessa idade é abandono, e o ledger não guarda conteúdo).
+-- Retenção do ledger: 30 dias por `created_at`. `processing` com lease
+-- vencido dessa idade é abandono e sai; com lease VIVO é um turno em curso e
+-- fica (apagá-lo deixaria o mesmo `mid` ser reivindicado de novo enquanto o
+-- primeiro turno ainda responde).
 create or replace function public.purge_instagram_processed_messages()
 returns integer
 language sql
@@ -405,6 +430,7 @@ as $$
   with gone as (
     delete from public.instagram_processed_messages
      where created_at < now() - interval '30 days'
+       and (status = 'done' or claimed_until < now())
     returning 1
   ) select count(*)::integer from gone;
 $$;
