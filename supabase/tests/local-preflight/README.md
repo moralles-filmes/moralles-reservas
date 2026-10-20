@@ -2695,9 +2695,9 @@ dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 7920–7929, controles 7930–7939. Task 1.3: casos 7940–7947, controles
 7950–7957; 7948–7949 e 7958–7959 livres. Task 1.4: casos 7960–7966,
 controles 7970–7976, e no fix round 1 o IG-4.8 (7967) e o C-IG-4.8 (7978);
-7968–7969, 7977 e 7979 livres. Task 1.5: casos 7980–7981, controles
-7990–7991; 7982–7989 e 7992–7999 livres. O 79 imprime os ordinais, a contagem
-e **aborta** se ela divergir do esperado (hoje **68 e 68**); quem acrescenta
+7968–7969, 7977 e 7979 livres. Task 1.5: casos 7980–7982, controles
+7990–7991; 7983–7989 e 7992–7999 livres. O 79 imprime os ordinais, a contagem
+e **aborta** se ela divergir do esperado (hoje **69 e 69**); quem acrescenta
 casos atualiza o número na última instrução do arquivo.
 
 **Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
@@ -2882,6 +2882,30 @@ quatro controles positivos. O `lock_timeout` de 5 s da 1.5 foi provado como o
 da 1.4 (sessão A segurando ACCESS SHARE em `reservations`: a migration cai em
 ~5 s com `canceling statement due to lock timeout` e o CHECK fica intacto).
 
+Fix round 1 da Task 1.5: antes do COMMIT a migration exige exatamente UM
+CHECK de `source` (`reservations_source_check`, validado) e senão aborta com
+P0001 `reservations_source_check_drift`. O IG-5.3 (7982) REAPLICA o arquivo
+da migration pelo `\ir` (com `ON_ERROR_STOP` desligado só em volta dele, e o
+`ERROR: reservations_source_check_drift` impresso é o esperado) sobre um
+banco com drift — CHECK antigo web/whatsapp mais `reservations_source_drift79`
+— e exige o erro e o catálogo intacto (o CHECK antigo não é trocado); depois
+tira o drift, reaplica (tem de passar) e confere o catálogo original e o
+IG-5.2. O controle positivo é manual, como o do `lock_timeout`:
+
+```bash
+# banco ig79 já com a 120400 aplicada; drift com outro nome
+P -c "begin; alter table public.reservations drop constraint reservations_source_check;
+      alter table public.reservations add constraint reservations_source_check check (source in ('web','whatsapp'));
+      alter table public.reservations add constraint reservations_source_drift79 check (source <> ''); commit;"
+P -f supabase/migrations/20261020120400_reservations_source_instagram.sql   # exit 3, reservations_source_check_drift, nada muda
+P -f /tmp/120400-sem-guarda.sql                                             # cópia sem o bloco do drift: exit 0, DOIS CHECKs de source sobrevivem
+P -c "alter table public.reservations drop constraint reservations_source_drift79"
+P -f supabase/migrations/20261020120400_reservations_source_instagram.sql   # restaura; o 79 volta a 69/69
+```
+
+O estado que a cópia sem guarda deixa (o CHECK novo somado a outro de
+`source`) é o que o C-IG-5.2 (b) prova que o IG-5.2 reprova.
+
 **Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
 loopback, banco recriado do zero): RED com `ERROR: 79: objetos do modulo
 Instagram ausentes` (exit 3) antes da 1.1, `objetos da conta/contato do
@@ -2892,7 +2916,7 @@ aplicadas duas vezes e o 79 com 64/64 após cada aplicação (62/62 antes do
 fix round 1); com a 1.5, RED `reservations_source_check sem a origem
 instagram` (exit 3) com 1.1–1.4, 64/68 (só os quatro da 1.5 reprovando) com a
 guarda da 1.5 removida numa cópia, e 68/68 depois da 120400 e de novo após
-reaplicar as cinco, sem linha residual nas
+reaplicar as cinco (69/69 com o IG-5.3 do fix round 1), sem linha residual nas
 tabelas novas, no `audit_log` da conta, segredo no Vault nem schema `net`.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)

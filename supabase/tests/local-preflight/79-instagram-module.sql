@@ -22,9 +22,11 @@
 -- Task 1.5 (migrations 20261020120400_reservations_source_instagram.sql e
 --   20261020120500_instagram_cron.sql; a de cron não roda aqui, sem pg_cron,
 --   e é lida como texto pelo gêmeo): casos IG-5.1..IG-5.2 (7980–7981) e um
---   controle positivo por caso, C-IG-5.1..C-IG-5.2 (7990–7991). Base:
+--   controle positivo por caso, C-IG-5.1..C-IG-5.2 (7990–7991). Fix round 1:
+--   IG-5.3 (7982), a guarda de drift da migration (reaplicada via \ir),
+--   com controle positivo manual (README §79). Base:
 --   `reservations.source` e `notification_outbox` + trigger da 028 no 79a
---   (seção 3c). 7982–7989 e 7992–7999 ficam livres.
+--   (seção 3c). 7983–7989 e 7992–7999 ficam livres.
 --
 -- BASE (banco próprio `ig79`, README seção 79):
 --   00 -> 01 -> 09a -> 106 -> 79a -> 20260905143453 -> 20261017160000
@@ -4215,17 +4217,85 @@ begin
          else 'FALHOU not_valid=' || s1 || ' somado=' || s2 || ' corpo=' || s3 || ' restaurado=' || d end);
 end $$;
 
+-- ─── IG-5.3 (Task 1.5, fix round 1): guarda de drift da migration ───────────
+-- A migration 20261020120400 exige, antes do COMMIT, exatamente UM CHECK de
+-- `source` (o `reservations_source_check`, validado). Este caso REAPLICA o
+-- arquivo da migration (via `\ir`) sobre um banco com drift: o CHECK antigo
+-- (web/whatsapp) mais um CHECK de origem com outro nome. Esperado: a migration
+-- aborta com P0001 `reservations_source_check_drift` e o catálogo fica como
+-- estava (o CHECK antigo NÃO é trocado). Depois o drift sai e a migration é
+-- reaplicada de verdade, restaurando o estado — conferido contra o catálogo
+-- capturado antes e pelo IG-5.2.
+-- O `ERROR: reservations_source_check_drift` que o psql imprime aqui é o
+-- ESPERADO (ON_ERROR_STOP desligado só em volta do `\ir`).
+-- Controle positivo: manual, fora do 79 (README §79): a mesma sequência com
+-- uma cópia da migration sem a guarda aplica com exit 0 e o drift sobrevive
+-- (dois CHECKs, que o IG-5.2 reprova).
+drop table if exists pg_temp.t_ig53;
+create temp table t_ig53 (k text primary key, v text);
+insert into t_ig53
+select 'orig', string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/' || c.convalidated, ',' order by c.conname)
+  from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.contype = 'c';
+
+begin;
+alter table public.reservations drop constraint reservations_source_check;
+alter table public.reservations add constraint reservations_source_check check (source in ('web', 'whatsapp'));
+alter table public.reservations add constraint reservations_source_drift79 check (source <> '');
+commit;
+insert into t_ig53
+select 'antes', string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/' || c.convalidated, ',' order by c.conname)
+  from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.contype = 'c';
+
+\set LAST_ERROR_SQLSTATE 00000
+\set LAST_ERROR_MESSAGE ''
+\set ON_ERROR_STOP off
+\ir ../../migrations/20261020120400_reservations_source_instagram.sql
+\set ON_ERROR_STOP on
+insert into t_ig53 values ('erro', :'LAST_ERROR_SQLSTATE' || ':' || :'LAST_ERROR_MESSAGE');
+insert into t_ig53
+select 'depois', string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/' || c.convalidated, ',' order by c.conname)
+  from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.contype = 'c';
+
+-- Restauração: tira o drift e reaplica a migration (agora tem de passar).
+alter table public.reservations drop constraint if exists reservations_source_drift79;
+\ir ../../migrations/20261020120400_reservations_source_instagram.sql
+insert into t_ig53
+select 'restaurado', string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/' || c.convalidated, ',' order by c.conname)
+  from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.contype = 'c';
+
+do $$
+declare o text; a text; e text; d text; r text; c52 text;
+begin
+  select v into o from t_ig53 where k = 'orig';
+  select v into a from t_ig53 where k = 'antes';
+  select v into e from t_ig53 where k = 'erro';
+  select v into d from t_ig53 where k = 'depois';
+  select v into r from t_ig53 where k = 'restaurado';
+  c52 := pg_temp.ig79_case_52();
+  raise notice 'IG-5.3 erro da reaplicacao com drift: %', e;
+  insert into t_res values (7982, 'IG-5.3 reaplicar a migration com um segundo CHECK de source (drift) aborta com P0001 reservations_source_check_drift sem mudar o catalogo; sem o drift reaplica e restaura',
+    case when e = 'P0001:reservations_source_check_drift'
+          and a like '%reservations_source_check=CHECK ((source = ANY (ARRAY[''web''::text, ''whatsapp''::text])))/true%'
+          and a like '%reservations_source_drift79=%'
+          and d = a
+          and r = o
+          and c52 = 'PASSOU' then 'PASSOU'
+         else 'FALHOU erro=' || coalesce(e, '<null>') || ' antes=' || coalesce(a, '<null>') || ' depois=' || coalesce(d, '<null>')
+              || ' restaurado=' || coalesce(r, '<null>') || ' orig=' || coalesce(o, '<null>') || ' ig52=' || c52 end);
+end $$;
+drop table if exists pg_temp.t_ig53;
+
 -- ─── Resultado ───────────────────────────────────────────────────────────────
 select ord, caso, veredito from t_res where ord between 7901 and 7999 order by ord;
 select count(*) as total, count(*) filter (where veredito = 'PASSOU') as passou
-  from t_res where ord between 7901 and 7999;   -- esperado: 68 e 68
+  from t_res where ord between 7901 and 7999;   -- esperado: 69 e 69
 
 do $$
 declare v_total int; v_ok int;
 begin
   select count(*), count(*) filter (where veredito = 'PASSOU') into v_total, v_ok
     from t_res where ord between 7901 and 7999;
-  if v_total <> 68 or v_ok <> 68 then
-    raise exception '79: esperado 68 e 68, obtido % e %', v_total, v_ok;
+  if v_total <> 69 or v_ok <> 69 then
+    raise exception '79: esperado 69 e 69, obtido % e %', v_total, v_ok;
   end if;
 end $$;

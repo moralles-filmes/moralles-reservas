@@ -36,6 +36,10 @@
 --   instagram-inbound-purge  04:17 UTC      -> as duas purgas, em SQL (fila:
 --                                              done 7d/dead 30d; ledger: 30d)
 --
+-- A purga chama as duas funções num ÚNICO statement: se a primeira levantar
+-- erro, a segunda não roda naquele dia (aceito; é o que o plano pede). A
+-- próxima execução tenta de novo no dia seguinte, e as janelas são de dias.
+--
 -- Idempotência: cada job é desagendado por `jobid` antes de ser agendado
 -- (padrão da 114): `perform ... from cron.job` age sobre 0..N linhas e não
 -- levanta exceção quando o job não existe, então não há `exception when
