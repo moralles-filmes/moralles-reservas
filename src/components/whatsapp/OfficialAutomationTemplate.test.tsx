@@ -5,6 +5,7 @@ import { projectTemplateSnapshot } from '../../../supabase/functions/_shared/wha
 import { useWhatsappTemplates } from '@/hooks/useWhatsappTemplates';
 import { OfficialAutomationTemplate, TemplateStatus } from './OfficialAutomationTemplate';
 import type { TemplatePreparation } from '@/features/whatsapp/template-preparation';
+import { syntheticDispatchStatus } from '@/test/fixtures/whatsapp-dispatch-status';
 
 const io = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@/lib/supabase', () => ({ supabase: { functions: { invoke: io.invoke } } }));
@@ -56,6 +57,17 @@ it('does not present a marketing model with RED quality as usable even if the sn
   expect(screen.queryByText('Modelo disponível')).not.toBeInTheDocument();
 });
 
+it('keeps v1 utility available but blocks v2 utility when quality is RED', () => {
+  const approved = { ...template, requestedCategory: 'UTILITY' as const, effectiveCategory: 'UTILITY' as const,
+    quality: 'RED' as const, remoteStatus: 'APPROVED' as const, localStatus: 'usable' as const,
+    hashMatches: true, syncRequired: false };
+  const { rerender } = render(<OfficialAutomationTemplate template={{ ...approved, version: 1 }} onSync={vi.fn()} canSync={false} />);
+  expect(screen.getByText('Modelo disponível')).toBeInTheDocument();
+  rerender(<OfficialAutomationTemplate template={{ ...approved, version: 2 }} onSync={vi.fn()} canSync={false} />);
+  expect(screen.getByText('Aprovação ou integridade pendente')).toBeInTheDocument();
+  expect(screen.queryByText('Modelo disponível')).not.toBeInTheDocument();
+});
+
 const unitId = '10000000-0000-4000-8000-000000000001';
 const channelId = '30000000-0000-4000-8000-000000000001';
 const logicalId = 'mkt_voucher_programado_v1' as const;
@@ -75,7 +87,7 @@ function mountStatus(jobs: Record<string, unknown>[], role: 'gerente' | 'operado
     unitAdopted: false, templates: [], jobs, generatedAt: '2026-10-09T12:00:00Z',
   }), ...(preparation ? { templatePreparation: preparation } : {}) };
   io.invoke.mockImplementation(async (_name: string, { body }: { body: { action: string } }) => ({
-    data: body.action === 'snapshot_v2' ? snapshot : { status: 'updated' }, error: null,
+    data: body.action === 'snapshot_v2' ? snapshot : body.action === 'dispatch_status' ? syntheticDispatchStatus() : { status: 'updated' }, error: null,
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><StatusHarness role={role} /></QueryClientProvider>);

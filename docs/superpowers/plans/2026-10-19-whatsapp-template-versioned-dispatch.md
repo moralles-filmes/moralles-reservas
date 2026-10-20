@@ -16,12 +16,36 @@ Arquivos previstos: nova migration criada por `supabase migration new`, harness 
 
 - [ ] Inventariar enqueue, `change_whatsapp_automation_pins`, trigger de integridade, prepare/confirm/check, custo MARKETING, grants v2 de submissão e índices únicos. Congelar contrato v1 e diagramar pin inicial, pré-configuração e revalidação por versão.
 - [ ] Provar ou corrigir, **antes de qualquer ativação**, exclusividade legado→gerenciado por finalidade: ceder produtor antigo quando houver adoção/job, bloquear fato anterior/aceito em `notifications_sent`, reconciliar outbox/receipt e race de lease/POST em voo. Se a prova exigir mudança de comportamento fora da spec aprovada, emendar/aprovar o desenho antes do código correspondente; não mascarar com `dispatch OFF` no teste.
-- [ ] Criar seleção administrativa privada `(binding_id, kind)` explícita v1/v2, revision/CAS/ator/audit, por RPC que resolve binding/organização/conta e exige platform_admin. Resolver único no enqueue: escolha administrativa válida → default futuro v2 por enrollment automático comprovado → v1 no legado comprovado. Retorno a v1 mantém linha explícita. Erro/inconsistência/proveniência ambígua recusam. Opt-in manual v2 valida ambos os modelos de confirmação e gates de hash/categoria/status/qualidade/sync/grant/canal. Deseleção bloqueia novo POST v2 pendente sem alterar histórico.
+- [x] Criar seleção administrativa privada `(binding_id, kind)` explícita v1/v2, revision/CAS/ator/audit, por RPC que resolve binding/organização/conta e exige platform_admin. Resolver único no enqueue: escolha administrativa válida → default futuro v2 por enrollment automático comprovado → v1 no legado comprovado. Retorno a v1 mantém linha explícita. Erro/inconsistência/proveniência ambígua recusam. Opt-in manual v2 valida ambos os modelos de confirmação e gates de hash/categoria/status/qualidade/sync/grant/canal. Deseleção bloqueia novo POST v2 pendente sem alterar histórico.
 - [ ] Fixar versão e fonte/proveniência da escolha também em preconfiguration sem binding/template. Validar enrollment origin auto, onboarding/canal/unidade, revisão/digest; ligar depois apenas à conta/coorte/generation/credential correspondentes. Não promover coorte manual compartilhada, inferir futuro pela conta ou converter job v2 para v1. Policy/grant OFF bloqueia conforme autoridade corrente, preservando pins e sem ressuscitar terminal. Provar Ren manual e dois bindings compartilhando WABA.
-- [ ] Criar autorização de custo MARKETING específica da v2, escopada a conta/binding/geração/categoria/versão, validade e ator; v1 mantém contrato próprio. Nenhum grant de submissão ou autorização v1 vira custo v2 por herança.
+- [x] Criar autorização de custo MARKETING específica da v2, escopada a conta/binding/geração/categoria/versão, validade e ator; v1 mantém contrato próprio. Nenhum grant de submissão ou autorização v1 vira custo v2 por herança.
 - [ ] Adaptar enqueue/índices/constraints/RPCs de pin e post para gravar versão e revisão de seleção no novo job e preservar versão/modelo do job existente. Manter a unicidade por fato entre versões, consentimento, TTL, fences, rate limits, idempotência, provider uncertain e erro de gate fechados. Não iniciar cron/POST durante testes.
 - [ ] Revogar EXECUTE público de toda função nova, conceder papel mínimo, atualizar ACL estático. Em PostgreSQL local descartável, aplicar/reaplicar migration e provar v1 regressão; duas sessões/CAS, tenant-cross, WABA compartilhada, reconexão, grant/custo vencidos, confirmação dupla, seleção falha, preconfig e jobs históricos.
 - [ ] Implementer → review spec → review qualidade → correções/aceite. Registrar comandos, exit codes, SHA da migration e fixtures; nenhum `db push` de produção.
+
+### Evidência local da Task 1 — ensaio CAS em duas sessões
+
+Em PostgreSQL 17.11 descartável `margin-versioned-dispatch-sql-pg`, criado com `docker run --network none` e sem publicação de portas, o bootstrap `73-template-auto-bootstrap-versioned-local.ps1`, as migrations `20261019133502`, `20261019183559` e `20261019193132`, e o harness `77-whatsapp-versioned-dispatch.sql` (`docker exec -i ... psql -X -q -v ON_ERROR_STOP=1`) retornaram exit 0. O harness é `BEGIN`/`ROLLBACK` e passou com asserções de grant v2, seleção→enqueue→prepare/confirm, deseleção pré-POST, custo por versão/validade, WABA compartilhada com `grant_unavailable` e binding de outra organização recusado com SQLSTATE `23514`. SHA256 da migration após remover linha vazia final: `7065150F816790FCD7671B1FA9E562C138BAA5600447E04DF95461751BC2429F`; harness: `B253A8576698782562F99261569E1E828926681793727D7C9A06AD4A027509C4`. Nenhum provider foi chamado. Reaplicação da migration, reconexão e grant já vencido não foram provados; o checkbox agregado permanece pendente.
+
+Para testar concorrência real, somente **nesse contêiner sem rede**, executou-se uma cópia transitória do harness com o `ROLLBACK` final trocado por `COMMIT`, criando a fixture visível a duas sessões. Em paralelo, ambas executaram esta transação com a mesma revisão esperada `3` (o identificador de binding é resolvido pela WABA sintética da fixture):
+
+```sql
+begin;
+select set_config('request.jwt.claim.role','authenticated',true);
+select set_config('request.jwt.claim.sub',
+  (select user_id::text from public.platform_admins order by user_id limit 1),true);
+select pg_sleep(2);
+select public.set_whatsapp_automation_version_selection(
+  (select b.id from public.whatsapp_template_bindings b
+   join public.whatsapp_template_accounts a on a.id=b.account_id
+   where a.waba_id='7700000000001' limit 1),
+  'confirmation',1,3,1,0);
+commit;
+```
+
+As duas sessões `docker exec -i ... psql -X -q -t -A -v ON_ERROR_STOP=1` terminaram com exit 0; uma retornou `selected, version=1, revision=4`, e a outra `stale, version=1, revision=4`. O verificador retornou `CONCURRENT_CAS_PASS`. A fixture persistida existiu somente para esse ensaio descartável; o contêiner foi removido. Isso prova o CAS concorrente, sem alterar banco de produção nem preencher os checkboxes de rollout.
+
+Review integrado independente do freeze: **PASS local**, sem P0/P1 em isolamento, ACL/RLS, identidade, custo por versão, idempotência ou POST fence. `npx vitest run scripts/function-acl-allowlist.test.ts scripts/migration-static-guard.test.ts src/lib/whatsapp-automation-versioned-dispatch.test.ts src/lib/whatsapp-automation-version-access.test.ts src/components/whatsapp/TemplateDispatchVersionAdminCard.test.tsx src/components/whatsapp/TemplateCatalogStoreCard.test.tsx`: 6 arquivos, 176 testes PASS. `npm run typecheck`, `npm run build`, `npm run lint` e `git diff --check`: exit 0 (lint com 18 avisos preexistentes, sem erro). `npx --yes deno@2.1.4 check` nos 13 entrypoints do grafo: exit 0. `node scripts/ef-import-graph.mjs` confirma 13 bundles; isto é matriz de publicação a autorizar, não deploy realizado. CI do commit final e rollout permanecem pendentes.
 
 ## Task 2 — EF, renderer e worker versionados
 

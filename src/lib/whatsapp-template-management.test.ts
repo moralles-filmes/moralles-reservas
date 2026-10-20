@@ -26,7 +26,8 @@ describe('actual management Request factory', () => {
     expect(v2.catalogSelection).toBeNull();
     expect(deps.snapshot).toHaveBeenLastCalledWith(id, true);
     const onboarding = await (await run(request({ action: 'onboarding_catalog_snapshot_v2', unit_id: id }))).json();
-    expect(onboarding).toEqual({ channelId: null, templatePreparation: null, catalogSelection: null, templates: [], generatedAt: '2026-10-09T10:00:00Z' });
+    expect(onboarding).toEqual({ channelId: null, templatePreparation: null, catalogSelection: null,
+      bindingGeneration: null, credentialRevision: null, templates: [], generatedAt: '2026-10-09T10:00:00Z' });
     expect(deps.onboardingSnapshot).toHaveBeenLastCalledWith(id, true);
     expect(deps.callerRpc).not.toHaveBeenCalled();
   });

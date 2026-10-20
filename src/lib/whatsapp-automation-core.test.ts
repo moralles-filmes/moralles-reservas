@@ -53,6 +53,7 @@ describe('automation identity and cutover', () => {
 const rawLedger = () => ({id:'00000000-0000-4000-8000-000000000001',pin_phase:'preconfiguration',state:'blocked',attempts:0,error_code:'channel_unconfigured',
   channel_id:null,provider:null,binding_id:null,binding_generation:null,transport:null,account_id:null,remote_template_id:null,template_version:null,sync_epoch:null,
   initial_credential_revision:null,initial_catalog_key:'res_confirmacao_v1',claim_token:null,claimed_until:null,posting_started_at:null,provider_message_id:null,
+  initial_template_version:1,initial_selection_source:'legacy',initial_selection_revision:0,initial_enrollment_id:null,initial_catalog_digest:null,
   safe_log_body:null,consent_revision:null,cost_authorization_id:null,reconcile_required:false});
 describe('Task9b truthful ledger projection',()=>{
   it('retains real incomplete identity instead of inventing a queued or accepted result',()=>{

@@ -75,7 +75,7 @@ export function templateErrorMessage(error: unknown): string {
 function closedError(code: unknown = 'dependency_unavailable') {
   return new Error(typeof code === 'string' && Object.prototype.hasOwnProperty.call(errors, code) ? code : 'dependency_unavailable');
 }
-async function requestManagement(request: TemplateManagementRequest): Promise<unknown> {
+export async function requestManagement(request: TemplateManagementRequest): Promise<unknown> {
   if (!parseTemplateManagementRequest(request)) throw closedError('invalid_request');
   try {
     const { data, error } = await supabase.functions.invoke('manage-whatsapp-templates', { body: request });
@@ -223,7 +223,7 @@ export function useWhatsappTemplates(unitId: string, role: TemplateRole = null, 
       if (!z.object({ status: z.literal('updated') }).strict().safeParse(data).success) throw closedError();
     }, onSettled: () => client.invalidateQueries({ queryKey: key, exact: true }),
   });
-  return { query, sync, correction, releaseCatalog, releaseDispatch, canManage: permitted, canAdministerCatalog,
+  return { unitId, query, sync, correction, releaseCatalog, releaseDispatch, canManage: permitted, canAdministerCatalog,
     canAdministerDispatch, wasDispatchAttempted: (pin: DispatchReleasePin) => dispatchAttemptMap.has(dispatchIdentity(unitId, pin)) };
 }
 export type TemplateControls = ReturnType<typeof useWhatsappTemplates>;

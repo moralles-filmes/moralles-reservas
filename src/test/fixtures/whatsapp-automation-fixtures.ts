@@ -515,6 +515,8 @@ export function createDispatchFixture(options: { finalizeFailsOnce?: boolean; be
     expires_at: '2026-10-05T23:30:00Z', state: 'queued', pin_phase: 'bound', attempts: 0, error_code: null,
     provider_message_id: null, provider: 'zapi', transport: 'text', channel_id: channelId, binding_id: bindingId,
     binding_generation: 1, initial_credential_revision: 1, initial_catalog_key: 'res_confirmacao_v1',
+    initial_template_version: 1, initial_selection_source: 'legacy', initial_selection_revision: 0,
+    initial_enrollment_id: null, initial_catalog_digest: null,
     account_id: null, remote_template_id: null, template_version: null, sync_epoch: null,
     claim_token: null, claimed_until: null, posting_started_at: null, safe_log_body: null,
     consent_revision: null, cost_authorization_id: null, reconcile_required: false, customer_erased_at: null,

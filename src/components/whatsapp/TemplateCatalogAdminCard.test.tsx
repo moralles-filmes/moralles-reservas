@@ -102,7 +102,7 @@ it('shows v1 and v2 separately with fixed paragraphs and a version-specific remo
   const model = (await screen.findByText(definition.name)).closest('li');
   expect(model).toHaveTextContent('Versão 2');
   expect(model).toHaveTextContent('Em análise na Meta');
-  expect(model).toHaveTextContent('não está habilitada para envio automático');
+  expect(model).toHaveTextContent('A aprovação pela Meta não ativa automações');
   const body = within(model).getByText((_, element) => element?.tagName === 'P' && element.textContent === definition.body);
   expect(body).toHaveClass('whitespace-pre-wrap');
   expect(body.textContent).toContain('⏳\n\n');

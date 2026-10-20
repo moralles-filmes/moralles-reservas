@@ -221,12 +221,15 @@
       "A política global de auto preparação acrescenta duas RPCs DEFINER",
       "authenticated com guarda platform_admin: projeção 9/27/36.",
       "A coorte v2 acrescenta quatro RPCs DEFINER autenticadas com guarda",
-      "platform_admin; projeção 9/31/40. Não é leitura do Advisor de produção.",
+      "platform_admin; projeção 9/31/40. O despacho versionado acrescenta",
+      "quatro RPCs DEFINER authenticated (leitura administrativa, escolha CAS,",
+      "estado da loja e custo MARKETING v2): projeção 9/35/44. Não é leitura",
+      "do Advisor de produção.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 31,
-    "total": 40
+    "0029": 35,
+    "total": 44
   },
 
   "public_anon": [
@@ -429,6 +432,38 @@
       "advisor_lints": [
         "0029"
       ]
+    },
+    {
+      "name": "authorize_whatsapp_marketing_cost",
+      "args": "p_channel_id uuid, p_expected_binding_generation bigint, p_category text, p_valid_from timestamp with time zone, p_valid_until timestamp with time zone, p_version integer",
+      "roles": ["authenticated"],
+      "why": "Overload v2: somente platform_admin real autoriza custo MARKETING no binding atual, categoria e intervalo finito; o grant v1 não cobre v2.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_whatsapp_automation_version_selections",
+      "args": "p_binding_id uuid",
+      "roles": ["authenticated"],
+      "why": "Leitura administrativa somente para platform_admin real; deriva canal e conta do binding e devolve seleção, revisão e prontidão sem segredos.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "set_whatsapp_automation_version_selection",
+      "args": "p_binding_id uuid, p_kind text, p_version integer, p_expected_revision bigint, p_expected_generation bigint, p_expected_credential_revision bigint",
+      "roles": ["authenticated"],
+      "why": "Platform_admin real registra opção v1/v2 por finalidade com CAS, binding e digest verificados; a escolha não habilita despacho.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_whatsapp_automation_dispatch_status",
+      "args": "p_binding_id uuid",
+      "roles": ["authenticated"],
+      "why": "Membro da unidade do binding ou platform_admin real lê só status de disponibilidade por finalidade, sem grants, custo, ator ou payload privado.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
     },
     {
       "name": "configure_whatsapp_promotion_frequency",
