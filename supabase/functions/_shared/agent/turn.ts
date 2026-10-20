@@ -1138,7 +1138,9 @@ export function createAgentTurn(io: AgentTurnIO) {
             return JSON.stringify(result);
           } catch (err) {
             jsonLog("error", { requestId, evt: "tool_error", channelId, unitId, name, err: String(err) });
-            return JSON.stringify({ error: String(err) });
+            // O texto do erro (PostgREST, rede, host do projeto) fica no log:
+            // o que volta ao LLM chega ao cliente parafraseado.
+            return JSON.stringify({ error: "Não foi possível concluir esta ação agora. Tente novamente em instantes." });
           }
         },
       });

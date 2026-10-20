@@ -936,10 +936,15 @@ export async function reserveSlot(
     check = recheck;
   }
 
+  // A mensagem volta ao portal público, ao painel e ao LLM do agente: o texto
+  // do Postgres (constraint, coluna, trigger) fica só no log, pelo `code`.
+  console.error(JSON.stringify({
+    evt: "reserve_slot_insert_failed",
+    code: (lastInsertErr as { code?: string } | null)?.code ?? null,
+  }));
   return {
     success: false,
     reason: "insert_failed",
-    message: (lastInsertErr as { message?: string } | null)?.message
-      ?? "Falha ao criar reserva após tentativas.",
+    message: "Não foi possível concluir a reserva agora. Tente novamente em instantes.",
   };
 }

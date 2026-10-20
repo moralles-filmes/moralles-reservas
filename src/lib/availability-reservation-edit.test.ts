@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { checkAvailability } from "../../supabase/functions/_shared/availability";
+import { describe, expect, it, vi } from "vitest";
+import { checkAvailability, reserveSlot } from "../../supabase/functions/_shared/availability";
 
 // Banco em memória com os operadores que `availability.ts` usa.
 type Row = Record<string, unknown>;
@@ -118,5 +118,33 @@ describe("checkAvailability ao alterar uma reserva", () => {
     expect(sem.available).toBe(false);
     const com = await check(db, { time: "20:00", partySize: 4, excludeReservationId: "r1" });
     expect(com.suggestedTableId).toBe("t-4b");
+  });
+});
+
+describe("reserveSlot quando o INSERT falha", () => {
+  it("devolve mensagem fixa ao chamador e deixa só o code no log", async () => {
+    const base = memoryDb(baseTables([]));
+    const pgError = { code: "23514", message: 'new row for relation "reservations" violates check constraint "reservations_source_check"' };
+    const db = {
+      from(table: string) {
+        const builder = base.from(table) as Record<string, unknown>;
+        builder.insert = () => ({ select: () => ({ single: () => Promise.resolve({ data: null, error: pgError }) }) });
+        return builder;
+      },
+    };
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => { logged.push(String(line)); });
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = await reserveSlot(db as any, { unitId: UNIT, date: DATE, time: "20:00", partySize: 2, customerId: "c1" } as any);
+      expect(out).toEqual({
+        success: false,
+        reason: "insert_failed",
+        message: "Não foi possível concluir a reserva agora. Tente novamente em instantes.",
+      });
+      expect(logged).toEqual([JSON.stringify({ evt: "reserve_slot_insert_failed", code: "23514" })]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

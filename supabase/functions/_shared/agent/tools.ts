@@ -221,7 +221,12 @@ export async function createReservation(supabase: SupabaseClient, params: {
       email: params.customer_email ?? null,
     });
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+    // O erro do PostgREST/rede não vai ao LLM (e dali ao cliente): só o code ao log.
+    console.error(JSON.stringify({
+      evt: "agent_resolve_customer_failed",
+      code: (err as { code?: string } | null)?.code ?? null,
+    }));
+    return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
   }
 
   const hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
@@ -254,16 +259,26 @@ export async function createReservation(supabase: SupabaseClient, params: {
 
 // deno-lint-ignore no-explicit-any
 export async function listCustomerReservations(supabase: SupabaseClient, customerId: string, unitId: string): Promise<any> {
-  const { data } = await supabase
+  // "Hoje" em BRT: Deno roda em UTC e, das 21h à meia-noite, o dia UTC já virou
+  // — o filtro esconderia as reservas de hoje justamente na hora do jantar.
+  const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
+  const todayBrt = new Date(Date.now() - BRT_OFFSET_MS).toISOString().slice(0, 10);
+  const { data, error } = await supabase
     .from("reservations")
     .select("reservation_code, date, time, party_size, status, notes")
     .eq("customer_id", customerId)
     .eq("unit_id", unitId)
     .in("status", ["pending", "confirmed"])
-    .gte("date", new Date().toISOString().slice(0, 10))
+    .gte("date", todayBrt)
     .order("date", { ascending: true })
     .limit(10);
 
+  // Falha de leitura não pode virar "você não tem reservas": o cliente
+  // reservaria de novo.
+  if (error) {
+    console.error(JSON.stringify({ evt: "agent_list_reservations_failed", code: error.code ?? null }));
+    return { found: false, error: "unavailable", message: "Não consegui consultar suas reservas agora. Tente novamente em instantes." };
+  }
   if (!data || data.length === 0) return { found: false, message: "Você não tem reservas ativas no momento." };
   return {
     found: true,
