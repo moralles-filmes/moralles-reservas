@@ -13,14 +13,21 @@ declare
   historical_job uuid; v_onboarding_id uuid:=gen_random_uuid();
   manual_onboarding_id uuid:=gen_random_uuid(); v2_res uuid:=gen_random_uuid();
   v2_res2 uuid:=gen_random_uuid(); sibling_unit uuid:=gen_random_uuid();
+  voucher_rule uuid:=gen_random_uuid(); voucher_rule_two uuid:=gen_random_uuid();
+  voucher_one uuid:=gen_random_uuid();
+  voucher_two uuid:=gen_random_uuid(); marketing_job uuid; marketing_job_two uuid;
+  marketing_fence uuid; marketing_fence_two uuid; marketing_epoch bigint;
+  marketing_revision bigint; changed_count integer;
   sibling_channel uuid:=gen_random_uuid(); foreign_channel uuid:=gen_random_uuid();
   sibling_binding uuid;
   reserved_channel uuid:=gen_random_uuid(); manual_channel uuid:=gen_random_uuid();
   account_id uuid:=gen_random_uuid(); preconfig_account uuid:=gen_random_uuid();
-  binding_id uuid; job_id uuid; next_job uuid;
+  binding_id uuid; rebound_binding uuid; job_id uuid; next_job uuid;
+  grant_unprepared_res uuid:=gen_random_uuid(); grant_unprepared_job uuid;
+  grant_unprepared_fence uuid; grant_unprepared_epoch bigint;
   selected jsonb; snapshot jsonb; store_status jsonb; denied text;
   v_ready jsonb; v_claim jsonb; v_fence uuid; v_sync_epoch bigint;
-  v_post_allowed boolean;
+  v_post_allowed boolean; v_confirm_allowed boolean;
   v_released boolean;
   fact timestamptz:=clock_timestamp()+interval '1 minute';
 begin
@@ -102,8 +109,9 @@ begin
     (id,unit_id,provider,status,is_active,last_health_check_at,credentials)
     values(reserved_channel,unit_id,'datafy','connected',true,clock_timestamp(),
       '{"phone_number_id":"7702"}'::jsonb);
-  insert into public.whatsapp_template_accounts(id,organization_id,waba_id,verified_at)
-    values(preconfig_account,org_id,'7700000000002',clock_timestamp());
+  insert into public.whatsapp_template_accounts
+    (id,organization_id,waba_id,verified_at,created_at)
+    values(preconfig_account,org_id,'7700000000002',clock_timestamp(),clock_timestamp());
   insert into public.whatsapp_template_bindings
     (unit_id,channel_id,account_id,provider,verified_at)
     values(unit_id,reserved_channel,preconfig_account,'datafy',clock_timestamp())
@@ -136,6 +144,144 @@ begin
        and j.channel_id=reserved_channel and j.binding_id is null
       and j.pin_phase='preconfiguration' and j.state='blocked') then
     raise exception '77_auto_preconfig_pin_or_idempotence: %',job_id; end if;
+  -- Reconnect the same reserved channel through a new binding generation.
+  -- The old generation cannot initialize the preconfigured v2 fact; the
+  -- authorized new generation can bind it without changing its version.
+  update public.whatsapp_datafy_onboardings
+    set state='completed',datafy_channel_id='local-auto-77',
+      completed_at=clock_timestamp()
+    where id=v_onboarding_id;
+  insert into public.whatsapp_template_bindings
+    (unit_id,channel_id,account_id,provider,generation,verified_at)
+    values(unit_id,reserved_channel,preconfig_account,'datafy',2,clock_timestamp())
+    returning id into rebound_binding;
+  if public.authorize_whatsapp_template_v2_channel(
+      v_onboarding_id,rebound_binding,2,0) is distinct from true
+    or public.mark_whatsapp_template_v2_preparation(
+      v_onboarding_id,reserved_channel,'ready',null) is distinct from true then
+    raise exception '77_reconnect_v2_grant_or_mark_failed'; end if;
+  insert into public.whatsapp_remote_templates
+    (account_id,logical_id,version,language,name,desired_hash,requested_category,
+      binding_generation,remote_id,observed_hash,effective_category,remote_status,
+      local_status,sync_required,last_synced_at,quality)
+    select preconfig_account,a.logical_id,2,'pt_BR',a.logical_id,
+      a.desired_hash,a.requested_category,1,'local-77-rebound-'||a.logical_id,
+      a.desired_hash,a.requested_category,'APPROVED','usable',false,
+      clock_timestamp(),'GREEN'
+    from app_private.whatsapp_template_approved_submissions a
+    where a.version=2 and a.logical_id in
+      ('res_confirmacao_v2','res_confirmacao_desconto_v2');
+  update public.whatsapp_template_accounts set
+    sync_capture_id=gen_random_uuid(),sync_binding_id=rebound_binding,
+    sync_binding_generation=2,sync_credential_revision=0,
+    last_sync_published_at=clock_timestamp()
+    where id=preconfig_account;
+  perform set_config('request.jwt.claim.role','authenticated',true);
+  perform set_config('request.jwt.claim.sub',admin_id::text,true);
+  if public.release_whatsapp_template_channel(reserved_channel,'dispatch',true,0,2)
+      is distinct from true then raise exception '77_reconnect_dispatch_release_failed'; end if;
+  v_ready:=app_private.whatsapp_automation_v2_readiness(
+    rebound_binding,'confirmation');
+  if v_ready->>'ready' is distinct from 'true' then
+    raise exception '77_reconnect_v2_not_ready: %',v_ready; end if;
+  denied:=null;
+  begin
+    perform public.initialize_whatsapp_automation_job(job_id,reserved_channel,1);
+  exception when others then get stacked diagnostics denied=returned_sqlstate; end;
+  if denied is distinct from 'PT409' then
+    raise exception '77_reconnect_old_generation_not_rejected: %',denied; end if;
+  v_post_allowed:=public.initialize_whatsapp_automation_job(job_id,reserved_channel,2);
+  if v_post_allowed is distinct from true
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=job_id and j.initial_template_version=2
+        and j.initial_selection_source='auto' and j.binding_id=rebound_binding
+        and j.binding_generation=2 and j.pin_phase='bound') then
+    raise exception '77_reconnect_v2_pin_failed: result %, job %',
+      v_post_allowed,(select row_to_json(j) from public.whatsapp_automation_jobs j
+        where j.id=job_id); end if;
+  update public.platform_flags set value='true'::jsonb
+    where key='whatsapp_automation_dispatch';
+  update public.whatsapp_automation_jobs
+    set due_at=clock_timestamp()-interval '1 second' where id=job_id;
+  perform set_config('request.jwt.claim.role','service_role',true);
+  perform set_config('request.jwt.claim.sub','',true);
+  v_claim:=public.claim_whatsapp_automation(job_id);
+  v_fence:=(v_claim->>'claim_token')::uuid;
+  select sync_epoch into v_sync_epoch from public.whatsapp_automation_jobs
+    where id=job_id;
+  if v_fence is null then raise exception '77_reconnect_claim_missing'; end if;
+  update public.whatsapp_automation_jobs
+    set safe_log_body='Task77 local reconnect render' where id=job_id;
+  insert into public.reservations(id,unit_id,customer_id,date,time,status,source,
+      party_size,reservation_code)
+    values(grant_unprepared_res,unit_id,customer_id,
+      (clock_timestamp() at time zone 'America/Sao_Paulo')::date+1,'20:00',
+      'confirmed','web',2,'V77-'||grant_unprepared_res);
+  grant_unprepared_job:=public.enqueue_whatsapp_automation(jsonb_build_object(
+    'unit_id',unit_id,'kind','confirmation','reservation_id',grant_unprepared_res,
+    'source_event_key','local-revoked-grant-prepare','fact_at',clock_timestamp(),
+    'expires_at',clock_timestamp()+interval '1 day',
+    'due_at',clock_timestamp()-interval '1 second'));
+  v_claim:=public.claim_whatsapp_automation(grant_unprepared_job);
+  grant_unprepared_fence:=(v_claim->>'claim_token')::uuid;
+  select sync_epoch into grant_unprepared_epoch
+    from public.whatsapp_automation_jobs where id=grant_unprepared_job;
+  if grant_unprepared_fence is null or grant_unprepared_epoch is null
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=grant_unprepared_job and j.initial_template_version=2
+        and j.initial_selection_source='auto' and j.binding_id=rebound_binding)
+    then raise exception '77_grant_unprepared_fixture_missing'; end if;
+  update public.whatsapp_automation_jobs
+    set safe_log_body='Task77 local unprepared render'
+    where id=grant_unprepared_job;
+  v_post_allowed:=public.prepare_whatsapp_automation_post(
+    job_id,v_fence,2,null,v_sync_epoch);
+  if v_post_allowed is distinct from true
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=job_id and j.state='posting' and j.attempts=1
+        and j.posting_started_at is not null and j.provider_message_id is null) then
+    raise exception '77_valid_grant_prepare_failed: result %, job %',
+      v_post_allowed,(select jsonb_build_object('state',j.state,'error',j.error_code,
+        'attempts',j.attempts,'posting',j.posting_started_at)
+        from public.whatsapp_automation_jobs j where j.id=job_id); end if;
+  -- v2 grants have no wall-clock expiry: revocation makes this grant stale.
+  -- A prepared job must fail confirm, while an unprepared job fails prepare.
+  perform set_config('request.jwt.claim.role','authenticated',true);
+  perform set_config('request.jwt.claim.sub',admin_id::text,true);
+  if public.release_whatsapp_template_v2_channel(rebound_binding,2,0)
+      is distinct from true then raise exception '77_reconnect_v2_revoke_failed'; end if;
+  v_ready:=app_private.whatsapp_automation_v2_readiness(
+    rebound_binding,'confirmation');
+  selected:=public.set_whatsapp_automation_version_selection(
+    rebound_binding,'confirmation',2,0,2,0);
+  if v_ready->>'reason_code' is distinct from 'grant_unavailable'
+    or selected->>'state' is distinct from 'not_ready'
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=job_id and j.initial_template_version=2
+        and j.initial_selection_source='auto' and j.binding_id=rebound_binding) then
+    raise exception '77_revoked_grant_did_not_close: %, %',v_ready,selected; end if;
+  perform set_config('request.jwt.claim.role','service_role',true);
+  perform set_config('request.jwt.claim.sub','',true);
+  v_confirm_allowed:=public.confirm_whatsapp_automation_post(
+    job_id,v_fence,2,null,v_sync_epoch);
+  v_post_allowed:=public.prepare_whatsapp_automation_post(
+    grant_unprepared_job,grant_unprepared_fence,2,null,grant_unprepared_epoch);
+  if v_confirm_allowed is distinct from false
+    or v_post_allowed is distinct from false
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=job_id and j.initial_template_version=2
+        and j.state='posting' and j.attempts=1
+        and j.posting_started_at is not null and j.provider_message_id is null)
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=grant_unprepared_job and j.initial_template_version=2
+        and j.error_code='template_unavailable' and j.state='blocked'
+        and j.attempts=0 and j.posting_started_at is null) then
+    raise exception '77_revoked_grant_post_gate_failed: confirm %, prepare %, jobs %',
+      v_confirm_allowed,v_post_allowed,
+      (select jsonb_agg(jsonb_build_object('id',j.id,'state',j.state,
+        'error',j.error_code,'attempts',j.attempts,'posting',j.posting_started_at))
+        from public.whatsapp_automation_jobs j
+        where j.id in(job_id,grant_unprepared_job)); end if;
   -- An existing Datafy/WABA with a v1 remote model is proven legacy until
   -- the admin records an explicit version for each purpose.
   insert into public.whatsapp_channels
@@ -429,6 +575,103 @@ begin
   v_ready:=app_private.whatsapp_automation_v2_readiness(binding_id,'voucher_issued');
   if v_ready->>'ready' is distinct from 'true' then
     raise exception '77_marketing_v2_cost_did_not_unlock: %',v_ready; end if;
+  selected:=public.set_whatsapp_automation_version_selection(
+    binding_id,'voucher_issued',2,0,1,0);
+  if selected->>'state' is distinct from 'selected'
+    or selected->>'revision' is distinct from '1' then
+    raise exception '77_marketing_v2_selection_missing: %',selected; end if;
+  insert into public.voucher_rules
+    (id,unit_id,name,trigger_type,discount_percent,validity_days,
+      min_rating,visits_required,days_window,active,created_at,updated_at)
+    values(voucher_rule,manual_unit,'Task77 local','birthday',15,30,
+      null,null,null,true,clock_timestamp(),clock_timestamp()),
+      (voucher_rule_two,manual_unit,'Task77 second','frequency',15,30,
+      null,2,30,true,clock_timestamp(),clock_timestamp());
+  insert into public.vouchers
+    (id,unit_id,customer_id,rule_id,code,discount_percent,
+      issued_at,created_at,expires_at,status)
+    values(voucher_one,manual_unit,customer_id,voucher_rule,
+      'V77-'||voucher_one,15,clock_timestamp(),clock_timestamp(),
+      clock_timestamp()+interval '30 days','active'),
+      (voucher_two,manual_unit,customer_id,voucher_rule_two,
+      'V77-'||voucher_two,15,clock_timestamp(),clock_timestamp(),
+      clock_timestamp()+interval '30 days','active');
+  insert into public.whatsapp_message_consent_events
+    (unit_id,customer_id,purpose,decision,source_code,evidence_reference,observed_at)
+    values(manual_unit,customer_id,'promotional','opt_in','fixture',
+      'task77-local-voucher',clock_timestamp()) returning revision into marketing_revision;
+  perform set_config('request.jwt.claim.role','service_role',true);
+  perform set_config('request.jwt.claim.sub','',true);
+  marketing_job:=public.enqueue_whatsapp_automation(jsonb_build_object(
+    'unit_id',manual_unit,'kind','voucher_issued','voucher_id',voucher_one,
+    'source_event_key','local-cost-confirm','fact_at',clock_timestamp(),
+    'expires_at',clock_timestamp()+interval '1 day',
+    'due_at',clock_timestamp()-interval '1 second'));
+  marketing_job_two:=public.enqueue_whatsapp_automation(jsonb_build_object(
+    'unit_id',manual_unit,'kind','voucher_issued','voucher_id',voucher_two,
+    'source_event_key','local-cost-prepare','fact_at',clock_timestamp(),
+    'expires_at',clock_timestamp()+interval '1 day',
+    'due_at',clock_timestamp()-interval '1 second'));
+  v_claim:=public.claim_whatsapp_automation(marketing_job);
+  marketing_fence:=(v_claim->>'claim_token')::uuid;
+  v_claim:=public.claim_whatsapp_automation(marketing_job_two);
+  marketing_fence_two:=(v_claim->>'claim_token')::uuid;
+  select sync_epoch into marketing_epoch from public.whatsapp_automation_jobs
+    where id=marketing_job;
+  if marketing_fence is null or marketing_fence_two is null
+    or marketing_epoch is null or marketing_revision is null then
+    raise exception '77_marketing_claim_fixture_missing'; end if;
+  update public.whatsapp_automation_jobs
+    set safe_log_body='Task77 local voucher render'
+    where id in(marketing_job,marketing_job_two);
+  v_post_allowed:=public.prepare_whatsapp_automation_post(marketing_job,
+    marketing_fence,1,marketing_revision,marketing_epoch);
+  if v_post_allowed is distinct from true
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=marketing_job and j.state='posting' and j.attempts=1
+        and j.cost_authorization_id is not null) then
+    raise exception '77_marketing_valid_cost_prepare_failed: prepare %, job %',
+      v_post_allowed,(select jsonb_build_object('state',j.state,
+        'error',j.error_code,'attempts',j.attempts,'cost',j.cost_authorization_id)
+        from public.whatsapp_automation_jobs j where j.id=marketing_job); end if;
+  -- Simulate passage of time in this rollback-only fixture. Production cost
+  -- evidence is immutable; temporarily bypass only that UPDATE guard while
+  -- preserving every scope/CHECK and restoring it before the actual gate.
+  execute 'alter table public.whatsapp_template_cost_authorizations disable trigger whatsapp_template_evidence';
+  update public.whatsapp_template_cost_authorizations ca
+    set valid_until=clock_timestamp()-interval '1 second'
+    where ca.account_id=fixture.account_id and ca.binding_id=fixture.binding_id
+      and ca.version=2 and ca.valid_from<clock_timestamp();
+  get diagnostics changed_count=row_count;
+  execute 'alter table public.whatsapp_template_cost_authorizations enable trigger whatsapp_template_evidence';
+  if changed_count<>1 or not exists(select 1 from pg_catalog.pg_trigger t
+      where t.tgrelid='public.whatsapp_template_cost_authorizations'::regclass
+        and t.tgname='whatsapp_template_evidence' and t.tgenabled='O') then
+    raise exception '77_expired_v2_cost_fixture_invalid: %',changed_count; end if;
+  v_ready:=app_private.whatsapp_automation_v2_readiness(binding_id,'voucher_issued');
+  if v_ready->>'reason_code' is distinct from 'cost_not_authorized' then
+    raise exception '77_expired_v2_cost_did_not_close: %',v_ready; end if;
+  v_confirm_allowed:=public.confirm_whatsapp_automation_post(marketing_job,
+    marketing_fence,1,marketing_revision,marketing_epoch);
+  v_post_allowed:=public.prepare_whatsapp_automation_post(marketing_job_two,
+    marketing_fence_two,1,marketing_revision,marketing_epoch);
+  if v_confirm_allowed is distinct from false
+    or v_post_allowed is distinct from false
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=marketing_job and j.initial_template_version=2
+        and j.state='posting' and j.attempts=1 and j.provider_message_id is null)
+    or not exists(select 1 from public.whatsapp_automation_jobs j
+      where j.id=marketing_job_two and j.initial_template_version=2
+        and j.state='blocked' and j.error_code='cost_not_authorized'
+        and j.attempts=0 and j.posting_started_at is null) then
+    raise exception '77_expired_v2_cost_post_gates_failed: confirm %, prepare %, jobs %',
+      v_confirm_allowed,v_post_allowed,
+      (select jsonb_agg(jsonb_build_object('id',j.id,'state',j.state,
+        'error',j.error_code,'attempts',j.attempts,'posting',j.posting_started_at))
+        from public.whatsapp_automation_jobs j
+        where j.id in(marketing_job,marketing_job_two)); end if;
+  perform set_config('request.jwt.claim.role','authenticated',true);
+  perform set_config('request.jwt.claim.sub',admin_id::text,true);
   -- One WABA can be shared inside an organization, but a sibling binding
   -- cannot borrow the first unit's v2 grant or administrative selection.
   insert into public.whatsapp_channels
@@ -472,6 +715,6 @@ begin
     or not exists(select 1 from public.whatsapp_template_bindings b
       where b.id=fixture.binding_id and b.dispatch_enabled and b.adopted_at is not null) then
     raise exception '77_missing_adoption_false_ready: %',store_status; end if;
-  raise notice '77_PASS auto-preconfig, approved v2 enqueue/POST, deselection, v1/v2 Meta variants, cost version/time, shared WABA/tenant, historical v1, CAS, ACL, adoption store';
+  raise notice '77_PASS auto-preconfig/reconnect/generation, revoked v2 grant prepared-confirm/unprepared-prepare, approved v2 enqueue/POST, deselection, v1/v2 Meta variants, expired cost prepare/confirm, shared WABA/tenant, historical v1, CAS, ACL, adoption store';
 end $$;
 rollback;
