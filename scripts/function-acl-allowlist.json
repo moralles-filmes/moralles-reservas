@@ -237,11 +237,15 @@
       "A conta do Instagram acrescenta get_instagram_account_status (DEFINER",
       "authenticated, guarda membro ou platform_admin); as outras oito RPCs da",
       "conta, do contato e do ledger são só service_role: projeção 9/47/56.",
+      "A fila do Instagram acrescenta get_instagram_diagnostics (DEFINER",
+      "authenticated, guarda platform_admin); as oito RPCs da fila e do ledger",
+      "são só service_role e os dois wrappers de cron não têm EXECUTE de API:",
+      "projeção 9/48/57.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 47,
-    "total": 56
+    "0029": 48,
+    "total": 57
   },
 
   "public_anon": [
@@ -726,6 +730,14 @@
       "args": "p_unit_id uuid",
       "roles": ["authenticated"],
       "why": "Projeção client-safe da conta do Instagram da unidade para o painel (username, status, vencimento do token, conexão, assinatura de messages, último erro), migration 20261020120100. Guarda interna app_private.is_unit_member(auth.uid(), p_unit_id) OR app_private.is_platform_admin(auth.uid()), senão 42501; unidade alheia, inexistente e sessão sem sub caem na mesma recusa (sem oráculo de existência). Zero linhas sem conta ativa. Nunca devolve token, ponteiro do Vault nem ig_user_id. DEFINER porque instagram_accounts é FORCE RLS sem policy e sem privilégio para authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-2.1, controle C-IG-2.1).",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_instagram_diagnostics",
+      "args": "p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Diagnóstico da ingestão do Instagram para a plataforma (último evento, contagem da fila por estado, pendente mais antigo e desfechos de 24h), migration 20261020120200. Guarda interna app_private.is_platform_admin(auth.uid()), senão 42501; owner, gerente, operador e sessão sem sub caem na mesma recusa. Só contagens e instantes: nunca corpo, erro, mid nem meta. DEFINER porque instagram_inbound_events e instagram_processed_messages são FORCE RLS sem policy e sem privilégio para authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-3.4, controle C-IG-3.4).",
       "security_definer": true,
       "advisor_lints": ["0029"]
     }
