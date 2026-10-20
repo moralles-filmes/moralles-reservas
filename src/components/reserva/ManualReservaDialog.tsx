@@ -52,7 +52,6 @@ const schema = z.object({
   hall_id: z.string().optional(),
   notes: z.string().optional(),
   source: z.enum(["whatsapp", "web"]),
-  status: z.enum(["confirmed", "pending"]),
   notify: z.boolean(),
   override: z.boolean(),
 });
@@ -94,14 +93,12 @@ export function ManualReservaDialog({
       hall_id: HALL_AUTO,
       notes: "",
       source: "whatsapp",
-      status: "confirmed",
       notify: false,
       override: false,
     },
   });
 
   const source = watch("source");
-  const status = watch("status");
   const notify = watch("notify");
   const override = watch("override");
   const date = watch("date");
@@ -132,7 +129,6 @@ export function ManualReservaDialog({
         party_size: data.party_size,
         notes: data.notes?.trim() || null,
         source: data.source,
-        status: data.status,
         notify: data.notify,
         override: data.override,
       });
@@ -303,19 +299,6 @@ export function ManualReservaDialog({
 
             {/* Toggles */}
             <div className="space-y-3 rounded-lg border p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">Reserva confirmada</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    Desligado entra como "Aguardando confirmação".
-                  </p>
-                </div>
-                <Switch
-                  checked={status === "confirmed"}
-                  onCheckedChange={(c) => setValue("status", c ? "confirmed" : "pending")}
-                />
-              </div>
-
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium">Avisar cliente</p>

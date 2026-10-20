@@ -17,6 +17,7 @@ beforeEach(() => {
   invoke.mockResolvedValue({
     data: {
       success: true, reservation_id: "reservation-1", reservation_code: "ABC123",
+      reservation_status: "confirmed", requires_payment: false,
       customer: { id: "customer-1", name: input.name, phone: input.phone, email: input.email },
     },
     error: null,

@@ -10,6 +10,7 @@ import { genRequestId, jsonLog, sanitizePhone } from "../_shared/security.ts";
 import { reserveSlot } from "../_shared/availability.ts";
 import { resolveOrCreateCustomer } from "../_shared/resolve-customer.ts";
 import { recordPublicReservationConsent } from "./public-marketing-consent.ts";
+import { initialNoDepositReservationState, type InitialReservationState } from "./initial-reservation-state.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -169,17 +170,62 @@ serve(async (req) => {
       return jsonResponse({ success: false, reason: "customer_failed", message: "Falha ao registrar cliente." }, 500);
     }
 
-    // reserveSlot valida disponibilidade + insere com table_id atribuído
-    const result = await reserveSlot(supabase, {
-      unitId,
-      hallId: body.hall_id ?? undefined,
-      date: body.date!,
-      time: body.time!,
-      partySize: body.party_size!,
-      customerId: customer.id,
-      notes: body.notes ?? null,
-      status: "pending",
-    });
+    // Só reservas sem caução entram neste rollout. Conferimos a configuração
+    // para o hall selecionado antes do INSERT; o trigger observa confirmed.
+    let initialState: InitialReservationState | null = null;
+    let result: Awaited<ReturnType<typeof reserveSlot>>;
+    try {
+      result = await reserveSlot(supabase, {
+        unitId,
+        hallId: body.hall_id ?? undefined,
+        date: body.date!,
+        time: body.time!,
+        partySize: body.party_size!,
+        customerId: customer.id,
+        notes: body.notes ?? null,
+        initialStateForSlot: async hallId => {
+          const state = await initialNoDepositReservationState({ unitId, date: body.date!, time: body.time!, hallId }, {
+            special: async (targetUnitId, date, selectedHallId) => {
+              let query = supabase.from("special_dates").select("charge_enabled, charge_amount_cents")
+                .eq("unit_id", targetUnitId).lte("date", date).gte("end_date", date)
+                .eq("is_closed", false).eq("charge_enabled", true);
+              query = selectedHallId
+                ? query.or(`hall_id.is.null,hall_id.eq.${selectedHallId}`)
+                : query.is("hall_id", null);
+              const { data, error } = await query.limit(1).maybeSingle();
+              if (error) throw new Error("charge_lookup_failed");
+              return data;
+            },
+            schedule: async (selectedHallId, weekday, time) => {
+              const { data, error } = await supabase.from("hall_schedules")
+                .select("charge_enabled, charge_amount_cents")
+                .eq("hall_id", selectedHallId).eq("day_of_week", weekday)
+                .eq("charge_enabled", true).lte("open_time", time).gt("close_time", time)
+                .limit(1).maybeSingle();
+              if (error) throw new Error("charge_lookup_failed");
+              return data;
+            },
+          });
+          initialState = state;
+          return state;
+        },
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message === "prepaid_reservation_not_supported") {
+        return jsonResponse({ success: false, reason: "deposit_unavailable",
+          message: "Reservas com caução não estão disponíveis agora. Fale com o restaurante." }, 409);
+      }
+      throw err;
+    }
+
+    if (result.success && (initialState === null || result.reservationStatus !== "confirmed"
+      || result.paymentStatus !== "not_required")) {
+      jsonLog("error", { requestId, evt: "create_reservation_state_mismatch", unitId,
+        reservationId: result.reservationId, status: result.reservationStatus,
+        paymentStatus: result.paymentStatus });
+      return jsonResponse({ success: false, reason: "state_unverified",
+        message: "A reserva foi criada, mas o estado não pôde ser confirmado. Consulte o restaurante antes de tentar novamente." }, 409);
+    }
 
     // Consentimento é independente da reserva: falha da RPC não desfaz o insert.
     await recordPublicReservationConsent(
@@ -205,61 +251,6 @@ serve(async (req) => {
         .eq("id", result.reservationId);
     }
 
-    // Detectar caução: buscar schedule do hall/data/hora selecionados
-    let requiresPayment = false;
-    let paymentAmountCents: number | null = null;
-
-    if (result.success && body.hall_id) {
-      const dateObj = new Date(`${body.date}T12:00:00`);
-      const dow = dateObj.getDay();
-
-      // Checar special_date override primeiro
-      const { data: specialRow } = await supabase
-        .from("special_dates")
-        .select("charge_enabled, charge_amount_cents")
-        .eq("unit_id", unitId)
-        .lte("date", body.date!)
-        .gte("end_date", body.date!)
-        .eq("is_closed", false)
-        .eq("charge_enabled", true)
-        .or(`hall_id.is.null,hall_id.eq.${body.hall_id}`)
-        .limit(1)
-        .maybeSingle();
-
-      if (specialRow?.charge_enabled && specialRow.charge_amount_cents > 0) {
-        paymentAmountCents = specialRow.charge_amount_cents;
-      } else {
-        // Checar hall_schedule
-        const { data: schedRow } = await supabase
-          .from("hall_schedules")
-          .select("charge_enabled, charge_amount_cents, open_time, close_time")
-          .eq("hall_id", body.hall_id)
-          .eq("day_of_week", dow)
-          .eq("charge_enabled", true)
-          .lte("open_time", body.time!)
-          .gt("close_time", body.time!)
-          .limit(1)
-          .maybeSingle();
-
-        if (schedRow?.charge_enabled && schedRow.charge_amount_cents > 0) {
-          paymentAmountCents = schedRow.charge_amount_cents;
-        }
-      }
-
-      if (paymentAmountCents && paymentAmountCents > 0) {
-        requiresPayment = true;
-        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        await supabase
-          .from("reservations")
-          .update({
-            payment_status: "pending_payment",
-            payment_amount_cents: paymentAmountCents,
-            payment_expires_at: expiresAt,
-          })
-          .eq("id", result.reservationId);
-      }
-    }
-
     jsonLog("info", {
       requestId,
       evt: "create_reservation_attempt",
@@ -267,7 +258,7 @@ serve(async (req) => {
       phone: sanitizePhone(phone),
       success: result.success,
       reason: result.success ? undefined : result.reason,
-      requires_payment: requiresPayment,
+      requires_payment: false,
     });
 
     if (!result.success) {
@@ -283,15 +274,16 @@ serve(async (req) => {
       reservation_id: result.reservationId,
       reservation_code: result.reservationCode,
       table_id: result.tableId,
-      requires_payment: requiresPayment,
-      payment_amount_cents: paymentAmountCents,
+      reservation_status: result.reservationStatus,
+      requires_payment: false,
+      payment_amount_cents: null,
       customer: {
         id: customer.id,
         name: customer.name,
         phone: customer.phone,
         email: customer.email,
       },
-      message: requiresPayment ? "Reserva criada. Pagamento pendente." : "Reserva criada.",
+      message: "Reserva confirmada.",
     }, 200);
   } catch (err) {
     jsonLog("error", { requestId, evt: "create_reservation_error", err: String(err) });

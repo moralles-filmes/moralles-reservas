@@ -45,7 +45,7 @@ Caminhos repo-relativos. Plano, fases e decisões do Asaas: [docs/billing-asaas/
 
 ## Caução de reserva (Stripe Connect Standard, por unidade)
 
-- **`create-reservation` detecta caução após `reserveSlot()`:** schedule com `charge_enabled` → `payment_status='pending_payment'`, `payment_expires_at = now()+15min`, `requires_payment: true`; o frontend chama `create-checkout-session`.
+- **Novas reservas públicas não iniciam caução:** `create-reservation` verifica `charge_enabled` no hall/data antes do INSERT e falha fechado se estiver ativo ou se a leitura falhar; sem caução, grava `confirmed` e `payment_status='not_required'` no INSERT, e o frontend não abre Checkout. O backend Stripe e os registros antigos continuam para compatibilidade; reativar caução exige fluxo próprio.
 - **Reservas `source='whatsapp'` são isentas.**
 - **`checkout.session.completed` marca `paid` e insere `notification_outbox` manualmente** — o trigger filtra `source` mas não re-filtra pagamento.
 - **Expiração em defesa dupla:** worker `expire-pending-payments` + evento `checkout.session.expired`.
