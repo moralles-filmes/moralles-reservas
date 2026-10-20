@@ -1632,7 +1632,7 @@ EOF
 
 - [ ] **Step 1: Escrever as regras permanentes**
 
-No mesmo commit, nos DOIS arquivos (`CLAUDE.md` com detalhe, `AGENTS.md` com o espelho condensado). Formato obrigatório: **regra em 1 frase. Por quê (1 frase). [arquivo.ts](arquivo.ts).**
+No mesmo commit, nos DOIS arquivos (`CLAUDE.md` com detalhe, `AGENTS.md` com o espelho condensado). Formato obrigatório: **regra em 1 frase. Por quê (1 frase). Ponteiro arquivo.**
 
 Regras a acrescentar:
 

@@ -1,0 +1,12 @@
+{
+  "nao_adotados": {
+    "PUBLIC_API.md": "o produto não emite chaves de API para clientes; a única chave de integração (INTERNAL_API_KEY, usada por pg_cron e n8n) é interna da plataforma"
+  },
+  "portabilidade": {
+    "ignorar": [".claude/worktrees/**", ".ai-router/**"]
+  },
+  "_notas": {
+    "portabilidade.ignorar": "worktrees ficam fora de toda ferramenta que varre o repo por glob (AGENTS.md §4)",
+    "nested-agents.json": "vazio de propósito: supabase/AGENTS.md e src/AGENTS.md são ponteiros escritos à mão para .claude/rules/. Gerar o conteúdo das 9 rules (~140 KB) estouraria o limite de 32 KiB de contexto do Codex."
+  }
+}

@@ -1,31 +1,40 @@
 # .claude/tenancy-profile.yml
-# Modelo multi-tenant REAL deste repo, para os agentes/skills do saas-shield-br
-# (skill tenant-model). Gerado a partir da auditoria. Mantenha em dia se o modelo mudar.
+# Modelo multi-tenant REAL deste repo, lido pelo Padrão SaaS e pelos plugins saas-shield-br,
+# saas-builder-br e saas-audit-br (skill tenant-model). Mantenha em dia se o modelo mudar.
 #
-# Moralles reservas — Híbrido: stack Vite + tenancy unit_id (Arquétipo B, resolver
-# próprio por membership-lookup). Hierarquia organizations → units → unit_members.
+# Moralles reservas — Arquétipo B (unit_id + membership-lookup). Hierarquia
+# organizations → units → unit_members. Não é o arquétipo E do Padrão SaaS: trocar de
+# arquétipo é projeto com ADR (docs/adr/), não ajuste deste arquivo.
 
+archetype: B
 framework: vite                # Vite SPA + React Router v6 + TanStack Query + Context/Zustand
 
 tenant:
-  columns: [unit_id, organization_id]   # maioria das tabelas usa unit_id; customers usam organization_id
-  resolver: is_unit_member     # is_unit_member(uid, unit) boolean ; + is_org_member ; + is_platform_admin
+  columns: [unit_id, organization_id]   # maioria das tabelas usa unit_id; customers e conta WABA usam organization_id
+  resolver: app_private.is_unit_member  # (p_user_id, p_unit_id) boolean ; + app_private.is_org_member ; + app_private.is_platform_admin
   resolver_kind: membership-lookup
   force_trigger: false
-  write_path: server-scoped    # policies USING/WITH CHECK; FORCE-sem-policy nas tabelas de secrets; leitura anon só via RPCs SECURITY DEFINER gateadas por units.is_public
+  write_path: server-scoped    # policies USING/WITH CHECK; FORCE-sem-policy nas tabelas de secrets/filas/ledgers; leitura anon só via RPCs SECURITY DEFINER gateadas por units.is_public
+  active_source: url           # /g/:unitSlug e /o/:unitSlug, resolvidos contra as memberships (src/App.tsx); EF revalida pelo próprio recurso (hasUnitAccess)
+
+locations:
+  enabled: false               # a "unidade" é a própria coluna de tenant (unit_id), não uma filial sob um tenant com location_id
 
 membership:
   model: multi
   table: unit_members          # junction user_id × unit_id × role
 
 roles:
-  model: enum                  # unit_members.role: owner > gerente > operador
+  model: enum                  # unit_members.role: owner > gerente > operador ; leitura por public.unit_role(p_user_id, p_unit_id)
+
+entitlements:
+  model: feature-by-organization  # system/whatsapp/ai por organização, via supabase/functions/_shared/entitlements.ts (ver .claude/rules/billing.md)
 
 super_admin:
   authority: platform_admins   # tabela dedicada (admin_users foi removida)
-  fn: is_platform_admin
+  fn: app_private.is_platform_admin
 
-secrets_boundary: edge-function   # ~40+ Supabase Edge Functions; secrets no Vault + tabela platform_secrets; workers via pg_cron → pg_net (x-internal-key)
+secrets_boundary: edge-function   # ~50 Supabase Edge Functions; secrets no Vault + tabela platform_secrets; workers via pg_cron → pg_net (x-internal-key)
 client_env_prefix: VITE_
-rls_helper_namespace: app_private   # 106 moveu os 3 helpers de public; EXECUTE segue concedido (24 policies TO PUBLIC dependem dele), o que mudou é o schema não ser exposto ao PostgREST
+rls_helper_namespace: app_private   # schema não exposto ao PostgREST; EXECUTE segue concedido (24 policies TO PUBLIC dependem dele)
 display_term: Unidade

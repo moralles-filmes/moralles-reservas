@@ -2418,7 +2418,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Modify: `CLAUDE.md`
 - Modify: `AGENTS.md`
 
-**Antes de escrever:** leia a seção "🧭 O que pertence neste arquivo" do `CLAUDE.md` e "Manutenção deste par" do `AGENTS.md`. Formato: `**regra em 1 frase.** Por quê (1 frase). [arquivo](arquivo).` Sem storytelling, sem data de bug. O `CLAUDE.md` já está muito acima do alvo de 40K: seja curto.
+**Antes de escrever:** leia a seção "🧭 O que pertence neste arquivo" do `CLAUDE.md` e "Manutenção deste par" do `AGENTS.md`. Formato: `**regra em 1 frase.** Por quê (1 frase). Ponteiro arquivo.` Sem storytelling, sem data de bug. O `CLAUDE.md` já está muito acima do alvo de 40K: seja curto.
 
 - [ ] **Step 1: `CLAUDE.md`**
 

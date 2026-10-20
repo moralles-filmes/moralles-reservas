@@ -2508,7 +2508,7 @@ trabalho. O que entra, quando chegar a hora:
 
 ```
 - **`whatsapp-instance-notes-core.ts`** (núcleo puro, testado em
-  [src/lib/whatsapp-instance-notes-core.test.ts](src/lib/whatsapp-instance-notes-core.test.ts))
+  [src/lib/whatsapp-instance-notes-core.test.ts](../../../src/lib/whatsapp-instance-notes-core.test.ts))
   → `manage-whatsapp-instances` (único consumidor de runtime). Carrega o
   vocabulário das sete ações do ledger; o mesmo teste verifica, nas duas
   direções, que ele e o CHECK da migration 096 não divergiram. O FRONTEND
@@ -2525,7 +2525,7 @@ trabalho. O que entra, quando chegar a hora:
   auditar a instância ali entregaria `current_monthly_cost_cents` (o que a
   plataforma paga ao fornecedor) para os membros do próprio cliente — exatamente
   o que o FORCE RLS da tabela existe para impedir.
-  [migration 096](supabase/migrations/20260803120000_096_whatsapp_instance_notes.sql).
+  [migration 096](../../../supabase/migrations/20260803120000_096_whatsapp_instance_notes.sql).
 
 - **`whatsapp_instance_notes` é `FORCE RLS` COM policy `platform_admin_all_*`,
   não sem policies.** "FORCE RLS sem policies" é o padrão das tabelas de
@@ -2538,13 +2538,13 @@ trabalho. O que entra, quando chegar a hora:
   não derruba operação já concluída — devolver erro depois do efeito faria o
   operador repetir uma ação já feita. A divergência entre as duas é detectável
   pela telemetria `wa_instance_note_write_failed` com `needsAdminAction`.
-  [manage-whatsapp-instances/index.ts](supabase/functions/manage-whatsapp-instances/index.ts).
+  [manage-whatsapp-instances/index.ts](../../../supabase/functions/manage-whatsapp-instances/index.ts).
 
 - **A EF decide o que gravar em `update_instance` por `"campo" in body`** —
   mandar uma chave significa *escreva isto, inclusive `null`*. Formulário que
   envie o objeto inteiro APAGA o canal de quem só quis corrigir o identificador.
   O corpo sai de `buildUpdatePatch`, função pura testada.
-  [src/lib/whatsapp-instance-form-core.ts](src/lib/whatsapp-instance-form-core.ts).
+  [src/lib/whatsapp-instance-form-core.ts](../../../src/lib/whatsapp-instance-form-core.ts).
 ```
 
 ### 1.3 Tabela de workers — sem mudança

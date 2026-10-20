@@ -1369,7 +1369,7 @@ e substituir por:
 
 - [ ] **Step 2: Acrescentar os três invariantes novos**
 
-Logo após a linha do custo de ciclo (a que termina em `[migration 104](supabase/migrations/20260807100000_104_whatsapp_cycle_cost_and_end.sql)`), inserir:
+Logo após a linha do custo de ciclo (a que termina em `[migration 104](../../../supabase/migrations/20260807100000_104_whatsapp_cycle_cost_and_end.sql)`), inserir:
 
 ```markdown
 - **No encerramento de instância, a PRIMEIRA confirmação vence nos TRÊS campos (`ended_at`, `ended_by`, `end_confirmation_note`) — repetições ficam no ledger `whatsapp_instance_notes`.** Coalescer só a data faria a linha afirmar "encerrada em T1, por B, com a nota de B": registro falso, não parcial. A porta não é corrida — `canTransition` tem curto-circuito de mesmo estado e o botão do painel é renderizado a partir do `lifecycle_state` em cache, com `refetchOnWindowFocus: false`, então uma aba parada de outro admin continua oferecendo o botão. Nada se perde porque `recordInstanceNote` roda em toda chamada. [migration 105](supabase/migrations/20260807110000_105_whatsapp_end_confirmation_first_wins.sql).

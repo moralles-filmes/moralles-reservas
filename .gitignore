@@ -9,6 +9,13 @@ dist/
 .claude/*
 !.claude/tenancy-profile.yml
 !.claude/rules/
+# Padrão SaaS: permissões do projeto, configuração do check e linha de base de portabilidade.
+!.claude/settings.json
+!.claude/padrao.json
+!.claude/nested-agents.json
+!.claude/portabilidade-baseline.json
+# Estado de tarefas do Padrão SaaS (PLAN/STATE/AUDIT), local.
+.tasks/
 .hermes/
 .superpowers/
 supabase/.temp/

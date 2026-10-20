@@ -1160,7 +1160,7 @@ Fazer, em `CLAUDE.md`:
    - `billing-notify.ts` → `process-billing-overdue`, `process-billing-reminders`, `process-billing-notifications`, `asaas-webhook`, `process-asaas-reconcile`, `manage-billing`
    - anexar `process-billing-notifications` como consumidor de `platform-flags.ts` e `email.ts`.
 3. **Invariante novo** (seção Billing) em 1 frase + porquê + ponteiro:
-   - "Avisos de billing são enfileirados em `billing_notifications` (pending) com dedupe UNIQUE `(organization_id, event_type, invoice_id)` e enviados só pelo `process-billing-notifications` (flag `billing_notifications_dispatch`); produtor novo insere tratando `23505` como no-op e resolve destinatário via `resolveBillingRecipient` (escopado por org — nunca query de owner sem filtro). [billing-notify.ts](supabase/functions/_shared/billing-notify.ts)."
+   - "Avisos de billing são enfileirados em `billing_notifications` (pending) com dedupe UNIQUE `(organization_id, event_type, invoice_id)` e enviados só pelo `process-billing-notifications` (flag `billing_notifications_dispatch`); produtor novo insere tratando `23505` como no-op e resolve destinatário via `resolveBillingRecipient` (escopado por org — nunca query de owner sem filtro). [billing-notify.ts](../../../supabase/functions/_shared/billing-notify.ts)."
 
 - [ ] **Step 5: Scan de segurança e commit dos docs**
 

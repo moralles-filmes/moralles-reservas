@@ -48,13 +48,13 @@ Sete verificações feitas antes de propor DDL.
 
 ### A1 — `billing_plans.features` é copy de marketing, não entitlement
 
-Renderizada por `parsePlanFeatures` em [PricingCard.tsx](src/components/PricingCard.tsx), editada como textarea de uma linha por bullet em [BillingPlans.tsx:722](src/pages/platform/BillingPlans.tsx), tipada como `string[] | Record<string, unknown>` em [billing.ts:92](src/types/billing.ts).
+Renderizada por `parsePlanFeatures` em [PricingCard.tsx](../../../src/components/PricingCard.tsx), editada como textarea de uma linha por bullet em [BillingPlans.tsx:722](../../../src/pages/platform/BillingPlans.tsx), tipada como `string[] | Record<string, unknown>` em [billing.ts:92](../../../src/types/billing.ts).
 
 **Decisão fechada:** permanece exclusivamente copy. Um administrador editando uma frase comercial **nunca** pode conceder ou retirar acesso. `included_features` é coluna separada, com CHECK fechado, sem nenhuma dependência de `parsePlanFeatures`. **Não reusar `features` para evitar uma migration.**
 
 ### A2 — A instrumentação de custo de IA já existe
 
-[_shared/ai-providers.ts](supabase/functions/_shared/ai-providers.ts) define `AgentUsage`, o callback `onUsage` implementado nos cinco provedores, e `estimateCostUsd` sobre `PRICING_USD_PER_MTOK`. O `webhook-whatsapp` já agrega `totalUsage` por invocação e loga `evt: "agent_usage"` com `estimated_cost_usd` na [linha 2543](supabase/functions/webhook-whatsapp/index.ts).
+[_shared/ai-providers.ts](../../../supabase/functions/_shared/ai-providers.ts) define `AgentUsage`, o callback `onUsage` implementado nos cinco provedores, e `estimateCostUsd` sobre `PRICING_USD_PER_MTOK`. O `webhook-whatsapp` já agrega `totalUsage` por invocação e loga `evt: "agent_usage"` com `estimated_cost_usd` na [linha 2543](../../../supabase/functions/webhook-whatsapp/index.ts).
 
 **Decisão fechada:** a Fase 7 **não reconstrói a instrumentação**. Ela persiste, versiona e protege financeiramente o que hoje só é calculado e jogado em log.
 
@@ -92,7 +92,7 @@ Nenhum limite de conversas, interações ou mensagens. O único teto é financei
 
 ### A5 — O gate do WhatsApp quebra sob o Plano 2
 
-[whatsapp-service-gate.ts:127](supabase/functions/_shared/whatsapp-service-gate.ts):
+[whatsapp-service-gate.ts:127](../../../supabase/functions/_shared/whatsapp-service-gate.ts):
 
 ```ts
 .select("id, status, canceled_at, suspended_at, billing_plans!inner(category)")
@@ -111,10 +111,10 @@ Sob o Plano 2 **não existe** assinatura dessa categoria: a consulta não retorn
 
 | Local | Uso | Impacto |
 |---|---|---|
-| [manage-whatsapp-implementations:239](supabase/functions/manage-whatsapp-implementations/index.ts) | `.eq("slug", "implementacao-whatsapp")` | resolve o plano da implementação — **permanece correto**, a implementação continua existindo |
-| [manage-whatsapp-implementations:626](supabase/functions/manage-whatsapp-implementations/index.ts) | `.in("slug", [três slugs])` **sem filtro `active`** | comentário no próprio código explica que o filtro foi omitido de propósito — logo `active=false` **não** esconde esses preços |
-| [manage-whatsapp-implementations:738-740](supabase/functions/manage-whatsapp-implementations/index.ts) | `systemMonthlyCents` / `instanceMonthlyCents` / `implementationOneTimeCents` | **afirma preço ao lojista**: continuaria dizendo R$ 449 + R$ 149/mês |
-| [AutomacaoWhatsappCard.tsx:89](src/components/gestao/AutomacaoWhatsappCard.tsx) | `find(p => p.slug === "instancia-whatsapp")` + `contratarInstancia()` | **botão de contratar instância** — o produto que o novo modelo remove |
+| [manage-whatsapp-implementations:239](../../../supabase/functions/manage-whatsapp-implementations/index.ts) | `.eq("slug", "implementacao-whatsapp")` | resolve o plano da implementação — **permanece correto**, a implementação continua existindo |
+| [manage-whatsapp-implementations:626](../../../supabase/functions/manage-whatsapp-implementations/index.ts) | `.in("slug", [três slugs])` **sem filtro `active`** | comentário no próprio código explica que o filtro foi omitido de propósito — logo `active=false` **não** esconde esses preços |
+| [manage-whatsapp-implementations:738-740](../../../supabase/functions/manage-whatsapp-implementations/index.ts) | `systemMonthlyCents` / `instanceMonthlyCents` / `implementationOneTimeCents` | **afirma preço ao lojista**: continuaria dizendo R$ 449 + R$ 149/mês |
+| [AutomacaoWhatsappCard.tsx:89](../../../src/components/gestao/AutomacaoWhatsappCard.tsx) | `find(p => p.slug === "instancia-whatsapp")` + `contratarInstancia()` | **botão de contratar instância** — o produto que o novo modelo remove |
 
 **O que o runtime ainda pode afirmar ao lojista hoje:** sistema por R$ 449; instância separada por R$ 149/mês; contratação individual de instância. **Isso contradiz o modelo de dois planos.**
 
@@ -152,7 +152,7 @@ Teste que prova que **superfícies de contratação nova** não dependem mais de
 
 `implementacao-whatsapp` **continua permitido** enquanto for o produto canônico da cobrança única.
 
-**O teste diferencia uso histórico legítimo de uso cliente-facing.** Proibir cegamente qualquer ocorrência textual reprovaria migrations, testes e comentários que precisam mencionar os slugs — [asaas-core.test.ts:398](src/lib/asaas-core.test.ts) usa os valores como fixtures nomeados, e [billing-amount.ts:5](src/lib/billing-amount.ts) os cita em comentário.
+**O teste diferencia uso histórico legítimo de uso cliente-facing.** Proibir cegamente qualquer ocorrência textual reprovaria migrations, testes e comentários que precisam mencionar os slugs — [asaas-core.test.ts:398](../../../src/lib/asaas-core.test.ts) usa os valores como fixtures nomeados, e [billing-amount.ts:5](../../../src/lib/billing-amount.ts) os cita em comentário.
 
 Forma proposta: allowlist por **caminho**, não por texto. O guardrail:
 
@@ -164,11 +164,11 @@ Forma proposta: allowlist por **caminho**, não por texto. O guardrail:
 
 O último item é o que impede o guardrail de apodrecer: sem ele, uma tela de contratação criada em 2027 simplesmente não seria varrida, e o teste continuaria verde afirmando algo que deixou de conferir.
 
-**Não fazer grep global** que transforme fixtures e documentação histórica em falso positivo — [asaas-core.test.ts:398](src/lib/asaas-core.test.ts) usa os valores antigos como fixtures nomeados e [billing-amount.ts:5](src/lib/billing-amount.ts) os cita em comentário; os dois são legítimos e permanecem.
+**Não fazer grep global** que transforme fixtures e documentação histórica em falso positivo — [asaas-core.test.ts:398](../../../src/lib/asaas-core.test.ts) usa os valores antigos como fixtures nomeados e [billing-amount.ts:5](../../../src/lib/billing-amount.ts) os cita em comentário; os dois são legítimos e permanecem.
 
 ### A7 — `whatsapp_instance_cycles.revenue_source` tem CHECK de quatro valores
 
-[088:34](supabase/migrations/20260801200100_088_whatsapp_instance_cycles.sql). Adicionar `PLAN_COMPONENT` exige drop/add do constraint — a única operação desta spec que toca migration aplicada (§1.2).
+[088:34](../../../supabase/migrations/20260801200100_088_whatsapp_instance_cycles.sql). Adicionar `PLAN_COMPONENT` exige drop/add do constraint — a única operação desta spec que toca migration aplicada (§1.2).
 
 ---
 
@@ -252,7 +252,7 @@ concede(feature) =
   OU feature ∈ plano.included_features
 ```
 
-Em [entitlements-core.ts:137](supabase/functions/_shared/entitlements-core.ts), o passo 3 passa de:
+Em [entitlements-core.ts:137](../../../supabase/functions/_shared/entitlements-core.ts), o passo 3 passa de:
 
 ```ts
 const sub = inputs.subscriptions.find(
@@ -291,7 +291,7 @@ O Plano 2 inclui tudo do Plano 1, uma conexão de WhatsApp, chat, automações, 
 
 ### 2.3 IA: o ramo que muda
 
-Hoje ([entitlements-core.ts:170-187](supabase/functions/_shared/entitlements-core.ts)) a IA resolve por override → carteira → herança de `system`. Com franquia inclusa, entra um degrau **entre** override e carteira:
+Hoje ([entitlements-core.ts:170-187](../../../supabase/functions/_shared/entitlements-core.ts)) a IA resolve por override → carteira → herança de `system`. Com franquia inclusa, entra um degrau **entre** override e carteira:
 
 ```
 1. override de ai (bloqueio ou concessão)              — inalterado
@@ -410,7 +410,7 @@ Sem a superfície operacional da 6c, o downgrade deixa custo invisível de R$ 99
 
 Uma fatura só, categoria `SYSTEM_SUBSCRIPTION`. `process-billing-overdue` escala normalmente: tolerância 5 dias, bloqueio D+6, `organizations.billing_status` → `blocked`.
 
-O gate lê `organizations.billing_status` como pai — **nunca** `entitlements.system.allowed`, pelo invariante em [whatsapp-service-state-core.ts:98](supabase/functions/_shared/whatsapp-service-state-core.ts). Bloqueado o sistema, bloqueado o WhatsApp junto: é a mesma fatura.
+O gate lê `organizations.billing_status` como pai — **nunca** `entitlements.system.allowed`, pelo invariante em [whatsapp-service-state-core.ts:98](../../../supabase/functions/_shared/whatsapp-service-state-core.ts). Bloqueado o sistema, bloqueado o WhatsApp junto: é a mesma fatura.
 
 **`SUSPENDED_UNPAID` isolado torna-se inalcançável para contratos novos.** Isso **não** é motivo para remover nada: `process-whatsapp-enforcement`, os sete estados e `LEGACY_GRANDFATHERED` continuam sendo o único caminho correto para organizações legadas.
 
@@ -549,7 +549,7 @@ Custo desconhecido é `null`, **nunca zero** — a regra de `consolidateOrgMargi
 
 **Pior caso conhecido: 43%.** É isso que o teto compra — sem ele não existe pior caso.
 
-**PENDENTE, não estimado:** taxa de cartão e boleto do Asaas (a única documentada é PIX R$ 0,99 sobre R$ 19,90, em [03-ASAAS-API-VERIFICADO.md:225](docs/billing-asaas/03-ASAAS-API-VERIFICADO.md)); impostos; custo de Supabase/Vercel por organização.
+**PENDENTE, não estimado:** taxa de cartão e boleto do Asaas (a única documentada é PIX R$ 0,99 sobre R$ 19,90, em [03-ASAAS-API-VERIFICADO.md:225](../../billing-asaas/03-ASAAS-API-VERIFICADO.md)); impostos; custo de Supabase/Vercel por organização.
 
 Dado real de campo: 1.600 conversas por menos de R$ 200 ≈ R$ 0,125 por conversa. Nesse patamar seriam ~800 conversas para tocar o teto. **Confirma a decisão:** limitar conversas restringiria comercialmente sem proteger financeiramente.
 
@@ -559,7 +559,7 @@ Dado real de campo: 1.600 conversas por menos de R$ 200 ≈ R$ 0,125 por convers
 
 **Ponto crítico confirmado.**
 
-[whatsapp-service-gate.ts:127](supabase/functions/_shared/whatsapp-service-gate.ts) filtra `billing_plans.category = 'WHATSAPP_SUBSCRIPTION'` e usa `.maybeSingle()`.
+[whatsapp-service-gate.ts:127](../../../supabase/functions/_shared/whatsapp-service-gate.ts) filtra `billing_plans.category = 'WHATSAPP_SUBSCRIPTION'` e usa `.maybeSingle()`.
 
 Sob o Plano 2:
 
@@ -567,7 +567,7 @@ Sob o Plano 2:
 - a consulta não retorna linha;
 - **uma organização pagante pode cair em `NOT_ENTITLED`**.
 
-**A query gêmea de [process-whatsapp-enforcement:194](supabase/functions/process-whatsapp-enforcement/index.ts) muda no mesmo commit.** Ela é campo-a-campo idêntica por invariante escrito no CLAUDE.md: divergir uma sem a outra faz o worker de suspensão e o gate de envio discordarem sobre quem está inadimplente.
+**A query gêmea de [process-whatsapp-enforcement:194](../../../supabase/functions/process-whatsapp-enforcement/index.ts) muda no mesmo commit.** Ela é campo-a-campo idêntica por invariante escrito no CLAUDE.md: divergir uma sem a outra faz o worker de suspensão e o gate de envio discordarem sobre quem está inadimplente.
 
 **Não corrigir apenas um consumidor.**
 
@@ -931,9 +931,9 @@ A meta arquitetural é **não ultrapassar R$ 100**. Diferença inevitável de um
 
 ### 17.7 Onde isso se conecta ao código existente
 
-O ponto de consolidação **já existe**: [webhook-whatsapp:2543](supabase/functions/webhook-whatsapp/index.ts) agrega `totalUsage` e loga `agent_usage`. Passos 5 e 6 entram ali.
+O ponto de consolidação **já existe**: [webhook-whatsapp:2543](../../../supabase/functions/webhook-whatsapp/index.ts) agrega `totalUsage` e loga `agent_usage`. Passos 5 e 6 entram ali.
 
-O passo 1 entra **antes** do `runOnce()` ([linha 2456](supabase/functions/webhook-whatsapp/index.ts)), junto do gate de serviço que já roda naquele caminho.
+O passo 1 entra **antes** do `runOnce()` ([linha 2456](../../../supabase/functions/webhook-whatsapp/index.ts)), junto do gate de serviço que já roda naquele caminho.
 
 O passo 4 exige um **hook novo** dentro de `runAgentLoop` — hoje `onUsage` só reporta *depois* da chamada, e não existe ponto de decisão antes dela. **É a única mudança estrutural no `ai-providers.ts`**, e vale para os cinco provedores.
 
@@ -1134,7 +1134,7 @@ Regra da spec, não preferência: **qualquer código que conte conversas para au
 
 Avisos **internos**, ao platform_admin, via `billing_notifications` + `TEMPLATE_BY_EVENT` em `process-billing-notifications`.
 
-**Sexta ocorrência do acoplamento por string** já documentado no CLAUDE.md: os quatro tipos exigem entrada em `TEMPLATE_BY_EVENT` no **mesmo deploy**, ou o aviso morre em `failed/unknown_event_type` — exatamente quando importa. Teste bidirecional no padrão de [whatsapp-instance-alerts-dispatcher.test.ts](src/lib/whatsapp-instance-alerts-dispatcher.test.ts).
+**Sexta ocorrência do acoplamento por string** já documentado no CLAUDE.md: os quatro tipos exigem entrada em `TEMPLATE_BY_EVENT` no **mesmo deploy**, ou o aviso morre em `failed/unknown_event_type` — exatamente quando importa. Teste bidirecional no padrão de [whatsapp-instance-alerts-dispatcher.test.ts](../../../src/lib/whatsapp-instance-alerts-dispatcher.test.ts).
 
 **Cada marco dispara no máximo uma vez por ciclo.** O UNIQUE de `billing_notifications` é **parcial** e não deduplica com `invoice_id` nulo — e estes avisos não têm fatura. A cadência vive no **ledger**, não na fila: ledger de marcos por (org, ciclo, marco), com a disciplina de três tempos da 6b — **tocar → enfileirar → carimbar** — onde o primeiro UPDATE prova que a linha é gravável antes de qualquer enfileiramento.
 
