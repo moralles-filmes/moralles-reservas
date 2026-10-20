@@ -132,7 +132,7 @@ npx -y deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts   # + toda 
 
 ### B1.0 Evidência oficial (Haiku busca, Opus decide)
 
-- [ ] O subagente Haiku abre **só páginas oficiais** de cada provider: docs de modelos, preços e referência da API de chat. Para cada modelo de §7.2 da spec (ativos e sucessores), devolve:
+- [x] O subagente Haiku abre **só páginas oficiais** de cada provider: docs de modelos, preços e referência da API de chat. Para cada modelo de §7.2 da spec (ativos e sucessores), devolve:
   - ID exato e status (GA, preview, legado, data de desligamento);
   - preço por Mtok: input, output, cache read, cache write, reasoning se for cobrado à parte;
   - parâmetro de limite de saída;
@@ -142,17 +142,17 @@ npx -y deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts   # + toda 
   - motivos de parada que indicam corte;
   - endpoint: Chat Completions continua aceito ou o modelo exige outra API;
   - URL e data de acesso.
-- [ ] Opus decide e preenche a tabela de §8.1. Regras de decisão:
+- [x] Opus decide e preenche a tabela de §8.1. Regras de decisão:
   - ID diferente da spec → vale o oficial, e o desvio é registrado;
   - modelo só em preview → **não entra** como ativo;
   - família que não pôde ser confirmada → não entra, e o provider fica com o que foi confirmado. Se isso deixar um aposentado sem sucessor ativo, **parar e perguntar ao usuário**;
   - **família que exige outra API** (ex.: OpenAI só pela Responses API) → **parar e perguntar**: é mudança de escopo do runner, não de perfil;
   - sucessor sempre do mesmo papel (default→default).
-- [ ] Registrar em §8.1 o `usd_to_brl` usado. A convenção da 099 é a taxa na linha, e o valor conservador vigente é 5.50; trocar a taxa é decisão do usuário.
+- [x] Registrar em §8.1 o `usd_to_brl` usado. A convenção da 099 é a taxa na linha, e o valor conservador vigente é 5.50; trocar a taxa é decisão do usuário.
 
 ### B1.1 Catálogo e `resolveModel` (Sonnet)
 
-- [ ] RED em `src/lib/ai-model-catalog.test.ts`:
+- [x] RED em `src/lib/ai-model-catalog.test.ts`:
   - ids únicos por provider;
   - exatamente um `role:"default"` ativo por provider;
   - todo `retired` tem `successor` ativo do mesmo provider e do mesmo papel;
@@ -160,94 +160,94 @@ npx -y deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts   # + toda 
   - só os dois Gemini 2.5 com `verifiedInProduction: true`;
   - default do Gemini = `gemini-2.5-flash` (D5);
   - `resolveModel` nos quatro motivos (`saved`, `default` para vazio, `retired_successor`, `unknown_default` com `rejected`), inclusive com espaços (`trim`).
-- [ ] GREEN: `ai-model-catalog.ts` com o tipo de §7.1 e a lista de §8.1.
-- [ ] Controle positivo:
+- [x] GREEN: `ai-model-catalog.ts` com o tipo de §7.1 e a lista de §8.1.
+- [x] Controle positivo:
   - catálogo sintético com dois defaults → o teste falha;
   - aposentado sem sucessor → falha.
-- [ ] `src/lib/aiModels.ts` vira re-export: `MODELS_BY_PROVIDER` e `DEFAULT_MODEL_BY_PROVIDER` são **derivados** do catálogo, só com os ativos. Teste em `ai-model-catalog-wiring.test.ts`: `aiModels.ts` não tem literal de ID de modelo (regex `"(claude|gpt|gemini|grok|deepseek)-`), com controle positivo sobre fonte sintética.
+- [x] `src/lib/aiModels.ts` vira re-export: `MODELS_BY_PROVIDER` e `DEFAULT_MODEL_BY_PROVIDER` são **derivados** do catálogo, só com os ativos. Teste em `ai-model-catalog-wiring.test.ts`: `aiModels.ts` não tem literal de ID de modelo (regex `"(claude|gpt|gemini|grok|deepseek)-`), com controle positivo sobre fonte sintética.
 
 ### B1.2 Preços (migration) e guard de preços
 
-- [ ] RED: reescrever o bloco "todo modelo conhecido tem preço semeado" de `ai-budget-migrations-guard.test.ts`:
+- [x] RED: reescrever o bloco "todo modelo conhecido tem preço semeado" de `ai-budget-migrations-guard.test.ts`:
   - o conjunto exigido vem de `import { AI_MODEL_CATALOG }`: todo ativo, todo `successor` e todo `sameProviderFallback`. Sai a regex sobre `KNOWN_MODELS`/`FALLBACK_MODELS`, que deixam de existir;
   - `seeded()` passa a varrer **todas** as migrations com `insert into ai_model_prices` e exige uma linha **sem `effective_to`** por par;
   - controle positivo: catálogo sintético com modelo sem preço → falha. O controle atual do extrator é adaptado.
-- [ ] Ver vermelho: os modelos novos ainda não têm preço.
-- [ ] GREEN: migration nova, no molde da 099:
+- [x] Ver vermelho: os modelos novos ainda não têm preço.
+- [x] GREEN: migration nova, no molde da 099:
   - `begin; … commit;`;
   - `insert … select … from (values …) as v(provider, model, …)`, com `where not exists` por provider+model, ignorando a vigência (mesmo motivo da 099: o replay não pode recriar vigência);
   - `effective_from` = literal `timestamptz '<dia da evidência B1.0> 00:00:00+00'`. É determinístico e não pode passar do dia do `db push`; o B6 confere;
   - linhas de aposentados intocadas;
   - comentário com a fonte e a data de cada preço; sem URL do projeto nem segredo.
-- [ ] `npx vitest run src/lib/ai-budget-migrations-guard.test.ts scripts/migration-static-guard.test.ts` verde.
-- [ ] `PRICING_USD_PER_MTOK` (telemetria, `ai-providers.ts`) ganha os ativos novos com os mesmos valores. Teste estático: todo ativo tem entrada.
+- [x] `npx vitest run src/lib/ai-budget-migrations-guard.test.ts scripts/migration-static-guard.test.ts` verde.
+- [x] `PRICING_USD_PER_MTOK` (telemetria, `ai-providers.ts`) ganha os ativos novos com os mesmos valores. Teste estático: todo ativo tem entrada.
 
 ### B1.3 Perfis de requisição (Opus)
 
-- [ ] RED em `src/lib/ai-request-profile-core.test.ts`: `requestParamsFor(entry)` devolve, por `requestProfile`, os campos que o runner manda. Casos:
+- [x] RED em `src/lib/ai-request-profile-core.test.ts`: `requestParamsFor(entry)` devolve, por `requestProfile`, os campos que o runner manda. Casos:
   - **Gemini 2.5:** `maxOutputTokens: 3072` + `thinkingConfig: { thinkingBudget: 1024 }`, **igual a hoje** (as lojas não mudam);
   - **Claude 4.x legado:** só existe como sucessor resolvido; o perfil não é alcançável;
   - famílias novas conforme §8.1: parâmetro de limite certo (ex.: `max_completion_tokens` em GPT-5+), controle de raciocínio e ausência dos proibidos;
   - para todo perfil com raciocínio que consome a saída, o limite fica acima de 1024 de resposta útil.
-- [ ] GREEN: núcleo puro. `MAX_OUTPUT_TOKENS_BY_PROVIDER` passa a ser derivado por perfil, ou fica e o perfil o sobrepõe; decidir e registrar. O teste gêmeo `AI_ESTIMATE_OUTPUT_TOKENS >= max(limite de todo perfil)` em `agent-output-core.test.ts` é estendido, com controle positivo.
-- [ ] `isTruncatedStop` cobre os motivos de corte das famílias novas (§8.1). RED → GREEN no teste existente.
-- [ ] Ligação no runner (`ai-providers.ts`): `callGeminiOnce`, ramo Claude e ramo OpenAI-compatível usam `requestParamsFor`. Guard estático em `ai-model-catalog-wiring.test.ts`:
+- [x] GREEN: núcleo puro. `MAX_OUTPUT_TOKENS_BY_PROVIDER` passa a ser derivado por perfil, ou fica e o perfil o sobrepõe; decidir e registrar. O teste gêmeo `AI_ESTIMATE_OUTPUT_TOKENS >= max(limite de todo perfil)` em `agent-output-core.test.ts` é estendido, com controle positivo.
+- [x] `isTruncatedStop` cobre os motivos de corte das famílias novas (§8.1). RED → GREEN no teste existente.
+- [x] Ligação no runner (`ai-providers.ts`): `callGeminiOnce`, ramo Claude e ramo OpenAI-compatível usam `requestParamsFor`. Guard estático em `ai-model-catalog-wiring.test.ts`:
   - fora do núcleo, `ai-providers.ts` não contém `max_tokens:`, `max_completion_tokens`, `maxOutputTokens:` nem `thinkingBudget` literal;
   - controle positivo sobre fonte sintética.
 
 ### B1.4 Flash→Pro condicional (D5)
 
-- [ ] RED em `agent-provider-fallback-core.test.ts`: `decideSameProviderFallback({ entry, reserve })` →
+- [x] RED em `agent-provider-fallback-core.test.ts`: `decideSameProviderFallback({ entry, reserve })` →
   - sem reserva → `gemini-2.5-pro`;
   - reserva válida (config legível, provider ≠ principal, chave ativa) → `null`;
   - config ilegível → `gemini-2.5-pro`;
   - reserva no mesmo provider → `gemini-2.5-pro`;
   - reserva sem chave ativa → `gemini-2.5-pro`;
   - modelo sem `sameProviderFallback` → `null`.
-- [ ] GREEN. Depois, ligação:
+- [x] GREEN. Depois, ligação:
   - `AgentLoopOptions` ganha `sameProviderFallbackModel: string | null`;
   - `runGemini` usa a opção nos **três** caminhos (5xx, timeout, vazio), no lugar de `FALLBACK_MODELS.gemini`;
   - o chamador calcula a decisão antes do turno.
-- [ ] Conferir onde a chave do reserva é resolvida hoje. Se for preguiçosa, a **existência** da chave ativa é lida antes do turno, de `ai_provider_credentials` com `active=true` e `unit_id` da própria unidade. O valor da chave não é lido nem logado.
-- [ ] Guard estático: `FALLBACK_MODELS` não existe mais, e os três caminhos referenciam a opção. Controle positivo.
+- [x] Conferir onde a chave do reserva é resolvida hoje. Se for preguiçosa, a **existência** da chave ativa é lida antes do turno, de `ai_provider_credentials` com `active=true` e `unit_id` da própria unidade. O valor da chave não é lido nem logado.
+- [x] Guard estático: `FALLBACK_MODELS` não existe mais, e os três caminhos referenciam a opção. Controle positivo.
 
 ### B1.5 Modelo resolvido em franquia e telemetria (D6)
 
-- [ ] RED (guard estático) em todo ponto que hoje recebe `modelOverride`:
+- [x] RED (guard estático) em todo ponto que hoje recebe `modelOverride`:
   - `openTurnBudget`, `priceFor`, `agent_usage`, `handoff_reason` e `meta` recebem o modelo **resolvido**;
   - o principal e o reserva (`ai_config.fallback.model`) passam por `resolveModel` do catálogo;
   - `evt:"ai_model_retired"` (`provider`, `saved`, `used`) quando o motivo é `retired_successor`; `evt:"ai_model_fallback"` continua em `unknown_default`.
-- [ ] GREEN e controle positivo.
+- [x] GREEN e controle positivo.
 
 ### B1.6 Aba IA da unidade (Sonnet)
 
-- [ ] RED: helper puro `describeSavedModel(provider, saved)` em `src/lib/aiModels.ts` →
+- [x] RED: helper puro `describeSavedModel(provider, saved)` em `src/lib/aiModels.ts` →
   - `active` (com `verified`);
   - `retired` (com `used`);
   - `unknown` (com `used` = default);
   - `empty`.
   Teste unitário.
-- [ ] GREEN, e a `AITab` passa a usar:
+- [x] GREEN, e a `AITab` passa a usar:
   - Select só com os ativos;
   - salvo aposentado: "aposentado — em uso: X (confirme)";
   - desconhecido: "descontinuado — usando o padrão X";
   - não verificado: badge "não testado em produção";
   - o mesmo vale para o Select do reserva.
-- [ ] Teste de componente leve da aba, ou do trecho extraído, cobrindo os três avisos.
+- [x] Teste de componente leve da aba, ou do trecho extraído, cobrindo os três avisos.
 
 ### B1.7 Regras (spec §15)
 
-- [ ] `.claude/rules/agente-ia.md`:
+- [x] `.claude/rules/agente-ia.md`:
   - "Default de modelo vive em DOIS arquivos" vira "catálogo único `ai-model-catalog.ts`; aposentado exige sucessor ativo do mesmo papel; todo ativo/sucessor/fallback exige preço vigente (guard)";
   - a linha "Fallback same-provider" passa a dizer "só sem reserva válida (`decideSameProviderFallback`)";
   - a seção Provedores aponta para o catálogo;
   - o `paths:` já cobre `_shared/ai-*`. Conferir que cobre `ai-model-catalog.ts` e `ai-request-profile-core.ts`.
-- [ ] `.claude/rules/edge-functions.md`: `ai-model-catalog.ts` entra na lista de `_shared` importado pelo front (mudança exige deploy do front).
+- [x] `.claude/rules/edge-functions.md`: `ai-model-catalog.ts` entra na lista de `_shared` importado pelo front (mudança exige deploy do front).
 
 ### B1.8 Grafo e fechamento
 
-- [ ] `node scripts/ef-import-graph.mjs` para `ai-model-catalog.ts`, `ai-request-profile-core.ts`, `ai-providers.ts`, `agent-output-core.ts` e `agent-provider-fallback-core.ts`. Registrar em §6.
-- [ ] Verificação V, reviews, commit `feat(agente-ia): catálogo único de modelos, perfis por família e Flash→Pro condicional`.
+- [x] `node scripts/ef-import-graph.mjs` para `ai-model-catalog.ts`, `ai-request-profile-core.ts`, `ai-providers.ts`, `agent-output-core.ts` e `agent-provider-fallback-core.ts`. Registrar em §6.
+- [x] Verificação V, reviews, commit `feat(agente-ia): catálogo único de modelos, perfis por família e Flash→Pro condicional`.
 
 ## 4. B2 — Banco (Chat 2)
 
@@ -499,8 +499,9 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 | `ai-providers.ts` | medido em 2026-10-20 (`main` `2185293`): `webhook-whatsapp` | — |
 | `agent-output-core.ts` | idem: `webhook-whatsapp` | — |
 | `agent-provider-fallback-core.ts` | idem: `webhook-whatsapp` | — |
-| `ai-model-catalog.ts` | B1.8 | sim |
-| `ai-request-profile-core.ts` | B1.8 | — |
+| `ai-model-catalog.ts` | medido em 2026-10-20 (B1.8, `bab6033` + B1): `webhook-whatsapp` | sim (`src/lib/aiModels.ts` importa) |
+| `ai-request-profile-core.ts` | idem: `webhook-whatsapp` | — |
+| `agent/turn.ts`, `ai-budget-core.ts` (só comentário) | idem: `webhook-whatsapp` | — |
 | `_shared/agent/global-prompt-core.ts`, `global-prompt.ts`, `store-data-core.ts`, `system-prompt.ts` | B3 | `global-prompt-core.ts`: sim |
 
 - [ ] Rodar `node scripts/ef-import-graph.mjs --all` no commit final e fixar a lista. Esperado: `webhook-whatsapp`, mais a EF do Instagram se já existir. `manage-ai-providers` não entra.
@@ -573,17 +574,71 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 
 ## 8. Evidências
 
-### 8.1 B1.0: modelos, preços e perfis (preencher no Chat 1)
+### 8.1 B1.0: modelos, preços e perfis (preenchido no Chat 1, 2026-10-20)
+
+Busca: subagente Haiku, só páginas oficiais, acesso em 2026-10-20 (relatório bruto fora do repo). Preços do Gemini reconferidos pelo Opus na página oficial. Os fatos do Claude também foram cruzados com a referência da API da Anthropic. "Proibidos" lista só o que o runner poderia mandar; ele não manda `temperature`, `top_p` nem penalidades.
 
 | Provider | ID oficial | Papel | Status oficial | Input / Output / Cache R / Cache W / Reasoning (USD/Mtok) | Limite de saída | Raciocínio | Proibidos | Corte (stop) | API | Fonte (URL, data) | Desvio da spec |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| gemini | | | | | | | | | | | |
-| claude | | | | | | | | | | | |
-| openai | | | | | | | | | | | |
-| grok | | | | | | | | | | | |
-| deepseek | | | | | | | | | | | |
+| gemini | `gemini-2.5-flash` | default (verificado) | estável, sem data de desligamento; acesso ao 2.5 restrito a quem já usava | 0.30 / 2.50 / 0.03 / 0 / como output | `maxOutputTokens` 3072 (máx. 65 536) | `thinkingBudget` 1024 (igual a hoje) | `thinkingLevel` no 2.5 dá erro | `MAX_TOKENS` | generateContent | ai.google.dev/gemini-api/docs/pricing; …/models/gemini-2.5-flash; 2026-10-20 | **preço da 099 (0.15/0.60/0.0375) está defasado**: fora do escopo B1, ver "Achados" abaixo |
+| gemini | `gemini-2.5-pro` | strong (verificado); `sameProviderFallback` do Flash | estável, sem data | 1.25 / 10.00 / 0.125 / 0 (≤200k; tier >200k existe) | 3072 | `thinkingBudget` 1024 | idem | `MAX_TOKENS` | generateContent | idem; …/models/gemini-2.5-pro | cache R da 099 (0.3125) acima do oficial: conservador, mantido |
+| gemini | `gemini-3.8-flash` | strong | estável (2026-09-02), sem data | 0.75 / 3.75 / 0.075 / 0 até 2026-12-31; **1.50 / 7.50 / 0.15 a partir de 2027-01-01** | 3072 | `thinkingLevel: "low"` (não desliga; níveis low/medium/high) | `thinkingBudget` | `MAX_TOKENS` | generateContent | …/models/gemini-3.8-flash; …/docs/thinking; pricing | papel "strong" (a spec só dizia "ativo"); preço em duas vigências |
+| gemini | `gemini-3.5-flash-lite` | light | estável (2026-07-21), sem data | 0.30 / 2.50 / 0.03 / 0 | 3072 | `thinkingLevel: "minimal"` | `thinkingBudget` | `MAX_TOKENS` | generateContent | …/models/gemini-3.5-flash-lite; pricing | — |
+| gemini | Pro 3.x | — | só `gemini-3.1-pro-preview` (preview) | — | — | — | — | — | — | …/models/gemini-3.1-pro-preview | não entra (preview) |
+| claude | `claude-haiku-5-5` | default | Active (latest), aposentadoria não antes de 2027-10-07 | 0.10 / 0.50 / 0.01 / 0.125 (≤100k) / como output | `max_tokens` 1024 | adaptativo ligado por padrão; o perfil manda `thinking: {type:"disabled"}` (aceito com effort ≤ high; default medium) | `budget_tokens`, sampling não-default, prefill | `max_tokens` (`refusal`, `model_context_window_exceeded` e `pause_turn` não são corte) | Messages | platform.claude.com/docs/en/models/haiku-5-5/overview, …/migration-guide, …/thinking-troubleshooting; 2026-10-20 | — |
+| claude | `claude-sonnet-5-5` | strong | Active (latest), não antes de 2027-09-28 | 2.00 / 10.00 / 0.20 / 2.50 / como output | `max_tokens` 1024 | `disabled` dá 400; o perfil manda `thinking: {type:"between_tools"}` (sem raciocínio estendido; notas curtas entre ferramentas voltam em blocos `thinking`, repassados intactos) | `disabled`, `budget_tokens`, `tool_choice` forçado, sampling não-default | `max_tokens` | Messages | …/models/sonnet-5-5/overview; …/thinking-troubleshooting; …/implement-tool-use | cache R: o subagente leu 0.10, a referência da API diz 0.20; vale o maior (conservador) |
+| claude | `claude-haiku-4-5` | aposentado → `claude-haiku-5-5` | Active (legacy), "não antes de 2026-10-15" | 1 / 5 / 0.10 / 1.25 (linha da 099, intocada) | — | — | — | — | — | …/models/haiku-4-5/overview; …/model-deprecations | oficialmente ainda ativo; aposentado no catálogo por decisão da spec (§7.2) |
+| claude | `claude-sonnet-4-6` | aposentado → `claude-sonnet-5-5` | Active (legacy), não antes de 2027-02-17 | 3 / 15 / 0.30 / 3.75 (099, intocada) | — | — | — | — | — | …/models/sonnet-4-6/overview | idem |
+| openai | `gpt-6-luna` | default | sem rótulo de status; substituto oficial do gpt-4o | 0.10 / 0.50 / 0.01 / 0.125 (tier >272k existe) | `max_completion_tokens` 1024 (`max_tokens` está deprecado) | `reasoning_effort: "none"` **obrigatório**: "Chat Completions supports function calling only with `reasoning_effort` set to `none`" | `max_tokens` | `length` | Chat Completions (com a restrição ao lado) | developers.openai.com/api/docs/models/gpt-6-luna; …/reference/…/chat/…/create; 2026-10-20 | — |
+| openai | `gpt-5.6-sol` | strong | sem rótulo; **preço promocional "pelo menos até 2026-11-21"** | 4.00 / 20.00 / 0.40 / 5.00 (cache W = 1.25× input) | `max_completion_tokens` 3072 | `reasoning_effort: "low"` (o raciocínio conta no limite) | `max_tokens` | `length` | Chat Completions, tools suportadas | …/models/gpt-5.6-sol | o preço pós-promoção é desconhecido: B6 reconfere antes do `db push` |
+| openai | `gpt-4o`, `gpt-4o-mini` | aposentados → `gpt-6-luna` | Deprecated; snapshots desligam em 2027-01-14 com substituto `gpt-6-luna` | linhas da 099 intocadas | — | — | — | — | — | …/docs/deprecations | — |
+| grok | `grok-4.20-0309-non-reasoning` | default | ativo | 1.25 / 2.50 / 0.20 / 0 (≤200k) | `max_completion_tokens` 1024 (`max_tokens` deprecado) | nenhum (modelo sem raciocínio) | — | `length` (`end_turn` não é corte) | Chat Completions, **legado/deprecado, sem data de desligamento** | docs.x.ai/developers/models; …/rest-api-reference/inference/chat-completions; …/guides/chat-completions | risco registrado: migrar para Responses é escopo futuro |
+| grok | `grok-4.3` | strong | ativo | 1.25 / 2.50 / 0.20 / 0 (≤200k) | `max_completion_tokens` 3072 | default `low`; o perfil não manda parâmetro de esforço (o nome no Chat Completions não foi confirmado) | `presence_penalty`, `frequency_penalty`, `stop` | `length` | Chat Completions (legado) | docs.x.ai/developers/model-capabilities/text/reasoning | — |
+| grok | `grok-3` | aposentado → `grok-4.20-0309-non-reasoning` | aposentado em 2026-05-15 (redireciona para grok-4.3) | linha da 099 intocada | — | — | — | — | — | docs.x.ai/developers/migration/may-15-retirement | — |
+| deepseek | `deepseek-flash` (V4.1-Flash) | default | atual | 0.30 / 1.20 / 0.006 / 0 (preço de pico; fora do pico é a metade) | `max_tokens` 1024 (máx. 384K) | thinking ligado por padrão; o perfil manda `thinking: {type:"disabled"}` | sampling sem efeito no modo thinking | `length` | Chat Completions (`/chat/completions`) | api-docs.deepseek.com/quick_start/pricing; …/api/create-chat-completion; 2026-10-20 | — |
+| deepseek | `deepseek-v4-pro` | — | **declarações oficiais conflitantes** (news260910: roteia para V4.1-Flash desde 2026-09-14; updates: o serviço continua) | — | — | — | — | — | — | …/news/news260910; …/updates | **não entra** (não confirmado); o deepseek fica só com o default |
+| deepseek | `deepseek-chat` | aposentado → `deepseek-flash` | descontinuação anunciada para 2026-07-24 | linha da 099 intocada | — | — | — | — | — | …/updates (entrada 2026-04-24) | — |
 
-`usd_to_brl`: ___. Data de `effective_from`: ___.
+`usd_to_brl`: 5.50 (convenção da 099; trocar a taxa é decisão do usuário). Data de `effective_from`: `2026-10-20 00:00:00+00`, e `2027-01-01 00:00:00+00` para a segunda vigência do `gemini-3.8-flash`.
+
+Regras de decisão aplicadas:
+- Nenhuma família exige outra API. O `gpt-6-luna` aceita ferramentas no Chat Completions só com `reasoning_effort: "none"`, e o perfil manda isso. O Chat Completions da xAI é legado, mas não tem data de desligamento.
+- O `deepseek-v4-pro` ficou de fora por não ter sido confirmado. Nenhum aposentado fica sem sucessor ativo.
+- Nenhum perfil passa de 3072 tokens de saída. `AI_ESTIMATE_OUTPUT_TOKENS` (3072) não muda, e a reserva de franquia das lojas também não.
+
+Achados fora do escopo do B1 (para decisão do usuário):
+- **Preço do `gemini-2.5-flash` defasado na 099.** A 099 tem 0.15 / 0.60 / 0.0375. O oficial em 2026-10-20 é 0.30 / 2.50 / 0.03. O custo de saída está subestimado em cerca de 4×, e a franquia mede menos do que o provider cobra. Corrigir é abrir uma vigência nova (fechar `effective_to` e inserir linha), o que muda a medição das lojas em produção. Não foi feito.
+- **O Gemini 2.5 está restrito a projetos que já o usavam**, e uma unidade nova com chave nova pode não ter acesso. A D5 mantém o default `gemini-2.5-flash`. Revisitar a D5 é decisão do usuário.
+
+#### B1: RED, GREEN, controles e decisões (Chat 1, 2026-10-20)
+
+Baseline (`bab6033` + spec/plano): typecheck zero erros; suíte 4118 passam e 45 falham em 8 arquivos (`OfficialConnectionCard`, `TemplateCatalogAdminCard`, `whatsapp-automation-receipts-request`, `whatsapp-reservation-automation-routing`, `whatsapp-template-catalog-migration-twin`, `whatsapp-template-catalog-v2`, `whatsapp-waitlist-voucher-routing`, `whatsapp-template-surfaces`), nenhum do agente de IA.
+
+| Passo | RED (motivo certo) | GREEN | Controle positivo |
+|---|---|---|---|
+| B1.1 catálogo | `ai-model-catalog.test.ts`: import não resolvido (módulo inexistente) | 23 casos | `catalogViolations` reprova catálogo sintético com 2 defaults, aposentado sem sucessor, sucessor de outro papel/provider/aposentado, id duplicado, fallback inexistente |
+| B1.1 `aiModels.ts` | — (re-export) | sem literal de id | regex pega literal em `"`, `'` e crase; não pega fonte sem literal |
+| B1.2 preços | guard: 9 ativos sem vigência aberta + telemetria sem 10 chaves | migration `20261020130000` + `PRICING_USD_PER_MTOK` | parser de `values` (linha aberta, só fechada, fechada+aberta, comentada, sem coluna `effective_to`); `missingPrices` acusa ativo, sucessor e fallback sem preço |
+| B1.3 perfis | `ai-request-profile-core.test.ts`: módulo inexistente | 18 casos | GPT-6 com `reasoning_effort:"low"` reprova o contrato; limite 4096 reprova o gêmeo com `AI_ESTIMATE_OUTPUT_TOKENS` (e 4 outros) |
+| B1.3 runner | guard estático | 0 literal de limite/raciocínio fora do núcleo | detector pega `max_tokens:`, `max_completion_tokens`, `maxOutputTokens:`, `thinkingBudget`, `reasoning_effort` escritos à mão e ignora comentário |
+| B1.3 `isTruncatedStop` | **sem RED**: a evidência §8.1 mostra que as famílias novas usam os mesmos motivos de corte, o código não muda | casos novos (`model_context_window_exceeded`, `end_turn` da xAI, `content_filter`, `MISSING_THOUGHT_SIGNATURE`) não são corte | — |
+| B1.4 núcleo | 6 casos `decideSameProviderFallback is not defined`; depois do review, o 7º (reserva fora de alcance) falhou por devolver `null` | 26 casos | sem a condição de chave ativa, o caso "reserva sem chave" reprova |
+| B1.4/B1.5 ligação | guards estáticos | 22 casos em `ai-model-catalog-wiring.test.ts` | franquia aberta com o salvo cru (`rawModel ?? modelOverride`) reprova; runner sem o `push` do fallback reprova este guard e o de `ai-budget-wiring-guard`; o builder de credencial sem o filtro de unidade ou de `active` reprova |
+| B1.6 UI | `describeSavedModel is not a function` (7); depois do review, o vazio com padrão não verificado | 15 casos (helper + aviso) | aba sem o aviso no seletor do reserva reprova o guard |
+
+Decisões e desvios registrados:
+- **`MAX_OUTPUT_TOKENS_BY_PROVIDER` saiu.** O limite agora é do perfil (`ai-request-profile-core.ts`), porque o mesmo provider tem famílias com limites diferentes (Sonnet 5.5 1024, GPT-5.6 3072). `GEMINI_THINKING_BUDGET` mudou de arquivo junto. O gêmeo com `AI_ESTIMATE_OUTPUT_TOKENS` foi para `ai-request-profile-core.test.ts`, e não para `agent-output-core.test.ts` como o plano dizia.
+- A ligação Flash→Pro foi presa em `ai-model-catalog-wiring.test.ts`, não em `agent-provider-fallback-wiring.test.ts`. Este segue verde e intacto.
+- **Review de qualidade (Opus), P2 corrigido.** O D5 tirava o Pro do turno inteiro, mas o reserva só entra na tentativa 0, sem ferramenta mutante e dentro de `AGENT_RETRY_BUDGET_MS`. Agora o runner pergunta na hora do fallback (`sameProviderFallbackModel` é função), e o núcleo ganhou `reserveStillUsable`.
+- **P3 corrigido: Pro como principal mantém o empty-retry nele mesmo.** O catálogo declara `gemini-2.5-pro → gemini-2.5-pro`, preservando o comportamento de antes, quando `FALLBACK_MODELS.gemini` também valia para o Pro.
+- **P3 corrigido: provider inválido.** A resolução da chave veio para antes da resolução do modelo: `provider` inválido no `ai_config` cai no handoff `api_key_not_configured` de sempre, sem lançar no catálogo. O snapshot de paridade não mudou com isso.
+- **Portabilidade sem dívida nova.** A primeira versão de `hasActiveApiKey` repetia o `.from("ai_provider_credentials")` e subia o `check-portabilidade` de 487 para 488. As duas leituras agora usam um único builder (`activeCredentials`) com o filtro de unidade, provider e ativa, e o check voltou a 487 sem regravar a linha de base.
+- `edge-request-harness.test.ts` falhou uma vez na suíte completa e passa isolado (17/17). É sensível a tempo sob carga e não tem relação com o B1.
+- **Snapshot de paridade regravado uma vez, com mudança decidida.** Os cenários usam Claude com o modelo padrão, e o diff tem só: `claude-haiku-4-5` → `claude-haiku-5-5` (corpo, `agent_usage`, `handoff_reason`, `meta`), `thinking: {type:"disabled"}` nos 10 corpos Claude e `estimated_cost_usd` recalculado. O snapshot passa sem `-u` depois disso e depois das correções do review.
+- Review de conformidade (Sonnet): no aviso da aba, o vazio com padrão não verificado ganhou "padrão: X" + selo, e um guard prende os dois seletores ao aviso.
+- Fica para o B6:
+  - nenhum cenário de paridade exercita o Gemini, o caminho das duas lojas. Ele é coberto pelo corpo fixado no teste de perfil e pelos guards estáticos. Antes do deploy, ler (somente leitura, com autorização) `ai_config->'fallback'` das 2 unidades e se há credencial ativa do provider reserva.
+  - o preço da telemetria do `gemini-2.5-flash` (`PRICING_USD_PER_MTOK`) está defasado como o da 099; não foi mexido.
 
 ### 8.2 B2: pré-voo 78
 

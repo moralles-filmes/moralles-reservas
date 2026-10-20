@@ -15,11 +15,11 @@ import {
 } from "./agent-deadline-core.ts";
 import {
   AgentTruncatedError,
-  geminiThinkingConfig,
   isAgentTruncatedError,
   isTruncatedStop,
-  MAX_OUTPUT_TOKENS_BY_PROVIDER,
 } from "./agent-output-core.ts";
+import { defaultModelFor, getModelEntry, type AIProvider } from "./ai-model-catalog.ts";
+import { requestParamsFor, type AIRequestParams } from "./ai-request-profile-core.ts";
 
 export type { AgentCallMeta, AgentCallOutcome, BeforeCallDecision };
 // Reexportados para que o chamador do loop (hoje `webhook-whatsapp`) importe a
@@ -31,7 +31,9 @@ export { AgentTruncatedError, isAgentTruncatedError };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type AIProvider = "claude" | "openai" | "gemini" | "grok" | "deepseek";
+// A união vive no catálogo (fonte única da lista de modelos); reexportada aqui
+// porque os chamadores do loop importam o tipo deste módulo.
+export type { AIProvider };
 
 export interface AgentTool {
   name: string;
@@ -150,57 +152,31 @@ export interface AgentLoopOptions {
    * função. Aqui só se pergunta.
    */
   shouldContinue?: () => boolean;
+  /**
+   * Modelo de fallback DENTRO do provider (hoje só Gemini Flash→Pro), ou `null`.
+   * Quem decide é o chamador, por `decideSameProviderFallback` (D5: só quando o
+   * reserva não está ao alcance). É FUNÇÃO de propósito: o runner pergunta na
+   * hora do fallback, porque o alcance do reserva muda durante o turno
+   * (ferramenta mutante, orçamento de tempo). Obrigatório: o runner não tem
+   * mais uma tabela própria de fallback.
+   */
+  sameProviderFallbackModel: () => string | null;
 }
 
-export const DEFAULT_MODELS: Record<AIProvider, string> = {
-  claude: "claude-haiku-4-5",
-  openai: "gpt-4o",
-  gemini: "gemini-2.5-flash",
-  grok: "grok-3",
-  deepseek: "deepseek-chat",
-};
-
-// Fallback de modelo dentro do mesmo provider para erros 5xx persistentes
-// (modelo principal saturado regionalmente). Cotas TPM são tipicamente
-// separadas entre modelos do mesmo provider, então `pro` continua atendendo
-// enquanto `flash` está sobrecarregado. Null = não há fallback configurado.
-// Conservador: só Gemini hoje, porque é o caso real observado em produção.
-export const FALLBACK_MODELS: Record<AIProvider, string | null> = {
-  claude: null,
-  openai: null,
-  gemini: "gemini-2.5-pro",
-  grok: null,
-  deepseek: null,
-};
-
-// Lista de modelos conhecidos (espelha `MODELS_BY_PROVIDER` em src/lib/aiModels.ts).
-// Blindagem: settings.ai_config.models[provider] pode ter valor legado de antes do
-// Select curado (vimos `gemini-2.0-flash` salvo em produção depois que o Google o
-// descontinuou — provoca 404 silencioso → agent_error). Se o modelo override não
-// está aqui, `resolveModel` ignora e usa o default. Mantenha sincronizado com:
-//   - src/lib/aiModels.ts MODELS_BY_PROVIDER (UI)
-//   - DEFAULT_MODELS acima (este arquivo)
-//   - DEFAULT_MODEL_BY_PROVIDER em src/lib/aiModels.ts
-const KNOWN_MODELS: Record<AIProvider, ReadonlySet<string>> = {
-  claude: new Set(["claude-haiku-4-5", "claude-sonnet-4-6"]),
-  openai: new Set(["gpt-4o", "gpt-4o-mini"]),
-  gemini: new Set(["gemini-2.5-flash", "gemini-2.5-pro"]),
-  grok: new Set(["grok-3"]),
-  deepseek: new Set(["deepseek-chat"]),
-};
+// A lista de modelos, o default, o sucessor de aposentado e o fallback do mesmo
+// provider vivem no catálogo único (`ai-model-catalog.ts`); `resolveModel` é de
+// lá. O que vai no corpo da requisição por família vem de
+// `ai-request-profile-core.ts`. Este arquivo só liga os fios.
 
 /**
- * Resolve o modelo final a ser usado:
- *   - se `override` está em KNOWN_MODELS[provider] → usa ele
- *   - senão (vazio, descontinuado, digitado errado) → usa DEFAULT_MODELS[provider]
- * Retorna o nome do modelo + flag indicando se houve fallback (pra log/telemetria).
+ * Os campos do corpo para este modelo. Modelo fora do catálogo ou aposentado
+ * LANÇA: o turno resolve o modelo antes de chamar o loop, então chegar aqui com
+ * um deles é defeito, e o erro vira auto-handoff como qualquer erro do agente.
  */
-export function resolveModel(provider: AIProvider, override?: string): { model: string; fellBack: boolean; rejected?: string } {
-  const def = DEFAULT_MODELS[provider];
-  const trimmed = (override ?? "").trim();
-  if (!trimmed) return { model: def, fellBack: false };
-  if (KNOWN_MODELS[provider]?.has(trimmed)) return { model: trimmed, fellBack: false };
-  return { model: def, fellBack: true, rejected: trimmed };
+function requestParamsForModel(provider: AIProvider, model: string): AIRequestParams {
+  const entry = getModelEntry(provider, model);
+  if (!entry) throw new Error(`model_not_in_catalog:${provider}:${model}`);
+  return requestParamsFor(entry.requestProfile);
 }
 
 const OPENAI_BASE_URLS: Partial<Record<AIProvider, string>> = {
@@ -233,6 +209,20 @@ const PRICING_USD_PER_MTOK: Record<string, { input: number; output: number; cach
   "gemini-2.5-flash":   { input: 0.15, output: 0.60, cache_read: 0.0375, cache_write: 0 },
   "grok-3":             { input: 3,    output: 15,  cache_read: 0,    cache_write: 0 },
   "deepseek-chat":      { input: 0.27, output: 1.10, cache_read: 0.07, cache_write: 0 },
+  // Modelos do catalogo (ai-model-catalog.ts), mesmos valores de
+  // 20261020130000_ai_model_prices_catalog_refresh.sql. Esta tabela e TELEMETRIA;
+  // o orcamento usa ai_model_prices.
+  "gemini-2.5-pro":                { input: 1.25, output: 10,   cache_read: 0.125, cache_write: 0 },
+  // Preco de 2026; DOBRA em 2027-01-01 (1.50 / 7.50 / 0.15). A vigencia certa vive em ai_model_prices.
+  "gemini-3.8-flash":              { input: 0.75, output: 3.75, cache_read: 0.075, cache_write: 0 },
+  "gemini-3.5-flash-lite":         { input: 0.30, output: 2.50, cache_read: 0.03,  cache_write: 0 },
+  "claude-haiku-5-5":              { input: 0.10, output: 0.50, cache_read: 0.01,  cache_write: 0.125 },
+  "claude-sonnet-5-5":             { input: 2,    output: 10,   cache_read: 0.20,  cache_write: 2.50 },
+  "gpt-6-luna":                    { input: 0.10, output: 0.50, cache_read: 0.01,  cache_write: 0.125 },
+  "gpt-5.6-sol":                   { input: 4,    output: 20,   cache_read: 0.40,  cache_write: 5 },
+  "grok-4.20-0309-non-reasoning":  { input: 1.25, output: 2.50, cache_read: 0.20,  cache_write: 0 },
+  "grok-4.3":                      { input: 1.25, output: 2.50, cache_read: 0.20,  cache_write: 0 },
+  "deepseek-flash":                { input: 0.30, output: 1.20, cache_read: 0.006, cache_write: 0 },
 };
 
 export function estimateCostUsd(model: string, usage: AgentUsage): number {
@@ -448,7 +438,7 @@ async function callWithBudget<T>(
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
-  const model = opts.model || DEFAULT_MODELS[opts.provider];
+  const model = opts.model || defaultModelFor(opts.provider).id;
   const trimmedHistory = truncateHistory(
     opts.history,
     opts.maxHistoryMessages ?? DEFAULT_HISTORY_CAP,
@@ -517,6 +507,9 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<AgentLo
     maxRetries: DEFAULT_HTTP_RETRIES,
   });
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Limite de saída e raciocínio do perfil da família (ai-request-profile-core).
+  const params = requestParamsForModel("claude", model);
+  if (params.wire !== "claude") throw new Error(`request_profile_wire_mismatch:claude:${model}`);
 
   // Cache breakpoint #2: último item de tools. Faz o array inteiro de tools
   // virar prefixo cacheável (~750 tokens economizados por turno em cache hit).
@@ -570,10 +563,13 @@ async function runClaude(opts: AgentLoopOptions, model: string): Promise<AgentLo
       model,
       iteration: MAX_ITERATIONS - iterations,
       invoke: async () => {
+        // O corpo do perfil entra por spread: `thinking` não existe nos tipos do
+        // SDK 0.27.3, que repassa o corpo inteiro ao endpoint. Blocos `thinking`
+        // da resposta voltam intactos no histórico (push de `response.content`).
         const r = await anthropic.messages.create(
           {
             model,
-            max_tokens: MAX_OUTPUT_TOKENS_BY_PROVIDER.claude,
+            ...params.body,
             system: systemBlocks,
             tools: claudeTools,
             messages,
@@ -651,6 +647,8 @@ async function runOpenAICompatible(
   baseUrl: string,
 ): Promise<AgentLoopResult> {
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const params = requestParamsForModel(opts.provider, model);
+  if (params.wire !== "openai") throw new Error(`request_profile_wire_mismatch:${opts.provider}:${model}`);
   const openaiTools = opts.tools.map((t) => ({
     type: "function",
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -694,7 +692,9 @@ async function runOpenAICompatible(
             messages,
             tools: openaiTools,
             tool_choice: "auto",
-            max_tokens: MAX_OUTPUT_TOKENS_BY_PROVIDER[opts.provider],
+            // Limite e raciocínio do perfil: `max_completion_tokens` (OpenAI,
+            // xAI) ou `max_tokens` (DeepSeek), mais `reasoning_effort`/`thinking`.
+            ...params.body,
           }),
           signal: timeoutSignal(timeoutMs),
         }, {
@@ -864,7 +864,9 @@ function shouldTryGeminiFallback(err: unknown): boolean {
 
 async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLoopResult> {
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const fallbackModel = FALLBACK_MODELS.gemini;
+  // O fallback do mesmo provider é perguntado ao chamador NA HORA, nos três
+  // caminhos (5xx, timeout, vazio): `null` enquanto o reserva da unidade ainda
+  // pode assumir (D5) — aí a rede é só ela, sem encadear Flash→Pro→reserva.
 
   const functionDeclarations = opts.tools.map((t) => ({
     name: t.name,
@@ -898,25 +900,23 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLo
       throw new AgentDeadlineError(opts.provider, iterations);
     }
 
+    // Perfil do modelo ATIVO (pode ter virado o Pro no empty-retry). O corpo é
+    // reaproveitado na tentativa do fallback: o catálogo exige que o fallback
+    // tenha o mesmo perfil do principal (teste em ai-request-profile-core).
+    const params = requestParamsForModel("gemini", activeModel);
+    if (params.wire !== "gemini") throw new Error(`request_profile_wire_mismatch:gemini:${activeModel}`);
     const body = JSON.stringify({
       system_instruction: { parts: [{ text: opts.systemPrompt }] },
       contents,
       tools: [{ functionDeclarations }],
       tool_config: { function_calling_config: { mode: "AUTO" } },
-      // O raciocínio do 2.5 consome o MESMO maxOutputTokens; o orçamento único
-      // serve a Flash e Pro porque o corpo é reaproveitado no fallback.
-      generationConfig: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS_BY_PROVIDER.gemini,
-        thinkingConfig: geminiThinkingConfig(activeModel),
-      },
+      generationConfig: params.generationConfig,
     });
 
     // Uma tentativa por modelo, cada uma com autorização financeira PRÓPRIA.
-    // `attemptModels` é [ativo] ou [ativo, fallback] — a segunda entrada só é
-    // tentada quando a primeira falha com 5xx ou erro de rede.
-    const attemptModels = fallbackModel && fallbackModel !== activeModel
-      ? [activeModel, fallbackModel]
-      : [activeModel];
+    // `attemptModels` nasce [ativo] e ganha o fallback só quando a primeira
+    // falha com 5xx ou erro de rede/timeout — e é NESSA hora que se pergunta.
+    const attemptModels = [activeModel];
 
     let data: any = null;
     let denied: { decision: BeforeCallDecision; meta: AgentCallMeta } | null = null;
@@ -994,6 +994,10 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLo
         break;
       } catch (err) {
         lastError = err;
+        if (a === 0 && shouldTryGeminiFallback(err)) {
+          const fallbackModel = opts.sameProviderFallbackModel();
+          if (fallbackModel && fallbackModel !== activeModel) attemptModels.push(fallbackModel);
+        }
         // Última tentativa, ou erro que o fallback não resolveria (4xx):
         // propaga como sempre propagou (→ agent_error → handoff).
         if (a === attemptModels.length - 1 || !shouldTryGeminiFallback(err)) throw err;
@@ -1034,6 +1038,8 @@ async function runGemini(opts: AgentLoopOptions, model: string): Promise<AgentLo
       // sem tool call, ou nenhum candidate). É a causa nº1 do "Desculpa, não
       // consegui montar uma resposta agora". Uma re-tentativa no fallback (Pro,
       // cota TPM separada) costuma resolver. NÃO empurra turno "model" vazio.
+      // No Pro como principal, o fallback é ele mesmo: uma re-tentativa igual.
+      const fallbackModel = emptyRetried ? null : opts.sameProviderFallbackModel();
       if (!emptyRetried && fallbackModel) {
         emptyRetried = true;
         activeModel = fallbackModel; // sticky pro resto do loop de tools

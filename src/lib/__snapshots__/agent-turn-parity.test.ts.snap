@@ -6,7 +6,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
     {
       "ai_lock_token": null,
       "handoff_at": "2026-10-05T15:00:06.000Z",
-      "handoff_reason": "agent_error:claude:claude-haiku-4-5",
+      "handoff_reason": "agent_error:claude:claude-haiku-5-5",
       "messages": [
         {
           "author": "customer",
@@ -35,7 +35,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       "meta": {
         "channel_id": "dddddddd-0000-4000-8000-000000000001",
         "deadline": false,
-        "model": "claude-haiku-4-5",
+        "model": "claude-haiku-5-5",
         "provider": "claude",
       },
       "outcome": "agent_error",
@@ -757,7 +757,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
         "operation": "update",
         "patch": {
           "handoff_at": "2026-10-05T15:00:06.000Z",
-          "handoff_reason": "agent_error:claude:claude-haiku-4-5",
+          "handoff_reason": "agent_error:claude:claude-haiku-5-5",
           "last_silenced_reply_at": null,
           "status": "awaiting_human",
         },
@@ -830,7 +830,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "meta": {
             "channel_id": "dddddddd-0000-4000-8000-000000000001",
             "deadline": false,
-            "model": "claude-haiku-4-5",
+            "model": "claude-haiku-5-5",
             "provider": "claude",
           },
           "outcome": "agent_error",
@@ -866,7 +866,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -922,6 +922,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -1100,7 +1103,7 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -1156,6 +1159,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -1377,7 +1383,7 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "evt": "agent_usage",
       "input_tokens": 0,
       "level": "info",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "output_tokens": 0,
       "provider": "claude",
       "reasoning_tokens": 0,
@@ -1390,7 +1396,7 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "err": "Error: synthetic provider down",
       "evt": "agent_error_handoff",
       "level": "warn",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "provider": "claude",
       "requestId": "<request_id_0>",
       "ts": "2026-10-05T15:00:06.000Z",
@@ -2259,7 +2265,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -2315,6 +2321,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -2516,7 +2525,7 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -2572,6 +2581,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -2796,11 +2808,11 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "cache_creation_tokens": 0,
       "cache_read_tokens": 0,
       "channelId": "dddddddd-0000-4000-8000-000000000001",
-      "estimated_cost_usd": 0.000136,
+      "estimated_cost_usd": 0.000014,
       "evt": "agent_usage",
       "input_tokens": 46,
       "level": "info",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "output_tokens": 18,
       "provider": "claude",
       "reasoning_tokens": 0,
@@ -3675,7 +3687,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -3738,6 +3750,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -3930,11 +3945,11 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "cache_creation_tokens": 0,
       "cache_read_tokens": 0,
       "channelId": "dddddddd-0000-4000-8000-000000000001",
-      "estimated_cost_usd": 0.000068,
+      "estimated_cost_usd": 0.000007,
       "evt": "agent_usage",
       "input_tokens": 23,
       "level": "info",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "output_tokens": 9,
       "provider": "claude",
       "reasoning_tokens": 0,
@@ -4852,7 +4867,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -4908,6 +4923,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -5107,7 +5125,7 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -5163,6 +5181,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -5383,7 +5404,7 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -5439,6 +5460,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -5677,11 +5701,11 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "cache_creation_tokens": 0,
       "cache_read_tokens": 0,
       "channelId": "dddddddd-0000-4000-8000-000000000001",
-      "estimated_cost_usd": 0.000204,
+      "estimated_cost_usd": 0.00002,
       "evt": "agent_usage",
       "input_tokens": 69,
       "level": "info",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "output_tokens": 27,
       "provider": "claude",
       "reasoning_tokens": 0,
@@ -6550,7 +6574,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -6665,6 +6689,9 @@ Instruções adicionais: Sempre ofereça o rodízio.",
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -6857,11 +6884,11 @@ Instruções adicionais: Sempre ofereça o rodízio.",
       "cache_creation_tokens": 0,
       "cache_read_tokens": 0,
       "channelId": "dddddddd-0000-4000-8000-000000000001",
-      "estimated_cost_usd": 0.000068,
+      "estimated_cost_usd": 0.000007,
       "evt": "agent_usage",
       "input_tokens": 23,
       "level": "info",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "output_tokens": 9,
       "provider": "claude",
       "reasoning_tokens": 0,
@@ -7704,7 +7731,7 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "user",
         },
       ],
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "system": [
         {
           "cache_control": {
@@ -7760,6 +7787,9 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
           "type": "text",
         },
       ],
+      "thinking": {
+        "type": "disabled",
+      },
       "tools": [
         {
           "description": "Verifica disponibilidade de mesas. Se o restaurante tem múltiplos salões e o cliente especificou um (ex: 'área externa', 'salão principal'), passe em hall_name; senão deixa em branco que o sistema busca em todos os salões ativos.",
@@ -7952,11 +7982,11 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "cache_creation_tokens": 0,
       "cache_read_tokens": 0,
       "channelId": "dddddddd-0000-4000-8000-000000000001",
-      "estimated_cost_usd": 0.000068,
+      "estimated_cost_usd": 0.000007,
       "evt": "agent_usage",
       "input_tokens": 23,
       "level": "info",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-5-5",
       "output_tokens": 9,
       "provider": "claude",
       "reasoning_tokens": 0,

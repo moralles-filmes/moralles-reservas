@@ -1,41 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentTruncatedError,
-  GEMINI_THINKING_BUDGET,
-  MAX_OUTPUT_TOKENS_BY_PROVIDER,
-  geminiThinkingConfig,
   isAgentTruncatedError,
   isTruncatedStop,
 } from "../../supabase/functions/_shared/agent-output-core";
-import { AI_ESTIMATE_OUTPUT_TOKENS } from "../../supabase/functions/_shared/ai-budget-core";
+import { GEMINI_THINKING_BUDGET } from "../../supabase/functions/_shared/ai-request-profile-core";
 
-describe("MAX_OUTPUT_TOKENS_BY_PROVIDER", () => {
-  it("dá ao Gemini espaço para raciocínio + resposta", () => {
-    expect(MAX_OUTPUT_TOKENS_BY_PROVIDER.gemini).toBe(3072);
-    expect(MAX_OUTPUT_TOKENS_BY_PROVIDER.gemini).toBeGreaterThan(GEMINI_THINKING_BUDGET + 1500);
-  });
-
-  it("mantém 1024 nos demais providers", () => {
-    for (const p of ["claude", "openai", "grok", "deepseek"] as const) {
-      expect(MAX_OUTPUT_TOKENS_BY_PROVIDER[p]).toBe(1024);
-    }
-  });
-
-  it("estimativa do orçamento cobre o maior limite de saída (gêmeo de ai-budget-core)", () => {
-    expect(AI_ESTIMATE_OUTPUT_TOKENS).toBeGreaterThanOrEqual(
-      Math.max(...Object.values(MAX_OUTPUT_TOKENS_BY_PROVIDER)),
-    );
-  });
-});
-
-describe("geminiThinkingConfig", () => {
-  it("usa um orçamento único válido em Flash (0–24576) e Pro (>=128)", () => {
-    for (const m of ["gemini-2.5-flash", "gemini-2.5-pro"]) {
-      const cfg = geminiThinkingConfig(m);
-      expect(cfg).toEqual({ thinkingBudget: 1024 });
-      expect(cfg.thinkingBudget).toBeGreaterThanOrEqual(128);
-      expect(cfg.thinkingBudget).toBeLessThanOrEqual(24576);
-    }
+// O limite de saída por família, o orçamento de raciocínio do Gemini e o gêmeo
+// com `AI_ESTIMATE_OUTPUT_TOKENS` moraram aqui até o catálogo de modelos; agora
+// estão em `ai-request-profile-core.test.ts`. Fica o intervalo do orçamento do
+// 2.5, que é fato do provider, não do perfil.
+describe("GEMINI_THINKING_BUDGET", () => {
+  it("é um orçamento único válido em Flash (0–24576) e Pro (>=128)", () => {
+    expect(GEMINI_THINKING_BUDGET).toBe(1024);
+    expect(GEMINI_THINKING_BUDGET).toBeGreaterThanOrEqual(128);
+    expect(GEMINI_THINKING_BUDGET).toBeLessThanOrEqual(24576);
   });
 });
 
@@ -58,6 +37,21 @@ describe("isTruncatedStop", () => {
     expect(isTruncatedStop("openai", "stop")).toBe(false);
     expect(isTruncatedStop("openai", "tool_calls")).toBe(false);
     expect(isTruncatedStop("openai", "MAX_TOKENS")).toBe(false);
+  });
+
+  it("famílias novas do catálogo (plano §8.1): mesmos motivos de corte, e os novos motivos não são corte", () => {
+    // Claude 5.5: `max_tokens` segue sendo o corte; `refusal` (classificadores)
+    // e `model_context_window_exceeded` não são resposta cortada pelo limite.
+    expect(isTruncatedStop("claude", "max_tokens")).toBe(true);
+    expect(isTruncatedStop("claude", "model_context_window_exceeded")).toBe(false);
+    // xAI documenta `end_turn` como fim normal no Chat Completions.
+    expect(isTruncatedStop("grok", "end_turn")).toBe(false);
+    // OpenAI GPT-6/5.6 e DeepSeek V4: `length`; filtro de conteúdo não é corte.
+    expect(isTruncatedStop("openai", "content_filter")).toBe(false);
+    expect(isTruncatedStop("deepseek", "length")).toBe(true);
+    // Gemini 3.x: mesmo enum de finishReason do 2.5.
+    expect(isTruncatedStop("gemini", "MALFORMED_FUNCTION_CALL")).toBe(false);
+    expect(isTruncatedStop("gemini", "MISSING_THOUGHT_SIGNATURE")).toBe(false);
   });
 
   it("undefined/null/não-string nunca é corte", () => {

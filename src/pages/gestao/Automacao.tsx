@@ -110,11 +110,35 @@ import { WEBHOOK_SIGNATURE_SCHEME } from "../../../supabase/functions/_shared/wh
 import {
   MODELS_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
+  describeSavedModel,
+  type AIModelOption,
   type AIProvider,
 } from "@/lib/aiModels";
+import { SavedModelNotice } from "@/components/ai/SavedModelNotice";
 import { fallbackProviderOptions } from "@/lib/ai-fallback-options";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
+
+/** Item do seletor de modelo: rótulo, dica e, se nunca rodou em produção, o aviso. */
+function ModelOptionItem({ m }: { m: AIModelOption }) {
+  return (
+    <SelectItem value={m.value}>
+      {m.label}
+      {m.hint ? <span className="text-muted-foreground"> · {m.hint}</span> : null}
+      {!m.verified ? <span className="text-muted-foreground"> · não testado em produção</span> : null}
+    </SelectItem>
+  );
+}
+
+/**
+ * Valor do `Select` para o modelo salvo. Aposentado/desconhecido não é opção da
+ * lista: `""` mostra o placeholder e o `SavedModelNotice` explica o que está em uso.
+ */
+function modelSelectValue(provider: AIProvider, saved: string): string {
+  const state = describeSavedModel(provider, saved);
+  if (state.kind === "empty") return "__default__";
+  return state.kind === "active" ? state.id : "";
+}
 
 interface AIConfig {
   provider: AIProvider;
@@ -1166,8 +1190,6 @@ function AITab({ unitId }: { unitId: string }) {
   const activeProviderModels = MODELS_BY_PROVIDER[aiConfig.provider];
   const activeDefaultModel = DEFAULT_MODEL_BY_PROVIDER[aiConfig.provider];
   const savedModel = aiConfig.models?.[aiConfig.provider] ?? "";
-  const savedModelInList = activeProviderModels.some((m) => m.value === savedModel);
-  const showLegacyOption = savedModel !== "" && !savedModelInList;
 
   const updateAiConfig = (patch: Partial<AIConfig>) => {
     const updated = { ...aiConfig, ...patch };
@@ -1195,8 +1217,6 @@ function AITab({ unitId }: { unitId: string }) {
     !fallbackOptions.includes(savedFallback.provider);
   const fallbackModels = savedFallback ? MODELS_BY_PROVIDER[savedFallback.provider] ?? [] : [];
   const fallbackSavedModel = savedFallback?.model ?? "";
-  const fallbackShowLegacyModel =
-    fallbackSavedModel !== "" && !fallbackModels.some((m) => m.value === fallbackSavedModel);
 
   const setFallbackProvider = (value: string) => {
     if (value === "__none__") {
@@ -1242,7 +1262,7 @@ function AITab({ unitId }: { unitId: string }) {
         <div className="space-y-1">
           <Label>Modelo</Label>
           <Select
-            value={savedModel === "" ? "__default__" : savedModel}
+            value={modelSelectValue(aiConfig.provider, savedModel)}
             onValueChange={(v) => setModelOverride(v === "__default__" ? "" : v)}
           >
             <SelectTrigger className="w-full sm:w-72">
@@ -1253,18 +1273,11 @@ function AITab({ unitId }: { unitId: string }) {
                 Padrão ({activeDefaultModel})
               </SelectItem>
               {activeProviderModels.map((m) => (
-                <SelectItem key={m.value} value={m.value}>
-                  {m.label}
-                  {m.hint ? <span className="text-muted-foreground"> · {m.hint}</span> : null}
-                </SelectItem>
+                <ModelOptionItem key={m.value} m={m} />
               ))}
-              {showLegacyOption && (
-                <SelectItem value={savedModel} className="text-warning">
-                  {savedModel} (descontinuado — trocar)
-                </SelectItem>
-              )}
             </SelectContent>
           </Select>
+          <SavedModelNotice provider={aiConfig.provider} saved={savedModel} />
           <p className="text-xs text-muted-foreground">
             Recomendado deixar no padrão. A lista é atualizada conforme cada provedor lança modelos novos.
           </p>
@@ -1421,7 +1434,7 @@ function AITab({ unitId }: { unitId: string }) {
                 <div className="space-y-1">
                   <Label>Modelo do reserva</Label>
                   <Select
-                    value={fallbackSavedModel === "" ? "__default__" : fallbackSavedModel}
+                    value={modelSelectValue(savedFallback.provider, fallbackSavedModel)}
                     onValueChange={setFallbackModel}
                   >
                     <SelectTrigger className="w-full sm:w-72">
@@ -1432,18 +1445,11 @@ function AITab({ unitId }: { unitId: string }) {
                         Padrão ({DEFAULT_MODEL_BY_PROVIDER[savedFallback.provider]})
                       </SelectItem>
                       {fallbackModels.map((m) => (
-                        <SelectItem key={m.value} value={m.value}>
-                          {m.label}
-                          {m.hint ? <span className="text-muted-foreground"> · {m.hint}</span> : null}
-                        </SelectItem>
+                        <ModelOptionItem key={m.value} m={m} />
                       ))}
-                      {fallbackShowLegacyModel && (
-                        <SelectItem value={fallbackSavedModel} className="text-warning">
-                          {fallbackSavedModel} (descontinuado — trocar)
-                        </SelectItem>
-                      )}
                     </SelectContent>
                   </Select>
+                  <SavedModelNotice provider={savedFallback.provider} saved={fallbackSavedModel} />
                 </div>
               )}
             </div>
