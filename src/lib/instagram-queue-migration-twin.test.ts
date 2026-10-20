@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   INBOUND_LEASE_TTL_MS,
+  INBOUND_SWEEP_INTERVAL_MS,
   PURGE_DEAD_AFTER_DAYS,
   PURGE_DONE_AFTER_DAYS,
 } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
@@ -130,5 +131,126 @@ describe("migration da fila do Instagram ⇔ núcleo da fila de inbound", () => 
       "-- created_at < now() - interval '30 days'\ncreate or replace function public.purge_instagram_processed_messages_x(",
     );
     expect(() => corpo(sabotado, "purge_instagram_processed_messages")).toThrow();
+  });
+});
+
+// ─── Task 1.5: agendamento (20261020120500_instagram_cron.sql) ──────────────
+// O harness não tem pg_cron: o arquivo de cron não roda no pré-voo 79 e é
+// conferido aqui, como texto. Escopo: as chamadas `cron.schedule(...)` do SQL
+// SEM comentários (o cabeçalho e o bloco de validação repetem as expressões).
+const ARQUIVO_CRON = readdirSync(MIGRATIONS).find((f) => /^\d{14}_instagram_cron\.sql$/.test(f));
+const SQL_CRON = ARQUIVO_CRON ? readFileSync(resolve(MIGRATIONS, ARQUIVO_CRON), "utf8") : "";
+
+type Agendamento = { nome: string; expr: string; comando: string; posicao: number };
+
+/** Toda chamada `select cron.schedule('nome', 'expr', $$comando$$)` do SQL sem comentários. */
+function agendamentos(sql: string): Agendamento[] {
+  const limpo = semComentarios(sql);
+  const re = /select\s+cron\.schedule\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*\$\$([\s\S]*?)\$\$\s*\)/gi;
+  return [...limpo.matchAll(re)].map((m) => ({ nome: m[1], expr: m[2], comando: m[3].trim(), posicao: m.index ?? -1 }));
+}
+
+/** Posição do `perform cron.unschedule(jobid) from cron.job where jobname = '<nome>'` (defensivo, por jobid). */
+function posicaoDoUnschedule(sql: string, nome: string): number {
+  const limpo = semComentarios(sql);
+  const re = new RegExp(
+    `perform\\s+cron\\.unschedule\\(\\s*jobid\\s*\\)\\s+from\\s+cron\\.job\\s+where\\s+jobname\\s*=\\s*'${nome}'`,
+    "i",
+  );
+  return limpo.match(re)?.index ?? -1;
+}
+
+/** Expressão cron "a cada N minutos" derivada do intervalo da varredura. */
+function exprDaVarredura(ms: number): string {
+  const minutos = ms / 60_000;
+  if (!Number.isInteger(minutos) || minutos < 1) throw new Error(`intervalo ${ms}ms não é minuto inteiro`);
+  // Montado por interpolação: a sequência asterisco-barra fecharia um comentário de bloco.
+  return `*${"/"}${minutos} * * * *`;
+}
+
+const ESPERADOS: Record<string, { expr: string; comando: string }> = {
+  "instagram-inbound-sweep": {
+    expr: exprDaVarredura(INBOUND_SWEEP_INTERVAL_MS),
+    comando: "select public.trigger_instagram_inbound_sweep();",
+  },
+  "instagram-token-refresh": { expr: "40 9 * * *", comando: "select public.trigger_instagram_token_refresh();" },
+  "instagram-inbound-purge": {
+    expr: "17 4 * * *",
+    comando: "select public.purge_instagram_inbound_events(), public.purge_instagram_processed_messages();",
+  },
+};
+
+/** Lista de divergências do arquivo de cron contra ESPERADOS (vazia = confere). */
+function conferir(sql: string): string[] {
+  const erros: string[] = [];
+  const ags = agendamentos(sql);
+  const nomes = ags.map((a) => a.nome).sort();
+  if (JSON.stringify(nomes) !== JSON.stringify(Object.keys(ESPERADOS).sort())) erros.push(`jobs=${nomes.join(",")}`);
+  for (const a of ags) {
+    const e = ESPERADOS[a.nome];
+    if (!e) continue;
+    if (a.expr !== e.expr) erros.push(`${a.nome}: expr ${a.expr} != ${e.expr}`);
+    if (a.comando.replace(/\s+/g, " ") !== e.comando) erros.push(`${a.nome}: comando ${a.comando}`);
+    const u = posicaoDoUnschedule(sql, a.nome);
+    if (u === -1 || u > a.posicao) erros.push(`${a.nome}: sem unschedule defensivo antes do schedule`);
+  }
+  return erros;
+}
+
+describe("migration de cron do Instagram ⇔ núcleo da fila de inbound", () => {
+  it("o arquivo existe e vem depois da 20261020120400 (origem da reserva)", () => {
+    expect(ARQUIVO_CRON).toBeDefined();
+    expect(Number(ARQUIVO_CRON!.slice(0, 14))).toBeGreaterThan(20261020120400);
+  });
+
+  it("a varredura roda a cada INBOUND_SWEEP_INTERVAL_MS (60_000 → a cada minuto)", () => {
+    const sweep = agendamentos(SQL_CRON).find((a) => a.nome === "instagram-inbound-sweep");
+    expect(sweep, "cron.schedule de instagram-inbound-sweep não encontrado").toBeDefined();
+    expect(sweep!.expr).toBe(exprDaVarredura(INBOUND_SWEEP_INTERVAL_MS));
+  });
+
+  it("três jobs, com nome, expressão e comando do plano, cada um desagendado (por jobid) antes", () => {
+    expect(conferir(SQL_CRON)).toEqual([]);
+  });
+
+  it("os wrappers e as purgas agendados existem na migration da fila (Task 1.3)", () => {
+    for (const nome of [
+      "trigger_instagram_inbound_sweep",
+      "trigger_instagram_token_refresh",
+      "purge_instagram_inbound_events",
+      "purge_instagram_processed_messages",
+    ]) {
+      expect(() => corpo(SQL, nome)).not.toThrow();
+    }
+  });
+
+  it("CONTROLE POSITIVO: varredura a cada 5 minutos reprova", () => {
+    const sabotado = SQL_CRON.replace(`'${exprDaVarredura(60_000)}'`, `'${exprDaVarredura(300_000)}'`);
+    expect(sabotado).not.toBe(SQL_CRON);
+    expect(conferir(sabotado).some((e) => e.startsWith("instagram-inbound-sweep: expr"))).toBe(true);
+  });
+
+  it("CONTROLE POSITIVO: job sem o unschedule defensivo reprova", () => {
+    const sabotado = SQL_CRON.replace(
+      /perform\s+cron\.unschedule\(jobid\)\s+from\s+cron\.job\s+where\s+jobname\s*=\s*'instagram-token-refresh';/i,
+      "",
+    );
+    expect(sabotado).not.toBe(SQL_CRON);
+    expect(conferir(sabotado)).toContain("instagram-token-refresh: sem unschedule defensivo antes do schedule");
+  });
+
+  it("CONTROLE POSITIVO: purga chamando só uma das duas funções reprova", () => {
+    const sabotado = SQL_CRON.replace(", public.purge_instagram_processed_messages()", "");
+    expect(sabotado).not.toBe(SQL_CRON);
+    expect(conferir(sabotado).some((e) => e.startsWith("instagram-inbound-purge: comando"))).toBe(true);
+  });
+
+  it("CONTROLE POSITIVO: agendamento só em comentário não conta", () => {
+    const sabotado = SQL_CRON.replace(
+      /select\s+cron\.schedule\(\s*'instagram-inbound-purge'/i,
+      "-- select cron.schedule('instagram-inbound-purge'",
+    );
+    expect(sabotado).not.toBe(SQL_CRON);
+    expect(conferir(sabotado).some((e) => e.startsWith("jobs="))).toBe(true);
   });
 });

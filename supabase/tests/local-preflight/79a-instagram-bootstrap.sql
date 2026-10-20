@@ -164,6 +164,105 @@ create table if not exists public.whatsapp_automation_jobs (
   pin_phase           text        not null default 'bound'
 );
 
+-- ─── 3c. Origem da reserva e outbox de confirmação (Task 1.5) ──────────────
+-- O 09a não tem `reservations.source` nem `notification_outbox`. O IG-5.1
+-- mede o CHECK de origem e o trigger de confirmação REAIS, então os dois
+-- entram aqui na forma de produção:
+--   * `reservations.source`: VERBATIM da 022 (20260506181440:10-15). O CHECK
+--     inline ganha o nome automático `reservations_source_check`, o mesmo que
+--     a migration da Task 1.5 derruba e recria por nome.
+--   * `notification_outbox`: tabela, índices e RLS da 028
+--     (20260507153453:13-36) + as duas colunas e a ACL da 20261006003631:4-10.
+--   * `enqueue_confirmation_notification()` e o trigger
+--     `enqueue_confirmation_after_insert`: VERBATIM da 028
+--     (20260507153453:42-63), a única migration que define o corpo; a
+--     20260817212500:21-22 só revoga o EXECUTE (reproduzido abaixo).
+--   * `guard_notification_outbox_insert_scope()` e o trigger BEFORE INSERT da
+--     20261006003631:68-80 (VERBATIM), que o INSERT do trigger de confirmação
+--     atravessa em produção.
+-- Fora: o guard de UPDATE do outbox (20261006003631:82-157) e os helpers
+-- `mark_outbox_*` — o IG-5.1 só insere.
+alter table reservations
+  add column if not exists source text not null default 'web'
+    check (source in ('web', 'whatsapp'));
+
+create index if not exists reservations_source_idx
+  on reservations(source);
+
+create table if not exists notification_outbox (
+  id              uuid primary key default gen_random_uuid(),
+  reservation_id  uuid not null references reservations(id) on delete cascade,
+  unit_id         uuid not null references units(id) on delete cascade,
+  kind            text not null check (kind in ('confirmation', 'cancellation')),
+  attempts        integer not null default 0,
+  next_attempt_at timestamptz not null default now(),
+  status          text not null default 'pending'
+                  check (status in ('pending', 'processing', 'done', 'dead')),
+  last_error      text,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  unique (reservation_id, kind)
+);
+
+create index if not exists idx_outbox_pending_due
+  on notification_outbox (next_attempt_at)
+  where status = 'pending';
+
+create index if not exists idx_outbox_unit_status
+  on notification_outbox (unit_id, status, created_at desc);
+
+alter table notification_outbox enable row level security;
+alter table notification_outbox force row level security;
+
+alter table public.notification_outbox add column if not exists automation_job_id uuid;
+alter table public.notification_outbox add column if not exists automation_initial_token uuid;
+
+revoke all on table public.notification_outbox from public,anon,authenticated,service_role;
+grant select,insert,update,delete on table public.notification_outbox to service_role;
+alter table public.notification_outbox enable row level security;
+alter table public.notification_outbox force row level security;
+
+create or replace function enqueue_confirmation_notification()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- Reservas via WhatsApp não geram confirmação automática (o agente já
+  -- confirma na conversa). Só web/painel/API.
+  if new.source is distinct from 'whatsapp' then
+    insert into notification_outbox (reservation_id, unit_id, kind)
+    values (new.id, new.unit_id, 'confirmation')
+    on conflict (reservation_id, kind) do nothing;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enqueue_confirmation_after_insert on reservations;
+create trigger enqueue_confirmation_after_insert
+  after insert on reservations
+  for each row
+  execute function enqueue_confirmation_notification();
+
+revoke all on function public.enqueue_confirmation_notification()
+  from public, anon, authenticated;
+
+create or replace function public.guard_notification_outbox_insert_scope()
+returns trigger language plpgsql security definer set search_path='' as $$
+begin
+  if new.automation_job_id is not null or new.automation_initial_token is not null
+    or not exists(select 1 from public.reservations r where r.id=new.reservation_id and r.unit_id=new.unit_id) then
+    raise exception 'outbox_insert_refused' using errcode='42501';
+  end if;
+  return new;
+end $$;
+revoke all on function public.guard_notification_outbox_insert_scope() from public,anon,authenticated,service_role;
+drop trigger if exists notification_outbox_insert_scope on public.notification_outbox;
+create trigger notification_outbox_insert_scope before insert on public.notification_outbox
+for each row execute function public.guard_notification_outbox_insert_scope();
+
 -- ─── 4. Fixtures ─────────────────────────────────────────────────────────────
 -- UA (org A): owner …a1, gerente …a2, operador …a3. UB (org B): gerente …b2.
 -- PA …c1: platform_admin sem nenhuma linha em unit_members.

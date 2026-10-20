@@ -2669,12 +2669,16 @@ P -f supabase/migrations/20261020120000_instagram_module_grants.sql
 P -f supabase/migrations/20261020120100_instagram_accounts_contacts.sql
 P -f supabase/migrations/20261020120200_instagram_inbound_queue.sql
 P -f supabase/migrations/20261020120300_conversations_instagram_channel.sql
+P -f supabase/migrations/20261020120400_reservations_source_instagram.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN
 P -f supabase/migrations/20261020120000_instagram_module_grants.sql
 P -f supabase/migrations/20261020120100_instagram_accounts_contacts.sql
 P -f supabase/migrations/20261020120200_instagram_inbound_queue.sql
 P -f supabase/migrations/20261020120300_conversations_instagram_channel.sql
+P -f supabase/migrations/20261020120400_reservations_source_instagram.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (idempotência)
+# 20261020120500_instagram_cron.sql NÃO roda aqui (sem pg_cron): é lida como
+# texto pelo gêmeo src/lib/instagram-queue-migration-twin.test.ts.
 ```
 
 O 79a não muda na Task 1.2: o stub do Vault do 00-bootstrap já tem
@@ -2691,10 +2695,10 @@ dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 7920–7929, controles 7930–7939. Task 1.3: casos 7940–7947, controles
 7950–7957; 7948–7949 e 7958–7959 livres. Task 1.4: casos 7960–7966,
 controles 7970–7976, e no fix round 1 o IG-4.8 (7967) e o C-IG-4.8 (7978);
-7968–7969, 7977 e 7979 livres. As tasks seguintes usam
-7980+. O 79 imprime os ordinais, a contagem e **aborta** se ela divergir do
-esperado (hoje **64 e 64**); quem acrescenta casos atualiza o número na última
-instrução do arquivo.
+7968–7969, 7977 e 7979 livres. Task 1.5: casos 7980–7981, controles
+7990–7991; 7982–7989 e 7992–7999 livres. O 79 imprime os ordinais, a contagem
+e **aborta** se ela divergir do esperado (hoje **68 e 68**); quem acrescenta
+casos atualiza o número na última instrução do arquivo.
 
 **Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
 IG-1.1 só platform_admin concede (owner, gerente e authenticated sem `sub`
@@ -2853,6 +2857,31 @@ wait; P -f supabase/migrations/20261020120300_conversations_instagram_channel.sq
 Controle: a mesma sequência com uma cópia da migration sem a linha do
 `lock_timeout` espera o lock inteiro (13 s) e aplica.
 
+**Task 1.5** (migrations `20261020120400_reservations_source_instagram.sql` e
+`20261020120500_instagram_cron.sql`). Base acrescida no 79a (seção 3c):
+`reservations.source` VERBATIM da 022 (o CHECK inline ganha o nome
+automático `reservations_source_check`), `notification_outbox` da 028 com as
+colunas e a ACL da 20261006003631, o corpo REAL de
+`enqueue_confirmation_notification` e o trigger `enqueue_confirmation_after_insert`
+VERBATIM da 028 (a única que define o corpo; a 20260817212500 só revoga o
+EXECUTE, reproduzido), e o guard `notification_outbox_insert_scope` da
+20261006003631, que o INSERT do trigger atravessa em produção. IG-5.1 com o
+escritor real (`service_role`): reserva `instagram` aceita e UMA
+`confirmation` pendente na unidade (D6: a confirmação vai pelo WhatsApp),
+`whatsapp` não enfileira, `web` enfileira, origem fora da lista dá `23514`.
+IG-5.2 catálogo: um único CHECK de origem, com o nome de produção, a lista
+nova e validado; coluna `not null default 'web'`; trigger e corpo da 028
+intactos. C-IG-5.1: o filtro do trigger trocado para `not in
+('whatsapp','instagram')` (prova de D6) e o CHECK antigo de volta reprovam o
+IG-5.1; C-IG-5.2: CHECK deixado NOT VALID, CHECK novo somado ao antigo (ADD
+sem o DROP por nome) e corpo do trigger citando `instagram` reprovam o
+IG-5.2. O arquivo de cron não roda no 79 (sem `pg_cron`): o gêmeo confere os
+três jobs (nome, expressão, comando), o desagendamento por `jobid` antes de
+cada `cron.schedule` e a varredura presa a `INBOUND_SWEEP_INTERVAL_MS`, com
+quatro controles positivos. O `lock_timeout` de 5 s da 1.5 foi provado como o
+da 1.4 (sessão A segurando ACCESS SHARE em `reservations`: a migration cai em
+~5 s com `canceling statement due to lock timeout` e o CHECK fica intacto).
+
 **Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
 loopback, banco recriado do zero): RED com `ERROR: 79: objetos do modulo
 Instagram ausentes` (exit 3) antes da 1.1, `objetos da conta/contato do
@@ -2860,7 +2889,10 @@ Instagram ausentes` (exit 3) com só a 1.1 e `objetos da fila de inbound do
 Instagram ausentes` (exit 3) com 1.1 e 1.2, `objetos de conversa do
 Instagram ausentes` (exit 3) com 1.1–1.3; as quatro migrations cruas
 aplicadas duas vezes e o 79 com 64/64 após cada aplicação (62/62 antes do
-fix round 1), sem linha residual nas
+fix round 1); com a 1.5, RED `reservations_source_check sem a origem
+instagram` (exit 3) com 1.1–1.4, 64/68 (só os quatro da 1.5 reprovando) com a
+guarda da 1.5 removida numa cópia, e 68/68 depois da 120400 e de novo após
+reaplicar as cinco, sem linha residual nas
 tabelas novas, no `audit_log` da conta, segredo no Vault nem schema `net`.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)

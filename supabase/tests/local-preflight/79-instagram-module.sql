@@ -19,7 +19,12 @@
 --   C-IG-4.8 (7978); o IG-4.4 e o C-IG-4.4 crescem no lugar (unidade
 --   imutável e cliente da conversa IG = cliente do contato). 7968–7969,
 --   7977 e 7979 ficam livres.
---   Tasks seguintes: 7980+.
+-- Task 1.5 (migrations 20261020120400_reservations_source_instagram.sql e
+--   20261020120500_instagram_cron.sql; a de cron não roda aqui, sem pg_cron,
+--   e é lida como texto pelo gêmeo): casos IG-5.1..IG-5.2 (7980–7981) e um
+--   controle positivo por caso, C-IG-5.1..C-IG-5.2 (7990–7991). Base:
+--   `reservations.source` e `notification_outbox` + trigger da 028 no 79a
+--   (seção 3c). 7982–7989 e 7992–7999 ficam livres.
 --
 -- BASE (banco próprio `ig79`, README seção 79):
 --   00 -> 01 -> 09a -> 106 -> 79a -> 20260905143453 -> 20261017160000
@@ -97,6 +102,16 @@ begin
      or to_regprocedure('public.conversations_clear_instagram_contact_name()') is null
      or to_regprocedure('app_private.reconcile_whatsapp_automation_acceptance_inner(uuid)') is null then
     raise exception '79: objetos de conversa do Instagram ausentes (conversations.channel, conversations.instagram_contact_id, get_or_create_instagram_conversation, link_instagram_contact_customer, conversations_channel_guard, reconcile inner). Aplique a migration 20261020120300_conversations_instagram_channel antes (sem ela, este abort e o RED esperado).';
+  end if;
+  if to_regclass('public.notification_outbox') is null
+     or to_regprocedure('public.enqueue_confirmation_notification()') is null
+     or not exists (select 1 from pg_attribute where attrelid = 'public.reservations'::regclass and attname = 'source' and not attisdropped) then
+    raise exception '79 exige o 79a da Task 1.5 (reservations.source, notification_outbox e o trigger de confirmacao da 028; README, secao 79).';
+  end if;
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.reservations'::regclass and conname = 'reservations_source_check'
+                    and pg_get_constraintdef(oid) like '%''instagram''%') then
+    raise exception '79: reservations_source_check sem a origem instagram. Aplique a migration 20261020120400_reservations_source_instagram antes (sem ela, este abort e o RED esperado).';
   end if;
   if not exists (select 1 from public.units where id = 'a0d79000-0000-4000-8000-0000000000aa')
      or not exists (select 1 from public.platform_admins where user_id = 'a0d79000-0000-4000-8000-0000000000c1') then
@@ -2467,6 +2482,92 @@ begin
   end;
 end $f$;
 
+-- ─── Casos da Task 1.5 (origem `instagram`, D6) ─────────────────────────────
+-- IG-5.1: com o escritor real (`service_role`, o worker do Instagram), a
+-- reserva `source='instagram'` é aceita e o trigger REAL da 028 (79a, seção
+-- 3c) enfileira UMA `confirmation` pendente na unidade da reserva — D6: a
+-- confirmação de reserva do Instagram vai pelo WhatsApp. `whatsapp` não
+-- enfileira; `web` enfileira; origem fora da lista dá 23514 no
+-- `reservations_source_check`.
+create or replace function pg_temp.ig79_case_51() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  cu constant uuid := 'a0d79000-0000-4000-8000-000000005101';
+  r_ig constant uuid := 'a0d79000-0000-4000-8000-000000005111';
+  r_wa constant uuid := 'a0d79000-0000-4000-8000-000000005112';
+  r_web constant uuid := 'a0d79000-0000-4000-8000-000000005113';
+  r_x constant uuid := 'a0d79000-0000-4000-8000-000000005114';
+  ins_ig text; ins_wa text; ins_web text; ins_x text; src text; ob_ig text; ob_wa text; ob_web text; ob_x text;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values (cu, org_a, 'ig79 cliente 51', '11990005101');
+    ins_ig := pg_temp.ig79_q('service_role', null, format(
+      'with i as (insert into public.reservations (id, unit_id, customer_id, party_size, date, time, reservation_code, source) '
+      'values (%L, %L, %L, 2, current_date + 1, ''20:00'', ''IG51IG'', ''instagram'') returning 1) select count(*)::text from i', r_ig, ua, cu));
+    ins_wa := pg_temp.ig79_q('service_role', null, format(
+      'with i as (insert into public.reservations (id, unit_id, customer_id, party_size, date, time, reservation_code, source) '
+      'values (%L, %L, %L, 2, current_date + 1, ''20:30'', ''IG51WA'', ''whatsapp'') returning 1) select count(*)::text from i', r_wa, ua, cu));
+    ins_web := pg_temp.ig79_q('service_role', null, format(
+      'with i as (insert into public.reservations (id, unit_id, customer_id, party_size, date, time, reservation_code) '
+      'values (%L, %L, %L, 2, current_date + 1, ''21:00'', ''IG51WB'') returning 1) select count(*)::text from i', r_web, ua, cu));
+    ins_x := pg_temp.ig79_q('service_role', null, format(
+      'with i as (insert into public.reservations (id, unit_id, customer_id, party_size, date, time, reservation_code, source) '
+      'values (%L, %L, %L, 2, current_date + 1, ''21:30'', ''IG51TT'', ''tiktok'') returning 1) select count(*)::text from i', r_x, ua, cu));
+
+    select coalesce(r.source, '<null>') into src from public.reservations r where r.id = r_ig;
+    select string_agg(o.kind || '/' || o.status || '/' || (o.unit_id = ua), ',') into ob_ig from public.notification_outbox o where o.reservation_id = r_ig;
+    select string_agg(o.kind || '/' || o.status || '/' || (o.unit_id = ua), ',') into ob_wa from public.notification_outbox o where o.reservation_id = r_wa;
+    select string_agg(o.kind || '/' || o.status || '/' || (o.unit_id = ua), ',') into ob_web from public.notification_outbox o where o.reservation_id = r_web;
+    select count(*)::text into ob_x from public.reservations r where r.id = r_x;
+
+    raise exception using errcode = 'P0R79', message =
+      case when ins_ig = '1' and src = 'instagram' and ob_ig = 'confirmation/pending/true'
+            and ins_wa = '1' and ob_wa is null
+            and ins_web = '1' and ob_web = 'confirmation/pending/true'
+            and ins_x like 'ERR 23514:%reservations_source_check%' and ob_x = '0' then 'PASSOU'
+           else 'FALHOU ins_ig=' || ins_ig || ' source_ig=' || coalesce(src, '<null>') || ' outbox_ig=' || coalesce(ob_ig, '<null>')
+                || ' ins_wa=' || ins_wa || ' outbox_wa=' || coalesce(ob_wa, '<null>')
+                || ' ins_web=' || ins_web || ' outbox_web=' || coalesce(ob_web, '<null>')
+                || ' ins_tiktok=' || ins_x || ' ' end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- IG-5.2: catálogo. UM CHECK sobre `source` em `reservations`, com o nome de
+-- produção, a lista nova e VALIDADO (entrou NOT VALID e foi validado); a
+-- coluna segue `not null default 'web'`; o trigger da 028 está lá, AFTER
+-- INSERT, e o corpo é o da 028 — filtra só `whatsapp` e não menciona
+-- `instagram` (D6: a migration não toca o trigger).
+create or replace function pg_temp.ig79_case_52() returns text language plpgsql as $f$
+declare
+  chk text; col text; trg text; fn text;
+begin
+  select string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/' || c.convalidated, ',' order by c.conname) into chk
+    from pg_constraint c
+   where c.conrelid = 'public.reservations'::regclass and c.contype = 'c'
+     and pg_get_constraintdef(c.oid) ~ '\msource\M';
+  select a.attnotnull || '/' || coalesce(pg_get_expr(d.adbin, d.adrelid), '-') into col
+    from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+   where a.attrelid = 'public.reservations'::regclass and a.attname = 'source' and not a.attisdropped;
+  select t.tgenabled::text || '/' || pg_get_triggerdef(t.oid) into trg
+    from pg_trigger t
+   where t.tgrelid = 'public.reservations'::regclass and t.tgname = 'enqueue_confirmation_after_insert';
+  select case when p.prosrc like '%if new.source is distinct from ''whatsapp'' then%'
+               and p.prosrc not like '%instagram%' then 'corpo_028' else 'corpo_alterado' end into fn
+    from pg_proc p where p.oid = 'public.enqueue_confirmation_notification()'::regprocedure;
+  if chk = 'reservations_source_check=CHECK ((source = ANY (ARRAY[''web''::text, ''whatsapp''::text, ''instagram''::text])))/true'
+     and col = 'true/''web''::text'
+     and trg = 'O/CREATE TRIGGER enqueue_confirmation_after_insert AFTER INSERT ON public.reservations FOR EACH ROW EXECUTE FUNCTION enqueue_confirmation_notification()'
+     and fn = 'corpo_028' then
+    return 'PASSOU';
+  end if;
+  return 'FALHOU check=' || coalesce(chk, '<null>') || ' coluna=' || coalesce(col, '<null>')
+         || ' trigger=' || coalesce(trg, '<null>') || ' funcao=' || coalesce(fn, '<null>') || ' ';
+end $f$;
+
 -- ─── Casos ───────────────────────────────────────────────────────────────────
 insert into t_res values
   (7901, 'IG-1.1 owner/gerente/sem sub recebem 42501 sem gravar; platform_admin sem membership concede (active=true, granted_by, org de units, settings dm_enabled=false)', pg_temp.ig79_case_11()),
@@ -2505,6 +2606,10 @@ insert into t_res values
   (7965, 'IG-4.6 link_instagram_contact_customer: cliente de outra org/apagado/inexistente e contato inexistente/anonimizado com o mesmo 42501; link grava contato e conversa; religar troca os dois', pg_temp.ig79_case_46()),
   (7966, 'IG-4.7 A x B: membro de A nao le a conversa IG de B, B e admin leem; colunas novas sem INSERT/UPDATE para authenticated/anon; EXECUTE so service_role, guard e reconcile inner para ninguem', pg_temp.ig79_case_47()),
   (7967, 'IG-4.8 anonimizar o cliente (anonymize_customer do platform_admin e soft delete direto do owner) limpa o contact_name da conversa IG do contato; a de outro contato fica; funcao DEFINER sem EXECUTE para ninguem', pg_temp.ig79_case_48());
+
+insert into t_res values
+  (7980, 'IG-5.1 service_role grava reserva source=instagram e o trigger real enfileira 1 confirmation pendente na unidade (D6: confirmacao pelo WhatsApp); whatsapp nao enfileira; web enfileira; origem fora da lista 23514', pg_temp.ig79_case_51()),
+  (7981, 'IG-5.2 catalogo: um unico CHECK de source em reservations, reservations_source_check com web/whatsapp/instagram e validado; coluna not null default web; trigger e corpo da 028 intactos (D6)', pg_temp.ig79_case_52());
 
 -- ─── Controles positivos ─────────────────────────────────────────────────────
 -- Cada sabotagem roda num subbloco desfeito por raise (DDL é transacional) e
@@ -4016,17 +4121,111 @@ begin
          else 'FALHOU sem_trigger=' || s1 || ' sem_filtro=' || s2 || ' restaurado=' || d end);
 end $$;
 
+-- ─── Controles positivos da Task 1.5 ────────────────────────────────────────
+-- C-IG-5.1: (a) o trigger passa a pular também `instagram` (`not in
+-- ('whatsapp','instagram')`) — é a prova de D6: IG-5.1 reprova sem a
+-- confirmação; (b) o CHECK antigo de volta (web/whatsapp) — a reserva do
+-- Instagram é recusada. Corpo e CHECK conferidos contra o catálogo depois.
+do $$
+declare
+  v_def text; v_mut text; v_chk text; s1 text; s2 text; d text;
+begin
+  v_def := pg_get_functiondef('public.enqueue_confirmation_notification()'::regprocedure);
+  select pg_get_constraintdef(c.oid) || '/' || c.convalidated into v_chk
+    from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.conname = 'reservations_source_check';
+  begin
+    v_mut := replace(v_def, $s$if new.source is distinct from 'whatsapp' then$s$, $s$if new.source not in ('whatsapp', 'instagram') then$s$);
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_51();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    alter table public.reservations drop constraint reservations_source_check;
+    alter table public.reservations add constraint reservations_source_check check (source in ('web', 'whatsapp'));
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_51();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_51();
+  raise notice 'C-IG-5.1 trigger pulando instagram: %', s1;
+  raise notice 'C-IG-5.1 CHECK antigo: %', s2;
+  insert into t_res values (7990, 'C-IG-5.1 trigger com not in (whatsapp, instagram) e CHECK antigo web/whatsapp: IG-5.1 reprova nos dois (sem confirmacao; reserva recusada); restaurado passa',
+    case when s1 like 'FALHOU ins_ig=1 source_ig=instagram outbox_ig=<null> ins_wa=1 outbox_wa=<null> ins_web=1 outbox_web=confirmation/pending/true %'
+          and s2 like 'FALHOU ins_ig=ERR 23514:%reservations_source_check%outbox_ig=<null>%'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.enqueue_confirmation_notification()'::regprocedure) = v_def
+          and (select pg_get_constraintdef(c.oid) || '/' || c.convalidated
+                 from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.conname = 'reservations_source_check') = v_chk then 'PASSOU'
+         else 'FALHOU trigger=' || s1 || ' check_antigo=' || s2 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-5.2: (a) CHECK novo deixado NOT VALID (sem o VALIDATE); (b) o CHECK
+-- novo somado ao antigo em vez de substituí-lo (ADD sem o DROP por nome);
+-- (c) o corpo do trigger alterado para citar `instagram` (D6 violada).
+do $$
+declare
+  v_def text; v_mut text; v_chk text; s1 text; s2 text; s3 text; d text;
+begin
+  v_def := pg_get_functiondef('public.enqueue_confirmation_notification()'::regprocedure);
+  select string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/' || c.convalidated, ',' order by c.conname) into v_chk
+    from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.contype = 'c';
+  begin
+    alter table public.reservations drop constraint reservations_source_check;
+    alter table public.reservations add constraint reservations_source_check
+      check (source in ('web', 'whatsapp', 'instagram')) not valid;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_52();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    alter table public.reservations drop constraint reservations_source_check;
+    alter table public.reservations add constraint reservations_source_check check (source in ('web', 'whatsapp'));
+    alter table public.reservations add constraint reservations_source_check1 check (source in ('web', 'whatsapp', 'instagram'));
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_52();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(v_def, $s$if new.source is distinct from 'whatsapp' then$s$, $s$if new.source not in ('whatsapp', 'instagram') then$s$);
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_52();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_52();
+  raise notice 'C-IG-5.2 NOT VALID sem VALIDATE: %', s1;
+  raise notice 'C-IG-5.2 CHECK novo somado ao antigo: %', s2;
+  raise notice 'C-IG-5.2 corpo do trigger alterado: %', s3;
+  insert into t_res values (7991, 'C-IG-5.2 CHECK deixado NOT VALID, CHECK novo somado ao antigo e corpo do trigger citando instagram: IG-5.2 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU check=reservations_source_check=%instagram%/false coluna=%'
+          and s2 like 'FALHOU check=reservations_source_check=%whatsapp''::text])))/true,reservations_source_check1=%instagram%/true coluna=%'
+          and s3 like 'FALHOU %funcao=corpo_alterado %'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.enqueue_confirmation_notification()'::regprocedure) = v_def
+          and (select string_agg(c.conname || '=' || pg_get_constraintdef(c.oid) || '/' || c.convalidated, ',' order by c.conname)
+                 from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.contype = 'c') = v_chk then 'PASSOU'
+         else 'FALHOU not_valid=' || s1 || ' somado=' || s2 || ' corpo=' || s3 || ' restaurado=' || d end);
+end $$;
+
 -- ─── Resultado ───────────────────────────────────────────────────────────────
 select ord, caso, veredito from t_res where ord between 7901 and 7999 order by ord;
 select count(*) as total, count(*) filter (where veredito = 'PASSOU') as passou
-  from t_res where ord between 7901 and 7999;   -- esperado: 64 e 64
+  from t_res where ord between 7901 and 7999;   -- esperado: 68 e 68
 
 do $$
 declare v_total int; v_ok int;
 begin
   select count(*), count(*) filter (where veredito = 'PASSOU') into v_total, v_ok
     from t_res where ord between 7901 and 7999;
-  if v_total <> 64 or v_ok <> 64 then
-    raise exception '79: esperado 64 e 64, obtido % e %', v_total, v_ok;
+  if v_total <> 68 or v_ok <> 68 then
+    raise exception '79: esperado 68 e 68, obtido % e %', v_total, v_ok;
   end if;
 end $$;
