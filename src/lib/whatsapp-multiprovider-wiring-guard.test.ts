@@ -129,8 +129,11 @@ describe("guardrails de wiring WhatsApp multi-provider", () => {
     expect(webhook).toContain("p_message_id: inbound.providerMessageId");
     expect(webhook).toContain('"complete_processed_whatsapp_message"');
     expect(webhook).toContain("inactive_channel_event_ignored");
+    // O laço do agente mora no núcleo (`_shared/agent/turn.ts`); no webhook o
+    // ponto de entrada da IA é `agentTurn.run(`.
+    expect(webhook.indexOf("await agentTurn.run(")).toBeGreaterThan(-1);
     expect(webhook.indexOf("inactive_channel_event_ignored"))
-      .toBeLessThan(webhook.indexOf("const runOnce = () => runAgentLoop("));
+      .toBeLessThan(webhook.indexOf("await agentTurn.run("));
   });
 
   it("envio prefere ativo e fallback legado aceita somente NULL", () => {

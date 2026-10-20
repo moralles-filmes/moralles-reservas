@@ -45,18 +45,18 @@ Arquivos:
 - `webhook-whatsapp/index.ts`;
 - testes de paridade em `src/lib/`.
 
-- [ ] Rebase sobre `main` e releitura das regras `agente-ia.md`, `whatsapp.md` e `reservas.md`.
-- [ ] Extrair com o `ChannelContext` da spec:
+- [x] Rebase sobre `main` e releitura das regras `agente-ia.md`, `whatsapp.md` e `reservas.md`.
+- [x] Extrair com o `ChannelContext` da spec:
   - montagem do prompt (`restaurantInfoLines`, blocos de horário, datas, giftback, regras);
   - `agentTools` e o despacho;
   - turno (debounce, lock, franquia, retry silencioso, handoff).
 
   O WhatsApp passa o contexto atual (`identityLine` com o telefone, `sanitizeForWhatsApp`, `sendAutomatic`, `reservationSource:"whatsapp"`).
-- [ ] Teste de paridade:
+- [x] Teste de paridade:
   - snapshot do prompt gerado antes e depois para um fixture de unidade;
   - igualdade da lista de ferramentas;
   - controle positivo (alterar uma linha do prompt quebra o snapshot).
-- [ ] `node scripts/ef-import-graph.mjs` para cada `_shared` novo ou alterado; registrar a matriz de redeploy.
+- [x] `node scripts/ef-import-graph.mjs` para cada `_shared` novo ou alterado; registrar a matriz de redeploy.
 
 ## Task 4 — Gates e entrega local
 
@@ -86,3 +86,17 @@ Arquivos:
 - Observação: `useUpdateReserva` (único caller de `update-reservation` no front) não é usado por nenhum componente hoje; a correção do painel é preventiva.
 - Fora do escopo, registrado: a alteração não recalcula `applied_discount_percent` quando o novo horário tem outro desconto (decisão comercial pendente).
 - Após o rebase sobre `d18f975`: `npm run typecheck` zero erros; 10 suítes relacionadas (inclui `agent-output-core` e `agent-calendar-core` da PR #39) 287/287; `deno check` das 4 EFs ok.
+
+### Task 3 (2026-10-20)
+- Rebase sobre `origin/main` `2ea296d` sem conflito; releitura de `agente-ia.md`, `whatsapp.md`, `reservas.md` e `edge-functions.md`.
+- **Paridade comportamental gravada ANTES da extração** (`c6f6cd4`): `src/lib/agent-turn-parity.test.ts` roda o `webhook-whatsapp` real no harness de Request com SDK Anthropic falso e prende, em 7 cenários (prompt rico, horários por salão, ida e volta de ferramentas, handoff por ferramenta, erro do provedor com retry, resposta vazia, sem chave BYOK), a entrada do LLM (prompt, ferramentas, histórico), a sequência de leituras/escritas/RPCs/envios, os logs e `webhook_executions`. O fixture ganhou as colunas reais de `hall_schedules` e a tabela `tables`. Duas execuções seguidas: determinístico.
+- Núcleo em `supabase/functions/_shared/agent/`: `channel-context.ts` (tipos), `system-prompt.ts` (carga na mesma ordem de leituras e relógio, montagem pura `composeAgentSystemPrompt`), `tools.ts` (definições e implementações com o client por parâmetro), `turn.ts` (`createAgentTurn(io)`: resolved→handoff UX→debounce→lock→franquia→prompt→laço com retry e reserva→desfechos). O `webhook-whatsapp` caiu de 5000 para ~2950 linhas e entra com o contexto do WhatsApp (`sendOutbound`, `sanitizeForWhatsApp`, identidade com o telefone, `WHATSAPP_FORMATTING_RULES`, `reservationSource:"whatsapp"`).
+- Depois da extração o snapshot passou **byte a byte** sem regravar. Controles positivos: tirar "Nunca atalhe." da regra 1 reprova 6 cenários; inverter `finish`/`releaseAiLock` no desfecho vazio reprova 1. Os dois restaurados por cópia idêntica (`cmp`). Teste novo prova que o harness carrega `_shared/agent/{turn,system-prompt,tools}.ts`.
+- Guardas textuais reapontados para o arquivo onde o código mora, sem afrouxar: `ai-budget-wiring-guard` (turno em `turnCode`, catch externo no webhook, portas de handoff sobre webhook+turno; a varredura de saídas agora prende TODO `return` do corpo de `run`, não só uma forma), `whatsapp-inbound-reentry` (+ amarra nova: o webhook entrega ao turno `ingestionSource` e `t0` por identidade), `agent-provider-fallback-wiring`, `whatsapp-conversation-parity-guard` (a cerca vale para `ctx.send`; o núcleo não chama `sendOutbound`), `whatsapp-multiprovider-wiring-guard`. Sabotagens no `turn.ts` (trava de mutação do retry, liquidação do sucesso, status de uma porta de handoff) reprovam cada uma.
+- `src/lib/agent-core-channel.test.ts`: identidade e formatação entram pelo contexto (o núcleo não contém o texto do WhatsApp), conjunto de ferramentas, e a cadeia `reservationSource` → `reserveSlot` que nenhum cenário do harness exercita.
+- Desvios do `ChannelContext` da spec, deliberados: `customer` segue **obrigatório** (o `null` do contato IG sem telefone entra na Fase 1 com `link_customer_phone` e `need_phone`, que o consomem); `reservationSource` só aceita `"whatsapp"` até a migration que libera `instagram`; o contexto ganhou `unit`, `phone`, `appBaseUrl` (lido preguiçoso, `Deno.env` só no entrypoint) e `channelId`; `ingestionSource`, `finish`, append e marca de efeito externo ficam no `AgentTurnIO` da invocação. A regra 12 do prompt ainda diz "pelo WhatsApp": fica para a Fase 1 parametrizar.
+- Gates: `npm run typecheck` zero erros (o teste novo pôs `tools.ts` no programa do tsc, o que pediu `result.success === false` e um tipo local de ferramenta para não puxar o SDK do `esm.sh`); ESLint dos arquivos tocados limpo; `npx deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts` ok; 14 suítes relacionadas 487/487.
+- Suíte completa: 4028 passaram e 18 falharam, todas preexistentes: `OfficialConnectionCard` não carrega (sem `.env.local` no worktree), e as 18 são de `whatsapp-automation-receipts-request`, `whatsapp-template-catalog-v2` e `Automacao.datafy`, que falham igual (18/55) num worktree limpo de `origin/main` `7ed0976`, removido depois. `receipts-request` já falhava no baseline desta branch antes de qualquer mudança da Task 3.
+- `node scripts/ef-import-graph.mjs`: `agent/turn.ts`, `agent/system-prompt.ts`, `agent/tools.ts` → 1 EF (`webhook-whatsapp`); `agent/channel-context.ts` → 0. Matriz de redeploy da Fase 0 inalterada: `webhook-whatsapp`, `update-reservation`, `create-reservation`, `create-manual-reservation`.
+- Regras atualizadas: `agente-ia.md` (invariante do núcleo por canal, `paths:` com `_shared/agent/**`, ponteiros) e o fluxo em `whatsapp.md`.
+- Pendente para a Task 4: `origin/main` avançou para `7ed0976` (PRs #47–#49; o #48 mexe em `reserveSlot`, sem tocar o webhook) — rebase antes do PR.

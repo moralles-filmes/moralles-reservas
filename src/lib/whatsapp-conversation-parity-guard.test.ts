@@ -46,21 +46,40 @@ describe("paridade de conversas entre providers WhatsApp", () => {
 
   it("preserva autoria, timestamp original e fence humano antes do envio da IA", () => {
     const webhook = read("supabase/functions/webhook-whatsapp/index.ts");
+    // O turno do agente mora no núcleo por canal; o webhook o roda.
+    const turn = read("supabase/functions/_shared/agent/turn.ts");
     expect(webhook).toContain('author: "customer"');
     expect(webhook).toContain('author: "automation"');
-    expect(webhook).toContain('author: "ai"');
+    expect(turn).toContain('author: "customer"');
+    expect(turn).toContain('author: "automation"');
+    expect(turn).toContain('author: "ai"');
     expect(webhook).toContain("timestamp: inbound.timestamp");
     expect(webhook).toContain("timestamp: media.timestamp");
     expect(webhook).toContain("eventId: `wa-in:${provider}:${inbound.providerMessageId}`");
     expect(webhook).toContain("required: true");
-    expect(webhook).toContain('"success_history_degraded"');
-    const fence = webhook.indexOf("const sendAutomatic = async");
-    const finalSend = webhook.indexOf("const sendRes = await sendAutomatic", fence);
+    // O inbound do turno chega com o timestamp e o event_id do provider, e o
+    // núcleo os usa no append obrigatório antes de qualquer resposta.
+    const run = webhook.slice(webhook.indexOf("await agentTurn.run("));
+    expect(run).toContain("timestamp: inbound.timestamp,");
+    expect(run).toContain("eventId: `wa-in:${provider}:${inbound.providerMessageId}`,");
+    expect(turn).toContain("timestamp: inbound.timestamp,");
+    expect(turn).toContain("eventId: inbound.eventId,");
+    expect(turn).toContain("required: true");
+    expect(turn).toContain('"success_history_degraded"');
+    // Toda saída automática depois do claim passa pela cerca: no turno, o envio
+    // cru do canal (`ctx.send`) aparece UMA vez depois dela — dentro dela.
+    const fence = turn.indexOf("const sendAutomatic = async");
+    const finalSend = turn.indexOf("const sendRes = await sendAutomatic", fence);
     expect(fence).toBeGreaterThan(0);
     expect(finalSend).toBeGreaterThan(fence);
-    const afterFence = webhook.slice(fence);
-    expect(afterFence.match(/sendOutbound\(provider, credentials/g)).toHaveLength(1);
+    const afterFence = turn.slice(fence);
+    expect(afterFence.match(/ctx\.send\(/g)).toHaveLength(1);
     expect(afterFence).toContain('select("status, ai_lock_token")');
+    expect(turn, "o núcleo voltou a enviar pelo provider direto").not.toContain("sendOutbound");
+    // E o envio cru do WhatsApp só chega ao turno como `ctx.send`: depois de
+    // `agentTurn.run(` o único `sendOutbound` do webhook é essa ligação.
+    expect(run.match(/sendOutbound\(provider, credentials/g)).toHaveLength(1);
+    expect(run).toMatch(/send: \(text\) => sendOutbound\(provider, credentials, \{ toPhone: phone, text \}\),/);
   });
 
   it("cutover exige prova persistida do contrato de conversa", () => {

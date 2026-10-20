@@ -21,7 +21,7 @@ paths:
 
 # WhatsApp: providers, webhook, envio e conversas
 
-Caminhos repo-relativos. Fluxo: Cliente → provider (Z-API/UazAPI/WAHA/Meta/Datafy) → `webhook-whatsapp` → resolve canal → histórico → `runAgentLoop()` → resposta sanitizada → `sendOutbound()`.
+Caminhos repo-relativos. Fluxo: Cliente → provider (Z-API/UazAPI/WAHA/Meta/Datafy) → `webhook-whatsapp` → resolve canal → histórico → `agentTurn.run()` (núcleo [`_shared/agent/turn.ts`](supabase/functions/_shared/agent/turn.ts), regras em `.claude/rules/agente-ia.md`) → resposta sanitizada → `sendOutbound()`.
 
 ## Providers e registry
 

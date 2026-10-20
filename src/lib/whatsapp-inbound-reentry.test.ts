@@ -42,6 +42,12 @@ const lerFonte = (caminhoRelativo: string): string =>
   readFileSync(resolve(__dirname, caminhoRelativo), "utf8").replace(/\r\n/g, "\n");
 
 const EF = lerFonte("../../supabase/functions/webhook-whatsapp/index.ts");
+/**
+ * O turno do agente (prazo, retry, desfechos) mora no núcleo por canal desde a
+ * Fase 0 do Instagram. As amarras de turno abaixo leem ESTE arquivo; as de
+ * ingestão continuam no webhook.
+ */
+const TURNO = lerFonte("../../supabase/functions/_shared/agent/turn.ts");
 
 const managementAdmissionAnchors = [
   'if (!isValid) {',
@@ -127,6 +133,7 @@ describe("as leituras de fonte são imunes a fim de linha", () => {
   // nada aqui" devolve o defeito ao primeiro clone em máquina Windows.
   it.each([
     ["webhook-whatsapp/index.ts", EF],
+    ["_shared/agent/turn.ts", TURNO],
     ["migration 113", MIGRATION_113],
     ["migration 114", MIGRATION_114],
     ["whatsapp-health/index.ts", HEALTH_EF],
@@ -1010,24 +1017,25 @@ describe("a finalização não pode deixar a linha sem contabilidade de tentativ
 });
 
 /**
- * O deadline SUAVE, do lado do webhook.
+ * O deadline SUAVE, do lado do turno (`_shared/agent/turn.ts`).
  *
  * O que é EXERCITÁVEL (a pergunta do laço, a marca do erro) mora em
  * `agent-deadline-core.test.ts`. Aqui ficam as três amarras que só existem no
- * `index.ts`: de que relógio o prazo é contado, que o retry silencioso NÃO o
- * engole, e que o motivo do handoff o distingue de um erro de provedor.
+ * turno: de que relógio o prazo é contado, que o retry silencioso NÃO o
+ * engole, e que o motivo do handoff o distingue de um erro de provedor. O
+ * turno importa `esm.sh` em runtime, então também só se confere por leitura.
  */
 const CONDICAO_DO_RETRY = (() => {
-  const marco = EF.indexOf('evt: "agent_retry"');
-  expect(marco, "o retry silencioso sumiu do webhook").toBeGreaterThan(-1);
-  const abre = EF.lastIndexOf("if (", marco);
+  const marco = TURNO.indexOf('evt: "agent_retry"');
+  expect(marco, "o retry silencioso sumiu do turno").toBeGreaterThan(-1);
+  const abre = TURNO.lastIndexOf("if (", marco);
   expect(abre).toBeGreaterThan(-1);
   let depth = 0;
-  for (let i = EF.indexOf("(", abre); i < EF.length; i++) {
-    if (EF[i] === "(") depth++;
-    else if (EF[i] === ")") {
+  for (let i = TURNO.indexOf("(", abre); i < TURNO.length; i++) {
+    if (TURNO[i] === "(") depth++;
+    else if (TURNO[i] === ")") {
       depth--;
-      if (depth === 0) return EF.slice(abre, i + 1);
+      if (depth === 0) return TURNO.slice(abre, i + 1);
     }
   }
   throw new Error("parênteses desbalanceados na condição do retry");
@@ -1035,10 +1043,26 @@ const CONDICAO_DO_RETRY = (() => {
 
 describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", () => {
   it("o deadline é perguntado ao núcleo, com processingStartedAt", () => {
-    expect(EF).toMatch(
+    expect(TURNO).toMatch(
       /agentDeadlineVerdict\(\{\s*startedAt:\s*processingStartedAt/,
     );
-    expect(EF).toMatch(/shouldContinue:\s*ingestionSource === "queue"/);
+    expect(TURNO).toMatch(/shouldContinue:\s*ingestionSource === "queue"/);
+  });
+
+  it("o webhook entrega ao turno a ORIGEM real da invocação e o relógio da requisição", () => {
+    // Um literal aqui (`ingestionSource: "queue"`) aplicaria o prazo ao
+    // síncrono dos providers legados; `"provider"` o desligaria na fila. E o
+    // orçamento do retry conta de `t0`, não do processamento.
+    expect(TURNO).toMatch(/const ingestionSource = io\.ingestionSource;/);
+    expect(TURNO).toMatch(/const t0 = io\.requestStartedAt;/);
+    const i = EF.indexOf("createAgentTurn({");
+    expect(i, "o webhook não monta o turno").toBeGreaterThan(-1);
+    const args = EF.slice(i, EF.indexOf("});", i));
+    expect(args, "a origem da invocação não chega ao turno por identidade").toMatch(/\n\s*ingestionSource,\n/);
+    expect(args, "o relógio do retry não é o início da requisição").toMatch(/requestStartedAt:\s*t0,/);
+    expect(EF, "a origem deixou de vir das opções do handler").toMatch(
+      /const ingestionSource: IngestionSource = opts\.source \?\? "provider";/,
+    );
   });
 
   // O prazo NÃO vale no caminho síncrono, e isso é requisito da fase e não
@@ -1051,7 +1075,7 @@ describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", ()
   // orçamento inteiro e a seguinte é sempre recusada.
   it("o prazo é ESCOPADO à fila: o caminho síncrono não recebe predicado", () => {
     expect(
-      EF,
+      TURNO,
       "o prazo voltou a valer no caminho síncrono dos providers legados",
     ).not.toMatch(/shouldContinue:\s*\(\)\s*=>\s*\n?\s*agentDeadlineVerdict/);
     // E a perna do `else` tem de ser AUSÊNCIA — `undefined` é o que faz
@@ -1062,11 +1086,11 @@ describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", ()
     // `: undefined` que passasse perto — um `budgetMs: undefined` a satisfaria
     // com o prazo reaplicado ao síncrono, que é justamente o que ela deveria
     // reprovar.
-    const inicio = EF.indexOf("shouldContinue: ingestionSource");
-    const fim = EF.indexOf("onUsage:", inicio);
+    const inicio = TURNO.indexOf("shouldContinue: ingestionSource");
+    const fim = TURNO.indexOf("onUsage:", inicio);
     expect(inicio, "a propriedade `shouldContinue` mudou de forma").toBeGreaterThan(-1);
     expect(fim, "a propriedade seguinte (`onUsage`) sumiu").toBeGreaterThan(inicio);
-    const propriedade = EF.slice(inicio, fim).trimEnd().replace(/,$/, "").trimEnd();
+    const propriedade = TURNO.slice(inicio, fim).trimEnd().replace(/,$/, "").trimEnd();
     expect(
       propriedade,
       "a perna do síncrono deixou de ser ausência de predicado",
@@ -1077,11 +1101,11 @@ describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", ()
     // `t0` é o começo da REQUISIÇÃO: nele cabem resolução de canal, CRM e os 6 s
     // de debounce. Contar o prazo dali gastaria o orçamento antes de o agente
     // existir — e faria o deadline morder rodada que ele não deveria alcançar.
-    expect(EF, "o prazo voltou a ser contado de t0").not.toMatch(
+    expect(TURNO, "o prazo voltou a ser contado de t0").not.toMatch(
       /agentDeadlineVerdict\(\{\s*startedAt:\s*t0\b/,
     );
-    const debounce = EF.indexOf("await sleep(DEBOUNCE_WINDOW_MS)");
-    const relogio = EF.indexOf("const processingStartedAt = Date.now()");
+    const debounce = TURNO.indexOf("await sleep(DEBOUNCE_WINDOW_MS)");
+    const relogio = TURNO.indexOf("const processingStartedAt = Date.now()");
     expect(debounce, "o debounce sumiu").toBeGreaterThan(-1);
     expect(relogio, "processingStartedAt não é declarado").toBeGreaterThan(-1);
     expect(relogio, "o relógio do prazo subiu para antes do debounce").toBeGreaterThan(debounce);
@@ -1095,7 +1119,7 @@ describe("o relógio do prazo é o do PROCESSAMENTO, não o da requisição", ()
     // A soma vale para o caminho da FILA, que é onde o prazo existe. No síncrono
     // o lock continua sendo piso contra lock órfão e nada prova que o turno cabe
     // nele — o que este caso amarra é o valor, não uma garantia de tempo lá.
-    const m = EF.match(/AI_LOCK_TTL_SECONDS\s*=\s*(\d+)/);
+    const m = TURNO.match(/AI_LOCK_TTL_SECONDS\s*=\s*(\d+)/);
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBeGreaterThanOrEqual(lockTtlSecondsRequired());
   });
@@ -1128,8 +1152,8 @@ describe("o retry silencioso NÃO pode engolir o prazo", () => {
 
 describe("o motivo do handoff distingue prazo de erro do provedor", () => {
   it("a decisão vem da MARCA do objeto, lida antes de sanitizar", () => {
-    const i = EF.indexOf("agentDeadlineReached = isAgentDeadlineError(err)");
-    const j = EF.indexOf("agentError = sanitizeProviderError(err)");
+    const i = TURNO.indexOf("agentDeadlineReached = isAgentDeadlineError(err)");
+    const j = TURNO.indexOf("agentError = sanitizeProviderError(err)");
     expect(i, "a marca do prazo não é lida no catch do agente").toBeGreaterThan(-1);
     expect(j).toBeGreaterThan(-1);
     expect(i, "a marca é lida depois de sanitizar").toBeLessThan(j);
@@ -1140,19 +1164,19 @@ describe("o motivo do handoff distingue prazo de erro do provedor", () => {
     // por redação e `slice(0, 300)`: `=== "agent_deadline"` seria sempre falso, e
     // `includes` amarraria a decisão à forma de um texto que outra regra
     // reescreve.
-    expect(EF, "voltou a comparar o texto sanitizado").not.toMatch(
+    expect(TURNO, "voltou a comparar o texto sanitizado").not.toMatch(
       /agentError\s*===?\s*["'`]agent_deadline/,
     );
-    expect(EF, "voltou a casar o prazo por substring").not.toMatch(
+    expect(TURNO, "voltou a casar o prazo por substring").not.toMatch(
       /agentError\s*\.\s*(?:includes|startsWith|indexOf)\(\s*["'`]agent_deadline/,
     );
   });
 
   it("as duas razões existem, e a gravada é a escolhida", () => {
     // `usedProvider`: o da ÚLTIMA tentativa — o provedor reserva, se houve troca.
-    expect(EF).toMatch(/agent_deadline:\$\{usedProvider\}/);
-    expect(EF).toMatch(/agent_error:\$\{usedProvider\}/);
-    expect(EF).toMatch(/handoff_reason:\s*agentHandoffReason/);
+    expect(TURNO).toMatch(/agent_deadline:\$\{usedProvider\}/);
+    expect(TURNO).toMatch(/agent_error:\$\{usedProvider\}/);
+    expect(TURNO).toMatch(/handoff_reason:\s*agentHandoffReason/);
   });
 
   it("CONTROLE POSITIVO: o ramo de erro do agente não grava mais a razão fixa", () => {
@@ -1160,8 +1184,8 @@ describe("o motivo do handoff distingue prazo de erro do provedor", () => {
     // o motivo caía SEMPRE em `agent_error` e o prazo ficava invisível
     // exatamente onde se investiga por que a conversa foi para atendimento
     // humano. Se alguém reintroduzir o literal na escrita, isto reprova.
-    const ramo = EF.slice(EF.indexOf("    if (agentError) {"));
-    const fim = ramo.indexOf('return new Response("ok")');
+    const ramo = TURNO.slice(TURNO.indexOf("    if (agentError) {"));
+    const fim = ramo.indexOf("return;");
     expect(fim, "o ramo de erro do agente não foi encontrado").toBeGreaterThan(-1);
     const corpo = ramo.slice(0, fim);
     // A razão gravada é a ESCOLHIDA no próprio ramo, e o identificador é
@@ -1192,8 +1216,8 @@ describe("o motivo do handoff distingue prazo de erro do provedor", () => {
  * mantém a suíte inteira verde — era o estado da branch antes desta rodada.
  */
 const RAMO_DE_ERRO_DO_AGENTE = (() => {
-  const ramo = EF.slice(EF.indexOf("    if (agentError) {"));
-  const fim = ramo.indexOf('return new Response("ok")');
+  const ramo = TURNO.slice(TURNO.indexOf("    if (agentError) {"));
+  const fim = ramo.indexOf("return;");
   expect(fim, "o ramo de erro do agente não foi encontrado").toBeGreaterThan(-1);
   return ramo.slice(0, fim);
 })();

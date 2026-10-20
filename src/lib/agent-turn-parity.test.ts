@@ -172,6 +172,16 @@ describe('turno do agente no webhook-whatsapp real — paridade comportamental',
     });
   }
 
+  it('o turno roda pelo núcleo em _shared/agent/, não por cópia no webhook', async () => {
+    const { f, c } = setup();
+    c.controls.sdkResponses = [text('ok')];
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi' });
+    const loaded = [...c.harness.manifest];
+    for (const file of ['turn.ts', 'system-prompt.ts', 'tools.ts']) {
+      expect(loaded, `o webhook não carregou _shared/agent/${file}`).toContain(`webhook-whatsapp:_shared/agent/${file}`);
+    }
+  });
+
   it('controle positivo: o snapshot enxerga uma linha a mais no prompt', async () => {
     // A mesma unidade com UM setting a mais tem de produzir um prompt diferente;
     // se não produzisse, o snapshot acima não estaria medindo o prompt.
