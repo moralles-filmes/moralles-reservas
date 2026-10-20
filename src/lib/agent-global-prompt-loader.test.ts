@@ -165,7 +165,8 @@ describe("telemetria do prompt global no turno", () => {
     if (!/const promptMeta = \{\s*global_prompt_version: [^,]+,\s*global_prompt_source: [^,}]+,?\s*\}/.test(src.slice(load))) {
       gaps.push("promptMeta não declarado com as duas chaves depois da carga do prompt");
     }
-    const finishes = [...src.slice(load).matchAll(/\bawait finish\(/g)].map((m) => load + m.index! + m[0].length - 1);
+    // Qualquer chamada (`await`, `return`, `void` ou solta), não só `await finish(`.
+    const finishes = [...src.slice(load).matchAll(/\bfinish\(/g)].map((m) => load + m.index! + m[0].length - 1);
     if (finishes.length < 8) gaps.push(`só ${finishes.length} finish( depois da carga do prompt`);
     for (const open of finishes) {
       const args = callArgs(src, open);
@@ -188,5 +189,8 @@ describe("telemetria do prompt global no turno", () => {
     expect(telemetryGaps(TURN.slice(0, lastFinish) + TURN.slice(lastFinish + "...promptMeta".length)).length).toBeGreaterThan(0);
     expect(telemetryGaps(TURN.replace(/(evt: "agent_usage",[\s\S]*?)\.\.\.promptMeta,?/, "$1"))).toEqual(["agent_usage sem promptMeta"]);
     expect(telemetryGaps(TURN.replace("await loadAgentSystemPrompt(", "await outraCoisa("))).toEqual(["loadAgentSystemPrompt não encontrado"]);
+    const extra = TURN.replace('    await releaseAiLock();\n    return;\n  };', '    void finish("extra_sem_meta");\n    await releaseAiLock();\n    return;\n  };');
+    expect(extra, "mutação sem efeito").not.toBe(TURN);
+    expect(telemetryGaps(extra)).toEqual(['finish sem promptMeta: finish("extra_sem_meta"']);
   });
 });

@@ -25,7 +25,20 @@ import { buildUpcomingDaysLines, WEEKDAY_NAMES_PT } from "../agent-calendar-core
 import type { AgentCustomer, AgentUnit } from "./channel-context.ts";
 import { renderGlobalLayer, STORE_TEXT_LIMITS, type GlobalPromptSource } from "./global-prompt-core.ts";
 import { loadGlobalPrompt, type GlobalPromptLog } from "./global-prompt.ts";
-import { neutralizeStoreText, storeDataBlock, truncateChars } from "./store-data-core.ts";
+import { SHORT_TEXT_LIMITS, shortStoreText, storeDataBlock, truncateChars } from "./store-data-core.ts";
+
+// Texto curto gravado pela loja (inclusive o operador, que a RLS de halls,
+// special_dates e table_blocks libera) ou pelo cliente: neutralizado, numa
+// linha só e com teto. Sem isso um "\n" forja seção ou voucher no prompt.
+const shortName = (v: unknown): string => shortStoreText(v, SHORT_TEXT_LIMITS.name);
+const shortDescription = (v: unknown): string => shortStoreText(v, SHORT_TEXT_LIMITS.description);
+
+/** Regras numéricas de reserva (classe manager, sem guard de valor): só inteiro positivo. */
+function positiveInt(v: unknown): number | null {
+  if (typeof v === "number") return Number.isInteger(v) && v > 0 ? v : null;
+  if (typeof v === "string" && /^\d{1,6}$/.test(v)) return Number(v) > 0 ? Number(v) : null;
+  return null;
+}
 
 // ─── Bloco de horários por salão ───────────────────────────────────────────────
 //
@@ -147,7 +160,8 @@ async function buildHallSchedulesBlock(supabase: SupabaseClient, unitId: string)
 
     // Header do hall: nome + descrição + capacidade.
     const headerParts: string[] = [];
-    if (hall.description) headerParts.push(hall.description);
+    const hallDescription = shortDescription(hall.description);
+    if (hallDescription) headerParts.push(hallDescription);
     const cap = capByHall.get(hall.id);
     if (cap) {
       const effectiveMin = hall.allow_empty_seat ? Math.max(1, cap.min - 1) : cap.min;
@@ -168,7 +182,7 @@ async function buildHallSchedulesBlock(supabase: SupabaseClient, unitId: string)
     groups.sort((a, b) => a.days[0] - b.days[0]);
 
     const lines = groups.map((g) => `  - ${describeDays(g.days)}: ${g.pattern}`);
-    hallLines.push(`- ${hall.name}${headerSuffix}:\n${lines.join("\n")}`);
+    hallLines.push(`- ${shortName(hall.name)}${headerSuffix}:\n${lines.join("\n")}`);
   }
 
   if (hallLines.length === 0) return null;
@@ -296,11 +310,11 @@ export function composeAgentSystemPrompt(p: AgentPromptParts): string {
         : `\n\nPrograma Giftback: esta unidade NÃO tem nenhuma regra automática de promoção, desconto, cupom ou benefício de aniversário ativa no momento. Se o cliente perguntar sobre desconto ou promoção e ele NÃO tiver voucher ativo listado em "O que sabemos sobre este cliente", deixe claro que no momento não há nenhuma promoção ou desconto — NÃO invente percentual, condição nem regra.`) +
       ((() => {
         const parts: string[] = [];
-        const bwd = settingsMap["booking_window_days"];
+        const bwd = positiveInt(settingsMap["booking_window_days"]);
         if (bwd) parts.push(`- Antecedência máxima para reservar: ${bwd} dias`);
-        const dur = settingsMap["reservation_duration_minutes"];
+        const dur = positiveInt(settingsMap["reservation_duration_minutes"]);
         if (dur) parts.push(`- Duração padrão da reserva: ${dur} minutos`);
-        const tol = settingsMap["reservation_tolerance_minutes"];
+        const tol = positiveInt(settingsMap["reservation_tolerance_minutes"]);
         if (tol) parts.push(`- Tolerância de atraso: ${tol} minutos`);
         return parts.length ? `\n\nRegras de reserva:\n${parts.join("\n")}` : "";
       })()) +
@@ -366,7 +380,7 @@ export async function loadAgentSystemPrompt(
 ): Promise<AgentSystemPrompt> {
   const { unitId, customer, phone } = args;
   const unitRow = args.unit.row;
-  const unitAddress = args.unit.address;
+  const unitAddress = shortName(args.unit.address);
   const unitName = args.unit.name;
   const unitSlug = args.unit.slug;
   const unitTicketMax = args.unit.ticketMax;
@@ -379,10 +393,10 @@ export async function loadAgentSystemPrompt(
     .eq("unit_id", unitId);
 
   const settingsMap = Object.fromEntries((settings || []).map((s: { key: string; value: unknown }) => [s.key, s.value]));
-  // Nome curto da loja (owner/gerente editam `units.name`): neutralizado, como os
-  // demais textos da loja fora dos blocos.
+  // Nome da loja (owner/gerente editam `units.name`; `restaurant_name` é legado,
+  // classe manager): texto curto, como os demais textos da loja fora dos blocos.
   const restaurantName =
-    neutralizeStoreText(settingsMap["restaurant_name"]) || neutralizeStoreText(unitName) || "nosso restaurante";
+    shortName(settingsMap["restaurant_name"]) || shortName(unitName) || "nosso restaurante";
   // Instrução da plataforma (confiável), só truncada no limite.
   const customPrompt = typeof settingsMap["ai_system_prompt"] === "string"
     ? truncateChars(settingsMap["ai_system_prompt"], STORE_TEXT_LIMITS.ai_system_prompt)
@@ -426,7 +440,8 @@ export async function loadAgentSystemPrompt(
   const specialLines = (specialDates ?? []).map((s: { date: string; name: string; is_closed: boolean; open_time: string; close_time: string }) => {
     const [y, m, d] = s.date.split("-");
     const ymd = `${d}/${m}/${y}`;
-    return s.is_closed ? `- ${ymd} (${s.name}): fechado` : `- ${ymd} (${s.name}): ${s.open_time?.slice(0, 5)} às ${s.close_time?.slice(0, 5)}`;
+    const name = shortName(s.name);
+    return s.is_closed ? `- ${ymd} (${name}): fechado` : `- ${ymd} (${name}): ${s.open_time?.slice(0, 5)} às ${s.close_time?.slice(0, 5)}`;
   });
 
   // table_blocks macro (table_id IS NULL) ativos no horizonte de 60 dias.
@@ -455,7 +470,7 @@ export async function loadAgentSystemPrompt(
       .select("id, name")
       .in("id", blockHallIds);
     for (const h of (hallRows ?? []) as { id: string; name: string }[]) {
-      blockHallNameById.set(h.id, h.name);
+      blockHallNameById.set(h.id, shortName(h.name));
     }
   }
 
@@ -486,7 +501,7 @@ export async function loadAgentSystemPrompt(
     (b: { title: string | null; reason: string | null; hall_id: string | null; blocked_from: string; blocked_to: string }) => {
       const from = toBrtParts(b.blocked_from);
       const to = toBrtParts(b.blocked_to);
-      const title = b.title ?? b.reason ?? "Bloqueio";
+      const title = shortName(b.title) || shortName(b.reason) || "Bloqueio";
       const hallSuffix = b.hall_id
         ? ` — só no salão ${blockHallNameById.get(b.hall_id) ?? "específico"}`
         : "";
@@ -589,11 +604,12 @@ export async function loadAgentSystemPrompt(
     }
   }
 
-  // Texto do cliente (o formulário público grava alergias e restrições):
-  // neutralizado para não forjar um bloco `DADOS_DA_LOJA` depois da camada 8.
-  const allergies = neutralizeStoreText(customer.allergies);
-  const dietary = neutralizeStoreText(customer.dietary_restrictions);
-  const vipNotes = neutralizeStoreText(customer.vip_notes);
+  // Texto do cliente e da equipe sobre ele: curto, para não forjar um bloco
+  // `DADOS_DA_LOJA` nem uma linha de voucher. No WhatsApp `resolveOrCreateCustomer`
+  // ainda não lê esses campos; a defesa vale para o canal que passar a ler.
+  const allergies = shortDescription(customer.allergies);
+  const dietary = shortDescription(customer.dietary_restrictions);
+  const vipNotes = shortDescription(customer.vip_notes);
   const prefsLines: string[] = [];
   if (allergies) prefsLines.push(`- Alergias: ${allergies}`);
   if (dietary) prefsLines.push(`- Restrições alimentares: ${dietary}`);
@@ -607,19 +623,25 @@ export async function loadAgentSystemPrompt(
   // e settings sem filtro garantem que o dado já está carregado.
   const FACILITY_LABELS: Record<string, string> = { parking: "estacionamento", valet: "valet/manobrista", wifi: "Wi-Fi", accessible: "acessibilidade", air_conditioning: "ar-condicionado", kids_area: "espaço kids", pet_friendly: "aceita pets", live_music: "música ao vivo", smoking_area: "área fumante", outdoor_seating: "área externa" };
   const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
-  // Campos curtos da loja (policy de `units` para owner/gerente): só neutraliza.
-  const shop = (v: unknown): string => neutralizeStoreText(str(v));
+  // Campos da loja (policy de `units` para owner/gerente).
+  const shop = (v: unknown): string => shortDescription(v);
+  const cuisines = Array.isArray(unitRow?.cuisine_types)
+    ? (unitRow.cuisine_types as unknown[]).map(shortName).filter(Boolean)
+    : [];
+  const facilities = Array.isArray(unitRow?.facilities)
+    ? (unitRow.facilities as unknown[]).map((f) => (typeof f === "string" ? FACILITY_LABELS[f] || shortName(f) : "")).filter(Boolean)
+    : [];
   const restaurantInfoLines: string[] = [
     shop(unitRow?.description) && `- Descrição: ${shop(unitRow?.description)}`,
-    Array.isArray(unitRow?.cuisine_types) && (unitRow.cuisine_types as string[]).filter(Boolean).length > 0 && `- Tipo de cozinha: ${(unitRow.cuisine_types as string[]).filter(Boolean).join(", ")}`,
+    cuisines.length > 0 && `- Tipo de cozinha: ${cuisines.join(", ")}`,
     shop(unitRow?.opening_hours_text) && `- Horário de funcionamento: ${shop(unitRow?.opening_hours_text)}`,
     unitTicketMax && unitTicketMax > 0 && `- Ticket médio: até R$ ${unitTicketMax.toFixed(2).replace(".", ",")} por pessoa (referência, não inclui bebidas/sobremesa).`,
     shop(unitRow?.payment_methods) && `- Formas de pagamento: ${shop(unitRow?.payment_methods)}`,
-    Array.isArray(unitRow?.facilities) && (unitRow.facilities as string[]).length > 0 && `- Facilidades: ${(unitRow.facilities as string[]).map((f: string) => FACILITY_LABELS[f] || f).join(", ")}`,
+    facilities.length > 0 && `- Facilidades: ${facilities.join(", ")}`,
     menuPublicUrl && `- Cardápio digital (envie o link quando o cliente pedir o cardápio): ${menuPublicUrl}`,
-    str(unitRow?.phone) && `- Telefone do restaurante: ${str(unitRow?.phone)}`,
-    str(unitRow?.instagram) && `- Instagram: @${str(unitRow?.instagram).replace(/^@/, "")}`,
-    str(unitRow?.website) && `- Site: ${str(unitRow?.website)}`,
+    shortName(unitRow?.phone) && `- Telefone do restaurante: ${shortName(unitRow?.phone)}`,
+    shortName(unitRow?.instagram) && `- Instagram: @${shortName(unitRow?.instagram).replace(/^@/, "")}`,
+    shortName(unitRow?.website) && `- Site: ${shortName(unitRow?.website)}`,
   ].filter((line): line is string => !!line);
 
   const [todayY, todayM, todayD] = today.split("-");
@@ -629,7 +651,7 @@ export async function loadAgentSystemPrompt(
   const agentMode = (settingsMap["agent_mode"] as string) ?? "reservations";
   const includeFaq = agentMode === "reservations_faq";
   // Nome do agente é per-unit (setting jsonb `agent_name`, default "Yumi"). str() blinda contra interpolação de jsonb cru.
-  const agentName = neutralizeStoreText(str(settingsMap["agent_name"]), STORE_TEXT_LIMITS.agent_name) || "Yumi";
+  const agentName = shortStoreText(settingsMap["agent_name"], STORE_TEXT_LIMITS.agent_name) || "Yumi";
   // Nome do cliente para o prompt. customer.name pode ser placeholder (== phone)
   // quando o canal não trouxe nome — nesse caso NÃO injetar (viraria "número").
   // Sem isso, o único nome próprio no prompt é o da persona (agentName) e o LLM
@@ -637,7 +659,7 @@ export async function loadAgentSystemPrompt(
   const rawCustomerName = str(customer?.name);
   const customerFirstName =
     rawCustomerName && rawCustomerName !== customer?.phone && rawCustomerName !== phone
-      ? neutralizeStoreText(rawCustomerName.trim().split(/\s+/)[0])
+      ? shortStoreText(rawCustomerName.trim().split(/\s+/)[0], SHORT_TEXT_LIMITS.personName)
       : "";
 
   // Camada global (persona e tom) da Plataforma. Falha aberta (D7): nunca lança

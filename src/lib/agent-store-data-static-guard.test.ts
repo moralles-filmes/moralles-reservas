@@ -7,7 +7,12 @@ import { describe, expect, it } from "vitest";
  * `settings` só entram no prompt por `storeDataBlock(...)`. Qualquer menção às
  * 5 chaves fora dos argumentos de uma chamada `storeDataBlock(` reprova —
  * leitura direta, alias, desestruturação, gate por fora ou comentário. Dentro
- * da chamada, o limite tem de ser o da mesma chave.
+ * da chamada, o limite tem de ser o da mesma chave. Também reprova despejar o
+ * `settingsMap` inteiro (`Object.entries/values/keys`, `JSON.stringify`, spread).
+ *
+ * Limite residual (registrado): chave montada em tempo de execução
+ * (`"restaurant_" + "menu"`) e leitura fora de `_shared/agent/**` e do
+ * `webhook-whatsapp` não são vistas.
  */
 
 const ROOT = resolve(__dirname, "../..");
@@ -57,6 +62,10 @@ function guardFindings(path: string, src: string): string[] {
       findings.push(`${path}:${line} ${m[1]} fora de storeDataBlock(`);
     }
   }
+  for (const m of src.matchAll(/Object\.(?:entries|values|keys)\(\s*settingsMap\b|JSON\.stringify\(\s*settingsMap\b|\.\.\.\s*settingsMap\b/g)) {
+    const line = src.slice(0, m.index).split("\n").length;
+    findings.push(`${path}:${line} settingsMap despejado inteiro (${m[0]})`);
+  }
   for (const [a, b] of spans) {
     const keys = [...src.slice(a, b).matchAll(KEY_RE)].map((m) => m[1]);
     if (keys.length && new Set(keys).size !== 1) findings.push(`${path}: storeDataBlock com chaves misturadas ${keys.join(",")}`);
@@ -88,6 +97,9 @@ describe("controle positivo: o guard reprova fonte sintética", () => {
     ["gate por fora do helper", `(settingsMap["rules_and_conditions"] ? ${ok.replace(/restaurant_menu/g, "rules_and_conditions")} : "")`, 1],
     ["outra função", 'foo(settingsMap["restaurant_extra_info"])', 1],
     ["limite de outra chave", 'storeDataBlock("X", settingsMap["restaurant_menu"], STORE_TEXT_LIMITS.delivery_response)', 1],
+    ["Object.entries", "const all = Object.entries(settingsMap).map(([k, v]) => `${k}: ${v}`);", 1],
+    ["JSON.stringify", "const all = JSON.stringify(settingsMap);", 1],
+    ["spread", "const copy = { ...settingsMap };", 1],
   ];
   for (const [name, src, n] of cases) {
     it(`reprova: ${name}`, () => expect(guardFindings("sintetico.ts", src)).toHaveLength(n));

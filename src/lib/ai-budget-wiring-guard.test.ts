@@ -1476,8 +1476,10 @@ function exigeHardStopCompleto(bloco: string, nome: string) {
     statementFrom(bloco, envio),
     `${nome}: a resposta ao cliente não é o texto determinístico`,
   ).toContain("AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT");
-  // Depois da carga do prompt o `finish` também leva `promptMeta` (Entrega B).
-  expect(bloco, `${nome}: não registra a execução`).toMatch(/\bfinish\("ai_budget_exhausted"[,)]/);
+  // Antes da carga do prompt o `finish` não tem meta; depois, leva só `promptMeta` (Entrega B).
+  expect(bloco, `${nome}: não registra a execução`).toMatch(
+    /\bfinish\("ai_budget_exhausted"(?:\)|, undefined, \{ \.\.\.promptMeta \}\))/,
+  );
   expect(bloco, `${nome}: não encerra o turno`).toMatch(SAIDA_DO_TURNO);
 }
 
