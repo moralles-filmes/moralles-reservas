@@ -26,6 +26,8 @@ O Claude Code carrega a regra sozinho ao tocar um arquivo do assunto. **Codex e 
 
 Runbooks: `docs/RUNBOOK-ROTACAO-CREDENCIAIS.md`, `docs/whatsapp-multiprovider-uazapi.md`, `docs/datafy-parceiro-runbook.md`, `docs/whatsapp-templates-programados-runbook.md`, `docs/billing-asaas/`. Specs e planos: `docs/superpowers/`.
 
+Padrões normativos (Padrão SaaS v3.2) em `docs/standards/`: o corpo não se edita (o `check-padrao` confere o hash); o que é deste projeto fica na seção final "Particularidades" de cada um. Em conflito, a regra do projeto (este arquivo e `.claude/rules/`) prevalece e vira divergência a reportar. Modelo de tenant: `.claude/tenancy-profile.yml` (arquétipo B). Leia o padrão do assunto: módulo novo → `MODULES` + `ARCHITECTURE` + `ACCESS_CONTROL`; permissão/papel → `ACCESS_CONTROL` + `MULTI_TENANCY`; auth/RLS/dados pessoais → `SECURITY` + `MULTI_TENANCY`; migration/RPC → `DATABASE`; cobrança/plano → `TENANT_LIFECYCLE`; provedor/webhook/IA com tools → `INTEGRATIONS` + `docs/integrations/providers/`; lentidão → `PERFORMANCE`; testes/CI → `TESTING`; deploy/incidente → `OPERATIONS`; infraestrutura → `GCP_MIGRATION`.
+
 ## 3. Manter este contexto
 
 - **Só entra regra que muda decisão futura:** invariante que evita bug, gotcha de stack, contrato entre features, segurança/multi-tenant. Descobrível em código/`git log`, histórico ("bug X corrigido em Y", "Fase Z", "Task N") e status transitório **não entram** — viram comentário no código ou somem.
@@ -55,6 +57,7 @@ Runbooks: `docs/RUNBOOK-ROTACAO-CREDENCIAIS.md`, `docs/whatsapp-multiprovider-ua
 
 - Vite + React + TypeScript + Tailwind/shadcn, TanStack Query, React Hook Form + Zod, Sonner; Supabase (Postgres, Auth, Storage, ~50 Edge Functions Deno, pg_cron + pg_net); Vercel; Vitest.
 - `npm install --legacy-peer-deps` (`.npmrc` força; react-day-picker × date-fns v4). `npm run dev` (localhost:8080), `lint`, `test`, `build`.
+- Padrão: `node scripts/check-padrao.mjs` (padrões × manifest, CLAUDE.md → @AGENTS.md, links). Portabilidade: `node scripts/check-portabilidade.mjs` (falha só se a dívida passar da linha de base `.claude/portabilidade-baseline.json`; ao reduzir, `--write-baseline` trava o ganho).
 - **Typecheck é `npm run typecheck` = `tsc -b --noEmit`; nunca `tsc --noEmit` sem `-b`** — o root tem `files: []` + references e vira no-op com exit 0. Rode antes de commitar (o dev server SWC não tipa); baseline zero erros. O `tsc -b` não alcança `supabase/functions/`; o gate Deno é `deno check`.
 - **`strict: false`: `if (!x.ok) { x.campo }` não estreita união discriminada** (TS2339). Use `x.ok === false` ou early-return. Pior em `supabase/functions/`, onde nem aparece. [tsconfig.app.json](tsconfig.app.json).
 
