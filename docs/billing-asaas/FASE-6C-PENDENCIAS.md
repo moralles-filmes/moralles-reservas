@@ -238,7 +238,7 @@ deixa a instância correta (`current_monthly_cost_cents = 14990`,
 `gross_margin_cents` todos nulos.
 
 **Por que, e por que não se resolve sozinho.** O custo é fotografado na
-ABERTURA do ciclo — [migration 090](supabase/migrations/20260801200300_090_whatsapp_instance_cycle_rpc.sql)
+ABERTURA do ciclo — [migration 090](../../supabase/migrations/20260801200300_090_whatsapp_instance_cycle_rpc.sql)
 cria o ciclo novo com `v_inst.current_monthly_cost_cents` do instante da
 rolagem. No fechamento, a classificação lê o valor **do próprio ciclo**
 (`case when v_open.provider_cost_cents is null then 'PENDING_REVIEW' else
@@ -274,7 +274,7 @@ Encontrado ao fechar o roteiro (07/08/2026). Instância em `ENDED`
 
 **Não há custo fantasma** — este ponto está correto e é o que mais importa:
 a RPC de rolagem tem guarda explícita
-([090](supabase/migrations/20260801200300_090_whatsapp_instance_cycle_rpc.sql):
+([090](../../supabase/migrations/20260801200300_090_whatsapp_instance_cycle_rpc.sql):
 `if v_inst.lifecycle_state not in ('ACTIVE','CANCELLATION_REQUESTED')` →
 `SKIPPED_LIFECYCLE`), então nenhum ciclo novo nasce para instância encerrada.
 

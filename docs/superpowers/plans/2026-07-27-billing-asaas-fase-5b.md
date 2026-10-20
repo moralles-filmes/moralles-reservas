@@ -3355,18 +3355,18 @@ git commit -m "feat(billing): superficie do servico, liberacao de retencao e rev
 
 - [ ] **Step 1: Acrescentar os invariantes ao `CLAUDE.md`**
 
-Formato obrigatório: **regra em 1 frase. Por quê (1 frase). [arquivo.ts](arquivo.ts).** Sem storytelling, sem data de bug.
+Formato obrigatório: **regra em 1 frase. Por quê (1 frase). Ponteiro arquivo.** Sem storytelling, sem data de bug.
 
 Na seção Billing:
 
-- **O gate pai do WhatsApp lê `organizations.billing_status`, nunca `entitlements.system.allowed`.** Aquele campo é `false` para organização legada com `billing_status='active'` e sem assinatura de sistema, e usá-lo bloquearia exatamente quem nunca deveria ser bloqueado. [whatsapp-service-state-core.ts](supabase/functions/_shared/whatsapp-service-state-core.ts).
-- **Ausência de direito de WhatsApp NÃO bloqueia envio; bloqueia provisionamento novo.** `entitlements.whatsapp.allowed` é `false` para toda org sem assinatura nem override, e gatear envio por ele silenciaria todo cliente que já usa WhatsApp e nunca comprou a instância. [whatsapp-service-state-core.ts](supabase/functions/_shared/whatsapp-service-state-core.ts).
-- **A revogação do grandfathering é terminal — cancelar a assinatura depois não o restaura.** Sem isso, "assino, cancelo, volto a ser legado" viraria isenção permanente. [migration 079](supabase/migrations/20260727100200_079_whatsapp_legacy_grandfathering.sql).
-- **`PAYMENT_CREATED` cria a fatura em aberto e é o único caminho pelo qual a renovação entra na inadimplência.** Antes da 5b ele era informativo e os workers de cobrança rodavam sobre entrada vazia. [asaas-billing-events.ts](supabase/functions/_shared/asaas-billing-events.ts).
-- **A renovação do mês 2+ só correlaciona por `provider_subscription_id`.** Ela nasce da assinatura, sem `externalReference`, sem `checkoutSession`, e com um `customer` que pode ser o que o pagador criou na página hospedada. [billing-correlation-core.ts](supabase/functions/_shared/billing-correlation-core.ts).
-- **Divergência de organização entre degraus de correlação derruba o evento.** Escrever no tenant errado é pior que atrasar um pagamento. [billing-correlation-core.ts](supabase/functions/_shared/billing-correlation-core.ts).
-- **Fatura com `enforcement_hold` não conta como atraso em lugar nenhum.** É o freio que impede a primeira varredura da ingestão de suspender por dívida antiga nunca cobrada; hold esquecido é cliente que nunca é cobrado, e o painel existe para isso não ficar invisível. [migration 077](supabase/migrations/20260727100000_077_billing_invoice_enforcement_hold.sql).
-- **Job estacionado por suspensão não incrementa `attempts`.** Sem isso o teto de 5 tentativas é consumido pela suspensão e a mensagem se perde justamente quando o cliente paga. [process-notification-outbox](supabase/functions/process-notification-outbox/index.ts).
+- **O gate pai do WhatsApp lê `organizations.billing_status`, nunca `entitlements.system.allowed`.** Aquele campo é `false` para organização legada com `billing_status='active'` e sem assinatura de sistema, e usá-lo bloquearia exatamente quem nunca deveria ser bloqueado. [whatsapp-service-state-core.ts](../../../supabase/functions/_shared/whatsapp-service-state-core.ts).
+- **Ausência de direito de WhatsApp NÃO bloqueia envio; bloqueia provisionamento novo.** `entitlements.whatsapp.allowed` é `false` para toda org sem assinatura nem override, e gatear envio por ele silenciaria todo cliente que já usa WhatsApp e nunca comprou a instância. [whatsapp-service-state-core.ts](../../../supabase/functions/_shared/whatsapp-service-state-core.ts).
+- **A revogação do grandfathering é terminal — cancelar a assinatura depois não o restaura.** Sem isso, "assino, cancelo, volto a ser legado" viraria isenção permanente. [migration 079](../../../supabase/migrations/20260727100200_079_whatsapp_legacy_grandfathering.sql).
+- **`PAYMENT_CREATED` cria a fatura em aberto e é o único caminho pelo qual a renovação entra na inadimplência.** Antes da 5b ele era informativo e os workers de cobrança rodavam sobre entrada vazia. [asaas-billing-events.ts](../../../supabase/functions/_shared/asaas-billing-events.ts).
+- **A renovação do mês 2+ só correlaciona por `provider_subscription_id`.** Ela nasce da assinatura, sem `externalReference`, sem `checkoutSession`, e com um `customer` que pode ser o que o pagador criou na página hospedada. [billing-correlation-core.ts](../../../supabase/functions/_shared/billing-correlation-core.ts).
+- **Divergência de organização entre degraus de correlação derruba o evento.** Escrever no tenant errado é pior que atrasar um pagamento. [billing-correlation-core.ts](../../../supabase/functions/_shared/billing-correlation-core.ts).
+- **Fatura com `enforcement_hold` não conta como atraso em lugar nenhum.** É o freio que impede a primeira varredura da ingestão de suspender por dívida antiga nunca cobrada; hold esquecido é cliente que nunca é cobrado, e o painel existe para isso não ficar invisível. [migration 077](../../../supabase/migrations/20260727100000_077_billing_invoice_enforcement_hold.sql).
+- **Job estacionado por suspensão não incrementa `attempts`.** Sem isso o teto de 5 tentativas é consumido pela suspensão e a mensagem se perde justamente quando o cliente paga. [process-notification-outbox](../../../supabase/functions/process-notification-outbox/index.ts).
 
 Na seção "Workers automáticos", acrescentar as duas linhas novas à tabela: `process-asaas-invoice-reconcile` (`0 8 * * *`) e `process-whatsapp-enforcement` (`0 11 * * *`).
 
