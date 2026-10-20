@@ -2183,6 +2183,15 @@ describe("turno do agente — ligação da franquia", () => {
       excecao.indexOf("releaseAiLock()"),
       "o claim da mensagem é devolvido antes de liquidar e soltar o lock",
     ).toBeLessThan(iClaim);
+    // As duas são as do turno DESTA requisição. Redeclará-las no webhook (até
+    // como função vazia) desligaria a liquidação e o lock do catch externo sem
+    // que nenhum recorte acima percebesse — eles leem só o nome da chamada.
+    expect(webhookCode, "o catch externo não usa mais as portas do turno").toMatch(
+      /const \{ settleTurnBudget, releaseAiLock \} = agentTurn;/,
+    );
+    expect(webhookCode, "o webhook redeclarou uma porta do turno").not.toMatch(
+      /\b(?:const|let|var|function)\s+(?:settleTurnBudget|releaseAiLock)\b/,
+    );
 
     // A liquidação passa por UMA porta, e é ela quem fala com o adapter — para
     // que "todo desfecho liquida" seja uma regra, não seis cópias.

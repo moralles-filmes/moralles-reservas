@@ -1,6 +1,7 @@
 ---
 paths:
   - "supabase/functions/webhook-whatsapp/**"
+  - "supabase/functions/_shared/agent/turn.ts"
   - "supabase/functions/_shared/whatsapp-*"
   - "supabase/functions/_shared/conversation-log.ts"
   - "supabase/functions/_shared/uazapi-*"

@@ -150,6 +150,24 @@ describe("update-reservation (painel) — ids do body presos à unidade da reser
     expect(db.data.reservations[0].notes).toBeNull();
   });
 
+  it("platform_admin sem membership edita reserva de qualquer unidade (paralelo do AGENTS §8)", async () => {
+    const db = createDb();
+    db.data.platform_admins.push({ user_id: "admin-plataforma" });
+    const res = await call(db, { reservation_id: "res-b", updates: { notes: "ajuste do suporte" } }, "admin-plataforma");
+    expect(res.status).toBe(200);
+    expect(db.data.reservations[1].notes).toBe("ajuste do suporte");
+    expect(db.updates[0].filters).toContainEqual(["eq", "unit_id", "unit-b"]);
+  });
+
+  it("salão da própria unidade passa pela checagem de posse", async () => {
+    // `override` pula a disponibilidade: o caso isola a checagem do salão.
+    const db = createDb();
+    const res = await call(db, { reservation_id: "res-a", updates: { hall_id: "salao-a" }, override: true });
+    expect(res.status).toBe(200);
+    expect(db.updates).toHaveLength(1);
+    expect(db.unexpected).toEqual([]);
+  });
+
   it("table_id que não é texto é recusado na validação", async () => {
     const db = createDb();
     const res = await call(db, { reservation_id: "res-a", updates: { table_id: { id: "mesa-b1" } } });

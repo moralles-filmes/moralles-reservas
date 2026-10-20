@@ -195,3 +195,27 @@ describe('turno do agente no webhook-whatsapp real — paridade comportamental',
     expect(system(changed.c)).not.toBe(system(base.c));
   });
 });
+
+describe('catch externo do webhook com o núcleo extraído', () => {
+  it('turno que lança depois do lock: solta o lock, devolve o claim e só então registra a execução', async () => {
+    // `menus` só é lido na carga do prompt: depois do lock, antes de qualquer
+    // efeito externo (LLM, envio). O erro sobe de `run` para o catch do webhook.
+    const { f, c } = setup();
+    c.controls.sdkResponses = [];
+    c.controls.beforeQuery = async (q) => { if (q.table === 'menus') throw new Error('synthetic_db_down'); };
+    const response = await f.runChatControl({ kind: 'customer_text', text: 'Oi' });
+    expect(response.status).toBe(500);
+    expect(c.unexpected).toEqual([]);
+    expect(c.calls.llm).toBe(0);
+    const ops = c.trace.map((t) => t.operation);
+    const iLock = ops.indexOf('rpc:try_claim_conversation_for_ai');
+    const iRelease = ops.indexOf('rpc:release_conversation_ai_claim');
+    const iClaim = ops.lastIndexOf('rpc:release_processed_whatsapp_message_claim');
+    const iFinish = ops.findIndex((op, i) => i > iClaim && op.endsWith(':webhook_executions'));
+    expect(iLock, 'o turno não chegou a pegar o lock').toBeGreaterThan(-1);
+    expect(iRelease, 'o lock não foi solto depois de tomado').toBeGreaterThan(iLock);
+    expect(iClaim, 'o claim da mensagem foi devolvido antes de soltar o lock').toBeGreaterThan(iRelease);
+    expect(iFinish, 'a execução não foi registrada depois de devolver o claim').toBeGreaterThan(iClaim);
+    expect(c.tables.webhook_executions.map((row) => row.outcome)).toEqual(['webhook_error']);
+  });
+});

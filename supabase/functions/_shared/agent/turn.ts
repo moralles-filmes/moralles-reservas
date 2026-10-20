@@ -10,9 +10,14 @@
  * O canal entra pelo `ChannelContext` (envio, sanitização, identidade e
  * formatação do prompt, origem da reserva) e pelo `AgentTurnIO` (registro do
  * desfecho, append na conversa, marca de efeito externo). Nada aqui sabe de
- * provider, credencial ou formato de webhook. Extraído do `webhook-whatsapp`
- * sem mudança de comportamento; a prova é `src/lib/agent-turn-parity.test.ts`
- * (I/O byte a byte) mais os guardas textuais que agora leem este arquivo.
+ * provider, credencial ou formato de webhook. O comportamento é preso por
+ * `src/lib/agent-turn-parity.test.ts` (I/O byte a byte) mais os guardas
+ * textuais que leem este arquivo; mudança deliberada vem com teste próprio, e
+ * o snapshot só se regrava junto com uma mudança de comportamento decidida.
+ *
+ * O catch externo é do adapter: `run` lança, e quem o chama liquida
+ * (`settleTurnBudget("RELEASED")`) e solta o lock (`releaseAiLock`) antes de
+ * qualquer passo que possa lançar.
  *
  * As decisões continuam nos núcleos puros (`ai-budget-*`, `agent-*-core`,
  * `handoff-clock-core`, `whatsapp-inbound-queue-core`); aqui é adapter de I/O.
