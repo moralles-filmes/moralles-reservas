@@ -97,7 +97,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     units: 'id,organization_id,name,slug,timezone,address,price_range_max',
     organizations: 'id,billing_status,trial_ends_at,whatsapp_legacy_grandfathered,whatsapp_grandfather_revoked_at',
     customers: 'id,organization_id,name,phone,email,emails,birthday,do_not_contact,deleted_at',
-    reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating,satisfaction_at,satisfaction_comment,notes,updated_at,created_at',
+    reservations: 'id,unit_id,customer_id,date,time,status,payment_status,source,party_size,reservation_code,applied_discount_percent,satisfaction_rating,satisfaction_at,satisfaction_comment,notes,table_id,updated_at,created_at',
     notifications_sent: 'id,unit_id,kind,status,sent_at,reservation_id,error,whatsapp_provider,whatsapp_channel_id,provider_message_id,delivered_at,read_at',
     conversations: 'id,unit_id,customer_id,messages,status,ai_lock_token,contact_name,wa_chat_lid,handoff_reason,handoff_at,last_silenced_reply_at,last_message_at',
     settings: 'unit_id,key,value', platform_flags: 'key,value',
@@ -106,7 +106,9 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     billing_plans: 'category,included_features',
     ai_cycle_budgets: 'id,organization_id,limit_cents,settled_cents,state,cycle_start,cycle_end',
     ai_provider_credentials: 'unit_id,provider,api_key,active',
-    halls: 'id,unit_id,name,description,allow_empty_seat,active,sort_order', hall_schedules: 'hall_id,day_of_week,open_time,close_time,is_closed',
+    halls: 'id,unit_id,name,description,allow_empty_seat,active,sort_order',
+    hall_schedules: 'hall_id,day_of_week,open_time,close_time,is_closed,min_advance_minutes,discount_percent,charge_enabled,charge_amount_cents',
+    tables: 'id,hall_id,min_capacity,max_capacity,active',
     business_hours: 'unit_id,day_of_week,open_time,close_time,is_closed',
     special_dates: 'unit_id,date,name,is_closed,open_time,close_time',
     table_blocks: 'unit_id,table_id,title,reason,hall_id,blocked_from,blocked_to',
@@ -129,7 +131,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     units: [{ ...base.rows.units[0], address: null, price_range_max: null }],
     organizations: [{ id: ids.organization, billing_status: 'active', trial_ends_at: null, whatsapp_legacy_grandfathered: true, whatsapp_grandfather_revoked_at: null }],
     customers: [{ ...base.rows.customers[0], email: null, emails: [], birthday: null }],
-    reservations: [{ ...base.rows.reservations[0], satisfaction_at: null, satisfaction_comment: null, notes: null, updated_at: base.nowISO, created_at: base.nowISO }],
+    reservations: [{ ...base.rows.reservations[0], satisfaction_at: null, satisfaction_comment: null, notes: null, table_id: null, updated_at: base.nowISO, created_at: base.nowISO }],
     conversations: [{ id: ids.conversation, unit_id: ids.unit, customer_id: ids.customer, messages: [], status: 'ai_active', ai_lock_token: null,
       contact_name: 'Marina', wa_chat_lid: null, handoff_reason: null, handoff_at: null, last_silenced_reply_at: null, last_message_at: base.nowISO }],
     settings: [{ unit_id: ids.unit, key: 'ai_config', value: { provider: 'claude' } }],
@@ -332,9 +334,17 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     const pending = h.request('webhook-whatsapp',await request(input)).finally(() => { done = true; });
     // Advance only the known debounce/retry timers while allowing all ordinary
     // I/O microtasks to settle. Do not let a fake timeout win a ready SDK reply.
-    for (let step=0;(!done || h.pendingBackground) && step<300;step++) {
+    // The 300 budget counts fake-clock advances only. With no fake timer due,
+    // the request is waiting on real I/O (webcrypto in the thread pool), which
+    // under a loaded full suite outlasts any number of setImmediate turns — so
+    // those steps wait real time instead, bounded by a wall-clock deadline.
+    const realDeadline = Date.now() + 20_000;
+    for (let advances=0;(!done || h.pendingBackground) && advances<300 && Date.now()<realDeadline;) {
       await new Promise<void>(resolve => setImmediate(resolve));
-      if ((!done || h.pendingBackground) && h.pendingTimers) await h.advanceTime(1000);
+      if (!done || h.pendingBackground) {
+        if (h.pendingTimers) { await h.advanceTime(1000); advances++; }
+        else await new Promise<void>(resolve => setTimeout(resolve, 1));
+      }
     }
     if (!done) fail('request_did_not_finish');
     const response = await pending;

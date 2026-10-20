@@ -12,6 +12,8 @@ paths:
   - "supabase/functions/process-reservation-reminders/**"
   - "supabase/functions/process-notification-outbox/**"
   - "supabase/functions/webhook-whatsapp/**"
+  - "supabase/functions/_shared/agent/**"
+  - "supabase/functions/_shared/agent-reservation-tools.ts"
   - "src/hooks/useReservationTemplates*"
   - "src/components/reserva/**"
   - "src/lib/phone.ts"
@@ -34,6 +36,7 @@ paths:
 7. **First-fit** — aloca menor mesa disponível
 8. **Overbooking** — se ativo, cria reserva floating (`table_id: null`) em vez de rejeitar
 
+- **Alterar reserva existente chama `checkAvailability` com `excludeReservationId` (a própria reserva) e `preferTableId` (mesa atual), no salão da mesa atual, e grava `table_id = suggestedTableId ?? null`, salvo mesa ou salão escolhidos pelo gerente no painel — que só valem se forem da unidade da reserva.** Sem a exclusão a reserva colide consigo mesma; sem gravar a mesa ela fica numa mesa ocupada no novo horário; sem conferir a unidade do id vindo do body, o service role grava mesa de outro tenant. Reserva nova não passa os dois. [agent-reservation-tools.ts](supabase/functions/_shared/agent-reservation-tools.ts), [update-reservation](supabase/functions/update-reservation/index.ts).
 - **Timestamps em `availability.ts` SEMPRE com offset BRT explícito (`-03:00`).** Deno runtime é UTC; sem offset, comparação contra `table_blocks.blocked_from/to` (BRT no banco) fica 3h fora e bloqueios parciais (ex.: 19h-22h) deixam reservas escaparem na borda. Replicar em qualquer query nova nesse arquivo.
 
 ## Reservas, clientes e telefone

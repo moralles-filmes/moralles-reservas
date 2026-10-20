@@ -1333,15 +1333,21 @@ describe("ai-budget-gate.ts — adapter sem decisão própria", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Ligação no webhook-whatsapp
+// Ligação no turno do agente (núcleo `_shared/agent/turn.ts` + webhook-whatsapp)
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// O webhook chama `serve()` no carregamento e importa `deno.land`/`esm.sh` — o
-// vitest também não o alcança. Toda DECISÃO continua em núcleo puro; o que se
-// prova aqui é a LIGAÇÃO: que o caminho novo só existe para quem resolve por
-// franquia, que a reserva é finalizada em TODOS os desfechos do turno, que a
-// negação distingue teto comercial de soluço de infraestrutura, e que nada de
-// custo, token ou limite chega ao cliente do restaurante.
+// O turno (franquia, laço, desfechos) mora em `_shared/agent/turn.ts`, que
+// importa `esm.sh` em runtime; o webhook chama `serve()` no carregamento e é
+// quem segura o catch externo. Nenhum dos dois é alcançado pelo vitest. Toda
+// DECISÃO continua em núcleo puro; o que se prova aqui é a LIGAÇÃO: que o
+// caminho novo só existe para quem resolve por franquia, que a reserva é
+// finalizada em TODOS os desfechos do turno, que a negação distingue teto
+// comercial de soluço de infraestrutura, e que nada de custo, token ou limite
+// chega ao cliente do restaurante.
+//
+// Cada recorte lê o arquivo onde o código MORA: o turno em `turnCode`, o catch
+// externo em `webhookCode`. Varreduras sem ordem (portas de handoff, textos
+// redigitados) leem os dois juntos em `agentCode`.
 //
 // MESMA REGRA DE PROJETO do resto do arquivo: nada fatia por janela de N
 // caracteres. Os recortes usam as mesmas quatro fronteiras sintáticas.
@@ -1350,15 +1356,29 @@ const webhook = readFileSync(
   join(__dirname, "..", "..", "supabase", "functions", "webhook-whatsapp", "index.ts"),
   "utf8",
 ).replace(/\r\n/g, "\n");
+const turn = readFileSync(join(SHARED, "agent", "turn.ts"), "utf8").replace(/\r\n/g, "\n");
 
 /**
- * O webhook SEM o conteúdo dos comentários, para os recortes estruturais: uma
+ * Os fontes SEM o conteúdo dos comentários, para os recortes estruturais: uma
  * chave ou um parêntese solto dentro de um comentário desbalancearia o recorte
  * e o bloco escorregaria para a vizinha — o defeito que reprovou uma rodada
  * anterior desta frente. O caso de controle logo abaixo prova que o apagador
- * atravessou este arquivo inteiro sem dessincronizar.
+ * atravessou os dois arquivos inteiros sem dessincronizar.
  */
 const webhookCode = blankComments(webhook);
+const turnCode = blankComments(turn);
+/** Só para varreduras sem ordem entre arquivos — nunca para recorte por índice. */
+const agentCode = `${webhookCode}\n${turnCode}`;
+
+/** Saída do turno: `run` devolve com `return;` e o adapter responde ao HTTP. */
+const SAIDA_DO_TURNO = /\breturn;/;
+
+/** [início, fim) do corpo de `run` — onde moram todos os desfechos do turno. */
+function runRange(): [number, number] {
+  const i = turnCode.indexOf("const run = async (");
+  expect(i, "o turno perdeu `run`").toBeGreaterThan(-1);
+  return braceBlock(turnCode, turnCode.indexOf("=> {", i));
+}
 const conversationParityMigration = readFileSync(
   join(__dirname, "..", "..", "supabase", "migrations", "20260905143453_whatsapp_conversation_provider_parity.sql"),
   "utf8",
@@ -1371,16 +1391,17 @@ function deniedBlock(src: string): string {
   return src.slice(...braceBlock(src, i));
 }
 
-/** Bloco `{ … }` que segue uma âncora textual, por chaves balanceadas. */
+/** Bloco `{ … }` do TURNO que segue uma âncora textual, por chaves balanceadas. */
 function blocoDe(ancora: string): string {
-  const i = webhookCode.indexOf(ancora);
+  const i = turnCode.indexOf(ancora);
   expect(i, `âncora não encontrada: ${ancora}`).toBeGreaterThan(-1);
-  return webhookCode.slice(...braceBlock(webhookCode, i));
+  return turnCode.slice(...braceBlock(turnCode, i));
 }
 
 /**
- * O `catch` externo do handler, achado a partir do log que só ele emite —
- * o arquivo tem vários `catch (err)` e escolher pelo índice mediria outro.
+ * O `catch` externo do handler do webhook, achado a partir do log que só ele
+ * emite — o arquivo tem vários `catch (err)` e escolher pelo índice mediria
+ * outro. É ele que liquida e solta o lock quando o turno lança.
  */
 function catchExterno(): string {
   const marca = webhookCode.indexOf('evt: "webhook_error"');
@@ -1391,18 +1412,17 @@ function catchExterno(): string {
 }
 
 /**
- * O trecho de SUCESSO: do fim do bloco de falha de envio até o início do catch
- * externo. Duas âncoras sintáticas reais — cortar no `finish("success")` mediria
- * só metade do desfecho, e é justamente a ORDEM entre a liquidação e o `finish`
+ * O trecho de SUCESSO: do fim do bloco de falha de envio até o fim de `run`.
+ * Duas âncoras sintáticas reais — cortar no `finish("success")` mediria só
+ * metade do desfecho, e é justamente a ORDEM entre a liquidação e o `finish`
  * que se prende aqui: dinheiro antes de telemetria. (A ordem inversa chegou a
  * ser escrita e foi desfeita — o comentário do caso da ordem diz por quê.)
  */
 function trechoSucesso(): string {
-  const [, fimEnvio] = braceBlock(webhookCode, webhookCode.indexOf("if (!sendRes.ok)"));
-  const marca = webhookCode.indexOf('evt: "webhook_error"');
-  const fim = webhookCode.lastIndexOf("catch (err) {", marca);
-  expect(fim, "o desfecho de sucesso sumiu").toBeGreaterThan(fimEnvio);
-  return webhookCode.slice(fimEnvio, fim);
+  const [, fimEnvio] = braceBlock(turnCode, turnCode.indexOf("if (!sendRes.ok)"));
+  const [, fimRun] = runRange();
+  expect(fimRun, "o desfecho de sucesso sumiu").toBeGreaterThan(fimEnvio);
+  return turnCode.slice(fimEnvio, fimRun);
 }
 
 /**
@@ -1438,7 +1458,7 @@ function exigeHardStopCompleto(bloco: string, nome: string) {
     `${nome}: a resposta ao cliente não é o texto determinístico`,
   ).toContain("AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT");
   expect(bloco, `${nome}: não registra a execução`).toContain('finish("ai_budget_exhausted")');
-  expect(bloco, `${nome}: não encerra o turno`).toContain("return new Response");
+  expect(bloco, `${nome}: não encerra o turno`).toMatch(SAIDA_DO_TURNO);
 }
 
 /** O bloco `if (opened.kind === "READY") { … }`, onde o dado é GUARDADO. */
@@ -1453,7 +1473,7 @@ function readyBlock(): string {
  * proposital: o que interessa aqui é quem SOBRESCREVE o dado depois.
  */
 function atribuicoesDe(nome: string): Array<{ valor: string; index: number }> {
-  return [...webhookCode.matchAll(new RegExp(`\\b${nome} = ([^;]+);`, "g"))].map((m) => ({
+  return [...turnCode.matchAll(new RegExp(`\\b${nome} = ([^;]+);`, "g"))].map((m) => ({
     valor: m[1].trim(),
     index: m.index!,
   }));
@@ -1589,23 +1609,29 @@ function exigeFailClosedTecnico(bloco: string, nome: string) {
     bloco,
     `${nome}: fail-closed técnico diz ao cliente que a franquia acabou`,
   ).not.toContain("AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT");
-  expect(bloco, `${nome}: não encerra o turno`).toContain("return new Response");
+  expect(bloco, `${nome}: não encerra o turno`).toMatch(SAIDA_DO_TURNO);
 }
 
-describe("webhook-whatsapp — ligação da franquia", () => {
-  it("controle do apagador sobre o webhook: strings sobrevivem e comentários somem", () => {
+describe("turno do agente — ligação da franquia", () => {
+  it("controle do apagador sobre o webhook e o turno: strings sobrevivem e comentários somem", () => {
     // Sem este controle, um apagador dessincronizado devolveria um arquivo
     // truncado e TODO recorte estrutural abaixo mediria outra coisa em silêncio.
     expect(webhookCode, "índices deixaram de ser preservados").toHaveLength(webhook.length);
     expect(webhookCode, "o apagador não chegou ao fim do arquivo").toContain('"webhook_error"');
     expect(webhookCode, "uma string do meio do arquivo foi comida").toContain("MEDIA_REPLY_TEXT");
-    expect(webhookCode, "comentário real sobreviveu").not.toContain("Grava esta mensagem já");
+    expect(webhook, "o comentário de controle sumiu do fonte").toContain("RAMO-FOLHA DE PROPÓSITO");
+    expect(webhookCode, "comentário real sobreviveu").not.toContain("RAMO-FOLHA DE PROPÓSITO");
+    expect(turnCode, "índices do turno deixaram de ser preservados").toHaveLength(turn.length);
+    expect(turnCode, "o apagador não chegou ao fim do turno").toContain('"success_history_degraded"');
+    expect(turnCode, "uma string do meio do turno foi comida").toContain('"conversation_handoff_fence_failed"');
+    expect(turn, "o comentário de controle sumiu do turno").toContain("Grava esta mensagem já");
+    expect(turnCode, "comentário real sobreviveu no turno").not.toContain("Grava esta mensagem já");
   });
 
   it("importa o adapter e os núcleos, sem reimplementar decisão", () => {
-    expect(webhook).toContain('from "../_shared/ai-budget-gate.ts"');
-    expect(webhook).toContain('from "../_shared/ai-budget-copy.ts"');
-    expect(webhook).toContain('from "../_shared/ai-budget-core.ts"');
+    expect(turn).toContain('from "../ai-budget-gate.ts"');
+    expect(turn).toContain('from "../ai-budget-copy.ts"');
+    expect(turn).toContain('from "../ai-budget-core.ts"');
     // CHAMADA, não menção: `toContain("openTurnBudget")` é satisfeito pela
     // linha de import sozinha — apagar todo ponto de chamada e manter os
     // imports deixaria este caso verde, que é a classe de falso-verde que já
@@ -1617,8 +1643,13 @@ describe("webhook-whatsapp — ligação da franquia", () => {
       "recordMilestones",
       "loadAiFranchise",
     ]) {
-      expect(webhookCode, `não CHAMA ${fn}`).toMatch(new RegExp(`${fn}\\(`));
+      expect(turnCode, `não CHAMA ${fn}`).toMatch(new RegExp(`${fn}\\(`));
     }
+    // E o webhook roda o turno pelo núcleo — sem isso o caminho de cima não
+    // existe em produção, por mais que o arquivo do núcleo esteja certo.
+    expect(webhook).toContain('from "../_shared/agent/turn.ts"');
+    expect(webhookCode, "o webhook não monta o turno").toMatch(/= createAgentTurn\(\{/);
+    expect(webhookCode, "o webhook não roda o turno").toMatch(/await agentTurn\.run\(/);
   });
 
   it("os ganchos chegam ao LAÇO do agente — o fio que faz a franquia existir", () => {
@@ -1628,14 +1659,14 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // em zero, o teto nunca se move e o sistema reporta saúde perfeita. É o
     // único fio que faz a franquia existir, e construir os ganchos não é
     // passá-los.
-    const i = webhookCode.indexOf("runAgentLoop(");
+    const i = turnCode.indexOf("runAgentLoop(");
     expect(i, "o laço do agente não é chamado").toBeGreaterThan(-1);
-    const args = parenBlock(webhookCode, i);
+    const args = parenBlock(turnCode, i);
     const passado = args.match(/\n\s*budget:\s*([A-Za-z_$][\w$.]*)\s*,/);
     expect(passado, "os ganchos não são passados ao laço").not.toBeNull();
     // IDENTIDADE: é a variável que recebeu `makeBudgetHooks`. Um `budget:
     // undefined` satisfaz a presença da chave e desliga a franquia inteira.
-    const construido = webhookCode.match(/([A-Za-z_$][\w$]*)\s*=\s*makeBudgetHooks\(/);
+    const construido = turnCode.match(/([A-Za-z_$][\w$]*)\s*=\s*makeBudgetHooks\(/);
     expect(construido, "os ganchos não são construídos").not.toBeNull();
     expect(
       passado![1],
@@ -1646,9 +1677,9 @@ describe("webhook-whatsapp — ligação da franquia", () => {
   it("os textos determinísticos entram no HARDCODED_AGENT_NOISE pela LISTA, não redigitados", () => {
     // Sem isto a mensagem de bloqueio polui o histórico das invocações
     // seguintes — mesmo motivo de MEDIA_REPLY_TEXT.
-    const i = webhookCode.indexOf("const HARDCODED_AGENT_NOISE");
+    const i = turnCode.indexOf("const HARDCODED_AGENT_NOISE");
     expect(i, "o conjunto de ruído sumiu").toBeGreaterThan(-1);
-    const stmt = statementFrom(webhookCode, i);
+    const stmt = statementFrom(turnCode, i);
     expect(stmt).toContain("AI_BUDGET_HARDCODED_TEXTS");
     expect(stmt, "a lista foi redigitada em vez de espalhada").toMatch(
       /\.\.\.AI_BUDGET_HARDCODED_TEXTS/,
@@ -1661,7 +1692,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // chave-de-objeto não vê `handoffReason = "ai_budget_exhausted";` dentro do
     // bloco de negação. Aqui todo VALOR atribuído a uma razão de handoff é
     // inspecionado, nas duas formas.
-    const escritas = [...webhookCode.matchAll(/handoff_?[Rr]eason\s*[:=]\s*([^,;\n]+)/g)];
+    const escritas = [...agentCode.matchAll(/handoff_?[Rr]eason\s*[:=]\s*([^,;\n]+)/g)];
     expect(escritas.length, "nenhuma razão de handoff — o detector quebrou").toBeGreaterThan(0);
     for (const m of escritas) {
       expect(m[1].trim(), "a razão da franquia foi redigitada em vez de importada").not.toBe(
@@ -1669,7 +1700,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
       );
     }
     // E a constante é REALMENTE usada onde importa.
-    const bloco = deniedBlock(webhookCode);
+    const bloco = deniedBlock(turnCode);
     expect(bloco, "o bloco de negação não usa a constante").toContain("AI_BUDGET_HANDOFF_REASON");
 
     // PRESENÇA NÃO É EXCLUSIVIDADE. Reduzir a cadeia inteira a
@@ -1695,10 +1726,10 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // Devolver a conversa para uma IA que não pode responder é o defeito; quem
     // sabe disso é o núcleo, e ele precisa do estado do orçamento para saber.
     // A forma de CHAMADA, de novo: o nome sozinho vem do import.
-    expect(webhookCode, "o núcleo é importado mas não chamado").toMatch(
+    expect(turnCode, "o núcleo é importado mas não chamado").toMatch(
       /shouldAutoResolveHandoff\(\{/,
     );
-    expect(webhookCode, "a comparação crua de idade voltou").not.toMatch(
+    expect(turnCode, "a comparação crua de idade voltou").not.toMatch(
       /handoffAge\s*>\s*HANDOFF_AUTO_RESOLVE_MS/,
     );
     // ORIGEM, NÃO PRESENÇA. É letra por letra o defeito que `budgetExhaustedNow`
@@ -1708,7 +1739,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // para `ai_active` por decurso de prazo, o cliente recebe "Voltei a te
     // atender por aqui", a próxima inbound bate no hard stop e tudo se repete de
     // 12 em 12 horas — com a IA devolvida a um estado em que não pode responder.
-    const passado = webhookCode.match(/budgetExhausted:\s*([A-Za-z_$][\w$]*)\s*,/);
+    const passado = turnCode.match(/budgetExhausted:\s*([A-Za-z_$][\w$]*)\s*,/);
     expect(passado, "o núcleo decide sem saber se o orçamento esgotou").not.toBeNull();
     const estado = passado![1];
     expect(["true", "false"], "o estado do orçamento virou literal").not.toContain(estado);
@@ -1720,7 +1751,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     const raiz = origem!.valor.match(/^([A-Za-z_$][\w$]*)/);
     expect(raiz, "a comparação não parte de uma variável").not.toBeNull();
     // E essa variável é a franquia REALMENTE lida — não outro objeto à mão.
-    const lidas = [...webhookCode.matchAll(/([A-Za-z_$][\w$]*) = await loadAiFranchise\(/g)].map(
+    const lidas = [...turnCode.matchAll(/([A-Za-z_$][\w$]*) = await loadAiFranchise\(/g)].map(
       (m) => m[1],
     );
     expect(lidas, `${raiz![1]} não vem de loadAiFranchise`).toContain(raiz![1]);
@@ -1729,7 +1760,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
   it("a franquia só entra quando o entitlement resolve por franchise", () => {
     // Override vitalício (Ren Sushi), carteira legada e BYOK puro NÃO entram.
     // Sobre o CÓDIGO: a prosa cita a fonte de propósito, e citar não é decidir.
-    expect(webhookCode).toMatch(/ai\.source\s*===\s*"franchise"/);
+    expect(turnCode).toMatch(/ai\.source\s*===\s*"franchise"/);
     // E a abertura do orçamento fica DENTRO desse gate.
     expect(blocoDe("if (isFranchise)"), "a reserva do turno saiu do gate da franquia").toContain(
       "openTurnBudget(",
@@ -1743,7 +1774,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     const bloco = blocoDe("if (entitlements.readFailed)");
     expect(bloco, "a leitura degradada não deixa rastro").toContain("jsonLog");
     expect(bloco, "a leitura degradada passou a NEGAR — decisão comercial, não desta task")
-      .not.toContain("return new Response");
+      .not.toMatch(SAIDA_DO_TURNO);
   });
 
   it("preço desconhecido falha FECHADO na porta de abertura, inclusive em observação", () => {
@@ -1751,9 +1782,9 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // `beforeCall` do adapter nega preço desconhecido em qualquer modo, e a
     // porta de abertura precisa dizer o mesmo. Sem preço não há `price_id`
     // (NOT NULL) e o evento não pode existir.
-    const i = webhookCode.indexOf("const failClosed");
+    const i = turnCode.indexOf("const failClosed");
     expect(i, "a porta de abertura não distingue preço desconhecido").toBeGreaterThan(-1);
-    const stmt = statementFrom(webhookCode, i);
+    const stmt = statementFrom(turnCode, i);
     expect(stmt, "preço desconhecido deixou de ser motivo próprio").toContain('"price_unknown"');
     expect(
       stmt,
@@ -1775,20 +1806,20 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // nunca mede nada justamente dela.
     // E a condição vem do ENTITLEMENT, não de um literal: `= false` desligaria
     // esta porta inteira com o `if` intacto.
-    const origem = webhookCode.match(/const budgetExhaustedNow = ([^;]+);/);
+    const origem = turnCode.match(/const budgetExhaustedNow = ([^;]+);/);
     expect(origem, "o hard stop anterior ao turno perdeu a origem").not.toBeNull();
     expect(origem![1], "o teto deixou de vir do entitlement").toContain(
       "!entitlements.ai.allowed",
     );
     expect(origem![1], "o teto deixou de ser exclusivo da franquia").toContain("isFranchise");
 
-    const i = webhookCode.indexOf("if (budgetExhaustedNow");
+    const i = turnCode.indexOf("if (budgetExhaustedNow");
     expect(i, "o hard stop anterior ao turno sumiu").toBeGreaterThan(-1);
     // CONJUNÇÃO, não presença: trocar `&&` por `||` mantém a string dentro do
     // `if` e passa a negar em modo observação — exatamente o defeito que este
     // caso existe para impedir.
     expect(
-      parenBlock(webhookCode, i),
+      parenBlock(turnCode, i),
       "o hard stop mais curto nega sem exigir o gate ligado",
     ).toMatch(/budgetExhaustedNow\s*&&[\s\S]*ai_wallet_enforced/);
 
@@ -1802,23 +1833,31 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // Ele é enviado em três desfechos E precisa estar no filtro de ruído.
     // Redigitado, editar um sem os outros faz a mensagem escapar do filtro e
     // poluir o histórico das invocações seguintes.
-    const ocorrencias = [...webhookCode.matchAll(/Tive um instante de instabilidade aqui/g)];
+    const ocorrencias = [...agentCode.matchAll(/Tive um instante de instabilidade aqui/g)];
     expect(ocorrencias.length, "o texto voltou a ser redigitado").toBe(1);
-    const stmt = statementFrom(webhookCode, webhookCode.indexOf("const HARDCODED_AGENT_NOISE"));
+    const stmt = statementFrom(turnCode, turnCode.indexOf("const HARDCODED_AGENT_NOISE"));
     expect(stmt, "a constante não entrou no filtro de ruído").toContain("AGENT_INSTABILITY_TEXT");
   });
 
-  it("o texto determinístico NÃO passa por sanitizeForWhatsApp", () => {
-    // sanitizeForWhatsApp aplica-se só a saída de LLM.
-    const chamadas = [...webhookCode.matchAll(/sanitizeForWhatsApp\(([^)]*)\)/g)];
+  it("o texto determinístico NÃO passa pela sanitização do canal", () => {
+    // A sanitização (no WhatsApp, `sanitizeForWhatsApp`) aplica-se só a saída
+    // de LLM. No núcleo ela é `ctx.sanitize(...)`; no webhook ela é só ligada,
+    // nunca chamada sobre texto determinístico.
+    const chamadas = [...turnCode.matchAll(/\bsanitize\(([^)]*)\)/g)];
     expect(chamadas.length, "nenhuma sanitização encontrada — o detector quebrou").toBeGreaterThan(0);
     for (const m of chamadas) {
-      expect(m[1]).not.toMatch(/AI_BUDGET_|stopText|errText/);
+      expect(m[1]).not.toMatch(/AI_BUDGET_|stopText|errText|handoffText|emptyText|AGENT_INSTABILITY_TEXT/);
+    }
+    expect(webhookCode, "o WhatsApp deixou de ligar o próprio sanitizador ao turno").toMatch(
+      /\bsanitize:\s*sanitizeForWhatsApp\s*,/,
+    );
+    for (const m of webhookCode.matchAll(/sanitizeForWhatsApp\(([^)]*)\)/g)) {
+      expect(m[1], "o webhook sanitiza texto determinístico").not.toMatch(/AI_BUDGET_|stopText|errText/);
     }
   });
 
   it("negação por orçamento não repete ferramenta mutante nem dá retry integral", () => {
-    const block = deniedBlock(webhookCode);
+    const block = deniedBlock(turnCode);
     expect(block, "a negação ignora que uma ferramenta mutante rodou").toContain("mutatingToolUsed");
     expect(block, "as três situações de ferramenta mutante viraram uma frase só").toContain(
       "resolveMutationStopText",
@@ -1826,11 +1865,11 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     expect(block, "o turno seria refeito — a chamada negada é justamente a que faltava").not.toContain(
       "runOnce()",
     );
-    expect(block, "a negação não encerra o turno").toContain("return new Response");
+    expect(block, "a negação não encerra o turno").toMatch(SAIDA_DO_TURNO);
   });
 
   it("a variante ERROR não é tratada como franquia esgotada", () => {
-    const block = deniedBlock(webhookCode);
+    const block = deniedBlock(turnCode);
     expect(block, "a distinção comercial não é consultada").toContain("isCommercialHardStop(");
     expect(block, "a distinção comercial foi redigitada no webhook").not.toMatch(
       /kind\s*===\s*"DENY_BUDGET"/,
@@ -1858,7 +1897,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // é satisfeito pela linha de IMPORT sozinha — apagar a chamada e manter o
     // import deixava este caso verde com um `evt` fixo no lugar, que é
     // exatamente a diferença entre as variantes que o boolean apagava.
-    const block = deniedBlock(webhookCode);
+    const block = deniedBlock(turnCode);
     expect(block, "a negação emite um evento único para todas as variantes").toContain(
       "telemetryEventFor(decision)",
     );
@@ -1869,9 +1908,9 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // independentes e podem falar de vigências diferentes. `makeBudgetHooks`
     // aceita o campo opcional e cria um próprio quando ele falta: a regressão é
     // silenciosa, e é por isso que ela precisa de caso.
-    const i = webhookCode.indexOf("makeBudgetHooks(");
+    const i = turnCode.indexOf("makeBudgetHooks(");
     expect(i, "os ganchos não são montados").toBeGreaterThan(-1);
-    const args = parenBlock(webhookCode, i);
+    const args = parenBlock(turnCode, i);
     const budgetExpr = args.match(/budget:\s*([A-Za-z_$][\w$.]*)/);
     const priceExpr = args.match(/resolvePrice:\s*([A-Za-z_$][\w$.]*)/);
     expect(budgetExpr, "os ganchos não recebem a reserva do turno").not.toBeNull();
@@ -1924,7 +1963,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // guarda com `||`, então anular só o tenant desliga a liquidação inteira
     // com o mesmo silêncio de anular a reserva. Um `budgetHooks = undefined;`
     // entre a construção e o laço faz o mesmo do outro lado.
-    const [pa, pb] = braceBlock(webhookCode, webhookCode.indexOf("const settleTurnBudget = async"));
+    const [pa, pb] = braceBlock(turnCode, turnCode.indexOf("const settleTurnBudget = async"));
     const naPorta = (i: number) => i > pa && i < pb;
 
     for (const [nome, origem] of [
@@ -1967,16 +2006,16 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // `undefined` — logo `failClosed` é falso e o turno roda SEM ganchos e SEM
     // medição. O pior desfecho possível, com zero sinal.
     const anc = 'if (opened.kind === "EXHAUSTED")';
-    expect(webhookCode.indexOf(anc), "o hard stop da reserva sumiu").toBeGreaterThan(-1);
+    expect(turnCode.indexOf(anc), "o hard stop da reserva sumiu").toBeGreaterThan(-1);
     // Mesmas quatro obrigações da porta irmã, e pelo STATEMENT de cada escrita:
     // `toContain` no bloco inteiro fica verde quando sobra só o append no
     // histórico e o cliente não recebe nada.
     exigeHardStopCompleto(blocoDe(anc), "a corrida entre resolução e reserva");
     // E ele decide ANTES do READY: depois, o valor já teria caído noutro ramo.
     expect(
-      webhookCode.indexOf(anc),
+      turnCode.indexOf(anc),
       "o hard stop da reserva perdeu a precedência",
-    ).toBeLessThan(webhookCode.indexOf('if (opened.kind === "READY")'));
+    ).toBeLessThan(turnCode.indexOf('if (opened.kind === "READY")'));
   });
 
   it("o resultado do laço é CAPTURADO — sem isso a negação nunca é vista", () => {
@@ -1996,8 +2035,8 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // multi-tenant do caminho novo. E `turnId` divergente entre a reserva e os
     // ganchos quebra a correlação entre a chave de idempotência e os
     // `ai_usage_events` do mesmo turno.
-    const abre = parenBlock(webhookCode, webhookCode.indexOf("openTurnBudget("));
-    const ganchos = parenBlock(webhookCode, webhookCode.indexOf("makeBudgetHooks("));
+    const abre = parenBlock(turnCode, turnCode.indexOf("openTurnBudget("));
+    const ganchos = parenBlock(turnCode, turnCode.indexOf("makeBudgetHooks("));
     for (const [nome, args] of [["openTurnBudget", abre], ["makeBudgetHooks", ganchos]] as const) {
       expect(args, `${nome} não recebe o tenant pelo atalho de propriedade`).toMatch(
         /[{\s]organizationId\s*,/,
@@ -2016,16 +2055,16 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // As leituras que ALIMENTAM a decisão também são escopadas pela
     // organização: orçamento lido de outro tenant nunca esgota, e entitlement
     // de outro tenant decide sobre a franquia errada.
-    const leituras = [...webhookCode.matchAll(/loadAiFranchise\(/g)];
+    const leituras = [...turnCode.matchAll(/loadAiFranchise\(/g)];
     expect(leituras.length, "nenhuma leitura de franquia — o detector quebrou").toBeGreaterThan(0);
     for (const m of leituras) {
       expect(
-        parenBlock(webhookCode, m.index!),
+        parenBlock(turnCode, m.index!),
         `leitura de franquia fora do escopo da organização (índice ${m.index})`,
       ).toContain("organizationId");
     }
     expect(
-      parenBlock(webhookCode, webhookCode.indexOf("resolveOrgEntitlements(")),
+      parenBlock(turnCode, turnCode.indexOf("resolveOrgEntitlements(")),
       "o entitlement é resolvido para outro tenant",
     ).toContain("organizationId");
   });
@@ -2037,11 +2076,11 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // identidade do turno.
     // TODAS as leituras: o auto-resolve do handoff tem a sua, e ela não é a que
     // alimenta o entitlement — casar só a primeira mediria a errada.
-    const lidas = [...webhookCode.matchAll(/([A-Za-z_$][\w$]*) = await loadAiFranchise\(/g)].map(
+    const lidas = [...turnCode.matchAll(/([A-Za-z_$][\w$]*) = await loadAiFranchise\(/g)].map(
       (m) => m[1],
     );
     expect(lidas.length, "o estado do orçamento não é lido").toBeGreaterThan(0);
-    const args = parenBlock(webhookCode, webhookCode.indexOf("resolveOrgEntitlements("));
+    const args = parenBlock(turnCode, turnCode.indexOf("resolveOrgEntitlements("));
     expect(
       lidas.some((v) => args.includes(v)),
       "o entitlement é resolvido SEM o estado do orçamento — a franquia nunca esgota",
@@ -2050,7 +2089,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // `turn_id` é a chave de idempotência da reserva. Fixo, dois turnos
     // reutilizariam a MESMA reserva; sem `requestId` ele não é único por
     // invocação.
-    const turnId = webhookCode.match(/const turnId = ([^;]+);/);
+    const turnId = turnCode.match(/const turnId = ([^;]+);/);
     expect(turnId, "o turno perdeu identidade").not.toBeNull();
     expect(turnId![1], "o turno não é único por invocação").toContain("requestId");
   });
@@ -2060,9 +2099,9 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // segura, mas a distinção das três situações de §17.7.4 morre em silêncio.
     // E `mutatingToolUsed` é o que desliga o retry: sem ele, reserva duplicada.
     for (const tool of ["create_reservation", "update_reservation", "cancel_reservation"]) {
-      const i = webhookCode.indexOf(`case "${tool}":`);
+      const i = turnCode.indexOf(`case "${tool}":`);
       expect(i, `a ferramenta ${tool} sumiu`).toBeGreaterThan(-1);
-      const caso = webhookCode.slice(i, webhookCode.indexOf("break;", i));
+      const caso = turnCode.slice(i, turnCode.indexOf("break;", i));
       expect(caso, `${tool} não desliga o retry silencioso`).toContain("mutatingToolUsed = true");
       expect(caso, `${tool} não classifica o desfecho`).toContain("lastMutationOutcome =");
     }
@@ -2079,7 +2118,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // marca EXPIRED sem tocá-lo. Desfecho que não liquida não atrasa a
     // contabilidade — apaga o custo do teto.
     const desfechos: Array<[string, string, string]> = [
-      ["negação de orçamento", deniedBlock(webhookCode), '"SETTLED"'],
+      ["negação de orçamento", deniedBlock(turnCode), '"SETTLED"'],
       ["falha do provedor", blocoDe("if (agentError) {"), '"RELEASED"'],
       ["resposta vazia", blocoDe("if (!finalText || !finalText.trim())"), '"RELEASED"'],
       ["falha de envio ao WhatsApp", blocoDe("if (!sendRes.ok)"), '"SETTLED"'],
@@ -2135,13 +2174,31 @@ describe("webhook-whatsapp — ligação da franquia", () => {
       excecao.indexOf("settleTurnBudget("),
       "o lock é solto com a reserva ainda pendurada",
     ).toBeLessThan(excecao.indexOf("releaseAiLock()"));
+    // E os dois vêm antes de devolver o claim da mensagem: aquela RPC lança
+    // quando falha, e o `throw` pularia a liquidação e deixaria o lock órfão
+    // até o TTL (a reentrega cairia em `conversation_locked`).
+    const iClaim = excecao.indexOf("release_processed_whatsapp_message_claim");
+    expect(iClaim, "o catch externo deixou de devolver o claim da mensagem").toBeGreaterThan(-1);
+    expect(
+      excecao.indexOf("releaseAiLock()"),
+      "o claim da mensagem é devolvido antes de liquidar e soltar o lock",
+    ).toBeLessThan(iClaim);
+    // As duas são as do turno DESTA requisição. Redeclará-las no webhook (até
+    // como função vazia) desligaria a liquidação e o lock do catch externo sem
+    // que nenhum recorte acima percebesse — eles leem só o nome da chamada.
+    expect(webhookCode, "o catch externo não usa mais as portas do turno").toMatch(
+      /const \{ settleTurnBudget, releaseAiLock \} = agentTurn;/,
+    );
+    expect(webhookCode, "o webhook redeclarou uma porta do turno").not.toMatch(
+      /\b(?:const|let|var|function)\s+(?:settleTurnBudget|releaseAiLock)\b/,
+    );
 
     // A liquidação passa por UMA porta, e é ela quem fala com o adapter — para
     // que "todo desfecho liquida" seja uma regra, não seis cópias.
     const porta = blocoDe("const settleTurnBudget = async");
     expect(porta, "a porta única não finaliza de verdade").toContain("finalizeTurn(");
     expect(porta, "a porta única não registra marcos").toContain("recordMilestones(");
-    const fora = [...webhookCode.matchAll(/finalizeTurn\(/g)];
+    const fora = [...agentCode.matchAll(/finalizeTurn\(/g)];
     expect(fora.length, "voltou a haver finalização fora da porta única").toBe(1);
 
     // E a porta não pode ser NEUTRALIZADA. `if (true) return;` no topo desliga
@@ -2171,22 +2228,41 @@ describe("webhook-whatsapp — ligação da franquia", () => {
 
   it("todo retorno posterior à reserva liquida — a lista de desfechos é exaustiva", () => {
     // O caso acima prende SEIS blocos PELO NOME. Enumeração correta hoje não é
-    // regra: um `return new Response(...)` novo entre a reserva e os desfechos,
-    // com `finish` e sem liquidar, ficava verde — e cada turno que saísse por
-    // ele deixaria a reserva HELD, para a varredura marcar EXPIRED sem tocar
+    // regra: uma saída nova de `run` entre a reserva e os desfechos, com
+    // `finish` e sem liquidar, ficava verde — e cada turno que saísse por ela
+    // deixaria a reserva HELD, para a varredura marcar EXPIRED sem tocar
     // `settled_cents`. Aqui a pergunta é sobre TODO retorno depois da abertura.
-    const reserva = webhookCode.indexOf("openTurnBudget(");
+    //
+    // TODO `return` do corpo de `run`, não só a forma `return;`: as closures
+    // aninhadas depois da abertura (a troca de provedor e os argumentos do
+    // laço, onde moram `onToolCall` e `shouldContinue`) devolvem valor e são
+    // recortadas fora; qualquer outro `return` é saída do turno e tem de ter a
+    // forma de saída — um `return algo;` novo não escapa da contagem.
+    const reserva = turnCode.indexOf("openTurnBudget(");
     expect(reserva, "a abertura do orçamento sumiu").toBeGreaterThan(-1);
-    const retornos = [...webhookCode.matchAll(/return new Response\(/g)]
+    const [, fimRun] = runRange();
+    const iLaco = turnCode.indexOf("runAgentLoop(", turnCode.indexOf("const runOnce = () =>"));
+    expect(iLaco, "os argumentos do laço sumiram").toBeGreaterThan(reserva);
+    const abreLaco = turnCode.indexOf("(", iLaco);
+    const aninhados: Array<[number, number]> = [
+      braceBlock(turnCode, turnCode.indexOf("const switchToFallback = async")),
+      [abreLaco, abreLaco + parenBlock(turnCode, iLaco).length],
+    ];
+    const aninhado = (i: number) => aninhados.some(([a, b]) => i > a && i < b);
+    const retornos = [...turnCode.matchAll(/\breturn\b/g)]
       .map((m) => m.index!)
-      .filter((i) => i > reserva);
+      .filter((i) => i > reserva && i < fimRun && !aninhado(i));
+    for (const i of retornos) {
+      expect(turnCode.slice(i, i + "return;".length), `saída de run fora da forma no índice ${i}`)
+        .toBe("return;");
+    }
 
     // Os DOIS isentos: neles a RPC recusou a reserva, então não existe
     // `reservation_id` para finalizar. Recortados pelos próprios blocos — se
     // algum dia passarem a receber um id, entram na regra.
     const isentos = [
-      braceBlock(webhookCode, webhookCode.indexOf('if (opened.kind === "EXHAUSTED")')),
-      braceBlock(webhookCode, webhookCode.indexOf("if (failClosed)")),
+      braceBlock(turnCode, turnCode.indexOf('if (opened.kind === "EXHAUSTED")')),
+      braceBlock(turnCode, turnCode.indexOf("if (failClosed)")),
     ];
     const isento = (i: number) => isentos.some(([a, b]) => i > a && i < b);
 
@@ -2201,7 +2277,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     expect(retornos.filter(isento).length, "os retornos isentos deixaram de ser dois").toBe(2);
     for (const [a, b] of isentos) {
       expect(
-        webhookCode.slice(a, b),
+        turnCode.slice(a, b),
         "um desfecho sem reserva passou a liquidar — não há o que finalizar ali",
       ).not.toContain("settleTurnBudget(");
     }
@@ -2211,7 +2287,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // dois, e o pedaço novo não tem liquidação nenhuma.
     let anterior = reserva;
     for (const i of retornos) {
-      const trecho = webhookCode.slice(anterior, i);
+      const trecho = turnCode.slice(anterior, i);
       anterior = i;
       if (isento(i)) continue;
       expect(trecho, `retorno sem liquidação no índice ${i}`).toContain("settleTurnBudget(");
@@ -2255,7 +2331,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // O RÓTULO chega ao adapter: com um literal fixo aqui dentro, as seis
     // asserções de `settleTurnBudget("…")` viram teatro.
     // O cabeçalho fica FORA do recorte (a porta começa no `{` do corpo).
-    const param = webhookCode.match(/const settleTurnBudget = async \((\w+):/);
+    const param = turnCode.match(/const settleTurnBudget = async \((\w+):/);
     expect(param, "a porta perdeu o parâmetro de rótulo").not.toBeNull();
     const argsFinalize = parenBlock(porta, chamada);
     // Atalho de propriedade (`{ …, status }`) ou explícito — o que não pode é um
@@ -2315,7 +2391,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
     // A chave de IA é per-unit (BYOK) e o erro do provedor pode ecoar o request
     // com o header de autorização, ou a URL do Gemini com `?key=`. `String(err)`
     // aqui grava isso em `webhook_executions.error`.
-    const atribuicoes = [...webhookCode.matchAll(/agentError = (?!null)([^;\n]+)/g)];
+    const atribuicoes = [...turnCode.matchAll(/agentError = (?!null)([^;\n]+)/g)];
     expect(atribuicoes.length, "nenhuma atribuição de erro do agente — o detector quebrou")
       .toBeGreaterThan(0);
     for (const m of atribuicoes) {
@@ -2375,7 +2451,7 @@ describe("webhook-whatsapp — ligação da franquia", () => {
   it("o hard stop NÃO desliga o canal nem toca no billing da organização", () => {
     // O WhatsApp continua recebendo, a conversa continua visível e o
     // atendimento humano continua possível. A única escrita é na conversa.
-    const block = deniedBlock(webhookCode);
+    const block = deniedBlock(turnCode);
     for (const tabela of ["whatsapp_channels", "whatsapp_instances", "organizations", "units"]) {
       expect(block, `a negação escreve em ${tabela}`).not.toContain(`from("${tabela}")`);
     }
@@ -2383,22 +2459,37 @@ describe("webhook-whatsapp — ligação da franquia", () => {
   });
 
   it("nenhum valor de custo, token ou limite é enviado ao cliente final", () => {
-    const chamadas = [...webhookCode.matchAll(/sendOutbound\(/g)];
-    expect(chamadas.length, "nenhum envio encontrado — o detector quebrou").toBeGreaterThan(0);
-    for (const m of chamadas) {
-      expect(
-        statementFrom(webhookCode, m.index!),
-        `envio com valor financeiro no índice ${m.index}`,
-      ).not.toMatch(/settledCents|limitCents|budgetRemaining|reservedCents|estimated_cost|cost_brl/);
+    // Os dois lados do envio: o cru do provider no webhook, e o do canal no
+    // turno (cru no handoff, cercado por `sendAutomatic` no resto). O recorte é
+    // o dos ARGUMENTOS da chamada — é o que chega ao cliente —, porque o envio
+    // cru do webhook vive dentro de um objeto literal (`send: (text) => …`),
+    // onde um statement não fecha.
+    const envios: Array<[string, string, RegExp]> = [
+      ["webhook", webhookCode, /sendOutbound\(/g],
+      ["turno", turnCode, /(?:ctx\.send|sendAutomatic)\(/g],
+    ];
+    for (const [nome, src, padrao] of envios) {
+      const chamadas = [...src.matchAll(padrao)];
+      expect(chamadas.length, `nenhum envio encontrado no ${nome} — o detector quebrou`).toBeGreaterThan(0);
+      for (const m of chamadas) {
+        expect(
+          parenBlock(src, m.index!),
+          `envio com valor financeiro no ${nome}, índice ${m.index}`,
+        ).not.toMatch(/settledCents|limitCents|budgetRemaining|reservedCents|estimated_cost|cost_brl/);
+      }
     }
+    // Controle: o recorte enxerga um argumento financeiro quando ele existe.
+    expect(parenBlock("sendAutomatic(`R$ ${settledCents}`)", 0)).toMatch(/settledCents/);
   });
 
   it("budgetRemainingCents nunca sai numa resposta HTTP do webhook", () => {
     expect(webhook).not.toContain("budgetRemainingCents");
+    expect(turn).not.toContain("budgetRemainingCents");
   });
 
   it("nenhuma contagem de conversa autoriza a IA", () => {
     expect(webhook).not.toMatch(/conversationCount|messageQuota|interactionLimit/);
+    expect(turn).not.toMatch(/conversationCount|messageQuota|interactionLimit/);
   });
 
   it("controle positivo: o detector acha um símbolo que sabidamente existe", () => {
@@ -2433,8 +2524,8 @@ function statusLiteralDe(stmt: string): string | null {
 /** Toda escrita em `conversations` que grava razão de handoff NÃO-NULA. */
 function escritasDeHandoff(): Array<{ stmt: string; status: string | null; razao: string }> {
   const out: Array<{ stmt: string; status: string | null; razao: string }> = [];
-  for (const m of webhookCode.matchAll(/\.from\("conversations"\)/g)) {
-    const stmt = statementFrom(webhookCode, m.index!);
+  for (const m of agentCode.matchAll(/\.from\("conversations"\)/g)) {
+    const stmt = statementFrom(agentCode, m.index!);
     const razao = stmt.match(/handoff_reason:\s*([^,\n]+)/);
     // `handoff_reason: null` é o oposto — devolver a conversa à IA.
     if (!razao || razao[1].trim() === "null") continue;
@@ -2445,14 +2536,14 @@ function escritasDeHandoff(): Array<{ stmt: string; status: string | null; razao
 
 /** A escrita da porta ancorada pelo fragmento da RAZÃO que só ela usa. */
 function escritaDaPorta(fragmentoDaRazao: string): string {
-  const i = webhookCode.indexOf(fragmentoDaRazao);
+  const i = agentCode.indexOf(fragmentoDaRazao);
   expect(i, `porta não encontrada: ${fragmentoDaRazao}`).toBeGreaterThan(-1);
-  const j = webhookCode.lastIndexOf('.from("conversations")', i);
+  const j = agentCode.lastIndexOf('.from("conversations")', i);
   expect(j, `a porta ${fragmentoDaRazao} não escreve em conversations`).toBeGreaterThan(-1);
-  return statementFrom(webhookCode, j);
+  return statementFrom(agentCode, j);
 }
 
-describe("webhook-whatsapp — toda porta de handoff põe a conversa na fila", () => {
+describe("turno do agente e webhook — toda porta de handoff põe a conversa na fila", () => {
   const escritas = escritasDeHandoff();
   const portas = escritas.filter((e) => e.stmt.includes("last_silenced_reply_at: null"));
   const outras = escritas.filter((e) => !e.stmt.includes("last_silenced_reply_at: null"));

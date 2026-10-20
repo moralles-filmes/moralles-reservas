@@ -3,19 +3,20 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
- * Guardas de ACOPLAMENTO do provedor reserva no turno do `webhook-whatsapp`.
+ * Guardas de ACOPLAMENTO do provedor reserva no turno do agente.
  *
  * A decisão (que erro troca de provedor, que config vale) mora em
  * `agent-provider-fallback-core.ts` e é testada lá. Aqui ficam só as amarras
- * que existem no `index.ts`, que o vitest não importa (chama `serve()` e
- * importa `deno.land`): o laço pergunta ao núcleo, a chave do reserva é BYOK da
- * própria unidade, e as travas do retry silencioso continuam valendo para ele.
+ * que existem no turno (`_shared/agent/turn.ts`, que o `webhook-whatsapp`
+ * roda), e que o vitest não importa (o turno importa `esm.sh` em runtime): o
+ * laço pergunta ao núcleo, a chave do reserva é BYOK da própria unidade, e as
+ * travas do retry silencioso continuam valendo para ele.
  *
  * Fim de linha normalizado na leitura — mesma razão de
  * `whatsapp-inbound-reentry.test.ts` (checkout com `core.autocrlf=true`).
  */
 const EF = readFileSync(
-  resolve(__dirname, "../../supabase/functions/webhook-whatsapp/index.ts"),
+  resolve(__dirname, "../../supabase/functions/_shared/agent/turn.ts"),
   "utf8",
 ).replace(/\r\n/g, "\n");
 
@@ -54,7 +55,7 @@ function condicaoAntesDe(trecho: string, marco: string): string {
 const LACO = blocoDe("for (let attempt = 0; attempt <= 1; attempt++)");
 const TROCA = blocoDe("const switchToFallback = async");
 
-describe("provedor reserva — ligação no turno do webhook", () => {
+describe("provedor reserva — ligação no turno do agente", () => {
   it("a config vem do núcleo, contra o provedor principal da unidade", () => {
     expect(EF).toMatch(/parseFallbackConfig\(aiConfig,\s*provider_ai\)/);
     // O modelo do reserva passa pela mesma blindagem do principal.
