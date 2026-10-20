@@ -334,9 +334,17 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     const pending = h.request('webhook-whatsapp',await request(input)).finally(() => { done = true; });
     // Advance only the known debounce/retry timers while allowing all ordinary
     // I/O microtasks to settle. Do not let a fake timeout win a ready SDK reply.
-    for (let step=0;(!done || h.pendingBackground) && step<300;step++) {
+    // The 300 budget counts fake-clock advances only. With no fake timer due,
+    // the request is waiting on real I/O (webcrypto in the thread pool), which
+    // under a loaded full suite outlasts any number of setImmediate turns — so
+    // those steps wait real time instead, bounded by a wall-clock deadline.
+    const realDeadline = Date.now() + 20_000;
+    for (let advances=0;(!done || h.pendingBackground) && advances<300 && Date.now()<realDeadline;) {
       await new Promise<void>(resolve => setImmediate(resolve));
-      if ((!done || h.pendingBackground) && h.pendingTimers) await h.advanceTime(1000);
+      if (!done || h.pendingBackground) {
+        if (h.pendingTimers) { await h.advanceTime(1000); advances++; }
+        else await new Promise<void>(resolve => setTimeout(resolve, 1));
+      }
     }
     if (!done) fail('request_did_not_finish');
     const response = await pending;
