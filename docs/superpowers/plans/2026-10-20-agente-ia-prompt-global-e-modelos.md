@@ -379,55 +379,55 @@ Conteúdo, com `begin; … commit;` no arquivo (o harness aplica cru):
 
 ### Passo A — camada global sai do banco, snapshot idêntico
 
-- [ ] RED: `renderGlobalLayer(GLOBAL_PERSONA_BASELINE, { agentName, restaurantName })` é igual ao trecho do prompt atual para o fixture da Task 3. Substituição literal dos 2 placeholders, sem template engine.
-- [ ] RED: validação TS igual ao CHECK SQL, com os mesmos casos de P4.
-- [ ] RED, loader:
+- [x] RED: `renderGlobalLayer(GLOBAL_PERSONA_BASELINE, { agentName, restaurantName })` é igual ao trecho do prompt atual para o fixture da Task 3. Substituição literal dos 2 placeholders, sem template engine.
+- [x] RED: validação TS igual ao CHECK SQL, com os mesmos casos de P4.
+- [x] RED, loader:
   - fresco → `db` e entra no cache;
   - erro com cache → `stale_cache` (qualquer idade);
   - erro sem cache → `baseline`;
   - corpo inválido → mesmo caminho do erro;
   - os três caminhos de falha emitem `evt:"ai_global_prompt_read_failed"` (sem corpo no log);
   - TTL de 60s com relógio injetado.
-- [ ] GREEN: núcleo e loader. A leitura é por service role, de `ai_prompt_slots` (`slot='global_persona'`) → versão ativa. Não recebe id de escopo do caller. A polaridade D7 fica declarada em comentário no código.
-- [ ] Integração em `system-prompt.ts`: o trecho contíguo vira a camada 2 renderizada.
-- [ ] **Snapshot da Task 3 roda SEM `-u` e fica idêntico.**
-- [ ] Controle positivo: trocar 1 caractere do baseline → o snapshot falha; reverter.
-- [ ] `meta` de `webhook_executions` e `agent_usage` ganham `global_prompt_version` (id ou `baseline`) e `global_prompt_source`. Guard estático com controle positivo.
-- [ ] Verificação V e **commit separado do passo A** (`feat(agente-ia): camada global do prompt lida do banco (snapshot idêntico)`). O hash vai em §8.3: é a prova de §4.4.
+- [x] GREEN: núcleo e loader. A leitura é por service role, de `ai_prompt_slots` (`slot='global_persona'`) → versão ativa. Não recebe id de escopo do caller. A polaridade D7 fica declarada em comentário no código.
+- [x] Integração em `system-prompt.ts`: o trecho contíguo vira a camada 2 renderizada.
+- [x] **Snapshot da Task 3 roda SEM `-u` e fica idêntico.** (A0 `5548e18`; ver §8.3: o passo A virou A0/A1.)
+- [x] Controle positivo: trocar 1 caractere do baseline → o snapshot falha; reverter.
+- [x] `meta` de `webhook_executions` e `agent_usage` ganham `global_prompt_version` (id ou `baseline`) e `global_prompt_source`. Guard estático com controle positivo.
+- [x] Verificação V e **commit separado do passo A** (`feat(agente-ia): camada global do prompt lida do banco (snapshot idêntico)`). O hash vai em §8.3: é a prova de §4.4. Feito em dois commits: A0 `5548e18` (snapshot idêntico) e A1 `1471db6` (loader e telemetria).
 
 ### Passo B — delimitação e regra 13 (mudança deliberada)
 
-- [ ] RED em `agent-store-data-core.test.ts`:
+- [x] RED em `agent-store-data-core.test.ts`:
   - `neutralizeStoreText` remove `<{3,}` e `>{3,}`, inclusive `<<<FIM_DADOS_DA_LOJA>>>` embutido;
   - remove NUL e controles além de `\n`/`\t`;
   - trunca no limite de `STORE_TEXT_LIMITS`;
   - `storeDataBlock(title, text)` produz exatamente `<<<DADOS_DA_LOJA: {title}>>>\n…\n<<<FIM_DADOS_DA_LOJA>>>`;
   - texto vazio não gera bloco (mesmo critério de hoje).
-- [ ] GREEN e integração. Ordem da camada 8 (§4.1): preços e condições, informações adicionais, [FAQ] cardápio, delivery, outras informações.
+- [x] GREEN e integração. Ordem da camada 8 (§4.1): preços e condições, informações adicionais, [FAQ] cardápio, delivery, outras informações.
   - Os campos curtos de "Sobre o restaurante" (`units.description`, `payment_methods`, `opening_hours_text`) passam por `neutralizeStoreText`: só neutraliza, sem limite novo.
   - **Regra 13** entra depois da 12.
   - **Lembrete final** (camada 11) entra **depois** das instruções da plataforma (camada 10), com o texto de §6.3.4.
   - `ai_context_extra`/`ai_system_prompt` continuam instrução, na mesma posição relativa, truncados no limite.
-- [ ] RED → GREEN no guard estático: leitura de `settingsMap["restaurant_menu" | "delivery_response" | "restaurant_extra_info" | "rules_and_conditions" | "additional_info"]` fora de `storeDataBlock` reprova. Controle positivo sobre fonte sintética.
-- [ ] Snapshot B: atualizar com `-u` **só** o snapshot de paridade. O diff do arquivo de snapshot entre o commit do passo A e o do passo B vai para §8.3 e para a descrição do PR. O revisor de qualidade lê o diff linha a linha: só pode mudar delimitador, regra 13, lembrete e neutralização.
-- [ ] Verificação V e commit `feat(agente-ia): texto da loja como dado delimitado, regra 13 e lembrete de precedência`.
+- [x] RED → GREEN no guard estático: leitura de `settingsMap["restaurant_menu" | "delivery_response" | "restaurant_extra_info" | "rules_and_conditions" | "additional_info"]` fora de `storeDataBlock` reprova. Controle positivo sobre fonte sintética.
+- [x] Snapshot B: atualizar com `-u` **só** o snapshot de paridade. O diff do arquivo de snapshot entre o commit do passo A e o do passo B vai para §8.3 e para a descrição do PR. O revisor de qualidade lê o diff linha a linha: só pode mudar delimitador, regra 13, lembrete e neutralização.
+- [x] Verificação V e commit `feat(agente-ia): texto da loja como dado delimitado, regra 13 e lembrete de precedência`.
 
 ### Checkpoint C-B3 — prompt renderizado das 2 unidades (spec §4.4)
 
 O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco `DADOS_DA_LOJA`. Exemplo: um `ai_system_prompt` que dependa de texto colado em `restaurant_extra_info`.
 
-- [ ] Pedir ao usuário **autorização para ler conteúdo** de `settings` e os 3 campos curtos de `units` das 2 unidades. O classificador já bloqueou essa leitura uma vez. Alternativa: o usuário roda ele mesmo a consulta só de leitura (o plano entrega o SQL no chat) e salva o JSON fora do repo.
-- [ ] Harness local `src/lib/agent-prompt-checkpoint.local.test.ts`, pulado sem a env `PROMPT_CHECKPOINT_FILE`. Renderiza as camadas 2 e 8–11 com o código do commit A e do commit B. Os dados de tabela vêm de fixture. Escreve o diff por unidade **no scratchpad**. Dados de produção nunca entram no repo nem no commit.
+- [ ] Pedir ao usuário **autorização para ler conteúdo** de `settings` e os 3 campos curtos de `units` das 2 unidades. O classificador já bloqueou essa leitura uma vez. Alternativa: o usuário roda ele mesmo a consulta só de leitura (o plano entrega o SQL no chat) e salva o JSON fora do repo. (Pedido no fim do Chat 3; consulta entregue no chat.)
+- [x] Harness local `src/lib/agent-prompt-checkpoint.local.test.ts`, pulado sem a env `PROMPT_CHECKPOINT_FILE`. Renderiza as camadas 2 e 8–11 com o código do commit A e do commit B. Os dados de tabela vêm de fixture. Escreve o diff por unidade **no scratchpad**. Dados de produção nunca entram no repo nem no commit.
 - [ ] O usuário lê os diffs e decide. Se algo estiver preso, a correção é **conteúdo**: o platform_admin move a instrução para `ai_system_prompt` pelo `PromptTab`, antes do deploy da EF. Registrar a decisão em §8.3. C-B3 pendente **bloqueia o deploy (B6.7)**, não o PR.
 
 ### Regras e grafo
 
-- [ ] `.claude/rules/agente-ia.md`:
+- [x] `.claude/rules/agente-ia.md`:
   - nova: "camada global = persona/tom; regras 1–13, âncoras e formatação ficam no núcleo; leitura falha aberta para cache de qualquer idade e depois para `GLOBAL_PERSONA_BASELINE`";
   - nova: "texto livre da loja entra só por `storeDataBlock` (guard estático)";
   - `paths:` ganha `supabase/functions/_shared/agent/**`.
-- [ ] `.claude/rules/edge-functions.md`: `_shared/agent/global-prompt-core.ts` entra na lista de importados pelo front (B4/B5 usam render e limites).
-- [ ] `node scripts/ef-import-graph.mjs` para cada `_shared/agent/*` tocado ou novo. Registrar em §6.
+- [x] `.claude/rules/edge-functions.md`: `_shared/agent/global-prompt-core.ts` entra na lista de importados pelo front (B4/B5 usam render e limites).
+- [x] `node scripts/ef-import-graph.mjs` para cada `_shared/agent/*` tocado ou novo. Registrar em §6.
 
 ## 6. B4 + B5 — Telas (Chat 4)
 
@@ -685,6 +685,82 @@ Pré-gate (Opus) e review de spec (Sonnet):
 ### 8.3 B3: passo A, passo B e C-B3
 
 Hash do commit A (snapshot idêntico); diff do snapshot A → B; decisão do C-B3 por unidade.
+
+#### B3: RED, GREEN, controles e decisões (Chat 3, 2026-10-20)
+
+Commits: **A0 `5548e18`** (prova de §4.4), **A1 `1471db6`**, **B `028073c`**, endurecimento do review ``3e373e4``.
+
+- **Passo A dividido em A0/A1 (desvio do plano, decidido no chat).** O snapshot de paridade grava toda leitura do banco (`io`) e o `meta` de `webhook_executions`. A leitura do slot e a telemetria mudam essas seções por definição, sem mudar o prompt. Então:
+  - **A0 `5548e18`:** `composeAgentSystemPrompt` monta a camada 2 por `renderGlobalLayer(GLOBAL_PERSONA_BASELINE)`. O snapshot roda **sem `-u` e fica idêntico**: o `.snap` não muda no commit. Controle positivo: um caractere a mais no baseline reprova 6 cenários; o 7º (sem chave BYOK) não chega ao prompt.
+  - **A1 `1471db6`:** o loader é ligado e entra a telemetria. O snapshot foi regravado uma vez. Um script comparou seção por seção os 7 cenários: `llm` (prompt, ferramentas e histórico) **idêntica em todos**. Mudam só as 2 leituras novas (`ai_prompt_slots` e `ai_prompt_versions`, filtradas só pelo slot) e `global_prompt_version`/`global_prompt_source` em `executions` e em `agent_usage`; no cenário "resposta vazia", `meta: {}` passa a ter os dois campos. O review de spec conferiu por conta própria.
+  - O harness do chat semeia a v1 com `GLOBAL_PERSONA_BASELINE`, como em produção depois do `db push`; o gêmeo SQL prende seed == baseline.
+- **Núcleo (`global-prompt-core.ts`):**
+  - RED: 28/28 sem as funções. GREEN 28/28.
+  - `isValidGlobalPromptBody` gêmea do CHECK, com os casos do P4/P4b e tamanho em code points (`char_length`).
+  - `renderGlobalLayer` numa passada, com função de substituição: `$&` e `{{…}}` dentro do valor ficam literais.
+  - `resolveGlobalPrompt`/`freshCachedGlobalPrompt` implementam D7: falha usa cache de qualquer idade sem renovar o relógio dele; sem cache, usa o baseline; corpo ou id inválido seguem o caminho do erro. TTL de 60s; relógio que volta não serve cache.
+  - `CONTROL_CHAR_CLASS` virou gêmea do SQL em `global-prompt-sql-twin.test.ts`, com controle positivo.
+- **Loader (`global-prompt.ts`) e adapter (`adapters/global-prompt-read.ts`).**
+  - O `check-portabilidade` barrou `.from(` fora de adapter (489 > 487). Por isso as 2 leituras foram para `adapters/`, e a dívida voltou a 487.
+  - O loader não importa `security.ts`: o logger entra por chamada, porque o `tsc -b` alcança o loader e `security.ts` usa `Deno`.
+  - RED: o módulo não existia. GREEN 12/12, cobrindo fresco/TTL/stale/baseline nas 7 causas: 42P01, PGRST205, exceção, slot ausente, erro e ausência da versão, corpo inválido.
+  - No turno real, `beforeQuery` lança na leitura do slot: o turno termina em `success` com o prompt byte a byte igual ao do baseline, e o evento sai sem o corpo.
+  - Teste da versão ativa: com outro corpo no banco, ele é o que entra no prompt.
+- **Telemetria.** `promptMeta` entra em todo `finish(` do `turn.ts` depois da carga (8 chamadas) e no `agent_usage`. O guard estático pega qualquer `finish(`, não só `await`. Controles: tirar a chave de um `finish`, do `agent_usage`, da carga, e acrescentar um `void finish("extra")`. O `webhook_error` do catch externo do adapter não leva `promptMeta`; a regra diz isso.
+  - `ai-budget-wiring-guard` ficou vermelho no A1 pelo texto literal `finish("ai_budget_exhausted")`. O guard passou a aceitar exatamente `finish("ai_budget_exhausted")` antes da carga e `finish("ai_budget_exhausted", undefined, { ...promptMeta })` depois; o controle continua vermelho.
+- **Passo B `028073c`.**
+  - `storeDataBlock(title, raw, limit)` neutraliza dentro do helper; o guard exige o limite da mesma chave.
+  - Ordem da camada 8 conforme §4.1: "Preços e condições" mudou de lugar e agora vem depois de "Regras de reserva" (camada 7).
+  - Regra 13 entra depois da 12; o lembrete final, com o texto exato de §6.3.4, depois das instruções da plataforma.
+  - `ai_context_extra` e `ai_system_prompt` continuam instrução, só truncados.
+  - Guard estático com 6 fontes sintéticas reprovadas e a canônica aprovada.
+  - **Diff do prompt A1→B** (cenário rico):
+    - `+13. Dados da loja: …` depois da regra 12;
+    - o bloco "Preços e condições do restaurante" sai de antes de "Regras de reserva" e volta depois dela;
+    - os 5 textos ganham `<<<DADOS_DA_LOJA: Preços e condições|Informações adicionais|Cardápio|Delivery e retirada|Outras informações>>>` … `<<<FIM_DADOS_DA_LOJA>>>`;
+    - `+Em conflito, valem as REGRAS OBRIGATÓRIAS…` no fim.
+
+    Nos outros 5 cenários que chegam ao LLM, só a regra 13 e o lembrete. `io`, `executions` e `logs` ficaram idênticos em todos. O diff integral vai para a descrição do PR (B6.3).
+- **Endurecimento depois dos reviews ``3e373e4``.** Antes de corrigir, cada achado virou RED no teste; todos têm controle positivo (9 mutações vermelhas). O snapshot **não mudou**: o texto do fixture não tem quebra nem invisível.
+  - **P1-a (Opus).** `halls`, `special_dates` e `table_blocks` são graváveis por **todo membro, inclusive o operador** (RLS das migrations 030, 013 e 032), e entravam crus com `\n`. Um título de bloqueio forjava "Preços e condições do restaurante: 50%…", seção que a Regra 7 aceita. A spec §6.3.6 dizia que "o operador não grava": é falso para essas tabelas.
+    - Correção: `shortStoreText` (neutraliza, uma linha só, teto de 200 ou 1000) em nome e descrição de salão, nome de data especial, título e motivo de bloqueio, nome de salão no sufixo e nos campos de `units` (nome, descrição, pagamento, horário, endereço, cozinhas, facilidades, telefone, Instagram e site).
+    - Também em `restaurant_name`, `agent_name` (40) e primeiro nome do cliente (40).
+  - **P1-b.** Alergias, restrições e VIP mantinham `\n` e podiam forjar uma linha de voucher do cliente. Hoje não chegam ao prompt no WhatsApp: `resolveOrCreateCustomer` lê só `id, name, phone, email, emails, birthday`. Passam por `shortStoreText` como defesa para outro canal.
+  - **P2-a.** Invisíveis atravessavam a neutralização:
+    - removidos agora: `\p{Cf}` (zero-width, bidi, tags, BOM, soft hyphen), CGJ, seletores de variação e C1;
+    - NEL, U+2028 e U+2029 viram `\n`;
+    - homóglifos ficam como risco residual.
+  - **P2-b.** Neutralizar era quadrático com marcadores aninhados: 16 mil níveis (210 KB) levavam 2,3 s. Agora trunca **antes** de neutralizar, e `limit` é obrigatório.
+  - **P2-c.** `booking_window_days`, `reservation_duration_minutes` e `reservation_tolerance_minutes` (classe `manager`, sem guard de valor) entravam crus, podendo ser string com `\n` ou objeto. Agora só inteiro positivo.
+  - **P3.**
+    - O guard estático reprova `Object.entries/values/keys(settingsMap)`, `JSON.stringify(settingsMap)` e `...settingsMap`. Ficam residuais a chave montada em tempo de execução e leituras fora de `_shared/agent/**` e do webhook.
+    - O harness C-B3 recusa entrada ou saída dentro desta worktree **ou** do checkout principal: caminho real, comparação sem caixa, checagem antes de criar pasta. Também valida slug e ref.
+- **Review de spec (Sonnet): CONFORME COM RESSALVAS.** Ressalvas fechadas: evidência e checkboxes, regra da telemetria, guard da franquia estrito, limite do guard estático documentado.
+- **Review de qualidade e segurança (Opus): APROVADO COM RESSALVAS**, sem P0. Corrigidos P1-a, P1-b, P2-a, P2-b, P2-c e P3 (guards e harness). Conferidos corretos: loader D7, telemetria, render, cache stale, ausência de corpo no log e prompt caching (lembrete constante no fim do bloco único).
+- **Para o usuário decidir (não corrigido):**
+  - **P2-d.** O lembrete final ("Em conflito, valem as REGRAS OBRIGATÓRIAS") vem depois das "Instruções adicionais" da plataforma. Em conflito, a instrução da plataforma agora perde para as regras 1–13; antes, era a última palavra. É o texto literal da spec §6.3.4. Se alguma loja tiver `ai_system_prompt` que contraria uma regra (por exemplo, oferecer fila de espera contra a Regra 12), o C-B3 mostra. Alternativa: "…; as Instruções adicionais da plataforma podem ajustá-las".
+  - **RLS (follow-up de banco, fora do B3):**
+    - operador grava `halls`, `special_dates` e `table_blocks`;
+    - possível INSERT anon em colunas de equipe de `customers` (`vip_notes`) via `anon_insert_customers` (023b). Não medido; conferir com `has_column_privilege('anon','customers','vip_notes','INSERT')` no harness local.
+  - **P3 de texto:** a Regra 7 nega promoção escrita no Cardápio (só aceita "Preços e condições"), e a âncora negativa do Giftback compete com "Preços e condições".
+- **Verificação V** (cada commit):
+  - typecheck 0;
+  - lint 0 erros (17 warnings antigos);
+  - suíte: falhas só nos 8 arquivos do baseline (45 testes). No B, `whatsapp-reservation-automation-routing` teve timeout de worker do vitest sob carga; isolado deu as mesmas 3 falhas do baseline;
+  - build ok;
+  - `deno check` de `webhook-whatsapp` ok;
+  - `check-padrao` ok;
+  - `check-portabilidade` 487 = baseline.
+- **Grafo (`ef-import-graph`):** `global-prompt-core.ts`, `global-prompt.ts`, `adapters/global-prompt-read.ts`, `store-data-core.ts`, `system-prompt.ts` e `turn.ts` → só **`webhook-whatsapp`**. `global-prompt-core.ts` também vai para o front no B4/B5, que exige deploy do front.
+
+#### Checkpoint C-B3 (pendente com o usuário; bloqueia o deploy B6.7, não o PR)
+
+- Harness: `src/lib/agent-prompt-checkpoint.local.test.ts`. Sem `PROMPT_CHECKPOINT_FILE`, é pulado.
+  - Renderiza `loadAgentSystemPrompt` do commit `1471db6` (A1) e do atual, sobre um cliente falso com os dados exportados.
+  - Escreve `<slug>.A.txt`, `<slug>.B.txt` e `<slug>.diff` fora de qualquer checkout.
+  - Validado com dados sintéticos: um "IMPORTANTE PARA A IA: …" em `restaurant_extra_info` aparece dentro do bloco "Outras informações", que é o caso que o C-B3 procura.
+- A consulta só de leitura (`units` + chaves de `settings` das unidades com `ai_config`) foi entregue no chat. A leitura de conteúdo de produção depende de autorização do usuário, ou o usuário roda.
+- Decisão por unidade: _(a preencher)_.
 
 ### 8.4 B6: rollout
 
