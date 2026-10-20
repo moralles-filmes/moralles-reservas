@@ -2690,9 +2690,10 @@ dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 7901–7906, controles 7908–7913; 7907, 7914 e 7915 livres. Task 1.2: casos
 7920–7929, controles 7930–7939. Task 1.3: casos 7940–7947, controles
 7950–7957; 7948–7949 e 7958–7959 livres. Task 1.4: casos 7960–7966,
-controles 7970–7976; 7967–7969 e 7977–7979 livres. As tasks seguintes usam
+controles 7970–7976, e no fix round 1 o IG-4.8 (7967) e o C-IG-4.8 (7978);
+7968–7969, 7977 e 7979 livres. As tasks seguintes usam
 7980+. O 79 imprime os ordinais, a contagem e **aborta** se ela divergir do
-esperado (hoje **62 e 62**); quem acrescenta casos atualiza o número na última
+esperado (hoje **64 e 64**); quem acrescenta casos atualiza o número na última
 instrução do arquivo.
 
 **Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
@@ -2824,13 +2825,42 @@ cair na IG. Fora do 79, a mesma Task rodou o 08 (sequência `fase6c`) e o 67d
 (sequência própria, PostgreSQL local como `postgres`) verdes, e o bloco de
 varredura de colunas do 67d contra o `ig79` depois da 1.4.
 
+Fix round 1 da Task 1.4: a guarda passa a recusar mudar `unit_id` em qualquer
+canal e cliente da conversa IG diferente do cliente do contato (IG-4.4 e
+C-IG-4.4 crescem: conversa WhatsApp movida para a UA2 da mesma organização,
+UPDATE e INSERT de conversa IG com cliente quando o contato não tem); o link
+trava o cliente antes do contato (ordem do soft delete) e confere tudo de novo
+sob os dois locks (IG-4.6 inalterado); e o IG-4.8 prova, pelo
+`anonymize_customer` do platform_admin e pelo soft delete direto do owner, que
+anonimizar o contato zera o `contact_name` da conversa IG dele e não o de outro
+contato (C-IG-4.8: sem o trigger o nome sobrevive; sem o filtro do contato
+todos somem).
+
+**`lock_timeout` da 1.4 (fora do 79, duas sessões).** A migration faz
+`set local lock_timeout = '5s'` logo após o `begin`. O 79 roda numa sessão só e
+não consegue segurar um lock concorrente, então a prova é manual, num banco
+descartável preparado até a 1.3 (mesma sequência acima):
+
+```bash
+# sessão A: segura ACCESS SHARE em conversations por 15 s
+P -c "begin; lock table public.conversations in access share mode; select pg_sleep(15); commit;" &
+P -c "select pg_sleep(2)"
+P -f supabase/migrations/20261020120300_conversations_instagram_channel.sql
+#   -> ERROR: canceling statement due to lock timeout (exit 3, ~5 s), coluna channel ausente
+wait; P -f supabase/migrations/20261020120300_conversations_instagram_channel.sql   # exit 0
+```
+
+Controle: a mesma sequência com uma cópia da migration sem a linha do
+`lock_timeout` espera o lock inteiro (13 s) e aplica.
+
 **Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
 loopback, banco recriado do zero): RED com `ERROR: 79: objetos do modulo
 Instagram ausentes` (exit 3) antes da 1.1, `objetos da conta/contato do
 Instagram ausentes` (exit 3) com só a 1.1 e `objetos da fila de inbound do
 Instagram ausentes` (exit 3) com 1.1 e 1.2, `objetos de conversa do
 Instagram ausentes` (exit 3) com 1.1–1.3; as quatro migrations cruas
-aplicadas duas vezes e o 79 com 62/62 após cada aplicação, sem linha residual nas
+aplicadas duas vezes e o 79 com 64/64 após cada aplicação (62/62 antes do
+fix round 1), sem linha residual nas
 tabelas novas, no `audit_log` da conta, segredo no Vault nem schema `net`.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)

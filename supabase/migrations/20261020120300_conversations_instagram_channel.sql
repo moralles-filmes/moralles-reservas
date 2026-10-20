@@ -34,6 +34,7 @@
 -- Sem URL do projeto e sem segredo.
 
 begin;
+set local lock_timeout = '5s';
 
 -- ============================================================================
 -- 1. Colunas
@@ -56,7 +57,11 @@ comment on column public.conversations.instagram_contact_id is
 -- Tudo roda numa transação que já segura ACCESS EXCLUSIVE em `conversations`
 -- desde o ADD COLUMN; o NOT VALID + VALIDATE segue o padrão do plano e deixa
 -- explícito que as linhas existentes (todas `whatsapp` com cliente) foram
--- conferidas. A tabela é pequena; o webhook espera o commit, não falha.
+-- conferidas. O `lock_timeout` de 5s (logo após o `begin`) limita a espera
+-- pelo lock: se o webhook ou o painel estiverem segurando a tabela, o ALTER
+-- desiste em 5s, a migration aborta inteira (ROLLBACK, nada aplicado) e a
+-- fila de escritas atrás dela é liberada. Repetir numa janela calma. Depois de
+-- obtido o lock, as escritas concorrentes esperam o COMMIT (tabela pequena).
 alter table public.conversations drop constraint if exists conversations_channel_check;
 alter table public.conversations
   add constraint conversations_channel_check
@@ -95,6 +100,15 @@ create index if not exists conversations_unit_channel_status_idx
 -- não tem INSERT nem UPDATE nessas colunas (20261017160000), então nunca chega
 -- aqui. Dispara só nas colunas de identidade: o append de mensagem e o handoff
 -- não pagam a checagem.
+--
+-- Regras: canal e unidade imutáveis (qualquer canal); conversa IG na unidade
+-- do contato e com o MESMO cliente do contato (nulo só se o contato não tem
+-- cliente); cliente da organização da unidade. O link
+-- (`link_instagram_contact_customer`) grava o contato antes da conversa, então
+-- a conversa já encontra o cliente novo no contato. Apagar o cliente de fato
+-- põe nulo no contato (`on delete set null`) e APAGA a conversa (FK
+-- `customer_id … on delete cascade`): a conversa nunca é atualizada nesse
+-- caminho.
 create or replace function public.conversations_channel_guard()
 returns trigger
 language plpgsql
@@ -103,6 +117,7 @@ set search_path = ''
 as $$
 declare
   v_contact_unit uuid;
+  v_contact_cust uuid;
   v_unit_org     uuid;
   v_cust_org     uuid;
 begin
@@ -111,13 +126,22 @@ begin
       using errcode = 'check_violation';
   end if;
 
+  if tg_op = 'UPDATE' and new.unit_id is distinct from old.unit_id then
+    raise exception 'conversations: unidade e imutavel'
+      using errcode = 'check_violation';
+  end if;
+
   -- A forma (canal x cliente x contato) é do CHECK de identidade; aqui só o
   -- tenant do contato presente.
   if new.channel = 'instagram' and new.instagram_contact_id is not null then
-    select c.unit_id into v_contact_unit
+    select c.unit_id, c.customer_id into v_contact_unit, v_contact_cust
       from public.instagram_contacts c where c.id = new.instagram_contact_id;
     if v_contact_unit is null or v_contact_unit is distinct from new.unit_id then
       raise exception 'conversations: contato do Instagram nao e da unidade da conversa'
+        using errcode = 'check_violation';
+    end if;
+    if new.customer_id is distinct from v_contact_cust then
+      raise exception 'conversations: cliente da conversa do Instagram nao e o do contato'
         using errcode = 'check_violation';
     end if;
   end if;
@@ -421,8 +445,16 @@ $$;
 -- Liga (ou religa) o contato a um cliente vivo da organização do contato e
 -- espelha o cliente na conversa do contato. Contato inexistente ou
 -- anonimizado, cliente de outra organização, apagado ou inexistente: o MESMO
--- 42501. O `for share` no cliente serializa contra a anonimização dele (o
--- soft delete espera o link, e o trigger da Task 1.2 alcança o contato).
+-- 42501.
+--
+-- Ordem de locks: CLIENTE antes do CONTATO, a mesma do caminho do soft delete
+-- (UPDATE de `customers.deleted_at` -> trigger da Task 1.2 -> UPDATE do
+-- contato). Ordem inversa abriria deadlock link x anonimização. Por isso a
+-- organização do contato é lida SEM lock, o `for share` no cliente vem
+-- primeiro (o soft delete dele espera o link, e o trigger alcança o contato
+-- já ligado), e só então o `for update` no contato, com TODAS as condições
+-- conferidas de novo sob os dois locks (contato não anonimizado, mesma
+-- organização, cliente vivo).
 create or replace function public.link_instagram_contact_customer(p_contact_id uuid, p_customer_id uuid)
 returns void
 language plpgsql
@@ -432,22 +464,41 @@ set search_path = ''
 as $$
 declare
   v_org  uuid;
+  v_org2 uuid;
   v_anon timestamptz;
   v_ok   uuid;
   v_n    integer;
 begin
-  select c.organization_id, c.anonymized_at into v_org, v_anon
+  -- 1. Organização do contato, sem lock.
+  select c.organization_id into v_org
     from public.instagram_contacts c
-   where c.id = p_contact_id
-   for update;
+   where c.id = p_contact_id;
 
-  if v_org is not null and v_anon is null and p_customer_id is not null then
+  -- 2. Cliente primeiro: vivo e da organização do contato.
+  if v_org is not null and p_customer_id is not null then
     select cu.id into v_ok
       from public.customers cu
      where cu.id = p_customer_id
        and cu.organization_id = v_org
        and cu.deleted_at is null
      for share;
+  end if;
+
+  -- 3. Contato depois, e tudo conferido de novo sob os dois locks.
+  if v_ok is not null then
+    select c.organization_id, c.anonymized_at into v_org2, v_anon
+      from public.instagram_contacts c
+     where c.id = p_contact_id
+     for update;
+    if v_org2 is distinct from v_org or v_anon is not null or not exists (
+      select 1
+        from public.customers cu
+       where cu.id = p_customer_id
+       and cu.organization_id = v_org
+       and cu.deleted_at is null
+    ) then
+      v_ok := null;
+    end if;
   end if;
 
   if v_ok is null then
@@ -472,9 +523,43 @@ end;
 $$;
 
 -- ============================================================================
+-- 6b. LGPD: anonimizar o contato limpa o nome copiado para a conversa IG
+-- ============================================================================
+-- `contact_name` da conversa do Instagram é cópia de `name`/`@username` do
+-- contato. Quando o contato é anonimizado (o soft delete do cliente aciona o
+-- trigger da Task 1.2, ou qualquer outro caminho que marque `anonymized_at`),
+-- a cópia também some. SECURITY DEFINER pelo mesmo motivo do trigger da 1.2:
+-- `conversations` é FORCE RLS e `authenticated` não tem UPDATE em
+-- `contact_name`; o soft delete feito por um membro pelo PostgREST precisa
+-- alcançar a conversa. O dono efetivo precisa de BYPASSRLS (README §79).
+-- Só `contact_name` é tocado: o guard de canal não dispara.
+create or replace function public.conversations_clear_instagram_contact_name()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.conversations cv
+     set contact_name = null
+   where cv.instagram_contact_id = new.id
+     and cv.contact_name is not null;
+  return null;
+end;
+$$;
+
+drop trigger if exists conversations_clear_instagram_contact_name_trg on public.instagram_contacts;
+create trigger conversations_clear_instagram_contact_name_trg
+  after update of anonymized_at on public.instagram_contacts
+  for each row
+  when (old.anonymized_at is null and new.anonymized_at is not null)
+  execute function public.conversations_clear_instagram_contact_name();
+
+-- ============================================================================
 -- 7. ACL das funções novas (assinatura completa)
 -- ============================================================================
 revoke all on function public.conversations_channel_guard() from public, anon, authenticated, service_role;
+revoke all on function public.conversations_clear_instagram_contact_name() from public, anon, authenticated, service_role;
 
 revoke all on function public.get_or_create_instagram_conversation(uuid) from public, anon, authenticated, service_role;
 grant execute on function public.get_or_create_instagram_conversation(uuid) to service_role;
@@ -500,6 +585,8 @@ commit;
 -- de 20260905143453:204 e 20261019183559:777 sem o filtro de canal):
 --   drop function if exists public.link_instagram_contact_customer(uuid, uuid);
 --   drop function if exists public.get_or_create_instagram_conversation(uuid);
+--   drop trigger if exists conversations_clear_instagram_contact_name_trg on public.instagram_contacts;
+--   drop function if exists public.conversations_clear_instagram_contact_name();
 --   drop trigger if exists conversations_channel_guard on public.conversations;
 --   drop function if exists public.conversations_channel_guard();
 --   drop index if exists public.conversations_unit_channel_status_idx;
