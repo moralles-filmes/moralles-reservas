@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_MODES,
+  CONTROL_CHAR_CLASS,
   GLOBAL_PERSONA_BASELINE,
   GLOBAL_PROMPT_MAX_CHARS,
   GLOBAL_PROMPT_PLACEHOLDERS,
@@ -112,6 +113,9 @@ function twinDiffs(t: SqlTwin): string[] {
   for (const s of t.slots) {
     if (s !== `'${GLOBAL_PROMPT_SLOT}'`) out.push(`CHECK de slot ${s} != '${GLOBAL_PROMPT_SLOT}'`);
   }
+  if (t.bodyControlClass !== `[${CONTROL_CHAR_CLASS}]`) {
+    out.push(`classe de controle do SQL ${t.bodyControlClass} != CONTROL_CHAR_CLASS [${CONTROL_CHAR_CLASS}]`);
+  }
   if (t.bodyControlClass !== t.valueControlClass) {
     out.push(`classe de controle do corpo ${t.bodyControlClass} != do guard de valor ${t.valueControlClass}`);
   }
@@ -142,7 +146,8 @@ describe("prompt global: gêmeos SQL <-> TS", () => {
 
 describe("prompt global: o baseline renderizado é o trecho atual do prompt", () => {
   const parts = (over: Partial<AgentPromptParts>): AgentPromptParts => ({
-    includeFaq: false, agentName: "Yumi", restaurantName: "Exemplo", identityLine: "IDENTIDADE_DO_CANAL.",
+    includeFaq: false, agentName: "Yumi", restaurantName: "Exemplo", globalPromptBody: GLOBAL_PERSONA_BASELINE,
+    identityLine: "IDENTIDADE_DO_CANAL.",
     todayBR: "segunda-feira, 05/10/2026", weekdayName: "segunda-feira", upcomingDaysLines: ["- amanhã: terça-feira"],
     customerFirstName: "", formattingRules: "FORMATACAO_DO_CANAL", unitAddress: "", restaurantInfoLines: [],
     hallScheduleBlock: null, hoursLines: [], specialLines: [], blockedLines: [], giftbackLines: [], prefsLines: [],
@@ -203,6 +208,11 @@ describe("controle positivo: twinDiffs reprova SQL divergente", () => {
   it("classes de controle divergentes entre corpo e guard de valor", () => {
     expect(mutate("v_text ~ '[\\x01-\\x08\\x0b-\\x1f\\x7f]'", "v_text ~ '[\\x01-\\x08\\x0e-\\x1f\\x7f]'")[0])
       .toMatch(/^classe de controle/);
+  });
+
+  it("classe de controle do corpo diferente da do núcleo TS", () => {
+    expect(mutate("p_body !~ '[\\x01-\\x08\\x0b-\\x1f\\x7f]'", "p_body !~ '[\\x01-\\x08\\x0e-\\x1f\\x7f]'")[0])
+      .toMatch(/^classe de controle do SQL .* != CONTROL_CHAR_CLASS/);
   });
 
   it("os extratores reprovam SQL com outra forma", () => {

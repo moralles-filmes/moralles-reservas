@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { composeAgentSystemPrompt, type AgentPromptParts } from '../../supabase/functions/_shared/agent/system-prompt';
 import { agentTools } from '../../supabase/functions/_shared/agent/tools';
+import { GLOBAL_PERSONA_BASELINE } from '../../supabase/functions/_shared/agent/global-prompt-core';
 
 /**
  * Ponto de extensão por canal do núcleo do agente (`_shared/agent/`).
@@ -17,7 +18,8 @@ import { agentTools } from '../../supabase/functions/_shared/agent/tools';
 const read = (path: string) => readFileSync(resolve(__dirname, '../..', path), 'utf8').replace(/\r\n/g, '\n');
 
 const parts = (over: Partial<AgentPromptParts> = {}): AgentPromptParts => ({
-  includeFaq: false, agentName: 'Yumi', restaurantName: 'Exemplo', identityLine: 'IDENTIDADE_DO_CANAL.',
+  includeFaq: false, agentName: 'Yumi', restaurantName: 'Exemplo', globalPromptBody: GLOBAL_PERSONA_BASELINE,
+    identityLine: 'IDENTIDADE_DO_CANAL.',
   todayBR: 'segunda-feira, 05/10/2026', weekdayName: 'segunda-feira', upcomingDaysLines: ['- amanhã: terça-feira'],
   customerFirstName: '', formattingRules: 'FORMATACAO_DO_CANAL', unitAddress: '', restaurantInfoLines: [],
   hallScheduleBlock: null, hoursLines: [], specialLines: [], blockedLines: [], giftbackLines: [], prefsLines: [],

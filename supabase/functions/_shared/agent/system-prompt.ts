@@ -23,6 +23,7 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { buildUpcomingDaysLines, WEEKDAY_NAMES_PT } from "../agent-calendar-core.ts";
 import type { AgentCustomer, AgentUnit } from "./channel-context.ts";
+import { GLOBAL_PERSONA_BASELINE, renderGlobalLayer } from "./global-prompt-core.ts";
 
 // ─── Bloco de horários por salão ───────────────────────────────────────────────
 //
@@ -178,6 +179,11 @@ export interface AgentPromptParts {
   includeFaq: boolean;
   agentName: string;
   restaurantName: string;
+  /**
+   * Camada global (persona e tom) ainda com `{{agent_name}}`/`{{restaurant_name}}`;
+   * renderizada aqui entre o cabeçalho e a identidade do canal.
+   */
+  globalPromptBody: string;
   /** Frase de identidade do cliente no canal (no WhatsApp, o telefone dele). */
   identityLine: string;
   todayBR: string;
@@ -201,7 +207,7 @@ export interface AgentPromptParts {
 /** Montagem pura do texto. Bloco novo é ANEXADO (preserva o prefixo do cache). */
 export function composeAgentSystemPrompt(p: AgentPromptParts): string {
   const {
-    includeFaq, agentName, restaurantName, identityLine, todayBR, weekdayName,
+    includeFaq, agentName, restaurantName, globalPromptBody, identityLine, todayBR, weekdayName,
     upcomingDaysLines, customerFirstName, formattingRules, unitAddress,
     restaurantInfoLines, hallScheduleBlock, hoursLines, specialLines, blockedLines,
     giftbackLines, prefsLines, customPrompt, settingsMap,
@@ -211,8 +217,7 @@ export function composeAgentSystemPrompt(p: AgentPromptParts): string {
     : `Você é ${agentName}, atendente de reservas do ${restaurantName}. `;
 
   return agentHeader +
-      `IDENTIDADE: Você se chama ${agentName} e atende como parte da equipe do ${restaurantName} — fale sempre na primeira pessoa, de forma natural e humana, tratando o cliente por "você". NÃO diga espontaneamente que é um assistente virtual, robô, IA, bot ou sistema automático, e não use linguagem robótica. Só revele que é um atendimento virtual se o cliente perguntar DIRETAMENTE se está falando com um robô/IA/atendente automático — nesse caso seja honesta e responda com naturalidade (ex: "Sou a ${agentName}, faço o atendimento virtual do ${restaurantName} e quando precisar chamo alguém da equipe"). Ao transferir para um colega (handoff), dizer que vai chamar alguém da equipe NÃO exige revelar que você é virtual. ` +
-      `Seja cordial, eficiente e responda sempre em português brasileiro. Respostas curtas e diretas — em geral 3 a 4 linhas; use mais espaço só quando precisar listar horários, opções ou preços. Evite excesso de emojis. ` +
+      renderGlobalLayer(globalPromptBody, { agentName, restaurantName }) +
       `${identityLine} Hoje é ${todayBR}. ` +
       `\n\nPróximos dias (use esta lista para saber o dia da semana de "amanhã", "sábado", "dia 18" etc. — nunca calcule de cabeça):\n${upcomingDaysLines.join("\n")}\n\n` +
       (customerFirstName
@@ -571,6 +576,7 @@ export async function loadAgentSystemPrompt(
     includeFaq,
     agentName,
     restaurantName,
+    globalPromptBody: GLOBAL_PERSONA_BASELINE,
     identityLine: args.identityLine,
     todayBR,
     weekdayName,
