@@ -69,6 +69,9 @@ function validate(p: UpdatePayload): string | null {
   if (u.party_size != null && (typeof u.party_size !== "number" || u.party_size < 1 || u.party_size > 30)) {
     return "party_size inválido.";
   }
+  if (u.table_id != null && typeof u.table_id !== "string") return "table_id inválido.";
+  if (u.hall_id != null && typeof u.hall_id !== "string") return "hall_id inválido.";
+  if (u.notes != null && typeof u.notes !== "string") return "notes inválido.";
   return null;
 }
 
@@ -109,15 +112,18 @@ serve(async (req) => {
       .eq("id", reservation_id!)
       .maybeSingle();
 
-    if (rErr || !reserva) {
-      return jsonResponse({ error: "reserva não encontrada" }, 404);
+    if (rErr) {
+      jsonLog("error", { evt: "update_reservation_read_failed", code: rErr.code });
+      return jsonResponse({ error: "internal_error" }, 500);
     }
 
     // platform_admin opera unidades alheias via pseudo-membership fabricada em
     // useCurrentUnit.ts — backend tem que aceitar o paralelo, senão super-admin
     // recebe 403 mesmo com a UI mostrando "Proprietário".
-    if (!(await hasUnitAccess(supabase, user.id, reserva.unit_id))) {
-      return jsonResponse({ error: "forbidden" }, 403);
+    // Reserva inexistente e reserva de outra unidade têm a MESMA resposta: um
+    // 403 próprio confirmaria que o UUID existe em outro tenant.
+    if (!reserva || !(await hasUnitAccess(supabase, user.id, reserva.unit_id))) {
+      return jsonResponse({ error: "reserva não encontrada" }, 404);
     }
 
     // Status terminal não pode ser editado pra evitar corromper relatórios.
@@ -126,6 +132,37 @@ serve(async (req) => {
         { error: `reserva em status '${reserva.status}' não pode ser editada` },
         409,
       );
+    }
+
+    // Mesa e salão do body só valem se forem da unidade DA RESERVA: o service
+    // role ignora RLS e `reservations.table_id` é FK simples. Sem isto, um
+    // membro da unidade A aponta a reserva para uma mesa da B, lê a linha dela
+    // no retorno e ocupa o slot dela no índice único (table_id, date, time).
+    if (updates!.table_id != null) {
+      const { data: ownTable, error: otErr } = await supabase
+        .from("tables")
+        .select("id")
+        .eq("id", updates!.table_id)
+        .eq("unit_id", reserva.unit_id)
+        .maybeSingle();
+      if (otErr) {
+        jsonLog("error", { evt: "update_reservation_table_check_failed", code: otErr.code });
+        return jsonResponse({ error: "internal_error" }, 500);
+      }
+      if (!ownTable) return jsonResponse({ error: "Mesa inválida." }, 400);
+    }
+    if (updates!.hall_id != null) {
+      const { data: ownHall, error: ohErr } = await supabase
+        .from("halls")
+        .select("id")
+        .eq("id", updates!.hall_id)
+        .eq("unit_id", reserva.unit_id)
+        .maybeSingle();
+      if (ohErr) {
+        jsonLog("error", { evt: "update_reservation_hall_check_failed", code: ohErr.code });
+        return jsonResponse({ error: "internal_error" }, 500);
+      }
+      if (!ownHall) return jsonResponse({ error: "Salão inválido." }, 400);
     }
 
     // Revalidação de disponibilidade quando date/time/party_size/hall mudam.
@@ -205,8 +242,12 @@ serve(async (req) => {
       .from("reservations")
       .update(patch)
       .eq("id", reservation_id!)
+      // Mesmo escopo da leitura: a unidade conferida e um status editável. Um
+      // cancelamento concorrente entre a leitura e o UPDATE casa zero linhas.
+      .eq("unit_id", reserva.unit_id)
+      .in("status", ["pending", "confirmed"])
       .select("*, customer:customers(*), table:tables(*)")
-      .single();
+      .maybeSingle();
 
     if (upErr) {
       jsonLog("error", { evt: "update_reservation_failed", code: upErr.code, err: upErr.message });
@@ -215,6 +256,9 @@ serve(async (req) => {
         return jsonResponse({ error: "Esse horário acabou de ser ocupado nesta mesa. Escolha outro horário ou mesa.", reason: "no_capacity" }, 409);
       }
       return jsonResponse({ error: "Não foi possível salvar a reserva. Tente novamente." }, 500);
+    }
+    if (!updated) {
+      return jsonResponse({ error: "A reserva mudou de status e não pode mais ser editada." }, 409);
     }
 
     jsonLog("info", {
