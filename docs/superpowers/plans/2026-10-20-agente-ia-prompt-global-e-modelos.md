@@ -1,0 +1,598 @@
+# Plano — Entrega B: prompt global do agente na Plataforma e catálogo de modelos
+
+- **Spec:** [2026-10-19-agente-ia-prompt-global-e-modelos-design.md](../specs/2026-10-19-agente-ia-prompt-global-e-modelos-design.md), aprovada pelo usuário em 2026-10-20. O aceite cobre a implementação **local**. Push, PR, `db push`, merge, deploy de EF e leitura de conteúdo de `settings` em produção pedem **autorização à parte, cada um**.
+- **Plano e spec:** branch `docs/agente-ia-prompt-global-spec`, worktree `.claude/worktrees/agente-ia-prompt-global-spec`. Local, sem push.
+- **Execução:** branch nova `feat/agente-ia-prompt-global`, worktree `.claude/worktrees/agente-ia-prompt-global`, criada a partir de `origin/main` **depois** do merge da Fase 0 do Instagram. O Chat 1 traz os commits de spec e plano por `git cherry-pick`.
+- **Fluxo por tarefa:** implementador → review de conformidade com a spec (Sonnet) → review de qualidade/segurança (Opus) → commit. No fim da entrega, review da branch inteira e gates (B6).
+- **Regras a reler antes de cada tarefa:** `.claude/rules/agente-ia.md`, `banco-de-dados.md`, `edge-functions.md` e `frontend.md`, mais AGENTS §5 e §8.
+
+## 0. Bloqueios e desvios (ler primeiro)
+
+### 0.1 BLOQUEIO — Instagram Fase 0, Tasks 3 e 4, fora de `main`
+
+Conferido em 2026-10-20:
+- `feat/instagram-module` está em `889bff3`, só local;
+- `git log origin/main..feat/instagram-module` mostra 4 commits (`0c7ff18`, `96df46d`, `6fb7451`, `889bff3`);
+- `git ls-tree origin/main supabase/functions/_shared` **não tem** `agent/`;
+- a Task 3 (extração para `_shared/agent/system-prompt.ts` com `ChannelContext` e snapshot de paridade) e a Task 4 (gates, PR, merge) **não foram feitas**.
+
+Consequências:
+- **B2–B5 não começam** até a Fase 0 entrar em `main`: B3 edita `system-prompt.ts`, B2 extrai o seed do texto que a Task 3 move, e B4/B5 dependem de B2.
+- **B1 também espera** (recomendação da spec §11.1): troca os pontos de chamada de `resolveModel` e o runner, que a Task 3 move para `_shared/agent/turn.ts`. Começar B1 antes exige decisão explícita do usuário e paga o rebase.
+
+Comando de desbloqueio (o Chat 1 roda antes de tudo):
+
+```bash
+git fetch origin
+git ls-tree -r --name-only origin/main supabase/functions/_shared/agent/   # tem de listar system-prompt.ts, channel-context.ts, tools.ts, turn.ts
+git log --oneline origin/main --grep "instagram" -5
+```
+
+Se a listagem vier vazia, o chat **para** e avisa o usuário.
+
+### 0.2 Desvio — número do pré-voo: 78/78a, não 77/77a
+
+A branch `codex/whatsapp-versioned-dispatch-final`, local e em `origin`, já tem `supabase/tests/local-preflight/77-whatsapp-versioned-dispatch.sql`. Este plano usa **`78a-ai-prompt-bootstrap.sql` + `78-ai-prompt-and-settings-value.sql`**, com ordinais `7801–7899`. O B2 reconfere no início: `git for-each-ref` + `git ls-tree` em todas as branches. Se o 78 também tiver dono, usa o próximo livre e registra aqui.
+
+### 0.3 Desvio — o teste de ACL de settings muda em B2, não em B5
+
+`scripts/settings-write-acl.test.ts` compara o conjunto `manager` do classificador com as constantes de chave que a Gestão grava. Se B2 passar as 3 chaves para `manager` sem uma constante correspondente, a suíte fica vermelha até B5. Por isso **B2 cria a constante `AI_STORE_SETTING_KEYS`** e atualiza o teste, e **B5 liga a tela a ela** e acrescenta ao teste a prova de que a tela a importa.
+
+### 0.4 Desvio — o "contrato com fetch mockado" (§10.2) roda sobre o núcleo puro
+
+O vitest não importa `_shared/ai-providers.ts`, por causa do import `https://esm.sh/@anthropic-ai/sdk`. Por isso:
+- o contrato de requisição por família vive num núcleo puro novo, `ai-request-profile-core.ts`, testado pelo vitest;
+- um guard estático prova que o runner envia o que o núcleo devolve e não monta limite nem raciocínio por conta própria.
+
+## 1. Chats de execução (um bloco por chat, em sequência)
+
+| Chat | Tarefas | Modelo do chat | Subagentes (parâmetro `model`) | Termina com |
+|---|---|---|---|---|
+| 0 | Instagram Fase 0, Tasks 3 e 4 (outro plano) | Opus | — | merge em `main` com autorização |
+| 1 | **B1** catálogo, perfis, preços, Flash→Pro, aba IA | Opus (decide perfis e evidência) | Haiku: busca nas páginas oficiais; Sonnet: catálogo, `resolveModel`, guard de preços, aba IA, review de spec; Opus: review de qualidade | commit, memória, prompt do Chat 2 |
+| 2 | **B2** migration, RPCs, ACL, pré-voo 78/78a, constantes gêmeas | Opus | Sonnet: review de spec; Opus: `migration-validator` + `rls-auditor` como pré-gate | idem |
+| 3 | **B3** núcleo do prompt (passo A, passo B) + checkpoint C-B3 | Opus | Sonnet: review de spec | idem; C-B3 pode ficar pendente com o usuário |
+| 4 | **B4 + B5** telas da Plataforma e da Gestão | Sonnet | Sonnet: review de spec; Opus: review de qualidade/segurança | idem |
+| 5 | **B6** gates, review da branch, PR, `db push`, merge, deploy, verificação | Opus | Opus: gates `saas-shield-br`/`saas-audit-br` | memória fechada |
+
+Motivo dos modelos (memória `model-choice-by-risk`, spec §16):
+- **Opus:** SQL/RLS/ACL, prompt e injeção, roteamento ao provider e rollout.
+- **Sonnet:** núcleos puros com teste gêmeo, telas e cópia.
+- **Haiku:** só busca.
+
+## 2. Convenções comuns a todas as tarefas
+
+**Ambiente do worktree** (memória `instagram-module`):
+- `npm install --legacy-peer-deps`.
+- Sem `.env.local`, `OfficialConnectionCard` e `App.preference-route` falham só ali. Antes de mexer, registre o baseline de `main` e compare sempre com ele.
+- Nunca rode duas suítes ao mesmo tempo (dá timeout).
+- Deno: `npx -y deno@2.1.4 check`.
+- Não há python. Edição por script usa `node`.
+
+**TDD em todo passo de código:**
+1. Escrever o teste.
+2. Rodar e ver **vermelho pelo motivo certo** (anotar a mensagem).
+3. Implementar.
+4. Ver **verde**.
+5. **Controle positivo:** reintroduzir o defeito (em memória, ou com edição temporária revertida) e ver o teste falhar.
+
+Registre RED, GREEN e controle em §8 (Evidências).
+
+**Verificação padrão (V)**, ao fim de cada tarefa e antes de cada commit:
+
+```bash
+npm run typecheck          # tsc -b --noEmit; nunca tsc --noEmit sem -b
+npm run lint
+npx vitest run <arquivos de teste da tarefa>
+npm run test               # suíte inteira, sozinha
+npm run build
+npx -y deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts   # + toda EF que o grafo listar
+```
+
+**Antes de cada commit:**
+- `git status`, `git diff` e `git diff --cached` inteiros;
+- varredura das linhas staged pelos padrões do AGENTS §5;
+- `git add <caminho>` explícito.
+
+**Ao fim de cada chat:**
+- marcar os checkboxes;
+- commitar;
+- atualizar a memória `agente-ia-prompt-global` com "próximo chat começa em Bn";
+- entregar ao usuário o prompt exato do próximo chat.
+
+**Ações que pedem autorização à parte:**
+- `git push`;
+- abrir PR;
+- `supabase db push`;
+- merge em `main`;
+- `supabase functions deploy`;
+- leitura de **conteúdo** de `settings` em produção (C-B3);
+- primeira chamada real a um provider sem chave em produção.
+
+## 3. B1 — Catálogo de modelos (Chat 1)
+
+**Arquivos**
+- novo `supabase/functions/_shared/ai-model-catalog.ts`: TS puro, sem import, importado também pelo front;
+- novo `supabase/functions/_shared/ai-request-profile-core.ts`: TS puro, perfis de requisição;
+- `supabase/functions/_shared/ai-providers.ts`:
+  - sai `DEFAULT_MODELS`/`KNOWN_MODELS`/`FALLBACK_MODELS`/`resolveModel`;
+  - o runner passa a usar os perfis;
+  - o Gemini recebe o fallback por opção;
+  - `PRICING_USD_PER_MTOK` ganha os modelos novos;
+- `supabase/functions/_shared/agent-output-core.ts`: limite por perfil, se a evidência exigir; `isTruncatedStop` para as famílias novas;
+- `supabase/functions/_shared/agent-provider-fallback-core.ts`: nova `decideSameProviderFallback`;
+- pontos de chamada de `resolveModel(` onde a Task 3 os deixou (`_shared/agent/turn.ts` ou `webhook-whatsapp/index.ts`; localizar com `git grep -n "resolveModel(\|modelOverride" supabase/functions`);
+- `src/lib/aiModels.ts`: re-export fino do catálogo; mantém `AI_PROVIDER_ORDER`;
+- `src/pages/gestao/Automacao.tsx`: `AITab` (~linhas 1078–1430 em `main` `2ea296d`), renderizado em `/platform/unidades/:unitSlug`;
+- nova `supabase/migrations/<AAAAMMDDHHMMSS>_ai_model_prices_catalog_refresh.sql`, com timestamp maior que a última migration de `main` no dia e menor que o da migration de B2;
+- testes:
+  - novos: `src/lib/ai-model-catalog.test.ts`, `src/lib/ai-request-profile-core.test.ts`, `src/lib/ai-model-catalog-wiring.test.ts`;
+  - atualizados: `src/lib/ai-budget-migrations-guard.test.ts`, `src/lib/agent-output-core.test.ts`, `src/lib/agent-provider-fallback-core.test.ts`, `src/lib/agent-provider-fallback-wiring.test.ts` (ligação da decisão Flash→Pro), `src/lib/ai-budget-wiring-guard.test.ts` (só se quebrar);
+- regras: `.claude/rules/agente-ia.md`, `.claude/rules/edge-functions.md`.
+
+### B1.0 Evidência oficial (Haiku busca, Opus decide)
+
+- [ ] O subagente Haiku abre **só páginas oficiais** de cada provider: docs de modelos, preços e referência da API de chat. Para cada modelo de §7.2 da spec (ativos e sucessores), devolve:
+  - ID exato e status (GA, preview, legado, data de desligamento);
+  - preço por Mtok: input, output, cache read, cache write, reasoning se for cobrado à parte;
+  - parâmetro de limite de saída;
+  - controle de raciocínio (orçamento, nível, adaptativo ou desligado) e se o raciocínio consome o limite de saída;
+  - parâmetros proibidos ou ignorados (ex.: `temperature` com raciocínio);
+  - formato de tool calling;
+  - motivos de parada que indicam corte;
+  - endpoint: Chat Completions continua aceito ou o modelo exige outra API;
+  - URL e data de acesso.
+- [ ] Opus decide e preenche a tabela de §8.1. Regras de decisão:
+  - ID diferente da spec → vale o oficial, e o desvio é registrado;
+  - modelo só em preview → **não entra** como ativo;
+  - família que não pôde ser confirmada → não entra, e o provider fica com o que foi confirmado. Se isso deixar um aposentado sem sucessor ativo, **parar e perguntar ao usuário**;
+  - **família que exige outra API** (ex.: OpenAI só pela Responses API) → **parar e perguntar**: é mudança de escopo do runner, não de perfil;
+  - sucessor sempre do mesmo papel (default→default).
+- [ ] Registrar em §8.1 o `usd_to_brl` usado. A convenção da 099 é a taxa na linha, e o valor conservador vigente é 5.50; trocar a taxa é decisão do usuário.
+
+### B1.1 Catálogo e `resolveModel` (Sonnet)
+
+- [ ] RED em `src/lib/ai-model-catalog.test.ts`:
+  - ids únicos por provider;
+  - exatamente um `role:"default"` ativo por provider;
+  - todo `retired` tem `successor` ativo do mesmo provider e do mesmo papel;
+  - `sameProviderFallback` aponta para ativo do mesmo provider (hoje só `gemini-2.5-flash → gemini-2.5-pro`);
+  - só os dois Gemini 2.5 com `verifiedInProduction: true`;
+  - default do Gemini = `gemini-2.5-flash` (D5);
+  - `resolveModel` nos quatro motivos (`saved`, `default` para vazio, `retired_successor`, `unknown_default` com `rejected`), inclusive com espaços (`trim`).
+- [ ] GREEN: `ai-model-catalog.ts` com o tipo de §7.1 e a lista de §8.1.
+- [ ] Controle positivo:
+  - catálogo sintético com dois defaults → o teste falha;
+  - aposentado sem sucessor → falha.
+- [ ] `src/lib/aiModels.ts` vira re-export: `MODELS_BY_PROVIDER` e `DEFAULT_MODEL_BY_PROVIDER` são **derivados** do catálogo, só com os ativos. Teste em `ai-model-catalog-wiring.test.ts`: `aiModels.ts` não tem literal de ID de modelo (regex `"(claude|gpt|gemini|grok|deepseek)-`), com controle positivo sobre fonte sintética.
+
+### B1.2 Preços (migration) e guard de preços
+
+- [ ] RED: reescrever o bloco "todo modelo conhecido tem preço semeado" de `ai-budget-migrations-guard.test.ts`:
+  - o conjunto exigido vem de `import { AI_MODEL_CATALOG }`: todo ativo, todo `successor` e todo `sameProviderFallback`. Sai a regex sobre `KNOWN_MODELS`/`FALLBACK_MODELS`, que deixam de existir;
+  - `seeded()` passa a varrer **todas** as migrations com `insert into ai_model_prices` e exige uma linha **sem `effective_to`** por par;
+  - controle positivo: catálogo sintético com modelo sem preço → falha. O controle atual do extrator é adaptado.
+- [ ] Ver vermelho: os modelos novos ainda não têm preço.
+- [ ] GREEN: migration nova, no molde da 099:
+  - `begin; … commit;`;
+  - `insert … select … from (values …) as v(provider, model, …)`, com `where not exists` por provider+model, ignorando a vigência (mesmo motivo da 099: o replay não pode recriar vigência);
+  - `effective_from` = literal `timestamptz '<dia da evidência B1.0> 00:00:00+00'`. É determinístico e não pode passar do dia do `db push`; o B6 confere;
+  - linhas de aposentados intocadas;
+  - comentário com a fonte e a data de cada preço; sem URL do projeto nem segredo.
+- [ ] `npx vitest run src/lib/ai-budget-migrations-guard.test.ts scripts/migration-static-guard.test.ts` verde.
+- [ ] `PRICING_USD_PER_MTOK` (telemetria, `ai-providers.ts`) ganha os ativos novos com os mesmos valores. Teste estático: todo ativo tem entrada.
+
+### B1.3 Perfis de requisição (Opus)
+
+- [ ] RED em `src/lib/ai-request-profile-core.test.ts`: `requestParamsFor(entry)` devolve, por `requestProfile`, os campos que o runner manda. Casos:
+  - **Gemini 2.5:** `maxOutputTokens: 3072` + `thinkingConfig: { thinkingBudget: 1024 }`, **igual a hoje** (as lojas não mudam);
+  - **Claude 4.x legado:** só existe como sucessor resolvido; o perfil não é alcançável;
+  - famílias novas conforme §8.1: parâmetro de limite certo (ex.: `max_completion_tokens` em GPT-5+), controle de raciocínio e ausência dos proibidos;
+  - para todo perfil com raciocínio que consome a saída, o limite fica acima de 1024 de resposta útil.
+- [ ] GREEN: núcleo puro. `MAX_OUTPUT_TOKENS_BY_PROVIDER` passa a ser derivado por perfil, ou fica e o perfil o sobrepõe; decidir e registrar. O teste gêmeo `AI_ESTIMATE_OUTPUT_TOKENS >= max(limite de todo perfil)` em `agent-output-core.test.ts` é estendido, com controle positivo.
+- [ ] `isTruncatedStop` cobre os motivos de corte das famílias novas (§8.1). RED → GREEN no teste existente.
+- [ ] Ligação no runner (`ai-providers.ts`): `callGeminiOnce`, ramo Claude e ramo OpenAI-compatível usam `requestParamsFor`. Guard estático em `ai-model-catalog-wiring.test.ts`:
+  - fora do núcleo, `ai-providers.ts` não contém `max_tokens:`, `max_completion_tokens`, `maxOutputTokens:` nem `thinkingBudget` literal;
+  - controle positivo sobre fonte sintética.
+
+### B1.4 Flash→Pro condicional (D5)
+
+- [ ] RED em `agent-provider-fallback-core.test.ts`: `decideSameProviderFallback({ entry, reserve })` →
+  - sem reserva → `gemini-2.5-pro`;
+  - reserva válida (config legível, provider ≠ principal, chave ativa) → `null`;
+  - config ilegível → `gemini-2.5-pro`;
+  - reserva no mesmo provider → `gemini-2.5-pro`;
+  - reserva sem chave ativa → `gemini-2.5-pro`;
+  - modelo sem `sameProviderFallback` → `null`.
+- [ ] GREEN. Depois, ligação:
+  - `AgentLoopOptions` ganha `sameProviderFallbackModel: string | null`;
+  - `runGemini` usa a opção nos **três** caminhos (5xx, timeout, vazio), no lugar de `FALLBACK_MODELS.gemini`;
+  - o chamador calcula a decisão antes do turno.
+- [ ] Conferir onde a chave do reserva é resolvida hoje. Se for preguiçosa, a **existência** da chave ativa é lida antes do turno, de `ai_provider_credentials` com `active=true` e `unit_id` da própria unidade. O valor da chave não é lido nem logado.
+- [ ] Guard estático: `FALLBACK_MODELS` não existe mais, e os três caminhos referenciam a opção. Controle positivo.
+
+### B1.5 Modelo resolvido em franquia e telemetria (D6)
+
+- [ ] RED (guard estático) em todo ponto que hoje recebe `modelOverride`:
+  - `openTurnBudget`, `priceFor`, `agent_usage`, `handoff_reason` e `meta` recebem o modelo **resolvido**;
+  - o principal e o reserva (`ai_config.fallback.model`) passam por `resolveModel` do catálogo;
+  - `evt:"ai_model_retired"` (`provider`, `saved`, `used`) quando o motivo é `retired_successor`; `evt:"ai_model_fallback"` continua em `unknown_default`.
+- [ ] GREEN e controle positivo.
+
+### B1.6 Aba IA da unidade (Sonnet)
+
+- [ ] RED: helper puro `describeSavedModel(provider, saved)` em `src/lib/aiModels.ts` →
+  - `active` (com `verified`);
+  - `retired` (com `used`);
+  - `unknown` (com `used` = default);
+  - `empty`.
+  Teste unitário.
+- [ ] GREEN, e a `AITab` passa a usar:
+  - Select só com os ativos;
+  - salvo aposentado: "aposentado — em uso: X (confirme)";
+  - desconhecido: "descontinuado — usando o padrão X";
+  - não verificado: badge "não testado em produção";
+  - o mesmo vale para o Select do reserva.
+- [ ] Teste de componente leve da aba, ou do trecho extraído, cobrindo os três avisos.
+
+### B1.7 Regras (spec §15)
+
+- [ ] `.claude/rules/agente-ia.md`:
+  - "Default de modelo vive em DOIS arquivos" vira "catálogo único `ai-model-catalog.ts`; aposentado exige sucessor ativo do mesmo papel; todo ativo/sucessor/fallback exige preço vigente (guard)";
+  - a linha "Fallback same-provider" passa a dizer "só sem reserva válida (`decideSameProviderFallback`)";
+  - a seção Provedores aponta para o catálogo;
+  - o `paths:` já cobre `_shared/ai-*`. Conferir que cobre `ai-model-catalog.ts` e `ai-request-profile-core.ts`.
+- [ ] `.claude/rules/edge-functions.md`: `ai-model-catalog.ts` entra na lista de `_shared` importado pelo front (mudança exige deploy do front).
+
+### B1.8 Grafo e fechamento
+
+- [ ] `node scripts/ef-import-graph.mjs` para `ai-model-catalog.ts`, `ai-request-profile-core.ts`, `ai-providers.ts`, `agent-output-core.ts` e `agent-provider-fallback-core.ts`. Registrar em §6.
+- [ ] Verificação V, reviews, commit `feat(agente-ia): catálogo único de modelos, perfis por família e Flash→Pro condicional`.
+
+## 4. B2 — Banco (Chat 2)
+
+**Arquivos**
+- nova `supabase/migrations/<AAAAMMDDHHMMSS>_ai_global_prompt_and_settings_value_guard.sql`, depois da de B1;
+- novos `supabase/tests/local-preflight/78a-ai-prompt-bootstrap.sql` e `78-ai-prompt-and-settings-value.sql`, mais a seção "78" no `README.md` do pré-voo;
+- `scripts/function-acl-allowlist.json`;
+- novo `supabase/functions/_shared/agent/global-prompt-core.ts`, **só constantes** nesta tarefa: `GLOBAL_PERSONA_BASELINE`, `GLOBAL_PROMPT_PLACEHOLDERS`, `GLOBAL_PROMPT_MAX_CHARS`, `STORE_TEXT_LIMITS`, `AGENT_MODES`;
+- nova constante `AI_STORE_SETTING_KEYS` em `src/lib/ai-store-settings.ts` (sem import do client Supabase);
+- `scripts/settings-write-acl.test.ts`;
+- novo `src/lib/global-prompt-sql-twin.test.ts`;
+- regra `.claude/rules/banco-de-dados.md`.
+
+### B2.0 Extração do seed
+
+- [ ] Em `_shared/agent/system-prompt.ts` (pós-Task 3), localizar o trecho contíguo de `IDENTIDADE:` até `Evite excesso de emojis. `, inclusive o espaço final.
+- [ ] Conferir que as **únicas** interpolações são `agentName` e `restaurantName`. Se houver condicional, outra variável ou trecho que dependa de `agent_mode`, **parar e perguntar ao usuário**: a premissa de §4.1 da spec quebrou.
+- [ ] `GLOBAL_PERSONA_BASELINE` = o trecho com `{{agent_name}}`/`{{restaurant_name}}`. O seed SQL usa dollar-quote `$seed$…$seed$`: sem escape de aspas, e o gêmeo compara byte a byte.
+
+### B2.1 Pré-voo primeiro (RED)
+
+- [ ] Reconfirmar o número livre (§0.2).
+- [ ] `78a`: base do 75/75a (`00-bootstrap` → `01-audit` → `09a-advisor-bootstrap` → migration 106 → `75a-settings-write-acl-bootstrap` → `20261019180000_settings_write_role_guard.sql`), mais as fixtures:
+  - platform_admin A e B sem membership;
+  - U1 com owner, gerente e operador; U2 com gerente;
+  - um usuário sem papel.
+  O 78a **não** instala nada da migration nova.
+- [ ] **Atributo do dono das funções:** conferir no harness, e se preciso em produção com leitura de metadado autorizada (`select rolbypassrls from pg_roles where rolname = 'postgres'`), que o dono efetivo das RPCs consegue escrever sob `FORCE RLS` **sem policy de escrita**. Regra de banco-de-dados.md e pré-voo 70. Se não tiver `BYPASSRLS`, a RPC precisa de outro caminho; **parar e decidir com o usuário** antes de escrever a migration.
+- [ ] `78`: reaplica a migration por `\i` (roda da raiz do repo e pode ser repetido) e mede cada caso pelo **código e pelo efeito**. Ordinais `7801…`, contagem impressa "esperado N e N".
+
+| Ordinal | Caso | Esperado |
+|---|---|---|
+| P1 | admin A publica com `expected` = v1 | v2 ativa; ledger `publish` com ator e nota; `body_sha256` preenchido |
+| P2 | owner, gerente, operador, `anon`, `service_role` e `authenticated` sem `sub` publicam **e** ativam | `42501`; slot, versões e ledger inalterados (contagem antes e depois) |
+| P3 | admin B publica com `expected` = v1 depois de P1 | `40001` `prompt_version_conflict`; nada muda |
+| P4 | corpo vazio, só brancos, 4001 caracteres, `{{x}}`, `{{agent_name}` solto, `<<<`, `>>>`, controle `\x07`; nota vazia ou com 281 | `22023`; nada muda. NUL: o Postgres recusa antes da função (`22021`/`22P05`); registrar o código medido |
+| P5 | ativar a v1 (rollback) com `expected` correto; ativar id de outro slot ou inexistente | ok + ledger `rollback` com `previous_version_id`; recusa `22023`, nada muda |
+| P6 | UPDATE e DELETE em `ai_prompt_versions` e `ai_prompt_activations` como dono da tabela, `service_role` e admin | recusado (`42501`, `ai_prompt_history_append_only`) |
+| P7 | `has_function_privilege`: `anon`/`service_role`/`public` nas 2 RPCs; todos os papéis nas trigger functions e em `guard_unit_setting_value`/`unit_setting_value_limit` | `false`; `authenticated` nas RPCs `true` |
+| P8 | reaplicar a migration depois de P1 | sem erro; slot continua na v2; uma só v1; um só ledger `seed` |
+| V1 | gerente U1 faz upsert das 3 chaves factuais | ok, valor gravado |
+| V2 | operador U1 nas 3 chaves; gerente U1 em `ai_system_prompt` | `42501` `setting_write_forbidden` (o role guard roda primeiro) |
+| V3 | `restaurant_menu` com 6001, não string (`{"a":1}`, número), controle `\x07`, como gerente **e** como `service_role` | `22023` `setting_value_invalid`; nada gravado |
+| V4 | `agent_mode='x'` por admin; `agent_mode` válido nos dois valores | `22023`; ok |
+| V5 | regressão: rodar o `75-settings-write-acl.sql` no mesmo banco | 20 e 20, como antes |
+| C1 | controle: `drop trigger` append-only (subbloco desfeito) | P6 passa a alterar; recriar faz P6 voltar a recusar |
+| C2 | controle: `drop trigger settings_write_value_guard` (subbloco desfeito) | V3 passa a gravar; recriar faz V3 voltar a recusar |
+| C3 | controle: classe das 3 chaves de volta a `platform` (subbloco desfeito) | V1 passa a `42501` |
+
+- [ ] Rodar o 78 antes da migration: **RED** (aborta na guarda de existência).
+
+### B2.2 Migration (GREEN)
+
+Conteúdo, com `begin; … commit;` no arquivo (o harness aplica cru):
+
+- [ ] **Tabelas** de §5.1 da spec. Todas `enable` + `force row level security`.
+  - CHECKs de `body` iguais aos do TS: placeholder por `regexp_replace(body, '\{\{(agent_name|restaurant_name)\}\}', '', 'g') !~ '\{\{|\}\}'`, mais `char_length 1..4000`, `body ~ '\S'`, `body !~ '<<<|>>>'` e classe de controle sem `\n`/`\t`.
+  - `body_sha256` como coluna gerada. Se o PG recusar por volatilidade, vira preenchimento na RPC, com CHECK de formato; registrar.
+  - `unique (slot, version)`, `unique (slot, id)`, FK composta `ai_prompt_slots(slot, active_version_id) → ai_prompt_versions(slot, id)`, `check (created_by is not null or version = 1)`.
+- [ ] **Append-only:** `app_private.ai_prompt_append_only()` (trigger BEFORE UPDATE OR DELETE nas duas tabelas). Levanta `42501` `ai_prompt_history_append_only`. Revoke de `public, anon, authenticated, service_role`.
+- [ ] **RLS e grants:**
+  - policy `platform_admin_read_<tabela>` `for select to authenticated using (app_private.is_platform_admin(auth.uid()))` nas três tabelas;
+  - `revoke all … from public, anon, authenticated`;
+  - `grant select … to authenticated, service_role`.
+- [ ] **RPCs** `public.publish_ai_prompt_version(p_slot text, p_body text, p_note text, p_expected_active_version_id uuid) returns uuid` e `public.activate_ai_prompt_version(p_slot text, p_version_id uuid, p_expected_active_version_id uuid, p_note text) returns void`:
+  - `security definer`, `set search_path = ''`, identificadores qualificados;
+  - guard `auth.uid()` nulo ou `not app_private.is_platform_admin(auth.uid())` → `42501` `prompt_forbidden`;
+  - `select … for update` no slot;
+  - conflito → `40001` `prompt_version_conflict`;
+  - corpo e nota inválidos → `22023` (`prompt_body_invalid`, `prompt_note_invalid`);
+  - versão de outro slot ou inexistente → `22023` `prompt_version_invalid`;
+  - insert da versão `max+1` + update do slot + ledger, na mesma transação;
+  - `revoke all on function <assinatura completa> from public, anon, authenticated, service_role;` e depois `grant execute … to authenticated`.
+- [ ] **Seed:**
+  - v1 com `$seed$…$seed$`, `created_by null` e nota `seed`, com `on conflict (slot, version) do nothing`;
+  - slot com `on conflict (slot) do nothing`;
+  - ledger `seed` só `where not exists`.
+- [ ] **Classe:** `create or replace function app_private.unit_setting_write_class` com as 3 chaves em `manager`. O resto não muda, e chave desconhecida continua `platform`. Revoke repetido.
+- [ ] **Guard de valor:**
+  - `app_private.unit_setting_value_limit(text) returns integer immutable`, com a tabela de §4.3 (chave fora dela → `null`);
+  - `app_private.guard_unit_setting_value()` (`security definer`, `search_path=''`): string JSON, tamanho, controle e enum de `agent_mode`, senão `22023` `setting_value_invalid`. Vale para todo papel;
+  - trigger `settings_write_value_guard` BEFORE INSERT OR UPDATE em `public.settings` (ordena depois de `settings_write_role_guard`);
+  - revoke das duas funções de `public, anon, authenticated, service_role`.
+- [ ] Rodar o pré-voo: 78a → 78 (**RED**) → migration → 78 (**GREEN**) → migration → 78 (**GREEN**, idempotência). Registrar a contagem, os códigos medidos e C1–C3 em §8.2.
+
+### B2.3 ACL, gêmeos e teste de settings
+
+- [ ] `scripts/function-acl-allowlist.json`: duas entradas no grupo em que já vivem as RPCs `authenticated` com guarda de platform_admin (`authenticated_tenant`; conferir com `grep -n "guarda platform_admin"`). Cada uma com:
+  - `args` exatamente como `pg_get_function_identity_arguments`;
+  - `roles: ["authenticated"]`, `security_definer: true`;
+  - `advisor_lints` iguais aos das irmãs;
+  - `why` citando o guard no corpo, o lock, o `40001` e o pré-voo 78 (P2, P7).
+  As trigger functions e as funções do guard **não entram**.
+- [ ] `npx vitest run scripts/function-acl-allowlist.test.ts`, mais o comando do job `acl-estatico` rodado localmente (ver `.github/workflows/function-acl-audit.yml`).
+- [ ] RED → GREEN em `src/lib/global-prompt-sql-twin.test.ts`:
+  - o seed da migration é igual a `GLOBAL_PERSONA_BASELINE`;
+  - os placeholders da regex SQL são iguais a `GLOBAL_PROMPT_PLACEHOLDERS`;
+  - o 4000 do CHECK é igual a `GLOBAL_PROMPT_MAX_CHARS`;
+  - `unit_setting_value_limit` é igual a `STORE_TEXT_LIMITS`, chave por chave;
+  - o enum SQL é igual a `AGENT_MODES`;
+  - controle positivo com SQL sintético divergente.
+- [ ] `scripts/settings-write-acl.test.ts` (§0.3):
+  - `AI_STORE_SETTING_KEYS` entra na união `manager`;
+  - a exclusão das chaves de `Automacao.tsx` passa a cobrir só as 5 `platform` do `PromptTab` (`ai_system_prompt`, `ai_context_extra`, `agent_mode`, `agent_name`, `ai_config`);
+  - `MIN_AUTOMACAO_KEYS` é revisto;
+  - controle negativo atualizado: tirar uma das 3 chaves do classificador em memória faz o teste falhar.
+
+### B2.4 Regra, pré-gate e fechamento
+
+- [ ] `.claude/rules/banco-de-dados.md`:
+  - a regra de `settings` passa a dizer que a classe `manager` inclui as 3 chaves factuais;
+  - nova linha: "`settings_write_value_guard` valida forma e tamanho para todo papel, inclusive `service_role`";
+  - nova linha: "`ai_prompt_versions`/`ai_prompt_activations` são append-only por trigger; só `publish_`/`activate_ai_prompt_version` escrevem".
+- [ ] Pré-gate (Opus): `saas-shield-br:migration-validator` e `saas-shield-br:rls-auditor` sobre a migration nova. Achado bloqueante → corrigir com TDD no pré-voo.
+- [ ] Verificação V e commit `feat(agente-ia): tabelas e RPCs do prompt global, classe e guard de valor em settings`. **Sem `db push`.**
+
+## 5. B3 — Núcleo do prompt (Chat 3)
+
+**Arquivos**
+- `supabase/functions/_shared/agent/global-prompt-core.ts`: render, validação gêmea do SQL, decisão de fonte, cache com relógio injetado;
+- novo `supabase/functions/_shared/agent/global-prompt.ts`: loader de I/O fino, cliente injetado, sem import Deno, para o vitest alcançar;
+- novo `supabase/functions/_shared/agent/store-data-core.ts`: `storeDataBlock`, `neutralizeStoreText`;
+- `supabase/functions/_shared/agent/system-prompt.ts`;
+- chamador do turno: `meta` e `agent_usage`;
+- testes:
+  - novos: `src/lib/agent-global-prompt-core.test.ts`, `src/lib/agent-global-prompt-loader.test.ts`, `src/lib/agent-store-data-core.test.ts`, `src/lib/agent-store-data-static-guard.test.ts`;
+  - existente: o snapshot de paridade da Task 3 (localizar com `git grep -ln "toMatchSnapshot\|toMatchInlineSnapshot" src/lib | xargs grep -l system-prompt`);
+- regras: `.claude/rules/agente-ia.md`, `.claude/rules/edge-functions.md`.
+
+### Passo A — camada global sai do banco, snapshot idêntico
+
+- [ ] RED: `renderGlobalLayer(GLOBAL_PERSONA_BASELINE, { agentName, restaurantName })` é igual ao trecho do prompt atual para o fixture da Task 3. Substituição literal dos 2 placeholders, sem template engine.
+- [ ] RED: validação TS igual ao CHECK SQL, com os mesmos casos de P4.
+- [ ] RED, loader:
+  - fresco → `db` e entra no cache;
+  - erro com cache → `stale_cache` (qualquer idade);
+  - erro sem cache → `baseline`;
+  - corpo inválido → mesmo caminho do erro;
+  - os três caminhos de falha emitem `evt:"ai_global_prompt_read_failed"` (sem corpo no log);
+  - TTL de 60s com relógio injetado.
+- [ ] GREEN: núcleo e loader. A leitura é por service role, de `ai_prompt_slots` (`slot='global_persona'`) → versão ativa. Não recebe id de escopo do caller. A polaridade D7 fica declarada em comentário no código.
+- [ ] Integração em `system-prompt.ts`: o trecho contíguo vira a camada 2 renderizada.
+- [ ] **Snapshot da Task 3 roda SEM `-u` e fica idêntico.**
+- [ ] Controle positivo: trocar 1 caractere do baseline → o snapshot falha; reverter.
+- [ ] `meta` de `webhook_executions` e `agent_usage` ganham `global_prompt_version` (id ou `baseline`) e `global_prompt_source`. Guard estático com controle positivo.
+- [ ] Verificação V e **commit separado do passo A** (`feat(agente-ia): camada global do prompt lida do banco (snapshot idêntico)`). O hash vai em §8.3: é a prova de §4.4.
+
+### Passo B — delimitação e regra 13 (mudança deliberada)
+
+- [ ] RED em `agent-store-data-core.test.ts`:
+  - `neutralizeStoreText` remove `<{3,}` e `>{3,}`, inclusive `<<<FIM_DADOS_DA_LOJA>>>` embutido;
+  - remove NUL e controles além de `\n`/`\t`;
+  - trunca no limite de `STORE_TEXT_LIMITS`;
+  - `storeDataBlock(title, text)` produz exatamente `<<<DADOS_DA_LOJA: {title}>>>\n…\n<<<FIM_DADOS_DA_LOJA>>>`;
+  - texto vazio não gera bloco (mesmo critério de hoje).
+- [ ] GREEN e integração. Ordem da camada 8 (§4.1): preços e condições, informações adicionais, [FAQ] cardápio, delivery, outras informações.
+  - Os campos curtos de "Sobre o restaurante" (`units.description`, `payment_methods`, `opening_hours_text`) passam por `neutralizeStoreText`: só neutraliza, sem limite novo.
+  - **Regra 13** entra depois da 12.
+  - **Lembrete final** (camada 11) entra **depois** das instruções da plataforma (camada 10), com o texto de §6.3.4.
+  - `ai_context_extra`/`ai_system_prompt` continuam instrução, na mesma posição relativa, truncados no limite.
+- [ ] RED → GREEN no guard estático: leitura de `settingsMap["restaurant_menu" | "delivery_response" | "restaurant_extra_info" | "rules_and_conditions" | "additional_info"]` fora de `storeDataBlock` reprova. Controle positivo sobre fonte sintética.
+- [ ] Snapshot B: atualizar com `-u` **só** o snapshot de paridade. O diff do arquivo de snapshot entre o commit do passo A e o do passo B vai para §8.3 e para a descrição do PR. O revisor de qualidade lê o diff linha a linha: só pode mudar delimitador, regra 13, lembrete e neutralização.
+- [ ] Verificação V e commit `feat(agente-ia): texto da loja como dado delimitado, regra 13 e lembrete de precedência`.
+
+### Checkpoint C-B3 — prompt renderizado das 2 unidades (spec §4.4)
+
+O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco `DADOS_DA_LOJA`. Exemplo: um `ai_system_prompt` que dependa de texto colado em `restaurant_extra_info`.
+
+- [ ] Pedir ao usuário **autorização para ler conteúdo** de `settings` e os 3 campos curtos de `units` das 2 unidades. O classificador já bloqueou essa leitura uma vez. Alternativa: o usuário roda ele mesmo a consulta só de leitura (o plano entrega o SQL no chat) e salva o JSON fora do repo.
+- [ ] Harness local `src/lib/agent-prompt-checkpoint.local.test.ts`, pulado sem a env `PROMPT_CHECKPOINT_FILE`. Renderiza as camadas 2 e 8–11 com o código do commit A e do commit B. Os dados de tabela vêm de fixture. Escreve o diff por unidade **no scratchpad**. Dados de produção nunca entram no repo nem no commit.
+- [ ] O usuário lê os diffs e decide. Se algo estiver preso, a correção é **conteúdo**: o platform_admin move a instrução para `ai_system_prompt` pelo `PromptTab`, antes do deploy da EF. Registrar a decisão em §8.3. C-B3 pendente **bloqueia o deploy (B6.7)**, não o PR.
+
+### Regras e grafo
+
+- [ ] `.claude/rules/agente-ia.md`:
+  - nova: "camada global = persona/tom; regras 1–13, âncoras e formatação ficam no núcleo; leitura falha aberta para cache de qualquer idade e depois para `GLOBAL_PERSONA_BASELINE`";
+  - nova: "texto livre da loja entra só por `storeDataBlock` (guard estático)";
+  - `paths:` ganha `supabase/functions/_shared/agent/**`.
+- [ ] `.claude/rules/edge-functions.md`: `_shared/agent/global-prompt-core.ts` entra na lista de importados pelo front (B4/B5 usam render e limites).
+- [ ] `node scripts/ef-import-graph.mjs` para cada `_shared/agent/*` tocado ou novo. Registrar em §6.
+
+## 6. B4 + B5 — Telas (Chat 4)
+
+### B4 — `/platform/agente-ia`
+
+**Arquivos**
+- `src/pages/platform/AgenteIa.tsx`, `src/hooks/useAiPromptVersions.ts`;
+- `src/lib/text-line-diff.ts`: diff de linhas puro. **Sem dependência npm nova**: o `package.json` não tem lib de diff;
+- `src/lib/ai-prompt-errors.ts`;
+- `src/components/layouts/platform-nav.ts` + `platform-nav.test.ts`;
+- `src/App.tsx`: rota com `PlatformGuard`;
+- testes ao lado.
+
+- [ ] RED → GREEN em `text-line-diff.ts`: igual, inserção, remoção, troca, texto vazio.
+- [ ] RED → GREEN em `ai-prompt-errors.ts`:
+  - `42501` → "Sem permissão.";
+  - `40001` → "Outra pessoa publicou uma versão. Recarregue antes de publicar.";
+  - `22023` → mensagem de corpo ou nota inválida;
+  - outro → genérica;
+  - nunca `error.message` cru.
+- [ ] RED → GREEN no hook:
+  - lê `ai_prompt_slots` e `ai_prompt_versions` (paginado, 50 por página, "carregar mais"; nunca sem `.range`);
+  - publica e restaura **só** por `rpc(...)` com `p_expected_active_version_id`;
+  - invalida as queries no sucesso.
+- [ ] RED → GREEN na página:
+  - versão ativa (número, autor, data, motivo);
+  - editor com contador de 4000 e validação local pela mesma função de `global-prompt-core.ts`;
+  - `\r\n` normalizado para `\n`;
+  - pré-visualização com `renderGlobalLayer` e nomes de exemplo;
+  - Publicar exige motivo (1–280) e confirmação com diff contra a ativa;
+  - histórico com diff e "Restaurar esta versão";
+  - cópia "a mudança vale para todas as lojas em até 1 minuto";
+  - 4 estados de lista (carregando, erro com `refetch`, vazio, lista).
+- [ ] Item "Agente de IA" na Plataforma (`platform-nav.ts`) e rota. O teste do nav é atualizado.
+
+### B5 — `/g/:unitSlug/atendimento-ia`
+
+**Arquivos**
+- `src/pages/gestao/AtendimentoIa.tsx`, `src/hooks/useAiStoreSettings.ts` (usa `AI_STORE_SETTING_KEYS` de B2);
+- `src/components/layouts/GestaoLayout.tsx`;
+- `src/App.tsx`: rota com `GestaoGuard`;
+- `src/pages/gestao/Automacao.tsx` (`PromptTab`, ~linha 1435);
+- `scripts/settings-write-acl.test.ts`;
+- testes ao lado.
+
+- [ ] RED → GREEN no hook:
+  - `upsert(...).select()` e conferência do tamanho do retorno (zero linhas = erro, AGENTS §8);
+  - `42501` → "Sem permissão para editar estes textos.";
+  - `22023` → "Texto acima do limite ou com caracteres inválidos.";
+  - invalida `settings`.
+- [ ] RED → GREEN na página:
+  - campos Cardápio, Delivery/retirada e Outras informações, com contador e limite de `STORE_TEXT_LIMITS`;
+  - mostra o modo atual (leitura de `agent_mode`) com a cópia de §6.4;
+  - avisos fixos de §6.4;
+  - visível a owner, gerente e platform_admin.
+- [ ] Item "Atendimento por IA" na sidebar da Gestão, e rota.
+- [ ] `PromptTab`: contador e limite nas 7 chaves, com os valores de `STORE_TEXT_LIMITS`/limites de §4.3 importados, nunca redigitados.
+- [ ] `settings-write-acl.test.ts`:
+  - nova asserção de que `AtendimentoIa.tsx`, ou o hook, importa `AI_STORE_SETTING_KEYS`;
+  - controle negativo: fonte sintética sem o import → falha.
+- [ ] Verificação V, reviews (Opus na qualidade das duas telas) e commit `feat(agente-ia): telas do prompt global e do atendimento por IA da loja`.
+
+## 7. B6 — Gates, PR, deploy e rollback (Chat 5)
+
+### B6.1 Matriz de redeploy (preencher com o grafo; não usar lista digitada)
+
+| Arquivo `_shared` alterado/novo | EFs (`node scripts/ef-import-graph.mjs <arquivo>`) | Front (Vercel) |
+|---|---|---|
+| `ai-providers.ts` | medido em 2026-10-20 (`main` `2185293`): `webhook-whatsapp` | — |
+| `agent-output-core.ts` | idem: `webhook-whatsapp` | — |
+| `agent-provider-fallback-core.ts` | idem: `webhook-whatsapp` | — |
+| `ai-model-catalog.ts` | B1.8 | sim |
+| `ai-request-profile-core.ts` | B1.8 | — |
+| `_shared/agent/global-prompt-core.ts`, `global-prompt.ts`, `store-data-core.ts`, `system-prompt.ts` | B3 | `global-prompt-core.ts`: sim |
+
+- [ ] Rodar `node scripts/ef-import-graph.mjs --all` no commit final e fixar a lista. Esperado: `webhook-whatsapp`, mais a EF do Instagram se já existir. `manage-ai-providers` não entra.
+- [ ] `deno check` em cada EF da lista.
+
+### B6.2 Gates (spec §11.3), antes do PR
+
+- [ ] Verificação V completa.
+- [ ] Subagentes Opus, cada um com o diff da branch e a spec:
+  - `saas-shield-br:migration-validator` (2 migrations);
+  - `saas-shield-br:rls-auditor`;
+  - `saas-shield-br:identity-access-auditor` (RPCs, papéis, classe de settings);
+  - `saas-shield-br:tenant-isolation-auditor` (tela da Gestão, loader, leitura de chave do reserva);
+  - `saas-audit-br:ai-automation-auditor` (prompt injection, custo, perfis).
+- [ ] Achado P0/P1 → correção com TDD e o gate roda de novo. P2/P3 → corrigir ou registrar como follow-up com justificativa.
+- [ ] Review da branch inteira (Opus).
+- [ ] `acl-estatico` local. `git status`, `git diff --cached` integral, varredura do AGENTS §5. `git add` explícito.
+
+### B6.3 PR — **autorização 1**
+
+- [ ] Push de `feat/agente-ia-prompt-global` e PR, que leva:
+  - o resumo;
+  - o diff do snapshot (A → B);
+  - a matriz;
+  - a evidência de B1.0;
+  - o resultado do pré-voo 78;
+  - os gates.
+- [ ] Conferir na aba Checks o `acl-estatico` (não é required) e o preview da Vercel.
+
+### B6.4 Sequência de deploy (spec §11.2): cada passo com autorização própria
+
+1. [ ] **Autorização 2 — `supabase db push`** das duas migrations, na ordem do nome: preços (B1), depois prompt e guard (B2). Receita da memória `settings-escrita-por-chave`:
+   - `npx --yes supabase@2.121.0 db push --linked --dry-run`, depois sem `--dry-run`;
+   - copiar `supabase/.temp/{project-ref,linked-project.json}` do checkout principal e **removê-los depois**;
+   - prod ref `gbabxcrntkwgblgqsiit`;
+   - conferir que `effective_from` dos preços ≤ agora.
+
+   Verificação só de leitura, sem conteúdo:
+   - `count(*)` de preços vigentes por modelo do catálogo;
+   - slot `global_persona` na v1;
+   - `has_function_privilege` como em P7;
+   - `relforcerowsecurity` nas 3 tabelas;
+   - trigger `settings_write_value_guard` presente;
+   - zero linhas de `settings` acima do limite (só `char_length`, sem ler o valor). Linha acima do limite não quebra nada, mas fica registrada.
+2. [ ] **Autorização 3 — merge do PR em `main`** (Vercel). Conferir o deploy READY. A UI passa a gravar as 3 chaves (o banco já aceita) e a chamar as RPCs.
+3. [ ] **Autorização 4 — `supabase functions deploy`** de cada EF da matriz B6.1, em janela de baixo tráfego, **só se C-B3 estiver fechado**. Entre o passo 2 e o 3:
+   - a EF velha cai no default para modelo novo (seguro);
+   - a EF velha ignora a camada publicada (seguro).
+4. [ ] **Verificação (spec §11.2.4):**
+   - nos primeiros turnos, `webhook_executions.meta.global_prompt_source = 'db'` e `global_prompt_version` = id da v1;
+   - nenhum `ai_global_prompt_read_failed` nem `ai_model_retired` inesperado nos logs;
+   - modelo resolvido das 2 lojas = `gemini-2.5-flash`;
+   - teste manual do usuário: owner real salva o cardápio na Gestão;
+   - admin abre `/platform/agente-ia` e vê a v1.
+
+### B6.5 Rollback (spec §12)
+
+- **Conteúdo:** "Restaurar esta versão" na `/platform/agente-ia` (≤60s).
+- **Código:** `supabase functions deploy` de `webhook-whatsapp` a partir de `main` anterior ao merge (`git checkout <sha pré-merge> -- supabase/functions` num worktree descartável). A camada volta ao código e os modelos voltam à lista antiga. Unidade com modelo novo salvo cai no default. Front: revert do merge em `main`, com autorização.
+- **Banco:** migration de reversão (com autorização e `db push`) que:
+  - devolve as 3 chaves a `platform` (`create or replace` da classe + revoke repetido);
+  - faz `drop trigger if exists settings_write_value_guard on public.settings`.
+  As tabelas de prompt e os preços ficam (inertes). Antes de reverter a classe, a tela da Gestão sai do ar (revert do front), senão o dono recebe `42501`.
+
+### B6.6 Fechamento
+
+- [ ] Registrar o rollout em §8.4.
+- [ ] Atualizar as memórias `agente-ia-prompt-global` (entregue) e `instagram-module` (Fase 1 liberada; a Fase 2 usa `capabilities.vision`).
+- [ ] Follow-ups da spec §13 ficam listados no PR.
+
+## 8. Evidências
+
+### 8.1 B1.0: modelos, preços e perfis (preencher no Chat 1)
+
+| Provider | ID oficial | Papel | Status oficial | Input / Output / Cache R / Cache W / Reasoning (USD/Mtok) | Limite de saída | Raciocínio | Proibidos | Corte (stop) | API | Fonte (URL, data) | Desvio da spec |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| gemini | | | | | | | | | | | |
+| claude | | | | | | | | | | | |
+| openai | | | | | | | | | | | |
+| grok | | | | | | | | | | | |
+| deepseek | | | | | | | | | | | |
+
+`usd_to_brl`: ___. Data de `effective_from`: ___.
+
+### 8.2 B2: pré-voo 78
+
+Contagem, códigos medidos (inclusive NUL), C1–C3, atributo `BYPASSRLS` do dono.
+
+### 8.3 B3: passo A, passo B e C-B3
+
+Hash do commit A (snapshot idêntico); diff do snapshot A → B; decisão do C-B3 por unidade.
+
+### 8.4 B6: rollout
+
+PR, checks, `db push`, merge, deploy, verificação.

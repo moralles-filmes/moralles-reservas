@@ -1,6 +1,6 @@
 # Prompt global do agente na Plataforma e catálogo de modelos (Entrega B) — design
 
-**Status:** rascunho para aprovação (2026-10-19). Decisões de produto de §3 tomadas com o usuário nesta data.
+**Status:** aprovada pelo usuário em 2026-10-20. Decisões de produto de §3 tomadas com o usuário em 2026-10-19. Plano: [2026-10-20-agente-ia-prompt-global-e-modelos.md](../plans/2026-10-20-agente-ia-prompt-global-e-modelos.md). O pré-voo de §10.1 foi renumerado para 78/78a, porque o 77 já é usado por outra branch (plano §0.2).
 **Branch/worktree da spec:** `docs/agente-ia-prompt-global-spec` em `.claude/worktrees/agente-ia-prompt-global-spec` (a partir de `origin/main` `2867bfc`).
 **Assuntos:** agente de IA (`.claude/rules/agente-ia.md`), banco/RLS (`.claude/rules/banco-de-dados.md`), frontend (`.claude/rules/frontend.md`).
 **Origem:** "fora do escopo" de `2026-10-19-agente-ia-respostas-cortadas-assumir-fallback-design.md` (entrega B) e de `2026-10-19-settings-escrita-por-chave-design.md` §8 (abrir chaves de prompt ao dono).
