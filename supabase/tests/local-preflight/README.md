@@ -64,6 +64,8 @@ presentes agendaria jobs apontando para lá.
 | `66-instance-delete.sql` | DEL-1..14 (ordinais 301–310, 313 e 316–318, migration `20261016180000`): a RPC `delete_whatsapp_instance_without_cost`. Encerrada sem custo e sem alerta aberto é apagada com o ciclo em cascata (e um retrato dele no `audit_log`), as notas (inclusive a `DELETE` nova) ficam com `instance_id` nulo e `instance_ref` intacto, e o `audit_log` grava o DELETE; custo atual, custo só em ciclo, custo anulado depois (histórico no `audit_log`), alerta `OPEN` ou `ACKNOWLEDGED`, estado não encerrado, id inexistente, motivo vazio e ator nulo são recusados sem apagar, e a precedência `not_ended` > `has_cost` > `open_alerts` é medida (DEL-12, DEL-13); o retrato do ciclo no `audit_log` é conferido com `organization_id` e `unit_id` da instância; ACL só `service_role`; migration aplicada duas vezes sem duplicar. Roda no banco `fase6c` da sequência base. |
 | `67-controles-instance-delete.sql` | CONTROLE-DEL-1..4 (ordinais 311, 312, 314, 315): tira do corpo real a checagem de custo em ciclo, a de estado, a de alerta aberto e a de custo no histórico, vê a instância de DEL-3/DEL-4/DEL-10/DEL-11 ser apagada, e desfaz a sabotagem por rollback de subbloco — sem reapply. Rodar sem `ON_ERROR_STOP`. |
 | `68-audit-log-member-allowlist.sql` | AUD-1..5 e CONTROLE-AUD-1 (ordinais 321–325 e 331, migration `20261016181000`): a policy `unit_member_read_audit` de `audit_log` com lista de tabelas. Membro da org lê `customers`/`reservations`/`unit_members` (pelas duas pernas, unidade e organização) e não lê `whatsapp_instances`/`whatsapp_implementations`/`organization_entitlement_overrides`/`whatsapp_instance_cycles` (o retrato dos ciclos que a RPC de exclusão grava); membro de outra org não lê nada da org A; platform admin lê as sete; migration aplicada duas vezes deixa uma policy. O controle recria a policy antiga num subbloco desfeito e vê o vazamento reaparecer. RLS de verdade (`set local role authenticated` + `request.jwt.claims`), banco **`aud67`** da sequência do advisor (00 → 01 → 09a → 106). O arquivo monta o estado de produção anterior à migration e a aplica (`\i`, duas vezes): rodar da raiz do repo. |
+| `79a-instagram-bootstrap.sql` | Base do 79 (módulo Instagram): **default privileges** de tabela e de função emulando o Supabase (sem eles o IG-1.5 fica cego), grant de tabela no que já existe em `public`, USAGE do schema `auth` para os papéis de API (o trigger de carimbo é INVOKER e resolve `auth.uid()` pelo nome), RLS de `unit_members` com as duas policies de produção e as fixtures `a0d79000-…` (org A/UA com owner, gerente e operador; org B/UB com gerente; platform_admin sem membership). **Recusa rodar depois das migrations do Instagram.** |
+| `79-instagram-module.sql` | Casos e controles positivos do módulo Instagram (ordinais 7901–7999, ver a seção 79). Task 1.1: IG-1.1..IG-1.6 (7901–7906) e C-IG-1.1..C-IG-1.6 (7908–7913). Banco **próprio** `ig79`. |
 
 ## Rodar
 
@@ -2637,6 +2639,70 @@ um valor do enum (`reservations_faq`): o guard de valor recusa outro valor para
 todo papel. Rodado depois do 80 no mesmo banco, o 75 continua 20/20, mas o
 `\i` dele reaplica a classe antiga (3 chaves factuais de volta a `platform`);
 rode o 80 de novo em seguida, porque ele reaplica a classe nova.
+
+### 79 — Módulo Instagram
+
+Banco próprio `ig79`, base do 68/75 (00 → 01 → 09a → 106), mais o
+`79a-instagram-bootstrap.sql`, que emula os default privileges do Supabase
+(tabela e função, como o 61a), dá grant de tabela no que já existe, USAGE do
+schema `auth` aos papéis de API, liga a RLS de `unit_members` com as policies
+de produção e cria as fixtures. O 79a **recusa rodar depois** das migrations do
+Instagram. As migrations rodam **cruas**, sem `psql -1`. O 79 não reaplica
+nada: cada caso desfaz o que gravou por rollback de subtransação, então ele
+pode ser repetido no mesmo banco depois de cada reaplicação.
+
+```bash
+export PGCLIENTENCODING=UTF8
+PG="/c/Program Files/PostgreSQL/18/bin"
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists ig79
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres ig79
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d ig79 -X -q -v ON_ERROR_STOP=1 "$@"; }
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/01-audit.sql
+P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
+P -f supabase/tests/local-preflight/79a-instagram-bootstrap.sql
+P -f supabase/tests/local-preflight/79-instagram-module.sql   # RED: aborta na guarda (objetos ausentes), exit 3
+P -f supabase/migrations/20261020120000_instagram_module_grants.sql
+P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN
+P -f supabase/migrations/20261020120000_instagram_module_grants.sql
+P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (idempotência)
+```
+
+As tasks seguintes da Fase 1 acrescentam migrations a esta sequência (na ordem
+dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
+
+**Ordinais.** Faixa 7901–7999 (a 78 é da Entrega B). Task 1.1: casos
+7901–7906, controles 7908–7913; 7907, 7914 e 7915 livres. As tasks seguintes
+usam 7920+, 7940+, 7960+ e 7980+. O 79 imprime os ordinais, a contagem e
+**aborta** se ela divergir do esperado (hoje **12 e 12**); quem acrescenta
+casos atualiza o número na última instrução do arquivo.
+
+**Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
+IG-1.1 só platform_admin concede (owner, gerente e authenticated sem `sub`
+recebem `42501` sem gravar; o admin sem membership concede, com a organização
+tirada de `units` e a linha de `instagram_settings` nascendo com
+`dm_enabled=false`); IG-1.2 idempotência nos dois sentidos, medida também no
+`audit_log` (um INSERT, um UPDATE); IG-1.3 `get_unit_modules` recusa A→B,
+unidade inexistente e sem `sub` com o MESMO `42501`; IG-1.4 operador e gerente
+de outra unidade casam zero linhas no UPDATE de `dm_enabled`, gerente e admin
+mudam com `updated_by` carimbado, e A não lê o de B; IG-1.5 ACL de função e de
+tabela (inclusive coluna) e FORCE RLS; IG-1.6 coerência organização × unidade e
+vínculos imutáveis, gravando como `postgres` para o guard ser a única barreira.
+Cada C-IG-1.x roda o MESMO caso sob sabotagem num subbloco desfeito e exige
+reprovação, depois exige aprovação com o objeto real conferido contra o
+catálogo; as mutações de corpo partem de `pg_get_functiondef` + `replace` e
+reprovam se o trecho sumir. O motivo de cada reprovação sai como NOTICE.
+
+**Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
+loopback, banco recriado do zero): RED com `ERROR: 79: objetos do modulo
+Instagram ausentes` (exit 3); migration crua aplicada duas vezes e o 79 com
+12/12 após cada uma, sem linha residual nas duas tabelas.
+
+O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
+nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A
+classificação das duas RPCs na allowlist é do
+`scripts/function-acl-allowlist.test.ts`.
 
 ### 80 — Camada global do prompt e guard de valor em settings
 
