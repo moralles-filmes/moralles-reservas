@@ -46,6 +46,7 @@ import {
   CreditCard,
   Copy,
   ExternalLink,
+  FileText,
   Inbox,
   Info,
   KeyRound,
@@ -209,7 +210,7 @@ export default function Automacao() {
           WhatsApp e IA · <span className="font-medium text-foreground">{unit.organization_name}</span>
         </p>
         <p className="text-sm text-muted-foreground">
-          Configure os canais de WhatsApp, o provedor de IA, as instruções do agente e os pagamentos.
+          Configure os canais de WhatsApp, os modelos e envios, o provedor de IA, as instruções do agente e os pagamentos.
         </p>
       </div>
 
@@ -218,11 +219,15 @@ export default function Automacao() {
           funcionando. */}
       <WhatsappServiceBanner organizationId={unit.organization_id} unitSlug={unit.slug} />
 
-      <Tabs defaultValue="channels">
-        <TabsList className="mb-4">
+      <Tabs key={unitId} defaultValue="channels">
+        <TabsList className="mb-4" aria-label="Configurações da unidade">
           <TabsTrigger value="channels" className="gap-2">
             <MessageSquare className="h-4 w-4" />
             Canais WhatsApp
+          </TabsTrigger>
+          <TabsTrigger value="models" className="gap-2">
+            <FileText className="h-4 w-4" />
+            Modelos e envios
           </TabsTrigger>
           <TabsTrigger value="ai" className="gap-2">
             <Bot className="h-4 w-4" />
@@ -246,6 +251,10 @@ export default function Automacao() {
           <ChannelsTab key={unitId} unitId={unitId} defaultProvider={unit.default_whatsapp_provider} />
         </TabsContent>
 
+        <TabsContent value="models">
+          <ModelsAndDispatchTab unitId={unitId} />
+        </TabsContent>
+
         <TabsContent value="ai">
           <AITab unitId={unitId} />
         </TabsContent>
@@ -262,6 +271,22 @@ export default function Automacao() {
           <PaymentsTab unitId={unitId} unitSlug={unitSlug ?? ""} />
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function ModelsAndDispatchTab({ unitId }: { unitId: string }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Prepare os modelos e aguarde a aprovação da Meta. Depois, libere o despacho desta unidade e escolha a versão quando a v2 estiver pronta. O preparo v2 pode ocorrer automaticamente; unidades que já usam v1 permanecem nela até uma nova seleção.
+      </p>
+      <p className="text-sm text-muted-foreground">
+        A loja habilita cada finalidade nos controles operacionais. Abrir esta aba, ter modelos aprovados ou escolher uma versão não envia mensagens por si.
+      </p>
+      <TemplateCatalogAdminCard unitId={unitId} />
+      <TemplateDispatchAdminCard unitId={unitId} />
+      <TemplateDispatchVersionAdminCard unitId={unitId} />
     </div>
   );
 }
@@ -381,9 +406,6 @@ function ChannelsTab({ unitId, defaultProvider }: { unitId: string; defaultProvi
         channelsError={isError}
         onRetryChannels={() => refetch()}
       />
-      <TemplateCatalogAdminCard unitId={unitId} />
-      <TemplateDispatchAdminCard unitId={unitId} />
-      <TemplateDispatchVersionAdminCard unitId={unitId} />
       {isLoading ? (
         <div className="space-y-3">{[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
       ) : isError ? (
