@@ -2664,19 +2664,28 @@ P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -f supabase/tests/local-preflight/79a-instagram-bootstrap.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # RED: aborta na guarda (objetos ausentes), exit 3
 P -f supabase/migrations/20261020120000_instagram_module_grants.sql
+P -f supabase/migrations/20261020120100_instagram_accounts_contacts.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN
 P -f supabase/migrations/20261020120000_instagram_module_grants.sql
+P -f supabase/migrations/20261020120100_instagram_accounts_contacts.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (idempotência)
 ```
+
+O 79a não muda na Task 1.2: o stub do Vault do 00-bootstrap já tem
+`vault.secrets`, `vault.decrypted_secrets`, `vault.create_secret` e
+`vault.update_secret` na forma que as RPCs usam, e `customers`/`reservations`
+e a `anonymize_customer` de produção (corpo da 106) vêm do 09a + 106. Clientes,
+reservas e a segunda unidade da org A (UA2) nascem dentro de cada caso.
 
 As tasks seguintes da Fase 1 acrescentam migrations a esta sequência (na ordem
 dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 
 **Ordinais.** Faixa 7901–7999 (a 78 é da Entrega B). Task 1.1: casos
-7901–7906, controles 7908–7913; 7907, 7914 e 7915 livres. As tasks seguintes
-usam 7920+, 7940+, 7960+ e 7980+. O 79 imprime os ordinais, a contagem e
-**aborta** se ela divergir do esperado (hoje **12 e 12**); quem acrescenta
-casos atualiza o número na última instrução do arquivo.
+7901–7906, controles 7908–7913; 7907, 7914 e 7915 livres. Task 1.2: casos
+7920–7925, controles 7930–7935. As tasks seguintes usam 7940+, 7960+ e 7980+.
+O 79 imprime os ordinais, a contagem e **aborta** se ela divergir do esperado
+(hoje **24 e 24**); quem acrescenta casos atualiza o número na última
+instrução do arquivo.
 
 **Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
 IG-1.1 só platform_admin concede (owner, gerente e authenticated sem `sub`
@@ -2694,15 +2703,42 @@ reprovação, depois exige aprovação com o objeto real conferido contra o
 catálogo; as mutações de corpo partem de `pg_get_functiondef` + `replace` e
 reprovam se o trecho sumir. O motivo de cada reprovação sai como NOTICE.
 
+**Task 1.2** (migration `20261020120100_instagram_accounts_contacts.sql`):
+IG-2.1 membro de A não lê contato de B, `get_instagram_account_status` recusa
+A→B, unidade inexistente e sem `sub` com o MESMO `42501`, devolve zero linhas
+sem conta ativa, e `authenticated` não lê `instagram_accounts` nem o ledger
+(mais a postura de ACL de tabela e FORCE RLS das três); IG-2.2 `ig_user_id`
+ativo em B recusado em A com `instagram_account_in_use`, a mesma conta
+reaproveita a linha (inclusive a desconectada, com UM segredo no Vault), outra
+conta da unidade é desconectada, e desconectar em B libera conectar em A;
+IG-2.3 token só por `service_role` (`authenticated`/`anon` com `42501` no
+EXECUTE), renovação no mesmo segredo, `disconnect` sobrescreve o Vault (lido
+pelo nome) e zera o ponteiro, e a ACL das nove RPCs e das duas trigger
+functions; IG-2.4 guarda do contato (cliente de outra organização,
+unidade/organização fora da conta, mover de conta) e da conta, gravando como
+`postgres`; IG-2.5 ledger recusa reserva de outra unidade da MESMA organização,
+de outro cliente, contato sem cliente e reserva inexistente com o mesmo
+`42501`; IG-2.6 `anonymize_customer` chamada como platform_admin (papel real +
+claims) anonimiza o contato do cliente, e o de outro cliente sobrevive também a
+um UPDATE de `deleted_at` de nulo para nulo. Os C-IG-2.x seguem o desenho da
+Task 1.1 (o C-IG-2.6 recria o trigger sem o `when` e confere o
+`pg_get_triggerdef` restaurado).
+
 **Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
 loopback, banco recriado do zero): RED com `ERROR: 79: objetos do modulo
-Instagram ausentes` (exit 3); migration crua aplicada duas vezes e o 79 com
-12/12 após cada uma, sem linha residual nas duas tabelas.
+Instagram ausentes` (exit 3) antes da 1.1 e `objetos da conta/contato do
+Instagram ausentes` (exit 3) com só a 1.1; as duas migrations cruas aplicadas
+duas vezes e o 79 com 24/24 após cada aplicação, sem linha residual nas
+tabelas novas nem segredo `instagram-account-*` no Vault.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
 nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A
-classificação das duas RPCs na allowlist é do
-`scripts/function-acl-allowlist.test.ts`.
+classificação das RPCs na allowlist é do
+`scripts/function-acl-allowlist.test.ts`. Nem o BYPASSRLS do dono: as
+funções SECURITY DEFINER sobre tabelas FORCE RLS sem policy (contas, ledger,
+e o trigger de anonimização sobre contatos) dependem de o dono efetivo ter
+BYPASSRLS, e no harness o dono é superusuário. Nem a cifra do Vault: o stub
+guarda o valor em claro.
 
 ### 80 — Camada global do prompt e guard de valor em settings
 
