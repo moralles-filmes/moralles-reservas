@@ -1,8 +1,8 @@
 # Plano — confirmação automática de reservas
 
-**Estado: implementação e testes locais autorizados antes do código.** Aceite “Aprovo a spec e implementação” em 19/10. [Spec](../specs/2026-10-19-reservation-auto-confirm-design.md).
+**Estado: publicado em 20/10; observação da primeira reserva nova pendente.** Aceite “Aprovo a spec e implementação” em 19/10 e autorização de publicação em 20/10. [Spec](../specs/2026-10-19-reservation-auto-confirm-design.md).
 
-**Escopo desta publicação:** apenas novas reservas sem caução. Leitura de produção em Moralles Reservas em 19/10: 0 `hall_schedules` com cobrança ativa, 0 `special_dates` futuras com cobrança ativa (inclusive valores 0/nulos), 0 reservas `pending_payment`. O responsável informou que nenhuma loja usa caução hoje. O estudo de Stripe/Pix foi preservado em trabalho local separado e não integra este pacote.
+**Escopo desta publicação:** apenas novas reservas sem caução. Leituras de produção em Moralles Reservas em 19/10 e novamente em 20/10: 0 `hall_schedules` com cobrança ativa, 0 `special_dates` futuras com cobrança ativa e 0 reservas `pending_payment`. O responsável decidiu não ativar caução em nenhuma loja por enquanto. O estudo de Stripe/Pix foi preservado em trabalho local separado e não integra este pacote.
 
 ## Task 1 — backend e autoridade do status
 
@@ -23,13 +23,20 @@ Implementer concluiu o pacote na branch `codex/reservation-auto-confirm-no-payme
 
 ## Task 3 — integração e publicação
 
-- [ ] Review integrado, gates de segurança proporcionais, status/diff/staged integral/segredos, commit com caminhos explícitos, CI e `acl-estatico` verdes.
-- [ ] Apresentar matriz concreta de EFs e efeitos para autorização própria. Nenhum SQL de produção é presumido; se necessário, especificar migration e obter autorização antes de aplicar.
-- [ ] Reconfirmar por leitura que `charge_enabled=true` continua ausente em schedules/datas futuras e que operadores não ativarão caução durante a janela: o check da EF e o INSERT são separados por uma pequena janela de corrida.
-- [ ] Com autorização, publicar bundles antes do frontend, merge/Vercel READY, conferir estado e uma intenção por reserva. Teste pago somente com canal/custo/autorização vigentes.
-- [ ] Atualizar evidências, checkboxes comprovados e memória; commit/merge autorizados após gates.
+- [x] Review integrado, gates de segurança proporcionais, status/diff/staged integral/segredos, commit com caminhos explícitos, CI e `acl-estatico` verdes.
+- [x] Apresentar matriz concreta de quatro EFs e efeitos para autorização própria; não há migration neste pacote.
+- [x] Reconfirmar por leitura que `charge_enabled=true` continua ausente em schedules/datas futuras; responsável confirmou janela e que ninguém ativará caução durante a publicação. O check da EF e o INSERT são separados por uma pequena janela de corrida.
+- [x] Com autorização específica, publicar os quatro bundles antes do frontend, merge/Vercel READY e conferir estado das EFs.
+- [ ] Observar uma nova reserva real sem caução entrando `confirmed/not_required` e uma única intenção de confirmação; ainda não houve reserva nova após o merge. Teste pago somente com canal/custo/autorização vigentes.
+- [x] Atualizar memória de reservas e billing com a regra sem caução e preservar o trabalho de Stripe fora do pacote.
 
-## Trabalho futuro fora desta publicação — caução
+### Evidência de produção da Task 3
 
-- [ ] Antes de qualquer rollout de caução, revisar separadamente concorrência e idempotência do Checkout, confirmação assíncrona Pix, expiração e reconciliação de pagamento tardio; aprovar spec e matriz próprias.
-- [ ] Confirmar no Stripe Dashboard os eventos realmente inscritos no endpoint (`checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`) e registrar evidência sem copiar segredo.
+- Branch `codex/reservation-auto-confirm-no-payment` no PR [#48](https://github.com/moralles-filmes/moralles-reservas/pull/48), commits `af499da` e `9047b81`. Review integrado sem P0/P1, diff staged integral e segredo revisados; Vitest focado 20/20, typecheck, lint, build e Deno check das quatro EFs exit 0. CI `acl-estatico` e Vercel preview passaram; PR sem conflitos.
+- Em 20/10, o responsável autorizou nominalmente as quatro EFs, o merge/deploy Vercel e a janela, mantendo a caução desativada em todas as lojas. Alvo: Moralles Reservas `gbabxcrntkwgblgqsiit`; Ren Sushi no canal Datafy `d35128bb…`, assinatura existente R$ 49,90/mês. O deploy não fez teste pago; reservas reais ainda podem gerar tarifa normal de mensagem, cujo valor efetivo não foi comprovado.
+- CLI `supabase functions deploy ... --project-ref gbabxcrntkwgblgqsiit --use-api --jobs 1` retornou exit 0 para cada função, com `--no-verify-jwt` somente nas três funções configuradas assim. Consulta posterior: `create-reservation` v44 ACTIVE/JWT false, `create-manual-reservation` v24 ACTIVE/JWT true, `update-reservation` v24 ACTIVE/JWT false, `webhook-whatsapp` v107 ACTIVE/JWT false.
+- PR #48 foi mesclado em `main` no commit `50ed428e2048b5731421137f47dcfa88552244ad`. Vercel production deployment `dpl_2bEkm6vxNwkRW17JwQqRomVspV1b` ficou READY com esse SHA. Leitura posterior: 0 schedules com cobrança ativa, 0 datas futuras com cobrança ativa, 0 reservas `pending_payment`, 0 reservas criadas desde o merge. Portanto o estado ponta a ponta de uma reserva nova e a intenção de mensagem ainda não foram observados; o checkbox permanece aberto.
+
+## Caução fora do escopo
+
+Não ativar pagamento antecipado de reservas em nenhuma loja neste trabalho. Um projeto futuro para caução exigirá spec, revisão de Checkout/Pix e autorização próprios. Não há verificação pendente no Stripe para concluir esta publicação.
