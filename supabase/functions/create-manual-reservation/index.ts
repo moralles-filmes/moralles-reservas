@@ -42,7 +42,7 @@ interface ManualReservationBody {
   party_size?: number;
   notes?: string | null;
   source?: "web" | "whatsapp";
-  status?: "pending" | "confirmed";
+  status?: "confirmed";
   notify?: boolean;
   override?: boolean;
 }
@@ -65,7 +65,7 @@ function validateBody(b: ManualReservationBody): string | null {
   if (!b.time || !/^\d{2}:\d{2}(:\d{2})?$/.test(b.time)) return "Horário inválido (use HH:MM).";
   if (typeof b.party_size !== "number" || b.party_size < 1 || b.party_size > 30) return "party_size inválido.";
   if (b.source !== undefined && b.source !== "web" && b.source !== "whatsapp") return "Origem inválida.";
-  if (b.status !== undefined && b.status !== "pending" && b.status !== "confirmed") return "Status inválido.";
+  if (b.status !== undefined && b.status !== "confirmed") return "Novas reservas não exigem confirmação manual.";
   return null;
 }
 
@@ -112,7 +112,7 @@ serve(async (req) => {
     const unitId = body.unit_id!;
     const organizationId = body.organization_id!;
     const source = body.source ?? "web";
-    const status = body.status ?? "confirmed";
+    const status = "confirmed";
     const notify = body.notify === true;
     const override = body.override === true;
 
@@ -188,6 +188,13 @@ serve(async (req) => {
       return json({ success: false, reason: result.reason, message: result.message }, 200);
     }
 
+    if (result.reservationStatus !== "confirmed") {
+      jsonLog("error", { requestId, evt: "manual_reservation_state_mismatch", unitId,
+        reservationId: result.reservationId, status: result.reservationStatus });
+      return json({ success: false, reason: "state_unverified",
+        message: "A reserva foi criada, mas o estado não pôde ser confirmado. Atualize a lista antes de tentar novamente." }, 409);
+    }
+
     // Reconciliação da notificação — DESACOPLA do `source`.
     // O trigger (mig 028) enfileira confirmação só quando source <> 'whatsapp'.
     //   notify=true  → garante 1 linha no outbox (cobre source='whatsapp', onde o trigger NÃO enfileirou).
@@ -230,6 +237,7 @@ serve(async (req) => {
       reservation_id: result.reservationId,
       reservation_code: result.reservationCode,
       table_id: result.tableId ?? null,
+      reservation_status: result.reservationStatus,
       customer: {
         id: customer.id,
         name: customer.name,

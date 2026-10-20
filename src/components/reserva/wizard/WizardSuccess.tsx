@@ -11,14 +11,23 @@ export function WizardSuccess() {
   const { state, actions } = useReservaWizardContext();
   const reserva = state.confirmed;
   if (!reserva) return null;
-
+  if (reserva.status !== "confirmed" || reserva.payment_status !== "not_required") {
+    return (
+      <div role="alert" className="text-center space-y-2 py-2">
+        <h2 className="text-xl font-semibold">Estado da reserva não confirmado</h2>
+        <p className="text-sm text-muted-foreground">
+          Consulte o restaurante com o código #{reserva.reservation_code} antes de tentar novamente.
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="text-center space-y-5 py-2">
-      <CheckCircle className="h-14 w-14 text-success mx-auto" />
+      <CheckCircle role="img" aria-label="Reserva confirmada" className="h-14 w-14 text-success mx-auto" />
       <div className="space-y-1.5">
-        <h2 className="text-2xl font-semibold">Reserva Confirmada!</h2>
+        <h2 className="text-2xl font-semibold">Reserva confirmada!</h2>
         <p className="text-sm text-muted-foreground">
-          Você receberá a confirmação via WhatsApp em breve.
+          Sua reserva está confirmada. A mensagem por WhatsApp ou e-mail, quando habilitada, é enviada separadamente.
         </p>
       </div>
       <div className="bg-muted rounded-lg p-4 text-left space-y-2">

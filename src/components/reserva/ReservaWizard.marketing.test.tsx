@@ -31,7 +31,7 @@ beforeEach(() => {
   createReserva.mockReset();
   createReserva.mockImplementation(async (data) => ({
     id: "reservation-1", reservation_code: "ABC123", date: "2026-10-20",
-    time: "19:00", party_size: 2, ...data,
+    time: "19:00", party_size: 2, status: "confirmed", payment_status: "not_required", ...data,
   }));
 });
 
