@@ -7,7 +7,7 @@
 - Reservas de mesa para restaurantes, com agente de IA no WhatsApp, fila de espera, giftback, automações de mensagens e cobrança da plataforma.
 - Usuários: dono/gerente/operador de restaurante (painéis), cliente final (portal público e WhatsApp), `platform_admin` (`/platform/*`).
 - Criticidade: envia WhatsApp a clientes finais, guarda dados pessoais (LGPD), movimenta dinheiro (caução Stripe, mensalidade Asaas). Repo privado, deploy automático (`main` → Vercel).
-- Nível de maturidade **N2** (Padrão SaaS): regras `[N1]` e `[N2]` dos padrões valem sempre que o fluxo protegido existe; `[N3]` só com necessidade medida ou exigência contratual. O nível decide quanta infraestrutura construir, nunca dispensa um controle N1 de fluxo existente.
+- Nível **N2** do Padrão SaaS: regras `[N1]` e `[N2]` dos padrões valem quando o fluxo protegido existe; `[N3]` só com necessidade medida.
 
 ## 2. Onde está cada regra
 
@@ -27,9 +27,7 @@ O Claude Code carrega a regra sozinho ao tocar um arquivo do assunto. **Codex e 
 | Qualquer provedor externo: webhook, idempotência, retry, fallback, credenciais | `.claude/rules/integracoes.md` |
 | Auth, membros, unidade ativa, filtro de tenant em query de tela, service role | `.claude/rules/seguranca-multitenancy.md` |
 
-Runbooks: `docs/RUNBOOK-ROTACAO-CREDENCIAIS.md`, `docs/whatsapp-multiprovider-uazapi.md`, `docs/datafy-parceiro-runbook.md`, `docs/whatsapp-templates-programados-runbook.md`, `docs/billing-asaas/`. Specs e planos: `docs/superpowers/`.
-
-Padrões normativos (Padrão SaaS v3.2) em `docs/standards/`: o corpo não se edita (o `check-padrao` confere o hash); o que é deste projeto fica na seção final "Particularidades" de cada um. Em conflito, a regra do projeto (este arquivo e `.claude/rules/`) prevalece e vira divergência a reportar. Modelo de tenant: `.claude/tenancy-profile.yml` (arquétipo B). Leia o padrão do assunto: módulo novo → `MODULES` + `ARCHITECTURE` + `ACCESS_CONTROL`; permissão/papel → `ACCESS_CONTROL` + `MULTI_TENANCY`; auth/RLS/dados pessoais → `SECURITY` + `MULTI_TENANCY`; migration/RPC → `DATABASE`; cobrança/plano → `TENANT_LIFECYCLE`; provedor/webhook/IA com tools → `INTEGRATIONS` + `docs/integrations/providers/`; lentidão → `PERFORMANCE`; testes/CI → `TESTING`; deploy/incidente → `OPERATIONS`; infraestrutura → `GCP_MIGRATION`.
+Padrões normativos v3.2 em `docs/standards/` (o nome do arquivo diz o assunto): o corpo não se edita (o `check-padrao` confere o hash) e o que é deste projeto fica em "Particularidades". Em conflito, prevalece a regra do projeto e a divergência é reportada. Runbooks: Particularidades de `OPERATIONS.md`. Specs e planos: `docs/superpowers/`.
 
 ## 3. Manter este contexto
 
@@ -55,12 +53,13 @@ Padrões normativos (Padrão SaaS v3.2) em `docs/standards/`: o corpo não se ed
 - Segredo de EF vai por `supabase secrets set`; Stripe/Asaas/Datafy-conta em `platform_secrets`; chave de IA em `ai_provider_credentials` (BYOK por unidade, sem fallback global). Migration nunca embute segredo nem URL do projeto — lê do Vault (`internal_api_key`, `project_url`).
 - Secret vazou: pare e **rotacione no provider antes de qualquer push** (reescrever histórico não neutraliza), depois atualize `supabase secrets set` e o Vault. Em dúvida, não commite.
 - **`platform_secrets` cai para `Deno.env` em qualquer erro de leitura:** cópia velha em env é credencial viva. Rotacionar no painel exige sincronizar `supabase secrets set` no mesmo ato (ou remover a env).
+- Credencial nunca vai a log, DTO, mensagem de erro ou prompt de IA.
 
 ## 6. Stack e comandos
 
 - Vite + React + TypeScript + Tailwind/shadcn, TanStack Query, React Hook Form + Zod, Sonner; Supabase (Postgres, Auth, Storage, ~50 Edge Functions Deno, pg_cron + pg_net); Vercel; Vitest.
 - `npm install --legacy-peer-deps` (`.npmrc` força; react-day-picker × date-fns v4). `npm run dev` (localhost:8080), `lint`, `test`, `build`.
-- Padrão: `node scripts/check-padrao.mjs` (padrões × manifest, CLAUDE.md → @AGENTS.md, links). Portabilidade: `node scripts/check-portabilidade.mjs` (falha só se a dívida passar da linha de base `.claude/portabilidade-baseline.json`; ao reduzir, `--write-baseline` trava o ganho).
+- `node scripts/check-padrao.mjs` e `node scripts/check-portabilidade.mjs` (barra só dívida acima de `.claude/portabilidade-baseline.json`; ao reduzir, `--write-baseline`).
 - **Typecheck é `npm run typecheck` = `tsc -b --noEmit`; nunca `tsc --noEmit` sem `-b`** — o root tem `files: []` + references e vira no-op com exit 0. Rode antes de commitar (o dev server SWC não tipa); baseline zero erros. O `tsc -b` não alcança `supabase/functions/`; o gate Deno é `deno check`.
 - **`strict: false`: `if (!x.ok) { x.campo }` não estreita união discriminada** (TS2339). Use `x.ok === false` ou early-return. Pior em `supabase/functions/`, onde nem aparece. [tsconfig.app.json](tsconfig.app.json).
 
@@ -68,7 +67,7 @@ Padrões normativos (Padrão SaaS v3.2) em `docs/standards/`: o corpo não se ed
 
 - `organizations` (cliente SaaS) → `units` (restaurante) → `unit_members` (`owner` > `gerente` > `operador`). Super-admin em `platform_admins`; `admin_users`/`manage-admins` foram removidos — não reinstalar. Perfil declarado em [.claude/tenancy-profile.yml](.claude/tenancy-profile.yml).
 - `customers` pertencem à organização (reserva em qualquer unidade); dados operacionais levam `unit_id`; conta WABA e catálogo remoto são da organização, ligados a canal/unidade por bindings validados em guards/RPCs. Não acrescente `unit_id` artificial à conta compartilhada nem infira tenant de id livre do caller.
-- Papéis: owner cria units e tem tudo; gerente configura/membros/dados, sem automação; operador atua em reservas/fila/passantes e **não cancela reserva** (trigger + gate na EF service-role).
+- Papéis: owner cria units, é o único que adiciona, remove ou muda papel de membro (`manage-members`) e tem tudo; gerente configura e mantém dados, sem automação; operador atua em reservas/fila/passantes e **não cancela reserva** (trigger + gate na EF service-role).
 
 ## 8. Invariantes que valem em qualquer arquivo
 
@@ -78,22 +77,16 @@ Padrões normativos (Padrão SaaS v3.2) em `docs/standards/`: o corpo não se ed
 - **Função nova (inclusive trigger function) revoga `EXECUTE` de `public, anon, authenticated` e concede ao papel mínimo** — `CREATE FUNCTION` concede a PUBLIC e `public` é exposto pela anon key. `drop`+`create` reabre o grant.
 - **Anon só escreve onde previsto e só lê por RPC `SECURITY DEFINER` privacy-safe gateada por `units.is_public`**; coluna nova em `units`/`organizations` nasce invisível para anon.
 - **`UPDATE` do supabase-js que casa zero linhas devolve `error: null`:** escrita com predicado de tenant usa `.select()` e confere o tamanho.
-- **Edge Functions não compartilham bundle:** mudar `_shared/X.ts` exige redeploy de todas as consumidoras — `node scripts/ef-import-graph.mjs supabase/functions/_shared/X.ts`. Migration que a EF lê (coluna, RPC, valor de CHECK) entra por `supabase db push` **antes** do deploy da EF.
-- **Migration só via `supabase db push`, nunca SQL colado no Studio** (drift em `schema_migrations` bloqueia o próximo push).
 - **Tempo:** Deno roda em UTC; data/dia "de hoje" e timestamps comparados com o banco usam BRT explícito (`-03:00`). Coluna `time` volta `HH:MM:SS` — `.slice(0, 5)` antes de montar literal.
 - **Telefone:** `customers.phone` é canônico sem `55` (`canonicalBrPhone`); destinatário de provider usa `toE164BrPhone`. Nunca `replace(/^55/)` cru — DDD 55 existe.
 - **Coluna JSONB nunca é interpolada em template literal** (`${obj}` vira `"[object Object]"`); campo de segredo do corpo passa por `typeof === "string"`, nunca `String(...)`.
-- **EF nunca devolve `error.message` cru do Postgres;** mensagem curta PT-BR ao cliente, detalhe no log. Credencial nunca vai a log, DTO ou erro (Z-API põe token no path da URL: redija na fonte).
 - **Lote que lê tabela inteira pagina com `.range()` até o fim** — PostgREST trunca em 1000 sem aviso.
 - **Erro de leitura de gate/flag nunca vira "OFF" ou "permitido"** sem decisão explícita de polaridade; cada gate documenta se falha aberto ou fechado.
 
-- **Membro lê em `audit_log` só `customers`, `reservations` e `unit_members`; a policy, a lista da UI e seus rótulos mudam juntos.** O trigger também grava dados internos da plataforma; alinhe `unit_member_read_audit`, `src/lib/audit-log-tables.ts`, `Auditoria.tsx` e `scripts/audit-log-member-policy.test.ts` antes de expor outra tabela. [migration](supabase/migrations/20261016181000_audit_log_member_read_allowlist.sql).
-- **Instância WhatsApp só é excluída pela RPC `delete_whatsapp_instance_without_cost`, com ator, se estiver `ENDED`, nunca tiver custo atual, de ciclo ou histórico, nem alerta `OPEN`/`ACKNOWLEDGED`.** A RPC preserva o retrato dos ciclos no `audit_log`; sua retenção deve manter o histórico de `whatsapp_instances` para a checagem não falhar aberto. [migration](supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql).
-- **O núcleo `whatsapp-instance-delete-core.ts` só traduz a decisão da RPC, e as nove ações de `whatsapp_instance_notes` seguem o CHECK da última migration que o redefine.** Duplicar a regra de exclusão em TypeScript ou esquecer uma ação no CHECK faz painel e banco divergirem. [núcleo](supabase/functions/_shared/whatsapp-instance-delete-core.ts), [migration](supabase/migrations/20261016180000_whatsapp_instance_delete_without_cost.sql).
-
 ## 9. Deploy
 
-- Frontend: push em `main` → Vercel. Edge Function: `supabase functions deploy <nome>`, depois das migrations, flags e segredos de que ela depende.
+- Frontend: push em `main` → Vercel. Migration só por `supabase db push`, nunca DDL colado no Studio ou rodado por MCP (drift em `schema_migrations` bloqueia o próximo push).
+- Edge Function: `supabase functions deploy <nome>`, depois das migrations, flags e segredos de que ela depende. EFs não compartilham bundle: mudou `_shared/X.ts`, redeploy de todas as consumidoras (`node scripts/ef-import-graph.mjs supabase/functions/_shared/X.ts`).
 - `INTERNAL_API_KEY` vive em Edge secrets **e** no Vault (pg_cron); rotacione Edge primeiro, Vault depois, e confira em `net._http_response` ([runbook](docs/RUNBOOK-ROTACAO-CREDENCIAIS.md) §4). Rotação pela metade silencia todos os workers sem erro visível.
 
 <!-- ai-router-br:start -->

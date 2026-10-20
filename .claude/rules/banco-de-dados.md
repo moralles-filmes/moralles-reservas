@@ -4,6 +4,9 @@ paths:
   - "supabase/tests/**"
   - "scripts/*acl*"
   - "scripts/migration-static-guard*"
+  - "scripts/audit-log-member-policy*"
+  - "src/lib/audit-log-tables.ts"
+  - "src/pages/gestao/Auditoria.tsx"
 ---
 
 # Banco, migrations, RLS e ACL
@@ -24,7 +27,7 @@ paths:
 
 - **`reservations`, `waitlist`, `conversations`, `notifications_sent` e `rate_limit_events` usam `FORCE RLS`; função `SECURITY DEFINER` só contorna a policy se o dono efetivo tiver `BYPASSRLS`.** `FORCE` muda o comportamento do dono sem bypass, enquanto `service_role` e funções dependem do atributo real do papel; ver migration `20261017180000` e pré-voo 70.
 - **Tabelas com credenciais usam `FORCE RLS` sem policies** (`whatsapp_channels`, `ai_provider_credentials`, `processed_messages`, `rate_limit_events`, `platform_secrets`, `stripe_accounts`, `stripe_webhook_events`, `billing_customers`, `billing_subscriptions`, `billing_invoices`, `billing_events`, `billing_notifications`, `billing_checkout_sessions`, `webhook_executions`, `whatsapp_inbound_events`, `whatsapp_ad_touchpoints`). UI acessa via Edge Function.
-- **`audit_log` usa `audit_trigger_func()` em `customers`, `reservations`, `unit_members`, `whatsapp_instances`, `whatsapp_implementations` e `organization_entitlement_overrides`.** Reservas/membros logam `unit_id`; clientes logam `organization_id` (porque pertencem à org), e as três tabelas da plataforma também geram linhas internas que a policy não libera a membros. Consulta nova de auditoria para membro mantém a allowlist `customers`/`reservations`/`unit_members` e cobre `.or(unit_id.eq.X, organization_id.eq.Y)` — filtrar só por `unit_id` esconde mudanças de cliente. [migration](supabase/migrations/20261016181000_audit_log_member_read_allowlist.sql).
+- **`audit_log` usa `audit_trigger_func()` em `customers`, `reservations`, `unit_members`, `whatsapp_instances`, `whatsapp_implementations` e `organization_entitlement_overrides`.** Reservas/membros logam `unit_id`; clientes logam `organization_id` (porque pertencem à org), e as três tabelas da plataforma também geram linhas internas que a policy não libera a membros. Consulta nova de auditoria para membro mantém a allowlist `customers`/`reservations`/`unit_members` e cobre `.or(unit_id.eq.X, organization_id.eq.Y)` — filtrar só por `unit_id` esconde mudanças de cliente. A policy `unit_member_read_audit`, a lista e os rótulos da UI ([audit-log-tables.ts](src/lib/audit-log-tables.ts), [Auditoria.tsx](src/pages/gestao/Auditoria.tsx)) e o [teste](scripts/audit-log-member-policy.test.ts) mudam juntos antes de expor outra tabela a membro. [migration](supabase/migrations/20261016181000_audit_log_member_read_allowlist.sql).
 - **Chave nova de `settings` nasce gravável só por platform_admin; a Gestão grava só as chaves `manager` de `app_private.unit_setting_write_class`, e o trigger `settings_write_role_guard` recusa o resto com `42501`.** `unit_member_all_settings` não confere papel, e o trigger é o que impede o operador de trocar IA, prompt e envios; tela que passe a gravar chave nova exige mudar a função e o teste juntos. O trigger deixa `service_role` passar: EF que um dia gravar `settings` revalida a classe da chave e o papel do caller. [migration](supabase/migrations/20261019180000_settings_write_role_guard.sql), [teste](scripts/settings-write-acl.test.ts).
 
 ## RLS e helpers
