@@ -60,11 +60,11 @@ Arquivos:
 
 ## Task 4 — Gates e entrega local
 
-- [ ] `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` e `deno check supabase/functions/webhook-whatsapp/index.ts`.
-- [ ] Gates `saas-shield-br`: `tenant-isolation-auditor` e `identity-access-auditor` sobre o diff; `integration-reliability-auditor` se a Task 3 tocar debounce ou lock.
-- [ ] Review da branch inteira.
-- [ ] `git status`, `git diff --cached` integral, varredura de segredos nas linhas staged e `git add` explícito.
-- [ ] Commit, push e PR com autorização. O deploy de `webhook-whatsapp` acontece só com autorização própria, em janela de baixo tráfego, e é conferido em `webhook_executions`.
+- [x] `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` e `deno check supabase/functions/webhook-whatsapp/index.ts`.
+- [x] Gates `saas-shield-br`: `tenant-isolation-auditor` e `identity-access-auditor` sobre o diff; `integration-reliability-auditor` se a Task 3 tocar debounce ou lock.
+- [x] Review da branch inteira.
+- [x] `git status`, `git diff --cached` integral, varredura de segredos nas linhas staged e `git add` explícito.
+- [x] Commit, push e PR com autorização. O deploy de `webhook-whatsapp` acontece só com autorização própria, em janela de baixo tráfego, e é conferido em `webhook_executions`.
 
 ## Evidências
 
@@ -94,9 +94,61 @@ Arquivos:
 - Depois da extração o snapshot passou **byte a byte** sem regravar. Controles positivos: tirar "Nunca atalhe." da regra 1 reprova 6 cenários; inverter `finish`/`releaseAiLock` no desfecho vazio reprova 1. Os dois restaurados por cópia idêntica (`cmp`). Teste novo prova que o harness carrega `_shared/agent/{turn,system-prompt,tools}.ts`.
 - Guardas textuais reapontados para o arquivo onde o código mora, sem afrouxar: `ai-budget-wiring-guard` (turno em `turnCode`, catch externo no webhook, portas de handoff sobre webhook+turno; a varredura de saídas agora prende TODO `return` do corpo de `run`, não só uma forma), `whatsapp-inbound-reentry` (+ amarra nova: o webhook entrega ao turno `ingestionSource` e `t0` por identidade), `agent-provider-fallback-wiring`, `whatsapp-conversation-parity-guard` (a cerca vale para `ctx.send`; o núcleo não chama `sendOutbound`), `whatsapp-multiprovider-wiring-guard`. Sabotagens no `turn.ts` (trava de mutação do retry, liquidação do sucesso, status de uma porta de handoff) reprovam cada uma.
 - `src/lib/agent-core-channel.test.ts`: identidade e formatação entram pelo contexto (o núcleo não contém o texto do WhatsApp), conjunto de ferramentas, e a cadeia `reservationSource` → `reserveSlot` que nenhum cenário do harness exercita.
-- Desvios do `ChannelContext` da spec, deliberados: `customer` segue **obrigatório** (o `null` do contato IG sem telefone entra na Fase 1 com `link_customer_phone` e `need_phone`, que o consomem); `reservationSource` só aceita `"whatsapp"` até a migration que libera `instagram`; o contexto ganhou `unit`, `phone`, `appBaseUrl` (lido preguiçoso, `Deno.env` só no entrypoint) e `channelId`; `ingestionSource`, `finish`, append e marca de efeito externo ficam no `AgentTurnIO` da invocação. A regra 12 do prompt ainda diz "pelo WhatsApp": fica para a Fase 1 parametrizar.
+- Desvios do `ChannelContext` da spec, deliberados: `customer` segue **obrigatório** (o `null` do contato IG sem telefone entra na Fase 1 com `link_customer_phone` e `need_phone`, que o consomem); `reservationSource` só aceita `"whatsapp"` até a migration que libera `instagram`; o contexto ganhou `unit`, `phone`, `appBaseUrl` (lido preguiçoso, `Deno.env` só no entrypoint) e `channelId`; leva a `conversation` carregada (o núcleo a atualiza em memória ao longo do turno) em vez de só `conversationId`, e ainda não tem `contact` (entra com o canal Instagram); `ingestionSource`, `finish`, append e marca de efeito externo ficam no `AgentTurnIO` da invocação. A regra 12 do prompt ainda diz "pelo WhatsApp": fica para a Fase 1 parametrizar.
 - Gates: `npm run typecheck` zero erros (o teste novo pôs `tools.ts` no programa do tsc, o que pediu `result.success === false` e um tipo local de ferramenta para não puxar o SDK do `esm.sh`); ESLint dos arquivos tocados limpo; `npx deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts` ok; 14 suítes relacionadas 487/487.
 - Suíte completa: 4028 passaram e 18 falharam, todas preexistentes: `OfficialConnectionCard` não carrega (sem `.env.local` no worktree), e as 18 são de `whatsapp-automation-receipts-request`, `whatsapp-template-catalog-v2` e `Automacao.datafy`, que falham igual (18/55) num worktree limpo de `origin/main` `7ed0976`, removido depois. `receipts-request` já falhava no baseline desta branch antes de qualquer mudança da Task 3.
 - `node scripts/ef-import-graph.mjs`: `agent/turn.ts`, `agent/system-prompt.ts`, `agent/tools.ts` → 1 EF (`webhook-whatsapp`); `agent/channel-context.ts` → 0. Matriz de redeploy da Fase 0 inalterada: `webhook-whatsapp`, `update-reservation`, `create-reservation`, `create-manual-reservation`.
 - Regras atualizadas: `agente-ia.md` (invariante do núcleo por canal, `paths:` com `_shared/agent/**`, ponteiros) e o fluxo em `whatsapp.md`.
-- Pendente para a Task 4: `origin/main` avançou para `7ed0976` (PRs #47–#49; o #48 mexe em `reserveSlot`, sem tocar o webhook) — rebase antes do PR.
+- Pendente para a Task 4: `origin/main` avançou para `7ed0976` (PRs #47–#49; o #48 mexe em `reserveSlot`, sem tocar o webhook) — rebase antes do PR. Feito na Task 4.
+
+### Task 4 (2026-10-20)
+- **Rebase:** primeiro sobre `origin/main` `3ed43b5` (PRs #47–#51), depois sobre `44d8690` (#52–#53), os dois sem conflito.
+  - No primeiro, só `availability.ts`, a fixture de automação e `reservas.md` se cruzavam, e o git os combinou sozinho.
+  - O segundo só trouxe `Automacao.*`.
+  - Os hashes citados nas Tasks 1–3 são de antes dos rebases; os commits se identificam pelo assunto.
+- **Gates estáticos:** todos ok.
+  - `npm run typecheck`: zero erros. `npm run lint`: 0 erros (17 warnings preexistentes). `npm run build`: ok.
+  - `npx deno@2.1.4 check` nas 4 EFs da matriz: ok.
+  - `check-padrao`: ok.
+  - `check-portabilidade`: acusou 38 chamadas `.from`/`.rpc` em `_shared/agent/*` e `agent-reservation-tools.ts`. São as mesmas consultas que moravam no `index.ts` do webhook, que o check libera como adapter. Por decisão do responsável, a linha de base foi regravada (commit "grava na linha de base a dívida que saiu do webhook para _shared"), e a porta de dados do núcleo fica para a Fase 1. O CI não roda esse check hoje.
+- **Gates `saas-shield-br`:**
+  - `tenant-isolation-auditor`: FAIL, com 1 bloqueante anterior à branch.
+  - `identity-access-auditor` (Sonnet, superfície estreita): PASS_WITH_WARNINGS.
+  - `integration-reliability-auditor`: PASS_WITH_WARNINGS.
+- **Corrigidos nesta task:**
+  - `update-reservation`: `table_id`/`hall_id` do body presos à unidade da reserva. Era o bloqueante, apontado pelos dois primeiros auditores. O UPDATE ganhou escopo por unidade e status editável (cancelamento concorrente → 409). Reserva alheia e inexistente agora têm a mesma resposta 404.
+  - `reserveSlot`, `create_reservation` e o catch do `onToolCall` não devolvem mais texto do Postgres ao portal, ao painel nem ao LLM.
+  - `list_customer_reservations`: dia em BRT, e erro de leitura deixa de virar "sem reservas".
+  - Catch externo do webhook: liquida e solta o lock antes de devolver o claim da mensagem.
+  - `releaseAiLock` lê o `{ error }` da RPC.
+- **Review da branch inteira:** "pronto com ajustes", sem blocker. A extração foi conferida com `diff -w` contra o webhook original: só aparecem as substituições previstas. Ajustes aplicados:
+  - a ordem do catch externo passou a ser presa por comportamento (cenário novo em `agent-turn-parity`) e pela guarda das portas do `agentTurn`;
+  - o contrato do catch do adapter foi escrito em `agente-ia.md`;
+  - `paths:` de `reservas.md` e `whatsapp.md` corrigidos, e três regras ficaram mais precisas;
+  - dois casos positivos novos no teste do `update-reservation`;
+  - cabeçalho do `turn.ts` atualizado.
+- **Controles positivos:** cada teste novo reprova contra o código anterior. Os arquivos foram restaurados por cópia e conferidos com `cmp`. O snapshot de paridade nunca foi regravado.
+- **Instabilidade corrigida:** a paridade falhou com `request_did_not_finish` em 2 de 3 suítes completas, cada vez num cenário diferente.
+  - Causa: o `run()` da fixture de chat gastava o orçamento de 300 em voltas de `setImmediate` enquanto esperava o webcrypto real do harness, e o thread pool fica saturado na suíte completa.
+  - Correção: o orçamento agora conta só os avanços do relógio falso. Sem timer devido, a volta espera 1ms real, com teto de 20s.
+- **Suíte completa:** 4118 passaram e 45 falharam, todas preexistentes: as mesmas suítes que falham num checkout limpo de `origin/main` (`whatsapp-template-surfaces`, `whatsapp-template-catalog-v2`, `whatsapp-waitlist-voucher-routing`, `whatsapp-automation-receipts-request`, `whatsapp-reservation-automation-routing`, `whatsapp-template-catalog-migration-twin`, `TemplateCatalogAdminCard`), mais `OfficialConnectionCard`, que só falha no worktree sem `.env.local`. Nenhum `request_did_not_finish` depois da correção da fixture.
+- **Mudanças deliberadas de comportamento,** para as notas de deploy:
+  1. `update-reservation`: 403 → 404 sem oráculo; mesa/salão de outra unidade → 400; cancelamento concorrente → 409; erro de leitura → 500 com texto fixo.
+  2. `insert_failed` do `reserveSlot` com texto fixo.
+  3. Erro de ferramenta da IA com texto fixo.
+  4. `list_customer_reservations` em BRT e com erro explícito.
+  5. Nova ordem do catch externo.
+- **Matriz de redeploy:** inalterada, 4 EFs (`webhook-whatsapp`, `update-reservation`, `create-reservation`, `create-manual-reservation`). Sem migration. O deploy só acontece depois do merge, com autorização própria e em janela de baixo tráfego, e é conferido em `webhook_executions`.
+- **Follow-ups fora desta fase:**
+  - auto-resolve e lembrete de handoff enviam por `ctx.send` cru, sem compare-and-set (risco de duplicata em rajada);
+  - o índice único pega só o horário exato, não a janela de duração (decisão de produto);
+  - o `override` do `update-reservation` aceita operador (decisão de produto);
+  - faltam validação de faixa de data e hora no painel e validação de formato no `update_reservation` da IA;
+  - `system-prompt.ts` calcula o aniversário pelo dia UTC (bug anterior à branch);
+  - logs novos de `tools.ts`/`availability.ts` sem `requestId`.
+- **Itens da Fase 1:**
+  - `create_reservation` resolve o cliente por telefone, separado do `customer.id`, e precisa de identidade única com o Instagram;
+  - `organizationId` pode chegar `""`;
+  - a regra 12 do prompt ainda diz "pelo WhatsApp";
+  - a porta de dados do núcleo;
+  - ferramentas de reserva desligadas enquanto `customer` for nulo.
