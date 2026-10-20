@@ -235,6 +235,14 @@ describe('actual existing resend Request preserves acceptance authority', () => 
     const legacyClient = legacyResponse === undefined ? client : { ...client, from(table: string) {
       if (table === 'units') return { select(columns: string) { expect(columns).toBe('name'); return {
         eq() { return this; }, async maybeSingle() { return { data: { name: 'Synthetic Unit' }, error: null }; } }; } };
+      if (table === 'waitlist') return { select(columns: string) {
+        if (columns !== 'id,unit_id,customer_id') return client.from(table).select(columns);
+        const filters: Row = {};
+        return { eq(key: string, value: unknown) { filters[key] = value; return this; }, async maybeSingle() {
+          expect(filters).toEqual({ id: waitlistId });
+          return { data: { id: waitlistId, unit_id: io.ids.unit, customer_id: io.ids.customer }, error: null };
+        } };
+      } };
       if (table === 'waitlist_message_templates') return { select(columns: string) { expect(columns).toBe('customized, body'); return {
         eq() { return this; }, async maybeSingle() { return { data: null, error: null }; } }; } };
       return client.from(table);

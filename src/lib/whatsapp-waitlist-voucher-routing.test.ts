@@ -101,6 +101,7 @@ describe('real producer refusal and preserved branches', () => {
     const call=p.trace.find(x=>x.name==='issue_scheduled_whatsapp_voucher')!;
     expect(call.args.p_expected_rule).toEqual({unit_id:f.ids.unit,trigger_type:kind,discount_percent:15,validity_days:30,
       visits_required:kind==='frequency'?1:null,days_window:kind==='frequency'?30:null,selected_brt_day:'2026-10-05'});
+    expect(p.row.initial_catalog_key).toBe('mkt_voucher_programado_v1');
     expect(f.calls.post).toBe(1); expect(f.calls.legacyText).toBe(0);
     expect(p.writes.deletedVoucherIds).toEqual([]);
   });

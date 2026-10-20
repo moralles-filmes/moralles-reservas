@@ -23,6 +23,16 @@ Spec aprovada: [2026-10-20-marketing-campaigns-design.md](../specs/2026-10-20-ma
 - Review da spec e de qualidade por tarefa, depois diff integral. Provar que SQL/EF produtor, crons, flags, grants de custo, seleção v1/v2 e configuração Ren Sushi não mudaram; atualização de `docs/modules/marketing.md` e registro das limitações de métricas.
 - Rodar `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `node scripts/check-padrao.mjs`, `node scripts/check-portabilidade.mjs`, testes SQL locais, gates de segurança e varredura de segredos. Conferir `git status`, diff e staged integral antes do commit. Sem `db push`, deploy, provider POST ou push em `main` nesta execução.
 
+## Tarefa 5 — publicação autorizada em 20/10/2026
+
+O responsável autorizou resolver os gates, aplicar as migrations e publicar este módulo. A autorização permanece limitada a rascunhos e leitura de resultados: não inclui disparo, submissão de modelo à Meta, ativação v2 da Ren Sushi nem chamada paga de provider.
+
+1. Fechar a suíte completa e a revisão integral da branch sem gate vermelho; validar 320/360 px e teclado. Confirmar `git status`, diff integral, diff staged e varredura de segredos antes de cada commit/push.
+2. Fazer push da branch e abrir PR para conferir `acl-estatico` na aba Checks, além dos demais checks. Não mesclar com check vermelho. Validar a revisão final do PR.
+3. Antes de tocar produção: confirmar projeto `Moralles Reservas`, backup concluído, diferença exata de versões, impacto de lock e plano de roll-forward. Usar Supabase CLI `db push --dry-run --skip-vault --project-ref <ref>` e exigir que liste somente `20261020183000` e `20261020184000`. `--skip-vault` evita alteração de segredos pela CLI atual.
+4. Aplicar somente essas duas migrations por `supabase db push --skip-vault --project-ref <ref>`, nunca por MCP/Studio. Confirmar histórico, ACL real (`pg_proc`/Advisor 0028/0029), RLS/grants e RPCs em leitura. Nenhuma Edge Function precisa de redeploy, pois o delta não altera `supabase/functions/`.
+5. Mesclar o PR em `main` após banco verde; o push de `main` dispara Vercel. Conferir build/deploy e fumaça autenticada das rotas de Campanhas/Resultados, sem salvar rascunho de loja real durante o smoke. Se a interface falhar, reverter o frontend/deploy; as tabelas e RPCs aditivas permanecem inertes até um roll-forward revisado.
+
 ## Critério final
 
-Branch local com mudanças revisadas e commitadas, sem gate vermelho. Merge local em `main` somente se o risco de deploy automático estiver fora do caminho; push/produção exigem autorização operacional separada. Qualquer indisponibilidade de banco de teste fica documentada com as validações alternativas realizadas, sem declarar gate não executado como PASS.
+Módulo em produção apenas para rascunhos e resultados, com migrations aplicadas antes da rota, gates verdes, check `acl-estatico` conferido, nenhuma chamada de provider e nenhuma mudança na operação v1 da Ren Sushi. Se qualquer gate falhar, registrar o bloqueio e não mesclar/publicar. O pré-voo PostgreSQL reduzido não substitui ACL/PostgREST do Supabase real.

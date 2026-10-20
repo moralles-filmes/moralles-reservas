@@ -267,7 +267,8 @@ begin
   end if;
   x := public.get_marketing_results('10000000-0000-4000-8000-000000000001',
     (now() at time zone 'America/Sao_Paulo')::date-91,(now() at time zone 'America/Sao_Paulo')::date-91);
-  if (x->>'managed_available')::boolean or (x->>'legacy_available')::boolean
+  if (x->>'managed_available')::boolean is distinct from false
+     or (x->>'legacy_available')::boolean is distinct from false
      or jsonb_array_length(x->'managed') is distinct from 0 or x->'legacy'->>'waitlist_feedback_sent' is not null then
     raise exception 'retention cutoff failed'; end if;
 end $$;
@@ -302,7 +303,7 @@ begin
     raise exception 'deleted rule still linked'; end if;
   x := public.get_marketing_results('10000000-0000-4000-8000-000000000001',
     (now() at time zone 'America/Sao_Paulo')::date,(now() at time zone 'America/Sao_Paulo')::date);
-  if not (x->>'unknown_giftback_source')::boolean then raise exception 'unknown origin hidden'; end if;
+  if (x->>'unknown_giftback_source')::boolean is distinct from true then raise exception 'unknown origin hidden'; end if;
   if not exists(select 1 from jsonb_array_elements(x->'managed') d
     where d.value->>'program'='giftback_rule' and d.value->>'rule_id' is null
       and (d.value->>'intentions')::bigint=1) then

@@ -79,8 +79,8 @@ it('treats projected catalog rows as expected models and blocks RED marketing ap
   expect(await screen.findByText(/Catálogo previsto: 9 modelos exibidos/)).toBeInTheDocument();
   expect(screen.getByText(/A lista não comprova submissão à Meta/)).toBeInTheDocument();
   const model = screen.getByText('mkt_voucher_programado_v1').closest('li');
-  expect(model?.textContent).toContain('Aprovação ou integridade pendente');
-  expect(model?.textContent).not.toContain('Aprovado e disponível');
+  expect(model?.textContent).toContain('Qualidade do modelo impede o envio');
+  expect(model?.textContent).not.toContain('Aprovado pela Meta');
 });
 
 it('does not call local pending with UNKNOWN remote status submitted to Meta', async () => {

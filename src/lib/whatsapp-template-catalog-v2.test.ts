@@ -5,7 +5,7 @@ import { catalogHash, renderTemplate, TEMPLATE_CATALOG, type TemplateId } from '
 import { renderTemplateV2, TEMPLATE_V2_CATALOG, type TemplateV2Id } from '../../supabase/functions/_shared/whatsapp-template-catalog-v2.ts';
 import { submissionPayloadHash } from '../../supabase/functions/_shared/whatsapp-template-submission-hash.ts';
 
-const spec = readFileSync(resolve(__dirname, '../../docs/superpowers/specs/2026-10-17-whatsapp-template-copy-v2-design.md'), 'utf8');
+const spec = readFileSync(resolve(__dirname, '../../docs/superpowers/specs/2026-10-17-whatsapp-template-copy-v2-design.md'), 'utf8').replace(/\r\n/g, '\n');
 const context = { allowedOrigins: ['https://example.com'] };
 const expectedHashes: Readonly<Record<TemplateV2Id, readonly [string, string]>> = {
   res_confirmacao_v2: ['2c6c958fea3540a686082cfcfcdb97c07d50f14eda492110998326582681a8cf', 'd8dd3a0de8cf5c1994f801a621a2927cdbe0e95a8b683bc84a3a1edbfbd961b2'],
