@@ -23,8 +23,9 @@
 -- nada é enviado): `captureExpected` em
 -- `_shared/whatsapp-automation-resources.ts:168-170` só aceita web/whatsapp, e
 -- `app_private.whatsapp_automation_post_inner` (20261019193132:1006) devolve
--- `snapshot_invalid`. Lacuna registrada no plano, pendente de decisão do dono
--- antes do grant do piloto (Bloco 6); esta migration não a resolve.
+-- `snapshot_invalid`. Decidido: D9 (a rota gerenciada passa a aceitar
+-- 'instagram'), corrigido na Task 4.5 antes do grant do piloto (Bloco 6);
+-- esta migration não toca a rota gerenciada.
 -- Prova do lado do trigger: IG-5.1 (a reserva 'instagram' enfileira a
 -- confirmação) e C-IG-5.1 (com o filtro `not in ('whatsapp','instagram')` o
 -- IG-5.1 reprova).
