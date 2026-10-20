@@ -763,6 +763,14 @@ export interface ReserveSlotParams extends AvailabilityParams {
   notes?: string | null;
   status?: "pending" | "confirmed";
   source?: "web" | "whatsapp";
+  /** Public no-deposit flow checks the selected hall before INSERT, so the
+   * outbox trigger sees a confirmed reservation with no payment required. */
+  initialStateForSlot?: (hallId: string | undefined) => Promise<{
+    status: "confirmed";
+    paymentStatus: "not_required";
+    paymentAmountCents: null;
+    paymentExpiresAt: null;
+  }>;
   /** Exclusivo da reserva manual pelo operador (create-manual-reservation):
    *  quando true e a validação normal recusa (sem mesa, fora de horário,
    *  bloqueio etc), cria a reserva mesmo assim como flutuante (table_id null). */
@@ -774,6 +782,8 @@ export type ReserveSlotResult =
       success: true;
       reservationId: string;
       reservationCode: string;
+      reservationStatus: string;
+      paymentStatus: string | null;
       /** Pode ser undefined em casos de overbooking (reserva floating). */
       tableId: string | undefined;
       hallId?: string;
@@ -835,6 +845,9 @@ export async function reserveSlot(
   let lastInsertErr: unknown = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = generateReservationCode();
+    const initialState = params.initialStateForSlot
+      ? await params.initialStateForSlot(check.suggestedHallId)
+      : null;
     const { data, error } = await supabase
       .from("reservations")
       .insert({
@@ -846,11 +859,16 @@ export async function reserveSlot(
         party_size: params.partySize,
         notes: params.notes ?? null,
         reservation_code: code,
-        status,
+        status: initialState?.status ?? status,
+        ...(initialState ? {
+          payment_status: initialState.paymentStatus,
+          payment_amount_cents: initialState.paymentAmountCents,
+          payment_expires_at: initialState.paymentExpiresAt,
+        } : {}),
         applied_discount_percent: appliedDiscountPercent,
         source: params.source ?? "web",
       })
-      .select("id")
+      .select("id,status,payment_status")
       .single();
 
     if (!error && data) {
@@ -858,6 +876,8 @@ export async function reserveSlot(
         success: true,
         reservationId: data.id,
         reservationCode: code,
+        reservationStatus: data.status,
+        paymentStatus: data.payment_status,
         tableId: check.suggestedTableId,
         hallId: check.suggestedHallId,
         durationMinutes: check.durationMinutes,

@@ -289,7 +289,7 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
     }
 
     return { timeSlots, partition, customFieldsSorted, enabledExtras, unavailableDate, chargeInfo };
-  }, [state.date, state.time, state.party_size, input.halls, input.customFields, input.widgetConfig, input.blockedDates, input.specialDates]);
+  }, [state.date, state.time, state.party_size, state.hall_id, input.halls, input.customFields, input.widgetConfig, input.blockedDates, input.specialDates]);
 
   // ─── Validação por step ──────────────────────────────────────────────────
 
@@ -454,16 +454,13 @@ export function useReservaWizard(input: WizardInput): WizardContextValue {
 
       if (currentUnitId.current !== input.unit.id) return;
 
-      const withCheckout = reserva as typeof reserva & { checkoutUrl?: string };
-      if (withCheckout.checkoutUrl) {
-        toast.success("Redirecionando para pagamento...");
-        window.location.href = withCheckout.checkoutUrl;
-        return;
+      if (reserva.status !== "confirmed" || reserva.payment_status !== "not_required") {
+        throw new Error("Não foi possível confirmar o estado da reserva. Consulte o restaurante antes de tentar novamente.");
       }
 
       setState((prev) => ({ ...prev, confirmed: reserva, step: "success" }));
       input.onSuccess?.(reserva);
-      toast.success("Reserva criada! Você receberá a confirmação no WhatsApp.");
+      toast.success("Reserva confirmada.");
     } catch (err) {
       if (currentUnitId.current !== input.unit.id) return;
       const msg = err instanceof Error ? err.message : "Erro ao criar reserva. Tente novamente.";

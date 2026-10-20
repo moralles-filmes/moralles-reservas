@@ -74,6 +74,7 @@ interface CreateReservationFnResponse {
   message?: string;
   reservation_id?: string;
   reservation_code?: string;
+  reservation_status?: "pending" | "confirmed";
   table_id?: string;
   requires_payment?: boolean;
   payment_amount_cents?: number | null;
@@ -144,6 +145,13 @@ export function useCreateReserva() {
         throw new Error(response?.message || reasonMsg || "Não foi possível criar a reserva.");
       }
 
+      if (!response.reservation_id || !response.reservation_code || !response.customer?.id
+        || response.requires_payment !== false
+        || response.reservation_status !== "confirmed"
+        || response.payment_amount_cents != null) {
+        throw new Error("Não foi possível confirmar o estado da reserva. Consulte o restaurante antes de tentar novamente.");
+      }
+
       const now = new Date().toISOString();
       const reserva: Reserva = {
         id: response.reservation_id!,
@@ -153,11 +161,11 @@ export function useCreateReserva() {
         date: data.date,
         time: data.time,
         party_size: data.party_size,
-        status: "pending",
+        status: "confirmed",
         notes: data.notes || null,
-        reservation_code: response.reservation_code!,
-        payment_status: response.requires_payment ? "pending_payment" : undefined,
-        payment_amount_cents: response.payment_amount_cents ?? undefined,
+        reservation_code: response.reservation_code,
+        payment_status: "not_required",
+        payment_amount_cents: undefined,
         created_at: now,
         updated_at: now,
         customer: {
@@ -170,23 +178,7 @@ export function useCreateReserva() {
         },
       };
 
-      // If payment required, create Stripe Checkout Session and attach URL
-      if (response.requires_payment) {
-        try {
-          const { data: checkoutData, error: checkoutErr } =
-            await supabase.functions.invoke("create-checkout-session", {
-              body: { reservation_id: response.reservation_id },
-            });
-          if (!checkoutErr && checkoutData?.checkout_url) {
-            (reserva as Reserva & { checkoutUrl?: string }).checkoutUrl =
-              checkoutData.checkout_url;
-          }
-        } catch {
-          // Payment session failed — reservation still created, user can retry
-        }
-      }
-
-      return reserva as Reserva & { checkoutUrl?: string };
+      return reserva;
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["reservas", vars.unit_id] });
@@ -208,7 +200,6 @@ export interface CreateManualReservaParams {
   notes?: string | null;
   /** Origem registrada na reserva — só pra relatório "Origem das reservas". */
   source: "web" | "whatsapp";
-  status: "pending" | "confirmed";
   /** Disparar confirmação automática (desacoplado da origem). */
   notify: boolean;
   /** Forçar reserva mesmo sem mesa/fora de horário (cria flutuante). */
@@ -222,6 +213,7 @@ interface ManualReservationFnResponse {
   reservation_id?: string;
   reservation_code?: string;
   table_id?: string | null;
+  reservation_status?: "confirmed";
   customer?: { id: string; name: string; phone: string; email: string | null };
 }
 
@@ -248,7 +240,6 @@ export function useCreateManualReserva(unitId: string) {
             party_size: data.party_size,
             notes: data.notes || null,
             source: data.source,
-            status: data.status,
             notify: data.notify,
             override: data.override,
           },
@@ -274,6 +265,10 @@ export function useCreateManualReserva(unitId: string) {
       if (!response || !response.success) {
         const reasonMsg = response?.reason ? REASON_MESSAGES[response.reason] : undefined;
         throw new Error(response?.message || reasonMsg || "Não foi possível criar a reserva.");
+      }
+
+      if (response.reservation_status !== "confirmed" || !response.reservation_id || !response.reservation_code) {
+        throw new Error("Não foi possível confirmar o estado da reserva manual. Atualize a lista antes de tentar novamente.");
       }
 
       return response;
