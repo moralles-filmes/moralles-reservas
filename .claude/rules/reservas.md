@@ -59,6 +59,7 @@ paths:
 
 ## Giftback
 
+- **`voucher_rules.trigger_type` pode mudar e `vouchers` não guarda o gatilho da emissão; exclusão da regra zera `vouchers.rule_id`.** Relatório histórico não pode reclassificar vouchers pelo gatilho atual nem atribuir os sem regra a outra campanha; agregue por vínculo comprovável e marque origem desconhecida. [MARKETING](docs/modules/marketing.md).
 
 - **Validade sempre fim-do-dia BRT.** Use `expiresAtEndOfDayBrt(validity_days)` de [supabase/functions/_shared/giftback.ts](supabase/functions/_shared/giftback.ts) — Deno é UTC, `setHours` daria 21:00 BRT do dia anterior. Frontend usa `endOfDayLocalISO` em [src/lib/utils.ts](src/lib/utils.ts).
 - **No webhook, voucher só persiste se WhatsApp send OK; o worker de aniversário/frequência persiste antes do envio.** Ciclo no webhook: `prepareGiftbackVoucher` (monta sem escrever) → `sendOutbound` → `commitGiftbackVoucher` (escreve voucher + `notifications_sent` com status real); inverter cria voucher fantasma nesse caminho. No worker, `issueAndSend` insere antes de enviar e mantém o benefício em falha/supressão: não aplicar a ordem do webhook ao worker. [process-voucher-triggers/index.ts](supabase/functions/process-voucher-triggers/index.ts).
