@@ -153,7 +153,7 @@ Além da matriz de MULTI_TENANCY §7:
 ## Particularidades deste projeto
 
 - Modelo atual (desvio do §1–§5, arquétipo B): papel enum por unidade em `unit_members.role` — `owner` > `gerente` > `operador`; leitura por `public.unit_role`. Sem `permissions`, `roles`, `member_permissions` nem `company_modules`.
-- Owner cria unidades e tem tudo; gerente configura, gerencia membros e dados, sem automação; operador atua em reservas, fila e passantes e não cancela reserva (trigger + gate na EF).
+- Owner cria unidades e tem tudo; gerente configura e mantém dados, sem automação; operador atua em reservas, fila e passantes e não cancela reserva (trigger + gate na EF).
 - Módulos contratados: entitlements por organização e por feature (system/whatsapp/ai) em `supabase/functions/_shared/entitlements.ts` (ver `.claude/rules/billing.md`).
-- Membros: Edge Function `manage-members`. Super-admin em `platform_admins`; `admin_users`/`manage-admins` foram removidos e não voltam.
+- Membros: só pela Edge Function `manage-members`; só `owner` adiciona, remove ou muda papel, e o `owner` não é removido nem rebaixado. Super-admin em `platform_admins`; `admin_users`/`manage-admins` foram removidos e não voltam.
 - Migração para o modelo de permissões deste padrão exige ADR e plano expand → backfill → contract.

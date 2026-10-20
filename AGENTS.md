@@ -7,6 +7,7 @@
 - Reservas de mesa para restaurantes, com agente de IA no WhatsApp, fila de espera, giftback, automações de mensagens e cobrança da plataforma.
 - Usuários: dono/gerente/operador de restaurante (painéis), cliente final (portal público e WhatsApp), `platform_admin` (`/platform/*`).
 - Criticidade: envia WhatsApp a clientes finais, guarda dados pessoais (LGPD), movimenta dinheiro (caução Stripe, mensalidade Asaas). Repo privado, deploy automático (`main` → Vercel).
+- Nível de maturidade **N2** (Padrão SaaS): regras `[N1]` e `[N2]` dos padrões valem sempre que o fluxo protegido existe; `[N3]` só com necessidade medida ou exigência contratual. O nível decide quanta infraestrutura construir, nunca dispensa um controle N1 de fluxo existente.
 
 ## 2. Onde está cada regra
 
@@ -23,6 +24,8 @@ O Claude Code carrega a regra sozinho ao tocar um arquivo do assunto. **Codex e 
 | Datafy (parceiro oficial): onboarding, claims, assinatura, migração | `.claude/rules/datafy.md` |
 | Templates oficiais, automações, consentimento, preferências | `.claude/rules/whatsapp-templates.md` |
 | Billing (Asaas/Stripe), caução, entitlements, custo de instância WhatsApp | `.claude/rules/billing.md` |
+| Qualquer provedor externo: webhook, idempotência, retry, fallback, credenciais | `.claude/rules/integracoes.md` |
+| Auth, membros, unidade ativa, filtro de tenant em query de tela, service role | `.claude/rules/seguranca-multitenancy.md` |
 
 Runbooks: `docs/RUNBOOK-ROTACAO-CREDENCIAIS.md`, `docs/whatsapp-multiprovider-uazapi.md`, `docs/datafy-parceiro-runbook.md`, `docs/whatsapp-templates-programados-runbook.md`, `docs/billing-asaas/`. Specs e planos: `docs/superpowers/`.
 
