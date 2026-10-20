@@ -906,7 +906,7 @@ export function createAgentTurn(io: AgentTurnIO) {
 
     // System prompt: carga (mesma ordem de leituras) e montagem em
     // `system-prompt.ts`. O canal entra com a identidade e a formatação.
-    const systemPrompt = await loadAgentSystemPrompt(supabase, {
+    const agentPrompt = await loadAgentSystemPrompt(supabase, {
       unitId,
       unit: ctx.unit,
       customer,
@@ -914,7 +914,17 @@ export function createAgentTurn(io: AgentTurnIO) {
       identityLine: ctx.identityLine,
       formattingRules: ctx.formattingRules,
       appBaseUrl: ctx.appBaseUrl,
+      requestId,
+      log: jsonLog,
     });
+    const systemPrompt = agentPrompt.text;
+    // Qual camada global (versão e fonte: db, stale_cache ou baseline) entrou no
+    // prompt. Vai em TODO `finish` daqui em diante e no `agent_usage` (guard
+    // estático em `agent-global-prompt-loader.test.ts`).
+    const promptMeta = {
+      global_prompt_version: agentPrompt.globalPrompt.version,
+      global_prompt_source: agentPrompt.globalPrompt.source,
+    };
 
     // Reserva ATÔMICA antes de iniciar o turno. O passo é onde o teto é
     // aplicado — verificar depois da chamada não é proteção, é detecção.
@@ -959,7 +969,7 @@ export function createAgentTurn(io: AgentTurnIO) {
           organizationId,
           convId: conv.id,
         });
-        await finish("ai_budget_exhausted");
+        await finish("ai_budget_exhausted", undefined, { ...promptMeta });
         await releaseAiLock();
         return;
       }
@@ -1031,7 +1041,7 @@ export function createAgentTurn(io: AgentTurnIO) {
           if (budgetErrorNotice.ok) {
             await appendToConversation(conv.id, conv.messages || [], "assistant", errText, { author: "automation" });
           }
-          await finish("ai_budget_error", opened.sanitizedCode);
+          await finish("ai_budget_error", opened.sanitizedCode, { ...promptMeta });
           await releaseAiLock();
           return;
         }
@@ -1309,6 +1319,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       provider: usedProvider,
       model: usedModel,
       ...fallbackMeta,
+      ...promptMeta,
       channelId,
       unitId,
       ...totalUsage,
@@ -1395,6 +1406,7 @@ export function createAgentTurn(io: AgentTurnIO) {
         provider: usedProvider,
         model: agentOutcome.meta.model,
         ...fallbackMeta,
+        ...promptMeta,
       });
       await releaseAiLock();
       return;
@@ -1498,6 +1510,7 @@ export function createAgentTurn(io: AgentTurnIO) {
         // trocá-lo é mudança de contrato que esta task não pede. A distinção
         // viaja no `meta` e no `handoff_reason`.
         deadline: agentDeadlineReached,
+        ...promptMeta,
       });
       await releaseAiLock();
       return;
@@ -1515,7 +1528,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       }
       // Mesma razão do ramo de erro: turno interrompido sem produzir resposta.
       await settleTurnBudget("RELEASED");
-      await finish("empty_response");
+      await finish("empty_response", undefined, { ...promptMeta });
       await releaseAiLock();
       return;
     }
@@ -1531,7 +1544,7 @@ export function createAgentTurn(io: AgentTurnIO) {
 
     if (sendRes.error === "suppressed_by_human") {
       await settleTurnBudget("SETTLED");
-      await finish("ai_reply_suppressed_by_human");
+      await finish("ai_reply_suppressed_by_human", undefined, { ...promptMeta });
       await releaseAiLock();
       return;
     }
@@ -1545,6 +1558,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
         missingCreds: sendRes.missingCreds,
         bodySnippet: sendRes.bodySnippet,
+        ...promptMeta,
       });
       await releaseAiLock();
       return;
@@ -1565,7 +1579,7 @@ export function createAgentTurn(io: AgentTurnIO) {
     await finish(
       finalHistoryAppend.persisted ? "success" : "success_history_degraded",
       finalHistoryAppend.persisted ? undefined : "conversation_message_persist_failed_after_send",
-      { tokens: totalUsage.input_tokens + totalUsage.output_tokens, ...fallbackMeta },
+      { tokens: totalUsage.input_tokens + totalUsage.output_tokens, ...fallbackMeta, ...promptMeta },
     );
     await releaseAiLock();
     return;

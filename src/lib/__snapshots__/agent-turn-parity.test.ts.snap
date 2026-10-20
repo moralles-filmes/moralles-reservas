@@ -35,6 +35,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       "meta": {
         "channel_id": "dddddddd-0000-4000-8000-000000000001",
         "deadline": false,
+        "global_prompt_source": "db",
+        "global_prompt_version": "77777777-0000-4000-8000-000000000001",
         "model": "claude-haiku-5-5",
         "provider": "claude",
       },
@@ -737,6 +739,45 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "select:ai_prompt_slots",
+      "value": {
+        "columns": "active_version_id",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_slots",
+      },
+    },
+    {
+      "operation": "select:ai_prompt_versions",
+      "value": {
+        "columns": "id, body",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+          [
+            "eq",
+            "id",
+            "77777777-0000-4000-8000-000000000001",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_versions",
+      },
+    },
+    {
       "operation": "sdk:messages.create",
     },
     {
@@ -830,6 +871,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "meta": {
             "channel_id": "dddddddd-0000-4000-8000-000000000001",
             "deadline": false,
+            "global_prompt_source": "db",
+            "global_prompt_version": "77777777-0000-4000-8000-000000000001",
             "model": "claude-haiku-5-5",
             "provider": "claude",
           },
@@ -1381,6 +1424,8 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "channelId": "dddddddd-0000-4000-8000-000000000001",
       "estimated_cost_usd": 0,
       "evt": "agent_usage",
+      "global_prompt_source": "db",
+      "global_prompt_version": "77777777-0000-4000-8000-000000000001",
       "input_tokens": 0,
       "level": "info",
       "model": "claude-haiku-5-5",
@@ -1438,6 +1483,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       "duration_ms": 6000,
       "error": null,
       "meta": {
+        "global_prompt_source": "db",
+        "global_prompt_version": "77777777-0000-4000-8000-000000000001",
         "tokens": 64,
       },
       "outcome": "success",
@@ -2139,6 +2186,45 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "select:ai_prompt_slots",
+      "value": {
+        "columns": "active_version_id",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_slots",
+      },
+    },
+    {
+      "operation": "select:ai_prompt_versions",
+      "value": {
+        "columns": "id, body",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+          [
+            "eq",
+            "id",
+            "77777777-0000-4000-8000-000000000001",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_versions",
+      },
+    },
+    {
       "operation": "sdk:messages.create",
     },
     {
@@ -2230,6 +2316,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "duration_ms": 6000,
           "error": null,
           "meta": {
+            "global_prompt_source": "db",
+            "global_prompt_version": "77777777-0000-4000-8000-000000000001",
             "tokens": 64,
           },
           "outcome": "success",
@@ -2810,6 +2898,8 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "channelId": "dddddddd-0000-4000-8000-000000000001",
       "estimated_cost_usd": 0.000014,
       "evt": "agent_usage",
+      "global_prompt_source": "db",
+      "global_prompt_version": "77777777-0000-4000-8000-000000000001",
       "input_tokens": 46,
       "level": "info",
       "model": "claude-haiku-5-5",
@@ -2857,6 +2947,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       "duration_ms": 6000,
       "error": null,
       "meta": {
+        "global_prompt_source": "db",
+        "global_prompt_version": "77777777-0000-4000-8000-000000000001",
         "tokens": 32,
       },
       "outcome": "success",
@@ -3586,6 +3678,45 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "select:ai_prompt_slots",
+      "value": {
+        "columns": "active_version_id",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_slots",
+      },
+    },
+    {
+      "operation": "select:ai_prompt_versions",
+      "value": {
+        "columns": "id, body",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+          [
+            "eq",
+            "id",
+            "77777777-0000-4000-8000-000000000001",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_versions",
+      },
+    },
+    {
       "operation": "sdk:messages.create",
     },
     {
@@ -3652,6 +3783,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "duration_ms": 6000,
           "error": null,
           "meta": {
+            "global_prompt_source": "db",
+            "global_prompt_version": "77777777-0000-4000-8000-000000000001",
             "tokens": 32,
           },
           "outcome": "success",
@@ -3947,6 +4080,8 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "channelId": "dddddddd-0000-4000-8000-000000000001",
       "estimated_cost_usd": 0.000007,
       "evt": "agent_usage",
+      "global_prompt_source": "db",
+      "global_prompt_version": "77777777-0000-4000-8000-000000000001",
       "input_tokens": 23,
       "level": "info",
       "model": "claude-haiku-5-5",
@@ -3994,6 +4129,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       "duration_ms": 6000,
       "error": null,
       "meta": {
+        "global_prompt_source": "db",
+        "global_prompt_version": "77777777-0000-4000-8000-000000000001",
         "tokens": 96,
       },
       "outcome": "success",
@@ -4695,6 +4832,45 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "select:ai_prompt_slots",
+      "value": {
+        "columns": "active_version_id",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_slots",
+      },
+    },
+    {
+      "operation": "select:ai_prompt_versions",
+      "value": {
+        "columns": "id, body",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+          [
+            "eq",
+            "id",
+            "77777777-0000-4000-8000-000000000001",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_versions",
+      },
+    },
+    {
       "operation": "sdk:messages.create",
     },
     {
@@ -4832,6 +5008,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "duration_ms": 6000,
           "error": null,
           "meta": {
+            "global_prompt_source": "db",
+            "global_prompt_version": "77777777-0000-4000-8000-000000000001",
             "tokens": 96,
           },
           "outcome": "success",
@@ -5703,6 +5881,8 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "channelId": "dddddddd-0000-4000-8000-000000000001",
       "estimated_cost_usd": 0.00002,
       "evt": "agent_usage",
+      "global_prompt_source": "db",
+      "global_prompt_version": "77777777-0000-4000-8000-000000000001",
       "input_tokens": 69,
       "level": "info",
       "model": "claude-haiku-5-5",
@@ -5751,6 +5931,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       "duration_ms": 6000,
       "error": null,
       "meta": {
+        "global_prompt_source": "db",
+        "global_prompt_version": "77777777-0000-4000-8000-000000000001",
         "tokens": 32,
       },
       "outcome": "success",
@@ -6471,6 +6653,45 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "select:ai_prompt_slots",
+      "value": {
+        "columns": "active_version_id",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_slots",
+      },
+    },
+    {
+      "operation": "select:ai_prompt_versions",
+      "value": {
+        "columns": "id, body",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+          [
+            "eq",
+            "id",
+            "77777777-0000-4000-8000-000000000001",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_versions",
+      },
+    },
+    {
       "operation": "sdk:messages.create",
     },
     {
@@ -6539,6 +6760,8 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "duration_ms": 6000,
           "error": null,
           "meta": {
+            "global_prompt_source": "db",
+            "global_prompt_version": "77777777-0000-4000-8000-000000000001",
             "tokens": 32,
           },
           "outcome": "success",
@@ -6886,6 +7109,8 @@ Instruções adicionais: Sempre ofereça o rodízio.",
       "channelId": "dddddddd-0000-4000-8000-000000000001",
       "estimated_cost_usd": 0.000007,
       "evt": "agent_usage",
+      "global_prompt_source": "db",
+      "global_prompt_version": "77777777-0000-4000-8000-000000000001",
       "input_tokens": 23,
       "level": "info",
       "model": "claude-haiku-5-5",
@@ -6932,7 +7157,10 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       "channel_id": "dddddddd-0000-4000-8000-000000000001",
       "duration_ms": 6000,
       "error": null,
-      "meta": {},
+      "meta": {
+        "global_prompt_source": "db",
+        "global_prompt_version": "77777777-0000-4000-8000-000000000001",
+      },
       "outcome": "empty_response",
       "phone_hash": "***5678",
       "request_id": "<request_id_0>",
@@ -7632,6 +7860,45 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "select:ai_prompt_slots",
+      "value": {
+        "columns": "active_version_id",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_slots",
+      },
+    },
+    {
+      "operation": "select:ai_prompt_versions",
+      "value": {
+        "columns": "id, body",
+        "filters": [
+          [
+            "eq",
+            "slot",
+            "global_persona",
+          ],
+          [
+            "eq",
+            "id",
+            "77777777-0000-4000-8000-000000000001",
+          ],
+        ],
+        "matched": [],
+        "operation": "select",
+        "patch": null,
+        "table": "ai_prompt_versions",
+      },
+    },
+    {
       "operation": "sdk:messages.create",
     },
     {
@@ -7697,7 +7964,10 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "channel_id": "dddddddd-0000-4000-8000-000000000001",
           "duration_ms": 6000,
           "error": null,
-          "meta": {},
+          "meta": {
+            "global_prompt_source": "db",
+            "global_prompt_version": "77777777-0000-4000-8000-000000000001",
+          },
           "outcome": "empty_response",
           "phone_hash": "***5678",
           "request_id": "<request_id_0>",
@@ -7984,6 +8254,8 @@ Programa Giftback: esta unidade NÃO tem nenhuma regra automática de promoção
       "channelId": "dddddddd-0000-4000-8000-000000000001",
       "estimated_cost_usd": 0.000007,
       "evt": "agent_usage",
+      "global_prompt_source": "db",
+      "global_prompt_version": "77777777-0000-4000-8000-000000000001",
       "input_tokens": 23,
       "level": "info",
       "model": "claude-haiku-5-5",

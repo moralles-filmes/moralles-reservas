@@ -182,6 +182,49 @@ describe('turno do agente no webhook-whatsapp real — paridade comportamental',
     }
   });
 
+  it('prompt global no banco: o turno lê slot e versão ativa e registra versão e fonte', async () => {
+    const { f, c } = setup();
+    c.controls.sdkResponses = [text('ok')];
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi' });
+    const ops = c.trace.map((t) => t.operation);
+    expect(ops).toContain('select:ai_prompt_slots');
+    expect(ops).toContain('select:ai_prompt_versions');
+    expect(c.tables.webhook_executions[0].meta).toMatchObject({ global_prompt_version: c.ids.globalPromptVersion, global_prompt_source: 'db' });
+    const usage = c.harness.logs.map((l) => JSON.parse(l)).find((l) => l.evt === 'agent_usage');
+    expect(usage).toMatchObject({ global_prompt_version: c.ids.globalPromptVersion, global_prompt_source: 'db' });
+  });
+
+  it('a versão ativa no banco é a que entra no prompt, renderizada no lugar da persona', async () => {
+    const { f, c } = setup((x) => {
+      x.tables.settings.push({ unit_id: x.ids.unit, key: 'agent_name', value: 'Sakura' });
+      x.tables.ai_prompt_versions[0].body = 'PERSONA_V2: sou {{agent_name}} do {{restaurant_name}}. ';
+    });
+    c.controls.sdkResponses = [text('ok')];
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi' });
+    const system = JSON.stringify((c.sdk.requests[0].input as { system: unknown }).system);
+    expect(system).toContain('atendente de reservas do Restaurante Exemplo. PERSONA_V2: sou Sakura do Restaurante Exemplo. ');
+    expect(system).not.toContain('IDENTIDADE: Você se chama');
+  });
+
+  it('D7: leitura do prompt global falha → o turno segue com o baseline e emite o evento, sem o corpo', async () => {
+    const base = setup();
+    base.c.controls.sdkResponses = [text('ok')];
+    await base.f.runChatControl({ kind: 'customer_text', text: 'Oi' });
+    const { f, c } = setup();
+    c.controls.sdkResponses = [text('ok')];
+    c.controls.beforeQuery = async (q) => { if (q.table === 'ai_prompt_slots') throw new Error('synthetic_db_down'); };
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi' });
+    expect(c.unexpected).toEqual([]);
+    expect(c.tables.webhook_executions.map((row) => row.outcome)).toEqual(['success']);
+    expect(c.tables.webhook_executions[0].meta).toMatchObject({ global_prompt_version: 'baseline', global_prompt_source: 'baseline' });
+    const failed = c.harness.logs.map((l) => JSON.parse(l)).filter((l) => l.evt === 'ai_global_prompt_read_failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ reason: 'read_threw', source: 'baseline', version: 'baseline' });
+    expect(JSON.stringify(failed)).not.toContain('IDENTIDADE');
+    const system = (x: Chat) => JSON.stringify((x.sdk.requests[0].input as { system: unknown }).system);
+    expect(system(c)).toBe(system(base.c));
+  });
+
   it('controle positivo: o snapshot enxerga uma linha a mais no prompt', async () => {
     // A mesma unidade com UM setting a mais tem de produzir um prompt diferente;
     // se não produzisse, o snapshot acima não estaria medindo o prompt.

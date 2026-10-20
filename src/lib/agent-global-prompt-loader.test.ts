@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GLOBAL_PERSONA_BASELINE } from "../../supabase/functions/_shared/agent/global-prompt-core";
 import { createGlobalPromptLoader } from "../../supabase/functions/_shared/agent/global-prompt";
@@ -134,5 +136,57 @@ describe("loader do prompt global", () => {
     const b = setup({ ai_prompt_slots: { data: null, error: { code: "42P01" } } });
     await a.load();
     expect((await b.load()).source).toBe("baseline");
+  });
+});
+
+/**
+ * Guard estático da telemetria (plano B3 passo A): depois de carregar o prompt,
+ * todo `finish(` do turno e o log `agent_usage` levam `promptMeta`
+ * (`global_prompt_version` e `global_prompt_source`). O snapshot de paridade
+ * só exercita alguns desfechos; este guard cobre todos.
+ */
+describe("telemetria do prompt global no turno", () => {
+  const TURN = readFileSync(resolve(__dirname, "../../supabase/functions/_shared/agent/turn.ts"), "utf8").replace(/\r\n/g, "\n");
+
+  /** Texto dos argumentos da chamada cujo `(` está em `open`. */
+  function callArgs(src: string, open: number): string {
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === "(") depth++;
+      else if (src[i] === ")" && --depth === 0) return src.slice(open + 1, i);
+    }
+    throw new Error("parêntese sem par");
+  }
+
+  function telemetryGaps(src: string): string[] {
+    const gaps: string[] = [];
+    const load = src.indexOf("await loadAgentSystemPrompt(");
+    if (load < 0) return ["loadAgentSystemPrompt não encontrado"];
+    if (!/const promptMeta = \{\s*global_prompt_version: [^,]+,\s*global_prompt_source: [^,}]+,?\s*\}/.test(src.slice(load))) {
+      gaps.push("promptMeta não declarado com as duas chaves depois da carga do prompt");
+    }
+    const finishes = [...src.slice(load).matchAll(/\bawait finish\(/g)].map((m) => load + m.index! + m[0].length - 1);
+    if (finishes.length < 8) gaps.push(`só ${finishes.length} finish( depois da carga do prompt`);
+    for (const open of finishes) {
+      const args = callArgs(src, open);
+      if (!args.includes("...promptMeta")) gaps.push(`finish sem promptMeta: finish(${args.split("\n")[0].trim()}`);
+    }
+    const usage = src.indexOf('evt: "agent_usage"');
+    const usageCall = src.lastIndexOf("jsonLog(", usage);
+    if (usage < 0 || !callArgs(src, usageCall + "jsonLog".length).includes("...promptMeta")) {
+      gaps.push("agent_usage sem promptMeta");
+    }
+    return gaps;
+  }
+
+  it("turn.ts: todo finish depois da carga do prompt e o agent_usage levam promptMeta", () => {
+    expect(telemetryGaps(TURN)).toEqual([]);
+  });
+
+  it("controle positivo: um finish ou o agent_usage sem promptMeta reprova", () => {
+    const lastFinish = TURN.lastIndexOf("...promptMeta");
+    expect(telemetryGaps(TURN.slice(0, lastFinish) + TURN.slice(lastFinish + "...promptMeta".length)).length).toBeGreaterThan(0);
+    expect(telemetryGaps(TURN.replace(/(evt: "agent_usage",[\s\S]*?)\.\.\.promptMeta,?/, "$1"))).toEqual(["agent_usage sem promptMeta"]);
+    expect(telemetryGaps(TURN.replace("await loadAgentSystemPrompt(", "await outraCoisa("))).toEqual(["loadAgentSystemPrompt não encontrado"]);
   });
 });

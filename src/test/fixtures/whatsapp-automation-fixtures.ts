@@ -2,6 +2,7 @@ import { createAutomationResourceService, type AutomationResourceIO, type Automa
 import type { ScheduledIntent } from '../../../supabase/functions/_shared/whatsapp-automation-core';
 import { createAutomationDispatcher } from '../../../supabase/functions/_shared/whatsapp-automation-dispatch';
 import { catalogHash, TEMPLATE_CATALOG } from '../../../supabase/functions/_shared/whatsapp-template-catalog-core';
+import { GLOBAL_PERSONA_BASELINE } from '../../../supabase/functions/_shared/agent/global-prompt-core';
 import type { TemplateSendInput, TemplateSendOutcome } from '../../../supabase/functions/_shared/whatsapp-template-provider-core';
 import { createEdgeRequestHarness, type EdgeName } from './edge-request-harness';
 import { webcrypto } from 'node:crypto';
@@ -88,7 +89,8 @@ export function chatSdkMessage(content: unknown[] = [{ type: 'text', text: 'Poss
  */
 function createChatRequestIO(base: { ids: { unit: string; organization: string; customer: string; reservation: string; foreignUnit: string };
   nowISO: string; rows: Record<AutomationResourceTable, ChatRow[]> }) {
-  const ids = { ...base.ids, channel: 'dddddddd-0000-4000-8000-000000000001', conversation: '88888888-0000-4000-8000-000000000001' };
+  const ids = { ...base.ids, channel: 'dddddddd-0000-4000-8000-000000000001', conversation: '88888888-0000-4000-8000-000000000001',
+    globalPromptVersion: '77777777-0000-4000-8000-000000000001' };
   const secret = 'synthetic-chat-datafy-secret';
   const env = { SUPABASE_URL: 'https://supabase.fixture.invalid', SUPABASE_SERVICE_ROLE_KEY: 'synthetic-service',
     SUPABASE_ANON_KEY: 'synthetic-anon', INTERNAL_API_KEY: 'synthetic-internal', APP_BASE_URL: 'https://app.fixture.invalid' };
@@ -122,6 +124,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     whatsapp_template_accounts: 'id,waba_id,organization_id,binding_generation',
     whatsapp_remote_templates: 'id,account_id,remote_id,name,language',
     whatsapp_inbound_events: 'id,provider,channel_id,unit_id,raw_body,delivery_id,signature_header,signature_scheme,status,claim_id,attempts',
+    ai_prompt_slots: 'slot,active_version_id', ai_prompt_versions: 'id,slot,body',
   };
   const tables: Record<string, ChatRow[]> = Object.fromEntries(Object.keys(schemas).map(table => [table, []]));
   Object.assign(tables, {
@@ -137,6 +140,9 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     settings: [{ unit_id: ids.unit, key: 'ai_config', value: { provider: 'claude' } }],
     platform_flags: [{ key: 'whatsapp_service_enforcement', value: false }, { key: 'whatsapp_async_ingestion', value: false }],
     ai_provider_credentials: [{ unit_id: ids.unit, provider: 'claude', api_key: 'synthetic-byok', active: true }],
+    // Como em produção depois do `db push`: a v1 (seed == GLOBAL_PERSONA_BASELINE) ativa.
+    ai_prompt_slots: [{ slot: 'global_persona', active_version_id: ids.globalPromptVersion }],
+    ai_prompt_versions: [{ id: ids.globalPromptVersion, slot: 'global_persona', body: GLOBAL_PERSONA_BASELINE }],
     whatsapp_template_bindings: [{ id: 'synthetic-binding',generation: 1,account_id: 'synthetic-account',channel_id: ids.channel,
       unit_id: ids.unit,provider: 'datafy',verified_at: base.nowISO,channel_credential_revision: 1 }],
     whatsapp_template_accounts: [{ id: 'synthetic-account',waba_id: 'waba1',organization_id: ids.organization,binding_generation: 1 }],

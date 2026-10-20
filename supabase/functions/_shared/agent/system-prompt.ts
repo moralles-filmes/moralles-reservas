@@ -23,7 +23,8 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { buildUpcomingDaysLines, WEEKDAY_NAMES_PT } from "../agent-calendar-core.ts";
 import type { AgentCustomer, AgentUnit } from "./channel-context.ts";
-import { GLOBAL_PERSONA_BASELINE, renderGlobalLayer } from "./global-prompt-core.ts";
+import { renderGlobalLayer, type GlobalPromptSource } from "./global-prompt-core.ts";
+import { loadGlobalPrompt, type GlobalPromptLog } from "./global-prompt.ts";
 
 // ─── Bloco de horários por salão ───────────────────────────────────────────────
 //
@@ -301,13 +302,22 @@ export interface LoadAgentPromptArgs {
   formattingRules: string;
   /** Lido só quando há cardápio digital ativo (mesmo ponto de antes). */
   appBaseUrl(): string;
+  requestId: string;
+  /** `jsonLog` do turno, para `ai_global_prompt_read_failed`. */
+  log: GlobalPromptLog;
+}
+
+export interface AgentSystemPrompt {
+  text: string;
+  /** Telemetria: `global_prompt_version` (id ou `baseline`) e `global_prompt_source`. */
+  globalPrompt: { version: string; source: GlobalPromptSource };
 }
 
 /** Lê os dados da unidade e do cliente e devolve o system prompt do turno. */
 export async function loadAgentSystemPrompt(
   supabase: SupabaseClient,
   args: LoadAgentPromptArgs,
-): Promise<string> {
+): Promise<AgentSystemPrompt> {
   const { unitId, customer, phone } = args;
   const unitRow = args.unit.row;
   const unitAddress = args.unit.address;
@@ -572,11 +582,15 @@ export async function loadAgentSystemPrompt(
       ? rawCustomerName.trim().split(/\s+/)[0]
       : "";
 
-  return composeAgentSystemPrompt({
+  // Camada global (persona e tom) da Plataforma. Falha aberta (D7): nunca lança
+  // e cai para cache vencido ou baseline; ver `global-prompt-core.ts`.
+  const globalPrompt = await loadGlobalPrompt(supabase, { requestId: args.requestId, log: args.log });
+
+  const text = composeAgentSystemPrompt({
     includeFaq,
     agentName,
     restaurantName,
-    globalPromptBody: GLOBAL_PERSONA_BASELINE,
+    globalPromptBody: globalPrompt.body,
     identityLine: args.identityLine,
     todayBR,
     weekdayName,
@@ -594,4 +608,5 @@ export async function loadAgentSystemPrompt(
     customPrompt,
     settingsMap,
   });
+  return { text, globalPrompt: { version: globalPrompt.version, source: globalPrompt.source } };
 }
