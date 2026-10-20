@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -220,7 +221,7 @@ export default function Automacao() {
       <WhatsappServiceBanner organizationId={unit.organization_id} unitSlug={unit.slug} />
 
       <Tabs key={unitId} defaultValue="channels">
-        <div className="mb-4 w-full overflow-x-auto pb-2 [scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground))_hsl(var(--muted))]">
+        <ScrollArea type="always" orientation="horizontal" className="mb-4 h-14 w-full">
           <TabsList className="w-max min-w-full max-w-none" aria-label="Configurações da unidade">
             <TabsTrigger value="channels" className="gap-2">
               <MessageSquare className="h-4 w-4" />
@@ -247,7 +248,7 @@ export default function Automacao() {
               Pagamentos
             </TabsTrigger>
           </TabsList>
-        </div>
+        </ScrollArea>
 
         <TabsContent value="channels">
           <ChannelsTab key={unitId} unitId={unitId} defaultProvider={unit.default_whatsapp_provider} />

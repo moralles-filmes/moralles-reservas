@@ -20,6 +20,11 @@ vi.mock("@/components/whatsapp/TemplateDispatchAdminCard", () => ({ TemplateDisp
 vi.mock("@/components/whatsapp/TemplateDispatchVersionAdminCard", () => ({ TemplateDispatchVersionAdminCard: ({ unitId }: { unitId: string }) => <div data-testid="version" data-unit-id={unitId}>Versão</div> }));
 
 beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   mocks.unit.id = "unit-a";
   mocks.unit.name = "Unidade A";
   mocks.invoke.mockReset();
@@ -28,7 +33,10 @@ beforeEach(() => {
     body.action === "list_provider_metadata" ? { providers: [] } : { success: true },
   }));
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function view(client: QueryClient) {
   return <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
