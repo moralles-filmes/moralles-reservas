@@ -7,10 +7,11 @@
  * tela nova gravar chave fora da lista, o dono recebe `42501` em produção; se a lista
  * ganhar chave que nenhuma tela grava, o operador-gerente ganha poder sem uso. Este teste
  * prende os dois lados: igualdade de conjuntos, mais a prova de que as chaves de IA/prompt
- * de Automacao.tsx continuam fora da lista.
+ * de Automacao.tsx que são só da plataforma continuam fora da lista. As 3 chaves factuais da
+ * loja (AI_STORE_SETTING_KEYS) o PromptTab também grava, para o admin, e são `manager`.
  *
  * Lê a função EFETIVA: o último arquivo de migration, em ordem de nome, que a define.
- * As chaves da Gestão vêm de GIFTBACK_SETTING_KEYS e WAITLIST_SETTING_KEYS (importadas),
+ * As chaves da Gestão vêm de GIFTBACK_SETTING_KEYS, WAITLIST_SETTING_KEYS e AI_STORE_SETTING_KEYS (importadas),
  * de SETTING_KEYS em Ajustes.tsx (regex no fonte: é página React, não se importa) e de
  * `allow_overbooking` / `restaurant_name`, cuja presença nos fontes é conferida por regex.
  * Limite: escritor novo em arquivo fora desta lista não é visto aqui; acrescente a fonte
@@ -25,6 +26,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { GIFTBACK_SETTING_KEYS } from "../src/hooks/useGiftbackSettings";
 import { WAITLIST_SETTING_KEYS } from "../src/hooks/useWaitlistSettings";
+import { AI_STORE_SETTING_KEYS } from "../src/lib/ai-store-settings";
 
 // Os hooks importam o client Supabase, que exige VITE_* no import; só as constantes interessam aqui.
 vi.mock("@/lib/supabase", () => ({ supabase: {} }));
@@ -36,7 +38,10 @@ const TABLE_BLOCKS_PATH = join(ROOT, "src", "hooks", "useTableBlocks.ts");
 const CONTA_PATH = join(ROOT, "src", "pages", "gestao", "Conta.tsx");
 const AUTOMACAO_PATH = join(ROOT, "src", "pages", "gestao", "Automacao.tsx");
 
-const MIN_AUTOMACAO_KEYS = 8;
+// Automacao.tsx (PromptTab + aba IA) grava 8 chaves: as 5 abaixo, só da plataforma, e as 3 de
+// AI_STORE_SETTING_KEYS. Lista literal: chave nova de IA na tela exige decidir a classe aqui.
+const PROMPT_TAB_PLATFORM_KEYS = ["ai_config", "ai_system_prompt", "ai_context_extra", "agent_mode", "agent_name"];
+const MIN_AUTOMACAO_KEYS = PROMPT_TAB_PLATFORM_KEYS.length + AI_STORE_SETTING_KEYS.length;
 
 function stripSqlComments(sql: string): string {
   return sql
@@ -95,6 +100,12 @@ function diffSettingKeys(
   };
 }
 
+/** Chaves de Automacao.tsx que não são da loja e mesmo assim estão no classificador. */
+function leakedPlatformKeys(automacaoKeys: string[], classifier: string[]): string[] {
+  const store = new Set<string>(AI_STORE_SETTING_KEYS);
+  return automacaoKeys.filter((k) => !store.has(k) && classifier.includes(k));
+}
+
 function hasDuplicates(list: string[]): string[] {
   return list.filter((k, i) => list.indexOf(k) !== i);
 }
@@ -113,6 +124,7 @@ describe("settings: classificador de escrita x chaves da Gestão", () => {
     expect(ajustes.length).toBeGreaterThan(0);
     expect(GIFTBACK_SETTING_KEYS.length).toBeGreaterThan(0);
     expect(WAITLIST_SETTING_KEYS.length).toBeGreaterThan(0);
+    expect(AI_STORE_SETTING_KEYS.length).toBeGreaterThan(0);
 
     // Chaves gravadas fora dos arrays: a string precisa estar escrita no fonte que a grava.
     expect(readFileSync(TABLE_BLOCKS_PATH, "utf8")).toMatch(/key:\s*"allow_overbooking"/);
@@ -122,6 +134,7 @@ describe("settings: classificador de escrita x chaves da Gestão", () => {
       ...ajustes,
       ...GIFTBACK_SETTING_KEYS,
       ...WAITLIST_SETTING_KEYS,
+      ...AI_STORE_SETTING_KEYS,
       "allow_overbooking",
       "restaurant_name",
     ];
@@ -135,10 +148,13 @@ describe("settings: classificador de escrita x chaves da Gestão", () => {
     expect(diff, message).toEqual({ onlyInExpected: [], onlyInActual: [] });
   });
 
-  it("nenhuma chave de IA/automação gravada em Automacao.tsx está no classificador", () => {
+  it("as chaves de IA só da plataforma gravadas em Automacao.tsx ficam fora do classificador", () => {
     const keys = extractAutomacaoKeys(readFileSync(AUTOMACAO_PATH, "utf8"));
     expect(keys.length).toBeGreaterThanOrEqual(MIN_AUTOMACAO_KEYS);
-    const leaked = keys.filter((k) => classifierKeys.includes(k));
+    const store = new Set<string>(AI_STORE_SETTING_KEYS);
+    expect([...new Set(keys.filter((k) => !store.has(k)))].sort()).toEqual([...PROMPT_TAB_PLATFORM_KEYS].sort());
+    expect(AI_STORE_SETTING_KEYS.filter((k) => !keys.includes(k)), "o PromptTab deixou de editar chave da loja").toEqual([]);
+    const leaked = leakedPlatformKeys(keys, classifierKeys);
     expect(leaked, `chaves de Automacao.tsx classificadas como manager: ${JSON.stringify(leaked)}`).toEqual([]);
   });
 
@@ -147,6 +163,16 @@ describe("settings: classificador de escrita x chaves da Gestão", () => {
     expect(diffSettingKeys(base, base)).toEqual({ onlyInExpected: [], onlyInActual: [] });
     expect(diffSettingKeys(base, [...base, "extra"])).toEqual({ onlyInExpected: [], onlyInActual: ["extra"] });
     expect(diffSettingKeys([...base, "extra"], base)).toEqual({ onlyInExpected: ["extra"], onlyInActual: [] });
+  });
+
+  it("controle negativo: classificador sem uma chave da loja ou com chave da plataforma reprova", () => {
+    const gestao = [...AI_STORE_SETTING_KEYS, "booking_window_days"];
+    const semMenu = classifierKeys.filter((k) => k !== "restaurant_menu");
+    expect(semMenu.length).toBe(classifierKeys.length - 1);
+    expect(diffSettingKeys(gestao, semMenu).onlyInExpected).toEqual(["restaurant_menu"]);
+    expect(leakedPlatformKeys(["ai_system_prompt", "restaurant_menu"], [...classifierKeys, "ai_system_prompt"]))
+      .toEqual(["ai_system_prompt"]);
+    expect(leakedPlatformKeys(["ai_system_prompt", "restaurant_menu"], classifierKeys)).toEqual([]);
   });
 
   it("controle negativo: os extratores reprovam fonte com outra forma", () => {

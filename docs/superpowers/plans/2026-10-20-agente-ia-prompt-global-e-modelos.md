@@ -263,20 +263,20 @@ npx -y deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts   # + toda 
 
 ### B2.0 Extração do seed
 
-- [ ] Em `_shared/agent/system-prompt.ts` (pós-Task 3), localizar o trecho contíguo de `IDENTIDADE:` até `Evite excesso de emojis. `, inclusive o espaço final.
-- [ ] Conferir que as **únicas** interpolações são `agentName` e `restaurantName`. Se houver condicional, outra variável ou trecho que dependa de `agent_mode`, **parar e perguntar ao usuário**: a premissa de §4.1 da spec quebrou.
-- [ ] `GLOBAL_PERSONA_BASELINE` = o trecho com `{{agent_name}}`/`{{restaurant_name}}`. O seed SQL usa dollar-quote `$seed$…$seed$`: sem escape de aspas, e o gêmeo compara byte a byte.
+- [x] Em `_shared/agent/system-prompt.ts` (pós-Task 3), localizar o trecho contíguo de `IDENTIDADE:` até `Evite excesso de emojis. `, inclusive o espaço final.
+- [x] Conferir que as **únicas** interpolações são `agentName` e `restaurantName`. Se houver condicional, outra variável ou trecho que dependa de `agent_mode`, **parar e perguntar ao usuário**: a premissa de §4.1 da spec quebrou.
+- [x] `GLOBAL_PERSONA_BASELINE` = o trecho com `{{agent_name}}`/`{{restaurant_name}}`. O seed SQL usa dollar-quote `$seed$…$seed$`: sem escape de aspas, e o gêmeo compara byte a byte.
 
 ### B2.1 Pré-voo primeiro (RED)
 
-- [ ] Reconfirmar o número livre (§0.2).
-- [ ] `78a`: base do 75/75a (`00-bootstrap` → `01-audit` → `09a-advisor-bootstrap` → migration 106 → `75a-settings-write-acl-bootstrap` → `20261019180000_settings_write_role_guard.sql`), mais as fixtures:
+- [x] Reconfirmar o número livre (§0.2).
+- [x] `78a`: base do 75/75a (`00-bootstrap` → `01-audit` → `09a-advisor-bootstrap` → migration 106 → `75a-settings-write-acl-bootstrap` → `20261019180000_settings_write_role_guard.sql`), mais as fixtures:
   - platform_admin A e B sem membership;
   - U1 com owner, gerente e operador; U2 com gerente;
   - um usuário sem papel.
   O 78a **não** instala nada da migration nova.
-- [ ] **Atributo do dono das funções:** conferir no harness, e se preciso em produção com leitura de metadado autorizada (`select rolbypassrls from pg_roles where rolname = 'postgres'`), que o dono efetivo das RPCs consegue escrever sob `FORCE RLS` **sem policy de escrita**. Regra de banco-de-dados.md e pré-voo 70. Se não tiver `BYPASSRLS`, a RPC precisa de outro caminho; **parar e decidir com o usuário** antes de escrever a migration.
-- [ ] `78`: reaplica a migration por `\i` (roda da raiz do repo e pode ser repetido) e mede cada caso pelo **código e pelo efeito**. Ordinais `7801…`, contagem impressa "esperado N e N".
+- [x] **Atributo do dono das funções:** conferir no harness, e se preciso em produção com leitura de metadado autorizada (`select rolbypassrls from pg_roles where rolname = 'postgres'`), que o dono efetivo das RPCs consegue escrever sob `FORCE RLS` **sem policy de escrita**. Regra de banco-de-dados.md e pré-voo 70. Se não tiver `BYPASSRLS`, a RPC precisa de outro caminho; **parar e decidir com o usuário** antes de escrever a migration.
+- [x] `78`: reaplica a migration por `\i` (roda da raiz do repo e pode ser repetido) e mede cada caso pelo **código e pelo efeito**. Ordinais `7801…`, contagem impressa "esperado N e N".
 
 | Ordinal | Caso | Esperado |
 |---|---|---|
@@ -297,22 +297,22 @@ npx -y deno@2.1.4 check supabase/functions/webhook-whatsapp/index.ts   # + toda 
 | C2 | controle: `drop trigger settings_write_value_guard` (subbloco desfeito) | V3 passa a gravar; recriar faz V3 voltar a recusar |
 | C3 | controle: classe das 3 chaves de volta a `platform` (subbloco desfeito) | V1 passa a `42501` |
 
-- [ ] Rodar o 78 antes da migration: **RED** (aborta na guarda de existência).
+- [x] Rodar o 78 antes da migration: **RED** (aborta na guarda de existência).
 
 ### B2.2 Migration (GREEN)
 
 Conteúdo, com `begin; … commit;` no arquivo (o harness aplica cru):
 
-- [ ] **Tabelas** de §5.1 da spec. Todas `enable` + `force row level security`.
+- [x] **Tabelas** de §5.1 da spec. Todas `enable` + `force row level security`.
   - CHECKs de `body` iguais aos do TS: placeholder por `regexp_replace(body, '\{\{(agent_name|restaurant_name)\}\}', '', 'g') !~ '\{\{|\}\}'`, mais `char_length 1..4000`, `body ~ '\S'`, `body !~ '<<<|>>>'` e classe de controle sem `\n`/`\t`.
   - `body_sha256` como coluna gerada. Se o PG recusar por volatilidade, vira preenchimento na RPC, com CHECK de formato; registrar.
   - `unique (slot, version)`, `unique (slot, id)`, FK composta `ai_prompt_slots(slot, active_version_id) → ai_prompt_versions(slot, id)`, `check (created_by is not null or version = 1)`.
-- [ ] **Append-only:** `app_private.ai_prompt_append_only()` (trigger BEFORE UPDATE OR DELETE nas duas tabelas). Levanta `42501` `ai_prompt_history_append_only`. Revoke de `public, anon, authenticated, service_role`.
-- [ ] **RLS e grants:**
+- [x] **Append-only:** `app_private.ai_prompt_append_only()` (trigger BEFORE UPDATE OR DELETE nas duas tabelas). Levanta `42501` `ai_prompt_history_append_only`. Revoke de `public, anon, authenticated, service_role`.
+- [x] **RLS e grants:**
   - policy `platform_admin_read_<tabela>` `for select to authenticated using (app_private.is_platform_admin(auth.uid()))` nas três tabelas;
   - `revoke all … from public, anon, authenticated`;
   - `grant select … to authenticated, service_role`.
-- [ ] **RPCs** `public.publish_ai_prompt_version(p_slot text, p_body text, p_note text, p_expected_active_version_id uuid) returns uuid` e `public.activate_ai_prompt_version(p_slot text, p_version_id uuid, p_expected_active_version_id uuid, p_note text) returns void`:
+- [x] **RPCs** `public.publish_ai_prompt_version(p_slot text, p_body text, p_note text, p_expected_active_version_id uuid) returns uuid` e `public.activate_ai_prompt_version(p_slot text, p_version_id uuid, p_expected_active_version_id uuid, p_note text) returns void`:
   - `security definer`, `set search_path = ''`, identificadores qualificados;
   - guard `auth.uid()` nulo ou `not app_private.is_platform_admin(auth.uid())` → `42501` `prompt_forbidden`;
   - `select … for update` no slot;
@@ -321,35 +321,35 @@ Conteúdo, com `begin; … commit;` no arquivo (o harness aplica cru):
   - versão de outro slot ou inexistente → `22023` `prompt_version_invalid`;
   - insert da versão `max+1` + update do slot + ledger, na mesma transação;
   - `revoke all on function <assinatura completa> from public, anon, authenticated, service_role;` e depois `grant execute … to authenticated`.
-- [ ] **Seed:**
+- [x] **Seed:**
   - v1 com `$seed$…$seed$`, `created_by null` e nota `seed`, com `on conflict (slot, version) do nothing`;
   - slot com `on conflict (slot) do nothing`;
   - ledger `seed` só `where not exists`.
-- [ ] **Classe:** `create or replace function app_private.unit_setting_write_class` com as 3 chaves em `manager`. O resto não muda, e chave desconhecida continua `platform`. Revoke repetido.
-- [ ] **Guard de valor:**
+- [x] **Classe:** `create or replace function app_private.unit_setting_write_class` com as 3 chaves em `manager`. O resto não muda, e chave desconhecida continua `platform`. Revoke repetido.
+- [x] **Guard de valor:**
   - `app_private.unit_setting_value_limit(text) returns integer immutable`, com a tabela de §4.3 (chave fora dela → `null`);
   - `app_private.guard_unit_setting_value()` (`security definer`, `search_path=''`): string JSON, tamanho, controle e enum de `agent_mode`, senão `22023` `setting_value_invalid`. Vale para todo papel;
   - trigger `settings_write_value_guard` BEFORE INSERT OR UPDATE em `public.settings` (ordena depois de `settings_write_role_guard`);
   - revoke das duas funções de `public, anon, authenticated, service_role`.
-- [ ] Rodar o pré-voo: 78a → 78 (**RED**) → migration → 78 (**GREEN**) → migration → 78 (**GREEN**, idempotência). Registrar a contagem, os códigos medidos e C1–C3 em §8.2.
+- [x] Rodar o pré-voo: 78a → 78 (**RED**) → migration → 78 (**GREEN**) → migration → 78 (**GREEN**, idempotência). Registrar a contagem, os códigos medidos e C1–C3 em §8.2.
 
 ### B2.3 ACL, gêmeos e teste de settings
 
-- [ ] `scripts/function-acl-allowlist.json`: duas entradas no grupo em que já vivem as RPCs `authenticated` com guarda de platform_admin (`authenticated_tenant`; conferir com `grep -n "guarda platform_admin"`). Cada uma com:
+- [x] `scripts/function-acl-allowlist.json`: duas entradas no grupo em que já vivem as RPCs `authenticated` com guarda de platform_admin (`authenticated_tenant`; conferir com `grep -n "guarda platform_admin"`). Cada uma com:
   - `args` exatamente como `pg_get_function_identity_arguments`;
   - `roles: ["authenticated"]`, `security_definer: true`;
   - `advisor_lints` iguais aos das irmãs;
   - `why` citando o guard no corpo, o lock, o `40001` e o pré-voo 78 (P2, P7).
   As trigger functions e as funções do guard **não entram**.
-- [ ] `npx vitest run scripts/function-acl-allowlist.test.ts`, mais o comando do job `acl-estatico` rodado localmente (ver `.github/workflows/function-acl-audit.yml`).
-- [ ] RED → GREEN em `src/lib/global-prompt-sql-twin.test.ts`:
+- [x] `npx vitest run scripts/function-acl-allowlist.test.ts`, mais o comando do job `acl-estatico` rodado localmente (ver `.github/workflows/function-acl-audit.yml`).
+- [x] RED → GREEN em `src/lib/global-prompt-sql-twin.test.ts`:
   - o seed da migration é igual a `GLOBAL_PERSONA_BASELINE`;
   - os placeholders da regex SQL são iguais a `GLOBAL_PROMPT_PLACEHOLDERS`;
   - o 4000 do CHECK é igual a `GLOBAL_PROMPT_MAX_CHARS`;
   - `unit_setting_value_limit` é igual a `STORE_TEXT_LIMITS`, chave por chave;
   - o enum SQL é igual a `AGENT_MODES`;
   - controle positivo com SQL sintético divergente.
-- [ ] `scripts/settings-write-acl.test.ts` (§0.3):
+- [x] `scripts/settings-write-acl.test.ts` (§0.3):
   - `AI_STORE_SETTING_KEYS` entra na união `manager`;
   - a exclusão das chaves de `Automacao.tsx` passa a cobrir só as 5 `platform` do `PromptTab` (`ai_system_prompt`, `ai_context_extra`, `agent_mode`, `agent_name`, `ai_config`);
   - `MIN_AUTOMACAO_KEYS` é revisto;
@@ -357,12 +357,12 @@ Conteúdo, com `begin; … commit;` no arquivo (o harness aplica cru):
 
 ### B2.4 Regra, pré-gate e fechamento
 
-- [ ] `.claude/rules/banco-de-dados.md`:
+- [x] `.claude/rules/banco-de-dados.md`:
   - a regra de `settings` passa a dizer que a classe `manager` inclui as 3 chaves factuais;
   - nova linha: "`settings_write_value_guard` valida forma e tamanho para todo papel, inclusive `service_role`";
   - nova linha: "`ai_prompt_versions`/`ai_prompt_activations` são append-only por trigger; só `publish_`/`activate_ai_prompt_version` escrevem".
-- [ ] Pré-gate (Opus): `saas-shield-br:migration-validator` e `saas-shield-br:rls-auditor` sobre a migration nova. Achado bloqueante → corrigir com TDD no pré-voo.
-- [ ] Verificação V e commit `feat(agente-ia): tabelas e RPCs do prompt global, classe e guard de valor em settings`. **Sem `db push`.**
+- [x] Pré-gate (Opus): `saas-shield-br:migration-validator` e `saas-shield-br:rls-auditor` sobre a migration nova. Achado bloqueante → corrigir com TDD no pré-voo.
+- [x] Verificação V e commit `feat(agente-ia): tabelas e RPCs do prompt global, classe e guard de valor em settings`. **Sem `db push`.**
 
 ## 5. B3 — Núcleo do prompt (Chat 3)
 
@@ -643,6 +643,44 @@ Decisões e desvios registrados:
 ### 8.2 B2: pré-voo 78
 
 Contagem, códigos medidos (inclusive NUL), C1–C3, atributo `BYPASSRLS` do dono.
+
+#### B2: RED, GREEN, controles e decisões (Chat 2, 2026-10-20)
+
+- **Número do pré-voo (§0.2):** `git for-each-ref` + `git ls-tree` em todas as branches locais e remotas, mais as worktrees. 77 é de `codex/whatsapp-versioned-dispatch-final` (e derivadas); 79/79a são de `feat/instagram-fase-1`; **78 livre**, usado.
+- **B2.0:** o trecho de `system-prompt.ts` (linhas 214–215) só interpola `agentName` e `restaurantName`, duas vezes cada, sem condicional nem `agent_mode`. Premissa da spec §4.1 confirmada. Seed extraído por script: 939 caracteres, uma linha, sem `$seed$` dentro. sha256 `2b4e3b5b09c903de2827cb9e0f792e573cb5fc34d745d3fc20ae6347864c03d9`, igual no banco e no TS.
+- **BYPASSRLS do dono:** não falta. Produção mediu `postgres` com `rolbypassrls=true` em 2026-09-27 (spec Datafy Fase D §1.2) e em 2026-10-17 (plano Datafy, leituras do alvo: 45 corpos `SECURITY DEFINER` com dono com bypass). Localmente o `postgres` é superusuário; o **C4** passa tabelas e RPC a um dono não superusuário e mede: sem `BYPASSRLS` o publish não enxerga o slot (`22023 prompt_slot_invalid`), com `BYPASSRLS` publica. **Reconferir em produção (leitura autorizada) antes do `db push`, no B6.**
+- **Pré-voo** (PG 18.6 local, banco `ai78` do zero, porta 55432): 78a ok; 78 antes da migration = **RED** `ERROR: 78: migration do prompt global ausente` (exit 3); migration → 78 **31 e 31**; migration de novo → 78 **31 e 31** (idempotência; o P8 também reaplica dentro do arquivo, com o slot antes movido para a v3). Sequência final repetida num banco recriado do zero depois das correções do pré-gate.
+- **NUL medido:** literal `E'\000'` → `22021`; `chr(0)` → `54000`; JSON `"\u0000"` (forma do PostgREST) → `22P05`. Nenhum chega à função.
+- **Controles positivos (todos vermelhos com o defeito e verdes com o guard real):** C1 append-only; C2 guard de valor; C3 classe antiga; C4 `BYPASSRLS`; C5 guard de platform_admin nas duas RPCs; C6 checagem de `expected`; C7 validação de corpo e nota (sem a da RPC o CHECK barra com `23514`; com o validador neutralizado passa); C8 checagem de versão (sem ela a FK composta barra a inexistente com `23503` e a já ativa vira rollback vazio); C9 seed de slot com `do update` devolveria o slot à v1 (o P8 acusaria).
+- **V5:** o 75 no mesmo banco deu **19/20** — só o S9, `agent_mode = 's75-pa-agent_mode'` recusado com `22023` pelo guard novo (comportamento pedido no V4). O S9 passou a gravar `reservations_faq` em `agent_mode`; o 75 ficou **20/20** no banco do 78 e numa base limpa sem a migration nova. O `\i` do 75 reaplica a classe antiga; o 78 rodado em seguida volta a **31/31**.
+- **Gêmeos (`global-prompt-sql-twin.test.ts`, 13 casos):** seed, placeholders, 4000, limites chave a chave, enum, slot e classe de controle do corpo = a do guard de valor; baseline renderizado = trecho atual de `composeAgentSystemPrompt` (com e sem FAQ). Sem RED de "arquivo ausente" (as constantes nasceram com o B2.0); o RED veio por mutação no repo: limite `restaurant_menu` 6500 no TS e baseline com um caractere a menos reprovam, revertidos. Mais 8 controles com SQL sintético.
+- **`settings-write-acl.test.ts`:** RED antes da mudança pelos dois motivos certos (3 chaves no classificador sem tela; "vazamento" em `Automacao.tsx`). GREEN 6/6 com `AI_STORE_SETTING_KEYS` na união e a exclusão restrita às 5 `platform` (conjunto exato); controle negativo em memória (classe sem `restaurant_menu`; chave `platform` no classificador).
+- **Allowlist:** RED (`publish_/activate_ai_prompt_version/4 → [authenticated] sem entrada`), GREEN com as duas entradas em `authenticated_tenant`; projeção do Advisor 9/37/46. `function-acl-allowlist` + `advisor-divergence-core` + `migration-static-guard` 96/96; `eslint supabase/functions --max-warnings=0` limpo.
+- **Verificação V:** typecheck 0; lint 0 erros (17 warnings antigos, nenhum em arquivo do B2); suíte 4220 passam e 45 falham nos **mesmos 8 arquivos do baseline**, sem timeout; build ok; `deno check` de `webhook-whatsapp` e de `global-prompt-core.ts` ok (o grafo: nenhuma EF importa o núcleo ainda); `check-padrao` ok; `check-portabilidade` 487 = baseline.
+
+Desvios e decisões:
+- `body_sha256` **não** é coluna gerada: o PG recusa porque `convert_to`/`textsend` são `STABLE`. A RPC e o seed preenchem, com CHECK de formato hex (fallback previsto).
+- Validação de corpo e nota em dois helpers `IMMUTABLE` (`app_private.ai_prompt_body_valid`/`ai_prompt_note_valid`), usados pelos CHECKs e pelas RPCs: uma régua só. Revogados de todos, fora da allowlist.
+- O `revoke` das três tabelas inclui `service_role` (o plano listava só public/anon/authenticated): os default privileges do Supabase dão ALL a ele, e só as RPCs escrevem. Depois `grant select` a `authenticated` e `service_role`.
+- Triggers `BEFORE TRUNCATE` extras nas duas tabelas append-only.
+- `activate_ai_prompt_version` recusa a versão já ativa (`22023 prompt_version_invalid`); slot desconhecido é `22023 prompt_slot_invalid` nas duas RPCs.
+- Constante extra `GLOBAL_PROMPT_SLOT`, gêmea do CHECK de slot.
+- Ordinais 7801–7831, com casos além do plano: P4c (NUL), P4b (bordas aceitas), P9 (quem lê), V3b (cada limite), V6 (chave fora da tabela), V7 (linha legada), C4–C9.
+- Triggers `BEFORE DELETE`/`BEFORE TRUNCATE` em `ai_prompt_slots` (o slot é atualizado pelas RPCs, nunca apagado) e policies com `(select auth.uid())`: correções do pré-gate, abaixo.
+- A classe de controle recusa `\r` (spec literal: "controle além de `\n`/`\t`").
+
+Pré-gate (Opus) e review de spec (Sonnet):
+- **Review de spec (Sonnet): CONFORME**, sem bloqueante. Menores: fechar §8.2 e checkboxes (feito), registrar o pré-gate (feito), extras declarados acima, e o risco do `\r` para B4/B5/B6 (abaixo).
+- **`rls-auditor` (Opus): PASS_WITH_WARNINGS, 0 bloqueantes.** Corrigido: a regra dizia "inclusive o dono" no append-only; agora diz "todo papel de API e DML do dono". Para o B6 e para o usuário decidir:
+  - **P2 — ordem do deploy.** As 3 chaves viram `manager` no `db push`, mas a defesa contra injeção (delimitação, regra 13) só chega com o deploy da EF do B3. Entre os dois, um gerente pode gravar ordem no cardápio pelo PostgREST e a EF velha a interpola crua (raio: a própria loja). Proposta para o B6: deploy de `webhook-whatsapp` com B3 logo depois do `db push` e antes do merge, ou antes do push (o loader D7 cai em baseline se a tabela não existir; conferir que `42P01` é tratado como erro de leitura).
+  - **P3 — dados legados.** O guard recusa ao regravar valor não-string, com `\r`, acima do limite ou `agent_mode` fora do enum. Antes do `db push`, contagem autorizada (sem ler conteúdo) por chave das linhas fora do formato; se > 0, normalizar antes. B4/B5 (e `PromptTab`/`Ajustes`) normalizam `\r\n`→`\n` antes de gravar e tratam `22023`.
+  - **P3 — FK `created_by → auth.users`** (pedida pela spec §5.1) impede apagar no Auth um platform_admin que publicou; `set null` é impossível (append-only + CHECK). Alternativa: guardar só o uuid, como `actor`. Mantido como a spec; decisão do usuário.
+  - P3 fora do escopo: MFA (`aal2`) nas RPCs de alto alcance; `settings` sem `FORCE RLS` (pré-existente, plano de risco).
+- **`migration-validator` (Opus): PASS_WITH_WARNINGS, 0 bloqueantes.** Corrigido com TDD no pré-voo:
+  - P3: o P8 não provava "o slot não volta à v1" (o slot já estava na v1). Agora o slot vai à v3 antes do P8, e o C9 mostra que um seed com `do update` seria pego.
+  - P3: `ai_prompt_slots` sem proteção contra DELETE/TRUNCATE do dono. RED: o P6 novo apagou o slot como dono e o preparo do P8 abortou (`prompt_slot_invalid`). GREEN: triggers `ai_prompt_slots_no_delete`/`_no_truncate`.
+  - P3: policies com `(select auth.uid())` (lint `auth_rls_initplan`); P7 confere o texto novo.
+  Registrados para o B6 e o usuário: P2 dados legados fora do formato travam o save em lote de `Ajustes` (`rules_and_conditions`/`additional_info` vão num `upsert` só) — contagem autorizada antes do `db push` e, no B5, contador + normalização + `22023` também em `Ajustes`; P3 FK `created_by` (igual ao rls-auditor; alternativa: runbook de offboarding de admin = remover de `platform_admins` e banir, nunca apagar); P3 `40001` vira HTTP 500 no PostgREST — a UI do B4 decide por `error.code`, nunca pelo status; o `PromptTab` salva 7 upserts em `Promise.all` e pode gravar parcialmente.
 
 ### 8.3 B3: passo A, passo B e C-B3
 
