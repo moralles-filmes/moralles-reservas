@@ -13,10 +13,14 @@
 --   C-IG-3.1..C-IG-3.8 (7950–7957). Fix round 1: os fixes 1–4 estendem
 --   IG-3.1/3.3/3.5/3.6 e os controles deles; o fix 5 é o IG-3.8.
 --   7948–7949 e 7958–7959 ficam livres.
---   Tasks seguintes: 7960+, 7980+.
+-- Task 1.4 (migration 20261020120300_conversations_instagram_channel.sql):
+--   casos IG-4.1..IG-4.7 (7960–7966) e um controle positivo por caso,
+--   C-IG-4.1..C-IG-4.7 (7970–7976). 7967–7969 e 7977–7979 ficam livres.
+--   Tasks seguintes: 7980+.
 --
 -- BASE (banco próprio `ig79`, README seção 79):
---   00 -> 01 -> 09a -> 106 -> 79a -> [migrations do Instagram] -> 79.
+--   00 -> 01 -> 09a -> 106 -> 79a -> 20260905143453 -> 20261017160000
+--   -> [migrations do Instagram] -> 79.
 -- Os casos usam a identidade real: `set local role authenticated` +
 -- `request.jwt.claims` com `sub` e `role`. RLS de produção nas tabelas novas
 -- (forçada) e em `unit_members` (79a).
@@ -76,6 +80,19 @@ begin
      or to_regprocedure('public.trigger_instagram_inbound_sweep()') is null
      or to_regprocedure('public.trigger_instagram_token_refresh()') is null then
     raise exception '79: objetos da fila de inbound do Instagram ausentes (instagram_inbound_events, instagram_processed_messages, RPCs de claim/finalize/purga, diagnostico e wrappers). Aplique a migration 20261020120200_instagram_inbound_queue antes (sem ela, este abort e o RED esperado).';
+  end if;
+  if to_regclass('public.conversations') is null
+     or to_regclass('public.whatsapp_automation_jobs') is null
+     or to_regprocedure('public.append_conversation_message(uuid,jsonb)') is null then
+    raise exception '79 exige o 79a da Task 1.4 (conversations, stub de whatsapp_automation_jobs) e a migration 20260905143453 aplicados antes (README, secao 79).';
+  end if;
+  if not exists (select 1 from pg_attribute where attrelid = 'public.conversations'::regclass and attname = 'channel' and not attisdropped)
+     or not exists (select 1 from pg_attribute where attrelid = 'public.conversations'::regclass and attname = 'instagram_contact_id' and not attisdropped)
+     or to_regprocedure('public.get_or_create_instagram_conversation(uuid)') is null
+     or to_regprocedure('public.link_instagram_contact_customer(uuid,uuid)') is null
+     or to_regprocedure('public.conversations_channel_guard()') is null
+     or to_regprocedure('app_private.reconcile_whatsapp_automation_acceptance_inner(uuid)') is null then
+    raise exception '79: objetos de conversa do Instagram ausentes (conversations.channel, conversations.instagram_contact_id, get_or_create_instagram_conversation, link_instagram_contact_customer, conversations_channel_guard, reconcile inner). Aplique a migration 20261020120300_conversations_instagram_channel antes (sem ela, este abort e o RED esperado).';
   end if;
   if not exists (select 1 from public.units where id = 'a0d79000-0000-4000-8000-0000000000aa')
      or not exists (select 1 from public.platform_admins where user_id = 'a0d79000-0000-4000-8000-0000000000c1') then
@@ -1860,6 +1877,509 @@ begin
   end;
 end $f$;
 
+-- ═══ Task 1.4: conversations com canal e cliente opcional ═══════════════════
+-- Fixtures próprias (clientes, reservas, contas, contatos, canal WhatsApp,
+-- jobs de automação) nascem e morrem dentro da subtransação de cada caso.
+-- A conversa WhatsApp "antiga" nasce por INSERT com `updated_at` no passado:
+-- o trigger de updated_at só age em UPDATE, e dentro da transação `now()` é
+-- constante, então é assim que a conversa do Instagram fica "a mais recente"
+-- e a busca SEM filtro de canal a escolheria.
+
+-- SQL de upsert_instagram_contact devolvendo o id.
+create or replace function pg_temp.ig79_contact(p_acc uuid, p_igsid text, p_user text, p_name text)
+returns text language sql as $$
+  select format('select public.upsert_instagram_contact(%L::uuid, %L, %L, %L)::text', p_acc, p_igsid, p_user, p_name)
+$$;
+
+-- Quantas mensagens da conversa têm o event_id dado.
+create or replace function pg_temp.ig79_evt(p_conv uuid, p_event text)
+returns int language sql as $$
+  select count(*)::int from public.conversations cv
+    cross join lateral jsonb_array_elements(coalesce(cv.messages, '[]'::jsonb)) m
+   where cv.id = p_conv and m->>'event_id' = p_event
+$$;
+
+-- ─── IG-4.1: CHECK de identidade do canal ───────────────────────────────────
+-- Como postgres (sem RLS; o guard não olha a forma): WhatsApp sem cliente,
+-- Instagram sem contato e WhatsApp com contato violam
+-- `conversations_channel_identity_check`; canal fora da lista viola
+-- `conversations_channel_check`. Instagram com contato e sem cliente passa, e
+-- WhatsApp com cliente nasce `channel = 'whatsapp'` pelo default. Catálogo:
+-- três constraints validadas, `customer_id` aceita nulo, `channel` NOT NULL
+-- com default 'whatsapp'.
+create or replace function pg_temp.ig79_case_41() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c_a constant uuid := 'a0d79000-0000-4000-8000-000000004101';
+  acc uuid; k uuid;
+  x_wa_sem text; x_ig_sem text; x_wa_contato text; x_canal text; ok_ig text; ok_wa text; cat text; col text;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values (c_a, org_a, 'ig79 cliente 41', '11990004101');
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79410001', 'conta_41', 'tok-41-A-000001', owner_a)));
+    k := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-41', 'user41', 'Nome 41')));
+
+    x_wa_sem := pg_temp.ig79_q(null, null, format(
+      'with i as (insert into public.conversations (unit_id, channel) values (%L, ''whatsapp'') returning 1) select count(*)::text from i', ua));
+    x_ig_sem := pg_temp.ig79_q(null, null, format(
+      'with i as (insert into public.conversations (unit_id, customer_id, channel) values (%L, %L, ''instagram'') returning 1) select count(*)::text from i', ua, c_a));
+    x_wa_contato := pg_temp.ig79_q(null, null, format(
+      'with i as (insert into public.conversations (unit_id, customer_id, channel, instagram_contact_id) values (%L, %L, ''whatsapp'', %L) returning 1) select count(*)::text from i', ua, c_a, k));
+    x_canal := pg_temp.ig79_q(null, null, format(
+      'with i as (insert into public.conversations (unit_id, customer_id, channel) values (%L, %L, ''email'') returning 1) select count(*)::text from i', ua, c_a));
+    ok_ig := pg_temp.ig79_q(null, null, format(
+      'with i as (insert into public.conversations (unit_id, channel, instagram_contact_id) values (%L, ''instagram'', %L) returning channel) select string_agg(channel, '','') from i', ua, k));
+    ok_wa := pg_temp.ig79_q(null, null, format(
+      'with i as (insert into public.conversations (unit_id, customer_id) values (%L, %L) returning channel) select string_agg(channel, '','') from i', ua, c_a));
+
+    select string_agg(conname || ':' || convalidated, ',' order by conname) into cat
+      from pg_constraint where conrelid = 'public.conversations'::regclass
+       and conname in ('conversations_channel_check', 'conversations_channel_identity_check', 'conversations_instagram_contact_id_fkey');
+    select string_agg(a.attname || ':' || a.attnotnull || ':' || coalesce(pg_get_expr(d.adbin, d.adrelid), '-'), ',' order by a.attname) into col
+      from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+     where a.attrelid = 'public.conversations'::regclass and a.attname in ('channel', 'customer_id', 'instagram_contact_id');
+
+    raise exception using errcode = 'P0R79', message =
+      case when acc is not null and k is not null
+            and x_wa_sem like 'ERR 23514:%conversations_channel_identity_check%'
+            and x_ig_sem like 'ERR 23514:%conversations_channel_identity_check%'
+            and x_wa_contato like 'ERR 23514:%conversations_channel_identity_check%'
+            and x_canal like 'ERR 23514:%conversations_channel_check%'
+            and ok_ig = 'instagram' and ok_wa = 'whatsapp'
+            and cat = 'conversations_channel_check:true,conversations_channel_identity_check:true,conversations_instagram_contact_id_fkey:true'
+            and col = 'channel:true:''whatsapp''::text,customer_id:false:-,instagram_contact_id:false:-' then 'PASSOU'
+           else 'FALHOU wa_sem_cliente=' || x_wa_sem || ' ig_sem_contato=' || x_ig_sem || ' wa_com_contato=' || x_wa_contato
+                || ' canal_email=' || x_canal || ' ig_ok=' || ok_ig || ' wa_ok=' || ok_wa
+                || ' catalogo=' || coalesce(cat, '<null>') || ' colunas=' || coalesce(col, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-4.2: get_or_create_whatsapp_conversation ignora a conversa IG ──────
+-- Cliente C com a conversa WhatsApp X (mais antiga) e a conversa IG Y ligada
+-- (mais recente): a RPC, como service_role, devolve X e não toca o
+-- `contact_name`/`wa_chat_lid` de Y. Cliente C2 só com a conversa IG Y2: a RPC
+-- cria uma conversa nova `whatsapp` do C2, diferente de Y2, e a segunda
+-- chamada devolve a mesma.
+create or replace function pg_temp.ig79_case_42() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c1 constant uuid := 'a0d79000-0000-4000-8000-000000004201';
+  c2 constant uuid := 'a0d79000-0000-4000-8000-000000004202';
+  x constant uuid := 'a0d79000-0000-4000-8000-000000004210';
+  acc uuid; k1 uuid; k2 uuid; y uuid; y2 uuid; r1 text; r2 text; r2b text;
+  y_depois text; y2_depois text; novo text; link1 text; link2 text;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values
+      (c1, org_a, 'ig79 cliente 42a', '11990004201'),
+      (c2, org_a, 'ig79 cliente 42b', '11990004202');
+    insert into public.conversations (id, unit_id, customer_id, messages, contact_name, updated_at)
+      values (x, ua, c1, '[]'::jsonb, 'Nome WA antigo', now() - interval '1 day');
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79420001', 'conta_42', 'tok-42-A-000001', owner_a)));
+    k1 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-42a', 'user42a', 'IG 42a')));
+    k2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-42b', 'user42b', 'IG 42b')));
+    link1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k1, c1)));
+    link2 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k2, c2)));
+    y := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k1)));
+    y2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k2)));
+
+    r1 := pg_temp.ig79_q('service_role', null, format(
+      'select public.get_or_create_whatsapp_conversation(%L::uuid, %L::uuid, ''Nome WA novo'', ''lid-42'')::text', c1, ua));
+    r2 := pg_temp.ig79_q('service_role', null, format(
+      'select public.get_or_create_whatsapp_conversation(%L::uuid, %L::uuid, ''Nome WA 2'', ''lid-42b'')::text', c2, ua));
+    r2b := pg_temp.ig79_q('service_role', null, format(
+      'select public.get_or_create_whatsapp_conversation(%L::uuid, %L::uuid, null, null)::text', c2, ua));
+
+    select cv.contact_name || '|' || coalesce(cv.wa_chat_lid, '-') || '|' || cv.customer_id into y_depois from public.conversations cv where cv.id = y;
+    select cv.contact_name || '|' || coalesce(cv.wa_chat_lid, '-') || '|' || cv.customer_id into y2_depois from public.conversations cv where cv.id = y2;
+    select cv.channel || '|' || cv.customer_id || '|' || cv.unit_id || '|' || coalesce(cv.instagram_contact_id::text, '-') into novo
+      from public.conversations cv where cv.id = pg_temp.ig79_uuid(r2);
+
+    raise exception using errcode = 'P0R79', message =
+      case when link1 = 'ok' and link2 = 'ok' and y is not null and y2 is not null
+            and r1 = x::text
+            and y_depois = 'IG 42a|-|' || c1
+            and r2 is distinct from y2::text and pg_temp.ig79_uuid(r2) is not null
+            and novo = 'whatsapp|' || c2 || '|' || ua || '|-'
+            and r2b = r2
+            and y2_depois = 'IG 42b|-|' || c2 then 'PASSOU'
+           else 'FALHOU link=' || link1 || '/' || link2 || ' y=' || coalesce(y::text, '<null>') || ' y2=' || coalesce(y2::text, '<null>')
+                || ' wa_c1=' || r1 || ' esperado_x=' || x || ' y_depois=' || coalesce(y_depois, '<null>')
+                || ' wa_c2=' || r2 || ' wa_c2_de_novo=' || r2b || ' nova=' || coalesce(novo, '<null>')
+                || ' y2_depois=' || coalesce(y2_depois, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-4.3: reconcile de aceitação ignora a conversa IG ───────────────────
+-- O corpo REAL de app_private.reconcile_whatsapp_automation_acceptance_inner
+-- (instalado pela migration), chamado como postgres (o EXECUTE é só do dono:
+-- o wrapper guardado não existe no harness), sobre o stub de
+-- `whatsapp_automation_jobs` do 79a. Cenário A: cliente C com a conversa
+-- WhatsApp X (mais antiga) e a conversa IG Y ligada que JÁ contém o event_id
+-- `automation:<job>:accepted` — o reconcile ainda assim registra o aceite em X
+-- (uma vez) e Y fica como estava. Cenário B: cliente C2 só com a conversa IG
+-- Y2: o reconcile cria a conversa WhatsApp do C2 e registra nela; Y2 intacta.
+-- Os dois jobs terminam `reconciled` com `history = recorded` e a notificação
+-- `sent` no canal histórico.
+create or replace function pg_temp.ig79_case_43() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c1 constant uuid := 'a0d79000-0000-4000-8000-000000004301';
+  c2 constant uuid := 'a0d79000-0000-4000-8000-000000004302';
+  r1 constant uuid := 'a0d79000-0000-4000-8000-000000004311';
+  r2 constant uuid := 'a0d79000-0000-4000-8000-000000004312';
+  ch constant uuid := 'a0d79000-0000-4000-8000-000000004320';
+  x constant uuid := 'a0d79000-0000-4000-8000-000000004330';
+  j1 constant uuid := 'a0d79000-0000-4000-8000-000000004341';
+  j2 constant uuid := 'a0d79000-0000-4000-8000-000000004342';
+  e1 text := 'automation:a0d79000-0000-4000-8000-000000004341:accepted';
+  e2 text := 'automation:a0d79000-0000-4000-8000-000000004342:accepted';
+  acc uuid; k1 uuid; k2 uuid; y uuid; y2 uuid; res1 text; res2 text; w2 uuid;
+  y_msgs text; y2_msgs text; jobs text; notif text; n_x int; n_y int; n_w2 int; n_y2 int; n_wa_c2 int;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values
+      (c1, org_a, 'ig79 cliente 43a', '11990004301'),
+      (c2, org_a, 'ig79 cliente 43b', '11990004302');
+    insert into public.reservations (id, unit_id, customer_id, party_size, date, time, reservation_code) values
+      (r1, ua, c1, 2, current_date + 1, '20:00', 'IG7943A'),
+      (r2, ua, c2, 2, current_date + 1, '20:30', 'IG7943B');
+    insert into public.whatsapp_channels (id, unit_id, provider, status) values (ch, ua, 'zapi', 'connected');
+    insert into public.conversations (id, unit_id, customer_id, messages, updated_at)
+      values (x, ua, c1, '[]'::jsonb, now() - interval '1 day');
+
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79430001', 'conta_43', 'tok-43-A-000001', owner_a)));
+    k1 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-43a', 'user43a', 'IG 43a')));
+    k2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-43b', 'user43b', 'IG 43b')));
+    perform pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k1, c1)));
+    perform pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k2, c2)));
+    y := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k1)));
+    y2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k2)));
+    -- Y já traz o event_id do aceite do job 1 (a dedupe sem canal o acharia).
+    update public.conversations set messages = jsonb_build_array(jsonb_build_object(
+      'event_id', e1, 'role', 'user', 'author', 'customer', 'content', 'ig 43', 'timestamp', now()))
+     where id = y;
+
+    insert into public.whatsapp_automation_jobs (id, unit_id, organization_id, kind, reservation_id, customer_id,
+      channel_id, provider, safe_log_body, state, claim_token, posting_started_at, provider_message_id, finished_at)
+    values
+      (j1, ua, org_a, 'confirmation', r1, c1, ch, 'zapi', 'ig79 aceite 43a', 'accepted', gen_random_uuid(),
+       now() - interval '2 minutes', 'wamid-ig79-43a', now() - interval '1 minute'),
+      (j2, ua, org_a, 'confirmation', r2, c2, ch, 'zapi', 'ig79 aceite 43b', 'accepted', gen_random_uuid(),
+       now() - interval '2 minutes', 'wamid-ig79-43b', now() - interval '1 minute');
+
+    res1 := pg_temp.ig79_q(null, null, format('select app_private.reconcile_whatsapp_automation_acceptance_inner(%L::uuid)::text', j1));
+    res2 := pg_temp.ig79_q(null, null, format('select app_private.reconcile_whatsapp_automation_acceptance_inner(%L::uuid)::text', j2));
+
+    n_x := pg_temp.ig79_evt(x, e1);
+    n_y := pg_temp.ig79_evt(y, e1);
+    select jsonb_array_length(messages)::text into y_msgs from public.conversations where id = y;
+    select cv.id into w2 from public.conversations cv where cv.customer_id = c2 and cv.unit_id = ua and cv.channel = 'whatsapp';
+    select count(*)::int into n_wa_c2 from public.conversations cv where cv.customer_id = c2 and cv.unit_id = ua and cv.channel = 'whatsapp';
+    n_w2 := pg_temp.ig79_evt(w2, e2);
+    n_y2 := pg_temp.ig79_evt(y2, e2);
+    select jsonb_array_length(messages)::text into y2_msgs from public.conversations where id = y2;
+    select string_agg(state || '/' || reconcile_required, ',' order by id) into jobs from public.whatsapp_automation_jobs where id in (j1, j2);
+    select string_agg(n.status || '/' || n.whatsapp_provider || '/' || (n.whatsapp_channel_id = ch), ',' order by n.reservation_id) into notif
+      from public.notifications_sent n where n.reservation_id in (r1, r2);
+
+    raise exception using errcode = 'P0R79', message =
+      case when y is not null and y2 is not null
+            and res1 = '{"state": "reconciled", "history": "recorded"}'
+            and res2 = '{"state": "reconciled", "history": "recorded"}'
+            and n_x = 1 and n_y = 1 and y_msgs = '1'
+            and w2 is not null and w2 <> y2 and n_wa_c2 = 1 and n_w2 = 1 and n_y2 = 0 and y2_msgs = '0'
+            and jobs = 'reconciled/false,reconciled/false'
+            and notif = 'sent/zapi/true,sent/zapi/true' then 'PASSOU'
+           else 'FALHOU res1=' || res1 || ' res2=' || res2 || ' aceite_em_X=' || n_x || ' evento_em_Y=' || n_y
+                || ' msgs_Y=' || coalesce(y_msgs, '<null>') || ' wa_c2=' || coalesce(w2::text, '<null>') || '/' || n_wa_c2
+                || ' aceite_em_wa_c2=' || coalesce(n_w2::text, '<null>') || ' aceite_em_Y2=' || n_y2
+                || ' msgs_Y2=' || coalesce(y2_msgs, '<null>') || ' jobs=' || coalesce(jobs, '<null>')
+                || ' notif=' || coalesce(notif, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-4.4: guarda de canal e tenant ──────────────────────────────────────
+-- Conversa IG na unidade A com contato da unidade B (como service_role, o
+-- escritor real, e como postgres), conversa IG em B com contato de A, mover a
+-- conversa IG de unidade, cliente de outra organização numa conversa WhatsApp
+-- e trocar o canal (WhatsApp→Instagram e Instagram→WhatsApp) dão 23514 sem
+-- gravar.
+create or replace function pg_temp.ig79_case_44() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  ub constant uuid := 'a0d79000-0000-4000-8000-0000000000bb';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  org_b constant uuid := 'a0d79000-0000-4000-8000-00000000000b';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  ger_b constant uuid := 'a0d79000-0000-4000-8000-0000000000b2';
+  c_a constant uuid := 'a0d79000-0000-4000-8000-000000004401';
+  c_b constant uuid := 'a0d79000-0000-4000-8000-000000004402';
+  w constant uuid := 'a0d79000-0000-4000-8000-000000004410';
+  acc_a uuid; acc_b uuid; k_a uuid; k_b uuid; k_a2 uuid; k_a3 uuid; k_b2 uuid; y uuid;
+  x_sr text; x_pg text; x_ba text; x_mover text; x_cli text; x_wa_ig text; x_ig_wa text; estado text;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values
+      (c_a, org_a, 'ig79 cliente 44a', '11990004401'),
+      (c_b, org_b, 'ig79 cliente 44b', '11990004402');
+    insert into public.conversations (id, unit_id, customer_id) values (w, ua, c_a);
+    acc_a := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79440001', 'conta_44a', 'tok-44-A-000001', owner_a)));
+    acc_b := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ub, '79440002', 'conta_44b', 'tok-44-B-000001', ger_b)));
+    k_a := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc_a, 'igsid-44a', 'user44a', 'IG 44a')));
+    k_b := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc_b, 'igsid-44b', 'user44b', 'IG 44b')));
+    k_a2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc_a, 'igsid-44a2', 'user44a2', 'IG 44a2')));
+    k_a3 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc_a, 'igsid-44a3', 'user44a3', 'IG 44a3')));
+    k_b2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc_b, 'igsid-44b2', 'user44b2', 'IG 44b2')));
+    y := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k_a)));
+
+    -- Cada tentativa usa um contato ainda sem conversa: sob sabotagem a
+    -- gravacao passa (e o indice unico por contato nao mascara o defeito).
+    x_sr := pg_temp.ig79_q('service_role', null, format(
+      'with i as (insert into public.conversations (unit_id, channel, instagram_contact_id) values (%L, ''instagram'', %L) returning 1) select count(*)::text from i', ua, k_b));
+    x_pg := pg_temp.ig79_q(null, null, format(
+      'with i as (insert into public.conversations (unit_id, channel, instagram_contact_id) values (%L, ''instagram'', %L) returning 1) select count(*)::text from i', ua, k_b2));
+    x_ba := pg_temp.ig79_q(null, null, format(
+      'with i as (insert into public.conversations (unit_id, channel, instagram_contact_id) values (%L, ''instagram'', %L) returning 1) select count(*)::text from i', ub, k_a2));
+    x_mover := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.conversations set unit_id = %L where id = %L returning 1) select count(*)::text from u', ub, y));
+    x_cli := pg_temp.ig79_q('service_role', null, format(
+      'with i as (insert into public.conversations (unit_id, customer_id) values (%L, %L) returning 1) select count(*)::text from i', ua, c_b));
+    x_wa_ig := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.conversations set channel = ''instagram'', customer_id = null, instagram_contact_id = %L where id = %L returning 1) select count(*)::text from u', k_a3, w));
+    x_ig_wa := pg_temp.ig79_q(null, null, format(
+      'with u as (update public.conversations set channel = ''whatsapp'', instagram_contact_id = null, customer_id = %L where id = %L returning 1) select count(*)::text from u', c_a, y));
+    select string_agg(cv.channel || '/' || cv.unit_id, ',' order by cv.channel) into estado from public.conversations cv where cv.id in (w, y);
+
+    raise exception using errcode = 'P0R79', message =
+      case when y is not null and k_a2 is not null and k_a3 is not null and k_b2 is not null
+            and x_sr = 'ERR 23514:conversations: contato do Instagram nao e da unidade da conversa'
+            and x_pg = 'ERR 23514:conversations: contato do Instagram nao e da unidade da conversa'
+            and x_ba = 'ERR 23514:conversations: contato do Instagram nao e da unidade da conversa'
+            and x_mover = 'ERR 23514:conversations: contato do Instagram nao e da unidade da conversa'
+            and x_cli = 'ERR 23514:conversations: cliente nao e da organizacao da unidade'
+            and x_wa_ig = 'ERR 23514:conversations: canal e imutavel'
+            and x_ig_wa = 'ERR 23514:conversations: canal e imutavel'
+            and estado = 'instagram/' || ua || ',whatsapp/' || ua then 'PASSOU'
+           else 'FALHOU ig_contato_B_service_role=' || x_sr || ' ig_contato_B_postgres=' || x_pg
+                || ' ig_em_B_contato_A=' || x_ba || ' mover_ig=' || x_mover || ' cliente_outra_org=' || x_cli
+                || ' wa_para_ig=' || x_wa_ig || ' ig_para_wa=' || x_ig_wa || ' estado=' || coalesce(estado, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-4.5: get_or_create_instagram_conversation ──────────────────────────
+-- Duas chamadas dão o mesmo id e UMA linha; unidade e cliente vêm do contato
+-- (contato sem cliente nasce com `customer_id` nulo; contato ligado nasce com
+-- o cliente); `contact_name = coalesce(name, '@'||username)` e é renovado
+-- quando o perfil muda. Contato anonimizado: 42501; inexistente: P0002; nulo:
+-- 22023. `authenticated` e `anon` sem EXECUTE (42501).
+create or replace function pg_temp.ig79_case_45() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c_a constant uuid := 'a0d79000-0000-4000-8000-000000004501';
+  acc uuid; k1 uuid; k2 uuid; k3 uuid; a1 text; a2 text; b1 text; n int; v1 text; v2 text; v_ren text;
+  x_anon text; x_nada text; x_nulo text; x_auth text; x_anon_role text;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values (c_a, org_a, 'ig79 cliente 45', '11990004501');
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79450001', 'conta_45', 'tok-45-A-000001', owner_a)));
+    k1 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-45a', 'user45a', null)));
+    k2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-45b', 'user45b', 'Nome 45b')));
+    k3 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-45c', 'user45c', 'Nome 45c')));
+    perform pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k2, c_a)));
+
+    a1 := pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k1));
+    a2 := pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k1));
+    b1 := pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k2));
+    select count(*)::int into n from public.conversations where instagram_contact_id = k1;
+    select cv.channel || '|' || cv.unit_id || '|' || coalesce(cv.customer_id::text, '-') || '|' || cv.contact_name into v1
+      from public.conversations cv where cv.id = pg_temp.ig79_uuid(a1);
+    select cv.channel || '|' || cv.unit_id || '|' || coalesce(cv.customer_id::text, '-') || '|' || cv.contact_name into v2
+      from public.conversations cv where cv.id = pg_temp.ig79_uuid(b1);
+    perform pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-45a', null, 'Nome novo 45a'));
+    perform pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k1));
+    select cv.contact_name into v_ren from public.conversations cv where cv.id = pg_temp.ig79_uuid(a1);
+
+    update public.instagram_contacts set igsid = null, username = null, name = null, anonymized_at = now() where id = k3;
+    x_anon := pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k3));
+    x_nada := pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', gen_random_uuid()));
+    x_nulo := pg_temp.ig79_q('service_role', null, 'select public.get_or_create_instagram_conversation(null)::text');
+    x_auth := pg_temp.ig79_q('authenticated', owner_a, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k1));
+    x_anon_role := pg_temp.ig79_q('anon', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k1));
+
+    raise exception using errcode = 'P0R79', message =
+      case when pg_temp.ig79_uuid(a1) is not null and a2 = a1 and n = 1
+            and v1 = 'instagram|' || ua || '|-|@user45a'
+            and v2 = 'instagram|' || ua || '|' || c_a || '|Nome 45b'
+            and v_ren = 'Nome novo 45a'
+            and x_anon = 'ERR 42501:instagram_contact_anonymized'
+            and x_nada = 'ERR P0002:instagram_contact_not_found'
+            and x_nulo = 'ERR 22023:invalid_instagram_contact_argument'
+            and x_auth like 'ERR 42501:permission denied for function get_or_create_instagram_conversation%'
+            and x_anon_role like 'ERR 42501:permission denied for function get_or_create_instagram_conversation%' then 'PASSOU'
+           else 'FALHOU primeira=' || a1 || ' segunda=' || a2 || ' linhas=' || n || ' sem_cliente=' || coalesce(v1, '<null>')
+                || ' ligado=' || coalesce(v2, '<null>') || ' renovado=' || coalesce(v_ren, '<null>')
+                || ' anonimizado=' || x_anon || ' inexistente=' || x_nada || ' nulo=' || x_nulo
+                || ' authenticated=' || x_auth || ' anon=' || x_anon_role end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-4.6: link_instagram_contact_customer ───────────────────────────────
+-- Cliente de outra organização, cliente apagado, cliente inexistente, contato
+-- inexistente e contato anonimizado: o MESMO 42501, sem gravar. Depois do
+-- link, `customer_id`/`customer_linked_at` no contato e `customer_id` na
+-- conversa; religar a outro cliente da organização troca os dois.
+-- `authenticated` sem EXECUTE.
+create or replace function pg_temp.ig79_case_46() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  org_b constant uuid := 'a0d79000-0000-4000-8000-00000000000b';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c_a constant uuid := 'a0d79000-0000-4000-8000-000000004601';
+  c_a2 constant uuid := 'a0d79000-0000-4000-8000-000000004602';
+  c_b constant uuid := 'a0d79000-0000-4000-8000-000000004603';
+  c_del constant uuid := 'a0d79000-0000-4000-8000-000000004604';
+  acc uuid; k uuid; k_anon uuid; y uuid;
+  x_b text; x_del text; x_inex text; x_contato text; x_anon text; x_auth text; antes text; ok1 text; depois1 text; ok2 text; depois2 text;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone, deleted_at) values
+      (c_a, org_a, 'ig79 cliente 46a', '11990004601', null),
+      (c_a2, org_a, 'ig79 cliente 46a2', '11990004602', null),
+      (c_b, org_b, 'ig79 cliente 46b', '11990004603', null),
+      (c_del, org_a, 'ig79 cliente 46 apagado', '11990004604', now());
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79460001', 'conta_46', 'tok-46-A-000001', owner_a)));
+    k := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-46', 'user46', 'IG 46')));
+    k_anon := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-46x', 'user46x', 'IG 46x')));
+    update public.instagram_contacts set igsid = null, username = null, name = null, anonymized_at = now() where id = k_anon;
+    y := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k)));
+
+    x_b := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k, c_b)));
+    x_del := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k, c_del)));
+    x_inex := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k, gen_random_uuid())));
+    x_contato := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', gen_random_uuid(), c_a)));
+    x_anon := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k_anon, c_a)));
+    x_auth := pg_temp.ig79_q('authenticated', owner_a, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k, c_a)));
+    select coalesce(c.customer_id::text, '-') || '|' || (c.customer_linked_at is not null) || '|' || coalesce(cv.customer_id::text, '-') into antes
+      from public.instagram_contacts c join public.conversations cv on cv.instagram_contact_id = c.id where c.id = k;
+
+    ok1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k, c_a)));
+    select coalesce(c.customer_id::text, '-') || '|' || (c.customer_linked_at is not null) || '|' || coalesce(cv.customer_id::text, '-') into depois1
+      from public.instagram_contacts c join public.conversations cv on cv.instagram_contact_id = c.id where c.id = k;
+    ok2 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', k, c_a2)));
+    select coalesce(c.customer_id::text, '-') || '|' || (c.customer_linked_at is not null) || '|' || coalesce(cv.customer_id::text, '-') into depois2
+      from public.instagram_contacts c join public.conversations cv on cv.instagram_contact_id = c.id where c.id = k;
+
+    raise exception using errcode = 'P0R79', message =
+      case when y is not null
+            and x_b = 'ERR 42501:instagram_contact_link_forbidden'
+            and x_del = 'ERR 42501:instagram_contact_link_forbidden'
+            and x_inex = 'ERR 42501:instagram_contact_link_forbidden'
+            and x_contato = 'ERR 42501:instagram_contact_link_forbidden'
+            and x_anon = 'ERR 42501:instagram_contact_link_forbidden'
+            and x_auth like 'ERR 42501:permission denied for function link_instagram_contact_customer%'
+            and antes = '-|false|-'
+            and ok1 = 'ok' and depois1 = c_a || '|true|' || c_a
+            and ok2 = 'ok' and depois2 = c_a2 || '|true|' || c_a2 then 'PASSOU'
+           else 'FALHOU cliente_org_B=' || x_b || ' cliente_apagado=' || x_del || ' cliente_inexistente=' || x_inex
+                || ' contato_inexistente=' || x_contato || ' contato_anonimizado=' || x_anon || ' authenticated=' || x_auth
+                || ' antes=' || coalesce(antes, '<null>') || ' link=' || ok1 || ' depois=' || coalesce(depois1, '<null>')
+                || ' religar=' || ok2 || ' depois_religar=' || coalesce(depois2, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-4.7: A×B na conversa IG e ACL das colunas e funções novas ─────────
+-- Papel real + claims: o owner de A lê a própria conversa IG e não lê a de B;
+-- o gerente de B lê a de B; o platform_admin sem membership lê as duas.
+-- `authenticated`/`anon` sem UPDATE nem INSERT em `channel` e
+-- `instagram_contact_id` (e o UPDATE real do owner dá 42501), as cinco
+-- colunas de handoff continuam com UPDATE. EXECUTE: as duas RPCs novas e o
+-- get_or_create do WhatsApp só para service_role; o guard e o reconcile
+-- inner para ninguém (fora o dono).
+create or replace function pg_temp.ig79_case_47() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  ub constant uuid := 'a0d79000-0000-4000-8000-0000000000bb';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  ger_b constant uuid := 'a0d79000-0000-4000-8000-0000000000b2';
+  pa constant uuid := 'a0d79000-0000-4000-8000-0000000000c1';
+  acc_a uuid; acc_b uuid; k_a uuid; k_b uuid; y_a uuid; y_b uuid;
+  r_a_a text; r_a_b text; r_b_b text; r_pa text; x_upd text; col_acl text; handoff text; fn_acl text;
+begin
+  begin
+    acc_a := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79470001', 'conta_47a', 'tok-47-A-000001', owner_a)));
+    acc_b := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ub, '79470002', 'conta_47b', 'tok-47-B-000001', ger_b)));
+    k_a := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc_a, 'igsid-47a', 'user47a', 'IG 47a')));
+    k_b := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc_b, 'igsid-47b', 'user47b', 'IG 47b')));
+    y_a := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k_a)));
+    y_b := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k_b)));
+
+    r_a_a := pg_temp.ig79_q('authenticated', owner_a, format('select count(*)::text from public.conversations where id = %L', y_a));
+    r_a_b := pg_temp.ig79_q('authenticated', owner_a, format('select count(*)::text from public.conversations where id = %L', y_b));
+    r_b_b := pg_temp.ig79_q('authenticated', ger_b, format('select count(*)::text from public.conversations where id = %L', y_b));
+    r_pa := pg_temp.ig79_q('authenticated', pa, format('select count(*)::text from public.conversations where id in (%L, %L)', y_a, y_b));
+    x_upd := pg_temp.ig79_q('authenticated', owner_a, format(
+      'with u as (update public.conversations set instagram_contact_id = null, channel = ''whatsapp'' where id = %L returning 1) select count(*)::text from u', y_a));
+
+    select string_agg(r || ':' || c || ':' || p || '=' || has_column_privilege(r, 'public.conversations', c, p), ',' order by r, c, p) into col_acl
+      from unnest(array['anon', 'authenticated']) r, unnest(array['channel', 'instagram_contact_id']) c, unnest(array['INSERT', 'UPDATE']) p;
+    select string_agg(c || '=' || has_column_privilege('authenticated', 'public.conversations', c, 'UPDATE'), ',' order by c) into handoff
+      from unnest(array['assigned_to', 'handoff_at', 'handoff_reason', 'status', 'updated_at']) c;
+    select string_agg(f || '=' || coalesce((
+        select string_agg(coalesce(r.rolname, 'PUBLIC'), '+' order by coalesce(r.rolname, 'PUBLIC'))
+          from pg_proc p cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+          left join pg_roles r on r.oid = a.grantee
+         where p.oid = f::regprocedure and a.privilege_type = 'EXECUTE' and coalesce(r.rolname, 'PUBLIC') <> 'postgres'), '-'), ',' order by f) into fn_acl
+      from unnest(array['public.get_or_create_instagram_conversation(uuid)', 'public.link_instagram_contact_customer(uuid,uuid)',
+                        'public.get_or_create_whatsapp_conversation(uuid,uuid,text,text)', 'public.conversations_channel_guard()',
+                        'app_private.reconcile_whatsapp_automation_acceptance_inner(uuid)']) f;
+
+    raise exception using errcode = 'P0R79', message =
+      case when y_a is not null and y_b is not null
+            and r_a_a = '1' and r_a_b = '0' and r_b_b = '1' and r_pa = '2'
+            and x_upd like 'ERR 42501:permission denied for table conversations%'
+            and col_acl = 'anon:channel:INSERT=false,anon:channel:UPDATE=false,anon:instagram_contact_id:INSERT=false,anon:instagram_contact_id:UPDATE=false,'
+                       || 'authenticated:channel:INSERT=false,authenticated:channel:UPDATE=false,authenticated:instagram_contact_id:INSERT=false,authenticated:instagram_contact_id:UPDATE=false'
+            and handoff = 'assigned_to=true,handoff_at=true,handoff_reason=true,status=true,updated_at=true'
+            and fn_acl = 'app_private.reconcile_whatsapp_automation_acceptance_inner(uuid)=-,public.conversations_channel_guard()=-,'
+                      || 'public.get_or_create_instagram_conversation(uuid)=service_role,public.get_or_create_whatsapp_conversation(uuid,uuid,text,text)=service_role,'
+                      || 'public.link_instagram_contact_customer(uuid,uuid)=service_role' then 'PASSOU'
+           else 'FALHOU A_le_A=' || r_a_a || ' A_le_B=' || r_a_b || ' B_le_B=' || r_b_b || ' admin=' || r_pa
+                || ' update_owner=' || x_upd || ' colunas=' || coalesce(col_acl, '<null>')
+                || ' handoff=' || coalesce(handoff, '<null>') || ' funcoes=' || coalesce(fn_acl, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
 -- ─── Casos ───────────────────────────────────────────────────────────────────
 insert into t_res values
   (7901, 'IG-1.1 owner/gerente/sem sub recebem 42501 sem gravar; platform_admin sem membership concede (active=true, granted_by, org de units, settings dm_enabled=false)', pg_temp.ig79_case_11()),
@@ -1888,6 +2408,15 @@ insert into t_res values
   (7945, 'IG-3.6 ACL: RPCs da fila/ledger so service_role, diagnostico so authenticated, wrappers e guard para ninguem; FORCE RLS sem policy; service_role so SELECT+INSERT na fila e SELECT no ledger', pg_temp.ig79_case_36()),
   (7946, 'IG-3.7 wrappers de cron: sem internal_api_key, sem project_url ou chave vazia voltam sem POST; com os dois, POST na EF certa com x-internal-key do Vault', pg_temp.ig79_case_37()),
   (7947, 'IG-3.8 desfecho em texto livre ou com 65 caracteres recusado com 23514 em finalize/complete/record e no INSERT direto, sem gravar; os codigos do harness/plano/nucleo casam o formato', pg_temp.ig79_case_38());
+
+insert into t_res values
+  (7960, 'IG-4.1 CHECK de identidade: whatsapp sem cliente, instagram sem contato e whatsapp com contato 23514; canal invalido 23514; constraints validadas, customer_id opcional, channel default whatsapp', pg_temp.ig79_case_41()),
+  (7961, 'IG-4.2 get_or_create_whatsapp_conversation devolve a conversa WhatsApp X e nao a IG Y mais recente do cliente ligado (Y intacta); sem X cria uma whatsapp nova e nao devolve Y2', pg_temp.ig79_case_42()),
+  (7962, 'IG-4.3 reconcile de aceitacao (corpo real) registra o aceite na conversa WhatsApp mesmo com o event_id na IG do mesmo cliente; sem conversa WhatsApp cria uma e a IG fica intacta', pg_temp.ig79_case_43()),
+  (7963, 'IG-4.4 guarda: conversa IG com contato de outra unidade (service_role e postgres), mover de unidade, cliente de outra org e trocar canal nos dois sentidos dao 23514', pg_temp.ig79_case_44()),
+  (7964, 'IG-4.5 get_or_create_instagram_conversation: mesmo id 2x, unidade/cliente do contato, contact_name coalesce(name, @username) renovado; anonimizado 42501, inexistente P0002, nulo 22023, sem EXECUTE para authenticated/anon', pg_temp.ig79_case_45()),
+  (7965, 'IG-4.6 link_instagram_contact_customer: cliente de outra org/apagado/inexistente e contato inexistente/anonimizado com o mesmo 42501; link grava contato e conversa; religar troca os dois', pg_temp.ig79_case_46()),
+  (7966, 'IG-4.7 A x B: membro de A nao le a conversa IG de B, B e admin leem; colunas novas sem INSERT/UPDATE para authenticated/anon; EXECUTE so service_role, guard e reconcile inner para ninguem', pg_temp.ig79_case_47());
 
 -- ─── Controles positivos ─────────────────────────────────────────────────────
 -- Cada sabotagem roda num subbloco desfeito por raise (DDL é transacional) e
@@ -3041,17 +3570,312 @@ begin
          else 'FALHOU fila_sem_check=' || s1 || ' ledger_sem_check=' || s2 || ' restaurado=' || d || ' checks=' || v_chk end);
 end $$;
 
+-- ─── Controles positivos da Task 1.4 ─────────────────────────────────────────
+-- Mesmo desenho: o MESMO caso roda sob sabotagem num subbloco desfeito e tem
+-- de reprovar com o motivo certo; depois roda de novo e tem de passar, com o
+-- objeto conferido contra o catálogo.
+
+-- C-IG-4.1: sem o CHECK de identidade e sem o CHECK de canal.
+do $$
+declare
+  s1 text; s2 text; d text; v_cat text; v_cat2 text;
+begin
+  select string_agg(conname || '=' || pg_get_constraintdef(oid), ',' order by conname) into v_cat
+    from pg_constraint where conrelid = 'public.conversations'::regclass
+     and conname in ('conversations_channel_check', 'conversations_channel_identity_check');
+  begin
+    alter table public.conversations drop constraint conversations_channel_identity_check;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_41();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    alter table public.conversations drop constraint conversations_channel_check;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_41();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_41();
+  select string_agg(conname || '=' || pg_get_constraintdef(oid), ',' order by conname) into v_cat2
+    from pg_constraint where conrelid = 'public.conversations'::regclass
+     and conname in ('conversations_channel_check', 'conversations_channel_identity_check');
+  raise notice 'C-IG-4.1 sem CHECK de identidade: %', s1;
+  raise notice 'C-IG-4.1 sem CHECK de canal: %', s2;
+  insert into t_res values (7970, 'C-IG-4.1 sem o CHECK de identidade e sem o CHECK de canal: WhatsApp sem cliente/IG sem contato/canal invalido gravam e IG-4.1 reprova; restaurado passa',
+    case when s1 like 'FALHOU wa_sem_cliente=1 ig_sem_contato=1 wa_com_contato=1 %'
+          and s2 like 'FALHOU%canal_email=ERR 23514:%conversations_channel_identity_check%'
+          and d = 'PASSOU' and v_cat2 = v_cat then 'PASSOU'
+         else 'FALHOU sem_identidade=' || s1 || ' sem_canal=' || s2 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-4.2: get_or_create_whatsapp_conversation SEM o filtro de canal (a
+-- forma de 20260905143453): devolve a conversa IG ao cliente ligado e, sem
+-- conversa WhatsApp, devolve a IG em vez de criar.
+do $$
+declare
+  v_def text; v_mut text; s1 text; d text;
+begin
+  v_def := pg_get_functiondef('public.get_or_create_whatsapp_conversation(uuid,uuid,text,text)'::regprocedure);
+  begin
+    v_mut := replace(v_def, E'where customer_id = p_customer_id and unit_id = p_unit_id\n    and channel = ''whatsapp''',
+                            'where customer_id = p_customer_id and unit_id = p_unit_id');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_42();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_42();
+  raise notice 'C-IG-4.2 get_or_create sem filtro de canal: %', s1;
+  insert into t_res values (7971, 'C-IG-4.2 get_or_create_whatsapp_conversation sem o filtro de canal: devolve a conversa IG (com e sem conversa WhatsApp) e IG-4.2 reprova; restaurada passa',
+    case when s1 like 'FALHOU%'
+          and s1 not like '%wa_c1=a0d79000-0000-4000-8000-000000004210 %'
+          and s1 like '%y_depois=Nome WA novo|lid-42|%'
+          and s1 like '%nova=instagram|%'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.get_or_create_whatsapp_conversation(uuid,uuid,text,text)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU sem_filtro=' || s1 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-4.3: (a) reconcile SEM o filtro de canal no exists (a forma de
+-- 20261019183559): o event_id na conversa IG faz o aceite NÃO ir para a
+-- conversa WhatsApp; (b) reconcile real, mas get_or_create SEM o filtro: o
+-- aceite do cliente sem conversa WhatsApp cai na conversa IG.
+do $$
+declare
+  v_rec text; v_goc text; v_mut text; s1 text; s2 text; d text;
+begin
+  v_rec := pg_get_functiondef('app_private.reconcile_whatsapp_automation_acceptance_inner(uuid)'::regprocedure);
+  v_goc := pg_get_functiondef('public.get_or_create_whatsapp_conversation(uuid,uuid,text,text)'::regprocedure);
+  begin
+    v_mut := replace(v_rec, E'where conversation.unit_id=j.unit_id and conversation.customer_id=j.customer_id\n        and conversation.channel = ''whatsapp''',
+                            'where conversation.unit_id=j.unit_id and conversation.customer_id=j.customer_id');
+    if v_mut = v_rec then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_43();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(v_goc, E'where customer_id = p_customer_id and unit_id = p_unit_id\n    and channel = ''whatsapp''',
+                            'where customer_id = p_customer_id and unit_id = p_unit_id');
+    if v_mut = v_goc then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_43();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_43();
+  raise notice 'C-IG-4.3 reconcile sem filtro de canal: %', s1;
+  raise notice 'C-IG-4.3 get_or_create sem filtro de canal: %', s2;
+  insert into t_res values (7972, 'C-IG-4.3 reconcile sem o filtro de canal no exists (aceite some da conversa WhatsApp) e get_or_create sem o filtro (aceite cai na conversa IG): IG-4.3 reprova nos dois; restaurado passa',
+    case when s1 like 'FALHOU%aceite_em_X=0 %aceite_em_Y2=0 %'
+          and s2 like 'FALHOU%aceite_em_Y2=1 %'
+          and d = 'PASSOU'
+          and pg_get_functiondef('app_private.reconcile_whatsapp_automation_acceptance_inner(uuid)'::regprocedure) = v_rec
+          and pg_get_functiondef('public.get_or_create_whatsapp_conversation(uuid,uuid,text,text)'::regprocedure) = v_goc then 'PASSOU'
+         else 'FALHOU reconcile_sem_filtro=' || s1 || ' get_or_create_sem_filtro=' || s2 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-4.4: guarda sem (a) a unidade do contato, (b) a imutabilidade do
+-- canal, (c) a organização do cliente.
+do $$
+declare
+  v_def text; v_mut text; s1 text; s2 text; s3 text; d text;
+begin
+  v_def := pg_get_functiondef('public.conversations_channel_guard()'::regprocedure);
+  begin
+    v_mut := replace(v_def, 'if v_contact_unit is null or v_contact_unit is distinct from new.unit_id then', 'if false then');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_44();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(v_def, 'if tg_op = ''UPDATE'' and new.channel is distinct from old.channel then', 'if false then');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_44();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(v_def, 'if v_cust_org is null or v_cust_org is distinct from v_unit_org then', 'if false then');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_44();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_44();
+  raise notice 'C-IG-4.4 guarda sem unidade do contato: %', s1;
+  raise notice 'C-IG-4.4 guarda sem imutabilidade do canal: %', s2;
+  raise notice 'C-IG-4.4 guarda sem organizacao do cliente: %', s3;
+  insert into t_res values (7973, 'C-IG-4.4 guarda sem a unidade do contato, sem a imutabilidade do canal e sem a organizacao do cliente: IG-4.4 reprova nos tres; restaurada passa',
+    case when s1 like 'FALHOU ig_contato_B_service_role=1 ig_contato_B_postgres=1 ig_em_B_contato_A=1 mover_ig=1 %'
+          and s2 like 'FALHOU%wa_para_ig=1 ig_para_wa=1 %'
+          and s3 like 'FALHOU%cliente_outra_org=1 %'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.conversations_channel_guard()'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU sem_unidade=' || s1 || ' sem_imutabilidade=' || s2 || ' sem_org_cliente=' || s3 || ' restaurada=' || d end);
+end $$;
+
+-- C-IG-4.5: get_or_create_instagram_conversation (a) aceitando contato
+-- anonimizado e (b) sem achar a conversa existente (cria de novo).
+do $$
+declare
+  v_def text; v_mut text; s1 text; s2 text; d text;
+begin
+  v_def := pg_get_functiondef('public.get_or_create_instagram_conversation(uuid)'::regprocedure);
+  begin
+    v_mut := replace(v_def, 'if v_anon is not null then', 'if false then');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_45();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(v_def, 'where cv.instagram_contact_id = p_contact_id;', 'where false;');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_45();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_45();
+  raise notice 'C-IG-4.5 aceita anonimizado: %', s1;
+  raise notice 'C-IG-4.5 sem achar a existente: %', s2;
+  insert into t_res values (7974, 'C-IG-4.5 get_or_create_instagram_conversation aceitando contato anonimizado e sem achar a conversa existente: IG-4.5 reprova nos dois; restaurada passa',
+    case when s1 like 'FALHOU%' and s1 not like '%anonimizado=ERR%'
+          and s2 like 'FALHOU%segunda=ERR 23505:%'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.get_or_create_instagram_conversation(uuid)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU aceita_anonimizado=' || s1 || ' recria=' || s2 || ' restaurada=' || d end);
+end $$;
+
+-- C-IG-4.6: link (a) sem a organização do cliente (sobra o guard do contato,
+-- que responde 23514 em vez do 42501 uniforme), (b) aceitando cliente
+-- apagado, (c) sem espelhar o cliente na conversa.
+do $$
+declare
+  v_def text; v_mut text; s1 text; s2 text; s3 text; d text;
+begin
+  v_def := pg_get_functiondef('public.link_instagram_contact_customer(uuid,uuid)'::regprocedure);
+  begin
+    v_mut := replace(v_def, E'\n       and cu.organization_id = v_org', '');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_46();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(v_def, E'\n       and cu.deleted_at is null', '');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_46();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(v_def, E'where cv.instagram_contact_id = p_contact_id\n     and cv.customer_id is distinct from p_customer_id;', 'where false;');
+    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_46();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_46();
+  raise notice 'C-IG-4.6 sem organizacao do cliente: %', s1;
+  raise notice 'C-IG-4.6 aceita cliente apagado: %', s2;
+  raise notice 'C-IG-4.6 sem espelhar na conversa: %', s3;
+  insert into t_res values (7975, 'C-IG-4.6 link sem a organizacao do cliente, aceitando cliente apagado e sem espelhar o cliente na conversa: IG-4.6 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU cliente_org_B=ERR 23514:%'
+          and s2 like 'FALHOU%cliente_apagado=ok %'
+          and s3 like 'FALHOU%depois=a0d79000-0000-4000-8000-000000004601|true|- %'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.link_instagram_contact_customer(uuid,uuid)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU sem_org=' || s1 || ' apagado=' || s2 || ' sem_espelho=' || s3 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-4.7: (a) UPDATE em `channel` para authenticated, (b) policy de membro
+-- aberta, (c) EXECUTE da RPC nova para authenticated.
+do $$
+declare
+  v_acl text; v_pol text; v_fn text; s1 text; s2 text; s3 text; d text;
+begin
+  select coalesce(relacl::text, '-') || '#' || (select string_agg(attname || '=' || coalesce(attacl::text, '-'), ',' order by attnum)
+           from pg_attribute where attrelid = 'public.conversations'::regclass and attnum > 0 and not attisdropped) into v_acl
+    from pg_class where oid = 'public.conversations'::regclass;
+  select string_agg(polname || '=' || coalesce(pg_get_expr(polqual, polrelid), '-') || '/' || coalesce(pg_get_expr(polwithcheck, polrelid), '-'), ',' order by polname) into v_pol
+    from pg_policy where polrelid = 'public.conversations'::regclass;
+  select coalesce(proacl::text, '-') into v_fn from pg_proc where oid = 'public.get_or_create_instagram_conversation(uuid)'::regprocedure;
+  begin
+    grant update (channel) on public.conversations to authenticated;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_47();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    drop policy "unit_member_all_conversations" on public.conversations;
+    create policy "unit_member_all_conversations" on public.conversations for all to authenticated using (true) with check (true);
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_47();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    grant execute on function public.get_or_create_instagram_conversation(uuid) to authenticated;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_47();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_47();
+  raise notice 'C-IG-4.7 UPDATE em channel: %', s1;
+  raise notice 'C-IG-4.7 policy aberta: %', s2;
+  raise notice 'C-IG-4.7 EXECUTE para authenticated: %', s3;
+  insert into t_res values (7976, 'C-IG-4.7 UPDATE em channel para authenticated, policy de membro aberta e EXECUTE da RPC nova para authenticated: IG-4.7 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU%authenticated:channel:UPDATE=true%'
+          and s2 like 'FALHOU A_le_A=1 A_le_B=1 %'
+          and s3 like 'FALHOU%public.get_or_create_instagram_conversation(uuid)=authenticated+service_role%'
+          and d = 'PASSOU'
+          and (select coalesce(relacl::text, '-') || '#' || (select string_agg(attname || '=' || coalesce(attacl::text, '-'), ',' order by attnum)
+                 from pg_attribute where attrelid = 'public.conversations'::regclass and attnum > 0 and not attisdropped)
+                 from pg_class where oid = 'public.conversations'::regclass) = v_acl
+          and (select string_agg(polname || '=' || coalesce(pg_get_expr(polqual, polrelid), '-') || '/' || coalesce(pg_get_expr(polwithcheck, polrelid), '-'), ',' order by polname)
+                 from pg_policy where polrelid = 'public.conversations'::regclass) = v_pol
+          and (select coalesce(proacl::text, '-') from pg_proc where oid = 'public.get_or_create_instagram_conversation(uuid)'::regprocedure) = v_fn then 'PASSOU'
+         else 'FALHOU update_channel=' || s1 || ' policy_aberta=' || s2 || ' execute_auth=' || s3 || ' restaurado=' || d end);
+end $$;
+
 -- ─── Resultado ───────────────────────────────────────────────────────────────
 select ord, caso, veredito from t_res where ord between 7901 and 7999 order by ord;
 select count(*) as total, count(*) filter (where veredito = 'PASSOU') as passou
-  from t_res where ord between 7901 and 7999;   -- esperado: 48 e 48
+  from t_res where ord between 7901 and 7999;   -- esperado: 62 e 62
 
 do $$
 declare v_total int; v_ok int;
 begin
   select count(*), count(*) filter (where veredito = 'PASSOU') into v_total, v_ok
     from t_res where ord between 7901 and 7999;
-  if v_total <> 48 or v_ok <> 48 then
-    raise exception '79: esperado 48 e 48, obtido % e %', v_total, v_ok;
+  if v_total <> 62 or v_ok <> 62 then
+    raise exception '79: esperado 62 e 62, obtido % e %', v_total, v_ok;
   end if;
 end $$;

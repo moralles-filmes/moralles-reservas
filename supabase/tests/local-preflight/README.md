@@ -2662,14 +2662,18 @@ P -f supabase/tests/local-preflight/01-audit.sql
 P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -f supabase/tests/local-preflight/79a-instagram-bootstrap.sql
+P -f supabase/migrations/20260905143453_whatsapp_conversation_provider_parity.sql  # Task 1.4: RPCs de conversa pré-Instagram
+P -f supabase/migrations/20261017160000_conversation_message_write_acl.sql         # Task 1.4: ACL de escrita de produção
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # RED: aborta na guarda (objetos ausentes), exit 3
 P -f supabase/migrations/20261020120000_instagram_module_grants.sql
 P -f supabase/migrations/20261020120100_instagram_accounts_contacts.sql
 P -f supabase/migrations/20261020120200_instagram_inbound_queue.sql
+P -f supabase/migrations/20261020120300_conversations_instagram_channel.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN
 P -f supabase/migrations/20261020120000_instagram_module_grants.sql
 P -f supabase/migrations/20261020120100_instagram_accounts_contacts.sql
 P -f supabase/migrations/20261020120200_instagram_inbound_queue.sql
+P -f supabase/migrations/20261020120300_conversations_instagram_channel.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (idempotência)
 ```
 
@@ -2685,9 +2689,10 @@ dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 **Ordinais.** Faixa 7901–7999 (a 78 é da Entrega B). Task 1.1: casos
 7901–7906, controles 7908–7913; 7907, 7914 e 7915 livres. Task 1.2: casos
 7920–7929, controles 7930–7939. Task 1.3: casos 7940–7947, controles
-7950–7957; 7948–7949 e 7958–7959 livres. As tasks seguintes usam 7960+ e
+7950–7957; 7948–7949 e 7958–7959 livres. Task 1.4: casos 7960–7966,
+controles 7970–7976; 7967–7969 e 7977–7979 livres. As tasks seguintes usam
 7980+. O 79 imprime os ordinais, a contagem e **aborta** se ela divergir do
-esperado (hoje **48 e 48**); quem acrescenta casos atualiza o número na última
+esperado (hoje **62 e 62**); quem acrescenta casos atualiza o número na última
 instrução do arquivo.
 
 **Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
@@ -2780,12 +2785,52 @@ recusado em finalize, complete, record e INSERT direto, e os códigos do harness
 do plano e do núcleo da fila casam o formato). Cada um tem a sua sabotagem nos
 C-IG-3.1/3.3/3.5/3.6 e no C-IG-3.8.
 
+**Task 1.4** (migration `20261020120300_conversations_instagram_channel.sql`).
+Base acrescida no 79a (seção 3b) e na sequência acima: `conversations` na
+forma que as migrations 001 + 013 + 015 + 027 + 049 + 056 + 070 deixam
+(colunas, FKs, CHECK de status, índices, trigger de `updated_at`), RLS
+habilitada e FORCE (20261017180000) com as duas policies da 013 já com os
+helpers em `app_private`; `whatsapp_channels.is_active` e
+`notifications_sent.whatsapp_provider/whatsapp_channel_id` na forma da
+20260817170753; e um stub MÍNIMO de `whatsapp_automation_jobs` com só as
+colunas (nome, tipo, nulidade, default) que o corpo real de
+`app_private.reconcile_whatsapp_automation_acceptance_inner` lê no caminho
+`recorded`. A 20260905143453 (`append_conversation_message`,
+`get_or_create_whatsapp_conversation` pré-Instagram) e a 20261017160000 (ACL
+de escrita) rodam VERBATIM depois do 79a, então a tabela tem os grants do
+Supabase e a revogação de produção. Fora: publication do Realtime.
+IG-4.1 CHECK de identidade (WhatsApp sem cliente, Instagram sem contato e
+WhatsApp com contato dão 23514; canal fora da lista também) e catálogo
+(constraints validadas, `customer_id` opcional, `channel` com default);
+IG-4.2 `get_or_create_whatsapp_conversation` devolve a conversa WhatsApp X e
+não a IG Y mais recente do cliente ligado, sem tocar Y, e sem X cria uma
+conversa `whatsapp` nova; IG-4.3 o corpo REAL do reconcile de aceitação,
+chamado como dono, registra o aceite em X mesmo com o `event_id` já na IG Y
+do mesmo cliente, e sem X cria a conversa WhatsApp (Y2 intacta) — roda no 79,
+não no 38, porque o 38 depende da pilha Docker de templates; IG-4.4 guarda
+(contato de outra unidade como `service_role` e `postgres`, mover de
+unidade, cliente de outra organização, canal imutável nos dois sentidos);
+IG-4.5 `get_or_create_instagram_conversation` (mesmo id, unidade e cliente
+do contato, `contact_name` renovado, anonimizado 42501, inexistente P0002);
+IG-4.6 `link_instagram_contact_customer` (o mesmo 42501 para cliente de outra
+organização/apagado/inexistente e contato inexistente/anonimizado; grava
+contato e conversa; religar troca); IG-4.7 A×B com papel real e ACL das
+colunas novas e das cinco funções. A conversa WhatsApp "antiga" nasce por
+INSERT com `updated_at` no passado (o trigger só age em UPDATE e `now()` é
+constante na transação), o que torna a IG "a mais recente". Os C-IG-4.2 e
+C-IG-4.3 tiram o filtro de canal (das RPCs reais, via `pg_get_functiondef`)
+e veem a conversa IG ser devolvida e o aceite sumir da conversa WhatsApp ou
+cair na IG. Fora do 79, a mesma Task rodou o 08 (sequência `fase6c`) e o 67d
+(sequência própria, PostgreSQL local como `postgres`) verdes, e o bloco de
+varredura de colunas do 67d contra o `ig79` depois da 1.4.
+
 **Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
 loopback, banco recriado do zero): RED com `ERROR: 79: objetos do modulo
 Instagram ausentes` (exit 3) antes da 1.1, `objetos da conta/contato do
 Instagram ausentes` (exit 3) com só a 1.1 e `objetos da fila de inbound do
-Instagram ausentes` (exit 3) com 1.1 e 1.2; as três migrations cruas aplicadas
-duas vezes e o 79 com 48/48 após cada aplicação, sem linha residual nas
+Instagram ausentes` (exit 3) com 1.1 e 1.2, `objetos de conversa do
+Instagram ausentes` (exit 3) com 1.1–1.3; as quatro migrations cruas
+aplicadas duas vezes e o 79 com 62/62 após cada aplicação, sem linha residual nas
 tabelas novas, no `audit_log` da conta, segredo no Vault nem schema `net`.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
