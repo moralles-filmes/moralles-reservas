@@ -225,11 +225,12 @@
       "quatro RPCs DEFINER authenticated (leitura administrativa, escolha CAS,",
       "estado da loja e custo MARKETING v2): projeção 9/35/44. Não é leitura",
       "do Advisor de produção.",
+      "DELTA MARKETING: quatro RPCs DEFINER authenticated com JWT real, acesso da unidade por papel e nenhuma autoridade de envio: projeção 9/39/48. As escritas exigem owner e CAS.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 35,
-    "total": 44
+    "0029": 39,
+    "total": 48
   },
 
   "public_anon": [
@@ -578,6 +579,38 @@
       "args": "p_customer_ids uuid[], p_unit_id uuid",
       "roles": ["authenticated"],
       "why": "Listagem de clientes — stats agregadas em uma chamada.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_marketing_drafts",
+      "args": "p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Lista rascunhos e regras da unidade para owner/gerente ou platform_admin; sem contato ou autoridade de disparo.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "save_marketing_draft",
+      "args": "p_unit_id uuid, p_draft_id uuid, p_expected_revision bigint, p_program text, p_voucher_rule_id uuid, p_title text, p_start_date date, p_end_date date, p_proposed_daily_contacts integer, p_proposed_daily_messages integer",
+      "roles": ["authenticated"],
+      "why": "Owner da unidade salva apenas rascunho com CAS e regra Giftback da mesma unidade; não escreve em produtores ou autorizações de custo.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "archive_marketing_draft",
+      "args": "p_draft_id uuid, p_expected_revision bigint",
+      "roles": ["authenticated"],
+      "why": "Owner identificado pela unidade do próprio rascunho arquiva com CAS, sem alterar fluxo Giftback ou WhatsApp.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_marketing_results",
+      "args": "p_unit_id uuid, p_from date, p_to date",
+      "roles": ["authenticated"],
+      "why": "Agregados sem PII da unidade para owner/gerente/platform_admin, com corte de retenção e sem custo presumido.",
       "security_definer": true,
       "advisor_lints": ["0029"]
     }

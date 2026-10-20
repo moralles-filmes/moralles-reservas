@@ -26,6 +26,7 @@ describe('actual reservation producers through Request and internal hops', () =>
   it('discount variant and current rescheduled time use the actual text renderer', async () => {
     const f = fixture(), p = f.producer();
     await f.runReservationProducer('confirmation', { time: '22:15:00', applied_discount_percent: 15 });
+    expect(p.row.initial_catalog_key).toBe('res_confirmacao_desconto_v1');
     expect(f.calls.post).toBe(1); expect(JSON.stringify(p.requests)).toContain('22:15'); expect(JSON.stringify(p.requests)).toContain('15%');
   });
   it.each(['cancelled','no_show'])('current %s never posts despite a current producer selection', async status => {

@@ -1,5 +1,5 @@
 import { createAutomationResourceService, type AutomationResourceIO, type AutomationResourceTable } from '../../../supabase/functions/_shared/whatsapp-automation-resources';
-import type { ScheduledIntent } from '../../../supabase/functions/_shared/whatsapp-automation-core';
+import type { ScheduledIntent, ScheduledKind } from '../../../supabase/functions/_shared/whatsapp-automation-core';
 import { createAutomationDispatcher } from '../../../supabase/functions/_shared/whatsapp-automation-dispatch';
 import { catalogHash, TEMPLATE_CATALOG } from '../../../supabase/functions/_shared/whatsapp-template-catalog-core';
 import type { TemplateSendInput, TemplateSendOutcome } from '../../../supabase/functions/_shared/whatsapp-template-provider-core';
@@ -650,6 +650,13 @@ function createReservationProducerIO(base: {
   const voucher = { id: voucherId, unit_id: base.ids.unit, customer_id: base.ids.customer, rule_id: ruleId,
     code: 'FIXTURE11', discount_percent: 15, status: 'active', issued_at: base.nowISO, created_at: base.nowISO,
     expires_at: '2026-11-05T02:59:59.999Z' };
+  const catalogByKind: Record<ScheduledKind, string> = {
+    confirmation: 'res_confirmacao_v1', reminder_d1: 'res_lembrete_dia_v1', survey_d1: 'res_pesquisa_reserva_v1',
+    cancellation: 'res_cancelada_v1', waitlist_entered: 'fila_entrada_v1', waitlist_feedback: 'fila_feedback_v1',
+    waitlist_table_ready: 'fila_mesa_pronta_v1', voucher_issued: 'mkt_voucher_programado_v1',
+  };
+  const catalogKeyFor = (kind: ScheduledKind) => kind === 'confirmation'
+    && Number(tables.reservations[0].applied_discount_percent) > 0 ? 'res_confirmacao_desconto_v1' : catalogByKind[kind];
   const writes = { voucherInsertCount: 0, deletedVoucherIds: [] as string[] };
   const channel = { id: f.row.channel_id, unit_id: base.ids.unit, provider: 'zapi', status: 'connected', is_active: true,
     credentials: { instance_id: 'synthetic-instance', token: 'synthetic-token', client_token: 'synthetic-client' },
@@ -756,7 +763,8 @@ function createReservationProducerIO(base: {
         // Supplied SQL outcome only. Genuine issuance/locking assertions live in gates49–51.
         Object.assign(voucher, { code: args.p_code }); tables.vouchers.push({ ...voucher }); writes.voucherInsertCount++;
         Object.assign(f.row, { kind: 'voucher_issued', reservation_id: null, waitlist_id: null, voucher_id: voucherId,
-          source_event_key: voucherId, fact_at: voucher.created_at, expires_at: '2026-10-12T15:00:00Z' });
+          source_event_key: voucherId, fact_at: voucher.created_at, expires_at: '2026-10-12T15:00:00Z',
+          initial_catalog_key: catalogByKind.voucher_issued });
         controls.ledger = true; controls.afterIssuer();
         const { id, ...fields } = voucher;
         return { data: controls.issuer === 'malformed' ? [{ voucher_id: id }] : [{ voucher_id: id, ...fields, job_id: f.jobId }], error: null };
@@ -784,9 +792,13 @@ function createReservationProducerIO(base: {
       }
       if (name === 'defer_notification_outbox_automation_dependency') { outbox.status = 'pending'; return { data: true, error: null }; }
       if (name === 'enqueue_whatsapp_automation') {
-        controls.ledger = true; const intent = args.p_intent as Record<string, unknown>;
-        // SQL INSERT leaves the two omitted resource FKs NULL, not a previous fixture's identity.
-        Object.assign(f.row, { reservation_id: null, waitlist_id: null, voucher_id: null }, intent);
+        const intent = args.p_intent as Record<string, unknown>;
+        if (!controls.ledger) {
+          controls.ledger = true;
+          // The SQL insert trigger pins the catalog once; an existing job keeps its original pin.
+          Object.assign(f.row, { reservation_id: null, waitlist_id: null, voucher_id: null }, intent,
+            { initial_catalog_key: catalogKeyFor(intent.kind as ScheduledKind) });
+        }
         return { data: f.jobId, error: null };
       }
       if (name === 'reconcile_whatsapp_automation_acceptance') {

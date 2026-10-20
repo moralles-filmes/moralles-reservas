@@ -37,6 +37,7 @@ const GConta = lazy(() => import("./pages/gestao/Conta"));
 const GUsuarios = lazy(() => import("./pages/gestao/Usuarios"));
 const GCobranca = lazy(() => import("./pages/gestao/Cobranca"));
 const GWhatsapp = lazy(() => import("./pages/gestao/Whatsapp"));
+const GMarketing = lazy(() => import("./pages/gestao/Marketing"));
 
 // ── Gestão > Reservas (sub-abas) ──────────────────────────────────────────────
 const GSaloes = lazy(() => import("./pages/gestao/reservas/Saloes"));
@@ -249,6 +250,8 @@ export default function App() {
               <Route path="/g/:unitSlug/giftback/regras" element={<GestaoGuard><GGiftbackRegras /></GestaoGuard>} />
               <Route path="/g/:unitSlug/giftback/vouchers" element={<GestaoGuard><GGiftbackVouchers /></GestaoGuard>} />
               <Route path="/g/:unitSlug/giftback/ajustes" element={<GestaoGuard><GGiftbackAjustes /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/marketing" element={<Navigate to="campanhas" replace />} />
+              <Route path="/g/:unitSlug/marketing/:section" element={<GestaoGuard><GMarketing /></GestaoGuard>} />
               <Route path="/g/:unitSlug/clientes" element={<GestaoGuard><GClientes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/conversas" element={<GestaoGuard><GConversas /></GestaoGuard>} />
               <Route path="/g/:unitSlug/whatsapp" element={<GestaoGuard><GWhatsapp /></GestaoGuard>} />
