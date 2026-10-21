@@ -55,8 +55,15 @@ export function useSaveAiStoreSettings(unitId: string) {
       const saved = await upsertSettingRows(rows);
       // UPDATE que casa zero linhas volta `error: null`: sem conferir o tamanho, "salvou" mentiria.
       if (saved.length !== rows.length) throw settingsNotWrittenError();
+      return Object.fromEntries(rows.map((r) => [r.key, r.value])) as AiStoreTexts;
     },
+    // O gravado entra no cache antes da releitura: se ela falhar, a tela não volta ao texto antigo.
     // Devolve a promessa: o `onSuccess` da tela só roda depois da releitura, sem piscar o valor antigo.
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings", unitId] }),
+    onSuccess: (saved) => {
+      queryClient.setQueryData<AiStoreSettings>(["settings", unitId, "ai-store"], (prev) =>
+        prev ? { ...prev, texts: saved } : prev,
+      );
+      return queryClient.invalidateQueries({ queryKey: ["settings", unitId] });
+    },
   });
 }

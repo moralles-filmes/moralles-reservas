@@ -127,6 +127,30 @@ describe("useSaveAiStoreSettings", () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ["settings", "unit-a"] });
   });
 
+  it("releitura que falha depois de gravar: o cache fica com o texto gravado, não com o antigo", async () => {
+    mocks.results.read = {
+      data: [
+        { key: "restaurant_menu", value: "antigo" },
+        { key: "agent_mode", value: "reservations_faq" },
+      ],
+      error: null,
+    };
+    const { result } = renderHook(
+      () => ({ read: useAiStoreSettings("unit-a"), save: useSaveAiStoreSettings("unit-a") }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.read.isSuccess).toBe(true));
+    mocks.results.read = { data: null, error: { code: "PGRST000", message: "rede" } };
+    mocks.results.write = { data: threeRows, error: null };
+    await act(async () => {
+      await result.current.save.mutateAsync({ ...texts, restaurant_menu: "novo\r\nmenu" });
+    });
+    expect(client.getQueryData(["settings", "unit-a", "ai-store"])).toEqual({
+      texts: { ...texts, restaurant_menu: "novo\nmenu" },
+      agentMode: "reservations_faq",
+    });
+  });
+
   it.each([0, 2])("volta %i linhas em vez de 3: erro, mesmo com error nulo (zero linhas não é sucesso)", async (n) => {
     mocks.results.write = { data: threeRows.slice(0, n), error: null };
     const spy = vi.spyOn(client, "invalidateQueries");

@@ -94,7 +94,7 @@ describe("Ajustes: textos do agente (Regras e Condições, Informações adicion
 
   it("com texto inválido, uma linha junto do Salvar explica o bloqueio e é ligada ao botão por aria-describedby", async () => {
     await openAjustes();
-    const hint = "Encurte os textos destacados para salvar os ajustes.";
+    const hint = "Corrija os textos destacados para salvar os ajustes.";
     expect(screen.queryByText(hint)).toBeNull();
     expect(saveButton().hasAttribute("aria-describedby")).toBe(false);
     fireEvent.change(info(), { target: { value: "a".repeat(STORE_TEXT_LIMITS.additional_info + 1) } });

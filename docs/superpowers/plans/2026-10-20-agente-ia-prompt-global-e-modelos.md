@@ -441,18 +441,18 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 - `src/App.tsx`: rota com `PlatformGuard`;
 - testes ao lado.
 
-- [ ] RED → GREEN em `text-line-diff.ts`: igual, inserção, remoção, troca, texto vazio.
-- [ ] RED → GREEN em `ai-prompt-errors.ts`:
+- [x] RED → GREEN em `text-line-diff.ts`: igual, inserção, remoção, troca, texto vazio.
+- [x] RED → GREEN em `ai-prompt-errors.ts`:
   - `42501` → "Sem permissão.";
-  - `40001` → "Outra pessoa publicou uma versão. Recarregue antes de publicar.";
+  - `40001` → "A versão ativa mudou. Revise as mudanças e confirme de novo." (cópia trocada no review: "recarregue" induzia F5, que perde o rascunho);
   - `22023` → mensagem de corpo ou nota inválida;
   - outro → genérica;
   - nunca `error.message` cru.
-- [ ] RED → GREEN no hook:
+- [x] RED → GREEN no hook:
   - lê `ai_prompt_slots` e `ai_prompt_versions` (paginado, 50 por página, "carregar mais"; nunca sem `.range`);
   - publica e restaura **só** por `rpc(...)` com `p_expected_active_version_id`;
   - invalida as queries no sucesso.
-- [ ] RED → GREEN na página:
+- [x] RED → GREEN na página:
   - versão ativa (número, autor, data, motivo);
   - editor com contador de 4000 e validação local pela mesma função de `global-prompt-core.ts`;
   - `\r\n` normalizado para `\n`;
@@ -461,7 +461,7 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
   - histórico com diff e "Restaurar esta versão";
   - cópia "a mudança vale para todas as lojas em até 1 minuto";
   - 4 estados de lista (carregando, erro com `refetch`, vazio, lista).
-- [ ] Item "Agente de IA" na Plataforma (`platform-nav.ts`) e rota. O teste do nav é atualizado.
+- [x] Item "Agente de IA" na Plataforma (`platform-nav.ts`) e rota. O teste do nav é atualizado.
 
 ### B5 — `/g/:unitSlug/atendimento-ia`
 
@@ -473,22 +473,22 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 - `scripts/settings-write-acl.test.ts`;
 - testes ao lado.
 
-- [ ] RED → GREEN no hook:
+- [x] RED → GREEN no hook:
   - `upsert(...).select()` e conferência do tamanho do retorno (zero linhas = erro, AGENTS §8);
   - `42501` → "Sem permissão para editar estes textos.";
   - `22023` → "Texto acima do limite ou com caracteres inválidos.";
   - invalida `settings`.
-- [ ] RED → GREEN na página:
+- [x] RED → GREEN na página:
   - campos Cardápio, Delivery/retirada e Outras informações, com contador e limite de `STORE_TEXT_LIMITS`;
   - mostra o modo atual (leitura de `agent_mode`) com a cópia de §6.4;
   - avisos fixos de §6.4;
   - visível a owner, gerente e platform_admin.
-- [ ] Item "Atendimento por IA" na sidebar da Gestão, e rota.
-- [ ] `PromptTab`: contador e limite nas 7 chaves, com os valores de `STORE_TEXT_LIMITS`/limites de §4.3 importados, nunca redigitados.
-- [ ] `settings-write-acl.test.ts`:
+- [x] Item "Atendimento por IA" na sidebar da Gestão, e rota.
+- [x] `PromptTab`: contador e limite nas 7 chaves, com os valores de `STORE_TEXT_LIMITS`/limites de §4.3 importados, nunca redigitados.
+- [x] `settings-write-acl.test.ts`:
   - nova asserção de que `AtendimentoIa.tsx`, ou o hook, importa `AI_STORE_SETTING_KEYS`;
   - controle negativo: fonte sintética sem o import → falha.
-- [ ] Verificação V, reviews (Opus na qualidade das duas telas) e commit `feat(agente-ia): telas do prompt global e do atendimento por IA da loja`.
+- [x] Verificação V, reviews (Opus na qualidade das duas telas) e commits (um por tarefa e por rodada de review; lista em §8.3a).
 
 ## 7. B6 — Gates, PR, deploy e rollback (Chat 5)
 
@@ -546,6 +546,7 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
    - `relforcerowsecurity` nas 3 tabelas;
    - trigger `settings_write_value_guard` presente;
    - zero linhas de `settings` acima do limite (só `char_length`, sem ler o valor). Linha acima do limite não quebra nada, mas fica registrada.
+> **⚠️ Decidir com o usuário antes do passo 2 (review final do Chat 4, Important 1):** este roteiro (push → merge → EF) contradiz o pré-gate P2 (§8.2: EF do B3 antes do merge). Com as telas do B5, o merge depois do `db push` dá ao gerente um formulário para gravar cardápio/delivery/extra enquanto a EF velha ainda interpola esses textos sem delimitação (raio: a própria loja). Opções: (a) `db push` → deploy de `webhook-whatsapp` (exige C-B3 fechado) → merge; (b) segurar o merge até o C-B3 fechar. **Nunca mergear antes do `db push`** — e o preview da Vercel do PR (B6.3) já expõe as telas: ali `/g/:slug/atendimento-ia` salva com 42501 ("Sem permissão…") e `/platform/agente-ia` mostra o card de erro, sem tela branca nem loop.
 2. [ ] **Autorização 3 — merge do PR em `main`** (Vercel). Conferir o deploy READY. A UI passa a gravar as 3 chaves (o banco já aceita) e a chamar as RPCs.
 3. [ ] **Autorização 4 — `supabase functions deploy`** de cada EF da matriz B6.1, em janela de baixo tráfego, **só se C-B3 estiver fechado**. Entre o passo 2 e o 3:
    - a EF velha cai no default para modelo novo (seguro);
@@ -761,6 +762,98 @@ Commits: **A0 `5548e18`** (prova de §4.4), **A1 `1471db6`**, **B `028073c`**, e
   - Validado com dados sintéticos: um "IMPORTANTE PARA A IA: …" em `restaurant_extra_info` aparece dentro do bloco "Outras informações", que é o caso que o C-B3 procura.
 - A consulta só de leitura (`units` + chaves de `settings` das unidades com `ai_config`) foi entregue no chat. A leitura de conteúdo de produção depende de autorização do usuário, ou o usuário roda.
 - Decisão por unidade: _(a preencher)_.
+
+### 8.3a B4/B5: RED, GREEN, controles e decisões (Chat 4, 2026-10-21)
+
+Execução: Opus orquestrou; Sonnet implementou e fez o review de spec; Opus fez os reviews de qualidade/segurança, o re-review e o review final. Relatórios completos (RED/GREEN e cada controle positivo) ficaram nos relatórios das tarefas; o essencial está aqui.
+
+**Commits**
+- `a1bb411` B4: tela `/platform/agente-ia`.
+- `bd0b342` B4, rodada 1 de correções:
+  - id esperado preso ao rascunho (`draft = { text, baseId }`), com aviso e o botão "Basear na versão ativa atual";
+  - cópia do 40001;
+  - diff com prefixo/sufixo cortados e tabela plana + `useMemo`;
+  - paginação por keyset (`.lt("version")` + `.range(0,49)`);
+  - a11y e testes.
+- `b17ff2a` B5: tela `/g/:unitSlug/atendimento-ia`, mais os limites no `PromptTab` e em `Ajustes`.
+- `15700c9` B4, rodada 2 de correções:
+  - adaptador `src/features/ai-prompt/api.ts` (o `check-portabilidade` acusava 493 > 487);
+  - Publicar bloqueado com base desatualizada;
+  - `Uint16Array`;
+  - `role="status"`.
+- `2af4d0b` B5, rodada 1 de correções:
+  - coerção de valor legado não-string no `PromptTab`;
+  - nome do agente sem `maxLength`;
+  - aviso perto do Salvar em `Ajustes`;
+  - `isError && !data`.
+- Commit de fechamento (este):
+  - o texto gravado entra no cache antes da releitura (`useSaveAiStoreSettings`);
+  - cópia do aviso de `Ajustes` ("Corrija…", que também cobre caractere inválido);
+  - esta evidência.
+
+**Módulos novos**
+
+| Arquivo | O que tem |
+|---|---|
+| `src/lib/text-normalize.ts` | `normalizeNewlines`: `\r\n?` vira `\n` |
+| `src/lib/text-line-diff.ts` | `diffLines`, LCS sem dependência |
+| `src/lib/ai-prompt-errors.ts` | `promptErrorMessage` |
+| `src/lib/store-text.ts` | `storeTextError`, `isValidStoreText`, `settingsWriteErrorMessage`, `settings_not_written` |
+| `src/features/ai-prompt/api.ts` e `src/features/ai-store/api.ts` | adaptadores |
+| `src/hooks/useAiPromptVersions.ts` e `src/hooks/useAiStoreSettings.ts` | hooks |
+| `src/components/ai/StoreTextCounter.tsx` | contador |
+
+O núcleo ganhou `GLOBAL_PROMPT_NOTE_MAX_CHARS = 280` e `isValidGlobalPromptNote`. É a gêmea de `app_private.ai_prompt_note_valid`, presa no `global-prompt-sql-twin.test.ts`. É só acréscimo, sem efeito nas EFs.
+
+**RED**
+- Módulos novos: `Failed to resolve import`.
+- Twin: `limite do motivo 280 != undefined`.
+- Nav: `expected [] to have a length of 1`.
+- PromptTab: `TypeError: text.replace is not a function` (legado não-string).
+- AtendimentoIa: a tela de erro aparecia com dado em cache.
+- Releitura que falha depois de salvar: o cache voltava ao texto antigo.
+
+Desvios declarados: as páginas `AgenteIa`, `AtendimentoIa` e a tela/hook do passo 7 do B5 tiveram o RED obtido tirando o arquivo do lugar. Isso foi compensado por controles positivos: cerca de 15 no B4 e cerca de 50 no B5, cada defeito reintroduzido reprovado por um teste.
+
+**Rulings do controlador** (cada um com o custo se estiver errado)
+1. Autor da versão: "Você", "Sistema (versão inicial)" ou "Admin " + 8 caracteres do uuid. Sem RPC de nomes. Custo: só a cópia.
+2. A gêmea da nota fica no núcleo. Custo: nenhum comportamento muda; entra no redeploy do B6.
+3. Normalização `/\r\n?/g`. Custo: nenhum, porque o banco recusa `\r` de qualquer forma.
+4. `Ajustes` entra no B5. Custo: texto legado acima do limite trava o Salvar do lote até ser corrigido, agora com aviso perto do botão.
+5. `PromptTab` mantém os 7 `mutateAsync` em `Promise.all`, por causa da regex do ACL, e valida tudo antes. Custo: ainda pode gravar parcialmente em erro de rede.
+6. Tela e item da Gestão ficam atrás de `isGerente`.
+7. Nome do agente sem `maxLength` no DOM, porque ele conta UTF-16 e corta a colagem em silêncio. Fica o contador mais a validação em code points do texto aparado. Custo: só UX, porque o banco recusa acima de 40.
+
+**Reviews**
+- B4:
+  - spec (Sonnet) Aprovado;
+  - qualidade (Opus) Aprovado com 10 Minor, dos quais 7 corrigidos na rodada 1;
+  - re-review (Opus) Aprovado com 4 Minor, dos quais 3 corrigidos na rodada 2.
+- B5:
+  - spec (Sonnet) Aprovado;
+  - qualidade (Opus) Aprovado com 6 Minor, dos quais 4 corrigidos.
+- Review final B4+B5 (Opus): pronto para fechar, 0 Critical.
+  - **1 Important, de sequência de deploy** (ver o aviso em B6.4).
+  - Minor corrigidos no fechamento: cache depois de salvar e cópia "Corrija".
+- Minor que ficam:
+  - "slot ausente" antes do `db push` cai no card de erro genérico, porque o PostgREST devolve `PGRST205`/`42P01` e não `data: null`;
+  - o teste dos 20 ms em `AtendimentoIa` é estável mas frágil (a correção é `notifyManager.setScheduler`);
+  - `isLoading` em vez de `isPending` quando a query está pausada offline;
+  - a cópia do 40001 não cita o botão "Basear";
+  - o restaurar zera o rascunho;
+  - `prompt_slot_invalid` cai na cópia de texto.
+- Follow-up fora do escopo: o `saveSetting` da aba IA (`ai_config`, `Automacao.tsx`) continua sem `.select()` e mostra `err.message` cru.
+
+**Verificação V (HEAD de fechamento)**
+- `npm run typecheck`: 0 erros.
+- `npm run lint`: 0 erros, 17 avisos, todos em arquivos que não foram tocados.
+- Suíte: 4555 testes, 51 falham em 12 arquivos.
+  - 8 desses arquivos são exatamente os do baseline (45 falhas, mesmas contagens).
+  - Os outros 4 são os conhecidos por timeout: edge-request-harness, agent-turn-parity, whatsapp-scheduled-templates-integration e whatsapp-survey-tenant-routing. Rodados um a um com `--testTimeout=120000`, passam: 17/17, 15/15, 23/23 e 16/16.
+- `npm run build`: ok.
+- `ef-import-graph global-prompt-core.ts` aponta só para `webhook-whatsapp`, e o `deno check` dela passa.
+- `check-padrao`: ok.
+- `check-portabilidade`: 487, igual ao baseline.
 
 ### 8.4 B6: rollout
 

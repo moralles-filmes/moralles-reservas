@@ -337,7 +337,7 @@ function InfoTab({ unitId }: { unitId: string }) {
       <div className="flex flex-col items-end gap-2">
         {(rulesInvalid || additionalInfoInvalid) && (
           <p id="ajustes-save-blocked" className="text-xs text-destructive">
-            Encurte os textos destacados para salvar os ajustes.
+            Corrija os textos destacados para salvar os ajustes.
           </p>
         )}
         <Button
