@@ -83,6 +83,7 @@ const OEntregas    = lazy(() => import("./pages/operacional/Entregas"));
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
 const PUnidades = lazy(() => import("./pages/platform/Unidades"));
 const PIntegracoes = lazy(() => import("./pages/platform/Integracoes"));
+const PAgenteIa = lazy(() => import("./pages/platform/AgenteIa"));
 const PBilling = lazy(() => import("./pages/platform/Billing"));
 const PBillingPlans = lazy(() => import("./pages/platform/BillingPlans"));
 const PBillingDetail = lazy(() => import("./pages/platform/BillingDetail"));
@@ -287,6 +288,7 @@ export default function App() {
               <Route path="/platform/unidades" element={<PlatformGuard><PUnidades /></PlatformGuard>} />
               <Route path="/platform/unidades/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
               <Route path="/platform/integracoes" element={<PlatformGuard><PIntegracoes /></PlatformGuard>} />
+              <Route path="/platform/agente-ia" element={<PlatformGuard><PAgenteIa /></PlatformGuard>} />
               {/* Endereços antigos: o retorno do Stripe Connect (manage-stripe-accounts)
                   ainda aponta para /platform/automacao/:slug?stripe=complete. */}
               <Route path="/platform/automacao" element={<Navigate to="/platform/unidades" replace />} />

@@ -6,9 +6,11 @@ import {
   CONTROL_CHAR_CLASS,
   GLOBAL_PERSONA_BASELINE,
   GLOBAL_PROMPT_MAX_CHARS,
+  GLOBAL_PROMPT_NOTE_MAX_CHARS,
   GLOBAL_PROMPT_PLACEHOLDERS,
   GLOBAL_PROMPT_SLOT,
   STORE_TEXT_LIMITS,
+  isValidGlobalPromptNote,
 } from "../../supabase/functions/_shared/agent/global-prompt-core";
 import { composeAgentSystemPrompt, type AgentPromptParts } from "../../supabase/functions/_shared/agent/system-prompt";
 
@@ -47,6 +49,8 @@ interface SqlTwin {
   seed: string;
   placeholders: string[];
   bodyMax: number;
+  noteMax: number;
+  noteNonBlank: string;
   valueLimits: Record<string, number>;
   agentModes: string[];
   slots: string[];
@@ -65,6 +69,12 @@ function extractTwin(sql: string): SqlTwin {
   if (!max) throw new Error("limite do corpo não encontrado em ai_prompt_body_valid");
   const bodyCtl = body.match(/p_body\s*!~\s*'(\[\\x01[^']*\])'/);
   if (!bodyCtl) throw new Error("classe de controle não encontrada em ai_prompt_body_valid");
+
+  const note = functionBody(sql, "app_private.ai_prompt_note_valid");
+  const noteMax = note.match(/char_length\(p_note\)\s+between\s+1\s+and\s+(\d+)/);
+  if (!noteMax) throw new Error("limite do motivo não encontrado em ai_prompt_note_valid");
+  const noteNonBlank = note.match(/p_note\s*~\s*'([^']+)'/);
+  if (!noteNonBlank) throw new Error("regex de não branco não encontrada em ai_prompt_note_valid");
 
   const limitFn = functionBody(sql, "app_private.unit_setting_value_limit");
   const valueLimits = Object.fromEntries(
@@ -85,6 +95,8 @@ function extractTwin(sql: string): SqlTwin {
     seed: seeds[0],
     placeholders: ph[1].split("|"),
     bodyMax: Number(max[1]),
+    noteMax: Number(noteMax[1]),
+    noteNonBlank: noteNonBlank[1],
     valueLimits,
     agentModes: [...modes[1].matchAll(/'([^']+)'/g)].map((m) => m[1]),
     slots,
@@ -101,6 +113,8 @@ function twinDiffs(t: SqlTwin): string[] {
     out.push(`placeholders ${JSON.stringify(t.placeholders)} != ${JSON.stringify(GLOBAL_PROMPT_PLACEHOLDERS)}`);
   }
   if (t.bodyMax !== GLOBAL_PROMPT_MAX_CHARS) out.push(`limite do corpo ${t.bodyMax} != ${GLOBAL_PROMPT_MAX_CHARS}`);
+  if (t.noteMax !== GLOBAL_PROMPT_NOTE_MAX_CHARS) out.push(`limite do motivo ${t.noteMax} != ${GLOBAL_PROMPT_NOTE_MAX_CHARS}`);
+  if (t.noteNonBlank !== "\\S") out.push(`regex de não branco do motivo ${t.noteNonBlank} != \\S`);
   const keys = new Set([...Object.keys(t.valueLimits), ...Object.keys(STORE_TEXT_LIMITS)]);
   for (const k of keys) {
     const sql = t.valueLimits[k];
@@ -167,6 +181,28 @@ describe("prompt global: o baseline renderizado é o trecho atual do prompt", ()
   }
 });
 
+describe("prompt global: validação do motivo (gêmea de ai_prompt_note_valid)", () => {
+  it("aceita de 1 a 280 caracteres com algum não branco", () => {
+    expect(isValidGlobalPromptNote("a")).toBe(true);
+    expect(isValidGlobalPromptNote("a".repeat(280))).toBe(true);
+    expect(isValidGlobalPromptNote("  tom mais curto  ")).toBe(true);
+  });
+
+  it("recusa vazio, só brancos, acima de 280 e não string", () => {
+    expect(isValidGlobalPromptNote("")).toBe(false);
+    expect(isValidGlobalPromptNote(" \n\t ")).toBe(false);
+    expect(isValidGlobalPromptNote("a".repeat(281))).toBe(false);
+    expect(isValidGlobalPromptNote(null)).toBe(false);
+    expect(isValidGlobalPromptNote(undefined)).toBe(false);
+    expect(isValidGlobalPromptNote(42)).toBe(false);
+  });
+
+  it("conta code points como char_length (emoji conta 1)", () => {
+    expect(isValidGlobalPromptNote("😀".repeat(280))).toBe(true);
+    expect(isValidGlobalPromptNote("😀".repeat(281))).toBe(false);
+  });
+});
+
 describe("controle positivo: twinDiffs reprova SQL divergente", () => {
   const mutate = (from: string | RegExp, to: string) => {
     const mutated = SQL.replace(from, to);
@@ -186,6 +222,16 @@ describe("controle positivo: twinDiffs reprova SQL divergente", () => {
 
   it("limite do corpo diferente", () => {
     expect(mutate("between 1 and 4000", "between 1 and 4001")).toEqual(["limite do corpo 4001 != 4000"]);
+  });
+
+  it("limite do motivo diferente", () => {
+    expect(mutate("char_length(p_note) between 1 and 280", "char_length(p_note) between 1 and 281")).toEqual([
+      "limite do motivo 281 != 280",
+    ]);
+  });
+
+  it("regex de não branco do motivo diferente", () => {
+    expect(mutate("p_note ~ '\\S'", "p_note ~ '\\w'")).toEqual(["regex de não branco do motivo \\w != \\S"]);
   });
 
   it("limite de chave diferente, chave a mais e chave a menos", () => {

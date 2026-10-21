@@ -10,6 +10,8 @@
  *     byte, e o fallback do loader quando a leitura falha sem cache (D7);
  *   - `GLOBAL_PROMPT_PLACEHOLDERS` e `GLOBAL_PROMPT_MAX_CHARS` são os CHECKs de
  *     `ai_prompt_versions.body` (`app_private.ai_prompt_body_valid`);
+ *   - `GLOBAL_PROMPT_NOTE_MAX_CHARS` e o `\S` de `isValidGlobalPromptNote` são
+ *     `app_private.ai_prompt_note_valid` (motivo da versão);
  *   - `STORE_TEXT_LIMITS` e `AGENT_MODES` são o guard de valor de `settings`
  *     (`app_private.unit_setting_value_limit` e o enum de `agent_mode`);
  *   - `CONTROL_CHAR_CLASS` é a classe de controle do corpo e do guard de valor.
@@ -89,6 +91,19 @@ export function isValidGlobalPromptBody(body: unknown): body is string {
   if (/\{\{|\}\}/.test(body.replace(KNOWN_PLACEHOLDER_RE, ""))) return false;
   if (/<<<|>>>/.test(body)) return false;
   return !CONTROL_CHAR_RE.test(body);
+}
+
+/** Tamanho máximo do motivo de uma versão/ativação, em caracteres. */
+export const GLOBAL_PROMPT_NOTE_MAX_CHARS = 280;
+
+/**
+ * Gêmea de `app_private.ai_prompt_note_valid`: string de 1 a 280 caracteres
+ * (code points) com algum não branco (`\S`). Valida a tela antes da RPC.
+ */
+export function isValidGlobalPromptNote(note: unknown): note is string {
+  if (typeof note !== "string") return false;
+  const len = charLength(note);
+  return len >= 1 && len <= GLOBAL_PROMPT_NOTE_MAX_CHARS && /\S/.test(note);
 }
 
 /**
