@@ -131,6 +131,7 @@ serve(async (req) => {
   let failed = 0;
   let skippedUnits = 0;
   let skippedSuspended = 0;
+  let skippedService = 0;
 
   const { data: units, error: unitsErr } = await supabase
     .from("units")
@@ -176,9 +177,15 @@ serve(async (req) => {
         const result = await (cardinality === 'single' ? query.maybeSingle() : query);
         if (result.error) throw result.error;
         return result.data;
-      }, { kind: 'survey_d1', unitId, reservationId: row.reservation_id });
+      }, { kind: 'survey_d1', unitId, reservationId: row.reservation_id }, async (kind, resourceId) => {
+        const { data, error } = await supabase.rpc('get_whatsapp_v2_service_route',
+          { p_kind: kind, p_resource_id: resourceId });
+        if (error) throw new Error('service_route_read_failed');
+        return data;
+      });
       if (route.path !== 'legacy') {
         if (route.path === 'dependency') { failed++; continue; }
+        if (route.path === 'disabled') { skippedService++; continue; }
         try {
           const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-key': INTERNAL_API_KEY },
@@ -262,6 +269,7 @@ serve(async (req) => {
     failed,
     skipped_units: skippedUnits,
     skipped_suspended: skippedSuspended,
+    skipped_service: skippedService,
     errors_count: errors.length,
     duration_ms: Date.now() - t0,
   });
@@ -273,6 +281,7 @@ serve(async (req) => {
       failed,
       skipped_units: skippedUnits,
       skipped_suspended: skippedSuspended,
+      skipped_service: skippedService,
       errors,
     }),
     {

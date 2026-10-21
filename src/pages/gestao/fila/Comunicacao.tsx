@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useWhatsappTemplates } from "@/hooks/useWhatsappTemplates";
+import { useWhatsappServicePreferences } from "@/hooks/useWhatsappServicePreferences";
+import { serviceStatus } from "@/features/whatsapp/service-preferences";
 import { TemplateStatus } from "@/components/whatsapp/OfficialAutomationTemplate";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import {
@@ -237,8 +239,9 @@ function CustomizacaoTab({ unitId }: { unitId: string }) {
 
 function ConfiguracoesTab({ unitId }: { unitId: string }) {
   const unit = useCurrentUnit();
-  const { isPlatformAdmin } = useAuth();
+  const { isPlatformAdmin, user } = useAuth();
   const canEdit = isPlatformAdmin || unit?.role === 'owner' || unit?.role === 'gerente';
+  const service = useWhatsappServicePreferences(unitId, user?.id ?? '');
   const query = useWaitlistSettings(unitId);
   const { data: settings, isLoading } = query;
   const update = useUpdateWaitlistSettings(unitId);
@@ -263,6 +266,19 @@ function ConfiguracoesTab({ unitId }: { unitId: string }) {
         </p>
       </div>
 
+      {service.query.isPending ? <p role="status">Consultando os avisos desta unidade…</p>
+        : service.query.isError || !service.query.data ? <p role="alert">Não foi possível conferir os avisos. Os controles antigos estão indisponíveis até atualizar a página.</p>
+          : service.query.data.auto_cohort ? <div className="space-y-2 rounded-lg border p-4 text-sm">
+            <p>Entrada na fila: {serviceStatus(service.query.data.kinds.find(item => item.kind === 'waitlist_entered')!, {
+              rolloutReady: service.query.data.rollout_ready,
+              eligible: service.query.data.eligible,
+              providerSubscriptionConfirmed: service.query.data.provider_subscription_confirmed,
+              globalDispatchEnabled: service.query.data.global_dispatch_enabled,
+              adminPaused: service.query.data.admin_paused,
+            })}.</p>
+            <p>Pesquisa da fila: MARKETING separado, sem ativação pelos avisos de serviço.</p>
+            <p>Altere os avisos de serviço em <Link className="font-medium underline" to={`/g/${unit?.unit_slug}/whatsapp`}>WhatsApp → Modelos e avisos</Link>.</p>
+          </div> : <>
       <ToggleRow
         title="Avisar quando o cliente entrar na fila"
         description="Mensagem disparada em segundos após o cliente entrar na fila (formulário público ou painel). Inclui a senha e o link de acompanhamento."
@@ -278,6 +294,7 @@ function ConfiguracoesTab({ unitId }: { unitId: string }) {
         disabled={!canEdit || update.isPending}
         onChange={(v) => { if (canEdit) update.mutate({ waitlist_feedback_enabled: v }); }}
       />
+      </>}
 
       <p className="text-xs text-muted-foreground border-t pt-4">
         Lembrete: para qualquer mensagem ser enviada, é preciso que um canal WhatsApp esteja

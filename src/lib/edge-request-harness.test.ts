@@ -39,7 +39,7 @@ function database(seed: Record<string, Row[]>, scripts: Record<string, (args: Ro
     whatsapp_automation_adoptions: ["adopted_at", "unit_id"],
     whatsapp_template_bindings: ["dispatch_enabled,adopted_at"],
     notifications_sent: ["id"],
-    whatsapp_channels: ["id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, template_credential_revision, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled", "id"],
+    whatsapp_channels: ["id, unit_id, provider, credentials, webhook_secret, status, is_active, instance_token_secret_id, external_instance_id, template_credential_revision, activation_requested_at, manual_echo_verified_at, async_ingestion_enabled", "id,unit_id,provider,status,is_active,created_at", "id"],
     platform_flags: ["value"],
     whatsapp_inbound_events: ["id"],
     units: ["organization_id", "name"],
@@ -344,7 +344,7 @@ describe("actual Edge Request harness foundation", () => {
     const db = database({ notification_outbox: [{ id: outboxIds.outbox, reservation_id: outboxIds.reservation, unit_id: outboxIds.unitB,
       kind: "confirmation", attempts: 0, status: "pending", next_attempt_at: new Date(NOW - 1).toISOString(), automation_job_id: null, automation_initial_token: null }],
       reservations: [{ id: outboxIds.reservation, unit_id: outboxIds.unitA, date: "2026-10-05", time: "18:00:00", status: "pending" }], notifications_sent: [], units: [],
-      whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
+      whatsapp_channels: [], whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
       platform_flags: [{ key: "whatsapp_automation_dispatch", value: false }],
     }, { recover_delegated_notification_outbox: () => ({ data: [], error: null }), mark_outbox_failed: () => ({ data: null, error: null }) });
     const fixture = harness(db, { now: NOW, internalHops: [{ from: "process-notification-outbox", to: "send-confirmation" }] });
@@ -379,7 +379,7 @@ describe("actual Edge Request harness foundation", () => {
       settings: [{ unit_id: outboxIds.unitA, key: "waitlist_entered_enabled", value: false }], waitlist_message_templates: [],
       notification_outbox: [{ id: outboxIds.outbox, unit_id: outboxIds.unitA, reservation_id: outboxIds.reservation, attempts: 0,
         status: "pending", kind: "confirmation", next_attempt_at: new Date(NOW - 1).toISOString(), automation_job_id: null, automation_initial_token: null }],
-      whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
+      whatsapp_channels: [], whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
     }, { recover_delegated_notification_outbox: () => ({ data: [], error: null }) });
     const fixture = harness(db, { now: NOW });
     const runWaitlist = () => fixture.request("process-waitlist-entered", producerRequest("process-waitlist-entered", { waitlist_id: outboxIds.reservation }));
@@ -402,7 +402,7 @@ describe("actual Edge Request harness foundation", () => {
       status: "pending", next_attempt_at: new Date(NOW - 1).toISOString(), automation_job_id: null, automation_initial_token: null }],
       reservations: [{ id: outboxIds.reservation, unit_id: outboxIds.unitA, date: "2026-10-05", time: "18:00:00", status: "pending" }],
       notifications_sent: [], units: [],
-      whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
+      whatsapp_channels: [], whatsapp_automation_jobs: [], whatsapp_automation_adoptions: [], whatsapp_template_bindings: [],
       platform_flags: [{ key: "whatsapp_automation_dispatch", value: false }],
     }, { recover_delegated_notification_outbox: () => ({ data: [], error: null }), mark_outbox_failed: () => ({ data: null, error: null }) });
     let cannedCalls = 0;

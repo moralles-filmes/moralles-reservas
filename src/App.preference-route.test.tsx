@@ -4,11 +4,11 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import App from './App';
 
-const io = vi.hoisted(() => ({ auth: vi.fn(), signOut: vi.fn(), members: false, admin: false, user: false }));
+const io = vi.hoisted(() => ({ auth: vi.fn(), signOut: vi.fn(), members: false, admin: false, user: false, role: 'owner' as 'owner' | 'operador' }));
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     auth: { onAuthStateChange: io.auth, signOut: io.signOut },
-    from: (table: string) => { const data = table === 'platform_admins' ? (io.admin ? { user_id: 'user' } : null) : io.members ? [{ unit_id: 'unit', role: 'owner', unit: { slug: 'unidade-a', name: 'Unidade A', organization_id: 'org', organization: { slug: 'org' } } }] : []; const chain = { select: () => chain, eq: () => chain, maybeSingle: async () => ({ data, error: null }), then: (fn: (value: unknown) => unknown) => Promise.resolve({ data, error: null }).then(fn) }; return chain; },
+    from: (table: string) => { const data = table === 'platform_admins' ? (io.admin ? { user_id: 'user' } : null) : io.members ? [{ unit_id: 'unit', role: io.role, unit: { slug: 'unidade-a', name: 'Unidade A', organization_id: 'org', organization: { slug: 'org' } } }] : []; const chain = { select: () => chain, eq: () => chain, maybeSingle: async () => ({ data, error: null }), then: (fn: (value: unknown) => unknown) => Promise.resolve({ data, error: null }).then(fn) }; return chain; },
     channel: () => { const chain = { on: () => chain, subscribe: () => chain }; return chain; }, removeChannel: vi.fn(),
   }
 }));
@@ -21,6 +21,7 @@ vi.mock('sonner', () => ({ toast: { info: vi.fn() } }));
 vi.mock('./pages/Index', () => ({ default: () => <h1>Início</h1> }));
 vi.mock('./pages/Auth', () => ({ default: () => <h1>Login privado</h1> }));
 vi.mock('./pages/gestao/Dashboard', () => ({ default: () => <h1>Painel privado</h1> }));
+vi.mock('./pages/gestao/Whatsapp', () => ({ default: () => <h1>Consulta de avisos WhatsApp</h1> }));
 vi.mock('./pages/platform/Empresas', () => ({ default: () => <h1>Plataforma privada</h1> }));
 vi.mock('react-router-dom', async importOriginal => {
   const actual = await importOriginal<typeof import('react-router-dom')>();
@@ -28,7 +29,7 @@ vi.mock('react-router-dom', async importOriginal => {
 });
 beforeEach(() => {
   window.matchMedia = vi.fn().mockReturnValue({ matches: false, addListener: vi.fn(), removeListener: vi.fn() });
-  io.user = false; io.members = false; io.admin = false;
+  io.user = false; io.members = false; io.admin = false; io.role = 'owner';
   io.signOut.mockReset().mockResolvedValue({});
   io.auth.mockReset().mockImplementation((callback: (event: string, session: unknown) => void) => { callback('INITIAL_SESSION', io.user ? { user: { id: 'user' } } : null); return { data: { subscription: { unsubscribe: vi.fn() } } }; });
 });
@@ -41,6 +42,12 @@ it.each(['anonymous', 'member', 'admin', 'orphan'])('exact public route does not
 it('private orphan still signs out and navigates to login', async () => {
   io.user = true; go('/admin'); render(<App />);
   await screen.findByText('Login privado'); expect(io.signOut).toHaveBeenCalledOnce();
+});
+it('lets an operator reach the WhatsApp notices route through OperacionalGuard', async () => {
+  io.user = true; io.members = true; io.role = 'operador';
+  go('/o/unidade-a/whatsapp'); render(<App />);
+  await screen.findByText('Consulta de avisos WhatsApp');
+  expect(io.signOut).not.toHaveBeenCalled();
 });
 it('changing another private pathname does not suppress a mounted Provider logout', async () => {
   io.user = true; let finish!: () => void; io.signOut.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));

@@ -53,6 +53,16 @@ function setup(role: Parameters<typeof createAutomationEndpointIO>[0] = 'owner')
 }
 
 describe('send-cancellation actual Request boundary', () => {
+  it('verified service OFF returns a skipped cancellation without creating a job or provider POST', async () => {
+    const f = setup();
+    f.fixture.operatorControls.ledgerVisible = false;
+    f.fixture.operatorControls.serviceRoute = { auto_cohort: true, allowed: false, reason_code: 'service_not_enabled' };
+    const response = await f.request();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, sent: false, skipped: 'service_not_enabled' });
+    expect(f.harness.internalRequests).toHaveLength(0);
+    expect(f.fixture.calls.post).toBe(0);
+  });
   it('requires a valid JWT before resource lookup', async () => {
     const f = setup();
     expect((await f.request({})).status).toBe(401);
@@ -124,8 +134,10 @@ describe('cancellation route before effects', () => {
       if (table === 'whatsapp_automation_adoptions') return state === 'legacy' ? null : { adopted_at: '2026-10-01T00:00:00Z' };
       if (table === 'platform_flags') return { value: true };
       if (table === 'whatsapp_template_bindings') return [{ dispatch_enabled: state === 'enabled', adopted_at: '2026-10-01T00:00:00Z' }];
+      if (table === 'whatsapp_channels') return [{ id:'aaaaaaaa-0000-0000-0000-000000000001', unit_id:unitId, provider:'zapi',
+        status:'connected', is_active:true, created_at:'2026-09-01T00:00:00Z' }];
       throw new Error(`unexpected:${table}`);
-    }, { kind: 'cancellation', unitId, reservationId });
+    }, { kind: 'cancellation', unitId, reservationId }, async () => ({auto_cohort:false,allowed:true}));
   it('selects enabled, paused, legacy and dependency without falling back on read error', async () => {
     expect(await pick('enabled')).toEqual({ path: 'managed', existingJobId: null, selection: 'scheduled' });
     expect(await pick('paused')).toEqual({ path: 'managed', existingJobId: null, selection: 'paused' });

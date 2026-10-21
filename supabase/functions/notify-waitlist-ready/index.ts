@@ -37,8 +37,15 @@ serve(async (req) => {
       const result = await (cardinality === "single" ? query.maybeSingle() : query);
       if (result.error) throw new Error("route_read_failed");
       return result.data;
-    }, { kind: "waitlist_table_ready", unitId: entry.unit_id, waitlistId: entry.id });
+    }, { kind: "waitlist_table_ready", unitId: entry.unit_id, waitlistId: entry.id }, async (kind, resourceId) => {
+      const { data, error } = await db.rpc("get_whatsapp_v2_service_route",
+        { p_kind: kind, p_resource_id: resourceId });
+      if (error) throw new Error("service_route_read_failed");
+      return data;
+    });
     if (route.path === "dependency") return json({ error: "automation_dependency_unavailable" }, 503);
+    if (route.path === "disabled") return json({ success: false, sent: false,
+      error: "service_not_enabled", skipped: "service_not_enabled", statusUpdated: false }, 200);
     if (route.path === "managed") {
       // O primeiro clique cria o fato no servidor. Um retry usa exatamente o
       // notified_at persistido, inclusive quando o despacho anterior falhou.

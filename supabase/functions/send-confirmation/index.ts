@@ -371,7 +371,12 @@ serve(async (req) => {
       const result = await (cardinality === 'single' ? query.maybeSingle() : query);
       if (result.error) throw result.error;
       return result.data;
-    }, { kind: 'confirmation', unitId: unit_id, reservationId: reserva.id });
+    }, { kind: 'confirmation', unitId: unit_id, reservationId: reserva.id }, async (kind, resourceId) => {
+      const { data, error } = await supabase.rpc('get_whatsapp_v2_service_route',
+        { p_kind: kind, p_resource_id: resourceId });
+      if (error) throw new Error('service_route_read_failed');
+      return data;
+    });
     const managed = route.path !== 'legacy';
     const outboxId = body.outbox_id;
     let initialToken: string | null = null;
@@ -413,26 +418,28 @@ serve(async (req) => {
         const deferred = await supabase.rpc('defer_notification_outbox_automation_dependency', { p_id: outboxId });
         return noEffects(!deferred.error && deferred.data === true ? 'automation_dependency_unavailable' : 'automation_defer_failed');
       }
-      const claimed = await supabase.rpc('claim_notification_outbox_initial', { p_id: outboxId });
-      if (claimed.error || !automationUuid(claimed.data)) return noEffects('automation_initial_unclaimed');
-      initialToken = claimed.data;
-      // Existing ledger allows one email-only opportunity, without dispatch or repair.
-      const jobId = route.existingJobId;
-      if (jobId) {
-        const pinned = await supabase.rpc('delegate_notification_outbox_automation', { p_id: outboxId, p_job_id: jobId });
-        if (pinned.error || pinned.data !== true) jsonLog('warn', { evt: 'confirmation_automation_dependency' });
-      } else {
-        scheduled = await scheduledRequest({ action: 'enqueue', kind: 'confirmation', resource_id: reserva.id, unit_id, outbox_id: outboxId });
-        if (scheduled?.jobId) {
-          const pinned = await supabase.rpc('delegate_notification_outbox_automation', { p_id: outboxId, p_job_id: scheduled.jobId });
-          scheduled = !pinned.error && pinned.data === true
-            ? await scheduledRequest({ action: 'dispatch_existing', job_id: scheduled.jobId }) : null;
+      if (route.path === 'managed') {
+        const claimed = await supabase.rpc('claim_notification_outbox_initial', { p_id: outboxId });
+        if (claimed.error || !automationUuid(claimed.data)) return noEffects('automation_initial_unclaimed');
+        initialToken = claimed.data;
+        // Existing ledger allows one email-only opportunity, without dispatch or repair.
+        const jobId = route.existingJobId;
+        if (jobId) {
+          const pinned = await supabase.rpc('delegate_notification_outbox_automation', { p_id: outboxId, p_job_id: jobId });
+          if (pinned.error || pinned.data !== true) jsonLog('warn', { evt: 'confirmation_automation_dependency' });
+        } else {
+          scheduled = await scheduledRequest({ action: 'enqueue', kind: 'confirmation', resource_id: reserva.id, unit_id, outbox_id: outboxId });
+          if (scheduled?.jobId) {
+            const pinned = await supabase.rpc('delegate_notification_outbox_automation', { p_id: outboxId, p_job_id: scheduled.jobId });
+            scheduled = !pinned.error && pinned.data === true
+              ? await scheduledRequest({ action: 'dispatch_existing', job_id: scheduled.jobId }) : null;
+          }
         }
       }
     }
     const scheduledWhatsapp = () => ({ kind: 'whatsapp' as const,
       ok: scheduled?.state === 'accepted' || scheduled?.state === 'reconciled', skipped: true,
-      reason: 'automation_managed' });
+      reason: route.path === 'disabled' ? 'service_not_enabled' : 'automation_managed' });
 
     // A seleção do canal é centralizada em sendWhatsApp: quando há `is_active`,
     // ela vence; sem projeção explícita, o fallback aceita só legado NULL.
@@ -577,6 +584,7 @@ serve(async (req) => {
         whatsapp: {
           sent: whatsappResult.ok,
           skipped: whatsappResult.skipped,
+          reason: route.path === 'disabled' ? 'service_not_enabled' : undefined,
           local_success: whatsappResult.ok ? whatsappHistoryPersisted : false,
           warning: whatsappResult.ok && !whatsappHistoryPersisted ? "CONVERSATION_RECONCILIATION_REQUIRED" : undefined,
         },
