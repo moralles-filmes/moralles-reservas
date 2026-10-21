@@ -26,6 +26,7 @@
 | D6 | Confirmação da reserva `source='instagram'` | **Vai pelo WhatsApp.** O trigger `enqueue_confirmation_notification` continua pulando só `'whatsapp'`. A migration só amplia o CHECK, e a IA diz que a confirmação e os lembretes chegam pelo WhatsApp. |
 | D7 | Ordem com a Entrega B (prompt global) | **Intercalar.** Os Blocos 1 e 2 não tocam o núcleo e podem rodar antes ou durante a Entrega B. O Bloco 3 começa depois que a B3 estiver em `main`, ou rebaseia sobre ela no início do chat. |
 | D8 | Política de privacidade e exclusão de dados (exigidas para publicar o app) | **Páginas no portal**, `/privacidade` e `/privacidade/exclusao-de-dados`, com **texto fornecido pelo responsável**. O agente não redige texto jurídico. |
+| D9 (2026-10-20, Bloco 1) | Rota gerenciada de automação recusa `source='instagram'` (`captureExpected` em `_shared/whatsapp-automation-resources.ts` e `app_private.whatsapp_automation_post_inner` da `20261019193132`) | **Ampliar a rota gerenciada.** Sem isso, numa unidade adotada a reserva do Instagram fica sem confirmação, lembrete, pesquisa e cancelamento, em silêncio (fail-closed). Task 4.5, antes do grant do piloto. |
 
 ### Desvios da spec (deliberados, com o motivo)
 
@@ -249,24 +250,24 @@ Cada task termina com o arquivo `79-instagram-module.sql` executando os casos de
   - `public.set_unit_module_grant(p_unit_id uuid, p_module text, p_active boolean) returns table(module text, active boolean, granted_at timestamptz, revoked_at timestamptz)`, com `EXECUTE` para `authenticated`. A guarda interna é `app_private.is_platform_admin(auth.uid())`, senão `42501`. O ator vem de `auth.uid()`, nunca de parâmetro. A organização sai de `units`. A função é idempotente nos dois sentidos. Ao conceder, cria a linha de `instagram_settings` com `on conflict do nothing`.
   - `public.get_unit_modules(p_unit_id uuid) returns table(module text, active boolean, granted_at timestamptz)`, com `EXECUTE` para `authenticated`. A guarda é `app_private.is_unit_member(auth.uid(), p_unit_id) or app_private.is_platform_admin(auth.uid())`, senão `42501`.
 
-- [ ] **Step 1: Escreva os casos do pré-voo (falham sem a migration).**
+- [x] **Step 1: Escreva os casos do pré-voo (falham sem a migration).**
   - IG-1.1: um owner da unidade chama `set_unit_module_grant` e recebe `42501`. Um `platform_admin` sem membership concede e recebe `active=true`.
   - IG-1.2: conceder duas vezes deixa uma linha ativa. Revogar grava `revoked_at` e `revoked_by = auth.uid()`.
   - IG-1.3: `get_unit_modules` de B chamado por um membro de A recebe `42501`. Um membro de A lê o de A.
   - IG-1.4: um operador faz `update instagram_settings set dm_enabled=true` e o valor fica `false`. Gerente e `platform_admin` sem membership mudam o valor. Um membro de A não lê o `instagram_settings` de B.
   - IG-1.5: ACL. `has_function_privilege('anon', …)` é `false` nas duas RPCs. `authenticated` não tem `INSERT`/`DELETE` em `instagram_settings`, e não tem nada em `unit_module_grants`.
   - Controle positivo de IG-1.1: troque a guarda por `true` via `pg_get_functiondef`, veja o caso reprovar e restaure.
-- [ ] **Step 2: Rode o pré-voo e confira que IG-1.x falham.** Use a receita do README §75, com o bootstrap `79a` emulando os privilégios padrão do Supabase como o `61a` faz. Esperado: falha por objeto inexistente.
-- [ ] **Step 3: Escreva a migration.**
+- [x] **Step 2: Rode o pré-voo e confira que IG-1.x falham.** Use a receita do README §75, com o bootstrap `79a` emulando os privilégios padrão do Supabase como o `61a` faz. Esperado: falha por objeto inexistente.
+- [x] **Step 3: Escreva a migration.**
   - Guard trigger: `organization_id` igual a `units.organization_id` (padrão `whatsapp_official_connection_grants_guard`).
   - Tabelas: `enable` + `force row level security`. `unit_module_grants` fica sem policy, com `revoke all … from public, anon, authenticated` e grants a `service_role`.
   - `instagram_settings`: policy de select para membro ou `platform_admin`; policy de update para owner/gerente (`exists … unit_members … role in ('owner','gerente')`) ou `platform_admin`. `authenticated` recebe `select` e `update (dm_enabled)`, sem insert nem delete.
   - Trigger `BEFORE UPDATE` grava `updated_by = auth.uid()` e `updated_at = now()` e congela `unit_id`/`organization_id`.
   - Auditoria: `unit_module_grants_audit` com `audit_trigger_func()`. A tabela não entra na allowlist de membro.
   - Revokes com a assinatura completa nas quatro funções. Entradas na allowlist para `set_unit_module_grant(uuid,text,boolean)` e `get_unit_modules(uuid)` com o `why`.
-- [ ] **Step 4: Rode o pré-voo e confira IG-1.1–1.5 `ok` e o controle positivo reprovando/restaurado.**
-- [ ] **Step 5: Rode `npx vitest run scripts/function-acl-allowlist.test.ts scripts/migration-static-guard.test.ts` e confira PASS.**
-- [ ] **Step 6: Commit** `feat(instagram): grant de módulo por unidade e configurações do Direct`.
+- [x] **Step 4: Rode o pré-voo e confira IG-1.1–1.5 `ok` e o controle positivo reprovando/restaurado.**
+- [x] **Step 5: Rode `npx vitest run scripts/function-acl-allowlist.test.ts scripts/migration-static-guard.test.ts` e confira PASS.**
+- [x] **Step 6: Commit** `feat(instagram): grant de módulo por unidade e configurações do Direct`.
 
 ### Task 1.2: conta, contato, ledger de reservas e anonimização
 
@@ -303,7 +304,7 @@ Cada task termina com o arquivo `79-instagram-module.sql` executando os casos de
   - Trigger `instagram_contacts_anonymize_on_customer_trg` em `customers` (`after update of deleted_at … when (old.deleted_at is null and new.deleted_at is not null)`), função `SECURITY DEFINER` com `search_path=''`. Zera `igsid`, `username` e `name` e grava `anonymized_at` nos contatos do cliente. Padrão: `20260927120000_115…:171-200`.
   - Guarda de coerência do contato: unidade e organização iguais às da conta; se houver cliente, a organização do cliente é a do contato.
 
-- [ ] **Step 1: Escreva os casos.**
+- [x] **Step 1: Escreva os casos.**
   - IG-2.1 (A×B): o membro de A não lê contato de B. `get_instagram_account_status(B)` chamado por A recebe `42501`. `authenticated` não lê `instagram_accounts` nem `instagram_contact_reservations`.
   - IG-2.2: `store_…` com `ig_user_id` ativo na unidade B, chamado para a unidade A, recebe `instagram_account_in_use`. Desconectar em B e conectar em A funciona.
   - IG-2.3: o token gravado é lido só por `get_instagram_account_token` como `service_role`, e `authenticated` recebe `42501` no `EXECUTE`. Depois de `disconnect`, o token lido não é o original e `token_secret_id` é nulo.
@@ -311,10 +312,10 @@ Cada task termina com o arquivo `79-instagram-module.sql` executando os casos de
   - IG-2.5: `record_instagram_contact_reservation` com reserva de outra unidade ou de outro cliente recebe `42501`.
   - IG-2.6: anonimizar o cliente pela RPC `anonymize_customer` como `platform_admin` deixa o contato com `igsid` nulo e `anonymized_at` preenchido. Um contato de outro cliente fica intacto.
   - Controles positivos: tirar a cláusula de unidade da guarda do ledger reprova IG-2.5; tirar o `when` do trigger reprova IG-2.6.
-- [ ] **Step 2: Rode e confira a falha.**
-- [ ] **Step 3: Escreva a migration**, com os revokes e as entradas na allowlist só para as funções expostas a `authenticated`.
-- [ ] **Step 4: Rode e confira IG-2.x `ok` e os controles positivos.**
-- [ ] **Step 5: Commit** `feat(instagram): conta com token no Vault, contato e ledger de reservas do contato`.
+- [x] **Step 2: Rode e confira a falha.**
+- [x] **Step 3: Escreva a migration**, com os revokes e as entradas na allowlist só para as funções expostas a `authenticated`.
+- [x] **Step 4: Rode e confira IG-2.x `ok` e os controles positivos.**
+- [x] **Step 5: Commit** `feat(instagram): conta com token no Vault, contato e ledger de reservas do contato`.
 
 ### Task 1.3: fila de inbound, ledger por mensagem e diagnóstico
 
@@ -348,20 +349,20 @@ Cada task termina com o arquivo `79-instagram-module.sql` executando os casos de
   - `get_instagram_diagnostics(p_unit_id uuid) returns jsonb`: `authenticated`, só `platform_admin` (`42501` caso contrário). Devolve `{ last_event_at, queue: {received, processing, done_24h, dead}, oldest_pending_received_at, outcomes_24h: {<outcome>: n} }`, sem conteúdo.
   - Wrappers `trigger_instagram_inbound_sweep()` → `process-instagram-inbound?sweep=1` e `trigger_instagram_token_refresh()` → `process-instagram-token-refresh`. Os dois leem `internal_api_key` e `project_url` do Vault, dão `raise notice` e pulam se faltar algum, e são revogados de `public, anon, authenticated`. Padrão: `20260924120100_112…`.
 
-- [ ] **Step 1: Escreva o teste gêmeo `instagram-queue-migration-twin.test.ts`.** Ele lê a migration e falha se:
+- [x] **Step 1: Escreva o teste gêmeo `instagram-queue-migration-twin.test.ts`.** Ele lê a migration e falha se:
   - o lease do claim não for `INBOUND_LEASE_TTL_MS/1000`;
   - a purga `done`/`dead` não usar `PURGE_DONE_AFTER_DAYS`/`PURGE_DEAD_AFTER_DAYS`;
   - a purga do ledger não usar `INSTAGRAM_PROCESSED_RETENTION_DAYS`, que a Task 4.1 cria com valor 30. Até lá, use o literal `30` com `TODO(4.1)` no teste.
-- [ ] **Step 2: Escreva os casos do pré-voo.**
+- [x] **Step 2: Escreva os casos do pré-voo.**
   - IG-3.1: o claim do mesmo evento por dois `claim_id` deixa só um vencedor. O finalize com claim errado devolve 0.
   - IG-3.2: `claim_instagram_message` duas vezes devolve `null` na segunda. Depois do lease vencido, devolve um claim novo e o `complete` com o claim antigo devolve `false`.
   - IG-3.3: gravar evento com `unit_id` diferente do da conta é recusado.
   - IG-3.4: `get_instagram_diagnostics` como owner recebe `42501`; como `platform_admin`, sai sem texto de mensagem.
   - IG-3.5: a purga apaga só o que passou da idade.
   - Controle positivo: remover o filtro de `claim_id` do finalize reprova IG-3.1.
-- [ ] **Step 3: Rode e confira a falha. Escreva a migration. Rode e confira `ok`.**
-- [ ] **Step 4: Rode `npx vitest run src/lib/instagram-queue-migration-twin.test.ts` e confira PASS.**
-- [ ] **Step 5: Commit** `feat(instagram): fila de inbound, ledger por mensagem e diagnóstico`.
+- [x] **Step 3: Rode e confira a falha. Escreva a migration. Rode e confira `ok`.**
+- [x] **Step 4: Rode `npx vitest run src/lib/instagram-queue-migration-twin.test.ts` e confira PASS.**
+- [x] **Step 5: Commit** `feat(instagram): fila de inbound, ledger por mensagem e diagnóstico`.
 
 ### Task 1.4: `conversations` com canal e cliente opcional
 
@@ -381,7 +382,7 @@ Cada task termina com o arquivo `79-instagram-module.sql` executando os casos de
   - `get_or_create_instagram_conversation(p_contact_id uuid) returns uuid`: `service_role`. Faz `select … for update` no contato. Unidade, organização e `customer_id` vêm do contato. `contact_name = coalesce(name, '@'||username)`. Recusa contato anonimizado.
   - `link_instagram_contact_customer(p_contact_id uuid, p_customer_id uuid) returns void`: `service_role`. Exige cliente vivo (`deleted_at is null`) da organização do contato e contato não anonimizado (`42501` caso contrário). Grava `customer_id`/`customer_linked_at` no contato e `customer_id` na conversa do contato. Religar a outro cliente é permitido.
 
-- [ ] **Step 1: Escreva os casos.**
+- [x] **Step 1: Escreva os casos.**
   - IG-4.1: inserir conversa `whatsapp` sem `customer_id` viola o CHECK. Conversa `instagram` sem contato também viola.
   - IG-4.2: um cliente com conversa WhatsApp X e conversa IG Y (ligada) chama `get_or_create_whatsapp_conversation` e recebe X. Sem X, cria uma conversa nova `whatsapp` e não devolve Y.
   - IG-4.3: o reconcile de aceitação ignora a conversa IG. Estenda o cenário do pré-voo 38 com uma conversa IG do mesmo cliente.
@@ -390,9 +391,9 @@ Cada task termina com o arquivo `79-instagram-module.sql` executando os casos de
   - IG-4.6: `link_…` com cliente de outra organização recebe `42501`. Depois do link, `customer_id` está gravado no contato e na conversa.
   - IG-4.7 (A×B): o membro de A não lê conversa IG de B. As colunas novas não aceitam `update` de `authenticated` (o 67d já varre todas as colunas: rode-o).
   - Controles positivos: tirar o filtro de canal do `get_or_create_whatsapp_conversation` reprova IG-4.2; o mesmo no reconcile reprova IG-4.3.
-- [ ] **Step 2: Rode e confira a falha. Escreva a migration. Rode o 79, o 67d, o 38 e o 08 e confira `ok`.**
-- [ ] **Step 3: Rode `npx vitest run src/lib/agent-turn-parity.test.ts src/lib/whatsapp-conversation-parity-guard.test.ts` com a fixture nova e confira PASS sem regravar snapshot.**
-- [ ] **Step 4: Commit** `feat(conversas): canal e contato do Instagram, com as RPCs do WhatsApp presas ao canal`.
+- [x] **Step 2: Rode e confira a falha. Escreva a migration. Rode o 79, o 67d, o 38 e o 08 e confira `ok`.**
+- [x] **Step 3: Rode `npx vitest run src/lib/agent-turn-parity.test.ts src/lib/whatsapp-conversation-parity-guard.test.ts` com a fixture nova e confira PASS sem regravar snapshot.**
+- [x] **Step 4: Commit** `feat(conversas): canal e contato do Instagram, com as RPCs do WhatsApp presas ao canal`.
 
 ### Task 1.5: `reservations.source` e cron
 
@@ -408,23 +409,23 @@ Cada task termina com o arquivo `79-instagram-module.sql` executando os casos de
     - `instagram-token-refresh` `40 9 * * *`;
     - `instagram-inbound-purge` `17 4 * * *`, que chama as duas purgas em SQL.
 
-- [ ] **Step 1: Escreva os casos.** IG-5.1: insert com `source='instagram'` é aceito e cria a linha `confirmation` em `notification_outbox`. Insert com `'whatsapp'` não cria. Controle positivo: trocar o filtro do trigger para `not in ('whatsapp','instagram')` reprova IG-5.1 (é a prova de D6).
-- [ ] **Step 2: Estenda o teste gêmeo:** a expressão do `cron.schedule` do sweep corresponde a `INBOUND_SWEEP_INTERVAL_MS`.
-- [ ] **Step 3: Rode e confira a falha. Escreva as migrations. O arquivo de cron não roda no pré-voo, porque o harness não tem `pg_cron`; o gêmeo o lê como texto. Rode e confira PASS.**
-- [ ] **Step 4: Commit** `feat(reservas): origem instagram e cron do módulo`.
+- [x] **Step 1: Escreva os casos.** IG-5.1: insert com `source='instagram'` é aceito e cria a linha `confirmation` em `notification_outbox`. Insert com `'whatsapp'` não cria. Controle positivo: trocar o filtro do trigger para `not in ('whatsapp','instagram')` reprova IG-5.1 (é a prova de D6).
+- [x] **Step 2: Estenda o teste gêmeo:** a expressão do `cron.schedule` do sweep corresponde a `INBOUND_SWEEP_INTERVAL_MS`.
+- [x] **Step 3: Rode e confira a falha. Escreva as migrations. O arquivo de cron não roda no pré-voo, porque o harness não tem `pg_cron`; o gêmeo o lê como texto. Rode e confira PASS.**
+- [x] **Step 4: Commit** `feat(reservas): origem instagram e cron do módulo`.
 
 ### Task 1.6: gates do Bloco 1
 
-- [ ] Rode o pré-voo completo `79a` + `79` e os vizinhos tocados (`08`, `38`, `67d`). Registre os ordinais e vereditos nas Evidências.
-- [ ] Rode `npm run typecheck` e `npx vitest run scripts/` e confira PASS.
-- [ ] Rode os gates com o Opus, cada migration nova como entrada:
+- [x] Rode o pré-voo completo `79a` + `79` e os vizinhos tocados (`08`, `38`, `67d`). Registre os ordinais e vereditos nas Evidências. (O 38 não rodou: o IG-4.3 cobre o reconcile no 79; ver Evidências.)
+- [x] Rode `npm run typecheck` e `npx vitest run scripts/` e confira PASS.
+- [x] Rode os gates com o Opus, cada migration nova como entrada:
   - `saas-shield-br:migration-validator` (uma vez por arquivo);
   - `saas-shield-br:rls-auditor`;
   - `saas-shield-br:tenant-isolation-auditor` (escopo banco);
   - `saas-shield-br:identity-access-auditor` (grant de módulo, policy de settings).
   - Bloqueante é corrigido no bloco; atenção vai para as Evidências com a decisão.
-- [ ] Atualize `.claude/rules/banco-de-dados.md`: as tabelas FORCE RLS sem policy novas e as duas RPCs WhatsApp presas a `channel`.
-- [ ] Commit `docs(banco): registra o módulo Instagram nas regras`.
+- [x] Atualize `.claude/rules/banco-de-dados.md`: as tabelas FORCE RLS sem policy novas e as duas RPCs WhatsApp presas a `channel`.
+- [x] Commit `docs(banco): registra o módulo Instagram nas regras`.
 
 ---
 
@@ -433,6 +434,14 @@ Cada task termina com o arquivo `79-instagram-module.sql` executando os casos de
 Antes de começar: leia `integracoes.md`, `edge-functions.md`, `seguranca-multitenancy.md`, `docs/standards/INTEGRATIONS.md` e a seção "Global Constraints" acima. Confira a versão `v26.0` na doc vigente.
 
 As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../../../src/test/fixtures/edge-request-harness.ts), e os testes de EF usam esse harness com `fetch` falso para `graph.instagram.com`, `api.instagram.com` e `www.instagram.com`. **Nenhum teste chama a Meta.**
+
+**Contrato de autorização herdado do Bloco 1 (gates `identity-access` e `tenant-isolation`).** As RPCs `service_role` garantem a coerência de tenant. `store_instagram_account_connection` e `disconnect_instagram_account` também conferem o papel do ator. O resto fica nas EFs:
+- **C1, connect/callback:** `getUser`; `p_actor = user.id`, nunca do body; `unit_id` só do `state` assinado (preso ao usuário, uso único, com expiração); `hasUnitAccess` + owner/gerente ou `platform_admin`; grant ativo; token nunca em log/DTO.
+- **C2, disconnect:** unidade resolvida pela linha de `instagram_accounts`, papel conferido nessa unidade, `p_actor` da sessão.
+- **C3, webhook:** HMAC antes de tudo; `entry.id` → `instagram_accounts.ig_user_id` com `status <> 'disconnected'`; `unit_id` da conta; gate = grant ativo **e** `dm_enabled`, fail-closed em erro de leitura.
+- **C4, worker e refresh:** conta e unidade só do claim/varredura, nunca do corpo.
+- **C5, link de cliente:** o cliente é resolvido no servidor dentro da organização do contato, nunca por id vindo da DM ou da LLM.
+- **C6, status e diagnóstico:** chamados com o JWT do usuário (com service role, `auth.uid()` é nulo e a RPC recusa).
 
 ### Task 2.1: cliente do Graph (Sonnet)
 
@@ -604,7 +613,7 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
   - `saas-shield-br:identity-access-auditor` (connect, `state`);
   - `saas-shield-br:secret-hunter` (diff do bloco);
   - revisão com a skill `saas-shield-br:edge-function-guard` sobre as três EFs.
-- [ ] Crie `.claude/rules/instagram.md`, com `paths:` para `supabase/functions/*instagram*/**`, `supabase/functions/_shared/instagram-*`, `supabase/migrations/*instagram*` e `src/**/instagram/**`, mais `src/pages/gestao/Instagram*` e `src/pages/InstagramCallback*`. Ela traz as invariantes S1, S5, S6, a regra de 1000 bytes, a fila antes do ACK e os gates fail-closed. Adicione a linha na tabela do AGENTS.md §2 e os jobs na tabela de `edge-functions.md`.
+- [ ] Crie `.claude/rules/instagram.md`, com `paths:` para `supabase/functions/*instagram*/**`, `supabase/functions/_shared/instagram-*`, `supabase/migrations/*instagram*` e `src/**/instagram/**`, mais `src/pages/gestao/Instagram*` e `src/pages/InstagramCallback*`. Ela traz as invariantes S1, S5, S6, a regra de 1000 bytes, a fila antes do ACK e os gates fail-closed. Adicione a linha na tabela do AGENTS.md §2. Os jobs já entraram na tabela de `edge-functions.md` no 1.6; confira que os nomes das EFs batem com o que foi implementado.
 - [ ] Commit `docs(instagram): regra do módulo e workers no inventário de cron`.
 
 ---
@@ -647,7 +656,7 @@ O snapshot de [agent-turn-parity.test.ts](../../../src/lib/agent-turn-parity.tes
 **Interfaces:**
 - Produces:
   - `INSTAGRAM_MAX_TEXT_BYTES = 1000`;
-  - `sanitizeForInstagram(text: string): string`, que remove `**`/`__`/`#`/crases, transforma `- `/`* ` de lista em `• `, converte `[t](u)` em `t: u` e preserva emoji;
+  - `sanitizeForInstagram(text: string): string`, que remove `**`/`__`/`#`/crases, transforma `- `/`* ` de lista em `• `, converte link markdown (texto entre colchetes seguido da URL entre parênteses) em `texto: url` e preserva emoji;
   - `splitInstagramText(text: string, maxBytes?: number): string[]`, que corta em parágrafo, depois frase, depois palavra, e, como último recurso, por code point. Cada parte tem ≤ `maxBytes` em UTF-8; nenhuma parte é vazia; `join("")` sem os separadores devolve o texto original;
   - `INSTAGRAM_FORMATTING_RULES` (texto exato):
     `FORMATAÇÃO DA RESPOSTA NO INSTAGRAM: texto simples, sem markdown (nada de *, _, # ou crases). Listas com "• ". Mensagens curtas, de até 900 caracteres. Links por extenso.`
@@ -781,7 +790,7 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
   - `extractAccountItems` só lê `entry[]` com `id === igUserId` e ordena por `timestamp`.
   - Classificação:
     - `is_echo` → `echo`, com `igsid` = destinatário;
-    - `sender.id === igUserId` sem eco → `ignored/self`;
+    - `sender.id === igUserId` sem eco → `ignored_self` (o desfecho segue o CHECK `^[a-z0-9_]{1,64}$` da migration 120200);
     - texto com ou sem `reply_to` → `text`;
     - só anexo `story_mention` → `story_mention`;
     - outro anexo → `media`.
@@ -826,7 +835,7 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
 - [ ] **Step 2: Testes de Request no harness, com SDK Anthropic falso e `fetch` falso do Graph.**
   - `DM sem telefone: a IA pede o WhatsApp`: o prompt contém `INSTAGRAM_CHANNEL_RULES` e a identidade, e a lista de ferramentas termina em `link_customer_phone`.
   - `DM com telefone: link → reserva instagram`: `reserveSlot` recebe `source:"instagram"`, o ledger ganha a reserva e a conversa ganha `customer_id`.
-  - `worker ignora entradas de outra conta no mesmo corpo`.
+  - `worker ignora entradas de outra conta no mesmo corpo`, com a outra conta em **outra organização**: nenhuma linha de contato, conversa ou ledger da unidade pedida nasce de item da outra conta (gate de tenant do Bloco 1).
   - `mesmo mid em dois corpos diferentes roda um turno`.
   - `revogação depois do ACK descarta sem LLM`: grant revogado e `dm_enabled=false`, nos dois casos com zero chamadas ao SDK.
   - Eco dá `echo_own` ou `echo_unknown`, sem append.
@@ -872,6 +881,18 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
 
 - [ ] **Step 1: Atualize o teste textual:** a consulta do dead-letter contém `.eq("channel", "whatsapp")`. Acrescente o caso de comportamento: com uma conversa IG mais recente do mesmo cliente, o dead-letter promove a conversa WhatsApp.
 - [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS, com a paridade inalterada. Rode o `deno check`. Commit** `fix(whatsapp): dead-letter promove só a conversa do WhatsApp`.
+
+### Task 4.5: rota gerenciada aceita `source='instagram'` (Opus) — D9
+
+**Files:**
+- Create: `supabase/migrations/<timestamp>_whatsapp_automation_source_instagram.sql`
+- Modify: `supabase/functions/_shared/whatsapp-automation-resources.ts` (`captureExpected`, ramo `confirmation`/`reminder_d1`/`survey_d1`/`cancellation`)
+- Modify: `src/lib/whatsapp-reservation-automation-routing.test.ts` e o teste de recursos da automação; caso novo no pré-voo `79`
+
+- [ ] **Step 1: Testes.** `captureExpected` aceita `source='instagram'` e continua recusando origem desconhecida e `null`. No pré-voo, `app_private.whatsapp_automation_post_inner` aceita reserva `instagram` e recusa origem desconhecida. Controle positivo: voltar a lista para `('web','whatsapp')` reprova os dois.
+- [ ] **Step 2: Migration.** Recrie `app_private.whatsapp_automation_post_inner` a partir do corpo **mais recente** (`20261019193132` ou posterior, se outra migration o recriou até lá), trocando só `not in('web','whatsapp')` por `not in('web','whatsapp','instagram')`. Confira com `diff` que a única linha alterada é essa e repita os `revoke` com a assinatura completa.
+- [ ] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check` das consumidoras dadas por `node scripts/ef-import-graph.mjs supabase/functions/_shared/whatsapp-automation-resources.ts` (hoje `send-scheduled-whatsapp`) e acrescente-as à matriz de redeploy.**
+- [ ] **Step 4: Commit** `feat(automacoes): rota gerenciada aceita reserva do Instagram`.
 
 ### Task 4.4: gates do Bloco 4
 
@@ -1087,6 +1108,8 @@ Piloto, depois que o responsável disser "pode liberar":
 | IG-3.1 – IG-3.5 | claim e finalize cercados; ledger por `mid`; coerência da fila; diagnóstico só `platform_admin`; purga | 1.3 |
 | IG-4.1 – IG-4.7 | CHECK de canal; RPCs WhatsApp presas ao canal (com o 38); coerência IG; criação idempotente; link entre organizações; A×B de conversa IG | 1.4 |
 | IG-5.1 | `source='instagram'` aceito e confirmação enfileirada (D6) | 1.5 |
+| IG-5.2 / IG-5.3 | um único CHECK de `source`, validado; drift aborta a migration | 1.5 |
+| IG-6.1 – IG-6.4 | conexão e desconexão autorizadas no SQL; contatos só por RPC/trigger DEFINER e anonimização irreversível; conversa IG sem `wa_chat_lid` | 1.6 (gates) |
 
 ## Matriz de redeploy prevista
 
@@ -1124,6 +1147,8 @@ Linha de base de 2026-10-20:
 
 - Contato do Instagram **sem** cliente ligado não tem caminho de exclusão LGPD pela tela. Hoje só se resolve por SQL; vira item da Fase 2.
 - A anonimização de cliente não apaga `conversations.messages` (WhatsApp e Instagram). É anterior a este módulo.
+- Hard delete de cliente apaga a conversa do Instagram ligada a ele (`conversations.customer_id … on delete cascade`, anterior ao módulo), e o contato sobrevive sem cliente (`set null`). Coerente com LGPD; a decisão de produto fica para a Fase 2.
+- A linha da fila guarda o POST inteiro da Meta, que pode trazer `entry[]` de outras contas (até de outra organização), por 7 dias (`done`) ou 30 (`dead`), fora da anonimização. O corpo fica intacto por desenho (dedupe por `body_sha256` e reprocessamento, como a fila do WhatsApp); o worker filtra por `entry.id` (Task 4.1). Guardar só o recorte da conta é a alternativa, se o piloto mostrar POSTs com várias contas. Risco aceito no Bloco 1.
 - Callback de desautorização da Meta.
 - Tag `HUMAN_AGENT`.
 - Correlação de eco para silenciar a IA: decisão da Fase 2, com a medição de D5.
@@ -1132,7 +1157,61 @@ Linha de base de 2026-10-20:
 ## Evidências
 
 ### Bloco 1
-_(preencher)_
+
+Executado em 2026-10-20/21 na branch `feat/instagram-fase-1`, local, sem push, sem `db push`, sem deploy e sem chamada à Meta. Commits `1a0b43d..050d1bb`, mais o commit de docs. Execução por tarefa (implementador Opus, review de spec Sonnet, review de qualidade e segurança Opus), com uma rodada de correção em cada Task de 1.2 a 1.5 e duas nos gates.
+
+**Migrations (timestamps acima da última de `origin/main`):** `20261020120000_instagram_module_grants`, `…120100_instagram_accounts_contacts`, `…120200_instagram_inbound_queue`, `…120300_conversations_instagram_channel` (`begin` + `lock_timeout 5s`, NOT VALID + VALIDATE), `…120400_reservations_source_instagram` (idem, mais a guarda de drift P0001 `reservations_source_check_drift`) e `…120500_instagram_cron`. Os corpos de `get_or_create_whatsapp_conversation` (de `20260905143453`) e `app_private.reconcile_whatsapp_automation_acceptance_inner` (de `20261019183559`, o mais recente) foram recriados verbatim, mais uma linha cada (`and channel = 'whatsapp'` / `and conversation.channel = 'whatsapp'`), conferido por `diff` e pelo gate.
+
+**Pré-voo** (PostgreSQL 18.6 descartável em loopback, receita do README §79: `00 → 01 → 09a → 106 → 79a`, migrations cruas sem `psql -1`):
+- RED antes de cada task (exit 3 na guarda do topo); GREEN final **77/77**, de novo 77/77 depois de reaplicar as cinco migrations (idempotência) e sem linha residual. A 120500 não roda no harness (sem `pg_cron`); o gêmeo a lê como texto.
+- Ordinais (IG = caso, C-IG = controle positivo, que sabota, reprova, restaura e compara o catálogo):
+  - 1.1: IG-1.1–1.6 = 7901–7906; C-IG-1.1–1.6 = 7908–7913.
+  - 1.2: IG-2.1–2.10 = 7920–7929; C-IG-2.1–2.10 = 7930–7939.
+  - 1.3: IG-3.1–3.8 = 7940–7947; C-IG-3.1–3.8 = 7950–7957.
+  - 1.4: IG-4.1–4.8 = 7960–7967; C-IG-4.1–4.8 = 7970–7976 e 7978. O IG-4.3 roda no 79 com um stub mínimo fiel do entorno; o 38 não foi rodado, porque exige o stack Docker `moralles-templates-20261003`.
+  - 1.5: IG-5.1–5.3 = 7980–7982; C-IG-5.1–5.2 = 7990–7991. Os controles do IG-5.3 (cópia sem a guarda) e do `lock_timeout` (sessão segurando o lock) são manuais e estão documentados no README §79.
+  - Gates: IG-6.1–6.4 = 7914–7917; C-IG-6.1–6.4 = 7992–7995.
+- Vizinhos: 08 verde (12 arquivos); 67d `GREEN67d` em 3 aplicações.
+
+**Outros comandos (verdes):**
+- `npm run typecheck`: exit 0.
+- `npx vitest run scripts/`: 118/118.
+- `instagram-queue-migration-twin`: 18/18. É o gêmeo de lease 90s, purga 7d/30d e ledger 30d, mais a expressão do sweep amarrada a `INBOUND_SWEEP_INTERVAL_MS`.
+- `whatsapp-conversation-parity-guard`: 13/13.
+- `agent-turn-parity`: 10/10 sem regravar o snapshot. Teve um timeout de 5s sob carga, verde ao rodar sozinho.
+- `function-acl-allowlist` e `migration-static-guard`: verdes.
+- `check-padrao`: exit 0.
+- `check-portabilidade`: 487 = linha de base.
+
+**Gates (todos Opus, PASS_WITH_WARNINGS, 0 bloqueante):** `migration-validator` ×6, `rls-auditor`, `tenant-isolation-auditor`, `identity-access-auditor`. Corrigido no bloco (`305e23b`, `050d1bb`):
+- `store_instagram_account_connection` exige grant ativo e ator owner/gerente da unidade ou `platform_admin`.
+- `disconnect_instagram_account` prende o ator à unidade da linha travada; conta inexistente também cai no 42501.
+- Nos dois casos acima, toda recusa é o mesmo `42501 instagram_account_forbidden`.
+- `service_role` só lê `instagram_contacts` (a escrita é por RPC ou trigger DEFINER) e a anonimização do contato é irreversível.
+- Conversa IG nunca carrega `wa_chat_lid`.
+- Dois comentários corrigidos.
+
+**Atenções com decisão:**
+- **FK RESTRICT conta → contato → conversa:** sem mudança. Medido: o `delete from units` com conta, contato, fila e ledger passa. Com conversa IG, quem trava é a FK `conversations_unit_id_fk`, que é anterior ao módulo e trava igual com conversa WhatsApp. O segredo do Vault sobrevive ao hard delete da unidade. Um fluxo futuro de hard delete de unidade chama `disconnect_instagram_account` antes, porque o token fica válido na Meta por até 60 dias.
+- **Auditoria de `dm_enabled`:** descartada. `audit_trigger_func` exige `NEW.id` e `instagram_settings` tem PK `unit_id`. O carimbo `updated_by`/`updated_at` guarda o último ator. Reavaliar quando as Fases 2 e 3 ampliarem a tabela.
+- **Corrida entre `store` e revogação concorrente do grant:** aceita, porque o gate do worker reconfere o grant.
+- **Policy de UPDATE de `instagram_settings` com `exists` inline:** mantida. `public.unit_role` foi revogada de `authenticated` (085:191) e o comentário registra a dependência da RLS de `unit_members`.
+- **`auth.uid()` sem `(select …)` nas policies:** aceito, porque é uma linha por unidade.
+- **FKs simples cobertas por trigger:** aceitas. A FK composta fica para fase futura.
+- **Purgas sem índice de apoio:** aceitas no volume do piloto.
+- **Uniões `"web" | "whatsapp"` no escritor e nos leitores de `source`:** ficam para o Bloco 3 (`availability.ts`) e o Bloco 5.
+- **Membro grava `source` arbitrário em `reservations`:** anterior ao módulo. Vai para o plano de risco de grants.
+- **Cron no mesmo `db push` antes das EFs:** os 404 são inofensivos sem grant. Na 6.3, conferir `?sweep=1` com 200 e o 401 sem a chave.
+- **Purga num único statement:** documentada no cabeçalho.
+- **POST cru com `entry[]` de outras contas e retenção do corpo:** registrado em "Fora desta fase". A Task 4.1 tem o teste de corpo misto com duas organizações.
+- **Hard delete de cliente apaga a conversa IG:** registrado em "Fora desta fase".
+- **Contrato C1–C6 para as EFs:** está no topo do Bloco 2.
+- **D9 (decisão do responsável):** a rota gerenciada de automação recusa `source='instagram'`. Vira a Task 4.5, antes do grant do piloto.
+
+**Ajustes de plano:**
+- `ignored/self` → `ignored_self`, porque o desfecho obedece ao CHECK `^[a-z0-9_]{1,64}$`.
+- O link markdown da linha do `sanitizeForInstagram` foi reescrito, porque o `check-padrao` o lia como link quebrado.
+- Os jobs de cron entraram em `edge-functions.md` já no 1.6.
 
 ### Bloco 2
 _(preencher)_
