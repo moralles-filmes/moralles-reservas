@@ -37,6 +37,7 @@ const GConta = lazy(() => import("./pages/gestao/Conta"));
 const GUsuarios = lazy(() => import("./pages/gestao/Usuarios"));
 const GCobranca = lazy(() => import("./pages/gestao/Cobranca"));
 const GWhatsapp = lazy(() => import("./pages/gestao/Whatsapp"));
+const GAtendimentoIa = lazy(() => import("./pages/gestao/AtendimentoIa"));
 
 // ── Gestão > Reservas (sub-abas) ──────────────────────────────────────────────
 const GSaloes = lazy(() => import("./pages/gestao/reservas/Saloes"));
@@ -253,6 +254,7 @@ export default function App() {
               <Route path="/g/:unitSlug/clientes" element={<GestaoGuard><GClientes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/conversas" element={<GestaoGuard><GConversas /></GestaoGuard>} />
               <Route path="/g/:unitSlug/whatsapp" element={<GestaoGuard><GWhatsapp /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/atendimento-ia" element={<GestaoGuard><GAtendimentoIa /></GestaoGuard>} />
               <Route path="/g/:unitSlug/configuracoes" element={<GestaoGuard><GConfiguracoes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/auditoria" element={<GestaoGuard><GAuditoria /></GestaoGuard>} />
               <Route path="/g/:unitSlug/relatorios" element={<Navigate to="fluxo-clientes" replace />} />

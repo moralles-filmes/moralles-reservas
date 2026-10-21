@@ -37,6 +37,8 @@ const AJUSTES_PATH = join(ROOT, "src", "pages", "gestao", "reservas", "Ajustes.t
 const TABLE_BLOCKS_PATH = join(ROOT, "src", "hooks", "useTableBlocks.ts");
 const CONTA_PATH = join(ROOT, "src", "pages", "gestao", "Conta.tsx");
 const AUTOMACAO_PATH = join(ROOT, "src", "pages", "gestao", "Automacao.tsx");
+const ATENDIMENTO_IA_PATH = join(ROOT, "src", "pages", "gestao", "AtendimentoIa.tsx");
+const AI_STORE_HOOK_PATH = join(ROOT, "src", "hooks", "useAiStoreSettings.ts");
 
 // Automacao.tsx (PromptTab + aba IA) grava 8 chaves: as 5 abaixo, só da plataforma, e as 3 de
 // AI_STORE_SETTING_KEYS. Lista literal: chave nova de IA na tela exige decidir a classe aqui.
@@ -106,6 +108,20 @@ function leakedPlatformKeys(automacaoKeys: string[], classifier: string[]): stri
   return automacaoKeys.filter((k) => !store.has(k) && classifier.includes(k));
 }
 
+/** Fonte que precisa existir: arquivo movido ou renomeado quebra o teste em vez de passar sobre nada. */
+function readRequiredSource(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    throw new Error(`fonte da tela "Atendimento por IA" não encontrada: ${path}`);
+  }
+}
+
+/** `import { ..., AI_STORE_SETTING_KEYS, ... } from "<qualquer caminho>/ai-store-settings"` (alias `@/lib`, relativo ou vizinho). */
+function importsAiStoreSettingKeys(src: string): boolean {
+  return /^\s*import\s*\{[^}]*\bAI_STORE_SETTING_KEYS\b[^}]*\}\s*from\s*["'](?:@\/lib\/|(?:\.{1,2}\/)+(?:lib\/)?)ai-store-settings["']/m.test(src);
+}
+
 function hasDuplicates(list: string[]): string[] {
   return list.filter((k, i) => list.indexOf(k) !== i);
 }
@@ -158,6 +174,11 @@ describe("settings: classificador de escrita x chaves da Gestão", () => {
     expect(leaked, `chaves de Automacao.tsx classificadas como manager: ${JSON.stringify(leaked)}`).toEqual([]);
   });
 
+  it("a tela do atendimento por IA (ou o hook dela) grava as chaves de AI_STORE_SETTING_KEYS, importadas e não redigitadas", () => {
+    const sources = [ATENDIMENTO_IA_PATH, AI_STORE_HOOK_PATH].map(readRequiredSource);
+    expect(sources.some(importsAiStoreSettingKeys), "nem a tela nem o hook importam AI_STORE_SETTING_KEYS de ai-store-settings").toBe(true);
+  });
+
   it("controle negativo: diffSettingKeys reporta chave a mais em qualquer dos lados", () => {
     const base = ["a", "b", "c"];
     expect(diffSettingKeys(base, base)).toEqual({ onlyInExpected: [], onlyInActual: [] });
@@ -173,6 +194,20 @@ describe("settings: classificador de escrita x chaves da Gestão", () => {
     expect(leakedPlatformKeys(["ai_system_prompt", "restaurant_menu"], [...classifierKeys, "ai_system_prompt"]))
       .toEqual(["ai_system_prompt"]);
     expect(leakedPlatformKeys(["ai_system_prompt", "restaurant_menu"], classifierKeys)).toEqual([]);
+  });
+
+  it("controle negativo: fonte sem o import de AI_STORE_SETTING_KEYS (ou com a lista redigitada) reprova; o import em qualquer forma passa", () => {
+    // Em memória, nunca editando arquivo.
+    const semImport = 'const KEYS = ["restaurant_menu", "delivery_response", "restaurant_extra_info"];';
+    expect(importsAiStoreSettingKeys(semImport)).toBe(false);
+    expect(importsAiStoreSettingKeys('import { AI_STORE_SETTING_KEYS } from "./outro-arquivo";')).toBe(false);
+    expect(importsAiStoreSettingKeys('import { OUTRA } from "@/lib/ai-store-settings";')).toBe(false);
+    expect(importsAiStoreSettingKeys('// import { AI_STORE_SETTING_KEYS } from "@/lib/ai-store-settings"\n')).toBe(false);
+    expect(importsAiStoreSettingKeys('import { AI_STORE_SETTING_KEYS } from "@/lib/ai-store-settings";')).toBe(true);
+    expect(importsAiStoreSettingKeys('import { AI_STORE_SETTING_KEYS, type AiStoreSettingKey } from "@/lib/ai-store-settings";')).toBe(true);
+    expect(importsAiStoreSettingKeys('import { AI_STORE_SETTING_KEYS } from "../lib/ai-store-settings";')).toBe(true);
+    expect(importsAiStoreSettingKeys('import { AI_STORE_SETTING_KEYS } from "./ai-store-settings";')).toBe(true);
+    expect(() => readRequiredSource(join(ROOT, "src", "pages", "gestao", "NaoExiste.tsx"))).toThrow(/não encontrada/);
   });
 
   it("controle negativo: os extratores reprovam fonte com outra forma", () => {
