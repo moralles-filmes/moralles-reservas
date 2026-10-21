@@ -438,7 +438,7 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
 **Contrato de autorização herdado do Bloco 1 (gates `identity-access` e `tenant-isolation`).** As RPCs `service_role` garantem a coerência de tenant. `store_instagram_account_connection` e `disconnect_instagram_account` também conferem o papel do ator. O resto fica nas EFs:
 - **C1, connect/callback:** `getUser`; `p_actor = user.id`, nunca do body; `unit_id` só do `state` assinado (preso ao usuário, uso único, com expiração); `hasUnitAccess` + owner/gerente ou `platform_admin`; grant ativo; token nunca em log/DTO.
 - **C2, disconnect:** unidade resolvida pela linha de `instagram_accounts`, papel conferido nessa unidade, `p_actor` da sessão.
-- **C3, webhook:** HMAC antes de tudo; `entry.id` → `instagram_accounts.ig_user_id` com `status <> 'disconnected'`; `unit_id` da conta; gate = grant ativo **e** `dm_enabled`, fail-closed em erro de leitura.
+- **C3, webhook:** HMAC antes de tudo; `entry.id` → `instagram_accounts.ig_user_id` com `status = 'connected'` (`reauth_required` é descartado, passo 7 da Task 2.3; a RPC `upsert_instagram_contact` aceita `reauth_required` só como defesa para evento já enfileirado); `unit_id` da conta; gate = grant ativo **e** `dm_enabled`, fail-closed em erro de leitura.
 - **C4, worker e refresh:** conta e unidade só do claim/varredura, nunca do corpo.
 - **C5, link de cliente:** o cliente é resolvido no servidor dentro da organização do contato, nunca por id vindo da DM ou da LLM.
 - **C6, status e diagnóstico:** chamados com o JWT do usuário (com service role, `auth.uid()` é nulo e a RPC recusa).
@@ -1038,12 +1038,12 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
 ### Task 6.2: PR e banco (cada passo com autorização)
 
 - [ ] Push e PR, com a descrição contendo:
-  - as decisões D1–D8 e os desvios S1–S7;
+  - as decisões D1–D9 (D9 = Task 4.5) e os desvios S1–S7;
   - a matriz de redeploy;
   - as mudanças deliberadas de comportamento do WhatsApp: CAS no handoff, filtro de canal nas RPCs e no dead-letter, guarda `invalid_channel_context`;
   - o diff do snapshot (3.1).
 - [ ] Confira o `acl-estatico` na aba Checks.
-- [ ] Antes do `db push`, rode `saas-shield-br:schema-diff` contra o remoto.
+- [ ] Antes do `db push`, rode `saas-shield-br:schema-diff` contra o remoto e duas leituras só de consulta (Bloco 1): `select rolname, rolbypassrls from pg_roles where rolname in ('postgres','service_role')` (o dono das funções DEFINER precisa de BYPASSRLS sobre as tabelas FORCE RLS) e `select has_schema_privilege('authenticated','auth','USAGE')` (as policies chamam `auth.uid()`).
 - [ ] `npx -y supabase@2.121.0 db push --project-ref gbabxcrntkwgblgqsiit` (autorização própria). Confira `schema_migrations` e o `cron.job` dos três jobs.
 
 ### Task 6.3: segredos, EFs e frontend (ordem obrigatória: banco → segredos → EF → frontend)
@@ -1158,7 +1158,7 @@ Linha de base de 2026-10-20:
 
 ### Bloco 1
 
-Executado em 2026-10-20/21 na branch `feat/instagram-fase-1`, local, sem push, sem `db push`, sem deploy e sem chamada à Meta. Commits `1a0b43d..050d1bb`, mais o commit de docs. Execução por tarefa (implementador Opus, review de spec Sonnet, review de qualidade e segurança Opus), com uma rodada de correção em cada Task de 1.2 a 1.5 e duas nos gates.
+Executado em 2026-10-20/21 na branch `feat/instagram-fase-1`, local, sem push, sem `db push`, sem deploy e sem chamada à Meta. Commits `977aa66..22a6df6` depois do rebase sobre `origin/main` (`4f211e5`, PR #55), mais o commit de docs final. Execução por tarefa (implementador Opus, review de spec Sonnet, review de qualidade e segurança Opus), com uma rodada de correção em cada Task de 1.2 a 1.5 e três nos gates. A terceira deixou os controles do 79 indiferentes a CRLF, porque a cópia de trabalho com `core.autocrlf=true` grava os corpos das funções com CR.
 
 **Migrations (timestamps acima da última de `origin/main`; nasceram como `20261020120000…120500` e foram renomeadas para `20261021…` no rebase sobre o PR #55, cujas migrations do MARKETING são `20261020183000`/`184000`):** `20261021120000_instagram_module_grants`, `…120100_instagram_accounts_contacts`, `…120200_instagram_inbound_queue`, `…120300_conversations_instagram_channel` (`begin` + `lock_timeout 5s`, NOT VALID + VALIDATE), `…120400_reservations_source_instagram` (idem, mais a guarda de drift P0001 `reservations_source_check_drift`) e `…120500_instagram_cron`. Os corpos de `get_or_create_whatsapp_conversation` (de `20260905143453`) e `app_private.reconcile_whatsapp_automation_acceptance_inner` (de `20261019183559`, o mais recente) foram recriados verbatim, mais uma linha cada (`and channel = 'whatsapp'` / `and conversation.channel = 'whatsapp'`), conferido por `diff` e pelo gate.
 
@@ -1171,7 +1171,8 @@ Executado em 2026-10-20/21 na branch `feat/instagram-fase-1`, local, sem push, s
   - 1.4: IG-4.1–4.8 = 7960–7967; C-IG-4.1–4.8 = 7970–7976 e 7978. O IG-4.3 roda no 79 com um stub mínimo fiel do entorno; o 38 não foi rodado, porque exige o stack Docker `moralles-templates-20261003`.
   - 1.5: IG-5.1–5.3 = 7980–7982; C-IG-5.1–5.2 = 7990–7991. Os controles do IG-5.3 (cópia sem a guarda) e do `lock_timeout` (sessão segurando o lock) são manuais e estão documentados no README §79.
   - Gates: IG-6.1–6.4 = 7914–7917; C-IG-6.1–6.4 = 7992–7995.
-- Vizinhos: 08 verde (12 arquivos); 67d `GREEN67d` em 3 aplicações.
+- Vizinhos: 08 verde (12 arquivos); 67d `GREEN67d` em 3 aplicações; 76 (MARKETING) verde depois do rebase.
+- Depois do rebase e do rename (`523548f`, `22a6df6`): 79 com 77/77 nas duas formas, com as migrations em CRLF e em LF, aplicadas e reaplicadas.
 
 **Outros comandos (verdes):**
 - `npm run typecheck`: exit 0.
@@ -1182,8 +1183,11 @@ Executado em 2026-10-20/21 na branch `feat/instagram-fase-1`, local, sem push, s
 - `function-acl-allowlist` e `migration-static-guard`: verdes.
 - `check-padrao`: exit 0.
 - `check-portabilidade`: 487 = linha de base.
+- Suíte completa depois do rebase: 196 de 198 arquivos verdes. Só falha `OfficialConnectionCard`, que já falhava antes por falta de `.env.local`.
 
-**Gates (todos Opus, PASS_WITH_WARNINGS, 0 bloqueante):** `migration-validator` ×6, `rls-auditor`, `tenant-isolation-auditor`, `identity-access-auditor`. Corrigido no bloco (`305e23b`, `050d1bb`):
+**Review final da branch (Opus):** pronta com pequenos ajustes. O 79 em CRLF foi corrigido em `22a6df6`. C3 foi alinhado à Task 2.3. A Task 6.2 ganhou D9 e as consultas de `rolbypassrls` e `USAGE` em `auth`. As notas de rollback da 120300 ganharam `lock_timeout`. Os itens menores adiados das Tasks 1.1–1.6 foram aceitos, cada um com motivo, no ledger da execução.
+
+**Gates (todos Opus, PASS_WITH_WARNINGS, 0 bloqueante):** `migration-validator` ×6, `rls-auditor`, `tenant-isolation-auditor`, `identity-access-auditor`. Corrigido no bloco (`b34c7e8`, `d928eef`, `22a6df6`):
 - `store_instagram_account_connection` exige grant ativo e ator owner/gerente da unidade ou `platform_admin`.
 - `disconnect_instagram_account` prende o ator à unidade da linha travada; conta inexistente também cai no 42501.
 - Nos dois casos acima, toda recusa é o mesmo `42501 instagram_account_forbidden`.
@@ -1194,6 +1198,7 @@ Executado em 2026-10-20/21 na branch `feat/instagram-fase-1`, local, sem push, s
 **Atenções com decisão:**
 - **FK RESTRICT conta → contato → conversa:** sem mudança. Medido: o `delete from units` com conta, contato, fila e ledger passa. Com conversa IG, quem trava é a FK `conversations_unit_id_fk`, que é anterior ao módulo e trava igual com conversa WhatsApp. O segredo do Vault sobrevive ao hard delete da unidade. Um fluxo futuro de hard delete de unidade chama `disconnect_instagram_account` antes, porque o token fica válido na Meta por até 60 dias.
 - **Auditoria de `dm_enabled`:** descartada. `audit_trigger_func` exige `NEW.id` e `instagram_settings` tem PK `unit_id`. O carimbo `updated_by`/`updated_at` guarda o último ator. Reavaliar quando as Fases 2 e 3 ampliarem a tabela.
+- **Ponteiro do Vault divergente** (`instagram_account_secret_mismatch`) bloqueia conectar e desconectar aquela conta. Só acontece por adulteração manual; a recuperação é SQL do dono (`update public.instagram_accounts set token_secret_id = null where id = …`), porque `service_role` só lê a tabela.
 - **Corrida entre `store` e revogação concorrente do grant:** aceita, porque o gate do worker reconfere o grant.
 - **Policy de UPDATE de `instagram_settings` com `exists` inline:** mantida. `public.unit_role` foi revogada de `authenticated` (085:191) e o comentário registra a dependência da RLS de `unit_members`.
 - **`auth.uid()` sem `(select …)` nas policies:** aceito, porque é uma linha por unidade.
