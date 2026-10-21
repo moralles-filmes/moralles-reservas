@@ -152,6 +152,18 @@ begin
   end;
 end $$;
 
+-- Texto sem CR. Com core.autocrlf=true (checkout no Windows) as migrations
+-- chegam ao psql em CRLF e o corpo no catálogo (pg_get_functiondef/prosrc)
+-- carrega os CRs; os trechos dos controles são LF. Todo controle que muta um
+-- corpo por replace() procura o trecho (e confere "uma vez só"/TRECHO
+-- AUSENTE) no corpo SEM CR e executa o texto LF sabotado; a restauração é o
+-- rollback da subtransação, que devolve o corpo original byte a byte (com os
+-- CRs), e por isso a comparação final com o catálogo usa o texto como lido.
+create or replace function pg_temp.ig79_lf(p text)
+returns text language sql immutable as $$
+  select replace(p, E'\r', '')
+$$;
+
 -- SQL que chama set_unit_module_grant e devolve 'modulo/ativo/tem_granted_at/tem_revoked_at'.
 create or replace function pg_temp.ig79_set(p_unit uuid, p_active boolean)
 returns text language sql as $$
@@ -2585,8 +2597,8 @@ begin
   select t.tgenabled::text || '/' || pg_get_triggerdef(t.oid) into trg
     from pg_trigger t
    where t.tgrelid = 'public.reservations'::regclass and t.tgname = 'enqueue_confirmation_after_insert';
-  select case when p.prosrc like '%if new.source is distinct from ''whatsapp'' then%'
-               and p.prosrc not like '%instagram%' then 'corpo_028' else 'corpo_alterado' end into fn
+  select case when pg_temp.ig79_lf(p.prosrc) like '%if new.source is distinct from ''whatsapp'' then%'
+               and pg_temp.ig79_lf(p.prosrc) not like '%instagram%' then 'corpo_028' else 'corpo_alterado' end into fn
     from pg_proc p where p.oid = 'public.enqueue_confirmation_notification()'::regprocedure;
   if chk = 'reservations_source_check=CHECK ((source = ANY (ARRAY[''web''::text, ''whatsapp''::text, ''instagram''::text])))/true'
      and col = 'true/''web''::text'
@@ -2893,8 +2905,8 @@ declare
 begin
   v_def := pg_get_functiondef('public.set_unit_module_grant(uuid,text,boolean)'::regprocedure);
   begin
-    v_mut := replace(v_def, 'if v_uid is null or not app_private.is_platform_admin(v_uid) then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_uid is null or not app_private.is_platform_admin(v_uid) then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_11();
   exception
@@ -2924,8 +2936,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'set revoked_at = now(), revoked_by = v_uid', 'set revoked_at = now(), revoked_by = p_unit_id');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'set revoked_at = now(), revoked_by = v_uid', 'set revoked_at = now(), revoked_by = p_unit_id');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_12();
   exception
@@ -2950,9 +2962,9 @@ declare
 begin
   v_def := pg_get_functiondef('public.get_unit_modules(uuid)'::regprocedure);
   begin
-    v_mut := replace(v_def,
+    v_mut := replace(pg_temp.ig79_lf(v_def),
       'or not (app_private.is_unit_member(v_uid, p_unit_id) or app_private.is_platform_admin(v_uid))', '');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_13();
   exception
@@ -3075,8 +3087,8 @@ begin
   v_guard := pg_get_functiondef('public.unit_module_tenant_guard()'::regprocedure);
   v_touch := pg_get_functiondef('public.instagram_settings_touch()'::regprocedure);
   begin
-    v_mut := replace(v_guard, 'if new.organization_id is distinct from v_unit_org then', 'if false then');
-    if v_mut = v_guard then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_guard), 'if new.organization_id is distinct from v_unit_org then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_guard) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_16();
   exception
@@ -3084,8 +3096,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_guard, 'if tg_op = ''UPDATE''', 'if false');
-    if v_mut = v_guard then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_guard), 'if tg_op = ''UPDATE''', 'if false');
+    if v_mut = pg_temp.ig79_lf(v_guard) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_16();
   exception
@@ -3093,8 +3105,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_touch, 'if new.unit_id is distinct from old.unit_id', 'if false and new.unit_id is distinct from old.unit_id');
-    if v_mut = v_touch then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_touch), 'if new.unit_id is distinct from old.unit_id', 'if false and new.unit_id is distinct from old.unit_id');
+    if v_mut = pg_temp.ig79_lf(v_touch) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_16();
   exception
@@ -3135,9 +3147,9 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def,
+    v_mut := replace(pg_temp.ig79_lf(v_def),
       'or not (app_private.is_unit_member(v_uid, p_unit_id) or app_private.is_platform_admin(v_uid))', '');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_21();
   exception
@@ -3194,8 +3206,8 @@ declare
 begin
   v_def := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure);
   begin
-    v_mut := replace(v_def, 'raise exception ''instagram_account_in_use'' using errcode = ''P0001'';', 'null;');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'raise exception ''instagram_account_in_use'' using errcode = ''P0001'';', 'null;');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_22();
   exception
@@ -3203,8 +3215,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'perform public.disconnect_instagram_account(v_other.id, p_actor);', 'null;');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'perform public.disconnect_instagram_account(v_other.id, p_actor);', 'null;');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_22();
   exception
@@ -3212,8 +3224,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'where a.unit_id = p_unit_id and a.ig_user_id = p_ig_user_id', 'where false');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'where a.unit_id = p_unit_id and a.ig_user_id = p_ig_user_id', 'where false');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_22();
   exception
@@ -3248,9 +3260,9 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def,
+    v_mut := replace(pg_temp.ig79_lf(v_def),
       'perform vault.update_secret(v_secret_id, ''revoked-'' || gen_random_uuid()::text || gen_random_uuid()::text);', 'null;');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_23();
   exception
@@ -3258,8 +3270,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'set token_secret_id = null,', 'set token_secret_id = a.token_secret_id,');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'set token_secret_id = null,', 'set token_secret_id = a.token_secret_id,');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_23();
   exception
@@ -3288,8 +3300,8 @@ declare
 begin
   v_def := pg_get_functiondef('public.instagram_contact_tenant_guard()'::regprocedure);
   begin
-    v_mut := replace(v_def, 'if v_cust_org is distinct from new.organization_id then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_cust_org is distinct from new.organization_id then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_24();
   exception
@@ -3297,9 +3309,9 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def,
+    v_mut := replace(pg_temp.ig79_lf(v_def),
       'if new.unit_id is distinct from v_acc_unit or new.organization_id is distinct from v_acc_org then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_24();
   exception
@@ -3325,8 +3337,8 @@ declare
 begin
   v_def := pg_get_functiondef('public.record_instagram_contact_reservation(uuid,uuid)'::regprocedure);
   begin
-    v_mut := replace(v_def, 'or v_r_unit is distinct from v_c_unit', '');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'or v_r_unit is distinct from v_c_unit', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_25();
   exception
@@ -3334,8 +3346,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'or v_c_cust is null or v_r_cust is distinct from v_c_cust', '');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'or v_c_cust is null or v_r_cust is distinct from v_c_cust', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_25();
   exception
@@ -3386,8 +3398,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'where c.customer_id = new.id', 'where true');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'where c.customer_id = new.id', 'where true');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_26();
   exception
@@ -3423,8 +3435,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_disc, 'then p_actor else a.disconnected_by end', 'then null else a.disconnected_by end');
-    if v_mut = v_disc then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_disc), 'then p_actor else a.disconnected_by end', 'then null else a.disconnected_by end');
+    if v_mut = pg_temp.ig79_lf(v_disc) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_27();
   exception
@@ -3432,8 +3444,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_store, 'disconnected_by = null,', 'disconnected_by = a.disconnected_by,');
-    if v_mut = v_store then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_store), 'disconnected_by = null,', 'disconnected_by = a.disconnected_by,');
+    if v_mut = pg_temp.ig79_lf(v_store) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_27();
   exception
@@ -3472,8 +3484,8 @@ begin
     v_def := pg_get_functiondef(fn::regprocedure);
     defs := defs || v_def;
     begin
-      v_mut := replace(v_def, 'and s.name = v_name;', ';');
-      if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+      v_mut := replace(pg_temp.ig79_lf(v_def), 'and s.name = v_name;', ';');
+      if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
       execute v_mut;
       raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_28();
     exception
@@ -3504,8 +3516,8 @@ declare
 begin
   v_def := pg_get_functiondef('public.instagram_contacts_anonymize_on_customer()'::regprocedure);
   begin
-    v_mut := replace(v_def, 'SECURITY DEFINER', 'SECURITY INVOKER');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'SECURITY DEFINER', 'SECURITY INVOKER');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     if (select prosecdef from pg_proc where oid = 'public.instagram_contacts_anonymize_on_customer()'::regprocedure) then
       raise exception using errcode = 'P0R79', message = 'SABOTAGEM NAO APLICADA';
@@ -3536,8 +3548,8 @@ begin
   v_up := pg_get_functiondef('public.upsert_instagram_contact(uuid,text,text,text)'::regprocedure);
   v_st := pg_get_functiondef('public.set_instagram_account_status(uuid,text,text)'::regprocedure);
   begin
-    v_mut := replace(v_store, 'p_ig_user_id := btrim(p_ig_user_id);', 'null;');
-    if v_mut = v_store then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_store), 'p_ig_user_id := btrim(p_ig_user_id);', 'null;');
+    if v_mut = pg_temp.ig79_lf(v_store) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_30();
   exception
@@ -3545,8 +3557,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_store, 'p_token := btrim(p_token);', 'null;');
-    if v_mut = v_store then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_store), 'p_token := btrim(p_token);', 'null;');
+    if v_mut = pg_temp.ig79_lf(v_store) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_30();
   exception
@@ -3561,8 +3573,8 @@ begin
     when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_up, 'if v_status = ''disconnected'' then', 'if false then');
-    if v_mut = v_up then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_up), 'if v_status = ''disconnected'' then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_up) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_30();
   exception
@@ -3570,8 +3582,8 @@ begin
     when others then s4 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_st, 'case when p_status = ''connected'' then null else p_error_code end', 'p_error_code');
-    if v_mut = v_st then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_st), 'case when p_status = ''connected'' then null else p_error_code end', 'p_error_code');
+    if v_mut = pg_temp.ig79_lf(v_st) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_30();
   exception
@@ -3613,8 +3625,8 @@ begin
   v_fin := pg_get_functiondef('public.finalize_instagram_inbound_event(uuid,uuid,text,text,text,integer)'::regprocedure);
   v_cl := pg_get_functiondef('public.claim_instagram_inbound_event(uuid)'::regprocedure);
   begin
-    v_mut := replace(v_fin, 'and e.claim_id = p_claim_id', '');
-    if v_mut = v_fin then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_fin), 'and e.claim_id = p_claim_id', '');
+    if v_mut = pg_temp.ig79_lf(v_fin) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_31();
   exception
@@ -3622,8 +3634,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_cl, '(e.status = ''processing'' and e.claimed_until < now())', 'e.status = ''processing''');
-    if v_mut = v_cl then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_cl), '(e.status = ''processing'' and e.claimed_until < now())', 'e.status = ''processing''');
+    if v_mut = pg_temp.ig79_lf(v_cl) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_31();
   exception
@@ -3631,8 +3643,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_fin, 'and p_status in (''received'', ''done'', ''dead'')', '');
-    if v_mut = v_fin then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_fin), 'and p_status in (''received'', ''done'', ''dead'')', '');
+    if v_mut = pg_temp.ig79_lf(v_fin) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_31();
   exception
@@ -3662,8 +3674,8 @@ begin
   v_co := pg_get_functiondef('public.complete_instagram_message(uuid,text,uuid,text,text,jsonb)'::regprocedure);
   v_rec := pg_get_functiondef('public.record_instagram_message_outcome(uuid,text,text,jsonb)'::regprocedure);
   begin
-    v_mut := replace(v_cl, 'and m.claimed_until < now()', '');
-    if v_mut = v_cl then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_cl), 'and m.claimed_until < now()', '');
+    if v_mut = pg_temp.ig79_lf(v_cl) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_32();
   exception
@@ -3671,8 +3683,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_co, 'and m.claim_id = p_claim_id', '');
-    if v_mut = v_co then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_co), 'and m.claim_id = p_claim_id', '');
+    if v_mut = pg_temp.ig79_lf(v_co) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_32();
   exception
@@ -3680,9 +3692,9 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_rec, 'on conflict (instagram_account_id, mid) do nothing',
+    v_mut := replace(pg_temp.ig79_lf(v_rec), 'on conflict (instagram_account_id, mid) do nothing',
                      'on conflict (instagram_account_id, mid) do update set outcome = excluded.outcome');
-    if v_mut = v_rec then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_rec) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_32();
   exception
@@ -3713,8 +3725,8 @@ declare
 begin
   v_guard := pg_get_functiondef('public.instagram_queue_tenant_guard()'::regprocedure);
   begin
-    v_mut := replace(v_guard, 'if new.unit_id is distinct from v_acc_unit then', 'if false then');
-    if v_mut = v_guard then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_guard), 'if new.unit_id is distinct from v_acc_unit then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_guard) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_33();
   exception
@@ -3722,8 +3734,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_guard, 'if tg_op = ''UPDATE''', 'if false');
-    if v_mut = v_guard then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_guard), 'if tg_op = ''UPDATE''', 'if false');
+    if v_mut = pg_temp.ig79_lf(v_guard) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_33();
   exception
@@ -3771,9 +3783,9 @@ declare
 begin
   v_def := pg_get_functiondef('public.get_instagram_diagnostics(uuid)'::regprocedure);
   begin
-    v_mut := replace(v_def, 'if v_uid is null or not app_private.is_platform_admin(v_uid) then',
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_uid is null or not app_private.is_platform_admin(v_uid) then',
       'if v_uid is null or not (app_private.is_platform_admin(v_uid) or app_private.is_unit_member(v_uid, p_unit_id)) then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_34();
   exception
@@ -3781,8 +3793,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'e.unit_id = p_unit_id', 'true');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'e.unit_id = p_unit_id', 'true');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_34();
   exception
@@ -3790,9 +3802,9 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, '''last_event_at'',',
+    v_mut := replace(pg_temp.ig79_lf(v_def), '''last_event_at'',',
       '''amostra'', (select string_agg(encode(x.raw_body, ''escape''), '','') from public.instagram_inbound_events x where x.unit_id = p_unit_id), ''last_event_at'',');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_34();
   exception
@@ -3822,8 +3834,8 @@ begin
   v_ev := pg_get_functiondef('public.purge_instagram_inbound_events()'::regprocedure);
   v_led := pg_get_functiondef('public.purge_instagram_processed_messages()'::regprocedure);
   begin
-    v_mut := replace(v_ev, 'interval ''7 days''', 'interval ''5 days''');
-    if v_mut = v_ev then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_ev), 'interval ''7 days''', 'interval ''5 days''');
+    if v_mut = pg_temp.ig79_lf(v_ev) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_35();
   exception
@@ -3831,9 +3843,9 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_ev, '(status = ''dead'' and received_at < now() - interval ''30 days'')',
+    v_mut := replace(pg_temp.ig79_lf(v_ev), '(status = ''dead'' and received_at < now() - interval ''30 days'')',
                      '(received_at < now() - interval ''30 days'')');
-    if v_mut = v_ev then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_ev) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_35();
   exception
@@ -3841,8 +3853,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_led, 'interval ''30 days''', 'interval ''28 days''');
-    if v_mut = v_led then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_led), 'interval ''30 days''', 'interval ''28 days''');
+    if v_mut = pg_temp.ig79_lf(v_led) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_35();
   exception
@@ -3850,8 +3862,8 @@ begin
     when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_led, 'and (status = ''done'' or claimed_until < now())', '');
-    if v_mut = v_led then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_led), 'and (status = ''done'' or claimed_until < now())', '');
+    if v_mut = pg_temp.ig79_lf(v_led) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_35();
   exception
@@ -3959,8 +3971,8 @@ begin
   v_sw := pg_get_functiondef('public.trigger_instagram_inbound_sweep()'::regprocedure);
   v_tr := pg_get_functiondef('public.trigger_instagram_token_refresh()'::regprocedure);
   begin
-    v_mut := replace(v_sw, 'if v_key is null or v_key = '''' then', 'if false then');
-    if v_mut = v_sw then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_sw), 'if v_key is null or v_key = '''' then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_sw) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_37();
   exception
@@ -3968,8 +3980,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_sw, '/functions/v1/process-instagram-inbound?sweep=1', '/functions/v1/webhook-whatsapp?sweep=1');
-    if v_mut = v_sw then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_sw), '/functions/v1/process-instagram-inbound?sweep=1', '/functions/v1/webhook-whatsapp?sweep=1');
+    if v_mut = pg_temp.ig79_lf(v_sw) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_37();
   exception
@@ -3977,8 +3989,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_tr, 'if v_url is null or v_url = '''' then', 'if false then');
-    if v_mut = v_tr then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_tr), 'if v_url is null or v_url = '''' then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_tr) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_37();
   exception
@@ -4084,9 +4096,9 @@ declare
 begin
   v_def := pg_get_functiondef('public.get_or_create_whatsapp_conversation(uuid,uuid,text,text)'::regprocedure);
   begin
-    v_mut := replace(v_def, E'where customer_id = p_customer_id and unit_id = p_unit_id\n    and channel = ''whatsapp''',
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'where customer_id = p_customer_id and unit_id = p_unit_id\n    and channel = ''whatsapp''',
                             'where customer_id = p_customer_id and unit_id = p_unit_id');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_42();
   exception
@@ -4116,9 +4128,9 @@ begin
   v_rec := pg_get_functiondef('app_private.reconcile_whatsapp_automation_acceptance_inner(uuid)'::regprocedure);
   v_goc := pg_get_functiondef('public.get_or_create_whatsapp_conversation(uuid,uuid,text,text)'::regprocedure);
   begin
-    v_mut := replace(v_rec, E'where conversation.unit_id=j.unit_id and conversation.customer_id=j.customer_id\n        and conversation.channel = ''whatsapp''',
+    v_mut := replace(pg_temp.ig79_lf(v_rec), E'where conversation.unit_id=j.unit_id and conversation.customer_id=j.customer_id\n        and conversation.channel = ''whatsapp''',
                             'where conversation.unit_id=j.unit_id and conversation.customer_id=j.customer_id');
-    if v_mut = v_rec then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_rec) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_43();
   exception
@@ -4126,9 +4138,9 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_goc, E'where customer_id = p_customer_id and unit_id = p_unit_id\n    and channel = ''whatsapp''',
+    v_mut := replace(pg_temp.ig79_lf(v_goc), E'where customer_id = p_customer_id and unit_id = p_unit_id\n    and channel = ''whatsapp''',
                             'where customer_id = p_customer_id and unit_id = p_unit_id');
-    if v_mut = v_goc then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    if v_mut = pg_temp.ig79_lf(v_goc) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_43();
   exception
@@ -4156,8 +4168,8 @@ declare
 begin
   v_def := pg_get_functiondef('public.conversations_channel_guard()'::regprocedure);
   begin
-    v_mut := replace(v_def, 'if v_contact_unit is null or v_contact_unit is distinct from new.unit_id then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_contact_unit is null or v_contact_unit is distinct from new.unit_id then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_44();
   exception
@@ -4165,8 +4177,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'if tg_op = ''UPDATE'' and new.channel is distinct from old.channel then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if tg_op = ''UPDATE'' and new.channel is distinct from old.channel then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_44();
   exception
@@ -4174,8 +4186,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'if v_cust_org is null or v_cust_org is distinct from v_unit_org then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_cust_org is null or v_cust_org is distinct from v_unit_org then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_44();
   exception
@@ -4183,8 +4195,8 @@ begin
     when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'if tg_op = ''UPDATE'' and new.unit_id is distinct from old.unit_id then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if tg_op = ''UPDATE'' and new.unit_id is distinct from old.unit_id then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_44();
   exception
@@ -4192,8 +4204,8 @@ begin
     when others then s4 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'if new.customer_id is distinct from v_contact_cust then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if new.customer_id is distinct from v_contact_cust then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_44();
   exception
@@ -4226,8 +4238,8 @@ declare
 begin
   v_def := pg_get_functiondef('public.get_or_create_instagram_conversation(uuid)'::regprocedure);
   begin
-    v_mut := replace(v_def, 'if v_anon is not null then', 'if false then');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_anon is not null then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_45();
   exception
@@ -4235,8 +4247,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, 'where cv.instagram_contact_id = p_contact_id;', 'where false;');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'where cv.instagram_contact_id = p_contact_id;', 'where false;');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_45();
   exception
@@ -4263,8 +4275,8 @@ declare
 begin
   v_def := pg_get_functiondef('public.link_instagram_contact_customer(uuid,uuid)'::regprocedure);
   begin
-    v_mut := replace(v_def, E'\n       and cu.organization_id = v_org', '');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'\n       and cu.organization_id = v_org', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_46();
   exception
@@ -4272,8 +4284,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, E'\n       and cu.deleted_at is null', '');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'\n       and cu.deleted_at is null', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_46();
   exception
@@ -4281,8 +4293,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, E'where cv.instagram_contact_id = p_contact_id\n     and cv.customer_id is distinct from p_customer_id;', 'where false;');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'where cv.instagram_contact_id = p_contact_id\n     and cv.customer_id is distinct from p_customer_id;', 'where false;');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_46();
   exception
@@ -4372,8 +4384,8 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, E'where cv.instagram_contact_id = new.id\n     and cv.contact_name is not null;', 'where cv.contact_name is not null and cv.channel = ''instagram'';');
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'where cv.instagram_contact_id = new.id\n     and cv.contact_name is not null;', 'where cv.contact_name is not null and cv.channel = ''instagram'';');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_48();
   exception
@@ -4406,8 +4418,8 @@ begin
   select pg_get_constraintdef(c.oid) || '/' || c.convalidated into v_chk
     from pg_constraint c where c.conrelid = 'public.reservations'::regclass and c.conname = 'reservations_source_check';
   begin
-    v_mut := replace(v_def, $s$if new.source is distinct from 'whatsapp' then$s$, $s$if new.source not in ('whatsapp', 'instagram') then$s$);
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), $s$if new.source is distinct from 'whatsapp' then$s$, $s$if new.source not in ('whatsapp', 'instagram') then$s$);
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_51();
   exception
@@ -4464,8 +4476,8 @@ begin
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    v_mut := replace(v_def, $s$if new.source is distinct from 'whatsapp' then$s$, $s$if new.source not in ('whatsapp', 'instagram') then$s$);
-    if v_mut = v_def then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    v_mut := replace(pg_temp.ig79_lf(v_def), $s$if new.source is distinct from 'whatsapp' then$s$, $s$if new.source not in ('whatsapp', 'instagram') then$s$);
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_52();
   exception
@@ -4501,15 +4513,15 @@ do $$
 declare
   v_def text; v_mut text; s1 text; s2 text; s3 text; d text;
   leg_papel constant text := 'and um.role in (''owner'', ''gerente'')';
-  leg_grant constant text := 'or not exists (
-       select 1 from public.unit_module_grants g';
+  leg_grant constant text := pg_temp.ig79_lf('or not exists (
+       select 1 from public.unit_module_grants g');
 begin
   v_def := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure);
   begin
-    if array_length(string_to_array(v_def, leg_papel), 1) <> 2 then
+    if array_length(string_to_array(pg_temp.ig79_lf(v_def), leg_papel), 1) <> 2 then
       raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (papel)';
     end if;
-    v_mut := replace(v_def, leg_papel, '');
+    v_mut := replace(pg_temp.ig79_lf(v_def), leg_papel, '');
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_61();
   exception
@@ -4517,10 +4529,10 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    if array_length(string_to_array(v_def, leg_grant), 1) <> 2 then
+    if array_length(string_to_array(pg_temp.ig79_lf(v_def), leg_grant), 1) <> 2 then
       raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (grant)';
     end if;
-    v_mut := replace(v_def, leg_grant, 'or false and not exists (
+    v_mut := replace(pg_temp.ig79_lf(v_def), leg_grant, 'or false and not exists (
        select 1 from public.unit_module_grants g');
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_61();
@@ -4531,10 +4543,10 @@ begin
   -- (c) guarda virando `(papel e grant) ou platform_admin`: o admin pula o
   -- módulo (conecta numa unidade sem grant).
   begin
-    if array_length(string_to_array(v_def, leg_grant), 1) <> 2 then
+    if array_length(string_to_array(pg_temp.ig79_lf(v_def), leg_grant), 1) <> 2 then
       raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (grant)';
     end if;
-    v_mut := replace(v_def, leg_grant, 'or not app_private.is_platform_admin(p_actor) and not exists (
+    v_mut := replace(pg_temp.ig79_lf(v_def), leg_grant, 'or not app_private.is_platform_admin(p_actor) and not exists (
        select 1 from public.unit_module_grants g');
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_61();
@@ -4566,10 +4578,10 @@ declare
 begin
   v_def := pg_get_functiondef('public.disconnect_instagram_account(uuid,uuid)'::regprocedure);
   begin
-    if array_length(string_to_array(v_def, leg_papel), 1) <> 2 then
+    if array_length(string_to_array(pg_temp.ig79_lf(v_def), leg_papel), 1) <> 2 then
       raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (papel)';
     end if;
-    v_mut := replace(v_def, leg_papel, '');
+    v_mut := replace(pg_temp.ig79_lf(v_def), leg_papel, '');
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_62();
   exception
@@ -4577,10 +4589,10 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    if array_length(string_to_array(v_def, leg_unid), 1) <> 2 then
+    if array_length(string_to_array(pg_temp.ig79_lf(v_def), leg_unid), 1) <> 2 then
       raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (unidade)';
     end if;
-    v_mut := replace(v_def, leg_unid, 'where true');
+    v_mut := replace(pg_temp.ig79_lf(v_def), leg_unid, 'where true');
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_62();
   exception
@@ -4589,10 +4601,10 @@ begin
   end;
   -- (c) o ramo P0002 de conta inexistente de volta (oráculo de existência).
   begin
-    if array_length(string_to_array(v_def, leg_inex), 1) <> 2 then
+    if array_length(string_to_array(pg_temp.ig79_lf(v_def), leg_inex), 1) <> 2 then
       raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (inexistente)';
     end if;
-    v_mut := replace(v_def, leg_inex, 'if not found then
+    v_mut := replace(pg_temp.ig79_lf(v_def), leg_inex, 'if not found then
     raise exception ''instagram_account_not_found'' using errcode = ''P0002'';
   end if;
   if p_actor is null');
@@ -4631,10 +4643,10 @@ begin
     when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
   begin
-    if array_length(string_to_array(v_def, leg_anon), 1) <> 2 then
+    if array_length(string_to_array(pg_temp.ig79_lf(v_def), leg_anon), 1) <> 2 then
       raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (anonimizacao)';
     end if;
-    v_mut := replace(v_def, leg_anon, 'if false then');
+    v_mut := replace(pg_temp.ig79_lf(v_def), leg_anon, 'if false then');
     execute v_mut;
     raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_63();
   exception

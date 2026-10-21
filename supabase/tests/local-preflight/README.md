@@ -2717,6 +2717,12 @@ Cada C-IG-1.x roda o MESMO caso sob sabotagem num subbloco desfeito e exige
 reprovação, depois exige aprovação com o objeto real conferido contra o
 catálogo; as mutações de corpo partem de `pg_get_functiondef` + `replace` e
 reprovam se o trecho sumir. O motivo de cada reprovação sai como NOTICE.
+Os controles são indiferentes a fim de linha: com `core.autocrlf=true`
+(checkout no Windows) as migrations chegam ao psql em CRLF e o corpo no
+catálogo carrega os CRs, então o trecho é procurado (e o "uma vez só"/TRECHO
+AUSENTE conferido) no corpo sem CR (`pg_temp.ig79_lf`), o texto sabotado sai
+em LF, e a restauração é o rollback da subtransação, que devolve o corpo
+original byte a byte para a comparação com o catálogo.
 
 **Task 1.2** (migration `20261021120100_instagram_accounts_contacts.sql`):
 IG-2.1 membro de A não lê contato de B, `get_instagram_account_status` recusa
@@ -2983,7 +2989,12 @@ tabelas do módulo nem segredo `instagram-account-*` no Vault. Fix round 2 da
 1.6 (banco `ig79_fix2`): o 79 sobre as migrations do commit anterior dá 75/77
 (exit 3: IG-6.2 e C-IG-6.2 reprovando pelo `P0002` de conta inexistente);
 com a migration corrigida, 77/77 após aplicar, após reaplicar as cinco e
-repetindo o 79, sem resíduo.
+repetindo o 79, sem resíduo. Fix round 3 (21/10/2026, depois do rebase que
+renomeou as migrations para 20261021…): com as cinco em CRLF na cópia de
+trabalho (`ig79_fix3a`), 77/77 após aplicar e após reaplicar (antes do ajuste
+dos controles, 73/77: C-IG-4.2, 4.3, 4.6 e 4.8); com cópias sem CR das cinco
+(`ig79_fix3b`), 77/77 após aplicar e após reaplicar; o próprio 79 em CRLF
+sobre o `ig79_fix3a`, 77/77; RED na guarda (exit 3) nos dois bancos.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
 nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A

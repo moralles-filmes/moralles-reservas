@@ -586,6 +586,7 @@ commit;
 --
 -- ROLLBACK (só enquanto não houver conversa do Instagram; reponha os corpos
 -- de 20260905143453:204 e 20261019183559:777 sem o filtro de canal):
+--   begin; set local lock_timeout = '5s';
 --   drop function if exists public.link_instagram_contact_customer(uuid, uuid);
 --   drop function if exists public.get_or_create_instagram_conversation(uuid);
 --   drop trigger if exists conversations_clear_instagram_contact_name_trg on public.instagram_contacts;
@@ -600,3 +601,4 @@ commit;
 --   alter table public.conversations alter column customer_id set not null;
 --   alter table public.conversations drop column if exists instagram_contact_id;
 --   alter table public.conversations drop column if exists channel;
+--   commit;
