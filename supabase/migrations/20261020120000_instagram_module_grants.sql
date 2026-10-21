@@ -108,6 +108,10 @@ create policy instagram_settings_select on public.instagram_settings
   );
 
 -- Operador é membro, mas não escreve: o UPDATE dele casa zero linhas.
+-- O `exists` sobre `unit_members` é inline e roda com o papel do caller: depende
+-- de o membro ler a PRÓPRIA linha sob a RLS de `unit_members` (policy
+-- `unit_member_read_unit_members`); não usa `public.unit_role` porque o EXECUTE
+-- dela foi revogado de `authenticated` (085:191).
 drop policy if exists instagram_settings_update on public.instagram_settings;
 create policy instagram_settings_update on public.instagram_settings
   for update to authenticated

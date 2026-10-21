@@ -293,7 +293,8 @@ as $$
 $$;
 
 -- Purga: `done` em 7 dias, `dead` em 30. Só alcança estado terminal: linha
--- viva nunca é apagada. Roda dentro da varredura do worker.
+-- viva nunca é apagada. Roda no job de pg_cron `instagram-inbound-purge`
+-- (migration 20261020120500), não na varredura do worker.
 create or replace function public.purge_instagram_inbound_events()
 returns integer
 language sql

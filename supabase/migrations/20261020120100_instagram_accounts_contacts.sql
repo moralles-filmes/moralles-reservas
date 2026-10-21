@@ -17,7 +17,7 @@
 --   * RPCs só `service_role` de conexão, leitura do token, assinatura do
 --     webhook, renovação, troca de status e desconexão.
 --   * `instagram_contacts`: o interlocutor do Direct (IGSID por conta). Membro
---     da unidade ou platform_admin lê; ninguém além do `service_role` escreve.
+--     da unidade ou platform_admin lê; só RPC/trigger DEFINER escreve.
 --   * `instagram_contact_reservations`: que reserva nasceu de qual contato.
 --     FORCE RLS sem policy; gravado só por `record_instagram_contact_reservation`.
 --   * Trigger em `customers`: o soft delete LGPD (`deleted_at`) apaga IGSID,
@@ -126,7 +126,7 @@ create table if not exists public.instagram_contacts (
 );
 
 comment on table public.instagram_contacts is
-  'Interlocutor do Direct (IGSID por conta). Unidade e organizacao vem da conta; cliente, se houver, e da mesma organizacao. Membro da unidade ou platform_admin le; so service_role escreve. Anonimizado junto com o cliente (trigger em customers).';
+  'Interlocutor do Direct (IGSID por conta). Unidade e organizacao vem da conta; cliente, se houver, e da mesma organizacao. Membro da unidade ou platform_admin le; so RPC/trigger DEFINER escreve (service_role so le). Anonimizado junto com o cliente (trigger em customers).';
 
 create index if not exists instagram_contacts_unit_idx
   on public.instagram_contacts (unit_id);
@@ -136,7 +136,8 @@ create index if not exists instagram_contacts_customer_idx
   on public.instagram_contacts (customer_id);
 
 -- Guarda de coerência do contato. SECURITY INVOKER: quem grava é RPC dona
--- `postgres`, o `service_role` ou o trigger de anonimização (DEFINER).
+-- `postgres` ou o trigger de anonimização (DEFINER); `service_role` só lê.
+-- Também torna a anonimização irreversível (`anonymized_at` não volta a nulo).
 create or replace function public.instagram_contact_tenant_guard()
 returns trigger
 language plpgsql
@@ -153,6 +154,13 @@ begin
           or new.unit_id is distinct from old.unit_id
           or new.organization_id is distinct from old.organization_id) then
     raise exception 'instagram_contacts: conta, unidade e organizacao sao imutaveis'
+      using errcode = 'check_violation';
+  end if;
+
+  -- Anonimização LGPD é só de ida: um contato anonimizado nunca volta a ter
+  -- `anonymized_at` nulo (nem com um IGSID novo que satisfaça o CHECK).
+  if tg_op = 'UPDATE' and old.anonymized_at is not null and new.anonymized_at is null then
+    raise exception 'instagram_contacts: anonimizacao e irreversivel'
       using errcode = 'check_violation';
   end if;
 
@@ -183,7 +191,7 @@ $$;
 
 drop trigger if exists instagram_contacts_tenant_guard_trg on public.instagram_contacts;
 create trigger instagram_contacts_tenant_guard_trg
-  before insert or update of instagram_account_id, unit_id, organization_id, customer_id
+  before insert or update of instagram_account_id, unit_id, organization_id, customer_id, anonymized_at
   on public.instagram_contacts
   for each row execute function public.instagram_contact_tenant_guard();
 
@@ -209,9 +217,11 @@ create index if not exists instagram_contact_reservations_unit_idx
 -- 4. RLS e ACL de tabela
 -- ============================================================================
 -- O `revoke` inclui `service_role` para tirar o que os default privileges do
--- Supabase dão. Contas e ledger: `service_role` só LÊ (o webhook e o worker de
--- renovação listam contas; a escrita é só pelas RPCs DEFINER, que conferem
--- tenant, Vault e transições). Contatos: CRUD para `service_role`.
+-- Supabase dão. Contas, contatos e ledger: `service_role` só LÊ (o webhook e o
+-- worker de renovação listam contas; a escrita é só pelas RPCs DEFINER, que
+-- conferem tenant, Vault e transições). Escrevem em contatos só
+-- `upsert_instagram_contact`, `link_instagram_contact_customer` (120300) e o
+-- trigger de anonimização, os três SECURITY DEFINER.
 alter table public.instagram_accounts enable row level security;
 alter table public.instagram_accounts force row level security;
 alter table public.instagram_contacts enable row level security;
@@ -224,7 +234,7 @@ grant select on table public.instagram_accounts to service_role;
 
 revoke all on table public.instagram_contacts from public, anon, authenticated, service_role;
 grant select on table public.instagram_contacts to authenticated;
-grant select, insert, update, delete on table public.instagram_contacts to service_role;
+grant select on table public.instagram_contacts to service_role;
 
 revoke all on table public.instagram_contact_reservations from public, anon, authenticated, service_role;
 grant select on table public.instagram_contact_reservations to service_role;
@@ -263,15 +273,31 @@ declare
   v_secret_id uuid;
   v_name      text;
 begin
-  if p_account_id is null or p_actor is null then
+  if p_account_id is null then
     raise exception 'invalid_instagram_account_argument' using errcode = '22023';
   end if;
 
-  select a.id, a.token_secret_id into v_acc
+  select a.id, a.unit_id, a.token_secret_id into v_acc
     from public.instagram_accounts a where a.id = p_account_id
     for update;
   if not found then
     raise exception 'instagram_account_not_found' using errcode = 'P0002';
+  end if;
+
+  -- O ator é owner/gerente da unidade DA CONTA (lida da linha travada, nunca
+  -- de parâmetro) ou platform_admin. Sem exigir o grant: desconectar tem de
+  -- funcionar depois da revogação do módulo. Ator nulo cai no mesmo 42501.
+  if p_actor is null
+     or not (
+       exists (
+         select 1 from public.unit_members um
+          where um.unit_id = v_acc.unit_id
+            and um.user_id = p_actor
+            and um.role in ('owner', 'gerente')
+       )
+       or app_private.is_platform_admin(p_actor)
+     ) then
+    raise exception 'instagram_account_forbidden' using errcode = '42501';
   end if;
 
   v_name := 'instagram-account-' || p_account_id::text || '-token';
@@ -330,7 +356,7 @@ begin
   p_ig_user_id := btrim(p_ig_user_id);
   p_token := btrim(p_token);
 
-  if p_unit_id is null or p_actor is null
+  if p_unit_id is null
      or p_ig_user_id is null or p_ig_user_id !~ '^[0-9]{1,64}$' then
     raise exception 'invalid_instagram_account_argument' using errcode = '22023';
   end if;
@@ -338,9 +364,28 @@ begin
     raise exception 'invalid_instagram_token' using errcode = '22023';
   end if;
 
+  -- Autorização no SQL, não só na EF: o ator é owner/gerente DESTA unidade ou
+  -- platform_admin, e a unidade tem o módulo liberado (grant ativo). Ator
+  -- nulo, unidade inexistente, papel insuficiente e módulo não liberado caem
+  -- no MESMO 42501 (sem oráculo de existência).
   select u.organization_id into v_org from public.units u where u.id = p_unit_id;
-  if v_org is null then
-    raise exception 'instagram_unit_not_found' using errcode = '22023';
+  if v_org is null or p_actor is null
+     or not (
+       exists (
+         select 1 from public.unit_members um
+          where um.unit_id = p_unit_id
+            and um.user_id = p_actor
+            and um.role in ('owner', 'gerente')
+       )
+       or app_private.is_platform_admin(p_actor)
+     )
+     or not exists (
+       select 1 from public.unit_module_grants g
+        where g.unit_id = p_unit_id
+          and g.module = 'instagram'
+          and g.revoked_at is null
+     ) then
+    raise exception 'instagram_account_forbidden' using errcode = '42501';
   end if;
 
   perform pg_advisory_xact_lock(hashtextextended('instagram_account_ig:' || p_ig_user_id, 0));

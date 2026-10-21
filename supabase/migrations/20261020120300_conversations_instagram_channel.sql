@@ -74,12 +74,15 @@ alter table public.conversations
   foreign key (instagram_contact_id) references public.instagram_contacts(id) on delete restrict not valid;
 alter table public.conversations validate constraint conversations_instagram_contact_id_fkey;
 
+-- Identidade por canal. O `wa_chat_lid` (LID do WhatsApp) nunca entra numa
+-- conversa do Instagram: um upsert do WhatsApp que achasse a conversa IG por
+-- engano e trouxesse o LID estoura aqui em vez de gravá-lo nela.
 alter table public.conversations drop constraint if exists conversations_channel_identity_check;
 alter table public.conversations
   add constraint conversations_channel_identity_check
   check (
     (channel = 'whatsapp' and customer_id is not null and instagram_contact_id is null)
-    or (channel = 'instagram' and instagram_contact_id is not null)
+    or (channel = 'instagram' and instagram_contact_id is not null and wa_chat_lid is null)
   ) not valid;
 alter table public.conversations validate constraint conversations_channel_identity_check;
 

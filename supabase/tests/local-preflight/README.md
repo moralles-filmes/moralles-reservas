@@ -2691,13 +2691,15 @@ As tasks seguintes da Fase 1 acrescentam migrations a esta sequência (na ordem
 dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 
 **Ordinais.** Faixa 7901–7999 (a 78 é da Entrega B). Task 1.1: casos
-7901–7906, controles 7908–7913; 7907, 7914 e 7915 livres. Task 1.2: casos
+7901–7906, controles 7908–7913; 7907 livre. Task 1.2: casos
 7920–7929, controles 7930–7939. Task 1.3: casos 7940–7947, controles
 7950–7957; 7948–7949 e 7958–7959 livres. Task 1.4: casos 7960–7966,
 controles 7970–7976, e no fix round 1 o IG-4.8 (7967) e o C-IG-4.8 (7978);
 7968–7969, 7977 e 7979 livres. Task 1.5: casos 7980–7982, controles
-7990–7991; 7983–7989 e 7992–7999 livres. O 79 imprime os ordinais, a contagem
-e **aborta** se ela divergir do esperado (hoje **69 e 69**); quem acrescenta
+7990–7991; 7983–7989 livres. Task 1.6 (fix round 1 dos gates): casos
+7914–7917, controles 7992–7995; 7918–7919 e 7996–7999 livres. O 79 imprime os
+ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **77 e
+77**); quem acrescenta
 casos atualiza o número na última instrução do arquivo.
 
 **Task 1.1** (migration `20261020120000_instagram_module_grants.sql`):
@@ -2840,6 +2842,53 @@ anonimizar o contato zera o `contact_name` da conversa IG dele e não o de outro
 contato (C-IG-4.8: sem o trigger o nome sobrevive; sem o filtro do contato
 todos somem).
 
+**Task 1.6** (fix round 1 dos gates; migrations 120000/120100/120200/120300
+editadas no lugar, nunca aplicadas fora de banco descartável). A
+`store_instagram_account_connection` autoriza no SQL: o ator tem de ser
+owner/gerente da unidade (em `unit_members`) ou platform_admin, E a unidade
+tem de ter grant ativo do módulo `instagram`; ator nulo, unidade inexistente,
+papel insuficiente e módulo não liberado caem no MESMO `42501
+instagram_account_forbidden` (antes, unidade inexistente era `22023`). A
+`disconnect_instagram_account` prende o ator à unidade DA CONTA (lida da linha
+travada) com a mesma regra de papel, sem exigir o grant (desconectar funciona
+depois da revogação). `service_role` perde INSERT/UPDATE/DELETE em
+`instagram_contacts` (só lê; escrevem só `upsert_instagram_contact`,
+`link_instagram_contact_customer` e o trigger de anonimização, os três
+SECURITY DEFINER), e a guarda do contato recusa devolver `anonymized_at` a
+nulo (`23514`, mesmo com um IGSID novo que satisfaz o CHECK). O CHECK de
+identidade de `conversations` ganha `wa_chat_lid is null` no ramo do
+Instagram. IG-6.1 (7914): sem grant, operador, owner de A na unidade B,
+unidade inexistente, ator nulo e grant revogado com o mesmo `42501` e nenhuma
+conta criada; owner e gerente com grant reaproveitam a mesma linha; o
+platform_admin sem membership conecta em B. IG-6.2 (7915): operador, owner de
+A na conta de B, gerente de B na conta de A e ator nulo recebem `42501` com a
+conta intacta (token legível); owner com o grant revogado e platform_admin
+desconectam, com `disconnected_by` = ator. IG-6.3 (7916): UPDATE (de
+`customer_id`), INSERT e DELETE diretos como `service_role` dão `42501`, a
+leitura e o link pela RPC funcionam, desanonimizar dá `23514` e os escritores
+são DEFINER. IG-6.4 (7917): conversa IG com `wa_chat_lid` (INSERT e UPDATE)
+dá `23514`, WhatsApp com `wa_chat_lid` segue aceito e o CHECK validado cita
+a perna nova. O IG-2.1 passa a conferir `service_role` só com SELECT em
+contatos. Controles: C-IG-6.1 (7992) tira a perna de papel (o operador conecta)
+e a perna do grant (conecta sem módulo) do corpo real; C-IG-6.2 (7993) tira a
+perna de papel (o operador desconecta) e a amarração à unidade da conta (owner
+de A desconecta a conta de B); C-IG-6.3 (7994) devolve UPDATE a `service_role`
+(o IG-6.3 e o catálogo do IG-2.1 reprovam) e tira a perna da anonimização
+irreversível; C-IG-6.4 (7995) recria o CHECK (NOT VALID + VALIDATE) sem a
+perna. Todos conferem o corpo/CHECK/ACL restaurado contra o catálogo. Efeitos
+nos casos antigos: o `pg_temp.ig79_store` passa a garantir, como `postgres`
+e dentro da subtransação do caso, um grant ativo na unidade antes de conectar
+(os casos das Tasks 1.2–1.5 já conectavam com owner/gerente da unidade); o
+IG-6.1 usa o `pg_temp.ig79_store_raw`, sem esse efeito. O C-IG-4.2 muda de
+expectativa: com o CHECK novo, a RPC do WhatsApp sabotada (sem o filtro de
+canal) estoura `23514` ao tentar gravar o `wa_chat_lid` na conversa IG, em
+vez de gravá-lo, e sem lid devolve a própria conversa IG (Y2) — o IG-4.2
+continua reprovando. Fora desta rodada (pendentes de decisão): FKs
+`on delete no action` (o RESTRICT atual não aborta a exclusão da unidade sem
+conversa, e com conversa quem aborta é o `conversations_unit_id_fk` RESTRICT
+da 013) e auditoria de `instagram_settings` (o `audit_trigger_func` lê
+`NEW.id`, coluna que a tabela não tem).
+
 **`lock_timeout` da 1.4 (fora do 79, duas sessões).** A migration faz
 `set local lock_timeout = '5s'` logo após o `begin`. O 79 roda numa sessão só e
 não consegue segurar um lock concorrente, então a prova é manual, num banco
@@ -2898,9 +2947,11 @@ P -c "begin; alter table public.reservations drop constraint reservations_source
       alter table public.reservations add constraint reservations_source_check check (source in ('web','whatsapp'));
       alter table public.reservations add constraint reservations_source_drift79 check (source <> ''); commit;"
 P -f supabase/migrations/20261020120400_reservations_source_instagram.sql   # exit 3, reservations_source_check_drift, nada muda
+# cópia sem o bloco `do $$ … $$;` da guarda de drift (o único `do $$` do arquivo)
+node -e "const f=require('fs');const s=f.readFileSync('supabase/migrations/20261020120400_reservations_source_instagram.sql','utf8');const a=s.indexOf('do \$\$');const b=s.indexOf('\$\$;',s.indexOf('\$\$',a+4)+2)+3;if(a<0||b<3)process.exit(1);f.writeFileSync('/tmp/120400-sem-guarda.sql',s.slice(0,a)+s.slice(b))"
 P -f /tmp/120400-sem-guarda.sql                                             # cópia sem o bloco do drift: exit 0, DOIS CHECKs de source sobrevivem
 P -c "alter table public.reservations drop constraint reservations_source_drift79"
-P -f supabase/migrations/20261020120400_reservations_source_instagram.sql   # restaura; o 79 volta a 69/69
+P -f supabase/migrations/20261020120400_reservations_source_instagram.sql   # restaura; o 79 volta a 77/77
 ```
 
 O estado que a cópia sem guarda deixa (o CHECK novo somado a outro de
@@ -2918,6 +2969,13 @@ instagram` (exit 3) com 1.1–1.4, 64/68 (só os quatro da 1.5 reprovando) com a
 guarda da 1.5 removida numa cópia, e 68/68 depois da 120400 e de novo após
 reaplicar as cinco (69/69 com o IG-5.3 do fix round 1), sem linha residual nas
 tabelas novas, no `audit_log` da conta, segredo no Vault nem schema `net`.
+Em 21/10/2026 (Task 1.6, mesmo ambiente, banco `ig79_fix` recriado do zero):
+RED na guarda (exit 3) antes da 1.1; o 79 novo sobre as migrations ANTERIORES
+à 1.6 dá 66/77 (exit 3: IG-6.1..6.4, IG-2.1 e os controles C-IG-2.1, C-IG-4.2 e
+C-IG-6.1..6.4 reprovando); com as migrations da 1.6 cruas, 77/77 após a
+primeira aplicação, 77/77 após reaplicar as cinco e 77/77 repetindo o 79 no
+mesmo banco, sem linha residual nas tabelas novas, no `audit_log` das
+tabelas do módulo nem segredo `instagram-account-*` no Vault.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
 nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A
