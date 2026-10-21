@@ -63,24 +63,30 @@ export function useAiPromptSlot() {
   });
 }
 
-/** Histórico paginado (50 por vez, da versão maior para a menor). */
+/**
+ * Histórico paginado (50 por vez, da versão maior para a menor). Paginação por
+ * keyset: a página seguinte lê `version < última da anterior`, então uma
+ * publicação no meio não desloca o que já foi carregado (offset repetiria linha).
+ */
 export function useAiPromptVersionList() {
   return useInfiniteQuery({
     queryKey: [...AI_PROMPT_QUERY_KEY, "versions"],
-    initialPageParam: 0,
+    // `null` = primeira página; depois, a última `version` da página anterior.
+    initialPageParam: null as number | null,
     queryFn: async ({ pageParam }): Promise<AiPromptVersion[]> => {
-      const { data, error } = await supabase
+      let query = supabase
         .from("ai_prompt_versions")
         .select(VERSION_COLUMNS)
         .eq("slot", GLOBAL_PROMPT_SLOT)
-        .order("version", { ascending: false })
-        .range(pageParam, pageParam + AI_PROMPT_PAGE_SIZE - 1);
+        .order("version", { ascending: false });
+      if (pageParam !== null) query = query.lt("version", pageParam);
+      const { data, error } = await query.range(0, AI_PROMPT_PAGE_SIZE - 1);
       if (error) throw error;
       return (data ?? []) as AiPromptVersion[];
     },
     // Página cheia: pode haver mais; incompleta: acabou.
-    getNextPageParam: (lastPage, _pages, lastPageParam) =>
-      lastPage.length === AI_PROMPT_PAGE_SIZE ? lastPageParam + AI_PROMPT_PAGE_SIZE : undefined,
+    getNextPageParam: (lastPage) =>
+      lastPage.length === AI_PROMPT_PAGE_SIZE ? lastPage[lastPage.length - 1].version : undefined,
   });
 }
 

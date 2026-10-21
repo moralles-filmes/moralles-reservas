@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Bot, History, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -59,7 +59,7 @@ function bodyProblem(normalized: string): string | null {
 }
 
 function DiffView({ before, after }: { before: string; after: string }) {
-  const lines = diffLines(before, after);
+  const lines = useMemo(() => diffLines(before, after), [before, after]);
   if (lines.every((l) => l.kind === "same")) {
     return <p className="text-sm text-muted-foreground">Sem diferenças em relação à versão ativa.</p>;
   }
@@ -119,6 +119,8 @@ function ConfirmForm({
 }: Omit<ConfirmDialogProps, "open" | "onOpenChange"> & { onCancel: () => void }) {
   const [note, setNote] = useState("");
   const noteOk = isValidGlobalPromptNote(note);
+  // Só reclama de motivo já digitado (vazio fica só com o botão bloqueado).
+  const noteInvalid = note !== "" && !noteOk;
   return (
     <>
       <ResponsiveDialogHeader>
@@ -135,10 +137,20 @@ function ConfirmForm({
             onChange={(e) => setNote(e.target.value)}
             placeholder="Por que esta mudança?"
             disabled={pending}
+            aria-invalid={noteInvalid}
+            aria-describedby={noteInvalid ? "prompt-note-counter prompt-note-problem" : "prompt-note-counter"}
           />
-          <p className={cn("text-xs", charLength(note) > GLOBAL_PROMPT_NOTE_MAX_CHARS ? "text-destructive" : "text-muted-foreground")}>
+          <p
+            id="prompt-note-counter"
+            className={cn("text-xs", charLength(note) > GLOBAL_PROMPT_NOTE_MAX_CHARS ? "text-destructive" : "text-muted-foreground")}
+          >
             {charLength(note)}/{GLOBAL_PROMPT_NOTE_MAX_CHARS}
           </p>
+          {noteInvalid && (
+            <p id="prompt-note-problem" className="text-xs text-destructive">
+              Escreva de 1 a {GLOBAL_PROMPT_NOTE_MAX_CHARS} caracteres, com algum texto.
+            </p>
+          )}
         </div>
         <div className="space-y-2">
           <p className="text-sm font-medium">Mudanças em relação à versão ativa</p>
@@ -197,8 +209,6 @@ function ActiveVersionCard({
   );
 }
 
-type HistoryDialog = { kind: "diff" | "restore"; version: AiPromptVersion };
-
 function HistoryCard({
   active,
   userId,
@@ -209,7 +219,9 @@ function HistoryCard({
   onRestore: (version: AiPromptVersion) => void;
 }) {
   const list = useAiPromptVersionList();
+  // A versão do diff fica guardada ao fechar: o corpo não esvazia durante a animação de saída.
   const [diffOf, setDiffOf] = useState<AiPromptVersion | null>(null);
+  const [diffOpen, setDiffOpen] = useState(false);
   const versions = list.data?.pages.flat() ?? [];
 
   return (
@@ -257,7 +269,10 @@ function HistoryCard({
                     </div>
                     <p className="text-sm break-words">{v.note}</p>
                     <div className="flex flex-wrap gap-2">
-                      <Button variant="outline" size="sm" onClick={() => setDiffOf(v)}>
+                      <Button variant="outline" size="sm" onClick={() => {
+                          setDiffOf(v);
+                          setDiffOpen(true);
+                        }}>
                         Ver diff
                       </Button>
                       {!isActive && (
@@ -285,7 +300,7 @@ function HistoryCard({
         )}
       </CardContent>
 
-      <ResponsiveDialog open={diffOf !== null} onOpenChange={(open) => !open && setDiffOf(null)}>
+      <ResponsiveDialog open={diffOpen} onOpenChange={setDiffOpen}>
         <ResponsiveDialogContent>
           <ResponsiveDialogHeader>
             <ResponsiveDialogTitle>Versão {diffOf?.version} contra a ativa</ResponsiveDialogTitle>
@@ -297,7 +312,7 @@ function HistoryCard({
             {diffOf && <DiffView before={active.body} after={diffOf.body} />}
           </ResponsiveDialogBody>
           <ResponsiveDialogFooter className="justify-end">
-            <Button variant="outline" onClick={() => setDiffOf(null)}>
+            <Button variant="outline" onClick={() => setDiffOpen(false)}>
               Fechar
             </Button>
           </ResponsiveDialogFooter>
@@ -314,15 +329,20 @@ export default function PlatformAgenteIa() {
   const activate = useActivateAiPromptVersion();
   // O que sai para a RPC e para a validação é sempre `normalized` (só \n), qualquer que seja a origem do texto.
   // `null` = sem edição: o editor mostra o corpo ativo, inclusive o novo depois de publicar.
-  const [draft, setDraft] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"publish" | HistoryDialog | null>(null);
+  // `baseId` é a versão ativa em que a edição começou: é ela que a RPC espera (`40001` se a ativa mudou
+  // depois), e não a que a tela lê no instante de confirmar.
+  const [draft, setDraft] = useState<{ text: string; baseId: string } | null>(null);
+  const [dialog, setDialog] = useState<"publish" | "restore" | null>(null);
+  // Versão escolhida para restaurar; fica guardada ao fechar para o diálogo não esvaziar na animação de saída.
+  const [restoreTarget, setRestoreTarget] = useState<AiPromptVersion | null>(null);
 
   const state = slot.data;
-  const text = draft ?? state?.active.body ?? "";
+  const text = draft?.text ?? state?.active.body ?? "";
   const normalized = normalizeNewlines(text);
   const problem = bodyProblem(normalized);
   const unchanged = state ? normalized === normalizeNewlines(state.active.body) : true;
   const length = charLength(normalized);
+  const staleBase = !!state && draft !== null && draft.baseId !== state.activeVersionId;
 
   const fail = (error: unknown) => {
     toast.error(promptErrorMessage(error));
@@ -333,7 +353,7 @@ export default function PlatformAgenteIa() {
   const handlePublish = (note: string) => {
     if (!state) return;
     publish.mutate(
-      { body: normalized, note, expectedActiveVersionId: state.activeVersionId },
+      { body: normalized, note, expectedActiveVersionId: draft?.baseId ?? state.activeVersionId },
       {
         onSuccess: () => {
           toast.success("Nova versão publicada. Vale para todas as lojas em até 1 minuto.");
@@ -360,7 +380,6 @@ export default function PlatformAgenteIa() {
     );
   };
 
-  const restoring = dialog !== null && dialog !== "publish" && dialog.kind === "restore" ? dialog.version : null;
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -416,7 +435,19 @@ export default function PlatformAgenteIa() {
                 rows={14}
                 className="font-mono text-xs"
                 value={text}
-                onChange={(e) => setDraft(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setDraft((prev) => ({ text: value, baseId: prev?.baseId ?? state.activeVersionId }));
+                }}
+                aria-invalid={problem !== null}
+                aria-describedby={[
+                  "prompt-counter",
+                  problem && "prompt-problem",
+                  !problem && unchanged && "prompt-unchanged",
+                  staleBase && "prompt-stale",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
               />
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <p className="text-muted-foreground">
@@ -425,6 +456,7 @@ export default function PlatformAgenteIa() {
                   ))}
                 </p>
                 <p
+                  id="prompt-counter"
                   className={cn(length > GLOBAL_PROMPT_MAX_CHARS ? "text-destructive" : "text-muted-foreground")}
                   data-testid="prompt-counter"
                 >
@@ -432,9 +464,29 @@ export default function PlatformAgenteIa() {
                 </p>
               </div>
               {problem && (
-                <p className="text-sm text-destructive" role="alert">
+                <p id="prompt-problem" className="text-sm text-destructive" role="alert">
                   {problem}
                 </p>
+              )}
+              {!problem && unchanged && (
+                <p id="prompt-unchanged" className="text-sm text-muted-foreground">
+                  Sem alterações em relação à versão ativa.
+                </p>
+              )}
+              {staleBase && (
+                <div
+                  id="prompt-stale"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning"
+                >
+                  <p>A versão ativa mudou desde que você começou a editar. Revise o diff antes de publicar.</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDraft((prev) => prev && { ...prev, baseId: state.activeVersionId })}
+                  >
+                    Basear na versão ativa atual
+                  </Button>
+                </div>
               )}
               <div className="flex justify-end">
                 <Button onClick={() => setDialog("publish")} disabled={problem !== null || unchanged}>
@@ -461,7 +513,10 @@ export default function PlatformAgenteIa() {
           <HistoryCard
             active={state.active}
             userId={user?.id}
-            onRestore={(version) => setDialog({ kind: "restore", version })}
+            onRestore={(version) => {
+              setRestoreTarget(version);
+              setDialog("restore");
+            }}
           />
 
           <ConfirmDialog
@@ -477,15 +532,15 @@ export default function PlatformAgenteIa() {
           />
 
           <ConfirmDialog
-            open={restoring !== null}
+            open={dialog === "restore"}
             onOpenChange={(open) => !open && setDialog(null)}
-            title={`Restaurar versão ${restoring?.version ?? ""}`}
+            title={`Restaurar versão ${restoreTarget?.version ?? ""}`}
             description="Esta versão volta a ser a ativa para todas as lojas em até 1 minuto. Explique o motivo."
             confirmLabel="Restaurar"
             before={state.active.body}
-            after={restoring?.body ?? ""}
+            after={restoreTarget?.body ?? ""}
             pending={activate.isPending}
-            onConfirm={(note) => restoring && handleRestore(restoring, note)}
+            onConfirm={(note) => restoreTarget && handleRestore(restoreTarget, note)}
           />
         </>
       )}

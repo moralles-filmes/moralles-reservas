@@ -15,7 +15,7 @@ describe("promptErrorMessage", () => {
 
   it("40001 vira conflito de versão", () => {
     expect(promptErrorMessage(pg("40001", "prompt_version_conflict"))).toBe(
-      "Outra pessoa publicou uma versão. Recarregue antes de publicar.",
+      "A versão ativa mudou. Revise as mudanças e confirme de novo.",
     );
   });
 
@@ -48,7 +48,7 @@ describe("promptErrorMessage", () => {
   });
 
   it("decide por code, não por status: 40001 que chega como HTTP 500 é conflito", () => {
-    expect(promptErrorMessage({ ...pg("40001", "prompt_version_conflict"), status: 500 })).toMatch(/Outra pessoa/);
+    expect(promptErrorMessage({ ...pg("40001", "prompt_version_conflict"), status: 500 })).toBe("A versão ativa mudou. Revise as mudanças e confirme de novo.");
   });
 
   it("um token de 22023 em erro de outro code não muda a cópia", () => {

@@ -20,7 +20,7 @@ export function promptErrorMessage(error: unknown): string {
   if (typeof error !== "object" || error === null) return GENERIC;
   const { code, message } = error as { code?: unknown; message?: unknown };
   if (code === "42501") return "Sem permissão.";
-  if (code === "40001") return "Outra pessoa publicou uma versão. Recarregue antes de publicar.";
+  if (code === "40001") return "A versão ativa mudou. Revise as mudanças e confirme de novo.";
   if (code === "22023") {
     if (message === "prompt_note_invalid") return NOTE_INVALID;
     if (message === "prompt_version_invalid") return "Versão inválida ou já ativa.";

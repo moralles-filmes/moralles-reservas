@@ -16,25 +16,27 @@ const mocks = vi.hoisted(() => {
   const results = {
     slots: { data: null, error: null } as { data: unknown; error: unknown },
     versionById: { data: null, error: null } as { data: unknown; error: unknown },
-    // Resposta da lista por início do range.
-    listByStart: {} as Record<number, { data: unknown; error: unknown }>,
+    // Resposta da lista pelo cursor: o valor de `.lt("version", n)`, ou 0 na primeira página (sem `.lt`).
+    listByCursor: {} as Record<number, { data: unknown; error: unknown }>,
   };
   const rpc = vi.fn();
   const from = vi.fn((table: string) => {
-    let rangeStart: number | null = null;
+    let cursor = 0;
+    let ranged = false;
     let byId = false;
     const builder: Record<string, unknown> = {};
-    for (const m of ["select", "eq", "order", "range", "maybeSingle", "insert", "update", "upsert", "delete"]) {
+    for (const m of ["select", "eq", "order", "range", "lt", "maybeSingle", "insert", "update", "upsert", "delete"]) {
       builder[m] = (...args: unknown[]) => {
         calls.push({ table, method: m, args });
-        if (m === "range") rangeStart = args[0] as number;
+        if (m === "range") ranged = true;
+        if (m === "lt") cursor = args[1] as number;
         if (m === "eq" && args[0] === "id") byId = true;
         return builder;
       };
     }
     builder.then = (resolve: (v: unknown) => unknown) => {
       if (table === "ai_prompt_slots") return resolve(results.slots);
-      if (rangeStart !== null) return resolve(results.listByStart[rangeStart] ?? { data: [], error: null });
+      if (ranged) return resolve(results.listByCursor[cursor] ?? { data: [], error: null });
       return resolve(byId ? results.versionById : { data: null, error: null });
     };
     return builder;
@@ -68,7 +70,7 @@ afterEach(() => {
   mocks.calls.length = 0;
   mocks.results.slots = { data: null, error: null };
   mocks.results.versionById = { data: null, error: null };
-  mocks.results.listByStart = {};
+  mocks.results.listByCursor = {};
   vi.clearAllMocks();
 });
 
@@ -121,11 +123,12 @@ describe("useAiPromptSlot", () => {
 });
 
 describe("useAiPromptVersionList", () => {
-  it("lê 50 por página, da maior versão para a menor, sempre com .range", async () => {
-    mocks.results.listByStart[0] = { data: [row(2), row(1)], error: null };
+  it("lê 50 por página, da maior versão para a menor, sempre com .range(0, 49) e sem .lt na primeira", async () => {
+    mocks.results.listByCursor[0] = { data: [row(2), row(1)], error: null };
     const { result } = renderHook(() => useAiPromptVersionList(), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(callsOf("ai_prompt_versions", "range")).toEqual([[0, 49]]);
+    expect(callsOf("ai_prompt_versions", "lt")).toEqual([]);
     expect(callsOf("ai_prompt_versions", "order")).toEqual([["version", { ascending: false }]]);
     expect(callsOf("ai_prompt_versions", "eq")).toContainEqual(["slot", "global_persona"]);
     expect(result.current.data?.pages.flat().map((v) => v.version)).toEqual([2, 1]);
@@ -133,29 +136,30 @@ describe("useAiPromptVersionList", () => {
     expect(result.current.hasNextPage).toBe(false);
   });
 
-  it("página cheia habilita carregar mais, que lê o range seguinte", async () => {
-    mocks.results.listByStart[0] = { data: Array.from({ length: 50 }, (_, i) => row(120 - i)), error: null };
-    mocks.results.listByStart[50] = { data: [row(70)], error: null };
+  it("página cheia habilita carregar mais, que lê a próxima por keyset (.lt na última versão) com .range(0, 49)", async () => {
+    mocks.results.listByCursor[0] = { data: Array.from({ length: 50 }, (_, i) => row(120 - i)), error: null };
+    mocks.results.listByCursor[71] = { data: [row(70)], error: null };
     const { result } = renderHook(() => useAiPromptVersionList(), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.hasNextPage).toBe(true);
     await act(async () => {
       await result.current.fetchNextPage();
     });
-    expect(callsOf("ai_prompt_versions", "range")).toEqual([[0, 49], [50, 99]]);
+    expect(callsOf("ai_prompt_versions", "range")).toEqual([[0, 49], [0, 49]]);
+    expect(callsOf("ai_prompt_versions", "lt")).toEqual([["version", 71]]);
     await waitFor(() => expect(result.current.data?.pages.flat()).toHaveLength(51));
     expect(result.current.hasNextPage).toBe(false);
   });
 
   it("nenhuma leitura de versões sai sem .range", async () => {
-    mocks.results.listByStart[0] = { data: [], error: null };
+    mocks.results.listByCursor[0] = { data: [], error: null };
     const { result } = renderHook(() => useAiPromptVersionList(), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(callsOf("ai_prompt_versions", "select")).toHaveLength(callsOf("ai_prompt_versions", "range").length);
   });
 
   it("erro de leitura vira isError", async () => {
-    mocks.results.listByStart[0] = { data: null, error: { code: "XX", message: "x" } };
+    mocks.results.listByCursor[0] = { data: null, error: { code: "XX", message: "x" } };
     const { result } = renderHook(() => useAiPromptVersionList(), { wrapper });
     await waitFor(() => expect(result.current.isError).toBe(true));
   });

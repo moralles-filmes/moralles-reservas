@@ -70,3 +70,47 @@ describe("diffLines", () => {
     ]);
   });
 });
+
+describe("diffLines — texto grande com edição pequena", () => {
+  const lines = (n: number) => Array.from({ length: n }, (_, i) => `linha ${i}`);
+
+  it("10000 linhas iguais com uma trocada no meio: resultado correto e rápido (prefixo/sufixo)", () => {
+    const before = lines(10000);
+    const after = [...before];
+    after[5000] = "TROCADA";
+    const t0 = performance.now();
+    const diff = diffLines(before.join("\n"), after.join("\n"));
+    const ms = performance.now() - t0;
+    expect(diff).toHaveLength(10001);
+    expect(diff[4999]).toEqual({ kind: "same", text: "linha 4999" });
+    expect(diff[5000]).toEqual({ kind: "remove", text: "linha 5000" });
+    expect(diff[5001]).toEqual({ kind: "add", text: "TROCADA" });
+    expect(diff[5002]).toEqual({ kind: "same", text: "linha 5001" });
+    expect(diff.filter((l) => l.kind !== "same")).toHaveLength(2);
+    expect(ms).toBeLessThan(100);
+  });
+
+  it("prefixo e sufixo comuns com miolo diferente nos dois lados", () => {
+    expect(diffLines("a\nb\nc\nd", "a\nX\nY\nd")).toEqual([
+      { kind: "same", text: "a" },
+      { kind: "remove", text: "b" },
+      { kind: "remove", text: "c" },
+      { kind: "add", text: "X" },
+      { kind: "add", text: "Y" },
+      { kind: "same", text: "d" },
+    ]);
+  });
+
+  it("um texto contido no outro (só prefixo ou só sufixo em comum)", () => {
+    expect(diffLines("a\nb", "a\nb\nc")).toEqual([
+      { kind: "same", text: "a" },
+      { kind: "same", text: "b" },
+      { kind: "add", text: "c" },
+    ]);
+    expect(diffLines("b\nc", "a\nb\nc")).toEqual([
+      { kind: "add", text: "a" },
+      { kind: "same", text: "b" },
+      { kind: "same", text: "c" },
+    ]);
+  });
+});

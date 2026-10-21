@@ -71,6 +71,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mocks.publish.mockReset();
+  mocks.activate.mockReset();
 });
 
 const editor = () => screen.getByLabelText("Texto do prompt global") as HTMLTextAreaElement;
@@ -225,7 +227,7 @@ describe("Agente de IA — publicar", () => {
     const { note, confirm } = openPublishDialog("meu texto");
     fireEvent.change(note, { target: { value: "motivo" } });
     fireEvent.click(confirm);
-    expect(mocks.toastError).toHaveBeenCalledWith("Outra pessoa publicou uma versão. Recarregue antes de publicar.");
+    expect(mocks.toastError).toHaveBeenCalledWith("A versão ativa mudou. Revise as mudanças e confirme de novo.");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(editor().value).toBe("meu texto");
   });
@@ -240,6 +242,112 @@ describe("Agente de IA — publicar", () => {
     fireEvent.click(confirm);
     expect(mocks.toastError).toHaveBeenCalledWith("Não foi possível concluir. Tente novamente.");
     expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+});
+
+describe("Agente de IA — base do rascunho (concorrência)", () => {
+  const NEW_ACTIVE = version(4, { body: "texto novo da versão 4", created_by: OTHER });
+  const activeChanged = () =>
+    setSlot({ data: { activeVersionId: "v4", activatedAt: "2026-10-21T11:00:00Z", activatedBy: OTHER, active: NEW_ACTIVE } });
+  const confirmPublish = (note = "motivo") => {
+    fireEvent.click(publishButton());
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Motivo"), { target: { value: note } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Publicar" }));
+  };
+  const STALE = /A versão ativa mudou desde que você começou a editar/;
+
+  it("ativa muda depois de digitar: a RPC leva o id em que o rascunho se baseou, não o atual", () => {
+    const view = render(<PlatformAgenteIa />);
+    type("meu rascunho");
+    activeChanged();
+    view.rerender(<PlatformAgenteIa />);
+    expect(screen.getByText(STALE)).toBeTruthy();
+    confirmPublish();
+    expect(mocks.publish.mock.calls[0][0].expectedActiveVersionId).toBe("v3");
+    expect(mocks.publish.mock.calls[0][0].body).toBe("meu rascunho");
+  });
+
+  it("sem mudança de ativa não há aviso e o id é o da ativa", () => {
+    render(<PlatformAgenteIa />);
+    type("meu rascunho");
+    expect(screen.queryByText(STALE)).toBeNull();
+    confirmPublish();
+    expect(mocks.publish.mock.calls[0][0].expectedActiveVersionId).toBe("v3");
+  });
+
+  it("continuar editando depois da mudança mantém a base original", () => {
+    const view = render(<PlatformAgenteIa />);
+    type("primeira");
+    activeChanged();
+    view.rerender(<PlatformAgenteIa />);
+    type("segunda");
+    confirmPublish();
+    expect(mocks.publish.mock.calls[0][0].expectedActiveVersionId).toBe("v3");
+  });
+
+  it("Basear na versão ativa atual tira o aviso e passa a mandar o id novo", () => {
+    const view = render(<PlatformAgenteIa />);
+    type("meu rascunho");
+    activeChanged();
+    view.rerender(<PlatformAgenteIa />);
+    fireEvent.click(screen.getByRole("button", { name: "Basear na versão ativa atual" }));
+    expect(screen.queryByText(STALE)).toBeNull();
+    confirmPublish();
+    expect(mocks.publish.mock.calls[0][0].expectedActiveVersionId).toBe("v4");
+  });
+
+  it("depois de publicar, o próximo rascunho nasce na ativa atual", () => {
+    mocks.publish.mockImplementation((_vars, opts) => opts.onSuccess());
+    const view = render(<PlatformAgenteIa />);
+    type("a");
+    confirmPublish();
+    activeChanged();
+    view.rerender(<PlatformAgenteIa />);
+    type("b");
+    expect(screen.queryByText(STALE)).toBeNull();
+  });
+});
+
+describe("Agente de IA — acessibilidade do editor", () => {
+  it("texto igual à ativa: avisa por quê Publicar está desabilitado e liga ao campo", () => {
+    render(<PlatformAgenteIa />);
+    const msg = screen.getByText("Sem alterações em relação à versão ativa.");
+    expect(publishButton().disabled).toBe(true);
+    expect(editor().getAttribute("aria-describedby")).toContain(msg.id);
+    type("outro texto");
+    expect(screen.queryByText("Sem alterações em relação à versão ativa.")).toBeNull();
+  });
+
+  it("corpo inválido: aria-invalid e a mensagem do problema ligada ao campo, junto com o contador", () => {
+    render(<PlatformAgenteIa />);
+    expect(editor().getAttribute("aria-invalid")).toBe("false");
+    type("oi {{outro}}");
+    expect(editor().getAttribute("aria-invalid")).toBe("true");
+    const describedBy = editor().getAttribute("aria-describedby") ?? "";
+    expect(describedBy).toContain(screen.getByRole("alert").id);
+    expect(describedBy).toContain(screen.getByTestId("prompt-counter").id);
+    expect(screen.getByRole("alert").id).not.toBe("");
+  });
+
+  it("não mostra o aviso de 'sem alterações' junto com o de corpo inválido", () => {
+    render(<PlatformAgenteIa />);
+    type("");
+    expect(screen.queryByText("Sem alterações em relação à versão ativa.")).toBeNull();
+  });
+
+  it("motivo: contador ligado ao campo; inválido marca aria-invalid e mostra o problema", () => {
+    render(<PlatformAgenteIa />);
+    const { dialog, note } = openPublishDialog();
+    expect(note.getAttribute("aria-invalid")).toBe("false");
+    expect(note.getAttribute("aria-describedby")).toBe("prompt-note-counter");
+    expect(within(dialog).getByText("0/280").id).toBe("prompt-note-counter");
+    fireEvent.change(note, { target: { value: "a".repeat(281) } });
+    expect(note.getAttribute("aria-invalid")).toBe("true");
+    expect(note.getAttribute("aria-describedby")).toContain("prompt-note-problem");
+    expect(within(dialog).getByText(/Escreva de 1 a 280 caracteres/).id).toBe("prompt-note-problem");
+    fireEvent.change(note, { target: { value: "ok" } });
+    expect(note.getAttribute("aria-invalid")).toBe("false");
   });
 });
 
@@ -293,7 +401,40 @@ describe("Agente de IA — histórico", () => {
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Motivo"), { target: { value: "m" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Restaurar" }));
-    expect(mocks.toastError).toHaveBeenCalledWith("Outra pessoa publicou uma versão. Recarregue antes de publicar.");
+    expect(mocks.toastError).toHaveBeenCalledWith("A versão ativa mudou. Revise as mudanças e confirme de novo.");
+  });
+
+  const restoreV1 = () => {
+    fireEvent.click(within(screen.getByTestId("version-1")).getByRole("button", { name: "Restaurar esta versão" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Motivo"), { target: { value: "voltar" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Restaurar" }));
+  };
+
+  it("sucesso ao restaurar: toast, diálogo fecha e o editor mostra a versão restaurada", () => {
+    const restored = version(1, { created_by: null });
+    mocks.activate.mockImplementation((_vars, opts) => {
+      // A invalidação faz a tela reler o slot: a restaurada passa a ser a ativa.
+      setSlot({ data: { activeVersionId: "v1", activatedAt: "2026-10-21T12:00:00Z", activatedBy: ME, active: restored } });
+      opts.onSuccess();
+    });
+    render(<PlatformAgenteIa />);
+    type("rascunho que será descartado");
+    restoreV1();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(expect.stringContaining("Versão 1 restaurada"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(editor().value).toBe("corpo da versão 1");
+  });
+
+  it("erro que não é 40001 ao restaurar: cópia mapeada, sem a mensagem crua, diálogo continua aberto", () => {
+    mocks.activate.mockImplementation((_vars, opts) =>
+      opts.onError({ code: "22023", message: "prompt_version_invalid" }),
+    );
+    render(<PlatformAgenteIa />);
+    restoreV1();
+    expect(mocks.toastError).toHaveBeenCalledWith("Versão inválida ou já ativa.");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByLabelText("Motivo")).toBeTruthy();
   });
 
   it("Carregar mais aparece só com próxima página e chama fetchNextPage", () => {
@@ -332,9 +473,10 @@ describe("Agente de IA — os 4 estados", () => {
 
   it("histórico carregando: skeleton", () => {
     setList({ isLoading: true, data: undefined });
-    const { container } = render(<PlatformAgenteIa />);
+    render(<PlatformAgenteIa />);
     expect(screen.getByText("Histórico").closest('[class*="rounded"]')?.querySelector(".animate-pulse")).not.toBeNull();
-    expect(container).toBeTruthy();
+    expect(screen.queryByTestId("version-3")).toBeNull();
+    expect(screen.queryByText("Nenhuma versão publicada ainda.")).toBeNull();
   });
 
   it("histórico com erro: Tentar novamente chama refetch da lista", () => {
