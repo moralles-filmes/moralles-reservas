@@ -92,6 +92,20 @@ describe("Ajustes: textos do agente (Regras e Condições, Informações adicion
     expect(mocks.state.upserts).toEqual([]);
   });
 
+  it("com texto inválido, uma linha junto do Salvar explica o bloqueio e é ligada ao botão por aria-describedby", async () => {
+    await openAjustes();
+    const hint = "Encurte os textos destacados para salvar os ajustes.";
+    expect(screen.queryByText(hint)).toBeNull();
+    expect(saveButton().hasAttribute("aria-describedby")).toBe(false);
+    fireEvent.change(info(), { target: { value: "a".repeat(STORE_TEXT_LIMITS.additional_info + 1) } });
+    const el = screen.getByText(hint);
+    expect(saveButton().getAttribute("aria-describedby")).toBe(el.id);
+    expect(el.id).not.toBe("");
+    fireEvent.change(info(), { target: { value: "ok" } });
+    expect(screen.queryByText(hint)).toBeNull();
+    expect(saveButton().hasAttribute("aria-describedby")).toBe(false);
+  });
+
   it("dado legado acima do limite já abre bloqueado (não grava o lote com texto que o banco recusaria)", async () => {
     mocks.state.read = {
       data: [{ key: "rules_and_conditions", value: "a".repeat(STORE_TEXT_LIMITS.rules_and_conditions + 1) }],

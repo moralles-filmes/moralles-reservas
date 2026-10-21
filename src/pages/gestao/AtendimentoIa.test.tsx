@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -244,6 +244,26 @@ describe("AtendimentoIa: estados e permissão", () => {
     await user.click(screen.getByRole("button", { name: "Tentar novamente" }));
     await ready();
     expect(menu().value).toBe("Voltou");
+  });
+
+  it("releitura que falha com dado já carregado mantém o formulário, sem a tela de erro", async () => {
+    mocks.results.read = { data: [{ key: "restaurant_menu", value: "Rodízio" }], error: null };
+    renderPage();
+    await ready();
+    fireEvent.change(delivery(), { target: { value: "edição em andamento" } });
+    mocks.results.read = { data: null, error: { code: "XX000", message: "x" } };
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["settings", "unit-a"] });
+      // O notifyManager do TanStack entrega a mudança de estado num timeout: sem esperar, o DOM ainda é o antigo.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    // A releitura falhou de verdade, e o dado anterior continua no cache.
+    const state = client.getQueryState(["settings", "unit-a", "ai-store"]);
+    expect(state?.status).toBe("error");
+    expect(state?.data).toBeTruthy();
+    expect(screen.queryByText("Não foi possível carregar os textos do atendimento.")).toBeNull();
+    expect(menu().value).toBe("Rodízio");
+    expect(delivery().value).toBe("edição em andamento");
   });
 
   it("vazio: campos em branco e Salvar habilitado", async () => {

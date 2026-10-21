@@ -124,10 +124,7 @@ import {
   storeTextDescribedBy,
 } from "@/lib/store-text";
 import { normalizeNewlines } from "@/lib/text-normalize";
-import {
-  AGENT_MODES,
-  STORE_TEXT_LIMITS,
-} from "../../../supabase/functions/_shared/agent/global-prompt-core";
+import { AGENT_MODES } from "../../../supabase/functions/_shared/agent/global-prompt-core";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
 
@@ -1497,13 +1494,15 @@ function PromptTab({ unitId }: { unitId: string }) {
   useEffect(() => {
     if (!settings) return;
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
-    setAgentMode(((map["agent_mode"] as string) ?? "reservations") as "reservations" | "reservations_faq");
-    setAgentName((map["agent_name"] as string) ?? "");
-    setRestaurantMenu((map["restaurant_menu"] as string) ?? "");
-    setDeliveryResponse((map["delivery_response"] as string) ?? "");
-    setRestaurantExtraInfo((map["restaurant_extra_info"] as string) ?? "");
-    setSystemPrompt((map["ai_system_prompt"] as string) ?? "");
-    setAiContextExtra((map["ai_context_extra"] as string) ?? "");
+    // JSONB legado pode não ser string (número, objeto): o render e o `normalizeNewlines` esperam string.
+    const text = (v: unknown) => (typeof v === "string" ? v : "");
+    setAgentMode((typeof map["agent_mode"] === "string" ? map["agent_mode"] : "reservations") as "reservations" | "reservations_faq");
+    setAgentName(text(map["agent_name"]));
+    setRestaurantMenu(text(map["restaurant_menu"]));
+    setDeliveryResponse(text(map["delivery_response"]));
+    setRestaurantExtraInfo(text(map["restaurant_extra_info"]));
+    setSystemPrompt(text(map["ai_system_prompt"]));
+    setAiContextExtra(text(map["ai_context_extra"]));
   }, [settings]);
 
   const [isSavingAll, setIsSavingAll] = useState(false);
@@ -1595,7 +1594,6 @@ function PromptTab({ unitId }: { unitId: string }) {
             value={agentName}
             onChange={(e) => setAgentName(e.target.value)}
             placeholder="Yumi"
-            maxLength={STORE_TEXT_LIMITS.agent_name}
             aria-invalid={!isValidStoreText("agent_name", prepared.agent_name)}
             aria-describedby={storeTextDescribedBy("prompt-agent_name", !isValidStoreText("agent_name", prepared.agent_name))}
           />

@@ -334,8 +334,17 @@ function InfoTab({ unitId }: { unitId: string }) {
         </div>
       </div>
 
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={upsertSettings.isPending || rulesInvalid || additionalInfoInvalid}>
+      <div className="flex flex-col items-end gap-2">
+        {(rulesInvalid || additionalInfoInvalid) && (
+          <p id="ajustes-save-blocked" className="text-xs text-destructive">
+            Encurte os textos destacados para salvar os ajustes.
+          </p>
+        )}
+        <Button
+          onClick={handleSave}
+          disabled={upsertSettings.isPending || rulesInvalid || additionalInfoInvalid}
+          aria-describedby={rulesInvalid || additionalInfoInvalid ? "ajustes-save-blocked" : undefined}
+        >
           {upsertSettings.isPending ? "Salvando…" : "Salvar"}
         </Button>
       </div>

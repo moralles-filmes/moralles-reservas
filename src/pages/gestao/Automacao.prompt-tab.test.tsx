@@ -103,9 +103,18 @@ describe("PromptTab: contador e limite nas 7 chaves", () => {
     expect(counterOf(label)).toBe(`0/${STORE_TEXT_LIMITS[key]}`);
   });
 
-  it("o campo do nome não leva limite digitado à mão (vem de STORE_TEXT_LIMITS)", async () => {
-    await openPromptTab();
-    expect(field("Nome do agente").getAttribute("maxlength")).toBe(String(STORE_TEXT_LIMITS.agent_name));
+  it("o campo do nome não tem maxLength no DOM: colar 45 caracteres mantém o texto inteiro, o contador mostra o estouro e Salvar bloqueia", async () => {
+    const user = await openPromptTab();
+    expect(field("Nome do agente").hasAttribute("maxlength")).toBe(false);
+    const pasted = "n".repeat(45);
+    await user.clear(field("Nome do agente"));
+    await user.paste(pasted);
+    // user-event respeita `maxLength` como o navegador: com o atributo, a colagem seria cortada em 40 sem aviso.
+    expect((field("Nome do agente") as HTMLInputElement).value).toBe(pasted);
+    expect(counterOf("Nome do agente")).toBe(`45/${STORE_TEXT_LIMITS.agent_name}`);
+    expect(field("Nome do agente").getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByText(`Passou de ${STORE_TEXT_LIMITS.agent_name} caracteres.`)).toBeTruthy();
+    expect(saveButton().disabled).toBe(true);
   });
 
   it.each(FIELDS)("%s: um acima do limite bloqueia Salvar, marca o campo e explica", async (key, label) => {
@@ -131,6 +140,35 @@ describe("PromptTab: contador e limite nas 7 chaves", () => {
     await openPromptTab();
     expect(saveButton().disabled).toBe(true);
     expect(screen.getByText("Escolha o modo do agente.")).toBeTruthy();
+  });
+});
+
+describe("PromptTab: valor legado que não é string (JSONB número/objeto)", () => {
+  it("abre sem quebrar, com os campos vazios e contadores em zero", async () => {
+    mocks.state.read = {
+      data: settingsRows({
+        agent_name: 42,
+        restaurant_menu: { itens: ["a"] },
+        delivery_response: 7,
+        restaurant_extra_info: ["x"],
+        ai_system_prompt: true,
+        ai_context_extra: { a: 1 },
+      }),
+      error: null,
+    };
+    await openPromptTab();
+    for (const [key, label] of FIELDS) {
+      expect(field(label).value).toBe("");
+      expect(counterOf(label)).toBe(`0/${STORE_TEXT_LIMITS[key]}`);
+    }
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("agent_mode que não é string volta ao padrão reservations (sem aviso de modo inválido)", async () => {
+    mocks.state.read = { data: settingsRows({ agent_mode: 3 }), error: null };
+    await openPromptTab();
+    expect(screen.queryByText("Escolha o modo do agente.")).toBeNull();
+    expect(saveButton().disabled).toBe(false);
   });
 });
 

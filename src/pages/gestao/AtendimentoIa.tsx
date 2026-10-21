@@ -158,7 +158,8 @@ export default function AtendimentoIa() {
 
       {canEdit && settings.isLoading && <LoadingState />}
 
-      {canEdit && !settings.isLoading && settings.isError && (
+      {/* Erro só sem dado: uma releitura que falha com dado já carregado não derruba o formulário (nem as edições). */}
+      {canEdit && !settings.isLoading && settings.isError && !settings.data && (
         <Card>
           <CardContent className="py-8 text-center space-y-3">
             <p className="text-sm text-destructive">Não foi possível carregar os textos do atendimento.</p>
@@ -169,7 +170,7 @@ export default function AtendimentoIa() {
         </Card>
       )}
 
-      {canEdit && !settings.isLoading && !settings.isError && settings.data && (
+      {canEdit && !settings.isLoading && settings.data && (
         <StoreTextsForm
           // Troca de unidade zera as edições.
           key={unit.unit_id}
