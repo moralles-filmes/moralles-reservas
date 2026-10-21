@@ -43,8 +43,9 @@ export default function ReservasComunicacao() {
         <p className="text-sm text-muted-foreground">
           Confira as mensagens automáticas de WhatsApp enviadas aos clientes —
           lembrete no dia da reserva (10:00 BRT) e pesquisa de satisfação no dia seguinte
-          (14:00 BRT). Habilite ou desabilite cada uma em{" "}
-          <span className="font-medium">Reservas → Ajustes</span>.
+          (14:00 BRT). Em conexões oficiais novas, escolha os avisos em{" "}
+          <span className="font-medium">WhatsApp → Modelos e avisos</span>;
+          nas demais, use <span className="font-medium">Reservas → Ajustes</span>.
         </p>
       </header>
 

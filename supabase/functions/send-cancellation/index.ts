@@ -101,11 +101,29 @@ serve(async (req) => {
       const result = await (cardinality === "single" ? query.maybeSingle() : query);
       if (result.error) throw new Error("route_read_failed");
       return result.data;
-    }, { kind: "cancellation", unitId: reserva.unit_id, reservationId: reserva.id });
+    }, { kind: "cancellation", unitId: reserva.unit_id, reservationId: reserva.id }, async (kind, resourceId) => {
+      const { data, error } = await supabase.rpc("get_whatsapp_v2_service_route",
+        { p_kind: kind, p_resource_id: resourceId });
+      if (error) throw new Error("service_route_read_failed");
+      return data;
+    });
 
     if (route.path === "dependency") {
       return new Response(JSON.stringify({ success: false, reason: "automation_dependency_unavailable" }), {
         status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (route.path === "disabled") {
+      if (reserva.status !== "cancelled") return new Response(JSON.stringify({ error: "reserva não está cancelada" }), {
+        status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+      if (typeof reserva.cancelled_at !== "string" || !Number.isFinite(Date.parse(reserva.cancelled_at))
+        || Date.parse(reserva.cancelled_at) > Date.now()) return new Response(JSON.stringify({ success: false,
+        reason: "cancellation_fact_unavailable" }), {
+        status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+      return new Response(JSON.stringify({ success: true, sent: false, skipped: "service_not_enabled" }), {
+        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
     if (route.path === "managed") {

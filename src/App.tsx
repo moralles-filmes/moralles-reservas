@@ -283,6 +283,7 @@ export default function App() {
               <Route path="/o/:unitSlug/conversas" element={<OperacionalGuard><OConversas /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/giftback" element={<OperacionalGuard><OGiftback /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/entregas" element={<OperacionalGuard><OEntregas /></OperacionalGuard>} />
+              <Route path="/o/:unitSlug/whatsapp" element={<OperacionalGuard><GWhatsapp /></OperacionalGuard>} />
 
               {/* ── Platform /platform/* ───────────────────────────────── */}
               <Route path="/platform" element={<Navigate to="/platform/empresas" replace />} />

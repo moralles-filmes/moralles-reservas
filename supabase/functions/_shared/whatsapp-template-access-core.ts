@@ -5,8 +5,12 @@ import { AUTOMATION_PREFLIGHT_REASONS, SCHEDULED_KINDS } from './whatsapp-automa
 
 export type TemplateRole = 'owner' | 'gerente' | 'operador' | null;
 export type ConsentPurpose = 'operational' | 'promotional';
+export const SERVICE_NOTICE_KINDS = ['confirmation', 'reminder_d1', 'survey_d1', 'waitlist_entered', 'cancellation', 'waitlist_table_ready'] as const;
+export type ServiceNoticeKind = typeof SERVICE_NOTICE_KINDS[number];
 type JobAssertion = { job_id: string; expected_channel_id: string; expected_binding_generation: number };
 export type TemplateManagementRequest =
+  | { action: 'service_preferences_snapshot'; unit_id: string }
+  | { action: 'set_service_preference'; binding_id: string; kind: ServiceNoticeKind; enabled: boolean; expected_revision: number; expected_generation: number; expected_credential_revision: number }
   | { action: 'dispatch_status'; unit_id: string }
   | { action: 'dispatch_version_snapshot'; channel_id: string }
   | { action: 'select_dispatch_version'; binding_id: string; kind: typeof SCHEDULED_KINDS[number]; version: 1 | 2; expected_revision: number; expected_generation: number; expected_credential_revision: number }
@@ -32,6 +36,8 @@ export type TemplateManagementRequest =
 export type TemplateAction = TemplateManagementRequest['action'];
 const ADMIN_ACTIONS: readonly TemplateAction[] = ['dispatch_version_snapshot', 'select_dispatch_version', 'authorize_marketing_cost_v2', 'v2_policy_snapshot', 'set_v2_policy', 'select_v2_channel', 'stop_v2_channel', 'auto_policy_snapshot', 'set_auto_policy', 'initialize_job', 'release_channel', 'authorize_marketing_cost', 'configure_promotion_frequency'];
 export function canManageTemplateAction(role: TemplateRole, action: TemplateAction, admin: boolean): boolean {
+  if (action === 'service_preferences_snapshot') return admin || role === 'owner' || role === 'gerente' || role === 'operador';
+  if (action === 'set_service_preference') return admin || role === 'owner' || role === 'gerente';
   if (![...ADMIN_ACTIONS, 'dispatch_status', 'snapshot_v2', 'onboarding_catalog_snapshot_v2', 'onboarding_catalog_snapshot', 'snapshot', 'sync', 'revalidate_job', 'record_consent', 'consent_snapshot'].includes(action)) return false;
   if (admin) return true;
   if (ADMIN_ACTIONS.includes(action)) return false;
@@ -56,6 +62,12 @@ export function parseTemplateManagementRequest(input: unknown): TemplateManageme
   if (!record(input)) return null;
   let keys: string[] = []; let valid = false;
   switch (input.action) {
+    case 'service_preferences_snapshot': keys = ['action', 'unit_id']; valid = isManagementUuid(input.unit_id); break;
+    case 'set_service_preference':
+      keys = ['action', 'binding_id', 'kind', 'enabled', 'expected_revision', 'expected_generation', 'expected_credential_revision'];
+      valid = isManagementUuid(input.binding_id) && SERVICE_NOTICE_KINDS.includes(input.kind as ServiceNoticeKind)
+        && typeof input.enabled === 'boolean' && integer(input.expected_revision, 0)
+        && integer(input.expected_generation) && integer(input.expected_credential_revision, 0); break;
     case 'dispatch_status': keys = ['action', 'unit_id']; valid = isManagementUuid(input.unit_id); break;
     case 'dispatch_version_snapshot': keys = ['action', 'channel_id']; valid = isManagementUuid(input.channel_id); break;
     case 'select_dispatch_version':
@@ -111,6 +123,75 @@ export function decodeSyncResult(value: unknown): { status: 'requested'; request
   return isManagementUuid(value) ? { status: 'requested', requestId: value } : unavailable();
 }
 export function managementPositiveInteger(value: unknown): number { return integer(value) ? value : unavailable(); }
+
+const SERVICE_V2_VARIANTS: Record<ServiceNoticeKind, readonly string[]> = {
+  confirmation: ['res_confirmacao_v2', 'res_confirmacao_desconto_v2'],
+  reminder_d1: ['res_lembrete_dia_v2'], survey_d1: ['res_pesquisa_reserva_v2'],
+  waitlist_entered: ['fila_entrada_v2'], cancellation: ['res_cancelada_v2'],
+  waitlist_table_ready: ['fila_mesa_pronta_v2'],
+};
+const SERVICE_READINESS_REASONS = ['ready', 'meta_pending', 'meta_rejected', 'catalog_drift',
+  'channel_unavailable', 'grant_unavailable', 'policy_paused', 'binding_changed',
+  'sync_stale', 'quality_blocked', 'cost_not_authorized', 'dependency_unavailable'] as const;
+const SERVICE_REMOTE_STATUSES = ['UNKNOWN', 'PENDING', 'APPROVED', 'REJECTED', 'PAUSED',
+  'DISABLED', 'IN_APPEAL', 'PENDING_DELETION', 'DELETED', 'LIMIT_EXCEEDED'] as const;
+
+/** Whitelist a privacy-safe SQL projection before it reaches the store browser. */
+export function projectServicePreferences(value: unknown, expectedUnitId: string) {
+  if (!record(value) || value.unit_id !== expectedUnitId || !isManagementUuid(value.unit_id)
+    || typeof value.eligible !== 'boolean' || typeof value.auto_cohort !== 'boolean'
+    || typeof value.rollout_ready !== 'boolean' || typeof value.global_dispatch_enabled !== 'boolean'
+    || typeof value.admin_paused !== 'boolean'
+    || typeof value.can_manage !== 'boolean' || typeof value.provider_subscription_confirmed !== 'boolean'
+    || !Array.isArray(value.kinds) || value.kinds.length !== SERVICE_NOTICE_KINDS.length) return unavailable();
+  const channelId = value.channel_id === null ? null : checkedUuid(value.channel_id);
+  const bindingId = value.binding_id === null ? null : checkedUuid(value.binding_id);
+  const generation = value.binding_generation === null ? null : managementPositiveInteger(value.binding_generation);
+  const credentialRevision = value.credential_revision === null ? null : integer(value.credential_revision, 0) ? value.credential_revision : unavailable();
+  if ((channelId === null && (bindingId !== null || generation !== null || credentialRevision !== null))
+    || (channelId !== null && credentialRevision === null)
+    || (bindingId === null) !== (generation === null)
+    || (bindingId !== null && channelId === null)
+    || (value.eligible && (!value.auto_cohort || bindingId === null))) return unavailable();
+  const seen = new Set<string>();
+  const kinds = value.kinds.map((item: unknown) => {
+    if (!record(item) || !SERVICE_NOTICE_KINDS.includes(item.kind as ServiceNoticeKind)
+      || seen.has(item.kind as string) || typeof item.enabled !== 'boolean'
+      || !integer(item.revision, 0) || typeof item.ready !== 'boolean'
+      || !SERVICE_READINESS_REASONS.includes(item.reason_code as typeof SERVICE_READINESS_REASONS[number])
+      || !Array.isArray(item.variants)) return unavailable();
+    const kind = item.kind as ServiceNoticeKind;
+    seen.add(kind);
+    const enabledAt = item.enabled_at === null ? null : checkedDate(item.enabled_at);
+    if (item.enabled !== (enabledAt !== null) || item.ready !== (item.reason_code === 'ready')) return unavailable();
+    const expected = bindingId === null ? [] : SERVICE_V2_VARIANTS[kind];
+    if (item.variants.length !== expected.length) return unavailable();
+    const variants = item.variants.map((variant: unknown) => {
+      if (!record(variant) || !expected.includes(variant.logical_id as string)
+        || !SERVICE_REMOTE_STATUSES.includes(variant.status as typeof SERVICE_REMOTE_STATUSES[number])
+        || typeof variant.ready !== 'boolean' || (variant.ready && variant.status !== 'APPROVED')) return unavailable();
+      return { logical_id: variant.logical_id as string, status: variant.status as typeof SERVICE_REMOTE_STATUSES[number], ready: variant.ready };
+    });
+    if (new Set(variants.map(v => v.logical_id)).size !== expected.length
+      || (item.ready && variants.some(v => !v.ready))) return unavailable();
+    return { kind, enabled: item.enabled, revision: item.revision, enabled_at: enabledAt,
+      ready: item.ready, reason_code: item.reason_code, variants };
+  });
+  return { eligible: value.eligible, auto_cohort: value.auto_cohort,
+    rollout_ready: value.rollout_ready, global_dispatch_enabled: value.global_dispatch_enabled,
+    admin_paused: value.admin_paused, can_manage: value.can_manage,
+    unit_id: expectedUnitId, channel_id: channelId, binding_id: bindingId,
+    binding_generation: generation, credential_revision: credentialRevision,
+    provider_subscription_confirmed: value.provider_subscription_confirmed, kinds };
+}
+
+export function projectServicePreferenceResult(value: unknown, expectedKind: ServiceNoticeKind, expectedEnabled: boolean, expectedRevision: number) {
+  if (!record(value) || value.kind !== expectedKind || value.enabled !== expectedEnabled
+    || !integer(value.revision, 0) || (value.revision as number) <= expectedRevision) return unavailable();
+  const enabledAt = value.enabled_at === null ? null : checkedDate(value.enabled_at);
+  if (expectedEnabled !== (enabledAt !== null)) return unavailable();
+  return { kind: expectedKind, enabled: expectedEnabled, revision: value.revision, enabled_at: enabledAt };
+}
 
 export interface TemplateAutoPolicySnapshot { enabled: boolean; revision: number; catalogDigest: string; updatedAt: string | null }
 export function decodeTemplateAutoPolicy(value: unknown): TemplateAutoPolicySnapshot {

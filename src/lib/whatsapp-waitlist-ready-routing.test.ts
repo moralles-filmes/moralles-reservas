@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 function setup(options: { role?: 'owner' | 'outsider' | 'platform_admin'; status?: string; route?: 'existing' | 'managed' | 'legacy' | 'error';
-  update?: 'ok' | 'zero' | 'error' } = {}) {
+  update?: 'ok' | 'zero' | 'error'; serviceRoute?: 'disabled' | 'dependency' } = {}) {
   const f = createAutomationEndpointIO(options.role ?? 'owner');
   const id = '99999999-0000-4000-8000-000000000001';
   const row: Record<string, unknown> = { id, unit_id: f.ids.unit, status: options.status ?? 'waiting',
@@ -23,6 +23,12 @@ function setup(options: { role?: 'owner' | 'outsider' | 'platform_admin'; status
   let ledgerRead = 0;
   const db = {
     ...f.db,
+    async rpc(name: string, args: Record<string, unknown>) {
+      if (name === 'get_whatsapp_v2_service_route' && options.serviceRoute)
+        return { data: { auto_cohort: true, allowed: false,
+          reason_code: options.serviceRoute === 'disabled' ? 'service_not_enabled' : 'dependency_unavailable' }, error: null };
+      return f.db.rpc(name, args);
+    },
     from(table: string) {
       if (table === 'waitlist') {
         const predicates: Record<string, unknown> = {};
@@ -208,6 +214,18 @@ describe('notify-waitlist-ready Request boundary', () => {
     const x = setup({ route: 'error' });
     expect((await x.request()).status).toBe(503);
     expect(x.effects.updates).toBe(0);
+  });
+  it('distinguishes verified OFF from a dependency before changing the waitlist fact', async () => {
+    const off = setup({ route: 'managed', serviceRoute: 'disabled' });
+    const skipped = await off.request();
+    expect(skipped.status).toBe(200);
+    expect(await skipped.json()).toMatchObject({ success: false, sent: false,
+      error: 'service_not_enabled', skipped: 'service_not_enabled', statusUpdated: false });
+    expect(off.effects.updates).toBe(0);
+    expect(off.harness.internalRequests).toHaveLength(0);
+    const uncertain = setup({ route: 'managed', serviceRoute: 'dependency' });
+    expect((await uncertain.request()).status).toBe(503);
+    expect(uncertain.effects.updates).toBe(0);
   });
   it('keeps the first fact when a new managed job cannot finish immediately', async () => {
     const x = setup({ route: 'managed' });

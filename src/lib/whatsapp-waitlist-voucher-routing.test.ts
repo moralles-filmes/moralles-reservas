@@ -210,6 +210,17 @@ describe('real producer refusal and preserved branches', () => {
 });
 
 describe('waitlist actual requests and exact routing', () => {
+  it('an auto cohort with waitlist entry OFF cannot create an intent or send legacy text', async () => {
+    const f=fixture('entered'),p=f.producer();
+    p.controls.serviceRoute={auto_cohort:true,allowed:false,reason_code:'service_not_enabled'};
+    const response=await f.runWaitlistProducer('waitlist_entered');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({dispatched:false,skipped:'service_not_enabled'});
+    expect(p.controls.serviceRouteReads).toEqual([{kind:'waitlist_entered',resourceId:f.ids.reservation}]);
+    expect(p.trace.some(x=>x.name==='enqueue_whatsapp_automation')).toBe(false);
+    expect(f.calls.post+f.calls.legacyText).toBe(0);
+    expect(p.unexpected).toEqual([]);p.harness.assertNoUnexpectedIo();
+  });
   it.each(['entered','feedback'] as const)('%s preserves text editor, current links and DDD55', async kind => {
     const f=fixture(kind),p=f.producer();
     p.tables.waitlist_message_templates=[{unit_id:f.ids.unit,event:kind,customized:true,body:'Olá {{cliente_nome}} #{{codigo_fila}} {{link_status}}'}];
@@ -275,8 +286,36 @@ describe('waitlist actual requests and exact routing', () => {
     const calls:string[]=[];
     const result=await selectWaitlistAutomationRoute(async (table,_columns,predicates)=>{
       calls.push(table);expect(predicates).toEqual([['unit_id',f.ids.unit],['waitlist_id',f.ids.reservation],['kind','waitlist_entered']]);return p.row;
-    },{kind:'waitlist_entered',unitId:f.ids.unit,waitlistId:f.ids.reservation});
+    },{kind:'waitlist_entered',unitId:f.ids.unit,waitlistId:f.ids.reservation},
+      async () => { throw new Error('gate_forbidden_after_existing_ledger'); });
     expect(result).toEqual({path:'managed',existingJobId:p.row.id,selection:'scheduled'}); expect(calls).toEqual(['whatsapp_automation_jobs']);
+  });
+  it('new waitlist fact on active Datafy before adoption cannot fall through to legacy text', async () => {
+    const f=fixture('entered');
+    const result=await selectWaitlistAutomationRoute(async (table) => {
+      if (table==='whatsapp_automation_jobs' || table==='whatsapp_automation_adoptions') return null;
+      if (table==='platform_flags') return {value:true};
+      if (table==='whatsapp_template_bindings') return [];
+      if (table==='whatsapp_channels') return [{id:'aaaaaaaa-0000-0000-0000-000000000001',unit_id:f.ids.unit,
+        provider:'datafy',status:'connected',is_active:true,created_at:'2026-10-01T00:00:00Z'}];
+      throw new Error(`unexpected:${table}`);
+    },{kind:'waitlist_entered',unitId:f.ids.unit,waitlistId:f.ids.reservation},
+      async () => ({auto_cohort:false,allowed:true}));
+    expect(result).toEqual({path:'managed',existingJobId:null,selection:'paused'});
+  });
+  it('an adopted auto Datafy unit cannot create a waitlist intent for an OFF kind', async () => {
+    const f=fixture('entered');const called:Array<[string,string]>=[];
+    const result=await selectWaitlistAutomationRoute(async table => {
+      if(table==='whatsapp_automation_jobs')return null;
+      if(table==='whatsapp_automation_adoptions')return {adopted_at:'2026-10-01T00:00:00Z'};
+      if(table==='platform_flags')return {value:true};
+      if(table==='whatsapp_template_bindings')return [{dispatch_enabled:true,adopted_at:'2026-10-01T00:00:00Z'}];
+      throw new Error(`unexpected:${table}`);
+    },{kind:'waitlist_entered',unitId:f.ids.unit,waitlistId:f.ids.reservation},async (kind,resourceId)=>{
+      called.push([kind,resourceId]);return {auto_cohort:true,allowed:false,reason_code:'service_not_enabled'};
+    });
+    expect(result).toEqual({path:'disabled'});
+    expect(called).toEqual([['waitlist_entered',f.ids.reservation]]);
   });
   it.each(['wrong_unit','wrong_resource','malformed','query_error'] as const)('exact route %s is dependency', async change => {
     const f=fixture('entered'),p=f.producer();Object.assign(p.row,{kind:'waitlist_entered',reservation_id:null,waitlist_id:f.ids.reservation});

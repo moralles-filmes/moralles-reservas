@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({ invoke: vi.fn(), unit: { unit_id: "u1", unit_s
 vi.mock("@/lib/supabase", () => ({ supabase: { functions: { invoke: mocks.invoke } } }));
 vi.mock("@/hooks/useCurrentUnit", () => ({ useCurrentUnit: () => mocks.unit }));
 vi.mock("@/components/billing/WhatsappServiceBanner", () => ({ WhatsappServiceBanner: () => null }));
+vi.mock("@/components/whatsapp/ServiceNoticePreferencesCard", () => ({
+  ServiceNoticePreferencesCard: ({ canManage }: { canManage: boolean }) => canManage ? null : <div>Modelos e avisos: somente leitura</div>,
+}));
 vi.mock("react-router-dom", () => ({ Navigate: ({ to }: { to: string }) => <span>{to}</span> }));
 const base = { step: "ready_to_connect", granted: true, items: [], templatesPending: true, onboardingState: null };
 let client: QueryClient;
@@ -18,6 +21,13 @@ const show = () => {
 beforeEach(() => { vi.clearAllMocks(); mocks.unit.isGerente = true; });
 afterEach(() => { cleanup(); client.clear(); vi.restoreAllMocks(); });
 describe("portal WhatsApp oficial", () => {
+  it('permite ao operador consultar avisos sem mostrar ações de conexão', () => {
+    mocks.unit.isGerente = false;
+    show();
+    expect(screen.getByText('Modelos e avisos: somente leitura')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Conectar WhatsApp|Reiniciar conexão|Desconectar/ })).toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
   it('mostra os nove estados pelo onboarding Datafy conectado antes do corte', async () => {
     mocks.unit.unit_id = '10000000-0000-4000-8000-000000000001';
     try {
@@ -152,12 +162,6 @@ describe("portal WhatsApp oficial", () => {
     show();
     expect(await screen.findByRole("button", { name: "Tentar novamente" })).toBeTruthy();
     expect(screen.queryByText(/QR Code/)).toBeNull();
-  });
-  it("operador não consulta nem exibe conexão", async () => {
-    mocks.unit.isGerente = false;
-    show();
-    await waitFor(() => expect(screen.getByText("/g/restaurante/reservas")).toBeTruthy());
-    expect(mocks.invoke).not.toHaveBeenCalled();
   });
   it("state vazio tem mensagem própria e não libera QR", async () => {
     mocks.invoke.mockResolvedValue({ data: null });

@@ -175,6 +175,7 @@ serve(async (req) => {
   let automationPending = 0;
   let automationDependency = 0;
   let automationWriteFailed = 0;
+  let skippedService = 0;
   let recovered = 0;
 
   try {
@@ -224,7 +225,18 @@ serve(async (req) => {
             const result = await (cardinality === 'single' ? query.maybeSingle() : query);
             if (result.error) throw result.error;
             return result.data;
-          }, { kind: 'confirmation', unitId: row.unit_id, reservationId: row.reservation_id });
+          }, { kind: 'confirmation', unitId: row.unit_id, reservationId: row.reservation_id }, async (kind, resourceId) => {
+            const { data, error } = await supabase.rpc('get_whatsapp_v2_service_route',
+              { p_kind: kind, p_resource_id: resourceId });
+            if (error) throw new Error('service_route_read_failed');
+            return data;
+          });
+        if (route.path === 'disabled') {
+          // The store opted out of this WhatsApp notice; confirmation email still uses the normal outbox path.
+          skippedService++;
+          toDispatch.push(row);
+          continue;
+        }
         if (route.path !== 'legacy') {
           // Initial ownership is never renewed. Recover only an unpinned original intent;
           // all outcomes, including enqueue suppression, are still projected by SQL.
@@ -370,7 +382,7 @@ serve(async (req) => {
         parkWriteFailed,
         expired,
         expireWriteFailed,
-        automationPending, automationDependency, automationWriteFailed, recovered,
+        automationPending, automationDependency, automationWriteFailed, recovered, skippedService,
         duration_ms: Date.now() - t0,
       }),
       { headers: { "Content-Type": "application/json" } },

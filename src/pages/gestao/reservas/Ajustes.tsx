@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useCurrentUnit } from "@/hooks/useCurrentUnit";
+import { useAuth } from "@/hooks/useAuth";
+import { useWhatsappServicePreferences } from "@/hooks/useWhatsappServicePreferences";
+import { serviceStatus } from "@/features/whatsapp/service-preferences";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -92,6 +96,9 @@ type SettingRow = { key: string; value: unknown };
 
 function InfoTab({ unitId }: { unitId: string }) {
   const queryClient = useQueryClient();
+  const unit = useCurrentUnit();
+  const { user } = useAuth();
+  const service = useWhatsappServicePreferences(unitId, user?.id ?? "");
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ["settings", unitId, "reserva"],
@@ -159,15 +166,20 @@ function InfoTab({ unitId }: { unitId: string }) {
       toast.error("Tolerância deve estar entre 0 e 240 minutos.");
       return;
     }
-    upsertSettings.mutate([
+    const patches: Array<{ key: string; value: unknown }> = [
       { key: "reservation_duration_minutes", value: dur },
       { key: "booking_window_days", value: win },
       { key: "reservation_tolerance_minutes", value: tol },
       { key: "rules_and_conditions", value: rules.trim() },
       { key: "additional_info", value: additionalInfo.trim() },
+    ];
+    // The new per-kind authority owns automatic v2 delivery. Never write
+    // legacy switches unless the server proved this is an existing cohort.
+    if (service.query.data?.auto_cohort === false) patches.push(
       { key: "reminder_d1_enabled", value: reminderEnabled },
       { key: "survey_d1_enabled", value: surveyEnabled },
-    ]);
+    );
+    upsertSettings.mutate(patches);
   };
 
   if (isLoading) {
@@ -240,7 +252,25 @@ function InfoTab({ unitId }: { unitId: string }) {
         </p>
       </div>
 
-      <div className="space-y-3">
+      {service.query.isPending ? <p role="status">Consultando os avisos desta unidade…</p>
+        : service.query.isError || !service.query.data ? <p role="alert">Não foi possível conferir os avisos. Os controles antigos estão indisponíveis até atualizar a página.</p>
+          : service.query.data.auto_cohort ? <div className="space-y-2 rounded-lg border p-4">
+            <p>Lembrete de reserva: {serviceStatus(service.query.data.kinds.find(item => item.kind === 'reminder_d1')!, {
+              rolloutReady: service.query.data.rollout_ready,
+              eligible: service.query.data.eligible,
+              providerSubscriptionConfirmed: service.query.data.provider_subscription_confirmed,
+              globalDispatchEnabled: service.query.data.global_dispatch_enabled,
+              adminPaused: service.query.data.admin_paused,
+            })}.</p>
+            <p>Pesquisa da reserva: {serviceStatus(service.query.data.kinds.find(item => item.kind === 'survey_d1')!, {
+              rolloutReady: service.query.data.rollout_ready,
+              eligible: service.query.data.eligible,
+              providerSubscriptionConfirmed: service.query.data.provider_subscription_confirmed,
+              globalDispatchEnabled: service.query.data.global_dispatch_enabled,
+              adminPaused: service.query.data.admin_paused,
+            })}.</p>
+            <p>Altere esses avisos em <Link className="font-medium underline" to={`/g/${unit?.unit_slug}/whatsapp`}>WhatsApp → Modelos e avisos</Link>.</p>
+          </div> : <div className="space-y-3">
         <div className="flex items-start gap-3">
           <Switch
             id="reminder-d1-enabled"
@@ -273,7 +303,7 @@ function InfoTab({ unitId }: { unitId: string }) {
             </p>
           </div>
         </div>
-      </div>
+      </div>}
 
       <div className="border-t pt-6 space-y-1">
         <h3 className="text-base font-semibold">Informações personalizadas</h3>
