@@ -2602,7 +2602,8 @@ end $f$;
 -- RPC e conversa IG sem wa_chat_lid ═══════════════════════════════════════════
 
 -- ─── IG-6.1: store_instagram_account_connection autoriza no SQL ─────────────
--- Sem grant (nunca concedido) o owner recebe 42501. Com UA e UB liberadas pelo
+-- Sem grant (nunca concedido) o owner E o platform_admin recebem 42501 (o
+-- admin não pula o módulo). Com UA e UB liberadas pelo
 -- platform_admin real: operador de UA, owner de A na unidade B, unidade
 -- inexistente e ator nulo recebem o MESMO 42501 e nenhuma conta nasce. Owner
 -- e gerente de UA conectam (a mesma linha). Revogado o grant de UA, o owner
@@ -2619,11 +2620,12 @@ declare
   op_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a3';
   pa constant uuid := 'a0d79000-0000-4000-8000-0000000000c1';
   f constant text := 'ERR 42501:instagram_account_forbidden';
-  sem_grant text; g1 text; g2 text; op text; outra text; inex text; sem_ator text; n0 int;
+  sem_grant text; pa_sem_grant text; g1 text; g2 text; op text; outra text; inex text; sem_ator text; n0 int;
   ok_owner text; ok_ger text; rv text; revogado text; ok_pa text; estado_pa text;
 begin
   begin
     sem_grant := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_raw(ua, '79610001', 'conta_61', 'tok-61-A-000001', owner_a));
+    pa_sem_grant := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_raw(ua, '79610001', 'conta_61', 'tok-61-A-000007', pa));
     g1 := pg_temp.ig79_q('authenticated', pa, pg_temp.ig79_set(ua, true));
     g2 := pg_temp.ig79_q('authenticated', pa, pg_temp.ig79_set(ub, true));
     op := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store_raw(ua, '79610001', 'conta_61', 'tok-61-A-000002', op_a));
@@ -2643,14 +2645,14 @@ begin
       from public.instagram_accounts a where a.id = pg_temp.ig79_uuid(ok_pa);
 
     raise exception using errcode = 'P0R79', message =
-      case when sem_grant = f
+      case when sem_grant = f and pa_sem_grant = f
             and g1 = 'instagram/true/true/false' and g2 = 'instagram/true/true/false'
             and op = f and outra = f and inex = f and sem_ator = f and n0 = 0
             and pg_temp.ig79_uuid(ok_owner) is not null and ok_ger = ok_owner
             and rv = 'instagram/false/true/true' and revogado = f
             and pg_temp.ig79_uuid(ok_pa) is not null
             and estado_pa = 'connected|' || pa || '|' || org_b then 'PASSOU'
-           else 'FALHOU sem_grant=' || sem_grant || ' grants=' || g1 || '/' || g2 || ' operador=' || op
+           else 'FALHOU sem_grant=' || sem_grant || ' pa_sem_grant=' || pa_sem_grant || ' grants=' || g1 || '/' || g2 || ' operador=' || op
                 || ' owner_A_em_B=' || outra || ' inexistente=' || inex || ' ator_nulo=' || sem_ator
                 || ' contas_apos_recusas=' || n0 || ' owner=' || ok_owner || ' gerente=' || ok_ger
                 || ' revogar=' || rv || ' owner_revogado=' || revogado || ' pa=' || ok_pa
@@ -2663,7 +2665,7 @@ end $f$;
 
 -- ─── IG-6.2: disconnect_instagram_account prende o ator à unidade da conta ──
 -- Contas em UA e UB. Operador de UA, owner de A na conta de B, gerente de B na
--- conta de A e ator nulo recebem o MESMO 42501 e a conta segue conectada com o
+-- conta de A, ator nulo e conta inexistente (owner de A) recebem o MESMO 42501 e a conta segue conectada com o
 -- token legível. Com o grant de UA revogado, o owner de UA desconecta (o
 -- disconnect não exige o módulo) e o platform_admin sem membership desconecta
 -- a de B; `disconnected_by` é o ator.
@@ -2676,7 +2678,7 @@ declare
   ger_b constant uuid := 'a0d79000-0000-4000-8000-0000000000b2';
   pa constant uuid := 'a0d79000-0000-4000-8000-0000000000c1';
   f constant text := 'ERR 42501:instagram_account_forbidden';
-  acc_a uuid; acc_b uuid; d_op text; d_outra text; d_ger_b text; d_nulo text; est_a text; tok_a text; est_b text;
+  acc_a uuid; acc_b uuid; d_op text; d_outra text; d_ger_b text; d_nulo text; d_ghost text; est_a text; tok_a text; est_b text;
   d_owner text; d_pa text; fim_a text; fim_b text;
 begin
   begin
@@ -2691,6 +2693,8 @@ begin
       'public.disconnect_instagram_account(%L::uuid, %L::uuid)', acc_a, ger_b)));
     d_nulo := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
       'public.disconnect_instagram_account(%L::uuid, null::uuid)', acc_a)));
+    d_ghost := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
+      'public.disconnect_instagram_account(%L::uuid, %L::uuid)', 'a0d79000-0000-4000-8000-0000000062ff', owner_a)));
     select a.status || '|' || (a.token_secret_id is not null) into est_a from public.instagram_accounts a where a.id = acc_a;
     select a.status || '|' || (a.token_secret_id is not null) into est_b from public.instagram_accounts a where a.id = acc_b;
     tok_a := pg_temp.ig79_q('service_role', null, format('select public.get_instagram_account_token(%L::uuid)', acc_a));
@@ -2706,13 +2710,13 @@ begin
 
     raise exception using errcode = 'P0R79', message =
       case when acc_a is not null and acc_b is not null
-            and d_op = f and d_outra = f and d_ger_b = f and d_nulo = f
+            and d_op = f and d_outra = f and d_ger_b = f and d_nulo = f and d_ghost = f
             and est_a = 'connected|true' and est_b = 'connected|true' and tok_a = 'tok-62-A-000001'
             and d_owner = 'ok' and d_pa = 'ok'
             and fim_a = 'disconnected|' || owner_a and fim_b = 'disconnected|' || pa then 'PASSOU'
            else 'FALHOU contas=' || coalesce(acc_a::text, '<null>') || '/' || coalesce(acc_b::text, '<null>')
                 || ' operador=' || d_op || ' owner_A_em_B=' || d_outra || ' gerente_B_em_A=' || d_ger_b
-                || ' ator_nulo=' || d_nulo || ' estado_A=' || coalesce(est_a, '<null>') || ' estado_B=' || coalesce(est_b, '<null>')
+                || ' ator_nulo=' || d_nulo || ' conta_inexistente=' || d_ghost || ' estado_A=' || coalesce(est_a, '<null>') || ' estado_B=' || coalesce(est_b, '<null>')
                 || ' token_A=' || tok_a || ' owner_revogado=' || d_owner || ' pa=' || d_pa
                 || ' fim_A=' || coalesce(fim_a, '<null>') || ' fim_B=' || coalesce(fim_b, '<null>') end;
   exception
@@ -4485,16 +4489,17 @@ end $$;
 
 -- ─── Task 1.6 (fix round 1): casos e controles positivos ────────────────────
 insert into t_res values
-  (7914, 'IG-6.1 store autoriza no SQL: sem grant, operador, owner de outra unidade, unidade inexistente, ator nulo e grant revogado com o mesmo 42501; owner/gerente com grant e platform_admin sem membership conectam', pg_temp.ig79_case_61()),
-  (7915, 'IG-6.2 disconnect prende o ator a unidade da conta: operador, owner de outra unidade, gerente de B e ator nulo com o mesmo 42501 (conta intacta); owner sem grant e platform_admin desconectam', pg_temp.ig79_case_62()),
+  (7914, 'IG-6.1 store autoriza no SQL: sem grant (owner e platform_admin), operador, owner de outra unidade, unidade inexistente, ator nulo e grant revogado com o mesmo 42501; owner/gerente com grant e platform_admin sem membership conectam', pg_temp.ig79_case_61()),
+  (7915, 'IG-6.2 disconnect prende o ator a unidade da conta: operador, owner de outra unidade, gerente de B, ator nulo e conta inexistente com o mesmo 42501 (conta intacta); owner sem grant e platform_admin desconectam', pg_temp.ig79_case_62()),
   (7916, 'IG-6.3 contatos: service_role le mas UPDATE/INSERT/DELETE diretos dao 42501; link pela RPC grava; desanonimizar (mesmo com IGSID novo) da 23514; escritores SECURITY DEFINER', pg_temp.ig79_case_63()),
   (7917, 'IG-6.4 conversa IG com wa_chat_lid (INSERT e UPDATE) viola o CHECK de identidade com 23514; WhatsApp com wa_chat_lid aceito; CHECK validado cita wa_chat_lid IS NULL', pg_temp.ig79_case_64());
 
 -- C-IG-6.1: (a) store sem a perna de papel (todo membro conecta); (b) store
--- sem a perna do grant (conecta sem o módulo liberado).
+-- sem a perna do grant (conecta sem o módulo liberado); (c) platform_admin
+-- isento do grant.
 do $$
 declare
-  v_def text; v_mut text; s1 text; s2 text; d text;
+  v_def text; v_mut text; s1 text; s2 text; s3 text; d text;
   leg_papel constant text := 'and um.role in (''owner'', ''gerente'')';
   leg_grant constant text := 'or not exists (
        select 1 from public.unit_module_grants g';
@@ -4523,24 +4528,41 @@ begin
     when sqlstate 'P0R79' then s2 := sqlerrm;
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
+  -- (c) guarda virando `(papel e grant) ou platform_admin`: o admin pula o
+  -- módulo (conecta numa unidade sem grant).
+  begin
+    if array_length(string_to_array(v_def, leg_grant), 1) <> 2 then
+      raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (grant)';
+    end if;
+    v_mut := replace(v_def, leg_grant, 'or not app_private.is_platform_admin(p_actor) and not exists (
+       select 1 from public.unit_module_grants g');
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_61();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
   d := pg_temp.ig79_case_61();
   raise notice 'C-IG-6.1 sem papel: %', s1;
   raise notice 'C-IG-6.1 sem grant: %', s2;
-  insert into t_res values (7992, 'C-IG-6.1 store sem a perna de papel e sem a perna do grant: IG-6.1 reprova nos dois (operador conecta; conecta sem modulo); restaurado passa',
+  raise notice 'C-IG-6.1 admin pula o grant: %', s3;
+  insert into t_res values (7992, 'C-IG-6.1 store sem a perna de papel, sem a perna do grant e com o admin pulando o grant: IG-6.1 reprova nos tres (operador conecta; conecta sem modulo; admin conecta sem modulo); restaurado passa',
     case when s1 like 'FALHOU sem_grant=ERR 42501:instagram_account_forbidden %operador=________-%'
           and s2 like 'FALHOU sem_grant=________-%'
+          and s3 like 'FALHOU sem_grant=ERR 42501:instagram_account_forbidden pa_sem_grant=________-%'
           and d = 'PASSOU'
           and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_def then 'PASSOU'
-         else 'FALHOU sem_papel=' || s1 || ' sem_grant=' || s2 || ' restaurado=' || d end);
+         else 'FALHOU sem_papel=' || s1 || ' sem_grant=' || s2 || ' admin_pula_grant=' || s3 || ' restaurado=' || d end);
 end $$;
 
 -- C-IG-6.2: (a) disconnect sem a perna de papel; (b) disconnect sem prender o
--- ator à unidade da conta.
+-- ator à unidade da conta; (c) conta inexistente de volta a P0002.
 do $$
 declare
-  v_def text; v_mut text; s1 text; s2 text; d text;
+  v_def text; v_mut text; s1 text; s2 text; s3 text; d text;
   leg_papel constant text := 'and um.role in (''owner'', ''gerente'')';
   leg_unid constant text := 'where um.unit_id = v_acc.unit_id';
+  leg_inex constant text := 'if v_acc.id is null or p_actor is null';
 begin
   v_def := pg_get_functiondef('public.disconnect_instagram_account(uuid,uuid)'::regprocedure);
   begin
@@ -4565,15 +4587,32 @@ begin
     when sqlstate 'P0R79' then s2 := sqlerrm;
     when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
   end;
+  -- (c) o ramo P0002 de conta inexistente de volta (oráculo de existência).
+  begin
+    if array_length(string_to_array(v_def, leg_inex), 1) <> 2 then
+      raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE OU REPETIDO (inexistente)';
+    end if;
+    v_mut := replace(v_def, leg_inex, 'if not found then
+    raise exception ''instagram_account_not_found'' using errcode = ''P0002'';
+  end if;
+  if p_actor is null');
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_62();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
   d := pg_temp.ig79_case_62();
   raise notice 'C-IG-6.2 sem papel: %', s1;
   raise notice 'C-IG-6.2 sem unidade da conta: %', s2;
-  insert into t_res values (7993, 'C-IG-6.2 disconnect sem a perna de papel e sem prender o ator a unidade da conta: IG-6.2 reprova nos dois (operador e owner de outra unidade desconectam); restaurado passa',
+  raise notice 'C-IG-6.2 P0002 de volta: %', s3;
+  insert into t_res values (7993, 'C-IG-6.2 disconnect sem a perna de papel, sem prender o ator a unidade da conta e com o P0002 de conta inexistente: IG-6.2 reprova nos tres; restaurado passa',
     case when s1 like 'FALHOU%operador=ok%'
           and s2 like 'FALHOU%owner_A_em_B=ok%'
+          and s3 like 'FALHOU%conta_inexistente=ERR P0002:instagram_account_not_found%'
           and d = 'PASSOU'
           and pg_get_functiondef('public.disconnect_instagram_account(uuid,uuid)'::regprocedure) = v_def then 'PASSOU'
-         else 'FALHOU sem_papel=' || s1 || ' sem_unidade=' || s2 || ' restaurado=' || d end);
+         else 'FALHOU sem_papel=' || s1 || ' sem_unidade=' || s2 || ' p0002=' || s3 || ' restaurado=' || d end);
 end $$;
 
 -- C-IG-6.3: (a) UPDATE em instagram_contacts de volta para service_role;

@@ -280,14 +280,12 @@ begin
   select a.id, a.unit_id, a.token_secret_id into v_acc
     from public.instagram_accounts a where a.id = p_account_id
     for update;
-  if not found then
-    raise exception 'instagram_account_not_found' using errcode = 'P0002';
-  end if;
 
   -- O ator é owner/gerente da unidade DA CONTA (lida da linha travada, nunca
   -- de parâmetro) ou platform_admin. Sem exigir o grant: desconectar tem de
-  -- funcionar depois da revogação do módulo. Ator nulo cai no mesmo 42501.
-  if p_actor is null
+  -- funcionar depois da revogação do módulo. Conta inexistente e ator nulo
+  -- caem no mesmo 42501 (sem oráculo de existência).
+  if v_acc.id is null or p_actor is null
      or not (
        exists (
          select 1 from public.unit_members um

@@ -2851,17 +2851,18 @@ papel insuficiente e módulo não liberado caem no MESMO `42501
 instagram_account_forbidden` (antes, unidade inexistente era `22023`). A
 `disconnect_instagram_account` prende o ator à unidade DA CONTA (lida da linha
 travada) com a mesma regra de papel, sem exigir o grant (desconectar funciona
-depois da revogação). `service_role` perde INSERT/UPDATE/DELETE em
+depois da revogação); conta inexistente cai no mesmo `42501` (fix round 2;
+antes era `P0002`, oráculo de existência). `service_role` perde INSERT/UPDATE/DELETE em
 `instagram_contacts` (só lê; escrevem só `upsert_instagram_contact`,
 `link_instagram_contact_customer` e o trigger de anonimização, os três
 SECURITY DEFINER), e a guarda do contato recusa devolver `anonymized_at` a
 nulo (`23514`, mesmo com um IGSID novo que satisfaz o CHECK). O CHECK de
 identidade de `conversations` ganha `wa_chat_lid is null` no ramo do
-Instagram. IG-6.1 (7914): sem grant, operador, owner de A na unidade B,
+Instagram. IG-6.1 (7914): sem grant (owner e também platform_admin), operador, owner de A na unidade B,
 unidade inexistente, ator nulo e grant revogado com o mesmo `42501` e nenhuma
 conta criada; owner e gerente com grant reaproveitam a mesma linha; o
 platform_admin sem membership conecta em B. IG-6.2 (7915): operador, owner de
-A na conta de B, gerente de B na conta de A e ator nulo recebem `42501` com a
+A na conta de B, gerente de B na conta de A, ator nulo e conta inexistente recebem `42501` com a
 conta intacta (token legível); owner com o grant revogado e platform_admin
 desconectam, com `disconnected_by` = ator. IG-6.3 (7916): UPDATE (de
 `customer_id`), INSERT e DELETE diretos como `service_role` dão `42501`, a
@@ -2870,9 +2871,11 @@ são DEFINER. IG-6.4 (7917): conversa IG com `wa_chat_lid` (INSERT e UPDATE)
 dá `23514`, WhatsApp com `wa_chat_lid` segue aceito e o CHECK validado cita
 a perna nova. O IG-2.1 passa a conferir `service_role` só com SELECT em
 contatos. Controles: C-IG-6.1 (7992) tira a perna de papel (o operador conecta)
-e a perna do grant (conecta sem módulo) do corpo real; C-IG-6.2 (7993) tira a
-perna de papel (o operador desconecta) e a amarração à unidade da conta (owner
-de A desconecta a conta de B); C-IG-6.3 (7994) devolve UPDATE a `service_role`
+e a perna do grant (conecta sem módulo) do corpo real, e transforma a guarda em
+`(papel e grant) ou platform_admin` (o admin conecta sem módulo); C-IG-6.2
+(7993) tira a perna de papel (o operador desconecta) e a amarração à unidade da
+conta (owner de A desconecta a conta de B) e devolve o ramo `P0002` de conta
+inexistente; C-IG-6.3 (7994) devolve UPDATE a `service_role`
 (o IG-6.3 e o catálogo do IG-2.1 reprovam) e tira a perna da anonimização
 irreversível; C-IG-6.4 (7995) recria o CHECK (NOT VALID + VALIDATE) sem a
 perna. Todos conferem o corpo/CHECK/ACL restaurado contra o catálogo. Efeitos
@@ -2883,11 +2886,12 @@ IG-6.1 usa o `pg_temp.ig79_store_raw`, sem esse efeito. O C-IG-4.2 muda de
 expectativa: com o CHECK novo, a RPC do WhatsApp sabotada (sem o filtro de
 canal) estoura `23514` ao tentar gravar o `wa_chat_lid` na conversa IG, em
 vez de gravá-lo, e sem lid devolve a própria conversa IG (Y2) — o IG-4.2
-continua reprovando. Fora desta rodada (pendentes de decisão): FKs
-`on delete no action` (o RESTRICT atual não aborta a exclusão da unidade sem
-conversa, e com conversa quem aborta é o `conversations_unit_id_fk` RESTRICT
-da 013) e auditoria de `instagram_settings` (o `audit_trigger_func` lê
-`NEW.id`, coluna que a tabela não tem).
+continua reprovando. Decididos sem mudança (ver Evidências do Bloco 1 no
+plano): FKs `on delete no action` não entraram, porque o RESTRICT atual não
+aborta a exclusão da unidade sem conversa, e com conversa quem aborta é o
+`conversations_unit_id_fk` RESTRICT da 013; a auditoria de
+`instagram_settings` foi descartada, porque o `audit_trigger_func` lê
+`NEW.id`, coluna que a tabela não tem.
 
 **`lock_timeout` da 1.4 (fora do 79, duas sessões).** A migration faz
 `set local lock_timeout = '5s'` logo após o `begin`. O 79 roda numa sessão só e
@@ -2975,7 +2979,11 @@ RED na guarda (exit 3) antes da 1.1; o 79 novo sobre as migrations ANTERIORES
 C-IG-6.1..6.4 reprovando); com as migrations da 1.6 cruas, 77/77 após a
 primeira aplicação, 77/77 após reaplicar as cinco e 77/77 repetindo o 79 no
 mesmo banco, sem linha residual nas tabelas novas, no `audit_log` das
-tabelas do módulo nem segredo `instagram-account-*` no Vault.
+tabelas do módulo nem segredo `instagram-account-*` no Vault. Fix round 2 da
+1.6 (banco `ig79_fix2`): o 79 sobre as migrations do commit anterior dá 75/77
+(exit 3: IG-6.2 e C-IG-6.2 reprovando pelo `P0002` de conta inexistente);
+com a migration corrigida, 77/77 após aplicar, após reaplicar as cinco e
+repetindo o 79, sem resíduo.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
 nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A
