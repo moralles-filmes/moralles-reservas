@@ -257,15 +257,27 @@ describe("Agente de IA — base do rascunho (concorrência)", () => {
   };
   const STALE = /A versão ativa mudou desde que você começou a editar/;
 
-  it("ativa muda depois de digitar: a RPC leva o id em que o rascunho se baseou, não o atual", () => {
+  it("ativa muda depois de digitar: avisa, e Publicar fica bloqueado até rebasear", () => {
+    const view = render(<PlatformAgenteIa />);
+    type("meu rascunho");
+    expect(publishButton().disabled).toBe(false);
+    activeChanged();
+    view.rerender(<PlatformAgenteIa />);
+    expect(screen.getByText(STALE)).toBeTruthy();
+    expect(publishButton().disabled).toBe(true);
+    // A explicação do bloqueio está ligada ao campo.
+    expect(editor().getAttribute("aria-describedby")).toContain("prompt-stale");
+    fireEvent.click(publishButton());
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
+  it("o aviso de base desatualizada é um role=status", () => {
     const view = render(<PlatformAgenteIa />);
     type("meu rascunho");
     activeChanged();
     view.rerender(<PlatformAgenteIa />);
-    expect(screen.getByText(STALE)).toBeTruthy();
-    confirmPublish();
-    expect(mocks.publish.mock.calls[0][0].expectedActiveVersionId).toBe("v3");
-    expect(mocks.publish.mock.calls[0][0].body).toBe("meu rascunho");
+    expect(screen.getByRole("status").textContent).toMatch(STALE);
   });
 
   it("sem mudança de ativa não há aviso e o id é o da ativa", () => {
@@ -276,14 +288,14 @@ describe("Agente de IA — base do rascunho (concorrência)", () => {
     expect(mocks.publish.mock.calls[0][0].expectedActiveVersionId).toBe("v3");
   });
 
-  it("continuar editando depois da mudança mantém a base original", () => {
+  it("continuar editando depois da mudança mantém a base original (Publicar segue bloqueado)", () => {
     const view = render(<PlatformAgenteIa />);
     type("primeira");
     activeChanged();
     view.rerender(<PlatformAgenteIa />);
     type("segunda");
-    confirmPublish();
-    expect(mocks.publish.mock.calls[0][0].expectedActiveVersionId).toBe("v3");
+    expect(screen.getByText(STALE)).toBeTruthy();
+    expect(publishButton().disabled).toBe(true);
   });
 
   it("Basear na versão ativa atual tira o aviso e passa a mandar o id novo", () => {

@@ -38,7 +38,8 @@ export function diffLines(before: string, after: string): LineDiffEntry[] {
   const m = endB - start;
   const width = m + 1;
   // lcs[i * width + j] = tamanho da subsequência comum de a[start+i..endA] e b[start+j..endB].
-  const lcs = new Uint32Array((n + 1) * width);
+  // Uint16Array basta: o corpo tem no máximo 4000 caracteres, ou seja, no máximo 4001 linhas e LCS <= 4001 (< 65536).
+  const lcs = new Uint16Array((n + 1) * width);
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
       lcs[i * width + j] =

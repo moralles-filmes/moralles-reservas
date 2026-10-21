@@ -114,3 +114,23 @@ describe("diffLines — texto grande com edição pequena", () => {
     ]);
   });
 });
+
+describe("diffLines — tamanho máximo do corpo (4000 caracteres = 4001 linhas)", () => {
+  it("4001 linhas todas diferentes dos dois lados: LCS cabe no contador e o resultado é completo", () => {
+    const before = Array.from({ length: 4001 }, () => "").join("\n");
+    const after = Array.from({ length: 4001 }, (_, i) => `x${i}`).join("\n");
+    const diff = diffLines(before, after);
+    expect(diff.filter((l) => l.kind === "remove")).toHaveLength(4001);
+    expect(diff.filter((l) => l.kind === "add")).toHaveLength(4001);
+    expect(diff.filter((l) => l.kind === "same")).toHaveLength(0);
+  });
+
+  it("4001 linhas com metade em comum alternada: LCS correto", () => {
+    const before = Array.from({ length: 4001 }, (_, i) => (i % 2 === 0 ? "a" : `b${i}`)).join("\n");
+    const after = Array.from({ length: 4001 }, (_, i) => (i % 2 === 0 ? "a" : `c${i}`)).join("\n");
+    const diff = diffLines(before, after);
+    expect(diff.filter((l) => l.kind === "same")).toHaveLength(2001);
+    expect(diff.filter((l) => l.kind === "remove")).toHaveLength(2000);
+    expect(diff.filter((l) => l.kind === "add")).toHaveLength(2000);
+  });
+});

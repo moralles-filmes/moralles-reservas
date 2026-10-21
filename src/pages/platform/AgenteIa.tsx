@@ -476,6 +476,7 @@ export default function PlatformAgenteIa() {
               {staleBase && (
                 <div
                   id="prompt-stale"
+                  role="status"
                   className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning"
                 >
                   <p>A versão ativa mudou desde que você começou a editar. Revise o diff antes de publicar.</p>
@@ -489,7 +490,7 @@ export default function PlatformAgenteIa() {
                 </div>
               )}
               <div className="flex justify-end">
-                <Button onClick={() => setDialog("publish")} disabled={problem !== null || unchanged}>
+                <Button onClick={() => setDialog("publish")} disabled={problem !== null || unchanged || staleBase}>
                   Publicar
                 </Button>
               </div>
