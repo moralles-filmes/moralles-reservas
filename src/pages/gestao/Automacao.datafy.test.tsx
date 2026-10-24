@@ -25,7 +25,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function mount() {
-  return render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><Automacao /></QueryClientProvider></MemoryRouter>);
+  return render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><Automacao /></QueryClientProvider></MemoryRouter>);
 }
 describe("Datafy channel dialogs", () => {
   it("starts the add dialog with the organization's default provider", async () => {
