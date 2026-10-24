@@ -23,10 +23,6 @@ vi.mock('./pages/Auth', () => ({ default: () => <h1>Login privado</h1> }));
 vi.mock('./pages/gestao/Dashboard', () => ({ default: () => <h1>Painel privado</h1> }));
 vi.mock('./pages/gestao/Whatsapp', () => ({ default: () => <h1>Consulta de avisos WhatsApp</h1> }));
 vi.mock('./pages/platform/Empresas', () => ({ default: () => <h1>Plataforma privada</h1> }));
-vi.mock('react-router-dom', async importOriginal => {
-  const actual = await importOriginal<typeof import('react-router-dom')>();
-  return { ...actual, BrowserRouter: (props: React.ComponentProps<typeof actual.BrowserRouter>) => <actual.BrowserRouter {...props} future={{ v7_startTransition: true, v7_relativeSplatPath: true }} /> };
-});
 beforeEach(() => {
   window.matchMedia = vi.fn().mockReturnValue({ matches: false, addListener: vi.fn(), removeListener: vi.fn() });
   io.user = false; io.members = false; io.admin = false; io.role = 'owner';

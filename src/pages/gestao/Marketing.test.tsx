@@ -29,7 +29,7 @@ function SwitchUnit() {
   return <button onClick={() => { mocks.unit = { ...mocks.unit, unit_id: "b", unit_slug: "praia" }; navigate("/g/praia/marketing/campanhas"); }}>Trocar unidade</button>;
 }
 function renderPage(section = "campanhas") {
-  return render(<MemoryRouter initialEntries={[`/g/centro/marketing/${section}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Routes><Route path="/g/:unitSlug/marketing/:section" element={<><SwitchUnit /><Marketing /></>} /></Routes></MemoryRouter>);
+  return render(<MemoryRouter initialEntries={[`/g/centro/marketing/${section}`]}><Routes><Route path="/g/:unitSlug/marketing/:section" element={<><SwitchUnit /><Marketing /></>} /></Routes></MemoryRouter>);
 }
 beforeEach(() => {
   vi.clearAllMocks();

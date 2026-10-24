@@ -43,7 +43,7 @@ function Navigation() {
   return <>{tokens.map((token, index) => <button key={index} onClick={() => navigate(`/preferencias/mensagens/${token}`)}>Abrir unidade {index + 1}</button>)}</>;
 }
 function mount(strict = false) {
-  const app = <QueryClientProvider client={client}><MemoryRouter initialEntries={[`/preferencias/mensagens/${tokens[0]}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Navigation /><Routes><Route path="/preferencias/mensagens/:token" element={<PreferenciasMensagens />} /></Routes></MemoryRouter></QueryClientProvider>;
+  const app = <QueryClientProvider client={client}><MemoryRouter initialEntries={[`/preferencias/mensagens/${tokens[0]}`]}><Navigation /><Routes><Route path="/preferencias/mensagens/:token" element={<PreferenciasMensagens />} /></Routes></MemoryRouter></QueryClientProvider>;
   return render(strict ? <StrictMode>{app}</StrictMode> : app);
 }
 it('loads a valid lifecycle under StrictMode without losing its active observer', async () => {

@@ -50,7 +50,7 @@ const renderAt = (url: string) => {
   queryClient = new QueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[url]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter initialEntries={[url]}>
         <WhatsappInstances />
         <LocationProbe />
       </MemoryRouter>

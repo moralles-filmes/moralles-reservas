@@ -61,7 +61,7 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 function mount(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-  render(<QueryClientProvider client={client}><MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Conversas /></MemoryRouter></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><MemoryRouter><Conversas /></MemoryRouter></QueryClientProvider>);
   fireEvent.click(screen.getByText("Cliente Teste"));
   return client;
 }

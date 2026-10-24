@@ -60,7 +60,7 @@ function UnitNavigation() {
 }
 function mount(Page: typeof Reservas) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/g/unidade-a']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><UnitNavigation /><Routes><Route path="/g/:unitSlug" element={<Page />} /></Routes></MemoryRouter></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/g/unidade-a']}><UnitNavigation /><Routes><Route path="/g/:unitSlug" element={<Page />} /></Routes></MemoryRouter></QueryClientProvider>);
   return client;
 }
 it.each([['reservas', Reservas], ['fila', Fila], ['giftback', Giftback]] as const)('%s displays official read-only models', async (_, Page) => {
