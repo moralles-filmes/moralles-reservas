@@ -14,34 +14,64 @@ export const INSTAGRAM_CHANNEL_RULES =
 const encoder = new TextEncoder();
 const byteLength = (s: string): number => encoder.encode(s).length;
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** Surrogate solto vira U+FFFD (sem depender de String.prototype.toWellFormed). */
+function wellFormed(s: string): string {
+  return s.replace(LONE_SURROGATE, "�");
+}
+
+/** Entrada normalizada: UTF-16 válido e quebras de linha `\n`. */
+function normalizeInput(s: string): string {
+  return wellFormed(s).replace(/\r\n?/g, "\n");
+}
+
+const URL_RE = /https?:\/\/[^\s*`)\]<>]+/g;
+const URL_TRAILING = new Set([".", ",", "!", "?", ";", ":", "_", '"', "'"]);
+
 /**
  * Remove markdown de saída de LLM. Escolhas:
  * - URLs são protegidas (placeholder) antes das regras: `_`, `__` e `#` dentro de URL sobrevivem.
+ *   A URL termina antes de * _ ` ) ] < > e de pontuação final (. , ! ? ; :), que voltam ao texto.
+ *   O NUL é removido da entrada antes, então o placeholder não colide.
+ * - Ênfase só é removida quando pareada, com conteúdo não vazio colado aos delimitadores
+ *   (**x**, __x__, *x*, _x_). "2 * 3 * 4" e "1*2*3" ficam como estão. O conteúdo de uma ênfase é
+ *   limitado a 300 caracteres por linha (evita varredura quadrática).
+ * - `__x__` com x identificador minúsculo ASCII (__init__) é tratado como palavra e fica como está;
+ *   negrito do LLM vem com `**`. Limite conhecido: "__dia__" também fica.
  * - `#` só é removido como cabeçalho (início de linha, até 3 espaços, seguido de espaço):
  *   "mesa #3" e "#promo" ficam intactos.
- * - `_x_` só vira `x` quando não colado a letra/dígito: snake_case sobrevive.
- * - `**`/`__` e crases são removidos em qualquer posição.
+ * - `_x_` simples não vale colado a letra/dígito: snake_case sobrevive.
+ * - Crases e cercas de bloco são removidas em qualquer posição.
  */
 export function sanitizeForInstagram(text: string): string {
   if (!text) return text;
-  let out = text;
+  let out = normalizeInput(text).replace(/\u0000/g, "");
 
   // Link markdown → "texto: url" (antes de proteger URLs).
   out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1: $2");
 
-  // Protege URLs.
+  // Protege URLs; pontuação/markdown final volta ao texto.
   const urls: string[] = [];
-  out = out.replace(/https?:\/\/[^\s)]+/g, (m) => {
-    urls.push(m);
-    return `\u0000${urls.length - 1}\u0000`;
+  out = out.replace(URL_RE, (m) => {
+    let end = m.length;
+    while (end > 0 && URL_TRAILING.has(m[end - 1])) end--;
+    const url = m.slice(0, end);
+    if (!/^https?:\/\/./.test(url)) return m;
+    urls.push(url);
+    return `\u0000${urls.length - 1}\u0000${m.slice(end)}`;
   });
 
   // Cercas de bloco de código e crases.
   out = out.replace(/```[a-zA-Z0-9_-]*\n?/g, "");
   out = out.replace(/`/g, "");
 
-  // Negrito / itálico duplo.
-  out = out.replace(/\*\*|__/g, "");
+  // Negrito pareado.
+  out = out.replace(/\*\*(?=\S)([^\n]{0,300}?\S)\*\*/g, "$1");
+  out = out.replace(
+    /(?<![\p{L}\p{N}_])__(?=\S)([^\n]{0,300}?\S)__(?![\p{L}\p{N}_])/gu,
+    (m, inner: string) => (/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(inner) ? m : inner),
+  );
 
   // Cabeçalhos.
   out = out.replace(/^ {0,3}#{1,6}[ \t]+/gm, "");
@@ -49,15 +79,15 @@ export function sanitizeForInstagram(text: string): string {
   // Listas "- " / "* " → "• " (antes do itálico de asterisco simples).
   out = out.replace(/^([ \t]*)[-*][ \t]+/gm, "$1• ");
 
-  // Itálico simples.
-  out = out.replace(/\*([^*\n]+)\*/g, "$1");
-  out = out.replace(/(?<![\p{L}\p{N}_])_([^_\n]+)_(?![\p{L}\p{N}_])/gu, "$1");
+  // Itálico simples pareado.
+  out = out.replace(/(?<![*\p{L}\p{N}])\*(?=[^\s*])([^\n*]{0,300}?[^\s*])\*(?![*\p{L}\p{N}])/gu, "$1");
+  out = out.replace(/(?<![\p{L}\p{N}_])_(?=[^\s_])([^\n_]{0,300}?[^\s_])_(?![\p{L}\p{N}_])/gu, "$1");
 
   // 3+ quebras de linha → 2.
   out = out.replace(/\n{3,}/g, "\n\n");
 
   // Restaura URLs.
-  out = out.replace(/\u0000(\d+)\u0000/g, (_m, i) => urls[Number(i)]);
+  out = out.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => urls[Number(i)] ?? "");
   return out;
 }
 
@@ -66,10 +96,42 @@ interface Piece {
   sep: string;
 }
 
-// Níveis de corte: parágrafo, frase, palavra. O último recurso (code point) é tratado à parte.
-const LEVELS: RegExp[] = [/\s*\n\s*\n\s*/g, /(?<=[.!?…])\s+/g, /\s+/g];
+const isBlankNotNl = (c: string): boolean => c !== "\n" && /\s/.test(c);
 
-function toPieces(text: string, re: RegExp): Piece[] {
+/**
+ * Peças por parágrafo, em varredura linear (sem regex com retrocesso): o separador é
+ * um `\n`, espaço/tab opcionais, outro `\n` e todo o espaço em branco que segue; o espaço
+ * em branco imediatamente antes do primeiro `\n` também faz parte do separador.
+ */
+function paragraphPieces(text: string): Piece[] {
+  const pieces: Piece[] = [];
+  const n = text.length;
+  let last = 0;
+  let i = 0;
+  while (i < n) {
+    if (text[i] !== "\n") {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < n && isBlankNotNl(text[j])) j++;
+    if (j >= n || text[j] !== "\n") {
+      i = j; // quebra simples: não é separador de parágrafo
+      continue;
+    }
+    let start = i;
+    while (start > last && isBlankNotNl(text[start - 1])) start--;
+    let end = j + 1;
+    while (end < n && /\s/.test(text[end])) end++;
+    if (start > last) pieces.push({ text: text.slice(last, start), sep: text.slice(start, end) });
+    last = end;
+    i = end;
+  }
+  if (last < n) pieces.push({ text: text.slice(last), sep: "" });
+  return pieces;
+}
+
+function regexPieces(text: string, re: RegExp): Piece[] {
   const pieces: Piece[] = [];
   const rx = new RegExp(re.source, "g");
   let last = 0;
@@ -85,6 +147,13 @@ function toPieces(text: string, re: RegExp): Piece[] {
   if (last < text.length) pieces.push({ text: text.slice(last), sep: "" });
   return pieces;
 }
+
+// Níveis de corte: parágrafo, frase, palavra. O último recurso (code point) é tratado à parte.
+const LEVEL_SPLITTERS: Array<(t: string) => Piece[]> = [
+  paragraphPieces,
+  (t) => regexPieces(t, /(?<=[.!?…])\s+/g),
+  (t) => regexPieces(t, /\s+/g),
+];
 
 function splitByCodePoint(text: string, maxBytes: number): string[] {
   const parts: string[] = [];
@@ -106,8 +175,8 @@ function splitByCodePoint(text: string, maxBytes: number): string[] {
 
 function pack(text: string, level: number, maxBytes: number): string[] {
   if (byteLength(text) <= maxBytes) return [text];
-  if (level >= LEVELS.length) return splitByCodePoint(text, maxBytes);
-  const pieces = toPieces(text, LEVELS[level]);
+  if (level >= LEVEL_SPLITTERS.length) return splitByCodePoint(text, maxBytes);
+  const pieces = LEVEL_SPLITTERS[level](text);
   if (pieces.length <= 1) return pack(text, level + 1, maxBytes);
 
   const parts: string[] = [];
@@ -140,17 +209,17 @@ function pack(text: string, level: number, maxBytes: number): string[] {
  * Divide em partes de no máximo `maxBytes` bytes UTF-8, cortando em parágrafo,
  * depois frase, depois palavra e, por último, por code point (nunca no meio de um par substituto).
  *
- * Contrato: o texto é aparado (trim) e o espaço em branco (`\s+`) que cai exatamente num
- * ponto de corte é DESCARTADO (separador de parágrafo, de frase ou de palavra); espaço dentro
- * de uma parte é preservado. Corte por code point não descarta nada. Nenhuma parte é vazia.
- * Entrada vazia ou só espaço devolve `[]`: o chamador não envia nada.
- * `maxBytes < 4` lança RangeError (um code point de 4 bytes não caberia).
+ * Contrato: a entrada é normalizada (surrogate solto vira U+FFFD; `\r\n`/`\r` viram `\n`) e aparada
+ * (trim); o espaço em branco (`\s+`) que cai exatamente num ponto de corte de parágrafo, frase ou
+ * palavra é DESCARTADO; espaço dentro de uma parte é preservado. Corte por code point não descarta
+ * nada (a concatenação é exata). Nenhuma parte é vazia. Entrada vazia ou só espaço devolve `[]`:
+ * o chamador não envia nada. `maxBytes < 4` lança RangeError (um code point de 4 bytes não caberia).
  */
 export function splitInstagramText(text: string, maxBytes: number = INSTAGRAM_MAX_TEXT_BYTES): string[] {
   if (!Number.isInteger(maxBytes) || maxBytes < 4) {
     throw new RangeError("maxBytes deve ser um inteiro >= 4");
   }
-  const trimmed = (text ?? "").trim();
+  const trimmed = normalizeInput(text ?? "").trim();
   if (!trimmed) return [];
   return pack(trimmed, 0, maxBytes);
 }
@@ -158,27 +227,43 @@ export function splitInstagramText(text: string, maxBytes: number = INSTAGRAM_MA
 /** Telefone canônico (sem 55) com 10/11 dígitos → "(11) 98888-7777"; outro formato volta cru. */
 function formatCanonicalBrPhone(raw: string): string {
   const d = raw.replace(/\D/g, "");
-  if (d === raw.trim()) {
+  if (d === raw) {
     if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
     if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
   }
-  return raw.trim();
+  return raw;
 }
 
-const cleanInline = (s: string | null | undefined, max: number): string =>
-  (s ?? "").replace(/\s+/g, " ").trim().slice(0, max).trim();
+// Controle, bidi, zero-width, BOM e NEL.
+const INVISIBLE = /[\p{Cc}‪-‮⁦-⁩​-‏﻿\u0085]/gu;
 
+/** Corta por code point (nunca deixa surrogate solto). */
+function cutCodePoints(s: string, max: number): string {
+  return Array.from(s).slice(0, max).join("");
+}
+
+function cleanText(s: string | null | undefined, allowed: RegExp, max: number): string {
+  const spaced = wellFormed(s ?? "").replace(/\s+/gu, " ").replace(INVISIBLE, "");
+  const kept = Array.from(spaced).filter((c) => allowed.test(c)).join("");
+  return cutCodePoints(kept.replace(/ +/g, " ").trim(), max).trim();
+}
+
+/**
+ * Linha de identidade declarada (não verificada) para o prompt do Instagram. A entrada é endurecida:
+ * username só [A-Za-z0-9._]; nome só letras/marcas/dígitos/espaço/' . -; telefone só dígitos e
+ * `+ ( ) -`/espaço; sem controle, bidi nem zero-width. O que sobrar vazio é tratado como ausente.
+ */
 export function buildInstagramIdentityLine(i: {
   username: string | null;
   name: string | null;
   linkedPhone: string | null;
 }): string {
-  const username = cleanInline(i.username, 60).replace(/^@+/, "");
-  const name = cleanInline(i.name, 80);
+  const username = cleanText(i.username, /[A-Za-z0-9._]/, 60);
+  const name = cleanText(i.name, /[\p{L}\p{M}\p{Nd}' .-]/u, 80);
   const who = [username ? `@${username}` : "", name].filter(Boolean).join(", ");
   const head = who ? `O cliente fala pelo Instagram (${who})` : "O cliente fala pelo Instagram";
 
-  const phone = cleanInline(i.linkedPhone, 40).replace(/\.+$/, "");
+  const phone = cleanText(i.linkedPhone, /[0-9+() -]/, 40);
   const tail = phone
     ? `o WhatsApp informado é ${formatCanonicalBrPhone(phone)}.`
     : "o WhatsApp ainda não foi informado.";
