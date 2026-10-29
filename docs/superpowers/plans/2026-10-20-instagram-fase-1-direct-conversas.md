@@ -463,18 +463,18 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
   - `sendText(i: { igUserId: string; token: string; igsid: string; text: string }): Promise<GraphResult<{ messageId: string }>>`;
   - timeout de 10s por chamada; **sem retry** em POST; token sempre no header `Authorization: Bearer`, nunca na query de POST.
 
-- [ ] **Step 1: Testes.**
+- [x] **Step 1: Testes.**
   - Tabela de `classifyGraphError` com todos os códigos das Global Constraints.
   - `buildAuthorizeUrl` traz os escopos separados por vírgula, `response_type=code` e o `state` codificado.
   - `parseMe` usa `user_id` e devolve `null` sem ele.
   - `stripOAuthCodeSuffix("abc#_")` devolve `"abc"`.
   - `redactSecrets` tira o token de uma URL e de uma mensagem de `TypeError`.
-- [ ] **Step 2: Rode `npx vitest run src/lib/instagram-graph-core.test.ts` e confira FAIL. Implemente. Rode e confira PASS.**
-- [ ] **Step 3: Teste do adapter com `fetch` falso:**
+- [x] **Step 2: Rode `npx vitest run src/lib/instagram-graph-core.test.ts` e confira FAIL. Implemente. Rode e confira PASS.**
+- [x] **Step 3: Teste do adapter com `fetch` falso:**
   - erro 500 cujo corpo ecoa o token não deixa o token em nenhum campo do resultado;
   - erro de rede com URL contendo `access_token=` é redigido.
   - Controle positivo: sem a redação, o teste reprova.
-- [ ] **Step 4: Rode `npx -y deno@2.1.4 check supabase/functions/_shared/instagram-graph.ts`. Commit** `feat(instagram): cliente do Graph com redação de token na origem`.
+- [x] **Step 4: Rode `npx -y deno@2.1.4 check supabase/functions/_shared/instagram-graph.ts`. Commit** `feat(instagram): cliente do Graph com redação de token na origem`.
 
 ### Task 2.2: segredos e `state` do OAuth (Opus)
 
@@ -490,12 +490,12 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
   - `verifyInstagramState(token: string, secret: string, nowMs: number): Promise<{ ok: true; payload } | { ok: false; reason: "malformed"|"bad_signature"|"expired" }>`;
   - `INSTAGRAM_STATE_TTL_MS = 600_000`.
 
-- [ ] **Step 1: Testes.**
+- [x] **Step 1: Testes.**
   - Erro de leitura dá `read_failed` e nunca valor de env. Controle positivo: um leitor com fallback reprova.
   - `state` adulterado em 1 caractere dá `bad_signature`. Vencido dá `expired`. `userId` trocado no json com a assinatura antiga dá `bad_signature`.
   - O teste estático confirma que `VALID_KEYS` contém as três chaves novas.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check` de `manage-platform-secrets`.**
-- [ ] **Step 3: Commit** `feat(instagram): segredos sem fallback de env e state assinado do OAuth`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check` de `manage-platform-secrets`.**
+- [x] **Step 3: Commit** `feat(instagram): segredos sem fallback de env e state assinado do OAuth`.
 
 ### Task 2.3: `webhook-instagram` (Opus)
 
@@ -520,12 +520,12 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
   6. **ACK 200**, e então `EdgeRuntime.waitUntil(fetch(process-instagram-inbound, { x-internal-key, body: { event_id } }))` para cada linha nova. O worker relê a linha; o corpo do pedido não carrega payload.
   7. **Descartes:** conta desconhecida, sem grant ou com Direct desligado dão 200 e uma contagem no log, sem gravar nada. Conta em `reauth_required` também descarta, porque sem token não há resposta; as telas da loja e da plataforma mostram o alerta de reconexão.
 
-- [ ] **Step 1: Testes do core.**
+- [x] **Step 1: Testes do core.**
   - A assinatura confere sobre os bytes, inclusive com `\u0000` e acento.
   - Candidato `meta` casa quando `instagram` não casa, e devolve `matched:"meta"`. Sem candidatos dá `no_secret`.
   - Cabeçalho sem `sha256=` dá `malformed_header`.
   - Desafio com token errado dá 403.
-- [ ] **Step 2: Testes de Request no harness.**
+- [x] **Step 2: Testes de Request no harness.**
   - `webhook grava uma linha por conta do lote`: o corpo traz duas contas, de A e B, e saem duas linhas, cada uma com o próprio `unit_id`.
   - Assinatura inválida dá 401, sem nenhuma leitura de conta.
   - Erro ao ler o grant dá 503.
@@ -533,8 +533,8 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
   - Mesmo corpo duas vezes grava uma linha.
   - Erro do INSERT dá 503.
   - O GET de verificação responde o `hub.challenge`.
-- [ ] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS. Controle positivo: resolver a unidade por `entry.id` sem o `select` de conta reprova o teste das duas contas.**
-- [ ] **Step 4: Rode `npx -y deno@2.1.4 check supabase/functions/webhook-instagram/index.ts`. Commit** `feat(instagram): webhook autentica sobre o corpo cru e grava na fila antes do ACK`.
+- [x] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS. Controle positivo: resolver a unidade por `entry.id` sem o `select` de conta reprova o teste das duas contas.**
+- [x] **Step 4: Rode `npx -y deno@2.1.4 check supabase/functions/webhook-instagram/index.ts`. Commit** `feat(instagram): webhook autentica sobre o corpo cru e grava na fila antes do ACK`.
 
 ### Task 2.4: `instagram-connect` (Opus)
 
@@ -567,8 +567,8 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
   - `redirect_uri` = `${APP_BASE_URL}/instagram/callback`. `APP_BASE_URL`, `INSTAGRAM_APP_ID` e `INSTAGRAM_OAUTH_STATE_SECRET` são lidos só no `index.ts`.
   - Erro do Graph ou do Postgres nunca volta cru: mensagem PT-BR e `errorClass` no log.
 
-- [ ] **Step 1: Testes do núcleo de acesso:** a tabela completa de ação × papel × grant × `platform_admin`.
-- [ ] **Step 2: Testes de Request.**
+- [x] **Step 1: Testes do núcleo de acesso:** a tabela completa de ação × papel × grant × `platform_admin`.
+- [x] **Step 2: Testes de Request.**
   - Operador recebe 403 em todas as ações.
   - `callback` com `state` de outro usuário dá 403, sem troca do código.
   - `state` vencido dá 403.
@@ -577,8 +577,8 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
   - Conta já conectada a outra unidade dá 409.
   - Caminho feliz: grava o token pelo RPC, nunca o devolve, e a resposta não contém o token.
   - `disconnect` de membro de outra unidade dá 403.
-- [ ] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS. Controle positivo: aceitar `unit_id` do body no `callback` reprova o teste do `state` alheio.**
-- [ ] **Step 4: Rode o `deno check`. Commit** `feat(instagram): conexão da conta pelo Instagram Login com state assinado`.
+- [x] **Step 3: Rode e confira FAIL. Implemente. Rode e confira PASS. Controle positivo: aceitar `unit_id` do body no `callback` reprova o teste do `state` alheio.**
+- [x] **Step 4: Rode o `deno check`. Commit** `feat(instagram): conexão da conta pelo Instagram Login com state assinado`.
 
 ### Task 2.5: renovação de token (Sonnet, review Opus)
 
@@ -597,24 +597,24 @@ As EFs novas entram em `EdgeName`/`ENDPOINTS` de [edge-request-harness.ts](../..
   - `refresh` → `refresh`; sucesso grava; `reauth_required` muda o status; `transient` só loga e tenta no dia seguinte;
   - nunca loga o token.
 
-- [ ] **Step 1: Teste da decisão.**
+- [x] **Step 1: Teste da decisão.**
   - 29 dias dá `skip`, 30 dias dá `refresh`.
   - Vencido dá `expired`.
   - `reauth_required` e `disconnected` dão `skip`.
   - Sem `tokenRefreshedAt`, usa `connectedAt`.
-- [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check`. Commit** `feat(instagram): renovação diária do token longo`.
+- [x] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Rode o `deno check`. Commit** `feat(instagram): renovação diária do token longo`.
 
 ### Task 2.6: gates do Bloco 2
 
-- [ ] Rode `npm run typecheck`, `npm run lint`, as suítes `src/lib/instagram-*` e o `deno check` das três EFs novas e de `manage-platform-secrets`.
-- [ ] Rode `node scripts/check-portabilidade.mjs`. Contagem acima da linha de base: **pare e pergunte** (D3).
-- [ ] Rode os gates com o Opus:
+- [x] Rode `npm run typecheck`, `npm run lint`, as suítes `src/lib/instagram-*` e o `deno check` das três EFs novas e de `manage-platform-secrets`.
+- [x] Rode `node scripts/check-portabilidade.mjs`. Contagem acima da linha de base: **pare e pergunte** (D3).
+- [x] Rode os gates com o Opus:
   - `saas-shield-br:integration-reliability-auditor` (webhook, fila, refresh);
   - `saas-shield-br:identity-access-auditor` (connect, `state`);
   - `saas-shield-br:secret-hunter` (diff do bloco);
   - revisão com a skill `saas-shield-br:edge-function-guard` sobre as três EFs.
-- [ ] Crie `.claude/rules/instagram.md`, com `paths:` para `supabase/functions/*instagram*/**`, `supabase/functions/_shared/instagram-*`, `supabase/migrations/*instagram*` e `src/**/instagram/**`, mais `src/pages/gestao/Instagram*` e `src/pages/InstagramCallback*`. Ela traz as invariantes S1, S5, S6, a regra de 1000 bytes, a fila antes do ACK e os gates fail-closed. Adicione a linha na tabela do AGENTS.md §2. Os jobs já entraram na tabela de `edge-functions.md` no 1.6; confira que os nomes das EFs batem com o que foi implementado.
-- [ ] Commit `docs(instagram): regra do módulo e workers no inventário de cron`.
+- [x] Crie `.claude/rules/instagram.md`, com `paths:` para `supabase/functions/*instagram*/**`, `supabase/functions/_shared/instagram-*`, `supabase/migrations/*instagram*` e `src/**/instagram/**`, mais `src/pages/gestao/Instagram*` e `src/pages/InstagramCallback*`. Ela traz as invariantes S1, S5, S6, a regra de 1000 bytes, a fila antes do ACK e os gates fail-closed. Adicione a linha na tabela do AGENTS.md §2. Os jobs já entraram na tabela de `edge-functions.md` no 1.6; confira que os nomes das EFs batem com o que foi implementado.
+- [x] Commit `docs(instagram): regra do módulo e workers no inventário de cron`.
 
 ---
 
@@ -788,6 +788,14 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
   export const INSTAGRAM_PROCESSED_RETENTION_DAYS = 30;
   ```
   - `extractAccountItems` só lê `entry[]` com `id === igUserId` e ordena por `timestamp`.
+- **Herdado do Bloco 2 (obrigatório):**
+  - `process-instagram-inbound` tem `verify_jwt = false` e `requireInternalAuth` como primeira instrução: o kick do webhook manda só `x-internal-key` e `{ event_id }`, sem `Authorization`.
+  - O teste de Request do `webhook-instagram` passa a declarar o hop `webhook-instagram → process-instagram-inbound` e conferir o corpo `{ event_id }` e o header `x-internal-key` (hoje só o core confere).
+  - O worker espelha `INBOUND_MAX_ATTEMPTS` de `whatsapp-inbound-queue-core.ts` e fecha como `dead` logo depois do claim quando `attempts` estourou (a fila não limita tentativas no banco).
+  - Envio: resultado com `isGraphOutcomeUnknown(r, "POST")` (2xx sem corpo legível, HTTP nulo ou `transient`) é desfecho desconhecido: não reenviar e não gravar como falha definitiva.
+  - O adapter do Graph não redige: log com texto de erro passa por `redactSecrets`.
+  - Nenhuma RPC ou diagnóstico devolve `raw_body`.
+  - Follow-up de banco (gate integration-reliability do Bloco 2): `record_instagram_token_refresh` e `set_instagram_account_status` ganham compare-and-set por `connected_at` esperado, para que uma reconexão durante a varredura do refresh não seja derrubada para `reauth_required`; o `process-instagram-token-refresh` conta o caso como `skipped_stale`. Entra na mesma leva de migrations da Task 4.5.
   - Classificação:
     - `is_echo` → `echo`, com `igsid` = destinatário;
     - `sender.id === igUserId` sem eco → `ignored_self` (o desfecho segue o CHECK `^[a-z0-9_]{1,64}$` da migration 120200);
@@ -864,6 +872,7 @@ Antes de começar: leia `whatsapp.md` ("Inbound, idempotência e fila", "Convers
     5. `record_whatsapp_human_message` com o texto **das partes que saíram** e `provider_message_ids`, para que o eco desse envio conte como `echo_own` (D5);
     6. falha parcial dá 502 `{ code:"PARTIAL_SEND", sent: n, total: m }`;
     7. 190 marca `reauth_required` e dá 409 `INSTAGRAM_REAUTH_REQUIRED`.
+  - Herdado do Bloco 2: parte com `isGraphOutcomeUnknown(r, "POST")` conta como "pode ter saído": o `PARTIAL_SEND` informa `sent` só com as partes confirmadas e a resposta diz que o desfecho da parte seguinte é desconhecido, sem reenviar.
 
 - [ ] **Step 1: Testes.**
   - Conversa IG ligada a cliente com telefone **não** chama envio WhatsApp. Controle positivo: sem o ramo, o teste vê o POST do provider.
@@ -964,6 +973,8 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
   - aviso fixo: "Respostas enviadas pelo app do Instagram não pausam a IA. Para atender você mesmo, use Assumir em Conversas." (D5).
 - Callback:
   - lê `code`/`state`;
+  - **compara o `state` recebido com o guardado no `start`** (o `start` devolve `{ authorize_url, state }`; guarde o `state` em `sessionStorage` antes do redirecionamento), apaga o guardado antes de chamar a EF e recusa sem chamar a EF quando não há `state` guardado ou ele difere (R2-d: a EF não tem nonce store);
+  - chama `callback` **uma vez só** (guarda contra StrictMode e reload; o código da Meta é de uso único e a segunda chamada daria 502);
   - **remove os dois da URL com `history.replaceState` antes de qualquer outra coisa**;
   - chama `connectCallback` e navega para `/g/<unit_slug>/instagram`;
   - em erro, mostra a mensagem do backend e um link de volta.
@@ -972,6 +983,9 @@ Antes de começar: leia `frontend.md`, as skills `saas-builder-br:tanstack-query
   - Operador é redirecionado.
   - Sem grant, o item não aparece no menu.
   - O callback limpa a URL antes do `connectCallback`. Controle positivo: sem `replaceState`, o teste vê o `code` na URL durante a chamada.
+  - Callback com `state` diferente do guardado, ou sem `state` guardado, não chama `instagram-connect`. Controle positivo: sem a comparação, a EF é chamada.
+  - Em StrictMode (efeito duplo), `connectCallback` roda uma vez.
+  - Operador não vê o cartão de status (a EF nega `status` a operador; a RPC aceitaria, mas a régua da tela é a da EF).
   - O interruptor desfaz o estado otimista quando a mutation falha.
 - [ ] **Step 2: Rode e confira FAIL. Implemente. Rode e confira PASS. Commit** `feat(instagram): página da loja com conexão e Direct`.
 
@@ -1219,7 +1233,41 @@ Executado em 2026-10-20/21 na branch `feat/instagram-fase-1`, local, sem push, s
 - Os jobs de cron entraram em `edge-functions.md` já no 1.6.
 
 ### Bloco 2
-_(preencher)_
+Executado em 2026-10-29 na branch `feat/instagram-fase-1`, local, sem push, sem `db push`, sem deploy, sem `secrets set` e sem chamada à Meta (todos os testes usam `fetch` falso). Começou com `git fetch` e rebase sobre `origin/main` `a7624e7` (PR #56, migration `20261021190000_whatsapp_v2_service_self_service`); por autorização do responsável, as migrations do Bloco 1 foram renomeadas para `20261021200000…200500` (`5fa1cdb`) e a projeção de ACL somada à do serviço v2 (9/46/55). Pré-voo 79 depois do rename: RED exit 3, GREEN 77/77 duas vezes (PostgreSQL 18.6 descartável na porta 55442: a 55432 passou a ser de um container Docker de outro projeto).
+
+Execução por tarefa: implementador (Sonnet em 2.1 e 2.5, Opus em 2.2–2.4), review de spec (Sonnet) e review de qualidade e segurança (Opus), teste falhando primeiro e controle positivo em cada task.
+
+**Commits:** `53a6c6e` + `832865d` (2.1, uma rodada de correção: `parseMe` recusa `user_id` numérico inseguro), `e51f098` + `a4ca9d2` (2.2; a leitura de `platform_secrets` saiu de `_shared` para o `index.ts` de cada EF, D3), `d4b7cd1` + `ea619ac` (2.3, uma rodada: corpo lido em stream com teto de 2 MiB), `d5af1e0` (2.4), `d68ce7b` (2.5), `e7fded7` (correções dos gates), mais o commit de docs.
+
+**Desvios do texto do plano (rulings):**
+- R2-a: `raw_body` é o hex dos bytes recebidos (`rawBodyByteaHex`), não `encodeRawBodyHex(text)`, que trocaria UTF-8 inválido e quebraria a revalidação do HMAC.
+- R2-b: o kick para `process-instagram-inbound` é best-effort (a EF só nasce na 4.1); a varredura de 1 min é a rede.
+- R2-c: o leitor de `platform_secrets` cacheia só sucesso por 5 min, nunca falha, nunca env.
+- R2-d: sem nonce store; uso único = código da Meta + `state` preso a usuário/unidade/exp + comparação no frontend (5.3, critério escrito na task). O `start` devolve `{ authorize_url, state }`.
+- R2-e: `toLongLived` e `refresh` levam credencial na query porque a Meta exige; o adapter nunca devolve texto remoto.
+- `_shared/instagram-config.ts` não faz `.from`: uma constante para escapar do regex do `check-portabilidade` foi recusada; a consulta literal fica no `index.ts` (D3).
+- O corpo do webhook é lido com `readBodyWithCap` (o plano dizia `arrayBuffer()`, que lê sem limite num endpoint sem autenticação).
+- `classifyGraphError` ganhou 429/17/32 → `rate_limited` e 1/2 → `transient`.
+- A `instagram-connect` lê o papel direto de `unit_members` + `platform_admins` (mesma consulta de `hasUnitAccess`, que não devolve o papel), com 503 em erro de leitura.
+- Operador recebe 403 em `status` (régua da EF); a RPC aceita qualquer membro, sem token. A tela da 5.3 esconde o cartão.
+
+**Gates locais (HEAD `e7fded7`):** `npm run typecheck` exit 0; lint sem erro (17 warnings, todos em arquivos anteriores ao bloco); `src/lib/instagram-*` + Datafy + Integracoes 15 arquivos 410/410; `scripts/` 118/118; arquivos de Request do harness verdes; `deno check` de `webhook-instagram`, `instagram-connect`, `process-instagram-token-refresh` e `manage-platform-secrets` exit 0; `check-padrao` exit 0; `check-portabilidade` 487 = linha de base; `secret-scan --range 5fa1cdb..d68ce7b` 0 achados. Suíte completa: 211 de 212 arquivos verdes (4594 testes); só falha `OfficialConnectionCard`, que já falhava por falta de `.env.local`.
+
+**Gates (Opus), todos PASS_WITH_WARNINGS, 0 bloqueante:** `integration-reliability-auditor`, `identity-access-auditor`, `secret-hunter`, `edge-function-guard` (as três EFs e `manage-platform-secrets`); review final do bloco: pronto. Corrigido em `e7fded7`: predicado `isGraphOutcomeUnknown`; refresh com as contas devidas mais antigas primeiro e orçamento de 100 s; `expires_in` com teto de 90 dias; corpo da connect com teto de 16 KiB; `instagram_account_secret_mismatch` → 503; `start` devolve `state`; testes de `platform_admin` no callback e no disconnect; `readBodyWithCap` recusa chunk que não é `Uint8Array`.
+
+**Atenções com decisão:**
+- Refresh grava a partir de um retrato da varredura: uma reconexão no meio pode ser derrubada para `reauth_required`. Precisa de compare-and-set por `connected_at` nas RPCs (SQL): vai com as migrations da Task 4.5 (escrito na 4.1).
+- O refresh continua para conta `connected` de unidade com grant revogado: a revogação desliga a ingestão, não a credencial.
+- POST forjado custa uma leitura de `platform_secrets` quando `meta_app_secret` não existe; sem timeout de banco no webhook (a Meta reentrega e a fila deduplica).
+- `P0001` → 409 "já conectada" depende de o store não levantar outro `P0001`; um SQLSTATE próprio fica para a próxima migration da conta.
+- Sem rate limit nem `requestId` nas três EFs; sem trava de concorrência no refresh (a renovação é idempotente).
+- Código 10 sem permissão cai em `window_closed` e o `exchangeCode` não devolve os escopos concedidos: medir no piloto.
+- `manage-platform-secrets` loga `error.message` e engole erro de leitura de admin (anterior ao bloco): plano de risco.
+- Segredos novos documentados em [RUNBOOK-ROTACAO-CREDENCIAIS.md](../../RUNBOOK-ROTACAO-CREDENCIAIS.md) §5. Deploy: `manage-platform-secrets` passa a importar `_shared/instagram-config-core.ts` e vai junto; `INSTAGRAM_OAUTH_STATE_SECRET` com ≥32 caracteres; `${APP_BASE_URL}/instagram/callback` registrado no app da Meta.
+
+**Herdado pelos próximos blocos** (escrito nas Tasks 4.1, 4.2 e 5.3 e em `.claude/rules/instagram.md`): `verify_jwt = false` + `requireInternalAuth` no worker; teste do hop do kick; `INBOUND_MAX_ATTEMPTS` no worker; `isGraphOutcomeUnknown` no envio; `redactSecrets` em log novo; comparação do `state` e chamada única do callback na tela.
+
+**Documentação:** `.claude/rules/instagram.md` (nova) e a linha na tabela do AGENTS.md §2. Os jobs de cron já estavam em `edge-functions.md` e os nomes conferem com as EFs (`process-instagram-token-refresh`; `process-instagram-inbound` nasce na 4.1).
 
 ### Bloco 3
 _(preencher)_
