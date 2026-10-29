@@ -16,6 +16,7 @@ const ALLOWED_BLUR_FILES = [
   "src/components/ui/tooltip.tsx",
   "src/components/ui/select.tsx",
   "src/components/ui/sonner.tsx",
+  "src/components/ui/toast.tsx",
   "src/pages/Index.tsx",
   "src/pages/gestao/Conta.tsx",
 ];
