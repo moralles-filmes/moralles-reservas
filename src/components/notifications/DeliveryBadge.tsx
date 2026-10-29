@@ -75,7 +75,7 @@ export function DeliveryBadge({ state, prefix, title, className }: DeliveryBadge
     <Badge
       variant="outline"
       title={title}
-      className={cn("text-[10px] gap-1 font-normal", cfg.className, className)}
+      className={cn("text-[11px] gap-1 font-normal", cfg.className, className)}
     >
       <Icon className="h-3 w-3" />
       {prefix ? `${prefix}: ${cfg.label}` : cfg.label}

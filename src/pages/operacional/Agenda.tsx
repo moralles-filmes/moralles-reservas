@@ -3,13 +3,13 @@ import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useReservas } from "@/hooks/useReservas";
 import { ReservasCalendar } from "@/components/reserva/ReservasCalendar";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AlertCircle, CalendarDays, List, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ReservaStatus } from "@/types/reserva";
+import { PageHeader } from "@/components/PageHeader";
 
 type View = "calendar" | "list";
 type StatusFilter = "all" | ReservaStatus;
@@ -88,21 +88,17 @@ function ListView({ unitId }: { unitId: string }) {
       {isLoading ? (
         <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
       ) : isError ? (
-        <Card className="border-destructive">
-          <CardContent className="py-8 flex flex-col items-center gap-3 text-center">
-            <AlertCircle className="h-8 w-8 text-destructive" />
-            <p className="text-sm font-medium">Erro ao carregar reservas.</p>
-            <Button size="sm" variant="outline" onClick={() => refetch()}>
-              Tentar de novo
-            </Button>
-          </CardContent>
-        </Card>
+        <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
+          <AlertCircle className="h-8 w-8 text-destructive" />
+          <p className="text-sm font-medium">Erro ao carregar reservas.</p>
+          <Button size="sm" variant="outline" onClick={() => refetch()}>
+            Tentar de novo
+          </Button>
+        </div>
       ) : !reservas || reservas.length === 0 ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground text-sm">
-            Nenhuma reserva encontrada.
-          </CardContent>
-        </Card>
+        <div className="surface rounded-card py-12 text-center text-muted-foreground text-sm">
+          Nenhuma reserva encontrada.
+        </div>
       ) : (
         <div className="space-y-3">
           {reservas.map((r) => (
@@ -121,7 +117,7 @@ export default function Agenda() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-xl font-bold">Calendário</h1>
+      <PageHeader title="Calendário" />
 
       <div className="flex items-center gap-1 border-b">
         <TabButton active={view === "calendar"} onClick={() => setView("calendar")} icon={CalendarDays}>

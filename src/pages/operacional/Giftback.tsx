@@ -22,9 +22,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Gift, Search, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { Search, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
 import { formatPhone } from "@/lib/utils";
 import { toast } from "sonner";
+import { PageHeader } from "@/components/PageHeader";
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("pt-BR", {
@@ -124,15 +125,10 @@ export default function GiftbackOperacional() {
 
   return (
     <div className="space-y-5 max-w-xl mx-auto">
-      <header>
-        <div className="flex items-center gap-2">
-          <Gift className="h-5 w-5 text-gold" />
-          <h1 className="text-2xl font-bold">Validar voucher</h1>
-        </div>
-        <p className="text-sm text-muted-foreground mt-1">
-          Digite o código do voucher do cliente pra validar e aplicar o desconto.
-        </p>
-      </header>
+      <PageHeader
+        title="Validar voucher"
+        description="Digite o código do voucher do cliente pra validar e aplicar o desconto."
+      />
 
       <Card>
         <CardContent className="p-4 space-y-3">
@@ -166,7 +162,7 @@ export default function GiftbackOperacional() {
       </Card>
 
       {notFound && (
-        <Card className="border-destructive">
+        <Card className="border-destructive/40">
           <CardContent className="py-4 flex items-center gap-3">
             <XCircle className="h-5 w-5 text-destructive shrink-0" />
             <div>
@@ -204,7 +200,7 @@ export default function GiftbackOperacional() {
       </AlertDialog>
 
       {voucher && (
-        <Card className="border-success/20">
+        <Card className="border-success/25">
           <CardContent className="p-5 space-y-4">
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div className="space-y-1">
@@ -218,8 +214,8 @@ export default function GiftbackOperacional() {
             </div>
 
             <div className="rounded-md bg-gold/10 border border-gold/20 p-4 text-center">
-              <p className="text-xs uppercase tracking-wider text-gold">Desconto</p>
-              <p className="text-4xl font-bold text-gold">{voucher.discount_percent}%</p>
+              <p className="text-xs font-medium text-gold">Desconto</p>
+              <p className="text-4xl font-bold text-gold tabular">{voucher.discount_percent}%</p>
             </div>
 
             <div className="space-y-2 text-sm">
@@ -239,7 +235,7 @@ export default function GiftbackOperacional() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Validade</span>
-                <span className="font-medium">
+                <span className="font-medium tabular">
                   {formatDate(voucher.expires_at)}
                   <span className="text-xs text-muted-foreground ml-1">
                     ({daysLeftLabel(daysLeft)})

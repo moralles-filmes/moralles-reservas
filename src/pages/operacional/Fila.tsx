@@ -24,7 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -45,7 +45,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { formatPhone } from "@/lib/utils";
+import { cn, formatPhone } from "@/lib/utils";
 import { validateBrPhone } from "@/lib/phone";
 import type {
   WaitlistEntry,
@@ -59,7 +59,7 @@ const STATUS_CONFIG: Record<WaitlistStatus, { label: string; className: string }
   waiting:   { label: "Aguardando", className: "bg-warning/10 text-warning border-warning/20" },
   notified:  { label: "Notificado", className: "bg-info/10 text-info border-info/20" },
   seated:    { label: "Sentou",     className: "bg-success/10 text-success border-success/20" },
-  cancelled: { label: "Cancelado",  className: "bg-muted text-muted-foreground" },
+  cancelled: { label: "Cancelado",  className: "bg-muted text-muted-foreground border-border" },
 };
 
 const PRIORITY_CONFIG: Record<
@@ -76,7 +76,7 @@ function WaitingTime({ createdAt }: { createdAt: string }) {
   const mins = Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000);
   const className = mins >= 30 ? "text-destructive font-semibold" : mins >= 15 ? "text-warning" : "text-muted-foreground";
   return (
-    <span className={`flex items-center gap-1 text-xs ${className}`}>
+    <span className={cn("flex items-center gap-1 text-xs tabular", className)}>
       <Clock className="h-3 w-3" />
       {mins < 1 ? "agora" : `${mins} min`}
     </span>
@@ -237,26 +237,17 @@ export default function Fila() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Users className="h-5 w-5 text-primary" />
-          <h1 className="text-xl font-bold">Fila de espera</h1>
-          {waitlist && waitlist.length > 0 && (
-            <Badge className="bg-warning/10 text-warning border-warning/20">
-              {waitlist.length} na fila
-            </Badge>
-          )}
-        </div>
+      <PageHeader title="Fila de espera">
+        {waitlist && waitlist.length > 0 && <span className="rounded-full border px-2 py-0.5 text-xs font-medium tabular bg-warning/10 text-warning border-warning/20">{waitlist.length} na fila</span>}
         <Button size="sm" onClick={openAdd}>
           <Plus className="h-4 w-4 mr-1" /> Adicionar
         </Button>
-      </div>
+      </PageHeader>
 
       {isLoading ? (
-        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
+        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full rounded-block" />)}</div>
       ) : isError ? (
-        <Card className="border-destructive">
-          <CardContent className="py-8 flex flex-col items-center gap-3 text-center">
+        <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
             <AlertCircle className="h-8 w-8 text-destructive" />
             <p className="text-sm font-medium">Erro ao carregar a fila de espera.</p>
             <p className="text-xs text-muted-foreground">
@@ -265,15 +256,12 @@ export default function Fila() {
             <Button size="sm" variant="outline" onClick={() => refetch()}>
               Tentar de novo
             </Button>
-          </CardContent>
-        </Card>
+        </div>
       ) : !waitlist?.length ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground text-sm">
+        <div className="surface rounded-card py-12 text-center text-muted-foreground text-sm">
             <Users className="h-8 w-8 mx-auto mb-2 opacity-30" />
             Fila de espera vazia.
-          </CardContent>
-        </Card>
+        </div>
       ) : (
         <div className="space-y-3">
           {waitlist.map((entry, idx) => {
@@ -296,8 +284,7 @@ export default function Fila() {
             const isResending =
               resendEntered.isPending && resendEntered.variables?.id === entry.id;
             return (
-              <Card key={entry.id}>
-                <CardContent className="py-3 flex items-start gap-4 flex-wrap">
+              <div key={entry.id} className="surface rounded-block p-4 flex items-start gap-4 flex-wrap">
                   <div className="flex flex-col items-center gap-0.5 shrink-0">
                     {entry.code != null ? (
                       <div className="h-10 w-10 rounded-md bg-primary/10 text-primary flex items-center justify-center text-base font-bold font-mono">
@@ -312,13 +299,13 @@ export default function Fila() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <p className="font-medium text-sm">{entry.customer_name}</p>
-                      <Badge variant="outline" className={`text-[10px] ${statusCfg.className}`}>
+                      <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium shrink-0", statusCfg.className)}>
                         {statusCfg.label}
-                      </Badge>
+                      </span>
                       {priorityCfg && PriorityIcon && (
                         <Badge
                           variant="outline"
-                          className="text-[10px] bg-muted text-foreground border-border gap-1"
+                          className="text-[11px] bg-muted text-foreground border-border gap-1"
                         >
                           <PriorityIcon className="h-3 w-3" />
                           {priorityCfg.label}
@@ -348,7 +335,7 @@ export default function Fila() {
                       {entry.requested_for_time && (
                         <span className="flex items-center gap-1">
                           <Clock className="h-3 w-3" />
-                          Prefere {entry.requested_for_time.slice(0, 5)}
+                          <span className="tabular">Prefere {entry.requested_for_time.slice(0, 5)}</span>
                         </span>
                       )}
                       <WaitingTime createdAt={entry.created_at} />
@@ -358,7 +345,7 @@ export default function Fila() {
                     )}
                     {entry.notified_at && (
                       <p className="text-xs text-info mt-1">
-                        Notificado às {new Date(entry.notified_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                        Notificado às <span className="tabular">{new Date(entry.notified_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span>
                       </p>
                     )}
                   </div>
@@ -453,8 +440,7 @@ export default function Fila() {
                       </AlertDialogContent>
                     </AlertDialog>
                   </div>
-                </CardContent>
-              </Card>
+              </div>
             );
           })}
         </div>

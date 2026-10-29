@@ -13,8 +13,8 @@ import {
 } from "@/hooks/useNotificationDeliveries";
 import { DeliveryBadge } from "@/components/notifications/DeliveryBadge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/PageHeader";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateBR, formatPhone } from "@/lib/utils";
 import { AlertCircle, MailWarning, Phone, Send } from "lucide-react";
@@ -49,19 +49,19 @@ function AutomationDeliveryPanel({ unitId }: { unitId: string }) {
   return <section aria-label="Automações de WhatsApp" className="space-y-3">
     <h2 className="text-lg font-semibold">Automações de WhatsApp</h2>
     <p className="text-xs text-muted-foreground">Acompanhamento dos envios programados e da atualização dos registros.</p>
-    {query.isLoading ? <Skeleton className="h-20 w-full" /> : query.isError ? <Card className="border-destructive"><CardContent className="py-5 space-y-3">
+    {query.isLoading ? <Skeleton className="h-20 w-full rounded-block" /> : query.isError ? <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
       <p>Não foi possível carregar as automações.</p><Button variant="outline" onClick={() => query.refetch()}>Tentar novamente</Button>
-    </CardContent></Card> : data && <>
+    </div> : data && <>
       <p className="text-sm">{data.counts.outstanding} pendentes de processamento de {data.counts.total} registros.
         {minutes !== null && <span className="text-muted-foreground"> Mais antiga: {minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h`} (observação local).</span>}</p>
-      {!data.rows.length ? <p className="text-sm text-muted-foreground">Nenhuma automação nesta página.</p> : data.rows.map(row => <Card key={row.job_id}><CardContent className="py-3 space-y-1">
+      {!data.rows.length ? <p className="text-sm text-muted-foreground">Nenhuma automação nesta página.</p> : data.rows.map(row => <div key={row.job_id} className="surface rounded-block p-4 space-y-1">
         <div className="flex flex-wrap gap-2 items-center"><span className="font-medium text-sm">{KIND_LABEL[row.kind]}</span>
-          <Badge variant="outline">{AUTOMATION_LABEL[row.state]}</Badge></div>
+          <span className="rounded-full border px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground border-border">{AUTOMATION_LABEL[row.state]}</span></div>
         {row.pin_phase === "preconfiguration" && <p className="text-xs text-muted-foreground">Configuração inicial pendente.</p>}
         {row.has_pending_receipt && <p className="text-xs text-muted-foreground">Confirmação recebida; atualizando o registro de entrega.</p>}
         {row.reason === "unknown_reason" && <p className="text-xs text-muted-foreground">Este registro precisa de verificação.</p>}
-        <p className="text-xs text-muted-foreground">Criada em {new Date(row.created_at).toLocaleString("pt-BR")} · Prazo {new Date(row.expires_at).toLocaleString("pt-BR")}</p>
-      </CardContent></Card>)}
+        <p className="text-xs text-muted-foreground">Criada em <span className="tabular">{new Date(row.created_at).toLocaleString("pt-BR")}</span> · Prazo <span className="tabular">{new Date(row.expires_at).toLocaleString("pt-BR")}</span></p>
+      </div>)}
       <div className="flex items-center gap-3"><Button variant="outline" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Anterior</Button>
         <span className="text-sm">Página {page + 1}</span><Button variant="outline" disabled={!data.has_more} onClick={() => setPage(p => p + 1)}>Próxima</Button></div>
     </>}
@@ -121,13 +121,9 @@ export default function Entregas() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <MailWarning className="h-5 w-5 text-primary shrink-0" />
-        <h1 className="text-xl font-bold">Mensagens não entregues</h1>
-        {rows && rows.length > 0 && (
-          <Badge className="bg-warning/10 text-warning border-warning/20">{rows.length}</Badge>
-        )}
-        <div className="flex gap-1 sm:ml-auto">
+      <PageHeader title="Mensagens não entregues">
+        {rows && rows.length > 0 && <span className="rounded-full border px-2 py-0.5 text-xs font-medium tabular bg-warning/10 text-warning border-warning/20">{rows.length}</span>}
+        <div className="flex gap-1">
           {FILTERS.map((f) => (
             <Button
               key={f.key}
@@ -139,34 +135,30 @@ export default function Entregas() {
             </Button>
           ))}
         </div>
-      </div>
+      </PageHeader>
 
       <p className="text-xs text-muted-foreground -mt-2">
         Mensagens que o WhatsApp não confirmou entrega (ou falharam) nos últimos 7 dias.
       </p>
 
       {isLoading ? (
-        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
+        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full rounded-block" />)}</div>
       ) : isError ? (
-        <Card className="border-destructive">
-          <CardContent className="py-8 flex flex-col items-center gap-3 text-center">
+        <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
             <AlertCircle className="h-8 w-8 text-destructive" />
             <p className="text-sm font-medium">Erro ao carregar as entregas.</p>
             <p className="text-xs text-muted-foreground">Verifique sua conexão e tente novamente.</p>
             <Button size="sm" variant="outline" onClick={() => refetch()}>
               Tentar de novo
             </Button>
-          </CardContent>
-        </Card>
+        </div>
       ) : !filtered.length ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground text-sm">
+        <div className="surface rounded-card py-12 text-center text-muted-foreground text-sm">
             <MailWarning className="h-8 w-8 mx-auto mb-2 opacity-30" />
             {rows && rows.length > 0
               ? "Nenhuma mensagem neste filtro."
               : "Tudo certo — nenhuma mensagem pendente de entrega. 🎉"}
-          </CardContent>
-        </Card>
+        </div>
       ) : (
         <div className="space-y-3">
           {filtered.map((row) => {
@@ -174,13 +166,12 @@ export default function Entregas() {
             const resendable = isResendableKind(row.kind) && (row.kind === "waitlist_table_ready" || !row.provider_message_id)
               && !row.delivered_at && !row.read_at;
             return (
-              <Card key={row.id}>
-                <CardContent className="py-3 flex items-start gap-4 flex-wrap">
+              <div key={row.id} className="surface rounded-block p-4 flex items-start gap-4 flex-wrap">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <p className="font-medium text-sm">{row.customer_name || "Cliente sem nome"}</p>
                       <DeliveryBadge state={state} title={deliveryTooltip(row)} />
-                      <Badge variant="outline" className="text-[10px] bg-muted text-foreground border-border">
+                      <Badge variant="outline" className="text-[11px] bg-muted text-foreground border-border">
                         {contextLabel(row)}
                       </Badge>
                     </div>
@@ -195,12 +186,12 @@ export default function Entregas() {
                       {row.sent_at && (
                         <span>
                           enviada{" "}
-                          {new Date(row.sent_at).toLocaleString("pt-BR", {
+                          <span className="tabular">{new Date(row.sent_at).toLocaleString("pt-BR", {
                             day: "2-digit",
                             month: "2-digit",
                             hour: "2-digit",
                             minute: "2-digit",
-                          })}
+                          })}</span>
                         </span>
                       )}
                     </div>
@@ -225,8 +216,7 @@ export default function Entregas() {
                       </Button>
                     )}
                   </div>
-                </CardContent>
-              </Card>
+              </div>
             );
           })}
         </div>

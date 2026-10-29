@@ -11,6 +11,7 @@ import {
   sortConversationMessages,
 } from "@/lib/conversation-message";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -69,7 +70,7 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
   return (
     <div className={`flex ${isUser ? "justify-start" : "justify-end"}`}>
       <div
-        className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${
+        className={`max-w-[75%] rounded-block px-4 py-2 text-sm ${
           isBot
             ? "bg-primary text-primary-foreground rounded-br-sm"
             : isHuman
@@ -82,8 +83,8 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
         </p>
         <p className="whitespace-pre-wrap">{msg.content}</p>
         <p
-          className={`text-[10px] mt-1 ${
-            isUser ? "text-muted-foreground" : "text-white/60"
+          className={`text-[10px] mt-1 tabular ${
+            isUser ? "text-muted-foreground" : "opacity-70"
           }`}
         >
           {formatMessageTime(msg.timestamp)}
@@ -480,7 +481,7 @@ export default function Conversas() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-bold">Conversas WhatsApp</h1>
+      <PageHeader title="Conversas WhatsApp" />
 
       {/* Suspensão da automação — reservas/agenda continuam normais, só o
           agente de WhatsApp para de responder. */}
@@ -517,8 +518,8 @@ export default function Conversas() {
               {chip.label}
               {count !== null && count > 0 && (
                 <span className={cn(
-                  "inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full px-1 text-[10px] font-semibold",
-                  isActive ? "bg-white/30" : "bg-muted"
+                  "inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full px-1 text-[11px] font-semibold",
+                  isActive ? "bg-background/30" : "bg-muted"
                 )}>
                   {count > 99 ? "99+" : count}
                 </span>
@@ -530,7 +531,7 @@ export default function Conversas() {
 
       <div className="grid lg:grid-cols-[320px,1fr] gap-4 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]">
         {/* List */}
-        <Card className={cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
+        <Card className={cn("rounded-panel flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
           <CardHeader className="py-3 px-4 border-b">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               {hasActiveSearch && filteredCount !== totalCount
@@ -571,7 +572,7 @@ export default function Conversas() {
                     </p>
                     <Badge
                       variant="outline"
-                      className={`text-[10px] shrink-0 ${STATUS_CLASSES[c.status ?? "ai_active"]}`}
+                      className={`text-[11px] shrink-0 ${STATUS_CLASSES[c.status ?? "ai_active"]}`}
                     >
                       {STATUS_LABEL[c.status ?? "ai_active"]}
                     </Badge>
@@ -582,7 +583,7 @@ export default function Conversas() {
                   {c.status === "awaiting_human" && c.handoff_reason && (
                     <p className="text-xs text-warning truncate mt-0.5">{c.handoff_reason}</p>
                   )}
-                  <p className="text-xs text-muted-foreground mt-0.5">
+                  <p className="text-xs text-muted-foreground mt-0.5 tabular">
                     {formatDateBR(c.last_message_at ?? c.updated_at)}
                   </p>
                 </button>
@@ -592,7 +593,7 @@ export default function Conversas() {
         </Card>
 
         {/* Detail */}
-        <Card className={cn("flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>
+        <Card className={cn("rounded-panel flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>
           {!selected ? (
             <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
               <MessageCircle className="h-10 w-10 opacity-30" />
