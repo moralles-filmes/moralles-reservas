@@ -19,6 +19,10 @@ verify_jwt = false
 [functions.instagram-connect]
 verify_jwt = true
 
+# Renovação diária do token longo do Instagram: pg_cron com x-internal-key.
+[functions.process-instagram-token-refresh]
+verify_jwt = false
+
 [functions.create-reservation]
 verify_jwt = false
 
