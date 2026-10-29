@@ -16,6 +16,7 @@ const ALLOWED_BLUR_FILES = [
   "src/components/ui/tooltip.tsx",
   "src/components/ui/select.tsx",
   "src/components/ui/sonner.tsx",
+  "src/components/ui/toast.tsx",
   "src/pages/Index.tsx",
   "src/pages/gestao/Conta.tsx",
 ];
@@ -58,6 +59,16 @@ describe("glass-usage-guard", () => {
     expect(block).not.toContain("backdrop-filter");
   });
 
+  it("vidro fica em @layer components, para o utilitário do chamador vencer", () => {
+    const css = readCss();
+    const components = extractBlock(css, "@layer components {");
+    const utilities = extractBlock(css, "@layer utilities {");
+    for (const cls of [".surface {", ".glass {", ".glass-strong {"]) {
+      expect(components, cls).toContain(cls);
+      expect(utilities, cls).not.toContain(cls);
+    }
+  });
+
   it("fallbacks existem", () => {
     const css = readCss();
     expect(css).toContain("@supports not ((backdrop-filter");
@@ -81,7 +92,13 @@ describe("glass-usage-guard", () => {
 
     for (const file of collectTsxFiles(path.resolve(process.cwd(), "src"))) {
       const rel = path.relative(process.cwd(), file).split(path.sep).join("/");
-      const source = fs.readFileSync(file, "utf8");
+      // A variante "glass" do Button usa .surface (sem desfoque): o nome da
+      // variante não conta como classe. A chave `glass:` só é descontada no
+      // button.tsx — em outro arquivo, `cn({ glass: x })` aplica a classe.
+      let source = fs
+        .readFileSync(file, "utf8")
+        .replace(/variant\s*[=:]\s*\{?\s*["']glass["']/g, "");
+      if (rel === "src/components/ui/button.tsx") source = source.replace(/\bglass\s*:/g, "");
       if (pattern.test(source) && !ALLOWED_BLUR_FILES.includes(rel)) {
         offenders.push(rel);
       }

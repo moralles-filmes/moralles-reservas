@@ -588,9 +588,9 @@ export const STATUS_LABELS: Record<ReservaStatus, string> = {
 };
 
 export const STATUS_COLORS: Record<ReservaStatus, string> = {
-  pending: "bg-warning/15 text-warning border-warning/20",
-  confirmed: "bg-success/15 text-success border-success/20",
-  cancelled: "bg-destructive/15 text-destructive border-destructive/20",
+  pending: "bg-status-pending/15 text-status-pending border-status-pending/25",
+  confirmed: "bg-status-reserved/15 text-status-reserved border-status-reserved/25",
+  cancelled: "bg-destructive/15 text-destructive border-destructive/25",
   no_show: "bg-muted text-muted-foreground border-border",
 };
 

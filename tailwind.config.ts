@@ -87,6 +87,7 @@ export default {
           foreground: "hsl(var(--gold-foreground))",
           ink: "hsl(var(--gold-ink))",
         },
+        "logo-plate": "hsl(var(--logo-plate))",
         tertiary: "hsl(var(--tertiary-foreground))",
         status: {
           free: "hsl(var(--status-free))",

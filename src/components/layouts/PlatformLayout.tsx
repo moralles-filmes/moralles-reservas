@@ -1,16 +1,16 @@
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { AdminShell } from "@/components/layouts/AdminShell";
+import { BrandMark } from "@/components/layouts/BrandMark";
 import {
   SidebarActionButton,
-  SidebarBrand,
   SidebarDisabledItem,
   SidebarFootnote,
   SidebarLink,
   SidebarSectionTitle,
 } from "@/components/layouts/SidebarNav";
 import { PLATFORM_NAV, isPlatformNavItemActive } from "@/components/layouts/platform-nav";
-import { Building2, LogOut } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { toast } from "sonner";
 
 export function PlatformLayout({ children }: { children: React.ReactNode }) {
@@ -30,7 +30,9 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
       mainPaddingClass="p-6"
       sidebar={
         <>
-          <SidebarBrand icon={Building2} label="Moralles Plataforma" />
+          <div className="flex items-center px-4 h-14">
+            <BrandMark label="Plataforma" />
+          </div>
 
           <nav className="flex-1 px-3 pb-2 overflow-y-auto scrollbar-premium">
             {PLATFORM_NAV.map((section) => (

@@ -14,7 +14,7 @@ type AdminShellProps = {
   sidebar: React.ReactNode;
   /** Conteúdo do <main> (a página). */
   children: React.ReactNode;
-  /** Aplica o tema navy `.theme-admin`. Default true; Admin legado passa false. */
+  /** Aplica o token de escopo do painel admin. Default true; Admin legado passa false. */
   themeAdmin?: boolean;
   /** Largura do aside no desktop. Default "lg:w-60". */
   sidebarWidthClass?: string;
@@ -92,7 +92,7 @@ export function AdminShell({
       {/* Backdrop só no mobile com gaveta aberta */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-background/60 backdrop-blur-sm lg:hidden"
           onClick={() => setMobileOpen(false)}
           aria-hidden="true"
         />
@@ -118,13 +118,13 @@ export function AdminShell({
         </SidebarCollapseContext.Provider>
       </TooltipProvider>
 
-      <main className="flex-1 overflow-y-auto min-w-0 flex flex-col">
-        <div className="sticky top-0 z-30 flex items-center gap-1 h-12 px-3 border-b border-sidebar-border bg-background/80 backdrop-blur">
+      <main className="relative flex-1 overflow-y-auto min-w-0 flex flex-col ambient">
+        <div className="glass sticky top-0 z-30 flex items-center gap-1 h-12 px-3 border-b border-sidebar-border">
           <button
             type="button"
             onClick={onToggle}
             aria-label="Mostrar ou esconder menu"
-            className="p-2 rounded-md text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            className="p-2 rounded-full text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 coarse:h-11 coarse:w-11"
           >
             <Menu className="h-5 w-5" />
           </button>
