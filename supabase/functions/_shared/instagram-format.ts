@@ -48,8 +48,9 @@ export function sanitizeForInstagram(text: string): string {
   if (!text) return text;
   let out = normalizeInput(text).replace(/\u0000/g, "");
 
-  // Link markdown → "texto: url" (antes de proteger URLs).
-  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1: $2");
+  // Link markdown → "texto: url" (antes de proteger URLs). Quantificadores limitados: classe negada
+  // sem teto seguida de delimitador que pode faltar ("[" repetido) seria quadrática.
+  out = out.replace(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]{1,2048})\)/g, "$1: $2");
 
   // Protege URLs; pontuação/markdown final volta ao texto.
   const urls: string[] = [];

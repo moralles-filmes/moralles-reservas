@@ -98,12 +98,33 @@ describe('sanitizeForInstagram', () => {
     expect(sanitizeForInstagram('a\uD83D b\uDE00')).toBe('a� b�');
     expect(sanitizeForInstagram('ok 😀')).toBe('ok 😀');
   });
-  it('entrada patológica roda em tempo linear', () => {
-    const cases = ['**a '.repeat(15000), '_a '.repeat(15000), 'a '.repeat(25000), 'http://'.repeat(6000)];
+  it('entrada patológica roda em tempo linear (sanitize e split)', () => {
+    const cases = [
+      '**a '.repeat(15000),
+      '_a '.repeat(15000),
+      'a '.repeat(25000),
+      'http://'.repeat(6000),
+      '['.repeat(50000),
+      '[a'.repeat(25000),
+      '[a]('.repeat(12500),
+      '[a](https://x'.repeat(4000),
+      '[a](https://x '.repeat(4000),
+      '`'.repeat(50000),
+      '*a'.repeat(25000),
+      '_a'.repeat(25000),
+      '__a '.repeat(12500),
+      '# '.repeat(25000),
+      '\n'.repeat(50000),
+      '. '.repeat(25000),
+    ];
     for (const c of cases) {
       const t0 = performance.now();
       sanitizeForInstagram(c);
-      expect(performance.now() - t0).toBeLessThan(200);
+      const t1 = performance.now();
+      splitInstagramText(c);
+      const t2 = performance.now();
+      expect(t1 - t0).toBeLessThan(200);
+      expect(t2 - t1).toBeLessThan(200);
     }
   });
 });
