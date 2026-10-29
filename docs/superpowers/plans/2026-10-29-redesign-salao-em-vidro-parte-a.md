@@ -166,7 +166,7 @@ Nota sobre `--status-free` no escuro: a spec diz "branco a 30%", mas isso dá 2,
 
 `--radius` continua `0.75rem`. Abaixo de 640 px, `--glass-blur: 16px` (spec §4.3), dentro de `@media (max-width: 639px)` nos dois grupos.
 
-- [ ] **Step 1: Escrever o teste que falha** em `src/lib/theme-tokens.test.ts`.
+- [x] **Step 1: Escrever o teste que falha** em `src/lib/theme-tokens.test.ts`.
   - O teste lê `src/index.css` com `fs.readFileSync`, extrai os blocos `:root, .theme-admin` e `.dark, .dark .theme-admin` e converte HSL em RGB. Os helpers de parse, conversão HSL→RGB e luminância relativa (WCAG 2.x) ficam dentro do próprio arquivo de teste.
   - Testes:
     - `"os dois grupos de escopo existem e definem os mesmos tokens"`: o conjunto de nomes `--*` dos dois grupos é igual e contém todos os tokens da tabela.
@@ -181,10 +181,10 @@ Nota sobre `--status-free` no escuro: a spec diz "branco a 30%", mas isso dá 2,
       - `sidebar-accent-foreground` sobre `sidebar-accent`;
       - `status-reserved|arriving|seated|late|pending` sobre `card`.
     - `"contraste de indicador"`, ≥ 3: `status-free` sobre `card`, e `gold-foreground` sobre `gold`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/theme-tokens.test.ts`. Esperado: FAIL, porque os grupos `:root, .theme-admin` ainda não existem.
-- [ ] **Step 3: Reescrever os blocos de tokens em `src/index.css`** com os dois grupos e os valores da tabela. Os blocos `* { @apply border-border }` e `body {…}` continuam. Os comentários de cabeçalho dizem "Salão em vidro: Noite e Dia".
-- [ ] **Step 4: Rodar e ver passar.** Mesmo comando. Esperado: PASS. Se um par derivado reprovar, ajustar só o valor derivado (nunca um †) e registrar no commit.
-- [ ] **Step 5: Commit.** `git add src/index.css src/lib/theme-tokens.test.ts` e depois `git commit -m "feat(tema): tokens Salão em vidro nos temas Noite e Dia"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/theme-tokens.test.ts`. Esperado: FAIL, porque os grupos `:root, .theme-admin` ainda não existem.
+- [x] **Step 3: Reescrever os blocos de tokens em `src/index.css`** com os dois grupos e os valores da tabela. Os blocos `* { @apply border-border }` e `body {…}` continuam. Os comentários de cabeçalho dizem "Salão em vidro: Noite e Dia".
+- [x] **Step 4: Rodar e ver passar.** Mesmo comando. Esperado: PASS. Se um par derivado reprovar, ajustar só o valor derivado (nunca um †) e registrar no commit.
+- [x] **Step 5: Commit.** `git add src/index.css src/lib/theme-tokens.test.ts` e depois `git commit -m "feat(tema): tokens Salão em vidro nos temas Noite e Dia"`.
 
 ### Task 2: Tailwind e fonte Geist
 
@@ -221,15 +221,15 @@ Valores:
 - `screens.coarse: { raw: "(pointer: coarse)" }`.
 - `index.html`: o link da fonte vira `https://fonts.googleapis.com/css2?family=Geist:wght@300..700&display=swap`. Os `preconnect` continuam.
 
-- [ ] **Step 1: Escrever o teste que falha** em `src/lib/tailwind-theme.test.ts`. Ele importa `tailwind.config` e lê `index.html` e `src/index.css`.
+- [x] **Step 1: Escrever o teste que falha** em `src/lib/tailwind-theme.test.ts`. Ele importa `tailwind.config` e lê `index.html` e `src/index.css`.
   - `"fonte é Geist"`: `theme.extend.fontFamily.sans[0] === "Geist"` e `display[0] === "Geist"`.
   - `"index.html carrega Geist e não carrega Plus Jakarta"`: contém `family=Geist:wght@300..700` e não contém `Plus+Jakarta`.
   - `"index.css não importa fonte"`: não contém `@import url(`.
   - `"cores e raios novos existem"`: as chaves de `status`, `gold.ink`, `tertiary`, `panel/card/block/item` e `screens.coarse.raw === "(pointer: coarse)"`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/tailwind-theme.test.ts`. Esperado: FAIL.
-- [ ] **Step 3: Aplicar as mudanças** em `tailwind.config.ts`, `index.html` e `src/index.css`.
-- [ ] **Step 4: Rodar e ver passar.** O mesmo teste e depois `npm run build`. Esperado: PASS e build verde.
-- [ ] **Step 5: Commit.** `git add tailwind.config.ts index.html src/index.css src/lib/tailwind-theme.test.ts` e depois `git commit -m "feat(tema): Geist e chaves de material no Tailwind"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/tailwind-theme.test.ts`. Esperado: FAIL.
+- [x] **Step 3: Aplicar as mudanças** em `tailwind.config.ts`, `index.html` e `src/index.css`.
+- [x] **Step 4: Rodar e ver passar.** O mesmo teste e depois `npm run build`. Esperado: PASS e build verde.
+- [x] **Step 5: Commit.** `git add tailwind.config.ts index.html src/index.css src/lib/tailwind-theme.test.ts` e depois `git commit -m "feat(tema): Geist e chaves de material no Tailwind"`.
 
 ### Task 3: Utilitários de material e teste-guarda
 
@@ -256,17 +256,17 @@ Definições:
   - sem animação e sem `background-attachment: fixed`.
 - `tabular`: `font-variant-numeric: tabular-nums`.
 
-- [ ] **Step 1: Escrever o teste que falha** em `src/lib/glass-usage-guard.test.ts`:
+- [x] **Step 1: Escrever o teste que falha** em `src/lib/glass-usage-guard.test.ts`:
   - `"surface nunca desfoca"`: o bloco `.surface { … }` do `src/index.css` não contém `backdrop-filter`.
   - `"fallbacks existem"`: o CSS contém `@supports not ((backdrop-filter` e `prefers-reduced-transparency: reduce`.
   - `"vidro com desfoque só em superfícies únicas"`:
     - varre `src/**/*.tsx` (fora de testes) atrás da regex `/\bglass(-strong)?\b|backdrop-blur/` e falha para qualquer arquivo fora de `ALLOWED_BLUR_FILES`;
     - lista inicial: `src/components/layouts/AdminShell.tsx`, `src/components/ui/{dialog,alert-dialog,responsive-dialog,popover,dropdown-menu,tooltip,select,sonner}.tsx`, `src/pages/Index.tsx` e `src/pages/gestao/Conta.tsx`;
     - comentário no topo: incluir um arquivo exige que a superfície seja única na tela, nunca item de lista.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/glass-usage-guard.test.ts`. Esperado: FAIL, porque `.surface` e os fallbacks ainda não existem.
-- [ ] **Step 3: Adicionar os utilitários** em `src/index.css`.
-- [ ] **Step 4: Rodar e ver passar.** Esperado: PASS.
-- [ ] **Step 5: Commit.** `git add src/index.css src/lib/glass-usage-guard.test.ts` e depois `git commit -m "feat(tema): utilitários de vidro e guarda de desfoque"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/glass-usage-guard.test.ts`. Esperado: FAIL, porque `.surface` e os fallbacks ainda não existem.
+- [x] **Step 3: Adicionar os utilitários** em `src/index.css`.
+- [x] **Step 4: Rodar e ver passar.** Esperado: PASS.
+- [x] **Step 5: Commit.** `git add src/index.css src/lib/glass-usage-guard.test.ts` e depois `git commit -m "feat(tema): utilitários de vidro e guarda de desfoque"`.
 
 ### Task 4: Tema por rota, padrão escuro e regra de tema
 
@@ -298,7 +298,7 @@ Retorna `false` para o resto. `RouteThemeProvider` lê `useLocation().pathname` 
 
 No `sonner.tsx`, o tema vem de `const { forcedTheme, resolvedTheme } = useTheme()`, e o valor passado ao Sonner é `forcedTheme ?? resolvedTheme ?? "light"`.
 
-- [ ] **Step 1: Escrever os testes que falham.**
+- [x] **Step 1: Escrever os testes que falham.**
   - `theme-routes.test.ts`:
     - `true` para `/`, `/r/casa`, `/r/casa?mode=embed`, `/w/casa`, `/m/casa`, `/acompanhar/abc`, `/preferencias/mensagens/tok`, `/admin/login` e `/reset-password`;
     - `false` para `/g/casa`, `/o/casa`, `/platform/empresas`, `/admin`, `/rx`, `/report` e `/g/casa/reservas`.
@@ -307,15 +307,15 @@ No `sonner.tsx`, o tema vem de `const { forcedTheme, resolvedTheme } = useTheme(
     - `"rota pública fica clara mesmo com escuro salvo"`: com `moralles-theme=dark` e rota `/r/casa`, após render `document.documentElement.classList.contains("dark") === false`.
     - `"painel sem escolha abre escuro"`: rota `/g/casa` sem chave, `contains("dark") === true`.
     - `"painel mantém claro escolhido"`: `moralles-theme=light`, rota `/g/casa`, `contains("dark") === false`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/theme-routes.test.ts src/components/RouteThemeProvider.test.tsx`. Esperado: FAIL (módulos inexistentes).
-- [ ] **Step 3: Implementar** `theme-routes.ts`, `RouteThemeProvider.tsx`, a troca no `App.tsx` e o ajuste no `sonner.tsx`.
-- [ ] **Step 4: Rodar e ver passar.** Os testes acima e depois `npm run test`. Esperado: PASS.
-- [ ] **Step 5: Reescrever a seção "Tema visual" de `.claude/rules/frontend.md`.** Os dois bullets atuais (`viewport-fit=cover` e `grid-cols-1 sm:grid-cols-2`) continuam. O parágrafo de abertura é substituído por regras no formato do AGENTS §3:
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/theme-routes.test.ts src/components/RouteThemeProvider.test.tsx`. Esperado: FAIL (módulos inexistentes).
+- [x] **Step 3: Implementar** `theme-routes.ts`, `RouteThemeProvider.tsx`, a troca no `App.tsx` e o ajuste no `sonner.tsx`.
+- [x] **Step 4: Rodar e ver passar.** Os testes acima e depois `npm run test`. Esperado: PASS.
+- [x] **Step 5: Reescrever a seção "Tema visual" de `.claude/rules/frontend.md`.** Os dois bullets atuais (`viewport-fit=cover` e `grid-cols-1 sm:grid-cols-2`) continuam. O parágrafo de abertura é substituído por regras no formato do AGENTS §3:
   - temas Noite e Dia definidos em dois grupos de seletores (`:root, .theme-admin` e `.dark, .dark .theme-admin`), com o teste `theme-tokens.test.ts` como guarda;
   - rota pública e login forçam Dia via `forcedTheme` do `RouteThemeProvider`, e painel sem escolha abre em Noite. Um wrapper de escopo não alcança Dialog e Sonner, que renderizam no `body`;
   - `backdrop-filter` só em superfície única, com `surface` para itens repetidos, guardado por `glass-usage-guard.test.ts`;
   - nunca cor fixa; situação de reserva com texto além da cor.
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
   - `git add src/lib/theme-routes.ts src/lib/theme-routes.test.ts src/components/RouteThemeProvider.tsx src/components/RouteThemeProvider.test.tsx src/App.tsx src/components/ui/sonner.tsx src/components/ThemeToggle.tsx .claude/rules/frontend.md`;
   - `git commit -m "feat(tema): tema por rota, painel escuro por padrão e regra atualizada"`.
 
