@@ -122,7 +122,7 @@ export default function Entregas() {
   return (
     <div className="space-y-5">
       <PageHeader title="Mensagens não entregues">
-        {rows && rows.length > 0 && <span className="rounded-full border px-2 py-0.5 text-xs font-medium tabular bg-warning/10 text-warning border-warning/20">{rows.length}</span>}
+        {rows && rows.length > 0 && <span className="rounded-full border px-2 py-0.5 text-xs font-medium tabular bg-warning/10 text-warning border-warning/20">{rows.length} {rows.length === 1 ? "pendente" : "pendentes"}</span>}
         <div className="flex gap-1">
           {FILTERS.map((f) => (
             <Button

@@ -41,7 +41,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn, formatPhone } from "@/lib/utils";
 import type { WalkIn, WalkInStatus } from "@/types/reserva";
-import { Clock, Plus, Trash2, UtensilsCrossed, Users } from "lucide-react";
+import { AlertCircle, Clock, Plus, Trash2, UtensilsCrossed, Users } from "lucide-react";
 import { toast } from "sonner";
 
 const STATUS_CONFIG: Record<WalkInStatus, { label: string; className: string }> = {
@@ -72,7 +72,7 @@ export default function Passantes() {
   const [partySize, setPartySize] = useState("2");
   const [notes, setNotes] = useState("");
 
-  const { data: walkIns, isLoading } = useWalkIns(unitId);
+  const { data: walkIns, isLoading, isError, refetch } = useWalkIns(unitId);
   const createWalkIn = useCreateWalkIn(unitId);
   const updateStatus = useUpdateWalkInStatus(unitId);
   const deleteWalkIn = useDeleteWalkIn(unitId);
@@ -122,6 +122,15 @@ export default function Passantes() {
 
       {isLoading ? (
         <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full rounded-block" />)}</div>
+      ) : isError ? (
+        <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
+          <AlertCircle className="h-8 w-8 text-destructive" />
+          <p className="text-sm font-medium">Erro ao carregar os walk-ins.</p>
+          <p className="text-xs text-muted-foreground">Verifique sua conexão e tente novamente.</p>
+          <Button size="sm" variant="outline" onClick={() => refetch()}>
+            Tentar de novo
+          </Button>
+        </div>
       ) : !walkIns?.length ? (
         <div className="surface rounded-card py-12 text-center text-muted-foreground text-sm">
             <UtensilsCrossed className="h-8 w-8 mx-auto mb-2 opacity-30" />

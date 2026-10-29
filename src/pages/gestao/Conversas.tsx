@@ -68,24 +68,23 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
   const authorLabel = getConversationMessageAuthorLabel(msg);
 
   return (
-    <div className={`flex ${isUser ? "justify-start" : "justify-end"}`}>
+    <div className={cn("flex", isUser ? "justify-start" : "justify-end")}>
       <div
-        className={`max-w-[75%] rounded-block px-4 py-2 text-sm ${
+        className={cn(
+          "max-w-[75%] rounded-block px-4 py-2 text-sm",
           isBot
             ? "bg-primary text-primary-foreground rounded-br-sm"
             : isHuman
             ? "bg-success text-success-foreground rounded-br-sm"
             : "bg-muted rounded-bl-sm"
-        }`}
+        )}
       >
         <p className="text-[10px] font-semibold tracking-wide opacity-80 mb-0.5">
           {authorLabel}
         </p>
         <p className="whitespace-pre-wrap">{msg.content}</p>
         <p
-          className={`text-[10px] mt-1 tabular ${
-            isUser ? "text-muted-foreground" : "opacity-70"
-          }`}
+          className={cn("text-[11px] mt-1 tabular", isUser ? "text-muted-foreground" : "opacity-80")}
         >
           {formatMessageTime(msg.timestamp)}
         </p>
@@ -531,7 +530,7 @@ export default function Conversas() {
 
       <div className="grid lg:grid-cols-[320px,1fr] gap-4 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]">
         {/* List */}
-        <Card className={cn("rounded-panel flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
+        <Card className={cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
           <CardHeader className="py-3 px-4 border-b">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               {hasActiveSearch && filteredCount !== totalCount
@@ -572,7 +571,7 @@ export default function Conversas() {
                     </p>
                     <Badge
                       variant="outline"
-                      className={`text-[11px] shrink-0 ${STATUS_CLASSES[c.status ?? "ai_active"]}`}
+                      className={cn("text-[11px] shrink-0", STATUS_CLASSES[c.status ?? "ai_active"])}
                     >
                       {STATUS_LABEL[c.status ?? "ai_active"]}
                     </Badge>
@@ -593,7 +592,7 @@ export default function Conversas() {
         </Card>
 
         {/* Detail */}
-        <Card className={cn("rounded-panel flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>
+        <Card className={cn("flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>
           {!selected ? (
             <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
               <MessageCircle className="h-10 w-10 opacity-30" />

@@ -86,7 +86,7 @@ function ListView({ unitId }: { unitId: string }) {
       </div>
 
       {isLoading ? (
-        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
+        <div className="space-y-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full rounded-block" />)}</div>
       ) : isError ? (
         <div className="surface rounded-card border-destructive/40 py-8 flex flex-col items-center gap-3 text-center">
           <AlertCircle className="h-8 w-8 text-destructive" />
