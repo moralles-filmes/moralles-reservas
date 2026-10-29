@@ -8,17 +8,22 @@
     <meta name="author" content="Moralles" />
     <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <meta name="referrer" content="no-referrer" />
-    <!-- Anti-FOUC: aplica o tema escuro persistido antes do React montar (default = claro). -->
+    <!-- Anti-FOUC: aplica o tema antes do React montar. Rota pública e login ficam no Dia;
+         painel fica na Noite salvo escolha "light". Espelha src/lib/theme-routes.ts
+         (theme-routes.test.ts confere os dois). -->
     <script>
       try {
-        if (localStorage.getItem("moralles-theme") === "dark") {
-          document.documentElement.classList.add("dark");
-        }
+        var p = location.pathname.toLowerCase().replace(/\/+$/, "") || "/";
+        var light = p === "/" || p === "/admin/login" || p === "/reset-password" ||
+          /^\/(r|w|m|acompanhar|preferencias)\//.test(p + "/");
+        var dark = !light && localStorage.getItem("moralles-theme") !== "light";
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
       } catch (e) {}
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root"></div>
