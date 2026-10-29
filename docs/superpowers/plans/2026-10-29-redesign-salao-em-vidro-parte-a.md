@@ -615,11 +615,11 @@ Alvos (mockup `Main.dc.html`, lista "Próximas chegadas", estendido para a lista
   - todas as informações atuais continuam.
 - **`ReservasDia`:** mesmas listas derivadas e a mesma checagem de vazio pelas listas derivadas; cabeçalho com `PageHeader` novo e botão de nova reserva.
 
-- [ ] **Step 1: Rodar a linha de base.** `npm run test`. Esperado: PASS, para comparar depois.
-- [ ] **Step 2: Restilizar** `ReservaCard` e `ReservasDia`.
-- [ ] **Step 3: Rodar os testes.** `npm run test`. Esperado: PASS sem alterar asserções de comportamento.
-- [ ] **Step 4: Revisão visual** de `/o/:slug` em 1194×834 nos dois temas, com pelo menos 20 reservas. Perfil com CPU 4× ao rolar a lista: sem travamento visível. Registrar no STATE.
-- [ ] **Step 5: Commit:** `git commit -m "feat(operacional): reservas do dia com horário grande e pílulas"`.
+- [x] **Step 1: Rodar a linha de base.** `npm run test`. Esperado: PASS, para comparar depois.
+- [x] **Step 2: Restilizar** `ReservaCard` e `ReservasDia`.
+- [x] **Step 3: Rodar os testes.** `npm run test`. Esperado: PASS sem alterar asserções de comportamento.
+- [ ] **Step 4: Revisão visual** de `/o/:slug` em 1194×834 nos dois temas, com pelo menos 20 reservas. Perfil com CPU 4× ao rolar a lista: sem travamento visível. Registrar no STATE. _Pendente: exige login (ver STATE)._
+- [x] **Step 5: Commit:** `git commit -m "feat(operacional): reservas do dia com horário grande e pílulas"`.
 
 ### Task 13: Demais telas do Operacional
 
@@ -638,10 +638,10 @@ Alvos:
 - botões de ação em cápsula, com `coarse:h-11`;
 - os padrões do `frontend.md` continuam: botão desabilitado por `mutation.variables`, `refetchInterval` ciente da visibilidade e mutation com `{ externalOk, dbOk }`.
 
-- [ ] **Step 1: Restilizar as seis telas.**
-- [ ] **Step 2: Rodar os testes.** `npm run test` e `npx vitest run src/lib/glass-usage-guard.test.ts`. Esperado: PASS.
-- [ ] **Step 3: Revisão visual** das seis rotas em 1194×834 e 390×844 nos dois temas.
-- [ ] **Step 4: Commit:** `git commit -m "feat(operacional): fila, passantes, agenda, giftback, entregas e conversas"`.
+- [x] **Step 1: Restilizar as seis telas.**
+- [x] **Step 2: Rodar os testes.** `npm run test` e `npx vitest run src/lib/glass-usage-guard.test.ts`. Esperado: PASS.
+- [ ] **Step 3: Revisão visual** das seis rotas em 1194×834 e 390×844 nos dois temas. _Pendente: exige login (ver STATE)._
+- [x] **Step 4: Commit:** `git commit -m "feat(operacional): fila, passantes, agenda, giftback, entregas e conversas"`.
 
 **Fechamento da fase A4.** Protocolo padrão.
 
