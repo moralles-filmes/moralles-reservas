@@ -11,6 +11,7 @@ import {
   sortConversationMessages,
 } from "@/lib/conversation-message";
 import { WhatsappServiceBanner } from "@/components/billing/WhatsappServiceBanner";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -67,24 +68,23 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
   const authorLabel = getConversationMessageAuthorLabel(msg);
 
   return (
-    <div className={`flex ${isUser ? "justify-start" : "justify-end"}`}>
+    <div className={cn("flex", isUser ? "justify-start" : "justify-end")}>
       <div
-        className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${
+        className={cn(
+          "max-w-[75%] rounded-block px-4 py-2 text-sm",
           isBot
             ? "bg-primary text-primary-foreground rounded-br-sm"
             : isHuman
             ? "bg-success text-success-foreground rounded-br-sm"
             : "bg-muted rounded-bl-sm"
-        }`}
+        )}
       >
         <p className="text-[10px] font-semibold tracking-wide opacity-80 mb-0.5">
           {authorLabel}
         </p>
         <p className="whitespace-pre-wrap">{msg.content}</p>
         <p
-          className={`text-[10px] mt-1 ${
-            isUser ? "text-muted-foreground" : "text-white/60"
-          }`}
+          className={cn("text-[11px] mt-1 tabular", isUser ? "text-muted-foreground" : "opacity-80")}
         >
           {formatMessageTime(msg.timestamp)}
         </p>
@@ -480,7 +480,7 @@ export default function Conversas() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-bold">Conversas WhatsApp</h1>
+      <PageHeader title="Conversas WhatsApp" />
 
       {/* Suspensão da automação — reservas/agenda continuam normais, só o
           agente de WhatsApp para de responder. */}
@@ -517,8 +517,8 @@ export default function Conversas() {
               {chip.label}
               {count !== null && count > 0 && (
                 <span className={cn(
-                  "inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full px-1 text-[10px] font-semibold",
-                  isActive ? "bg-white/30" : "bg-muted"
+                  "inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full px-1 text-[11px] font-semibold",
+                  isActive ? "bg-background/30" : "bg-muted"
                 )}>
                   {count > 99 ? "99+" : count}
                 </span>
@@ -571,7 +571,7 @@ export default function Conversas() {
                     </p>
                     <Badge
                       variant="outline"
-                      className={`text-[10px] shrink-0 ${STATUS_CLASSES[c.status ?? "ai_active"]}`}
+                      className={cn("text-[11px] shrink-0", STATUS_CLASSES[c.status ?? "ai_active"])}
                     >
                       {STATUS_LABEL[c.status ?? "ai_active"]}
                     </Badge>
@@ -582,7 +582,7 @@ export default function Conversas() {
                   {c.status === "awaiting_human" && c.handoff_reason && (
                     <p className="text-xs text-warning truncate mt-0.5">{c.handoff_reason}</p>
                   )}
-                  <p className="text-xs text-muted-foreground mt-0.5">
+                  <p className="text-xs text-muted-foreground mt-0.5 tabular">
                     {formatDateBR(c.last_message_at ?? c.updated_at)}
                   </p>
                 </button>

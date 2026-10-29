@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import { STATUS_LABEL, type VoucherStatus } from "@/hooks/useVouchers";
 import { cn } from "@/lib/utils";
 
@@ -11,8 +10,8 @@ const STATUS_CLASS: Record<VoucherStatus, string> = {
 
 export function VoucherStatusBadge({ status }: { status: VoucherStatus }) {
   return (
-    <Badge variant="outline" className={cn("font-medium", STATUS_CLASS[status])}>
+    <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium", STATUS_CLASS[status])}>
       {STATUS_LABEL[status]}
-    </Badge>
+    </span>
   );
 }

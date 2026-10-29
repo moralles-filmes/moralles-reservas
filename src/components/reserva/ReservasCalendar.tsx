@@ -127,14 +127,12 @@ export function ReservasCalendar({ unitId }: ReservasCalendarProps) {
 
         {isLoading ? (
           <div className="space-y-3">
-            {[1, 2].map((i) => <Skeleton key={i} className="h-20 w-full" />)}
+            {[1, 2].map((i) => <Skeleton key={i} className="h-24 w-full rounded-block" />)}
           </div>
         ) : dayReservas?.length === 0 ? (
-          <Card>
-            <CardContent className="py-10 text-center text-muted-foreground text-sm">
-              Nenhuma reserva neste dia.
-            </CardContent>
-          </Card>
+          <div className="surface rounded-card py-10 text-center text-muted-foreground text-sm">
+            Nenhuma reserva neste dia.
+          </div>
         ) : (
           dayReservas?.map((r) => (
             <ReservaCard key={r.id} reserva={r} showActions unitId={unitId} />
