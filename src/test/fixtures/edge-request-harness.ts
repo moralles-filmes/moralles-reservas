@@ -21,12 +21,12 @@ export type EdgeName = "send-confirmation" | "send-cancellation" | "send-manual-
   | "process-waitlist-entered" | "process-waitlist-feedback"
   | "process-voucher-triggers" | "webhook-whatsapp"
   | "send-scheduled-whatsapp" | "send-whatsapp" | "process-whatsapp-automations" | "resend-notification" | "manage-whatsapp-templates"
-  | "update-reservation";
+  | "update-reservation" | "webhook-instagram";
 const ENDPOINTS: readonly EdgeName[] = ["send-confirmation", "send-cancellation", "send-manual-message", "notify-waitlist-ready", "process-notification-outbox",
   "process-reservation-reminders", "process-satisfaction-surveys", "process-waitlist-entered",
   "process-waitlist-feedback", "process-voucher-triggers", "webhook-whatsapp",
   "send-scheduled-whatsapp", "send-whatsapp", "process-whatsapp-automations", "resend-notification", "manage-whatsapp-templates",
-  "update-reservation"];
+  "update-reservation", "webhook-instagram"];
 type Handler = (request: Request) => Response | Promise<Response>;
 type Transport = { from?: EdgeName; method: string; url: string; respond: (request: Request) => Response | Promise<Response> };
 export interface EdgeRequestHarnessOptions {

@@ -9,6 +9,11 @@ policy = "per_worker"
 [functions.webhook-whatsapp]
 verify_jwt = false
 
+# Webhook do Direct do Instagram: chamado pela Meta, sem JWT. Autentica pelo
+# HMAC `X-Hub-Signature-256` sobre o corpo cru (GET: `hub.verify_token`).
+[functions.webhook-instagram]
+verify_jwt = false
+
 [functions.create-reservation]
 verify_jwt = false
 
