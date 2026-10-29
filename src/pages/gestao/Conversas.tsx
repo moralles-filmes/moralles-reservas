@@ -6,6 +6,7 @@ import { useConversations, useConversationActions } from "@/hooks/useConversatio
 import { useSendManualMessage } from "@/hooks/useSendManualMessage";
 import { useWhatsappTemplates } from "@/hooks/useWhatsappTemplates";
 import { useDebounce } from "@/hooks/useDebounce";
+import { useResizableWidth } from "@/hooks/useResizableWidth";
 import {
   getConversationMessageAuthorLabel,
   sortConversationMessages,
@@ -428,6 +429,12 @@ export default function Conversas() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search.trim(), 200);
+  const { width: listWidth, handleProps: listResizeHandle } = useResizableWidth({
+    storageKey: "conversas-list-width",
+    defaultWidth: 320,
+    min: 240,
+    max: 560,
+  });
 
   const { data: allConversations, isLoading, isError, refetch } = useConversations(unitId, "all");
 
@@ -528,7 +535,12 @@ export default function Conversas() {
         })}
       </div>
 
-      <div className="grid lg:grid-cols-[320px,1fr] gap-4 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]">
+      {/* ≥lg: lista com largura ajustável pela alça; a conversa nunca fica
+          abaixo de 26rem, mesmo com largura salva numa tela maior. */}
+      <div
+        className="grid lg:grid-cols-[var(--conversas-cols)] gap-4 lg:gap-0 h-[calc(100dvh-180px)] min-h-[480px] lg:h-[calc(100vh-220px)]"
+        style={{ "--conversas-cols": `min(${listWidth}px, calc(100% - 26rem)) 1rem minmax(0, 1fr)` } as React.CSSProperties}
+      >
         {/* List */}
         <Card className={cn("flex flex-col overflow-hidden", selectedId && "hidden lg:flex")}>
           <CardHeader className="py-3 px-4 border-b">
@@ -590,6 +602,15 @@ export default function Conversas() {
             )}
           </ScrollArea>
         </Card>
+
+        <div
+          {...listResizeHandle}
+          aria-label="Largura da lista de conversas"
+          title="Arraste para ajustar a largura · duplo clique volta ao padrão"
+          className="group hidden lg:flex justify-center cursor-col-resize touch-none select-none rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        >
+          <span className="my-auto h-12 w-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/50 group-focus-visible:bg-muted-foreground/50" />
+        </div>
 
         {/* Detail */}
         <Card className={cn("flex flex-col overflow-hidden", !selectedId && "hidden lg:flex")}>
