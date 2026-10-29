@@ -2,8 +2,16 @@
  * Adapter fino do Graph do Instagram. Recebe `fetch` por injeção.
  * Todo caminho de falha devolve só classe, status HTTP e código numérico:
  * nenhum texto vindo da Meta ou do runtime chega ao resultado, então nenhum
- * token pode vazar por ele. (R2-e: GETs da Meta que exigem credencial na query
- * passam por redactSecrets antes de qualquer uso da URL.)
+ * token pode vazar por ele. (GETs da Meta que exigem credencial na query levam-na na URL, que
+ * nunca sai deste módulo.)
+ *
+ * Resultado ambíguo: `ok:false` com `httpStatus` 2xx (corpo ilegível após 2xx) ou
+ * `httpStatus: null` (timeout/rede), e `transient` em POST, significam "desfecho
+ * desconhecido: a requisição pode ter sido aplicada". O chamador não deve tratar
+ * como falha definitiva (o Bloco 4 não reenvia automaticamente).
+ *
+ * R2-e é cumprida por omissão: o adapter nunca copia texto remoto ou de runtime
+ * para o resultado. Quem acrescentar log deve chamar `redactSecrets` por conta própria.
  */
 import {
   INSTAGRAM_GRAPH_VERSION,
@@ -130,7 +138,7 @@ export function createInstagramGraph(fetchImpl: typeof fetch, opts: { timeoutMs?
 
     profile(i: { igsid: string; token: string }) {
       return call(`${V}/${encodeURIComponent(i.igsid)}?fields=name,username`, get(i.token), (j) => {
-        if (typeof j !== "object" || j === null) return null;
+        if (typeof j !== "object" || j === null || Array.isArray(j)) return null;
         const o = j as { name?: unknown; username?: unknown };
         return {
           name: typeof o.name === "string" ? o.name : null,

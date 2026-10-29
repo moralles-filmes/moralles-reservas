@@ -42,6 +42,12 @@ describe("classifyGraphError", () => {
     [400, 100, null, "invalid_request"],
     [404, null, null, "invalid_request"],
     [400, null, null, "invalid_request"],
+    [429, null, null, "rate_limited"],
+    [400, 17, null, "rate_limited"],
+    [400, 32, null, "rate_limited"],
+    [400, 1, null, "transient"],
+    [400, 2, null, "transient"],
+    [429, 190, null, "reauth_required"],
   ];
   it.each(cases)("http=%s code=%s subcode=%s -> %s", (httpStatus, code, subcode, expected) => {
     expect(classifyGraphError({ httpStatus, code, subcode })).toBe(expected);
@@ -80,6 +86,17 @@ describe("parsers", () => {
     expect(parseMe(null)).toBeNull();
     expect(parseMe({ user_id: "17841" })).toEqual({ igUserId: "17841", username: null, accountType: null });
   });
+  it("parseMe recusa user_id numerico inseguro e aceita string intacta", () => {
+    expect(parseMe(JSON.parse('{"user_id":17841400000000001}'))).toBeNull();
+    expect(parseMe({ user_id: 0 })).toBeNull();
+    expect(parseMe({ user_id: -5 })).toBeNull();
+    expect(parseMe({ user_id: 1.5 })).toBeNull();
+    expect(parseMe({ user_id: 12345 })).toMatchObject({ igUserId: "12345" });
+    expect(parseMe(JSON.parse('{"user_id":"17841400000000001"}'))).toMatchObject({ igUserId: "17841400000000001" });
+  });
+  it("parseLongLived exige expires_in inteiro positivo", () => {
+    for (const bad of [0, -1, 1.5]) expect(parseLongLived({ access_token: TOKEN, expires_in: bad })).toBeNull();
+  });
   it("parseCodeExchange aceita array data e objeto direto", () => {
     expect(parseCodeExchange({ data: [{ access_token: SHORT, user_id: 1 }] })).toEqual({ shortToken: SHORT });
     expect(parseCodeExchange({ access_token: SHORT })).toEqual({ shortToken: SHORT });
@@ -103,6 +120,11 @@ describe("redactSecrets", () => {
   it("tira forma codificada e ignora segredos vazios", () => {
     const s = "a b/c";
     expect(redactSecrets(`x=${encodeURIComponent(s)} y=${s}`, [s, "", "  "])).not.toMatch(/a%20b|a b/);
+  });
+  it("redige o code= do OAuth", () => {
+    const out = redactSecrets("code=abc123&grant_type=authorization_code&state=s", []);
+    expect(out).not.toContain("abc123");
+    expect(out).toContain("grant_type=authorization_code");
   });
   it("redige access_token= e client_secret= mesmo desconhecidos", () => {
     const out = redactSecrets("?access_token=zzz123&client_secret=qqq456&x=1", []);
@@ -254,6 +276,12 @@ describe("adapter createInstagramGraph", () => {
       expect(c.url).not.toContain(TOKEN);
       expect(new Headers(c.init?.headers).get("authorization")).toBe(`Bearer ${TOKEN}`);
     }
+  });
+
+  it("profile rejeita corpo array", async () => {
+    const { f } = fakeFetch(() => json([{ name: "Ana" }]));
+    const r = await createInstagramGraph(f).profile({ igsid: "2", token: TOKEN });
+    expect(r).toMatchObject({ ok: false, errorClass: "invalid_request", httpStatus: 200 });
   });
 
   it("sem retry: uma única chamada em falha", async () => {

@@ -30,13 +30,15 @@ export function classifyGraphError(i: {
   if ((code !== null && WINDOW_CLOSED.has(code)) || (subcode !== null && WINDOW_CLOSED.has(subcode))) {
     return "window_closed";
   }
-  if (code === 4 || code === 613) return "rate_limited";
+  if (code === 4 || code === 613 || code === 17 || code === 32) return "rate_limited";
   if (
     (code !== null && RECIPIENT_UNAVAILABLE.has(code)) ||
     (subcode !== null && RECIPIENT_UNAVAILABLE.has(subcode))
   ) {
     return "recipient_unavailable";
   }
+  if (code === 1 || code === 2) return "transient";
+  if (httpStatus === 429) return "rate_limited";
   if (httpStatus === null || httpStatus >= 500) return "transient";
   return "invalid_request";
 }
@@ -69,7 +71,7 @@ export function redactSecrets(text: string, secrets: string[]): string {
       out = out.split(form).join("[redacted]");
     }
   }
-  return out.replace(/(access_token|client_secret)=[^&\s"']*/gi, "$1=[redacted]");
+  return out.replace(/(access_token|client_secret|(?<![A-Za-z0-9_])code)=[^&\s"']*/gi, "$1=[redacted]");
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -89,7 +91,7 @@ export function parseLongLived(json: unknown): { token: string; expiresInSec: nu
   if (!isObj(json)) return null;
   const t = str(json.access_token);
   const e = json.expires_in;
-  if (!t || typeof e !== "number" || !Number.isFinite(e)) return null;
+  if (!t || typeof e !== "number" || !Number.isInteger(e) || e <= 0) return null;
   return { token: t, expiresInSec: e };
 }
 
@@ -98,7 +100,8 @@ export function parseMe(
 ): { igUserId: string; username: string | null; accountType: string | null } | null {
   if (!isObj(json)) return null;
   const raw = json.user_id;
-  const id = typeof raw === "number" ? String(raw) : str(raw);
+  // Número só se for inteiro seguro: ids de 17 dígitos perdem precisão no JSON.parse.
+  const id = typeof raw === "number" ? (Number.isSafeInteger(raw) && raw > 0 ? String(raw) : null) : str(raw);
   if (!id) return null;
   return { igUserId: id, username: str(json.username), accountType: str(json.account_type) };
 }
