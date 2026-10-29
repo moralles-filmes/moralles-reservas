@@ -32,6 +32,7 @@ import {
   LogOut,
   MessageCircle,
   MessageSquare,
+  Megaphone,
   ScrollText,
   Sliders,
   SquareStack,
@@ -134,6 +135,15 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
         { to: `${base}/giftback/ajustes`,  label: "Ajustes",  icon: Sliders },
       ],
     },
+    ...(unit?.isGerente || isPlatformAdmin ? [{
+      label: "Marketing",
+      icon: Megaphone,
+      matchPrefix: `${base}/marketing`,
+      children: [
+        { to: `${base}/marketing/campanhas`, label: "Campanhas", icon: Megaphone },
+        { to: `${base}/marketing/resultados`, label: "Resultados", icon: BarChart3 },
+      ],
+    }] : []),
     { to: `${base}/clientes`,       label: "Clientes",       icon: Users },
     { to: `${base}/conversas`,      label: "Conversas",      icon: MessageCircle, badge: awaitingCount },
     ...(unit?.isGerente

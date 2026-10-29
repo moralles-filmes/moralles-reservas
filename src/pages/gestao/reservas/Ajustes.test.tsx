@@ -39,6 +39,11 @@ vi.mock("@/lib/supabase", () => ({ supabase: { from: mocks.from } }));
 vi.mock("@/hooks/useCurrentUnit", () => ({ useCurrentUnit: () => ({ unit_id: "unit-a" }) }));
 vi.mock("./Saloes", () => ({ BreadcrumbReservas: () => null }));
 vi.mock("sonner", () => ({ toast: mocks.toast }));
+vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: { id: "actor-1" } }) }));
+// Coorte manual: o Salvar ainda grava os 2 interruptores legados, e o lote fica com 7 chaves.
+vi.mock("@/hooks/useWhatsappServicePreferences", () => ({
+  useWhatsappServicePreferences: () => ({ query: { isPending: false, isError: false, data: { auto_cohort: false, eligible: false } } }),
+}));
 
 afterEach(() => {
   cleanup();

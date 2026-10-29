@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -253,32 +254,34 @@ export default function Automacao() {
       <WhatsappServiceBanner organizationId={unit.organization_id} unitSlug={unit.slug} />
 
       <Tabs key={unitId} defaultValue="channels">
-        <TabsList className="mb-4" aria-label="Configurações da unidade">
-          <TabsTrigger value="channels" className="gap-2">
-            <MessageSquare className="h-4 w-4" />
-            Canais WhatsApp
-          </TabsTrigger>
-          <TabsTrigger value="models" className="gap-2">
-            <FileText className="h-4 w-4" />
-            Modelos e envios
-          </TabsTrigger>
-          <TabsTrigger value="ai" className="gap-2">
-            <Bot className="h-4 w-4" />
-            Provedor de IA
-          </TabsTrigger>
-          <TabsTrigger value="prompt" className="gap-2">
-            <Info className="h-4 w-4" />
-            Instruções do agente
-          </TabsTrigger>
-          <TabsTrigger value="diagnostics" className="gap-2">
-            <Activity className="h-4 w-4" />
-            Diagnóstico
-          </TabsTrigger>
-          <TabsTrigger value="payments" className="gap-2">
-            <CreditCard className="h-4 w-4" />
-            Pagamentos
-          </TabsTrigger>
-        </TabsList>
+        <ScrollArea type="always" orientation="horizontal" className="mb-4 h-14 w-full">
+          <TabsList className="w-max min-w-full max-w-none" aria-label="Configurações da unidade">
+            <TabsTrigger value="channels" className="gap-2">
+              <MessageSquare className="h-4 w-4" />
+              Canais WhatsApp
+            </TabsTrigger>
+            <TabsTrigger value="models" className="gap-2">
+              <FileText className="h-4 w-4" />
+              Modelos e envios
+            </TabsTrigger>
+            <TabsTrigger value="ai" className="gap-2">
+              <Bot className="h-4 w-4" />
+              Provedor de IA
+            </TabsTrigger>
+            <TabsTrigger value="prompt" className="gap-2">
+              <Info className="h-4 w-4" />
+              Instruções do agente
+            </TabsTrigger>
+            <TabsTrigger value="diagnostics" className="gap-2">
+              <Activity className="h-4 w-4" />
+              Diagnóstico
+            </TabsTrigger>
+            <TabsTrigger value="payments" className="gap-2">
+              <CreditCard className="h-4 w-4" />
+              Pagamentos
+            </TabsTrigger>
+          </TabsList>
+        </ScrollArea>
 
         <TabsContent value="channels">
           <ChannelsTab key={unitId} unitId={unitId} defaultProvider={unit.default_whatsapp_provider} />

@@ -16,6 +16,8 @@ import type {
  */
 function friendlyWhatsAppError(code?: string | null): string {
   if (!code) return "Falha ao enviar WhatsApp.";
+  if (code === "service_not_enabled")
+    return "Aviso de mesa pronta desativado. Ative em WhatsApp → Modelos e avisos ou avise o cliente por outro meio.";
   if (code === "automation_dependency_unavailable" || code === "internal_error")
     return "Não foi possível confirmar o aviso. Atualize a fila e confira Entregas antes de tentar novamente.";
   if (code === "dependency_unavailable")

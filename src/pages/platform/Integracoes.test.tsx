@@ -30,7 +30,7 @@ vi.mock("@/components/whatsapp/TemplateV2PolicyCard", () => ({ TemplateV2PolicyC
 
 const renderPage = () =>
   render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter>
       <PlatformIntegracoes />
     </MemoryRouter>,
   );

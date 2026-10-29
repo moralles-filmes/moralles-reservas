@@ -1,7 +1,7 @@
 import { corsHeadersFor } from './cors.ts';
 import { awaitingDispatchChannel, decodeAutomationDispatchStatus, decodeAutomationVersionSelection, decodeAutomationVersionSnapshot } from './whatsapp-automation-version-access.ts';
 import { canManageTemplateRequest, decodeConsentState, decodeSyncResult, decodeTemplateAutoPolicy, decodeTemplateV2Policy, isManagementUuid,
-  managementPositiveInteger, parseTemplateManagementRequest, projectTemplateSnapshot,
+  managementPositiveInteger, parseTemplateManagementRequest, projectServicePreferenceResult, projectServicePreferences, projectTemplateSnapshot,
   projectOnboardingCatalogSnapshot,
   type TemplateManagementRequest, type TemplateRole, type TemplateSnapshotInput } from './whatsapp-template-access-core.ts';
 
@@ -17,6 +17,12 @@ export interface TemplateManagementDependencies {
 }
 function rpcCall(request: Exclude<TemplateManagementRequest, { action: 'snapshot' | 'onboarding_catalog_snapshot' | 'snapshot_v2' | 'onboarding_catalog_snapshot_v2' }>, bindingId?: string): [string, Record<string, unknown>] {
   switch (request.action) {
+    case 'service_preferences_snapshot': return ['get_whatsapp_v2_service_preferences', { p_unit_id: request.unit_id }];
+    case 'set_service_preference': return ['set_whatsapp_v2_service_preference', {
+      p_binding_id: request.binding_id, p_kind: request.kind, p_enabled: request.enabled,
+      p_expected_revision: request.expected_revision, p_expected_generation: request.expected_generation,
+      p_expected_credential_revision: request.expected_credential_revision,
+    }];
     case 'dispatch_version_snapshot': case 'dispatch_status':
       if (!isManagementUuid(bindingId)) throw new Error('dependency_unavailable');
       return [request.action === 'dispatch_status' ? 'get_whatsapp_automation_dispatch_status' : 'get_whatsapp_automation_version_selections', { p_binding_id: bindingId }];
@@ -85,10 +91,13 @@ export function createTemplateManagementHandler(deps: TemplateManagementDependen
         if (error.code === '42501' || error.code === 'P0A15') return reply({ error: 'forbidden' }, 403);
         if (error.code === '22023') return reply({ error: 'invalid_request' }, 400);
         if (error.code === 'PT409') return reply({ error: 'configuration_changed' }, 409);
+        if (error.code === 'P0A01') return reply({ error: 'not_eligible' }, 409);
         return reply({ error: 'dependency_unavailable' }, 503);
       }
       if (input.action === 'auto_policy_snapshot' || input.action === 'set_auto_policy') return reply(decodeTemplateAutoPolicy(data));
       if (input.action === 'dispatch_status') return reply(decodeAutomationDispatchStatus(data));
+      if (input.action === 'service_preferences_snapshot') return reply(projectServicePreferences(data, input.unit_id));
+      if (input.action === 'set_service_preference') return reply(projectServicePreferenceResult(data, input.kind, input.enabled, input.expected_revision));
       if (input.action === 'dispatch_version_snapshot') return reply(decodeAutomationVersionSnapshot(data, bindingId!, input.channel_id));
       if (input.action === 'select_dispatch_version') return reply(decodeAutomationVersionSelection(data, input.version, input.expected_revision));
       if (input.action === 'v2_policy_snapshot' || input.action === 'set_v2_policy') return reply(decodeTemplateV2Policy(data));

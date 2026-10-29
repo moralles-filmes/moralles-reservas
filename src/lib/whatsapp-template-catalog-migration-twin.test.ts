@@ -312,6 +312,28 @@ interface KindCase {
   end: number;
 }
 
+/** The versioned readiness functions build ids from a fixed base CASE and a fixed confirmation pair. */
+function readinessCase(text: string, where: string): { covered: { start: number; end: number }[]; mismatches: string[]; found: boolean } {
+  const version = /app_private\.whatsapp_automation_v([12])_readiness\(/.exec(where)?.[1];
+  if (!version) return { covered: [], mismatches: [], found: false };
+  const mismatches: string[] = [];
+  const base = /v_base\s*:=\s*case\s+p_kind\b([\s\S]*?)\bend\s*;/i.exec(text);
+  const expectedBase = Object.fromEntries(Object.entries(TS_KIND_TO_TEMPLATES).map(([kind, ids]) =>
+    [kind, (kind === 'confirmation' ? ids[1] : ids[0]).replace(/_v1$/, '')]));
+  const actualBase = Object.fromEntries([...((base?.[1] ?? '').matchAll(/\bwhen\s+'([^']+)'\s+then\s+'([^']+)'/gi))]
+    .map((match) => [match[1], match[2]]));
+  if (!base || JSON.stringify(Object.entries(actualBase).sort()) !== JSON.stringify(Object.entries(expectedBase).sort())) {
+    mismatches.push(`${where}: CASE base kind→modelo diverge do TS`);
+  }
+  const pair = /v_names\s*:=\s*case\s+when\s+p_kind\s*=\s*'confirmation'\s+then\s+array\s*\[([^\]]*)\]\s+else\s+array\s*\[\s*v_base\s*\|\|\s*'_v([12])'\s*\]\s*end\s*;/i.exec(text);
+  const expectedPair = TS_KIND_TO_TEMPLATES.confirmation.map((id) => id.replace(/_v1$/, `_v${version}`));
+  const actualPair = [...((pair?.[1] ?? '').matchAll(TEMPLATE_LITERAL))].map((match) => match[1]);
+  if (!pair || pair[2] !== version || !sameSet(actualPair, expectedPair) || actualPair.length !== expectedPair.length) {
+    mismatches.push(`${where}: par de confirmação v${version} diverge do TS`);
+  }
+  return { covered: pair ? [{ start: pair.index, end: pair.index + pair[0].length }] : [], mismatches, found: true };
+}
+
 /** `case <expr> when '<kind>' then ...` cujo resultado é id de modelo, com CASE aninhado no ramo. */
 function kindTemplateCases(text: string, where: string): KindCase[] {
   const out: KindCase[] = [];
@@ -395,6 +417,7 @@ function kindResourcePairs(expr: string): Record<string, string> {
 interface TwinReport {
   idLists: IdList[];
   cases: KindCase[];
+  readinessCases: number;
   checks: Map<CheckClass, CheckDef>;
   mismatches: string[];
 }
@@ -410,15 +433,19 @@ function compareTwins(
   const mismatches: string[] = inForce.unclassifiedChecks.map((w) => `CHECK não classificado com id de modelo: ${w}`);
   const idLists: IdList[] = [];
   const cases: KindCase[] = [];
+  let readinessCases = 0;
 
   for (const fn of inForce.functions) {
     const where = `${fn.file}:${fn.key}`;
     const lists = templateIdLists(fn.body, where);
     const fnCases = kindTemplateCases(fn.body, where);
+    const readiness = readinessCase(fn.body, where);
+    if (readiness.found) readinessCases++;
+    mismatches.push(...readiness.mismatches);
     idLists.push(...lists.map(list => ({ ...list, domain: "dispatch" as const })));
     cases.push(...fnCases);
     // Literal de modelo fora de lista/CASE reconhecido é um gêmeo que este teste não enxerga.
-    const covered = [...lists, ...fnCases];
+    const covered = [...lists, ...fnCases, ...readiness.covered];
     for (const lit of fn.body.matchAll(TEMPLATE_LITERAL)) {
       const at = lit.index ?? 0;
       if (!covered.some((c) => at >= c.start && at < c.end)) mismatches.push(`${where}: literal ${lit[1]} fora de lista/CASE reconhecido`);
@@ -479,7 +506,7 @@ function compareTwins(
     }
   }
 
-  return { idLists, cases, checks: inForce.checks, mismatches };
+  return { idLists, cases, readinessCases, checks: inForce.checks, mismatches };
 }
 
 // -------------------------------------------------------------------- testes
@@ -506,7 +533,8 @@ describe("catálogo de modelos TS ⇔ listas fixas vigentes nas migrations", () 
     const checkLists = report.idLists.filter((l) => l.where.includes(":CHECK "));
     expect(fnLists.length).toBeGreaterThanOrEqual(3);
     expect(checkLists.length).toBeGreaterThanOrEqual(2);
-    expect(report.cases.length).toBeGreaterThanOrEqual(4);
+    expect(report.cases.length + report.readinessCases).toBeGreaterThanOrEqual(4);
+    expect(report.readinessCases).toBe(2);
     expect([...report.checks.keys()].sort()).toEqual(["approved_catalog_logical_id", "jobs_kind", "jobs_kind_resource", "logical_id", "pin_tuple"]);
   });
 
@@ -535,12 +563,31 @@ describe("catálogo de modelos TS ⇔ listas fixas vigentes nas migrations", () 
     expect(joined).toMatch(/CHECK pin_tuple: lista de ids diverge/);
     expect(joined).toMatch(/CHECK de kind/);
     expect(joined).toMatch(/CHECK kind↔recurso/);
-    expect(joined).toMatch(/CASE cancellation|kinds do CASE/);
+    expect(joined).toMatch(/CHECK approved_catalog_logical_id vigente não encontrado/);
     expect(joined).toMatch(/prepare_whatsapp_template_provision.*lista de ids diverge/);
   });
 });
 
 describe("CONTROLES POSITIVOS do comparador", () => {
+  const readinessV2 = resolveInForce(ALL_FILES).functions.find((fn) => fn.name === 'app_private.whatsapp_automation_v2_readiness')!;
+  const readinessWhere = `${readinessV2.file}:${readinessV2.key}`;
+
+  it('detecta kind→base errado no CASE da prontidão versionada', () => {
+    const broken = readinessV2.body.replace("when 'cancellation' then 'res_cancelada'", "when 'cancellation' then 'res_lembrete_dia'");
+    expect(broken).not.toBe(readinessV2.body);
+    expect(readinessCase(broken, readinessWhere).mismatches).toContain(`${readinessWhere}: CASE base kind→modelo diverge do TS`);
+  });
+
+  it('detecta par de confirmação errado e concatenação da versão errada', () => {
+    const wrongPair = readinessV2.body.replace("'res_confirmacao_desconto_v2'", "'res_confirmacao_v2'");
+    const wrongVersion = readinessV2.body.replace("array[v_base||'_v2']", "array[v_base||'_v1']");
+    expect(wrongPair).not.toBe(readinessV2.body);
+    expect(wrongVersion).not.toBe(readinessV2.body);
+    for (const broken of [wrongPair, wrongVersion]) {
+      expect(readinessCase(broken, readinessWhere).mismatches).toContain(`${readinessWhere}: par de confirmação v2 diverge do TS`);
+    }
+  });
+
   const ids = CATALOG_IDS.map((id) => `'${id}'`);
   const v2Ids = V2_CATALOG_IDS.map((id) => `'${id}'`);
   const storageIds = STORAGE_IDS.map((id) => `'${id}'`);

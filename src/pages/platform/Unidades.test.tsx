@@ -24,7 +24,7 @@ vi.mock("@/hooks/useAllUnits", () => ({
 
 const renderAt = (url: string) =>
   render(
-    <MemoryRouter initialEntries={[url]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={[url]}>
       <PlatformUnidades />
     </MemoryRouter>,
   );

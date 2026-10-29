@@ -38,6 +38,7 @@ const GUsuarios = lazy(() => import("./pages/gestao/Usuarios"));
 const GCobranca = lazy(() => import("./pages/gestao/Cobranca"));
 const GWhatsapp = lazy(() => import("./pages/gestao/Whatsapp"));
 const GAtendimentoIa = lazy(() => import("./pages/gestao/AtendimentoIa"));
+const GMarketing = lazy(() => import("./pages/gestao/Marketing"));
 
 // ── Gestão > Reservas (sub-abas) ──────────────────────────────────────────────
 const GSaloes = lazy(() => import("./pages/gestao/reservas/Saloes"));
@@ -251,6 +252,8 @@ export default function App() {
               <Route path="/g/:unitSlug/giftback/regras" element={<GestaoGuard><GGiftbackRegras /></GestaoGuard>} />
               <Route path="/g/:unitSlug/giftback/vouchers" element={<GestaoGuard><GGiftbackVouchers /></GestaoGuard>} />
               <Route path="/g/:unitSlug/giftback/ajustes" element={<GestaoGuard><GGiftbackAjustes /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/marketing" element={<Navigate to="campanhas" replace />} />
+              <Route path="/g/:unitSlug/marketing/:section" element={<GestaoGuard><GMarketing /></GestaoGuard>} />
               <Route path="/g/:unitSlug/clientes" element={<GestaoGuard><GClientes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/conversas" element={<GestaoGuard><GConversas /></GestaoGuard>} />
               <Route path="/g/:unitSlug/whatsapp" element={<GestaoGuard><GWhatsapp /></GestaoGuard>} />
@@ -283,6 +286,7 @@ export default function App() {
               <Route path="/o/:unitSlug/conversas" element={<OperacionalGuard><OConversas /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/giftback" element={<OperacionalGuard><OGiftback /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/entregas" element={<OperacionalGuard><OEntregas /></OperacionalGuard>} />
+              <Route path="/o/:unitSlug/whatsapp" element={<OperacionalGuard><GWhatsapp /></OperacionalGuard>} />
 
               {/* ── Platform /platform/* ───────────────────────────────── */}
               <Route path="/platform" element={<Navigate to="/platform/empresas" replace />} />

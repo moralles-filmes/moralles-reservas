@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { Navigate } from "react-router-dom";
 import QRCode from "qrcode";
 import {
   AlertCircle,
@@ -39,6 +38,7 @@ import { useCurrentUnit } from "@/hooks/useCurrentUnit";
 import { useOfficialConnection } from "@/hooks/useOfficialConnection";
 import { OfficialConnectionCard } from "@/components/whatsapp/OfficialConnectionCard";
 import { TemplateCatalogStoreCard } from "@/components/whatsapp/TemplateCatalogStoreCard";
+import { ServiceNoticePreferencesCard } from "@/components/whatsapp/ServiceNoticePreferencesCard";
 import {
   useConnectWhatsapp,
   useDisconnectWhatsapp,
@@ -473,9 +473,11 @@ export default function Whatsapp() {
     );
   }
 
-  if (!unit.isGerente) {
-    return <Navigate to={`/g/${unit.unit_slug}/reservas`} replace />;
-  }
+  if (!unit.isGerente) return <div className="mx-auto max-w-3xl space-y-5">
+    <div><h1 className="text-2xl font-bold tracking-tight">WhatsApp</h1>
+      <p className="mt-1 text-sm text-muted-foreground">Modelos e avisos de serviço da unidade, para consulta.</p></div>
+    <ServiceNoticePreferencesCard unitId={unitId} unitName={unit.unit_name} canManage={false} />
+  </div>;
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -502,6 +504,8 @@ export default function Whatsapp() {
         <CurrentConnectionCard title="Conexão do número" controls={controls} />
       )}
       {useOfficial && officialNumberConnected && <TemplateCatalogStoreCard unitId={unitId} />}
+      {useOfficial && officialNumberConnected && <ServiceNoticePreferencesCard unitId={unitId}
+        unitName={unit.unit_name} canManage={unit.isGerente} />}
     </div>
   );
 }

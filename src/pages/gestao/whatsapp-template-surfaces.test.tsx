@@ -7,6 +7,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { projectTemplateSnapshot } from '../../../supabase/functions/_shared/whatsapp-template-access-core';
 import { APPROVED_CATALOG_DIGESTS } from '../../../supabase/functions/_shared/whatsapp-template-cohort';
 import { createTemplateManagementHandler } from '../../../supabase/functions/_shared/whatsapp-template-management';
+import { syntheticDispatchStatus } from '@/test/fixtures/whatsapp-dispatch-status';
 import Reservas from './reservas/Comunicacao';
 import Fila from './fila/Comunicacao';
 import Giftback from './giftback/Ajustes';
@@ -30,12 +31,13 @@ beforeEach(() => {
   Element.prototype.hasPointerCapture = () => false; Element.prototype.scrollIntoView = () => { };
   io.mode = 'official'; io.role = 'owner'; io.admin = false; io.slug = 'unidade-a'; io.unitId = unitId; io.saves = []; io.filters = []; io.bound = true; io.jobs = []; io.choice = 'unknown'; io.concurrentOptOut = false; io.holdWrite = null;
   io.rpc.mockReset().mockImplementation(async (_jwt: string, name: string, args: Record<string, unknown>) => {
+    if (name === 'get_whatsapp_automation_dispatch_status') return { data: syntheticDispatchStatus(), error: null };
     if (name === 'get_whatsapp_message_consent_state') return { data: { purpose: args.p_purpose, status: io.choice, revision: io.choice === 'unknown' ? null : 2 }, error: null };
     if (name === 'record_whatsapp_message_consent') { io.choice = io.concurrentOptOut ? 'opt_out' : String(args.p_decision); return { data: 2, error: null }; }
     if (name === 'request_whatsapp_template_sync_for_channel') return { data: '50000000-0000-4000-8000-000000000001', error: null };
     return { data: true, error: null };
   });
-  const handler = createTemplateManagementHandler({ authenticate: async () => ({ id: '40000000-0000-4000-8000-000000000001' }), access: async () => ({ role: io.role as 'owner' | 'gerente' | 'operador', isPlatformAdmin: io.admin, exists: true }), snapshot: async () => snapshotInput(), onboardingSnapshot: async () => snapshotInput(), callerRpc: io.rpc });
+  const handler = createTemplateManagementHandler({ authenticate: async () => ({ id: '40000000-0000-4000-8000-000000000001' }), access: async () => ({ role: io.role as 'owner' | 'gerente' | 'operador', isPlatformAdmin: io.admin, exists: true }), snapshot: async () => snapshotInput(), onboardingSnapshot: async () => snapshotInput(), resolveActiveBinding: async () => io.mode === 'official' && io.bound ? '50000000-0000-4000-8000-000000000001' : null, callerRpc: io.rpc });
   io.invoke.mockReset().mockImplementation(async (_name: string, { body }: { body: unknown }) => {
     const response = await handler(new Request('http://localhost:3000/functions/v1/manage-whatsapp-templates', { method: 'POST', headers: { authorization: 'Bearer synthetic-test-jwt', 'content-type': 'application/json' }, body: JSON.stringify(body) }));
     return response.ok ? { data: await response.json(), error: null } : { data: null, error: new FunctionsHttpError(response) };
@@ -58,7 +60,7 @@ function UnitNavigation() {
 }
 function mount(Page: typeof Reservas) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/g/unidade-a']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><UnitNavigation /><Routes><Route path="/g/:unitSlug" element={<Page />} /></Routes></MemoryRouter></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/g/unidade-a']}><UnitNavigation /><Routes><Route path="/g/:unitSlug" element={<Page />} /></Routes></MemoryRouter></QueryClientProvider>);
   return client;
 }
 it.each([['reservas', Reservas], ['fila', Fila], ['giftback', Giftback]] as const)('%s displays official read-only models', async (_, Page) => {
@@ -176,7 +178,7 @@ async function selectContact() {
 }
 it('looks up exactly the canonical DDD55 phone in the actual organization and reads selected consent only', async () => {
   mount(Giftback); await screen.findByText('Consentimento individual');
-  expect(io.rpc).not.toHaveBeenCalled(); await selectContact();
+  expect(io.rpc.mock.calls.some(([, name]) => name === 'get_whatsapp_message_consent_state')).toBe(false); await selectContact();
   expect(io.filters).toContainEqual(['select', 'id,name,phone']); expect(io.filters).toContainEqual(['eq', 'organization_id', '20000000-0000-4000-8000-000000000001']); expect(io.filters).toContainEqual(['eq', 'phone', '55999998888']); expect(io.filters).toContainEqual(['is', 'deleted_at', null]); expect(io.filters).toContainEqual(['limit', 2]);
   expect(screen.getByText(/nenhuma escolha registrada/)).toBeInTheDocument();
   expect(io.rpc).toHaveBeenCalledWith('synthetic-test-jwt', 'get_whatsapp_message_consent_state', { p_unit_id: unitId, p_customer_id: '60000000-0000-4000-8000-000000000001', p_purpose: 'promotional' });
@@ -255,7 +257,8 @@ it.each([
   ['catalog', { target: 'catalog', target_key: 'res_lembrete_dia_v1', state: 'needs_review', created_at: '2026-10-01T00:00:00Z', due_at: '2026-10-01T00:00:00Z' }],
 ] as const)('never offers correction for %s', async (_, overrides) => {
   io.bound = true; io.jobs = [blockedJob(overrides)]; mount(Reservas); await screen.findAllByText('Qualidade desconhecida');
-  expect(screen.queryByRole('button', { name: 'Verificar correção' })).not.toBeInTheDocument(); expect(io.rpc).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Verificar correção' })).not.toBeInTheDocument();
+  expect(io.rpc.mock.calls.some(([, name]) => name === 'revalidate_whatsapp_automation_job')).toBe(false);
 });
 it.each([['reservas', Reservas], ['fila', Fila], ['giftback', Giftback]] as const)('%s discards an A draft on unit switch and only submits B data', async (_, Page) => {
   io.mode = 'unofficial'; mount(Page); fireEvent.change(await screen.findByRole('textbox', { name: 'Mensagem' }), { target: { value: 'Rascunho da unidade A' } });

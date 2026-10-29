@@ -11,6 +11,11 @@ vi.mock("@/hooks/useAllUnits", () => ({ useUnitBySlug: () => ({ isLoading: false
 vi.mock("@/components/billing/WhatsappServiceBanner", () => ({ WhatsappServiceBanner: () => null }));
 const capabilities = { manualCredentials: true, automaticProvisioning: false, automaticWebhook: false };
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   mocks.invoke.mockReset();
   mocks.invoke.mockImplementation((_name, { body }) => Promise.resolve({ error: null, data:
     body.action === "list" ? { channels: [{ id: "local", provider: "datafy", status: "connected", capabilities, manual_echo_verified_at: null }] } :
@@ -18,9 +23,9 @@ beforeEach(() => {
     body.action === "official_connection_state" ? { items: [], granted: false, step: "not_granted", templatesPending: true } : { success: true },
   }));
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function mount() {
-  return render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><Automacao /></QueryClientProvider></MemoryRouter>);
+  return render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><Automacao /></QueryClientProvider></MemoryRouter>);
 }
 describe("Datafy channel dialogs", () => {
   it("starts the add dialog with the organization's default provider", async () => {

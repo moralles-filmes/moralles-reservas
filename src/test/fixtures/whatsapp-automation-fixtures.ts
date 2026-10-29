@@ -1,5 +1,5 @@
 import { createAutomationResourceService, type AutomationResourceIO, type AutomationResourceTable } from '../../../supabase/functions/_shared/whatsapp-automation-resources';
-import type { ScheduledIntent } from '../../../supabase/functions/_shared/whatsapp-automation-core';
+import type { ScheduledIntent, ScheduledKind } from '../../../supabase/functions/_shared/whatsapp-automation-core';
 import { createAutomationDispatcher } from '../../../supabase/functions/_shared/whatsapp-automation-dispatch';
 import { catalogHash, TEMPLATE_CATALOG } from '../../../supabase/functions/_shared/whatsapp-template-catalog-core';
 import { GLOBAL_PERSONA_BASELINE } from '../../../supabase/functions/_shared/agent/global-prompt-core';
@@ -411,7 +411,8 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
   if (!queued) { f.row.state = 'accepted'; f.row.provider_message_id = 'native-request'; }
   const queries: { table: string; columns: string; predicates: Record<string, unknown> }[] = [];
   const unexpected: string[] = [];
-  const operatorControls = { ledgerVisible: true, resourceFailure: false, adoptionFailure: false };
+  const operatorControls = { ledgerVisible: true, resourceFailure: false, adoptionFailure: false,
+    serviceRoute: { auto_cohort: false, allowed: true } as unknown };
   const userId = '77777777-0000-4000-8000-000000000001';
   const fail = (reason: string): never => { unexpected.push(reason); throw new Error('unexpected_endpoint_io'); };
   const db = {
@@ -436,7 +437,11 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
           if (predicates.unit_id !== f.ids.unit) return fail('channel_tenant');
           if (head && columns === 'id' && predicates.is_active === true) return { data: null, count: 1, error: null };
           const channel = { id: f.row.channel_id, unit_id: f.ids.unit, provider: 'zapi', credentials: { instance_id: 'synthetic-instance', token: 'synthetic-token', client_token: 'synthetic-client' },
-            instance_token_secret_id: null, status: 'connected', last_health_check_at: f.nowISO, is_active: true, template_credential_revision: 1 };
+            instance_token_secret_id: null, status: 'connected', last_health_check_at: f.nowISO, is_active: true,
+            created_at: '2026-09-01T00:00:00Z', template_credential_revision: 1 };
+          if (columns === 'id,unit_id,provider,status,is_active,created_at' && predicates.id === undefined)
+            return { data: [{ id: channel.id, unit_id: channel.unit_id, provider: channel.provider, status: channel.status,
+              is_active: channel.is_active, created_at: channel.created_at }], error: null };
           if (predicates.id !== channel.id) return fail('channel_id');
           return { data: project(channel), error: null };
         }
@@ -503,6 +508,8 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
       return query;
     },
     async rpc(name: string, args: Record<string, unknown>) {
+      if (name === 'get_whatsapp_v2_service_route')
+        return { data: operatorControls.serviceRoute, error: null };
       if (name === 'enqueue_whatsapp_automation') {
         const intent = args.p_intent as Record<string, unknown>;
         Object.assign(f.row, { reservation_id: null, waitlist_id: null, voucher_id: null, state: 'queued' }, intent);
@@ -640,6 +647,8 @@ function createReservationProducerIO(base: {
     resendReceipt: false, plain: false, resend: false, requestUnit: base.ids.unit, outboxOverride: undefined as string | undefined,
     outbox: true, templateStatus: options.templateStatus, templateCategory: 'UTILITY',
     serviceSuspended: false, enforcement: false, consent: 'opt_in', issuer: 'row' as 'row' | 'zero' | 'error' | 'malformed',
+    serviceRoute: { auto_cohort: false, allowed: true } as unknown,
+    serviceRouteReads: [] as { kind: unknown; resourceId: unknown }[],
     onQuery: (_table: string, _columns: string) => {}, afterIssuer: () => {} };
   const rpcReplies: Record<string, { data: unknown; error: unknown }[]> = {};
   const queryReplies: Record<string, { data: unknown; error: unknown }[]> = {};
@@ -656,8 +665,16 @@ function createReservationProducerIO(base: {
   const voucher = { id: voucherId, unit_id: base.ids.unit, customer_id: base.ids.customer, rule_id: ruleId,
     code: 'FIXTURE11', discount_percent: 15, status: 'active', issued_at: base.nowISO, created_at: base.nowISO,
     expires_at: '2026-11-05T02:59:59.999Z' };
+  const catalogByKind: Record<ScheduledKind, string> = {
+    confirmation: 'res_confirmacao_v1', reminder_d1: 'res_lembrete_dia_v1', survey_d1: 'res_pesquisa_reserva_v1',
+    cancellation: 'res_cancelada_v1', waitlist_entered: 'fila_entrada_v1', waitlist_feedback: 'fila_feedback_v1',
+    waitlist_table_ready: 'fila_mesa_pronta_v1', voucher_issued: 'mkt_voucher_programado_v1',
+  };
+  const catalogKeyFor = (kind: ScheduledKind) => kind === 'confirmation'
+    && Number(tables.reservations[0].applied_discount_percent) > 0 ? 'res_confirmacao_desconto_v1' : catalogByKind[kind];
   const writes = { voucherInsertCount: 0, deletedVoucherIds: [] as string[] };
   const channel = { id: f.row.channel_id, unit_id: base.ids.unit, provider: 'zapi', status: 'connected', is_active: true,
+    created_at: '2026-09-01T00:00:00Z',
     credentials: { instance_id: 'synthetic-instance', token: 'synthetic-token', client_token: 'synthetic-client' },
     instance_token_secret_id: null, last_health_check_at: base.nowISO, template_credential_revision: 1 };
   const db = {
@@ -740,6 +757,10 @@ function createReservationProducerIO(base: {
       }; return q;
     },
     async rpc(name: string, args: Record<string, unknown>) {
+      if (name === 'get_whatsapp_v2_service_route') {
+        controls.serviceRouteReads.push({ kind: args.p_kind, resourceId: args.p_resource_id });
+        return rpcReplies[name]?.shift() ?? { data: controls.serviceRoute, error: null };
+      }
       trace.push({ name, args });
       const scripted = rpcReplies[name]?.shift();
       if (scripted) return scripted;
@@ -762,7 +783,8 @@ function createReservationProducerIO(base: {
         // Supplied SQL outcome only. Genuine issuance/locking assertions live in gates49–51.
         Object.assign(voucher, { code: args.p_code }); tables.vouchers.push({ ...voucher }); writes.voucherInsertCount++;
         Object.assign(f.row, { kind: 'voucher_issued', reservation_id: null, waitlist_id: null, voucher_id: voucherId,
-          source_event_key: voucherId, fact_at: voucher.created_at, expires_at: '2026-10-12T15:00:00Z' });
+          source_event_key: voucherId, fact_at: voucher.created_at, expires_at: '2026-10-12T15:00:00Z',
+          initial_catalog_key: catalogByKind.voucher_issued });
         controls.ledger = true; controls.afterIssuer();
         const { id, ...fields } = voucher;
         return { data: controls.issuer === 'malformed' ? [{ voucher_id: id }] : [{ voucher_id: id, ...fields, job_id: f.jobId }], error: null };
@@ -790,9 +812,13 @@ function createReservationProducerIO(base: {
       }
       if (name === 'defer_notification_outbox_automation_dependency') { outbox.status = 'pending'; return { data: true, error: null }; }
       if (name === 'enqueue_whatsapp_automation') {
-        controls.ledger = true; const intent = args.p_intent as Record<string, unknown>;
-        // SQL INSERT leaves the two omitted resource FKs NULL, not a previous fixture's identity.
-        Object.assign(f.row, { reservation_id: null, waitlist_id: null, voucher_id: null }, intent);
+        const intent = args.p_intent as Record<string, unknown>;
+        if (!controls.ledger) {
+          controls.ledger = true;
+          // The SQL insert trigger pins the catalog once; an existing job keeps its original pin.
+          Object.assign(f.row, { reservation_id: null, waitlist_id: null, voucher_id: null }, intent,
+            { initial_catalog_key: catalogKeyFor(intent.kind as ScheduledKind) });
+        }
         return { data: f.jobId, error: null };
       }
       if (name === 'reconcile_whatsapp_automation_acceptance') {

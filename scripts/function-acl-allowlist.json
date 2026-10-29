@@ -134,6 +134,9 @@
     "confirm_whatsapp_template_post(uuid,uuid,bigint,text,integer)",
     "check_whatsapp_template_submission(uuid,uuid,bigint,text,integer)"
   ],
+  "_service_only_whatsapp_v2_service": [
+    "get_whatsapp_v2_service_route(text,uuid)"
+  ],
 
   "_expected_advisor": {
     "_doc": [
@@ -225,14 +228,14 @@
       "quatro RPCs DEFINER authenticated (leitura administrativa, escolha CAS,",
       "estado da loja e custo MARKETING v2): projeção 9/35/44. Não é leitura",
       "do Advisor de produção.",
-      "A camada global do prompt do agente (20261020150000) acrescenta duas",
-      "RPCs DEFINER authenticated com guarda platform_admin (publicar e",
-      "restaurar versão): projeção 9/37/46.",
+      "DELTA MARKETING: quatro RPCs DEFINER authenticated com JWT real, acesso da unidade por papel e nenhuma autoridade de envio: projeção 9/39/48. As escritas exigem owner e CAS.",
+      "DELTA serviço v2 self-service: três RPCs DEFINER authenticated (leitura com membership, preferência CAS owner/gerente/admin e rollout global admin): projeção 9/42/51.",
+      "DELTA camada global do prompt do agente (20261020150000): duas RPCs DEFINER authenticated com guarda platform_admin (publicar e restaurar versão): projeção 9/44/53.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 37,
-    "total": 46
+    "0029": 44,
+    "total": 53
   },
 
   "public_anon": [
@@ -332,6 +335,30 @@
   "rls_helpers": [],
 
   "authenticated_tenant": [
+    {
+      "name": "get_whatsapp_v2_service_preferences",
+      "args": "p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "JWT real owner/gerente/operador da unidade ou platform_admin; resolve binding ativo pela unidade e projeta seis finalidades sem PII/segredos, inclusive estado OFF e prontidão.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "set_whatsapp_v2_service_preference",
+      "args": "p_binding_id uuid, p_kind text, p_enabled boolean, p_expected_revision bigint, p_expected_generation bigint, p_expected_credential_revision bigint",
+      "roles": ["authenticated"],
+      "why": "JWT real owner/gerente da unidade derivada do binding ou platform_admin; CAS, grant auto v2, rollout, readiness e permit tipado de uso único para adoção atômica; não aceita tenant do caller.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "set_whatsapp_v2_service_rollout_ready",
+      "args": "p_ready boolean, p_expected_revision bigint",
+      "roles": ["authenticated"],
+      "why": "Somente platform_admin real altera o gate global OFF por padrão, com CAS; a operação não envia mensagens nem concede consentimento ou custo MARKETING.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
     {
       "name": "enter_waitlist",
       "args": "p_unit_id uuid, p_customer_name text, p_customer_phone text, p_party_size integer, p_notes text, p_priority_category text, p_requested_for_time time without time zone",
@@ -581,6 +608,38 @@
       "args": "p_customer_ids uuid[], p_unit_id uuid",
       "roles": ["authenticated"],
       "why": "Listagem de clientes — stats agregadas em uma chamada.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_marketing_drafts",
+      "args": "p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "Lista rascunhos e regras da unidade para owner/gerente ou platform_admin; sem contato ou autoridade de disparo.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "save_marketing_draft",
+      "args": "p_unit_id uuid, p_draft_id uuid, p_expected_revision bigint, p_program text, p_voucher_rule_id uuid, p_title text, p_start_date date, p_end_date date, p_proposed_daily_contacts integer, p_proposed_daily_messages integer",
+      "roles": ["authenticated"],
+      "why": "Owner da unidade salva apenas rascunho com CAS e regra Giftback da mesma unidade; não escreve em produtores ou autorizações de custo.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "archive_marketing_draft",
+      "args": "p_draft_id uuid, p_expected_revision bigint",
+      "roles": ["authenticated"],
+      "why": "Owner identificado pela unidade do próprio rascunho arquiva com CAS, sem alterar fluxo Giftback ou WhatsApp.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "get_marketing_results",
+      "args": "p_unit_id uuid, p_from date, p_to date",
+      "roles": ["authenticated"],
+      "why": "Agregados sem PII da unidade para owner/gerente/platform_admin, com corte de retenção e sem custo presumido.",
       "security_definer": true,
       "advisor_lints": ["0029"]
     },
