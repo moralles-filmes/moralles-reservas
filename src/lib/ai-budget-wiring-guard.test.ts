@@ -688,8 +688,12 @@ describe("ai-providers.ts — contrato de orçamento", () => {
 
     const decl = body.slice(body.indexOf("const attemptModels"));
     const stmt = decl.slice(0, decl.indexOf(";") + 1);
-    expect(stmt, "a lista de tentativas não considera o fallback").toContain("fallbackModel");
     expect(stmt, "a lista de tentativas não parte do modelo ativo").toContain("activeModel");
+    // O fallback entra na lista depois da falha da 1ª tentativa (a decisão D5
+    // é perguntada ao chamador nessa hora — guarda em ai-model-catalog-wiring).
+    expect(body, "a lista de tentativas não considera o fallback").toMatch(
+      /attemptModels\.push\(fallbackModel\)/,
+    );
 
     const spec = budgetSpec(body);
     expect(spec, "a autorização do Gemini não usa o modelo da TENTATIVA").toMatch(
@@ -788,11 +792,26 @@ describe("ai-providers.ts — contrato de orçamento", () => {
     expect(linhaCrua).not.toContain("sanitizeProviderError");
   });
 
-  it("o catálogo de modelos NÃO muda nesta frente — manage-ai-providers fora do redeploy", () => {
-    expect(providers).toContain("DEFAULT_MODELS");
-    expect(providers).toContain("KNOWN_MODELS");
-    expect(providers).toMatch(/gemini:\s*"gemini-2\.5-flash"/);
-    expect(providers).toMatch(/gemini:\s*"gemini-2\.5-pro"/);
+  it("a lista de modelos é do catálogo único, e manage-ai-providers segue fora do redeploy", () => {
+    // As tabelas paralelas saíram do runner: lista, default, sucessor e
+    // fallback do mesmo provider vivem em `ai-model-catalog.ts`.
+    for (const antiga of ["DEFAULT_MODELS", "KNOWN_MODELS", "FALLBACK_MODELS"]) {
+      expect(providers, `${antiga} voltou ao runner`).not.toContain(antiga);
+    }
+    expect(providers).toContain('from "./ai-model-catalog.ts"');
+    // manage-ai-providers é CRUD de credencial: não resolve modelo nem preço, e
+    // por isso mudar o catálogo não o põe na matriz de redeploy.
+    const manage = readFileSync(join(SHARED, "..", "manage-ai-providers", "index.ts"), "utf8");
+    // Pelo caminho do IMPORT: o nome da própria EF contém "ai-providers".
+    const imports = [...manage.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]);
+    expect(imports.length, "o extrator de imports não achou nada").toBeGreaterThan(0);
+    expect(imports.filter((p) => /ai-model-catalog|\/ai-providers\.ts$/.test(p))).toEqual([]);
+    expect(
+      [...`import x from "../_shared/ai-providers.ts";`.matchAll(/from\s+["']([^"']+)["']/g)]
+        .map((m) => m[1])
+        .filter((p) => /ai-model-catalog|\/ai-providers\.ts$/.test(p)),
+      "CONTROLE: o filtro tem de pegar o import do runner",
+    ).toHaveLength(1);
   });
 
   it("estimateCostUsd continua existindo, e o comentário fixa que ele NÃO serve o orçamento", () => {
@@ -1457,7 +1476,10 @@ function exigeHardStopCompleto(bloco: string, nome: string) {
     statementFrom(bloco, envio),
     `${nome}: a resposta ao cliente não é o texto determinístico`,
   ).toContain("AI_BUDGET_EXHAUSTED_CUSTOMER_TEXT");
-  expect(bloco, `${nome}: não registra a execução`).toContain('finish("ai_budget_exhausted")');
+  // Antes da carga do prompt o `finish` não tem meta; depois, leva só `promptMeta` (Entrega B).
+  expect(bloco, `${nome}: não registra a execução`).toMatch(
+    /\bfinish\("ai_budget_exhausted"(?:\)|, undefined, \{ \.\.\.promptMeta \}\))/,
+  );
   expect(bloco, `${nome}: não encerra o turno`).toMatch(SAIDA_DO_TURNO);
 }
 

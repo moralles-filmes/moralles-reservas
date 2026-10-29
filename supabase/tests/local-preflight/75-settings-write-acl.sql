@@ -269,16 +269,19 @@ begin
 end $$;
 
 -- ─── S9: platform_admin sem membership grava ai_config e prompt ──────────────
+-- `agent_mode` recebe um valor do enum: desde a migration 20261029120100 o
+-- guard de valor recusa outro valor para todo papel (pré-voo 80, V4).
 do $$
-declare k text; r text; ruins text := '';
+declare k text; r text; v text; ruins text := '';
   u1 constant uuid := 'a0d75000-0000-4000-8000-0000000000aa';
   pa constant uuid := 'a0d75000-0000-4000-8000-0000000000c1';
 begin
   foreach k in array array['ai_config', 'agent_mode', 'agent_name', 'restaurant_menu',
                            'delivery_response', 'restaurant_extra_info', 'ai_system_prompt',
                            'ai_context_extra', 'foo_bar'] loop
-    r := pg_temp.s75_try('authenticated', pa, pg_temp.s75_ups(u1, k, 's75-pa-' || k));
-    if r <> 'ok' or pg_temp.s75_val(u1, k) <> 's75-pa-' || k then
+    v := case k when 'agent_mode' then 'reservations_faq' else 's75-pa-' || k end;
+    r := pg_temp.s75_try('authenticated', pa, pg_temp.s75_ups(u1, k, v));
+    if r <> 'ok' or pg_temp.s75_val(u1, k) <> v then
       ruins := ruins || ' ' || k || '=' || r || '/' || pg_temp.s75_val(u1, k);
     end if;
   end loop;

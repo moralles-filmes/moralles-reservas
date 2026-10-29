@@ -49,6 +49,7 @@ describe("isPlatformNavItemActive", () => {
       "/platform/billing/implementacoes",
       "/platform/billing/622a0dc1-0e23-4a98-932c-a1c583619354",
       "/platform/instancias-whatsapp",
+      "/platform/agente-ia",
       "/platform/integracoes",
     ];
     for (const path of paths) {

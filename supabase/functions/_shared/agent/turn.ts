@@ -26,7 +26,6 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   runAgentLoop,
-  resolveModel,
   estimateCostUsd,
   isAgentDeadlineError,
   sanitizeProviderError,
@@ -34,6 +33,9 @@ import {
   type AgentLoopResult,
   type AIProvider,
 } from "../ai-providers.ts";
+// Catálogo único de modelos: o modelo salvo passa por `resolveModel` (aposentado
+// vira sucessor, desconhecido vira default) ANTES de franquia e telemetria.
+import { getModelEntry, resolveModel } from "../ai-model-catalog.ts";
 // ─── Franquia de IA (Plano D) ────────────────────────────────────────────────
 // O adapter faz I/O; a decisão é dos núcleos puros. Nada aqui reimplementa
 // "cabe?", "isto é teto ou soluço?" ou "o que dizer ao cliente".
@@ -68,6 +70,7 @@ import { jsonLog } from "../security.ts";
 import { checkAvailability as checkAvailabilityCore } from "../availability.ts";
 import { resolveHandoffClock } from "../handoff-clock-core.ts";
 import {
+  decideSameProviderFallback,
   parseFallbackConfig,
   shouldUseFallbackProvider,
 } from "../agent-provider-fallback-core.ts";
@@ -296,18 +299,37 @@ export function createAgentTurn(io: AgentTurnIO) {
   // faziam parecer "vazamento de chave entre lojas" e bagunçavam cobrança por
   // tenant. Sem chave própria = throw → handoff humano automático no catch do
   // caller.
-  async function resolveApiKey(provider: AIProvider, unitId: string): Promise<string> {
-    const { data } = await supabase
+  // Credencial ATIVA da unidade para o provider: o filtro de tenant fica num
+  // lugar só para a leitura da chave e para a checagem de existência.
+  const activeCredentials = <Columns extends string>(provider: AIProvider, unitId: string, columns: Columns) =>
+    supabase
       .from("ai_provider_credentials")
-      .select("api_key")
+      .select(columns)
       .eq("unit_id", unitId)
       .eq("provider", provider)
-      .eq("active", true)
-      .maybeSingle();
+      .eq("active", true);
+
+  async function resolveApiKey(provider: AIProvider, unitId: string): Promise<string> {
+    const { data } = await activeCredentials(provider, unitId, "api_key").maybeSingle();
 
     if (data?.api_key) return data.api_key;
 
     throw new Error(`api_key_not_configured:${provider}`);
+  }
+
+  /**
+   * A unidade tem chave ATIVA deste provider? Só EXISTÊNCIA: a coluna da chave
+   * não é lida, e nada aqui vai a log. Serve à decisão Flash→Pro (D5), que
+   * precisa saber antes do turno se o reserva é utilizável.
+   *
+   * POLARIDADE: erro de leitura = sem chave = o fallback do mesmo provider
+   * continua, que é o comportamento de antes desta decisão. O reserva em si
+   * segue tentando a chave em `switchToFallback`, como sempre.
+   */
+  async function hasActiveApiKey(provider: AIProvider, unitId: string): Promise<boolean> {
+    const { data, error } = await activeCredentials(provider, unitId, "id").limit(1);
+    if (error) return false;
+    return Array.isArray(data) && data.length > 0;
   }
 
   /**
@@ -785,39 +807,10 @@ export function createAgentTurn(io: AgentTurnIO) {
     const aiConfig = (configSetting?.value ?? {}) as Record<string, unknown>;
     const provider_ai: AIProvider = (aiConfig.provider as AIProvider) ?? "claude";
     const rawModel: string | undefined = (aiConfig.models as Record<string, string>)?.[provider_ai];
-    // Blindagem: ignora modelo desconhecido/descontinuado salvo em settings (ex: legado
-    // "gemini-2.0-flash" que o Google removeu pra contas novas → 404 silencioso).
-    // resolveModel cai no DEFAULT_MODELS[provider] e marca fellBack pra logar/telemetria.
-    const modelResolved = resolveModel(provider_ai, rawModel);
-    const modelOverride: string = modelResolved.model;
-    if (modelResolved.fellBack) {
-      jsonLog("warn", {
-        requestId,
-        evt: "ai_model_fallback",
-        provider: provider_ai,
-        rejected: modelResolved.rejected,
-        used: modelOverride,
-        unitId,
-      });
-    }
-    // Provedor RESERVA (opcional, por unidade). Config ilegível = sem reserva =
-    // comportamento de hoje. A chave dele só é resolvida se ele for usado.
-    const fallbackConfig = parseFallbackConfig(aiConfig, provider_ai);
-    const fallbackModelResolved = fallbackConfig
-      ? resolveModel(fallbackConfig.provider, fallbackConfig.model)
-      : null;
-    if (fallbackConfig && fallbackModelResolved?.fellBack) {
-      jsonLog("warn", {
-        requestId,
-        evt: "ai_model_fallback",
-        provider: fallbackConfig.provider,
-        rejected: fallbackModelResolved.rejected,
-        used: fallbackModelResolved.model,
-        role: "fallback",
-        unitId,
-      });
-    }
 
+    // A chave vem ANTES da resolução do modelo: `provider` inválido no
+    // `ai_config` (o banco não tem CHECK) cai aqui, no handoff de sempre,
+    // em vez de lançar no catálogo (que só conhece os 5 providers).
     let apiKey: string;
     try {
       apiKey = await resolveApiKey(provider_ai, unitId);
@@ -857,9 +850,63 @@ export function createAgentTurn(io: AgentTurnIO) {
       return;
     }
 
+    // Blindagem pelo catálogo (D6): salvo aposentado → sucessor, com
+    // `ai_model_retired`; desconhecido (ex: legado "gemini-2.0-flash", 404
+    // silencioso) → default, com `ai_model_fallback`. O valor salvo não é
+    // reescrito. Daqui em diante só circula o modelo RESOLVIDO: franquia
+    // (`openTurnBudget`, `priceFor`), `agent_usage`, `handoff_reason` e `meta`.
+    const modelResolved = resolveModel(provider_ai, rawModel);
+    const modelOverride: string = modelResolved.model;
+    if (modelResolved.reason === "retired_successor") {
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_model_retired",
+        provider: provider_ai,
+        saved: modelResolved.rejected,
+        used: modelOverride,
+        unitId,
+      });
+    } else if (modelResolved.reason === "unknown_default") {
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_model_fallback",
+        provider: provider_ai,
+        rejected: modelResolved.rejected,
+        used: modelOverride,
+        unitId,
+      });
+    }
+    // Provedor RESERVA (opcional, por unidade). Config ilegível = sem reserva =
+    // comportamento de hoje. A chave dele só é resolvida se ele for usado.
+    const fallbackConfig = parseFallbackConfig(aiConfig, provider_ai);
+    const fallbackModelResolved = fallbackConfig
+      ? resolveModel(fallbackConfig.provider, fallbackConfig.model)
+      : null;
+    if (fallbackConfig && fallbackModelResolved?.reason === "retired_successor") {
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_model_retired",
+        provider: fallbackConfig.provider,
+        saved: fallbackModelResolved.rejected,
+        used: fallbackModelResolved.model,
+        role: "fallback",
+        unitId,
+      });
+    } else if (fallbackConfig && fallbackModelResolved?.reason === "unknown_default") {
+      jsonLog("warn", {
+        requestId,
+        evt: "ai_model_fallback",
+        provider: fallbackConfig.provider,
+        rejected: fallbackModelResolved.rejected,
+        used: fallbackModelResolved.model,
+        role: "fallback",
+        unitId,
+      });
+    }
+
     // System prompt: carga (mesma ordem de leituras) e montagem em
     // `system-prompt.ts`. O canal entra com a identidade e a formatação.
-    const systemPrompt = await loadAgentSystemPrompt(supabase, {
+    const agentPrompt = await loadAgentSystemPrompt(supabase, {
       unitId,
       unit: ctx.unit,
       customer,
@@ -867,7 +914,17 @@ export function createAgentTurn(io: AgentTurnIO) {
       identityLine: ctx.identityLine,
       formattingRules: ctx.formattingRules,
       appBaseUrl: ctx.appBaseUrl,
+      requestId,
+      log: jsonLog,
     });
+    const systemPrompt = agentPrompt.text;
+    // Qual camada global (versão e fonte: db, stale_cache ou baseline) entrou no
+    // prompt. Vai em TODO `finish` daqui em diante e no `agent_usage` (guard
+    // estático em `agent-global-prompt-loader.test.ts`).
+    const promptMeta = {
+      global_prompt_version: agentPrompt.globalPrompt.version,
+      global_prompt_source: agentPrompt.globalPrompt.source,
+    };
 
     // Reserva ATÔMICA antes de iniciar o turno. O passo é onde o teto é
     // aplicado — verificar depois da chamada não é proteção, é detecção.
@@ -912,7 +969,7 @@ export function createAgentTurn(io: AgentTurnIO) {
           organizationId,
           convId: conv.id,
         });
-        await finish("ai_budget_exhausted");
+        await finish("ai_budget_exhausted", undefined, { ...promptMeta });
         await releaseAiLock();
         return;
       }
@@ -984,7 +1041,7 @@ export function createAgentTurn(io: AgentTurnIO) {
           if (budgetErrorNotice.ok) {
             await appendToConversation(conv.id, conv.messages || [], "assistant", errText, { author: "automation" });
           }
-          await finish("ai_budget_error", opened.sanitizedCode);
+          await finish("ai_budget_error", opened.sanitizedCode, { ...promptMeta });
           await releaseAiLock();
           return;
         }
@@ -1011,6 +1068,27 @@ export function createAgentTurn(io: AgentTurnIO) {
     // formatos de tool call).
     type AgentTarget = { provider: AIProvider; apiKey: string; model: string };
     const primaryTarget: AgentTarget = { provider: provider_ai, apiKey, model: modelOverride };
+    // D5: o fallback DENTRO do provider (Flash→Pro) só vale enquanto o reserva
+    // não pode assumir; com reserva ao alcance, a tentativa pós-503 vai direto a
+    // ela. A existência da chave ativa do reserva é lida aqui, antes do turno (o
+    // valor, só na troca). O ALCANCE é perguntado na hora do fallback: o reserva
+    // só entra na tentativa 0 do retry, sem ferramenta mutante e dentro do
+    // orçamento de tempo (as mesmas travas do laço abaixo) — fora disso, o Pro.
+    const reserveHasActiveKey = fallbackConfig
+      ? await hasActiveApiKey(fallbackConfig.provider, unitId)
+      : false;
+    let currentAttempt = 0;
+    const reserveStillUsable = (): boolean =>
+      currentAttempt === 0 && !mutatingToolUsed && Date.now() - t0 < AGENT_RETRY_BUDGET_MS;
+    // No reserva não há outro reserva atrás dele: vale o fallback do catálogo.
+    const sameProviderFallbackFor = (target: AgentTarget) => (): string | null =>
+      decideSameProviderFallback({
+        entry: getModelEntry(target.provider, target.model) ?? {},
+        primaryProvider: target.provider,
+        reserve: target === primaryTarget ? fallbackConfig : null,
+        reserveHasActiveKey: target === primaryTarget && reserveHasActiveKey,
+        reserveStillUsable: target === primaryTarget && reserveStillUsable(),
+      });
     let agentTarget: AgentTarget = primaryTarget;
     const switchToFallback = async (reason: string): Promise<boolean> => {
       if (!fallbackConfig || !fallbackModelResolved) return false;
@@ -1039,6 +1117,7 @@ export function createAgentTurn(io: AgentTurnIO) {
         provider: agentTarget.provider,
         apiKey: agentTarget.apiKey,
         model: agentTarget.model,
+        sameProviderFallbackModel: sameProviderFallbackFor(agentTarget),
         systemPrompt,
         history,
         userMessage: combinedUserMessage,
@@ -1165,6 +1244,7 @@ export function createAgentTurn(io: AgentTurnIO) {
     // claim inteiro depois de uma exceção já não é comprovadamente seguro.
     markExternalSideEffect();
     for (let attempt = 0; attempt <= 1; attempt++) {
+      currentAttempt = attempt;
       try {
         agentOutcome = await runOnce();
         agentError = null;
@@ -1239,6 +1319,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       provider: usedProvider,
       model: usedModel,
       ...fallbackMeta,
+      ...promptMeta,
       channelId,
       unitId,
       ...totalUsage,
@@ -1325,6 +1406,7 @@ export function createAgentTurn(io: AgentTurnIO) {
         provider: usedProvider,
         model: agentOutcome.meta.model,
         ...fallbackMeta,
+        ...promptMeta,
       });
       await releaseAiLock();
       return;
@@ -1428,6 +1510,7 @@ export function createAgentTurn(io: AgentTurnIO) {
         // trocá-lo é mudança de contrato que esta task não pede. A distinção
         // viaja no `meta` e no `handoff_reason`.
         deadline: agentDeadlineReached,
+        ...promptMeta,
       });
       await releaseAiLock();
       return;
@@ -1445,7 +1528,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       }
       // Mesma razão do ramo de erro: turno interrompido sem produzir resposta.
       await settleTurnBudget("RELEASED");
-      await finish("empty_response");
+      await finish("empty_response", undefined, { ...promptMeta });
       await releaseAiLock();
       return;
     }
@@ -1461,7 +1544,7 @@ export function createAgentTurn(io: AgentTurnIO) {
 
     if (sendRes.error === "suppressed_by_human") {
       await settleTurnBudget("SETTLED");
-      await finish("ai_reply_suppressed_by_human");
+      await finish("ai_reply_suppressed_by_human", undefined, { ...promptMeta });
       await releaseAiLock();
       return;
     }
@@ -1475,6 +1558,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       await finish("send_error", sendRes.error ?? `status_${sendRes.status}`, {
         missingCreds: sendRes.missingCreds,
         bodySnippet: sendRes.bodySnippet,
+        ...promptMeta,
       });
       await releaseAiLock();
       return;
@@ -1495,7 +1579,7 @@ export function createAgentTurn(io: AgentTurnIO) {
     await finish(
       finalHistoryAppend.persisted ? "success" : "success_history_degraded",
       finalHistoryAppend.persisted ? undefined : "conversation_message_persist_failed_after_send",
-      { tokens: totalUsage.input_tokens + totalUsage.output_tokens, ...fallbackMeta },
+      { tokens: totalUsage.input_tokens + totalUsage.output_tokens, ...fallbackMeta, ...promptMeta },
     );
     await releaseAiLock();
     return;

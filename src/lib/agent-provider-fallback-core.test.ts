@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  decideSameProviderFallback,
   parseFallbackConfig,
   shouldUseFallbackProvider,
 } from "../../supabase/functions/_shared/agent-provider-fallback-core";
@@ -127,5 +128,74 @@ describe("shouldUseFallbackProvider", () => {
     expect(shouldUseFallbackProvider(undefined)).toBe(true);
     expect(shouldUseFallbackProvider("boom")).toBe(true);
     expect(shouldUseFallbackProvider({})).toBe(true);
+  });
+});
+
+describe("decideSameProviderFallback (D5: Flash→Pro só sem reserva válida)", () => {
+  const flash = { sameProviderFallback: "gemini-2.5-pro" };
+  const reservaClaude = parseFallbackConfig({ fallback: { provider: "claude" } }, "gemini");
+
+  it("sem reserva -> o Pro continua", () => {
+    expect(
+      decideSameProviderFallback({ entry: flash, primaryProvider: "gemini", reserve: null, reserveHasActiveKey: false, reserveStillUsable: true }),
+    ).toBe("gemini-2.5-pro");
+  });
+
+  it("reserva válida (legível, outro provider, chave ativa) -> sem Pro: a rede é só a reserva", () => {
+    expect(reservaClaude).not.toBeNull();
+    expect(
+      decideSameProviderFallback({ entry: flash, primaryProvider: "gemini", reserve: reservaClaude, reserveHasActiveKey: true, reserveStillUsable: true }),
+    ).toBeNull();
+  });
+
+  it("config ilegível conta como sem reserva -> Pro (mesma polaridade de parseFallbackConfig)", () => {
+    const ilegivel = parseFallbackConfig({ fallback: { provider: 42 } }, "gemini");
+    expect(ilegivel).toBeNull();
+    expect(
+      decideSameProviderFallback({ entry: flash, primaryProvider: "gemini", reserve: ilegivel, reserveHasActiveKey: true, reserveStillUsable: true }),
+    ).toBe("gemini-2.5-pro");
+  });
+
+  it("reserva no mesmo provider não é reserva -> Pro", () => {
+    expect(
+      decideSameProviderFallback({
+        entry: flash,
+        primaryProvider: "gemini",
+        reserve: { provider: "gemini" },
+        reserveHasActiveKey: true,
+        reserveStillUsable: true,
+      }),
+    ).toBe("gemini-2.5-pro");
+  });
+
+  it("reserva sem chave ativa na unidade -> Pro (a troca de provedor falharia em fallback_unavailable)", () => {
+    expect(
+      decideSameProviderFallback({ entry: flash, primaryProvider: "gemini", reserve: reservaClaude, reserveHasActiveKey: false, reserveStillUsable: true }),
+    ).toBe("gemini-2.5-pro");
+  });
+
+  it("modelo sem sameProviderFallback -> null, com ou sem reserva", () => {
+    for (const entry of [{ sameProviderFallback: null }, {}]) {
+      expect(
+        decideSameProviderFallback({ entry, primaryProvider: "gemini", reserve: null, reserveHasActiveKey: false, reserveStillUsable: true }),
+      ).toBeNull();
+      expect(
+        decideSameProviderFallback({ entry, primaryProvider: "gemini", reserve: reservaClaude, reserveHasActiveKey: true, reserveStillUsable: true }),
+      ).toBeNull();
+    }
+  });
+
+  it("reserva válida mas já fora de alcance (mutação, tentativa 1 ou orçamento de tempo) -> o Pro volta", () => {
+    // O reserva só entra na tentativa 0 do retry silencioso, antes de ferramenta
+    // mutante e dentro do orçamento de tempo. Fora disso o Pro é a única rede.
+    expect(
+      decideSameProviderFallback({
+        entry: flash,
+        primaryProvider: "gemini",
+        reserve: reservaClaude,
+        reserveHasActiveKey: true,
+        reserveStillUsable: false,
+      }),
+    ).toBe("gemini-2.5-pro");
   });
 });

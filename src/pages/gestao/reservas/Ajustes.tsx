@@ -22,6 +22,14 @@ import {
 import { CreditCard, HelpCircle } from "lucide-react";
 import { toast } from "sonner";
 import { BreadcrumbReservas } from "./Saloes";
+import { StoreTextCounter } from "@/components/ai/StoreTextCounter";
+import {
+  isValidStoreText,
+  settingsNotWrittenError,
+  settingsWriteErrorMessage,
+  storeTextDescribedBy,
+} from "@/lib/store-text";
+import { normalizeNewlines } from "@/lib/text-normalize";
 
 const SETTING_KEYS = [
   "reservation_duration_minutes",
@@ -138,19 +146,33 @@ function InfoTab({ unitId }: { unitId: string }) {
   const upsertSettings = useMutation({
     mutationFn: async (patches: Array<{ key: string; value: unknown }>) => {
       const rows = patches.map((p) => ({ unit_id: unitId, key: p.key, value: p.value }));
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("settings")
-        .upsert(rows, { onConflict: "unit_id,key" });
+        .upsert(rows, { onConflict: "unit_id,key" })
+        .select();
       if (error) throw error;
+      // UPDATE que casa zero linhas volta `error: null`: sem conferir o tamanho, "salvou" mentiria.
+      if (!data || data.length !== rows.length) throw settingsNotWrittenError();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings", unitId] });
       toast.success("Ajustes salvos.");
     },
-    onError: (err: Error) => toast.error(err.message ?? "Erro ao salvar."),
+    // Cópia por `error.code`: a mensagem crua do banco pode trazer a linha rejeitada.
+    onError: (err: unknown) => toast.error(settingsWriteErrorMessage(err)),
   });
 
+  // O que o banco vai medir nos textos que o agente lê: quebras normalizadas (`\r` só chega por dado legado) e aparado.
+  const rulesPrepared = normalizeNewlines(rules).trim();
+  const additionalInfoPrepared = normalizeNewlines(additionalInfo).trim();
+  const rulesInvalid = !isValidStoreText("rules_and_conditions", rulesPrepared);
+  const additionalInfoInvalid = !isValidStoreText("additional_info", additionalInfoPrepared);
+
   const handleSave = () => {
+    if (rulesInvalid || additionalInfoInvalid) {
+      toast.error("Corrija os textos destacados antes de salvar.");
+      return;
+    }
     const win = Number(bookingWindow);
     if (!Number.isFinite(win) || win < 1 || win > 365) {
       toast.error("Janela de reserva deve estar entre 1 e 365 dias.");
@@ -170,8 +192,8 @@ function InfoTab({ unitId }: { unitId: string }) {
       { key: "reservation_duration_minutes", value: dur },
       { key: "booking_window_days", value: win },
       { key: "reservation_tolerance_minutes", value: tol },
-      { key: "rules_and_conditions", value: rules.trim() },
-      { key: "additional_info", value: additionalInfo.trim() },
+      { key: "rules_and_conditions", value: rulesPrepared },
+      { key: "additional_info", value: additionalInfoPrepared },
     ];
     // The new per-kind authority owns automatic v2 delivery. Never write
     // legacy switches unless the server proved this is an existing cohort.
@@ -315,27 +337,44 @@ function InfoTab({ unitId }: { unitId: string }) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="space-y-1">
-          <Label className="text-sm">Regras e Condições</Label>
+          <Label htmlFor="ajustes-rules_and_conditions" className="text-sm">Regras e Condições</Label>
           <Textarea
+            id="ajustes-rules_and_conditions"
             rows={8}
             value={rules}
             onChange={(e) => setRules(e.target.value)}
             placeholder={"Ex:\nRODÍZIO TRADICIONAL (40+ itens)\n☀ ALMOÇO de terça a sexta-feira\n…"}
+            aria-invalid={rulesInvalid}
+            aria-describedby={storeTextDescribedBy("ajustes-rules_and_conditions", rulesInvalid)}
           />
+          <StoreTextCounter id="ajustes-rules_and_conditions" storeKey="rules_and_conditions" value={rulesPrepared} />
         </div>
         <div className="space-y-1">
-          <Label className="text-sm">Informações adicionais</Label>
+          <Label htmlFor="ajustes-additional_info" className="text-sm">Informações adicionais</Label>
           <Textarea
+            id="ajustes-additional_info"
             rows={8}
             value={additionalInfo}
             onChange={(e) => setAdditionalInfo(e.target.value)}
             placeholder="Estacionamento, dress code, política de cancelamento…"
+            aria-invalid={additionalInfoInvalid}
+            aria-describedby={storeTextDescribedBy("ajustes-additional_info", additionalInfoInvalid)}
           />
+          <StoreTextCounter id="ajustes-additional_info" storeKey="additional_info" value={additionalInfoPrepared} />
         </div>
       </div>
 
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={upsertSettings.isPending}>
+      <div className="flex flex-col items-end gap-2">
+        {(rulesInvalid || additionalInfoInvalid) && (
+          <p id="ajustes-save-blocked" className="text-xs text-destructive">
+            Corrija os textos destacados para salvar os ajustes.
+          </p>
+        )}
+        <Button
+          onClick={handleSave}
+          disabled={upsertSettings.isPending || rulesInvalid || additionalInfoInvalid}
+          aria-describedby={rulesInvalid || additionalInfoInvalid ? "ajustes-save-blocked" : undefined}
+        >
           {upsertSettings.isPending ? "Salvando…" : "Salvar"}
         </Button>
       </div>
