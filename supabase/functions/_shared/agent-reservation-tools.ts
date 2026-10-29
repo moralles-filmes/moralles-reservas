@@ -12,13 +12,19 @@
  * existe" de "é de outra pessoa") e erro de banco vira frase genérica — o
  * `error.message` do Postgres só vai para o log.
  *
+ * Identidade declarada (Instagram, telefone digitado no Direct): o escopo traz
+ * `reservationIds`, o ledger das reservas criadas por aquele contato. Com ele
+ * toda consulta ganha `.in("id", ids)` além de unidade e cliente, e a lista
+ * vazia responde "não encontrada" sem consultar. O dono do telefone pode ter
+ * outras reservas; o contato declarado não as alcança.
+ *
  * Sem client global nem `Deno.env`: o client entra por parâmetro para o
  * núcleo ser testável no Vitest.
  */
 
 import type { AvailabilityParams, AvailabilityResult } from "./availability.ts";
 
-export type ReservationToolScope = { unitId: string; customerId: string };
+export type ReservationToolScope = { unitId: string; customerId: string; reservationIds?: readonly string[] };
 
 type DbResult = { data: unknown; error: { code?: string; message?: string } | null };
 
@@ -37,6 +43,16 @@ function normalizeCode(code: string): string {
   return code.trim().toUpperCase();
 }
 
+/** Ledger presente e vazio: nada a alcançar, e nenhuma consulta. */
+function emptyLedger(scope: ReservationToolScope): boolean {
+  return !!scope.reservationIds && scope.reservationIds.length === 0;
+}
+
+// deno-lint-ignore no-explicit-any
+function withinLedger(query: any, scope: ReservationToolScope): any {
+  return scope.reservationIds ? query.in("id", [...scope.reservationIds]) : query;
+}
+
 type ReservationRow = {
   reservation_code: string;
   date: string;
@@ -52,12 +68,13 @@ export async function getReservationScoped(
   scope: ReservationToolScope,
   // deno-lint-ignore no-explicit-any
 ): Promise<any> {
-  let query = db
+  if (emptyLedger(scope)) return { found: false, message: NOT_FOUND };
+  let query = withinLedger(db
     .from("reservations")
     .select("reservation_code, date, time, party_size, status, notes")
     .eq("unit_id", scope.unitId)
     .eq("customer_id", scope.customerId)
-    .in("status", ACTIVE_STATUSES);
+    .in("status", ACTIVE_STATUSES), scope);
 
   const code = params.reservation_code?.trim();
   query = code
@@ -99,14 +116,15 @@ export async function updateReservationScoped(
   if (params.party_size) updates.party_size = params.party_size;
   if (params.notes !== undefined) updates.notes = params.notes;
   if (!Object.keys(updates).length) return { success: false, message: "Nenhuma alteração informada." };
+  if (emptyLedger(scope)) return { success: false, error: NOT_FOUND };
 
-  const { data: currentData, error: readError } = (await db
+  const { data: currentData, error: readError } = (await withinLedger(db
     .from("reservations")
     .select("id, date, time, party_size, table_id")
     .eq("reservation_code", normalizeCode(params.reservation_code))
     .eq("unit_id", scope.unitId)
     .eq("customer_id", scope.customerId)
-    .in("status", ACTIVE_STATUSES)
+    .in("status", ACTIVE_STATUSES), scope)
     .maybeSingle()) as DbResult;
   if (readError) {
     logToolError("update_reservation", readError);
@@ -158,13 +176,13 @@ export async function updateReservationScoped(
     updates.table_id = check.suggestedTableId ?? null;
   }
 
-  const { data, error } = (await db
+  const { data, error } = (await withinLedger(db
     .from("reservations")
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq("id", current.id)
     .eq("unit_id", scope.unitId)
     .eq("customer_id", scope.customerId)
-    .in("status", ACTIVE_STATUSES)
+    .in("status", ACTIVE_STATUSES), scope)
     .select("reservation_code")
     .maybeSingle()) as DbResult;
 
@@ -189,14 +207,15 @@ export async function cancelReservationScoped(
   if (!code?.trim()) {
     return { success: false, error: "Código da reserva não informado. Use get_reservation ou list_customer_reservations para obter o código." };
   }
+  if (emptyLedger(scope)) return { success: false, error: NOT_FOUND };
   const upperCode = normalizeCode(code);
-  const { data, error } = (await db
+  const { data, error } = (await withinLedger(db
     .from("reservations")
     .update({ status: "cancelled", updated_at: new Date().toISOString() })
     .eq("reservation_code", upperCode)
     .eq("unit_id", scope.unitId)
     .eq("customer_id", scope.customerId)
-    .in("status", ACTIVE_STATUSES)
+    .in("status", ACTIVE_STATUSES), scope)
     .select("reservation_code")
     .maybeSingle()) as DbResult;
 

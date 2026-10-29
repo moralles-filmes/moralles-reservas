@@ -797,7 +797,7 @@ export interface ReserveSlotParams extends AvailabilityParams {
   customerId: string;
   notes?: string | null;
   status?: "pending" | "confirmed";
-  source?: "web" | "whatsapp";
+  source?: "web" | "whatsapp" | "instagram";
   /** Public no-deposit flow checks the selected hall before INSERT, so the
    * outbox trigger sees a confirmed reservation with no payment required. */
   initialStateForSlot?: (hallId: string | undefined) => Promise<{

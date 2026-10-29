@@ -3,10 +3,9 @@
  * de leitura/criação. Todas são escopadas pela unidade do turno; o caller nunca
  * escolhe o escopo — ele vem do canal e do cliente já resolvidos.
  *
- * O despacho (`onToolCall`) mora em `turn.ts`, porque é lá que ficam as
- * consequências de cada chamada: `mutatingToolUsed` (desliga o retry
- * silencioso) e `lastMutationOutcome` (copy de §17.7.4). Ferramenta mutante
- * nova DEVE setar as duas no despacho.
+ * O despacho mora em `tool-dispatch.ts`, com as consequências de cada chamada:
+ * `mutatingToolUsed` (desliga o retry silencioso) e `lastMutationOutcome`
+ * (copy de §17.7.4). Ferramenta mutante nova DEVE setar as duas no despacho.
  *
  * Sem client global nem `Deno.env`: o client entra por parâmetro.
  */
@@ -202,7 +201,11 @@ export async function createReservation(supabase: SupabaseClient, params: {
   party_size: number;
   notes?: string;
   hall_name?: string;
-  phone: string;
+  /**
+   * Cliente do turno, vindo do estado do despacho (canal ou `link_customer_phone`),
+   * nunca do LLM. O telefone dele é o que resolve o cadastro.
+   */
+  customer: { id: string; phone: string };
   unit_id: string;
   organization_id: string;
   source: AgentReservationSource;
@@ -212,11 +215,11 @@ export async function createReservation(supabase: SupabaseClient, params: {
   //   - lookup por (organization_id, phone)
   //   - se existe: PRESERVA nome cadastrado, append em emails[]
   //   - se não existe: cria
-  let customer;
+  let resolved;
   try {
-    customer = await resolveOrCreateCustomer(supabase, {
+    resolved = await resolveOrCreateCustomer(supabase, {
       organizationId: params.organization_id,
-      phone: params.phone,
+      phone: params.customer.phone,
       name: params.customer_name,
       email: params.customer_email ?? null,
     });
@@ -228,6 +231,13 @@ export async function createReservation(supabase: SupabaseClient, params: {
     }));
     return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
   }
+  // O telefone do cliente do turno tem de resolver para o MESMO cadastro. Se
+  // não resolver (cliente apagado/fundido entre a ligação e a reserva), a
+  // reserva não vai para outra pessoa: erro genérico, e só o evento vai ao log.
+  if (resolved.id !== params.customer.id) {
+    console.error(JSON.stringify({ evt: "agent_customer_identity_mismatch" }));
+    return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+  }
 
   const hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
   const result = await reserveSlot(supabase, {
@@ -236,7 +246,7 @@ export async function createReservation(supabase: SupabaseClient, params: {
     date: params.date,
     time: params.time,
     partySize: params.party_size,
-    customerId: customer.id,
+    customerId: params.customer.id,
     notes: params.notes ?? null,
     status: "confirmed",
     // Load-bearing: o trigger `enqueue_confirmation_notification` pula a
@@ -254,21 +264,38 @@ export async function createReservation(supabase: SupabaseClient, params: {
     success: true,
     reservation_code: result.reservationCode,
     message: `Reserva criada! Código: #${result.reservationCode}. Data: ${d}/${m}/${y} às ${params.time} para ${params.party_size} pessoas.`,
+    // Só para o despacho (ledger da identidade declarada); ele o remove antes
+    // de devolver ao LLM.
+    reservationId: result.reservationId,
   };
 }
 
-// deno-lint-ignore no-explicit-any
-export async function listCustomerReservations(supabase: SupabaseClient, customerId: string, unitId: string): Promise<any> {
+/**
+ * Com `reservationIds` (identidade declarada), só as reservas do ledger: a
+ * consulta ganha `.in("id", ids)` e a lista vazia responde sem consultar.
+ */
+export async function listCustomerReservations(
+  supabase: SupabaseClient,
+  customerId: string,
+  unitId: string,
+  reservationIds?: readonly string[],
+  // deno-lint-ignore no-explicit-any
+): Promise<any> {
+  if (reservationIds && reservationIds.length === 0) {
+    return { found: false, message: "Você não tem reservas ativas no momento." };
+  }
   // "Hoje" em BRT: Deno roda em UTC e, das 21h à meia-noite, o dia UTC já virou
   // — o filtro esconderia as reservas de hoje justamente na hora do jantar.
   const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
   const todayBrt = new Date(Date.now() - BRT_OFFSET_MS).toISOString().slice(0, 10);
-  const { data, error } = await supabase
+  let query = supabase
     .from("reservations")
     .select("reservation_code, date, time, party_size, status, notes")
     .eq("customer_id", customerId)
     .eq("unit_id", unitId)
-    .in("status", ["pending", "confirmed"])
+    .in("status", ["pending", "confirmed"]);
+  if (reservationIds) query = query.in("id", [...reservationIds]);
+  const { data, error } = await query
     .gte("date", todayBrt)
     .order("date", { ascending: true })
     .limit(10);

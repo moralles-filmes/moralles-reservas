@@ -40,7 +40,7 @@ describe("create_reservation: falha ao resolver o cliente", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await createReservation(db as any, {
       date: "2030-03-15", time: "20:00", party_size: 2, customer_name: "Ana",
-      phone: "11988887777", unit_id: "unit-a", organization_id: "org-a", source: "whatsapp",
+      customer: { id: "cust-1", phone: "11988887777" }, unit_id: "unit-a", organization_id: "org-a", source: "whatsapp",
     });
     expect(out).toEqual({ success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." });
     expect(JSON.stringify(out)).not.toContain("password");
@@ -81,13 +81,15 @@ describe("list_customer_reservations", () => {
   });
 });
 
-describe("despacho de ferramentas no turno", () => {
-  const turn = readFileSync(resolve(__dirname, "../..", "supabase/functions/_shared/agent/turn.ts"), "utf8").replace(/\r\n/g, "\n");
+describe("despacho de ferramentas", () => {
+  // O `switch` e o seu catch saíram do `onToolCall` do `turn.ts` para
+  // `tool-dispatch.ts` (Task 3.4); o turno só delega.
+  const dispatch = readFileSync(resolve(__dirname, "../..", "supabase/functions/_shared/agent/tool-dispatch.ts"), "utf8").replace(/\r\n/g, "\n");
 
-  it("o catch do onToolCall loga o erro e devolve ao LLM só uma frase fixa", () => {
-    const at = turn.indexOf('evt: "tool_error"');
+  it("o catch do despacho loga o erro e devolve ao LLM só uma frase fixa", () => {
+    const at = dispatch.indexOf('evt: "tool_error"');
     expect(at).toBeGreaterThan(0);
-    const tail = turn.slice(at, turn.indexOf("\n          }", at));
+    const tail = dispatch.slice(at, dispatch.indexOf("\n    }", at));
     const returned = tail.slice(tail.indexOf("return JSON.stringify("));
     expect(returned).toContain('return JSON.stringify({ error: "Não foi possível concluir esta ação agora. Tente novamente em instantes." });');
     expect(returned).not.toMatch(/\berr\b/);

@@ -202,6 +202,44 @@ describe("updateReservationScoped", () => {
   });
 });
 
+describe("escopo com ledger (identidade declarada)", () => {
+  const ledger = { ...scope, reservationIds: ["r1", "r9"] as const };
+  const CURRENT = { data: { id: "r1", date: "2026-10-24", time: "20:00:00", party_size: 4, table_id: null }, error: null };
+
+  it("get, update (leitura e escrita) e cancel ganham .in(id, ledger) além de unidade e cliente", async () => {
+    const get = fakeDb({ data: ROW, error: null });
+    await getReservationScoped(get.db, { reservation_code: "ABCD2345" }, ledger);
+    expectScoped(get.calls);
+    expect(get.calls).toContainEqual(["in", "id", ["r1", "r9"]]);
+
+    const upd = fakeDb(CURRENT, { data: { reservation_code: "ABCD2345" }, error: null });
+    await updateReservationScoped(upd.db, { reservation_code: "ABCD2345", notes: "x" }, ledger, { checkAvailability: async () => { throw new Error("não devia revalidar"); } });
+    expectScoped(upd.calls);
+    expect(upd.calls.filter((c) => c[0] === "in" && c[1] === "id")).toEqual([["in", "id", ["r1", "r9"]], ["in", "id", ["r1", "r9"]]]);
+
+    const cancel = fakeDb({ data: { reservation_code: "ABCD2345" }, error: null });
+    await cancelReservationScoped(cancel.db, "ABCD2345", ledger);
+    expectScoped(cancel.calls);
+    expect(cancel.calls).toContainEqual(["in", "id", ["r1", "r9"]]);
+  });
+
+  it("ledger vazio: não encontrada sem nenhuma consulta", async () => {
+    const empty = { ...scope, reservationIds: [] as string[] };
+    const a = fakeDb({ data: ROW, error: null });
+    expect(await getReservationScoped(a.db, { reservation_code: "ABCD2345" }, empty)).toEqual({ found: false, message: "Reserva não encontrada ou já cancelada." });
+    expect(await updateReservationScoped(a.db, { reservation_code: "ABCD2345", party_size: 2 }, empty, { checkAvailability: async () => { throw new Error("x"); } }))
+      .toEqual({ success: false, error: "Reserva não encontrada ou já cancelada." });
+    expect(await cancelReservationScoped(a.db, "ABCD2345", empty)).toEqual({ success: false, error: "Reserva não encontrada ou já cancelada." });
+    expect(a.calls).toEqual([]);
+  });
+
+  it("sem reservationIds (WhatsApp) nenhuma consulta filtra por id de ledger", async () => {
+    const { db, calls } = fakeDb({ data: ROW, error: null });
+    await getReservationScoped(db, { reservation_code: "ABCD2345" }, scope);
+    expect(calls.some((c) => c[0] === "in" && c[1] === "id")).toBe(false);
+  });
+});
+
 describe("cancelReservationScoped", () => {
   it("aplica unidade, cliente e status", async () => {
     const { db, calls } = fakeDb({ data: { reservation_code: "ABCD2345" }, error: null });

@@ -368,8 +368,11 @@ export interface LoadAgentPromptArgs {
    * e nenhum nome do cliente no prompt.
    */
   privateCustomer: AgentCustomer | null;
-  /** Telefone do contato como chegou pelo canal; reconhece nome-placeholder. */
-  phone: string;
+  /**
+   * Telefone do contato como chegou pelo canal; reconhece nome-placeholder.
+   * `null` quando o canal não traz telefone (contato declarado sem link).
+   */
+  phone: string | null;
   identityLine: string;
   formattingRules: string;
   channelLabel: string;
@@ -679,7 +682,7 @@ export async function loadAgentSystemPrompt(
   // Sem cadastro privado não há nome gravado: `customerFirstName` fica vazio.
   const rawCustomerName = str(privateCustomer?.name);
   const customerFirstName =
-    rawCustomerName && rawCustomerName !== privateCustomer?.phone && rawCustomerName !== phone
+    rawCustomerName && rawCustomerName !== privateCustomer?.phone && (phone === null || rawCustomerName !== phone)
       ? shortStoreText(rawCustomerName.trim().split(/\s+/)[0], SHORT_TEXT_LIMITS.personName)
       : "";
 

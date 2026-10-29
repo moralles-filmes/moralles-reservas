@@ -67,26 +67,13 @@ import {
   type IngestionSource,
 } from "../whatsapp-inbound-queue-core.ts";
 import { jsonLog } from "../security.ts";
-import { checkAvailability as checkAvailabilityCore } from "../availability.ts";
 import { resolveHandoffClock } from "../handoff-clock-core.ts";
 import {
   decideSameProviderFallback,
   parseFallbackConfig,
   shouldUseFallbackProvider,
 } from "../agent-provider-fallback-core.ts";
-import {
-  cancelReservationScoped,
-  getReservationScoped,
-  updateReservationScoped,
-} from "../agent-reservation-tools.ts";
-import {
-  agentTools,
-  checkAvailability,
-  createReservation,
-  listCustomerReservations,
-  summarizeToolInput,
-  summarizeToolResult,
-} from "./tools.ts";
+import { agentToolsFor, createToolDispatcher, type ToolDispatchState } from "./tool-dispatch.ts";
 import { loadAgentSystemPrompt } from "./system-prompt.ts";
 import type { ChannelContext, ChannelSendResult, TurnInbound } from "./channel-context.ts";
 
@@ -338,24 +325,30 @@ export function createAgentTurn(io: AgentTurnIO) {
    * do adapter, que liquida, solta o lock e registra.
    */
   const run = async (ctx: ChannelContext, inbound: TurnInbound): Promise<void> => {
-    // Guarda do contexto: sem unidade ou organização o turno não tem tenant
-    // para filtrar leitura, franquia nem ferramenta. Roda ANTES de tudo — antes
-    // do append, do debounce, do lock e da reserva de orçamento, então não há o
-    // que soltar nem liquidar — e antes da carga do prompt global, por isso o
-    // `finish` não leva `global_prompt_version`.
-    if (!ctx.unitId || !ctx.organizationId) {
+    // Guarda do contexto: sem unidade ou organização (vazias ou só espaço) o
+    // turno não tem tenant para filtrar leitura, franquia nem ferramenta; e só
+    // um canal de identidade declarada (com porta) pode chegar sem cliente.
+    // Roda ANTES de tudo — antes do append, do debounce, do lock e da reserva
+    // de orçamento, então não há o que soltar nem liquidar — e antes da carga
+    // do prompt global, por isso o `finish` não leva `global_prompt_version`.
+    const hasUnitId = typeof ctx.unitId === "string" && ctx.unitId.trim() !== "";
+    const hasOrganizationId = typeof ctx.organizationId === "string" && ctx.organizationId.trim() !== "";
+    const hasCustomerOrPort = !!ctx.customer || !!ctx.claimedIdentity;
+    if (!hasUnitId || !hasOrganizationId || !hasCustomerOrPort) {
       jsonLog("error", {
         requestId,
         evt: "agent_context_invalid",
         channel: ctx.channel,
-        hasUnitId: !!ctx.unitId,
-        hasOrganizationId: !!ctx.organizationId,
+        hasUnitId,
+        hasOrganizationId,
+        hasCustomer: !!ctx.customer,
+        hasClaimedIdentity: !!ctx.claimedIdentity,
       });
       await finish("invalid_channel_context");
       return;
     }
     const conv = ctx.conversation;
-    const { unitId, organizationId, customer, phone } = ctx;
+    const { unitId, organizationId } = ctx;
     const channelId = ctx.channelId;
     const incomingText = inbound.text;
 
@@ -999,11 +992,14 @@ export function createAgentTurn(io: AgentTurnIO) {
 
     // System prompt: carga (mesma ordem de leituras) e montagem em
     // `system-prompt.ts`. O canal entra com a identidade e a formatação.
+    // R3-a: identidade declarada nunca leva o cadastro privado ao prompt —
+    // nem depois de `link_customer_phone` (o prompt é montado uma vez, antes
+    // das ferramentas, e nos turnos seguintes a porta continua presente).
     const agentPrompt = await loadAgentSystemPrompt(supabase, {
       unitId,
       unit: ctx.unit,
-      privateCustomer: ctx.customer,
-      phone,
+      privateCustomer: ctx.claimedIdentity ? null : ctx.customer,
+      phone: ctx.phone,
       identityLine: ctx.identityLine,
       formattingRules: ctx.formattingRules,
       channelLabel: ctx.channelLabel,
@@ -1156,6 +1152,17 @@ export function createAgentTurn(io: AgentTurnIO) {
     // conclusão de uma ação que ainda exige validação é o erro que produz
     // cliente aparecendo no restaurante sem mesa (§17.7.4).
     let lastMutationOutcome: MutationOutcome = "UNKNOWN";
+    // Despacho das ferramentas (`tool-dispatch.ts`), um por turno: o estado é
+    // dele, e as duas variáveis acima o espelham depois de cada chamada (o
+    // retry e os desfechos abaixo leem as variáveis). O cliente do estado pode
+    // mudar no turno por `link_customer_phone`; o prompt não (R3-a).
+    const toolState: ToolDispatchState = {
+      mutatingToolUsed: false,
+      lastMutationOutcome: null,
+      customer: ctx.customer,
+    };
+    const dispatchTool = createToolDispatcher({ supabase, requestId, ctx, conv, state: toolState });
+    const turnTools = agentToolsFor(ctx);
     // Alvo da PRÓXIMA tentativa. Nasce no principal e só muda por
     // `switchToFallback`, entre a tentativa 0 e a 1 do retry silencioso. O
     // turno recomeça limpo no reserva (histórico em texto é neutro entre
@@ -1216,7 +1223,7 @@ export function createAgentTurn(io: AgentTurnIO) {
         systemPrompt,
         history,
         userMessage: combinedUserMessage,
-        tools: agentTools,
+        tools: turnTools,
         // AUSENTE fora da franquia: nenhuma autorização, nenhuma apropriação,
         // nenhum custo persistido — o caminho legado inteiro depende disso.
         budget: budgetHooks,
@@ -1258,73 +1265,12 @@ export function createAgentTurn(io: AgentTurnIO) {
           totalUsage.cache_read_tokens += u.cache_read_tokens;
           totalUsage.reasoning_tokens += u.reasoning_tokens ?? 0;
         },
-        // deno-lint-ignore no-explicit-any
-        onToolCall: async (name, input: any) => {
-          jsonLog("info", { requestId, evt: "tool_call", channelId, unitId, name, input: summarizeToolInput(input) });
+        onToolCall: async (name, input) => {
           try {
-            // deno-lint-ignore no-explicit-any
-            let result: any;
-            switch (name) {
-              case "check_availability":
-                result = await checkAvailability(supabase, input.date, input.time, input.party_size, unitId, input.hall_name);
-                break;
-              case "create_reservation":
-                mutatingToolUsed = true; // desliga o retry silencioso (evita reserva duplicada)
-                result = await createReservation(supabase, {
-                  ...input,
-                  phone,
-                  unit_id: unitId,
-                  organization_id: organizationId,
-                  source: ctx.reservationSource,
-                });
-                // Classificação do desfecho para a copy de §17.7.4. A reserva
-                // do agente nasce `confirmed` e é ISENTA de caução — não existe
-                // desfecho PENDING neste caminho, e inventar um seria afirmar
-                // ao cliente uma espera que não vai acontecer. `success: false`
-                // é ignorância sobre o que ficou de pé: UNKNOWN.
-                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
-                break;
-              case "get_reservation":
-                result = await getReservationScoped(supabase, input, { unitId, customerId: customer.id });
-                break;
-              case "update_reservation":
-                mutatingToolUsed = true; // desliga o retry silencioso (evita alteração duplicada)
-                result = await updateReservationScoped(
-                  supabase,
-                  input,
-                  { unitId, customerId: customer.id },
-                  { checkAvailability: (p) => checkAvailabilityCore(supabase, p) },
-                );
-                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
-                break;
-              case "cancel_reservation":
-                mutatingToolUsed = true; // desliga o retry silencioso (evita cancelamento duplicado)
-                result = await cancelReservationScoped(supabase, input.reservation_code, { unitId, customerId: customer.id });
-                lastMutationOutcome = result?.success === true ? "COMPLETED" : "UNKNOWN";
-                break;
-              case "list_customer_reservations":
-                result = await listCustomerReservations(supabase, customer.id, unitId);
-                break;
-              case "request_human_handoff":
-                await supabase.from("conversations").update({
-                  status: "awaiting_human",
-                  handoff_reason: input.reason,
-                  handoff_at: new Date().toISOString(),
-                  last_silenced_reply_at: null,
-                }).eq("id", conv.id);
-                jsonLog("info", { requestId, evt: "handoff_requested", convId: conv.id, reason: input.reason });
-                result = { ok: true, message: "Transferência registrada. AGORA envie ao cliente uma mensagem cordial dizendo que um atendente humano vai responder em breve, antes de encerrar." };
-                break;
-              default:
-                result = { error: `Tool desconhecida: ${name}` };
-            }
-            jsonLog("info", { requestId, evt: "tool_result", channelId, unitId, name, result: summarizeToolResult(result) });
-            return JSON.stringify(result);
-          } catch (err) {
-            jsonLog("error", { requestId, evt: "tool_error", channelId, unitId, name, err: String(err) });
-            // O texto do erro (PostgREST, rede, host do projeto) fica no log:
-            // o que volta ao LLM chega ao cliente parafraseado.
-            return JSON.stringify({ error: "Não foi possível concluir esta ação agora. Tente novamente em instantes." });
+            return await dispatchTool(name, input);
+          } finally {
+            mutatingToolUsed = toolState.mutatingToolUsed;
+            lastMutationOutcome = toolState.lastMutationOutcome ?? "UNKNOWN";
           }
         },
       });
