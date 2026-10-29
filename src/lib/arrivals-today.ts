@@ -24,11 +24,13 @@ export function buildArrivalsByHour(
 ): ArrivalHour[] {
   const counts = new Map<number, { reservations: number; guests: number }>();
   let minHour = range.min;
-  let maxHour = range.max;
+  // Unidade que fecha depois da meia-noite chega com max < min: segue o byHour do período.
+  let maxHour = Math.max(range.min, range.max);
 
   for (const reserva of reservas) {
     if (!countsAsArrival(reserva.status) || reserva.time === null) continue;
-    const hour = Number(reserva.time.slice(0, 2));
+    const hour = Number.parseInt(reserva.time.slice(0, 2), 10);
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) continue;
     minHour = Math.min(minHour, hour);
     maxHour = Math.max(maxHour, hour);
     const current = counts.get(hour) ?? { reservations: 0, guests: 0 };

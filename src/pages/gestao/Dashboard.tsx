@@ -7,6 +7,7 @@ import { useUnitHourRange } from "@/hooks/useUnitHourRange";
 import { useWalkInStatsToday } from "@/hooks/useWalkInStatsToday";
 import { useWaitlist } from "@/hooks/useWaitlist";
 import { ReservaCard } from "@/components/reserva/ReservaCard";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DashboardHero } from "@/components/dashboard/DashboardHero";
@@ -56,7 +57,12 @@ export default function Dashboard() {
   const [period, setPeriod] = useState<Period>("30d");
 
   const { data: stats } = useReservaStats(unitId);
-  const { data: reservasHoje, isLoading: isLoadingReservasHoje } = useReservasHoje(unitId);
+  const {
+    data: reservasHoje,
+    isLoading: isLoadingReservasHoje,
+    isError: isErrorReservasHoje,
+    refetch: refetchReservasHoje,
+  } = useReservasHoje(unitId);
   const unitHours = useUnitHourRange(unitId);
 
   const { kpis, charts, lists, hasDataInPeriod, isLoading: isLoadingMetrics } =
@@ -67,10 +73,7 @@ export default function Dashboard() {
 
   const today = useMemo(() => todayLocalISO(), []);
   const periodLabel = PERIOD_LABEL[period];
-  const hours = useMemo(() => buildArrivalsByHour(reservasHoje ?? [],
-    Number.isFinite(unitHours?.min) && Number.isFinite(unitHours?.max)
-      ? { min: Math.floor(unitHours.min), max: Math.ceil(unitHours.max) }
-      : { min: 18, max: 22 }), [reservasHoje, unitHours]);
+  const hours = useMemo(() => buildArrivalsByHour(reservasHoje ?? [], unitHours), [reservasHoje, unitHours]);
 
   const extrasHoje =
     (stats?.canceladas_hoje ?? 0) + (stats?.no_show_hoje ?? 0);
@@ -85,7 +88,15 @@ export default function Dashboard() {
         todayStats={stats}
         unitSlug={unitSlug}
         onNewReservation={() => setManualOpen(true)}
-        aside={<UpcomingArrivalsPanel reservas={reservasHoje} isLoading={isLoadingReservasHoje} />}
+        isLoading={isLoadingReservasHoje}
+        aside={
+          <UpcomingArrivalsPanel
+            reservas={reservasHoje}
+            isLoading={isLoadingReservasHoje}
+            isError={isErrorReservasHoje}
+            onRetry={() => refetchReservasHoje()}
+          />
+        }
       />
       {unitId && unit?.organization_id && (
         <ManualReservaDialog open={manualOpen} onOpenChange={setManualOpen} unitId={unitId} organizationId={unit?.organization_id ?? ""} />
@@ -141,6 +152,13 @@ export default function Dashboard() {
             <div className="space-y-3">
               {[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}
             </div>
+          ) : isErrorReservasHoje ? (
+            <Card>
+              <CardContent className="py-10 text-center text-muted-foreground space-y-3">
+                <p>Não foi possível carregar as reservas de hoje.</p>
+                <Button variant="outline" onClick={() => refetchReservasHoje()}>Tentar de novo</Button>
+              </CardContent>
+            </Card>
           ) : reservasHoje?.length === 0 ? (
             <Card>
               <CardContent className="py-10 text-center text-muted-foreground">

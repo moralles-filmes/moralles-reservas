@@ -76,4 +76,14 @@ describe("chegadas de hoje", () => {
     expect(chegadas).toHaveLength(5);
     expect(chegadas.map(({ id }) => id)).toEqual(["dentro", "válida-0", "válida-1", "válida-2", "válida-3"]);
   });
+
+  it("ignora horário inválido e faixa invertida", () => {
+    const hours = buildArrivalsByHour([
+      reserva("1", "", "confirmed"),
+      reserva("2", "xx:00", "confirmed"),
+      reserva("3", "19:00", "confirmed"),
+    ], { min: 18, max: 1 });
+    expect(hours.map(({ hour }) => hour)).toEqual([18, 19]);
+    expect(hours.find(({ hour }) => hour === 19)).toMatchObject({ reservations: 1 });
+  });
 });

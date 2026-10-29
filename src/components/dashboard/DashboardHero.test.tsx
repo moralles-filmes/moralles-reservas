@@ -21,4 +21,11 @@ describe("DashboardHero", () => {
     expect(screen.getByText("Nenhuma reserva para hoje")).toBeTruthy();
     expect(screen.queryByRole("img")).toBeNull();
   });
+
+  it("carregando não se passa por dia vazio", () => {
+    render(<MemoryRouter><DashboardHero dateLabel="Hoje" hours={[{ hour: 20, label: "20h", reservations: 0, guests: 0, isPeak: false }]} unitSlug="casa" onNewReservation={vi.fn()} aside={null} isLoading /></MemoryRouter>);
+    expect(screen.getByTestId("hero-skeleton")).toBeTruthy();
+    expect(screen.queryByText("Nenhuma reserva para hoje")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Dashboard" })).toBeTruthy();
+  });
 });

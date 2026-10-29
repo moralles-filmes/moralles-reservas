@@ -12,7 +12,7 @@ export function ArrivalsByHour3D({ hours, className }: { hours: ArrivalHour[]; c
         aria-label={arrivalsSentence(hours) ?? "Sem chegadas hoje"}
         className="w-full"
       >
-        <div className="relative h-[200px] flex items-end justify-between pr-[14px]" aria-hidden="true">
+        <div className="relative h-[200px] flex items-end justify-between gap-1.5 pr-[14px] sm:gap-2" aria-hidden="true">
           {hours.map((h, index) => {
             const height = max === 0 || h.reservations === 0
               ? 0
@@ -23,7 +23,7 @@ export function ArrivalsByHour3D({ hours, className }: { hours: ArrivalHour[]; c
                 key={h.hour}
                 data-peak={String(h.isPeak)}
                 data-hour={h.hour}
-                className="relative w-[26px] origin-bottom motion-safe:animate-rise"
+                className="relative min-w-0 flex-1 max-w-[26px] origin-bottom motion-safe:animate-rise"
                 style={{ height: `${height}px`, animationDelay: `${index * 60}ms` }}
               >
                 {peak && (
@@ -38,8 +38,8 @@ export function ArrivalsByHour3D({ hours, className }: { hours: ArrivalHour[]; c
             );
           })}
         </div>
-        <div className="flex justify-between pr-[14px]" aria-hidden="true">
-          {hours.map((h) => <span key={h.hour} className="w-[26px] text-center text-xs text-tertiary tabular">{h.label}</span>)}
+        <div className="flex justify-between gap-1.5 pr-[14px] sm:gap-2" aria-hidden="true">
+          {hours.map((h) => <span key={h.hour} className="min-w-0 flex-1 max-w-[26px] text-center text-[10px] sm:text-xs text-tertiary tabular">{h.label}</span>)}
         </div>
       </div>
       <ul className="sr-only">
