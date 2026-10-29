@@ -317,6 +317,86 @@ describe('turno do agente no webhook-whatsapp real — paridade comportamental',
   });
 });
 
+/**
+ * Duas invocações sobre a mesma conversa em handoff leem o mesmo estado; sem
+ * compare-and-set antes do envio, as duas mandam a retomada ou o lembrete. O
+ * gancho `beforeQuery` faz o papel da invocação vencedora: grava o estado no
+ * banco entre a leitura do adapter e o UPDATE deste turno.
+ */
+describe('UX de handoff sob concorrência', () => {
+  const RESUMED = 'Oi! Voltei a te atender por aqui. Em que posso ajudar?';
+  const REMINDER = 'Recebi sua mensagem! Já avisei alguém da equipe — vou te responder por aqui assim que possível. 🙏';
+  const sent = (c: Chat) => c.trace.filter((t) => t.operation === 'provider:post')
+    .map((t) => (t.value as { text?: { body?: string } }).text?.body);
+  const outcomes = (c: Chat) => c.tables.webhook_executions.map((row) => row.outcome);
+
+  it('auto-resolve concorrente envia uma retomada', async () => {
+    const { f, c } = setup(seedHandoff('2026-10-05T02:00:00Z', null));
+    c.controls.sdkResponses = [text('Claro! Para quantas pessoas?')];
+    let raced = false;
+    c.controls.beforeQuery = async (q) => {
+      if (raced || q.operation !== 'update' || q.table !== 'conversations' || q.patch?.status !== 'ai_active') return;
+      raced = true;
+      Object.assign(c.tables.conversations[0], { status: 'ai_active', handoff_reason: null, handoff_at: null, last_silenced_reply_at: null });
+    };
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi, alguém aí?' });
+    expect(c.unexpected).toEqual([]);
+    expect(raced, 'o turno não tentou o auto-resolve').toBe(true);
+    // A outra invocação já mandou a retomada: esta segue para o turno sem repeti-la.
+    expect(sent(c).filter((body) => body === RESUMED)).toEqual([]);
+    expect(outcomes(c)).toEqual(['success']);
+  });
+
+  it('auto-resolve que encontra outro handoff encerra sem envio', async () => {
+    const { f, c } = setup(seedHandoff('2026-10-05T02:00:00Z', null));
+    c.controls.sdkResponses = [];
+    let raced = false;
+    c.controls.beforeQuery = async (q) => {
+      if (raced || q.operation !== 'update' || q.table !== 'conversations' || q.patch?.status !== 'ai_active') return;
+      raced = true;
+      Object.assign(c.tables.conversations[0], { status: 'awaiting_human', handoff_reason: 'outro motivo', handoff_at: '2026-10-05T14:59:00Z' });
+    };
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi, alguém aí?' });
+    expect(c.unexpected).toEqual([]);
+    expect(raced, 'o turno não tentou o auto-resolve').toBe(true);
+    expect(sent(c)).toEqual([]);
+    expect(c.calls.llm).toBe(0);
+    expect(c.tables.conversations[0].status).toBe('awaiting_human');
+    expect(outcomes(c)).toEqual(['handoff_state_changed']);
+  });
+
+  it('lembrete concorrente envia um aviso', async () => {
+    const { f, c } = setup(seedHandoff('2026-10-05T14:00:00Z', null));
+    c.controls.sdkResponses = [];
+    let raced = false;
+    c.controls.beforeQuery = async (q) => {
+      if (raced || q.operation !== 'update' || q.table !== 'conversations' || !q.patch?.last_silenced_reply_at) return;
+      raced = true;
+      c.tables.conversations[0].last_silenced_reply_at = '2026-10-05T14:59:59.000Z';
+    };
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi, alguém aí?' });
+    expect(c.unexpected).toEqual([]);
+    expect(raced, 'o turno não reivindicou a janela do lembrete').toBe(true);
+    // A outra invocação já reivindicou a janela e mandou o aviso.
+    expect(sent(c)).toEqual([]);
+    expect(c.tables.conversations[0].last_silenced_reply_at).toBe('2026-10-05T14:59:59.000Z');
+    expect(outcomes(c)).toEqual(['human_active_silent']);
+  });
+
+  it('lembrete que falha no envio devolve a janela', async () => {
+    const { f, c } = setup(seedHandoff('2026-10-05T14:00:00Z', null));
+    c.controls.sdkResponses = [];
+    c.controls.sendStatus = 500;
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi, alguém aí?' });
+    expect(c.unexpected).toEqual([]);
+    // O provider retenta o POST que falha; todas as tentativas são o mesmo aviso.
+    expect(sent(c).length).toBeGreaterThan(0);
+    expect(new Set(sent(c))).toEqual(new Set([REMINDER]));
+    // A próxima inbound tenta de novo: a janela não fica gasta por um aviso que não saiu.
+    expect(c.tables.conversations[0].last_silenced_reply_at).toBeNull();
+  });
+});
+
 describe('catch externo do webhook com o núcleo extraído', () => {
   it('turno que lança depois do lock: solta o lock, devolve o claim e só então registra a execução', async () => {
     // `menus` só é lido na carga do prompt: depois do lock, antes de qualquer

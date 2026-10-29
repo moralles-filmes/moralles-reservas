@@ -3306,12 +3306,22 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
     {
       "operation": "update:conversations",
       "value": {
-        "columns": "",
+        "columns": "id",
         "filters": [
           [
             "eq",
             "id",
             "88888888-0000-4000-8000-000000000001",
+          ],
+          [
+            "eq",
+            "unit_id",
+            "bbbbbbbb-0000-0000-0000-000000000001",
+          ],
+          [
+            "eq",
+            "status",
+            "human_active",
           ],
         ],
         "matched": [],
@@ -4975,6 +4985,35 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
       },
     },
     {
+      "operation": "update:conversations",
+      "value": {
+        "columns": "id",
+        "filters": [
+          [
+            "eq",
+            "id",
+            "88888888-0000-4000-8000-000000000001",
+          ],
+          [
+            "eq",
+            "unit_id",
+            "bbbbbbbb-0000-0000-0000-000000000001",
+          ],
+          [
+            "is",
+            "last_silenced_reply_at",
+            null,
+          ],
+        ],
+        "matched": [],
+        "operation": "update",
+        "patch": {
+          "last_silenced_reply_at": "2026-10-05T15:00:00.000Z",
+        },
+        "table": "conversations",
+      },
+    },
+    {
       "operation": "provider:post",
       "value": {
         "messaging_product": "whatsapp",
@@ -4997,25 +5036,6 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
           "role": "assistant",
           "timestamp": "2026-10-05T15:00:00.000Z",
         },
-      },
-    },
-    {
-      "operation": "update:conversations",
-      "value": {
-        "columns": "",
-        "filters": [
-          [
-            "eq",
-            "id",
-            "88888888-0000-4000-8000-000000000001",
-          ],
-        ],
-        "matched": [],
-        "operation": "update",
-        "patch": {
-          "last_silenced_reply_at": "2026-10-05T15:00:00.000Z",
-        },
-        "table": "conversations",
       },
     },
     {

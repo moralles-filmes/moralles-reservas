@@ -445,7 +445,11 @@ export function createAgentTurn(io: AgentTurnIO) {
         });
 
       if (shouldAutoResolve) {
-        await supabase
+        // Compare-and-set ANTES do envio: duas invocações leem o mesmo
+        // `human_active` e, com UPDATE incondicional, as duas mandavam a
+        // retomada. Só quem tira a conversa do status lido envia; zero linhas
+        // casadas volta com `error: null`, por isso o `.select("id")`.
+        const { data: resolvedRows, error: resolveErr } = await supabase
           .from("conversations")
           .update({
             status: "ai_active",
@@ -453,21 +457,54 @@ export function createAgentTurn(io: AgentTurnIO) {
             handoff_at: null,
             last_silenced_reply_at: null,
           })
-          .eq("id", conv.id);
-
-        const resumedText = "Oi! Voltei a te atender por aqui. Em que posso ajudar?";
-        markExternalSideEffect();
-        const resumedSend = await ctx.send(resumedText);
-        if (resumedSend.ok) {
-          await appendToConversation(conv.id, conv.messages || [], "assistant", resumedText, { author: "automation" });
+          .eq("id", conv.id)
+          .eq("unit_id", unitId)
+          .eq("status", conv.status)
+          .select("id");
+        if (resolveErr) {
+          jsonLog("warn", { requestId, evt: "handoff_auto_resolve_failed", convId: conv.id, err: resolveErr.message });
+          await finish("handoff_state_changed");
+          return;
         }
 
-        jsonLog("info", {
-          requestId,
-          evt: "handoff_auto_resolved",
-          convId: conv.id,
-          ageHours: Math.round(handoffAge / 3600000),
-        });
+        if (Array.isArray(resolvedRows) && resolvedRows.length > 0) {
+          const resumedText = "Oi! Voltei a te atender por aqui. Em que posso ajudar?";
+          markExternalSideEffect();
+          const resumedSend = await ctx.send(resumedText);
+          if (resumedSend.ok) {
+            await appendToConversation(conv.id, conv.messages || [], "assistant", resumedText, { author: "automation" });
+          }
+
+          jsonLog("info", {
+            requestId,
+            evt: "handoff_auto_resolved",
+            convId: conv.id,
+            ageHours: Math.round(handoffAge / 3600000),
+          });
+        } else {
+          // Outra invocação mudou o status depois da nossa leitura. Se foi ela
+          // que devolveu a conversa à IA, a retomada já saiu por ela e este
+          // turno segue sem repeti-la; qualquer outro estado (novo handoff,
+          // conversa sumida, leitura que falha) encerra sem envio.
+          const { data: current, error: rereadErr } = await supabase
+            .from("conversations")
+            .select("status")
+            .eq("id", conv.id)
+            .eq("unit_id", unitId)
+            .maybeSingle();
+          if (rereadErr || current?.status !== "ai_active") {
+            jsonLog("info", {
+              requestId,
+              evt: "handoff_state_changed",
+              convId: conv.id,
+              status: current?.status ?? null,
+              rereadFailed: !!rereadErr,
+            });
+            await finish("handoff_state_changed");
+            return;
+          }
+          jsonLog("info", { requestId, evt: "handoff_auto_resolve_lost", convId: conv.id });
+        }
         // Atualiza estado local para o agente processar a mensagem normalmente.
         conv.status = "ai_active";
         conv.handoff_reason = null;
@@ -480,34 +517,71 @@ export function createAgentTurn(io: AgentTurnIO) {
           : 0;
         const shouldRemind = !lastSilenced || (Date.now() - lastSilenced) > HANDOFF_REMINDER_THROTTLE_MS;
 
+        // Só avisa quem reivindicar a janela: o compare-and-set grava a marca
+        // ANTES do envio, sobre o valor lido. Antes a marca vinha depois do
+        // envio, e duas invocações concorrentes mandavam o aviso duas vezes.
+        const previousSilenced = conv.last_silenced_reply_at ?? null;
+        const claimedAt = new Date().toISOString();
+        let reminded = false;
         if (shouldRemind) {
+          const claimWindow = supabase
+            .from("conversations")
+            .update({ last_silenced_reply_at: claimedAt })
+            .eq("id", conv.id)
+            .eq("unit_id", unitId);
+          const { data: claimedRows, error: claimErr } = await (previousSilenced === null
+            ? claimWindow.is("last_silenced_reply_at", null)
+            : claimWindow.eq("last_silenced_reply_at", previousSilenced)
+          ).select("id");
+          if (claimErr) {
+            // Falha fechada: sem a janela reivindicada, não há aviso.
+            jsonLog("warn", { requestId, evt: "handoff_reminder_claim_failed", convId: conv.id, err: claimErr.message });
+          }
+          reminded = !claimErr && Array.isArray(claimedRows) && claimedRows.length > 0;
+        }
+
+        if (reminded) {
           const reminderText = "Recebi sua mensagem! Já avisei alguém da equipe — vou te responder por aqui assim que possível. 🙏";
           markExternalSideEffect();
           const sendRes = await ctx.send(reminderText);
           if (sendRes.ok) {
             await appendToConversation(conv.id, conv.messages || [], "assistant", reminderText, { author: "automation" });
-            await supabase
-              .from("conversations")
-              .update({
-                last_silenced_reply_at: new Date().toISOString(),
-              })
-              .eq("id", conv.id);
+          } else {
+            // O aviso não saiu: devolve a janela para a próxima inbound tentar.
+            // Best-effort e com CAS sobre a marca deste turno — se outra
+            // invocação já gravou outra marca, ela fica.
+            try {
+              const { error: revertErr } = await supabase
+                .from("conversations")
+                .update({ last_silenced_reply_at: previousSilenced })
+                .eq("id", conv.id)
+                .eq("unit_id", unitId)
+                .eq("last_silenced_reply_at", claimedAt)
+                .select("id");
+              if (revertErr) {
+                jsonLog("warn", { requestId, evt: "handoff_reminder_revert_failed", convId: conv.id, err: revertErr.message });
+              }
+            } catch (e) {
+              jsonLog("warn", { requestId, evt: "handoff_reminder_revert_failed", convId: conv.id, err: String(e) });
+            }
           }
-        } else {
+        } else if (!shouldRemind) {
           await supabase
             .from("conversations")
             .update({ last_message_at: new Date().toISOString() })
             .eq("id", conv.id);
         }
+        // `shouldRemind` sem `reminded`: outra invocação reivindicou a janela
+        // (ou a reivindicação falhou) — o aviso é dela, este turno fica quieto.
 
         jsonLog("info", {
           requestId,
           evt: "skipped_ai_human_active",
           convId: conv.id,
           status: conv.status,
-          reminded: shouldRemind,
+          reminded,
         });
-        await finish(shouldRemind ? "human_active_reminded" : "human_active_silent");
+        await finish(reminded ? "human_active_reminded" : "human_active_silent");
         return;
       }
     }
