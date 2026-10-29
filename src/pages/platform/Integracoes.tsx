@@ -35,6 +35,9 @@ const SECRET_LABELS: Record<string, string> = {
   stripe_webhook_secret: "Webhook Signing Secret",
   asaas_api_key: "Chave da API (Access Token)",
   asaas_webhook_token: "Token de autenticação do webhook",
+  instagram_app_secret: "Segredo do app do Instagram",
+  instagram_verify_token: "Token de verificação do webhook",
+  meta_app_secret: "Segredo do app da Meta (opcional)",
 };
 
 const SECRET_PLACEHOLDERS: Record<string, string> = {
@@ -43,17 +46,27 @@ const SECRET_PLACEHOLDERS: Record<string, string> = {
   stripe_webhook_secret: "whsec_...",
   asaas_api_key: "$aact_hmlg_... ou $aact_prod_...",
   asaas_webhook_token: "Token do header asaas-access-token",
+  instagram_app_secret: "Cole o App Secret do Instagram Login",
+  instagram_verify_token: "Mesmo texto informado no painel da Meta",
+  meta_app_secret: "Cole o App Secret da Meta (opcional)",
 };
 
-const KEY_PROVIDER: Record<string, "datafy" | "stripe" | "asaas"> = {
+type SecretProvider = "datafy" | "instagram" | "stripe" | "asaas";
+
+const KEY_PROVIDER: Record<string, SecretProvider> = {
   datafy_account_token: "datafy",
   stripe_secret_key: "stripe",
   stripe_webhook_secret: "stripe",
   asaas_api_key: "asaas",
   asaas_webhook_token: "asaas",
+  instagram_app_secret: "instagram",
+  instagram_verify_token: "instagram",
+  meta_app_secret: "instagram",
 };
 
-const PROVIDER_LABELS: Record<"stripe" | "asaas", string> = {
+const PROVIDER_LABELS: Record<SecretProvider, string> = {
+  datafy: "Datafy",
+  instagram: "Instagram",
   stripe: "Stripe",
   asaas: "Asaas",
 };
@@ -88,7 +101,7 @@ export default function PlatformIntegracoes() {
     }
   };
 
-  const byProvider = (provider: "datafy" | "stripe" | "asaas") =>
+  const byProvider = (provider: SecretProvider) =>
     (secrets ?? []).filter((secret) => KEY_PROVIDER[secret.key] === provider);
   // Chave que a EF conhece (VALID_KEYS) mas que esta tela ainda não mapeou em
   // KEY_PROVIDER cai aqui — visível num cartão próprio em vez de sumir sem aviso.
@@ -98,6 +111,9 @@ export default function PlatformIntegracoes() {
     const provider = KEY_PROVIDER[key];
     if (provider === "datafy") {
       return "Ao remover, a conexão oficial de novas lojas fica indisponível até um novo token ser cadastrado.";
+    }
+    if (provider === "instagram") {
+      return "Ao remover, a conexão de contas e o recebimento de mensagens do Instagram podem parar até um novo valor ser cadastrado. Esta ação não pode ser desfeita.";
     }
     const label = provider ? PROVIDER_LABELS[provider] : key;
     return `As funcionalidades de pagamento ${label} ficarão inativas até um novo valor ser cadastrado. Esta ação não pode ser desfeita.`;
@@ -218,6 +234,20 @@ export default function PlatformIntegracoes() {
               </p>
             </CardHeader>
             <CardContent className="space-y-3">{byProvider("datafy").map(renderSecretRow)}</CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-4 w-4 text-primary" />
+                <CardTitle className="text-base">{PROVIDER_LABELS.instagram}</CardTitle>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Segredos do app do Instagram Login, usados na conexão das contas e no webhook de
+                mensagens diretas. O segredo da Meta é opcional.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-3">{byProvider("instagram").map(renderSecretRow)}</CardContent>
           </Card>
 
           <Card>
