@@ -528,7 +528,10 @@ export function createAgentTurn(io: AgentTurnIO) {
             .from("conversations")
             .update({ last_silenced_reply_at: claimedAt })
             .eq("id", conv.id)
-            .eq("unit_id", unitId);
+            .eq("unit_id", unitId)
+            // Conversa devolvida à IA entre a leitura e aqui (`releaseToAI`
+            // zera a marca) não recebe "já avisei a equipe".
+            .eq("status", conv.status);
           const { data: claimedRows, error: claimErr } = await (previousSilenced === null
             ? claimWindow.is("last_silenced_reply_at", null)
             : claimWindow.eq("last_silenced_reply_at", previousSilenced)

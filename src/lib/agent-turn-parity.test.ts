@@ -325,6 +325,7 @@ describe('turno do agente no webhook-whatsapp real — paridade comportamental',
  */
 describe('UX de handoff sob concorrência', () => {
   const RESUMED = 'Oi! Voltei a te atender por aqui. Em que posso ajudar?';
+  const CLAIMED_AT = '2026-10-05T15:00:00.000Z'; // relógio fixo do harness
   const REMINDER = 'Recebi sua mensagem! Já avisei alguém da equipe — vou te responder por aqui assim que possível. 🙏';
   const sent = (c: Chat) => c.trace.filter((t) => t.operation === 'provider:post')
     .map((t) => (t.value as { text?: { body?: string } }).text?.body);
@@ -383,18 +384,81 @@ describe('UX de handoff sob concorrência', () => {
     expect(outcomes(c)).toEqual(['human_active_silent']);
   });
 
-  it('lembrete que falha no envio devolve a janela', async () => {
+  it('lembrete que volta para a IA antes da reivindicação não avisa', async () => {
+    // `releaseToAI`/`markResolved` zeram a marca: sem o status no predicado, o
+    // `.is(null)` casaria e o cliente receberia "já avisei a equipe" com a IA.
     const { f, c } = setup(seedHandoff('2026-10-05T14:00:00Z', null));
     c.controls.sdkResponses = [];
-    c.controls.sendStatus = 500;
+    let raced = false;
+    c.controls.beforeQuery = async (q) => {
+      if (raced || q.operation !== 'update' || q.table !== 'conversations' || !q.patch?.last_silenced_reply_at) return;
+      raced = true;
+      Object.assign(c.tables.conversations[0], { status: 'ai_active', handoff_reason: null, handoff_at: null, last_silenced_reply_at: null });
+    };
     await f.runChatControl({ kind: 'customer_text', text: 'Oi, alguém aí?' });
     expect(c.unexpected).toEqual([]);
-    // O provider retenta o POST que falha; todas as tentativas são o mesmo aviso.
-    expect(sent(c).length).toBeGreaterThan(0);
-    expect(new Set(sent(c))).toEqual(new Set([REMINDER]));
-    // A próxima inbound tenta de novo: a janela não fica gasta por um aviso que não saiu.
-    expect(c.tables.conversations[0].last_silenced_reply_at).toBeNull();
+    expect(raced, 'o turno não reivindicou a janela do lembrete').toBe(true);
+    expect(sent(c)).toEqual([]);
+    expect(c.tables.conversations[0]).toMatchObject({ status: 'ai_active', last_silenced_reply_at: null });
+    expect(outcomes(c)).toEqual(['human_active_silent']);
   });
+
+  // Janela vencida: a marca anterior tem mais de 6h e a reivindicação compara
+  // com ELA (não com nulo). É o caminho de todo aviso depois do primeiro.
+  const STALE_MARK = '2026-10-05T08:00:00Z';
+
+  it('lembrete com a janela vencida reivindica sobre a marca anterior e avisa', async () => {
+    const { f, c } = setup(seedHandoff('2026-10-05T07:00:00Z', STALE_MARK));
+    c.controls.sdkResponses = [];
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi, alguém aí?' });
+    expect(c.unexpected).toEqual([]);
+    expect(sent(c)).toEqual([REMINDER]);
+    expect(c.tables.conversations[0].last_silenced_reply_at).toBe(CLAIMED_AT);
+    expect(outcomes(c)).toEqual(['human_active_reminded']);
+  });
+
+  it('lembrete com a janela vencida e corrida: outro turno gravou a marca antes, sem aviso', async () => {
+    const { f, c } = setup(seedHandoff('2026-10-05T07:00:00Z', STALE_MARK));
+    c.controls.sdkResponses = [];
+    let raced = false;
+    c.controls.beforeQuery = async (q) => {
+      if (raced || q.operation !== 'update' || q.table !== 'conversations' || !q.patch?.last_silenced_reply_at) return;
+      raced = true;
+      c.tables.conversations[0].last_silenced_reply_at = '2026-10-05T14:59:59.000Z';
+    };
+    await f.runChatControl({ kind: 'customer_text', text: 'Oi, alguém aí?' });
+    expect(c.unexpected).toEqual([]);
+    expect(raced, 'o turno não reivindicou a janela do lembrete').toBe(true);
+    expect(sent(c)).toEqual([]);
+    expect(c.tables.conversations[0].last_silenced_reply_at).toBe('2026-10-05T14:59:59.000Z');
+    expect(outcomes(c)).toEqual(['human_active_silent']);
+  });
+
+  for (const previous of [null, STALE_MARK]) {
+    it(`lembrete que falha no envio devolve a janela (marca anterior ${previous ?? 'nula'})`, async () => {
+      const { f, c } = setup(seedHandoff('2026-10-05T07:00:00Z', previous));
+      c.controls.sdkResponses = [];
+      c.controls.sendStatus = 500;
+      await f.runChatControl({ kind: 'customer_text', text: 'Oi, alguém aí?' });
+      expect(c.unexpected).toEqual([]);
+      // O provider retenta o POST que falha; todas as tentativas são o mesmo aviso.
+      expect(sent(c).length).toBeGreaterThan(0);
+      expect(new Set(sent(c))).toEqual(new Set([REMINDER]));
+      // Ordem: reivindicação → envio → devolução com CAS sobre a marca deste turno.
+      const ops = c.trace.map((t) => ({ op: t.operation, q: t.value as { patch?: Record<string, unknown>; filters?: unknown[][] } }));
+      const iClaim = ops.findIndex((o) => o.op === 'update:conversations' && o.q.patch?.last_silenced_reply_at === CLAIMED_AT);
+      const iPost = ops.findIndex((o) => o.op === 'provider:post');
+      const iRevert = ops.findIndex((o) => o.op === 'update:conversations'
+        && o.q.patch && 'last_silenced_reply_at' in o.q.patch && o.q.patch.last_silenced_reply_at === previous
+        && (o.q.filters ?? []).some(([op, col, val]) => op === 'eq' && col === 'last_silenced_reply_at' && val === CLAIMED_AT));
+      expect(iClaim, 'a janela não foi reivindicada').toBeGreaterThan(-1);
+      expect(iPost, 'o aviso saiu antes da reivindicação').toBeGreaterThan(iClaim);
+      expect(iRevert, 'não houve devolução com CAS depois do envio').toBeGreaterThan(iPost);
+      // A próxima inbound tenta de novo: a janela não fica gasta por um aviso que não saiu.
+      expect(c.tables.conversations[0].last_silenced_reply_at).toBe(previous);
+      expect(outcomes(c)).toEqual(['human_active_reminded']);
+    });
+  }
 });
 
 describe('catch externo do webhook com o núcleo extraído', () => {

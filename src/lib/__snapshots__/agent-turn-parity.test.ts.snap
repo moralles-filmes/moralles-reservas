@@ -5000,6 +5000,11 @@ exports[`turno do agente no webhook-whatsapp real — paridade comportamental > 
             "bbbbbbbb-0000-0000-0000-000000000001",
           ],
           [
+            "eq",
+            "status",
+            "human_active",
+          ],
+          [
             "is",
             "last_silenced_reply_at",
             null,
