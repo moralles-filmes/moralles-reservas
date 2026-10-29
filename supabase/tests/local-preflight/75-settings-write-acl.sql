@@ -269,8 +269,8 @@ begin
 end $$;
 
 -- ─── S9: platform_admin sem membership grava ai_config e prompt ──────────────
--- `agent_mode` recebe um valor do enum: desde a migration 20261020150000 o
--- guard de valor recusa outro valor para todo papel (pré-voo 78, V4).
+-- `agent_mode` recebe um valor do enum: desde a migration 20261029120100 o
+-- guard de valor recusa outro valor para todo papel (pré-voo 80, V4).
 do $$
 declare k text; r text; v text; ruins text := '';
   u1 constant uuid := 'a0d75000-0000-4000-8000-0000000000aa';

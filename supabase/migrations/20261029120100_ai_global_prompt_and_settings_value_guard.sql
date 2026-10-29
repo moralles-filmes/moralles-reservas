@@ -11,7 +11,7 @@
 -- Writes to the three ai_prompt_* tables happen only inside the two SECURITY
 -- DEFINER RPCs. The tables are FORCE RLS with a single SELECT policy, so those
 -- writes rely on the function owner having BYPASSRLS (`postgres`, measured in
--- production on 2026-09-27 and 2026-10-17; preflight 78 C4 shows the
+-- production on 2026-09-27 and 2026-10-17; preflight 80 C4 shows the
 -- dependency with a non-superuser owner).
 begin;
 -- `drop trigger` on `settings` takes ACCESS EXCLUSIVE on a table every worker
@@ -150,7 +150,7 @@ grant select on table public.ai_prompt_versions, public.ai_prompt_slots, public.
   to authenticated, service_role;
 
 -- ─── RPCs ────────────────────────────────────────────────────────────────────
--- The `-- <x>` / `-- </x>` markers delimit each guard for the preflight 78
+-- The `-- <x>` / `-- </x>` markers delimit each guard for the preflight 80
 -- positive controls (C5..C8); keep them around the guard they name.
 create or replace function public.publish_ai_prompt_version(
   p_slot text, p_body text, p_note text, p_expected_active_version_id uuid)

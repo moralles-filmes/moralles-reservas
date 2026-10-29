@@ -2632,22 +2632,24 @@ SQL; a prova HTTP é manual e opcional), nem o isolamento entre unidades, que
 continua nas policies e não mudou. A paridade entre as chaves gravadas pela
 Gestão e o classificador é do `scripts/settings-write-acl.test.ts`.
 
-**Desde a migration `20261020150000` (pré-voo 78)** o S9 grava `agent_mode` com
+**Desde a migration `20261029120100` (pré-voo 80)** o S9 grava `agent_mode` com
 um valor do enum (`reservations_faq`): o guard de valor recusa outro valor para
-todo papel. Rodado depois do 78 no mesmo banco, o 75 continua 20/20, mas o
+todo papel. Rodado depois do 80 no mesmo banco, o 75 continua 20/20, mas o
 `\i` dele reaplica a classe antiga (3 chaves factuais de volta a `platform`);
-rode o 78 de novo em seguida, porque ele reaplica a classe nova.
+rode o 80 de novo em seguida, porque ele reaplica a classe nova.
 
-### 78 — Camada global do prompt e guard de valor em settings
+### 80 — Camada global do prompt e guard de valor em settings
+
+Até 2026-10-29 este pré-voo se chamava 78/78a e a migration `20261020150000`; foi renumerado porque a `main` passou a ter outro 78 (serviço v2) e migrations aplicadas com timestamp posterior. Os identificadores do fixture (`ai78_*`, UUIDs `a0d78000-…`) ficaram como estavam.
 
 Banco próprio, base do 75 (00 → 01 → 09a → 106 → 75a → migration
-`20261019180000`), mais o `78a-ai-prompt-bootstrap.sql`: default privileges que
+`20261019180000`), mais o `80a-ai-prompt-bootstrap.sql`: default privileges que
 emulam o Supabase (ALL nas tabelas novas de `public` e EXECUTE nas funções novas
 de `public` para `anon`/`authenticated`/`service_role`, sem os quais o `revoke`
 da migration não teria o que tirar), dois platform_admin sem membership, U1 com
 owner/gerente/operador, U2 com gerente, um usuário sem papel e as linhas
-iniciais de `settings`. O 78a **recusa rodar depois da migration**. A migration
-roda **crua**, sem `psql -1`. O 78 zera a história em modo `replica` (só no
+iniciais de `settings`. O 80a **recusa rodar depois da migration**. A migration
+roda **crua**, sem `psql -1`. O 80 zera a história em modo `replica` (só no
 harness: desliga o append-only e as FKs), reaplica a migration por `\i` (o seed
 recria a v1), recoloca as linhas de `settings`, mede, e no fim reaplica a
 migration de novo para o P8. Roda **da raiz do repo** e pode ser repetido.
@@ -2655,26 +2657,26 @@ migration de novo para o P8. Roda **da raiz do repo** e pode ser repetido.
 ```bash
 export PGCLIENTENCODING=UTF8
 PG="/c/Program Files/PostgreSQL/18/bin"   # ou o do scoop
-"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists ai78
-"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres ai78
-P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d ai78 -X -q -v ON_ERROR_STOP=1 "$@"; }
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists ai80
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres ai80
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d ai80 -X -q -v ON_ERROR_STOP=1 "$@"; }
 P -f supabase/tests/local-preflight/00-bootstrap.sql
 P -f supabase/tests/local-preflight/01-audit.sql
 P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
 P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
 P -f supabase/tests/local-preflight/75a-settings-write-acl-bootstrap.sql
 P -f supabase/migrations/20261019180000_settings_write_role_guard.sql
-P -f supabase/tests/local-preflight/78a-ai-prompt-bootstrap.sql
-P -f supabase/tests/local-preflight/78-ai-prompt-and-settings-value.sql   # RED: aborta na guarda (migration ausente)
-P -f supabase/migrations/20261020150000_ai_global_prompt_and_settings_value_guard.sql
-P -f supabase/tests/local-preflight/78-ai-prompt-and-settings-value.sql   # GREEN
-P -f supabase/migrations/20261020150000_ai_global_prompt_and_settings_value_guard.sql
-P -f supabase/tests/local-preflight/78-ai-prompt-and-settings-value.sql   # GREEN de novo (idempotência)
+P -f supabase/tests/local-preflight/80a-ai-prompt-bootstrap.sql
+P -f supabase/tests/local-preflight/80-ai-prompt-and-settings-value.sql   # RED: aborta na guarda (migration ausente)
+P -f supabase/migrations/20261029120100_ai_global_prompt_and_settings_value_guard.sql
+P -f supabase/tests/local-preflight/80-ai-prompt-and-settings-value.sql   # GREEN
+P -f supabase/migrations/20261029120100_ai_global_prompt_and_settings_value_guard.sql
+P -f supabase/tests/local-preflight/80-ai-prompt-and-settings-value.sql   # GREEN de novo (idempotência)
 P -f supabase/tests/local-preflight/75-settings-write-acl.sql             # V5: regressão do 75, 20 e 20
-P -f supabase/tests/local-preflight/78-ai-prompt-and-settings-value.sql   # de novo: o 75 reaplicou a classe antiga
+P -f supabase/tests/local-preflight/80-ai-prompt-and-settings-value.sql   # de novo: o 75 reaplicou a classe antiga
 ```
 
-O 78 imprime os ordinais 7801–7831 e a contagem: **esperado 31 e 31**. Cada caso
+O 80 imprime os ordinais 8001–8031 e a contagem: **esperado 31 e 31**. Cada caso
 confere o SQLSTATE, a mensagem e o efeito (retrato do slot, das versões e do
 ledger, ou o valor gravado). P1–P9 são a camada global: publicação, recusa a
 quem não é platform_admin (inclusive `service_role` com grant temporário, que

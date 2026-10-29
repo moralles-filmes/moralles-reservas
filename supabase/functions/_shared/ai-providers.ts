@@ -210,7 +210,7 @@ const PRICING_USD_PER_MTOK: Record<string, { input: number; output: number; cach
   "grok-3":             { input: 3,    output: 15,  cache_read: 0,    cache_write: 0 },
   "deepseek-chat":      { input: 0.27, output: 1.10, cache_read: 0.07, cache_write: 0 },
   // Modelos do catalogo (ai-model-catalog.ts), mesmos valores de
-  // 20261020130000_ai_model_prices_catalog_refresh.sql. Esta tabela e TELEMETRIA;
+  // 20261029120000_ai_model_prices_catalog_refresh.sql. Esta tabela e TELEMETRIA;
   // o orcamento usa ai_model_prices.
   "gemini-2.5-pro":                { input: 1.25, output: 10,   cache_read: 0.125, cache_write: 0 },
   // Preco de 2026; DOBRA em 2027-01-01 (1.50 / 7.50 / 0.15). A vigencia certa vive em ai_model_prices.

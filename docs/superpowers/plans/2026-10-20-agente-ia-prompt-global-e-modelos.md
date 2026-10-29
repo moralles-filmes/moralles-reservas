@@ -504,21 +504,21 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 | `agent/turn.ts`, `ai-budget-core.ts` (só comentário) | idem: `webhook-whatsapp` | — |
 | `_shared/agent/global-prompt-core.ts`, `global-prompt.ts`, `store-data-core.ts`, `system-prompt.ts` | B3 | `global-prompt-core.ts`: sim |
 
-- [ ] Rodar `node scripts/ef-import-graph.mjs --all` no commit final e fixar a lista. Esperado: `webhook-whatsapp`, mais a EF do Instagram se já existir. `manage-ai-providers` não entra.
-- [ ] `deno check` em cada EF da lista.
+- [x] Rodar `node scripts/ef-import-graph.mjs --all` no commit final e fixar a lista. Esperado: `webhook-whatsapp`, mais a EF do Instagram se já existir. `manage-ai-providers` não entra. **Medido em 2026-10-29 no HEAD pós-merge da `main` a7624e7, sobre os 12 arquivos de `supabase/functions` do `git diff origin/main HEAD`: só `webhook-whatsapp`. Não há EF do Instagram na `main`.**
+- [ ] `deno check` em cada EF da lista. _(Pendente: `deno` fora do PATH; o usuário passa o caminho.)_
 
 ### B6.2 Gates (spec §11.3), antes do PR
 
-- [ ] Verificação V completa.
-- [ ] Subagentes Opus, cada um com o diff da branch e a spec:
+- [x] Verificação V completa (§8.4).
+- [x] Subagentes Opus, cada um com o diff da branch e a spec (resultado em §8.4):
   - `saas-shield-br:migration-validator` (2 migrations);
   - `saas-shield-br:rls-auditor`;
   - `saas-shield-br:identity-access-auditor` (RPCs, papéis, classe de settings);
   - `saas-shield-br:tenant-isolation-auditor` (tela da Gestão, loader, leitura de chave do reserva);
   - `saas-audit-br:ai-automation-auditor` (prompt injection, custo, perfis).
-- [ ] Achado P0/P1 → correção com TDD e o gate roda de novo. P2/P3 → corrigir ou registrar como follow-up com justificativa.
-- [ ] Review da branch inteira (Opus).
-- [ ] `acl-estatico` local. `git status`, `git diff --cached` integral, varredura do AGENTS §5. `git add` explícito.
+- [x] Achado P0/P1 → correção com TDD e o gate roda de novo. P2/P3 → corrigir ou registrar como follow-up com justificativa. _(Nenhum P0/P1. P2/P3 viram follow-up no PR, por decisão do usuário em 2026-10-29.)_
+- [x] Review da branch inteira (Opus).
+- [x] `acl-estatico` local. `git status`, `git diff --cached` integral, varredura do AGENTS §5. `git add` explícito.
 
 ### B6.3 PR — **autorização 1**
 
@@ -533,8 +533,11 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 
 ### B6.4 Sequência de deploy (spec §11.2): cada passo com autorização própria
 
-1. [ ] **Autorização 2 — `supabase db push`** das duas migrations, na ordem do nome: preços (B1), depois prompt e guard (B2). Receita da memória `settings-escrita-por-chave`:
-   - `npx --yes supabase@2.121.0 db push --linked --dry-run`, depois sem `--dry-run`;
+> **Decidido com o usuário em 2026-10-29: opção (a)** — `db push` → deploy de `webhook-whatsapp` do commit exato do PR → merge desse mesmo commit. O C-B3 fechou no mesmo dia (§8.3). As migrations foram renomeadas para `20261029120000` (preços) e `20261029120100` (prompt e guard), porque a `main` trouxe 3 migrations já aplicadas em produção com timestamp posterior às antigas `20261020130000`/`20261020150000`; o pré-voo passou de 78/78a para 80/80a.
+
+1. [ ] **Autorização 2 — `supabase db push`** das duas migrations, na ordem do nome: preços (B1, `20261029120000`), depois prompt e guard (B2, `20261029120100`). Receita da memória `settings-escrita-por-chave`, com `--skip-vault` (planos da `main` de 2026-10-20/21: a CLI atual mexe nos segredos do Vault sem ele):
+   - `npx --yes supabase@2.121.0 db push --linked --skip-vault --dry-run`, que tem de listar **exatamente** as 2 migrations; depois sem `--dry-run`. Nunca `--include-all`;
+   - antes, só de leitura: contagem por chave das linhas de `settings` fora do formato do guard (sem ler o valor), `rolbypassrls` do `postgres`, preços reconferidos no dia, decisão da FK `created_by`;
    - copiar `supabase/.temp/{project-ref,linked-project.json}` do checkout principal e **removê-los depois**;
    - prod ref `gbabxcrntkwgblgqsiit`;
    - conferir que `effective_from` dos preços ≤ agora.
@@ -547,10 +550,8 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
    - trigger `settings_write_value_guard` presente;
    - zero linhas de `settings` acima do limite (só `char_length`, sem ler o valor). Linha acima do limite não quebra nada, mas fica registrada.
 > **⚠️ Decidir com o usuário antes do passo 2 (review final do Chat 4, Important 1):** este roteiro (push → merge → EF) contradiz o pré-gate P2 (§8.2: EF do B3 antes do merge). Com as telas do B5, o merge depois do `db push` dá ao gerente um formulário para gravar cardápio/delivery/extra enquanto a EF velha ainda interpola esses textos sem delimitação (raio: a própria loja). Opções: (a) `db push` → deploy de `webhook-whatsapp` (exige C-B3 fechado) → merge; (b) segurar o merge até o C-B3 fechar. **Nunca mergear antes do `db push`** — e o preview da Vercel do PR (B6.3) já expõe as telas: ali `/g/:slug/atendimento-ia` salva com 42501 ("Sem permissão…") e `/platform/agente-ia` mostra o card de erro, sem tela branca nem loop.
-2. [ ] **Autorização 3 — merge do PR em `main`** (Vercel). Conferir o deploy READY. A UI passa a gravar as 3 chaves (o banco já aceita) e a chamar as RPCs.
-3. [ ] **Autorização 4 — `supabase functions deploy`** de cada EF da matriz B6.1, em janela de baixo tráfego, **só se C-B3 estiver fechado**. Entre o passo 2 e o 3:
-   - a EF velha cai no default para modelo novo (seguro);
-   - a EF velha ignora a camada publicada (seguro).
+2. [ ] **Autorização 3 — `supabase functions deploy webhook-whatsapp`** (matriz B6.1) logo depois do passo 1, do commit exato da cabeça do PR, em janela de baixo tráfego. C-B3 fechado em 2026-10-29. Fecha a janela do P2: as 3 chaves já são `manager` desde o passo 1, e só esta EF as delimita. A EF nova funciona com o front antigo. Até o passo 3, a EF de produção vem de um commit fora da `main`; o rollback de código usa a `main` pré-merge.
+3. [ ] **Autorização 4 — merge do PR em `main`** (Vercel), **do mesmo commit** deployado no passo 2. Conferir o deploy READY. A UI passa a gravar as 3 chaves (o banco já aceita) e a chamar as RPCs.
 4. [ ] **Verificação (spec §11.2.4):**
    - nos primeiros turnos, `webhook_executions.meta.global_prompt_source = 'db'` e `global_prompt_version` = id da v1;
    - nenhum `ai_global_prompt_read_failed` nem `ai_model_retired` inesperado nos logs;
@@ -865,3 +866,37 @@ Desvios declarados: as páginas `AgenteIa`, `AtendimentoIa` e a tela/hook do pas
 ### 8.4 B6: rollout
 
 PR, checks, `db push`, merge, deploy, verificação.
+
+#### B6.1–B6.2 (Chat 5, 2026-10-29)
+
+**Integração com a `main`.** A branch partiu de `bab6033`; a `origin/main` estava em `a7624e7` (15 commits: MARKETING, serviço v2 self-service, `react-router-dom` 7.18, barra de rolagem das abas).
+- `d47486e`: merge local da `origin/main` com 3 conflitos resolvidos mantendo os dois lados:
+  - `function-acl-allowlist.json`: entradas de MARKETING/serviço v2 e as 2 RPCs do prompt; projeção 9/44/53;
+  - `App.tsx`: rotas lazy de Marketing e AtendimentoIa;
+  - `Ajustes.tsx`: textos normalizados do B5 e a escrita condicional dos interruptores legados da `main`; `Ajustes.test.tsx` ganhou os mocks de `useAuth`/`useWhatsappServicePreferences` (coorte manual, lote de 7).
+- `9688a21` (usuário): C-B3 fechado.
+- `0b71574`: testes do B4/B5 sem a prop `future` (removida no `react-router` 7, TS2322) e stub de `ResizeObserver` no PromptTab (o `scroll-area` da `main` usa).
+- **Renomeação das migrations e do pré-voo (decisão do usuário).** Produção já tinha `20261020183000`, `20261020184000` e `20261021190000`; as únicas locais ausentes eram as duas desta branch, com timestamp anterior. O push comum recusaria, e o `--include-all` contraria o runbook do Datafy. Por isso: `20261020130000` → **`20261029120000`**, `20261020150000` → **`20261029120100`** (conteúdo idêntico; só 2 linhas de comentário mudaram), e pré-voo 78/78a → **80/80a** (a `main` tem outro 78; 80 livre em todas as branches), com ordinais 7801–7831 → 8001–8031 (o 78 da `main` usa 7801–7803). Os identificadores do fixture (`ai78_*`, UUIDs `a0d78000-…`) ficaram. O `migration-validator` mediu que aplicar estas depois das 3 já aplicadas não muda nenhum resultado: nenhuma toca `settings`, as funções recriadas são disjuntas e não há grant amplo. Guards que leem migrations pelo nome: 675/675 (26 arquivos).
+
+**Verificação V (HEAD `0b71574` e depois da renomeação)**
+- typecheck 0; lint 0 erros (17 avisos antigos); build ok; `check-padrao` ok; `check-portabilidade` 487 = baseline.
+- Suíte: 4516 passam, 7 falham em 7 arquivos, rodada sob carga junto com os gates. Um a um com `--testTimeout=120000`, passam: `ReservaWizard.marketing` 4/4, `TemplateV2ChannelControls` 7/7, `edge-request-harness` 17/17, `whatsapp-automation-receipts-request` 35/35, `whatsapp-reservation-automation-routing` 111/111, `whatsapp-waitlist-voucher-routing` 75/75. `OfficialConnectionCard` só falha na worktree sem `.env.local` (passa 16/16 no checkout principal; a branch não toca o arquivo). Dos 8 arquivos do baseline antigo, a `main` consertou 7.
+- `acl-estatico` local: `function-acl-allowlist` + `advisor-divergence-core` + `migration-static-guard` 96/96; `eslint supabase/functions --max-warnings=0` limpo.
+- `secret-scan --range origin/main..HEAD`: 0 achados em 18 commits.
+- **Pendentes do usuário:** `deno check` da `webhook-whatsapp` (`deno` fora do PATH) e o pré-voo 80 com o banco recriado (o Postgres local pede senha).
+
+**Gates (Opus, diff `origin/main..HEAD`)** — todos PASS_WITH_WARNINGS, 0 bloqueantes:
+
+| Gate | P2 | P3 (resumo) |
+|---|---|---|
+| `migration-validator` | — | push fora de ordem (resolvido pela renomeação); `ai_model_prices` sem schema na migration de preços (convenção da 099) |
+| `rls-auditor` | — | o guard de valor não recusa `<<<`/`>>>` nem invisíveis nas chaves da loja (só a EF neutraliza); `restaurant_name` sem limite no banco; o seed também depende de `BYPASSRLS` (o C4 só mede o publish) |
+| `identity-access-auditor` | — | platform_admin que também é operador real da loja não vê a tela da Gestão (falha fechada, só UI; Marketing já usa `|| isPlatformAdmin`); gerente influencia o texto do bot (decisão D2, contida) |
+| `tenant-isolation-auditor` | — | pré-voo sem caso de gerente da U2 gravando as 3 chaves da U1 (o 75 cobre o caso genérico); injeção intra-loja; cache do prompt global sem dado de unidade (registro) |
+| `secret-hunter` | — | literais `sk-ant-123` em testes negativos (falso-positivo) |
+| `integration-reliability-auditor` | franquia conta raciocínio/cache em dobro (OpenAI/xAI/Gemini; mapeamento antigo que pesa com os perfis novos); timeout de 12s por chamada compartilhado entre retries, apertado para os modelos `strong` com raciocínio | loader sem backoff de falha, leitura única nem timeout; `webhook_error` sem `promptMeta`; janela do D5 sem Pro e sem reserva quando a troca falha depois; custo da telemetria com o preço do último modelo |
+| `ai-automation-auditor` | texto do operador (salão, data especial, bloqueio) e `reservations.notes` chegam fora do bloco delimitado e podem citar "REGRAS OBRIGATÓRIAS"; a premissa "o operador não grava" da spec §6.3.6 é falsa; prompt sem teto de linhas (salões/bloqueios) infla o custo | homóglifo/colchete largo forja o marcador (risco residual já registrado); `AI_ESTIMATE_BASE_INPUT_TOKENS` 6000 abaixo do prompt máximo |
+
+Review da branch inteira (Opus): pronto para PR com ressalvas, 0 Critical. Merge conferido sem regressão (rotas, navegação, Ajustes, PromptTab, allowlist). Important 1 (migrations fora de ordem) e 2 (`--skip-vault` ausente na receita do `db push`) estão resolvidos acima e no B6.4. Minor: pré-voo 78 repetido (resolvido); a cópia de `AtendimentoIa.tsx` diz "Preços e condições", mas o campo em Ajustes se chama "Regras e Condições"; a matriz de redeploy foi remedida no HEAD pós-merge (B6.1).
+
+**Decisões do usuário (2026-10-29):** ordem de deploy (a) push → EF → merge; renomear as migrations; P2/P3 dos gates viram follow-up no PR, porque nenhum afeta as 2 lojas hoje (ambas no `gemini-2.5-flash` padrão, sem modelo `strong`).

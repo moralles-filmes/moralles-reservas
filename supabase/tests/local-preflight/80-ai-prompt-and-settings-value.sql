@@ -1,9 +1,9 @@
--- P1..P9, V1..V7 e C1..C9 (ordinais 7801-7831): migration
--- 20261020150000_ai_global_prompt_and_settings_value_guard.sql contra Postgres
+-- P1..P9, V1..V7 e C1..C9 (ordinais 8001-8031): migration
+-- 20261029120100_ai_global_prompt_and_settings_value_guard.sql contra Postgres
 -- real.
 --
--- BASE: 00 -> 01 -> 09a -> 106 -> 75a -> 20261019180000 -> 78a (ver 78a e
--- README §78). Os casos rodam com a identidade de verdade: `set local role
+-- BASE: 00 -> 01 -> 09a -> 106 -> 75a -> 20261019180000 -> 80a (ver 80a e
+-- README §80). Os casos rodam com a identidade de verdade: `set local role
 -- authenticated|service_role|anon` + `request.jwt.claims` (`sub`, `role`).
 -- Cada caso confere o SQLSTATE e a MENSAGEM (`prompt_forbidden`,
 -- `setting_value_invalid`… são da migration; ACL e RLS devolvem `42501` com
@@ -17,7 +17,7 @@
 -- RAIZ DO REPO e pode ser repetido no mesmo banco.
 
 create table if not exists t_res (ord int primary key, caso text, veredito text);
-delete from t_res where ord between 7801 and 7831;
+delete from t_res where ord between 8001 and 8031;
 
 do $$
 begin
@@ -29,10 +29,10 @@ begin
      or not exists (select 1 from pg_trigger
                      where tgrelid = 'public.settings'::regclass
                        and tgname = 'settings_write_value_guard' and not tgisinternal) then
-    raise exception '78: migration do prompt global ausente. Aplique a 20261020150000 antes (sem ela, este abort e o RED esperado).';
+    raise exception '80: migration do prompt global ausente. Aplique a 20261029120100 antes (sem ela, este abort e o RED esperado).';
   end if;
   if not exists (select 1 from platform_admins where user_id = 'a0d78000-0000-4000-8000-0000000000c2') then
-    raise exception '78 exige o 78a (atores ai78).';
+    raise exception '80 exige o 80a (atores ai78).';
   end if;
 end $$;
 
@@ -44,7 +44,7 @@ delete from public.ai_prompt_versions;
 set session_replication_role = origin;
 
 -- ─── Migration reaplicada: o seed recria a v1 ────────────────────────────────
-\i supabase/migrations/20261020150000_ai_global_prompt_and_settings_value_guard.sql
+\i supabase/migrations/20261029120100_ai_global_prompt_and_settings_value_guard.sql
 
 -- ─── Linhas iniciais de settings de volta (sem triggers, só para o setup) ────
 set session_replication_role = replica;
@@ -175,7 +175,7 @@ begin
      and (select activated_by from public.ai_prompt_slots where slot = 'global_persona') = pa
     into v_ok
     from public.ai_prompt_versions v where v.id = v2;
-  insert into t_res values (7801, 'P1 admin A publica com expected=v1: devolve o id da v2, slot na v2, body_sha256 do corpo, autor e ledger publish com ator/nota/anterior',
+  insert into t_res values (8001, 'P1 admin A publica com expected=v1: devolve o id da v2, slot na v2, body_sha256 do corpo, autor e ledger publish com ator/nota/anterior',
     case when coalesce(v_ok, false) then 'PASSOU' else 'FALHOU r=' || r || ' estado=' || pg_temp.s78_state() end);
 end $$;
 
@@ -221,14 +221,14 @@ end $$;
 do $$
 declare r text := pg_temp.s78_p2('pub');
 begin
-  insert into t_res values (7802, 'P2 publish: owner/gerente/operador/sem papel/sem sub recebem prompt_forbidden; anon e service_role sem EXECUTE; service_role com grant cai no guard; slot, versoes e ledger intactos',
+  insert into t_res values (8002, 'P2 publish: owner/gerente/operador/sem papel/sem sub recebem prompt_forbidden; anon e service_role sem EXECUTE; service_role com grant cai no guard; slot, versoes e ledger intactos',
     case when r = '' then 'PASSOU' else 'FALHOU' || r end);
 end $$;
 
 do $$
 declare r text := pg_temp.s78_p2('act');
 begin
-  insert into t_res values (7803, 'P2 activate: os mesmos sete papeis recusados (prompt_forbidden ou sem EXECUTE), service_role com grant no guard; nada muda',
+  insert into t_res values (8003, 'P2 activate: os mesmos sete papeis recusados (prompt_forbidden ou sem EXECUTE), service_role com grant no guard; nada muda',
     case when r = '' then 'PASSOU' else 'FALHOU' || r end);
 end $$;
 
@@ -241,7 +241,7 @@ begin
   a := pg_temp.s78_try('authenticated', pb, pg_temp.s78_pub(pg_temp.s78_good_body('P3'), 'P3 admin B atrasado', pg_temp.s78_vid(1)));
   b := pg_temp.s78_try('authenticated', pb, pg_temp.s78_pub(pg_temp.s78_good_body('P3'), 'P3 sem expected', null));
   c := pg_temp.s78_try('authenticated', pb, pg_temp.s78_act(pg_temp.s78_vid(1), pg_temp.s78_vid(1), 'P3 activate atrasado'));
-  insert into t_res values (7804, 'P3 admin B com expected=v1 depois do P1 (publish e activate) e com expected nulo: 40001 prompt_version_conflict, nada muda',
+  insert into t_res values (8004, 'P3 admin B com expected=v1 depois do P1 (publish e activate) e com expected nulo: 40001 prompt_version_conflict, nada muda',
     case when a = f and b = f and c = f and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU pub=' || a || ' nulo=' || b || ' act=' || c || ' estado=' || pg_temp.s78_state() end);
 end $$;
@@ -260,7 +260,7 @@ begin
   end loop;
   r := pg_temp.s78_try('authenticated', pa, pg_temp.s78_pub(null, 'P4', pg_temp.s78_active()));
   if r <> '22023:prompt_body_invalid' then ruins := ruins || ' [null]=' || r; end if;
-  insert into t_res values (7805, 'P4 corpo vazio, so brancos, 4001, {{x}}, {{agent_name} solto, }} solto, placeholder com espaco, <<<, >>>, \x07, \r, DEL e nulo: 22023 prompt_body_invalid, nada muda',
+  insert into t_res values (8005, 'P4 corpo vazio, so brancos, 4001, {{x}}, {{agent_name} solto, }} solto, placeholder com espaco, <<<, >>>, \x07, \r, DEL e nulo: 22023 prompt_body_invalid, nada muda',
     case when ruins = '' and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU' || ruins || ' estado=' || pg_temp.s78_state() end);
 end $$;
@@ -277,7 +277,7 @@ begin
   end loop;
   r := pg_temp.s78_try('authenticated', pa, pg_temp.s78_pub(pg_temp.s78_good_body('P4n'), null, pg_temp.s78_active()));
   if r <> '22023:prompt_note_invalid' then ruins := ruins || ' pub[null]=' || r; end if;
-  insert into t_res values (7806, 'P4 nota vazia, so brancos, 281 e nula (publish e activate): 22023 prompt_note_invalid, nada muda',
+  insert into t_res values (8006, 'P4 nota vazia, so brancos, 281 e nula (publish e activate): 22023 prompt_note_invalid, nada muda',
     case when ruins = '' and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU' || ruins || ' estado=' || pg_temp.s78_state() end);
 end $$;
@@ -298,7 +298,7 @@ begin
   c := pg_temp.s78_try('authenticated', pa,
          format('select public.publish_ai_prompt_version(%L, (%L::jsonb ->> 0), %L, %L::uuid)',
                 'global_persona', '["a\u0000b"]', 'P4c', pg_temp.s78_active()));
-  insert into t_res values (7807, 'P4c NUL recusado antes da funcao, nada muda; medido: literal=' || split_part(a, ':', 1)
+  insert into t_res values (8007, 'P4c NUL recusado antes da funcao, nada muda; medido: literal=' || split_part(a, ':', 1)
                                   || ' chr(0)=' || split_part(b, ':', 1) || ' json=' || split_part(c, ':', 1),
     case when a not like 'ok%' and b not like 'ok%' and c not like 'ok%'
           and a not like '%prompt_%' and b not like '%prompt_%' and c not like '%prompt_%'
@@ -317,7 +317,7 @@ begin
   v3 := pg_temp.s78_vid(3);
   select r = 'ok:' || v3::text and pg_temp.s78_active() = v3 and char_length(v.body) = 4000 and v.body = b
     into v_ok from public.ai_prompt_versions v where v.id = v3;
-  insert into t_res values (7808, 'P4b bordas aceitas: corpo de 4000 com \t, \n e os dois placeholders, nota de 280; v3 ativa e corpo identico',
+  insert into t_res values (8008, 'P4b bordas aceitas: corpo de 4000 com \t, \n e os dois placeholders, nota de 280; v3 ativa e corpo identico',
     case when coalesce(v_ok, false) then 'PASSOU' else 'FALHOU r=' || r || ' estado=' || pg_temp.s78_state() end);
 end $$;
 
@@ -335,7 +335,7 @@ begin
                     and a.actor = pa and a.note = 'P5 voltar ao seed')
      and (select activated_by from public.ai_prompt_slots where slot = 'global_persona') = pa
     into v_ok;
-  insert into t_res values (7809, 'P5 admin A ativa a v1 com expected=v3: slot na v1, nenhuma versao nova, ledger rollback com anterior=v3, ator e nota',
+  insert into t_res values (8009, 'P5 admin A ativa a v1 com expected=v3: slot na v1, nenhuma versao nova, ledger rollback com anterior=v3, ator e nota',
     case when v_ok then 'PASSOU' else 'FALHOU r=' || r || ' estado=' || pg_temp.s78_state() end);
 end $$;
 
@@ -349,7 +349,7 @@ begin
   c := pg_temp.s78_try('authenticated', pa, pg_temp.s78_act(pg_temp.s78_active(), pg_temp.s78_active(), 'P5 ja ativa'));
   d := pg_temp.s78_try('authenticated', pa, pg_temp.s78_act(pg_temp.s78_vid(2), pg_temp.s78_active(), 'P5 outro slot', 'outro_slot'));
   e := pg_temp.s78_try('authenticated', pa, pg_temp.s78_pub(pg_temp.s78_good_body('P5'), 'P5 outro slot', pg_temp.s78_active(), 'outro_slot'));
-  insert into t_res values (7810, 'P5 recusas: versao inexistente, nula e ja ativa (prompt_version_invalid); slot inexistente no activate e no publish (prompt_slot_invalid); 22023, nada muda',
+  insert into t_res values (8010, 'P5 recusas: versao inexistente, nula e ja ativa (prompt_version_invalid); slot inexistente no activate e no publish (prompt_slot_invalid); 22023, nada muda',
     case when a = '22023:prompt_version_invalid' and b = a and c = a
           and d = '22023:prompt_slot_invalid' and e = d and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU inexistente=' || a || ' nulo=' || b || ' ativa=' || c || ' slot_act=' || d || ' slot_pub=' || e end);
@@ -399,7 +399,7 @@ begin
   exception when raise_exception then null;
   end;
   if pg_temp.s78_state() <> s0 then ruins := ruins || ' estado_mudou=' || pg_temp.s78_state(); end if;
-  insert into t_res values (7811, 'P6 versoes e ledger append-only e slot sem DELETE/TRUNCATE: dono recebe ai_prompt_history_append_only; service_role e admin sem grant de escrita; com grant, service_role cai no trigger e admin casa zero linhas; nada muda',
+  insert into t_res values (8011, 'P6 versoes e ledger append-only e slot sem DELETE/TRUNCATE: dono recebe ai_prompt_history_append_only; service_role e admin sem grant de escrita; com grant, service_role cai no trigger e admin casa zero linhas; nada muda',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -451,7 +451,7 @@ begin
                      'app_private.unit_setting_write_class(text)'::regprocedure)
          and provolatile = 'i' and proconfig = array['search_path=""']) <> 4 then
     ruins := ruins || ' validadores_nao_immutable_ou_search_path'; end if;
-  insert into t_res values (7812, 'P7 RPCs: authenticated executa, anon/service_role/PUBLIC nao, SECURITY DEFINER e search_path vazio; trigger functions, validadores, guard de valor, limite e classe sem EXECUTE para ninguem (proacl so do dono)',
+  insert into t_res values (8012, 'P7 RPCs: authenticated executa, anon/service_role/PUBLIC nao, SECURITY DEFINER e search_path vazio; trigger functions, validadores, guard de valor, limite e classe sem EXECUTE para ninguem (proacl so do dono)',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -477,7 +477,7 @@ begin
     if v_pol is distinct from 'platform_admin_read_' || t || '=SELECT:authenticated:app_private.is_platform_admin(( SELECT auth.uid() AS uid)):-' then
       ruins := ruins || ' policies:' || t || '=' || coalesce(v_pol, '<nenhuma>'); end if;
   end loop;
-  insert into t_res values (7813, 'P7 tabelas: ENABLE + FORCE RLS; anon sem privilegio; authenticated e service_role so SELECT; uma policy so, SELECT to authenticated com is_platform_admin',
+  insert into t_res values (8013, 'P7 tabelas: ENABLE + FORCE RLS; anon sem privilegio; authenticated e service_role so SELECT; uma policy so, SELECT to authenticated com is_platform_admin',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -499,7 +499,7 @@ begin
     r := pg_temp.s78_sel('anon', null, format('select count(*)::text from public.%I', t));
     if r not like '42501:permission denied for table%' then ruins := ruins || ' anon:' || t || '=' || r; end if;
   end loop;
-  insert into t_res values (7814, 'P9 leitura: admin e service_role leem tudo; owner da loja e authenticated sem sub leem zero linhas; anon sem permissao',
+  insert into t_res values (8014, 'P9 leitura: admin e service_role leem tudo; owner da loja e authenticated sem sub leem zero linhas; anon sem permissao',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -515,7 +515,7 @@ begin
         ruins := ruins || ' ' || k || '=' || r || '/' || pg_temp.s78_val(u1, k); end if;
     end loop;
   end loop;
-  insert into t_res values (7815, 'V1 gerente e owner U1: upsert de restaurant_menu, delivery_response e restaurant_extra_info gravados',
+  insert into t_res values (8015, 'V1 gerente e owner U1: upsert de restaurant_menu, delivery_response e restaurant_extra_info gravados',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -543,7 +543,7 @@ begin
     if r <> f then ruins := ruins || ' ger:' || k || '=' || r; end if;
     if pg_temp.s78_val(u1, k) <> v0 then ruins := ruins || ' ger_gravou:' || k; end if;
   end loop;
-  insert into t_res values (7816, 'V2 operador U1 nas 3 chaves (valor valido e invalido) e gerente U1 nas 5 chaves platform: 42501 setting_write_forbidden, nada gravado',
+  insert into t_res values (8016, 'V2 operador U1 nas 3 chaves (valor valido e invalido) e gerente U1 nas 5 chaves platform: 42501 setting_write_forbidden, nada gravado',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -567,7 +567,7 @@ begin
          pg_temp.s78_ups(u1, 'restaurant_menu', pg_temp.s78_str(repeat('y', 5998) || E'\n\t')));
   if r <> 'ok' or pg_temp.s78_val(u1, 'restaurant_menu') <> pg_temp.s78_str(repeat('y', 5998) || E'\n\t') then
     ruins := ruins || ' borda_6000=' || r; end if;
-  insert into t_res values (7817, 'V3 restaurant_menu com 6001, objeto, numero, booleano, null, array, \x07 e \r, como gerente e service_role: 22023 setting_value_invalid, nada gravado; 6000 com \n\t aceito',
+  insert into t_res values (8017, 'V3 restaurant_menu com 6001, objeto, numero, booleano, null, array, \x07 e \r, como gerente e service_role: 22023 setting_value_invalid, nada gravado; 6000 com \n\t aceito',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -595,7 +595,7 @@ begin
     if pg_temp.s78_val(u1, kv.k) <> pg_temp.s78_str(repeat('a', kv.lim)) then
       ruins := ruins || ' ' || kv.k || '@valor_mudou'; end if;
   end loop;
-  insert into t_res values (7818, 'V3b admin e postgres sem claims: cada uma das 8 chaves de texto aceita o limite e recusa limite+1 e numero com 22023',
+  insert into t_res values (8018, 'V3b admin e postgres sem claims: cada uma das 8 chaves de texto aceita o limite e recusa limite+1 e numero com 22023',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -613,7 +613,7 @@ begin
   e := pg_temp.s78_try('authenticated', pa, pg_temp.s78_ups(u1, 'agent_mode', '"reservations_faq"'));
   v := pg_temp.s78_val(u1, 'agent_mode');
   g := pg_temp.s78_try('authenticated', pa, pg_temp.s78_ups(u1, 'agent_mode', '"reservations"'));
-  insert into t_res values (7819, 'V4 agent_mode "x", numero, maiuscula (postgres) e vazio (service_role): 22023; "reservations_faq" e "reservations" gravados pelo admin',
+  insert into t_res values (8019, 'V4 agent_mode "x", numero, maiuscula (postgres) e vazio (service_role): 22023; "reservations_faq" e "reservations" gravados pelo admin',
     case when a = f and b = f and c = f and d = f and e = 'ok' and v = '"reservations_faq"' and g = 'ok'
           and pg_temp.s78_val(u1, 'agent_mode') = '"reservations"' then 'PASSOU'
          else 'FALHOU x=' || a || ' num=' || b || ' maiusc=' || c || ' vazio=' || d || ' faq=' || e || '/' || v || ' res=' || g end);
@@ -629,7 +629,7 @@ begin
   a := pg_temp.s78_try('authenticated', ger, pg_temp.s78_ups(u1, 'booking_window_days', '30'));
   b := pg_temp.s78_try('authenticated', pa, pg_temp.s78_ups(u1, 'ai_config', '{"provider":"gemini"}'));
   c := pg_temp.s78_try('authenticated', pa, pg_temp.s78_ups(u1, 'foo_bar', pg_temp.s78_str(repeat('z', 9000))));
-  insert into t_res values (7820, 'V6 chave fora da tabela: booking_window_days numero (gerente), ai_config objeto e chave desconhecida com 9000 (admin) gravados',
+  insert into t_res values (8020, 'V6 chave fora da tabela: booking_window_days numero (gerente), ai_config objeto e chave desconhecida com 9000 (admin) gravados',
     case when a = 'ok' and b = 'ok' and c = 'ok' and pg_temp.s78_val(u1, 'booking_window_days') = '30'
           and pg_temp.s78_val(u1, 'ai_config') = '{"provider": "gemini"}' then 'PASSOU'
          else 'FALHOU booking=' || a || ' ai_config=' || b || ' foo=' || c end);
@@ -647,7 +647,7 @@ begin
   a := pg_temp.s78_try('authenticated', ger,
          format('update public.settings set value = value where unit_id = %L and key = %L', u1, 'delivery_response'));
   b := pg_temp.s78_try('authenticated', ger, pg_temp.s78_ups(u1, 'delivery_response', pg_temp.s78_str('V7 curto')));
-  insert into t_res values (7821, 'V7 delivery_response legado com 7000: regravar o mesmo valor recusa (22023); gerente regrava valor valido e passa',
+  insert into t_res values (8021, 'V7 delivery_response legado com 7000: regravar o mesmo valor recusa (22023); gerente regrava valor valido e passa',
     case when a = '22023:setting_value_invalid' and b = 'ok'
           and pg_temp.s78_val(u1, 'delivery_response') = '"V7 curto"' then 'PASSOU'
          else 'FALHOU mesmo=' || a || ' curto=' || b end);
@@ -681,7 +681,7 @@ begin
   end;
   d1 := pg_temp.s78_try(null, null, 'update public.ai_prompt_versions set note = ''C1'' where version = 1');
   d2 := pg_temp.s78_try(null, null, 'delete from public.ai_prompt_activations where kind = ''publish''');
-  insert into t_res values (7822, 'C1 sem o trigger append-only o dono reescreve versoes e apaga ledger; com ele de volta, recusa',
+  insert into t_res values (8022, 'C1 sem o trigger append-only o dono reescreve versoes e apaga ledger; com ele de volta, recusa',
     case when p1 = 'ok' and p2 = 'ok' and d1 = f and d2 = f and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU sem=' || p1 || '/' || p2 || ' com=' || d1 || '/' || d2 end);
 end $$;
@@ -701,7 +701,7 @@ begin
   exception when raise_exception then null;
   end;
   d := pg_temp.s78_try('authenticated', ger, pg_temp.s78_ups(u1, 'restaurant_menu', pg_temp.s78_str(repeat('x', 6001))));
-  insert into t_res values (7823, 'C2 sem settings_write_value_guard o gerente grava 6001 em restaurant_menu; com ele de volta, 22023',
+  insert into t_res values (8023, 'C2 sem settings_write_value_guard o gerente grava 6001 em restaurant_menu; com ele de volta, 22023',
     case when p = 'ok' and pv = '6003' and d = '22023:setting_value_invalid'
           and pg_temp.s78_val(u1, 'restaurant_menu') = v0 then 'PASSOU'
          else 'FALHOU sem=' || p || '/' || pv || ' com=' || d end);
@@ -723,7 +723,7 @@ begin
   exception when raise_exception then null;
   end;
   d := pg_temp.s78_try('authenticated', ger, pg_temp.s78_ups(u1, 'restaurant_menu', pg_temp.s78_str('C3')));
-  insert into t_res values (7824, 'C3 classificador sem as 3 chaves factuais: gerente recebe setting_write_forbidden; com a classe real, grava',
+  insert into t_res values (8024, 'C3 classificador sem as 3 chaves factuais: gerente recebe setting_write_forbidden; com a classe real, grava',
     case when p = '42501:setting_write_forbidden' and d = 'ok' then 'PASSOU'
          else 'FALHOU sem=' || p || ' com=' || d end);
 end $$;
@@ -752,7 +752,7 @@ begin
     raise exception 'desfazer controle';
   exception when raise_exception then null;
   end;
-  insert into t_res values (7825, 'C4 dono nao superusuario sob FORCE RLS: sem BYPASSRLS o publish nao enxerga o slot (22023); com BYPASSRLS publica; tudo desfeito',
+  insert into t_res values (8025, 'C4 dono nao superusuario sob FORCE RLS: sem BYPASSRLS o publish nao enxerga o slot (22023); com BYPASSRLS publica; tudo desfeito',
     case when p_sem = '22023:prompt_slot_invalid' and p_com = 'ok' and pg_temp.s78_state() = s0
           and not exists (select 1 from pg_roles where rolname = 'ai78_owner')
           and (select relowner::regrole::text from pg_class where oid = 'public.ai_prompt_versions'::regclass) = 'postgres'
@@ -775,7 +775,7 @@ begin
   end;
   d1 := pg_temp.s78_try('authenticated', own, pg_temp.s78_pub(pg_temp.s78_good_body('C5'), 'C5 owner', pg_temp.s78_active()));
   d2 := pg_temp.s78_try('authenticated', own, pg_temp.s78_act(pg_temp.s78_vid(3), pg_temp.s78_active(), 'C5 owner'));
-  insert into t_res values (7826, 'C5 RPCs sem o guard de platform_admin: owner da loja publica e ativa; com o guard real, prompt_forbidden',
+  insert into t_res values (8026, 'C5 RPCs sem o guard de platform_admin: owner da loja publica e ativa; com o guard real, prompt_forbidden',
     case when p1 = 'ok' and p2 = 'ok' and d1 = '42501:prompt_forbidden' and d2 = d1 and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU sem=' || p1 || '/' || p2 || ' com=' || d1 || '/' || d2 end);
 end $$;
@@ -795,7 +795,7 @@ begin
   end;
   d1 := pg_temp.s78_try('authenticated', pb, pg_temp.s78_pub(pg_temp.s78_good_body('C6'), 'C6 atrasado', pg_temp.s78_vid(2)));
   d2 := pg_temp.s78_try('authenticated', pb, pg_temp.s78_act(pg_temp.s78_vid(3), pg_temp.s78_vid(2), 'C6 atrasado'));
-  insert into t_res values (7827, 'C6 RPCs sem a checagem de expected: admin B com expected velho publica e ativa; com ela, 40001',
+  insert into t_res values (8027, 'C6 RPCs sem a checagem de expected: admin B com expected velho publica e ativa; com ela, 40001',
     case when p1 = 'ok' and p2 = 'ok' and d1 = '40001:prompt_version_conflict' and d2 = d1 and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU sem=' || p1 || '/' || p2 || ' com=' || d1 || '/' || d2 end);
 end $$;
@@ -828,7 +828,7 @@ begin
   end;
   d1 := pg_temp.s78_try('authenticated', pa, pg_temp.s78_pub('ola {{x}} <<<', 'C7b', pg_temp.s78_active()));
   d2 := pg_temp.s78_try('authenticated', pa, pg_temp.s78_act(pg_temp.s78_vid(3), pg_temp.s78_active(), ''));
-  insert into t_res values (7828, 'C7 sem a checagem da RPC o CHECK barra (23514); com o validador neutralizado corpo e nota invalidos passam; com os reais, 22023',
+  insert into t_res values (8028, 'C7 sem a checagem da RPC o CHECK barra (23514); com o validador neutralizado corpo e nota invalidos passam; com os reais, 22023',
     case when a1 like '23514:%ai_prompt_versions_body_check%' and a2 like '23514:%ai_prompt_versions_note_check%'
           and b1 = 'ok' and b2 = 'ok'
           and d1 = '22023:prompt_body_invalid' and d2 = '22023:prompt_note_invalid' and pg_temp.s78_state() = s0 then 'PASSOU'
@@ -851,7 +851,7 @@ begin
   end;
   d1 := pg_temp.s78_try('authenticated', pa, pg_temp.s78_act(ghost, pg_temp.s78_active(), 'C8 inexistente'));
   d2 := pg_temp.s78_try('authenticated', pa, pg_temp.s78_act(pg_temp.s78_active(), pg_temp.s78_active(), 'C8 ja ativa'));
-  insert into t_res values (7829, 'C8 activate sem a checagem da versao: inexistente cai na FK composta (23503) e a ja ativa grava rollback vazio; com ela, 22023',
+  insert into t_res values (8029, 'C8 activate sem a checagem da versao: inexistente cai na FK composta (23503) e a ja ativa grava rollback vazio; com ela, 22023',
     case when p1 like '23503:%' and p2 = 'ok' and d1 = '22023:prompt_version_invalid' and d2 = d1
           and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU sem=' || p1 || '/' || p2 || ' com=' || d1 || '/' || d2 end);
@@ -866,7 +866,7 @@ begin
   r := pg_temp.s78_try('authenticated', 'a0d78000-0000-4000-8000-0000000000c1',
          pg_temp.s78_act(pg_temp.s78_vid(3), pg_temp.s78_vid(1), 'P8 sair da v1'));
   if r <> 'ok' or pg_temp.s78_active() <> pg_temp.s78_vid(3) then
-    raise exception '78: preparo do P8 falhou (%): o slot tinha de ir para a v3', r;
+    raise exception '80: preparo do P8 falhou (%): o slot tinha de ir para a v3', r;
   end if;
 end $$;
 
@@ -874,7 +874,7 @@ create temp table if not exists t78_antes (estado text, ativa uuid);
 delete from t78_antes;
 insert into t78_antes select pg_temp.s78_state(), pg_temp.s78_active();
 
-\i supabase/migrations/20261020150000_ai_global_prompt_and_settings_value_guard.sql
+\i supabase/migrations/20261029120100_ai_global_prompt_and_settings_value_guard.sql
 
 do $$
 declare ruins text := ''; v_n int; t text;
@@ -910,7 +910,7 @@ begin
     select count(*) into v_n from pg_trigger where tgrelid = 'public.ai_prompt_slots'::regclass and tgname = t;
     if v_n <> 1 then ruins := ruins || ' ' || t || '=' || v_n; end if;
   end loop;
-  insert into t_res values (7830, 'P8 migration reaplicada com o slot na v3: historia e slot intactos (nao volta a v1), uma v1, um seed, um trigger de cada, tres policies',
+  insert into t_res values (8030, 'P8 migration reaplicada com o slot na v3: historia e slot intactos (nao volta a v1), uma v1, um seed, um trigger de cada, tres policies',
     case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end);
 end $$;
 
@@ -928,12 +928,12 @@ begin
     raise exception 'desfazer controle';
   exception when raise_exception then null;
   end;
-  insert into t_res values (7831, 'C9 seed de slot com do update devolveria o slot a v1 (o P8 acusaria); desfeito, slot segue na v3',
+  insert into t_res values (8031, 'C9 seed de slot com do update devolveria o slot a v1 (o P8 acusaria); desfeito, slot segue na v3',
     case when v_depois = pg_temp.s78_vid(1) and v_depois is distinct from (select ativa from t78_antes)
           and pg_temp.s78_active() = pg_temp.s78_vid(3) and pg_temp.s78_state() = s0 then 'PASSOU'
          else 'FALHOU com_do_update=' || coalesce(v_depois::text, '<null>') || ' estado=' || pg_temp.s78_state() end);
 end $$;
 
-select ord, caso, veredito from t_res where ord between 7801 and 7831 order by ord;
+select ord, caso, veredito from t_res where ord between 8001 and 8031 order by ord;
 select count(*) as total, count(*) filter (where veredito = 'PASSOU') as passou
-  from t_res where ord between 7801 and 7831;   -- esperado: 31 e 31
+  from t_res where ord between 8001 and 8031;   -- esperado: 31 e 31

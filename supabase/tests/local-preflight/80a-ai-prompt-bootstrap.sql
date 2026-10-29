@@ -1,4 +1,4 @@
--- 78a: base do pré-voo 78 (camada global do prompt + classe e guard de valor
+-- 80a: base do pré-voo 80 (camada global do prompt + classe e guard de valor
 -- em `settings`).
 --
 -- RODA DEPOIS DE: 00-bootstrap -> 01-audit -> 09a-advisor-bootstrap -> migration
@@ -21,12 +21,12 @@
 do $$
 begin
   if to_regclass('public.ai_prompt_versions') is not null then
-    raise exception '78a exige rodar ANTES da migration do prompt global: as tabelas ja existem e nasceram sem os default privileges. Recrie o banco.';
+    raise exception '80a exige rodar ANTES da migration do prompt global: as tabelas ja existem e nasceram sem os default privileges. Recrie o banco.';
   end if;
   if not exists (select 1 from pg_trigger
                   where tgrelid = 'public.settings'::regclass
                     and tgname = 'settings_write_role_guard' and not tgisinternal) then
-    raise exception '78a exige o 75a e a migration 20261019180000 (settings_write_role_guard ausente).';
+    raise exception '80a exige o 75a e a migration 20261019180000 (settings_write_role_guard ausente).';
   end if;
 end $$;
 
@@ -71,7 +71,7 @@ insert into platform_admins (user_id) values
   ('a0d78000-0000-4000-8000-0000000000c2')
 on conflict (user_id) do nothing;
 
--- Linhas iniciais de U1. O 78 as recoloca nestes valores no começo de cada
+-- Linhas iniciais de U1. O 80 as recoloca nestes valores no começo de cada
 -- execução (UPDATE sem linha não dispara trigger e mediria nada).
 insert into public.settings (unit_id, key, value)
 select 'a0d78000-0000-4000-8000-0000000000aa'::uuid, k, to_jsonb('ai78-inicial-' || k)
