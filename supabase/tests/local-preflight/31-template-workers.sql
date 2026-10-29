@@ -218,5 +218,35 @@ begin
     perform pg_temp.ok(public.claim_whatsapp_template_job(provision) is not null,'provision becomes reclaimable after abandoned sync recovery');
   end loop;
 end $$;
+-- Health counts a sync failure only until a later successful sync of the same account.
+do $$ declare
+  c1 uuid:=gen_random_uuid(); c2 uuid:=gen_random_uuid(); a1 uuid; a2 uuid; b1 uuid; b2 uuid; base integer; fa uuid; x jsonb;
+begin
+  insert into public.whatsapp_channels(id,unit_id,provider,status,is_active,credentials,last_health_check_at) values
+    (c1,'bbbbbbbb-0000-0000-0000-000000000001','datafy','connected',false,'{"phone_number_id":"3181"}',clock_timestamp()),
+    (c2,'bbbbbbbb-0000-0000-0000-000000000002','datafy','connected',false,'{"phone_number_id":"3182"}',clock_timestamp());
+  x:=public.bind_whatsapp_template_account(c1,'bbbbbbbb-0000-0000-0000-000000000001','datafy',0,'3181','318100'); a1:=(x->>'accountId')::uuid;
+  x:=public.bind_whatsapp_template_account(c2,'bbbbbbbb-0000-0000-0000-000000000002','datafy',0,'3182','318200'); a2:=(x->>'accountId')::uuid;
+  select id into b1 from public.whatsapp_template_bindings where channel_id=c1;
+  select id into b2 from public.whatsapp_template_bindings where channel_id=c2;
+  base:=(public.whatsapp_template_pipeline_health()->>'failed')::integer;
+  insert into public.whatsapp_template_jobs(account_id,binding_id,binding_generation,operation,target_key,revision,state,error_code,finished_at)
+    values(a1,b1,1,'sync','account',10,'failed','template_get_failed',clock_timestamp()-interval '10 minutes') returning id into fa;
+  insert into public.whatsapp_template_jobs(account_id,binding_id,binding_generation,operation,target_key,revision,state,finished_at)
+    values(a1,b1,1,'sync','account',9,'done',clock_timestamp()-interval '20 minutes');
+  perform pg_temp.ok((public.whatsapp_template_pipeline_health()->>'failed')::integer=base+1,'failure without later success counts even after an earlier success');
+  insert into public.whatsapp_template_jobs(account_id,binding_id,binding_generation,operation,target_key,revision,state,finished_at)
+    values(a2,b2,1,'sync','account',11,'done',clock_timestamp()-interval '5 minutes');
+  perform pg_temp.ok((public.whatsapp_template_pipeline_health()->>'failed')::integer=base+1,'another account success never resolves this failure');
+  insert into public.whatsapp_template_jobs(account_id,binding_id,binding_generation,operation,target_key,revision,state,error_code,finished_at)
+    values(a1,b1,1,'sync','account',11,'failed','template_get_failed',clock_timestamp()-interval '6 minutes');
+  insert into public.whatsapp_template_jobs(account_id,binding_id,binding_generation,operation,target_key,revision,state,finished_at)
+    values(a1,b1,1,'sync','account',12,'done',clock_timestamp()-interval '1 minute');
+  perform pg_temp.ok((public.whatsapp_template_pipeline_health()->>'failed')::integer=base,'later same-account success resolves every earlier failure');
+  perform pg_temp.ok((select state='failed' from public.whatsapp_template_jobs where id=fa),'resolved failure keeps its evidence row');
+  insert into public.whatsapp_template_jobs(account_id,binding_id,binding_generation,operation,target_key,revision,state,error_code,finished_at)
+    values(a1,b1,1,'sync','account',13,'failed','template_get_failed',clock_timestamp());
+  perform pg_temp.ok((public.whatsapp_template_pipeline_health()->>'failed')::integer=base+1,'new failure after the success counts again');
+end $$;
 select count(*)||' worker SQL assertions GREEN' from worker_checks;
 rollback;
