@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Operacional: Salão ao vivo</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#E8CC93}a:hover{color:#F3F1EC}
+.op{font-family:'Geist',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;-webkit-font-smoothing:antialiased;--bg:#0B0D11;--glass:rgba(255,255,255,0.045);--glass-hi:rgba(255,255,255,0.10);--line:rgba(255,255,255,0.08);--edge:rgba(255,255,255,0.11);--text:#F3F1EC;--text-2:#B0ADA7;--text-3:#8E8B86;--accent:#E2C48A;--accent-text:#E8CC93;--accent-soft:rgba(226,196,138,0.12);--neutral-soft:rgba(255,255,255,0.07)}
+.glass{background:var(--glass);border:1px solid var(--line);box-shadow:inset 0 1px 0 var(--edge),0 40px 80px -44px rgba(0,0,0,0.85);backdrop-filter:blur(28px) saturate(150%);-webkit-backdrop-filter:blur(28px) saturate(150%)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.seg{display:flex;padding:4px;border-radius:999px;background:var(--neutral-soft);gap:2px}
+.seg button{border:0;background:transparent;color:var(--text-2);font:inherit;font-size:13px;padding:0 16px;height:36px;border-radius:999px;cursor:pointer}
+.seg button.on{background:var(--glass-hi);color:var(--text);box-shadow:inset 0 1px 0 var(--edge),0 6px 16px -8px rgba(0,0,0,.5)}
+.chip{display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 12px;border-radius:999px;background:var(--neutral-soft);font-size:13px;color:var(--text-2)}
+.chip b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+.chip .dot{width:8px;height:8px;border-radius:50%}
+.btn-cta{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:48px;padding:0 22px;border-radius:999px;border:0;background:#E2C48A;color:#1A1408;font:inherit;font-size:15px;font-weight:600;cursor:pointer;box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 12px 30px -12px rgba(226,196,138,.55)}
+.btn-glass{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:48px;padding:0 18px;border-radius:999px;border:1px solid var(--line);background:var(--neutral-soft);color:var(--text);font:inherit;font-size:14px;font-weight:500;cursor:pointer;box-shadow:inset 0 1px 0 var(--edge)}
+.row{display:grid;grid-template-columns:52px minmax(0,1fr) auto;gap:12px;align-items:center;width:100%;min-height:56px;padding:8px 10px;border:0;border-radius:14px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.row:hover{background:var(--neutral-soft)}
+.pill{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:500;white-space:nowrap}
+.pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.p-free{color:#C9C6C0;background:rgba(255,255,255,0.08)}
+.p-res{color:#E8CC93;background:rgba(226,196,138,0.12)}
+.p-arr{color:#A9C8FF;background:rgba(143,184,255,0.13)}
+.p-seat{color:#7ED8B0;background:rgba(126,216,176,0.12)}
+.p-late{color:#FF9478;background:rgba(255,148,120,0.12)}
+
+.scene{position:relative;perspective:1500px;perspective-origin:50% 18%;overflow:hidden}
+.plane{position:absolute;left:50%;top:50%;width:540px;height:420px;margin:-200px 0 0 -270px;transform:rotateX(56deg) rotateZ(-36deg);transform-style:preserve-3d;border-radius:20px;background-color:rgba(255,255,255,0.028);background-image:linear-gradient(rgba(255,255,255,0.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.045) 1px,transparent 1px);background-size:30px 30px;box-shadow:inset 0 0 0 1px rgba(255,255,255,0.10),0 80px 120px -20px rgba(0,0,0,0.7);animation:settle 1.6s cubic-bezier(.16,1,.3,1) both}
+.wall-t{position:absolute;left:0;top:0;width:100%;height:34px;transform-origin:50% 0;transform:rotateX(90deg);background:linear-gradient(0deg,rgba(255,255,255,0.10),rgba(255,255,255,0.02));background-image:repeating-linear-gradient(90deg,rgba(255,255,255,0.10) 0 1px,transparent 1px 54px),linear-gradient(0deg,rgba(255,255,255,0.09),rgba(255,255,255,0.015));box-shadow:inset 0 1px 0 rgba(255,255,255,0.25)}
+.wall-r{position:absolute;right:0;top:0;width:34px;height:100%;transform-origin:100% 50%;transform:rotateY(90deg);background-image:repeating-linear-gradient(180deg,rgba(255,255,255,0.16) 0 1px,transparent 1px 70px),linear-gradient(270deg,rgba(143,184,255,0.10),rgba(255,255,255,0.02));box-shadow:inset 1px 0 0 rgba(255,255,255,0.25)}
+.floor-word{position:absolute;right:26px;bottom:18px;font-size:13px;letter-spacing:.02em;color:rgba(255,255,255,0.20);transform:translateZ(1px)}
+.tb{position:absolute;border:0;padding:0;margin:0;background:transparent;cursor:pointer;transform-style:preserve-3d;font:inherit;color:inherit}
+.tb.round{border-radius:50%}
+.tb.sq{border-radius:7px}
+.tb .glow{position:absolute;inset:-22px;border-radius:50%;background:radial-gradient(closest-side,var(--tc-glow),transparent);transform:translateZ(1px)}
+.tb .l{position:absolute;inset:0;border-radius:inherit}
+.tb .l1{transform:translateZ(3px);background:#16191E}
+.tb .l2{transform:translateZ(6px);background:#1C2026}
+.tb .l3{transform:translateZ(9px);background:#22262D}
+.tb .top{transform:translateZ(12px);background-color:#2A2E36;background-image:linear-gradient(var(--tc-top),var(--tc-top));box-shadow:inset 0 0 0 1.5px var(--tc-rim);transition:transform .35s cubic-bezier(.2,.8,.2,1)}
+.tb:hover .top{transform:translateZ(16px)}
+.tb .ch{position:absolute;width:12px;height:12px;border-radius:4px;background:#2A2E36;box-shadow:inset 0 0 0 1px rgba(255,255,255,0.16);transform:translateZ(5px)}
+.tb .tag{position:absolute;left:50%;top:50%;display:flex;gap:6px;align-items:center;white-space:nowrap;padding:4px 9px;border-radius:999px;background:rgba(11,13,17,0.82);box-shadow:inset 0 0 0 1px var(--tc-rim),0 8px 18px -6px rgba(0,0,0,.7);font-size:12px;font-weight:600;color:#F3F1EC;transform:translate(-50%,-50%) translateZ(40px) rotateZ(36deg) rotateX(-56deg);pointer-events:none}
+.tb .tag i{font-style:normal;font-weight:400;color:#C9C6C0}
+.tb.sel .top{transform:translateZ(18px);box-shadow:inset 0 0 0 2px #FFFFFF,0 0 30px var(--tc-glow)}
+.tb.sel .tag{background:#F3F1EC;color:#111318;box-shadow:0 10px 24px -6px rgba(0,0,0,.8)}
+.tb.sel .tag i{color:#4F545C}
+.s-free{--tc-top:rgba(255,255,255,0.08);--tc-rim:rgba(255,255,255,0.30);--tc-glow:rgba(255,255,255,0)}
+.s-res{--tc-top:rgba(226,196,138,0.20);--tc-rim:#E2C48A;--tc-glow:rgba(226,196,138,0.22)}
+.s-arr{--tc-top:rgba(143,184,255,0.26);--tc-rim:#9EC1FF;--tc-glow:rgba(143,184,255,0.42)}
+.s-seat{--tc-top:rgba(126,216,176,0.22);--tc-rim:#7ED8B0;--tc-glow:rgba(126,216,176,0.26)}
+.s-late{--tc-top:rgba(255,148,120,0.26);--tc-rim:#FF9478;--tc-glow:rgba(255,148,120,0.46)}
+.s-arr .glow{animation:breathe 2.8s ease-in-out infinite}
+.s-late .glow{animation:breathe 1.6s ease-in-out infinite}
+.counter .top{background-color:#30343C;background-image:linear-gradient(rgba(255,255,255,0.10),rgba(255,255,255,0.04));box-shadow:inset 0 0 0 1px rgba(255,255,255,0.22)}
+.counter .l4{transform:translateZ(15px);background:#262A31}
+.counter .top{transform:translateZ(20px)}
+.counter{--tc-rim:rgba(255,255,255,0.3);cursor:default}
+.counter .tag{transform:translate(-50%,-50%) translateZ(46px) rotateZ(36deg) rotateX(-56deg)}
+.door{position:absolute;left:-2px;bottom:28px;width:4px;height:58px;border-radius:2px;background:#E2C48A;box-shadow:0 0 16px rgba(226,196,138,.7);transform:translateZ(2px)}
+.door-tag{position:absolute;left:10px;bottom:46px;font-size:11px;font-weight:600;color:#E8CC93;padding:3px 8px;border-radius:999px;background:rgba(11,13,17,.8);box-shadow:inset 0 0 0 1px rgba(226,196,138,.4);transform:translateZ(30px) rotateZ(36deg) rotateX(-56deg);white-space:nowrap}
+@keyframes settle{from{transform:rotateX(34deg) rotateZ(-12deg) translateZ(-80px)}to{transform:rotateX(56deg) rotateZ(-36deg)}}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.plane,.s-arr .glow,.s-late .glow{animation:none}.tb .top{transition:none}}
+</style>
+</helmet>
+<div class="op" style="width: 1194px; height: 834px; box-sizing: border-box; padding: 20px; background: var(--bg); color: var(--text); display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 18px; overflow: hidden;">
+
+  <section class="glass" aria-labelledby="salao-title" style="border-radius: 30px; display: flex; flex-direction: column; min-width: 0; overflow: hidden;">
+    <div style="display: flex; flex-direction: column; gap: 14px; padding: 22px 24px 0;">
+      <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+        <h1 id="salao-title" style="margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.03em;">Salão ao vivo</h1>
+        <span style="display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border-radius: 999px; background: var(--neutral-soft); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: #7ED8B0; box-shadow: 0 0 10px #7ED8B0;"></span>19:57</span>
+        <div style="flex: 1 1 0;"></div>
+        <div class="seg" role="group" aria-label="Ambiente">
+          <button type="button" class="on" aria-pressed="true">Salão principal</button>
+          <button type="button" aria-pressed="false">Varanda</button>
+          <button type="button" aria-pressed="false">Mezanino</button>
+        </div>
+      </div>
+      <ul aria-label="Situação das mesas" style="list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px;">
+        <li class="chip"><span class="dot" aria-hidden="true" style="background: rgba(255,255,255,0.45);"></span>Livres <b>2</b></li>
+        <li class="chip"><span class="dot" aria-hidden="true" style="background: #E2C48A;"></span>Reservadas <b>3</b></li>
+        <li class="chip"><span class="dot" aria-hidden="true" style="background: #9EC1FF;"></span>Chegando <b>2</b></li>
+        <li class="chip"><span class="dot" aria-hidden="true" style="background: #7ED8B0;"></span>Ocupadas <b>9</b></li>
+        <li class="chip"><span class="dot" aria-hidden="true" style="background: #FF9478;"></span>Atrasadas <b>1</b></li>
+      </ul>
+    </div>
+
+    <div class="scene" style="flex: 1 1 auto; min-height: 0;">
+      <div aria-hidden="true" style="position: absolute; left: 10%; right: 10%; top: 30%; bottom: 0; background: radial-gradient(ellipse at 50% 55%, rgba(226,196,138,0.10), transparent 62%);"></div>
+      <div class="plane" role="group" aria-label="Planta 3D do salão principal">
+        <div class="wall-t" aria-hidden="true"></div>
+        <div class="wall-r" aria-hidden="true"></div>
+        <span class="floor-word" aria-hidden="true">Salão principal</span>
+        <span class="door" aria-hidden="true"></span>
+        <span class="door-tag" aria-hidden="true">Entrada</span>
+
+        <div class="tb sq counter" aria-hidden="true" style="left: 40px; top: 22px; width: 262px; height: 28px;">
+          <sc-for list="{{stools}}" as="c" hint-placeholder-count="7"><span class="ch" style="left: {{c.x}}px; top: {{c.y}}px; border-radius: 50%;"></span></sc-for>
+          <span class="l l1"></span><span class="l l2"></span><span class="l l3"></span><span class="l l4"></span><span class="l top"></span>
+          <span class="tag">Bar</span>
+        </div>
+
+        <sc-for list="{{tables}}" as="t" hint-placeholder-count="17">
+          <button type="button" class="{{t.cls}}" style="left: {{t.x}}px; top: {{t.y}}px; width: {{t.w}}px; height: {{t.h}}px;" aria-label="{{t.aria}}" aria-pressed="{{t.pressed}}" onClick="{{t.pick}}">
+            <span class="glow"></span>
+            <sc-for list="{{t.chairs}}" as="c" hint-placeholder-count="4"><span class="ch" style="left: {{c.x}}px; top: {{c.y}}px;"></span></sc-for>
+            <span class="l l1"></span><span class="l l2"></span><span class="l l3"></span><span class="l top"></span>
+            <span class="tag">{{t.label}}<sc-if value="{{t.hasTime}}" hint-placeholder-val="{{ false }}"><i>{{t.time}}</i></sc-if></span>
+          </button>
+        </sc-for>
+      </div>
+    </div>
+  </section>
+
+  <aside style="display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0;">
+    <section class="glass" aria-live="polite" aria-labelledby="mesa-title" style="border-radius: 26px; padding: 22px; display: flex; flex-direction: column; gap: 18px;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <h2 id="mesa-title" style="margin: 0; font-size: 30px; font-weight: 600; letter-spacing: -0.04em; line-height: 1;">{{sel.title}}</h2>
+          <span style="font-size: 14px; color: var(--text-2);">{{sel.sub}}</span>
+        </div>
+        <span class="{{sel.pillCls}}"><span class="dot"></span>{{sel.statusText}}</span>
+      </div>
+
+      <sc-if value="{{sel.hasGuest}}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; gap: 14px; align-items: center; padding: 14px; border-radius: 18px; background: var(--neutral-soft);">
+          <span aria-hidden="true" style="width: 44px; height: 44px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 15px; font-weight: 600; background: var(--glass-hi); color: var(--text);">{{sel.initials}}</span>
+          <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0;">
+            <span style="font-size: 16px; font-weight: 600;">{{sel.guest}}</span>
+            <span style="font-size: 13px; color: var(--text-2);">{{sel.when}}</span>
+          </div>
+        </div>
+        <p style="margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2);">{{sel.note}}</p>
+      </sc-if>
+      <sc-if value="{{sel.noGuest}}" hint-placeholder-val="{{ false }}">
+        <p style="margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2);">{{sel.note}}</p>
+      </sc-if>
+
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;">
+        <button type="button" class="btn-cta">{{sel.primary}}</button>
+        <button type="button" class="btn-glass">{{sel.secondary}}</button>
+      </div>
+    </section>
+
+    <section class="glass" aria-labelledby="prox-title" style="border-radius: 26px; padding: 18px 12px 10px; display: flex; flex-direction: column; gap: 6px;">
+      <h2 id="prox-title" style="margin: 0 10px 4px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em;">Próximas chegadas</h2>
+      <sc-for list="{{nextList}}" as="n" hint-placeholder-count="3">
+        <button type="button" class="row" onClick="{{n.pick}}">
+          <span style="font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums;">{{n.time}}</span>
+          <span style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+            <span style="font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{n.name}}</span>
+            <span style="font-size: 12.5px; color: var(--text-3);">{{n.detail}}</span>
+          </span>
+          <span class="{{n.pillCls}}"><span class="dot"></span>{{n.status}}</span>
+        </button>
+      </sc-for>
+    </section>
+
+    <section class="glass" aria-labelledby="fila-title" style="border-radius: 26px; padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; margin-top: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px;">
+        <h2 id="fila-title" style="margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em;">Fila de espera</h2>
+        <span style="font-size: 13px; color: var(--text-3);">Espera média de 18 min</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <span style="font-size: 40px; font-weight: 600; letter-spacing: -0.05em; line-height: 1; font-variant-numeric: tabular-nums;">6</span>
+        <span style="font-size: 14px; line-height: 1.45; color: var(--text-2);">grupos aguardando. O próximo é a família Rocha, 4 pessoas, há 22 min.</span>
+      </div>
+      <button type="button" class="btn-glass" style="width: 100%;">Chamar no WhatsApp</button>
+    </section>
+  </aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1194,"height":834}}'>
+class Component extends DCLogic {
+  constructor(...args) {
+    super(...args);
+    this.state = { sel: 'm12' };
+  }
+
+  renderVals() {
+    const selId = (this.state && this.state.sel) || 'm12';
+    const STATUS = {
+      free: { text: 'Livre', pill: 'pill p-free' },
+      res: { text: 'Reservada', pill: 'pill p-res' },
+      arr: { text: 'Chega em 3 min', pill: 'pill p-arr' },
+      seat: { text: 'Ocupada', pill: 'pill p-seat' },
+      late: { text: 'Atrasada 12 min', pill: 'pill p-late' },
+    };
+    const raw = [
+      { id: 'm1', n: '1', x: 52, y: 104, w: 34, h: 34, shape: 'round', seats: 2, st: 'seat', since: '19:05' },
+      { id: 'm2', n: '2', x: 52, y: 174, w: 34, h: 34, shape: 'round', seats: 2, st: 'seat', since: '19:30' },
+      { id: 'm3', n: '3', x: 52, y: 244, w: 34, h: 34, shape: 'round', seats: 2, st: 'arr', guest: 'Rafael Moura', time: '20:00', pax: 2, note: 'Reserva feita pelo site. Confirmou pelo WhatsApp hoje às 14h.' },
+      { id: 'm4', n: '4', x: 52, y: 314, w: 34, h: 34, shape: 'round', seats: 2, st: 'seat', since: '19:40' },
+      { id: 'm5', n: '5', x: 140, y: 96, w: 46, h: 46, shape: 'sq', seats: 4, st: 'late', guest: 'Lívia Andrade', time: '19:45', pax: 2, note: 'Ainda não chegou. O agente enviou mensagem às 19:52 e aguarda resposta.' },
+      { id: 'm6', n: '6', x: 140, y: 186, w: 46, h: 46, shape: 'sq', seats: 4, st: 'seat', since: '19:15' },
+      { id: 'm7', n: '7', x: 140, y: 276, w: 46, h: 46, shape: 'sq', seats: 4, st: 'res', guest: 'Otávio Ramos', time: '20:15', pax: 2, note: 'Reserva feita pelo WhatsApp.' },
+      { id: 'm8', n: '8', x: 236, y: 96, w: 46, h: 46, shape: 'sq', seats: 4, st: 'res', guest: 'Joana Freitas', time: '20:45', pax: 3, note: 'Reserva feita pelo WhatsApp. Pediu cadeira alta.' },
+      { id: 'm9', n: '9', x: 236, y: 186, w: 46, h: 46, shape: 'sq', seats: 4, st: 'seat', since: '19:25' },
+      { id: 'm10', n: '10', x: 236, y: 276, w: 46, h: 46, shape: 'sq', seats: 4, st: 'seat', since: '19:35' },
+      { id: 'm11', n: '11', x: 330, y: 92, w: 92, h: 48, shape: 'sq', seats: 8, st: 'seat', since: '19:00' },
+      { id: 'm12', n: '12', x: 340, y: 186, w: 46, h: 46, shape: 'sq', seats: 4, st: 'arr', guest: 'Helena Prado', time: '20:00', pax: 4, note: 'Cliente frequente, 9 visitas. Tem giftback de R$ 40 disponível.' },
+      { id: 'm13', n: '13', x: 330, y: 276, w: 92, h: 48, shape: 'sq', seats: 6, st: 'free', nextAt: '21:30' },
+      { id: 'm14', n: '14', x: 466, y: 80, w: 44, h: 70, shape: 'sq', seats: 4, st: 'seat', since: '19:10', booth: true },
+      { id: 'm15', n: '15', x: 466, y: 176, w: 44, h: 70, shape: 'sq', seats: 4, st: 'seat', since: '19:45', booth: true },
+      { id: 'm16', n: '16', x: 466, y: 272, w: 44, h: 70, shape: 'sq', seats: 4, st: 'free', booth: true },
+      { id: 'm21', n: '21', x: 140, y: 356, w: 142, h: 40, shape: 'sq', seats: 8, st: 'res', guest: 'Beatriz Siqueira', time: '20:15', pax: 6, note: 'Aniversário. Pediu para trazer o bolo na sobremesa.' },
+    ];
+
+    const chairsFor = (t) => {
+      const c = [];
+      if (t.shape === 'round') {
+        c.push({ x: t.w / 2 - 6, y: -16 }, { x: t.w / 2 - 6, y: t.h + 4 });
+      } else if (t.booth) {
+        c.push({ x: -16, y: t.h * 0.25 - 6 }, { x: -16, y: t.h * 0.75 - 6 });
+      } else if (t.w === t.h) {
+        c.push({ x: t.w / 2 - 6, y: -16 }, { x: t.w / 2 - 6, y: t.h + 4 }, { x: -16, y: t.h / 2 - 6 }, { x: t.w + 4, y: t.h / 2 - 6 });
+      } else {
+        const per = t.seats / 2;
+        for (let i = 0; i < per; i++) {
+          const x = (i + 0.5) * (t.w / per) - 6;
+          c.push({ x, y: -16 }, { x, y: t.h + 4 });
+        }
+      }
+      return c;
+    };
+
+    const tables = raw.map((t) => ({
+      ...t,
+      label: t.n,
+      hasTime: !!t.time && t.st !== 'seat',
+      cls: 'tb ' + t.shape + ' s-' + t.st + (t.id === selId ? ' sel' : ''),
+      pressed: t.id === selId ? 'true' : 'false',
+      aria: 'Mesa ' + t.n + ', ' + t.seats + ' lugares, ' + STATUS[t.st].text.toLowerCase() + (t.time ? ', ' + t.time : ''),
+      chairs: chairsFor(t),
+      pick: () => this.setState({ sel: t.id }),
+    }));
+
+    const stools = [];
+    for (let i = 0; i < 7; i++) stools.push({ x: 18 + i * 36, y: 34 });
+
+    const s = raw.find((t) => t.id === selId) || raw[11];
+    const initials = s.guest ? s.guest.split(' ').map((p) => p[0]).slice(0, 2).join('') : '';
+    let primary = 'Marcar chegada', secondary = 'Avisar no WhatsApp', note = s.note || '';
+    if (s.st === 'seat') { primary = 'Liberar mesa'; secondary = 'Trocar mesa'; note = 'Ocupada desde ' + s.since + '. Próxima reserva para esta mesa às 21:45.'; }
+    if (s.st === 'free') { primary = 'Sentar walk-in'; secondary = 'Bloquear mesa'; note = s.nextAt ? 'Livre até a reserva das ' + s.nextAt + '.' : 'Livre pelo resto da noite.'; }
+    const sel = {
+      title: 'Mesa ' + s.n,
+      sub: s.seats + ' lugares' + (s.booth ? ', junto à janela' : ''),
+      statusText: STATUS[s.st].text,
+      pillCls: STATUS[s.st].pill,
+      hasGuest: !!s.guest,
+      noGuest: !s.guest,
+      guest: s.guest || '',
+      initials,
+      when: s.guest ? s.pax + ' pessoas às ' + s.time : '',
+      note,
+      primary,
+      secondary,
+    };
+
+    const nextList = [
+      { id: 'm12', time: '20:00', name: 'Helena Prado', detail: '4 pessoas na mesa 12', status: 'Chegando', pillCls: 'pill p-arr' },
+      { id: 'm3', time: '20:00', name: 'Rafael Moura', detail: '2 pessoas na mesa 3', status: 'Chegando', pillCls: 'pill p-arr' },
+      { id: 'm21', time: '20:15', name: 'Beatriz Siqueira', detail: '6 pessoas na mesa 21', status: 'Reservada', pillCls: 'pill p-res' },
+    ].map((n) => ({ ...n, pick: () => this.setState({ sel: n.id }) }));
+
+    return { tables, stools, sel, nextList };
+  }
+}
+</script>
+</body>
+</html>

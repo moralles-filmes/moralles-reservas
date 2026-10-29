@@ -1,0 +1,18 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-10-29T12:00:00Z" },
+  "title": "Redesign Moralles Reservas",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": { "x": 0, "y": 0, "w": 1440, "h": 1400, "title": "Gestão: Dashboard (escuro, alterna para claro)", "expand": "fill", "is_interactive": true },
+    "Salao.dc.html": { "x": 1520, "y": 0, "w": 1194, "h": 834, "title": "Operacional: Salão ao vivo (tablet)", "is_interactive": true },
+    "Portal.dc.html": { "x": 2794, "y": 0, "w": 390, "h": 844, "title": "Portal público: Reservar (celular)", "is_interactive": true },
+    "Sistema.dc.html": { "x": 0, "y": 1520, "w": 1440, "h": 980, "title": "Sistema visual" }
+  },
+  "order": ["Main.dc.html", "Salao.dc.html", "Portal.dc.html", "Sistema.dc.html"],
+  "notes": {
+    "t1": { "x": 0, "y": -300, "text": "Salão em vidro: proposta de redesign", "kind": "title1", "maxW": 3184 }
+  },
+  "designSystems": []
+}

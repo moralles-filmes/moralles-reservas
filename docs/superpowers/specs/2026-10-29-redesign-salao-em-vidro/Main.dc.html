@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Gestão: Dashboard</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+.mr{font-family:'Geist',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.mr-dark{--bg:#0B0D11;--bg-deep:#08090C;--glass:rgba(255,255,255,0.045);--glass-hi:rgba(255,255,255,0.10);--line:rgba(255,255,255,0.08);--edge:rgba(255,255,255,0.11);--text:#F3F1EC;--text-2:#B0ADA7;--text-3:#8E8B86;--accent:#E2C48A;--accent-text:#E8CC93;--accent-soft:rgba(226,196,138,0.12);--accent-ring:rgba(226,196,138,0.22);--cta-bg:#E2C48A;--cta-ink:#1A1408;--cta-glow:rgba(226,196,138,0.55);--shadow:0 40px 80px -44px rgba(0,0,0,0.85);--bar-front:linear-gradient(180deg,rgba(255,255,255,0.24),rgba(255,255,255,0.05));--bar-side:rgba(255,255,255,0.06);--bar-top:rgba(255,255,255,0.34);--pool:rgba(226,196,138,0.20);--ok:#7ED8B0;--ok-soft:rgba(126,216,176,0.12);--late:#FF9478;--late-soft:rgba(255,148,120,0.12);--neutral-soft:rgba(255,255,255,0.07);--input:rgba(255,255,255,0.045)}
+.mr-light{--bg:#EDEFF2;--bg-deep:#E5E8EC;--glass:rgba(255,255,255,0.68);--glass-hi:#FFFFFF;--line:rgba(16,18,24,0.08);--edge:rgba(255,255,255,0.95);--text:#111318;--text-2:#4F545C;--text-3:#5E636B;--accent:#9A7434;--accent-text:#7A5A20;--accent-soft:rgba(154,116,52,0.11);--accent-ring:rgba(154,116,52,0.22);--cta-bg:#111318;--cta-ink:#F6F4EF;--cta-glow:rgba(17,19,24,0.35);--shadow:0 30px 60px -34px rgba(20,24,32,0.30);--bar-front:linear-gradient(180deg,rgba(17,19,24,0.16),rgba(17,19,24,0.05));--bar-side:rgba(17,19,24,0.11);--bar-top:#FFFFFF;--pool:rgba(184,140,66,0.22);--ok:#1F7A56;--ok-soft:rgba(31,122,86,0.10);--late:#B4442A;--late-soft:rgba(180,68,42,0.10);--neutral-soft:rgba(17,19,24,0.06);--input:rgba(255,255,255,0.75)}
+.glass{background:var(--glass);border:1px solid var(--line);box-shadow:inset 0 1px 0 var(--edge),var(--shadow);backdrop-filter:blur(28px) saturate(150%);-webkit-backdrop-filter:blur(28px) saturate(150%)}
+.orb{background:radial-gradient(circle at 32% 28%,#FFF7E3 0%,#E9CE97 28%,#A57B3A 70%,#4A3415 100%);box-shadow:inset -3px -4px 8px rgba(0,0,0,.35),0 6px 18px -6px rgba(226,196,138,.6)}
+.nav{display:flex;align-items:center;gap:12px;min-height:38px;padding:0 12px;border-radius:12px;color:var(--text-2);text-decoration:none;font-size:14px;transition:background .2s,color .2s}
+.nav:hover{background:var(--neutral-soft);color:var(--text)}
+.nav.on{background:var(--accent-soft);color:var(--accent-text);box-shadow:inset 0 0 0 1px var(--accent-ring)}
+.seg{display:flex;padding:4px;border-radius:999px;background:var(--neutral-soft);gap:2px}
+.seg button{border:0;background:transparent;color:var(--text-2);font:inherit;font-size:13px;padding:0 16px;height:36px;border-radius:999px;cursor:pointer}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--glass-hi);color:var(--text);box-shadow:inset 0 1px 0 var(--edge),0 6px 16px -8px rgba(0,0,0,.5)}
+.icon-btn{width:44px;height:44px;display:inline-grid;place-items:center;border-radius:50%;border:1px solid var(--line);background:var(--input);color:var(--text-2);cursor:pointer;position:relative;padding:0}
+.icon-btn:hover{color:var(--text)}
+.btn-cta{display:inline-flex;align-items:center;gap:8px;height:46px;padding:0 22px;border-radius:999px;background:var(--cta-bg);color:var(--cta-ink);font-size:15px;font-weight:600;text-decoration:none;box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 12px 30px -12px var(--cta-glow);transition:transform .25s cubic-bezier(.2,.8,.2,1)}
+.btn-cta:hover{color:var(--cta-ink);transform:translateY(-1px)}
+.btn-cta:active{transform:scale(.98)}
+.btn-glass{display:inline-flex;align-items:center;gap:8px;height:46px;padding:0 20px;border-radius:999px;background:var(--neutral-soft);color:var(--text);border:1px solid var(--line);box-shadow:inset 0 1px 0 var(--edge);font-size:15px;font-weight:500;text-decoration:none}
+.btn-glass:hover{color:var(--text);background:var(--glass-hi)}
+.search:focus-within{box-shadow:0 0 0 2px var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.pill{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:500;white-space:nowrap}
+.pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.p-ok{color:var(--ok);background:var(--ok-soft)}
+.p-conf{color:var(--accent-text);background:var(--accent-soft)}
+.p-pend{color:var(--text-2);background:var(--neutral-soft)}
+.p-late{color:var(--late);background:var(--late-soft)}
+.up{color:var(--ok);font-weight:500}
+.bar{position:relative;width:26px;transform-origin:50% 100%;animation:rise 1.2s cubic-bezier(.16,1,.3,1) both}
+.bar .f{position:absolute;inset:0;background:var(--bar-front);border-radius:1px 1px 0 0}
+.bar .s{position:absolute;left:100%;top:0;width:12px;height:100%;background:var(--bar-side);transform:skewY(-45deg);transform-origin:0 0}
+.bar .t{position:absolute;left:0;top:-12px;width:100%;height:12px;background:var(--bar-top);transform:skewX(-45deg);transform-origin:0 100%}
+.bar.pk{filter:drop-shadow(0 0 24px rgba(226,196,138,0.35))}
+.bar.pk .f{background:linear-gradient(180deg,#F3DCA8,#B48A45)}
+.bar.pk .s{background:#85642E}
+.bar.pk .t{background:#FCEBC6}
+.val{position:absolute;bottom:calc(100% + 20px);left:-6px;width:44px;text-align:center;font-size:12px;font-weight:600;color:var(--accent-text);font-variant-numeric:tabular-nums}
+.live{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:pulse 2.4s ease-out infinite}
+.fade{animation:fade 1s cubic-bezier(.16,1,.3,1) both}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@keyframes rise{from{transform:scaleY(0.03);opacity:.3}to{transform:scaleY(1);opacity:1}}
+@keyframes fade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(126,216,176,.55)}100%{box-shadow:0 0 0 10px rgba(126,216,176,0)}}
+@media (prefers-reduced-motion:reduce){.bar,.fade,.live{animation:none}}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="min-height: 1400px; background: var(--bg); color: var(--text); display: flex; flex-wrap: wrap; align-items: stretch;">
+
+  <nav aria-label="Navegação principal" style="flex: 1 1 236px; box-sizing: border-box; padding: 22px 14px; display: flex; flex-direction: column; gap: 18px; border-right: 1px solid var(--line); background: var(--bg-deep);">
+    <div style="display: flex; align-items: center; gap: 12px; padding: 2px 10px;">
+      <span aria-hidden="true" class="orb" style="width: 34px; height: 34px; border-radius: 50%; flex: none;"></span>
+      <div style="display: flex; flex-direction: column; line-height: 1.2;">
+        <span style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em;">Moralles</span>
+        <span style="font-size: 12px; color: var(--text-3);">Reservas</span>
+      </div>
+    </div>
+
+    <button type="button" class="glass" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 52px; padding: 8px 14px; border-radius: 16px; color: var(--text); font: inherit; cursor: pointer; text-align: left;">
+      <span style="display: flex; flex-direction: column; gap: 2px;">
+        <span style="font-size: 11.5px; color: var(--text-3);">Unidade</span>
+        <span style="font-size: 14px; font-weight: 500;">Jardins</span>
+      </span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 10l5 5 5-5"></path></svg>
+    </button>
+
+    <div style="display: flex; flex-direction: column; gap: 2px;">
+      <a href="#" class="nav on" aria-current="page"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>Dashboard</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20h18M6 16v-5M11 16V5M16 16v-3M21 16V9"></path></svg>Relatórios</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2.5"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>Reservas</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"></circle><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6 6 0 0 1 3.5 5.5"></path></svg>Fila de espera</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5h6a4 4 0 0 1 4 4v11a3 3 0 0 0-3-3H2zM22 5h-6a4 4 0 0 0-4 4v11a3 3 0 0 1 3-3h7z"></path></svg>Cardápios</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"></rect><path d="M12 8v13M5 12v9h14v-9M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5"></path></svg>Giftback</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1zM17 8a5 5 0 0 1 0 8"></path></svg>Marketing</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Clientes</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 20.5l1.6-5A8.5 8.5 0 1 1 21 11.5z"></path></svg>Conversas<span style="margin-left: auto; min-width: 22px; height: 22px; padding: 0 7px; box-sizing: border-box; border-radius: 999px; background: var(--cta-bg); color: var(--cta-ink); font-size: 12px; font-weight: 600; display: inline-grid; place-items: center;">3</span></a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l1.4-4.2A8 8 0 1 1 8.2 18.6z"></path><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-1.9-1-1 .8a4 4 0 0 1-2.2-2.2l.8-1-1-1.9z"></path></svg>WhatsApp</a>
+    </div>
+
+    <div style="height: 1px; background: var(--line); margin: 0 10px;"></div>
+
+    <div style="display: flex; flex-direction: column; gap: 2px;">
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l1.5-5h15L21 9M3 9v11h18V9M3 9h18M9 20v-6h6v6"></path></svg>Conta</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"></rect><path d="M2 10h20"></path></svg>Cobrança</a>
+      <a href="#" class="nav"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"></circle><path d="M2.5 20a6.5 6.5 0 0 1 13 0M17 11l2 2 4-4"></path></svg>Usuários</a>
+    </div>
+
+    <div style="margin-top: auto; display: flex; flex-direction: column; gap: 14px;">
+      <a href="#" class="btn-glass" style="justify-content: center; height: 44px; font-size: 14px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>Abrir painel operacional</a>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 4px 10px;">
+        <span aria-hidden="true" style="width: 34px; height: 34px; border-radius: 50%; background: var(--neutral-soft); border: 1px solid var(--line); display: grid; place-items: center; font-size: 13px; font-weight: 600; color: var(--text-2);">AM</span>
+        <span style="display: flex; flex-direction: column; line-height: 1.25;">
+          <span style="font-size: 14px; font-weight: 500;">Ana Martins</span>
+          <span style="font-size: 12px; color: var(--text-3);">Proprietária</span>
+        </span>
+      </div>
+    </div>
+  </nav>
+
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 24px clamp(16px, 3vw, 36px) 48px; display: flex; flex-direction: column; gap: 22px;">
+
+    <header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px;">
+      <label class="search" style="flex: 1 1 260px; max-width: 420px; display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 8px 0 16px; box-sizing: border-box; border-radius: 999px; background: var(--input); border: 1px solid var(--line); color: var(--text-3);">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+        <span class="sr">Buscar</span>
+        <input type="search" placeholder="Buscar cliente, reserva ou telefone" style="flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; outline: none;">
+        <kbd style="font-family: inherit; font-size: 12px; color: var(--text-3); border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px;">⌘K</kbd>
+      </label>
+      <div style="flex: 1 1 0;"></div>
+      <div class="seg" role="group" aria-label="Período dos indicadores">
+        <sc-for list="{{periods}}" as="p" hint-placeholder-count="4"><button type="button" class="{{p.cls}}" aria-pressed="{{p.pressed}}" onClick="{{p.pick}}">{{p.label}}</button></sc-for>
+      </div>
+      <button type="button" class="icon-btn" aria-label="{{themeLabel}}" onClick="{{toggleTheme}}">
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{ true }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{ false }}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"></path></svg>
+        </sc-if>
+      </button>
+      <button type="button" class="icon-btn" aria-label="Notificações, 2 novas">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"></path></svg>
+        <span aria-hidden="true" style="position: absolute; top: 10px; right: 11px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg);"></span>
+      </button>
+    </header>
+
+    <section class="glass" aria-labelledby="hoje-title" style="position: relative; overflow: hidden; border-radius: 32px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 28px; padding: clamp(22px, 3vw, 40px);">
+      <div class="fade" style="display: flex; flex-direction: column; gap: 28px; justify-content: space-between;">
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+          <p style="margin: 0; font-size: 14px; color: var(--text-2); display: flex; align-items: center; gap: 10px;"><span class="live" aria-hidden="true"></span>Quinta-feira, 29 de outubro</p>
+          <h1 id="hoje-title" style="margin: 0; font-size: clamp(38px, 4.2vw, 58px); line-height: 1.02; font-weight: 600; letter-spacing: -0.045em; max-width: 11ch;">Casa cheia das 20h às 22h.</h1>
+          <p style="margin: 0; font-size: 16px; line-height: 1.55; color: var(--text-2); max-width: 40ch;">138 pessoas esperadas em 42 reservas. O pico é às 20h30, com 61 pessoas para 64 lugares no salão.</p>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+          <a href="#" class="btn-cta">Abrir salão ao vivo</a>
+          <a href="#" class="btn-glass"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Nova reserva</a>
+        </div>
+        <dl style="margin: 0; display: flex; flex-wrap: wrap; gap: 12px 36px;">
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <dt style="font-size: 13px; color: var(--text-3);">Na fila agora</dt>
+            <dd style="margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;">6</dd>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <dt style="font-size: 13px; color: var(--text-3);">Walk-ins hoje</dt>
+            <dd style="margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;">11</dd>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <dt style="font-size: 13px; color: var(--text-3);">Canceladas</dt>
+            <dd style="margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;">2</dd>
+          </div>
+        </dl>
+      </div>
+
+      <figure style="margin: 0; display: flex; flex-direction: column; gap: 18px; min-width: 0;">
+        <figcaption style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;">
+          <span style="font-size: 15px; font-weight: 500;">Ocupação por horário</span>
+          <span style="font-size: 13px; color: var(--text-3);">Pessoas no salão a cada 30 minutos</span>
+        </figcaption>
+        <p class="sr">Ocupação cresce a partir das 19h, passa de 85% da capacidade entre 20h e 22h e chega ao pico de 61 pessoas às 20h30.</p>
+        <div style="overflow-x: auto; overflow-y: visible;">
+          <div aria-hidden="true" style="min-width: 520px; padding: 28px 4px 4px;">
+            <div style="position: relative; height: 240px;">
+              <div style="position: absolute; left: -8%; right: -8%; bottom: -46px; height: 130px; background: radial-gradient(ellipse at 52% 50%, var(--pool), transparent 66%);"></div>
+              <div style="position: absolute; left: 0; right: 0; bottom: 205px; border-top: 1px dashed var(--text-3); opacity: 0.5;"></div>
+              <span style="position: absolute; right: 0; bottom: 212px; font-size: 12px; color: var(--text-3);">64 lugares</span>
+              <div style="position: absolute; inset: 0; display: flex; align-items: flex-end; justify-content: space-between; padding-right: 14px;">
+                <sc-for list="{{bars}}" as="b" hint-placeholder-count="12">
+                  <div class="{{b.cls}}" style="height: {{b.h}}px; animation-delay: {{b.delay}}ms;">
+                    <span class="f"></span><span class="s"></span><span class="t"></span>
+                    <sc-if value="{{b.peak}}" hint-placeholder-val="{{ false }}"><span class="val">{{b.v}}</span></sc-if>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="display: flex; justify-content: space-between; padding-right: 14px; margin-top: 14px;">
+              <sc-for list="{{bars}}" as="b" hint-placeholder-count="12"><span style="width: 26px; text-align: center; font-size: 12px; color: var(--text-3);">{{b.label}}</span></sc-for>
+            </div>
+          </div>
+        </div>
+      </figure>
+    </section>
+
+    <section class="glass" aria-label="Indicadores do período" style="border-radius: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); overflow: hidden;">
+      <sc-for list="{{kpis}}" as="k" hint-placeholder-count="4">
+        <div style="padding: 22px 24px; display: flex; flex-direction: column; gap: 10px; border-left: {{k.border}};">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
+            <span style="font-size: 13px; color: var(--text-2);">{{k.label}}</span>
+            <svg width="92" height="28" viewBox="0 0 120 32" aria-hidden="true" style="overflow: visible;"><path d="{{k.path}}" fill="none" style="stroke: var(--accent);" stroke-width="1.7" stroke-linecap="round"></path></svg>
+          </div>
+          <span style="font-size: 34px; font-weight: 600; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; line-height: 1;">{{k.value}}</span>
+          <span style="font-size: 12.5px; color: var(--text-3); display: flex; gap: 8px; align-items: center;"><span class="up">{{k.delta}}</span>{{k.note}}</span>
+        </div>
+      </sc-for>
+    </section>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 22px; align-items: start;">
+
+      <section class="glass" aria-labelledby="cheg-title" style="padding: 26px 26px 10px; border-radius: 24px; display: flex; flex-direction: column;">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px;">
+          <h2 id="cheg-title" style="margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.015em;">Próximas chegadas</h2>
+          <a href="#" style="font-size: 13px; text-decoration: none;">Ver todas as reservas</a>
+        </div>
+        <ul style="list-style: none; margin: 0; padding: 0;">
+          <sc-for list="{{arrivals}}" as="r" hint-placeholder-count="8">
+            <li style="display: grid; grid-template-columns: 54px minmax(0, 1fr) auto auto; gap: 14px; align-items: center; padding: 13px 0; border-top: 1px solid var(--line);">
+              <span style="font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em;">{{r.time}}</span>
+              <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0;">
+                <span style="font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{r.name}}</span>
+                <span style="font-size: 12.5px; color: var(--text-3);">{{r.detail}}</span>
+              </span>
+              <span style="font-size: 13px; color: var(--text-2); white-space: nowrap;">{{r.where}}</span>
+              <span class="{{r.pillCls}}"><span class="dot"></span>{{r.status}}</span>
+            </li>
+          </sc-for>
+        </ul>
+      </section>
+
+      <div style="display: flex; flex-direction: column; gap: 22px; min-width: 0;">
+        <section class="glass" aria-labelledby="ia-title" style="padding: 24px; border-radius: 24px; display: flex; flex-direction: column; gap: 18px;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span aria-hidden="true" style="width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent-ring);"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"></path><path d="M19 15l.8 2.2 2.2.8-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"></path></svg></span>
+            <h2 id="ia-title" style="margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.015em;">Agente no WhatsApp</h2>
+            <span class="pill p-ok" style="margin-left: auto;"><span class="dot"></span>Ativo</span>
+          </div>
+          <p style="margin: 0; font-size: 15px; line-height: 1.55; color: var(--text-2);">Hoje o agente resolveu 52 de 64 conversas sem ajuda. Três clientes esperam sua resposta.</p>
+          <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px;">
+            <sc-for list="{{chats}}" as="c" hint-placeholder-count="2">
+              <li style="display: flex; gap: 12px; align-items: center; padding: 12px; border-radius: 16px; background: var(--neutral-soft);">
+                <span aria-hidden="true" style="width: 36px; height: 36px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 600; background: var(--glass-hi); color: var(--text-2);">{{c.initials}}</span>
+                <span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1;">
+                  <span style="font-size: 14px; font-weight: 500;">{{c.name}}</span>
+                  <span style="font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{c.msg}}</span>
+                </span>
+                <span style="font-size: 12px; color: var(--text-3); white-space: nowrap;">{{c.ago}}</span>
+              </li>
+            </sc-for>
+          </ul>
+          <a href="#" class="btn-glass" style="justify-content: center; height: 44px; font-size: 14px;">Responder conversas</a>
+        </section>
+
+        <section class="glass" aria-labelledby="dia-title" style="padding: 24px; border-radius: 24px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;">
+            <h2 id="dia-title" style="margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.015em;">Reservas por dia</h2>
+            <span style="font-size: 13px; color: var(--text-3);">Últimos 30 dias</span>
+          </div>
+          <div style="position: relative;">
+            <svg viewBox="0 0 580 200" preserveAspectRatio="none" aria-hidden="true" style="display: block; width: 100%; height: 150px; overflow: visible;">
+              <defs>
+                <linearGradient id="rpdFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" style="stop-color: var(--accent); stop-opacity: 0.30;"></stop>
+                  <stop offset="1" style="stop-color: var(--accent); stop-opacity: 0;"></stop>
+                </linearGradient>
+              </defs>
+              <path d="{{areaPath}}" fill="url(#rpdFill)"></path>
+              <path d="{{linePath}}" fill="none" style="stroke: var(--accent);" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linecap="round"></path>
+            </svg>
+            <span aria-hidden="true" style="position: absolute; right: -5px; top: {{lastTop}}; width: 10px; height: 10px; margin-top: -5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft), 0 0 18px var(--accent);"></span>
+            <div aria-hidden="true" style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: var(--text-3);"><span>30 set</span><span>Hoje</span></div>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 10px 28px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--text-2);">
+            <span><span style="color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums;">1.107</span> reservas no período</span>
+            <span>Melhor dia: sábado, 24 de outubro, com 50</span>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"mode":{"editor":"enum","options":["Escuro","Claro"],"default":"Escuro"},"$preview":{"width":1440,"height":1400}}'>
+class Component extends DCLogic {
+  constructor(...args) {
+    super(...args);
+    this.state = { mode: null, period: '30d' };
+  }
+
+  renderVals() {
+    const st = this.state || {};
+    const mode = st.mode || this.props.mode || 'Escuro';
+    const isDark = mode !== 'Claro';
+    const period = st.period || '30d';
+
+    const smooth = (p) => {
+      let d = 'M' + p[0][0].toFixed(1) + ' ' + p[0][1].toFixed(1);
+      for (let i = 0; i < p.length - 1; i++) {
+        const p0 = p[i - 1] || p[i], p1 = p[i], p2 = p[i + 1], p3 = p[i + 2] || p2;
+        const c = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6, p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6, p2[0], p2[1]];
+        d += ' C' + c.map((n) => n.toFixed(1)).join(' ');
+      }
+      return d;
+    };
+    const spark = (vals) => {
+      const min = Math.min(...vals), max = Math.max(...vals);
+      return smooth(vals.map((v, i) => [i * (120 / (vals.length - 1)), 29 - ((v - min) / (max - min || 1)) * 26]));
+    };
+
+    const periods = [
+      { id: 'hoje', label: 'Hoje' },
+      { id: '7d', label: '7 dias' },
+      { id: '30d', label: '30 dias' },
+      { id: '90d', label: '90 dias' },
+    ].map((p) => ({
+      ...p,
+      cls: p.id === period ? 'on' : '',
+      pressed: p.id === period ? 'true' : 'false',
+      pick: () => this.setState({ period: p.id }),
+    }));
+
+    const cap = 64;
+    const slots = [['18h', 8], ['', 14], ['19h', 24], ['', 39], ['20h', 55], ['', 61], ['21h', 58], ['', 55], ['22h', 36], ['', 21], ['23h', 10], ['', 4]];
+    const bars = slots.map(([label, v], i) => {
+      const peak = v / cap >= 0.85;
+      return { label, v, peak, h: Math.round(v * 3.2), delay: 160 + i * 60, cls: peak ? 'bar pk' : 'bar' };
+    });
+
+    const kpis = [
+      { label: 'Reservas confirmadas', value: '1.047', delta: '+12%', note: 'vs. 30 dias anteriores', path: spark([22, 26, 24, 30, 29, 35, 33, 38]) },
+      { label: 'Pessoas atendidas', value: '3.218', delta: '+9%', note: 'vs. 30 dias anteriores', path: spark([30, 28, 33, 32, 36, 35, 39, 41]) },
+      { label: 'Taxa de no-show', value: '3,2%', delta: '−0,8 p.p.', note: 'menos faltas', path: spark([9, 8, 8.5, 7, 6.5, 6, 5, 4.6]) },
+      { label: 'Avaliação média', value: '4,8', delta: '+0,1', note: '412 avaliações', path: spark([4.5, 4.6, 4.6, 4.7, 4.65, 4.7, 4.8, 4.8]) },
+    ].map((k, i) => ({ ...k, border: i === 0 ? 'none' : '1px solid var(--line)' }));
+
+    const arrivals = [
+      { time: '19:45', name: 'Lívia Andrade', detail: '2 pessoas, atrasada 12 min', where: 'Mesa 5', status: 'Atrasada', pillCls: 'pill p-late' },
+      { time: '20:00', name: 'Helena Prado', detail: '4 pessoas, via WhatsApp', where: 'Mesa 12', status: 'Confirmada', pillCls: 'pill p-conf' },
+      { time: '20:00', name: 'Rafael Moura', detail: '2 pessoas, pelo site', where: 'Mesa 3', status: 'Confirmada', pillCls: 'pill p-conf' },
+      { time: '20:15', name: 'Beatriz Siqueira', detail: '6 pessoas, aniversário', where: 'Mesa 21', status: 'Pendente', pillCls: 'pill p-pend' },
+      { time: '20:15', name: 'Otávio Ramos', detail: '2 pessoas, via WhatsApp', where: 'Mesa 7', status: 'Confirmada', pillCls: 'pill p-conf' },
+      { time: '20:30', name: 'Carla Menezes', detail: '8 pessoas, caução paga', where: 'Varanda 2', status: 'Confirmada', pillCls: 'pill p-conf' },
+      { time: '20:30', name: 'Thiago Lins', detail: '2 pessoas, pelo site', where: 'Sem mesa', status: 'Pendente', pillCls: 'pill p-pend' },
+      { time: '20:45', name: 'Joana Freitas', detail: '3 pessoas, via WhatsApp', where: 'Mesa 8', status: 'Confirmada', pillCls: 'pill p-conf' },
+    ];
+
+    const chats = [
+      { initials: 'MC', name: 'Mariana Costa', msg: 'Vocês têm cadeirinha para bebê?', ago: 'há 4 min' },
+      { initials: 'PG', name: 'Pedro Galvão', msg: 'Consigo mudar para 6 pessoas no sábado?', ago: 'há 11 min' },
+    ];
+
+    const daily = [31, 35, 44, 47, 39, 23, 27, 33, 36, 45, 48, 41, 25, 28, 32, 38, 46, 49, 40, 24, 30, 34, 39, 47, 50, 42, 26, 31, 35, 42];
+    const pts = daily.map((v, i) => [i * (580 / (daily.length - 1)), 186 - ((v - 20) / 32) * 166]);
+    const linePath = smooth(pts);
+    const areaPath = linePath + ' L580 200 L0 200 Z';
+    const lastTop = ((pts[pts.length - 1][1] / 200) * 100).toFixed(1) + '%';
+
+    return {
+      themeClass: isDark ? 'mr mr-dark' : 'mr mr-light',
+      isDark,
+      isLight: !isDark,
+      themeLabel: isDark ? 'Mudar para tema claro' : 'Mudar para tema escuro',
+      toggleTheme: () => this.setState({ mode: isDark ? 'Claro' : 'Escuro' }),
+      periods,
+      bars,
+      kpis,
+      arrivals,
+      chats,
+      linePath,
+      areaPath,
+      lastTop,
+    };
+  }
+}
+</script>
+</body>
+</html>

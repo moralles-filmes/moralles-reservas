@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Portal público: Reservar</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#7A5A20}a:hover{color:#111318}
+.pp{font-family:'Geist',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;-webkit-font-smoothing:antialiased;--text:#111318;--text-2:#4F545C;--text-3:#5E636B;--line:rgba(16,18,24,0.08);--soft:rgba(17,19,24,0.05)}
+:focus-visible{outline:2px solid #9A7434;outline-offset:2px}
+.gbtn{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 16px;border-radius:999px;border:0;background:rgba(255,255,255,0.72);backdrop-filter:blur(18px) saturate(160%);-webkit-backdrop-filter:blur(18px) saturate(160%);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 8px 20px -10px rgba(17,19,24,.35);color:#111318;font:inherit;font-size:14px;font-weight:500;text-decoration:none;cursor:pointer}
+.step{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:#FFFFFF;color:#111318;display:grid;place-items:center;cursor:pointer;padding:0;box-shadow:0 1px 0 rgba(17,19,24,.04)}
+.step:disabled{color:#A3A7AD;cursor:not-allowed}
+.dchip{flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;width:62px;height:64px;border-radius:18px;border:1px solid var(--line);background:#FFFFFF;color:var(--text);font:inherit;cursor:pointer;transition:transform .25s cubic-bezier(.2,.8,.2,1),box-shadow .25s}
+.dchip span{font-size:12px;color:var(--text-3)}
+.dchip b{font-size:19px;font-weight:600;letter-spacing:-0.02em}
+.dchip.on{background:#111318;border-color:#111318;color:#F6F4EF;transform:translateY(-2px);box-shadow:0 14px 24px -12px rgba(17,19,24,.6),inset 0 1px 0 rgba(255,255,255,.16)}
+.dchip.on span{color:#C9C6C0}
+.tchip{height:44px;border-radius:14px;border:1px solid var(--line);background:#FFFFFF;color:var(--text);font:inherit;font-size:14px;font-weight:500;font-variant-numeric:tabular-nums;cursor:pointer;transition:transform .25s cubic-bezier(.2,.8,.2,1),box-shadow .25s}
+.tchip.on{background:#111318;border-color:#111318;color:#F6F4EF;transform:translateY(-2px);box-shadow:0 14px 24px -12px rgba(17,19,24,.6),inset 0 1px 0 rgba(255,255,255,.16)}
+.tchip:disabled{background:transparent;color:var(--text-3);text-decoration:line-through;cursor:not-allowed}
+.seg{display:flex;padding:4px;border-radius:999px;background:var(--soft);gap:2px}
+.seg button{flex:1;border:0;background:transparent;color:var(--text-2);font:inherit;font-size:14px;height:36px;border-radius:999px;cursor:pointer}
+.seg button.on{background:#FFFFFF;color:var(--text);box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 6px 14px -8px rgba(17,19,24,.4)}
+.cta{display:flex;align-items:center;justify-content:center;width:100%;height:54px;border-radius:999px;border:0;background:#111318;color:#F6F4EF;font:inherit;font-size:16px;font-weight:600;cursor:pointer;box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 16px 30px -14px rgba(17,19,24,.7)}
+.orb{background:radial-gradient(circle at 32% 28%,#FFF7E3 0%,#E9CE97 28%,#A57B3A 70%,#4A3415 100%);box-shadow:inset -4px -5px 10px rgba(0,0,0,.30),0 0 0 4px #EEF0F3,0 16px 30px -12px rgba(122,90,32,.6)}
+.rise{animation:rise .9s cubic-bezier(.16,1,.3,1) both}
+@keyframes rise{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.rise{animation:none}.dchip,.tchip{transition:none}}
+</style>
+</helmet>
+<div class="pp" style="position: relative; width: 390px; height: 844px; overflow: hidden; background: #EEF0F3; color: var(--text);">
+  <div style="height: 844px; overflow-y: auto; padding-bottom: 120px; box-sizing: border-box;">
+
+    <div style="position: relative; height: 188px; margin: 10px 10px 0; border-radius: 30px; overflow: hidden; background: #CDD2D9;">
+      <div aria-hidden="true" style="position: absolute; inset: 0; display: grid; place-items: center; color: #5E636B; font-size: 13px;">
+        <span style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"></rect><circle cx="9" cy="10" r="2"></circle><path d="M21 16l-5-5-9 9"></path></svg>
+          Foto de capa do restaurante
+        </span>
+      </div>
+      <div style="position: absolute; top: 14px; left: 14px; right: 14px; display: flex; justify-content: space-between;">
+        <a href="#" class="gbtn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5h6a4 4 0 0 1 4 4v11a3 3 0 0 0-3-3H2zM22 5h-6a4 4 0 0 0-4 4v11a3 3 0 0 1 3-3h7z"></path></svg>Cardápio</a>
+        <button type="button" class="gbtn" aria-label="Compartilhar" style="width: 44px; padding: 0; justify-content: center;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 8l5-5 5 5M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"></path></svg></button>
+      </div>
+    </div>
+
+    <div style="padding: 0 22px; margin-top: -32px; position: relative; display: flex; flex-direction: column; gap: 10px;">
+      <span aria-hidden="true" class="orb" style="width: 64px; height: 64px; border-radius: 50%;"></span>
+      <h1 style="margin: 4px 0 0; font-size: 32px; font-weight: 600; letter-spacing: -0.045em; line-height: 1;">Moralles</h1>
+      <p style="margin: 0; font-size: 14px; color: var(--text-2);">Cozinha contemporânea nos Jardins, São Paulo</p>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13.5px; color: var(--text-2);">
+        <span style="display: inline-flex; align-items: center; gap: 6px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="#9A7434" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"></path></svg><b style="color: var(--text); font-weight: 600;">4,8</b> de 412 avaliações</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px;"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: #1F7A56;"></span>Aberto até 23h</span>
+      </div>
+    </div>
+
+    <section class="rise" aria-labelledby="res-title" style="margin: 20px 10px 0; padding: 22px 18px 20px; border-radius: 30px; background: #FFFFFF; box-shadow: 0 1px 0 rgba(255,255,255,.9) inset, 0 30px 60px -30px rgba(20,24,32,.28), 0 0 0 1px rgba(16,18,24,0.05); display: flex; flex-direction: column; gap: 18px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+        <h2 id="res-title" style="margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -0.03em;">Reservar mesa</h2>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <button type="button" class="step" aria-label="Diminuir número de pessoas" onClick="{{dec}}" disabled="{{decDisabled}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"></path></svg></button>
+          <span aria-live="polite" style="min-width: 68px; text-align: center; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums;">{{paxLabel}}</span>
+          <button type="button" class="step" aria-label="Aumentar número de pessoas" onClick="{{inc}}" disabled="{{incDisabled}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+        </div>
+      </div>
+
+      <div role="group" aria-labelledby="dia-label" style="display: flex; flex-direction: column; gap: 10px;">
+        <span id="dia-label" style="font-size: 13px; font-weight: 500; color: var(--text-2);">Dia</span>
+        <div style="display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 10px; margin: -4px -2px -10px;">
+          <sc-for list="{{dates}}" as="d" hint-placeholder-count="5"><button type="button" class="{{d.cls}}" aria-pressed="{{d.pressed}}" aria-label="{{d.aria}}" onClick="{{d.pick}}"><span>{{d.wd}}</span><b>{{d.day}}</b></button></sc-for>
+        </div>
+      </div>
+
+      <div role="group" aria-labelledby="hora-label" style="display: flex; flex-direction: column; gap: 10px;">
+        <span id="hora-label" style="font-size: 13px; font-weight: 500; color: var(--text-2);">Horário</span>
+        <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;">
+          <sc-for list="{{times}}" as="t" hint-placeholder-count="8"><button type="button" class="{{t.cls}}" aria-pressed="{{t.pressed}}" aria-label="{{t.aria}}" disabled="{{t.off}}" onClick="{{t.pick}}">{{t.t}}</button></sc-for>
+        </div>
+      </div>
+
+      <div role="group" aria-label="Ambiente" class="seg">
+        <sc-for list="{{halls}}" as="h" hint-placeholder-count="2"><button type="button" class="{{h.cls}}" aria-pressed="{{h.pressed}}" onClick="{{h.pick}}">{{h.label}}</button></sc-for>
+      </div>
+    </section>
+
+    <p style="margin: 18px 0 0; text-align: center; font-size: 14px; color: var(--text-2);">Sem horário para hoje? <a href="#" style="font-weight: 500;">Entrar na fila de espera</a></p>
+  </div>
+
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 16px 22px; background: rgba(238,240,243,0.78); backdrop-filter: blur(22px) saturate(160%); -webkit-backdrop-filter: blur(22px) saturate(160%); box-shadow: 0 -1px 0 rgba(16,18,24,0.07); display: flex; flex-direction: column; gap: 10px;">
+    <p aria-live="polite" style="margin: 0; text-align: center; font-size: 13.5px; color: var(--text-2);">{{summary}}</p>
+    <button type="button" class="cta">Continuar</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(...args) {
+    super(...args);
+    this.state = { pax: 2, date: 'sex', time: '20:30', hall: 'salao' };
+  }
+
+  renderVals() {
+    const st = this.state || {};
+    const pax = st.pax || 2;
+    const DATES = [
+      { id: 'hoje', wd: 'Hoje', day: '29', long: 'Hoje, 29 de outubro' },
+      { id: 'sex', wd: 'Sex', day: '30', long: 'Sexta, 30 de outubro' },
+      { id: 'sab', wd: 'Sáb', day: '31', long: 'Sábado, 31 de outubro' },
+      { id: 'dom', wd: 'Dom', day: '1', long: 'Domingo, 1º de novembro' },
+      { id: 'seg', wd: 'Seg', day: '2', long: 'Segunda, 2 de novembro' },
+      { id: 'ter', wd: 'Ter', day: '3', long: 'Terça, 3 de novembro' },
+    ];
+    const dates = DATES.map((d) => ({
+      ...d,
+      cls: d.id === st.date ? 'dchip on' : 'dchip',
+      pressed: d.id === st.date ? 'true' : 'false',
+      aria: d.long,
+      pick: () => this.setState({ date: d.id }),
+    }));
+    const soldOut = ['21:30'];
+    const times = ['19:00', '19:30', '20:00', '20:30', '21:00', '21:30', '22:00', '22:30'].map((t) => {
+      const off = soldOut.includes(t);
+      return {
+        t,
+        off,
+        cls: t === st.time && !off ? 'tchip on' : 'tchip',
+        pressed: t === st.time ? 'true' : 'false',
+        aria: off ? t + ', esgotado' : t,
+        pick: () => this.setState({ time: t }),
+      };
+    });
+    const halls = [
+      { id: 'salao', label: 'Salão principal' },
+      { id: 'varanda', label: 'Varanda' },
+    ].map((h) => ({
+      ...h,
+      cls: h.id === st.hall ? 'on' : '',
+      pressed: h.id === st.hall ? 'true' : 'false',
+      pick: () => this.setState({ hall: h.id }),
+    }));
+    const d = DATES.find((x) => x.id === st.date) || DATES[1];
+    const paxLabel = pax === 1 ? '1 pessoa' : pax + ' pessoas';
+    return {
+      dates,
+      times,
+      halls,
+      paxLabel,
+      dec: () => this.setState({ pax: Math.max(1, pax - 1) }),
+      inc: () => this.setState({ pax: Math.min(12, pax + 1) }),
+      decDisabled: pax <= 1,
+      incDisabled: pax >= 12,
+      summary: d.long + ', às ' + st.time + ', para ' + paxLabel,
+    };
+  }
+}
+</script>
+</body>
+</html>
