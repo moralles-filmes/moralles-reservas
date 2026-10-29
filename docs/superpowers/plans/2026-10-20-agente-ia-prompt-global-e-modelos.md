@@ -886,6 +886,12 @@ PR, checks, `db push`, merge, deploy, verificação.
 - **Pré-voo 80 (2026-10-29, container descartável `postgres:18` em `127.0.0.1:55480`, banco `ai80` do zero, removido ao fim):** a porta 55432 passou a ser de um container de outro projeto e não foi usada. Sequência do README: 80a ok; 80 antes da migration = **RED** `ERROR: 80: migration do prompt global ausente` (exit 3); migration → 80 **31 e 31**; migration de novo → 80 **31 e 31** (idempotência); 75 **20 e 20**; 80 de novo **31 e 31**.
 - **`deno check supabase/functions/webhook-whatsapp/index.ts`:** ok, sem erros (`npx --yes deno` 2.9.6, autorizado pelo usuário).
 
+**Leituras antes do `db push` (2026-10-29, produção, só leitura, autorizadas)**
+- `settings` fora do formato do guard, por chave, sem ler valor: as 9 chaves validadas têm 2 linhas cada e **0** não-string, **0** acima do limite, **0** com caractere de controle; `agent_mode` 2 linhas, **0** fora do enum. Nenhuma linha legada travaria uma escrita.
+- `pg_roles` do `postgres`: `rolsuper=false`, **`rolbypassrls=true`** — as RPCs escrevem sob `FORCE RLS` sem policy de escrita, como o C4 do pré-voo pressupõe.
+- **Preços reconferidos no dia** nas páginas oficiais: todos iguais, exceto o cache de leitura do `claude-sonnet-5-5`, que a página de preços dá como 0,10 (a migration grava 0,20, a escolha conservadora feita quando as duas fontes divergiam). **Mantido 0,20:** superestima o custo, ou seja, falha para o lado seguro, e o Sonnet não é o modelo default. Acertar exige vigência nova, nunca UPDATE (follow-up). Ressalvas confirmadas: o `gpt-5.6-sol` tem preço promocional "pelo menos até 2026-11-21"; o `deepseek-flash` está gravado na tarifa de pico; faixas de contexto longo (Haiku > 100k, Grok ≥ 200k) não estão na tabela.
+- **FK `created_by` (P3):** o usuário delegou a decisão e **ela fica, como na spec**: dá integridade referencial e evita mexer na migration depois dos gates e do pré-voo. Para remover um admin que já publicou, ele sai de `platform_admins`, não do Auth (follow-up para registrar no runbook).
+
 **Gates (Opus, diff `origin/main..HEAD`)** — todos PASS_WITH_WARNINGS, 0 bloqueantes:
 
 | Gate | P2 | P3 (resumo) |
