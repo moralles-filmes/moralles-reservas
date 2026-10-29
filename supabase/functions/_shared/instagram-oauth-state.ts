@@ -12,6 +12,14 @@
  * (comparação em tempo constante) → só então o JSON é lido e validado → `exp`.
  * Conteúdo não autenticado nunca é interpretado. `expired` quando `nowMs >= exp`.
  *
+ * NONCE: o chamador gera com `crypto.randomUUID()` (ou ≥ 16 bytes aleatórios
+ * em base64url). Nonce com menos de `MIN_NONCE_LENGTH` caracteres: `sign` lança
+ * e `verify` devolve `malformed`.
+ *
+ * TETO DO `exp`: `exp - now` acima de `INSTAGRAM_STATE_TTL_MS + MAX_CLOCK_SKEW_MS`
+ * nunca foi emitido por nós: `sign` lança e `verify` devolve `malformed` (um
+ * segredo vazado não cunha `state` "eterno" que sobreviva à rotação por meses).
+ *
  * Segredo vazio, não-string ou com menos de `MIN_SECRET_LENGTH` caracteres:
  * `sign` lança e `verify` recusa (`bad_signature`) — nunca se assina com chave fraca.
  *
@@ -27,6 +35,11 @@ export const INSTAGRAM_STATE_TTL_MS = 600_000;
 
 /** Tamanho mínimo do segredo do `state` (caracteres). */
 const MIN_SECRET_LENGTH = 32;
+/** Tamanho mínimo do nonce (caracteres); `crypto.randomUUID()` tem 36. */
+const MIN_NONCE_LENGTH = 16;
+/** Folga de relógio aceita além do TTL ao conferir o teto do `exp`. */
+const MAX_CLOCK_SKEW_MS = 60_000;
+const MAX_EXP_AHEAD_MS = INSTAGRAM_STATE_TTL_MS + MAX_CLOCK_SKEW_MS;
 const HMAC_BYTES = 32;
 const B64URL = /^[A-Za-z0-9_-]+$/;
 
@@ -77,14 +90,27 @@ function toPayload(v: unknown): InstagramStatePayload | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   if (!nonEmptyString(o.unitId) || !nonEmptyString(o.userId) || !nonEmptyString(o.nonce)) return null;
+  if (o.nonce.length < MIN_NONCE_LENGTH) return null;
   if (typeof o.exp !== "number" || !Number.isFinite(o.exp)) return null;
   return { unitId: o.unitId, userId: o.userId, exp: o.exp, nonce: o.nonce };
 }
 
-export async function signInstagramState(p: InstagramStatePayload, secret: string): Promise<string> {
+/** `exp` além do teto em relação a `nowMs` (nunca emitido por nós). */
+function beyondMaxExp(exp: number, nowMs: number): boolean {
+  return exp - nowMs > MAX_EXP_AHEAD_MS;
+}
+
+export async function signInstagramState(
+  p: InstagramStatePayload,
+  secret: string,
+  nowMs: number = Date.now(),
+): Promise<string> {
   if (!isUsableSecret(secret)) throw new Error("instagram_state_secret_unusable");
   const payload = toPayload(p);
   if (payload === null) throw new Error("instagram_state_payload_invalid");
+  if (typeof nowMs !== "number" || !Number.isFinite(nowMs) || beyondMaxExp(payload.exp, nowMs)) {
+    throw new Error("instagram_state_exp_out_of_range");
+  }
   const part = bytesToB64url(
     enc.encode(JSON.stringify({ unitId: payload.unitId, userId: payload.userId, exp: payload.exp, nonce: payload.nonce })),
   );
@@ -125,5 +151,6 @@ export async function verifyInstagramState(
   const payload = toPayload(parsed);
   if (payload === null) return { ok: false, reason: "malformed" };
   if (!(typeof nowMs === "number" && nowMs < payload.exp)) return { ok: false, reason: "expired" };
+  if (beyondMaxExp(payload.exp, nowMs)) return { ok: false, reason: "malformed" };
   return { ok: true, payload };
 }

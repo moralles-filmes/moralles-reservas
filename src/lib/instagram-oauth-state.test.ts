@@ -16,7 +16,7 @@ const PAYLOAD = {
   unitId: "11111111-1111-4111-8111-111111111111",
   userId: "22222222-2222-4222-8222-222222222222",
   exp: NOW + INSTAGRAM_STATE_TTL_MS,
-  nonce: "nonce-FAKE-abc",
+  nonce: "nonce-FAKE-0123456789abcdef",
 };
 
 function b64url(bytes: Uint8Array): string {
@@ -53,7 +53,7 @@ describe("INSTAGRAM_STATE_TTL_MS", () => {
 
 describe("signInstagramState / verifyInstagramState", () => {
   it("ida e volta: formato base64url(json).base64url(hmac) e payload íntegro", async () => {
-    const token = await signInstagramState(PAYLOAD, SECRET);
+    const token = await signInstagramState(PAYLOAD, SECRET, NOW);
     expect(token).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
     const [p, s] = token.split(".");
     expect(JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(p.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))))).toEqual(PAYLOAD);
@@ -62,21 +62,21 @@ describe("signInstagramState / verifyInstagramState", () => {
   });
 
   it("state adulterado em 1 caractere do payload → bad_signature", async () => {
-    const token = await signInstagramState(PAYLOAD, SECRET);
+    const token = await signInstagramState(PAYLOAD, SECRET, NOW);
     const i = 5;
     const tampered = token.slice(0, i) + flip(token[i]) + token.slice(i + 1);
     expect(await verifyInstagramState(tampered, SECRET, NOW)).toEqual({ ok: false, reason: "bad_signature" });
   });
 
   it("state adulterado em 1 caractere da assinatura → bad_signature", async () => {
-    const token = await signInstagramState(PAYLOAD, SECRET);
+    const token = await signInstagramState(PAYLOAD, SECRET, NOW);
     const i = token.indexOf(".") + 10;
     const tampered = token.slice(0, i) + flip(token[i]) + token.slice(i + 1);
     expect(await verifyInstagramState(tampered, SECRET, NOW)).toEqual({ ok: false, reason: "bad_signature" });
   });
 
   it("qualquer troca do último caractere da assinatura é recusada (sem bits de folga aceitos)", async () => {
-    const token = await signInstagramState(PAYLOAD, SECRET);
+    const token = await signInstagramState(PAYLOAD, SECRET, NOW);
     const last = token[token.length - 1];
     for (const c of "AEIMQUYcgkosw048BCDFfh") {
       if (c === last) continue;
@@ -86,7 +86,7 @@ describe("signInstagramState / verifyInstagramState", () => {
   });
 
   it("userId trocado no json com a assinatura antiga → bad_signature", async () => {
-    const token = await signInstagramState(PAYLOAD, SECRET);
+    const token = await signInstagramState(PAYLOAD, SECRET, NOW);
     const oldSig = token.split(".")[1];
     const swapped = b64urlText(JSON.stringify({ ...PAYLOAD, userId: "33333333-3333-4333-8333-333333333333" }));
     expect(await verifyInstagramState(`${swapped}.${oldSig}`, SECRET, NOW)).toEqual({
@@ -96,19 +96,19 @@ describe("signInstagramState / verifyInstagramState", () => {
   });
 
   it("assinado com outro segredo → bad_signature", async () => {
-    const token = await signInstagramState(PAYLOAD, OTHER_SECRET);
+    const token = await signInstagramState(PAYLOAD, OTHER_SECRET, NOW);
     expect(await verifyInstagramState(token, SECRET, NOW)).toEqual({ ok: false, reason: "bad_signature" });
   });
 
   it("vencido (now >= exp) → expired; um ms antes ainda vale", async () => {
-    const token = await signInstagramState(PAYLOAD, SECRET);
+    const token = await signInstagramState(PAYLOAD, SECRET, NOW);
     expect(await verifyInstagramState(token, SECRET, PAYLOAD.exp)).toEqual({ ok: false, reason: "expired" });
     expect(await verifyInstagramState(token, SECRET, PAYLOAD.exp + 1)).toEqual({ ok: false, reason: "expired" });
     expect((await verifyInstagramState(token, SECRET, PAYLOAD.exp - 1)).ok).toBe(true);
   });
 
   it("assinatura confere antes do vencimento: token alheio vencido continua bad_signature", async () => {
-    const token = await signInstagramState(PAYLOAD, OTHER_SECRET);
+    const token = await signInstagramState(PAYLOAD, OTHER_SECRET, NOW);
     expect(await verifyInstagramState(token, SECRET, PAYLOAD.exp + 1)).toEqual({ ok: false, reason: "bad_signature" });
   });
 
@@ -131,7 +131,7 @@ describe("signInstagramState / verifyInstagramState", () => {
   });
 
   it("assinatura com tamanho errado → malformed", async () => {
-    const token = await signInstagramState(PAYLOAD, SECRET);
+    const token = await signInstagramState(PAYLOAD, SECRET, NOW);
     expect(await verifyInstagramState(`${token.split(".")[0]}.AAAA`, SECRET, NOW)).toEqual({
       ok: false,
       reason: "malformed",
@@ -163,8 +163,8 @@ describe("signInstagramState / verifyInstagramState", () => {
     ["curto", "short-secret"],
     ["não-string", undefined as unknown as string],
   ])("segredo %s: sign lança e verify recusa", async (_n, secret) => {
-    await expect(signInstagramState(PAYLOAD, secret)).rejects.toThrow();
-    const token = await signInstagramState(PAYLOAD, SECRET);
+    await expect(signInstagramState(PAYLOAD, secret, NOW)).rejects.toThrow();
+    const token = await signInstagramState(PAYLOAD, SECRET, NOW);
     expect((await verifyInstagramState(token, secret, NOW)).ok).toBe(false);
     // e um token assinado com o próprio segredo fraco também não passa
     if (typeof secret === "string" && secret.length > 0) {
@@ -175,8 +175,47 @@ describe("signInstagramState / verifyInstagramState", () => {
   });
 
   it("sign recusa payload inválido", async () => {
-    await expect(signInstagramState({ ...PAYLOAD, userId: "" }, SECRET)).rejects.toThrow();
-    await expect(signInstagramState({ ...PAYLOAD, exp: Number.NaN }, SECRET)).rejects.toThrow();
+    await expect(signInstagramState({ ...PAYLOAD, userId: "" }, SECRET, NOW)).rejects.toThrow();
+    await expect(signInstagramState({ ...PAYLOAD, exp: Number.NaN }, SECRET, NOW)).rejects.toThrow();
+  });
+});
+
+describe("teto do exp e nonce mínimo", () => {
+  const MAX_AHEAD = INSTAGRAM_STATE_TTL_MS + 60_000;
+
+  it("exp no teto (TTL + 60 s) é aceito por sign e verify", async () => {
+    const p = { ...PAYLOAD, exp: NOW + MAX_AHEAD };
+    const token = await signInstagramState(p, SECRET, NOW);
+    expect(await verifyInstagramState(token, SECRET, NOW)).toEqual({ ok: true, payload: p });
+  });
+
+  it("sign lança quando exp passa do teto", async () => {
+    await expect(signInstagramState({ ...PAYLOAD, exp: NOW + MAX_AHEAD + 1 }, SECRET, NOW)).rejects.toThrow();
+  });
+
+  it("sign usa o relógio atual por padrão: exp longe no futuro lança", async () => {
+    await expect(signInstagramState({ ...PAYLOAD, exp: Date.now() + 24 * 3600_000 }, SECRET)).rejects.toThrow();
+    const ok = { ...PAYLOAD, exp: Date.now() + INSTAGRAM_STATE_TTL_MS };
+    await expect(signInstagramState(ok, SECRET)).resolves.toMatch(/./);
+  });
+
+  it("verify recusa (malformed) state bem assinado com exp além do teto", async () => {
+    const part = b64urlText(JSON.stringify({ ...PAYLOAD, exp: NOW + MAX_AHEAD + 1 }));
+    expect(await verifyInstagramState(await signedRaw(part), SECRET, NOW)).toEqual({ ok: false, reason: "malformed" });
+    // um ano à frente, típico de chave vazada usada para cunhar state "eterno"
+    const year = b64urlText(JSON.stringify({ ...PAYLOAD, exp: NOW + 365 * 24 * 3600_000 }));
+    expect(await verifyInstagramState(await signedRaw(year), SECRET, NOW)).toEqual({ ok: false, reason: "malformed" });
+  });
+
+  it("nonce com menos de 16 caracteres: sign lança e verify devolve malformed", async () => {
+    await expect(signInstagramState({ ...PAYLOAD, nonce: "123456789012345" }, SECRET, NOW)).rejects.toThrow();
+    const part = b64urlText(JSON.stringify({ ...PAYLOAD, nonce: "123456789012345" }));
+    expect(await verifyInstagramState(await signedRaw(part), SECRET, NOW)).toEqual({ ok: false, reason: "malformed" });
+  });
+
+  it("nonce de crypto.randomUUID() é aceito", async () => {
+    const p = { ...PAYLOAD, nonce: crypto.randomUUID() };
+    expect((await verifyInstagramState(await signInstagramState(p, SECRET, NOW), SECRET, NOW)).ok).toBe(true);
   });
 });
 

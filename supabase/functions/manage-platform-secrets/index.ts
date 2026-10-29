@@ -53,8 +53,9 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
 // As chamadas abaixo só limpam o cache DESTE isolate — que aqui nem chega
 // a ser populado, pois manage-platform-secrets nunca lê getStripeSecretKey()/
 // getAsaasApiKey()/getDatafyAccountToken(). Os segredos do Instagram nem têm
-// instância aqui: cada EF consumidora cria a sua (createInstagramConfig) e a
-// troca vale nela ao fim do TTL de 5 min. Isolates que de fato leem a chave
+// instância aqui: cada EF consumidora cria seu leitor com
+// `createInstagramSecretReader` no `index.ts`, e a troca vale nela ao fim do
+// TTL de 5 min. Isolates que de fato leem a chave
 // (stripe-webhook, create-checkout-session, o futuro asaas-webhook, etc.) mantêm
 // o valor antigo em cache até o próprio TTL de 5min expirar — uma chave
 // rotacionada pode levar até 5min pra valer em todo lugar. Não existe

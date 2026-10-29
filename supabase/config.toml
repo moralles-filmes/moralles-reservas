@@ -14,6 +14,11 @@ verify_jwt = false
 [functions.webhook-instagram]
 verify_jwt = false
 
+# Conexão da conta do Instagram (start/callback/status/disconnect/resubscribe):
+# invocada pelo painel autenticado. JWT no gateway + getUser e papel no código.
+[functions.instagram-connect]
+verify_jwt = true
+
 [functions.create-reservation]
 verify_jwt = false
 
