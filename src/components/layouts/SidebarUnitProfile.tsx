@@ -39,7 +39,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
   // Trilho recolhido: só o avatar circular (logo ou ícone), com tooltip do nome.
   if (collapsed) {
     const avatar = (
-      <div className="mx-auto h-10 w-10 rounded-full bg-card border border-sidebar-border shadow-sm overflow-hidden flex items-center justify-center">
+      <div className="mx-auto h-10 w-10 rounded-full bg-card ring-1 ring-sidebar-border shadow-depth-1 overflow-hidden flex items-center justify-center">
         {logoUrl ? (
           <img src={logoUrl} alt="" className="h-full w-full object-cover" />
         ) : (
@@ -82,9 +82,8 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
   const card = (
     <div
       className={cn(
-        "relative w-full h-32 rounded-lg overflow-hidden border border-sidebar-border",
-        "shadow-sm group",
-        hasMultiple && "cursor-pointer hover:shadow-md transition-shadow",
+        "surface relative w-full h-32 rounded-block overflow-hidden group",
+        hasMultiple && "cursor-pointer hover:shadow-depth-2 transition-shadow",
       )}
     >
       {heroUrl ? (
@@ -100,7 +99,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent" />
 
       <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-end gap-2.5">
-        <div className="h-11 w-11 rounded-full bg-white border-2 border-white shadow-md overflow-hidden shrink-0 flex items-center justify-center">
+        <div className="h-11 w-11 rounded-full bg-card ring-2 ring-background shadow-depth-1 overflow-hidden shrink-0 flex items-center justify-center">
           {logoUrl ? (
             <img src={logoUrl} alt="" className="h-full w-full object-cover" />
           ) : (

@@ -8,20 +8,20 @@ import { useSidebarCollapse } from "./sidebar-context";
 
 /* ────────────────────────────────────────────────────────────────────────────
    Estilos canônicos do item de navegação — fonte única, importada por todos os
-   layouts (Gestão/Operacional/Plataforma/Admin legado). Item ativo é DOURADO via
-   tokens da sidebar (--sidebar-accent + --sidebar-accent-foreground + anel
-   --sidebar-ring), sem azul chapado.
+   layouts (Gestão/Operacional/Plataforma/Admin legado). Item ativo usa os tokens
+   da sidebar (--sidebar-accent + --sidebar-accent-foreground) com um traço
+   dourado de 2px à esquerda. Superfícies únicas: sem vidro nos itens repetidos.
    ──────────────────────────────────────────────────────────────────────────── */
 export const navItemBase =
-  "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors";
+  "flex items-center gap-3 px-3 py-2 rounded-item text-sm transition-colors";
 export const navItemActive =
-  "bg-sidebar-accent text-sidebar-accent-foreground font-medium ring-1 ring-inset ring-sidebar-ring/25";
+  "relative bg-sidebar-accent text-sidebar-accent-foreground font-medium before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[2px] before:rounded-full before:bg-gold";
 export const navItemIdle =
   "text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-foreground";
 export const navItem = (isActive: boolean) =>
   cn(navItemBase, isActive ? navItemActive : navItemIdle);
 export const navSectionTitle =
-  "text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-3";
+  "text-[10px] font-semibold tracking-wider text-tertiary px-3";
 
 type IconType = React.ComponentType<{ className?: string }>;
 
@@ -34,7 +34,7 @@ function NavBadge({ value, collapsed }: { value: number; collapsed: boolean }) {
     );
   }
   return (
-    <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-warning text-warning-foreground text-[10px] font-bold flex items-center justify-center leading-none">
+    <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-warning text-warning-foreground text-[10px] font-bold flex items-center justify-center leading-none tabular">
       {value > 99 ? "99+" : value}
     </span>
   );
@@ -209,7 +209,7 @@ export function SidebarCopyCode({ slug }: { slug: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-muted-foreground bg-muted hover:bg-muted/70 transition-colors group"
+      className="w-full flex items-center gap-2 px-3 py-1.5 rounded-item text-xs text-muted-foreground bg-muted hover:bg-muted/70 transition-colors group"
     >
       <Copy className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" />
       <span className="flex-1 text-left">Copiar código</span>
@@ -295,14 +295,14 @@ export function SidebarGroup({ label, icon: Icon, matchPrefix, items }: SidebarG
                 end={child.end}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                    "flex items-center gap-2 px-3 py-1.5 rounded-item text-sm transition-colors",
                     isActive ? navItemActive : navItemIdle,
                   )
                 }
               >
                 {({ isActive }) => (
                   <>
-                    <ChildIcon className={cn("h-3.5 w-3.5 shrink-0", !isActive && "text-muted-foreground")} />
+                    <ChildIcon className={cn("h-3.5 w-3.5 shrink-0", !isActive && "text-tertiary")} />
                     <span className="flex-1 truncate">{child.label}</span>
                   </>
                 )}
