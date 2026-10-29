@@ -485,17 +485,17 @@ Regras:
   - três ou mais: `Pico às 18h, 19h e 20h, com 6 reservas cada`.
 - **Próximas chegadas** (`upcomingArrivals`): só `pending` e `confirmed` com `time.slice(0, 5) >= nowHHMM`, ordenadas por horário crescente, limite padrão 5.
 
-- [ ] **Step 1: Escrever os testes que falham** em `arrivals-today.test.ts`:
+- [x] **Step 1: Escrever os testes que falham** em `arrivals-today.test.ts`:
   - `"conta só pendente e confirmada"`: 20:00 confirmed (4 pessoas), 20:15 pending (2), 20:30 cancelled (6) e 20:45 no_show (3), faixa 18–22. A hora 20 tem `reservations: 2, guests: 6`.
   - `"estende a faixa para reserva fora do horário"`: uma confirmed às `23:30:00` com faixa 18–22. Existe item `hour: 23, label: "23h", reservations: 1`, e o resultado vai de 18 a 23 sem buracos.
   - `"dia vazio não tem pico nem frase"`: lista vazia ou só canceladas. Todo `isPeak === false` e `arrivalsSentence` devolve `null`.
   - `"frase com um pico"`: 14 reservas às 20h e menos nas outras horas, frase `"Pico às 20h, com 14 reservas"`. Com 1 reserva no pico: `"Pico às 20h, com 1 reserva"`.
   - `"frase com empate"`: 6 às 19h e 6 às 20h dão `"Pico às 19h e 20h, com 6 reservas cada"`. Com 18, 19 e 20h empatadas: `"Pico às 18h, 19h e 20h, com 6 reservas cada"`.
   - `"próximas chegadas"`: com `nowHHMM = "19:40"`, 19:30 confirmed fica fora, 19:45 pending entra, 20:00 cancelled fica fora; a ordem é crescente e o limite de 5 é respeitado.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/arrivals-today.test.ts`. Esperado: FAIL.
-- [ ] **Step 3: Implementar** `arrivals-today.ts`.
-- [ ] **Step 4: Rodar e ver passar.** Esperado: PASS.
-- [ ] **Step 5: Commit:** `git add src/lib/arrivals-today.ts src/lib/arrivals-today.test.ts` e depois `git commit -m "feat(dashboard): núcleo das chegadas de hoje"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/lib/arrivals-today.test.ts`. Esperado: FAIL.
+- [x] **Step 3: Implementar** `arrivals-today.ts`.
+- [x] **Step 4: Rodar e ver passar.** Esperado: PASS.
+- [x] **Step 5: Commit:** `git add src/lib/arrivals-today.ts src/lib/arrivals-today.test.ts` e depois `git commit -m "feat(dashboard): núcleo das chegadas de hoje"`.
 
 ### Task 10: Gráfico 3D de chegadas
 
@@ -522,15 +522,15 @@ Acessibilidade:
 - o contêiner tem `role="img"` e `aria-label={arrivalsSentence(hours) ?? "Sem chegadas hoje"}`;
 - uma `<ul className="sr-only">` traz um `<li>` por hora no formato `20h: 14 reservas, 38 pessoas` (`1 reserva`, `1 pessoa` no singular).
 
-- [ ] **Step 1: Escrever o teste que falha:**
+- [x] **Step 1: Escrever o teste que falha:**
   - `"lista acessível por hora"`: com horas 19h (2 reservas, 5 pessoas) e 20h (1 reserva, 1 pessoa), existem os itens `"19h: 2 reservas, 5 pessoas"` e `"20h: 1 reserva, 1 pessoa"`;
   - `"pico marcado"`: a barra de 19h tem `data-peak="true"` e a de 20h, `"false"`;
   - `"animação só com movimento permitido"`: as barras têm a classe `motion-safe:animate-rise` e nenhuma classe `animate-` fora do prefixo `motion-safe:`;
   - `"rótulo do gráfico"`: `getByRole("img")` tem `aria-label` `"Pico às 19h, com 2 reservas"`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/dashboard/ArrivalsByHour3D.test.tsx`. Esperado: FAIL.
-- [ ] **Step 3: Implementar o componente.**
-- [ ] **Step 4: Rodar e ver passar.** Esperado: PASS.
-- [ ] **Step 5: Commit:** `git commit -m "feat(dashboard): barras 3D de chegadas por horário"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/dashboard/ArrivalsByHour3D.test.tsx`. Esperado: FAIL.
+- [x] **Step 3: Implementar o componente.**
+- [x] **Step 4: Rodar e ver passar.** Esperado: PASS.
+- [x] **Step 5: Commit:** `git commit -m "feat(dashboard): barras 3D de chegadas por horário"`.
 
 ### Task 11: Novo Dashboard
 
@@ -578,7 +578,7 @@ Acessibilidade:
 
 `horaLocalAgora` é calculada no componente com `new Date()` local, formato `HH:MM`.
 
-- [ ] **Step 1: Escrever os testes que falham.**
+- [x] **Step 1: Escrever os testes que falham.**
   - `DashboardHero.test.tsx`:
     - `"mostra frase e ações"`: com horas que dão pico às 20h, aparecem `"Pico às 20h, com 3 reservas"`, um link "Abrir operacional" com `href` `/o/casa` e um botão "Nova reserva" que chama `onNewReservation`;
     - `"dia vazio mostra estado vazio sem gráfico"`: com horas todas zeradas, aparece "Nenhuma reserva para hoje" e não existe `role="img"`.
@@ -587,10 +587,10 @@ Acessibilidade:
     - `"erro"` mostra mensagem e "Tentar de novo", que chama `refetch`;
     - `"vazio"` mostra "Nenhuma conversa aguardando resposta";
     - `"lista"` mostra nome e "Aguardando atendente".
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/dashboard/DashboardHero.test.tsx src/components/dashboard/ConversationsWaitingPanel.test.tsx`. Esperado: FAIL.
-- [ ] **Step 3: Implementar os três componentes** e reorganizar `Dashboard.tsx` na ordem acima. Nenhum bloco atual sai.
-- [ ] **Step 4: Rodar e ver passar.** Os testes, o guarda de desfoque e `npm run test`. Esperado: PASS.
-- [ ] **Step 5: Commit:** `git commit -m "feat(dashboard): painel principal, próximas chegadas e conversas aguardando"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/dashboard/DashboardHero.test.tsx src/components/dashboard/ConversationsWaitingPanel.test.tsx`. Esperado: FAIL.
+- [x] **Step 3: Implementar os três componentes** e reorganizar `Dashboard.tsx` na ordem acima. Nenhum bloco atual sai.
+- [x] **Step 4: Rodar e ver passar.** Os testes, o guarda de desfoque e `npm run test`. Esperado: PASS.
+- [x] **Step 5: Commit:** `git commit -m "feat(dashboard): painel principal, próximas chegadas e conversas aguardando"`.
 
 **Fechamento da fase A3.** Revisão visual de `/g/:slug` nos dois temas e nos três tamanhos, com e sem reservas no dia. Perfil de desempenho no tablet (DevTools, CPU 4× mais lenta): a entrada das barras sem queda de quadro visível. Registrar no STATE.
 
