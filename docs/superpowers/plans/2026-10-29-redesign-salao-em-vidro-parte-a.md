@@ -353,14 +353,14 @@ Alvos visuais (mockup `Sistema.dc.html`, seção de componentes):
   - `no_show` = `bg-muted text-muted-foreground border-border`.
 - **Switch, Checkbox e Calendar:** marcados em `bg-primary`, raios na hierarquia nova, dia selecionado em cápsula.
 
-- [ ] **Step 1: Escrever o teste que falha** em `src/components/ui/button.test.ts`:
+- [x] **Step 1: Escrever o teste que falha** em `src/components/ui/button.test.ts`:
   - `"variantes antigas continuam"`: para `default`, `destructive`, `outline`, `secondary`, `ghost` e `link`, `buttonVariants({ variant })` é string não vazia;
   - `"variante glass existe e usa surface"`: o retorno contém `surface`;
   - `"botão é cápsula com alvo de toque"`: `buttonVariants({})` contém `rounded-full` e `coarse:h-11`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/ui/button.test.ts`. Esperado: FAIL.
-- [ ] **Step 3: Restilizar os nove componentes e `STATUS_COLORS`.**
-- [ ] **Step 4: Rodar e ver passar.** O teste e depois `npm run test`, porque testes de wizard e WhatsApp checam classes. Esperado: PASS. Se um teste existente reprovar por classe, ajustar o componente, não o teste, a menos que o teste cheque cor antiga; nesse caso, atualizar a asserção e citar no commit.
-- [ ] **Step 5: Commit** dos arquivos listados: `git commit -m "feat(ui): botões, campos e pílulas no Salão em vidro"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/ui/button.test.ts`. Esperado: FAIL.
+- [x] **Step 3: Restilizar os nove componentes e `STATUS_COLORS`.**
+- [x] **Step 4: Rodar e ver passar.** O teste e depois `npm run test`, porque testes de wizard e WhatsApp checam classes. Esperado: PASS. Se um teste existente reprovar por classe, ajustar o componente, não o teste, a menos que o teste cheque cor antiga; nesse caso, atualizar a asserção e citar no commit.
+- [x] **Step 5: Commit** dos arquivos listados: `git commit -m "feat(ui): botões, campos e pílulas no Salão em vidro"`.
 
 ### Task 6: Superfícies e sobreposições
 
@@ -381,13 +381,13 @@ Alvos:
 - **Skeleton:** `bg-muted`.
 - **ScrollArea:** thumb `bg-border`.
 
-- [ ] **Step 1: Escrever o teste que falha** em `src/components/ui/card.test.tsx`:
+- [x] **Step 1: Escrever o teste que falha** em `src/components/ui/card.test.tsx`:
   - `"card é vidro sem desfoque"`: renderiza `<Card data-testid="c" />`; o `className` contém `surface` e `rounded-card` e não contém `glass` nem `backdrop`;
   - `"className do chamador continua valendo"`: `<Card className="p-0" />` contém `p-0`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/ui/card.test.tsx`. Esperado: FAIL.
-- [ ] **Step 3: Restilizar os componentes.**
-- [ ] **Step 4: Rodar e ver passar.** O teste, `npx vitest run src/lib/glass-usage-guard.test.ts` e `npm run test`. Esperado: PASS.
-- [ ] **Step 5: Commit:** `git commit -m "feat(ui): superfícies de vidro e sobreposições"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/ui/card.test.tsx`. Esperado: FAIL.
+- [x] **Step 3: Restilizar os componentes.**
+- [x] **Step 4: Rodar e ver passar.** O teste, `npx vitest run src/lib/glass-usage-guard.test.ts` e `npm run test`. Esperado: PASS.
+- [x] **Step 5: Commit:** `git commit -m "feat(ui): superfícies de vidro e sobreposições"`.
 
 ### Task 7: KPI e cartões de gráfico
 
@@ -405,14 +405,14 @@ Alvos:
 
 O valor usa `tabular` e `text-3xl font-semibold tracking-tight`, e o `formatValue` não muda. Nos gráficos recharts, a barra passa a `hsl(var(--chart-reserva))`, a grade a `hsl(var(--border))`, o tooltip a `hsl(var(--popover))` com `borderRadius: 16`, e a área do "Reservas por dia" ganha gradiente de `--chart-reserva` a transparente.
 
-- [ ] **Step 1: Escrever o teste que falha** em `KpiCard.test.tsx`:
+- [x] **Step 1: Escrever o teste que falha** em `KpiCard.test.tsx`:
   - `"null, NaN e Infinity viram —"`: `KpiStat` com `value={null}`, `NaN` e `Infinity` mostra `—` e nenhum sufixo;
   - `"sufixo só com número finito"`: `value={12.34} suffix="%"` mostra `12.3` e `%`;
   - `"KpiStrip agrupa itens"`: três `KpiStat` dentro de `KpiStrip` renderizam três títulos.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/dashboard/KpiCard.test.tsx`. Esperado: FAIL (`KpiStat` inexistente).
-- [ ] **Step 3: Implementar** `KpiStat`, `KpiStrip`, o `KpiCard` como composição e os gráficos.
-- [ ] **Step 4: Rodar e ver passar.** Esperado: PASS.
-- [ ] **Step 5: Commit:** `git commit -m "feat(dashboard): KpiStat, KpiStrip e gráficos com tokens novos"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/dashboard/KpiCard.test.tsx`. Esperado: FAIL (`KpiStat` inexistente).
+- [x] **Step 3: Implementar** `KpiStat`, `KpiStrip`, o `KpiCard` como composição e os gráficos.
+- [x] **Step 4: Rodar e ver passar.** Esperado: PASS.
+- [x] **Step 5: Commit:** `git commit -m "feat(dashboard): KpiStat, KpiStrip e gráficos com tokens novos"`.
 
 ### Task 8: Cascos e navegação
 
@@ -437,13 +437,13 @@ Alvos (mockup `Main.dc.html`, sidebar e topo):
 - **PageHeader:** título `text-[28px] sm:text-[30px] font-semibold tracking-[-0.02em]`, descrição em `text-muted-foreground`.
 - **ThemeToggle:** botão em cápsula `coarse:h-11 coarse:w-11`.
 
-- [ ] **Step 1: Escrever o teste que falha** em `AdminShell.test.tsx`:
+- [x] **Step 1: Escrever o teste que falha** em `AdminShell.test.tsx`:
   - `"recolher a sidebar persiste em admin-sidebar-collapsed"`: renderiza `AdminShell` com `sidebar={<nav>menu</nav>}` dentro de `MemoryRouter` e do `RouteThemeProvider`; clica no botão de recolher (pelo `aria-label` atual) e confere `localStorage.getItem("admin-sidebar-collapsed") === "true"`;
   - `"área principal tem fundo ambiente"`: o contêiner do conteúdo tem a classe `ambient`.
-- [ ] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/layouts/AdminShell.test.tsx`. Esperado: o primeiro teste PASS (o contrato já existe) e o segundo FAIL.
-- [ ] **Step 3: Implementar** `BrandMark` e restilizar os cascos.
-- [ ] **Step 4: Rodar e ver passar.** O teste, `src/components/layouts/platform-nav.test.ts` e `npm run test`. Esperado: PASS.
-- [ ] **Step 5: Commit:** `git commit -m "feat(cascos): sidebar, topo e seletor de unidade em vidro"`.
+- [x] **Step 2: Rodar e ver falhar.** `npx vitest run src/components/layouts/AdminShell.test.tsx`. Esperado: o primeiro teste PASS (o contrato já existe) e o segundo FAIL.
+- [x] **Step 3: Implementar** `BrandMark` e restilizar os cascos.
+- [x] **Step 4: Rodar e ver passar.** O teste, `src/components/layouts/platform-nav.test.ts` e `npm run test`. Esperado: PASS.
+- [x] **Step 5: Commit:** `git commit -m "feat(cascos): sidebar, topo e seletor de unidade em vidro"`.
 
 **Fechamento da fase A2.** Revisão visual nos dois temas:
 - `/g/:slug/clientes` (tabela);
