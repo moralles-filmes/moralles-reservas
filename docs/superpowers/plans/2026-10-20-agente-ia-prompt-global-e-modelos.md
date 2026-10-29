@@ -522,20 +522,20 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 
 ### B6.3 PR — **autorização 1**
 
-- [ ] Push de `feat/agente-ia-prompt-global` e PR, que leva:
+- [x] Push de `feat/agente-ia-prompt-global` e PR, que leva: _(PR #60.)_
   - o resumo;
   - o diff do snapshot (A → B);
   - a matriz;
   - a evidência de B1.0;
   - o resultado do pré-voo 78;
   - os gates.
-- [ ] Conferir na aba Checks o `acl-estatico` (não é required) e o preview da Vercel.
+- [x] Conferir na aba Checks o `acl-estatico` (não é required) e o preview da Vercel. _(`acl-estatico` pass, Vercel preview pass; `acl-com-banco` é manual e foi pulado.)_
 
 ### B6.4 Sequência de deploy (spec §11.2): cada passo com autorização própria
 
 > **Decidido com o usuário em 2026-10-29: opção (a)** — `db push` → deploy de `webhook-whatsapp` do commit exato do PR → merge desse mesmo commit. O C-B3 fechou no mesmo dia (§8.3). As migrations foram renomeadas para `20261029120000` (preços) e `20261029120100` (prompt e guard), porque a `main` trouxe 3 migrations já aplicadas em produção com timestamp posterior às antigas `20261020130000`/`20261020150000`; o pré-voo passou de 78/78a para 80/80a.
 
-1. [ ] **Autorização 2 — `supabase db push`** das duas migrations, na ordem do nome: preços (B1, `20261029120000`), depois prompt e guard (B2, `20261029120100`). Receita da memória `settings-escrita-por-chave`, com `--skip-vault` (planos da `main` de 2026-10-20/21: a CLI atual mexe nos segredos do Vault sem ele):
+1. [x] **Autorização 2 — `supabase db push`** das duas migrations, na ordem do nome: preços (B1, `20261029120000`), depois prompt e guard (B2, `20261029120100`). Receita da memória `settings-escrita-por-chave`, com `--skip-vault` (planos da `main` de 2026-10-20/21: a CLI atual mexe nos segredos do Vault sem ele):
    - `npx --yes supabase@2.121.0 db push --linked --skip-vault --dry-run`, que tem de listar **exatamente** as 2 migrations; depois sem `--dry-run`. Nunca `--include-all`;
    - antes, só de leitura: contagem por chave das linhas de `settings` fora do formato do guard (sem ler o valor), `rolbypassrls` do `postgres`, preços reconferidos no dia, decisão da FK `created_by`;
    - copiar `supabase/.temp/{project-ref,linked-project.json}` do checkout principal e **removê-los depois**;
@@ -550,9 +550,9 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
    - trigger `settings_write_value_guard` presente;
    - zero linhas de `settings` acima do limite (só `char_length`, sem ler o valor). Linha acima do limite não quebra nada, mas fica registrada.
 > **⚠️ Decidir com o usuário antes do passo 2 (review final do Chat 4, Important 1):** este roteiro (push → merge → EF) contradiz o pré-gate P2 (§8.2: EF do B3 antes do merge). Com as telas do B5, o merge depois do `db push` dá ao gerente um formulário para gravar cardápio/delivery/extra enquanto a EF velha ainda interpola esses textos sem delimitação (raio: a própria loja). Opções: (a) `db push` → deploy de `webhook-whatsapp` (exige C-B3 fechado) → merge; (b) segurar o merge até o C-B3 fechar. **Nunca mergear antes do `db push`** — e o preview da Vercel do PR (B6.3) já expõe as telas: ali `/g/:slug/atendimento-ia` salva com 42501 ("Sem permissão…") e `/platform/agente-ia` mostra o card de erro, sem tela branca nem loop.
-2. [ ] **Autorização 3 — `supabase functions deploy webhook-whatsapp`** (matriz B6.1) logo depois do passo 1, do commit exato da cabeça do PR, em janela de baixo tráfego. C-B3 fechado em 2026-10-29. Fecha a janela do P2: as 3 chaves já são `manager` desde o passo 1, e só esta EF as delimita. A EF nova funciona com o front antigo. Até o passo 3, a EF de produção vem de um commit fora da `main`; o rollback de código usa a `main` pré-merge.
-3. [ ] **Autorização 4 — merge do PR em `main`** (Vercel), **do mesmo commit** deployado no passo 2. Conferir o deploy READY. A UI passa a gravar as 3 chaves (o banco já aceita) e a chamar as RPCs.
-4. [ ] **Verificação (spec §11.2.4):**
+2. [x] **Autorização 3 — `supabase functions deploy webhook-whatsapp`** (matriz B6.1) logo depois do passo 1, do commit exato da cabeça do PR, em janela de baixo tráfego. C-B3 fechado em 2026-10-29. Fecha a janela do P2: as 3 chaves já são `manager` desde o passo 1, e só esta EF as delimita. A EF nova funciona com o front antigo. Até o passo 3, a EF de produção vem de um commit fora da `main`; o rollback de código usa a `main` pré-merge.
+3. [x] **Autorização 4 — merge do PR em `main`** (Vercel), **do mesmo commit** deployado no passo 2. Conferir o deploy READY. A UI passa a gravar as 3 chaves (o banco já aceita) e a chamar as RPCs.
+4. [x] **Verificação (spec §11.2.4):** _(resultado em §8.4, B6.3–B6.4.)_
    - nos primeiros turnos, `webhook_executions.meta.global_prompt_source = 'db'` e `global_prompt_version` = id da v1;
    - nenhum `ai_global_prompt_read_failed` nem `ai_model_retired` inesperado nos logs;
    - modelo resolvido das 2 lojas = `gemini-2.5-flash`;
@@ -570,9 +570,9 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 
 ### B6.6 Fechamento
 
-- [ ] Registrar o rollout em §8.4.
-- [ ] Atualizar as memórias `agente-ia-prompt-global` (entregue) e `instagram-module` (Fase 1 liberada; a Fase 2 usa `capabilities.vision`).
-- [ ] Follow-ups da spec §13 ficam listados no PR.
+- [x] Registrar o rollout em §8.4.
+- [x] Atualizar as memórias `agente-ia-prompt-global` (entregue) e `instagram-module` (Fase 1 liberada; a Fase 2 usa `capabilities.vision`). _(A `instagram-module` fica com a sessão do Bloco 3 do Instagram.)_
+- [x] Follow-ups da spec §13 ficam listados no PR. _(PR #60.)_
 
 ## 8. Evidências
 
@@ -909,3 +909,15 @@ PR, checks, `db push`, merge, deploy, verificação.
 Review da branch inteira (Opus): pronto para PR com ressalvas, 0 Critical. Merge conferido sem regressão (rotas, navegação, Ajustes, PromptTab, allowlist). Important 1 (migrations fora de ordem) e 2 (`--skip-vault` ausente na receita do `db push`) estão resolvidos acima e no B6.4. Minor: pré-voo 78 repetido (resolvido); a cópia de `AtendimentoIa.tsx` diz "Preços e condições", mas o campo em Ajustes se chama "Regras e Condições"; a matriz de redeploy foi remedida no HEAD pós-merge (B6.1).
 
 **Decisões do usuário (2026-10-29):** ordem de deploy (a) push → EF → merge; renomear as migrations; P2/P3 dos gates viram follow-up no PR, porque nenhum afeta as 2 lojas hoje (ambas no `gemini-2.5-flash` padrão, sem modelo `strong`).
+
+#### B6.3–B6.4: PR, merge e verificação (2026-10-29)
+
+- **PR #60:** `acl-estatico` pass, Vercel preview pass, `acl-com-banco` (manual, alvo não-produção) pulado. Follow-ups listados no corpo do PR. Mergeado às 17:17 UTC: `main` **`aecc574`**, cabeça `9d5ea4e`. Deploy da Vercel em `aecc574`: success.
+- **Mesmo código na EF e na `main`:** a `webhook-whatsapp` v113 saiu de `ee08ecb`. `ee08ecb..9d5ea4e` só acrescenta 2 linhas neste plano, e `9d5ea4e..aecc574` não mexe em `supabase/functions`. A EF de produção é o código da `main`.
+- **Primeiros turnos (produção, só leitura, sem conteúdo nem telefone; janela 17:10–17:26 UTC):**
+  - `ai_prompt_versions` tem só a v1, `9bfa9819-55b9-42c1-a15b-b787aa78d48c`;
+  - 16 execuções, todas de uma das 2 lojas; a outra ainda sem tráfego;
+  - 1 turno do agente com `outcome='success'`, `meta.global_prompt_source='db'` e `meta.global_prompt_version` igual à v1;
+  - 2 `webhook_error` com `processed_message_inflight`, que é reentrega concorrente e aparece todo dia na semana anterior (cerca de 1 por `success`); não veio do deploy.
+- **Logs da função (17:00–17:35 UTC, leitura autorizada pelo usuário):** 3 `agent_usage`, todos da mesma loja, com `provider=gemini`, `model=gemini-2.5-flash`, `global_prompt_source=db` e a versão v1. **Zero** `ai_global_prompt_read_failed`, `ai_model_retired` e `ai_model_fallback`. Os únicos `level:error` são `processed_message_inflight` (3 até 17:35, o mesmo caso acima) e o `WHATSAPP_TEMPLATE_PIPELINE_ALERT` do pipeline de templates, que já disparava antes do deploy (83 vezes entre 10:00 e 17:00 UTC) e não tem relação com esta entrega. A outra loja segue sem turno do agente; o modelo dela é o mesmo default.
+- **Testes manuais do usuário:** o owner salvou o cardápio em Atendimento por IA; o admin vê a v1 em `/platform/agente-ia`. Os dois passaram.
