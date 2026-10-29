@@ -735,7 +735,8 @@ Alvos:
 ### Task 17: Varredura das demais telas
 
 **Files:**
-- Modify: telas de `src/pages/gestao/**`, `src/pages/platform/**`, `src/pages/PaymentRequired.tsx` e componentes de `src/components/{gestao,giftback,menus,whatsapp,billing,conta,relatorios,halls,notifications,admin,platform}/**` onde a busca abaixo ou a revisão visual acusar problema.
+- Modify: telas de `src/pages/gestao/**`, `src/pages/platform/**`, `src/pages/PaymentRequired.tsx` e componentes de `src/components/{gestao,giftback,menus,whatsapp,billing,conta,relatorios,halls,notifications,admin,platform,ai}/**` onde a busca abaixo ou a revisão visual acusar problema.
+- Telas que chegaram da `main` depois do plano (merge 4882166) e entram nesta varredura: `/g/:slug/atendimento-ia` (`src/pages/gestao/AtendimentoIa.tsx`), `/platform/agente-ia` (`src/pages/platform/AgenteIa.tsx`), `/o/:slug/whatsapp` (reusa `src/pages/gestao/Whatsapp.tsx`, revisar no casco do Operacional) e `ServiceNoticePreferencesCard`. Antes desta task, mergear a `main` de novo e incluir toda rota nova de `src/App.tsx` (ex.: Instagram em `/platform/integracoes`, se já estiver na `main`).
 
 Busca de cor fixa:
 
