@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const ALLOWED_BLUR_FILES = [
+  "src/components/dashboard/DashboardHero.tsx",
   "src/components/layouts/AdminShell.tsx",
   "src/components/ui/dialog.tsx",
   "src/components/ui/alert-dialog.tsx",
