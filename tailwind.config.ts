@@ -20,8 +20,11 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ["Plus Jakarta Sans", "system-ui", "sans-serif"],
-        display: ["Plus Jakarta Sans", "system-ui", "sans-serif"],
+        sans: ["Geist", "system-ui", "sans-serif"],
+        display: ["Geist", "system-ui", "sans-serif"],
+      },
+      screens: {
+        coarse: { raw: "(pointer: coarse)" },
       },
       colors: {
         border: "hsl(var(--border))",
@@ -82,6 +85,16 @@ export default {
         gold: {
           DEFAULT: "hsl(var(--gold))",
           foreground: "hsl(var(--gold-foreground))",
+          ink: "hsl(var(--gold-ink))",
+        },
+        tertiary: "hsl(var(--tertiary-foreground))",
+        status: {
+          free: "hsl(var(--status-free))",
+          reserved: "hsl(var(--status-reserved))",
+          arriving: "hsl(var(--status-arriving))",
+          seated: "hsl(var(--status-seated))",
+          late: "hsl(var(--status-late))",
+          pending: "hsl(var(--status-pending))",
         },
         "surface-elevated": "hsl(var(--surface-elevated))",
       },
@@ -89,6 +102,10 @@ export default {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+        panel: "30px",
+        card: "24px",
+        block: "16px",
+        item: "12px",
       },
       boxShadow: {
         soft: "0 1px 2px hsl(var(--foreground) / 0.04), 0 1px 3px hsl(var(--foreground) / 0.06)",
@@ -98,6 +115,15 @@ export default {
         "premium-dark": "0 8px 40px -8px rgb(0 0 0 / 0.6)",
         "gold-glow":
           "0 0 0 1px hsl(var(--gold) / 0.22), 0 4px 14px -2px hsl(var(--gold) / 0.25)",
+        "depth-1":
+          "0 1px 2px hsl(var(--shadow-color) / 0.10), 0 8px 24px -12px hsl(var(--shadow-color) / 0.25)",
+        "depth-2":
+          "0 2px 6px hsl(var(--shadow-color) / 0.12), 0 24px 48px -24px hsl(var(--shadow-color) / 0.40)",
+        "depth-3":
+          "0 4px 12px hsl(var(--shadow-color) / 0.14), 0 40px 80px -32px hsl(var(--shadow-color) / 0.55)",
+      },
+      transitionTimingFunction: {
+        "out-expo": "cubic-bezier(0.16, 1, 0.3, 1)",
       },
       keyframes: {
         "accordion-down": {
@@ -112,11 +138,16 @@ export default {
           from: { transform: "translateY(8px)", opacity: "0" },
           to: { transform: "translateY(0)", opacity: "1" },
         },
+        rise: {
+          from: { transform: "scaleY(0)" },
+          to: { transform: "scaleY(1)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "fade-up": "fade-up 0.4s ease-out",
+        rise: "rise 1.2s cubic-bezier(0.16, 1, 0.3, 1) both",
       },
     },
   },
