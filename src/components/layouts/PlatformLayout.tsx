@@ -30,9 +30,8 @@ export function PlatformLayout({ children }: { children: React.ReactNode }) {
       mainPaddingClass="p-6"
       sidebar={
         <>
-          <div className="flex items-center justify-between px-4 h-14">
-            <BrandMark />
-            <span className="text-[11px] text-tertiary truncate">Plataforma</span>
+          <div className="flex items-center px-4 h-14">
+            <BrandMark label="Plataforma" />
           </div>
 
           <nav className="flex-1 px-3 pb-2 overflow-y-auto scrollbar-premium">

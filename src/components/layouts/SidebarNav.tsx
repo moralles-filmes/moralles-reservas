@@ -13,7 +13,7 @@ import { useSidebarCollapse } from "./sidebar-context";
    dourado de 2px à esquerda. Superfícies únicas: sem vidro nos itens repetidos.
    ──────────────────────────────────────────────────────────────────────────── */
 export const navItemBase =
-  "flex items-center gap-3 px-3 py-2 rounded-item text-sm transition-colors";
+  "flex items-center gap-3 px-3 py-2 coarse:min-h-11 rounded-item text-sm transition-colors";
 export const navItemActive =
   "relative bg-sidebar-accent text-sidebar-accent-foreground font-medium before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[2px] before:rounded-full before:bg-gold";
 export const navItemIdle =

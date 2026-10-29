@@ -86,7 +86,7 @@ const ResponsiveDialogContent = React.forwardRef<
         <DialogPrimitive.Close
           className={cn(
             "absolute right-3 top-3 sm:right-4 sm:top-4 z-10",
-            "h-9 w-9 rounded-full inline-flex items-center justify-center",
+            "h-9 w-9 coarse:h-11 coarse:w-11 rounded-full inline-flex items-center justify-center",
             "bg-background/80 text-foreground/70",
             "hover:text-foreground hover:bg-muted transition-colors",
             "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",

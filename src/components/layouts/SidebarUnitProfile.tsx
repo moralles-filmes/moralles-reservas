@@ -99,7 +99,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent" />
 
       <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-end gap-2.5">
-        <div className="h-11 w-11 rounded-full bg-card ring-2 ring-background shadow-depth-1 overflow-hidden shrink-0 flex items-center justify-center">
+        <div className="h-11 w-11 rounded-full bg-logo-plate ring-2 ring-background shadow-depth-1 overflow-hidden shrink-0 flex items-center justify-center">
           {logoUrl ? (
             <img src={logoUrl} alt="" className="h-full w-full object-cover" />
           ) : (

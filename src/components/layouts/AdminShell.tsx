@@ -92,7 +92,7 @@ export function AdminShell({
       {/* Backdrop só no mobile com gaveta aberta */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 z-40 bg-foreground/50 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-background/60 backdrop-blur-sm lg:hidden"
           onClick={() => setMobileOpen(false)}
           aria-hidden="true"
         />
