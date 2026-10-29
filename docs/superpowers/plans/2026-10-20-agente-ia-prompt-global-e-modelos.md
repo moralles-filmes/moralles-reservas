@@ -416,9 +416,9 @@ Conteúdo, com `begin; … commit;` no arquivo (o harness aplica cru):
 
 O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco `DADOS_DA_LOJA`. Exemplo: um `ai_system_prompt` que dependa de texto colado em `restaurant_extra_info`.
 
-- [ ] Pedir ao usuário **autorização para ler conteúdo** de `settings` e os 3 campos curtos de `units` das 2 unidades. O classificador já bloqueou essa leitura uma vez. Alternativa: o usuário roda ele mesmo a consulta só de leitura (o plano entrega o SQL no chat) e salva o JSON fora do repo. (Pedido no fim do Chat 3; consulta entregue no chat.)
+- [x] Pedir ao usuário **autorização para ler conteúdo** de `settings` e os 3 campos curtos de `units` das 2 unidades. O classificador já bloqueou essa leitura uma vez. Alternativa: o usuário roda ele mesmo a consulta só de leitura (o plano entrega o SQL no chat) e salva o JSON fora do repo. (Pedido no fim do Chat 3; autorizado pelo usuário em 2026-10-29: leitura só de leitura pelo MCP, JSON no scratchpad da sessão, fora do repo.)
 - [x] Harness local `src/lib/agent-prompt-checkpoint.local.test.ts`, pulado sem a env `PROMPT_CHECKPOINT_FILE`. Renderiza as camadas 2 e 8–11 com o código do commit A e do commit B. Os dados de tabela vêm de fixture. Escreve o diff por unidade **no scratchpad**. Dados de produção nunca entram no repo nem no commit.
-- [ ] O usuário lê os diffs e decide. Se algo estiver preso, a correção é **conteúdo**: o platform_admin move a instrução para `ai_system_prompt` pelo `PromptTab`, antes do deploy da EF. Registrar a decisão em §8.3. C-B3 pendente **bloqueia o deploy (B6.7)**, não o PR.
+- [x] O usuário lê os diffs e decide. Se algo estiver preso, a correção é **conteúdo**: o platform_admin move a instrução para `ai_system_prompt` pelo `PromptTab`, antes do deploy da EF. Registrar a decisão em §8.3. C-B3 pendente **bloqueia o deploy (B6.7)**, não o PR. **Fechado em 2026-10-29 (§8.3).**
 
 ### Regras e grafo
 
@@ -754,14 +754,21 @@ Commits: **A0 `5548e18`** (prova de §4.4), **A1 `1471db6`**, **B `028073c`**, e
   - `check-portabilidade` 487 = baseline.
 - **Grafo (`ef-import-graph`):** `global-prompt-core.ts`, `global-prompt.ts`, `adapters/global-prompt-read.ts`, `store-data-core.ts`, `system-prompt.ts` e `turn.ts` → só **`webhook-whatsapp`**. `global-prompt-core.ts` também vai para o front no B4/B5, que exige deploy do front.
 
-#### Checkpoint C-B3 (pendente com o usuário; bloqueia o deploy B6.7, não o PR)
+#### Checkpoint C-B3 (FECHADO em 2026-10-29)
 
 - Harness: `src/lib/agent-prompt-checkpoint.local.test.ts`. Sem `PROMPT_CHECKPOINT_FILE`, é pulado.
   - Renderiza `loadAgentSystemPrompt` do commit `1471db6` (A1) e do atual, sobre um cliente falso com os dados exportados.
   - Escreve `<slug>.A.txt`, `<slug>.B.txt` e `<slug>.diff` fora de qualquer checkout.
   - Validado com dados sintéticos: um "IMPORTANTE PARA A IA: …" em `restaurant_extra_info` aparece dentro do bloco "Outras informações", que é o caso que o C-B3 procura.
 - A consulta só de leitura (`units` + chaves de `settings` das unidades com `ai_config`) foi entregue no chat. A leitura de conteúdo de produção depende de autorização do usuário, ou o usuário roda.
-- Decisão por unidade: _(a preencher)_.
+- **Execução (2026-10-29, autorizada pelo usuário):** leitura só de leitura em produção (`units` com `ai_config` → 2 unidades; os 13 `settings` que o prompt lê e os 3 campos curtos de `units`). JSON e saídas ficaram no scratchpad da sessão, fora de qualquer checkout; nada de produção entrou no repo. Harness verde sobre `HEAD 77c9853` contra a base `1471db6`.
+- **Decisão por unidade (usuário, 2026-10-29): nenhuma correção de conteúdo.**
+  - `moralles-centro`: os 3 blocos `DADOS_DA_LOJA` (cardápio, delivery, outras informações) só têm fatos. `ai_system_prompt` sem conflito com as regras 1–13.
+  - `ren-sushi`: idem para os 4 blocos (inclui "Preços e condições"). A única instrução ("sempre avisar que atende por ordem de chegada") está em `ai_context_extra`, que segue fora do bloco de dados e continua instrução; ordem de chegada não é fila de espera (Regra 12).
+  - P2-d (lembrete final de precedência): sem efeito nas 2 unidades; fica o texto literal da spec §6.3.4.
+- **Diferenças cosméticas aceitas:** o `INVISIBLE_RE` de `store-data-core.ts` remove `U+FE0F` (☀️ → ☀, 🍽️ → 🍽); `opening_hours_text` multilinha vira uma linha (`shortStoreText`); no Ren, "Regras de reserva" sai de dentro do bloco de preços.
+- **Follow-ups:** (1) avaliar liberar só `U+FE0F` no `INVISIBLE_RE`, mantendo o resto da faixa; (2) conteúdo do Ren, pré-existente: os preços estão em `rules_and_conditions` e divergem do Cardápio nos dias do jantar — a loja corrige.
+- **Efeito:** C-B3 fechado; o deploy da `webhook-whatsapp` (B6.4 passo 3) deixa de estar bloqueado por ele.
 
 ### 8.3a B4/B5: RED, GREEN, controles e decisões (Chat 4, 2026-10-21)
 
