@@ -39,15 +39,6 @@ vi.mock("@/components/BillingGuard", () => ({ BillingGuard: ({ children }: { chi
 vi.mock("@/components/ui/sonner", () => ({ Toaster: () => null }));
 vi.mock("./pages/gestao/AtendimentoIa", () => ({ default: () => <h1>Tela do atendimento por IA</h1> }));
 vi.mock("./pages/operacional/ReservasDia", () => ({ default: () => <h1>Painel operacional</h1> }));
-vi.mock("react-router-dom", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("react-router-dom")>();
-  return {
-    ...actual,
-    BrowserRouter: (props: React.ComponentProps<typeof actual.BrowserRouter>) => (
-      <actual.BrowserRouter {...props} future={{ v7_startTransition: true, v7_relativeSplatPath: true }} />
-    ),
-  };
-});
 
 beforeEach(() => {
   window.matchMedia = vi.fn().mockReturnValue({ matches: false, addListener: vi.fn(), removeListener: vi.fn() });

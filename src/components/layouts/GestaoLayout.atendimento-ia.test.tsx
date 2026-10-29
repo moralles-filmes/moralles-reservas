@@ -28,7 +28,7 @@ afterEach(() => {
 
 function renderLayout() {
   return render(
-    <MemoryRouter initialEntries={["/g/loja"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={["/g/loja"]}>
       <Routes>
         <Route path="/g/:unitSlug" element={<GestaoLayout><p>conteúdo</p></GestaoLayout>} />
       </Routes>

@@ -45,6 +45,11 @@ vi.mock("@/components/whatsapp/DatafyAdminCard", () => ({ DatafyAdminCard: () =>
 vi.mock("sonner", () => ({ toast: mocks.toast }));
 
 beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   mocks.invoke.mockImplementation((_name, { body }) =>
     Promise.resolve({
       error: null,
@@ -59,6 +64,7 @@ afterEach(() => {
   mocks.state.write = (row) => ({ data: [row], error: null });
   mocks.state.upserts.length = 0;
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const settingsRows = (over: Record<string, unknown> = {}) =>
@@ -67,7 +73,7 @@ const settingsRows = (over: Record<string, unknown> = {}) =>
 async function openPromptTab() {
   const user = userEvent.setup();
   render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter>
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
         <Automacao />
       </QueryClientProvider>
