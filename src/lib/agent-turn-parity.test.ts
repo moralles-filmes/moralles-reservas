@@ -141,6 +141,20 @@ function observe(c: Chat) {
   return JSON.parse(normalize(JSON.stringify(snapshot)));
 }
 
+/**
+ * Conversa em handoff humano. O relógio do harness é `2026-10-05T15:00:00Z`:
+ * o auto-resolve exige mais de 12h desde `handoff_at`, e o lembrete sai quando
+ * `last_silenced_reply_at` é nulo ou tem mais de 6h.
+ */
+function seedHandoff(handoffAt: string, lastSilencedReplyAt: string | null) {
+  return (c: Chat) => {
+    Object.assign(c.tables.conversations[0], {
+      status: 'human_active', handoff_reason: 'cliente quer reclamar', handoff_at: handoffAt,
+      last_silenced_reply_at: lastSilencedReplyAt,
+    });
+  };
+}
+
 const scenarios: Array<{ name: string; seed?: (c: Chat) => void; sdk: unknown[]; text?: string; outcome: string }> = [
   { name: 'prompt rico e resposta de texto', seed: seedRichUnit, sdk: [text('Claro! Temos mesa **amanhã** às 20h.\n* Salão')], outcome: 'success' },
   { name: 'horários por salão no prompt', seed: seedHalls, sdk: [text('Abrimos às 19h.')], outcome: 'success' },
@@ -157,6 +171,15 @@ const scenarios: Array<{ name: string; seed?: (c: Chat) => void; sdk: unknown[];
   { name: 'erro do provedor vira handoff após o retry silencioso', sdk: [new Error('synthetic provider down'), new Error('synthetic provider down')], outcome: 'agent_error' },
   { name: 'resposta vazia', sdk: [text('')], outcome: 'empty_response' },
   { name: 'sem chave BYOK ativa', seed: (c) => { c.tables.ai_provider_credentials.splice(0); }, sdk: [], outcome: 'ai_key_unavailable' },
+  {
+    name: 'handoff: auto-resolve após 12h', seed: seedHandoff('2026-10-05T02:00:00Z', null),
+    sdk: [text('Claro! Para quantas pessoas?')], outcome: 'success',
+  },
+  { name: 'handoff: lembrete na janela', seed: seedHandoff('2026-10-05T14:00:00Z', null), sdk: [], outcome: 'human_active_reminded' },
+  {
+    name: 'handoff: dentro da janela, silencioso', seed: seedHandoff('2026-10-05T13:00:00Z', '2026-10-05T14:00:00Z'),
+    sdk: [], outcome: 'human_active_silent',
+  },
 ];
 
 describe('turno do agente no webhook-whatsapp real — paridade comportamental', () => {
