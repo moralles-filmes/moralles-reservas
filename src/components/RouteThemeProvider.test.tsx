@@ -1,5 +1,5 @@
-import { render, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { act, render, waitFor } from "@testing-library/react";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RouteThemeProvider } from "./RouteThemeProvider";
 
@@ -50,6 +50,32 @@ describe("RouteThemeProvider", () => {
     await waitFor(() => {
       expect(document.documentElement.classList.contains("dark")).toBe(true);
     });
+  });
+
+  it("sair da rota pública para o painel devolve o escuro salvo sem apagá-lo", async () => {
+    localStorage.setItem("moralles-theme", "dark");
+    let navigate: ReturnType<typeof useNavigate> = () => undefined;
+    function CaptureNavigate() {
+      navigate = useNavigate();
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={["/r/casa"]}>
+        <RouteThemeProvider>
+          <CaptureNavigate />
+        </RouteThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains("dark")).toBe(false);
+    });
+
+    act(() => navigate("/g/casa"));
+
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains("dark")).toBe(true);
+    });
+    expect(localStorage.getItem("moralles-theme")).toBe("dark");
   });
 
   it("painel mantém claro escolhido", async () => {

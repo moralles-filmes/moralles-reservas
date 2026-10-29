@@ -64,6 +64,17 @@ describe("glass-usage-guard", () => {
     expect(css).toContain("prefers-reduced-transparency: reduce");
   });
 
+  it("fallbacks ficam fora de @layer e depois dos utilitários, para vencer pela ordem", () => {
+    const css = readCss();
+    const utilitiesLayer = css.indexOf("@layer utilities {");
+    const utilitiesEnd = extractBlock(css, "@layer utilities {").length + utilitiesLayer;
+    for (const marker of ["@supports not ((backdrop-filter", "@media (prefers-reduced-transparency: reduce)"]) {
+      const at = css.indexOf(marker);
+      expect(at, marker).toBeGreaterThan(utilitiesEnd);
+      expect(css.indexOf("@layer", at), `${marker} seguido de @layer`).toBe(-1);
+    }
+  });
+
   it("vidro com desfoque só em superfícies únicas", () => {
     const pattern = /\bglass(-strong)?\b|backdrop-blur/;
     const offenders: string[] = [];
