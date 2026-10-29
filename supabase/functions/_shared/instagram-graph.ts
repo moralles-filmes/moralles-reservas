@@ -10,6 +10,8 @@
  * desconhecido: a requisição pode ter sido aplicada". O chamador não deve tratar
  * como falha definitiva (o Bloco 4 não reenvia automaticamente).
  *
+ * A regra está codificada em `isGraphOutcomeUnknown` (instagram-graph-core.ts): use-a em vez de reimplementar.
+ *
  * R2-e é cumprida por omissão: o adapter nunca copia texto remoto ou de runtime
  * para o resultado. Quem acrescentar log deve chamar `redactSecrets` por conta própria.
  */

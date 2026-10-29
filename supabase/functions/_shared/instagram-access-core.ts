@@ -46,3 +46,13 @@ export function decideInstagramAccess(i: {
   if (GRANT_REQUIRED.has(i.action) && i.grantActive !== true) return "deny_grant";
   return "allow";
 }
+
+/**
+ * `42501` do `store_…` pode ser papel/grant (403) ou divergência do cofre
+ * (`instagram_account_secret_mismatch`, falha do servidor: 503). Só roteia; o
+ * texto do Postgres nunca é devolvido nem registrado.
+ */
+export function isSecretMismatchError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  return (error as Record<string, unknown>)["message"] === "instagram_account_secret_mismatch";
+}

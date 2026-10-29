@@ -91,7 +91,7 @@ export function parseLongLived(json: unknown): { token: string; expiresInSec: nu
   if (!isObj(json)) return null;
   const t = str(json.access_token);
   const e = json.expires_in;
-  if (!t || typeof e !== "number" || !Number.isInteger(e) || e <= 0) return null;
+  if (!t || typeof e !== "number" || !Number.isInteger(e) || e <= 0 || e > 90 * 86_400) return null;
   return { token: t, expiresInSec: e };
 }
 
@@ -112,4 +112,20 @@ export function parseGraphErrorBody(json: unknown): { code: number | null; subco
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const e = isObj(json.error) ? json.error : json;
   return { code: num(e.code), subcode: num(e.error_subcode) };
+}
+
+/**
+ * Desfecho desconhecido: a requisição pode ter sido aplicada. Verdadeiro para
+ * `ok:false` com HTTP 2xx (corpo ilegível), sem status (timeout/rede) ou, em
+ * POST, falha `transient`. O chamador não trata como falha definitiva.
+ */
+export function isGraphOutcomeUnknown(
+  r: { ok: true; value: unknown } | { ok: false; httpStatus: number | null; errorClass: GraphErrorClass },
+  method: "GET" | "POST",
+): boolean {
+  if (r.ok === true) return false;
+  const s = r.httpStatus;
+  if (s === null) return true;
+  if (s >= 200 && s < 300) return true;
+  return method === "POST" && r.errorClass === "transient";
 }

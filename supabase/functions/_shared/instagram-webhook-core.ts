@@ -26,29 +26,41 @@ export const INSTAGRAM_SIGNATURE_HEADER = "x-hub-signature-256";
 export async function readBodyWithCap(
   stream: ReadableStream<Uint8Array> | null,
   max: number,
-): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: "too_large" }> {
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: "too_large" | "invalid_chunk" }> {
   if (stream === null) return { ok: true, bytes: new Uint8Array(0) };
   const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > max) {
-      await reader.cancel().catch(() => undefined);
-      return { ok: false, reason: "too_large" };
+  try {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined || value === null) continue;
+      if (!(value instanceof Uint8Array)) {
+        await reader.cancel().catch(() => undefined);
+        return { ok: false, reason: "invalid_chunk" };
+      }
+      total += value.byteLength;
+      if (total > max) {
+        await reader.cancel().catch(() => undefined);
+        return { ok: false, reason: "too_large" };
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { ok: true, bytes };
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // leitura pendente: o lock cai com o stream cancelado
+    }
   }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { ok: true, bytes };
 }
 
 export type InstagramSignatureCandidateName = "instagram" | "meta";

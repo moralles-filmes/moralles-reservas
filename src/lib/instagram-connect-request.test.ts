@@ -43,7 +43,7 @@ const ACTIONS = ["start", "callback", "status", "disconnect", "resubscribe"] as 
 
 type Row = Record<string, unknown>;
 type ErrorFlag = "members" | "admins" | "grants" | "units" | "secrets" | "accounts"
-  | "store_in_use" | "store_forbidden" | "store_invalid" | "store_other"
+  | "store_mismatch" | "store_in_use" | "store_forbidden" | "store_invalid" | "store_other"
   | "status_forbidden" | "disconnect_forbidden" | "token" | "record";
 
 const harnesses: ReturnType<typeof createEdgeRequestHarness>[] = [];
@@ -149,6 +149,7 @@ function fixture(opts: { env?: Record<string, string | undefined>; me?: Row; sub
       if (key !== env.SUPABASE_SERVICE_ROLE_KEY) return err("42501");
       if (name === "store_instagram_account_connection") {
         if (state.errors.has("store_other")) return err("XX000");
+        if (state.errors.has("store_mismatch")) return { data: null, error: { code: "42501", message: "instagram_account_secret_mismatch" } };
         if (state.errors.has("store_invalid")) return err("22023");
         if (state.errors.has("store_forbidden") || !roleOk(args.p_actor, args.p_unit_id) || !grantOk(args.p_unit_id)) return err("42501");
         if (state.errors.has("store_in_use") || state.accounts.some((a) => a.ig_user_id === args.p_ig_user_id
@@ -321,7 +322,8 @@ describe("instagram-connect — start", () => {
     const f = fixture();
     const r = await f.call(OWNER_A, { action: "start", unit_id: UNIT_A });
     expect(r.status).toBe(200);
-    expect(Object.keys(r.json)).toEqual(["authorize_url"]);
+    expect(Object.keys(r.json)).toEqual(["authorize_url", "state"]);
+    expect(r.json.state).toBe(new URL(r.json.authorize_url as string).searchParams.get("state"));
     const url = new URL(r.json.authorize_url as string);
     expect(`${url.origin}${url.pathname}`).toBe("https://www.instagram.com/oauth/authorize");
     expect(url.searchParams.get("client_id")).toBe(env.INSTAGRAM_APP_ID);
@@ -409,6 +411,25 @@ describe("instagram-connect — callback", () => {
     expect(f.state.accounts).toHaveLength(1);
     expect(f.state.accounts[0].subscribed_fields).toEqual(["messages"]);
     f.harness.assertNoUnexpectedIo();
+  });
+
+  it("platform_admin sem membership conecta com p_actor = ADMIN", async () => {
+    const f = fixture();
+    const state = await f.start(ADMIN, UNIT_A);
+    const r = await f.call(ADMIN, { action: "callback", code: CODE, state });
+    expect(r.status).toBe(200);
+    const store = f.state.rpcs.find((x) => x.name === "store_instagram_account_connection");
+    expect(store?.args.p_actor).toBe(ADMIN);
+  });
+
+  it("42501 de secret_mismatch → 503 'concluir a conexão agora', nunca 403 nem a mensagem do SQL", async () => {
+    const f = fixture();
+    f.state.errors.add("store_mismatch");
+    const r = await f.call(OWNER_A, { action: "callback", code: CODE, state: await f.start(OWNER_A, UNIT_A) });
+    expect(r.status).toBe(503);
+    expect(r.json).toEqual({ error: "Não foi possível concluir a conexão agora." });
+    expect(r.text).not.toContain("secret_mismatch");
+    expect(f.harness.logs.join("\n")).not.toContain("secret_mismatch");
   });
 
   it("Media_Creator também é Profissional", async () => {
@@ -636,6 +657,17 @@ describe("instagram-connect — disconnect (C2)", () => {
     expect(f.state.accounts[0].status).toBe("disconnected");
   });
 
+  it("platform_admin desconecta com p_actor = ADMIN", async () => {
+    const f = fixture();
+    f.seedAccount();
+    const r = await f.call(ADMIN, { action: "disconnect", unit_id: UNIT_A });
+    expect(r.status).toBe(200);
+    expect(f.state.rpcs).toEqual([{
+      name: "disconnect_instagram_account", args: { p_account_id: ACC_A, p_actor: ADMIN },
+      key: env.SUPABASE_SERVICE_ROLE_KEY, auth: null,
+    }]);
+  });
+
   it("membro de outra unidade → 403, conta intacta", async () => {
     const f = fixture();
     f.seedAccount();
@@ -721,6 +753,29 @@ describe("instagram-connect — resubscribe", () => {
 });
 
 describe("instagram-connect — guardas estáticas", () => {
+  it("corpo acima de 16 KiB → 413; JSON inválido → 400; ambos em PT-BR", async () => {
+    const f = fixture();
+    const call = (body: string) => f.harness.request("instagram-connect", new Request(URL_FN, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost:8080", Authorization: `Bearer ${OWNER_A}` },
+      body,
+    }));
+    const big = await call(JSON.stringify({ action: "start", unit_id: UNIT_A, pad: "x".repeat(17_000) }));
+    expect(big.status).toBe(413);
+    expect(await big.json()).toEqual({ error: "Requisição grande demais." });
+    const bad = await call("{nao-e-json");
+    expect(bad.status).toBe(400);
+    expect(f.state.rpcs).toEqual([]);
+  });
+
+  it("logs de falha de leitura da conta levam action; exceção não tratada leva só o nome da classe", async () => {
+    const f = fixture();
+    f.state.errors.add("accounts");
+    expect((await f.call(OWNER_A, { action: "disconnect", unit_id: UNIT_A })).status).toBe(503);
+    const logs = f.harness.logs.join("\n");
+    expect(logs).toMatch(/instagram_connect_account_read_failed[^\n]*disconnect/);
+  });
+
   it("Deno.env só no index e nenhum log de mensagem de erro", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");

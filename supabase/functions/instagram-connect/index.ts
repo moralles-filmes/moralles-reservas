@@ -3,7 +3,7 @@
  *
  * POST { action, unit_id?, code?, state? }, chamado pelo painel autenticado
  * (`verify_jwt = true` + `getUser()` aqui). Ações:
- * - `start { unit_id }` → `{ authorize_url }` com `state` assinado de 10 min,
+ * - `start { unit_id }` → `{ authorize_url, state }` (o painel guarda e compara o state) com `state` assinado de 10 min,
  *   preso a usuário + unidade (`_shared/instagram-oauth-state.ts`).
  * - `callback { code, state }` → `{ unit_slug, username, subscribed }`. O
  *   `state` é conferido ANTES de qualquer Graph; `state.userId` tem de ser o
@@ -36,6 +36,7 @@ import { corsHeadersFor } from "../_shared/cors.ts";
 import { jsonLog } from "../_shared/security.ts";
 import { INSTAGRAM_SECRET_KEYS, createInstagramSecretReader } from "../_shared/instagram-config-core.ts";
 import { platformSecretRowOrThrow } from "../_shared/instagram-config.ts";
+import { readBodyWithCap } from "../_shared/instagram-webhook-core.ts";
 import { INSTAGRAM_SUBSCRIBED_FIELDS, buildAuthorizeUrl } from "../_shared/instagram-graph-core.ts";
 import { createInstagramGraph } from "../_shared/instagram-graph.ts";
 import { INSTAGRAM_STATE_TTL_MS, signInstagramState, verifyInstagramState } from "../_shared/instagram-oauth-state.ts";
@@ -43,6 +44,7 @@ import {
   type InstagramConnectAction,
   decideInstagramAccess,
   instagramActionRequiresGrant,
+  isSecretMismatchError,
   isInstagramConnectAction,
 } from "../_shared/instagram-access-core.ts";
 
@@ -65,6 +67,7 @@ const igSecrets = createInstagramSecretReader(async (key) =>
 
 const graph = createInstagramGraph((input, init) => fetch(input, init));
 
+const MAX_BODY_BYTES = 16_384;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PROFESSIONAL_TYPES = new Set(["Business", "Media_Creator"]);
 
@@ -79,6 +82,8 @@ const MSG = {
   inUse: "Esta conta do Instagram já está conectada a outra unidade",
   noAccount: "Nenhuma conta do Instagram conectada nesta unidade.",
   reauth: "A conta do Instagram precisa ser reconectada.",
+  tooLarge: "Requisição grande demais.",
+  connectLater: "Não foi possível concluir a conexão agora.",
   subscribe: "Não foi possível assinar as mensagens do Instagram. Tente de novo.",
 } as const;
 
@@ -153,7 +158,7 @@ async function checkAccess(ctx: Ctx, unitId: string): Promise<Access> {
 type ActiveAccount = { id: string; ig_user_id: string; status: string };
 
 /** Conta não desconectada da unidade (no máximo uma, índice único parcial). */
-async function activeAccountOf(unitId: string): Promise<{ ok: true; account: ActiveAccount | null } | { ok: false }> {
+async function activeAccountOf(unitId: string, action: InstagramConnectAction): Promise<{ ok: true; account: ActiveAccount | null } | { ok: false }> {
   const { data, error } = await supabase
     .from("instagram_accounts")
     .select("id, ig_user_id, status")
@@ -161,7 +166,7 @@ async function activeAccountOf(unitId: string): Promise<{ ok: true; account: Act
     .neq("status", "disconnected")
     .maybeSingle();
   if (error) {
-    jsonLog("error", { evt: "instagram_connect_account_read_failed", code: pgCode(error) });
+    jsonLog("error", { evt: "instagram_connect_account_read_failed", action, code: pgCode(error) });
     return { ok: false };
   }
   const row = data as { id?: unknown; ig_user_id?: unknown; status?: unknown } | null;
@@ -218,6 +223,7 @@ async function handleStart(ctx: Ctx, unitId: string): Promise<Response> {
   jsonLog("info", { evt: "instagram_connect_started", action: ctx.action });
   return json(ctx.req, 200, {
     authorize_url: buildAuthorizeUrl({ appId: INSTAGRAM_APP_ID, redirectUri: REDIRECT_URI, state }),
+    state,
   });
 }
 
@@ -313,7 +319,10 @@ async function handleCallback(ctx: Ctx, body: Record<string, unknown>): Promise<
     const pg = pgCode(stored.error);
     jsonLog("error", { evt: "instagram_connect_store_failed", action: ctx.action, code: pg });
     if (pg === "P0001") return json(ctx.req, 409, { error: MSG.inUse });
-    if (pg === "42501") return json(ctx.req, 403, { error: MSG.forbidden });
+    if (pg === "42501") {
+      if (isSecretMismatchError(stored.error)) return json(ctx.req, 503, { error: MSG.connectLater });
+      return json(ctx.req, 403, { error: MSG.forbidden });
+    }
     if (pg === "22023") return json(ctx.req, 502, { error: MSG.graph });
     return json(ctx.req, 503, { error: MSG.unavailable });
   }
@@ -356,7 +365,7 @@ async function handleStatus(ctx: Ctx, unitId: string): Promise<Response> {
 async function handleDisconnect(ctx: Ctx, unitId: string): Promise<Response> {
   const access = await checkAccess(ctx, unitId);
   if (access.ok === false) return json(ctx.req, access.status, access.body);
-  const found = await activeAccountOf(unitId);
+  const found = await activeAccountOf(unitId, ctx.action);
   if (found.ok === false) return json(ctx.req, 503, { error: MSG.unavailable });
   if (found.account === null) return json(ctx.req, 200, { disconnected: true });
 
@@ -376,7 +385,7 @@ async function handleDisconnect(ctx: Ctx, unitId: string): Promise<Response> {
 async function handleResubscribe(ctx: Ctx, unitId: string): Promise<Response> {
   const access = await checkAccess(ctx, unitId);
   if (access.ok === false) return json(ctx.req, access.status, access.body);
-  const found = await activeAccountOf(unitId);
+  const found = await activeAccountOf(unitId, ctx.action);
   if (found.ok === false) return json(ctx.req, 503, { error: MSG.unavailable });
   if (found.account === null) return json(ctx.req, 404, { error: MSG.noAccount });
   if (found.account.status !== "connected") return json(ctx.req, 409, { error: MSG.reauth });
@@ -414,7 +423,13 @@ serve(async (req: Request): Promise<Response> => {
 
     let body: Record<string, unknown>;
     try {
-      const parsed: unknown = await req.json();
+      const read = await readBodyWithCap(req.body, MAX_BODY_BYTES);
+      if (read.ok === false) {
+        return read.reason === "too_large"
+          ? json(req, 413, { error: MSG.tooLarge })
+          : json(req, 400, { error: "Requisição inválida." });
+      }
+      const parsed: unknown = JSON.parse(new TextDecoder().decode(read.bytes));
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not_object");
       body = parsed as Record<string, unknown>;
     } catch {
@@ -431,8 +446,8 @@ serve(async (req: Request): Promise<Response> => {
     if (ctx.action === "status") return await handleStatus(ctx, unitId);
     if (ctx.action === "disconnect") return await handleDisconnect(ctx, unitId);
     return await handleResubscribe(ctx, unitId);
-  } catch {
-    jsonLog("error", { evt: "instagram_connect_unhandled" });
+  } catch (err) {
+    jsonLog("error", { evt: "instagram_connect_unhandled", errorClass: err instanceof Error ? err.name : typeof err });
     return json(req, 503, { error: MSG.unavailable });
   }
 });

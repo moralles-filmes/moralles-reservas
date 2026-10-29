@@ -37,10 +37,11 @@ const EXPIRED = (n: number) => acct(n, { token_expires_at: "2026-10-01T12:00:00.
 
 function fixture(
   accounts: Row[],
-  opts: { graph?: Record<string, { status: number; body: unknown }>; scanFails?: boolean; rpcFail?: Record<string, string> } = {},
+  opts: { graph?: Record<string, { status: number; body: unknown }>; scanFails?: boolean; rpcFail?: Record<string, string>; graphDelayMs?: number } = {},
 ) {
   const state = {
     accounts,
+    orders: [] as unknown[][],
     reads: [] as { filters: Row; range: [number, number] | null }[],
     rpcs: [] as { name: string; args: Row; key: string }[],
     graph: [] as string[],
@@ -63,7 +64,7 @@ function fixture(
       const q = {
         select(_v: string) { return q; },
         eq(k: string, v: unknown) { f[k] = v; return q; },
-        order(_k: string, _o: unknown) { return q; },
+        order(...a: unknown[]) { state.orders.push(a); return q; },
         range(a: number, b: number) { range = [a, b]; return q; },
         then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) { return result().then(resolve, reject); },
       };
@@ -73,9 +74,11 @@ function fixture(
       state.rpcs.push({ name, args: { ...args }, key });
       if (key !== env.SUPABASE_SERVICE_ROLE_KEY) return err("42501");
       const failCode = opts.rpcFail?.[`${name}:${args.p_account_id}`];
+      if (failCode === "throw") throw new TypeError(LEAK);
       if (failCode) return err(failCode);
       const acc = state.accounts.find((a) => a.id === args.p_account_id);
       if (name === "get_instagram_account_token") {
+        if (opts.graphDelayMs) await harness.advanceTime(opts.graphDelayMs);
         return acc ? { data: tokenOf(acc.id as string), error: null } : err("P0002");
       }
       if (name === "record_instagram_token_refresh") {
@@ -138,7 +141,7 @@ describe("process-instagram-token-refresh (Request)", () => {
     const f = fixture(many);
     const r = await f.call();
     expect(r.status).toBe(200);
-    expect(r.json).toEqual({ scanned: 1203, refreshed: 0, expired: 0, reauth: 0, failed: 0 });
+    expect(r.json).toEqual({ scanned: 1203, refreshed: 0, expired: 0, reauth: 0, failed: 0, remaining: 0 });
     expect(f.state.reads.map((x) => x.range)).toEqual([[0, 499], [500, 999], [1000, 1499]]);
     expect(f.state.reads.every((x) => x.filters.status === "connected")).toBe(true);
   });
@@ -146,7 +149,7 @@ describe("process-instagram-token-refresh (Request)", () => {
   it("vencida: set_instagram_account_status expired e zero Graph", async () => {
     const f = fixture([EXPIRED(2)]);
     const r = await f.call();
-    expect(r.json).toEqual({ scanned: 1, refreshed: 0, expired: 1, reauth: 0, failed: 0 });
+    expect(r.json).toEqual({ scanned: 1, refreshed: 0, expired: 1, reauth: 0, failed: 0, remaining: 0 });
     expect(f.state.rpcs).toEqual([{
       name: "set_instagram_account_status",
       args: { p_account_id: id(2), p_status: "reauth_required", p_error_code: "expired" },
@@ -158,7 +161,7 @@ describe("process-instagram-token-refresh (Request)", () => {
   it("renova com sucesso: grava o token novo e nada vaza", async () => {
     const f = fixture([STALE(3), FRESH(4)]);
     const r = await f.call();
-    expect(r.json).toEqual({ scanned: 2, refreshed: 1, expired: 0, reauth: 0, failed: 0 });
+    expect(r.json).toEqual({ scanned: 2, refreshed: 1, expired: 0, reauth: 0, failed: 0, remaining: 0 });
     expect(f.state.graph).toEqual([id(3)]);
     const rec = f.state.rpcs.filter((x) => x.name === "record_instagram_token_refresh");
     expect(rec).toHaveLength(1);
@@ -174,7 +177,7 @@ describe("process-instagram-token-refresh (Request)", () => {
       graph: { [id(5)]: { status: 400, body: { error: { code: 190, message: `Invalid OAuth access token ${tokenOf(id(5))}` } } } },
     });
     const r = await f.call();
-    expect(r.json).toEqual({ scanned: 1, refreshed: 0, expired: 0, reauth: 1, failed: 0 });
+    expect(r.json).toEqual({ scanned: 1, refreshed: 0, expired: 0, reauth: 1, failed: 0, remaining: 0 });
     const st = f.state.rpcs.find((x) => x.name === "set_instagram_account_status");
     expect(st?.args).toEqual({ p_account_id: id(5), p_status: "reauth_required", p_error_code: "190" });
     expect(f.state.rpcs.some((x) => x.name === "record_instagram_token_refresh")).toBe(false);
@@ -185,14 +188,14 @@ describe("process-instagram-token-refresh (Request)", () => {
   it("transitório: sem escrita, tenta amanhã", async () => {
     const f = fixture([STALE(6)], { graph: { [id(6)]: { status: 503, body: { error: { message: "down" } } } } });
     const r = await f.call();
-    expect(r.json).toEqual({ scanned: 1, refreshed: 0, expired: 0, reauth: 0, failed: 1 });
+    expect(r.json).toEqual({ scanned: 1, refreshed: 0, expired: 0, reauth: 0, failed: 1, remaining: 0 });
     expect(f.state.rpcs.filter((x) => x.name !== "get_instagram_account_token")).toHaveLength(0);
   });
 
   it("erro de RPC numa conta não interrompe a próxima", async () => {
     const f = fixture([STALE(7), STALE(8)], { rpcFail: { [`get_instagram_account_token:${id(7)}`]: "P0002" } });
     const r = await f.call();
-    expect(r.json).toEqual({ scanned: 2, refreshed: 1, expired: 0, reauth: 0, failed: 1 });
+    expect(r.json).toEqual({ scanned: 2, refreshed: 1, expired: 0, reauth: 0, failed: 1, remaining: 0 });
     expect(f.state.graph).toEqual([id(8)]);
     f.noLeak(r.text);
     f.noLeak(f.harness.logs.join("\n"));
@@ -207,10 +210,59 @@ describe("process-instagram-token-refresh (Request)", () => {
     f.noLeak(f.harness.logs.join("\n"));
   });
 
+  it("order(id) ascendente em toda página", async () => {
+    const f = fixture([FRESH(1)]);
+    await f.call();
+    expect(f.state.orders).toEqual([["id", { ascending: true }]]);
+  });
+
+  it("processa primeiro vencidas e depois as mais velhas; ignora skip", async () => {
+    const OLD = acct(21, { connected_at: "2026-07-01T12:00:00.000Z", token_expires_at: "2026-12-30T12:00:00.000Z" });
+    const f = fixture([STALE(20), FRESH(22), OLD, EXPIRED(23)]);
+    const r = await f.call();
+    expect(r.json).toMatchObject({ scanned: 4, refreshed: 2, expired: 1, failed: 0, remaining: 0 });
+    expect(f.state.rpcs.map((x) => `${x.name}:${x.args.p_account_id}`)).toEqual([
+      `set_instagram_account_status:${id(23)}`,
+      `get_instagram_account_token:${id(21)}`,
+      `record_instagram_token_refresh:${id(21)}`,
+      `get_instagram_account_token:${id(20)}`,
+      `record_instagram_token_refresh:${id(20)}`,
+    ]);
+  });
+
+  it("orçamento de tempo: para de iniciar contas e informa remaining", async () => {
+    const f = fixture([STALE(30), STALE(31), STALE(32)], { graphDelayMs: 60_000 });
+    const r = await f.call();
+    // 1ª conta (t=0) e 2ª (t=60s) rodam; na 3ª (t=120s >= 100s) o orçamento acabou
+    expect(r.json).toEqual({ scanned: 3, refreshed: 2, expired: 0, reauth: 0, failed: 0, remaining: 1 });
+    expect(f.state.graph).toEqual([id(30), id(31)]);
+    expect(f.harness.logs.join("\n")).toContain("instagram_refresh_budget_exhausted");
+  });
+
+  it("falha ao gravar o token novo: failed, segue a próxima, nada vaza", async () => {
+    const f = fixture([STALE(40), STALE(41)], { rpcFail: { [`record_instagram_token_refresh:${id(40)}`]: "XX000" } });
+    const r = await f.call();
+    expect(r.json).toMatchObject({ refreshed: 1, failed: 1 });
+    expect(f.state.graph).toEqual([id(40), id(41)]);
+    f.noLeak(r.text);
+    f.noLeak(f.harness.logs.join("\n"));
+  });
+
+  it("exceção por conta: loga só o nome da classe, nunca a mensagem", async () => {
+    const f = fixture([STALE(50), STALE(51)], { rpcFail: { [`get_instagram_account_token:${id(50)}`]: "throw" } });
+    const r = await f.call();
+    expect(r.json).toMatchObject({ refreshed: 1, failed: 1 });
+    const logs = f.harness.logs.join("\n");
+    expect(logs).toContain("instagram_refresh_account_unhandled");
+    expect(logs).toContain("TypeError");
+    f.noLeak(r.text);
+    f.noLeak(logs);
+  });
+
   it("data ilegível: pula sem Graph", async () => {
     const f = fixture([acct(10, { connected_at: "lixo" })]);
     const r = await f.call();
-    expect(r.json).toEqual({ scanned: 1, refreshed: 0, expired: 0, reauth: 0, failed: 0 });
+    expect(r.json).toEqual({ scanned: 1, refreshed: 0, expired: 0, reauth: 0, failed: 0, remaining: 0 });
     expect(f.state.graph).toHaveLength(0);
     expect(f.state.rpcs).toHaveLength(0);
   });

@@ -17,7 +17,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonLog, requireInternalAuth } from "../_shared/security.ts";
 import { createInstagramGraph } from "../_shared/instagram-graph.ts";
-import { decideTokenRefresh } from "../_shared/instagram-token-refresh-core.ts";
+import { INSTAGRAM_REFRESH_BUDGET_MS, planTokenRefreshes } from "../_shared/instagram-token-refresh-core.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const supabase = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "");
@@ -101,23 +101,22 @@ serve(async (req: Request): Promise<Response> => {
       return json(503, { error: "unavailable" });
     }
 
-    const counts = { scanned: loaded.rows.length, refreshed: 0, expired: 0, reauth: 0, failed: 0 };
-    const nowMs = Date.now();
-
+    const startedAt = Date.now();
+    const nowMs = startedAt;
     for (const acc of loaded.rows) {
-      try {
-        const decision = decideTokenRefresh({
-          status: acc.status,
-          tokenRefreshedAt: acc.token_refreshed_at,
-          connectedAt: acc.connected_at,
-          tokenExpiresAt: acc.token_expires_at,
-          nowMs,
-        });
-        if (decision === "skip") {
-          if (hasBadDate(acc)) jsonLog("warn", { evt: "instagram_refresh_bad_dates", accountId: acc.id });
-          continue;
-        }
+      if (hasBadDate(acc)) jsonLog("warn", { evt: "instagram_refresh_bad_dates", accountId: acc.id });
+    }
+    const plan = planTokenRefreshes(loaded.rows, nowMs);
+    const counts = { scanned: loaded.rows.length, refreshed: 0, expired: 0, reauth: 0, failed: 0, remaining: 0 };
 
+    for (let i = 0; i < plan.length; i++) {
+      if (Date.now() - startedAt >= INSTAGRAM_REFRESH_BUDGET_MS) {
+        counts.remaining = plan.length - i;
+        jsonLog("warn", { evt: "instagram_refresh_budget_exhausted", remaining: counts.remaining });
+        break;
+      }
+      const { acc, decision } = plan[i];
+      try {
         if (decision === "expired") {
           if (await setStatus(acc.id, "reauth_required", "expired")) counts.expired++;
           else counts.failed++;
@@ -160,8 +159,12 @@ serve(async (req: Request): Promise<Response> => {
           continue;
         }
         counts.refreshed++;
-      } catch {
-        jsonLog("error", { evt: "instagram_refresh_account_unhandled", accountId: acc.id });
+      } catch (err) {
+        jsonLog("error", {
+          evt: "instagram_refresh_account_unhandled",
+          accountId: acc.id,
+          errorClass: err instanceof Error ? err.name : typeof err,
+        });
         counts.failed++;
       }
     }

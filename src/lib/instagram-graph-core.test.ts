@@ -5,6 +5,7 @@ import {
   INSTAGRAM_SUBSCRIBED_FIELDS,
   buildAuthorizeUrl,
   classifyGraphError,
+  isGraphOutcomeUnknown,
   parseCodeExchange,
   parseLongLived,
   parseMe,
@@ -288,5 +289,26 @@ describe("adapter createInstagramGraph", () => {
     const { f, calls } = fakeFetch(() => json({ error: { code: 1 } }, 500));
     await createInstagramGraph(f).sendText({ igUserId: "1", token: TOKEN, igsid: "2", text: "a" });
     expect(calls.length).toBe(1);
+  });
+});
+
+describe("isGraphOutcomeUnknown", () => {
+  const f = (httpStatus: number | null, errorClass: "transient" | "invalid_request" | "reauth_required") =>
+    ({ ok: false as const, errorClass, httpStatus, code: null });
+  it("tabela de desfechos", () => {
+    expect(isGraphOutcomeUnknown(f(200, "invalid_request"), "POST")).toBe(true);
+    expect(isGraphOutcomeUnknown(f(200, "invalid_request"), "GET")).toBe(true);
+    expect(isGraphOutcomeUnknown(f(null, "transient"), "GET")).toBe(true);
+    expect(isGraphOutcomeUnknown(f(503, "transient"), "POST")).toBe(true);
+    expect(isGraphOutcomeUnknown(f(503, "transient"), "GET")).toBe(false);
+    expect(isGraphOutcomeUnknown(f(400, "invalid_request"), "POST")).toBe(false);
+    expect(isGraphOutcomeUnknown({ ok: true, value: 1 }, "POST")).toBe(false);
+  });
+});
+
+describe("parseLongLived teto", () => {
+  it("rejeita expires_in acima de 90 dias", () => {
+    expect(parseLongLived({ access_token: TOKEN, expires_in: 90 * 86_400 })).not.toBeNull();
+    expect(parseLongLived({ access_token: TOKEN, expires_in: 90 * 86_400 + 1 })).toBeNull();
   });
 });

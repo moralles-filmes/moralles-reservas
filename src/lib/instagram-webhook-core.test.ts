@@ -248,6 +248,20 @@ describe("readBodyWithCap", () => {
   });
 });
 
+describe("readBodyWithCap chunk inválido", () => {
+  it("chunk que não é Uint8Array: recusa, cancela e libera o lock", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<unknown>({
+      pull(c) { c.enqueue("texto"); },
+      cancel() { cancelled = true; },
+    }, { highWaterMark: 0 }) as unknown as ReadableStream<Uint8Array>;
+    const r = await readBodyWithCap(stream, 100);
+    expect(r.ok).toBe(false);
+    expect(cancelled).toBe(true);
+    expect(stream.locked).toBe(false);
+  });
+});
+
 describe("buildInstagramInboundKick", () => {
   it("POST interno só com event_id e x-internal-key", () => {
     const k = buildInstagramInboundKick("https://p.invalid", "synthetic-internal", "e-1");
