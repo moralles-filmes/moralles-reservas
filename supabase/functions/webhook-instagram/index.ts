@@ -2,7 +2,7 @@
  * webhook-instagram — entrada do Direct do Instagram (Task 2.3, contrato C3).
  *
  * GET:  handshake da Meta (`hub.verify_token` contra `instagram_verify_token`).
- * POST: tamanho → bytes crus → HMAC (`instagram`, depois `meta`) → só então
+ * POST: tamanho (lido com teto) → bytes crus → HMAC (`instagram`, depois `meta`) → só então
  *       `JSON.parse` → contas pelo `entry.id` com a unidade do MESMO select →
  *       gates sem cache (grant ativo E `dm_enabled`; erro de leitura FECHA)
  *       → uma linha por conta elegível em `instagram_inbound_events` (corpo cru
@@ -27,6 +27,7 @@ import {
   decideVerifyChallenge,
   entryAccountIds,
   rawBodyByteaHex,
+  readBodyWithCap,
   selectEligibleInstagramAccounts,
   sha256Hex,
 } from "../_shared/instagram-webhook-core.ts";
@@ -108,11 +109,14 @@ async function handleEvent(req: Request): Promise<Response> {
     jsonLog("warn", { evt: "instagram_webhook_too_large" });
     return json(413, { error: "Corpo grande demais." });
   }
-  const raw = new Uint8Array(await req.arrayBuffer());
-  if (raw.byteLength > INSTAGRAM_WEBHOOK_MAX_BYTES) {
+  // Leitura com teto: sem Content-Length (chunked), para assim que passa do
+  // limite em vez de carregar o corpo inteiro antes de checar.
+  const read = await readBodyWithCap(req.body, INSTAGRAM_WEBHOOK_MAX_BYTES);
+  if (read.ok === false) {
     jsonLog("warn", { evt: "instagram_webhook_too_large" });
     return json(413, { error: "Corpo grande demais." });
   }
+  const raw = read.bytes;
 
   // 2. Assinatura sobre os bytes, antes de qualquer parse.
   const auth = await authenticateInstagramWebhook(

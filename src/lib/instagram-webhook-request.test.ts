@@ -143,13 +143,22 @@ function fixture() {
     else if (secret !== null) headers["x-hub-signature-256"] = `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`;
     return harness.request("webhook-instagram", new Request(URL_WEBHOOK, { method: "POST", headers, body: new Uint8Array(raw) }));
   };
+  /** POST com corpo em stream (chunked, sem Content-Length). */
+  const postStream = (stream: ReadableStream<Uint8Array>, signedRaw?: Uint8Array) => {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (signedRaw) headers["x-hub-signature-256"] = `sha256=${createHmac("sha256", IG_SECRET).update(signedRaw).digest("hex")}`;
+    const init = { method: "POST", headers, body: stream, duplex: "half" } as RequestInit;
+    const request = new Request(URL_WEBHOOK, init);
+    expect(request.headers.get("content-length")).toBeNull();
+    return harness.request("webhook-instagram", request);
+  };
   const kickAttempts = () => harness.logs.filter((l) => l.includes("instagram_inbound_kick_failed")).length;
   /** Toda I/O inesperada tem de ser exatamente os `n` kicks recusados pelo harness. */
   const expectOnlyKicks = (n: number) => {
     if (n === 0) expect(() => harness.assertNoUnexpectedIo()).not.toThrow();
     else expect(() => harness.assertNoUnexpectedIo()).toThrow(`Unexpected fixture I/O recorded: ${Array(n).fill("internal_hop").join(", ")}`);
   };
-  return { state, harness, post, kickAttempts, expectOnlyKicks };
+  return { state, harness, post, postStream, kickAttempts, expectOnlyKicks };
 }
 
 const enc = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
@@ -237,6 +246,71 @@ describe("webhook-instagram POST", () => {
     expect((await f.post(new Uint8Array(10).fill(0x20), { headers: { "content-length": "2097153" } })).status).toBe(413);
     expect(f.state.reads).toEqual([]);
     f.expectOnlyKicks(0);
+  });
+
+  it("corpo em stream sem Content-Length acima do limite: 413 durante a leitura, sem ler segredo", async () => {
+    const f = fixture();
+    const CHUNK = 64 * 1024;
+    const TOTAL_CHUNKS = 64; // 4 MiB oferecidos; o limite é 2 MiB
+    let pulled = 0, cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= TOTAL_CHUNKS) { controller.close(); return; }
+        pulled += 1;
+        controller.enqueue(new Uint8Array(CHUNK).fill(0x20));
+      },
+      cancel() { cancelled = true; },
+    }, { highWaterMark: 0 });
+    expect((await f.postStream(stream)).status).toBe(413);
+    expect(f.state.reads).toEqual([]);
+    // Parou logo depois de passar do limite: nunca leu o stream inteiro.
+    expect(pulled * CHUNK).toBeLessThanOrEqual(2_097_152 + 2 * CHUNK);
+    expect(cancelled).toBe(true);
+    f.expectOnlyKicks(0);
+  });
+
+  it("corpo em stream exatamente no limite segue e grava os bytes idênticos", async () => {
+    const f = fixture();
+    const MAX = 2_097_152;
+    const head = new TextEncoder().encode(`{"object":"instagram","entry":[{"id":"${IG_A}"}],"pad":"`);
+    const tail = new TextEncoder().encode('"}');
+    const raw = new Uint8Array(MAX);
+    raw.set(head, 0);
+    raw.fill(0x61, head.length, MAX - tail.length);
+    raw.set(tail, MAX - tail.length);
+    const CHUNK = 100_000;
+    let offset = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= raw.length) { controller.close(); return; }
+        controller.enqueue(raw.slice(offset, offset + CHUNK));
+        offset += CHUNK;
+      },
+    });
+    expect((await f.postStream(stream, raw)).status).toBe(200);
+    expect(f.state.queue).toHaveLength(1);
+    expect(f.state.queue[0].raw_body).toBe(`\\x${Buffer.from(raw).toString("hex")}`);
+    expect(f.state.queue[0].body_sha256).toBe(createHash("sha256").update(raw).digest("hex"));
+    await f.harness.drainBackground();
+    f.expectOnlyKicks(1);
+  });
+
+  it("lote misto: A elegível + B com grant revogado grava só A, com UNIT_A", async () => {
+    const f = fixture();
+    f.state.grants[1].revoked_at = "2026-10-01T00:00:00Z";
+    expect((await f.post(batch(msg(IG_A, "m-a"), msg(IG_B, "m-b")))).status).toBe(200);
+    expect(f.state.queue.map((r) => [r.instagram_account_id, r.unit_id])).toEqual([[ACC_A, UNIT_A]]);
+    await f.harness.drainBackground();
+    f.expectOnlyKicks(1);
+  });
+
+  it("lote misto: A elegível + B com Direct desligado grava só A, com UNIT_A", async () => {
+    const f = fixture();
+    f.state.settings[1].dm_enabled = false;
+    expect((await f.post(batch(msg(IG_A, "m-a"), msg(IG_B, "m-b")))).status).toBe(200);
+    expect(f.state.queue.map((r) => [r.instagram_account_id, r.unit_id])).toEqual([[ACC_A, UNIT_A]]);
+    await f.harness.drainBackground();
+    f.expectOnlyKicks(1);
   });
 
   it.each(["accounts", "grants", "settings"] as const)("erro ao ler %s dá 503, nada gravado", async (flag) => {

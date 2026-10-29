@@ -11,6 +11,7 @@ import {
   decideVerifyChallenge,
   entryAccountIds,
   rawBodyByteaHex,
+  readBodyWithCap,
   selectEligibleInstagramAccounts,
   sha256Hex,
   verifyInstagramSignature,
@@ -214,6 +215,36 @@ describe("selectEligibleInstagramAccounts", () => {
       dmEnabledUnitIds: new Set(["u1"]),
     });
     expect(r.eligible.map((a) => a.id)).toEqual(["a"]);
+  });
+});
+
+describe("readBodyWithCap", () => {
+  const streamOf = (chunks: Uint8Array[], track = { pulled: 0, cancelled: false }) =>
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (track.pulled >= chunks.length) { controller.close(); return; }
+        controller.enqueue(chunks[track.pulled++]);
+      },
+      cancel() { track.cancelled = true; },
+    }, { highWaterMark: 0 });
+
+  it("null vira bytes vazios", async () => {
+    const r = await readBodyWithCap(null, 10);
+    expect(r.ok).toBe(true);
+    if (r.ok === true) expect(r.bytes).toEqual(new Uint8Array(0));
+  });
+
+  it("concatena os pedaços na ordem, exatamente no limite", async () => {
+    const r = await readBodyWithCap(streamOf([new Uint8Array([1, 2]), new Uint8Array([]), new Uint8Array([3, 0, 255])]), 5);
+    expect(r).toEqual({ ok: true, bytes: new Uint8Array([1, 2, 3, 0, 255]) });
+  });
+
+  it("passa do limite: too_large e cancela sem puxar o resto", async () => {
+    const track = { pulled: 0, cancelled: false };
+    const chunks = Array.from({ length: 10 }, () => new Uint8Array(4));
+    expect(await readBodyWithCap(streamOf(chunks, track), 9)).toEqual({ ok: false, reason: "too_large" });
+    expect(track.pulled).toBe(3);
+    expect(track.cancelled).toBe(true);
   });
 });
 

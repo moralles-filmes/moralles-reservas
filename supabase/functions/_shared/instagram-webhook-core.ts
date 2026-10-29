@@ -17,6 +17,40 @@ export const INSTAGRAM_WEBHOOK_MAX_BYTES = 2_097_152;
 /** Cabeçalho da Meta; `Headers.get` não diferencia caixa. */
 export const INSTAGRAM_SIGNATURE_HEADER = "x-hub-signature-256";
 
+/**
+ * Lê o corpo contando bytes e para ASSIM QUE passa de `max` (cancela o
+ * stream e devolve `too_large`): sem Content-Length (chunked) o corpo inteiro
+ * nunca chega à memória antes da checagem, num endpoint ainda não autenticado.
+ * `null` (sem corpo) vira bytes vazios. Só a API padrão de `ReadableStream`.
+ */
+export async function readBodyWithCap(
+  stream: ReadableStream<Uint8Array> | null,
+  max: number,
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: "too_large" }> {
+  if (stream === null) return { ok: true, bytes: new Uint8Array(0) };
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      return { ok: false, reason: "too_large" };
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true, bytes };
+}
+
 export type InstagramSignatureCandidateName = "instagram" | "meta";
 
 export type InstagramSignatureResult =
