@@ -1,0 +1,81 @@
+// Teste-guarda de uso de vidro com desfoque.
+// REGRA: incluir um arquivo em ALLOWED_BLUR_FILES exige que a superfície com
+// backdrop-filter seja ÚNICA na tela (sobreposição, casco, painel principal).
+// Nunca aplicar glass/backdrop-blur em item repetido de lista — para esses, usar .surface.
+import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+
+const ALLOWED_BLUR_FILES = [
+  "src/components/layouts/AdminShell.tsx",
+  "src/components/ui/dialog.tsx",
+  "src/components/ui/alert-dialog.tsx",
+  "src/components/ui/responsive-dialog.tsx",
+  "src/components/ui/popover.tsx",
+  "src/components/ui/dropdown-menu.tsx",
+  "src/components/ui/tooltip.tsx",
+  "src/components/ui/select.tsx",
+  "src/components/ui/sonner.tsx",
+  "src/pages/Index.tsx",
+  "src/pages/gestao/Conta.tsx",
+];
+
+const readCss = () => fs.readFileSync(path.resolve(process.cwd(), "src/index.css"), "utf8");
+
+function collectTsxFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...collectTsxFiles(full));
+    } else if (entry.isFile() && entry.name.endsWith(".tsx") && !entry.name.endsWith(".test.tsx")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+function extractBlock(css: string, selector: string): string {
+  const start = css.indexOf(selector);
+  if (start === -1) return "";
+  const open = css.indexOf("{", start);
+  if (open === -1) return "";
+  let depth = 0;
+  for (let i = open; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}") {
+      depth--;
+      if (depth === 0) return css.slice(start, i + 1);
+    }
+  }
+  return css.slice(start);
+}
+
+describe("glass-usage-guard", () => {
+  it("surface nunca desfoca", () => {
+    const block = extractBlock(readCss(), ".surface {");
+    expect(block).not.toBe("");
+    expect(block).not.toContain("backdrop-filter");
+  });
+
+  it("fallbacks existem", () => {
+    const css = readCss();
+    expect(css).toContain("@supports not ((backdrop-filter");
+    expect(css).toContain("prefers-reduced-transparency: reduce");
+  });
+
+  it("vidro com desfoque só em superfícies únicas", () => {
+    const pattern = /\bglass(-strong)?\b|backdrop-blur/;
+    const offenders: string[] = [];
+
+    for (const file of collectTsxFiles(path.resolve(process.cwd(), "src"))) {
+      const rel = path.relative(process.cwd(), file).split(path.sep).join("/");
+      const source = fs.readFileSync(file, "utf8");
+      if (pattern.test(source) && !ALLOWED_BLUR_FILES.includes(rel)) {
+        offenders.push(rel);
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+});
