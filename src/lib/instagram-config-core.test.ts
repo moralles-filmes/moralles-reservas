@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -6,6 +6,7 @@ import {
   INSTAGRAM_SECRET_KEYS,
   createInstagramSecretReader,
 } from "../../supabase/functions/_shared/instagram-config-core.ts";
+import { platformSecretRowOrThrow } from "../../supabase/functions/_shared/instagram-config.ts";
 
 /**
  * Segredos do Instagram em `platform_secrets` (S5/S6, R2-c): leitura que falha
@@ -187,8 +188,8 @@ function between(source: string, start: string, end: string): string {
   return source.slice(i, j);
 }
 
-describe("guardas estáticas do núcleo e do adapter", () => {
-  it("nem o núcleo nem o adapter tocam variável de ambiente", () => {
+describe("guardas estáticas do núcleo e do helper", () => {
+  it("nem o núcleo nem o helper tocam variável de ambiente", () => {
     for (const src of [CORE, ADAPTER]) {
       expect(src).not.toMatch(/\bDeno\s*\.\s*env\b/);
       expect(src).not.toMatch(/\bprocess\s*\.\s*env\b|node:process/);
@@ -197,18 +198,55 @@ describe("guardas estáticas do núcleo e do adapter", () => {
     expect(CORE).not.toMatch(/esm\.sh|deno\.land/);
   });
 
-  it("o adapter lê platform_secrets e decide pelo núcleo", () => {
-    expect(ADAPTER).toContain('"platform_secrets"');
-    expect(ADAPTER).toContain("createInstagramSecretReader(");
+  it("D3: o helper não consulta o banco nem importa SDK (a consulta mora no index.ts da EF)", () => {
+    const code = ADAPTER.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/\.(from|rpc)\s*\(/);
+    expect(code).not.toMatch(/esm\.sh|deno\.land|createClient/);
   });
 
-  it("o adapter importa o SDK só como tipo (sem acoplamento em runtime)", () => {
-    expect(ADAPTER).not.toMatch(/^\s*import\s+(?!type\b)[^;]*esm\.sh/m);
-  });
-
-  it("o log de falha do adapter leva só discriminador, nunca mensagem nem String(err)", () => {
+  it("o log de falha do helper leva só discriminador, nunca mensagem nem String(err)", () => {
     expect(ADAPTER).toContain("instagram_secret_read_failed");
     expect(ADAPTER).not.toMatch(/String\(\s*(err|error|e)\b|\.message\b/);
+  });
+
+  it("o JSDoc do núcleo traz o readRow de referência com a tabela literal", () => {
+    expect(CORE).toContain('.from("platform_secrets").select("value").eq("key", key).maybeSingle()');
+    expect(CORE).toContain("platformSecretRowOrThrow(");
+  });
+});
+
+describe("platformSecretRowOrThrow → contrato do núcleo", () => {
+  it("linha → linha; sem linha → null; erro → lança, loga só key+code e o núcleo dá read_failed", async () => {
+    expect(platformSecretRowOrThrow(APP, { data: { value: "app-FAKE" }, error: null })).toEqual({ value: "app-FAKE" });
+    expect(platformSecretRowOrThrow(APP, { data: null, error: null })).toBeNull();
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const pgError = { code: "PGRST301", message: "detalhe-sensivel-XYZ", details: "x" };
+      expect(() => platformSecretRowOrThrow(APP, { data: { value: "app-FAKE" }, error: pgError })).toThrow();
+      const logged = warn.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("instagram_secret_read_failed");
+      expect(logged).toContain("PGRST301");
+      expect(logged).not.toContain("detalhe-sensivel-XYZ");
+      expect(logged).not.toContain("app-FAKE");
+
+      const reader = createInstagramSecretReader(async (key) =>
+        platformSecretRowOrThrow(key, { data: { value: "app-FAKE" }, error: pgError }),
+      );
+      expect(await reader.read(APP)).toEqual({ ok: false, reason: "read_failed" });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("code não-string não é logado", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() => platformSecretRowOrThrow(APP, { data: null, error: { code: { leak: "obj-XYZ" } } })).toThrow();
+      expect(String(warn.mock.calls[0][0])).not.toContain("obj-XYZ");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

@@ -45,6 +45,30 @@ const KNOWN_KEYS: ReadonlySet<string> = new Set(Object.values(INSTAGRAM_SECRET_K
  * @param readRow uma leitura de `platform_secrets` pela chave; pode lançar
  *   (rede, cliente sem ambiente) → `read_failed`.
  * @param now relógio do cache local (só decide reuso em memória).
+ *
+ * Uso no `index.ts` da EF consumidora (D3: a consulta mora lá; uma instância
+ * por isolate, no nível do módulo, para o cache valer). `supabase` é o cliente
+ * service-role que o próprio `index.ts` já cria:
+ *
+ * ```ts
+ * import { INSTAGRAM_SECRET_KEYS, createInstagramSecretReader } from "../_shared/instagram-config-core.ts";
+ * import { platformSecretRowOrThrow } from "../_shared/instagram-config.ts";
+ *
+ * const igSecrets = createInstagramSecretReader(async (key) =>
+ *   platformSecretRowOrThrow(
+ *     key,
+ *     await supabase.from("platform_secrets").select("value").eq("key", key).maybeSingle(),
+ *   )
+ * );
+ *
+ * const appSecret = await igSecrets.read(INSTAGRAM_SECRET_KEYS.appSecret);
+ * if (appSecret.ok === false) { // falha fechado: 503, nunca "permitido"
+ *   jsonLog("warn", { evt: "instagram_secret_unavailable", reason: appSecret.reason });
+ *   return new Response(..., { status: 503 });
+ * }
+ * ```
+ *
+ * Exceção de rede/cliente lançada pelo `await` também vira `read_failed`.
  */
 export function createInstagramSecretReader(
   readRow: (key: string) => Promise<{ value: string } | null>,
