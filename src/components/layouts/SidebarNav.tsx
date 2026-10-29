@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
+import { Link, NavLink, useLocation, useMatch, useResolvedPath } from "react-router-dom";
 import { ChevronDown, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -91,19 +91,21 @@ export function SidebarLink({ to, label, icon: Icon, end, badge, tone = "default
     </>
   );
 
-  // Com o ativo decidido pelo layout, `Link` em vez de `NavLink`: o NavLink
-  // marcaria `aria-current="page"` pelo próprio prefixo, e dois itens seriam
-  // anunciados como a página atual (ex.: Cobranças dentro de Planos).
-  const link =
-    isActiveOverride === undefined ? (
-      <NavLink to={to} end={end} className={({ isActive }) => linkClass(isActive)}>
-        {content}
-      </NavLink>
-    ) : (
-      <Link to={to} aria-current={isActiveOverride ? "page" : undefined} className={linkClass(isActiveOverride)}>
-        {content}
-      </Link>
-    );
+  // `Link` com className em texto, nunca `NavLink`: recolhido, o link fica sob
+  // `TooltipTrigger asChild`, e o Slot do Radix junta className com join(" "),
+  // transformando o className-função do NavLink no código da função (o item
+  // perde flex/padding e sai do centro). O ativo é o mesmo casamento do
+  // NavLink, salvo quando o layout decide (`isActive`): aí o prefixo não conta,
+  // senão dois itens seriam anunciados como a página atual (ex.: Cobranças dentro de Planos).
+  const resolved = useResolvedPath(to);
+  const match = useMatch({ path: resolved.pathname, end: end ?? false });
+  const isActive = isActiveOverride ?? match !== null;
+
+  const link = (
+    <Link to={to} aria-current={isActive ? "page" : undefined} className={linkClass(isActive)}>
+      {content}
+    </Link>
+  );
 
   return withTooltip(link, label, collapsed);
 }
