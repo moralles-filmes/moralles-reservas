@@ -2665,19 +2665,19 @@ P -f supabase/tests/local-preflight/79a-instagram-bootstrap.sql
 P -f supabase/migrations/20260905143453_whatsapp_conversation_provider_parity.sql  # Task 1.4: RPCs de conversa pré-Instagram
 P -f supabase/migrations/20261017160000_conversation_message_write_acl.sql         # Task 1.4: ACL de escrita de produção
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # RED: aborta na guarda (objetos ausentes), exit 3
-P -f supabase/migrations/20261021200000_instagram_module_grants.sql
-P -f supabase/migrations/20261021200100_instagram_accounts_contacts.sql
-P -f supabase/migrations/20261021200200_instagram_inbound_queue.sql
-P -f supabase/migrations/20261021200300_conversations_instagram_channel.sql
-P -f supabase/migrations/20261021200400_reservations_source_instagram.sql
+P -f supabase/migrations/20261029200000_instagram_module_grants.sql
+P -f supabase/migrations/20261029200100_instagram_accounts_contacts.sql
+P -f supabase/migrations/20261029200200_instagram_inbound_queue.sql
+P -f supabase/migrations/20261029200300_conversations_instagram_channel.sql
+P -f supabase/migrations/20261029200400_reservations_source_instagram.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN
-P -f supabase/migrations/20261021200000_instagram_module_grants.sql
-P -f supabase/migrations/20261021200100_instagram_accounts_contacts.sql
-P -f supabase/migrations/20261021200200_instagram_inbound_queue.sql
-P -f supabase/migrations/20261021200300_conversations_instagram_channel.sql
-P -f supabase/migrations/20261021200400_reservations_source_instagram.sql
+P -f supabase/migrations/20261029200000_instagram_module_grants.sql
+P -f supabase/migrations/20261029200100_instagram_accounts_contacts.sql
+P -f supabase/migrations/20261029200200_instagram_inbound_queue.sql
+P -f supabase/migrations/20261029200300_conversations_instagram_channel.sql
+P -f supabase/migrations/20261029200400_reservations_source_instagram.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (idempotência)
-# 20261021200500_instagram_cron.sql NÃO roda aqui (sem pg_cron): é lida como
+# 20261029200500_instagram_cron.sql NÃO roda aqui (sem pg_cron): é lida como
 # texto pelo gêmeo src/lib/instagram-queue-migration-twin.test.ts.
 ```
 
@@ -2702,7 +2702,7 @@ ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **77 e
 77**); quem acrescenta
 casos atualiza o número na última instrução do arquivo.
 
-**Task 1.1** (migration `20261021200000_instagram_module_grants.sql`):
+**Task 1.1** (migration `20261029200000_instagram_module_grants.sql`):
 IG-1.1 só platform_admin concede (owner, gerente e authenticated sem `sub`
 recebem `42501` sem gravar; o admin sem membership concede, com a organização
 tirada de `units` e a linha de `instagram_settings` nascendo com
@@ -2724,7 +2724,7 @@ AUSENTE conferido) no corpo sem CR (`pg_temp.ig79_lf`), o texto sabotado sai
 em LF, e a restauração é o rollback da subtransação, que devolve o corpo
 original byte a byte para a comparação com o catálogo.
 
-**Task 1.2** (migration `20261021200100_instagram_accounts_contacts.sql`):
+**Task 1.2** (migration `20261029200100_instagram_accounts_contacts.sql`):
 IG-2.1 membro de A não lê contato de B, `get_instagram_account_status` recusa
 A→B, unidade inexistente e sem `sub` com o MESMO `42501`, devolve zero linhas
 sem conta ativa, e `authenticated` não lê `instagram_accounts` nem o ledger
@@ -2759,7 +2759,7 @@ Task 1.1 (o C-IG-2.6 recria o trigger sem o `when` e confere o
 `pg_get_triggerdef` restaurado; o C-IG-2.8 tira a amarração por nome de cada
 uma das quatro funções, uma por vez).
 
-**Task 1.3** (migration `20261021200200_instagram_inbound_queue.sql`, gêmeo
+**Task 1.3** (migration `20261029200200_instagram_inbound_queue.sql`, gêmeo
 `src/lib/instagram-queue-migration-twin.test.ts`): IG-3.1 cerca do evento (o
 claim devolve conta, unidade e corpo cru byte a byte; com o lease vivo o
 segundo claim devolve zero linhas; o takeover dá `claim_id` novo e gasta
@@ -2798,7 +2798,7 @@ recusado em finalize, complete, record e INSERT direto, e os códigos do harness
 do plano e do núcleo da fila casam o formato). Cada um tem a sua sabotagem nos
 C-IG-3.1/3.3/3.5/3.6 e no C-IG-3.8.
 
-**Task 1.4** (migration `20261021200300_conversations_instagram_channel.sql`).
+**Task 1.4** (migration `20261029200300_conversations_instagram_channel.sql`).
 Base acrescida no 79a (seção 3b) e na sequência acima: `conversations` na
 forma que as migrations 001 + 013 + 015 + 027 + 049 + 056 + 070 deixam
 (colunas, FKs, CHECK de status, índices, trigger de `updated_at`), RLS
@@ -2908,16 +2908,16 @@ descartável preparado até a 1.3 (mesma sequência acima):
 # sessão A: segura ACCESS SHARE em conversations por 15 s
 P -c "begin; lock table public.conversations in access share mode; select pg_sleep(15); commit;" &
 P -c "select pg_sleep(2)"
-P -f supabase/migrations/20261021200300_conversations_instagram_channel.sql
+P -f supabase/migrations/20261029200300_conversations_instagram_channel.sql
 #   -> ERROR: canceling statement due to lock timeout (exit 3, ~5 s), coluna channel ausente
-wait; P -f supabase/migrations/20261021200300_conversations_instagram_channel.sql   # exit 0
+wait; P -f supabase/migrations/20261029200300_conversations_instagram_channel.sql   # exit 0
 ```
 
 Controle: a mesma sequência com uma cópia da migration sem a linha do
 `lock_timeout` espera o lock inteiro (13 s) e aplica.
 
-**Task 1.5** (migrations `20261021200400_reservations_source_instagram.sql` e
-`20261021200500_instagram_cron.sql`). Base acrescida no 79a (seção 3c):
+**Task 1.5** (migrations `20261029200400_reservations_source_instagram.sql` e
+`20261029200500_instagram_cron.sql`). Base acrescida no 79a (seção 3c):
 `reservations.source` VERBATIM da 022 (o CHECK inline ganha o nome
 automático `reservations_source_check`), `notification_outbox` da 028 com as
 colunas e a ACL da 20261006003631, o corpo REAL de
@@ -2956,12 +2956,12 @@ IG-5.2. O controle positivo é manual, como o do `lock_timeout`:
 P -c "begin; alter table public.reservations drop constraint reservations_source_check;
       alter table public.reservations add constraint reservations_source_check check (source in ('web','whatsapp'));
       alter table public.reservations add constraint reservations_source_drift79 check (source <> ''); commit;"
-P -f supabase/migrations/20261021200400_reservations_source_instagram.sql   # exit 3, reservations_source_check_drift, nada muda
+P -f supabase/migrations/20261029200400_reservations_source_instagram.sql   # exit 3, reservations_source_check_drift, nada muda
 # cópia sem o bloco `do $$ … $$;` da guarda de drift (o único `do $$` do arquivo)
-node -e "const f=require('fs');const s=f.readFileSync('supabase/migrations/20261021200400_reservations_source_instagram.sql','utf8');const a=s.indexOf('do \$\$');const b=s.indexOf('\$\$;',s.indexOf('\$\$',a+4)+2)+3;if(a<0||b<3)process.exit(1);f.writeFileSync('/tmp/120400-sem-guarda.sql',s.slice(0,a)+s.slice(b))"
+node -e "const f=require('fs');const s=f.readFileSync('supabase/migrations/20261029200400_reservations_source_instagram.sql','utf8');const a=s.indexOf('do \$\$');const b=s.indexOf('\$\$;',s.indexOf('\$\$',a+4)+2)+3;if(a<0||b<3)process.exit(1);f.writeFileSync('/tmp/120400-sem-guarda.sql',s.slice(0,a)+s.slice(b))"
 P -f /tmp/120400-sem-guarda.sql                                             # cópia sem o bloco do drift: exit 0, DOIS CHECKs de source sobrevivem
 P -c "alter table public.reservations drop constraint reservations_source_drift79"
-P -f supabase/migrations/20261021200400_reservations_source_instagram.sql   # restaura; o 79 volta a 77/77
+P -f supabase/migrations/20261029200400_reservations_source_instagram.sql   # restaura; o 79 volta a 77/77
 ```
 
 O estado que a cópia sem guarda deixa (o CHECK novo somado a outro de
