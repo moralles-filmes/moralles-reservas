@@ -713,7 +713,7 @@
       "name": "set_unit_module_grant",
       "args": "p_unit_id uuid, p_module text, p_active boolean",
       "roles": ["authenticated"],
-      "why": "Concessão e revogação de módulo pago por unidade (Instagram), migration 20261021120000. Guarda interna app_private.is_platform_admin(auth.uid()), senão 42501, ANTES de qualquer leitura da unidade; ator de auth.uid(), nunca parâmetro; organização tirada de units. Idempotente nos dois sentidos (índice único parcial de um grant ativo por unidade e módulo); ao conceder cria instagram_settings com on conflict do nothing. unit_module_grants é FORCE RLS sem policy e sem privilégio para anon/authenticated: esta RPC é o único caminho de escrita do painel. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-1.1, IG-1.2, controles C-IG-1.1 e C-IG-1.2).",
+      "why": "Concessão e revogação de módulo pago por unidade (Instagram), migration 20261021200000. Guarda interna app_private.is_platform_admin(auth.uid()), senão 42501, ANTES de qualquer leitura da unidade; ator de auth.uid(), nunca parâmetro; organização tirada de units. Idempotente nos dois sentidos (índice único parcial de um grant ativo por unidade e módulo); ao conceder cria instagram_settings com on conflict do nothing. unit_module_grants é FORCE RLS sem policy e sem privilégio para anon/authenticated: esta RPC é o único caminho de escrita do painel. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-1.1, IG-1.2, controles C-IG-1.1 e C-IG-1.2).",
       "security_definer": true,
       "advisor_lints": ["0029"]
     },
@@ -721,7 +721,7 @@
       "name": "get_unit_modules",
       "args": "p_unit_id uuid",
       "roles": ["authenticated"],
-      "why": "Leitura dos módulos da unidade para o painel (uma linha por módulo do catálogo, ativo ou não), migration 20261021120000. Guarda interna app_private.is_unit_member(auth.uid(), p_unit_id) OR app_private.is_platform_admin(auth.uid()), senão 42501; unidade alheia e inexistente caem na mesma recusa (sem oráculo de existência). DEFINER porque unit_module_grants não concede nada a authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-1.3, controle C-IG-1.3).",
+      "why": "Leitura dos módulos da unidade para o painel (uma linha por módulo do catálogo, ativo ou não), migration 20261021200000. Guarda interna app_private.is_unit_member(auth.uid(), p_unit_id) OR app_private.is_platform_admin(auth.uid()), senão 42501; unidade alheia e inexistente caem na mesma recusa (sem oráculo de existência). DEFINER porque unit_module_grants não concede nada a authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-1.3, controle C-IG-1.3).",
       "security_definer": true,
       "advisor_lints": ["0029"]
     },
@@ -729,7 +729,7 @@
       "name": "get_instagram_account_status",
       "args": "p_unit_id uuid",
       "roles": ["authenticated"],
-      "why": "Projeção client-safe da conta do Instagram da unidade para o painel (username, status, vencimento do token, conexão, assinatura de messages, último erro), migration 20261021120100. Guarda interna app_private.is_unit_member(auth.uid(), p_unit_id) OR app_private.is_platform_admin(auth.uid()), senão 42501; unidade alheia, inexistente e sessão sem sub caem na mesma recusa (sem oráculo de existência). Zero linhas sem conta ativa. Nunca devolve token, ponteiro do Vault nem ig_user_id. DEFINER porque instagram_accounts é FORCE RLS sem policy e sem privilégio para authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-2.1, controle C-IG-2.1).",
+      "why": "Projeção client-safe da conta do Instagram da unidade para o painel (username, status, vencimento do token, conexão, assinatura de messages, último erro), migration 20261021200100. Guarda interna app_private.is_unit_member(auth.uid(), p_unit_id) OR app_private.is_platform_admin(auth.uid()), senão 42501; unidade alheia, inexistente e sessão sem sub caem na mesma recusa (sem oráculo de existência). Zero linhas sem conta ativa. Nunca devolve token, ponteiro do Vault nem ig_user_id. DEFINER porque instagram_accounts é FORCE RLS sem policy e sem privilégio para authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-2.1, controle C-IG-2.1).",
       "security_definer": true,
       "advisor_lints": ["0029"]
     },
@@ -737,7 +737,7 @@
       "name": "get_instagram_diagnostics",
       "args": "p_unit_id uuid",
       "roles": ["authenticated"],
-      "why": "Diagnóstico da ingestão do Instagram para a plataforma (último evento, contagem da fila por estado, pendente mais antigo e desfechos de 24h), migration 20261021120200. Guarda interna app_private.is_platform_admin(auth.uid()), senão 42501; owner, gerente, operador e sessão sem sub caem na mesma recusa. Só contagens e instantes: nunca corpo, erro, mid nem meta. DEFINER porque instagram_inbound_events e instagram_processed_messages são FORCE RLS sem policy e sem privilégio para authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-3.4, controle C-IG-3.4).",
+      "why": "Diagnóstico da ingestão do Instagram para a plataforma (último evento, contagem da fila por estado, pendente mais antigo e desfechos de 24h), migration 20261021200200. Guarda interna app_private.is_platform_admin(auth.uid()), senão 42501; owner, gerente, operador e sessão sem sub caem na mesma recusa. Só contagens e instantes: nunca corpo, erro, mid nem meta. DEFINER porque instagram_inbound_events e instagram_processed_messages são FORCE RLS sem policy e sem privilégio para authenticated. Medido em supabase/tests/local-preflight/79-instagram-module.sql (IG-3.4, controle C-IG-3.4).",
       "security_definer": true,
       "advisor_lints": ["0029"]
     }

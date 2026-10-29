@@ -37,7 +37,7 @@ begin;
 -- 1. instagram_accounts
 -- ============================================================================
 -- `connected_by`/`disconnected_by` sem FK: registro histórico, como
--- `granted_by` na 20261021120000. As RPCs rodam como `service_role` (sem
+-- `granted_by` na 20261021200000. As RPCs rodam como `service_role` (sem
 -- `sub`), então o `actor_id` do audit_log sai nulo: quem conectou e quem
 -- desconectou ficam nessas duas colunas, que o audit_log copia em new_values.
 -- `ig_user_id` é o id numérico da conta no Instagram, gravado sem espaços.
@@ -85,7 +85,7 @@ create index if not exists instagram_accounts_token_secret_idx
   on public.instagram_accounts (token_secret_id);
 
 -- Coerência organização × unidade e vínculo imutável: o mesmo guard da
--- 20261021120000 (genérico por `tg_table_name`).
+-- 20261021200000 (genérico por `tg_table_name`).
 drop trigger if exists instagram_accounts_tenant_guard_trg on public.instagram_accounts;
 create trigger instagram_accounts_tenant_guard_trg
   before insert or update of organization_id, unit_id on public.instagram_accounts

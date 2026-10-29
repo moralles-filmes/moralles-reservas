@@ -11,7 +11,7 @@
 -- ESTA MIGRATION SÓ AGENDA. Os wrappers `trigger_instagram_inbound_sweep()` e
 -- `trigger_instagram_token_refresh()` e as purgas
 -- `purge_instagram_inbound_events()` / `purge_instagram_processed_messages()`
--- foram criados na 20261021120200 (Task 1.3). Os wrappers leem `project_url` E
+-- foram criados na 20261021200200 (Task 1.3). Os wrappers leem `project_url` E
 -- `internal_api_key` do Vault, fail-closed: faltando qualquer um, avisam e
 -- voltam sem POST. Por isso NÃO há URL de projeto nem segredo aqui; o
 -- guardrail scripts/migration-static-guard.test.ts reprova quem regredir.
@@ -26,7 +26,7 @@
 --
 -- `pg_cron` NÃO PULA EXECUÇÕES SOBREPOSTAS. Uma varredura que passe de um
 -- minuto convive com a seguinte; quem torna isso seguro é o claim POR LINHA da
--- 20261021120200 (`claim_instagram_inbound_event`, `claim_instagram_message`),
+-- 20261021200200 (`claim_instagram_inbound_event`, `claim_instagram_message`),
 -- não o agendamento. `timeout_milliseconds` do `pg_net` (30 s, nos wrappers)
 -- encerra a ESPERA pelo POST, não a execução da Edge Function.
 --

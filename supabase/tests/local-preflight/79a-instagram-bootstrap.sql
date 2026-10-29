@@ -27,7 +27,7 @@ do $$
 begin
   if to_regclass('public.unit_module_grants') is not null
      or to_regclass('public.instagram_settings') is not null then
-    raise exception '79a exige rodar ANTES da migration 20261021120000_instagram_module_grants: as tabelas ja existem e nasceram sem os default privileges, o que cega o IG-1.5. Recrie o banco (dropdb ig79 / createdb ig79) e siga o README, secao 79.';
+    raise exception '79a exige rodar ANTES da migration 20261021200000_instagram_module_grants: as tabelas ja existem e nasceram sem os default privileges, o que cega o IG-1.5. Recrie o banco (dropdb ig79 / createdb ig79) e siga o README, secao 79.';
   end if;
   if to_regprocedure('app_private.is_unit_member(uuid,uuid)') is null
      or to_regprocedure('app_private.is_platform_admin(uuid)') is null
