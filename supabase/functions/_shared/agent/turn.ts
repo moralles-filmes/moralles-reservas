@@ -338,6 +338,22 @@ export function createAgentTurn(io: AgentTurnIO) {
    * do adapter, que liquida, solta o lock e registra.
    */
   const run = async (ctx: ChannelContext, inbound: TurnInbound): Promise<void> => {
+    // Guarda do contexto: sem unidade ou organização o turno não tem tenant
+    // para filtrar leitura, franquia nem ferramenta. Roda ANTES de tudo — antes
+    // do append, do debounce, do lock e da reserva de orçamento, então não há o
+    // que soltar nem liquidar — e antes da carga do prompt global, por isso o
+    // `finish` não leva `global_prompt_version`.
+    if (!ctx.unitId || !ctx.organizationId) {
+      jsonLog("error", {
+        requestId,
+        evt: "agent_context_invalid",
+        channel: ctx.channel,
+        hasUnitId: !!ctx.unitId,
+        hasOrganizationId: !!ctx.organizationId,
+      });
+      await finish("invalid_channel_context");
+      return;
+    }
     const conv = ctx.conversation;
     const { unitId, organizationId, customer, phone } = ctx;
     const channelId = ctx.channelId;
@@ -986,10 +1002,12 @@ export function createAgentTurn(io: AgentTurnIO) {
     const agentPrompt = await loadAgentSystemPrompt(supabase, {
       unitId,
       unit: ctx.unit,
-      customer,
+      privateCustomer: ctx.customer,
       phone,
       identityLine: ctx.identityLine,
       formattingRules: ctx.formattingRules,
+      channelLabel: ctx.channelLabel,
+      channelRules: ctx.channelRules,
       appBaseUrl: ctx.appBaseUrl,
       requestId,
       log: jsonLog,

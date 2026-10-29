@@ -163,7 +163,7 @@ describe("prompt global: o baseline renderizado é o trecho atual do prompt", ()
     includeFaq: false, agentName: "Yumi", restaurantName: "Exemplo", globalPromptBody: GLOBAL_PERSONA_BASELINE,
     identityLine: "IDENTIDADE_DO_CANAL.",
     todayBR: "segunda-feira, 05/10/2026", weekdayName: "segunda-feira", upcomingDaysLines: ["- amanhã: terça-feira"],
-    customerFirstName: "", formattingRules: "FORMATACAO_DO_CANAL", unitAddress: "", restaurantInfoLines: [],
+    customerFirstName: "", formattingRules: "FORMATACAO_DO_CANAL", channelLabel: "WhatsApp", channelRules: "", unitAddress: "", restaurantInfoLines: [],
     hallScheduleBlock: null, hoursLines: [], specialLines: [], blockedLines: [], giftbackLines: [], prefsLines: [],
     customPrompt: "", settingsMap: {}, ...over,
   });

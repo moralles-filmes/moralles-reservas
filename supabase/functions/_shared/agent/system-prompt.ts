@@ -4,8 +4,8 @@
  * `loadAgentSystemPrompt` faz as leituras NA MESMA ORDEM e lê o relógio nos
  * mesmos pontos do turno original do `webhook-whatsapp` (a paridade é provada
  * por `src/lib/agent-turn-parity.test.ts`). `composeAgentSystemPrompt` é a
- * montagem pura do texto, onde entram os dois pedaços que mudam por canal:
- * `identityLine` e `formattingRules`.
+ * montagem pura do texto, onde entram os pedaços que mudam por canal:
+ * `identityLine`, `formattingRules`, `channelLabel` (regra 12) e `channelRules`.
  *
  * Invariantes (regra `.claude/rules/agente-ia.md`):
  * - `units` com `SELECT *` e TODOS os `settings` sem filtro por key;
@@ -208,6 +208,10 @@ export interface AgentPromptParts {
   customerFirstName: string;
   /** Regras de formatação do canal, sem as quebras de linha iniciais. */
   formattingRules: string;
+  /** Nome do canal na regra 12 (WhatsApp: `"WhatsApp"`). */
+  channelLabel: string;
+  /** Regras próprias do canal depois da formatação; vazio não emite nenhum byte. */
+  channelRules: string;
   unitAddress: string;
   restaurantInfoLines: string[];
   hallScheduleBlock: string | null;
@@ -243,7 +247,7 @@ const storeSection = (lead: string, block: string) => (block ? `\n\n${lead}\n${b
 export function composeAgentSystemPrompt(p: AgentPromptParts): string {
   const {
     includeFaq, agentName, restaurantName, globalPromptBody, identityLine, todayBR, weekdayName,
-    upcomingDaysLines, customerFirstName, formattingRules, unitAddress,
+    upcomingDaysLines, customerFirstName, formattingRules, channelLabel, channelRules, unitAddress,
     restaurantInfoLines, hallScheduleBlock, hoursLines, specialLines, blockedLines,
     giftbackLines, prefsLines, customPrompt, settingsMap,
   } = p;
@@ -293,9 +297,11 @@ export function composeAgentSystemPrompt(p: AgentPromptParts): string {
       // Regra 12: o agente NÃO tem tool de fila de espera — prometer isso é
       // promessa vazia (o cliente espera um aviso que nunca sai). Enquanto a
       // fila não for exposta como ferramenta, a regra é não oferecer.
-      `12. Fila de espera / lista de espera: NÃO trabalhamos com fila de espera pelo WhatsApp. NUNCA ofereça, prometa, sugira nem diga que colocou o cliente em "fila de espera", "lista de espera" ou que "avisa se vagar uma mesa" — você NÃO tem ferramenta para isso, então qualquer promessa dessas é falsa e o cliente ficaria esperando um aviso que nunca chega. Quando não houver disponibilidade, ofereça alternativas concretas: outro horário do mesmo dia, outra data próxima ou outro salão. Se o cliente pedir explicitamente para entrar numa fila/lista de espera, diga com clareza e cordialidade que no momento não fazemos isso por aqui e ofereça as alternativas acima; se ele insistir, acione 'request_human_handoff' em vez de prometer qualquer coisa.\n` +
+      `12. Fila de espera / lista de espera: NÃO trabalhamos com fila de espera pelo ${channelLabel}. NUNCA ofereça, prometa, sugira nem diga que colocou o cliente em "fila de espera", "lista de espera" ou que "avisa se vagar uma mesa" — você NÃO tem ferramenta para isso, então qualquer promessa dessas é falsa e o cliente ficaria esperando um aviso que nunca chega. Quando não houver disponibilidade, ofereça alternativas concretas: outro horário do mesmo dia, outra data próxima ou outro salão. Se o cliente pedir explicitamente para entrar numa fila/lista de espera, diga com clareza e cordialidade que no momento não fazemos isso por aqui e ofereça as alternativas acima; se ele insistir, acione 'request_human_handoff' em vez de prometer qualquer coisa.\n` +
       STORE_DATA_RULE +
       `\n\n${formattingRules}` +
+      // Só se houver: canal sem regra própria (WhatsApp) não muda nenhum byte.
+      (channelRules ? `\n\n${channelRules}` : "") +
       (unitAddress ? `\n\nEndereço: ${unitAddress}` : "") +
       (restaurantInfoLines.length ? `\n\nSobre o restaurante:\n${restaurantInfoLines.join("\n")}` : "") +
       (hallScheduleBlock
@@ -355,11 +361,19 @@ export function composeAgentSystemPrompt(p: AgentPromptParts): string {
 export interface LoadAgentPromptArgs {
   unitId: string;
   unit: AgentUnit;
-  customer: AgentCustomer;
+  /**
+   * Cadastro do cliente (vouchers, preferências, aniversário, nome gravado), ou
+   * `null` quando o contato não pode ver dado privado (identidade só declarada
+   * no canal). Com `null` não há consulta de vouchers, nenhuma linha do cliente
+   * e nenhum nome do cliente no prompt.
+   */
+  privateCustomer: AgentCustomer | null;
   /** Telefone do contato como chegou pelo canal; reconhece nome-placeholder. */
   phone: string;
   identityLine: string;
   formattingRules: string;
+  channelLabel: string;
+  channelRules: string;
   /** Lido só quando há cardápio digital ativo (mesmo ponto de antes). */
   appBaseUrl(): string;
   requestId: string;
@@ -378,7 +392,7 @@ export async function loadAgentSystemPrompt(
   supabase: SupabaseClient,
   args: LoadAgentPromptArgs,
 ): Promise<AgentSystemPrompt> {
-  const { unitId, customer, phone } = args;
+  const { unitId, privateCustomer, phone } = args;
   const unitRow = args.unit.row;
   const unitAddress = shortName(args.unit.address);
   const unitName = args.unit.name;
@@ -561,15 +575,21 @@ export async function loadAgentSystemPrompt(
   }
 
   // ── Vouchers ativos deste cliente
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const { data: customerVouchers } = await supabase
-    .from("vouchers")
-    .select("code, discount_percent, expires_at")
-    .eq("unit_id", unitId)
-    .eq("customer_id", customer.id)
-    .eq("status", "active")
-    .gte("expires_at", todayIso)
-    .order("expires_at", { ascending: true });
+  // Sem cadastro privado, NENHUMA consulta (nem o relógio é lido): o contato
+  // declarado não pode descobrir vouchers de quem é dono do telefone.
+  let customerVouchers: unknown[] | null = null;
+  if (privateCustomer) {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const { data } = await supabase
+      .from("vouchers")
+      .select("code, discount_percent, expires_at")
+      .eq("unit_id", unitId)
+      .eq("customer_id", privateCustomer.id)
+      .eq("status", "active")
+      .gte("expires_at", todayIso)
+      .order("expires_at", { ascending: true });
+    customerVouchers = data;
+  }
 
   const customerVoucherLines: string[] = ((customerVouchers ?? []) as {
     code: string;
@@ -582,8 +602,8 @@ export async function loadAgentSystemPrompt(
 
   // ── Aniversário do cliente — hoje? nos próximos 7 dias?
   let birthdayLine: string | null = null;
-  if (customer.birthday) {
-    const bday = String(customer.birthday); // YYYY-MM-DD
+  if (privateCustomer?.birthday) {
+    const bday = String(privateCustomer.birthday); // YYYY-MM-DD
     const bMM = bday.slice(5, 7);
     const bDD = bday.slice(8, 10);
     const now = new Date();
@@ -607,14 +627,14 @@ export async function loadAgentSystemPrompt(
   // Texto do cliente e da equipe sobre ele: curto, para não forjar um bloco
   // `DADOS_DA_LOJA` nem uma linha de voucher. No WhatsApp `resolveOrCreateCustomer`
   // ainda não lê esses campos; a defesa vale para o canal que passar a ler.
-  const allergies = shortDescription(customer.allergies);
-  const dietary = shortDescription(customer.dietary_restrictions);
-  const vipNotes = shortDescription(customer.vip_notes);
+  const allergies = shortDescription(privateCustomer?.allergies);
+  const dietary = shortDescription(privateCustomer?.dietary_restrictions);
+  const vipNotes = shortDescription(privateCustomer?.vip_notes);
   const prefsLines: string[] = [];
   if (allergies) prefsLines.push(`- Alergias: ${allergies}`);
   if (dietary) prefsLines.push(`- Restrições alimentares: ${dietary}`);
   if (vipNotes) prefsLines.push(`- VIP: ${vipNotes}`);
-  if (customer.preferred_table_location) prefsLines.push(`- Mesa preferida: ${customer.preferred_table_location === "internal" ? "interna" : "externa"}`);
+  if (privateCustomer?.preferred_table_location) prefsLines.push(`- Mesa preferida: ${privateCustomer.preferred_table_location === "internal" ? "interna" : "externa"}`);
   if (birthdayLine) prefsLines.push(birthdayLine);
   for (const v of customerVoucherLines) prefsLines.push(v);
 
@@ -656,9 +676,10 @@ export async function loadAgentSystemPrompt(
   // quando o canal não trouxe nome — nesse caso NÃO injetar (viraria "número").
   // Sem isso, o único nome próprio no prompt é o da persona (agentName) e o LLM
   // passa a chamar o CLIENTE pelo nome da persona ("Yumi").
-  const rawCustomerName = str(customer?.name);
+  // Sem cadastro privado não há nome gravado: `customerFirstName` fica vazio.
+  const rawCustomerName = str(privateCustomer?.name);
   const customerFirstName =
-    rawCustomerName && rawCustomerName !== customer?.phone && rawCustomerName !== phone
+    rawCustomerName && rawCustomerName !== privateCustomer?.phone && rawCustomerName !== phone
       ? shortStoreText(rawCustomerName.trim().split(/\s+/)[0], SHORT_TEXT_LIMITS.personName)
       : "";
 
@@ -677,6 +698,8 @@ export async function loadAgentSystemPrompt(
     upcomingDaysLines,
     customerFirstName,
     formattingRules: args.formattingRules,
+    channelLabel: args.channelLabel,
+    channelRules: args.channelRules,
     unitAddress,
     restaurantInfoLines,
     hallScheduleBlock,

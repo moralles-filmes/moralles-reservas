@@ -83,6 +83,17 @@ export interface ChannelContext {
   identityLine: string;
   /** Bloco de regras de formatação do canal, sem as quebras de linha iniciais. */
   formattingRules: string;
+  /**
+   * Nome do canal como o cliente o conhece (WhatsApp: `"WhatsApp"`); entra na
+   * regra 12 ("NÃO trabalhamos com fila de espera pelo …"). Obrigatório: canal
+   * novo não herda o nome de outro por esquecimento.
+   */
+  channelLabel: string;
+  /**
+   * Regras próprias do canal, logo depois de `formattingRules`. Vazio = nenhum
+   * byte no prompt (o WhatsApp passa `""` e o prompt dele fica idêntico).
+   */
+  channelRules: string;
   /** Aplica-se SÓ à saída do LLM, nunca a texto determinístico. */
   sanitize(text: string): string;
   /** Envio cru do canal. O núcleo o chama atrás da cerca de handoff. */

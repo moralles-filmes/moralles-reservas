@@ -2873,6 +2873,9 @@ async function handleWebhookRequest(
         phone,
         identityLine: `O número de WhatsApp do cliente é ${phone}.`,
         formattingRules: WHATSAPP_FORMATTING_RULES,
+        channelLabel: "WhatsApp",
+        // Sem regra própria: o prompt do WhatsApp não ganha nenhum byte.
+        channelRules: "",
         // Só a saída do LLM passa por aqui — nunca texto determinístico.
         sanitize: sanitizeForWhatsApp,
         // Envio cru do provider; o núcleo o chama atrás da cerca de handoff.
