@@ -11,6 +11,10 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+  AI_MODEL_CATALOG,
+  type AIModelEntry,
+} from "../../supabase/functions/_shared/ai-model-catalog";
 
 const MIGRATIONS = join(__dirname, "..", "..", "supabase", "migrations");
 
@@ -351,9 +355,14 @@ describe("ledger dos marcos (103)", () => {
 // ─── Cobertura de preço × catálogo de modelos ──────────────────────────────
 //
 // Depois que preço desconhecido passou a FALHAR FECHADO em qualquer modo,
-// acrescentar um modelo a `KNOWN_MODELS` sem semear preço na 099 CALA o agente
-// da organização que o resolver. A cobertura de hoje é exata, mas isso é
-// coincidência, não invariante — este bloco a torna invariante.
+// acrescentar um modelo ao catálogo sem semear preço CALA o agente da
+// organização que o resolver. Este bloco torna a cobertura invariante.
+//
+// O conjunto exigido vem de `AI_MODEL_CATALOG` (fonte única): todo modelo ATIVO,
+// todo `successor` (um aposentado salvo na unidade passa a rodar nele) e todo
+// `sameProviderFallback` (modelo da 2ª tentativa). O preço pode estar em QUALQUER
+// migration com `insert into ai_model_prices` — a 099 e as de atualização do
+// catálogo — e precisa ter ao menos uma vigência ABERTA (sem `effective_to`).
 
 const providersSrc = readFileSync(
   join(__dirname, "..", "..", "supabase", "functions", "_shared", "ai-providers.ts"),
@@ -375,73 +384,282 @@ function braceBlock(src: string, from: number): string {
   throw new Error(`chaves desbalanceadas a partir de ${open}`);
 }
 
-/** Pares (provider, model) declarados em `KNOWN_MODELS`. */
-function knownModelPairs(src: string): Array<[string, string]> {
-  const i = src.indexOf("const KNOWN_MODELS");
-  if (i === -1) throw new Error("KNOWN_MODELS não encontrado em ai-providers.ts");
-  const block = braceBlock(src, i);
-  const out: Array<[string, string]> = [];
-  for (const entry of block.matchAll(/(\w+):\s*new Set\(\[([^\]]*)\]\)/g)) {
-    for (const model of entry[2].matchAll(/"([^"]+)"/g)) out.push([entry[1], model[1]]);
+interface PriceRow {
+  provider: string;
+  model: string;
+  /** Vigência aberta: sem `effective_to` (a coluna não existe ou o valor é `null`). */
+  open: boolean;
+}
+
+/** Fatia por vírgulas de profundidade 0, respeitando literais `'...'`. */
+function splitTopLevel(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inStr = false;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "'") inStr = !inStr; // `''` escapado alterna duas vezes: volta ao mesmo estado
+    else if (inStr) continue;
+    else if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (c === "," && depth === 0) {
+      out.push(s.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(s.slice(start));
+  return out.map((x) => x.trim());
+}
+
+/** Conteúdo de cada tupla `( ... )` de primeiro nível de um bloco `values`. */
+function topLevelTuples(inner: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inStr = false;
+  let start = -1;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === "'") inStr = !inStr;
+    else if (inStr) continue;
+    else if (c === "(") {
+      if (depth === 0) start = i + 1;
+      depth++;
+    } else if (c === ")") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        out.push(inner.slice(start, i));
+        start = -1;
+      }
+    }
   }
   return out;
 }
 
-/** Só o bloco `values (...)` do seed — nunca o arquivo inteiro. */
-const priceSeed = prices.slice(
-  prices.indexOf("insert into ai_model_prices"),
-  prices.indexOf(") as v(provider, model"),
-);
+const unquote = (v: string) => v.replace(/^'|'$/g, "");
 
-function seeded(provider: string, model: string): boolean {
-  const esc = model.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`'${provider}'\\s*,\\s*'${esc}'`).test(priceSeed);
+/**
+ * Linhas de preço semeadas por um arquivo SQL: cada tupla de
+ * `insert into ai_model_prices … from (values …) as v(colunas)`. A coluna
+ * `effective_to` é lida pelo NOME no `as v(...)`; sem ela, toda linha é aberta.
+ * Comentários são apagados antes — o bloco de validação da 099 cita o `insert`.
+ */
+function parsePriceRows(sql: string): PriceRow[] {
+  const clean = blankSqlComments(sql);
+  const rows: PriceRow[] = [];
+  for (const ins of clean.matchAll(/insert into ai_model_prices\b/gi)) {
+    const rest = clean.slice(ins.index!);
+    const values = /\(\s*values\b/i.exec(rest);
+    if (!values) throw new Error("insert into ai_model_prices sem `(values`");
+    const [a, b] = parenRange(rest, values.index);
+    const alias = /^\s*as\s+\w+\s*\(([^)]*)\)/i.exec(rest.slice(b));
+    if (!alias) throw new Error("insert into ai_model_prices sem `as v(colunas)`");
+    const cols = alias[1].split(",").map((c) => c.trim().toLowerCase());
+    const iProvider = cols.indexOf("provider");
+    const iModel = cols.indexOf("model");
+    const iTo = cols.indexOf("effective_to");
+    if (iProvider === -1 || iModel === -1) throw new Error("as v(...) sem provider/model");
+    for (const tuple of topLevelTuples(rest.slice(a + 1, b - 1))) {
+      const f = splitTopLevel(tuple);
+      rows.push({
+        provider: unquote(f[iProvider]),
+        model: unquote(f[iModel]),
+        open: iTo === -1 ? true : /^null\b/i.test(f[iTo]),
+      });
+    }
+  }
+  return rows;
 }
 
-describe("todo modelo conhecido tem preço semeado", () => {
-  it("o extrator de KNOWN_MODELS funciona, e o recorte do seed não é o arquivo", () => {
-    // Controles do detector, antes de qualquer afirmação sobre o alvo.
-    const sintetico = `const KNOWN_MODELS: Record<AIProvider, ReadonlySet<string>> = {
-  claude: new Set(["a-1", "a-2"]),
-  gemini: new Set(["b-1"]),
-};`;
-    expect(knownModelPairs(sintetico)).toEqual([
-      ["claude", "a-1"],
-      ["claude", "a-2"],
-      ["gemini", "b-1"],
+/** O recorte `insert … ) as v(...)` de cada seed — nunca o arquivo inteiro. */
+function priceInsertBlocks(sql: string): string[] {
+  const clean = blankSqlComments(sql);
+  const out: string[] = [];
+  for (const ins of clean.matchAll(/insert into ai_model_prices\b/gi)) {
+    const rest = clean.slice(ins.index!);
+    const values = /\(\s*values\b/i.exec(rest);
+    if (!values) continue;
+    const [, b] = parenRange(rest, values.index);
+    const alias = /^\s*as\s+\w+\s*\([^)]*\)/i.exec(rest.slice(b));
+    out.push(rest.slice(0, b + (alias ? alias[0].length : 0)));
+  }
+  return out;
+}
+
+/** Todas as migrations que semeiam preço, com as linhas que cada uma semeia. */
+function seedMigrations(): Array<{ file: string; sql: string; rows: PriceRow[] }> {
+  const out: Array<{ file: string; sql: string; rows: PriceRow[] }> = [];
+  for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort()) {
+    const sql = readFileSync(join(MIGRATIONS, file), "utf8");
+    if (!/insert into ai_model_prices\b/i.test(blankSqlComments(sql))) continue;
+    out.push({ file, sql, rows: parsePriceRows(sql) });
+  }
+  return out;
+}
+
+const seedFiles = seedMigrations();
+const allPriceRows = seedFiles.flatMap((s) => s.rows);
+
+/** O par tem ao menos uma linha de vigência ABERTA? */
+function seeded(rows: PriceRow[], provider: string, model: string): boolean {
+  return rows.some((r) => r.provider === provider && r.model === model && r.open);
+}
+
+/** Pares (provider, model) que o catálogo exige preço para: ativo, successor, fallback. */
+function requiredPairs(entries: readonly AIModelEntry[]): Array<[string, string]> {
+  const seen = new Set<string>();
+  const out: Array<[string, string]> = [];
+  const add = (provider: string, model: string | null | undefined) => {
+    if (!model || seen.has(`${provider}/${model}`)) return;
+    seen.add(`${provider}/${model}`);
+    out.push([provider, model]);
+  };
+  for (const e of entries) {
+    if (e.status === "active") add(e.provider, e.id);
+    add(e.provider, e.successor);
+    add(e.provider, e.sameProviderFallback);
+  }
+  return out;
+}
+
+/** `provider/model` exigidos pelo catálogo que NÃO têm vigência aberta semeada. */
+function missingPrices(entries: readonly AIModelEntry[], rows: PriceRow[]): string[] {
+  return requiredPairs(entries)
+    .filter(([provider, model]) => !seeded(rows, provider, model))
+    .map(([provider, model]) => `${provider}/${model}`);
+}
+
+/** Chaves do objeto literal `PRICING_USD_PER_MTOK` (telemetria) de um fonte. */
+function pricingKeys(src: string): string[] {
+  const decl = src.indexOf("const PRICING_USD_PER_MTOK");
+  if (decl === -1) throw new Error("PRICING_USD_PER_MTOK não encontrado");
+  // O `{` do tipo (`Record<string, { input: number; … }>`) vem ANTES do `= {`.
+  const eq = /=\s*\{/.exec(src.slice(decl));
+  if (!eq) throw new Error("literal de PRICING_USD_PER_MTOK não encontrado");
+  const block = braceBlock(src, decl + eq.index);
+  return [...block.matchAll(/^\s*"([^"]+)"\s*:/gm)].map((m) => m[1]);
+}
+
+/** Modelos ATIVOS do catálogo sem chave em `PRICING_USD_PER_MTOK`. */
+function missingTelemetryKeys(entries: readonly AIModelEntry[], src: string): string[] {
+  const keys = new Set(pricingKeys(src));
+  return entries.filter((e) => e.status === "active" && !keys.has(e.id)).map((e) => `${e.provider}/${e.id}`);
+}
+
+const SINTETICO_SQL = `
+-- insert into ai_model_prices (comentado: não conta)
+insert into ai_model_prices (provider, model, input_usd_per_mtok, effective_from, effective_to)
+select v.provider, v.model, v.inp, v.ef, v.et
+from (values
+  ('gemini', 'a-aberto',   1.0, timestamptz '2026-10-20 00:00:00+00', null::timestamptz),
+  ('gemini', 'b-fechado',  1.0, timestamptz '2026-10-20 00:00:00+00', timestamptz '2027-01-01 00:00:00+00'),
+  ('claude', 'c-virada',   1.0, timestamptz '2026-10-20 00:00:00+00', timestamptz '2027-01-01 00:00:00+00'),
+  ('claude', 'c-virada',   2.0, timestamptz '2027-01-01 00:00:00+00', null)
+) as v(provider, model, inp, ef, effective_to)
+where not exists (select 1 from ai_model_prices p where p.provider = v.provider and p.model = v.model);
+`;
+
+const SINTETICO_SQL_SEM_VIGENCIA = `
+insert into ai_model_prices (provider, model, input_usd_per_mtok, effective_from)
+select v.provider, v.model, v.inp, timestamptz '2026-01-01 00:00:00+00'
+from (values ('openai', 'd-legado', 1.0)) as v(provider, model, inp);
+`;
+
+function entradaSintetica(over: Partial<AIModelEntry> & Pick<AIModelEntry, "provider" | "id">): AIModelEntry {
+  return {
+    label: over.id,
+    status: "active",
+    role: "default",
+    capabilities: { vision: false, reasoning: "none" },
+    requestProfile: "retired",
+    verifiedInProduction: false,
+    ...over,
+  };
+}
+
+describe("todo modelo do catálogo tem preço semeado", () => {
+  it("controle: o parser lê provider, model e vigência aberta/fechada", () => {
+    const rows = parsePriceRows(SINTETICO_SQL);
+    // 4 tuplas: o `insert` comentado não entra, e `null` cru também conta como aberto.
+    expect(rows).toHaveLength(4);
+    expect(seeded(rows, "gemini", "a-aberto"), "linha sem effective_to deve ser aberta").toBe(true);
+    expect(seeded(rows, "gemini", "b-fechado"), "só linha fechada NÃO cobre o modelo").toBe(false);
+    expect(seeded(rows, "claude", "c-virada"), "uma linha aberta entre duas basta").toBe(true);
+    expect(seeded(rows, "gemini", "nao-existe")).toBe(false);
+    // Sem a coluna `effective_to` (caso da 099), toda linha é aberta.
+    const legado = parsePriceRows(SINTETICO_SQL_SEM_VIGENCIA);
+    expect(legado).toEqual([{ provider: "openai", model: "d-legado", open: true }]);
+  });
+
+  it("controle: o recorte do seed real não é vazio nem é o arquivo inteiro", () => {
+    const m099 = seedFiles.find((s) => s.file.includes("099_ai_model_prices"));
+    expect(m099, "a varredura não encontrou a 099").toBeDefined();
+    const blocos = priceInsertBlocks(m099!.sql);
+    expect(blocos, "a 099 tem um único insert").toHaveLength(1);
+    expect(blocos[0].length, "o recorte do seed ficou vazio").toBeGreaterThan(200);
+    expect(blocos[0].length, "o recorte do seed engoliu o arquivo").toBeLessThan(m099!.sql.length * 0.5);
+    expect(blocos[0], "o recorte perdeu as linhas de preço").toContain("'gemini-2.5-flash'");
+    expect(m099!.rows.length, "o parser perdeu linhas da 099").toBe(8);
+    // Negativos do alvo real: sem eles a checagem abaixo passaria com qualquer coisa.
+    expect(seeded(allPriceRows, "gemini", "gemini-9.9-inexistente")).toBe(false);
+    expect(seeded(allPriceRows, "claude", "claude-haiku-4-5")).toBe(true);
+  });
+
+  it("controle: a cobertura reporta modelo ativo, sucessor e fallback sem preço", () => {
+    const rows = parsePriceRows(SINTETICO_SQL);
+    const catalogo = [
+      entradaSintetica({ provider: "gemini", id: "a-aberto", sameProviderFallback: "fallback-sem-preco" }),
+      entradaSintetica({ provider: "gemini", id: "novo-sem-preco" }),
+      entradaSintetica({ provider: "claude", id: "c-virada" }),
+      // Aposentado: o id dele não exige preço, o SUCESSOR exige.
+      entradaSintetica({ provider: "claude", id: "velho", status: "retired", successor: "sucessor-sem-preco" }),
+    ];
+    expect(missingPrices(catalogo, rows).sort()).toEqual([
+      "claude/sucessor-sem-preco",
+      "gemini/fallback-sem-preco",
+      "gemini/novo-sem-preco",
     ]);
-    expect(priceSeed.length, "o recorte do seed ficou vazio").toBeGreaterThan(200);
-    expect(priceSeed.length, "o recorte do seed engoliu o arquivo").toBeLessThan(prices.length * 0.5);
-    expect(priceSeed, "o recorte perdeu as linhas de preço").toContain("'gemini-2.5-flash'");
-    // Negativo: um par que NÃO está no seed tem de dar falso, senão a checagem
-    // abaixo passaria com qualquer coisa.
-    expect(seeded("gemini", "gemini-9.9-inexistente")).toBe(false);
-    expect(seeded("claude", "claude-haiku-4-5")).toBe(true);
+    // E o catálogo sem lacuna não reporta nada.
+    expect(missingPrices([entradaSintetica({ provider: "gemini", id: "a-aberto" })], rows)).toEqual([]);
   });
 
-  it("cada par (provider, model) de KNOWN_MODELS tem linha no seed da 099", () => {
+  it("o conjunto exigido do catálogo real é achado, e a varredura vê as migrations de preço", () => {
+    expect(requiredPairs(AI_MODEL_CATALOG).length, "o extrator não achou os modelos reais").toBeGreaterThanOrEqual(8);
+    expect(seedFiles.length, "a varredura deve achar a 099 e a migration de atualização").toBeGreaterThanOrEqual(1);
+  });
+
+  it("cada ativo, sucessor e fallback do catálogo tem vigência aberta semeada", () => {
     // Preço desconhecido falha FECHADO em qualquer modo (sem preço não há
-    // price_id, que é NOT NULL): um modelo conhecido sem preço não degrada, cala.
-    const pairs = knownModelPairs(providersSrc);
-    expect(pairs.length, "o extrator não achou os modelos reais").toBeGreaterThanOrEqual(8);
-    for (const [provider, model] of pairs) {
-      expect(seeded(provider, model), `modelo conhecido sem preço semeado: ${provider}/${model}`).toBe(
-        true,
-      );
-    }
+    // price_id, que é NOT NULL): um modelo do catálogo sem preço não degrada, cala.
+    expect(missingPrices(AI_MODEL_CATALOG, allPriceRows), "modelos do catálogo sem preço semeado").toEqual([]);
+  });
+});
+
+describe("todo modelo ativo do catálogo tem entrada em PRICING_USD_PER_MTOK", () => {
+  // Telemetria, não orçamento: o teto usa `ai_model_prices`. Mas `estimateCostUsd`
+  // devolve 0 para chave ausente, e o log `agent_usage` mostraria custo zero.
+  it("controle: o extrator lê as chaves e o detector reporta a ausente", () => {
+    const sintetico = `const PRICING_USD_PER_MTOK: Record<string, { input: number; output: number }> = {
+  // "comentado": não é chave
+  "m-1": { input: 1, output: 2 },
+  "m-2":   { input: 1, output: 2 },
+};
+export function estimateCostUsd() {}`;
+    expect(pricingKeys(sintetico)).toEqual(["m-1", "m-2"]);
+    const catalogo = [
+      entradaSintetica({ provider: "claude", id: "m-1" }),
+      entradaSintetica({ provider: "claude", id: "m-3-ausente" }),
+      entradaSintetica({ provider: "claude", id: "m-4-aposentado", status: "retired", successor: "m-1" }),
+    ];
+    expect(missingTelemetryKeys(catalogo, sintetico)).toEqual(["claude/m-3-ausente"]);
   });
 
-  it("o fallback de cada provedor também tem preço — é o modelo da 2ª tentativa", () => {
-    // GUARDA PARA O FUTURO, e é honesto dizer: hoje o único fallback não-nulo
-    // (`gemini-2.5-pro`) também está em KNOWN_MODELS, então este caso é
-    // subconjunto estrito do anterior e não prova nada sozinho. Ele ganha dente
-    // no dia em que um fallback FORA de KNOWN_MODELS aparecer — e é justamente
-    // esse dia que interromperia a IA no momento em que o modelo principal
-    // falhou, com o preço faltando só na segunda tentativa.
-    const block = braceBlock(providersSrc, providersSrc.indexOf("const FALLBACK_MODELS"));
-    for (const m of block.matchAll(/(\w+):\s*"([^"]+)"/g)) {
-      expect(seeded(m[1], m[2]), `fallback sem preço semeado: ${m[1]}/${m[2]}`).toBe(true);
-    }
+  it("o extrator acha as chaves reais", () => {
+    expect(pricingKeys(providersSrc).length, "o extrator não achou as chaves reais").toBeGreaterThanOrEqual(8);
+  });
+
+  it("todo modelo ativo tem chave", () => {
+    expect(missingTelemetryKeys(AI_MODEL_CATALOG, providersSrc)).toEqual([]);
   });
 });
 

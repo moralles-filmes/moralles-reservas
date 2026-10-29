@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { Building2, CreditCard, KeyRound, Layers, MessageSquare, Smartphone, Store, Users } from "lucide-react";
+import { Bot, Building2, CreditCard, KeyRound, Layers, MessageSquare, Smartphone, Store, Users } from "lucide-react";
 
 type IconType = ComponentType<{ className?: string }>;
 
@@ -46,7 +46,10 @@ export const PLATFORM_NAV: PlatformNavSection[] = [
   },
   {
     title: "Configurações",
-    items: [{ to: "/platform/integracoes", label: "Integrações e chaves", icon: KeyRound }],
+    items: [
+      { to: "/platform/agente-ia", label: "Agente de IA", icon: Bot },
+      { to: "/platform/integracoes", label: "Integrações e chaves", icon: KeyRound },
+    ],
     disabledItems: [{ label: "Admins da plataforma", icon: Users }],
   },
 ];

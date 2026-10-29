@@ -37,6 +37,7 @@ const GConta = lazy(() => import("./pages/gestao/Conta"));
 const GUsuarios = lazy(() => import("./pages/gestao/Usuarios"));
 const GCobranca = lazy(() => import("./pages/gestao/Cobranca"));
 const GWhatsapp = lazy(() => import("./pages/gestao/Whatsapp"));
+const GAtendimentoIa = lazy(() => import("./pages/gestao/AtendimentoIa"));
 const GMarketing = lazy(() => import("./pages/gestao/Marketing"));
 
 // ── Gestão > Reservas (sub-abas) ──────────────────────────────────────────────
@@ -84,6 +85,7 @@ const OEntregas    = lazy(() => import("./pages/operacional/Entregas"));
 const PEmpresas = lazy(() => import("./pages/platform/Empresas"));
 const PUnidades = lazy(() => import("./pages/platform/Unidades"));
 const PIntegracoes = lazy(() => import("./pages/platform/Integracoes"));
+const PAgenteIa = lazy(() => import("./pages/platform/AgenteIa"));
 const PBilling = lazy(() => import("./pages/platform/Billing"));
 const PBillingPlans = lazy(() => import("./pages/platform/BillingPlans"));
 const PBillingDetail = lazy(() => import("./pages/platform/BillingDetail"));
@@ -249,6 +251,7 @@ export default function App() {
               <Route path="/g/:unitSlug/clientes" element={<GestaoGuard><GClientes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/conversas" element={<GestaoGuard><GConversas /></GestaoGuard>} />
               <Route path="/g/:unitSlug/whatsapp" element={<GestaoGuard><GWhatsapp /></GestaoGuard>} />
+              <Route path="/g/:unitSlug/atendimento-ia" element={<GestaoGuard><GAtendimentoIa /></GestaoGuard>} />
               <Route path="/g/:unitSlug/configuracoes" element={<GestaoGuard><GConfiguracoes /></GestaoGuard>} />
               <Route path="/g/:unitSlug/auditoria" element={<GestaoGuard><GAuditoria /></GestaoGuard>} />
               <Route path="/g/:unitSlug/relatorios" element={<Navigate to="fluxo-clientes" replace />} />
@@ -277,6 +280,7 @@ export default function App() {
               <Route path="/o/:unitSlug/conversas" element={<OperacionalGuard><OConversas /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/giftback" element={<OperacionalGuard><OGiftback /></OperacionalGuard>} />
               <Route path="/o/:unitSlug/entregas" element={<OperacionalGuard><OEntregas /></OperacionalGuard>} />
+              <Route path="/o/:unitSlug/whatsapp" element={<OperacionalGuard><GWhatsapp /></OperacionalGuard>} />
 
               {/* ── Platform /platform/* ───────────────────────────────── */}
               <Route path="/platform" element={<Navigate to="/platform/empresas" replace />} />
@@ -284,6 +288,7 @@ export default function App() {
               <Route path="/platform/unidades" element={<PlatformGuard><PUnidades /></PlatformGuard>} />
               <Route path="/platform/unidades/:unitSlug" element={<PlatformGuard><GAutomacao /></PlatformGuard>} />
               <Route path="/platform/integracoes" element={<PlatformGuard><PIntegracoes /></PlatformGuard>} />
+              <Route path="/platform/agente-ia" element={<PlatformGuard><PAgenteIa /></PlatformGuard>} />
               {/* Endereços antigos: o retorno do Stripe Connect (manage-stripe-accounts)
                   ainda aponta para /platform/automacao/:slug?stripe=complete. */}
               <Route path="/platform/automacao" element={<Navigate to="/platform/unidades" replace />} />

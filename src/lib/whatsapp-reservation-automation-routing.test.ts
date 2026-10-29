@@ -40,6 +40,44 @@ describe('actual reservation producers through Request and internal hops', () =>
     expect(f.calls.email).toBe(1); expect(f.calls.post).toBe(0); expect(f.calls.legacyText).toBe(0);
     expect(p.trace).toEqual([]); expect(p.unexpected).toEqual([]); p.harness.assertNoUnexpectedIo();
   });
+  it('an auto cohort with confirmation OFF cannot create an intent or use legacy text', async () => {
+    const f = fixture(), p = f.producer();
+    p.controls.plain = true;
+    p.controls.serviceRoute = { auto_cohort: true, allowed: false, reason_code: 'service_not_enabled' };
+    const response = await f.runReservationProducer('confirmation');
+    expect(response.ok).toBe(true);
+    expect(await response.json()).toMatchObject({ success: true, whatsapp: { sent: false,
+      skipped: true, reason: 'service_not_enabled' }, email: { sent: true } });
+    expect(p.controls.serviceRouteReads).toEqual([{ kind: 'confirmation', resourceId: f.ids.reservation }]);
+    expect(p.trace.some(x => x.name === 'enqueue_whatsapp_automation')).toBe(false);
+    expect(f.calls.post + f.calls.legacyText).toBe(0);
+    expect(f.calls.email).toBe(1);
+    expect(p.unexpected).toEqual([]); p.harness.assertNoUnexpectedIo();
+  });
+  it('an auto cohort with confirmation OFF completes the outbox email without a WhatsApp intent', async () => {
+    const f = fixture(), p = f.producer();
+    p.controls.serviceRoute = { auto_cohort: true, allowed: false, reason_code: 'service_not_enabled' };
+    const response = await f.runReservationProducer('outbox');
+    expect(await response.json()).toMatchObject({ succeeded: 1, skippedService: 1,
+      automationDependency: 0, failed: 0 });
+    expect(f.calls.email).toBe(1);
+    expect(f.calls.post + f.calls.legacyText).toBe(0);
+    expect(p.trace.map(x => x.name)).toContain('mark_outbox_done');
+    expect(p.trace.some(x => x.name === 'enqueue_whatsapp_automation'
+      || x.name === 'claim_notification_outbox_initial')).toBe(false);
+    expect(p.controls.serviceRouteReads).toEqual(Array(2).fill({ kind: 'confirmation', resourceId: f.ids.reservation }));
+    expect(p.unexpected).toEqual([]); p.harness.assertNoUnexpectedIo();
+  });
+  it.each(['reminder_d1', 'survey_d1'] as const)('%s verified OFF is skipped, not a worker failure', async kind => {
+    const f = fixture(), p = f.producer();
+    p.controls.serviceRoute = { auto_cohort: true, allowed: false, reason_code: 'service_not_enabled' };
+    const response = await f.runReservationProducer(kind);
+    expect(await response.json()).toMatchObject({ dispatched: 0, failed: 0, skipped_service: 1 });
+    expect(p.controls.serviceRouteReads).toEqual([{ kind, resourceId: f.ids.reservation }]);
+    expect(p.trace.some(x => x.name === 'enqueue_whatsapp_automation')).toBe(false);
+    expect(f.calls.post + f.calls.legacyText).toBe(0);
+    expect(p.unexpected).toEqual([]); p.harness.assertNoUnexpectedIo();
+  });
   it('initial owner claims before enqueue, pins before dispatch, preserves attempts and one email across real worker polls', async () => {
     const f = fixture(), p = f.producer();
     await f.runReservationProducer('outbox');
@@ -371,6 +409,7 @@ describe('read-only route contract', () => {
       ['whatsapp_automation_adoptions','adopted_at',[['unit_id',input.unitId]],'single'],
       ['platform_flags','value',[['key','whatsapp_automation_dispatch']],'single'],
       ['whatsapp_template_bindings','dispatch_enabled,adopted_at',[['unit_id',input.unitId]],'many'],
+      ['whatsapp_channels','id,unit_id,provider,status,is_active,created_at',[['unit_id',input.unitId]],'many'],
     ]);
   });
   it('valid existing ledger wins without touching failed activation dependencies', async () => {
@@ -388,8 +427,91 @@ describe('read-only route contract', () => {
   it.each([
     ['platform_flags',{value:'false'}], ['whatsapp_automation_adoptions',{adopted_at:'invalid'}],
     ['whatsapp_template_bindings',null], ['whatsapp_template_bindings',[{dispatch_enabled:true,adopted_at:null}]],
+    ['whatsapp_channels',null], ['whatsapp_channels',[{provider:'datafy',status:'connected',is_active:true}]],
   ])('refuses malformed %s without coercion', async (table,value) => {
     const read: AutomationRouteReader = async (name,_columns,_predicates,cardinality) => name === table ? value : cardinality === 'many' ? [] : null;
     expect(await selectReservationAutomationRoute(read,input)).toEqual({ path: 'dependency' });
+  });
+  it.each([
+    ['active Datafy before adoption', [{ id:'aaaaaaaa-0000-0000-0000-000000000001', unit_id:input.unitId, provider:'datafy', status:'connected', is_active:true, created_at:'2026-10-01T00:00:00Z' }], 'paused'],
+    ['disconnected but active Datafy', [{ id:'aaaaaaaa-0000-0000-0000-000000000001', unit_id:input.unitId, provider:'datafy', status:'disconnected', is_active:true, created_at:'2026-10-01T00:00:00Z' }], 'paused'],
+    ['connected legacy NULL Datafy', [{ id:'aaaaaaaa-0000-0000-0000-000000000001', unit_id:input.unitId, provider:'datafy', status:'connected', is_active:null, created_at:'2026-10-01T00:00:00Z' }], 'paused'],
+    ['UazAPI active with prepared Datafy', [
+      { id:'aaaaaaaa-0000-0000-0000-000000000002', unit_id:input.unitId, provider:'datafy', status:'connected', is_active:false, created_at:'2026-10-01T00:00:00Z' },
+      { id:'aaaaaaaa-0000-0000-0000-000000000001', unit_id:input.unitId, provider:'uazapi', status:'disconnected', is_active:true, created_at:'2026-09-01T00:00:00Z' },
+    ], 'legacy'],
+    ['legacy NULL UazAPI with prepared Datafy', [
+      { id:'aaaaaaaa-0000-0000-0000-000000000002', unit_id:input.unitId, provider:'datafy', status:'connected', is_active:false, created_at:'2026-10-01T00:00:00Z' },
+      { id:'aaaaaaaa-0000-0000-0000-000000000001', unit_id:input.unitId, provider:'uazapi', status:'connected', is_active:null, created_at:'2026-09-01T00:00:00Z' },
+    ], 'legacy'],
+    ['no operational channel', [], 'legacy'],
+  ] as const)('%s does not let a new Datafy channel fall through to text', async (_label, channels, expected) => {
+    const read: AutomationRouteReader = async (table) => {
+      if (table === 'whatsapp_automation_jobs' || table === 'whatsapp_automation_adoptions') return null;
+      if (table === 'platform_flags') return { value: true };
+      if (table === 'whatsapp_template_bindings') return [];
+      if (table === 'whatsapp_channels') return channels;
+      throw new Error(`unexpected:${table}`);
+    };
+    expect(await selectReservationAutomationRoute(read,input, async () => ({auto_cohort:false,allowed:true}))).toEqual(expected === 'legacy'
+      ? {path:'legacy'} : {path:'managed',existingJobId:null,selection:'paused'});
+  });
+  it('fails closed on ambiguous active channels, even before adoption', async () => {
+    const read: AutomationRouteReader = async (table) => {
+      if (table === 'whatsapp_automation_jobs' || table === 'whatsapp_automation_adoptions') return null;
+      if (table === 'platform_flags') return {value:true};
+      if (table === 'whatsapp_template_bindings') return [];
+      if (table === 'whatsapp_channels') return [
+        {id:'aaaaaaaa-0000-0000-0000-000000000001',unit_id:input.unitId,provider:'uazapi',status:'connected',is_active:true,created_at:'2026-09-01T00:00:00Z'},
+        {id:'aaaaaaaa-0000-0000-0000-000000000002',unit_id:input.unitId,provider:'datafy',status:'connected',is_active:true,created_at:'2026-10-01T00:00:00Z'},
+      ];
+      throw new Error(`unexpected:${table}`);
+    };
+    expect(await selectReservationAutomationRoute(read,input)).toEqual({path:'dependency'});
+  });
+  it('checks the exact service fact before selecting a new managed intent, while durable jobs bypass this gate', async () => {
+    const f = createAutomationEndpointIO();
+    const calls: Array<[string,string]> = [];
+    const read: AutomationRouteReader = async (table) => {
+      if (table === 'whatsapp_automation_jobs') return null;
+      if (table === 'whatsapp_automation_adoptions') return {adopted_at:'2026-10-01T00:00:00Z'};
+      if (table === 'platform_flags') return {value:true};
+      if (table === 'whatsapp_template_bindings') return [{dispatch_enabled:true,adopted_at:'2026-10-01T00:00:00Z'}];
+      throw new Error(`unexpected:${table}`);
+    };
+    const route = (gate: unknown) => selectReservationAutomationRoute(read,input, async (kind,resourceId) => {
+      calls.push([kind,resourceId]); return gate;
+    });
+    expect(await route({auto_cohort:true,allowed:false,reason_code:'service_not_enabled'})).toEqual({path:'disabled'});
+    expect(await route({auto_cohort:true,allowed:false,reason_code:'dependency_unavailable'})).toEqual({path:'dependency'});
+    expect(await route({auto_cohort:true,allowed:true,reason_code:'ready'}))
+      .toEqual({path:'managed',existingJobId:null,selection:'scheduled'});
+    expect(await route({auto_cohort:false,allowed:true}))
+      .toEqual({path:'managed',existingJobId:null,selection:'scheduled'});
+    expect(calls).toEqual(Array(4).fill(['confirmation',input.reservationId]));
+    const existingRead: AutomationRouteReader = async table => table === 'whatsapp_automation_jobs'
+      ? {...f.row,unit_id:input.unitId,reservation_id:input.reservationId,kind:'confirmation'}
+      : Promise.reject(new Error('volatile_read_forbidden'));
+    expect(await selectReservationAutomationRoute(existingRead,input,async () => { throw new Error('gate_forbidden'); }))
+      .toEqual({path:'managed',existingJobId:f.jobId,selection:'scheduled'});
+  });
+  it.each([null, {}, {auto_cohort:true,allowed:true}, {auto_cohort:false,allowed:false},
+    {auto_cohort:true,allowed:true,reason_code:'ready',extra:true}])('refuses malformed service route %#', async gate => {
+    const read: AutomationRouteReader = async table => table === 'whatsapp_automation_jobs' ? null
+      : table === 'whatsapp_automation_adoptions' ? {adopted_at:'2026-10-01T00:00:00Z'}
+      : table === 'platform_flags' ? {value:true}
+      : [{dispatch_enabled:true,adopted_at:'2026-10-01T00:00:00Z'}];
+    expect(await selectReservationAutomationRoute(read,input,async () => gate)).toEqual({path:'dependency'});
+  });
+  it('refuses a channel row from another unit instead of treating Datafy as absent', async () => {
+    const read: AutomationRouteReader = async (table) => {
+      if (table === 'whatsapp_automation_jobs' || table === 'whatsapp_automation_adoptions') return null;
+      if (table === 'platform_flags') return {value:true};
+      if (table === 'whatsapp_template_bindings') return [];
+      if (table === 'whatsapp_channels') return [{id:'aaaaaaaa-0000-0000-0000-000000000001',unit_id:input.reservationId,
+        provider:'datafy',status:'connected',is_active:true,created_at:'2026-10-01T00:00:00Z'}];
+      throw new Error(`unexpected:${table}`);
+    };
+    expect(await selectReservationAutomationRoute(read,input)).toEqual({path:'dependency'});
   });
 });

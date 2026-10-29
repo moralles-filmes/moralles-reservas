@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 function view(client: QueryClient) {
-  return <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+  return <MemoryRouter>
     <QueryClientProvider client={client}><Automacao /></QueryClientProvider>
   </MemoryRouter>;
 }

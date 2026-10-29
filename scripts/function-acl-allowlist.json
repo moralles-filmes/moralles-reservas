@@ -134,6 +134,9 @@
     "confirm_whatsapp_template_post(uuid,uuid,bigint,text,integer)",
     "check_whatsapp_template_submission(uuid,uuid,bigint,text,integer)"
   ],
+  "_service_only_whatsapp_v2_service": [
+    "get_whatsapp_v2_service_route(text,uuid)"
+  ],
 
   "_expected_advisor": {
     "_doc": [
@@ -226,11 +229,13 @@
       "estado da loja e custo MARKETING v2): projeção 9/35/44. Não é leitura",
       "do Advisor de produção.",
       "DELTA MARKETING: quatro RPCs DEFINER authenticated com JWT real, acesso da unidade por papel e nenhuma autoridade de envio: projeção 9/39/48. As escritas exigem owner e CAS.",
+      "DELTA serviço v2 self-service: três RPCs DEFINER authenticated (leitura com membership, preferência CAS owner/gerente/admin e rollout global admin): projeção 9/42/51.",
+      "DELTA camada global do prompt do agente (20261029120100): duas RPCs DEFINER authenticated com guarda platform_admin (publicar e restaurar versão): projeção 9/44/53.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,
-    "0029": 39,
-    "total": 48
+    "0029": 44,
+    "total": 53
   },
 
   "public_anon": [
@@ -330,6 +335,30 @@
   "rls_helpers": [],
 
   "authenticated_tenant": [
+    {
+      "name": "get_whatsapp_v2_service_preferences",
+      "args": "p_unit_id uuid",
+      "roles": ["authenticated"],
+      "why": "JWT real owner/gerente/operador da unidade ou platform_admin; resolve binding ativo pela unidade e projeta seis finalidades sem PII/segredos, inclusive estado OFF e prontidão.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "set_whatsapp_v2_service_preference",
+      "args": "p_binding_id uuid, p_kind text, p_enabled boolean, p_expected_revision bigint, p_expected_generation bigint, p_expected_credential_revision bigint",
+      "roles": ["authenticated"],
+      "why": "JWT real owner/gerente da unidade derivada do binding ou platform_admin; CAS, grant auto v2, rollout, readiness e permit tipado de uso único para adoção atômica; não aceita tenant do caller.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "set_whatsapp_v2_service_rollout_ready",
+      "args": "p_ready boolean, p_expected_revision bigint",
+      "roles": ["authenticated"],
+      "why": "Somente platform_admin real altera o gate global OFF por padrão, com CAS; a operação não envia mensagens nem concede consentimento ou custo MARKETING.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
     {
       "name": "enter_waitlist",
       "args": "p_unit_id uuid, p_customer_name text, p_customer_phone text, p_party_size integer, p_notes text, p_priority_category text, p_requested_for_time time without time zone",
@@ -611,6 +640,22 @@
       "args": "p_unit_id uuid, p_from date, p_to date",
       "roles": ["authenticated"],
       "why": "Agregados sem PII da unidade para owner/gerente/platform_admin, com corte de retenção e sem custo presumido.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "publish_ai_prompt_version",
+      "args": "p_slot text, p_body text, p_note text, p_expected_active_version_id uuid",
+      "roles": ["authenticated"],
+      "why": "Publica versão nova da camada global do prompt do agente (/platform/agente-ia). O corpo exige auth.uid() de platform_admin real (`prompt_forbidden` 42501; service_role não tem sub e também cai aqui), trava a linha do slot com FOR UPDATE, recusa expected desatualizado com 40001 `prompt_version_conflict` e valida corpo/nota (22023) antes de gravar versão, slot e ledger na mesma transação. Tabelas FORCE RLS sem policy de escrita: só esta RPC e a de restaurar escrevem. anon e service_role sem EXECUTE. Medido no pré-voo 80 (P1–P4, P7) com controles C5–C7.",
+      "security_definer": true,
+      "advisor_lints": ["0029"]
+    },
+    {
+      "name": "activate_ai_prompt_version",
+      "args": "p_slot text, p_version_id uuid, p_expected_active_version_id uuid, p_note text",
+      "roles": ["authenticated"],
+      "why": "Restaura (rollback) uma versão existente do mesmo slot da camada global do prompt. Mesmos guardas da publicação: platform_admin real do JWT (42501 `prompt_forbidden`), FOR UPDATE no slot, 40001 `prompt_version_conflict`, nota validada, versão de outro slot, inexistente ou já ativa recusada com 22023 `prompt_version_invalid` (FK composta como rede). Grava ledger `rollback` com a anterior. anon e service_role sem EXECUTE. Medido no pré-voo 80 (P2, P3, P5, P7) com controles C5, C6 e C8.",
       "security_definer": true,
       "advisor_lints": ["0029"]
     }

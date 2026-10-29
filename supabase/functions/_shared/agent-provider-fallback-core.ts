@@ -102,3 +102,40 @@ export function shouldUseFallbackProvider(err: unknown): boolean {
   }
   return true;
 }
+
+/**
+ * O modelo de fallback DENTRO do provider (hoje só Gemini Flash→Pro) vale para
+ * este turno? Decisão D5 da spec (§7.5): só quando a unidade NÃO tem reserva
+ * válida. Com reserva válida, a rede é só ela: a tentativa pós-503 vai direto
+ * para o outro provedor, sem encadear Flash→Pro→reserva.
+ *
+ * "Reserva válida" = `ai_config.fallback` legível (`reserve` é a saída de
+ * `parseFallbackConfig`), provider diferente do principal e chave ATIVA desse
+ * provider na própria unidade. Config ilegível conta como sem reserva, a mesma
+ * polaridade de `parseFallbackConfig`: o Pro continua.
+ *
+ * `reserveHasActiveKey` é EXISTÊNCIA da credencial, lida pelo adapter antes do
+ * turno. O valor da chave não entra aqui.
+ *
+ * `reserveStillUsable` é a janela em que o turno ainda TROCA para o reserva:
+ * tentativa 0 do retry silencioso, nenhuma ferramenta mutante usada e dentro do
+ * orçamento de tempo. Fora dela o reserva não vem (o retry não acontece), e
+ * tirar o Pro deixaria o turno sem rede nenhuma — por isso a pergunta é feita na
+ * hora do fallback, não uma vez antes do turno.
+ */
+export function decideSameProviderFallback(input: {
+  entry: { sameProviderFallback?: string | null };
+  primaryProvider: AIProvider;
+  reserve: { provider: AIProvider } | null;
+  reserveHasActiveKey: boolean;
+  reserveStillUsable: boolean;
+}): string | null {
+  const sameProvider = input.entry.sameProviderFallback ?? null;
+  if (!sameProvider) return null;
+  const hasValidReserve =
+    input.reserve !== null &&
+    input.reserve.provider !== input.primaryProvider &&
+    input.reserveHasActiveKey &&
+    input.reserveStillUsable;
+  return hasValidReserve ? null : sameProvider;
+}

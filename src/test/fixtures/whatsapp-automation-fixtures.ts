@@ -2,6 +2,7 @@ import { createAutomationResourceService, type AutomationResourceIO, type Automa
 import type { ScheduledIntent, ScheduledKind } from '../../../supabase/functions/_shared/whatsapp-automation-core';
 import { createAutomationDispatcher } from '../../../supabase/functions/_shared/whatsapp-automation-dispatch';
 import { catalogHash, TEMPLATE_CATALOG } from '../../../supabase/functions/_shared/whatsapp-template-catalog-core';
+import { GLOBAL_PERSONA_BASELINE } from '../../../supabase/functions/_shared/agent/global-prompt-core';
 import type { TemplateSendInput, TemplateSendOutcome } from '../../../supabase/functions/_shared/whatsapp-template-provider-core';
 import { createEdgeRequestHarness, type EdgeName } from './edge-request-harness';
 import { webcrypto } from 'node:crypto';
@@ -88,7 +89,8 @@ export function chatSdkMessage(content: unknown[] = [{ type: 'text', text: 'Poss
  */
 function createChatRequestIO(base: { ids: { unit: string; organization: string; customer: string; reservation: string; foreignUnit: string };
   nowISO: string; rows: Record<AutomationResourceTable, ChatRow[]> }) {
-  const ids = { ...base.ids, channel: 'dddddddd-0000-4000-8000-000000000001', conversation: '88888888-0000-4000-8000-000000000001' };
+  const ids = { ...base.ids, channel: 'dddddddd-0000-4000-8000-000000000001', conversation: '88888888-0000-4000-8000-000000000001',
+    globalPromptVersion: '77777777-0000-4000-8000-000000000001' };
   const secret = 'synthetic-chat-datafy-secret';
   const env = { SUPABASE_URL: 'https://supabase.fixture.invalid', SUPABASE_SERVICE_ROLE_KEY: 'synthetic-service',
     SUPABASE_ANON_KEY: 'synthetic-anon', INTERNAL_API_KEY: 'synthetic-internal', APP_BASE_URL: 'https://app.fixture.invalid' };
@@ -122,6 +124,7 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     whatsapp_template_accounts: 'id,waba_id,organization_id,binding_generation',
     whatsapp_remote_templates: 'id,account_id,remote_id,name,language',
     whatsapp_inbound_events: 'id,provider,channel_id,unit_id,raw_body,delivery_id,signature_header,signature_scheme,status,claim_id,attempts',
+    ai_prompt_slots: 'slot,active_version_id', ai_prompt_versions: 'id,slot,body',
   };
   const tables: Record<string, ChatRow[]> = Object.fromEntries(Object.keys(schemas).map(table => [table, []]));
   Object.assign(tables, {
@@ -137,6 +140,9 @@ function createChatRequestIO(base: { ids: { unit: string; organization: string; 
     settings: [{ unit_id: ids.unit, key: 'ai_config', value: { provider: 'claude' } }],
     platform_flags: [{ key: 'whatsapp_service_enforcement', value: false }, { key: 'whatsapp_async_ingestion', value: false }],
     ai_provider_credentials: [{ unit_id: ids.unit, provider: 'claude', api_key: 'synthetic-byok', active: true }],
+    // Como em produção depois do `db push`: a v1 (seed == GLOBAL_PERSONA_BASELINE) ativa.
+    ai_prompt_slots: [{ slot: 'global_persona', active_version_id: ids.globalPromptVersion }],
+    ai_prompt_versions: [{ id: ids.globalPromptVersion, slot: 'global_persona', body: GLOBAL_PERSONA_BASELINE }],
     whatsapp_template_bindings: [{ id: 'synthetic-binding',generation: 1,account_id: 'synthetic-account',channel_id: ids.channel,
       unit_id: ids.unit,provider: 'datafy',verified_at: base.nowISO,channel_credential_revision: 1 }],
     whatsapp_template_accounts: [{ id: 'synthetic-account',waba_id: 'waba1',organization_id: ids.organization,binding_generation: 1 }],
@@ -405,7 +411,8 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
   if (!queued) { f.row.state = 'accepted'; f.row.provider_message_id = 'native-request'; }
   const queries: { table: string; columns: string; predicates: Record<string, unknown> }[] = [];
   const unexpected: string[] = [];
-  const operatorControls = { ledgerVisible: true, resourceFailure: false, adoptionFailure: false };
+  const operatorControls = { ledgerVisible: true, resourceFailure: false, adoptionFailure: false,
+    serviceRoute: { auto_cohort: false, allowed: true } as unknown };
   const userId = '77777777-0000-4000-8000-000000000001';
   const fail = (reason: string): never => { unexpected.push(reason); throw new Error('unexpected_endpoint_io'); };
   const db = {
@@ -430,7 +437,11 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
           if (predicates.unit_id !== f.ids.unit) return fail('channel_tenant');
           if (head && columns === 'id' && predicates.is_active === true) return { data: null, count: 1, error: null };
           const channel = { id: f.row.channel_id, unit_id: f.ids.unit, provider: 'zapi', credentials: { instance_id: 'synthetic-instance', token: 'synthetic-token', client_token: 'synthetic-client' },
-            instance_token_secret_id: null, status: 'connected', last_health_check_at: f.nowISO, is_active: true, template_credential_revision: 1 };
+            instance_token_secret_id: null, status: 'connected', last_health_check_at: f.nowISO, is_active: true,
+            created_at: '2026-09-01T00:00:00Z', template_credential_revision: 1 };
+          if (columns === 'id,unit_id,provider,status,is_active,created_at' && predicates.id === undefined)
+            return { data: [{ id: channel.id, unit_id: channel.unit_id, provider: channel.provider, status: channel.status,
+              is_active: channel.is_active, created_at: channel.created_at }], error: null };
           if (predicates.id !== channel.id) return fail('channel_id');
           return { data: project(channel), error: null };
         }
@@ -497,6 +508,8 @@ export function createAutomationEndpointIO(role: 'owner' | 'gerente' | 'operador
       return query;
     },
     async rpc(name: string, args: Record<string, unknown>) {
+      if (name === 'get_whatsapp_v2_service_route')
+        return { data: operatorControls.serviceRoute, error: null };
       if (name === 'enqueue_whatsapp_automation') {
         const intent = args.p_intent as Record<string, unknown>;
         Object.assign(f.row, { reservation_id: null, waitlist_id: null, voucher_id: null, state: 'queued' }, intent);
@@ -634,6 +647,8 @@ function createReservationProducerIO(base: {
     resendReceipt: false, plain: false, resend: false, requestUnit: base.ids.unit, outboxOverride: undefined as string | undefined,
     outbox: true, templateStatus: options.templateStatus, templateCategory: 'UTILITY',
     serviceSuspended: false, enforcement: false, consent: 'opt_in', issuer: 'row' as 'row' | 'zero' | 'error' | 'malformed',
+    serviceRoute: { auto_cohort: false, allowed: true } as unknown,
+    serviceRouteReads: [] as { kind: unknown; resourceId: unknown }[],
     onQuery: (_table: string, _columns: string) => {}, afterIssuer: () => {} };
   const rpcReplies: Record<string, { data: unknown; error: unknown }[]> = {};
   const queryReplies: Record<string, { data: unknown; error: unknown }[]> = {};
@@ -659,6 +674,7 @@ function createReservationProducerIO(base: {
     && Number(tables.reservations[0].applied_discount_percent) > 0 ? 'res_confirmacao_desconto_v1' : catalogByKind[kind];
   const writes = { voucherInsertCount: 0, deletedVoucherIds: [] as string[] };
   const channel = { id: f.row.channel_id, unit_id: base.ids.unit, provider: 'zapi', status: 'connected', is_active: true,
+    created_at: '2026-09-01T00:00:00Z',
     credentials: { instance_id: 'synthetic-instance', token: 'synthetic-token', client_token: 'synthetic-client' },
     instance_token_secret_id: null, last_health_check_at: base.nowISO, template_credential_revision: 1 };
   const db = {
@@ -741,6 +757,10 @@ function createReservationProducerIO(base: {
       }; return q;
     },
     async rpc(name: string, args: Record<string, unknown>) {
+      if (name === 'get_whatsapp_v2_service_route') {
+        controls.serviceRouteReads.push({ kind: args.p_kind, resourceId: args.p_resource_id });
+        return rpcReplies[name]?.shift() ?? { data: controls.serviceRoute, error: null };
+      }
       trace.push({ name, args });
       const scripted = rpcReplies[name]?.shift();
       if (scripted) return scripted;

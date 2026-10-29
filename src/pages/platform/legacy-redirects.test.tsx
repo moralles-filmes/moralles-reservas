@@ -18,7 +18,6 @@ describe("LegacyPlatformUnitRedirect", () => {
     render(
       <MemoryRouter
         initialEntries={["/platform/automacao/ren-sushi?stripe=complete#topo"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Routes>
           <Route path="/platform/automacao/:unitSlug" element={<LegacyPlatformUnitRedirect />} />

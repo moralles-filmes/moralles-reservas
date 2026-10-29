@@ -99,11 +99,19 @@ serve(async (req) => {
     const result = await (cardinality === 'single' ? query.maybeSingle() : query);
     if (result.error) throw result.error;
     return result.data;
-  }, { kind: 'waitlist_entered', unitId, waitlistId });
+  }, { kind: 'waitlist_entered', unitId, waitlistId }, async (kind, resourceId) => {
+    const { data, error } = await supabase.rpc('get_whatsapp_v2_service_route',
+      { p_kind: kind, p_resource_id: resourceId });
+    if (error) throw new Error('service_route_read_failed');
+    return data;
+  });
   const dependency = () => new Response(JSON.stringify({ dispatched: false, error: 'dependency_unavailable' }), {
     status: 503, headers: { 'Content-Type': 'application/json' },
   });
   if (route.path === 'dependency') return dependency();
+  if (route.path === 'disabled') return new Response(JSON.stringify({ dispatched: false, skipped: 'service_not_enabled' }), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  });
   async function dispatchManaged(jobId: string | null) {
     try {
       const response = await fetch(`${SUPABASE_URL}/functions/v1/send-scheduled-whatsapp`, {

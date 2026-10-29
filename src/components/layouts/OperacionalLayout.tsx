@@ -51,6 +51,7 @@ export function OperacionalLayout({ children }: { children: React.ReactNode }) {
     { to: `${base}/passantes`, label: "Walk-ins",        icon: UtensilsCrossed },
     { to: `${base}/giftback`,  label: "Validar voucher", icon: Gift },
     { to: `${base}/entregas`,  label: "Entregas",        icon: MailWarning, badge: undeliveredCount },
+    { to: `${base}/whatsapp`,  label: "WhatsApp",        icon: MessageCircle },
     { to: `${base}/conversas`, label: "Conversas",       icon: MessageCircle, badge: awaitingCount },
   ];
 

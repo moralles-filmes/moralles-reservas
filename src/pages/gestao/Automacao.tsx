@@ -111,11 +111,44 @@ import { WEBHOOK_SIGNATURE_SCHEME } from "../../../supabase/functions/_shared/wh
 import {
   MODELS_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
+  describeSavedModel,
+  type AIModelOption,
   type AIProvider,
 } from "@/lib/aiModels";
+import { SavedModelNotice } from "@/components/ai/SavedModelNotice";
 import { fallbackProviderOptions } from "@/lib/ai-fallback-options";
+import { StoreTextCounter } from "@/components/ai/StoreTextCounter";
+import {
+  isValidStoreText,
+  settingsNotWrittenError,
+  settingsWriteErrorMessage,
+  storeTextDescribedBy,
+} from "@/lib/store-text";
+import { normalizeNewlines } from "@/lib/text-normalize";
+import { AGENT_MODES } from "../../../supabase/functions/_shared/agent/global-prompt-core";
 
 // ─── AI provider config ────────────────────────────────────────────────────────
+
+/** Item do seletor de modelo: rótulo, dica e, se nunca rodou em produção, o aviso. */
+function ModelOptionItem({ m }: { m: AIModelOption }) {
+  return (
+    <SelectItem value={m.value}>
+      {m.label}
+      {m.hint ? <span className="text-muted-foreground"> · {m.hint}</span> : null}
+      {!m.verified ? <span className="text-muted-foreground"> · não testado em produção</span> : null}
+    </SelectItem>
+  );
+}
+
+/**
+ * Valor do `Select` para o modelo salvo. Aposentado/desconhecido não é opção da
+ * lista: `""` mostra o placeholder e o `SavedModelNotice` explica o que está em uso.
+ */
+function modelSelectValue(provider: AIProvider, saved: string): string {
+  const state = describeSavedModel(provider, saved);
+  if (state.kind === "empty") return "__default__";
+  return state.kind === "active" ? state.id : "";
+}
 
 interface AIConfig {
   provider: AIProvider;
@@ -1169,8 +1202,6 @@ function AITab({ unitId }: { unitId: string }) {
   const activeProviderModels = MODELS_BY_PROVIDER[aiConfig.provider];
   const activeDefaultModel = DEFAULT_MODEL_BY_PROVIDER[aiConfig.provider];
   const savedModel = aiConfig.models?.[aiConfig.provider] ?? "";
-  const savedModelInList = activeProviderModels.some((m) => m.value === savedModel);
-  const showLegacyOption = savedModel !== "" && !savedModelInList;
 
   const updateAiConfig = (patch: Partial<AIConfig>) => {
     const updated = { ...aiConfig, ...patch };
@@ -1198,8 +1229,6 @@ function AITab({ unitId }: { unitId: string }) {
     !fallbackOptions.includes(savedFallback.provider);
   const fallbackModels = savedFallback ? MODELS_BY_PROVIDER[savedFallback.provider] ?? [] : [];
   const fallbackSavedModel = savedFallback?.model ?? "";
-  const fallbackShowLegacyModel =
-    fallbackSavedModel !== "" && !fallbackModels.some((m) => m.value === fallbackSavedModel);
 
   const setFallbackProvider = (value: string) => {
     if (value === "__none__") {
@@ -1245,7 +1274,7 @@ function AITab({ unitId }: { unitId: string }) {
         <div className="space-y-1">
           <Label>Modelo</Label>
           <Select
-            value={savedModel === "" ? "__default__" : savedModel}
+            value={modelSelectValue(aiConfig.provider, savedModel)}
             onValueChange={(v) => setModelOverride(v === "__default__" ? "" : v)}
           >
             <SelectTrigger className="w-full sm:w-72">
@@ -1256,18 +1285,11 @@ function AITab({ unitId }: { unitId: string }) {
                 Padrão ({activeDefaultModel})
               </SelectItem>
               {activeProviderModels.map((m) => (
-                <SelectItem key={m.value} value={m.value}>
-                  {m.label}
-                  {m.hint ? <span className="text-muted-foreground"> · {m.hint}</span> : null}
-                </SelectItem>
+                <ModelOptionItem key={m.value} m={m} />
               ))}
-              {showLegacyOption && (
-                <SelectItem value={savedModel} className="text-warning">
-                  {savedModel} (descontinuado — trocar)
-                </SelectItem>
-              )}
             </SelectContent>
           </Select>
+          <SavedModelNotice provider={aiConfig.provider} saved={savedModel} />
           <p className="text-xs text-muted-foreground">
             Recomendado deixar no padrão. A lista é atualizada conforme cada provedor lança modelos novos.
           </p>
@@ -1424,7 +1446,7 @@ function AITab({ unitId }: { unitId: string }) {
                 <div className="space-y-1">
                   <Label>Modelo do reserva</Label>
                   <Select
-                    value={fallbackSavedModel === "" ? "__default__" : fallbackSavedModel}
+                    value={modelSelectValue(savedFallback.provider, fallbackSavedModel)}
                     onValueChange={setFallbackModel}
                   >
                     <SelectTrigger className="w-full sm:w-72">
@@ -1435,18 +1457,11 @@ function AITab({ unitId }: { unitId: string }) {
                         Padrão ({DEFAULT_MODEL_BY_PROVIDER[savedFallback.provider]})
                       </SelectItem>
                       {fallbackModels.map((m) => (
-                        <SelectItem key={m.value} value={m.value}>
-                          {m.label}
-                          {m.hint ? <span className="text-muted-foreground"> · {m.hint}</span> : null}
-                        </SelectItem>
+                        <ModelOptionItem key={m.value} m={m} />
                       ))}
-                      {fallbackShowLegacyModel && (
-                        <SelectItem value={fallbackSavedModel} className="text-warning">
-                          {fallbackSavedModel} (descontinuado — trocar)
-                        </SelectItem>
-                      )}
                     </SelectContent>
                   </Select>
+                  <SavedModelNotice provider={savedFallback.provider} saved={fallbackSavedModel} />
                 </div>
               )}
             </div>
@@ -1482,46 +1497,70 @@ function PromptTab({ unitId }: { unitId: string }) {
   useEffect(() => {
     if (!settings) return;
     const map = Object.fromEntries(settings.map((s) => [s.key, s.value]));
-    setAgentMode(((map["agent_mode"] as string) ?? "reservations") as "reservations" | "reservations_faq");
-    setAgentName((map["agent_name"] as string) ?? "");
-    setRestaurantMenu((map["restaurant_menu"] as string) ?? "");
-    setDeliveryResponse((map["delivery_response"] as string) ?? "");
-    setRestaurantExtraInfo((map["restaurant_extra_info"] as string) ?? "");
-    setSystemPrompt((map["ai_system_prompt"] as string) ?? "");
-    setAiContextExtra((map["ai_context_extra"] as string) ?? "");
+    // JSONB legado pode não ser string (número, objeto): o render e o `normalizeNewlines` esperam string.
+    const text = (v: unknown) => (typeof v === "string" ? v : "");
+    setAgentMode((typeof map["agent_mode"] === "string" ? map["agent_mode"] : "reservations") as "reservations" | "reservations_faq");
+    setAgentName(text(map["agent_name"]));
+    setRestaurantMenu(text(map["restaurant_menu"]));
+    setDeliveryResponse(text(map["delivery_response"]));
+    setRestaurantExtraInfo(text(map["restaurant_extra_info"]));
+    setSystemPrompt(text(map["ai_system_prompt"]));
+    setAiContextExtra(text(map["ai_context_extra"]));
   }, [settings]);
 
   const [isSavingAll, setIsSavingAll] = useState(false);
 
   const saveSetting = useMutation({
     mutationFn: async ({ key, value }: { key: string; value: unknown }) => {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("settings")
-        .upsert({ key, value, unit_id: unitId }, { onConflict: "unit_id,key" });
+        .upsert({ key, value, unit_id: unitId }, { onConflict: "unit_id,key" })
+        .select();
       if (error) throw error;
+      // UPDATE que casa zero linhas volta `error: null`: sem conferir, "salvou" mentiria.
+      if (!data || data.length !== 1) throw settingsNotWrittenError();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings", unitId] });
     },
-    onError: (err: Error) => toast.error(err.message || "Erro ao salvar."),
+    // Sem toast por chave: o erro de qualquer uma sobe pelo Promise.all do saveAll, que mostra a cópia uma vez.
   });
+
+  // O que o banco vai medir: quebras normalizadas (`\r` só chega por dado legado) e, no nome, sem espaços nas pontas.
+  const prepared = {
+    agent_name: normalizeNewlines(agentName).trim(),
+    restaurant_menu: normalizeNewlines(restaurantMenu),
+    delivery_response: normalizeNewlines(deliveryResponse),
+    restaurant_extra_info: normalizeNewlines(restaurantExtraInfo),
+    ai_system_prompt: normalizeNewlines(systemPrompt),
+    ai_context_extra: normalizeNewlines(aiContextExtra),
+  };
+  const modeValid = (AGENT_MODES as readonly string[]).includes(agentMode);
+  const textKeys = Object.keys(prepared) as Array<keyof typeof prepared>;
+  const textsValid = textKeys.every((k) => isValidStoreText(k, prepared[k]));
+  const canSave = modeValid && textsValid;
 
   async function saveAll() {
     if (isSavingAll) return;
+    // As 7 são validadas ANTES de gravar qualquer uma: gravação parcial deixaria o agente com metade da configuração.
+    if (!canSave) {
+      toast.error("Corrija os campos destacados antes de salvar.");
+      return;
+    }
     setIsSavingAll(true);
     try {
       await Promise.all([
         saveSetting.mutateAsync({ key: "agent_mode", value: agentMode }),
-        saveSetting.mutateAsync({ key: "agent_name", value: agentName.trim() }),
-        saveSetting.mutateAsync({ key: "restaurant_menu", value: restaurantMenu }),
-        saveSetting.mutateAsync({ key: "delivery_response", value: deliveryResponse }),
-        saveSetting.mutateAsync({ key: "restaurant_extra_info", value: restaurantExtraInfo }),
-        saveSetting.mutateAsync({ key: "ai_system_prompt", value: systemPrompt }),
-        saveSetting.mutateAsync({ key: "ai_context_extra", value: aiContextExtra }),
+        saveSetting.mutateAsync({ key: "agent_name", value: prepared.agent_name }),
+        saveSetting.mutateAsync({ key: "restaurant_menu", value: prepared.restaurant_menu }),
+        saveSetting.mutateAsync({ key: "delivery_response", value: prepared.delivery_response }),
+        saveSetting.mutateAsync({ key: "restaurant_extra_info", value: prepared.restaurant_extra_info }),
+        saveSetting.mutateAsync({ key: "ai_system_prompt", value: prepared.ai_system_prompt }),
+        saveSetting.mutateAsync({ key: "ai_context_extra", value: prepared.ai_context_extra }),
       ]);
       toast.success("Configuração do agente salva.");
     } catch (err) {
-      toast.error((err as Error)?.message || "Erro ao salvar configuração.");
+      toast.error(settingsWriteErrorMessage(err));
     } finally {
       setIsSavingAll(false);
     }
@@ -1548,83 +1587,107 @@ function PromptTab({ unitId }: { unitId: string }) {
               <SelectItem value="reservations_faq">Reservas + FAQ — responde também cardápio, horário, endereço e outras dúvidas gerais</SelectItem>
             </SelectContent>
           </Select>
+          {!modeValid && <p className="text-xs text-destructive">Escolha o modo do agente.</p>}
         </div>
 
         <div className="space-y-2">
-          <Label>Nome do agente</Label>
+          <Label htmlFor="prompt-agent_name">Nome do agente</Label>
           <Input
+            id="prompt-agent_name"
             value={agentName}
             onChange={(e) => setAgentName(e.target.value)}
             placeholder="Yumi"
-            maxLength={40}
+            aria-invalid={!isValidStoreText("agent_name", prepared.agent_name)}
+            aria-describedby={storeTextDescribedBy("prompt-agent_name", !isValidStoreText("agent_name", prepared.agent_name))}
           />
           <p className="text-xs text-muted-foreground">
             Nome usado pelo atendente no WhatsApp. Ele se apresenta como pessoa da equipe e só revela que é um atendimento virtual se o cliente perguntar diretamente. Em branco, usa "Yumi".
           </p>
+          <StoreTextCounter id="prompt-agent_name" storeKey="agent_name" value={prepared.agent_name} />
         </div>
 
         <div className="space-y-2">
-          <Label>Cardápio (URL ou texto)</Label>
+          <Label htmlFor="prompt-restaurant_menu">Cardápio (URL ou texto)</Label>
           <Textarea
+            id="prompt-restaurant_menu"
             rows={4}
             value={restaurantMenu}
             onChange={(e) => setRestaurantMenu(e.target.value)}
             placeholder="https://seurestaurante.com/cardapio  — ou cole o cardápio em texto simples"
             className="text-sm"
+            aria-invalid={!isValidStoreText("restaurant_menu", prepared.restaurant_menu)}
+            aria-describedby={storeTextDescribedBy("prompt-restaurant_menu", !isValidStoreText("restaurant_menu", prepared.restaurant_menu))}
           />
           <p className="text-xs text-muted-foreground">Deixe em branco para a IA não citar o cardápio.</p>
+          <StoreTextCounter id="prompt-restaurant_menu" storeKey="restaurant_menu" value={prepared.restaurant_menu} />
         </div>
 
         <div className="space-y-2">
-          <Label>Resposta sobre delivery / take-away</Label>
+          <Label htmlFor="prompt-delivery_response">Resposta sobre delivery / take-away</Label>
           <Textarea
+            id="prompt-delivery_response"
             rows={3}
             value={deliveryResponse}
             onChange={(e) => setDeliveryResponse(e.target.value)}
             placeholder="Não fazemos delivery. Para pedidos fora do restaurante, sugerimos os apps iFood e Rappi."
             className="text-sm"
+            aria-invalid={!isValidStoreText("delivery_response", prepared.delivery_response)}
+            aria-describedby={storeTextDescribedBy("prompt-delivery_response", !isValidStoreText("delivery_response", prepared.delivery_response))}
           />
           <p className="text-xs text-muted-foreground">Se o sistema não oferecer delivery, deixe claro aqui para a IA orientar o cliente corretamente.</p>
+          <StoreTextCounter id="prompt-delivery_response" storeKey="delivery_response" value={prepared.delivery_response} />
         </div>
 
         <div className="space-y-2">
-          <Label>Outras informações (estacionamento, contatos, regras da casa)</Label>
+          <Label htmlFor="prompt-restaurant_extra_info">Outras informações (estacionamento, contatos, regras da casa)</Label>
           <Textarea
+            id="prompt-restaurant_extra_info"
             rows={3}
             value={restaurantExtraInfo}
             onChange={(e) => setRestaurantExtraInfo(e.target.value)}
             placeholder="Temos estacionamento gratuito na rua X. Aceitamos pets na área externa. Dress code: traje esporte fino às sextas."
             className="text-sm"
+            aria-invalid={!isValidStoreText("restaurant_extra_info", prepared.restaurant_extra_info)}
+            aria-describedby={storeTextDescribedBy("prompt-restaurant_extra_info", !isValidStoreText("restaurant_extra_info", prepared.restaurant_extra_info))}
           />
+          <StoreTextCounter id="prompt-restaurant_extra_info" storeKey="restaurant_extra_info" value={prepared.restaurant_extra_info} />
         </div>
 
         <div className="space-y-2">
-          <Label>Instruções adicionais ao agente</Label>
+          <Label htmlFor="prompt-ai_system_prompt">Instruções adicionais ao agente</Label>
           <Textarea
+            id="prompt-ai_system_prompt"
             rows={5}
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
             placeholder="Ex: Sempre pergunte se o cliente tem alguma alergia antes de confirmar a reserva."
             className="font-mono text-sm"
+            aria-invalid={!isValidStoreText("ai_system_prompt", prepared.ai_system_prompt)}
+            aria-describedby={storeTextDescribedBy("prompt-ai_system_prompt", !isValidStoreText("ai_system_prompt", prepared.ai_system_prompt))}
           />
           <p className="text-xs text-muted-foreground">Complementa o comportamento padrão do agente. Use para regras específicas do seu negócio.</p>
+          <StoreTextCounter id="prompt-ai_system_prompt" storeKey="ai_system_prompt" value={prepared.ai_system_prompt} />
         </div>
 
         <div className="space-y-2">
-          <Label>Observações extras para o bot</Label>
+          <Label htmlFor="prompt-ai_context_extra">Observações extras para o bot</Label>
           <Textarea
+            id="prompt-ai_context_extra"
             rows={4}
             value={aiContextExtra}
             onChange={(e) => setAiContextExtra(e.target.value)}
             placeholder="Ex: O rodízio funciona via tablet na mesa, sem precisar chamar garçom. Para grupos acima de 12 pessoas confirmamos pelo telefone após a reserva."
             className="text-sm"
+            aria-invalid={!isValidStoreText("ai_context_extra", prepared.ai_context_extra)}
+            aria-describedby={storeTextDescribedBy("prompt-ai_context_extra", !isValidStoreText("ai_context_extra", prepared.ai_context_extra))}
           />
           <p className="text-xs text-muted-foreground">
             Use para informações úteis que o bot precisa saber para responder dúvidas frequentes — coisas que não cabem em cardápio, delivery ou outras informações.
           </p>
+          <StoreTextCounter id="prompt-ai_context_extra" storeKey="ai_context_extra" value={prepared.ai_context_extra} />
         </div>
 
-        <Button onClick={saveAll} disabled={isSavingAll || saveSetting.isPending}>
+        <Button onClick={saveAll} disabled={!canSave || isSavingAll || saveSetting.isPending}>
           {isSavingAll ? "Salvando…" : "Salvar configuração"}
         </Button>
       </CardContent>

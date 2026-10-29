@@ -2631,3 +2631,86 @@ O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no
 SQL; a prova HTTP é manual e opcional), nem o isolamento entre unidades, que
 continua nas policies e não mudou. A paridade entre as chaves gravadas pela
 Gestão e o classificador é do `scripts/settings-write-acl.test.ts`.
+
+**Desde a migration `20261029120100` (pré-voo 80)** o S9 grava `agent_mode` com
+um valor do enum (`reservations_faq`): o guard de valor recusa outro valor para
+todo papel. Rodado depois do 80 no mesmo banco, o 75 continua 20/20, mas o
+`\i` dele reaplica a classe antiga (3 chaves factuais de volta a `platform`);
+rode o 80 de novo em seguida, porque ele reaplica a classe nova.
+
+### 80 — Camada global do prompt e guard de valor em settings
+
+Até 2026-10-29 este pré-voo se chamava 78/78a e a migration `20261020150000`; foi renumerado porque a `main` passou a ter outro 78 (serviço v2) e migrations aplicadas com timestamp posterior. Os identificadores do fixture (`ai78_*`, UUIDs `a0d78000-…`) ficaram como estavam.
+
+Banco próprio, base do 75 (00 → 01 → 09a → 106 → 75a → migration
+`20261019180000`), mais o `80a-ai-prompt-bootstrap.sql`: default privileges que
+emulam o Supabase (ALL nas tabelas novas de `public` e EXECUTE nas funções novas
+de `public` para `anon`/`authenticated`/`service_role`, sem os quais o `revoke`
+da migration não teria o que tirar), dois platform_admin sem membership, U1 com
+owner/gerente/operador, U2 com gerente, um usuário sem papel e as linhas
+iniciais de `settings`. O 80a **recusa rodar depois da migration**. A migration
+roda **crua**, sem `psql -1`. O 80 zera a história em modo `replica` (só no
+harness: desliga o append-only e as FKs), reaplica a migration por `\i` (o seed
+recria a v1), recoloca as linhas de `settings`, mede, e no fim reaplica a
+migration de novo para o P8. Roda **da raiz do repo** e pode ser repetido.
+
+```bash
+export PGCLIENTENCODING=UTF8
+PG="/c/Program Files/PostgreSQL/18/bin"   # ou o do scoop
+"$PG/dropdb.exe"   -h 127.0.0.1 -p 55432 -U postgres --if-exists ai80
+"$PG/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres ai80
+P() { "$PG/psql.exe" -h 127.0.0.1 -p 55432 -U postgres -d ai80 -X -q -v ON_ERROR_STOP=1 "$@"; }
+P -f supabase/tests/local-preflight/00-bootstrap.sql
+P -f supabase/tests/local-preflight/01-audit.sql
+P -f supabase/tests/local-preflight/09a-advisor-bootstrap.sql
+P -f supabase/migrations/20260910120000_106_advisor_private_rls_helpers.sql
+P -f supabase/tests/local-preflight/75a-settings-write-acl-bootstrap.sql
+P -f supabase/migrations/20261019180000_settings_write_role_guard.sql
+P -f supabase/tests/local-preflight/80a-ai-prompt-bootstrap.sql
+P -f supabase/tests/local-preflight/80-ai-prompt-and-settings-value.sql   # RED: aborta na guarda (migration ausente)
+P -f supabase/migrations/20261029120100_ai_global_prompt_and_settings_value_guard.sql
+P -f supabase/tests/local-preflight/80-ai-prompt-and-settings-value.sql   # GREEN
+P -f supabase/migrations/20261029120100_ai_global_prompt_and_settings_value_guard.sql
+P -f supabase/tests/local-preflight/80-ai-prompt-and-settings-value.sql   # GREEN de novo (idempotência)
+P -f supabase/tests/local-preflight/75-settings-write-acl.sql             # V5: regressão do 75, 20 e 20
+P -f supabase/tests/local-preflight/80-ai-prompt-and-settings-value.sql   # de novo: o 75 reaplicou a classe antiga
+```
+
+O 80 imprime os ordinais 8001–8031 e a contagem: **esperado 31 e 31**. Cada caso
+confere o SQLSTATE, a mensagem e o efeito (retrato do slot, das versões e do
+ledger, ou o valor gravado). P1–P9 são a camada global: publicação, recusa a
+quem não é platform_admin (inclusive `service_role` com grant temporário, que
+cai no guard do corpo), conflito `40001`, corpo e nota inválidos (`22023`),
+NUL recusado pelo Postgres antes da função (o caso registra os códigos
+medidos), bordas aceitas, rollback e suas recusas, append-only para todo papel,
+ACL/RLS/policies, quem lê, e a idempotência (P8, ao fim, com o slot antes movido para a v3: reaplicar não pode devolvê-lo à v1). O P6 também mede que o dono não apaga nem trunca o slot. V1–V7 são `settings`:
+as 3 chaves factuais gravadas por gerente/owner, o role guard primeiro (operador
+com valor inválido recebe `42501`, não `22023`), valor inválido para gerente e
+`service_role`, cada limite da tabela (lista literal), o enum de `agent_mode`,
+chave fora da tabela não validada e linha legada acima do limite. C1–C9 são os
+controles positivos, cada um num subbloco desfeito: sem o trigger append-only,
+sem o guard de valor, classe antiga, dono sem `BYPASSRLS`, RPC sem o guard de
+admin, sem a checagem de `expected`, sem a validação de corpo/nota (o CHECK é a
+rede) sem a checagem de versão (a FK composta é a rede) e, no C9, um seed de slot com `do update` (o P8 acusaria a volta à v1). As mutações de corpo
+saem de `pg_get_functiondef` recortando entre os marcadores `-- <x>`/`-- </x>`
+da migration e falham se o marcador sumir.
+
+**C4 e o `BYPASSRLS`:** localmente o `postgres` é superusuário e não mede nada.
+O C4 passa as três tabelas e a RPC a um dono **não superusuário**: sem
+`BYPASSRLS`, sob `FORCE RLS` e sem policy de escrita, a RPC não enxerga o slot;
+com `BYPASSRLS`, publica. Em produção o dono é o `postgres`, com
+`rolbypassrls = true` medido em 2026-09-27 e 2026-10-17. Reconferir com leitura
+autorizada antes do `db push`.
+
+**Resultados observados em 20/10/2026** (PostgreSQL 18.6 local descartável,
+loopback, banco recriado do zero): RED com `ERROR: 78: migration do prompt
+global ausente` (exit 3); 31/31 depois da migration e 31/31 depois de
+reaplicá-la; o 75 deu 19/20 no mesmo banco antes do ajuste do S9 (só
+`agent_mode`, com `22023`), e 20/20 depois; o 78 de novo, 31/31. Antes dos triggers do slot, o P6 novo
+apagou o slot como dono (o preparo do P8 abortou com `prompt_slot_invalid`). NUL medido:
+literal `E'\000'` → `22021`, `chr(0)` → `54000`, JSON `"\u0000"` → `22P05`.
+
+O que NÃO prova: PostgREST/JWT real, nem o atributo `BYPASSRLS` do dono em
+produção. A paridade SQL↔TS (seed, placeholders, limites, enum) é do
+`src/lib/global-prompt-sql-twin.test.ts`; a das chaves da Gestão, do
+`scripts/settings-write-acl.test.ts`.

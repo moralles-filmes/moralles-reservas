@@ -16,6 +16,7 @@ import {
 import {
   BarChart3,
   BookOpen,
+  Bot,
   Building2,
   CalendarIcon,
   CalendarOff,
@@ -146,6 +147,9 @@ export function GestaoLayout({ children }: { children: React.ReactNode }) {
     }] : []),
     { to: `${base}/clientes`,       label: "Clientes",       icon: Users },
     { to: `${base}/conversas`,      label: "Conversas",      icon: MessageCircle, badge: awaitingCount },
+    ...(unit?.isGerente
+      ? [{ to: `${base}/atendimento-ia`, label: "Atendimento por IA", icon: Bot }]
+      : []),
     ...(unit?.isGerente
       ? [{ to: `${base}/whatsapp`, label: "WhatsApp", icon: MessageSquare }]
       : []),

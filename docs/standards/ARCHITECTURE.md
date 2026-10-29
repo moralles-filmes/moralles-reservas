@@ -244,7 +244,7 @@ Formato: contexto, decisão, alternativas consideradas, consequências.
 
 ## Particularidades deste projeto
 
-- Runtime: Vite SPA (React 18, React Router 6) na Vercel; servidor = Supabase Edge Functions (Deno) + RPCs `SECURITY DEFINER`. Não há Next.js nem route handlers.
+- Runtime: Vite SPA (React 18, React Router 7, modo declarativo) na Vercel; servidor = Supabase Edge Functions (Deno) + RPCs `SECURITY DEFINER`. Não há Next.js nem route handlers.
 - Não existe `src/modules/` nem adapter por módulo (`src/features/<m>/api.ts`). O acesso ao Supabase no frontend está espalhado em `src/hooks/`, `src/pages/`, `src/contexts/` e `src/lib/`; é dívida registrada em `.claude/portabilidade-baseline.json` (§3 deste padrão), reduzida módulo a módulo quando o módulo já for alterado.
 - No servidor, a lógica compartilhada fica em `supabase/functions/_shared/`, com núcleos puros `*-core.ts` testados em Vitest; cada EF é um bundle próprio (redeploy das consumidoras ao mudar `_shared`, ver `.claude/rules/edge-functions.md`).
 - Trabalho assíncrono durável: outbox/filas em tabelas Postgres + `pg_cron` → `pg_net` → Edge Function worker autenticada por `x-internal-key` (`.claude/rules/edge-functions.md`).
