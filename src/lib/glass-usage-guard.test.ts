@@ -81,7 +81,12 @@ describe("glass-usage-guard", () => {
 
     for (const file of collectTsxFiles(path.resolve(process.cwd(), "src"))) {
       const rel = path.relative(process.cwd(), file).split(path.sep).join("/");
-      const source = fs.readFileSync(file, "utf8");
+      // A variante "glass" do Button usa .surface (sem desfoque): o nome da
+      // variante (chave `glass:` e `variant="glass"`) não conta como classe.
+      const source = fs
+        .readFileSync(file, "utf8")
+        .replace(/\bglass\s*:/g, "")
+        .replace(/variant\s*[=:]\s*\{?\s*["']glass["']/g, "");
       if (pattern.test(source) && !ALLOWED_BLUR_FILES.includes(rel)) {
         offenders.push(rel);
       }
