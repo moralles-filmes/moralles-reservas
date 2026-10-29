@@ -505,7 +505,7 @@ O objetivo é confirmar que nenhuma instrução legítima ficou presa num bloco 
 | `_shared/agent/global-prompt-core.ts`, `global-prompt.ts`, `store-data-core.ts`, `system-prompt.ts` | B3 | `global-prompt-core.ts`: sim |
 
 - [x] Rodar `node scripts/ef-import-graph.mjs --all` no commit final e fixar a lista. Esperado: `webhook-whatsapp`, mais a EF do Instagram se já existir. `manage-ai-providers` não entra. **Medido em 2026-10-29 no HEAD pós-merge da `main` a7624e7, sobre os 12 arquivos de `supabase/functions` do `git diff origin/main HEAD`: só `webhook-whatsapp`. Não há EF do Instagram na `main`.**
-- [ ] `deno check` em cada EF da lista. _(Pendente: `deno` fora do PATH; o usuário passa o caminho.)_
+- [x] `deno check` em cada EF da lista. _(`webhook-whatsapp` ok com `npx --yes deno` 2.9.6, 2026-10-29.)_
 
 ### B6.2 Gates (spec §11.3), antes do PR
 
@@ -883,7 +883,8 @@ PR, checks, `db push`, merge, deploy, verificação.
 - Suíte: 4516 passam, 7 falham em 7 arquivos, rodada sob carga junto com os gates. Um a um com `--testTimeout=120000`, passam: `ReservaWizard.marketing` 4/4, `TemplateV2ChannelControls` 7/7, `edge-request-harness` 17/17, `whatsapp-automation-receipts-request` 35/35, `whatsapp-reservation-automation-routing` 111/111, `whatsapp-waitlist-voucher-routing` 75/75. `OfficialConnectionCard` só falha na worktree sem `.env.local` (passa 16/16 no checkout principal; a branch não toca o arquivo). Dos 8 arquivos do baseline antigo, a `main` consertou 7.
 - `acl-estatico` local: `function-acl-allowlist` + `advisor-divergence-core` + `migration-static-guard` 96/96; `eslint supabase/functions --max-warnings=0` limpo.
 - `secret-scan --range origin/main..HEAD`: 0 achados em 18 commits.
-- **Pendentes do usuário:** `deno check` da `webhook-whatsapp` (`deno` fora do PATH) e o pré-voo 80 com o banco recriado (o Postgres local pede senha).
+- **Pré-voo 80 (2026-10-29, container descartável `postgres:18` em `127.0.0.1:55480`, banco `ai80` do zero, removido ao fim):** a porta 55432 passou a ser de um container de outro projeto e não foi usada. Sequência do README: 80a ok; 80 antes da migration = **RED** `ERROR: 80: migration do prompt global ausente` (exit 3); migration → 80 **31 e 31**; migration de novo → 80 **31 e 31** (idempotência); 75 **20 e 20**; 80 de novo **31 e 31**.
+- **`deno check supabase/functions/webhook-whatsapp/index.ts`:** ok, sem erros (`npx --yes deno` 2.9.6, autorizado pelo usuário).
 
 **Gates (Opus, diff `origin/main..HEAD`)** — todos PASS_WITH_WARNINGS, 0 bloqueantes:
 
