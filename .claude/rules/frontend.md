@@ -93,7 +93,10 @@ Convenções em [src/hooks/useDashboardMetrics.ts](src/hooks/useDashboardMetrics
 ## Tema visual
 
 
-Dois mundos: `:root` warm (laranja+bege, portais públicos+login) e `.theme-admin` navy SaaS (painéis Gestão/Operacional/Plataforma). `.theme-admin` sobrescreve TODAS as CSS vars no escopo. Nunca hardcode cores — tokens Tailwind sempre.
+- **Temas Noite e Dia vivem em dois grupos de seletores, `:root, .theme-admin` (Dia) e `.dark, .dark .theme-admin` (Noite), com o mesmo conjunto de tokens.** Escopo separado por tema volta a divergir em silêncio; [theme-tokens.test.ts](src/lib/theme-tokens.test.ts) confere nomes, valores da spec e contraste AA. [src/index.css](src/index.css).
+- **Rota pública e login forçam Dia pelo `forcedTheme` do `RouteThemeProvider`; painel sem escolha salva abre em Noite.** Wrapper de escopo não alcança Dialog e Sonner, que renderizam no `body`; a lista de rotas está em [theme-routes.ts](src/lib/theme-routes.ts) e a chave `moralles-theme` preserva a escolha. [RouteThemeProvider.tsx](src/components/RouteThemeProvider.tsx).
+- **`backdrop-filter` (`glass`, `glass-strong`, `backdrop-blur`) só em superfície única na tela; item repetido usa `surface`.** Desfoque em lista derruba o tablet com dezenas de itens; [glass-usage-guard.test.ts](src/lib/glass-usage-guard.test.ts) barra arquivo fora da lista permitida.
+- **Nunca cor fixa em componente (hex, `rgb()`, `bg-white`, `bg-zinc-*`): cor só por token.** Cor fixa quebra um dos dois temas. Situação de reserva leva texto além da cor.
 
 - **`index.html` precisa manter `viewport-fit=cover` no meta viewport.** Sem ele, todo `env(safe-area-inset-*)` (footers de `Dialog`/`ResponsiveDialog`, gaveta do `AdminShell`) avalia 0 no iOS — safe-area morre em silêncio. [index.html](index.html).
 - **Pares de inputs em form usam `grid grid-cols-1 sm:grid-cols-2`, nunca `grid-cols-2` cru.** O `sm:` (640px) casa com a largura em que o Dialog deixa de ser fullscreen — abaixo disso empilha. Grid de KPI/tiles (`grid-cols-2 lg:grid-cols-4`) é proposital e fica.

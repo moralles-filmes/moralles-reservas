@@ -6,7 +6,9 @@ import { cn } from "@/lib/utils";
 /**
  * Alterna entre tema claro e escuro nos painéis admin.
  * Usa next-themes (adiciona/remove `.dark` em <html>). O escuro dos painéis vive
- * em `.dark .theme-admin` (src/index.css). Público não monta este botão → fica claro.
+ * em `.dark, .dark .theme-admin` (src/index.css). O RouteThemeProvider força o
+ * tema claro nas rotas públicas (sem apagar a escolha salva) e o painel sem
+ * escolha salva abre escuro.
  */
 export function ThemeToggle({ className }: { className?: string }) {
   const { resolvedTheme, setTheme } = useTheme();
