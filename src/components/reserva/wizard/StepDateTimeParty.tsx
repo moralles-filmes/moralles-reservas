@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { CalendarX2, Users } from "lucide-react";
@@ -27,11 +27,32 @@ export function StepDateTimeParty() {
   const noSlotsAvailable = state.date && computed.timeSlots.length === 0;
   const unavailable = computed.unavailableDate;
 
-  // Ao voltar ao passo 1, traz a ficha do dia escolhido para a vista.
+  // Ao voltar ao passo 1, traz a ficha do dia escolhido para a vista. Rola só a
+  // faixa (scrollIntoView rolaria também a página que hospeda o widget em iframe).
+  const daysRef = useRef<HTMLDivElement>(null);
   const selectedDayRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    selectedDayRef.current?.scrollIntoView?.({ inline: "center", block: "nearest" });
+    const strip = daysRef.current;
+    const chip = selectedDayRef.current;
+    if (!strip || !chip) return;
+    strip.scrollLeft = chip.offsetLeft - (strip.clientWidth - chip.offsetWidth) / 2;
   }, []);
+
+  // Radiogroup com tabindex itinerante: um Tab entra na faixa e as setas
+  // trocam o dia, em vez de 60 paradas de Tab.
+  const tabStopDate = state.date && dates.includes(state.date) ? state.date : dates[0];
+  const onDaysKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    const edge = e.key === "Home" ? 0 : e.key === "End" ? dates.length - 1 : null;
+    if (step == null && edge == null) return;
+    e.preventDefault();
+    const current = dates.indexOf(tabStopDate);
+    const next = edge ?? Math.min(dates.length - 1, Math.max(0, current + step));
+    pickDate(dates[next]);
+    daysRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-date="${dates[next]}"]`)
+      ?.focus();
+  };
 
   const pickDate = (date: string) => {
     if (date === state.date) return;
@@ -54,22 +75,32 @@ export function StepDateTimeParty() {
         />
       </div>
 
-      <div role="group" aria-labelledby="wizard-date-label" className="space-y-1.5">
+      <div className="space-y-1.5">
         <span id="wizard-date-label" className="block text-sm font-medium">
           Data <span className="text-destructive">*</span>
         </span>
-        <div className="-mx-1 flex snap-x gap-2 overflow-x-auto px-1 pb-2 pt-1">
+        <div
+          ref={daysRef}
+          role="radiogroup"
+          aria-labelledby="wizard-date-label"
+          onKeyDown={onDaysKeyDown}
+          className="-mx-1 flex snap-x gap-2 overflow-x-auto px-1 pb-2 pt-1"
+        >
           {dates.map((d) => {
             const selected = state.date === d;
             const parsed = parseISO(d);
             const weekday = shortWeekdayPtBR(parsed);
+            const fullLabel = format(parsed, "EEEE, d 'de' MMMM", { locale: ptBR });
             return (
               <button
                 key={d}
                 ref={selected ? selectedDayRef : undefined}
                 type="button"
-                aria-pressed={selected}
-                aria-label={format(parsed, "EEEE, d 'de' MMMM", { locale: ptBR })}
+                role="radio"
+                data-date={d}
+                aria-checked={selected}
+                tabIndex={d === tabStopDate ? 0 : -1}
+                aria-label={d === minDate ? `Hoje, ${fullLabel}` : fullLabel}
                 onClick={() => pickDate(d)}
                 className={cn(
                   "flex h-16 w-[62px] flex-none snap-start flex-col items-center justify-center gap-0.5",

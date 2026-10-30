@@ -54,6 +54,8 @@ export function StepHall() {
             <div role="group" aria-label="Ambiente" className="flex flex-wrap gap-1 rounded-panel bg-muted p-1">
               {compatible.map((hall) => {
                 const selected = state.hall_id === hall.id;
+                // A caução aparece em cada opção para o cliente comparar antes de escolher.
+                const chargeCents = getHallChargeCents(hall, state.date, state.time);
                 return (
                   <button
                     key={hall.id}
@@ -61,12 +63,18 @@ export function StepHall() {
                     aria-pressed={selected}
                     onClick={() => actions.set("hall_id", hall.id)}
                     className={cn(
-                      "min-h-11 flex-1 basis-[8rem] rounded-full px-4 text-sm font-medium text-muted-foreground transition-colors",
+                      "flex min-h-11 flex-1 basis-[8rem] flex-col items-center justify-center rounded-full px-4 py-1",
+                      "text-sm font-medium text-muted-foreground transition-colors",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       selected && "bg-card font-semibold text-foreground shadow-sm",
                     )}
                   >
                     {hall.name}
+                    {chargeCents != null && chargeCents > 0 && (
+                      <span className="text-[11px] font-medium text-warning tabular">
+                        Caução R$ {(chargeCents / 100).toFixed(2).replace(".", ",")}
+                      </span>
+                    )}
                   </button>
                 );
               })}
