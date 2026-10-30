@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import type { UnitAddress } from "@/types/reserva";
 import { FACILITY_GROUPS, getFacilityIcon, getFacilityLabel } from "@/lib/facilities";
+import { cn } from "@/lib/utils";
 
 interface PublicUnit {
   id: string;
@@ -128,22 +129,22 @@ export default function PublicPortal() {
   if (isLoading) {
     if (mode === "embed") {
       return (
-        <div className="min-h-screen bg-muted/40 flex items-center justify-center p-4 sm:p-6">
+        <div className="min-h-screen bg-background ambient flex items-center justify-center p-4 sm:p-6">
           <div className="w-full max-w-md space-y-3">
-            <Skeleton className="h-28 w-full rounded-2xl" />
-            <Skeleton className="h-24 w-full rounded-2xl" />
+            <Skeleton className="h-28 w-full rounded-card" />
+            <Skeleton className="h-24 w-full rounded-card" />
           </div>
         </div>
       );
     }
     return (
-      <div className="min-h-screen bg-background">
-        <div className="aspect-[16/9] w-full max-h-[520px]">
-          <Skeleton className="h-full w-full rounded-none" />
+      <div className="min-h-screen bg-background ambient p-2.5 sm:p-6">
+        <div className="aspect-[2/1] w-full max-w-6xl mx-auto max-h-[440px]">
+          <Skeleton className="h-full w-full rounded-panel" />
         </div>
         <div className="max-w-6xl mx-auto px-4 py-12 space-y-4">
-          <Skeleton className="h-10 w-72" />
-          <Skeleton className="h-5 w-96" />
+          <Skeleton className="h-10 w-72 max-w-full rounded-block" />
+          <Skeleton className="h-5 w-96 max-w-full rounded-block" />
         </div>
       </div>
     );
@@ -251,7 +252,7 @@ function PortalContent({
 
   if (mode === "embed") {
     return (
-      <div className="min-h-screen bg-muted/40 flex items-center justify-center p-4 sm:p-6">
+      <div className="min-h-screen bg-background ambient flex items-center justify-center p-4 sm:p-6">
         <div className="w-full max-w-md space-y-3">
           <ReservaCTA
             unit={unit}
@@ -273,19 +274,19 @@ function PortalContent({
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background ambient pt-2.5 sm:pt-6">
       {/* Top bar minimal — não compete com o hero */}
-      <header className="absolute top-0 inset-x-0 z-20">
-        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+      <header className="absolute top-6 sm:top-10 inset-x-0 z-20">
+        <div className="max-w-6xl mx-auto px-6 sm:px-10 flex items-center justify-between">
           <Link
             to="/"
-            className="text-xs uppercase tracking-[0.2em] text-white/90 hover:text-white drop-shadow"
+            className="surface rounded-full min-h-11 px-4 inline-flex items-center text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             Moralles
           </Link>
           <Link
             to="/admin/login"
-            className="text-xs text-white/90 hover:text-white drop-shadow"
+            className="surface rounded-full min-h-11 px-4 inline-flex items-center text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             Área Admin
           </Link>
@@ -293,8 +294,8 @@ function PortalContent({
       </header>
 
       {/* Hero */}
-      <section className="relative">
-        <div className="relative aspect-[16/9] max-h-[560px] w-full overflow-hidden bg-gradient-to-br from-[hsl(24,85%,45%)] via-[hsl(28,80%,55%)] to-[hsl(38,90%,52%)]">
+      <section className="relative max-w-6xl mx-auto px-2.5 sm:px-6">
+        <div className={cn("relative mt-2.5 sm:mt-4 aspect-[16/9] max-h-[560px] w-full overflow-hidden rounded-panel bg-muted", !unit.hero_image_url && "ambient")}>
           {unit.hero_image_url ? (
             <img
               src={unit.hero_image_url}
@@ -302,22 +303,17 @@ function PortalContent({
               className="absolute inset-0 w-full h-full object-cover"
             />
           ) : (
-            <div
-              className="absolute inset-0"
-              style={{
-                backgroundImage:
-                  "radial-gradient(circle at 30% 30%, rgba(255,255,255,0.18) 0%, transparent 50%), radial-gradient(circle at 70% 70%, rgba(0,0,0,0.18) 0%, transparent 60%)",
-              }}
-            />
+            <div className="absolute inset-0 flex items-center justify-center text-gold-ink" aria-hidden="true">
+              <UtensilsCrossed className="h-12 w-12" />
+            </div>
           )}
-          <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-black/10 to-black/55" />
         </div>
 
         {/* Faixa identitária — sobreposta ao hero, com logo + nome */}
-        <div className="max-w-6xl mx-auto px-4">
-          <div className="relative -mt-20 sm:-mt-24 flex items-end gap-5 sm:gap-7">
+        <div className="px-3 sm:px-6">
+          <div className="surface rounded-card relative -mt-16 sm:-mt-20 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 p-5 sm:p-7">
             <div
-              className={`shrink-0 h-28 w-28 sm:h-36 sm:w-36 rounded-full overflow-hidden ring-4 ring-background bg-card shadow-xl flex items-center justify-center`}
+              className="shrink-0 h-20 w-20 sm:h-28 sm:w-28 rounded-full overflow-hidden ring-4 ring-card bg-logo-plate shadow-depth-1 flex items-center justify-center"
             >
               {unit.logo_url ? (
                 <img
@@ -326,18 +322,18 @@ function PortalContent({
                   className="w-full h-full object-cover"
                 />
               ) : (
-                <span className="font-display text-3xl sm:text-4xl text-primary">
+                <span className="font-display text-2xl sm:text-3xl font-semibold text-gold-ink">
                   {initials}
                 </span>
               )}
             </div>
-            <div className="pb-3 sm:pb-4 text-white">
-              <h1 className="font-display text-3xl sm:text-5xl leading-tight tracking-tight drop-shadow-md">
+            <div className="min-w-0 text-foreground">
+              <h1 className="font-display text-3xl sm:text-5xl font-semibold leading-tight tracking-tight break-words">
                 {unit.name}
               </h1>
               {cityLine && (
-                <p className="text-sm sm:text-base font-medium text-foreground/80 mt-2 flex items-center gap-1.5">
-                  <MapPin className="h-3.5 w-3.5 text-primary" />
+                <p className="text-sm sm:text-base text-muted-foreground mt-2 flex items-center gap-1.5">
+                  <MapPin className="h-4 w-4 shrink-0 text-gold-ink" />
                   {cityLine}
                 </p>
               )}
@@ -347,10 +343,10 @@ function PortalContent({
       </section>
 
       {/* Body */}
-      <section className="max-w-6xl mx-auto px-4 pt-10 sm:pt-14 pb-20">
-        <div className="grid lg:grid-cols-[1fr_22rem] gap-10 lg:gap-14 items-start">
+      <section className="max-w-6xl mx-auto px-2.5 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-20">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_22rem] gap-6 lg:gap-8 items-start">
           {/* ── Coluna esquerda — conteúdo editorial ───────────────────────── */}
-          <div className="space-y-12">
+          <div className="min-w-0 space-y-5">
             {unit.description && (
               <Section icon={<UtensilsCrossed className="h-4 w-4" />} title="Sobre">
                 <p className="font-display text-lg sm:text-xl leading-relaxed text-foreground/85 whitespace-pre-line">
@@ -367,14 +363,14 @@ function PortalContent({
                       key={`${url}-${idx}`}
                       type="button"
                       onClick={() => setLightboxIndex(idx)}
-                      className="relative aspect-square rounded-md overflow-hidden bg-muted/30 group focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      className="relative aspect-square rounded-block overflow-hidden bg-muted group focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                       aria-label={`Abrir foto ${idx + 1}`}
                     >
                       <img
                         src={url}
                         alt={`Foto ${idx + 1} de ${unit.name}`}
                         loading="lazy"
-                        className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        className="absolute inset-0 w-full h-full object-cover motion-safe:transition-transform motion-safe:duration-300 motion-safe:group-hover:scale-105"
                       />
                     </button>
                   ))}
@@ -388,7 +384,7 @@ function PortalContent({
                   {unit.cuisine_types.map((c) => (
                     <span
                       key={c}
-                      className="inline-flex items-center rounded-full bg-muted px-3 py-1 text-sm text-foreground/80"
+                      className="inline-flex items-center rounded-full border border-gold/20 bg-gold/10 px-3 py-1.5 text-sm text-gold-ink"
                     >
                       {c}
                     </span>
@@ -407,7 +403,7 @@ function PortalContent({
 
             {(unit.price_range_min != null || unit.price_range_max != null) && (
               <Section icon={<Wallet className="h-4 w-4" />} title="Faixa de preço">
-                <p className="font-display text-2xl sm:text-3xl">
+                <p className="font-display text-2xl sm:text-3xl tabular tracking-tight">
                   {formatPriceRange(unit.price_range_min, unit.price_range_max)}
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
@@ -435,10 +431,10 @@ function PortalContent({
                 <ul className="space-y-2 text-foreground/85">
                   {unit.phone && (
                     <li className="flex items-center gap-2">
-                      <Phone className="h-4 w-4 text-primary" />
+                      <Phone className="h-4 w-4 shrink-0 text-gold-ink" />
                       <a
                         href={`tel:${unit.phone.replace(/\D/g, "")}`}
-                        className="hover:text-primary transition-colors"
+                        className="inline-flex items-center coarse:min-h-11 hover:text-gold-ink hover:underline rounded-item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         {unit.phone}
                       </a>
@@ -446,7 +442,7 @@ function PortalContent({
                   )}
                   {unit.instagram && (
                     <li className="flex items-center gap-2">
-                      <Instagram className="h-4 w-4 text-primary" />
+                      <Instagram className="h-4 w-4 shrink-0 text-gold-ink" />
                       <a
                         href={
                           unit.instagram.startsWith("http")
@@ -455,7 +451,7 @@ function PortalContent({
                         }
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="hover:text-primary transition-colors"
+                        className="inline-flex items-center coarse:min-h-11 hover:text-gold-ink hover:underline rounded-item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring break-all"
                       >
                         {unit.instagram}
                       </a>
@@ -463,12 +459,12 @@ function PortalContent({
                   )}
                   {unit.website && (
                     <li className="flex items-center gap-2">
-                      <LinkIcon className="h-4 w-4 text-primary" />
+                      <LinkIcon className="h-4 w-4 shrink-0 text-gold-ink" />
                       <a
                         href={unit.website.startsWith("http") ? unit.website : `https://${unit.website}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="hover:text-primary transition-colors break-all"
+                        className="inline-flex items-center coarse:min-h-11 hover:text-gold-ink hover:underline rounded-item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring break-all"
                       >
                         {unit.website}
                       </a>
@@ -481,7 +477,7 @@ function PortalContent({
             {fullAddress && (
               <Section icon={<MapPin className="h-4 w-4" />} title="Como chegar">
                 <p className="text-foreground/85 leading-relaxed">{fullAddress}</p>
-                <div className="mt-4 rounded-xl overflow-hidden border bg-muted">
+                <div className="mt-4 rounded-block overflow-hidden border bg-muted">
                   <iframe
                     title={`Mapa de ${unit.name}`}
                     src={`https://www.google.com/maps?q=${encodeURIComponent(
@@ -498,7 +494,7 @@ function PortalContent({
                   )}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-sm text-primary hover:underline mt-3 inline-flex items-center gap-1"
+                  className="text-sm text-gold-ink hover:underline mt-3 inline-flex items-center gap-1 coarse:min-h-11 rounded-item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Abrir no Google Maps
                   <ChevronRight className="h-3.5 w-3.5" />
@@ -507,13 +503,13 @@ function PortalContent({
             )}
 
             {/* Footer minimal — consulta por código discreta */}
-            <div className="border-t pt-6">
+            <div className="surface rounded-card p-5 sm:p-6">
               <ReservaCodeLookup unitId={unit.id} />
             </div>
           </div>
 
           {/* ── Coluna direita — CTAs sticky ────────────────────────────────── */}
-          <div className="lg:sticky lg:top-8 space-y-3 order-first lg:order-none -mt-2 lg:mt-0">
+          <div className="lg:sticky lg:top-8 space-y-3 order-first lg:order-none">
             <ReservaCTA
               unit={unit}
               halls={halls}
@@ -533,8 +529,8 @@ function PortalContent({
       </section>
 
       {/* Footer */}
-      <footer className="border-t bg-card">
-        <div className="max-w-6xl mx-auto px-4 py-6 flex items-center justify-between text-xs text-muted-foreground">
+      <footer className="border-t border-border">
+        <div className="max-w-6xl mx-auto px-6 py-6 flex flex-wrap gap-3 items-center justify-between text-xs text-tertiary">
           <span>Reservas · {unit.name}</span>
           <span>Powered by Moralles</span>
         </div>
@@ -547,7 +543,7 @@ function PortalContent({
           if (!open) setLightboxIndex(null);
         }}
       >
-        <DialogContent className="max-w-5xl p-0 bg-black/95 border-0 sm:rounded-lg overflow-hidden">
+        <DialogContent className="max-w-5xl p-0 bg-primary text-primary-foreground border-0 sm:rounded-panel overflow-hidden">
           <DialogTitle className="sr-only">
             Foto {lightboxIndex !== null ? lightboxIndex + 1 : 0} de {unit.name}
           </DialogTitle>
@@ -561,7 +557,7 @@ function PortalContent({
               <button
                 type="button"
                 onClick={() => setLightboxIndex(null)}
-                className="absolute top-3 right-3 h-9 w-9 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                className="absolute top-3 right-3 h-11 w-11 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 border border-primary-foreground/20 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground"
                 aria-label="Fechar"
               >
                 <X className="h-5 w-5" />
@@ -575,7 +571,7 @@ function PortalContent({
                         i === null ? null : (i - 1 + galleryPhotos.length) % galleryPhotos.length
                       )
                     }
-                    className="absolute left-3 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                    className="absolute left-3 top-1/2 -translate-y-1/2 h-11 w-11 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 border border-primary-foreground/20 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground"
                     aria-label="Foto anterior"
                   >
                     <ChevronRight className="h-5 w-5 rotate-180" />
@@ -587,12 +583,12 @@ function PortalContent({
                         i === null ? null : (i + 1) % galleryPhotos.length
                       )
                     }
-                    className="absolute right-3 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center transition-colors"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 h-11 w-11 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 border border-primary-foreground/20 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground"
                     aria-label="Próxima foto"
                   >
                     <ChevronRight className="h-5 w-5" />
                   </button>
-                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-xs text-white/80 bg-black/60 rounded-full px-3 py-1">
+                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-xs tabular text-primary-foreground bg-primary rounded-full px-3 py-1.5">
                     {lightboxIndex + 1} / {galleryPhotos.length}
                   </div>
                 </>
@@ -617,10 +613,10 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section>
-      <div className="flex items-center gap-2 text-primary mb-3">
+    <section className="surface rounded-card p-5 sm:p-6">
+      <div className="flex items-center gap-2 text-gold-ink mb-4">
         {icon}
-        <h2 className="text-xs font-medium uppercase tracking-[0.18em]">{title}</h2>
+        <h2 className="text-base font-semibold tracking-tight text-foreground">{title}</h2>
       </div>
       <div>{children}</div>
     </section>
@@ -651,9 +647,9 @@ function FacilitiesGrid({ codes }: { codes: string[] }) {
                   className="flex items-center gap-2 text-foreground/85"
                 >
                   {Icon ? (
-                    <Icon className="h-4 w-4 text-primary shrink-0" />
+                    <Icon className="h-4 w-4 text-gold-ink shrink-0" />
                   ) : (
-                    <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+                    <CheckCircle2 className="h-4 w-4 text-gold-ink shrink-0" />
                   )}
                   <span>{item.label}</span>
                 </li>
@@ -666,7 +662,7 @@ function FacilitiesGrid({ codes }: { codes: string[] }) {
         <ul className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
           {orphan.map((code) => (
             <li key={code} className="flex items-center gap-2 text-foreground/85">
-              <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+              <CheckCircle2 className="h-4 w-4 text-gold-ink shrink-0" />
               <span>{getFacilityLabel(code)}</span>
             </li>
           ))}
@@ -702,21 +698,21 @@ function ReservaCTA({
       <ResponsiveDialogTrigger asChild>
         <button
           type="button"
-          className="w-full text-left rounded-2xl border bg-card p-5 sm:p-6 hover:shadow-lg hover:border-primary/40 transition-all group"
+          className="surface w-full text-left rounded-card p-5 sm:p-6 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-safe:transition-transform motion-safe:duration-300 motion-safe:hover:-translate-y-0.5"
         >
           <div className="flex items-start gap-4">
-            <div className="h-11 w-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+            <div className="h-11 w-11 rounded-full bg-gold/10 text-gold-ink flex items-center justify-center shrink-0">
               <CalendarDays className="h-5 w-5" />
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="font-display text-2xl leading-tight">Reserve Agora</h3>
+              <h3 className="font-display text-2xl font-semibold tracking-tight leading-tight">Reserve Agora</h3>
               <p className="text-sm text-muted-foreground mt-1">
                 Garanta sua mesa, evite filas
               </p>
-              <p className="text-xs text-primary mt-3 inline-flex items-center gap-1 font-medium">
+              <span className="text-sm bg-primary text-primary-foreground rounded-full min-h-12 px-5 mt-4 flex w-full items-center justify-center gap-2 font-semibold">
                 Fazer reserva
-                <ChevronRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
-              </p>
+                <ChevronRight className="h-4 w-4 motion-safe:transition-transform motion-safe:duration-300 motion-safe:group-hover:translate-x-0.5" />
+              </span>
             </div>
           </div>
         </button>
@@ -767,26 +763,26 @@ function WaitlistCTA({
       <DialogTrigger asChild>
         <button
           type="button"
-          className="w-full text-left rounded-2xl border bg-card/60 p-5 hover:shadow-md hover:border-secondary/40 transition-all group"
+          className="surface w-full text-left rounded-card p-5 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-safe:transition-transform motion-safe:duration-300 motion-safe:hover:-translate-y-0.5"
         >
           <div className="flex items-start gap-4">
-            <div className="h-10 w-10 rounded-full bg-secondary/15 text-secondary flex items-center justify-center shrink-0">
+            <div className="h-11 w-11 rounded-full bg-gold/10 text-gold-ink flex items-center justify-center shrink-0">
               <Smartphone className="h-4 w-4" />
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="font-display text-xl leading-tight">Entrar na Fila</h3>
+              <h3 className="font-display text-xl font-semibold tracking-tight leading-tight">Entrar na Fila</h3>
               <p className="text-sm text-muted-foreground mt-0.5">
                 Guarde seu lugar sem sair de casa
               </p>
             </div>
-            <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 mt-1" />
+            <ChevronRight className="h-4 w-4 shrink-0 text-tertiary motion-safe:transition-transform motion-safe:duration-300 motion-safe:group-hover:translate-x-0.5 mt-1" />
           </div>
         </button>
       </DialogTrigger>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md sm:rounded-panel">
         <DialogHeader>
-          <DialogTitle className="font-display text-2xl flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-secondary" />
+          <DialogTitle className="font-display text-2xl font-semibold tracking-tight flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-gold-ink" />
             Entrar na fila
           </DialogTitle>
           <p className="text-sm text-muted-foreground">
