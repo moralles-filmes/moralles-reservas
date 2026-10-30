@@ -97,8 +97,8 @@ export default function MeusCardapios() {
 
         <div className="space-y-3">
           {!menus?.length ? (
-            <Card className="p-5 space-y-2 opacity-60">
-              <h3 className="text-sm font-semibold">Compartilhar cardápio</h3>
+            <Card className="p-5 space-y-2">
+              <h3 className="text-sm font-semibold text-muted-foreground">Compartilhar cardápio</h3>
               <p className="text-xs text-muted-foreground">
                 Crie um cardápio para gerar o link de compartilhamento.
               </p>

@@ -47,10 +47,10 @@ export function KpiStat({ title, value, icon: Icon, color, delta, invertDelta, d
   const DeltaIcon = !hasDelta || delta === 0 ? Minus : positive ? ArrowUpRight : ArrowDownRight;
 
   return (
-    <div className="pt-6 pb-6 px-6">
+    <div className="p-4 sm:p-6">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="text-xs text-tertiary truncate">{title}</p>
+          <p className="text-xs leading-snug text-tertiary">{title}</p>
           {isLoading ? (
             <Skeleton className="h-9 w-20 mt-2" />
           ) : (

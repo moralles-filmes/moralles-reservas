@@ -46,7 +46,8 @@ export function DashboardHero({ dateLabel, hours, todayStats, unitSlug, onNewRes
             <ArrivalsByHour3D hours={hours} />
           </div>
         )}
-        <KpiStrip>
+        {/* Ao lado da coluna de chegadas e da sidebar, quatro colunas só cabem a partir de xl. */}
+        <KpiStrip className="lg:grid-cols-2 xl:grid-cols-4">
           <KpiStat title="Reservas hoje" value={todayStats?.total_hoje} icon={CalendarIcon} color="bg-primary/10 text-primary" />
           <KpiStat title="Confirmadas" value={todayStats?.confirmadas_hoje} icon={CheckCircle} color="bg-success/10 text-success" />
           <KpiStat title="Pendentes" value={todayStats?.pendentes_hoje} icon={Clock} color="bg-warning/10 text-warning" />

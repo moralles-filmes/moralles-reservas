@@ -252,6 +252,26 @@ describe('theme-tokens (Dia e Noite)', () => {
     }
   });
 
+  // text-success/-info/-destructive/-warning aparecem como texto puro e em selo
+  // bg-<cor>/10; o pior caso é o selo sobre --secondary (linha de tabela, aba).
+  it('contraste AA das cores de situação usadas como texto, inclusive em selo tingido', () => {
+    const mix = (fg: RGB, bg: RGB, alpha: number): RGB =>
+      fg.map((v, i) => Math.round(v * alpha + bg[i] * (1 - alpha))) as RGB;
+    for (const theme of [['Dia', day] as const, ['Noite', night] as const]) {
+      const [label, tokens] = theme;
+      for (const status of ['--success', '--info', '--destructive', '--warning']) {
+        const fg = tokenRgb(tokens, status);
+        for (const surface of ['--background', '--card', '--secondary']) {
+          const bg = tokenRgb(tokens, surface);
+          const plain = contrastRatio(fg, bg);
+          expect(plain, `${label}: ${status} sobre ${surface} = ${plain.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
+          const tinted = contrastRatio(fg, mix(fg, bg, 0.1));
+          expect(tinted, `${label}: ${status} sobre ${status}/10 em ${surface} = ${tinted.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+  });
+
   it('contraste de indicador >= 3 nos dois temas', () => {
     const pairs: Array<[string, string]> = [
       ['--status-free', '--card'],
