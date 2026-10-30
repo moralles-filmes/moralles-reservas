@@ -145,7 +145,7 @@ export function StepDateTimeParty() {
         )}
       </div>
 
-      <div role="radiogroup" aria-labelledby="wizard-time-label" onKeyDown={onTimesKeyDown} className="space-y-1.5">
+      <div className="space-y-1.5">
         <span id="wizard-time-label" className="block text-sm font-medium">
           Horário <span className="text-destructive">*</span>
         </span>
@@ -162,7 +162,13 @@ export function StepDateTimeParty() {
             Escolha a data primeiro.
           </p>
         ) : (
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          <div
+            role="radiogroup"
+            aria-labelledby="wizard-time-label"
+            aria-required="true"
+            onKeyDown={onTimesKeyDown}
+            className="grid grid-cols-3 gap-2 sm:grid-cols-4"
+          >
             {computed.timeSlots.map((s) => {
               const selected = state.time === s.time;
               return (

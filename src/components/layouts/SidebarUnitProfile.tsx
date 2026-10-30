@@ -58,7 +58,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" aria-label={`Trocar unidade (${unit.unit_name})`} className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <button type="button" aria-label={`${unit.unit_name}, trocar unidade`} className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {avatar}
           </button>
         </DropdownMenuTrigger>

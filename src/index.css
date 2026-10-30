@@ -177,7 +177,7 @@
     --glass-tint: 0 0% 100%;
     --glass-alpha: 0.045;
     /* Tom do cartão, não branco: diálogos sólidos o bastante para a página de trás não manchar. */
-    --glass-strong-tint: 222.9 14.9% 9.2%;
+    --glass-strong-tint: 222.9 14.9% 13%;  /* um pouco acima do --card para popover sobre cartão destacar */
     --glass-strong-alpha: 0.82;
     --glass-edge: 0 0% 100%;
     --glass-edge-alpha: 0.08;
