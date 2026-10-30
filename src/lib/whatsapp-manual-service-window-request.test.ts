@@ -20,6 +20,7 @@ function setup(options: {
   historyError?: boolean;
   messages?: unknown;
   expireDuringSelection?: boolean;
+  channel?: string;
 } = {}) {
   const reads: string[] = [];
   const provider = options.provider ?? "datafy";
@@ -35,7 +36,8 @@ function setup(options: {
         order() { return query; },
         async maybeSingle() {
           if (table === "conversations" && columns.includes("unit_id, status")) {
-            return { data: { id: conversation, unit_id: unit, status: "human_active", customer: { phone: "11999999999" } }, error: null };
+            return { data: { id: conversation, unit_id: unit, status: "human_active", channel: options.channel ?? "whatsapp",
+              instagram_contact_id: null, customer: { phone: "11999999999" }, instagram_contact: null }, error: null };
           }
           if (table === "conversations" && columns === "messages") {
             return options.historyError ? { data: null, error: { message: "synthetic" } } : { data: { messages }, error: null };
@@ -116,6 +118,18 @@ describe("send-manual-message request boundary", () => {
     expect(channel.reads).not.toContain("conversations:messages");
     const history = setup({ historyError: true });
     expect((await history.request()).status).toBe(503);
+  });
+
+  it("refuses an unknown conversation channel before any channel or history read", async () => {
+    const fixture = setup({ channel: "telegram" });
+    const response = await fixture.request();
+    expect(response.status).toBe(422);
+    expect(fixture.reads.some(read => read.startsWith("whatsapp_channels:"))).toBe(false);
+    expect(fixture.reads).not.toContain("conversations:messages");
+    // Controle positivo: o mesmo fixture com canal WhatsApp lê o canal.
+    const control = setup();
+    await control.request();
+    expect(control.reads.some(read => read.startsWith("whatsapp_channels:"))).toBe(true);
   });
 
   it("does not require a Meta window when UazAPI is active and Datafy is inactive", async () => {
