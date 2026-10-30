@@ -2671,6 +2671,9 @@ P -f supabase/migrations/20261029200200_instagram_inbound_queue.sql
 P -f supabase/migrations/20261029200300_conversations_instagram_channel.sql
 P -f supabase/migrations/20261029200400_reservations_source_instagram.sql
 P -f supabase/migrations/20261029200600_instagram_contact_reservation_atomic.sql
+P -f supabase/migrations/20261029200700_whatsapp_automation_source_instagram.sql
+P -f supabase/migrations/20261029200800_instagram_account_cas_connected_at.sql
+P -f supabase/migrations/20261029200900_instagram_message_claim_release.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN
 P -f supabase/migrations/20261029200000_instagram_module_grants.sql
 P -f supabase/migrations/20261029200100_instagram_accounts_contacts.sql
@@ -2678,6 +2681,9 @@ P -f supabase/migrations/20261029200200_instagram_inbound_queue.sql
 P -f supabase/migrations/20261029200300_conversations_instagram_channel.sql
 P -f supabase/migrations/20261029200400_reservations_source_instagram.sql
 P -f supabase/migrations/20261029200600_instagram_contact_reservation_atomic.sql  # depois da 200100/200300: recria record/link
+P -f supabase/migrations/20261029200700_whatsapp_automation_source_instagram.sql
+P -f supabase/migrations/20261029200800_instagram_account_cas_connected_at.sql   # depois da 200100: dropa as versões de 3 argumentos que ela recria
+P -f supabase/migrations/20261029200900_instagram_message_claim_release.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (idempotência)
 # 20261029200500_instagram_cron.sql NÃO roda aqui (sem pg_cron): é lida como
 # texto pelo gêmeo src/lib/instagram-queue-migration-twin.test.ts.
@@ -2700,10 +2706,10 @@ controles 7970–7976, e no fix round 1 o IG-4.8 (7967) e o C-IG-4.8 (7978);
 7968–7969, 7977 e 7979 livres. Task 1.5: casos 7980–7982, controles
 7990–7991; 7983–7989 livres. Task 1.6 (fix round 1 dos gates): casos
 7914–7917, controles 7992–7995. Task 4.0b: casos 7983–7988, controles 7989,
-7996–7999 e 7918. Task 4.0d: caso 7919, controles 7958–7959; livres 7907,
-7948–7949, 7968–7969, 7977 e 7979. O 79 imprime os
-ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **92 e
-92**); quem acrescenta
+7996–7999 e 7918. Task 4.0d: caso 7919, controles 7958–7959. Task 4.5: casos 7907, 7948 e
+7949, controles 7968, 7969 e 7977; livre 7979. O 79 imprime os
+ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **98 e
+98**); quem acrescenta
 casos atualiza o número na última instrução do arquivo.
 
 **Task 1.1** (migration `20261029200000_instagram_module_grants.sql`):
@@ -3060,6 +3066,42 @@ PG 18 local descartável na porta 55452): RED com a migration da 4.0b (7918,
 após reaplicar as seis (a 200600 em CRLF e em LF) e com o 79 em CRLF e em LF
 (a cópia LF do 79 precisa ficar em `supabase/tests/local-preflight/`: o `ir` do
 IG-5.3 é relativo ao arquivo).
+
+**Task 4.5** (migrations `20261029200700_whatsapp_automation_source_instagram.sql`,
+`20261029200800_instagram_account_cas_connected_at.sql` e
+`20261029200900_instagram_message_claim_release.sql`). Base acrescida no 79a
+(seção 3e): os stubs que o corpo de `app_private.whatsapp_automation_post_inner`
+exige (as tabelas do `%rowtype` e só as colunas que o caminho medido lê),
+`units.slug/timezone`, `reservations.satisfaction_rating` (011),
+`public.normalize_br_phone` (060) e colunas do stub de jobs. Quem já tinha um
+`ig79` recria o banco. IG-8.1 (7907) chama o corpo REAL do POST final
+(`p_confirm_only`, snapshot de reserva) com o MESMO job/cerca variando só
+`resource.source`: `desconhecida`, vazia, `INSTAGRAM` e nula dão
+`snapshot_invalid` (prova de que o caminho chega à validação do snapshot);
+`web`, `whatsapp` e `instagram` passam dela (o job sem `claimed_until` cai
+depois em `authority_changed`, sem POST); catálogo com a lista nova uma vez e a
+antiga ausente, DEFINER e sem EXECUTE de API. IG-8.2 (7948) CAS por
+`connected_at`: a geração lida aplica (`true`); depois de avançar o
+`connected_at` (a reconexão; `now()` é constante na transação) a antiga devolve
+`false` sem efeito (status, erro, token no Vault e carimbo intactos) e a nova
+aplica; geração nula `22023`; só as versões de 4 argumentos existem, DEFINER,
+EXECUTE só `service_role`. Os casos antigos que chamam essas duas RPCs passam
+a geração atual (`pg_temp.ig79_cat`) e embrulham o booleano para manter o
+`ok` de antes. IG-8.3 (7949) `release_instagram_message_claim`: claim errado,
+outra conta e outro `mid` devolvem `false` sem tocar a linha; o certo libera
+(`claim_id` nulo, lease vencido) e então o claim velho não libera de novo nem
+completa, e um claim novo assume na hora; linha `done` não é liberada; DEFINER,
+`search_path` vazio, EXECUTE só `service_role`. Controles: C-IG-8.1 (7968) lista
+antiga, sem a perna da origem e EXECUTE para `service_role`; C-IG-8.2 (7969)
+set_status sem o CAS, record_refresh sem o CAS e o overload de 3 argumentos de
+volta; C-IG-8.3 (7977) release sem a perna do claim, sem a de `processing` e
+EXECUTE para `authenticated`. Resultado (30/10/2026, PG 18 local descartável na
+porta 55452, initdb novo): RED na guarda nova (exit 3) com 200000–200600; RED
+por caso com o corpo ANTERIOR do `post_inner` (o da 20261019193132) no lugar da
+200700: 96/98 (IG-8.1 e C-IG-8.1 reprovam); GREEN 98/98 após aplicar, após
+reaplicar as nove em ordem e repetindo o 79; num banco novo, 98/98 com as três
+migrations novas em CRLF e com o 79 em CRLF e em LF, sem resíduo (clientes,
+reservas, jobs, contas, ledger, segredos `instagram-account-*`).
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
 nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A

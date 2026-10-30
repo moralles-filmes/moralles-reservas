@@ -244,6 +244,11 @@
       "A reserva atômica do contato do Instagram (20261029200600) acrescenta",
       "create_instagram_contact_reservation e recria record_ e link_ do contato,",
       "as três só service_role: projeção 9/48/57 inalterada.",
+      "A Task 4.5 recria app_private.whatsapp_automation_post_inner (sem EXECUTE",
+      "de API), troca set_instagram_account_status e record_instagram_token_refresh",
+      "pelas versões com CAS de connected_at e acrescenta",
+      "release_instagram_message_claim, as três só service_role: projeção",
+      "9/48/57 inalterada.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,

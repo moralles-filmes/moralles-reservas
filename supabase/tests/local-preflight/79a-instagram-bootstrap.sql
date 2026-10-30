@@ -20,6 +20,7 @@
 --      UPDATE enxerga só o que o papel real enxerga.
 --   3b–3d. Conversas (Task 1.4), origem da reserva e outbox (Task 1.5) e as
 --      colunas de reserva que o `reserveSlot` grava (Task 4.0b).
+--   3e. Stubs que o corpo do POST final das automações lê (Task 4.5).
 --   4. Fixtures (UUIDs fixos `a0d79000-…`): org A com a unidade UA (owner,
 --      gerente, operador), org B com a unidade UB (gerente), e um
 --      platform_admin sem membership.
@@ -308,6 +309,109 @@ create table if not exists public.tables (
   id      uuid primary key default gen_random_uuid(),
   unit_id uuid not null references public.units(id) on delete cascade
 );
+
+-- ─── 3e. O que o POST final das automações lê (Task 4.5, D9) ──────────────
+-- O IG-8.1 chama o corpo REAL de `app_private.whatsapp_automation_post_inner`
+-- (20261019193132, recriado pela 20261029200700) no caminho `p_confirm_only`
+-- com snapshot de reserva. O `%rowtype` do corpo exige TODAS as tabelas que ele
+-- declara no `create or replace` da migration; em execução, plpgsql resolve cada
+-- coluna só quando o comando roda. Por isso entram:
+--   * tabelas só como TIPO (nenhum comando do caminho medido as lê por coluna):
+--     `whatsapp_remote_templates`, `vouchers`, `voucher_rules`;
+--   * tabelas lidas no caminho medido, com SÓ as colunas que ele toca:
+--     `whatsapp_template_bindings` (id, channel_id), `whatsapp_template_accounts`
+--     (id, sync_binding_id), `whatsapp_template_cost_authorizations` (id,
+--     actor_id), `whatsapp_promotion_slots` (id, job_id),
+--     `whatsapp_message_consent_events` (unit_id, customer_id, purpose,
+--     revision, decision), `platform_flags` (key, value),
+--     `whatsapp_automation_adoptions` (unit_id);
+--   * colunas de produção que faltam no stub de jobs (pins, contadores, fato),
+--     em `units` (`slug`, `timezone`) e em `reservations`
+--     (`satisfaction_rating`, VERBATIM da 011);
+--   * `public.normalize_br_phone(text)`: VERBATIM da 060 (20260613150000:15-34).
+-- Nomes e tipos são os de produção; sem RLS, sem FK para essas tabelas e sem
+-- dados: o caso chama a função como dono (postgres) e mede só a decisão do
+-- snapshot (`snapshot_invalid` × seguir adiante).
+create table if not exists public.whatsapp_template_bindings (
+  id         uuid primary key default gen_random_uuid(),
+  channel_id uuid
+);
+create table if not exists public.whatsapp_template_accounts (
+  id              uuid primary key default gen_random_uuid(),
+  sync_binding_id uuid
+);
+create table if not exists public.whatsapp_remote_templates (
+  id uuid primary key default gen_random_uuid()
+);
+create table if not exists public.whatsapp_template_cost_authorizations (
+  id       uuid primary key default gen_random_uuid(),
+  actor_id uuid
+);
+create table if not exists public.whatsapp_promotion_slots (
+  id     uuid primary key default gen_random_uuid(),
+  job_id uuid
+);
+create table if not exists public.whatsapp_message_consent_events (
+  id          uuid primary key default gen_random_uuid(),
+  unit_id     uuid   not null,
+  customer_id uuid   not null,
+  purpose     text   not null,
+  revision    bigint not null,
+  decision    text   not null
+);
+create table if not exists public.platform_flags (
+  key   text primary key,
+  value jsonb not null
+);
+create table if not exists public.whatsapp_automation_adoptions (
+  unit_id uuid primary key
+);
+create table if not exists public.vouchers (
+  id uuid primary key default gen_random_uuid()
+);
+create table if not exists public.voucher_rules (
+  id uuid primary key default gen_random_uuid()
+);
+
+alter table public.whatsapp_automation_jobs
+  add column if not exists account_id               uuid,
+  add column if not exists binding_id               uuid,
+  add column if not exists remote_template_id       uuid,
+  add column if not exists voucher_id               uuid,
+  add column if not exists transport                text,
+  add column if not exists attempts                 integer not null default 0,
+  add column if not exists initial_template_version integer not null default 1,
+  add column if not exists fact_at                  timestamptz,
+  add column if not exists claimed_until            timestamptz;
+
+alter table public.units
+  add column if not exists slug     text,
+  add column if not exists timezone text;
+
+alter table public.reservations
+  add column if not exists satisfaction_rating integer
+    check (satisfaction_rating between 1 and 5);
+
+create or replace function public.normalize_br_phone(raw text)
+returns text
+language plpgsql
+immutable
+as $$
+declare
+  d text;
+begin
+  d := regexp_replace(coalesce(raw, ''), '[^0-9]', '', 'g');
+  -- Tira o código do país (55) só com 12/13 díg. — NÃO cru, pois DDD 55 (RS) existe.
+  if length(d) in (12, 13) and left(d, 2) = '55' then
+    d := substr(d, 3);
+  end if;
+  -- Celular sem o 9 (10 díg. e 1º dígito do assinante ∈ {6,7,8,9}) ganha o 9.
+  if length(d) = 10 and substr(d, 3, 1) in ('6', '7', '8', '9') then
+    d := substr(d, 1, 2) || '9' || substr(d, 3);
+  end if;
+  return d;
+end;
+$$;
 
 -- ─── 4. Fixtures ─────────────────────────────────────────────────────────────
 -- UA (org A): owner …a1, gerente …a2, operador …a3. UB (org B): gerente …b2.

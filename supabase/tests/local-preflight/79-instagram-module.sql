@@ -39,7 +39,15 @@
 --   (7918): reserva + ledger numa transação com a identidade conferida pela
 --   RPC, teto de 3 reservas ativas, falha do ledger desfaz a reserva, record
 --   recusa reserva de outro contato, teto de 3 trocas de cliente em 30 dias,
---   ACL. Livres: 7907, 7919, 7948–7949, 7958–7959, 7968–7969, 7977, 7979.
+--   ACL. Livres: 7907, 7919, 7948–7949, 7958–7959, 7968–7969, 7977, 7979
+--   (a 4.0d usou 7919 e 7958–7959).
+-- Task 4.5 (migrations 20261029200700, 20261029200800 e 20261029200900; base:
+--   79a seção 3e): casos IG-8.1 (7907, rota gerenciada aceita reserva
+--   instagram no post_inner real), IG-8.2 (7948, CAS por connected_at em
+--   set_status/record_refresh) e IG-8.3 (7949, liberação cercada do claim de
+--   mensagem), e controles C-IG-8.1..C-IG-8.3 (7968, 7969, 7977). Os casos
+--   antigos que chamam set_status/record_refresh passam a geração atual
+--   (pg_temp.ig79_cat). Livre: 7979.
 --
 -- BASE (banco próprio `ig79`, README seção 79):
 --   00 -> 01 -> 09a -> 106 -> 79a -> 20260905143453 -> 20261017160000
@@ -77,8 +85,6 @@ begin
      or to_regprocedure('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)') is null
      or to_regprocedure('public.get_instagram_account_token(uuid)') is null
      or to_regprocedure('public.record_instagram_account_subscription(uuid,text[])') is null
-     or to_regprocedure('public.record_instagram_token_refresh(uuid,text,timestamptz)') is null
-     or to_regprocedure('public.set_instagram_account_status(uuid,text,text)') is null
      or to_regprocedure('public.disconnect_instagram_account(uuid,uuid)') is null
      or to_regprocedure('public.get_instagram_account_status(uuid)') is null
      or to_regprocedure('public.upsert_instagram_contact(uuid,text,text,text)') is null
@@ -137,6 +143,17 @@ begin
      or not exists (select 1 from pg_attribute where attrelid = 'public.instagram_contacts'::regclass and attname = 'link_changes_count' and not attisdropped)
      or not exists (select 1 from pg_attribute where attrelid = 'public.instagram_contacts'::regclass and attname = 'link_changes_window_started_at' and not attisdropped) then
     raise exception '79: reserva atomica do contato do Instagram ausente (create_instagram_contact_reservation, instagram_contacts.link_changes_count/link_changes_window_started_at). Aplique a migration 20261029200600_instagram_contact_reservation_atomic antes (sem ela, este abort e o RED esperado).';
+  end if;
+  if to_regclass('public.whatsapp_template_bindings') is null
+     or to_regclass('public.whatsapp_message_consent_events') is null
+     or not exists (select 1 from pg_attribute where attrelid = 'public.whatsapp_automation_jobs'::regclass and attname = 'initial_template_version' and not attisdropped) then
+    raise exception '79 exige o 79a da Task 4.5 (secao 3e: stubs que o corpo de app_private.whatsapp_automation_post_inner le; README, secao 79).';
+  end if;
+  if to_regprocedure('app_private.whatsapp_automation_post_inner(uuid,uuid,bigint,bigint,bigint,boolean,jsonb)') is null
+     or to_regprocedure('public.record_instagram_token_refresh(uuid,text,timestamptz,timestamptz)') is null
+     or to_regprocedure('public.set_instagram_account_status(uuid,text,text,timestamptz)') is null
+     or to_regprocedure('public.release_instagram_message_claim(uuid,text,uuid)') is null then
+    raise exception '79: objetos da Task 4.5 ausentes (whatsapp_automation_post_inner, set_instagram_account_status/record_instagram_token_refresh com CAS de connected_at, release_instagram_message_claim). Aplique as migrations 20261029200700, 20261029200800 e 20261029200900 antes (sem elas, este abort e o RED esperado).';
   end if;
   if not exists (select 1 from public.units where id = 'a0d79000-0000-4000-8000-0000000000aa')
      or not exists (select 1 from public.platform_admins where user_id = 'a0d79000-0000-4000-8000-0000000000c1') then
@@ -537,6 +554,15 @@ begin
 end $$;
 
 -- Envolve a chamada de uma RPC `void`: devolve 'ok' quando ela não lança.
+-- Task 4.5: `connected_at` atual da conta, como texto (lido como postgres,
+-- antes do `set local role` do ig79_q), para o CAS de set_status/record_refresh.
+-- As chamadas antigas passam por `case when … then '' else 'stale:' end`: a
+-- versão booleana devolve 'ok' quando aplica, como o `void` de antes.
+create or replace function pg_temp.ig79_cat(p_acc uuid)
+returns text language sql as $$
+  select a.connected_at::text from public.instagram_accounts a where a.id = p_acc
+$$;
+
 create or replace function pg_temp.ig79_void(p_call text)
 returns text language sql as $$
   select format('select (%s)::text || ''ok''', p_call)
@@ -792,15 +818,15 @@ begin
     select a.token_secret_id into sid0 from public.instagram_accounts a where a.id = acc;
 
     rf := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.record_instagram_token_refresh(%L::uuid, %L, now() + interval ''60 days'')', acc, t2)));
+      'case when public.record_instagram_token_refresh(%L::uuid, %L, now() + interval ''60 days'', %L::timestamptz) then '''' else ''stale:'' end', acc, t2, pg_temp.ig79_cat(acc))));
     l2 := pg_temp.ig79_q('service_role', null, format('select public.get_instagram_account_token(%L::uuid)', acc));
     select (a.token_secret_id = sid0) || '|' || (a.token_refreshed_at is not null) into sid1
       from public.instagram_accounts a where a.id = acc;
 
     st1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''expired'')', acc)));
+      'case when public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''expired'', %L::timestamptz) then '''' else ''stale:'' end', acc, pg_temp.ig79_cat(acc))));
     st_ruim := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.set_instagram_account_status(%L::uuid, ''disconnected'', null)', acc)));
+      'case when public.set_instagram_account_status(%L::uuid, ''disconnected'', null, %L::timestamptz) then '''' else ''stale:'' end', acc, pg_temp.ig79_cat(acc))));
 
     dis := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
       'public.disconnect_instagram_account(%L::uuid, %L::uuid)', acc, owner_a)));
@@ -809,16 +835,16 @@ begin
     select ds.decrypted_secret into v_vault from vault.decrypted_secrets ds
      where ds.name = 'instagram-account-' || acc || '-token';
     rf_depois := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.record_instagram_token_refresh(%L::uuid, %L, now() + interval ''60 days'')', acc, t2)));
+      'case when public.record_instagram_token_refresh(%L::uuid, %L, now() + interval ''60 days'', %L::timestamptz) then '''' else ''stale:'' end', acc, t2, pg_temp.ig79_cat(acc))));
     st_depois := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.set_instagram_account_status(%L::uuid, ''connected'', null)', acc)));
+      'case when public.set_instagram_account_status(%L::uuid, ''connected'', null, %L::timestamptz) then '''' else ''stale:'' end', acc, pg_temp.ig79_cat(acc))));
 
     foreach fn in array array[
       'public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)',
       'public.get_instagram_account_token(uuid)',
       'public.record_instagram_account_subscription(uuid,text[])',
-      'public.record_instagram_token_refresh(uuid,text,timestamptz)',
-      'public.set_instagram_account_status(uuid,text,text)',
+      'public.record_instagram_token_refresh(uuid,text,timestamptz,timestamptz)',
+      'public.set_instagram_account_status(uuid,text,text,timestamptz)',
       'public.disconnect_instagram_account(uuid,uuid)',
       'public.upsert_instagram_contact(uuid,text,text,text)'] loop
       foreach r in array array['anon', 'authenticated'] loop
@@ -1157,7 +1183,7 @@ begin
 
     g := pg_temp.ig79_q('service_role', null, format('select public.get_instagram_account_token(%L::uuid)', acc));
     rf := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.record_instagram_token_refresh(%L::uuid, ''tok-28-novo-0002'', now() + interval ''60 days'')', acc)));
+      'case when public.record_instagram_token_refresh(%L::uuid, ''tok-28-novo-0002'', now() + interval ''60 days'', %L::timestamptz) then '''' else ''stale:'' end', acc, pg_temp.ig79_cat(acc))));
     st := pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79280001', 'conta_28', 'tok-28-novo-0003', owner_a));
     d := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
       'public.disconnect_instagram_account(%L::uuid, %L::uuid)', acc, owner_a)));
@@ -1248,14 +1274,14 @@ begin
       'values (%L, %L, ''7930x'', ''disconnected'', %L) returning 1) select count(*)::text from i', org_a, ua, owner_a));
 
     s1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''expired'')', pg_temp.ig79_uuid(a1))));
+      'case when public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''expired'', %L::timestamptz) then '''' else ''stale:'' end', pg_temp.ig79_uuid(a1), pg_temp.ig79_cat(pg_temp.ig79_uuid(a1)))));
     st1 := pg_temp.ig79_q('authenticated', owner_a, pg_temp.ig79_status(ua));
     s2 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.set_instagram_account_status(%L::uuid, ''connected'', ''ignorado'')', pg_temp.ig79_uuid(a1))));
+      'case when public.set_instagram_account_status(%L::uuid, ''connected'', ''ignorado'', %L::timestamptz) then '''' else ''stale:'' end', pg_temp.ig79_uuid(a1), pg_temp.ig79_cat(pg_temp.ig79_uuid(a1)))));
     select coalesce(a.last_error_code, '<null>') into le from public.instagram_accounts a where a.id = pg_temp.ig79_uuid(a1);
 
     s3 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
-      'public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''expired'')', pg_temp.ig79_uuid(a1))));
+      'case when public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''expired'', %L::timestamptz) then '''' else ''stale:'' end', pg_temp.ig79_uuid(a1), pg_temp.ig79_cat(pg_temp.ig79_uuid(a1)))));
     k1 := pg_temp.ig79_q('service_role', null, format(
       'select public.upsert_instagram_contact(%L::uuid, ''igsid-30a'', ''user30'', null)::text', pg_temp.ig79_uuid(a1)));
     d := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
@@ -3495,7 +3521,7 @@ do $$
 declare
   fns text[] := array[
     'public.get_instagram_account_token(uuid)',
-    'public.record_instagram_token_refresh(uuid,text,timestamptz)',
+    'public.record_instagram_token_refresh(uuid,text,timestamptz,timestamptz)',
     'public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)',
     'public.disconnect_instagram_account(uuid,uuid)'];
   fn text; v_def text; v_mut text; s text; res text[] := '{}'; ok boolean := true; d text; intactas boolean := true;
@@ -3567,7 +3593,7 @@ declare
 begin
   v_store := pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure);
   v_up := pg_get_functiondef('public.upsert_instagram_contact(uuid,text,text,text)'::regprocedure);
-  v_st := pg_get_functiondef('public.set_instagram_account_status(uuid,text,text)'::regprocedure);
+  v_st := pg_get_functiondef('public.set_instagram_account_status(uuid,text,text,timestamptz)'::regprocedure);
   begin
     v_mut := replace(pg_temp.ig79_lf(v_store), 'p_ig_user_id := btrim(p_ig_user_id);', 'null;');
     if v_mut = pg_temp.ig79_lf(v_store) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
@@ -3628,7 +3654,7 @@ begin
           and d = 'PASSOU' and v_chk = 1
           and pg_get_functiondef('public.store_instagram_account_connection(uuid,text,text,text,text,timestamptz,uuid)'::regprocedure) = v_store
           and pg_get_functiondef('public.upsert_instagram_contact(uuid,text,text,text)'::regprocedure) = v_up
-          and pg_get_functiondef('public.set_instagram_account_status(uuid,text,text)'::regprocedure) = v_st then 'PASSOU'
+          and pg_get_functiondef('public.set_instagram_account_status(uuid,text,text,timestamptz)'::regprocedure) = v_st then 'PASSOU'
          else 'FALHOU sem_norm_ig=' || s1 || ' sem_norm_token=' || s2 || ' sem_check=' || s3
               || ' upsert_desconectada=' || s4 || ' sem_limpar=' || s5 || ' restaurado=' || d || ' check=' || v_chk end);
 end $$;
@@ -5503,6 +5529,423 @@ begin
          else 'FALHOU execute_service=' || s1 || ' restaurado=' || d end);
 end $$;
 
+-- ─── Task 4.5: rota gerenciada (D9), CAS por connected_at e liberação do claim ─
+-- Migrations 20261029200700 (post_inner aceita `instagram`), 20261029200800
+-- (CAS em set_status/record_refresh) e 20261029200900 (release do claim).
+-- Base: 79a seção 3e (stubs que o corpo do POST final lê).
+
+-- IG-8.1 (7907): o corpo REAL de `app_private.whatsapp_automation_post_inner`
+-- no caminho `p_confirm_only` com snapshot de reserva. O MESMO job e a MESMA
+-- cerca são chamados com o snapshot variando só `resource.source`: origem
+-- desconhecida/vazia/maiúscula/nula devolve `snapshot_invalid` (o que prova que
+-- o caminho chegou à validação do snapshot, pois as cercas iniciais devolvem
+-- `authority_changed` antes dela); `web`, `whatsapp` e `instagram` passam da
+-- validação (o job sem `claimed_until` cai depois em `authority_changed`, sem
+-- POST). Mais o catálogo: a lista nova uma vez só, a antiga ausente, DEFINER e
+-- nenhum EXECUTE de API.
+create or replace function pg_temp.ig79_case_81() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  c1 constant uuid := 'a0d79000-0000-4000-8000-000000008101';
+  r1 constant uuid := 'a0d79000-0000-4000-8000-000000008111';
+  j1 constant uuid := 'a0d79000-0000-4000-8000-000000008121';
+  fence constant uuid := 'a0d79000-0000-4000-8000-000000008131';
+  fn constant text := 'app_private.whatsapp_automation_post_inner(uuid,uuid,bigint,bigint,bigint,boolean,jsonb)';
+  d1 date := (now() at time zone 'America/Sao_Paulo')::date + 1;
+  base jsonb; src text; got text; aceitas text := ''; recusadas text := ''; v_body text;
+  n_nova int; n_velha int; ruins text := ''; r text; definer boolean;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values (c1, org_a, 'ig79 cliente 81', '11990008101');
+    insert into public.reservations (id, unit_id, customer_id, status, party_size, date, time, reservation_code, source)
+      values (r1, ua, c1, 'confirmed', 2, d1, '19:00', 'IG79-8101', 'instagram');
+    insert into public.whatsapp_automation_jobs (id, unit_id, organization_id, kind, reservation_id, customer_id,
+        state, claim_token, posting_started_at, attempts, pin_phase, initial_template_version)
+      values (j1, ua, org_a, 'confirmation', r1, c1, 'posting', fence, now(), 1, 'bound', 1);
+    base := jsonb_build_object(
+      'version', 1, 'kind', 'confirmation',
+      'unit', jsonb_build_object('id', ua, 'organization_id', org_a, 'name', 'ig79 UA', 'slug', null, 'timezone', null),
+      'customer', jsonb_build_object('id', c1, 'organization_id', org_a, 'name', 'ig79 cliente 81', 'phone', '11990008101',
+                                     'do_not_contact', false, 'deleted_at', null),
+      'rule', null,
+      'setting', jsonb_build_object('key', null, 'present', false, 'value', null),
+      'resource', jsonb_build_object('id', r1, 'unit_id', ua, 'customer_id', c1, 'date', d1::text, 'time', '19:00:00',
+                                     'status', 'confirmed', 'payment_status', null, 'source', 'instagram', 'party_size', 2,
+                                     'reservation_code', 'IG79-8101', 'applied_discount_percent', null, 'satisfaction_rating', null));
+
+    foreach src in array array['web', 'whatsapp', 'instagram'] loop
+      got := app_private.whatsapp_automation_post_inner(j1, fence, 0, null, null, true,
+               jsonb_set(base, '{resource,source}', to_jsonb(src)))->>'reason';
+      aceitas := aceitas || ' ' || src || '=' || coalesce(got, '<null>');
+    end loop;
+    foreach src in array array['desconhecida', '', 'INSTAGRAM'] loop
+      got := app_private.whatsapp_automation_post_inner(j1, fence, 0, null, null, true,
+               jsonb_set(base, '{resource,source}', to_jsonb(src)))->>'reason';
+      recusadas := recusadas || ' ' || src || '=' || coalesce(got, '<null>');
+    end loop;
+    got := app_private.whatsapp_automation_post_inner(j1, fence, 0, null, null, true,
+             jsonb_set(base, '{resource,source}', 'null'::jsonb))->>'reason';
+    recusadas := recusadas || ' nula=' || coalesce(got, '<null>');
+
+    v_body := pg_temp.ig79_lf(pg_get_functiondef(fn::regprocedure));
+    n_nova := (length(v_body) - length(replace(v_body, 'not in(''web'',''whatsapp'',''instagram'')', ''))) / length('not in(''web'',''whatsapp'',''instagram'')');
+    n_velha := (length(v_body) - length(replace(v_body, 'not in(''web'',''whatsapp'')', ''))) / length('not in(''web'',''whatsapp'')');
+    select p.prosecdef into definer from pg_proc p where p.oid = fn::regprocedure;
+    foreach r in array array['public', 'anon', 'authenticated', 'service_role'] loop
+      if r = 'public' then
+        if exists (select 1 from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                    where p.oid = fn::regprocedure and x.grantee = 0 and x.privilege_type = 'EXECUTE') then
+          ruins := ruins || ' public_exec';
+        end if;
+      elsif has_function_privilege(r, fn, 'EXECUTE') then ruins := ruins || ' ' || r || '_exec';
+      end if;
+    end loop;
+
+    raise exception using errcode = 'P0R79', message =
+      case when aceitas = ' web=authority_changed whatsapp=authority_changed instagram=authority_changed'
+            and recusadas = ' desconhecida=snapshot_invalid =snapshot_invalid INSTAGRAM=snapshot_invalid nula=snapshot_invalid'
+            and n_nova = 1 and n_velha = 0 and definer and ruins = '' then 'PASSOU'
+           else 'FALHOU aceitas=' || aceitas || ' recusadas=' || recusadas || ' lista_nova=' || n_nova
+                || ' lista_velha=' || n_velha || ' definer=' || coalesce(definer::text, '<null>') || ' acl=' || ruins end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- IG-8.2 (7948): CAS por `connected_at`. A geração lida aplica (`true`); depois
+-- de uma "reconexão" (o `connected_at` avança, como o `store_` faria em outra
+-- transação — aqui `now()` é constante) a geração antiga devolve `false` sem
+-- efeito nenhum (status, erro, token no Vault e carimbo intactos), e a nova
+-- aplica. Geração nula é 22023. Catálogo: só as versões de 4 argumentos, DEFINER,
+-- EXECUTE só de service_role; as de 3 argumentos não existem mais.
+create or replace function pg_temp.ig79_case_82() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  fns constant text[] := array['public.set_instagram_account_status(uuid,text,text,timestamptz)',
+                               'public.record_instagram_token_refresh(uuid,text,timestamptz,timestamptz)'];
+  acc uuid; g0 text; g1 text;
+  st_ok text; st_estado text; st_velho text; st_estado2 text; st_nulo text; st_novo text; st_estado3 text;
+  rf_velho text; tk_velho text; car_velho text; rf_nulo text; rf_novo text; tk_novo text; car_novo text;
+  ruins text := ''; fn text; r text; n_old int; n_proc int;
+begin
+  begin
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79820001', 'conta_82', 'tok-82-A-000001', owner_a)));
+    g0 := pg_temp.ig79_cat(acc);
+
+    st_ok := pg_temp.ig79_q('service_role', null, format(
+      'select public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''190'', %L::timestamptz)::text', acc, g0));
+    select a.status || '/' || coalesce(a.last_error_code, '-') into st_estado from public.instagram_accounts a where a.id = acc;
+    -- volta a connected na mesma geração (limpa o erro)
+    perform pg_temp.ig79_q('service_role', null, format(
+      'select public.set_instagram_account_status(%L::uuid, ''connected'', null, %L::timestamptz)::text', acc, g0));
+
+    -- "reconexão": a geração avança
+    update public.instagram_accounts set connected_at = connected_at + interval '1 minute' where id = acc;
+    g1 := pg_temp.ig79_cat(acc);
+
+    st_velho := pg_temp.ig79_q('service_role', null, format(
+      'select public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''190'', %L::timestamptz)::text', acc, g0));
+    select a.status || '/' || coalesce(a.last_error_code, '-') into st_estado2 from public.instagram_accounts a where a.id = acc;
+    rf_velho := pg_temp.ig79_q('service_role', null, format(
+      'select public.record_instagram_token_refresh(%L::uuid, ''tok-82-velho-0002'', now() + interval ''60 days'', %L::timestamptz)::text', acc, g0));
+    tk_velho := pg_temp.ig79_q('service_role', null, format('select public.get_instagram_account_token(%L::uuid)', acc));
+    select coalesce(a.token_refreshed_at::text, '-') into car_velho from public.instagram_accounts a where a.id = acc;
+
+    st_nulo := pg_temp.ig79_q('service_role', null, format(
+      'select public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''190'', null)::text', acc));
+    rf_nulo := pg_temp.ig79_q('service_role', null, format(
+      'select public.record_instagram_token_refresh(%L::uuid, ''tok-82-nulo-00003'', now() + interval ''60 days'', null)::text', acc));
+
+    rf_novo := pg_temp.ig79_q('service_role', null, format(
+      'select public.record_instagram_token_refresh(%L::uuid, ''tok-82-novo-00004'', now() + interval ''60 days'', %L::timestamptz)::text', acc, g1));
+    tk_novo := pg_temp.ig79_q('service_role', null, format('select public.get_instagram_account_token(%L::uuid)', acc));
+    select (a.token_refreshed_at is not null)::text into car_novo from public.instagram_accounts a where a.id = acc;
+    st_novo := pg_temp.ig79_q('service_role', null, format(
+      'select public.set_instagram_account_status(%L::uuid, ''reauth_required'', ''190'', %L::timestamptz)::text', acc, g1));
+    select a.status || '/' || coalesce(a.last_error_code, '-') into st_estado3 from public.instagram_accounts a where a.id = acc;
+
+    foreach fn in array fns loop
+      if not (select p.prosecdef from pg_proc p where p.oid = fn::regprocedure) then ruins := ruins || ' invoker:' || fn; end if;
+      if exists (select 1 from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                  where p.oid = fn::regprocedure and x.grantee = 0 and x.privilege_type = 'EXECUTE') then
+        ruins := ruins || ' public_exec:' || fn;
+      end if;
+      foreach r in array array['anon', 'authenticated'] loop
+        if has_function_privilege(r, fn, 'EXECUTE') then ruins := ruins || ' ' || r || '_exec:' || fn; end if;
+      end loop;
+      if not has_function_privilege('service_role', fn, 'EXECUTE') then ruins := ruins || ' service_sem_exec:' || fn; end if;
+    end loop;
+    n_old := (to_regprocedure('public.set_instagram_account_status(uuid,text,text)') is not null)::int
+           + (to_regprocedure('public.record_instagram_token_refresh(uuid,text,timestamptz)') is not null)::int;
+    select count(*) into n_proc from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public' and p.proname in ('set_instagram_account_status', 'record_instagram_token_refresh');
+
+    raise exception using errcode = 'P0R79', message =
+      case when acc is not null and g0 is not null and g1 is not null and g1 <> g0
+            and st_ok = 'true' and st_estado = 'reauth_required/190'
+            and st_velho = 'false' and st_estado2 = 'connected/-'
+            and rf_velho = 'false' and tk_velho = 'tok-82-A-000001' and car_velho = '-'
+            and st_nulo like 'ERR 22023:invalid_instagram_account_generation%'
+            and rf_nulo like 'ERR 22023:invalid_instagram_account_generation%'
+            and rf_novo = 'true' and tk_novo = 'tok-82-novo-00004' and car_novo = 'true'
+            and st_novo = 'true' and st_estado3 = 'reauth_required/190'
+            and ruins = '' and n_old = 0 and n_proc = 2 then 'PASSOU'
+           else 'FALHOU geracao_lida=' || coalesce(st_ok, '<null>') || '/' || coalesce(st_estado, '<null>')
+                || ' status_velho=' || st_velho || '/' || coalesce(st_estado2, '<null>')
+                || ' refresh_velho=' || rf_velho || ' token_apos_velho=' || tk_velho || ' carimbo_apos_velho=' || coalesce(car_velho, '<null>')
+                || ' status_nulo=' || st_nulo || ' refresh_nulo=' || rf_nulo
+                || ' refresh_novo=' || rf_novo || ' token_novo=' || tk_novo || ' status_novo=' || st_novo || '/' || coalesce(st_estado3, '<null>')
+                || ' acl=' || ruins || ' antigas=' || n_old || ' funcoes=' || n_proc end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- IG-8.3 (7949): `release_instagram_message_claim` com a cerca do claim. Claim
+-- errado devolve `false` e não toca a linha (o lease vivo segue barrando outro
+-- claim); o certo libera (`claim_id` nulo, lease vencido), e então o claim
+-- antigo não libera de novo nem completa, e um claim novo assume na hora.
+-- Mensagem `done` não é liberada. Outra conta/mid com o claim certo: `false`.
+-- ACL: DEFINER, `search_path` vazio, EXECUTE só service_role (authenticated 42501).
+create or replace function pg_temp.ig79_case_83() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  ub constant uuid := 'a0d79000-0000-4000-8000-0000000000bb';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  ger_b constant uuid := 'a0d79000-0000-4000-8000-0000000000b2';
+  fn constant text := 'public.release_instagram_message_claim(uuid,text,uuid)';
+  acc uuid; acc_b uuid; cl1 text; cl2 text; errado text; linha1 text; em_voo text; certo text; linha2 text;
+  de_novo text; completa_velho text; outra_conta text; outro_mid text; done_ok text; done_rel text; linha3 text;
+  e_auth text; ruins text := ''; r text; cfg text;
+begin
+  begin
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79830001', 'conta_83', 'tok-83-A-000001', owner_a)));
+    acc_b := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ub, '79830002', 'conta_83b', 'tok-83-B-000001', ger_b)));
+    cl1 := pg_temp.ig79_q('service_role', null, format('select public.claim_instagram_message(%L::uuid, ''mid-83'')::text', acc));
+
+    errado := pg_temp.ig79_q('service_role', null, format(
+      'select public.release_instagram_message_claim(%L::uuid, ''mid-83'', %L::uuid)::text', acc, gen_random_uuid()));
+    select m.status || '/' || (m.claim_id::text = cl1) || '/' || (m.claimed_until > now()) into linha1
+      from public.instagram_processed_messages m where m.instagram_account_id = acc and m.mid = 'mid-83';
+    em_voo := pg_temp.ig79_q('service_role', null, format('select public.claim_instagram_message(%L::uuid, ''mid-83'')::text', acc));
+    outra_conta := pg_temp.ig79_q('service_role', null, format(
+      'select public.release_instagram_message_claim(%L::uuid, ''mid-83'', %L::uuid)::text', acc_b, cl1));
+    outro_mid := pg_temp.ig79_q('service_role', null, format(
+      'select public.release_instagram_message_claim(%L::uuid, ''mid-83-x'', %L::uuid)::text', acc, cl1));
+
+    certo := pg_temp.ig79_q('service_role', null, format(
+      'select public.release_instagram_message_claim(%L::uuid, ''mid-83'', %L::uuid)::text', acc, cl1));
+    select m.status || '/' || coalesce(m.claim_id::text, '-') || '/' || (m.claimed_until < now()) into linha2
+      from public.instagram_processed_messages m where m.instagram_account_id = acc and m.mid = 'mid-83';
+    de_novo := pg_temp.ig79_q('service_role', null, format(
+      'select public.release_instagram_message_claim(%L::uuid, ''mid-83'', %L::uuid)::text', acc, cl1));
+    completa_velho := pg_temp.ig79_q('service_role', null, format(
+      'select public.complete_instagram_message(%L::uuid, ''mid-83'', %L::uuid, ''success'', null, ''{}''::jsonb)::text', acc, cl1));
+    cl2 := pg_temp.ig79_q('service_role', null, format('select public.claim_instagram_message(%L::uuid, ''mid-83'')::text', acc));
+
+    done_ok := pg_temp.ig79_q('service_role', null, format(
+      'select public.complete_instagram_message(%L::uuid, ''mid-83'', %L::uuid, ''success'', null, ''{}''::jsonb)::text', acc, pg_temp.ig79_uuid(cl2)));
+    -- linha `done`: o claim encerrado não reabre nada, nem com o próprio id
+    update public.instagram_processed_messages set claim_id = pg_temp.ig79_uuid(cl2)
+     where instagram_account_id = acc and mid = 'mid-83';
+    done_rel := pg_temp.ig79_q('service_role', null, format(
+      'select public.release_instagram_message_claim(%L::uuid, ''mid-83'', %L::uuid)::text', acc, pg_temp.ig79_uuid(cl2)));
+    select m.status || '/' || (m.claim_id::text = cl2) into linha3
+      from public.instagram_processed_messages m where m.instagram_account_id = acc and m.mid = 'mid-83';
+
+    e_auth := pg_temp.ig79_q('authenticated', owner_a, format(
+      'select public.release_instagram_message_claim(%L::uuid, ''mid-83'', %L::uuid)::text', acc, gen_random_uuid()));
+    if not (select p.prosecdef from pg_proc p where p.oid = fn::regprocedure) then ruins := ruins || ' invoker'; end if;
+    select array_to_string(p.proconfig, ',') into cfg from pg_proc p where p.oid = fn::regprocedure;
+    if exists (select 1 from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                where p.oid = fn::regprocedure and x.grantee = 0 and x.privilege_type = 'EXECUTE') then
+      ruins := ruins || ' public_exec';
+    end if;
+    foreach r in array array['anon', 'authenticated'] loop
+      if has_function_privilege(r, fn, 'EXECUTE') then ruins := ruins || ' ' || r || '_exec'; end if;
+    end loop;
+    if not has_function_privilege('service_role', fn, 'EXECUTE') then ruins := ruins || ' service_sem_exec'; end if;
+
+    raise exception using errcode = 'P0R79', message =
+      case when acc is not null and acc_b is not null and pg_temp.ig79_uuid(cl1) is not null
+            and errado = 'false' and linha1 = 'processing/true/true' and em_voo = '<null>'
+            and outra_conta = 'false' and outro_mid = 'false'
+            and certo = 'true' and linha2 = 'processing/-/true'
+            and de_novo = 'false' and completa_velho = 'false'
+            and pg_temp.ig79_uuid(cl2) is not null and cl2 <> cl1
+            and done_ok = 'true' and done_rel = 'false' and linha3 = 'done/true'
+            and e_auth like 'ERR 42501:%' and ruins = '' and cfg = 'search_path=""' then 'PASSOU'
+           else 'FALHOU claim_errado=' || errado || ' linha_apos_errado=' || coalesce(linha1, '<null>') || ' em_voo=' || em_voo
+                || ' outra_conta=' || outra_conta || ' outro_mid=' || outro_mid
+                || ' claim_certo=' || certo || ' linha_apos_certo=' || coalesce(linha2, '<null>')
+                || ' liberar_de_novo=' || de_novo || ' completar_com_velho=' || completa_velho || ' claim_novo=' || coalesce(cl2, '<null>')
+                || ' completar_novo=' || done_ok || ' liberar_done=' || done_rel || ' linha_done=' || coalesce(linha3, '<null>')
+                || ' authenticated=' || e_auth || ' acl=' || ruins || ' config=' || coalesce(cfg, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+insert into t_res values
+  (7907, 'IG-8.1 post_inner real (confirm_only, snapshot de reserva): web, whatsapp e instagram passam da validacao do snapshot; desconhecida, vazia, maiuscula e nula dao snapshot_invalid; lista nova uma vez, antiga ausente, DEFINER sem EXECUTE de API', pg_temp.ig79_case_81()),
+  (7948, 'IG-8.2 CAS por connected_at: geracao lida aplica (true); depois da reconexao a antiga devolve false sem efeito (status, erro, token e carimbo intactos) e a nova aplica; geracao nula 22023; so as versoes de 4 argumentos, DEFINER, EXECUTE so service_role', pg_temp.ig79_case_82()),
+  (7949, 'IG-8.3 release_instagram_message_claim: claim errado, outra conta e outro mid devolvem false sem tocar; o certo libera (claim nulo, lease vencido), o velho nao libera de novo nem completa, claim novo assume; done nao libera; DEFINER, search_path vazio, EXECUTE so service_role', pg_temp.ig79_case_83());
+
+-- ─── Controles positivos da Task 4.5 ────────────────────────────────────────
+
+-- C-IG-8.1: post_inner (a) com a lista antiga ('web','whatsapp'); (b) sem a
+-- perna da origem (qualquer origem passa); (c) EXECUTE para service_role.
+do $$
+declare
+  fn constant text := 'app_private.whatsapp_automation_post_inner(uuid,uuid,bigint,bigint,bigint,boolean,jsonb)';
+  v_def text; v_acl text; v_mut text; s1 text; s2 text; s3 text; d text;
+begin
+  v_def := pg_get_functiondef(fn::regprocedure);
+  select p.proacl::text into v_acl from pg_proc p where p.oid = fn::regprocedure;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'not in(''web'',''whatsapp'',''instagram'')', 'not in(''web'',''whatsapp'')');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_81();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'or e_res.source is null or e_res.source not in(''web'',''whatsapp'',''instagram'')', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_81();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    execute format('grant execute on function %s to service_role', fn);
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_81();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_81();
+  raise notice 'C-IG-8.1 lista antiga: %', s1;
+  raise notice 'C-IG-8.1 sem a perna da origem: %', s2;
+  raise notice 'C-IG-8.1 EXECUTE para service_role: %', s3;
+  insert into t_res values (7968, 'C-IG-8.1 post_inner com a lista antiga web/whatsapp, sem a perna da origem e com EXECUTE para service_role: IG-8.1 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU aceitas= web=authority_changed whatsapp=authority_changed instagram=snapshot_invalid %'
+          and s2 like 'FALHOU%desconhecida=authority_changed%'
+          and s3 like 'FALHOU%acl= service_role_exec'
+          and d = 'PASSOU'
+          and pg_get_functiondef(fn::regprocedure) = v_def
+          and (select p.proacl::text from pg_proc p where p.oid = fn::regprocedure) is not distinct from v_acl then 'PASSOU'
+         else 'FALHOU lista_antiga=' || s1 || ' sem_origem=' || s2 || ' exec_service=' || s3 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-8.2: (a) set_status sem o CAS; (b) record_refresh sem o CAS; (c) a
+-- versão antiga de 3 argumentos de volta (overload sem CAS).
+do $$
+declare
+  fst constant text := 'public.set_instagram_account_status(uuid,text,text,timestamptz)';
+  frf constant text := 'public.record_instagram_token_refresh(uuid,text,timestamptz,timestamptz)';
+  v_st text; v_rf text; v_mut text; s1 text; s2 text; s3 text; d text;
+begin
+  v_st := pg_get_functiondef(fst::regprocedure);
+  v_rf := pg_get_functiondef(frf::regprocedure);
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_st), 'if v_connected_at is distinct from p_expected_connected_at then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_st) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_82();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_rf), 'if v_acc.connected_at is distinct from p_expected_connected_at then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_rf) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_82();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    create function public.set_instagram_account_status(p_account_id uuid, p_status text, p_error_code text)
+      returns void language sql security definer set search_path = '' as $b$ select null::void $b$;
+    revoke all on function public.set_instagram_account_status(uuid, text, text) from public, anon, authenticated;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_82();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_82();
+  raise notice 'C-IG-8.2 set_status sem CAS: %', s1;
+  raise notice 'C-IG-8.2 record_refresh sem CAS: %', s2;
+  raise notice 'C-IG-8.2 overload antigo: %', s3;
+  insert into t_res values (7969, 'C-IG-8.2 set_status sem o CAS, record_refresh sem o CAS e a versao antiga de 3 argumentos de volta: IG-8.2 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU%status_velho=true/reauth_required/190%'
+          and s2 like 'FALHOU%refresh_velho=true token_apos_velho=tok-82-velho-0002%'
+          and s3 like 'FALHOU%antigas=1 funcoes=3'
+          and d = 'PASSOU'
+          and pg_get_functiondef(fst::regprocedure) = v_st
+          and pg_get_functiondef(frf::regprocedure) = v_rf
+          and to_regprocedure('public.set_instagram_account_status(uuid,text,text)') is null then 'PASSOU'
+         else 'FALHOU sem_cas_status=' || s1 || ' sem_cas_refresh=' || s2 || ' overload=' || s3 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-8.3: release (a) sem a perna do claim; (b) sem a perna de
+-- `processing`; (c) EXECUTE para authenticated.
+do $$
+declare
+  fn constant text := 'public.release_instagram_message_claim(uuid,text,uuid)';
+  v_def text; v_acl text; v_mut text; s1 text; s2 text; s3 text; d text;
+begin
+  v_def := pg_get_functiondef(fn::regprocedure);
+  select p.proacl::text into v_acl from pg_proc p where p.oid = fn::regprocedure;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), '     and m.claim_id = p_claim_id' || E'\n', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_83();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'\n     and m.status = ''processing'';', ';');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_83();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    execute format('grant execute on function %s to authenticated', fn);
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_83();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_83();
+  raise notice 'C-IG-8.3 sem a perna do claim: %', s1;
+  raise notice 'C-IG-8.3 sem a perna de processing: %', s2;
+  raise notice 'C-IG-8.3 EXECUTE para authenticated: %', s3;
+  insert into t_res values (7977, 'C-IG-8.3 release sem a perna do claim, sem a perna de processing e com EXECUTE para authenticated: IG-8.3 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU claim_errado=true %'
+          and s2 like 'FALHOU%liberar_done=true%'
+          and s3 like 'FALHOU%acl= authenticated_exec%'
+          and d = 'PASSOU'
+          and pg_get_functiondef(fn::regprocedure) = v_def
+          and (select p.proacl::text from pg_proc p where p.oid = fn::regprocedure) is not distinct from v_acl then 'PASSOU'
+         else 'FALHOU sem_claim=' || s1 || ' sem_processing=' || s2 || ' exec_auth=' || s3 || ' restaurado=' || d end);
+end $$;
+
 -- ─── IG-5.3 (Task 1.5, fix round 1): guarda de drift da migration ───────────
 -- A migration 20261029200400 exige, antes do COMMIT, exatamente UM CHECK de
 -- `source` (o `reservations_source_check`, validado). Este caso REAPLICA o
@@ -5574,14 +6017,14 @@ drop table if exists pg_temp.t_ig53;
 -- ─── Resultado ───────────────────────────────────────────────────────────────
 select ord, caso, veredito from t_res where ord between 7901 and 7999 order by ord;
 select count(*) as total, count(*) filter (where veredito = 'PASSOU') as passou
-  from t_res where ord between 7901 and 7999;   -- esperado: 92 e 92
+  from t_res where ord between 7901 and 7999;   -- esperado: 98 e 98
 
 do $$
 declare v_total int; v_ok int;
 begin
   select count(*), count(*) filter (where veredito = 'PASSOU') into v_total, v_ok
     from t_res where ord between 7901 and 7999;
-  if v_total <> 92 or v_ok <> 92 then
-    raise exception '79: esperado 92 e 92, obtido % e %', v_total, v_ok;
+  if v_total <> 98 or v_ok <> 98 then
+    raise exception '79: esperado 98 e 98, obtido % e %', v_total, v_ok;
   end if;
 end $$;
