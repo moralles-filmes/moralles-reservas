@@ -33,9 +33,10 @@
  *
  * Catch do turno (`agente-ia.md`): `settleTurnBudget("RELEASED")` e depois
  * `releaseAiLock()`, ANTES de completar a mensagem e de fechar o evento. Exceção
- * antes de qualquer efeito externo deixa a mensagem em `processing` (o lease de
- * 90 s a libera) e reagenda o evento; depois do efeito externo, a mensagem
- * fecha `webhook_error` e não se repete.
+ * antes de qualquer efeito externo libera o claim da mensagem pela cerca
+ * (`release_instagram_message_claim`, R4-k; se a liberação falhar, o lease de
+ * 90 s cobre) e reagenda o evento; depois do efeito externo, a mensagem fecha
+ * `webhook_error` e não se repete.
  *
  * Erro 190 marca `reauth_required` com o `connected_at` lido nos gates (CAS,
  * 20261029200800): reconexão no meio do turno não é derrubada.
@@ -535,6 +536,26 @@ function createEventWorker(a: {
     // os ids vão só no `meta` do desfecho, para diagnóstico (sem conteúdo).
     let partialSentIds: string[] = [];
 
+    /**
+     * R4-k: falha ANTES de qualquer efeito externo devolve a mensagem à fila na
+     * hora, pela mesma cerca do claim. Nunca lança; falhar aqui só deixa o lease
+     * de 90 s fazer o mesmo.
+     */
+    const releaseClaim = async () => {
+      try {
+        const { data, error } = await supabase.rpc("release_instagram_message_claim", {
+          p_account_id: account.id,
+          p_mid: item.mid,
+          p_claim_id: claimId,
+        });
+        if (error || data !== true) {
+          jsonLog("warn", { evt: "instagram_message_claim_release_failed", requestId, eventId: row.id, code: pgCode(error) });
+        }
+      } catch {
+        jsonLog("warn", { evt: "instagram_message_claim_release_failed", requestId, eventId: row.id });
+      }
+    };
+
     /** `complete_instagram_message`: desfecho e meta, sem conteúdo. Nunca lança. */
     const finish = async (outcome: string, error?: string | null, meta?: Record<string, unknown>) => {
       if (outcome === "invalid_channel_context") {
@@ -853,8 +874,9 @@ function createEventWorker(a: {
         }
         await releaseAiLock();
         if (!externalSideEffect) {
-          // Nada saiu: a mensagem fica em `processing` (o lease a devolve) e o
-          // evento tenta de novo.
+          // Nada saiu: libera o claim (depois de soltar o lock) e o evento tenta
+          // de novo.
+          await releaseClaim();
           retryReason = "turn_error_before_side_effect";
           return "retry";
         }
@@ -862,9 +884,13 @@ function createEventWorker(a: {
         return "done";
       }
     } catch (err) {
-      if (err instanceof RetryableItemError && !externalSideEffect) throw err;
+      if (err instanceof RetryableItemError && !externalSideEffect) {
+        await releaseClaim();
+        throw err;
+      }
       jsonLog("error", { evt: "instagram_message_error", requestId, eventId: row.id, err: safeErrorLabel(err) });
       if (!externalSideEffect) {
+        await releaseClaim();
         retryReason = "message_error_before_side_effect";
         return "retry";
       }

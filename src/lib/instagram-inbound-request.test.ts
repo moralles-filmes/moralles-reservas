@@ -247,10 +247,23 @@ function world() {
         case "claim_instagram_message": {
           const acc = T.instagram_accounts.find((r) => r.id === args.p_account_id)!;
           const m = T.instagram_processed_messages.find((r) => r.instagram_account_id === acc.id && r.mid === args.p_mid);
+          // Takeover só de `processing` liberado (lease vencido): o fake não tem relógio de lease.
+          if (m && m.status === "processing" && m.claim_id === null) {
+            m.claim_id = newId("77777777");
+            return { data: m.claim_id, error: null };
+          }
           if (m) return { data: null, error: null };
           const claim = newId("77777777");
           T.instagram_processed_messages.push({ instagram_account_id: acc.id, unit_id: acc.unit_id, mid: args.p_mid, status: "processing", claim_id: claim, outcome: null, meta: {} });
           return { data: claim, error: null };
+        }
+        case "release_instagram_message_claim": {
+          // Cerca da 20261029200900: conta, mid, claim vigente e `processing`.
+          const m = T.instagram_processed_messages.find((r) => r.instagram_account_id === args.p_account_id && r.mid === args.p_mid
+            && r.claim_id === args.p_claim_id && r.status === "processing");
+          if (!m) return { data: false, error: null };
+          m.claim_id = null;
+          return { data: true, error: null };
         }
         case "complete_instagram_message": {
           const m = T.instagram_processed_messages.find((r) => r.instagram_account_id === args.p_account_id && r.mid === args.p_mid
@@ -976,6 +989,52 @@ describe("process-instagram-inbound: catch do turno", () => {
     expect(ops).not.toContain("rpc:complete_instagram_message");
     expect(w.tables.instagram_processed_messages[0]).toMatchObject({ mid: "m1", status: "processing" });
     expect(w.tables.instagram_inbound_events[0]).toMatchObject({ status: "received", outcome: "item_retry", attempts: 1 });
+    // R4-k: o claim é liberado com a MESMA cerca do claim, depois de soltar o lock
+    // e antes de fechar o evento — a nova tentativa não espera o lease de 90 s.
+    const releaseArgs = w.trace.find((t) => t.op === "rpc:release_instagram_message_claim")?.value as Record<string, unknown> | undefined;
+    expect(releaseArgs).toMatchObject({ p_account_id: ACC_A, p_mid: "m1" });
+    expect(typeof releaseArgs?.p_claim_id).toBe("string");
+    const iUnlock = ops.indexOf("rpc:release_conversation_ai_claim");
+    const iRelease = ops.indexOf("rpc:release_instagram_message_claim");
+    const iFinalize = ops.indexOf("rpc:finalize_instagram_inbound_event");
+    expect(iRelease, "não liberou o claim da mensagem").toBeGreaterThan(iUnlock);
+    expect(iFinalize, "fechou o evento antes de liberar o claim").toBeGreaterThan(iRelease);
+    expect(w.tables.instagram_processed_messages[0]).toMatchObject({ claim_id: null });
+
+    // Nova tentativa: o claim liberado é reassumido na hora e o turno roda.
+    w.controls.beforeQuery = () => {};
+    w.controls.sdk = [sdkText("Olá!")];
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.sdkRequests).toHaveLength(1);
+    expect(w.messageOutcomes()).toEqual({ m1: "success" });
+    expect(w.tables.instagram_inbound_events[0]).toMatchObject({ status: "done" });
+  });
+
+  it("efeito externo já feito: o claim NÃO é liberado (a mensagem fecha webhook_error)", async () => {
+    const w = world();
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "oi"))));
+    w.controls.sdk = [sdkText("Olá!")];
+    w.controls.beforeQuery = (q) => {
+      if (q.table === "conversations" && q.op === "select" && q.columns === "status, ai_lock_token") throw new Error("db down");
+    };
+    await w.kick();
+    expect(w.ops()).not.toContain("rpc:release_instagram_message_claim");
+    expect(w.messageOutcomes()).toEqual({ m1: "webhook_error" });
+  });
+
+  it("falha na liberação do claim não muda o desfecho: o evento reagenda e o lease cobre", async () => {
+    const w = world();
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "oi"))));
+    w.controls.beforeQuery = (q) => { if (q.table === "menus") throw new Error("reject: db down"); };
+    w.controls.rpcError.release_instagram_message_claim = { code: "08006", message: "synthetic" };
+    await w.kick();
+    expectCleanIo(w);
+    expect(w.ops()).toContain("rpc:release_instagram_message_claim");
+    expect(w.tables.instagram_processed_messages[0]).toMatchObject({ mid: "m1", status: "processing" });
+    expect(w.tables.instagram_processed_messages[0].claim_id).not.toBeNull();
+    expect(w.tables.instagram_inbound_events[0]).toMatchObject({ status: "received", outcome: "item_retry", attempts: 1 });
+    expect(w.harness.logs.join("\n")).toContain("instagram_message_claim_release_failed");
   });
 });
 
