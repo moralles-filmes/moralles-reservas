@@ -126,7 +126,7 @@ Todas as tabelas novas têm RLS (ou FORCE RLS sem policy quando guardam credenci
   - O impacto do `customer_id` nulo é mapeado em todo leitor de `conversations.customer` antes da migration (`getConversationDisplayName`, Conversas, `send-manual-message`, dead-letter, `conversation-log.ts`).
 - `reservations.source`:
   - entra `'instagram'`;
-  - `enqueue_confirmation_notification` passa a pular `whatsapp` **e** `instagram`, porque a IA já confirma na conversa;
+  - `enqueue_confirmation_notification` continua pulando só `whatsapp`: a reserva `instagram` confirma pelo WhatsApp do telefone ligado (decisão D6 do plano da Fase 1, que substitui a ideia de pular `instagram`);
   - os lembretes seguem pelo WhatsApp quando o cliente tem telefone e consentimento.
 - **Contato → cliente:**
   - o contato do Instagram existe sem `customers`;
