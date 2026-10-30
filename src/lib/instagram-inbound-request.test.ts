@@ -26,6 +26,8 @@ const IG_A = "17841400000000001", IG_B = "17841400000000002";
 const IGSID = "6600000000000001", IGSID_B = "6600000000000002";
 const EVENT_1 = id("eeeeeeee", 1), EVENT_2 = id("eeeeeeee", 2);
 const TOKEN_A = "synthetic-ig-token-a";
+const CONNECTED_AT = "2026-10-01T12:00:00.123456+00:00";
+const RECONNECTED_AT = "2026-10-04T09:00:00.654321+00:00";
 const NOW_ISO = "2026-10-05T15:00:00Z"; // segunda-feira, 12h BRT
 const env = {
   SUPABASE_URL: "https://supabase.fixture.invalid",
@@ -61,8 +63,8 @@ function world() {
       { id: UNIT_B, organization_id: ORG_B, name: "Loja B", slug: "loja-b", timezone: "America/Sao_Paulo", address: null, price_range_max: null },
     ],
     instagram_accounts: [
-      { id: ACC_A, unit_id: UNIT_A, organization_id: ORG_A, ig_user_id: IG_A, status: "connected" },
-      { id: ACC_B, unit_id: UNIT_B, organization_id: ORG_B, ig_user_id: IG_B, status: "connected" },
+      { id: ACC_A, unit_id: UNIT_A, organization_id: ORG_A, ig_user_id: IG_A, status: "connected", connected_at: CONNECTED_AT },
+      { id: ACC_B, unit_id: UNIT_B, organization_id: ORG_B, ig_user_id: IG_B, status: "connected", connected_at: CONNECTED_AT },
     ],
     unit_module_grants: [
       { unit_id: UNIT_A, module: "instagram", revoked_at: null },
@@ -214,9 +216,12 @@ function world() {
         case "get_instagram_account_token":
           return { data: args.p_account_id === ACC_A ? TOKEN_A : "synthetic-ig-token-b", error: null };
         case "set_instagram_account_status": {
+          // CAS fiel à 20261029200800: geração ausente 22023; divergente `false` sem efeito.
           const a = T.instagram_accounts.find((r) => r.id === args.p_account_id)!;
+          if (typeof args.p_expected_connected_at !== "string") return { data: null, error: { code: "22023" } };
+          if (args.p_expected_connected_at !== a.connected_at) return { data: false, error: null };
           Object.assign(a, { status: args.p_status, last_error_code: args.p_error_code });
-          return { data: null, error: null };
+          return { data: true, error: null };
         }
         case "upsert_instagram_contact": {
           const acc = T.instagram_accounts.find((r) => r.id === args.p_account_id)!;
@@ -845,6 +850,31 @@ describe("process-instagram-inbound: envio", () => {
     expect(w.tables.instagram_accounts[0]).toMatchObject({ status: "reauth_required", last_error_code: "190" });
     expect(w.messageOutcomes()).toEqual({ m1: "send_error" });
     expect(w.harness.logs.join("\n")).not.toContain("token vencido");
+    const mark = w.trace.find((t) => t.op === "rpc:set_instagram_account_status");
+    expect(mark?.value).toEqual({ p_account_id: ACC_A, p_status: "reauth_required", p_error_code: "190", p_expected_connected_at: CONNECTED_AT });
+  });
+
+  it("erro 190 depois de uma reconexão no meio do turno: CAS recusa, a conexão nova segue connected", async () => {
+    const w = world();
+    w.enqueue(igBody(entry(IG_A, textMsg("m1", "oi"))));
+    w.controls.sdk = [sdkText("Olá!")];
+    w.controls.send = [{ status: 400, body: { error: { code: 190, message: "token vencido" } } }];
+    // O dono reconecta depois da leitura dos gates (a conta lida fica com o connected_at antigo).
+    let reconnected = false;
+    w.controls.beforeQuery = (q) => {
+      if (!reconnected && q.table === "instagram_contacts") {
+        reconnected = true;
+        w.tables.instagram_accounts[0].connected_at = RECONNECTED_AT;
+      }
+    };
+    await w.kick();
+    expectCleanIo(w);
+    expect(reconnected).toBe(true);
+    expect(w.tables.instagram_accounts[0]).toMatchObject({ status: "connected", connected_at: RECONNECTED_AT });
+    expect(w.trace.find((t) => t.op === "rpc:set_instagram_account_status")?.value)
+      .toMatchObject({ p_expected_connected_at: CONNECTED_AT });
+    expect(w.harness.logs.join("\n")).toContain("instagram_account_reauth_stale");
+    expect(w.messageOutcomes()).toEqual({ m1: "send_error" });
   });
 
   it("send nunca lança: fetch que lança termina o turno como desfecho desconhecido, sem exceção escapando", async () => {

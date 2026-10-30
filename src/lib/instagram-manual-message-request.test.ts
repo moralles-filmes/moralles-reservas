@@ -17,6 +17,7 @@ const ACCOUNT = "dddddddd-0000-4000-8000-000000000001";
 const IG_USER = "17841400000000001";
 const IGSID = "6600000000000001";
 const TOKEN = "synthetic-ig-token-manual";
+const CONNECTED_AT = "2026-10-01T12:00:00.123456+00:00";
 const CALLER = "eeeeeeee-0000-4000-8000-000000000001";
 const SEND_URL = `https://graph.instagram.com/v26.0/${IG_USER}/messages`;
 const WA_SEND_URL = "https://cloud.datafyapi.com.br/v1/synthetic-phone-id/messages";
@@ -44,6 +45,8 @@ function setup(options: {
   dmEnabled?: boolean;
   /** Avança o relógio dentro da leitura do token (entre a janela e o POST). */
   advanceOnToken?: number;
+  /** Reconexão depois da leitura da conta: o CAS devolve `false`. */
+  reconnected?: boolean;
 } = {}) {
   const reads: string[] = [];
   const rpcs: { name: string; args: Record<string, unknown> }[] = [];
@@ -61,7 +64,7 @@ function setup(options: {
   };
   const account = {
     id: ACCOUNT, unit_id: options.accountUnit ?? UNIT, ig_user_id: IG_USER,
-    status: options.accountStatus ?? "connected",
+    status: options.accountStatus ?? "connected", connected_at: CONNECTED_AT,
   };
   const client = {
     auth: { getUser: async () => ({ data: { user: { id: CALLER } }, error: null }) },
@@ -70,6 +73,11 @@ function setup(options: {
       if (name === "get_instagram_account_token") {
         if (options.advanceOnToken) await harnessRef.current!.advanceTime(options.advanceOnToken);
         return args.p_account_id === ACCOUNT ? { data: TOKEN, error: null } : { data: null, error: { code: "P0002" } };
+      }
+      if (name === "set_instagram_account_status") {
+        // CAS fiel à 20261029200800.
+        if (typeof args.p_expected_connected_at !== "string") return { data: null, error: { code: "22023" } };
+        return { data: !options.reconnected && args.p_expected_connected_at === CONNECTED_AT, error: null };
       }
       if (name === "record_whatsapp_human_message") {
         return options.recordError ? { data: null, error: { message: "synthetic" } } : { data: null, error: null };
@@ -321,9 +329,21 @@ describe("send-manual-message pelo Instagram", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "INSTAGRAM_REAUTH_REQUIRED" });
     expect(x.rpcs.find((call) => call.name === "set_instagram_account_status")?.args).toEqual({
-      p_account_id: ACCOUNT, p_status: "reauth_required", p_error_code: "190",
+      p_account_id: ACCOUNT, p_status: "reauth_required", p_error_code: "190", p_expected_connected_at: CONNECTED_AT,
     });
     expect(x.recorded()).toHaveLength(0);
+    expect(x.harness.logs.join(" | ")).toContain("instagram_account_reauth_required");
+  });
+
+  it("código 190 depois de uma reconexão: o CAS recusa e nada é marcado como reauth", async () => {
+    const x = setup({ replies: [{ status: 400, body: { error: { code: 190 } } }], reconnected: true });
+    const response = await x.request();
+    expect(response.status).toBe(409);
+    expect(x.rpcs.find((call) => call.name === "set_instagram_account_status")?.args)
+      .toMatchObject({ p_expected_connected_at: CONNECTED_AT });
+    const logs = x.harness.logs.join(" | ");
+    expect(logs).toContain("instagram_account_reauth_stale");
+    expect(logs).not.toContain("instagram_account_reauth_required");
   });
 
   it("falha do registro após envio completo devolve 202 de reconciliação", async () => {

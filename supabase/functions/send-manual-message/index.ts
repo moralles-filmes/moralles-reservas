@@ -99,7 +99,7 @@ async function sendInstagramManual(
   // nunca do caller), e só `connected` envia.
   const { data: account, error: accountErr } = await supabase
     .from("instagram_accounts")
-    .select("id, unit_id, ig_user_id, status")
+    .select("id, unit_id, ig_user_id, status, connected_at")
     .eq("id", accountId)
     .eq("unit_id", conv.unit_id)
     .maybeSingle();
@@ -109,7 +109,7 @@ async function sendInstagramManual(
   }
   if (
     !account || account.id !== accountId || account.unit_id !== conv.unit_id || account.status !== "connected" ||
-    typeof account.ig_user_id !== "string" || account.ig_user_id === ""
+    typeof account.ig_user_id !== "string" || account.ig_user_id === "" || typeof account.connected_at !== "string"
   ) {
     return json(409, { error: "INSTAGRAM_NOT_CONNECTED" });
   }
@@ -165,14 +165,22 @@ async function sendInstagramManual(
   }
 
   if (stop?.kind === "failed" && stop.errorClass === "reauth_required") {
-    const { error: markErr } = await supabase.rpc("set_instagram_account_status", {
+    // CAS por `connected_at` (20261029200800): se o dono reconectou depois da
+    // leitura da conta, a RPC devolve `false` e a conexão nova fica intacta.
+    const { data: marked, error: markErr } = await supabase.rpc("set_instagram_account_status", {
       p_account_id: account.id,
       p_status: "reauth_required",
       p_error_code: "190",
+      p_expected_connected_at: account.connected_at,
     });
-    jsonLog(markErr ? "error" : "warn", {
-      evt: "instagram_account_reauth_required", accountId: account.id, code: markErr?.code ?? null,
-    });
+    if (!markErr && marked === false) {
+      jsonLog("info", { evt: "instagram_account_reauth_stale", accountId: account.id });
+    } else {
+      jsonLog(markErr || marked !== true ? "error" : "warn", {
+        evt: "instagram_account_reauth_required", accountId: account.id,
+        code: markErr?.code ?? (marked === true ? null : "unexpected_result"),
+      });
+    }
   }
   if (stop) {
     jsonLog("warn", {

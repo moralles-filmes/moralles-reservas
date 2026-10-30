@@ -4,11 +4,15 @@
  * Chamado pelo pg_cron 1x ao dia com `x-internal-key`. Varre as contas
  * `connected` (paginado com `.range()`), decide por conta
  * (`_shared/instagram-token-refresh-core.ts`) e:
- * - `expired` → `set_instagram_account_status(id,'reauth_required','expired')`,
+ * - `expired` → `set_instagram_account_status(id,'reauth_required','expired',connected_at)`,
  *   sem chamar o Graph;
  * - `refresh` → token do cofre → `graph.refresh` → `record_instagram_token_refresh`.
  *   Graph `reauth_required` muda o status; `transient`/`rate_limited`/outros só
  *   logam (o cron tenta de novo amanhã).
+ * As duas escritas levam o `connected_at` lido na varredura (CAS, 20261029200800):
+ * se o dono reconectou no meio, a RPC devolve `false` sem efeito e a conta conta
+ * como `skipped_stale` (a conexão nova não cai para `reauth_required` nem tem o
+ * token sobrescrito pelo renovado do antigo).
  * A conta vem SÓ da varredura (nunca do corpo). A falha de uma conta não aborta
  * as demais. Resposta e logs: contagens, ids internos, classe e `code` do
  * Postgres; nunca token nem texto da Meta/Postgres.
@@ -72,17 +76,32 @@ async function loadConnectedAccounts(): Promise<{ ok: true; rows: AccountRow[] }
   }
 }
 
-async function setStatus(accountId: string, status: string, errorCode: string): Promise<boolean> {
-  const { error } = await supabase.rpc("set_instagram_account_status", {
-    p_account_id: accountId,
+/** Desfecho de uma escrita com CAS: aplicou, conexão nova (stale) ou falhou. */
+type CasWrite = "applied" | "stale" | "failed";
+
+function casOutcome(evtFailed: string, accountId: string, data: unknown, error: unknown): CasWrite {
+  if (error) {
+    jsonLog("error", { evt: evtFailed, accountId, code: pgCode(error) });
+    return "failed";
+  }
+  if (data === true) return "applied";
+  if (data === false) {
+    jsonLog("info", { evt: "instagram_refresh_skipped_stale", accountId });
+    return "stale";
+  }
+  // Fora do contrato (nem true nem false): nunca conta como aplicado.
+  jsonLog("error", { evt: evtFailed, accountId, code: "unexpected_result" });
+  return "failed";
+}
+
+async function setStatus(acc: AccountRow, status: string, errorCode: string): Promise<CasWrite> {
+  const { data, error } = await supabase.rpc("set_instagram_account_status", {
+    p_account_id: acc.id,
     p_status: status,
     p_error_code: errorCode,
+    p_expected_connected_at: acc.connected_at,
   });
-  if (error) {
-    jsonLog("error", { evt: "instagram_refresh_status_failed", accountId, code: pgCode(error) });
-    return false;
-  }
-  return true;
+  return casOutcome("instagram_refresh_status_failed", acc.id, data, error);
 }
 
 function hasBadDate(acc: AccountRow): boolean {
@@ -107,7 +126,7 @@ serve(async (req: Request): Promise<Response> => {
       if (hasBadDate(acc)) jsonLog("warn", { evt: "instagram_refresh_bad_dates", accountId: acc.id });
     }
     const plan = planTokenRefreshes(loaded.rows, nowMs);
-    const counts = { scanned: loaded.rows.length, refreshed: 0, expired: 0, reauth: 0, failed: 0, remaining: 0 };
+    const counts = { scanned: loaded.rows.length, refreshed: 0, expired: 0, reauth: 0, failed: 0, remaining: 0, skipped_stale: 0 };
 
     for (let i = 0; i < plan.length; i++) {
       if (Date.now() - startedAt >= INSTAGRAM_REFRESH_BUDGET_MS) {
@@ -118,7 +137,9 @@ serve(async (req: Request): Promise<Response> => {
       const { acc, decision } = plan[i];
       try {
         if (decision === "expired") {
-          if (await setStatus(acc.id, "reauth_required", "expired")) counts.expired++;
+          const out = await setStatus(acc, "reauth_required", "expired");
+          if (out === "applied") counts.expired++;
+          else if (out === "stale") counts.skipped_stale++;
           else counts.failed++;
           continue;
         }
@@ -140,7 +161,9 @@ serve(async (req: Request): Promise<Response> => {
             graphCode: res.code,
           });
           if (res.errorClass === "reauth_required") {
-            if (await setStatus(acc.id, "reauth_required", String(res.code ?? "reauth_required"))) counts.reauth++;
+            const out = await setStatus(acc, "reauth_required", String(res.code ?? "reauth_required"));
+            if (out === "applied") counts.reauth++;
+            else if (out === "stale") counts.skipped_stale++;
             else counts.failed++;
           } else {
             counts.failed++;
@@ -148,17 +171,16 @@ serve(async (req: Request): Promise<Response> => {
           continue;
         }
 
-        const { error } = await supabase.rpc("record_instagram_token_refresh", {
+        const { data: recorded, error } = await supabase.rpc("record_instagram_token_refresh", {
           p_account_id: acc.id,
           p_token: res.value.token,
           p_expires_at: new Date(Date.now() + res.value.expiresInSec * 1000).toISOString(),
+          p_expected_connected_at: acc.connected_at,
         });
-        if (error) {
-          jsonLog("error", { evt: "instagram_refresh_record_failed", accountId: acc.id, code: pgCode(error) });
-          counts.failed++;
-          continue;
-        }
-        counts.refreshed++;
+        const out = casOutcome("instagram_refresh_record_failed", acc.id, recorded, error);
+        if (out === "applied") counts.refreshed++;
+        else if (out === "stale") counts.skipped_stale++;
+        else counts.failed++;
       } catch (err) {
         jsonLog("error", {
           evt: "instagram_refresh_account_unhandled",

@@ -37,6 +37,9 @@
  * 90 s a libera) e reagenda o evento; depois do efeito externo, a mensagem
  * fecha `webhook_error` e não se repete.
  *
+ * Erro 190 marca `reauth_required` com o `connected_at` lido nos gates (CAS,
+ * 20261029200800): reconexão no meio do turno não é derrubada.
+ *
  * Logs: ids internos, classes e códigos; nunca texto do cliente, IGSID, token
  * ou texto da Meta. Adapter de I/O: as decisões moram em
  * `_shared/instagram-inbound-core.ts` e nos núcleos do agente.
@@ -123,7 +126,7 @@ type ClaimedRow = {
   claim_id: string;
 };
 
-type Account = { id: string; unit_id: string; organization_id: string; ig_user_id: string; status: string };
+type Account = { id: string; unit_id: string; organization_id: string; ig_user_id: string; status: string; connected_at: string };
 
 type Contact = {
   id: string;
@@ -198,7 +201,7 @@ async function readGates(row: ClaimedRow): Promise<GateResult> {
   // Conta da PRÓPRIA linha (id e unidade): nunca do payload.
   const { data: acc, error: accError } = await supabase
     .from("instagram_accounts")
-    .select("id, unit_id, organization_id, ig_user_id, status")
+    .select("id, unit_id, organization_id, ig_user_id, status, connected_at")
     .eq("id", row.instagram_account_id)
     .eq("unit_id", row.unit_id)
     .maybeSingle();
@@ -206,7 +209,7 @@ async function readGates(row: ClaimedRow): Promise<GateResult> {
   const account = acc as Account | null;
   if (
     !account || account.status !== "connected" || typeof account.ig_user_id !== "string" ||
-    typeof account.organization_id !== "string"
+    typeof account.organization_id !== "string" || typeof account.connected_at !== "string"
   ) {
     return { kind: "discard", reason: "account_not_connected" };
   }
@@ -345,12 +348,20 @@ function createEventWorker(a: {
   async function markReauth(): Promise<void> {
     if (reauthMarked) return;
     reauthMarked = true;
-    const { error } = await supabase.rpc("set_instagram_account_status", {
+    const { data, error } = await supabase.rpc("set_instagram_account_status", {
       p_account_id: account.id,
       p_status: "reauth_required",
       p_error_code: "190",
+      p_expected_connected_at: account.connected_at,
     });
-    jsonLog(error ? "error" : "warn", { evt: "instagram_account_reauth_required", accountId: account.id, code: pgCode(error) });
+    if (!error && data === false) {
+      // CAS: o dono reconectou depois da leitura; a conexão nova fica intacta.
+      jsonLog("info", { evt: "instagram_account_reauth_stale", accountId: account.id });
+      return;
+    }
+    jsonLog(error || data !== true ? "error" : "warn", {
+      evt: "instagram_account_reauth_required", accountId: account.id, code: pgCode(error) ?? (data === true ? undefined : "unexpected_result"),
+    });
   }
 
   async function recordOutcome(mid: string, outcome: string): Promise<void> {
