@@ -666,6 +666,38 @@
       "why": "Owner/gerente/admin salva a planta do salão da própria unidade; INVOKER sobre RLS; ids validados contra o salão. O papel é decidido pelo trigger app_private.guard_plan_write em modo estrito (GUC local), pois authenticated não tem USAGE em app_private; salão alheio ou inexistente e mesa de outro salão dão o mesmo 42501 hall_plan_forbidden. Medido no pré-voo 81 (L-9 a L-13, L-16, L-18) com controles L-CP e L-CP2.",
       "security_definer": false,
       "advisor_lints": []
+    },
+    {
+      "name": "set_reservation_presence",
+      "args": "p_reservation_id uuid, p_action text",
+      "roles": ["authenticated"],
+      "why": "Planta do salão: chegada, desfazer chegada e liberar mesa de uma reserva. Não muda status nem cria linha; carimbo de presença. INVOKER sobre a RLS (reservations com FORCE RLS): alheia e inexistente dão o mesmo 42501 presence_forbidden; relógio e ordem impostos pelo trigger app_private.guard_presence_stamps. Medido no pré-voo 81 (P-1 a P-7, P-14) com controle P-CP.",
+      "security_definer": false,
+      "advisor_lints": []
+    },
+    {
+      "name": "seat_waitlist_entry",
+      "args": "p_waitlist_id uuid, p_table_id uuid",
+      "roles": ["authenticated"],
+      "why": "Planta do salão: senta uma entrada da fila numa mesa, na própria linha de waitlist (status seated pela transição já existente, table_id). Não muda status além disso nem cria linha; carimbo de presença. INVOKER sobre a RLS (waitlist com FORCE RLS); mesa de outra unidade recusada pelo trigger app_private.guard_same_unit_table. Medido no pré-voo 81 (P-8, P-12, P-14).",
+      "security_definer": false,
+      "advisor_lints": []
+    },
+    {
+      "name": "release_waitlist_entry",
+      "args": "p_waitlist_id uuid",
+      "roles": ["authenticated"],
+      "why": "Planta do salão: libera a mesa de uma entrada da fila sentada. Não muda status nem cria linha; carimbo de presença (released_at). INVOKER sobre a RLS: alheia e inexistente dão o mesmo 42501 presence_forbidden. Medido no pré-voo 81 (P-9, P-12, P-14).",
+      "security_definer": false,
+      "advisor_lints": []
+    },
+    {
+      "name": "release_walk_in",
+      "args": "p_walk_in_id uuid",
+      "roles": ["authenticated"],
+      "why": "Planta do salão: libera a mesa de um passante sentado. Não muda status nem cria linha; carimbo de presença (released_at), nunca status left, para não tirar o passante das métricas de sentados. INVOKER sobre a RLS, com o paralelo platform_admin_all_walk_ins criado na mesma migration. Medido no pré-voo 81 (P-9, P-11, P-12, P-14) com controle P-CP2.",
+      "security_definer": false,
+      "advisor_lints": []
     }
   ]
 }
