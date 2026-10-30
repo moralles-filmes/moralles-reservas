@@ -30,7 +30,7 @@ export function WizardSuccess() {
           Sua reserva está confirmada. A mensagem por WhatsApp ou e-mail, quando habilitada, é enviada separadamente.
         </p>
       </div>
-      <div className="bg-muted rounded-lg p-4 text-left space-y-2">
+      <div className="surface rounded-card p-4 text-left space-y-2">
         <Row label="Código" value={`#${reserva.reservation_code}`} mono />
         <Row label="Data" value={formatDateBR(reserva.date)} />
         <Row label="Horário" value={reserva.time} />

@@ -31,15 +31,14 @@ export function PartySizeInput({
 }: PartySizeInputProps) {
   const current = clampPartySize(value, min, max);
   return (
-    <div className="flex items-stretch rounded-md border border-input bg-background overflow-hidden">
+    <div className="flex items-center gap-1 rounded-full border border-input bg-card p-1 focus-within:ring-2 focus-within:ring-ring">
       <button
         type="button"
         aria-label="Diminuir número de pessoas"
         onClick={() => onChange(clampPartySize(current - 1, min, max))}
         disabled={current <= min}
         className={cn(
-          "flex h-12 sm:h-11 w-12 sm:w-11 items-center justify-center text-foreground transition-colors",
-          "hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent",
+          "flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-foreground transition-transform duration-200 motion-safe:active:scale-95 hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent",
         )}
       >
         <Minus className="h-4 w-4" />
@@ -59,7 +58,7 @@ export function PartySizeInput({
           }
           onChange(clampPartySize(Number(raw), min, max));
         }}
-        className="h-12 sm:h-11 flex-1 rounded-none border-0 border-x border-input text-center text-base focus-visible:ring-0 focus-visible:ring-offset-0"
+        className="h-11 min-w-0 flex-1 rounded-full border-0 bg-transparent text-center text-base font-semibold tabular focus-visible:ring-0 focus-visible:ring-offset-0"
       />
       <button
         type="button"
@@ -67,8 +66,7 @@ export function PartySizeInput({
         onClick={() => onChange(clampPartySize(current + 1, min, max))}
         disabled={current >= max}
         className={cn(
-          "flex h-12 sm:h-11 w-12 sm:w-11 items-center justify-center text-foreground transition-colors",
-          "hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent",
+          "flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-foreground transition-transform duration-200 motion-safe:active:scale-95 hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent",
         )}
       >
         <Plus className="h-4 w-4" />
