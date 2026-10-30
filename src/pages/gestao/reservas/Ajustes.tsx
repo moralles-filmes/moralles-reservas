@@ -218,6 +218,7 @@ function InfoTab({ unitId }: { unitId: string }) {
       <div className="space-y-1">
         <LabelWithHelp
           label="Janela de reserva no calendário (em dias)"
+          htmlFor="reservas-ajustes-janela"
           required
           help="Quantos dias seus clientes vêem disponíveis no calendário pra reservar — sempre dias corridos. Ex: 30 = 1 mês, 45 = 1 mês e meio, 120 = 4 meses. Em 01/01 com janela 30, clientes podem reservar até 31/01."
         />
@@ -226,6 +227,7 @@ function InfoTab({ unitId }: { unitId: string }) {
           min={1}
           max={365}
           className="w-40"
+          id="reservas-ajustes-janela"
           value={bookingWindow}
           onChange={(e) => setBookingWindow(e.target.value)}
         />
@@ -234,6 +236,7 @@ function InfoTab({ unitId }: { unitId: string }) {
       <div className="space-y-1">
         <LabelWithHelp
           label="Duração padrão da reserva (minutos)"
+          htmlFor="reservas-ajustes-duracao"
           required
           help="Tempo que cada reserva ocupa a mesa. Usado pelo sistema pra evitar sobreposições."
         />
@@ -243,6 +246,7 @@ function InfoTab({ unitId }: { unitId: string }) {
           max={600}
           step={5}
           className="w-40"
+          id="reservas-ajustes-duracao"
           value={duration}
           onChange={(e) => setDuration(e.target.value)}
         />
@@ -251,6 +255,7 @@ function InfoTab({ unitId }: { unitId: string }) {
       <div className="space-y-1">
         <LabelWithHelp
           label="Tolerância (minutos)"
+          htmlFor="reservas-ajustes-tolerancia"
           help="Tempo de tolerância depois do horário marcado antes da reserva ser considerada no-show."
         />
         <div className="flex items-center gap-2">
@@ -259,6 +264,7 @@ function InfoTab({ unitId }: { unitId: string }) {
             min={0}
             max={240}
             className="w-28"
+            id="reservas-ajustes-tolerancia"
             value={tolerance}
             onChange={(e) => setTolerance(e.target.value)}
           />
@@ -424,13 +430,15 @@ function LabelWithHelp({
   label,
   required,
   help,
+  htmlFor,
 }: {
   label: string;
   required?: boolean;
   help: string;
+  htmlFor?: string;
 }) {
   return (
-    <Label className="text-sm flex items-center gap-1.5">
+    <Label htmlFor={htmlFor} className="text-sm flex items-center gap-1.5">
       {required && <span className="text-destructive">*</span>}
       {label}
       <TooltipProvider>

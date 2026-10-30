@@ -103,18 +103,20 @@ export default function DatasEspeciais() {
       <Card className="p-0 overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b">
           <div className="flex items-center gap-2 text-sm">
-            <Label className="text-xs text-muted-foreground">Data inicial</Label>
+            <Label htmlFor="datas-especiais-filtro-inicio" className="text-xs text-muted-foreground">Data inicial</Label>
             <Input
               type="date"
               className="w-40"
+              id="datas-especiais-filtro-inicio"
               value={filterFrom}
               onChange={(e) => setFilterFrom(e.target.value)}
             />
             <span className="text-muted-foreground">→</span>
-            <Label className="text-xs text-muted-foreground">Data final</Label>
+            <Label htmlFor="datas-especiais-filtro-fim" className="text-xs text-muted-foreground">Data final</Label>
             <Input
               type="date"
               className="w-40"
+              id="datas-especiais-filtro-fim"
               value={filterTo}
               onChange={(e) => setFilterTo(e.target.value)}
             />
@@ -199,7 +201,7 @@ export default function DatasEspeciais() {
                       </Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Excluir data especial">
                             <Trash2 className="h-3.5 w-3.5 text-destructive" />
                           </Button>
                         </AlertDialogTrigger>
@@ -375,11 +377,12 @@ function SpecialDateModal({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label className="text-xs">
+              <Label htmlFor="datas-especiais-data-inicial" className="text-xs">
                 <span className="text-destructive">*</span> Data inicial
               </Label>
               <Input
                 type="date"
+                id="datas-especiais-data-inicial"
                 value={startDate}
                 onChange={(e) => {
                   setStartDate(e.target.value);
@@ -388,11 +391,12 @@ function SpecialDateModal({
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">
+              <Label htmlFor="datas-especiais-data-final" className="text-xs">
                 <span className="text-destructive">*</span> Data final
               </Label>
               <Input
                 type="date"
+                id="datas-especiais-data-final"
                 value={endDate}
                 min={startDate}
                 onChange={(e) => setEndDate(e.target.value)}

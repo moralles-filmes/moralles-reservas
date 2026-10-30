@@ -118,11 +118,13 @@ export default function FilaAjustes() {
               <div className="space-y-1">
                 <LabelWithHelp
                   label="Código mínimo"
+                  htmlFor="fila-ajustes-codigo-minimo"
                   help="Senha inicial gerada pra primeiro cliente da fila. A numeração é cíclica."
                 />
                 <Input
                   type="number"
                   min={1}
+                  id="fila-ajustes-codigo-minimo"
                   value={form.waitlist_code_min}
                   onChange={(e) =>
                     setForm({
@@ -135,11 +137,13 @@ export default function FilaAjustes() {
               <div className="space-y-1">
                 <LabelWithHelp
                   label="Código máximo"
+                  htmlFor="fila-ajustes-codigo-maximo"
                   help="Quando atinge esse valor, a senha volta pro código mínimo (cíclica)."
                 />
                 <Input
                   type="number"
                   min={form.waitlist_code_min}
+                  id="fila-ajustes-codigo-maximo"
                   value={form.waitlist_code_max}
                   onChange={(e) =>
                     setForm({
@@ -152,6 +156,7 @@ export default function FilaAjustes() {
               <div className="space-y-1">
                 <LabelWithHelp
                   label="Tolerância (minutos)"
+                  htmlFor="fila-ajustes-tolerancia"
                   help="Tempo entre notificar o cliente e considerar que não veio."
                 />
                 <div className="flex items-center gap-2">
@@ -160,6 +165,7 @@ export default function FilaAjustes() {
                     min={0}
                     max={60}
                     className="w-24"
+                    id="fila-ajustes-tolerancia"
                     value={form.waitlist_tolerance_minutes}
                     onChange={(e) =>
                       setForm({
@@ -192,10 +198,11 @@ export default function FilaAjustes() {
             />
 
             <div className="space-y-1 max-w-xs">
-              <Label className="text-sm">Limite de pessoas</Label>
+              <Label htmlFor="fila-ajustes-entrada-limite" className="text-sm">Limite de pessoas</Label>
               <Input
                 type="number"
                 min={0}
+                id="fila-ajustes-entrada-limite"
                 value={form.waitlist_remote_entry_limit}
                 onChange={(e) =>
                   setForm({
@@ -275,9 +282,9 @@ function CheckboxField({
   );
 }
 
-function LabelWithHelp({ label, help }: { label: string; help: string }) {
+function LabelWithHelp({ label, help, htmlFor }: { label: string; help: string; htmlFor?: string }) {
   return (
-    <Label className="text-sm flex items-center gap-1.5">
+    <Label htmlFor={htmlFor} className="text-sm flex items-center gap-1.5">
       {label}
       <TooltipProvider>
         <Tooltip>

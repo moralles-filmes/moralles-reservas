@@ -52,6 +52,7 @@ export default function Reservas() {
       <div className="flex flex-wrap gap-3">
         <Input
           type="date"
+          aria-label="Data"
           value={filters.date}
           onChange={(e) => setFilter("date", e.target.value)}
           className="w-40"
@@ -60,7 +61,7 @@ export default function Reservas() {
           value={filters.status}
           onValueChange={(v) => setFilter("status", v as ReservaStatus | "")}
         >
-          <SelectTrigger className="w-44">
+          <SelectTrigger className="w-44" aria-label="Filtrar por situação">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

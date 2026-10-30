@@ -62,11 +62,11 @@ export function ReservasCalendar({ unitId }: ReservasCalendarProps) {
       <Card>
         <CardContent className="pt-4">
           <div className="flex items-center justify-between mb-4">
-            <Button variant="ghost" size="icon" onClick={prevMonth}>
+            <Button variant="ghost" size="icon" aria-label="Mês anterior" onClick={prevMonth}>
               <ChevronLeft className="h-4 w-4" />
             </Button>
             <span className="font-semibold capitalize">{monthLabel}</span>
-            <Button variant="ghost" size="icon" onClick={nextMonth}>
+            <Button variant="ghost" size="icon" aria-label="Próximo mês" onClick={nextMonth}>
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>

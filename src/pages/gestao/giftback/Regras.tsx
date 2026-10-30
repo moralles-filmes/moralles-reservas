@@ -136,12 +136,13 @@ export default function Regras() {
                   </p>
                 </div>
                 <Switch
+                  aria-label={`Regra ${rule.name} ativa`}
                   checked={rule.active}
                   onCheckedChange={() => toggleActive(rule)}
                 />
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8">
+                    <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Ações de ${rule.name}`}>
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
