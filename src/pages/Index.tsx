@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -47,7 +48,7 @@ export default function Index() {
   const { data: units = [], isLoading } = usePublicUnits({ city, search });
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background text-foreground">
       <Header
         city={city}
         cities={cities}
@@ -94,9 +95,9 @@ function Header({ city, cities, cityOpen, setCityOpen, onSelectCity }: HeaderPro
       <div className="max-w-7xl mx-auto px-5 sm:px-8 h-16 sm:h-20 flex items-center justify-between gap-4">
         <Link
           to="/"
-          className="font-display text-xl sm:text-2xl tracking-tight text-white drop-shadow"
+          className="font-display text-xl sm:text-2xl font-semibold tracking-tight text-foreground"
         >
-          moralles<span className="text-primary">.</span>
+          moralles<span className="text-gold-ink">.</span>
         </Link>
 
         <div className="flex items-center gap-2 sm:gap-3">
@@ -110,7 +111,7 @@ function Header({ city, cities, cityOpen, setCityOpen, onSelectCity }: HeaderPro
           <Link to="/admin">
             <Button
               size="sm"
-              className="rounded-full bg-white/95 hover:bg-white text-foreground font-medium px-4 sm:px-5 backdrop-blur"
+              className="rounded-full border border-border bg-card/90 hover:bg-card text-foreground font-medium px-4 sm:px-5 backdrop-blur"
             >
               <UtensilsCrossed className="h-3.5 w-3.5 sm:mr-1.5" />
               <span className="hidden sm:inline">Sou restaurante</span>
@@ -162,14 +163,14 @@ function CityChip({ city, cities, open, setOpen, onSelect }: CityChipProps) {
       <DialogTrigger asChild>
         <button
           type="button"
-          className="group inline-flex items-center gap-2 rounded-full bg-black/25 hover:bg-black/35 backdrop-blur-md border border-white/20 px-3 sm:px-4 py-1.5 text-sm text-white transition"
+          className="group inline-flex items-center gap-2 rounded-full bg-card/80 hover:bg-card backdrop-blur-md border border-border px-3 sm:px-4 py-1.5 coarse:min-h-11 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           {city ? (
             <span className="flex items-center gap-1.5">
-              <span className="hidden sm:inline text-white/70 text-xs">Você está em</span>
+              <span className="hidden sm:inline text-muted-foreground text-xs">Você está em</span>
               <span className="font-medium">{city}</span>
-              <span className="text-xs text-white/70 underline underline-offset-2">
+              <span className="text-xs text-gold-ink underline underline-offset-2">
                 alterar
               </span>
             </span>
@@ -178,7 +179,7 @@ function CityChip({ city, cities, open, setOpen, onSelect }: CityChipProps) {
           )}
         </button>
       </DialogTrigger>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md rounded-panel">
         <DialogHeader>
           <DialogTitle className="font-display text-2xl">Sua cidade</DialogTitle>
           <p className="text-sm text-muted-foreground">
@@ -193,7 +194,7 @@ function CityChip({ city, cities, open, setOpen, onSelect }: CityChipProps) {
             placeholder="Ex: Bauru, São Paulo, Curitiba…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            className="pl-9"
+            className="h-12 sm:h-11 pl-9 rounded-block"
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -209,20 +210,20 @@ function CityChip({ city, cities, open, setOpen, onSelect }: CityChipProps) {
             <button
               type="button"
               onClick={confirmTyped}
-              className="w-full flex items-center justify-between px-3 py-3 text-left text-sm rounded-md hover:bg-primary/10 bg-primary/5 transition"
+              className="w-full flex items-center justify-between px-3 py-3 text-left text-sm rounded-block hover:bg-gold/15 bg-gold/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               <span className="flex items-center gap-2">
-                <MapPin className="h-3.5 w-3.5 text-primary" />
+                <MapPin className="h-3.5 w-3.5 text-gold-ink" />
                 Usar <span className="font-semibold">"{toTitleCase(typed)}"</span> como minha cidade
               </span>
-              <ChevronRight className="h-4 w-4 text-primary" />
+              <ChevronRight className="h-4 w-4 text-gold-ink" />
             </button>
           )}
 
           {filtered.length > 0 && (
             <>
               {showCustomConfirm && (
-                <p className="px-3 mt-3 mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                <p className="px-3 mt-3 mb-1 text-xs font-medium text-tertiary">
                   Cidades com restaurantes
                 </p>
               )}
@@ -232,16 +233,17 @@ function CityChip({ city, cities, open, setOpen, onSelect }: CityChipProps) {
                     key={c}
                     type="button"
                     onClick={() => onSelect(c)}
-                    className={`w-full flex items-center justify-between px-3 py-3 text-left text-sm hover:bg-muted/60 transition ${
-                      c === city ? "text-primary font-medium" : ""
-                    }`}
+                    className={cn(
+                      "w-full flex items-center justify-between gap-3 rounded-block px-3 py-3 text-left text-sm hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+                      c === city && "text-gold-ink font-medium",
+                    )}
                   >
                     <span className="flex items-center gap-2">
                       <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
                       {c}
                     </span>
                     {c === city && (
-                      <span className="text-xs uppercase tracking-wider">
+                      <span className="text-xs">
                         selecionada
                       </span>
                     )}
@@ -268,7 +270,7 @@ function CityChip({ city, cities, open, setOpen, onSelect }: CityChipProps) {
           <button
             type="button"
             onClick={() => onSelect(null)}
-            className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 self-start"
+            className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 self-start coarse:min-h-11 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             <X className="h-3 w-3" />
             Limpar seleção
@@ -290,41 +292,21 @@ interface HeroProps {
 
 function Hero({ search, onSearch, city, onPickCity }: HeroProps) {
   return (
-    <section className="relative isolate min-h-[640px] sm:min-h-[680px] flex items-center justify-center overflow-hidden">
-      <div
-        aria-hidden
-        className="absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(ellipse 80% 60% at 20% 30%, hsl(24 85% 45% / 0.85), transparent 60%), radial-gradient(ellipse 60% 70% at 80% 70%, hsl(340 55% 35% / 0.85), transparent 55%), radial-gradient(ellipse 50% 50% at 50% 100%, hsl(38 90% 50% / 0.7), transparent 60%), linear-gradient(180deg, hsl(20 25% 18%), hsl(20 30% 12%))",
-        }}
-      />
-
-      {/* Overlays — escurece + grão sutil */}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/30 to-black/65" />
-      <div
-        aria-hidden
-        className="absolute inset-0 opacity-[0.07] mix-blend-overlay pointer-events-none"
-        style={{
-          backgroundImage:
-            "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.6'/></svg>\")",
-        }}
-      />
-
-      <div className="relative z-10 max-w-3xl w-full text-center text-white px-5 pt-24 sm:pt-28 pb-12 animate-fade-up">
-        <p className="text-xs sm:text-sm uppercase tracking-[0.3em] text-white/80 mb-5 sm:mb-6 inline-flex items-center gap-2">
-          <span className="h-px w-8 bg-white/40" />
+    <section className="relative isolate ambient min-h-[580px] sm:min-h-[640px] flex items-center justify-center overflow-hidden rounded-b-panel border-b border-border">
+      <div className="relative z-10 max-w-3xl w-full text-center px-5 pt-28 sm:pt-32 pb-14 motion-safe:animate-fade-up motion-safe:[animation-duration:1s] motion-safe:[animation-timing-function:cubic-bezier(0.16,1,0.3,1)]">
+        <p className="text-xs sm:text-sm font-medium text-gold-ink mb-5 sm:mb-6 inline-flex items-center gap-2">
+          <span className="h-px w-8 bg-gold/40" />
           Reservas inteligentes
-          <span className="h-px w-8 bg-white/40" />
+          <span className="h-px w-8 bg-gold/40" />
         </p>
 
-        <h1 className="font-display text-[2.4rem] leading-[1.05] sm:text-6xl sm:leading-[1.02] tracking-tight">
+        <h1 className="font-display font-semibold text-[2.4rem] leading-[1.05] sm:text-6xl sm:leading-[1.02] tracking-[-0.045em]">
           Encontre sua próxima
           <br />
-          <span className="italic text-primary-foreground/95">mesa favorita.</span>
+          <span className="text-gold-ink">mesa favorita.</span>
         </h1>
 
-        <p className="mt-5 sm:mt-6 text-white/85 max-w-xl mx-auto text-sm sm:text-base leading-relaxed">
+        <p className="mt-5 sm:mt-6 text-muted-foreground max-w-xl mx-auto text-sm sm:text-base leading-relaxed">
           {city ? (
             <>
               Restaurantes em <span className="font-medium">{city}</span> — reserve em
@@ -340,14 +322,14 @@ function Hero({ search, onSearch, city, onPickCity }: HeroProps) {
 
         {/* Search bar */}
         <div className="mt-8 sm:mt-10 max-w-2xl mx-auto">
-          <div className="flex items-stretch gap-2 rounded-full bg-white shadow-2xl shadow-black/30 p-1.5 ring-1 ring-white/30">
-            <div className="flex-1 flex items-center gap-2 sm:gap-3 pl-4 sm:pl-5">
+          <div className="surface flex items-stretch gap-2 rounded-full p-1.5">
+            <div className="flex-1 min-w-0 flex items-center gap-2 sm:gap-3 pl-4 sm:pl-5">
               <Search className="h-4 w-4 text-muted-foreground shrink-0" />
               <Input
                 value={search}
                 onChange={(e) => onSearch(e.target.value)}
                 placeholder={city ? `Buscar em ${city}…` : "Buscar restaurante…"}
-                className="border-0 shadow-none focus-visible:ring-0 px-0 text-sm sm:text-base bg-transparent text-foreground placeholder:text-muted-foreground"
+                className="h-12 sm:h-11 border-0 shadow-none focus-visible:ring-0 px-0 text-sm sm:text-base bg-transparent text-foreground placeholder:text-muted-foreground"
               />
             </div>
             <Button
@@ -367,7 +349,7 @@ function Hero({ search, onSearch, city, onPickCity }: HeroProps) {
             <button
               type="button"
               onClick={onPickCity}
-              className="mt-5 inline-flex items-center gap-2 text-sm text-white/85 hover:text-white underline underline-offset-4 decoration-white/40"
+              className="mt-5 inline-flex items-center gap-2 text-sm text-gold-ink hover:text-foreground underline underline-offset-4 decoration-gold/40 coarse:min-h-11 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               <MapPin className="h-3.5 w-3.5" />
               Selecionar minha cidade primeiro
@@ -407,10 +389,10 @@ function Discover({
     >
       <div className="flex items-end justify-between gap-4 flex-wrap mb-8 sm:mb-10">
         <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-primary mb-2">
+          <p className="text-xs font-medium text-gold-ink mb-2">
             {city ? "Onde sentar" : "Comece por aqui"}
           </p>
-          <h2 className="font-display text-3xl sm:text-4xl tracking-tight">
+          <h2 className="font-display font-semibold text-3xl sm:text-4xl tracking-tight">
             {city ? (
               <>
                 Restaurantes em <span className="italic">{city}</span>
@@ -432,7 +414,7 @@ function Discover({
               <button
                 type="button"
                 onClick={onClearSearch}
-                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1 coarse:min-h-11 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 <X className="h-3 w-3" />
                 Limpar busca "{search}"
@@ -475,11 +457,11 @@ function CityCallout({
   onPickCity: () => void;
 }) {
   return (
-    <div className="rounded-3xl border bg-card p-8 sm:p-12 flex flex-col items-center text-center gap-4">
-      <div className="h-14 w-14 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+    <div className="surface rounded-panel p-8 sm:p-12 flex flex-col items-center text-center gap-4">
+      <div className="h-14 w-14 rounded-full bg-gold/10 text-gold-ink flex items-center justify-center">
         <MapPin className="h-6 w-6" />
       </div>
-      <h3 className="font-display text-2xl sm:text-3xl">
+      <h3 className="font-display font-semibold text-2xl sm:text-3xl tracking-tight">
         Onde você quer comer hoje?
       </h3>
       <p className="text-sm text-muted-foreground max-w-md">
@@ -508,9 +490,9 @@ function EmptyState({
   onPickCity: () => void;
 }) {
   return (
-    <div className="rounded-3xl border border-dashed bg-muted/30 p-10 sm:p-14 flex flex-col items-center text-center gap-4">
+    <div className="surface rounded-panel border-dashed p-10 sm:p-14 flex flex-col items-center text-center gap-4">
       <UtensilsCrossed className="h-10 w-10 text-muted-foreground/60" />
-      <h3 className="font-display text-2xl">Nada por aqui ainda</h3>
+      <h3 className="font-display text-2xl font-semibold tracking-tight">Nada por aqui ainda</h3>
       <p className="text-sm text-muted-foreground max-w-md">
         {search
           ? `Não encontramos restaurantes em ${city} com "${search}".`
@@ -534,8 +516,8 @@ function CardsSkeleton() {
   return (
     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-7">
       {[1, 2, 3].map((i) => (
-        <div key={i} className="space-y-3">
-          <Skeleton className="aspect-[16/10] rounded-2xl" />
+        <div key={i} className="surface rounded-card p-3 space-y-3">
+          <Skeleton className="aspect-[16/10] rounded-block" />
           <Skeleton className="h-5 w-3/4" />
           <Skeleton className="h-4 w-1/2" />
         </div>
@@ -555,7 +537,7 @@ function RestaurantCard({ unit, index }: { unit: PublicUnitCard; index: number }
   return (
     <Link
       to={`/r/${unit.slug}`}
-      className="group flex flex-col rounded-2xl overflow-hidden bg-card border hover:border-primary/40 hover:shadow-xl hover:shadow-black/5 transition-all duration-300 animate-fade-up"
+      className="surface group flex flex-col rounded-card overflow-hidden hover:border-gold/40 motion-safe:transition-transform motion-safe:duration-300 motion-safe:hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary motion-safe:animate-fade-up motion-safe:[animation-duration:1s] motion-safe:[animation-timing-function:cubic-bezier(0.16,1,0.3,1)]"
       style={{ animationDelay: `${index * 60}ms`, animationFillMode: "backwards" }}
     >
       <div className="relative aspect-[16/10] bg-muted">
@@ -564,18 +546,12 @@ function RestaurantCard({ unit, index }: { unit: PublicUnitCard; index: number }
             <img
               src={unit.hero_image_url}
               alt=""
-              className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
+              className="absolute inset-0 w-full h-full object-cover motion-safe:transition-transform motion-safe:duration-300 motion-safe:group-hover:scale-[1.04]"
             />
           ) : (
-            <div
-              className="absolute inset-0"
-              style={{
-                background:
-                  "radial-gradient(circle at 30% 30%, hsl(24 85% 50% / 0.7), transparent 55%), radial-gradient(circle at 75% 70%, hsl(340 55% 40% / 0.6), transparent 55%), linear-gradient(135deg, hsl(20 25% 22%), hsl(28 50% 18%))",
-              }}
-            />
+            <div className="absolute inset-0 bg-gradient-to-br from-gold/20 via-muted to-gold/10" />
           )}
-          <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/45 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-foreground/20 to-transparent" />
         </div>
 
         {/* Logo overlap — fora do overflow-hidden pra não ser cortada */}
@@ -588,20 +564,20 @@ function RestaurantCard({ unit, index }: { unit: PublicUnitCard; index: number }
                 className="w-full h-full object-cover"
               />
             ) : (
-              <span className="font-display text-base text-primary">{initials}</span>
+              <span className="font-display text-base text-gold-ink">{initials}</span>
             )}
           </div>
         </div>
 
         {(unit.price_range_min != null || unit.price_range_max != null) && (
-          <div className="absolute top-3 right-3 rounded-full bg-white/95 backdrop-blur text-xs font-medium px-3 py-1 text-foreground">
+          <div className="surface absolute top-3 right-3 rounded-full bg-card text-xs font-medium tabular px-3 py-1 text-foreground">
             {formatPriceRangeShort(unit.price_range_min, unit.price_range_max)}
           </div>
         )}
       </div>
 
       <div className="p-5 pt-9 flex-1 flex flex-col">
-        <h3 className="font-display text-2xl leading-tight tracking-tight">
+        <h3 className="font-display font-semibold text-2xl leading-tight tracking-tight">
           {unit.name}
         </h3>
         {cityLine && (
@@ -616,7 +592,7 @@ function RestaurantCard({ unit, index }: { unit: PublicUnitCard; index: number }
           </p>
         )}
         <div className="mt-4 pt-3 border-t border-dashed flex items-center justify-between text-sm">
-          <span className="text-primary font-medium inline-flex items-center gap-1 transition-transform group-hover:translate-x-0.5">
+          <span className="text-gold-ink font-medium inline-flex items-center gap-1 motion-safe:transition-transform motion-safe:duration-300 motion-safe:group-hover:translate-x-0.5">
             Ver e reservar
             <ChevronRight className="h-3.5 w-3.5" />
           </span>
@@ -633,10 +609,10 @@ function Footer() {
     <footer className="border-t bg-card mt-8">
       <div className="max-w-7xl mx-auto px-5 sm:px-8 py-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted-foreground">
         <span className="font-display text-base text-foreground">
-          moralles<span className="text-primary">.</span>
+          moralles<span className="text-gold-ink">.</span>
         </span>
         <span>Reservas inteligentes para restaurantes</span>
-        <Link to="/admin" className="hover:text-foreground transition-colors">
+        <Link to="/admin" className="hover:text-foreground coarse:min-h-11 inline-flex items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
           Sou restaurante →
         </Link>
       </div>
