@@ -87,12 +87,18 @@ const CLAIMED_IDENTITY_HIDDEN_PARAMS: Record<string, string> = {
   get_reservation: "phone",
 };
 
+/** Descrições que citam o parâmetro escondido e por isso mudam com a porta. */
+const CLAIMED_IDENTITY_DESCRIPTIONS: Record<string, string> = {
+  get_reservation: "Busca uma reserva pelo código ou a última reserva ativa do cliente desta conversa.",
+};
+
 function forClaimedIdentity(tool: (typeof agentTools)[number]): (typeof agentTools)[number] {
   const hidden = CLAIMED_IDENTITY_HIDDEN_PARAMS[tool.name];
   if (!hidden) return tool;
   const properties = { ...tool.parameters.properties };
   delete properties[hidden];
-  return { ...tool, parameters: { ...tool.parameters, properties } };
+  const description = CLAIMED_IDENTITY_DESCRIPTIONS[tool.name] ?? tool.description;
+  return { ...tool, description, parameters: { ...tool.parameters, properties } };
 }
 
 /**
@@ -108,7 +114,7 @@ export function agentToolsFor(ctx: Pick<ChannelContext, "claimedIdentity">): typ
 export interface ToolDispatchState {
   mutatingToolUsed: boolean;
   lastMutationOutcome: MutationOutcome | null;
-  customer: AgentCustomer | null;
+  customer: Pick<AgentCustomer, "id" | "phone"> | null;
 }
 
 /**
@@ -158,7 +164,7 @@ export function createToolDispatcher(a: {
     if (ledger === null) ledger = [...(await port.reservationIds())];
     return ledger;
   };
-  const scopeFor = async (customer: AgentCustomer): Promise<ReservationToolScope> =>
+  const scopeFor = async (customer: Pick<AgentCustomer, "id" | "phone">): Promise<ReservationToolScope> =>
     port
       ? { unitId, customerId: customer.id, reservationIds: await ledgerIds() }
       : { unitId, customerId: customer.id };
@@ -177,7 +183,7 @@ export function createToolDispatcher(a: {
       } else {
         // As ferramentas de cliente só chegam aqui com cliente (guarda acima);
         // as outras não leem `current`.
-        const current = customer as AgentCustomer;
+        const current = customer as Pick<AgentCustomer, "id" | "phone">;
         switch (name) {
           case "check_availability":
             result = await checkAvailability(supabase, input.date, input.time, input.party_size, unitId, input.hall_name);
@@ -282,6 +288,8 @@ export function createToolDispatcher(a: {
             result = { ok: true, message: "Transferência registrada. AGORA envie ao cliente uma mensagem cordial dizendo que um atendente humano vai responder em breve, antes de encerrar." };
             break;
           case "link_customer_phone":
+            // Sem porta a ferramenta não é oferecida: cai no `default` (sem `break`),
+            // como qualquer nome desconhecido.
             if (port) {
               // Idempotente: NÃO liga `mutatingToolUsed`. O cliente vem da porta
               // (resolvido no servidor, na organização do contato).
@@ -299,8 +307,6 @@ export function createToolDispatcher(a: {
               }
               break;
             }
-            result = { error: `Tool desconhecida: ${name}` };
-            break;
           default:
             result = { error: `Tool desconhecida: ${name}` };
         }

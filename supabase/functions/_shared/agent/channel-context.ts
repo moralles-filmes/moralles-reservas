@@ -25,7 +25,7 @@ export type AgentChannel = "whatsapp" | "instagram";
 export type AgentReservationSource = "whatsapp" | "instagram";
 
 export type LinkPhoneResult =
-  | { ok: true; customer: AgentCustomer }
+  | { ok: true; customer: Pick<AgentCustomer, "id" | "phone"> }
   | { ok: false; reason: "invalid_phone" | "unavailable" };
 
 /**

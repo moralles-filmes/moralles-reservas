@@ -216,38 +216,42 @@ export async function createReservation(supabase: SupabaseClient, params: {
   source: AgentReservationSource;
 // deno-lint-ignore no-explicit-any
 }): Promise<any> {
-  // Resolve customer com merge preservando dados:
-  //   - lookup por (organization_id, phone)
-  //   - se existe: PRESERVA nome cadastrado, append em emails[]
-  //   - se não existe: cria
-  let resolved;
-  try {
-    resolved = await resolveOrCreateCustomer(supabase, {
-      organizationId: params.organization_id,
-      phone: params.customer.phone,
-      name: params.customer_name,
-      email: params.customer_email ?? null,
-    });
-  } catch (err) {
-    // O erro do PostgREST/rede não vai ao LLM (e dali ao cliente): só o code ao log.
-    console.error(JSON.stringify({
-      evt: "agent_resolve_customer_failed",
-      code: (err as { code?: string } | null)?.code ?? null,
-    }));
-    return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
-  }
-  // O telefone do cliente do turno deveria resolver para o MESMO cadastro; só
-  // não resolve se o cadastro foi editado, fundido ou anonimizado no meio do
-  // turno. O evento vai ao log nos dois canais, mas o desfecho difere:
-  // - identidade declarada (telefone digitado): recusa com erro genérico, a
-  //   reserva não vai para quem hoje detém o telefone;
-  // - WhatsApp (telefone verificado pelo canal): reserva para o cadastro que
-  //   hoje detém o telefone, como antes da Task 3.4.
-  if (resolved.id !== params.customer.id) {
-    console.error(JSON.stringify({ evt: "agent_customer_identity_mismatch", claimedIdentity: params.claimedIdentity }));
-    if (params.claimedIdentity) {
-      return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+  const GENERIC_FAIL = { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+  let customerId: string;
+  if (params.claimedIdentity) {
+    // Identidade declarada: nenhum I/O de cliente aqui (nem resolveOrCreateCustomer,
+    // nem leitura de `customers`). O id vem do estado do despacho, nunca do LLM; a
+    // conferência (cliente vivo, da organização e igual ao ligado ao contato) é
+    // feita sob lock pela RPC atômica da Task 4.0b.
+    customerId = params.customer.id;
+  } else {
+    // Resolve customer com merge preservando dados:
+    //   - lookup por (organization_id, phone)
+    //   - se existe: PRESERVA nome cadastrado, append em emails[]
+    //   - se não existe: cria
+    let resolved;
+    try {
+      resolved = await resolveOrCreateCustomer(supabase, {
+        organizationId: params.organization_id,
+        phone: params.customer.phone,
+        name: params.customer_name,
+        email: params.customer_email ?? null,
+      });
+    } catch (err) {
+      // O erro do PostgREST/rede não vai ao LLM (e dali ao cliente): só o code ao log.
+      console.error(JSON.stringify({
+        evt: "agent_resolve_customer_failed",
+        code: (err as { code?: string } | null)?.code ?? null,
+      }));
+      return { ...GENERIC_FAIL };
     }
+    // WhatsApp (telefone verificado pelo canal): se o telefone resolve para
+    // outro cadastro (editado/fundido no meio do turno), reserva para o que hoje
+    // o detém e só loga o evento.
+    if (resolved.id !== params.customer.id) {
+      console.error(JSON.stringify({ evt: "agent_customer_identity_mismatch", claimedIdentity: false }));
+    }
+    customerId = resolved.id;
   }
 
   const hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
@@ -257,7 +261,7 @@ export async function createReservation(supabase: SupabaseClient, params: {
     date: params.date,
     time: params.time,
     partySize: params.party_size,
-    customerId: resolved.id,
+    customerId,
     notes: params.notes ?? null,
     status: "confirmed",
     // Load-bearing: o trigger `enqueue_confirmation_notification` pula a

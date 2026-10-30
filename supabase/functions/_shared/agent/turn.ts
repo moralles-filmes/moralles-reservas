@@ -67,6 +67,18 @@ import {
   type IngestionSource,
 } from "../whatsapp-inbound-queue-core.ts";
 import { jsonLog } from "../security.ts";
+
+/**
+ * Campos de log de um erro de claim/CAS: só a classe e o `code`, como o
+ * `tool_error` do despacho. A mensagem do PostgREST pode trazer dado do cliente.
+ */
+function errorLogFields(err: unknown): { errorClass: string; code?: string } {
+  const code = (err as { code?: unknown } | null)?.code;
+  return {
+    errorClass: err instanceof Error ? err.name : typeof err,
+    ...(typeof code === "string" ? { code } : {}),
+  };
+}
 import { resolveHandoffClock } from "../handoff-clock-core.ts";
 import {
   decideSameProviderFallback,
@@ -471,7 +483,7 @@ export function createAgentTurn(io: AgentTurnIO) {
           .eq("status", conv.status)
           .select("id");
         if (resolveErr) {
-          jsonLog("warn", { requestId, evt: "handoff_auto_resolve_failed", convId: conv.id, err: resolveErr.message });
+          jsonLog("warn", { requestId, evt: "handoff_auto_resolve_failed", convId: conv.id, ...errorLogFields(resolveErr) });
           await finish("handoff_state_changed");
           return;
         }
@@ -547,7 +559,7 @@ export function createAgentTurn(io: AgentTurnIO) {
           ).select("id");
           if (claimErr) {
             // Falha fechada: sem a janela reivindicada, não há aviso.
-            jsonLog("warn", { requestId, evt: "handoff_reminder_claim_failed", convId: conv.id, err: claimErr.message });
+            jsonLog("warn", { requestId, evt: "handoff_reminder_claim_failed", convId: conv.id, ...errorLogFields(claimErr) });
           }
           reminded = !claimErr && Array.isArray(claimedRows) && claimedRows.length > 0;
         }
@@ -571,10 +583,10 @@ export function createAgentTurn(io: AgentTurnIO) {
                 .eq("last_silenced_reply_at", claimedAt)
                 .select("id");
               if (revertErr) {
-                jsonLog("warn", { requestId, evt: "handoff_reminder_revert_failed", convId: conv.id, err: revertErr.message });
+                jsonLog("warn", { requestId, evt: "handoff_reminder_revert_failed", convId: conv.id, ...errorLogFields(revertErr) });
               }
             } catch (e) {
-              jsonLog("warn", { requestId, evt: "handoff_reminder_revert_failed", convId: conv.id, err: String(e) });
+              jsonLog("warn", { requestId, evt: "handoff_reminder_revert_failed", convId: conv.id, ...errorLogFields(e) });
             }
           }
         } else if (!shouldRemind) {
@@ -672,7 +684,7 @@ export function createAgentTurn(io: AgentTurnIO) {
       p_ttl_seconds: AI_LOCK_TTL_SECONDS,
     });
     if (claimErr) {
-      jsonLog("warn", { requestId, evt: "ai_lock_claim_failed", convId: conv.id, err: claimErr.message });
+      jsonLog("warn", { requestId, evt: "ai_lock_claim_failed", convId: conv.id, ...errorLogFields(claimErr) });
       throw new Error("ai_lock_claim_failed");
     } else if (claimed !== true) {
       // Outro irmão da rajada detém o lock. Desiste — mas via finish() pra que

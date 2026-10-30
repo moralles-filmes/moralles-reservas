@@ -203,8 +203,11 @@ describe("agentToolsFor", () => {
     const { phone: _phone, ...resto } = original.parameters.properties as Record<string, unknown>;
     expect(comPorta.parameters.properties).toEqual(resto);
     expect(comPorta.parameters.required).toEqual(original.parameters.required);
-    expect(comPorta.description).toBe(original.description);
+    // Com porta a descrição não cita telefone; sem porta fica byte a byte igual.
+    expect(comPorta.description).not.toMatch(/telefone/i);
+    expect(original.description).toMatch(/telefone/i);
     expect(get(agentToolsFor({})).parameters.properties).toHaveProperty("phone");
+    expect(get(agentToolsFor({})).description).toBe(original.description);
     expect(get(agentToolsFor({}))).toBe(original);
   });
 
@@ -255,18 +258,17 @@ describe("cliente nulo (identidade declarada sem telefone)", () => {
 
 describe("link_customer_phone", () => {
   it("válido seguido de create_reservation reserva para o cliente ligado e registra no ledger", async () => {
-    const port = fakePort({ link: { ok: true, customer: LINKED } });
+    const port = fakePort({ link: { ok: true, customer: { id: LINKED.id, phone: LINKED.phone } } });
     const { call, state } = await setup({ port });
-    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, name: "Fulana Cadastrada", phone: LINKED.phone });
     h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-nova", reservationCode: "NOVA2345" });
 
     expect(await call("link_customer_phone", { phone: "(11) 98888-7777", name: "Ana" })).toEqual({ success: true, message: "Número registrado." });
     expect(port.seen.links).toEqual([{ phone: "(11) 98888-7777", name: "Ana" }]);
-    expect(state.customer).toEqual(LINKED);
+    expect(state.customer).toEqual({ id: LINKED.id, phone: LINKED.phone });
     expect(state.mutatingToolUsed, "link_customer_phone é idempotente e não desliga o retry").toBe(false);
 
     const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
-    expect(h.resolveOrCreateCustomer).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ organizationId: "org-a", phone: LINKED.phone, name: "Ana" }));
+    expect(h.resolveOrCreateCustomer, "identidade declarada não cria nem mescla cadastro").not.toHaveBeenCalled();
     expect(h.reserveSlot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ unitId: "unit-a", customerId: LINKED.id, source: "instagram" }));
     expect(port.seen.recorded).toEqual(["res-nova"]);
     expect(out).toMatchObject({ success: true, reservation_code: "NOVA2345" });
@@ -465,15 +467,22 @@ describe("identidade declarada só alcança reservas do ledger", () => {
 });
 
 describe("create_reservation", () => {
-  it("com porta, customer_email do LLM nunca chega ao cadastro (C1)", async () => {
+  it("com porta, customer_email do LLM nunca chega ao cadastro nem ao slot (C1) e o cadastro não é tocado", async () => {
     const { call } = await setup({ ctx: { customer: LINKED, phone: LINKED.phone } });
-    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
     h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-ig", reservationCode: "IGIG2345" });
     await call("create_reservation", { customer_name: "Ana", customer_email: "atacante@exemplo.invalid", date: "2099-01-10", time: "20:00", party_size: 2 });
-    expect(h.resolveOrCreateCustomer).toHaveBeenCalledTimes(1);
-    expect(h.resolveOrCreateCustomer.mock.calls[0][1]).toMatchObject({ email: null });
-    expect(JSON.stringify(h.resolveOrCreateCustomer.mock.calls)).not.toContain("atacante");
+    expect(h.resolveOrCreateCustomer).not.toHaveBeenCalled();
     expect(JSON.stringify(h.reserveSlot.mock.calls)).not.toContain("atacante");
+  });
+
+  it("com porta, createReservation não faz I/O de cliente e reserva direto com customer.id (R4-f)", async () => {
+    const { call, calls } = await setup({ ctx: { customer: LINKED, phone: LINKED.phone } });
+    h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-ig", reservationCode: "IGIG2345" });
+    const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
+    expect(out).toMatchObject({ success: true, reservation_code: "IGIG2345" });
+    expect(h.resolveOrCreateCustomer).not.toHaveBeenCalled();
+    expect(calls).not.toContainEqual(["from", "customers"]);
+    expect(h.reserveSlot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ customerId: LINKED.id }));
   });
 
   it("controle (C1): no WhatsApp o customer_email continua indo ao cadastro", async () => {
@@ -493,20 +502,6 @@ describe("create_reservation", () => {
     expect(out).toMatchObject({ success: true, reservation_code: "WAWA2345" });
     expect(logs.some((l) => l.includes('"evt":"agent_customer_identity_mismatch"'))).toBe(true);
     expect(JSON.stringify(logs)).not.toContain(LINKED.phone);
-  });
-
-  it("identidade declarada divergente dá erro genérico, sem reserveSlot e sem ledger (M1)", async () => {
-    const port = fakePort();
-    const { call, state } = await setup({ ctx: { customer: LINKED, phone: LINKED.phone }, port });
-    h.resolveOrCreateCustomer.mockResolvedValue({ id: "outro-cliente", phone: LINKED.phone });
-    const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
-    expect(out).toEqual({ success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." });
-    expect(h.reserveSlot).not.toHaveBeenCalled();
-    expect(port.seen.recorded).toEqual([]);
-    expect(logs.some((l) => l.includes('"evt":"agent_customer_identity_mismatch"'))).toBe(true);
-    expect(JSON.stringify(logs)).not.toContain(LINKED.phone);
-    expect(state.mutatingToolUsed).toBe(true);
-    expect(state.lastMutationOutcome).toBe("UNKNOWN");
   });
 
   it("sem porta (WhatsApp) não chama ledger e a origem é a do canal", async () => {

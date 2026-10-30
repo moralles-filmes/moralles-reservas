@@ -95,3 +95,38 @@ describe("despacho de ferramentas", () => {
     expect(returned).not.toMatch(/\berr\b/);
   });
 });
+
+describe("núcleo do agente: logs de claim/CAS e ferramenta sem porta (Task 4.0a)", () => {
+  const read = (p: string) => readFileSync(resolve(__dirname, "../..", p), "utf8").replace(/\r\n/g, "\n");
+  const turn = read("supabase/functions/_shared/agent/turn.ts");
+  const dispatch = read("supabase/functions/_shared/agent/tool-dispatch.ts");
+
+  it("logs do CAS do handoff e do claim da conversa gravam só a classe e o code, nunca a mensagem do erro", () => {
+    for (const evt of [
+      "handoff_auto_resolve_failed",
+      "handoff_reminder_claim_failed",
+      "handoff_reminder_revert_failed",
+      "ai_lock_claim_failed",
+    ]) {
+      const lines = turn.split("\n").filter((l) => l.includes(`evt: "${evt}"`));
+      expect(lines.length, evt).toBeGreaterThan(0);
+      for (const l of lines) {
+        expect(l, evt).toContain("...errorLogFields(");
+        expect(l, evt).not.toMatch(/err: |\.message/);
+      }
+    }
+    const helper = turn.slice(turn.indexOf("function errorLogFields"), turn.indexOf("function errorLogFields") + 400);
+    expect(helper).toContain("errorClass");
+    expect(helper).toContain("code");
+    expect(helper).not.toContain("message");
+  });
+
+  it("link_customer_phone sem porta não tem ramo próprio: cai no default do despacho", () => {
+    const at = dispatch.indexOf('case "link_customer_phone":');
+    const body = dispatch.slice(at, dispatch.indexOf("default:", at));
+    expect(body).toContain("if (port) {");
+    expect(body).not.toContain("Tool desconhecida");
+    // O último `break` do ramo fica dentro do `if (port)`: sem porta o fluxo cai no default.
+    expect(body.trimEnd().endsWith("break;\n            }")).toBe(true);
+  });
+});
