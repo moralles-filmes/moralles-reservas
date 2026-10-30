@@ -4,8 +4,8 @@ import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { UtensilsCrossed } from "lucide-react";
+import { CardContent, CardHeader } from "@/components/ui/card";
+import { BrandMark } from "@/components/layouts/BrandMark";
 import { toast } from "sonner";
 
 export default function ResetPassword() {
@@ -38,20 +38,21 @@ export default function ResetPassword() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader className="text-center">
-          <div className="flex justify-center mb-2">
-            <UtensilsCrossed className="h-8 w-8 text-primary" />
+    <div className="ambient min-h-[100dvh] flex items-center justify-center bg-background px-4 py-8">
+      <div className="glass rounded-panel w-full max-w-[400px] text-card-foreground">
+        <CardHeader className="p-6 text-center sm:p-8">
+          <div className="mb-4 flex justify-center">
+            <BrandMark />
           </div>
-          <CardTitle>Nova senha</CardTitle>
+          <h1 className="text-2xl font-semibold tracking-tight">Nova senha</h1>
           <p className="text-sm text-muted-foreground">Moralles Reservas</p>
         </CardHeader>
-        <CardContent>
+        <CardContent className="px-6 pb-6 sm:px-8 sm:pb-8">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1">
               <Label htmlFor="password">Nova senha</Label>
               <Input
+                className="h-12 sm:h-11 coarse:h-12 text-base"
                 id="password"
                 type="password"
                 value={password}
@@ -64,6 +65,7 @@ export default function ResetPassword() {
             <div className="space-y-1">
               <Label htmlFor="confirm">Confirmar senha</Label>
               <Input
+                className="h-12 sm:h-11 coarse:h-12 text-base"
                 id="confirm"
                 type="password"
                 value={confirm}
@@ -72,12 +74,12 @@ export default function ResetPassword() {
                 placeholder="repita a senha"
               />
             </div>
-            <Button type="submit" className="w-full" disabled={loading}>
+            <Button type="submit" className="w-full h-12 sm:h-11" disabled={loading}>
               {loading ? "Salvando..." : "Salvar nova senha"}
             </Button>
           </form>
         </CardContent>
-      </Card>
+      </div>
     </div>
   );
 }
