@@ -14,6 +14,8 @@
  * Só tipos: nada aqui entra no bundle.
  */
 
+import type { ReservationInsertRow } from "../availability.ts";
+
 export type AgentChannel = "whatsapp" | "instagram";
 
 /**
@@ -38,8 +40,19 @@ export type LinkPhoneResult =
 export interface ClaimedIdentityPort {
   /** Reservas criadas por este contato (ledger). Lido uma vez por turno. */
   reservationIds(): Promise<string[]>;
-  /** Acrescenta ao ledger a reserva recém-criada pelo agente. */
-  recordReservation(reservationId: string): Promise<void>;
+  /**
+   * Substitui o INSERT do `reserveSlot` (mesmo retorno do hook). O adapter grava
+   * a reserva E a linha do ledger numa transação (RPC
+   * `create_instagram_contact_reservation`), que confere sob lock o cliente
+   * (vivo, da organização, igual ao ligado ao contato), a unidade e a origem, e
+   * aplica o teto de reservas ativas do contato. É a ÚNICA barreira de
+   * identidade do núcleo com porta. Recusa e falha voltam em `error.code`
+   * (o 23505 da mesa dispara o retry do `reserveSlot`).
+   */
+  insertReservation(row: ReservationInsertRow): Promise<{
+    data: { id: string; status: string; payment_status: string | null } | null;
+    error: { code?: string } | null;
+  }>;
   /** Liga o telefone declarado ao contato; nenhum id atravessa a porta. */
   linkPhone(input: { phone: string; name: string }): Promise<LinkPhoneResult>;
 }

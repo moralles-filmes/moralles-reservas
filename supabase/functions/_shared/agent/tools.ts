@@ -14,6 +14,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   checkAvailability as checkAvailabilityCore,
   reserveSlot,
+  type ReserveSlotParams,
 } from "../availability.ts";
 import { resolveOrCreateCustomer } from "../resolve-customer.ts";
 import type { AgentReservationSource } from "./channel-context.ts";
@@ -207,10 +208,17 @@ export async function createReservation(supabase: SupabaseClient, params: {
    */
   customer: { id: string; phone: string };
   /**
-   * Identidade declarada (Instagram): telefone digitado, não verificado. Muda
-   * só o desfecho de identidade divergente (recusa em vez de seguir).
+   * Identidade declarada (Instagram): telefone digitado, não verificado. Com
+   * ela o núcleo não faz I/O de cliente e a reserva só nasce pelo
+   * `insertReservation` da porta.
    */
   claimedIdentity: boolean;
+  /**
+   * INSERT da porta (`ClaimedIdentityPort.insertReservation`): grava reserva e
+   * ledger numa transação. Repassado ao `reserveSlot` só com identidade
+   * declarada; sem ele, a identidade declarada falha fechado.
+   */
+  insertReservation?: ReserveSlotParams["insertReservation"];
   unit_id: string;
   organization_id: string;
   source: AgentReservationSource;
@@ -220,9 +228,14 @@ export async function createReservation(supabase: SupabaseClient, params: {
   let customerId: string;
   if (params.claimedIdentity) {
     // Identidade declarada: nenhum I/O de cliente aqui (nem resolveOrCreateCustomer,
-    // nem leitura de `customers`). O id vem do estado do despacho, nunca do LLM; a
-    // conferência (cliente vivo, da organização e igual ao ligado ao contato) é
-    // feita sob lock pela RPC atômica da Task 4.0b.
+    // nem leitura de `customers`). O id vem do estado do despacho, nunca do LLM.
+    // A ÚNICA barreira é a RPC `create_instagram_contact_reservation`, atrás do
+    // `insertReservation` da porta: confere sob lock que o cliente está vivo, é
+    // da organização e é o ligado ao contato. Sem o hook, nada de INSERT direto.
+    if (!params.insertReservation) {
+      console.error(JSON.stringify({ evt: "agent_claimed_identity_without_insert_hook" }));
+      return { ...GENERIC_FAIL };
+    }
     customerId = params.customer.id;
   } else {
     // Resolve customer com merge preservando dados:
@@ -267,6 +280,8 @@ export async function createReservation(supabase: SupabaseClient, params: {
     // Load-bearing: o trigger `enqueue_confirmation_notification` pula a
     // origem do agente; sem isso o cliente recebe a confirmação duplicada.
     source: params.source,
+    // Só com identidade declarada; sem porta, a chamada de sempre (paridade).
+    ...(params.claimedIdentity ? { insertReservation: params.insertReservation } : {}),
   });
 
   // `=== false`, não `!`: com `strict: false` o `!` não estreita a união.

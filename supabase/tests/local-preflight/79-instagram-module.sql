@@ -32,7 +32,14 @@
 --   positivo por caso, C-IG-6.1..C-IG-6.4 (7992–7995): autorização no SQL de
 --   store/disconnect, contatos só por RPC/trigger DEFINER e anonimização
 --   irreversível, conversa IG sem wa_chat_lid. O IG-2.1 passa a conferir
---   service_role só com SELECT em contatos. 7918–7919 e 7996–7999 livres.
+--   service_role só com SELECT em contatos.
+-- Task 4.0b (migration 20261029200600_instagram_contact_reservation_atomic.sql,
+--   Rulings R4-a/R4-b; base: 79a seção 3d): casos IG-7.1..IG-7.6 (7983–7988)
+--   e controles C-IG-7.1 (7989), C-IG-7.2..C-IG-7.5 (7996–7999) e C-IG-7.6
+--   (7918): reserva + ledger numa transação com a identidade conferida pela
+--   RPC, teto de 3 reservas ativas, falha do ledger desfaz a reserva, record
+--   recusa reserva de outro contato, teto de 3 trocas de cliente em 30 dias,
+--   ACL. Livres: 7907, 7919, 7948–7949, 7958–7959, 7968–7969, 7977, 7979.
 --
 -- BASE (banco próprio `ig79`, README seção 79):
 --   00 -> 01 -> 09a -> 106 -> 79a -> 20260905143453 -> 20261017160000
@@ -120,6 +127,16 @@ begin
                   where conrelid = 'public.reservations'::regclass and conname = 'reservations_source_check'
                     and pg_get_constraintdef(oid) like '%''instagram''%') then
     raise exception '79: reservations_source_check sem a origem instagram. Aplique a migration 20261029200400_reservations_source_instagram antes (sem ela, este abort e o RED esperado).';
+  end if;
+  if not exists (select 1 from pg_attribute where attrelid = 'public.reservations'::regclass and attname = 'payment_status' and not attisdropped)
+     or not exists (select 1 from pg_attribute where attrelid = 'public.reservations'::regclass and attname = 'table_id' and not attisdropped)
+     or to_regclass('public.reservations_unique_active_table_slot') is null then
+    raise exception '79 exige o 79a da Task 4.0b (secao 3d: colunas de reserva que o reserveSlot grava e o indice unico da mesa; README, secao 79).';
+  end if;
+  if to_regprocedure('public.create_instagram_contact_reservation(uuid,jsonb)') is null
+     or not exists (select 1 from pg_attribute where attrelid = 'public.instagram_contacts'::regclass and attname = 'link_changes_count' and not attisdropped)
+     or not exists (select 1 from pg_attribute where attrelid = 'public.instagram_contacts'::regclass and attname = 'link_changes_window_started_at' and not attisdropped) then
+    raise exception '79: reserva atomica do contato do Instagram ausente (create_instagram_contact_reservation, instagram_contacts.link_changes_count/link_changes_window_started_at). Aplique a migration 20261029200600_instagram_contact_reservation_atomic antes (sem ela, este abort e o RED esperado).';
   end if;
   if not exists (select 1 from public.units where id = 'a0d79000-0000-4000-8000-0000000000aa')
      or not exists (select 1 from public.platform_admins where user_id = 'a0d79000-0000-4000-8000-0000000000c1') then
@@ -4697,6 +4714,627 @@ begin
          else 'FALHOU sem_perna=' || s1 || ' restaurado=' || d end);
 end $$;
 
+-- ═══ Task 4.0b: reserva + ledger numa transação e tetos por contato ═════════
+-- Migration 20261029200600_instagram_contact_reservation_atomic.sql. Base: 79a
+-- seção 3d (colunas de reserva que o `reserveSlot` grava e o índice único da
+-- mesa da 056). Casos IG-7.1..IG-7.6 (7983–7988) e controles C-IG-7.1..C-IG-7.6
+-- (7989, 7996–7999, 7918).
+
+-- Linha como `reserveSlot` monta (`ReservationInsertRow`), em jsonb.
+create or replace function pg_temp.ig79_row(p_cust uuid, p_unit uuid, p_source text, p_date date, p_time text, p_code text, p_table uuid, p_status text default 'confirmed')
+returns jsonb language sql as $$
+  select jsonb_build_object(
+    'customer_id', p_cust, 'unit_id', p_unit, 'table_id', p_table,
+    'date', p_date, 'time', p_time, 'party_size', 2, 'notes', null,
+    'reservation_code', p_code, 'status', p_status,
+    'applied_discount_percent', null, 'source', p_source)
+$$;
+
+-- SQL de create_instagram_contact_reservation devolvendo 'id|status|payment_status'.
+create or replace function pg_temp.ig79_mk(p_contact uuid, p_row jsonb)
+returns text language sql as $$
+  select format('select r.id::text || ''|'' || r.status || ''|'' || coalesce(r.payment_status, ''-'') '
+                'from public.create_instagram_contact_reservation(%L::uuid, %L::jsonb) r', p_contact, p_row)
+$$;
+
+-- SQL de link_instagram_contact_customer que devolve 'ok'.
+create or replace function pg_temp.ig79_link(p_contact uuid, p_customer uuid)
+returns text language sql as $$
+  select pg_temp.ig79_void(format('select public.link_instagram_contact_customer(%L::uuid, %L::uuid)', p_contact, p_customer))
+$$;
+
+-- ─── IG-7.1: criação atômica, identidade conferida pela RPC ────────────────
+-- Contato de UA ligado a C1. Recusados com o MESMO 42501 e sem gravar:
+-- unidade da linha = UA2 (mesma organização), cliente da linha = C2 (identidade
+-- declarada divergente, M-1), cliente de outra organização, cliente apagado,
+-- contato anonimizado, contato sem cliente, contato inexistente, origem
+-- `whatsapp`, origem nula, `customer_id` que não é uuid e linha nula. A linha
+-- válida devolve id/status/payment_status, grava a reserva na unidade do
+-- contato com origem `instagram`, UMA linha no ledger (contato, UA) e o
+-- trigger real enfileira a confirmação (D6).
+create or replace function pg_temp.ig79_case_71() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  ua2 constant uuid := 'a0d79000-0000-4000-8000-0000000071a2';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  org_b constant uuid := 'a0d79000-0000-4000-8000-00000000000b';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c1 constant uuid := 'a0d79000-0000-4000-8000-000000007101';
+  c2 constant uuid := 'a0d79000-0000-4000-8000-000000007102';
+  c_b constant uuid := 'a0d79000-0000-4000-8000-000000007103';
+  c_del constant uuid := 'a0d79000-0000-4000-8000-000000007104';
+  f constant text := 'ERR 42501:instagram_contact_reservation_forbidden';
+  d1 date := (now() at time zone 'America/Sao_Paulo')::date + 1;
+  acc uuid; k uuid; k_sem uuid; k_anon uuid; rid uuid;
+  e_unid text; e_cli text; e_cli_b text; e_del text; e_anon text; e_sem text; e_ghost text;
+  e_src text; e_src_null text; e_txt text; e_null text; ok text;
+  linha text; led text; n_out int; n_codes int; n_led int;
+begin
+  begin
+    insert into public.units (id, organization_id, name) values (ua2, org_a, 'ig79 UA2 71');
+    insert into public.customers (id, organization_id, name, phone, deleted_at) values
+      (c1, org_a, 'ig79 cliente 71', '11990007101', null),
+      (c2, org_a, 'ig79 cliente 71b', '11990007102', null),
+      (c_b, org_b, 'ig79 cliente 71 org B', '11990007103', null),
+      (c_del, org_a, 'ig79 cliente 71 apagado', '11990007104', now());
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79710001', 'conta_71', 'tok-71-A-000001', owner_a)));
+    k := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-71', 'user71', null)));
+    k_sem := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-71s', 'user71s', null)));
+    k_anon := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-71x', 'user71x', null)));
+    update public.instagram_contacts set customer_id = c1, customer_linked_at = now() where id in (k, k_anon);
+    update public.instagram_contacts set igsid = null, username = null, name = null, anonymized_at = now() where id = k_anon;
+
+    e_unid := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua2, 'instagram', d1, '20:00', 'IG79-7101', null)));
+    e_cli := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c2, ua, 'instagram', d1, '20:00', 'IG79-7102', null)));
+    e_cli_b := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c_b, ua, 'instagram', d1, '20:00', 'IG79-7103', null)));
+    e_del := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c_del, ua, 'instagram', d1, '20:00', 'IG79-7104', null)));
+    e_anon := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k_anon, pg_temp.ig79_row(c1, ua, 'instagram', d1, '20:00', 'IG79-7105', null)));
+    e_sem := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k_sem, pg_temp.ig79_row(c1, ua, 'instagram', d1, '20:00', 'IG79-7106', null)));
+    e_ghost := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(gen_random_uuid(), pg_temp.ig79_row(c1, ua, 'instagram', d1, '20:00', 'IG79-7107', null)));
+    e_src := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'whatsapp', d1, '20:00', 'IG79-7108', null)));
+    e_src_null := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, null, d1, '20:00', 'IG79-7109', null)));
+    e_txt := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k,
+      pg_temp.ig79_row(c1, ua, 'instagram', d1, '20:00', 'IG79-7110', null) || '{"customer_id": "nao-e-uuid"}'::jsonb));
+    e_null := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, null));
+
+    ok := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d1, '20:00', 'IG79-7111', null)));
+    rid := pg_temp.ig79_uuid(split_part(ok, '|', 1));
+    select r.unit_id || '|' || r.customer_id || '|' || r.source || '|' || r.status || '|' || r.date || '|' || r.time
+           || '|' || r.party_size || '|' || coalesce(r.table_id::text, '-') || '|' || coalesce(r.notes, '-')
+      into linha from public.reservations r where r.id = rid;
+    select coalesce(string_agg(l.instagram_contact_id || '|' || l.unit_id, ','), '<nenhuma>') into led
+      from public.instagram_contact_reservations l where l.reservation_id = rid;
+    select count(*) into n_out from public.notification_outbox o where o.reservation_id = rid and o.kind = 'confirmation' and o.status = 'pending';
+    select count(*) into n_codes from public.reservations r where r.reservation_code like 'IG79-71%';
+    select count(*) into n_led from public.instagram_contact_reservations l where l.instagram_contact_id in (k, k_sem, k_anon);
+
+    raise exception using errcode = 'P0R79', message =
+      case when acc is not null and k is not null and k_sem is not null and k_anon is not null
+            and e_unid = f and e_cli = f and e_cli_b = f and e_del = f and e_anon = f and e_sem = f
+            and e_ghost = f and e_src = f and e_src_null = f and e_txt = f and e_null = f
+            and rid is not null and ok = rid || '|confirmed|-'
+            and linha = ua || '|' || c1 || '|instagram|confirmed|' || d1 || '|20:00:00|2|-|-'
+            and led = k || '|' || ua
+            and n_out = 1 and n_codes = 1 and n_led = 1 then 'PASSOU'
+           else 'FALHOU outra_unidade=' || e_unid || ' outro_cliente=' || e_cli || ' cliente_org_B=' || e_cli_b
+                || ' cliente_apagado=' || e_del || ' contato_anonimizado=' || e_anon || ' contato_sem_cliente=' || e_sem
+                || ' contato_inexistente=' || e_ghost || ' origem_whatsapp=' || e_src || ' origem_nula=' || e_src_null
+                || ' cliente_nao_uuid=' || e_txt || ' linha_nula=' || e_null || ' valido=' || ok
+                || ' linha=' || coalesce(linha, '<null>') || ' ledger=' || coalesce(led, '<null>')
+                || ' outbox=' || n_out || ' reservas=' || n_codes || ' linhas_ledger=' || n_led end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-7.2: teto de 3 reservas ativas por contato ─────────────────────────
+-- No ledger do contato já há uma reserva de ontem (confirmada) e uma cancelada
+-- de amanhã: nenhuma conta. Hoje (BRT), amanhã e depois (pending) passam; a 4ª
+-- recebe P0001 `instagram_contact_reservation_limit` sem gravar. Cancelada uma
+-- ativa, a próxima passa. Outro contato do MESMO cliente tem teto próprio.
+create or replace function pg_temp.ig79_case_72() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c1 constant uuid := 'a0d79000-0000-4000-8000-000000007201';
+  r_past constant uuid := 'a0d79000-0000-4000-8000-000000007211';
+  r_canc constant uuid := 'a0d79000-0000-4000-8000-000000007212';
+  lim constant text := 'ERR P0001:instagram_contact_reservation_limit';
+  d0 date := (now() at time zone 'America/Sao_Paulo')::date;
+  acc uuid; k uuid; k2 uuid;
+  a1 text; a2 text; a3 text; a4 text; a5 text; a6 text; b1 text; n4 int; n_led int;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values (c1, org_a, 'ig79 cliente 72', '11990007201');
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79720001', 'conta_72', 'tok-72-A-000001', owner_a)));
+    k := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-72', 'user72', null)));
+    k2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-72b', 'user72b', null)));
+    update public.instagram_contacts set customer_id = c1, customer_linked_at = now() where id in (k, k2);
+    insert into public.reservations (id, unit_id, customer_id, party_size, date, time, reservation_code, status, source) values
+      (r_past, ua, c1, 2, d0 - 1, '20:00', 'IG79-7201', 'confirmed', 'instagram'),
+      (r_canc, ua, c1, 2, d0 + 1, '20:00', 'IG79-7202', 'cancelled', 'instagram');
+    insert into public.instagram_contact_reservations (reservation_id, instagram_contact_id, unit_id) values
+      (r_past, k, ua), (r_canc, k, ua);
+
+    a1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d0, '12:00', 'IG79-7221', null)));
+    a2 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d0 + 1, '20:00', 'IG79-7222', null)));
+    a3 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d0 + 2, '20:00', 'IG79-7223', null, 'pending')));
+    a4 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d0 + 3, '20:00', 'IG79-7224', null)));
+    select count(*) into n4 from public.reservations r where r.reservation_code = 'IG79-7224';
+    update public.reservations set status = 'cancelled' where id = pg_temp.ig79_uuid(split_part(a2, '|', 1));
+    a5 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d0 + 4, '20:00', 'IG79-7225', null)));
+    a6 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d0 + 5, '20:00', 'IG79-7226', null)));
+    b1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k2, pg_temp.ig79_row(c1, ua, 'instagram', d0 + 6, '20:00', 'IG79-7227', null)));
+    select count(*) into n_led from public.instagram_contact_reservations l where l.instagram_contact_id = k;
+
+    raise exception using errcode = 'P0R79', message =
+      case when acc is not null and k is not null and k2 is not null
+            and a1 like '%|confirmed|-' and a2 like '%|confirmed|-' and a3 like '%|pending|-'
+            and a4 = lim and n4 = 0
+            and a5 like '%|confirmed|-' and a6 = lim
+            and b1 like '%|confirmed|-'
+            and n_led = 6 then 'PASSOU'
+           else 'FALHOU hoje=' || a1 || ' amanha=' || a2 || ' depois=' || a3 || ' quarta=' || a4 || ' quarta_gravada=' || n4
+                || ' apos_cancelar=' || a5 || ' de_novo_no_teto=' || a6 || ' outro_contato=' || b1 || ' ledger=' || n_led end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-7.3: falha no ledger desfaz a reserva; 23505 da mesa propaga ───────
+-- (a) Um CHECK provisório que recusa a linha do ledger deste contato: a RPC
+-- devolve o 23514 dele e NENHUMA reserva fica gravada. (b) Duas criações na
+-- mesma mesa/dia/hora: a 2ª recebe o 23505 do índice da 056 como está (o retry
+-- do TS depende do code), sem reserva nem linha de ledger a mais.
+create or replace function pg_temp.ig79_case_73() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c1 constant uuid := 'a0d79000-0000-4000-8000-000000007301';
+  t constant uuid := 'a0d79000-0000-4000-8000-000000007399';
+  d1 date := (now() at time zone 'America/Sao_Paulo')::date + 1;
+  acc uuid; k uuid;
+  e_led text; n_falha int; n_out_falha int; ok1 text; e_dup text; n_dup int; n_led int;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values (c1, org_a, 'ig79 cliente 73', '11990007301');
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79730001', 'conta_73', 'tok-73-A-000001', owner_a)));
+    k := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-73', 'user73', null)));
+    update public.instagram_contacts set customer_id = c1, customer_linked_at = now() where id = k;
+
+    execute format('alter table public.instagram_contact_reservations add constraint ig79_73_falha check (instagram_contact_id <> %L::uuid) not valid', k);
+    e_led := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d1, '19:00', 'IG79-7301', null)));
+    select count(*) into n_falha from public.reservations r where r.reservation_code = 'IG79-7301';
+    select count(*) into n_out_falha from public.notification_outbox o join public.reservations r on r.id = o.reservation_id
+     where r.reservation_code = 'IG79-7301';
+    alter table public.instagram_contact_reservations drop constraint ig79_73_falha;
+
+    ok1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d1, '20:00', 'IG79-7311', t)));
+    e_dup := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k, pg_temp.ig79_row(c1, ua, 'instagram', d1, '20:00', 'IG79-7312', t)));
+    select count(*) into n_dup from public.reservations r where r.reservation_code = 'IG79-7312';
+    select count(*) into n_led from public.instagram_contact_reservations l where l.instagram_contact_id = k;
+
+    raise exception using errcode = 'P0R79', message =
+      case when acc is not null and k is not null
+            and e_led like 'ERR 23514:%ig79_73_falha%' and n_falha = 0 and n_out_falha = 0
+            and ok1 like '%|confirmed|-'
+            and e_dup like 'ERR 23505:%reservations_unique_active_table_slot%' and n_dup = 0
+            and n_led = 1 then 'PASSOU'
+           else 'FALHOU ledger_falho=' || e_led || ' reservas_apos_falha=' || n_falha || ' outbox_apos_falha=' || n_out_falha
+                || ' mesa_1=' || ok1 || ' mesa_2=' || e_dup || ' reservas_mesa_2=' || n_dup || ' ledger=' || n_led end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-7.4: record recusa reserva já no ledger de outro contato ───────────
+-- Dois contatos de UA ligados ao MESMO cliente. A reserva criada por K1 está
+-- no ledger de K1: K2 registrá-la dá 42501 e o ledger não muda; K1 repetir é
+-- no-op. Uma reserva fora do ledger entra para K2, e daí K1 é recusado.
+create or replace function pg_temp.ig79_case_74() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c1 constant uuid := 'a0d79000-0000-4000-8000-000000007401';
+  r2 constant uuid := 'a0d79000-0000-4000-8000-000000007412';
+  f constant text := 'ERR 42501:instagram_contact_reservation_forbidden';
+  d1 date := (now() at time zone 'America/Sao_Paulo')::date + 1;
+  acc uuid; k1 uuid; k2 uuid; rid uuid;
+  ok text; x_outro text; x_mesmo text; x_novo text; x_volta text; led text;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values (c1, org_a, 'ig79 cliente 74', '11990007401');
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79740001', 'conta_74', 'tok-74-A-000001', owner_a)));
+    k1 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-74', 'user74', null)));
+    k2 := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-74b', 'user74b', null)));
+    update public.instagram_contacts set customer_id = c1, customer_linked_at = now() where id in (k1, k2);
+    insert into public.reservations (id, unit_id, customer_id, party_size, date, time, reservation_code, status, source)
+    values (r2, ua, c1, 2, d1, '21:00', 'IG79-7412', 'confirmed', 'web');
+
+    ok := pg_temp.ig79_q('service_role', null, pg_temp.ig79_mk(k1, pg_temp.ig79_row(c1, ua, 'instagram', d1, '20:00', 'IG79-7411', null)));
+    rid := pg_temp.ig79_uuid(split_part(ok, '|', 1));
+    x_outro := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
+      'public.record_instagram_contact_reservation(%L::uuid, %L::uuid)', k2, rid)));
+    x_mesmo := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
+      'public.record_instagram_contact_reservation(%L::uuid, %L::uuid)', k1, rid)));
+    x_novo := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
+      'public.record_instagram_contact_reservation(%L::uuid, %L::uuid)', k2, r2)));
+    x_volta := pg_temp.ig79_q('service_role', null, pg_temp.ig79_void(format(
+      'public.record_instagram_contact_reservation(%L::uuid, %L::uuid)', k1, r2)));
+    select coalesce(string_agg(case when l.reservation_id = rid then 'criada' else 'avulsa' end || '>'
+                               || case when l.instagram_contact_id = k1 then 'K1' when l.instagram_contact_id = k2 then 'K2' else '?' end,
+                               ',' order by case when l.reservation_id = rid then 'criada' else 'avulsa' end), '<nenhuma>')
+      into led from public.instagram_contact_reservations l where l.reservation_id in (rid, r2);
+
+    raise exception using errcode = 'P0R79', message =
+      case when rid is not null and x_outro = f and x_mesmo = 'ok' and x_novo = 'ok' and x_volta = f
+            and led = 'avulsa>K2,criada>K1' then 'PASSOU'
+           else 'FALHOU criada=' || ok || ' outro_contato=' || x_outro || ' mesmo_contato=' || x_mesmo
+                || ' avulsa_K2=' || x_novo || ' avulsa_K1=' || x_volta || ' ledger=' || led end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-7.5: teto de trocas de cliente no link ─────────────────────────────
+-- Contato novo: contador 0 e janela nula. O primeiro link (de nulo) não conta;
+-- três trocas passam (contador 3); a 4ª dá P0001 `instagram_contact_link_limit`
+-- sem gravar (contato e conversa continuam no 4º cliente); cliente de outra
+-- organização continua recebendo o 42501 (identidade antes do teto); religar o
+-- mesmo cliente passa e não conta. Com a janela vencida (31 dias), a troca
+-- passa e abre janela nova (contador 1, início = now()).
+create or replace function pg_temp.ig79_case_75() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  org_a constant uuid := 'a0d79000-0000-4000-8000-00000000000a';
+  org_b constant uuid := 'a0d79000-0000-4000-8000-00000000000b';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  c1 constant uuid := 'a0d79000-0000-4000-8000-000000007501';
+  c2 constant uuid := 'a0d79000-0000-4000-8000-000000007502';
+  c3 constant uuid := 'a0d79000-0000-4000-8000-000000007503';
+  c4 constant uuid := 'a0d79000-0000-4000-8000-000000007504';
+  c5 constant uuid := 'a0d79000-0000-4000-8000-000000007505';
+  c_b constant uuid := 'a0d79000-0000-4000-8000-000000007509';
+  acc uuid; k uuid; y uuid;
+  s0 text; l1 text; s1 text; l2 text; l3 text; l4 text; s4 text; l5 text; s5 text; lb text; ls text; ss text; l6 text; s6 text;
+begin
+  begin
+    insert into public.customers (id, organization_id, name, phone) values
+      (c1, org_a, 'ig79 cliente 75-1', '11990007501'),
+      (c2, org_a, 'ig79 cliente 75-2', '11990007502'),
+      (c3, org_a, 'ig79 cliente 75-3', '11990007503'),
+      (c4, org_a, 'ig79 cliente 75-4', '11990007504'),
+      (c5, org_a, 'ig79 cliente 75-5', '11990007505'),
+      (c_b, org_b, 'ig79 cliente 75 org B', '11990007509');
+    acc := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_store(ua, '79750001', 'conta_75', 'tok-75-A-000001', owner_a)));
+    k := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, pg_temp.ig79_contact(acc, 'igsid-75', 'user75', 'IG 75')));
+    y := pg_temp.ig79_uuid(pg_temp.ig79_q('service_role', null, format('select public.get_or_create_instagram_conversation(%L::uuid)::text', k)));
+    select c.link_changes_count || '|' || (c.link_changes_window_started_at is not null) into s0 from public.instagram_contacts c where c.id = k;
+
+    l1 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_link(k, c1));
+    select c.link_changes_count || '|' || (c.link_changes_window_started_at is not null) into s1 from public.instagram_contacts c where c.id = k;
+    l2 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_link(k, c2));
+    l3 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_link(k, c3));
+    l4 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_link(k, c4));
+    select c.link_changes_count || '|' || (c.link_changes_window_started_at = now()) into s4 from public.instagram_contacts c where c.id = k;
+    l5 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_link(k, c5));
+    select c.customer_id || '|' || cv.customer_id || '|' || c.link_changes_count into s5
+      from public.instagram_contacts c join public.conversations cv on cv.instagram_contact_id = c.id where c.id = k;
+    lb := pg_temp.ig79_q('service_role', null, pg_temp.ig79_link(k, c_b));
+    ls := pg_temp.ig79_q('service_role', null, pg_temp.ig79_link(k, c4));
+    select c.customer_id || '|' || c.link_changes_count into ss from public.instagram_contacts c where c.id = k;
+
+    update public.instagram_contacts set link_changes_window_started_at = now() - interval '31 days' where id = k;
+    l6 := pg_temp.ig79_q('service_role', null, pg_temp.ig79_link(k, c5));
+    select c.customer_id || '|' || cv.customer_id || '|' || c.link_changes_count || '|' || (c.link_changes_window_started_at = now()) into s6
+      from public.instagram_contacts c join public.conversations cv on cv.instagram_contact_id = c.id where c.id = k;
+
+    raise exception using errcode = 'P0R79', message =
+      case when y is not null and s0 = '0|false'
+            and l1 = 'ok' and s1 = '0|false'
+            and l2 = 'ok' and l3 = 'ok' and l4 = 'ok' and s4 = '3|true'
+            and l5 = 'ERR P0001:instagram_contact_link_limit' and s5 = c4 || '|' || c4 || '|3'
+            and lb = 'ERR 42501:instagram_contact_link_forbidden'
+            and ls = 'ok' and ss = c4 || '|3'
+            and l6 = 'ok' and s6 = c5 || '|' || c5 || '|1|true' then 'PASSOU'
+           else 'FALHOU novo=' || coalesce(s0, '<null>') || ' primeiro_link=' || l1 || ' apos_primeiro=' || coalesce(s1, '<null>')
+                || ' troca2=' || l2 || ' troca3=' || l3 || ' troca4=' || l4 || ' apos_3_trocas=' || coalesce(s4, '<null>')
+                || ' quarta_troca=' || l5 || ' estado=' || coalesce(s5, '<null>') || ' org_B=' || lb
+                || ' religar=' || ls || ' apos_religar=' || coalesce(ss, '<null>')
+                || ' janela_vencida=' || l6 || ' apos_janela=' || coalesce(s6, '<null>') end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+-- ─── IG-7.6: ACL das três funções e das colunas novas ──────────────────────
+-- create/record/link: DEFINER com search_path vazio, EXECUTE só para
+-- service_role (nem PUBLIC, nem anon, nem authenticated); a chamada real do
+-- owner como authenticated dá 42501. `authenticated` lê as colunas novas do
+-- contato (policy de membro) e ninguém da API as escreve.
+create or replace function pg_temp.ig79_case_76() returns text language plpgsql as $f$
+declare
+  ua constant uuid := 'a0d79000-0000-4000-8000-0000000000aa';
+  owner_a constant uuid := 'a0d79000-0000-4000-8000-0000000000a1';
+  sig text; ruins text := ''; x_auth text; x_anon text;
+begin
+  begin
+    foreach sig in array array[
+      'public.create_instagram_contact_reservation(uuid,jsonb)',
+      'public.record_instagram_contact_reservation(uuid,uuid)',
+      'public.link_instagram_contact_customer(uuid,uuid)'] loop
+      if has_function_privilege('anon', sig, 'EXECUTE') then ruins := ruins || ' anon:' || sig; end if;
+      if has_function_privilege('authenticated', sig, 'EXECUTE') then ruins := ruins || ' authenticated:' || sig; end if;
+      if not has_function_privilege('service_role', sig, 'EXECUTE') then ruins := ruins || ' service_sem:' || sig; end if;
+      if exists (select 1 from pg_proc p, aclexplode(p.proacl) a where p.oid = sig::regprocedure and a.grantee = 0) then
+        ruins := ruins || ' public:' || sig;
+      end if;
+      if not exists (select 1 from pg_proc p where p.oid = sig::regprocedure and p.prosecdef
+                        and p.proconfig = array['search_path=""']) then
+        ruins := ruins || ' definer_search_path:' || sig;
+      end if;
+    end loop;
+    if not has_column_privilege('authenticated', 'public.instagram_contacts', 'link_changes_count', 'SELECT') then ruins := ruins || ' auth_sem_select_contador'; end if;
+    if has_column_privilege('authenticated', 'public.instagram_contacts', 'link_changes_count', 'INSERT,UPDATE')
+       or has_column_privilege('authenticated', 'public.instagram_contacts', 'link_changes_window_started_at', 'INSERT,UPDATE')
+       or has_column_privilege('service_role', 'public.instagram_contacts', 'link_changes_count', 'INSERT,UPDATE')
+       or has_column_privilege('service_role', 'public.instagram_contacts', 'link_changes_window_started_at', 'INSERT,UPDATE')
+       or has_column_privilege('anon', 'public.instagram_contacts', 'link_changes_count', 'SELECT,INSERT,UPDATE') then
+      ruins := ruins || ' escrita_nas_colunas_novas';
+    end if;
+    x_auth := pg_temp.ig79_q('authenticated', owner_a, pg_temp.ig79_mk(gen_random_uuid(), '{}'::jsonb));
+    x_anon := pg_temp.ig79_q('anon', null, pg_temp.ig79_mk(gen_random_uuid(), '{}'::jsonb));
+    if x_auth not like 'ERR 42501:permission denied for function create_instagram_contact_reservation%' then ruins := ruins || ' authenticated_chama=' || x_auth; end if;
+    if x_anon not like 'ERR 42501:permission denied for function create_instagram_contact_reservation%' then ruins := ruins || ' anon_chama=' || x_anon; end if;
+    raise exception using errcode = 'P0R79', message =
+      case when ruins = '' then 'PASSOU' else 'FALHOU' || ruins end;
+  exception
+    when sqlstate 'P0R79' then return sqlerrm;
+    when others then return 'FALHOU erro inesperado ' || sqlstate || ':' || sqlerrm;
+  end;
+end $f$;
+
+insert into t_res values
+  (7983, 'IG-7.1 create_instagram_contact_reservation: outra unidade, outro cliente (identidade divergente), cliente de outra org/apagado, contato anonimizado/sem cliente/inexistente, origem errada/nula, id nao uuid e linha nula com o mesmo 42501 sem gravar; valida grava reserva instagram + 1 linha de ledger + confirmacao', pg_temp.ig79_case_71()),
+  (7984, 'IG-7.2 teto de 3 reservas ativas por contato: passada e cancelada nao contam, a 4a recebe P0001 instagram_contact_reservation_limit sem gravar; cancelar libera; outro contato tem teto proprio', pg_temp.ig79_case_72()),
+  (7985, 'IG-7.3 falha no INSERT do ledger desfaz a reserva (zero reservas e zero outbox); 23505 da mesa propaga como esta, sem reserva nem ledger a mais', pg_temp.ig79_case_73()),
+  (7986, 'IG-7.4 record_instagram_contact_reservation: reserva no ledger de outro contato 42501 sem mudar o ledger; mesmo contato no-op; avulsa entra para K2 e K1 e recusado', pg_temp.ig79_case_74()),
+  (7987, 'IG-7.5 link: primeiro link nao conta, 3 trocas passam, a 4a em 30 dias da P0001 instagram_contact_link_limit sem gravar; outra org continua 42501; religar o mesmo nao conta; janela vencida abre outra', pg_temp.ig79_case_75()),
+  (7988, 'IG-7.6 ACL: create/record/link DEFINER com search_path vazio, EXECUTE so service_role (sem PUBLIC/anon/authenticated); colunas novas legiveis por authenticated e sem escrita pela API', pg_temp.ig79_case_76());
+
+-- ─── Controles positivos da Task 4.0b ───────────────────────────────────────
+-- Mesmo desenho dos anteriores: a sabotagem roda num subbloco desfeito, o caso
+-- tem de reprovar pelo motivo esperado, e depois passa de novo com o corpo
+-- conferido contra o catálogo.
+
+-- C-IG-7.1: create (a) sem a cláusula do cliente ligado (identidade
+-- divergente vira reserva), (b) sem a da unidade, (c) sem a do anonimizado,
+-- (d) sem a da origem.
+do $$
+declare
+  v_def text; v_mut text; s1 text; s2 text; s3 text; s4 text; d text;
+  frags text[] := array[
+    E'\n       or v_c_cust is null or v_c_cust is distinct from v_cust',
+    E'\n       or v_unit is null or v_unit is distinct from v_c_unit',
+    E'\n       or v_anon is not null',
+    E'\n       or (p_reservation->>''source'') is distinct from ''instagram'''];
+  res text[] := array[]::text[];
+  i int;
+begin
+  v_def := pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure);
+  for i in 1 .. array_length(frags, 1) loop
+    begin
+      v_mut := replace(pg_temp.ig79_lf(v_def), frags[i], '');
+      if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+      execute v_mut;
+      raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_71();
+    exception
+      when sqlstate 'P0R79' then res := res || sqlerrm;
+      when others then res := res || ('ERRO ' || sqlstate || ':' || sqlerrm);
+    end;
+  end loop;
+  s1 := res[1]; s2 := res[2]; s3 := res[3]; s4 := res[4];
+  d := pg_temp.ig79_case_71();
+  raise notice 'C-IG-7.1 sem cliente ligado: %', s1;
+  raise notice 'C-IG-7.1 sem unidade: %', s2;
+  raise notice 'C-IG-7.1 sem anonimizado: %', s3;
+  raise notice 'C-IG-7.1 sem origem: %', s4;
+  insert into t_res values (7989, 'C-IG-7.1 create sem a clausula do cliente ligado, da unidade, do anonimizado e da origem: IG-7.1 reprova nos quatro; restaurado passa',
+    case when s1 like 'FALHOU%outro_cliente=________-____-____-____-____________|confirmed|-%'
+          and s2 like 'FALHOU outra_unidade=________-____-____-____-____________|confirmed|-%'
+          and s3 like 'FALHOU%contato_anonimizado=________-____-____-____-____________|confirmed|-%'
+          and s4 like 'FALHOU%origem_whatsapp=________-____-____-____-____________|confirmed|-%'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU sem_cliente=' || s1 || ' sem_unidade=' || s2 || ' sem_anonimizado=' || s3 || ' sem_origem=' || s4 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-7.2: teto (a) 3 -> 4, (b) sem o filtro de status (a cancelada conta),
+-- (c) sem o filtro de data (a passada conta).
+do $$
+declare
+  v_def text; v_mut text; s1 text; s2 text; s3 text; d text;
+begin
+  v_def := pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure);
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'c_max_active constant integer := 3;', 'c_max_active constant integer := 4;');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_72();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'\n     and r.status in (''pending'', ''confirmed'')', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_72();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), E'\n     and r.date >= (now() at time zone ''America/Sao_Paulo'')::date', '');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_72();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_72();
+  raise notice 'C-IG-7.2 teto 4: %', s1;
+  raise notice 'C-IG-7.2 sem status: %', s2;
+  raise notice 'C-IG-7.2 sem data: %', s3;
+  insert into t_res values (7996, 'C-IG-7.2 teto 4, sem filtro de status e sem filtro de data: IG-7.2 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU%quarta=________-____-____-____-____________|confirmed|-%'
+          and s2 like 'FALHOU%depois=ERR P0001:instagram_contact_reservation_limit%'
+          and s3 like 'FALHOU%depois=ERR P0001:instagram_contact_reservation_limit%'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU teto4=' || s1 || ' sem_status=' || s2 || ' sem_data=' || s3 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-7.3: o INSERT do ledger engolindo o erro (reserva sem ledger).
+do $$
+declare
+  v_def text; v_mut text; s1 text; d text;
+begin
+  v_def := pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure);
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def),
+      E'  insert into public.instagram_contact_reservations (reservation_id, instagram_contact_id, unit_id)\n  values (v_id, p_contact_id, v_c_unit);',
+      E'  begin\n  insert into public.instagram_contact_reservations (reservation_id, instagram_contact_id, unit_id)\n  values (v_id, p_contact_id, v_c_unit);\n  exception when others then null;\n  end;');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_73();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_73();
+  raise notice 'C-IG-7.3 ledger engolido: %', s1;
+  insert into t_res values (7997, 'C-IG-7.3 INSERT do ledger engolindo o erro: IG-7.3 reprova (reserva gravada sem ledger); restaurado passa',
+    case when s1 like 'FALHOU ledger_falho=________-____-____-____-____________|confirmed|- reservas_apos_falha=1 %'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU ledger_engolido=' || s1 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-7.4: record sem a recusa do dono do ledger (volta o aceite calado).
+do $$
+declare
+  v_def text; v_mut text; s1 text; d text;
+begin
+  v_def := pg_get_functiondef('public.record_instagram_contact_reservation(uuid,uuid)'::regprocedure);
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_owner is distinct from p_contact_id then', 'if false then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_74();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_74();
+  raise notice 'C-IG-7.4 sem recusa do dono: %', s1;
+  insert into t_res values (7998, 'C-IG-7.4 record sem a recusa de reserva no ledger de outro contato: IG-7.4 reprova (aceite calado); restaurado passa',
+    case when s1 like 'FALHOU%outro_contato=ok %'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.record_instagram_contact_reservation(uuid,uuid)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU sem_recusa=' || s1 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-7.5: link (a) teto 3 -> 4, (b) religar o mesmo cliente conta, (c) a
+-- janela nunca vence.
+do $$
+declare
+  v_def text; v_mut text; s1 text; s2 text; s3 text; d text;
+begin
+  v_def := pg_get_functiondef('public.link_instagram_contact_customer(uuid,uuid)'::regprocedure);
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'c_max_link_changes constant integer := 3;', 'c_max_link_changes constant integer := 4;');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_75();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_cur is not null and v_cur is distinct from p_customer_id then', 'if v_cur is not null then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_75();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    v_mut := replace(pg_temp.ig79_lf(v_def), 'if v_window is null or v_window <= now() - c_link_window then', 'if v_window is null then');
+    if v_mut = pg_temp.ig79_lf(v_def) then raise exception using errcode = 'P0R79', message = 'TRECHO AUSENTE'; end if;
+    execute v_mut;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_75();
+  exception
+    when sqlstate 'P0R79' then s3 := sqlerrm;
+    when others then s3 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_75();
+  raise notice 'C-IG-7.5 teto 4: %', s1;
+  raise notice 'C-IG-7.5 religar conta: %', s2;
+  raise notice 'C-IG-7.5 janela nunca vence: %', s3;
+  insert into t_res values (7999, 'C-IG-7.5 link com teto 4, religar contando e janela que nunca vence: IG-7.5 reprova nos tres; restaurado passa',
+    case when s1 like 'FALHOU%quarta_troca=ok %'
+          and s2 like 'FALHOU%religar=ERR P0001:instagram_contact_link_limit %'
+          and s3 like 'FALHOU%janela_vencida=ERR P0001:instagram_contact_link_limit %'
+          and d = 'PASSOU'
+          and pg_get_functiondef('public.link_instagram_contact_customer(uuid,uuid)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU teto4=' || s1 || ' religar=' || s2 || ' janela=' || s3 || ' restaurado=' || d end);
+end $$;
+
+-- C-IG-7.6: (a) EXECUTE de create para authenticated, (b) create como
+-- SECURITY INVOKER.
+do $$
+declare
+  v_def text; v_acl text; s1 text; s2 text; d text;
+begin
+  v_def := pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure);
+  select p.proacl::text into v_acl from pg_proc p where p.oid = 'public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure;
+  begin
+    grant execute on function public.create_instagram_contact_reservation(uuid, jsonb) to authenticated;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_76();
+  exception
+    when sqlstate 'P0R79' then s1 := sqlerrm;
+    when others then s1 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  begin
+    alter function public.create_instagram_contact_reservation(uuid, jsonb) security invoker;
+    raise exception using errcode = 'P0R79', message = pg_temp.ig79_case_76();
+  exception
+    when sqlstate 'P0R79' then s2 := sqlerrm;
+    when others then s2 := 'ERRO ' || sqlstate || ':' || sqlerrm;
+  end;
+  d := pg_temp.ig79_case_76();
+  raise notice 'C-IG-7.6 EXECUTE para authenticated: %', s1;
+  raise notice 'C-IG-7.6 INVOKER: %', s2;
+  insert into t_res values (7918, 'C-IG-7.6 EXECUTE de create para authenticated e create como INVOKER: IG-7.6 reprova nos dois; restaurado passa',
+    case when s1 like 'FALHOU%authenticated:public.create_instagram_contact_reservation(uuid,jsonb)%'
+          and s2 like 'FALHOU%definer_search_path:public.create_instagram_contact_reservation(uuid,jsonb)%'
+          and d = 'PASSOU'
+          and (select p.proacl::text from pg_proc p where p.oid = 'public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure) = v_acl
+          and pg_get_functiondef('public.create_instagram_contact_reservation(uuid,jsonb)'::regprocedure) = v_def then 'PASSOU'
+         else 'FALHOU execute_authenticated=' || s1 || ' invoker=' || s2 || ' restaurado=' || d end);
+end $$;
+
 -- ─── IG-5.3 (Task 1.5, fix round 1): guarda de drift da migration ───────────
 -- A migration 20261029200400 exige, antes do COMMIT, exatamente UM CHECK de
 -- `source` (o `reservations_source_check`, validado). Este caso REAPLICA o
@@ -4768,14 +5406,14 @@ drop table if exists pg_temp.t_ig53;
 -- ─── Resultado ───────────────────────────────────────────────────────────────
 select ord, caso, veredito from t_res where ord between 7901 and 7999 order by ord;
 select count(*) as total, count(*) filter (where veredito = 'PASSOU') as passou
-  from t_res where ord between 7901 and 7999;   -- esperado: 77 e 77
+  from t_res where ord between 7901 and 7999;   -- esperado: 89 e 89
 
 do $$
 declare v_total int; v_ok int;
 begin
   select count(*), count(*) filter (where veredito = 'PASSOU') into v_total, v_ok
     from t_res where ord between 7901 and 7999;
-  if v_total <> 77 or v_ok <> 77 then
-    raise exception '79: esperado 77 e 77, obtido % e %', v_total, v_ok;
+  if v_total <> 89 or v_ok <> 89 then
+    raise exception '79: esperado 89 e 89, obtido % e %', v_total, v_ok;
   end if;
 end $$;

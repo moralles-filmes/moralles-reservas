@@ -241,6 +241,9 @@
       "authenticated, guarda platform_admin); as oito RPCs da fila e do ledger",
       "são só service_role e os dois wrappers de cron não têm EXECUTE de API:",
       "projeção 9/48/57.",
+      "A reserva atômica do contato do Instagram (20261029200600) acrescenta",
+      "create_instagram_contact_reservation e recria record_ e link_ do contato,",
+      "as três só service_role: projeção 9/48/57 inalterada.",
       "Estes totais são projeção de ACL, não leitura do Advisor de produção."
     ],
     "0028": 9,

@@ -2670,12 +2670,14 @@ P -f supabase/migrations/20261029200100_instagram_accounts_contacts.sql
 P -f supabase/migrations/20261029200200_instagram_inbound_queue.sql
 P -f supabase/migrations/20261029200300_conversations_instagram_channel.sql
 P -f supabase/migrations/20261029200400_reservations_source_instagram.sql
+P -f supabase/migrations/20261029200600_instagram_contact_reservation_atomic.sql
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN
 P -f supabase/migrations/20261029200000_instagram_module_grants.sql
 P -f supabase/migrations/20261029200100_instagram_accounts_contacts.sql
 P -f supabase/migrations/20261029200200_instagram_inbound_queue.sql
 P -f supabase/migrations/20261029200300_conversations_instagram_channel.sql
 P -f supabase/migrations/20261029200400_reservations_source_instagram.sql
+P -f supabase/migrations/20261029200600_instagram_contact_reservation_atomic.sql  # depois da 200100/200300: recria record/link
 P -f supabase/tests/local-preflight/79-instagram-module.sql   # GREEN de novo (idempotência)
 # 20261029200500_instagram_cron.sql NÃO roda aqui (sem pg_cron): é lida como
 # texto pelo gêmeo src/lib/instagram-queue-migration-twin.test.ts.
@@ -2697,9 +2699,11 @@ dos timestamps) e o que mais precisarem ao 79a, nunca ao 09a.
 controles 7970–7976, e no fix round 1 o IG-4.8 (7967) e o C-IG-4.8 (7978);
 7968–7969, 7977 e 7979 livres. Task 1.5: casos 7980–7982, controles
 7990–7991; 7983–7989 livres. Task 1.6 (fix round 1 dos gates): casos
-7914–7917, controles 7992–7995; 7918–7919 e 7996–7999 livres. O 79 imprime os
-ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **77 e
-77**); quem acrescenta
+7914–7917, controles 7992–7995. Task 4.0b: casos 7983–7988, controles 7989,
+7996–7999 e 7918; livres 7907, 7919, 7948–7949, 7958–7959, 7968–7969, 7977 e
+7979. O 79 imprime os
+ordinais, a contagem e **aborta** se ela divergir do esperado (hoje **89 e
+89**); quem acrescenta
 casos atualiza o número na última instrução do arquivo.
 
 **Task 1.1** (migration `20261029200000_instagram_module_grants.sql`):
@@ -2995,6 +2999,49 @@ trabalho (`ig79_fix3a`), 77/77 após aplicar e após reaplicar (antes do ajuste
 dos controles, 73/77: C-IG-4.2, 4.3, 4.6 e 4.8); com cópias sem CR das cinco
 (`ig79_fix3b`), 77/77 após aplicar e após reaplicar; o próprio 79 em CRLF
 sobre o `ig79_fix3a`, 77/77; RED na guarda (exit 3) nos dois bancos.
+
+**Task 4.0b** (migration `20261029200600_instagram_contact_reservation_atomic.sql`,
+Rulings R4-a/R4-b). Base acrescida no 79a (seção 3d): `reservations.table_id`
+(sem a FK para `tables`), o índice único da mesa da 056 VERBATIM (é o que
+devolve o 23505), `applied_discount_percent` da 051 e as três colunas de
+pagamento da 20260527140000 — as colunas que o `reserveSlot` grava e que a RPC
+nova insere. O 79a continua recusando rodar depois das migrations do Instagram:
+quem já tinha um `ig79` recria o banco. A migration roda DEPOIS da 200100 e da
+200300 também na reaplicação, porque recria `record_instagram_contact_reservation`
+e `link_instagram_contact_customer`. IG-7.1 (7983)
+`create_instagram_contact_reservation`: outra unidade da organização, outro
+cliente (identidade declarada divergente, M-1), cliente de outra organização,
+cliente apagado, contato anonimizado, sem cliente e inexistente, origem
+`whatsapp` ou nula, `customer_id` que não é uuid e linha nula recebem o MESMO
+`42501 instagram_contact_reservation_forbidden` sem gravar; a válida devolve
+id/status/payment_status, grava a reserva `instagram` na unidade do contato,
+UMA linha no ledger e a confirmação pendente (D6). IG-7.2 (7984) teto de 3
+ativas (pending/confirmed de hoje em BRT em diante): passada e cancelada não
+contam, a 4ª recebe `P0001 instagram_contact_reservation_limit` sem gravar,
+cancelar libera, outro contato do mesmo cliente tem teto próprio. IG-7.3
+(7985) um CHECK provisório no ledger faz a RPC falhar com 23514 e nenhuma
+reserva (nem outbox) sobra; a 2ª reserva na mesma mesa/dia/hora recebe o 23505
+do índice como está. IG-7.4 (7986) `record_…` recusa reserva já no ledger de
+outro contato e é no-op para o mesmo. IG-7.5 (7987) `link_…`: o primeiro link
+não conta, três trocas passam, a 4ª em 30 dias dá `P0001
+instagram_contact_link_limit` sem gravar, cliente de outra organização segue
+com o 42501 (identidade antes do teto), religar o mesmo cliente não conta e a
+janela vencida abre outra. IG-7.6 (7988) ACL das três (DEFINER, `search_path`
+vazio, EXECUTE só `service_role`) e das colunas novas do contato (leitura de
+membro, sem escrita pela API). Controles: C-IG-7.1 tira do corpo real a
+cláusula do cliente ligado, a da unidade, a do anonimizado e a da origem;
+C-IG-7.2 teto 3→4 e sem os filtros de status e de data; C-IG-7.3 o INSERT do
+ledger engolindo o erro (sobra reserva sem ledger); C-IG-7.4 `record_…` sem a
+recusa do dono; C-IG-7.5 teto de trocas 3→4, religar contando e janela que
+nunca vence; C-IG-7.6 EXECUTE para `authenticated` e a RPC como INVOKER. Todos
+conferem o corpo/ACL restaurado contra o catálogo.
+
+**Resultados da Task 4.0b** (30/10/2026, PostgreSQL 18 local descartável,
+loopback, banco recriado do zero): RED na guarda nova (exit 3) com
+200000–200400; 89/89 após aplicar a 200600, 89/89 após reaplicar as seis
+(duas execuções do 79 no mesmo banco), 89/89 com a 200600 em CRLF e com cópias
+LF das seis, sem linha residual em `reservations`, `instagram_contacts`, ledger,
+`customers` de teste, outbox nem constraint provisória.
 
 O que NÃO prova: o caminho PostgREST/JWT real (papel e claims simulados no SQL)
 nem o ACL do banco de produção (isso é do `audit-function-acl.ts`). A

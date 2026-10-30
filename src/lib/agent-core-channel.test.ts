@@ -363,7 +363,7 @@ describe('turno com identidade declarada nunca leva o cadastro ao prompt (R3-a)'
     const links: unknown[] = [];
     const claimedIdentity = port ? {
       reservationIds: async () => [],
-      recordReservation: async () => {},
+      insertReservation: async () => ({ data: null, error: { code: '42501' } }),
       linkPhone: async (input: unknown) => { links.push(input); return { ok: true, customer: cadastro }; },
     } : undefined;
     llm.requests.length = 0;

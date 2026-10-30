@@ -5,7 +5,8 @@ import type {
   ClaimedIdentityPort,
   LinkPhoneResult,
 } from "../../supabase/functions/_shared/agent/channel-context";
-import { agentTools } from "../../supabase/functions/_shared/agent/tools";
+import { agentTools, createReservation } from "../../supabase/functions/_shared/agent/tools";
+import type { ReservationInsertRow } from "../../supabase/functions/_shared/availability";
 
 /**
  * Despacho das ferramentas do agente (`_shared/agent/tool-dispatch.ts`, Task 3.4).
@@ -88,16 +89,16 @@ function fakePort(opts: {
   ledger?: string[];
   /** Um resultado fixo, ou uma sequência (um por chamada; o último se repete). */
   link?: LinkPhoneResult | LinkPhoneResult[];
-  /** `true` = falha sempre; número = falha nas N primeiras tentativas. */
-  recordFails?: boolean | number;
+  /** Resposta da porta ao INSERT (a RPC atômica): erro com `code`, ou lança. */
+  insertError?: { code?: string };
+  insertThrows?: Error;
   /** A leitura do ledger lança. */
   readFails?: boolean;
   /** `linkPhone` lança este erro. */
   linkThrows?: Error;
 } = {}) {
   const ledger = [...(opts.ledger ?? [])];
-  const seen = { reads: 0, recorded: [] as string[], recordAttempts: 0, links: [] as unknown[] };
-  const failures = opts.recordFails === true ? Infinity : Number(opts.recordFails ?? 0);
+  const seen = { reads: 0, inserted: [] as ReservationInsertRow[], links: [] as unknown[] };
   const links = Array.isArray(opts.link) ? opts.link : opts.link ? [opts.link] : [];
   const port: ClaimedIdentityPort = {
     reservationIds: async () => {
@@ -105,11 +106,14 @@ function fakePort(opts: {
       if (opts.readFails) throw new Error("leitura do ledger indisponível");
       return [...ledger];
     },
-    recordReservation: async (id: string) => {
-      seen.recordAttempts += 1;
-      if (seen.recordAttempts <= failures) throw new Error("ledger indisponível");
-      seen.recorded.push(id);
+    // Como a RPC: reserva e ledger nascem juntos, ou nada.
+    insertReservation: async (row) => {
+      seen.inserted.push(row);
+      if (opts.insertThrows) throw opts.insertThrows;
+      if (opts.insertError) return { data: null, error: opts.insertError };
+      const id = `res-porta-${seen.inserted.length}`;
       ledger.push(id);
+      return { data: { id, status: row.status, payment_status: null }, error: null };
     },
     linkPhone: async (input) => {
       seen.links.push(input);
@@ -150,6 +154,27 @@ const reservation = (id: string, code: string, over: Row = {}): Row => ({
   id, reservation_code: code, unit_id: "unit-a", customer_id: LINKED.id, status: "confirmed",
   date: "2099-01-10", time: "20:00:00", party_size: 2, notes: "ALERGIA NA RESERVA", created_at: "2026-10-01T00:00:00Z", ...over,
 });
+
+/**
+ * `reserveSlot` falso que segue o contrato do real: com `insertReservation`
+ * a linha vai ao hook; sem ele, "insert direto" (`res-direto`). A tabela
+ * `rows`, se dada, ganha a reserva criada para as leituras seguintes.
+ */
+const MSG_INSERT_FAILED = "Não foi possível concluir a reserva agora. Tente novamente em instantes.";
+function slotViaHook(code: string, rows?: Row[]) {
+  return async (_db: unknown, p: { insertReservation?: (r: ReservationInsertRow) => Promise<{ data: { id: string } | null; error: unknown }>; customerId: string; unitId: string; date: string; time: string; partySize: number; source: "web" | "whatsapp" | "instagram" }) => {
+    const row: ReservationInsertRow = {
+      customer_id: p.customerId, unit_id: p.unitId, table_id: null, date: p.date, time: p.time, party_size: p.partySize,
+      notes: null, reservation_code: code, status: "confirmed", applied_discount_percent: null, source: p.source,
+    };
+    const { data, error } = p.insertReservation
+      ? await p.insertReservation(row)
+      : { data: { id: "res-direto" }, error: null };
+    if (error || !data) return { success: false, reason: "insert_failed", message: MSG_INSERT_FAILED };
+    rows?.push(reservation(data.id, code));
+    return { success: true, reservationId: data.id, reservationCode: code };
+  };
+}
 
 let logs: string[] = [];
 beforeEach(() => {
@@ -257,10 +282,10 @@ describe("cliente nulo (identidade declarada sem telefone)", () => {
 });
 
 describe("link_customer_phone", () => {
-  it("válido seguido de create_reservation reserva para o cliente ligado e registra no ledger", async () => {
+  it("válido seguido de create_reservation reserva para o cliente ligado pela porta (reserva + ledger juntos)", async () => {
     const port = fakePort({ link: { ok: true, customer: { id: LINKED.id, phone: LINKED.phone } } });
     const { call, state } = await setup({ port });
-    h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-nova", reservationCode: "NOVA2345" });
+    h.reserveSlot.mockImplementation(slotViaHook("NOVA2345"));
 
     expect(await call("link_customer_phone", { phone: "(11) 98888-7777", name: "Ana" })).toEqual({ success: true, message: "Número registrado." });
     expect(port.seen.links).toEqual([{ phone: "(11) 98888-7777", name: "Ana" }]);
@@ -269,11 +294,15 @@ describe("link_customer_phone", () => {
 
     const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
     expect(h.resolveOrCreateCustomer, "identidade declarada não cria nem mescla cadastro").not.toHaveBeenCalled();
-    expect(h.reserveSlot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ unitId: "unit-a", customerId: LINKED.id, source: "instagram" }));
-    expect(port.seen.recorded).toEqual(["res-nova"]);
+    expect(h.reserveSlot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      unitId: "unit-a", customerId: LINKED.id, source: "instagram", insertReservation: expect.any(Function),
+    }));
+    // A linha foi à porta (RPC atômica), não ao INSERT direto.
+    expect(port.seen.inserted).toHaveLength(1);
+    expect(port.seen.inserted[0]).toMatchObject({ customer_id: LINKED.id, unit_id: "unit-a", source: "instagram", reservation_code: "NOVA2345" });
     expect(out).toMatchObject({ success: true, reservation_code: "NOVA2345" });
     const json = JSON.stringify(out);
-    expect(json, "o id interno da reserva chegou ao LLM").not.toContain("res-nova");
+    expect(json, "o id interno da reserva chegou ao LLM").not.toContain("res-porta");
     expect(json).not.toContain("reservationId");
     expect(json, "o nome gravado no cadastro chegou ao LLM").not.toContain("Fulana");
     expect(state.mutatingToolUsed).toBe(true);
@@ -301,61 +330,57 @@ describe("link_customer_phone", () => {
     const { call } = await setup({ port, rows });
     await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
     expect(await call("get_reservation", { reservation_code: "NOVA2345" })).toMatchObject({ found: false });
-    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
-    h.reserveSlot.mockImplementation(async () => {
-      rows.push(reservation("res-nova", "NOVA2345"));
-      return { success: true, reservationId: "res-nova", reservationCode: "NOVA2345" };
-    });
+    h.reserveSlot.mockImplementation(slotViaHook("NOVA2345", rows));
     await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
     expect(await call("get_reservation", { reservation_code: "NOVA2345" })).toMatchObject({ found: true, reservation_code: "NOVA2345" });
     expect(port.seen.reads, "reservationIds() relido no mesmo turno").toBe(1);
   });
 
-  it("falha ao registrar no ledger só vai ao log e não abre a reserva no turno", async () => {
-    const port = fakePort({ ledger: [], link: { ok: true, customer: LINKED }, recordFails: true });
-    const rows: Row[] = [];
-    const { call } = await setup({ port, rows });
-    await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
-    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
-    h.reserveSlot.mockImplementation(async () => {
-      rows.push(reservation("res-nova", "NOVA2345"));
-      return { success: true, reservationId: "res-nova", reservationCode: "NOVA2345" };
+  // M-1: a RPC é a única barreira de identidade (cliente vivo, da organização e
+  // igual ao ligado ao contato). A recusa dela (42501) e o teto (P0001) chegam
+  // ao LLM como erro genérico e nada entra no ledger do turno.
+  for (const [nome, opts] of [
+    ["identidade divergente recusada pela RPC (42501)", { insertError: { code: "42501" } }],
+    ["teto de reservas ativas do contato (P0001)", { insertError: { code: "P0001" } }],
+  ] as const) {
+    it(`${nome}: erro genérico ao LLM, nada no ledger em memória`, async () => {
+      const port = fakePort({ ledger: [], link: { ok: true, customer: LINKED }, ...opts });
+      const rows: Row[] = [];
+      const { call, calls, state } = await setup({ port, rows });
+      await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
+      h.reserveSlot.mockImplementation(slotViaHook("NOVA2345", rows));
+      const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
+      expect(out).toEqual({ success: false, reason: "insert_failed", message: MSG_INSERT_FAILED });
+      expect(port.seen.inserted).toHaveLength(1);
+      expect(state.lastMutationOutcome).toBe("UNKNOWN");
+      expect(await call("list_customer_reservations")).toEqual({ found: false, message: "Você não tem reservas ativas no momento." });
+      expect(calls.some((c) => c[0] === "in" && c[1] === "id"), "consultou com ids no ledger").toBe(false);
+      expect(logs.some((l) => l.includes("agent_reservation_ledger_record_failed"))).toBe(false);
     });
+  }
+
+  it("a porta lança (rede): erro genérico do despacho, sem a mensagem no log, nada no ledger", async () => {
+    const err = Object.assign(new Error("fetch failed: https://projeto.supabase.co"), { code: "ECONNRESET" });
+    const port = fakePort({ ledger: [], link: { ok: true, customer: LINKED }, insertThrows: err });
+    const { call, calls } = await setup({ port });
+    await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
+    h.reserveSlot.mockImplementation(slotViaHook("NOVA2345"));
     const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
-    expect(out).toMatchObject({ success: true, reservation_code: "NOVA2345" });
-    expect(port.seen.recordAttempts, "o registro no ledger é tentado duas vezes (M2)").toBe(2);
-    expect(logs.filter((l) => l.includes('"evt":"agent_reservation_ledger_record_failed"'))).toHaveLength(1);
-    expect(await call("get_reservation", { reservation_code: "NOVA2345" })).toMatchObject({ found: false });
+    expect(out).toEqual({ error: "Não foi possível concluir esta ação agora. Tente novamente em instantes." });
+    expect(logs.join("\n")).not.toContain("supabase.co");
+    expect(await call("list_customer_reservations")).toMatchObject({ found: false });
+    expect(calls.some((c) => c[0] === "in" && c[1] === "id")).toBe(false);
   });
 
-  it("registro no ledger que falha uma vez é refeito, entra no ledger e não loga falha (M2)", async () => {
-    const port = fakePort({ ledger: [], link: { ok: true, customer: LINKED }, recordFails: 1 });
-    const rows: Row[] = [];
-    const { call } = await setup({ port, rows });
-    await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
-    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
-    h.reserveSlot.mockImplementation(async () => {
-      rows.push(reservation("res-nova", "NOVA2345"));
-      return { success: true, reservationId: "res-nova", reservationCode: "NOVA2345" };
-    });
-    await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
-    expect(port.seen.recordAttempts).toBe(2);
-    expect(port.seen.recorded).toEqual(["res-nova"]);
-    expect(logs.some((l) => l.includes('"evt":"agent_reservation_ledger_record_failed"'))).toBe(false);
-    expect(await call("get_reservation", { reservation_code: "NOVA2345" })).toMatchObject({ found: true });
-  });
-
-  it("registro ok e releitura do ledger falha: o log é o da leitura, não o do registro (M3)", async () => {
+  it("reserva criada e releitura do ledger falha: loga a leitura e devolve o sucesso", async () => {
     // Nenhum get/list antes do create: o ledger ainda não foi lido no turno.
     const port = fakePort({ link: { ok: true, customer: LINKED }, readFails: true });
     const { call } = await setup({ port });
     await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
-    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
-    h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-nova", reservationCode: "NOVA2345" });
+    h.reserveSlot.mockImplementation(slotViaHook("NOVA2345"));
     const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
     expect(out).toMatchObject({ success: true, reservation_code: "NOVA2345" });
-    expect(port.seen.recorded).toEqual(["res-nova"]);
-    expect(logs.some((l) => l.includes('"evt":"agent_reservation_ledger_record_failed"')), "registro feito foi logado como falha").toBe(false);
+    expect(port.seen.inserted).toHaveLength(1);
     expect(logs.some((l) => l.includes('"evt":"agent_reservation_ledger_read_failed"'))).toBe(true);
   });
 
@@ -475,14 +500,40 @@ describe("create_reservation", () => {
     expect(JSON.stringify(h.reserveSlot.mock.calls)).not.toContain("atacante");
   });
 
-  it("com porta, createReservation não faz I/O de cliente e reserva direto com customer.id (R4-f)", async () => {
-    const { call, calls } = await setup({ ctx: { customer: LINKED, phone: LINKED.phone } });
-    h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-ig", reservationCode: "IGIG2345" });
+  it("com porta, createReservation não faz I/O de cliente e a linha vai só à porta (R4-f, R4-a)", async () => {
+    const port = fakePort();
+    const { call, calls } = await setup({ ctx: { customer: LINKED, phone: LINKED.phone }, port });
+    h.reserveSlot.mockImplementation(slotViaHook("IGIG2345"));
     const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
     expect(out).toMatchObject({ success: true, reservation_code: "IGIG2345" });
     expect(h.resolveOrCreateCustomer).not.toHaveBeenCalled();
     expect(calls).not.toContainEqual(["from", "customers"]);
-    expect(h.reserveSlot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ customerId: LINKED.id }));
+    expect(h.reserveSlot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ customerId: LINKED.id, insertReservation: expect.any(Function) }));
+    // O reserveSlot falso faz "insert direto" (res-direto) quando não recebe o
+    // hook: a porta ter recebido a linha é o que separa os dois caminhos.
+    expect(port.seen.inserted).toHaveLength(1);
+    expect(port.seen.inserted[0].customer_id).toBe(LINKED.id);
+  });
+
+  it("I-2: createReservation com identidade declarada e SEM o hook falha fechado, sem reserveSlot nem I/O", async () => {
+    const { db, calls } = fakeDb();
+    const out = await createReservation(db as never, {
+      customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2, hall_name: "Salão",
+      customer: { id: LINKED.id, phone: LINKED.phone }, claimedIdentity: true,
+      unit_id: "unit-a", organization_id: "org-a", source: "instagram",
+    });
+    expect(out).toEqual({ success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." });
+    expect(h.reserveSlot).not.toHaveBeenCalled();
+    expect(h.resolveOrCreateCustomer).not.toHaveBeenCalled();
+    expect(calls, "resolveHallId ou outra leitura antes da recusa").toEqual([]);
+  });
+
+  it("sem porta, reserveSlot é chamado sem hook (insert direto de sempre)", async () => {
+    const { call } = await setup({ port: null, ctx: { channel: "whatsapp", customer: LINKED, phone: LINKED.phone, reservationSource: "whatsapp" } });
+    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
+    h.reserveSlot.mockImplementation(slotViaHook("WAWA2345"));
+    expect(await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 })).toMatchObject({ success: true });
+    expect(h.reserveSlot.mock.calls[0][1]).not.toHaveProperty("insertReservation");
   });
 
   it("controle (C1): no WhatsApp o customer_email continua indo ao cadastro", async () => {

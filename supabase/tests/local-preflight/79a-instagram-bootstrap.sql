@@ -18,6 +18,8 @@
 --   3. RLS de `unit_members` com as duas policies de produção (013, com os
 --      helpers já em `app_private` depois da 106): o `exists` da policy de
 --      UPDATE enxerga só o que o papel real enxerga.
+--   3b–3d. Conversas (Task 1.4), origem da reserva e outbox (Task 1.5) e as
+--      colunas de reserva que o `reserveSlot` grava (Task 4.0b).
 --   4. Fixtures (UUIDs fixos `a0d79000-…`): org A com a unidade UA (owner,
 --      gerente, operador), org B com a unidade UB (gerente), e um
 --      platform_admin sem membership.
@@ -262,6 +264,42 @@ revoke all on function public.guard_notification_outbox_insert_scope() from publ
 drop trigger if exists notification_outbox_insert_scope on public.notification_outbox;
 create trigger notification_outbox_insert_scope before insert on public.notification_outbox
 for each row execute function public.guard_notification_outbox_insert_scope();
+
+-- ─── 3d. Colunas de reserva que o `reserveSlot` grava (Task 4.0b) ──────────
+-- A RPC `create_instagram_contact_reservation` (20261029200600) insere a linha
+-- que `_shared/availability.ts` monta, e o 09a só tem o núcleo de
+-- `reservations`. Entram na forma de produção:
+--   * `table_id`: tipo e nulidade da 001 (20260427190619), SEM a FK para
+--     `tables` (o harness não tem mesas; a RPC só copia o valor do jsonb).
+--   * `reservations_unique_active_table_slot`: VERBATIM da 056
+--     (20260517100400:23-26); é o que devolve o 23505 do retry do TS.
+--   * `applied_discount_percent`: VERBATIM da 051 (20260516171355:11-16).
+--   * `payment_status`, `payment_amount_cents`, `payment_expires_at`: VERBATIM
+--     da 20260527140000:54-64 (sem as colunas do Stripe que a RPC não grava).
+alter table reservations
+  add column if not exists table_id uuid;
+
+create unique index if not exists reservations_unique_active_table_slot
+  on reservations (table_id, date, time)
+  where table_id is not null
+    and status in ('pending', 'confirmed');
+
+alter table public.reservations
+  add column if not exists applied_discount_percent integer null
+    check (
+      applied_discount_percent is null
+      or (applied_discount_percent >= 0 and applied_discount_percent <= 100)
+    );
+
+alter table reservations
+  add column if not exists payment_status text
+    default null
+    check (payment_status is null or payment_status in (
+      'not_required', 'pending_payment', 'paid', 'failed', 'refunded', 'expired'
+    )),
+  add column if not exists payment_amount_cents int
+    check (payment_amount_cents is null or payment_amount_cents >= 0),
+  add column if not exists payment_expires_at timestamptz;
 
 -- ─── 4. Fixtures ─────────────────────────────────────────────────────────────
 -- UA (org A): owner …a1, gerente …a2, operador …a3. UB (org B): gerente …b2.

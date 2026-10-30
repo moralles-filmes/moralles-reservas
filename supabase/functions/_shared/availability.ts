@@ -810,6 +810,30 @@ export interface ReserveSlotParams extends AvailabilityParams {
    *  quando true e a validação normal recusa (sem mesa, fora de horário,
    *  bloqueio etc), cria a reserva mesmo assim como flutuante (table_id null). */
   override?: boolean;
+  /** Substitui só o INSERT (mesma linha, mesmo select de volta). Sem hook, o insert direto de sempre. */
+  insertReservation?: (row: ReservationInsertRow) => Promise<{ data: { id: string; status: string; payment_status: string | null } | null; error: { code?: string } | null }>;
+}
+
+/**
+ * A linha que `reserveSlot` grava em `reservations`, exatamente como o INSERT
+ * direto a monta. O hook `insertReservation` a recebe sem mudança; a RPC do
+ * Instagram (`create_instagram_contact_reservation`) insere só estas colunas.
+ */
+export interface ReservationInsertRow {
+  customer_id: string;
+  unit_id: string;
+  table_id: string | null;
+  date: string;
+  time: string;
+  party_size: number;
+  notes: string | null;
+  reservation_code: string;
+  status: "pending" | "confirmed";
+  payment_status?: "not_required";
+  payment_amount_cents?: null;
+  payment_expires_at?: null;
+  applied_discount_percent: number | null;
+  source: "web" | "whatsapp" | "instagram";
 }
 
 export type ReserveSlotResult =
@@ -883,28 +907,33 @@ export async function reserveSlot(
     const initialState = params.initialStateForSlot
       ? await params.initialStateForSlot(check.suggestedHallId)
       : null;
-    const { data, error } = await supabase
-      .from("reservations")
-      .insert({
-        customer_id: params.customerId,
-        unit_id: params.unitId,
-        table_id: check.suggestedTableId ?? null,
-        date: params.date,
-        time: params.time,
-        party_size: params.partySize,
-        notes: params.notes ?? null,
-        reservation_code: code,
-        status: initialState?.status ?? status,
-        ...(initialState ? {
-          payment_status: initialState.paymentStatus,
-          payment_amount_cents: initialState.paymentAmountCents,
-          payment_expires_at: initialState.paymentExpiresAt,
-        } : {}),
-        applied_discount_percent: appliedDiscountPercent,
-        source: params.source ?? "web",
-      })
-      .select("id,status,payment_status")
-      .single();
+    const row: ReservationInsertRow = {
+      customer_id: params.customerId,
+      unit_id: params.unitId,
+      table_id: check.suggestedTableId ?? null,
+      date: params.date,
+      time: params.time,
+      party_size: params.partySize,
+      notes: params.notes ?? null,
+      reservation_code: code,
+      status: initialState?.status ?? status,
+      ...(initialState ? {
+        payment_status: initialState.paymentStatus,
+        payment_amount_cents: initialState.paymentAmountCents,
+        payment_expires_at: initialState.paymentExpiresAt,
+      } : {}),
+      applied_discount_percent: appliedDiscountPercent,
+      source: params.source ?? "web",
+    };
+    // Com hook (identidade declarada do Instagram), a porta grava reserva e
+    // ledger numa transação; o retry de 23505 abaixo vale para os dois caminhos.
+    const { data, error } = params.insertReservation
+      ? await params.insertReservation(row)
+      : await supabase
+        .from("reservations")
+        .insert(row)
+        .select("id,status,payment_status")
+        .single();
 
     if (!error && data) {
       return {

@@ -12,10 +12,11 @@
  * - Sem cliente no estado, as ferramentas de cliente devolvem
  *   `NEED_PHONE_RESULT` sem I/O.
  * - As ferramentas de reserva só alcançam o ledger do contato
- *   (`reservationIds()`, lido uma vez por turno). Reserva criada no turno entra
- *   no ledger local só se `recordReservation` resolveu: o ledger do banco é a
- *   autoridade, e uma reserva que não está nele também não estará no próximo
- *   turno — abri-la só neste turno daria acesso que o banco não sustenta.
+ *   (`reservationIds()`, lido uma vez por turno). `create_reservation` passa
+ *   `port.insertReservation` ao `reserveSlot`: o adapter grava reserva e ledger
+ *   numa transação (RPC `create_instagram_contact_reservation`, a única
+ *   barreira de identidade). Só reserva criada com sucesso entra no ledger do
+ *   turno; recusa ou falha da RPC não deixa reserva nem id.
  * - O que volta ao LLM passa por allowlist de chaves: sem `notes` da reserva
  *   (a equipe pode anotar alergia/VIP nela) e sem campo do cadastro. Chave
  *   nova num resultado é descartada até entrar na lista.
@@ -196,6 +197,9 @@ export function createToolDispatcher(a: {
               ...(port ? { customer_email: undefined } : {}),
               customer: { id: current.id, phone: current.phone },
               claimedIdentity: !!port,
+              // Com porta, o INSERT vai à RPC atômica (reserva + ledger). Sempre
+              // explícito: nada do `input` do LLM chega como hook.
+              insertReservation: port ? (row) => port.insertReservation(row) : undefined,
               unit_id: unitId,
               organization_id: organizationId,
               source: ctx.reservationSource,
@@ -206,46 +210,23 @@ export function createToolDispatcher(a: {
             // ao cliente uma espera que não vai acontecer. `success: false`
             // é ignorância sobre o que ficou de pé: UNKNOWN.
             state.lastMutationOutcome = created?.success === true ? "COMPLETED" : "UNKNOWN";
-            // O id interno não vai ao LLM; com porta, entra no ledger do contato.
+            // O id interno não vai ao LLM. Com porta, a RPC já gravou o ledger
+            // junto com a reserva: aqui só o ledger em memória do turno, para as
+            // ferramentas seguintes. Se o ledger ainda não foi lido, a leitura já
+            // a traz.
             const { reservationId, ...forLlm } = created ?? {};
             if (port && created?.success === true && typeof reservationId === "string") {
-              // Duas tentativas: sem o registro, a reserva some das consultas do
-              // contato e o LLM pode criar outra no turno seguinte. Gravação
-              // atômica com a criação fica para o adapter (Bloco 4).
-              let recorded = false;
-              let recordError: unknown = null;
-              for (let attempt = 0; attempt < 2 && !recorded; attempt++) {
-                try {
-                  await port.recordReservation(reservationId);
-                  recorded = true;
-                } catch (err) {
-                  recordError = err;
-                }
-              }
-              if (!recorded) {
+              try {
+                const ids = await ledgerIds();
+                if (!ids.includes(reservationId)) ids.push(reservationId);
+              } catch (err) {
                 jsonLog("error", {
                   requestId,
-                  evt: "agent_reservation_ledger_record_failed",
+                  evt: "agent_reservation_ledger_read_failed",
                   channelId,
                   unitId,
-                  attempts: 2,
-                  errorClass: recordError instanceof Error ? recordError.name : typeof recordError,
+                  errorClass: err instanceof Error ? err.name : typeof err,
                 });
-              } else {
-                // Registrado: a reserva fica visível às ferramentas seguintes do
-                // turno. Se o ledger ainda não foi lido, a leitura já a traz.
-                try {
-                  const ids = await ledgerIds();
-                  if (!ids.includes(reservationId)) ids.push(reservationId);
-                } catch (err) {
-                  jsonLog("error", {
-                    requestId,
-                    evt: "agent_reservation_ledger_read_failed",
-                    channelId,
-                    unitId,
-                    errorClass: err instanceof Error ? err.name : typeof err,
-                  });
-                }
               }
             }
             result = forLlm;
