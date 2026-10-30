@@ -7,14 +7,12 @@ import {
   PURGE_DEAD_AFTER_DAYS,
   PURGE_DONE_AFTER_DAYS,
 } from "../../supabase/functions/_shared/whatsapp-inbound-queue-core";
+import { INSTAGRAM_PROCESSED_RETENTION_DAYS } from "../../supabase/functions/_shared/instagram-inbound-core";
 
 // Gêmeos declarados: SQL não importa TypeScript. Este teste é o único ponto
 // que amarra a fila de inbound do Instagram às constantes do núcleo da fila
-// do WhatsApp, que o worker do Instagram (Task 4.1) reusa.
-//
-// TODO(4.1): a Task 4.1 cria `INSTAGRAM_PROCESSED_RETENTION_DAYS = 30` no
-// núcleo do Instagram; troque este literal pelo import.
-const INSTAGRAM_PROCESSED_RETENTION_DAYS = 30;
+// do WhatsApp (que o worker do Instagram reusa) e à retenção do ledger por
+// mensagem, declarada no núcleo do worker do Direct.
 
 const MIGRATIONS = resolve(__dirname, "../../supabase/migrations");
 const ARQUIVO = readdirSync(MIGRATIONS).find((f) => /^\d{14}_instagram_inbound_queue\.sql$/.test(f));

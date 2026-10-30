@@ -1,0 +1,225 @@
+// @vitest-environment node
+import { describe, expect, it } from "vitest";
+import {
+  INSTAGRAM_CONTACT_RATE_LIMIT,
+  INSTAGRAM_PROCESSED_RETENTION_DAYS,
+  RESERVATION_LIMIT_ERROR_CODE,
+  extractAccountItems,
+  ignoredOutcome,
+  instagramRateLimitKey,
+  isEchoOwn,
+  mapContactReservationRpc,
+  sendInstagramParts,
+} from "../../supabase/functions/_shared/instagram-inbound-core.ts";
+import { isOrgBillingBlocked } from "../../supabase/functions/_shared/org-billing-gate-core.ts";
+import { buildAgentUnit } from "../../supabase/functions/_shared/agent/unit-context.ts";
+import { MEDIA_REPLY_TEXT } from "../../supabase/functions/_shared/media-reply-text.ts";
+
+/**
+ * Núcleo do worker do Direct (Task 4.1): classificação dos itens do corpo
+ * guardado na fila, eco próprio, envio dividido que nunca lança, mapeamento da
+ * RPC atômica de reserva e os predicados compartilhados com o WhatsApp.
+ */
+
+const ME = "17841400000000001";
+const OTHER = "17841400000000002";
+
+const msg = (over: Record<string, unknown>, ts = 1000, sender = "555", recipient = ME) => ({
+  sender: { id: sender }, recipient: { id: recipient }, timestamp: ts, ...over,
+});
+const body = (...entries: unknown[]) => ({ object: "instagram", entry: entries });
+
+describe("extractAccountItems", () => {
+  it("corpo com duas contas devolve só as da conta pedida", () => {
+    const b = body(
+      { id: ME, time: 1, messaging: [msg({ message: { mid: "m-me", text: "oi" } })] },
+      { id: OTHER, time: 1, messaging: [msg({ message: { mid: "m-other", text: "oi" } }, 1000, "777", OTHER)] },
+    );
+    expect(extractAccountItems(b, ME)).toEqual([
+      { kind: "text", mid: "m-me", igsid: "555", text: "oi", timestamp: 1000 },
+    ]);
+    expect(extractAccountItems(b, OTHER).map((i) => (i as { mid: string }).mid)).toEqual(["m-other"]);
+  });
+
+  it("fora de ordem sai ordenado por timestamp (também entre entradas da mesma conta)", () => {
+    const b = body(
+      { id: ME, messaging: [msg({ message: { mid: "c", text: "3" } }, 3000), msg({ message: { mid: "a", text: "1" } }, 1000)] },
+      { id: ME, messaging: [msg({ message: { mid: "b", text: "2" } }, 2000)] },
+    );
+    expect(extractAccountItems(b, ME).map((i) => (i as { mid: string }).mid)).toEqual(["a", "b", "c"]);
+  });
+
+  it("classifica eco, self, story_mention, media, deleted, unsupported, reply_to e não-mensagem", () => {
+    const b = body({
+      id: ME,
+      messaging: [
+        msg({ message: { mid: "echo", text: "resp", is_echo: true } }, 1, ME, "555"),
+        msg({ message: { mid: "self", text: "x" } }, 2, ME, "555"),
+        msg({ message: { mid: "story", attachments: [{ type: "story_mention", payload: { url: "https://cdn.invalid/s" } }] } }, 3),
+        msg({ message: { mid: "img", attachments: [{ type: "image", payload: { url: "https://cdn.invalid/i" } }] } }, 4),
+        msg({ message: { mid: "del", is_deleted: true } }, 5),
+        msg({ message: { mid: "unsup", is_unsupported: true } }, 6),
+        msg({ message: { mid: "reply", text: "que lindo", reply_to: { story: { id: "s1", url: "https://cdn.invalid/s" } } } }, 7),
+        msg({ read: { mid: "lido" } }, 8),
+        msg({ message: { mid: "mix", attachments: [{ type: "story_mention" }, { type: "image" }] } }, 9),
+        msg({ message: { mid: "vazio" } }, 10),
+      ],
+    });
+    expect(extractAccountItems(b, ME)).toEqual([
+      { kind: "echo", mid: "echo", igsid: "555", timestamp: 1 },
+      { kind: "ignored", mid: "self", reason: "self" },
+      { kind: "story_mention", mid: "story", igsid: "555", timestamp: 3 },
+      { kind: "media", mid: "img", igsid: "555", timestamp: 4 },
+      { kind: "ignored", mid: "del", reason: "deleted" },
+      { kind: "ignored", mid: "unsup", reason: "unsupported" },
+      { kind: "text", mid: "reply", igsid: "555", text: "que lindo", timestamp: 7 },
+      { kind: "ignored", mid: null, reason: "non_message" },
+      { kind: "media", mid: "mix", igsid: "555", timestamp: 9 },
+      { kind: "ignored", mid: "vazio", reason: "unsupported" },
+    ]);
+  });
+
+  it("ids numéricos só se forem inteiros seguros; mid ou remetente faltando é malformed", () => {
+    const b = body({
+      id: Number(ME.slice(0, 15)),
+      messaging: [msg({ message: { mid: "n", text: "a" } }, 1, 12345 as unknown as string, ME.slice(0, 15))],
+    });
+    expect(extractAccountItems(b, ME.slice(0, 15))).toEqual([
+      { kind: "text", mid: "n", igsid: "12345", text: "a", timestamp: 1 },
+    ]);
+    const bad = body({ id: ME, messaging: [msg({ message: { text: "sem mid" } }, 1), { recipient: { id: ME }, timestamp: 2, message: { mid: "x", text: "a" } }] });
+    expect(extractAccountItems(bad, ME)).toEqual([
+      { kind: "ignored", mid: null, reason: "malformed" },
+      { kind: "ignored", mid: "x", reason: "malformed" },
+    ]);
+  });
+
+  it("corpo malformado dá [] sem lançar", () => {
+    for (const b of [null, undefined, 1, "x", [], {}, { object: "page", entry: [] }, { object: "instagram" },
+      { object: "instagram", entry: "x" }, { object: "instagram", entry: [null, 1, { id: ME, messaging: "x" }] }]) {
+      expect(() => extractAccountItems(b, ME)).not.toThrow();
+      expect(extractAccountItems(b, ME)).toEqual([]);
+    }
+  });
+});
+
+describe("eco próprio e desfechos", () => {
+  it("echo_own só com o mid em provider_message_ids de mensagem assistant/human", () => {
+    const messages = [
+      { role: "user", content: "x", provider_message_ids: ["m1"] },
+      { role: "assistant", content: "y", provider_message_ids: ["m2", "m3"] },
+      { role: "human", content: "z", provider_message_ids: ["m4"] },
+    ];
+    expect(isEchoOwn(messages, "m3")).toBe(true);
+    expect(isEchoOwn(messages, "m4")).toBe(true);
+    expect(isEchoOwn(messages, "m1")).toBe(false);
+    expect(isEchoOwn(messages, "m9")).toBe(false);
+    expect(isEchoOwn(null, "m3")).toBe(false);
+  });
+
+  it("os desfechos seguem o CHECK ^[a-z0-9_]{1,64}$", () => {
+    for (const r of ["deleted", "unsupported", "non_message", "self", "malformed"] as const) {
+      expect(ignoredOutcome(r)).toMatch(/^[a-z0-9_]{1,64}$/);
+    }
+    expect(ignoredOutcome("self")).toBe("ignored_self");
+  });
+
+  it("rate limit por contato: chave ig:<igsid>, 60 s e 10 mensagens", () => {
+    expect(instagramRateLimitKey("555")).toBe("ig:555");
+    expect(INSTAGRAM_CONTACT_RATE_LIMIT).toEqual({ windowSeconds: 60, max: 10 });
+    expect(INSTAGRAM_PROCESSED_RETENTION_DAYS).toBe(30);
+  });
+});
+
+describe("sendInstagramParts", () => {
+  const ok = (id: string) => ({ ok: true as const, value: { messageId: id } });
+  const fail = (errorClass: string, httpStatus: number | null, code: number | null = null) =>
+    ({ ok: false as const, errorClass, httpStatus, code }) as never;
+
+  it("divide por bytes, envia na ordem e guarda os messageId", async () => {
+    const sent: string[] = [];
+    const r = await sendInstagramParts("a".repeat(900) + "\n\n" + "b".repeat(600), async (t) => {
+      sent.push(t);
+      return ok(`mid-${sent.length}`);
+    });
+    expect(sent).toEqual(["a".repeat(900), "b".repeat(600)]);
+    expect(r).toEqual({ result: { ok: true, status: 200 }, messageIds: ["mid-1", "mid-2"], reauthRequired: false });
+  });
+
+  it("para na primeira falha: ok só com todas", async () => {
+    let n = 0;
+    const r = await sendInstagramParts("a".repeat(900) + "\n\n" + "b".repeat(600), async () =>
+      ++n === 1 ? ok("mid-1") : fail("invalid_request", 400));
+    expect(n).toBe(2);
+    expect(r.result).toEqual({ ok: false, status: 400, error: "invalid_request" });
+    expect(r.messageIds).toEqual(["mid-1"]);
+  });
+
+  it("desfecho desconhecido vira provider_timeout (não é falha definitiva) e para", async () => {
+    for (const unknown of [fail("transient", null), fail("transient", 503), fail("invalid_request", 200)]) {
+      let n = 0;
+      const r = await sendInstagramParts("a".repeat(900) + "\n\n" + "b".repeat(600), async () => { n++; return unknown; });
+      expect(n).toBe(1);
+      expect(r.result.ok).toBe(false);
+      expect(r.result.error).toBe("provider_timeout");
+    }
+  });
+
+  it("erro 190 sinaliza reauth_required", async () => {
+    const r = await sendInstagramParts("oi", async () => fail("reauth_required", 400, 190));
+    expect(r.reauthRequired).toBe(true);
+    expect(r.result).toEqual({ ok: false, status: 400, error: "reauth_required" });
+  });
+
+  it("nunca lança: envio que lança vira provider_transport_error; texto vazio não envia", async () => {
+    await expect(sendInstagramParts("oi", async () => { throw new Error("boom https://x?access_token=s"); }))
+      .resolves.toEqual({ result: { ok: false, error: "provider_transport_error" }, messageIds: [], reauthRequired: false });
+    let n = 0;
+    const r = await sendInstagramParts("   ", async () => { n++; return ok("x"); });
+    expect(n).toBe(0);
+    expect(r.result).toEqual({ ok: false, error: "empty_text" });
+  });
+});
+
+describe("mapContactReservationRpc", () => {
+  it("linha devolvida vira data", () => {
+    expect(mapContactReservationRpc([{ id: "r1", status: "confirmed", payment_status: null }], null))
+      .toEqual({ data: { id: "r1", status: "confirmed", payment_status: null }, error: null });
+    expect(mapContactReservationRpc({ id: "r1", status: "pending", payment_status: "not_required" }, null))
+      .toEqual({ data: { id: "r1", status: "pending", payment_status: "not_required" }, error: null });
+  });
+
+  it("23505 passa o code (retry de mesa); teto vira código próprio; o resto só o code", () => {
+    expect(mapContactReservationRpc(null, { code: "23505", message: "dup" })).toEqual({ data: null, error: { code: "23505" } });
+    expect(mapContactReservationRpc(null, { code: "P0001", message: "instagram_contact_reservation_limit" }))
+      .toEqual({ data: null, error: { code: RESERVATION_LIMIT_ERROR_CODE } });
+    expect(mapContactReservationRpc(null, { code: "P0001", message: "outra coisa" })).toEqual({ data: null, error: { code: "P0001" } });
+    expect(mapContactReservationRpc(null, { code: "42501", message: "instagram_contact_reservation_forbidden" }))
+      .toEqual({ data: null, error: { code: "42501" } });
+    expect(mapContactReservationRpc([], null)).toEqual({ data: null, error: { code: "no_row" } });
+    expect(mapContactReservationRpc([{ id: 1 }], null)).toEqual({ data: null, error: { code: "no_row" } });
+  });
+});
+
+describe("predicados compartilhados com o webhook-whatsapp", () => {
+  it("org bloqueada = blocked ou suspended; leitura que falha (null) não bloqueia (polaridade aberta)", () => {
+    expect(isOrgBillingBlocked({ billing_status: "blocked" })).toBe(true);
+    expect(isOrgBillingBlocked({ billing_status: "suspended" })).toBe(true);
+    expect(isOrgBillingBlocked({ billing_status: "active" })).toBe(false);
+    expect(isOrgBillingBlocked({ billing_status: "trialing" })).toBe(false);
+    expect(isOrgBillingBlocked(null)).toBe(false);
+    expect(isOrgBillingBlocked(undefined)).toBe(false);
+  });
+
+  it("buildAgentUnit monta a unidade como o webhook-whatsapp", () => {
+    const row = { id: "u", name: "Loja", slug: "loja", price_range_max: 80,
+      address: { street: "Rua A", number: "1", neighborhood: null, city: "SP", state: " " } };
+    expect(buildAgentUnit(row)).toEqual({ row, name: "Loja", slug: "loja", address: "Rua A, 1, SP", ticketMax: 80 });
+    expect(buildAgentUnit({ ...row, address: { full: " Av. B, 2 ", street: "x" } }).address).toBe("Av. B, 2");
+    expect(buildAgentUnit(null)).toEqual({ row: null, name: "", slug: null, address: "", ticketMax: null });
+  });
+
+  it("MEDIA_REPLY_TEXT mantém o valor do WhatsApp", () => {
+    expect(MEDIA_REPLY_TEXT).toBe("Por aqui só consigo ler texto. Pode me escrever a informação que precisa? Se quiser falar com a equipe, é só pedir.");
+  });
+});
