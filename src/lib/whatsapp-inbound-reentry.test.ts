@@ -676,6 +676,70 @@ describe("dead letter visível: promover sem atropelar quem está atendendo", ()
     expect(busca, "a busca da conversa não filtra o canal").toContain('.eq("channel", "whatsapp")');
   });
 
+  describe("comportamento: busca da conversa com uma conversa IG mais recente do mesmo cliente", () => {
+    /** Recorte da busca como está na fonte: `supabase.from("conversations")` … `.maybeSingle()`. */
+    const trechoDaBusca = (corpo: string): string => {
+      const ini = corpo.indexOf('.from("conversations")\n          .select("id")');
+      const fim = corpo.indexOf(".maybeSingle()", ini);
+      if (ini < 0 || fim < 0) return "";
+      return corpo.slice(ini, fim + ".maybeSingle()".length);
+    };
+
+    type Linha = Record<string, string>;
+    const CONVERSAS: Linha[] = [
+      { id: "conv-wa", unit_id: "u1", customer_id: "c1", channel: "whatsapp", updated_at: "2026-10-01T10:00:00Z" },
+      // Mais recente, mesmo cliente e unidade, mas do Instagram.
+      { id: "conv-ig", unit_id: "u1", customer_id: "c1", channel: "instagram", updated_at: "2026-10-02T10:00:00Z" },
+      // Ruído de outro cliente e de outra unidade (mais recentes ainda).
+      { id: "conv-outro-cliente", unit_id: "u1", customer_id: "c2", channel: "whatsapp", updated_at: "2026-10-03T10:00:00Z" },
+      { id: "conv-outra-unidade", unit_id: "u2", customer_id: "c1", channel: "whatsapp", updated_at: "2026-10-03T10:00:00Z" },
+    ];
+
+    /** Supabase falso: aplica `.eq`, ordena por `.order` e respeita `.limit`. */
+    const fakeSupabase = (linhas: Linha[]) => ({
+      from(tabela: string) {
+        if (tabela !== "conversations") throw new Error(`tabela inesperada: ${tabela}`);
+        const filtros: Array<[string, string]> = [];
+        let ordem: { col: string; asc: boolean } | null = null;
+        let limite = Infinity;
+        const q = {
+          select: () => q,
+          eq: (col: string, v: string) => { filtros.push([col, v]); return q; },
+          order: (col: string, o?: { ascending?: boolean }) => { ordem = { col, asc: o?.ascending !== false }; return q; },
+          limit: (n: number) => { limite = n; return q; },
+          maybeSingle: async () => {
+            let r = linhas.filter((l) => filtros.every(([c, v]) => l[c] === v));
+            if (ordem) {
+              const { col, asc } = ordem;
+              r = [...r].sort((a, b) => (a[col] < b[col] ? -1 : a[col] > b[col] ? 1 : 0) * (asc ? 1 : -1));
+            }
+            return { data: r.slice(0, limite)[0] ?? null, error: null };
+          },
+        };
+        return q;
+      },
+    });
+
+    const executa = async (trecho: string) => {
+      const fn = new Function("supabase", "unitId", "customer", `return supabase${trecho.trim()};`);
+      const { data } = await fn(fakeSupabase(CONVERSAS), "u1", { id: "c1" });
+      return data?.id ?? null;
+    };
+
+    it("promove a conversa do WhatsApp, e não a do Instagram, mais recente, do mesmo cliente", async () => {
+      const trecho = trechoDaBusca(PROMOVE);
+      expect(trecho, "a busca da conversa da promoção não foi encontrada").not.toBe("");
+      expect(await executa(trecho)).toBe("conv-wa");
+    });
+
+    it("CONTROLE POSITIVO: sem o filtro de canal, a busca devolve a conversa do Instagram", async () => {
+      const trecho = trechoDaBusca(PROMOVE);
+      const semFiltro = trecho.replace(/\s*\.eq\("channel", "whatsapp"\)/, "");
+      expect(semFiltro, "a cirurgia do controle não achou o filtro de canal").not.toBe(trecho);
+      expect(await executa(semFiltro)).toBe("conv-ig");
+    });
+  });
+
   it("NUNCA cria conversa — só promove a que existe", () => {
     // Criar uma para marcá-la em handoff inventaria thread vazia no painel.
     expect(PROMOVE).not.toMatch(/\.from\("conversations"\)\s*\n\s*\.insert/);
