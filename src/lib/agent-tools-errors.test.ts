@@ -40,7 +40,7 @@ describe("create_reservation: falha ao resolver o cliente", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await createReservation(db as any, {
       date: "2030-03-15", time: "20:00", party_size: 2, customer_name: "Ana",
-      customer: { id: "cust-1", phone: "11988887777" }, unit_id: "unit-a", organization_id: "org-a", source: "whatsapp",
+      customer: { id: "cust-1", phone: "11988887777" }, claimedIdentity: false, unit_id: "unit-a", organization_id: "org-a", source: "whatsapp",
     });
     expect(out).toEqual({ success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." });
     expect(JSON.stringify(out)).not.toContain("password");

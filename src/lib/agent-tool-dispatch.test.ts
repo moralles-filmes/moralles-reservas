@@ -83,17 +83,38 @@ function fakeDb(rows: Row[] = []) {
   return { db, calls, rows };
 }
 
-function fakePort(opts: { ledger?: string[]; link?: LinkPhoneResult; recordFails?: boolean } = {}) {
+function fakePort(opts: {
+  ledger?: string[];
+  /** Um resultado fixo, ou uma sequência (um por chamada; o último se repete). */
+  link?: LinkPhoneResult | LinkPhoneResult[];
+  /** `true` = falha sempre; número = falha nas N primeiras tentativas. */
+  recordFails?: boolean | number;
+  /** A leitura do ledger lança. */
+  readFails?: boolean;
+  /** `linkPhone` lança este erro. */
+  linkThrows?: Error;
+} = {}) {
   const ledger = [...(opts.ledger ?? [])];
-  const seen = { reads: 0, recorded: [] as string[], links: [] as unknown[] };
+  const seen = { reads: 0, recorded: [] as string[], recordAttempts: 0, links: [] as unknown[] };
+  const failures = opts.recordFails === true ? Infinity : Number(opts.recordFails ?? 0);
+  const links = Array.isArray(opts.link) ? opts.link : opts.link ? [opts.link] : [];
   const port: ClaimedIdentityPort = {
-    reservationIds: async () => { seen.reads += 1; return [...ledger]; },
+    reservationIds: async () => {
+      seen.reads += 1;
+      if (opts.readFails) throw new Error("leitura do ledger indisponível");
+      return [...ledger];
+    },
     recordReservation: async (id: string) => {
-      if (opts.recordFails) throw new Error("ledger indisponível");
+      seen.recordAttempts += 1;
+      if (seen.recordAttempts <= failures) throw new Error("ledger indisponível");
       seen.recorded.push(id);
       ledger.push(id);
     },
-    linkPhone: async (input) => { seen.links.push(input); return opts.link ?? { ok: false, reason: "unavailable" }; },
+    linkPhone: async (input) => {
+      seen.links.push(input);
+      if (opts.linkThrows) throw opts.linkThrows;
+      return links[Math.min(seen.links.length - 1, links.length - 1)] ?? { ok: false, reason: "unavailable" };
+    },
   };
   return { port, seen };
 }
@@ -153,7 +174,10 @@ describe("agentToolsFor", () => {
     const { agentToolsFor } = await load();
     const before = JSON.stringify(agentTools);
     const tools = agentToolsFor({ claimedIdentity: fakePort().port });
-    expect(tools.slice(0, -1)).toEqual(agentTools);
+    expect(tools.slice(0, -1).map((t) => t.name)).toEqual(agentTools.map((t) => t.name));
+    // Só `create_reservation` muda (sem `customer_email`, C1); as demais são as mesmas.
+    expect(tools.slice(0, -1).filter((t) => t.name !== "create_reservation"))
+      .toEqual(agentTools.filter((t) => t.name !== "create_reservation"));
     const link = tools[tools.length - 1];
     expect(link.name).toBe("link_customer_phone");
     expect(link.parameters).toEqual({
@@ -165,6 +189,19 @@ describe("agentToolsFor", () => {
       required: ["phone", "name"],
     });
     expect(JSON.stringify(agentTools)).toBe(before);
+  });
+
+  it("com porta, create_reservation não oferece customer_email ao LLM (C1); sem porta, oferece", async () => {
+    const { agentToolsFor } = await load();
+    const create = (tools: typeof agentTools) => tools.find((t) => t.name === "create_reservation")!;
+    const comPorta = create(agentToolsFor({ claimedIdentity: fakePort().port }));
+    const original = create(agentTools);
+    expect(comPorta.parameters.properties).not.toHaveProperty("customer_email");
+    expect(comPorta.parameters.required).toEqual(original.parameters.required);
+    const { customer_email: _email, ...resto } = original.parameters.properties as Record<string, unknown>;
+    expect(comPorta.parameters.properties).toEqual(resto);
+    expect(comPorta.description).toBe(original.description);
+    expect(create(agentToolsFor({})).parameters.properties).toHaveProperty("customer_email");
   });
 });
 
@@ -267,8 +304,75 @@ describe("link_customer_phone", () => {
     });
     const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
     expect(out).toMatchObject({ success: true, reservation_code: "NOVA2345" });
-    expect(logs.some((l) => l.includes('"evt":"agent_reservation_ledger_record_failed"'))).toBe(true);
+    expect(port.seen.recordAttempts, "o registro no ledger é tentado duas vezes (M2)").toBe(2);
+    expect(logs.filter((l) => l.includes('"evt":"agent_reservation_ledger_record_failed"'))).toHaveLength(1);
     expect(await call("get_reservation", { reservation_code: "NOVA2345" })).toMatchObject({ found: false });
+  });
+
+  it("registro no ledger que falha uma vez é refeito, entra no ledger e não loga falha (M2)", async () => {
+    const port = fakePort({ ledger: [], link: { ok: true, customer: LINKED }, recordFails: 1 });
+    const rows: Row[] = [];
+    const { call } = await setup({ port, rows });
+    await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
+    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
+    h.reserveSlot.mockImplementation(async () => {
+      rows.push(reservation("res-nova", "NOVA2345"));
+      return { success: true, reservationId: "res-nova", reservationCode: "NOVA2345" };
+    });
+    await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
+    expect(port.seen.recordAttempts).toBe(2);
+    expect(port.seen.recorded).toEqual(["res-nova"]);
+    expect(logs.some((l) => l.includes('"evt":"agent_reservation_ledger_record_failed"'))).toBe(false);
+    expect(await call("get_reservation", { reservation_code: "NOVA2345" })).toMatchObject({ found: true });
+  });
+
+  it("registro ok e releitura do ledger falha: o log é o da leitura, não o do registro (M3)", async () => {
+    // Nenhum get/list antes do create: o ledger ainda não foi lido no turno.
+    const port = fakePort({ link: { ok: true, customer: LINKED }, readFails: true });
+    const { call } = await setup({ port });
+    await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
+    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
+    h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-nova", reservationCode: "NOVA2345" });
+    const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
+    expect(out).toMatchObject({ success: true, reservation_code: "NOVA2345" });
+    expect(port.seen.recorded).toEqual(["res-nova"]);
+    expect(logs.some((l) => l.includes('"evt":"agent_reservation_ledger_record_failed"')), "registro feito foi logado como falha").toBe(false);
+    expect(logs.some((l) => l.includes('"evt":"agent_reservation_ledger_read_failed"'))).toBe(true);
+  });
+
+  it("segundo link com outro telefone troca o cliente: a reserva do primeiro fica inalcançável", async () => {
+    const OUTRO: AgentCustomer = { id: "cust-outro", phone: "11977776666" };
+    const port = fakePort({ ledger: ["res-1"], link: [{ ok: true, customer: LINKED }, { ok: true, customer: OUTRO }] });
+    const rows = [reservation("res-1", "LEDG2345")];
+    const { call, state, rows: tabela } = await setup({ port, rows });
+    await call("link_customer_phone", { phone: LINKED.phone, name: "Ana" });
+    expect(await call("get_reservation", { reservation_code: "LEDG2345" })).toMatchObject({ found: true });
+    await call("link_customer_phone", { phone: OUTRO.phone, name: "Bia" });
+    expect(state.customer).toEqual(OUTRO);
+    expect(await call("get_reservation", { reservation_code: "LEDG2345" })).toEqual({ found: false, message: "Reserva não encontrada ou já cancelada." });
+    expect(await call("cancel_reservation", { reservation_code: "LEDG2345" })).toMatchObject({ success: false });
+    expect(tabela[0].status).toBe("confirmed");
+  });
+
+  it("os logs de link_customer_phone não levam telefone nem nome", async () => {
+    const { call } = await setup({ port: fakePort({ link: { ok: true, customer: LINKED } }) });
+    await call("link_customer_phone", { phone: "(11) 98888-7777", name: "Aninha Teste" });
+    expect(logs.some((l) => l.includes('"evt":"tool_call"') && l.includes("link_customer_phone"))).toBe(true);
+    expect(logs.some((l) => l.includes('"evt":"tool_result"') && l.includes("link_customer_phone"))).toBe(true);
+    const all = logs.join("\n");
+    for (const pii of ["98888", "8888-7777", "11988887777", "Aninha", "Fulana"]) expect(all, `log com "${pii}"`).not.toContain(pii);
+  });
+
+  it("erro lançado pela porta: tool_error leva só a classe e o code, nunca a mensagem (M4)", async () => {
+    const err = Object.assign(new Error('duplicate key: Key (organization_id, phone)=(org-a, 11999998888)'), { code: "23505" });
+    const { call } = await setup({ port: fakePort({ linkThrows: err }) });
+    const out = await call("link_customer_phone", { phone: "11999998888", name: "Ana" });
+    expect(out).toEqual({ error: "Não foi possível concluir esta ação agora. Tente novamente em instantes." });
+    const line = logs.find((l) => l.includes('"evt":"tool_error"'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line!)).toMatchObject({ evt: "tool_error", name: "link_customer_phone", errorClass: "Error", code: "23505" });
+    expect(logs.join("\n")).not.toContain("11999998888");
+    expect(line).not.toContain("duplicate key");
   });
 });
 
@@ -344,7 +448,37 @@ describe("identidade declarada só alcança reservas do ledger", () => {
 });
 
 describe("create_reservation", () => {
-  it("identidade divergente dá erro genérico, sem reserveSlot e sem ledger", async () => {
+  it("com porta, customer_email do LLM nunca chega ao cadastro (C1)", async () => {
+    const { call } = await setup({ ctx: { customer: LINKED, phone: LINKED.phone } });
+    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
+    h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-ig", reservationCode: "IGIG2345" });
+    await call("create_reservation", { customer_name: "Ana", customer_email: "atacante@exemplo.invalid", date: "2099-01-10", time: "20:00", party_size: 2 });
+    expect(h.resolveOrCreateCustomer).toHaveBeenCalledTimes(1);
+    expect(h.resolveOrCreateCustomer.mock.calls[0][1]).toMatchObject({ email: null });
+    expect(JSON.stringify(h.resolveOrCreateCustomer.mock.calls)).not.toContain("atacante");
+    expect(JSON.stringify(h.reserveSlot.mock.calls)).not.toContain("atacante");
+  });
+
+  it("controle (C1): no WhatsApp o customer_email continua indo ao cadastro", async () => {
+    const { call } = await setup({ port: null, ctx: { channel: "whatsapp", customer: LINKED, phone: LINKED.phone, reservationSource: "whatsapp" } });
+    h.resolveOrCreateCustomer.mockResolvedValue({ id: LINKED.id, phone: LINKED.phone });
+    h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-wa", reservationCode: "WAWA2345" });
+    await call("create_reservation", { customer_name: "Ana", customer_email: "ana@exemplo.invalid", date: "2099-01-10", time: "20:00", party_size: 2 });
+    expect(h.resolveOrCreateCustomer.mock.calls[0][1]).toMatchObject({ email: "ana@exemplo.invalid" });
+  });
+
+  it("WhatsApp com identidade divergente reserva para o cliente resolvido e loga o evento (M1)", async () => {
+    const { call } = await setup({ port: null, ctx: { channel: "whatsapp", customer: LINKED, phone: LINKED.phone, reservationSource: "whatsapp" } });
+    h.resolveOrCreateCustomer.mockResolvedValue({ id: "cliente-atual-do-telefone", phone: LINKED.phone });
+    h.reserveSlot.mockResolvedValue({ success: true, reservationId: "res-wa", reservationCode: "WAWA2345" });
+    const out = await call("create_reservation", { customer_name: "Ana", date: "2099-01-10", time: "20:00", party_size: 2 });
+    expect(h.reserveSlot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ customerId: "cliente-atual-do-telefone" }));
+    expect(out).toMatchObject({ success: true, reservation_code: "WAWA2345" });
+    expect(logs.some((l) => l.includes('"evt":"agent_customer_identity_mismatch"'))).toBe(true);
+    expect(JSON.stringify(logs)).not.toContain(LINKED.phone);
+  });
+
+  it("identidade declarada divergente dá erro genérico, sem reserveSlot e sem ledger (M1)", async () => {
     const port = fakePort();
     const { call, state } = await setup({ ctx: { customer: LINKED, phone: LINKED.phone }, port });
     h.resolveOrCreateCustomer.mockResolvedValue({ id: "outro-cliente", phone: LINKED.phone });

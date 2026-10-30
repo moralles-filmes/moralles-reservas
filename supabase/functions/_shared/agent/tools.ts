@@ -206,6 +206,11 @@ export async function createReservation(supabase: SupabaseClient, params: {
    * nunca do LLM. O telefone dele é o que resolve o cadastro.
    */
   customer: { id: string; phone: string };
+  /**
+   * Identidade declarada (Instagram): telefone digitado, não verificado. Muda
+   * só o desfecho de identidade divergente (recusa em vez de seguir).
+   */
+  claimedIdentity: boolean;
   unit_id: string;
   organization_id: string;
   source: AgentReservationSource;
@@ -231,12 +236,18 @@ export async function createReservation(supabase: SupabaseClient, params: {
     }));
     return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
   }
-  // O telefone do cliente do turno tem de resolver para o MESMO cadastro. Se
-  // não resolver (cliente apagado/fundido entre a ligação e a reserva), a
-  // reserva não vai para outra pessoa: erro genérico, e só o evento vai ao log.
+  // O telefone do cliente do turno deveria resolver para o MESMO cadastro; só
+  // não resolve se o cadastro foi editado, fundido ou anonimizado no meio do
+  // turno. O evento vai ao log nos dois canais, mas o desfecho difere:
+  // - identidade declarada (telefone digitado): recusa com erro genérico, a
+  //   reserva não vai para quem hoje detém o telefone;
+  // - WhatsApp (telefone verificado pelo canal): reserva para o cadastro que
+  //   hoje detém o telefone, como antes da Task 3.4.
   if (resolved.id !== params.customer.id) {
-    console.error(JSON.stringify({ evt: "agent_customer_identity_mismatch" }));
-    return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+    console.error(JSON.stringify({ evt: "agent_customer_identity_mismatch", claimedIdentity: params.claimedIdentity }));
+    if (params.claimedIdentity) {
+      return { success: false, error: "Não foi possível registrar a reserva agora. Tente novamente em instantes." };
+    }
   }
 
   const hallId = await resolveHallId(supabase, params.unit_id, params.hall_name, params.party_size);
@@ -246,7 +257,7 @@ export async function createReservation(supabase: SupabaseClient, params: {
     date: params.date,
     time: params.time,
     partySize: params.party_size,
-    customerId: params.customer.id,
+    customerId: resolved.id,
     notes: params.notes ?? null,
     status: "confirmed",
     // Load-bearing: o trigger `enqueue_confirmation_notification` pula a

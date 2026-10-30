@@ -18,6 +18,9 @@
  *   turno — abri-la só neste turno daria acesso que o banco não sustenta.
  * - O que volta ao LLM não leva `notes` da reserva nem campo do cadastro (a
  *   equipe pode anotar alergia/VIP na reserva).
+ * - `create_reservation` não oferece nem repassa `customer_email`: o e-mail iria
+ *   para o cadastro do dono do telefone e desviaria a confirmação por e-mail
+ *   (com o nome cadastrado) para quem digitou o número.
  *
  * Sem porta (WhatsApp) o despacho é o de antes, byte a byte (paridade).
  */
@@ -72,9 +75,21 @@ const LINK_CUSTOMER_PHONE_TOOL = {
   },
 };
 
-/** Sem porta, exatamente `agentTools`; com porta, `link_customer_phone` no fim. */
+/** `create_reservation` sem `customer_email`: identidade declarada não grava e-mail. */
+function withoutCustomerEmail(tool: (typeof agentTools)[number]): (typeof agentTools)[number] {
+  if (tool.name !== "create_reservation") return tool;
+  const { customer_email: _email, ...properties } = tool.parameters.properties;
+  return { ...tool, parameters: { ...tool.parameters, properties } };
+}
+
+/**
+ * Sem porta, exatamente `agentTools`. Com porta, `create_reservation` sem
+ * `customer_email` e `link_customer_phone` no fim.
+ */
 export function agentToolsFor(ctx: Pick<ChannelContext, "claimedIdentity">): typeof agentTools {
-  return ctx.claimedIdentity ? [...agentTools, LINK_CUSTOMER_PHONE_TOOL] : agentTools;
+  return ctx.claimedIdentity
+    ? [...agentTools.map(withoutCustomerEmail), LINK_CUSTOMER_PHONE_TOOL]
+    : agentTools;
 }
 
 export interface ToolDispatchState {
@@ -160,7 +175,10 @@ export function createToolDispatcher(a: {
             state.mutatingToolUsed = true; // desliga o retry silencioso (evita reserva duplicada)
             const created = await createReservation(supabase, {
               ...input,
+              // Identidade declarada: o e-mail do LLM nunca chega ao cadastro (C1).
+              ...(port ? { customer_email: undefined } : {}),
               customer: { id: current.id, phone: current.phone },
+              claimedIdentity: !!port,
               unit_id: unitId,
               organization_id: organizationId,
               source: ctx.reservationSource,
@@ -174,17 +192,43 @@ export function createToolDispatcher(a: {
             // O id interno não vai ao LLM; com porta, entra no ledger do contato.
             const { reservationId, ...forLlm } = created ?? {};
             if (port && created?.success === true && typeof reservationId === "string") {
-              try {
-                await port.recordReservation(reservationId);
-                (await ledgerIds()).push(reservationId);
-              } catch (err) {
+              // Duas tentativas: sem o registro, a reserva some das consultas do
+              // contato e o LLM pode criar outra no turno seguinte. Gravação
+              // atômica com a criação fica para o adapter (Bloco 4).
+              let recorded = false;
+              let recordError: unknown = null;
+              for (let attempt = 0; attempt < 2 && !recorded; attempt++) {
+                try {
+                  await port.recordReservation(reservationId);
+                  recorded = true;
+                } catch (err) {
+                  recordError = err;
+                }
+              }
+              if (!recorded) {
                 jsonLog("error", {
                   requestId,
                   evt: "agent_reservation_ledger_record_failed",
                   channelId,
                   unitId,
-                  errorClass: err instanceof Error ? err.name : typeof err,
+                  attempts: 2,
+                  errorClass: recordError instanceof Error ? recordError.name : typeof recordError,
                 });
+              } else {
+                // Registrado: a reserva fica visível às ferramentas seguintes do
+                // turno. Se o ledger ainda não foi lido, a leitura já a traz.
+                try {
+                  const ids = await ledgerIds();
+                  if (!ids.includes(reservationId)) ids.push(reservationId);
+                } catch (err) {
+                  jsonLog("error", {
+                    requestId,
+                    evt: "agent_reservation_ledger_read_failed",
+                    channelId,
+                    unitId,
+                    errorClass: err instanceof Error ? err.name : typeof err,
+                  });
+                }
               }
             }
             result = forLlm;
@@ -254,7 +298,18 @@ export function createToolDispatcher(a: {
       jsonLog("info", { requestId, evt: "tool_result", channelId, unitId, name, result: summarizeToolResult(result) });
       return JSON.stringify(result);
     } catch (err) {
-      jsonLog("error", { requestId, evt: "tool_error", channelId, unitId, name, err: String(err) });
+      // Só a classe e o code: a mensagem pode trazer dado do cliente (um 23505
+      // em `customers` traz o telefone na `Key (...)=(...)`).
+      const code = (err as { code?: unknown } | null)?.code;
+      jsonLog("error", {
+        requestId,
+        evt: "tool_error",
+        channelId,
+        unitId,
+        name,
+        errorClass: err instanceof Error ? err.name : typeof err,
+        ...(typeof code === "string" ? { code } : {}),
+      });
       // O texto do erro (PostgREST, rede, host do projeto) fica no log:
       // o que volta ao LLM chega ao cliente parafraseado.
       return JSON.stringify({ error: "Não foi possível concluir esta ação agora. Tente novamente em instantes." });
