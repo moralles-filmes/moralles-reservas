@@ -78,6 +78,23 @@ async function sendInstagramManual(
     return json(422, { error: "contato do Instagram não encontrado" });
   }
 
+  // Grant ativo do módulo (R4-m), mesma leitura do gate do worker 4.1. Erro de
+  // leitura fecha (503). `dm_enabled` NÃO entra aqui: controla só a IA.
+  const { data: grants, error: grantErr } = await supabase
+    .from("unit_module_grants")
+    .select("unit_id")
+    .eq("unit_id", conv.unit_id)
+    .eq("module", "instagram")
+    .is("revoked_at", null)
+    .limit(1);
+  if (grantErr) {
+    jsonLog("error", { evt: "manual_instagram_grant_read_failed", convId: conv.id, code: grantErr.code ?? null });
+    return json(503, { error: "Não foi possível validar o módulo Instagram." });
+  }
+  if (!Array.isArray(grants) || grants.length === 0) {
+    return json(409, { error: "INSTAGRAM_MODULE_DISABLED" });
+  }
+
   // Conta da MESMA unidade da conversa (o tenant vem da conversa autorizada,
   // nunca do caller), e só `connected` envia.
   const { data: account, error: accountErr } = await supabase

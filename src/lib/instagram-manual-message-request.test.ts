@@ -40,6 +40,8 @@ function setup(options: {
   message?: string;
   replies?: GraphReply[];
   recordError?: boolean;
+  grant?: "active" | "revoked" | "error";
+  dmEnabled?: boolean;
   /** Avança o relógio dentro da leitura do token (entre a janela e o POST). */
   advanceOnToken?: number;
 } = {}) {
@@ -80,6 +82,8 @@ function setup(options: {
       const query = {
         select(value: string) { columns = value; reads.push(`${table}:${value}`); return query; },
         eq(key: string, value: unknown) { filters[key] = value; return query; },
+        is(key: string, value: unknown) { filters[`is:${key}`] = value; return query; },
+        limit() { return query; },
         order() { return query; },
         async maybeSingle() {
           if (table === "conversations" && columns.includes("unit_id, status")) {
@@ -108,6 +112,16 @@ function setup(options: {
           return { data: null, error: null };
         },
         then(resolve: (value: unknown) => unknown) {
+          if (table === "unit_module_grants") {
+            const grant = options.grant ?? "active";
+            if (grant === "error") return Promise.resolve(resolve({ data: null, error: { code: "XX000" } }));
+            const matches = grant === "active" && filters.unit_id === UNIT && filters.module === "instagram"
+              && "is:revoked_at" in filters && filters["is:revoked_at"] === null;
+            return Promise.resolve(resolve({ data: matches ? [{ unit_id: UNIT }] : [], error: null }));
+          }
+          if (table === "instagram_settings") {
+            return Promise.resolve(resolve({ data: [{ unit_id: UNIT, dm_enabled: options.dmEnabled ?? true }], error: null }));
+          }
           if (table === "whatsapp_channels") {
             return Promise.resolve(resolve(columns === "id" ? { data: null, error: null, count: 1 } : { data: [
               { id: "wa-channel", provider: "datafy", status: "connected", is_active: true, created_at: "2026-10-01T00:00:00Z" },
@@ -270,6 +284,35 @@ describe("send-manual-message pelo Instagram", () => {
     expect((await control.request()).status).toBe(200);
     expect(control.posts).toHaveLength(2);
     expect(control.recorded()[0].args.p_message).toMatchObject({ content: LONG_MESSAGE, provider_message_ids: ["mid-1", "mid-2"] });
+  });
+
+  it("grant do módulo revogado dá 409 INSTAGRAM_MODULE_DISABLED sem token, janela nem POST", async () => {
+    const x = setup({ grant: "revoked" });
+    const response = await x.request();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "INSTAGRAM_MODULE_DISABLED" });
+    expect(x.posts).toHaveLength(0);
+    expect(x.waPosts).toHaveLength(0);
+    expect(x.rpcs).toHaveLength(0);
+    expect(x.reads).not.toContain("conversations:messages");
+    expect(x.reads).toContain("unit_module_grants:unit_id");
+    x.harness.assertNoUnexpectedIo();
+  });
+
+  it("erro de leitura do grant fecha com 503 sem POST e sem texto do erro", async () => {
+    const x = setup({ grant: "error" });
+    const response = await x.request();
+    expect(response.status).toBe(503);
+    expect(x.posts).toHaveLength(0);
+    expect(x.rpcs).toHaveLength(0);
+    expect(x.harness.logs.join(" | ")).toContain("manual_instagram_grant_read_failed");
+  });
+
+  it("dm_enabled=false não bloqueia o envio manual (controla só a IA)", async () => {
+    const x = setup({ dmEnabled: false });
+    expect((await x.request()).status).toBe(200);
+    expect(x.posts).toHaveLength(1);
+    expect(x.reads.some((read) => read.startsWith("instagram_settings:"))).toBe(false);
   });
 
   it("código 190 marca reauth_required e dá 409 INSTAGRAM_REAUTH_REQUIRED", async () => {
