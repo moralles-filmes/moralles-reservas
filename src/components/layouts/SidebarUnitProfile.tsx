@@ -96,6 +96,7 @@ export function SidebarUnitProfile({ basePath }: SidebarUnitProfileProps) {
         <div className="absolute inset-0 bg-gradient-to-br from-gold to-gold/70" />
       )}
 
+      {/* Véu e texto sobre a foto de capa são fixos (preto/branco): a foto não muda com o tema. */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent" />
 
       <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-end gap-2.5">
