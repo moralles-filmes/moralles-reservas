@@ -307,6 +307,7 @@ export function ManualReservaDialog({
                   </p>
                 </div>
                 <Switch
+                  aria-label="Avisar cliente"
                   checked={notify}
                   onCheckedChange={(c) => setValue("notify", c)}
                 />
@@ -320,6 +321,7 @@ export function ManualReservaDialog({
                   </p>
                 </div>
                 <Switch
+                  aria-label="Forçar reserva"
                   checked={override}
                   onCheckedChange={(c) => {
                     setValue("override", c);

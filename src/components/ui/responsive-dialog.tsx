@@ -17,6 +17,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useDialogFocusReturn } from "@/components/ui/use-dialog-focus-return";
 
 const ResponsiveDialog = DialogPrimitive.Root;
 const ResponsiveDialogTrigger = DialogPrimitive.Trigger;
@@ -54,11 +55,14 @@ interface ResponsiveDialogContentProps
 const ResponsiveDialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   ResponsiveDialogContentProps
->(({ className, children, hideClose = false, ...props }, ref) => (
+>(({ className, children, hideClose = false, onOpenAutoFocus, onCloseAutoFocus, ...props }, ref) => {
+  const focusReturn = useDialogFocusReturn(onOpenAutoFocus, onCloseAutoFocus);
+  return (
   <ResponsiveDialogPortal>
     <ResponsiveDialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      {...focusReturn}
       className={cn(
         // Base: vidro forte (superfície única)
         "glass-strong",
@@ -98,7 +102,8 @@ const ResponsiveDialogContent = React.forwardRef<
       )}
     </DialogPrimitive.Content>
   </ResponsiveDialogPortal>
-));
+  );
+});
 ResponsiveDialogContent.displayName = "ResponsiveDialogContent";
 
 /** Header fixo no topo. Sem padding inferior (o body controla seu próprio padding). */
