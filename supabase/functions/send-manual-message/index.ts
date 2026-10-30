@@ -164,6 +164,8 @@ async function sendInstagramManual(
     break;
   }
 
+  // `true` quando o CAS recusou o 190: a conta foi reconectada durante o envio.
+  let accountReconnected = false;
   if (stop?.kind === "failed" && stop.errorClass === "reauth_required") {
     // CAS por `connected_at` (20261029200800): se o dono reconectou depois da
     // leitura da conta, a RPC devolve `false` e a conexão nova fica intacta.
@@ -174,6 +176,7 @@ async function sendInstagramManual(
       p_expected_connected_at: account.connected_at,
     });
     if (!markErr && marked === false) {
+      accountReconnected = true;
       jsonLog("info", { evt: "instagram_account_reauth_stale", accountId: account.id });
     } else {
       jsonLog(markErr || marked !== true ? "error" : "warn", {
@@ -248,12 +251,16 @@ async function sendInstagramManual(
     : stop.kind === "unknown"
     ? "SEND_OUTCOME_UNKNOWN"
     : stop.errorClass === "reauth_required"
-    ? "INSTAGRAM_REAUTH_REQUIRED"
+    // Reconectada no meio: a conta está ok com o token novo; o operador tenta de novo.
+    ? (accountReconnected ? "INSTAGRAM_ACCOUNT_RECONNECTED" : "INSTAGRAM_REAUTH_REQUIRED")
     : stop.errorClass === "window_closed"
     ? "OUTSIDE_SERVICE_WINDOW"
     : stop.errorClass;
 
   if (sentIds.length === 0 && stop.kind !== "unknown") {
+    if (reason === "INSTAGRAM_ACCOUNT_RECONNECTED") {
+      return json(409, { error: reason, message: "A conta do Instagram foi reconectada; tente enviar de novo." });
+    }
     if (reason === "OUTSIDE_SERVICE_WINDOW" || reason === "INSTAGRAM_REAUTH_REQUIRED") {
       return json(409, { error: reason });
     }

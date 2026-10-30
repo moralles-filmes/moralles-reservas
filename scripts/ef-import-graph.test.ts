@@ -71,8 +71,8 @@ describe("repositório real (fatos que a checklist antiga afirmava)", () => {
       "update-reservation",
     ]);
   });
-  it("ai-providers.ts tem webhook-whatsapp como único consumidor (manage-ai-providers não importa)", () => {
-    expect(consumersOf("supabase/functions/_shared/ai-providers.ts", map)).toEqual(["webhook-whatsapp"]);
+  it("ai-providers.ts tem webhook-whatsapp e process-instagram-inbound (via agent/turn.ts) como consumidores (manage-ai-providers não importa)", () => {
+    expect(consumersOf("supabase/functions/_shared/ai-providers.ts", map)).toEqual(["process-instagram-inbound", "webhook-whatsapp"]);
   });
   it("billing-cancel-core.ts só por valor em manage-billing (billing-provider importa só o tipo)", () => {
     expect(consumersOf("supabase/functions/_shared/billing-cancel-core.ts", map)).toEqual(["manage-billing"]);

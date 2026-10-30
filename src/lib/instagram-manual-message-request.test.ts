@@ -339,11 +339,31 @@ describe("send-manual-message pelo Instagram", () => {
     const x = setup({ replies: [{ status: 400, body: { error: { code: 190 } } }], reconnected: true });
     const response = await x.request();
     expect(response.status).toBe(409);
+    const body = await response.json();
+    // A conta está conectada (com o token novo): o operador tenta de novo, não reautentica.
+    expect(body).toEqual({ error: "INSTAGRAM_ACCOUNT_RECONNECTED", message: "A conta do Instagram foi reconectada; tente enviar de novo." });
+    expect(body.error).not.toBe("INSTAGRAM_REAUTH_REQUIRED");
     expect(x.rpcs.find((call) => call.name === "set_instagram_account_status")?.args)
       .toMatchObject({ p_expected_connected_at: CONNECTED_AT });
     const logs = x.harness.logs.join(" | ");
     expect(logs).toContain("instagram_account_reauth_stale");
     expect(logs).not.toContain("instagram_account_reauth_required");
+    expect(x.recorded()).toHaveLength(0);
+  });
+
+  it("parte 1 saiu e a 2 deu 190 depois de uma reconexão: PARTIAL_SEND com reason INSTAGRAM_ACCOUNT_RECONNECTED", async () => {
+    const x = setup({ message: LONG_MESSAGE, replies: [ok("mid-1"), { status: 400, body: { error: { code: 190 } } }], reconnected: true });
+    const response = await x.request();
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body).toMatchObject({ code: "PARTIAL_SEND", sent: 1, total: 2, reason: "INSTAGRAM_ACCOUNT_RECONNECTED", outcome_unknown: false });
+    expect(x.recorded()).toHaveLength(1);
+  });
+
+  it("parte 1 saiu e a 2 deu 190 sem reconexão: PARTIAL_SEND segue com INSTAGRAM_REAUTH_REQUIRED", async () => {
+    const x = setup({ message: LONG_MESSAGE, replies: [ok("mid-1"), { status: 400, body: { error: { code: 190 } } }] });
+    const response = await x.request();
+    expect(await response.json()).toMatchObject({ code: "PARTIAL_SEND", sent: 1, reason: "INSTAGRAM_REAUTH_REQUIRED" });
   });
 
   it("falha do registro após envio completo devolve 202 de reconciliação", async () => {
