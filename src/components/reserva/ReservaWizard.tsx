@@ -105,8 +105,8 @@ export function ReservaWizard({
           <WizardBody />
         </ResponsiveDialogBody>
         {ctx.state.step !== "success" && (
-          <ResponsiveDialogFooter>
-            <WizardFooter />
+          <ResponsiveDialogFooter className="block border-t-0 bg-transparent p-0 sm:p-0">
+            <WizardFooter floating />
           </ResponsiveDialogFooter>
         )}
       </WizardContext.Provider>
@@ -146,7 +146,7 @@ function WizardStepIndicator({ embedded = false }: { embedded?: boolean }) {
   if (state.step === "success") return null;
   const stepNum = state.step;
   return (
-    <div className={embedded ? "text-xs text-muted-foreground" : "text-xs text-muted-foreground mt-1.5"}>
+    <div className={embedded ? "text-xs text-muted-foreground tabular" : "text-xs text-muted-foreground tabular mt-1.5"}>
       Passo {stepNum} de 3
     </div>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, SquareStack, Check, Banknote } from "lucide-react";
+import { ChevronDown, SquareStack, Banknote } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useReservaWizardContext } from "./useReservaWizard";
 import { WizardSummary } from "./WizardSummary";
@@ -20,6 +20,7 @@ export function StepHall() {
   const { compatible, alternative } = computed.partition;
   const hasAlternatives = alternative.length > 0;
   const noCompatible = compatible.length === 0;
+  const selectedHall = compatible.find((hall) => hall.id === state.hall_id);
 
   // Acordeão aberto por default quando não há compatíveis
   const [showAlternatives, setShowAlternatives] = useState(noCompatible && hasAlternatives);
@@ -41,7 +42,7 @@ export function StepHall() {
         </h3>
 
         {noCompatible ? (
-          <div className="rounded-lg border border-warning/20 bg-warning/10 p-4 text-sm text-warning">
+          <div className="rounded-block border border-warning/20 bg-warning/10 p-4 text-sm text-warning">
             Nenhum ambiente disponível para {state.party_size} pessoa
             {state.party_size === 1 ? "" : "s"} às {state.time}.
             {hasAlternatives
@@ -49,24 +50,49 @@ export function StepHall() {
               : " Volte e escolha outra data/horário."}
           </div>
         ) : (
-          <div className="space-y-2.5">
-            {compatible.map((hall) => (
-              <HallCard
-                key={hall.id}
-                hall={hall}
-                selected={state.hall_id === hall.id}
-                onSelect={() => actions.set("hall_id", hall.id)}
+          <>
+            <div role="group" aria-label="Ambiente" className="flex flex-wrap gap-1 rounded-panel bg-muted p-1">
+              {compatible.map((hall) => {
+                const selected = state.hall_id === hall.id;
+                // A caução aparece em cada opção para o cliente comparar antes de escolher.
+                const chargeCents = getHallChargeCents(hall, state.date, state.time);
+                return (
+                  <button
+                    key={hall.id}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => actions.set("hall_id", hall.id)}
+                    className={cn(
+                      "flex min-h-11 flex-1 basis-[8rem] flex-col items-center justify-center rounded-full px-4 py-1",
+                      "text-sm font-medium text-muted-foreground transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      selected && "bg-card font-semibold text-foreground shadow-sm",
+                    )}
+                  >
+                    {hall.name}
+                    {chargeCents != null && chargeCents > 0 && (
+                      <span className="text-[11px] font-medium text-warning tabular">
+                        Caução R$ {(chargeCents / 100).toFixed(2).replace(".", ",")}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedHall && (
+              <HallDetails
+                hall={selectedHall}
                 partySize={state.party_size}
                 time={state.time}
                 date={state.date}
               />
-            ))}
-          </div>
+            )}
+          </>
         )}
       </div>
 
       {hasAlternatives && (
-        <div className="border rounded-lg overflow-hidden">
+        <div className="surface rounded-card overflow-hidden">
           <button
             type="button"
             onClick={() => setShowAlternatives((v) => !v)}
@@ -97,7 +123,7 @@ export function StepHall() {
                       actions.set("time", "");
                       actions.goToStep(1);
                     }}
-                    className="flex flex-col items-center gap-2 rounded-lg border bg-background p-3 hover:border-primary/40 hover:shadow-sm transition-all min-h-[88px] justify-center"
+                    className="flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-block border bg-card p-3 transition-colors"
                   >
                     <SquareStack className="h-5 w-5 text-muted-foreground" />
                     <span className="text-xs text-center text-foreground/80 leading-tight line-clamp-2">
@@ -114,17 +140,13 @@ export function StepHall() {
   );
 }
 
-function HallCard({
+function HallDetails({
   hall,
-  selected,
-  onSelect,
   partySize,
   time,
   date,
 }: {
   hall: PublicHall;
-  selected: boolean;
-  onSelect: () => void;
   partySize: number;
   time: string;
   date: string;
@@ -132,46 +154,23 @@ function HallCard({
   const chargeCents = getHallChargeCents(hall, date, time);
 
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={cn(
-        "w-full text-left rounded-xl border p-4 transition-all relative",
-        selected
-          ? "border-primary ring-2 ring-primary/20 bg-primary/5"
-          : "border-input hover:border-primary/40 hover:bg-muted/30",
+    <div className="surface rounded-card space-y-1 p-4">
+      <p className="font-semibold text-foreground leading-tight">{hall.name}</p>
+      {hall.description && (
+        <p className="text-xs text-muted-foreground line-clamp-2">{hall.description}</p>
       )}
-      aria-pressed={selected}
-    >
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="font-semibold text-foreground leading-tight">
-            {hall.name}
-          </div>
-          {hall.description && (
-            <div className="text-xs text-muted-foreground line-clamp-2">
-              {hall.description}
-            </div>
-          )}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-foreground/70">
-            <span>
-              {partySize} pessoa{partySize === 1 ? "" : "s"} às {time}
-            </span>
-            {chargeCents != null && chargeCents > 0 && (
-              <span className="inline-flex items-center gap-1 text-warning font-medium">
-                <Banknote className="h-3 w-3" />
-                Caução R$ {(chargeCents / 100).toFixed(2).replace(".", ",")}
-              </span>
-            )}
-          </div>
-        </div>
-        {selected && (
-          <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center shrink-0">
-            <Check className="h-3.5 w-3.5" />
-          </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-foreground/70">
+        <span className="tabular">
+          {partySize} pessoa{partySize === 1 ? "" : "s"} às {time}
+        </span>
+        {chargeCents != null && chargeCents > 0 && (
+          <span className="inline-flex items-center gap-1 text-warning font-medium">
+            <Banknote className="h-3 w-3" />
+            Caução R$ {(chargeCents / 100).toFixed(2).replace(".", ",")}
+          </span>
         )}
       </div>
-    </button>
+    </div>
   );
 }
 

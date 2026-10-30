@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { DEFAULT_MENU_THEME, type MenuTheme } from "@/types/reserva";
-import { isSafeHttpUrl } from "@/lib/utils";
+import { cn, isSafeHttpUrl } from "@/lib/utils";
 
 const HEX_RE = /^#[0-9A-Fa-f]{6}$/;
 
@@ -51,12 +51,12 @@ export default function MenuPortal() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background p-6">
-        <div className="max-w-2xl mx-auto space-y-4">
-          <Skeleton className="aspect-[2/1] w-full rounded-md" />
+      <div className="min-h-screen ambient bg-background text-foreground p-6">
+        <div className="surface rounded-panel p-4 max-w-3xl mx-auto space-y-4">
+          <Skeleton className="aspect-[2/1] w-full rounded-card" />
           <Skeleton className="h-10 w-3/4" />
-          <Skeleton className="aspect-[3/4] w-full" />
-          <Skeleton className="aspect-[3/4] w-full" />
+          <Skeleton className="aspect-[3/4] w-full rounded-block" />
+          <Skeleton className="aspect-[3/4] w-full rounded-block" />
         </div>
       </div>
     );
@@ -64,9 +64,9 @@ export default function MenuPortal() {
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-muted/40 flex items-center justify-center p-6 text-center">
-        <div className="space-y-2">
-          <p className="text-lg font-semibold">Cardápio não encontrado.</p>
+      <div className="min-h-screen ambient bg-background text-foreground flex items-center justify-center p-6 text-center">
+        <div className="surface rounded-panel max-w-md p-8 space-y-2">
+          <p className="text-xl font-semibold tracking-tight">Cardápio não encontrado.</p>
           <p className="text-sm text-muted-foreground">
             Verifique o link e tente novamente.
           </p>
@@ -99,19 +99,21 @@ export default function MenuPortal() {
   } as React.CSSProperties;
 
   return (
-    <div style={themeStyle} className="min-h-screen">
+    <div style={themeStyle} className="min-h-screen py-3 sm:py-6">
       {/* Banners da home (carrossel/grid no topo) */}
       {banners.home.length > 0 && (
-        <BannerCarousel banners={banners.home} aspect="aspect-[9/16]" />
+        <div className="px-4 sm:px-6">
+          <BannerCarousel banners={banners.home} aspect="aspect-[9/16]" />
+        </div>
       )}
 
       {/* Hero — cover + nome */}
       <header
-        className="px-4 sm:px-6 py-8 max-w-3xl mx-auto"
+        className="px-4 sm:px-6 pt-4 pb-6 max-w-3xl mx-auto"
         style={{ backgroundColor: theme.bg_primary }}
       >
         {menu.cover_image_url && (
-          <div className="aspect-[2/1] w-full rounded-lg overflow-hidden mb-5">
+          <div className="aspect-[2/1] w-full rounded-panel overflow-hidden">
             <img
               src={menu.cover_image_url}
               alt={menu.name}
@@ -120,24 +122,27 @@ export default function MenuPortal() {
           </div>
         )}
 
-        <div className="flex items-center gap-3">
+        <div className={cn(
+          "surface rounded-card relative p-5 flex items-center gap-3",
+          menu.cover_image_url && "-mt-6 mx-3",
+        )} style={{ backgroundColor: theme.bg_primary }}>
           {unit.logo_url && (
             <img
               src={unit.logo_url}
               alt={`Logo ${unit.name}`}
-              className="h-12 w-12 rounded-full object-cover ring-2"
+              className="h-14 w-14 shrink-0 rounded-full object-cover ring-2 ring-background"
               style={{ outline: `2px solid ${theme.accent}` }}
             />
           )}
-          <div>
+          <div className="min-w-0">
             <h1
-              className="text-3xl font-display"
+              className="text-3xl font-display font-semibold tracking-tight break-words"
               style={{ color: theme.font_primary }}
             >
               {menu.name}
             </h1>
             <p
-              className="text-sm"
+              className="text-sm mt-1 break-words"
               style={{ color: theme.font_secondary }}
             >
               {unit.name}
@@ -148,13 +153,13 @@ export default function MenuPortal() {
 
       {/* Galeria de páginas */}
       <main
-        className="px-4 sm:px-6 max-w-3xl mx-auto pb-8 space-y-4"
+        className="px-4 sm:px-6 max-w-3xl mx-auto pb-8 pt-4 space-y-4 rounded-panel"
         style={{ backgroundColor: theme.bg_secondary }}
       >
         {pages.length === 0 ? (
           <div
-            className="text-center py-16 text-sm"
-            style={{ color: theme.font_secondary }}
+            className="surface rounded-card text-center px-6 py-16 text-sm leading-relaxed"
+            style={{ backgroundColor: theme.bg_primary, color: theme.font_secondary }}
           >
             Cardápio em preparação. Volte em breve.
           </div>
@@ -162,7 +167,7 @@ export default function MenuPortal() {
           pages.map((p, idx) => (
             <div
               key={p.id}
-              className="rounded-lg overflow-hidden"
+              className="surface rounded-card overflow-hidden"
               style={{ backgroundColor: theme.bg_primary }}
             >
               <img
@@ -184,7 +189,7 @@ export default function MenuPortal() {
       </main>
 
       <footer
-        className="border-t py-4 text-center text-xs"
+        className="border-t px-4 pt-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-center text-xs"
         style={{
           borderColor: theme.bg_secondary,
           color: theme.font_secondary,
@@ -220,7 +225,7 @@ function BannerCarousel({
   const current = banners[idx];
 
   const inner = (
-    <div className={`relative w-full ${aspect} bg-muted overflow-hidden`}>
+    <div className={cn("relative w-full rounded-card bg-muted overflow-hidden", aspect)}>
       <img
         src={current.image_url}
         alt={`Banner ${idx + 1}`}
@@ -234,7 +239,7 @@ function BannerCarousel({
               e.preventDefault();
               setIdx((idx - 1 + banners.length) % banners.length);
             }}
-            className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 text-white rounded-full p-1"
+            className="surface absolute left-2 top-1/2 -translate-y-1/2 bg-card hover:bg-muted text-foreground rounded-full h-9 w-9 coarse:h-11 coarse:w-11 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             aria-label="Banner anterior"
           >
             <ChevronLeft className="h-4 w-4" />
@@ -245,18 +250,19 @@ function BannerCarousel({
               e.preventDefault();
               setIdx((idx + 1) % banners.length);
             }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 text-white rounded-full p-1"
+            className="surface absolute right-2 top-1/2 -translate-y-1/2 bg-card hover:bg-muted text-foreground rounded-full h-9 w-9 coarse:h-11 coarse:w-11 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             aria-label="Próximo banner"
           >
             <ChevronRight className="h-4 w-4" />
           </button>
-          <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1">
+          <div className="surface absolute bottom-3 left-1/2 -translate-x-1/2 flex justify-center gap-1.5 rounded-full bg-card p-2">
             {banners.map((_, i) => (
               <span
                 key={i}
-                className={`h-1.5 rounded-full transition-all ${
-                  i === idx ? "w-6 bg-white" : "w-1.5 bg-white/50"
-                }`}
+                className={cn(
+                  "h-1.5 rounded-full",
+                  i === idx ? "w-6 bg-primary" : "w-1.5 bg-foreground/30",
+                )}
               />
             ))}
           </div>
@@ -273,7 +279,7 @@ function BannerCarousel({
         href={current.link_url}
         target="_blank"
         rel="noopener noreferrer"
-        className="block max-w-3xl mx-auto"
+        className="block max-w-3xl mx-auto rounded-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
         {inner}
       </a>
